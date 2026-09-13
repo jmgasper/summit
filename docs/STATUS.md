@@ -147,6 +147,20 @@ Unicode, overrides, installation fallback and missing helpers. Run these with
 `.vm/native-process-paths.log`. The modern WebKit process launcher itself is
 not compiled yet, and this does not establish WebKit process isolation.
 
+The original area-based shared-memory backend loses its allocation when the
+owner is destroyed, even if a handle remains. A native baseline probe confirms
+that failure. Its mapping function also leaves the data pointer uninitialized.
+The replacement uses owned file descriptors and native file-backed mappings;
+**39 checks pass** against the production implementation. They cover handle
+lifetime, independent mappings, read-only access, copy-on-write and copied data,
+borrowed mappings, real child-process descriptor transfer, and native bitmap
+import with shared pixel bytes. The child cannot write through a read-only
+handle or bypass it by cloning the owner's ordinary memory area. Bitmap sharing
+explicitly enables area cloning for app_server. An imported writable mapping
+cannot currently export a separate read-only handle; it reports failure instead
+of granting writable access. These changes await the next engine build sync.
+Logs: `.vm/native-memory-tests.log` and `.vm/native-memory-baseline.log`.
+
 WebCore and WebKitLegacy compilation has started. The source transfer was
 corrected to include root `Configurations/`, which supplies the version header
 input. The current renderer build log is `.vm/webcore-build.log`.

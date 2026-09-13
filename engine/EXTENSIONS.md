@@ -41,6 +41,13 @@ discovery and failure cases (12 checks). These exercise the production spawn
 helper and path resolver. The full modern process launcher and WebKit IPC
 connection are still awaiting integration and compilation.
 
+The shared-memory backend now owns transferable file descriptors, preserves
+backing data beyond the allocating object's lifetime, and enforces read-only
+handles. Thirty-nine native checks include descriptor transfer into a real
+child, private mappings, and bitmap import by app_server. This establishes the
+memory primitives; the complete WebKit IPC connection and process lifecycle
+still need integration tests.
+
 The next engine stages are:
 
 1. Compile and exercise current JavaScriptCore, WebCore and native embedding.

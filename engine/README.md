@@ -32,6 +32,7 @@ bash tools/test-engine-cookies-in-vm.sh
 bash tools/test-download-names-in-vm.sh
 bash tools/test-engine-runloop-in-vm.sh
 bash tools/test-engine-process-in-vm.sh
+bash tools/test-engine-memory-in-vm.sh
 ```
 
 Do not run a second engine build while one is active. Inspect the live guest

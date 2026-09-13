@@ -2001,9 +2001,18 @@ index f24497c99ab0e49d3b157e148b8907b31379b695..47a7e9ca55c598b80fccee61ad6a0502
      enum class IsTouch : bool { No, Yes };
  
 diff --git a/Source/WebCore/platform/SharedMemory.h b/Source/WebCore/platform/SharedMemory.h
-index 68f798ab3b4a968c6dba787ac524e4c39e326bd2..d199a0e68d95e93a2fae4bb5b9ed38d821a951f0 100644
+index 68f798ab3b4a968c6dba787ac524e4c39e326bd2..20f3145e8d62462c19fbe78fdf228dfcc7eb5ce2 100644
 --- a/Source/WebCore/platform/SharedMemory.h
 +++ b/Source/WebCore/platform/SharedMemory.h
+@@ -32,7 +32,7 @@
+ #include <wtf/Platform.h>
+ #include <wtf/ThreadSafeRefCounted.h>
+ 
+-#if USE(UNIX_DOMAIN_SOCKETS)
++#if USE(UNIX_DOMAIN_SOCKETS) || OS(HAIKU)
+ #include <wtf/unix/UnixFileDescriptor.h>
+ #endif
+ 
 @@ -44,6 +44,10 @@
  #include <wtf/MachSendRight.h>
  #endif
@@ -2015,45 +2024,78 @@ index 68f798ab3b4a968c6dba787ac524e4c39e326bd2..d199a0e68d95e93a2fae4bb5b9ed38d8
  #if PLATFORM(COCOA)
  OBJC_CLASS NSData;
  #endif
-@@ -68,6 +72,10 @@ public:
+@@ -62,12 +66,14 @@ WEBCORE_EXPORT bool isMemoryAttributionDisabled();
+ class SharedMemoryHandle {
+ public:
+     using Type =
+-#if USE(UNIX_DOMAIN_SOCKETS)
++#if USE(UNIX_DOMAIN_SOCKETS) || OS(HAIKU)
+         UnixFileDescriptor;
+ #elif OS(DARWIN)
          MachSendRight;
  #elif OS(WINDOWS)
          Win32Handle;
-+#elif OS(HAIKU)
-+        area_id;
 +#else
 +        #error Missing platform specific code
  #endif
  
      // Note: this function should not be used to share writable arbitrary malloc memory to
-@@ -125,6 +133,8 @@ public:
+@@ -81,7 +87,7 @@ public:
+     WEBCORE_EXPORT static std::optional<SharedMemoryHandle> createCopy(std::span<const uint8_t>, SharedMemoryProtection);
+ 
+     SharedMemoryHandle(SharedMemoryHandle&&) = default;
+-#if USE(UNIX_DOMAIN_SOCKETS)
++#if USE(UNIX_DOMAIN_SOCKETS) || OS(HAIKU)
+     explicit SharedMemoryHandle(const SharedMemoryHandle&);
+ #else
+     explicit SharedMemoryHandle(const SharedMemoryHandle&) = default;
+@@ -97,7 +103,7 @@ public:
+     // Transfer ownership of the memory for process memory accounting purposes.
+     WEBCORE_EXPORT void setOwnershipOfMemory(const WebCore::ProcessIdentity&, MemoryLedger) const;
+ 
+-#if USE(UNIX_DOMAIN_SOCKETS)
++#if USE(UNIX_DOMAIN_SOCKETS) || OS(HAIKU)
+     UnixFileDescriptor releaseHandle();
+ #elif OS(DARWIN)
+     MachSendRight releaseHandle() { return std::exchange(m_handle, MachSendRight { }); }
+@@ -121,7 +127,7 @@ public:
+     WEBCORE_EXPORT static RefPtr<SharedMemory> allocate(size_t);
+     WEBCORE_EXPORT static RefPtr<SharedMemory> copyBuffer(const WebCore::FragmentedSharedBuffer&);
+     WEBCORE_EXPORT static RefPtr<SharedMemory> map(Handle&&, Protection, CopyOnWrite = CopyOnWrite::No);
+-#if USE(UNIX_DOMAIN_SOCKETS)
++#if USE(UNIX_DOMAIN_SOCKETS) || OS(HAIKU)
      WEBCORE_EXPORT static RefPtr<SharedMemory> wrapMap(void*, size_t, int fileDescriptor);
  #elif OS(DARWIN)
      WEBCORE_EXPORT static RefPtr<SharedMemory> wrapMap(std::span<const uint8_t>, Protection);
-+#elif PLATFORM(HAIKU)
-+    WEBCORE_EXPORT static RefPtr<SharedMemory> wrapMap(area_id, size_t , Protection);
- #endif
- 
-     WEBCORE_EXPORT ~SharedMemory();
-@@ -145,6 +155,10 @@ public:
+@@ -145,6 +151,10 @@ public:
      WEBCORE_EXPORT RetainPtr<NSData> toNSData() const;
  #endif
  
 +#if OS(HAIKU)
-+    area_id area() const { return m_areaid; }
++    WEBCORE_EXPORT area_id area() const;
 +#endif
 +
      WEBCORE_EXPORT Ref<WebCore::SharedBuffer> createSharedBuffer(size_t) const;
  
  private:
-@@ -165,6 +179,10 @@ private:
+@@ -158,13 +168,19 @@ private:
+     Protection m_protection;
+ #endif
+ 
+-#if USE(UNIX_DOMAIN_SOCKETS)
++#if USE(UNIX_DOMAIN_SOCKETS) || OS(HAIKU)
+     UnixFileDescriptor m_fileDescriptor;
+     bool m_isWrappingMap { false };
+ #elif OS(DARWIN)
      MachSendRight m_sendRight;
  #elif OS(WINDOWS)
      Win32Handle m_handle;
-+#elif OS(HAIKU)
-+        area_id m_areaid;
 +#else
 +        #error Missing platform specific code
++#endif
++#if OS(HAIKU)
++    UnixFileDescriptor m_readOnlyFileDescriptor;
++    bool m_isCopyOnWrite { false };
  #endif
  };
  
@@ -12354,10 +12396,10 @@ index 0000000000000000000000000000000000000000..b643509345de3c578337c746965cade3
 +#endif // SearchPopupMenuHaiku_h
 diff --git a/Source/WebCore/platform/haiku/SharedMemoryHaiku.cpp b/Source/WebCore/platform/haiku/SharedMemoryHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..5217c6ae2683b89ebed7e23531ef28ced36072a7
+index 0000000000000000000000000000000000000000..583a0e05168d879e7c6ceeef77cdd25bf8494d58
 --- /dev/null
 +++ b/Source/WebCore/platform/haiku/SharedMemoryHaiku.cpp
-@@ -0,0 +1,83 @@
+@@ -0,0 +1,179 @@
 +/*
 + * Copyright (C) 2019 Haiku, Inc. All rights reserved.
 + *
@@ -12386,61 +12428,157 @@ index 0000000000000000000000000000000000000000..5217c6ae2683b89ebed7e23531ef28ce
 +#include "config.h"
 +#include "SharedMemory.h"
 +
++#include <cerrno>
++#include <cstdio>
++#include <fcntl.h>
++#include <limits>
++#include <sys/mman.h>
++#include <sys/stat.h>
++#include <unistd.h>
++#include <wtf/CryptographicallyRandomNumber.h>
 +#include <wtf/RefPtr.h>
-+
-+#include <OS.h>
-+#include <Bitmap.h>
 +
 +namespace WebCore {
 +
-+RefPtr<SharedMemory> SharedMemory::allocate(size_t size)
++SharedMemoryHandle::SharedMemoryHandle(const SharedMemoryHandle& other)
++    : m_handle(other.m_handle.duplicate())
++    , m_size(other.m_size)
 +{
-+        void* baseAddress;
-+
-+        area_id sharedArea = create_area("WebKit-Shared-Memory", &baseAddress, B_ANY_ADDRESS,
-+                size, B_NO_LOCK, B_READ_AREA | B_WRITE_AREA);
-+
-+        if (sharedArea < 0)
-+                return nullptr;
-+
-+        RefPtr<SharedMemory> memory = adoptRef(new SharedMemory);
-+        memory->m_size = size;
-+        memory->m_data = baseAddress;
-+        memory->m_areaid = sharedArea;
-+
-+        return memory;
 +}
 +
-+RefPtr<SharedMemory> SharedMemory::map(Handle&& handle, Protection protection, CopyOnWrite)
++UnixFileDescriptor SharedMemoryHandle::releaseHandle()
 +{
-+        RefPtr<SharedMemory> memory = adoptRef(new SharedMemory());
-+        if(!memory)
-+                return nullptr;
++    return WTF::move(m_handle);
++}
 +
-+        memory->m_areaid = handle.m_handle;
-+        memory->m_size = handle.size();
-+        return memory;
++RefPtr<SharedMemory> SharedMemory::allocate(size_t size)
++{
++    if (!size || size > static_cast<uint64_t>(std::numeric_limits<off_t>::max()))
++        return nullptr;
++
++    // Keep separate read/write and read-only capabilities before removing the
++    // name. dup() cannot reduce a descriptor's access mode after unlinking.
++    UnixFileDescriptor descriptor;
++    UnixFileDescriptor readOnlyDescriptor;
++    for (unsigned attempt = 0; attempt < 10; ++attempt) {
++        char name[96];
++        std::snprintf(name, sizeof(name), "/WebKitSharedMemory.%ld.%08x.%08x", static_cast<long>(getpid()),
++            cryptographicallyRandomNumber<unsigned>(), cryptographicallyRandomNumber<unsigned>());
++        int file;
++        do {
++            file = shm_open(name, O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR);
++        } while (file < 0 && errno == EINTR);
++        if (file < 0) {
++            if (errno == EEXIST)
++                continue;
++            return nullptr;
++        }
++        descriptor = UnixFileDescriptor { file, UnixFileDescriptor::Adopt };
++        int readOnlyFile;
++        do {
++            readOnlyFile = shm_open(name, O_RDONLY | O_CLOEXEC, 0);
++        } while (readOnlyFile < 0 && errno == EINTR);
++        readOnlyDescriptor = UnixFileDescriptor { readOnlyFile, UnixFileDescriptor::Adopt };
++        int result;
++        do {
++            result = shm_unlink(name);
++        } while (result < 0 && errno == EINTR);
++        if (result || !readOnlyDescriptor)
++            return nullptr;
++        break;
++    }
++    if (!descriptor)
++        return nullptr;
++
++    while (ftruncate(descriptor.value(), size)) {
++        if (errno != EINTR)
++            return nullptr;
++    }
++    void* data = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, descriptor.value(), 0);
++    if (data == MAP_FAILED)
++        return nullptr;
++    RefPtr<SharedMemory> memory = adoptRef(new SharedMemory);
++    memory->m_size = size;
++    memory->m_data = data;
++    memory->m_fileDescriptor = WTF::move(descriptor);
++    memory->m_readOnlyFileDescriptor = WTF::move(readOnlyDescriptor);
++    return memory;
++}
++
++RefPtr<SharedMemory> SharedMemory::map(Handle&& handle, Protection protection, CopyOnWrite copyOnWrite)
++{
++    if (!handle.m_handle || !handle.m_size || handle.m_size > std::numeric_limits<size_t>::max())
++        return nullptr;
++    struct stat info;
++    if (fstat(handle.m_handle.value(), &info) || !S_ISREG(info.st_mode)
++        || info.st_size < 0 || handle.m_size > static_cast<uint64_t>(info.st_size))
++        return nullptr;
++
++    int access = PROT_READ | (protection == Protection::ReadWrite ? PROT_WRITE : 0);
++    int flags = copyOnWrite == CopyOnWrite::Yes ? MAP_PRIVATE : MAP_SHARED;
++    void* data = mmap(nullptr, handle.size(), access, flags, handle.m_handle.value(), 0);
++    if (data == MAP_FAILED)
++        return nullptr;
++    RefPtr<SharedMemory> memory = adoptRef(new SharedMemory);
++    memory->m_size = handle.size();
++    memory->m_data = data;
++    memory->m_fileDescriptor = WTF::move(handle.m_handle);
++    memory->m_isCopyOnWrite = copyOnWrite == CopyOnWrite::Yes;
++    if ((fcntl(memory->m_fileDescriptor.value(), F_GETFL) & O_ACCMODE) == O_RDONLY)
++        memory->m_readOnlyFileDescriptor = memory->m_fileDescriptor.duplicate();
++    return memory;
++}
++
++RefPtr<SharedMemory> SharedMemory::wrapMap(void* data, size_t size, int descriptor)
++{
++    if (!data || data == MAP_FAILED || !size || descriptor < 0)
++        return nullptr;
++    RefPtr<SharedMemory> memory = adoptRef(new SharedMemory);
++    memory->m_size = size;
++    memory->m_data = data;
++    memory->m_fileDescriptor = UnixFileDescriptor { descriptor, UnixFileDescriptor::Borrow };
++    memory->m_isWrappingMap = true;
++    return memory;
 +}
 +
 +SharedMemory::~SharedMemory()
 +{
-+        if(!m_areaid)
-+                return;
-+
-+        //unset
-+        delete_area(m_areaid);
-+        m_areaid = 0;
++    if (!m_isWrappingMap)
++        munmap(m_data, m_size);
 +}
 +
-+std::optional<SharedMemory::Handle> SharedMemory::createHandle(Protection)
++std::optional<SharedMemory::Handle> SharedMemory::createHandle(Protection protection)
 +{
-+    ASSERT(m_areaid);
-+
-+        return SharedMemory::Handle(std::move(m_areaid), m_size);
++    // A descriptor for a private mapping refers to the original file, not its
++    // private writes. Export those bytes through a new backing object instead.
++    if (m_isCopyOnWrite)
++        return Handle::createCopy(span(), protection);
++    // An imported writable descriptor has no separate read-only capability.
++    // Decline that conversion instead of exporting writable access as read-only.
++    auto& descriptor = protection == Protection::ReadOnly ? m_readOnlyFileDescriptor : m_fileDescriptor;
++    auto duplicate = descriptor.duplicate();
++    if (!duplicate)
++        return std::nullopt;
++    if (protection == Protection::ReadWrite && (fcntl(duplicate.value(), F_GETFL) & O_ACCMODE) != O_RDWR)
++        return std::nullopt;
++    return Handle { WTF::move(duplicate), m_size };
 +}
 +
-+} // namespace WebKit
++area_id SharedMemory::area() const
++{
++    // Only bitmap sharing opts into Haiku's app_server area transport. Ordinary
++    // IPC memory remains uncloneable by unrelated teams and uses descriptors.
++    area_id id = area_for(m_data);
++    area_info info;
++    if (id < 0 || get_area_info(id, &info) != B_OK)
++        return B_BAD_VALUE;
++    auto protection = info.protection & (B_READ_AREA | B_WRITE_AREA | B_EXECUTE_AREA);
++    if (set_area_protection(id, protection | B_CLONEABLE_AREA) != B_OK)
++        return B_NOT_ALLOWED;
++    return id;
++}
 +
++} // namespace WebCore
 diff --git a/Source/WebCore/platform/haiku/SharedTimerHaiku.cpp b/Source/WebCore/platform/haiku/SharedTimerHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..b3f42080d37327d732ab8164f63dbd5426465223
@@ -19175,6 +19313,19 @@ index 0000000000000000000000000000000000000000..61ea71ea73a945cf4fea7a961443c30a
 +}
 +
 +} // namespace WebCore
+diff --git a/Source/WebCore/platform/unix/SharedMemoryUnix.cpp b/Source/WebCore/platform/unix/SharedMemoryUnix.cpp
+index c534f8fe7e32b62d5c1b9584aaaa109e836086ff..bcfba160da5797070c6d5cdee5b0bb4e72fc2694 100644
+--- a/Source/WebCore/platform/unix/SharedMemoryUnix.cpp
++++ b/Source/WebCore/platform/unix/SharedMemoryUnix.cpp
+@@ -28,7 +28,7 @@
+ #include "config.h"
+ #include "SharedMemory.h"
+ 
+-#if USE(UNIX_DOMAIN_SOCKETS) && !OS(ANDROID)
++#if USE(UNIX_DOMAIN_SOCKETS) && !OS(ANDROID) && !OS(HAIKU)
+ 
+ #include <errno.h>
+ #include <fcntl.h>
 diff --git a/Source/WebCore/rendering/haiku/RenderThemeHaiku.cpp b/Source/WebCore/rendering/haiku/RenderThemeHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..92d20a3ff6fd83acdf255b10fa5b68cdfff528ae
@@ -20566,9 +20717,18 @@ index 25960ae4ce9923740dd3f84bfa522a0f08b84cb0..c6e7176cd29251b02e21ad4144112886
      NativeWebWheelEvent(WebWheelEventInit&&, const MSG&);
  
 diff --git a/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in b/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in
-index 575a1f68f3bd19cbe2259aae39f94dcadb552392..ec69c209214e88838cc65273f1a8dba7574754c8 100644
+index 575a1f68f3bd19cbe2259aae39f94dcadb552392..1a8f90a6eb737c0b0d7b62edd4effbcba28416a1 100644
 --- a/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in
 +++ b/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in
+@@ -1689,7 +1689,7 @@ header: <wtf/MachSendRight.h>
+ #endif
+ 
+ [CustomHeader, RValue, WebKitPlatform] class WebCore::SharedMemoryHandle {
+-#if USE(UNIX_DOMAIN_SOCKETS)
++#if USE(UNIX_DOMAIN_SOCKETS) || OS(HAIKU)
+     [Validator='!!m_handle && *m_handle'] UnixFileDescriptor m_handle;
+ #endif
+ #if OS(DARWIN)
 @@ -6688,7 +6688,11 @@ using WebCore::GlyphBufferGlyph = CGGlyph
  #else
  using WebCore::GlyphBufferGlyph = WebCore::Glyph
