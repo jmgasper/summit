@@ -79,6 +79,22 @@ Logs are `.vm/jsc-icu66-failure.log`, `.vm/jsc-build.log`,
 the shell resolves the newly built library under `WebKitBuild/Release/lib`.
 Two runs also show different load addresses with `DISABLE_ASLR` unset.
 
+Focused native cookie tests exposed and now cover an overly broad domain
+match and cookie names incorrectly parsed as attributes. **18 checks pass in
+both a console process and a native application loop**. The tests link the
+actual current WebCore cookie object and newly built JavaScriptCore library.
+The original three regression cases failed before the parser changes.
+
+That harness also exposed a double free during process shutdown: Haiku ran
+WebKit's thread-local `BHandler` destructor after libbe's global token table
+was destroyed. The Haiku run loop now releases its native handler before
+static teardown. Console exit, native application exit and main-thread exit
+before process exit all complete successfully. JavaScriptCore's 16 JIT and
+15 interpreter checks still pass after this change. Logs are
+`.vm/engine-cookie-tests.log`, `.vm/cookie-probe-baseline.log` and
+`.vm/jsc-runloop-smoke.log`; the original crash report is
+`.vm/cookie-probe-crash.report`.
+
 WebCore and WebKitLegacy compilation has started. The source transfer was
 corrected to include root `Configurations/`, which supplies the version header
 input. The current renderer build log is `.vm/webcore-build.log`.

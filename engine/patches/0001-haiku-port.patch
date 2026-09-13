@@ -594,6 +594,46 @@ index a49b2f86ed54af526692b47ef4ba02887f403e69..70a87f357d27c2bbc430133240ca02c5
  #else
  #define USE_GENERIC_EVENT_LOOP 1
  #endif
+diff --git a/Source/WTF/wtf/RunLoop.cpp b/Source/WTF/wtf/RunLoop.cpp
+index bfb38c92982b2c48517d9b097dbc6d652be917eb..f1fd1c50849c9100fe6d71cb11637ab09a54e1b0 100644
+--- a/Source/WTF/wtf/RunLoop.cpp
++++ b/Source/WTF/wtf/RunLoop.cpp
+@@ -32,6 +32,7 @@
+ #include <wtf/ThreadSpecific.h>
+ #include <wtf/text/StringBuilder.h>
+ #include <wtf/threads/BinarySemaphore.h>
++#include <cstdlib>
+ 
+ namespace WTF {
+ 
+@@ -64,6 +65,14 @@ void RunLoop::initializeMain()
+ {
+     RELEASE_ASSERT(!s_mainRunLoop);
+     s_mainRunLoop = &RunLoop::currentSingleton();
++#if OS(HAIKU)
++    // Haiku runs pthread TLS destructors after the C++ static destructors.
++    // Release BHandlers while libbe's global token space is still alive.
++    std::atexit([] {
++        if (s_mainRunLoop)
++            s_mainRunLoop->stop();
++    });
++#endif
+ }
+ 
+ auto RunLoop::runLoopHolder() -> ThreadSpecific<Holder>&
+@@ -200,6 +209,12 @@ void RunLoop::threadWillExit()
+         Locker locker { m_nextIterationLock };
+         m_nextIteration.clear();
+     }
++#if OS(HAIKU)
++    if (this == s_mainRunLoop) {
++        stop();
++        s_mainRunLoop = nullptr;
++    }
++#endif
+ }
+ 
+ void RunLoop::registerTimer(TimerBase& timer)
 diff --git a/Source/WTF/wtf/RunLoop.h b/Source/WTF/wtf/RunLoop.h
 index 2a916946b7a034407bbad8f1fe9e92a611f20bc6..a138d0ed4d2f79bebdf5dec01e3c324bccab7072 100644
 --- a/Source/WTF/wtf/RunLoop.h
@@ -675,10 +715,10 @@ index f7c1f5175e14e27e4c67598f5424782e2af77050..cde8501928cd6510cb4386b3afb6edd1
  
 diff --git a/Source/WTF/wtf/haiku/RunLoopHaiku.cpp b/Source/WTF/wtf/haiku/RunLoopHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..3a3b147e8c4d9e9f1367b5c4bb27a19907c4e0ea
+index 0000000000000000000000000000000000000000..6cfb2ff77506918da79f24bb068d1a2be4d02f32
 --- /dev/null
 +++ b/Source/WTF/wtf/haiku/RunLoopHaiku.cpp
-@@ -0,0 +1,187 @@
+@@ -0,0 +1,193 @@
 +/*
 + * Copyright (C) 2014, 2024 Haiku, Inc
 + *
@@ -754,6 +794,8 @@ index 0000000000000000000000000000000000000000..3a3b147e8c4d9e9f1367b5c4bb27a199
 +
 +void RunLoop::run()
 +{
++    if (!currentSingleton().m_handler)
++        currentSingleton().m_handler = new LoopHandler();
 +    BLooper* looper = BLooper::LooperForThread(find_thread(NULL));
 +    if (!looper) {
 +        currentSingleton().m_looper = looper = new BLooper();
@@ -774,12 +816,15 @@ index 0000000000000000000000000000000000000000..3a3b147e8c4d9e9f1367b5c4bb27a199
 +
 +void RunLoop::stop()
 +{
-+    if (!m_handler->LockLooper())
++    if (!m_handler)
 +        return;
 +
-+    BLooper* looper = m_handler->Looper();
-+    looper->RemoveHandler(m_handler);
-+    looper->Unlock();
++    if (m_handler->LockLooper()) {
++        BLooper* looper = m_handler->Looper();
++        looper->RemoveHandler(m_handler);
++        looper->Unlock();
++    }
++    delete std::exchange(m_handler, nullptr);
 +
 +    if (m_looper) {
 +        thread_id thread = m_looper->Thread();
@@ -794,7 +839,8 @@ index 0000000000000000000000000000000000000000..3a3b147e8c4d9e9f1367b5c4bb27a199
 +
 +void RunLoop::wakeUp()
 +{
-+    m_handler->Looper()->PostMessage('loop', m_handler);
++    if (m_handler && m_handler->Looper())
++        m_handler->Looper()->PostMessage('loop', m_handler);
 +}
 +
 +RunLoop::TimerBase::TimerBase(WTF::Ref<RunLoop>&& runLoop, WTF::ASCIILiteral)
@@ -13679,6 +13725,58 @@ index 1373e6e9b7b3e517f8570d11022f02a40ce42c27..97f95743448a1c0b9baa0c092916ac81
  {
  }
  
+diff --git a/Source/WebCore/platform/network/curl/CookieUtil.cpp b/Source/WebCore/platform/network/curl/CookieUtil.cpp
+index 7d0ffb01d0cfc846045fea9ad8a4b2e7a7d63e8c..34817cb46214bf9423137af4685733e906df5494 100644
+--- a/Source/WebCore/platform/network/curl/CookieUtil.cpp
++++ b/Source/WebCore/platform/network/curl/CookieUtil.cpp
+@@ -60,25 +60,17 @@ bool isIPAddress(const String& hostname)
+ 
+ bool domainMatch(const String& cookieDomain, const String& host)
+ {
+-    size_t index = host.find(cookieDomain);
+-
+-    bool tailMatch = (index != notFound && index + cookieDomain.length() == host.length());
+-
+-    // Check if host equals cookie domain.
+-    if (tailMatch && !index)
+-        return true;
+-
+-    // Check if host is a subdomain of the domain in the cookie.
+-    // Curl uses a '.' in front of domains to indicate it's valid on subdomains.
+-    if (tailMatch && index > 0 && host[index] == '.')
++    if (cookieDomain.isEmpty() || host.isEmpty())
++        return false;
++    if (cookieDomain == host)
+         return true;
+ 
+-    // Check the special case where host equals the cookie domain, except for a leading '.' in the cookie domain.
+-    // E.g. cookie domain is .apple.com and host is apple.com.
+-    if (cookieDomain[0] == '.' && cookieDomain.find(host) == 1)
+-        return true;
+-
+-    return false;
++    // Curl stores domain cookies with a leading dot; host-only cookies must
++    // match exactly. Both domain cases must consume the complete suffix.
++    if (!cookieDomain.startsWith('.'))
++        return false;
++    return host == cookieDomain.substring(1)
++        || (host.length() > cookieDomain.length() && host.endsWith(cookieDomain) && !isIPAddress(host));
+ }
+ 
+ static std::optional<double> parseExpiresMS(std::span<const Latin1Character> expires)
+@@ -177,8 +169,10 @@ std::optional<Cookie> parseCookieHeader(const String& cookieLine)
+     bool hasMaxAge = false;
+     cookie.session = true;
+ 
+-    for (auto attribute : cookieLine.splitAllowingEmptyEntries(';'))
+-        parseCookieAttributes(attribute, hasMaxAge, cookie);
++    if (separatorPosition != notFound) {
++        for (auto attribute : cookieLine.substring(separatorPosition + 1).splitAllowingEmptyEntries(';'))
++            parseCookieAttributes(attribute, hasMaxAge, cookie);
++    }
+ 
+     return cookie;
+ }
 diff --git a/Source/WebCore/platform/network/curl/CurlCacheEntry.cpp b/Source/WebCore/platform/network/curl/CurlCacheEntry.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..4181a09648810af79ad0153ab8a5124a7d43e278
