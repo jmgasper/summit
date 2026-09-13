@@ -199,15 +199,18 @@ Unicode, overrides, installation fallback and missing helpers. Run these with
 `.vm/native-process-paths.log`. The modern WebKit process launcher itself is
 not compiled yet, and this does not establish WebKit process isolation.
 
-The Haiku IPC socket monitor passes **18 native checks** against production
+The Haiku IPC socket monitor passes **19 native checks** against production
 code: ordered sequenced packets, serial-queue callbacks, idle cancellation,
 peer closure, destruction inside a callback, suppression of queued callbacks,
 descriptor reuse, close-on-exec and repeated lifecycle leak checks. A dedicated
 polling thread only detects readiness; protocol processing stays on the
 connection queue. Cancellation wakes and joins the polling thread. Integration
 is wired into the modern transport, whose full compilation remains pending.
-Run `tools/test-engine-socket-monitor-in-vm.sh`; log:
-`.vm/native-socket-monitor.log`.
+The test explicitly joins its detached connection-queue thread before process
+static teardown; without that wait, an earlier passing run produced a late
+native debugger dialog. Ten complete process runs now pass with no new crash
+reports. Run `tools/test-engine-socket-monitor-in-vm.sh`; logs:
+`.vm/native-socket-monitor-fixed.log`, `.vm/native-socket-monitor-repeat.log`.
 
 The original area-based shared-memory backend loses its allocation when the
 owner is destroyed, even if a handle remains. A native baseline probe confirms

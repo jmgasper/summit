@@ -45,7 +45,9 @@ static int OpenDescriptors()
 int main()
 {
     WTF::initializeMainThread();
-    auto queue = WorkQueue::create("Summit IPC monitor test"_s);
+    RefPtr<WorkQueue> queue = WorkQueue::create("Summit IPC monitor test"_s);
+    thread_id queueThread = -1;
+    queue->dispatchSync([&] { queueThread = find_thread(nullptr); });
     std::unique_ptr<IPC::SocketMonitorHaiku> monitor;
     Pair pair;
     BinarySemaphore received;
@@ -55,7 +57,7 @@ int main()
         std::array<bool, 2048> previouslyOpen;
         for (size_t fd = 0; fd < previouslyOpen.size(); ++fd)
             previouslyOpen[fd] = fcntl(fd, F_GETFD) >= 0;
-        monitor = IPC::SocketMonitorHaiku::create(pair.reader.value(), queue, [&] {
+        monitor = IPC::SocketMonitorHaiku::create(pair.reader.value(), *queue, [&] {
             onQueue &= queue->isCurrent();
             int value = -1;
             auto bytes = recv(pair.reader.value(), &value, sizeof(value), 0);
@@ -95,7 +97,7 @@ int main()
     std::atomic<int> capturedDestroyed { 0 };
     auto captured = std::shared_ptr<int>(new int(1), [&](int* p) { delete p; ++capturedDestroyed; });
     queue->dispatchSync([&] {
-        monitor = IPC::SocketMonitorHaiku::create(pair.reader.value(), queue,
+        monitor = IPC::SocketMonitorHaiku::create(pair.reader.value(), *queue,
             [&, captured] { ++cancelledCalls; });
     });
     captured.reset();
@@ -118,7 +120,7 @@ int main()
     BinarySemaphore closed;
     bool sawEOF = false;
     queue->dispatchSync([&] {
-        monitor = IPC::SocketMonitorHaiku::create(pair.reader.value(), queue, [&] {
+        monitor = IPC::SocketMonitorHaiku::create(pair.reader.value(), *queue, [&] {
             char byte;
             sawEOF = recv(pair.reader.value(), &byte, 1, 0) == 0;
             monitor.reset();
@@ -129,7 +131,7 @@ int main()
     Check(closed.waitFor(2_s), "peer closure wakes the connection queue");
     queue->dispatchSync([&] {
         Check(sawEOF && !monitor, "a callback can destroy its own monitor without deadlocking");
-        Check(!IPC::SocketMonitorHaiku::create(-1, queue, [] { }), "invalid descriptors report creation failure");
+        Check(!IPC::SocketMonitorHaiku::create(-1, *queue, [] { }), "invalid descriptors report creation failure");
     });
 
     Pair oldPair, replacement;
@@ -137,7 +139,7 @@ int main()
     BinarySemaphore originalArrived;
     std::atomic<int> reuseCalls { 0 };
     queue->dispatchSync([&] {
-        monitor = IPC::SocketMonitorHaiku::create(oldPair.reader.value(), queue, [&] {
+        monitor = IPC::SocketMonitorHaiku::create(oldPair.reader.value(), *queue, [&] {
             int item;
             if (recv(oldReader.value(), &item, sizeof(item), 0) == sizeof(item)) {
                 ++reuseCalls;
@@ -161,12 +163,19 @@ int main()
     int before = OpenDescriptors();
     for (int i = 0; i < 40; ++i) {
         queue->dispatchSync([&] {
-            auto transient = IPC::SocketMonitorHaiku::create(oldReader.value(), queue, [] { });
+            auto transient = IPC::SocketMonitorHaiku::create(oldReader.value(), *queue, [] { });
             RELEASE_ASSERT(transient);
         });
     }
     queue->dispatchSync([] { });
     Check(OpenDescriptors() == before, "repeated creation and cancellation do not leak descriptors");
+    // WorkQueue owns a detached run-loop thread. Let its native teardown finish
+    // before returning from main and beginning libbe's global destruction.
+    queue = nullptr;
+    status_t threadResult = B_ERROR;
+    status_t waited = wait_for_thread(queueThread, &threadResult);
+    Check(waited == B_BAD_THREAD_ID || (waited == B_OK && threadResult == B_OK),
+        "the test's connection queue finishes before process static teardown");
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
