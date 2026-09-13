@@ -26,6 +26,7 @@ bash tools/build-webkit-in-vm.sh jsc
 bash tools/test-jsc-in-vm.sh
 bash tools/test262-in-vm.sh
 bash tools/test262-in-vm.sh atomics
+bash tools/test262-in-vm.sh intl
 # Full suite with upstream proposal/feature skips, ignoring failure expectations:
 bash tools/test262-in-vm.sh full
 # Focused native WebCore cookie and event-loop lifecycle checks:
@@ -73,6 +74,14 @@ against the full-browser objective.
 The [extension integration design](EXTENSIONS.md) records the shared upstream
 runtime, Haiku's missing process infrastructure and the compatibility evidence
 needed for the original three-ecosystem requirement.
+
+An optional private ICU 78.3 build addresses the older system ICU's Unicode
+and locale data. `engine/icu.lock.json` pins its verified upstream archive;
+`bash tools/build-icu-in-vm.sh` builds, installs under
+`/boot/home/summit-deps/icu78`, and runs upstream tests. All four test groups and
+the configuration self-check pass. Configure an engine with
+`-DICU_ROOT=/boot/home/summit-deps/icu78` to select it. The existing current-browser
+bundle continues to use ICU 74 until an updated engine is built and verified.
 
 Primary source references:
 

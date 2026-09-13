@@ -98,6 +98,17 @@ microtasks, hot JavaScript and WebAssembly. Fifteen JavaScript checks also pass
 with JIT disabled. The full 16-check run passes with `DISABLE_ASLR` unset.
 These are port smoke checks, not an upstream conformance suite.
 
+ICU **78.3** was subsequently built into a private prefix from its verified
+upstream source archive. Its `testdata`, `intltest`, `iotest`, `cintltst` suites
+and configuration self-check all pass on Haiku. The initial data-packaging and
+installation attempts failed because their relative runtime library paths did
+not resolve; absolute `LIBRARY_PATH` entries corrected that without source
+changes. Logs: `.vm/icu78-build.log`, `.vm/icu78-build-fixed.log`,
+`.vm/icu78-install-check.log`. `engine/icu.lock.json` and
+`tools/build-icu-in-vm.sh` record the source and reproducible private build.
+The preserved working browser still uses ICU 74; JavaScriptCore is rebuilding
+against ICU 78.3 in a separate modern-engine build directory for comparison.
+
 The upstream Test262 runner also passes **232 runs from 116 test files**, with
 zero skips and zero failures, for `Intl.ListFormat`, `Array.prototype.toSorted`
 and `Object.groupBy`. Both strict and default modes were exercised. Expectations

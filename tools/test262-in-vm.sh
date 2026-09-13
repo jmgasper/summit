@@ -4,8 +4,8 @@ SUMMIT_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$SUMMIT_ROOT"
 SUMMIT_TEST262_SCOPE=${1:-smoke}
 case "$SUMMIT_TEST262_SCOPE" in
-    smoke|atomics|full) ;;
-    *) echo 'Usage: test262-in-vm.sh [smoke|atomics|full]' >&2; exit 2 ;;
+    smoke|atomics|intl|full) ;;
+    *) echo 'Usage: test262-in-vm.sh [smoke|atomics|intl|full]' >&2; exit 2 ;;
 esac
 mkdir -p .vm
 exec 8>.vm/test262.lock
@@ -35,6 +35,9 @@ if [[ $SUMMIT_TEST262_SCOPE == smoke ]]; then
         --test-only test/built-ins/Array/prototype/toSorted --test-only test/built-ins/Object/groupBy)
 elif [[ $SUMMIT_TEST262_SCOPE == atomics ]]; then
     SUMMIT_TEST262_OPTIONS=(--test-only test/built-ins/Atomics)
+elif [[ $SUMMIT_TEST262_SCOPE == intl ]]; then
+    SUMMIT_TEST262_OPTIONS=(--test-only test/intl402 --test-only test/language/identifiers
+        --test-only test/staging/sm/String)
 fi
 SUMMIT_TEST262_JSC=${SUMMIT_TEST262_JSC:-/boot/home/summit-webkit/WebKitBuild/Release/bin/jsc}
 SUMMIT_TEST262_LIBRARY=${SUMMIT_TEST262_LIBRARY:-/boot/home/summit-webkit/WebKitBuild/Release/lib/libJavaScriptCore.so.18.7.4}
