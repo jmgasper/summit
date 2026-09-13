@@ -2,6 +2,14 @@
 set -euo pipefail
 SUMMIT_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$SUMMIT_ROOT"
+mkdir -p .vm
+exec 9>.vm/engine-build.lock
+if ! flock -n 9; then
+    echo 'Another Summit engine build script is active.' >&2
+    exit 1
+fi
+# Also catch builds started directly over SSH before changing their sources.
+bash tools/haiku.sh 'if ps | /bin/grep -q "[n]inja.*WebKitBuild/Release"; then echo "An engine build is active in the VM; inspect its existing log and process." >&2; exit 1; fi'
 python3 tools/prepare-webkit.py
 # Source paths are fixed and passed as archive members, never as remote commands.
 tar -C .cache/WebKit -czf - --exclude=__pycache__ CMakeLists.txt Source Tools |
