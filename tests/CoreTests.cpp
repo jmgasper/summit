@@ -22,6 +22,10 @@ int main()
     CHECK(ResolveAddress("about:blank").url == "about:blank");
     CHECK(ResolveAddress("/boot/home/test.html").url == "file:///boot/home/test.html");
     CHECK(ResolveAddress("/").url == "file:///");
+    CHECK(ResolveAddress("/boot/home/a #?%/café.html").url == "file:///boot/home/a%20%23%3F%25/caf%C3%A9.html");
+    CHECK(FileURL("/boot/home/ report .html ") == "file:///boot/home/%20report%20.html%20");
+    CHECK(ResolveAddress("file:///boot/home/a%20%23.html").url == "file:///boot/home/a%20%23.html");
+    CHECK(FileURL("relative.html").empty());
     CHECK(ResolveAddress("kunanyi walking tracks").search);
     CHECK(ResolveAddress("site:example.com").error.size() > 0);
     CHECK(ResolveAddress("hello & goodbye").url == "https://duckduckgo.com/?q=hello%20%26%20goodbye");

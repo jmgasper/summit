@@ -365,7 +365,8 @@ void BrowserWindow::MessageReceived(BMessage* message)
         case B_REFS_RECEIVED: {
             entry_ref ref;
             for (int32 i = 0; message->FindRef("refs", i, &ref) == B_OK; ++i) {
-                BPath path(&ref); CreateTab("file://" + std::string(path.Path()));
+                BPath path(&ref);
+                if (path.InitCheck() == B_OK) CreateTab(FileURL(path.Path()));
             } break;
         }
         case kShowDownloads: {

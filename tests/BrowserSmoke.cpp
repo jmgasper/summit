@@ -1,9 +1,13 @@
 #include "ui/Messages.h"
 #include <Application.h>
+#include <Entry.h>
 #include <Message.h>
 #include <Messenger.h>
 #include <OS.h>
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <string>
 
@@ -128,6 +132,26 @@ int main()
     }), "new start tab presents an empty address field for typing");
     Send(window, summit::kCloseTab);
     Check(Wait(window, [&](const BMessage& s) { return Count(s) == count; }), "closing the start tab returns to the document");
+    char localDirectory[] = "/tmp/summit-browser-XXXXXX";
+    if (!mkdtemp(localDirectory)) { Check(false, "create local document fixture"); return 1; }
+    const auto localPath = std::filesystem::path(localDirectory) / "page #?% 雪.html";
+    { std::ofstream file(localPath); file << "<!doctype html><title>Summit local document</title><p>Local file opened.</p>"; }
+    entry_ref localRef;
+    const bool hasLocalFile = get_ref_for_path(localPath.c_str(), &localRef) == B_OK;
+    Check(hasLocalFile, "create local document with URL delimiters and Unicode in its filename");
+    if (hasLocalFile) {
+        Send(window, summit::kNavigate, localPath.c_str());
+        Check(Wait(window, [](const BMessage& s) { return Title(s) == "Summit local document"; }), "native path navigation opens the exact local filename");
+        BMessage refs(B_REFS_RECEIVED);
+        refs.AddRef("refs", &localRef);
+        window.SendMessage(&refs);
+        Check(Wait(window, [&](const BMessage& s) { return Count(s) == count + 1 && Title(s) == "Summit local document"; }), "file panel references open the exact local filename in a new tab");
+        Send(window, summit::kCloseTab);
+        Check(Wait(window, [&](const BMessage& s) { return Count(s) == count; }), "closing a local document keeps the window responsive");
+    }
+    Send(window, summit::kNavigate, "http://10.0.2.2:8765/basic");
+    Wait(window, [](const BMessage& s) { return Title(s) == "Summit fixture PASS"; });
+    std::filesystem::remove_all(localDirectory);
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

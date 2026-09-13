@@ -10,16 +10,27 @@ std::string Trim(std::string_view text)
     return std::string(text);
 }
 
-std::string PercentEncode(std::string_view text)
+static std::string Encode(std::string_view text, bool preserveSlashes)
 {
     static constexpr char hex[] = "0123456789ABCDEF";
     std::string result;
     for (unsigned char c : text) {
         if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
-            || c == '-' || c == '_' || c == '.' || c == '~') result += c;
+            || c == '-' || c == '_' || c == '.' || c == '~' || (preserveSlashes && c == '/')) result += c;
         else { result += '%'; result += hex[c >> 4]; result += hex[c & 15]; }
     }
     return result;
+}
+
+std::string PercentEncode(std::string_view text)
+{
+    return Encode(text, false);
+}
+
+std::string FileURL(std::string_view path)
+{
+    if (path.empty() || path.front() != '/' || path.find('\0') != std::string_view::npos) return {};
+    return "file://" + Encode(path, true);
 }
 
 std::string EscapeHTML(std::string_view text)
@@ -61,7 +72,7 @@ Address ResolveAddress(std::string_view input)
         if (text == "about:blank") return {text, {}, false};
         return {{}, "This address type is not supported: " + scheme, false};
     }
-    if (text.front() == '/') return {"file://" + text, {}, false};
+    if (text.front() == '/') return {FileURL(text), {}, false};
     const bool whitespace = text.find_first_of(" \t\r\n") != std::string::npos;
     const bool domain = host.find('.') != std::string::npos && host.front() != '.'
         && host.back() != '.' && host.find('@') == std::string::npos;

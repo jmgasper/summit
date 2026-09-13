@@ -1,5 +1,6 @@
 #include "ui/BrowserWindow.h"
 #include "ui/Messages.h"
+#include "core/Address.h"
 #include <Application.h>
 #include <Entry.h>
 #include <FindDirectory.h>
@@ -34,7 +35,8 @@ public:
         else {
             entry_ref ref;
             for (int32 i = 0; message->FindRef("refs", i, &ref) == B_OK; ++i) {
-                BPath path(&ref); fURLs.push_back("file://" + std::string(path.Path()));
+                BPath path(&ref);
+                if (path.InitCheck() == B_OK) fURLs.push_back(summit::FileURL(path.Path()));
             }
         }
     }
@@ -55,7 +57,7 @@ public:
         if (!std::filesystem::exists(home)) {
             std::fprintf(stderr, "Summit: missing start page at %s\n", home.c_str());
         }
-        fWindow = new summit::BrowserWindow(fProfile / "profile.json", "file://" + home.string(), fURLs);
+        fWindow = new summit::BrowserWindow(fProfile / "profile.json", summit::FileURL(home.string()), fURLs);
         fWindow->Show();
     }
     void MessageReceived(BMessage* message) override
