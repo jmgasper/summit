@@ -3237,6 +3237,20 @@ index 1b1e327400bb705c9cc4aab4d063a268f1d6cecd..afe386f6521f22a5cad24d4f943aa6dc
  #elif USE(SKIA)
  #include <WebCore/PathSkia.h>
  #endif
+diff --git a/Source/WebCore/platform/graphics/ShareableBitmap.h b/Source/WebCore/platform/graphics/ShareableBitmap.h
+index 583c2f2b023cd8f3698252f251df5bc6cabcb5c5..38d61a0a11c01f5f2b09271c9d0379464fc432c1 100644
+--- a/Source/WebCore/platform/graphics/ShareableBitmap.h
++++ b/Source/WebCore/platform/graphics/ShareableBitmap.h
+@@ -137,6 +137,9 @@ public:
+     ShareableBitmapHandle& operator=(ShareableBitmapHandle&&) = default;
+ 
+     SharedMemory::Handle& handle() LIFETIME_BOUND { return m_handle; }
++#if PLATFORM(HAIKU)
++    const ShareableBitmapConfiguration& configuration() const LIFETIME_BOUND { return m_configuration; }
++#endif
+ 
+     // Take ownership of the memory for process memory accounting purposes.
+     WEBCORE_EXPORT void takeOwnershipOfMemory(MemoryLedger) const;
 diff --git a/Source/WebCore/platform/graphics/haiku/AffineTransformHaiku.cpp b/Source/WebCore/platform/graphics/haiku/AffineTransformHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..a44519f5a93c601024b885f451e3502892c6514b
@@ -4553,7 +4567,7 @@ index 0000000000000000000000000000000000000000..3b15b78d60159f55a47836add578e3e8
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/GraphicsContextHaiku.cpp b/Source/WebCore/platform/graphics/haiku/GraphicsContextHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..9c093121614fb1ddb0541a1ca48963f202903642
+index 0000000000000000000000000000000000000000..ed971ace4dd9a0362df5f0ccd0b9bd5112d0703d
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/GraphicsContextHaiku.cpp
 @@ -0,0 +1,980 @@
@@ -4593,6 +4607,7 @@ index 0000000000000000000000000000000000000000..9c093121614fb1ddb0541a1ca48963f2
 +#include "Color.h"
 +#include "DisplayListRecorder.h"
 +#include "Gradient.h"
++#include "GraphicsContextStateSaver.h"
 +#include "ImageBuffer.h"
 +#include "NotImplemented.h"
 +#include "Path.h"
@@ -4693,7 +4708,7 @@ index 0000000000000000000000000000000000000000..9c093121614fb1ddb0541a1ca48963f2
 +    HGTRACE(("drawBitmap:  src([%f:%f] [%f:%f])\n", srcRect.x(), srcRect.y(), srcRect.width(), srcRect.height()));
 +    HGTRACE(("            dest([%f:%f] [%f:%f])\n", destRect.x(), destRect.y(), destRect.width(), destRect.height()));
 +
-+    BlendModeGuard guard(m_view);
++    GraphicsContextStateSaver stateSaver(*this);
 +    setCompositeOperation(options.compositeOperator());
 +
 +    // Test using example site at
@@ -5432,7 +5447,7 @@ index 0000000000000000000000000000000000000000..9c093121614fb1ddb0541a1ca48963f2
 +                blending_mode = B_ALPHA_COMPOSITE_XOR;
 +                break;
 +            case CompositeOperator::Copy:
-+                blending_mode = B_ALPHA_COMPOSITE;
++                mode = B_OP_COPY;
 +                break;
 +            default:
 +                fprintf(stderr, "GraphicsContext::setCompositeOperation: Unsupported composite operation %s\n",
@@ -5536,7 +5551,6 @@ index 0000000000000000000000000000000000000000..9c093121614fb1ddb0541a1ca48963f2
 +
 +
 +} // namespace WebCore
-+
 diff --git a/Source/WebCore/platform/graphics/haiku/GraphicsContextHaiku.h b/Source/WebCore/platform/graphics/haiku/GraphicsContextHaiku.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..d2fbe65a6f25207f8206826ed3870b50e014fec1
@@ -8146,10 +8160,10 @@ index 0000000000000000000000000000000000000000..60ab27e9464c9342864b6c5e1abfcb12
 +#endif // PlatformDisplayHaiku
 diff --git a/Source/WebCore/platform/graphics/haiku/ShareableBitmapHaiku.cpp b/Source/WebCore/platform/graphics/haiku/ShareableBitmapHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..15b1a7bce9ee77c69f4808f70ee2a5eb802df88e
+index 0000000000000000000000000000000000000000..4ccc1747cfa35097813f72e005ed5d8bd4cfe8b7
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/ShareableBitmapHaiku.cpp
-@@ -0,0 +1,105 @@
+@@ -0,0 +1,190 @@
 +/*
 + * Copyright (C) 2014 Haiku, Inc.
 + *
@@ -8183,50 +8197,122 @@ index 0000000000000000000000000000000000000000..15b1a7bce9ee77c69f4808f70ee2a5eb
 +#include "GraphicsContext.h"
 +#include "GraphicsContextHaiku.h"
 +#include "IntRect.h"
-+#include "NotImplemented.h"
 +
 +#include <Bitmap.h>
 +#include <View.h>
++#include <cmath>
++#include <limits>
 +
 +namespace WebCore {
 +
++namespace {
++
++// BBitmap borrows a client area's address. Keep the mapping alive for every
++// native image reference, including references that outlive ShareableBitmap.
++class SharedBitmapImage final : public BitmapRef {
++public:
++    SharedBitmapImage(Ref<SharedMemory>&& memory, const IntRect& bounds, uint32 flags, int32 bytesPerRow)
++        : BitmapRef(memory->area(), 0, bounds, flags, B_RGBA32, bytesPerRow)
++        , m_memory(WTF::move(memory))
++    {
++    }
++
++private:
++    Ref<SharedMemory> m_memory;
++};
++
++class SharedBitmapGraphicsContext final : public GraphicsContextHaiku {
++    WTF_MAKE_TZONE_ALLOCATED_INLINE(SharedBitmapGraphicsContext);
++public:
++    SharedBitmapGraphicsContext(BView* view, Ref<BitmapRef>&& image)
++        : GraphicsContextHaiku(view)
++        , m_image(WTF::move(image))
++    {
++    }
++
++    ~SharedBitmapGraphicsContext() override
++    {
++        // Finish app_server writes before publishing the shared backing store.
++        platformContext()->Sync();
++        m_image->Unlock();
++    }
++
++private:
++    Ref<BitmapRef> m_image;
++};
++
++bool memoryIsWritable(const SharedMemory& memory)
++{
++    area_info info;
++    return get_area_info(area_for(memory.mutableSpan().data()), &info) == B_OK
++        && (info.protection & B_WRITE_AREA);
++}
++
++} // namespace
++
 +std::unique_ptr<GraphicsContext> ShareableBitmap::createGraphicsContext()
 +{
-+    PlatformImagePtr image = createPlatformImage();
++    if (!memoryIsWritable(m_sharedMemory))
++        return nullptr;
++    Ref<BitmapRef> image = adoptRef(*new SharedBitmapImage(m_sharedMemory.copyRef(), bounds(), B_BITMAP_ACCEPTS_VIEWS, bytesPerRow()));
++    if (!image->IsValid() || !image->Lock())
++        return nullptr;
 +
-+    BView* surface = new BView(image->Bounds(), "Shareable", 0, 0);
-+    image->AddChild(surface);
-+    surface->LockLooper();
++    auto surface = std::make_unique<BView>(image->Bounds(), "WebKit shared bitmap", 0, 0);
++    image->AddChild(surface.get());
++    if (!surface->Looper()) {
++        image->Unlock();
++        return nullptr;
++    }
++    auto* view = surface.release(); // BBitmap owns its child views.
 +
-+    return std::make_unique<GraphicsContextHaiku>(surface);
++    return makeUnique<SharedBitmapGraphicsContext>(view, WTF::move(image));
 +}
 +
 +void ShareableBitmap::paint(GraphicsContext& context, const IntPoint& dstPoint, const IntRect& srcRect)
 +{
-+    PlatformImagePtr bitmap = createPlatformImage(DontCopyBackingStore);
-+
-+    BView* viewSurface = context.platformContext();
-+
-+    viewSurface->DrawBitmap(bitmap.get());
-+    viewSurface->Sync();
++    paint(context, 1, dstPoint, srcRect);
 +}
 +
 +void ShareableBitmap::paint(GraphicsContext& context, float scaleFactor, const IntPoint& dstPoint, const IntRect& srcRect)
 +{
++    if (!context.hasPlatformContext() || srcRect.isEmpty() || !std::isfinite(scaleFactor) || scaleFactor <= 0)
++        return;
++    auto image = createPlatformImage(DontCopyBackingStore);
++    if (!image)
++        return;
 +    FloatRect destRect(dstPoint, srcRect.size());
 +    FloatRect srcRectScaled(srcRect);
 +    srcRectScaled.scale(scaleFactor);
-+    notImplemented();
++    static_cast<GraphicsContextHaiku&>(context).drawBitmap(image.get(), destRect, srcRectScaled,
++        ImagePaintingOptions { context.compositeOperation(), context.imageInterpolationQuality() });
++    context.platformContext()->Sync();
 +}
 +
-+WebCore::PlatformImagePtr ShareableBitmap::createPlatformImage(WebCore::BackingStoreCopy, WebCore::ShouldInterpolate)
++PlatformImagePtr ShareableBitmap::createBasePlatformImage(BackingStoreCopy copyBehavior, ShouldInterpolate shouldInterpolate)
 +{
-+    return WebCore::PlatformImagePtr(new BitmapRef(m_sharedMemory->area(), 0, bounds(), 0, /*m_configuration.platformColorSpace()*/ B_RGBA32, bytesPerRow()));
++    return createPlatformImage(copyBehavior, shouldInterpolate);
++}
++
++PlatformImagePtr ShareableBitmap::createPlatformImage(BackingStoreCopy copyBehavior, ShouldInterpolate)
++{
++    if (copyBehavior == DontCopyBackingStore && memoryIsWritable(m_sharedMemory)) {
++        auto image = adoptRef(*new SharedBitmapImage(m_sharedMemory.copyRef(), bounds(), 0, bytesPerRow()));
++        if (image->IsValid())
++            return image;
++    }
++    // Haiku's app_server clones bitmap areas with write access. Read-only
++    // capabilities stay uncloneable and are displayed through private copies.
++    auto image = adoptRef(*new BitmapRef(bounds(), 0, B_RGBA32, bytesPerRow()));
++    if (!image->IsValid() || image->BitsLength() <= 0 || static_cast<size_t>(image->BitsLength()) != sizeInBytes())
++        return nullptr;
++    memcpy(image->Bits(), span().data(), sizeInBytes());
++    return image;
 +}
 +
 +RefPtr<Image> ShareableBitmap::createImage()
 +{
-+    WebCore::PlatformImagePtr surface = createPlatformImage();
++    WebCore::PlatformImagePtr surface = createPlatformImage(DontCopyBackingStore);
 +    if (!surface)
 +        return nullptr;
 +
@@ -8238,20 +8324,33 @@ index 0000000000000000000000000000000000000000..15b1a7bce9ee77c69f4808f70ee2a5eb
 +    return (calculateBytesPerPixel(fmt, colorSpace) / 4) * 8;
 +}
 +
-+CheckedUint32 ShareableBitmapConfiguration::calculateBytesPerRow(const WebCore::IntSize& size,
-+    WebCore::PixelFormat, const WebCore::ColorSpace& config)
++CheckedUint32 ShareableBitmapConfiguration::calculateBytesPerRow(const IntSize& size,
++    PixelFormat pixelFormat, const ColorSpace& colorSpace)
 +{
-+    return 4 * size.width();
++    if (size.isEmpty())
++        return WTF::ResultOverflowed;
++    auto bytes = calculateBytesPerPixel(pixelFormat, colorSpace) * size.width();
++    if (bytes.hasOverflowed() || bytes.value() > std::numeric_limits<int32_t>::max())
++        return WTF::ResultOverflowed;
++    return bytes;
 +}
 +
-+CheckedUint32 ShareableBitmapConfiguration::calculateBytesPerPixel(WebCore::PixelFormat, const WebCore::ColorSpace&)
++CheckedUint32 ShareableBitmapConfiguration::calculateBytesPerPixel(PixelFormat pixelFormat, const ColorSpace&)
 +{
-+    return 4;
++    switch (pixelFormat) {
++    case PixelFormat::RGBX8:
++    case PixelFormat::RGBA8:
++    case PixelFormat::BGRX8:
++    case PixelFormat::BGRA8:
++        return 4;
++    default:
++        return WTF::ResultOverflowed;
++    }
 +}
 +
-+ColorSpace ShareableBitmapConfiguration::validateColorSpace(WebCore::ColorSpace const& space)
++ColorSpace ShareableBitmapConfiguration::validateColorSpace(const ColorSpace&)
 +{
-+        return space;
++    return ColorSpace::SRGB();
 +}
 +
 +}
@@ -21280,6 +21379,52 @@ index d5a0d8693335265c6d716689e238f144ebcfa2a7..4da8bf168426fea1b1352cfe671d5069
  #endif
  };
  
+diff --git a/Source/WebKit/Platform/haiku/BitmapFrameHaiku.h b/Source/WebKit/Platform/haiku/BitmapFrameHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..e6506c4d667ca790af6832a314af9b125bccff71
+--- /dev/null
++++ b/Source/WebKit/Platform/haiku/BitmapFrameHaiku.h
+@@ -0,0 +1,40 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#pragma once
++
++#include <WebCore/IntSize.h>
++#include <WebCore/ShareableBitmap.h>
++#include <cmath>
++#include <optional>
++
++namespace WebKit {
++
++inline std::optional<WebCore::IntSize> bitmapFrameSizeHaiku(const WebCore::IntSize& viewSize, float scale)
++{
++    if (viewSize.isEmpty() || !std::isfinite(scale) || scale <= 0 || scale > 8)
++        return std::nullopt;
++    double width = std::ceil(viewSize.width() * static_cast<double>(scale));
++    double height = std::ceil(viewSize.height() * static_cast<double>(scale));
++    // Bound both native BBitmap geometry and memory accepted from WebContent.
++    constexpr int maximumDimension = 8192;
++    if (width < 1 || height < 1 || width > maximumDimension || height > maximumDimension)
++        return std::nullopt;
++    return WebCore::IntSize { static_cast<int>(width), static_cast<int>(height) };
++}
++
++inline bool bitmapFrameHandleIsValidHaiku(const WebCore::IntSize& viewSize, float scale, WebCore::ShareableBitmapHandle& handle)
++{
++    auto expectedSize = bitmapFrameSizeHaiku(viewSize, scale);
++    if (!expectedSize)
++        return false;
++    const auto& configuration = handle.configuration();
++    auto expectedStride = static_cast<size_t>(expectedSize->width()) * 4;
++    auto expectedBytes = expectedStride * expectedSize->height();
++    return configuration.size() == *expectedSize && configuration.bytesPerRow() == expectedStride
++        && configuration.bytesPerPixel() == 4 && configuration.bitsPerComponent() == 8
++        && configuration.colorSpace() == WebCore::ColorSpace::SRGB()
++        && (configuration.pixelFormat() == WebCore::PixelFormat::RGBA8 || configuration.pixelFormat() == WebCore::PixelFormat::BGRA8)
++        && handle.handle().size() == expectedBytes;
++}
++
++} // namespace WebKit
 diff --git a/Source/WebKit/Platform/haiku/LoggingHaiku.cpp b/Source/WebKit/Platform/haiku/LoggingHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..b78517cd47cc3e776e3c70ff854b2d6c7208fb89
@@ -21499,10 +21644,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..6d5d1bb1ef310ebe266651bd1a642b6489981187
+index 0000000000000000000000000000000000000000..6ab037411c7f62644c5673a11759ffc627adc9fb
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,133 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -21532,12 +21677,14 @@ index 0000000000000000000000000000000000000000..6d5d1bb1ef310ebe266651bd1a642b64
 +    UIProcess/Launcher/haiku/ProcessLauncherHaiku.cpp
 +    UIProcess/LegacySessionStateCodingNone.cpp
 +    UIProcess/WebsiteData/haiku/WebsiteDataStoreHaiku.cpp
++    UIProcess/haiku/DrawingAreaProxyHaiku.cpp
 +    UIProcess/haiku/TextCheckerHaiku.cpp
 +    UIProcess/haiku/WebInspectorProxyHaiku.cpp
 +    UIProcess/haiku/WebPageProxyHaiku.cpp
 +    UIProcess/haiku/WebProcessPoolHaiku.cpp
 +
 +    WebProcess/InjectedBundle/haiku/InjectedBundleHaiku.cpp
++    WebProcess/WebPage/haiku/DrawingAreaHaiku.cpp
 +    WebProcess/WebPage/haiku/WebInspectorHaiku.cpp
 +    WebProcess/WebPage/haiku/WebPageHaiku.cpp
 +    WebProcess/haiku/WebProcessHaiku.cpp
@@ -21564,6 +21711,7 @@ index 0000000000000000000000000000000000000000..6d5d1bb1ef310ebe266651bd1a642b64
 +    "${WEBKIT_DIR}/WebProcess/unix"
 +    "${WEBKIT_DIR}/WebProcess/WebCoreSupport/haiku"
 +    "${WEBKIT_DIR}/WebProcess/WebPage/CoordinatedGraphics"
++    "${WEBKIT_DIR}/WebProcess/WebPage/haiku"
 +    ${LIBXML2_INCLUDE_DIR}
 +    ${LIBXSLT_INCLUDE_DIRS}
 +    ${SQLITE_INCLUDE_DIRS}
@@ -22798,6 +22946,43 @@ index 0000000000000000000000000000000000000000..76c801492fff9daa106e386dcfeb1ae1
 +        WKRetainPtr<WKViewRef> fWebView;
 +};
 +
+diff --git a/Source/WebKit/UIProcess/DrawingAreaProxy.h b/Source/WebKit/UIProcess/DrawingAreaProxy.h
+index 2729ba216eff3f8d826362ea08c5a91a81e35895..4508f7100b776f6343903e784438042ba1493877 100644
+--- a/Source/WebKit/UIProcess/DrawingAreaProxy.h
++++ b/Source/WebKit/UIProcess/DrawingAreaProxy.h
+@@ -50,6 +50,7 @@ class MachSendRight;
+ #endif
+ 
+ namespace WebCore {
++class ShareableBitmapHandle;
+ enum class DelegatedScrollingMode : uint8_t;
+ using FramesPerSecond = unsigned;
+ using PlatformDisplayID = uint32_t;
+@@ -169,6 +170,10 @@ private:
+     virtual void updateAcceleratedCompositingMode(uint64_t /* backingStoreStateID */, const LayerTreeContext&) { }
+     virtual void didFirstLayerFlush(uint64_t /* backingStoreStateID */, const LayerTreeContext&) { }
+ 
++#if PLATFORM(HAIKU)
++    virtual void updateBitmapHaiku(uint64_t, uint64_t, const WebCore::IntSize&, float, WebCore::ShareableBitmapHandle&&) { }
++#endif
++
+ #if !PLATFORM(WPE) && !PLATFORM(GTK) && (USE(COORDINATED_GRAPHICS) || USE(TEXTURE_MAPPER))
+     virtual void update(uint64_t /* backingStoreStateID */, UpdateInfo&&) { }
+     virtual void exitAcceleratedCompositingMode(uint64_t /* backingStoreStateID */, UpdateInfo&&) { }
+diff --git a/Source/WebKit/UIProcess/DrawingAreaProxy.messages.in b/Source/WebKit/UIProcess/DrawingAreaProxy.messages.in
+index 558bc4dbcebf1af98a2fc3b744d3b390b68a56f1..24ce837888d94fcea6d0e960a4af01dbff45e243 100644
+--- a/Source/WebKit/UIProcess/DrawingAreaProxy.messages.in
++++ b/Source/WebKit/UIProcess/DrawingAreaProxy.messages.in
+@@ -26,6 +26,9 @@
+     DispatchedTo=UI
+ ]
+ messages -> DrawingAreaProxy {
++#if PLATFORM(HAIKU)
++    UpdateBitmapHaiku(uint64_t geometryIdentifier, uint64_t frameIdentifier, WebCore::IntSize viewSize, float deviceScaleFactor, WebCore::ShareableBitmapHandle handle)
++#endif
+     EnterAcceleratedCompositingMode(uint64_t backingStoreStateID, WebKit::LayerTreeContext context)
+     UpdateAcceleratedCompositingMode(uint64_t backingStoreStateID, WebKit::LayerTreeContext context)
+     DidFirstLayerFlush(uint64_t backingStoreStateID, WebKit::LayerTreeContext context)
 diff --git a/Source/WebKit/UIProcess/Launcher/ProcessLauncher.h b/Source/WebKit/UIProcess/Launcher/ProcessLauncher.h
 index 58f00aff737c58a39b1f8556c134f6b39ba2c43c..39a2b870eb9cc704e34a5bc348d85a7e9da274dd 100644
 --- a/Source/WebKit/UIProcess/Launcher/ProcessLauncher.h
@@ -23002,6 +23187,22 @@ index 0000000000000000000000000000000000000000..f0d827e69a42a3717accff5f30c55629
 +}
 +
 +} // namespace WebKit
+diff --git a/Source/WebKit/UIProcess/PageClient.h b/Source/WebKit/UIProcess/PageClient.h
+index a4299803aa31a4a1705aebf669aba3190bcb878a..d0f3a47edf7d2b080af70b57cf1193adae733387 100644
+--- a/Source/WebKit/UIProcess/PageClient.h
++++ b/Source/WebKit/UIProcess/PageClient.h
+@@ -263,6 +263,11 @@ public:
+     // Tell the view to invalidate the given region. The region is in view coordinates.
+     virtual void setViewNeedsDisplay(const WebCore::Region&) = 0;
+ 
++#if PLATFORM(HAIKU)
++    // Complete on the WebKit main thread after presentation or view teardown.
++    virtual void presentBitmapHaiku(Ref<WebCore::ShareableBitmap>&&, const WebCore::IntSize&, float, CompletionHandler<void()>&& completionHandler) { completionHandler(); }
++#endif
++
+     // Tell the view to scroll to the given position, and whether this was a programmatic scroll.
+     virtual void requestScroll(const WebCore::FloatPoint& scrollPosition, const WebCore::IntPoint& scrollOrigin, WebCore::ScrollIsAnimated, WebCore::InterruptScrollAnimation) = 0;
+ 
 diff --git a/Source/WebKit/UIProcess/WebsiteData/haiku/WebsiteDataStoreHaiku.cpp b/Source/WebKit/UIProcess/WebsiteData/haiku/WebsiteDataStoreHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..e545399afbe8b5539a8026d49532e05ab3fbb017
@@ -23072,6 +23273,122 @@ index 0000000000000000000000000000000000000000..e545399afbe8b5539a8026d49532e05a
 +{
 +    return UnifiedOriginStorageLevel::None;
 +}
++
++} // namespace WebKit
+diff --git a/Source/WebKit/UIProcess/haiku/DrawingAreaProxyHaiku.cpp b/Source/WebKit/UIProcess/haiku/DrawingAreaProxyHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..1eb0725dcc3c8d4ff18b82424abc6c3431da486d
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/DrawingAreaProxyHaiku.cpp
+@@ -0,0 +1,76 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#include "config.h"
++#include "DrawingAreaProxyHaiku.h"
++
++#include "BitmapFrameHaiku.h"
++#include "DrawingAreaMessages.h"
++#include "PageClient.h"
++#include "WebPageProxy.h"
++#include "WebProcessProxy.h"
++#include <WebCore/ShareableBitmap.h>
++#include <wtf/TZoneMallocInlines.h>
++
++namespace WebKit {
++using namespace WebCore;
++
++WTF_MAKE_TZONE_ALLOCATED_IMPL(DrawingAreaProxyHaiku);
++
++Ref<DrawingAreaProxyHaiku> DrawingAreaProxyHaiku::create(WebPageProxy& page, WebProcessProxy& process)
++{
++    return adoptRef(*new DrawingAreaProxyHaiku(page, process));
++}
++
++DrawingAreaProxyHaiku::DrawingAreaProxyHaiku(WebPageProxy& page, WebProcessProxy& process)
++    : DrawingAreaProxy(page, process)
++{
++}
++
++void DrawingAreaProxyHaiku::sizeDidChange()
++{
++    sendGeometry([] { });
++}
++
++void DrawingAreaProxyHaiku::deviceScaleFactorDidChange(CompletionHandler<void()>&& completionHandler)
++{
++    sendGeometry(WTF::move(completionHandler));
++}
++
++void DrawingAreaProxyHaiku::sendGeometry(CompletionHandler<void()>&& completionHandler)
++{
++    RefPtr page = this->page();
++    if (!page || !page->hasRunningProcess()) {
++        completionHandler();
++        return;
++    }
++    ++m_geometryIdentifier;
++    sendWithAsyncReply(Messages::DrawingArea::UpdateGeometryHaiku(m_geometryIdentifier, size(), page->deviceScaleFactor()), WTF::move(completionHandler));
++}
++
++void DrawingAreaProxyHaiku::updateBitmapHaiku(uint64_t geometryIdentifier, uint64_t frameIdentifier, const IntSize& viewSize, float scale, ShareableBitmapHandle&& handle)
++{
++    auto& connection = webProcessProxy().connection();
++    MESSAGE_CHECK_BASE(frameIdentifier && frameIdentifier > m_lastFrameIdentifier, connection);
++    MESSAGE_CHECK_BASE(geometryIdentifier <= m_geometryIdentifier, connection);
++    // Verify the declared geometry before displaying bytes from WebContent.
++    MESSAGE_CHECK_BASE(bitmapFrameHandleIsValidHaiku(viewSize, scale, handle), connection);
++    auto bitmap = ShareableBitmap::create(WTF::move(handle), SharedMemory::Protection::ReadOnly);
++    MESSAGE_CHECK_BASE(bitmap, connection);
++    m_lastFrameIdentifier = frameIdentifier;
++    RefPtr page = this->page();
++    if (!page || geometryIdentifier != m_geometryIdentifier || viewSize != size()) {
++        send(Messages::DrawingArea::DidPresentBitmapHaiku(frameIdentifier));
++        return;
++    }
++    RefPtr client = page->pageClient();
++    if (!client) {
++        send(Messages::DrawingArea::DidPresentBitmapHaiku(frameIdentifier));
++        return;
++    }
++    client->presentBitmapHaiku(bitmap.releaseNonNull(), viewSize, scale, [weakThis = WeakPtr { *this }, frameIdentifier] {
++        if (RefPtr protectedThis = weakThis.get())
++            protectedThis->send(Messages::DrawingArea::DidPresentBitmapHaiku(frameIdentifier));
++    });
++}
++
++} // namespace WebKit
+diff --git a/Source/WebKit/UIProcess/haiku/DrawingAreaProxyHaiku.h b/Source/WebKit/UIProcess/haiku/DrawingAreaProxyHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..0bee5b6e8a1234d768064bc9f9802ecd1e3e8dfa
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/DrawingAreaProxyHaiku.h
+@@ -0,0 +1,28 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#pragma once
++
++#include "DrawingAreaProxy.h"
++#include <wtf/RefCounted.h>
++
++namespace WebKit {
++
++class DrawingAreaProxyHaiku final : public DrawingAreaProxy, public RefCounted<DrawingAreaProxyHaiku> {
++    WTF_MAKE_TZONE_ALLOCATED(DrawingAreaProxyHaiku);
++    WTF_OVERRIDE_DELETE_FOR_CHECKED_PTR(DrawingAreaProxyHaiku);
++public:
++    static Ref<DrawingAreaProxyHaiku> create(WebPageProxy&, WebProcessProxy&);
++    void ref() const final { RefCounted::ref(); }
++    void deref() const final { RefCounted::deref(); }
++
++private:
++    DrawingAreaProxyHaiku(WebPageProxy&, WebProcessProxy&);
++    void sizeDidChange() override;
++    void deviceScaleFactorDidChange(CompletionHandler<void()>&&) override;
++    void updateBitmapHaiku(uint64_t, uint64_t, const WebCore::IntSize&, float, WebCore::ShareableBitmapHandle&&) override;
++    void sendGeometry(CompletionHandler<void()>&&);
++    uint64_t m_geometryIdentifier { 0 };
++    uint64_t m_lastFrameIdentifier { 0 };
++};
 +
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/RemoteWebInspectorProxyHaiku.cpp b/Source/WebKit/UIProcess/haiku/RemoteWebInspectorProxyHaiku.cpp
@@ -24254,6 +24571,322 @@ index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..3076cdf485677138de09d5054e2dc062
      SkCanvas* canvas();
  
      void willDestroyGLContext();
+diff --git a/Source/WebKit/WebProcess/WebPage/DrawingArea.cpp b/Source/WebKit/WebProcess/WebPage/DrawingArea.cpp
+index 5ac78eb5880335f49a9a6f2690626e46fbcac7f4..9276cd9babee2a1b6404b1967fb79b22c231b20d 100644
+--- a/Source/WebKit/WebProcess/WebPage/DrawingArea.cpp
++++ b/Source/WebKit/WebProcess/WebPage/DrawingArea.cpp
+@@ -41,7 +41,9 @@
+ #include <wtf/TZoneMallocInlines.h>
+ 
+ // Subclasses
+-#if PLATFORM(COCOA)
++#if PLATFORM(HAIKU)
++#include "DrawingAreaHaiku.h"
++#elif PLATFORM(COCOA)
+ #include "RemoteLayerTreeDrawingAreaMac.h"
+ #include "TiledCoreAnimationDrawingArea.h"
+ #elif USE(COORDINATED_GRAPHICS) || USE(TEXTURE_MAPPER)
+@@ -62,7 +64,9 @@ WTF_MAKE_TZONE_ALLOCATED_IMPL(DrawingArea);
+ 
+ RefPtr<DrawingArea> DrawingArea::create(WebPage& webPage, const WebPageCreationParameters& parameters)
+ {
+-#if ENABLE(TILED_CA_DRAWING_AREA)
++#if PLATFORM(HAIKU)
++    return DrawingAreaHaiku::create(webPage, parameters);
++#elif ENABLE(TILED_CA_DRAWING_AREA)
+     SandboxExtension::consumePermanently(parameters.renderServerMachExtensionHandle);
+     switch (parameters.drawingAreaType) {
+     case DrawingAreaType::TiledCoreAnimation:
+@@ -158,7 +162,7 @@ bool DrawingArea::supportsGPUProcessRendering()
+     return true;
+ #elif USE(GRAPHICS_LAYER_WC)
+     return true;
+-#elif USE(COORDINATED_GRAPHICS) || USE(TEXTURE_MAPPER)
++#elif USE(COORDINATED_GRAPHICS) || USE(TEXTURE_MAPPER) || PLATFORM(HAIKU)
+     return false;
+ #endif
+ }
+diff --git a/Source/WebKit/WebProcess/WebPage/DrawingArea.h b/Source/WebKit/WebProcess/WebPage/DrawingArea.h
+index ad563a42133321423bc14f1f47e2beebe0027e1a..d3928a1012135ac9cb9a277e31a88c22d8cb5e93 100644
+--- a/Source/WebKit/WebProcess/WebPage/DrawingArea.h
++++ b/Source/WebKit/WebProcess/WebPage/DrawingArea.h
+@@ -169,6 +169,11 @@ public:
+     virtual void updateGeometryWC(uint64_t, WebCore::IntSize, float deviceScaleFactor, float intrinsicDeviceScaleFactor) { };
+ #endif
+ 
++#if PLATFORM(HAIKU)
++    virtual void updateGeometryHaiku(uint64_t, const WebCore::IntSize&, float, CompletionHandler<void()>&&) = 0;
++    virtual void didPresentBitmapHaiku(uint64_t) = 0;
++#endif
++
+ #if USE(COORDINATED_GRAPHICS) || USE(TEXTURE_MAPPER)
+     virtual void updateGeometry(const WebCore::IntSize&, CompletionHandler<void()>&&) = 0;
+     virtual bool enterAcceleratedCompositingModeIfNeeded() = 0;
+diff --git a/Source/WebKit/WebProcess/WebPage/DrawingArea.messages.in b/Source/WebKit/WebProcess/WebPage/DrawingArea.messages.in
+index e6fbb8c1896bf99dc0f7322868052566b8629598..d84e2ecbc70d219a63eb074c1fd4b1c95079bdd3 100644
+--- a/Source/WebKit/WebProcess/WebPage/DrawingArea.messages.in
++++ b/Source/WebKit/WebProcess/WebPage/DrawingArea.messages.in
+@@ -25,6 +25,10 @@
+     DispatchedTo=WebContent
+ ]
+ messages -> DrawingArea {
++#if PLATFORM(HAIKU)
++    UpdateGeometryHaiku(uint64_t geometryIdentifier, WebCore::IntSize viewSize, float deviceScaleFactor) -> ()
++    DidPresentBitmapHaiku(uint64_t frameIdentifier)
++#endif
+ #if USE(COORDINATED_GRAPHICS) || USE(TEXTURE_MAPPER)
+     UpdateGeometry(WebCore::IntSize size) -> ()
+ #endif
+diff --git a/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.cpp b/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..f835272faed13a2dd0b18978534ddf1b7e979e34
+--- /dev/null
++++ b/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.cpp
+@@ -0,0 +1,191 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#include "config.h"
++#include "DrawingAreaHaiku.h"
++
++#include "BitmapFrameHaiku.h"
++#include "DrawingAreaProxyMessages.h"
++#include "WebPage.h"
++#include "WebPageCreationParameters.h"
++#include <WebCore/GraphicsContext.h>
++#include <WebCore/Page.h>
++#include <WebCore/ShareableBitmap.h>
++#include <wtf/SetForScope.h>
++#include <wtf/TZoneMallocInlines.h>
++#include <utility>
++
++namespace WebKit {
++using namespace WebCore;
++
++WTF_MAKE_TZONE_ALLOCATED_IMPL(DrawingAreaHaiku);
++
++Ref<DrawingAreaHaiku> DrawingAreaHaiku::create(WebPage& page, const WebPageCreationParameters& parameters)
++{
++    return adoptRef(*new DrawingAreaHaiku(page, parameters));
++}
++
++DrawingAreaHaiku::DrawingAreaHaiku(WebPage& page, const WebPageCreationParameters& parameters)
++    : DrawingArea(parameters.drawingAreaIdentifier, page)
++    , m_displayTimer(RunLoop::mainSingleton(), "DrawingAreaHaiku::Display"_s, this, &DrawingAreaHaiku::display)
++    , m_isVisible(parameters.activityState.contains(ActivityState::IsVisible))
++{
++}
++
++DrawingAreaHaiku::~DrawingAreaHaiku()
++{
++    m_displayTimer.stop();
++    completeRepaintCallbacks();
++}
++
++void DrawingAreaHaiku::setNeedsDisplay()
++{
++    m_needsDisplay = true;
++    scheduleDisplay();
++}
++
++void DrawingAreaHaiku::setNeedsDisplayInRect(const IntRect& rect)
++{
++    if (rect.intersects(m_webPage->bounds()))
++        setNeedsDisplay();
++}
++
++void DrawingAreaHaiku::scroll(const IntRect& rect, const IntSize&)
++{
++    setNeedsDisplayInRect(rect);
++}
++
++void DrawingAreaHaiku::triggerRenderingUpdate()
++{
++    setNeedsDisplay();
++}
++
++bool DrawingAreaHaiku::scheduleRenderingUpdate()
++{
++    setNeedsDisplay();
++    return true;
++}
++
++void DrawingAreaHaiku::updateRenderingWithForcedRepaint()
++{
++    m_needsDisplay = true;
++    if (!m_pendingFrame && !m_isDisplaying)
++        display();
++}
++
++void DrawingAreaHaiku::updateRenderingWithForcedRepaintAsync(WebPage&, CompletionHandler<void()>&& completionHandler)
++{
++    m_repaintCallbacks.append(WTF::move(completionHandler));
++    updateRenderingWithForcedRepaint();
++}
++
++void DrawingAreaHaiku::setRootCompositingLayer(Frame&, GraphicsLayer*)
++{
++    setNeedsDisplay();
++}
++
++void DrawingAreaHaiku::setLayerTreeStateIsFrozen(bool frozen)
++{
++    m_isFrozen = frozen;
++    if (frozen)
++        m_displayTimer.stop();
++    else
++        setNeedsDisplay();
++}
++
++void DrawingAreaHaiku::activityStateDidChange(OptionSet<ActivityState>, ActivityStateChangeID, CompletionHandler<void()>&& completionHandler)
++{
++    m_isVisible = m_webPage->corePage()->isVisible();
++    if (m_isVisible)
++        setNeedsDisplay();
++    else
++        m_displayTimer.stop();
++    completionHandler();
++}
++
++void DrawingAreaHaiku::updateGeometryHaiku(uint64_t geometryIdentifier, const IntSize& size, float scale, CompletionHandler<void()>&& completionHandler)
++{
++    if ((!size.isEmpty() && !bitmapFrameSizeHaiku(size, scale)) || !std::isfinite(scale) || scale <= 0 || scale > 8) {
++        completionHandler();
++        return;
++    }
++    m_geometryIdentifier = geometryIdentifier;
++    Ref page = m_webPage.get();
++    page->setDeviceScaleFactor(scale);
++    page->setSize(size);
++    setNeedsDisplay();
++    completionHandler();
++}
++
++void DrawingAreaHaiku::setDeviceScaleFactor(float scale, CompletionHandler<void()>&& completionHandler)
++{
++    updateGeometryHaiku(m_geometryIdentifier, m_webPage->size(), scale, WTF::move(completionHandler));
++}
++
++void DrawingAreaHaiku::didPresentBitmapHaiku(uint64_t frameIdentifier)
++{
++    if (m_pendingFrame != frameIdentifier)
++        return;
++    m_pendingFrame.reset();
++    scheduleDisplay();
++}
++
++void DrawingAreaHaiku::scheduleDisplay()
++{
++    if (!m_needsDisplay || m_pendingFrame || m_isFrozen || m_isDisplaying || (!m_isVisible && m_repaintCallbacks.isEmpty()) || m_displayTimer.isActive())
++        return;
++    m_displayTimer.startOneShot(16_ms);
++}
++
++void DrawingAreaHaiku::completeRepaintCallbacks()
++{
++    auto callbacks = std::exchange(m_repaintCallbacks, { });
++    for (auto& callback : callbacks)
++        callback();
++}
++
++void DrawingAreaHaiku::display()
++{
++    if (m_isDisplaying || m_pendingFrame)
++        return;
++    m_displayTimer.stop();
++    if (m_isFrozen || (!m_isVisible && m_repaintCallbacks.isEmpty())) {
++        completeRepaintCallbacks();
++        return;
++    }
++    Ref protectedThis { *this };
++    {
++        SetForScope displaying(m_isDisplaying, true);
++        Ref page = m_webPage.get();
++        // Clear before layout, which can request another rendering update.
++        m_needsDisplay = false;
++        if (page->isClosed()) {
++            completeRepaintCallbacks();
++            return;
++        }
++        page->updateRendering();
++        page->finalizeRenderingUpdate({ });
++        page->flushPendingEditorStateUpdate();
++
++        float scale = page->corePage()->deviceScaleFactor();
++        auto bitmapSize = bitmapFrameSizeHaiku(page->size(), scale);
++        RefPtr<ShareableBitmap> bitmap;
++        if (bitmapSize)
++            bitmap = ShareableBitmap::create({ *bitmapSize });
++        auto context = bitmap ? bitmap->createGraphicsContext() : nullptr;
++        if (context) {
++            context->applyDeviceScaleFactor(scale);
++            page->drawRect(*context, page->bounds());
++            context = nullptr; // Synchronize app_server before sending the handle.
++            if (auto handle = bitmap->createReadOnlyHandle()) {
++                auto frameIdentifier = ++m_frameIdentifier;
++                if (send(Messages::DrawingAreaProxy::UpdateBitmapHaiku(m_geometryIdentifier, frameIdentifier, page->size(), scale, WTF::move(*handle))))
++                    m_pendingFrame = frameIdentifier;
++            }
++        }
++        page->didUpdateRendering();
++        completeRepaintCallbacks();
++    }
++    scheduleDisplay();
++}
++
++} // namespace WebKit
+diff --git a/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.h b/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..2ebc0883a57056bf0f07f675af348d74bba79b07
+--- /dev/null
++++ b/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.h
+@@ -0,0 +1,47 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#pragma once
++
++#include "DrawingArea.h"
++#include <wtf/RunLoop.h>
++
++namespace WebKit {
++
++class DrawingAreaHaiku final : public DrawingArea {
++    WTF_MAKE_TZONE_ALLOCATED(DrawingAreaHaiku);
++public:
++    static Ref<DrawingAreaHaiku> create(WebPage&, const WebPageCreationParameters&);
++    ~DrawingAreaHaiku() override;
++
++private:
++    DrawingAreaHaiku(WebPage&, const WebPageCreationParameters&);
++    void setNeedsDisplay() override;
++    void setNeedsDisplayInRect(const WebCore::IntRect&) override;
++    void scroll(const WebCore::IntRect&, const WebCore::IntSize&) override;
++    void triggerRenderingUpdate() override;
++    bool scheduleRenderingUpdate() override;
++    void updateRenderingWithForcedRepaint() override;
++    void updateRenderingWithForcedRepaintAsync(WebPage&, CompletionHandler<void()>&&) override;
++    void setRootCompositingLayer(WebCore::Frame&, WebCore::GraphicsLayer*) override;
++    void setLayerTreeStateIsFrozen(bool) override;
++    bool layerTreeStateIsFrozen() const override { return m_isFrozen; }
++    void activityStateDidChange(OptionSet<WebCore::ActivityState>, ActivityStateChangeID, CompletionHandler<void()>&&) override;
++    void updateGeometryHaiku(uint64_t, const WebCore::IntSize&, float, CompletionHandler<void()>&&) override;
++    void didPresentBitmapHaiku(uint64_t) override;
++    void setDeviceScaleFactor(float, CompletionHandler<void()>&&) override;
++    void scheduleDisplay();
++    void display();
++    void completeRepaintCallbacks();
++
++    RunLoop::Timer m_displayTimer;
++    Vector<CompletionHandler<void()>> m_repaintCallbacks;
++    uint64_t m_geometryIdentifier { 0 };
++    uint64_t m_frameIdentifier { 0 };
++    std::optional<uint64_t> m_pendingFrame;
++    bool m_needsDisplay { true };
++    bool m_isVisible { false };
++    bool m_isFrozen { false };
++    bool m_isDisplaying { false };
++};
++
++} // namespace WebKit
 diff --git a/Source/WebKit/WebProcess/WebPage/haiku/WebInspectorHaiku.cpp b/Source/WebKit/WebProcess/WebPage/haiku/WebInspectorHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..7459ce25f180160a1c12431c73926a1f023968e2
@@ -24505,7 +25138,7 @@ index 0000000000000000000000000000000000000000..fdfe5c82e968f5b6768974856f9b42cc
 +}
 diff --git a/Source/WebKit/WebProcess/haiku/WebProcessMainHaiku.cpp b/Source/WebKit/WebProcess/haiku/WebProcessMainHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..29d0f70b23a11492c0e6eed84fbe0691b9d18645
+index 0000000000000000000000000000000000000000..2dc7dff075a853b0eec696bf1a3e546d948bd3e5
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/haiku/WebProcessMainHaiku.cpp
 @@ -0,0 +1,61 @@
@@ -24548,7 +25181,7 @@ index 0000000000000000000000000000000000000000..29d0f70b23a11492c0e6eed84fbe0691
 +public:
 +    bool platformInitialize() override
 +    {
-+        m_application = makeUnique<BApplication>("application/x-vnd.haiku-webkit.webprocess");
++        m_application = std::make_unique<BApplication>("application/x-vnd.haiku-webkit.webprocess");
 +        return m_application->InitCheck() == B_OK;
 +    }
 +

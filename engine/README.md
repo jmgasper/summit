@@ -36,6 +36,10 @@ bash tools/test-engine-runloop-in-vm.sh
 bash tools/test-engine-process-in-vm.sh
 bash tools/test-engine-memory-in-vm.sh
 bash tools/test-engine-socket-monitor-in-vm.sh
+bash tools/test-engine-message-packets-in-vm.sh
+bash tools/test-engine-storage-paths-in-vm.sh
+bash tools/test-engine-modules-in-vm.sh
+bash tools/test-engine-bitmaps-in-vm.sh
 # Build Summit with private current-engine libraries and accompanying source:
 bash tools/build-current-browser-in-vm.sh
 # Repeat the host bundle copy without rebuilding, while inputs still match:
@@ -45,6 +49,23 @@ bash tools/copy-current-browser-bundle.sh
 Do not run a second engine build while one is active. Inspect the live guest
 `ninja` process and host SSH session, and resume that build after a terminal
 failure has been diagnosed. The build tree is retained between iterations.
+
+The separate modern process port uses private ICU 78.3. Its build entry point is
+available while the remaining platform integration is developed:
+
+```sh
+bash tools/build-icu-in-vm.sh
+SUMMIT_WEBKIT_JOBS=8 bash tools/build-webkit-in-vm.sh --modern
+# Or select a modern target:
+bash tools/build-webkit-in-vm.sh --modern WebProcess
+```
+
+Both modes check for an active engine build before synchronizing their shared
+source directory. The modern configuration enables WebKit's process architecture
+and currently disables the GPU process. It does not yet provide a working
+browser process connection. Its ICU 78 JavaScriptCore passes 31 JIT/interpreter
+smoke checks; the scoped conformance comparison fixes 94 ICU-related failures.
+The full ICU 78 conformance run is still in progress.
 
 Current status: Haiku CMake configuration succeeds with ICU 74.1. Current
 JavaScriptCore and its shell build successfully after correcting the initial
@@ -66,8 +87,9 @@ WebCore into WebKit during September; the Haiku legacy Curl backend needs
 corresponding adaptation, now compiled and exercised in Summit. The adapter does not yet
 address the inherited database's missing SameSite and partitioned-cookie
 support. Its existing non-Curl backend is not an alternate
-validated path. The unfinished Haiku multiprocess API in the patch is also
-not enabled or validated. Platform feature switches inherited from the Haiku
+validated path. The unfinished Haiku multiprocess API in the patch is enabled
+in the separate modern build, with full browser integration still pending.
+Platform feature switches inherited from the Haiku
 port (including disabled WebGL, WebAudio and media APIs) must be reviewed
 against the full-browser objective.
 

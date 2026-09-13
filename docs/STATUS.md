@@ -283,7 +283,27 @@ cannot currently export a separate read-only handle; it reports failure instead
 of granting writable access. These changes are integrated into the working engine.
 Logs: `.vm/native-memory-tests.log` and `.vm/native-memory-baseline.log`.
 
-All 32 Haiku embedding source files pass the native compiler's syntax checks.
+Shared bitmap drawing now passes **32 native checks** against the production
+WebCore adapters. Drawing contexts retain their native views and mappings,
+flush app_server writes on completion, and reject read-only backing memory.
+Image copies remain stable while shared references observe later writes;
+both images and contexts survive release of the original bitmap. Pixel checks
+cover destination positioning, source rectangles, device scaling, transparent
+copy compositing and restoration of per-image graphics state. The previous
+copy operator incorrectly used source-over blending. Read-only images use
+private snapshots without making their mappings writable or cloneable.
+Frame checks reject invalid scales, oversized geometry, metadata mismatches and
+oversized backing objects before mapping. Run
+`tools/test-engine-bitmaps-in-vm.sh`; final log:
+`.vm/native-bitmap-frame-tests-fixed.log`.
+
+The modern Haiku drawing-area implementation and IPC definitions are staged for
+native compilation. They send complete software-rendered frames, associate them
+with viewport generations and wait for presentation acknowledgment before sending
+another frame. The message generator accepts the new handlers. Native embedding,
+full compilation and process-to-view presentation are not yet verified.
+
+All 32 Haiku legacy embedding source files pass the native compiler's syntax checks.
 The initial pass found five failing files caused by two upstream API changes:
 the color chooser's coordinate query and the frame loader's `std::expected`
 callback. The adapted color chooser uses screen coordinates, and unsupported
