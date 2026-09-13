@@ -1207,7 +1207,7 @@ index 341db75e1e661ce171e21d818a544a19c5ecdbbd..b59f07b399e5a939f4a2cdf7795e41f7
      platform/mock/MediaPlaybackTargetMock.h
      platform/mock/MediaPlaybackTargetPickerMock.h
 diff --git a/Source/WebCore/PlatformHaiku.cmake b/Source/WebCore/PlatformHaiku.cmake
-index 16a88804a1baa39ccdd9fc2870b6e2524d941298..b3ecd1075bb9806ac2594dfe5633a4029c5f789b 100644
+index 16a88804a1baa39ccdd9fc2870b6e2524d941298..134f21a4af90dce7fdd16d9ef6c84478beb72846 100644
 --- a/Source/WebCore/PlatformHaiku.cmake
 +++ b/Source/WebCore/PlatformHaiku.cmake
 @@ -1,8 +1,71 @@
@@ -1283,7 +1283,7 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..b3ecd1075bb9806ac2594dfe5633a402
  )
  
  list(APPEND WebCore_SOURCES
-@@ -11,42 +74,133 @@ list(APPEND WebCore_SOURCES
+@@ -11,42 +74,134 @@ list(APPEND WebCore_SOURCES
  
    editing/glib/EditorGLib.cpp
  
@@ -1335,6 +1335,7 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..b3ecd1075bb9806ac2594dfe5633a402
 +  platform/graphics/haiku/ComplexTextControllerHaiku.cpp
 +  platform/graphics/haiku/FontCacheHaiku.cpp
 +  platform/graphics/haiku/FontCustomPlatformData.cpp
++  platform/graphics/opentype/OpenTypeUtilities.cpp
 +  platform/graphics/haiku/FontDescriptionHaiku.cpp
 +  platform/graphics/haiku/FontPlatformDataHaiku.cpp
 +  platform/graphics/haiku/FloatPointHaiku.cpp
@@ -1419,7 +1420,7 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..b3ecd1075bb9806ac2594dfe5633a402
    textencoding
    translation
    ${WEBP_LIBRARIES}
-@@ -61,6 +215,131 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
+@@ -61,6 +216,131 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
    ${SQLITE_INCLUDE_DIR}
    ${WEBP_INCLUDE_DIRS}
    ${ZLIB_INCLUDE_DIRS}
@@ -2764,7 +2765,7 @@ index 9ff17f4c5813fcd673c7a3ac627ee2b3f5e73420..438812961e85b098467acaf0e2df918f
  {
      m_metadata.pointSize = size;
 diff --git a/Source/WebCore/platform/graphics/FontPlatformData.h b/Source/WebCore/platform/graphics/FontPlatformData.h
-index b80f3b4ee212fcdbbd5ea70a05637b4c1b318a8b..62ef74290424f95c5dfe454522e9121cf13f1317 100644
+index b80f3b4ee212fcdbbd5ea70a05637b4c1b318a8b..6204bfeb75774b3f2cceec93d1081478cbd74259 100644
 --- a/Source/WebCore/platform/graphics/FontPlatformData.h
 +++ b/Source/WebCore/platform/graphics/FontPlatformData.h
 @@ -59,6 +59,15 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
@@ -2783,26 +2784,69 @@ index b80f3b4ee212fcdbbd5ea70a05637b4c1b318a8b..62ef74290424f95c5dfe454522e9121c
  #if USE(APPKIT)
  OBJC_CLASS NSFont;
  #endif
-@@ -274,6 +283,12 @@ struct FontPlatformSerializedData {
+@@ -104,11 +113,32 @@ struct FontMetadata {
+     friend bool operator==(const FontMetadata&, const FontMetadata&) = default;
+ };
+ 
++#if USE(HAIKU)
++struct FontPlatformSerializedData {
++    String family;
++    String style;
++    float shear { 90 };
++    float rotation { 0 };
++    float falseBoldWidth { 0 };
++    uint32_t flags { 0 };
++    uint16_t face { B_REGULAR_FACE };
++    uint8_t spacing { B_BITMAP_SPACING };
++    uint8_t encoding { B_UNICODE_UTF8 };
++};
++#endif
++
+ struct FontPlatformDataAttributes {
+     FontPlatformDataAttributes(const FontMetadata& metadata)
+         : m_metadata(metadata)
+         { }
+ 
++#if USE(HAIKU)
++    FontPlatformDataAttributes(const FontMetadata& metadata, FontPlatformSerializedData font)
++        : m_metadata(metadata)
++        , m_font(WTF::move(font))
++        { }
++#endif
++
+ #if USE(CORE_TEXT)
+     FontPlatformDataAttributes(const FontMetadata& metadata, RetainPtr<CFDictionaryRef> attributes, CTFontDescriptorOptions options, RetainPtr<CFStringRef> url, RetainPtr<CFStringRef> psName)
+         : m_metadata(metadata)
+@@ -152,6 +182,8 @@ struct FontPlatformDataAttributes {
+     SkString m_familyName;
+     SkFontStyle m_style;
+     Vector<hb_feature_t> m_features;
++#elif USE(HAIKU)
++    FontPlatformSerializedData m_font;
+ #endif
+ };
+ 
+@@ -274,6 +306,12 @@ struct FontPlatformSerializedData {
      LOGFONT logFont;
  #endif
  };
 +#elif USE(HAIKU)
 +struct CustomFontCreationData {
-+};
-+
-+struct FontPlatformSerializedData {
++    Vector<uint8_t> fontFaceData;
++    String itemInCollection;
++    FontPlatformSerializedData font;
 +};
  #endif
  
  // This class is conceptually immutable. Once created, no instances should ever change (in an observable way).
-@@ -316,6 +331,15 @@ public:
+@@ -316,6 +354,16 @@ public:
      WEBCORE_EXPORT FontPlatformData(RetainPtr<CTFontRef>&&, const FontMetadata&, const FontCustomPlatformData* = nullptr);
  #endif
  
 +#if PLATFORM(HAIKU)
 +    FontPlatformData(const FontDescription& fontDescription, const AtomString& familyName);
 +    FontPlatformData(const BFont&, const FontDescription& fontDescription);
++    FontPlatformData(const BFont&, const FontDescription&, const FontCustomPlatformData*, const FontMetricsOverrides& = { });
 +    static void SetFallBackSerifFont(const BString& font);
 +    static void SetFallBackSansSerifFont(const BString& font);
 +    static void SetFallBackFixedFont(const BString& font);
@@ -2812,7 +2856,7 @@ index b80f3b4ee212fcdbbd5ea70a05637b4c1b318a8b..62ef74290424f95c5dfe454522e9121c
  #if PLATFORM(WIN) && USE(CAIRO)
      WEBCORE_EXPORT FontPlatformData(GDIObject<HFONT>, float size, bool syntheticBold, bool syntheticOblique, const FontMetricsOverrides& = { }, const FontCustomPlatformData* = nullptr);
      FontPlatformData(GDIObject<HFONT>, cairo_font_face_t*, float size, bool bold, bool italic, const FontMetricsOverrides& = { }, const FontCustomPlatformData* = nullptr);
-@@ -328,6 +352,10 @@ public:
+@@ -328,6 +376,10 @@ public:
      WEBCORE_EXPORT FontPlatformData(sk_sp<SkTypeface>&&, const FontMetadata&, Vector<hb_feature_t>&&, const FontCustomPlatformData* = nullptr);
  #endif
  
@@ -2823,7 +2867,7 @@ index b80f3b4ee212fcdbbd5ea70a05637b4c1b318a8b..62ef74290424f95c5dfe454522e9121c
      using Attributes = FontPlatformDataAttributes;
  
      WEBCORE_EXPORT static FontPlatformData create(const Attributes&, const FontCustomPlatformData*);
-@@ -462,6 +490,10 @@ private:
+@@ -462,6 +514,10 @@ private:
  #if USE(FREETYPE) && USE(CAIRO)
      void buildScaledFont(cairo_font_face_t*);
  #endif
@@ -2834,7 +2878,7 @@ index b80f3b4ee212fcdbbd5ea70a05637b4c1b318a8b..62ef74290424f95c5dfe454522e9121c
  
  #if PLATFORM(WIN)
      RefPtr<SharedGDIObject<HFONT>> m_hfont; // FIXME: Delete this in favor of m_hbFont
-@@ -478,7 +510,9 @@ private:
+@@ -478,7 +534,9 @@ private:
  #endif
  
  #if USE(FREETYPE)
@@ -2844,7 +2888,7 @@ index b80f3b4ee212fcdbbd5ea70a05637b4c1b318a8b..62ef74290424f95c5dfe454522e9121c
  #endif
  
      FontMetadata m_metadata;
-@@ -494,6 +528,12 @@ private:
+@@ -494,6 +552,12 @@ private:
  #endif
      // The values above are common to all ports
  
@@ -3913,10 +3957,10 @@ index 0000000000000000000000000000000000000000..ab4c1671ad2f62ad93df8e9b622b8bc3
 +}
 diff --git a/Source/WebCore/platform/graphics/haiku/FontCustomPlatformData.cpp b/Source/WebCore/platform/graphics/haiku/FontCustomPlatformData.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..d23b75f0f7ed902ff7a6b7e87e7cfce4d7c00a3e
+index 0000000000000000000000000000000000000000..dd70696e96971966d0df35c46ac5d1242daff876
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/FontCustomPlatformData.cpp
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,112 @@
 +/*
 + * Copyright (C) 2008 Alp Toker <alp@atoker.com>
 + *
@@ -3942,7 +3986,10 @@ index 0000000000000000000000000000000000000000..d23b75f0f7ed902ff7a6b7e87e7cfce4
 +
 +#include "FontPlatformData.h"
 +#include "NotImplemented.h"
++#include "OpenTypeUtilities.h"
 +#include "SharedBuffer.h"
++#include <limits>
++#include <wtf/UUID.h>
 +
 +#include "wtf/RefPtr.h"
 +
@@ -3954,23 +4001,33 @@ index 0000000000000000000000000000000000000000..d23b75f0f7ed902ff7a6b7e87e7cfce4
 +	delete_area(m_area);
 +}
 +
-+FontPlatformData FontCustomPlatformData::fontPlatformData(const FontDescription& description, const FontCreationContext&)
++FontPlatformData FontCustomPlatformData::fontPlatformData(const FontDescription& description, const FontCreationContext& context)
 +{
-+    return FontPlatformData(m_font, description);
++    return FontPlatformData(m_font, description, this, context.metricsOverrides());
 +}
 +
 +RefPtr<FontCustomPlatformData> FontCustomPlatformData::create(SharedBuffer& buffer, const String& itemInCollection)
 +{
-+	void* sharedData;
++	// app_server identifies private faces by their internal family/style names.
++	// Two downloads (including different subsets) may have the same names, so
++	// give each native face its own identity while retaining the original data
++	// for WebCore and IPC. Use the upstream OpenType name-table rewriter.
++	Vector<uint8_t> nativeData;
++	if (!renameFont(buffer, WTF::UUID::createVersion4().toString(), nativeData)
++		|| nativeData.size() > std::numeric_limits<size_t>::max() - (B_PAGE_SIZE - 1))
++		return nullptr;
++	void* sharedData = nullptr;
 +	// TODO is it possible to create a SharedBuffer so that it is allocated in a clonable area already?
 +	// It would save a copy here.
-+	area_id area = create_area("web font", &sharedData, B_ANY_ADDRESS, buffer.size(), B_NO_LOCK, B_WRITE_AREA | B_READ_AREA | B_CLONEABLE_AREA);
++	auto areaSize = (nativeData.size() + B_PAGE_SIZE - 1) & ~(static_cast<size_t>(B_PAGE_SIZE) - 1);
++	area_id area = create_area("web font", &sharedData, B_ANY_ADDRESS, areaSize, B_NO_LOCK, B_WRITE_AREA | B_READ_AREA | B_CLONEABLE_AREA);
++	if (area < B_OK)
++		return nullptr;
 +
-+
-+	memcpy(sharedData, buffer.span().data(), buffer.span().size());
++	memcpy(sharedData, nativeData.span().data(), nativeData.size());
 +	BFont font;
 +
-+	status_t result = font.LoadFont(area, buffer.size(), 0);
++	status_t result = font.LoadFont(area, nativeData.size(), 0);
 +
 +	if (result != B_OK) { // B_NOT_SUPPORTED returned for r1beta4 fallback path
 +		delete_area(area);
@@ -3978,7 +4035,22 @@ index 0000000000000000000000000000000000000000..d23b75f0f7ed902ff7a6b7e87e7cfce4
 +	}
 +
 +    FontPlatformData::CreationData creationData = { buffer, itemInCollection };
-+	return adoptRef(new FontCustomPlatformData(area, font, std::move(creationData)));
++    return adoptRef(*new FontCustomPlatformData(area, font, std::move(creationData)));
++}
++
++FontCustomPlatformSerializedData FontCustomPlatformData::serializedData() const
++{
++    return { creationData.fontFaceData, creationData.itemInCollection, m_renderingResourceIdentifier };
++}
++
++std::optional<Ref<FontCustomPlatformData>> FontCustomPlatformData::tryMakeFromSerializationData(FontCustomPlatformSerializedData&& data, bool shouldUseLockdownParser)
++{
++    auto font = shouldUseLockdownParser ? createMemorySafe(data.fontFaceData, data.itemInCollection)
++        : create(data.fontFaceData, data.itemInCollection);
++    if (!font)
++        return std::nullopt;
++    font->m_renderingResourceIdentifier = data.renderingResourceIdentifier;
++    return font.releaseNonNull();
 +}
 +
 +RefPtr<FontCustomPlatformData> FontCustomPlatformData::createMemorySafe(SharedBuffer&, const String&)
@@ -4184,10 +4256,10 @@ index 0000000000000000000000000000000000000000..a1427a36473ff9274ecfe96014781631
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/haiku/FontPlatformDataHaiku.cpp b/Source/WebCore/platform/graphics/haiku/FontPlatformDataHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..8e161a2c75ff370825d1e5800cb7da0bdb7bf8b6
+index 0000000000000000000000000000000000000000..e3c0c9db245a921b99b0c02608610cec6ac396d2
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/FontPlatformDataHaiku.cpp
-@@ -0,0 +1,229 @@
+@@ -0,0 +1,341 @@
 +/*
 + * Copyright (C) 2009 Maxime Simon <simon.maxime@gmail.com>
 + * Copyright (C) 2010 Stephan Aßmus <superstippi@gmx.de>
@@ -4217,8 +4289,10 @@ index 0000000000000000000000000000000000000000..8e161a2c75ff370825d1e5800cb7da0b
 +#include "FontPlatformData.h"
 +#include "SharedBuffer.h"
 +#include "NotImplemented.h"
++#include "RenderStyleConstants.h"
 +
 +#include <String.h>
++#include <cmath>
 +
 +#include <wtf/text/AtomString.h>
 +#include <wtf/text/CString.h>
@@ -4286,6 +4360,7 @@ index 0000000000000000000000000000000000000000..8e161a2c75ff370825d1e5800cb7da0b
 +// #pragma mark -
 +
 +FontPlatformData::FontPlatformData(const FontDescription& fontDescription, const AtomString& familyName)
++    : FontPlatformData(fontDescription.usedSize(), false, false, fontDescription.orientation(), fontDescription.widthVariant(), fontDescription.textRenderingMode())
 +{
 +    m_font = std::make_unique<BFont>();
 +    m_font->SetSize(fontDescription.usedSize());
@@ -4302,9 +4377,19 @@ index 0000000000000000000000000000000000000000..8e161a2c75ff370825d1e5800cb7da0b
 +
 +
 +FontPlatformData::FontPlatformData(const BFont& font, const FontDescription& fontDescription)
++    : FontPlatformData(font, fontDescription, nullptr)
++{
++}
++
++FontPlatformData::FontPlatformData(const BFont& font, const FontDescription& fontDescription, const FontCustomPlatformData* custom, const FontMetricsOverrides& overrides)
++    : FontPlatformData(fontDescription.usedSize(), false, false, fontDescription.orientation(), fontDescription.widthVariant(), fontDescription.textRenderingMode(), overrides, custom)
 +{
 +    m_font = std::make_unique<BFont>(font);
 +    m_font->SetSize(fontDescription.usedSize());
++
++    // Private downloaded faces are not entries in the installed-font catalog.
++    if (custom)
++        return;
 +
 +    font_family fontFamily;
 +    font_style fontStyle;
@@ -4320,6 +4405,7 @@ index 0000000000000000000000000000000000000000..8e161a2c75ff370825d1e5800cb7da0b
 +
 +void FontPlatformData::updateSize(float size)
 +{
++	m_metadata.pointSize = size;
 +	// The default copy constructor does not create a copy of the underlying font!
 +	// Here is a weird time to do it, bu that's what FreeType and Core Text do, so let's follow
 +	// them. Some kind of copy-on-write optimization.
@@ -4410,10 +4496,108 @@ index 0000000000000000000000000000000000000000..8e161a2c75ff370825d1e5800cb7da0b
 +
 +String FontPlatformData::familyName() const
 +{
++	if (!m_font)
++		return emptyString();
 +	font_family family;
 +	font_style style;
 +	m_font->GetFamilyAndStyle(&family, &style);
 +	return String::fromUTF8(family);
++}
++
++static FontPlatformSerializedData serializeFontHaiku(const BFont* font)
++{
++    if (!font)
++        return { };
++    font_family family;
++    font_style style;
++    font->GetFamilyAndStyle(&family, &style);
++    return { String::fromUTF8(family), String::fromUTF8(style), font->Shear(), font->Rotation(),
++        font->FalseBoldWidth(), font->Flags(), font->Face(), font->Spacing(), font->Encoding() };
++}
++
++static bool validFontDataHaiku(const FontMetadata& metadata, const FontPlatformSerializedData& data)
++{
++    if (!std::isfinite(metadata.pointSize) || metadata.pointSize < 0 || metadata.pointSize > maximumAllowedFontSize
++        || !std::isfinite(data.shear) || data.shear < 0 || data.shear > 180
++        || !std::isfinite(data.rotation) || data.rotation < 0 || data.rotation > 360
++        || !std::isfinite(data.falseBoldWidth) || data.falseBoldWidth < 0 || data.falseBoldWidth > maximumAllowedFontSize
++        || data.spacing > B_FIXED_SPACING || data.encoding != B_UNICODE_UTF8
++        || (data.flags & ~(B_DISABLE_ANTIALIASING | B_FORCE_ANTIALIASING)) || (data.face & ~0x3ff))
++        return false;
++    auto family = data.family.utf8();
++    auto style = data.style.utf8();
++    return !data.family.isEmpty() && !data.family.contains('\0') && !data.style.contains('\0')
++        && family.length() < B_FONT_FAMILY_LENGTH && style.length() < B_FONT_STYLE_LENGTH;
++}
++
++static bool restoreFontHaiku(BFont& font, const FontMetadata& metadata, const FontPlatformSerializedData& data, bool custom)
++{
++    if (!validFontDataHaiku(metadata, data))
++        return false;
++    if (!custom && font.SetFamilyAndStyle(data.family.utf8().legacyCStringPointer(), data.style.utf8().legacyCStringPointer()) != B_OK)
++        return false;
++    font.SetSize(metadata.pointSize);
++    font.SetShear(data.shear);
++    font.SetRotation(data.rotation);
++    font.SetFalseBoldWidth(data.falseBoldWidth);
++    font.SetFlags(data.flags);
++    font.SetSpacing(data.spacing);
++    font.SetEncoding(data.encoding);
++    // Family/style restoration already selects the installed face. Changing
++    // family or face on a private font can detach it from its loaded data.
++    if (!custom && font.Face() != data.face)
++        font.SetFace(data.face);
++    return true;
++}
++
++FontPlatformData::IPCData FontPlatformData::toIPCData() const
++{
++    auto fontData = serializeFontHaiku(font());
++    if (auto* data = creationData())
++        return CustomFontCreationData { { data->fontFaceData->span() }, data->itemInCollection, WTF::move(fontData) };
++    return fontData;
++}
++
++std::optional<FontPlatformData> FontPlatformData::fromIPCData(const FontMetadata& metadata, IPCData&& data)
++{
++    return WTF::switchOn(data,
++        [&] (const FontPlatformSerializedData& data) -> std::optional<FontPlatformData> {
++            FontPlatformData result(metadata);
++            result.m_font = std::make_shared<BFont>();
++            if (!restoreFontHaiku(*result.m_font, metadata, data, false))
++                return std::nullopt;
++            return result;
++        },
++        [&] (CustomFontCreationData& data) -> std::optional<FontPlatformData> {
++            if (!validFontDataHaiku(metadata, data.font))
++                return std::nullopt;
++            auto buffer = SharedBuffer::create(WTF::move(data.fontFaceData));
++            auto custom = FontCustomPlatformData::create(buffer, data.itemInCollection);
++            if (!custom)
++                return std::nullopt;
++            FontPlatformData result(metadata, custom.get());
++            result.m_font = std::make_shared<BFont>(custom->m_font);
++            if (!restoreFontHaiku(*result.m_font, metadata, data.font, true))
++                return std::nullopt;
++            return result;
++        });
++}
++
++FontPlatformData::Attributes FontPlatformData::attributes() const
++{
++    return { m_metadata, serializeFontHaiku(font()) };
++}
++
++FontPlatformData FontPlatformData::create(const Attributes& attributes, const FontCustomPlatformData* custom)
++{
++    FontPlatformData result(attributes.m_metadata, custom);
++    result.m_font = custom ? std::make_shared<BFont>(custom->m_font) : std::make_shared<BFont>();
++    if (!restoreFontHaiku(*result.m_font, attributes.m_metadata, attributes.m_font, custom)) {
++        // This API cannot return an error; retain a usable native fallback.
++        result.m_font = std::make_shared<BFont>();
++        result.m_metadata.pointSize = result.m_font->Size();
++    }
++    return result;
 +}
 +
 +} // namespace WebCore
@@ -8821,6 +9005,145 @@ index 5d87f33eb2a97149463d75d210cedce7fc689bd5..b6ff6a6a7e2803966cb2f229d0b1c800
  #endif
  
  OpenTypeMathData::~OpenTypeMathData() = default;
+diff --git a/Source/WebCore/platform/graphics/opentype/OpenTypeUtilities.cpp b/Source/WebCore/platform/graphics/opentype/OpenTypeUtilities.cpp
+index a74b717fa21c21a93c08835d8540acc37307f406..db9c13b5712ef9833a920e96ae0241b4319439a3 100644
+--- a/Source/WebCore/platform/graphics/opentype/OpenTypeUtilities.cpp
++++ b/Source/WebCore/platform/graphics/opentype/OpenTypeUtilities.cpp
+@@ -27,8 +27,11 @@
+ #include "config.h"
+ #include "OpenTypeUtilities.h"
+ 
++#if PLATFORM(WIN)
+ #include "FontMemoryResource.h"
++#endif
+ #include "SharedBuffer.h"
++#include <limits>
+ #include <wtf/StdLibExtras.h>
+ 
+ namespace WebCore {
+@@ -90,6 +93,13 @@ struct sfntHeader {
+     TableDirectoryEntry tables[1];
+ };
+ 
++struct FontCollectionHeader {
++    BigEndianULong tag;
++    BigEndianULong version;
++    BigEndianULong numFonts;
++    BigEndianULong firstFontOffset;
++};
++
+ struct OS2Table {
+     BigEndianUShort version;
+     BigEndianUShort avgCharWidth;
+@@ -198,14 +208,30 @@ void EOTHeader::appendPaddingShort()
+ bool renameFont(const SharedBuffer& fontData, const String& fontName, Vector<uint8_t>& rewrittenFontData)
+ {
+     size_t originalDataSize = fontData.size();
+-    const sfntHeader* sfnt = reinterpret_cast<const sfntHeader*>(fontData.span().data());
++    if (fontName.isEmpty() || fontName.length() > std::numeric_limits<uint16_t>::max() / sizeof(char16_t))
++        return false;
++    size_t sfntOffset = 0;
++    if (originalDataSize >= sizeof(FontCollectionHeader)) {
++        auto* collection = reinterpret_cast<const FontCollectionHeader*>(fontData.span().data());
++        if (collection->tag == 'ttcf') {
++            size_t numFonts = collection->numFonts;
++            if (!numFonts || numFonts > (originalDataSize - offsetof(FontCollectionHeader, firstFontOffset)) / sizeof(BigEndianULong)
++                || (collection->version != 0x00010000 && collection->version != 0x00020000))
++                return false;
++            sfntOffset = collection->firstFontOffset;
++            if (sfntOffset % 4 || sfntOffset > originalDataSize
++                || sfntOffset < offsetof(FontCollectionHeader, firstFontOffset) + numFonts * sizeof(BigEndianULong))
++                return false;
++        }
++    }
+ 
+     // Abort if the data is too small to be a font header with a "tables" entry.
+-    if (originalDataSize < offsetof(sfntHeader, tables))
++    if (originalDataSize - sfntOffset < offsetof(sfntHeader, tables))
+         return false;
++    const sfntHeader* sfnt = reinterpret_cast<const sfntHeader*>(fontData.span().subspan(sfntOffset).data());
+ 
+     // Abort if the data is too small to hold all the tables specified in the header.
+-    if (originalDataSize < offsetof(sfntHeader, tables) + sfnt->numTables * sizeof(TableDirectoryEntry))
++    if (originalDataSize - sfntOffset < offsetof(sfntHeader, tables) + static_cast<size_t>(sfnt->numTables) * sizeof(TableDirectoryEntry))
+         return false;
+ 
+     unsigned t;
+@@ -220,18 +246,22 @@ bool renameFont(const SharedBuffer& fontData, const String& fontName, Vector<uin
+ 
+     // Rounded up to a multiple of 4 to simplify the checksum calculation.
+     size_t nameTableSize = ((offsetof(nameTable, nameRecords) + nameRecordCount * sizeof(nameRecord) + fontName.length() * sizeof(char16_t)) & ~3) + 4;
++    if (originalDataSize > std::numeric_limits<uint32_t>::max() - nameTableSize - 3)
++        return false;
++    size_t nameTableOffset = (originalDataSize + 3) & ~static_cast<size_t>(3);
+ 
+-    rewrittenFontData.resize(fontData.size() + nameTableSize);
++    rewrittenFontData.resize(nameTableOffset + nameTableSize);
+     auto dataSpan = rewrittenFontData.mutableSpan();
+     memcpySpan(dataSpan, fontData.span());
++    zeroSpan(dataSpan.subspan(originalDataSize));
+ 
+     // Make the table directory entry point to the new 'name' table.
+-    sfntHeader* rewrittenSfnt = reinterpret_cast<sfntHeader*>(dataSpan.data());
++    sfntHeader* rewrittenSfnt = reinterpret_cast<sfntHeader*>(dataSpan.subspan(sfntOffset).data());
+     rewrittenSfnt->tables[t].length = nameTableSize;
+-    rewrittenSfnt->tables[t].offset = originalDataSize;
++    rewrittenSfnt->tables[t].offset = nameTableOffset;
+ 
+     // Write the new 'name' table after the original font data.
+-    nameTable* name = reinterpret_cast<nameTable*>(dataSpan.subspan(originalDataSize).data());
++    nameTable* name = reinterpret_cast<nameTable*>(dataSpan.subspan(nameTableOffset).data());
+     name->format = 0;
+     name->count = nameRecordCount;
+     name->stringOffset = offsetof(nameTable, nameRecords) + nameRecordCount * sizeof(nameRecord);
+@@ -250,7 +280,7 @@ bool renameFont(const SharedBuffer& fontData, const String& fontName, Vector<uin
+     name->nameRecords[3].nameID = 4;
+     name->nameRecords[4].nameID = 6;
+ 
+-    auto fontSpan = spanReinterpretCast<BigEndianUShort>(dataSpan.subspan(originalDataSize + name->stringOffset));
++    auto fontSpan = spanReinterpretCast<BigEndianUShort>(dataSpan.subspan(nameTableOffset + name->stringOffset));
+     for (unsigned i = 0; i < fontName.length(); ++i)
+         fontSpan[i] = fontName[i];
+ 
+@@ -263,6 +293,7 @@ bool renameFont(const SharedBuffer& fontData, const String& fontName, Vector<uin
+ }
+ 
+ // Rename the font and install the new font data into the system
++#if PLATFORM(WIN)
+ RefPtr<FontMemoryResource> renameAndActivateFont(const SharedBuffer& fontData, const String& fontName)
+ {
+     Vector<uint8_t> rewrittenFontData;
+@@ -280,5 +311,6 @@ RefPtr<FontMemoryResource> renameAndActivateFont(const SharedBuffer& fontData, c
+ 
+     return FontMemoryResource::create(fontHandle);
+ }
++#endif
+ 
+ }
+diff --git a/Source/WebCore/platform/graphics/opentype/OpenTypeUtilities.h b/Source/WebCore/platform/graphics/opentype/OpenTypeUtilities.h
+index 6cc3e9febb8c00ec5829ca476fc21b1b693c81a3..fc5107b6ced726a345ccd053cbc48fcafc416fd9 100644
+--- a/Source/WebCore/platform/graphics/opentype/OpenTypeUtilities.h
++++ b/Source/WebCore/platform/graphics/opentype/OpenTypeUtilities.h
+@@ -27,7 +27,9 @@
+ #ifndef OpenTypeUtilities_h
+ #define OpenTypeUtilities_h
+ 
++#if PLATFORM(WIN)
+ #include <windows.h>
++#endif
+ #include <wtf/Forward.h>
+ #include <wtf/RefPtr.h>
+ #include <wtf/text/WTFString.h>
+@@ -56,7 +58,9 @@ private:
+ };
+ 
+ bool renameFont(const SharedBuffer&, const String&, Vector<uint8_t>&);
++#if PLATFORM(WIN)
+ RefPtr<FontMemoryResource> renameAndActivateFont(const SharedBuffer&, const String&);
++#endif
+ 
+ } // namespace WebCore
+ 
 diff --git a/Source/WebCore/platform/graphics/transforms/AffineTransform.h b/Source/WebCore/platform/graphics/transforms/AffineTransform.h
 index 3ae8339850008d049df5f38d9d53a1c776827c67..d901f787833f48b776c9c77e78f914df8496f8fd 100644
 --- a/Source/WebCore/platform/graphics/transforms/AffineTransform.h
@@ -20059,7 +20382,7 @@ index 0000000000000000000000000000000000000000..18987ccb29fc7459f934d9015ae58c5c
 +} // namespace NetworkCache
 +} // namespace WebKit
 diff --git a/Source/WebKit/NetworkProcess/cache/NetworkCacheFileSystem.cpp b/Source/WebKit/NetworkProcess/cache/NetworkCacheFileSystem.cpp
-index b49353d3217671b2eedbe0ee4cf83d8b51eecbd3..3acfe2bf4b750ac77db7f0ececd1b53f566a5a1e 100644
+index b49353d3217671b2eedbe0ee4cf83d8b51eecbd3..6a63b1596a8a7f0e9c4f8cb554c405e763c8783a 100644
 --- a/Source/WebKit/NetworkProcess/cache/NetworkCacheFileSystem.cpp
 +++ b/Source/WebKit/NetworkProcess/cache/NetworkCacheFileSystem.cpp
 @@ -67,6 +67,11 @@ FileTimes fileTimes(const String& path)
@@ -20068,9 +20391,9 @@ index b49353d3217671b2eedbe0ee4cf83d8b51eecbd3..3acfe2bf4b750ac77db7f0ececd1b53f
      return { WallTime::fromRawSeconds(fileInfo.st_birthtime), WallTime::fromRawSeconds(fileInfo.st_mtime) };
 +#elif USE(HAIKU)
 +    struct stat fileInfo;
-+    if (stat(FileSystem::fileSystemRepresentation(path).data(), &fileInfo))
++    if (FileSystem::statFile(FileSystem::fileSystemRepresentation(path).spanIncludingNullTerminator(), fileInfo))
 +        return { };
-+    return { WallTime::fromRawSeconds(fileInfo.st_ctime), WallTime::fromRawSeconds(fileInfo.st_mtime) };
++    return { WallTime::fromRawSeconds(fileInfo.st_crtime), WallTime::fromRawSeconds(fileInfo.st_mtime) };
  #elif USE(SOUP)
      // There's no st_birthtime in some operating systems like Linux, so we use xattrs to set/get the creation time.
      GRefPtr<GFile> file = adoptGRef(g_file_new_for_path(FileSystem::fileSystemRepresentation(path).legacyCStringPointer()));
@@ -21729,10 +22052,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..af1c8374d7d13c5e209acbef4238a886c6bc2a2b
+index 0000000000000000000000000000000000000000..1194cb3556aefa0bfacdeeda141372ae12e83b56
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,132 @@
+@@ -0,0 +1,140 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -21760,6 +22083,7 @@ index 0000000000000000000000000000000000000000..af1c8374d7d13c5e209acbef4238a886
 +    Shared/haiku/WebMemorySamplerHaiku.cpp
 +
 +    UIProcess/DefaultUndoController.cpp
++    UIProcess/API/haiku/WebKitView.cpp
 +    UIProcess/Launcher/haiku/ProcessLauncherHaiku.cpp
 +    UIProcess/LegacySessionStateCodingNone.cpp
 +    UIProcess/WebsiteData/haiku/WebsiteDataStoreHaiku.cpp
@@ -21767,6 +22091,7 @@ index 0000000000000000000000000000000000000000..af1c8374d7d13c5e209acbef4238a886
 +    UIProcess/haiku/TextCheckerHaiku.cpp
 +    UIProcess/haiku/WebPageProxyHaiku.cpp
 +    UIProcess/haiku/WebProcessPoolHaiku.cpp
++    UIProcess/haiku/WebView.cpp
 +
 +    WebProcess/InjectedBundle/haiku/InjectedBundleHaiku.cpp
 +    WebProcess/WebPage/haiku/DrawingAreaHaiku.cpp
@@ -21782,6 +22107,7 @@ index 0000000000000000000000000000000000000000..af1c8374d7d13c5e209acbef4238a886
 +    "${WEBKIT_DIR}/Platform/IPC/unix"
 +    "${WEBKIT_DIR}/Platform/IPC/haiku"
 +    "${WEBKIT_DIR}/Platform/haiku"
++    "${WEBKIT_DIR}/Platform/generic"
 +    "${WEBKIT_DIR}/Platform/classifier"
 +    "${WEBKIT_DIR}/Shared/API/c/haiku"
 +    "${WEBKIT_DIR}/Shared/CoordinatedGraphics"
@@ -21812,6 +22138,10 @@ index 0000000000000000000000000000000000000000..af1c8374d7d13c5e209acbef4238a886
 +    ${OPENGL_LIBRARIES}
 +    ${PNG_LIBRARIES}
 +    ${SQLITE_LIBRARIES}
++)
++
++list(APPEND WebKit_SERIALIZATION_IN_FILES
++    Shared/haiku/WebCoreFontHaiku.serialization.in
 +)
 +
 +list(APPEND WebProcess_SOURCES
@@ -21864,6 +22194,7 @@ index 0000000000000000000000000000000000000000..af1c8374d7d13c5e209acbef4238a886
 +
 +list(APPEND WebKit_PUBLIC_FRAMEWORK_HEADERS
 +    Shared/API/c/haiku/WKBaseHaiku.h
++    UIProcess/API/haiku/WebKitView.h
 +)
 diff --git a/Source/WebKit/Shared/API/c/WKBase.h b/Source/WebKit/Shared/API/c/WKBase.h
 index f920a7cd3f564700db2a4b293b79c4949a78f84c..4e6df27d9c74bc96bccc623ac1f51b25bc674fc5 100644
@@ -22118,6 +22449,20 @@ index 575a1f68f3bd19cbe2259aae39f94dcadb552392..1a8f90a6eb737c0b0d7b62edd4effbcb
  
  enum class WebCore::ContentExtensionDefaultEnablement : bool
  using WebCore::ContentExtensionEnablement = std::pair<WebCore::ContentExtensionDefaultEnablement, HashSet<String>>;
+diff --git a/Source/WebKit/Shared/WebCoreFont.serialization.in b/Source/WebKit/Shared/WebCoreFont.serialization.in
+index 43b2a51c28b1c3f1116605c7064c22555e5750b8..dd5e2a9d209b6b9240a703eb3e6230518b58fbea 100644
+--- a/Source/WebKit/Shared/WebCoreFont.serialization.in
++++ b/Source/WebKit/Shared/WebCoreFont.serialization.in
+@@ -99,6 +99,9 @@ header: <WebCore/FontPlatformData.h>
+     SkFontStyle m_style;
+     Vector<hb_feature_t> m_features;
+ #endif
++#if USE(HAIKU)
++    WebCore::FontPlatformSerializedData m_font;
++#endif
+ };
+ 
+ header: <WebCore/FontCustomPlatformData.h>
 diff --git a/Source/WebKit/Shared/WebEvent.cpp b/Source/WebKit/Shared/WebEvent.cpp
 index f5d465ab8f8ce8096c4b19592c4020f62bcd6e69..1ea6f0eb4f0622453c8d899c7755aaa2994f7ed4 100644
 --- a/Source/WebKit/Shared/WebEvent.cpp
@@ -22674,6 +23019,34 @@ index 0000000000000000000000000000000000000000..92e6a5ad332ada635bf11487a9bf9166
 +}
 +
 +
+diff --git a/Source/WebKit/Shared/haiku/WebCoreFontHaiku.serialization.in b/Source/WebKit/Shared/haiku/WebCoreFontHaiku.serialization.in
+new file mode 100644
+index 0000000000000000000000000000000000000000..89cbf4bd629a0eeaade24011bd2f58dfee9951d4
+--- /dev/null
++++ b/Source/WebKit/Shared/haiku/WebCoreFontHaiku.serialization.in
+@@ -0,0 +1,22 @@
++# Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause
++
++#if USE(HAIKU)
++header: <WebCore/FontPlatformData.h>
++[CustomHeader] struct WebCore::FontPlatformSerializedData {
++    String family;
++    String style;
++    float shear;
++    float rotation;
++    float falseBoldWidth;
++    uint32_t flags;
++    uint16_t face;
++    uint8_t spacing;
++    uint8_t encoding;
++};
++
++[CustomHeader] struct WebCore::CustomFontCreationData {
++    Vector<uint8_t> fontFaceData;
++    String itemInCollection;
++    WebCore::FontPlatformSerializedData font;
++};
++#endif
 diff --git a/Source/WebKit/Shared/haiku/WebEventFactory.h b/Source/WebKit/Shared/haiku/WebEventFactory.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..a35e9256c3e1b09d6b64d4b8adb4f282dd88e879
@@ -23261,6 +23634,318 @@ index 0000000000000000000000000000000000000000..d28a6cad6339adf79b155cf974e85bfd
 +    (WEBKIT_MAJOR_VERSION == (major) && WEBKIT_MINOR_VERSION == (minor) && \
 +     WEBKIT_MICRO_VERSION >= (micro)))
 +
+diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..1020f506429fd108e6a3b371badd2021171ed5fb
+--- /dev/null
++++ b/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp
+@@ -0,0 +1,242 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#include "config.h"
++#include "WebKitView.h"
++
++#include "WebKit2Initialize.h"
++#include "WebViewPrivate.h"
++#include "WebViewStateHaiku.h"
++#include <Application.h>
++#include <Cursor.h>
++#include <Window.h>
++#include <cmath>
++#include <wtf/RunLoop.h>
++#include <utility>
++
++using namespace WebKit;
++
++static std::atomic<bool> webKitInitializedHaiku { false };
++
++static int viewDimensionHaiku(float dimension)
++{
++    double pixels = std::ceil(static_cast<double>(dimension) + 1);
++    return std::isfinite(pixels) && pixels > 0 && pixels <= 8192 ? static_cast<int>(pixels) : 0;
++}
++
++status_t BWebKitInitialize()
++{
++    if (!be_app || be_app->Thread() != find_thread(nullptr))
++        return B_BAD_THREAD_ID;
++    if (!webKitInitializedHaiku) {
++        InitializeWebKit2();
++        webKitInitializedHaiku = true;
++    }
++    return B_OK;
++}
++
++BWebKitView::BWebKitView(BRect frame, const char* name, BMessenger target, uint32 resizingMode)
++    : BView(frame, name, resizingMode, B_WILL_DRAW | B_FRAME_EVENTS | B_NAVIGABLE | B_FULL_UPDATE_ON_RESIZE)
++    , m_state(std::make_shared<WebViewStateHaiku>(target))
++{
++    SetViewColor(B_TRANSPARENT_COLOR);
++    if (!webKitInitializedHaiku)
++        return;
++    m_status = B_OK;
++    UpdateGeometry();
++    WTF::RunLoop::mainSingleton().dispatch([state = m_state] {
++        if (!state->closed)
++            state->client = WebView::create(state);
++    });
++}
++
++BWebKitView::~BWebKitView()
++{
++    m_state->closed = true;
++    m_state->presenter.close();
++    if (m_status == B_OK) {
++        WTF::RunLoop::mainSingleton().dispatch([state = std::move(m_state)] {
++            if (auto client = std::exchange(state->client, nullptr))
++                client->close();
++        });
++    }
++}
++
++status_t BWebKitView::InitCheck() const { return m_status; }
++
++void BWebKitView::SendCommand(uint32 what, const char* url)
++{
++    if (m_status != B_OK)
++        return;
++    BMessage message(what);
++    if (url)
++        message.AddString("url", url);
++    dispatchViewMessageHaiku(m_state, std::move(message));
++}
++
++void BWebKitView::LoadURL(const char* url) { SendCommand(viewLoadHaiku, url); }
++void BWebKitView::GoBack() { SendCommand(viewBackHaiku); }
++void BWebKitView::GoForward() { SendCommand(viewForwardHaiku); }
++void BWebKitView::Reload() { SendCommand(viewReloadHaiku); }
++void BWebKitView::Stop() { SendCommand(viewStopHaiku); }
++
++void BWebKitView::UpdateGeometry()
++{
++    WebViewGeometryHaiku current;
++    auto bounds = Bounds();
++    current.size = { viewDimensionHaiku(bounds.Width()), viewDimensionHaiku(bounds.Height()) };
++    current.attached = Window();
++    current.focused = IsFocus();
++    BMessenger messenger;
++    if (auto* window = Window()) {
++        BPoint origin = ConvertToScreen(BPoint());
++        current.screenOrigin = { static_cast<int>(std::round(origin.x)), static_cast<int>(std::round(origin.y)) };
++        current.visible = !IsHidden() && !window->IsHidden();
++        current.active = window->IsActive();
++        messenger = BMessenger(this);
++    }
++    bool changed;
++    {
++        std::lock_guard guard(m_state->mutex);
++        changed = m_state->geometry != current || m_state->view != messenger;
++        m_state->geometry = current;
++        m_state->view = messenger;
++    }
++    if (changed)
++        SendCommand(viewGeometryHaiku);
++}
++
++void BWebKitView::AttachedToWindow()
++{
++    BView::AttachedToWindow();
++    UpdateGeometry();
++}
++
++void BWebKitView::DetachedFromWindow()
++{
++    {
++        std::lock_guard guard(m_state->mutex);
++        m_state->geometry.attached = false;
++        m_state->geometry.visible = false;
++        m_state->geometry.focused = false;
++        m_state->geometry.active = false;
++        m_state->view = BMessenger();
++    }
++    SendCommand(viewGeometryHaiku);
++    BView::DetachedFromWindow();
++}
++
++void BWebKitView::FrameResized(float width, float height) { BView::FrameResized(width, height); UpdateGeometry(); }
++void BWebKitView::FrameMoved(BPoint point) { BView::FrameMoved(point); UpdateGeometry(); }
++void BWebKitView::WindowActivated(bool active) { BView::WindowActivated(active); UpdateGeometry(); }
++void BWebKitView::MakeFocus(bool focused) { BView::MakeFocus(focused); UpdateGeometry(); }
++void BWebKitView::Show() { BView::Show(); UpdateGeometry(); }
++void BWebKitView::Hide() { BView::Hide(); UpdateGeometry(); }
++
++void BWebKitView::Draw(BRect update)
++{
++    UpdateGeometry();
++    auto frame = m_state->presenter.snapshot();
++    PushState();
++    SetDrawingMode(B_OP_COPY);
++    SetHighColor(255, 255, 255, 255);
++    FillRect(update);
++    if (frame) {
++        BRect destination(0, 0, frame->viewSize.width() - 1, frame->viewSize.height() - 1);
++        DrawBitmap(frame->image.get(), frame->image->Bounds(), destination);
++    }
++    PopState();
++    Sync();
++    if (frame && m_status == B_OK) {
++        BMessage message(viewPresentedHaiku);
++        message.AddUInt64("identifier", frame->identifier);
++        dispatchViewMessageHaiku(m_state, std::move(message));
++    }
++}
++
++void BWebKitView::SendInput(const BMessage& event, BPoint position)
++{
++    if (m_status != B_OK || !Window())
++        return;
++    UpdateGeometry();
++    BMessage message(viewInputHaiku);
++    BMessage native(event);
++    int32 modifierState;
++    if (native.FindInt32("modifiers", &modifierState) != B_OK)
++        native.AddInt32("modifiers", modifiers());
++    message.AddMessage("event", &native);
++    message.AddPoint("local", position);
++    message.AddPoint("screen", ConvertToScreen(position));
++    dispatchViewMessageHaiku(m_state, std::move(message));
++}
++
++void BWebKitView::KeyDown(const char* bytes, int32 length)
++{
++    if (Window() && Window()->CurrentMessage())
++        SendInput(*Window()->CurrentMessage());
++    else
++        BView::KeyDown(bytes, length);
++}
++
++void BWebKitView::KeyUp(const char* bytes, int32 length)
++{
++    if (Window() && Window()->CurrentMessage())
++        SendInput(*Window()->CurrentMessage());
++    else
++        BView::KeyUp(bytes, length);
++}
++
++void BWebKitView::MouseDown(BPoint point)
++{
++    MakeFocus();
++    SetMouseEventMask(B_POINTER_EVENTS, B_NO_POINTER_HISTORY);
++    if (Window() && Window()->CurrentMessage())
++        SendInput(*Window()->CurrentMessage(), point);
++}
++
++void BWebKitView::MouseUp(BPoint point)
++{
++    if (Window() && Window()->CurrentMessage())
++        SendInput(*Window()->CurrentMessage(), point);
++}
++
++void BWebKitView::MouseMoved(BPoint point, uint32, const BMessage*)
++{
++    if (Window() && Window()->CurrentMessage())
++        SendInput(*Window()->CurrentMessage(), point);
++}
++
++void BWebKitView::MessageReceived(BMessage* message)
++{
++    switch (message->what) {
++    case viewFrameHaiku:
++        Invalidate();
++        return;
++    case viewTooltipHaiku:
++        SetToolTip(message->FindString("text"));
++        return;
++    case viewCursorHaiku: {
++        BMessage archive;
++        if (message->FindMessage("cursor", &archive) == B_OK) {
++            auto cursor = std::make_unique<BCursor>(&archive);
++            if (cursor->InitCheck() == B_OK) {
++                m_cursor = std::move(cursor);
++                SetViewCursor(m_cursor.get());
++            }
++        }
++        return;
++    }
++    case B_MOUSE_WHEEL_CHANGED: {
++        BPoint point;
++        uint32 buttons;
++        GetMouse(&point, &buttons, false);
++        SendInput(*message, point);
++        return;
++    }
++    case B_UNMAPPED_KEY_DOWN:
++    case B_UNMAPPED_KEY_UP:
++        SendInput(*message);
++        return;
++    default:
++        BView::MessageReceived(message);
++    }
++}
+diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitView.h b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..0fd52b3cd9f3595c05b1166c6586613336dd522c
+--- /dev/null
++++ b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
+@@ -0,0 +1,58 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#pragma once
++
++#include "WKBase.h"
++#include <Messenger.h>
++#include <View.h>
++#include <memory>
++
++namespace WebKit { struct WebViewStateHaiku; }
++class BCursor;
++
++// Call on the BApplication thread before creating any modern web views.
++WK_EXPORT status_t BWebKitInitialize();
++
++enum : uint32 {
++    B_WEBKIT_STATE_CHANGED = 'wsta',
++    B_WEBKIT_PROCESS_EXITED = 'wpex'
++};
++
++// Navigation and input are queued to the application thread. Notifications are
++// sent to the supplied messenger with a "view" messenger and page state fields.
++class WK_EXPORT BWebKitView : public BView {
++public:
++    BWebKitView(BRect, const char* name, BMessenger notificationTarget,
++        uint32 resizingMode = B_FOLLOW_ALL);
++    ~BWebKitView() override;
++    status_t InitCheck() const;
++    void LoadURL(const char*);
++    void GoBack();
++    void GoForward();
++    void Reload();
++    void Stop();
++
++    void AttachedToWindow() override;
++    void DetachedFromWindow() override;
++    void FrameResized(float, float) override;
++    void FrameMoved(BPoint) override;
++    void WindowActivated(bool) override;
++    void MakeFocus(bool = true) override;
++    void Show() override;
++    void Hide() override;
++    void Draw(BRect) override;
++    void KeyDown(const char*, int32) override;
++    void KeyUp(const char*, int32) override;
++    void MouseDown(BPoint) override;
++    void MouseUp(BPoint) override;
++    void MouseMoved(BPoint, uint32, const BMessage*) override;
++    void MessageReceived(BMessage*) override;
++
++private:
++    void UpdateGeometry();
++    void SendInput(const BMessage&, BPoint = BPoint());
++    void SendCommand(uint32, const char* = nullptr);
++    std::shared_ptr<WebKit::WebViewStateHaiku> m_state;
++    std::unique_ptr<BCursor> m_cursor;
++    status_t m_status { B_NO_INIT };
++};
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebView.cpp b/Source/WebKit/UIProcess/API/haiku/WebView.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..b73a05ac7b911ad19905209832a02a8983a2ffca
@@ -24078,7 +24763,7 @@ index 0000000000000000000000000000000000000000..b12e656b2046acc0f1325d1b28ee8be2
 +#endif
 diff --git a/Source/WebKit/UIProcess/haiku/WebPageProxyHaiku.cpp b/Source/WebKit/UIProcess/haiku/WebPageProxyHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..118bc13f9b8859a5a6af9c0bf54f9da449628f39
+index 0000000000000000000000000000000000000000..e7c42ca1941d19f335fa815dda752aae69918ab6
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebPageProxyHaiku.cpp
 @@ -0,0 +1,67 @@
@@ -24112,7 +24797,7 @@ index 0000000000000000000000000000000000000000..118bc13f9b8859a5a6af9c0bf54f9da4
 +#include "WebPageProxy.h"
 +
 +#include <WebCore/NotImplemented.h>
-+#include <WebCore/RecentSearch.h>
++#include <WebCore/SearchPopupMenu.h>
 +#include <WebCore/UserAgent.h>
 +
 +#include <sys/utsname.h>
@@ -24214,10 +24899,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..77d2917c5b6aa9e116ca1d73fb384b6f87338028
+index 0000000000000000000000000000000000000000..70aa4c610358a30dde3afb430c85906c703acad9
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,275 @@
+@@ -0,0 +1,341 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -24246,259 +24931,325 @@ index 0000000000000000000000000000000000000000..77d2917c5b6aa9e116ca1d73fb384b6f
 +#include "config.h"
 +#include "WebViewPrivate.h"
 +
-+#include "NotImplemented.h"
-+#include "WebContext.h"
-+#include "WebPageGroup.h"
-+
-+using namespace WebCore;
++#include "APIPageConfiguration.h"
++#include "APINavigation.h"
++#include "DrawingAreaProxyHaiku.h"
++#include "NativeWebKeyboardEvent.h"
++#include "NativeWebMouseEvent.h"
++#include "NativeWebWheelEvent.h"
++#include "PageLoadState.h"
++#include "WKAPICast.h"
++#include "WKPage.h"
++#include "WebColorPicker.h"
++#include "WebContextMenuProxy.h"
++#include "WebDataListSuggestionsDropdown.h"
++#include "WebDateTimePicker.h"
++#include "WebKitView.h"
++#include "WebPopupMenuProxy.h"
++#include "WebPreferences.h"
++#include "WebProcessPool.h"
++#include <WebCore/Cursor.h>
++#include <WebCore/DOMPasteAccess.h>
++#include <WebCore/ResourceRequest.h>
++#include <wtf/RunLoop.h>
++#include <wtf/TZoneMallocInlines.h>
++#include <wtf/text/CString.h>
++#include <utility>
 +
 +namespace WebKit {
++using namespace WebCore;
 +
-+WebView::WebView(WebContext* context, WebPageGroup* pageGroup)
++WTF_MAKE_TZONE_ALLOCATED_IMPL(WebView);
++
++WebViewStateHaiku::~WebViewStateHaiku()
 +{
-+    WebPageConfiguration webPageConfiguration;
-+    webPageConfiguration.pageGroup = pageGroup;
++    ASSERT(!client);
++}
 +
-+    // Need to call createWebPage after other data members, specifically m_visible, are initialized.
-+    m_page = context->createWebPage(*this, WTF::move(webPageConfiguration));
++void dispatchViewMessageHaiku(std::shared_ptr<WebViewStateHaiku> state, BMessage&& message)
++{
++    RunLoop::mainSingleton().dispatch([state = std::move(state), message = std::move(message)] {
++        if (!state->closed) {
++            if (RefPtr client = state->client)
++                client->handleMessage(message);
++        }
++    });
++}
 +
-+    m_page->pageGroup().preferences().setAcceleratedCompositingEnabled(true);
-+    m_page->pageGroup().preferences().setForceCompositingMode(true);
++Ref<WebView> WebView::create(std::shared_ptr<WebViewStateHaiku> state)
++{
++    auto view = adoptRef(*new WebView(std::move(state)));
++    view->initialize();
++    return view;
++}
 +
-+    char* debugVisualsEnvironment = getenv("WEBKIT_SHOW_COMPOSITING_DEBUG_VISUALS");
-+    bool showDebugVisuals = debugVisualsEnvironment && !strcmp(debugVisualsEnvironment, "1");
-+    m_page->pageGroup().preferences().setCompositingBordersVisible(showDebugVisuals);
-+    m_page->pageGroup().preferences().setCompositingRepaintCountersVisible(showDebugVisuals);
-+    
-+    notImplemented();
++WebView::WebView(std::shared_ptr<WebViewStateHaiku> state)
++    : m_state(std::move(state))
++{
++}
++
++void WebView::initialize()
++{
++    ASSERT(RunLoop::isMain());
++    auto configuration = API::PageConfiguration::create();
++    configuration->preferences().setAcceleratedCompositingEnabled(false);
++    configuration->preferences().setForceCompositingMode(false);
++    configuration->preferences().setThreadedScrollingEnabled(false);
++    auto& pool = configuration->processPool();
++    m_page = pool.createWebPage(*this, WTF::move(configuration));
++    auto& pageConfiguration = m_page->configuration();
++    m_page->initializeWebPage(pageConfiguration.openedSite(), pageConfiguration.initialSandboxFlags(), pageConfiguration.initialReferrerPolicy());
++    m_page->setIntrinsicDeviceScaleFactor(1);
++    WKPageStateClientV0 observer { };
++    observer.base.clientInfo = this;
++    auto changed = [](const void* context) { static_cast<const WebView*>(context)->notifyState(); };
++    observer.didChangeIsLoading = changed;
++    observer.didChangeTitle = changed;
++    observer.didChangeActiveURL = changed;
++    observer.didChangeEstimatedProgress = changed;
++    observer.didChangeCanGoBack = changed;
++    observer.didChangeCanGoForward = changed;
++    observer.didChangeHasOnlySecureContent = changed;
++    observer.didChangeWebProcessIsResponsive = changed;
++    WKPageSetPageStateClient(toAPI(m_page.get()), &observer.base);
++    updateGeometry();
++    notifyState();
 +}
 +
 +WebView::~WebView()
 +{
-+    if (m_page->isClosed())
++    ASSERT(RunLoop::isMain());
++    ASSERT(!m_page);
++    if (m_presentationCallback)
++        std::exchange(m_presentationCallback, { })();
++}
++
++void WebView::close()
++{
++    ASSERT(RunLoop::isMain());
++    Ref protectedThis { *this };
++    m_state->presenter.close();
++    if (m_presentationCallback)
++        std::exchange(m_presentationCallback, { })();
++    if (m_page) {
++        WKPageSetPageStateClient(toAPI(m_page.get()), nullptr);
++        m_page->close();
++        m_page = nullptr;
++    }
++    m_undoController.clearAllEditCommands();
++}
++
++WebViewGeometryHaiku WebView::geometry() const
++{
++    std::lock_guard guard(m_state->mutex);
++    return m_state->geometry;
++}
++
++void WebView::sendToView(BMessage& message) const
++{
++    BMessenger view;
++    {
++        std::lock_guard guard(m_state->mutex);
++        view = m_state->view;
++    }
++    view.SendMessage(&message, static_cast<BHandler*>(nullptr), 0);
++}
++
++void WebView::notifyState(uint32_t what) const
++{
++    if (!m_page || m_state->closed)
 +        return;
-+
-+    m_page->close();
++    const auto& state = m_page->pageLoadState();
++    BMessage message(what);
++    message.AddString("url", state.activeURL().string().utf8().legacyCStringPointer());
++    message.AddString("title", state.title().utf8().legacyCStringPointer());
++    message.AddBool("loading", state.isLoading());
++    message.AddDouble("progress", state.estimatedProgress());
++    message.AddBool("canGoBack", state.canGoBack());
++    message.AddBool("canGoForward", state.canGoForward());
++    {
++        std::lock_guard guard(m_state->mutex);
++        message.AddMessenger("view", m_state->view);
++    }
++    m_state->target.SendMessage(&message, static_cast<BHandler*>(nullptr), 0);
 +}
 +
-+PassRefPtr<WebView> WebView::create(WebContext* context, WebPageGroup* pageGroup)
++void WebView::handleMessage(const BMessage& message)
 +{
-+    return adoptRef(new WebView(context, pageGroup));
++    if (!m_page)
++        return;
++    switch (message.what) {
++    case viewLoadHaiku: {
++        URL url { String::fromUTF8(message.FindString("url")) };
++        if (url.isValid())
++            m_page->loadRequest(ResourceRequest(WTF::move(url)));
++        break;
++    }
++    case viewBackHaiku: m_page->goBack(); break;
++    case viewForwardHaiku: m_page->goForward(); break;
++    case viewReloadHaiku: m_page->reload({ }); break;
++    case viewStopHaiku: m_page->stopLoading(); break;
++    case viewGeometryHaiku: updateGeometry(); break;
++    case viewPresentedHaiku: {
++        uint64 identifier = 0;
++        if (message.FindUInt64("identifier", &identifier) == B_OK)
++            didPresent(identifier);
++        break;
++    }
++    case viewInputHaiku: {
++        BMessage native;
++        if (message.FindMessage("event", &native) != B_OK)
++            break;
++        BPoint local = message.FindPoint("local"), screen = message.FindPoint("screen");
++        if (auto key = NativeWebKeyboardEvent::create(native))
++            m_page->handleKeyboardEvent(key.releaseNonNull());
++        else if (auto wheel = NativeWebWheelEvent::create(native, local, screen))
++            m_page->handleNativeWheelEvent(wheel.releaseNonNull());
++        else if (auto mouse = NativeWebMouseEvent::create(native, local, screen, m_buttons)) {
++            m_buttons = mouse->buttons();
++            m_page->handleMouseEvent(mouse.releaseNonNull());
++        }
++        break;
++    }
++    default: break;
++    }
 +}
 +
-+void WebView::didChangeContentSize(WebCore::IntSize const&)
++Ref<DrawingAreaProxy> WebView::createDrawingAreaProxy(WebProcessProxy& process)
 +{
-+    notImplemented();
++    return DrawingAreaProxyHaiku::create(*m_page, process);
 +}
 +
-+std::unique_ptr<WebKit::DrawingAreaProxy> WebView::createDrawingAreaProxy()
++void WebView::updateGeometry()
 +{
-+    notImplemented();
++    if (!m_page)
++        return;
++    auto current = geometry();
++    if (auto* drawingArea = m_page->drawingArea())
++        drawingArea->setSize(current.size);
++    m_page->activityStateDidChange({ ActivityState::IsFocused, ActivityState::WindowIsActive,
++        ActivityState::IsVisible, ActivityState::IsInWindow });
++    if (!current.visible && m_presentationCallback)
++        std::exchange(m_presentationCallback, { })();
 +}
 +
-+void WebView::setViewNeedsDisplay(WebCore::IntRect const&)
++void WebView::setViewNeedsDisplay(const Region&)
 +{
-+    notImplemented();
++    BMessage message(viewFrameHaiku);
++    sendToView(message);
 +}
 +
-+void WebView::displayView()
++void WebView::presentBitmapHaiku(Ref<ShareableBitmap>&& bitmap, const IntSize& size, float scale, CompletionHandler<void()>&& callback)
 +{
-+    notImplemented();
++    if (m_presentationCallback)
++        std::exchange(m_presentationCallback, { })();
++    auto current = geometry();
++    auto identifier = ++m_presentationIdentifier;
++    if (m_state->closed || !current.visible || !m_state->presenter.publish(identifier, bitmap, size, scale)) {
++        callback();
++        return;
++    }
++    m_presentationCallback = WTF::move(callback);
++    BMessenger view;
++    {
++        std::lock_guard guard(m_state->mutex);
++        view = m_state->view;
++    }
++    BMessage message(viewFrameHaiku);
++    if (view.SendMessage(&message, static_cast<BHandler*>(nullptr), 0) != B_OK)
++        std::exchange(m_presentationCallback, { })();
 +}
 +
-+void WebView::scrollView(WebCore::IntRect const&, WebCore::IntSize const&)
++void WebView::didPresent(uint64_t identifier)
 +{
-+    notImplemented();
-+}
-+
-+void WebView::requestScroll(WebCore::FloatPoint const&, bool)
-+{
-+    notImplemented();
-+}
-+
-+WebCore::IntSize WebView::viewSize()
-+{
-+    notImplemented();
-+}
-+
-+bool WebView::isViewWindowActive()
-+{
-+    notImplemented();
-+    return true;
-+}
-+
-+bool WebView::isViewFocused()
-+{
-+    notImplemented();
-+    return true;
-+}
-+
-+bool WebView::isViewVisible()
-+{
-+    notImplemented();
-+    return true;
++    if (identifier == m_presentationIdentifier && m_presentationCallback)
++        std::exchange(m_presentationCallback, { })();
 +}
 +
 +void WebView::processDidExit()
 +{
-+    notImplemented();
++    m_undoController.clearAllEditCommands();
++    if (m_presentationCallback)
++        std::exchange(m_presentationCallback, { })();
++    notifyState(B_WEBKIT_PROCESS_EXITED);
 +}
 +
 +void WebView::didRelaunchProcess()
 +{
-+    notImplemented();
++    updateGeometry();
++    notifyState();
 +}
 +
 +void WebView::pageClosed()
 +{
-+    notImplemented();
++    if (m_presentationCallback)
++        std::exchange(m_presentationCallback, { })();
 +}
 +
-+void WebView::preferencesDidChange()
++void WebView::toolTipChanged(const String&, const String& text)
 +{
-+    notImplemented();
++    BMessage message(viewTooltipHaiku);
++    message.AddString("text", text.utf8().legacyCStringPointer());
++    sendToView(message);
 +}
 +
-+void WebView::toolTipChanged(WTF::String const&, WTF::String const&)
++void WebView::setCursor(const Cursor& cursor)
 +{
-+    notImplemented();
++    if (auto* native = cursor.platformCursor()) {
++        BMessage archive;
++        if (native->Archive(&archive) == B_OK) {
++            BMessage message(viewCursorHaiku);
++            message.AddMessage("cursor", &archive);
++            sendToView(message);
++        }
++    }
 +}
 +
-+void WebView::didCommitLoadForMainFrame(WTF::String const&, bool)
++void WebView::registerEditCommand(Ref<WebEditCommandProxy>&& command, UndoOrRedo kind) { m_undoController.registerEditCommand(WTF::move(command), kind); }
++void WebView::clearAllEditCommands() { m_undoController.clearAllEditCommands(); }
++bool WebView::canUndoRedo(UndoOrRedo kind) { return m_undoController.canUndoRedo(kind); }
++void WebView::executeUndoRedo(UndoOrRedo kind) { m_undoController.executeUndoRedo(kind); }
++IntPoint WebView::screenToRootView(const IntPoint& point) { return point - toIntSize(geometry().screenOrigin); }
++IntPoint WebView::rootViewToScreen(const IntPoint& point) { return point + toIntSize(geometry().screenOrigin); }
++IntRect WebView::rootViewToScreen(const IntRect& rect) { auto result = rect; result.move(toIntSize(geometry().screenOrigin)); return result; }
++
++RefPtr<WebPopupMenuProxy> WebView::createPopupMenuProxy(WebPageProxy&) { return nullptr; }
++RefPtr<WebColorPicker> WebView::createColorPicker(WebPageProxy&, const Color&, const IntRect&, ColorControlSupportsAlpha, Vector<Color>&&, std::optional<FrameIdentifier>) { return nullptr; }
++RefPtr<WebDataListSuggestionsDropdown> WebView::createDataListSuggestionsDropdown(WebPageProxy&) { return nullptr; }
++RefPtr<WebDateTimePicker> WebView::createDateTimePicker(WebPageProxy&) { return nullptr; }
++
++#if ENABLE(CONTEXT_MENUS)
++class PendingContextMenuHaiku final : public WebContextMenuProxy {
++    WTF_MAKE_TZONE_ALLOCATED_INLINE(PendingContextMenuHaiku);
++public:
++    PendingContextMenuHaiku(WebPageProxy& page, FrameInfoData&& frame, ContextMenuContextData&& context, const UserData& data)
++        : WebContextMenuProxy(page, WTF::move(frame), WTF::move(context), data) { }
++private:
++    void showContextMenuWithItems(Vector<Ref<WebContextMenuItem>>&&) override
++    {
++        if (RefPtr page = this->page())
++            page->didDismissContextMenu();
++    }
++};
++
++Ref<WebContextMenuProxy> WebView::createContextMenuProxy(WebPageProxy& page, FrameInfoData&& frame, ContextMenuContextData&& context, const UserData& data)
 +{
-+    notImplemented();
++    return adoptRef(*new PendingContextMenuHaiku(page, WTF::move(frame), WTF::move(context), data));
 +}
++#endif
 +
-+void WebView::setCursor(WebCore::Cursor const&)
++void WebView::requestDOMPasteAccess(DOMPasteAccessCategory, DOMPasteRequiresInteraction, FrameIdentifier, const IntRect&, const String&, CompletionHandler<void(DOMPasteAccessResponse)>&& callback)
 +{
-+    notImplemented();
++    callback(DOMPasteAccessResponse::DeniedForGesture);
 +}
 +
-+void WebView::setCursorHiddenUntilMouseMoves(bool)
-+{
-+    notImplemented();
-+}
-+
-+void WebView::didChangeViewportProperties(WebCore::ViewportAttributes const&)
-+{
-+    notImplemented();
-+}
-+
-+bool WebView::isViewInWindow()
-+{
-+    notImplemented();
-+    return true;
-+}
-+
-+void WebView::registerEditCommand(WTF::PassRefPtr<WebKit::WebEditCommandProxy>, WebKit::WebPageProxy::UndoOrRedo)
-+{
-+    notImplemented();
-+}
-+
-+void WebView::clearAllEditCommands()
-+{
-+    notImplemented();
-+}
-+
-+bool WebView::canUndoRedo(WebKit::WebPageProxy::UndoOrRedo)
-+{
-+    notImplemented();
-+}
-+
-+void WebView::executeUndoRedo(WebKit::WebPageProxy::UndoOrRedo)
-+{
-+    notImplemented();
-+}
-+
-+WebCore::FloatRect WebView::convertToDeviceSpace(WebCore::FloatRect const& rect)
-+{
-+    notImplemented();
-+    return rect;
-+}
-+
-+WebCore::IntPoint WebView::screenToRootView(WebCore::IntPoint const&)
-+{
-+    notImplemented();
-+}
-+
-+WebCore::IntRect WebView::rootViewToScreen(WebCore::IntRect const&)
-+{
-+    notImplemented();
-+}
-+
-+WebCore::FloatRect WebView::convertToUserSpace(WebCore::FloatRect const&)
-+{
-+    notImplemented();
-+}
-+
-+void WebView::updateTextInputState()
-+{
-+    notImplemented();
-+}
-+
-+void WebView::handleDownloadRequest(WebKit::DownloadProxy*)
-+{
-+    notImplemented();
-+}
-+
-+void WebView::doneWithKeyEvent(WebKit::NativeWebKeyboardEvent const&, bool)
-+{
-+    notImplemented();
-+}
-+
-+WTF::PassRefPtr<WebKit::WebPopupMenuProxy> WebView::createPopupMenuProxy(WebKit::WebPageProxy*)
-+{
-+    notImplemented();
-+}
-+
-+WTF::PassRefPtr<WebKit::WebContextMenuProxy> WebView::createContextMenuProxy(WebKit::WebPageProxy*)
-+{
-+    notImplemented();
-+}
-+
-+void WebView::setFindIndicator(WTF::PassRefPtr<WebKit::FindIndicator>, bool, bool)
-+{
-+    notImplemented();
-+}
-+
-+void WebView::enterAcceleratedCompositingMode(WebKit::LayerTreeContext const&)
-+{
-+    notImplemented();
-+}
-+
-+void WebView::exitAcceleratedCompositingMode()
-+{
-+    notImplemented();
-+}
-+
-+void WebView::updateAcceleratedCompositingMode(WebKit::LayerTreeContext const&)
-+{
-+    notImplemented();
-+}
-+
-+void WebView::didFinishLoadingDataForCustomContentProvider(WTF::String const&, IPC::DataReference const&)
-+{
-+    notImplemented();
-+}
-+
-+void WebView::didFinishLoadForMainFrame()
-+{
-+    notImplemented();
-+}
-+
-+void WebView::didFirstVisuallyNonEmptyLayoutForMainFrame()
-+{
-+    notImplemented();
-+}
-+
-+
-+}
++} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewPrivate.h b/Source/WebKit/UIProcess/haiku/WebViewPrivate.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..056454690762a0f16226f7dc6d0f5be4deac3e99
+index 0000000000000000000000000000000000000000..2cdcb470d8fc0e96b7b485eaaba1ab7498158430
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewPrivate.h
-@@ -0,0 +1,122 @@
+@@ -0,0 +1,121 @@
 +/*
 +   Copyright (C) 2014 Haiku, inc.
 +
@@ -24518,109 +25269,165 @@ index 0000000000000000000000000000000000000000..056454690762a0f16226f7dc6d0f5be4
 +    Boston, MA 02110-1301, USA.
 +*/
 +
++#pragma once
++
++#include "APIObject.h"
++#include "DefaultUndoController.h"
 +#include "PageClient.h"
++#include "WebKitView.h"
++#include "WebViewStateHaiku.h"
++#include <wtf/CompletionHandler.h>
 +
 +namespace WebKit {
 +
-+// TODO move to own file? (should not be part of the API?)
-+class WebView : public API::ObjectImpl<API::Object::Type::View>, public PageClient
-+{
++class WebView final : public API::ObjectImpl<API::Object::Type::View>, public PageClient {
++    WTF_MAKE_TZONE_ALLOCATED(WebView);
 +public:
-+    static PassRefPtr<WebView> create(WebContext*, WebPageGroup*);
-+    ~WebView();
++    static Ref<WebView> create(std::shared_ptr<WebViewStateHaiku>);
++    ~WebView() override;
++    void ref() const { API::Object::ref(); }
++    void deref() const { API::Object::deref(); }
++    void close();
++    void handleMessage(const BMessage&);
++    WebPageProxy* page() const { return m_page.get(); }
++    void notifyState(uint32_t = B_WEBKIT_STATE_CHANGED) const;
 +
-+    WKPageRef pageRef() const { return toAPI(m_page.get()); }
++private:
++    explicit WebView(std::shared_ptr<WebViewStateHaiku>);
++    void initialize();
++    WebViewGeometryHaiku geometry() const;
++    void sendToView(BMessage&) const;
++    void updateGeometry();
++    void didPresent(uint64_t);
 +
-+    void didChangeContentSize(const WebCore::IntSize&);
-+
-+protected:
-+    std::unique_ptr<DrawingAreaProxy> createDrawingAreaProxy() override;
-+    void setViewNeedsDisplay(const WebCore::IntRect&) override;
-+    void displayView() override;
-+    bool canScrollView() override { return false; }
-+    void scrollView(const WebCore::IntRect&, const WebCore::IntSize&) override;
-+    void requestScroll(const WebCore::FloatPoint&, bool) override;
-+    WebCore::IntSize viewSize() override;
-+
-+    bool isViewWindowActive() override;
-+    bool isViewFocused() override;
-+    bool isViewVisible() override;
-+    bool isViewInWindow() override;
-+
++    Ref<DrawingAreaProxy> createDrawingAreaProxy(WebProcessProxy&) override;
++    void setViewNeedsDisplay(const WebCore::Region&) override;
++    void presentBitmapHaiku(Ref<WebCore::ShareableBitmap>&&, const WebCore::IntSize&, float, CompletionHandler<void()>&&) override;
++    void requestScroll(const WebCore::FloatPoint&, const WebCore::IntPoint&, WebCore::ScrollIsAnimated, WebCore::InterruptScrollAnimation) override { }
++    WebCore::FloatPoint viewScrollPosition() override { return { }; }
++    WebCore::IntSize viewSize() override { return geometry().size; }
++    bool isViewWindowActive() override { return geometry().active; }
++    bool isViewFocused() override { return geometry().focused; }
++    bool isActiveViewVisible() override { return geometry().visible; }
++    bool isViewInWindow() override { return geometry().attached; }
 +    void processDidExit() override;
 +    void didRelaunchProcess() override;
 +    void pageClosed() override;
-+
-+    void preferencesDidChange() override;
-+
++    void preferencesDidChange() override { }
 +    void toolTipChanged(const String&, const String&) override;
-+
-+    void didCommitLoadForMainFrame(const String& mimeType, bool useCustomContentProvider) override;
-+
 +    void setCursor(const WebCore::Cursor&) override;
-+    void setCursorHiddenUntilMouseMoves(bool) override;
-+
-+    void didChangeViewportProperties(const WebCore::ViewportAttributes&) override;
-+
-+    void registerEditCommand(PassRefPtr<WebEditCommandProxy>, WebPageProxy::UndoOrRedo) override;
++    void setCursorHiddenUntilMouseMoves(bool) override { }
++    void registerEditCommand(Ref<WebEditCommandProxy>&&, UndoOrRedo) override;
 +    void clearAllEditCommands() override;
-+    bool canUndoRedo(WebPageProxy::UndoOrRedo) override;
-+    void executeUndoRedo(WebPageProxy::UndoOrRedo) override;
-+
-+    WebCore::FloatRect convertToDeviceSpace(const WebCore::FloatRect&) override;
-+    WebCore::FloatRect convertToUserSpace(const WebCore::FloatRect&) override;
++    bool canUndoRedo(UndoOrRedo) override;
++    void executeUndoRedo(UndoOrRedo) override;
++    void wheelEventWasNotHandledByWebCore(const NativeWebWheelEvent&) override { }
++    WebCore::FloatRect convertToDeviceSpace(const WebCore::FloatRect& rect) override { return rect; }
++    WebCore::FloatRect convertToUserSpace(const WebCore::FloatRect& rect) override { return rect; }
 +    WebCore::IntPoint screenToRootView(const WebCore::IntPoint&) override;
++    WebCore::IntPoint rootViewToScreen(const WebCore::IntPoint&) override;
 +    WebCore::IntRect rootViewToScreen(const WebCore::IntRect&) override;
-+
-+    void updateTextInputState() override;
-+    void handleDownloadRequest(DownloadProxy*) override;
-+
-+    void doneWithKeyEvent(const NativeWebKeyboardEvent&, bool) override;
-+#if ENABLE(TOUCH_EVENTS)
-+    void doneWithTouchEvent(const NativeWebTouchEvent&, bool wasEventHandled) override;
++    WebCore::IntPoint accessibilityScreenToRootView(const WebCore::IntPoint& point) override { return screenToRootView(point); }
++    WebCore::IntRect rootViewToAccessibilityScreen(const WebCore::IntRect& rect) override { return rootViewToScreen(rect); }
++    void doneWithKeyEvent(const NativeWebKeyboardEvent&, bool) override { }
++    RefPtr<WebPopupMenuProxy> createPopupMenuProxy(WebPageProxy&) override;
++#if ENABLE(CONTEXT_MENUS)
++    Ref<WebContextMenuProxy> createContextMenuProxy(WebPageProxy&, FrameInfoData&&, ContextMenuContextData&&, const UserData&) override;
 +#endif
++    RefPtr<WebColorPicker> createColorPicker(WebPageProxy&, const WebCore::Color&, const WebCore::IntRect&, ColorControlSupportsAlpha, Vector<WebCore::Color>&&, std::optional<WebCore::FrameIdentifier>) override;
++    RefPtr<WebDataListSuggestionsDropdown> createDataListSuggestionsDropdown(WebPageProxy&) override;
++    RefPtr<WebDateTimePicker> createDateTimePicker(WebPageProxy&) override;
++    void enterAcceleratedCompositingMode(const LayerTreeContext&) override { }
++    void exitAcceleratedCompositingMode() override { }
++    void updateAcceleratedCompositingMode(const LayerTreeContext&) override { }
++    void didChangeContentSize(const WebCore::IntSize&) override { }
++    void didCommitLoadForMainFrame(const String&, bool) override { notifyState(); }
++    void didFinishLoadingDataForCustomContentProvider(const String&, std::span<const uint8_t>) override { }
++    void navigationGestureDidBegin() override { }
++    void navigationGestureWillEnd(bool, WebBackForwardListItem&) override { }
++    void navigationGestureDidEnd(bool, WebBackForwardListItem&) override { }
++    void navigationGestureDidEnd() override { }
++    void willRecordNavigationSnapshot(WebBackForwardListItem&) override { }
++    void didRemoveNavigationGestureSnapshot() override { }
++    void didFirstVisuallyNonEmptyLayoutForMainFrame() override { notifyState(); }
++    void didFinishNavigation(API::Navigation*) override { notifyState(); }
++    void didFailNavigation(API::Navigation*) override { notifyState(); }
++    void didSameDocumentNavigationForMainFrame(SameDocumentNavigationType) override { notifyState(); }
++    void didChangeBackgroundColor() override { }
++    void isPlayingAudioWillChange() override { }
++    void isPlayingAudioDidChange() override { notifyState(); }
++    void refView() override { ref(); }
++    void derefView() override { deref(); }
++    void didRestoreScrollPosition() override { }
++    WebCore::UserInterfaceLayoutDirection userInterfaceLayoutDirection() override { return WebCore::UserInterfaceLayoutDirection::LTR; }
++    void requestDOMPasteAccess(WebCore::DOMPasteAccessCategory, WebCore::DOMPasteRequiresInteraction, WebCore::FrameIdentifier, const WebCore::IntRect&, const String&, CompletionHandler<void(WebCore::DOMPasteAccessResponse)>&&) override;
 +
-+    PassRefPtr<WebPopupMenuProxy> createPopupMenuProxy(WebPageProxy*) override;
-+    PassRefPtr<WebContextMenuProxy> createContextMenuProxy(WebPageProxy*) override;
-+#if ENABLE(INPUT_TYPE_COLOR)
-+    PassRefPtr<WebColorPicker> createColorPicker(WebPageProxy*, const WebCore::Color& initialColor, const WebCore::IntRect&) override;
-+#endif
-+
-+    void setFindIndicator(PassRefPtr<FindIndicator>, bool, bool) override;
-+
-+    void enterAcceleratedCompositingMode(const LayerTreeContext&) override;
-+    void exitAcceleratedCompositingMode() override;
-+    void updateAcceleratedCompositingMode(const LayerTreeContext&) override;
-+
-+#if ENABLE(FULLSCREEN_API)
-+    WebFullScreenManagerProxyClient& fullScreenManagerProxyClient() override;
-+
-+    // WebFullScreenManagerProxyClient
-+    virtual void closeFullScreenManager() override { }
-+    virtual bool isFullScreen() override { return false; }
-+    virtual void enterFullScreen() override { }
-+    virtual void exitFullScreen() override { }
-+    virtual void beganEnterFullScreen(const WebCore::IntRect&, const WebCore::IntRect&) override { }
-+    virtual void beganExitFullScreen(const WebCore::IntRect&, const WebCore::IntRect&) override { }
-+#endif
-+    virtual void navigationGestureDidBegin() override { };
-+    virtual void navigationGestureWillEnd(bool, WebBackForwardListItem&) override { };
-+    virtual void navigationGestureDidEnd(bool, WebBackForwardListItem&) override { };
-+    virtual void willRecordNavigationSnapshot(WebBackForwardListItem&) override { };
-+
-+private:
-+    WebView(WebContext* context, WebPageGroup* pageGroup);
-+
-+    void didFinishLoadingDataForCustomContentProvider(const String& suggestedFilename, const IPC::DataReference&) override;
-+    void didFinishLoadForMainFrame() override;
-+    void didFirstVisuallyNonEmptyLayoutForMainFrame() override;
-+
++    const std::shared_ptr<WebViewStateHaiku> m_state;
 +    RefPtr<WebPageProxy> m_page;
++    DefaultUndoController m_undoController;
++    CompletionHandler<void()> m_presentationCallback;
++    uint64_t m_presentationIdentifier { 0 };
++    uint32_t m_buttons { 0 };
 +};
 +
-+}
++} // namespace WebKit
+diff --git a/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..e9805f5f6165d17442b959ecb79b98798d3eacc1
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
+@@ -0,0 +1,51 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
++#pragma once
 +
++#include "BitmapPresenterHaiku.h"
++#include <Messenger.h>
++#include <WebCore/IntPoint.h>
++#include <atomic>
++#include <memory>
++#include <mutex>
++#include <wtf/RefPtr.h>
++
++namespace WebKit {
++
++class WebView;
++
++enum : uint32_t {
++    viewFrameHaiku = 'wvfr', viewGeometryHaiku = 'wvge', viewInputHaiku = 'wvin',
++    viewLoadHaiku = 'wvld', viewBackHaiku = 'wvba', viewForwardHaiku = 'wvfo',
++    viewReloadHaiku = 'wvrl', viewStopHaiku = 'wvst', viewPresentedHaiku = 'wvpr',
++    viewCursorHaiku = 'wvcu', viewTooltipHaiku = 'wvtt'
++};
++
++struct WebViewGeometryHaiku {
++    WebCore::IntSize size;
++    WebCore::IntPoint screenOrigin;
++    bool attached { false };
++    bool visible { false };
++    bool focused { false };
++    bool active { false };
++    bool operator==(const WebViewGeometryHaiku&) const = default;
++};
++
++struct WebViewStateHaiku {
++    explicit WebViewStateHaiku(BMessenger target) : target(target) { }
++    ~WebViewStateHaiku();
++
++    std::mutex mutex;
++    WebViewGeometryHaiku geometry;
++    BMessenger view;
++    const BMessenger target;
++    BitmapPresenterHaiku presenter;
++    std::atomic<bool> closed { false };
++    // This reference is read, assigned and released only on the WebKit main
++    // thread. Native windows retain the state without touching the client.
++    RefPtr<WebView> client;
++};
++
++void dispatchViewMessageHaiku(std::shared_ptr<WebViewStateHaiku>, BMessage&&);
++
++} // namespace WebKit
 diff --git a/Source/WebKit/WebProcess/Cookies/haiku/WebCookieManagerHaiku.cpp b/Source/WebKit/WebProcess/Cookies/haiku/WebCookieManagerHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..a416ba9f74355c9c3c43af38b518bf6d8f1db9d1
@@ -25047,6 +25854,19 @@ index e6fbb8c1896bf99dc0f7322868052566b8629598..d84e2ecbc70d219a63eb074c1fd4b1c9
  #if USE(COORDINATED_GRAPHICS) || USE(TEXTURE_MAPPER)
      UpdateGeometry(WebCore::IntSize size) -> ()
  #endif
+diff --git a/Source/WebKit/WebProcess/WebPage/WebPage.cpp b/Source/WebKit/WebProcess/WebPage/WebPage.cpp
+index 48f9e1c5cff34a053ed104c3d2cfd3ac6e0a2bdc..a95170323c3bf858c0fe0610637c5bb016c7a40e 100644
+--- a/Source/WebKit/WebProcess/WebPage/WebPage.cpp
++++ b/Source/WebKit/WebProcess/WebPage/WebPage.cpp
+@@ -5406,7 +5406,7 @@ void WebPage::updatePreferences(const WebPreferencesStore& store)
+ 
+     updateSettingsGenerated(store, settings);
+ 
+-#if !PLATFORM(GTK) && !PLATFORM(WIN) && !PLATFORM(PLAYSTATION) && !PLATFORM(WPE)
++#if !PLATFORM(GTK) && !PLATFORM(WIN) && !PLATFORM(PLAYSTATION) && !PLATFORM(WPE) && !PLATFORM(HAIKU)
+     if (!settings.acceleratedCompositingEnabled()) {
+         WEBPAGE_RELEASE_LOG(Layers, "updatePreferences: acceleratedCompositingEnabled setting was false. WebKit cannot function in this mode; changing setting to true");
+         settings.setAcceleratedCompositingEnabled(true);
 diff --git a/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.cpp b/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..f835272faed13a2dd0b18978534ddf1b7e979e34
@@ -25516,7 +26336,7 @@ index 0000000000000000000000000000000000000000..6549d7f5c9eac54d993817a051d3965d
 +resource app_flags B_MULTIPLE_LAUNCH | B_BACKGROUND_APP;
 diff --git a/Source/WebKit/WebProcess/haiku/WebProcessHaiku.cpp b/Source/WebKit/WebProcess/haiku/WebProcessHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..fdfe5c82e968f5b6768974856f9b42cc1f2cb371
+index 0000000000000000000000000000000000000000..cb755ba75b2a11cdec2f34533f2212aa40874212
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/haiku/WebProcessHaiku.cpp
 @@ -0,0 +1,47 @@
@@ -25548,7 +26368,7 @@ index 0000000000000000000000000000000000000000..fdfe5c82e968f5b6768974856f9b42cc
 +#include "config.h"
 +#include "WebProcess.h"
 +
-+#include "NotImplemented.h"
++#include <WebCore/NotImplemented.h>
 +
 +namespace WebKit {
 +
@@ -49602,11 +50422,13 @@ index 0000000000000000000000000000000000000000..6d0e899a5ed17ba506377f0eea3367ac
 +} // namespace ImageDiff
 diff --git a/Tools/PlatformHaiku.cmake b/Tools/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..03139fb8880683ef7dc17a4cf09aa8dea61d2563
+index 0000000000000000000000000000000000000000..e4030f399449f147afdb4e62d4ba0408e6678658
 --- /dev/null
 +++ b/Tools/PlatformHaiku.cmake
-@@ -0,0 +1 @@
-+add_subdirectory(HaikuLauncher)
+@@ -0,0 +1,3 @@
++if (ENABLE_WEBKIT_LEGACY)
++    add_subdirectory(HaikuLauncher)
++endif ()
 diff --git a/Tools/Scripts/build-dumprendertree b/Tools/Scripts/build-dumprendertree
 index 58a33e1e96ff591c1e4da80542eb7fb4b9540454..3acda394a3c8c777b9d5e50606c184a80f225113 100755
 --- a/Tools/Scripts/build-dumprendertree

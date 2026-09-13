@@ -1,4 +1,4 @@
-# Development verification — September 13, 2026
+# Development verification — September 14, 2026
 
 The original full-browser objective is **not complete**. Summit now builds and
 runs with the pinned latest upstream WebKit in Haiku. Extensions and the modern
@@ -316,13 +316,40 @@ oversized backing objects before mapping. Run
 shared pixels into immutable window snapshots. Concurrent reads and frame
 replacement preserve matching pixels and frame identifiers; outstanding
 snapshots survive view closure, which rejects later publication. This helper
-is ready for the native view integration.
+is integrated into the native modern view bridge.
 
-The modern Haiku drawing-area implementation and IPC definitions are staged for
-native compilation. They send complete software-rendered frames, associate them
-with viewport generations and wait for presentation acknowledgment before sending
-another frame. The message generator accepts the new handlers. Native embedding,
-full compilation and process-to-view presentation are not yet verified.
+Both modern Haiku drawing areas now compile with their generated IPC handlers.
+They send complete software-rendered frames, associate them with viewport
+generations and wait for presentation acknowledgment before sending another
+frame. The native `BWebKitView` and its current `PageClient` controller also
+compile. The bridge queues WebKit operations on the application thread and
+gives window drawing immutable native snapshots; close, hidden-view and failed
+delivery paths complete outstanding frame acknowledgments. A common preference
+override was corrected so Haiku can retain software compositing. Full linking
+and process-to-view presentation are not yet verified.
+
+`tests/ModernBrowser.cpp` compiles natively against the new public API. Its
+pending runtime check requires the real HTTP fixture to finish and its CSS
+background to appear in a captured native window. The preview bundle helper
+requires both completed process targets, a matching source patch and unchanged
+input hashes, then preserves private WebKit/JSC/ICU libraries with relative
+runtime paths. Native compilation, missing-engine refusal and build-lock refusal
+were checked; `.vm/modern-preview-compile.json` records the compilation. Run
+`tools/build-modern-browser-in-vm.sh --bundle` after both processes link.
+
+Native font reconstruction now passes **39 checks** against the production
+WebCore sources. Installed fonts preserve native style, size, orientation and
+text metrics across IPC; malformed metadata is rejected. Downloaded faces keep
+their original bytes and CSS metrics overrides through reconstruction, and
+remain usable until the final owning reference is released. Haiku rejects
+duplicate private family/style names, so the port now uses WebKit's existing
+OpenType name rewriter to assign each native load a unique identity. Tests cover
+independent repeated loads, TrueType, CFF, unaligned trailing data and the
+existing first-face behavior for font collections. Selecting a collection face
+by its URL fragment remains unsupported. Run `tools/test-engine-fonts-in-vm.sh`;
+log: `.vm/native-font-tests-collections.log`. These checks include real native
+font loading and metrics; they do not yet establish font IPC in a running
+modern browser.
 
 Native keyboard, mouse and wheel translation passes **38 checks** through the
 production WebKit event classes and WebCore converters. Events own their native
@@ -343,8 +370,11 @@ retains timestamps for identical files and gives changed content a current guest
 timestamp. This prevents generated IPC headers from remaining stale when host
 edits predate a build that still used the old source. The previous affected
 inputs were explicitly refreshed. Host checks cover changed/identical content,
-file modes, removal of managed files and archive path boundaries; the next
-native build verifies message regeneration.
+file modes, removal of managed files and archive path boundaries. Subsequent
+native builds regenerated the IPC messages and compiled the drawing-area and
+view adapters. Fixes for the collected font-serialization, generic-platform
+include and native cache-filesystem errors are now prepared for the next full
+build. The font argument coders also pass the upstream serializer generator.
 
 All 32 Haiku legacy embedding source files pass the native compiler's syntax checks.
 The initial pass found five failing files caused by two upstream API changes:

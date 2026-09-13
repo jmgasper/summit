@@ -1,0 +1,248 @@
+#!/usr/bin/env python3
+"""Build a native preview, then freeze a completed modern WebKit build.
+
+Run through build-modern-browser-in-vm.sh, which owns both engine and ICU locks.
+--compile-only needs only the staged public headers and never loads WebKit.
+"""
+import argparse
+import datetime
+import hashlib
+import json
+import os
+import pathlib
+import re
+import shutil
+import subprocess
+import tempfile
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+SOURCE = pathlib.Path('/boot/home/summit-webkit')
+ENGINE = SOURCE / 'WebKitBuild/Modern'
+ICU = pathlib.Path('/boot/home/summit-deps/icu78')
+BUILD = pathlib.Path('/boot/home/summit/build-modern-preview')
+NAME = 'SummitModernPreview'
+
+
+def digest(path):
+    value = hashlib.sha256()
+    with path.open('rb') as source:
+        for data in iter(lambda: source.read(1024 * 1024), b''):
+            value.update(data)
+    return value.hexdigest()
+
+
+def run(arguments):
+    return subprocess.run([str(argument) for argument in arguments], check=True,
+                          capture_output=True, text=True).stdout
+
+
+def dynamic(path, name):
+    return re.findall(r'\((?:' + name + r')\).*?\[([^\]]*)\]', run(['readelf', '-d', path]))
+
+
+def relocate(path, search_path, required=False):
+    old = dynamic(path, 'RUNPATH|RPATH')
+    if not old:
+        if required:
+            raise RuntimeError(f'{path.name} has no configured library search path')
+        return
+    if len(old) != 1:
+        raise RuntimeError(f'{path.name} has ambiguous library search paths')
+    script = path.parent / '.relocate.cmake'
+    script.write_text(f'file(RPATH_CHANGE FILE [==[{path}]==] OLD_RPATH [==[{old[0]}]==] NEW_RPATH [==[{search_path}]==])\n')
+    try:
+        run(['cmake', '-P', script])
+    finally:
+        script.unlink(missing_ok=True)
+    if dynamic(path, 'RUNPATH|RPATH') != [search_path]:
+        raise RuntimeError(f'Failed to set the private library path for {path.name}')
+
+
+def require_idle():
+    # The host wrapper holds our two build locks. Native ps cannot expose a
+    # process working directory, so refuse any direct make/ninja/cmake activity.
+    active = [line for line in run(['ps']).splitlines()
+              if re.search(r'(?:^|\s)(?:\S*/)?(?:ninja|cmake|make)(?:\s|$)', line)]
+    if active:
+        raise RuntimeError('An engine or ICU build is active in the VM: ' + active[0].strip())
+
+
+def engine_inputs(inputs):
+    require_idle()
+    manifest = SOURCE / '.summit-source-manifest.json'
+    if json.loads(manifest.read_text()).get('patch_sha256') != inputs['engine']['patch']['sha256']:
+        raise RuntimeError('The native engine source patch differs from sources.lock.json; complete the engine build first')
+    cache_path = ENGINE / 'CMakeCache.txt'
+    cache = dict(re.findall(r'^([A-Za-z_][A-Za-z0-9_-]*):[^=\r\n]*=([^\r\n]*)$', cache_path.read_text(), re.MULTILINE))
+    expected = {'PORT': 'Haiku', 'ENABLE_WEBKIT': 'ON', 'ENABLE_WEBKIT_LEGACY': 'OFF',
+                'CMAKE_HOME_DIRECTORY': str(SOURCE), 'ICU_ROOT': str(ICU)}
+    mismatches = [f'{key}: expected {value!r}, found {cache.get(key)!r}'
+                  for key, value in expected.items() if cache.get(key) != value]
+    if mismatches:
+        raise RuntimeError('Modern CMake configuration does not match the native WebKit/ICU build: ' + '; '.join(mismatches))
+    for name, relative in inputs['public_headers'].items():
+        if digest(SOURCE / 'Source/WebKit' / relative) != inputs['sha256']['include/WebKit/' + name]:
+            raise RuntimeError(f'Public header {name} differs from the engine source')
+    missing = [name for name in ['bin/WebProcess', 'bin/NetworkProcess', 'lib/libWebKit.so']
+               if not (ENGINE / name).is_file()]
+    if missing:
+        raise RuntimeError('Modern engine is not fully linked; missing: ' + ', '.join(missing))
+    # A matching source manifest alone does not prove these executables were rebuilt.
+    dry_run = run(['ninja', '-C', ENGINE, '-n', 'WebProcess', 'NetworkProcess'])
+    work = [line for line in dry_run.splitlines()
+            if line and not line.startswith('ninja: Entering directory') and line != 'ninja: no work to do.']
+    if work or 'ninja: no work to do.' not in dry_run:
+        raise RuntimeError('Complete both modern process targets before freezing: ' + '\n'.join(work[:10]))
+    paths = [manifest, cache_path, ENGINE / 'build.ninja', ENGINE / '.ninja_log']
+    paths += [ENGINE / 'bin/WebProcess', ENGINE / 'bin/NetworkProcess']
+    paths += [(ENGINE / 'lib' / name).resolve(strict=True)
+              for name in ['libWebKit.so', 'libJavaScriptCore.so']]
+    paths += [(ICU / 'lib' / name).resolve(strict=True)
+              for name in ['libicudata.so', 'libicui18n.so', 'libicuuc.so']]
+    return expected, paths
+
+
+def library(name, directory):
+    source = (directory / name).resolve(strict=True)
+    if source.parent != directory.resolve():
+        raise RuntimeError(f'{name} resolves outside the required private library directory')
+    sonames = dynamic(source, 'SONAME')
+    if len(sonames) != 1 or pathlib.Path(sonames[0]).name != sonames[0]:
+        raise RuntimeError(f'Invalid library identity in {source}')
+    return name, sonames[0], source
+
+
+def verify_hashes(hashes):
+    for path, before in hashes.items():
+        if digest(pathlib.Path(path)) != before:
+            raise RuntimeError(f'Build input changed while creating the preview: {path}')
+
+
+def freeze(work, inputs, command, before, configuration):
+    require_idle()
+    verify_hashes(before)
+    bundle = pathlib.Path(tempfile.mkdtemp(prefix='bundle-', dir=BUILD))
+    try:
+        (bundle / 'lib').mkdir()
+        libraries = [library(name, ENGINE / 'lib') for name in ['libWebKit.so', 'libJavaScriptCore.so']]
+        libraries += [library(name, ICU / 'lib') for name in ['libicudata.so', 'libicui18n.so', 'libicuuc.so']]
+        if inputs['icu']['version'] != '78.3' or any('.so.78' not in soname for _, soname, _ in libraries[2:]):
+            raise RuntimeError('The preview requires the pinned private ICU 78.3 build')
+        files = {NAME: work / NAME, 'WebProcess': ENGINE / 'bin/WebProcess',
+                 'NetworkProcess': ENGINE / 'bin/NetworkProcess'}
+        files.update({'lib/' + source.name: source for _, _, source in libraries})
+        before = {**before, str(work / NAME): digest(work / NAME)}
+        for relative, source in files.items():
+            destination = bundle / relative
+            shutil.copy2(source, destination)
+            if digest(destination) != before[str(source)]:
+                raise RuntimeError(f'{source.name} changed while being copied')
+            relocate(destination, '$ORIGIN' if relative.startswith('lib/') else '$ORIGIN/lib',
+                     required=not relative.startswith('lib/') or source.name.startswith(('libWebKit', 'libJavaScriptCore')))
+        for name, soname, source in libraries:
+            for alias in {name, soname} - {source.name}:
+                (bundle / 'lib' / alias).symlink_to(source.name)
+        dependencies = {name: dynamic(bundle / name, 'NEEDED') for name in files}
+        for name, needed in dependencies.items():
+            for dependency in needed:
+                if dependency.startswith(('libWebKit', 'libJavaScriptCore', 'libicu')) and not (bundle / 'lib' / dependency).is_file():
+                    raise RuntimeError(f'{name} has an unbundled engine dependency: {dependency}')
+        shutil.copy2(ROOT / 'LICENSE-Summit', bundle / 'LICENSE-Summit')
+        for license_file in (SOURCE / 'Source').rglob('*'):
+            if license_file.is_file() and license_file.name.upper().startswith(('LICENSE', 'COPYING')):
+                destination = bundle / 'licenses/WebKit' / license_file.relative_to(SOURCE / 'Source')
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(license_file, destination)
+        icu_license = pathlib.Path('/boot/home/summit-deps/icu-78.3/LICENSE')
+        (bundle / 'licenses/ICU').mkdir(parents=True)
+        shutil.copy2(icu_license, bundle / 'licenses/ICU/LICENSE')
+        launcher = bundle / 'run-preview.sh'
+        launcher.write_text(
+            '#!/bin/sh\nset -eu\n'
+            'SUMMIT_BUNDLE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\n'
+            'export WEBKIT_EXEC_PATH="$SUMMIT_BUNDLE"\n'
+            'export LIBRARY_PATH="$SUMMIT_BUNDLE/lib:/boot/system/lib"\n'
+            'exec "$SUMMIT_BUNDLE/SummitModernPreview" "$@"\n')
+        launcher.chmod(0o755)
+        (bundle / 'README.txt').write_text(
+            'Summit modern WebKit native preview for Haiku/KunanyiOS.\n'
+            'Run ./run-preview.sh [URL], or --smoke with tools/serve-fixtures.py on the host.\n'
+            'WebProcess and NetworkProcess are resolved beside the preview executable.\n'
+            'Private WebKit, JavaScriptCore and ICU libraries are in lib with relative runtime paths.\n'
+            'The preview source and build inputs are preserved in source.\n'
+            'This preview exercises the modern engine bridge; the complete browser UI is separate.\n')
+        shutil.copytree(ROOT, bundle / 'source')
+        for name, expected in inputs['sha256'].items():
+            if digest(bundle / 'source' / name) != expected:
+                raise RuntimeError(f'Staged input changed while creating the bundle: {name}')
+        require_idle()
+        verify_hashes(before)
+        manifest = {
+            'created_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            'kind': 'modern-native-preview', 'inputs': inputs, 'configuration': configuration,
+            'compiler': run(['c++', '--version']).splitlines()[0],
+            'compile_command': command, 'original_sha256': before,
+            'bundled_sha256': {name: digest(bundle / name) for name in [*files, 'run-preview.sh']},
+            'needed': dependencies,
+            'runtime_search_paths': {name: dynamic(bundle / name, 'RPATH|RUNPATH') for name in files},
+            'symlinks': {str(path.relative_to(bundle)): os.readlink(path)
+                         for path in (bundle / 'lib').iterdir() if path.is_symlink()},
+        }
+        (bundle / 'build-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+        latest = BUILD / 'latest-bundle.json'
+        temporary = latest.with_suffix('.tmp')
+        temporary.write_text(json.dumps({'bundle': str(bundle), **manifest}, indent=2) + '\n')
+        temporary.replace(latest)
+        return {'bundle': str(bundle), **manifest}
+    except BaseException:
+        shutil.rmtree(bundle)
+        raise
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--compile-only', action='store_true')
+    mode.add_argument('--bundle', action='store_true')
+    arguments = parser.parse_args()
+    inputs = json.loads((ROOT / 'inputs.json').read_text())
+    for name, expected in inputs['sha256'].items():
+        if digest(ROOT / name) != expected:
+            raise RuntimeError('Staged input hash mismatch: ' + name)
+    require_idle()
+    configuration, original_paths = ({}, []) if arguments.compile_only else engine_inputs(inputs)
+    BUILD.mkdir(parents=True, exist_ok=True)
+    work = pathlib.Path(tempfile.mkdtemp(prefix='compile-', dir=BUILD))
+    command = ['c++', '-std=c++23', '-O2', '-Wall', '-Wextra', '-DBUILDING_HAIKU__=1',
+               '-I' + str(ROOT / 'include'), str(ROOT / 'tests/ModernBrowser.cpp')]
+    if arguments.compile_only:
+        command += ['-c', '-o', str(work / 'ModernBrowser.o')]
+    else:
+        command += ['-L' + str(ENGINE / 'lib'), '-lWebKit', '-lbe', '-lnetwork',
+                    '-Wl,-rpath,' + str(ENGINE / 'lib') + ':' + str(ICU / 'lib'),
+                    '-o', str(work / NAME)]
+    before = {str(path): digest(path) for path in original_paths}
+    try:
+        run(command)
+        verify_hashes(before)
+        if arguments.compile_only:
+            shutil.copytree(ROOT, work / 'source')
+            report = {'kind': 'compile-only', 'object': str(work / 'ModernBrowser.o'),
+                      'sha256': digest(work / 'ModernBrowser.o'), 'inputs': inputs,
+                      'compiler': run(['c++', '--version']).splitlines()[0], 'compile_command': command}
+            (work / 'build-manifest.json').write_text(json.dumps(report, indent=2) + '\n')
+        else:
+            report = freeze(work, inputs, command, before, configuration)
+        print(json.dumps(report, indent=2))
+    except BaseException:
+        shutil.rmtree(work)
+        raise
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except subprocess.CalledProcessError as error:
+        raise SystemExit(f'Command failed ({error.returncode}): {error.cmd}\n{error.stdout or ""}{error.stderr or ""}')
+    except (OSError, RuntimeError) as error:
+        raise SystemExit(str(error))
