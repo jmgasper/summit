@@ -114,8 +114,12 @@ not resolve; absolute `LIBRARY_PATH` entries corrected that without source
 changes. Logs: `.vm/icu78-build.log`, `.vm/icu78-build-fixed.log`,
 `.vm/icu78-install-check.log`. `engine/icu.lock.json` and
 `tools/build-icu-in-vm.sh` record the source and reproducible private build.
-The preserved working browser still uses ICU 74; JavaScriptCore is rebuilding
-against ICU 78.3 in a separate modern-engine build directory for comparison.
+The preserved working browser still uses ICU 74. JavaScriptCore rebuilt against
+ICU 78.3 in the separate modern-engine directory and passes 16 JavaScript/JIT/
+WebAssembly checks plus 15 interpreter checks with normal address randomization.
+Its frozen copy includes private ICU libraries; loaded-image paths and hashes
+were verified. Logs: `.vm/jsc-icu78-freeze.log` (smoke results),
+`.vm/jsc-icu78-loaded-images.log` (corrected image probe).
 
 The upstream Test262 runner also passes **232 runs from 116 test files**, with
 zero skips and zero failures, for `Intl.ListFormat`, `Array.prototype.toSorted`
@@ -142,12 +146,22 @@ ignores failure expectations; failures have not been suppressed.
 Of the 234 failures, 138 have the same path, mode and exit code in pinned
 upstream Linux expectations (120 match its default expectations). The other
 96 comprise 58 Intl executions, 32 Unicode 16/17 identifier executions, four
-Unicode case-mapping executions and two deep-WeakMap timeouts. Older ICU/data
-is a likely contributor to the Unicode/Intl differences, pending verification
-with a newer ICU build. Matching upstream expectations does not make a failing
-test pass. The [machine-readable report](test262-2026-09-13.json) records every
+Unicode case-mapping executions and two deep-WeakMap timeouts. Matching upstream
+expectations does not make a failing test pass. The
+[machine-readable report](test262-2026-09-13.json) records every
 failure, the comparison and source/report hashes. Raw reports remain in
 `.vm/test262-full-results/`; the log is `.vm/test262-full-fixed.log`.
+
+The ICU 78 comparison reran all Intl tests, language identifiers and the staging
+String group: **7,293 passed, 22 failed, 7,315 executions, 14 skipped files**.
+It fixes all **94** previous locale/Unicode failures in that scope, with no
+passing-to-failing transitions. The remaining 22 executions match pinned Linux
+expectations: four locale hour-cycle cases and 18 Chinese-calendar cases.
+This is a scoped comparison; the full suite has not yet rerun against ICU 78.
+The shell, JSC library and all three private ICU libraries retained their hashes.
+Report: [ICU 78 comparison](test262-icu78-intl-2026-09-13.json); raw evidence:
+`.vm/test262-icu78-intl.log`, `.vm/test262-intl-results/`,
+`.vm/icu78-scope-comparison.json`.
 
 Logs are `.vm/jsc-icu66-failure.log`, `.vm/jsc-build.log`,
 `.vm/jsc-shell-build.log`, `.vm/jsc-smoke.log`, `.vm/jsc-default-aslr.log` and

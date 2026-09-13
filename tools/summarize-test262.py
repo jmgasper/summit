@@ -70,6 +70,9 @@ def main():
             for r in failures
         ],
     }
+    dependencies = args.results / 'dependency-sha256.txt'
+    if dependencies.is_file():
+        output['dependency_sha256'] = dependencies.read_text().splitlines()
     args.output.write_text(json.dumps(output, indent=2, ensure_ascii=False) + '\n')
     print(json.dumps({'counts': output['counts'], 'expectations_comparison': comparisons}, indent=2))
 

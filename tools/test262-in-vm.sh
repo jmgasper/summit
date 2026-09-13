@@ -41,9 +41,17 @@ elif [[ $SUMMIT_TEST262_SCOPE == intl ]]; then
 fi
 SUMMIT_TEST262_JSC=${SUMMIT_TEST262_JSC:-/boot/home/summit-webkit/WebKitBuild/Release/bin/jsc}
 SUMMIT_TEST262_LIBRARY=${SUMMIT_TEST262_LIBRARY:-/boot/home/summit-webkit/WebKitBuild/Release/lib/libJavaScriptCore.so.18.7.4}
+SUMMIT_TEST262_DEPENDENCY_MANIFEST=${SUMMIT_TEST262_DEPENDENCY_MANIFEST:-}
 if [[ ! $SUMMIT_TEST262_JSC =~ ^/[A-Za-z0-9/_.+-]+$ || ! $SUMMIT_TEST262_LIBRARY =~ ^/[A-Za-z0-9/_.+-]+$ ]]; then
     echo 'Native engine paths must be absolute and contain no shell metacharacters.' >&2
     exit 2
+fi
+if [[ -n $SUMMIT_TEST262_DEPENDENCY_MANIFEST && ! $SUMMIT_TEST262_DEPENDENCY_MANIFEST =~ ^/[A-Za-z0-9/_.+-]+$ ]]; then
+    echo 'The dependency checksum manifest must use an absolute path without shell metacharacters.' >&2
+    exit 2
+fi
+if [[ -n $SUMMIT_TEST262_DEPENDENCY_MANIFEST ]]; then
+    bash tools/haiku.sh "sha256sum -c '$SUMMIT_TEST262_DEPENDENCY_MANIFEST'"
 fi
 # Each invocation gets a new report directory. An interrupted upstream run does
 # not write reports and must never be mistaken for an earlier successful run.
@@ -57,6 +65,10 @@ echo "JavaScriptCore shell: $SUMMIT_TEST262_JSC"
 SUMMIT_JSC_BEFORE=$(bash tools/haiku.sh "sha256sum '$SUMMIT_TEST262_JSC' '$SUMMIT_TEST262_LIBRARY'")
 bash tools/haiku.sh "cd '$SUMMIT_TEST262_RUN' && SUMMIT_WEBKIT_SOURCE=/boot/home/summit-webkit python3.10 /boot/home/summit/tools/test262-haiku.py --jsc '$SUMMIT_TEST262_JSC' --child-processes 1 --timeout 10000 --ignore-expectations" "${SUMMIT_TEST262_OPTIONS[@]}" || SUMMIT_TEST262_RESULT=$?
 SUMMIT_JSC_AFTER=$(bash tools/haiku.sh "sha256sum '$SUMMIT_TEST262_JSC' '$SUMMIT_TEST262_LIBRARY'")
+SUMMIT_DEPENDENCIES_VALID=1
+if [[ -n $SUMMIT_TEST262_DEPENDENCY_MANIFEST ]]; then
+    bash tools/haiku.sh "sha256sum -c '$SUMMIT_TEST262_DEPENDENCY_MANIFEST'" || SUMMIT_DEPENDENCIES_VALID=0
+fi
 SUMMIT_TEST262_OUTPUT=.vm/test262-results
 if [[ $SUMMIT_TEST262_SCOPE != smoke ]]; then
     SUMMIT_TEST262_OUTPUT=.vm/test262-$SUMMIT_TEST262_SCOPE-results
@@ -69,12 +81,15 @@ if bash tools/haiku.sh "test -f '$SUMMIT_TEST262_RUN/test262-results/results.yam
     bash tools/haiku.sh "tar -czf - -C '$SUMMIT_TEST262_RUN/test262-results' ." |
         tar -xzf - -C "$SUMMIT_TEST262_OUTPUT"
     printf '%s\n' "$SUMMIT_JSC_BEFORE" > "$SUMMIT_TEST262_OUTPUT/engine-sha256.txt"
+    if [[ -n $SUMMIT_TEST262_DEPENDENCY_MANIFEST ]]; then
+        bash tools/haiku.sh "cat '$SUMMIT_TEST262_DEPENDENCY_MANIFEST'" > "$SUMMIT_TEST262_OUTPUT/dependency-sha256.txt"
+    fi
 else
     echo 'This Test262 invocation produced no result report.' >&2
     if [[ $SUMMIT_TEST262_RESULT == 0 ]]; then SUMMIT_TEST262_RESULT=1; fi
 fi
-if [[ $SUMMIT_JSC_BEFORE != "$SUMMIT_JSC_AFTER" ]]; then
-    echo 'The JavaScriptCore shell or library changed during Test262; rerun before using these results.' >&2
+if [[ $SUMMIT_JSC_BEFORE != "$SUMMIT_JSC_AFTER" || $SUMMIT_DEPENDENCIES_VALID != 1 ]]; then
+    echo 'The JavaScriptCore shell, library or checked dependency changed during Test262; rerun before using these results.' >&2
     exit 1
 fi
 exit "$SUMMIT_TEST262_RESULT"
