@@ -50,6 +50,14 @@ portable test execution were verified in the guest as well.
   profile directories are mode 0700 and the cookie database is mode 0600.
 - Launched with a saved session containing only a rejected executable URL.
   The app showed the rejection and opened a usable start tab without crashing.
+- An unavailable profile directory now shows a native startup error and exits
+  with status 1 before initializing WebKit. An unavailable Downloads directory
+  cancels the download and shows an error while browsing remains responsive.
+  Both failures were exercised in the guest, with the original Downloads
+  directory restored afterward; all 37 normal browser checks then passed.
+  Logs: `.vm/folder-startup-error-fixed.log`, `.vm/download-folder-error.log`,
+  `.vm/ui-folder-errors-smoke.log`. This app update is built in
+  `build-ui-current` and is not yet included in the preserved distribution.
 
 The current-engine distribution is `artifacts/current-browser/`, with private
 libraries, resources, licenses, patched engine source and a manifest recording

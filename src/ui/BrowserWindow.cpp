@@ -27,8 +27,26 @@
 #include <WebView.h>
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 
 namespace summit {
+static bool FindDownloads(BPath& path, std::string& error)
+{
+    status_t status = find_directory(B_USER_DIRECTORY, &path);
+    if (status == B_OK) status = path.Append("Downloads");
+    if (status != B_OK) {
+        error = "Could not locate the Downloads folder: " + std::string(std::strerror(status));
+        return false;
+    }
+    std::error_code filesystemError;
+    std::filesystem::create_directories(path.Path(), filesystemError);
+    if (filesystemError) {
+        error = "Could not open the Downloads folder: " + filesystemError.message();
+        return false;
+    }
+    return true;
+}
+
 static void AddItem(BMenu* menu, const char* label, uint32 what, char key = 0, uint32 mods = 0)
 {
     menu->AddItem(new BMenuItem(label, new BMessage(what), key, mods));
@@ -370,15 +388,25 @@ void BrowserWindow::MessageReceived(BMessage* message)
             } break;
         }
         case kShowDownloads: {
-            BPath path; find_directory(B_USER_DIRECTORY, &path); path.Append("Downloads");
-            std::filesystem::create_directories(path.Path());
-            entry_ref ref; if (get_ref_for_path(path.Path(), &ref) == B_OK) be_roster->Launch(&ref); break;
+            BPath path;
+            std::string error;
+            if (!FindDownloads(path, error)) { ShowError(error); break; }
+            entry_ref ref;
+            status_t status = get_ref_for_path(path.Path(), &ref);
+            if (status == B_OK) status = be_roster->Launch(&ref);
+            if (status != B_OK) ShowError("Could not open Downloads: " + std::string(std::strerror(status)));
+            break;
         }
         case B_DOWNLOAD_ADDED: {
             BWebDownload* download = nullptr;
             if (message->FindPointer("download", reinterpret_cast<void**>(&download)) != B_OK || !download) break;
-            BPath path; find_directory(B_USER_DIRECTORY, &path); path.Append("Downloads");
-            std::filesystem::create_directories(path.Path());
+            BPath path;
+            std::string error;
+            if (!FindDownloads(path, error)) {
+                download->Cancel();
+                ShowError(error);
+                break;
+            }
             fDownloads.push_back(download);
             download->SetProgressListener(BMessenger(this));
             download->Start(path);

@@ -1,6 +1,7 @@
 #include "ui/BrowserWindow.h"
 #include "ui/Messages.h"
 #include "core/Address.h"
+#include <Alert.h>
 #include <Application.h>
 #include <Entry.h>
 #include <FindDirectory.h>
@@ -13,6 +14,7 @@
 #include <vector>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <sys/stat.h>
 
 class SummitApp : public BApplication {
@@ -43,18 +45,30 @@ public:
     void ReadyToRun() override
     {
         if (fProfile.empty()) {
-            BPath path; find_directory(B_USER_SETTINGS_DIRECTORY, &path); path.Append("Summit");
+            BPath path;
+            status_t status = find_directory(B_USER_SETTINGS_DIRECTORY, &path);
+            if (status == B_OK) status = path.Append("Summit");
+            if (status != B_OK) {
+                StartupError("Could not locate your settings folder: " + std::string(std::strerror(status)));
+                return;
+            }
             fProfile = path.Path();
         }
-        std::filesystem::create_directories(fProfile);
+        std::error_code error;
+        std::filesystem::create_directories(fProfile, error);
+        if (error) {
+            StartupError("Could not open the profile folder:\n" + fProfile.string() + "\n\n" + error.message());
+            return;
+        }
         setenv("CURL_COOKIE_JAR_PATH", (fProfile / "cookies.sqlite").c_str(), 1);
         BWebPage::InitializeOnce();
+        fWebKitInitialized = true;
         BWebPage::SetCacheModel(B_WEBKIT_CACHE_MODEL_WEB_BROWSER);
         BWebSettings::SetPersistentStoragePath((fProfile / "WebKit").c_str());
         app_info info; GetAppInfo(&info); BPath executable(&info.ref);
         auto home = std::filesystem::path(executable.Path()).parent_path() / "resources/start.html";
-        if (!std::filesystem::exists(home)) home = "/boot/system/data/Summit/start.html";
-        if (!std::filesystem::exists(home)) {
+        if (!std::filesystem::exists(home, error)) home = "/boot/system/data/Summit/start.html";
+        if (!std::filesystem::exists(home, error)) {
             std::fprintf(stderr, "Summit: missing start page at %s\n", home.c_str());
         }
         fWindow = new summit::BrowserWindow(fProfile / "profile.json", summit::FileURL(home.string()), fURLs);
@@ -80,8 +94,20 @@ public:
         else BApplication::MessageReceived(message);
     }
     void AboutRequested() override { if (fWindow) fWindow->PostMessage(B_ABOUT_REQUESTED); }
+    bool WebKitInitialized() const { return fWebKitInitialized; }
+    int ExitStatus() const { return fExitStatus; }
 private:
+    void StartupError(const std::string& message)
+    {
+        fExitStatus = 1;
+        std::fprintf(stderr, "Summit: %s\n", message.c_str());
+        (new BAlert("Summit", message.c_str(), "Quit", nullptr, nullptr,
+            B_WIDTH_AS_USUAL, B_STOP_ALERT))->Go();
+        PostMessage(B_QUIT_REQUESTED);
+    }
     summit::BrowserWindow* fWindow = nullptr;
+    bool fWebKitInitialized = false;
+    int fExitStatus = 0;
     std::filesystem::path fProfile;
     std::vector<std::string> fURLs;
 };
@@ -91,6 +117,6 @@ int main()
     umask(0077);
     SummitApp app;
     app.Run();
-    BWebPage::ShutdownOnce();
-    return 0;
+    if (app.WebKitInitialized()) BWebPage::ShutdownOnce();
+    return app.ExitStatus();
 }
