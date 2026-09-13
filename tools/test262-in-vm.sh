@@ -69,9 +69,11 @@ SUMMIT_DEPENDENCIES_VALID=1
 if [[ -n $SUMMIT_TEST262_DEPENDENCY_MANIFEST ]]; then
     bash tools/haiku.sh "sha256sum -c '$SUMMIT_TEST262_DEPENDENCY_MANIFEST'" || SUMMIT_DEPENDENCIES_VALID=0
 fi
-SUMMIT_TEST262_OUTPUT=.vm/test262-results
-if [[ $SUMMIT_TEST262_SCOPE != smoke ]]; then
-    SUMMIT_TEST262_OUTPUT=.vm/test262-$SUMMIT_TEST262_SCOPE-results
+if [[ -z ${SUMMIT_TEST262_OUTPUT:-} ]]; then
+    SUMMIT_TEST262_OUTPUT=.vm/test262-results
+    if [[ $SUMMIT_TEST262_SCOPE != smoke ]]; then
+        SUMMIT_TEST262_OUTPUT=.vm/test262-$SUMMIT_TEST262_SCOPE-results
+    fi
 fi
 if bash tools/haiku.sh "test -f '$SUMMIT_TEST262_RUN/test262-results/results.yaml'"; then
     if [[ -e $SUMMIT_TEST262_OUTPUT ]]; then

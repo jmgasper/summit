@@ -221,18 +221,39 @@ Unicode, overrides, installation fallback and missing helpers. Run these with
 `.vm/native-process-paths.log`. The modern WebKit process launcher itself is
 not compiled yet, and this does not establish WebKit process isolation.
 
-The Haiku IPC socket monitor passes **19 native checks** against production
+The Haiku IPC socket monitor passes **25 native checks** against production
 code: ordered sequenced packets, serial-queue callbacks, idle cancellation,
 peer closure, destruction inside a callback, suppression of queued callbacks,
-descriptor reuse, close-on-exec and repeated lifecycle leak checks. A dedicated
+descriptor reuse, close-on-exec, write backpressure and lifecycle leak checks. A dedicated
 polling thread only detects readiness; protocol processing stays on the
-connection queue. Cancellation wakes and joins the polling thread. Integration
-is wired into the modern transport, whose full compilation remains pending.
+connection queue. Cancellation wakes and joins the polling thread, including
+when the peer is not reading a full socket. Integration is wired into the
+modern transport, whose full compilation remains pending.
 The test explicitly joins its detached connection-queue thread before process
 static teardown; without that wait, an earlier passing run produced a late
 native debugger dialog. Ten complete process runs now pass with no new crash
 reports. Run `tools/test-engine-socket-monitor-in-vm.sh`; logs:
 `.vm/native-socket-monitor-fixed.log`, `.vm/native-socket-monitor-repeat.log`.
+The expanded write-readiness checks are in `.vm/native-socket-monitor-write-full.log`.
+
+The new Haiku packet transport passes **43 native checks** using real sequenced
+sockets and the production shared-memory implementation. It rejects malformed
+flags, counts, truncated bodies, extra/missing descriptors and invalid shared
+memory while closing received descriptors on every failure path. Inline and
+out-of-line bodies, attachment order, atomic close-on-exec, peer closure and
+repeated malformed-message cleanup are covered. Haiku limits control data to
+1024 bytes and each kernel ancillary record to 32 descriptor pointers; grouped
+records successfully transfer the resulting **224-descriptor** maximum.
+Run `tools/test-engine-message-packets-in-vm.sh`; final log:
+`.vm/native-message-packet-tests-final.log`.
+
+Modern WebKit configuration succeeds with private ICU 78, Unix-domain sockets,
+the current Curl network-process sources and native WebProcess application
+resources. The new connection backend validates complete packets and retains
+unsent messages while asynchronously waiting for capacity, with a short yield
+between retries to handle readiness for less than a complete packet. Actual
+Connection/process compilation is in progress; these component checks do not
+yet establish a working WebKit process connection or browser process isolation.
 
 The original area-based shared-memory backend loses its allocation when the
 owner is destroyed, even if a handle remains. A native baseline probe confirms

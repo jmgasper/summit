@@ -20274,7 +20274,7 @@ index 122733d20088dcfcf96c151b6f4f1d4a62a895a4..f8fa9434ed211b05897b732d4163a1b6
  {
      notImplemented();
 diff --git a/Source/WebKit/Platform/IPC/Connection.h b/Source/WebKit/Platform/IPC/Connection.h
-index 72735563ab8ac49ffc69531d46b6068a5a43d93c..f079c2e81f065aafc6c1f0fdfa37c5a1394d3976 100644
+index 72735563ab8ac49ffc69531d46b6068a5a43d93c..307a58eab62fd2346b4722205c43c677e9d2aef0 100644
 --- a/Source/WebKit/Platform/IPC/Connection.h
 +++ b/Source/WebKit/Platform/IPC/Connection.h
 @@ -89,6 +89,10 @@
@@ -20288,7 +20288,19 @@ index 72735563ab8ac49ffc69531d46b6068a5a43d93c..f079c2e81f065aafc6c1f0fdfa37c5a1
  #if USE(UNIX_DOMAIN_SOCKETS)
  #include <wtf/unix/UnixFileDescriptor.h>
  #endif
-@@ -810,6 +814,8 @@ private:
+@@ -801,6 +805,11 @@ private:
+     Vector<RefPtr<AHardwareBuffer>, 2> m_incomingHardwareBuffers;
+     Vector<RefPtr<AHardwareBuffer>, 2> m_outgoingHardwareBuffers;
+ #endif
++#elif PLATFORM(HAIKU)
++    int socketDescriptor() const;
++    UnixFileDescriptor m_socketDescriptor;
++    std::unique_ptr<SocketMonitorHaiku> m_writeSocketMonitor;
++    bool m_hasPendingOutputMessage { false };
+ #else
+     bool processMessage();
+     int socketDescriptor() const;
+@@ -810,6 +819,8 @@ private:
  #endif
  #if PLATFORM(PLAYSTATION)
      RefPtr<WTF::Thread> m_socketMonitor;
@@ -20356,12 +20368,490 @@ index 0000000000000000000000000000000000000000..2b968b6ac3681112fefa4f50dc2da402
 +};
 +
 +}
+diff --git a/Source/WebKit/Platform/IPC/haiku/ConnectionHaiku.cpp b/Source/WebKit/Platform/IPC/haiku/ConnectionHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..f63134a3a4c2fbd22c5cc7bc553f54e5b04786cb
+--- /dev/null
++++ b/Source/WebKit/Platform/IPC/haiku/ConnectionHaiku.cpp
+@@ -0,0 +1,205 @@
++/*
++ * Copyright (C) 2026 KunanyiOS contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "Connection.h"
++
++#include "IPCUtilities.h"
++#include "MessagePacketHaiku.h"
++#include "UnixMessage.h"
++#include <cerrno>
++#include <cstring>
++#include <sys/socket.h>
++#include <wtf/UniStdExtras.h>
++
++namespace IPC {
++
++int Connection::socketDescriptor() const
++{
++    return m_socketDescriptor.value();
++}
++
++void Connection::platformInitialize(Identifier&& identifier)
++{
++    m_socketDescriptor = WTF::move(identifier.handle);
++}
++
++void Connection::platformInvalidate()
++{
++    m_isConnected = false;
++    m_socketMonitor = nullptr;
++    m_writeSocketMonitor = nullptr;
++    m_hasPendingOutputMessage = false;
++    m_socketDescriptor = { };
++}
++
++bool Connection::platformPrepareForOpen()
++{
++    return setNonBlock(socketDescriptor());
++}
++
++void Connection::platformOpen()
++{
++    m_connectionQueue->dispatch([protectedThis = Ref { *this }] {
++        if (!protectedThis->isValid())
++            return;
++        protectedThis->m_isConnected = true;
++        protectedThis->m_socketMonitor = SocketMonitorHaiku::create(protectedThis->socketDescriptor(),
++            protectedThis->m_connectionQueue, [protectedThis] {
++                if (protectedThis->m_isConnected)
++                    protectedThis->readyReadHandler();
++            });
++        if (!protectedThis->m_socketMonitor) {
++            protectedThis->connectionDidClose();
++            return;
++        }
++        protectedThis->sendOutgoingMessages();
++    });
++}
++
++void Connection::readyReadHandler()
++{
++    MessagePacketHaiku packet;
++    // Return to the queue periodically so traffic cannot indefinitely postpone
++    // cancellation or outgoing messages. Level-triggered polling resumes reads.
++    for (size_t i = 0; i < 64 && m_isConnected && isValid(); ++i) {
++        switch (packet.receive(socketDescriptor())) {
++        case MessagePacketHaiku::Result::WouldBlock:
++            return;
++        case MessagePacketHaiku::Result::Closed:
++        case MessagePacketHaiku::Result::Error:
++            connectionDidClose();
++            return;
++        case MessagePacketHaiku::Result::Message:
++            break;
++        }
++        auto decoder = Decoder::create(packet.body(), packet.takeAttachments());
++        if (!decoder) {
++            connectionDidClose();
++            return;
++        }
++        processIncomingMessage(makeUniqueRefFromNonNullUniquePtr(WTF::move(decoder)));
++    }
++}
++
++bool Connection::platformCanSendOutgoingMessages() const
++{
++    return !m_hasPendingOutputMessage;
++}
++
++bool Connection::sendOutgoingMessage(UniqueRef<Encoder>&& encoder)
++{
++    UnixMessage message(encoder.get());
++    if (message.attachments().size() >= attachmentMaxAmountHaiku) {
++        connectionDidClose();
++        return false;
++    }
++    auto inlineOverhead = sizeof(MessageInfo) + message.attachments().size() * sizeof(AttachmentInfoHaiku);
++    if (message.bodySize() > messageMaxSizeHaiku - inlineOverhead && !message.setBodyOutOfLine()) {
++        connectionDidClose();
++        return false;
++    }
++    return sendOutputMessage(WTF::move(message));
++}
++
++bool Connection::sendOutputMessage(UnixMessage&& output)
++{
++    ASSERT(!m_hasPendingOutputMessage);
++    auto& info = output.messageInfo();
++    const auto& attachments = output.attachments();
++    std::array<AttachmentInfoHaiku, attachmentMaxAmountHaiku> metadata;
++    std::array<int, attachmentMaxAmountHaiku> descriptors;
++    FileDescriptorMessageHaiku control;
++    std::array<iovec, 3> vectors;
++    vectors[0] = { &info, sizeof(info) };
++    size_t vectorCount = 1;
++    size_t packetSize = sizeof(info);
++    size_t descriptorCount = 0;
++    msghdr message { };
++
++    for (size_t i = 0; i < attachments.size(); ++i) {
++        metadata[i].isNull = !attachments[i];
++        if (attachments[i]) {
++            descriptors[descriptorCount++] = attachments[i].value();
++        }
++    }
++    if (!control.setDescriptors(std::span { descriptors }.first(descriptorCount))) {
++        connectionDidClose();
++        return false;
++    }
++    control.attachTo(message);
++    if (!attachments.isEmpty()) {
++        auto size = sizeof(AttachmentInfoHaiku) * attachments.size();
++        vectors[vectorCount++] = { metadata.data(), size };
++        packetSize += size;
++    }
++    if (!info.isBodyOutOfLine()) {
++        vectors[vectorCount++] = { output.body().data(), output.bodySize() };
++        packetSize += output.bodySize();
++    }
++    message.msg_iov = vectors.data();
++    message.msg_iovlen = vectorCount;
++
++    ssize_t sent;
++    do {
++        sent = sendmsg(socketDescriptor(), &message, MSG_NOSIGNAL | MSG_DONTWAIT);
++    } while (sent < 0 && errno == EINTR);
++    if (sent >= 0) {
++        if (static_cast<size_t>(sent) == packetSize)
++            return true;
++        connectionDidClose();
++        return false;
++    }
++    if (errno != EAGAIN && errno != EWOULDBLOCK) {
++        connectionDidClose();
++        return false;
++    }
++
++    // Retain the unsent packet and its descriptors while waiting asynchronously
++    // for capacity. The connection queue remains available for invalidation.
++    m_hasPendingOutputMessage = true;
++    m_writeSocketMonitor = SocketMonitorHaiku::create(socketDescriptor(), m_connectionQueue,
++        [this, protectedThis = Ref { *this }, output = WTF::move(output)]() mutable {
++            m_writeSocketMonitor = nullptr;
++            // Writable readiness may mean space for fewer bytes than this
++            // whole packet needs. Yield between retries instead of spinning.
++            m_connectionQueue->dispatchAfter(1_ms, [this, protectedThis, output = WTF::move(output)]() mutable {
++                m_hasPendingOutputMessage = false;
++                if (m_isConnected && isValid() && sendOutputMessage(WTF::move(output)))
++                    sendOutgoingMessages();
++            });
++        }, SocketMonitorHaiku::Mode::Write);
++    if (!m_writeSocketMonitor)
++        connectionDidClose();
++    return false;
++}
++
++std::optional<Connection::ConnectionIdentifierPair> Connection::createConnectionIdentifierPair()
++{
++    auto pair = createPlatformConnection(SOCK_SEQPACKET);
++    return { { Identifier { WTF::move(pair.server) }, ConnectionHandle { WTF::move(pair.client) } } };
++}
++
++} // namespace IPC
+diff --git a/Source/WebKit/Platform/IPC/haiku/MessagePacketHaiku.cpp b/Source/WebKit/Platform/IPC/haiku/MessagePacketHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..b9dc3b78e581658907614722ac570eed82cdfeb1
+--- /dev/null
++++ b/Source/WebKit/Platform/IPC/haiku/MessagePacketHaiku.cpp
+@@ -0,0 +1,175 @@
++/*
++ * Copyright (C) 2026 KunanyiOS contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "MessagePacketHaiku.h"
++
++#include "MessageInfo.h"
++#include <cerrno>
++#include <cstring>
++#include <sys/socket.h>
++
++namespace IPC {
++
++bool FileDescriptorMessageHaiku::setDescriptors(std::span<const int> descriptors)
++{
++    m_size = 0;
++    m_bytes.fill(0);
++    if (descriptors.size() > attachmentMaxAmountHaiku)
++        return false;
++    while (!descriptors.empty()) {
++        auto count = std::min(descriptors.size(), descriptorGroupSizeHaiku);
++        auto* header = reinterpret_cast<cmsghdr*>(m_bytes.data() + m_size);
++        header->cmsg_level = SOL_SOCKET;
++        header->cmsg_type = SCM_RIGHTS;
++        header->cmsg_len = CMSG_LEN(count * sizeof(int));
++        memcpy(CMSG_DATA(header), descriptors.data(), count * sizeof(int));
++        m_size += CMSG_SPACE(count * sizeof(int));
++        descriptors = descriptors.subspan(count);
++    }
++    return true;
++}
++
++void FileDescriptorMessageHaiku::attachTo(msghdr& message)
++{
++    message.msg_control = m_size ? m_bytes.data() : nullptr;
++    message.msg_controllen = m_size;
++}
++
++MessagePacketHaiku::Result MessagePacketHaiku::receive(int socket)
++{
++    m_attachments.clear();
++    m_sharedBody = nullptr;
++    m_bodyOffset = 0;
++    m_bodySize = 0;
++
++    alignas(cmsghdr) std::array<uint8_t, CMSG_SPACE(sizeof(int) * attachmentMaxAmountHaiku)> control;
++    iovec vector { m_bytes.data(), m_bytes.size() };
++    msghdr message { };
++    message.msg_iov = &vector;
++    message.msg_iovlen = 1;
++    message.msg_control = control.data();
++    message.msg_controllen = control.size();
++
++    ssize_t bytes;
++    do {
++        bytes = recvmsg(socket, &message, MSG_NOSIGNAL | MSG_CMSG_CLOEXEC | MSG_DONTWAIT);
++    } while (bytes < 0 && errno == EINTR);
++    if (bytes < 0)
++        return errno == EAGAIN || errno == EWOULDBLOCK ? Result::WouldBlock : Result::Error;
++
++    // Adopt all returned descriptors before validating the envelope, including
++    // truncated packets. RAII closes them on every rejection path.
++    Vector<UnixFileDescriptor> descriptors;
++    bool invalidControl = false;
++    for (auto* item = CMSG_FIRSTHDR(&message); item; item = CMSG_NXTHDR(&message, item)) {
++        auto offset = reinterpret_cast<uint8_t*>(item) - control.data();
++        if (item->cmsg_len < CMSG_LEN(0) || offset + item->cmsg_len > message.msg_controllen) {
++            invalidControl = true;
++            break;
++        }
++        if (item->cmsg_level != SOL_SOCKET || item->cmsg_type != SCM_RIGHTS) {
++            invalidControl = true;
++            continue;
++        }
++        auto length = item->cmsg_len - CMSG_LEN(0);
++        if (length % sizeof(int))
++            invalidControl = true;
++        for (size_t i = 0; i < length / sizeof(int); ++i) {
++            int descriptor;
++            memcpy(&descriptor, CMSG_DATA(item) + i * sizeof(int), sizeof(descriptor));
++            descriptors.append(UnixFileDescriptor { descriptor, UnixFileDescriptor::Adopt });
++        }
++    }
++    if (invalidControl || (message.msg_flags & (MSG_TRUNC | MSG_CTRUNC))
++        || static_cast<size_t>(bytes) > m_bytes.size() || descriptors.size() > attachmentMaxAmountHaiku)
++        return Result::Error;
++    if (!bytes)
++        return Result::Closed;
++    if (!decode(bytes, WTF::move(descriptors))) {
++        m_attachments.clear();
++        m_sharedBody = nullptr;
++        return Result::Error;
++    }
++    return Result::Message;
++}
++
++bool MessagePacketHaiku::decode(size_t bytes, Vector<UnixFileDescriptor>&& descriptors)
++{
++    if (bytes < sizeof(MessageInfo))
++        return false;
++    MessageInfo info;
++    memcpySpan(asMutableByteSpan(info), std::span { m_bytes }.first(sizeof(info)));
++    if (!info.isValid() || info.attachmentCount() > attachmentMaxAmountHaiku || !info.bodySize())
++        return false;
++    auto metadataSize = info.attachmentCount() * sizeof(AttachmentInfoHaiku);
++    if (metadataSize > bytes - sizeof(info))
++        return false;
++    auto offset = sizeof(info) + metadataSize;
++    if (info.isBodyOutOfLine()) {
++        if (!info.attachmentCount() || bytes != offset)
++            return false;
++    } else if (info.bodySize() != bytes - offset)
++        return false;
++
++    size_t descriptorCount = 0;
++    for (size_t i = 0; i < info.attachmentCount(); ++i) {
++        AttachmentInfoHaiku attachment;
++        memcpy(&attachment, m_bytes.data() + sizeof(info) + i, sizeof(attachment));
++        if (!attachment.isValid())
++            return false;
++        descriptorCount += !attachment.isNull;
++    }
++    if (descriptorCount != descriptors.size())
++        return false;
++
++    auto attachmentCount = info.attachmentCount() - (info.isBodyOutOfLine() ? 1 : 0);
++    if (info.isBodyOutOfLine() && m_bytes[sizeof(info) + attachmentCount])
++        return false;
++    m_attachments.resize(attachmentCount);
++    size_t descriptorIndex = 0;
++    for (size_t i = 0; i < attachmentCount; ++i) {
++        if (!m_bytes[sizeof(info) + i])
++            m_attachments[attachmentCount - i - 1] = WTF::move(descriptors[descriptorIndex++]);
++    }
++    if (info.isBodyOutOfLine()) {
++        WebCore::SharedMemory::Handle handle { WTF::move(descriptors[descriptorIndex]), info.bodySize() };
++        m_sharedBody = WebCore::SharedMemory::map(WTF::move(handle), WebCore::SharedMemory::Protection::ReadOnly);
++        if (!m_sharedBody)
++            return false;
++    }
++    m_bodyOffset = offset;
++    m_bodySize = info.bodySize();
++    return true;
++}
++
++std::span<const uint8_t> MessagePacketHaiku::body() const
++{
++    if (m_sharedBody)
++        return m_sharedBody->span().first(m_bodySize);
++    return std::span { m_bytes }.subspan(m_bodyOffset, m_bodySize);
++}
++
++} // namespace IPC
+diff --git a/Source/WebKit/Platform/IPC/haiku/MessagePacketHaiku.h b/Source/WebKit/Platform/IPC/haiku/MessagePacketHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..193875098b547bec5d0ec938d443b4baa570610a
+--- /dev/null
++++ b/Source/WebKit/Platform/IPC/haiku/MessagePacketHaiku.h
+@@ -0,0 +1,80 @@
++/*
++ * Copyright (C) 2026 KunanyiOS contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#pragma once
++
++#include "Attachment.h"
++#include <WebCore/SharedMemory.h>
++#include <array>
++#include <utility>
++#include <sys/socket.h>
++#include <wtf/Vector.h>
++
++namespace IPC {
++
++inline constexpr size_t messageMaxSizeHaiku = 4096;
++// Haiku caps the userspace control buffer at 1024 bytes and each kernel
++// ancillary record at 32 descriptor pointers. Send larger lists in groups.
++inline constexpr size_t descriptorGroupSizeHaiku = 32;
++inline constexpr size_t controlBufferSizeHaiku = 1024;
++inline constexpr size_t attachmentMaxAmountHaiku = controlBufferSizeHaiku
++    / CMSG_SPACE(descriptorGroupSizeHaiku * sizeof(int)) * descriptorGroupSizeHaiku;
++
++class FileDescriptorMessageHaiku {
++public:
++    bool setDescriptors(std::span<const int>);
++    void attachTo(msghdr&);
++private:
++    alignas(cmsghdr) std::array<uint8_t, controlBufferSizeHaiku> m_bytes { };
++    size_t m_size { 0 };
++};
++
++// This byte is copied across the socket; a C++ bool cannot safely represent
++// every possible input byte from a peer.
++struct AttachmentInfoHaiku {
++    uint8_t isNull { 0 };
++    bool isValid() const { return isNull <= 1; }
++};
++static_assert(sizeof(AttachmentInfoHaiku) == 1);
++
++// Owns one SOCK_SEQPACKET message and every descriptor received with it.
++// Invalid packets cannot leave descriptors behind for the next message.
++class MessagePacketHaiku {
++public:
++    enum class Result { Message, WouldBlock, Closed, Error };
++    Result receive(int socket);
++    std::span<const uint8_t> body() const;
++    Vector<Attachment> takeAttachments() { return std::exchange(m_attachments, { }); }
++
++private:
++    bool decode(size_t bytes, Vector<UnixFileDescriptor>&&);
++    std::array<uint8_t, messageMaxSizeHaiku> m_bytes;
++    size_t m_bodyOffset { 0 };
++    size_t m_bodySize { 0 };
++    Vector<Attachment> m_attachments;
++    RefPtr<WebCore::SharedMemory> m_sharedBody;
++};
++
++} // namespace IPC
 diff --git a/Source/WebKit/Platform/IPC/haiku/SocketMonitorHaiku.cpp b/Source/WebKit/Platform/IPC/haiku/SocketMonitorHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..15f8c784d5f654e40fdeed11792ce314daf214a5
+index 0000000000000000000000000000000000000000..b4573c09ccb4082337e457d3da9febfbe2f0add7
 --- /dev/null
 +++ b/Source/WebKit/Platform/IPC/haiku/SocketMonitorHaiku.cpp
-@@ -0,0 +1,155 @@
+@@ -0,0 +1,157 @@
 +/*
 + * Copyright (C) 2026 KunanyiOS contributors.
 + *
@@ -20403,12 +20893,13 @@ index 0000000000000000000000000000000000000000..15f8c784d5f654e40fdeed11792ce314
 +
 +struct SocketMonitorHaiku::State : ThreadSafeRefCounted<State> {
 +    State(UnixFileDescriptor&& socket, UnixFileDescriptor&& wakeRead, UnixFileDescriptor&& wakeWrite,
-+        WorkQueue& queue, Function<void()>&& callback)
++        WorkQueue& queue, Function<void()>&& callback, Mode mode)
 +        : socket(WTF::move(socket))
 +        , wakeRead(WTF::move(wakeRead))
 +        , wakeWrite(WTF::move(wakeWrite))
 +        , queue(queue)
 +        , callback(WTF::move(callback))
++        , events(mode == Mode::Read ? POLLIN : POLLOUT)
 +    {
 +    }
 +
@@ -20436,7 +20927,7 @@ index 0000000000000000000000000000000000000000..15f8c784d5f654e40fdeed11792ce314
 +            // While a callback is queued/running, wait only for its acknowledgement
 +            // or stop(). This bounds the queue even if the peer remains readable.
 +            pollfd descriptors[] = {
-+                { callbackPending.load() ? -1 : socket.value(), POLLIN, 0 },
++                { callbackPending.load() ? -1 : socket.value(), events, 0 },
 +                { wakeRead.value(), POLLIN, 0 }
 +            };
 +            int result;
@@ -20469,11 +20960,12 @@ index 0000000000000000000000000000000000000000..15f8c784d5f654e40fdeed11792ce314
 +    UnixFileDescriptor wakeWrite;
 +    Ref<WorkQueue> queue;
 +    Function<void()> callback;
++    short events;
 +    std::atomic<bool> active { true };
 +    std::atomic<bool> callbackPending { false };
 +};
 +
-+std::unique_ptr<SocketMonitorHaiku> SocketMonitorHaiku::create(int descriptor, WorkQueue& queue, Function<void()>&& callback)
++std::unique_ptr<SocketMonitorHaiku> SocketMonitorHaiku::create(int descriptor, WorkQueue& queue, Function<void()>&& callback, Mode mode)
 +{
 +    assertIsCurrent(queue);
 +    UnixFileDescriptor socket { descriptor, UnixFileDescriptor::Duplicate };
@@ -20487,7 +20979,7 @@ index 0000000000000000000000000000000000000000..15f8c784d5f654e40fdeed11792ce314
 +    UnixFileDescriptor wakeRead { wakeDescriptors[0], UnixFileDescriptor::Adopt };
 +    UnixFileDescriptor wakeWrite { wakeDescriptors[1], UnixFileDescriptor::Adopt };
 +    return std::unique_ptr<SocketMonitorHaiku>(new SocketMonitorHaiku(adoptRef(*new State(
-+        WTF::move(socket), WTF::move(wakeRead), WTF::move(wakeWrite), queue, WTF::move(callback)))));
++        WTF::move(socket), WTF::move(wakeRead), WTF::move(wakeWrite), queue, WTF::move(callback), mode))));
 +}
 +
 +SocketMonitorHaiku::SocketMonitorHaiku(Ref<State>&& state)
@@ -20519,10 +21011,10 @@ index 0000000000000000000000000000000000000000..15f8c784d5f654e40fdeed11792ce314
 +} // namespace IPC
 diff --git a/Source/WebKit/Platform/IPC/haiku/SocketMonitorHaiku.h b/Source/WebKit/Platform/IPC/haiku/SocketMonitorHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..210004a8f63f172191876e73c91bdcab29211b04
+index 0000000000000000000000000000000000000000..8c9fadddd57b601c7a4e032a0362949eaa88d5d9
 --- /dev/null
 +++ b/Source/WebKit/Platform/IPC/haiku/SocketMonitorHaiku.h
-@@ -0,0 +1,51 @@
+@@ -0,0 +1,52 @@
 +/*
 + * Copyright (C) 2026 KunanyiOS contributors.
 + *
@@ -20561,7 +21053,8 @@ index 0000000000000000000000000000000000000000..210004a8f63f172191876e73c91bdcab
 +// The polling thread never reads protocol data or accesses a Connection.
 +class SocketMonitorHaiku {
 +public:
-+    static std::unique_ptr<SocketMonitorHaiku> create(int, WorkQueue&, Function<void()>&&);
++    enum class Mode { Read, Write };
++    static std::unique_ptr<SocketMonitorHaiku> create(int, WorkQueue&, Function<void()>&&, Mode = Mode::Read);
 +    ~SocketMonitorHaiku();
 +
 +    void stop();
@@ -20574,44 +21067,195 @@ index 0000000000000000000000000000000000000000..210004a8f63f172191876e73c91bdcab
 +};
 +
 +} // namespace IPC
-diff --git a/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp b/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp
-index 3ee3ad88d83c8d0a22cef3245666eb4106b457fd..ad4cc5fccea6a5989adbcaa5806f76bd30da6f05 100644
---- a/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp
-+++ b/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp
-@@ -108,6 +108,11 @@ void Connection::platformInitialize(Identifier&& identifier)
- 
- void Connection::platformInvalidate()
+diff --git a/Source/WebKit/Platform/IPC/unix/IPCUtilitiesUnix.cpp b/Source/WebKit/Platform/IPC/unix/IPCUtilitiesUnix.cpp
+index 5ba3ea56961464cc7dc4c971340ad40069b095fa..10cb7a24242199fe64fb40e0a9cedf9845a0533a 100644
+--- a/Source/WebKit/Platform/IPC/unix/IPCUtilitiesUnix.cpp
++++ b/Source/WebKit/Platform/IPC/unix/IPCUtilitiesUnix.cpp
+@@ -35,7 +35,7 @@ SocketPair createPlatformConnection(int socketType, unsigned options)
  {
-+#if PLATFORM(HAIKU)
-+    // Cancel and join before releasing the connection descriptor. Queued
-+    // readiness callbacks are suppressed by the monitor's shared state.
-+    m_socketMonitor = nullptr;
-+#endif
-     if (m_socketDescriptor.value() != -1)
-         closeWithRetry(m_socketDescriptor.release());
+     std::array<int, 2> sockets;
  
-@@ -333,6 +338,21 @@ bool Connection::platformPrepareForOpen()
- void Connection::platformOpen()
- {
-     RefPtr<Connection> protectedThis(this);
-+#if PLATFORM(HAIKU)
-+    m_connectionQueue->dispatch([protectedThis] {
-+        if (!protectedThis->isValid())
-+            return;
-+        protectedThis->m_isConnected = true;
-+        protectedThis->m_socketMonitor = SocketMonitorHaiku::create(protectedThis->socketDescriptor(),
-+            protectedThis->m_connectionQueue, [protectedThis] {
-+                if (protectedThis->m_isConnected)
-+                    protectedThis->readyReadHandler();
-+            });
-+        if (!protectedThis->m_socketMonitor)
-+            protectedThis->connectionDidClose();
-+    });
-+    return;
-+#endif
-     m_isConnected = true;
+-#if OS(LINUX)
++#if OS(LINUX) || OS(HAIKU)
+     if ((options & SetCloexecOnServer) || (options & SetCloexecOnClient)) {
+         RELEASE_ASSERT(socketpair(AF_UNIX, socketType | SOCK_CLOEXEC, 0, sockets.data()) != -1);
  
- #if PLATFORM(PLAYSTATION)
+diff --git a/Source/WebKit/Platform/IPC/unix/MessageInfo.h b/Source/WebKit/Platform/IPC/unix/MessageInfo.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..b67841835e54b055d7f6b9c6ce7260513cddee8d
+--- /dev/null
++++ b/Source/WebKit/Platform/IPC/unix/MessageInfo.h
+@@ -0,0 +1,93 @@
++/*
++ * Copyright (C) 2010 Apple Inc. All rights reserved.
++ * Copyright (C) 2010 Nokia Corporation and/or its subsidiary(-ies)
++ * Copyright (C) 2011,2017 Igalia S.L.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#pragma once
++
++#include <wtf/StdLibExtras.h>
++
++namespace IPC {
++
++class MessageInfo {
++public:
++    MessageInfo()
++    {
++        // The entire MessageInfo is passed to write(), so we have to zero our
++        // padding bytes to avoid writing uninitialized memory.
++        zeroBytes(*this);
++    }
++
++#if OS(ANDROID)
++    MessageInfo(size_t bodySize, size_t initialAttachmentCount, size_t hardwareBufferCount)
++        : MessageInfo()
++    {
++        m_bodySize = bodySize;
++        m_attachmentCount = initialAttachmentCount;
++        m_hardwareBufferCount = hardwareBufferCount;
++    }
++
++    size_t hardwareBufferCount() const { return m_hardwareBufferCount; }
++#else
++    MessageInfo(size_t bodySize, size_t initialAttachmentCount)
++        : MessageInfo()
++    {
++        m_bodySize = bodySize;
++        m_attachmentCount = initialAttachmentCount;
++    }
++#endif
++
++    MessageInfo(const MessageInfo& info)
++        : MessageInfo()
++    {
++        *this = info;
++    }
++
++    MessageInfo& operator=(const MessageInfo&) = default;
++
++    void setBodyOutOfLine()
++    {
++        ASSERT(!isBodyOutOfLine());
++
++        m_isBodyOutOfLine = true;
++        m_attachmentCount++;
++    }
++
++    bool isValid() const { return m_isBodyOutOfLine <= 1; }
++    bool isBodyOutOfLine() const { return m_isBodyOutOfLine; }
++    size_t bodySize() const { return m_bodySize; }
++    size_t attachmentCount() const { return m_attachmentCount; }
++
++private:
++    // The MessageInfo will be copied using memcpy, so all members must be trivially copyable.
++    size_t m_bodySize;
++    size_t m_attachmentCount;
++#if OS(ANDROID)
++    size_t m_hardwareBufferCount;
++#endif
++    uint8_t m_isBodyOutOfLine;
++};
++
++} // namespace IPC
+diff --git a/Source/WebKit/Platform/IPC/unix/UnixMessage.h b/Source/WebKit/Platform/IPC/unix/UnixMessage.h
+index 10932fbbf87880b89b9bdde1473f2a40c988c9e6..3f6bd8692d1e389095a4513d66312d6c0d0731a9 100644
+--- a/Source/WebKit/Platform/IPC/unix/UnixMessage.h
++++ b/Source/WebKit/Platform/IPC/unix/UnixMessage.h
+@@ -29,6 +29,7 @@
+ 
+ #include "Attachment.h"
+ #include "Encoder.h"
++#include "MessageInfo.h"
+ #include <WebCore/SharedMemory.h>
+ #include <wtf/StdLibExtras.h>
+ #include <wtf/TZoneMallocInlines.h>
+@@ -36,64 +37,6 @@
+ 
+ namespace IPC {
+ 
+-class MessageInfo {
+-public:
+-    MessageInfo()
+-    {
+-        // The entire MessageInfo is passed to write(), so we have to zero our
+-        // padding bytes to avoid writing uninitialized memory.
+-        zeroBytes(*this);
+-    }
+-
+-#if OS(ANDROID)
+-    MessageInfo(size_t bodySize, size_t initialAttachmentCount, size_t hardwareBufferCount)
+-        : MessageInfo()
+-    {
+-        m_bodySize = bodySize;
+-        m_attachmentCount = initialAttachmentCount;
+-        m_hardwareBufferCount = hardwareBufferCount;
+-    }
+-
+-    size_t hardwareBufferCount() const { return m_hardwareBufferCount; }
+-#else
+-    MessageInfo(size_t bodySize, size_t initialAttachmentCount)
+-        : MessageInfo()
+-    {
+-        m_bodySize = bodySize;
+-        m_attachmentCount = initialAttachmentCount;
+-    }
+-#endif
+-
+-    MessageInfo(const MessageInfo& info)
+-        : MessageInfo()
+-    {
+-        *this = info;
+-    }
+-
+-    MessageInfo& operator=(const MessageInfo&) = default;
+-
+-    void setBodyOutOfLine()
+-    {
+-        ASSERT(!isBodyOutOfLine());
+-
+-        m_isBodyOutOfLine = true;
+-        m_attachmentCount++;
+-    }
+-
+-    bool isBodyOutOfLine() const { return m_isBodyOutOfLine; }
+-    size_t bodySize() const { return m_bodySize; }
+-    size_t attachmentCount() const { return m_attachmentCount; }
+-
+-private:
+-    // The MessageInfo will be copied using memcpy, so all members must be trivially copyable.
+-    size_t m_bodySize;
+-    size_t m_attachmentCount;
+-#if OS(ANDROID)
+-    size_t m_hardwareBufferCount;
+-#endif
+-    bool m_isBodyOutOfLine;
+-};
+-
+ class UnixMessage {
+     WTF_MAKE_TZONE_ALLOCATED_INLINE(UnixMessage);
+ public:
 diff --git a/Source/WebKit/Platform/Module.h b/Source/WebKit/Platform/Module.h
 index d5a0d8693335265c6d716689e238f144ebcfa2a7..248b212b335e2eb19c30a2be0ca07c08bf03dfbe 100644
 --- a/Source/WebKit/Platform/Module.h
@@ -20748,30 +21392,30 @@ index 0000000000000000000000000000000000000000..6c1b3916ff0fd1dfda2f69b43591c35b
 +
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..dff469112fde38af900ac4b438762b4dc4e1432a
+index 0000000000000000000000000000000000000000..cdc59ec4069c31af772411bd2bb0f7af1e3a0f79
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,127 @@
+@@ -0,0 +1,130 @@
 +include(Headers.cmake)
++include(Platform/Curl.cmake)
 +
 +file(MAKE_DIRECTORY ${DERIVED_SOURCES_HAIKU_API_DIR})
 +
 +configure_file(UIProcess/API/haiku/WebKitVersion.h.in ${DERIVED_SOURCES_HAIKU_API_DIR}/WebKitVersion.h)
 +
 +list(APPEND WebKit_SOURCES
-+    NetworkProcess/cache/NetworkCacheDataHaiku.cpp
-+    NetworkProcess/cache/NetworkCacheIOChannelHaiku.cpp
-+    NetworkProcess/haiku/NetworkProcessHaiku.cpp
-+    NetworkProcess/haiku/NetworkProcessMainHaiku.cpp
++    NetworkProcess/NetworkDataTaskDataURL.cpp
++    NetworkProcess/Classifier/WebResourceLoadStatisticsStore.cpp
 +
-+    Platform/IPC/unix/AttachmentUnix.cpp
-+    Platform/IPC/unix/ConnectionUnix.cpp
++    Platform/IPC/unix/ArgumentCodersUnix.cpp
++    Platform/IPC/haiku/ConnectionHaiku.cpp
++    Platform/IPC/haiku/MessagePacketHaiku.cpp
++    Platform/IPC/unix/IPCSemaphoreUnix.cpp
++    Platform/IPC/unix/IPCUtilitiesUnix.cpp
 +    Platform/IPC/haiku/SocketMonitorHaiku.cpp
++    Platform/classifier/ResourceLoadStatisticsClassifier.cpp
 +    Platform/haiku/LoggingHaiku.cpp
 +    Platform/haiku/ModuleHaiku.cpp
-+    Platform/unix/SharedMemoryUnix.cpp
-+
-+    Shared/WebCoreArgumentCoders.cpp
 +    Shared/unix/AuxiliaryProcessMain.cpp
 +    Shared/haiku/ProcessExecutablePathHaiku.cpp
 +    Shared/haiku/WebCoreArgumentCodersHaiku.cpp
@@ -20787,26 +21431,20 @@ index 0000000000000000000000000000000000000000..dff469112fde38af900ac4b438762b4d
 +    UIProcess/haiku/WebPageProxyHaiku.cpp
 +    UIProcess/haiku/WebProcessPoolHaiku.cpp
 +
-+    WebProcess/Cookies/haiku/WebCookieManagerHaiku.cpp
 +    WebProcess/InjectedBundle/haiku/InjectedBundleHaiku.cpp
-+    WebProcess/InjectedBundle/haiku/InjectedBundleHaiku.cpp
-+    WebProcess/WebCoreSupport/haiku/WebFrameNetworkingContext.cpp
-+    WebProcess/WebPage/AcceleratedDrawingArea.cpp
-+    WebProcess/WebPage/CoordinatedGraphics/CoordinatedLayerTreeHost.cpp
-+    WebProcess/WebPage/DrawingAreaImpl.cpp
-+    WebProcess/WebPage/LayerTreeHost.cpp
 +    WebProcess/WebPage/haiku/WebInspectorHaiku.cpp
 +    WebProcess/WebPage/haiku/WebPageHaiku.cpp
 +    WebProcess/haiku/WebProcessHaiku.cpp
 +    WebProcess/haiku/WebProcessMainHaiku.cpp
 +)
 +
-+list(APPEND WebKit_INCLUDE_DIRECTORIES
++list(APPEND WebKit_PRIVATE_INCLUDE_DIRECTORIES
 +    "${DERIVED_SOURCES_HAIKU_API_DIR}"
 +    "${WEBKIT_DIR}/NetworkProcess/unix"
 +    "${WEBKIT_DIR}/Platform"
 +    "${WEBKIT_DIR}/Platform/IPC/unix"
 +    "${WEBKIT_DIR}/Platform/IPC/haiku"
++    "${WEBKIT_DIR}/Platform/classifier"
 +    "${WEBKIT_DIR}/Shared/API/c/haiku"
 +    "${WEBKIT_DIR}/Shared/CoordinatedGraphics"
 +    "${WEBKIT_DIR}/Shared/unix"
@@ -20839,6 +21477,15 @@ index 0000000000000000000000000000000000000000..dff469112fde38af900ac4b438762b4d
 +
 +list(APPEND WebProcess_SOURCES
 +    WebProcess/EntryPoint/unix/WebProcessMain.cpp
++)
++
++find_program(HAIKU_RESOURCE_COMPILER rc REQUIRED)
++find_program(HAIKU_RESOURCE_LINKER xres REQUIRED)
++set_property(TARGET WebProcess APPEND PROPERTY LINK_DEPENDS "${WEBKIT_DIR}/WebProcess/haiku/WebProcess.rdef")
++add_custom_command(TARGET WebProcess POST_BUILD
++    COMMAND ${HAIKU_RESOURCE_COMPILER} -o "$<TARGET_FILE_DIR:WebProcess>/WebProcess.rsrc" "${WEBKIT_DIR}/WebProcess/haiku/WebProcess.rdef"
++    COMMAND ${HAIKU_RESOURCE_LINKER} -o "$<TARGET_FILE:WebProcess>" "$<TARGET_FILE_DIR:WebProcess>/WebProcess.rsrc"
++    VERBATIM
 +)
 +
 +list(APPEND NetworkProcess_SOURCES
@@ -20931,6 +21578,53 @@ index 0000000000000000000000000000000000000000..9c07f8e0c8c862d8144fa5b9b3a0b9b3
 +typedef const struct OpaqueWKTouchEvent* WKTouchEventRef;
 +
 +#endif /* WKBaseEfl_h */
+diff --git a/Source/WebKit/Shared/AuxiliaryProcess.cpp b/Source/WebKit/Shared/AuxiliaryProcess.cpp
+index 04efad5b4aa62b9809431c2ea3d5fe10a6b87287..83da500511cea0d10cb18988b596c40e356ded25 100644
+--- a/Source/WebKit/Shared/AuxiliaryProcess.cpp
++++ b/Source/WebKit/Shared/AuxiliaryProcess.cpp
+@@ -40,6 +40,10 @@
+ #include <wtf/SetForScope.h>
+ #include <wtf/WTFProcess.h>
+ 
++#if PLATFORM(HAIKU)
++#include <Application.h>
++#endif
++
+ #if !OS(WINDOWS)
+ #include <unistd.h>
+ #endif
+@@ -233,6 +237,10 @@ void AuxiliaryProcess::stopRunLoop()
+ #if !PLATFORM(COCOA)
+ void AuxiliaryProcess::platformStopRunLoop()
+ {
++#if PLATFORM(HAIKU)
++    if (be_app)
++        be_app->PostMessage(B_QUIT_REQUESTED);
++#endif
+     RunLoop::mainSingleton().stop();
+ }
+ #endif
+diff --git a/Source/WebKit/Shared/AuxiliaryProcessMain.h b/Source/WebKit/Shared/AuxiliaryProcessMain.h
+index 4aa44664bcb8fd583fd38914ebc053fe737f8ce9..2411f2e16b0942622b701ef51dd712b3079ec506 100644
+--- a/Source/WebKit/Shared/AuxiliaryProcessMain.h
++++ b/Source/WebKit/Shared/AuxiliaryProcessMain.h
+@@ -49,6 +49,7 @@ template<typename AuxiliaryProcessType>
+ class AuxiliaryProcessMainBase : public AuxiliaryProcessMainCommon {
+ public:
+     virtual bool platformInitialize() { return true; }
++    virtual void platformRunEventLoop() { RunLoop::run(); }
+     virtual void platformFinalize() { }
+ 
+     virtual void initializeAuxiliaryProcess(AuxiliaryProcessInitializationParameters&& parameters)
+@@ -73,7 +74,7 @@ public:
+         InitializeWebKit2();
+ 
+         initializeAuxiliaryProcess(WTF::move(m_parameters));
+-        RunLoop::run();
++        platformRunEventLoop();
+         platformFinalize();
+ 
+         return EXIT_SUCCESS;
 diff --git a/Source/WebKit/Shared/NativeWebKeyboardEvent.h b/Source/WebKit/Shared/NativeWebKeyboardEvent.h
 index d19f2b5f32665df6704bbd5ceac3f483ece6822d..d8b113b1ac659a75cca4c18ac2a3b36fddf382a0 100644
 --- a/Source/WebKit/Shared/NativeWebKeyboardEvent.h
@@ -23643,6 +24337,14 @@ index 0000000000000000000000000000000000000000..78ab9a456e1cea70d91afdbfc533e6b8
 +}
 +
 +} // namespace WebKit
+diff --git a/Source/WebKit/WebProcess/haiku/WebProcess.rdef b/Source/WebKit/WebProcess/haiku/WebProcess.rdef
+new file mode 100644
+index 0000000000000000000000000000000000000000..6549d7f5c9eac54d993817a051d3965dba9302ef
+--- /dev/null
++++ b/Source/WebKit/WebProcess/haiku/WebProcess.rdef
+@@ -0,0 +1,2 @@
++resource app_signature "application/x-vnd.haiku-webkit.webprocess";
++resource app_flags B_MULTIPLE_LAUNCH | B_BACKGROUND_APP;
 diff --git a/Source/WebKit/WebProcess/haiku/WebProcessHaiku.cpp b/Source/WebKit/WebProcess/haiku/WebProcessHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..60210a952f257f5378b9d3e4461c1b2a059a9eff
@@ -23698,10 +24400,10 @@ index 0000000000000000000000000000000000000000..60210a952f257f5378b9d3e4461c1b2a
 +}
 diff --git a/Source/WebKit/WebProcess/haiku/WebProcessMainHaiku.cpp b/Source/WebKit/WebProcess/haiku/WebProcessMainHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..2efc73420b605f1023ada5d0e1b1b339c8dffe06
+index 0000000000000000000000000000000000000000..29d0f70b23a11492c0e6eed84fbe0691b9d18645
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/haiku/WebProcessMainHaiku.cpp
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,61 @@
 +/*
 + * Copyright 2014,2019 Haiku, Inc.
 + *
@@ -23737,18 +24439,29 @@ index 0000000000000000000000000000000000000000..2efc73420b605f1023ada5d0e1b1b339
 +namespace WebKit {
 +using namespace WebCore;
 +
-+class WebProcessMain final : public AuxiliaryProcessMainBase {
++class WebProcessMainHaiku final : public AuxiliaryProcessMainBase<WebProcess> {
 +public:
 +    bool platformInitialize() override
 +    {
-+        BApplication* app = new BApplication("application/x-vnd.haiku-webkit.webprocess");
-+        return true;
++        m_application = makeUnique<BApplication>("application/x-vnd.haiku-webkit.webprocess");
++        return m_application->InitCheck() == B_OK;
 +    }
++
++    void platformRunEventLoop() override
++    {
++        // WTF attaches its main-thread handler to this BApplication. The
++        // application must drive that looper and maintain app_server access
++        // for native fonts, images and offscreen drawing.
++        m_application->Run();
++    }
++
++private:
++    std::unique_ptr<BApplication> m_application;
 +};
 +
-+int WebProcessMainUnix(int argc, char** argv)
++int WebProcessMain(int argc, char** argv)
 +{
-+    return AuxiliaryProcessMain<WebProcess, WebProcessMain>(argc, argv);
++    return AuxiliaryProcessMain<WebProcessMainHaiku>(argc, argv);
 +}
 +
 +} // namespace WebKit
@@ -39583,7 +40296,7 @@ index 121e64b01bce34e387deacf3bbbca93adf0f59da..7926cd9c3edf141bc52f7db0253c37c0
  endif ()
 diff --git a/Source/cmake/OptionsHaiku.cmake b/Source/cmake/OptionsHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..e2013c45e2ae6cb49a86eb4617a2a541d672deed
+index 0000000000000000000000000000000000000000..83dcaa38ee35283ea40b3dd2b5b680b0de38ede6
 --- /dev/null
 +++ b/Source/cmake/OptionsHaiku.cmake
 @@ -0,0 +1,254 @@
@@ -39609,8 +40322,8 @@ index 0000000000000000000000000000000000000000..e2013c45e2ae6cb49a86eb4617a2a541
 +# Uncomment to enable logs even in release mode
 +# add_definitions(-DLOG_DISABLED=0 -DERROR_DISABLED=0 -DFATAL_DISABLED=0)
 +
-+set(ENABLE_WEBKIT OFF)
-+set(ENABLE_WEBKIT_LEGACY ON)
++option(ENABLE_WEBKIT_LEGACY "Enable building the Haiku legacy embedding" ON)
++SET_AND_EXPOSE_TO_BUILD(USE_UNIX_DOMAIN_SOCKETS ${ENABLE_WEBKIT})
 +
 +set(USE_ANGLE_EGL OFF)
 +
@@ -39842,10 +40555,23 @@ index 0000000000000000000000000000000000000000..e2013c45e2ae6cb49a86eb4617a2a541
 +	"${CMAKE_CXX_STANDARD_LIBRARIES} ${GNU_LIBRARY}"
 +)
 diff --git a/Source/cmake/WebKitCommon.cmake b/Source/cmake/WebKitCommon.cmake
-index d6247301b40ca1e63847d51f05f14920510d8d3a..722a86695ffe46d1b977048296c2f6952b8eea8e 100644
+index d6247301b40ca1e63847d51f05f14920510d8d3a..360966bb75f8311b1b455d64c936162c4021c294 100644
 --- a/Source/cmake/WebKitCommon.cmake
 +++ b/Source/cmake/WebKitCommon.cmake
-@@ -75,6 +75,7 @@ if (NOT HAS_RUN_WEBKIT_COMMON)
+@@ -51,7 +51,11 @@ if (NOT HAS_RUN_WEBKIT_COMMON)
+ 
+     option(ENABLE_JAVASCRIPTCORE "Enable building JavaScriptCore" ON)
+     option(ENABLE_WEBCORE "Enable building JavaScriptCore" ON)
+-    option(ENABLE_WEBKIT "Enable building WebKit" ON)
++    if (PORT STREQUAL "Haiku")
++        option(ENABLE_WEBKIT "Enable building WebKit" OFF)
++    else ()
++        option(ENABLE_WEBKIT "Enable building WebKit" ON)
++    endif ()
+ 
+     if (NOT ENABLE_JAVASCRIPTCORE)
+         set(ENABLE_WEBCORE OFF)
+@@ -75,6 +79,7 @@ if (NOT HAS_RUN_WEBKIT_COMMON)
      set(ALL_PORTS
          Cocoa
          GTK
@@ -39853,7 +40579,7 @@ index d6247301b40ca1e63847d51f05f14920510d8d3a..722a86695ffe46d1b977048296c2f695
          IOS
          JSCOnly
          Mac
-@@ -235,7 +236,11 @@ if (NOT HAS_RUN_WEBKIT_COMMON)
+@@ -235,7 +240,11 @@ if (NOT HAS_RUN_WEBKIT_COMMON)
      set(WebKit_LIBRARY_TYPE SHARED)
      set(WebCoreTestSupport_LIBRARY_TYPE STATIC)
  

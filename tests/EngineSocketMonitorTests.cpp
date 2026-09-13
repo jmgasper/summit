@@ -160,6 +160,40 @@ int main()
     Check(recv(replacementAlias.value(), &actual, sizeof(actual), 0) == sizeof(actual),
         "cancellation does not close or drain a reused descriptor");
 
+    Pair congested;
+    RELEASE_ASSERT(setNonBlock(congested.writer.value()));
+    std::array<char, 1024> filler { };
+    while (send(congested.writer.value(), filler.data(), filler.size(), MSG_NOSIGNAL) >= 0) { }
+    // POLLOUT promises capacity for some bytes, not a whole 1024-byte packet.
+    while (send(congested.writer.value(), filler.data(), 1, MSG_NOSIGNAL) >= 0) { }
+    Check(errno == EAGAIN || errno == EWOULDBLOCK, "fill a nonblocking socket to exercise write backpressure");
+    std::atomic<int> writableCalls { 0 };
+    queue->dispatchSync([&] {
+        monitor = IPC::SocketMonitorHaiku::create(congested.writer.value(), *queue,
+            [&] { ++writableCalls; }, IPC::SocketMonitorHaiku::Mode::Write);
+        RELEASE_ASSERT(monitor);
+    });
+    snooze(50000);
+    Check(!writableCalls, "a full socket does not schedule writable callbacks");
+    bool responsive = false;
+    queue->dispatchSync([&] { responsive = true; });
+    Check(responsive, "the connection queue stays available while the socket is full");
+    auto writeStop = MonotonicTime::now();
+    queue->dispatchSync([&] { monitor.reset(); });
+    Check(MonotonicTime::now() - writeStop < 1_s, "cancelling a pending write does not wait for the peer to read");
+    BinarySemaphore writable;
+    queue->dispatchSync([&] {
+        monitor = IPC::SocketMonitorHaiku::create(congested.writer.value(), *queue, [&] {
+            ++writableCalls;
+            monitor.reset();
+            writable.signal();
+        }, IPC::SocketMonitorHaiku::Mode::Write);
+    });
+    while (recv(congested.reader.value(), filler.data(), filler.size(), 0) >= 0) { }
+    Check(writable.waitFor(2_s), "peer reads wake a pending writable monitor");
+    queue->dispatchSync([] { });
+    Check(writableCalls == 1 && !monitor, "write readiness can cancel itself after one queue callback");
+
     int before = OpenDescriptors();
     for (int i = 0; i < 40; ++i) {
         queue->dispatchSync([&] {
