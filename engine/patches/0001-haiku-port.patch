@@ -1883,7 +1883,7 @@ index c4c472fdd2eaf510f2523571b98f76a9c09a38e2..faf7a5d5b46f90400da6659eac3effd3
      notImplemented();
      return String::fromUTF8(format);
 diff --git a/Source/WebCore/platform/MIMETypeRegistry.cpp b/Source/WebCore/platform/MIMETypeRegistry.cpp
-index 9b54ff20266447120b80f850ebd0a0f69423bdcb..9b74ecd9e9c3edeb4093e2bd58254e848ead7a16 100644
+index 9b54ff20266447120b80f850ebd0a0f69423bdcb..361b7de4fda4c599ac52d9d4c489c7623d1a7208 100644
 --- a/Source/WebCore/platform/MIMETypeRegistry.cpp
 +++ b/Source/WebCore/platform/MIMETypeRegistry.cpp
 @@ -54,6 +54,15 @@
@@ -1911,7 +1911,7 @@ index 9b54ff20266447120b80f850ebd0a0f69423bdcb..9b74ecd9e9c3edeb4093e2bd58254e84
 +    // have a mime type file attribute.
 +    // If this is a local path, get an entry while also resolving symbolic
 +    // links and get the mime type info.
-+    BString localPath(path.utf8().data());
++    BString localPath(path.utf8().legacyCStringPointer());
 +    int offset = 0;
 +    if (localPath.FindFirst("file://") == 0 && localPath.Length() > 7) {
 +        offset = 7;
@@ -20317,7 +20317,7 @@ index 0000000000000000000000000000000000000000..6c1b3916ff0fd1dfda2f69b43591c35b
 +
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..1c223135782ec30c32e6ba86ba3dbc8bb015c01a
+index 0000000000000000000000000000000000000000..a07d8e88a79e977a904a744f436e2cc887415e0c
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
 @@ -0,0 +1,126 @@
@@ -20340,7 +20340,7 @@ index 0000000000000000000000000000000000000000..1c223135782ec30c32e6ba86ba3dbc8b
 +    Platform/unix/SharedMemoryUnix.cpp
 +
 +    Shared/WebCoreArgumentCoders.cpp
-+    Shared/haiku/AuxiliaryProcessMainHaiku.cpp
++    Shared/unix/AuxiliaryProcessMain.cpp
 +    Shared/haiku/ProcessExecutablePathHaiku.cpp
 +    Shared/haiku/WebCoreArgumentCodersHaiku.cpp
 +    Shared/haiku/WebMemorySamplerHaiku.cpp
@@ -20629,10 +20629,10 @@ index 0000000000000000000000000000000000000000..ee93bdaf3f08d885309473d7532b715e
 +} // namespace WebKit
 diff --git a/Source/WebKit/Shared/haiku/ProcessExecutablePathHaiku.cpp b/Source/WebKit/Shared/haiku/ProcessExecutablePathHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..53f10cb745d5aa8daed0d906452b721c152cf9ca
+index 0000000000000000000000000000000000000000..e60ee2addd00b59c42ab70b2c3cf126980316243
 --- /dev/null
 +++ b/Source/WebKit/Shared/haiku/ProcessExecutablePathHaiku.cpp
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,93 @@
 +/*
 + * Copyright (C) 2012 Samsung Electronics
 + * Copyright (C) 2014 Haiku, inc.
@@ -20662,74 +20662,70 @@ index 0000000000000000000000000000000000000000..53f10cb745d5aa8daed0d906452b721c
 +#include "config.h"
 +#include "ProcessExecutablePath.h"
 +
-+#include "NotImplemented.h"
-+#include <libgen.h>
++#include <image.h>
++#include <sys/stat.h>
 +#include <unistd.h>
 +#include <wtf/FileSystem.h>
 +#include <wtf/NeverDestroyed.h>
-+#include <wtf/StdLibExtras.h>
 +#include <wtf/text/CString.h>
 +
 +namespace WebKit {
 +
-+// We initially look for the process in WEBKIT_EXEC_PATH, then proceed to try the working
-+// directory of the running process, and finally we try LIBEXECDIR (usually /usr/local/bin).
++static bool isExecutable(const String& path)
++{
++    auto nativePath = path.utf8();
++    const char* filename = nativePath.legacyCStringPointer();
++    struct stat info;
++    return filename && filename[0] == '/' && !stat(filename, &info)
++        && S_ISREG(info.st_mode) && !access(filename, X_OK);
++}
++
 +static String findProcessPath(const char* processName)
 +{
-+    String executablePath;
-+    static const char* execDirectory = getenv("WEBKIT_EXEC_PATH");
-+    if (execDirectory) {
-+        executablePath = FileSystem::pathByAppendingComponent(String::fromUTF8(execDirectory), processName);
-+        if (FileSystem::fileExists(executablePath))
-+            return executablePath;
++    auto name = String::fromUTF8(processName);
++    if (const char* directory = getenv("WEBKIT_EXEC_PATH")) {
++        auto path = FileSystem::pathByAppendingComponent(String::fromUTF8(directory), name);
++        if (isExecutable(path))
++            return path;
 +    }
 +
-+#if OS(UNIX)
-+    char readLinkBuffer[PATH_MAX] = {0};
-+
-+    notImplemented();
-+#if OS(LINUX)
-+    ssize_t result = readlink("/proc/self/exe", readLinkBuffer, PATH_MAX);
-+#else
-+    ssize_t result = readlink("/proc/curproc/file", readLinkBuffer, PATH_MAX);
-+#endif
-+    if (result > 0) {
-+        char* executablePathPtr = dirname(readLinkBuffer);
-+        executablePath = FileSystem::pathByAppendingComponent(String::fromUTF8(executablePathPtr), processName);
-+        if (FileSystem::fileExists(executablePath))
-+            return executablePath;
++    // Haiku exposes loaded images directly; it has no /proc/self/exe link.
++    int32 cookie = 0;
++    image_info image;
++    while (get_next_image_info(B_CURRENT_TEAM, &cookie, &image) == B_OK) {
++        if (image.type != B_APP_IMAGE)
++            continue;
++        auto directory = FileSystem::parentPath(String::fromUTF8(image.name));
++        auto path = FileSystem::pathByAppendingComponent(directory, name);
++        if (isExecutable(path))
++            return path;
++        break;
 +    }
-+#endif
-+    executablePath = FileSystem::pathByAppendingComponent(String(LIBEXECDIR), processName);
-+    ASSERT(FileSystem::fileExists(executablePath));
-+    return executablePath;
++    auto path = FileSystem::pathByAppendingComponent(String::fromUTF8(LIBEXECDIR), name);
++    return isExecutable(path) ? path : String();
 +}
 +
 +String executablePathOfWebProcess()
 +{
-+    static NeverDestroyed<const String> webKitWebProcessName(findProcessPath(WEBPROCESSNAME));
-+
-+    return webKitWebProcessName;
++    static NeverDestroyed<String> path(findProcessPath(WEBPROCESSNAME));
++    return path.get();
 +}
 +
-+String executablePathOfPluginProcess()
-+{
-+    static NeverDestroyed<const String> webKitPluginProcessName(findProcessPath(PLUGINPROCESSNAME));
-+
-+    return webKitPluginProcessName;
-+}
-+
-+#if ENABLE(NETWORK_PROCESS)
 +String executablePathOfNetworkProcess()
 +{
-+    static NeverDestroyed<const String> webKitNetworkProcessName(findProcessPath(NETWORKPROCESSNAME));
++    static NeverDestroyed<String> path(findProcessPath(NETWORKPROCESSNAME));
++    return path.get();
++}
 +
-+    return webKitNetworkProcessName;
++#if ENABLE(GPU_PROCESS)
++String executablePathOfGPUProcess()
++{
++    static NeverDestroyed<String> path(findProcessPath("GPUProcess"));
++    return path.get();
 +}
 +#endif
 +
 +} // namespace WebKit
-+
 diff --git a/Source/WebKit/Shared/haiku/WebCoreArgumentCodersHaiku.cpp b/Source/WebKit/Shared/haiku/WebCoreArgumentCodersHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..92e6a5ad332ada635bf11487a9bf91669fe153dc
@@ -21573,12 +21569,102 @@ index 58f00aff737c58a39b1f8556c134f6b39ba2c43c..39a2b870eb9cc704e34a5bc348d85a7e
  enum class SandboxPermission {
      ReadOnly,
      ReadWrite,
+diff --git a/Source/WebKit/UIProcess/Launcher/haiku/HaikuProcess.h b/Source/WebKit/UIProcess/Launcher/haiku/HaikuProcess.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..79046c61ef365eb513fed931d4aa8a8fcba7b582
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Launcher/haiku/HaikuProcess.h
+@@ -0,0 +1,84 @@
++/*
++ * Copyright (c) 2026 KunanyiOS contributors
++ * SPDX-License-Identifier: MIT
++ */
++
++#pragma once
++
++#include <cerrno>
++#include <cstdint>
++#include <fcntl.h>
++#include <signal.h>
++#include <spawn.h>
++#include <string>
++#include <unistd.h>
++#include <vector>
++
++extern char** environ;
++
++namespace WebKit {
++
++struct HaikuProcessResult {
++    pid_t process { 0 };
++    int error { 0 };
++};
++
++// Match AuxiliaryProcessMainCommon's process-identifier/socket argument pair.
++// File descriptors owned by the caller must have FD_CLOEXEC unless deliberately
++// inherited; the IPC endpoint alone is made inheritable in the child here.
++inline HaikuProcessResult spawnHaikuProcess(const char* executable, uint64_t processIdentifier,
++    int connection, const std::vector<std::string>& extraArguments = { })
++{
++    if (!executable || executable[0] != '/' || !processIdentifier)
++        return { 0, EINVAL };
++    // Use a temporary descriptor distinct from the child's fixed endpoint.
++    // Haiku's dup2(fd, fd) does not clear FD_CLOEXEC.
++    int duplicate = fcntl(connection, F_DUPFD_CLOEXEC, 4);
++    if (duplicate < 0)
++        return { 0, errno };
++
++    posix_spawn_file_actions_t actions;
++    int error = posix_spawn_file_actions_init(&actions);
++    if (error) {
++        close(duplicate);
++        return { 0, error };
++    }
++    error = posix_spawn_file_actions_adddup2(&actions, duplicate, 3);
++    if (!error)
++        error = posix_spawn_file_actions_addclose(&actions, duplicate);
++
++    posix_spawnattr_t attributes;
++    int attributeError = posix_spawnattr_init(&attributes);
++    if (!error)
++        error = attributeError;
++    if (!error) {
++        sigset_t signals;
++        sigemptyset(&signals);
++        error = posix_spawnattr_setsigmask(&attributes, &signals);
++        sigaddset(&signals, SIGTERM);
++        sigaddset(&signals, SIGINT);
++        sigaddset(&signals, SIGPIPE);
++        if (!error)
++            error = posix_spawnattr_setsigdefault(&attributes, &signals);
++        if (!error)
++            error = posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF);
++    }
++
++    pid_t process = 0;
++    if (!error) {
++        std::vector<std::string> arguments { executable, std::to_string(processIdentifier), "3" };
++        arguments.insert(arguments.end(), extraArguments.begin(), extraArguments.end());
++        std::vector<char*> argv;
++        for (auto& argument : arguments)
++            argv.push_back(argument.data());
++        argv.push_back(nullptr);
++        error = posix_spawn(&process, executable, &actions, &attributes, argv.data(), environ);
++    }
++    if (!attributeError)
++        posix_spawnattr_destroy(&attributes);
++    posix_spawn_file_actions_destroy(&actions);
++    close(duplicate);
++    return { error ? 0 : process, error };
++}
++
++} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/Launcher/haiku/ProcessLauncherHaiku.cpp b/Source/WebKit/UIProcess/Launcher/haiku/ProcessLauncherHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..9dde9511b7e76c82ead21f373ead7b3062d9296c
+index 0000000000000000000000000000000000000000..f0d827e69a42a3717accff5f30c55629453be0cf
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Launcher/haiku/ProcessLauncherHaiku.cpp
-@@ -0,0 +1,46 @@
+@@ -0,0 +1,95 @@
 +/*
 + *  Copyright (C) 2019 Haiku, Inc.
 + *
@@ -21606,6 +21692,14 @@ index 0000000000000000000000000000000000000000..9dde9511b7e76c82ead21f373ead7b30
 +
 +#include "config.h"
 +#include "ProcessLauncher.h"
++#include "HaikuProcess.h"
++#include "IPCUtilities.h"
++#include "ProcessExecutablePath.h"
++#include <signal.h>
++#include <sys/socket.h>
++#include <sys/wait.h>
++#include <wtf/RunLoop.h>
++#include <wtf/text/CString.h>
 +
 +using namespace WebCore;
 +
@@ -21613,18 +21707,59 @@ index 0000000000000000000000000000000000000000..9dde9511b7e76c82ead21f373ead7b30
 +
 +void ProcessLauncher::launchProcess()
 +{
++    String executable;
++    switch (m_launchOptions.processType) {
++    case ProcessType::Web:
++        executable = executablePathOfWebProcess();
++        break;
++    case ProcessType::Network:
++        executable = executablePathOfNetworkProcess();
++        break;
++#if ENABLE(GPU_PROCESS)
++    case ProcessType::GPU:
++        executable = executablePathOfGPUProcess();
++        break;
++#endif
++    default:
++        break;
++    }
++    auto sockets = IPC::createPlatformConnection(SOCK_SEQPACKET);
++    std::vector<std::string> arguments;
++    if (m_client && m_client->shouldConfigureJSCForTesting())
++        arguments.emplace_back("--configure-jsc-for-testing");
++    auto result = m_launchOptions.shouldMakeProcessLaunchFailForTesting
++        ? HaikuProcessResult { 0, ENOENT }
++        : spawnHaikuProcess(executable.utf8().legacyCStringPointer(), m_launchOptions.processIdentifier.toUInt64(), sockets.client.value(), arguments);
++    if (result.error) {
++        RunLoop::mainSingleton().dispatch([protectedThis = Ref { *this }] {
++            protectedThis->didFinishLaunchingProcess(0, { });
++        });
++        return;
++    }
++
++    Thread::create("WebKit process reaper"_s, [process = result.process] {
++        int status;
++        while (waitpid(process, &status, 0) < 0 && errno == EINTR) { }
++    })->detach();
++    RunLoop::mainSingleton().dispatch([protectedThis = Ref { *this }, process = result.process, server = WTF::move(sockets.server)] mutable {
++        if (!protectedThis->m_client)
++            kill(process, SIGKILL);
++        protectedThis->didFinishLaunchingProcess(process, IPC::Connection::Identifier { WTF::move(server) });
++    });
 +}
 +
-+void ProcessLauncher::terminateProcess()
++void ProcessLauncher::terminateProcess(const String&)
 +{
++    if (m_processID)
++        kill(m_processID, SIGKILL);
 +}
 +
 +void ProcessLauncher::platformInvalidate()
 +{
++    m_processID = 0;
 +}
 +
 +} // namespace WebKit
-+
 diff --git a/Source/WebKit/UIProcess/WebsiteData/haiku/WebsiteDataStoreHaiku.cpp b/Source/WebKit/UIProcess/WebsiteData/haiku/WebsiteDataStoreHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..6f011911668d69ca4d840e72ee882aba437b5172

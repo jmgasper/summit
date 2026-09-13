@@ -125,17 +125,27 @@ With both fixes linked into an isolated shell, **760 upstream Atomics test
 executions pass**, with nine upstream skips and zero failures. The first run
 with only the timer fix had one timeout and captured a worker double-free
 report. Both JIT and interpreter smoke checks still pass. These source changes
-are queued for integration into the main engine build after its current
-compilation finishes. Logs are `.vm/runloop-isolated.log`,
+are included in the resumed main engine build. Logs are `.vm/runloop-isolated.log`,
 `.vm/runloop-atomics.log`, `.vm/runloop-atomics-fixed.log` and
 `.vm/runloop-atomics-crash.report`.
 
 The new native download filename helper passes **16 checks** for path
 components, control characters, empty names, Unicode and filesystem length
 limits. It also preserves Unicode extensions when avoiding filename collisions.
-The helper and an explicit completion-status field are queued for the next
+The helper and an explicit completion-status field are included in the current
 engine build iteration; actual downloads through that engine remain unverified.
 The installed system engine still has its original filename handling.
+
+The modern process port now has a native spawn helper and executable resolver.
+**18 native process/IPC checks pass**: creating a child with exact arguments,
+preserving descriptor flags, resetting its signal mask, sequenced packets,
+transferring real descriptors with close-on-exec, sharing writable mappings,
+reaping the child and reporting launch errors. **12 path checks pass** against
+the production resolver, including executable directories with spaces and
+Unicode, overrides, installation fallback and missing helpers. Run these with
+`tools/test-engine-process-in-vm.sh`; logs are `.vm/native-ipc-tests.log` and
+`.vm/native-process-paths.log`. The modern WebKit process launcher itself is
+not compiled yet, and this does not establish WebKit process isolation.
 
 WebCore and WebKitLegacy compilation has started. The source transfer was
 corrected to include root `Configurations/`, which supplies the version header

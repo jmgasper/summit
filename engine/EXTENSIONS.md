@@ -33,6 +33,14 @@ Haiku's process initialization, network-process lifecycle, argument coders and
 process-pool code contain unimplemented hooks. Turning on `ENABLE_WEBKIT` and
 `ENABLE_WK_WEB_EXTENSIONS` cannot resolve these gaps.
 
+The native process launcher now uses `posix_spawn` with an explicit IPC endpoint,
+and resolves helper executables through Haiku's image API. Focused native tests
+verify process creation, exact arguments, descriptor inheritance, sequenced
+packets, descriptor transfer and shared mappings (18 checks), plus executable
+discovery and failure cases (12 checks). These exercise the production spawn
+helper and path resolver. The full modern process launcher and WebKit IPC
+connection are still awaiting integration and compilation.
+
 The next engine stages are:
 
 1. Compile and exercise current JavaScriptCore, WebCore and native embedding.
