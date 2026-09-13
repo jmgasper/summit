@@ -4,6 +4,7 @@
 #include "GraphicsContext.h"
 #include "GraphicsContextHaiku.h"
 #include "BitmapFrameHaiku.h"
+#include "BitmapPresenterHaiku.h"
 #include <Application.h>
 #include <View.h>
 #include <wtf/MainThread.h>
@@ -11,6 +12,8 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <atomic>
+#include <thread>
 
 using namespace WebCore;
 static int checks = 0, failures = 0;
@@ -36,7 +39,7 @@ static bool Pixel(const ShareableBitmap& bitmap, int x, int y,
     return Pixel(bitmap.span(), bitmap.bytesPerRow(), x, y, red, green, blue, alpha);
 }
 
-static bool Pixel(const BitmapRef& image, int x, int y,
+static bool Pixel(const BBitmap& image, int x, int y,
     uint8_t red, uint8_t green, uint8_t blue, uint8_t alpha = 255)
 {
     return Pixel({ static_cast<const uint8_t*>(image.Bits()), static_cast<size_t>(image.BitsLength()) },
@@ -199,6 +202,49 @@ int main()
     ShareableBitmapHandle oversizedFrame(WTF::move(*oversizedHandle), ShareableBitmapConfiguration({ 1, 1 }));
     Check(!WebKit::bitmapFrameHandleIsValidHaiku({ 1, 1 }, 1, oversizedFrame),
         "reject oversized backing objects hidden behind a small frame configuration");
+
+    WebKit::BitmapPresenterHaiku presenter;
+    SetPixel(*source, 1, 1, 1, 0, 0);
+    Check(presenter.publish(1, *source, { 8, 8 }, 1), "publish a native window frame from shared pixels");
+    auto firstFrame = presenter.snapshot();
+    Check(firstFrame && firstFrame->identifier == 1 && firstFrame->viewSize == IntSize(8, 8)
+        && firstFrame->image->Bits() != source->span().data() && Pixel(*firstFrame->image, 1, 1, 1, 0, 0),
+        "native window snapshot owns immutable pixels independent of WebContent");
+    SetPixel(*source, 1, 1, 2, 0, 0);
+    Check(firstFrame && Pixel(*firstFrame->image, 1, 1, 1, 0, 0),
+        "later shared-memory writes cannot alter an outstanding native window frame");
+    Check(!presenter.publish(1, *source, { 8, 8 }, 1) && !presenter.publish(0, *source, { 8, 8 }, 1)
+        && !presenter.publish(2, *source, { 7, 8 }, 1),
+        "native presentation rejects stale frames and inconsistent view geometry");
+    Check(presenter.publish(2, *source, { 4, 4 }, 2) && presenter.snapshot()->scale == 2,
+        "native window frame retains logical size and device scale");
+    std::atomic<bool> reading { true }, validSnapshots { true };
+    std::atomic<unsigned> observations { 0 };
+    std::thread windowReader([&] {
+        while (reading.load()) {
+            auto frame = presenter.snapshot();
+            if (!frame || !Pixel(*frame->image, 1, 1, static_cast<uint8_t>(frame->identifier), 0, 0))
+                validSnapshots = false;
+            ++observations;
+            std::this_thread::yield();
+        }
+    });
+    while (!observations.load()) std::this_thread::yield();
+    bool published = true;
+    for (uint64_t identifier = 3; identifier <= 32; ++identifier) {
+        SetPixel(*source, 1, 1, identifier, 0, 0);
+        published &= presenter.publish(identifier, *source, { 8, 8 }, 1);
+    }
+    reading = false;
+    windowReader.join();
+    Check(published && validSnapshots && observations,
+        "window and application threads exchange complete stable frames during replacement");
+    auto finalFrame = presenter.snapshot();
+    presenter.close();
+    Check(!presenter.snapshot() && finalFrame && Pixel(*finalFrame->image, 1, 1, 32, 0, 0)
+        && firstFrame && Pixel(*firstFrame->image, 1, 1, 1, 0, 0),
+        "closing presentation preserves snapshots already retained by a drawing window");
+    Check(!presenter.publish(33, *source, { 8, 8 }, 1), "closed native views reject subsequent frames");
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

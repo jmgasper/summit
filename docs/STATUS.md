@@ -287,7 +287,7 @@ cannot currently export a separate read-only handle; it reports failure instead
 of granting writable access. These changes are integrated into the working engine.
 Logs: `.vm/native-memory-tests.log` and `.vm/native-memory-baseline.log`.
 
-Shared bitmap drawing now passes **32 native checks** against the production
+Shared bitmap drawing now passes **40 native checks** against the production
 WebCore adapters. Drawing contexts retain their native views and mappings,
 flush app_server writes on completion, and reject read-only backing memory.
 Image copies remain stable while shared references observe later writes;
@@ -298,8 +298,13 @@ copy operator incorrectly used source-over blending. Read-only images use
 private snapshots without making their mappings writable or cloneable.
 Frame checks reject invalid scales, oversized geometry, metadata mismatches and
 oversized backing objects before mapping. Run
-`tools/test-engine-bitmaps-in-vm.sh`; final log:
-`.vm/native-bitmap-frame-tests-fixed.log`.
+`tools/test-engine-bitmaps-in-vm.sh`; logs:
+`.vm/native-bitmap-frame-tests-fixed.log` and
+`.vm/native-bitmap-presenter-tests.log`. The native presentation helper copies
+shared pixels into immutable window snapshots. Concurrent reads and frame
+replacement preserve matching pixels and frame identifiers; outstanding
+snapshots survive view closure, which rejects later publication. This helper
+is ready for the native view integration.
 
 The modern Haiku drawing-area implementation and IPC definitions are staged for
 native compilation. They send complete software-rendered frames, associate them
@@ -317,6 +322,17 @@ clipboard commands, undo/redo and tab/newline handling. Run
 `tools/test-engine-native-events-in-vm.sh`; log:
 `.vm/native-event-editing-tests.log`. The page editing adapter is wired into the
 modern port; complete DOM editing still needs the running modern browser.
+
+The modern build reached its current Curl network backend and Haiku platform
+objects. Obsolete Haiku inspector source files referred to removed interfaces;
+the build now uses upstream's unsupported-frontend implementations until the
+native inspector window is ported. Source synchronization now compares content,
+retains timestamps for identical files and gives changed content a current guest
+timestamp. This prevents generated IPC headers from remaining stale when host
+edits predate a build that still used the old source. The previous affected
+inputs were explicitly refreshed. Host checks cover changed/identical content,
+file modes, removal of managed files and archive path boundaries; the next
+native build verifies message regeneration.
 
 All 32 Haiku legacy embedding source files pass the native compiler's syntax checks.
 The initial pass found five failing files caused by two upstream API changes:

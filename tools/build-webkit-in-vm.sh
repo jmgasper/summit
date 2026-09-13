@@ -34,9 +34,15 @@ if [[ $SUMMIT_ENGINE_MODE == modern ]]; then
     bash tools/haiku.sh 'test -f /boot/home/summit-deps/icu78/lib/libicuuc.so.78.3 || { echo "Build private ICU first with tools/build-icu-in-vm.sh." >&2; exit 1; }'
 fi
 python3 tools/prepare-webkit.py
+SUMMIT_ENGINE_PATCH_SHA=$(python3 -c 'import json; print(json.load(open("engine/sources.lock.json"))["patch"]["sha256"])')
+if [[ ! $SUMMIT_ENGINE_PATCH_SHA =~ ^[0-9a-f]{64}$ ]]; then
+    echo 'Invalid engine patch digest.' >&2
+    exit 1
+fi
+bash tools/haiku.sh 'mkdir -p /boot/home/summit/tools && cat > /boot/home/summit/tools/sync-webkit-sources.py' < tools/sync-webkit-sources.py
 # Source paths are fixed and passed as archive members, never as remote commands.
 tar -C .cache/WebKit -czf - --exclude=__pycache__ CMakeLists.txt Configurations Source Tools |
-    bash tools/haiku.sh 'mkdir -p /boot/home/summit-webkit && tar xzf - -C /boot/home/summit-webkit'
+    bash tools/haiku.sh 'python3.10 /boot/home/summit/tools/sync-webkit-sources.py /boot/home/summit-webkit' "$SUMMIT_ENGINE_PATCH_SHA"
 if [[ $SUMMIT_ENGINE_MODE == modern ]]; then
     bash tools/haiku.sh 'cd /boot/home/summit-webkit && cmake -S . -B WebKitBuild/Modern -G Ninja -DPORT=Haiku -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-ftrack-macro-expansion=0 --param ggc-min-expand=10" -DENABLE_WEBKIT=ON -DENABLE_WEBKIT_LEGACY=OFF -DENABLE_GPU_PROCESS=OFF -DENABLE_LAYOUT_TESTS=OFF -DICU_ROOT=/boot/home/summit-deps/icu78 -DCMAKE_INSTALL_PREFIX=/boot/home/summit-webkit-modern && DISABLE_ASLR=1 ninja -C WebKitBuild/Modern -j' "$SUMMIT_WEBKIT_JOBS" "$SUMMIT_ENGINE_TARGET"
 else

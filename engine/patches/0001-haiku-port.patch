@@ -21425,6 +21425,91 @@ index 0000000000000000000000000000000000000000..e6506c4d667ca790af6832a314af9b12
 +}
 +
 +} // namespace WebKit
+diff --git a/Source/WebKit/Platform/haiku/BitmapPresenterHaiku.h b/Source/WebKit/Platform/haiku/BitmapPresenterHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..6b2283622ed80a5a6c1b0afb82d270c5a477be12
+--- /dev/null
++++ b/Source/WebKit/Platform/haiku/BitmapPresenterHaiku.h
+@@ -0,0 +1,79 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#pragma once
++
++#include "BitmapFrameHaiku.h"
++#include <Bitmap.h>
++#include <WebCore/ShareableBitmap.h>
++#include <cstring>
++#include <memory>
++#include <mutex>
++#include <utility>
++
++namespace WebKit {
++
++// WebKit publishes on the application thread. A native window may retain its
++// immutable snapshot while the next frame is published or the view is closed.
++class BitmapPresenterHaiku {
++public:
++    struct Frame {
++        uint64_t identifier;
++        WebCore::IntSize viewSize;
++        float scale;
++        std::unique_ptr<const BBitmap> image;
++    };
++
++    bool publish(uint64_t identifier, const WebCore::ShareableBitmap& bitmap, const WebCore::IntSize& viewSize, float scale)
++    {
++        auto size = bitmapFrameSizeHaiku(viewSize, scale);
++        if (!identifier || !size || bitmap.size() != *size || bitmap.bytesPerRow() != static_cast<size_t>(size->width()) * 4
++            || bitmap.span().size() != bitmap.bytesPerRow() * size->height())
++            return false;
++        {
++            std::lock_guard guard(m_mutex);
++            if (m_closed || identifier <= m_lastIdentifier)
++                return false;
++        }
++        // Do not expose the WebContent mapping to app_server or retain mutable
++        // shared pixels after acknowledging presentation to the sender.
++        auto image = std::make_unique<BBitmap>(BRect(0, 0, size->width() - 1, size->height() - 1), uint32_t(0), B_RGBA32);
++        if (!image->IsValid() || image->BytesPerRow() != static_cast<int32>(bitmap.bytesPerRow())
++            || static_cast<size_t>(image->BitsLength()) != bitmap.span().size())
++            return false;
++        std::memcpy(image->Bits(), bitmap.span().data(), bitmap.span().size());
++        auto frame = std::make_shared<const Frame>(Frame { identifier, viewSize, scale, std::move(image) });
++        std::shared_ptr<const Frame> previous;
++        {
++            std::lock_guard guard(m_mutex);
++            if (m_closed || identifier <= m_lastIdentifier)
++                return false;
++            m_lastIdentifier = identifier;
++            previous = std::exchange(m_frame, std::move(frame));
++        }
++        return true;
++    }
++
++    std::shared_ptr<const Frame> snapshot() const
++    {
++        std::lock_guard guard(m_mutex);
++        return m_frame;
++    }
++
++    void close()
++    {
++        std::shared_ptr<const Frame> previous;
++        {
++            std::lock_guard guard(m_mutex);
++            m_closed = true;
++            previous = std::exchange(m_frame, nullptr);
++        }
++    }
++
++private:
++    mutable std::mutex m_mutex;
++    std::shared_ptr<const Frame> m_frame;
++    uint64_t m_lastIdentifier { 0 };
++    bool m_closed { false };
++};
++
++} // namespace WebKit
 diff --git a/Source/WebKit/Platform/haiku/LoggingHaiku.cpp b/Source/WebKit/Platform/haiku/LoggingHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..b78517cd47cc3e776e3c70ff854b2d6c7208fb89
@@ -21644,10 +21729,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..bd7a0b24cd708f36feaf60fb09a5959b62714383
+index 0000000000000000000000000000000000000000..af1c8374d7d13c5e209acbef4238a886c6bc2a2b
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,134 @@
+@@ -0,0 +1,132 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -21680,13 +21765,11 @@ index 0000000000000000000000000000000000000000..bd7a0b24cd708f36feaf60fb09a5959b
 +    UIProcess/WebsiteData/haiku/WebsiteDataStoreHaiku.cpp
 +    UIProcess/haiku/DrawingAreaProxyHaiku.cpp
 +    UIProcess/haiku/TextCheckerHaiku.cpp
-+    UIProcess/haiku/WebInspectorProxyHaiku.cpp
 +    UIProcess/haiku/WebPageProxyHaiku.cpp
 +    UIProcess/haiku/WebProcessPoolHaiku.cpp
 +
 +    WebProcess/InjectedBundle/haiku/InjectedBundleHaiku.cpp
 +    WebProcess/WebPage/haiku/DrawingAreaHaiku.cpp
-+    WebProcess/WebPage/haiku/WebInspectorHaiku.cpp
 +    WebProcess/WebPage/haiku/WebPageHaiku.cpp
 +    WebProcess/haiku/WebProcessHaiku.cpp
 +    WebProcess/haiku/WebProcessMainHaiku.cpp
@@ -23995,10 +24078,10 @@ index 0000000000000000000000000000000000000000..b12e656b2046acc0f1325d1b28ee8be2
 +#endif
 diff --git a/Source/WebKit/UIProcess/haiku/WebPageProxyHaiku.cpp b/Source/WebKit/UIProcess/haiku/WebPageProxyHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..abf359963e3793e13780d3869692c3aa73c33016
+index 0000000000000000000000000000000000000000..118bc13f9b8859a5a6af9c0bf54f9da449628f39
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebPageProxyHaiku.cpp
-@@ -0,0 +1,66 @@
+@@ -0,0 +1,67 @@
 +/*
 + * Copyright (C) 2014-2021 Haiku, inc.
 + *
@@ -24029,6 +24112,7 @@ index 0000000000000000000000000000000000000000..abf359963e3793e13780d3869692c3aa
 +#include "WebPageProxy.h"
 +
 +#include <WebCore/NotImplemented.h>
++#include <WebCore/RecentSearch.h>
 +#include <WebCore/UserAgent.h>
 +
 +#include <sys/utsname.h>

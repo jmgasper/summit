@@ -62,7 +62,9 @@ bash tools/build-webkit-in-vm.sh --modern WebProcess
 ```
 
 Both modes check for an active engine build before synchronizing their shared
-source directory. The modern configuration enables WebKit's process architecture
+source directory. Synchronization preserves unchanged files and timestamps new
+content on the guest, so generated headers cannot silently retain older content.
+The modern configuration enables WebKit's process architecture
 and currently disables the GPU process. It does not yet provide a working
 browser process connection. Its ICU 78 JavaScriptCore passes 31 JIT/interpreter
 smoke checks; the scoped conformance comparison fixes 94 ICU-related failures.
