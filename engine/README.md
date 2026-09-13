@@ -34,6 +34,7 @@ bash tools/test-download-names-in-vm.sh
 bash tools/test-engine-runloop-in-vm.sh
 bash tools/test-engine-process-in-vm.sh
 bash tools/test-engine-memory-in-vm.sh
+bash tools/test-engine-socket-monitor-in-vm.sh
 # Build Summit with private current-engine libraries and accompanying source:
 bash tools/build-current-browser-in-vm.sh
 # Repeat the host bundle copy without rebuilding, while inputs still match:

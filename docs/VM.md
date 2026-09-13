@@ -1,6 +1,6 @@
 # Summit's Haiku test VM
 
-Summit has an independent QEMU/KVM VM, with 8 vCPUs and 12 GiB RAM.
+Summit has an independent QEMU/KVM VM, with 12 vCPUs and 20 GiB RAM.
 Its 24 GiB disk is `summit/.vm/work.qcow2`. Kiri's disk and VM are separate.
 
 - SSH: `127.0.0.1:2225`, through `bash tools/haiku.sh`.
@@ -57,6 +57,8 @@ the 12 GiB guest used several GiB of swap and developed long SSH login delays
 and compiler processes stuck in kernel waits. The precise kernel cause has
 not been established.
 Set `SUMMIT_WEBKIT_JOBS` to adjust concurrency for a different VM size.
+After the first full Test262 run completed, the guest was shut down normally
+and increased from 8 vCPUs/12 GiB to 12 vCPUs/20 GiB for subsequent builds.
 
 The September 13 incident required a guest reset after compiler termination,
 `sync` and normal shutdown stopped responding. A full QMP disk backup completed

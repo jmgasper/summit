@@ -20273,6 +20273,30 @@ index 122733d20088dcfcf96c151b6f4f1d4a62a895a4..f8fa9434ed211b05897b732d4163a1b6
  std::optional<Connection::ConnectionIdentifierPair> Connection::createConnectionIdentifierPair()
  {
      notImplemented();
+diff --git a/Source/WebKit/Platform/IPC/Connection.h b/Source/WebKit/Platform/IPC/Connection.h
+index 72735563ab8ac49ffc69531d46b6068a5a43d93c..f079c2e81f065aafc6c1f0fdfa37c5a1394d3976 100644
+--- a/Source/WebKit/Platform/IPC/Connection.h
++++ b/Source/WebKit/Platform/IPC/Connection.h
+@@ -89,6 +89,10 @@
+ #include <wtf/glib/GSocketMonitor.h>
+ #endif
+ 
++#if PLATFORM(HAIKU)
++#include "SocketMonitorHaiku.h"
++#endif
++
+ #if USE(UNIX_DOMAIN_SOCKETS)
+ #include <wtf/unix/UnixFileDescriptor.h>
+ #endif
+@@ -810,6 +814,8 @@ private:
+ #endif
+ #if PLATFORM(PLAYSTATION)
+     RefPtr<WTF::Thread> m_socketMonitor;
++#elif PLATFORM(HAIKU)
++    std::unique_ptr<SocketMonitorHaiku> m_socketMonitor;
+ #endif
+ #elif OS(DARWIN)
+     // Called on the connection queue.
 diff --git a/Source/WebKit/Platform/IPC/IPCEvent.h b/Source/WebKit/Platform/IPC/IPCEvent.h
 index ad092499963e96b597ee991fa87a5abffa6b5755..c4ca087e4f0a18b4b7798af8b493706c3d0d4d81 100644
 --- a/Source/WebKit/Platform/IPC/IPCEvent.h
@@ -20332,6 +20356,262 @@ index 0000000000000000000000000000000000000000..2b968b6ac3681112fefa4f50dc2da402
 +};
 +
 +}
+diff --git a/Source/WebKit/Platform/IPC/haiku/SocketMonitorHaiku.cpp b/Source/WebKit/Platform/IPC/haiku/SocketMonitorHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..15f8c784d5f654e40fdeed11792ce314daf214a5
+--- /dev/null
++++ b/Source/WebKit/Platform/IPC/haiku/SocketMonitorHaiku.cpp
+@@ -0,0 +1,155 @@
++/*
++ * Copyright (C) 2026 KunanyiOS contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "SocketMonitorHaiku.h"
++
++#include <atomic>
++#include <cerrno>
++#include <fcntl.h>
++#include <poll.h>
++#include <unistd.h>
++#include <wtf/Threading.h>
++#include <wtf/UniStdExtras.h>
++#include <wtf/unix/UnixFileDescriptor.h>
++
++namespace IPC {
++
++struct SocketMonitorHaiku::State : ThreadSafeRefCounted<State> {
++    State(UnixFileDescriptor&& socket, UnixFileDescriptor&& wakeRead, UnixFileDescriptor&& wakeWrite,
++        WorkQueue& queue, Function<void()>&& callback)
++        : socket(WTF::move(socket))
++        , wakeRead(WTF::move(wakeRead))
++        , wakeWrite(WTF::move(wakeWrite))
++        , queue(queue)
++        , callback(WTF::move(callback))
++    {
++    }
++
++    void wake()
++    {
++        char byte = 0;
++        // A full nonblocking pipe already supplies the needed wakeup.
++        while (write(wakeWrite.value(), &byte, 1) < 0 && errno == EINTR) { }
++    }
++
++    void drainWakeups()
++    {
++        char bytes[64];
++        while (true) {
++            auto count = read(wakeRead.value(), bytes, sizeof(bytes));
++            if (count > 0 || (count < 0 && errno == EINTR))
++                continue;
++            return;
++        }
++    }
++
++    void run()
++    {
++        while (active.load()) {
++            // While a callback is queued/running, wait only for its acknowledgement
++            // or stop(). This bounds the queue even if the peer remains readable.
++            pollfd descriptors[] = {
++                { callbackPending.load() ? -1 : socket.value(), POLLIN, 0 },
++                { wakeRead.value(), POLLIN, 0 }
++            };
++            int result;
++            do {
++                result = poll(descriptors, 2, -1);
++            } while (result < 0 && errno == EINTR);
++            if (!active.load())
++                return;
++            if (descriptors[1].revents)
++                drainWakeups();
++            if (result >= 0 && !descriptors[0].revents)
++                continue;
++
++            callbackPending.store(true);
++            queue->dispatch([state = Ref { *this }] {
++                if (state->active.load())
++                    state->callback();
++                state->callbackPending.store(false);
++                state->wake();
++            });
++            if (result < 0)
++                return;
++        }
++    }
++
++    // Duplicate the watched socket: closing/reusing the caller's descriptor
++    // cannot make this thread accidentally monitor an unrelated resource.
++    UnixFileDescriptor socket;
++    UnixFileDescriptor wakeRead;
++    UnixFileDescriptor wakeWrite;
++    Ref<WorkQueue> queue;
++    Function<void()> callback;
++    std::atomic<bool> active { true };
++    std::atomic<bool> callbackPending { false };
++};
++
++std::unique_ptr<SocketMonitorHaiku> SocketMonitorHaiku::create(int descriptor, WorkQueue& queue, Function<void()>&& callback)
++{
++    assertIsCurrent(queue);
++    UnixFileDescriptor socket { descriptor, UnixFileDescriptor::Duplicate };
++    if (!socket)
++        return nullptr;
++    int wakeDescriptors[2];
++    // Set close-on-exec atomically so a concurrent process launch cannot
++    // inherit a wakeup endpoint between creation and fcntl().
++    if (pipe2(wakeDescriptors, O_CLOEXEC | O_NONBLOCK) < 0)
++        return nullptr;
++    UnixFileDescriptor wakeRead { wakeDescriptors[0], UnixFileDescriptor::Adopt };
++    UnixFileDescriptor wakeWrite { wakeDescriptors[1], UnixFileDescriptor::Adopt };
++    return std::unique_ptr<SocketMonitorHaiku>(new SocketMonitorHaiku(adoptRef(*new State(
++        WTF::move(socket), WTF::move(wakeRead), WTF::move(wakeWrite), queue, WTF::move(callback)))));
++}
++
++SocketMonitorHaiku::SocketMonitorHaiku(Ref<State>&& state)
++    : m_state(WTF::move(state))
++    , m_thread(Thread::create("IPC socket monitor"_s, [state = Ref { *m_state }] { state->run(); }))
++{
++}
++
++SocketMonitorHaiku::~SocketMonitorHaiku()
++{
++    stop();
++}
++
++void SocketMonitorHaiku::stop()
++{
++    if (!m_state)
++        return;
++    assertIsCurrent(m_state->queue);
++    m_state->active.store(false);
++    m_state->wake();
++    m_thread->waitForCompletion();
++    m_thread = nullptr;
++    // An already queued callback retains State and sees active=false. If stop()
++    // is called inside the callback, that same reference preserves its Function
++    // until invocation returns; we never destroy a Function while calling it.
++    m_state = nullptr;
++}
++
++} // namespace IPC
+diff --git a/Source/WebKit/Platform/IPC/haiku/SocketMonitorHaiku.h b/Source/WebKit/Platform/IPC/haiku/SocketMonitorHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..210004a8f63f172191876e73c91bdcab29211b04
+--- /dev/null
++++ b/Source/WebKit/Platform/IPC/haiku/SocketMonitorHaiku.h
+@@ -0,0 +1,51 @@
++/*
++ * Copyright (C) 2026 KunanyiOS contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#pragma once
++
++#include <memory>
++#include <wtf/Function.h>
++#include <wtf/RefPtr.h>
++#include <wtf/WorkQueue.h>
++
++namespace IPC {
++
++// Creation, destruction and callbacks belong to the supplied serial queue.
++// The polling thread never reads protocol data or accesses a Connection.
++class SocketMonitorHaiku {
++public:
++    static std::unique_ptr<SocketMonitorHaiku> create(int, WorkQueue&, Function<void()>&&);
++    ~SocketMonitorHaiku();
++
++    void stop();
++
++private:
++    struct State;
++    explicit SocketMonitorHaiku(Ref<State>&&);
++    RefPtr<State> m_state;
++    RefPtr<WTF::Thread> m_thread;
++};
++
++} // namespace IPC
+diff --git a/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp b/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp
+index 3ee3ad88d83c8d0a22cef3245666eb4106b457fd..ad4cc5fccea6a5989adbcaa5806f76bd30da6f05 100644
+--- a/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp
++++ b/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp
+@@ -108,6 +108,11 @@ void Connection::platformInitialize(Identifier&& identifier)
+ 
+ void Connection::platformInvalidate()
+ {
++#if PLATFORM(HAIKU)
++    // Cancel and join before releasing the connection descriptor. Queued
++    // readiness callbacks are suppressed by the monitor's shared state.
++    m_socketMonitor = nullptr;
++#endif
+     if (m_socketDescriptor.value() != -1)
+         closeWithRetry(m_socketDescriptor.release());
+ 
+@@ -333,6 +338,21 @@ bool Connection::platformPrepareForOpen()
+ void Connection::platformOpen()
+ {
+     RefPtr<Connection> protectedThis(this);
++#if PLATFORM(HAIKU)
++    m_connectionQueue->dispatch([protectedThis] {
++        if (!protectedThis->isValid())
++            return;
++        protectedThis->m_isConnected = true;
++        protectedThis->m_socketMonitor = SocketMonitorHaiku::create(protectedThis->socketDescriptor(),
++            protectedThis->m_connectionQueue, [protectedThis] {
++                if (protectedThis->m_isConnected)
++                    protectedThis->readyReadHandler();
++            });
++        if (!protectedThis->m_socketMonitor)
++            protectedThis->connectionDidClose();
++    });
++    return;
++#endif
+     m_isConnected = true;
+ 
+ #if PLATFORM(PLAYSTATION)
 diff --git a/Source/WebKit/Platform/Module.h b/Source/WebKit/Platform/Module.h
 index d5a0d8693335265c6d716689e238f144ebcfa2a7..248b212b335e2eb19c30a2be0ca07c08bf03dfbe 100644
 --- a/Source/WebKit/Platform/Module.h
@@ -20468,10 +20748,10 @@ index 0000000000000000000000000000000000000000..6c1b3916ff0fd1dfda2f69b43591c35b
 +
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..a07d8e88a79e977a904a744f436e2cc887415e0c
+index 0000000000000000000000000000000000000000..dff469112fde38af900ac4b438762b4dc4e1432a
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,126 @@
+@@ -0,0 +1,127 @@
 +include(Headers.cmake)
 +
 +file(MAKE_DIRECTORY ${DERIVED_SOURCES_HAIKU_API_DIR})
@@ -20486,6 +20766,7 @@ index 0000000000000000000000000000000000000000..a07d8e88a79e977a904a744f436e2cc8
 +
 +    Platform/IPC/unix/AttachmentUnix.cpp
 +    Platform/IPC/unix/ConnectionUnix.cpp
++    Platform/IPC/haiku/SocketMonitorHaiku.cpp
 +    Platform/haiku/LoggingHaiku.cpp
 +    Platform/haiku/ModuleHaiku.cpp
 +    Platform/unix/SharedMemoryUnix.cpp
@@ -20525,6 +20806,7 @@ index 0000000000000000000000000000000000000000..a07d8e88a79e977a904a744f436e2cc8
 +    "${WEBKIT_DIR}/NetworkProcess/unix"
 +    "${WEBKIT_DIR}/Platform"
 +    "${WEBKIT_DIR}/Platform/IPC/unix"
++    "${WEBKIT_DIR}/Platform/IPC/haiku"
 +    "${WEBKIT_DIR}/Shared/API/c/haiku"
 +    "${WEBKIT_DIR}/Shared/CoordinatedGraphics"
 +    "${WEBKIT_DIR}/Shared/unix"
@@ -20597,7 +20879,6 @@ index 0000000000000000000000000000000000000000..a07d8e88a79e977a904a744f436e2cc8
 +list(APPEND WebKit_PUBLIC_FRAMEWORK_HEADERS
 +    Shared/API/c/haiku/WKBaseHaiku.h
 +)
-+
 diff --git a/Source/WebKit/Shared/API/c/WKBase.h b/Source/WebKit/Shared/API/c/WKBase.h
 index f920a7cd3f564700db2a4b293b79c4949a78f84c..4e6df27d9c74bc96bccc623ac1f51b25bc674fc5 100644
 --- a/Source/WebKit/Shared/API/c/WKBase.h

@@ -15,7 +15,7 @@ if [[ -f .vm/qemu.pid ]] && kill -0 "$(cat .vm/qemu.pid)" 2>/dev/null; then
     echo 'VM process exists but QMP is missing; inspect the existing process.' >&2
     exit 1
 fi
-exec qemu-system-x86_64 -enable-kvm -cpu host -m 12288 -smp 8 \
+exec qemu-system-x86_64 -enable-kvm -cpu host -m 20480 -smp 12 \
     -drive file=.vm/work.qcow2,format=qcow2,if=ide,index=0 \
     -nic user,model=e1000,hostfwd=tcp:127.0.0.1:2225-:22 \
     -device qemu-xhci -device usb-tablet -vga std -display none \

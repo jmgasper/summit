@@ -58,6 +58,11 @@ library resolution were checked. **The existing `dev1` HPKG still contains the
 earlier system-engine preview**; packaging and restart checks need repeating
 for the current distribution.
 
+After a clean guest shutdown and VM resource upgrade, the current-engine
+bundle relaunched with its saved WebKit page and bookmark intact. The page
+returned to Ready with the current engine identity. Evidence:
+`.vm/current-engine-before-restart.log`, `.vm/current-engine-after-restart.log`.
+
 Actual QEMU capture: [current WebKit over HTTPS](screenshots/current-webkit.png).
 The earlier [start page](screenshots/start.png) and
 [WebKit capture](screenshots/webkit.png) show the system-engine preview.
@@ -182,6 +187,16 @@ Unicode, overrides, installation fallback and missing helpers. Run these with
 `tools/test-engine-process-in-vm.sh`; logs are `.vm/native-ipc-tests.log` and
 `.vm/native-process-paths.log`. The modern WebKit process launcher itself is
 not compiled yet, and this does not establish WebKit process isolation.
+
+The Haiku IPC socket monitor passes **18 native checks** against production
+code: ordered sequenced packets, serial-queue callbacks, idle cancellation,
+peer closure, destruction inside a callback, suppression of queued callbacks,
+descriptor reuse, close-on-exec and repeated lifecycle leak checks. A dedicated
+polling thread only detects readiness; protocol processing stays on the
+connection queue. Cancellation wakes and joins the polling thread. Integration
+is wired into the modern transport, whose full compilation remains pending.
+Run `tools/test-engine-socket-monitor-in-vm.sh`; log:
+`.vm/native-socket-monitor.log`.
 
 The original area-based shared-memory backend loses its allocation when the
 owner is destroyed, even if a handle remains. A native baseline probe confirms
