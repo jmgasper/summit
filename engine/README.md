@@ -40,6 +40,7 @@ bash tools/test-engine-message-packets-in-vm.sh
 bash tools/test-engine-storage-paths-in-vm.sh
 bash tools/test-engine-modules-in-vm.sh
 bash tools/test-engine-bitmaps-in-vm.sh
+bash tools/test-engine-native-events-in-vm.sh
 # Build Summit with private current-engine libraries and accompanying source:
 bash tools/build-current-browser-in-vm.sh
 # Repeat the host bundle copy without rebuilding, while inputs still match:

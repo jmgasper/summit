@@ -218,8 +218,8 @@ reaping the child and reporting launch errors. **12 path checks pass** against
 the production resolver, including executable directories with spaces and
 Unicode, overrides, installation fallback and missing helpers. Run these with
 `tools/test-engine-process-in-vm.sh`; logs are `.vm/native-ipc-tests.log` and
-`.vm/native-process-paths.log`. The modern WebKit process launcher itself is
-not compiled yet, and this does not establish WebKit process isolation.
+`.vm/native-process-paths.log`. The modern WebKit process launcher and shared
+process entry code now compile. This does not establish WebKit process isolation.
 
 The Haiku IPC socket monitor passes **25 native checks** against production
 code: ordered sequenced packets, serial-queue callbacks, idle cancellation,
@@ -228,7 +228,8 @@ descriptor reuse, close-on-exec, write backpressure and lifecycle leak checks. A
 polling thread only detects readiness; protocol processing stays on the
 connection queue. Cancellation wakes and joins the polling thread, including
 when the peer is not reading a full socket. Integration is wired into the
-modern transport, whose full compilation remains pending.
+modern connection backend, which now compiles; its linked runtime integration
+remains pending.
 The test explicitly joins its detached connection-queue thread before process
 static teardown; without that wait, an earlier passing run produced a late
 native debugger dialog. Ten complete process runs now pass with no new crash
@@ -265,9 +266,12 @@ Modern WebKit configuration succeeds with private ICU 78, Unix-domain sockets,
 the current Curl network-process sources and native WebProcess application
 resources. The new connection backend validates complete packets and retains
 unsent messages while asynchronously waiting for capacity, with a short yield
-between retries to handle readiness for less than a complete packet. Actual
-Connection/process compilation is in progress; these component checks do not
-yet establish a working WebKit process connection or browser process isolation.
+between retries to handle readiness for less than a complete packet. The actual
+Connection, ProcessLauncher and AuxiliaryProcessMain objects compile. WebProcess
+startup exposed an allocation-helper mismatch with native BApplication; the
+corrected source is included in the next build. Log:
+`.vm/modern-connection-build.log`. These component checks do not yet establish
+a working WebKit process connection or browser process isolation.
 
 The original area-based shared-memory backend loses its allocation when the
 owner is destroyed, even if a handle remains. A native baseline probe confirms
@@ -302,6 +306,17 @@ native compilation. They send complete software-rendered frames, associate them
 with viewport generations and wait for presentation acknowledgment before sending
 another frame. The message generator accepts the new handlers. Native embedding,
 full compilation and process-to-view presentation are not yet verified.
+
+Native keyboard, mouse and wheel translation passes **38 checks** through the
+production WebKit event classes and WebCore converters. Events own their native
+messages, preserve Unicode, repeat, timestamps, modifiers, fractional positions
+and multi-button transitions, and reject malformed input. Physical key names
+are corrected for P, Enter, numeric keypad and Meta keys. Editing checks cover
+caret and selection movement, word/paragraph/document boundaries, deletion,
+clipboard commands, undo/redo and tab/newline handling. Run
+`tools/test-engine-native-events-in-vm.sh`; log:
+`.vm/native-event-editing-tests.log`. The page editing adapter is wired into the
+modern port; complete DOM editing still needs the running modern browser.
 
 All 32 Haiku legacy embedding source files pass the native compiler's syntax checks.
 The initial pass found five failing files caused by two upstream API changes:
