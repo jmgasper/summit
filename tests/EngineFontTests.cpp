@@ -3,6 +3,7 @@
 #include "FontCustomPlatformData.h"
 #include "FontDescription.h"
 #include "SharedBuffer.h"
+#include "WOFFFileFormat.h"
 #include <Application.h>
 #include <OS.h>
 #include <wtf/MainThread.h>
@@ -10,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <woff2/encode.h>
 
 using namespace WebCore;
 static int checks = 0, failures = 0;
@@ -186,6 +188,26 @@ int main()
         "collection rewriting preserves native first-face glyph metrics");
     if (collectionSupported)
         originalCollection.UnloadFont();
+
+#if USE(WOFF2)
+    Check(FontCustomPlatformData::supportsFormat("woff2"_s) && FontCustomPlatformData::supportsFormat("WOFF2"_s),
+        "CSS font format selection accepts enabled WOFF2 support");
+    size_t compressedSize = woff2::MaxWOFF2CompressedSize(bytes->span().data(), bytes->size());
+    Vector<uint8_t> compressed(compressedSize);
+    bool encoded = woff2::ConvertTTFToWOFF2(bytes->span().data(), bytes->size(), compressed.mutableSpan().data(), &compressedSize);
+    Check(encoded && compressedSize && compressedSize < bytes->size(),
+        "encode a real native TrueType fixture as compressed WOFF2");
+    if (!encoded)
+        return 1;
+    compressed.shrink(compressedSize);
+    RefPtr<SharedBuffer> compressedBuffer = SharedBuffer::create(WTF::move(compressed));
+    bool converted = convertWOFFToSfntIfNecessary(compressedBuffer);
+    Check(converted && compressedBuffer,
+        "production WebCore decoder expands WOFF2 for native font loading");
+    auto woffFont = compressedBuffer ? FontCustomPlatformData::create(*compressedBuffer, emptyString()) : nullptr;
+    Check(woffFont && woffFont->m_font.StringWidth("WOFF2 native text") > 0,
+        "decoded WOFF2 creates a usable private native font");
+#endif
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

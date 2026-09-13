@@ -21,15 +21,22 @@
 #include <StringView.h>
 #include <TextControl.h>
 #include <TextView.h>
+#if SUMMIT_MODERN_WEBKIT
+#include <WebKit/WebKitInfo.h>
+#else
 #include <WebDownload.h>
 #include <WebKitInfo.h>
 #include <WebPage.h>
 #include <WebView.h>
+#endif
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <utility>
 
 namespace summit {
+#if !SUMMIT_MODERN_WEBKIT
 static bool FindDownloads(BPath& path, std::string& error)
 {
     status_t status = find_directory(B_USER_DIRECTORY, &path);
@@ -46,15 +53,23 @@ static bool FindDownloads(BPath& path, std::string& error)
     }
     return true;
 }
+#endif
 
 static void AddItem(BMenu* menu, const char* label, uint32 what, char key = 0, uint32 mods = 0)
 {
     menu->AddItem(new BMenuItem(label, new BMessage(what), key, mods));
 }
 BrowserWindow::BrowserWindow(std::filesystem::path profile, std::string homeURL,
-    const std::vector<std::string>& urls)
-    : BWebWindow(BRect(75, 65, 1195, 745), "Summit", B_TITLED_WINDOW_LOOK, B_NORMAL_WINDOW_FEEL,
+    const std::vector<std::string>& urls
+#if SUMMIT_MODERN_WEBKIT
+    , std::shared_ptr<BWebKitContext> context
+#endif
+    )
+    : BrowserWindowBase(BRect(75, 65, 1195, 745), "Summit", B_TITLED_WINDOW_LOOK, B_NORMAL_WINDOW_FEEL,
           B_ASYNCHRONOUS_CONTROLS | B_AUTO_UPDATE_SIZE_LIMITS),
+#if SUMMIT_MODERN_WEBKIT
+      fWebKitContext(std::move(context)),
+#endif
       fProfilePath(std::move(profile)), fHomeURL(std::move(homeURL))
 {
     std::string error;
@@ -106,6 +121,9 @@ BrowserWindow::BrowserWindow(std::filesystem::path profile, std::string homeURL,
     AddItem(window, "Previous Tab", kPreviousTab);
     AddItem(window, "Downloads", kShowDownloads, 'J');
     menu->AddItem(window);
+#if SUMMIT_MODERN_WEBKIT
+    if (auto* item = menu->FindItem(kShowDownloads)) item->SetEnabled(false);
+#endif
 
     auto* toolbar = new BGroupView(B_HORIZONTAL, 4);
     auto* sidebarButton = new ToolButton("sidebar", "Show / hide sidebar", Icon::Sidebar, kToggleSidebar);
@@ -117,12 +135,16 @@ BrowserWindow::BrowserWindow(std::filesystem::path profile, std::string homeURL,
     fAddress->SetExplicitMaxSize(BSize(660, B_SIZE_UNSET));
     fAddress->TextView()->SetAlignment(B_ALIGN_CENTER);
     fAddress->SetToolTip("Search or enter a website address");
+    auto* downloadsButton = new ToolButton("downloads", "Open Downloads", Icon::Downloads, kShowDownloads);
+#if SUMMIT_MODERN_WEBKIT
+    downloadsButton->SetEnabled(false);
+#endif
     BLayoutBuilder::Group<>(toolbar)
         .SetInsets(8, 7, 8, 7)
         .Add(sidebarButton).AddStrut(6).Add(fBack).Add(fForward)
         .AddGlue().Add(fAddress, 3).Add(fReload).AddGlue()
         .Add(new ToolButton("bookmark", "Bookmark this page", Icon::Bookmark, kBookmark))
-        .Add(new ToolButton("downloads", "Open Downloads", Icon::Downloads, kShowDownloads))
+        .Add(downloadsButton)
         .Add(new ToolButton("new-tab", "New tab", Icon::Plus, kNewTab));
     fTabStrip = new TabStrip();
     fProgress = new ProgressLine();
@@ -168,7 +190,9 @@ BrowserWindow::BrowserWindow(std::filesystem::path profile, std::string homeURL,
     AddShortcut(B_TAB, B_CONTROL_KEY, new BMessage(kNextTab));
     AddShortcut(B_TAB, B_CONTROL_KEY | B_SHIFT_KEY, new BMessage(kPreviousTab));
     SetSizeLimits(760, 10000, 450, 10000);
+#if !SUMMIT_MODERN_WEBKIT
     BWebPage::SetDownloadListener(BMessenger(this));
+#endif
 
     const auto restored = fProfile.tabs;
     const auto selected = fProfile.selected;
@@ -184,12 +208,32 @@ BrowserWindow::BrowserWindow(std::filesystem::path profile, std::string homeURL,
     fSaveTimer = std::make_unique<BMessageRunner>(BMessenger(this), &save, 5000000);
     if (!error.empty()) ShowError("The saved profile could not be read. It has been preserved. " + error);
 }
-BrowserWindow::~BrowserWindow() = default;
+BrowserWindow::~BrowserWindow()
+{
+#if SUMMIT_MODERN_WEBKIT
+    SaveSession();
+    fSaveTimer.reset();
+    for (auto& tab : fTabs) {
+        tab.view->RemoveSelf();
+        delete tab.view;
+    }
+    fTabs.clear();
+#endif
+}
+#if SUMMIT_MODERN_WEBKIT
+BrowserWindow::Tab* BrowserWindow::FindTab(const BMessenger& view)
+{
+    if (!view.IsValid()) return nullptr;
+    for (auto& tab : fTabs) if (tab.messenger == view) return &tab;
+    return nullptr;
+}
+#else
 BrowserWindow::Tab* BrowserWindow::FindTab(BWebView* view)
 {
     for (auto& tab : fTabs) if (tab.view == view) return &tab;
     return nullptr;
 }
+#endif
 BrowserWindow::Tab* BrowserWindow::ActiveTab()
 {
     for (auto& tab : fTabs) if (tab.id == fSelected) return &tab;
@@ -204,8 +248,16 @@ std::string BrowserWindow::StoredURL(const BString& url) const
         return "summit:home";
     return value;
 }
+#if SUMMIT_MODERN_WEBKIT
+void BrowserWindow::CreateTab(const std::string& input, bool select)
+#else
 void BrowserWindow::CreateTab(const std::string& input, bool select, BWebView* adopted)
+#endif
 {
+#if SUMMIT_MODERN_WEBKIT
+    if (fClosingWindow) return;
+#endif
+#if !SUMMIT_MODERN_WEBKIT
     // BWebPage is owned by the application looper. Its constructor accesses
     // WebCore and takes the application lock; never call it from a window thread.
     if (!adopted && find_thread(nullptr) != be_app->Thread()) {
@@ -216,27 +268,56 @@ void BrowserWindow::CreateTab(const std::string& input, bool select, BWebView* a
         be_app->PostMessage(&create);
         return;
     }
+#endif
     if (fTabs.size() >= 512) { ShowError("The session has reached its 512-tab limit."); return; }
     const auto address = ResolveAddress(input);
     if (!address.error.empty()) { ShowError(address.error); return; }
+#if SUMMIT_MODERN_WEBKIT
+    auto* webView = new BWebKitView(BRect(0, 0, 319, 199), "web-page", BMessenger(this), B_FOLLOW_ALL, fWebKitContext);
+    if (webView->InitCheck() != B_OK) {
+        const status_t status = webView->InitCheck();
+        delete webView;
+        ShowError("Could not create the web page: " + std::string(std::strerror(status)));
+        return;
+    }
+#else
     auto* webView = adopted ? adopted : new BWebView("web-page");
+#endif
     webView->SetExplicitMinSize(BSize(320, 200));
     webView->SetExplicitMaxSize(BSize(B_SIZE_UNLIMITED, B_SIZE_UNLIMITED));
     fCards->AddView(webView);
     fTabs.push_back({fNextID++, webView, address.url, address.url == "summit:home" ? "Start Page" : "Loading…"});
+#if SUMMIT_MODERN_WEBKIT
+    fTabs.back().messenger = BMessenger(webView);
+#endif
     if (select || fSelected == 0) SelectTab(fTabs.back().id);
+#if SUMMIT_MODERN_WEBKIT
+    webView->LoadURL(address.url == "summit:home" ? fHomeURL.c_str() : address.url.c_str());
+#else
     if (!adopted) webView->LoadURL(address.url == "summit:home" ? fHomeURL.c_str() : address.url.c_str(), select);
+#endif
     if (select && address.url == "summit:home") fAddress->MakeFocus();
     RefreshChrome();
 }
-void BrowserWindow::SelectTab(int64 id)
+void BrowserWindow::SelectTab(int64 id, bool forClose)
 {
+#if !SUMMIT_MODERN_WEBKIT
+    (void)forClose;
+#endif
     for (size_t i = 0; i < fTabs.size(); ++i) {
         if (fTabs[i].id != id) continue;
+#if SUMMIT_MODERN_WEBKIT
+        if (!forClose) ++fSelectionGeneration;
+#endif
         fSelected = id;
         fCards->SetVisibleItem(static_cast<int32>(i));
+#if !SUMMIT_MODERN_WEBKIT
         SetCurrentWebView(fTabs[i].view);
         fTabs[i].view->WebPage()->ResendNotifications();
+#else
+        fStatus->SetText(fTabs[i].processExited ? fTabs[i].processError.c_str()
+            : fTabs[i].loading ? "Loading…" : "Ready");
+#endif
         fTabs[i].view->MakeFocus();
         fAddress->SetText(fTabs[i].url == "summit:home" ? "" : fTabs[i].url.c_str());
         RefreshChrome();
@@ -245,17 +326,282 @@ void BrowserWindow::SelectTab(int64 id)
 }
 void BrowserWindow::CloseTab(int64 id)
 {
+#if SUMMIT_MODERN_WEBKIT
+    if (fClosingWindow) return;
+    for (auto& tab : fTabs) {
+        if (tab.id != id || tab.closeRequested || tab.closeQueued || tab.closeApproved) continue;
+        tab.closeQueued = true;
+        ContinueTabCloses();
+        return;
+    }
+}
+
+void BrowserWindow::StartCloseRequest(Tab& tab)
+{
+    tab.closeQueued = false;
+    tab.closeRequested = true;
+    tab.view->RequestClose();
+}
+
+void BrowserWindow::ContinueTabCloses()
+{
+    if (fCloseCommitPending) return;
+    if (fClosingWindow) { ContinueWindowClose(); return; }
+    // One outstanding decision avoids overlapping beforeunload prompts and
+    // lets a cancelled window close reset completed approvals safely.
+    if (std::any_of(fTabs.begin(), fTabs.end(), [](const Tab& tab) { return tab.closeRequested; })) return;
+    // A page can request window.close while another approval is committing.
+    // Keep that completed approval queued instead of requesting it again.
+    for (const auto& tab : fTabs) {
+        if (!tab.closeApproved) continue;
+        CommitTabCloses({ tab.id }, false);
+        return;
+    }
+    for (auto& tab : fTabs) {
+        if (!tab.closeQueued) continue;
+        StartCloseRequest(tab);
+        return;
+    }
+}
+
+BrowserWindow::CloseFocusState BrowserWindow::CaptureCloseFocus() const
+{
+    CloseFocusState state;
+    state.selected = fSelected;
+    if (auto* focus = CurrentFocus()) state.focus = BMessenger(focus);
+    state.address = fAddress->Text();
+    fAddress->TextView()->GetSelection(&state.selectionStart, &state.selectionEnd);
+    state.generation = fSelectionGeneration;
+    return state;
+}
+
+void BrowserWindow::RestoreCloseFocus(const CloseFocusState& state)
+{
+    if (std::none_of(fTabs.begin(), fTabs.end(), [&](const Tab& tab) { return tab.id == state.selected; })) return;
+    SelectTab(state.selected, true);
+    fAddress->SetText(state.address.c_str());
+    fAddress->TextView()->Select(state.selectionStart, state.selectionEnd);
+    BLooper* looper = nullptr;
+    if (auto* focus = dynamic_cast<BView*>(state.focus.Target(&looper)); focus && looper == this)
+        focus->MakeFocus();
+}
+
+void BrowserWindow::WebKitClosePrompt(const BMessage& message)
+{
+    BMessenger sender;
+    if (message.FindMessenger("view", &sender) != B_OK) return;
+    auto* tab = FindTab(sender);
+    if (!tab || !tab->closeRequested) return;
+    // The bridge sends this before the actual dialog message to this same
+    // window looper, so making the card visible precedes native presentation.
+    if (tab->id == fSelected) return;
+    if (fClosingWindow) {
+        if (!fClosePromptTab || !fWindowCloseFocus || fWindowCloseFocus->generation != fSelectionGeneration)
+            fWindowCloseFocus = CaptureCloseFocus();
+        fClosePromptTab = tab->id;
+    } else if (!tab->closeFocus || tab->closeFocus->generation != fSelectionGeneration)
+        tab->closeFocus = CaptureCloseFocus();
+    SelectTab(tab->id, true);
+}
+
+void BrowserWindow::BeginWindowClose()
+{
+    if (fClosingWindow) return;
+    if (fCloseCommitPending) { fWindowCloseQueued = true; return; }
+    fWindowCloseQueued = false;
+    fWindowCloseInvalidated = false;
+    // Approval is provisional until every tab agrees. Keep live documents,
+    // undo state and the full saved session intact when any tab chooses Stay.
+    SaveSession();
+    fWindowCloseFocus = CaptureCloseFocus();
+    fClosePromptTab = 0;
+    for (const auto& tab : fTabs) {
+        if (tab.closeRequested && tab.closeFocus && tab.closeFocus->generation == fSelectionGeneration && tab.id == fSelected) {
+            fWindowCloseFocus = tab.closeFocus;
+            fClosePromptTab = tab.id;
+            break;
+        }
+    }
+    fClosingWindow = true;
+    ContinueWindowClose();
+}
+
+void BrowserWindow::ContinueWindowClose()
+{
+    if (!fClosingWindow || fCloseCommitPending) return;
+    if (std::any_of(fTabs.begin(), fTabs.end(), [](const Tab& tab) { return tab.closeRequested; })) return;
+    if (fWindowCloseInvalidated) {
+        CancelWindowClose();
+        fStatus->SetText("Close cancelled");
+        return;
+    }
+    if (auto* selected = ActiveTab(); selected && !selected->closeApproved) {
+        StartCloseRequest(*selected);
+        return;
+    }
+    for (auto& tab : fTabs) {
+        if (tab.closeApproved) continue;
+        StartCloseRequest(tab);
+        return;
+    }
+    std::vector<int64> identifiers;
+    for (const auto& tab : fTabs) identifiers.push_back(tab.id);
+    CommitTabCloses(identifiers, true);
+}
+
+void BrowserWindow::InvalidateWindowClose()
+{
+    if (!fClosingWindow) return;
+    fWindowCloseInvalidated = true;
+    // Keep the pending request owned by the window-close sequence until its
+    // definitive reply. Resetting now could turn a late approval into an
+    // ordinary tab-close event after cancellation.
+    ContinueWindowClose();
+}
+
+bool BrowserWindow::PrepareNavigation()
+{
+    if (fCloseCommitPending && (fCommitWholeWindow
+        || std::find(fCommitTabs.begin(), fCommitTabs.end(), fSelected) != fCommitTabs.end()))
+        return false;
+    ++fSelectionGeneration;
+    InvalidateWindowClose();
+    return true;
+}
+
+void BrowserWindow::CommitTabCloses(const std::vector<int64>& identifiers, bool wholeWindow)
+{
+    if (fCloseCommitPending) return;
+    std::vector<BWebKitView*> views;
+    for (auto id : identifiers) {
+        auto found = std::find_if(fTabs.begin(), fTabs.end(), [id](const Tab& tab) { return tab.id == id; });
+        if (found == fTabs.end()) return;
+        views.push_back(found->view);
+    }
+    fCloseCommitPending = true;
+    fCommitWholeWindow = wholeWindow;
+    fCommitTabs = identifiers;
+    BWebKitView::CommitClose(views, BMessenger(this), ++fCloseCommitIdentifier);
+}
+
+void BrowserWindow::WebKitCloseCommitted(const BMessage& message)
+{
+    uint64 identifier;
+    bool closed;
+    if (!fCloseCommitPending || message.FindUInt64("identifier", &identifier) != B_OK
+        || identifier != fCloseCommitIdentifier || message.FindBool("closed", &closed) != B_OK) return;
+    fCloseCommitPending = false;
+    auto identifiers = std::exchange(fCommitTabs, { });
+    if (fCommitWholeWindow) {
+        if (!closed) {
+            CancelWindowClose();
+            fStatus->SetText("Close cancelled");
+            return;
+        }
+        for (auto& tab : fTabs) {
+            tab.view->RemoveSelf();
+            delete tab.view;
+        }
+        fTabs.clear();
+        fSelected = 0;
+        BMessage ready(kWindowReadyToClose);
+        ready.AddMessenger("window", BMessenger(this));
+        be_app->PostMessage(&ready);
+        return;
+    }
+    for (auto id : identifiers) {
+        auto found = std::find_if(fTabs.begin(), fTabs.end(), [id](const Tab& tab) { return tab.id == id; });
+        if (found == fTabs.end()) continue;
+        auto focus = found->closeFocus;
+        const bool restoreFocus = focus && id == fSelected && focus->generation == fSelectionGeneration;
+        if (closed)
+            FinishCloseTab(id);
+        else {
+            found->closeApproved = found->closeRequested = found->closeQueued = false;
+            found->closeFocus.reset();
+            found->view->ResetCloseRequest();
+        }
+        if (restoreFocus) RestoreCloseFocus(*focus);
+    }
+    if (!closed) { SaveSession(); fStatus->SetText("Close cancelled"); }
+    if (fWindowCloseQueued) BeginWindowClose();
+    else ContinueTabCloses();
+}
+
+void BrowserWindow::CancelWindowClose()
+{
+    for (auto& tab : fTabs) {
+        tab.closeQueued = tab.closeRequested = tab.closeApproved = false;
+        tab.closeFocus.reset();
+        tab.view->ResetCloseRequest();
+    }
+    fClosingWindow = false;
+    fWindowCloseInvalidated = false;
+    fWindowCloseQueued = false;
+    if (fWindowCloseFocus && fClosePromptTab == fSelected && fWindowCloseFocus->generation == fSelectionGeneration)
+        RestoreCloseFocus(*fWindowCloseFocus);
+    fWindowCloseFocus.reset();
+    fClosePromptTab = 0;
+    SaveSession();
+}
+
+void BrowserWindow::WebKitCloseResult(const BMessage& message)
+{
+    BMessenger sender;
+    if (message.FindMessenger("view", &sender) != B_OK) return;
+    auto* tab = FindTab(sender);
+    if (!tab) return;
+    if (message.what == B_WEBKIT_CLOSE_CANCELLED) {
+        if (!tab->closeRequested) return;
+        tab->closeRequested = false;
+        if (fClosingWindow)
+            CancelWindowClose();
+        else {
+            auto focus = std::exchange(tab->closeFocus, std::nullopt);
+            if (focus && tab->id == fSelected && focus->generation == fSelectionGeneration)
+                RestoreCloseFocus(*focus);
+            SaveSession();
+            ContinueTabCloses();
+        }
+        fStatus->SetText("Close cancelled");
+        return;
+    }
+    tab->closeRequested = tab->closeQueued = false;
+    if (fClosingWindow) {
+        tab->closeApproved = true;
+        ContinueWindowClose();
+        return;
+    }
+    tab->closeApproved = true;
+    ContinueTabCloses();
+}
+
+void BrowserWindow::FinishCloseTab(int64 id)
+{
+#endif
     for (size_t i = 0; i < fTabs.size(); ++i) {
         if (fTabs[i].id != id) continue;
         const bool selected = id == fSelected;
         auto* webView = fTabs[i].view;
         fClosedTabs.push_back({fTabs[i].url, fTabs[i].title});
         if (fClosedTabs.size() > 25) fClosedTabs.erase(fClosedTabs.begin());
+#if !SUMMIT_MODERN_WEBKIT
         if (selected) SetCurrentWebView(nullptr);
+#endif
         webView->RemoveSelf();
+#if SUMMIT_MODERN_WEBKIT
+        delete webView;
+#else
         webView->Shutdown();
+#endif
         fTabs.erase(fTabs.begin() + i);
-        if (fTabs.empty()) { fSelected = 0; CreateTab("summit:home"); }
+        if (fTabs.empty()) {
+            fSelected = 0;
+#if SUMMIT_MODERN_WEBKIT
+            if (!fClosingWindow)
+#endif
+                CreateTab("summit:home");
+        }
         else if (selected) SelectTab(fTabs[std::min(i, fTabs.size() - 1)].id);
         RefreshChrome();
         return;
@@ -265,6 +611,9 @@ void BrowserWindow::Navigate(const std::string& text)
 {
     auto address = ResolveAddress(text);
     if (!address.error.empty()) { ShowError(address.error); return; }
+#if SUMMIT_MODERN_WEBKIT
+    if (!PrepareNavigation()) return;
+#endif
     if (auto* tab = ActiveTab()) {
         fAddress->SetText(address.url == "summit:home" ? "" : address.url.c_str());
         tab->view->LoadURL(address.url == "summit:home" ? fHomeURL.c_str() : address.url.c_str());
@@ -293,6 +642,9 @@ void BrowserWindow::RefreshSidebar(bool history)
 }
 void BrowserWindow::SaveSession()
 {
+#if SUMMIT_MODERN_WEBKIT
+    if (fClosingWindow) return;
+#endif
     if (!fProfileWritable) return;
     fProfile.tabs.clear();
     for (size_t i = 0; i < fTabs.size(); ++i) {
@@ -308,6 +660,12 @@ void BrowserWindow::ShowError(const std::string& error)
 }
 bool BrowserWindow::QuitRequested()
 {
+#if SUMMIT_MODERN_WEBKIT
+    // The application closes this window and drains queued WebKit destruction
+    // before it stops the application looper.
+    be_app->PostMessage(B_QUIT_REQUESTED);
+    return false;
+#else
     if (!fDownloads.empty()) {
         auto* prompt = new BAlert("Downloads", "Downloads are still in progress. Quit and cancel them?", "Keep Browsing", "Quit");
         if (prompt->Go() == 0) return false;
@@ -320,11 +678,19 @@ bool BrowserWindow::QuitRequested()
     fTabs.clear();
     be_app->PostMessage(B_QUIT_REQUESTED);
     return true;
+#endif
 }
 void BrowserWindow::MessageReceived(BMessage* message)
 {
     auto* tab = ActiveTab();
     switch (message->what) {
+#if SUMMIT_MODERN_WEBKIT
+        case kRequestWindowClose: BeginWindowClose(); break;
+        case B_WEBKIT_CLOSE_PROMPT: WebKitClosePrompt(*message); break;
+        case B_WEBKIT_CLOSE_COMMITTED: WebKitCloseCommitted(*message); break;
+        case B_WEBKIT_CLOSE_REQUESTED: case B_WEBKIT_CLOSE_CANCELLED:
+            WebKitCloseResult(*message); break;
+#endif
         case kNavigate: {
             const char* url = nullptr;
             Navigate(message->FindString("url", &url) == B_OK ? url : fAddress->Text()); break;
@@ -339,9 +705,30 @@ void BrowserWindow::MessageReceived(BMessage* message)
             if (message->FindInt64("id", &id) != B_OK) id = fSelected;
             if (message->what == kSelectTab) SelectTab(id); else CloseTab(id); break;
         }
-        case kBack: if (tab) tab->view->GoBack(); break;
-        case kForward: if (tab) tab->view->GoForward(); break;
-        case kReload: if (tab) { if (tab->loading) tab->view->StopLoading(); else tab->view->Reload(); } break;
+        case kBack:
+#if SUMMIT_MODERN_WEBKIT
+            if (!tab || !tab->back || !PrepareNavigation()) break;
+#endif
+            if (tab) tab->view->GoBack();
+            break;
+        case kForward:
+#if SUMMIT_MODERN_WEBKIT
+            if (!tab || !tab->forward || !PrepareNavigation()) break;
+#endif
+            if (tab) tab->view->GoForward();
+            break;
+        case kReload: if (tab) {
+#if SUMMIT_MODERN_WEBKIT
+            if (!tab->loading && !PrepareNavigation()) break;
+#endif
+            if (tab->loading) {
+#if SUMMIT_MODERN_WEBKIT
+                tab->view->Stop();
+#else
+                tab->view->StopLoading();
+#endif
+            } else tab->view->Reload();
+        } break;
         case kHome: Navigate("summit:home"); break;
         case kFocusAddress: fAddress->MakeFocus(); fAddress->TextView()->SelectAll(); break;
         case kToggleSidebar: if (fSidebar->IsHidden()) fSidebar->Show(); else fSidebar->Hide(); break;
@@ -360,9 +747,23 @@ void BrowserWindow::MessageReceived(BMessage* message)
                 RefreshSidebar(false); SaveSession(); fStatus->SetText("Bookmark saved");
             } break;
         case kFind: if (fFindBar->IsHidden()) fFindBar->Show(); fFindText->MakeFocus(); fFindText->TextView()->SelectAll(); break;
-        case kCloseFind: if (!fFindBar->IsHidden()) fFindBar->Hide(); if (tab) tab->view->MakeFocus(); break;
+        case kCloseFind:
+            if (!fFindBar->IsHidden()) fFindBar->Hide();
+            if (tab) {
+#if SUMMIT_MODERN_WEBKIT
+                tab->view->HideFindUI();
+                fStatus->SetText(tab->loading ? "Loading…" : "Ready");
+#endif
+                tab->view->MakeFocus();
+            }
+            break;
         case kFindNext: case kFindPrevious:
-            if (tab) tab->view->FindString(fFindText->Text(), message->what == kFindNext);
+            if (tab) {
+                tab->view->FindString(fFindText->Text(), message->what == kFindNext);
+#if SUMMIT_MODERN_WEBKIT
+                fStatus->SetText(*fFindText->Text() ? "Searching…" : "Ready");
+#endif
+            }
             break;
         case kZoomIn: if (tab) tab->view->IncreaseZoomFactor(false); break;
         case kZoomOut: if (tab) tab->view->DecreaseZoomFactor(false); break;
@@ -387,6 +788,7 @@ void BrowserWindow::MessageReceived(BMessage* message)
                 if (path.InitCheck() == B_OK) CreateTab(FileURL(path.Path()));
             } break;
         }
+#if !SUMMIT_MODERN_WEBKIT
         case kShowDownloads: {
             BPath path;
             std::string error;
@@ -432,13 +834,35 @@ void BrowserWindow::MessageReceived(BMessage* message)
             }
             message->SendReply(B_REPLY); break;
         }
+#else
+        case kShowDownloads:
+            fStatus->SetText("Downloads are not available yet.");
+            break;
+        case B_WEBKIT_STATE_CHANGED: case B_WEBKIT_PROCESS_EXITED:
+            WebKitStateChanged(*message);
+            break;
+        case B_WEBKIT_FIND_RESULT:
+            WebKitFindResult(*message);
+            break;
+#endif
         case B_ABOUT_REQUESTED: {
+#if SUMMIT_MODERN_WEBKIT
+            std::string info = "Summit — a browser for KunanyiOS\nModern WebKit development build\n\nWebKit "
+                + std::string(BWebKitVersion()) + "\nHaiku port " + BWebKitPortVersion();
+#else
             std::string info = "Summit — a browser for KunanyiOS\nDevelopment build\n\nWebKit "
                 + std::string(WebKitInfo::WebKitVersion().String()) + "\nHaiku port "
                 + WebKitInfo::HaikuWebKitVersion().String();
+#endif
             (new BAlert("About Summit", info.c_str(), "OK"))->Go(nullptr); break;
         }
         case B_CUT: case B_COPY: case B_PASTE: case B_SELECT_ALL: case B_UNDO: case B_REDO:
+#if SUMMIT_MODERN_WEBKIT
+            if (tab && CurrentFocus() == tab->view) {
+                tab->view->ExecuteEditCommand(message->what);
+                break;
+            }
+#endif
             if (CurrentFocus()) PostMessage(message, CurrentFocus());
             break;
         case kBrowserState: {
@@ -446,18 +870,100 @@ void BrowserWindow::MessageReceived(BMessage* message)
             reply.AddInt32("count", fTabs.size()); reply.AddInt64("selected", fSelected);
             reply.AddString("address", fAddress->Text());
             reply.AddString("status", fStatus->Text());
+#if SUMMIT_MODERN_WEBKIT
+            reply.AddString("backend", "modern");
+            reply.AddBool("engine_version_available", true);
+            reply.AddString("webkit", BWebKitVersion());
+            reply.AddString("haiku_webkit", BWebKitPortVersion());
+            reply.AddString("webkit_revision", BWebKitSourceRevision());
+#else
+            reply.AddString("backend", "legacy");
             reply.AddString("webkit", WebKitInfo::WebKitVersion());
             reply.AddString("haiku_webkit", WebKitInfo::HaikuWebKitVersion());
+#endif
             for (const auto& page : fTabs) {
                 BMessage item; item.AddInt64("id", page.id); item.AddString("url", page.url.c_str());
                 item.AddString("title", page.title.c_str()); item.AddBool("loading", page.loading);
+#if SUMMIT_MODERN_WEBKIT
+                item.AddDouble("pageZoom", page.pageZoom);
+                item.AddDouble("textZoom", page.textZoom);
+#endif
                 reply.AddMessage("tab", &item);
             }
             message->SendReply(&reply); break;
         }
-        default: BWebWindow::MessageReceived(message); break;
+        default: BrowserWindowBase::MessageReceived(message); break;
     }
 }
+#if SUMMIT_MODERN_WEBKIT
+void BrowserWindow::WebKitFindResult(const BMessage& message)
+{
+    BMessenger sender;
+    if (message.FindMessenger("view", &sender) != B_OK) return;
+    auto* tab = FindTab(sender);
+    const char* query = nullptr;
+    if (!tab || tab->id != fSelected || message.FindString("query", &query) != B_OK
+        || !query || std::strcmp(query, fFindText->Text())) return;
+    int32 error;
+    if (message.FindInt32("error", &error) != B_OK) return;
+    if (error != B_OK) {
+        fStatus->SetText("Could not search this page.");
+        return;
+    }
+    bool found;
+    if (message.FindBool("found", &found) == B_OK)
+        fStatus->SetText(found ? "Match found" : "No matches");
+}
+
+void BrowserWindow::WebKitStateChanged(const BMessage& message)
+{
+    BMessenger sender;
+    if (message.FindMessenger("view", &sender) != B_OK) return;
+    auto* tab = FindTab(sender);
+    if (!tab) return;
+    if (message.what == B_WEBKIT_PROCESS_EXITED) {
+        tab->processExited = true;
+        tab->loading = false;
+        tab->progress = 0;
+        int32 error;
+        tab->processError = message.FindInt32("error", &error) == B_OK && error != B_OK
+            ? "Could not initialize the web page: " + std::string(std::strerror(error))
+            : "The page process exited. Reload to try again.";
+        if (tab->id == fSelected) fStatus->SetText(tab->processError.c_str());
+        RefreshChrome();
+        return;
+    }
+    bool closeInvalidated = false;
+    if (message.FindBool("closeApprovalInvalidated", &closeInvalidated) == B_OK && closeInvalidated)
+        InvalidateWindowClose();
+    const bool wasLoading = tab->loading;
+    const char* value = nullptr;
+    if (message.FindString("url", &value) == B_OK && value && *value) tab->url = StoredURL(value);
+    if (message.FindString("title", &value) == B_OK && value)
+        tab->title = *value ? value : tab->url == "summit:home" ? "Start Page" : tab->url;
+    message.FindBool("loading", &tab->loading);
+    message.FindBool("canGoBack", &tab->back);
+    message.FindBool("canGoForward", &tab->forward);
+    double progress;
+    if (message.FindDouble("progress", &progress) == B_OK && std::isfinite(progress))
+        tab->progress = static_cast<float>(std::clamp(progress, 0.0, 1.0));
+    double zoom;
+    if (message.FindDouble("pageZoom", &zoom) == B_OK && std::isfinite(zoom)) tab->pageZoom = zoom;
+    if (message.FindDouble("textZoom", &zoom) == B_OK && std::isfinite(zoom)) tab->textZoom = zoom;
+    if (tab->loading) {
+        tab->processExited = false;
+        tab->processError.clear();
+    }
+    if (wasLoading && !tab->loading && !tab->processExited) fProfile.Visit({tab->url, tab->title});
+    for (auto& page : fProfile.history) if (page.url == tab->url) page.title = tab->title;
+    if (fSidebarHistory) RefreshSidebar(true);
+    if (tab->id == fSelected) {
+        if (!fAddress->TextView()->IsFocus()) fAddress->SetText(tab->url == "summit:home" ? "" : tab->url.c_str());
+        fStatus->SetText(tab->processExited ? tab->processError.c_str() : tab->loading ? "Loading…" : "Ready");
+    }
+    RefreshChrome();
+}
+#else
 void BrowserWindow::NavigationRequested(const BString& url, BWebView* view)
 {
     // This is a notification for a navigation WebKit has already started.
@@ -531,4 +1037,5 @@ void BrowserWindow::NavigationCapabilitiesChanged(bool back, bool forward, bool,
     if (auto* tab = FindTab(view)) { tab->back = back; tab->forward = forward; }
     RefreshChrome();
 }
+#endif
 }

@@ -1,0 +1,102 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Summit context fixture loading</title>
+<style>body { font: 16px system-ui; background: #edf5ee; color: #173524; margin: 24px } pre { white-space: pre-wrap }</style>
+<h1>Native browser context isolation</h1>
+<pre id="result">Checking real browser storage…</pre>
+<script>
+(async () => {
+    const query = new URLSearchParams(location.search);
+    const run = query.get('run');
+    const step = query.get('step');
+    const expected = query.get('expected') || null;
+    const write = query.get('write') || null;
+    const report = { run, step, expected, write, checks: {} };
+    const cookieName = 'summit_context_visible';
+    const hiddenCookieName = 'summit_context_http';
+    const storageKey = 'summit-context-state';
+    let database;
+
+    function domCookie() {
+        const entry = document.cookie.split(';').map(item => item.trim())
+            .find(item => item.startsWith(cookieName + '='));
+        return entry ? decodeURIComponent(entry.slice(cookieName.length + 1)) : null;
+    }
+    function openDatabase() {
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open('summit-context-database', 1);
+            request.onupgradeneeded = () => request.result.createObjectStore('values');
+            request.onerror = () => reject(request.error);
+            request.onblocked = () => reject(new Error('IndexedDB open was blocked'));
+            request.onsuccess = () => resolve(request.result);
+        });
+    }
+    function indexedValue(value) {
+        return new Promise((resolve, reject) => {
+            const transaction = database.transaction('values', value === undefined ? 'readonly' : 'readwrite');
+            const store = transaction.objectStore('values');
+            const request = value === undefined ? store.get(storageKey) : store.put(value, storageKey);
+            let result = null;
+            request.onsuccess = () => { result = request.result === undefined ? null : request.result; };
+            transaction.onabort = () => reject(transaction.error || request.error || new Error('IndexedDB transaction aborted'));
+            transaction.onerror = () => reject(transaction.error || request.error);
+            // Only a committed transaction counts as a completed write.
+            transaction.oncomplete = () => resolve(result);
+        });
+    }
+    async function observe() {
+        const response = await fetch('/context-cookie?run=' + encodeURIComponent(run), { cache: 'no-store' });
+        if (!response.ok)
+            throw new Error('Cookie echo HTTP ' + response.status);
+        const network = await response.json();
+        return { domCookie: domCookie(), networkCookie: network.visible, httpCookie: network.httpOnly,
+            localStorage: localStorage.getItem(storageKey), indexedDB: await indexedValue() };
+    }
+    function check(prefix, actual, wanted) {
+        for (const [name, value] of Object.entries(actual))
+            report.checks[prefix + '_' + name] = value === wanted;
+    }
+
+    try {
+        if (!run || !step)
+            throw new Error('Missing harness run or step');
+        database = await openDatabase();
+        report.before = await observe();
+        check('before', report.before, expected);
+        report.checks.httpOnlyHidden = !document.cookie.split(';').some(cookie => cookie.trim().startsWith(hiddenCookieName + '='));
+        if (write !== null) {
+            document.cookie = cookieName + '=' + encodeURIComponent(write) + '; Path=/; Max-Age=3600; SameSite=Lax';
+            localStorage.setItem(storageKey, write);
+            await indexedValue(write);
+            const response = await fetch('/context-cookie?run=' + encodeURIComponent(run), {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: write })
+            });
+            if (!response.ok)
+                throw new Error('HTTP-only cookie write failed: ' + response.status);
+            report.after = await observe();
+            check('after', report.after, write);
+            report.checks.httpOnlyHidden = report.checks.httpOnlyHidden
+                && !document.cookie.split(';').some(cookie => cookie.trim().startsWith(hiddenCookieName + '='));
+        }
+    } catch (error) {
+        report.error = String(error && error.stack || error);
+        report.checks.fixtureCompleted = false;
+    } finally {
+        if (database)
+            database.close();
+    }
+    const passed = Object.keys(report.checks).length > 0 && Object.values(report.checks).every(value => value === true);
+    document.getElementById('result').textContent = JSON.stringify(report, null, 2);
+    try {
+        const response = await fetch('/context-report?run=' + encodeURIComponent(run), {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(report)
+        });
+        if (!response.ok)
+            throw new Error('Report rejected: HTTP ' + response.status);
+        document.title = 'SUMMIT CONTEXT ' + step + (passed ? ' PASS' : ' FAIL');
+    } catch (error) {
+        document.getElementById('result').textContent += '\n' + error;
+        document.title = 'SUMMIT CONTEXT ' + step + ' FAIL';
+    }
+})();
+</script>

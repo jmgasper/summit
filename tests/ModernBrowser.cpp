@@ -21,8 +21,8 @@ public:
 
 class ModernBrowser final : public BApplication {
 public:
-    ModernBrowser(const char* url, bool smoke)
-        : BApplication("application/x-vnd.Kunanyi-Summit-ModernPreview")
+    ModernBrowser(const char* url, bool smoke, status_t& status)
+        : BApplication("application/x-vnd.Kunanyi-Summit-ModernPreview", &status)
         , m_url(url), m_smoke(smoke) { }
 
     void ReadyToRun() override
@@ -66,6 +66,7 @@ public:
         }
         if (message->what == B_WEBKIT_PROCESS_EXITED) {
             std::fputs("FAIL modern content process exited\n", stderr);
+            m_failed = true;
             m_result = 1;
             if (m_smoke)
                 PostMessage(B_QUIT_REQUESTED);
@@ -76,14 +77,24 @@ public:
 
     void Pulse() override
     {
+        if (m_waitingForNativeUI) {
+            PostMessage(B_QUIT_REQUESTED);
+            return;
+        }
         if (!m_smoke || !m_window || !m_view)
             return;
+        if (m_failed) {
+            PostMessage(B_QUIT_REQUESTED);
+            return;
+        }
         if (m_fixturePassed && FixturePixelsVisible()) {
             std::puts("PASS modern HTTP/DOM/JavaScript/storage/cookie fixture and native frame presentation");
             m_result = 0;
             PostMessage(B_QUIT_REQUESTED);
         } else if (system_time() - m_started > 60000000) {
             std::fputs("FAIL modern browser fixture did not finish and render within 60 seconds\n", stderr);
+            m_failed = true;
+            m_result = 1;
             PostMessage(B_QUIT_REQUESTED);
         }
     }
@@ -99,6 +110,19 @@ public:
             window->Quit();
             // Native view destruction queues WebKit teardown. Let that queued
             // application-thread work run before stopping the application loop.
+            PostMessage(B_QUIT_REQUESTED);
+            return false;
+        }
+        if (BWebKitHasPendingNativeUI()) {
+            m_waitingForNativeUI = true;
+            m_nativeUIExitReady = false;
+            SetPulseRate(100000); // Shorter native pulse intervals round down to zero.
+            return false;
+        }
+        m_waitingForNativeUI = false;
+        SetPulseRate(0);
+        if (!m_nativeUIExitReady) {
+            m_nativeUIExitReady = true;
             PostMessage(B_QUIT_REQUESTED);
             return false;
         }
@@ -129,6 +153,9 @@ private:
     BString m_url;
     bool m_smoke;
     bool m_fixturePassed { false };
+    bool m_failed { false };
+    bool m_waitingForNativeUI { false };
+    bool m_nativeUIExitReady { false };
     bigtime_t m_started { 0 };
     PreviewWindow* m_window { nullptr };
     BWebKitView* m_view { nullptr };
@@ -145,9 +172,10 @@ int main(int argc, char** argv)
         else
             url = argv[index];
     }
-    ModernBrowser browser(url, smoke);
-    if (browser.InitCheck() != B_OK) {
-        std::fputs("FAIL initialize the native preview application\n", stderr);
+    status_t status = B_NO_INIT;
+    ModernBrowser browser(url, smoke, status);
+    if (status != B_OK) {
+        std::fprintf(stderr, "FAIL initialize the native preview application: %s\n", std::strerror(status));
         return 1;
     }
     browser.Run();

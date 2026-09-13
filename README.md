@@ -67,6 +67,19 @@ library paths were verified against the native loader. It includes the patched
 WebKit source used for the build. `bash tools/copy-current-browser-bundle.sh`
 can repeat the host copy without rebuilding when the engine inputs still match.
 
+The experimental multiprocess backend uses a separate engine build and profile:
+
+```sh
+bash tools/build-webkit-in-vm.sh --modern all
+bash tools/build-modern-browser-in-vm.sh --browser --bundle
+```
+
+The second command records the frozen native bundle path, including its
+`run-browser.sh` launcher and private engine processes. Native UI compilation
+and component checks pass; full browser linking and runtime verification are
+still in progress. [The verification record](docs/STATUS.md) distinguishes
+these results from the working current-engine preview above.
+
 See [the current verification record](docs/STATUS.md), the complete
 [requirements and remaining work](docs/REQUIREMENTS.md), and the
 [engine source and porting notes](engine/README.md). Passing the preview's

@@ -1,18 +1,32 @@
 #!/usr/bin/env bash
-# Compile the preview and freeze an already completed modern engine. This never builds WebKit.
+# Compile a native app and freeze an already completed modern engine. This never builds WebKit.
 set -euo pipefail
 SUMMIT_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$SUMMIT_ROOT"
-SUMMIT_MODE=${1:---bundle}
-if (( $# > 1 )) || [[ $SUMMIT_MODE != --bundle && $SUMMIT_MODE != --compile-only ]]; then
-    echo 'Usage: build-modern-browser-in-vm.sh [--bundle|--compile-only]' >&2
-    exit 2
-fi
+SUMMIT_MODE=--bundle
+SUMMIT_TARGET=preview
+SUMMIT_MODE_SEEN=0
+for SUMMIT_ARGUMENT in "$@"; do
+    case "$SUMMIT_ARGUMENT" in
+        --bundle|--compile-only)
+            if (( SUMMIT_MODE_SEEN )); then
+                echo 'Select only one build mode.' >&2
+                exit 2
+            fi
+            SUMMIT_MODE=$SUMMIT_ARGUMENT
+            SUMMIT_MODE_SEEN=1
+            ;;
+        --browser) SUMMIT_TARGET=browser ;;
+        *) echo 'Usage: build-modern-browser-in-vm.sh [--bundle|--compile-only] [--browser]' >&2; exit 2 ;;
+    esac
+done
 mkdir -p .vm
-exec 9>.vm/engine-build.lock
-flock -n 9 || { echo 'An engine build is active; wait for it before building the preview.' >&2; exit 1; }
-exec 8>.vm/icu-build.lock
-flock -n 8 || { echo 'A private ICU build is active; wait for it before building the preview.' >&2; exit 1; }
+if [[ $SUMMIT_MODE == --bundle ]]; then
+    exec 9>.vm/engine-build.lock
+    flock -n 9 || { echo 'An engine build is active; wait for it before bundling the app.' >&2; exit 1; }
+    exec 8>.vm/icu-build.lock
+    flock -n 8 || { echo 'A private ICU build is active; wait for it before bundling the app.' >&2; exit 1; }
+fi
 SUMMIT_STAGE=$(mktemp -d .vm/modern-preview-inputs.XXXXXX)
 SUMMIT_RESULT=$(mktemp .vm/modern-preview-result.XXXXXX)
 SUMMIT_REMOTE_STAGE=
@@ -24,16 +38,19 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
-python3 - "$SUMMIT_STAGE" <<'PY'
+python3 - "$SUMMIT_STAGE" "$SUMMIT_TARGET" <<'PY'
 import hashlib, json, pathlib, shutil, sys
 root = pathlib.Path.cwd()
 stage = pathlib.Path(sys.argv[1])
+target = sys.argv[2]
 lock = json.loads((root / 'engine/sources.lock.json').read_text())
 patch = root / lock['patch']['path']
 if hashlib.sha256(patch.read_bytes()).hexdigest() != lock['patch']['sha256']:
     raise SystemExit('Engine patch does not match sources.lock.json.')
 headers = {
     'WebKitView.h': 'UIProcess/API/haiku/WebKitView.h',
+    'WebKitContext.h': 'UIProcess/API/haiku/WebKitContext.h',
+    'WebKitInfo.h': 'UIProcess/API/haiku/WebKitInfo.h',
     'WKBase.h': 'Shared/API/c/WKBase.h',
     'WKDeclarationSpecifiers.h': 'Shared/API/c/WKDeclarationSpecifiers.h',
     'WKBaseHaiku.h': 'Shared/API/c/haiku/WKBaseHaiku.h',
@@ -41,6 +58,12 @@ headers = {
 files = {'tests/ModernBrowser.cpp': 'tests/ModernBrowser.cpp',
          'tools/build-modern-browser.py': 'tools/build-modern-browser.py',
          'LICENSE-Summit': 'LICENSE'}
+if target == 'browser':
+    for directory in ['src', 'vendor', 'resources']:
+        for source in sorted((root / directory).rglob('*')):
+            if source.is_file():
+                relative = str(source.relative_to(root))
+                files[relative] = relative
 for name, path in headers.items():
     files['include/WebKit/' + name] = '.cache/WebKit/Source/WebKit/' + path
 hashes = {}
@@ -53,6 +76,7 @@ for destination, source in files.items():
     'engine': lock,
     'icu': json.loads((root / 'engine/icu.lock.json').read_text()),
     'public_headers': headers,
+    'target': target,
     'sha256': hashes,
 }, indent=2) + '\n')
 PY
@@ -66,7 +90,7 @@ tar -C "$SUMMIT_STAGE" -czf - . |
 bash tools/haiku.sh "python3.10 '$SUMMIT_REMOTE_STAGE/tools/build-modern-browser.py' '$SUMMIT_MODE'" |
     tee "$SUMMIT_RESULT"
 if [[ $SUMMIT_MODE == --compile-only ]]; then
-    mv -- "$SUMMIT_RESULT" .vm/modern-preview-compile.json
+    mv -- "$SUMMIT_RESULT" ".vm/modern-$SUMMIT_TARGET-compile.json"
 else
-    mv -- "$SUMMIT_RESULT" .vm/modern-preview-bundle.json
+    mv -- "$SUMMIT_RESULT" ".vm/modern-$SUMMIT_TARGET-bundle.json"
 fi

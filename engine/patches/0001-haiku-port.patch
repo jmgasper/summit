@@ -488,7 +488,7 @@ index bb0e77712461bde33900295c5cf169b0aed3c519..a8dc41e3b3e5bb797c73c0f8665b5f7f
      area_info info;
      while (get_next_area_info(B_CURRENT_TEAM, &cookie, &info) == B_OK)
 diff --git a/Source/WTF/wtf/FileSystem.cpp b/Source/WTF/wtf/FileSystem.cpp
-index 99669a85dddd56c6169d090cd818e34909f86a7f..f17a5b59f3cdea3b9d54c5000292c502050e1f68 100644
+index 99669a85dddd56c6169d090cd818e34909f86a7f..e18f3439cb811417d2493752ff72012afa82e4c6 100644
 --- a/Source/WTF/wtf/FileSystem.cpp
 +++ b/Source/WTF/wtf/FileSystem.cpp
 @@ -48,6 +48,10 @@
@@ -502,6 +502,28 @@ index 99669a85dddd56c6169d090cd818e34909f86a7f..f17a5b59f3cdea3b9d54c5000292c502
  #if HAVE(STD_FILESYSTEM) || HAVE(STD_EXPERIMENTAL_FILESYSTEM)
  #include <wtf/StdFilesystem.h>
  #endif
+@@ -843,17 +847,15 @@ String pathByAppendingComponents(StringView path, std::span<const StringView> co
+ String createTemporaryDirectory()
+ {
+     std::error_code ec;
+-    std::string tempDir = std::filesystem::temp_directory_path(ec);
++    auto tempDir = std::filesystem::temp_directory_path(ec);
+     if (ec)
+         return String();
+ 
+-    std::string newTempDirTemplate = tempDir + "XXXXXXXX";
+-
+-    Vector<char> newTempDir(std::span<const char> { newTempDirTemplate });
+-    if (!mkdtemp(newTempDir.mutableSpan().data()))
++    auto newTempDir = (tempDir / "XXXXXXXX").string();
++    if (!mkdtemp(newTempDir.data()))
+         return String();
+ 
+-    return stringFromFileSystemRepresentation(newTempDir.span().data());
++    return stringFromFileSystemRepresentation(newTempDir.c_str());
+ }
+ 
+ #endif // !OS(WINDOWS) && !PLATFORM(COCOA)
 diff --git a/Source/WTF/wtf/FileSystem.h b/Source/WTF/wtf/FileSystem.h
 index 6b82dac18bd500aa98f8cbc2827bef45fb454e21..f214a3cf2d788f15e39a5d0a92cc2edb3f1cbcb6 100644
 --- a/Source/WTF/wtf/FileSystem.h
@@ -742,10 +764,10 @@ index f7c1f5175e14e27e4c67598f5424782e2af77050..cde8501928cd6510cb4386b3afb6edd1
  
 diff --git a/Source/WTF/wtf/haiku/RunLoopHaiku.cpp b/Source/WTF/wtf/haiku/RunLoopHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..267ca3e95aebdbbb884602da79a41c338040ac4a
+index 0000000000000000000000000000000000000000..49795be7c03daf39a5be51e47809fa5669e8e50b
 --- /dev/null
 +++ b/Source/WTF/wtf/haiku/RunLoopHaiku.cpp
-@@ -0,0 +1,290 @@
+@@ -0,0 +1,297 @@
 +/*
 + * Copyright (C) 2014, 2024 Haiku, Inc
 + *
@@ -827,7 +849,14 @@ index 0000000000000000000000000000000000000000..267ca3e95aebdbbb884602da79a41c33
 +    static void initialize(RunLoop& runLoop)
 +    {
 +        runLoop.m_handler = new LoopHandler(runLoop);
-+        BLooper* looper = BLooper::LooperForThread(find_thread(nullptr));
++        auto thread = find_thread(nullptr);
++        BLooper* looper = BLooper::LooperForThread(thread);
++        // BApplication does not register its thread until Run(). Auxiliary
++        // processes initialize WTF while the creating thread still owns the
++        // application's initial lock, then drive this looper with Run().
++        if (!looper && be_app && be_app->InitCheck() == B_OK
++            && be_app->Thread() < B_OK && be_app->LockingThread() == thread)
++            looper = be_app;
 +        if (!looper) {
 +            runLoop.m_looper = looper = new StandaloneRunLoop;
 +            looper->AddHandler(runLoop.m_handler);
@@ -2991,6 +3020,50 @@ index 1edbed14cf714f36ad7dc5841bb2a212467f74bf..10cb4637234a1cea822dea457039dde5
      return ImageDrawResult::DidDraw;
  }
  
+diff --git a/Source/WebCore/platform/graphics/Icon.cpp b/Source/WebCore/platform/graphics/Icon.cpp
+index d768aaad251145c35f954ee9ef8aab51eb60189a..33823b95fda0dc622667b9fc02e99559ac46ea23 100644
+--- a/Source/WebCore/platform/graphics/Icon.cpp
++++ b/Source/WebCore/platform/graphics/Icon.cpp
+@@ -26,7 +26,7 @@
+ #include "config.h"
+ #include "Icon.h"
+ 
+-#if !USE(GLIB) && !PLATFORM(IOS_FAMILY) && !PLATFORM(MAC) && !PLATFORM(WIN)
++#if !USE(GLIB) && !PLATFORM(IOS_FAMILY) && !PLATFORM(MAC) && !PLATFORM(WIN) && !PLATFORM(HAIKU)
+ 
+ namespace WebCore {
+ 
+@@ -43,4 +43,4 @@ RefPtr<Icon> Icon::createIconForFiles(const Vector<String>&)
+ 
+ } // namespace WebCore
+ 
+-#endif // !USE(GLIB) && !PLATFORM(IOS_FAMILY) && !PLATFORM(MAC) && !PLATFORM(WIN)
++#endif // !USE(GLIB) && !PLATFORM(IOS_FAMILY) && !PLATFORM(MAC) && !PLATFORM(WIN) && !PLATFORM(HAIKU)
+diff --git a/Source/WebCore/platform/graphics/Icon.h b/Source/WebCore/platform/graphics/Icon.h
+index 55e87d1025ca3540c0ea7f19dfe3a410631beab4..544cdfd0d5f06bb4fe89988a040b6a4570f62c7c 100644
+--- a/Source/WebCore/platform/graphics/Icon.h
++++ b/Source/WebCore/platform/graphics/Icon.h
+@@ -73,6 +73,10 @@ public:
+     GIcon* icon() const { return m_icon.get(); };
+ #endif
+ 
++#if PLATFORM(HAIKU)
++    WEBCORE_EXPORT static RefPtr<Icon> create(RefPtr<NativeImage>&&);
++#endif
++
+ #if PLATFORM(COCOA)
+     WEBCORE_EXPORT static RefPtr<Icon> create(CocoaImage *);
+     WEBCORE_EXPORT static RefPtr<Icon> create(PlatformImagePtr&&);
+@@ -95,6 +99,9 @@ private:
+ #elif USE(GLIB)
+     explicit Icon(GRefPtr<GIcon>&&);
+     GRefPtr<GIcon> m_icon;
++#elif PLATFORM(HAIKU)
++    explicit Icon(RefPtr<NativeImage>&&);
++    RefPtr<NativeImage> m_image;
+ #endif
+ };
+ 
 diff --git a/Source/WebCore/platform/graphics/ImageBuffer.cpp b/Source/WebCore/platform/graphics/ImageBuffer.cpp
 index ea2bca619dd073dbaa7c73c7db5f4ec334fb7b46..40e59b33d1665f418160e42e30da1c4b7bc2db23 100644
 --- a/Source/WebCore/platform/graphics/ImageBuffer.cpp
@@ -3957,10 +4030,10 @@ index 0000000000000000000000000000000000000000..ab4c1671ad2f62ad93df8e9b622b8bc3
 +}
 diff --git a/Source/WebCore/platform/graphics/haiku/FontCustomPlatformData.cpp b/Source/WebCore/platform/graphics/haiku/FontCustomPlatformData.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..dd70696e96971966d0df35c46ac5d1242daff876
+index 0000000000000000000000000000000000000000..0837118f69c9da9c61589693c8bc0c594d3ad6c1
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/FontCustomPlatformData.cpp
-@@ -0,0 +1,112 @@
+@@ -0,0 +1,115 @@
 +/*
 + * Copyright (C) 2008 Alp Toker <alp@atoker.com>
 + *
@@ -4062,6 +4135,9 @@ index 0000000000000000000000000000000000000000..dd70696e96971966d0df35c46ac5d124
 +{
 +    return equalIgnoringASCIICase(format, ASCIILiteral::fromLiteralUnsafe("truetype"))
 +        || equalIgnoringASCIICase(format, ASCIILiteral::fromLiteralUnsafe("opentype"))
++#if USE(WOFF2)
++        || equalIgnoringASCIICase(format, "woff2"_s)
++#endif
 +        || equalIgnoringASCIICase(format, ASCIILiteral::fromLiteralUnsafe("woff"))
 +    ;
 +}
@@ -5925,10 +6001,10 @@ index 0000000000000000000000000000000000000000..740c848aa5379c979b37382f4099a149
 +}
 diff --git a/Source/WebCore/platform/graphics/haiku/IconHaiku.cpp b/Source/WebCore/platform/graphics/haiku/IconHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..13e7e1d375b8d31406bcbbbee92617c3b4c72d08
+index 0000000000000000000000000000000000000000..64f8e39b6f4b5d718822e168655ea0146e9cf228
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/IconHaiku.cpp
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,71 @@
 +/*
 + * Copyright (C) 2007 Ryan Leavengood <leavengood@gmail.com>
 + *
@@ -5955,19 +6031,51 @@ index 0000000000000000000000000000000000000000..13e7e1d375b8d31406bcbbbee92617c3
 +#include "Icon.h"
 +
 +#include "GraphicsContext.h"
-+#include "IntRect.h"
-+#include "NotImplemented.h"
-+
++#include "FloatRect.h"
++#include "NativeImage.h"
++#include <Entry.h>
++#include <NodeInfo.h>
++#include <wtf/Vector.h>
++#include <wtf/text/CString.h>
++#include <wtf/text/WTFString.h>
 +
 +namespace WebCore {
 +
-+void Icon::paint(GraphicsContext&, const FloatRect&)
++Icon::Icon(RefPtr<NativeImage>&& image)
++    : m_image(WTF::move(image))
 +{
-+    notImplemented();
++}
++
++Icon::~Icon() = default;
++
++RefPtr<Icon> Icon::create(RefPtr<NativeImage>&& image)
++{
++    if (!image || image->size().isEmpty())
++        return nullptr;
++    return adoptRef(*new Icon(WTF::move(image)));
++}
++
++void Icon::paint(GraphicsContext& context, const FloatRect& destination)
++{
++    if (!destination.isEmpty())
++        context.drawNativeImage(*m_image, destination, FloatRect({ }, m_image->size()));
++}
++
++RefPtr<Icon> Icon::createIconForFiles(const Vector<String>& filenames)
++{
++    if (filenames.isEmpty() || filenames[0].isEmpty() || filenames[0].contains('\0'))
++        return nullptr;
++    BEntry entry(filenames[0].utf8().legacyCStringPointer(), true);
++    entry_ref reference;
++    if (entry.GetRef(&reference) != B_OK)
++        return nullptr;
++    PlatformImagePtr bitmap = adoptRef(*new BitmapRef(BRect(0, 0, 31, 31), B_RGBA32, false));
++    if (!bitmap->IsValid() || BNodeInfo::GetTrackerIcon(&reference, bitmap.get(), B_LARGE_ICON) != B_OK)
++        return nullptr;
++    return create(NativeImage::create(WTF::move(bitmap)));
 +}
 +
 +} // namespace WebCore
-+
 diff --git a/Source/WebCore/platform/graphics/haiku/ImageBufferDataHaiku.h b/Source/WebCore/platform/graphics/haiku/ImageBufferDataHaiku.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..3711b43af784ff0a28f2e75c76e7067d2a61250d
@@ -8344,10 +8452,10 @@ index 0000000000000000000000000000000000000000..60ab27e9464c9342864b6c5e1abfcb12
 +#endif // PlatformDisplayHaiku
 diff --git a/Source/WebCore/platform/graphics/haiku/ShareableBitmapHaiku.cpp b/Source/WebCore/platform/graphics/haiku/ShareableBitmapHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..4ccc1747cfa35097813f72e005ed5d8bd4cfe8b7
+index 0000000000000000000000000000000000000000..2fbbda17afe9f00be49289dc64b863dfce31ea1e
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/ShareableBitmapHaiku.cpp
-@@ -0,0 +1,190 @@
+@@ -0,0 +1,196 @@
 +/*
 + * Copyright (C) 2014 Haiku, Inc.
 + *
@@ -8501,6 +8609,12 @@ index 0000000000000000000000000000000000000000..4ccc1747cfa35097813f72e005ed5d8b
 +        return nullptr;
 +
 +    return BitmapImage::create(std::move(surface));
++}
++
++void ShareableBitmap::setOwnershipOfMemory(const ProcessIdentity&)
++{
++    // This hook attributes Mach graphics-ledger usage on CG ports. Haiku
++    // retains native area accounting and the existing descriptor protections.
 +}
 +
 +CheckedUint32 ShareableBitmapConfiguration::calculateBitsPerComponent(WebCore::PixelFormat fmt, const ColorSpace& colorSpace)
@@ -20732,10 +20846,88 @@ index 72735563ab8ac49ffc69531d46b6068a5a43d93c..307a58eab62fd2346b4722205c43c677
  #elif OS(DARWIN)
      // Called on the connection queue.
 diff --git a/Source/WebKit/Platform/IPC/IPCEvent.h b/Source/WebKit/Platform/IPC/IPCEvent.h
-index ad092499963e96b597ee991fa87a5abffa6b5755..c4ca087e4f0a18b4b7798af8b493706c3d0d4d81 100644
+index ad092499963e96b597ee991fa87a5abffa6b5755..a9bd331b6da0e15d06c5d370a50844ffaf79a1e1 100644
 --- a/Source/WebKit/Platform/IPC/IPCEvent.h
 +++ b/Source/WebKit/Platform/IPC/IPCEvent.h
-@@ -147,7 +147,7 @@ struct EventSignalPair {
+@@ -40,7 +40,8 @@ std::optional<EventSignalPair> createEventSignalPair();
+ // The wait operation will be interrupted if the Signal instance is
+ // destroyed (including if the remote process that owns it crashes or is
+ // killed).
+-// FIXME: Write proper interruptible implementations for non-COCOA platforms.
++// Haiku detects peer closure within 100 ms, draining queued signals first.
++// FIXME: Write proper interruptible implementations for other non-COCOA platforms.
+ class Signal {
+     WTF_MAKE_TZONE_ALLOCATED_INLINE(Signal);
+     WTF_MAKE_NONCOPYABLE(Signal);
+@@ -59,6 +60,10 @@ public:
+     }
+ 
+     const Semaphore& semaphore() const LIFETIME_BOUND { return m_semaphore; }
++#if OS(HAIKU)
++    UnixFileDescriptor takeConnection() { return WTF::move(m_connection); }
++    static bool isValidConnection(const UnixFileDescriptor&);
++#endif
+ #endif
+ 
+ private:
+@@ -70,6 +75,11 @@ private:
+     Signal(MachSendRight&& sendRight)
+         : m_sendRight(WTF::move(sendRight))
+     { }
++#elif OS(HAIKU)
++    Signal(Semaphore&& semaphore, UnixFileDescriptor&& connection)
++        : m_semaphore(WTF::move(semaphore))
++        , m_connection(WTF::move(connection))
++    { }
+ #else
+     Signal(Semaphore&& semaphore)
+         : m_semaphore(WTF::move(semaphore))
+@@ -80,6 +90,9 @@ private:
+     MachSendRight m_sendRight;
+ #else
+     Semaphore m_semaphore;
++#if OS(HAIKU)
++    UnixFileDescriptor m_connection;
++#endif
+ #endif
+ };
+ 
+@@ -104,6 +117,11 @@ public:
+         return *this;
+     }
+ 
++    bool wait();
++    bool waitFor(Timeout);
++#elif OS(HAIKU)
++    Event(Event&&) = default;
++    Event& operator=(Event&&) = default;
+     bool wait();
+     bool waitFor(Timeout);
+ #else
+@@ -128,6 +146,11 @@ private:
+     Event(mach_port_t port)
+         : m_receiveRight(port)
+     { }
++#elif OS(HAIKU)
++    Event(Semaphore&& semaphore, UnixFileDescriptor&& connection)
++        : m_semaphore(WTF::move(semaphore))
++        , m_connection(WTF::move(connection))
++    { }
+ #else
+     Event(Semaphore&& semaphore)
+         : m_semaphore(WTF::move(semaphore))
+@@ -139,6 +162,10 @@ private:
+     bool m_peerDied { false };
+ #else
+     Semaphore m_semaphore;
++#if OS(HAIKU)
++    UnixFileDescriptor m_connection;
++    bool m_peerDied { false };
++#endif
+ #endif
+ };
+ 
+@@ -147,7 +174,7 @@ struct EventSignalPair {
      Signal signal;
  };
  
@@ -20744,6 +20936,76 @@ index ad092499963e96b597ee991fa87a5abffa6b5755..c4ca087e4f0a18b4b7798af8b493706c
  inline std::optional<EventSignalPair> createEventSignalPair()
  {
      Semaphore event;
+diff --git a/Source/WebKit/Platform/IPC/IPCEvent.serialization.in b/Source/WebKit/Platform/IPC/IPCEvent.serialization.in
+index 4701e4d01232eda181bd6d15ad23ab661f828337..5b905dc9680a5b7ef70badabaa3dbbda77e14031 100644
+--- a/Source/WebKit/Platform/IPC/IPCEvent.serialization.in
++++ b/Source/WebKit/Platform/IPC/IPCEvent.serialization.in
+@@ -26,7 +26,11 @@ webkit_platform_header: "IPCEvent.h"
+ #if PLATFORM(COCOA)
+     MachSendRight takeSendRight();
+ #endif
+-#if !PLATFORM(COCOA)
++#if OS(HAIKU)
++    [Validator='!!*semaphore'] IPC::Semaphore semaphore();
++    [Validator='IPC::Signal::isValidConnection(*takeConnection)'] UnixFileDescriptor takeConnection();
++#endif
++#if !PLATFORM(COCOA) && !OS(HAIKU)
+     IPC::Semaphore semaphore();
+ #endif
+ }
+diff --git a/Source/WebKit/Platform/IPC/IPCSemaphore.h b/Source/WebKit/Platform/IPC/IPCSemaphore.h
+index 6d19a33734c78204edecc3ae48baf255d320385e..09cdeeb4d18dda6d00cb42a84f2d72ffc572c39f 100644
+--- a/Source/WebKit/Platform/IPC/IPCSemaphore.h
++++ b/Source/WebKit/Platform/IPC/IPCSemaphore.h
+@@ -29,6 +29,10 @@
+ #include <wtf/Lock.h>
+ #include <wtf/Noncopyable.h>
+ #include <wtf/Seconds.h>
++#if OS(HAIKU)
++#include <wtf/RefPtr.h>
++namespace WebCore { class SharedMemory; }
++#endif
+ #include <wtf/TZoneMallocInlines.h>
+ 
+ #if PLATFORM(COCOA)
+@@ -79,7 +83,12 @@ public:
+ #elif USE(UNIX_DOMAIN_SOCKETS)
+     explicit Semaphore(UnixFileDescriptor&&);
+     UnixFileDescriptor duplicateDescriptor() const;
++#if OS(HAIKU)
++    explicit operator bool() const;
++    static bool isValidDescriptor(const UnixFileDescriptor&);
++#else
+     explicit operator bool() const { return !!m_fd; }
++#endif
+ #else
+     explicit operator bool() const { return true; }
+ #endif
+@@ -92,6 +101,8 @@ private:
+     semaphore_t m_semaphore { SEMAPHORE_NULL };
+ #elif OS(WINDOWS)
+     Win32Handle m_semaphoreHandle;
++#elif OS(HAIKU)
++    RefPtr<WebCore::SharedMemory> m_memory;
+ #elif USE(UNIX_DOMAIN_SOCKETS)
+     UnixFileDescriptor m_fd;
+ #endif
+diff --git a/Source/WebKit/Platform/IPC/IPCSemaphore.serialization.in b/Source/WebKit/Platform/IPC/IPCSemaphore.serialization.in
+index f3463374b0046902cb4483b60479be2d205fe9d3..addfd3eb78092455326ff6cb56c95def317ec484 100644
+--- a/Source/WebKit/Platform/IPC/IPCSemaphore.serialization.in
++++ b/Source/WebKit/Platform/IPC/IPCSemaphore.serialization.in
+@@ -29,7 +29,10 @@ webkit_platform_header: "IPCSemaphore.h"
+ #if OS(WINDOWS)
+     Win32Handle win32Handle();
+ #endif
+-#if USE(UNIX_DOMAIN_SOCKETS)
++#if OS(HAIKU)
++    [Validator='IPC::Semaphore::isValidDescriptor(*duplicateDescriptor)'] UnixFileDescriptor duplicateDescriptor();
++#endif
++#if USE(UNIX_DOMAIN_SOCKETS) && !OS(HAIKU)
+     UnixFileDescriptor duplicateDescriptor();
+ #endif
+ };
 diff --git a/Source/WebKit/Platform/IPC/haiku/ArgumentCodersHaiku.h b/Source/WebKit/Platform/IPC/haiku/ArgumentCodersHaiku.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..2b968b6ac3681112fefa4f50dc2da402d020dd5d
@@ -20999,6 +21261,333 @@ index 0000000000000000000000000000000000000000..f63134a3a4c2fbd22c5cc7bc553f54e5
 +    auto pair = createPlatformConnection(SOCK_SEQPACKET);
 +    return { { Identifier { WTF::move(pair.server) }, ConnectionHandle { WTF::move(pair.client) } } };
 +}
++
++} // namespace IPC
+diff --git a/Source/WebKit/Platform/IPC/haiku/IPCEventHaiku.cpp b/Source/WebKit/Platform/IPC/haiku/IPCEventHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..36f9b63aa267ff91f5e78a70c4145c39e39032c0
+--- /dev/null
++++ b/Source/WebKit/Platform/IPC/haiku/IPCEventHaiku.cpp
+@@ -0,0 +1,84 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#include "config.h"
++#include "IPCEvent.h"
++
++#include <cerrno>
++#include <fcntl.h>
++#include <poll.h>
++#include <sys/socket.h>
++#include <sys/un.h>
++
++namespace IPC {
++
++bool Signal::isValidConnection(const UnixFileDescriptor& connection)
++{
++    if (!connection)
++        return false;
++    int type;
++    socklen_t size = sizeof(type);
++    if (getsockopt(connection.value(), SOL_SOCKET, SO_TYPE, &type, &size) || type != SOCK_STREAM)
++        return false;
++    sockaddr_un peer { };
++    size = sizeof(peer);
++    return !getpeername(connection.value(), reinterpret_cast<sockaddr*>(&peer), &size) && peer.sun_family == AF_UNIX;
++}
++
++std::optional<EventSignalPair> createEventSignalPair()
++{
++    Semaphore event;
++    if (!event)
++        return std::nullopt;
++    Semaphore signal(event.duplicateDescriptor());
++    if (!signal)
++        return std::nullopt;
++    int sockets[2];
++    if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets))
++        return std::nullopt;
++    // No payload ever enters the socket. It exists only to report the death of
++    // the last Signal owner, including ownership transferred through SCM_RIGHTS.
++    return EventSignalPair {
++        Event { WTF::move(event), UnixFileDescriptor { sockets[0], UnixFileDescriptor::Adopt } },
++        Signal { WTF::move(signal), UnixFileDescriptor { sockets[1], UnixFileDescriptor::Adopt } }
++    };
++}
++
++bool Event::wait()
++{
++    return waitFor(Timeout::infinity());
++}
++
++bool Event::waitFor(Timeout timeout)
++{
++    if (m_peerDied || !m_connection || !m_semaphore)
++        return false;
++    for (;;) {
++        if (!m_semaphore)
++            return false;
++        // Preserve signals published before the final peer endpoint closed.
++        if (m_semaphore.waitFor(Timeout::now()))
++            return true;
++        pollfd descriptor { m_connection.value(), POLLIN, 0 };
++        int result;
++        do {
++            result = poll(&descriptor, 1, 0);
++        } while (result < 0 && errno == EINTR);
++        if (result < 0 || (result && descriptor.revents)) {
++            m_peerDied = true;
++            // The sender may have published its final count between the first
++            // check and EOF. Drain it before making peer death permanent.
++            if (m_semaphore.waitFor(Timeout::now())) {
++                m_peerDied = false;
++                return true;
++            }
++            return false;
++        }
++        if (!timeout.isInfinity() && timeout.didTimeOut())
++            return false;
++        auto interval = timeout.isInfinity() ? 100_ms : std::min(timeout.secondsUntilDeadline(), 100_ms);
++        if (m_semaphore.waitFor(Timeout { interval }))
++            return true;
++    }
++}
++
++} // namespace IPC
+diff --git a/Source/WebKit/Platform/IPC/haiku/IPCSemaphoreHaiku.cpp b/Source/WebKit/Platform/IPC/haiku/IPCSemaphoreHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..b4cff66d80dd728fed4388f22cc1e69e387a4138
+--- /dev/null
++++ b/Source/WebKit/Platform/IPC/haiku/IPCSemaphoreHaiku.cpp
+@@ -0,0 +1,198 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#include "config.h"
++#include "IPCSemaphore.h"
++#include "IPCSemaphoreSharedHaiku.h"
++
++#include <WebCore/SharedMemory.h>
++#include <atomic>
++#include <cerrno>
++#include <cmath>
++#include <fcntl.h>
++#include <limits>
++#include <semaphore.h>
++#include <sys/stat.h>
++#include <time.h>
++#include <wtf/StdLibExtras.h>
++
++namespace IPC {
++
++namespace {
++
++static SharedSemaphoreHaiku& sharedState(WebCore::SharedMemory& memory)
++{
++    return *reinterpret_cast<SharedSemaphoreHaiku*>(memory.mutableSpan().data());
++}
++
++static bool validState(const SharedSemaphoreHaiku& state)
++{
++    static const int32_t expectedType = [] {
++        sem_t expected { };
++        RELEASE_ASSERT(!sem_init(&expected, 1, 0));
++        auto type = expected.type;
++        sem_destroy(&expected);
++        return type;
++    }();
++    // libroot/kernel accesses this word atomically. Only -1 (contended), 0,
++    // and 1 are reachable with our single outstanding wake notification.
++    auto wakeCount = std::atomic_ref<const int32_t>(state.wake.u.unnamed_sem).load(std::memory_order_relaxed);
++    return state.magic == SharedSemaphoreHaiku::expectedMagic && state.version == 1
++        && state.semaphoreSize == sizeof(sem_t) && !state.reserved
++        && state.wake.type == expectedType && wakeCount >= -1 && wakeCount <= 1
++        && state.wakePending.load(std::memory_order_relaxed) <= 1
++        && state.count.load(std::memory_order_relaxed) != std::numeric_limits<uint64_t>::max();
++}
++
++static RefPtr<WebCore::SharedMemory> mapDescriptor(UnixFileDescriptor&& descriptor)
++{
++    if (!descriptor)
++        return nullptr;
++    struct stat info;
++    if (fstat(descriptor.value(), &info) || !S_ISREG(info.st_mode)
++        || info.st_size != sizeof(SharedSemaphoreHaiku)
++        || (fcntl(descriptor.value(), F_GETFL) & O_ACCMODE) != O_RDWR)
++        return nullptr;
++    auto memory = WebCore::SharedMemory::map({ WTF::move(descriptor), sizeof(SharedSemaphoreHaiku) }, WebCore::SharedMemory::Protection::ReadWrite);
++    if (!memory)
++        return nullptr;
++    return validState(sharedState(*memory)) ? memory : nullptr;
++}
++
++static void wakeWaiter(SharedSemaphoreHaiku& state)
++{
++    if (!state.wakePending.exchange(1, std::memory_order_acq_rel) && sem_post(&state.wake))
++        WTFLogAlways("IPC::Semaphore: native wake failed (%d); the shared count remains pending", errno);
++}
++
++static bool tryAcquire(SharedSemaphoreHaiku& state)
++{
++    auto count = state.count.load(std::memory_order_acquire);
++    while (count) {
++        if (count == std::numeric_limits<uint64_t>::max()) {
++            WTFLogAlways("IPC::Semaphore: rejected corrupted shared count");
++            return false;
++        }
++        if (state.count.compare_exchange_weak(count, count - 1, std::memory_order_acq_rel, std::memory_order_acquire)) {
++            if (count > 1)
++                wakeWaiter(state);
++            return true;
++        }
++    }
++    return false;
++}
++
++static timespec wakeDeadline(Timeout timeout)
++{
++    timespec deadline;
++    RELEASE_ASSERT(!clock_gettime(CLOCK_MONOTONIC, &deadline));
++    // Recheck the count even if a peer dies after publishing it but before
++    // sem_post. This also makes an interrupted notification harmless.
++    double seconds = timeout.isInfinity() ? 0.1 : std::min(timeout.secondsUntilDeadline().seconds(), 0.1);
++    auto nanoseconds = static_cast<long>(std::ceil(std::max(seconds, 0.0) * 1000000000.0));
++    deadline.tv_nsec += nanoseconds;
++    if (deadline.tv_nsec >= 1000000000) {
++        ++deadline.tv_sec;
++        deadline.tv_nsec -= 1000000000;
++    }
++    return deadline;
++}
++
++} // namespace
++
++Semaphore::Semaphore()
++    : m_memory(WebCore::SharedMemory::allocate(sizeof(SharedSemaphoreHaiku)))
++{
++    if (!m_memory)
++        return;
++    auto* state = new (m_memory->mutableSpan().data()) SharedSemaphoreHaiku;
++    if (sem_init(&state->wake, 1, 0))
++        m_memory = nullptr;
++}
++
++Semaphore::Semaphore(UnixFileDescriptor&& descriptor)
++    : m_memory(mapDescriptor(WTF::move(descriptor)))
++{
++}
++
++Semaphore::Semaphore(Semaphore&&) = default;
++Semaphore& Semaphore::operator=(Semaphore&&) = default;
++
++Semaphore::~Semaphore()
++{
++    destroy();
++}
++
++Semaphore::operator bool() const
++{
++    return m_memory && validState(sharedState(*m_memory));
++}
++
++bool Semaphore::isValidDescriptor(const UnixFileDescriptor& descriptor)
++{
++    return !!mapDescriptor(descriptor.duplicate());
++}
++
++UnixFileDescriptor Semaphore::duplicateDescriptor() const
++{
++    if (!m_memory)
++        return { };
++    auto handle = m_memory->createHandle(WebCore::SharedMemory::Protection::ReadWrite);
++    return handle ? handle->releaseHandle() : UnixFileDescriptor { };
++}
++
++void Semaphore::signal()
++{
++    RELEASE_ASSERT(m_memory);
++    auto& state = sharedState(*m_memory);
++    if (!validState(state)) {
++        WTFLogAlways("IPC::Semaphore: rejected corrupted shared state while signalling");
++        return;
++    }
++    auto count = state.count.load(std::memory_order_relaxed);
++    do {
++        // The void API cannot report overflow. Reject it explicitly without
++        // allowing externally writable shared data to crash the receiver.
++        if (count == std::numeric_limits<uint64_t>::max()) {
++            WTFLogAlways("IPC::Semaphore: rejected overflowing shared count");
++            return;
++        }
++    } while (!state.count.compare_exchange_weak(count, count + 1, std::memory_order_release, std::memory_order_relaxed));
++    wakeWaiter(state);
++}
++
++bool Semaphore::wait()
++{
++    return waitFor(Timeout::infinity());
++}
++
++bool Semaphore::waitFor(Timeout timeout)
++{
++    if (!m_memory)
++        return false;
++    auto& state = sharedState(*m_memory);
++    for (;;) {
++        if (!validState(state)) {
++            WTFLogAlways("IPC::Semaphore: rejected corrupted shared state while waiting");
++            return false;
++        }
++        if (tryAcquire(state))
++            return true;
++        if (!timeout.isInfinity() && timeout.didTimeOut())
++            return false;
++        auto deadline = wakeDeadline(timeout);
++        int result = sem_clockwait(&state.wake, CLOCK_MONOTONIC, &deadline);
++        if (!result)
++            state.wakePending.store(0, std::memory_order_release);
++        else if (errno != ETIMEDOUT && errno != EINTR)
++            return false;
++    }
++}
++
++void Semaphore::destroy()
++{
++    // Other processes can still own this object. Haiku's unnamed sem_destroy
++    // owns no kernel resource; unmapping and closing our descriptors is enough.
++    m_memory = nullptr;
++}
++
++} // namespace IPC
+diff --git a/Source/WebKit/Platform/IPC/haiku/IPCSemaphoreSharedHaiku.h b/Source/WebKit/Platform/IPC/haiku/IPCSemaphoreSharedHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..f8ac1cf7a24ba5194e4c6660c48c3cba45c25b8f
+--- /dev/null
++++ b/Source/WebKit/Platform/IPC/haiku/IPCSemaphoreSharedHaiku.h
+@@ -0,0 +1,27 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++
++#include <atomic>
++#include <cstdint>
++#include <semaphore.h>
++
++namespace IPC {
++
++// The descriptor is a capability for one complete, versioned shared object.
++// A separate 64-bit count avoids sem_post's signed 32-bit overflow in libroot.
++// The POSIX semaphore carries at most one wake notification, never the count.
++struct SharedSemaphoreHaiku {
++    static constexpr uint64_t expectedMagic = 0x485749504353454dULL;
++    uint64_t magic { expectedMagic };
++    uint32_t version { 1 };
++    uint32_t semaphoreSize { sizeof(sem_t) };
++    std::atomic<uint64_t> count { 0 };
++    std::atomic<uint32_t> wakePending { 0 };
++    uint32_t reserved { 0 };
++    sem_t wake { };
++};
++
++static_assert(std::atomic<uint64_t>::is_always_lock_free);
++static_assert(std::atomic<uint32_t>::is_always_lock_free);
 +
 +} // namespace IPC
 diff --git a/Source/WebKit/Platform/IPC/haiku/MessagePacketHaiku.cpp b/Source/WebKit/Platform/IPC/haiku/MessagePacketHaiku.cpp
@@ -22052,16 +22641,30 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..1194cb3556aefa0bfacdeeda141372ae12e83b56
+index 0000000000000000000000000000000000000000..1e86ab3c05d16ba69bc0d3fd4cf487870c8ca1a9
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,140 @@
+@@ -0,0 +1,170 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
 +file(MAKE_DIRECTORY ${DERIVED_SOURCES_HAIKU_API_DIR})
 +
 +configure_file(UIProcess/API/haiku/WebKitVersion.h.in ${DERIVED_SOURCES_HAIKU_API_DIR}/WebKitVersion.h)
++
++# The port's public header version and the upstream rendering engine version
++# are separate. Report the latter from the exact upstream configuration.
++set(WebKit_HAIKU_VERSION_CONFIGURATION "${CMAKE_SOURCE_DIR}/Configurations/Version.xcconfig")
++set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${WebKit_HAIKU_VERSION_CONFIGURATION}")
++file(READ "${WebKit_HAIKU_VERSION_CONFIGURATION}" WebKit_HAIKU_VERSION_CONTENT)
++foreach(WebKit_HAIKU_VERSION_COMPONENT MAJOR MINOR TINY)
++    string(REGEX MATCH "(^|\n)${WebKit_HAIKU_VERSION_COMPONENT}_VERSION[ \t]*=[ \t]*([0-9]+);" WebKit_HAIKU_VERSION_MATCH "${WebKit_HAIKU_VERSION_CONTENT}")
++    if(NOT WebKit_HAIKU_VERSION_MATCH)
++        message(FATAL_ERROR "Missing ${WebKit_HAIKU_VERSION_COMPONENT} engine version in ${WebKit_HAIKU_VERSION_CONFIGURATION}")
++    endif()
++    set(WebKit_HAIKU_${WebKit_HAIKU_VERSION_COMPONENT}_VERSION "${CMAKE_MATCH_2}")
++endforeach()
++configure_file(UIProcess/API/haiku/WebKitBuildInfoHaiku.h.in ${DERIVED_SOURCES_HAIKU_API_DIR}/WebKitBuildInfoHaiku.h @ONLY)
 +
 +list(APPEND WebKit_SOURCES
 +    NetworkProcess/NetworkDataTaskDataURL.cpp
@@ -22070,7 +22673,8 @@ index 0000000000000000000000000000000000000000..1194cb3556aefa0bfacdeeda141372ae
 +    Platform/IPC/unix/ArgumentCodersUnix.cpp
 +    Platform/IPC/haiku/ConnectionHaiku.cpp
 +    Platform/IPC/haiku/MessagePacketHaiku.cpp
-+    Platform/IPC/unix/IPCSemaphoreUnix.cpp
++    Platform/IPC/haiku/IPCEventHaiku.cpp
++    Platform/IPC/haiku/IPCSemaphoreHaiku.cpp
 +    Platform/IPC/unix/IPCUtilitiesUnix.cpp
 +    Platform/IPC/haiku/SocketMonitorHaiku.cpp
 +    Platform/classifier/ResourceLoadStatisticsClassifier.cpp
@@ -22083,15 +22687,22 @@ index 0000000000000000000000000000000000000000..1194cb3556aefa0bfacdeeda141372ae
 +    Shared/haiku/WebMemorySamplerHaiku.cpp
 +
 +    UIProcess/DefaultUndoController.cpp
++    UIProcess/API/haiku/WebKitContext.cpp
++    UIProcess/API/haiku/WebKitInfo.cpp
 +    UIProcess/API/haiku/WebKitView.cpp
++    UIProcess/Extensions/haiku/WebExtensionArchiveHaiku.cpp
++    UIProcess/Extensions/haiku/WebExtensionControllerConfigurationHaiku.cpp
++    UIProcess/Extensions/haiku/WebExtensionHaiku.cpp
 +    UIProcess/Launcher/haiku/ProcessLauncherHaiku.cpp
 +    UIProcess/LegacySessionStateCodingNone.cpp
 +    UIProcess/WebsiteData/haiku/WebsiteDataStoreHaiku.cpp
 +    UIProcess/haiku/DrawingAreaProxyHaiku.cpp
 +    UIProcess/haiku/TextCheckerHaiku.cpp
 +    UIProcess/haiku/WebPageProxyHaiku.cpp
++    UIProcess/haiku/WebPopupMenuProxyHaiku.cpp
 +    UIProcess/haiku/WebProcessPoolHaiku.cpp
 +    UIProcess/haiku/WebView.cpp
++    UIProcess/haiku/WebViewContextHaiku.cpp
 +
 +    WebProcess/InjectedBundle/haiku/InjectedBundleHaiku.cpp
 +    WebProcess/WebPage/haiku/DrawingAreaHaiku.cpp
@@ -22139,6 +22750,12 @@ index 0000000000000000000000000000000000000000..1194cb3556aefa0bfacdeeda141372ae
 +    ${PNG_LIBRARIES}
 +    ${SQLITE_LIBRARIES}
 +)
++
++if (ENABLE_WK_WEB_EXTENSIONS)
++    find_package(PkgConfig REQUIRED)
++    pkg_check_modules(LIBZIP REQUIRED IMPORTED_TARGET libzip>=1.11)
++    list(APPEND WebKit_LIBRARIES PkgConfig::LIBZIP)
++endif ()
 +
 +list(APPEND WebKit_SERIALIZATION_IN_FILES
 +    Shared/haiku/WebCoreFontHaiku.serialization.in
@@ -22194,6 +22811,8 @@ index 0000000000000000000000000000000000000000..1194cb3556aefa0bfacdeeda141372ae
 +
 +list(APPEND WebKit_PUBLIC_FRAMEWORK_HEADERS
 +    Shared/API/c/haiku/WKBaseHaiku.h
++    UIProcess/API/haiku/WebKitContext.h
++    UIProcess/API/haiku/WebKitInfo.h
 +    UIProcess/API/haiku/WebKitView.h
 +)
 diff --git a/Source/WebKit/Shared/API/c/WKBase.h b/Source/WebKit/Shared/API/c/WKBase.h
@@ -23262,6 +23881,34 @@ index 0000000000000000000000000000000000000000..964df248231137e87da9c37afbb37b84
 +
 +}
 +#endif
+diff --git a/Source/WebKit/Sources.txt b/Source/WebKit/Sources.txt
+index e229fa1ae53c6c89e7534316dd06a7c5bfec5330..40b13e3a463b71605c175abec5278a861c4aefdf 100644
+--- a/Source/WebKit/Sources.txt
++++ b/Source/WebKit/Sources.txt
+@@ -614,6 +614,8 @@ UIProcess/Extensions/WebExtensionControllerConfiguration.cpp
+ UIProcess/Extensions/WebExtensionDataRecord.cpp
+ UIProcess/Extensions/WebExtensionDeclarativeNetRequestSQLiteStore.cpp
+ UIProcess/Extensions/WebExtensionMatchPattern.cpp
++UIProcess/Extensions/WebExtensionMatchPatternProcessPool.cpp
++UIProcess/Extensions/WebExtensionResources.cpp @no-unify
+ UIProcess/Extensions/WebExtensionStorageSQLiteStore.cpp
+ 
+ UIProcess/Extensions/API/WebExtensionContextAPIAlarms.cpp
+diff --git a/Source/WebKit/UIProcess/API/APIUIClient.h b/Source/WebKit/UIProcess/API/APIUIClient.h
+index 9555283cab179e279fb3824cd46cdb76433f069c..e5a925637597156bcce225cd83c90ca4e472b2b8 100644
+--- a/Source/WebKit/UIProcess/API/APIUIClient.h
++++ b/Source/WebKit/UIProcess/API/APIUIClient.h
+@@ -106,6 +106,10 @@ public:
+     virtual void didExitFullscreen(WebKit::WebPageProxy*) { }
+     virtual void hasVideoInPictureInPictureDidChange(WebKit::WebPageProxy*, bool) { }
+     virtual void close(WebKit::WebPageProxy*) { }
++    // The asynchronous tryClose request finished with an explicit refusal.
++    virtual void didCancelClose(WebKit::WebPageProxy*) { }
++    // Main-frame document.open replaced the active document without navigation.
++    virtual void didExplicitOpen(WebKit::WebPageProxy*) { }
+ 
+     virtual bool takeFocus(WebKit::WebPageProxy*, WKFocusDirection) { return false; }
+     virtual void focus(WebKit::WebPageProxy*) { }
 diff --git a/Source/WebKit/UIProcess/API/C/WKAPICast.h b/Source/WebKit/UIProcess/API/C/WKAPICast.h
 index f49fc985a299040ab4da6b31cd9099b2acb97f08..a1248cfdf02c093eeb9960894159f075b5835944 100644
 --- a/Source/WebKit/UIProcess/API/C/WKAPICast.h
@@ -23565,6 +24212,121 @@ index 0000000000000000000000000000000000000000..737cf4eece3b67d3e5548b867e8d3254
 +}
 +
 +} // namespace API
+diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitBuildInfoHaiku.h.in b/Source/WebKit/UIProcess/API/haiku/WebKitBuildInfoHaiku.h.in
+new file mode 100644
+index 0000000000000000000000000000000000000000..574ed16658f0c14b1aa2e63208e990b84728c357
+--- /dev/null
++++ b/Source/WebKit/UIProcess/API/haiku/WebKitBuildInfoHaiku.h.in
+@@ -0,0 +1,4 @@
++/* Generated from the upstream engine version configuration. */
++#pragma once
++
++#define WEBKIT_ENGINE_VERSION_HAIKU "@WebKit_HAIKU_MAJOR_VERSION@.@WebKit_HAIKU_MINOR_VERSION@.@WebKit_HAIKU_TINY_VERSION@"
+diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitContext.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitContext.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..9752480624aa917d18f2c358e974c7d6d5db93f5
+--- /dev/null
++++ b/Source/WebKit/UIProcess/API/haiku/WebKitContext.cpp
+@@ -0,0 +1,20 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#include "config.h"
++#include "WebKitContext.h"
++
++#include "WebKitView.h"
++#include "WebViewContextHaiku.h"
++
++BWebKitContext::BWebKitContext(const char* profilePath, bool privateBrowsing)
++    : m_private(privateBrowsing)
++{
++    m_status = BWebKitInitialize();
++    if (m_status == B_OK)
++        m_context = WebKit::WebViewContextHaiku::create(profilePath, privateBrowsing, m_status);
++}
++
++BWebKitContext::~BWebKitContext() = default;
++
++status_t BWebKitContext::InitCheck() const { return m_status; }
++bool BWebKitContext::IsPrivate() const { return m_private; }
+diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitContext.h b/Source/WebKit/UIProcess/API/haiku/WebKitContext.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..6e232079e5b951703f4c45539001433bed2e19ff
+--- /dev/null
++++ b/Source/WebKit/UIProcess/API/haiku/WebKitContext.h
+@@ -0,0 +1,30 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#pragma once
++
++#include "WKBase.h"
++#include <SupportDefs.h>
++#include <memory>
++
++namespace WebKit { class WebViewContextHaiku; }
++
++// Create on the BApplication thread after BWebKitInitialize(). All views given
++// this context share one website data store and process pool. A persistent
++// profile path must be absolute; nullptr selects the application's default
++// WebKit profile. A private context ignores the path and creates no directories.
++class WK_EXPORT BWebKitContext final {
++public:
++    explicit BWebKitContext(const char* profilePath, bool privateBrowsing = false);
++    ~BWebKitContext();
++    BWebKitContext(const BWebKitContext&) = delete;
++    BWebKitContext& operator=(const BWebKitContext&) = delete;
++
++    status_t InitCheck() const;
++    bool IsPrivate() const;
++
++private:
++    friend class BWebKitView;
++    std::shared_ptr<WebKit::WebViewContextHaiku> m_context;
++    status_t m_status { B_NO_INIT };
++    const bool m_private;
++};
+diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitInfo.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitInfo.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..92649157ae5ff19bbc99f521aebc48f186a8977a
+--- /dev/null
++++ b/Source/WebKit/UIProcess/API/haiku/WebKitInfo.cpp
+@@ -0,0 +1,21 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#include "config.h"
++#include "WebKitInfo.h"
++
++#include "WebKitBuildInfoHaiku.h"
++
++const char* BWebKitVersion()
++{
++    return WEBKIT_ENGINE_VERSION_HAIKU;
++}
++
++const char* BWebKitPortVersion()
++{
++    return HAIKU_WEBKIT_VERSION "+summit.00991b6cdc59937da6076c69a22ae6a9460a4445";
++}
++
++const char* BWebKitSourceRevision()
++{
++    return "00991b6cdc59937da6076c69a22ae6a9460a4445";
++}
+diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitInfo.h b/Source/WebKit/UIProcess/API/haiku/WebKitInfo.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..22ab42571717f32300ebb36a55b100116d8e52bb
+--- /dev/null
++++ b/Source/WebKit/UIProcess/API/haiku/WebKitInfo.h
+@@ -0,0 +1,10 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#pragma once
++
++#include <WebKit/WKBase.h>
++
++// These strings describe the loaded library. They do not require WebKit initialization.
++WK_EXPORT const char* BWebKitVersion();
++WK_EXPORT const char* BWebKitPortVersion();
++WK_EXPORT const char* BWebKitSourceRevision();
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitVersion.h.in b/Source/WebKit/UIProcess/API/haiku/WebKitVersion.h.in
 new file mode 100644
 index 0000000000000000000000000000000000000000..d28a6cad6339adf79b155cf974e85bfd0780c24c
@@ -23636,20 +24398,23 @@ index 0000000000000000000000000000000000000000..d28a6cad6339adf79b155cf974e85bfd
 +
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..1020f506429fd108e6a3b371badd2021171ed5fb
+index 0000000000000000000000000000000000000000..64acb4c5f15f038f166ac4dc19c1756b0b46e6f7
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp
-@@ -0,0 +1,242 @@
+@@ -0,0 +1,400 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
 +#include "WebKitView.h"
 +
 +#include "WebKit2Initialize.h"
++#include "JavaScriptDialogHaiku.h"
++#include "NativeSelectPopupHaiku.h"
 +#include "WebViewPrivate.h"
 +#include "WebViewStateHaiku.h"
 +#include <Application.h>
 +#include <Cursor.h>
++#include <MessageRunner.h>
 +#include <Window.h>
 +#include <cmath>
 +#include <wtf/RunLoop.h>
@@ -23676,14 +24441,27 @@ index 0000000000000000000000000000000000000000..1020f506429fd108e6a3b371badd2021
 +    return B_OK;
 +}
 +
-+BWebKitView::BWebKitView(BRect frame, const char* name, BMessenger target, uint32 resizingMode)
++bool BWebKitHasPendingNativeUI()
++{
++    return JavaScriptDialogHaiku::activeCount() || NativeSelectPopupHaiku::activeCount();
++}
++
++BWebKitView::BWebKitView(BRect frame, const char* name, BMessenger target, uint32 resizingMode, std::shared_ptr<BWebKitContext> context)
 +    : BView(frame, name, resizingMode, B_WILL_DRAW | B_FRAME_EVENTS | B_NAVIGABLE | B_FULL_UPDATE_ON_RESIZE)
 +    , m_state(std::make_shared<WebViewStateHaiku>(target))
 +{
 +    SetViewColor(B_TRANSPARENT_COLOR);
 +    if (!webKitInitializedHaiku)
 +        return;
++    if (context) {
++        m_status = context->InitCheck();
++        m_state->status = m_status;
++        if (m_status != B_OK)
++            return;
++        m_state->context = context->m_context;
++    }
 +    m_status = B_OK;
++    m_state->status = B_OK;
 +    UpdateGeometry();
 +    WTF::RunLoop::mainSingleton().dispatch([state = m_state] {
 +        if (!state->closed)
@@ -23694,6 +24472,8 @@ index 0000000000000000000000000000000000000000..1020f506429fd108e6a3b371badd2021
 +BWebKitView::~BWebKitView()
 +{
 +    m_state->closed = true;
++    m_state->dialogs->cancelAll(true);
++    m_dialogHost.reset();
 +    m_state->presenter.close();
 +    if (m_status == B_OK) {
 +        WTF::RunLoop::mainSingleton().dispatch([state = std::move(m_state)] {
@@ -23703,12 +24483,14 @@ index 0000000000000000000000000000000000000000..1020f506429fd108e6a3b371badd2021
 +    }
 +}
 +
-+status_t BWebKitView::InitCheck() const { return m_status; }
++status_t BWebKitView::InitCheck() const { return m_state->status; }
 +
 +void BWebKitView::SendCommand(uint32 what, const char* url)
 +{
 +    if (m_status != B_OK)
 +        return;
++    if (what == viewLoadHaiku || what == viewBackHaiku || what == viewForwardHaiku || what == viewReloadHaiku)
++        ++m_state->findRequestIdentifier;
 +    BMessage message(what);
 +    if (url)
 +        message.AddString("url", url);
@@ -23720,6 +24502,119 @@ index 0000000000000000000000000000000000000000..1020f506429fd108e6a3b371badd2021
 +void BWebKitView::GoForward() { SendCommand(viewForwardHaiku); }
 +void BWebKitView::Reload() { SendCommand(viewReloadHaiku); }
 +void BWebKitView::Stop() { SendCommand(viewStopHaiku); }
++
++void BWebKitView::RequestClose()
++{
++    if (m_status == B_OK) {
++        SendCommand(viewRequestCloseHaiku);
++        return;
++    }
++    // Initialization can fail before there is a WebKit client or main loop.
++    // Such a view has no document whose unload handlers need to run.
++    if (m_failedViewCloseNotified)
++        return;
++    BMessage message(B_WEBKIT_CLOSE_REQUESTED);
++    message.AddMessenger("view", BMessenger(this));
++    auto result = m_state->target.SendMessage(&message, static_cast<BHandler*>(nullptr), 0);
++    m_failedViewCloseNotified = result == B_OK;
++    if (result == B_WOULD_BLOCK || result == B_TIMED_OUT) {
++        // No WebKit client was created. Retry through the view's native looper;
++        // the owned messenger becomes invalid if the view is destroyed.
++        BMessage retry(viewRetryCloseHaiku);
++        BMessageRunner::StartSending(BMessenger(this), &retry, 10000, 1);
++    }
++}
++
++void BWebKitView::ResetCloseRequest()
++{
++    if (m_status == B_OK)
++        SendCommand(viewResetCloseHaiku);
++    else
++        m_failedViewCloseNotified = false;
++}
++
++void BWebKitView::CommitClose(const std::vector<BWebKitView*>& views, BMessenger target, uint64 identifier)
++{
++    if (!webKitInitializedHaiku) {
++        // The native-only failure path has no engine documents or WTF loop.
++        bool approved = target.IsValid();
++        for (auto* view : views)
++            approved &= view && !view->m_state->closed && view->m_failedViewCloseNotified;
++        if (approved) {
++            for (auto* view : views)
++                view->m_state->closed = true;
++        }
++        BMessage result(B_WEBKIT_CLOSE_COMMITTED);
++        result.AddUInt64("identifier", identifier);
++        result.AddBool("closed", approved);
++        auto status = target.SendMessage(&result, static_cast<BHandler*>(nullptr), 0);
++        if (status == B_WOULD_BLOCK || status == B_TIMED_OUT) {
++            // A detached one-shot uses the registrar's MessageDeliverer, which
++            // retains the final message while the destination port is full.
++            BMessageRunner::StartSending(target, &result, 10000, 1);
++        }
++        return;
++    }
++    std::vector<std::shared_ptr<WebViewStateHaiku>> states;
++    states.reserve(views.size());
++    for (auto* view : views)
++        states.push_back(view ? view->m_state : nullptr);
++    RunLoop::mainSingleton().dispatch([states = std::move(states), target, identifier]() mutable {
++        commitViewCloseHaiku(std::move(states), target, identifier);
++    });
++}
++
++void BWebKitView::FindString(const char* query, bool forward, bool caseSensitive, bool wrapSelection)
++{
++    if (m_status != B_OK)
++        return;
++    if (!query || !*query) {
++        HideFindUI();
++        return;
++    }
++    BMessage message(viewFindHaiku);
++    message.AddString("query", query);
++    message.AddBool("forward", forward);
++    message.AddBool("caseSensitive", caseSensitive);
++    message.AddBool("wrapSelection", wrapSelection);
++    message.AddUInt64("identifier", ++m_state->findRequestIdentifier);
++    dispatchViewMessageHaiku(m_state, std::move(message));
++}
++
++void BWebKitView::HideFindUI()
++{
++    ++m_state->findRequestIdentifier;
++    SendCommand(viewHideFindHaiku);
++}
++
++void BWebKitView::ChangeZoomFactor(int32 direction, bool textOnly)
++{
++    if (m_status != B_OK)
++        return;
++    BMessage message(viewZoomHaiku);
++    message.AddInt32("direction", direction);
++    message.AddBool("textOnly", textOnly);
++    dispatchViewMessageHaiku(m_state, std::move(message));
++}
++
++void BWebKitView::IncreaseZoomFactor(bool textOnly) { ChangeZoomFactor(1, textOnly); }
++void BWebKitView::DecreaseZoomFactor(bool textOnly) { ChangeZoomFactor(-1, textOnly); }
++void BWebKitView::ResetZoomFactor() { ChangeZoomFactor(0, false); }
++
++void BWebKitView::ExecuteEditCommand(uint32 command)
++{
++    if (m_status != B_OK)
++        return;
++    switch (command) {
++    case B_CUT: case B_COPY: case B_PASTE: case B_SELECT_ALL: case B_UNDO: case B_REDO:
++        break;
++    default:
++        return;
++    }
++    BMessage message(viewEditHaiku);
++    message.AddUInt32("command", command);
++    dispatchViewMessageHaiku(m_state, std::move(message));
++}
 +
 +void BWebKitView::UpdateGeometry()
 +{
@@ -23745,6 +24640,8 @@ index 0000000000000000000000000000000000000000..1020f506429fd108e6a3b371badd2021
 +    }
 +    if (changed)
 +        SendCommand(viewGeometryHaiku);
++    if (m_dialogHost)
++        m_dialogHost->pump(Window(), BMessenger(this), current.visible);
 +}
 +
 +void BWebKitView::AttachedToWindow()
@@ -23755,6 +24652,8 @@ index 0000000000000000000000000000000000000000..1020f506429fd108e6a3b371badd2021
 +
 +void BWebKitView::DetachedFromWindow()
 +{
++    m_state->dialogs->cancelAll();
++    m_dialogHost.reset();
 +    {
 +        std::lock_guard guard(m_state->mutex);
 +        m_state->geometry.attached = false;
@@ -23850,6 +24749,27 @@ index 0000000000000000000000000000000000000000..1020f506429fd108e6a3b371badd2021
 +void BWebKitView::MessageReceived(BMessage* message)
 +{
 +    switch (message->what) {
++    case viewRetryCloseHaiku:
++        RequestClose();
++        return;
++    case javaScriptDialogShowHaiku:
++        if (!m_dialogHost)
++            m_dialogHost = std::make_unique<JavaScriptDialogHostHaiku>(m_state->dialogs);
++        m_dialogHost->show(*message, Window(), BMessenger(this), Window() && !Window()->IsHidden() && !IsHidden());
++        return;
++    case javaScriptDialogClosedHaiku: {
++        uint64 identifier;
++        if (m_dialogHost && message->FindUInt64("identifier", &identifier) == B_OK)
++            m_dialogHost->didClose(identifier, Window(), BMessenger(this), Window() && !Window()->IsHidden() && !IsHidden());
++        return;
++    }
++    case javaScriptDialogsCancelHaiku:
++        if (m_dialogHost)
++            m_dialogHost->cancelAll();
++        return;
++    case B_CUT: case B_COPY: case B_PASTE: case B_SELECT_ALL: case B_UNDO: case B_REDO:
++        ExecuteEditCommand(message->what);
++        return;
 +    case viewFrameHaiku:
 +        Invalidate();
 +        return;
@@ -23884,28 +24804,40 @@ index 0000000000000000000000000000000000000000..1020f506429fd108e6a3b371badd2021
 +}
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitView.h b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..0fd52b3cd9f3595c05b1166c6586613336dd522c
+index 0000000000000000000000000000000000000000..8d78d3a485d6dd2a98c91bf2f15b57c5a7e14c58
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
-@@ -0,0 +1,58 @@
+@@ -0,0 +1,93 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
 +
 +#include "WKBase.h"
++#include "WebKitContext.h"
 +#include <Messenger.h>
 +#include <View.h>
 +#include <memory>
++#include <vector>
 +
-+namespace WebKit { struct WebViewStateHaiku; }
++namespace WebKit { struct WebViewStateHaiku; class JavaScriptDialogHostHaiku; }
 +class BCursor;
 +
 +// Call on the BApplication thread before creating any modern web views.
 +WK_EXPORT status_t BWebKitInitialize();
++// Query on the application thread while draining close operations. Keep the
++// application loop alive until native windows and popup workers finish. After
++// observing false, queue one final application turn to drain completions that
++// native UI has already submitted.
++WK_EXPORT bool BWebKitHasPendingNativeUI();
 +
 +enum : uint32 {
 +    B_WEBKIT_STATE_CHANGED = 'wsta',
-+    B_WEBKIT_PROCESS_EXITED = 'wpex'
++    B_WEBKIT_PROCESS_EXITED = 'wpex',
++    B_WEBKIT_FIND_RESULT = 'wfin',
++    B_WEBKIT_CLOSE_REQUESTED = 'wclr',
++    B_WEBKIT_CLOSE_CANCELLED = 'wclc',
++    B_WEBKIT_CLOSE_PROMPT = 'wclp',
++    B_WEBKIT_CLOSE_COMMITTED = 'wclb'
 +};
 +
 +// Navigation and input are queued to the application thread. Notifications are
@@ -23913,7 +24845,7 @@ index 0000000000000000000000000000000000000000..0fd52b3cd9f3595c05b1166c65866133
 +class WK_EXPORT BWebKitView : public BView {
 +public:
 +    BWebKitView(BRect, const char* name, BMessenger notificationTarget,
-+        uint32 resizingMode = B_FOLLOW_ALL);
++        uint32 resizingMode = B_FOLLOW_ALL, std::shared_ptr<BWebKitContext> = nullptr);
 +    ~BWebKitView() override;
 +    status_t InitCheck() const;
 +    void LoadURL(const char*);
@@ -23921,6 +24853,26 @@ index 0000000000000000000000000000000000000000..0fd52b3cd9f3595c05b1166c65866133
 +    void GoForward();
 +    void Reload();
 +    void Stop();
++    // Asks beforeunload handlers before notifying CLOSE_REQUESTED or
++    // CLOSE_CANCELLED. Keep the view alive until the resulting notification.
++    // Repeated requests while waiting for a decision are ignored.
++    void RequestClose();
++    // Withdraw a completed provisional approval when a window quit is cancelled.
++    // Does not reset a close decision that is still pending in the WebProcess.
++    void ResetCloseRequest();
++    // Retain all native views until CLOSE_COMMITTED returns identifier and
++    // closed. On main, validate all approvals against observed navigation and
++    // close every engine page together; a failed validation closes none.
++    static void CommitClose(const std::vector<BWebKitView*>&, BMessenger target, uint64 identifier);
++    // The result contains view, query, identifier, error, and found on success.
++    // A newer request, explicit navigation or HideFindUI cancels older replies.
++    void FindString(const char*, bool forward = true, bool caseSensitive = false, bool wrapSelection = true);
++    void HideFindUI();
++    void IncreaseZoomFactor(bool textOnly = false);
++    void DecreaseZoomFactor(bool textOnly = false);
++    void ResetZoomFactor();
++    // Accepts B_CUT, B_COPY, B_PASTE, B_SELECT_ALL, B_UNDO and B_REDO.
++    void ExecuteEditCommand(uint32);
 +
 +    void AttachedToWindow() override;
 +    void DetachedFromWindow() override;
@@ -23942,9 +24894,12 @@ index 0000000000000000000000000000000000000000..0fd52b3cd9f3595c05b1166c65866133
 +    void UpdateGeometry();
 +    void SendInput(const BMessage&, BPoint = BPoint());
 +    void SendCommand(uint32, const char* = nullptr);
++    void ChangeZoomFactor(int32 direction, bool textOnly);
 +    std::shared_ptr<WebKit::WebViewStateHaiku> m_state;
 +    std::unique_ptr<BCursor> m_cursor;
++    std::unique_ptr<WebKit::JavaScriptDialogHostHaiku> m_dialogHost;
 +    status_t m_status { B_NO_INIT };
++    bool m_failedViewCloseNotified { false };
 +};
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebView.cpp b/Source/WebKit/UIProcess/API/haiku/WebView.cpp
 new file mode 100644
@@ -24077,6 +25032,1151 @@ index 558bc4dbcebf1af98a2fc3b744d3b390b68a56f1..24ce837888d94fcea6d0e960a4af01db
      EnterAcceleratedCompositingMode(uint64_t backingStoreStateID, WebKit::LayerTreeContext context)
      UpdateAcceleratedCompositingMode(uint64_t backingStoreStateID, WebKit::LayerTreeContext context)
      DidFirstLayerFlush(uint64_t backingStoreStateID, WebKit::LayerTreeContext context)
+diff --git a/Source/WebKit/UIProcess/Extensions/WebExtension.cpp b/Source/WebKit/UIProcess/Extensions/WebExtension.cpp
+index fac1522cfb35558dda22d0d441b493abf1669ee8..36eda8af3bf5e5157f99e5128f9b1d9931132979 100644
+--- a/Source/WebKit/UIProcess/Extensions/WebExtension.cpp
++++ b/Source/WebKit/UIProcess/Extensions/WebExtension.cpp
+@@ -48,6 +48,10 @@
+ #include <wtf/text/StringToIntegerConversion.h>
+ #include <wtf/text/WTFString.h>
+ 
++#if PLATFORM(HAIKU)
++#include "haiku/WebExtensionResourcePathsHaiku.h"
++#endif
++
+ namespace WebKit {
+ 
+ using namespace WebCore;
+@@ -527,6 +531,9 @@ URL WebExtension::resourceFileURLForPath(const String& originalPath)
+ {
+     ASSERT(originalPath);
+ 
++#if PLATFORM(HAIKU)
++    return resolveWebExtensionResourceURLHaiku(m_resourceBaseURL, originalPath);
++#else
+     String path = originalPath;
+     if (path.startsWith('/'))
+         path = path.substring(1);
+@@ -541,12 +548,13 @@ URL WebExtension::resourceFileURLForPath(const String& originalPath)
+     // Don't allow escaping the base URL with "../".
+     auto basePath = FileSystem::realPath(m_resourceBaseURL.fileSystemPath());
+     auto resourcePath = FileSystem::realPath(result.fileSystemPath());
+-    if (!resourcePath.startsWith(basePath)) {
++    if (!FileSystem::isAncestor(basePath, resourcePath)) {
+         RELEASE_LOG_ERROR(Extensions, "Resource URL path escape attempt: %s", resourcePath.utf8().legacyCStringPointer());
+         return { };
+     }
+ 
+     return result;
++#endif
+ }
+ 
+ String WebExtension::resourceMIMETypeForPath(const String& path)
+diff --git a/Source/WebKit/UIProcess/Extensions/WebExtension.h b/Source/WebKit/UIProcess/Extensions/WebExtension.h
+index f14860d8e436a90cb7616ae96bb9f05d6517bc50..82194307c95982f947c180baa35828f3deaae048 100644
+--- a/Source/WebKit/UIProcess/Extensions/WebExtension.h
++++ b/Source/WebKit/UIProcess/Extensions/WebExtension.h
+@@ -75,8 +75,10 @@ public:
+ #if PLATFORM(COCOA)
+     explicit WebExtension(NSBundle *appExtensionBundle, NSURL *resourceURL, RefPtr<API::Error>&);
+     explicit WebExtension(NSDictionary *manifest, Resources&& = { });
+-#else
++#elif USE(GLIB)
+     explicit WebExtension(GFile *resourcesFile, RefPtr<API::Error>&);
++#elif PLATFORM(HAIKU)
++    explicit WebExtension(const String& resourcePath, RefPtr<API::Error>&);
+ #endif
+     explicit WebExtension(const JSON::Value& manifest, Resources&& = { });
+ 
+diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionControllerConfiguration.cpp b/Source/WebKit/UIProcess/Extensions/WebExtensionControllerConfiguration.cpp
+index ddcfc1880bc1e51da6b6074feb17725c10723b44..b1c7675bc4b77c80e38c276904af4a573abd9a4c 100644
+--- a/Source/WebKit/UIProcess/Extensions/WebExtensionControllerConfiguration.cpp
++++ b/Source/WebKit/UIProcess/Extensions/WebExtensionControllerConfiguration.cpp
+@@ -49,12 +49,14 @@ WebExtensionControllerConfiguration::WebExtensionControllerConfiguration(const W
+ {
+ }
+ 
+-#if PLATFORM(COCOA)
+ bool WebExtensionControllerConfiguration::operator==(const WebExtensionControllerConfiguration& other) const
+ {
+-    return this == &other || (m_identifier == other.m_identifier && m_storageDirectory == other.m_storageDirectory && m_webViewConfiguration == other.m_webViewConfiguration && m_defaultWebsiteDataStore == other.m_defaultWebsiteDataStore);
+-}
++    return this == &other || (m_identifier == other.m_identifier && m_storageDirectory == other.m_storageDirectory
++#if PLATFORM(COCOA)
++        && m_webViewConfiguration == other.m_webViewConfiguration
+ #endif
++        && m_defaultWebsiteDataStore == other.m_defaultWebsiteDataStore);
++}
+ 
+ WebsiteDataStore& WebExtensionControllerConfiguration::defaultWebsiteDataStore() const
+ {
+diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionMatchPattern.cpp b/Source/WebKit/UIProcess/Extensions/WebExtensionMatchPattern.cpp
+index 312ba296042e77cd73d1b568a433d367c720a6e4..f40b4b2ad7e429d21ac136328053196332b11656 100644
+--- a/Source/WebKit/UIProcess/Extensions/WebExtensionMatchPattern.cpp
++++ b/Source/WebKit/UIProcess/Extensions/WebExtensionMatchPattern.cpp
+@@ -28,9 +28,6 @@
+ 
+ #if ENABLE(WK_WEB_EXTENSIONS)
+ 
+-#include "WebProcessMessages.h"
+-#include "WebProcessPool.h"
+-#include <WebCore/LegacySchemeRegistry.h>
+ #include <WebCore/LocalizedStrings.h>
+ #include <WebCore/PublicSuffixStore.h>
+ #include <wtf/HashMap.h>
+@@ -92,21 +89,6 @@ static HashMap<String, RefPtr<WebExtensionMatchPattern>>& NODELETE patternCache(
+     return cache;
+ }
+ 
+-void WebExtensionMatchPattern::registerCustomURLScheme(String urlScheme)
+-{
+-    auto canonicalScheme = URLParser::maybeCanonicalizeScheme(String(urlScheme));
+-    ASSERT(canonicalScheme);
+-
+-    extensionSchemes().addVoid(canonicalScheme.value());
+-    validSchemes().addVoid(canonicalScheme.value());
+-    supportedSchemes().addVoid(canonicalScheme.value());
+-
+-    LegacySchemeRegistry::registerURLSchemeAsAllowingServiceWorkerClients(canonicalScheme.value());
+-
+-    for (auto& pool : WebProcessPool::allProcessPools())
+-        pool->sendToAllProcesses(Messages::WebProcess::RegisterURLSchemeAsWebExtension(urlScheme));
+-}
+-
+ bool WebExtensionMatchPattern::isWebExtensionURL(const URL& url)
+ {
+     if (!url.isValid())
+diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionMatchPatternProcessPool.cpp b/Source/WebKit/UIProcess/Extensions/WebExtensionMatchPatternProcessPool.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..dcb82f153bf77388c21d2babca1b6334e9d13017
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/WebExtensionMatchPatternProcessPool.cpp
+@@ -0,0 +1,58 @@
++/*
++ * Copyright (C) 2022-2024 Apple Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "WebExtensionMatchPattern.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS)
++
++#include "WebProcessMessages.h"
++#include "WebProcessPool.h"
++#include <WebCore/LegacySchemeRegistry.h>
++#include <wtf/URLParser.h>
++
++namespace WebKit {
++
++using namespace WTF;
++using namespace WebCore;
++
++void WebExtensionMatchPattern::registerCustomURLScheme(String urlScheme)
++{
++    auto canonicalScheme = URLParser::maybeCanonicalizeScheme(String(urlScheme));
++    ASSERT(canonicalScheme);
++
++    extensionSchemes().addVoid(canonicalScheme.value());
++    validSchemes().addVoid(canonicalScheme.value());
++    supportedSchemes().addVoid(canonicalScheme.value());
++
++    LegacySchemeRegistry::registerURLSchemeAsAllowingServiceWorkerClients(canonicalScheme.value());
++
++    for (auto& pool : WebProcessPool::allProcessPools())
++        pool->sendToAllProcesses(Messages::WebProcess::RegisterURLSchemeAsWebExtension(urlScheme));
++}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS)
+diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionResources.cpp b/Source/WebKit/UIProcess/Extensions/WebExtensionResources.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..458c7617bf4678c2cbe4d7c0b9b22b77633ffd36
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/WebExtensionResources.cpp
+@@ -0,0 +1,123 @@
++/*
++ * Copyright (C) 2025 Igalia S.L.
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Library General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Library General Public License for more details.
++ *
++ * You should have received a copy of the GNU Library General Public License
++ * along with this library; see the file COPYING.LIB.  If not, write to
++ * the Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
++ * Boston, MA 02110-1301, USA.
++ */
++
++#include "config.h"
++#include "WebExtension.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS) && !PLATFORM(COCOA)
++
++#include "Logging.h"
++#include "WebExtensionUtilities.h"
++#include <WebCore/DataURLDecoder.h>
++#include <WebCore/LocalizedStrings.h>
++#include <wtf/FileSystem.h>
++
++namespace WebKit {
++
++static constexpr auto generatedBackgroundPageFilename = "_generated_background_page.html"_s;
++static constexpr auto generatedBackgroundServiceWorkerFilename = "_generated_service_worker.js"_s;
++
++std::expected<Ref<API::Data>, RefPtr<API::Error>> WebExtension::resourceDataForPath(const String& originalPath, CacheResult cacheResult, SuppressNotFoundErrors suppressErrors)
++{
++    ASSERT(originalPath);
++
++    String path = originalPath;
++
++    // Remove leading slash to normalize the path for lookup/storage in the cache dictionary.
++    if (path.startsWith('/'))
++        path = path.substring(1);
++
++    if (path.startsWith("data:"_s)) {
++        if (auto decodedURL = WebCore::DataURLDecoder::decode(URL { path }))
++            return API::Data::create(decodedURL.value().data);
++        ASSERT(path == "data:"_s);
++        return API::Data::create(std::span<const uint8_t> { });
++    }
++
++    if (path == generatedBackgroundPageFilename || path  == generatedBackgroundServiceWorkerFilename)
++        return API::Data::create(generatedBackgroundContent().utf8().span());
++
++    if (auto maybeData = m_dataResources.getOptional(path))
++        return *maybeData;
++
++    if (auto maybeString = m_stringResources.getOptional(path)) {
++        auto data = API::Data::create(maybeString->utf8().span());
++        m_dataResources.set(path, data);
++        return data;
++    }
++
++    auto resourceURL = resourceFileURLForPath(path);
++    if (resourceURL.isEmpty()) {
++        if (suppressErrors == SuppressNotFoundErrors::No)
++            return makeUnexpected(createError(Error::ResourceNotFound, WEB_UI_FORMAT_STRING("Unable to find “%s” in the extension’s resources. It is an invalid path.", "WKWebExtensionErrorResourceNotFound description with invalid file path", path.utf8().legacyCStringPointer())));
++        return makeUnexpected(nullptr);
++    }
++
++    auto rawData = FileSystem::readEntireFile(resourceURL.fileSystemPath());
++    if (!rawData.has_value()) {
++        if (suppressErrors == SuppressNotFoundErrors::No)
++            return makeUnexpected(createError(Error::ResourceNotFound, WEB_UI_FORMAT_STRING("Unable to find “%s” in the extension’s resources.", "WKWebExtensionErrorResourceNotFound description with file name", path.utf8().legacyCStringPointer())));
++        return makeUnexpected(nullptr);
++    }
++
++    Ref data = API::Data::create(*rawData);
++    if (cacheResult == CacheResult::Yes)
++        m_dataResources.set(path, data);
++
++    return data;
++}
++
++void WebExtension::recordError(Ref<API::Error> error)
++{
++    RELEASE_LOG_ERROR(Extensions, "Error recorded: %s", error->localizedDescription().utf8().legacyCStringPointer());
++
++    // Only the first occurrence of each error is recorded in the array. This prevents duplicate errors,
++    // such as repeated "resource not found" errors, from being included multiple times.
++    if (m_errors.contains(error))
++        return;
++
++    m_errors.append(error);
++}
++
++RefPtr<WebCore::Icon> WebExtension::bestIcon(RefPtr<JSON::Object> icons, WebCore::FloatSize idealSize, NOESCAPE const Function<void(Ref<API::Error>)>& reportError)
++{
++    if (!icons)
++        return nullptr;
++
++    auto idealPointSize = idealSize.width() > idealSize.height() ? idealSize.width() : idealSize.height();
++    auto bestScale = largestDisplayScale();
++
++    auto pixelSize = idealPointSize * bestScale;
++    auto iconPath = pathForBestImage(*icons, pixelSize);
++    if (iconPath.isEmpty())
++        return nullptr;
++
++    auto imageValue = iconForPath(iconPath, idealSize);
++    if (imageValue)
++        return imageValue.value().get();
++
++    if (reportError && !imageValue && imageValue.error())
++        reportError(imageValue.error().releaseNonNull());
++
++    return nullptr;
++}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS) && !PLATFORM(COCOA)
+diff --git a/Source/WebKit/UIProcess/Extensions/glib/WebExtensionGLib.cpp b/Source/WebKit/UIProcess/Extensions/glib/WebExtensionGLib.cpp
+index f09e0085d0228b905e0a7cfe7592260e9d4977a9..3ada5a0beca92b82ae14dc44131be6f12c3f7e5f 100644
+--- a/Source/WebKit/UIProcess/Extensions/glib/WebExtensionGLib.cpp
++++ b/Source/WebKit/UIProcess/Extensions/glib/WebExtensionGLib.cpp
+@@ -22,22 +22,12 @@
+ 
+ #if ENABLE(WK_WEB_EXTENSIONS)
+ 
+-#include "Logging.h"
+-#include "WebExtensionLocalization.h"
+-#include "WebExtensionUtilities.h"
+-#include <WebCore/DataURLDecoder.h>
+-#include <WebCore/LocalizedStrings.h>
+-#include <wtf/FileSystem.h>
+-#include <wtf/Language.h>
+ #include <wtf/glib/GRefPtr.h>
+ #include <wtf/text/MakeString.h>
+ #include <wtf/text/WTFString.h>
+ 
+ namespace WebKit {
+ 
+-static constexpr auto generatedBackgroundPageFilename = "_generated_background_page.html"_s;
+-static constexpr auto generatedBackgroundServiceWorkerFilename = "_generated_service_worker.js"_s;
+-
+ WebExtension::WebExtension(GFile* resourcesFile, RefPtr<API::Error>& outError)
+     : m_manifestJSON(JSON::Value::null())
+ {
+@@ -63,91 +53,6 @@ WebExtension::WebExtension(GFile* resourcesFile, RefPtr<API::Error>& outError)
+     }
+ }
+ 
+-std::expected<Ref<API::Data>, RefPtr<API::Error>> WebExtension::resourceDataForPath(const String& originalPath, CacheResult cacheResult, SuppressNotFoundErrors suppressErrors)
+-{
+-    ASSERT(originalPath);
+-
+-    String path = originalPath;
+-
+-    // Remove leading slash to normalize the path for lookup/storage in the cache dictionary.
+-    if (path.startsWith('/'))
+-        path = path.substring(1);
+-
+-    if (path.startsWith("data:"_s)) {
+-        if (auto decodedURL = WebCore::DataURLDecoder::decode(URL { path }))
+-            return API::Data::create(decodedURL.value().data);
+-        ASSERT(path == "data:"_s);
+-        return API::Data::create(std::span<const uint8_t> { });
+-    }
+-
+-    if (path == generatedBackgroundPageFilename || path  == generatedBackgroundServiceWorkerFilename)
+-        return API::Data::create(generatedBackgroundContent().utf8().span());
+-
+-    if (auto maybeData = m_dataResources.getOptional(path))
+-        return *maybeData;
+-
+-    if (auto maybeString = m_stringResources.getOptional(path)) {
+-        auto data = API::Data::create(maybeString->utf8().span());
+-        m_dataResources.set(path, data);
+-        return data;
+-    }
+-
+-    auto resourceURL = resourceFileURLForPath(path);
+-    if (resourceURL.isEmpty()) {
+-        if (suppressErrors == SuppressNotFoundErrors::No)
+-            return makeUnexpected(createError(Error::ResourceNotFound, WEB_UI_FORMAT_STRING("Unable to find “%s” in the extension’s resources. It is an invalid path.", "WKWebExtensionErrorResourceNotFound description with invalid file path", path.utf8().legacyCStringPointer())));
+-        return makeUnexpected(nullptr);
+-    }
+-
+-    auto rawData = FileSystem::readEntireFile(resourceURL.fileSystemPath());
+-    if (!rawData.has_value()) {
+-        if (suppressErrors == SuppressNotFoundErrors::No)
+-            return makeUnexpected(createError(Error::ResourceNotFound, WEB_UI_FORMAT_STRING("Unable to find “%s” in the extension’s resources.", "WKWebExtensionErrorResourceNotFound description with file name", path.utf8().legacyCStringPointer())));
+-        return makeUnexpected(nullptr);
+-    }
+-
+-    Ref data = API::Data::create(*rawData);
+-    if (cacheResult == CacheResult::Yes)
+-        m_dataResources.set(path, data);
+-
+-    return data;
+-}
+-
+-void WebExtension::recordError(Ref<API::Error> error)
+-{
+-    RELEASE_LOG_ERROR(Extensions, "Error recorded: %s", error->localizedDescription().utf8().legacyCStringPointer());
+-
+-    // Only the first occurrence of each error is recorded in the array. This prevents duplicate errors,
+-    // such as repeated "resource not found" errors, from being included multiple times.
+-    if (m_errors.contains(error))
+-        return;
+-
+-    m_errors.append(error);
+-}
+-
+-RefPtr<WebCore::Icon> WebExtension::bestIcon(RefPtr<JSON::Object> icons, WebCore::FloatSize idealSize, NOESCAPE const Function<void(Ref<API::Error>)>& reportError)
+-{
+-    if (!icons)
+-        return nullptr;
+-
+-    auto idealPointSize = idealSize.width() > idealSize.height() ? idealSize.width() : idealSize.height();
+-    auto bestScale = largestDisplayScale();
+-
+-    auto pixelSize = idealPointSize * bestScale;
+-    auto iconPath = pathForBestImage(*icons, pixelSize);
+-    if (iconPath.isEmpty())
+-        return nullptr;
+-
+-    auto imageValue = iconForPath(iconPath, idealSize);
+-    if (imageValue)
+-        return imageValue.value().get();
+-
+-    if (reportError && !imageValue && imageValue.error())
+-        reportError(imageValue.error().releaseNonNull());
+-
+-    return nullptr;
+-}
+-
+ } // namespace WebKit
+ 
+ #endif // ENABLE(WK_WEB_EXTENSIONS)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionArchiveHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionArchiveHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..b31351ac379724cd397ea8819a3baa081f26c2d1
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionArchiveHaiku.cpp
+@@ -0,0 +1,292 @@
++/*
++ * Copyright (C) 2026 KunanyiOS contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are met:
++ * 1. Redistributions of source code must retain the above copyright notice,
++ *    this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright notice,
++ *    this list of conditions and the following disclaimer in the documentation
++ *    and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "WebExtensionArchiveHaiku.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++
++#include "WebExtensionResourcePathsHaiku.h"
++#include <zip.h>
++#include <array>
++#include <cerrno>
++#include <cstdlib>
++#include <cstring>
++#include <filesystem>
++#include <fcntl.h>
++#include <memory>
++#include <string>
++#include <sys/stat.h>
++#include <unistd.h>
++#include <unordered_set>
++#include <utility>
++#include <vector>
++#include <wtf/FileSystem.h>
++
++namespace WebKit {
++
++WebExtensionTemporaryDirectoryHaiku::WebExtensionTemporaryDirectoryHaiku(String&& path)
++    : m_path(WTF::move(path))
++{
++}
++
++WebExtensionTemporaryDirectoryHaiku::WebExtensionTemporaryDirectoryHaiku(WebExtensionTemporaryDirectoryHaiku&& other)
++    : m_path(other.release())
++{
++}
++
++WebExtensionTemporaryDirectoryHaiku::~WebExtensionTemporaryDirectoryHaiku()
++{
++    if (!m_path.isEmpty())
++        FileSystem::deleteNonEmptyDirectory(m_path);
++}
++
++String WebExtensionTemporaryDirectoryHaiku::release()
++{
++    return std::exchange(m_path, { });
++}
++
++namespace {
++
++class FileDescriptor {
++public:
++    explicit FileDescriptor(int descriptor = -1) : m_descriptor(descriptor) { }
++    FileDescriptor(FileDescriptor&& other) : m_descriptor(std::exchange(other.m_descriptor, -1)) { }
++    FileDescriptor(const FileDescriptor&) = delete;
++    FileDescriptor& operator=(const FileDescriptor&) = delete;
++    ~FileDescriptor() { if (m_descriptor >= 0) close(m_descriptor); }
++    int get() const { return m_descriptor; }
++    int release() { return std::exchange(m_descriptor, -1); }
++    explicit operator bool() const { return m_descriptor >= 0; }
++    void reset(int descriptor)
++    {
++        if (m_descriptor >= 0)
++            close(m_descriptor);
++        m_descriptor = descriptor;
++    }
++private:
++    int m_descriptor;
++};
++
++// ZIP names use forward slashes. Reject ambiguous native/Windows spellings,
++// parent/current components, absolute paths, and names exceeding port bounds.
++std::expected<std::vector<std::string>, WebExtensionArchiveErrorHaiku> pathComponents(const char* name, bool directory, const WebExtensionArchiveLimitsHaiku& limits)
++{
++    using Error = WebExtensionArchiveErrorHaiku;
++    if (!name || !*name)
++        return std::unexpected(Error::UnsafeEntry);
++    std::string path(name);
++    if (path.size() > limits.pathBytes)
++        return std::unexpected(Error::ExpansionLimit);
++    if (path.front() == '/' || path.find('\\') != std::string::npos || path.find(':') != std::string::npos
++        || String::fromUTF8(path.c_str()).isNull())
++        return std::unexpected(Error::UnsafeEntry);
++    if (directory && path.back() == '/')
++        path.pop_back();
++    if (path.empty())
++        return std::unexpected(Error::UnsafeEntry);
++
++    std::vector<std::string> components;
++    size_t begin = 0;
++    while (begin <= path.size()) {
++        auto end = path.find('/', begin);
++        if (end == std::string::npos)
++            end = path.size();
++        auto component = path.substr(begin, end - begin);
++        if (component.empty() || component == "." || component == ".." || component.size() > 255)
++            return std::unexpected(Error::UnsafeEntry);
++        components.push_back(WTF::move(component));
++        if (components.size() > limits.pathDepth)
++            return std::unexpected(Error::ExpansionLimit);
++        begin = end + 1;
++    }
++    return components;
++}
++
++} // namespace
++
++std::expected<WebExtensionTemporaryDirectoryHaiku, WebExtensionArchiveErrorHaiku> extractWebExtensionArchiveHaiku(const String& archivePath, const WebExtensionArchiveLimitsHaiku& limits, const String& temporaryParent)
++{
++    using Error = WebExtensionArchiveErrorHaiku;
++    if (archivePath.isEmpty() || !archivePath.startsWith('/') || archivePath.contains('\0'))
++        return std::unexpected(Error::InvalidArchive);
++    auto inputBytes = archivePath.utf8();
++    if (inputBytes.isNull())
++        return std::unexpected(Error::InvalidArchive);
++    FileDescriptor input(open(inputBytes.legacyCStringPointer(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW));
++    struct stat inputStatus { };
++    if (!input || fstat(input.get(), &inputStatus) || !S_ISREG(inputStatus.st_mode) || inputStatus.st_size < 0)
++        return std::unexpected(Error::InvalidArchive);
++    if (static_cast<uint64_t>(inputStatus.st_size) > limits.archiveBytes)
++        return std::unexpected(Error::ExpansionLimit);
++
++    // Accept ordinary ZIP/XPI containers, not self-extracting executables or
++    // CRX wrappers which a general archive reader might otherwise scan past.
++    std::array<unsigned char, 4> signature;
++    if (pread(input.get(), signature.data(), signature.size(), 0) != static_cast<ssize_t>(signature.size())
++        || signature[0] != 'P' || signature[1] != 'K'
++        || !((signature[2] == 3 && signature[3] == 4) || (signature[2] == 5 && signature[3] == 6)))
++        return std::unexpected(Error::InvalidArchive);
++
++    int archiveError = 0;
++    std::unique_ptr<zip_t, decltype(&zip_discard)> reader(zip_fdopen(input.get(), ZIP_RDONLY | ZIP_CHECKCONS, &archiveError), &zip_discard);
++    if (!reader)
++        return std::unexpected(Error::InvalidArchive);
++    input.release(); // zip_fdopen owns the descriptor after success.
++    auto entryCount = zip_get_num_entries(reader.get(), 0);
++    if (entryCount < 0)
++        return std::unexpected(Error::InvalidArchive);
++    if (static_cast<uint64_t>(entryCount) > limits.entries)
++        return std::unexpected(Error::ExpansionLimit);
++
++    String parent = temporaryParent;
++    if (parent.isEmpty()) {
++        std::error_code fileSystemError;
++        auto nativeParent = std::filesystem::temp_directory_path(fileSystemError).string();
++        if (fileSystemError)
++            return std::unexpected(Error::FileSystem);
++        parent = String::fromUTF8(nativeParent.c_str());
++    }
++    auto canonicalParent = canonicalWebExtensionPathHaiku(parent);
++    if (canonicalParent.isEmpty())
++        return std::unexpected(Error::FileSystem);
++    auto parentBytes = canonicalParent.utf8();
++    std::string directoryTemplate(parentBytes.legacyCStringPointer());
++    directoryTemplate += "/WebKitExtension-XXXXXX";
++    if (!mkdtemp(directoryTemplate.data()))
++        return std::unexpected(Error::FileSystem);
++    WebExtensionTemporaryDirectoryHaiku directory(String::fromUTF8(directoryTemplate.c_str()));
++    FileDescriptor root(open(directoryTemplate.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
++    if (!root)
++        return std::unexpected(Error::FileSystem);
++
++    unsigned createdNodes = 0;
++    uint64_t expandedBytes = 0;
++    bool hasManifest = false;
++    std::unordered_set<std::string> seenEntries;
++    for (zip_uint64_t index = 0; index < static_cast<zip_uint64_t>(entryCount); ++index) {
++        zip_stat_t entry;
++        zip_stat_init(&entry);
++        constexpr auto requiredFields = ZIP_STAT_NAME | ZIP_STAT_SIZE | ZIP_STAT_COMP_SIZE | ZIP_STAT_COMP_METHOD | ZIP_STAT_ENCRYPTION_METHOD;
++        if (zip_stat_index(reader.get(), index, ZIP_FL_ENC_STRICT, &entry) || (entry.valid & requiredFields) != requiredFields
++            || entry.encryption_method != ZIP_EM_NONE
++            || (entry.comp_method != ZIP_CM_STORE && entry.comp_method != ZIP_CM_DEFLATE))
++            return std::unexpected(Error::InvalidArchive);
++        zip_uint8_t operatingSystem;
++        zip_uint32_t attributes;
++        if (zip_file_get_external_attributes(reader.get(), index, 0, &operatingSystem, &attributes))
++            return std::unexpected(Error::InvalidArchive);
++        // ZIP's Unix/BeOS/macOS external mode bits retain the original type.
++        // Never apply archive ownership, privileges, links, devices or ACLs.
++        auto type = (attributes >> 16) & S_IFMT;
++        if (type && type != S_IFREG && type != S_IFDIR)
++            return std::unexpected(Error::UnsafeEntry);
++        bool isDirectory = type == S_IFDIR || (!type && (attributes & 0x10));
++        if (entry.name && *entry.name && entry.name[strlen(entry.name) - 1] == '/') {
++            if (type == S_IFREG)
++                return std::unexpected(Error::UnsafeEntry);
++            isDirectory = true;
++        }
++        auto components = pathComponents(entry.name, isDirectory, limits);
++        if (!components)
++            return std::unexpected(components.error());
++        std::string normalizedPath;
++        for (const auto& component : *components) {
++            if (!normalizedPath.empty())
++                normalizedPath += '/';
++            normalizedPath += component;
++        }
++        if (!seenEntries.insert(normalizedPath).second)
++            return std::unexpected(Error::UnsafeEntry);
++        auto fileBytes = entry.size;
++        if (isDirectory && fileBytes)
++            return std::unexpected(Error::InvalidArchive);
++        if (fileBytes > limits.fileBytes || fileBytes > limits.expandedBytes - expandedBytes)
++            return std::unexpected(Error::ExpansionLimit);
++
++        FileDescriptor parentDirectory(fcntl(root.get(), F_DUPFD_CLOEXEC, 0));
++        if (!parentDirectory)
++            return std::unexpected(Error::FileSystem);
++        auto directoryComponents = components->size() - (isDirectory ? 0 : 1);
++        for (size_t index = 0; index < directoryComponents; ++index) {
++            const auto& component = (*components)[index];
++            if (!mkdirat(parentDirectory.get(), component.c_str(), 0700)) {
++                if (++createdNodes > limits.entries)
++                    return std::unexpected(Error::ExpansionLimit);
++            } else if (errno != EEXIST)
++                return std::unexpected(Error::FileSystem);
++            auto child = openat(parentDirectory.get(), component.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
++            if (child < 0)
++                return std::unexpected(Error::UnsafeEntry);
++            parentDirectory.reset(child);
++        }
++        if (isDirectory)
++            continue;
++        FileDescriptor output(openat(parentDirectory.get(), components->back().c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600));
++        if (!output)
++            return std::unexpected(Error::UnsafeEntry);
++        if (++createdNodes > limits.entries)
++            return std::unexpected(Error::ExpansionLimit);
++
++        std::unique_ptr<zip_file_t, decltype(&zip_fclose)> archivedFile(zip_fopen_index(reader.get(), index, 0), &zip_fclose);
++        if (!archivedFile)
++            return std::unexpected(Error::InvalidArchive);
++        uint64_t writtenBytes = 0;
++        std::array<unsigned char, 64 * 1024> buffer;
++        while (true) {
++            auto count = zip_fread(archivedFile.get(), buffer.data(), buffer.size());
++            if (count < 0)
++                return std::unexpected(Error::InvalidArchive);
++            if (!count)
++                break;
++            auto bytes = static_cast<uint64_t>(count);
++            if (bytes > fileBytes - writtenBytes || bytes > limits.expandedBytes - expandedBytes)
++                return std::unexpected(Error::ExpansionLimit);
++            size_t offset = 0;
++            while (offset < static_cast<size_t>(count)) {
++                auto written = write(output.get(), buffer.data() + offset, static_cast<size_t>(count) - offset);
++                if (written < 0 && errno == EINTR)
++                    continue;
++                if (written <= 0)
++                    return std::unexpected(Error::FileSystem);
++                offset += written;
++            }
++            writtenBytes += bytes;
++            expandedBytes += bytes;
++        }
++        if (zip_fclose(archivedFile.release()) || writtenBytes != fileBytes)
++            return std::unexpected(Error::InvalidArchive);
++        if (close(output.release()))
++            return std::unexpected(Error::FileSystem);
++        if (normalizedPath == "manifest.json")
++            hasManifest = true;
++    }
++    if (!hasManifest)
++        return std::unexpected(Error::InvalidArchive);
++    return directory;
++}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionArchiveHaiku.h b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionArchiveHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..8116761679d10df7d8286d4c19d66865e6a9913b
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionArchiveHaiku.h
+@@ -0,0 +1,73 @@
++/*
++ * Copyright (C) 2026 KunanyiOS contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are met:
++ * 1. Redistributions of source code must retain the above copyright notice,
++ *    this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright notice,
++ *    this list of conditions and the following disclaimer in the documentation
++ *    and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#pragma once
++
++#if PLATFORM(HAIKU)
++
++#include <cstdint>
++#include <expected>
++#include <wtf/text/WTFString.h>
++
++namespace WebKit {
++
++struct WebExtensionArchiveLimitsHaiku {
++    uint64_t archiveBytes { 128 * 1024 * 1024 };
++    uint64_t fileBytes { 64 * 1024 * 1024 };
++    uint64_t expandedBytes { 256 * 1024 * 1024 };
++    unsigned entries { 10000 };
++    unsigned pathBytes { 1024 };
++    unsigned pathDepth { 32 };
++};
++
++enum class WebExtensionArchiveErrorHaiku : uint8_t {
++    InvalidArchive,
++    UnsafeEntry,
++    ExpansionLimit,
++    FileSystem,
++};
++
++// A failed extraction and an unconsumed successful result both remove their
++// private directory. WebExtension releases it only after manifest parsing,
++// then uses its existing m_resourcesAreTemporary destructor ownership.
++class WebExtensionTemporaryDirectoryHaiku {
++public:
++    explicit WebExtensionTemporaryDirectoryHaiku(String&&);
++    WebExtensionTemporaryDirectoryHaiku(WebExtensionTemporaryDirectoryHaiku&&);
++    WebExtensionTemporaryDirectoryHaiku(const WebExtensionTemporaryDirectoryHaiku&) = delete;
++    WebExtensionTemporaryDirectoryHaiku& operator=(const WebExtensionTemporaryDirectoryHaiku&) = delete;
++    ~WebExtensionTemporaryDirectoryHaiku();
++
++    const String& path() const { return m_path; }
++    String release();
++
++private:
++    String m_path;
++};
++
++std::expected<WebExtensionTemporaryDirectoryHaiku, WebExtensionArchiveErrorHaiku> extractWebExtensionArchiveHaiku(const String& archivePath, const WebExtensionArchiveLimitsHaiku& = { }, const String& temporaryParent = { });
++
++} // namespace WebKit
++
++#endif // PLATFORM(HAIKU)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionControllerConfigurationHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionControllerConfigurationHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..a5f9aae43990067335545cb019b2e4f06dc804e5
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionControllerConfigurationHaiku.cpp
+@@ -0,0 +1,66 @@
++/*
++ * Copyright (C) 2022 Apple Inc. All rights reserved.
++ * Copyright (C) 2026 KunanyiOS contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "WebExtensionControllerConfiguration.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++
++#include "StoragePathsHaiku.h"
++#include <wtf/FileSystem.h>
++
++namespace WebKit {
++
++String WebExtensionControllerConfiguration::createStorageDirectoryPath(std::optional<WTF::UUID> identifier)
++{
++    auto identifierPath = identifier ? identifier->toString().convertToASCIIUppercase() : "Default"_s;
++    auto directory = FileSystem::pathByAppendingComponent("WebExtensions"_s, identifierPath);
++    // Use the same application profile root as native website data stores.
++    // Persistent storage is created lazily by the controller's storage stores.
++    return storageDirectoryPathHaiku(false, nullString(), directory, false);
++}
++
++String WebExtensionControllerConfiguration::createTemporaryStorageDirectoryPath()
++{
++    return FileSystem::createTemporaryDirectory();
++}
++
++Ref<WebExtensionControllerConfiguration> WebExtensionControllerConfiguration::copy() const
++{
++    // Creating a default configuration only computes a path. Copy the stored
++    // state directly so temporary copies share their original directory and
++    // nonpersistent copies share their original ephemeral website data store.
++    auto result = createDefault();
++    result->m_identifier = m_identifier;
++    result->m_temporary = m_temporary;
++    result->m_storageDirectory = m_storageDirectory;
++    result->m_defaultWebsiteDataStore = m_defaultWebsiteDataStore;
++    return result;
++}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..0fad592e47df78032bff706631ce21c5873ec2fc
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionHaiku.cpp
+@@ -0,0 +1,156 @@
++/*
++ * Copyright (C) 2026 KunanyiOS contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are met:
++ * 1. Redistributions of source code must retain the above copyright notice,
++ *    this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright notice,
++ *    this list of conditions and the following disclaimer in the documentation
++ *    and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "WebExtension.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++
++#include "WebExtensionArchiveHaiku.h"
++#include "WebExtensionResourcePathsHaiku.h"
++#include "WebExtensionUtilities.h"
++#include <WebCore/BitmapImage.h>
++#include <WebCore/GraphicsContext.h>
++#include <WebCore/ImageBuffer.h>
++#include <WebCore/LocalizedStrings.h>
++#include <WebCore/NativeImage.h>
++#include <WebCore/SVGImage.h>
++#include <WebCore/SharedBuffer.h>
++#include <cmath>
++#include <wtf/FileSystem.h>
++#include <wtf/text/MakeString.h>
++
++namespace WebKit {
++
++WebExtension::WebExtension(const String& resourcePath, RefPtr<API::Error>& outError)
++    : m_manifestJSON(JSON::Value::null())
++{
++    outError = nullptr;
++    auto canonicalDirectory = canonicalWebExtensionPathHaiku(resourcePath);
++    auto type = FileSystem::fileType(canonicalDirectory);
++    if (canonicalDirectory.isEmpty() || (type != FileSystem::FileType::Directory && type != FileSystem::FileType::Regular)) {
++        outError = createError(Error::ResourceNotFound, WEB_UI_STRING("The extension resource directory or archive is missing or invalid.", "WKWebExtensionErrorResourceNotFound description for an invalid native resource path"));
++        recordErrorIfNeeded(outError);
++        return;
++    }
++
++    std::optional<WebExtensionTemporaryDirectoryHaiku> archiveDirectory;
++    if (type == FileSystem::FileType::Regular) {
++        auto extracted = extractWebExtensionArchiveHaiku(canonicalDirectory);
++        if (!extracted) {
++            outError = createError(Error::InvalidArchive);
++            recordErrorIfNeeded(outError);
++            return;
++        }
++        archiveDirectory.emplace(WTF::move(extracted.value()));
++        canonicalDirectory = archiveDirectory->path();
++    }
++
++    // Relative manifest resources must resolve inside this directory, including
++    // when its native spelling contains spaces, percent signs or Unicode.
++    m_resourceBaseURL = fileURLForWebExtensionPathHaiku(makeString(canonicalDirectory, canonicalDirectory.endsWith('/') ? ""_s : "/"_s));
++    if (!manifestParsedSuccessfully()) {
++        ASSERT(!m_errors.isEmpty());
++        outError = m_errors.last().ptr();
++        // The local archive owner removes incomplete resources immediately.
++        if (archiveDirectory)
++            m_resourceBaseURL = { };
++        return;
++    }
++
++    if (archiveDirectory) {
++        archiveDirectory->release();
++        m_resourcesAreTemporary = true;
++    }
++}
++
++Vector<double> availableScreenScales()
++{
++    // Haiku WebPage configurations currently use one backing pixel per CSS
++    // pixel. Keep icon representation selection consistent with that scale.
++    return { 1.0 };
++}
++
++static bool validIconSize(const WebCore::FloatSize& size)
++{
++    return std::isfinite(size.width()) && std::isfinite(size.height()) && !size.isEmpty();
++}
++
++std::expected<Ref<WebCore::Icon>, RefPtr<API::Error>> WebExtension::iconForPath(const String& path, WebCore::FloatSize sizeForResizing, std::optional<double> idealDisplayScale)
++{
++    auto fail = [&] {
++        return makeUnexpected(createError(Error::InvalidIcon, WEB_UI_STRING("The extension icon could not be decoded.", "WKWebExtensionErrorInvalidIcon description for undecodable image data")));
++    };
++    auto scale = idealDisplayScale.value_or(largestDisplayScale());
++    if (path.isEmpty() || !std::isfinite(scale) || scale <= 0 || (!sizeForResizing.isZero() && !validIconSize(sizeForResizing)))
++        return fail();
++
++    auto dataResult = resourceDataForPath(path);
++    if (!dataResult)
++        return makeUnexpected(dataResult.error());
++    Ref data = dataResult.value();
++    if (!data->size())
++        return fail();
++
++    Ref encodedData = WebCore::SharedBuffer::create(data->span());
++    RefPtr<WebCore::NativeImage> nativeImage;
++    if (equalLettersIgnoringASCIICase(resourceMIMETypeForPath(path), "image/svg+xml"_s)) {
++        Ref svg = WebCore::SVGImage::create(nullptr);
++        if (svg->setData(WTF::move(encodedData), true) != WebCore::EncodedDataStatus::Complete)
++            return fail();
++        auto rasterSize = sizeForResizing.isZero() ? svg->resolvedIntrinsicSize() : sizeForResizing;
++        rasterSize.scale(scale);
++        if (!validIconSize(rasterSize))
++            return fail();
++        // SVGImage uses an isolated image document with scripting disabled.
++        nativeImage = svg->nativeImage(rasterSize);
++    } else {
++        Ref bitmap = WebCore::BitmapImage::create();
++        if (bitmap->setData(WTF::move(encodedData), true) < WebCore::EncodedDataStatus::SizeAvailable || !validIconSize(bitmap->size()))
++            return fail();
++        if (sizeForResizing.isZero())
++            nativeImage = static_cast<WebCore::Image&>(bitmap.get()).currentPreTransformedNativeImage(WebCore::ImageOrientation::Orientation::FromImage);
++        else {
++            auto originalSize = bitmap->size();
++            auto ratio = std::min(sizeForResizing.width() / originalSize.width(), sizeForResizing.height() / originalSize.height()) * scale;
++            auto rasterSize = originalSize;
++            rasterSize.scale(ratio);
++            if (!validIconSize(rasterSize))
++                return fail();
++            RefPtr imageBuffer = WebCore::ImageBuffer::create(rasterSize, WebCore::RenderingMode::Unaccelerated, WebCore::RenderingPurpose::DOM, 1, WebCore::ColorSpace::SRGB(), WebCore::PixelFormat::BGRA8);
++            if (!imageBuffer)
++                return fail();
++            imageBuffer->context().drawImage(bitmap, WebCore::FloatRect({ }, rasterSize));
++            nativeImage = WebCore::ImageBuffer::sinkIntoNativeImage(WTF::move(imageBuffer));
++        }
++    }
++
++    if (RefPtr icon = WebCore::Icon::create(WTF::move(nativeImage)))
++        return icon.releaseNonNull();
++    return fail();
++}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionResourcePathsHaiku.h b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionResourcePathsHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..6ebc5963dbf6ae3b340e55b4701edaeb2afc3ca0
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionResourcePathsHaiku.h
+@@ -0,0 +1,102 @@
++/*
++ * Copyright (C) 2026 KunanyiOS contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are met:
++ * 1. Redistributions of source code must retain the above copyright notice,
++ *    this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright notice,
++ *    this list of conditions and the following disclaimer in the documentation
++ *    and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#pragma once
++
++#if PLATFORM(HAIKU)
++
++#include <cstdlib>
++#include <memory>
++#include <wtf/ASCIICType.h>
++#include <wtf/FileSystem.h>
++#include <wtf/URL.h>
++#include <wtf/text/StringBuilder.h>
++#include <wtf/text/WTFString.h>
++
++namespace WebKit {
++
++inline URL fileURLForWebExtensionPathHaiku(const String& path)
++{
++    if (path.isEmpty() || !path.startsWith('/') || path.contains('\0'))
++        return { };
++
++    // URL::fileURLWithFileSystemPath preserves existing percent escapes, and
++    // the URL parser treats literal backslashes as separators. Native POSIX
++    // filenames need those bytes escaped before entering the URL parser.
++    constexpr char hex[] = "0123456789ABCDEF";
++    StringBuilder builder;
++    builder.append("file://"_s);
++    auto pathBytes = path.utf8();
++    if (pathBytes.isNull())
++        return { };
++    for (auto character : pathBytes.span()) {
++        auto byte = static_cast<uint8_t>(character);
++        if (isASCIIAlphanumeric(byte) || byte == '/' || byte == '-' || byte == '.' || byte == '_' || byte == '~')
++            builder.append(static_cast<char>(byte));
++        else
++            builder.append('%', hex[byte >> 4], hex[byte & 15]);
++    }
++    return URL { builder.toString() };
++}
++
++inline String canonicalWebExtensionPathHaiku(const String& path)
++{
++    if (path.isEmpty() || !path.startsWith('/') || path.contains('\0'))
++        return { };
++
++    // FileSystem::realPath returns its input when canonicalization fails.
++    // Resource boundaries instead need an explicit failure in that case.
++    auto bytes = FileSystem::fileSystemRepresentation(path);
++    if (bytes.isNull())
++        return { };
++    std::unique_ptr<char, decltype(&std::free)> canonical(realpath(bytes.legacyCStringPointer(), nullptr), &std::free);
++    return canonical ? String::fromUTF8(canonical.get()) : String { };
++}
++
++inline URL resolveWebExtensionResourceURLHaiku(const URL& baseURL, const String& originalPath)
++{
++    if (!baseURL.isValid() || !baseURL.protocolIsFile() || !baseURL.host().isEmpty()
++        || originalPath.isEmpty() || originalPath.contains('\0'))
++        return { };
++
++    auto path = originalPath.startsWith('/') ? originalPath.substring(1) : originalPath;
++    if (path.isEmpty())
++        return { };
++
++    URL candidate { baseURL, path };
++    if (!candidate.isValid() || !candidate.protocolIsFile() || !candidate.host().isEmpty())
++        return { };
++
++    auto basePath = canonicalWebExtensionPathHaiku(baseURL.fileSystemPath());
++    auto resourcePath = canonicalWebExtensionPathHaiku(candidate.fileSystemPath());
++    if (basePath.isEmpty() || resourcePath.isEmpty() || !FileSystem::isAncestor(basePath, resourcePath))
++        return { };
++
++    // Read the path we checked, rather than retaining a symlink spelling.
++    return fileURLForWebExtensionPathHaiku(resourcePath);
++}
++
++} // namespace WebKit
++
++#endif // PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Launcher/ProcessLauncher.h b/Source/WebKit/UIProcess/Launcher/ProcessLauncher.h
 index 58f00aff737c58a39b1f8556c134f6b39ba2c43c..39a2b870eb9cc704e34a5bc348d85a7e9da274dd 100644
 --- a/Source/WebKit/UIProcess/Launcher/ProcessLauncher.h
@@ -24281,6 +26381,19 @@ index 0000000000000000000000000000000000000000..f0d827e69a42a3717accff5f30c55629
 +}
 +
 +} // namespace WebKit
+diff --git a/Source/WebKit/UIProcess/Network/NetworkProcessProxy.cpp b/Source/WebKit/UIProcess/Network/NetworkProcessProxy.cpp
+index 610ed35519af0442e109655604b981ee835db31d..efc5714a0e7c5abee897bf3df83beff54855b8f6 100644
+--- a/Source/WebKit/UIProcess/Network/NetworkProcessProxy.cpp
++++ b/Source/WebKit/UIProcess/Network/NetworkProcessProxy.cpp
+@@ -214,7 +214,7 @@ void NetworkProcessProxy::sendCreationParametersToNewProcess()
+     parameters.urlSchemesRegisteredForCustomProtocols = WebProcessPool::urlSchemesWithCustomProtocolHandlers();
+     parameters.localhostAliasesForTesting = LegacyGlobalSettings::singleton().hostnamesToRegisterAsLocal();
+ 
+-#if !PLATFORM(GTK) && !PLATFORM(WPE) // GTK and WPE don't use defaultNetworkProcess
++#if !PLATFORM(GTK) && !PLATFORM(WPE) && !PLATFORM(HAIKU) // These ports add only their own store after process creation.
+     parameters.websiteDataStoreParameters = WebsiteDataStore::parametersFromEachWebsiteDataStore();
+     WebsiteDataStore::forEachWebsiteDataStore([&](auto& websiteDataStore) {
+         addSession(websiteDataStore, SendParametersToNetworkProcess::No);
 diff --git a/Source/WebKit/UIProcess/PageClient.h b/Source/WebKit/UIProcess/PageClient.h
 index a4299803aa31a4a1705aebf669aba3190bcb878a..d0f3a47edf7d2b080af70b57cf1193adae733387 100644
 --- a/Source/WebKit/UIProcess/PageClient.h
@@ -24297,6 +26410,135 @@ index a4299803aa31a4a1705aebf669aba3190bcb878a..d0f3a47edf7d2b080af70b57cf1193ad
      // Tell the view to scroll to the given position, and whether this was a programmatic scroll.
      virtual void requestScroll(const WebCore::FloatPoint& scrollPosition, const WebCore::IntPoint& scrollOrigin, WebCore::ScrollIsAnimated, WebCore::InterruptScrollAnimation) = 0;
  
+diff --git a/Source/WebKit/UIProcess/WebPageProxy.cpp b/Source/WebKit/UIProcess/WebPageProxy.cpp
+index dcb789361fd321de76e3f647c18328ad2f4af9fc..8677067b6f8c5ac5aa34751fd6c4b3428f04ce5b 100644
+--- a/Source/WebKit/UIProcess/WebPageProxy.cpp
++++ b/Source/WebKit/UIProcess/WebPageProxy.cpp
+@@ -542,7 +542,11 @@ using namespace WebCore;
+ 
+ static constexpr Seconds resetRecentCrashCountDelay = 30_s;
+ static constexpr unsigned maximumWebProcessRelaunchAttempts = 1;
++#if PLATFORM(HAIKU)
++static constexpr Seconds tryCloseTimeoutDelay = 30_s;
++#else
+ static constexpr Seconds tryCloseTimeoutDelay = 50_ms;
++#endif
+ 
+ static WeakListHashSet<WebPageProxy>& NODELETE leastRecentlyVisiblePages()
+ {
+@@ -2087,15 +2091,32 @@ bool WebPageProxy::tryClose()
+ 
+     // Close without delay if the process allows it. Our goal is to terminate
+     // the process, so we check a per-process status bit.
++#if !PLATFORM(HAIKU)
+     if (m_legacyMainFrameProcess->isSuddenTerminationEnabled())
+         return true;
++#endif
+ 
++    // Haiku retains provisional approvals, so require a current process reply
++    // even when sudden termination was previously allowed. StopLoading sent by
++    // the native client is processed before this assessment on that connection.
++#if PLATFORM(HAIKU)
++    auto requestGeneration = ++internals().tryCloseRequestGeneration;
++#endif
+     internals().tryCloseTimeoutTimer.startOneShot(tryCloseTimeoutDelay);
+-    sendWithAsyncReply(Messages::WebPage::TryClose(), [weakThis = WeakPtr { *this }](bool shouldClose) {
++    sendWithAsyncReply(Messages::WebPage::TryClose(), [weakThis = WeakPtr { *this }
++#if PLATFORM(HAIKU)
++        , requestGeneration
++#endif
++    ](bool shouldClose) {
+         RefPtr protectedThis = weakThis.get();
+         if (!protectedThis)
+             return;
+ 
++#if PLATFORM(HAIKU)
++        // A reply to a timed-out attempt must not settle a subsequent retry.
++        if (protectedThis->internals().tryCloseRequestGeneration != requestGeneration)
++            return;
++#endif
+         // If we timed out, don't ask the client to close again.
+         if (!protectedThis->internals().tryCloseTimeoutTimer.isActive())
+             return;
+@@ -2103,14 +2124,22 @@ bool WebPageProxy::tryClose()
+         protectedThis->internals().tryCloseTimeoutTimer.stop();
+         if (shouldClose)
+             protectedThis->closePage();
++        else
++            protectedThis->m_uiClient->didCancelClose(protectedThis.get());
+     });
+     return false;
+ }
+ 
+ void WebPageProxy::tryCloseTimedOut()
+ {
++#if PLATFORM(HAIKU)
++    WEBPAGEPROXY_RELEASE_LOG_ERROR(Process, "tryCloseTimedOut: Cancelling close without a process approval");
++    ++internals().tryCloseRequestGeneration;
++    m_uiClient->didCancelClose(this);
++#else
+     WEBPAGEPROXY_RELEASE_LOG_ERROR(Process, "tryCloseTimedOut: Timed out waiting for the process to respond to the WebPage::TryClose IPC, closing the page now");
+     closePage();
++#endif
+ }
+ 
+ static std::optional<URL> storageClassBaseURL(const URL& url)
+@@ -8485,6 +8514,10 @@ void WebPageProxy::didExplicitOpenForFrame(IPC::Connection& connection, FrameIde
+         process->didCommitMeaningfulProvisionalLoad();
+ 
+     pageLoadState->commitChanges();
++#if PLATFORM(HAIKU)
++    if (frame->isMainFrame())
++        m_uiClient->didExplicitOpen(this);
++#endif
+ }
+ 
+ void WebPageProxy::didReceiveServerRedirectForProvisionalLoadForFrame(IPC::Connection& connection, FrameIdentifier frameID, std::optional<WebCore::NavigationIdentifier> navigationID, ResourceRequest&& request, const UserData& userData)
+@@ -11314,8 +11347,12 @@ void WebPageProxy::closePage()
+         return;
+ 
+     WEBPAGEPROXY_RELEASE_LOG(Process, "closePage:");
++#if !PLATFORM(HAIKU)
+     if (RefPtr pageClient = this->pageClient())
+         pageClient->clearAllEditCommands();
++#endif
++    // Haiku may retain an approved tab until every tab approves a window quit.
++    // Its WebView::close() clears undo history when the tab is actually closed.
+     m_uiClient->close(this);
+ }
+ 
+diff --git a/Source/WebKit/UIProcess/WebPageProxyInternals.h b/Source/WebKit/UIProcess/WebPageProxyInternals.h
+index bc3b24188d37a1517e0cbb152e7634211b111243..226044918059bdd29b0892f573e24c7ea2a9aa31 100644
+--- a/Source/WebKit/UIProcess/WebPageProxyInternals.h
++++ b/Source/WebKit/UIProcess/WebPageProxyInternals.h
+@@ -282,6 +282,9 @@ public:
+     std::optional<WebCore::FloatBoxExtent> pendingObscuredContentInsets;
+ #endif
+     RunLoop::Timer tryCloseTimeoutTimer;
++#if PLATFORM(HAIKU)
++    uint64_t tryCloseRequestGeneration { 0 };
++#endif
+     WebCore::Color underPageBackgroundColorOverride;
+     WebCore::Color underlayColor;
+     RunLoop::Timer updateReportedMediaCaptureStateTimer;
+diff --git a/Source/WebKit/UIProcess/WebsiteData/WebsiteDataStore.cpp b/Source/WebKit/UIProcess/WebsiteData/WebsiteDataStore.cpp
+index 2d72030b58aed216674703f4eda8ae5e77ca7d34..133fa9b1cec5931074e9054e2d57a3449314ad6c 100644
+--- a/Source/WebKit/UIProcess/WebsiteData/WebsiteDataStore.cpp
++++ b/Source/WebKit/UIProcess/WebsiteData/WebsiteDataStore.cpp
+@@ -318,7 +318,12 @@ SOAuthorizationCoordinator& WebsiteDataStore::soAuthorizationCoordinator(const W
+ 
+ static Ref<NetworkProcessProxy> networkProcessForSession(PAL::SessionID sessionID)
+ {
+-#if ((PLATFORM(GTK) || PLATFORM(WPE)) && !ENABLE(2022_GLIB_API))
++#if PLATFORM(HAIKU)
++    // Curl's alternative-services state belongs to the process. Keep every
++    // profile, including ephemeral profiles, in its own network process.
++    UNUSED_PARAM(sessionID);
++    return NetworkProcessProxy::create();
++#elif ((PLATFORM(GTK) || PLATFORM(WPE)) && !ENABLE(2022_GLIB_API))
+     if (sessionID.isEphemeral()) {
+         // Reuse a previous persistent session network process for ephemeral sessions.
+         for (auto& dataStore : allDataStores().values()) {
 diff --git a/Source/WebKit/UIProcess/WebsiteData/haiku/WebsiteDataStoreHaiku.cpp b/Source/WebKit/UIProcess/WebsiteData/haiku/WebsiteDataStoreHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..e545399afbe8b5539a8026d49532e05ab3fbb017
@@ -24371,10 +26613,10 @@ index 0000000000000000000000000000000000000000..e545399afbe8b5539a8026d49532e05a
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/DrawingAreaProxyHaiku.cpp b/Source/WebKit/UIProcess/haiku/DrawingAreaProxyHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..1eb0725dcc3c8d4ff18b82424abc6c3431da486d
+index 0000000000000000000000000000000000000000..4cce66689b940bee023ee7faa7783bca5b82705f
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/DrawingAreaProxyHaiku.cpp
-@@ -0,0 +1,76 @@
+@@ -0,0 +1,77 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -24382,6 +26624,7 @@ index 0000000000000000000000000000000000000000..1eb0725dcc3c8d4ff18b82424abc6c34
 +
 +#include "BitmapFrameHaiku.h"
 +#include "DrawingAreaMessages.h"
++#include "MessageSenderInlines.h"
 +#include "PageClient.h"
 +#include "WebPageProxy.h"
 +#include "WebProcessProxy.h"
@@ -24482,6 +26725,613 @@ index 0000000000000000000000000000000000000000..0bee5b6e8a1234d768064bc9f9802ecd
 +    void sendGeometry(CompletionHandler<void()>&&);
 +    uint64_t m_geometryIdentifier { 0 };
 +    uint64_t m_lastFrameIdentifier { 0 };
++};
++
++} // namespace WebKit
+diff --git a/Source/WebKit/UIProcess/haiku/JavaScriptDialogHaiku.h b/Source/WebKit/UIProcess/haiku/JavaScriptDialogHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..15401027888088266cf858cb7282d33ea2607e04
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/JavaScriptDialogHaiku.h
+@@ -0,0 +1,279 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#pragma once
++
++#include "JavaScriptDialogRequestsHaiku.h"
++#include <Button.h>
++#include <GroupView.h>
++#include <LayoutBuilder.h>
++#include <Message.h>
++#include <Messenger.h>
++#include <ScrollView.h>
++#include <StringView.h>
++#include <TextView.h>
++#include <Window.h>
++#include <atomic>
++#include <deque>
++#include <memory>
++
++namespace WebKit {
++
++enum class JavaScriptDialogKindHaiku : int32 { Alert, Confirm, Prompt, BeforeUnload };
++enum : uint32 {
++    javaScriptDialogShowHaiku = 'jssh', javaScriptDialogClosedHaiku = 'jscl',
++    javaScriptDialogDismissHaiku = 'jsdi', javaScriptDialogsCancelHaiku = 'jsca',
++    javaScriptDialogAcceptHaiku = 'jsok', javaScriptDialogCancelHaiku = 'jsno'
++};
++
++// BTextControl's internal text view passes inserted text through BString,
++// which cannot preserve embedded NULs. Use the native BTextView byte buffer
++// directly, with the same single-line editing behavior.
++class JavaScriptPromptInputHaiku final : public BTextView {
++public:
++    JavaScriptPromptInputHaiku() : BTextView("dialog-input")
++    {
++        SetWordWrap(false);
++        SetDoesUndo(true);
++        SetExplicitMinSize(BSize(490, 26));
++        SetExplicitMaxSize(BSize(B_SIZE_UNLIMITED, 26));
++    }
++
++    void KeyDown(const char* bytes, int32 length) override
++    {
++        if (length == 1 && bytes[0] == B_ENTER && Window()) {
++            Window()->PostMessage(javaScriptDialogAcceptHaiku);
++            return;
++        }
++        BTextView::KeyDown(bytes, length);
++    }
++
++protected:
++    void InsertText(const char* text, int32 length, int32 offset, const text_run_array* runs) override
++    {
++        if (length <= 0)
++            return;
++        std::string filtered(text, static_cast<size_t>(length));
++        for (auto& byte : filtered) {
++            if (byte == '\n' || byte == '\r')
++                byte = ' ';
++        }
++        BTextView::InsertText(filtered.data(), length, offset, runs);
++    }
++};
++
++class JavaScriptDialogActivityHaiku {
++public:
++    static uint32_t activeCount() { return s_active.load(); }
++protected:
++    JavaScriptDialogActivityHaiku() { ++s_active; }
++    ~JavaScriptDialogActivityHaiku() { --s_active; }
++private:
++    static inline std::atomic<uint32_t> s_active { 0 };
++};
++
++// This base order keeps activity nonzero through the BWindow/BLooper
++// destructors, which still use the native application and app_server.
++class JavaScriptDialogHaiku final : private JavaScriptDialogActivityHaiku, public BWindow {
++public:
++    static uint32_t activeCount() { return JavaScriptDialogActivityHaiku::activeCount(); }
++    JavaScriptDialogHaiku(uint64_t identifier, JavaScriptDialogKindHaiku kind,
++        const std::string& origin, const std::string& topOrigin, const std::string& message, const std::string& defaultValue,
++        std::shared_ptr<JavaScriptDialogRequestsHaiku> requests, BMessenger target)
++        : BWindow(BRect(0, 0, 559, 359), "Web page dialog", B_TITLED_WINDOW_LOOK, B_MODAL_SUBSET_WINDOW_FEEL,
++            B_ASYNCHRONOUS_CONTROLS | B_NOT_RESIZABLE | B_NOT_ZOOMABLE | B_AUTO_UPDATE_SIZE_LIMITS | B_CLOSE_ON_ESCAPE)
++        , m_identifier(identifier), m_requests(std::move(requests)), m_target(target)
++    {
++        auto* originView = textView("dialog-origin", origin, 76);
++        auto* body = textView("dialog-message", kind == JavaScriptDialogKindHaiku::BeforeUnload
++            ? "This page may contain unsaved changes. Leave this page?" : message, 140);
++        auto* scroll = new BScrollView("dialog-message-scroll", body, 0, false, true, B_NO_BORDER);
++        BLayoutBuilder::Group<> layout(this, B_VERTICAL, 10);
++        layout.SetInsets(16).Add(new BStringView("dialog-site-label", "Website:"))
++            .Add(originView);
++        if (!topOrigin.empty()) {
++            layout.Add(new BStringView("dialog-top-label", "Embedded in:"))
++                .Add(textView("dialog-top-origin", topOrigin, 76));
++        }
++        layout.Add(scroll);
++        if (kind == JavaScriptDialogKindHaiku::Prompt) {
++            m_input = new JavaScriptPromptInputHaiku();
++            m_input->SetText(defaultValue.data(), static_cast<int32>(defaultValue.size()));
++            layout.Add(new BScrollView("dialog-input-border", m_input, 0, false, false, B_FANCY_BORDER));
++        }
++        auto* buttons = new BGroupView(B_HORIZONTAL, 8);
++        BLayoutBuilder::Group<> buttonLayout(buttons);
++        buttonLayout.AddGlue();
++        BButton* cancel = nullptr;
++        if (kind != JavaScriptDialogKindHaiku::Alert) {
++            cancel = new BButton("dialog-cancel", kind == JavaScriptDialogKindHaiku::BeforeUnload ? "Stay" : "Cancel",
++                new BMessage(javaScriptDialogCancelHaiku));
++            buttonLayout.Add(cancel);
++        }
++        auto* accept = new BButton("dialog-accept", kind == JavaScriptDialogKindHaiku::BeforeUnload ? "Leave" : "OK",
++            new BMessage(javaScriptDialogAcceptHaiku));
++        buttonLayout.Add(accept);
++        layout.Add(buttons);
++        SetDefaultButton(kind == JavaScriptDialogKindHaiku::BeforeUnload ? cancel : accept);
++        ResizeToPreferred();
++        if (m_input) {
++            m_input->MakeFocus();
++            m_input->SelectAll();
++        }
++    }
++
++    ~JavaScriptDialogHaiku() override { finish(false); }
++
++    bool QuitRequested() override
++    {
++        finish(false);
++        return true;
++    }
++
++    void MessageReceived(BMessage* message) override
++    {
++        switch (message->what) {
++        case javaScriptDialogAcceptHaiku:
++            finish(true);
++            PostMessage(B_QUIT_REQUESTED);
++            return;
++        case javaScriptDialogCancelHaiku:
++        case javaScriptDialogDismissHaiku:
++            finish(false);
++            PostMessage(B_QUIT_REQUESTED);
++            return;
++        default:
++            BWindow::MessageReceived(message);
++        }
++    }
++
++private:
++    static BTextView* textView(const char* name, const std::string& text, float height)
++    {
++        auto* view = new BTextView(name);
++        view->SetText(text.data(), static_cast<int32>(text.size()));
++        view->MakeEditable(false);
++        view->MakeSelectable(true);
++        view->SetWordWrap(true);
++        view->SetViewUIColor(B_PANEL_BACKGROUND_COLOR);
++        view->SetExplicitMinSize(BSize(490, height));
++        view->SetExplicitMaxSize(BSize(B_SIZE_UNLIMITED, height));
++        return view;
++    }
++
++    void finish(bool accepted)
++    {
++        if (m_finished)
++            return;
++        m_finished = true;
++        std::string value;
++        if (accepted && m_input)
++            value.assign(m_input->Text(), m_input->TextLength());
++        m_requests->complete(m_identifier, accepted, std::move(value));
++        BMessage closed(javaScriptDialogClosedHaiku);
++        closed.AddUInt64("identifier", m_identifier);
++        m_target.SendMessage(&closed, static_cast<BHandler*>(nullptr), 0);
++    }
++
++    const uint64_t m_identifier;
++    const std::shared_ptr<JavaScriptDialogRequestsHaiku> m_requests;
++    const BMessenger m_target;
++    JavaScriptPromptInputHaiku* m_input { nullptr };
++    bool m_finished { false };
++};
++
++// Owned and called only by the native BWebKitView's window looper. Dialogs have
++// their own native loopers; this queue keeps one sheet visible per web view.
++class JavaScriptDialogHostHaiku {
++public:
++    explicit JavaScriptDialogHostHaiku(std::shared_ptr<JavaScriptDialogRequestsHaiku> requests)
++        : m_requests(std::move(requests)) { }
++    ~JavaScriptDialogHostHaiku() { cancelAll(); }
++
++    void show(BMessage message, BWindow* parent, BMessenger target, bool visible)
++    {
++        uint64 identifier;
++        if (message.FindUInt64("identifier", &identifier) != B_OK || !m_requests->contains(identifier))
++            return;
++        m_pending.push_back(std::move(message));
++        pump(parent, target, visible);
++    }
++
++    void pump(BWindow* parent, BMessenger target, bool visible)
++    {
++        if (!parent || !visible || m_active.IsValid())
++            return;
++        while (!m_pending.empty()) {
++            BMessage message = std::move(m_pending.front());
++            m_pending.pop_front();
++            uint64 identifier;
++            int32 kind;
++            if (message.FindUInt64("identifier", &identifier) != B_OK || !m_requests->contains(identifier))
++                continue;
++            if (message.FindInt32("kind", &kind) != B_OK || kind < 0
++                || kind > static_cast<int32>(JavaScriptDialogKindHaiku::BeforeUnload)) {
++                m_requests->complete(identifier, false);
++                continue;
++            }
++            auto origin = text(message, "origin");
++            if (origin.empty()) {
++                m_requests->complete(identifier, false);
++                continue;
++            }
++            auto* dialog = new JavaScriptDialogHaiku(identifier, static_cast<JavaScriptDialogKindHaiku>(kind),
++                origin, text(message, "topOrigin"), text(message, "message"),
++                text(message, "defaultValue"), m_requests, target);
++            if (dialog->AddToSubset(parent) != B_OK) {
++                dialog->Quit();
++                continue;
++            }
++            dialog->CenterIn(parent->Frame());
++            m_identifier = identifier;
++            m_active = BMessenger(dialog);
++            dialog->Show();
++            return;
++        }
++    }
++
++    void didClose(uint64 identifier, BWindow* parent, BMessenger target, bool visible)
++    {
++        if (identifier != m_identifier)
++            return;
++        m_active = BMessenger();
++        m_identifier = 0;
++        pump(parent, target, visible);
++    }
++
++    void cancelAll()
++    {
++        for (const auto& message : m_pending) {
++            uint64 identifier;
++            if (message.FindUInt64("identifier", &identifier) == B_OK)
++                m_requests->complete(identifier, false);
++        }
++        m_pending.clear();
++        m_requests->complete(m_identifier, false);
++        BMessage dismiss(javaScriptDialogDismissHaiku);
++        m_active.SendMessage(&dismiss, static_cast<BHandler*>(nullptr), 0);
++        m_active = BMessenger();
++        m_identifier = 0;
++    }
++
++private:
++    static std::string text(const BMessage& message, const char* name)
++    {
++        const void* bytes;
++        ssize_t length;
++        if (message.FindData(name, B_RAW_TYPE, &bytes, &length) == B_OK && length > 0
++            && !static_cast<const char*>(bytes)[length - 1])
++            return { static_cast<const char*>(bytes), static_cast<size_t>(length - 1) };
++        const char* value = message.FindString(name);
++        return value ? value : "";
++    }
++
++    const std::shared_ptr<JavaScriptDialogRequestsHaiku> m_requests;
++    std::deque<BMessage> m_pending;
++    BMessenger m_active;
++    uint64_t m_identifier { 0 };
++};
++
++} // namespace WebKit
+diff --git a/Source/WebKit/UIProcess/haiku/JavaScriptDialogRequestsHaiku.h b/Source/WebKit/UIProcess/haiku/JavaScriptDialogRequestsHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..57f5eeb4902e21afc628362e9090894effbbdf13
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/JavaScriptDialogRequestsHaiku.h
+@@ -0,0 +1,77 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#pragma once
++
++#include <cstdint>
++#include <functional>
++#include <map>
++#include <mutex>
++#include <string>
++#include <utility>
++
++namespace WebKit {
++
++// Native window threads may finish a request while the WebKit thread closes
++// the page. Remove callbacks under the lock, then invoke them outside it. The
++// bridge supplies callbacks that dispatch their WebKit completion onto main.
++class JavaScriptDialogRequestsHaiku {
++public:
++    using Completion = std::function<void(bool, std::string)>;
++
++    ~JavaScriptDialogRequestsHaiku() { cancelAll(true); }
++
++    uint64_t add(Completion completion)
++    {
++        {
++            std::lock_guard guard(m_mutex);
++            if (!m_closed) {
++                do { ++m_nextIdentifier; } while (!m_nextIdentifier || m_requests.contains(m_nextIdentifier));
++                m_requests.emplace(m_nextIdentifier, std::move(completion));
++                return m_nextIdentifier;
++            }
++        }
++        completion(false, { });
++        return 0;
++    }
++
++    bool contains(uint64_t identifier) const
++    {
++        std::lock_guard guard(m_mutex);
++        return m_requests.contains(identifier);
++    }
++
++    bool complete(uint64_t identifier, bool accepted, std::string value = { })
++    {
++        Completion completion;
++        {
++            std::lock_guard guard(m_mutex);
++            auto found = m_requests.find(identifier);
++            if (found == m_requests.end())
++                return false;
++            completion = std::move(found->second);
++            m_requests.erase(found);
++        }
++        completion(accepted, std::move(value));
++        return true;
++    }
++
++    void cancelAll(bool close = false)
++    {
++        std::map<uint64_t, Completion> requests;
++        {
++            std::lock_guard guard(m_mutex);
++            m_closed |= close;
++            requests.swap(m_requests);
++        }
++        for (auto& [identifier, completion] : requests)
++            completion(false, { });
++    }
++
++private:
++    mutable std::mutex m_mutex;
++    uint64_t m_nextIdentifier { 0 };
++    bool m_closed { false };
++    std::map<uint64_t, Completion> m_requests;
++};
++
++} // namespace WebKit
+diff --git a/Source/WebKit/UIProcess/haiku/NativeSelectPopupHaiku.h b/Source/WebKit/UIProcess/haiku/NativeSelectPopupHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..3b6bd0d9d011c797c2a2e6deb3e2bbbd4eec80ce
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/NativeSelectPopupHaiku.h
+@@ -0,0 +1,233 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#pragma once
++
++#include <Application.h>
++#include <MenuItem.h>
++#include <Message.h>
++#include <Messenger.h>
++#include <OS.h>
++#include <PopUpMenu.h>
++#include <Screen.h>
++#include <algorithm>
++#include <atomic>
++#include <functional>
++#include <memory>
++#include <mutex>
++#include <string>
++#include <utility>
++#include <vector>
++
++namespace WebKit {
++
++// This class owns only native data. Menu tracking and destruction take place
++// on its worker; cancel never waits for that worker or touches a raw BMenu.
++class NativeSelectPopupHaiku final {
++public:
++    struct Item {
++        std::string label;
++        bool enabled { true };
++        bool groupLabel { false };
++        bool separator { false };
++    };
++
++    NativeSelectPopupHaiku(std::vector<Item>&& items, BRect anchor, bool rightToLeft, int32 selectedIndex, std::function<void(int32)>&& completion)
++        : m_control(std::make_shared<Control>(std::move(items), anchor, rightToLeft, selectedIndex, std::move(completion))) { }
++
++    ~NativeSelectPopupHaiku() { cancel(); }
++
++    static size_t activeCount() { return s_activeCount.load(); }
++
++    status_t start()
++    {
++        if (m_started)
++            return B_NOT_ALLOWED;
++        m_started = true;
++        auto* owner = new std::shared_ptr<Control>(m_control);
++        ++s_activeCount;
++        thread_id thread = spawn_thread([](void* data) -> int32 {
++            std::unique_ptr<std::shared_ptr<Control>> owner(static_cast<std::shared_ptr<Control>*>(data));
++            auto control = *owner;
++            int32 index = -1;
++            if (!control->cancelled && !control->items.empty()) {
++                auto menu = std::make_unique<Menu>(control);
++                if (menu->populate()) {
++                    BPoint location = menu->location();
++                    // BPopUpMenu's async Go has no completion or failure result.
++                    // Its synchronous result is safe here, off the WebKit loop,
++                    // and covers selection, Escape, outside click and failure.
++                    BMenuItem* chosen = menu->Go(location, false, true, control->anchor, false);
++                    if (chosen && !control->cancelled)
++                        index = menu->IndexOf(chosen);
++                }
++                // Go has joined its own tracking thread. Destroy the native
++                // menu before posting the completion to the application.
++                menu.reset();
++            }
++            if (control->cancelled)
++                index = -1;
++            control->completion(index);
++            --s_activeCount;
++            return B_OK;
++        }, "WebKit select popup", B_NORMAL_PRIORITY, owner);
++        if (thread < B_OK) {
++            --s_activeCount;
++            delete owner;
++            return thread;
++        }
++        status_t status = resume_thread(thread);
++        if (status != B_OK) {
++            kill_thread(thread);
++            --s_activeCount;
++            delete owner;
++        }
++        return status;
++    }
++
++    void cancel()
++    {
++        m_control->cancelled = true;
++        sendEscape(target());
++    }
++
++    BMessenger target() const
++    {
++        std::lock_guard lock(m_control->mutex);
++        return m_control->target;
++    }
++
++private:
++    struct Control {
++        Control(std::vector<Item>&& items, BRect anchor, bool rightToLeft, int32 selectedIndex, std::function<void(int32)>&& completion)
++            : items(std::move(items)), anchor(anchor), rightToLeft(rightToLeft), selectedIndex(selectedIndex), completion(std::move(completion)) { }
++        const std::vector<Item> items;
++        const BRect anchor;
++        const bool rightToLeft;
++        const int32 selectedIndex;
++        const std::function<void(int32)> completion;
++        std::atomic<bool> cancelled { false };
++        std::mutex mutex;
++        BMessenger target;
++    };
++
++    static void sendEscape(BMessenger target)
++    {
++        if (!target.IsValid())
++            return;
++        BMessage message(B_KEY_DOWN);
++        const char escape[] = { B_ESCAPE, 0 };
++        message.AddString("bytes", escape);
++        target.SendMessage(&message, static_cast<BHandler*>(nullptr), 0);
++    }
++
++    class Menu final : public BPopUpMenu {
++        class Option final : public BMenuItem {
++        public:
++            explicit Option(const char* label) : BMenuItem(label, nullptr) { }
++            bool isHighlighted() const { return IsSelected(); }
++        };
++
++    public:
++        explicit Menu(std::shared_ptr<Control> control)
++            : BPopUpMenu("WebKit select", true, false), m_control(std::move(control))
++        {
++            SetTriggersEnabled(false);
++            SetTrackingHook([](BMenu*, void* state) {
++                return static_cast<Control*>(state)->cancelled.load();
++            }, m_control.get());
++        }
++
++        bool populate()
++        {
++            for (size_t i = 0; i < m_control->items.size(); ++i) {
++                const auto& source = m_control->items[i];
++                if (source.separator) {
++                    if (!AddSeparatorItem())
++                        return false;
++                    continue;
++                }
++                auto item = std::make_unique<Option>(source.label.c_str());
++                item->SetEnabled(source.enabled && !source.groupLabel);
++                item->SetMarked(static_cast<int32>(i) == m_control->selectedIndex);
++                if (!AddItem(item.get()))
++                    return false;
++                item.release();
++            }
++            return true;
++        }
++
++        BPoint location()
++        {
++            BRect screen = BScreen().Frame();
++            SetMaxContentWidth(std::max(1.0f, screen.Width() - 40));
++            SetExplicitMinSize(BSize(std::clamp(m_control->anchor.Width(), 1.0f, std::max(1.0f, screen.Width() - 2)), B_SIZE_UNSET));
++            DoLayout();
++            BPoint point = m_control->anchor.LeftTop();
++            if (m_control->rightToLeft)
++                point.x = m_control->anchor.right - Bounds().Width();
++            if (auto* marked = ItemAt(m_control->selectedIndex))
++                point.y -= marked->Frame().top;
++            point.x = std::clamp(point.x, screen.left, std::max(screen.left, screen.right - Bounds().Width()));
++            // Oversized menus keep their full content height. BMenu provides
++            // native screen clipping, scroll arrows and marked-item scrolling.
++            point.y = std::clamp(point.y, screen.top, std::max(screen.top, screen.bottom - Bounds().Height()));
++            return point;
++        }
++
++        void AttachedToWindow() override
++        {
++            BPopUpMenu::AttachedToWindow();
++            BMessenger messenger(this);
++            {
++                std::lock_guard lock(m_control->mutex);
++                m_control->target = messenger;
++            }
++            if (m_control->cancelled)
++                sendEscape(messenger);
++        }
++
++        void KeyDown(const char* bytes, int32 count) override
++        {
++            if (count <= 0)
++                return;
++            bool highlighted = false;
++            for (int32 i = 0; i < CountItems(); ++i) {
++                if (auto* option = dynamic_cast<Option*>(ItemAt(i)); option && option->isHighlighted()) {
++                    highlighted = true;
++                    break;
++                }
++            }
++            // BMenu deselects highlighted items when the pointer is outside
++            // the menu. Begin keyboard navigation from the current value,
++            // using native navigation to skip groups, disabled rows and rules.
++            auto* selected = ItemAt(m_control->selectedIndex);
++            if (!highlighted && selected && selected->IsEnabled()
++                && (bytes[0] == B_UP_ARROW || bytes[0] == B_DOWN_ARROW || bytes[0] == B_ENTER || bytes[0] == B_SPACE)) {
++                const char down = B_DOWN_ARROW;
++                for (int32 i = 0; i <= m_control->selectedIndex; ++i) {
++                    if (ItemAt(i)->IsEnabled())
++                        BPopUpMenu::KeyDown(&down, 1);
++                }
++            }
++            BPopUpMenu::KeyDown(bytes, count);
++        }
++
++        void DetachedFromWindow() override
++        {
++            {
++                std::lock_guard lock(m_control->mutex);
++                m_control->target = { };
++            }
++            BPopUpMenu::DetachedFromWindow();
++        }
++
++    private:
++        const std::shared_ptr<Control> m_control;
++    };
++
++    const std::shared_ptr<Control> m_control;
++    bool m_started { false };
++    inline static std::atomic<size_t> s_activeCount { 0 };
 +};
 +
 +} // namespace WebKit
@@ -24834,6 +27684,183 @@ index 0000000000000000000000000000000000000000..e7c42ca1941d19f335fa815dda752aae
 +}
 +
 +}
+diff --git a/Source/WebKit/UIProcess/haiku/WebPopupMenuProxyHaiku.cpp b/Source/WebKit/UIProcess/haiku/WebPopupMenuProxyHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..ee2a1d04d7c36f43434901d2d2ded8ba94bac619
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/WebPopupMenuProxyHaiku.cpp
+@@ -0,0 +1,128 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#include "config.h"
++#include "WebPopupMenuProxyHaiku.h"
++
++#include "NativeSelectPopupHaiku.h"
++#include "WebPopupItem.h"
++#include "WebViewStateHaiku.h"
++#include <WebCore/IntRect.h>
++#include <cmath>
++#include <wtf/Function.h>
++#include <wtf/RunLoop.h>
++#include <wtf/text/CString.h>
++
++namespace WebKit {
++
++struct WebPopupMenuProxyHaiku::CompletionState {
++    // Accessed only by application-thread callbacks. Native workers retain the
++    // state but never inspect the function or reference the proxy/client.
++    Function<void(int32_t)> callback;
++    std::atomic<bool> cancelled { false };
++};
++
++WebPopupMenuProxyHaiku::WebPopupMenuProxyHaiku(std::shared_ptr<WebViewStateHaiku> state, Client& client)
++    : WebPopupMenuProxy(client), m_viewState(std::move(state))
++{
++    ASSERT(RunLoop::isMain());
++}
++
++WebPopupMenuProxyHaiku::~WebPopupMenuProxyHaiku()
++{
++    ASSERT(RunLoop::isMain());
++    if (m_completion) {
++        m_completion->cancelled = true;
++        m_completion->callback = nullptr;
++    }
++    // The native owner cancels and releases immediately; its worker owns all
++    // remaining menu data until tracking has finished.
++}
++
++void WebPopupMenuProxyHaiku::showPopupMenu(const WebCore::IntRect& rect, WebCore::TextDirection direction, double pageScaleFactor, const Vector<WebPopupItem>& items, const PlatformPopupMenuData&, int32_t selectedIndex)
++{
++    ASSERT(RunLoop::isMain());
++    hidePopupMenu();
++    m_completed = false;
++    auto state = m_viewState.lock();
++    if (!state || state->closed || items.isEmpty() || !std::isfinite(pageScaleFactor) || pageScaleFactor <= 0) {
++        didComplete(-1);
++        return;
++    }
++    WebViewGeometryHaiku geometry;
++    {
++        std::lock_guard lock(state->mutex);
++        geometry = state->geometry;
++    }
++    if (!geometry.attached || !geometry.visible) {
++        didComplete(-1);
++        return;
++    }
++
++    // Haiku uses the desktop RenderListBox for multiple/size>1 selects. This
++    // upstream popup interface carries one selected list index, not a set.
++    std::vector<NativeSelectPopupHaiku::Item> nativeItems;
++    nativeItems.reserve(items.size());
++    for (const auto& item : items) {
++        auto text = item.m_text.utf8();
++        std::string label;
++        if (text.length())
++            label.assign(text.legacyCStringPointer(), text.length());
++        nativeItems.push_back({ std::move(label), item.m_isEnabled, item.m_isLabel, item.m_type == WebPopupItem::Type::Separator });
++    }
++    BRect anchor(geometry.screenOrigin.x() + rect.x() * pageScaleFactor,
++        geometry.screenOrigin.y() + rect.y() * pageScaleFactor,
++        geometry.screenOrigin.x() + (static_cast<double>(rect.x()) + rect.width()) * pageScaleFactor - 1,
++        geometry.screenOrigin.y() + (static_cast<double>(rect.y()) + rect.height()) * pageScaleFactor - 1);
++    if (!std::isfinite(anchor.left) || !std::isfinite(anchor.top)
++        || !std::isfinite(anchor.right) || !std::isfinite(anchor.bottom) || !anchor.IsValid()) {
++        didComplete(-1);
++        return;
++    }
++
++    m_completion = std::make_shared<CompletionState>();
++    m_completion->callback = [this](int32_t index) { didComplete(index); };
++    m_native = std::make_unique<NativeSelectPopupHaiku>(std::move(nativeItems), anchor, direction == WebCore::TextDirection::RTL, selectedIndex,
++        [completion = m_completion](int32_t index) {
++            if (completion->cancelled)
++                return;
++            RunLoop::mainSingleton().dispatch([completion, index] {
++                if (auto callback = std::exchange(completion->callback, nullptr))
++                    callback(index);
++            });
++        });
++    if (m_native->start() != B_OK)
++        didComplete(-1);
++}
++
++void WebPopupMenuProxyHaiku::didComplete(int32_t index)
++{
++    ASSERT(RunLoop::isMain());
++    if (std::exchange(m_completed, true))
++        return;
++    Ref protectedThis { *this };
++    if (m_completion) {
++        m_completion->cancelled = true;
++        m_completion->callback = nullptr;
++    }
++    m_native.reset();
++    auto state = m_viewState.lock();
++    if (!state || state->closed)
++        return;
++    if (CheckedPtr client = this->client())
++        client->valueChangedForPopupMenu(this, index);
++}
++
++void WebPopupMenuProxyHaiku::hidePopupMenu()
++{
++    ASSERT(RunLoop::isMain());
++    didComplete(-1);
++}
++
++void WebPopupMenuProxyHaiku::cancelTracking()
++{
++    ASSERT(RunLoop::isMain());
++    invalidate();
++    hidePopupMenu();
++}
++
++} // namespace WebKit
+diff --git a/Source/WebKit/UIProcess/haiku/WebPopupMenuProxyHaiku.h b/Source/WebKit/UIProcess/haiku/WebPopupMenuProxyHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..f679ac20d3fece4819bff4d4c5d9d61f27fbec0e
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/WebPopupMenuProxyHaiku.h
+@@ -0,0 +1,37 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#pragma once
++
++#include "WebPopupMenuProxy.h"
++#include <memory>
++#include <wtf/Ref.h>
++
++namespace WebKit {
++
++class NativeSelectPopupHaiku;
++struct WebViewStateHaiku;
++
++class WebPopupMenuProxyHaiku final : public WebPopupMenuProxy {
++public:
++    static Ref<WebPopupMenuProxyHaiku> create(std::shared_ptr<WebViewStateHaiku> state, Client& client)
++    {
++        return adoptRef(*new WebPopupMenuProxyHaiku(std::move(state), client));
++    }
++    ~WebPopupMenuProxyHaiku() override;
++
++    void showPopupMenu(const WebCore::IntRect&, WebCore::TextDirection, double pageScaleFactor, const Vector<WebPopupItem>&, const PlatformPopupMenuData&, int32_t selectedIndex) override;
++    void hidePopupMenu() override;
++    void cancelTracking() override;
++
++private:
++    WebPopupMenuProxyHaiku(std::shared_ptr<WebViewStateHaiku>, Client&);
++    void didComplete(int32_t);
++
++    struct CompletionState;
++    const std::weak_ptr<WebViewStateHaiku> m_viewState;
++    std::shared_ptr<CompletionState> m_completion;
++    std::unique_ptr<NativeSelectPopupHaiku> m_native;
++    bool m_completed { true };
++};
++
++} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebProcessPoolHaiku.cpp b/Source/WebKit/UIProcess/haiku/WebProcessPoolHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc96045acdb999
@@ -24899,10 +27926,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..70aa4c610358a30dde3afb430c85906c703acad9
+index 0000000000000000000000000000000000000000..a7194fd67b82d1dc79ab6c51bf13e4d50041307e
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,341 @@
+@@ -0,0 +1,804 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -24931,9 +27958,15 @@ index 0000000000000000000000000000000000000000..70aa4c610358a30dde3afb430c85906c
 +#include "config.h"
 +#include "WebViewPrivate.h"
 +
++#include "APIFrameInfo.h"
++#include "APINavigationAction.h"
++#include "APINavigationClient.h"
 +#include "APIPageConfiguration.h"
 +#include "APINavigation.h"
++#include "APIUIClient.h"
 +#include "DrawingAreaProxyHaiku.h"
++#include "FrameInfoData.h"
++#include "JavaScriptDialogHaiku.h"
 +#include "NativeWebKeyboardEvent.h"
 +#include "NativeWebMouseEvent.h"
 +#include "NativeWebWheelEvent.h"
@@ -24944,22 +27977,321 @@ index 0000000000000000000000000000000000000000..70aa4c610358a30dde3afb430c85906c
 +#include "WebContextMenuProxy.h"
 +#include "WebDataListSuggestionsDropdown.h"
 +#include "WebDateTimePicker.h"
++#include "WebFindOptions.h"
 +#include "WebKitView.h"
 +#include "WebPopupMenuProxy.h"
++#include "WebPopupMenuProxyHaiku.h"
 +#include "WebPreferences.h"
 +#include "WebProcessPool.h"
++#include "WebViewContextHaiku.h"
 +#include <WebCore/Cursor.h>
 +#include <WebCore/DOMPasteAccess.h>
 +#include <WebCore/ResourceRequest.h>
 +#include <wtf/RunLoop.h>
 +#include <wtf/TZoneMallocInlines.h>
 +#include <wtf/text/CString.h>
++#include <cmath>
 +#include <utility>
 +
 +namespace WebKit {
 +using namespace WebCore;
 +
 +WTF_MAKE_TZONE_ALLOCATED_IMPL(WebView);
++
++template<typename Completion> static JavaScriptDialogRequestsHaiku::Completion dialogCompletionOnMainHaiku(Completion&& completion)
++{
++    auto callback = std::make_shared<std::decay_t<Completion>>(std::forward<Completion>(completion));
++    return [callback = std::move(callback)](bool accepted, std::string value) mutable {
++        RunLoop::mainSingleton().dispatch([callback = std::move(callback), accepted, value = std::move(value)] {
++            (*callback)(accepted, value);
++        });
++    };
++}
++
++static void sendCloseNotificationHaiku(std::weak_ptr<WebViewStateHaiku> weakState, BMessage message,
++    uint64_t generation, bool isPrompt, Function<void(bool)>&& completion)
++{
++    ASSERT(RunLoop::isMain());
++    auto state = weakState.lock();
++    if (!state || state->closed || state->closeRequestGeneration != generation
++        || (isPrompt && (!state->closeRequestPending || state->closeDecisionInFlight))) {
++        completion(false);
++        return;
++    }
++    BMessenger view;
++    if (message.FindMessenger("view", &view) != B_OK || !view.IsValid()) {
++        completion(false);
++        return;
++    }
++    bool matchesView;
++    {
++        std::lock_guard guard(state->mutex);
++        matchesView = state->view == view;
++    }
++    if (!matchesView) {
++        completion(false);
++        return;
++    }
++    auto result = state->target.SendMessage(&message, static_cast<BHandler*>(nullptr), 0);
++    if (result == B_WOULD_BLOCK || result == B_TIMED_OUT) {
++        RunLoop::mainSingleton().dispatchAfter(10_ms,
++            [weakState, message = std::move(message), generation, isPrompt, completion = WTF::move(completion)]() mutable {
++                sendCloseNotificationHaiku(weakState, std::move(message), generation, isPrompt, WTF::move(completion));
++            });
++        return;
++    }
++    completion(result == B_OK);
++}
++
++static void navigationChangedHaiku(const std::shared_ptr<WebViewStateHaiku>& state)
++{
++    ASSERT(RunLoop::isMain());
++    if (state->closed)
++        return;
++    ++state->navigationGeneration;
++    if (state->closeRequestApproved || state->closeRequestPending) {
++        state->closeApprovalInvalidated = true;
++        state->closeRequestApproved = false;
++        if (RefPtr client = state->client)
++            client->notifyState();
++    }
++}
++
++static bool closeApprovalMatchesNavigationHaiku(const WebViewStateHaiku& state)
++{
++    return !state.closeApprovalInvalidated
++        && state.closeNavigationGeneration == state.navigationGeneration
++        && state.closeDocumentIdentifier == state.documentIdentifier;
++}
++
++static void notifyCloseDecisionHaiku(const std::shared_ptr<WebViewStateHaiku>& state, bool approved)
++{
++    ASSERT(RunLoop::isMain());
++    if (state->closed || state->closeRequestApproved || state->closeDecisionInFlight
++        || (!approved && !state->closeRequestPending))
++        return;
++    if (!state->closeRequestPending) {
++        ++state->closeRequestGeneration;
++        state->closeApprovalInvalidated = false;
++        state->closeNavigationGeneration = state->navigationGeneration;
++        state->closeDocumentIdentifier = state->documentIdentifier;
++    }
++    approved = approved && closeApprovalMatchesNavigationHaiku(*state);
++    state->closeRequestPending = true;
++    state->closeDecisionInFlight = true;
++    BMessage message(approved ? B_WEBKIT_CLOSE_REQUESTED : B_WEBKIT_CLOSE_CANCELLED);
++    {
++        std::lock_guard guard(state->mutex);
++        message.AddMessenger("view", state->view);
++    }
++    std::weak_ptr weakState { state };
++    auto generation = state->closeRequestGeneration;
++    sendCloseNotificationHaiku(weakState, std::move(message), generation, false,
++        [weakState, generation, approved](bool delivered) {
++            if (auto state = weakState.lock(); state && state->closeRequestGeneration == generation) {
++                state->closeDecisionInFlight = false;
++                state->closeRequestPending = false;
++                state->closeRequestApproved = delivered && approved && closeApprovalMatchesNavigationHaiku(*state);
++            }
++        });
++}
++
++class CloseNavigationClientHaiku final : public API::NavigationClient {
++    WTF_MAKE_TZONE_ALLOCATED_INLINE(CloseNavigationClientHaiku);
++public:
++    explicit CloseNavigationClientHaiku(std::weak_ptr<WebViewStateHaiku> state) : m_state(std::move(state)) { }
++
++    void decidePolicyForNavigationAction(WebPageProxy&, Ref<API::NavigationAction>&& action, Ref<WebFramePolicyListenerProxy>&& listener) override
++    {
++        if (auto state = m_state.lock(); state && action->targetFrame() && action->targetFrame()->isMainFrame())
++            navigationChangedHaiku(state);
++        listener->use();
++    }
++
++    void didStartProvisionalNavigation(WebPageProxy&, const ResourceRequest&, API::Navigation*, API::Object*) override
++    {
++        if (auto state = m_state.lock())
++            navigationChangedHaiku(state);
++    }
++
++    void didCommitLoadForFrame(WebPageProxy&, ResourceRequest&&, FrameInfoData&& frame) override
++    {
++        if (!frame.isMainFrame)
++            return;
++        if (auto state = m_state.lock()) {
++            state->documentIdentifier = frame.documentID ? std::optional { *frame.documentID } : std::nullopt;
++            navigationChangedHaiku(state);
++        }
++    }
++
++    void didSameDocumentNavigation(WebPageProxy&, API::Navigation*, SameDocumentNavigationType, API::Object*) override
++    {
++        if (auto state = m_state.lock())
++            navigationChangedHaiku(state);
++    }
++
++private:
++    const std::weak_ptr<WebViewStateHaiku> m_state;
++};
++
++class JavaScriptUIClientHaiku final : public API::UIClient {
++    WTF_MAKE_TZONE_ALLOCATED_INLINE(JavaScriptUIClientHaiku);
++public:
++    explicit JavaScriptUIClientHaiku(std::weak_ptr<WebViewStateHaiku> state) : m_state(std::move(state)) { }
++
++    void runJavaScriptAlert(WebPageProxy&, const String& message, WebFrameProxy*, FrameInfoData&& frame, Function<void()>&& completion) override
++    {
++        show(JavaScriptDialogKindHaiku::Alert, message, { }, frame, dialogCompletionOnMainHaiku(
++            [completion = WTF::move(completion)](bool, const std::string&) { completion(); }));
++    }
++
++    void runJavaScriptConfirm(WebPageProxy&, const String& message, WebFrameProxy*, FrameInfoData&& frame, Function<void(bool)>&& completion) override
++    {
++        show(JavaScriptDialogKindHaiku::Confirm, message, { }, frame, dialogCompletionOnMainHaiku(
++            [completion = WTF::move(completion)](bool accepted, const std::string&) { completion(accepted); }));
++    }
++
++    void runJavaScriptPrompt(WebPageProxy&, const String& message, const String& defaultValue, WebFrameProxy*, FrameInfoData&& frame, Function<void(const String&)>&& completion) override
++    {
++        show(JavaScriptDialogKindHaiku::Prompt, message, defaultValue, frame, dialogCompletionOnMainHaiku(
++            [completion = WTF::move(completion)](bool accepted, const std::string& value) {
++                completion(accepted ? String::fromUTF8WithLatin1Fallback(std::span<const char> { value.data(), value.size() }) : String());
++            }));
++    }
++
++    void close(WebPageProxy*) override
++    {
++        if (auto state = m_state.lock())
++            notifyCloseDecisionHaiku(state, true);
++    }
++
++    void didCancelClose(WebPageProxy*) override
++    {
++        if (auto state = m_state.lock())
++            notifyCloseDecisionHaiku(state, false);
++    }
++
++    void didExplicitOpen(WebPageProxy*) override
++    {
++        if (auto state = m_state.lock())
++            navigationChangedHaiku(state);
++    }
++
++    bool canRunBeforeUnloadConfirmPanel() const override { return true; }
++
++    void runBeforeUnloadConfirmPanel(WebPageProxy&, String&& message, WebFrameProxy*, FrameInfoData&& frame, Function<void(bool)>&& completion) override
++    {
++        show(JavaScriptDialogKindHaiku::BeforeUnload, message, { }, frame, dialogCompletionOnMainHaiku(
++            [completion = WTF::move(completion)](bool accepted, const std::string&) { completion(accepted); }));
++    }
++
++private:
++    static status_t addText(BMessage& message, const char* name, const String& text)
++    {
++        auto utf8 = text.utf8();
++        // Retain embedded NULs as well as an accepted empty prompt value.
++        return message.AddData(name, B_RAW_TYPE, utf8.data() ? reinterpret_cast<const char*>(utf8.data()) : "", utf8.length() + 1);
++    }
++
++    void show(JavaScriptDialogKindHaiku kind, const String& text, const String& defaultValue,
++        const FrameInfoData& frame, JavaScriptDialogRequestsHaiku::Completion completion)
++    {
++        auto state = m_state.lock();
++        if (!state || state->closed) {
++            completion(false, { });
++            return;
++        }
++        uint64 identifier = state->dialogs->add(std::move(completion));
++        if (!identifier)
++            return;
++        BMessage message(javaScriptDialogShowHaiku);
++        BMessenger view;
++        {
++            std::lock_guard guard(state->mutex);
++            view = state->view;
++        }
++        String origin = frame.securityOrigin.isOpaque() ? "Opaque origin"_s : frame.securityOrigin.toString();
++        String topOrigin = frame.topOrigin.isOpaque() ? "Opaque origin"_s : frame.topOrigin.toString();
++        if (message.AddUInt64("identifier", identifier) != B_OK
++            || message.AddInt32("kind", static_cast<int32>(kind)) != B_OK
++            || addText(message, "origin", origin) != B_OK
++            || addText(message, "topOrigin", origin == topOrigin ? emptyString() : topOrigin) != B_OK
++            || addText(message, "message", text) != B_OK
++            || addText(message, "defaultValue", defaultValue) != B_OK) {
++            state->dialogs->complete(identifier, false);
++            return;
++        }
++        if (kind == JavaScriptDialogKindHaiku::BeforeUnload && state->closeRequestPending) {
++            // The browser window and its view share a looper. Announce the real
++            // beforeunload request first so a hidden tab can become visible
++            // before the queued native dialog is considered for display.
++            BMessage prompt(B_WEBKIT_CLOSE_PROMPT);
++            if (prompt.AddMessenger("view", view) != B_OK) {
++                state->dialogs->complete(identifier, false);
++                return;
++            }
++            std::weak_ptr weakState { state };
++            sendCloseNotificationHaiku(weakState, std::move(prompt), state->closeRequestGeneration, true,
++                [weakState, view, message = std::move(message), identifier](bool delivered) mutable {
++                    if (auto state = weakState.lock()) {
++                        if (!delivered || state->closed || !state->dialogs->contains(identifier)
++                            || view.SendMessage(&message, static_cast<BHandler*>(nullptr), 0) != B_OK)
++                            state->dialogs->complete(identifier, false);
++                    }
++                });
++            return;
++        }
++        if (view.SendMessage(&message, static_cast<BHandler*>(nullptr), 0) != B_OK)
++            state->dialogs->complete(identifier, false);
++    }
++
++    const std::weak_ptr<WebViewStateHaiku> m_state;
++};
++
++static void sendCloseCommitResultHaiku(BMessenger target, BMessage message)
++{
++    if (!target.IsValid())
++        return;
++    auto result = target.SendMessage(&message, static_cast<BHandler*>(nullptr), 0);
++    if (result == B_WOULD_BLOCK || result == B_TIMED_OUT) {
++        RunLoop::mainSingleton().dispatchAfter(10_ms, [target, message = std::move(message)]() mutable {
++            sendCloseCommitResultHaiku(target, std::move(message));
++        });
++    }
++}
++
++void commitViewCloseHaiku(std::vector<std::shared_ptr<WebViewStateHaiku>> states, BMessenger target, uint64_t identifier)
++{
++    ASSERT(RunLoop::isMain());
++    bool approved = target.IsValid();
++    for (const auto& state : states) {
++        if (!state || state->closed || state->closeRequestPending || state->closeDecisionInFlight
++            || (state->client && (!state->closeRequestApproved || !closeApprovalMatchesNavigationHaiku(*state)))) {
++            approved = false;
++            break;
++        }
++    }
++    // No main-loop turn occurs between validating the complete set and closing
++    // its engine pages. Later navigation IPC cannot replace a closed proxy.
++    if (approved) {
++        for (const auto& state : states) {
++            state->closed = true;
++            state->dialogs->cancelAll(true);
++            state->presenter.close();
++            if (RefPtr client = state->client)
++                client->close();
++        }
++    }
++    BMessage result(B_WEBKIT_CLOSE_COMMITTED);
++    result.AddUInt64("identifier", identifier);
++    result.AddBool("closed", approved);
++    sendCloseCommitResultHaiku(target, std::move(result));
++}
++
++WebViewStateHaiku::WebViewStateHaiku(BMessenger target)
++    : target(target)
++{
++}
 +
 +WebViewStateHaiku::~WebViewStateHaiku()
 +{
@@ -24991,12 +28323,30 @@ index 0000000000000000000000000000000000000000..70aa4c610358a30dde3afb430c85906c
 +void WebView::initialize()
 +{
 +    ASSERT(RunLoop::isMain());
++    if (!m_state->context) {
++        status_t status;
++        m_state->context = WebViewContextHaiku::defaultContext(status);
++        if (!m_state->context) {
++            m_state->status = status;
++            BMessage message(B_WEBKIT_PROCESS_EXITED);
++            message.AddInt32("error", status);
++            {
++                std::lock_guard guard(m_state->mutex);
++                message.AddMessenger("view", m_state->view);
++            }
++            m_state->target.SendMessage(&message, static_cast<BHandler*>(nullptr), 0);
++            return;
++        }
++    }
 +    auto configuration = API::PageConfiguration::create();
++    m_state->context->configure(configuration);
 +    configuration->preferences().setAcceleratedCompositingEnabled(false);
 +    configuration->preferences().setForceCompositingMode(false);
 +    configuration->preferences().setThreadedScrollingEnabled(false);
 +    auto& pool = configuration->processPool();
 +    m_page = pool.createWebPage(*this, WTF::move(configuration));
++    m_page->setUIClient(makeUnique<JavaScriptUIClientHaiku>(m_state));
++    m_page->setNavigationClient(makeUniqueRef<CloseNavigationClientHaiku>(m_state));
 +    auto& pageConfiguration = m_page->configuration();
 +    m_page->initializeWebPage(pageConfiguration.openedSite(), pageConfiguration.initialSandboxFlags(), pageConfiguration.initialReferrerPolicy());
 +    m_page->setIntrinsicDeviceScaleFactor(1);
@@ -25028,6 +28378,9 @@ index 0000000000000000000000000000000000000000..70aa4c610358a30dde3afb430c85906c
 +{
 +    ASSERT(RunLoop::isMain());
 +    Ref protectedThis { *this };
++    m_state->dialogs->cancelAll(true);
++    BMessage dismissDialogs(javaScriptDialogsCancelHaiku);
++    sendToView(dismissDialogs);
 +    m_state->presenter.close();
 +    if (m_presentationCallback)
 +        std::exchange(m_presentationCallback, { })();
@@ -25067,6 +28420,9 @@ index 0000000000000000000000000000000000000000..70aa4c610358a30dde3afb430c85906c
 +    message.AddDouble("progress", state.estimatedProgress());
 +    message.AddBool("canGoBack", state.canGoBack());
 +    message.AddBool("canGoForward", state.canGoForward());
++    message.AddDouble("pageZoom", m_page->pageZoomFactor());
++    message.AddDouble("textZoom", m_page->textZoomFactor());
++    message.AddBool("closeApprovalInvalidated", m_state->closeApprovalInvalidated);
 +    {
 +        std::lock_guard guard(m_state->mutex);
 +        message.AddMessenger("view", m_state->view);
@@ -25076,19 +28432,139 @@ index 0000000000000000000000000000000000000000..70aa4c610358a30dde3afb430c85906c
 +
 +void WebView::handleMessage(const BMessage& message)
 +{
++    if (message.what == viewResetCloseHaiku) {
++        if (!m_state->closeRequestPending && !m_state->closeDecisionInFlight) {
++            m_state->closeRequestApproved = false;
++            m_state->closeApprovalInvalidated = false;
++            ++m_state->closeRequestGeneration;
++        }
++        return;
++    }
++    if (message.what == viewRequestCloseHaiku) {
++        if (m_state->closeRequestPending || m_state->closeRequestApproved)
++            return;
++        // Stop an existing load before the ordered TryClose IPC assesses the
++        // current document. Failed/stalled loads must not trap the close path.
++        // A new observed navigation after this point still invalidates it.
++        if (m_page && m_page->pageLoadState().isLoading())
++            m_page->stopLoading();
++        m_state->closeRequestPending = true;
++        m_state->closeApprovalInvalidated = false;
++        m_state->closeNavigationGeneration = m_state->navigationGeneration;
++        m_state->closeDocumentIdentifier = m_state->documentIdentifier;
++        ++m_state->closeRequestGeneration;
++        if (!m_page || m_page->tryClose())
++            notifyCloseDecisionHaiku(m_state, true);
++        return;
++    }
 +    if (!m_page)
 +        return;
 +    switch (message.what) {
 +    case viewLoadHaiku: {
 +        URL url { String::fromUTF8(message.FindString("url")) };
-+        if (url.isValid())
++        if (url.isValid()) {
++            navigationChangedHaiku(m_state);
 +            m_page->loadRequest(ResourceRequest(WTF::move(url)));
++        }
 +        break;
 +    }
-+    case viewBackHaiku: m_page->goBack(); break;
-+    case viewForwardHaiku: m_page->goForward(); break;
-+    case viewReloadHaiku: m_page->reload({ }); break;
++    case viewBackHaiku:
++        if (m_page->pageLoadState().canGoBack()) { navigationChangedHaiku(m_state); m_page->goBack(); }
++        break;
++    case viewForwardHaiku:
++        if (m_page->pageLoadState().canGoForward()) { navigationChangedHaiku(m_state); m_page->goForward(); }
++        break;
++    case viewReloadHaiku: navigationChangedHaiku(m_state); m_page->reload({ }); break;
 +    case viewStopHaiku: m_page->stopLoading(); break;
++    case viewEditHaiku: {
++        uint32 command;
++        if (message.FindUInt32("command", &command) != B_OK)
++            break;
++        String name;
++        switch (command) {
++        case B_CUT: name = "Cut"_s; break;
++        case B_COPY: name = "Copy"_s; break;
++        case B_PASTE: name = "Paste"_s; break;
++        case B_SELECT_ALL: name = "SelectAll"_s; break;
++        case B_UNDO: name = "Undo"_s; break;
++        case B_REDO: name = "Redo"_s; break;
++        default: break;
++        }
++        if (!name.isNull())
++            m_page->executeEditCommand(name);
++        break;
++    }
++    case viewZoomHaiku: {
++        int32 direction;
++        bool textOnly;
++        if (message.FindInt32("direction", &direction) != B_OK
++            || message.FindBool("textOnly", &textOnly) != B_OK
++            || direction < -1 || direction > 1)
++            break;
++        if (!direction)
++            m_page->setPageAndTextZoomFactors(1, 1);
++        else {
++            double current = textOnly ? m_page->textZoomFactor() : m_page->pageZoomFactor();
++            double next = direction > 0 ? current * 1.1 : current / 1.1;
++            if (std::isfinite(next) && next >= 0.5 && next <= 3) {
++                if (textOnly)
++                    m_page->setTextZoomFactor(next);
++                else
++                    m_page->setPageZoomFactor(next);
++            }
++        }
++        notifyState();
++        break;
++    }
++    case viewHideFindHaiku:
++        m_page->hideFindUI();
++        break;
++    case viewFindHaiku: {
++        uint64 identifier;
++        const char* bytes;
++        bool forward, caseSensitive, wrapSelection;
++        if (message.FindUInt64("identifier", &identifier) != B_OK
++            || message.FindString("query", &bytes) != B_OK
++            || message.FindBool("forward", &forward) != B_OK
++            || message.FindBool("caseSensitive", &caseSensitive) != B_OK
++            || message.FindBool("wrapSelection", &wrapSelection) != B_OK)
++            break;
++        String query = String::fromUTF8(bytes);
++        auto searchURL = m_page->pageLoadState().activeURL();
++        auto reply = [state = m_state, identifier, query, searchURL](bool found, status_t error = B_OK) {
++            if (state->closed || state->findRequestIdentifier != identifier)
++                return;
++            RefPtr client = state->client;
++            if (!client || !client->page() || client->page()->pageLoadState().activeURL() != searchURL)
++                return;
++            if (error == B_OK && !client->page()->hasRunningProcess())
++                error = B_NO_INIT;
++            BMessage result(B_WEBKIT_FIND_RESULT);
++            result.AddString("query", query.utf8().legacyCStringPointer());
++            result.AddUInt64("identifier", identifier);
++            result.AddInt32("error", error);
++            if (error == B_OK)
++                result.AddBool("found", found);
++            {
++                std::lock_guard guard(state->mutex);
++                result.AddMessenger("view", state->view);
++            }
++            state->target.SendMessage(&result, static_cast<BHandler*>(nullptr), 0);
++        };
++        if (query.isNull() || !m_page->hasRunningProcess()) {
++            reply(false, query.isNull() ? B_BAD_VALUE : B_NO_INIT);
++            break;
++        }
++        OptionSet<FindOptions> options { FindOptions::ShowHighlight };
++        if (!forward)
++            options.add(FindOptions::Backwards);
++        if (!caseSensitive)
++            options.add(FindOptions::CaseInsensitive);
++        if (wrapSelection)
++            options.add(FindOptions::WrapAround);
++        m_page->findString(query, options, 1000, [reply = WTF::move(reply)](bool found) { reply(found); });
++        break;
++    }
 +    case viewGeometryHaiku: updateGeometry(); break;
 +    case viewPresentedHaiku: {
 +        uint64 identifier = 0;
@@ -25168,10 +28644,20 @@ index 0000000000000000000000000000000000000000..70aa4c610358a30dde3afb430c85906c
 +
 +void WebView::processDidExit()
 +{
++    m_state->dialogs->cancelAll();
++    BMessage dismissDialogs(javaScriptDialogsCancelHaiku);
++    sendToView(dismissDialogs);
++    ++m_state->findRequestIdentifier;
 +    m_undoController.clearAllEditCommands();
 +    if (m_presentationCallback)
 +        std::exchange(m_presentationCallback, { })();
++    // A dead process has no replacement document whose unload needs checking.
++    m_state->closeApprovalInvalidated = false;
++    m_state->closeNavigationGeneration = m_state->navigationGeneration;
++    m_state->closeDocumentIdentifier = m_state->documentIdentifier;
 +    notifyState(B_WEBKIT_PROCESS_EXITED);
++    if (m_state->closeRequestPending)
++        notifyCloseDecisionHaiku(m_state, true);
 +}
 +
 +void WebView::didRelaunchProcess()
@@ -25208,12 +28694,16 @@ index 0000000000000000000000000000000000000000..70aa4c610358a30dde3afb430c85906c
 +void WebView::registerEditCommand(Ref<WebEditCommandProxy>&& command, UndoOrRedo kind) { m_undoController.registerEditCommand(WTF::move(command), kind); }
 +void WebView::clearAllEditCommands() { m_undoController.clearAllEditCommands(); }
 +bool WebView::canUndoRedo(UndoOrRedo kind) { return m_undoController.canUndoRedo(kind); }
-+void WebView::executeUndoRedo(UndoOrRedo kind) { m_undoController.executeUndoRedo(kind); }
++void WebView::executeUndoRedo(UndoOrRedo kind)
++{
++    if (m_undoController.canUndoRedo(kind))
++        m_undoController.executeUndoRedo(kind);
++}
 +IntPoint WebView::screenToRootView(const IntPoint& point) { return point - toIntSize(geometry().screenOrigin); }
 +IntPoint WebView::rootViewToScreen(const IntPoint& point) { return point + toIntSize(geometry().screenOrigin); }
 +IntRect WebView::rootViewToScreen(const IntRect& rect) { auto result = rect; result.move(toIntSize(geometry().screenOrigin)); return result; }
 +
-+RefPtr<WebPopupMenuProxy> WebView::createPopupMenuProxy(WebPageProxy&) { return nullptr; }
++RefPtr<WebPopupMenuProxy> WebView::createPopupMenuProxy(WebPageProxy& page) { return WebPopupMenuProxyHaiku::create(m_state, page.popupMenuClient()); }
 +RefPtr<WebColorPicker> WebView::createColorPicker(WebPageProxy&, const Color&, const IntRect&, ColorControlSupportsAlpha, Vector<Color>&&, std::optional<FrameIdentifier>) { return nullptr; }
 +RefPtr<WebDataListSuggestionsDropdown> WebView::createDataListSuggestionsDropdown(WebPageProxy&) { return nullptr; }
 +RefPtr<WebDateTimePicker> WebView::createDateTimePicker(WebPageProxy&) { return nullptr; }
@@ -25242,6 +28732,179 @@ index 0000000000000000000000000000000000000000..70aa4c610358a30dde3afb430c85906c
 +{
 +    callback(DOMPasteAccessResponse::DeniedForGesture);
 +}
++
++} // namespace WebKit
+diff --git a/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..65539a7ee10546d5f7598214227430b55379d931
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp
+@@ -0,0 +1,128 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#include "config.h"
++#include "WebViewContextHaiku.h"
++
++#include "APIPageConfiguration.h"
++#include "APIProcessPoolConfiguration.h"
++#include "StoragePathsHaiku.h"
++#include "WebsiteDataStore.h"
++#include "WebsiteDataStoreConfiguration.h"
++#include "WebProcessPool.h"
++#include <pal/SessionID.h>
++#include <wtf/FileSystem.h>
++#include <wtf/NeverDestroyed.h>
++#include <wtf/RunLoop.h>
++
++namespace WebKit {
++
++WebViewContextHaiku::WebViewContextHaiku(Ref<WebsiteDataStore>&& dataStore)
++    : m_dataStore(WTF::move(dataStore))
++    , m_processPool(WebProcessPool::create(API::ProcessPoolConfiguration::create()))
++{
++    ASSERT(RunLoop::isMain());
++}
++
++WebViewContextHaiku::~WebViewContextHaiku()
++{
++    ASSERT(RunLoop::isMain());
++}
++
++std::shared_ptr<WebViewContextHaiku> WebViewContextHaiku::adopt(Ref<WebsiteDataStore>&& dataStore)
++{
++    return { new WebViewContextHaiku(WTF::move(dataStore)), [](WebViewContextHaiku* context) {
++        if (RunLoop::isMain())
++            delete context;
++        else
++            RunLoop::mainSingleton().dispatch([context] { delete context; });
++    } };
++}
++
++std::shared_ptr<WebViewContextHaiku> WebViewContextHaiku::create(const char* profilePath, bool privateBrowsing, status_t& status)
++{
++    ASSERT(RunLoop::isMain());
++    status = B_OK;
++    if (privateBrowsing)
++        return adopt(WebsiteDataStore::createNonPersistent());
++
++    String requestedPath = String::fromUTF8(profilePath);
++    if (profilePath && (requestedPath.isEmpty() || !requestedPath.startsWith('/'))) {
++        status = B_BAD_VALUE;
++        return nullptr;
++    }
++    auto profile = storageDirectoryPathHaiku(false, requestedPath, emptyString(), true);
++    if (profile.isEmpty()) {
++        status = B_IO_ERROR;
++        return nullptr;
++    }
++    auto cache = storageDirectoryPathHaiku(true, profile, "Cache"_s, true);
++    auto data = storageDirectoryPathHaiku(false, profile, "Data"_s, true);
++    if (cache.isEmpty() || data.isEmpty()) {
++        status = B_IO_ERROR;
++        return nullptr;
++    }
++
++    // Use WebKit's complete directory initialization so new storage backends
++    // inherit these same profile roots. Curl's cookie path is not initialized
++    // by the common non-Cocoa implementation, so supply it explicitly.
++    auto configuration = WebsiteDataStoreConfiguration::createWithBaseDirectories(cache, data);
++    configuration->setCookieStorageFile(FileSystem::pathByAppendingComponent(data, "Cookies.db"_s));
++    configuration->setSearchFieldHistoryDirectory(storageDirectoryPathHaiku(false, data, "SearchFieldHistory"_s, true));
++    configuration->setEnhancedSecurityDirectory(storageDirectoryPathHaiku(false, data, "EnhancedSecurity"_s, true));
++    if (auto type = FileSystem::fileTypeFollowingSymlinks(configuration->cookieStorageFile()); type && *type != FileSystem::FileType::Regular) {
++        status = B_BAD_VALUE;
++        return nullptr;
++    }
++
++    const auto& paths = configuration->directories();
++    // Directory creation failure must not silently turn one backend into an
++    // in-memory store or cause it to fall back to another profile's defaults.
++    for (const auto* path : {
++        &paths.alternativeServicesDirectory, &paths.cacheStorageDirectory,
++        &paths.cookieStorageFile, &paths.deviceIdHashSaltsStorageDirectory,
++#if ENABLE(ENCRYPTED_MEDIA)
++        &paths.mediaKeysHashSaltsStorageDirectory,
++#endif
++        &paths.generalStorageDirectory, &paths.hstsStorageDirectory,
++        &paths.indexedDBDatabaseDirectory, &paths.isolatedSitesDirectory,
++        &paths.localStorageDirectory, &paths.mediaCacheDirectory,
++        &paths.mediaKeysStorageDirectory, &paths.networkCacheDirectory,
++        &paths.resourceLoadStatisticsDirectory, &paths.searchFieldHistoryDirectory,
++        &paths.serviceWorkerRegistrationDirectory, &paths.webSQLDatabaseDirectory,
++#if ENABLE(CONTENT_EXTENSIONS)
++        &paths.resourceMonitorThrottlerDirectory,
++#endif
++        &paths.enhancedSecurityDirectory,
++    }) {
++        if (path->isEmpty()) {
++            status = B_IO_ERROR;
++            return nullptr;
++        }
++    }
++    // JavaScriptConfiguration is a Cocoa-only configuration input. Its common
++    // Haiku default stays empty instead of enabling an unrelated configuration.
++    return adopt(WebsiteDataStore::create(WTF::move(configuration), PAL::SessionID::generatePersistentSessionID()));
++}
++
++std::shared_ptr<WebViewContextHaiku> WebViewContextHaiku::defaultContext(status_t& status)
++{
++    ASSERT(RunLoop::isMain());
++    static NeverDestroyed<std::weak_ptr<WebViewContextHaiku>> weakContext;
++    auto context = weakContext.get().lock();
++    if (context) {
++        status = B_OK;
++        return context;
++    }
++    context = create(nullptr, false, status);
++    weakContext.get() = context;
++    return context;
++}
++
++void WebViewContextHaiku::configure(API::PageConfiguration& configuration) const
++{
++    ASSERT(RunLoop::isMain());
++    configuration.setProcessPool(m_processPool.copyRef());
++    configuration.setWebsiteDataStore(m_dataStore.copyRef());
++}
++
++} // namespace WebKit
+diff --git a/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..01f2a2a46de0d011a4b84742b5774c3f402739ff
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h
+@@ -0,0 +1,33 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#pragma once
++
++#include <SupportDefs.h>
++#include <memory>
++#include <wtf/Ref.h>
++
++namespace API { class PageConfiguration; }
++
++namespace WebKit {
++
++class WebProcessPool;
++class WebsiteDataStore;
++
++// References to WebKit objects are created, inspected and released on the
++// application thread. The shared owner itself may travel across native loopers.
++class WebViewContextHaiku final {
++public:
++    static std::shared_ptr<WebViewContextHaiku> create(const char*, bool, status_t&);
++    static std::shared_ptr<WebViewContextHaiku> defaultContext(status_t&);
++    ~WebViewContextHaiku();
++    void configure(API::PageConfiguration&) const;
++
++private:
++    explicit WebViewContextHaiku(Ref<WebsiteDataStore>&&);
++    static std::shared_ptr<WebViewContextHaiku> adopt(Ref<WebsiteDataStore>&&);
++
++    const Ref<WebsiteDataStore> m_dataStore;
++    const Ref<WebProcessPool> m_processPool;
++};
 +
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewPrivate.h b/Source/WebKit/UIProcess/haiku/WebViewPrivate.h
@@ -25373,31 +29036,39 @@ index 0000000000000000000000000000000000000000..2cdcb470d8fc0e96b7b485eaaba1ab74
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..e9805f5f6165d17442b959ecb79b98798d3eacc1
+index 0000000000000000000000000000000000000000..08ef9fe65c09c650d9050bed2ebcacf91dad967b
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
-@@ -0,0 +1,51 @@
+@@ -0,0 +1,75 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
 +
 +#include "BitmapPresenterHaiku.h"
++#include "JavaScriptDialogRequestsHaiku.h"
 +#include <Messenger.h>
 +#include <WebCore/IntPoint.h>
++#include <WebCore/ScriptExecutionContextIdentifier.h>
 +#include <atomic>
 +#include <memory>
 +#include <mutex>
++#include <optional>
++#include <vector>
 +#include <wtf/RefPtr.h>
 +
 +namespace WebKit {
 +
 +class WebView;
++class WebViewContextHaiku;
 +
 +enum : uint32_t {
 +    viewFrameHaiku = 'wvfr', viewGeometryHaiku = 'wvge', viewInputHaiku = 'wvin',
 +    viewLoadHaiku = 'wvld', viewBackHaiku = 'wvba', viewForwardHaiku = 'wvfo',
 +    viewReloadHaiku = 'wvrl', viewStopHaiku = 'wvst', viewPresentedHaiku = 'wvpr',
-+    viewCursorHaiku = 'wvcu', viewTooltipHaiku = 'wvtt'
++    viewCursorHaiku = 'wvcu', viewTooltipHaiku = 'wvtt',
++    viewFindHaiku = 'wvfi', viewHideFindHaiku = 'wvhf',
++    viewZoomHaiku = 'wvzo', viewEditHaiku = 'wved', viewRequestCloseHaiku = 'wvcl',
++    viewResetCloseHaiku = 'wvcr', viewRetryCloseHaiku = 'wvrc'
 +};
 +
 +struct WebViewGeometryHaiku {
@@ -25411,7 +29082,7 @@ index 0000000000000000000000000000000000000000..e9805f5f6165d17442b959ecb79b9879
 +};
 +
 +struct WebViewStateHaiku {
-+    explicit WebViewStateHaiku(BMessenger target) : target(target) { }
++    explicit WebViewStateHaiku(BMessenger);
 +    ~WebViewStateHaiku();
 +
 +    std::mutex mutex;
@@ -25420,10 +29091,26 @@ index 0000000000000000000000000000000000000000..e9805f5f6165d17442b959ecb79b9879
 +    const BMessenger target;
 +    BitmapPresenterHaiku presenter;
 +    std::atomic<bool> closed { false };
++    std::atomic<status_t> status { B_NO_INIT };
++    std::atomic<uint64_t> findRequestIdentifier { 0 };
++    const std::shared_ptr<JavaScriptDialogRequestsHaiku> dialogs { std::make_shared<JavaScriptDialogRequestsHaiku>() };
++    std::shared_ptr<WebViewContextHaiku> context;
 +    // This reference is read, assigned and released only on the WebKit main
 +    // thread. Native windows retain the state without touching the client.
 +    RefPtr<WebView> client;
++    // These close-handshake flags are also confined to the WebKit main thread.
++    bool closeRequestPending { false };
++    bool closeRequestApproved { false };
++    bool closeDecisionInFlight { false };
++    uint64_t closeRequestGeneration { 0 };
++    uint64_t navigationGeneration { 0 };
++    uint64_t closeNavigationGeneration { 0 };
++    std::optional<WebCore::ScriptExecutionContextIdentifier> documentIdentifier;
++    std::optional<WebCore::ScriptExecutionContextIdentifier> closeDocumentIdentifier;
++    bool closeApprovalInvalidated { false };
 +};
++
++void commitViewCloseHaiku(std::vector<std::shared_ptr<WebViewStateHaiku>>, BMessenger, uint64_t);
 +
 +void dispatchViewMessageHaiku(std::shared_ptr<WebViewStateHaiku>, BMessage&&);
 +
@@ -25869,10 +29556,10 @@ index 48f9e1c5cff34a053ed104c3d2cfd3ac6e0a2bdc..a95170323c3bf858c0fe0610637c5bb0
          settings.setAcceleratedCompositingEnabled(true);
 diff --git a/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.cpp b/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..f835272faed13a2dd0b18978534ddf1b7e979e34
+index 0000000000000000000000000000000000000000..b02ae539b37a4831b77d094a4911cbaaff351d54
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.cpp
-@@ -0,0 +1,191 @@
+@@ -0,0 +1,193 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -25880,8 +29567,10 @@ index 0000000000000000000000000000000000000000..f835272faed13a2dd0b18978534ddf1b
 +
 +#include "BitmapFrameHaiku.h"
 +#include "DrawingAreaProxyMessages.h"
++#include "MessageSenderInlines.h"
 +#include "WebPage.h"
 +#include "WebPageCreationParameters.h"
++#include "WebPageInlines.h"
 +#include <WebCore/GraphicsContext.h>
 +#include <WebCore/Page.h>
 +#include <WebCore/ShareableBitmap.h>
@@ -26183,10 +29872,10 @@ index 0000000000000000000000000000000000000000..7459ce25f180160a1c12431c73926a1f
 +
 diff --git a/Source/WebKit/WebProcess/WebPage/haiku/WebPageHaiku.cpp b/Source/WebKit/WebProcess/WebPage/haiku/WebPageHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..76445761a1fc344aac38188ea83dad706202707d
+index 0000000000000000000000000000000000000000..2dba937436256e14115db78836472cfbba98946d
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/WebPage/haiku/WebPageHaiku.cpp
-@@ -0,0 +1,139 @@
+@@ -0,0 +1,140 @@
 +/*
 + * Copyright (C) 2014 Haiku, inc.
 + *
@@ -26224,6 +29913,7 @@ index 0000000000000000000000000000000000000000..76445761a1fc344aac38188ea83dad70
 +#include <WebCore/FocusController.h>
 +#include <WebCore/KeyboardEvent.h>
 +#include <WebCore/LocalFrame.h>
++#include <WebCore/LocalFrameInlines.h>
 +#include <WebCore/NotImplemented.h>
 +#include <WebCore/Page.h>
 +#include <WebCore/PlatformKeyboardEvent.h>
@@ -26336,10 +30026,10 @@ index 0000000000000000000000000000000000000000..6549d7f5c9eac54d993817a051d3965d
 +resource app_flags B_MULTIPLE_LAUNCH | B_BACKGROUND_APP;
 diff --git a/Source/WebKit/WebProcess/haiku/WebProcessHaiku.cpp b/Source/WebKit/WebProcess/haiku/WebProcessHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..cb755ba75b2a11cdec2f34533f2212aa40874212
+index 0000000000000000000000000000000000000000..d6ac95e6822fcbd1bf68ecd96a72244fe3bd9d2e
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/haiku/WebProcessHaiku.cpp
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,99 @@
 +/*
 + * Copyright (C) 2014,2019 Haiku, Inc.
 + *
@@ -26368,31 +30058,83 @@ index 0000000000000000000000000000000000000000..cb755ba75b2a11cdec2f34533f2212aa
 +#include "config.h"
 +#include "WebProcess.h"
 +
-+#include <WebCore/NotImplemented.h>
++#include "WebProcessCreationParameters.h"
++#include "WebProcessDataStoreParameters.h"
++#include <Application.h>
++#include <wtf/Assertions.h>
 +
 +namespace WebKit {
 +
++// The native app_server connection supplies fonts and drawing services.
++// Mach sandbox extensions and CoreText's static registry do not exist here.
++#if ENABLE(SANDBOX_EXTENSIONS) || HAVE(STATIC_FONT_REGISTRY)
++#error Haiku needs native registry and sandbox hook implementations before enabling these features.
++#endif
++
++void WebProcess::platformInitializeProcess(const AuxiliaryProcessInitializationParameters&)
++{
++    // WebProcessMainHaiku establishes this connection before WebKit starts.
++    // Native fonts, bitmaps and the main RunLoop require a valid BApplication
++    // owned by this thread; continuing without it cannot render a page.
++    RELEASE_ASSERT(be_app && be_app->InitCheck() == B_OK);
++    // BApplication::Thread() is not assigned until Run(), which follows this
++    // initialization. The creator must still own its initial looper lock.
++    RELEASE_ASSERT(be_app->LockingThread() == find_thread(nullptr));
++}
++
 +void WebProcess::platformInitializeWebProcess(WebProcessCreationParameters& parameters)
 +{
-+    notImplemented();
++    applyProcessCreationParameters(WTF::move(parameters.auxiliaryProcessParameters));
++}
++
++void WebProcess::platformSetWebsiteDataStoreParameters(WebProcessDataStoreParameters&& parameters)
++{
++    // The common caller installs the session and media storage settings before
++    // this hook, then connects to that session's NetworkProcess. Curl cookies,
++    // HSTS, caches and general website storage live in that process. Haiku has
++    // no additional native storage manager or sandbox grants to configure here.
++    RELEASE_ASSERT(m_sessionID && *m_sessionID == parameters.sessionID);
 +}
 +
 +void WebProcess::platformTerminate()
 +{
++    // WebProcessMainHaiku owns the BApplication through the native event loop.
 +}
 +
-+void WebProcess::platformSetCacheModel(CacheModel cacheModel)
++void WebProcess::platformSetCacheModel(CacheModel)
 +{
-+    notImplemented();
++    // Common WebProcess::setCacheModel configures MemoryCache and the back /
++    // forward cache; the NetworkProcess separately owns Curl's disk cache.
 +}
 +
++void WebProcess::grantAccessToAssetServices(Vector<SandboxExtensionHandle>&& handles)
++{
++    // This shared IPC hook grants access to Cocoa asset services. The Haiku UI
++    // process never sends such handles, and app_server requires no such grant.
++    RELEASE_ASSERT(handles.isEmpty());
 +}
++
++void WebProcess::revokeAccessToAssetServices()
++{
++    RELEASE_ASSERT(m_assetServicesExtensions.isEmpty());
++}
++
++#if !ENABLE(REMOVE_XPC_AND_MACH_SANDBOX_EXTENSIONS_IN_WEBCONTENT)
++void WebProcess::switchFromStaticFontRegistryToUserFontRegistry(Vector<SandboxExtensionHandle>&& handles)
++{
++    // BApplication already exposes app_server's installed fonts to FontCache;
++    // there is no separate static registry or fontd Mach connection to switch.
++    RELEASE_ASSERT(handles.isEmpty());
++}
++#endif
++
++} // namespace WebKit
 diff --git a/Source/WebKit/WebProcess/haiku/WebProcessMainHaiku.cpp b/Source/WebKit/WebProcess/haiku/WebProcessMainHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..2dc7dff075a853b0eec696bf1a3e546d948bd3e5
+index 0000000000000000000000000000000000000000..dd4a4800c1febf9588a2d462293221327be1dc30
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/haiku/WebProcessMainHaiku.cpp
-@@ -0,0 +1,61 @@
+@@ -0,0 +1,70 @@
 +/*
 + * Copyright 2014,2019 Haiku, Inc.
 + *
@@ -26425,6 +30167,8 @@ index 0000000000000000000000000000000000000000..2dc7dff075a853b0eec696bf1a3e546d
 +#include "WebProcess.h"
 +
 +#include <Application.h>
++#include <cstdio>
++#include <cstring>
 +namespace WebKit {
 +using namespace WebCore;
 +
@@ -26432,8 +30176,15 @@ index 0000000000000000000000000000000000000000..2dc7dff075a853b0eec696bf1a3e546d
 +public:
 +    bool platformInitialize() override
 +    {
-+        m_application = std::make_unique<BApplication>("application/x-vnd.haiku-webkit.webprocess");
-+        return m_application->InitCheck() == B_OK;
++        // The one-argument constructor exits with status zero on failure,
++        // preventing the auxiliary process entry point from reporting it.
++        status_t status;
++        m_application = std::make_unique<BApplication>("application/x-vnd.haiku-webkit.webprocess", &status);
++        if (status != B_OK) {
++            std::fprintf(stderr, "WebProcess: cannot initialize native application: %s (%ld)\n", std::strerror(status), static_cast<long>(status));
++            return false;
++        }
++        return true;
 +    }
 +
 +    void platformRunEventLoop() override
@@ -26479,7 +30230,7 @@ index 612c526e87bc2f194ca6b757d70f28092ab63698..93d06fa18adefb4e22ae8e2ac1115e6a
 +endif ()
 diff --git a/Source/WebKitLegacy/PlatformHaiku.cmake b/Source/WebKitLegacy/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..25c07785b9a6858042e12bda1cca587680bb12a8
+index 0000000000000000000000000000000000000000..1560818194353c896baac742f695052efbb5cb17
 --- /dev/null
 +++ b/Source/WebKitLegacy/PlatformHaiku.cmake
 @@ -0,0 +1,151 @@
@@ -26584,9 +30335,9 @@ index 0000000000000000000000000000000000000000..25c07785b9a6858042e12bda1cca5876
 +    WebCoreSupport/WebSocketChannel.cpp
 +)
 +
-+# FIXME there is something not working right: WebCore should already depend on PAL and WTF, but
-+# it doesn't depend on WTF currently. So we have to add both explicitly here, in the right order
-+# since they are static libraries.
++# Preserve the order of the statically linked WebCore and PAL archives.
++# WTF and bmalloc come from shared JavaScriptCore through WebKitLegacy_FRAMEWORKS;
++# linking their OBJECT targets here would create another copy of their state.
 +LIST(APPEND WebKitLegacy_LIBRARIES
 +    ${LIBXML2_LIBRARIES}
 +    ${SQLITE_LIBRARIES}
@@ -26594,7 +30345,7 @@ index 0000000000000000000000000000000000000000..25c07785b9a6858042e12bda1cca5876
 +    ${JPEG_LIBRARY}
 +    ${CMAKE_DL_LIBS}
 +    be bnetapi GL shared translation tracker
-+    WebCore PAL WTF
++    WebCore PAL
 +)
 +
 +INSTALL(FILES
@@ -42285,10 +46036,10 @@ index 121e64b01bce34e387deacf3bbbca93adf0f59da..7926cd9c3edf141bc52f7db0253c37c0
  endif ()
 diff --git a/Source/cmake/OptionsHaiku.cmake b/Source/cmake/OptionsHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..83dcaa38ee35283ea40b3dd2b5b680b0de38ede6
+index 0000000000000000000000000000000000000000..e8f62225679aa09e92fa95460e2936ae273ccd18
 --- /dev/null
 +++ b/Source/cmake/OptionsHaiku.cmake
-@@ -0,0 +1,254 @@
+@@ -0,0 +1,258 @@
 +include(GNUInstallDirs)
 +include(VersioningUtils)
 +
@@ -42521,6 +46272,10 @@ index 0000000000000000000000000000000000000000..83dcaa38ee35283ea40b3dd2b5b680b0
 +    add_definitions(-DUSE_LEVELDB=1)
 +endif ()
 +
++# Shared JavaScriptCore owns WTF and bmalloc for all engine consumers. Include
++# every object so WTF APIs used only by WebCore or WebKit are exported too.
++set(bmalloc_LIBRARY_TYPE OBJECT)
++set(WTF_LIBRARY_TYPE OBJECT)
 +set(JavaScriptCore_LIBRARY_TYPE SHARED)
 +set(SHOULD_INSTALL_JS_SHELL ON)
 +

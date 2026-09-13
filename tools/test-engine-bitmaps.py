@@ -9,9 +9,10 @@ ENGINE = pathlib.Path('/boot/home/summit-webkit')
 BUILD = ENGINE / 'WebKitBuild/Release'
 OUTPUT = ROOT / 'build-bitmap-tests'
 (OUTPUT / 'WebCore').mkdir(exist_ok=True)
-forwarding_header = OUTPUT / 'WebCore/ShareableBitmap.h'
-if not forwarding_header.is_symlink():
-    forwarding_header.symlink_to('../ShareableBitmap.h')
+for name in ('ShareableBitmap.h', 'Icon.h'):
+    forwarding_header = OUTPUT / 'WebCore' / name
+    if not forwarding_header.is_symlink():
+        forwarding_header.symlink_to('../' + name)
 OBJECT = 'Source/WebCore/CMakeFiles/WebCore.dir/platform/graphics/haiku/ShareableBitmapHaiku.cpp.o'
 fields = {}
 with (BUILD / 'build.ninja').open() as stream:
@@ -30,7 +31,7 @@ flags = ['-I' + str(OUTPUT), '-iquote', str(OUTPUT), '-iquote', str(ENGINE / 'So
          *flags, '-ffunction-sections', '-fdata-sections', '-fvisibility=hidden',
          '-DWEBCORE_EXPORT=', '-fdiagnostics-color=never']
 objects = []
-for source in [OUTPUT / 'ShareableBitmap.cpp', OUTPUT / 'ShareableBitmapHaiku.cpp', OUTPUT / 'GraphicsContextHaiku.cpp', ROOT / 'tests/EngineBitmapTests.cpp']:
+for source in [OUTPUT / 'ShareableBitmap.cpp', OUTPUT / 'ShareableBitmapHaiku.cpp', OUTPUT / 'GraphicsContextHaiku.cpp', OUTPUT / 'IconHaiku.cpp', ROOT / 'tests/EngineBitmapTests.cpp']:
     target = OUTPUT / (source.stem + '.o')
     if subprocess.run(['c++', *flags, '-c', str(source), '-o', str(target)], cwd=BUILD).returncode:
         raise SystemExit('Native compilation failed: ' + source.name)

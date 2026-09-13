@@ -1,0 +1,62 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Summit native select fixture ready</title>
+<style>
+body { font: 16px system-ui; margin: 30px; background: #f5f7f2; color: #22352b }
+label { display: block; margin: 20px 0 }
+select { margin-left: 12px; min-width: 220px; font: inherit }
+pre { white-space: pre-wrap }
+</style>
+<h1>Native select popup verification</h1>
+<p>Select Omega, open the disabled selected value and press Escape, choose Option 0 in the long list,
+then select only B and D in the multiple list. Press Verify after all four actions.</p>
+<label>Single selection
+<select id="single">
+  <optgroup label="Enabled group"><option value="alpha">Alpha</option><option value="beta" selected>Beta</option></optgroup>
+  <hr><option value="disabled" disabled>Disabled option</option>
+  <optgroup label="Disabled group" disabled><option value="blocked">Blocked option</option></optgroup>
+  <option value="omega">Omega</option>
+</select></label>
+<label>Cancel with a disabled current selection
+<select id="cancel"><option>Enabled</option><option selected disabled>Disabled current value</option></select></label>
+<label>Long list (RTL placement)
+<select id="long" dir="rtl"></select></label>
+<label>Multiple selection (page list box)
+<select id="multiple" multiple size="4">
+  <option value="a" selected>A</option><option value="b">B</option>
+  <option value="c" selected>C</option><option value="d">D</option>
+</select></label>
+<button id="verify">Verify selections</button>
+<pre id="result">Waiting for native interaction.</pre>
+<script>
+const events = [];
+const longList = document.getElementById('long');
+for (let index = 0; index < 100; ++index)
+    longList.add(new Option('Option ' + index, String(index), index === 99, index === 99));
+for (const select of document.querySelectorAll('select')) {
+    for (const type of ['input', 'change'])
+        select.addEventListener(type, event => {
+            events.push({ id: select.id, type, value: select.value, trusted: event.isTrusted });
+            document.getElementById('result').textContent = JSON.stringify(events, null, 2);
+        });
+}
+let failed = false;
+document.getElementById('verify').addEventListener('click', () => {
+    const single = document.getElementById('single');
+    const multiple = document.getElementById('multiple');
+    const singleEvents = events.filter(event => event.id === 'single');
+    const checks = {
+        nativeSelection: single.value === 'omega',
+        exactlyOneInputAndChange: singleEvents.length === 2 && singleEvents[0].type === 'input'
+            && singleEvents[1].type === 'change' && singleEvents.every(event => event.trusted),
+        cancelledSelectionUnchanged: document.getElementById('cancel').selectedIndex === 1,
+        cancelProducedNoChange: !events.some(event => event.id === 'cancel'),
+        longListSelection: longList.value === '0',
+        multipleListSelection: Array.from(multiple.selectedOptions, option => option.value).join(',') === 'b,d',
+        multipleReceivedNativeInput: events.some(event => event.id === 'multiple' && event.trusted)
+    };
+    failed ||= Object.values(checks).some(value => !value);
+    document.title = 'Summit native select fixture ' + (failed ? 'FAIL' : 'PASS');
+    document.getElementById('result').textContent = JSON.stringify({ failed, checks, events }, null, 2);
+});
+</script>

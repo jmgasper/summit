@@ -215,6 +215,16 @@ are included in the resumed main engine build. Logs are `.vm/runloop-isolated.lo
 `.vm/runloop-atomics.log`, `.vm/runloop-atomics-fixed.log` and
 `.vm/runloop-atomics-crash.report`.
 
+WebProcess startup initializes WebKit before calling `BApplication::Run`.
+At that point Haiku has not assigned the application's looper thread, so the
+old selection code incorrectly created a separate, undriven loop. The revised
+selection recognizes an initialized application still locked by its startup
+thread, while preserving worker isolation. A native baseline fails four of
+**15 checks**; the fixed production code passes all 15, the existing 12 checks
+and ten worker-exit runs. Frozen libraries and native engine inputs remain
+unchanged. Run `python3 tools/test-engine-runloop-prerun.py`; evidence:
+`.vm/runloop-prerun-inputs.y2cx33hl/result.json`.
+
 The new native download filename helper passes **16 checks** for path
 components, control characters, empty names, Unicode and filesystem length
 limits. It also preserves Unicode extensions when avoiding filename collisions.
@@ -249,6 +259,23 @@ reports. Run `tools/test-engine-socket-monitor-in-vm.sh`; logs:
 `.vm/native-socket-monitor-fixed.log`, `.vm/native-socket-monitor-repeat.log`.
 The expanded write-readiness checks are in `.vm/native-socket-monitor-write-full.log`.
 
+The native IPC semaphore and event implementations now pass **54 checks**.
+The previous Unix source compiled on Haiku but supplied no working semaphore
+operations or event factory. The replacement keeps a 64-bit permit count in
+shared memory and uses a native process-shared semaphore for wake notifications.
+Event endpoints use a separate Unix socket only to observe the last signal
+owner closing or dying, with a 100 ms polling interval.
+Tests compile the real encoder, decoder and generated serializers. They cover
+200,000 queued permits, concurrent producers/waiters, move ownership, finite
+and interrupted deadlines, malformed imports, corrupted bookkeeping, actual
+descriptor transfer, 20,000 cross-process signals and interruption after killing
+the remote owner. Descriptor counts return from four to four. The test warms
+WTF's process-lifetime random-device descriptor before measuring cleanup.
+These checks validate the native transport; writable shared memory is not an
+immutable boundary against a hostile peer. Full WebKit connection integration
+still requires the linked engine. Run `python3 tools/test-engine-ipc-signals.py`;
+evidence: `.vm/ipc-signal-inputs.SVhp7jdS/result.json`.
+
 The new Haiku packet transport passes **43 native checks** using real sequenced
 sockets and the production shared-memory implementation. It rejects malformed
 flags, counts, truncated bodies, extra/missing descriptors and invalid shared
@@ -268,6 +295,17 @@ explicit profiles cannot fall back to the working directory. Run
 `.vm/native-storage-path-tests-private.log`. These are path-adapter checks;
 complete website-data separation still requires the modern browser integration.
 
+The shared temporary-directory helper now passes **11 native checks**. A
+baseline using the original production source fails three checks: a parent
+without a trailing slash produces sibling directories rather than children.
+The fix joins path components and gives `mkdtemp` a NUL-terminated mutable
+buffer. Checks cover Unicode and spaces, twenty unique directories, private
+permissions under a permissive umask, invalid parents and preservation of
+existing files. Both versions compile the complete production `FileSystem.cpp`
+and link the frozen ICU 78 JavaScriptCore library, whose hashes remain unchanged.
+Run `python3 tools/test-engine-temporary-directories.py`; evidence:
+`.vm/temporary-directory-inputs.0jmr9jsu/result.json`.
+
 The native module loader passes **10 checks** for missing images and symbols,
 Unicode paths, repeated loads, explicit unloading and destructor cleanup.
 Failed native image IDs no longer report success, and repeated loads do not
@@ -285,6 +323,26 @@ corrected source is included in the next build. Log:
 `.vm/modern-connection-build.log`. These component checks do not yet establish
 a working WebKit process connection or browser process isolation.
 
+The first complete modern compilation reached the final `libWebKit` link with
+no compiler errors, then failed on **127 distinct unresolved symbols**. Of
+these, **115** are present in the compiled WTF archive but absent from shared
+JavaScriptCore: the static archive only contributed objects JSC itself used.
+Haiku now follows the other ports' object-library configuration, placing all
+WTF/bmalloc objects in JSC once. The legacy link workaround was adjusted to
+avoid adding a second WTF copy. Native symbol inspection and upstream CMake
+routing checks support the fix; the complete link still needs repeating.
+Evidence: `.vm/modern-font-view-build.log`, `.vm/modern-wtf-link-audit.json`.
+The native drawing areas also needed the upstream message-sender template
+definitions, and the bitmap adapter needed its platform memory-accounting
+hook. All three corrected objects compile, and their targeted unresolved
+references are gone: `.vm/modern-link-adapters.json`.
+The five missing WebProcess platform hooks now compile and define the expected
+symbols. Native initialization validates the application startup thread and
+applies the common process parameters; website-data setup preserves the session
+already established by common code. Cocoa-only asset and font capabilities are
+asserted absent in this port. Evidence:
+`.vm/webprocess-platform-inputs.gt2cayvD/result.json`.
+
 The original area-based shared-memory backend loses its allocation when the
 owner is destroyed, even if a handle remains. A native baseline probe confirms
 that failure. Its mapping function also leaves the data pointer uninitialized.
@@ -299,7 +357,7 @@ cannot currently export a separate read-only handle; it reports failure instead
 of granting writable access. These changes are integrated into the working engine.
 Logs: `.vm/native-memory-tests.log` and `.vm/native-memory-baseline.log`.
 
-Shared bitmap drawing now passes **40 native checks** against the production
+Shared bitmap drawing and native icons now pass **47 native checks** against the production
 WebCore adapters. Drawing contexts retain their native views and mappings,
 flush app_server writes on completion, and reject read-only backing memory.
 Image copies remain stable while shared references observe later writes;
@@ -312,7 +370,11 @@ Frame checks reject invalid scales, oversized geometry, metadata mismatches and
 oversized backing objects before mapping. Run
 `tools/test-engine-bitmaps-in-vm.sh`; logs:
 `.vm/native-bitmap-frame-tests-fixed.log` and
-`.vm/native-bitmap-presenter-tests.log`. The native presentation helper copies
+`.vm/native-bitmap-presenter-tests.log` and `.vm/native-icon-bitmap-tests.log`.
+Native icons retain decoded images, paint scaled pixels inside the requested
+rectangle and load real system file/folder icons. Tests also check ownership,
+inclusive native image dimensions and missing-resource handling.
+The native presentation helper copies
 shared pixels into immutable window snapshots. Concurrent reads and frame
 replacement preserve matching pixels and frame identifiers; outstanding
 snapshots survive view closure, which rejects later publication. This helper
@@ -327,6 +389,11 @@ gives window drawing immutable native snapshots; close, hidden-view and failed
 delivery paths complete outstanding frame acknowledgments. A common preference
 override was corrected so Haiku can retain software compositing. Full linking
 and process-to-view presentation are not yet verified.
+Full-build warnings also exposed missing inline definitions in the native
+drawing area and page editing adapter. Including the upstream inline headers
+fixes both warnings; each corrected production object compiles natively.
+Evidence: `.vm/drawing-area-inline-compile.json` and
+`.vm/web-page-inline-compile.json`.
 
 `tests/ModernBrowser.cpp` compiles natively against the new public API. Its
 pending runtime check requires the real HTTP fixture to finish and its CSS
@@ -336,8 +403,15 @@ input hashes, then preserves private WebKit/JSC/ICU libraries with relative
 runtime paths. Native compilation, missing-engine refusal and build-lock refusal
 were checked; `.vm/modern-preview-compile.json` records the compilation. Run
 `tools/build-modern-browser-in-vm.sh --bundle` after both processes link.
+The same tool accepts `--browser` to build the complete Summit interface and
+freeze it with both helper processes, its start page and the same private
+libraries. Browser and preview bundles use separate output directories.
+`--compile-only --browser` passed for all five browser source files; it uses
+isolated staged inputs and can run during an engine build. Bundling still
+requires the engine and ICU build locks and completed, unchanged inputs.
+The latest browser compile evidence is `.vm/modern-browser-compile.json`.
 
-Native font reconstruction now passes **39 checks** against the production
+Native font reconstruction now passes **43 checks** against the production
 WebCore sources. Installed fonts preserve native style, size, orientation and
 text metrics across IPC; malformed metadata is rejected. Downloaded faces keep
 their original bytes and CSS metrics overrides through reconstruction, and
@@ -345,11 +419,132 @@ remain usable until the final owning reference is released. Haiku rejects
 duplicate private family/style names, so the port now uses WebKit's existing
 OpenType name rewriter to assign each native load a unique identity. Tests cover
 independent repeated loads, TrueType, CFF, unaligned trailing data and the
-existing first-face behavior for font collections. Selecting a collection face
+existing first-face behavior for font collections. WOFF2 is now accepted by CSS
+format selection when its decoder is enabled; a real encoded TrueType fixture
+passes the production WOFF2 decoder and loads through the native font manager.
+Selecting a collection face
 by its URL fragment remains unsupported. Run `tools/test-engine-fonts-in-vm.sh`;
-log: `.vm/native-font-tests-collections.log`. These checks include real native
+logs: `.vm/native-font-tests-collections.log` and `.vm/native-font-tests-woff2.log`.
+These checks include real native
 font loading and metrics; they do not yet establish font IPC in a running
 modern browser.
+
+The existing Summit interface now has an optional `SUMMIT_MODERN_WEBKIT` build.
+Both backend configurations and all six UI object compilations passed natively;
+`.vm/modern-ui-compile.json` preserves inputs and results. The modern path uses
+native message identities for tab state and queues view teardown before stopping
+the application. Find, forward/backward match selection, page/text zoom, native
+clipboard commands and undo/redo now reach the real page proxy. Stale find
+results are suppressed after navigation or later searches. Both bridge command
+objects and both UI modes compile; rendered find, zoom and DOM editing still
+need runtime checks. The About dialog and browser probe now call exported
+library functions for engine, port and source versions. The actual native
+version implementation reports `626.1.6`, port `1.10.0` and the pinned upstream
+revision in an isolated linked probe; `.vm/version-api-compile-runtime.log`
+records that result. The full browser has not yet linked or run with the
+modern engine.
+
+Native startup now uses `BApplication`'s error-return overload. The default
+constructor exits with status zero on initialization failure, bypassing a later
+`InitCheck`. A deterministic invalid-signature regression confirms the old
+behavior and the corrected nonzero exit: **five native checks pass**. The
+WebProcess entry object, preview, context harness and both browser entry modes
+compile. Smoke-test failure also remains recorded after a content-process exit,
+so a queued page-state update cannot turn it into a pass. Evidence:
+`.vm/application-init-inputs.IbaOFcaq/result.json`,
+`.vm/webprocess-main-inputs.qK5XyPGi/result.json`,
+`.vm/modern-browser-compile.json`, `.vm/modern-preview-compile.json`,
+`.vm/modern-context-ee907fa65fd9680186a41e17/result.json` and
+`.vm/legacy-startup-compile.json`.
+
+The native HTML select popup adapter compiles and its real widget passes
+**104 checks** across eight scenarios. Tests cover keyboard navigation from the
+current selection, disabled/group/separator rows, Escape and explicit cancel,
+owner destruction during tracking, large RTL menus with native scrolling, and
+exactly-once completion. Native tracking runs off the application thread and
+its activity remains counted until menu destruction and completion submission.
+Application shutdown waits asynchronously for native UI activity, then drains
+one final queued turn. Haiku rounds pulse intervals to 100 ms; a smaller test
+interval initially disabled polling, and corrected tests now pass. Evidence:
+`.vm/modern-popup-inputs.KE5XgpFQ/result.json`. Run
+`python3 tools/test-modern-popup.py`. HTML input/change events and multiple-list
+behavior still need the linked engine; `tests/fixtures/native-popup.html`
+supplies those pending interaction cases.
+
+Native JavaScript dialogs pass **95 checks** for alert, confirm, prompt and
+before-unload controls, origin display, Unicode, embedded NUL defaults, edited
+empty values, Return-key acceptance, cancellation and close/reply races.
+Both bridge objects compile and the common page-proxy close changes pass native
+syntax checking. Prompt input uses a native `BTextView`: Haiku's
+`BTextControl` truncated embedded NUL defaults through its internal `BString`
+conversion. Completion ownership moves to the WebKit thread before native
+callbacks are released. Evidence: `.vm/modern-dialog-inputs.lJCsSiTv/result.json`.
+Critical close notifications retry native queue backpressure without blocking
+the WebKit thread. The browser retains every tab until all approve a window
+close; cancellation resets approvals and preserves documents and undo state.
+Background tabs become selected only when they need a before-unload prompt.
+Previous address drafts, text selection and focus are restored unless the user
+has since selected another tab. The revised close flow passed all four native
+UI object compilations across both backends; evidence:
+`.vm/modern-close-ui-inputs.gjo0y9hr/result.json`.
+Close approvals also track navigation and document identity. A final batch
+validates every approval on WebKit's main thread before closing any engine
+page. Haiku cancels a close after a 30-second process-response timeout and
+rejects late replies; a visible prompt suspends that timer. The revised bridge
+and both UI backends compile; the 95 dialog checks still pass. Evidence:
+`.vm/close-navigation-final-report.json`.
+`tests/ModernCloseTests.cpp` compiles as an external native harness. Its pending
+runtime scenarios cover cancellation after an earlier approval, live document
+and undo preservation, saved sessions, repeated prompts, background address
+draft/focus, newer selection and navigation during quit. Run
+`python3 tools/test-modern-close.py --bundle NATIVE_FULL_BROWSER_BUNDLE`.
+Actual JavaScript dialog IPC and these close scenarios still require the
+matching linked engine.
+
+The new `BWebKitContext` adapter and its six affected engine objects compile
+natively. A context owns one process pool and website data store; persistent
+paths derive from the selected profile, while private contexts use ephemeral
+stores without creating profile directories. Haiku now creates a separate
+NetworkProcess for each store because Curl keeps its alternative-services file
+path in process-global state. The previous default network-process startup
+also injected unrelated stores; Haiku is excluded from that path. Logs:
+`.vm/context-native-compile-fixed.log`, `.vm/context-native-common-compile.log`.
+Actual cross-profile/private storage and process-lifecycle isolation still need
+the running engine and are not established by these compiler checks.
+`tests/ModernContextTests.cpp` also compiles natively. Its twelve pending runtime
+stages exercise visible/HTTP-only cookies, localStorage and committed IndexedDB
+writes across shared tabs, separate persistent/private contexts, persistent
+reopen and fresh private reopen. Native team enumeration checks distinct network
+processes and waits for helper teardown before reopening. A dedicated HTTP
+fixture checks complete ordered reports without changing the existing fixture
+server. Run `python3 tools/test-modern-contexts.py --bundle NATIVE_BUNDLE_PATH`
+after freezing a matching modern engine.
+
+Seven production extension parser/resource units compile with
+`WK_WEB_EXTENSIONS=1`; the real native resource resolver passes **27 checks**.
+The shared parser and matcher retain upstream behavior, resource/error handling
+is reused from the GLib implementation, and native icons use real WebCore
+bitmap/SVG decoders. Path checks cover native filename encoding, canonical
+containment and symlink escapes. Manifest execution and browser extension
+execution have not yet run. Detailed evidence and remaining integration work
+are in `tools/test-engine-extension-manifest-core-notes.md` and
+`docs/webextensions-native-integration.md`.
+The native ZIP/XPI extractor also passes **111 checks** using real libzip 1.11.4,
+and the constructor accepting archive files compiles with extensions enabled.
+It extracts regular resources into an owned private directory, rejects path
+escapes, links/special entries and corrupt/encrypted containers, bounds expanded
+data, and cleans up failed or unconsumed extractions. Native manifest execution,
+installation UI and signature/trust handling remain unfinished. Libzip is
+required only with extensions enabled; test dependencies were privately unpacked
+without OS installation. Evidence and dependency hashes are in
+`tools/test-engine-extension-archives-notes.md`.
+The native extension controller configuration now supplies default/UUID paths,
+temporary directories and copy behavior while sharing the configured website
+data store. Its two production units and real-class assertion unit compile with
+extensions enabled. The assertions cover factories, copy identity, custom paths
+and temporary storage, but have not run against a linked engine. Evidence:
+`tools/test-engine-extension-configuration-results.json` and the accompanying
+notes. The full engine still builds with extensions disabled.
 
 Native keyboard, mouse and wheel translation passes **38 checks** through the
 production WebKit event classes and WebCore converters. Events own their native
@@ -372,9 +567,9 @@ edits predate a build that still used the old source. The previous affected
 inputs were explicitly refreshed. Host checks cover changed/identical content,
 file modes, removal of managed files and archive path boundaries. Subsequent
 native builds regenerated the IPC messages and compiled the drawing-area and
-view adapters. Fixes for the collected font-serialization, generic-platform
-include and native cache-filesystem errors are now prepared for the next full
-build. The font argument coders also pass the upstream serializer generator.
+view adapters. The full build is now compiling fixes for the collected
+font-serialization, generic-platform include and native cache-filesystem
+errors. The font argument coders also pass the upstream serializer generator.
 
 All 32 Haiku legacy embedding source files pass the native compiler's syntax checks.
 The initial pass found five failing files caused by two upstream API changes:

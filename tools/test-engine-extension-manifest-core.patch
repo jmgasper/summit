@@ -1,0 +1,121 @@
+diff --git a/Source/WebKit/UIProcess/Extensions/WebExtension.h b/Source/WebKit/UIProcess/Extensions/WebExtension.h
+--- a/Source/WebKit/UIProcess/Extensions/WebExtension.h
++++ b/Source/WebKit/UIProcess/Extensions/WebExtension.h
+@@ -75,7 +75,7 @@
+ #if PLATFORM(COCOA)
+     explicit WebExtension(NSBundle *appExtensionBundle, NSURL *resourceURL, RefPtr<API::Error>&);
+     explicit WebExtension(NSDictionary *manifest, Resources&& = { });
+-#else
++#elif USE(GLIB)
+     explicit WebExtension(GFile *resourcesFile, RefPtr<API::Error>&);
+ #endif
+     explicit WebExtension(const JSON::Value& manifest, Resources&& = { });
+diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionMatchPattern.cpp b/Source/WebKit/UIProcess/Extensions/WebExtensionMatchPattern.cpp
+--- a/Source/WebKit/UIProcess/Extensions/WebExtensionMatchPattern.cpp
++++ b/Source/WebKit/UIProcess/Extensions/WebExtensionMatchPattern.cpp
+@@ -28,9 +28,6 @@
+ 
+ #if ENABLE(WK_WEB_EXTENSIONS)
+ 
+-#include "WebProcessMessages.h"
+-#include "WebProcessPool.h"
+-#include <WebCore/LegacySchemeRegistry.h>
+ #include <WebCore/LocalizedStrings.h>
+ #include <WebCore/PublicSuffixStore.h>
+ #include <wtf/HashMap.h>
+@@ -92,21 +89,6 @@
+     return cache;
+ }
+ 
+-void WebExtensionMatchPattern::registerCustomURLScheme(String urlScheme)
+-{
+-    auto canonicalScheme = URLParser::maybeCanonicalizeScheme(String(urlScheme));
+-    ASSERT(canonicalScheme);
+-
+-    extensionSchemes().addVoid(canonicalScheme.value());
+-    validSchemes().addVoid(canonicalScheme.value());
+-    supportedSchemes().addVoid(canonicalScheme.value());
+-
+-    LegacySchemeRegistry::registerURLSchemeAsAllowingServiceWorkerClients(canonicalScheme.value());
+-
+-    for (auto& pool : WebProcessPool::allProcessPools())
+-        pool->sendToAllProcesses(Messages::WebProcess::RegisterURLSchemeAsWebExtension(urlScheme));
+-}
+-
+ bool WebExtensionMatchPattern::isWebExtensionURL(const URL& url)
+ {
+     if (!url.isValid())
+diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionMatchPatternProcessPool.cpp b/Source/WebKit/UIProcess/Extensions/WebExtensionMatchPatternProcessPool.cpp
+new file mode 100644
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/WebExtensionMatchPatternProcessPool.cpp
+@@ -0,0 +1,58 @@
++/*
++ * Copyright (C) 2022-2024 Apple Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "WebExtensionMatchPattern.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS)
++
++#include "WebProcessMessages.h"
++#include "WebProcessPool.h"
++#include <WebCore/LegacySchemeRegistry.h>
++#include <wtf/URLParser.h>
++
++namespace WebKit {
++
++using namespace WTF;
++using namespace WebCore;
++
++void WebExtensionMatchPattern::registerCustomURLScheme(String urlScheme)
++{
++    auto canonicalScheme = URLParser::maybeCanonicalizeScheme(String(urlScheme));
++    ASSERT(canonicalScheme);
++
++    extensionSchemes().addVoid(canonicalScheme.value());
++    validSchemes().addVoid(canonicalScheme.value());
++    supportedSchemes().addVoid(canonicalScheme.value());
++
++    LegacySchemeRegistry::registerURLSchemeAsAllowingServiceWorkerClients(canonicalScheme.value());
++
++    for (auto& pool : WebProcessPool::allProcessPools())
++        pool->sendToAllProcesses(Messages::WebProcess::RegisterURLSchemeAsWebExtension(urlScheme));
++}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS)
+diff --git a/Source/WebKit/Sources.txt b/Source/WebKit/Sources.txt
+--- a/Source/WebKit/Sources.txt
++++ b/Source/WebKit/Sources.txt
+@@ -614,6 +614,7 @@
+ UIProcess/Extensions/WebExtensionDataRecord.cpp
+ UIProcess/Extensions/WebExtensionDeclarativeNetRequestSQLiteStore.cpp
+ UIProcess/Extensions/WebExtensionMatchPattern.cpp
++UIProcess/Extensions/WebExtensionMatchPatternProcessPool.cpp
+ UIProcess/Extensions/WebExtensionStorageSQLiteStore.cpp
+ 
+ UIProcess/Extensions/API/WebExtensionContextAPIAlarms.cpp

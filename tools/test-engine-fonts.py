@@ -55,12 +55,13 @@ def compile_source(source):
         raise SystemExit('Native compilation failed: ' + source.name)
     return str(target)
 
-with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
     objects = list(executor.map(compile_source, [OUTPUT / 'FontPlatformData.cpp',
         OUTPUT / 'FontPlatformDataHaiku.cpp', OUTPUT / 'FontCustomPlatformData.cpp',
         OUTPUT / 'OpenTypeUtilities.cpp',
+        OUTPUT / 'WOFFFileFormat.cpp',
         ROOT / 'tests/EngineFontTests.cpp']))
 subprocess.run(['c++', *objects, '-Wl,--no-export-dynamic', '-Wl,--gc-sections', '-L' + str(BUILD / 'lib'),
-                '-lWebKitLegacy', '-lJavaScriptCore', '-lbe', '-lnetwork', '-Wl,-rpath,' + str(BUILD / 'lib'),
+                '-lWebKitLegacy', '-lJavaScriptCore', '-lbe', '-lnetwork', '-lwoff2enc', '-lwoff2dec', '-lz', '-Wl,-rpath,' + str(BUILD / 'lib'),
                 '-o', str(OUTPUT / 'run')], check=True)
 subprocess.run([str(OUTPUT / 'run')], timeout=30, check=True)

@@ -3,6 +3,8 @@
 #include "Color.h"
 #include "GraphicsContext.h"
 #include "GraphicsContextHaiku.h"
+#include "Icon.h"
+#include "NativeImage.h"
 #include "BitmapFrameHaiku.h"
 #include "BitmapPresenterHaiku.h"
 #include <Application.h>
@@ -245,6 +247,42 @@ int main()
         && firstFrame && Pixel(*firstFrame->image, 1, 1, 1, 0, 0),
         "closing presentation preserves snapshots already retained by a drawing window");
     Check(!presenter.publish(33, *source, { 8, 8 }, 1), "closed native views reject subsequent frames");
+    Check(!Icon::create(nullptr), "native icon factory rejects a missing image");
+    auto iconSource = ShareableBitmap::create({ { 2, 2 } });
+    if (!iconSource)
+        return 1;
+    for (int y = 0; y < 2; ++y)
+        for (int x = 0; x < 2; ++x)
+            SetPixel(*iconSource, x, y, 32, 160, 64);
+    auto nativeIconImage = NativeImage::create(iconSource->createPlatformImage(CopyBackingStore));
+    Check(nativeIconImage && nativeIconImage->size() == IntSize(2, 2),
+        "native icon image preserves inclusive bitmap dimensions");
+    auto icon = Icon::create(WTF::move(nativeIconImage));
+    Check(icon && !nativeIconImage, "native icon takes ownership of its decoded image");
+    iconSource = nullptr;
+    auto iconTarget = ShareableBitmap::create({ { 12, 12 } });
+    if (!icon || !iconTarget)
+        return 1;
+    auto iconPainter = iconTarget->createGraphicsContext();
+    icon->paint(*iconPainter, { 4, 3, 4, 4 });
+    iconPainter = nullptr;
+    Check(Pixel(*iconTarget, 4, 3, 32, 160, 64) && Pixel(*iconTarget, 7, 6, 32, 160, 64)
+        && Pixel(*iconTarget, 3, 3, 0, 0, 0, 0) && Pixel(*iconTarget, 8, 6, 0, 0, 0, 0),
+        "native icon paints scaled pixels only inside its destination after source release");
+    Check(!Icon::createIconForFiles({ }) && !Icon::createIconForFiles({ "/summit-icon-file-does-not-exist"_s }),
+        "native file icon rejects empty selection and nonexistent files");
+    auto folderIcon = Icon::createIconForFiles({ "/boot/home"_s });
+    Check(!!folderIcon, "native file icon loads the system folder icon");
+    auto folderTarget = ShareableBitmap::create({ { 32, 32 } });
+    if (!folderIcon || !folderTarget)
+        return 1;
+    auto folderPainter = folderTarget->createGraphicsContext();
+    folderIcon->paint(*folderPainter, { 0, 0, 32, 32 });
+    folderPainter = nullptr;
+    bool visibleIcon = false;
+    for (size_t index = 3; index < folderTarget->span().size(); index += 4)
+        visibleIcon |= folderTarget->span()[index] != 0;
+    Check(visibleIcon, "system folder icon produces visible native pixels");
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

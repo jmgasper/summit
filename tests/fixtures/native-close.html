@@ -1,0 +1,60 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Close fixture starting</title>
+<style>
+body { margin: 0; font: 18px sans-serif; }
+#arm { position: absolute; left: 0; top: 0; width: 300px; height: 80px; }
+#editor { position: absolute; left: 0; top: 100px; width: 300px; height: 90px; }
+p { position: absolute; top: 210px; padding: 12px; }
+</style>
+<button id="arm">Activate the close fixture</button>
+<textarea id="editor">seed</textarea>
+<p>This fixture requires a native click and native typing. Its beforeunload handler is installed only after that click.</p>
+<script>
+'use strict';
+const parameters = new URLSearchParams(location.search);
+const run = parameters.get('run');
+const name = parameters.get('name');
+const guarded = parameters.get('guard') === '1';
+const editor = document.querySelector('#editor');
+const state = { name, instance: Math.random().toString(36).slice(2), armed: false,
+    attempts: 0, value: editor.value, trusted: false };
+let reports = Promise.resolve();
+function publish() { document.title = 'CLOSE ' + JSON.stringify(state); }
+function report(event, trusted = false) {
+    const data = { run, event, ...state, trusted };
+    reports = reports.then(async () => {
+        const response = await fetch('/close-report?run=' + run, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data)
+        });
+        if (!response.ok) throw new Error('HTTP report failed: ' + response.status);
+        publish();
+    }).catch(error => { document.title = 'FAIL ' + String(error); });
+}
+document.querySelector('#arm').addEventListener('click', event => {
+    if (!event.isTrusted || !navigator.userActivation.hasBeenActive) {
+        document.title = 'FAIL native activation was not trusted';
+        return;
+    }
+    if (!state.armed && guarded) {
+        addEventListener('beforeunload', event => {
+            ++state.attempts;
+            publish();
+            navigator.sendBeacon('/close-report?run=' + run,
+                JSON.stringify({ run, event: 'beforeunload', ...state }));
+            event.preventDefault();
+            event.returnValue = '';
+        });
+    }
+    state.armed = true;
+    state.trusted = true;
+    editor.focus();
+    editor.select();
+    report('arm', event.isTrusted);
+});
+editor.addEventListener('input', event => {
+    state.value = editor.value;
+    report('input', event.isTrusted);
+});
+report('ready');
+</script>

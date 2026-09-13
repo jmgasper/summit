@@ -1,7 +1,14 @@
 #pragma once
 #include "core/Profile.h"
+#if SUMMIT_MODERN_WEBKIT
+#include <WebKit/WebKitView.h>
+#include <Window.h>
+#else
 #include <WebWindow.h>
+#endif
+#include <Messenger.h>
 #include <memory>
+#include <optional>
 #include <vector>
 
 class BCardLayout;
@@ -11,18 +18,35 @@ class BListView;
 class BMessageRunner;
 class BStringView;
 class BTextControl;
+#if !SUMMIT_MODERN_WEBKIT
 class BWebDownload;
+#endif
 
 namespace summit {
 class ToolButton;
 class TabStrip;
 class ProgressLine;
-class BrowserWindow : public BWebWindow {
+#if SUMMIT_MODERN_WEBKIT
+using BrowserWindowBase = BWindow;
+using BrowserWebView = BWebKitView;
+#else
+using BrowserWindowBase = BWebWindow;
+using BrowserWebView = BWebView;
+#endif
+class BrowserWindow : public BrowserWindowBase {
 public:
+#if SUMMIT_MODERN_WEBKIT
+    BrowserWindow(std::filesystem::path profile, std::string homeURL, const std::vector<std::string>& urls,
+        std::shared_ptr<BWebKitContext> context);
+#else
     BrowserWindow(std::filesystem::path profile, std::string homeURL, const std::vector<std::string>& urls);
+#endif
     ~BrowserWindow() override;
     void MessageReceived(BMessage* message) override;
     bool QuitRequested() override;
+#if SUMMIT_MODERN_WEBKIT
+    void CreateTab(const std::string& url, bool select = true);
+#else
     void NavigationRequested(const BString& url, BWebView* view) override;
     void NewWindowRequested(const BString& url, bool primary) override;
     void NewPageCreated(BWebView* view, BRect frame, bool modal, bool resizable, bool activate) override;
@@ -37,17 +61,68 @@ public:
     void StatusChanged(const BString& status, BWebView* view) override;
     void NavigationCapabilitiesChanged(bool back, bool forward, bool stop, BWebView* view) override;
     void CreateTab(const std::string& url, bool select = true, BWebView* adopted = nullptr);
+#endif
 private:
+#if SUMMIT_MODERN_WEBKIT
+    struct CloseFocusState {
+        int64 selected = 0;
+        BMessenger focus;
+        std::string address;
+        int32 selectionStart = 0, selectionEnd = 0;
+        uint64 generation = 0;
+    };
+#endif
     struct Tab {
         int64 id;
-        BWebView* view;
+        BrowserWebView* view;
         std::string url, title;
         bool loading = false, back = false, forward = false;
         float progress = 0;
+#if SUMMIT_MODERN_WEBKIT
+        BMessenger messenger { };
+        bool processExited = false;
+        std::string processError;
+        bool closeQueued = false;
+        bool closeRequested = false;
+        bool closeApproved = false;
+        std::optional<CloseFocusState> closeFocus { };
+        double pageZoom = 1, textZoom = 1;
+#endif
     };
+#if SUMMIT_MODERN_WEBKIT
+    Tab* FindTab(const BMessenger& view);
+    void WebKitStateChanged(const BMessage& message);
+    void WebKitFindResult(const BMessage& message);
+    void WebKitCloseResult(const BMessage& message);
+    void WebKitClosePrompt(const BMessage& message);
+    void WebKitCloseCommitted(const BMessage& message);
+    void CommitTabCloses(const std::vector<int64>&, bool wholeWindow);
+    bool PrepareNavigation();
+    void InvalidateWindowClose();
+    void FinishCloseTab(int64 id);
+    void StartCloseRequest(Tab&);
+    void ContinueTabCloses();
+    void BeginWindowClose();
+    void ContinueWindowClose();
+    void CancelWindowClose();
+    CloseFocusState CaptureCloseFocus() const;
+    void RestoreCloseFocus(const CloseFocusState&);
+    std::shared_ptr<BWebKitContext> fWebKitContext;
+    bool fClosingWindow = false;
+    bool fWindowCloseInvalidated = false;
+    bool fWindowCloseQueued = false;
+    bool fCloseCommitPending = false;
+    bool fCommitWholeWindow = false;
+    uint64 fCloseCommitIdentifier = 0;
+    std::vector<int64> fCommitTabs;
+    uint64 fSelectionGeneration = 0;
+    int64 fClosePromptTab = 0;
+    std::optional<CloseFocusState> fWindowCloseFocus;
+#else
     Tab* FindTab(BWebView* view);
+#endif
     Tab* ActiveTab();
-    void SelectTab(int64 id);
+    void SelectTab(int64 id, bool forClose = false);
     void CloseTab(int64 id);
     void Navigate(const std::string& text);
     void RefreshChrome();
@@ -81,6 +156,8 @@ private:
     ProgressLine* fProgress;
     std::unique_ptr<BFilePanel> fOpenPanel;
     std::unique_ptr<BMessageRunner> fSaveTimer;
+#if !SUMMIT_MODERN_WEBKIT
     std::vector<BWebDownload*> fDownloads;
+#endif
 };
 }

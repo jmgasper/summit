@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Build a native preview, then freeze a completed modern WebKit build.
+"""Build a native preview or Summit browser, then freeze a completed modern WebKit build.
 
-Run through build-modern-browser-in-vm.sh, which owns both engine and ICU locks.
---compile-only needs only the staged public headers and never loads WebKit.
+Run through build-modern-browser-in-vm.sh, which locks engine and ICU builds before bundling.
+--compile-only uses isolated staged headers and sources, without accessing the native engine build.
 """
 import argparse
 import datetime
@@ -19,8 +19,6 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCE = pathlib.Path('/boot/home/summit-webkit')
 ENGINE = SOURCE / 'WebKitBuild/Modern'
 ICU = pathlib.Path('/boot/home/summit-deps/icu78')
-BUILD = pathlib.Path('/boot/home/summit/build-modern-preview')
-NAME = 'SummitModernPreview'
 
 
 def digest(path):
@@ -115,23 +113,23 @@ def library(name, directory):
 def verify_hashes(hashes):
     for path, before in hashes.items():
         if digest(pathlib.Path(path)) != before:
-            raise RuntimeError(f'Build input changed while creating the preview: {path}')
+            raise RuntimeError(f'Build input changed while creating the app: {path}')
 
 
-def freeze(work, inputs, command, before, configuration):
+def freeze(work, inputs, commands, before, configuration, build, executable_name, browser):
     require_idle()
     verify_hashes(before)
-    bundle = pathlib.Path(tempfile.mkdtemp(prefix='bundle-', dir=BUILD))
+    bundle = pathlib.Path(tempfile.mkdtemp(prefix='bundle-', dir=build))
     try:
         (bundle / 'lib').mkdir()
         libraries = [library(name, ENGINE / 'lib') for name in ['libWebKit.so', 'libJavaScriptCore.so']]
         libraries += [library(name, ICU / 'lib') for name in ['libicudata.so', 'libicui18n.so', 'libicuuc.so']]
         if inputs['icu']['version'] != '78.3' or any('.so.78' not in soname for _, soname, _ in libraries[2:]):
-            raise RuntimeError('The preview requires the pinned private ICU 78.3 build')
-        files = {NAME: work / NAME, 'WebProcess': ENGINE / 'bin/WebProcess',
+            raise RuntimeError('The app requires the pinned private ICU 78.3 build')
+        files = {executable_name: work / executable_name, 'WebProcess': ENGINE / 'bin/WebProcess',
                  'NetworkProcess': ENGINE / 'bin/NetworkProcess'}
         files.update({'lib/' + source.name: source for _, _, source in libraries})
-        before = {**before, str(work / NAME): digest(work / NAME)}
+        before = {**before, str(work / executable_name): digest(work / executable_name)}
         for relative, source in files.items():
             destination = bundle / relative
             shutil.copy2(source, destination)
@@ -148,6 +146,11 @@ def freeze(work, inputs, command, before, configuration):
                 if dependency.startswith(('libWebKit', 'libJavaScriptCore', 'libicu')) and not (bundle / 'lib' / dependency).is_file():
                     raise RuntimeError(f'{name} has an unbundled engine dependency: {dependency}')
         shutil.copy2(ROOT / 'LICENSE-Summit', bundle / 'LICENSE-Summit')
+        assets = []
+        if browser:
+            (bundle / 'resources').mkdir()
+            shutil.copy2(ROOT / 'resources/start.html', bundle / 'resources/start.html')
+            assets.append('resources/start.html')
         for license_file in (SOURCE / 'Source').rglob('*'):
             if license_file.is_file() and license_file.name.upper().startswith(('LICENSE', 'COPYING')):
                 destination = bundle / 'licenses/WebKit' / license_file.relative_to(SOURCE / 'Source')
@@ -156,21 +159,24 @@ def freeze(work, inputs, command, before, configuration):
         icu_license = pathlib.Path('/boot/home/summit-deps/icu-78.3/LICENSE')
         (bundle / 'licenses/ICU').mkdir(parents=True)
         shutil.copy2(icu_license, bundle / 'licenses/ICU/LICENSE')
-        launcher = bundle / 'run-preview.sh'
+        launcher = bundle / ('run-browser.sh' if browser else 'run-preview.sh')
         launcher.write_text(
             '#!/bin/sh\nset -eu\n'
             'SUMMIT_BUNDLE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\n'
             'export WEBKIT_EXEC_PATH="$SUMMIT_BUNDLE"\n'
             'export LIBRARY_PATH="$SUMMIT_BUNDLE/lib:/boot/system/lib"\n'
-            'exec "$SUMMIT_BUNDLE/SummitModernPreview" "$@"\n')
+            f'exec "$SUMMIT_BUNDLE/{executable_name}" "$@"\n')
         launcher.chmod(0o755)
         (bundle / 'README.txt').write_text(
-            'Summit modern WebKit native preview for Haiku/KunanyiOS.\n'
-            'Run ./run-preview.sh [URL], or --smoke with tools/serve-fixtures.py on the host.\n'
-            'WebProcess and NetworkProcess are resolved beside the preview executable.\n'
+            ('Summit browser with modern WebKit for Haiku/KunanyiOS.\n'
+             'Run ./run-browser.sh [--profile PATH] [URL ...].\n'
+             'Default settings are stored separately in the SummitModern profile.\n'
+             if browser else
+             'Summit modern WebKit native preview for Haiku/KunanyiOS.\n'
+             'Run ./run-preview.sh [URL], or --smoke with tools/serve-fixtures.py on the host.\n') +
+            'WebProcess and NetworkProcess are resolved beside the app executable.\n'
             'Private WebKit, JavaScriptCore and ICU libraries are in lib with relative runtime paths.\n'
-            'The preview source and build inputs are preserved in source.\n'
-            'This preview exercises the modern engine bridge; the complete browser UI is separate.\n')
+            'The app source and build inputs are preserved in source.\n')
         shutil.copytree(ROOT, bundle / 'source')
         for name, expected in inputs['sha256'].items():
             if digest(bundle / 'source' / name) != expected:
@@ -179,17 +185,18 @@ def freeze(work, inputs, command, before, configuration):
         verify_hashes(before)
         manifest = {
             'created_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            'kind': 'modern-native-preview', 'inputs': inputs, 'configuration': configuration,
+            'kind': 'modern-native-browser' if browser else 'modern-native-preview',
+            'inputs': inputs, 'configuration': configuration,
             'compiler': run(['c++', '--version']).splitlines()[0],
-            'compile_command': command, 'original_sha256': before,
-            'bundled_sha256': {name: digest(bundle / name) for name in [*files, 'run-preview.sh']},
+            'compile_commands': commands, 'original_sha256': before,
+            'bundled_sha256': {name: digest(bundle / name) for name in [*files, launcher.name, *assets]},
             'needed': dependencies,
             'runtime_search_paths': {name: dynamic(bundle / name, 'RPATH|RUNPATH') for name in files},
             'symlinks': {str(path.relative_to(bundle)): os.readlink(path)
                          for path in (bundle / 'lib').iterdir() if path.is_symlink()},
         }
         (bundle / 'build-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
-        latest = BUILD / 'latest-bundle.json'
+        latest = build / 'latest-bundle.json'
         temporary = latest.with_suffix('.tmp')
         temporary.write_text(json.dumps({'bundle': str(bundle), **manifest}, indent=2) + '\n')
         temporary.replace(latest)
@@ -206,33 +213,55 @@ def main():
     mode.add_argument('--bundle', action='store_true')
     arguments = parser.parse_args()
     inputs = json.loads((ROOT / 'inputs.json').read_text())
+    target = inputs.get('target', 'preview')
+    if target not in ('preview', 'browser'):
+        raise RuntimeError('Unknown native app target: ' + str(target))
+    browser = target == 'browser'
+    executable_name = 'Summit' if browser else 'SummitModernPreview'
+    build = pathlib.Path('/boot/home/summit/build-modern-' + target)
     for name, expected in inputs['sha256'].items():
         if digest(ROOT / name) != expected:
             raise RuntimeError('Staged input hash mismatch: ' + name)
-    require_idle()
+    if not arguments.compile_only:
+        require_idle()
     configuration, original_paths = ({}, []) if arguments.compile_only else engine_inputs(inputs)
-    BUILD.mkdir(parents=True, exist_ok=True)
-    work = pathlib.Path(tempfile.mkdtemp(prefix='compile-', dir=BUILD))
-    command = ['c++', '-std=c++23', '-O2', '-Wall', '-Wextra', '-DBUILDING_HAIKU__=1',
-               '-I' + str(ROOT / 'include'), str(ROOT / 'tests/ModernBrowser.cpp')]
-    if arguments.compile_only:
-        command += ['-c', '-o', str(work / 'ModernBrowser.o')]
-    else:
-        command += ['-L' + str(ENGINE / 'lib'), '-lWebKit', '-lbe', '-lnetwork',
-                    '-Wl,-rpath,' + str(ENGINE / 'lib') + ':' + str(ICU / 'lib'),
-                    '-o', str(work / NAME)]
+    build.mkdir(parents=True, exist_ok=True)
+    work = pathlib.Path(tempfile.mkdtemp(prefix='compile-', dir=build))
+    flags = ['c++', '-std=c++23', '-O2', '-Wall', '-Wextra', '-Wno-multichar',
+             '-DBUILDING_HAIKU__=1', '-I' + str(ROOT / 'include')]
+    sources = ['tests/ModernBrowser.cpp']
+    if browser:
+        flags += ['-DSUMMIT_MODERN_WEBKIT=1', '-I' + str(ROOT / 'src'),
+                  '-I' + str(ROOT / 'vendor'), '-I/boot/system/develop/headers/private/netservices']
+        sources = ['src/main.cpp', 'src/core/Address.cpp', 'src/core/Profile.cpp',
+                   'src/ui/BrowserWindow.cpp', 'src/ui/Chrome.cpp']
+    objects = [work / pathlib.Path(source).with_suffix('.o') for source in sources]
+    commands = [flags + ['-c', str(ROOT / source), '-o', str(output)]
+                for source, output in zip(sources, objects)]
+    if not arguments.compile_only:
+        commands.append(['c++', *map(str, objects), '-L' + str(ENGINE / 'lib'),
+                         '-lWebKit', '-lbe', '-lnetwork',
+                         *(['-lbnetapi', '-ltranslation', '-ltracker'] if browser else []),
+                         '-Wl,-rpath,' + str(ENGINE / 'lib') + ':' + str(ICU / 'lib'),
+                         '-o', str(work / executable_name)])
+        if browser:
+            commands += [['rc', '-o', str(work / 'Summit.rsrc'), str(ROOT / 'resources/Summit.rdef')],
+                         ['xres', '-o', str(work / executable_name), str(work / 'Summit.rsrc')]]
     before = {str(path): digest(path) for path in original_paths}
     try:
-        run(command)
+        for output in objects:
+            output.parent.mkdir(parents=True, exist_ok=True)
+        for command in commands:
+            run(command)
         verify_hashes(before)
         if arguments.compile_only:
             shutil.copytree(ROOT, work / 'source')
-            report = {'kind': 'compile-only', 'object': str(work / 'ModernBrowser.o'),
-                      'sha256': digest(work / 'ModernBrowser.o'), 'inputs': inputs,
-                      'compiler': run(['c++', '--version']).splitlines()[0], 'compile_command': command}
+            report = {'kind': 'compile-only', 'target': target,
+                      'objects': {str(output): digest(output) for output in objects}, 'inputs': inputs,
+                      'compiler': run(['c++', '--version']).splitlines()[0], 'compile_commands': commands}
             (work / 'build-manifest.json').write_text(json.dumps(report, indent=2) + '\n')
         else:
-            report = freeze(work, inputs, command, before, configuration)
+            report = freeze(work, inputs, commands, before, configuration, build, executable_name, browser)
         print(json.dumps(report, indent=2))
     except BaseException:
         shutil.rmtree(work)
