@@ -3,6 +3,11 @@ set -euo pipefail
 SUMMIT_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$SUMMIT_ROOT"
 SUMMIT_ENGINE_TARGET=${1:-all}
+SUMMIT_WEBKIT_JOBS=${SUMMIT_WEBKIT_JOBS:-3}
+if [[ ! $SUMMIT_WEBKIT_JOBS =~ ^[1-9][0-9]?$ ]] || (( SUMMIT_WEBKIT_JOBS > 64 )); then
+    echo 'SUMMIT_WEBKIT_JOBS must be an integer between 1 and 64.' >&2
+    exit 2
+fi
 case "$SUMMIT_ENGINE_TARGET" in
     all|JavaScriptCore|jsc|WebCore|WebKitLegacy) ;;
     *) echo 'Usage: build-webkit-in-vm.sh [all|JavaScriptCore|jsc|WebCore|WebKitLegacy]' >&2; exit 2 ;;
@@ -19,4 +24,4 @@ python3 tools/prepare-webkit.py
 # Source paths are fixed and passed as archive members, never as remote commands.
 tar -C .cache/WebKit -czf - --exclude=__pycache__ CMakeLists.txt Configurations Source Tools |
     bash tools/haiku.sh 'mkdir -p /boot/home/summit-webkit && tar xzf - -C /boot/home/summit-webkit'
-bash tools/haiku.sh 'cd /boot/home/summit-webkit && cmake -S . -B WebKitBuild/Release -G Ninja -DPORT=Haiku -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-ftrack-macro-expansion=0 --param ggc-min-expand=10" -DENABLE_WEBKIT=OFF -DENABLE_WEBKIT_LEGACY=ON -DENABLE_LAYOUT_TESTS=OFF -DCMAKE_INSTALL_PREFIX=/boot/home/summit-webkit-install && DISABLE_ASLR=1 ninja -C WebKitBuild/Release -j6' "$SUMMIT_ENGINE_TARGET"
+bash tools/haiku.sh 'cd /boot/home/summit-webkit && cmake -S . -B WebKitBuild/Release -G Ninja -DPORT=Haiku -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-ftrack-macro-expansion=0 --param ggc-min-expand=10" -DENABLE_WEBKIT=OFF -DENABLE_WEBKIT_LEGACY=ON -DENABLE_LAYOUT_TESTS=OFF -DCMAKE_INSTALL_PREFIX=/boot/home/summit-webkit-install && DISABLE_ASLR=1 ninja -C WebKitBuild/Release -j' "$SUMMIT_WEBKIT_JOBS" "$SUMMIT_ENGINE_TARGET"

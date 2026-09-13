@@ -52,6 +52,11 @@ Use `icu74_devel` explicitly. The generic `devel:libicuuc` capability can select
 ICU 66, which is too old for the pinned JavaScriptCore source. If another ICU
 development package is active, select its replacement in pkgman's solver.
 The build script uses the HaikuPorts GCC memory-management flags for the VM.
+It defaults to three compiler workers. During a six-worker WebCore build,
+the 12 GiB guest used several GiB of swap and developed long SSH login delays
+and compiler processes stuck in kernel waits. The precise kernel cause has
+not been established.
+Set `SUMMIT_WEBKIT_JOBS` to adjust concurrency for a different VM size.
 
 The selected upstream Test262 groups use Python 3.10 and `pyyaml_python310`:
 

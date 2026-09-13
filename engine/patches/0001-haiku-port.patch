@@ -3825,7 +3825,7 @@ index 0000000000000000000000000000000000000000..9545c5de9702a6d44bed3fd2d015b217
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/FontHaiku.cpp b/Source/WebCore/platform/graphics/haiku/FontHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..898bcb26567027701d1c31b66a8cfab5d55c8846
+index 0000000000000000000000000000000000000000..a1427a36473ff9274ecfe96014781631473196ea
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/FontHaiku.cpp
 @@ -0,0 +1,127 @@
@@ -3859,6 +3859,7 @@ index 0000000000000000000000000000000000000000..898bcb26567027701d1c31b66a8cfab5
 +#include "config.h"
 +
 +#include "FontCascade.h"
++#include "FontBase.h"
 +#include "FontDescription.h"
 +#include "FontSelector.h"
 +#include "GraphicsContext.h"
@@ -3873,7 +3874,7 @@ index 0000000000000000000000000000000000000000..898bcb26567027701d1c31b66a8cfab5
 +
 +namespace WebCore {
 +
-+void FontCascade::drawGlyphs(GraphicsContext& graphicsContext, const Font& font,
++void FontCascade::drawGlyphs(GraphicsContext& graphicsContext, const FontBase& font,
 +    std::span<const GlyphBufferGlyph> glyphs, std::span<const GlyphBufferAdvance> advances,
 +    const FloatPoint& point, WebCore::FontSmoothingMode smoothing)
 +{
@@ -3955,13 +3956,12 @@ index 0000000000000000000000000000000000000000..898bcb26567027701d1c31b66a8cfab5
 +}
 +
 +} // namespace WebCore
-+
 diff --git a/Source/WebCore/platform/graphics/haiku/FontPlatformDataHaiku.cpp b/Source/WebCore/platform/graphics/haiku/FontPlatformDataHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..bc7498b6c717a38d2d6a56a095c6dec3534029f2
+index 0000000000000000000000000000000000000000..8e161a2c75ff370825d1e5800cb7da0bdb7bf8b6
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/FontPlatformDataHaiku.cpp
-@@ -0,0 +1,230 @@
+@@ -0,0 +1,229 @@
 +/*
 + * Copyright (C) 2009 Maxime Simon <simon.maxime@gmail.com>
 + * Copyright (C) 2010 Stephan Aßmus <superstippi@gmx.de>
@@ -4062,7 +4062,7 @@ index 0000000000000000000000000000000000000000..bc7498b6c717a38d2d6a56a095c6dec3
 +FontPlatformData::FontPlatformData(const FontDescription& fontDescription, const AtomString& familyName)
 +{
 +    m_font = std::make_unique<BFont>();
-+    m_font->SetSize(fontDescription.computedSize());
++    m_font->SetSize(fontDescription.usedSize());
 +
 +    font_family fontFamily;
 +    findMatchingFontFamily(familyName, fontFamily);
@@ -4078,7 +4078,7 @@ index 0000000000000000000000000000000000000000..bc7498b6c717a38d2d6a56a095c6dec3
 +FontPlatformData::FontPlatformData(const BFont& font, const FontDescription& fontDescription)
 +{
 +    m_font = std::make_unique<BFont>(font);
-+    m_font->SetSize(fontDescription.computedSize());
++    m_font->SetSize(fontDescription.usedSize());
 +
 +    font_family fontFamily;
 +    font_style fontStyle;
@@ -4191,7 +4191,6 @@ index 0000000000000000000000000000000000000000..bc7498b6c717a38d2d6a56a095c6dec3
 +}
 +
 +} // namespace WebCore
-+
 diff --git a/Source/WebCore/platform/graphics/haiku/GlyphPageTreeNodeHaiku.cpp b/Source/WebCore/platform/graphics/haiku/GlyphPageTreeNodeHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..72461f16f9c1eeaec681129996e31ab96d022e02
@@ -5625,10 +5624,10 @@ index 0000000000000000000000000000000000000000..3711b43af784ff0a28f2e75c76e7067d
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/ImageBufferHaiku.cpp b/Source/WebCore/platform/graphics/haiku/ImageBufferHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..7a7c457289f710bf727206007bfb78d8e62f4210
+index 0000000000000000000000000000000000000000..90e67cf1e841bda706d779b086ac10bb4284cac0
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/ImageBufferHaiku.cpp
-@@ -0,0 +1,245 @@
+@@ -0,0 +1,251 @@
 +/*
 + * Copyright (C) 2010 Stephan Aßmus <superstippi@gmx.de>
 + *
@@ -5741,19 +5740,23 @@ index 0000000000000000000000000000000000000000..7a7c457289f710bf727206007bfb78d8
 +
 +
 +std::unique_ptr<ImageBufferHaikuSurfaceBackend>
-+ImageBufferHaikuSurfaceBackend::create(const ImageBufferBackend::Parameters& parameters,
++ImageBufferHaikuSurfaceBackend::create(const ImageBufferParameters& parameters,
 +    const ImageBufferCreationContext&)
 +{
-+    if (parameters.backendSize.isEmpty())
++    auto backendSize = calculateSafeBackendSize(parameters);
++    if (backendSize.isEmpty())
 +        return nullptr;
 +
-+    return std::unique_ptr<ImageBufferHaikuSurfaceBackend>(
-+        new ImageBufferHaikuSurfaceBackend(parameters, parameters.backendSize));
++    auto backend = std::unique_ptr<ImageBufferHaikuSurfaceBackend>(
++        new ImageBufferHaikuSurfaceBackend(parameters, backendSize));
++    if (!backend->m_data.m_context)
++        return nullptr;
++    return backend;
 +}
 +
 +
 +std::unique_ptr<ImageBufferHaikuSurfaceBackend>
-+ImageBufferHaikuSurfaceBackend::create(const ImageBufferBackend::Parameters& parameters,
++ImageBufferHaikuSurfaceBackend::create(const ImageBufferParameters& parameters,
 +    const GraphicsContext&)
 +{
 +    return create(parameters, ImageBufferCreationContext());
@@ -5761,14 +5764,14 @@ index 0000000000000000000000000000000000000000..7a7c457289f710bf727206007bfb78d8
 +
 +
 +ImageBufferHaikuSurfaceBackend::ImageBufferHaikuSurfaceBackend(
-+    const Parameters& parameters, const IntSize& backendSize)
++    const ImageBufferParameters& parameters, const IntSize& backendSize)
 +    : ImageBufferBackend(parameters)
 +    , m_data(backendSize)
 +{
 +}
 +
 +ImageBufferHaikuSurfaceBackend::ImageBufferHaikuSurfaceBackend(
-+    const Parameters& parameters)
++    const ImageBufferParameters& parameters)
 +    : ImageBufferBackend(parameters)
 +    , m_data({0, 0})
 +{
@@ -5866,17 +5869,19 @@ index 0000000000000000000000000000000000000000..7a7c457289f710bf727206007bfb78d8
 +    return result;
 +}
 +
-+size_t ImageBufferHaikuSurfaceBackend::calculateMemoryCost(const Parameters& parameters)
++size_t ImageBufferHaikuSurfaceBackend::calculateMemoryCost(const ImageBufferParameters& parameters)
 +{
-+    int bytesPerRow = parameters.backendSize.width() * 4;
-+    return ImageBufferBackend::calculateMemoryCost(parameters.backendSize, bytesPerRow);
++    auto backendSize = calculateSafeBackendSize(parameters);
++    if (backendSize.isEmpty())
++        return 0;
++    auto bytesPerRow = CheckedUint32(backendSize.width()) * 4;
++    return ImageBufferBackend::calculateMemoryCost(backendSize, bytesPerRow);
 +}
 +
 +} // namespace WebCore
-+
 diff --git a/Source/WebCore/platform/graphics/haiku/ImageBufferHaikuSurfaceBackend.h b/Source/WebCore/platform/graphics/haiku/ImageBufferHaikuSurfaceBackend.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..439e1b75720cd6a3b19a1dfe1dd6b16d59fc4d58
+index 0000000000000000000000000000000000000000..c4ef78680007b61be05256bedd2d2576ef08d6b0
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/ImageBufferHaikuSurfaceBackend.h
 @@ -0,0 +1,72 @@
@@ -5924,8 +5929,8 @@ index 0000000000000000000000000000000000000000..439e1b75720cd6a3b19a1dfe1dd6b16d
 +    WTF_DEPRECATED_MAKE_FAST_ALLOCATED(ImageBufferHaikuSurfaceBackend);
 +    WTF_MAKE_NONCOPYABLE(ImageBufferHaikuSurfaceBackend);
 +public:
-+    static std::unique_ptr<ImageBufferHaikuSurfaceBackend> create(const ImageBufferBackend::Parameters&, const ImageBufferCreationContext&);
-+    static std::unique_ptr<ImageBufferHaikuSurfaceBackend> create(const ImageBufferBackend::Parameters&, const GraphicsContext&);
++    static std::unique_ptr<ImageBufferHaikuSurfaceBackend> create(const ImageBufferParameters&, const ImageBufferCreationContext&);
++    static std::unique_ptr<ImageBufferHaikuSurfaceBackend> create(const ImageBufferParameters&, const GraphicsContext&);
 +    ~ImageBufferHaikuSurfaceBackend();
 +
 +    GraphicsContext& context() override;
@@ -5936,13 +5941,13 @@ index 0000000000000000000000000000000000000000..439e1b75720cd6a3b19a1dfe1dd6b16d
 +    unsigned bytesPerRow() const override;
 +    bool canMapBackingStore() const override { return true; }
 +
-+    static size_t calculateMemoryCost(const Parameters&);
++    static size_t calculateMemoryCost(const ImageBufferParameters&);
 +
 +    String debugDescription() const override { return ASCIILiteral::fromLiteralUnsafe("haiku image"); }
 +
 +protected:
-+    ImageBufferHaikuSurfaceBackend(const Parameters& parameters, const IntSize& backendSize);
-+    ImageBufferHaikuSurfaceBackend(const Parameters& parameters);
++    ImageBufferHaikuSurfaceBackend(const ImageBufferParameters& parameters, const IntSize& backendSize);
++    ImageBufferHaikuSurfaceBackend(const ImageBufferParameters& parameters);
 +
 +private:
 +    ImageBufferData m_data;
@@ -6235,10 +6240,10 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..e6a7ff00343974a19915bae953d346562e69fbf4
+index 0000000000000000000000000000000000000000..5d875f226141b84fed066a87c656e59c7a7df767
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,517 @@
+@@ -0,0 +1,530 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -6259,6 +6264,7 @@ index 0000000000000000000000000000000000000000..e6a7ff00343974a19915bae953d34656
 + */
 +
 +#include "config.h"
++#include "ColorSpace.h"
 +#include "MediaPlayerPrivateHaiku.h"
 +
 +#if ENABLE(VIDEO)
@@ -6576,17 +6582,27 @@ index 0000000000000000000000000000000000000000..e6a7ff00343974a19915bae953d34656
 +
 +Ref<MediaTimePromise> MediaPlayerPrivate::seekToTarget(const SeekTarget& time)
 +{
-+    m_mediaLock.Lock();
++    if (!m_mediaLock.Lock())
++        return MediaTimePromise::createAndReject(PlatformMediaError::InvalidState);
++    if (!m_videoTrack && !m_audioTrack) {
++        m_mediaLock.Unlock();
++        return MediaTimePromise::createAndReject(PlatformMediaError::NotReady);
++    }
 +    bigtime_t newTime = (bigtime_t)(time.time.toDouble() * 1000000);
++    status_t status = B_OK;
 +    if (m_videoTrack)
-+        m_videoTrack->SeekToTime(&newTime);
-+    if (m_audioTrack)
-+        m_audioTrack->SeekToTime(&newTime);
++        status = m_videoTrack->SeekToTime(&newTime);
++    if (m_audioTrack && status == B_OK)
++        status = m_audioTrack->SeekToTime(&newTime);
++    if (status != B_OK) {
++        m_mediaLock.Unlock();
++        return MediaTimePromise::createAndReject(PlatformMediaError::NotSupportedError);
++    }
 +
 +    m_currentTime = newTime / 1000000.f;
 +
 +    if (m_paused && m_videoTrack && m_frameBuffer) {
-+        int64 count;
++        int64 count = 1;
 +        if (m_videoTrack->ReadFrames(m_frameBuffer->Bits(), &count) == B_OK) {
 +            callOnMainThread([p = WeakPtr(this)] {
 +                if (p)
@@ -6594,8 +6610,10 @@ index 0000000000000000000000000000000000000000..e6a7ff00343974a19915bae953d34656
 +            });
 +        }
 +    }
-+    m_player.timeChanged();
++    auto position = currentTime();
 +    m_mediaLock.Unlock();
++    m_player.timeChanged();
++    return MediaTimePromise::createAndResolve(position);
 +}
 +
 +
@@ -6748,9 +6766,9 @@ index 0000000000000000000000000000000000000000..e6a7ff00343974a19915bae953d34656
 +    return MediaPlayer::SupportsType::IsNotSupported;
 +}
 +
-+DestinationColorSpace MediaPlayerPrivate::colorSpace()
++ColorSpace MediaPlayerPrivate::colorSpace()
 +{
-+    return DestinationColorSpace::SRGB();
++    return ColorSpace::SRGB();
 +}
 +
 +}
@@ -6758,7 +6776,7 @@ index 0000000000000000000000000000000000000000..e6a7ff00343974a19915bae953d34656
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..cda1995b604b37fd7caefc1c1928833e26e71910
+index 0000000000000000000000000000000000000000..63f70781bd9b677516198c0348a530a96df19af8
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
 @@ -0,0 +1,140 @@
@@ -6858,7 +6876,7 @@ index 0000000000000000000000000000000000000000..cda1995b604b37fd7caefc1c1928833e
 +        bool didLoadingProgress() const override;
 +
 +        void paint(GraphicsContext&, const FloatRect&) override;
-+        DestinationColorSpace colorSpace() override;
++        ColorSpace colorSpace() override;
 +
 +    constexpr MediaPlayerType mediaPlayerType() const final { return MediaPlayerType::Haiku; }
 +private:
@@ -6904,10 +6922,10 @@ index 0000000000000000000000000000000000000000..cda1995b604b37fd7caefc1c1928833e
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/NativeImageHaiku.cpp b/Source/WebCore/platform/graphics/haiku/NativeImageHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..e9558715dbf2ae1696c6b74cd41bc679ba9b2341
+index 0000000000000000000000000000000000000000..8a9be616e65d18875e79acb1028c271315b81ad9
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/NativeImageHaiku.cpp
-@@ -0,0 +1,74 @@
+@@ -0,0 +1,75 @@
 +/*
 + * Copyright (C) 2016-2020 Apple Inc.  All rights reserved.
 + *
@@ -6934,6 +6952,7 @@ index 0000000000000000000000000000000000000000..e9558715dbf2ae1696c6b74cd41bc679
 + */
 +
 +#include "config.h"
++#include "ColorSpace.h"
 +#include "NativeImage.h"
 +
 +#include "GraphicsContext.h"
@@ -6953,10 +6972,10 @@ index 0000000000000000000000000000000000000000..e9558715dbf2ae1696c6b74cd41bc679
 +    return platformImage()->ColorSpace() == B_RGBA32;
 +}
 +
-+DestinationColorSpace NativeImage::colorSpace() const
++ColorSpace NativeImage::colorSpace() const
 +{
 +    notImplemented();
-+    return DestinationColorSpace::SRGB();
++    return ColorSpace::SRGB();
 +}
 +
 +std::optional<Color> NativeImage::singlePixelSolidColor() const
@@ -7915,10 +7934,10 @@ index 0000000000000000000000000000000000000000..60ab27e9464c9342864b6c5e1abfcb12
 +#endif // PlatformDisplayHaiku
 diff --git a/Source/WebCore/platform/graphics/haiku/ShareableBitmapHaiku.cpp b/Source/WebCore/platform/graphics/haiku/ShareableBitmapHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..9a8ae63e8e78e803cb330963f9666591a6e69702
+index 0000000000000000000000000000000000000000..15b1a7bce9ee77c69f4808f70ee2a5eb802df88e
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/ShareableBitmapHaiku.cpp
-@@ -0,0 +1,104 @@
+@@ -0,0 +1,105 @@
 +/*
 + * Copyright (C) 2014 Haiku, Inc.
 + *
@@ -7945,6 +7964,7 @@ index 0000000000000000000000000000000000000000..9a8ae63e8e78e803cb330963f9666591
 + */
 +
 +#include "config.h"
++#include "ColorSpace.h"
 +#include "ShareableBitmap.h"
 +
 +#include "BitmapImage.h"
@@ -8001,23 +8021,23 @@ index 0000000000000000000000000000000000000000..9a8ae63e8e78e803cb330963f9666591
 +    return BitmapImage::create(std::move(surface));
 +}
 +
-+CheckedUint32 ShareableBitmapConfiguration::calculateBitsPerComponent(WebCore::PixelFormat fmt, const DestinationColorSpace& colorSpace)
++CheckedUint32 ShareableBitmapConfiguration::calculateBitsPerComponent(WebCore::PixelFormat fmt, const ColorSpace& colorSpace)
 +{
 +    return (calculateBytesPerPixel(fmt, colorSpace) / 4) * 8;
 +}
 +
 +CheckedUint32 ShareableBitmapConfiguration::calculateBytesPerRow(const WebCore::IntSize& size,
-+    WebCore::PixelFormat, const WebCore::DestinationColorSpace& config)
++    WebCore::PixelFormat, const WebCore::ColorSpace& config)
 +{
 +    return 4 * size.width();
 +}
 +
-+CheckedUint32 ShareableBitmapConfiguration::calculateBytesPerPixel(WebCore::PixelFormat, const WebCore::DestinationColorSpace&)
++CheckedUint32 ShareableBitmapConfiguration::calculateBytesPerPixel(WebCore::PixelFormat, const WebCore::ColorSpace&)
 +{
 +    return 4;
 +}
 +
-+DestinationColorSpace ShareableBitmapConfiguration::validateColorSpace(WebCore::DestinationColorSpace const& space)
++ColorSpace ShareableBitmapConfiguration::validateColorSpace(WebCore::ColorSpace const& space)
 +{
 +        return space;
 +}
@@ -8025,10 +8045,10 @@ index 0000000000000000000000000000000000000000..9a8ae63e8e78e803cb330963f9666591
 +}
 diff --git a/Source/WebCore/platform/graphics/haiku/SimpleFontDataHaiku.cpp b/Source/WebCore/platform/graphics/haiku/SimpleFontDataHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..af829949e7dd3c2895566753f50fd045c2c8fba2
+index 0000000000000000000000000000000000000000..ca4c2bcb3955d009cccdd88bc4fbcfaa3c4e7bc0
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/SimpleFontDataHaiku.cpp
-@@ -0,0 +1,138 @@
+@@ -0,0 +1,137 @@
 +/*
 + * Copyright (C) 2006 Apple Computer, Inc.  All rights reserved.
 + * Copyright (C) 2009 Maxime Simon <simon.maxime@gmail.com> All rights reserved.
@@ -8080,7 +8100,7 @@ index 0000000000000000000000000000000000000000..af829949e7dd3c2895566753f50fd045
 +static const float smallCapsFraction = 0.7;
 +static const float emphasisMarkFraction = 0.5;
 +
-+void Font::platformInit()
++void FontBase::platformInit()
 +{
 +    const BFont* font = m_platformData.font();
 +    if (!font)
@@ -8114,7 +8134,7 @@ index 0000000000000000000000000000000000000000..af829949e7dd3c2895566753f50fd045
 +
 +RefPtr<Font> Font::platformCreateScaledFont(const FontDescription& fontDescription, float scaleFactor) const
 +{
-+    const float scaledSize = lroundf(fontDescription.computedSize() * scaleFactor);
++    const float scaledSize = lroundf(fontDescription.usedSize() * scaleFactor);
 +    return Font::create(FontPlatformData::cloneWithSize(m_platformData, scaledSize));
 +}
 +
@@ -8166,7 +8186,6 @@ index 0000000000000000000000000000000000000000..af829949e7dd3c2895566753f50fd045
 +}
 +
 +} // namespace WebCore
-+
 diff --git a/Source/WebCore/platform/graphics/haiku/SystemFontDatabaseHaiku.cpp b/Source/WebCore/platform/graphics/haiku/SystemFontDatabaseHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..418f7610270c840083bc29e86603b5f50a8dac98
@@ -10413,10 +10432,10 @@ index 0000000000000000000000000000000000000000..4ae9f35336dc319d5d3fe7a2cf870576
 +
 diff --git a/Source/WebCore/platform/haiku/PlatformKeyboardEventHaiku.cpp b/Source/WebCore/platform/haiku/PlatformKeyboardEventHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..a153a3a687f13db67551a93637b342a4d94d358e
+index 0000000000000000000000000000000000000000..cc228a3c3b54dba152b7da02563ba14a20cb345c
 --- /dev/null
 +++ b/Source/WebCore/platform/haiku/PlatformKeyboardEventHaiku.cpp
-@@ -0,0 +1,713 @@
+@@ -0,0 +1,712 @@
 +/*
 + * Copyright (C) 2007 Ryan Leavengood <leavengood@gmail.com>
 + * Copyright (C) 2008 Andrea Anzani <andrea.anzani@gmail.com>
@@ -11067,7 +11086,7 @@ index 0000000000000000000000000000000000000000..a153a3a687f13db67551a93637b342a4
 +    int32 nativeVirtualKeyCode = message->FindInt32("key");
 +
 +    m_text = String::fromUTF8(std::span<const char>(bytes.String(), bytes.Length()));
-+    m_unmodifiedText = String(std::span<const char>(bytes.String(), bytes.Length()));
++    m_unmodifiedText = m_text;
 +    m_keyIdentifier = keyIdentifierForHaikuKeyCode(bytes.ByteAt(0), nativeVirtualKeyCode);
 +
 +    m_windowsVirtualKeyCode = windowsKeyCodeForKeyEvent(bytes.ByteAt(0), nativeVirtualKeyCode);
@@ -11129,7 +11148,6 @@ index 0000000000000000000000000000000000000000..a153a3a687f13db67551a93637b342a4
 +
 +
 +} // namespace WebCore
-+
 diff --git a/Source/WebCore/platform/haiku/PlatformMouseEventHaiku.cpp b/Source/WebCore/platform/haiku/PlatformMouseEventHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..8ed6642710ff23ee0337a02d2592ede5110720fd
@@ -11223,7 +11241,7 @@ index 0000000000000000000000000000000000000000..8ed6642710ff23ee0337a02d2592ede5
 +
 diff --git a/Source/WebCore/platform/haiku/PlatformScreenHaiku.cpp b/Source/WebCore/platform/haiku/PlatformScreenHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..6734a699ae3a30642ea5a1d19271d4283a246065
+index 0000000000000000000000000000000000000000..f4b1c7d8cda1a42b6f3bf81b69bab9b3c3f2a464
 --- /dev/null
 +++ b/Source/WebCore/platform/haiku/PlatformScreenHaiku.cpp
 @@ -0,0 +1,113 @@
@@ -11255,6 +11273,7 @@ index 0000000000000000000000000000000000000000..6734a699ae3a30642ea5a1d19271d428
 + */
 +
 +#include "config.h"
++#include "ColorSpace.h"
 +#include "Screen.h"
 +
 +#include "FloatRect.h"
@@ -11333,13 +11352,12 @@ index 0000000000000000000000000000000000000000..6734a699ae3a30642ea5a1d19271d428
 +    return screen.ColorSpace() == B_MONOCHROME_1_BIT;
 +}
 +
-+DestinationColorSpace screenColorSpace(Widget*)
++ColorSpace screenColorSpace(Widget*)
 +{
-+    return DestinationColorSpace::SRGB();
++    return ColorSpace::SRGB();
 +}
 +
 +} // namespace WebCore
-+
 diff --git a/Source/WebCore/platform/haiku/PlatformWheelEventHaiku.cpp b/Source/WebCore/platform/haiku/PlatformWheelEventHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..382e2cf6418190ef3bfec83a8aca4f4f68795259
@@ -18889,10 +18907,10 @@ index 0000000000000000000000000000000000000000..09e42d8e9a598aa58a68373c51c4d590
 +
 diff --git a/Source/WebCore/platform/text/haiku/StringHaiku.cpp b/Source/WebCore/platform/text/haiku/StringHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..3866bfb6ded6446be167667d451926cf0209eedf
+index 0000000000000000000000000000000000000000..61ea71ea73a945cf4fea7a961443c30a88a4fb8c
 --- /dev/null
 +++ b/Source/WebCore/platform/text/haiku/StringHaiku.cpp
-@@ -0,0 +1,43 @@
+@@ -0,0 +1,42 @@
 +/*
 + * Copyright (C) 2007 Ryan Leavengood <leavengood@gmail.com>
 + *
@@ -18929,19 +18947,18 @@ index 0000000000000000000000000000000000000000..3866bfb6ded6446be167667d451926cf
 +String::operator BString() const
 +{
 +    BString string;
-+    string.SetTo(utf8().data());
++    string.SetTo(utf8().legacyCStringPointer());
 +
 +    return string;
 +}
 +
 +} // namespace WebCore
-+
 diff --git a/Source/WebCore/rendering/haiku/RenderThemeHaiku.cpp b/Source/WebCore/rendering/haiku/RenderThemeHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..31bc2f41916e35683686b768eea6b6beedcb487b
+index 0000000000000000000000000000000000000000..92d20a3ff6fd83acdf255b10fa5b68cdfff528ae
 --- /dev/null
 +++ b/Source/WebCore/rendering/haiku/RenderThemeHaiku.cpp
-@@ -0,0 +1,410 @@
+@@ -0,0 +1,409 @@
 +/*
 + * This file is part of the WebKit project.
 + *
@@ -19143,7 +19160,7 @@ index 0000000000000000000000000000000000000000..31bc2f41916e35683686b768eea6b6be
 +    style.resetBorder();
 +    style.resetBorderRadius();
 +
-+    int labelSpacing = be_control_look ? static_cast<int>(be_control_look->DefaultLabelSpacing()) : 3;
++    float labelSpacing = be_control_look ? be_control_look->DefaultLabelSpacing() : 3.f;
 +    // Position the text correctly within the select box and make the box wide enough to fit the dropdown button
 +    style.setPaddingTop(WebCore::Style::PaddingEdge::Fixed { 3 } );
 +    style.setPaddingLeft(WebCore::Style::PaddingEdge::Fixed { 3 + labelSpacing });
@@ -19154,9 +19171,8 @@ index 0000000000000000000000000000000000000000..31bc2f41916e35683686b768eea6b6be
 +    style.setHeight(CSS::Keyword::Auto { });
 +
 +    // Calculate our min-height
-+    const int menuListButtonMinHeight = 20;
-+    int minHeight = style.computedFontSize();
-+    minHeight = std::max(minHeight, menuListButtonMinHeight);
++    const float menuListButtonMinHeight = 20;
++    float minHeight = std::max(style.usedFontSize(), menuListButtonMinHeight);
 +
 +    style.setMinHeight(WebCore::Style::MinimumSize::Fixed { minHeight });
 +}

@@ -15,8 +15,7 @@ portable test execution were verified in the guest as well.
   UTF-8 escaping, rejection of control characters and executable address
   schemes, profile round trips, replacement of saved sessions, private file
   permissions, deduplicated history, and preserving malformed profile data.
-- **32 native browser checks pass in the latest native build** (the earlier
-  installed package passed 28): native scripting responsiveness, a real
+- **32 native browser checks pass in the installed package**: native scripting responsiveness, a real
   HTTP/DOM/JavaScript/CSS/storage/cookie fixture, independent tabs, back/forward,
   closing selected and background tabs, reopening closed tabs, and repeated
   creation and destruction of web views, and focusing an empty address field
@@ -46,7 +45,7 @@ Actual QEMU captures: [start page](screenshots/start.png) and
 Raw logs and guest state are retained in ignored `.vm/`: `browser-build.log`,
 `browser-smoke.log`, `loading-smoke.log`, `package-smoke.log`,
 `session-restart.log`, `rejected-profile.log`, `local-file-build.log`,
-`local-file-smoke.log`, `http.log`,
+`local-file-smoke.log`, `local-package-smoke.log`, `http.log`,
 `engine-reports.jsonl`, `full-sync.log`, `build-dependencies.log`, and
 `llvm-install.log`. The app's guest log is
 `/boot/home/summit/browser.log`.
@@ -87,8 +86,12 @@ input. The current renderer build log is `.vm/webcore-build.log`.
 The source changes address the initial preference-generator conflicts and
 adapt the legacy Curl loader to current cookie-storage interfaces. The adapter
 now compiles; its network behavior still needs verification in the new browser
-engine. Native UTF-8 boundaries are being adapted to current WebKit's `char8_t`
-buffers. WebCore, the renderer integration,
+engine. Native keyboard text, font drawing and sizing, color spaces and canvas
+buffer allocation have been adapted to current upstream interfaces and compile.
+The media seek implementation now returns the required completion promise,
+checks native seek errors and bounds its paused-video read to one frame;
+media behavior still needs runtime verification. Remaining native text/theme
+changes and the generated DOM bindings are being compiled. WebCore, the renderer integration,
 upstream conformance suites and the browser running against the new engine
 are still unverified. The inherited Haiku engine feature switches also leave
 substantial full-browser work, recorded in `REQUIREMENTS.md`.
