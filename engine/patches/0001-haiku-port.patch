@@ -21257,7 +21257,7 @@ index 10932fbbf87880b89b9bdde1473f2a40c988c9e6..3f6bd8692d1e389095a4513d66312d6c
      WTF_MAKE_TZONE_ALLOCATED_INLINE(UnixMessage);
  public:
 diff --git a/Source/WebKit/Platform/Module.h b/Source/WebKit/Platform/Module.h
-index d5a0d8693335265c6d716689e238f144ebcfa2a7..248b212b335e2eb19c30a2be0ca07c08bf03dfbe 100644
+index d5a0d8693335265c6d716689e238f144ebcfa2a7..4da8bf168426fea1b1352cfe671d506913cd0a36 100644
 --- a/Source/WebKit/Platform/Module.h
 +++ b/Source/WebKit/Platform/Module.h
 @@ -38,6 +38,10 @@
@@ -21276,7 +21276,7 @@ index d5a0d8693335265c6d716689e238f144ebcfa2a7..248b212b335e2eb19c30a2be0ca07c08
  #elif USE(GLIB)
      GModule* m_handle;
 +#elif PLATFORM(HAIKU)
-+    image_id m_module;
++    image_id m_module { -1 };
  #endif
  };
  
@@ -21331,10 +21331,10 @@ index 0000000000000000000000000000000000000000..b78517cd47cc3e776e3c70ff854b2d6c
 +#endif // !LOG_DISABLED
 diff --git a/Source/WebKit/Platform/haiku/ModuleHaiku.cpp b/Source/WebKit/Platform/haiku/ModuleHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..6c1b3916ff0fd1dfda2f69b43591c35bb213fc63
+index 0000000000000000000000000000000000000000..b74d082988e7091f1376fc40192116c167e4b86d
 --- /dev/null
 +++ b/Source/WebKit/Platform/haiku/ModuleHaiku.cpp
-@@ -0,0 +1,55 @@
+@@ -0,0 +1,51 @@
 +/*
 +    Copyright (C) 2014 Haiku, Inc.
 +
@@ -21358,41 +21358,148 @@ index 0000000000000000000000000000000000000000..6c1b3916ff0fd1dfda2f69b43591c35b
 +#include "Module.h"
 +
 +#include <wtf/text/CString.h>
++#include <utility>
 +
 +namespace WebKit {
 +
 +bool Module::load()
 +{
-+    m_module = load_add_on(m_path.utf8().data());
-+    if (!m_module) {
-+        return false;
-+    }
-+
-+    return true;
++    if (m_module >= 0)
++        return true;
++    m_module = load_add_on(m_path.utf8().legacyCStringPointer());
++    return m_module >= 0;
 +}
 +
 +void Module::unload()
 +{
-+    unload_add_on(m_module);
-+    m_module = 0;
++    auto module = std::exchange(m_module, -1);
++    if (module >= 0)
++        unload_add_on(module);
 +}
 +
 +void* Module::platformFunctionPointer(const char* functionName) const
 +{
-+    if (m_module) {
-+        void* pointer = NULL;
-+        get_image_symbol(m_module, functionName, B_SYMBOL_TYPE_ANY, &pointer);
-+        return pointer;
++    void* pointer = nullptr;
++    if (m_module < 0 || get_image_symbol(m_module, functionName, B_SYMBOL_TYPE_ANY, &pointer) != B_OK)
++        return nullptr;
++    return pointer;
++}
++
++} // namespace WebKit
+diff --git a/Source/WebKit/Platform/haiku/StoragePathsHaiku.cpp b/Source/WebKit/Platform/haiku/StoragePathsHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..5808553a1f8298d5e614bac2579cad5d06fe465a
+--- /dev/null
++++ b/Source/WebKit/Platform/haiku/StoragePathsHaiku.cpp
+@@ -0,0 +1,67 @@
++/*
++ * Copyright (C) 2026 KunanyiOS contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "StoragePathsHaiku.h"
++
++#include <Application.h>
++#include <Directory.h>
++#include <FindDirectory.h>
++#include <Path.h>
++#include <wtf/FileSystem.h>
++#include <wtf/text/StringView.h>
++
++namespace WebKit {
++
++String storageDirectoryPathHaiku(bool cache, const String& baseDirectory, const String& directoryName, bool create)
++{
++    if (directoryName.contains('\0') || baseDirectory.contains('\0') || directoryName.startsWith('/'))
++        return { };
++    for (auto component : StringView(directoryName).split('/')) {
++        if (component == ".."_s)
++            return { };
 +    }
 +
-+    return 0;
++    String base = baseDirectory;
++    if (base.isNull()) {
++        BPath nativePath;
++        if (!be_app || !be_app->Signature()
++            || find_directory(cache ? B_USER_CACHE_DIRECTORY : B_USER_SETTINGS_DIRECTORY, &nativePath) != B_OK)
++            return { };
++        auto application = FileSystem::encodeForFileName(String::fromUTF8(be_app->Signature()));
++        base = FileSystem::pathByAppendingComponent(String::fromUTF8(nativePath.Path()), "WebKit"_s);
++        base = FileSystem::pathByAppendingComponent(base, application);
++    }
++    // An explicitly empty profile base must never become a path relative to
++    // the current working directory.
++    if (base.isEmpty() || !base.startsWith('/'))
++        return { };
++    auto result = directoryName.isEmpty() ? base : FileSystem::pathByAppendingComponent(base, directoryName);
++    if (create && create_directory(FileSystem::fileSystemRepresentation(result).legacyCStringPointer(), 0700) != B_OK)
++        return { };
++    return result;
 +}
 +
-+}
++} // namespace WebKit
+diff --git a/Source/WebKit/Platform/haiku/StoragePathsHaiku.h b/Source/WebKit/Platform/haiku/StoragePathsHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aab4f6fbba
+--- /dev/null
++++ b/Source/WebKit/Platform/haiku/StoragePathsHaiku.h
+@@ -0,0 +1,32 @@
++/*
++ * Copyright (C) 2026 KunanyiOS contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
 +
++#pragma once
++
++#include <wtf/text/WTFString.h>
++
++namespace WebKit {
++String storageDirectoryPathHaiku(bool cache, const String& baseDirectory, const String& directoryName, bool create);
++} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..cdc59ec4069c31af772411bd2bb0f7af1e3a0f79
+index 0000000000000000000000000000000000000000..6d5d1bb1ef310ebe266651bd1a642b6489981187
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
 @@ -0,0 +1,130 @@
@@ -21416,12 +21523,11 @@ index 0000000000000000000000000000000000000000..cdc59ec4069c31af772411bd2bb0f7af
 +    Platform/classifier/ResourceLoadStatisticsClassifier.cpp
 +    Platform/haiku/LoggingHaiku.cpp
 +    Platform/haiku/ModuleHaiku.cpp
++    Platform/haiku/StoragePathsHaiku.cpp
 +    Shared/unix/AuxiliaryProcessMain.cpp
 +    Shared/haiku/ProcessExecutablePathHaiku.cpp
-+    Shared/haiku/WebCoreArgumentCodersHaiku.cpp
 +    Shared/haiku/WebMemorySamplerHaiku.cpp
 +
-+    UIProcess/API/haiku/APIWebsiteDataStoreHaiku.cpp
 +    UIProcess/DefaultUndoController.cpp
 +    UIProcess/Launcher/haiku/ProcessLauncherHaiku.cpp
 +    UIProcess/LegacySessionStateCodingNone.cpp
@@ -21444,6 +21550,7 @@ index 0000000000000000000000000000000000000000..cdc59ec4069c31af772411bd2bb0f7af
 +    "${WEBKIT_DIR}/Platform"
 +    "${WEBKIT_DIR}/Platform/IPC/unix"
 +    "${WEBKIT_DIR}/Platform/IPC/haiku"
++    "${WEBKIT_DIR}/Platform/haiku"
 +    "${WEBKIT_DIR}/Platform/classifier"
 +    "${WEBKIT_DIR}/Shared/API/c/haiku"
 +    "${WEBKIT_DIR}/Shared/CoordinatedGraphics"
@@ -22065,7 +22172,7 @@ index 0000000000000000000000000000000000000000..a35e9256c3e1b09d6b64d4b8adb4f282
 +#endif // WebEventFactory_h
 diff --git a/Source/WebKit/Shared/haiku/WebMemorySamplerHaiku.cpp b/Source/WebKit/Shared/haiku/WebMemorySamplerHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..48145f5ad3406e6bcb671899575cdbcff43efb08
+index 0000000000000000000000000000000000000000..964df248231137e87da9c37afbb37b84a0a00740
 --- /dev/null
 +++ b/Source/WebKit/Shared/haiku/WebMemorySamplerHaiku.cpp
 @@ -0,0 +1,156 @@
@@ -22135,7 +22242,7 @@ index 0000000000000000000000000000000000000000..48145f5ad3406e6bcb671899575cdbcf
 +{
 +    ApplicationMemoryStats applicationStats = {0, 0, 0, 0, 0, 0, 0};
 +
-+    ssize_t cookie;
++    ssize_t cookie = 0;
 +    area_info area;
 +
 +    while (get_next_area_info(B_CURRENT_TEAM, &cookie, &area) == B_OK)
@@ -22897,10 +23004,10 @@ index 0000000000000000000000000000000000000000..f0d827e69a42a3717accff5f30c55629
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/WebsiteData/haiku/WebsiteDataStoreHaiku.cpp b/Source/WebKit/UIProcess/WebsiteData/haiku/WebsiteDataStoreHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..6f011911668d69ca4d840e72ee882aba437b5172
+index 0000000000000000000000000000000000000000..e545399afbe8b5539a8026d49532e05ab3fbb017
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/WebsiteData/haiku/WebsiteDataStoreHaiku.cpp
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,66 @@
 +/*
 + * Copyright (C) 2019 Haiku, Inc.
 + *
@@ -22929,6 +23036,7 @@ index 0000000000000000000000000000000000000000..6f011911668d69ca4d840e72ee882aba
 +#include "config.h"
 +#include "WebsiteDataStore.h"
 +#include "WebsiteDataStoreParameters.h"
++#include "StoragePathsHaiku.h"
 +
 +#include <WebCore/NotImplemented.h>
 +
@@ -22949,19 +23057,15 @@ index 0000000000000000000000000000000000000000..6f011911668d69ca4d840e72ee882aba
 +#endif
 +
 +String WebsiteDataStore::cacheDirectoryFileSystemRepresentation(const String& directoryName,
-+    const WTF::String& baseCacheDirectory, WebsiteDataStore::ShouldCreateDirectory)
++    const String& baseCacheDirectory, ShouldCreateDirectory create)
 +{
-+    if (!baseCacheDirectory.isNull())
-+        return FileSystem::pathByAppendingComponent(baseCacheDirectory, directoryName);
-+    return FileSystem::pathByAppendingComponent("/app0"_s, directoryName);
++    return storageDirectoryPathHaiku(true, baseCacheDirectory, directoryName, create == ShouldCreateDirectory::Yes);
 +}
 +
 +String WebsiteDataStore::websiteDataDirectoryFileSystemRepresentation(const String& directoryName,
-+    const WTF::String& baseDataDirectory, WebsiteDataStore::ShouldCreateDirectory)
++    const String& baseDataDirectory, ShouldCreateDirectory create)
 +{
-+    if (!baseDataDirectory.isNull())
-+        return FileSystem::pathByAppendingComponent(baseDataDirectory, directoryName);
-+    return FileSystem::pathByAppendingComponent("/app0"_s, directoryName);
++    return storageDirectoryPathHaiku(false, baseDataDirectory, directoryName, create == ShouldCreateDirectory::Yes);
 +}
 +
 +UnifiedOriginStorageLevel WebsiteDataStore::defaultUnifiedOriginStorageLevel()
@@ -23248,10 +23352,10 @@ index 0000000000000000000000000000000000000000..b12e656b2046acc0f1325d1b28ee8be2
 +#endif
 diff --git a/Source/WebKit/UIProcess/haiku/WebPageProxyHaiku.cpp b/Source/WebKit/UIProcess/haiku/WebPageProxyHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..06d0a54b5b5d932478a63490afed3497bb895397
+index 0000000000000000000000000000000000000000..abf359963e3793e13780d3869692c3aa73c33016
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebPageProxyHaiku.cpp
-@@ -0,0 +1,65 @@
+@@ -0,0 +1,66 @@
 +/*
 + * Copyright (C) 2014-2021 Haiku, inc.
 + *
@@ -23307,9 +23411,10 @@ index 0000000000000000000000000000000000000000..06d0a54b5b5d932478a63490afed3497
 +    notImplemented();
 +}
 +
-+void WebPageProxy::loadRecentSearches(IPC::Connection&, const String& name, CompletionHandler<void(Vector<WebCore::RecentSearch>&&)>&&)
++void WebPageProxy::loadRecentSearches(IPC::Connection&, const String& name, CompletionHandler<void(Vector<WebCore::RecentSearch>&&)>&& completionHandler)
 +{
 +    notImplemented();
++    completionHandler({ });
 +}
 +
 +void WebPageProxy::didUpdateEditorState(const EditorState&, const EditorState&)
@@ -24215,7 +24320,7 @@ index 0000000000000000000000000000000000000000..7459ce25f180160a1c12431c73926a1f
 +
 diff --git a/Source/WebKit/WebProcess/WebPage/haiku/WebPageHaiku.cpp b/Source/WebKit/WebProcess/WebPage/haiku/WebPageHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..78ab9a456e1cea70d91afdbfc533e6b847a06737
+index 0000000000000000000000000000000000000000..015a9dcdd5e7a9f46a2f441927c051898dcef386
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/WebPage/haiku/WebPageHaiku.cpp
 @@ -0,0 +1,118 @@
@@ -24267,7 +24372,7 @@ index 0000000000000000000000000000000000000000..78ab9a456e1cea70d91afdbfc533e6b8
 +{
 +}
 +
-+void WebPage::platformReinitialize()
++void WebPage::platformReinitializeAccessibilityToken()
 +{
 +}
 +
@@ -24347,7 +24452,7 @@ index 0000000000000000000000000000000000000000..6549d7f5c9eac54d993817a051d3965d
 +resource app_flags B_MULTIPLE_LAUNCH | B_BACKGROUND_APP;
 diff --git a/Source/WebKit/WebProcess/haiku/WebProcessHaiku.cpp b/Source/WebKit/WebProcess/haiku/WebProcessHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..60210a952f257f5378b9d3e4461c1b2a059a9eff
+index 0000000000000000000000000000000000000000..fdfe5c82e968f5b6768974856f9b42cc1f2cb371
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/haiku/WebProcessHaiku.cpp
 @@ -0,0 +1,47 @@
@@ -24383,7 +24488,7 @@ index 0000000000000000000000000000000000000000..60210a952f257f5378b9d3e4461c1b2a
 +
 +namespace WebKit {
 +
-+void WebProcess::platformInitializeWebProcess(WebProcessCreationParameters&& parameters)
++void WebProcess::platformInitializeWebProcess(WebProcessCreationParameters& parameters)
 +{
 +    notImplemented();
 +}

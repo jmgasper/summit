@@ -247,6 +247,20 @@ records successfully transfer the resulting **224-descriptor** maximum.
 Run `tools/test-engine-message-packets-in-vm.sh`; final log:
 `.vm/native-message-packet-tests-final.log`.
 
+The native storage-path adapter passes **18 checks** for separate cache/settings
+roots, application namespaces, explicit profiles, Unicode paths, private new
+directories, creation failures and rejected relative/traversal paths. Empty
+explicit profiles cannot fall back to the working directory. Run
+`tools/test-engine-storage-paths-in-vm.sh`; log:
+`.vm/native-storage-path-tests-private.log`. These are path-adapter checks;
+complete website-data separation still requires the modern browser integration.
+
+The native module loader passes **10 checks** for missing images and symbols,
+Unicode paths, repeated loads, explicit unloading and destructor cleanup.
+Failed native image IDs no longer report success, and repeated loads do not
+leak loader references. Run `tools/test-engine-modules-in-vm.sh`; log:
+`.vm/native-module-tests.log`.
+
 Modern WebKit configuration succeeds with private ICU 78, Unix-domain sockets,
 the current Curl network-process sources and native WebProcess application
 resources. The new connection backend validates complete packets and retains
