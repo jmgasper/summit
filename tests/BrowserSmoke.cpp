@@ -8,6 +8,9 @@
 #include <Path.h>
 #include <cstdio>
 #include <cstdlib>
+#include <cerrno>
+#include <climits>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -72,10 +75,42 @@ static void Send(const BMessenger& window, uint32 what, const char* url = nullpt
     if (id >= 0) message.AddInt64("id", id);
     window.SendMessage(&message);
 }
-int main()
+int main(int argc, char** argv)
 {
-    BApplication application("application/x-vnd.Kunanyi-Summit-smoke");
-    BMessenger app("application/x-vnd.Kunanyi-Summit");
+    team_id team = -1;
+    const char* expectedBackend = nullptr;
+    bool navigationOnly = false;
+    for (int i = 1; i < argc; ++i) {
+        if (!std::strcmp(argv[i], "--navigation-only")) {
+            navigationOnly = true;
+        } else if (!std::strcmp(argv[i], "--team") && i + 1 < argc) {
+            char* end = nullptr;
+            errno = 0;
+            long parsed = std::strtol(argv[++i], &end, 10);
+            if (errno || !*argv[i] || *end || parsed <= 0 || parsed > INT_MAX) {
+                std::fputs("Invalid native browser team ID\n", stderr);
+                return 2;
+            }
+            team = static_cast<team_id>(parsed);
+        } else if (!std::strcmp(argv[i], "--backend") && i + 1 < argc
+            && (!std::strcmp(argv[i + 1], "modern") || !std::strcmp(argv[i + 1], "legacy"))) {
+            expectedBackend = argv[++i];
+        } else {
+            std::fputs("Usage: BrowserSmoke [--team ID] [--backend modern|legacy] [--navigation-only]\n", stderr);
+            return 2;
+        }
+    }
+    if (expectedBackend && team < 0) {
+        std::fputs("Backend-specific smoke tests require an explicit --team ID\n", stderr);
+        return 2;
+    }
+    status_t status = B_NO_INIT;
+    BApplication application("application/x-vnd.Kunanyi-Summit-smoke", &status);
+    if (status != B_OK) {
+        std::fprintf(stderr, "FAIL initialize native smoke application: %s\n", std::strerror(status));
+        return 1;
+    }
+    BMessenger app("application/x-vnd.Kunanyi-Summit", team);
     Check(app.IsValid(), "native browser is running");
     if (!app.IsValid()) return 1;
     BMessage request(B_GET_PROPERTY), reply;
@@ -85,6 +120,13 @@ int main()
     Check(reply.FindMessenger("result", &window) == B_OK && window.IsValid(), "window responds through native scripting");
     if (!window.IsValid()) return 1;
     auto initial = State(window);
+    if (expectedBackend) {
+        const char* backend = nullptr;
+        bool matches = app.Team() == team && initial.FindString("backend", &backend) == B_OK
+            && !std::strcmp(backend, expectedBackend);
+        Check(matches, "exact browser team reports the required engine backend");
+        if (!matches) return 1;
+    }
     const auto count = Count(initial);
     const auto original = Selected(initial);
     Check(count >= 1, "session has a selected tab");
@@ -154,35 +196,39 @@ int main()
     Send(window, summit::kNavigate, "http://10.0.2.2:8765/basic");
     Wait(window, [](const BMessage& s) { return Title(s) == "Summit fixture PASS"; });
     std::filesystem::remove_all(localDirectory);
-    BPath userDirectory;
-    const bool hasUserDirectory = find_directory(B_USER_DIRECTORY, &userDirectory) == B_OK;
-    Check(hasUserDirectory, "locate the native Downloads folder");
-    if (hasUserDirectory) {
-        const std::string token = std::to_string(find_thread(nullptr)) + "-" + std::to_string(system_time());
-        const auto downloadPath = std::filesystem::path(userDirectory.Path()) / "Downloads" / ("summit-test-" + token + ".txt");
-        const bool unusedFilename = !std::filesystem::exists(downloadPath);
-        Check(unusedFilename, "download fixture has a unique destination");
-        if (unusedFilename) {
-            const std::string url = "http://10.0.2.2:8765/download?token=" + token;
-            Send(window, summit::kNavigate, url.c_str());
-            Check(Wait(window, [&](const BMessage&) {
-                std::ifstream file(downloadPath, std::ios::binary);
-                return std::string(std::istreambuf_iterator<char>(file), {}) == "Summit download fixture\n";
-            }), "HTTP attachment saves its exact contents in Downloads");
-            Check(Wait(window, [](const BMessage& s) {
-                const char* engine = "";
-                const char* status = "";
-                if (s.FindString("haiku_webkit", &engine) != B_OK || s.FindString("status", &status) != B_OK) return false;
-                const bool reportsCompletion = std::string(engine).find("+summit.") != std::string::npos;
-                return std::string(status) == (reportsCompletion
-                    ? "Download complete — open Downloads to view the file"
-                    : "Download ended — open Downloads to view the file");
-            }), "download notification reflects the engine's available completion information");
-            std::filesystem::remove(downloadPath);
+    if (!navigationOnly) {
+        BPath userDirectory;
+        const bool hasUserDirectory = find_directory(B_USER_DIRECTORY, &userDirectory) == B_OK;
+        Check(hasUserDirectory, "locate the native Downloads folder");
+        if (hasUserDirectory) {
+            const std::string token = std::to_string(find_thread(nullptr)) + "-" + std::to_string(system_time());
+            const auto downloadPath = std::filesystem::path(userDirectory.Path()) / "Downloads" / ("summit-test-" + token + ".txt");
+            const bool unusedFilename = !std::filesystem::exists(downloadPath);
+            Check(unusedFilename, "download fixture has a unique destination");
+            if (unusedFilename) {
+                const std::string url = "http://10.0.2.2:8765/download?token=" + token;
+                Send(window, summit::kNavigate, url.c_str());
+                Check(Wait(window, [&](const BMessage&) {
+                    std::ifstream file(downloadPath, std::ios::binary);
+                    return std::string(std::istreambuf_iterator<char>(file), {}) == "Summit download fixture\n";
+                }), "HTTP attachment saves its exact contents in Downloads");
+                Check(Wait(window, [](const BMessage& s) {
+                    const char* engine = "";
+                    const char* status = "";
+                    if (s.FindString("haiku_webkit", &engine) != B_OK || s.FindString("status", &status) != B_OK) return false;
+                    const bool reportsCompletion = std::string(engine).find("+summit.") != std::string::npos;
+                    return std::string(status) == (reportsCompletion
+                        ? "Download complete — open Downloads to view the file"
+                        : "Download ended — open Downloads to view the file");
+                }), "download notification reflects the engine's available completion information");
+                std::filesystem::remove(downloadPath);
+            }
         }
+        Send(window, summit::kNavigate, "http://10.0.2.2:8765/basic");
+        Check(Wait(window, [](const BMessage& s) { return Title(s) == "Summit fixture PASS"; }), "browsing remains usable after a download");
+    } else {
+        std::puts("SKIP downloads: explicit navigation-only test scope");
     }
-    Send(window, summit::kNavigate, "http://10.0.2.2:8765/basic");
-    Check(Wait(window, [](const BMessage& s) { return Title(s) == "Summit fixture PASS"; }), "browsing remains usable after a download");
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

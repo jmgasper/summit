@@ -329,9 +329,13 @@ these, **115** are present in the compiled WTF archive but absent from shared
 JavaScriptCore: the static archive only contributed objects JSC itself used.
 Haiku now follows the other ports' object-library configuration, placing all
 WTF/bmalloc objects in JSC once. The legacy link workaround was adjusted to
-avoid adding a second WTF copy. Native symbol inspection and upstream CMake
-routing checks support the fix; the complete link still needs repeating.
-Evidence: `.vm/modern-font-view-build.log`, `.vm/modern-wtf-link-audit.json`.
+avoid adding a second WTF copy. The corrected Modern JavaScriptCore has now
+relinked and exports **115/115** missing WTF definitions plus the checked global
+ownership sentinels. Its actual shell passes **31 smoke assertions** with ASLR
+enabled; shell, library, private ICU and staged test hashes remain unchanged.
+The complete WebKit link and its ownership check are still pending.
+Evidence: `.vm/modern-font-view-build.log`, `.vm/modern-wtf-link-audit.json`,
+`.vm/jsc-modern-validation.BnVSDlqx/results/result.json`.
 The native drawing areas also needed the upstream message-sender template
 definitions, and the bitmap adapter needed its platform memory-accounting
 hook. All three corrected objects compile, and their targeted unresolved
@@ -456,6 +460,15 @@ so a queued page-state update cannot turn it into a pass. Evidence:
 `.vm/modern-browser-compile.json`, `.vm/modern-preview-compile.json`,
 `.vm/modern-context-ee907fa65fd9680186a41e17/result.json` and
 `.vm/legacy-startup-compile.json`.
+
+The browser smoke harness now accepts an explicit native team and required
+backend before navigating. Four invalid-argument cases are rejected, and an
+actual negative test against the running legacy team rejects the requested
+modern backend before changing any page. Its explicit `--navigation-only`
+mode reports downloads as skipped without counting them as passes; the default
+suite retains the download checks. The revised harness compiles natively.
+Evidence: `.vm/browser-smoke-targeting-results.json`. Modern browser navigation
+results still await the completed engine.
 
 The native HTML select popup adapter compiles and its real widget passes
 **104 checks** across eight scenarios. Tests cover keyboard navigation from the

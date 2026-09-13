@@ -54,7 +54,9 @@ The native embedding seam is already present in modern WebKit.
 `setWeakWebExtensionController(WebExtensionController*)`.
 `WebPageProxy.cpp:968` retains them, `:1030` adds the page to the controller,
 and `:14819` includes controller parameters in page creation. The WebProcess
-receives them in `WebProcess/WebPage/WebPage.cpp:879`.
+consumes them only on Cocoa at `WebProcess/WebPage/WebPage.cpp:878`;
+`WebPage.h:1868` currently returns a null controller proxy on Haiku. Those
+gates must change together with the native proxy implementation.
 Attach the controller before creating each Summit page, including new windows;
 a JavaScript injection API in the application is not needed for this route.
 
@@ -62,12 +64,18 @@ Use one browser-owned controller configuration per actual profile, with its
 chosen `WebsiteDataStore`, extension storage directory and durable extension
 identifiers. `WebExtensionControllerConfiguration` already exposes
 `setStorageDirectory`, `setDefaultWebsiteDataStore`, persistent/nonpersistent
-factories, and a UUID constructor. Its path creation and `copy` methods are
-currently implemented only in
-`UIProcess/Extensions/Cocoa/WebExtensionControllerConfigurationCocoa.mm`.
-Add native implementations that obey Summit's profile paths. Ordinary pages
-can retain the profile controller; controller-owned background/popup pages
-should use the weak configuration reference to avoid ownership cycles. Private
+factories, and a UUID constructor. The native adapter now implements path
+creation and `copy` in
+`UIProcess/Extensions/haiku/WebExtensionControllerConfigurationHaiku.cpp:37`.
+It computes default paths through `StoragePathsHaiku`, creates real temporary
+directories, and preserves the selected directory and data store when copied.
+Its default path follows the application signature; the browser still needs
+to supply each actual profile's directory and data store explicitly. Persistent
+extension storage also requires a durable custom extension identifier:
+`WebExtensionController.cpp:449` returns no directory without one.
+Ordinary pages can retain the profile controller; controller-owned
+background/popup pages should use the weak configuration reference to avoid
+ownership cycles. Private
 access remains a separate permission (`setHasAccessToPrivateData`) and data
 store decision, with controller sets for private and nonprivate content
 controllers. A second storage folder alone does not prove private isolation.
@@ -127,6 +135,54 @@ The next gates are upstream manifest/match-pattern assertions linked against
 compatible Modern dependencies, then the actual WebKit library and process
 executables with the feature enabled and the remaining native runtime paths.
 Keep those feature-on probes isolated from the full-engine build.
+
+**Feature-enabled controller runtime tests cannot use the feature-disabled
+WebKit library.** `ENABLE_WK_WEB_EXTENSIONS` changes object layouts and the
+generated IPC contract:
+
+| Current source | Feature-enabled difference |
+| --- | --- |
+| `UIProcess/API/APIPageConfiguration.h:535` | Adds the required extension URL and strong/weak controller references to configuration data. |
+| `UIProcess/WebPageProxy.h:3876` | Adds strong/weak controller references to each page proxy. |
+| `Shared/WebPageCreationParameters.h:284` | Adds controller parameters to the page-creation structure and its serialized payload. |
+| `Shared/API/APIObject.h:190` | Inserts extension API type IDs before existing types, changing subsequent values including `WebsiteDataStore` and `WebsitePolicies`. |
+
+A successful link does not establish compatibility. Controller and
+configuration runtime tests need a matching feature-enabled WebKit dependency
+closure, including the generated headers/serializers and any process
+executables they use. Keep these probes compile-only until that closure is
+available; linking selected feature-enabled objects to the baseline
+feature-disabled `libWebKit.so` is unsafe. The standalone native path/archive
+helper checks do not cross this boundary and do not demonstrate controller
+execution.
+
+The next proposed native slice is profile-owned controller/context lifecycle
+and resource serving. `UIProcess/haiku/WebViewContextHaiku` is the existing
+owner of the profile's process pool and data store; it should also own the
+controller and attach it in `configure(API::PageConfiguration&)`. Preserve
+the common controller load/unload implementation at
+`WebExtensionController.cpp:147`, including duplicate-context/base-URL
+rejection, rollback and process notifications. Proposed implementation files
+under `UIProcess/Extensions/haiku` are:
+
+| Proposed file; not implemented | Required scope |
+| --- | --- |
+| `WebExtensionControllerHaiku.cpp` | Native platform/client initialization. Port the five-second freshly-created expiry at `WebExtensionController.cpp:101`; generated controller message dispatch also needs the seven test callbacks currently in `Cocoa/API/WebExtensionControllerAPITestCocoa.mm:42`. |
+| `WebExtensionContextHaiku.cpp` | Native extension construction, state/errors, load/unload/reload, storage invalidation and page identities. Preserve the sequencing and cleanup in `Cocoa/WebExtensionContextCocoa.mm:278`, including asynchronous unloaded-context checks and notifying WebProcesses before injection. |
+| `WebExtensionURLSchemeHandlerHaiku.cpp` | Constructor plus start/stop/completed task methods, preserving the resource permission, response and cancellation semantics at `Cocoa/WebExtensionURLSchemeHandlerCocoa.mm:58`. |
+
+Header adaptation is a prerequisite: `WebExtensionContext.h:217` has no
+Haiku extension constructor; `:636` uses an undefined native `WebViewClass`,
+and `:753` exposes GLib state types outside a GLib guard. Its native state
+and background-page ownership need real representations. `CocoaMenuItem`
+declarations and the `NSBlockOperation` map at
+`WebExtensionURLSchemeHandler.h:56` also require platform separation.
+Adding only an empty controller platform hook cannot supply this runtime.
+The first lifecycle fixture against matching dependencies can use a manifest
+without scripts or background content to verify registration, duplicate rejection, rollback,
+unload/reset and profile persistence. That establishes lifecycle behavior;
+content-script/background execution still requires the proxy, binding and
+page integration gates below.
 
 | Required port work after the manifest-core compile | Existing implementation to preserve |
 | --- | --- |
