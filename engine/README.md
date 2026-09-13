@@ -43,6 +43,10 @@ not enabled or validated. Platform feature switches inherited from the Haiku
 port (including disabled WebGL, WebAudio and media APIs) must be reviewed
 against the full-browser objective.
 
+The [extension integration design](EXTENSIONS.md) records the shared upstream
+runtime, Haiku's missing process infrastructure and the compatibility evidence
+needed for the original three-ecosystem requirement.
+
 Primary source references:
 
 - https://github.com/WebKit/WebKit

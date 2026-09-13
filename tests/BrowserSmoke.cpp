@@ -39,6 +39,17 @@ static std::string Title(const BMessage& state)
     }
     return {};
 }
+static bool Loading(const BMessage& state)
+{
+    BMessage tab;
+    for (int32 i = 0; state.FindMessage("tab", i, &tab) == B_OK; ++i) {
+        int64 id = -1;
+        bool loading = true;
+        tab.FindInt64("id", &id); tab.FindBool("loading", &loading);
+        if (id == Selected(state)) return loading;
+    }
+    return true;
+}
 static bool Wait(const BMessenger& window, const std::function<bool(const BMessage&)>& predicate)
 {
     const bigtime_t deadline = system_time() + 20000000;
@@ -73,6 +84,12 @@ int main()
     Check(count >= 1, "session has a selected tab");
     Send(window, summit::kNavigate, "http://10.0.2.2:8765/basic");
     Check(Wait(window, [](const BMessage& s) { return Title(s) == "Summit fixture PASS"; }), "real HTTP, JavaScript, DOM, CSS, storage, fetch and cookie fixture");
+    Check(Wait(window, [](const BMessage& s) { return Title(s) == "Summit fixture PASS" && !Loading(s); }), "completed page clears its loading indicator");
+    Send(window, summit::kNavigate, "http://10.0.2.2:8765/slow");
+    Check(Wait(window, [](const BMessage& s) { return Title(s) == "Summit pending image" && Loading(s); }), "DOM readiness keeps the loading indicator while an image is pending");
+    Check(Wait(window, [](const BMessage& s) { return Title(s) == "Summit completed image" && !Loading(s); }), "resource completion clears the loading indicator");
+    Send(window, summit::kNavigate, "http://10.0.2.2:8765/basic");
+    Check(Wait(window, [](const BMessage& s) { return Title(s) == "Summit fixture PASS"; }), "navigation remains usable after delayed resources complete");
     Send(window, summit::kNewTab, "http://10.0.2.2:8765/second");
     Check(Wait(window, [&](const BMessage& s) { return Count(s) == count + 1 && Title(s) == "Summit second page"; }), "new tab creates a live WebKit page");
     auto selected = Selected(State(window));
@@ -90,6 +107,8 @@ int main()
     auto reopened = Selected(State(window));
     Send(window, summit::kSelectTab, nullptr, selected);
     Check(Wait(window, [&](const BMessage& s) { return Selected(s) == selected; }), "selecting a background tab");
+    snooze(200000); // Allow the engine's resent progress notifications to arrive.
+    Check(Wait(window, [&](const BMessage& s) { return Selected(s) == selected && !Loading(s); }), "selecting a completed tab keeps its loading indicator cleared");
     Send(window, summit::kCloseTab, nullptr, selected);
     Check(Wait(window, [&](const BMessage& s) { return Count(s) == count && Selected(s) == reopened; }), "closing the foreground tab selects a live neighbour");
     Send(window, summit::kBookmark);

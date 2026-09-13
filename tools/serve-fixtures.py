@@ -4,6 +4,7 @@ import argparse
 import http.server
 import json
 import pathlib
+import time
 import urllib.parse
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -57,6 +58,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send(self.headers.get('Cookie', '').encode(), 'text/plain')
         elif path == '/second':
             self.send(b'<!doctype html><title>Summit second page</title><h1>Second page</h1><a href="/basic">Back to engine checks</a>')
+        elif path == '/slow':
+            self.send(b'''<!doctype html><title>Loading delayed fixture</title><h1>Delayed image</h1>
+<script>document.addEventListener('DOMContentLoaded', () => { document.title = 'Summit pending image'; });
+window.addEventListener('load', () => { document.title = 'Summit completed image'; });</script>
+<img src="/slow-image" alt="delayed fixture">''')
+        elif path == '/slow-image':
+            time.sleep(3)
+            self.send(bytes.fromhex('47494638396101000100800000000000ffffff21f90401000000002c00000000010001000002024401003b'), 'image/gif', [('Cache-Control', 'no-store')])
         elif path == '/download':
             self.send(b'Summit download fixture\n', 'application/octet-stream', [('Content-Disposition', 'attachment; filename="summit-test.txt"')])
         else:

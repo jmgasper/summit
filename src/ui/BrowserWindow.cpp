@@ -157,8 +157,10 @@ BrowserWindow::BrowserWindow(std::filesystem::path profile, std::string homeURL,
     if (!urls.empty()) for (const auto& url : urls) CreateTab(url);
     else if (!restored.empty()) {
         for (const auto& page : restored) CreateTab(page.url, false);
-        SelectTab(fTabs[std::min(selected, fTabs.size() - 1)].id);
+        if (!fTabs.empty()) SelectTab(fTabs[std::min(selected, fTabs.size() - 1)].id);
     } else CreateTab("summit:home");
+    // Invalid command-line or saved URLs may all have been rejected.
+    if (fTabs.empty()) CreateTab("summit:home");
     RefreshSidebar(false);
     BMessage save(kSaveSession);
     fSaveTimer = std::make_unique<BMessageRunner>(BMessenger(this), &save, 5000000);
@@ -443,7 +445,11 @@ void BrowserWindow::LoadCommitted(const BString& url, BWebView* view)
 }
 void BrowserWindow::LoadProgress(float progress, BWebView* view)
 {
-    if (auto* tab = FindTab(view)) tab->progress = progress / 100.0f;
+    if (auto* tab = FindTab(view)) {
+        tab->progress = std::clamp(progress / 100.0f, 0.0f, 1.0f);
+        if (tab->progress >= 1.0f) tab->loading = false;
+    }
+    if (progress >= 100 && view == CurrentWebView()) fStatus->SetText("Ready");
     RefreshChrome();
 }
 void BrowserWindow::LoadFailed(const BString&, BWebView* view)
@@ -455,10 +461,11 @@ void BrowserWindow::LoadFailed(const BString&, BWebView* view)
 void BrowserWindow::LoadFinished(const BString& url, BWebView* view)
 {
     if (auto* tab = FindTab(view)) {
-        tab->loading = false; tab->progress = 1; tab->url = StoredURL(url);
+        // BWebWindow calls this at DOM readiness, before images and other
+        // resources finish. Completion arrives through LoadProgress(100).
+        tab->url = StoredURL(url);
         fProfile.Visit({tab->url, tab->title});
     }
-    if (view == CurrentWebView()) fStatus->SetText("Ready");
     if (fSidebarHistory) RefreshSidebar(true);
     RefreshChrome();
 }
@@ -479,9 +486,11 @@ void BrowserWindow::StatusChanged(const BString& status, BWebView* view)
 {
     if (view == CurrentWebView()) fStatus->SetText(status.String());
 }
-void BrowserWindow::NavigationCapabilitiesChanged(bool back, bool forward, bool stop, BWebView* view)
+void BrowserWindow::NavigationCapabilitiesChanged(bool back, bool forward, bool, BWebView* view)
 {
-    if (auto* tab = FindTab(view)) { tab->back = back; tab->forward = forward; tab->loading = stop; }
+    // The loader can still report "can stop" while dispatching its final
+    // progress notification. It is not a new loading transition.
+    if (auto* tab = FindTab(view)) { tab->back = back; tab->forward = forward; }
     RefreshChrome();
 }
 }
