@@ -62,10 +62,18 @@ microtasks, hot JavaScript and WebAssembly. Fifteen JavaScript checks also pass
 with JIT disabled. The full 16-check run passes with `DISABLE_ASLR` unset.
 These are port smoke checks, not an upstream conformance suite.
 
+The upstream Test262 runner also passes **232 runs from 116 test files**, with
+zero skips and zero failures, for `Intl.ListFormat`, `Array.prototype.toSorted`
+and `Object.groupBy`. Both strict and default modes were exercised. Expectations
+and skip configuration were ignored so they could not hide failures. This is a
+selected part of Test262, not the complete suite. The log is `.vm/test262.log`;
+native reports are under `/boot/home/summit-webkit/test262-results/`.
+
 Logs are `.vm/jsc-icu66-failure.log`, `.vm/jsc-build.log`,
 `.vm/jsc-shell-build.log`, `.vm/jsc-smoke.log`, `.vm/jsc-default-aslr.log` and
 `.vm/jsc-loaded-images.log`. The last record checks the loaded library path;
 the shell resolves the newly built library under `WebKitBuild/Release/lib`.
+Two runs also show different load addresses with `DISABLE_ASLR` unset.
 
 WebCore and WebKitLegacy compilation has started. The source transfer was
 corrected to include root `Configurations/`, which supplies the version header
@@ -73,7 +81,9 @@ input. The current renderer build log is `.vm/webcore-build.log`.
 
 The source changes address the initial preference-generator conflicts and
 adapt the legacy Curl loader to current cookie-storage interfaces. The adapter
-is not compiled or verified yet. WebCore, the renderer integration,
+now compiles; its network behavior still needs verification in the new browser
+engine. Native UTF-8 boundaries are being adapted to current WebKit's `char8_t`
+buffers. WebCore, the renderer integration,
 upstream conformance suites and the browser running against the new engine
 are still unverified. The inherited Haiku engine feature switches also leave
 substantial full-browser work, recorded in `REQUIREMENTS.md`.

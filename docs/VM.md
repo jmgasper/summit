@@ -52,3 +52,15 @@ Use `icu74_devel` explicitly. The generic `devel:libicuuc` capability can select
 ICU 66, which is too old for the pinned JavaScriptCore source. If another ICU
 development package is active, select its replacement in pkgman's solver.
 The build script uses the HaikuPorts GCC memory-management flags for the VM.
+
+The selected upstream Test262 groups use Python 3.10 and `pyyaml_python310`:
+
+```sh
+pkgman install pyyaml_python310
+```
+
+Run `bash tools/test262-in-vm.sh` on the host after building `jsc`. The wrapper
+preloads the packaged YAML module because upstream's requested wheel is not
+available for Haiku. Test definitions, harness, strict/default execution and
+failure reporting remain upstream's. Other pure Python harness dependencies
+are installed by WebKit's own pinned dependency manager.
