@@ -700,6 +700,33 @@ index 3ed98dc3dbaef25c50446b187d68975c7323e3cd..84f89195d99dfa3bec558d4145b5f96e
  #if USE(GLIB)
      WTF_EXPORT_PRIVATE URL(GUri*);
      WTF_EXPORT_PRIVATE GRefPtr<GUri> createGUri() const;
+diff --git a/Source/WTF/wtf/WTFProcess.cpp b/Source/WTF/wtf/WTFProcess.cpp
+index 7d01fe9cd0574de69acfa8356e11f20fe557afc0..8eafb23b04da7539e7dc7314685a058841469f07 100644
+--- a/Source/WTF/wtf/WTFProcess.cpp
++++ b/Source/WTF/wtf/WTFProcess.cpp
+@@ -27,6 +27,7 @@
+ #include <wtf/WTFProcess.h>
+ 
+ #include <stdlib.h>
++#include <stdio.h>
+ 
+ #if OS(UNIX)
+ #include <unistd.h>
+@@ -57,6 +58,14 @@ void exitProcess(int status)
+     // The code can reach here only when very buggy anti-virus software hooks are integrated into the system. To make it safe, in that case,
+     // let the process crash explicitly.
+     CRASH();
++#elif OS(HAIKU)
++    // libbe destroys its global handler-token table before other threads have
++    // finished their pthread TLS destructors. Explicit process exit may leave
++    // JavaScript agents alive; running those destructors against the destroyed
++    // table can double-free BHandlers. Flush output, then terminate all threads
++    // together without invoking C++ static teardown.
++    fflush(nullptr);
++    _exit(status);
+ #else
+     exit(status);
+ #endif
 diff --git a/Source/WTF/wtf/haiku/LanguageHaiku.cpp b/Source/WTF/wtf/haiku/LanguageHaiku.cpp
 index f7c1f5175e14e27e4c67598f5424782e2af77050..cde8501928cd6510cb4386b3afb6edd1e961b549 100644
 --- a/Source/WTF/wtf/haiku/LanguageHaiku.cpp
@@ -715,10 +742,10 @@ index f7c1f5175e14e27e4c67598f5424782e2af77050..cde8501928cd6510cb4386b3afb6edd1
  
 diff --git a/Source/WTF/wtf/haiku/RunLoopHaiku.cpp b/Source/WTF/wtf/haiku/RunLoopHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..6cfb2ff77506918da79f24bb068d1a2be4d02f32
+index 0000000000000000000000000000000000000000..267ca3e95aebdbbb884602da79a41c338040ac4a
 --- /dev/null
 +++ b/Source/WTF/wtf/haiku/RunLoopHaiku.cpp
-@@ -0,0 +1,193 @@
+@@ -0,0 +1,290 @@
 +/*
 + * Copyright (C) 2014, 2024 Haiku, Inc
 + *
@@ -745,95 +772,161 @@ index 0000000000000000000000000000000000000000..6cfb2ff77506918da79f24bb068d1a2b
 + */
 +
 +#include "config.h"
-+#include "wtf/RunLoop.h"
++#include <wtf/RunLoop.h>
 +
 +#include <Application.h>
++#include <Autolock.h>
 +#include <Handler.h>
++#include <MessageQueue.h>
 +#include <MessageRunner.h>
-+#include <errno.h>
-+#include <stdio.h>
++#include <algorithm>
++#include <atomic>
++#include <memory>
++#include <unordered_map>
 +
 +namespace WTF {
 +
++// BLooper::Loop() cannot be stopped without exiting its thread. A standalone
++// JavaScript or worker run loop must instead return to its caller when stopped.
++class StandaloneRunLoop final : public BLooper {
++public:
++    StandaloneRunLoop()
++        : BLooper("WebKit RunLoop")
++    {
++    }
 +
-+class LoopHandler: public BHandler
-+{
-+    public:
-+        LoopHandler()
-+            : BHandler("RunLoop")
-+        {
++    void cycle(BHandler& handler, bigtime_t timeout)
++    {
++        std::unique_ptr<BMessage> message(MessageQueue()->NextMessage());
++        if (!message)
++            message.reset(MessageFromPort(timeout));
++        if (!message)
++            message.reset(MessageQueue()->NextMessage());
++        if (message) {
++            BAutolock locker(this);
++            if (locker.IsLocked())
++                handler.MessageReceived(message.get());
 +        }
-+
-+        void MessageReceived(BMessage* message) override
-+        {
-+            if (message->what == 'loop') {
-+                RunLoop::currentSingleton().performWork();
-+            } else if (message->what == 'tmrf') {
-+                RunLoop::TimerBase* timer
-+                    = (RunLoop::TimerBase*)message->GetPointer("timer");
-+                timer->timerFired();
-+            } else {
-+                message->PrintToStream();
-+                BHandler::MessageReceived(message);
-+            }
-+        }
++    }
 +};
 +
++class LoopHandler final : public BHandler {
++public:
++    explicit LoopHandler(RunLoop& runLoop)
++        : BHandler("RunLoop")
++        , m_runLoop(runLoop)
++    {
++    }
++
++    ~LoopHandler() override
++    {
++        for (auto& [timer, state] : timers)
++            delete std::exchange(timer->m_messageRunner, nullptr);
++    }
++
++    static void initialize(RunLoop& runLoop)
++    {
++        runLoop.m_handler = new LoopHandler(runLoop);
++        BLooper* looper = BLooper::LooperForThread(find_thread(nullptr));
++        if (!looper) {
++            runLoop.m_looper = looper = new StandaloneRunLoop;
++            looper->AddHandler(runLoop.m_handler);
++            looper->Unlock();
++        } else {
++            BAutolock locker(looper);
++            RELEASE_ASSERT(locker.IsLocked());
++            looper->AddHandler(runLoop.m_handler);
++        }
++    }
++
++    void MessageReceived(BMessage* message) override
++    {
++        if (message->what == 'loop') {
++            m_runLoop.performWork();
++            return;
++        }
++        if (message->what == 'tmrf') {
++            RunLoop::TimerBase* timer = nullptr;
++            int64 identifier = 0;
++            if (message->FindPointer("timer", reinterpret_cast<void**>(&timer)) != B_OK
++                || message->FindInt64("identifier", &identifier) != B_OK)
++                return;
++            auto found = timers.find(timer);
++            // A queued native notification may outlive a stopped or destroyed
++            // timer, or belong to an earlier start at the same memory address.
++            if (found != timers.end() && found->second.identifier == identifier)
++                timer->timerFired();
++            return;
++        }
++        BHandler::MessageReceived(message);
++    }
++
++    struct TimerState {
++        int64 identifier;
++        MonotonicTime fireTime;
++        Seconds interval;
++        bool repeating;
++    };
++    std::unordered_map<RunLoop::TimerBase*, TimerState> timers;
++    int64 nextIdentifier { 0 };
++    std::atomic<bool> running { false };
++    std::atomic<bool> shouldStop { false };
++
++private:
++    RunLoop& m_runLoop;
++};
 +
 +RunLoop::RunLoop()
-+	: m_looper(nullptr)
++    : m_looper(nullptr)
++    , m_handler(nullptr)
 +{
-+    m_handler = new LoopHandler();
++    // Give timers a valid native destination even before run() is entered.
++    LoopHandler::initialize(*this);
 +}
 +
 +RunLoop::~RunLoop()
 +{
 +    stop();
-+    delete m_handler;
 +}
 +
 +void RunLoop::run()
 +{
-+    if (!currentSingleton().m_handler)
-+        currentSingleton().m_handler = new LoopHandler();
-+    BLooper* looper = BLooper::LooperForThread(find_thread(NULL));
-+    if (!looper) {
-+        currentSingleton().m_looper = looper = new BLooper();
-+    } else if (looper != be_app) {
-+        fprintf(stderr, "Add handler to existing RunLoop looper\n");
-+    }
-+    looper->LockLooper();
-+    looper->AddHandler(currentSingleton().m_handler);
-+    looper->UnlockLooper();
++    auto& runLoop = currentSingleton();
++    if (!runLoop.m_handler)
++        LoopHandler::initialize(runLoop);
++    if (!runLoop.m_looper)
++        return; // BApplication or BWindow already dispatches this thread's messages.
 +
-+    if (currentSingleton().m_looper) {
-+        // Make sure the thread will start calling performWork as soon as it can
-+        RunLoop::currentSingleton().wakeUp();
-+        // Then start the normal event loop
-+        currentSingleton().m_looper->Loop();
-+    }
++    auto& handler = *static_cast<LoopHandler*>(runLoop.m_handler);
++    RELEASE_ASSERT(!handler.running.exchange(true));
++    handler.shouldStop = false;
++    runLoop.wakeUp();
++    while (!handler.shouldStop)
++        static_cast<StandaloneRunLoop*>(runLoop.m_looper)->cycle(handler, B_INFINITE_TIMEOUT);
++    handler.running = false;
 +}
 +
 +void RunLoop::stop()
 +{
-+    if (!m_handler)
++    auto* handler = static_cast<LoopHandler*>(m_handler);
++    if (!handler)
 +        return;
-+
-+    if (m_handler->LockLooper()) {
-+        BLooper* looper = m_handler->Looper();
-+        looper->RemoveHandler(m_handler);
-+        looper->Unlock();
++    if (handler->running) {
++        handler->shouldStop = true;
++        wakeUp();
++        return;
 +    }
-+    delete std::exchange(m_handler, nullptr);
 +
-+    if (m_looper) {
-+        thread_id thread = m_looper->Thread();
-+        status_t ret;
-+
-+        m_looper->PostMessage(B_QUIT_REQUESTED);
-+        m_looper = nullptr;
-+
-+        wait_for_thread(thread, &ret);
++    if (handler->LockLooper()) {
++        BLooper* looper = handler->Looper();
++        looper->RemoveHandler(handler);
++        delete std::exchange(m_handler, nullptr);
++        looper->Unlock();
++    } else
++        delete std::exchange(m_handler, nullptr);
++    if (auto* looper = std::exchange(m_looper, nullptr)) {
++        looper->Lock();
++        looper->Quit(); // This looper never called BLooper::Run() or Loop().
 +    }
 +}
 +
@@ -843,10 +936,11 @@ index 0000000000000000000000000000000000000000..6cfb2ff77506918da79f24bb068d1a2b
 +        m_handler->Looper()->PostMessage('loop', m_handler);
 +}
 +
-+RunLoop::TimerBase::TimerBase(WTF::Ref<RunLoop>&& runLoop, WTF::ASCIILiteral)
-+    : m_runLoop(runLoop)
++RunLoop::TimerBase::TimerBase(Ref<RunLoop>&& runLoop, ASCIILiteral description)
++    : m_runLoop(WTF::move(runLoop))
++    , m_description(description)
++    , m_messageRunner(nullptr)
 +{
-+    m_messageRunner = NULL;
 +}
 +
 +RunLoop::TimerBase::~TimerBase()
@@ -856,62 +950,92 @@ index 0000000000000000000000000000000000000000..6cfb2ff77506918da79f24bb068d1a2b
 +
 +void RunLoop::TimerBase::timerFired()
 +{
-+    // was timer stopped?
-+    if (m_messageRunner == nullptr)
++    auto& handler = *static_cast<LoopHandler*>(m_runLoop->m_handler);
++    auto found = handler.timers.find(this);
++    if (found == handler.timers.end())
 +        return;
-+
-+    // do we need to stop it?
-+    bigtime_t interval = 0;
-+    int32 count = 0;
-+
-+    m_messageRunner->GetInfo(&interval, &count);
-+    if (count == 1)
++    if (found->second.repeating)
++        found->second.fireTime = MonotonicTime::now() + found->second.interval;
++    else
 +        stop();
-+
 +    fired();
 +}
 +
-+void RunLoop::TimerBase::start(Seconds nextFireInterval, bool repeat)
++void RunLoop::TimerBase::start(Seconds interval, bool repeat)
 +{
-+    if (m_messageRunner) {
-+        delete m_messageRunner;
-+        m_messageRunner = nullptr;
++    auto* handler = static_cast<LoopHandler*>(m_runLoop->m_handler);
++    if (!handler)
++        return;
++    BAutolock locker(handler->Looper());
++    if (!locker.IsLocked())
++        return;
++    stop();
++
++    auto identifier = ++handler->nextIdentifier;
++    BMessage message('tmrf');
++    message.AddPointer("timer", this);
++    message.AddInt64("identifier", identifier);
++    // Haiku rejects zero-duration BMessageRunner intervals. WebKit uses zero
++    // for work that should run on the next turn, including Promise completion.
++    auto microseconds = static_cast<bigtime_t>(std::clamp(interval.microseconds(), 1.0, static_cast<double>(B_INFINITE_TIMEOUT / 2)));
++    handler->timers.insert_or_assign(this, LoopHandler::TimerState { identifier, MonotonicTime::now() + interval, interval, repeat });
++    m_messageRunner = new BMessageRunner(BMessenger(handler), &message, microseconds, repeat ? -1 : 1);
++    if (m_messageRunner->InitCheck() != B_OK) {
++        handler->timers.erase(this);
++        delete std::exchange(m_messageRunner, nullptr);
 +    }
-+
-+    BMessage* message = new BMessage('tmrf');
-+    message->AddPointer("timer", this);
-+
-+    m_messageRunner = new BMessageRunner(m_runLoop->m_handler,
-+        message, nextFireInterval.microseconds(), repeat ? -1 : 1);
 +}
 +
 +bool RunLoop::TimerBase::isActive() const
 +{
-+    return m_messageRunner != NULL && m_messageRunner->GetInfo(NULL, NULL) == B_OK;
++    auto* handler = static_cast<LoopHandler*>(m_runLoop->m_handler);
++    if (!handler)
++        return false;
++    BAutolock locker(handler->Looper());
++    return locker.IsLocked() && handler->timers.contains(const_cast<TimerBase*>(this));
 +}
 +
 +void RunLoop::TimerBase::stop()
 +{
-+    delete m_messageRunner;
-+    m_messageRunner = NULL;
++    auto* handler = static_cast<LoopHandler*>(m_runLoop->m_handler);
++    if (handler) {
++        BAutolock locker(handler->Looper());
++        if (locker.IsLocked()) {
++            handler->timers.erase(this);
++            delete std::exchange(m_messageRunner, nullptr);
++        }
++    } else
++        delete std::exchange(m_messageRunner, nullptr);
 +}
 +
 +RunLoop::CycleResult RunLoop::cycle(RunLoopMode)
 +{
-+    RunLoop::currentSingleton().performWork();
-+
-+    if (RunLoop::currentSingleton().m_handler->Looper()->IsMessageWaiting())
-+        return CycleResult::Continue;
-+    else
++    auto& runLoop = currentSingleton();
++    if (!runLoop.m_handler)
 +        return CycleResult::Stop;
++    auto& handler = *static_cast<LoopHandler*>(runLoop.m_handler);
++    bool wasRunning = handler.running.exchange(true);
++    if (runLoop.m_looper)
++        static_cast<StandaloneRunLoop*>(runLoop.m_looper)->cycle(handler, 0);
++    else
++        runLoop.performWork();
++    handler.running = wasRunning;
++    return handler.Looper()->IsMessageWaiting() ? CycleResult::Continue : CycleResult::Stop;
 +}
 +
 +Seconds RunLoop::TimerBase::secondsUntilFire() const
 +{
-+    // FIXME implement
-+    return 0_s;
++    auto* handler = static_cast<LoopHandler*>(m_runLoop->m_handler);
++    if (!handler)
++        return 0_s;
++    BAutolock locker(handler->Looper());
++    if (!locker.IsLocked())
++        return 0_s;
++    auto found = handler->timers.find(const_cast<TimerBase*>(this));
++    return found == handler->timers.end() ? 0_s : std::max(0_s, found->second.fireTime - MonotonicTime::now());
 +}
-+}
++
++} // namespace WTF
 diff --git a/Source/WTF/wtf/posix/FileHandlePOSIX.cpp b/Source/WTF/wtf/posix/FileHandlePOSIX.cpp
 index ae947fe28021c584967c900b16bf0a364affd9be..e357e409e33dd1f96bbbbefe35c75b08eb7ed632 100644
 --- a/Source/WTF/wtf/posix/FileHandlePOSIX.cpp

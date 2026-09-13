@@ -1,6 +1,7 @@
 #!/usr/bin/env python3.10
 """Run upstream's Test262 harness with Haiku's packaged PyYAML."""
 import pathlib
+import os
 import runpy
 import sys
 
@@ -8,6 +9,6 @@ import sys
 # module works on Haiku; upstream's pinned wheel is unavailable for this OS.
 import yaml  # noqa: F401
 
-scripts = pathlib.Path.cwd() / 'Tools/Scripts'
+scripts = pathlib.Path(os.environ.get('SUMMIT_WEBKIT_SOURCE', pathlib.Path.cwd())) / 'Tools/Scripts'
 sys.path.insert(0, str(scripts))
 runpy.run_path(str(scripts / 'test262-runner'), run_name='__main__')

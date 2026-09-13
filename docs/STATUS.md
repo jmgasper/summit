@@ -75,12 +75,19 @@ and skip configuration were ignored so they could not hide failures. This is a
 selected part of Test262, not the complete suite. The log is `.vm/test262.log`;
 native reports are under `/boot/home/summit-webkit/test262-results/`.
 
-A full run across 53,578 discovered Test262 files is in progress. It keeps
-upstream's skip configuration, including unsupported proposals, and ignores
-failure expectations. Its results are not yet known; see `.vm/test262-full.log`.
-It has encountered native crash dialogs and repeated `Atomics.waitAsync`
-timeouts. A focused synchronous atomic test passes while its asynchronous
-counterpart times out; the Haiku event-loop integration is being investigated.
+The first full Test262 run was interrupted after its progress counter reached
+4,950 of 53,578 files. It encountered native crash dialogs and repeated
+`Atomics.waitAsync` timeouts; it produced no full-suite result report.
+The harness now creates a separate working directory for every invocation,
+so an interrupted run cannot reuse reports from an earlier successful run.
+
+A new full run is in progress against an isolated shell containing the event-loop
+and explicit-exit fixes below. Its library is copied to a separate directory,
+and the actual loaded library path was verified, allowing the renderer build
+to continue without changing conformance-test inputs. The harness verifies
+both shell and library hashes before and after the run. This run keeps
+upstream's skip configuration and ignores failure expectations; results are
+not yet known. Its log is `.vm/test262-full-fixed.log`.
 
 Logs are `.vm/jsc-icu66-failure.log`, `.vm/jsc-build.log`,
 `.vm/jsc-shell-build.log`, `.vm/jsc-smoke.log`, `.vm/jsc-default-aslr.log` and
@@ -103,6 +110,25 @@ before process exit all complete successfully. JavaScriptCore's 16 JIT and
 `.vm/engine-cookie-tests.log`, `.vm/cookie-probe-baseline.log` and
 `.vm/jsc-runloop-smoke.log`; the original crash report is
 `.vm/cookie-probe-crash.report`.
+
+Further Test262 failures exposed missing timer delivery and a worker shutdown
+race. The revised Haiku run loop accepts timers before entering the loop,
+handles zero-delay scheduling, rejects stale notifications after cancellation
+or rearming, and returns from standalone loops without terminating their thread.
+**12 native checks pass**, including native application dispatch and worker
+thread completion. The original timer implementation fails the first check
+and hangs. Ten explicit process-exit probes with a finishing worker also pass;
+Haiku's explicit exit path flushes output and terminates threads together,
+avoiding libbe static teardown while worker handlers are still being destroyed.
+
+With both fixes linked into an isolated shell, **760 upstream Atomics test
+executions pass**, with nine upstream skips and zero failures. The first run
+with only the timer fix had one timeout and captured a worker double-free
+report. Both JIT and interpreter smoke checks still pass. These source changes
+are queued for integration into the main engine build after its current
+compilation finishes. Logs are `.vm/runloop-isolated.log`,
+`.vm/runloop-atomics.log`, `.vm/runloop-atomics-fixed.log` and
+`.vm/runloop-atomics-crash.report`.
 
 The new native download filename helper passes **16 checks** for path
 components, control characters, empty names, Unicode and filesystem length
