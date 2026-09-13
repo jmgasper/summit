@@ -1,0 +1,37 @@
+#pragma once
+#include <SupportDefs.h>
+namespace summit {
+constexpr uint32 kNavigate = 'navi';
+constexpr uint32 kNewTab = 'ntab';
+constexpr uint32 kCreateTabOnApp = 'atap';
+constexpr uint32 kCloseTab = 'ctab';
+constexpr uint32 kSelectTab = 'stab';
+constexpr uint32 kBack = 'back';
+constexpr uint32 kForward = 'frwd';
+constexpr uint32 kReload = 'reld';
+constexpr uint32 kHome = 'home';
+constexpr uint32 kFocusAddress = 'fadr';
+constexpr uint32 kToggleSidebar = 'side';
+constexpr uint32 kBookmark = 'bkmk';
+constexpr uint32 kShowBookmarks = 'sbkm';
+constexpr uint32 kShowHistory = 'shis';
+constexpr uint32 kOpenSaved = 'osav';
+constexpr uint32 kFind = 'find';
+constexpr uint32 kFindNext = 'fnxt';
+constexpr uint32 kFindPrevious = 'fprv';
+constexpr uint32 kCloseFind = 'cfin';
+constexpr uint32 kZoomIn = 'zmin';
+constexpr uint32 kZoomOut = 'zmot';
+constexpr uint32 kZoomReset = 'zres';
+constexpr uint32 kSaveSession = 'sess';
+constexpr uint32 kNextTab = 'next';
+constexpr uint32 kPreviousTab = 'prev';
+constexpr uint32 kReopenTab = 'rtab';
+constexpr uint32 kOpenFile = 'file';
+constexpr uint32 kShowDownloads = 'down';
+constexpr uint32 kDownloadSave = 'dsav';
+constexpr uint32 kShowExtensions = 'exts';
+constexpr uint32 kInspectExtension = 'exin';
+constexpr uint32 kExtensionSelected = 'exsl';
+constexpr uint32 kBrowserState = 'stat';
+}
