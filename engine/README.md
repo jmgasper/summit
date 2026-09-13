@@ -24,8 +24,11 @@ bash tools/build-webkit-in-vm.sh
 bash tools/build-webkit-in-vm.sh jsc
 bash tools/test-jsc-in-vm.sh
 bash tools/test262-in-vm.sh
+# Full suite with upstream proposal/feature skips, ignoring failure expectations:
+bash tools/test262-in-vm.sh full
 # Focused native WebCore cookie and event-loop lifecycle checks:
 bash tools/test-engine-cookies-in-vm.sh
+bash tools/test-download-names-in-vm.sh
 ```
 
 Do not run a second engine build while one is active. Inspect the live guest

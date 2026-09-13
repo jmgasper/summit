@@ -23338,6 +23338,63 @@ diff --git a/Source/WebKitLegacy/WebCoreSupport/WebViewGroup.mm b/Source/WebKitL
 similarity index 100%
 rename from Source/WebKitLegacy/WebCoreSupport/WebViewGroup.mm
 rename to Source/WebKitLegacy/WebCoreSupport/WebViewGroup.cpp
+diff --git a/Source/WebKitLegacy/haiku/API/DownloadFilename.h b/Source/WebKitLegacy/haiku/API/DownloadFilename.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..f4b5fe0f1c405c3de9c680fbe5c2073bd41854d7
+--- /dev/null
++++ b/Source/WebKitLegacy/haiku/API/DownloadFilename.h
+@@ -0,0 +1,51 @@
++/*
++ * Copyright (c) 2026 KunanyiOS contributors
++ * SPDX-License-Identifier: MIT
++ */
++
++#pragma once
++
++#include <StorageDefs.h>
++#include <String.h>
++#include <algorithm>
++
++namespace BPrivate {
++
++inline BString sanitizedDownloadFilename(const BString& suggested)
++{
++    BString name = suggested;
++    int32 separator = std::max(name.FindLast('/'), name.FindLast('\\'));
++    if (separator >= 0)
++        name.Remove(0, separator + 1);
++    for (int32 i = 0; i < name.Length(); ++i) {
++        unsigned char byte = name.ByteAt(i);
++        if (byte < 32 || byte == 127)
++            name.SetByteAt(i, '_');
++    }
++    name.Trim();
++
++    // Leave room for a collision counter, and never split a UTF-8 character.
++    constexpr int32 maximumLength = B_FILE_NAME_LENGTH - 1 - 12;
++    if (name.Length() > maximumLength) {
++        int32 length = maximumLength;
++        while (length && (static_cast<unsigned char>(name.ByteAt(length)) & 0xc0) == 0x80)
++            --length;
++        name.Truncate(length);
++    }
++    if (name.IsEmpty() || name == "." || name == "..")
++        return BString("Download");
++    return name;
++}
++
++inline BString downloadFilenameWithCounter(const BString& sanitizedName, uint32 counter)
++{
++    BString base = sanitizedName;
++    BString extension;
++    int32 extensionStart = base.FindLast('.');
++    if (extensionStart > 0)
++        base.MoveInto(extension, extensionStart, base.Length() - extensionStart);
++    base << "-" << counter;
++    return base.Append(extension);
++}
++
++} // namespace BPrivate
 diff --git a/Source/WebKitLegacy/haiku/API/DumpRenderTreeClient.h b/Source/WebKitLegacy/haiku/API/DumpRenderTreeClient.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..6bae00cbadf61b67eccd1e08c699e0299c0f16b8
@@ -23676,10 +23733,10 @@ index 0000000000000000000000000000000000000000..f9a7482db04623bacfeccbd1a240a007
 +#endif // _WEB_DOWNLOAD_H_
 diff --git a/Source/WebKitLegacy/haiku/API/WebDownloadPrivate.cpp b/Source/WebKitLegacy/haiku/API/WebDownloadPrivate.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..ea83bb10e60ee3894e840ed09c96e516a823aac4
+index 0000000000000000000000000000000000000000..f3801ee7be6495eb6db9474485108bd234904106
 --- /dev/null
 +++ b/Source/WebKitLegacy/haiku/API/WebDownloadPrivate.cpp
-@@ -0,0 +1,334 @@
+@@ -0,0 +1,323 @@
 +/*
 + * Copyright (C) 2010 Stephan Aßmus <superstippi@gmx.de>
 + *
@@ -23709,6 +23766,7 @@ index 0000000000000000000000000000000000000000..ea83bb10e60ee3894e840ed09c96e516
 +
 +#include "config.h"
 +#include "WebDownloadPrivate.h"
++#include "DownloadFilename.h"
 +
 +#include "WebCore/NetworkingContext.h"
 +#include "WebCore/NotImplemented.h"
@@ -23931,7 +23989,7 @@ index 0000000000000000000000000000000000000000..ea83bb10e60ee3894e840ed09c96e516
 +
 +// #pragma mark - private
 +
-+void WebDownloadPrivate::handleFinished(WebCore::ResourceHandle* handle, uint32 /*status*/)
++void WebDownloadPrivate::handleFinished(WebCore::ResourceHandle* handle, uint32 status)
 +{
 +#if USE(CURL)
 +    BNode node(m_path.Path());
@@ -23952,6 +24010,7 @@ index 0000000000000000000000000000000000000000..ea83bb10e60ee3894e840ed09c96e516
 +    if (m_progressListener.IsValid()) {
 +        BMessage message(B_DOWNLOAD_REMOVED);
 +        message.AddPointer("download", m_webDownload);
++        message.AddInt32("status", status);
 +        // Block until the listener has released the object on it's side...
 +        BMessage reply;
 +        m_progressListener.SendMessage(&message, &reply);
@@ -23978,6 +24037,7 @@ index 0000000000000000000000000000000000000000..ea83bb10e60ee3894e840ed09c96e516
 +
 +void WebDownloadPrivate::findAvailableFilename()
 +{
++    m_filename = sanitizedDownloadFilename(m_filename);
 +    BPath filePath = m_path;
 +    BString fileName = m_filename;
 +    filePath.Append(fileName.String());
@@ -23989,21 +24049,8 @@ index 0000000000000000000000000000000000000000..ea83bb10e60ee3894e840ed09c96e516
 +
 +    // Find a name that doesn't exists in the directoy yet
 +    BEntry entry(filePath.Path());
-+    for (int32 i = 0; entry.InitCheck() == B_OK && entry.Exists(); i++) {
-+        // Use original file name in each iteration
-+        BString baseName = m_filename;
-+
-+        // Separate extension and base file name
-+        int32 extensionStart = baseName.FindLast('.');
-+        BString extension;
-+        if (extensionStart > 0)
-+            baseName.MoveInto(extension, extensionStart, baseName.CountChars() - extensionStart);
-+
-+        // Add i to file name before the extension
-+        char num[12];
-+        snprintf(num, sizeof(num), "-%" B_PRId32, i);
-+        baseName.Append(num).Append(extension);
-+        fileName = baseName;
++    for (uint32 i = 0; entry.InitCheck() == B_OK && entry.Exists(); i++) {
++        fileName = downloadFilenameWithCounter(m_filename, i);
 +        filePath = m_path;
 +        filePath.Append(fileName);
 +        entry.SetTo(filePath.Path());
@@ -24013,7 +24060,6 @@ index 0000000000000000000000000000000000000000..ea83bb10e60ee3894e840ed09c96e516
 +}
 +
 +} // namespace BPrivate
-+
 diff --git a/Source/WebKitLegacy/haiku/API/WebDownloadPrivate.h b/Source/WebKitLegacy/haiku/API/WebDownloadPrivate.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..8b1b92ba8dc20ca952490aab5ef39b176fb3136d

@@ -15,7 +15,7 @@ portable test execution were verified in the guest as well.
   UTF-8 escaping, rejection of control characters and executable address
   schemes, profile round trips, replacement of saved sessions, private file
   permissions, deduplicated history, and preserving malformed profile data.
-- **32 native browser checks pass in the installed package**: native scripting responsiveness, a real
+- **37 native browser checks pass in the latest native build; 32 were also verified in the installed package**: native scripting responsiveness, a real
   HTTP/DOM/JavaScript/CSS/storage/cookie fixture, independent tabs, back/forward,
   closing selected and background tabs, reopening closed tabs, and repeated
   creation and destruction of web views, and focusing an empty address field
@@ -32,6 +32,8 @@ portable test execution were verified in the guest as well.
 - Loaded and visually inspected `https://webkit.org/` in the native browser.
 - Downloaded `/download` from the fixture server and checked the saved
   `~/Downloads/summit-test.txt` contents (`Summit download fixture` plus newline).
+  The automated suite now uses a unique download filename, verifies the exact
+  contents and completion notification, and resumes browsing afterward.
 - Quit and relaunched the installed app with its showcase profile. Both tabs,
   their selected index and the WebKit bookmark survived the restart.
 - Built and installed the native HPKG. The package creates a Deskbar launcher;
@@ -73,6 +75,13 @@ and skip configuration were ignored so they could not hide failures. This is a
 selected part of Test262, not the complete suite. The log is `.vm/test262.log`;
 native reports are under `/boot/home/summit-webkit/test262-results/`.
 
+A full run across 53,578 discovered Test262 files is in progress. It keeps
+upstream's skip configuration, including unsupported proposals, and ignores
+failure expectations. Its results are not yet known; see `.vm/test262-full.log`.
+It has encountered native crash dialogs and repeated `Atomics.waitAsync`
+timeouts. A focused synchronous atomic test passes while its asynchronous
+counterpart times out; the Haiku event-loop integration is being investigated.
+
 Logs are `.vm/jsc-icu66-failure.log`, `.vm/jsc-build.log`,
 `.vm/jsc-shell-build.log`, `.vm/jsc-smoke.log`, `.vm/jsc-default-aslr.log` and
 `.vm/jsc-loaded-images.log`. The last record checks the loaded library path;
@@ -94,6 +103,13 @@ before process exit all complete successfully. JavaScriptCore's 16 JIT and
 `.vm/engine-cookie-tests.log`, `.vm/cookie-probe-baseline.log` and
 `.vm/jsc-runloop-smoke.log`; the original crash report is
 `.vm/cookie-probe-crash.report`.
+
+The new native download filename helper passes **16 checks** for path
+components, control characters, empty names, Unicode and filesystem length
+limits. It also preserves Unicode extensions when avoiding filename collisions.
+The helper and an explicit completion-status field are queued for the next
+engine build iteration; actual downloads through that engine remain unverified.
+The installed system engine still has its original filename handling.
 
 WebCore and WebKitLegacy compilation has started. The source transfer was
 corrected to include root `Configurations/`, which supplies the version header

@@ -1,9 +1,11 @@
 #include "ui/Messages.h"
 #include <Application.h>
 #include <Entry.h>
+#include <FindDirectory.h>
 #include <Message.h>
 #include <Messenger.h>
 #include <OS.h>
+#include <Path.h>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -152,6 +154,35 @@ int main()
     Send(window, summit::kNavigate, "http://10.0.2.2:8765/basic");
     Wait(window, [](const BMessage& s) { return Title(s) == "Summit fixture PASS"; });
     std::filesystem::remove_all(localDirectory);
+    BPath userDirectory;
+    const bool hasUserDirectory = find_directory(B_USER_DIRECTORY, &userDirectory) == B_OK;
+    Check(hasUserDirectory, "locate the native Downloads folder");
+    if (hasUserDirectory) {
+        const std::string token = std::to_string(find_thread(nullptr)) + "-" + std::to_string(system_time());
+        const auto downloadPath = std::filesystem::path(userDirectory.Path()) / "Downloads" / ("summit-test-" + token + ".txt");
+        const bool unusedFilename = !std::filesystem::exists(downloadPath);
+        Check(unusedFilename, "download fixture has a unique destination");
+        if (unusedFilename) {
+            const std::string url = "http://10.0.2.2:8765/download?token=" + token;
+            Send(window, summit::kNavigate, url.c_str());
+            Check(Wait(window, [&](const BMessage&) {
+                std::ifstream file(downloadPath, std::ios::binary);
+                return std::string(std::istreambuf_iterator<char>(file), {}) == "Summit download fixture\n";
+            }), "HTTP attachment saves its exact contents in Downloads");
+            Check(Wait(window, [](const BMessage& s) {
+                const char* engine = "";
+                const char* status = "";
+                if (s.FindString("haiku_webkit", &engine) != B_OK || s.FindString("status", &status) != B_OK) return false;
+                const bool reportsCompletion = std::string(engine).find("+summit.") != std::string::npos;
+                return std::string(status) == (reportsCompletion
+                    ? "Download complete — open Downloads to view the file"
+                    : "Download ended — open Downloads to view the file");
+            }), "download notification reflects the engine's available completion information");
+            std::filesystem::remove(downloadPath);
+        }
+    }
+    Send(window, summit::kNavigate, "http://10.0.2.2:8765/basic");
+    Check(Wait(window, [](const BMessage& s) { return Title(s) == "Summit fixture PASS"; }), "browsing remains usable after a download");
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

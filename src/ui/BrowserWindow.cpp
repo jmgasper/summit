@@ -393,7 +393,15 @@ void BrowserWindow::MessageReceived(BMessage* message)
             BWebDownload* download = nullptr;
             message->FindPointer("download", reinterpret_cast<void**>(&download));
             fDownloads.erase(std::remove(fDownloads.begin(), fDownloads.end(), download), fDownloads.end());
-            fStatus->SetText("Download ended — open Downloads to view the file");
+            int32 status = -1;
+            if (message->FindInt32("status", &status) != B_OK) status = -1;
+            switch (status) {
+                case B_DOWNLOAD_FINISHED: fStatus->SetText("Download complete — open Downloads to view the file"); break;
+                case B_DOWNLOAD_FAILED: fStatus->SetText("Download failed"); break;
+                case B_DOWNLOAD_BLOCKED: fStatus->SetText("Download blocked"); break;
+                case B_DOWNLOAD_CANNOT_SHOW_URL: fStatus->SetText("This address could not be downloaded"); break;
+                default: fStatus->SetText("Download ended — open Downloads to view the file"); break;
+            }
             message->SendReply(B_REPLY); break;
         }
         case B_ABOUT_REQUESTED: {
@@ -409,6 +417,7 @@ void BrowserWindow::MessageReceived(BMessage* message)
             BMessage reply(B_REPLY);
             reply.AddInt32("count", fTabs.size()); reply.AddInt64("selected", fSelected);
             reply.AddString("address", fAddress->Text());
+            reply.AddString("status", fStatus->Text());
             reply.AddString("webkit", WebKitInfo::WebKitVersion());
             reply.AddString("haiku_webkit", WebKitInfo::HaikuWebKitVersion());
             for (const auto& page : fTabs) {

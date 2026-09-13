@@ -4,6 +4,7 @@ import argparse
 import http.server
 import json
 import pathlib
+import re
 import time
 import urllib.parse
 
@@ -67,7 +68,12 @@ window.addEventListener('load', () => { document.title = 'Summit completed image
             time.sleep(3)
             self.send(bytes.fromhex('47494638396101000100800000000000ffffff21f90401000000002c00000000010001000002024401003b'), 'image/gif', [('Cache-Control', 'no-store')])
         elif path == '/download':
-            self.send(b'Summit download fixture\n', 'application/octet-stream', [('Content-Disposition', 'attachment; filename="summit-test.txt"')])
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            token = query.get('token', [''])[0]
+            if token and not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', token):
+                return self.send_error(400)
+            filename = 'summit-test' + ('-' + token if token else '') + '.txt'
+            self.send(b'Summit download fixture\n', 'application/octet-stream', [('Content-Disposition', f'attachment; filename="{filename}"')])
         else:
             self.send_error(404)
 

@@ -58,6 +58,11 @@ and compiler processes stuck in kernel waits. The precise kernel cause has
 not been established.
 Set `SUMMIT_WEBKIT_JOBS` to adjust concurrency for a different VM size.
 
+The September 13 incident required a guest reset after compiler termination,
+`sync` and normal shutdown stopped responding. A full QMP disk backup completed
+first and is retained as `.vm/recovery-before-restart.qcow2`. The restarted guest
+passed the 38 portable browser checks and JavaScriptCore runtime checks again.
+
 The selected upstream Test262 groups use Python 3.10 and `pyyaml_python310`:
 
 ```sh
@@ -69,3 +74,9 @@ preloads the packaged YAML module because upstream's requested wheel is not
 available for Haiku. Test definitions, harness, strict/default execution and
 failure reporting remain upstream's. Other pure Python harness dependencies
 are installed by WebKit's own pinned dependency manager.
+
+The engine test VM saves native crash reports for the development `jsc` path
+automatically, using an executable-specific `report` action in
+`~/config/settings/system/debug_server/settings`. Other applications retain
+Haiku's normal prompt. Reports are written to the guest Desktop; this avoids
+leaving unattended conformance runs behind modal crash dialogs.
