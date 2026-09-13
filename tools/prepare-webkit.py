@@ -25,10 +25,16 @@ def prepare(destination):
         git(destination, 'init')
         git(destination, 'remote', 'add', 'origin', lock['upstream']['url'])
         git(destination, 'fetch', '--depth=1', '--filter=blob:none', 'origin', pin)
-        git(destination, 'sparse-checkout', 'set', 'Source', 'Tools')
+        git(destination, 'sparse-checkout', 'set', 'Source', 'Tools', 'Configurations')
         git(destination, 'checkout', '--detach', 'FETCH_HEAD')
     if git(destination, 'rev-parse', 'HEAD', capture=True).strip() != pin:
         raise SystemExit('Checkout is on a different upstream revision; use a new --destination.')
+    if not (destination / 'Configurations/Version.xcconfig').is_file():
+        sparse = subprocess.run(['git', '-C', str(destination), 'config', '--bool', 'core.sparseCheckout'],
+                                text=True, stdout=subprocess.PIPE)
+        if sparse.stdout.strip() != 'true':
+            raise SystemExit('Configurations/Version.xcconfig is missing from the checkout; review local changes.')
+        git(destination, 'sparse-checkout', 'add', 'Configurations')
     reverse = subprocess.run(['git', '-C', str(destination), 'apply', '--reverse', '--check', str(patch)],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if reverse.returncode == 0:

@@ -12,10 +12,16 @@ add_test(NAME summit_core COMMAND summit_tests)
 if(CMAKE_SYSTEM_NAME STREQUAL "Haiku")
     find_path(WEBKIT_INCLUDE_DIR WebView.h PATH_SUFFIXES webkit webkit/haiku REQUIRED)
     find_library(WEBKIT_LIBRARY WebKitLegacy REQUIRED)
+    find_program(HAIKU_RC rc REQUIRED)
+    find_program(HAIKU_XRES xres REQUIRED)
     add_executable(Summit src/main.cpp src/ui/BrowserWindow.cpp src/ui/Chrome.cpp)
     target_include_directories(Summit PRIVATE ${WEBKIT_INCLUDE_DIR} /boot/system/develop/headers/private/netservices)
     target_compile_options(Summit PRIVATE -Wno-multichar)
     target_link_libraries(Summit PRIVATE summit_core ${WEBKIT_LIBRARY} be network bnetapi translation tracker)
-    add_custom_command(TARGET Summit POST_BUILD COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:Summit>/resources
+    set_property(TARGET Summit APPEND PROPERTY LINK_DEPENDS ${CMAKE_SOURCE_DIR}/resources/Summit.rdef)
+    add_custom_command(TARGET Summit POST_BUILD
+        COMMAND ${HAIKU_RC} -o $<TARGET_FILE_DIR:Summit>/Summit.rsrc ${CMAKE_SOURCE_DIR}/resources/Summit.rdef
+        COMMAND ${HAIKU_XRES} -o $<TARGET_FILE:Summit> $<TARGET_FILE_DIR:Summit>/Summit.rsrc
+        COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:Summit>/resources
         COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_SOURCE_DIR}/resources/start.html $<TARGET_FILE_DIR:Summit>/resources/start.html)
 endif()

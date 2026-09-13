@@ -20,15 +20,20 @@ cookie adapter preserves the original database behavior and remains unverified.
 ```sh
 python3 tools/prepare-webkit.py
 bash tools/build-webkit-in-vm.sh
+# Individual build targets are also accepted:
+bash tools/build-webkit-in-vm.sh jsc
+bash tools/test-jsc-in-vm.sh
 ```
 
 Do not run a second engine build while one is active. Inspect the live guest
 `ninja` process and host SSH session, and resume that build after a terminal
 failure has been diagnosed. The build tree is retained between iterations.
 
-Current status: Haiku CMake configuration succeeds with ICU 74.1; a clean native
-JavaScriptCore rebuild is in progress after the initial ICU 66 selection caused
-compilation errors. The browser preview still
+Current status: Haiku CMake configuration succeeds with ICU 74.1. Current
+JavaScriptCore and its shell build successfully after correcting the initial
+ICU 66 selection. Runtime checks pass with JavaScript JIT enabled and disabled;
+the normal engine also executes a WebAssembly module. WebCore and WebKitLegacy
+compilation is underway. The browser preview still
 links the system's Haiku WebKit 1.10.0. The latest engine has **not** been
 validated as a working renderer.
 

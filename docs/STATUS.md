@@ -8,6 +8,8 @@ the first native preview and a separate current-upstream engine port.
 Built on Haiku R1/beta6 hrev59866+79 x86_64, GCC 13.3, in QEMU/KVM.
 The browser links the packaged **Haiku WebKit 1.10.0-2**. The portable suite
 also runs on the Linux host with GCC 13.3.
+Both native Make and CMake builds compile; CMake's application resources and
+portable test execution were verified in the guest as well.
 
 - **34 portable checks pass on Linux and Haiku**: address/search resolution,
   UTF-8 escaping, rejection of control characters and executable address
@@ -52,9 +54,22 @@ The patch was checked for application against a fresh Git index of that exact
 upstream commit. Native CMake configuration completed with the Haiku port.
 The first JavaScriptCore build failed because the generic ICU development
 capability selected version 66. Installing `icu74_devel`, requiring ICU 74 in
-CMake and rebuilding all dependencies corrected that selection. The second
-build is in progress; this is not a completed engine build. Logs are
-`.vm/jsc-icu66-failure.log` and `.vm/jsc-build.log`.
+CMake and rebuilding all dependencies corrected that selection. The current
+**JavaScriptCore library and `jsc` shell now build successfully**. Its 16 runtime
+checks pass, including BigInt, modern arrays/objects, private fields, buffers,
+Unicode regular expressions, ICU list/number/date/word processing, Promise
+microtasks, hot JavaScript and WebAssembly. Fifteen JavaScript checks also pass
+with JIT disabled. The full 16-check run passes with `DISABLE_ASLR` unset.
+These are port smoke checks, not an upstream conformance suite.
+
+Logs are `.vm/jsc-icu66-failure.log`, `.vm/jsc-build.log`,
+`.vm/jsc-shell-build.log`, `.vm/jsc-smoke.log`, `.vm/jsc-default-aslr.log` and
+`.vm/jsc-loaded-images.log`. The last record checks the loaded library path;
+the shell resolves the newly built library under `WebKitBuild/Release/lib`.
+
+WebCore and WebKitLegacy compilation has started. The source transfer was
+corrected to include root `Configurations/`, which supplies the version header
+input. The current renderer build log is `.vm/webcore-build.log`.
 
 The source changes address the initial preference-generator conflicts and
 adapt the legacy Curl loader to current cookie-storage interfaces. The adapter
