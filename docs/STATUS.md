@@ -157,11 +157,23 @@ String group: **7,293 passed, 22 failed, 7,315 executions, 14 skipped files**.
 It fixes all **94** previous locale/Unicode failures in that scope, with no
 passing-to-failing transitions. The remaining 22 executions match pinned Linux
 expectations: four locale hour-cycle cases and 18 Chinese-calendar cases.
-This is a scoped comparison; the full suite has not yet rerun against ICU 78.
+This was the initial scoped comparison; the subsequent full run is recorded below.
 The shell, JSC library and all three private ICU libraries retained their hashes.
 Report: [ICU 78 comparison](test262-icu78-intl-2026-09-13.json); raw evidence:
 `.vm/test262-icu78-intl.log`, `.vm/test262-intl-results/`,
 `.vm/icu78-scope-comparison.json`.
+
+The full ICU 78 run completed in **6,291.58 seconds**, with **101,849 passes,
+140 failures and 486 skipped files** across the same 101,989 executions and
+53,578 files. All **94** locale/Unicode failures are fixed, and the complete
+comparison has **no passing-to-failing transitions** or changed execution/skip
+keys. The remaining 138 assertion/exception failures match the pinned Linux
+expectations by path, mode and exit code. The other two are the same deep-WeakMap
+staging test timing out in strict and default modes; no crash exit codes appear.
+The shell, JSC library and all private ICU libraries retained their hashes.
+Report: [full ICU 78 conformance](test262-icu78-full-2026-09-13.json). Raw evidence:
+`.vm/test262-icu78-full.log`, `.vm/test262-icu78-full-results/` and
+`.vm/icu78-full-comparison.json`.
 
 Logs are `.vm/jsc-icu66-failure.log`, `.vm/jsc-build.log`,
 `.vm/jsc-shell-build.log`, `.vm/jsc-smoke.log`, `.vm/jsc-default-aslr.log` and

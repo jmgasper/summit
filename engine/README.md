@@ -67,8 +67,10 @@ content on the guest, so generated headers cannot silently retain older content.
 The modern configuration enables WebKit's process architecture
 and currently disables the GPU process. It does not yet provide a working
 browser process connection. Its ICU 78 JavaScriptCore passes 31 JIT/interpreter
-smoke checks; the scoped conformance comparison fixes 94 ICU-related failures.
-The full ICU 78 conformance run is still in progress.
+smoke checks. Its full conformance run records 101,849 passes, 140 failures and
+486 skipped files, fixing 94 ICU-related failures without any regressions in
+the complete comparison. Of the remaining failures, 138 match pinned upstream
+Linux expectations and two are deep-WeakMap staging timeouts.
 
 Current status: Haiku CMake configuration succeeds with ICU 74.1. Current
 JavaScriptCore and its shell build successfully after correcting the initial
