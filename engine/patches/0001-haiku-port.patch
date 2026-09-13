@@ -29985,10 +29985,10 @@ index 0000000000000000000000000000000000000000..9312949353867689c525a16f82c7b69d
 +};
 diff --git a/Source/WebKitLegacy/haiku/WebCoreSupport/ChromeClientHaiku.cpp b/Source/WebKitLegacy/haiku/WebCoreSupport/ChromeClientHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..ddd829e8a0eb5dbc37879ed5f804a1e74ae3fd5f
+index 0000000000000000000000000000000000000000..d8a4161101102ca1f9620d0d4ed112066ef42afa
 --- /dev/null
 +++ b/Source/WebKitLegacy/haiku/WebCoreSupport/ChromeClientHaiku.cpp
-@@ -0,0 +1,528 @@
+@@ -0,0 +1,527 @@
 +/*
 + * Copyright (C) 2006 Zack Rusin <zack@kde.org>
 + * Copyright (C) 2006 Apple Computer, Inc.  All rights reserved.
@@ -30239,7 +30239,7 @@ index 0000000000000000000000000000000000000000..ddd829e8a0eb5dbc37879ed5f804a1e7
 +RefPtr<ColorChooser> ChromeClientHaiku::createColorChooser(
 +    ColorChooserClient& client, const Color& color)
 +{
-+    return adoptRef(* new ColorChooserHaiku(&client, color));
++    return adoptRef(* new ColorChooserHaiku(&client, color, rootViewToScreen(client.elementRectRelativeToMainFrameView())));
 +}
 +
 +KeyboardUIMode ChromeClientHaiku::keyboardUIMode()
@@ -30516,7 +30516,6 @@ index 0000000000000000000000000000000000000000..ddd829e8a0eb5dbc37879ed5f804a1e7
 +
 +
 +} // namespace WebCore
-+
 diff --git a/Source/WebKitLegacy/haiku/WebCoreSupport/ChromeClientHaiku.h b/Source/WebKitLegacy/haiku/WebCoreSupport/ChromeClientHaiku.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..f90f1f2dc0c8e719d58aa632db680b81a098d819
@@ -30739,7 +30738,7 @@ index 0000000000000000000000000000000000000000..f90f1f2dc0c8e719d58aa632db680b81
 +
 diff --git a/Source/WebKitLegacy/haiku/WebCoreSupport/ColorChooserHaiku.h b/Source/WebKitLegacy/haiku/WebCoreSupport/ColorChooserHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..527bdf228cc3b7a0c7959bec2b07ae4509d93ca2
+index 0000000000000000000000000000000000000000..d8380153b3f517f866ab9046fa514734be997269
 --- /dev/null
 +++ b/Source/WebKitLegacy/haiku/WebCoreSupport/ColorChooserHaiku.h
 @@ -0,0 +1,184 @@
@@ -30804,8 +30803,8 @@ index 0000000000000000000000000000000000000000..527bdf228cc3b7a0c7959bec2b07ae45
 +class ColorChooserWindow: public BWindow
 +{
 +public:
-+    ColorChooserWindow(ColorChooserClient& client)
-+        : BWindow(client.elementRectRelativeToRootView(), "Color Picker",
++    ColorChooserWindow(ColorChooserClient& client, const IntRect& screenRect)
++        : BWindow(screenRect, "Color Picker",
 +            B_FLOATING_WINDOW, B_NOT_CLOSABLE | B_NOT_RESIZABLE | B_NOT_ZOOMABLE
 +            | B_AUTO_UPDATE_SIZE_LIMITS)
 +        , m_client(client)
@@ -30891,8 +30890,8 @@ index 0000000000000000000000000000000000000000..527bdf228cc3b7a0c7959bec2b07ae45
 +{
 +    WTF_MAKE_TZONE_ALLOCATED_INLINE(ColorChooserHaiku);
 +public:
-+    ColorChooserHaiku(ColorChooserClient* client, const Color& color)
-+        : m_window(new ColorChooserWindow(*client))
++    ColorChooserHaiku(ColorChooserClient* client, const Color& color, const IntRect& screenRect)
++        : m_window(new ColorChooserWindow(*client, screenRect))
 +        , m_client(*client)
 +    {
 +        reattachColorChooser(color);
@@ -32609,10 +32608,10 @@ index 0000000000000000000000000000000000000000..3eff6fc40aa60d6e97bb660f086af96c
 +
 diff --git a/Source/WebKitLegacy/haiku/WebCoreSupport/FrameLoaderClientHaiku.cpp b/Source/WebKitLegacy/haiku/WebCoreSupport/FrameLoaderClientHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..020932f4e9e30e5e380fd4ecb47f7b57430e1d6e
+index 0000000000000000000000000000000000000000..293f984ec31fd0a5713dc2f0a3a991cb129d4946
 --- /dev/null
 +++ b/Source/WebKitLegacy/haiku/WebCoreSupport/FrameLoaderClientHaiku.cpp
-@@ -0,0 +1,1026 @@
+@@ -0,0 +1,1030 @@
 +/*
 + * Copyright (C) 2006 Don Gibson <dgibson77@gmail.com>
 + * Copyright (C) 2006 Zack Rusin <zack@kde.org>
@@ -32717,6 +32716,11 @@ index 0000000000000000000000000000000000000000..020932f4e9e30e5e380fd4ecb47f7b57
 +#endif
 +
 +namespace WebCore {
++
++void FrameLoaderClientHaiku::sendH2Ping(const URL& url, CompletionHandler<void(std::expected<Seconds, ResourceError>&&)>&& completionHandler)
++{
++    completionHandler(makeUnexpected(internalError(url)));
++}
 +
 +FrameLoaderClientHaiku::FrameLoaderClientHaiku(WebCore::FrameLoader& loader, BWebPage* webPage)
 +    : LocalFrameLoaderClient(loader)
@@ -33638,13 +33642,12 @@ index 0000000000000000000000000000000000000000..020932f4e9e30e5e380fd4ecb47f7b57
 +}
 +
 +} // namespace WebCore
-+
 diff --git a/Source/WebKitLegacy/haiku/WebCoreSupport/FrameLoaderClientHaiku.h b/Source/WebKitLegacy/haiku/WebCoreSupport/FrameLoaderClientHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..21433c11d94d076073154139e08ecb5cecbc3bcf
+index 0000000000000000000000000000000000000000..dae4cf03535afb8ff95969f6daec6a066fa51139
 --- /dev/null
 +++ b/Source/WebKitLegacy/haiku/WebCoreSupport/FrameLoaderClientHaiku.h
-@@ -0,0 +1,240 @@
+@@ -0,0 +1,239 @@
 +/*
 + * Copyright (C) 2006 Zack Rusin <zack@kde.org>
 + * Copyright (C) 2006 Apple Computer, Inc.  All rights reserved.
@@ -33861,7 +33864,7 @@ index 0000000000000000000000000000000000000000..21433c11d94d076073154139e08ecb5c
 +
 +    void didRestoreFromBackForwardCache() final {}
 +
-+    void sendH2Ping(const URL& url, CompletionHandler<void(Expected<Seconds, ResourceError>&&)>&& completionHandler) final { notImplemented(); }
++    void sendH2Ping(const URL&, CompletionHandler<void(std::expected<Seconds, ResourceError>&&)>&&) final;
 + private:
 +    bool isTertiaryMouseButton(const NavigationAction& action) const;
 +
@@ -33884,7 +33887,6 @@ index 0000000000000000000000000000000000000000..21433c11d94d076073154139e08ecb5c
 +}
 +
 +#endif // FrameLoaderClientHaiku_h
-+
 diff --git a/Source/WebKitLegacy/haiku/WebCoreSupport/FrameNetworkingContextHaiku.cpp b/Source/WebKitLegacy/haiku/WebCoreSupport/FrameNetworkingContextHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..b4586300eaa28912133b8d6797a2a42787a6e180

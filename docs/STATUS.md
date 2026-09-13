@@ -161,6 +161,15 @@ cannot currently export a separate read-only handle; it reports failure instead
 of granting writable access. These changes await the next engine build sync.
 Logs: `.vm/native-memory-tests.log` and `.vm/native-memory-baseline.log`.
 
+All 32 Haiku embedding source files pass the native compiler's syntax checks.
+The initial pass found five failing files caused by two upstream API changes:
+the color chooser's coordinate query and the frame loader's `std::expected`
+callback. The adapted color chooser uses screen coordinates, and unsupported
+HTTP/2 pings now complete with an error instead of leaving their callback pending.
+The five affected files pass when compiled from an isolated corrected source
+copy. These checks do not replace object generation, linking or browser runtime
+tests. Logs are `.vm/legacy-syntax.log` and `.vm/legacy-syntax-fixed.log`.
+
 WebCore and WebKitLegacy compilation has started. The source transfer was
 corrected to include root `Configurations/`, which supplies the version header
 input. The current renderer build log is `.vm/webcore-build.log`.
