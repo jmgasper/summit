@@ -28,6 +28,8 @@ check: $(BUILD)/summit_tests
 	$(BUILD)/summit_tests
 $(BUILD)/summit_browser_smoke: $(BUILD)/tests/BrowserSmoke.o
 	$(CXX) -o $@ $^ -lbe
+$(BUILD)/summit_browser_probe: $(BUILD)/tests/BrowserProbe.o
+	$(CXX) -o $@ $^ -lbe
 browser-smoke: $(BUILD)/summit_browser_smoke
 	$(BUILD)/summit_browser_smoke
 package: all

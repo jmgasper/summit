@@ -5,10 +5,21 @@ import http.server
 import json
 import pathlib
 import re
+import struct
 import time
 import urllib.parse
+import zlib
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+def pixel_png():
+    def chunk(kind, data):
+        return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
+    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', 1, 1, 8, 6, 0, 0, 0))
+            + chunk(b'IDAT', zlib.compress(b'\x00\x1e\x90\xff\xff')) + chunk(b'IEND', b''))
+
+
 PAGE = b'''<!doctype html><meta charset="utf-8"><title>Fixture loading</title>
 <link rel="stylesheet" href="/fixture.css">
 <h1>Summit engine check</h1><p id="result">Running JavaScript checks...</p>
@@ -55,6 +66,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send(SCRIPT, 'application/javascript')
         elif path == '/fixture.css':
             self.send(b'body{font:18px system-ui;margin:48px;background:#f7faf6;color:#234c3b}#grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}#grid span{padding:24px;background:#e0eddb}a{color:#246548}#result{white-space:pre-wrap}', 'text/css')
+        elif path == '/platform':
+            self.send((ROOT / 'tests/fixtures/platform.html').read_bytes())
+        elif path == '/platform.js':
+            self.send((ROOT / 'tests/fixtures/platform.js').read_bytes(), 'application/javascript')
+        elif path == '/module.js':
+            self.send(b'export const answer = 42; export function value() { return "module loaded"; }', 'application/javascript')
+        elif path == '/worker.js':
+            self.send(b'onmessage = event => postMessage(new Uint8Array(event.data).reduce((sum, value) => sum + value, 0));', 'application/javascript')
+        elif path == '/pixel.png':
+            self.send(pixel_png(), 'image/png')
+        elif path == '/square.svg':
+            self.send(b'<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="#1e90ff"/></svg>', 'image/svg+xml')
         elif path == '/echo-cookie':
             self.send(self.headers.get('Cookie', '').encode(), 'text/plain')
         elif path == '/second':

@@ -75,7 +75,7 @@ available for Haiku. Test definitions, harness, strict/default execution and
 failure reporting remain upstream's. Other pure Python harness dependencies
 are installed by WebKit's own pinned dependency manager.
 
-The engine test VM saves native crash reports for the development `jsc` path
+The engine test VM saves native crash reports for Summit and the development `jsc` paths
 automatically, using an executable-specific `report` action in
 `~/config/settings/system/debug_server/settings`. Other applications retain
 Haiku's normal prompt. Reports are written to the guest Desktop; this avoids

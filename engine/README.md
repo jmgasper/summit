@@ -15,7 +15,8 @@ patch against the pinned modern upstream. The patch retains all upstream
 copyright/license headers. It currently restores the Haiku platform and
 legacy embedding API, adjusts preferences for the current generator schema,
 and adapts the legacy Curl loader to the new cookie-storage interfaces. The
-cookie adapter preserves the original database behavior and remains unverified.
+cookie adapter preserves the original database and passes native regression
+checks plus the running browser's cookie/fetch fixture.
 
 ```sh
 python3 tools/prepare-webkit.py
@@ -33,6 +34,10 @@ bash tools/test-download-names-in-vm.sh
 bash tools/test-engine-runloop-in-vm.sh
 bash tools/test-engine-process-in-vm.sh
 bash tools/test-engine-memory-in-vm.sh
+# Build Summit with private current-engine libraries and accompanying source:
+bash tools/build-current-browser-in-vm.sh
+# Repeat the host bundle copy without rebuilding, while inputs still match:
+bash tools/copy-current-browser-bundle.sh
 ```
 
 Do not run a second engine build while one is active. Inspect the live guest
@@ -43,15 +48,20 @@ Current status: Haiku CMake configuration succeeds with ICU 74.1. Current
 JavaScriptCore and its shell build successfully after correcting the initial
 ICU 66 selection. Runtime checks pass with JavaScript JIT enabled and disabled;
 the normal engine also executes a WebAssembly module. WebCore and WebKitLegacy
-compilation is underway. A selected 116-file Test262 corpus passes 232 runs
-without skips or failures. The browser preview still
-links the system's Haiku WebKit 1.10.0. The latest engine has **not** been
-validated as a working renderer.
+compile and link. **Summit runs the current engine**, reporting 626.1.6 and the
+exact upstream commit, with both private library paths verified in the native
+loader. Its 37 native browser checks pass and WebKit.org renders over HTTPS.
+Eleven of twelve advanced platform probes pass; BroadcastChannel is unavailable
+because upstream disables it in the legacy embedding pending PageGroup isolation.
+A selected 116-file Test262 corpus passes 232 runs without skips or failures.
+The full run records 101,755 passes, 234 failures and 486 skipped files; 138
+failures match pinned upstream Linux expectations by path, mode and exit code.
+See the [verification record](../docs/STATUS.md) for the remaining differences.
 
-Next port work includes compiling WebCore and the Haiku embedding against
-current signatures. Upstream moved networking and cookie functions from
+Next port work includes the modern WebKit process architecture and extensions.
+Upstream moved networking and cookie functions from
 WebCore into WebKit during September; the Haiku legacy Curl backend needs
-corresponding adaptation and runtime verification. The new adapter does not yet
+corresponding adaptation, now compiled and exercised in Summit. The adapter does not yet
 address the inherited database's missing SameSite and partitioned-cookie
 support. Its existing non-Curl backend is not an alternate
 validated path. The unfinished Haiku multiprocess API in the patch is also
