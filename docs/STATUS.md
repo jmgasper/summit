@@ -1461,3 +1461,28 @@ assertion API, report IPC or extension was run; queued-test execution remains
 Cocoa-only. See [promise assertion evidence](webextensions-native-promise-assertions.md).
 
 Patch: `35dcd668ac188e1ef81ca581f5be6303a44db6f16a5614f5e0948d9f06838643`.
+
+2026-09-14 seventh full extension link result: the frozen `5732f407...` build
+completes compilation and fails at the WebKit shared-library link with 39
+distinct missing symbols, down from 41. The listener-availability query and
+queued test-message delivery are resolved, with no new missing symbols.
+This build predates the common promise assertions. Record:
+`.vm/modern-extensions-test-delivery-build-result.json`.
+No feature-enabled WebKit link or extension runtime passed.
+
+2026-09-14 eighth full extension link result: the frozen `35dcd668...` build
+completes compilation and fails at the WebKit shared-library link with 37
+distinct missing symbols, down from 39. Both promise assertion methods are
+resolved, with no new missing symbols. This build predates queued-test execution.
+Record: `.vm/modern-extensions-promise-assertions-build-result.json`.
+No feature-enabled WebKit link or extension runtime passed.
+
+2026-09-14 queued test executor: `addTest` and sequential execution now use
+common C++, retaining named-function validation, result promises and reporting.
+Thenables/exceptions use the intrinsic helper; following tests are scheduled on
+the main queue, and unavailable execution contexts report failure. Settled
+native callback state is released immediately. All 41 helper checks and both
+final integration compiles pass. No queued test, API object, DOM context or IPC
+was run. See [executor evidence and limits](webextensions-native-test-executor.md).
+
+Patch: `ba1ee173c7963284ecede95c47830e7109b13fad531aca9c2c4495f2212f221f`.

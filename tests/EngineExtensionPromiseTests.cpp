@@ -123,6 +123,7 @@ int main()
         evaluate(context.get(), "afterGC === weakCapture.deref() && afterGC.data === 'retained'", "captured object identity survives collection before settlement");
         evaluate(context.get(), "globalThis.count = 0; for (let i = 0; i < 128; ++i) nativeTransform({then(resolve, reject) { resolve(i); reject(i); }}).then(x => { if (x[0] && x[1] === i) ++count; }); true", "batch of competing thenable settlements is scheduled");
         evaluate(context.get(), "count === 128", "each transformed promise completes exactly once");
+        check(liveCompletions.load() == 0, "settled callbacks release native state before another collection");
         evaluate(context.get(), "nativeTransform(new Promise(() => {}), {pending: true}); true", "an unreferenced pending graph can be released with its context");
         check(liveCompletions.load() > 0, "the fixture actually has native callback state to release");
     }
