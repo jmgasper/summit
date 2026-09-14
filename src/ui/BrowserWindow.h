@@ -47,6 +47,7 @@ public:
     bool QuitRequested() override;
 #if SUMMIT_MODERN_WEBKIT
     void CreateTab(const std::string& url, bool select = true);
+    void WindowActivated(bool active) override;
 #else
     void NavigationRequested(const BString& url, BWebView* view) override;
     void NewWindowRequested(const BString& url, bool primary) override;
@@ -138,6 +139,9 @@ private:
     void CloseTab(int64 id);
     void Navigate(const std::string& text);
     void RefreshChrome();
+#if SUMMIT_MODERN_WEBKIT
+    void SyncBrowserWindow();
+#endif
     void RefreshSidebar(bool history);
     void SaveSession();
     void ShowError(const std::string& error);

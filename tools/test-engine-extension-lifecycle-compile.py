@@ -36,7 +36,10 @@ BINDING_UNITS = ('JSWebExtensionAPIWebNavigation.cpp', 'JSWebExtensionAPIWebNavi
                  'JSWebExtensionAPINamespace.cpp', 'JSWebExtensionAPIWebPageNamespace.cpp')
 PAGE_UNITS = {'WebPage.cpp': 'WebProcess/WebPage/WebPage.cpp',
               'WebLocalFrameLoaderClient.cpp': 'WebProcess/WebCoreSupport/WebLocalFrameLoaderClient.cpp'}
-NATIVE_PAGE_UNITS = {'WebPageProxy.cpp': 'UIProcess/WebPageProxy.cpp',
+NATIVE_PAGE_UNITS = {'BrowserTabRegistryHaiku.cpp': 'UIProcess/haiku/BrowserTabRegistryHaiku.cpp',
+                     'WebViewContextHaiku.cpp': 'UIProcess/haiku/WebViewContextHaiku.cpp',
+                     'WebKitContext.cpp': 'UIProcess/API/haiku/WebKitContext.cpp',
+                     'WebPageProxy.cpp': 'UIProcess/WebPageProxy.cpp',
                      'WebView.cpp': 'UIProcess/haiku/WebView.cpp'}
 UI_API_UNITS = {'WebExtensionNavigationURLFilter.cpp': 'WebProcess/Extensions/WebExtensionNavigationURLFilter.cpp',
                 'WebExtensionNavigationParameters.cpp': 'WebProcess/Extensions/WebExtensionNavigationParameters.cpp',
@@ -207,8 +210,12 @@ def host(overlay=None, units=None, engine_root=DEFAULT_ENGINE, regenerate=False,
             files[path.name] = (path, source(path), source(path).read_bytes())
     if any(name in NATIVE_PAGE_UNITS for name in units or ()) or (overlay and
             (pathlib.Path(overlay).resolve() / 'Source/WebKit/UIProcess/haiku/WebViewPrivate.h').is_file()):
-        for relative in ('UIProcess/haiku/WebViewPrivate.h',):
+        for relative in ('UIProcess/haiku/WebViewPrivate.h', 'UIProcess/haiku/WebViewContextHaiku.h',
+                         'UIProcess/haiku/WebViewStateHaiku.h', 'UIProcess/haiku/BrowserTabRegistryHaiku.h',
+                         'UIProcess/API/haiku/WebKitContext.h', 'UIProcess/API/haiku/WebKitView.h'):
             path = engine / 'Source/WebKit' / relative
+            if not source(path).is_file():
+                continue
             if path.name in files:
                 raise RuntimeError('Ambiguous native page header: ' + path.name)
             files[path.name] = (path, source(path), source(path).read_bytes())

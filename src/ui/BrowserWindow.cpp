@@ -250,6 +250,7 @@ BrowserWindow::BrowserWindow(std::filesystem::path profile, std::string homeURL,
 BrowserWindow::~BrowserWindow()
 {
 #if SUMMIT_MODERN_WEBKIT
+    fWebKitContext->SetBrowserWindowTabs(BMessenger(this), { }, nullptr, false);
     SaveSession();
     fSaveTimer.reset();
     for (auto& tab : fTabs) {
@@ -336,6 +337,9 @@ void BrowserWindow::CreateTab(const std::string& input, bool select, BWebView* a
     if (!adopted) webView->LoadURL(address.url == "summit:home" ? fHomeURL.c_str() : address.url.c_str(), select);
 #endif
     if (select && address.url == "summit:home") fAddress->MakeFocus();
+#if SUMMIT_MODERN_WEBKIT
+    SyncBrowserWindow();
+#endif
     RefreshChrome();
 }
 void BrowserWindow::SelectTab(int64 id, bool forClose)
@@ -358,6 +362,9 @@ void BrowserWindow::SelectTab(int64 id, bool forClose)
 #endif
         fTabs[i].view->MakeFocus();
         fAddress->SetText(fTabs[i].url == "summit:home" ? "" : fTabs[i].url.c_str());
+#if SUMMIT_MODERN_WEBKIT
+        SyncBrowserWindow();
+#endif
         RefreshChrome();
         return;
     }
@@ -660,6 +667,9 @@ void BrowserWindow::FinishCloseTab(int64 id)
                 CreateTab("summit:home");
         }
         else if (selected) SelectTab(fTabs[std::min(i, fTabs.size() - 1)].id);
+#if SUMMIT_MODERN_WEBKIT
+        SyncBrowserWindow();
+#endif
         RefreshChrome();
         return;
     }
@@ -676,6 +686,24 @@ void BrowserWindow::Navigate(const std::string& text)
         tab->view->LoadURL(address.url == "summit:home" ? fHomeURL.c_str() : address.url.c_str());
     }
 }
+#if SUMMIT_MODERN_WEBKIT
+void BrowserWindow::SyncBrowserWindow()
+{
+    std::vector<BWebKitView*> views;
+    views.reserve(fTabs.size());
+    for (auto& tab : fTabs)
+        views.push_back(tab.view);
+    auto* active = ActiveTab();
+    fWebKitContext->SetBrowserWindowTabs(BMessenger(this), views, active ? active->view : nullptr, IsActive());
+}
+
+void BrowserWindow::WindowActivated(bool active)
+{
+    BrowserWindowBase::WindowActivated(active);
+    SyncBrowserWindow();
+}
+#endif
+
 void BrowserWindow::RefreshChrome()
 {
     std::vector<TabLabel> labels;

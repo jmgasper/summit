@@ -1501,3 +1501,11 @@ Two additional interfaces use C++ bindings, bringing the total to 12 of 37.
 Native frame-query handling and tab integration are still missing; no extension
 API or navigation event was run. See [navigation API evidence and limits](webextensions-native-navigation-api.md).
 Patch: `5358cf199868ababff67cf59212eb911603ae30f75b7980e3fae366f1b993945`.
+
+2026-09-14 native browser tab registry: browsing contexts now own window/tab
+metadata, the native SDK queues whole-window updates and checks page ownership,
+and Summit submits tab and focus changes. **543 registry checks pass**, **four
+engine units compile** and **five browser units compile**. SDK/browser runtime
+and extension delegate integration remain unverified. See [registry evidence
+and limits](native-browser-tab-registry.md).
+Patch: `0f24f49c6189020ec84b14732cd10bfa31b4c7f4a555ebaa224c18f9c63d5209`.

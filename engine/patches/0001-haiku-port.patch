@@ -22926,10 +22926,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..b17137bf2407c57aee8085bd49841854a2c47bff
+index 0000000000000000000000000000000000000000..df6e4e6ac41d62d9385139ddb157a7d1731b8d60
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,187 @@
+@@ -0,0 +1,188 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -22996,6 +22996,7 @@ index 0000000000000000000000000000000000000000..b17137bf2407c57aee8085bd49841854
 +    UIProcess/haiku/WebPopupMenuProxyHaiku.cpp
 +    UIProcess/haiku/WebProcessPoolHaiku.cpp
 +    UIProcess/haiku/WebView.cpp
++    UIProcess/haiku/BrowserTabRegistryHaiku.cpp
 +    UIProcess/haiku/WebViewContextHaiku.cpp
 +
 +    WebProcess/Extensions/Bindings/JSWebExtensionWrapper.cpp
@@ -25036,16 +25037,21 @@ index 0000000000000000000000000000000000000000..574ed16658f0c14b1aa2e63208e990b8
 +#define WEBKIT_ENGINE_VERSION_HAIKU "@WebKit_HAIKU_MAJOR_VERSION@.@WebKit_HAIKU_MINOR_VERSION@.@WebKit_HAIKU_TINY_VERSION@"
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitContext.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitContext.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..ec75b44c77e1583bb8155b0f75099eb18124bce0
+index 0000000000000000000000000000000000000000..0068e6c197cbd96a9fb55e438ddf0abee2d92a57
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitContext.cpp
-@@ -0,0 +1,64 @@
+@@ -0,0 +1,131 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
 +#include "WebKitContext.h"
 +
++#include "BrowserTabRegistryHaiku.h"
 +#include "DownloadRegistryHaiku.h"
++#include "WebPageProxy.h"
++#include "WebViewPrivate.h"
++#include "WebViewStateHaiku.h"
++#include <MessageRunner.h>
 +#include "WebKitView.h"
 +#include <Application.h>
 +#include <wtf/RunLoop.h>
@@ -25104,12 +25110,74 @@ index 0000000000000000000000000000000000000000..ec75b44c77e1583bb8155b0f75099eb1
 +{
 +    return m_context && m_context->downloads()->hasPendingDownloads();
 +}
++
++void BWebKitContext::SetBrowserWindowTabs(const BMessenger& window, const std::vector<BWebKitView*>& views,
++    BWebKitView* activeView, bool focused, const BMessenger& reply, uint64 identifier)
++{
++    auto respond = [reply, identifier](status_t error, uint64 windowIdentifier, int32 tabCount, int32 activeIndex) {
++        if (!reply.IsValid())
++            return;
++        BMessage result(B_WEBKIT_BROWSER_WINDOW_UPDATED);
++        result.AddUInt64("identifier", identifier);
++        result.AddInt32("error", error);
++        if (error == B_OK) {
++            result.AddUInt64("window_identifier", windowIdentifier);
++            result.AddInt32("tab_count", tabCount);
++            result.AddInt32("active_index", activeIndex);
++        }
++        auto status = reply.SendMessage(&result, static_cast<BHandler*>(nullptr), 0);
++        if (status == B_WOULD_BLOCK || status == B_TIMED_OUT)
++            BMessageRunner::StartSending(reply, &result, 10000, 1);
++    };
++    if (m_status != B_OK) {
++        respond(m_status, 0, 0, -1);
++        return;
++    }
++    if (views.size() > static_cast<size_t>(std::numeric_limits<int32>::max())) {
++        respond(B_BAD_VALUE, 0, 0, -1);
++        return;
++    }
++    std::vector<std::shared_ptr<WebKit::WebViewStateHaiku>> states;
++    states.reserve(views.size());
++    int32 activeIndex = -1;
++    for (size_t index = 0; index < views.size(); ++index) {
++        auto* view = views[index];
++        if (!view) {
++            respond(B_BAD_VALUE, 0, 0, -1);
++            return;
++        }
++        states.push_back(view->m_state);
++        if (view == activeView)
++            activeIndex = static_cast<int32>(index);
++    }
++    if (activeView && activeIndex == -1) {
++        respond(B_BAD_VALUE, 0, 0, -1);
++        return;
++    }
++    WTF::RunLoop::mainSingleton().dispatch([context = m_context, states = std::move(states), window, focused, activeIndex, respond] {
++        Vector<WebKit::WebPageProxyIdentifier> pages;
++        for (auto& state : states) {
++            if (state->context != context) {
++                respond(B_BAD_VALUE, 0, 0, -1);
++                return;
++            }
++            if (state->closed || !state->client || !state->client->page() || state->client->page()->isClosed()) {
++                respond(B_CANCELED, 0, 0, -1);
++                return;
++            }
++            pages.append(state->client->page()->identifier());
++        }
++        auto activePage = activeIndex >= 0 ? std::optional { pages[activeIndex] } : std::nullopt;
++        auto result = context->browserTabs()->update(window, pages, activePage, focused);
++        respond(result ? B_OK : result.error(), result ? *result : 0, static_cast<int32>(pages.size()), activeIndex);
++    });
++}
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitContext.h b/Source/WebKit/UIProcess/API/haiku/WebKitContext.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..f082105080d2b519fdc238b2301d89aed01abbcb
+index 0000000000000000000000000000000000000000..746579046cf27009e6483bc2c513d79e88bb1af5
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitContext.h
-@@ -0,0 +1,65 @@
+@@ -0,0 +1,78 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -25118,6 +25186,9 @@ index 0000000000000000000000000000000000000000..f082105080d2b519fdc238b2301d89ae
 +#include <Messenger.h>
 +#include <SupportDefs.h>
 +#include <memory>
++#include <vector>
++
++class BWebKitView;
 +
 +namespace WebKit { class WebViewContextHaiku; }
 +
@@ -25132,7 +25203,8 @@ index 0000000000000000000000000000000000000000..f082105080d2b519fdc238b2301d89ae
 +enum : uint32 {
 +    B_WEBKIT_DOWNLOAD_STARTED = 'wdst',
 +    B_WEBKIT_DOWNLOAD_PROGRESS = 'wdpr',
-+    B_WEBKIT_DOWNLOAD_FINISHED = 'wdfn'
++    B_WEBKIT_DOWNLOAD_FINISHED = 'wdfn',
++    B_WEBKIT_BROWSER_WINDOW_UPDATED = 'wbwu'
 +};
 +enum : uint32 {
 +    B_WEBKIT_DOWNLOAD_SUCCEEDED,
@@ -25153,6 +25225,15 @@ index 0000000000000000000000000000000000000000..f082105080d2b519fdc238b2301d89ae
 +
 +    status_t InitCheck() const;
 +    bool IsPrivate() const;
++
++    // Submit from the owning window looper while these views are alive. The
++    // complete ordered list is applied on WebKit main after checking every
++    // page belongs to this context. An empty list removes the window. A null
++    // activeView records no active tab. Closed/missing/mixed-profile views
++    // reject the whole update. Optional reply: identifier, error, and on
++    // success window_identifier, tab_count and active_index (-1 for none).
++    void SetBrowserWindowTabs(const BMessenger& window, const std::vector<BWebKitView*>&,
++        BWebKitView* activeView, bool focused, const BMessenger& reply = BMessenger(), uint64 identifier = 0);
 +
 +    // Configure on the application thread before downloads start. The directory
 +    // must already exist, be writable, and have an absolute UTF-8 path. Existing
@@ -25696,10 +25777,10 @@ index 0000000000000000000000000000000000000000..2eb35b00e3e955de784a59c88026e72c
 +}
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitView.h b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..38ae49a449a3a6a93116d8e58a431d32f1ff9072
+index 0000000000000000000000000000000000000000..76e0d3db5f131fff71c6985a8d2d2620f562d202
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
-@@ -0,0 +1,96 @@
+@@ -0,0 +1,97 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -25786,6 +25867,7 @@ index 0000000000000000000000000000000000000000..38ae49a449a3a6a93116d8e58a431d32
 +    void MessageReceived(BMessage*) override;
 +
 +private:
++    friend class BWebKitContext;
 +    void UpdateGeometry();
 +    void SendInput(const BMessage&, BPoint = BPoint());
 +    void SendCommand(uint32, const char* = nullptr);
@@ -33018,6 +33100,188 @@ index 0000000000000000000000000000000000000000..e545399afbe8b5539a8026d49532e05a
 +}
 +
 +} // namespace WebKit
+diff --git a/Source/WebKit/UIProcess/haiku/BrowserTabRegistryHaiku.cpp b/Source/WebKit/UIProcess/haiku/BrowserTabRegistryHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..a9ad0897ea1dd9d96f82d6467a891b1cb6e8df5e
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/BrowserTabRegistryHaiku.cpp
+@@ -0,0 +1,124 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#include "config.h"
++#include "BrowserTabRegistryHaiku.h"
++
++#include <wtf/HashSet.h>
++#include <wtf/MainThread.h>
++
++namespace WebKit {
++
++std::expected<uint64_t, status_t> BrowserTabRegistryHaiku::update(const BMessenger& messenger, const Vector<WebPageProxyIdentifier>& pages,
++    std::optional<WebPageProxyIdentifier> activePage, bool focused)
++{
++    ASSERT(isMainThread());
++    HashSet<WebPageProxyIdentifier> incomingPages;
++    for (auto page : pages) {
++        if (!incomingPages.add(page).isNewEntry)
++            return makeUnexpected(B_BAD_VALUE);
++    }
++    if (activePage && !incomingPages.contains(*activePage))
++        return makeUnexpected(B_BAD_VALUE);
++    auto existing = m_windows.findIf([&](auto& window) { return window.messenger == messenger; });
++    if (pages.isEmpty()) {
++        if (existing == notFound)
++            return uint64_t { 0 };
++        auto identifier = m_windows[existing].identifier;
++        m_windows.removeAt(existing);
++        if (m_focusedWindow == identifier)
++            m_focusedWindow = std::nullopt;
++        return identifier;
++    }
++    if (!messenger.IsValid())
++        return makeUnexpected(B_BAD_VALUE);
++    if (existing == notFound && m_nextWindowIdentifier == std::numeric_limits<uint64_t>::max())
++        return makeUnexpected(B_ERROR);
++
++    auto identifier = existing != notFound ? m_windows[existing].identifier : m_nextWindowIdentifier++;
++    // Validate first, then publish a complete replacement. A move may affect
++    // several windows, but observers only see the final ownership and order.
++    auto windows = m_windows;
++    for (auto& window : windows) {
++        if (window.identifier == identifier)
++            continue;
++        window.pages.removeAllMatching([&](auto page) { return incomingPages.contains(page); });
++        if (window.activePage && !window.pages.contains(*window.activePage))
++            window.activePage = std::nullopt;
++    }
++    windows.removeAllMatching([](auto& window) { return window.pages.isEmpty(); });
++    auto index = windows.findIf([&](auto& window) { return window.identifier == identifier; });
++    Window replacement { identifier, messenger, pages, activePage };
++    if (index == notFound) {
++        windows.append(WTF::move(replacement));
++        index = windows.size() - 1;
++    } else
++        windows[index] = WTF::move(replacement);
++    if (focused) {
++        m_focusedWindow = identifier;
++        if (index) {
++            auto window = WTF::move(windows[index]);
++            windows.removeAt(index);
++            windows.insert(0, WTF::move(window));
++        }
++    } else if (m_focusedWindow == identifier)
++        m_focusedWindow = std::nullopt;
++    if (m_focusedWindow && !windows.containsIf([&](auto& window) { return window.identifier == *m_focusedWindow; }))
++        m_focusedWindow = std::nullopt;
++    m_windows = WTF::move(windows);
++    return identifier;
++}
++
++void BrowserTabRegistryHaiku::removePage(WebPageProxyIdentifier identifier)
++{
++    ASSERT(isMainThread());
++    for (auto& window : m_windows) {
++        window.pages.removeFirst(identifier);
++        if (window.activePage == identifier)
++            window.activePage = std::nullopt;
++    }
++    m_windows.removeAllMatching([](auto& window) { return window.pages.isEmpty(); });
++    if (m_focusedWindow && !m_windows.containsIf([&](auto& window) { return window.identifier == *m_focusedWindow; }))
++        m_focusedWindow = std::nullopt;
++}
++
++void BrowserTabRegistryHaiku::clear()
++{
++    ASSERT(isMainThread());
++    m_windows.clear();
++    m_focusedWindow = std::nullopt;
++    // Do not recycle IDs: a retained extension window must stay invalid.
++}
++
++Vector<BrowserTabRegistryHaiku::Window> BrowserTabRegistryHaiku::windows() const
++{
++    ASSERT(isMainThread());
++    return m_windows;
++}
++
++std::optional<BrowserTabRegistryHaiku::Window> BrowserTabRegistryHaiku::window(uint64_t identifier) const
++{
++    ASSERT(isMainThread());
++    auto index = m_windows.findIf([&](auto& window) { return window.identifier == identifier; });
++    if (index == notFound)
++        return std::nullopt;
++    return m_windows[index];
++}
++
++std::optional<BrowserTabRegistryHaiku::Tab> BrowserTabRegistryHaiku::tab(WebPageProxyIdentifier identifier) const
++{
++    ASSERT(isMainThread());
++    for (auto& window : m_windows) {
++        auto index = window.pages.find(identifier);
++        if (index != notFound)
++            return Tab { window.identifier, index, window.activePage == identifier };
++    }
++    return std::nullopt;
++}
++
++std::optional<uint64_t> BrowserTabRegistryHaiku::focusedWindow() const
++{
++    ASSERT(isMainThread());
++    return m_focusedWindow;
++}
++
++} // namespace WebKit
+diff --git a/Source/WebKit/UIProcess/haiku/BrowserTabRegistryHaiku.h b/Source/WebKit/UIProcess/haiku/BrowserTabRegistryHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..d8332d59fc0aefa278882a8ffa9be682dd87da26
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/BrowserTabRegistryHaiku.h
+@@ -0,0 +1,46 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#pragma once
++
++#include "WebPageProxyIdentifier.h"
++#include <Messenger.h>
++#include <SupportDefs.h>
++#include <wtf/Vector.h>
++
++namespace WebKit {
++
++// Main-thread metadata only. The native SDK validates page ownership before
++// updating this profile's registry; WebKit retains ownership of the pages.
++class BrowserTabRegistryHaiku {
++public:
++    struct Window {
++        uint64_t identifier;
++        BMessenger messenger;
++        Vector<WebPageProxyIdentifier> pages;
++        std::optional<WebPageProxyIdentifier> activePage;
++    };
++    struct Tab {
++        uint64_t windowIdentifier;
++        size_t index;
++        bool active;
++    };
++
++    // An empty page list removes the window. Moving a page removes it from its
++    // previous window. Focused windows move to the front of the window order.
++    std::expected<uint64_t, status_t> update(const BMessenger&, const Vector<WebPageProxyIdentifier>&,
++        std::optional<WebPageProxyIdentifier> activePage, bool focused);
++    void removePage(WebPageProxyIdentifier);
++    void clear();
++
++    Vector<Window> windows() const;
++    std::optional<Window> window(uint64_t) const;
++    std::optional<Tab> tab(WebPageProxyIdentifier) const;
++    std::optional<uint64_t> focusedWindow() const;
++
++private:
++    Vector<Window> m_windows;
++    std::optional<uint64_t> m_focusedWindow;
++    uint64_t m_nextWindowIdentifier { 1 };
++};
++
++} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/DownloadRegistryHaiku.cpp b/Source/WebKit/UIProcess/haiku/DownloadRegistryHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..9908678c73d07600450c9746ae2de56d5678dee2
@@ -34866,10 +35130,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..8e1a34247262943826c1f93805b4385ee41d8a71
+index 0000000000000000000000000000000000000000..ccc91dbcfaf46a506236d172c929f452cc25572f
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,1121 @@
+@@ -0,0 +1,1124 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -34899,6 +35163,7 @@ index 0000000000000000000000000000000000000000..8e1a34247262943826c1f93805b4385e
 +#include "WebViewPrivate.h"
 +
 +#include "APIFrameInfo.h"
++#include "BrowserTabRegistryHaiku.h"
 +#include "APIError.h"
 +#include "APINavigationAction.h"
 +#include "APINavigationClient.h"
@@ -35578,6 +35843,8 @@ index 0000000000000000000000000000000000000000..8e1a34247262943826c1f93805b4385e
 +        std::exchange(m_presentationCallback, { })();
 +    if (m_page) {
 +        WKPageSetPageStateClient(toAPI(m_page.get()), nullptr);
++        if (m_state->context)
++            m_state->context->browserTabs()->removePage(m_page->identifier());
 +        m_page->close();
 +        m_page = nullptr;
 +    }
@@ -35993,14 +36260,15 @@ index 0000000000000000000000000000000000000000..8e1a34247262943826c1f93805b4385e
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..e5239a394c8a9e3524a58752e1a67164a07046d1
+index 0000000000000000000000000000000000000000..779449030821b3e77472d2e82db851c18e95d802
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp
-@@ -0,0 +1,143 @@
+@@ -0,0 +1,145 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
 +#include "WebViewContextHaiku.h"
++#include "BrowserTabRegistryHaiku.h"
 +
 +#include "APIDownloadClient.h"
 +#include "APIPageConfiguration.h"
@@ -36019,7 +36287,8 @@ index 0000000000000000000000000000000000000000..e5239a394c8a9e3524a58752e1a67164
 +namespace WebKit {
 +
 +WebViewContextHaiku::WebViewContextHaiku(Ref<WebsiteDataStore>&& dataStore)
-+    : m_dataStore(WTF::move(dataStore))
++    : m_browserTabs(std::make_shared<BrowserTabRegistryHaiku>())
++    , m_dataStore(WTF::move(dataStore))
 +    , m_processPool(WebProcessPool::create(API::ProcessPoolConfiguration::create()))
 +    , m_downloads(DownloadRegistryHaiku::create())
 +{
@@ -36142,10 +36411,10 @@ index 0000000000000000000000000000000000000000..e5239a394c8a9e3524a58752e1a67164
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..6e26869d2409355f777c0a09ba519e17cd6adba2
+index 0000000000000000000000000000000000000000..5a3913e555f8cde1e32665a1de9cb8c4d5aeba35
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h
-@@ -0,0 +1,40 @@
+@@ -0,0 +1,43 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -36160,6 +36429,7 @@ index 0000000000000000000000000000000000000000..6e26869d2409355f777c0a09ba519e17
 +
 +namespace WebKit {
 +
++class BrowserTabRegistryHaiku;
 +class DownloadRegistryHaiku;
 +class WebPageProxy;
 +class WebProcessPool;
@@ -36174,12 +36444,14 @@ index 0000000000000000000000000000000000000000..6e26869d2409355f777c0a09ba519e17
 +    ~WebViewContextHaiku();
 +    void configure(API::PageConfiguration&) const;
 +    const std::shared_ptr<DownloadRegistryHaiku>& downloads() const { return m_downloads; }
++    const std::shared_ptr<BrowserTabRegistryHaiku>& browserTabs() const { return m_browserTabs; }
 +    void download(WebPageProxy&, const WebCore::ResourceRequest&, const BMessenger&);
 +
 +private:
 +    explicit WebViewContextHaiku(Ref<WebsiteDataStore>&&);
 +    static std::shared_ptr<WebViewContextHaiku> adopt(Ref<WebsiteDataStore>&&);
 +
++    const std::shared_ptr<BrowserTabRegistryHaiku> m_browserTabs;
 +    const Ref<WebsiteDataStore> m_dataStore;
 +    const Ref<WebProcessPool> m_processPool;
 +    const std::shared_ptr<DownloadRegistryHaiku> m_downloads;
