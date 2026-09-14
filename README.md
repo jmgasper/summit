@@ -88,7 +88,7 @@ HTTP, HTML-link and native quit-dialog tests; see [download behavior and limits]
 Navigation errors, unchanged-address retry and successful-only history pass
 90 native assertions; see [navigation behavior](docs/modern-navigation-errors.md).
 The verified development bundle is
-in `artifacts/modern-browser/bundle-g3wycs_1`;
+in `artifacts/modern-browser/bundle-yqhmejfw`;
 [copy and rebuild instructions](docs/modern-bundle-copy.md) accompany it. [The verification record](docs/STATUS.md)
 records the exact bundles and remaining limitations.
 

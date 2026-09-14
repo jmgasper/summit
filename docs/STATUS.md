@@ -1004,3 +1004,10 @@ still requires independent server receipt. These are recorded in:
 
 Certificate/authentication UX, a dedicated recovery error page, wider network
 failure coverage and extension runtime remain unfinished.
+
+The verified navigation bundle is copied to
+`artifacts/modern-browser/bundle-yqhmejfw` with its matching patched engine
+sources and rebuild inputs. Copy provenance SHA-256:
+`2afb85bbcb6566bca96340d22b72eb9fdb9159c3f892f765d24417eb9470487d`.
+Evidence: `.vm/modern-load-errors-bundle-copy.log` and the artifact's
+`copy-provenance.json`.

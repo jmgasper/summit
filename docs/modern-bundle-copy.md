@@ -53,10 +53,9 @@ The original `build-manifest.json` and `host-bundle-report.json` are preserved.
 before/after fingerprints and a file inventory of the final payload excluding
 the provenance file itself. The final command output reports the provenance
 digest. These hashes establish the copied inputs; they do not establish browser
-runtime behavior. The current verified copy is `bundle-g3wycs_1`, including the
-native launcher, looper-lock and NetworkProcess exit fixes, plus the basic
-download UI. Earlier artifacts are preserved; `bundle-lb1k0wql` predates the
-NetworkProcess exit correction.
+runtime behavior. The current verified copy is `bundle-yqhmejfw`, including the
+native process fixes, basic download UI, navigation errors and history handling.
+Earlier artifacts are preserved with their recorded limitations.
 See [the verification record](STATUS.md) for exact runtime results and remaining
 limitations.
 
