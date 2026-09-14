@@ -27902,7 +27902,7 @@ index 4ce987fbfe339d6b3d834eb6d2715ac65641357c..990d38e71e8b7a48a2f02da4dfc5cddb
  
  } // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm b/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm
-index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..7c611873272ca99a83cae9a50585fa950b93670b 100644
+index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..6d9189f259514954a4f90dc3432ad2ae830338ce 100644
 --- a/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm
 +++ b/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm
 @@ -261,183 +261,19 @@ void WebExtensionContext::clearError(Error error)
@@ -28180,21 +28180,21 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..7c611873272ca99a83cae9a50585fa95
 -    if (tab && hasPermission(WebExtensionPermission::webNavigation(), tab.get()) && hasPermission(frameURL, tab.get())) {
 -        constexpr auto committedEventType = WebExtensionEventListenerType::WebNavigationOnCommitted;
 -        constexpr auto contentEventType = WebExtensionEventListenerType::WebNavigationOnDOMContentLoaded;
- 
+-
 -        wakeUpBackgroundContentIfNecessaryToFireEvents({ committedEventType, contentEventType }, [=, this, protectedThis = Ref { *this }] {
 -            sendToProcessesForEvent(committedEventType, Messages::WebExtensionContextProxy::DispatchWebNavigationEvent(committedEventType, tab->identifier(), frameParameters, timestamp));
 -            sendToProcessesForEvent(contentEventType, Messages::WebExtensionContextProxy::DispatchWebNavigationEvent(contentEventType, tab->identifier(), frameParameters, timestamp));
 -        });
 -    }
 -}
- 
+-
 -void WebExtensionContext::didFinishLoadForFrame(WebPageProxyIdentifier pageID, const WebExtensionFrameParameters& frameParameters, WallTime timestamp)
 -{
 -    ASSERT(frameParameters.url);
  
 -    RefPtr tab = getTab(pageID);
 -    auto& frameURL = *frameParameters.url;
--
+ 
 -    // Dispatch webNavigation events.
 -    if (tab && hasPermission(WebExtensionPermission::webNavigation(), tab.get()) && hasPermission(frameURL, tab.get())) {
 -        constexpr auto eventType = WebExtensionEventListenerType::WebNavigationOnCompleted;
@@ -28203,7 +28203,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..7c611873272ca99a83cae9a50585fa95
 -        });
 -    }
 -}
--
+ 
 -void WebExtensionContext::didFailLoadForFrame(WebPageProxyIdentifier pageID, const WebExtensionFrameParameters& frameParameters, WallTime timestamp)
 -{
 -    ASSERT(frameParameters.url);
@@ -28222,7 +28222,82 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..7c611873272ca99a83cae9a50585fa95
  
  // MARK: webRequest
  
-@@ -2654,12 +2384,6 @@ WebsiteDataStore* WebExtensionContext::websiteDataStore(std::optional<PAL::Sessi
+@@ -2458,74 +2188,9 @@ Vector<WebExtensionContext::PageIdentifierTuple> WebExtensionContext::inspectorP
+ }
+ #endif // ENABLE(INSPECTOR_EXTENSIONS)
+ 
+-Vector<WebExtensionContext::PageIdentifierTuple> WebExtensionContext::popupPageIdentifiers(WebProcessProxy& destinationProcess) const
+-{
+-    Vector<PageIdentifierTuple> result;
+ 
+-    for (auto entry : m_popupPageActionMap) {
+-        Ref page = entry.key;
+-        Ref value = entry.value;
+-        RefPtr tab = value->tab();
+-        RefPtr window = tab ? tab->window() : value->window();
+ 
+-        auto tabIdentifier = tab ? std::optional(tab->identifier()) : std::nullopt;
+-        auto windowIdentifier = window ? std::optional(window->identifier()) : std::nullopt;
+-
+-        result.append({ page->webPageIDInProcess(destinationProcess), tabIdentifier, windowIdentifier });
+-    }
+-
+-    return result;
+-}
+-
+-Vector<WebExtensionContext::PageIdentifierTuple> WebExtensionContext::tabPageIdentifiers(WebProcessProxy& destinationProcess) const
+-{
+-    Vector<PageIdentifierTuple> result;
+-
+-    for (auto entry : m_extensionPageTabMap) {
+-        RefPtr tab = getTab(entry.value);
+-        if (!tab)
+-            continue;
+-
+-        Ref page = entry.key;
+-        RefPtr window = tab->window();
+-        auto windowIdentifier = window ? std::optional(window->identifier()) : std::nullopt;
+-
+-        result.append({ page->webPageIDInProcess(destinationProcess), tab->identifier(), windowIdentifier });
+-    }
+-
+-    return result;
+-}
+-
+-void WebExtensionContext::addPopupPage(WebPageProxy& page, WebExtensionAction& action)
+-{
+-    m_popupPageActionMap.set(page, action);
+ 
+-    RefPtr tab = action.tab();
+-    RefPtr window = tab ? tab->window() : action.window();
+-
+-    auto tabIdentifier = tab ? std::optional(tab->identifier()) : std::nullopt;
+-    auto windowIdentifier = window ? std::optional(window->identifier()) : std::nullopt;
+-
+-    Ref protectedPage = page;
+-    protectedPage->forEachWebContentProcess([&](auto& webProcess, auto pageID) {
+-        webProcess.send(Messages::WebExtensionContextProxy::AddPopupPageIdentifier(pageID, tabIdentifier, windowIdentifier), identifier());
+-    });
+-}
+-
+-void WebExtensionContext::addExtensionTabPage(WebPageProxy& page, WebExtensionTab& tab)
+-{
+-    m_extensionPageTabMap.set(page, tab.identifier());
+-
+-    RefPtr window = tab.window();
+-
+-    auto tabIdentifier = tab.identifier();
+-    auto windowIdentifier = window ? std::optional(window->identifier()) : std::nullopt;
+-
+-    Ref protectedPage = page;
+-    protectedPage->forEachWebContentProcess([&](auto& webProcess, auto pageID) {
+-        webProcess.send(Messages::WebExtensionContextProxy::AddTabPageIdentifier(pageID, tabIdentifier, windowIdentifier), identifier());
+-    });
+-}
+ 
+ void WebExtensionContext::enumerateExtensionPages(NOESCAPE Function<void(WebPageProxy&, bool&)>&& action)
+ {
+@@ -2654,12 +2319,6 @@ WebsiteDataStore* WebExtensionContext::websiteDataStore(std::optional<PAL::Sessi
      return weakDataStore.get();
  }
  
@@ -28235,7 +28310,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..7c611873272ca99a83cae9a50585fa95
  
  bool WebExtensionContext::isBackgroundPage(WebPageProxyIdentifier pageProxyIdentifier) const
  {
-@@ -2889,38 +2613,6 @@ void WebExtensionContext::saveBackgroundPageListenersToStorage()
+@@ -2889,38 +2548,6 @@ void WebExtensionContext::saveBackgroundPageListenersToStorage()
          writeStateToStorage();
  }
  
@@ -28274,7 +28349,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..7c611873272ca99a83cae9a50585fa95
  #ifndef NDEBUG
  // This is only defined in debug builds since it has a performance impact with little benefit to release builds.
  void WebExtensionContext::reportWebViewConfigurationErrorIfNeeded(const WebExtensionTab& tab) const
-@@ -3386,18 +3078,6 @@ void WebExtensionContext::inspectorEffectiveAppearanceDidChange(API::InspectorEx
+@@ -3386,18 +3013,6 @@ void WebExtensionContext::inspectorEffectiveAppearanceDidChange(API::InspectorEx
  }
  #endif // ENABLE(INSPECTOR_EXTENSIONS)
  
@@ -28293,7 +28368,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..7c611873272ca99a83cae9a50585fa95
  
  String WebExtensionContext::declarativeNetRequestContentRuleListFilePath()
  {
-@@ -3410,16 +3090,6 @@ String WebExtensionContext::declarativeNetRequestContentRuleListFilePath()
+@@ -3410,16 +3025,6 @@ String WebExtensionContext::declarativeNetRequestContentRuleListFilePath()
      return m_declarativeNetRequestContentRuleListFilePath;
  }
  
@@ -28310,7 +28385,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..7c611873272ca99a83cae9a50585fa95
  
  static NSString *computeStringHashForContentBlockerRules(NSString *rules)
  {
-@@ -3630,19 +3300,6 @@ void WebExtensionContext::saveStorageAccessLevelsToStorage()
+@@ -3630,19 +3235,6 @@ void WebExtensionContext::saveStorageAccessLevelsToStorage()
      writeStateToStorage();
  }
  
@@ -28486,11 +28561,15 @@ index f14860d8e436a90cb7616ae96bb9f05d6517bc50..82194307c95982f947c180baa35828f3
      explicit WebExtension(const JSON::Value& manifest, Resources&& = { });
  
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
-index a156078a37b33ea2704f6a9ba747a0c881bb0009..19cd73a8416c1a8140c440afc86d289462e1c3e4 100644
+index a156078a37b33ea2704f6a9ba747a0c881bb0009..41a0328ade9539adf437209c6b272103751ceefa 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
-@@ -36,9 +36,13 @@
+@@ -34,11 +34,17 @@
+ #include "InjectUserScriptImmediately.h"
+ #include "Logging.h"
  #include "WebExtensionConstants.h"
++#include "WebExtensionAction.h"
++#include "WebExtensionTab.h"
  #include "WebExtensionContextParameters.h"
  #include "WebExtensionContextProxyMessages.h"
 +#include "WebExtensionDeferredReply.h"
@@ -28503,7 +28582,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..19cd73a8416c1a8140c440afc86d2894
  #include <WebCore/LocalizedStrings.h>
  #include <WebCore/TextResourceDecoder.h>
  #include <wtf/HashMap.h>
-@@ -51,6 +55,210 @@ namespace WebKit {
+@@ -51,6 +57,210 @@ namespace WebKit {
  
  using namespace WebCore;
  
@@ -28714,7 +28793,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..19cd73a8416c1a8140c440afc86d2894
  int WebExtensionContext::toAPIError(WebExtensionContext::Error error)
  {
      switch (error) {
-@@ -1660,7 +1868,13 @@ WebExtensionContext::WebExtensionContext()
+@@ -1660,7 +1870,13 @@ WebExtensionContext::WebExtensionContext()
  }
  
  #if !USE(GLIB)
@@ -28729,7 +28808,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..19cd73a8416c1a8140c440afc86d2894
  #endif
  
  WebExtensionContextIdentifier WebExtensionContext::privilegedIdentifier() const
-@@ -1798,9 +2012,17 @@ void WebExtensionContext::loadBackgroundContent(CompletionHandler<void(RefPtr<AP
+@@ -1798,9 +2014,17 @@ void WebExtensionContext::loadBackgroundContent(CompletionHandler<void(RefPtr<AP
          return;
      }
  
@@ -28750,7 +28829,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..19cd73a8416c1a8140c440afc86d2894
      });
  }
  
-@@ -2003,6 +2225,59 @@ Ref<WebExtensionRegisteredScriptsSQLiteStore> WebExtensionContext::registeredCon
+@@ -2003,6 +2227,128 @@ Ref<WebExtensionRegisteredScriptsSQLiteStore> WebExtensionContext::registeredCon
      return *m_registeredContentScriptsStorage;
  }
  
@@ -28806,6 +28885,75 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..19cd73a8416c1a8140c440afc86d2894
 +}
 +
 +#endif
++
++Vector<WebExtensionContext::PageIdentifierTuple> WebExtensionContext::popupPageIdentifiers(WebProcessProxy& destinationProcess) const
++{
++    Vector<PageIdentifierTuple> result;
++
++    for (auto entry : m_popupPageActionMap) {
++        Ref page = entry.key;
++        Ref value = entry.value;
++        RefPtr tab = value->tab();
++        RefPtr window = tab ? tab->window() : value->window();
++
++        auto tabIdentifier = tab ? std::optional(tab->identifier()) : std::nullopt;
++        auto windowIdentifier = window ? std::optional(window->identifier()) : std::nullopt;
++
++        result.append({ page->webPageIDInProcess(destinationProcess), tabIdentifier, windowIdentifier });
++    }
++
++    return result;
++}
++
++Vector<WebExtensionContext::PageIdentifierTuple> WebExtensionContext::tabPageIdentifiers(WebProcessProxy& destinationProcess) const
++{
++    Vector<PageIdentifierTuple> result;
++
++    for (auto entry : m_extensionPageTabMap) {
++        RefPtr tab = getTab(entry.value);
++        if (!tab)
++            continue;
++
++        Ref page = entry.key;
++        RefPtr window = tab->window();
++        auto windowIdentifier = window ? std::optional(window->identifier()) : std::nullopt;
++
++        result.append({ page->webPageIDInProcess(destinationProcess), tab->identifier(), windowIdentifier });
++    }
++
++    return result;
++}
++
++void WebExtensionContext::addPopupPage(WebPageProxy& page, WebExtensionAction& action)
++{
++    m_popupPageActionMap.set(page, action);
++
++    RefPtr tab = action.tab();
++    RefPtr window = tab ? tab->window() : action.window();
++
++    auto tabIdentifier = tab ? std::optional(tab->identifier()) : std::nullopt;
++    auto windowIdentifier = window ? std::optional(window->identifier()) : std::nullopt;
++
++    Ref protectedPage = page;
++    protectedPage->forEachWebContentProcess([&](auto& webProcess, auto pageID) {
++        webProcess.send(Messages::WebExtensionContextProxy::AddPopupPageIdentifier(pageID, tabIdentifier, windowIdentifier), identifier());
++    });
++}
++
++void WebExtensionContext::addExtensionTabPage(WebPageProxy& page, WebExtensionTab& tab)
++{
++    m_extensionPageTabMap.set(page, tab.identifier());
++
++    RefPtr window = tab.window();
++
++    auto tabIdentifier = tab.identifier();
++    auto windowIdentifier = window ? std::optional(window->identifier()) : std::nullopt;
++
++    Ref protectedPage = page;
++    protectedPage->forEachWebContentProcess([&](auto& webProcess, auto pageID) {
++        webProcess.send(Messages::WebExtensionContextProxy::AddTabPageIdentifier(pageID, tabIdentifier, windowIdentifier), identifier());
++    });
++}
 +
  } // namespace WebKit
  

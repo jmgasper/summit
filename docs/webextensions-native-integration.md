@@ -296,3 +296,22 @@ API families, with helpers under `Helpers/cocoa/WebExtensionUtilities.mm`.
 Port their assertions and fixtures to the native embedding while retaining
 API behavior; merely reproducing the small GLib test surface would leave most
 of the browser's requested extension compatibility unverified.
+# Common popup and tab page associations
+
+The context now builds popup/tab page identifier tuples and registers popup
+and extension-tab pages in common C++. These four bodies are unchanged from
+Cocoa. They preserve destination-process page IDs, optional tab/window IDs,
+and notification of every content process belonging to a page.
+
+`.vm/extension-lifecycle-inputs.y4RuJo8n/result.json` records successful native
+compilation of the final context unit with both extension features enabled
+and regenerated IPC. Native inputs and configuration remain unchanged; the
+source hash matches the promoted candidate. Body hashes are recorded in
+`.vm/extension-page-associations-extraction.json`.
+
+This does not implement native tab/window delegates or run page-association
+IPC. Popup creation, tab lookup and browser attachment remain incomplete.
+Cocoa compilation has not been run.
+
+Promoted patch: `b85b0ea4c1b19d2bf6b0c421e1916c5a7d90e6f183f0888f1995bd4320763101`.
+Probe baseline: `a3f30d1b01848597f29ffa1009bc53cee272ecb4dcc48fa09631d8e7fac2e469`.

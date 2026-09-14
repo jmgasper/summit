@@ -1337,3 +1337,13 @@ See [event-forwarding evidence](webextensions-native-navigation-events.md).
 
 Patch: `a3f30d1b01848597f29ffa1009bc53cee272ecb4dcc48fa09631d8e7fac2e469`.
 The running full build remains frozen on `7f17d7a6...`.
+
+
+2026-09-14 popup/tab page associations: four context methods move unchanged
+to common C++, preserving process-specific page IDs and optional tab/window
+IDs. The final context unit compiles natively with both extension flags and
+regenerated IPC; `.vm/extension-lifecycle-inputs.y4RuJo8n/result.json`.
+No page association or popup/tab delegate was exercised at runtime.
+
+Patch: `b85b0ea4c1b19d2bf6b0c421e1916c5a7d90e6f183f0888f1995bd4320763101`.
+The full build remains frozen on `7f17d7a6...`.
