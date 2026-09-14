@@ -1236,3 +1236,19 @@ DNR translation, native state loading and runtime removal remain unverified.
 Patch: `1b839dea86a02bbebcf8210d82f7ba85c51c7b1fea0421f09ebea8622f254f27`.
 The full build remains frozen on `1daf0679...` and is finishing WebProcess
 compilation. No feature-enabled WebKit link has passed yet.
+
+
+2026-09-14 full extension compile/link result: the three-worker native
+attempt on `1daf0679...` completed its WebCore/WebKit compilation and failed
+linking `libWebKit.so.1.10.0`, with 82 distinct unresolved symbols. The
+record is `.vm/modern-extensions-process-events-build-result.json` and the
+full diagnostic log is `.vm/modern-extensions-process-events-build.log`.
+Missing symbols include platform content-rule storage/mapping support and
+extension events, permissions, delegates and JS helpers. No feature-enabled
+WebKit library or extension runtime passed this attempt.
+
+A subsequent three-worker build is now frozen on
+`1b839dea86a02bbebcf8210d82f7ba85c51c7b1fea0421f09ebea8622f254f27`,
+which includes the intervening porting work. It reuses compiled dependencies
+and rebuilds 267 steps after regeneration; log:
+`.vm/modern-extensions-native-runtime-build.log`.
