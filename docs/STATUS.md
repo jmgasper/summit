@@ -1581,3 +1581,9 @@ to zero. **147 native helper checks pass and five integration units compile**.
 No live frame lookup, navigation race, request event or IPC was executed.
 See [metadata evidence and limits](webextensions-native-web-request-metadata.md).
 Patch: `d577d67362ab609beaa6d87d67938b3f65eb3476190953d9c2af0313aff0882d`.
+
+2026-09-15 (local) forwarding source correction: removed two leftover Cocoa
+content-rule callback definitions that conflicted with the common C++ port.
+A source audit finds exactly one definition of all 13 moved methods. This is
+not a Cocoa compile result and does not alter Haiku-compiled sources.
+Patch: `a2a94c217a4b41946fcaf638ff43a297e4a23723b6ab92c148fa88d0f20ae82b`.

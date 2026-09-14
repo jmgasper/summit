@@ -28091,7 +28091,7 @@ index cd0440f4c462d092dbc520844d6fbdf6815115ce..897d680755e39a4b2724dd0f07fab59b
  {
      frames.append(frameParametersForFrame(frame, parentFrame, tab, this, true));
 diff --git a/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm b/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm
-index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..4bd9ed28ec435ddc15abeeb8d741a4b0a38440db 100644
+index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..14c097eb91a9114d1c494dfa194ac40a023d937e 100644
 --- a/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm
 +++ b/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm
 @@ -29,6 +29,7 @@
@@ -28337,7 +28337,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..4bd9ed28ec435ddc15abeeb8d741a4b0
  Ref<WebExtensionWindow> WebExtensionContext::getOrCreateWindow(WKWebExtensionWindow *delegate) const
  {
      ASSERT(delegate);
-@@ -1631,233 +1443,12 @@ void WebExtensionContext::didChangeTabProperties(WebExtensionTab& tab, OptionSet
+@@ -1631,267 +1443,12 @@ void WebExtensionContext::didChangeTabProperties(WebExtensionTab& tab, OptionSet
      }).get());
  }
  
@@ -28420,11 +28420,11 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..4bd9ed28ec435ddc15abeeb8d741a4b0
 -        });
 -    }
 -}
--
+ 
 -void WebExtensionContext::didFailLoadForFrame(WebPageProxyIdentifier pageID, const WebExtensionFrameParameters& frameParameters, WallTime timestamp)
 -{
 -    ASSERT(frameParameters.url);
- 
+-
 -    RefPtr tab = getTab(pageID);
 -    auto& frameURL = *frameParameters.url;
 -
@@ -28568,10 +28568,44 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..4bd9ed28ec435ddc15abeeb8d741a4b0
 -    });
 -}
 -
- #if ENABLE(CONTENT_EXTENSIONS)
- void WebExtensionContext::resourceLoadWasBlockedByDeclarativeNetRequest(WebPageProxyIdentifier pageID, const WebExtensionContentRuleListBlockedLoadInfo& info)
+-#if ENABLE(CONTENT_EXTENSIONS)
+-void WebExtensionContext::resourceLoadWasBlockedByDeclarativeNetRequest(WebPageProxyIdentifier pageID, const WebExtensionContentRuleListBlockedLoadInfo& info)
+-{
+-    RefPtr tab = getTab(pageID);
+-
+-    ResourceLoadInfo loadInfo {
+-        NetworkResourceLoadIdentifier::generate(),
+-        info.frameID,
+-        info.parentFrameID,
+-        { },
+-        info.url,
+-        info.httpMethod,
+-        WallTime::now(),
+-        false,
+-        info.type
+-    };
+-
+-    if (!hasPermissionToSendWebRequestEvent(tab.get(), info.url, loadInfo))
+-        return;
+-
+-    RefPtr window = tab->window();
+-    auto windowIdentifier = window ? window->identifier() : WebExtensionWindowConstants::NoneIdentifier;
+-
+-    constexpr auto beforeRequestType = WebExtensionEventListenerType::WebRequestOnBeforeRequest;
+-    constexpr auto errorOccurredType = WebExtensionEventListenerType::WebRequestOnErrorOccurred;
+-
+-    auto error = blockedByContentBlockerError(WebCore::ResourceRequest { URL { info.url } });
+-
+-    wakeUpBackgroundContentIfNecessaryToFireEvents({ beforeRequestType, errorOccurredType }, [=, this, protectedThis = Ref { *this }] mutable {
+-        sendToProcessesForEvent(beforeRequestType, Messages::WebExtensionContextProxy::ResourceLoadDidBlockBeforeRequest(tab->identifier(), windowIdentifier, loadInfo));
+-        sendToProcessesForEvent(errorOccurredType, Messages::WebExtensionContextProxy::ResourceLoadDidCompleteWithError(tab->identifier(), windowIdentifier, WebCore::ResourceResponse { }, error, loadInfo));
+-    });
+-}
+-#endif
+ 
+ WebExtensionAction& WebExtensionContext::defaultAction()
  {
-@@ -2374,30 +1965,7 @@ void WebExtensionContext::userGesturePerformed(WebExtensionTab& tab)
+@@ -2374,30 +1931,7 @@ void WebExtensionContext::userGesturePerformed(WebExtensionTab& tab)
      didChangeTabProperties(tab, { WebExtensionTab::ChangedProperties::URL, WebExtensionTab::ChangedProperties::Title });
  }
  
@@ -28580,7 +28614,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..4bd9ed28ec435ddc15abeeb8d741a4b0
 -    ASSERT(isLoaded());
 -    if (!isLoaded())
 -        return false;
--
+ 
 -    return tab.hasActiveUserGesture();
 -}
 -
@@ -28591,7 +28625,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..4bd9ed28ec435ddc15abeeb8d741a4b0
 -        return;
 -
 -    RefPtr oldTemporaryPermissionMatchPattern = tab.temporaryPermissionMatchPattern();
- 
+-
 -    tab.setActiveUserGesture(false);
 -    tab.setTemporaryPermissionMatchPattern(nullptr);
 -
@@ -28602,29 +28636,29 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..4bd9ed28ec435ddc15abeeb8d741a4b0
  
  std::optional<WebCore::PageIdentifier> WebExtensionContext::backgroundPageIdentifier(WebProcessProxy& destinationProcess) const
  {
-@@ -2458,74 +2026,9 @@ Vector<WebExtensionContext::PageIdentifierTuple> WebExtensionContext::inspectorP
+@@ -2458,74 +1992,9 @@ Vector<WebExtensionContext::PageIdentifierTuple> WebExtensionContext::inspectorP
  }
  #endif // ENABLE(INSPECTOR_EXTENSIONS)
  
 -Vector<WebExtensionContext::PageIdentifierTuple> WebExtensionContext::popupPageIdentifiers(WebProcessProxy& destinationProcess) const
 -{
 -    Vector<PageIdentifierTuple> result;
- 
+-
 -    for (auto entry : m_popupPageActionMap) {
 -        Ref page = entry.key;
 -        Ref value = entry.value;
 -        RefPtr tab = value->tab();
 -        RefPtr window = tab ? tab->window() : value->window();
- 
+-
 -        auto tabIdentifier = tab ? std::optional(tab->identifier()) : std::nullopt;
 -        auto windowIdentifier = window ? std::optional(window->identifier()) : std::nullopt;
  
 -        result.append({ page->webPageIDInProcess(destinationProcess), tabIdentifier, windowIdentifier });
 -    }
--
+ 
 -    return result;
 -}
--
+ 
 -Vector<WebExtensionContext::PageIdentifierTuple> WebExtensionContext::tabPageIdentifiers(WebProcessProxy& destinationProcess) const
 -{
 -    Vector<PageIdentifierTuple> result;
@@ -28677,7 +28711,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..4bd9ed28ec435ddc15abeeb8d741a4b0
  
  void WebExtensionContext::enumerateExtensionPages(NOESCAPE Function<void(WebPageProxy&, bool&)>&& action)
  {
-@@ -2654,12 +2157,6 @@ WebsiteDataStore* WebExtensionContext::websiteDataStore(std::optional<PAL::Sessi
+@@ -2654,12 +2123,6 @@ WebsiteDataStore* WebExtensionContext::websiteDataStore(std::optional<PAL::Sessi
      return weakDataStore.get();
  }
  
@@ -28690,7 +28724,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..4bd9ed28ec435ddc15abeeb8d741a4b0
  
  bool WebExtensionContext::isBackgroundPage(WebPageProxyIdentifier pageProxyIdentifier) const
  {
-@@ -2889,38 +2386,6 @@ void WebExtensionContext::saveBackgroundPageListenersToStorage()
+@@ -2889,38 +2352,6 @@ void WebExtensionContext::saveBackgroundPageListenersToStorage()
          writeStateToStorage();
  }
  
@@ -28729,7 +28763,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..4bd9ed28ec435ddc15abeeb8d741a4b0
  #ifndef NDEBUG
  // This is only defined in debug builds since it has a performance impact with little benefit to release builds.
  void WebExtensionContext::reportWebViewConfigurationErrorIfNeeded(const WebExtensionTab& tab) const
-@@ -3386,18 +2851,6 @@ void WebExtensionContext::inspectorEffectiveAppearanceDidChange(API::InspectorEx
+@@ -3386,18 +2817,6 @@ void WebExtensionContext::inspectorEffectiveAppearanceDidChange(API::InspectorEx
  }
  #endif // ENABLE(INSPECTOR_EXTENSIONS)
  
@@ -28748,7 +28782,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..4bd9ed28ec435ddc15abeeb8d741a4b0
  
  String WebExtensionContext::declarativeNetRequestContentRuleListFilePath()
  {
-@@ -3410,16 +2863,6 @@ String WebExtensionContext::declarativeNetRequestContentRuleListFilePath()
+@@ -3410,16 +2829,6 @@ String WebExtensionContext::declarativeNetRequestContentRuleListFilePath()
      return m_declarativeNetRequestContentRuleListFilePath;
  }
  
@@ -28765,7 +28799,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..4bd9ed28ec435ddc15abeeb8d741a4b0
  
  static NSString *computeStringHashForContentBlockerRules(NSString *rules)
  {
-@@ -3630,19 +3073,6 @@ void WebExtensionContext::saveStorageAccessLevelsToStorage()
+@@ -3630,19 +3039,6 @@ void WebExtensionContext::saveStorageAccessLevelsToStorage()
      writeStateToStorage();
  }
  
@@ -28785,7 +28819,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..4bd9ed28ec435ddc15abeeb8d741a4b0
  void WebExtensionContext::reloadBackgroundContentForTesting()
  {
      ASSERT(isLoaded() && inTestingMode());
-@@ -3776,20 +3206,6 @@ void WebExtensionContext::sendQueuedTestMessagesIfNeeded(WebExtensionEventListen
+@@ -3776,20 +3172,6 @@ void WebExtensionContext::sendQueuedTestMessagesIfNeeded(WebExtensionEventListen
      }
  }
  
@@ -28807,10 +28841,10 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..4bd9ed28ec435ddc15abeeb8d741a4b0
  } // namespace WebKit
  
 diff --git a/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionControllerCocoa.mm b/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionControllerCocoa.mm
-index 3215e2e7509b0fabe3cd8044f6ff7a955347803d..99e5388669a8ee6781d914da9e183d93ed2df841 100644
+index 3215e2e7509b0fabe3cd8044f6ff7a955347803d..9c95689197cb984d03af987b75fb12a46835afcd 100644
 --- a/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionControllerCocoa.mm
 +++ b/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionControllerCocoa.mm
-@@ -353,36 +353,6 @@ void WebExtensionController::updateWebsitePoliciesForNavigation(API::WebsitePoli
+@@ -353,49 +353,6 @@ void WebExtensionController::updateWebsitePoliciesForNavigation(API::WebsitePoli
      websitePolicies.setActiveContentRuleListActionPatterns(WTF::move(actionPatterns));
  }
  
@@ -28844,9 +28878,22 @@ index 3215e2e7509b0fabe3cd8044f6ff7a955347803d..99e5388669a8ee6781d914da9e183d93
 -        context->resourceLoadDidCompleteWithError(pageID, loadInfo, response, error);
 -}
 -
- #if ENABLE(CONTENT_EXTENSIONS)
- void WebExtensionController::resourceLoadWasBlockedByContentRuleList(WebPageProxyIdentifier pageID, const WebExtensionContentRuleListBlockedLoadInfo& info)
- {
+-#if ENABLE(CONTENT_EXTENSIONS)
+-void WebExtensionController::resourceLoadWasBlockedByContentRuleList(WebPageProxyIdentifier pageID, const WebExtensionContentRuleListBlockedLoadInfo& info)
+-{
+-    for (auto& identifier : info.blockingContentRuleListIdentifiers) {
+-        for (Ref context : m_extensionContexts) {
+-            if (context->uniqueIdentifier() == identifier) {
+-                context->resourceLoadWasBlockedByDeclarativeNetRequest(pageID, info);
+-                break;
+-            }
+-        }
+-    }
+-}
+-#endif
+ 
+ // MARK: Inspector
+ 
 diff --git a/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionDynamicScriptsCocoa.mm b/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionDynamicScriptsCocoa.mm
 index 713a395f6fda1c50c694eef6181a23349c9b5fb2..d6419587d5402f01e573eb5f7335695ab2f79c45 100644
 --- a/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionDynamicScriptsCocoa.mm

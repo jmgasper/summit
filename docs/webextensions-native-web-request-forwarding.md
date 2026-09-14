@@ -37,3 +37,11 @@ improve status-line and parent-frame mapping.
 
 Promoted patch: `e9fa1eff70595ba5e03552f0d8fd811084b56861e630853866ccce3e2361f756`.
 Probe baseline: `c9587d431175525e047288be50e42c7b97fc365ad93831a1cf9e3c6a78073a71`.
+
+A later source audit found the two content-rule-blocking definitions still in
+the Cocoa files: the extraction had expected a blank line before their closing
+platform guards. Those duplicate definitions are now removed. The source audit
+confirms exactly one definition for all 13 moved methods and no stale Cocoa
+resource IPC sends. Cocoa compilation remains unverified. Evidence:
+`.vm/extension-web-request-cocoa-cleanup-validation.json`.
+Cleanup patch: `a2a94c217a4b41946fcaf638ff43a297e4a23723b6ab92c148fa88d0f20ae82b`.
