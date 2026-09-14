@@ -45,3 +45,23 @@ controller setup and browser attachment. No extension has run in the preview.
 Promoted patch: `1d075f46ad782a384ae548bd1a2f1b390ace18e0ea342e8ea44ace3322cb0543`.
 Probe baseline: `2ea935a16cbd980a09e5bc20229863c257a22e09e2fc48c29afcc8837d7936b6`.
 Aggregate: `.vm/extension-scripts-native-results.json`.
+
+## Shared script ownership
+
+The registered-script allocator and its seven ownership/parameter methods
+now live in `WebExtensionDynamicScripts.cpp`. Their bodies are unchanged
+from Cocoa, including removal from every user-content controller. The
+document identifier helper also moves unchanged into common utilities.
+The old definitions are removed, and the new source is listed in Sources
+and the Xcode project.
+
+`.vm/extension-lifecycle-inputs.F2WTQUFt/result.json` records successful native
+compilation of the ownership, utilities, scripting and context units, with
+both extension features enabled and regenerated IPC. Native input and
+configuration snapshots remain unchanged. This is compilation evidence;
+it does not exercise script removal, live frame identification or injection.
+Cocoa compilation has not been run.
+
+Extraction: `.vm/extension-script-ownership-extraction.json`.
+Promoted patch: `d5c9a8c180f514ddebb4d39392d4df6b08873769d9e3f733c82b615afb0d6aa8`.
+Probe baseline: `6338f83f047dcaa3b58be944341804d64cb421d092305cbd7b0cffeb083d6069`.

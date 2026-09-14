@@ -1280,3 +1280,16 @@ See [rejected-promise evidence](webextensions-native-rejected-promises.md).
 Patch: `6338f83f047dcaa3b58be944341804d64cb421d092305cbd7b0cffeb083d6069`.
 The full build remains frozen on `1b839dea...` and continues through UI-process
 units. The preview remains `bundle-yqhmejfw`, with extensions disabled.
+
+
+2026-09-14 registered-script ownership: the allocator, parameter updates and
+script/style ownership methods move unchanged from Cocoa to common C++.
+The frame document identifier helper also moves unchanged. All four selected
+native units compile with both extension flags enabled and regenerated IPC;
+record: `.vm/extension-lifecycle-inputs.F2WTQUFt/result.json`. No live frame,
+script removal or injection was exercised. See
+[registered-script evidence](webextensions-native-registered-scripts.md).
+
+Patch: `d5c9a8c180f514ddebb4d39392d4df6b08873769d9e3f733c82b615afb0d6aa8`.
+The full build remains frozen on `1b839dea...`, now finishing WebProcess
+compilation. No feature-enabled WebKit link has passed.
