@@ -1651,3 +1651,10 @@ context, lifecycle event, database removal or browser runtime was executed. The
 browser SDK must still wire startup/update intent. See [package identity evidence
 and limits](webextensions-native-package-identity.md).
 Patch: `341d7bd1bb1d8d5601a45cd83b1dc5af3eeb3b2f4039f7468d1b212ee32d6ef5`.
+
+2026-09-15 (local) seventeenth full extension link result: the frozen `341d7bd1...`
+package-snapshot build reaches the WebKit library link. Native install-state
+selection now resolves, reducing missing symbols from 18 to 17, with none newly
+introduced. The remaining symbols are the DNR loader and 16 process-side event
+handlers. Evidence: `.vm/modern-extensions-package-snapshot-build-result.json`.
+The feature-enabled library has not linked and no extension has run.

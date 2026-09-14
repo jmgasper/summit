@@ -96,3 +96,9 @@ explicit-length string. These failures are retained in the validation history.
 
 Promoted patch: `341d7bd1bb1d8d5601a45cd83b1dc5af3eeb3b2f4039f7468d1b212ee32d6ef5`.
 Probe baseline: `425e5c88a7cb5b221858163374430798efa40a166384bcde3f085be904e3df50`.
+
+The subsequent full build of patch `341d7bd1...` reached shared-library linking
+and failed with **17 missing symbols, down from 18**. The native
+`determineInstallReasonDuringLoad()` symbol resolves and no new missing symbol
+was introduced. This confirms full-build compilation, not extension runtime.
+Evidence: `.vm/modern-extensions-package-snapshot-build-result.json`.
