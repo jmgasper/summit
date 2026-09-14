@@ -42,8 +42,11 @@ NATIVE_PAGE_UNITS = {'BrowserTabRegistryHaiku.cpp': 'UIProcess/haiku/BrowserTabR
                      'WebKitContext.cpp': 'UIProcess/API/haiku/WebKitContext.cpp',
                      'WebPageProxy.cpp': 'UIProcess/WebPageProxy.cpp',
                      'WebView.cpp': 'UIProcess/haiku/WebView.cpp'}
-WEB_CORE_UNITS = {'URLFilterParser.cpp': 'contentextensions/URLFilterParser.cpp'}
-UI_API_UNITS = {'WebExtensionDeclarativeNetRequestURLFilter.cpp': 'UIProcess/Extensions/haiku/WebExtensionDeclarativeNetRequestURLFilter.cpp',
+WEB_CORE_UNITS = {name: 'contentextensions/' + name for name in ('URLFilterParser.cpp', 'DFABytecodeInterpreter.cpp', 'ContentExtension.cpp',
+                  'ContentExtensionURLConditions.cpp', 'ContentExtensionRule.cpp', 'ContentExtensionParser.cpp',
+                  'ContentExtensionCompiler.cpp', 'ContentExtensionsBackend.cpp')}
+UI_API_UNITS = {'APIContentRuleListStore.cpp': 'UIProcess/API/APIContentRuleListStore.cpp',
+                'WebExtensionDeclarativeNetRequestURLFilter.cpp': 'UIProcess/Extensions/haiku/WebExtensionDeclarativeNetRequestURLFilter.cpp',
                 'WebExtensionPackageSnapshotHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionPackageSnapshotHaiku.cpp',
                 'WebExtensionHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionHaiku.cpp',
                 'WebExtension.cpp': 'UIProcess/Extensions/WebExtension.cpp',
@@ -157,6 +160,20 @@ def native(units=None, engine_root=DEFAULT_ENGINE, regenerate=False):
     probe.SOURCES = UNITS + EXTRA_UNITS + GENERATED_UNITS + BINDING_UNITS + tuple(PAGE_UNITS) + tuple(NATIVE_PAGE_UNITS) + tuple(UI_API_UNITS) + tuple(WEB_CORE_UNITS)
     probe.ENGINE = pathlib.Path(engine_root)
     probe.BUILD = probe.ENGINE / 'WebKitBuild/Modern'
+    if any(name in WEB_CORE_UNITS for name in units or ()):
+        # WebKit's compile command omits WebCore's unexported sibling headers.
+        # Use the configured WebCore search paths after the staged candidates.
+        core_object = False
+        for line in (probe.BUILD / 'build.ninja').read_text().splitlines():
+            if line.startswith('build '):
+                core_object = line.startswith('build Source/WebCore/CMakeFiles/WebCore.dir/') and '.cpp.o:' in line
+            elif core_object and line.startswith('  INCLUDES = '):
+                includes = shlex.split(line.split(' = ', 1)[1])
+                probe.EXTRA_INCLUDE_DIRECTORIES = (probe.BUILD / 'WebCore/PrivateHeaders/WebCore',
+                    *(pathlib.Path(flag[2:]) for flag in includes if flag.startswith('-I')))
+                break
+        else:
+            raise RuntimeError('Configured WebCore include paths were not found')
     manifest = json.loads((probe.OUTPUT / 'source-manifest.json').read_text())
     engine = json.loads((probe.ENGINE / '.summit-source-manifest.json').read_text())
     if engine['patch_sha256'] != manifest['host_engine_patch_sha256']:
@@ -211,11 +228,21 @@ def host(overlay=None, units=None, engine_root=DEFAULT_ENGINE, regenerate=False,
         # Preserve quoted sibling headers when flattening a WebCore source unit.
         # Also stage the namespaced form so those headers cannot fall back to a
         # different native copy for their own <WebCore/...> includes.
-        for path in sorted((engine / 'Source/WebCore/contentextensions').glob('*.h')):
+        core_headers = set((engine / 'Source/WebCore/contentextensions').glob('*.h'))
+        core_headers.add(engine / 'Source/WebCore/loader/ResourceLoadInfo.h')
+        if overlay:
+            for candidate in (pathlib.Path(overlay).resolve() / 'Source/WebCore/contentextensions').glob('*.h'):
+                core_headers.add(engine / 'Source/WebCore/contentextensions' / candidate.name)
+        for path in sorted(core_headers):
             for name in (path.name, 'WebCore/' + path.name):
                 if name in files:
                     raise RuntimeError('Ambiguous staged WebCore header: ' + name)
                 files[name] = (path, source(path), source(path).read_bytes())
+    if 'APIContentRuleListStore.cpp' in (units or ()):
+        path = engine / 'Source/WebKit/UIProcess/API/APIContentRuleListStore.h'
+        if path.name in files:
+            raise RuntimeError('Ambiguous staged API header: ' + path.name)
+        files[path.name] = (path, source(path), source(path).read_bytes())
     for name in units or UNITS:
         if name in BINDING_UNITS:
             if not generated_bindings:

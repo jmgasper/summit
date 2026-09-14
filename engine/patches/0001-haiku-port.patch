@@ -1223,10 +1223,18 @@ index 5f4a893485a9b9e1904cf2d342085ea83c5315c1..6522ed0048f3fd2cd4d63096941c38d0
      PREFIX WebCoreJSBindingsPrefix.h
      PREFIX_LANGUAGES CXX
 diff --git a/Source/WebCore/Headers.cmake b/Source/WebCore/Headers.cmake
-index 341db75e1e661ce171e21d818a544a19c5ecdbbd..b59f07b399e5a939f4a2cdf7795e41f7088ee285 100644
+index 341db75e1e661ce171e21d818a544a19c5ecdbbd..a7ec26f8aa10a8c50c370e4c0dfc95fe032454ab 100644
 --- a/Source/WebCore/Headers.cmake
 +++ b/Source/WebCore/Headers.cmake
-@@ -2938,6 +2938,8 @@ set(WebCore_PRIVATE_FRAMEWORK_HEADERS
+@@ -1018,6 +1018,7 @@ set(WebCore_PRIVATE_FRAMEWORK_HEADERS
+     contentextensions/ContentExtensionRule.h
+     contentextensions/ContentExtensionStringSerialization.h
+     contentextensions/ContentExtensionStyleSheet.h
++    contentextensions/ContentExtensionURLConditions.h
+     contentextensions/ContentExtensionsBackend.h
+     contentextensions/ContentExtensionsDebugging.h
+     contentextensions/ContentRuleListBlockedLoadInfo.h
+@@ -2938,6 +2939,8 @@ set(WebCore_PRIVATE_FRAMEWORK_HEADERS
      platform/mediastream/libwebrtc/LibWebRTCVideoFrameUtilities.h
      platform/mediastream/libwebrtc/VideoFrameLibWebRTC.h
  
@@ -1581,6 +1589,564 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..134f21a4af90dce7fdd16d9ef6c84478
  )
  
  set(CSS_VALUE_PLATFORM_DEFINES "HAVE_OS_DARK_MODE_SUPPORT=1")
+diff --git a/Source/WebCore/Sources.txt b/Source/WebCore/Sources.txt
+index 1b478eff878aef4108b0f4f828eabe3132f24131..697e681b98110eb40583e3af9064481fdf8dd784 100644
+--- a/Source/WebCore/Sources.txt
++++ b/Source/WebCore/Sources.txt
+@@ -906,6 +906,7 @@ contentextensions/ContentExtensionParser.cpp
+ contentextensions/ContentExtensionRule.cpp
+ contentextensions/ContentExtensionStringSerialization.cpp
+ contentextensions/ContentExtensionStyleSheet.cpp
++contentextensions/ContentExtensionURLConditions.cpp
+ contentextensions/ContentExtensionsBackend.cpp
+ contentextensions/DFA.cpp
+ contentextensions/DFABytecodeCompiler.cpp
+diff --git a/Source/WebCore/contentextensions/ContentExtension.cpp b/Source/WebCore/contentextensions/ContentExtension.cpp
+index af98d12bc8869a1678f940471531333950be1d11..5e0f99c3611d29adf7f698565386d9023b9d70a9 100644
+--- a/Source/WebCore/contentextensions/ContentExtension.cpp
++++ b/Source/WebCore/contentextensions/ContentExtension.cpp
+@@ -121,7 +121,7 @@ void ContentExtension::compileGlobalDisplayNoneStyleSheet()
+ 
+ void ContentExtension::populateTopURLActionCacheIfNeeded(const URL& topURL) const
+ {
+-    if (m_cachedTopURL == topURL)
++    if (m_cachedTopURL && *m_cachedTopURL == topURL)
+         return;
+ 
+     DFABytecodeInterpreter interpreter(m_compiledExtension->topURLFiltersBytecode());
+@@ -138,7 +138,7 @@ void ContentExtension::populateTopURLActionCacheIfNeeded(const URL& topURL) cons
+ 
+ void ContentExtension::populateFrameURLActionCacheIfNeeded(const URL& frameURL) const
+ {
+-    if (m_cachedFrameURL == frameURL)
++    if (m_cachedFrameURL && *m_cachedFrameURL == frameURL)
+         return;
+ 
+     DFABytecodeInterpreter interpreter(m_compiledExtension->frameURLFiltersBytecode());
+diff --git a/Source/WebCore/contentextensions/ContentExtension.h b/Source/WebCore/contentextensions/ContentExtension.h
+index 333815477ead287c282ad92fa761cfced5abae68..1d9e6aab4e1bc652a82ce78d37b12f372d529781 100644
+--- a/Source/WebCore/contentextensions/ContentExtension.h
++++ b/Source/WebCore/contentextensions/ContentExtension.h
+@@ -32,6 +32,7 @@
+ #include <wtf/Ref.h>
+ #include <wtf/RefCounted.h>
+ #include <wtf/RefPtr.h>
++#include <optional>
+ 
+ namespace WebCore {
+ 
+@@ -65,11 +66,11 @@ private:
+     void compileGlobalDisplayNoneStyleSheet();
+ 
+     void populateTopURLActionCacheIfNeeded(const URL& topURL) const;
+-    mutable URL m_cachedTopURL;
++    mutable std::optional<URL> m_cachedTopURL;
+     mutable DFABytecodeInterpreter::Actions m_cachedTopURLActions;
+ 
+     void populateFrameURLActionCacheIfNeeded(const URL& frameURL) const;
+-    mutable URL m_cachedFrameURL;
++    mutable std::optional<URL> m_cachedFrameURL;
+     mutable DFABytecodeInterpreter::Actions m_cachedFrameURLActions;
+ 
+     Vector<uint64_t> m_universalActions;
+diff --git a/Source/WebCore/contentextensions/ContentExtensionCompiler.cpp b/Source/WebCore/contentextensions/ContentExtensionCompiler.cpp
+index 576a1d54820fd497996d0bd512d1fd8403e768bd..5dd26d3fdc2ff2f69778f6338ad8c8db04fd4961 100644
+--- a/Source/WebCore/contentextensions/ContentExtensionCompiler.cpp
++++ b/Source/WebCore/contentextensions/ContentExtensionCompiler.cpp
+@@ -109,7 +109,7 @@ static Vector<unsigned> serializeActions(const Vector<ContentExtensionRule>& rul
+         // of the rule when we process them later.
+         //
+         // If we're tracking rule identifiers, we also cannot combine actions since the identifiers are unique.
+-        if (!rule.trigger().conditions.isEmpty() || std::holds_alternative<IgnoreFollowingRulesAction>(actionData) || std::holds_alternative<ReportIdentifierAction>(actionData)) {
++        if (!rule.trigger().conditions.isEmpty() || !rule.trigger().urlConditionGroups.isEmpty() || std::holds_alternative<IgnoreFollowingRulesAction>(actionData) || std::holds_alternative<ReportIdentifierAction>(actionData)) {
+             actionLocations.append(actions.size());
+ 
+             actions.append(actionData.index());
+@@ -322,20 +322,19 @@ std::error_code compileRuleList(ContentExtensionCompilationClient& client, Strin
+         // High bits are used for flags. This should match how they are used in DFABytecodeCompiler::compileNode.
+         ASSERT(!(~ActionFlagMask & (static_cast<uint64_t>(trigger.flags) << 32)));
+         uint64_t actionLocationAndFlags = (static_cast<uint64_t>(trigger.flags) << 32) | static_cast<uint64_t>(actionLocations[ruleIndex]);
+-        URLFilterParser::ParseStatus status = URLFilterParser::Ok;
+-        status = urlFilterParser.addPattern(trigger.urlFilter, trigger.urlFilterIsCaseSensitive, actionLocationAndFlags);
+-        if (status == URLFilterParser::MatchesEverything) {
+-            universalActions.add(actionLocationAndFlags);
+-            status = URLFilterParser::Ok;
+-        }
+-        if (status != URLFilterParser::Ok) {
+-            dataLogLn("Error while parsing "_s, trigger.urlFilter, ": "_s, URLFilterParser::statusString(status));
++        auto status = compileTriggerURLFilters(trigger, actionLocations[ruleIndex], urlFilterParser, universalActions);
++        if (status != URLFilterParser::Ok)
++            return ContentExtensionError::JSONInvalidRegex;
++        status = compileURLConditions(trigger.urlConditionGroups, actionLocations[ruleIndex],
++            urlFilterParser, universalActions, topURLFilterParser, topURLUniversalActions,
++            frameURLFilterParser, frameURLUniversalActions);
++        if (status != URLFilterParser::Ok)
+             return ContentExtensionError::JSONInvalidRegex;
+-        }
+ 
+         for (const String& condition : trigger.conditions) {
+             switch (static_cast<ActionCondition>(trigger.flags & ActionConditionMask)) {
+             case ActionCondition::None:
++            case ActionCondition::Conjunction:
+                 ASSERT_NOT_REACHED();
+                 break;
+             case ActionCondition::IfTopURL:
+diff --git a/Source/WebCore/contentextensions/ContentExtensionParser.cpp b/Source/WebCore/contentextensions/ContentExtensionParser.cpp
+index 0b614af13497a4930c9ee4b8d550d9aaf8b3c041..301b6707f84836ec212abe1859ab33c10f42c415 100644
+--- a/Source/WebCore/contentextensions/ContentExtensionParser.cpp
++++ b/Source/WebCore/contentextensions/ContentExtensionParser.cpp
+@@ -130,6 +130,15 @@ static std::expected<Trigger, std::error_code> loadTrigger(const JSON::Object& r
+ 
+     Trigger trigger;
+     trigger.urlFilter = urlFilter;
++    if (auto alternativesValue = triggerObject->getValue("url-filter-alternatives"_s)) {
++        auto alternatives = alternativesValue->asArray();
++        if (!alternatives || !alternatives->length())
++            return makeUnexpected(ContentExtensionError::JSONInvalidConditionList);
++        auto patterns = getStringList(*alternatives);
++        if (!patterns)
++            return makeUnexpected(patterns.error());
++        trigger.urlFilterAlternatives = WTF::move(*patterns);
++    }
+ 
+     if (std::optional<bool> urlFilterCaseSensitiveValue = triggerObject->getBoolean("url-filter-is-case-sensitive"_s))
+         trigger.urlFilterIsCaseSensitive = *urlFilterCaseSensitiveValue;
+@@ -209,6 +218,16 @@ static std::expected<Trigger, std::error_code> loadTrigger(const JSON::Object& r
+     if (auto error = checkCondition("unless-frame-url"_s, getStringList, ActionCondition::UnlessFrameURL))
+         return makeUnexpected(error);
+ 
++    if (auto groupsValue = triggerObject->getValue("url-conditions"_s)) {
++        if ((trigger.flags & ActionConditionMask) || trigger.topURLFilterIsCaseSensitive || trigger.frameURLFilterIsCaseSensitive)
++            return makeUnexpected(ContentExtensionError::JSONMultipleConditions);
++        auto groups = parseURLConditionGroups(*groupsValue);
++        if (!groups)
++            return makeUnexpected(ContentExtensionError::JSONInvalidConditionList);
++        trigger.flags |= static_cast<ResourceFlags>(ActionCondition::Conjunction) | urlConditionRequirements(*groups);
++        trigger.urlConditionGroups = WTF::move(*groups);
++    }
++
+     trigger.checkValidity();
+     return trigger;
+ }
+diff --git a/Source/WebCore/contentextensions/ContentExtensionRule.cpp b/Source/WebCore/contentextensions/ContentExtensionRule.cpp
+index 8e27cad3e1ce325dd129b27bfac78bc1e565a171..edfbe0dda9f6f8fe151356ab52468382355db4c8 100644
+--- a/Source/WebCore/contentextensions/ContentExtensionRule.cpp
++++ b/Source/WebCore/contentextensions/ContentExtensionRule.cpp
+@@ -100,12 +100,12 @@ size_t DeserializedAction::serializedLength(std::span<const uint8_t> serializedA
+ 
+ Trigger Trigger::isolatedCopy() const &
+ {
+-    return { urlFilter.isolatedCopy(), urlFilterIsCaseSensitive, topURLFilterIsCaseSensitive, frameURLFilterIsCaseSensitive, flags, crossThreadCopy(conditions) };
++    return { urlFilter.isolatedCopy(), urlFilterIsCaseSensitive, topURLFilterIsCaseSensitive, frameURLFilterIsCaseSensitive, flags, crossThreadCopy(conditions), crossThreadCopy(urlFilterAlternatives), crossThreadCopy(urlConditionGroups) };
+ }
+ 
+ Trigger Trigger::isolatedCopy() &&
+ {
+-    return { WTF::move(urlFilter).isolatedCopy(), urlFilterIsCaseSensitive, topURLFilterIsCaseSensitive, frameURLFilterIsCaseSensitive, flags, crossThreadCopy(WTF::move(conditions)) };
++    return { WTF::move(urlFilter).isolatedCopy(), urlFilterIsCaseSensitive, topURLFilterIsCaseSensitive, frameURLFilterIsCaseSensitive, flags, crossThreadCopy(WTF::move(conditions)), crossThreadCopy(WTF::move(urlFilterAlternatives)), crossThreadCopy(WTF::move(urlConditionGroups)) };
+ }
+ 
+ Action Action::isolatedCopy() const &
+diff --git a/Source/WebCore/contentextensions/ContentExtensionRule.h b/Source/WebCore/contentextensions/ContentExtensionRule.h
+index 37ffcc02c923d5df28ecbe3596e30cfa91b7b3eb..f054dc19393102455a881235b987cc95326831e8 100644
+--- a/Source/WebCore/contentextensions/ContentExtensionRule.h
++++ b/Source/WebCore/contentextensions/ContentExtensionRule.h
+@@ -28,6 +28,7 @@
+ #if ENABLE(CONTENT_EXTENSIONS)
+ 
+ #include <WebCore/ContentExtensionActions.h>
++#include <WebCore/ContentExtensionURLConditions.h>
+ #include <WebCore/ResourceLoadInfo.h>
+ #include <wtf/Hasher.h>
+ #include <wtf/text/WTFString.h>
+@@ -46,6 +47,8 @@ struct Trigger {
+     bool frameURLFilterIsCaseSensitive { false };
+     ResourceFlags flags { 0 };
+     Vector<String> conditions;
++    Vector<String> urlFilterAlternatives;
++    URLConditionGroups urlConditionGroups;
+ 
+     WEBCORE_EXPORT Trigger isolatedCopy() const &;
+     WEBCORE_EXPORT Trigger isolatedCopy() &&;
+@@ -53,7 +56,14 @@ struct Trigger {
+     void checkValidity()
+     {
+         auto actionCondition = static_cast<ActionCondition>(flags & ActionConditionMask);
+-        ASSERT_UNUSED(actionCondition, conditions.isEmpty() == (actionCondition == ActionCondition::None));
++        if (actionCondition == ActionCondition::Conjunction) {
++            ASSERT(conditions.isEmpty() && !urlConditionGroups.isEmpty());
++            ASSERT((flags & URLConditionMask) == urlConditionRequirements(urlConditionGroups));
++        } else {
++            ASSERT(urlConditionGroups.isEmpty());
++            ASSERT(!(flags & URLConditionMask));
++            ASSERT(conditions.isEmpty() == (actionCondition == ActionCondition::None));
++        }
+         if (topURLFilterIsCaseSensitive)
+             ASSERT(actionCondition == ActionCondition::IfTopURL || actionCondition == ActionCondition::UnlessTopURL);
+         if (frameURLFilterIsCaseSensitive)
+@@ -67,7 +77,9 @@ struct Trigger {
+             && !topURLFilterIsCaseSensitive
+             && !frameURLFilterIsCaseSensitive
+             && !flags
+-            && conditions.isEmpty();
++            && conditions.isEmpty()
++            && urlFilterAlternatives.isEmpty()
++            && urlConditionGroups.isEmpty();
+     }
+ 
+     friend bool operator==(const Trigger&, const Trigger&) = default;
+@@ -75,7 +87,7 @@ struct Trigger {
+ 
+ inline void add(Hasher& hasher, const Trigger& trigger)
+ {
+-    add(hasher, trigger.urlFilterIsCaseSensitive, trigger.urlFilter, trigger.flags, trigger.conditions);
++    add(hasher, trigger.urlFilterIsCaseSensitive, trigger.topURLFilterIsCaseSensitive, trigger.frameURLFilterIsCaseSensitive, trigger.urlFilter, trigger.flags, trigger.conditions, trigger.urlFilterAlternatives, trigger.urlConditionGroups);
+ }
+ 
+ struct TriggerHashTraits : public WTF::CustomHashTraits<Trigger> {
+diff --git a/Source/WebCore/contentextensions/ContentExtensionURLConditions.cpp b/Source/WebCore/contentextensions/ContentExtensionURLConditions.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..cf006222e1f40aa53d17ad20f3518a8d96ecf841
+--- /dev/null
++++ b/Source/WebCore/contentextensions/ContentExtensionURLConditions.cpp
+@@ -0,0 +1,215 @@
++/*
++ * Copyright (C) 2026 KunanyiOS contributors.
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include "config.h"
++#include "ContentExtensionURLConditions.h"
++
++#if ENABLE(CONTENT_EXTENSIONS)
++
++#include "ContentExtensionRule.h"
++#include <wtf/CrossThreadCopier.h>
++#include <wtf/text/MakeString.h>
++
++namespace WebCore::ContentExtensions {
++
++static_assert(!(URLConditionMask & (LoadTypeMask | ResourceTypeMask | LoadContextMask | ActionConditionMask | RequestMethodMask)));
++static_assert((static_cast<uint64_t>(AllResourceFlags) << 32) == ActionFlagMask);
++static_assert(!(ActionFlagMask & (uint64_t { 1 } << 63)));
++
++static std::optional<URLConditionType> conditionType(const String& name)
++{
++    if (name == "if-request-url"_s)
++        return URLConditionType::IfRequestURL;
++    if (name == "unless-request-url"_s)
++        return URLConditionType::UnlessRequestURL;
++    if (name == "if-top-url"_s)
++        return URLConditionType::IfTopURL;
++    if (name == "unless-top-url"_s)
++        return URLConditionType::UnlessTopURL;
++    if (name == "if-frame-url"_s)
++        return URLConditionType::IfFrameURL;
++    if (name == "unless-frame-url"_s)
++        return URLConditionType::UnlessFrameURL;
++    return std::nullopt;
++}
++
++std::expected<URLConditionGroups, String> parseURLConditionGroups(JSON::Value& value)
++{
++    auto array = value.asArray();
++    if (!array || !array->length() || array->length() > 6)
++        return makeUnexpected("url-conditions must contain one to six condition groups."_s);
++    URLConditionGroups result;
++    ResourceFlags types = 0;
++    for (auto& entry : *array) {
++        auto object = entry->asObject();
++        if (!object)
++            return makeUnexpected("Each URL condition group must be an object."_s);
++        for (auto& key : object->keys()) {
++            if (key != "type"_s && key != "urls"_s && key != "case-sensitive"_s)
++                return makeUnexpected(makeString("Unsupported URL condition property: "_s, key));
++        }
++        auto type = conditionType(object->getString("type"_s));
++        if (!type)
++            return makeUnexpected("Unknown URL condition type."_s);
++        auto flag = static_cast<ResourceFlags>(*type);
++        if (types & flag)
++            return makeUnexpected("URL condition types must not be repeated."_s);
++        types |= flag;
++        URLConditionGroup group { *type, { }, false };
++        if (auto sensitive = object->getValue("case-sensitive"_s)) {
++            auto boolean = sensitive->asBoolean();
++            if (!boolean)
++                return makeUnexpected("URL condition case-sensitive must be a boolean."_s);
++            group.caseSensitive = *boolean;
++        }
++        auto urls = object->getArray("urls"_s);
++        if (!urls || !urls->length())
++            return makeUnexpected("URL condition urls must be a non-empty array."_s);
++        for (auto& url : *urls) {
++            auto pattern = url->asString();
++            if (pattern.isEmpty() || !StringView(pattern).containsOnlyASCII() || pattern.contains('\0'))
++                return makeUnexpected("URL condition patterns must be non-empty ASCII strings without NUL."_s);
++            group.urls.append(WTF::move(pattern));
++        }
++        result.append(WTF::move(group));
++    }
++    return result;
++}
++
++ResourceFlags urlConditionRequirements(const URLConditionGroups& groups)
++{
++    ResourceFlags flags = 0;
++    for (auto& group : groups)
++        flags |= static_cast<ResourceFlags>(group.type);
++    return flags;
++}
++
++URLFilterParser::ParseStatus compileTriggerURLFilters(const Trigger& trigger, uint32_t actionLocation, URLFilterParser& parser, URLConditionActions& universalActions)
++{
++    // All alternatives identify the same serialized action, so overlapping
++    // patterns cannot apply a header mutation or other action more than once.
++    uint64_t actionAndFlags = (static_cast<uint64_t>(trigger.flags) << 32) | actionLocation;
++    auto addPattern = [&](const String& pattern) {
++        auto status = parser.addPattern(pattern, trigger.urlFilterIsCaseSensitive, actionAndFlags);
++        if (status == URLFilterParser::MatchesEverything) {
++            universalActions.add(actionAndFlags);
++            return URLFilterParser::Ok;
++        }
++        return status;
++    };
++    auto status = addPattern(trigger.urlFilter);
++    if (status != URLFilterParser::Ok)
++        return status;
++    for (auto& alternative : trigger.urlFilterAlternatives) {
++        status = addPattern(alternative);
++        if (status != URLFilterParser::Ok)
++            return status;
++    }
++    return URLFilterParser::Ok;
++}
++
++bool matchesURLConditions(uint64_t actionAndFlags, const URLConditionActions& requestActions, const URLConditionActions& topActions, const URLConditionActions& frameActions)
++{
++    ResourceFlags required = (actionAndFlags >> 32) & URLConditionMask;
++    if (!required)
++        return false;
++    uint32_t location = actionAndFlags;
++    auto accepts = [&](URLConditionType type, const URLConditionActions& actions, bool excluded) {
++        auto flag = static_cast<ResourceFlags>(type);
++        if (!(required & flag))
++            return true;
++        bool found = actions.contains((static_cast<uint64_t>(flag) << 32) | location);
++        return excluded ? !found : found;
++    };
++    return accepts(URLConditionType::IfRequestURL, requestActions, false)
++        && accepts(URLConditionType::UnlessRequestURL, requestActions, true)
++        && accepts(URLConditionType::IfTopURL, topActions, false)
++        && accepts(URLConditionType::UnlessTopURL, topActions, true)
++        && accepts(URLConditionType::IfFrameURL, frameActions, false)
++        && accepts(URLConditionType::UnlessFrameURL, frameActions, true);
++}
++
++URLFilterParser::ParseStatus compileURLConditions(const URLConditionGroups& groups, uint32_t actionLocation,
++    URLFilterParser& requestParser, URLConditionActions& requestUniversalActions,
++    URLFilterParser& topParser, URLConditionActions& topUniversalActions,
++    URLFilterParser& frameParser, URLConditionActions& frameUniversalActions)
++{
++    for (auto& group : groups) {
++        URLFilterParser* parser = nullptr;
++        URLConditionActions* universalActions = nullptr;
++        switch (group.type) {
++        case URLConditionType::IfRequestURL:
++        case URLConditionType::UnlessRequestURL:
++            parser = &requestParser;
++            universalActions = &requestUniversalActions;
++            break;
++        case URLConditionType::IfTopURL:
++        case URLConditionType::UnlessTopURL:
++            parser = &topParser;
++            universalActions = &topUniversalActions;
++            break;
++        case URLConditionType::IfFrameURL:
++        case URLConditionType::UnlessFrameURL:
++            parser = &frameParser;
++            universalActions = &frameUniversalActions;
++            break;
++        }
++        uint64_t tag = (static_cast<uint64_t>(group.type) << 32) | actionLocation;
++        for (auto& url : group.urls) {
++            auto status = parser->addPattern(url, group.caseSensitive, tag);
++            if (status == URLFilterParser::MatchesEverything)
++                universalActions->add(tag);
++            else if (status != URLFilterParser::Ok)
++                return status;
++        }
++    }
++    return URLFilterParser::Ok;
++}
++
++void filterActionsByURLConditions(URLConditionActions& requestActions, const URLConditionActions& topActions, const URLConditionActions& frameActions)
++{
++    // Snapshot before removal: hash iteration order must not decide whether
++    // an auxiliary tag is still present when its owning action is evaluated.
++    URLConditionActions requestConditionActions;
++    for (auto action : requestActions) {
++        if (isAuxiliaryURLConditionAction(action))
++            requestConditionActions.add(action);
++    }
++    requestActions.removeIf([&](uint64_t actionAndFlags) {
++        if (isAuxiliaryURLConditionAction(actionAndFlags))
++            return true;
++        auto mode = static_cast<ActionCondition>((actionAndFlags >> 32) & ActionConditionMask);
++        switch (mode) {
++        case ActionCondition::None:
++            return false;
++        case ActionCondition::Conjunction:
++            return !matchesURLConditions(actionAndFlags, requestConditionActions, topActions, frameActions);
++        case ActionCondition::IfTopURL:
++            return !topActions.contains(actionAndFlags);
++        case ActionCondition::UnlessTopURL:
++            return topActions.contains(actionAndFlags);
++        case ActionCondition::IfFrameURL:
++            return !frameActions.contains(actionAndFlags);
++        case ActionCondition::UnlessFrameURL:
++            return frameActions.contains(actionAndFlags);
++        }
++        ASSERT_NOT_REACHED();
++        return true;
++    });
++}
++
++URLConditionGroup URLConditionGroup::isolatedCopy() const &
++{
++    return { type, crossThreadCopy(urls), caseSensitive };
++}
++
++URLConditionGroup URLConditionGroup::isolatedCopy() &&
++{
++    return { type, crossThreadCopy(WTF::move(urls)), caseSensitive };
++}
++
++} // namespace WebCore::ContentExtensions
++
++#endif
+diff --git a/Source/WebCore/contentextensions/ContentExtensionURLConditions.h b/Source/WebCore/contentextensions/ContentExtensionURLConditions.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..59a1fedb56e6e60d28660832a403705c014c8cb8
+--- /dev/null
++++ b/Source/WebCore/contentextensions/ContentExtensionURLConditions.h
+@@ -0,0 +1,72 @@
++/*
++ * Copyright (C) 2026 KunanyiOS contributors.
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#if ENABLE(CONTENT_EXTENSIONS)
++
++#include <WebCore/ResourceLoadInfo.h>
++#include <WebCore/URLFilterParser.h>
++#include <wtf/HashSet.h>
++#include <wtf/Hasher.h>
++#include <wtf/JSONValues.h>
++#include <wtf/Vector.h>
++#include <expected>
++
++namespace WebCore::ContentExtensions {
++
++struct Trigger;
++
++enum class URLConditionType : uint32_t {
++    IfRequestURL = 0x02000000,
++    UnlessRequestURL = 0x04000000,
++    IfTopURL = 0x08000000,
++    UnlessTopURL = 0x10000000,
++    IfFrameURL = 0x20000000,
++    UnlessFrameURL = 0x40000000,
++};
++
++struct URLConditionGroup {
++    URLConditionType type;
++    Vector<String> urls;
++    bool caseSensitive { false };
++
++    URLConditionGroup isolatedCopy() const &;
++    URLConditionGroup isolatedCopy() &&;
++    friend bool operator==(const URLConditionGroup&, const URLConditionGroup&) = default;
++};
++
++inline void add(Hasher& hasher, const URLConditionGroup& group)
++{
++    add(hasher, group.type, group.urls, group.caseSensitive);
++}
++
++using URLConditionGroups = Vector<URLConditionGroup>;
++using URLConditionActions = HashSet<uint64_t, DefaultHash<uint64_t>, WTF::UnsignedWithZeroKeyHashTraits<uint64_t>>;
++
++WEBCORE_EXPORT std::expected<URLConditionGroups, String> parseURLConditionGroups(JSON::Value&);
++WEBCORE_EXPORT ResourceFlags urlConditionRequirements(const URLConditionGroups&);
++WEBCORE_EXPORT URLFilterParser::ParseStatus compileTriggerURLFilters(const Trigger&, uint32_t actionLocation, URLFilterParser&, URLConditionActions& universalActions);
++WEBCORE_EXPORT bool matchesURLConditions(uint64_t actionAndFlags, const URLConditionActions& requestActions, const URLConditionActions& topActions, const URLConditionActions& frameActions);
++WEBCORE_EXPORT void filterActionsByURLConditions(URLConditionActions& requestActions, const URLConditionActions& topActions, const URLConditionActions& frameActions);
++
++constexpr bool isAuxiliaryURLConditionAction(uint64_t actionAndFlags)
++{
++    auto flags = static_cast<ResourceFlags>(actionAndFlags >> 32);
++    return (flags & URLConditionMask) && !(flags & ActionConditionMask);
++}
++
++// Each condition gets its own tag at the original action location. Inclusion
++// patterns form a union inside a group; separate groups form a conjunction.
++// Request-condition tags share the request bytecode stream and must be removed
++// from candidate actions before deserializing any action bytes.
++WEBCORE_EXPORT URLFilterParser::ParseStatus compileURLConditions(const URLConditionGroups&, uint32_t actionLocation,
++    URLFilterParser& requestParser, URLConditionActions& requestUniversalActions,
++    URLFilterParser& topParser, URLConditionActions& topUniversalActions,
++    URLFilterParser& frameParser, URLConditionActions& frameUniversalActions);
++
++} // namespace WebCore::ContentExtensions
++
++#endif
+diff --git a/Source/WebCore/contentextensions/ContentExtensionsBackend.cpp b/Source/WebCore/contentextensions/ContentExtensionsBackend.cpp
+index 847a113cc61c9c8868c9e7792f79093442e6a21a..e27852515ae554a1f81293a9f61a966b9d832fd9 100644
+--- a/Source/WebCore/contentextensions/ContentExtensionsBackend.cpp
++++ b/Source/WebCore/contentextensions/ContentExtensionsBackend.cpp
+@@ -113,25 +113,7 @@ auto ContentExtensionsBackend::actionsFromContentRuleList(const ContentExtension
+     auto actionLocations = contentExtension.interpretURLFilters(urlString, flags);
+     auto& topURLActions = contentExtension.topURLActions(resourceLoadInfo.mainDocumentURL);
+     auto& frameURLActions = contentExtension.frameURLActions(resourceLoadInfo.frameURL);
+-
+-    actionLocations.removeIf([&](uint64_t actionAndFlags) {
+-        ResourceFlags flags = actionAndFlags >> 32;
+-        auto actionCondition = static_cast<ActionCondition>(flags & ActionConditionMask);
+-        switch (actionCondition) {
+-        case ActionCondition::None:
+-            return false;
+-        case ActionCondition::IfTopURL:
+-            return !topURLActions.contains(actionAndFlags);
+-        case ActionCondition::UnlessTopURL:
+-            return topURLActions.contains(actionAndFlags);
+-        case ActionCondition::IfFrameURL:
+-            return !frameURLActions.contains(actionAndFlags);
+-        case ActionCondition::UnlessFrameURL:
+-            return frameURLActions.contains(actionAndFlags);
+-        }
+-        ASSERT_NOT_REACHED();
+-        return false;
+-    });
++    filterActionsByURLConditions(actionLocations, topURLActions, frameURLActions);
+ 
+     auto serializedActions = compiledExtension.serializedActions();
+ 
+diff --git a/Source/WebCore/contentextensions/DFABytecodeInterpreter.cpp b/Source/WebCore/contentextensions/DFABytecodeInterpreter.cpp
+index dfb1ded59b78c1d9e5a7d28e28039da447df1d21..4c3bba603e689128c0a3999a094bdc8ad36dc85e 100644
+--- a/Source/WebCore/contentextensions/DFABytecodeInterpreter.cpp
++++ b/Source/WebCore/contentextensions/DFABytecodeInterpreter.cpp
+@@ -200,7 +200,7 @@ void DFABytecodeInterpreter::interpretTestFlagsAndAppendAction(uint32_t& program
+     bool loadTypeMatches = loadTypeFlags ? (loadTypeFlags & flags) : true;
+     bool loadContextMatches = loadContextFlags ? (loadContextFlags & flags) : true;
+     bool resourceTypeMatches = resourceTypeFlags ? (resourceTypeFlags & flags) : true;
+-    bool requestMethodMatches = requestMethodFlags ? (requestMethodFlags == (flags & RequestMethodMask)) : true;
++    bool requestMethodMatches = !requestMethodFlags || flags == AllResourceFlags || requestMethodFlags == (flags & RequestMethodMask);
+ 
+     auto actionWithoutFlags = consumeAction(m_bytecode, programCounter, instructionLocation);
+     if (loadTypeMatches && loadContextMatches && resourceTypeMatches && requestMethodMatches) {
 diff --git a/Source/WebCore/contentextensions/URLFilterParser.cpp b/Source/WebCore/contentextensions/URLFilterParser.cpp
 index 19bcf443fcb0f6c51227361c38ba4255bc255806..9b60ff67bd4ab3a6f3574dfe712ea29f42e77466 100644
 --- a/Source/WebCore/contentextensions/URLFilterParser.cpp
@@ -1673,6 +2239,40 @@ index 0797f2dc9bbb79a30b0ffac5f8b1f1fa898117cb..8aef59f339555bc7f5338c37dca2413f
      virtual void updateSandboxFlags(SandboxFlags) = 0;
      virtual void updateOpener(std::optional<FrameIdentifier>) = 0;
      virtual void setPrinting(bool printing, FloatSize pageSize, FloatSize originalPageSize, float maximumShrinkRatio, AdjustViewSize) = 0;
+diff --git a/Source/WebCore/loader/ResourceLoadInfo.h b/Source/WebCore/loader/ResourceLoadInfo.h
+index b3468af901cd6c69526a36d31bcefcc329fd79e5..59a5f9e59afd1d71fabe24d6fc675fff73f1403a 100644
+--- a/Source/WebCore/loader/ResourceLoadInfo.h
++++ b/Source/WebCore/loader/ResourceLoadInfo.h
+@@ -37,6 +37,7 @@ enum class ActionCondition : uint32_t {
+     None = 0x00000,
+     IfTopURL = 0x40000,
+     UnlessTopURL = 0x80000,
++    Conjunction = 0xC0000,
+     IfFrameURL = 0x140000,
+     UnlessFrameURL = 0x180000
+ };
+@@ -86,14 +87,18 @@ enum class RequestMethod : uint32_t {
+ };
+ static constexpr uint32_t RequestMethodMask = 0x1E00000;
+ 
++// These six bits identify independent URL condition groups. The highest flag
++// bit stays unused so encoded actions cannot collide with HashTable sentinels.
++static constexpr uint32_t URLConditionMask = 0x7E000000;
++
+ using ResourceFlags = uint32_t;
+ 
+-constexpr ResourceFlags AllResourceFlags = LoadTypeMask | ResourceTypeMask | LoadContextMask | ActionConditionMask | RequestMethodMask;
++constexpr ResourceFlags AllResourceFlags = LoadTypeMask | ResourceTypeMask | LoadContextMask | ActionConditionMask | RequestMethodMask | URLConditionMask;
+ 
+ // The first 32 bits of a uint64_t action are used for the action location.
+-// The next 25 bits are used for the flags (ResourceType, LoadType, LoadContext, ActionCondition, RequestMethod).
++// The next 31 bits hold resource flags, the condition mode and URL condition groups.
+ // The values -1 and -2 are used for removed and empty values in HashTables.
+-static constexpr uint64_t ActionFlagMask = 0x01FFFFFF00000000;
++static constexpr uint64_t ActionFlagMask = 0x7FFFFFFF00000000;
+ 
+ OptionSet<ResourceType> toResourceType(CachedResource::Type, ResourceRequestRequester, bool isMainFrame);
+ std::optional<OptionSet<ResourceType>> readResourceType(StringView);
 diff --git a/Source/WebCore/loader/ResourceLoadNotifier.cpp b/Source/WebCore/loader/ResourceLoadNotifier.cpp
 index 767c20d7c54f099ba98573a5e29032cbfd54f2ff..7bd9b1d3f47fdf00cc5c6b6ff9fdf5f2ae6ed406 100644
 --- a/Source/WebCore/loader/ResourceLoadNotifier.cpp
@@ -24702,6 +25302,19 @@ index e229fa1ae53c6c89e7534316dd06a7c5bfec5330..9388aa4f02c1c22ffeac08c115d9f7de
  WebProcess/FileAPI/BlobRegistryProxy.cpp
  
  WebProcess/FullScreen/WebFullScreenManager.cpp @cost:8
+diff --git a/Source/WebKit/UIProcess/API/APIContentRuleListStore.h b/Source/WebKit/UIProcess/API/APIContentRuleListStore.h
+index d4d415b3d8dfa723539f4f93c8c08972048d7a05..71e5c7982f118a2d571275b815abedc136c6dde8 100644
+--- a/Source/WebKit/UIProcess/API/APIContentRuleListStore.h
++++ b/Source/WebKit/UIProcess/API/APIContentRuleListStore.h
+@@ -52,7 +52,7 @@ public:
+ #if ENABLE(CONTENT_EXTENSIONS)
+     // This should be incremented every time a functional change is made to the bytecode, file format, etc.
+     // to prevent crashing while loading old data.
+-    static constexpr uint32_t CurrentContentRuleListFileVersion = 21;
++    static constexpr uint32_t CurrentContentRuleListFileVersion = 22;
+ 
+     static ContentRuleListStore& defaultStoreSingleton();
+     static Ref<ContentRuleListStore> storeWithPath(const WTF::String& storePath);
 diff --git a/Source/WebKit/UIProcess/API/APIUIClient.h b/Source/WebKit/UIProcess/API/APIUIClient.h
 index 9555283cab179e279fb3824cd46cdb76433f069c..e5a925637597156bcce225cd83c90ca4e472b2b8 100644
 --- a/Source/WebKit/UIProcess/API/APIUIClient.h

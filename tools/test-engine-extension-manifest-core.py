@@ -23,6 +23,7 @@ SOURCES = ('WebExtension.cpp', 'WebExtensionMatchPattern.cpp',
            'WebExtensionUtilities.cpp', 'WebExtensionResources.cpp',
            'haiku/WebExtensionHaiku.cpp')
 EXTRA_WATCHED_INPUTS = ()
+EXTRA_INCLUDE_DIRECTORIES = ()
 
 
 def digest(path):
@@ -106,6 +107,7 @@ def main():
             flags.append(flag)
     flags = ['-I' + str(OUTPUT), '-I' + str(OUTPUT / 'API'), '-I' + str(OUTPUT / 'Bindings'), '-I' + str(OUTPUT / 'haiku'),
              '-iquote', str(OUTPUT), *flags,
+             *(flag for directory in EXTRA_INCLUDE_DIRECTORIES for flag in ('-idirafter', str(directory))),
              '-include', str(prefix), '-fdiagnostics-color=never', '-fmax-errors=5']
     source_manifest = json.loads((OUTPUT / 'source-manifest.json').read_text())
     for name, info in source_manifest['files'].items():

@@ -1677,3 +1677,14 @@ the native DNR URL helper. The WebKit shared-library link still fails on the
 same 17 symbols as the package-snapshot build, with no newly introduced missing
 symbols. Evidence: `.vm/modern-extensions-dnr-url-filter-build-result.json`.
 No extension runtime was executed.
+
+2026-09-15 (local) compound DNR URL conditions: the shared WebCore compiler and
+backend can combine independent request, top-page and frame inclusions and
+exclusions. URL alternatives share one action identity, and exclusions retain
+unrelated rules. Legacy method-bearing conditions and the first empty-URL cache
+lookup are corrected; compiled rule caches advance to version 22. **76 native
+checks and 4,032 condition comparisons pass; eight integration units compile.**
+The harness uses actual filter bytecode but does not execute the full parser,
+cache, actions, extension loader or browser enforcement. See [compound condition
+evidence and limits](webextensions-native-dnr-conditions.md).
+Patch: `656209ed1a5461930864b0bc5ee25d29edce7c026f34754e2f4397797a5d16f0`.
