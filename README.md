@@ -75,10 +75,14 @@ bash tools/build-modern-browser-in-vm.sh --browser --bundle
 ```
 
 The second command records the frozen native bundle path, including its
-`run-browser.sh` launcher and private engine processes. Native UI compilation
-and component checks pass; full browser linking and runtime verification are
-still in progress. [The verification record](docs/STATUS.md) distinguishes
-these results from the working current-engine preview above.
+`run-browser.sh` launcher and private engine processes. The complete modern
+engine, process helpers and browser now link and run natively. The preview
+passes its live HTTP/DOM/storage fixture and native pixel check. The full browser
+passes 143 close-workflow checks, and the modern API passes all 12 context
+storage stages. Navigation currently passes 32 of 33 checks; a forward-history
+failure and intermittent shutdown hangs remain under investigation before a
+modern distribution is published. [The verification record](docs/STATUS.md)
+records the exact bundles and remaining limitations.
 
 See [the current verification record](docs/STATUS.md), the complete
 [requirements and remaining work](docs/REQUIREMENTS.md), and the

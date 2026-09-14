@@ -27926,10 +27926,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..a7194fd67b82d1dc79ab6c51bf13e4d50041307e
+index 0000000000000000000000000000000000000000..9d6146f5c2b4996f6a15dd0187fd736383331143
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,804 @@
+@@ -0,0 +1,825 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -28064,6 +28064,11 @@ index 0000000000000000000000000000000000000000..a7194fd67b82d1dc79ab6c51bf13e4d5
 +        && state.closeDocumentIdentifier == state.documentIdentifier;
 +}
 +
++static void rememberNativeNavigationHaiku(WebViewStateHaiku& state, RefPtr<API::Navigation>&& navigation)
++{
++    state.nativeNavigationIdentifier = navigation ? std::optional { navigation->navigationID() } : std::nullopt;
++}
++
 +static void notifyCloseDecisionHaiku(const std::shared_ptr<WebViewStateHaiku>& state, bool approved)
 +{
 +    ASSERT(RunLoop::isMain());
@@ -28103,8 +28108,15 @@ index 0000000000000000000000000000000000000000..a7194fd67b82d1dc79ab6c51bf13e4d5
 +
 +    void decidePolicyForNavigationAction(WebPageProxy&, Ref<API::NavigationAction>&& action, Ref<WebFramePolicyListenerProxy>&& listener) override
 +    {
-+        if (auto state = m_state.lock(); state && action->targetFrame() && action->targetFrame()->isMainFrame())
-+            navigationChangedHaiku(state);
++        if (auto state = m_state.lock(); state && action->targetFrame() && action->targetFrame()->isMainFrame()) {
++            // LoadURL/back/forward/reload already advanced the generation when
++            // issued. Their delayed policy callback must not cancel a close
++            // requested in the meantime. Page-initiated requests still count
++            // here; provisional starts and document commits are also tracked.
++            RefPtr navigation = action->mainFrameNavigation();
++            if (!navigation || state->nativeNavigationIdentifier != navigation->navigationID())
++                navigationChangedHaiku(state);
++        }
 +        listener->use();
 +    }
 +
@@ -28464,17 +28476,26 @@ index 0000000000000000000000000000000000000000..a7194fd67b82d1dc79ab6c51bf13e4d5
 +        URL url { String::fromUTF8(message.FindString("url")) };
 +        if (url.isValid()) {
 +            navigationChangedHaiku(m_state);
-+            m_page->loadRequest(ResourceRequest(WTF::move(url)));
++            rememberNativeNavigationHaiku(*m_state, m_page->loadRequest(ResourceRequest(WTF::move(url))));
 +        }
 +        break;
 +    }
 +    case viewBackHaiku:
-+        if (m_page->pageLoadState().canGoBack()) { navigationChangedHaiku(m_state); m_page->goBack(); }
++        if (m_page->pageLoadState().canGoBack()) {
++            navigationChangedHaiku(m_state);
++            rememberNativeNavigationHaiku(*m_state, m_page->goBack());
++        }
 +        break;
 +    case viewForwardHaiku:
-+        if (m_page->pageLoadState().canGoForward()) { navigationChangedHaiku(m_state); m_page->goForward(); }
++        if (m_page->pageLoadState().canGoForward()) {
++            navigationChangedHaiku(m_state);
++            rememberNativeNavigationHaiku(*m_state, m_page->goForward());
++        }
 +        break;
-+    case viewReloadHaiku: navigationChangedHaiku(m_state); m_page->reload({ }); break;
++    case viewReloadHaiku:
++        navigationChangedHaiku(m_state);
++        rememberNativeNavigationHaiku(*m_state, m_page->reload({ }));
++        break;
 +    case viewStopHaiku: m_page->stopLoading(); break;
 +    case viewEditHaiku: {
 +        uint32 command;
@@ -29036,10 +29057,10 @@ index 0000000000000000000000000000000000000000..2cdcb470d8fc0e96b7b485eaaba1ab74
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..08ef9fe65c09c650d9050bed2ebcacf91dad967b
+index 0000000000000000000000000000000000000000..c0fd7b850f2a31fcd535fc89441f632b30e4d72b
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
-@@ -0,0 +1,75 @@
+@@ -0,0 +1,79 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -29048,6 +29069,7 @@ index 0000000000000000000000000000000000000000..08ef9fe65c09c650d9050bed2ebcacf9
 +#include "JavaScriptDialogRequestsHaiku.h"
 +#include <Messenger.h>
 +#include <WebCore/IntPoint.h>
++#include <WebCore/NavigationIdentifier.h>
 +#include <WebCore/ScriptExecutionContextIdentifier.h>
 +#include <atomic>
 +#include <memory>
@@ -29105,6 +29127,9 @@ index 0000000000000000000000000000000000000000..08ef9fe65c09c650d9050bed2ebcacf9
 +    uint64_t closeRequestGeneration { 0 };
 +    uint64_t navigationGeneration { 0 };
 +    uint64_t closeNavigationGeneration { 0 };
++    // The policy callback for a native request is asynchronous. Its matching
++    // identifier describes the request we already observed, not a new one.
++    std::optional<WebCore::NavigationIdentifier> nativeNavigationIdentifier;
 +    std::optional<WebCore::ScriptExecutionContextIdentifier> documentIdentifier;
 +    std::optional<WebCore::ScriptExecutionContextIdentifier> closeDocumentIdentifier;
 +    bool closeApprovalInvalidated { false };
@@ -30131,10 +30156,10 @@ index 0000000000000000000000000000000000000000..d6ac95e6822fcbd1bf68ecd96a72244f
 +} // namespace WebKit
 diff --git a/Source/WebKit/WebProcess/haiku/WebProcessMainHaiku.cpp b/Source/WebKit/WebProcess/haiku/WebProcessMainHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..dd4a4800c1febf9588a2d462293221327be1dc30
+index 0000000000000000000000000000000000000000..91790e81f538e5dd02a989cd6bbce3c8fcb72148
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/haiku/WebProcessMainHaiku.cpp
-@@ -0,0 +1,70 @@
+@@ -0,0 +1,76 @@
 +/*
 + * Copyright 2014,2019 Haiku, Inc.
 + *
@@ -30165,6 +30190,7 @@ index 0000000000000000000000000000000000000000..dd4a4800c1febf9588a2d46229322132
 +
 +#include "AuxiliaryProcessMain.h"
 +#include "WebProcess.h"
++#include <wtf/WTFProcess.h>
 +
 +#include <Application.h>
 +#include <cstdio>
@@ -30201,7 +30227,12 @@ index 0000000000000000000000000000000000000000..dd4a4800c1febf9588a2d46229322132
 +
 +int WebProcessMain(int argc, char** argv)
 +{
-+    return AuxiliaryProcessMain<WebProcessMainHaiku>(argc, argv);
++    // Haiku's exit() also destroys main-thread pthread data. WebCore keeps
++    // process-wide timers and caches alive until process termination; their
++    // TLS teardown can recreate ThreadGlobalData during font destruction.
++    // Use the same native process exit path as an IPC connection shutdown,
++    // after the normal auxiliary-process event loop has finished.
++    exitProcess(AuxiliaryProcessMain<WebProcessMainHaiku>(argc, argv));
 +}
 +
 +} // namespace WebKit

@@ -65,8 +65,12 @@ Both modes check for an active engine build before synchronizing their shared
 source directory. Synchronization preserves unchanged files and timestamps new
 content on the guest, so generated headers cannot silently retain older content.
 The modern configuration enables WebKit's process architecture
-and currently disables the GPU process. It does not yet provide a working
-browser process connection. Its ICU 78 JavaScriptCore passes 31 JIT/interpreter
+and currently disables the GPU process. The complete modern engine and helper
+processes now link, and its native preview renders the live HTTP/DOM/storage
+fixture with a verified frame on screen. The full browser passes 143 close-workflow checks and the modern API passes
+12 context storage stages. Navigation passes 32 of 33 checks; forward history
+and intermittent shutdown hangs remain under investigation. Its ICU 78
+JavaScriptCore passes 31 JIT/interpreter
 smoke checks. Its full conformance run records 101,849 passes, 140 failures and
 486 skipped files, fixing 94 ICU-related failures without any regressions in
 the complete comparison. Of the remaining failures, 138 match pinned upstream
@@ -93,7 +97,8 @@ corresponding adaptation, now compiled and exercised in Summit. The adapter does
 address the inherited database's missing SameSite and partitioned-cookie
 support. Its existing non-Curl backend is not an alternate
 validated path. The unfinished Haiku multiprocess API in the patch is enabled
-in the separate modern build, with full browser integration still pending.
+in the separate modern build and now runs the full browser, with downloads
+and extension execution still unfinished.
 Platform feature switches inherited from the Haiku
 port (including disabled WebGL, WebAudio and media APIs) must be reviewed
 against the full-browser objective.

@@ -333,7 +333,11 @@ avoid adding a second WTF copy. The corrected Modern JavaScriptCore has now
 relinked and exports **115/115** missing WTF definitions plus the checked global
 ownership sentinels. Its actual shell passes **31 smoke assertions** with ASLR
 enabled; shell, library, private ICU and staged test hashes remain unchanged.
-The complete WebKit link and its ownership check are still pending.
+The complete `libWebKit`, `WebProcess` and `NetworkProcess` build subsequently
+finished **277/277 steps with no compiler or linker errors**. The final
+`libWebKit` ownership audit found **zero duplicate WTF definitions** and kept
+the four checked global sentinels owned by JSC. Evidence:
+`.vm/modern-process-link-build.log` and `.vm/modern-wtf-postlink-results.json`.
 Evidence: `.vm/modern-font-view-build.log`, `.vm/modern-wtf-link-audit.json`,
 `.vm/jsc-modern-validation.BnVSDlqx/results/result.json`.
 The native drawing areas also needed the upstream message-sender template
@@ -391,22 +395,25 @@ frame. The native `BWebKitView` and its current `PageClient` controller also
 compile. The bridge queues WebKit operations on the application thread and
 gives window drawing immutable native snapshots; close, hidden-view and failed
 delivery paths complete outstanding frame acknowledgments. A common preference
-override was corrected so Haiku can retain software compositing. Full linking
-and process-to-view presentation are not yet verified.
+override was corrected so Haiku can retain software compositing. The complete
+engine now links, and the preview verifies process-to-view presentation using
+actual screen pixels from the loaded fixture.
 Full-build warnings also exposed missing inline definitions in the native
 drawing area and page editing adapter. Including the upstream inline headers
 fixes both warnings; each corrected production object compiles natively.
 Evidence: `.vm/drawing-area-inline-compile.json` and
 `.vm/web-page-inline-compile.json`.
 
-`tests/ModernBrowser.cpp` compiles natively against the new public API. Its
-pending runtime check requires the real HTTP fixture to finish and its CSS
-background to appear in a captured native window. The preview bundle helper
+`tests/ModernBrowser.cpp` now passes its real runtime smoke test: the HTTP
+fixture completes its DOM/JavaScript/storage/cookie checks, and its CSS
+background appears in the captured native window. The process exits normally
+with ASLR enabled. Evidence: `.vm/modern-preview-first-smoke.json` and `.log`;
+frozen bundle `/boot/home/summit/build-modern-preview/bundle-u3r9_4z4`. The preview bundle helper
 requires both completed process targets, a matching source patch and unchanged
 input hashes, then preserves private WebKit/JSC/ICU libraries with relative
 runtime paths. Native compilation, missing-engine refusal and build-lock refusal
 were checked; `.vm/modern-preview-compile.json` records the compilation. Run
-`tools/build-modern-browser-in-vm.sh --bundle` after both processes link.
+`tools/build-modern-browser-in-vm.sh --bundle` to freeze the completed preview.
 The same tool accepts `--browser` to build the complete Summit interface and
 freeze it with both helper processes, its start page and the same private
 libraries. Browser and preview bundles use separate output directories.
@@ -445,8 +452,9 @@ need runtime checks. The About dialog and browser probe now call exported
 library functions for engine, port and source versions. The actual native
 version implementation reports `626.1.6`, port `1.10.0` and the pinned upstream
 revision in an isolated linked probe; `.vm/version-api-compile-runtime.log`
-records that result. The full browser has not yet linked or run with the
-modern engine.
+records that result. The full browser now links and runs with the modern
+engine. Its loaded-image report verifies the private WebKit/JSC/ICU 78 paths;
+native OS libraries also load their versioned system ICU 74 dependencies.
 
 Native startup now uses `BApplication`'s error-return overload. The default
 constructor exits with status zero on initialization failure, bypassing a later
@@ -467,8 +475,84 @@ actual negative test against the running legacy team rejects the requested
 modern backend before changing any page. Its explicit `--navigation-only`
 mode reports downloads as skipped without counting them as passes; the default
 suite retains the download checks. The revised harness compiles natively.
-Evidence: `.vm/browser-smoke-targeting-results.json`. Modern browser navigation
-results still await the completed engine.
+Evidence: `.vm/browser-smoke-targeting-results.json`.
+
+The first modern full-browser run passed **30 of 33 navigation checks** against
+`/boot/home/summit/build-modern-browser/bundle-exvpbdlz`, built with engine patch
+`424867592959d1edd8aaee5b38c0bea1f63a8abe536f4a8f893e938bc5bc9d67`.
+HTTP/DOM/JavaScript/storage, delayed-resource loading state, independent tabs,
+back/forward, close/reopen and repeated tab lifecycles passed. Closing a newly
+created Start Page immediately was cancelled. Two later local-file tab-count
+checks also failed after that retained tab; direct navigation to the exact
+Unicode local filename passed. Downloads were explicitly skipped because the
+modern download integration is unfinished. Evidence:
+`.vm/modern-browser-navigation-smoke.log`, `.vm/modern-browser-bundle.json` and
+`.vm/modern-browser-first-loaded-images.log`.
+
+Two original-bundle WebProcess crash reports identify the same shutdown fault:
+Haiku's normal `exit()` runs main-thread pthread cleanup; destroying cached fonts
+then recreates WebCore thread data and trips the shared-timer assertion.
+`WebProcessMainHaiku` now routes its completed auxiliary-process result through
+WTF's existing Haiku process-exit routine, preserving the exit status. The
+corrected engine builds. The original early-close probe reproduces cancellation
+on the first click and successful closure on a second attempt. Tracing found
+that a delayed policy callback for the existing native request invalidated a
+valid close approval. Matching the native navigation ID fixes that case: eight
+consecutive immediate closes pass. A subsequent full navigation run passes
+32/33 checks, including all three original tab/local-file close failures; one
+forward-navigation assertion fails and remains under investigation. Evidence:
+`.vm/modern-browser-first-crash.report`, `.vm/modern-browser-second-crash.report`,
+`.vm/modern-process-exit-build.log` and `.vm/modern-early-close-baseline.log`.
+Additional evidence: `.vm/modern-close-trace-events.log`,
+`.vm/modern-early-close-fixed-probe.json` and `.vm/modern-browser-navigation-fixed.log`.
+The current tested full bundle is
+`/boot/home/summit/build-modern-browser/bundle-mjs1avo_`, with engine patch
+`174f3a2d6f70c5e208b3fd9bf0033e5235b865cfe795c939febe60b6366a1ef4`.
+
+The full native beforeunload scenario passes **143 checks**: real activation
+and typing, Enter navigation from the address editor, multiple provisional
+page approvals followed by Stay, preserved document identities, undo and saved
+sessions, repeated prompting, background closes, draft text and selection
+restoration, newer user selection, navigation that invalidates a pending quit,
+and final approved browser exit with status zero. Fixture reports come from
+actual HTTP/JavaScript and the frozen bundle remains unchanged. Evidence:
+`.vm/modern-close-cce5ece7b5e849921a5e9f20/result.json` and
+`.vm/modern-close-selection-ordered-runtime.log`.
+
+The harness checks the native prompt before waiting for title updates queued
+behind its synchronous DOM task, then verifies exact JavaScript counters after
+resumption. It observes tab-selection completion before sending quit to the
+separate application looper, and uses the browser probe's `closing` state for
+cancellation completion. Production fixes prevent BTextControl's focus-loss
+invocation from submitting a draft and restore text selection after native
+focus acquisition, which otherwise selects all text. Both UI backends compile.
+
+The current bundle passes all **12 context storage stages**, including shared
+tabs, separate persistent/private contexts, retained persistent storage after
+reopen, empty newly created private storage and sharing within that new private
+context. Visible and HttpOnly cookies, network cookie headers, localStorage and
+IndexedDB are checked against the live fixture. Each context has a distinct
+network process; both cleanup phases wait for all owned helpers to exit, and
+the private path hint stays absent. The test exits normally with status zero.
+Evidence: `.vm/modern-context-89bb0f1daf35cc3182c428d3/result.json`.
+
+Shutdown reliability remains under investigation. Two earlier context runs
+using `bundle-cq94yd3n` passed eight stages and hung before reopen; the full
+browser also hung after its earlier navigation run. Native stacks wait on
+Haiku's global looper-list lock, and all-thread inspection showed a pending
+writer handoff. Diagnostic intervention or timeout ended those failed runs.
+Evidence: `.vm/modern-context-384358b51934885d2c48f5fa/result.json`,
+`.vm/modern-context-7b4bfeec936a7526833e59a2/result.json`,
+`.vm/modern-context-all-threads.report` and
+`.vm/modern-browser-quit-hang.report`. A native-only probe completed 48,000
+looper lifecycles; its first 30-second limit was too short, so that timeout is
+not evidence of a reproduced deadlock. A separate probe linked to the current
+frozen JavaScriptCore completed 1,600 WorkQueue lifecycles, observing every
+worker's exit. Neither smaller probe reproduced the hang, and no speculative
+native lock or RunLoop change has been applied. Evidence:
+`.vm/native-looper-stress-long.log`, `.vm/workqueue-teardown-result.json`.
+
+These results do not establish complete web-platform or extension compatibility.
 
 The native HTML select popup adapter compiles and its real widget passes
 **104 checks** across eight scenarios. Tests cover keyboard navigation from the

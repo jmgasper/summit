@@ -113,6 +113,14 @@ static void Send(const BMessenger& target, uint32 what, int64 id = -1, const std
     Require(target.IsValid() && target.SendMessage(&message, static_cast<BHandler*>(nullptr), 500000) == B_OK,
         "deliver native browser command " + std::to_string(what));
 }
+static void SelectTab(const BMessenger& window, int64 id)
+{
+    Send(window, summit::kSelectTab, id);
+    // Selection is queued on the window, whereas quit goes to BApplication.
+    // Observe completion before issuing a command to the other looper.
+    Require(Wait([&] { return Selected(State(window)) == id; }),
+        "native tab selection completes before the next operation");
+}
 static void Key(const BMessenger& target, const std::string& bytes, int32 code = 0)
 {
     for (uint32 what : { B_KEY_DOWN, B_KEY_UP }) {
@@ -162,12 +170,34 @@ static BMessenger Dialog(const BMessenger& app)
 static BMessenger Prompt(const BMessenger& app, const BMessenger& window, int64 id, int attempts)
 {
     BMessenger result;
-    Require(Wait([&] {
+    const auto document = Document(State(window), id);
+    Require(document.is_object() && document.contains("instance") && Has(document, "armed", true),
+        "pending close belongs to an activated live fixture");
+    const bool ready = Wait([&] {
         result = Dialog(app);
         const auto state = State(window);
-        return result.IsValid() && Selected(state) == id && Has(Document(state, id), "attempts", attempts);
-    }), "actual beforeunload dialog selects expected live tab, attempt " + std::to_string(attempts));
+        const auto current = Document(state, id);
+        // Document::updateTitle queues a DOM task. A synchronous beforeunload
+        // dialog can hold that task until the user decides. Observe the real
+        // native prompt now; check the exact new counter after cancellation.
+        return result.IsValid() && Selected(state) == id
+            && Has(current, "instance", document["instance"])
+            && (Has(current, "attempts", attempts - 1) || Has(current, "attempts", attempts));
+    });
+    if (!ready) {
+        const auto state = State(window);
+        std::fprintf(stderr, "PROMPT_STATE dialog=%d expectedTab=%lld selected=%lld document=%s\n",
+            result.IsValid(), static_cast<long long>(id), static_cast<long long>(Selected(state)),
+            Document(state, id).dump().c_str());
+        state.PrintToStream();
+    }
+    Require(ready, "actual beforeunload dialog selects expected live tab, attempt " + std::to_string(attempts));
     return result;
+}
+static void SettledAttempts(const BMessenger& window, int64 id, int attempts)
+{
+    Require(Wait([&] { return Has(Document(State(window), id), "attempts", attempts); }),
+        "resumed document reports exact beforeunload count " + std::to_string(attempts));
 }
 static void Decide(const BMessenger& dialog, bool leave)
 {
@@ -265,7 +295,12 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "Usage: ModernCloseTests TEAM BROWSER_EXECUTABLE BASE_URL RUN_TOKEN PROFILE\n");
         return 2;
     }
-    BApplication application("application/x-vnd.Kunanyi-Summit-modern-close-tests");
+    status_t applicationStatus;
+    BApplication application("application/x-vnd.Kunanyi-Summit-modern-close-tests", &applicationStatus);
+    if (applicationStatus != B_OK) {
+        std::fprintf(stderr, "FAIL initialize native close harness: %ld\n", static_cast<long>(applicationStatus));
+        return 1;
+    }
     BMessenger app;
     const team_id team = static_cast<team_id>(std::strtol(argv[1], nullptr, 10));
     bool verifiedTeam = false;
@@ -294,8 +329,13 @@ int main(int argc, char** argv)
         const std::string urlB = prefix + "&name=B&guard=1";
         const std::string urlC = prefix + "&name=C&guard=0";
         const auto a = Selected(State(window));
-        Send(window, summit::kNavigate, -1, urlA);
-        Require(Wait([&] { return Has(Document(State(window), a), "name", "A"); }), "page A loads real HTTP/JavaScript fixture");
+        Send(window, summit::kFocusAddress);
+        auto initialAddress = Child(View(window, "address"), 0);
+        Require(initialAddress.IsValid(), "native address editor is available");
+        Key(initialAddress, urlA);
+        Key(initialAddress, std::string(1, B_ENTER), 0x47);
+        Require(Wait([&] { return Has(Document(State(window), a), "name", "A"); }),
+            "Enter in the native address editor loads the real HTTP/JavaScript fixture");
         Click(Page(window, a), BPoint(40, 40));
         Require(Wait([&] { return Has(Document(State(window), a), "armed", true); }), "native click activates A beforeunload protection");
         Key(Page(window, a), "X", 0x4d);
@@ -307,7 +347,7 @@ int main(int argc, char** argv)
         Click(Page(window, b), BPoint(40, 40));
         Require(Wait([&] { return Has(Document(State(window), b), "armed", true); }), "native click activates B beforeunload protection");
         const auto originalB = Document(State(window), b);
-        Send(window, summit::kSelectTab, a);
+        SelectTab(window, a);
         Send(app, B_QUIT_REQUESTED);
         Decide(Prompt(app, window, a, 1), true);
         auto second = Prompt(app, window, b, 1);
@@ -315,20 +355,23 @@ int main(int argc, char** argv)
             && Has(Document(State(window), a), "value", "X"), "earlier approved tab remains the same live edited document");
         Decide(second, false);
         Require(Wait([&] { return Count(State(window)) == 2 && Selected(State(window)) == a
-            && String(State(window), "status") == "Close cancelled"; }), "window cancellation retains both original live tabs and selection");
+            && !State(window).GetBool("closing", true); }), "window cancellation retains both original live tabs and selection");
+        SettledAttempts(window, a, 1);
+        SettledAttempts(window, b, 1);
         Require(Has(Document(State(window), b), "instance", originalB["instance"]), "cancelling tab retains its original document instance");
         Session(argv[5], { urlA, urlB }, 0);
         Send(window, B_UNDO);
         Require(Wait([&] { return Has(Document(State(window), a), "value", "seed"); }), "earlier provisional approval preserved native WebKit undo state");
         Send(app, B_QUIT_REQUESTED);
         Decide(Prompt(app, window, a, 2), false);
-        Require(Wait([&] { return Count(State(window)) == 2 && String(State(window), "status") == "Close cancelled"; }),
+        Require(Wait([&] { return Count(State(window)) == 2 && !State(window).GetBool("closing", true); }),
             "reset approval runs beforeunload again and permits another cancellation");
+        SettledAttempts(window, a, 2);
 
         Send(window, summit::kNewTab, -1, urlC);
         Require(Wait([&] { return Count(State(window)) == 3 && Has(Document(State(window), Selected(State(window))), "name", "C"); }), "unguarded background-close fixture loads");
         auto c = Selected(State(window));
-        Send(window, summit::kSelectTab, a);
+        SelectTab(window, a);
         auto address = Child(View(window, "address"), 0);
         Require(address.IsValid(), "native address text view is scriptable");
         const std::string draft = "unsubmitted close-test draft";
@@ -342,27 +385,29 @@ int main(int argc, char** argv)
         Send(window, summit::kCloseTab, b);
         Decide(Prompt(app, window, b, 2), false);
         Require(Wait([&] { return Selected(State(window)) == a; }), "cancelled background prompt restores the prior selected tab");
+        SettledAttempts(window, b, 2);
         CheckDraft(window, address, a, draft);
         Send(window, summit::kNewTab, -1, urlC);
         Require(Wait([&] { return Count(State(window)) == 3 && Has(Document(State(window), Selected(State(window))), "name", "C"); }), "newer-selection fixture loads");
         c = Selected(State(window));
-        Send(window, summit::kSelectTab, a);
+        SelectTab(window, a);
         Send(window, summit::kCloseTab, b);
         auto background = Prompt(app, window, b, 3);
-        Send(window, summit::kSelectTab, c);
+        SelectTab(window, c);
         Require(Wait([&] { return Selected(State(window)) == c; }), "newer tab selection takes effect while close decision is pending");
         Decide(background, false);
-        Require(Wait([&] { return String(State(window), "status") == "Close cancelled"; }), "background close cancellation reaches the browser");
+        Require(Wait([&] { return !State(window).GetBool("closing", true); }), "background close cancellation reaches the browser");
         Require(Selected(State(window)) == c && Count(State(window)) == 3,
             "close cancellation does not override newer user tab selection");
+        SettledAttempts(window, b, 3);
 
         // C has no beforeunload handler: it approves first without a prompt.
         // Navigation of that provisionally approved tab must invalidate quit
         // while A's outstanding close decision settles.
-        Send(window, summit::kSelectTab, c);
+        SelectTab(window, c);
         Send(app, B_QUIT_REQUESTED);
         auto navigationPending = Prompt(app, window, a, 3);
-        Send(window, summit::kSelectTab, c);
+        SelectTab(window, c);
         const std::string urlD = prefix + "&name=D&guard=0";
         Send(window, summit::kNavigate, -1, urlD);
         Require(Wait([&] { return Has(Document(State(window), c), "name", "D"); }),
@@ -370,13 +415,14 @@ int main(int argc, char** argv)
         const auto replacement = Document(State(window), c);
         Decide(navigationPending, true);
         Require(Wait([&] { return Count(State(window)) == 3 && Selected(State(window)) == c
-            && String(State(window), "status") == "Close cancelled"; }),
+            && !State(window).GetBool("closing", true); }),
             "navigation invalidates whole-window quit after its pending decision settles");
         Require(!Dialog(app).IsValid() && Has(Document(State(window), c), "instance", replacement["instance"]),
             "replacement document survives the stale close approval without another tab prompt");
+        SettledAttempts(window, a, 3);
         Session(argv[5], { urlA, urlB, urlD }, 2);
 
-        Send(window, summit::kSelectTab, a);
+        SelectTab(window, a);
         Send(app, B_QUIT_REQUESTED);
         Decide(Prompt(app, window, a, 4), true);
         Decide(Prompt(app, window, b, 4), true);

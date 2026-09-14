@@ -36,6 +36,19 @@
 #include <utility>
 
 namespace summit {
+class AddressControl final : public BTextControl {
+public:
+    AddressControl() : BTextControl("address", nullptr, "", new BMessage(kNavigate)) { }
+
+    status_t Invoke(BMessage* message = nullptr) override
+    {
+        // Native BTextControl also invokes changed text when focus leaves.
+        // A tab switch or beforeunload prompt must not submit an address draft.
+        if (!TextView()->IsFocus()) return B_OK;
+        return BTextControl::Invoke(message);
+    }
+};
+
 #if !SUMMIT_MODERN_WEBKIT
 static bool FindDownloads(BPath& path, std::string& error)
 {
@@ -130,7 +143,7 @@ BrowserWindow::BrowserWindow(std::filesystem::path profile, std::string homeURL,
     fBack = new ToolButton("back", "Back", Icon::Back, kBack);
     fForward = new ToolButton("forward", "Forward", Icon::Forward, kForward);
     fReload = new ToolButton("reload", "Reload / stop", Icon::Reload, kReload);
-    fAddress = new BTextControl("address", nullptr, "", new BMessage(kNavigate));
+    fAddress = new AddressControl;
     fAddress->SetExplicitMinSize(BSize(240, 30));
     fAddress->SetExplicitMaxSize(BSize(660, B_SIZE_UNSET));
     fAddress->TextView()->SetAlignment(B_ALIGN_CENTER);
@@ -380,10 +393,11 @@ void BrowserWindow::RestoreCloseFocus(const CloseFocusState& state)
     if (std::none_of(fTabs.begin(), fTabs.end(), [&](const Tab& tab) { return tab.id == state.selected; })) return;
     SelectTab(state.selected, true);
     fAddress->SetText(state.address.c_str());
-    fAddress->TextView()->Select(state.selectionStart, state.selectionEnd);
     BLooper* looper = nullptr;
     if (auto* focus = dynamic_cast<BView*>(state.focus.Target(&looper)); focus && looper == this)
         focus->MakeFocus();
+    // BTextControl selects all text when its editor regains focus.
+    fAddress->TextView()->Select(state.selectionStart, state.selectionEnd);
 }
 
 void BrowserWindow::WebKitClosePrompt(const BMessage& message)
@@ -872,6 +886,10 @@ void BrowserWindow::MessageReceived(BMessage* message)
             reply.AddString("status", fStatus->Text());
 #if SUMMIT_MODERN_WEBKIT
             reply.AddString("backend", "modern");
+            reply.AddBool("closing", fClosingWindow || fWindowCloseQueued || fCloseCommitPending
+                || std::any_of(fTabs.begin(), fTabs.end(), [](const Tab& tab) {
+                    return tab.closeRequested || tab.closeQueued || tab.closeApproved;
+                }));
             reply.AddBool("engine_version_available", true);
             reply.AddString("webkit", BWebKitVersion());
             reply.AddString("haiku_webkit", BWebKitPortVersion());
