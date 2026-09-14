@@ -1621,3 +1621,14 @@ with no new missing symbols. Evidence:
 `.vm/modern-extensions-native-permissions-build-result.json`.
 This build predates the native action-state patch. No feature-enabled engine
 link or extension runtime passed.
+
+2026-09-15 (local) native message-port lifecycle: host callbacks receive validated
+JSON through an ordered, bounded queue. Disconnects carry errors and context
+unload detaches ports before background-page closure. Common disconnect delivery
+now selects actual channel-owning pages, including ports without disconnect
+listeners. **57 native queue checks and 31 ownership checks pass; seven final
+integration units compile.** No native port/context, unload callback, JavaScript
+error/disconnect, IPC or executable-host runtime was executed. The native host
+SDK and runtime connection path remain unfinished. See [message-port evidence
+and limits](webextensions-native-message-ports.md).
+Patch: `425e5c88a7cb5b221858163374430798efa40a166384bcde3f085be904e3df50`.

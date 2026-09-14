@@ -90,6 +90,31 @@ int main()
     ports.remove(firstPage, first);
     check(!ports.contains(firstPage), "map can be reused after unload");
 
+    check(ports.pages(World::Main, firstID).isEmpty(), "empty ownership map has no disconnect recipients");
+    ports.add(firstPage, first, 3);
+    ports.add(firstPage, { World::Main, World::Native, firstID }, 1);
+    ports.add(firstPage, second, 1);
+    ports.add(secondPage, reverse, 1);
+    auto recipients = ports.pages(World::Main, firstID);
+    check(recipients.size() == 1 && recipients.contains(firstPage), "same page is selected once across multiple ports and target worlds");
+    check(ports.pages(World::ContentScript, firstID) == Vector<WebPageProxyIdentifier> { secondPage }, "disconnect recipients use the endpoint source world");
+    check(ports.pages(World::Main, secondID) == Vector<WebPageProxyIdentifier> { firstPage }, "disconnect recipients use the requested channel");
+    check(ports.pages(World::Native, firstID).isEmpty(), "native target alone does not make a page a native endpoint");
+    ports.add(secondPage, first, 2);
+    recipients = ports.pages(World::Main, firstID);
+    check(recipients.size() == 2 && recipients.contains(firstPage) && recipients.contains(secondPage), "every page owning the channel is selected");
+    ports.take(firstPage);
+    check(ports.pages(World::Main, firstID) == Vector<WebPageProxyIdentifier> { secondPage }, "removed page is absent from future disconnect delivery");
+    check(recipients.size() == 2, "recipient snapshot survives changes to the ownership map");
+#if ENABLE(INSPECTOR_EXTENSIONS)
+    ports.add(firstPage, { World::Inspector, World::Native, firstID }, 1);
+    recipients = ports.pages(World::Main, firstID);
+    check(recipients.size() == 2 && recipients.contains(firstPage), "main-world recipients include inspector alias");
+    check(ports.pages(World::Inspector, firstID).size() == 2, "inspector-world recipients include main alias");
+#endif
+    ports.clear();
+    check(ports.pages(World::Main, firstID).isEmpty(), "unload removes every disconnect recipient");
+
     std::printf("%u page-port ownership checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;
 }

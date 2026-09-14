@@ -22928,10 +22928,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..dc7c36da9974b3b503f4577617a386dca18019e8
+index 0000000000000000000000000000000000000000..5de7e1a51e2c3ad7bf93f4ca4c719306ff039bc0
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,196 @@
+@@ -0,0 +1,197 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -22983,6 +22983,7 @@ index 0000000000000000000000000000000000000000..dc7c36da9974b3b503f4577617a386dc
 +    UIProcess/Extensions/haiku/WebExtensionContextHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionContextPermissionsHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionContextActionsHaiku.cpp
++    UIProcess/Extensions/haiku/WebExtensionMessagePortHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionActionHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionContextTestHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionContextBackgroundHaiku.cpp
@@ -26333,10 +26334,10 @@ index 0000000000000000000000000000000000000000..d914c61d3403f3bef256040ca152a0c6
 +#endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/UIProcess/Extensions/API/WebExtensionContextAPIPort.cpp b/Source/WebKit/UIProcess/Extensions/API/WebExtensionContextAPIPort.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..9646cfed1402f767f2a17e856f964e921efb658f
+index 0000000000000000000000000000000000000000..2a83f11ee4c1044a15ec0a8c8c9edc0fd14a9c30
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/API/WebExtensionContextAPIPort.cpp
-@@ -0,0 +1,284 @@
+@@ -0,0 +1,312 @@
 +/*
 + * Copyright (C) 2023 Apple Inc. All rights reserved.
 + *
@@ -26457,15 +26458,19 @@ index 0000000000000000000000000000000000000000..9646cfed1402f767f2a17e856f964e92
 +    m_pagePortMap.remove(webPageProxyIdentifier, { sourceContentWorldType, targetContentWorldType, channelIdentifier });
 +}
 +
-+void WebExtensionContext::addNativePort(WebExtensionMessagePort& nativePort)
++bool WebExtensionContext::addNativePort(WebExtensionMessagePort& nativePort)
 +{
 +    constexpr auto contentWorldType = WebExtensionContentWorldType::Native;
 +    auto channelIdentifier = nativePort.channelIdentifier();
 +
 +    RELEASE_LOG_DEBUG(Extensions, "Added 1 port for channel %{public}llu in %" PUBLIC_LOG_STRING " world", channelIdentifier.toUInt64(), toDebugString(contentWorldType).utf8().data());
 +
++    if (!isLoaded() || nativePort.extensionContext() != this || nativePort.isDisconnected())
++        return false;
++    if (!m_nativePortMap.add(channelIdentifier, nativePort).isNewEntry)
++        return false;
 +    m_ports.add({ contentWorldType, channelIdentifier });
-+    m_nativePortMap.add(channelIdentifier, nativePort);
++    return true;
 +}
 +
 +void WebExtensionContext::removeNativePort(WebExtensionMessagePort& nativePort)
@@ -26473,9 +26478,14 @@ index 0000000000000000000000000000000000000000..9646cfed1402f767f2a17e856f964e92
 +    constexpr auto contentWorldType = WebExtensionContentWorldType::Native;
 +    auto channelIdentifier = nativePort.channelIdentifier();
 +
++    RefPtr currentPort = m_nativePortMap.get(channelIdentifier);
++    if (currentPort.get() != &nativePort)
++        return;
++
 +    RELEASE_LOG_DEBUG(Extensions, "Removed 1 port for channel %{public}llu in %" PUBLIC_LOG_STRING " world", channelIdentifier.toUInt64(), toDebugString(contentWorldType).utf8().data());
 +
 +    clearQueuedPortMessages(WebExtensionContentWorldType::Main, channelIdentifier);
++    clearQueuedPortMessages(WebExtensionContentWorldType::Native, channelIdentifier);
 +
 +    m_ports.remove({ contentWorldType, channelIdentifier });
 +    m_nativePortMap.remove(channelIdentifier);
@@ -26555,7 +26565,7 @@ index 0000000000000000000000000000000000000000..9646cfed1402f767f2a17e856f964e92
 +#endif
 +}
 +
-+void WebExtensionContext::firePortDisconnectEventIfNeeded(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier channelIdentifier)
++void WebExtensionContext::firePortDisconnectEventIfNeeded(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier channelIdentifier, const std::optional<String>& errorMessage)
 +{
 +    // Only fire the disconnect event if there are no ports connected on this channel.
 +    if (isPortConnected(sourceContentWorldType, targetContentWorldType, channelIdentifier))
@@ -26563,29 +26573,25 @@ index 0000000000000000000000000000000000000000..9646cfed1402f767f2a17e856f964e92
 +
 +    RELEASE_LOG_DEBUG(Extensions, "Sending disconnect event for port channel %{public}llu in %" PUBLIC_LOG_STRING " world", channelIdentifier.toUInt64(), toDebugString(targetContentWorldType).utf8().data());
 +
-+    constexpr auto type = WebExtensionEventListenerType::PortOnDisconnect;
-+
-+    switch (targetContentWorldType) {
-+    case WebExtensionContentWorldType::Main:
-+#if ENABLE(INSPECTOR_EXTENSIONS)
-+    case WebExtensionContentWorldType::Inspector:
-+#endif
-+        sendToProcessesForEvent(type, Messages::WebExtensionContextProxy::DispatchPortDisconnectEvent(channelIdentifier));
-+        return;
-+
-+    case WebExtensionContentWorldType::ContentScript:
-+        sendToContentScriptProcessesForEvent(type, Messages::WebExtensionContextProxy::DispatchPortDisconnectEvent(channelIdentifier));
-+        return;
-+
-+    case WebExtensionContentWorldType::Native:
++    if (targetContentWorldType == WebExtensionContentWorldType::Native) {
 +        if (RefPtr nativePort = m_nativePortMap.get(channelIdentifier))
-+            nativePort->reportDisconnection(std::nullopt);
-+        return;
-+
-+    case WebExtensionContentWorldType::WebPage:
-+        sendToProcesses(processes(type, WebExtensionContentWorldType::WebPage), Messages::WebExtensionContextProxy::DispatchPortDisconnectEvent(channelIdentifier));
++            nativePort->reportDisconnection(errorMessage ? WebExtensionMessagePort::Error { { WebExtensionMessagePort::ErrorType::Unknown, *errorMessage } } : std::nullopt);
 +        return;
 +    }
++
++    // Disconnection changes port state even when no onDisconnect listener exists.
++    // Include every process of each owning page, including site-isolated frames.
++    WebProcessProxySet recipients;
++    for (auto pageIdentifier : m_pagePortMap.pages(targetContentWorldType, channelIdentifier)) {
++        RefPtr page = WebProcessProxy::webPage(pageIdentifier);
++        if (!page || page->isClosed())
++            continue;
++        page->forEachWebContentProcess([&](WebProcessProxy& process, auto) {
++            if (process.canSendMessage())
++                recipients.add(process);
++        });
++    }
++    sendToProcesses(recipients, Messages::WebExtensionContextProxy::DispatchPortDisconnectEvent(channelIdentifier, errorMessage));
 +}
 +
 +void WebExtensionContext::firePortMessageEventsIfNeeded(WebExtensionContentWorldType targetContentWorldType, std::optional<WebPageProxyIdentifier> sendingPageProxyIdentifier, WebExtensionPortChannelIdentifier channelIdentifier, const String& messageJSON, bool userGesture)
@@ -26607,7 +26613,7 @@ index 0000000000000000000000000000000000000000..9646cfed1402f767f2a17e856f964e92
 +        return;
 +
 +    case WebExtensionContentWorldType::Native:
-+#if PLATFORM(COCOA)
++#if PLATFORM(COCOA) || PLATFORM(HAIKU)
 +        dispatchNativePortMessage(channelIdentifier, messageJSON);
 +#endif
 +        return;
@@ -26617,6 +26623,29 @@ index 0000000000000000000000000000000000000000..9646cfed1402f767f2a17e856f964e92
 +        return;
 +    }
 +}
++
++#if PLATFORM(HAIKU)
++void WebExtensionContext::dispatchNativePortMessage(WebExtensionPortChannelIdentifier channelIdentifier, const String& messageJSON)
++{
++    if (RefPtr nativePort = m_nativePortMap.get(channelIdentifier))
++        nativePort->receiveMessages({ messageJSON });
++}
++
++void WebExtensionContext::sendQueuedNativePortMessagesIfNeeded(WebExtensionPortChannelIdentifier channelIdentifier)
++{
++    RefPtr nativePort = m_nativePortMap.get(channelIdentifier);
++    if (!nativePort || nativePort->isDisconnected())
++        return;
++    // Take the whole batch before calling the host. The port queues the batch
++    // together so reentrant messages follow every earlier pending message.
++    auto messages = m_portQueuedMessages.take({ WebExtensionContentWorldType::Native, channelIdentifier });
++    Vector<String> payloads;
++    payloads.reserveInitialCapacity(messages.size());
++    for (auto& entry : messages)
++        payloads.append(WTF::move(entry.messageJSON));
++    nativePort->receiveMessages(WTF::move(payloads));
++}
++#endif
 +
 +} // namespace WebKit
 +
@@ -29053,7 +29082,7 @@ index f14860d8e436a90cb7616ae96bb9f05d6517bc50..82194307c95982f947c180baa35828f3
      explicit WebExtension(const JSON::Value& manifest, Resources&& = { });
  
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
-index a156078a37b33ea2704f6a9ba747a0c881bb0009..51bf107142461e1c1ca1388b537b87b6ac284972 100644
+index a156078a37b33ea2704f6a9ba747a0c881bb0009..13d44cb92adf96de0437aa946072ca51750b2f0f 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
 @@ -34,11 +34,18 @@
@@ -29075,7 +29104,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..51bf107142461e1c1ca1388b537b87b6
  #include <WebCore/LocalizedStrings.h>
  #include <WebCore/TextResourceDecoder.h>
  #include <wtf/HashMap.h>
-@@ -49,8 +56,257 @@ static constexpr size_t maximumCachedPermissionResults = 256;
+@@ -49,8 +56,268 @@ static constexpr size_t maximumCachedPermissionResults = 256;
  
  namespace WebKit {
  
@@ -29196,6 +29225,17 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..51bf107142461e1c1ca1388b537b87b6
 +        RELEASE_LOG_ERROR(Extensions, "Extension context not loaded");
 +        return makeUnexpected(createError(Error::NotLoaded));
 +    }
++
++#if PLATFORM(HAIKU)
++    // Detach before closing background pages, which can itself remove ports.
++    for (auto& entry : m_nativePortMap) {
++        entry.value->disconnectForContextUnload();
++        m_ports.remove({ WebExtensionContentWorldType::Native, entry.key });
++        clearQueuedPortMessages(WebExtensionContentWorldType::Main, entry.key);
++        clearQueuedPortMessages(WebExtensionContentWorldType::Native, entry.key);
++    }
++    m_nativePortMap.clear();
++#endif
 +
 +    writeStateToStorage();
 +
@@ -29333,7 +29373,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..51bf107142461e1c1ca1388b537b87b6
  int WebExtensionContext::toAPIError(WebExtensionContext::Error error)
  {
      switch (error) {
-@@ -1660,7 +1916,13 @@ WebExtensionContext::WebExtensionContext()
+@@ -1660,7 +1927,13 @@ WebExtensionContext::WebExtensionContext()
  }
  
  #if !USE(GLIB)
@@ -29348,7 +29388,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..51bf107142461e1c1ca1388b537b87b6
  #endif
  
  WebExtensionContextIdentifier WebExtensionContext::privilegedIdentifier() const
-@@ -1798,9 +2060,17 @@ void WebExtensionContext::loadBackgroundContent(CompletionHandler<void(RefPtr<AP
+@@ -1798,9 +2071,17 @@ void WebExtensionContext::loadBackgroundContent(CompletionHandler<void(RefPtr<AP
          return;
      }
  
@@ -29369,7 +29409,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..51bf107142461e1c1ca1388b537b87b6
      });
  }
  
-@@ -2003,6 +2273,128 @@ Ref<WebExtensionRegisteredScriptsSQLiteStore> WebExtensionContext::registeredCon
+@@ -2003,6 +2284,128 @@ Ref<WebExtensionRegisteredScriptsSQLiteStore> WebExtensionContext::registeredCon
      return *m_registeredContentScriptsStorage;
  }
  
@@ -29499,7 +29539,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..51bf107142461e1c1ca1388b537b87b6
  
  #endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
-index 05a8676082d56f2c47c9af6120f5120b09f982be..86076ccbbc472d3141f00a13fa5a96d6b6a9a06c 100644
+index 05a8676082d56f2c47c9af6120f5120b09f982be..bc172fb9dabca331f576ce851201e21eae5b2c53 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 @@ -52,6 +52,7 @@
@@ -29634,14 +29674,14 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..86076ccbbc472d3141f00a13fa5a96d6
  #endif
  
      URL backgroundContentURL();
-@@ -656,6 +697,7 @@ public:
+@@ -655,6 +696,7 @@ public:
+     void runOpenPanel(WKWebView *, WKOpenPanelParameters *, void (^)(NSArray *));
  #endif
  
- #if PLATFORM(COCOA)
 +    void dispatchNativePortMessage(WebExtensionPortChannelIdentifier, const String& messageJSON);
+ #if PLATFORM(COCOA)
      void sendNativeMessage(const String& applicationID, id message, CompletionHandler<void(std::expected<RetainPtr<id>, WebExtensionError>&&)>&&);
  #endif
- 
 @@ -749,11 +791,18 @@ private:
  #if PLATFORM(COCOA)
      NSDictionary *currentState() const;
@@ -29681,6 +29721,24 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..86076ccbbc472d3141f00a13fa5a96d6
  
  #ifdef NDEBUG
      // This is method is a no-op in release builds since it has a performance impact with little benefit to release builds.
+@@ -1000,7 +1054,7 @@ private:
+     void disconnectPortsForPage(WebPageProxy&);
+     void addPorts(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier, HashCountedSet<WebPageProxyIdentifier>&&);
+     void removePort(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier, WebPageProxyIdentifier);
+-    void addNativePort(WebExtensionMessagePort&);
++    bool addNativePort(WebExtensionMessagePort&);
+     void removeNativePort(WebExtensionMessagePort&);
+     unsigned openPortCount(WebExtensionContentWorldType, WebExtensionPortChannelIdentifier);
+     bool isPortConnected(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier);
+@@ -1009,7 +1063,7 @@ private:
+     void firePortMessageEventsIfNeeded(WebExtensionContentWorldType, std::optional<WebPageProxyIdentifier>, WebExtensionPortChannelIdentifier, const String& messageJSON, bool userGesture);
+     void fireQueuedPortMessageEventsIfNeeded(WebExtensionContentWorldType, WebExtensionPortChannelIdentifier);
+     void sendQueuedNativePortMessagesIfNeeded(WebExtensionPortChannelIdentifier);
+-    void firePortDisconnectEventIfNeeded(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier);
++    void firePortDisconnectEventIfNeeded(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier, const std::optional<String>& errorMessage = std::nullopt);
+ 
+     // Runtime APIs
+     void runtimeGetBackgroundPage(CompletionHandler<void(std::expected<std::optional<WebCore::PageIdentifier>, WebExtensionError>&&)>&&);
 @@ -1034,6 +1088,7 @@ private:
      void scriptingGetRegisteredScripts(const Vector<String>&, CompletionHandler<void(std::expected<Vector<WebExtensionRegisteredScriptParameters>, WebExtensionError>&&)>&&);
      void scriptingUnregisterContentScripts(const Vector<String>&, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
@@ -30619,12 +30677,59 @@ index 0000000000000000000000000000000000000000..dcb82f153bf77388c21d2babca1b6334
 +} // namespace WebKit
 +
 +#endif // ENABLE(WK_WEB_EXTENSIONS)
+diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionMessagePort.h b/Source/WebKit/UIProcess/Extensions/WebExtensionMessagePort.h
+index c64fefb1fcd763b49e32a6b46f43d1e814bc0251..e6012897d6c8dbd4c9d49c0bf31dd0550a190bd1 100644
+--- a/Source/WebKit/UIProcess/Extensions/WebExtensionMessagePort.h
++++ b/Source/WebKit/UIProcess/Extensions/WebExtensionMessagePort.h
+@@ -29,6 +29,10 @@
+ 
+ #include "APIObject.h"
+ #include "WebExtensionPortChannelIdentifier.h"
++#if PLATFORM(HAIKU)
++#include "WebExtensionContextIdentifier.h"
++#include "haiku/WebExtensionNativePortMessageQueue.h"
++#endif
+ #include <wtf/CanMakeWeakPtr.h>
+ #include <wtf/CompletionHandler.h>
+ #include <wtf/Forward.h>
+@@ -73,6 +77,16 @@ public:
+     void reportDisconnection(Error);
+     bool NODELETE isDisconnected() const;
+ 
++#if PLATFORM(HAIKU)
++    using MessageHandler = WebExtensionNativePortMessageQueue::MessageHandler;
++    using DisconnectHandler = SharedTask<void(Error)>;
++    void setMessageHandler(RefPtr<MessageHandler>&&);
++    void setDisconnectHandler(RefPtr<DisconnectHandler>&&);
++    void sendMessage(const String& messageJSON, CompletionHandler<void(Error)>&& = { });
++    void receiveMessages(Vector<String>&&);
++    void disconnectForContextUnload();
++#endif
++
+ #if PLATFORM(COCOA)
+     void sendMessage(id message, CompletionHandler<void(Error)>&& = { });
+     void receiveMessage(id message, Error);
+@@ -83,7 +97,14 @@ public:
+ #endif
+ 
+ private:
++#if PLATFORM(HAIKU)
++    void remove(Error);
++    Ref<WebExtensionNativePortMessageQueue> m_messageQueue;
++    RefPtr<DisconnectHandler> m_disconnectHandler;
++    std::optional<WebExtensionContextIdentifier> m_loadIdentifier;
++#else
+     void remove();
++#endif
+ 
+     WeakPtr<WebExtensionContext> m_extensionContext;
+     String m_applicationIdentifier;
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionPagePortMap.h b/Source/WebKit/UIProcess/Extensions/WebExtensionPagePortMap.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..312a888c8c9d3764dc8fdf37108e40257ccec81d
+index 0000000000000000000000000000000000000000..8a6bf38a2cbb4ff1b7bd98e5ef8c0e6fb898c940
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionPagePortMap.h
-@@ -0,0 +1,72 @@
+@@ -0,0 +1,87 @@
 +/*
 + * Copyright (C) 2023 Apple Inc. All rights reserved.
 + *
@@ -30659,6 +30764,7 @@ index 0000000000000000000000000000000000000000..312a888c8c9d3764dc8fdf37108e4025
 +#include "WebPageProxyIdentifier.h"
 +#include <wtf/HashCountedSet.h>
 +#include <wtf/HashMap.h>
++#include <wtf/Vector.h>
 +
 +namespace WebKit {
 +
@@ -30684,6 +30790,20 @@ index 0000000000000000000000000000000000000000..312a888c8c9d3764dc8fdf37108e4025
 +        entry->value.remove(channel);
 +        if (entry->value.isEmpty())
 +            m_pages.remove(entry);
++    }
++
++    Vector<WebPageProxyIdentifier> pages(WebExtensionContentWorldType world, WebExtensionPortChannelIdentifier identifier) const
++    {
++        Vector<WebPageProxyIdentifier> result;
++        for (auto& page : m_pages) {
++            for (auto& entry : page.value) {
++                if (isEqual(std::get<0>(entry.key), world) && std::get<2>(entry.key) == identifier) {
++                    result.append(page.key);
++                    break;
++                }
++            }
++        }
++        return result;
 +    }
 +
 +    bool contains(WebPageProxyIdentifier page) const { return m_pages.contains(page); }
@@ -33969,6 +34089,334 @@ index 0000000000000000000000000000000000000000..0fad592e47df78032bff706631ce21c5
 +        return icon.releaseNonNull();
 +    return fail();
 +}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionMessagePortHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionMessagePortHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..9a6911e70c2bb6678865878df16eba03d2989b1a
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionMessagePortHaiku.cpp
+@@ -0,0 +1,193 @@
++/*
++ * Copyright (C) 2023-2024 Apple Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "WebExtensionMessagePort.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++
++#include "WebExtensionContext.h"
++#include <wtf/RunLoop.h>
++
++namespace WebKit {
++
++static std::optional<String> disconnectMessage(const WebExtensionMessagePort::Error& error)
++{
++    if (!error)
++        return std::nullopt;
++    if (error->second && !error->second->isEmpty())
++        return *error->second;
++    switch (error->first) {
++    case WebExtensionMessagePort::ErrorType::Unknown:
++        return "An unknown native message-port error occurred."_s;
++    case WebExtensionMessagePort::ErrorType::NotConnected:
++        return "The native message port is not connected."_s;
++    case WebExtensionMessagePort::ErrorType::MessageInvalid:
++        return "The native message is not valid JSON or exceeds the message limit."_s;
++    }
++    RELEASE_ASSERT_NOT_REACHED();
++}
++
++WebExtensionMessagePort::WebExtensionMessagePort(WebExtensionContext& context, String applicationIdentifier, WebExtensionPortChannelIdentifier channelIdentifier)
++    : m_messageQueue(WebExtensionNativePortMessageQueue::create())
++    , m_loadIdentifier(context.isLoaded() ? std::make_optional(context.privilegedIdentifier()) : std::nullopt)
++    , m_extensionContext(context)
++    , m_applicationIdentifier(WTF::move(applicationIdentifier))
++    , m_channelIdentifier(channelIdentifier)
++{
++    ASSERT(isMainThread());
++}
++
++WebExtensionMessagePort::~WebExtensionMessagePort()
++{
++    // Registered ports are strongly owned by the context and explicitly detached
++    // before its map is cleared. An unregistered port has no membership to remove.
++    m_messageQueue->close();
++}
++
++bool WebExtensionMessagePort::operator==(const WebExtensionMessagePort& other) const
++{
++    return this == &other || (!isDisconnected() && !other.isDisconnected()
++        && m_extensionContext == other.m_extensionContext && m_loadIdentifier == other.m_loadIdentifier
++        && m_applicationIdentifier == other.m_applicationIdentifier && m_channelIdentifier == other.m_channelIdentifier);
++}
++
++WebExtensionContext* WebExtensionMessagePort::extensionContext() const
++{
++    return m_extensionContext.get();
++}
++
++bool WebExtensionMessagePort::isDisconnected() const
++{
++    RefPtr context = m_extensionContext.get();
++    return m_messageQueue->isClosed() || !context || !context->isLoaded() || !m_loadIdentifier
++        || context->privilegedIdentifier() != *m_loadIdentifier;
++}
++
++void WebExtensionMessagePort::setMessageHandler(RefPtr<MessageHandler>&& handler)
++{
++    ASSERT(isMainThread());
++    Ref protectedThis { *this };
++    if (!isDisconnected())
++        m_messageQueue->setMessageHandler(WTF::move(handler));
++}
++
++void WebExtensionMessagePort::setDisconnectHandler(RefPtr<DisconnectHandler>&& handler)
++{
++    ASSERT(isMainThread());
++    Ref protectedThis { *this };
++    if (!isDisconnected())
++        m_disconnectHandler = WTF::move(handler);
++}
++
++void WebExtensionMessagePort::remove(Error error)
++{
++    ASSERT(isMainThread());
++    RefPtr context = m_extensionContext.get();
++    bool currentLoad = !isDisconnected();
++    // Detach before dropping the map's reference or invoking any host callback.
++    m_extensionContext = nullptr;
++    m_messageQueue->close();
++    m_disconnectHandler = nullptr;
++    if (!currentLoad || !context || context->m_nativePortMap.get(m_channelIdentifier) != this)
++        return;
++    context->removeNativePort(*this);
++    context->firePortDisconnectEventIfNeeded(WebExtensionContentWorldType::Native, WebExtensionContentWorldType::Main, m_channelIdentifier, disconnectMessage(error));
++}
++
++void WebExtensionMessagePort::disconnect(Error error)
++{
++    Ref protectedThis { *this };
++    remove(WTF::move(error));
++}
++
++void WebExtensionMessagePort::reportDisconnection(Error error)
++{
++    ASSERT(isMainThread());
++    Ref protectedThis { *this };
++    if (m_messageQueue->isClosed())
++        return;
++    RefPtr handler = m_disconnectHandler;
++    remove(error);
++    if (handler)
++        handler->run(WTF::move(error));
++}
++
++void WebExtensionMessagePort::disconnectForContextUnload()
++{
++    ASSERT(isMainThread());
++    Ref protectedThis { *this };
++    if (m_messageQueue->isClosed())
++        return;
++    RefPtr handler = WTF::move(m_disconnectHandler);
++    m_extensionContext = nullptr;
++    m_messageQueue->close();
++    // Context unload still has maps and background state to clear. A callback
++    // may reload that context, so run it only after the unload stack unwinds.
++    if (handler) {
++        RunLoop::mainSingleton().dispatch([handler = WTF::move(handler)] {
++            handler->run({ { ErrorType::NotConnected, "The extension context was unloaded."_s } });
++        });
++    }
++}
++
++void WebExtensionMessagePort::sendMessage(const String& messageJSON, CompletionHandler<void(Error)>&& completionHandler)
++{
++    ASSERT(isMainThread());
++    Ref protectedThis { *this };
++    Error error;
++    RefPtr context = m_extensionContext.get();
++    if (isDisconnected() || !context || context->m_nativePortMap.get(m_channelIdentifier) != this)
++        error = { { ErrorType::NotConnected, std::nullopt } };
++    else if (!WebExtensionNativePortMessageQueue::isValidMessage(messageJSON))
++        error = { { ErrorType::MessageInvalid, std::nullopt } };
++    else
++        context->portPostMessage(WebExtensionContentWorldType::Native, WebExtensionContentWorldType::Main, std::nullopt, m_channelIdentifier, messageJSON, false);
++    if (completionHandler)
++        completionHandler(WTF::move(error));
++}
++
++void WebExtensionMessagePort::receiveMessages(Vector<String>&& messages)
++{
++    ASSERT(isMainThread());
++    Ref protectedThis { *this };
++    if (isDisconnected())
++        return;
++    switch (m_messageQueue->receive(WTF::move(messages))) {
++    case WebExtensionNativePortMessageQueue::Result::Accepted:
++    case WebExtensionNativePortMessageQueue::Result::Closed:
++        return;
++    case WebExtensionNativePortMessageQueue::Result::InvalidMessage:
++        reportDisconnection({ { ErrorType::MessageInvalid, std::nullopt } });
++        return;
++    case WebExtensionNativePortMessageQueue::Result::QueueFull:
++        reportDisconnection({ { ErrorType::MessageInvalid, "The native message queue limit was exceeded."_s } });
++        return;
++    }
++}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionNativePortMessageQueue.h b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionNativePortMessageQueue.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..e5bc0db9179485a0737b400bba575be5e2f27559
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionNativePortMessageQueue.h
+@@ -0,0 +1,123 @@
++/*
++ * Copyright (C) 2023-2024 Apple Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#pragma once
++
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++
++#include "WebExtensionConstants.h"
++#include <wtf/Deque.h>
++#include <wtf/JSONValues.h>
++#include <wtf/MainThread.h>
++#include <wtf/RefCounted.h>
++#include <wtf/SharedTask.h>
++
++namespace WebKit {
++
++// The native callback boundary carries validated JSON text, including fragments.
++// Confined to the WebKit main thread; callbacks can replace themselves or close it.
++class WebExtensionNativePortMessageQueue : public RefCounted<WebExtensionNativePortMessageQueue> {
++public:
++    using MessageHandler = SharedTask<void(const String&)>;
++    enum class Result : uint8_t { Accepted, Closed, InvalidMessage, QueueFull };
++
++    static Ref<WebExtensionNativePortMessageQueue> create() { return adoptRef(*new WebExtensionNativePortMessageQueue); }
++    bool isClosed() const { return m_closed; }
++
++    static bool isValidMessage(const String& message)
++    {
++        return message.length() <= webExtensionMaxMessageLength && !!JSON::Value::parseJSON(message);
++    }
++
++    void setMessageHandler(RefPtr<MessageHandler>&& handler)
++    {
++        ASSERT(isMainThread());
++        Ref protectedThis { *this };
++        if (m_closed)
++            return;
++        m_handler = WTF::move(handler);
++        drain();
++    }
++
++    Result receive(Vector<String>&& messages)
++    {
++        ASSERT(isMainThread());
++        Ref protectedThis { *this };
++        if (m_closed)
++            return Result::Closed;
++        constexpr size_t maximumQueuedMessages = 1024;
++        if (messages.size() > maximumQueuedMessages - m_messages.size())
++            return Result::QueueFull;
++        size_t length = m_queuedLength;
++        for (auto& message : messages) {
++            if (!isValidMessage(message))
++                return Result::InvalidMessage;
++            if (message.length() > webExtensionMaxMessageLength - length)
++                return Result::QueueFull;
++            length += message.length();
++        }
++        m_queuedLength = length;
++        for (auto& message : messages)
++            m_messages.append(WTF::move(message));
++        drain();
++        return Result::Accepted;
++    }
++
++    void close()
++    {
++        ASSERT(isMainThread());
++        m_closed = true;
++        m_messages.clear();
++        m_queuedLength = 0;
++        m_handler = nullptr;
++    }
++
++private:
++    WebExtensionNativePortMessageQueue() = default;
++
++    void drain()
++    {
++        if (m_delivering)
++            return;
++        m_delivering = true;
++        while (!m_closed && m_handler && !m_messages.isEmpty()) {
++            Ref handler { *m_handler };
++            auto message = m_messages.takeFirst();
++            m_queuedLength -= message.length();
++            handler->run(message);
++        }
++        m_delivering = false;
++    }
++
++    RefPtr<MessageHandler> m_handler;
++    Deque<String> m_messages;
++    size_t m_queuedLength { 0 };
++    bool m_closed { false };
++    bool m_delivering { false };
++};
 +
 +} // namespace WebKit
 +
@@ -41825,10 +42273,10 @@ index 0daeb9f57bccead43bac234e6d71bff821327db7..23df4cc24585b4d2d546199d57213d9c
  private:
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIPort.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIPort.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..876475be6248a8861d8a2ad6ad4257872d24c7a6
+index 0000000000000000000000000000000000000000..b6227b9a50ea74f5653e1aa3ba39c9cf1f09ce93
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIPort.cpp
-@@ -0,0 +1,259 @@
+@@ -0,0 +1,274 @@
 +/*
 + * Copyright (C) 2023 Apple Inc. All rights reserved.
 + *
@@ -41942,9 +42390,14 @@ index 0000000000000000000000000000000000000000..876475be6248a8861d8a2ad6ad425787
 +    return m_senderParameters ? toWebAPI(context, m_senderParameters.value()) : JSValueMakeNull(context);
 +}
 +
-+JSValueRef WebExtensionAPIPort::error()
++JSValueRef WebExtensionAPIPort::error(JSContextRef context)
 +{
-+    return m_error.get();
++    if (m_errorMessage) {
++        protect(runtime())->markLastErrorAccessed();
++        if (!m_error)
++            setError(context, toJSError(context, *m_errorMessage));
++    }
++    return m_error ? m_error.get() : JSValueMakeNull(context);
 +}
 +
 +void WebExtensionAPIPort::setError(JSContextRef context, JSValueRef error)
@@ -42009,13 +42462,16 @@ index 0000000000000000000000000000000000000000..876475be6248a8861d8a2ad6ad425787
 +    }
 +}
 +
-+void WebExtensionAPIPort::fireDisconnectEventIfNeeded()
++void WebExtensionAPIPort::fireDisconnectEventIfNeeded(const std::optional<String>& errorMessage)
 +{
 +    if (isDisconnected())
 +        return;
 +
++    Ref protectedThis { *this };
++
 +    RELEASE_LOG_DEBUG(Extensions, "Port channel %{public}llu disconnected in %" PUBLIC_LOG_STRING " world", m_channelIdentifier ? m_channelIdentifier->toUInt64() : 0, toDebugString(contentWorldType()).utf8().data());
 +
++    m_errorMessage = errorMessage;
 +    m_disconnected = true;
 +
 +    if (m_onMessage)
@@ -42033,8 +42489,15 @@ index 0000000000000000000000000000000000000000..876475be6248a8861d8a2ad6ad425787
 +
 +    for (RefPtr listener : listenersCopy) {
 +        auto globalContext = listener->globalContext();
++        if (!globalContext)
++            continue;
 +
-+        listener->call(toJS(globalContext, this));
++        if (m_errorMessage) {
++            protect(runtime())->reportError(*m_errorMessage, globalContext, [&] {
++                listener->call(toJS(globalContext, this));
++            });
++        } else
++            listener->call(toJS(globalContext, this));
 +    }
 +
 +    m_onDisconnect->removeAllListeners();
@@ -42075,21 +42538,21 @@ index 0000000000000000000000000000000000000000..876475be6248a8861d8a2ad6ad425787
 +    }
 +}
 +
-+void WebExtensionContextProxy::dispatchPortDisconnectEvent(WebExtensionPortChannelIdentifier channelIdentifier)
++void WebExtensionContextProxy::dispatchPortDisconnectEvent(WebExtensionPortChannelIdentifier channelIdentifier, const std::optional<String>& errorMessage)
 +{
 +    auto ports = WebExtensionAPIPort::get(channelIdentifier);
 +    if (ports.isEmpty())
 +        return;
 +
 +    for (Ref port : ports)
-+        port->fireDisconnectEventIfNeeded();
++        port->fireDisconnectEventIfNeeded(errorMessage);
 +}
 +
 +} // namespace WebKit
 +
 +#endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIPort.h b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIPort.h
-index 5adbf62a81fabfdb9858be69af623037d0987c75..de0a55ed6672bb7d9174568d80e3304d248cf191 100644
+index 5adbf62a81fabfdb9858be69af623037d0987c75..bd64e5243c036135472125d017cfd6f38b303e1b 100644
 --- a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIPort.h
 +++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIPort.h
 @@ -36,17 +36,12 @@
@@ -42128,7 +42591,7 @@ index 5adbf62a81fabfdb9858be69af623037d0987c75..de0a55ed6672bb7d9174568d80e3304d
      JSValueRef sender(JSContextRef);
  
 -    JSValue *error();
-+    JSValueRef error();
++    JSValueRef error(JSContextRef);
      void setError(JSContextRef, JSValueRef);
  
      WebExtensionAPIEvent& onMessage();
@@ -42146,12 +42609,21 @@ index 5adbf62a81fabfdb9858be69af623037d0987c75..de0a55ed6672bb7d9174568d80e3304d
  
 -#if PLATFORM(COCOA)
 -    void fireMessageEventIfNeeded(id message, bool userGesture);
-+    void fireMessageEventIfNeeded(const String& messageJSON, bool userGesture);
-     void fireDisconnectEventIfNeeded();
+-    void fireDisconnectEventIfNeeded();
 -#endif
++    void fireMessageEventIfNeeded(const String& messageJSON, bool userGesture);
++    void fireDisconnectEventIfNeeded(const std::optional<String>& errorMessage = std::nullopt);
  
      WebExtensionContentWorldType m_targetContentWorldType;
      Markable<WebPageProxyIdentifier> m_owningPageProxyIdentifier;
+@@ -151,6 +141,7 @@ private:
+ 
+     String m_name;
+     Protected<JSValueRef> m_error;
++    std::optional<String> m_errorMessage;
+     std::optional<WebExtensionMessageSenderParameters> m_senderParameters;
+ 
+     const RefPtr<WebExtensionAPIEvent> m_onMessage;
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIRuntime.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIRuntime.cpp
 index cb3eac4c0a556a9fe000ece79903aa86b9fd69c7..686a8e8dfca9ecb8f8adc15e34a26a499d3a7ffa 100644
 --- a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIRuntime.cpp
@@ -42375,6 +42847,18 @@ index cb3eac4c0a556a9fe000ece79903aa86b9fd69c7..686a8e8dfca9ecb8f8adc15e34a26a49
  void WebExtensionContextProxy::dispatchRuntimeMessageEvent(WebExtensionContentWorldType contentWorldType, const String& messageJSON, const std::optional<WebExtensionMessageTargetParameters>& targetParameters, const WebExtensionMessageSenderParameters& senderParameters, bool userGesture, CompletionHandler<void(String&& replyJSON)>&& completionHandler)
  {
      switch (contentWorldType) {
+diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIRuntime.h b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIRuntime.h
+index f8a0b0260957a0d8e21debde8ce80acdb0f98f1d..39d5bf764826d811f5e8754f76b8a0c6781ad778 100644
+--- a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIRuntime.h
++++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIRuntime.h
+@@ -41,6 +41,7 @@ class WebExtensionAPIRuntime;
+ 
+ class WebExtensionAPIRuntimeBase : public JSWebExtensionWrappable {
+ public:
++    void markLastErrorAccessed() { m_lastErrorAccessed = true; }
+     JSValueRef reportError(String errorMessage, JSGlobalContextRef, NOESCAPE const Function<void()>& = nullptr);
+     JSValueRef reportError(const String& errorMessage, WebExtensionCallbackHandler&);
+ 
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIStorage.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIStorage.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..e0f0b275c6dd305c4a001403deed07df5f7512d0
@@ -45438,7 +45922,7 @@ index 8fd7a8880207871662fb33d5b56dcf2fde2dfbc4..1a90ee90abe92964e01f7e8bd0b91a67
      [Dynamic] readonly attribute WebExtensionAPITest test;
  
 diff --git a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIPort.idl b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIPort.idl
-index 2bbcb63b2c07fe3a4ce7209f1a695bfaa02fa81b..7792395c89740e7f4e6e0d4c70a5a42bba47fb35 100644
+index 2bbcb63b2c07fe3a4ce7209f1a695bfaa02fa81b..3544912a9ee6292cfa629be42cd14e887e0a1f27 100644
 --- a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIPort.idl
 +++ b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIPort.idl
 @@ -25,13 +25,14 @@
@@ -45450,7 +45934,8 @@ index 2bbcb63b2c07fe3a4ce7209f1a695bfaa02fa81b..7792395c89740e7f4e6e0d4c70a5a42b
  
      readonly attribute DOMString name;
      [NeedsScriptContext] readonly attribute any sender;
-     readonly attribute any error;
+-    readonly attribute any error;
++    [NeedsScriptContext] readonly attribute any error;
  
 -    [RaisesException, NeedsFrame] void postMessage([Serialization=JSON] any message);
 +    [RaisesStringException, NeedsFrame] void postMessage([Serialization=JSON] any message);
@@ -45782,9 +46267,18 @@ index 2b2ff5395e73b7978dc8b610d62ffe835fc1a886..e9215d1ae97db698219770ee06d8a0ea
  
  #endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.h b/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.h
-index 1b514e1106295ebe5b2cc26520a9970b6c35633c..e4fbf6c338ad92e915b611048a97ccba94983c81 100644
+index 1b514e1106295ebe5b2cc26520a9970b6c35633c..f406445f187c56b1c2a20304ae8c2f79358e2ddb 100644
 --- a/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.h
 +++ b/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.h
+@@ -203,7 +203,7 @@ private:
+ 
+     // Port
+     void dispatchPortMessageEvent(std::optional<WebPageProxyIdentifier>, WebExtensionPortChannelIdentifier, const String& messageJSON, bool userGesture);
+-    void dispatchPortDisconnectEvent(WebExtensionPortChannelIdentifier);
++    void dispatchPortDisconnectEvent(WebExtensionPortChannelIdentifier, const std::optional<String>& errorMessage);
+ 
+     // Runtime
+     void internalDispatchRuntimeMessageEvent(WebExtensionContentWorldType, const String& messageJSON, const std::optional<WebExtensionMessageTargetParameters>&, const WebExtensionMessageSenderParameters&, bool userGesture, CompletionHandler<void(String&& replyJSON)>&&);
 @@ -238,12 +238,12 @@ private:
      void dispatchWebNavigationEvent(WebExtensionEventListenerType, WebExtensionTabIdentifier, const WebExtensionFrameParameters&, WallTime);
  
@@ -45805,9 +46299,18 @@ index 1b514e1106295ebe5b2cc26520a9970b6c35633c..e4fbf6c338ad92e915b611048a97ccba
      // Windows
      void dispatchWindowsEvent(WebExtensionEventListenerType, const std::optional<WebExtensionWindowParameters>&);
 diff --git a/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.messages.in b/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.messages.in
-index 7e5207762fe78057c1b72f80bc18bf9bdd0042e6..a1b88b3b497c0bd2af5a751b1fd42985bbfcf659 100644
+index 7e5207762fe78057c1b72f80bc18bf9bdd0042e6..d07e957b5ee34e74e8cba3b24b3d1071b924ff67 100644
 --- a/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.messages.in
 +++ b/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.messages.in
+@@ -77,7 +77,7 @@ messages -> WebExtensionContextProxy {
+ 
+     // Ports
+     DispatchPortMessageEvent(std::optional<WebKit::WebPageProxyIdentifier> sendingPageProxyIdentifier, WebKit::WebExtensionPortChannelIdentifier channelIdentifier, String messageJSON, bool userGesture)
+-    DispatchPortDisconnectEvent(WebKit::WebExtensionPortChannelIdentifier channelIdentifier)
++    DispatchPortDisconnectEvent(WebKit::WebExtensionPortChannelIdentifier channelIdentifier, std::optional<String> errorMessage)
+ 
+     // Runtime
+     DispatchRuntimeMessageEvent(WebKit::WebExtensionContentWorldType contentWorldType, String messageJSON, struct std::optional<WebKit::WebExtensionMessageTargetParameters> targetParameters, struct WebKit::WebExtensionMessageSenderParameters senderParameters, bool userGesture) -> (String replyJSON)
 @@ -109,12 +109,12 @@ messages -> WebExtensionContextProxy {
      DispatchWebNavigationEvent(WebKit::WebExtensionEventListenerType type, WebKit::WebExtensionTabIdentifier tabID, struct WebKit::WebExtensionFrameParameters frameParamaters, WallTime timestamp)
  
