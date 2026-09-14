@@ -41,7 +41,11 @@ NATIVE_PAGE_UNITS = {'BrowserTabRegistryHaiku.cpp': 'UIProcess/haiku/BrowserTabR
                      'WebKitContext.cpp': 'UIProcess/API/haiku/WebKitContext.cpp',
                      'WebPageProxy.cpp': 'UIProcess/WebPageProxy.cpp',
                      'WebView.cpp': 'UIProcess/haiku/WebView.cpp'}
-UI_API_UNITS = {'WebExtensionNavigationURLFilter.cpp': 'WebProcess/Extensions/WebExtensionNavigationURLFilter.cpp',
+UI_API_UNITS = {'WebExtensionTabHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionTabHaiku.cpp',
+                'WebExtensionWindowHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionWindowHaiku.cpp',
+                'WebExtensionContextTabsHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionContextTabsHaiku.cpp',
+                'WebExtensionContextWebNavigationHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionContextWebNavigationHaiku.cpp',
+                'WebExtensionNavigationURLFilter.cpp': 'WebProcess/Extensions/WebExtensionNavigationURLFilter.cpp',
                 'WebExtensionNavigationParameters.cpp': 'WebProcess/Extensions/WebExtensionNavigationParameters.cpp',
                 'WebExtensionContextAPIWebNavigation.cpp': 'UIProcess/Extensions/API/WebExtensionContextAPIWebNavigation.cpp',
                 'WebExtensionDynamicScripts.cpp': 'UIProcess/Extensions/WebExtensionDynamicScripts.cpp',
@@ -209,7 +213,7 @@ def host(overlay=None, units=None, engine_root=DEFAULT_ENGINE, regenerate=False,
             if path.name in files:
                 raise RuntimeError('Ambiguous staged page header: ' + path.name)
             files[path.name] = (path, source(path), source(path).read_bytes())
-    if any(name in NATIVE_PAGE_UNITS for name in units or ()) or (overlay and
+    if any(name in NATIVE_PAGE_UNITS or name.endswith('Haiku.cpp') for name in units or ()) or (overlay and
             (pathlib.Path(overlay).resolve() / 'Source/WebKit/UIProcess/haiku/WebViewPrivate.h').is_file()):
         for relative in ('UIProcess/haiku/WebViewPrivate.h', 'UIProcess/haiku/WebViewContextHaiku.h',
                          'UIProcess/haiku/WebViewStateHaiku.h', 'UIProcess/haiku/BrowserTabRegistryHaiku.h',

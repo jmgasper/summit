@@ -22926,10 +22926,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..031e53b8478de6b35eef8e75568c03434226fa31
+index 0000000000000000000000000000000000000000..e2a97c83f26cd430e129f6ef50c14bdca342c685
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,189 @@
+@@ -0,0 +1,193 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -22984,6 +22984,10 @@ index 0000000000000000000000000000000000000000..031e53b8478de6b35eef8e75568c0343
 +    UIProcess/Extensions/haiku/WebExtensionControllerAPITestHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionControllerConfigurationHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionControllerHaiku.cpp
++    UIProcess/Extensions/haiku/WebExtensionTabHaiku.cpp
++    UIProcess/Extensions/haiku/WebExtensionWindowHaiku.cpp
++    UIProcess/Extensions/haiku/WebExtensionContextTabsHaiku.cpp
++    UIProcess/Extensions/haiku/WebExtensionContextWebNavigationHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionStateHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionURLSchemeHandlerHaiku.cpp
@@ -29264,7 +29268,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..51bf107142461e1c1ca1388b537b87b6
  
  #endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
-index 05a8676082d56f2c47c9af6120f5120b09f982be..b601b648ac6bf34e26c148c48e9d5d4d3e4469ed 100644
+index 05a8676082d56f2c47c9af6120f5120b09f982be..78652d0b45fdfbea2cfa4d74ae407ed4798e059e 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 @@ -52,6 +52,7 @@
@@ -29356,7 +29360,20 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..b601b648ac6bf34e26c148c48e9d5d4d
      using PortQueuedMessageMap = HashMap<PortWorldPair, Vector<PortQueuedMessage>>;
      using NativePortMap = HashMap<WebExtensionPortChannelIdentifier, Ref<WebExtensionMessagePort>>;
  
-@@ -630,6 +649,10 @@ public:
+@@ -504,6 +523,12 @@ public:
+ 
+     void removePage(WebPageProxy&);
+ 
++#if PLATFORM(HAIKU)
++    RefPtr<WebPageProxy> nativePage(WebPageProxyIdentifier) const;
++    RefPtr<WebExtensionWindow> getOrCreateNativeWindow(uint64_t) const;
++    RefPtr<WebExtensionTab> getOrCreateNativeTab(WebPageProxyIdentifier) const;
++    void pruneNativeHostObjects() const;
++#endif
+     Ref<WebExtensionWindow> getOrCreateWindow(WKWebExtensionWindow *) const;
+     RefPtr<WebExtensionWindow> getWindow(WebExtensionWindowIdentifier, std::optional<WebPageProxyIdentifier> = std::nullopt, IgnoreExtensionAccess = IgnoreExtensionAccess::No) const;
+     void forgetWindow(WebExtensionWindowIdentifier) const;
+@@ -630,6 +655,10 @@ public:
      void sendTestStarted(id argument);
      void sendTestFinished(id argument);
      void reloadBackgroundContentForTesting();
@@ -29367,7 +29384,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..b601b648ac6bf34e26c148c48e9d5d4d
  #endif
  
      URL backgroundContentURL();
-@@ -656,6 +679,7 @@ public:
+@@ -656,6 +685,7 @@ public:
  #endif
  
  #if PLATFORM(COCOA)
@@ -29375,7 +29392,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..b601b648ac6bf34e26c148c48e9d5d4d
      void sendNativeMessage(const String& applicationID, id message, CompletionHandler<void(std::expected<RetainPtr<id>, WebExtensionError>&&)>&&);
  #endif
  
-@@ -749,11 +773,18 @@ private:
+@@ -749,11 +779,18 @@ private:
  #if PLATFORM(COCOA)
      NSDictionary *currentState() const;
      NSDictionary *readStateFromStorage();
@@ -29395,7 +29412,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..b601b648ac6bf34e26c148c48e9d5d4d
  
      void loadStorageAccessLevelsFromStorage();
      void saveStorageAccessLevelsToStorage();
-@@ -796,6 +827,7 @@ private:
+@@ -796,6 +833,7 @@ private:
      void saveBackgroundPageListenersToStorage();
  
      void performTasksAfterBackgroundContentLoads();
@@ -29403,7 +29420,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..b601b648ac6bf34e26c148c48e9d5d4d
  
  #ifdef NDEBUG
      // This is method is a no-op in release builds since it has a performance impact with little benefit to release builds.
-@@ -1034,6 +1066,7 @@ private:
+@@ -1034,6 +1072,7 @@ private:
      void scriptingGetRegisteredScripts(const Vector<String>&, CompletionHandler<void(std::expected<Vector<WebExtensionRegisteredScriptParameters>, WebExtensionError>&&)>&&);
      void scriptingUnregisterContentScripts(const Vector<String>&, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
      bool createInjectedContentForScripts(const Vector<WebExtensionRegisteredScriptParameters>&, WebExtensionDynamicScripts::WebExtensionRegisteredScript::FirstTimeRegistration, DynamicInjectedContentsMap&, NSString *callingAPIName, NSString **errorMessage);
@@ -29411,7 +29428,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..b601b648ac6bf34e26c148c48e9d5d4d
  
      // Sidebar APIs
  #if ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
-@@ -1129,6 +1162,8 @@ private:
+@@ -1129,6 +1168,8 @@ private:
      RetainPtr<NSMutableDictionary> m_state;
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<GKeyFile> m_state;
@@ -29420,7 +29437,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..b601b648ac6bf34e26c148c48e9d5d4d
  #endif
      Vector<Ref<API::Error>> m_errors;
  
-@@ -1194,6 +1229,9 @@ private:
+@@ -1194,6 +1235,9 @@ private:
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<WebKitWebView> m_backgroundWebView;
      GWeakPtr<WebKitWebExtensionContext> m_delegate;
@@ -29430,7 +29447,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..b601b648ac6bf34e26c148c48e9d5d4d
  #endif
      Variant<std::monostate, Ref<ProcessThrottlerActivity>, Ref<ProcessActivityGroup>> m_backgroundWebViewActivity;
      RefPtr<API::Error> m_backgroundContentLoadError;
-@@ -1215,6 +1253,7 @@ private:
+@@ -1215,6 +1259,7 @@ private:
      HashMap<Ref<WebExtensionMatchPattern>, UserScriptVector> m_injectedScriptsPerPatternMap;
      HashMap<Ref<WebExtensionMatchPattern>, UserStyleSheetVector> m_injectedStyleSheetsPerPatternMap;
  
@@ -29438,7 +29455,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..b601b648ac6bf34e26c148c48e9d5d4d
      HashMap<String, Ref<WebExtensionDynamicScripts::WebExtensionRegisteredScript>> m_registeredScriptsMap;
      RefPtr<WebExtensionRegisteredScriptsSQLiteStore> m_registeredContentScriptsStorage;
  
-@@ -1234,7 +1273,7 @@ private:
+@@ -1234,7 +1279,7 @@ private:
  #endif // ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
  
      PortCountedSet m_ports;
@@ -29447,7 +29464,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..b601b648ac6bf34e26c148c48e9d5d4d
      PortQueuedMessageMap m_portQueuedMessages;
      NativePortMap m_nativePortMap;
  
-@@ -1274,12 +1313,16 @@ private:
+@@ -1274,12 +1319,16 @@ private:
          String message;
  #if PLATFORM(COCOA)
          RetainPtr<id> argument;
@@ -29464,7 +29481,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..b601b648ac6bf34e26c148c48e9d5d4d
  
      Deque<TestMessage> m_testMessageQueue;
      Deque<TestMessage> m_testStartedQueue;
-@@ -1289,6 +1332,8 @@ private:
+@@ -1289,6 +1338,8 @@ private:
      void sendQueuedTestMessagesIfNeeded(WebExtensionEventListenerType);
  #if PLATFORM(COCOA)
      void addTestMessageToQueue(const String& message, id argument, WebExtensionEventListenerType);
@@ -30156,6 +30173,40 @@ index 0000000000000000000000000000000000000000..458c7617bf4678c2cbe4d7c0b9b22b77
 +} // namespace WebKit
 +
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && !PLATFORM(COCOA)
+diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionTab.h b/Source/WebKit/UIProcess/Extensions/WebExtensionTab.h
+index 41aa2bacea7ca71e4b7414628cb684111b223dbc..a79782eabaa07a9900d121b60eafebdebbe6e15d 100644
+--- a/Source/WebKit/UIProcess/Extensions/WebExtensionTab.h
++++ b/Source/WebKit/UIProcess/Extensions/WebExtensionTab.h
+@@ -47,6 +47,7 @@ OBJC_PROTOCOL(WKWebExtensionTab);
+ 
+ namespace WebKit {
+ 
++class WebPageProxy;
+ class WebExtensionContext;
+ class WebExtensionMatchPattern;
+ class WebExtensionWindow;
+@@ -73,6 +74,11 @@ public:
+     }
+ 
+     explicit WebExtensionTab(const WebExtensionContext&, WKWebExtensionTab *);
++#if PLATFORM(HAIKU)
++    WebExtensionTab(const WebExtensionContext&, WebPageProxy&);
++    RefPtr<WebPageProxy> nativePage() const;
++    bool isValid() const;
++#endif
+ 
+     enum class ChangedProperties : uint16_t {
+         Loading      = 1 << 1,
+@@ -217,6 +223,9 @@ public:
+ 
+ private:
+     WeakPtr<WebExtensionContext> m_extensionContext;
++#if PLATFORM(HAIKU)
++    WeakPtr<WebPageProxy> m_nativePage;
++#endif
+ #if PLATFORM(COCOA)
+     WeakObjCPtr<WKWebExtensionTab> m_delegate;
+ #endif
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionURLSchemeHandler.h b/Source/WebKit/UIProcess/Extensions/WebExtensionURLSchemeHandler.h
 index 6cc31666df494b43a9c98c89ad7b6d9fbabd4616..a07f329ffdd6685a0c249ff257c13cdfa8e7fda9 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionURLSchemeHandler.h
@@ -30326,6 +30377,32 @@ index 0000000000000000000000000000000000000000..4e033e185f8037949a47bf5ed7ca4d54
 +} // namespace WebKit
 +
 +#endif // ENABLE(WK_WEB_EXTENSIONS)
+diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionWindow.h b/Source/WebKit/UIProcess/Extensions/WebExtensionWindow.h
+index ff0fa9cab59b530b8b46c0a1e83b15a31712f123..e84ad27243e34b5e8a635b437b18d7b96d7fa354 100644
+--- a/Source/WebKit/UIProcess/Extensions/WebExtensionWindow.h
++++ b/Source/WebKit/UIProcess/Extensions/WebExtensionWindow.h
+@@ -76,6 +76,11 @@ public:
+     }
+ 
+     explicit WebExtensionWindow(const WebExtensionContext&, WKWebExtensionWindow*);
++#if PLATFORM(HAIKU)
++    WebExtensionWindow(const WebExtensionContext&, uint64_t nativeWindowIdentifier);
++    uint64_t nativeWindowIdentifier() const { return m_nativeWindowIdentifier; }
++    bool isValid() const;
++#endif
+ 
+     enum class Type : uint8_t {
+         Normal,
+@@ -149,6 +154,9 @@ public:
+ 
+ private:
+     WeakPtr<WebExtensionContext> m_extensionContext;
++#if PLATFORM(HAIKU)
++    uint64_t m_nativeWindowIdentifier;
++#endif
+ #if PLATFORM(COCOA)
+     WeakObjCPtr<WKWebExtensionWindow> m_delegate;
+ #endif
 diff --git a/Source/WebKit/UIProcess/Extensions/glib/WebExtensionGLib.cpp b/Source/WebKit/UIProcess/Extensions/glib/WebExtensionGLib.cpp
 index f09e0085d0228b905e0a7cfe7592260e9d4977a9..3ada5a0beca92b82ae14dc44131be6f12c3f7e5f 100644
 --- a/Source/WebKit/UIProcess/Extensions/glib/WebExtensionGLib.cpp
@@ -31570,6 +31647,248 @@ index 0000000000000000000000000000000000000000..602baf54bf4eb5b65560a68e8f6833f2
 +} // namespace WebKit
 +
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextTabsHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextTabsHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c44956bb1f36796c9281a58d9d4128a7a3bb2227
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextTabsHaiku.cpp
+@@ -0,0 +1,236 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#include "config.h"
++#include "WebExtensionContext.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++
++#include "BrowserTabRegistryHaiku.h"
++#include "WebExtensionController.h"
++#include "WebPageProxy.h"
++
++namespace WebKit {
++
++RefPtr<WebPageProxy> WebExtensionContext::nativePage(WebPageProxyIdentifier identifier) const
++{
++    RefPtr controller = extensionController();
++    if (!isLoaded() || !controller)
++        return nullptr;
++    auto registry = controller->nativeBrowserTabs();
++    auto tab = registry->tab(identifier);
++    if (!tab)
++        return nullptr;
++    auto window = registry->window(tab->windowIdentifier);
++    if (!window || !window->messenger.IsValid())
++        return nullptr;
++    for (auto& page : controller->allPages()) {
++        if (page.identifier() == identifier && !page.isClosed() && page.webExtensionController() == controller.get())
++            return page;
++    }
++    return nullptr;
++}
++
++bool WebExtensionContext::isValidTab(const WebExtensionTab& tab)
++{
++    if (!isLoaded() || tab.extensionContext() != this || m_tabMap.get(tab.identifier()) != &tab)
++        return false;
++    RefPtr page = tab.nativePage();
++    return page && nativePage(page->identifier()) == page;
++}
++
++bool WebExtensionContext::isValidWindow(const WebExtensionWindow& window)
++{
++    if (!isLoaded() || window.extensionContext() != this || m_windowMap.get(window.identifier()) != &window)
++        return false;
++    RefPtr controller = extensionController();
++    if (!controller)
++        return false;
++    auto nativeWindow = controller->nativeBrowserTabs()->window(window.nativeWindowIdentifier());
++    return nativeWindow && nativeWindow->messenger.IsValid();
++}
++
++void WebExtensionContext::pruneNativeHostObjects() const
++{
++    // Validity reads these maps to check identity. Collect first so validation
++    // never observes a hash table partway through removing its buckets.
++    Vector<WebExtensionTabIdentifier> staleTabs;
++    for (auto& entry : m_tabMap) {
++        if (!entry.value->isValid())
++            staleTabs.append(entry.key);
++    }
++    for (auto identifier : staleTabs)
++        m_tabMap.remove(identifier);
++    Vector<WebExtensionWindowIdentifier> staleWindows;
++    for (auto& entry : m_windowMap) {
++        if (!entry.value->isValid())
++            staleWindows.append(entry.key);
++    }
++    for (auto identifier : staleWindows)
++        m_windowMap.remove(identifier);
++    m_windowOrderVector.removeAllMatching([&](auto identifier) { return !m_windowMap.contains(identifier); });
++    if (m_focusedWindowIdentifier && !m_windowMap.contains(*m_focusedWindowIdentifier))
++        m_focusedWindowIdentifier = std::nullopt;
++}
++
++RefPtr<WebExtensionWindow> WebExtensionContext::getOrCreateNativeWindow(uint64_t nativeIdentifier) const
++{
++    pruneNativeHostObjects();
++    RefPtr controller = extensionController();
++    if (!isLoaded() || !controller)
++        return nullptr;
++    auto nativeWindow = controller->nativeBrowserTabs()->window(nativeIdentifier);
++    if (!nativeWindow || !nativeWindow->messenger.IsValid())
++        return nullptr;
++    for (auto& entry : m_windowMap) {
++        if (entry.value->nativeWindowIdentifier() == nativeIdentifier)
++            return entry.value.copyRef();
++    }
++    Ref window = WebExtensionWindow::create(*this, nativeIdentifier);
++    m_windowMap.set(window->identifier(), window.copyRef());
++    window->didOpen();
++    return window;
++}
++
++RefPtr<WebExtensionTab> WebExtensionContext::getOrCreateNativeTab(WebPageProxyIdentifier identifier) const
++{
++    pruneNativeHostObjects();
++    RefPtr page = nativePage(identifier);
++    if (!page)
++        return nullptr;
++    for (auto& entry : m_tabMap) {
++        if (entry.value->nativePage() == page)
++            return entry.value.copyRef();
++    }
++    Ref tab = WebExtensionTab::create(*this, *page);
++    m_tabMap.set(tab->identifier(), tab.copyRef());
++    tab->didOpen();
++    return tab;
++}
++
++RefPtr<WebExtensionTab> WebExtensionContext::getTab(WebExtensionTabIdentifier identifier, IgnoreExtensionAccess ignoreExtensionAccess) const
++{
++    if (!isValid(identifier))
++        return nullptr;
++    pruneNativeHostObjects();
++    RefPtr tab = m_tabMap.get(identifier);
++    if (tab && ignoreExtensionAccess == IgnoreExtensionAccess::No && !tab->extensionHasAccess())
++        return nullptr;
++    return tab;
++}
++
++RefPtr<WebExtensionTab> WebExtensionContext::getTab(WebPageProxyIdentifier pageIdentifier, std::optional<WebExtensionTabIdentifier> identifier, IncludeExtensionViews includeExtensionViews, IgnoreExtensionAccess ignoreExtensionAccess) const
++{
++    return identifier ? getTab(*identifier, ignoreExtensionAccess) : getCurrentTab(pageIdentifier, includeExtensionViews, ignoreExtensionAccess);
++}
++
++RefPtr<WebExtensionTab> WebExtensionContext::getCurrentTab(WebPageProxyIdentifier identifier, IncludeExtensionViews includeExtensionViews, IgnoreExtensionAccess ignoreExtensionAccess) const
++{
++    RefPtr<WebExtensionTab> tab;
++    if (isBackgroundPage(identifier)) {
++        if (includeExtensionViews == IncludeExtensionViews::No)
++            return nullptr;
++        if (RefPtr window = frontmostWindow(ignoreExtensionAccess))
++            tab = window->activeTab();
++    } else
++        tab = getOrCreateNativeTab(identifier);
++    // Popup and sidebar host associations require their own native integration.
++    // Only explicitly registered browser pages are ordinary tabs here.
++    if (tab && ignoreExtensionAccess == IgnoreExtensionAccess::No && !tab->extensionHasAccess())
++        return nullptr;
++    return tab;
++}
++
++RefPtr<WebExtensionWindow> WebExtensionContext::getWindow(WebExtensionWindowIdentifier identifier, std::optional<WebPageProxyIdentifier> pageIdentifier, IgnoreExtensionAccess ignoreExtensionAccess) const
++{
++    if (!isValid(identifier))
++        return nullptr;
++    pruneNativeHostObjects();
++    RefPtr<WebExtensionWindow> window;
++    if (isCurrent(identifier)) {
++        if (pageIdentifier) {
++            if (RefPtr tab = getCurrentTab(*pageIdentifier, IncludeExtensionViews::Yes, ignoreExtensionAccess))
++                window = tab->window();
++        }
++        if (!window)
++            window = frontmostWindow(ignoreExtensionAccess);
++    } else
++        window = m_windowMap.get(identifier);
++    if (window && ignoreExtensionAccess == IgnoreExtensionAccess::No && !window->extensionHasAccess())
++        return nullptr;
++    return window;
++}
++
++void WebExtensionContext::forgetTab(WebExtensionTabIdentifier identifier) const
++{
++    m_tabMap.remove(identifier);
++}
++
++void WebExtensionContext::forgetWindow(WebExtensionWindowIdentifier identifier) const
++{
++    m_windowMap.remove(identifier);
++    m_windowOrderVector.removeAll(identifier);
++    if (m_focusedWindowIdentifier == identifier)
++        m_focusedWindowIdentifier = std::nullopt;
++}
++
++WebExtensionContext::WindowVector WebExtensionContext::openWindows(IgnoreExtensionAccess ignoreExtensionAccess) const
++{
++    pruneNativeHostObjects();
++    WindowVector result;
++    RefPtr controller = extensionController();
++    if (!isLoaded() || !controller)
++        return result;
++    for (auto& state : controller->nativeBrowserTabs()->windows()) {
++        RefPtr window = getOrCreateNativeWindow(state.identifier);
++        if (window && (ignoreExtensionAccess == IgnoreExtensionAccess::Yes || window->extensionHasAccess()))
++            result.append(window.releaseNonNull());
++    }
++    return result;
++}
++
++WebExtensionContext::TabVector WebExtensionContext::openTabs(IgnoreExtensionAccess ignoreExtensionAccess) const
++{
++    TabVector result;
++    for (auto& window : openWindows(ignoreExtensionAccess)) {
++        for (auto& tab : window->tabs()) {
++            if (ignoreExtensionAccess == IgnoreExtensionAccess::Yes || tab->extensionHasAccess())
++                result.append(tab.copyRef());
++        }
++    }
++    return result;
++}
++
++RefPtr<WebExtensionWindow> WebExtensionContext::focusedWindow(IgnoreExtensionAccess ignoreExtensionAccess) const
++{
++    RefPtr controller = extensionController();
++    if (!isLoaded() || !controller)
++        return nullptr;
++    auto identifier = controller->nativeBrowserTabs()->focusedWindow();
++    RefPtr window = identifier ? getOrCreateNativeWindow(*identifier) : nullptr;
++    if (window && ignoreExtensionAccess == IgnoreExtensionAccess::No && !window->extensionHasAccess())
++        return nullptr;
++    return window;
++}
++
++RefPtr<WebExtensionWindow> WebExtensionContext::frontmostWindow(IgnoreExtensionAccess ignoreExtensionAccess) const
++{
++    auto windows = openWindows(ignoreExtensionAccess);
++    return windows.isEmpty() ? nullptr : windows[0].ptr();
++}
++
++void WebExtensionContext::populateWindowsAndTabs()
++{
++    ASSERT(isLoaded());
++    m_windowOrderVector.clear();
++    m_focusedWindowIdentifier = std::nullopt;
++    for (auto& window : openWindows(IgnoreExtensionAccess::Yes)) {
++        m_windowOrderVector.append(window->identifier());
++        window->tabs();
++        if (window->isFocused())
++            m_focusedWindowIdentifier = window->identifier();
++    }
++}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextTestHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextTestHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..f0d39259efea20c5b48abdb23588ef7c5ecd0379
@@ -31727,6 +32046,125 @@ index 0000000000000000000000000000000000000000..f0d39259efea20c5b48abdb23588ef7c
 +        ASSERT_NOT_REACHED();
 +        return;
 +    }
++}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextWebNavigationHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextWebNavigationHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..14a233b25aa096a498b05c278b6884164e331304
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextWebNavigationHaiku.cpp
+@@ -0,0 +1,113 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#include "config.h"
++#include "WebExtensionContext.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++
++#include "FrameTreeNodeData.h"
++#include "WebExtensionFrameParameters.h"
++#include "WebExtensionPermission.h"
++#include "WebExtensionUtilities.h"
++#include "WebPageProxy.h"
++
++namespace WebKit {
++
++// Traverse the process-provided tree in document order without recursive calls.
++// Frame identifiers and parent relationships come from WebKit's frame metadata.
++static Vector<WebExtensionFrameParameters> nativeFrameParameters(const FrameTreeNodeData& root, WebExtensionContext& context, WebExtensionTab& tab, std::optional<WebExtensionFrameIdentifier> target = std::nullopt)
++{
++    struct PendingFrame {
++        const FrameTreeNodeData* node;
++        WebExtensionFrameIdentifier parentIdentifier;
++    };
++    Vector<PendingFrame> pending { { &root, WebExtensionFrameConstants::NoneIdentifier } };
++    Vector<WebExtensionFrameParameters> result;
++    while (!pending.isEmpty()) {
++        auto frame = pending.takeLast();
++        auto& info = frame.node->info;
++        auto identifier = toWebExtensionFrameIdentifier(info);
++        if (!target || identifier == *target) {
++            auto& url = info.request.url();
++            WebExtensionFrameParameters parameters {
++                .errorOccurred = info.errorOccurred,
++                .url = context.hasPermission(url, &tab) ? std::optional { url } : std::nullopt,
++                .parentFrameIdentifier = frame.parentIdentifier,
++                .frameIdentifier = target ? std::nullopt : std::optional { identifier },
++                .documentIdentifier = info.documentID ? Markable<WTF::UUID> { info.documentID->object() } : Markable<WTF::UUID> { }
++            };
++            result.append(WTF::move(parameters));
++            if (target)
++                break;
++        }
++        for (size_t i = frame.node->children.size(); i; --i)
++            pending.append({ &frame.node->children[i - 1], identifier });
++    }
++    return result;
++}
++
++void WebExtensionContext::webNavigationGetFrame(WebExtensionTabIdentifier tabIdentifier, WebExtensionFrameIdentifier frameIdentifier, CompletionHandler<void(std::expected<std::optional<WebExtensionFrameParameters>, WebExtensionError>&&)>&& completionHandler)
++{
++    if (!isLoaded() || !hasPermission(WebExtensionPermission::webNavigation())) {
++        completionHandler(toWebExtensionError("webNavigation.getFrame()"_s, nullString(), "permission denied"_s));
++        return;
++    }
++    RefPtr tab = getTab(tabIdentifier);
++    RefPtr page = tab ? tab->nativePage() : nullptr;
++    if (!page) {
++        completionHandler(toWebExtensionError("webNavigation.getFrame()"_s, nullString(), "tab not found"_s));
++        return;
++    }
++    page->getAllFrames([protectedThis = Ref { *this }, tab = tab.releaseNonNull(), page = Ref { *page }, frameIdentifier, completionHandler = WTF::move(completionHandler)](std::optional<FrameTreeNodeData>&& tree) mutable {
++        if (!protectedThis->isLoaded() || !protectedThis->hasPermission(WebExtensionPermission::webNavigation())) {
++            completionHandler(toWebExtensionError("webNavigation.getFrame()"_s, nullString(), "permission denied"_s));
++            return;
++        }
++        if (!tab->extensionHasAccess() || protectedThis->getTab(tab->identifier()) != tab.ptr() || tab->nativePage() != page.ptr()) {
++            completionHandler(toWebExtensionError("webNavigation.getFrame()"_s, nullString(), "tab not found"_s));
++            return;
++        }
++        if (!tree || !tree->info.isMainFrame) {
++            completionHandler(toWebExtensionError("webNavigation.getFrame()"_s, nullString(), "main frame not found"_s));
++            return;
++        }
++        auto frames = nativeFrameParameters(*tree, protectedThis, tab, frameIdentifier);
++        if (frames.isEmpty())
++            completionHandler(toWebExtensionError("webNavigation.getFrame()"_s, nullString(), "frame not found"_s));
++        else
++            completionHandler(std::optional { frames.takeLast() });
++    });
++}
++
++void WebExtensionContext::webNavigationGetAllFrames(WebExtensionTabIdentifier tabIdentifier, CompletionHandler<void(std::expected<Vector<WebExtensionFrameParameters>, WebExtensionError>&&)>&& completionHandler)
++{
++    if (!isLoaded() || !hasPermission(WebExtensionPermission::webNavigation())) {
++        completionHandler(toWebExtensionError("webNavigation.getAllFrames()"_s, nullString(), "permission denied"_s));
++        return;
++    }
++    RefPtr tab = getTab(tabIdentifier);
++    RefPtr page = tab ? tab->nativePage() : nullptr;
++    if (!page) {
++        completionHandler(toWebExtensionError("webNavigation.getAllFrames()"_s, nullString(), "tab not found"_s));
++        return;
++    }
++    page->getAllFrames([protectedThis = Ref { *this }, tab = tab.releaseNonNull(), page = Ref { *page }, completionHandler = WTF::move(completionHandler)](std::optional<FrameTreeNodeData>&& tree) mutable {
++        if (!protectedThis->isLoaded() || !protectedThis->hasPermission(WebExtensionPermission::webNavigation())) {
++            completionHandler(toWebExtensionError("webNavigation.getAllFrames()"_s, nullString(), "permission denied"_s));
++            return;
++        }
++        if (!tab->extensionHasAccess() || protectedThis->getTab(tab->identifier()) != tab.ptr() || tab->nativePage() != page.ptr()) {
++            completionHandler(toWebExtensionError("webNavigation.getAllFrames()"_s, nullString(), "tab not found"_s));
++            return;
++        }
++        if (!tree || !tree->info.isMainFrame) {
++            completionHandler(toWebExtensionError("webNavigation.getAllFrames()"_s, nullString(), "main frame not found"_s));
++            return;
++        }
++        completionHandler(nativeFrameParameters(*tree, protectedThis, tab));
++    });
 +}
 +
 +} // namespace WebKit
@@ -32382,6 +32820,170 @@ index 0000000000000000000000000000000000000000..33513664e83e2f9b8cae80550e474ac2
 +} // namespace WebKit
 +
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionTabHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionTabHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..abf1646d3645dbb014dd0c7a8891738974928e42
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionTabHaiku.cpp
+@@ -0,0 +1,158 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#include "config.h"
++#include "WebExtensionTab.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++
++#include "BrowserTabRegistryHaiku.h"
++#include "PageLoadState.h"
++#include "WebExtensionContext.h"
++#include "WebExtensionController.h"
++#include "WebExtensionTabParameters.h"
++#include "WebPageProxy.h"
++#include "WebsiteDataStore.h"
++#include <wtf/TZoneMallocInlines.h>
++
++namespace WebKit {
++
++WTF_MAKE_TZONE_ALLOCATED_IMPL(WebExtensionTab);
++
++WebExtensionTab::WebExtensionTab(const WebExtensionContext& context, WebPageProxy& page)
++    : m_extensionContext(context)
++    , m_nativePage(page)
++{
++}
++
++WebExtensionContext* WebExtensionTab::extensionContext() const { return m_extensionContext.get(); }
++
++RefPtr<WebPageProxy> WebExtensionTab::nativePage() const
++{
++    RefPtr page = m_nativePage.get();
++    return page && !page->isClosed() ? page : nullptr;
++}
++
++bool WebExtensionTab::isValid() const
++{
++    RefPtr context = m_extensionContext.get();
++    return context && context->isValidTab(*this);
++}
++
++bool WebExtensionTab::operator==(const WebExtensionTab& other) const { return this == &other; }
++bool WebExtensionTab::isOpen() const { return m_isOpen && isValid(); }
++
++bool WebExtensionTab::extensionHasAccess() const
++{
++    return isValid() && (!isPrivate() || m_extensionContext->hasAccessToPrivateData());
++}
++
++bool WebExtensionTab::extensionHasPermission() const
++{
++    RefPtr context = m_extensionContext.get();
++    return context && extensionHasAccess() && context->hasPermission(url(), const_cast<WebExtensionTab*>(this));
++}
++
++bool WebExtensionTab::isPrivate() const
++{
++    RefPtr page = nativePage();
++    return page && page->websiteDataStore().sessionID().isEphemeral();
++}
++
++RefPtr<WebExtensionWindow> WebExtensionTab::window() const
++{
++    RefPtr context = m_extensionContext.get();
++    RefPtr page = nativePage();
++    if (!context || !page || !isValid())
++        return nullptr;
++    RefPtr controller = context->extensionController();
++    auto state = controller->nativeBrowserTabs()->tab(page->identifier());
++    return state ? context->getOrCreateNativeWindow(state->windowIdentifier) : nullptr;
++}
++
++size_t WebExtensionTab::index() const
++{
++    RefPtr context = m_extensionContext.get();
++    RefPtr page = nativePage();
++    if (!context || !page || !isValid())
++        return notFound;
++    RefPtr controller = context->extensionController();
++    auto state = controller->nativeBrowserTabs()->tab(page->identifier());
++    return state ? state->index : notFound;
++}
++
++bool WebExtensionTab::isActive() const
++{
++    RefPtr context = m_extensionContext.get();
++    RefPtr page = nativePage();
++    if (!context || !page || !isValid())
++        return false;
++    RefPtr controller = context->extensionController();
++    auto state = controller->nativeBrowserTabs()->tab(page->identifier());
++    return state && state->active;
++}
++
++bool WebExtensionTab::isSelected() const { return isActive(); }
++
++String WebExtensionTab::title() const
++{
++    RefPtr page = nativePage();
++    return page && isValid() ? page->pageLoadState().title() : nullString();
++}
++
++URL WebExtensionTab::url() const
++{
++    RefPtr page = nativePage();
++    return page && isValid() ? page->pageLoadState().activeURL() : URL { };
++}
++
++URL WebExtensionTab::pendingURL() const
++{
++    RefPtr page = nativePage();
++    return page && isValid() ? page->pageLoadState().provisionalURL() : URL { };
++}
++
++bool WebExtensionTab::isLoadingComplete() const
++{
++    RefPtr page = nativePage();
++    return page && isValid() && !page->pageLoadState().isLoading();
++}
++
++WebExtensionTabParameters WebExtensionTab::parameters() const
++{
++    WebExtensionTabParameters result;
++    result.identifier = identifier();
++    if (!extensionHasAccess())
++        return result;
++    bool hasPermission = extensionHasPermission();
++    result.url = hasPermission ? url() : URL { };
++    result.title = hasPermission ? title() : nullString();
++    RefPtr window = this->window();
++    result.windowIdentifier = window ? window->identifier() : WebExtensionWindowConstants::NoneIdentifier;
++    result.index = index();
++    result.active = isActive();
++    result.selected = isSelected();
++    result.loading = !isLoadingComplete();
++    result.privateBrowsing = isPrivate();
++    return result;
++}
++
++WebExtensionTabParameters WebExtensionTab::changedParameters(OptionSet<ChangedProperties> properties) const
++{
++    WebExtensionTabParameters result;
++    if (!extensionHasAccess())
++        return result;
++    if (properties.isEmpty())
++        properties = changedProperties();
++    bool hasPermission = extensionHasPermission();
++    if (properties.contains(ChangedProperties::URL))
++        result.url = hasPermission ? url() : URL { };
++    if (properties.contains(ChangedProperties::Title))
++        result.title = hasPermission ? title() : nullString();
++    if (properties.contains(ChangedProperties::Loading))
++        result.loading = !isLoadingComplete();
++    return result;
++}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionTestMessageQueueHaiku.h b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionTestMessageQueueHaiku.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..41c42fb6848b3ce5783ff3102c0f6afcedd249a0
@@ -32623,6 +33225,132 @@ index 0000000000000000000000000000000000000000..769a2d9242a9a3966bbf75bfc378522e
 +{
 +    ASSERT(RunLoop::isMain());
 +    m_pendingTasks.remove(task);
++}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionWindowHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionWindowHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..005111f7ad299b79005846f7f468ca78ba28ee86
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionWindowHaiku.cpp
+@@ -0,0 +1,120 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#include "config.h"
++#include "WebExtensionWindow.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++
++#include "BrowserTabRegistryHaiku.h"
++#include "WebExtensionContext.h"
++#include "WebExtensionController.h"
++#include "WebExtensionTab.h"
++#include "WebExtensionWindowParameters.h"
++#include "WebsiteDataStore.h"
++#include <wtf/TZoneMallocInlines.h>
++
++namespace WebKit {
++
++WTF_MAKE_TZONE_ALLOCATED_IMPL(WebExtensionWindow);
++
++WebExtensionWindow::WebExtensionWindow(const WebExtensionContext& context, uint64_t identifier)
++    : m_extensionContext(context)
++    , m_nativeWindowIdentifier(identifier)
++{
++}
++
++WebExtensionContext* WebExtensionWindow::extensionContext() const { return m_extensionContext.get(); }
++bool WebExtensionWindow::operator==(const WebExtensionWindow& other) const { return this == &other; }
++
++bool WebExtensionWindow::isValid() const
++{
++    RefPtr context = m_extensionContext.get();
++    return context && context->isValidWindow(*this);
++}
++
++bool WebExtensionWindow::isOpen() const { return m_isOpen && isValid(); }
++
++bool WebExtensionWindow::extensionHasAccess() const
++{
++    return isValid() && (!isPrivate() || m_extensionContext->hasAccessToPrivateData());
++}
++
++bool WebExtensionWindow::isPrivate() const
++{
++    RefPtr context = m_extensionContext.get();
++    RefPtr controller = context ? context->extensionController() : nullptr;
++    return controller && !controller->configuration().defaultWebsiteDataStore().isPersistent();
++}
++
++WebExtensionWindow::TabVector WebExtensionWindow::tabs(SkipValidation) const
++{
++    TabVector result;
++    RefPtr context = m_extensionContext.get();
++    if (!context || !isValid())
++        return result;
++    RefPtr controller = context->extensionController();
++    auto window = controller->nativeBrowserTabs()->window(m_nativeWindowIdentifier);
++    if (!window)
++        return result;
++    for (auto page : window->pages) {
++        if (RefPtr tab = context->getOrCreateNativeTab(page))
++            result.append(tab.releaseNonNull());
++    }
++    return result;
++}
++
++RefPtr<WebExtensionTab> WebExtensionWindow::activeTab(SkipValidation) const
++{
++    RefPtr context = m_extensionContext.get();
++    if (!context || !isValid())
++        return nullptr;
++    RefPtr controller = context->extensionController();
++    auto window = controller->nativeBrowserTabs()->window(m_nativeWindowIdentifier);
++    return window && window->activePage ? context->getOrCreateNativeTab(*window->activePage) : nullptr;
++}
++
++bool WebExtensionWindow::isFocused() const
++{
++    RefPtr context = m_extensionContext.get();
++    if (!context || !isValid())
++        return false;
++    RefPtr controller = context->extensionController();
++    return controller->nativeBrowserTabs()->focusedWindow() == m_nativeWindowIdentifier;
++}
++
++bool WebExtensionWindow::isFrontmost() const
++{
++    RefPtr context = m_extensionContext.get();
++    if (!context || !isValid())
++        return false;
++    RefPtr controller = context->extensionController();
++    auto windows = controller->nativeBrowserTabs()->windows();
++    return !windows.isEmpty() && windows[0].identifier == m_nativeWindowIdentifier;
++}
++
++WebExtensionWindowParameters WebExtensionWindow::minimalParameters() const
++{
++    WebExtensionWindowParameters result;
++    result.identifier = identifier();
++    return result;
++}
++
++WebExtensionWindowParameters WebExtensionWindow::parameters(PopulateTabs populateTabs) const
++{
++    auto result = minimalParameters();
++    if (!extensionHasAccess())
++        return result;
++    result.focused = isFocused();
++    result.privateBrowsing = isPrivate();
++    if (populateTabs == PopulateTabs::Yes) {
++        Vector<WebExtensionTabParameters> parameters;
++        for (auto& tab : tabs())
++            parameters.append(tab->parameters());
++        result.tabs = WTF::move(parameters);
++    }
++    return result;
 +}
 +
 +} // namespace WebKit

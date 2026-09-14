@@ -1518,3 +1518,20 @@ controller/profile/page runtime remains unverified. Native storage-deletion
 notifications and tab/window delegates are still missing. See [controller host
 evidence and limits](webextensions-native-controller-host.md).
 Patch: `7d5fe9b8cc4f898dae1bcda278c6468dc4eee5cedd4904d0b146d40f230188ce`.
+
+2026-09-14 tenth full extension link result: the frozen `5358cf19...` build
+completes compilation and fails at the WebKit shared-library link with 37
+missing symbols. Navigation event dispatch is resolved; the two newly enabled
+frame-query receiver methods remain unresolved in that frozen build. It predates
+the browser registry, controller host and native tab/frame implementations.
+Evidence: `.vm/modern-extensions-navigation-api-build-result.json`.
+The feature-enabled engine has not linked or run an extension.
+
+2026-09-14 native extension tabs and frames: context lookups now resolve actual
+registered WebKit pages and windows, retain per-extension identifiers, prune
+stale wrappers and enforce private access. Frame queries use the process frame
+tree and recheck permissions before replying. **Eight final native units
+compile**. Tab/window mutation and event APIs remain unfinished; no wrapper,
+frame query, IPC or extension runtime was executed. See [tab/frame evidence and
+limits](webextensions-native-tabs-and-frames.md).
+Patch: `e9e643ec3a02d6b3f73f386db7b4a5e05eda99c45832c506dc1a34ce6db43502`.
