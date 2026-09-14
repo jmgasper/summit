@@ -1081,3 +1081,20 @@ A new separate full build uses three workers and this patch, recorded in
 `.vm/modern-extensions-process-events-build.log`. The preview artifact remains
 `bundle-yqhmejfw`. Exact source scope, failures, evidence and missing runtime
 work: [native process bindings](webextensions-native-process-bindings.md).
+
+
+2026-09-14 native port bindings: the JavaScript port API now uses common C++
+and generated C++ bindings. Page ownership preserves listener multiplicity
+and independent channels. Its native helper passes 22 assertions with no
+fresh debugger events; restoring the former behaviors in an isolated
+mutation fails nine assertions as expected. Port/namespace/runtime/context
+units, the generated port binding and both IPC receivers compile. Incoming
+port messages retain loaded-context validators and gesture restrictions.
+The final UI disconnect-event route also compiles. No extension was run.
+
+Patch: `91b1db7aefd1bc6212d452e2eeb3871e99ecb23febee1d8ea6472eca89d5b02f`.
+The full three-worker engine build continues on its frozen `1daf0679...`
+source tree; it has progressed beyond the WebCore JavaScript and module
+units. The preview artifact remains `bundle-yqhmejfw`, with extensions off.
+Remaining message routing, sender conversion and runtime requirements are
+recorded with the precise test scope in [native ports](webextensions-native-ports.md).

@@ -18,12 +18,13 @@ UNITS = ('WebExtensionController.cpp', 'WebExtensionContext.cpp',
 EXTRA_UNITS = ('haiku/WebExtensionURLSchemeHandlerHaiku.cpp', 'haiku/WebExtensionContextHaiku.cpp',
                'haiku/WebExtensionStateHaiku.cpp', 'Bindings/JSWebExtensionWrapper.cpp',
                'API/WebExtensionAPINamespace.cpp', 'API/WebExtensionAPIRuntime.cpp',
-               'API/WebExtensionAPIEvent.cpp')
-GENERATED_UNITS = ('WebExtensionContextMessageReceiver.cpp',)
-BINDING_UNITS = ('JSWebExtensionAPIEvent.cpp',)
+               'API/WebExtensionAPIEvent.cpp', 'API/WebExtensionAPIPort.cpp')
+GENERATED_UNITS = ('WebExtensionContextMessageReceiver.cpp', 'WebExtensionContextProxyMessageReceiver.cpp')
+BINDING_UNITS = ('JSWebExtensionAPIEvent.cpp', 'JSWebExtensionAPIPort.cpp')
 PAGE_UNITS = {'WebPage.cpp': 'WebProcess/WebPage/WebPage.cpp',
               'WebLocalFrameLoaderClient.cpp': 'WebProcess/WebCoreSupport/WebLocalFrameLoaderClient.cpp'}
-UI_API_UNITS = {'WebExtensionContextAPIEvent.cpp': 'UIProcess/Extensions/API/WebExtensionContextAPIEvent.cpp'}
+UI_API_UNITS = {'WebExtensionContextAPIEvent.cpp': 'UIProcess/Extensions/API/WebExtensionContextAPIEvent.cpp',
+                'WebExtensionContextAPIPort.cpp': 'UIProcess/Extensions/API/WebExtensionContextAPIPort.cpp'}
 DEFAULT_ENGINE = '/boot/home/summit-webkit'
 
 
