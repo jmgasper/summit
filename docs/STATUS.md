@@ -1114,3 +1114,17 @@ its accessibility unit repeated the previously observed non-void-return
 warning, with no reported compile failure so far. The preview artifact is
 still `bundle-yqhmejfw`, with extensions off. See [message replies](webextensions-native-message-replies.md)
 for exact evidence and the remaining sender/UI/background work.
+
+
+2026-09-14 extension string bridge: conversion now preserves UTF-16 code
+units directly instead of passing through NUL-terminated UTF-8. All 46
+native assertions pass, including all 65,536 code-unit values and actual
+JavaScript evaluation. Restoring the old conversion fails 21 assertions
+as expected. The string helper, wrapper and runtime unit also compile.
+No fresh debugger events or source/dependency changes occurred in the
+successful helper run. See [string evidence](webextensions-native-strings.md).
+
+Patch: `afeb9db214b575cddb072d8f65e890cb1cb10d0508b6a55bae32a00089e1074e`.
+The separate full engine build remains frozen on `1daf0679...` and is
+progressing through WebCore HTML units. The verified preview remains
+`bundle-yqhmejfw`, with extensions disabled.

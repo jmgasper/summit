@@ -12,6 +12,12 @@ have separate native compile evidence. Reports and exact scope are in the
 [manifest/resource notes](../tools/test-engine-extension-manifest-core-notes.md)
 and [ZIP/XPI notes](../tools/test-engine-extension-archives-notes.md).
 
+Subsequent native helper checks add [22 page-port ownership assertions](webextensions-native-ports.md),
+[51 JavaScript reply assertions](webextensions-native-message-replies.md), and
+[46 UTF-16 bridge assertions](webextensions-native-strings.md). Their related
+common API, wrapper and IPC units have isolated compile passes. These remain
+separate from a linked extension context and browser runtime.
+
 The verified browser build keeps `ENABLE_WK_WEB_EXTENSIONS=OFF`. A separate
 full feature-enabled build is also being ported; its first attempt compiled
 JavaScriptCore/PAL but stalled during WebCore compilation in the VM's filesystem,
