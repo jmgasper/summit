@@ -68,13 +68,35 @@ The modern configuration enables WebKit's process architecture
 and currently disables the GPU process. The complete modern engine and helper
 processes now link, and its native preview renders the live HTTP/DOM/storage
 fixture with a verified frame on screen. The full browser passes 143 close-workflow checks and the modern API passes
-12 context storage stages. All 33 navigation checks and 30 repeated history cycles pass. Helper launch
-failures and intermittent shutdown hangs remain under investigation. Its ICU 78
-JavaScriptCore passes 31 JIT/interpreter
+12 context storage stages. All 33 navigation checks and 30 repeated history cycles pass.
+The native fork allocator fix passes 900 concurrent-launch checks. The native
+looper-lock fix passes 14 focused checks and three consecutive context teardown/
+reopen runs, all exiting normally. Its ICU 78 JavaScriptCore passes 31 JIT/interpreter
 smoke checks. Its full conformance run records 101,849 passes, 140 failures and
 486 skipped files, fixing 94 ICU-related failures without any regressions in
 the complete comparison. Of the remaining failures, 138 match pinned upstream
 Linux expectations and two are deep-WeakMap staging timeouts.
+
+The modern Haiku WebKit library provides corrected native `__rw_lock_read_lock`
+and `__rw_lock_write_lock` acquisition routines. The system wait loop can spin
+forever after SIGCHLD interrupts a blocked looper operation. The replacement
+restores the thread wait state under the native queue mutex and recognizes a
+concurrent handoff before retrying. Initialization and release still use libroot.
+Keep this unit in libWebKit: placing it only in transitive JavaScriptCore lets
+libroot resolve first for the browser. No WTF lock state is duplicated, and no
+OS files are changed. Its private lock/TLS headers must match the target Haiku
+SDK and runtime; the tested environment is beta6 x86_64 hrev59866+79. The unit
+skips WebKit's precompiled header because its MutexLocker alias conflicts with
+the native header. Verify a frozen bundle with:
+
+```sh
+python3 tools/test-engine-native-locks.py --bundle /boot/home/summit/build-modern-browser/bundle-ID
+```
+
+The test checks the actual symbol provider, native recursive locking, concurrent
+protected reads/writes, and 800 real BLooper/BHandler lifecycles under SIGCHLD.
+It links WebKit directly with JavaScriptCore transitive, matching the browser,
+and runs without preload overrides or disabling ASLR.
 
 Current status: Haiku CMake configuration succeeds with ICU 74.1. Current
 JavaScriptCore and its shell build successfully after correcting the initial

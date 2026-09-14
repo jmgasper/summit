@@ -608,6 +608,43 @@ approach remains under investigation; no OS source has been changed. Evidence:
 `.vm/native-looper-signal-probe.json` and
 `.vm/native-looper-signal-variants.json`.
 
+The application-side lock fix now passes the failing integration workflow.
+Haiku's native wait state is restored while holding its queue mutex; after an
+interruption the protected waiter list distinguishes a granted lock from a
+pending wait. Only native acquisition routines are exported by libWebKit;
+initialization/release stay in libroot and no WTF state is duplicated. The first
+JavaScriptCore-only placement passed standalone tests but was ineffective in
+the browser: libroot resolved first. A browser-order regression reproduces that
+failure and passes with the corrected provider; the final test verifies both
+actual symbol addresses belong to the frozen WebKit library. Private lock/TLS
+headers are confined to the compatibility unit, which skips the precompiled
+header to avoid the two libraries' MutexLocker alias collision. No OS sources
+were changed. Evidence: `.vm/rwlock-binding-result.json`,
+`.vm/modern-rwlock-context-hang.report` and
+`.vm/native-lock-inputs.lgs637rx/result.json` (expected negative control).
+
+Patch `67841526e8efee114f53c075446854de22ac3894d1a561d396f0212b867031fe`
+rebuilds successfully and is frozen in native `bundle-ihenjatl`. It passes all
+**14 native lock checks**: provider identity, recursion, 8,000 protected updates
+alongside 8,000 reads, and 800 BLooper/BHandler lifecycles under process-wide
+SIGCHLD. **Three consecutive 12-stage context runs** retain persistent storage,
+clear private storage on reopen, share data only within their contexts, remove
+all helpers during both teardowns and exit normally (0). The full browser again
+passes **143 close-workflow checks** and exits normally. JavaScriptCore passes
+**31 JIT/interpreter smoke checks** with ASLR enabled; all **115 WTF exports**
+and ownership sentinels remain in JavaScriptCore, with zero WebKit duplicates.
+These results address the reproduced launch and signal/looper shutdown faults;
+they do not establish general platform or extension completeness. Evidence:
+
+- `.vm/modern-webkit-rwlock-final-build.log`
+- `.vm/native-lock-inputs.ioazvxwx/result.json`
+- `.vm/modern-context-063ac14ee4e9c6614e74bd73/result.json`
+- `.vm/modern-context-c1371b5e6afeee2cbc11c114/result.json`
+- `.vm/modern-context-888c491a32534f49934ac103/result.json`
+- `.vm/modern-close-5a33b5a066c5b585c4a8e1c0/result.json`
+- `.vm/jsc-rwlock-validation.k8_m101o/results/result.json`
+- `.vm/rwlock-wtf-postlink-results.json`
+
 The tested frozen bundle has now been copied to
 `artifacts/modern-browser/bundle-mjs1avo_`, with its app sources, private
 libraries, helpers, exact patched native WebKit source trees, licenses and
