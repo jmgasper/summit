@@ -1551,3 +1551,19 @@ units compile**. Native UI event forwarding, blocking requests, full compatibili
 and actual extension runtime remain unfinished. See [request-event evidence and
 limits](webextensions-native-web-request.md).
 Patch: `c9587d431175525e047288be50e42c7b97fc365ad93831a1cf9e3c6a78073a71`.
+
+2026-09-15 (local) twelfth full extension link result: the frozen `c9587d43...`
+build completes compilation and fails at the WebKit shared-library link with
+23 missing symbols, down from 29. All six request notification symbols are
+resolved, with no new missing symbols. This build predates native UI resource
+forwarding. Evidence: `.vm/modern-extensions-web-request-build-result.json`.
+No feature-enabled engine link or extension runtime passed.
+
+2026-09-15 (local) native resource forwarding: loader requests now record actual
+loaded extension contexts, and page/controller/context notifications reach the
+common request-event messages. Queued wake-up callbacks recheck live tab and
+permission state before sending data. **Four native units compile**; no resource
+notification, permission race, network request or extension runtime was executed.
+Native CORS permission prompts remain unfinished. See [forwarding evidence and
+limits](webextensions-native-web-request-forwarding.md).
+Patch: `e9fa1eff70595ba5e03552f0d8fd811084b56861e630853866ccce3e2361f756`.

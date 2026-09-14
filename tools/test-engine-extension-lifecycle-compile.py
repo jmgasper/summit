@@ -34,14 +34,17 @@ BINDING_UNITS = ('JSWebExtensionAPIWebRequest.cpp', 'JSWebExtensionAPIWebRequest
                  'JSWebExtensionAPIEvent.cpp', 'JSWebExtensionAPIPort.cpp',
                  'JSWebExtensionAPIStorage.cpp', 'JSWebExtensionAPIStorageArea.cpp',
                  'JSWebExtensionAPINamespace.cpp', 'JSWebExtensionAPIWebPageNamespace.cpp')
-PAGE_UNITS = {'WebPage.cpp': 'WebProcess/WebPage/WebPage.cpp',
+PAGE_UNITS = {'WebLoaderStrategy.cpp': 'WebProcess/Network/WebLoaderStrategy.cpp',
+              'WebPage.cpp': 'WebProcess/WebPage/WebPage.cpp',
               'WebLocalFrameLoaderClient.cpp': 'WebProcess/WebCoreSupport/WebLocalFrameLoaderClient.cpp'}
 NATIVE_PAGE_UNITS = {'BrowserTabRegistryHaiku.cpp': 'UIProcess/haiku/BrowserTabRegistryHaiku.cpp',
                      'WebViewContextHaiku.cpp': 'UIProcess/haiku/WebViewContextHaiku.cpp',
                      'WebKitContext.cpp': 'UIProcess/API/haiku/WebKitContext.cpp',
                      'WebPageProxy.cpp': 'UIProcess/WebPageProxy.cpp',
                      'WebView.cpp': 'UIProcess/haiku/WebView.cpp'}
-UI_API_UNITS = {'WebExtensionWebRequestFilter.cpp': 'WebProcess/Extensions/WebExtensionWebRequestFilter.cpp',
+UI_API_UNITS = {'WebExtensionControllerWebRequest.cpp': 'UIProcess/Extensions/WebExtensionControllerWebRequest.cpp',
+                'WebExtensionContextWebRequest.cpp': 'UIProcess/Extensions/WebExtensionContextWebRequest.cpp',
+                'WebExtensionWebRequestFilter.cpp': 'WebProcess/Extensions/WebExtensionWebRequestFilter.cpp',
                 'WebExtensionWebRequestBody.cpp': 'WebProcess/Extensions/WebExtensionWebRequestBody.cpp',
                 'WebExtensionTabHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionTabHaiku.cpp',
                 'WebExtensionWindowHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionWindowHaiku.cpp',

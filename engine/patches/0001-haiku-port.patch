@@ -24606,7 +24606,7 @@ index 0000000000000000000000000000000000000000..964df248231137e87da9c37afbb37b84
 +}
 +#endif
 diff --git a/Source/WebKit/Sources.txt b/Source/WebKit/Sources.txt
-index e229fa1ae53c6c89e7534316dd06a7c5bfec5330..ddee2e27c953711269f304cda61649e3a4bea0f2 100644
+index e229fa1ae53c6c89e7534316dd06a7c5bfec5330..9388aa4f02c1c22ffeac08c115d9f7de56040ae0 100644
 --- a/Source/WebKit/Sources.txt
 +++ b/Source/WebKit/Sources.txt
 @@ -321,6 +321,7 @@ Shared/Extensions/WebExtensionSQLiteRow.cpp
@@ -24617,7 +24617,7 @@ index e229fa1ae53c6c89e7534316dd06a7c5bfec5330..ddee2e27c953711269f304cda61649e3
  Shared/Extensions/WebExtensionUtilities.cpp
  Shared/Extensions/WebExtensionRegisteredScriptsSQLiteStore.cpp
  
-@@ -609,11 +610,20 @@ UIProcess/Downloads/DownloadProxyMap.cpp
+@@ -609,11 +610,22 @@ UIProcess/Downloads/DownloadProxyMap.cpp
  UIProcess/Extensions/WebExtension.cpp
  UIProcess/Extensions/WebExtensionAlarm.cpp
  UIProcess/Extensions/WebExtensionContext.cpp
@@ -24627,6 +24627,8 @@ index e229fa1ae53c6c89e7534316dd06a7c5bfec5330..ddee2e27c953711269f304cda61649e3
 +UIProcess/Extensions/API/WebExtensionContextAPIScripting.cpp
 +UIProcess/Extensions/API/WebExtensionContextAPIWebNavigation.cpp
  UIProcess/Extensions/WebExtensionController.cpp
++UIProcess/Extensions/WebExtensionControllerWebRequest.cpp
++UIProcess/Extensions/WebExtensionContextWebRequest.cpp
  UIProcess/Extensions/WebExtensionControllerConfiguration.cpp
  UIProcess/Extensions/WebExtensionDataRecord.cpp
  UIProcess/Extensions/WebExtensionDeclarativeNetRequestSQLiteStore.cpp
@@ -24638,7 +24640,7 @@ index e229fa1ae53c6c89e7534316dd06a7c5bfec5330..ddee2e27c953711269f304cda61649e3
  UIProcess/Extensions/WebExtensionStorageSQLiteStore.cpp
  
  UIProcess/Extensions/API/WebExtensionContextAPIAlarms.cpp
-@@ -711,13 +721,31 @@ WebProcess/EncryptedMedia/MediaKeySystemPermissionRequestManager.cpp
+@@ -711,13 +723,31 @@ WebProcess/EncryptedMedia/MediaKeySystemPermissionRequestManager.cpp
  
  WebProcess/Extensions/WebExtensionContextProxy.cpp
  WebProcess/Extensions/WebExtensionControllerProxy.cpp
@@ -28089,7 +28091,7 @@ index cd0440f4c462d092dbc520844d6fbdf6815115ce..897d680755e39a4b2724dd0f07fab59b
  {
      frames.append(frameParametersForFrame(frame, parentFrame, tab, this, true));
 diff --git a/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm b/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm
-index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..001b2102cce6746b810995a3c255a43cd261d824 100644
+index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..4bd9ed28ec435ddc15abeeb8d741a4b0a38440db 100644
 --- a/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm
 +++ b/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm
 @@ -29,6 +29,7 @@
@@ -28335,7 +28337,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..001b2102cce6746b810995a3c255a43c
  Ref<WebExtensionWindow> WebExtensionContext::getOrCreateWindow(WKWebExtensionWindow *delegate) const
  {
      ASSERT(delegate);
-@@ -1631,101 +1443,9 @@ void WebExtensionContext::didChangeTabProperties(WebExtensionTab& tab, OptionSet
+@@ -1631,233 +1443,12 @@ void WebExtensionContext::didChangeTabProperties(WebExtensionTab& tab, OptionSet
      }).get());
  }
  
@@ -28418,11 +28420,11 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..001b2102cce6746b810995a3c255a43c
 -        });
 -    }
 -}
- 
+-
 -void WebExtensionContext::didFailLoadForFrame(WebPageProxyIdentifier pageID, const WebExtensionFrameParameters& frameParameters, WallTime timestamp)
 -{
 -    ASSERT(frameParameters.url);
--
+ 
 -    RefPtr tab = getTab(pageID);
 -    auto& frameURL = *frameParameters.url;
 -
@@ -28437,7 +28439,139 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..001b2102cce6746b810995a3c255a43c
  
  // MARK: webRequest
  
-@@ -2374,30 +2094,7 @@ void WebExtensionContext::userGesturePerformed(WebExtensionTab& tab)
+-bool WebExtensionContext::hasPermissionToSendWebRequestEvent(WebExtensionTab* tab, const URL& resourceURL, const ResourceLoadInfo& loadInfo)
+-{
+-    if (!tab)
+-        return false;
+-
+-    if (!hasPermission(WebExtensionPermission::webRequest(), tab))
+-        return false;
+-
+-    bool isMainFrameNavigation = loadInfo.type == ResourceLoadInfo::Type::Document && !loadInfo.parentFrameID;
+-    if (!isMainFrameNavigation && !tab->extensionHasPermission())
+-        return false;
+-
+-    if (resourceURL.isValid() && !hasPermission(resourceURL, tab))
+-        return false;
+-
+-    const URL& resourceLoadURL = loadInfo.originalURL;
+-    if (resourceLoadURL.isValid() && !hasPermission(resourceLoadURL, tab))
+-        return false;
+-
+-    return true;
+-}
+-
+-void WebExtensionContext::resourceLoadDidSendRequest(WebPageProxyIdentifier pageID, const ResourceLoadInfo& loadInfo, const WebCore::ResourceRequest& request)
+-{
+-    RefPtr tab = getTab(pageID);
+-    if (!hasPermissionToSendWebRequestEvent(tab.get(), request.url(), loadInfo))
+-        return;
+-
+-    RefPtr window = tab->window();
+-    auto windowIdentifier = window ? window->identifier() : WebExtensionWindowConstants::NoneIdentifier;
+-
+-    std::optional<IPC::FormDataReference> formDataReference;
+-    if (RefPtr formData = request.httpBody()) {
+-        RefPtr resolvedFormData = formData->resolveBlobReferences().ptr();
+-        formDataReference = IPC::FormDataReference { WTF::move(resolvedFormData) };
+-    }
+-
+-    constexpr auto beforeRequestType = WebExtensionEventListenerType::WebRequestOnBeforeRequest;
+-    constexpr auto beforeSendHeadersType = WebExtensionEventListenerType::WebRequestOnBeforeSendHeaders;
+-    constexpr auto sendHeadersType = WebExtensionEventListenerType::WebRequestOnSendHeaders;
+-
+-    wakeUpBackgroundContentIfNecessaryToFireEvents({ beforeRequestType, beforeSendHeadersType, sendHeadersType }, [=, this, protectedThis = Ref { *this }] {
+-        sendToProcessesForEvents({ beforeRequestType, beforeSendHeadersType, sendHeadersType }, Messages::WebExtensionContextProxy::ResourceLoadDidSendRequest(tab->identifier(), windowIdentifier, request, loadInfo, formDataReference));
+-    });
+-}
+-
+-void WebExtensionContext::resourceLoadDidPerformHTTPRedirection(WebPageProxyIdentifier pageID, const ResourceLoadInfo& loadInfo, const WebCore::ResourceResponse& response, const WebCore::ResourceRequest& request)
+-{
+-    RefPtr tab = getTab(pageID);
+-    if (!hasPermissionToSendWebRequestEvent(tab.get(), request.url(), loadInfo))
+-        return;
+-
+-    RefPtr window = tab->window();
+-    auto windowIdentifier = window ? window->identifier() : WebExtensionWindowConstants::NoneIdentifier;
+-
+-    constexpr auto headersReceivedType = WebExtensionEventListenerType::WebRequestOnHeadersReceived;
+-    constexpr auto redirectType = WebExtensionEventListenerType::WebRequestOnBeforeRedirect;
+-
+-    wakeUpBackgroundContentIfNecessaryToFireEvents({ headersReceivedType, redirectType }, [=, this, protectedThis = Ref { *this }] {
+-        sendToProcessesForEvents({ headersReceivedType, redirectType }, Messages::WebExtensionContextProxy::ResourceLoadDidPerformHTTPRedirection(tab->identifier(), windowIdentifier, response, loadInfo, request));
+-    });
+-
+-    // After dispatching the redirect events, also dispatch the `didSendRequest` events for the redirection.
+-    resourceLoadDidSendRequest(pageID, loadInfo, request);
+-}
+-
+-void WebExtensionContext::resourceLoadDidReceiveChallenge(WebPageProxyIdentifier pageID, const ResourceLoadInfo& loadInfo, const WebCore::AuthenticationChallenge& challenge)
+-{
+-    RefPtr tab = getTab(pageID);
+-    if (!hasPermissionToSendWebRequestEvent(tab.get(), URL { }, loadInfo))
+-        return;
+-
+-    RefPtr window = tab->window();
+-    auto windowIdentifier = window ? window->identifier() : WebExtensionWindowConstants::NoneIdentifier;
+-
+-    constexpr auto authRequiredType = WebExtensionEventListenerType::WebRequestOnAuthRequired;
+-
+-    wakeUpBackgroundContentIfNecessaryToFireEvents({ authRequiredType }, [=, this, protectedThis = Ref { *this }] {
+-        sendToProcessesForEvent(authRequiredType, Messages::WebExtensionContextProxy::ResourceLoadDidReceiveChallenge(tab->identifier(), windowIdentifier, challenge, loadInfo));
+-    });
+-}
+-
+-void WebExtensionContext::resourceLoadDidReceiveResponse(WebPageProxyIdentifier pageID, const ResourceLoadInfo& loadInfo, const WebCore::ResourceResponse& response)
+-{
+-    RefPtr tab = getTab(pageID);
+-    if (!hasPermissionToSendWebRequestEvent(tab.get(), response.url(), loadInfo))
+-        return;
+-
+-    RefPtr window = tab->window();
+-    auto windowIdentifier = window ? window->identifier() : WebExtensionWindowConstants::NoneIdentifier;
+-
+-    constexpr auto headersReceivedType = WebExtensionEventListenerType::WebRequestOnHeadersReceived;
+-    constexpr auto responseStartedType = WebExtensionEventListenerType::WebRequestOnResponseStarted;
+-
+-    wakeUpBackgroundContentIfNecessaryToFireEvents({ headersReceivedType, responseStartedType }, [=, this, protectedThis = Ref { *this }] {
+-        sendToProcessesForEvents({ headersReceivedType, responseStartedType }, Messages::WebExtensionContextProxy::ResourceLoadDidReceiveResponse(tab->identifier(), windowIdentifier, response, loadInfo));
+-    });
+-}
+-
+-void WebExtensionContext::resourceLoadDidCompleteWithError(WebPageProxyIdentifier pageID, const ResourceLoadInfo& loadInfo, const WebCore::ResourceResponse& response, const WebCore::ResourceError& error)
+-{
+-    RefPtr tab = getTab(pageID);
+-
+-    // If a Fetch or XHR fails due to CORS, prompt the user for permission to the URL
+-    // if the URL of the frame where the request originated corresponds to this extension.
+-    // This won't help the failed request, but future requests might succeed if the user
+-    // grants permission.
+-    if (error.isAccessControl() && (loadInfo.type == ResourceLoadInfo::Type::Fetch || loadInfo.type == ResourceLoadInfo::Type::XMLHTTPRequest)) {
+-        RefPtr<WebFrameProxy> originatingFrame = loadInfo.frameID ? WebFrameProxy::webFrame(*loadInfo.frameID) : nullptr;
+-        if (originatingFrame && isURLForThisExtension(originatingFrame->url())) {
+-            RELEASE_LOG_ERROR(Extensions, "Requesting permission to access URL due to CORS failure: %{sensitive}s", loadInfo.originalURL.string().utf8().legacyCStringPointer());
+-            requestPermissionToAccessURLs({ loadInfo.originalURL }, tab, nullptr, GrantOnCompletion::Yes, { PermissionStateOptions::RequestedWithTabsPermission, PermissionStateOptions::IncludeOptionalPermissions });
+-        }
+-    }
+-
+-    if (!hasPermissionToSendWebRequestEvent(tab.get(), response.url(), loadInfo))
+-        return;
+-
+-    RefPtr window = tab->window();
+-    auto windowIdentifier = window ? window->identifier() : WebExtensionWindowConstants::NoneIdentifier;
+-
+-    constexpr auto errorOccurredType = WebExtensionEventListenerType::WebRequestOnErrorOccurred;
+-    constexpr auto completedType = WebExtensionEventListenerType::WebRequestOnCompleted;
+-
+-    wakeUpBackgroundContentIfNecessaryToFireEvents({ errorOccurredType, completedType }, [=, this, protectedThis = Ref { *this }] mutable {
+-        sendToProcessesForEvents({ errorOccurredType, completedType }, Messages::WebExtensionContextProxy::ResourceLoadDidCompleteWithError(tab->identifier(), windowIdentifier, response, error, loadInfo));
+-    });
+-}
+-
+ #if ENABLE(CONTENT_EXTENSIONS)
+ void WebExtensionContext::resourceLoadWasBlockedByDeclarativeNetRequest(WebPageProxyIdentifier pageID, const WebExtensionContentRuleListBlockedLoadInfo& info)
+ {
+@@ -2374,30 +1965,7 @@ void WebExtensionContext::userGesturePerformed(WebExtensionTab& tab)
      didChangeTabProperties(tab, { WebExtensionTab::ChangedProperties::URL, WebExtensionTab::ChangedProperties::Title });
  }
  
@@ -28468,23 +28602,23 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..001b2102cce6746b810995a3c255a43c
  
  std::optional<WebCore::PageIdentifier> WebExtensionContext::backgroundPageIdentifier(WebProcessProxy& destinationProcess) const
  {
-@@ -2458,74 +2155,9 @@ Vector<WebExtensionContext::PageIdentifierTuple> WebExtensionContext::inspectorP
+@@ -2458,74 +2026,9 @@ Vector<WebExtensionContext::PageIdentifierTuple> WebExtensionContext::inspectorP
  }
  #endif // ENABLE(INSPECTOR_EXTENSIONS)
  
 -Vector<WebExtensionContext::PageIdentifierTuple> WebExtensionContext::popupPageIdentifiers(WebProcessProxy& destinationProcess) const
 -{
 -    Vector<PageIdentifierTuple> result;
--
+ 
 -    for (auto entry : m_popupPageActionMap) {
 -        Ref page = entry.key;
 -        Ref value = entry.value;
 -        RefPtr tab = value->tab();
 -        RefPtr window = tab ? tab->window() : value->window();
--
+ 
 -        auto tabIdentifier = tab ? std::optional(tab->identifier()) : std::nullopt;
 -        auto windowIdentifier = window ? std::optional(window->identifier()) : std::nullopt;
--
+ 
 -        result.append({ page->webPageIDInProcess(destinationProcess), tabIdentifier, windowIdentifier });
 -    }
 -
@@ -28506,14 +28640,14 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..001b2102cce6746b810995a3c255a43c
 -
 -        result.append({ page->webPageIDInProcess(destinationProcess), tab->identifier(), windowIdentifier });
 -    }
- 
+-
 -    return result;
 -}
- 
+-
 -void WebExtensionContext::addPopupPage(WebPageProxy& page, WebExtensionAction& action)
 -{
 -    m_popupPageActionMap.set(page, action);
- 
+-
 -    RefPtr tab = action.tab();
 -    RefPtr window = tab ? tab->window() : action.window();
 -
@@ -28543,7 +28677,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..001b2102cce6746b810995a3c255a43c
  
  void WebExtensionContext::enumerateExtensionPages(NOESCAPE Function<void(WebPageProxy&, bool&)>&& action)
  {
-@@ -2654,12 +2286,6 @@ WebsiteDataStore* WebExtensionContext::websiteDataStore(std::optional<PAL::Sessi
+@@ -2654,12 +2157,6 @@ WebsiteDataStore* WebExtensionContext::websiteDataStore(std::optional<PAL::Sessi
      return weakDataStore.get();
  }
  
@@ -28556,7 +28690,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..001b2102cce6746b810995a3c255a43c
  
  bool WebExtensionContext::isBackgroundPage(WebPageProxyIdentifier pageProxyIdentifier) const
  {
-@@ -2889,38 +2515,6 @@ void WebExtensionContext::saveBackgroundPageListenersToStorage()
+@@ -2889,38 +2386,6 @@ void WebExtensionContext::saveBackgroundPageListenersToStorage()
          writeStateToStorage();
  }
  
@@ -28595,7 +28729,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..001b2102cce6746b810995a3c255a43c
  #ifndef NDEBUG
  // This is only defined in debug builds since it has a performance impact with little benefit to release builds.
  void WebExtensionContext::reportWebViewConfigurationErrorIfNeeded(const WebExtensionTab& tab) const
-@@ -3386,18 +2980,6 @@ void WebExtensionContext::inspectorEffectiveAppearanceDidChange(API::InspectorEx
+@@ -3386,18 +2851,6 @@ void WebExtensionContext::inspectorEffectiveAppearanceDidChange(API::InspectorEx
  }
  #endif // ENABLE(INSPECTOR_EXTENSIONS)
  
@@ -28614,7 +28748,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..001b2102cce6746b810995a3c255a43c
  
  String WebExtensionContext::declarativeNetRequestContentRuleListFilePath()
  {
-@@ -3410,16 +2992,6 @@ String WebExtensionContext::declarativeNetRequestContentRuleListFilePath()
+@@ -3410,16 +2863,6 @@ String WebExtensionContext::declarativeNetRequestContentRuleListFilePath()
      return m_declarativeNetRequestContentRuleListFilePath;
  }
  
@@ -28631,7 +28765,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..001b2102cce6746b810995a3c255a43c
  
  static NSString *computeStringHashForContentBlockerRules(NSString *rules)
  {
-@@ -3630,19 +3202,6 @@ void WebExtensionContext::saveStorageAccessLevelsToStorage()
+@@ -3630,19 +3073,6 @@ void WebExtensionContext::saveStorageAccessLevelsToStorage()
      writeStateToStorage();
  }
  
@@ -28651,7 +28785,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..001b2102cce6746b810995a3c255a43c
  void WebExtensionContext::reloadBackgroundContentForTesting()
  {
      ASSERT(isLoaded() && inTestingMode());
-@@ -3776,20 +3335,6 @@ void WebExtensionContext::sendQueuedTestMessagesIfNeeded(WebExtensionEventListen
+@@ -3776,20 +3206,6 @@ void WebExtensionContext::sendQueuedTestMessagesIfNeeded(WebExtensionEventListen
      }
  }
  
@@ -28672,6 +28806,47 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..001b2102cce6746b810995a3c255a43c
  
  } // namespace WebKit
  
+diff --git a/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionControllerCocoa.mm b/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionControllerCocoa.mm
+index 3215e2e7509b0fabe3cd8044f6ff7a955347803d..99e5388669a8ee6781d914da9e183d93ed2df841 100644
+--- a/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionControllerCocoa.mm
++++ b/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionControllerCocoa.mm
+@@ -353,36 +353,6 @@ void WebExtensionController::updateWebsitePoliciesForNavigation(API::WebsitePoli
+     websitePolicies.setActiveContentRuleListActionPatterns(WTF::move(actionPatterns));
+ }
+ 
+-void WebExtensionController::resourceLoadDidSendRequest(WebPageProxyIdentifier pageID, const ResourceLoadInfo& loadInfo, const WebCore::ResourceRequest& request)
+-{
+-    for (Ref context : m_extensionContexts)
+-        context->resourceLoadDidSendRequest(pageID, loadInfo, request);
+-}
+-
+-void WebExtensionController::resourceLoadDidPerformHTTPRedirection(WebPageProxyIdentifier pageID, const ResourceLoadInfo& loadInfo, const WebCore::ResourceResponse& response, const WebCore::ResourceRequest& request)
+-{
+-    for (Ref context : m_extensionContexts)
+-        context->resourceLoadDidPerformHTTPRedirection(pageID, loadInfo, response, request);
+-}
+-
+-void WebExtensionController::resourceLoadDidReceiveChallenge(WebPageProxyIdentifier pageID, const ResourceLoadInfo& loadInfo, const WebCore::AuthenticationChallenge& challenge)
+-{
+-    for (Ref context : m_extensionContexts)
+-        context->resourceLoadDidReceiveChallenge(pageID, loadInfo, challenge);
+-}
+-
+-void WebExtensionController::resourceLoadDidReceiveResponse(WebPageProxyIdentifier pageID, const ResourceLoadInfo& loadInfo, const WebCore::ResourceResponse& response)
+-{
+-    for (Ref context : m_extensionContexts)
+-        context->resourceLoadDidReceiveResponse(pageID, loadInfo, response);
+-}
+-
+-void WebExtensionController::resourceLoadDidCompleteWithError(WebPageProxyIdentifier pageID, const ResourceLoadInfo& loadInfo, const WebCore::ResourceResponse& response, const WebCore::ResourceError& error)
+-{
+-    for (Ref context : m_extensionContexts)
+-        context->resourceLoadDidCompleteWithError(pageID, loadInfo, response, error);
+-}
+-
+ #if ENABLE(CONTENT_EXTENSIONS)
+ void WebExtensionController::resourceLoadWasBlockedByContentRuleList(WebPageProxyIdentifier pageID, const WebExtensionContentRuleListBlockedLoadInfo& info)
+ {
 diff --git a/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionDynamicScriptsCocoa.mm b/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionDynamicScriptsCocoa.mm
 index 713a395f6fda1c50c694eef6181a23349c9b5fb2..d6419587d5402f01e573eb5f7335695ab2f79c45 100644
 --- a/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionDynamicScriptsCocoa.mm
@@ -29594,6 +29769,259 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..1b0b6adda64558f01bef254b545f91d5
  
      // Windows APIs
      [Validator=isLoadedAndPrivilegedMessage] WindowsCreate(WebKit::WebExtensionWindowParameters creationParameters) -> (std::expected<std::optional<WebKit::WebExtensionWindowParameters>, WebKit::WebExtensionError> result)
+diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContextWebRequest.cpp b/Source/WebKit/UIProcess/Extensions/WebExtensionContextWebRequest.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..444fdfe41363ead30e248e648c5219486faf6420
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContextWebRequest.cpp
+@@ -0,0 +1,247 @@
++/*
++ * Copyright (C) 2022 Apple Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "WebExtensionContext.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS)
++
++#include "FormDataReference.h"
++#include "Logging.h"
++#include "ResourceLoadInfo.h"
++#include "WebErrors.h"
++#include "WebExtensionContentRuleListBlockedLoadInfo.h"
++#include "WebExtensionContextProxyMessages.h"
++#include "WebExtensionPermission.h"
++#include "WebFrameProxy.h"
++#include <WebCore/AuthenticationChallenge.h>
++#include <WebCore/FormData.h>
++#include <WebCore/ResourceError.h>
++#include <WebCore/ResourceRequest.h>
++#include <WebCore/ResourceResponse.h>
++
++namespace WebKit {
++
++bool WebExtensionContext::hasPermissionToSendWebRequestEvent(WebExtensionTab* tab, const URL& resourceURL, const ResourceLoadInfo& loadInfo)
++{
++    if (!isLoaded() || !tab || !isValidTab(*tab) || !tab->extensionHasAccess())
++        return false;
++
++    if (!hasPermission(WebExtensionPermission::webRequest(), tab))
++        return false;
++
++    bool isMainFrameNavigation = loadInfo.type == ResourceLoadInfo::Type::Document && !loadInfo.parentFrameID;
++    if (!isMainFrameNavigation && !tab->extensionHasPermission())
++        return false;
++
++    if (!resourceURL.isEmpty() && (!resourceURL.isValid() || !hasPermission(resourceURL, tab)))
++        return false;
++
++    const URL& resourceLoadURL = loadInfo.originalURL;
++    if (!resourceLoadURL.isValid() || !hasPermission(resourceLoadURL, tab))
++        return false;
++
++    return true;
++}
++
++void WebExtensionContext::resourceLoadDidSendRequest(WebPageProxyIdentifier pageID, const ResourceLoadInfo& loadInfo, const WebCore::ResourceRequest& request)
++{
++    RefPtr tab = getTab(pageID);
++    if (!hasPermissionToSendWebRequestEvent(tab.get(), request.url(), loadInfo))
++        return;
++
++    RefPtr window = tab->window();
++    auto windowIdentifier = window ? window->identifier() : WebExtensionWindowConstants::NoneIdentifier;
++
++    std::optional<IPC::FormDataReference> formDataReference;
++    if (RefPtr formData = request.httpBody()) {
++        RefPtr resolvedFormData = formData->resolveBlobReferences().ptr();
++        formDataReference = IPC::FormDataReference { WTF::move(resolvedFormData) };
++    }
++
++    constexpr auto beforeRequestType = WebExtensionEventListenerType::WebRequestOnBeforeRequest;
++    constexpr auto beforeSendHeadersType = WebExtensionEventListenerType::WebRequestOnBeforeSendHeaders;
++    constexpr auto sendHeadersType = WebExtensionEventListenerType::WebRequestOnSendHeaders;
++
++    wakeUpBackgroundContentIfNecessaryToFireEvents({ beforeRequestType, beforeSendHeadersType, sendHeadersType }, [=, this, protectedThis = Ref { *this }] {
++        // The tab, profile access or permission may have changed while the
++        // background context was waking. Retained objects do not grant access.
++        if (!hasPermissionToSendWebRequestEvent(tab.get(), request.url(), loadInfo))
++            return;
++
++        sendToProcessesForEvents({ beforeRequestType, beforeSendHeadersType, sendHeadersType }, Messages::WebExtensionContextProxy::ResourceLoadDidSendRequest(tab->identifier(), windowIdentifier, request, loadInfo, formDataReference));
++    });
++}
++
++void WebExtensionContext::resourceLoadDidPerformHTTPRedirection(WebPageProxyIdentifier pageID, const ResourceLoadInfo& loadInfo, const WebCore::ResourceResponse& response, const WebCore::ResourceRequest& request)
++{
++    RefPtr tab = getTab(pageID);
++    if (!hasPermissionToSendWebRequestEvent(tab.get(), request.url(), loadInfo))
++        return;
++
++    RefPtr window = tab->window();
++    auto windowIdentifier = window ? window->identifier() : WebExtensionWindowConstants::NoneIdentifier;
++
++    constexpr auto headersReceivedType = WebExtensionEventListenerType::WebRequestOnHeadersReceived;
++    constexpr auto redirectType = WebExtensionEventListenerType::WebRequestOnBeforeRedirect;
++
++    wakeUpBackgroundContentIfNecessaryToFireEvents({ headersReceivedType, redirectType }, [=, this, protectedThis = Ref { *this }] {
++        // The tab, profile access or permission may have changed while the
++        // background context was waking. Retained objects do not grant access.
++        if (!hasPermissionToSendWebRequestEvent(tab.get(), request.url(), loadInfo))
++            return;
++
++        sendToProcessesForEvents({ headersReceivedType, redirectType }, Messages::WebExtensionContextProxy::ResourceLoadDidPerformHTTPRedirection(tab->identifier(), windowIdentifier, response, loadInfo, request));
++    });
++
++    // After dispatching the redirect events, also dispatch the `didSendRequest` events for the redirection.
++    resourceLoadDidSendRequest(pageID, loadInfo, request);
++}
++
++void WebExtensionContext::resourceLoadDidReceiveChallenge(WebPageProxyIdentifier pageID, const ResourceLoadInfo& loadInfo, const WebCore::AuthenticationChallenge& challenge)
++{
++    RefPtr tab = getTab(pageID);
++    if (!hasPermissionToSendWebRequestEvent(tab.get(), URL { }, loadInfo))
++        return;
++
++    RefPtr window = tab->window();
++    auto windowIdentifier = window ? window->identifier() : WebExtensionWindowConstants::NoneIdentifier;
++
++    constexpr auto authRequiredType = WebExtensionEventListenerType::WebRequestOnAuthRequired;
++
++    wakeUpBackgroundContentIfNecessaryToFireEvents({ authRequiredType }, [=, this, protectedThis = Ref { *this }] {
++        // The tab, profile access or permission may have changed while the
++        // background context was waking. Retained objects do not grant access.
++        if (!hasPermissionToSendWebRequestEvent(tab.get(), URL { }, loadInfo))
++            return;
++
++        sendToProcessesForEvent(authRequiredType, Messages::WebExtensionContextProxy::ResourceLoadDidReceiveChallenge(tab->identifier(), windowIdentifier, challenge, loadInfo));
++    });
++}
++
++void WebExtensionContext::resourceLoadDidReceiveResponse(WebPageProxyIdentifier pageID, const ResourceLoadInfo& loadInfo, const WebCore::ResourceResponse& response)
++{
++    RefPtr tab = getTab(pageID);
++    if (!hasPermissionToSendWebRequestEvent(tab.get(), response.url(), loadInfo))
++        return;
++
++    RefPtr window = tab->window();
++    auto windowIdentifier = window ? window->identifier() : WebExtensionWindowConstants::NoneIdentifier;
++
++    constexpr auto headersReceivedType = WebExtensionEventListenerType::WebRequestOnHeadersReceived;
++    constexpr auto responseStartedType = WebExtensionEventListenerType::WebRequestOnResponseStarted;
++
++    wakeUpBackgroundContentIfNecessaryToFireEvents({ headersReceivedType, responseStartedType }, [=, this, protectedThis = Ref { *this }] {
++        // The tab, profile access or permission may have changed while the
++        // background context was waking. Retained objects do not grant access.
++        if (!hasPermissionToSendWebRequestEvent(tab.get(), response.url(), loadInfo))
++            return;
++
++        sendToProcessesForEvents({ headersReceivedType, responseStartedType }, Messages::WebExtensionContextProxy::ResourceLoadDidReceiveResponse(tab->identifier(), windowIdentifier, response, loadInfo));
++    });
++}
++
++void WebExtensionContext::resourceLoadDidCompleteWithError(WebPageProxyIdentifier pageID, const ResourceLoadInfo& loadInfo, const WebCore::ResourceResponse& response, const WebCore::ResourceError& error)
++{
++    RefPtr tab = getTab(pageID);
++
++#if PLATFORM(COCOA)
++    // If a Fetch or XHR fails due to CORS, prompt the user for permission to the URL
++    // if the URL of the frame where the request originated corresponds to this extension.
++    // This won't help the failed request, but future requests might succeed if the user
++    // grants permission.
++    if (error.isAccessControl() && (loadInfo.type == ResourceLoadInfo::Type::Fetch || loadInfo.type == ResourceLoadInfo::Type::XMLHTTPRequest)) {
++        RefPtr<WebFrameProxy> originatingFrame = loadInfo.frameID ? WebFrameProxy::webFrame(*loadInfo.frameID) : nullptr;
++        if (originatingFrame && isURLForThisExtension(originatingFrame->url())) {
++            RELEASE_LOG_ERROR(Extensions, "Requesting permission to access URL due to CORS failure: %{sensitive}s", loadInfo.originalURL.string().utf8().legacyCStringPointer());
++            requestPermissionToAccessURLs({ loadInfo.originalURL }, tab, nullptr, GrantOnCompletion::Yes, { PermissionStateOptions::RequestedWithTabsPermission, PermissionStateOptions::IncludeOptionalPermissions });
++        }
++    }
++
++#endif
++
++    if (!hasPermissionToSendWebRequestEvent(tab.get(), response.url(), loadInfo))
++        return;
++
++    RefPtr window = tab->window();
++    auto windowIdentifier = window ? window->identifier() : WebExtensionWindowConstants::NoneIdentifier;
++
++    constexpr auto errorOccurredType = WebExtensionEventListenerType::WebRequestOnErrorOccurred;
++    constexpr auto completedType = WebExtensionEventListenerType::WebRequestOnCompleted;
++
++    wakeUpBackgroundContentIfNecessaryToFireEvents({ errorOccurredType, completedType }, [=, this, protectedThis = Ref { *this }] mutable {
++        // The tab, profile access or permission may have changed while the
++        // background context was waking. Retained objects do not grant access.
++        if (!hasPermissionToSendWebRequestEvent(tab.get(), response.url(), loadInfo))
++            return;
++
++        sendToProcessesForEvents({ errorOccurredType, completedType }, Messages::WebExtensionContextProxy::ResourceLoadDidCompleteWithError(tab->identifier(), windowIdentifier, response, error, loadInfo));
++    });
++}
++
++#if ENABLE(CONTENT_EXTENSIONS)
++void WebExtensionContext::resourceLoadWasBlockedByDeclarativeNetRequest(WebPageProxyIdentifier pageID, const WebExtensionContentRuleListBlockedLoadInfo& info)
++{
++    RefPtr tab = getTab(pageID);
++
++    ResourceLoadInfo loadInfo {
++        NetworkResourceLoadIdentifier::generate(),
++        info.frameID,
++        info.parentFrameID,
++        { },
++        info.url,
++        info.httpMethod,
++        WallTime::now(),
++        false,
++        info.type
++    };
++
++    if (!hasPermissionToSendWebRequestEvent(tab.get(), info.url, loadInfo))
++        return;
++
++    RefPtr window = tab->window();
++    auto windowIdentifier = window ? window->identifier() : WebExtensionWindowConstants::NoneIdentifier;
++
++    constexpr auto beforeRequestType = WebExtensionEventListenerType::WebRequestOnBeforeRequest;
++    constexpr auto errorOccurredType = WebExtensionEventListenerType::WebRequestOnErrorOccurred;
++
++    auto error = blockedByContentBlockerError(WebCore::ResourceRequest { URL { info.url } });
++
++    wakeUpBackgroundContentIfNecessaryToFireEvents({ beforeRequestType, errorOccurredType }, [=, this, protectedThis = Ref { *this }] mutable {
++        // The tab, profile access or permission may have changed while the
++        // background context was waking. Retained objects do not grant access.
++        if (!hasPermissionToSendWebRequestEvent(tab.get(), info.url, loadInfo))
++            return;
++
++        sendToProcessesForEvent(beforeRequestType, Messages::WebExtensionContextProxy::ResourceLoadDidBlockBeforeRequest(tab->identifier(), windowIdentifier, loadInfo));
++        sendToProcessesForEvent(errorOccurredType, Messages::WebExtensionContextProxy::ResourceLoadDidCompleteWithError(tab->identifier(), windowIdentifier, WebCore::ResourceResponse { }, error, loadInfo));
++    });
++}
++
++#endif
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionController.cpp b/Source/WebKit/UIProcess/Extensions/WebExtensionController.cpp
 index 06cec0eb534d3f51d3a04e7ea3b68ac347c6a2cf..f0a9e6fafa0e1d0b06efd7057802f497e99b2118 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionController.cpp
@@ -29722,6 +30150,116 @@ index ddcfc1880bc1e51da6b6074feb17725c10723b44..b1c7675bc4b77c80e38c276904af4a57
  
  WebsiteDataStore& WebExtensionControllerConfiguration::defaultWebsiteDataStore() const
  {
+diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionControllerWebRequest.cpp b/Source/WebKit/UIProcess/Extensions/WebExtensionControllerWebRequest.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..492cd7b9622d443909f19ceec277ac2cabe5050e
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/WebExtensionControllerWebRequest.cpp
+@@ -0,0 +1,104 @@
++/*
++ * Copyright (C) 2022 Apple Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "WebExtensionController.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS)
++
++#include "WebExtensionContentRuleListBlockedLoadInfo.h"
++#include "WebExtensionContext.h"
++
++namespace WebKit {
++
++void WebExtensionController::resourceLoadDidSendRequest(WebPageProxyIdentifier pageID, const ResourceLoadInfo& loadInfo, const WebCore::ResourceRequest& request)
++{
++    auto contexts = m_extensionContexts;
++    for (Ref context : contexts) {
++        if (context->extensionController() != this)
++            continue;
++        context->resourceLoadDidSendRequest(pageID, loadInfo, request);
++    }
++}
++
++void WebExtensionController::resourceLoadDidPerformHTTPRedirection(WebPageProxyIdentifier pageID, const ResourceLoadInfo& loadInfo, const WebCore::ResourceResponse& response, const WebCore::ResourceRequest& request)
++{
++    auto contexts = m_extensionContexts;
++    for (Ref context : contexts) {
++        if (context->extensionController() != this)
++            continue;
++        context->resourceLoadDidPerformHTTPRedirection(pageID, loadInfo, response, request);
++    }
++}
++
++void WebExtensionController::resourceLoadDidReceiveChallenge(WebPageProxyIdentifier pageID, const ResourceLoadInfo& loadInfo, const WebCore::AuthenticationChallenge& challenge)
++{
++    auto contexts = m_extensionContexts;
++    for (Ref context : contexts) {
++        if (context->extensionController() != this)
++            continue;
++        context->resourceLoadDidReceiveChallenge(pageID, loadInfo, challenge);
++    }
++}
++
++void WebExtensionController::resourceLoadDidReceiveResponse(WebPageProxyIdentifier pageID, const ResourceLoadInfo& loadInfo, const WebCore::ResourceResponse& response)
++{
++    auto contexts = m_extensionContexts;
++    for (Ref context : contexts) {
++        if (context->extensionController() != this)
++            continue;
++        context->resourceLoadDidReceiveResponse(pageID, loadInfo, response);
++    }
++}
++
++void WebExtensionController::resourceLoadDidCompleteWithError(WebPageProxyIdentifier pageID, const ResourceLoadInfo& loadInfo, const WebCore::ResourceResponse& response, const WebCore::ResourceError& error)
++{
++    auto contexts = m_extensionContexts;
++    for (Ref context : contexts) {
++        if (context->extensionController() != this)
++            continue;
++        context->resourceLoadDidCompleteWithError(pageID, loadInfo, response, error);
++    }
++}
++
++#if ENABLE(CONTENT_EXTENSIONS)
++void WebExtensionController::resourceLoadWasBlockedByContentRuleList(WebPageProxyIdentifier pageID, const WebExtensionContentRuleListBlockedLoadInfo& info)
++{
++    auto contexts = m_extensionContexts;
++    for (auto& identifier : info.blockingContentRuleListIdentifiers) {
++        for (Ref context : contexts) {
++            if (context->extensionController() == this && context->uniqueIdentifier() == identifier) {
++                context->resourceLoadWasBlockedByDeclarativeNetRequest(pageID, info);
++                break;
++            }
++        }
++    }
++}
++
++#endif
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionDeclarativeNetRequestSQLiteStore.cpp b/Source/WebKit/UIProcess/Extensions/WebExtensionDeclarativeNetRequestSQLiteStore.cpp
 index 7da5d96d34059095571f904e63a5b9f13f679a01..03032934950a9331b859efc0ede02d5f8e9070b5 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionDeclarativeNetRequestSQLiteStore.cpp
@@ -33646,7 +34184,7 @@ index a4299803aa31a4a1705aebf669aba3190bcb878a..d0f3a47edf7d2b080af70b57cf1193ad
      virtual void requestScroll(const WebCore::FloatPoint& scrollPosition, const WebCore::IntPoint& scrollOrigin, WebCore::ScrollIsAnimated, WebCore::InterruptScrollAnimation) = 0;
  
 diff --git a/Source/WebKit/UIProcess/WebPageProxy.cpp b/Source/WebKit/UIProcess/WebPageProxy.cpp
-index dcb789361fd321de76e3f647c18328ad2f4af9fc..f090e05a870b4b10cab4e2e711a60da06eec8020 100644
+index dcb789361fd321de76e3f647c18328ad2f4af9fc..35438315d14c147e5a196bd3ac83f3dbf11c3f73 100644
 --- a/Source/WebKit/UIProcess/WebPageProxy.cpp
 +++ b/Source/WebKit/UIProcess/WebPageProxy.cpp
 @@ -466,7 +466,7 @@
@@ -33774,6 +34312,15 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..f090e05a870b4b10cab4e2e711a60da0
  }
  
  void WebPageProxy::didReceiveServerRedirectForProvisionalLoadForFrame(IPC::Connection& connection, FrameIdentifier frameID, std::optional<WebCore::NavigationIdentifier> navigationID, ResourceRequest&& request, const UserData& userData)
+@@ -10872,7 +10905,7 @@ void WebPageProxy::contentRuleListMatchedRule(WebCore::ContentRuleListMatchedRul
+ #if ENABLE(WK_WEB_EXTENSIONS) && ENABLE(CONTENT_EXTENSIONS)
+ void WebPageProxy::contentRuleListDidBlockLoad(WebExtensionContentRuleListBlockedLoadInfo&& info)
+ {
+-#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(COCOA)
++#if ENABLE(WK_WEB_EXTENSIONS) && (PLATFORM(COCOA) || PLATFORM(HAIKU))
+     if (RefPtr webExtensionController = this->webExtensionController())
+         webExtensionController->resourceLoadWasBlockedByContentRuleList(identifier(), WTF::move(info));
+ #endif
 @@ -11314,8 +11347,12 @@ void WebPageProxy::closePage()
          return;
  
@@ -33787,6 +34334,51 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..f090e05a870b4b10cab4e2e711a60da0
      m_uiClient->close(this);
  }
  
+@@ -12500,7 +12537,7 @@ WebInspectorUIProxy* WebPageProxy::inspector() const
+ 
+ void WebPageProxy::resourceLoadDidSendRequest(ResourceLoadInfo&& loadInfo, WebCore::ResourceRequest&& request)
+ {
+-#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(COCOA)
++#if ENABLE(WK_WEB_EXTENSIONS) && (PLATFORM(COCOA) || PLATFORM(HAIKU))
+     if (RefPtr webExtensionController = this->webExtensionController())
+         webExtensionController->resourceLoadDidSendRequest(identifier(), loadInfo, request);
+ #endif
+@@ -12511,7 +12548,7 @@ void WebPageProxy::resourceLoadDidSendRequest(ResourceLoadInfo&& loadInfo, WebCo
+ 
+ void WebPageProxy::resourceLoadDidPerformHTTPRedirection(ResourceLoadInfo&& loadInfo, WebCore::ResourceResponse&& response, WebCore::ResourceRequest&& request)
+ {
+-#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(COCOA)
++#if ENABLE(WK_WEB_EXTENSIONS) && (PLATFORM(COCOA) || PLATFORM(HAIKU))
+     if (RefPtr webExtensionController = this->webExtensionController())
+         webExtensionController->resourceLoadDidPerformHTTPRedirection(identifier(), loadInfo, response, request);
+ #endif
+@@ -12522,7 +12559,7 @@ void WebPageProxy::resourceLoadDidPerformHTTPRedirection(ResourceLoadInfo&& load
+ 
+ void WebPageProxy::resourceLoadDidReceiveChallenge(ResourceLoadInfo&& loadInfo, WebCore::AuthenticationChallenge&& challenge)
+ {
+-#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(COCOA)
++#if ENABLE(WK_WEB_EXTENSIONS) && (PLATFORM(COCOA) || PLATFORM(HAIKU))
+     if (RefPtr webExtensionController = this->webExtensionController())
+         webExtensionController->resourceLoadDidReceiveChallenge(identifier(), loadInfo, challenge);
+ #endif
+@@ -12533,7 +12570,7 @@ void WebPageProxy::resourceLoadDidReceiveChallenge(ResourceLoadInfo&& loadInfo,
+ 
+ void WebPageProxy::resourceLoadDidReceiveResponse(ResourceLoadInfo&& loadInfo, WebCore::ResourceResponse&& response)
+ {
+-#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(COCOA)
++#if ENABLE(WK_WEB_EXTENSIONS) && (PLATFORM(COCOA) || PLATFORM(HAIKU))
+     if (RefPtr webExtensionController = this->webExtensionController())
+         webExtensionController->resourceLoadDidReceiveResponse(identifier(), loadInfo, response);
+ #endif
+@@ -12544,7 +12581,7 @@ void WebPageProxy::resourceLoadDidReceiveResponse(ResourceLoadInfo&& loadInfo, W
+ 
+ void WebPageProxy::resourceLoadDidCompleteWithError(ResourceLoadInfo&& loadInfo, WebCore::ResourceResponse&& response, WebCore::ResourceError&& error)
+ {
+-#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(COCOA)
++#if ENABLE(WK_WEB_EXTENSIONS) && (PLATFORM(COCOA) || PLATFORM(HAIKU))
+     if (RefPtr webExtensionController = this->webExtensionController())
+         webExtensionController->resourceLoadDidCompleteWithError(identifier(), loadInfo, response, error);
+ #endif
 @@ -14815,7 +14852,7 @@ WebPageCreationParameters WebPageProxy::creationParameters(WebProcessProxy& proc
      parameters.hasResourceLoadClient = !!m_resourceLoadClient;
      parameters.portsForUpgradingInsecureSchemeForTesting = m_configuration->portsForUpgradingInsecureSchemeForTesting();
@@ -37538,7 +38130,7 @@ index 0000000000000000000000000000000000000000..2a51b2913800fada0f6279c8919bc190
 +
 +} // namespace WebKit
 diff --git a/Source/WebKit/WebKit.xcodeproj/project.pbxproj b/Source/WebKit/WebKit.xcodeproj/project.pbxproj
-index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..61a12ad4e3f4ba6acf5b0041458c0e3167edf42f 100644
+index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..cdb6eec88b401515908c295de0f1190861b9e124 100644
 --- a/Source/WebKit/WebKit.xcodeproj/project.pbxproj
 +++ b/Source/WebKit/WebKit.xcodeproj/project.pbxproj
 @@ -123,6 +123,8 @@
@@ -37647,7 +38239,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..61a12ad4e3f4ba6acf5b0041458c0e31
  		337042012B58A0880077FF78 /* JSWebExtensionAPIWebRequestEvent.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIWebRequestEvent.h; sourceTree = "<group>"; };
  		337042032B58A2430077FF78 /* WebExtensionAPIWebRequestEvent.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPIWebRequestEvent.h; sourceTree = "<group>"; };
  		337042052B58A2550077FF78 /* WebExtensionAPIWebRequestEventCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionAPIWebRequestEventCocoa.mm; sourceTree = "<group>"; };
-@@ -5478,8 +5503,21 @@
+@@ -5478,8 +5503,23 @@
  		337042082B58A8390077FF78 /* _WKWebExtensionWebRequestFilter.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = _WKWebExtensionWebRequestFilter.mm; sourceTree = "<group>"; };
  		33750522302D355C00FDB37C /* SystemTracePoints.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = SystemTracePoints.plist; sourceTree = "<group>"; };
  		3375A37029429DDA0028536D /* WebExtensionAPIWebNavigationCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionAPIWebNavigationCocoa.mm; sourceTree = "<group>"; };
@@ -37664,13 +38256,15 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..61a12ad4e3f4ba6acf5b0041458c0e31
 +		9829867FDC43CEAE0C3CDADB /* WebExtensionWebRequestBody.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = WebExtensionWebRequestBody.cpp; path = WebProcess/Extensions/WebExtensionWebRequestBody.cpp; sourceTree = SOURCE_ROOT; };
 +		987350B08238AFDF7C8A9D4A /* WebExtensionWebRequestFilter.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = WebExtensionWebRequestFilter.h; path = WebProcess/Extensions/WebExtensionWebRequestFilter.h; sourceTree = SOURCE_ROOT; };
 +		30C212E7CD01FD5168898E41 /* WebExtensionWebRequestBody.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = WebExtensionWebRequestBody.h; path = WebProcess/Extensions/WebExtensionWebRequestBody.h; sourceTree = SOURCE_ROOT; };
++		572F1A9F351B3208BE89E5B4 /* WebExtensionControllerWebRequest.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = WebExtensionControllerWebRequest.cpp; path = UIProcess/Extensions/WebExtensionControllerWebRequest.cpp; sourceTree = SOURCE_ROOT; };
++		1452CF556051A45195651DBA /* WebExtensionContextWebRequest.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = WebExtensionContextWebRequest.cpp; path = UIProcess/Extensions/WebExtensionContextWebRequest.cpp; sourceTree = SOURCE_ROOT; };
  		3375A37329429DF50028536D /* WebExtensionAPIWebNavigation.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPIWebNavigation.h; sourceTree = "<group>"; };
 -		3375A3762942A19C0028536D /* JSWebExtensionAPIWebNavigation.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = JSWebExtensionAPIWebNavigation.mm; sourceTree = "<group>"; };
 +		3375A3762942A19C0028536D /* JSWebExtensionAPIWebNavigation.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = JSWebExtensionAPIWebNavigation.cpp; sourceTree = "<group>"; };
  		337822412947F679002106BB /* _WKWebExtensionWebNavigationURLFilter.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = _WKWebExtensionWebNavigationURLFilter.mm; sourceTree = "<group>"; };
  		337822422947F679002106BB /* _WKWebExtensionWebNavigationURLFilter.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = _WKWebExtensionWebNavigationURLFilter.h; sourceTree = "<group>"; };
  		337822452947FBA4002106BB /* WebExtensionUtilities.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionUtilities.h; sourceTree = "<group>"; };
-@@ -5488,7 +5526,7 @@
+@@ -5488,7 +5528,7 @@
  		3378F2FC2B1FCA5C00362EF3 /* WebExtensionMatchedRuleParameters.serialization.in */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionMatchedRuleParameters.serialization.in; sourceTree = "<group>"; };
  		3399E14E2B59ECEB008BFB60 /* WebExtensionAPIWebRequest.idl */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionAPIWebRequest.idl; sourceTree = "<group>"; };
  		3399E14F2B59EFD6008BFB60 /* JSWebExtensionAPIWebNavigation.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIWebNavigation.h; sourceTree = "<group>"; };
@@ -37679,7 +38273,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..61a12ad4e3f4ba6acf5b0041458c0e31
  		3399E1512B59EFD7008BFB60 /* JSWebExtensionAPIWebRequest.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIWebRequest.h; sourceTree = "<group>"; };
  		3399E1552B59F0E5008BFB60 /* WebExtensionAPIWebRequest.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPIWebRequest.h; sourceTree = "<group>"; };
  		3399E1572B59F0FC008BFB60 /* WebExtensionAPIWebRequestCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionAPIWebRequestCocoa.mm; sourceTree = "<group>"; };
-@@ -5507,7 +5545,7 @@
+@@ -5507,7 +5547,7 @@
  		33F1A0102FEFB66B00BD5D70 /* PositionInformationManager.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = PositionInformationManager.h; sourceTree = "<group>"; };
  		33F1A0112FEFB66B00BD5D70 /* PositionInformationManager.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = PositionInformationManager.cpp; sourceTree = "<group>"; };
  		33F68335293FF6F5005C63C0 /* JSWebExtensionAPIWebNavigationEvent.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIWebNavigationEvent.h; sourceTree = "<group>"; };
@@ -37688,7 +38282,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..61a12ad4e3f4ba6acf5b0041458c0e31
  		33F6833D293FFA4B005C63C0 /* WebExtensionAPIWebNavigationEvent.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPIWebNavigationEvent.h; sourceTree = "<group>"; };
  		33F6833F293FFB3F005C63C0 /* WebExtensionAPIWebNavigationEventCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionAPIWebNavigationEventCocoa.mm; sourceTree = "<group>"; };
  		35541583DC2A3C24CD8C2D87 /* ProxyingNetworkAgent.messages.in */ = {isa = PBXFileReference; lastKnownFileType = text; path = ProxyingNetworkAgent.messages.in; sourceTree = "<group>"; };
-@@ -7986,7 +8024,7 @@
+@@ -7986,7 +8026,7 @@
  		B6058CF32B6D98E7006D4C77 /* WebExtensionDataRecord.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionDataRecord.h; sourceTree = "<group>"; };
  		B6058CF42B6D98E8006D4C77 /* WebExtensionDataRecord.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = WebExtensionDataRecord.cpp; sourceTree = "<group>"; };
  		B6114A7C2939498000380B1B /* JSWebExtensionAPIEvent.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIEvent.h; sourceTree = "<group>"; };
@@ -37697,7 +38291,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..61a12ad4e3f4ba6acf5b0041458c0e31
  		B6114A8B293AE05200380B1B /* WebExtensionEventListenerType.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WebExtensionEventListenerType.h; sourceTree = "<group>"; };
  		B61274A62B7D738100D8ACDA /* WebExtensionAPIWebPageNamespace.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPIWebPageNamespace.h; sourceTree = "<group>"; };
  		B61AFA4629510D0F008220B1 /* JSWebExtensionAPIPermissions.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIPermissions.h; sourceTree = "<group>"; };
-@@ -8003,14 +8041,16 @@
+@@ -8003,14 +8043,16 @@
  		B63403F814910D57001070B5 /* APIObject.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = APIObject.cpp; sourceTree = "<group>"; };
  		B63A99732B7EA000004611FD /* JSWebExtensionAPIWebPageRuntime.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIWebPageRuntime.h; sourceTree = "<group>"; };
  		B63C10322B51C09C004A69B8 /* JSWebExtensionAPIStorageArea.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIStorageArea.h; sourceTree = "<group>"; };
@@ -37716,7 +38310,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..61a12ad4e3f4ba6acf5b0041458c0e31
  		B651BC5B2B460C9C009654A9 /* WebExtensionAPIStorage.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = WebExtensionAPIStorage.h; path = WebProcess/Extensions/API/WebExtensionAPIStorage.h; sourceTree = SOURCE_ROOT; };
  		B651BC5E2B460CBF009654A9 /* WebExtensionAPIStorageArea.idl */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = WebExtensionAPIStorageArea.idl; sourceTree = "<group>"; };
  		B651BC5F2B460CBF009654A9 /* WebExtensionAPIStorage.idl */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = WebExtensionAPIStorage.idl; sourceTree = "<group>"; };
-@@ -8044,6 +8084,7 @@
+@@ -8044,6 +8086,7 @@
  		B6B1565B2B5E177A004F9894 /* WebExtensionContextParameters.serialization.in */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = WebExtensionContextParameters.serialization.in; sourceTree = "<group>"; };
  		B6CCAAB629A445E90092E846 /* JSWebExtensionAPILocalization.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPILocalization.h; sourceTree = "<group>"; };
  		B6CCAAB729A445E90092E846 /* JSWebExtensionAPILocalization.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = JSWebExtensionAPILocalization.mm; sourceTree = "<group>"; };
@@ -37724,7 +38318,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..61a12ad4e3f4ba6acf5b0041458c0e31
  		B6D031032AC1F240006C8E0B /* WebExtensionDynamicScripts.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionDynamicScripts.h; sourceTree = "<group>"; };
  		B6D031042AC1F241006C8E0B /* WebExtensionDynamicScriptsCocoa.mm */ = {isa = PBXFileReference; explicitFileType = sourcecode.cpp.objcpp.preprocessed; fileEncoding = 4; path = WebExtensionDynamicScriptsCocoa.mm; sourceTree = "<group>"; };
  		B6D031082AC1F631006C8E0B /* WebExtensionScriptInjectionParameters.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionScriptInjectionParameters.h; sourceTree = "<group>"; };
-@@ -11275,11 +11316,26 @@
+@@ -11275,11 +11318,28 @@
  				B62FB8622AA9180C00E61418 /* WebExtensionAPIScripting.h */,
  				029D6BAB2C4060920068CF99 /* WebExtensionAPISidebarAction.h */,
  				028648C52C3F5A2E00E474D4 /* WebExtensionAPISidePanel.h */,
@@ -37748,10 +38342,12 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..61a12ad4e3f4ba6acf5b0041458c0e31
 +				9829867FDC43CEAE0C3CDADB /* WebExtensionWebRequestBody.cpp */,
 +				987350B08238AFDF7C8A9D4A /* WebExtensionWebRequestFilter.h */,
 +				30C212E7CD01FD5168898E41 /* WebExtensionWebRequestBody.h */,
++				572F1A9F351B3208BE89E5B4 /* WebExtensionControllerWebRequest.cpp */,
++				1452CF556051A45195651DBA /* WebExtensionContextWebRequest.cpp */,
  				3375A37329429DF50028536D /* WebExtensionAPIWebNavigation.h */,
  				33F6833D293FFA4B005C63C0 /* WebExtensionAPIWebNavigationEvent.h */,
  				7DC192E42FEF2D4C0092B7BC /* WebExtensionAPIWebPageNamespace.cpp */,
-@@ -11341,6 +11397,11 @@
+@@ -11341,6 +11401,11 @@
  				1C5DC45B29099F010061EC62 /* JSWebExtensionWrappable.h */,
  				1C5DC45729099F010061EC62 /* JSWebExtensionWrapper.cpp */,
  				1C5DC45829099F010061EC62 /* JSWebExtensionWrapper.h */,
@@ -37763,7 +38359,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..61a12ad4e3f4ba6acf5b0041458c0e31
  			);
  			path = Bindings;
  			sourceTree = "<group>";
-@@ -11866,12 +11927,18 @@
+@@ -11866,12 +11931,18 @@
  				B6058CF32B6D98E7006D4C77 /* WebExtensionDataRecord.h */,
  				7D199FE42E1B4ECF0042147F /* WebExtensionDeclarativeNetRequestSQLiteStore.cpp */,
  				7D199FE32E1B4ECF0042147F /* WebExtensionDeclarativeNetRequestSQLiteStore.h */,
@@ -37782,7 +38378,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..61a12ad4e3f4ba6acf5b0041458c0e31
  				028D30762C616E8A004F4FC6 /* WebExtensionSidebar.h */,
  				7D1A8A0D2D405B34001715DF /* WebExtensionStorageSQLiteStore.cpp */,
  				7D1A8A0C2D405B34001715DF /* WebExtensionStorageSQLiteStore.h */,
-@@ -15897,6 +15964,8 @@
+@@ -15897,6 +15968,8 @@
  				1CF35F492B36089E0079C02C /* WebExtensionCookieParameters.serialization.in */,
  				B6B156582B5E1779004F9894 /* WebExtensionDataType.h */,
  				B624FF1C2ABE54B500F6EDF6 /* WebExtensionDynamicScripts.serialization.in */,
@@ -37791,7 +38387,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..61a12ad4e3f4ba6acf5b0041458c0e31
  				1C2BBF922B82BC5D001DBDFC /* WebExtensionError.h */,
  				B6114A8B293AE05200380B1B /* WebExtensionEventListenerType.h */,
  				8696CE2F297EB3C90081C800 /* WebExtensionEventListenerType.serialization.in */,
-@@ -17458,7 +17527,7 @@
+@@ -17458,7 +17531,7 @@
  				1C05906A2DFA0FB7000406F9 /* JSWebExtensionAPIDOM.h */,
  				1C05906B2DFA0FB7000406F9 /* JSWebExtensionAPIDOM.mm */,
  				B6114A7C2939498000380B1B /* JSWebExtensionAPIEvent.h */,
@@ -37800,7 +38396,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..61a12ad4e3f4ba6acf5b0041458c0e31
  				1C5DC462290B1C470061EC62 /* JSWebExtensionAPIExtension.h */,
  				1C5DC460290B1C440061EC62 /* JSWebExtensionAPIExtension.mm */,
  				B6CCAAB629A445E90092E846 /* JSWebExtensionAPILocalization.h */,
-@@ -17472,7 +17541,7 @@
+@@ -17472,7 +17545,7 @@
  				B61AFA4629510D0F008220B1 /* JSWebExtensionAPIPermissions.h */,
  				B61AFA4729510D0F008220B1 /* JSWebExtensionAPIPermissions.mm */,
  				1C9A15CC2ABDF1E1002CC12A /* JSWebExtensionAPIPort.h */,
@@ -37809,7 +38405,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..61a12ad4e3f4ba6acf5b0041458c0e31
  				7D3D13B1304398C400289ABF /* JSWebExtensionAPIRuntime.cpp */,
  				1C5DC461290B1C470061EC62 /* JSWebExtensionAPIRuntime.h */,
  				B63E9A6C2AAF2B2D005F4561 /* JSWebExtensionAPIScripting.h */,
-@@ -17482,9 +17551,9 @@
+@@ -17482,9 +17555,9 @@
  				029D6BAF2C407AA30068CF99 /* JSWebExtensionAPISidePanel.h */,
  				029D6BB02C407AA30068CF99 /* JSWebExtensionAPISidePanel.mm */,
  				B626B7BD2B4F1DF8008E8DD1 /* JSWebExtensionAPIStorage.h */,
@@ -37821,7 +38417,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..61a12ad4e3f4ba6acf5b0041458c0e31
  				1C5ACFAA2A96F8D500C041C0 /* JSWebExtensionAPITabs.h */,
  				1C5ACFA92A96F8D400C041C0 /* JSWebExtensionAPITabs.mm */,
  				1C15497E2926C05A001B9E5B /* JSWebExtensionAPITest.cpp */,
-@@ -17492,17 +17561,17 @@
+@@ -17492,17 +17565,17 @@
  				7D2F27C3301C10470043C2CE /* JSWebExtensionAPIUnified.cpp */,
  				1C0F05BD2CFA5D2E007D1F62 /* JSWebExtensionAPIUnified.mm */,
  				3399E14F2B59EFD6008BFB60 /* JSWebExtensionAPIWebNavigation.h */,
@@ -37843,7 +38439,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..61a12ad4e3f4ba6acf5b0041458c0e31
  				1C5ACFA12A96F8C200C041C0 /* JSWebExtensionAPIWindows.h */,
  				1C5ACFA22A96F8C300C041C0 /* JSWebExtensionAPIWindows.mm */,
  				1C5ACFA42A96F8C300C041C0 /* JSWebExtensionAPIWindowsEvent.h */,
-@@ -18657,6 +18726,10 @@
+@@ -18657,6 +18730,10 @@
  				1C5ACFA82A96F8C400C041C0 /* JSWebExtensionAPIWindowsEvent.h in Headers */,
  				1C5DC46F290B27260061EC62 /* JSWebExtensionWrappable.h in Headers */,
  				1C5DC46E290B27260061EC62 /* JSWebExtensionWrapper.h in Headers */,
@@ -37854,7 +38450,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..61a12ad4e3f4ba6acf5b0041458c0e31
  				074A6FC72D5F1FAF0027F958 /* KeyEventInterpretationContext.h in Headers */,
  				E385F3692E86D75800461B0C /* LaunchLogHook.h in Headers */,
  				E385F37C2E87076100461B0C /* LaunchLogMessages.h in Headers */,
-@@ -19228,6 +19301,10 @@
+@@ -19228,6 +19305,10 @@
  				B651BC5D2B460C9D009654A9 /* WebExtensionAPIStorage.h in Headers */,
  				1C5ACFAE2A96F9D300C041C0 /* WebExtensionAPITabs.h in Headers */,
  				1C15497C2926BF75001B9E5B /* WebExtensionAPITest.h in Headers */,
@@ -37865,7 +38461,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..61a12ad4e3f4ba6acf5b0041458c0e31
  				3375A37529429DF50028536D /* WebExtensionAPIWebNavigation.h in Headers */,
  				33F6833E293FFA4B005C63C0 /* WebExtensionAPIWebNavigationEvent.h in Headers */,
  				B61274A82B7D738100D8ACDA /* WebExtensionAPIWebPageNamespace.h in Headers */,
-@@ -19257,6 +19334,10 @@
+@@ -19257,6 +19338,10 @@
  				B6058CF52B6D98E8006D4C77 /* WebExtensionDataRecord.h in Headers */,
  				B6B1565C2B5E177A004F9894 /* WebExtensionDataType.h in Headers */,
  				B6D031052AC1F241006C8E0B /* WebExtensionDynamicScripts.h in Headers */,
@@ -37876,7 +38472,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..61a12ad4e3f4ba6acf5b0041458c0e31
  				1C2BBF932B82BC5D001DBDFC /* WebExtensionError.h in Headers */,
  				B6114A8C293AE06800380B1B /* WebExtensionEventListenerType.h in Headers */,
  				1C4A14C62ABB710E00A1018C /* WebExtensionFrameIdentifier.h in Headers */,
-@@ -19268,6 +19349,7 @@
+@@ -19268,6 +19353,7 @@
  				1C6BE79F2B0A910200D01D93 /* WebExtensionMenuItemParameters.h in Headers */,
  				1C6BE7A32B0A94E500D01D93 /* WebExtensionMenuItemType.h in Headers */,
  				1C73167B2AC1E676007FADA4 /* WebExtensionMessagePort.h in Headers */,
@@ -45289,6 +45885,28 @@ index 0000000000000000000000000000000000000000..7342ae978b799129ac64d60995021667
 +{
 +}
 +}
+diff --git a/Source/WebKit/WebProcess/Network/WebLoaderStrategy.cpp b/Source/WebKit/WebProcess/Network/WebLoaderStrategy.cpp
+index 1ead3222995438e67fc22b7232af895a788d3a28..3bd1fc63a0d02b47a72e9c1a30504e9ccd991036 100644
+--- a/Source/WebKit/WebProcess/Network/WebLoaderStrategy.cpp
++++ b/Source/WebKit/WebProcess/Network/WebLoaderStrategy.cpp
+@@ -85,7 +85,7 @@
+ #include <WebCore/QuickLook.h>
+ #endif
+ 
+-#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(COCOA)
++#if ENABLE(WK_WEB_EXTENSIONS) && (PLATFORM(COCOA) || PLATFORM(HAIKU))
+ #include "WebExtensionControllerProxy.h"
+ #endif
+ 
+@@ -415,7 +415,7 @@ static void addParametersShared(const LocalFrame* frame, NetworkResourceLoadPara
+         page->logMediaDiagnosticMessage(parameters.request.httpBody());
+ 
+         if (RefPtr webPage = WebPage::fromCorePage(*page)) {
+-#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(COCOA)
++#if ENABLE(WK_WEB_EXTENSIONS) && (PLATFORM(COCOA) || PLATFORM(HAIKU))
+             if (auto* extensionControllerProxy = webPage->webExtensionControllerProxy())
+                 parameters.pageHasLoadedWebExtensions = extensionControllerProxy->hasLoadedContexts();
+ #endif
 diff --git a/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.cpp b/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.cpp
 index 335b456329f885a77d3880fc2a98b2b58cb4bee8..848d43f645144b2ebe55e6a2725a8be652ab2b9c 100644
 --- a/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.cpp
