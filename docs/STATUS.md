@@ -1197,3 +1197,14 @@ Patch: `c711e3e700a24caf8c796eee55989f36d12d139e3129f92aeea80fd5d3db26cb`.
 The full engine build on frozen `1daf0679...` has created `libWebCore.a` and
 continues through WebKit units. A feature-enabled WebKit link and extension
 runtime remain unverified. The preview remains `bundle-yqhmejfw`, extensions off.
+
+
+2026-09-14 media IPC enum correction: the generated validator now accepts
+Haiku's native media-engine identifier. All 256 native wire-value checks
+pass; the original definition fails only the Haiku value, reproducing the
+full-build warning. This tests the actual generated validator function,
+not media playback or IPC transport. See [media validator evidence](media-engine-ipc-validator.md).
+
+Patch: `2ea935a16cbd980a09e5bc20229863c257a22e09e2fc48c29afcc8837d7936b6`.
+The running full engine build remains frozen on `1daf0679...` and continues
+through WebKit UI-process units. It does not yet contain this correction.
