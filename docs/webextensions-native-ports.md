@@ -77,3 +77,8 @@ baseline with isolated candidate sources and regenerated IPC headers. The
 ongoing full build remains frozen on that baseline. Cocoa/Xcode compilation
 has not been run; its project references and retained definitions were
 checked during the extraction. Aggregate: `.vm/extension-port-native-results.json`.
+
+The subsequent [message reply port](webextensions-native-message-replies.md)
+implements the runtime reply callback helper and common dispatcher listed
+above. Its 51 native JavaScript assertions are separate from these ownership
+checks; the remaining sender/UI/background dependencies are still open.

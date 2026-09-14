@@ -1098,3 +1098,19 @@ source tree; it has progressed beyond the WebCore JavaScript and module
 units. The preview artifact remains `bundle-yqhmejfw`, with extensions off.
 Remaining message routing, sender conversion and runtime requirements are
 recorded with the precise test scope in [native ports](webextensions-native-ports.md).
+
+
+2026-09-14 message reply port: the common runtime dispatcher now uses
+JavaScriptCore native functions and C++ callback aggregation instead of
+Objective-C blocks. Its helper passes 51 native JavaScript assertions,
+including promise/thenable handling, reentrant and duplicate replies, forced
+garbage collection of retained callbacks, unanswered context destruction,
+and message-size boundaries. Both the helper and runtime dispatcher compile
+with extension features enabled. No extension context or IPC path was run.
+
+Patch: `fb28750f4eb0d93caf2c9190b2c09e152af29c914fd2f475bb94180e5a9dd90c`.
+The separate full build continues on `1daf0679...` through WebCore DOM units;
+its accessibility unit repeated the previously observed non-void-return
+warning, with no reported compile failure so far. The preview artifact is
+still `bundle-yqhmejfw`, with extensions off. See [message replies](webextensions-native-message-replies.md)
+for exact evidence and the remaining sender/UI/background work.
