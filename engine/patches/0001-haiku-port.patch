@@ -21048,7 +21048,7 @@ index efb0e18ef3681d9f33b6c784f0fb22f1ff0e80eb..19ec94335716b9ab75d52343c7adcad7
  
      undefined setTopDocumentURLForQuirks(DOMString urlString);
 diff --git a/Source/WebKit/CMakeLists.txt b/Source/WebKit/CMakeLists.txt
-index e516087e3331311877a49df982704f642f6dffe9..9590af7ceece05064b1db2df70788836014c3d78 100644
+index e516087e3331311877a49df982704f642f6dffe9..921b01f65567cf85f358c4765722b51430224050 100644
 --- a/Source/WebKit/CMakeLists.txt
 +++ b/Source/WebKit/CMakeLists.txt
 @@ -144,7 +144,6 @@ list(APPEND WebKit_UNIFIED_SOURCE_LIST_FILES
@@ -21081,11 +21081,13 @@ index e516087e3331311877a49df982704f642f6dffe9..9590af7ceece05064b1db2df70788836
 -    WebProcess/Extensions/Interfaces/WebExtensionAPIWebNavigationEvent
 -    WebProcess/Extensions/Interfaces/WebExtensionAPIWebRequest
 -    WebProcess/Extensions/Interfaces/WebExtensionAPIWebRequestEvent
-     WebProcess/Extensions/Interfaces/WebExtensionAPIWindows
-     WebProcess/Extensions/Interfaces/WebExtensionAPIWindowsEvent
+-    WebProcess/Extensions/Interfaces/WebExtensionAPIWindows
+-    WebProcess/Extensions/Interfaces/WebExtensionAPIWindowsEvent
  )
  
  set(WebKit_CPP_BINDINGS_IN_FILES
++    WebProcess/Extensions/Interfaces/WebExtensionAPIWindowsEvent
++    WebProcess/Extensions/Interfaces/WebExtensionAPIWindows
 +    WebProcess/Extensions/Interfaces/WebExtensionAPITabs
 +    WebProcess/Extensions/Interfaces/WebExtensionAPIPermissions
 +    WebProcess/Extensions/Interfaces/WebExtensionAPICommands
@@ -23574,10 +23576,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..a40fa64c80884d2bb953ff7eb2948f992ae847a0
+index 0000000000000000000000000000000000000000..cc9b59178dbd429a1c226eba36d56fc5cd974a95
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,213 @@
+@@ -0,0 +1,219 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -23639,6 +23641,12 @@ index 0000000000000000000000000000000000000000..a40fa64c80884d2bb953ff7eb2948f99
 +    Shared/Extensions/WebExtensionCommandShortcut.cpp
 +    Shared/Extensions/WebExtensionCommandSettings.cpp
 +    Shared/Extensions/WebExtensionPermissionState.cpp
++    Shared/Extensions/WebExtensionWindowQueryParser.cpp
++    WebProcess/Extensions/Bindings/JSWebExtensionWindowParameters.cpp
++    WebProcess/Extensions/API/WebExtensionAPIWindows.cpp
++    WebProcess/Extensions/API/WebExtensionAPIWindowsEvent.cpp
++    UIProcess/Extensions/haiku/WebExtensionContextWindowsHaiku.cpp
++    UIProcess/Extensions/haiku/WebExtensionContextAPIWindowsHaiku.cpp
 +    Shared/Extensions/WebExtensionTabQueryParser.cpp
 +    UIProcess/Extensions/haiku/WebExtensionContextAPITabsHaiku.cpp
 +    WebProcess/Extensions/API/WebExtensionAPITabs.cpp
@@ -24951,6 +24959,74 @@ index ef3d8e58a23df74e93afd6c73d32658de87403fc..670bf355dcef2dc9a0ad154dfe1a600d
  
  Vector<double> availableScreenScales()
  {
+diff --git a/Source/WebKit/Shared/Extensions/WebExtensionWindowQueryParser.cpp b/Source/WebKit/Shared/Extensions/WebExtensionWindowQueryParser.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..7ded5959169d34ca20177e7a6ab8bd60d2c2105a
+--- /dev/null
++++ b/Source/WebKit/Shared/Extensions/WebExtensionWindowQueryParser.cpp
+@@ -0,0 +1,41 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#include "WebExtensionWindowQueryParser.h"
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++namespace WebKit {
++std::expected<WebExtensionWindowQuery, String> parseWebExtensionWindowQuery(const JSON::Value* value, WebExtensionWindowQueryKind kind)
++{
++    WebExtensionWindowQuery result;
++    if (!value)
++        return result;
++    RefPtr object = value->asObject();
++    if (!object)
++        return std::unexpected("window options must be an object"_s);
++    for (auto& key : object->keys()) {
++        Ref entry = object->getValue(key).releaseNonNull();
++        if (key == "populate"_s && kind == WebExtensionWindowQueryKind::Get) {
++            auto populate = entry->asBoolean();
++            if (!populate)
++                return std::unexpected("populate must be a boolean"_s);
++            result.populate = *populate ? WebExtensionWindow::PopulateTabs::Yes : WebExtensionWindow::PopulateTabs::No;
++        } else if (key == "windowTypes"_s) {
++            RefPtr types = entry->asArray();
++            if (!types || !types->length())
++                return std::unexpected("windowTypes must be a non-empty array"_s);
++            result.types = { };
++            for (auto& type : *types) {
++                auto name = type->asString();
++                if (name == "normal"_s)
++                    result.types.add(WebExtensionWindowTypeFilter::Normal);
++                else if (name == "popup"_s)
++                    result.types.add(WebExtensionWindowTypeFilter::Popup);
++                else
++                    return std::unexpected("windowTypes must contain only 'normal' or 'popup'"_s);
++            }
++        } else
++            return std::unexpected("unsupported window option"_s);
++    }
++    return result;
++}
++}
++#endif
+diff --git a/Source/WebKit/Shared/Extensions/WebExtensionWindowQueryParser.h b/Source/WebKit/Shared/Extensions/WebExtensionWindowQueryParser.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..b656efb9e420a6c378184d8e77a6d8c3c39e5c0f
+--- /dev/null
++++ b/Source/WebKit/Shared/Extensions/WebExtensionWindowQueryParser.h
+@@ -0,0 +1,15 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++#include "WebExtensionWindow.h"
++#include <expected>
++#include <wtf/JSONValues.h>
++namespace WebKit {
++struct WebExtensionWindowQuery {
++    WebExtensionWindow::PopulateTabs populate { WebExtensionWindow::PopulateTabs::No };
++    OptionSet<WebExtensionWindowTypeFilter> types { allWebExtensionWindowTypeFilters() };
++};
++enum class WebExtensionWindowQueryKind : uint8_t { Get, Event };
++std::expected<WebExtensionWindowQuery, String> parseWebExtensionWindowQuery(const JSON::Value*, WebExtensionWindowQueryKind);
++}
++#endif
 diff --git a/Source/WebKit/Shared/NativeWebKeyboardEvent.h b/Source/WebKit/Shared/NativeWebKeyboardEvent.h
 index d19f2b5f32665df6704bbd5ceac3f483ece6822d..489043ab4e7a29948bf94db71c26723cb72fe1e7 100644
 --- a/Source/WebKit/Shared/NativeWebKeyboardEvent.h
@@ -30662,7 +30738,7 @@ index 65b9841a9d4469a699b92c47435fecaaaa034d77..0361d615767169f4af1a6c192853c93e
  
      OptionSet<ModifierFlags> modifierFlags() const { return !m_activationKey.isEmpty() ? m_modifierFlags : OptionSet<ModifierFlags> { }; }
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
-index a156078a37b33ea2704f6a9ba747a0c881bb0009..99d2c70140ca3853f15b9389990daf9c96839170 100644
+index a156078a37b33ea2704f6a9ba747a0c881bb0009..777f1a9b2b1992cd5ad4dadd68cbad29077ac67b 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
 @@ -34,11 +34,19 @@
@@ -30685,7 +30761,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..99d2c70140ca3853f15b9389990daf9c
  #include <WebCore/LocalizedStrings.h>
  #include <WebCore/TextResourceDecoder.h>
  #include <wtf/HashMap.h>
-@@ -49,8 +57,288 @@ static constexpr size_t maximumCachedPermissionResults = 256;
+@@ -49,8 +57,291 @@ static constexpr size_t maximumCachedPermissionResults = 256;
  
  namespace WebKit {
  
@@ -30878,6 +30954,9 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..99d2c70140ca3853f15b9389990daf9c
 +#endif
 +
 +    m_windowMap.clear();
++#if PLATFORM(HAIKU)
++    m_nativeWindowEventIdentifiers.clear();
++#endif
 +    m_windowOrderVector.clear();
 +    m_focusedWindowIdentifier = std::nullopt;
 +
@@ -30974,7 +31053,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..99d2c70140ca3853f15b9389990daf9c
  int WebExtensionContext::toAPIError(WebExtensionContext::Error error)
  {
      switch (error) {
-@@ -282,6 +570,10 @@ const WebExtensionContext::PermissionsMap& WebExtensionContext::grantedPermissio
+@@ -282,6 +573,10 @@ const WebExtensionContext::PermissionsMap& WebExtensionContext::grantedPermissio
  
  void WebExtensionContext::setGrantedPermissions(PermissionsMap&& grantedPermissions)
  {
@@ -30985,7 +31064,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..99d2c70140ca3853f15b9389990daf9c
      PermissionsSet removedPermissions;
      for (auto& entry : m_grantedPermissions)
          removedPermissions.add(entry.key);
-@@ -348,6 +640,10 @@ const WebExtensionContext::PermissionMatchPatternsMap& WebExtensionContext::gran
+@@ -348,6 +643,10 @@ const WebExtensionContext::PermissionMatchPatternsMap& WebExtensionContext::gran
  
  void WebExtensionContext::setGrantedPermissionMatchPatterns(PermissionMatchPatternsMap&& grantedPermissionMatchPatterns, EqualityOnly equalityOnly)
  {
@@ -30996,7 +31075,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..99d2c70140ca3853f15b9389990daf9c
      MatchPatternSet removedMatchPatterns;
      for (auto& entry : m_grantedPermissionMatchPatterns)
          removedMatchPatterns.add(entry.key);
-@@ -576,6 +872,12 @@ bool WebExtensionContext::removePermissionMatchPatterns(PermissionMatchPatternsM
+@@ -576,6 +875,12 @@ bool WebExtensionContext::removePermissionMatchPatterns(PermissionMatchPatternsM
  
  bool WebExtensionContext::removeGrantedPermissionMatchPatterns(MatchPatternSet& matchPatternsToRemove, EqualityOnly equalityOnly)
  {
@@ -31009,7 +31088,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..99d2c70140ca3853f15b9389990daf9c
  #if PLATFORM(COCOA)
      // Clear activeTab permissions if the patterns match.
      for (Ref tab : openTabs()) {
-@@ -600,6 +902,10 @@ bool WebExtensionContext::removeGrantedPermissionMatchPatterns(MatchPatternSet&
+@@ -600,6 +905,10 @@ bool WebExtensionContext::removeGrantedPermissionMatchPatterns(MatchPatternSet&
  
  bool WebExtensionContext::removeGrantedPermissions(PermissionsSet& permissionsToRemove)
  {
@@ -31020,7 +31099,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..99d2c70140ca3853f15b9389990daf9c
      return removePermissions(m_grantedPermissions, permissionsToRemove, m_nextGrantedPermissionsExpirationDate, WebExtensionContext::PermissionNotification::GrantedPermissionsWereRemoved);
  }
  
-@@ -623,14 +929,14 @@ WebExtensionContext::PermissionsMap& WebExtensionContext::removeExpired(Permissi
+@@ -623,14 +932,14 @@ WebExtensionContext::PermissionsMap& WebExtensionContext::removeExpired(Permissi
      WallTime currentTime = WallTime::now();
  
      // If the next expiration date hasn't passed yet, there is nothing to remove.
@@ -31037,7 +31116,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..99d2c70140ca3853f15b9389990daf9c
              removedPermissions.add(entry.key);
              return true;
          }
-@@ -644,7 +950,7 @@ WebExtensionContext::PermissionsMap& WebExtensionContext::removeExpired(Permissi
+@@ -644,7 +953,7 @@ WebExtensionContext::PermissionsMap& WebExtensionContext::removeExpired(Permissi
      if (removedPermissions.isEmpty() || notification == PermissionNotification::None)
          return permissionMap;
  
@@ -31046,7 +31125,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..99d2c70140ca3853f15b9389990daf9c
      permissionsDidChange(notification, removedPermissions);
  #endif
  
-@@ -656,14 +962,14 @@ WebExtensionContext::PermissionMatchPatternsMap& WebExtensionContext::removeExpi
+@@ -656,14 +965,14 @@ WebExtensionContext::PermissionMatchPatternsMap& WebExtensionContext::removeExpi
      WallTime currentTime = WallTime::now();
  
      // If the next expiration date hasn't passed yet, there is nothing to remove.
@@ -31063,7 +31142,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..99d2c70140ca3853f15b9389990daf9c
              removedMatchPatterns.add(entry.key);
              return true;
          }
-@@ -677,7 +983,7 @@ WebExtensionContext::PermissionMatchPatternsMap& WebExtensionContext::removeExpi
+@@ -677,7 +986,7 @@ WebExtensionContext::PermissionMatchPatternsMap& WebExtensionContext::removeExpi
      if (removedMatchPatterns.isEmpty() || notification == PermissionNotification::None)
          return matchPatternMap;
  
@@ -31072,7 +31151,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..99d2c70140ca3853f15b9389990daf9c
      permissionsDidChange(notification, removedMatchPatterns);
  #endif
  
-@@ -1660,7 +1966,13 @@ WebExtensionContext::WebExtensionContext()
+@@ -1660,7 +1969,13 @@ WebExtensionContext::WebExtensionContext()
  }
  
  #if !USE(GLIB)
@@ -31087,7 +31166,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..99d2c70140ca3853f15b9389990daf9c
  #endif
  
  WebExtensionContextIdentifier WebExtensionContext::privilegedIdentifier() const
-@@ -1798,9 +2110,17 @@ void WebExtensionContext::loadBackgroundContent(CompletionHandler<void(RefPtr<AP
+@@ -1798,9 +2113,17 @@ void WebExtensionContext::loadBackgroundContent(CompletionHandler<void(RefPtr<AP
          return;
      }
  
@@ -31108,7 +31187,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..99d2c70140ca3853f15b9389990daf9c
      });
  }
  
-@@ -2003,6 +2323,128 @@ Ref<WebExtensionRegisteredScriptsSQLiteStore> WebExtensionContext::registeredCon
+@@ -2003,6 +2326,128 @@ Ref<WebExtensionRegisteredScriptsSQLiteStore> WebExtensionContext::registeredCon
      return *m_registeredContentScriptsStorage;
  }
  
@@ -31238,7 +31317,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..99d2c70140ca3853f15b9389990daf9c
  
  #endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
-index 05a8676082d56f2c47c9af6120f5120b09f982be..ff05de481ea200ac6bc3e273b3210730d9329cd4 100644
+index 05a8676082d56f2c47c9af6120f5120b09f982be..76e57cca4e0d342090def90a58a71f8fd682788a 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 @@ -51,7 +51,11 @@
@@ -31355,7 +31434,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..ff05de481ea200ac6bc3e273b3210730
      enum class PermissionState : int8_t {
          DeniedExplicitly    = -3,
          DeniedImplicitly    = -2,
-@@ -504,6 +540,12 @@ public:
+@@ -504,6 +540,14 @@ public:
  
      void removePage(WebPageProxy&);
  
@@ -31364,11 +31443,13 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..ff05de481ea200ac6bc3e273b3210730
 +    RefPtr<WebExtensionWindow> getOrCreateNativeWindow(uint64_t) const;
 +    RefPtr<WebExtensionTab> getOrCreateNativeTab(WebPageProxyIdentifier) const;
 +    void pruneNativeHostObjects() const;
++    void nativeBrowserWindowsDidChange(const Vector<uint64_t>& before, const Vector<uint64_t>& after,
++        std::optional<uint64_t> previousFocus, std::optional<uint64_t> newFocus);
 +#endif
      Ref<WebExtensionWindow> getOrCreateWindow(WKWebExtensionWindow *) const;
      RefPtr<WebExtensionWindow> getWindow(WebExtensionWindowIdentifier, std::optional<WebPageProxyIdentifier> = std::nullopt, IgnoreExtensionAccess = IgnoreExtensionAccess::No) const;
      void forgetWindow(WebExtensionWindowIdentifier) const;
-@@ -630,6 +672,10 @@ public:
+@@ -630,6 +674,10 @@ public:
      void sendTestStarted(id argument);
      void sendTestFinished(id argument);
      void reloadBackgroundContentForTesting();
@@ -31379,7 +31460,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..ff05de481ea200ac6bc3e273b3210730
  #endif
  
      URL backgroundContentURL();
-@@ -655,6 +701,7 @@ public:
+@@ -655,6 +703,7 @@ public:
      void runOpenPanel(WKWebView *, WKOpenPanelParameters *, void (^)(NSArray *));
  #endif
  
@@ -31387,7 +31468,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..ff05de481ea200ac6bc3e273b3210730
  #if PLATFORM(COCOA)
      void sendNativeMessage(const String& applicationID, id message, CompletionHandler<void(std::expected<RetainPtr<id>, WebExtensionError>&&)>&&);
  #endif
-@@ -749,19 +796,41 @@ private:
+@@ -749,19 +798,41 @@ private:
  #if PLATFORM(COCOA)
      NSDictionary *currentState() const;
      NSDictionary *readStateFromStorage();
@@ -31430,7 +31511,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..ff05de481ea200ac6bc3e273b3210730
      void permissionsDidChange(PermissionNotification, const PermissionsSet&);
      void permissionsDidChange(PermissionNotification, const MatchPatternSet&);
  
-@@ -796,6 +865,7 @@ private:
+@@ -796,6 +867,7 @@ private:
      void saveBackgroundPageListenersToStorage();
  
      void performTasksAfterBackgroundContentLoads();
@@ -31438,7 +31519,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..ff05de481ea200ac6bc3e273b3210730
  
  #ifdef NDEBUG
      // This is method is a no-op in release builds since it has a performance impact with little benefit to release builds.
-@@ -924,6 +994,11 @@ private:
+@@ -924,6 +996,11 @@ private:
      // Commands APIs
      bool isCommandsMessageAllowed(IPC::Decoder&);
      void commandsGetAll(CompletionHandler<void(Vector<WebExtensionCommandParameters>)>&&);
@@ -31450,7 +31531,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..ff05de481ea200ac6bc3e273b3210730
      void fireCommandEventIfNeeded(const WebExtensionCommand&, WebExtensionTab*);
      void fireCommandChangedEventIfNeeded(const WebExtensionCommand&, const String& oldShortcut);
  
-@@ -988,9 +1063,18 @@ private:
+@@ -988,9 +1065,18 @@ private:
  
      // Permissions APIs
      void permissionsGetAll(CompletionHandler<void(Vector<String>&& permissions, Vector<String>&& origins)>&&);
@@ -31469,7 +31550,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..ff05de481ea200ac6bc3e273b3210730
      void firePermissionsEventListenerIfNecessary(WebExtensionEventListenerType, const PermissionsSet&, const MatchPatternSet&);
  
      // Port APIs
-@@ -1000,7 +1084,7 @@ private:
+@@ -1000,7 +1086,7 @@ private:
      void disconnectPortsForPage(WebPageProxy&);
      void addPorts(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier, HashCountedSet<WebPageProxyIdentifier>&&);
      void removePort(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier, WebPageProxyIdentifier);
@@ -31478,7 +31559,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..ff05de481ea200ac6bc3e273b3210730
      void removeNativePort(WebExtensionMessagePort&);
      unsigned openPortCount(WebExtensionContentWorldType, WebExtensionPortChannelIdentifier);
      bool isPortConnected(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier);
-@@ -1009,7 +1093,7 @@ private:
+@@ -1009,7 +1095,7 @@ private:
      void firePortMessageEventsIfNeeded(WebExtensionContentWorldType, std::optional<WebPageProxyIdentifier>, WebExtensionPortChannelIdentifier, const String& messageJSON, bool userGesture);
      void fireQueuedPortMessageEventsIfNeeded(WebExtensionContentWorldType, WebExtensionPortChannelIdentifier);
      void sendQueuedNativePortMessagesIfNeeded(WebExtensionPortChannelIdentifier);
@@ -31487,7 +31568,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..ff05de481ea200ac6bc3e273b3210730
  
      // Runtime APIs
      void runtimeGetBackgroundPage(CompletionHandler<void(std::expected<std::optional<WebCore::PageIdentifier>, WebExtensionError>&&)>&&);
-@@ -1034,6 +1118,7 @@ private:
+@@ -1034,6 +1120,7 @@ private:
      void scriptingGetRegisteredScripts(const Vector<String>&, CompletionHandler<void(std::expected<Vector<WebExtensionRegisteredScriptParameters>, WebExtensionError>&&)>&&);
      void scriptingUnregisterContentScripts(const Vector<String>&, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
      bool createInjectedContentForScripts(const Vector<WebExtensionRegisteredScriptParameters>&, WebExtensionDynamicScripts::WebExtensionRegisteredScript::FirstTimeRegistration, DynamicInjectedContentsMap&, NSString *callingAPIName, NSString **errorMessage);
@@ -31495,7 +31576,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..ff05de481ea200ac6bc3e273b3210730
  
      // Sidebar APIs
  #if ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
-@@ -1129,6 +1214,12 @@ private:
+@@ -1129,6 +1216,12 @@ private:
      RetainPtr<NSMutableDictionary> m_state;
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<GKeyFile> m_state;
@@ -31508,7 +31589,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..ff05de481ea200ac6bc3e273b3210730
  #endif
      Vector<Ref<API::Error>> m_errors;
  
-@@ -1147,6 +1238,15 @@ private:
+@@ -1147,6 +1240,15 @@ private:
  
      RefPtr<API::ContentWorld> m_contentScriptWorld;
  
@@ -31524,7 +31605,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..ff05de481ea200ac6bc3e273b3210730
      PermissionsMap m_grantedPermissions;
      PermissionsMap m_deniedPermissions;
  
-@@ -1172,6 +1272,9 @@ private:
+@@ -1172,6 +1274,9 @@ private:
      EventListenerTypeCountedSet m_backgroundContentEventListeners;
      EventListenerTypeFrameMap m_eventListenerFrames;
  
@@ -31534,7 +31615,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..ff05de481ea200ac6bc3e273b3210730
      bool m_shouldFireStartupEvent { false };
      InstallReason m_installReason { InstallReason::None };
      String m_previousVersion;
-@@ -1194,6 +1297,9 @@ private:
+@@ -1194,6 +1299,9 @@ private:
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<WebKitWebView> m_backgroundWebView;
      GWeakPtr<WebKitWebExtensionContext> m_delegate;
@@ -31544,7 +31625,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..ff05de481ea200ac6bc3e273b3210730
  #endif
      Variant<std::monostate, Ref<ProcessThrottlerActivity>, Ref<ProcessActivityGroup>> m_backgroundWebViewActivity;
      RefPtr<API::Error> m_backgroundContentLoadError;
-@@ -1215,6 +1321,7 @@ private:
+@@ -1215,6 +1323,7 @@ private:
      HashMap<Ref<WebExtensionMatchPattern>, UserScriptVector> m_injectedScriptsPerPatternMap;
      HashMap<Ref<WebExtensionMatchPattern>, UserStyleSheetVector> m_injectedStyleSheetsPerPatternMap;
  
@@ -31552,7 +31633,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..ff05de481ea200ac6bc3e273b3210730
      HashMap<String, Ref<WebExtensionDynamicScripts::WebExtensionRegisteredScript>> m_registeredScriptsMap;
      RefPtr<WebExtensionRegisteredScriptsSQLiteStore> m_registeredContentScriptsStorage;
  
-@@ -1234,7 +1341,7 @@ private:
+@@ -1234,11 +1343,14 @@ private:
  #endif // ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
  
      PortCountedSet m_ports;
@@ -31561,7 +31642,14 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..ff05de481ea200ac6bc3e273b3210730
      PortQueuedMessageMap m_portQueuedMessages;
      NativePortMap m_nativePortMap;
  
-@@ -1274,12 +1381,16 @@ private:
+     mutable WindowIdentifierMap m_windowMap;
++#if PLATFORM(HAIKU)
++    HashMap<uint64_t, WebExtensionWindowIdentifier> m_nativeWindowEventIdentifiers;
++#endif
+     mutable WindowIdentifierVector m_windowOrderVector;
+     mutable std::optional<WebExtensionWindowIdentifier> m_focusedWindowIdentifier;
+ 
+@@ -1274,12 +1386,16 @@ private:
          String message;
  #if PLATFORM(COCOA)
          RetainPtr<id> argument;
@@ -31578,7 +31666,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..ff05de481ea200ac6bc3e273b3210730
  
      Deque<TestMessage> m_testMessageQueue;
      Deque<TestMessage> m_testStartedQueue;
-@@ -1289,6 +1400,8 @@ private:
+@@ -1289,6 +1405,8 @@ private:
      void sendQueuedTestMessagesIfNeeded(WebExtensionEventListenerType);
  #if PLATFORM(COCOA)
      void addTestMessageToQueue(const String& message, id argument, WebExtensionEventListenerType);
@@ -31588,10 +31676,10 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..ff05de481ea200ac6bc3e273b3210730
  };
  
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in
-index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..7f62e65fbdbe4d17bff3cbf1c0e52cceec30c589 100644
+index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..a8b6c177d51bba1d6485e5aa8acf0cd9eec1b320 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in
-@@ -31,10 +31,56 @@
+@@ -31,10 +31,60 @@
      DispatchedTo=UI
  ]
  messages -> WebExtensionContext {
@@ -31602,6 +31690,10 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..7f62e65fbdbe4d17bff3cbf1c0e52cce
 +    [Validator=isLoadedAndPrivilegedMessage] TabsQuery(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, WebKit::WebExtensionTabQueryParameters queryParameters) -> (std::expected<Vector<WebKit::WebExtensionTabParameters>, WebKit::WebExtensionError> result)
 +#endif
 +#if PLATFORM(HAIKU)
++    [Validator=isLoadedAndPrivilegedMessage] WindowsGet(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, WebKit::WebExtensionWindowIdentifier windowIdentifier, OptionSet<WebKit::WebExtensionWindowTypeFilter> filter, WebKit::WebExtensionWindow::PopulateTabs populate) -> (std::expected<WebKit::WebExtensionWindowParameters, WebKit::WebExtensionError> result)
++    [Validator=isLoadedAndPrivilegedMessage] WindowsGetLastFocused(OptionSet<WebKit::WebExtensionWindowTypeFilter> filter, WebKit::WebExtensionWindow::PopulateTabs populate) -> (std::expected<WebKit::WebExtensionWindowParameters, WebKit::WebExtensionError> result)
++    [Validator=isLoadedAndPrivilegedMessage] WindowsGetAll(OptionSet<WebKit::WebExtensionWindowTypeFilter> filter, WebKit::WebExtensionWindow::PopulateTabs populate) -> (std::expected<Vector<WebKit::WebExtensionWindowParameters>, WebKit::WebExtensionError> result)
++
 +    // Native permission changes are privileged and revalidated in the UI process.
 +    [Validator=isLoadedAndPrivilegedMessage] PermissionsGetAll() -> (Vector<String> permissions, Vector<String> origins)
 +    [Validator=isLoadedAndPrivilegedMessage] PermissionsContains(HashSet<String> permissions, HashSet<String> origins) -> (std::expected<bool, WebKit::WebExtensionError> result)
@@ -31649,7 +31741,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..7f62e65fbdbe4d17bff3cbf1c0e52cce
      // Action APIs
      [Validator=isActionMessageAllowed] ActionGetTitle(std::optional<WebKit::WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier) -> (std::expected<String, WebKit::WebExtensionError> result)
      [Validator=isActionMessageAllowed] ActionSetTitle(std::optional<WebKit::WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, String title) -> (std::expected<void, WebKit::WebExtensionError> result)
-@@ -71,9 +117,6 @@ messages -> WebExtensionContext {
+@@ -71,9 +121,6 @@ messages -> WebExtensionContext {
      [Validator=isBookmarksMessageAllowed] BookmarksRemoveTree(String bookmarkId) -> (std::expected<void, WebKit::WebExtensionError> result)
  #endif // ENABLE(WK_WEB_EXTENSIONS_BOOKMARKS)
  
@@ -31659,7 +31751,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..7f62e65fbdbe4d17bff3cbf1c0e52cce
      // Cookies APIs
      [Validator=isCookiesMessageAllowed] CookiesGet(std::optional<PAL::SessionID> sessionID, String name, URL url) -> (std::expected<std::optional<WebKit::WebExtensionCookieParameters>, WebKit::WebExtensionError> result)
      [Validator=isCookiesMessageAllowed] CookiesGetAll(std::optional<PAL::SessionID> sessionID, URL url, struct WebKit::WebExtensionCookieFilterParameters filterParameters) -> (std::expected<Vector<WebKit::WebExtensionCookieParameters>, WebKit::WebExtensionError> result)
-@@ -100,8 +143,6 @@ messages -> WebExtensionContext {
+@@ -100,8 +147,6 @@ messages -> WebExtensionContext {
  #endif
  
      // Event APIs
@@ -31668,7 +31760,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..7f62e65fbdbe4d17bff3cbf1c0e52cce
  
      // Extensions APIs
      [Validator=isLoaded] ExtensionIsAllowedIncognitoAccess() -> (bool result)
-@@ -125,20 +166,10 @@ messages -> WebExtensionContext {
+@@ -125,20 +170,10 @@ messages -> WebExtensionContext {
      [Validator=isLoaded] PermissionsRequest(HashSet<String> permissions, HashSet<String> origins) -> (bool success)
      [Validator=isLoaded] PermissionsRemove(HashSet<String> permissions, HashSet<String> origins) -> (bool success)
  
@@ -31689,7 +31781,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..7f62e65fbdbe4d17bff3cbf1c0e52cce
  
      // Scripting APIs
      [Validator=isScriptingMessageAllowed] ScriptingExecuteScript(WebKit::WebExtensionScriptInjectionParameters parameters, bool userGesture) -> (std::expected<Vector<WebKit::WebExtensionScriptInjectionResultParameters>, WebKit::WebExtensionError> result)
-@@ -165,15 +196,6 @@ messages -> WebExtensionContext {
+@@ -165,15 +200,6 @@ messages -> WebExtensionContext {
      [Validator=isSidebarMessageAllowed] SidebarGetActionClickBehavior() -> (std::expected<WebKit::WebExtensionActionClickBehavior, WebKit::WebExtensionError> result)
  #endif // ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
  
@@ -31705,7 +31797,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..7f62e65fbdbe4d17bff3cbf1c0e52cce
      // Tabs APIs
      [Validator=isLoadedAndPrivilegedMessage] TabsCreate(std::optional<WebKit::WebPageProxyIdentifier> webPageProxyIdentifier, WebKit::WebExtensionTabParameters creationParameters) -> (std::expected<std::optional<WebKit::WebExtensionTabParameters>, WebKit::WebExtensionError> result)
      [Validator=isLoadedAndPrivilegedMessage] TabsUpdate(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, WebKit::WebExtensionTabParameters updateParameters) -> (std::expected<std::optional<WebKit::WebExtensionTabParameters>, WebKit::WebExtensionError> result)
-@@ -198,8 +220,6 @@ messages -> WebExtensionContext {
+@@ -198,8 +224,6 @@ messages -> WebExtensionContext {
      [Validator=isLoadedAndPrivilegedMessage] TabsRemoveCSS(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, WebKit::WebExtensionScriptInjectionParameters parameters) -> (std::expected<void, WebKit::WebExtensionError> result)
  
      // WebNavigation APIs
@@ -34627,6 +34719,77 @@ index 0000000000000000000000000000000000000000..9aba5095d9172c29c9d78c6d302949d2
 +}
 +}
 +#endif
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPIWindowsHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPIWindowsHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..33f7bab5229c2d0070a056f67f8aeb0ec8f642dc
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPIWindowsHaiku.cpp
+@@ -0,0 +1,65 @@
++/*
++ * Copyright (C) 2023 Apple Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#include "WebExtensionContext.h"
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++#include "WebExtensionUtilities.h"
++namespace WebKit {
++static bool matchesWindow(const WebExtensionWindow* window, OptionSet<WebExtensionWindowTypeFilter> filter)
++{
++    // The native host registry currently contains normal browser windows.
++    return window && window->isOpen() && window->extensionHasAccess() && filter.contains(WebExtensionWindowTypeFilter::Normal);
++}
++void WebExtensionContext::windowsGet(WebPageProxyIdentifier page, WebExtensionWindowIdentifier identifier, OptionSet<WebExtensionWindowTypeFilter> filter, WebExtensionWindow::PopulateTabs populate, CompletionHandler<void(std::expected<WebExtensionWindowParameters, WebExtensionError>&&)>&& completion)
++{
++    RefPtr window = getWindow(identifier, page);
++    if (!matchesWindow(window.get(), filter)) {
++        completion(toWebExtensionError("windows.get()"_s, nullString(), "window not found or does not match windowTypes"_s));
++        return;
++    }
++    completion(window->parameters(populate));
++}
++void WebExtensionContext::windowsGetLastFocused(OptionSet<WebExtensionWindowTypeFilter> filter, WebExtensionWindow::PopulateTabs populate, CompletionHandler<void(std::expected<WebExtensionWindowParameters, WebExtensionError>&&)>&& completion)
++{
++    RefPtr window = frontmostWindow();
++    if (!matchesWindow(window.get(), filter)) {
++        completion(toWebExtensionError("windows.getLastFocused()"_s, nullString(), "window not found or does not match windowTypes"_s));
++        return;
++    }
++    completion(window->parameters(populate));
++}
++void WebExtensionContext::windowsGetAll(OptionSet<WebExtensionWindowTypeFilter> filter, WebExtensionWindow::PopulateTabs populate, CompletionHandler<void(std::expected<Vector<WebExtensionWindowParameters>, WebExtensionError>&&)>&& completion)
++{
++    Vector<WebExtensionWindowParameters> result;
++    for (Ref window : openWindows()) {
++        if (matchesWindow(window.ptr(), filter))
++            result.append(window->parameters(populate));
++    }
++    completion(WTF::move(result));
++}
++}
++#endif
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextActionsHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextActionsHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..ed33696667bcedd840e506f2a6ac6f232a88e3b7
@@ -35882,10 +36045,10 @@ index 0000000000000000000000000000000000000000..886748b81caababf0e12031e087cf7f6
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextTabsHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextTabsHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..c44956bb1f36796c9281a58d9d4128a7a3bb2227
+index 0000000000000000000000000000000000000000..b1a60b333b1d5286c78f3b9a6bea40543f319ea7
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextTabsHaiku.cpp
-@@ -0,0 +1,236 @@
+@@ -0,0 +1,238 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -36110,9 +36273,11 @@ index 0000000000000000000000000000000000000000..c44956bb1f36796c9281a58d9d4128a7
 +{
 +    ASSERT(isLoaded());
 +    m_windowOrderVector.clear();
++    m_nativeWindowEventIdentifiers.clear();
 +    m_focusedWindowIdentifier = std::nullopt;
 +    for (auto& window : openWindows(IgnoreExtensionAccess::Yes)) {
 +        m_windowOrderVector.append(window->identifier());
++        m_nativeWindowEventIdentifiers.set(window->nativeWindowIdentifier(), window->identifier());
 +        window->tabs();
 +        if (window->isFocused())
 +            m_focusedWindowIdentifier = window->identifier();
@@ -36403,6 +36568,90 @@ index 0000000000000000000000000000000000000000..14a233b25aa096a498b05c278b688416
 +} // namespace WebKit
 +
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextWindowsHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextWindowsHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..ed73ff799bad074fd641f491af2986edd5de4f8d
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextWindowsHaiku.cpp
+@@ -0,0 +1,78 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#include "WebExtensionContext.h"
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++#include "WebExtensionContextProxyMessages.h"
++#include "WebExtensionController.h"
++#include "WebsiteDataStore.h"
++namespace WebKit {
++void WebExtensionContext::nativeBrowserWindowsDidChange(const Vector<uint64_t>& before, const Vector<uint64_t>& after,
++    std::optional<uint64_t> previousFocus, std::optional<uint64_t> newFocus)
++{
++    if (!isLoaded())
++        return;
++    RefPtr controller = extensionController();
++    if (!controller)
++        return;
++    bool allowed = controller->configuration().defaultWebsiteDataStore().isPersistent() || hasAccessToPrivateData();
++    Vector<WebExtensionWindowParameters> removed;
++    // A dead native messenger may already have pruned its wrapper. Keep the
++    // original public identity until the registry reports the actual removal.
++    for (auto identifier : before) {
++        if (after.contains(identifier))
++            continue;
++        auto cached = m_nativeWindowEventIdentifiers.find(identifier);
++        if (cached == m_nativeWindowEventIdentifiers.end())
++            continue;
++        WebExtensionWindowParameters parameters;
++        parameters.identifier = cached->value;
++        parameters.type = WebExtensionWindow::Type::Normal;
++        removed.append(WTF::move(parameters));
++        m_nativeWindowEventIdentifiers.remove(cached);
++    }
++    Vector<WebExtensionWindowParameters> created;
++    std::optional<WebExtensionWindowParameters> focused;
++    m_windowOrderVector.clear();
++    m_focusedWindowIdentifier = std::nullopt;
++    for (Ref window : openWindows(IgnoreExtensionAccess::Yes)) {
++        auto identifier = window->nativeWindowIdentifier();
++        m_windowOrderVector.append(window->identifier());
++        m_nativeWindowEventIdentifiers.set(identifier, window->identifier());
++        if (identifier == newFocus) {
++            focused = window->minimalParameters();
++            m_focusedWindowIdentifier = window->identifier();
++        }
++        if (!before.contains(identifier) && after.contains(identifier)) {
++            window->tabs();
++            if (allowed)
++                created.append(window->parameters());
++        }
++    }
++    if (!allowed)
++        return;
++    for (auto& window : removed)
++        fireWindowsEventIfNeeded(WebExtensionEventListenerType::WindowsOnRemoved, WTF::move(window));
++    for (auto& window : created)
++        fireWindowsEventIfNeeded(WebExtensionEventListenerType::WindowsOnCreated, WTF::move(window));
++    if (previousFocus != newFocus)
++        fireWindowsEventIfNeeded(WebExtensionEventListenerType::WindowsOnFocusChanged, WTF::move(focused));
++}
++
++void WebExtensionContext::fireWindowsEventIfNeeded(WebExtensionEventListenerType type, std::optional<WebExtensionWindowParameters> window)
++{
++    if (!isLoaded())
++        return;
++    auto loadIdentifier = privilegedIdentifier();
++    wakeUpBackgroundContentIfNecessaryToFireEvents({ type }, [this, protectedThis = Ref { *this }, type, window = WTF::move(window), loadIdentifier] {
++        if (!isLoaded() || !m_privilegedIdentifier || *m_privilegedIdentifier != loadIdentifier)
++            return;
++        RefPtr controller = extensionController();
++        if (!controller || (!controller->configuration().defaultWebsiteDataStore().isPersistent() && !hasAccessToPrivateData()))
++            return;
++        // Send the committed transition even if a later update changed focus
++        // or removed the window while background content was waking.
++        sendToProcessesForEvent(type, Messages::WebExtensionContextProxy::DispatchWindowsEvent(type, window));
++    });
++}
++}
++#endif
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionControllerAPITestHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionControllerAPITestHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..0bf56cd8732dcb9f4097f3072fbbf32a2a0d98e7
@@ -36593,10 +36842,10 @@ index 0000000000000000000000000000000000000000..a5f9aae43990067335545cb019b2e4f0
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionControllerHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionControllerHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..c4fb5c82897fdc6b1b6bcc47637fd2171d4c9e32
+index 0000000000000000000000000000000000000000..e93a494877eb220e0f139e7a701c59577d5bcfff
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionControllerHaiku.cpp
-@@ -0,0 +1,25 @@
+@@ -0,0 +1,41 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -36606,6 +36855,7 @@ index 0000000000000000000000000000000000000000..c4fb5c82897fdc6b1b6bcc47637fd217
 +
 +#include "BrowserTabRegistryHaiku.h"
 +#include "ExtensionPermissionPromptHaiku.h"
++#include "WebExtensionContext.h"
 +
 +namespace WebKit {
 +
@@ -36616,6 +36866,21 @@ index 0000000000000000000000000000000000000000..c4fb5c82897fdc6b1b6bcc47637fd217
 +    // Page configurations, the native SDK and loaded extension contexts share
 +    // this controller's host state without retaining native windows or pages.
 +    m_nativeBrowserTabs = std::make_shared<BrowserTabRegistryHaiku>();
++    m_nativeBrowserTabs->setObserver([weakThis = WeakPtr { *this }](const auto& before, const auto& after) {
++        RefPtr controller = weakThis.get();
++        if (!controller)
++            return;
++        Vector<uint64_t> oldWindows, newWindows;
++        for (auto& window : before.windows)
++            oldWindows.append(window.identifier);
++        for (auto& window : after.windows)
++            newWindows.append(window.identifier);
++        auto contexts = controller->extensionContexts();
++        for (Ref context : contexts) {
++            if (context->isLoaded() && context->extensionController() == controller.get())
++                context->nativeBrowserWindowsDidChange(oldWindows, newWindows, before.focusedWindow, after.focusedWindow);
++        }
++    });
 +    m_nativePermissionPrompts = ExtensionPermissionPromptHaiku::create();
 +}
 +
@@ -38579,10 +38844,10 @@ index 0000000000000000000000000000000000000000..769a2d9242a9a3966bbf75bfc378522e
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionWindowHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionWindowHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..005111f7ad299b79005846f7f468ca78ba28ee86
+index 0000000000000000000000000000000000000000..8eb790cac00307c5a277b765e1a3bb1c75207d0c
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionWindowHaiku.cpp
-@@ -0,0 +1,120 @@
+@@ -0,0 +1,123 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -38681,6 +38946,7 @@ index 0000000000000000000000000000000000000000..005111f7ad299b79005846f7f468ca78
 +{
 +    WebExtensionWindowParameters result;
 +    result.identifier = identifier();
++    result.type = Type::Normal;
 +    return result;
 +}
 +
@@ -38693,8 +38959,10 @@ index 0000000000000000000000000000000000000000..005111f7ad299b79005846f7f468ca78
 +    result.privateBrowsing = isPrivate();
 +    if (populateTabs == PopulateTabs::Yes) {
 +        Vector<WebExtensionTabParameters> parameters;
-+        for (auto& tab : tabs())
-+            parameters.append(tab->parameters());
++        for (auto& tab : tabs()) {
++            if (tab->isOpen() && tab->extensionHasAccess())
++                parameters.append(tab->parameters());
++        }
 +        result.tabs = WTF::move(parameters);
 +    }
 +    return result;
@@ -39297,10 +39565,10 @@ index 0000000000000000000000000000000000000000..e545399afbe8b5539a8026d49532e05a
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/BrowserTabRegistryHaiku.cpp b/Source/WebKit/UIProcess/haiku/BrowserTabRegistryHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..a9ad0897ea1dd9d96f82d6467a891b1cb6e8df5e
+index 0000000000000000000000000000000000000000..d8e729f0e77e4a0bc2a26211662f0c00d9b6af48
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/BrowserTabRegistryHaiku.cpp
-@@ -0,0 +1,124 @@
+@@ -0,0 +1,149 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -39310,6 +39578,28 @@ index 0000000000000000000000000000000000000000..a9ad0897ea1dd9d96f82d6467a891b1c
 +#include <wtf/MainThread.h>
 +
 +namespace WebKit {
++
++void BrowserTabRegistryHaiku::publish(Vector<Window>&& windows, std::optional<uint64_t> focusedWindow)
++{
++    bool changed = focusedWindow != m_focusedWindow || windows.size() != m_windows.size();
++    for (size_t i = 0; !changed && i < windows.size(); ++i) {
++        auto& oldWindow = m_windows[i];
++        auto& newWindow = windows[i];
++        changed = oldWindow.identifier != newWindow.identifier || oldWindow.messenger != newWindow.messenger
++            || oldWindow.pages != newWindow.pages || oldWindow.activePage != newWindow.activePage;
++    }
++    if (!changed)
++        return;
++    Snapshot before { WTF::move(m_windows), m_focusedWindow };
++    m_windows = WTF::move(windows);
++    m_focusedWindow = focusedWindow;
++    // Copy both the callback and new state so a nested update or unregister
++    // cannot invalidate the arguments of the current callback.
++    if (auto observer = m_observer) {
++        Snapshot after { m_windows, m_focusedWindow };
++        observer(before, after);
++    }
++}
 +
 +std::expected<uint64_t, status_t> BrowserTabRegistryHaiku::update(const BMessenger& messenger, const Vector<WebPageProxyIdentifier>& pages,
 +    std::optional<WebPageProxyIdentifier> activePage, bool focused)
@@ -39327,9 +39617,9 @@ index 0000000000000000000000000000000000000000..a9ad0897ea1dd9d96f82d6467a891b1c
 +        if (existing == notFound)
 +            return uint64_t { 0 };
 +        auto identifier = m_windows[existing].identifier;
-+        m_windows.removeAt(existing);
-+        if (m_focusedWindow == identifier)
-+            m_focusedWindow = std::nullopt;
++        auto windows = m_windows;
++        windows.removeAt(existing);
++        publish(WTF::move(windows), m_focusedWindow == identifier ? std::nullopt : m_focusedWindow);
 +        return identifier;
 +    }
 +    if (!messenger.IsValid())
@@ -39356,39 +39646,42 @@ index 0000000000000000000000000000000000000000..a9ad0897ea1dd9d96f82d6467a891b1c
 +        index = windows.size() - 1;
 +    } else
 +        windows[index] = WTF::move(replacement);
++    auto focusedWindow = m_focusedWindow;
 +    if (focused) {
-+        m_focusedWindow = identifier;
++        focusedWindow = identifier;
 +        if (index) {
 +            auto window = WTF::move(windows[index]);
 +            windows.removeAt(index);
 +            windows.insert(0, WTF::move(window));
 +        }
-+    } else if (m_focusedWindow == identifier)
-+        m_focusedWindow = std::nullopt;
-+    if (m_focusedWindow && !windows.containsIf([&](auto& window) { return window.identifier == *m_focusedWindow; }))
-+        m_focusedWindow = std::nullopt;
-+    m_windows = WTF::move(windows);
++    } else if (focusedWindow == identifier)
++        focusedWindow = std::nullopt;
++    if (focusedWindow && !windows.containsIf([&](auto& window) { return window.identifier == *focusedWindow; }))
++        focusedWindow = std::nullopt;
++    publish(WTF::move(windows), focusedWindow);
 +    return identifier;
 +}
 +
 +void BrowserTabRegistryHaiku::removePage(WebPageProxyIdentifier identifier)
 +{
 +    ASSERT(isMainThread());
-+    for (auto& window : m_windows) {
++    auto windows = m_windows;
++    for (auto& window : windows) {
 +        window.pages.removeFirst(identifier);
 +        if (window.activePage == identifier)
 +            window.activePage = std::nullopt;
 +    }
-+    m_windows.removeAllMatching([](auto& window) { return window.pages.isEmpty(); });
-+    if (m_focusedWindow && !m_windows.containsIf([&](auto& window) { return window.identifier == *m_focusedWindow; }))
-+        m_focusedWindow = std::nullopt;
++    windows.removeAllMatching([](auto& window) { return window.pages.isEmpty(); });
++    auto focusedWindow = m_focusedWindow;
++    if (focusedWindow && !windows.containsIf([&](auto& window) { return window.identifier == *focusedWindow; }))
++        focusedWindow = std::nullopt;
++    publish(WTF::move(windows), focusedWindow);
 +}
 +
 +void BrowserTabRegistryHaiku::clear()
 +{
 +    ASSERT(isMainThread());
-+    m_windows.clear();
-+    m_focusedWindow = std::nullopt;
++    publish({ }, std::nullopt);
 +    // Do not recycle IDs: a retained extension window must stay invalid.
 +}
 +
@@ -39427,16 +39720,17 @@ index 0000000000000000000000000000000000000000..a9ad0897ea1dd9d96f82d6467a891b1c
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/BrowserTabRegistryHaiku.h b/Source/WebKit/UIProcess/haiku/BrowserTabRegistryHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..d8332d59fc0aefa278882a8ffa9be682dd87da26
+index 0000000000000000000000000000000000000000..c9ce1c3634ecf86e8225245d70df7d8820bf199f
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/BrowserTabRegistryHaiku.h
-@@ -0,0 +1,46 @@
+@@ -0,0 +1,58 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
 +
 +#include "WebPageProxyIdentifier.h"
 +#include <Messenger.h>
++#include <functional>
 +#include <SupportDefs.h>
 +#include <wtf/Vector.h>
 +
@@ -39458,6 +39752,15 @@ index 0000000000000000000000000000000000000000..d8332d59fc0aefa278882a8ffa9be682
 +        bool active;
 +    };
 +
++    struct Snapshot {
++        Vector<Window> windows;
++        std::optional<uint64_t> focusedWindow;
++    };
++    using Observer = std::function<void(const Snapshot& before, const Snapshot& after)>;
++    // Observers see committed, independent snapshots and may unregister while
++    // running. Setting an observer does not synthesize creation events.
++    void setObserver(Observer observer) { m_observer = WTF::move(observer); }
++
 +    // An empty page list removes the window. Moving a page removes it from its
 +    // previous window. Focused windows move to the front of the window order.
 +    std::expected<uint64_t, status_t> update(const BMessenger&, const Vector<WebPageProxyIdentifier>&,
@@ -39471,6 +39774,8 @@ index 0000000000000000000000000000000000000000..d8332d59fc0aefa278882a8ffa9be682
 +    std::optional<uint64_t> focusedWindow() const;
 +
 +private:
++    void publish(Vector<Window>&&, std::optional<uint64_t> focusedWindow);
++    Observer m_observer;
 +    Vector<Window> m_windows;
 +    std::optional<uint64_t> m_focusedWindow;
 +    uint64_t m_nextWindowIdentifier { 1 };
@@ -43234,7 +43539,7 @@ index 0000000000000000000000000000000000000000..2a51b2913800fada0f6279c8919bc190
 +
 +} // namespace WebKit
 diff --git a/Source/WebKit/WebKit.xcodeproj/project.pbxproj b/Source/WebKit/WebKit.xcodeproj/project.pbxproj
-index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..a286fb3f454e8dfd163cec061f6dda9abbda05e7 100644
+index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..796fa2d59dfa8525d3c9049ab348578bdaa52a92 100644
 --- a/Source/WebKit/WebKit.xcodeproj/project.pbxproj
 +++ b/Source/WebKit/WebKit.xcodeproj/project.pbxproj
 @@ -123,6 +123,8 @@
@@ -43305,9 +43610,14 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..a286fb3f454e8dfd163cec061f6dda9a
  		1C2BBF922B82BC5D001DBDFC /* WebExtensionError.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionError.h; sourceTree = "<group>"; };
  		1C386F2E2AF407B1004108F0 /* WebExtensionAPINotifications.idl */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionAPINotifications.idl; sourceTree = "<group>"; };
  		1C386F2F2AF4082F004108F0 /* WebExtensionAPINotifications.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPINotifications.h; sourceTree = "<group>"; };
-@@ -4401,7 +4420,7 @@
- 		1C5ACFA22A96F8C300C041C0 /* JSWebExtensionAPIWindows.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = JSWebExtensionAPIWindows.mm; sourceTree = "<group>"; };
- 		1C5ACFA32A96F8C300C041C0 /* JSWebExtensionAPIWindowsEvent.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = JSWebExtensionAPIWindowsEvent.mm; sourceTree = "<group>"; };
+@@ -4398,10 +4417,10 @@
+ 		1C5ACF9E2A96E15400C041C0 /* WebExtensionAPIWindows.idl */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionAPIWindows.idl; sourceTree = "<group>"; };
+ 		1C5ACF9F2A96E15E00C041C0 /* WebExtensionAPITabs.idl */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionAPITabs.idl; sourceTree = "<group>"; };
+ 		1C5ACFA12A96F8C200C041C0 /* JSWebExtensionAPIWindows.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIWindows.h; sourceTree = "<group>"; };
+-		1C5ACFA22A96F8C300C041C0 /* JSWebExtensionAPIWindows.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = JSWebExtensionAPIWindows.mm; sourceTree = "<group>"; };
+-		1C5ACFA32A96F8C300C041C0 /* JSWebExtensionAPIWindowsEvent.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = JSWebExtensionAPIWindowsEvent.mm; sourceTree = "<group>"; };
++		1C5ACFA22A96F8C300C041C0 /* JSWebExtensionAPIWindows.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = JSWebExtensionAPIWindows.cpp; sourceTree = "<group>"; };
++		1C5ACFA32A96F8C300C041C0 /* JSWebExtensionAPIWindowsEvent.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = JSWebExtensionAPIWindowsEvent.cpp; sourceTree = "<group>"; };
  		1C5ACFA42A96F8C300C041C0 /* JSWebExtensionAPIWindowsEvent.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIWindowsEvent.h; sourceTree = "<group>"; };
 -		1C5ACFA92A96F8D400C041C0 /* JSWebExtensionAPITabs.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = JSWebExtensionAPITabs.mm; sourceTree = "<group>"; };
 +		1C5ACFA92A96F8D400C041C0 /* JSWebExtensionAPITabs.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = JSWebExtensionAPITabs.cpp; sourceTree = "<group>"; };
@@ -43544,7 +43854,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..a286fb3f454e8dfd163cec061f6dda9a
  				7D3D13B1304398C400289ABF /* JSWebExtensionAPIRuntime.cpp */,
  				1C5DC461290B1C470061EC62 /* JSWebExtensionAPIRuntime.h */,
  				B63E9A6C2AAF2B2D005F4561 /* JSWebExtensionAPIScripting.h */,
-@@ -17482,27 +17555,27 @@
+@@ -17482,31 +17555,31 @@
  				029D6BAF2C407AA30068CF99 /* JSWebExtensionAPISidePanel.h */,
  				029D6BB02C407AA30068CF99 /* JSWebExtensionAPISidePanel.mm */,
  				B626B7BD2B4F1DF8008E8DD1 /* JSWebExtensionAPIStorage.h */,
@@ -43577,8 +43887,14 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..a286fb3f454e8dfd163cec061f6dda9a
 -				337042002B58A0880077FF78 /* JSWebExtensionAPIWebRequestEvent.mm */,
 +				337042002B58A0880077FF78 /* JSWebExtensionAPIWebRequestEvent.cpp */,
  				1C5ACFA12A96F8C200C041C0 /* JSWebExtensionAPIWindows.h */,
- 				1C5ACFA22A96F8C300C041C0 /* JSWebExtensionAPIWindows.mm */,
+-				1C5ACFA22A96F8C300C041C0 /* JSWebExtensionAPIWindows.mm */,
++				1C5ACFA22A96F8C300C041C0 /* JSWebExtensionAPIWindows.cpp */,
  				1C5ACFA42A96F8C300C041C0 /* JSWebExtensionAPIWindowsEvent.h */,
+-				1C5ACFA32A96F8C300C041C0 /* JSWebExtensionAPIWindowsEvent.mm */,
++				1C5ACFA32A96F8C300C041C0 /* JSWebExtensionAPIWindowsEvent.cpp */,
+ 				843FD167295234DC00476A01 /* module.private.modulemap */,
+ 				DD5697CC2DC06F7700050321 /* rdar150228472.swift */,
+ 				9BF622532C3E8559007F7021 /* SecurityFlags.cpp */,
 @@ -18657,6 +18730,10 @@
  				1C5ACFA82A96F8C400C041C0 /* JSWebExtensionAPIWindowsEvent.h in Headers */,
  				1C5DC46F290B27260061EC62 /* JSWebExtensionWrappable.h in Headers */,
@@ -46121,6 +46437,138 @@ index 56c304b8fefeca6008b563d601a719c8af81fc8d..bb79cbee63593525d8f16b22a1efd115
  
 -#endif // ENABLE(WK_WEB_EXTENSIONS)
 +// Implemented in common C++ for native extension bindings.
+diff --git a/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIWindowsCocoa.mm b/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIWindowsCocoa.mm
+index 725c29afaaf87656743648ec97f2456e302cf4bb..7b77f45654f4d15a3d9869165d8e019b65ca46d6 100644
+--- a/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIWindowsCocoa.mm
++++ b/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIWindowsCocoa.mm
+@@ -47,6 +47,100 @@
+ 
+ namespace WebKit {
+ 
++// C++ bindings retain the existing Cocoa implementations.
++void WebExtensionAPIWindows::createWindow(RefPtr<JSON::Value> info, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto infoValue = info ? parseJSON(info->toJSONString().createNSString().get(), JSONOptions::FragmentsAllowed) : nil;
++    auto infoObject = dynamic_objc_cast<NSDictionary>(infoValue);
++    if (infoValue && !infoObject) {
++        exception = "options must be an object"_s;
++        return;
++    }
++    NSString *nativeException = nil;
++    createWindow(infoObject, WTF::move(callback), &nativeException);
++    if (nativeException)
++        exception = nativeException;
++}
++
++void WebExtensionAPIWindows::get(WebPageProxyIdentifier page, double windowID, RefPtr<JSON::Value> info, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto infoValue = info ? parseJSON(info->toJSONString().createNSString().get(), JSONOptions::FragmentsAllowed) : nil;
++    auto infoObject = dynamic_objc_cast<NSDictionary>(infoValue);
++    if (infoValue && !infoObject) {
++        exception = "options must be an object"_s;
++        return;
++    }
++    NSString *nativeException = nil;
++    get(page, windowID, infoObject, WTF::move(callback), &nativeException);
++    if (nativeException)
++        exception = nativeException;
++}
++
++void WebExtensionAPIWindows::getCurrent(WebPageProxyIdentifier page, RefPtr<JSON::Value> info, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto infoValue = info ? parseJSON(info->toJSONString().createNSString().get(), JSONOptions::FragmentsAllowed) : nil;
++    auto infoObject = dynamic_objc_cast<NSDictionary>(infoValue);
++    if (infoValue && !infoObject) {
++        exception = "options must be an object"_s;
++        return;
++    }
++    NSString *nativeException = nil;
++    getCurrent(page, infoObject, WTF::move(callback), &nativeException);
++    if (nativeException)
++        exception = nativeException;
++}
++
++void WebExtensionAPIWindows::getLastFocused(RefPtr<JSON::Value> info, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto infoValue = info ? parseJSON(info->toJSONString().createNSString().get(), JSONOptions::FragmentsAllowed) : nil;
++    auto infoObject = dynamic_objc_cast<NSDictionary>(infoValue);
++    if (infoValue && !infoObject) {
++        exception = "options must be an object"_s;
++        return;
++    }
++    NSString *nativeException = nil;
++    getLastFocused(infoObject, WTF::move(callback), &nativeException);
++    if (nativeException)
++        exception = nativeException;
++}
++
++void WebExtensionAPIWindows::getAll(RefPtr<JSON::Value> info, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto infoValue = info ? parseJSON(info->toJSONString().createNSString().get(), JSONOptions::FragmentsAllowed) : nil;
++    auto infoObject = dynamic_objc_cast<NSDictionary>(infoValue);
++    if (infoValue && !infoObject) {
++        exception = "options must be an object"_s;
++        return;
++    }
++    NSString *nativeException = nil;
++    getAll(infoObject, WTF::move(callback), &nativeException);
++    if (nativeException)
++        exception = nativeException;
++}
++
++void WebExtensionAPIWindows::update(double windowID, RefPtr<JSON::Value> info, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto infoValue = info ? parseJSON(info->toJSONString().createNSString().get(), JSONOptions::FragmentsAllowed) : nil;
++    auto infoObject = dynamic_objc_cast<NSDictionary>(infoValue);
++    if (infoValue && !infoObject) {
++        exception = "options must be an object"_s;
++        return;
++    }
++    NSString *nativeException = nil;
++    update(windowID, infoObject, WTF::move(callback), &nativeException);
++    if (nativeException)
++        exception = nativeException;
++}
++
++void WebExtensionAPIWindows::remove(double windowID, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    NSString *nativeException = nil;
++    remove(windowID, WTF::move(callback), &nativeException);
++    if (nativeException)
++        exception = nativeException;
++}
++
++
+ static inline NSString *NODELETE toWebAPI(WebExtensionWindow::State state)
+ {
+     switch (state) {
+diff --git a/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIWindowsEventCocoa.mm b/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIWindowsEventCocoa.mm
+index 77c4db0966a28ff00141af56b68d0fd16a6a826b..4d8372f4f47e8b05e804aa2bb49fbcf9f2aa9747 100644
+--- a/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIWindowsEventCocoa.mm
++++ b/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIWindowsEventCocoa.mm
+@@ -42,6 +42,22 @@
+ 
+ namespace WebKit {
+ 
++// C++ bindings retain the existing Cocoa implementations.
++void WebExtensionAPIWindowsEvent::addListener(WebCore::FrameIdentifier frame, RefPtr<WebExtensionCallbackHandler> listener, RefPtr<JSON::Value> info, String& exception)
++{
++    auto infoValue = info ? parseJSON(info->toJSONString().createNSString().get(), JSONOptions::FragmentsAllowed) : nil;
++    auto infoObject = dynamic_objc_cast<NSDictionary>(infoValue);
++    if (infoValue && !infoObject) {
++        exception = "options must be an object"_s;
++        return;
++    }
++    NSString *nativeException = nil;
++    addListener(frame, WTF::move(listener), infoObject, &nativeException);
++    if (nativeException)
++        exception = nativeException;
++}
++
++
+ void WebExtensionAPIWindowsEvent::invokeListenersWithArgument(id argument, OptionSet<WindowTypeFilter> windowTypeFilter)
+ {
+     if (m_listeners.isEmpty())
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPICommands.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPICommands.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..4b12560dc00b4599cc4c1da0bab25466de9a2d86
@@ -46542,7 +46990,7 @@ index 8e5ecd249ca1330547c03039e959fc77b549f325..9826adea1517e419ad842c2adbb4d22c
  
      void addListener(WebCore::FrameIdentifier, RefPtr<WebExtensionCallbackHandler>);
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.cpp
-index a631bca164f7da881e64b2ee29f21de7f4179746..62b139c8acc33d83ef25ffc72e40a6d5731a246f 100644
+index a631bca164f7da881e64b2ee29f21de7f4179746..ed7c05d376918773658355f345d3ddcc8963946b 100644
 --- a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.cpp
 +++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.cpp
 @@ -81,8 +81,14 @@ bool WebExtensionAPINamespace::isPropertyAllowed(const ASCIILiteral& name, WebPa
@@ -46594,77 +47042,88 @@ index a631bca164f7da881e64b2ee29f21de7f4179746..62b139c8acc33d83ef25ffc72e40a6d5
  WebExtensionAPIScripting& WebExtensionAPINamespace::scripting()
  {
      // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/scripting
-@@ -324,6 +333,19 @@ WebExtensionAPIBookmarks& WebExtensionAPINamespace::bookmarks()
+@@ -324,15 +333,8 @@ WebExtensionAPIBookmarks& WebExtensionAPINamespace::bookmarks()
  }
  #endif
  
-+
+-WebExtensionAPIStorage& WebExtensionAPINamespace::storage()
+-{
+-    // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/storage
+-
+-    if (!m_storage)
+-        m_storage = WebExtensionAPIStorage::create(*this);
+ 
+-    return *m_storage;
+-}
 +#endif
-+
-+WebExtensionAPITabs& WebExtensionAPINamespace::tabs()
-+{
-+    // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/tabs
-+
-+    if (!m_tabs)
-+        m_tabs = WebExtensionAPITabs::create(*this);
-+
-+    return *m_tabs;
-+}
-+
- WebExtensionAPIStorage& WebExtensionAPINamespace::storage()
+ 
+ WebExtensionAPITabs& WebExtensionAPINamespace::tabs()
  {
-     // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/storage
-@@ -334,16 +356,25 @@ WebExtensionAPIStorage& WebExtensionAPINamespace::storage()
-     return *m_storage;
- }
+@@ -343,27 +345,15 @@ WebExtensionAPITabs& WebExtensionAPINamespace::tabs()
  
--WebExtensionAPITabs& WebExtensionAPINamespace::tabs()
-+WebExtensionAPIWebNavigation& WebExtensionAPINamespace::webNavigation()
- {
--    // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/tabs
-+    // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/webNavigation
- 
--    if (!m_tabs)
--        m_tabs = WebExtensionAPITabs::create(*this);
-+    if (!m_webNavigation)
-+        m_webNavigation = WebExtensionAPIWebNavigation::create(*this);
- 
--    return *m_tabs;
-+    return *m_webNavigation;
-+}
-+
-+WebExtensionAPIWebRequest& WebExtensionAPINamespace::webRequest()
-+{
-+    // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/webRequest
-+
-+    if (!m_webRequest)
-+        m_webRequest = WebExtensionAPIWebRequest::create(*this);
-+
-+    return *m_webRequest;
+     return *m_tabs;
  }
 -#endif
- 
- WebExtensionAPITest& WebExtensionAPINamespace::test()
- {
-@@ -366,16 +397,6 @@ WebExtensionAPIWindows& WebExtensionAPINamespace::windows()
-     return *m_windows;
- }
- 
--WebExtensionAPIWebNavigation& WebExtensionAPINamespace::webNavigation()
+-
+-WebExtensionAPITest& WebExtensionAPINamespace::test()
 -{
--    // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/webNavigation
+-    // Documentation: None (Testing Only)
+ 
+-    if (!m_test)
+-        m_test = WebExtensionAPITest::create(*this);
 -
--    if (!m_webNavigation)
--        m_webNavigation = WebExtensionAPIWebNavigation::create(*this);
--
--    return *m_webNavigation;
+-    return *m_test;
 -}
 -
- WebExtensionAPIWebRequest& WebExtensionAPINamespace::webRequest()
+-#if PLATFORM(COCOA)
+-WebExtensionAPIWindows& WebExtensionAPINamespace::windows()
++WebExtensionAPIStorage& WebExtensionAPINamespace::storage()
  {
-     // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/webRequest
+-    // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/windows
++    // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/storage
+ 
+-    if (!m_windows)
+-        m_windows = WebExtensionAPIWindows::create(*this);
++    if (!m_storage)
++        m_storage = WebExtensionAPIStorage::create(*this);
+ 
+-    return *m_windows;
++    return *m_storage;
+ }
+ 
+ WebExtensionAPIWebNavigation& WebExtensionAPINamespace::webNavigation()
+@@ -385,7 +375,28 @@ WebExtensionAPIWebRequest& WebExtensionAPINamespace::webRequest()
+ 
+     return *m_webRequest;
+ }
+-#endif
++
++WebExtensionAPITest& WebExtensionAPINamespace::test()
++{
++    // Documentation: None (Testing Only)
++
++    if (!m_test)
++        m_test = WebExtensionAPITest::create(*this);
++
++    return *m_test;
++}
++
++WebExtensionAPIWindows& WebExtensionAPINamespace::windows()
++{
++    // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/windows
++
++    if (!m_windows)
++        m_windows = WebExtensionAPIWindows::create(*this);
++
++    return *m_windows;
++}
++
++
+ 
+ } // namespace WebKit
+ 
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.h b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.h
-index 0daeb9f57bccead43bac234e6d71bff821327db7..67cb5ccbb74b5f005e045a90b2782401beda66db 100644
+index 0daeb9f57bccead43bac234e6d71bff821327db7..7e6b419126b61e6b261989d89923f00126af648d 100644
 --- a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.h
 +++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.h
 @@ -70,9 +70,9 @@ public:
@@ -46688,7 +47147,7 @@ index 0daeb9f57bccead43bac234e6d71bff821327db7..67cb5ccbb74b5f005e045a90b2782401
      WebExtensionAPIRuntime& runtime() const final;
  #if PLATFORM(COCOA)
      WebExtensionAPIScripting& scripting();
-@@ -100,14 +100,14 @@ public:
+@@ -100,15 +100,13 @@ public:
  #if ENABLE(WK_WEB_EXTENSIONS_BOOKMARKS)
      WebExtensionAPIBookmarks& bookmarks();
  #endif
@@ -46698,15 +47157,16 @@ index 0daeb9f57bccead43bac234e6d71bff821327db7..67cb5ccbb74b5f005e045a90b2782401
 +    WebExtensionAPITabs& tabs();
 +    WebExtensionAPIStorage& storage();
      WebExtensionAPITest& test();
-+    WebExtensionAPIWebRequest& webRequest();
-+    WebExtensionAPIWebNavigation& webNavigation();
- #if PLATFORM(COCOA)
-     WebExtensionAPIWindows& windows();
+-#if PLATFORM(COCOA)
+-    WebExtensionAPIWindows& windows();
 -    WebExtensionAPIWebNavigation& webNavigation();
--    WebExtensionAPIWebRequest& webRequest();
- #endif
+     WebExtensionAPIWebRequest& webRequest();
+-#endif
++    WebExtensionAPIWebNavigation& webNavigation();
++    WebExtensionAPIWindows& windows();
  
  private:
+     RefPtr<WebExtensionAPIAction> m_action;
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIPermissions.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIPermissions.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..2c2b6cb78107c7ccea9d24343049ae22f7f44346
@@ -49396,6 +49856,344 @@ index a81d859b2cf12338df656bfe866549760217a324..961f2a62ca049d60b88bb202a4227a57
  };
  
  } // namespace WebKit
+diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIWindows.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIWindows.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..848f72ab050b39f1fe1349f1e3fe01a4e9d7ecb4
+--- /dev/null
++++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIWindows.cpp
+@@ -0,0 +1,157 @@
++/*
++ * Copyright (C) 2023 Apple Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#include "WebExtensionAPIWindows.h"
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++#include "JSWebExtensionWindowParameters.h"
++#include "MessageSenderInlines.h"
++#include "WebExtensionAPINamespace.h"
++#include "WebExtensionContextMessages.h"
++#include "WebExtensionContextProxy.h"
++#include "WebExtensionWindowQueryParser.h"
++#include "WebProcess.h"
++namespace WebKit {
++static void callWithWindow(WebExtensionCallbackHandler& callback, std::expected<WebExtensionWindowParameters, WebExtensionError>&& result)
++{
++    if (!result) {
++        callback.reportError(result.error());
++        return;
++    }
++    auto context = callback.globalContext();
++    Protected<JSValueRef> value(context, toWebAPI(context, *result));
++    callback.call(value.get());
++}
++void WebExtensionAPIWindows::get(WebPageProxyIdentifier page, double identifier, RefPtr<JSON::Value> info, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto window = toWebExtensionWindowIdentifier(identifier);
++    if (!isValid(window) || identifier > 9007199254740991.0) {
++        exception = "windowID must be a valid window identifier"_s;
++        return;
++    }
++    auto query = parseWebExtensionWindowQuery(info.get(), WebExtensionWindowQueryKind::Get);
++    if (!query) {
++        exception = query.error();
++        return;
++    }
++    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::WindowsGet(page, *window, query->types, query->populate),
++        [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<WebExtensionWindowParameters, WebExtensionError>&& result) {
++            callWithWindow(callback.get(), WTF::move(result));
++        }, extensionContext().identifier());
++}
++void WebExtensionAPIWindows::getCurrent(WebPageProxyIdentifier page, RefPtr<JSON::Value> info, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    get(page, WebExtensionWindowConstants::Current, WTF::move(info), WTF::move(callback), exception);
++}
++void WebExtensionAPIWindows::getLastFocused(RefPtr<JSON::Value> info, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto query = parseWebExtensionWindowQuery(info.get(), WebExtensionWindowQueryKind::Get);
++    if (!query) {
++        exception = query.error();
++        return;
++    }
++    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::WindowsGetLastFocused(query->types, query->populate),
++        [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<WebExtensionWindowParameters, WebExtensionError>&& result) {
++            callWithWindow(callback.get(), WTF::move(result));
++        }, extensionContext().identifier());
++}
++void WebExtensionAPIWindows::getAll(RefPtr<JSON::Value> info, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto query = parseWebExtensionWindowQuery(info.get(), WebExtensionWindowQueryKind::Get);
++    if (!query) {
++        exception = query.error();
++        return;
++    }
++    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::WindowsGetAll(query->types, query->populate),
++        [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<Vector<WebExtensionWindowParameters>, WebExtensionError>&& result) {
++            if (!result) {
++                callback->reportError(result.error());
++                return;
++            }
++            auto context = callback->globalContext();
++            Vector<Protected<JSValueRef>> protectedWindows;
++            Vector<JSValueRef> windows;
++            for (auto& window : *result) {
++                protectedWindows.append(Protected<JSValueRef>(context, toWebAPI(context, window)));
++                windows.append(protectedWindows.last().get());
++            }
++            Protected<JSObjectRef> array(context, JSObjectMakeArray(context, windows.size(), windows.span().data(), nullptr));
++            callback->call(array.get());
++        }, extensionContext().identifier());
++}
++WebExtensionAPIWindowsEvent& WebExtensionAPIWindows::onCreated()
++{
++    if (!m_onCreated)
++        m_onCreated = WebExtensionAPIWindowsEvent::create(*this, WebExtensionEventListenerType::WindowsOnCreated);
++    return *m_onCreated;
++}
++WebExtensionAPIWindowsEvent& WebExtensionAPIWindows::onRemoved()
++{
++    if (!m_onRemoved)
++        m_onRemoved = WebExtensionAPIWindowsEvent::create(*this, WebExtensionEventListenerType::WindowsOnRemoved);
++    return *m_onRemoved;
++}
++WebExtensionAPIWindowsEvent& WebExtensionAPIWindows::onFocusChanged()
++{
++    if (!m_onFocusChanged)
++        m_onFocusChanged = WebExtensionAPIWindowsEvent::create(*this, WebExtensionEventListenerType::WindowsOnFocusChanged);
++    return *m_onFocusChanged;
++}
++void WebExtensionContextProxy::dispatchWindowsEvent(WebExtensionEventListenerType type, const std::optional<WebExtensionWindowParameters>& window)
++{
++    if (window && (!window->identifier || !window->type))
++        return;
++    auto filter = window ? OptionSet { *window->type == WebExtensionWindow::Type::Normal ? WebExtensionWindowTypeFilter::Normal : WebExtensionWindowTypeFilter::Popup }
++                         : allWebExtensionWindowTypeFilters();
++    enumerateNamespaceObjects([&](auto& object) {
++        auto& windows = object.windows();
++        switch (type) {
++        case WebExtensionEventListenerType::WindowsOnCreated:
++            if (window) {
++                windows.onCreated().invokeListenersWithArgumentFactory(filter, [&](JSGlobalContextRef context) {
++                    return Protected<JSValueRef>(context, toWebAPI(context, *window));
++                });
++            }
++            break;
++        case WebExtensionEventListenerType::WindowsOnRemoved:
++            if (window) {
++                windows.onRemoved().invokeListenersWithArgumentFactory(filter, [&](JSGlobalContextRef context) {
++                    return Protected<JSValueRef>(context, JSValueMakeNumber(context, toWebAPI(*window->identifier)));
++                });
++            }
++            break;
++        case WebExtensionEventListenerType::WindowsOnFocusChanged:
++            windows.onFocusChanged().invokeListenersWithArgumentFactory(filter, [&](JSGlobalContextRef context) {
++                return Protected<JSValueRef>(context, JSValueMakeNumber(context, window ? toWebAPI(*window->identifier) : WebExtensionWindowConstants::None));
++            });
++            break;
++        default:
++            ASSERT_NOT_REACHED();
++        }
++    });
++}
++}
++#endif
+diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIWindows.h b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIWindows.h
+index 966ce8a5b8895297c23a032ab2065c43033c947b..5946de9bc1da0e29a5859e39c23d97e6bf61d9ad 100644
+--- a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIWindows.h
++++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIWindows.h
+@@ -33,6 +33,7 @@
+ #include "WebExtensionWindow.h"
+ #include "WebExtensionWindowIdentifier.h"
+ #include "WebPageProxyIdentifier.h"
++#include <wtf/JSONValues.h>
+ 
+ OBJC_CLASS NSDictionary;
+ OBJC_CLASS NSString;
+@@ -45,10 +46,17 @@ class WebExtensionAPIWindows : public WebExtensionAPIObject, public JSWebExtensi
+     WEB_EXTENSION_DECLARE_JS_WRAPPER_CLASS(WebExtensionAPIWindows, windows, windows);
+ 
+ public:
+-#if PLATFORM(COCOA)
+     using PopulateTabs = WebExtensionWindow::PopulateTabs;
+     using WindowTypeFilter = WebExtensionWindow::TypeFilter;
+ 
++    void get(WebPageProxyIdentifier, double windowID, RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String& exception);
++    void getCurrent(WebPageProxyIdentifier, RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String& exception);
++    void getLastFocused(RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String& exception);
++    void getAll(RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String& exception);
++#if PLATFORM(COCOA)
++    void createWindow(RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String& exception);
++    void update(double windowID, RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String& exception);
++    void remove(double windowID, Ref<WebExtensionCallbackHandler>&&, String& exception);
+     bool isPropertyAllowed(const ASCIILiteral& propertyName, WebPage*);
+ 
+     void createWindow(NSDictionary *data, Ref<WebExtensionCallbackHandler>&&, NSString **outExceptionString);
+@@ -61,6 +69,8 @@ public:
+     void update(double windowID, NSDictionary *info, Ref<WebExtensionCallbackHandler>&&, NSString **outExceptionString);
+     void remove(double windowID, Ref<WebExtensionCallbackHandler>&&, NSString **outExceptionString);
+ 
++#endif
++
+     double windowIdentifierNone() const { return WebExtensionWindowConstants::None; }
+     double windowIdentifierCurrent() const { return WebExtensionWindowConstants::Current; }
+ 
+@@ -72,6 +82,7 @@ private:
+     friend class WebExtensionAPITabs;
+     friend class WebExtensionAPIWindowsEvent;
+ 
++#if PLATFORM(COCOA)
+     static bool parsePopulateTabs(NSDictionary *, PopulateTabs&, NSString *sourceKey, NSString **outExceptionString);
+     static bool parseWindowTypesFilter(NSDictionary *, OptionSet<WindowTypeFilter>&, NSString *sourceKey, NSString **outExceptionString);
+     static bool parseWindowTypeFilter(NSString *, OptionSet<WindowTypeFilter>&, NSString *sourceKey, NSString **outExceptionString);
+@@ -79,10 +90,11 @@ private:
+     bool parseWindowCreateOptions(NSDictionary *, WebExtensionWindowParameters&, NSString *sourceKey, NSString **outExceptionString);
+     static bool parseWindowUpdateOptions(NSDictionary *, WebExtensionWindowParameters&, NSString *sourceKey, NSString **outExceptionString);
+ 
++#endif
++
+     RefPtr<WebExtensionAPIWindowsEvent> m_onCreated;
+     RefPtr<WebExtensionAPIWindowsEvent> m_onRemoved;
+     RefPtr<WebExtensionAPIWindowsEvent> m_onFocusChanged;
+-#endif
+ };
+ 
+ bool isValid(std::optional<WebExtensionWindowIdentifier>, NSString **outExceptionString);
+diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIWindowsEvent.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIWindowsEvent.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..bac2687254efab60ec3752a61349cc10de48ee75
+--- /dev/null
++++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIWindowsEvent.cpp
+@@ -0,0 +1,72 @@
++/*
++ * Copyright (C) 2023 Apple Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#include "WebExtensionAPIWindowsEvent.h"
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++#include "MessageSenderInlines.h"
++#include "WebExtensionContextMessages.h"
++#include "WebExtensionWindowQueryParser.h"
++#include "WebProcess.h"
++namespace WebKit {
++void WebExtensionAPIWindowsEvent::addListener(WebCore::FrameIdentifier frame, RefPtr<WebExtensionCallbackHandler> listener, RefPtr<JSON::Value> filter, String& exception)
++{
++    auto query = parseWebExtensionWindowQuery(filter.get(), WebExtensionWindowQueryKind::Event);
++    if (!query) {
++        exception = query.error();
++        return;
++    }
++    if (!hasExtensionContext()) {
++        exception = "extension context is unavailable"_s;
++        return;
++    }
++    m_frameIdentifier = frame;
++    m_listeners.append({ WTF::move(listener), query->types });
++    WebProcess::singleton().send(Messages::WebExtensionContext::AddListener(frame, m_type, contentWorldType()), extensionContext().identifier());
++}
++void WebExtensionAPIWindowsEvent::removeListener(WebCore::FrameIdentifier frame, RefPtr<WebExtensionCallbackHandler> listener)
++{
++    auto count = m_listeners.removeAllMatching([&](auto& entry) { return entry.first->callbackFunction() == listener->callbackFunction(); });
++    if (!count)
++        return;
++    ASSERT(frame == m_frameIdentifier);
++    if (hasExtensionContext())
++        WebProcess::singleton().send(Messages::WebExtensionContext::RemoveListener(frame, m_type, contentWorldType(), count), extensionContext().identifier());
++}
++bool WebExtensionAPIWindowsEvent::hasListener(RefPtr<WebExtensionCallbackHandler> listener)
++{
++    return m_listeners.containsIf([&](auto& entry) { return entry.first->callbackFunction() == listener->callbackFunction(); });
++}
++void WebExtensionAPIWindowsEvent::removeAllListeners()
++{
++    if (m_listeners.isEmpty())
++        return;
++    if (hasExtensionContext())
++        WebProcess::singleton().send(Messages::WebExtensionContext::RemoveListener(*m_frameIdentifier, m_type, contentWorldType(), m_listeners.size()), extensionContext().identifier());
++    m_listeners.clear();
++}
++}
++#endif
+diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIWindowsEvent.h b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIWindowsEvent.h
+index 0df430648c8583ac2b72082f383085b9203a3254..4feb3e38e19c86532ff9120ab38fbb134b8dd56f 100644
+--- a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIWindowsEvent.h
++++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIWindowsEvent.h
+@@ -31,6 +31,7 @@
+ #include "WebExtensionAPIEvent.h"
+ #include "WebExtensionAPIObject.h"
+ #include "WebExtensionWindow.h"
++#include <wtf/JSONValues.h>
+ 
+ OBJC_CLASS NSDictionary;
+ OBJC_CLASS NSString;
+@@ -51,7 +52,23 @@ public:
+ 
+     const ListenerVector& listeners() const LIFETIME_BOUND { return m_listeners; }
+ 
++    template<typename Factory>
++    void invokeListenersWithArgumentFactory(OptionSet<WindowTypeFilter> filter, Factory&& factory)
++    {
++        auto listeners = m_listeners;
++        for (auto& entry : listeners) {
++            if (!entry.second.containsAny(filter))
++                continue;
++            Ref listener = *entry.first;
++            Protected<JSValueRef> argument = factory(listener->globalContext());
++            listener->call(argument.get());
++        }
++    }
++
++    void addListener(WebCore::FrameIdentifier, RefPtr<WebExtensionCallbackHandler>, RefPtr<JSON::Value> filter, String& exception);
++#if PLATFORM(COCOA)
+     void addListener(WebCore::FrameIdentifier, RefPtr<WebExtensionCallbackHandler>, NSDictionary *filter, NSString **outExceptionString);
++#endif
+     void removeListener(WebCore::FrameIdentifier, RefPtr<WebExtensionCallbackHandler>);
+     bool hasListener(RefPtr<WebExtensionCallbackHandler>);
+ 
 diff --git a/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionMessageReply.cpp b/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionMessageReply.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..4c9c0127c6fc188e5243ea2ef28c866ca7787a30
@@ -50299,6 +51097,78 @@ index 0000000000000000000000000000000000000000..4a70ba007eb5858d0e26eb8ab5e4438d
 +} // namespace WebKit
 +
 +#endif // ENABLE(WK_WEB_EXTENSIONS)
+diff --git a/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionWindowParameters.cpp b/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionWindowParameters.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..294b0dce6bfcf6618ea5ecdce88c105616bfc9b0
+--- /dev/null
++++ b/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionWindowParameters.cpp
+@@ -0,0 +1,51 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#include "JSWebExtensionWindowParameters.h"
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++#include "JSWebExtensionString.h"
++#include "JSWebExtensionTabParameters.h"
++#include "Protected.h"
++#include "WebExtensionWindowParameters.h"
++namespace WebKit {
++JSValueRef toWebAPI(JSContextRef context, const WebExtensionWindowParameters& parameters)
++{
++    auto globalContext = JSContextGetGlobalContext(context);
++    Protected<JSObjectRef> result(globalContext, JSObjectMake(context, nullptr, nullptr));
++    auto set = [&](ASCIILiteral key, JSValueRef value) {
++        JSObjectSetProperty(context, result.get(), toJSString(key).get(), value, kJSPropertyAttributeNone, nullptr);
++    };
++    auto stringValue = [&](ASCIILiteral value) {
++        return JSValueMakeString(context, toJSString(value).get());
++    };
++    if (parameters.identifier)
++        set("id"_s, JSValueMakeNumber(context, toWebAPI(*parameters.identifier)));
++    if (parameters.type)
++        set("type"_s, stringValue(*parameters.type == WebExtensionWindow::Type::Normal ? "normal"_s : "popup"_s));
++    if (parameters.state) {
++        switch (*parameters.state) {
++        case WebExtensionWindow::State::Normal: set("state"_s, stringValue("normal"_s)); break;
++        case WebExtensionWindow::State::Minimized: set("state"_s, stringValue("minimized"_s)); break;
++        case WebExtensionWindow::State::Maximized: set("state"_s, stringValue("maximized"_s)); break;
++        case WebExtensionWindow::State::Fullscreen: set("state"_s, stringValue("fullscreen"_s)); break;
++        }
++    }
++    if (parameters.focused)
++        set("focused"_s, JSValueMakeBoolean(context, *parameters.focused));
++    if (parameters.privateBrowsing)
++        set("incognito"_s, JSValueMakeBoolean(context, *parameters.privateBrowsing));
++    // Registered native browser windows have normal window feel.
++    set("alwaysOnTop"_s, JSValueMakeBoolean(context, false));
++    if (parameters.tabs) {
++        Vector<Protected<JSValueRef>> protectedTabs;
++        Vector<JSValueRef> tabs;
++        for (auto& tab : *parameters.tabs) {
++            protectedTabs.append(Protected<JSValueRef>(globalContext, toWebAPI(context, tab)));
++            tabs.append(protectedTabs.last().get());
++        }
++        Protected<JSObjectRef> array(globalContext, JSObjectMakeArray(context, tabs.size(), tabs.span().data(), nullptr));
++        set("tabs"_s, array.get());
++    }
++    return result.get();
++}
++}
++#endif
+diff --git a/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionWindowParameters.h b/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionWindowParameters.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..80deac4079e45cdcbc0249ee23e1bddd46d16dfc
+--- /dev/null
++++ b/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionWindowParameters.h
+@@ -0,0 +1,9 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++#include <JavaScriptCore/JSValueRef.h>
++namespace WebKit {
++struct WebExtensionWindowParameters;
++JSValueRef toWebAPI(JSContextRef, const WebExtensionWindowParameters&);
++}
++#endif
 diff --git a/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionWrapper.cpp b/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionWrapper.cpp
 index 674db48c5a30980a9ccbe359eeb67e6a7a65c1d2..04c614603f5e48c029515b4e84286c55c9801c4f 100644
 --- a/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionWrapper.cpp
@@ -50925,7 +51795,7 @@ index 25491a911534c611ab59ab4725e41bafeb93894d..d1c62c9c4082a2e4856f1861dde93535
  
      [NeedsFrameIdentifier] void addListener([CallbackHandler] function listener);
 diff --git a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPINamespace.idl b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPINamespace.idl
-index 8fd7a8880207871662fb33d5b56dcf2fde2dfbc4..065d32442192a4c63681be6417d689b6c31c5071 100644
+index 8fd7a8880207871662fb33d5b56dcf2fde2dfbc4..6f048f4cd11691262fc58743676e777cf23cdab6 100644
 --- a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPINamespace.idl
 +++ b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPINamespace.idl
 @@ -43,7 +43,7 @@
@@ -50965,7 +51835,8 @@ index 8fd7a8880207871662fb33d5b56dcf2fde2dfbc4..065d32442192a4c63681be6417d689b6
 -    [MainWorldOnly, Dynamic, Platform=COCOA] readonly attribute WebExtensionAPITabs tabs;
 +    [MainWorldOnly, Dynamic] readonly attribute WebExtensionAPITabs tabs;
  
-     [MainWorldOnly, Dynamic, Platform=COCOA] readonly attribute WebExtensionAPIWindows windows;
+-    [MainWorldOnly, Dynamic, Platform=COCOA] readonly attribute WebExtensionAPIWindows windows;
++    [MainWorldOnly, Dynamic] readonly attribute WebExtensionAPIWindows windows;
  
 -    [MainWorldOnly, Dynamic, Platform=COCOA] readonly attribute WebExtensionAPIWebNavigation webNavigation;
 +    [MainWorldOnly, Dynamic] readonly attribute WebExtensionAPIWebNavigation webNavigation;
@@ -51217,6 +52088,53 @@ index f0efde6095b7d12c7cf85dbaf1034a08d319432d..6586e0e9e769b28bbbe50c560575d8cf
  
 -    [NeedsFrameIdentifier, RaisesException] void addListener([CallbackHandler] function listener, [NSDictionary, Optional] any filter, [NSArray=NSString, Optional] array extraInfoSpec);
 +    [NeedsFrameIdentifier, RaisesStringException] void addListener([CallbackHandler] function listener, [JSONValue, Optional] any filter, [JSONValue, Optional] any extraInfoSpec);
+     [NeedsFrameIdentifier] void removeListener([CallbackHandler] function listener);
+     boolean hasListener([CallbackHandler] function listener);
+ 
+diff --git a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIWindows.idl b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIWindows.idl
+index 771d6e1a5deb305bf1644bc6ad23771dd17cb1a5..b2c55b7968d1658a33254834dc59a2de1c1790ef 100644
+--- a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIWindows.idl
++++ b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIWindows.idl
+@@ -79,18 +79,19 @@ dictionary WebExtensionWindowUpdateInfo {
+ [
+     Conditional=WK_WEB_EXTENSIONS,
+     MainWorldOnly,
++    UseCPPAPI,
+     ReturnsPromiseWhenCallbackIsOmitted,
+ ] interface WebExtensionAPIWindows {
+ 
+-    [RaisesException, Dynamic, ImplementedAs=createWindow] void create([Optional, NSDictionary] any info, [Optional, CallbackHandler] function callback);
++    [Platform=COCOA, RaisesStringException, Dynamic, ImplementedAs=createWindow] void create([Optional, JSONValue] any info, [Optional, CallbackHandler] function callback);
+ 
+-    [RaisesException, NeedsPageIdentifier] void get(double windowID, [Optional, NSDictionary] any properties, [Optional, CallbackHandler] function callback);
+-    [RaisesException, NeedsPageIdentifier] void getCurrent([Optional, NSDictionary] any info, [Optional, CallbackHandler] function callback);
+-    [RaisesException] void getLastFocused([Optional, NSDictionary] any info, [Optional, CallbackHandler] function callback);
+-    [RaisesException] void getAll([Optional, NSDictionary] any info, [Optional, CallbackHandler] function callback);
++    [RaisesStringException, NeedsPageIdentifier] void get(double windowID, [Optional, JSONValue] any properties, [Optional, CallbackHandler] function callback);
++    [RaisesStringException, NeedsPageIdentifier] void getCurrent([Optional, JSONValue] any info, [Optional, CallbackHandler] function callback);
++    [RaisesStringException] void getLastFocused([Optional, JSONValue] any info, [Optional, CallbackHandler] function callback);
++    [RaisesStringException] void getAll([Optional, JSONValue] any info, [Optional, CallbackHandler] function callback);
+ 
+-    [RaisesException, Dynamic] void update(double windowID, [NSDictionary] any properties, [Optional, CallbackHandler] function callback);
+-    [RaisesException, Dynamic] void remove(double windowID, [Optional, CallbackHandler] function callback);
++    [Platform=COCOA, RaisesStringException, Dynamic] void update(double windowID, [JSONValue] any properties, [Optional, CallbackHandler] function callback);
++    [Platform=COCOA, RaisesStringException, Dynamic] void remove(double windowID, [Optional, CallbackHandler] function callback);
+ 
+     [ImplementedAs=windowIdentifierNone] readonly attribute double WINDOW_ID_NONE;
+     [ImplementedAs=windowIdentifierCurrent] readonly attribute double WINDOW_ID_CURRENT;
+diff --git a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIWindowsEvent.idl b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIWindowsEvent.idl
+index d7751fadf02bf7a0dc7542d087b546d5e4bc2606..cb5bbc0220fffec20c931603020f9186b8f95eb9 100644
+--- a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIWindowsEvent.idl
++++ b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIWindowsEvent.idl
+@@ -26,9 +26,10 @@
+ [
+     Conditional=WK_WEB_EXTENSIONS,
+     MainWorldOnly,
++    UseCPPAPI,
+ ] interface WebExtensionAPIWindowsEvent {
+ 
+-    [NeedsFrameIdentifier, RaisesException] void addListener([CallbackHandler] function listener, [Optional, NSDictionary] any filter);
++    [NeedsFrameIdentifier, RaisesStringException] void addListener([CallbackHandler] function listener, [Optional, JSONValue] any filter);
      [NeedsFrameIdentifier] void removeListener([CallbackHandler] function listener);
      boolean hasListener([CallbackHandler] function listener);
  

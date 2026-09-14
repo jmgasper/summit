@@ -16,10 +16,90 @@ static void check(bool result, const char* label)
         printf("FAIL %s\n", label);
     }
 }
-int main()
+static void checkObserver(const BMessenger& first, const BMessenger& second)
 {
-    BApplication application("application/x-vnd.Kunanyi-Summit-browser-tab-registry-tests");
-    WTF::initializeMainThread();
+    using Snapshot = BrowserTabRegistryHaiku::Snapshot;
+    BrowserTabRegistryHaiku registry;
+    Vector<std::pair<Snapshot, Snapshot>> changes;
+    registry.setObserver([&](const Snapshot& before, const Snapshot& after) {
+        changes.append({ before, after });
+        check(registry.windows().size() == after.windows.size() && registry.focusedWindow() == after.focusedWindow,
+            "observer runs after the replacement state is committed");
+        for (auto& window : after.windows) {
+            check(registry.window(window.identifier)->pages == window.pages, "observers see complete tab ownership");
+            for (auto page : window.pages)
+                check(registry.tab(page)->windowIdentifier == window.identifier, "no intermediate duplicate tab owner is visible");
+        }
+    });
+    check(changes.isEmpty(), "registering an observer does not synthesize events");
+    auto a = WebPageProxyIdentifier::generate();
+    auto b = WebPageProxyIdentifier::generate();
+    auto c = WebPageProxyIdentifier::generate();
+    auto one = registry.update(first, { a, b }, a, true);
+    check(one && changes.size() == 1 && changes[0].first.windows.isEmpty()
+        && changes[0].second.windows[0].pages == Vector { a, b }, "first window publishes one complete transition");
+    check(!changes[0].first.focusedWindow && changes[0].second.focusedWindow == one,
+        "initial focus transition is included with creation");
+    registry.update(first, { a, b }, a, true);
+    registry.removePage(c);
+    registry.update(second, { }, std::nullopt, false);
+    check(changes.size() == 1, "unchanged snapshots and absent removals do not notify");
+    check(!registry.update(first, { a, a }, a, false)
+        && !registry.update(first, { a }, c, false)
+        && !registry.update(BMessenger(), { c }, c, true), "invalid mutations are rejected");
+    check(changes.size() == 1, "invalid mutations do not notify observers");
+    registry.update(first, { b, a }, b, true);
+    check(changes.size() == 2 && changes.last().first.windows[0].pages == Vector { a, b }
+        && changes.last().second.windows[0].pages == Vector { b, a }, "reorder preserves independent before and after snapshots");
+    auto two = registry.update(second, { c }, c, true);
+    check(two && changes.last().second.focusedWindow == two && changes.last().first.focusedWindow == one,
+        "focus switches retain the previous window identifier");
+    auto count = changes.size();
+    registry.update(first, { b, a }, b, false);
+    check(changes.size() == count, "late deactivation of the old window does not repeat a focus transition");
+    registry.update(second, { c }, c, false);
+    check(changes.size() == count + 1 && !changes.last().second.focusedWindow,
+        "deactivation reports loss of focus without inventing a replacement window");
+    registry.update(second, { a, b, c }, c, true);
+    check(changes.last().first.windows.size() == 2 && changes.last().second.windows.size() == 1
+        && changes.last().second.windows[0].identifier == *two, "moving all pages removes the source window atomically");
+    registry.removePage(c);
+    check(!changes.last().second.windows[0].activePage && changes.last().first.windows[0].activePage == c,
+        "page removal captures the previous active page without inventing a new selection");
+    registry.clear();
+    check(changes.last().first.windows.size() == 1 && changes.last().second.windows.isEmpty()
+        && !changes.last().second.focusedWindow, "clear publishes one transition for all removed windows");
+    count = changes.size();
+    registry.clear();
+    check(changes.size() == count, "clearing an empty registry does not notify");
+    check(changes[0].second.windows[0].pages == Vector { a, b }, "retained snapshots remain unchanged through later mutations");
+
+    unsigned callbacks = 0;
+    registry.setObserver([&](const Snapshot& before, const Snapshot& after) {
+        ++callbacks;
+        auto retained = after;
+        if (callbacks == 1) {
+            registry.update(second, { b }, b, true);
+            check(before.windows.isEmpty() && after.windows.size() == 1 && after.windows[0].pages == Vector { a },
+                "nested mutation does not invalidate outer snapshot arguments");
+            check(retained.windows[0].identifier == after.windows[0].identifier, "outer snapshot retains its original window identity");
+        }
+    });
+    registry.update(first, { a }, a, true);
+    check(callbacks == 2 && registry.windows().size() == 2, "nested changes each publish one complete transition");
+    registry.setObserver([&](const Snapshot&, const Snapshot& after) {
+        ++callbacks;
+        registry.setObserver({ });
+        check(after.windows.isEmpty(), "an observer can unregister during its own callback");
+    });
+    registry.clear();
+    registry.update(first, { a }, a, true);
+    check(callbacks == 3, "unregistered observers receive no later transitions");
+    registry.clear();
+}
+
+static void checkRegistry(BApplication& application)
+{
     BHandler firstHandler("first-window"), secondHandler("second-window");
     application.AddHandler(&firstHandler);
     application.AddHandler(&secondHandler);
@@ -87,8 +167,29 @@ int main()
     check(registry.windows().isEmpty() && !registry.focusedWindow(), "all pages close without stale windows");
     registry.clear();
     otherProfile.clear();
+    checkObserver(first, second);
     application.RemoveHandler(&secondHandler);
     application.RemoveHandler(&firstHandler);
+}
+
+class RegistryApplication final : public BApplication {
+public:
+    bool didRun { false };
+    RegistryApplication() : BApplication("application/x-vnd.Kunanyi-Summit-browser-tab-registry-tests") { }
+    void ReadyToRun() override
+    {
+        WTF::initializeMainThread();
+        checkRegistry(*this);
+        didRun = true;
+        PostMessage(B_QUIT_REQUESTED);
+    }
+};
+
+int main()
+{
+    RegistryApplication application;
+    application.Run();
+    check(application.didRun, "the native suite ran from BApplication::ReadyToRun");
     printf("%u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;
 }

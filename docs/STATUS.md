@@ -1792,5 +1792,28 @@ Native mutation, navigation, capture, script and messaging methods remain
 unported. See [the native tabs API scope](webextensions-native-tabs-api.md).
 
 Patch `f0952d6df18433d24eff8f132fc8bc1cd5f66c860936e00ff74aa3c644515db6`
-is promoted; its full extension-enabled build is pending. Full extension
-support remains unfinished, and no extension has run.
+is promoted. Its full extension-enabled build reached linking with **5 missing
+symbols (9 references), down from 14**. All nine tab dispatchers are resolved,
+with no new missing symbols or compiler errors. The two native source/config
+checks match this patch. Evidence: `.vm/modern-extensions-tab-api-build-result.json`.
+Full extension support remains unfinished, and no extension has run.
+
+2026-09-15 (local) native windows reads and lifecycle notifications: added `windows.get`,
+`getCurrent`, `getLastFocused`, `getAll`, identifier constants and filtered
+created/removed/focus dispatchers. A native registry observer now forwards
+committed window transitions to loaded contexts; it preserves removed window
+IDs, rejects invalid/no-op notifications, and checks the load identity and
+private-data access again after waking background content. The native tab
+lifecycle notification route remains unfinished.
+
+The window query/JavaScriptCore helper passes **111 checks** and the extended
+native registry helper passes **594 checks**, both with unchanged input/library
+hashes and no native crash-log events. Nineteen of 37 interfaces generate C++
+bindings; **318 binding checks pass**. **Seventeen native integration units compile** against the combined
+candidate, with source/header hashes audited. State/geometry and window mutation APIs remain unavailable. See
+[the native windows API scope](webextensions-native-windows-api.md).
+
+Windows patch `6730e1ed2e25f7c9f9a8071634aed7e8dee6e4f374fce052230b745f627b155e`
+is promoted; its full extension-enabled engine build is pending.
+No extension has executed these APIs or received these native events in a
+browser; the full-browser objective remains unfinished.

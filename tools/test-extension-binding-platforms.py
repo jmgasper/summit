@@ -136,6 +136,32 @@ def main(generated):
                 checks += 1
                 if not re.search(pattern, result.stdout):
                     raise RuntimeError(f'Missing tabs namespace: Haiku={haiku}, source={suffix}')
+    if (generated / 'JSWebExtensionAPIWindows.cpp').exists():
+        surfaces = {
+            'Windows': (('get', 'getCurrent', 'getLastFocused', 'getAll', 'windowIdentifierNone',
+                         'windowIdentifierCurrent', 'onCreated', 'onRemoved', 'onFocusChanged'), ('create', 'update', 'remove')),
+            'WindowsEvent': (('addListener', 'removeListener', 'hasListener'), ()),
+            'Namespace': (('windows',), ()),
+        }
+        for haiku in (0, 1):
+            for suffix in ('h', 'cpp'):
+                prefix = f'#define ENABLE(x) 1\n#define PLATFORM(x) PLATFORM_##x\n#define PLATFORM_HAIKU {haiku}\n#define PLATFORM_COCOA {1-haiku}\n'
+                for interface, (common, cocoa_only) in surfaces.items():
+                    source = generated / ('JSWebExtensionAPI' + interface + '.' + suffix)
+                    if digest(source) != generation['files'][source.name]:
+                        raise RuntimeError('Generated binding changed: ' + source.name)
+                    stripped = re.sub(r'^\s*#(?:include|import|pragma)\b[^\n]*', '', source.read_text(), flags=re.M)
+                    result = subprocess.run([compiler, '-E', '-P', '-x', 'c++', '-'], input=prefix + stripped,
+                                            text=True, capture_output=True, check=True)
+                    if haiku and suffix == 'cpp' and interface != 'Namespace':
+                        checks += 1
+                        if re.search(r'\b(?:toNSDictionary|NSString|NSDictionary)\b', result.stdout):
+                            raise RuntimeError('Native binding contains Objective-C argument handling: ' + interface)
+                    for name in common + cocoa_only:
+                        pattern = r'\bstatic JSValueRef ' + name + r'\(' if suffix == 'h' else r'\bJSWebExtensionAPI' + interface + '::' + name + r'\('
+                        checks += 1
+                        if bool(re.search(pattern, result.stdout)) != (name in common or not haiku):
+                            raise RuntimeError(f'Incorrect {interface}.{name} exposure: Haiku={haiku}, source={suffix}')
     report = {'scope': 'actual Perl generation and C++ preprocessing; no Cocoa or Haiku engine compile/runtime',
               'generation': str(generated), 'fixture_sha256': digest(idl), 'command': command,
               'checks': checks, 'cases': records, 'passed': True}

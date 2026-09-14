@@ -4,7 +4,7 @@ The Haiku port implements `tabs.get`, `tabs.getCurrent`, `tabs.query`,
 `TAB_ID_NONE`, and all nine upstream tab lifecycle events to the native C++
 bindings. It uses the existing native browser registry and permission-filtered
 tab parameters. This implementation has passed isolated native checks; its
-full engine build is pending. **No extension has run these APIs.**
+full engine build compiled and reached linking, leaving five missing symbols. **No extension has run these APIs.**
 
 ## Read behavior
 
@@ -51,6 +51,10 @@ next one, and listener snapshots retain callback order during mutation. Each
 listener receives newly created objects. JSON arguments used by the other
 events are likewise parsed and protected separately for each listener.
 
+The web-process dispatchers still need native host lifecycle notifications
+connected through the UI process before browser actions can produce these
+events in an extension.
+
 ## Verification
 
 **136 native checks pass** for the new structural query parser and the actual
@@ -75,8 +79,15 @@ dispatch browser events. Those runtime behaviors still need the complete
 extension-enabled browser. Cocoa implementation wrappers preserve the existing
 methods but have not been compiled against a Cocoa SDK.
 
+The full feature-enabled build resolved all nine tab dispatchers, reducing
+missing symbols from 14 to **5** (9 references). It reported no new missing
+symbols or compiler errors. At this tabs checkpoint, the remaining symbols are the declarative request-rule
+loader and windows, menus, action and cookies dispatchers. This does not yet
+produce a runnable extension-enabled browser.
+
 Evidence:
 
+- `.vm/modern-extensions-tab-api-build-result.json`
 - `.vm/extension-tab-api-validation.json`
 - `.vm/extension-tab-json-tests.8lM4jSwH/result.json`
 - `.vm/extension-binding-platforms-h8g8u7lm/result.json`
