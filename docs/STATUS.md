@@ -1594,3 +1594,12 @@ library link fails with the same 23 missing symbols, with none newly introduced.
 Evidence: `.vm/modern-extensions-web-request-metadata-build-result.json`.
 The later Cocoa-only duplicate removal does not affect this build's native
 compiled sources. No feature-enabled engine link or extension runtime passed.
+
+2026-09-15 (local) native permission changes: named grants/revocations now update
+extension processes and clipboard preferences; host-pattern changes update CORS,
+injected content and tab metadata. Delayed events check the current load and tab
+identity, and tab payloads read permissions at delivery. A native C++ host
+observer interface is available but not yet wired into the SDK or extension UI.
+**Four native units compile**; no permission or observer runtime was executed.
+See [permission-change evidence and limits](webextensions-native-permission-changes.md).
+Patch: `61626a3e1a2fcb8cf9b87008c6543921fa3b338666873e55df51254c11dbeaf5`.

@@ -22928,10 +22928,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..e2a97c83f26cd430e129f6ef50c14bdca342c685
+index 0000000000000000000000000000000000000000..1cd0953e71d6b80ddb9a2978f0c5b51027fdd692
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,193 @@
+@@ -0,0 +1,194 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -22981,6 +22981,7 @@ index 0000000000000000000000000000000000000000..e2a97c83f26cd430e129f6ef50c14bdc
 +    UIProcess/API/haiku/WebKitView.cpp
 +    UIProcess/Extensions/haiku/WebExtensionArchiveHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionContextHaiku.cpp
++    UIProcess/Extensions/haiku/WebExtensionContextPermissionsHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionContextTestHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionContextBackgroundHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionControllerAPITestHaiku.cpp
@@ -29496,7 +29497,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..51bf107142461e1c1ca1388b537b87b6
  
  #endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
-index 05a8676082d56f2c47c9af6120f5120b09f982be..78652d0b45fdfbea2cfa4d74ae407ed4798e059e 100644
+index 05a8676082d56f2c47c9af6120f5120b09f982be..fbcffc7df4a0ffa1ba13f0c6d1bbb0759b5f58cb 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 @@ -52,6 +52,7 @@
@@ -29507,18 +29508,19 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..78652d0b45fdfbea2cfa4d74ae407ed4
  #include "WebExtensionPortChannelIdentifier.h"
  #include "WebExtensionRegisteredScriptsSQLiteStore.h"
  #include "WebExtensionStorageAccessLevel.h"
-@@ -85,6 +86,10 @@
+@@ -85,6 +86,11 @@
  #include <wtf/WeakHashMap.h>
  #include <wtf/WeakPtr.h>
  
 +#if PLATFORM(HAIKU)
 +#include <wtf/JSONValues.h>
++#include <wtf/SharedTask.h>
 +#endif
 +
  #if ENABLE(INSPECTOR_EXTENSIONS)
  #include "APIInspectorExtension.h"
  #include "APIInspectorExtensionClient.h"
-@@ -144,9 +149,18 @@ namespace PAL {
+@@ -144,9 +150,18 @@ namespace PAL {
  class SessionID;
  }
  
@@ -29538,7 +29540,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..78652d0b45fdfbea2cfa4d74ae407ed4
  using WebViewClass = WebKitWebView;
  using WebViewConfiguration = GRefPtr<WebKitSettings>;
  using NavigationPolicyAction = WebKitNavigationPolicyDecision;
-@@ -179,6 +193,10 @@ enum class WebExtensionContextInstallReason : uint8_t {
+@@ -179,6 +194,10 @@ enum class WebExtensionContextInstallReason : uint8_t {
      BrowserUpdate,
  };
  
@@ -29549,7 +29551,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..78652d0b45fdfbea2cfa4d74ae407ed4
  class WebExtensionContext : public API::ObjectImpl<API::Object::Type::WebExtensionContext>, public IPC::MessageReceiver, public Identified<WebExtensionContextIdentifier> {
      WTF_MAKE_NONCOPYABLE(WebExtensionContext);
  
-@@ -198,6 +216,8 @@ public:
+@@ -198,6 +217,8 @@ public:
      {
  #if PLATFORM(COCOA)
          return "State.plist"_s;
@@ -29558,7 +29560,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..78652d0b45fdfbea2cfa4d74ae407ed4
  #else
          return "State.ini"_s;
  #endif
-@@ -206,6 +226,8 @@ public:
+@@ -206,6 +227,8 @@ public:
      static NSMutableDictionary *readStateFromPath(const String&);
  #elif ENABLE(2022_GLIB_API)
      static GRefPtr<GKeyFile> readStateFromPath(const String&);
@@ -29567,7 +29569,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..78652d0b45fdfbea2cfa4d74ae407ed4
  #endif
      static bool readLastBaseURLFromState(const String& filePath, URL& outLastBaseURL);
      static bool readDisplayNameFromState(const String& filePath, String& outDisplayName);
-@@ -214,7 +236,7 @@ public:
+@@ -214,7 +237,7 @@ public:
  
      static WebExtensionContext* NODELETE get(WebExtensionContextIdentifier);
  
@@ -29576,7 +29578,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..78652d0b45fdfbea2cfa4d74ae407ed4
      explicit WebExtensionContext(Ref<WebExtension>&&);
  #elif ENABLE(2022_GLIB_API)
      explicit WebExtensionContext(WebKitWebExtensionContext*);
-@@ -265,11 +287,8 @@ public:
+@@ -265,11 +288,8 @@ public:
          bool userGesture { false };
      };
  
@@ -29588,7 +29590,21 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..78652d0b45fdfbea2cfa4d74ae407ed4
      using PortQueuedMessageMap = HashMap<PortWorldPair, Vector<PortQueuedMessage>>;
      using NativePortMap = HashMap<WebExtensionPortChannelIdentifier, Ref<WebExtensionMessagePort>>;
  
-@@ -504,6 +523,12 @@ public:
+@@ -334,6 +354,13 @@ public:
+         DeniedPermissionMatchPatternsWereRemoved,
+     };
+ 
++#if PLATFORM(HAIKU)
++    // Main-thread host observer. Replacing or clearing it cancels queued
++    // deliveries; permission and pattern sets describe the recorded change.
++    using NativePermissionChangeHandler = SharedTask<void(PermissionNotification, const PermissionsSet&, const MatchPatternSet&)>;
++    void setNativePermissionChangeHandler(RefPtr<NativePermissionChangeHandler>&&);
++#endif
++
+     enum class PermissionState : int8_t {
+         DeniedExplicitly    = -3,
+         DeniedImplicitly    = -2,
+@@ -504,6 +531,12 @@ public:
  
      void removePage(WebPageProxy&);
  
@@ -29601,7 +29617,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..78652d0b45fdfbea2cfa4d74ae407ed4
      Ref<WebExtensionWindow> getOrCreateWindow(WKWebExtensionWindow *) const;
      RefPtr<WebExtensionWindow> getWindow(WebExtensionWindowIdentifier, std::optional<WebPageProxyIdentifier> = std::nullopt, IgnoreExtensionAccess = IgnoreExtensionAccess::No) const;
      void forgetWindow(WebExtensionWindowIdentifier) const;
-@@ -630,6 +655,10 @@ public:
+@@ -630,6 +663,10 @@ public:
      void sendTestStarted(id argument);
      void sendTestFinished(id argument);
      void reloadBackgroundContentForTesting();
@@ -29612,7 +29628,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..78652d0b45fdfbea2cfa4d74ae407ed4
  #endif
  
      URL backgroundContentURL();
-@@ -656,6 +685,7 @@ public:
+@@ -656,6 +693,7 @@ public:
  #endif
  
  #if PLATFORM(COCOA)
@@ -29620,7 +29636,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..78652d0b45fdfbea2cfa4d74ae407ed4
      void sendNativeMessage(const String& applicationID, id message, CompletionHandler<void(std::expected<RetainPtr<id>, WebExtensionError>&&)>&&);
  #endif
  
-@@ -749,11 +779,18 @@ private:
+@@ -749,11 +787,18 @@ private:
  #if PLATFORM(COCOA)
      NSDictionary *currentState() const;
      NSDictionary *readStateFromStorage();
@@ -29640,7 +29656,18 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..78652d0b45fdfbea2cfa4d74ae407ed4
  
      void loadStorageAccessLevelsFromStorage();
      void saveStorageAccessLevelsToStorage();
-@@ -796,6 +833,7 @@ private:
+@@ -762,6 +807,10 @@ private:
+     void moveLocalStorageIfNeeded(const URL& previousBaseURL, CompletionHandler<void()>&&);
+     void removeStaleExtensionWebsiteData();
+ 
++#if PLATFORM(HAIKU)
++    void notifyNativePermissionChange(PermissionNotification, const PermissionsSet&, const MatchPatternSet&);
++#endif
++
+     void permissionsDidChange(PermissionNotification, const PermissionsSet&);
+     void permissionsDidChange(PermissionNotification, const MatchPatternSet&);
+ 
+@@ -796,6 +845,7 @@ private:
      void saveBackgroundPageListenersToStorage();
  
      void performTasksAfterBackgroundContentLoads();
@@ -29648,7 +29675,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..78652d0b45fdfbea2cfa4d74ae407ed4
  
  #ifdef NDEBUG
      // This is method is a no-op in release builds since it has a performance impact with little benefit to release builds.
-@@ -1034,6 +1072,7 @@ private:
+@@ -1034,6 +1084,7 @@ private:
      void scriptingGetRegisteredScripts(const Vector<String>&, CompletionHandler<void(std::expected<Vector<WebExtensionRegisteredScriptParameters>, WebExtensionError>&&)>&&);
      void scriptingUnregisterContentScripts(const Vector<String>&, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
      bool createInjectedContentForScripts(const Vector<WebExtensionRegisteredScriptParameters>&, WebExtensionDynamicScripts::WebExtensionRegisteredScript::FirstTimeRegistration, DynamicInjectedContentsMap&, NSString *callingAPIName, NSString **errorMessage);
@@ -29656,16 +29683,18 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..78652d0b45fdfbea2cfa4d74ae407ed4
  
      // Sidebar APIs
  #if ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
-@@ -1129,6 +1168,8 @@ private:
+@@ -1129,6 +1180,10 @@ private:
      RetainPtr<NSMutableDictionary> m_state;
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<GKeyFile> m_state;
 +#elif PLATFORM(HAIKU)
 +    RefPtr<JSON::Object> m_state;
++    RefPtr<NativePermissionChangeHandler> m_nativePermissionChangeHandler;
++    uint64_t m_nativePermissionChangeHandlerGeneration { 0 };
  #endif
      Vector<Ref<API::Error>> m_errors;
  
-@@ -1194,6 +1235,9 @@ private:
+@@ -1194,6 +1249,9 @@ private:
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<WebKitWebView> m_backgroundWebView;
      GWeakPtr<WebKitWebExtensionContext> m_delegate;
@@ -29675,7 +29704,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..78652d0b45fdfbea2cfa4d74ae407ed4
  #endif
      Variant<std::monostate, Ref<ProcessThrottlerActivity>, Ref<ProcessActivityGroup>> m_backgroundWebViewActivity;
      RefPtr<API::Error> m_backgroundContentLoadError;
-@@ -1215,6 +1259,7 @@ private:
+@@ -1215,6 +1273,7 @@ private:
      HashMap<Ref<WebExtensionMatchPattern>, UserScriptVector> m_injectedScriptsPerPatternMap;
      HashMap<Ref<WebExtensionMatchPattern>, UserStyleSheetVector> m_injectedStyleSheetsPerPatternMap;
  
@@ -29683,7 +29712,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..78652d0b45fdfbea2cfa4d74ae407ed4
      HashMap<String, Ref<WebExtensionDynamicScripts::WebExtensionRegisteredScript>> m_registeredScriptsMap;
      RefPtr<WebExtensionRegisteredScriptsSQLiteStore> m_registeredContentScriptsStorage;
  
-@@ -1234,7 +1279,7 @@ private:
+@@ -1234,7 +1293,7 @@ private:
  #endif // ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
  
      PortCountedSet m_ports;
@@ -29692,7 +29721,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..78652d0b45fdfbea2cfa4d74ae407ed4
      PortQueuedMessageMap m_portQueuedMessages;
      NativePortMap m_nativePortMap;
  
-@@ -1274,12 +1319,16 @@ private:
+@@ -1274,12 +1333,16 @@ private:
          String message;
  #if PLATFORM(COCOA)
          RetainPtr<id> argument;
@@ -29709,7 +29738,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..78652d0b45fdfbea2cfa4d74ae407ed4
  
      Deque<TestMessage> m_testMessageQueue;
      Deque<TestMessage> m_testStartedQueue;
-@@ -1289,6 +1338,8 @@ private:
+@@ -1289,6 +1352,8 @@ private:
      void sendQueuedTestMessagesIfNeeded(WebExtensionEventListenerType);
  #if PLATFORM(COCOA)
      void addTestMessageToQueue(const String& message, id argument, WebExtensionEventListenerType);
@@ -32258,6 +32287,190 @@ index 0000000000000000000000000000000000000000..602baf54bf4eb5b65560a68e8f6833f2
 +    extensionController()->configuration().defaultWebsiteDataStore().renameOriginInWebsiteData(
 +        WebCore::SecurityOriginData::fromURL(previousBaseURL), WebCore::SecurityOriginData::fromURL(baseURL()),
 +        { WebsiteDataType::IndexedDBDatabases, WebsiteDataType::LocalStorage }, WTF::move(completionHandler));
++}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextPermissionsHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextPermissionsHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..e4a5c7250e7eca7448193b1dc6ccc25585f50a0b
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextPermissionsHaiku.cpp
+@@ -0,0 +1,178 @@
++/*
++ * Copyright (C) 2022-2025 Apple Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "WebExtensionContext.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++
++#include "WebExtensionContextProxyMessages.h"
++#include "WebExtensionPermission.h"
++#include "WebPageProxy.h"
++#include "WebPreferences.h"
++#include <wtf/MainThread.h>
++
++namespace WebKit {
++
++void WebExtensionContext::setNativePermissionChangeHandler(RefPtr<NativePermissionChangeHandler>&& handler)
++{
++    ASSERT(isMainThread());
++    RELEASE_ASSERT(++m_nativePermissionChangeHandlerGeneration);
++    m_nativePermissionChangeHandler = WTF::move(handler);
++}
++
++void WebExtensionContext::notifyNativePermissionChange(PermissionNotification notification, const PermissionsSet& permissions, const MatchPatternSet& matchPatterns)
++{
++    ASSERT(isMainThread());
++    RefPtr handler = m_nativePermissionChangeHandler;
++    if (!handler || notification == PermissionNotification::None)
++        return;
++
++    auto generation = m_nativePermissionChangeHandlerGeneration;
++    RunLoop::mainSingleton().dispatch([this, protectedThis = Ref { *this }, handler = WTF::move(handler), generation, notification, permissions, matchPatterns] {
++        // Removing or replacing the observer cancels its queued deliveries.
++        // Keep the active task alive if it replaces itself during the callback.
++        if (m_nativePermissionChangeHandlerGeneration == generation && m_nativePermissionChangeHandler == handler)
++            handler->run(notification, permissions, matchPatterns);
++    });
++}
++
++void WebExtensionContext::permissionsDidChange(PermissionNotification notification, const PermissionsSet& permissions)
++{
++    if (permissions.isEmpty() || notification == PermissionNotification::None)
++        return;
++
++    if (isLoaded()) {
++        RefPtr controller = extensionController();
++        if (!controller)
++            return;
++
++        controller->sendToAllProcesses(Messages::WebExtensionContextProxy::UpdateGrantedPermissions(m_grantedPermissions), identifier());
++
++        if (permissions.contains(WebExtensionPermission::clipboardWrite())) {
++            bool granted = hasPermission(WebExtensionPermission::clipboardWrite());
++            enumerateExtensionPages([&](auto& page, bool&) {
++                page.preferences().setJavaScriptCanAccessClipboard(granted);
++            });
++        }
++
++        if (notification == PermissionNotification::PermissionsWereGranted)
++            firePermissionsEventListenerIfNecessary(WebExtensionEventListenerType::PermissionsOnAdded, permissions, { });
++        else if (notification == PermissionNotification::GrantedPermissionsWereRemoved)
++            firePermissionsEventListenerIfNecessary(WebExtensionEventListenerType::PermissionsOnRemoved, permissions, { });
++    }
++
++    notifyNativePermissionChange(notification, permissions, { });
++}
++
++void WebExtensionContext::permissionsDidChange(PermissionNotification notification, const MatchPatternSet& matchPatterns)
++{
++    if (matchPatterns.isEmpty() || notification == PermissionNotification::None)
++        return;
++
++    clearCachedPermissionStates();
++
++    if (isLoaded()) {
++        updateCORSDisablingPatternsOnAllExtensionPages();
++
++        if (notification == PermissionNotification::PermissionMatchPatternsWereGranted) {
++            addInjectedContent(injectedContents(), matchPatterns);
++            firePermissionsEventListenerIfNecessary(WebExtensionEventListenerType::PermissionsOnAdded, { }, matchPatterns);
++        } else if (notification == PermissionNotification::GrantedPermissionMatchPatternsWereRemoved) {
++            removeInjectedContent(matchPatterns);
++            firePermissionsEventListenerIfNecessary(WebExtensionEventListenerType::PermissionsOnRemoved, { }, matchPatterns);
++        } else
++            updateInjectedContent();
++
++        constexpr auto changedProperties = OptionSet { WebExtensionTab::ChangedProperties::URL, WebExtensionTab::ChangedProperties::Title };
++        for (Ref tab : openTabs()) {
++            auto url = tab->url();
++            for (auto& pattern : matchPatterns) {
++                if (pattern->matchesURL(url)) {
++                    didChangeTabProperties(tab, changedProperties);
++                    break;
++                }
++            }
++        }
++    }
++
++    notifyNativePermissionChange(notification, { }, matchPatterns);
++}
++
++void WebExtensionContext::firePermissionsEventListenerIfNecessary(WebExtensionEventListenerType type, const PermissionsSet& permissions, const MatchPatternSet& matchPatterns)
++{
++    ASSERT(type == WebExtensionEventListenerType::PermissionsOnAdded || type == WebExtensionEventListenerType::PermissionsOnRemoved);
++    if (!isLoaded())
++        return;
++
++    auto loadIdentifier = privilegedIdentifier();
++    auto origins = toStrings(matchPatterns);
++    wakeUpBackgroundContentIfNecessaryToFireEvents({ type }, [this, protectedThis = Ref { *this }, type, permissions, origins = WTF::move(origins), loadIdentifier] {
++        // The same context object can be unloaded and loaded again while a
++        // background task waits. Its privileged identifier is per load.
++        if (!isLoaded() || !m_privilegedIdentifier || *m_privilegedIdentifier != loadIdentifier)
++            return;
++        sendToProcessesForEvent(type, Messages::WebExtensionContextProxy::DispatchPermissionsEvent(type, permissions, origins));
++    });
++}
++
++void WebExtensionContext::didChangeTabProperties(WebExtensionTab& tab, OptionSet<WebExtensionTab::ChangedProperties> properties)
++{
++    if (!isLoaded() || !isValidTab(tab) || !tab.isOpen() || !tab.extensionHasAccess())
++        return;
++    if (properties.isEmpty())
++        properties = WebExtensionTab::allChangedProperties();
++
++    bool hasChangesPending = !tab.changedProperties().isEmpty();
++    tab.addChangedProperties(properties);
++    if (hasChangesPending)
++        return;
++
++    auto loadIdentifier = privilegedIdentifier();
++    RunLoop::mainSingleton().dispatchAfter(25_ms, [this, protectedThis = Ref { *this }, tab = Ref { tab }, loadIdentifier] {
++        auto changes = tab->changedProperties();
++        tab->clearChangedProperties();
++        if (changes.isEmpty() || !isLoaded() || !m_privilegedIdentifier || *m_privilegedIdentifier != loadIdentifier
++            || !isValidTab(tab) || !tab->isOpen() || !tab->extensionHasAccess())
++            return;
++
++        constexpr auto type = WebExtensionEventListenerType::TabsOnUpdated;
++        wakeUpBackgroundContentIfNecessaryToFireEvents({ type }, [this, protectedThis = Ref { *this }, tab, changes, loadIdentifier] {
++            if (!isLoaded() || !m_privilegedIdentifier || *m_privilegedIdentifier != loadIdentifier
++                || !isValidTab(tab) || !tab->isOpen() || !tab->extensionHasAccess())
++                return;
++
++            // Construct both payloads at delivery, after revalidating identity
++            // and access. Never retain URL/title data across a permission change.
++            auto parameters = tab->parameters();
++            auto changedParameters = tab->changedParameters(changes);
++            sendToProcessesForEvent(type, Messages::WebExtensionContextProxy::DispatchTabsUpdatedEvent(parameters, changedParameters));
++        });
++    });
 +}
 +
 +} // namespace WebKit
