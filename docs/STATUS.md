@@ -1424,3 +1424,12 @@ website-data fetch/deletion, sentinel handling or extension context was run.
 See [cleanup evidence and limitations](webextensions-native-website-data.md).
 
 Patch: `adb8b391c6e42031b5ccd084b4898216e9634bfc929214306c7a58f63ec23ac6`.
+
+2026-09-14 native test reporting: all seven controller test-message handlers
+now emit JSON log records on Haiku, retaining test results, values and source
+locations even when release-log channels are disabled. The existing testing-mode
+IPC validators remain intact. The native unit compiles with both extension
+features and regenerated IPC. No test-message IPC or extension test was run.
+See [test-reporting evidence](webextensions-native-test-reporting.md).
+
+Patch: `8ba00bb96388053d59053815dba4bea5c8d7e2ee28fb67c553a8a2c1949e3c57`.

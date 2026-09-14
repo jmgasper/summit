@@ -34,6 +34,7 @@ PAGE_UNITS = {'WebPage.cpp': 'WebProcess/WebPage/WebPage.cpp',
 NATIVE_PAGE_UNITS = {'WebPageProxy.cpp': 'UIProcess/WebPageProxy.cpp',
                      'WebView.cpp': 'UIProcess/haiku/WebView.cpp'}
 UI_API_UNITS = {'WebExtensionDynamicScripts.cpp': 'UIProcess/Extensions/WebExtensionDynamicScripts.cpp',
+                'WebExtensionControllerAPITestHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionControllerAPITestHaiku.cpp',
                 'WebExtensionWebsiteData.cpp': 'UIProcess/Extensions/WebExtensionWebsiteData.cpp',
                 'WebExtensionUtilities.cpp': 'Shared/Extensions/WebExtensionUtilities.cpp',
                 'WebExtensionContextAPIDeclarativeNetRequest.cpp': 'UIProcess/Extensions/API/WebExtensionContextAPIDeclarativeNetRequest.cpp',
