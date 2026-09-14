@@ -154,6 +154,7 @@ def stage_inputs():
     paths = {
         'tests/ModernContextTests.cpp': ROOT / 'tests/ModernContextTests.cpp',
         'tools/test-modern-contexts-native.py': ROOT / 'tools/test-modern-contexts-native.py',
+        'tools/native_crash_log.py': ROOT / 'tools/native_crash_log.py',
     }
     engine = ROOT / '.cache/WebKit/Source/WebKit'
     for name, relative in {

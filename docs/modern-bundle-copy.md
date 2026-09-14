@@ -53,8 +53,11 @@ The original `build-manifest.json` and `host-bundle-report.json` are preserved.
 before/after fingerprints and a file inventory of the final payload excluding
 the provenance file itself. The final command output reports the provenance
 digest. These hashes establish the copied inputs; they do not establish browser
-runtime behavior. The current verified copy is `bundle-ihenjatl`, including the
-native launcher and looper-lock fixes. The earlier `bundle-mjs1avo_` is preserved.
+runtime behavior. The current verified copy is `bundle-lb1k0wql`, including the
+native launcher, looper-lock fixes and basic download UI. Earlier
+`bundle-ihenjatl` and `bundle-mjs1avo_` artifacts are preserved. A subsequently
+observed NetworkProcess shutdown crash is corrected in native `bundle-g3wycs_1`;
+this copied artifact predates that correction.
 See [the verification record](STATUS.md) for exact runtime results and remaining
 limitations.
 

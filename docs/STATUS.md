@@ -876,3 +876,67 @@ verification. The preview's tests do not establish those requirements.
 The inherited Curl cookie database also lacks SameSite persistence/enforcement
 and partitioned cookie storage; the new adapter does not claim to fix those
 requirements and rejects partitioned access instead of mixing stores.
+
+## Native helper exit follow-up
+
+The download bundle `bundle-lb1k0wql` has been copied with matching patched
+engine sources to `artifacts/modern-browser/bundle-lb1k0wql`. Its copy
+provenance SHA-256 is
+`b10cc4793071e056b295939bf587387133b9a00c6c49de3bfcc8e76f59eafd3f`.
+Evidence: `.vm/modern-download-bundle-copy.log` and the artifact's
+`copy-provenance.json`.
+
+A later inspection of native syslog found shutdown traps missed by the earlier
+helper-disappearance assertions. Thread 432464 in `bundle-eih3q6or` faulted in
+`BBlockCache::Save()` from a WTF worker RunLoop; thread 434486 in
+`bundle-ihenjatl` reported a bogus pointer/double free. The UI process can kill
+a helper after it has trapped, leaving the previous test's main exit status and
+helper-count checks passing. These are separate from the corrected native
+looper lock hang. `.vm/native-network-exit-kernel-stacks.log` preserves the
+kernel diagnostics. The second event lacks a usable stack and is not yet
+attributed to a specific destructor.
+
+Haiku libbe's `terminate_after()` destroys the global BMessage cache. The curl
+NetworkProcess entry point returns through ordinary `exit()` while
+process-lifetime worker threads remain active. A Haiku-only correction now uses
+`WTF::exitProcess()` after the normal auxiliary event loop and session teardown,
+as WebProcess already does. This retains the existing cookie/localStorage sync
+before the loop stops. Context, close and download runners now inspect only new native syslog
+bytes during their runtime and reject native debugger events or a gap in log
+coverage. This is a conservative VM-wide check; those tests must run serially.
+
+The monitored baseline reproduced the shutdown fault in `bundle-lb1k0wql`
+after four clean context runs. The fifth run stopped after eight storage
+stages: NetworkProcess 438100's worker 438113 trapped in
+`BTokenSpace::RemoveToken()` from its RunLoop TLS destructor while the main
+thread had reached `_kern_exit_team`. The native Save report action terminated
+that already failed helper. This run remains **failed** (harness exit 1 and
+fresh debugger events), not a recovered pass. Evidence:
+`.vm/modern-context-9aa04553d127a7e6cbd7a13e/result.json`,
+`.vm/modern-network-exit-baseline-kernel-stack.log`,
+`.vm/modern-network-exit-baseline.report`.
+
+The corrected patch
+`92a51ca2e5b29cdcd83706f3e125fd4a99525eef31fb3adb2b8f3a730b3866ec`
+builds all targets and is frozen in native `bundle-g3wycs_1`. It passes five
+consecutive 12-stage profile teardown/reopen runs, all 143 close checks, all
+59 browser download checks and all eight API download scenarios. All runs exit
+normally, preserve their frozen bundle hashes and report complete native log
+coverage with no new debugger events. The API deliberately kills its own
+verified NetworkProcess in one recovery scenario; that expected SIGKILL is
+separate from a native debugger trap. Five host tests verify that the monitor
+rejects new traps, rotation and truncation without retaining unrelated syslog
+data. These checks address the reproduced shutdown failure; they do not establish
+long-duration browser reliability.
+
+Evidence: `.vm/modern-network-exit-build.log`,
+`.vm/modern-network-exit-bundle.json`,
+`.vm/modern-context-fd18f7021a611d1e27818a29/result.json`, and:
+
+- `.vm/modern-context-0f7f0793418fbad3bb789e7f/result.json` (context-repeat-1)
+- `.vm/modern-context-06d6a643e3484c2767ffe001/result.json` (context-repeat-2)
+- `.vm/modern-context-5440f3881bc1ddf399e2c356/result.json` (context-repeat-3)
+- `.vm/modern-context-a98adb465b9de8fc98db30d0/result.json` (context-repeat-4)
+- `.vm/modern-close-5c264f3188a0e12c4b1298ec/result.json` (close)
+- `.vm/modern-downloads-f1a46e71c14e4bc6ac7a9596/result.json` (download-ui)
+- `.vm/modern-downloads-d72576c84112a53ead58ea6e/result.json` (download-api)

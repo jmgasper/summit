@@ -20645,6 +20645,35 @@ index c40c6c91c819cafb627a4fda54277b773aecf853..8d53f448c1b0cba94d849e8663d0a1a5
      bool shouldRedirectAsGET(const WebCore::ResourceRequest&, bool crossOrigin);
      void willPerformHTTPRedirection();
  
+diff --git a/Source/WebKit/NetworkProcess/curl/NetworkProcessMainCurl.cpp b/Source/WebKit/NetworkProcess/curl/NetworkProcessMainCurl.cpp
+index 7c9075474552a6beaffbeffe6838dd4e5b24b0d0..63ecf65d7718f6b8e24e27b37f2ea6ea38acc2eb 100644
+--- a/Source/WebKit/NetworkProcess/curl/NetworkProcessMainCurl.cpp
++++ b/Source/WebKit/NetworkProcess/curl/NetworkProcessMainCurl.cpp
+@@ -29,6 +29,9 @@
+ #include "AuxiliaryProcessMain.h"
+ #include "NetworkProcess.h"
+ #include "NetworkSession.h"
++#if PLATFORM(HAIKU)
++#include <wtf/WTFProcess.h>
++#endif
+ 
+ namespace WebKit {
+ 
+@@ -47,7 +50,14 @@ public:
+ 
+ int NetworkProcessMain(int argc, char** argv)
+ {
++#if PLATFORM(HAIKU)
++    // Finish the normal event loop and session teardown before exiting. Haiku's
++    // exit() destroys libbe's global BMessage cache while process-lifetime WTF
++    // work queues can still be dispatching messages on other threads.
++    exitProcess(AuxiliaryProcessMain<NetworkProcessMainCurl>(argc, argv));
++#else
+     return AuxiliaryProcessMain<NetworkProcessMainCurl>(argc, argv);
++#endif
+ }
+ 
+ } // namespace WebKit
 diff --git a/Source/WebKit/NetworkProcess/haiku/NetworkProcessHaiku.cpp b/Source/WebKit/NetworkProcess/haiku/NetworkProcessHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..3501f834cd938d6300470bb89a245e322368e057

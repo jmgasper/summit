@@ -115,7 +115,7 @@ def remote(command, **kwargs):
 
 
 def stage_inputs():
-    names = ('tests/ModernCloseTests.cpp', 'tools/test-modern-close-native.py',
+    names = ('tests/ModernCloseTests.cpp', 'tools/test-modern-close-native.py', 'tools/native_crash_log.py',
              'src/ui/Messages.h', 'vendor/nlohmann/json.hpp')
     content = {name: (ROOT / name).read_bytes() for name in names}
     inputs = {'sha256': {name: hashlib.sha256(data).hexdigest() for name, data in content.items()},

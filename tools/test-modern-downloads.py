@@ -94,6 +94,7 @@ class Fixture(http.server.BaseHTTPRequestHandler):
 
 
 def native(args):
+    from native_crash_log import NativeCrashLog
     if args.browser:
         return subprocess.run(['python3.10', str(ROOT / 'tools/test-modern-close-native.py'),
                                '--downloads', '--bundle', args.bundle, '--base-url', args.url,
@@ -126,6 +127,7 @@ def native(args):
         environment.update(WEBKIT_EXEC_PATH=str(bundle), LIBRARY_PATH=str(bundle / 'lib') + ':/boot/system/lib')
         runtime = [str(target), args.url, str(directory), str(bundle)]
         report.update(run_command=runtime, executable_sha256=verifier.digest(target))
+        crash_log = NativeCrashLog()
         try:
             result = subprocess.run(runtime, env=environment, capture_output=True, text=True, timeout=300)
             report.update(runtime_exit=result.returncode, stdout=result.stdout, stderr=result.stderr)
@@ -135,11 +137,13 @@ def native(args):
             report.update(runtime_exit=None, timeout=True, stdout=decoded(error.stdout), stderr=decoded(error.stderr))
         print(report['stdout'] + report['stderr'], end='', flush=True)
         (ROOT / 'runtime.log').write_text(report['stdout'] + report['stderr'])
+        report['native_crash_log'] = crash_log.finish()
         report['download_files'] = {str(p.relative_to(directory)): {'sha256': verifier.digest(p), 'size': p.stat().st_size}
                                     for p in directory.rglob('*') if p.is_file()}
         verifier.verify_symlinks(bundle, manifest)
         report['bundle_unchanged'] = all(verifier.digest(pathlib.Path(p)) == expected for p, expected in before.items())
         report['passed'] = (report['runtime_exit'] == 0 and report['bundle_unchanged']
+                            and report['native_crash_log']['passed']
                             and 'DOWNLOAD_RESULT PASS steps=8 ' in report['stdout'])
     (ROOT / 'result.json').write_text(json.dumps(report, indent=2) + '\n')
     return 0 if report['passed'] else 1
@@ -171,7 +175,8 @@ def host(args):
                        check=True, capture_output=True, text=True).stdout.strip()
         if not stage.startswith('/boot/home/summit/modern-download-inputs.'):
             raise RuntimeError('Unexpected native staging directory')
-        paths = ['tests/ModernDownloadTests.cpp', 'tools/test-modern-downloads.py', 'tools/test-modern-contexts-native.py']
+        paths = ['tests/ModernDownloadTests.cpp', 'tools/test-modern-downloads.py',
+                 'tools/test-modern-contexts-native.py', 'tools/native_crash_log.py']
         if args.browser:
             paths += ['tests/ModernCloseTests.cpp', 'tests/ModernBrowserDownloadTests.cpp',
                       'tests/fixtures/native-close.html', 'tools/test-modern-close-native.py']

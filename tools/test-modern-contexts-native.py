@@ -64,6 +64,7 @@ def verified_bundle(path):
 
 
 def main():
+    from native_crash_log import NativeCrashLog
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument('--compile-only', action='store_true')
@@ -114,30 +115,36 @@ def main():
     profiles.mkdir(mode=0o700)
     report['profile_root'] = str(profiles)
     environment = os.environ.copy()
+    for name in ('LD_PRELOAD', 'LD_PRELOAD_ADDONS', 'DISABLE_ASLR'):
+        environment.pop(name, None)
     environment['WEBKIT_EXEC_PATH'] = str(bundle)
     environment['LIBRARY_PATH'] = str(bundle / 'lib') + ':/boot/system/lib'
     runtime = [str(target), args.base_url, args.run_token, str(profiles)]
     report['run_command'] = runtime
     print('Running context tests with frozen bundle: ' + str(bundle), flush=True)
-    try:
-        result = subprocess.run(runtime, env=environment, text=True, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, timeout=850)
-        report['runtime_exit'] = result.returncode
-        output = result.stdout
-    except subprocess.TimeoutExpired as error:
-        report['runtime_exit'] = None
-        report['timeout'] = True
-        output = error.stdout or ''
-        if isinstance(output, bytes):
-            output = output.decode('utf-8', errors='replace')
+    crash_log = NativeCrashLog()
+    # A crashed orphan helper can retain the parent's stdout descriptor after
+    # the harness has already failed. A file lets us observe the harness exit
+    # without waiting for that orphan to close an inherited pipe.
+    runtime_log = ROOT / 'runtime.log'
+    with runtime_log.open('w') as log:
+        try:
+            result = subprocess.run(runtime, env=environment, stdout=log,
+                                    stderr=subprocess.STDOUT, timeout=850)
+            report['runtime_exit'] = result.returncode
+        except subprocess.TimeoutExpired:
+            report['runtime_exit'] = None
+            report['timeout'] = True
+    output = runtime_log.read_text(errors='replace')
     print(output, end='', flush=True)
-    (ROOT / 'runtime.log').write_text(output)
+    report['native_crash_log'] = crash_log.finish()
     report['private_hint_exists'] = (profiles / 'private-must-not-exist').exists()
     report['profile_files'] = sorted(str(path.relative_to(profiles)) for path in profiles.rglob('*'))
     verify_symlinks(bundle, manifest)
     report['bundle_unchanged'] = all(digest(pathlib.Path(path)) == expected for path, expected in before.items())
     report['passed'] = (report['runtime_exit'] == 0 and not report['private_hint_exists']
-                        and report['bundle_unchanged'] and 'CONTEXT_RESULT PASS steps=12' in output)
+                        and report['bundle_unchanged'] and report['native_crash_log']['passed']
+                        and 'CONTEXT_RESULT PASS steps=12' in output)
     (ROOT / 'result.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(report), flush=True)
     return 0 if report['passed'] else 1

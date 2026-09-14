@@ -7,6 +7,7 @@ import os
 import pathlib
 import subprocess
 import sys
+from native_crash_log import NativeCrashLog
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -117,11 +118,14 @@ def main():
     profile = ROOT / 'profile'
     profile.mkdir(mode=0o700)
     environment = os.environ.copy()
+    for name in ('LD_PRELOAD', 'LD_PRELOAD_ADDONS', 'DISABLE_ASLR'):
+        environment.pop(name, None)
     environment['WEBKIT_EXEC_PATH'] = str(bundle)
     environment['LIBRARY_PATH'] = str(bundle / 'lib') + ':/boot/system/lib'
     browser_command = [str(bundle / 'Summit'), '--profile', str(profile)]
     report['browser_command'] = browser_command
     report['profile'] = str(profile)
+    crash_log = NativeCrashLog()
     with (ROOT / 'browser.log').open('w') as browser_log:
         browser = subprocess.Popen(browser_command, env=environment, stdout=browser_log, stderr=subprocess.STDOUT)
         report['browser_team'] = browser.pid
@@ -151,11 +155,13 @@ def main():
                     browser.wait(timeout=10)
             report['browser_exit'] = browser.wait()
     (ROOT / 'runtime.log').write_text(output)
+    report['native_crash_log'] = crash_log.finish()
     print(output, end='', flush=True)
     verified_bundle(str(bundle))
     report['bundle_unchanged'] = all(digest(pathlib.Path(path)) == expected for path, expected in before.items())
     report['passed'] = (report['runtime_exit'] == 0 and report['browser_exit'] == 0
                         and not report.get('forced_cleanup') and report['bundle_unchanged']
+                        and report['native_crash_log']['passed']
                         and ('DOWNLOAD_UI_RESULT PASS checks=' if args.downloads else 'CLOSE_RESULT PASS checks=') in output)
     save()
     return 0 if report['passed'] else 1

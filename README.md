@@ -81,11 +81,12 @@ passes its live HTTP/DOM/storage fixture and native pixel check. The full browse
 passes 143 close-workflow checks, and the modern API passes all 12 context
 storage stages. All 33 navigation checks and 30 repeated history cycles pass.
 Native helper-launch and looper-lock fixes now pass the concurrent launch stress
-regression and three consecutive profile teardown/reopen runs. Broader browsing
+regression. The NetworkProcess exit fix passes five consecutive profile
+teardown/reopen runs with native debugger-event monitoring. Broader browsing
 and extension integration remain unfinished. Modern downloads now pass real
 HTTP, HTML-link and native quit-dialog tests; see [download behavior and limits](docs/modern-downloads.md).
 The verified development bundle is
-in `artifacts/modern-browser/bundle-ihenjatl`;
+in `artifacts/modern-browser/bundle-lb1k0wql`;
 [copy and rebuild instructions](docs/modern-bundle-copy.md) accompany it. [The verification record](docs/STATUS.md)
 records the exact bundles and remaining limitations.
 
