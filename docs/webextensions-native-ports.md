@@ -82,3 +82,6 @@ The subsequent [message reply port](webextensions-native-message-replies.md)
 implements the runtime reply callback helper and common dispatcher listed
 above. Its 51 native JavaScript assertions are separate from these ownership
 checks; the remaining sender/UI/background dependencies are still open.
+
+Subsequent UI routing extraction and compile evidence are recorded in
+[message routing](webextensions-native-message-routing.md).

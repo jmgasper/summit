@@ -1141,3 +1141,16 @@ Patch: `23064dc4cd0304e24b9c5924d1aa7238c727d76439502b37887affdc1162516c`.
 The separate full engine build continues on frozen `1daf0679...` through
 WebCore page units. The verified preview remains `bundle-yqhmejfw`, with
 extensions disabled.
+
+
+2026-09-14 message routing: eight UI runtime handlers and outgoing port
+delivery now use common C++. Six runtime message declarations and their
+process sends retain loaded-context validation outside Cocoa. All four
+native units compile, including the regenerated UI receiver. This is
+compile coverage; no extension messages were run. Permission checks,
+external-connection restrictions and gesture policy are preserved in the
+extracted source. See [routing evidence](webextensions-native-message-routing.md).
+
+Patch: `e3a4cf2b5baf68e779cb6cb3fcd8d3bf38f2e242f7aacd7a96645971efb65ea8`.
+The full three-worker build continues on frozen `1daf0679...` through
+WebCore platform units. The preview remains `bundle-yqhmejfw`, extensions off.

@@ -43,3 +43,6 @@ feature-enabled engine closure remain necessary.
 Promoted engine patch: `23064dc4cd0304e24b9c5924d1aa7238c727d76439502b37887affdc1162516c`.
 The probes used baseline `afeb9db214b575cddb072d8f65e890cb1cb10d0508b6a55bae32a00089e1074e`
 with isolated candidate sources. Aggregate: `.vm/extension-parameters-native-results.json`.
+
+Subsequent UI routing extraction and compile evidence are recorded in
+[message routing](webextensions-native-message-routing.md).
