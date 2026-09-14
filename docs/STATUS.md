@@ -1154,3 +1154,18 @@ extracted source. See [routing evidence](webextensions-native-message-routing.md
 Patch: `e3a4cf2b5baf68e779cb6cb3fcd8d3bf38f2e242f7aacd7a96645971efb65ea8`.
 The full three-worker build continues on frozen `1daf0679...` through
 WebCore platform units. The preview remains `bundle-yqhmejfw`, extensions off.
+
+
+2026-09-14 native background adapter: the extension context can construct
+and own a hidden native page client with extension-specific configuration,
+document/worker load callbacks, background identities and unload/restart
+paths. UI page creation now supplies the extension controller on Haiku;
+page removal performs common port cleanup. Five selected translation units
+compile with final sources and headers: the adapter, native constructor,
+common context, native view and UI page proxy. Earlier failed probes are
+retained separately. No background document or worker was executed.
+
+Patch: `208a07045b9623b53979da1eab879dd1c16db9a88c39e59bc0b22c4181602426`.
+See [background evidence and remaining lifecycle work](webextensions-native-background.md).
+The full three-worker build continues on frozen `1daf0679...` through
+WebCore style units. The preview remains `bundle-yqhmejfw`, extensions off.

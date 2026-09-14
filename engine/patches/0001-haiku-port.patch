@@ -22861,10 +22861,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..a3339847fb03d7d34d16e74e05095ebebb90cdb7
+index 0000000000000000000000000000000000000000..732261e7895dfe0805086908e22f00d8a4acd370
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,183 @@
+@@ -0,0 +1,184 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -22913,6 +22913,7 @@ index 0000000000000000000000000000000000000000..a3339847fb03d7d34d16e74e05095ebe
 +    UIProcess/API/haiku/WebKitView.cpp
 +    UIProcess/Extensions/haiku/WebExtensionArchiveHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionContextHaiku.cpp
++    UIProcess/Extensions/haiku/WebExtensionContextBackgroundHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionControllerConfigurationHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionStateHaiku.cpp
@@ -26892,7 +26893,7 @@ index 35d91f0e8beddbc09d7e9fcf3de39490a35e1f16..12164f5aeb0c46185b10862f993667f2
  
  #endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm b/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm
-index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..c852eab393455e4e430b62aa8e5bf4f0256840ee 100644
+index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..051e3946402ea30548d38f068426d30a4b0666c3 100644
 --- a/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm
 +++ b/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm
 @@ -261,183 +261,19 @@ void WebExtensionContext::clearError(Error error)
@@ -27098,7 +27099,58 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..c852eab393455e4e430b62aa8e5bf4f0
  void WebExtensionContext::setInspectable(bool inspectable)
  {
      m_inspectable = inspectable;
-@@ -3630,19 +3457,6 @@ void WebExtensionContext::saveStorageAccessLevelsToStorage()
+@@ -900,11 +727,6 @@ void WebExtensionContext::requestPermissions(const PermissionsSet& requestedPerm
+     }).get()];
+ }
+ 
+-void WebExtensionContext::removePage(WebPageProxy& page)
+-{
+-    disconnectPortsForPage(page);
+-}
+-
+ Ref<WebExtensionWindow> WebExtensionContext::getOrCreateWindow(WKWebExtensionWindow *delegate) const
+ {
+     ASSERT(delegate);
+@@ -2889,38 +2711,6 @@ void WebExtensionContext::saveBackgroundPageListenersToStorage()
+         writeStateToStorage();
+ }
+ 
+-void WebExtensionContext::performTasksAfterBackgroundContentLoads()
+-{
+-    if (!isLoaded())
+-        return;
+-
+-    RELEASE_LOG_DEBUG(Extensions, "Background content loaded");
+-
+-    if (m_shouldFireStartupEvent) {
+-        fireRuntimeStartupEventIfNeeded();
+-        m_shouldFireStartupEvent = false;
+-    }
+-
+-    if (m_installReason != InstallReason::None) {
+-        fireRuntimeInstalledEventIfNeeded();
+-
+-        m_installReason = InstallReason::None;
+-        m_previousVersion = nullString();
+-    }
+-
+-    RELEASE_LOG_DEBUG(Extensions, "Performing %{public}zu task(s) after background content loaded", m_actionsToPerformAfterBackgroundContentLoads.size());
+-
+-    for (auto& action : m_actionsToPerformAfterBackgroundContentLoads)
+-        action();
+-
+-    m_backgroundContentIsLoaded = true;
+-    m_backgroundContentHasLoadedOnce = true;
+-    m_actionsToPerformAfterBackgroundContentLoads.clear();
+-
+-    saveBackgroundPageListenersToStorage();
+-    scheduleBackgroundContentToUnload();
+-}
+-
+ #ifndef NDEBUG
+ // This is only defined in debug builds since it has a performance impact with little benefit to release builds.
+ void WebExtensionContext::reportWebViewConfigurationErrorIfNeeded(const WebExtensionTab& tab) const
+@@ -3630,19 +3420,6 @@ void WebExtensionContext::saveStorageAccessLevelsToStorage()
      writeStateToStorage();
  }
  
@@ -27175,10 +27227,20 @@ index f14860d8e436a90cb7616ae96bb9f05d6517bc50..82194307c95982f947c180baa35828f3
      explicit WebExtension(const JSON::Value& manifest, Resources&& = { });
  
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
-index a156078a37b33ea2704f6a9ba747a0c881bb0009..04cda3b073a7dec2cd1ef8d0944161aebca5d2cb 100644
+index a156078a37b33ea2704f6a9ba747a0c881bb0009..b40063e7ea4a76191157c0e8562d18bc77bfbd11 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
-@@ -51,6 +51,209 @@ namespace WebKit {
+@@ -39,6 +39,9 @@
+ #include "WebExtensionController.h"
+ #include "WebExtensionPermission.h"
+ #include "WebPageProxy.h"
++#if PLATFORM(HAIKU)
++#include "WebViewPrivate.h"
++#endif
+ #include <WebCore/LocalizedStrings.h>
+ #include <WebCore/TextResourceDecoder.h>
+ #include <wtf/HashMap.h>
+@@ -51,6 +54,209 @@ namespace WebKit {
  
  using namespace WebCore;
  
@@ -27388,8 +27450,70 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..04cda3b073a7dec2cd1ef8d0944161ae
  int WebExtensionContext::toAPIError(WebExtensionContext::Error error)
  {
      switch (error) {
+@@ -1660,7 +1866,13 @@ WebExtensionContext::WebExtensionContext()
+ }
+ 
+ #if !USE(GLIB)
+-WebExtensionContext::~WebExtensionContext() = default;
++WebExtensionContext::~WebExtensionContext()
++{
++    webExtensionContexts().remove(identifier());
++#if PLATFORM(HAIKU)
++    unloadBackgroundWebView();
++#endif
++}
+ #endif
+ 
+ WebExtensionContextIdentifier WebExtensionContext::privilegedIdentifier() const
+@@ -2003,6 +2215,46 @@ Ref<WebExtensionRegisteredScriptsSQLiteStore> WebExtensionContext::registeredCon
+     return *m_registeredContentScriptsStorage;
+ }
+ 
++void WebExtensionContext::removePage(WebPageProxy& page)
++{
++    disconnectPortsForPage(page);
++}
++
++#if PLATFORM(COCOA) || PLATFORM(HAIKU)
++void WebExtensionContext::performTasksAfterBackgroundContentLoads()
++{
++    if (!isLoaded())
++        return;
++
++    RELEASE_LOG_DEBUG(Extensions, "Background content loaded");
++
++    if (m_shouldFireStartupEvent) {
++        fireRuntimeStartupEventIfNeeded();
++        m_shouldFireStartupEvent = false;
++    }
++
++    if (m_installReason != InstallReason::None) {
++        fireRuntimeInstalledEventIfNeeded();
++
++        m_installReason = InstallReason::None;
++        m_previousVersion = nullString();
++    }
++
++    RELEASE_LOG_DEBUG(Extensions, "Performing %{public}zu task(s) after background content loaded", m_actionsToPerformAfterBackgroundContentLoads.size());
++
++    for (auto& action : m_actionsToPerformAfterBackgroundContentLoads)
++        action();
++
++    m_backgroundContentIsLoaded = true;
++    m_backgroundContentHasLoadedOnce = true;
++    m_actionsToPerformAfterBackgroundContentLoads.clear();
++
++    saveBackgroundPageListenersToStorage();
++    scheduleBackgroundContentToUnload();
++}
++
++#endif
++
+ } // namespace WebKit
+ 
+ #endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
-index 05a8676082d56f2c47c9af6120f5120b09f982be..a0bf57f546d965cdc5faca5051e2d197ef6400fc 100644
+index 05a8676082d56f2c47c9af6120f5120b09f982be..00d836d0aa8189c6e9269c96400067c6bc27c0c1 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 @@ -52,6 +52,7 @@
@@ -27431,7 +27555,18 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..a0bf57f546d965cdc5faca5051e2d197
  using WebViewClass = WebKitWebView;
  using WebViewConfiguration = GRefPtr<WebKitSettings>;
  using NavigationPolicyAction = WebKitNavigationPolicyDecision;
-@@ -198,6 +212,8 @@ public:
+@@ -179,6 +193,10 @@ enum class WebExtensionContextInstallReason : uint8_t {
+     BrowserUpdate,
+ };
+ 
++#if PLATFORM(HAIKU)
++class WebView;
++#endif
++
+ class WebExtensionContext : public API::ObjectImpl<API::Object::Type::WebExtensionContext>, public IPC::MessageReceiver, public Identified<WebExtensionContextIdentifier> {
+     WTF_MAKE_NONCOPYABLE(WebExtensionContext);
+ 
+@@ -198,6 +216,8 @@ public:
      {
  #if PLATFORM(COCOA)
          return "State.plist"_s;
@@ -27440,7 +27575,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..a0bf57f546d965cdc5faca5051e2d197
  #else
          return "State.ini"_s;
  #endif
-@@ -206,6 +222,8 @@ public:
+@@ -206,6 +226,8 @@ public:
      static NSMutableDictionary *readStateFromPath(const String&);
  #elif ENABLE(2022_GLIB_API)
      static GRefPtr<GKeyFile> readStateFromPath(const String&);
@@ -27449,7 +27584,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..a0bf57f546d965cdc5faca5051e2d197
  #endif
      static bool readLastBaseURLFromState(const String& filePath, URL& outLastBaseURL);
      static bool readDisplayNameFromState(const String& filePath, String& outDisplayName);
-@@ -214,7 +232,7 @@ public:
+@@ -214,7 +236,7 @@ public:
  
      static WebExtensionContext* NODELETE get(WebExtensionContextIdentifier);
  
@@ -27458,7 +27593,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..a0bf57f546d965cdc5faca5051e2d197
      explicit WebExtensionContext(Ref<WebExtension>&&);
  #elif ENABLE(2022_GLIB_API)
      explicit WebExtensionContext(WebKitWebExtensionContext*);
-@@ -265,11 +283,8 @@ public:
+@@ -265,11 +287,8 @@ public:
          bool userGesture { false };
      };
  
@@ -27470,7 +27605,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..a0bf57f546d965cdc5faca5051e2d197
      using PortQueuedMessageMap = HashMap<PortWorldPair, Vector<PortQueuedMessage>>;
      using NativePortMap = HashMap<WebExtensionPortChannelIdentifier, Ref<WebExtensionMessagePort>>;
  
-@@ -656,6 +671,7 @@ public:
+@@ -656,6 +675,7 @@ public:
  #endif
  
  #if PLATFORM(COCOA)
@@ -27478,7 +27613,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..a0bf57f546d965cdc5faca5051e2d197
      void sendNativeMessage(const String& applicationID, id message, CompletionHandler<void(std::expected<RetainPtr<id>, WebExtensionError>&&)>&&);
  #endif
  
-@@ -749,11 +765,18 @@ private:
+@@ -749,11 +769,18 @@ private:
  #if PLATFORM(COCOA)
      NSDictionary *currentState() const;
      NSDictionary *readStateFromStorage();
@@ -27498,7 +27633,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..a0bf57f546d965cdc5faca5051e2d197
  
      void loadStorageAccessLevelsFromStorage();
      void saveStorageAccessLevelsToStorage();
-@@ -1129,6 +1152,8 @@ private:
+@@ -1129,6 +1156,8 @@ private:
      RetainPtr<NSMutableDictionary> m_state;
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<GKeyFile> m_state;
@@ -27507,16 +27642,17 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..a0bf57f546d965cdc5faca5051e2d197
  #endif
      Vector<Ref<API::Error>> m_errors;
  
-@@ -1194,6 +1219,8 @@ private:
+@@ -1194,6 +1223,9 @@ private:
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<WebKitWebView> m_backgroundWebView;
      GWeakPtr<WebKitWebExtensionContext> m_delegate;
 +#elif PLATFORM(HAIKU)
 +    RefPtr<WebPageProxy> m_backgroundWebView;
++    RefPtr<WebView> m_backgroundPageClient;
  #endif
      Variant<std::monostate, Ref<ProcessThrottlerActivity>, Ref<ProcessActivityGroup>> m_backgroundWebViewActivity;
      RefPtr<API::Error> m_backgroundContentLoadError;
-@@ -1234,7 +1261,7 @@ private:
+@@ -1234,7 +1266,7 @@ private:
  #endif // ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
  
      PortCountedSet m_ports;
@@ -28498,6 +28634,363 @@ index 0000000000000000000000000000000000000000..8116761679d10df7d8286d4c19d66865
 +} // namespace WebKit
 +
 +#endif // PLATFORM(HAIKU)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextBackgroundHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextBackgroundHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..cc819c61a1773a773ca2be38a66198af8616c574
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextBackgroundHaiku.cpp
+@@ -0,0 +1,351 @@
++/*
++ * Copyright (C) 2022-2025 Apple Inc. All rights reserved.
++ * Copyright (C) 2026 KunanyiOS contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are met:
++ * 1. Redistributions of source code must retain the above copyright notice,
++ *    this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright notice,
++ *    this list of conditions and the following disclaimer in the documentation
++ *    and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "WebExtensionContext.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++
++#include "APIFrameInfo.h"
++#include "APINavigationAction.h"
++#include "APINavigationClient.h"
++#include "APIPageConfiguration.h"
++#include "APIWebsitePolicies.h"
++#include "Logging.h"
++#include "MessageSenderInlines.h"
++#include "ProcessActivityGroup.h"
++#include "WebExtensionContextProxyMessages.h"
++#include "WebExtensionPermission.h"
++#include "WebFramePolicyListenerProxy.h"
++#include "WebFrameProxy.h"
++#include "WebPageProxy.h"
++#include "WebPreferences.h"
++#include "WebProcessProxy.h"
++#include "WebProcessPool.h"
++#include "WebViewPrivate.h"
++#include <WebCore/ContentSecurityPolicy.h>
++#include <WebCore/ResourceRequest.h>
++#include <WebCore/ShouldRelaxThirdPartyCookieBlocking.h>
++
++namespace WebKit {
++
++class ExtensionBackgroundNavigationClientHaiku final : public API::NavigationClient {
++    WTF_MAKE_TZONE_ALLOCATED_INLINE(ExtensionBackgroundNavigationClientHaiku);
++public:
++    explicit ExtensionBackgroundNavigationClientHaiku(WebExtensionContext& context)
++        : m_context(context) { }
++
++private:
++    RefPtr<WebExtensionContext> contextForPage(WebPageProxy& page) const
++    {
++        // Closing a page can invoke callbacks while its context is being
++        // destroyed. Check cleared identity before taking another reference.
++        auto* context = m_context.get();
++        if (!context || !context->isLoaded() || context->backgroundWebView() != &page)
++            return nullptr;
++        return context;
++    }
++
++    void decidePolicyForNavigationAction(WebPageProxy& page, Ref<API::NavigationAction>&& action, Ref<WebFramePolicyListenerProxy>&& listener) final
++    {
++        RefPtr context = contextForPage(page);
++        if (context && context->decidePolicyForNavigationAction(&page, action.ptr()))
++            listener->use();
++        else
++            listener->ignore();
++    }
++
++    void didFinishDocumentLoad(WebPageProxy& page, API::Navigation*, API::Object*) final
++    {
++        if (RefPtr context = contextForPage(page))
++            context->didFinishDocumentLoad(&page);
++    }
++
++    void didFailProvisionalNavigationWithError(WebPageProxy& page, FrameInfoData&&, API::Navigation*, const URL&, const WebCore::ResourceError& error, API::Object*) final
++    {
++        if (RefPtr context = contextForPage(page))
++            context->didFailNavigation(&page, API::Error::create(error));
++    }
++
++    void didFailNavigationWithError(WebPageProxy& page, const FrameInfoData&, API::Navigation*, const URL&, const WebCore::ResourceError& error, API::Object*) final
++    {
++        if (RefPtr context = contextForPage(page))
++            context->didFailNavigation(&page, API::Error::create(error));
++    }
++
++    bool processDidTerminate(WebPageProxy& page, ProcessTerminationReason) final
++    {
++        if (RefPtr context = contextForPage(page))
++            context->webViewWebContentProcessDidTerminate(&page);
++        return true;
++    }
++
++    WeakPtr<WebExtensionContext> m_context;
++};
++
++void WebExtensionContext::enumerateExtensionPages(NOESCAPE Function<void(WebPageProxy&, bool&)>&& action)
++{
++    RefPtr controller = extensionController();
++    if (!controller)
++        return;
++
++    bool stop = false;
++    for (Ref page : controller->allPages()) {
++        if (!isURLForThisExtension(page->configuration().requiredWebExtensionBaseURL()))
++            continue;
++        action(page, stop);
++        if (stop)
++            return;
++    }
++}
++
++void WebExtensionContext::updateCORSDisablingPatternsOnAllExtensionPages()
++{
++    auto patterns = corsDisablingPatterns();
++    enumerateExtensionPages([&](auto& page, bool&) {
++        page.setCORSDisablingPatterns(Vector<String> { patterns });
++    });
++}
++
++WebPageProxy* WebExtensionContext::relatedWebView()
++{
++    ASSERT(isLoaded());
++    if (m_backgroundWebView)
++        return m_backgroundWebView.get();
++
++    WebPageProxy* result = nullptr;
++    enumerateExtensionPages([&](auto& page, bool& stop) {
++        result = &page;
++        stop = true;
++    });
++    return result;
++}
++
++WebViewConfiguration WebExtensionContext::webViewConfiguration(WebViewPurpose purpose)
++{
++    RefPtr controller = extensionController();
++    if (!controller)
++        return nullptr;
++
++    Ref configuration = API::PageConfiguration::create();
++    configuration->setWebsiteDataStore(Ref { controller->configuration().defaultWebsiteDataStore() });
++    configuration->setContentSecurityPolicyModeForExtension(protect(extension())->supportsManifestVersion(3)
++        ? WebCore::ContentSecurityPolicyModeForExtension::ManifestV3 : WebCore::ContentSecurityPolicyModeForExtension::ManifestV2);
++    configuration->setCORSDisablingPatterns(corsDisablingPatterns());
++    configuration->setCrossOriginAccessControlCheckEnabled(false);
++    configuration->setProcessDisplayName(processDisplayName());
++    configuration->setRequiredWebExtensionBaseURL(URL { baseURL() });
++    configuration->setShouldRelaxThirdPartyCookieBlocking(WebCore::ShouldRelaxThirdPartyCookieBlocking::Yes);
++    configuration->setMaskedURLSchemes({ });
++    configuration->defaultWebsitePolicies().setAutoplayPolicy(WebsiteAutoplayPolicy::Allow);
++
++    Ref preferences = configuration->preferences();
++    preferences->setAcceleratedCompositingEnabled(false);
++    preferences->setForceCompositingMode(false);
++    preferences->setThreadedScrollingEnabled(false);
++    preferences->setJavaScriptCanAccessClipboard(hasPermission(WebExtensionPermission::clipboardWrite()));
++
++    if (RefPtr relatedPage = relatedWebView()) {
++        configuration->setProcessPool(Ref { relatedPage->configuration().processPool() });
++        if (!preferences->siteIsolationEnabled())
++            configuration->setRelatedPage(WeakPtr { *relatedPage });
++    }
++
++    if (purpose == WebViewPurpose::Tab)
++        configuration->setWebExtensionController(WTF::move(controller));
++    else
++        configuration->setWeakWebExtensionController(controller.get());
++
++    if (purpose == WebViewPurpose::Background || purpose == WebViewPurpose::Inspector) {
++        preferences->setHiddenPageDOMTimerThrottlingEnabled(false);
++        preferences->setPageVisibilityBasedProcessSuppressionEnabled(false);
++        preferences->setShouldTakeNearSuspendedAssertions(true);
++        preferences->setBackgroundWebContentRunningBoardThrottlingEnabled(false);
++        preferences->setShouldDropNearSuspendedAssertionAfterDelay(false);
++    }
++    return configuration;
++}
++
++bool WebExtensionContext::isBackgroundPage(WebPageProxyIdentifier identifier) const
++{
++    return m_backgroundWebView && m_backgroundWebView->identifier() == identifier;
++}
++
++std::optional<WebCore::PageIdentifier> WebExtensionContext::backgroundPageIdentifier(WebProcessProxy& destinationProcess) const
++{
++    if (!m_backgroundWebView || protect(extension())->backgroundContentIsServiceWorker())
++        return std::nullopt;
++    return m_backgroundWebView->webPageIDInProcess(destinationProcess);
++}
++
++std::optional<WebCore::PageIdentifier> WebExtensionContext::backgroundPageIdentifierInOwnProcess() const
++{
++    if (!m_backgroundWebView || protect(extension())->backgroundContentIsServiceWorker())
++        return std::nullopt;
++    RefPtr frame = m_backgroundWebView->mainFrame();
++    return frame ? frame->webPageIDInCurrentProcess() : std::nullopt;
++}
++
++bool WebExtensionContext::backgroundContentIsLoaded() const
++{
++    return m_backgroundWebView && m_backgroundContentIsLoaded && m_actionsToPerformAfterBackgroundContentLoads.isEmpty();
++}
++
++void WebExtensionContext::loadBackgroundWebViewIfNeeded()
++{
++    ASSERT(isLoaded());
++    if (!protect(extension())->hasBackgroundContent() || m_backgroundWebView || !safeToLoadBackgroundContent())
++        return;
++    loadBackgroundWebView();
++}
++
++void WebExtensionContext::loadBackgroundWebView()
++{
++    ASSERT(isLoaded());
++    if (!protect(extension())->hasBackgroundContent() || !extensionController())
++        return;
++
++    ASSERT(safeToLoadBackgroundContent());
++    ASSERT(!m_backgroundWebView);
++    ASSERT(!m_backgroundPageClient);
++    ASSERT(!m_backgroundContentIsLoaded);
++
++    RefPtr configuration = webViewConfiguration(WebViewPurpose::Background);
++    if (!configuration)
++        return;
++    m_backgroundPageClient = WebView::createForExtensionBackground(configuration.releaseNonNull());
++    m_backgroundWebView = m_backgroundPageClient->page();
++    Ref page = *m_backgroundWebView;
++    page->setNavigationClient(makeUniqueRef<ExtensionBackgroundNavigationClientHaiku>(*this));
++    page->setInspectable(m_inspectable);
++    setBackgroundWebViewInspectionName(backgroundWebViewInspectionName());
++    clearError(Error::BackgroundContentFailedToLoad);
++    m_backgroundContentLoadError = nullptr;
++
++    constexpr auto activityName = "Web Extension background content"_s;
++    m_backgroundWebViewActivity = protect(page->activityGroupContext())->foregroundProcessActivityGroup(activityName);
++
++    if (!protect(extension())->backgroundContentIsServiceWorker()) {
++        page->forEachWebContentProcess([&](auto& process, auto pageID) {
++            process.send(Messages::WebExtensionContextProxy::SetBackgroundPageIdentifier(pageID), identifier());
++        });
++        page->loadRequest(WebCore::ResourceRequest { backgroundContentURL() });
++        return;
++    }
++
++    page->loadServiceWorker(backgroundContentURL(), protect(extension())->backgroundContentUsesModules(),
++        [weakThis = WeakPtr { *this }, weakPage = WeakPtr { page.get() }](bool success) {
++            if (!weakThis || !weakThis->isLoaded() || !weakPage || weakThis->backgroundWebView() != weakPage.get())
++                return;
++            Ref context = *weakThis;
++            Ref page = *weakPage;
++            if (!success) {
++                context->didFailNavigation(page.ptr(), nullptr);
++                return;
++            }
++            context->performTasksAfterBackgroundContentLoads();
++        });
++}
++
++void WebExtensionContext::unloadBackgroundWebView()
++{
++    m_backgroundContentIsLoaded = false;
++    m_unloadBackgroundWebViewTimer = nullptr;
++    m_backgroundWebViewActivity = { };
++    // Clear identity before closing: close may complete a pending worker load.
++    m_backgroundWebView = nullptr;
++    if (RefPtr client = std::exchange(m_backgroundPageClient, nullptr))
++        client->close();
++}
++
++void WebExtensionContext::setBackgroundWebViewInspectionName(const String& name)
++{
++    m_backgroundWebViewInspectionName = name;
++    if (m_backgroundWebView)
++        m_backgroundWebView->setRemoteInspectionNameOverride(name);
++}
++
++bool WebExtensionContext::isNotRunningInTestRunner()
++{
++    RefPtr controller = extensionController();
++    return !controller || !controller->inTestingMode();
++}
++
++void WebExtensionContext::unloadBackgroundContentIfPossible()
++{
++    if (!m_backgroundWebView || protect(extension())->backgroundContentIsPersistent())
++        return;
++    auto delayForInactivePorts = isNotRunningInTestRunner() ? 2_min : 6_s;
++    if (m_pendingPermissionRequests
++        || (pageHasOpenPorts(*m_backgroundWebView) && MonotonicTime::now() - m_lastBackgroundPortActivityTime < delayForInactivePorts)
++        || m_backgroundWebView->hasInspectorFrontend()) {
++        scheduleBackgroundContentToUnload();
++        return;
++    }
++#if ENABLE(INSPECTOR_EXTENSIONS)
++    if (!m_inspectorContextMap.isEmptyIgnoringNullReferences()) {
++        scheduleBackgroundContentToUnload();
++        return;
++    }
++#endif
++    unloadBackgroundWebView();
++}
++
++bool WebExtensionContext::decidePolicyForNavigationAction(WebPageProxy* page, API::NavigationAction* action)
++{
++    if (page != m_backgroundWebView || !action)
++        return false;
++    RefPtr targetFrame = action->targetFrame();
++    return (targetFrame && !targetFrame->isMainFrame()) || isURLForThisExtension(action->request().url());
++}
++
++void WebExtensionContext::didFinishDocumentLoad(WebPageProxy* page)
++{
++    if (page != m_backgroundWebView || protect(extension())->backgroundContentIsServiceWorker())
++        return;
++    performTasksAfterBackgroundContentLoads();
++}
++
++void WebExtensionContext::didFailNavigation(WebPageProxy* page, RefPtr<API::Error> error)
++{
++    if (page != m_backgroundWebView)
++        return;
++    m_backgroundContentLoadError = createError(Error::BackgroundContentFailedToLoad, nullString(), error);
++    recordErrorIfNeeded(backgroundContentLoadError());
++    unloadBackgroundWebView();
++}
++
++void WebExtensionContext::webViewWebContentProcessDidTerminate(WebPageProxy* page)
++{
++    if (page != m_backgroundWebView)
++        return;
++    unloadBackgroundWebView();
++    if (isLoaded() && protect(extension())->backgroundContentIsPersistent())
++        loadBackgroundWebView();
++}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..220e193ba1efec44becf1cdbf63f771bd203284f
@@ -29623,9 +30116,18 @@ index a4299803aa31a4a1705aebf669aba3190bcb878a..d0f3a47edf7d2b080af70b57cf1193ad
      virtual void requestScroll(const WebCore::FloatPoint& scrollPosition, const WebCore::IntPoint& scrollOrigin, WebCore::ScrollIsAnimated, WebCore::InterruptScrollAnimation) = 0;
  
 diff --git a/Source/WebKit/UIProcess/WebPageProxy.cpp b/Source/WebKit/UIProcess/WebPageProxy.cpp
-index dcb789361fd321de76e3f647c18328ad2f4af9fc..8677067b6f8c5ac5aa34751fd6c4b3428f04ce5b 100644
+index dcb789361fd321de76e3f647c18328ad2f4af9fc..f090e05a870b4b10cab4e2e711a60da06eec8020 100644
 --- a/Source/WebKit/UIProcess/WebPageProxy.cpp
 +++ b/Source/WebKit/UIProcess/WebPageProxy.cpp
+@@ -466,7 +466,7 @@
+ #include "DrawingAreaProxyCoordinatedGraphics.h"
+ #endif
+ 
+-#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(COCOA)
++#if ENABLE(WK_WEB_EXTENSIONS) && (PLATFORM(COCOA) || PLATFORM(HAIKU))
+ #include "WebExtensionController.h"
+ #endif
+ 
 @@ -542,7 +542,11 @@ using namespace WebCore;
  
  static constexpr Seconds resetRecentCrashCountDelay = 30_s;
@@ -29638,6 +30140,42 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..8677067b6f8c5ac5aa34751fd6c4b342
  
  static WeakListHashSet<WebPageProxy>& NODELETE leastRecentlyVisiblePages()
  {
+@@ -964,7 +968,7 @@ WebPageProxy::WebPageProxy(PageClient& pageClient, WebProcessProxy& process, Ref
+     , m_pageGroup(*configuration->pageGroup())
+     , m_preferences(configuration->preferences())
+     , m_userContentController(configuration->userContentController())
+-#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(COCOA)
++#if ENABLE(WK_WEB_EXTENSIONS) && (PLATFORM(COCOA) || PLATFORM(HAIKU))
+     , m_webExtensionController(configuration->webExtensionController())
+     , m_weakWebExtensionController(configuration->weakWebExtensionController())
+ #endif
+@@ -1026,7 +1030,7 @@ WebPageProxy::WebPageProxy(PageClient& pageClient, WebProcessProxy& process, Ref
+ 
+     protect(preferences())->addPage(*this);
+ 
+-#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(COCOA)
++#if ENABLE(WK_WEB_EXTENSIONS) && (PLATFORM(COCOA) || PLATFORM(HAIKU))
+     if (RefPtr webExtensionController = this->webExtensionController())
+         webExtensionController->addPage(*this);
+ #endif
+@@ -1197,7 +1201,7 @@ bool WebPageProxy::modelElementEnabled()
+     return protect(preferences())->modelElementEnabled();
+ }
+ 
+-#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(COCOA)
++#if ENABLE(WK_WEB_EXTENSIONS) && (PLATFORM(COCOA) || PLATFORM(HAIKU))
+ WebExtensionController* WebPageProxy::webExtensionController()
+ {
+     return m_webExtensionController.get() ?: m_weakWebExtensionController.get();
+@@ -1980,7 +1984,7 @@ void WebPageProxy::close()
+         dismissImmersiveElement([] { });
+ #endif
+ 
+-#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(COCOA)
++#if ENABLE(WK_WEB_EXTENSIONS) && (PLATFORM(COCOA) || PLATFORM(HAIKU))
+     if (RefPtr webExtensionController = m_webExtensionController)
+         webExtensionController->removePage(*this);
+     if (RefPtr webExtensionController = m_weakWebExtensionController.get())
 @@ -2087,15 +2091,32 @@ bool WebPageProxy::tryClose()
  
      // Close without delay if the process allows it. Our goal is to terminate
@@ -29718,6 +30256,15 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..8677067b6f8c5ac5aa34751fd6c4b342
 +    // Its WebView::close() clears undo history when the tab is actually closed.
      m_uiClient->close(this);
  }
+ 
+@@ -14815,7 +14852,7 @@ WebPageCreationParameters WebPageProxy::creationParameters(WebProcessProxy& proc
+     parameters.hasResourceLoadClient = !!m_resourceLoadClient;
+     parameters.portsForUpgradingInsecureSchemeForTesting = m_configuration->portsForUpgradingInsecureSchemeForTesting();
+ 
+-#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(COCOA)
++#if ENABLE(WK_WEB_EXTENSIONS) && (PLATFORM(COCOA) || PLATFORM(HAIKU))
+     if (RefPtr webExtensionController = m_webExtensionController)
+         parameters.webExtensionControllerParameters = webExtensionController->parameters(m_configuration, process);
  
 diff --git a/Source/WebKit/UIProcess/WebPageProxyInternals.h b/Source/WebKit/UIProcess/WebPageProxyInternals.h
 index bc3b24188d37a1517e0cbb152e7634211b111243..226044918059bdd29b0892f573e24c7ea2a9aa31 100644
@@ -31671,10 +32218,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..a530d6c56d08f9ab768f14d1639825df64417d28
+index 0000000000000000000000000000000000000000..8e1a34247262943826c1f93805b4385ee41d8a71
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,1104 @@
+@@ -0,0 +1,1121 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -32294,6 +32841,23 @@ index 0000000000000000000000000000000000000000..a530d6c56d08f9ab768f14d1639825df
 +    view->initialize();
 +    return view;
 +}
++
++#if ENABLE(WK_WEB_EXTENSIONS)
++Ref<WebView> WebView::createForExtensionBackground(Ref<API::PageConfiguration>&& configuration)
++{
++    ASSERT(RunLoop::isMain());
++    auto state = std::make_shared<WebViewStateHaiku>(BMessenger { });
++    state->status = B_OK;
++    Ref view = adoptRef(*new WebView(WTF::move(state)));
++    auto& pool = configuration->processPool();
++    view->m_page = pool.createWebPage(view.get(), WTF::move(configuration));
++    auto& pageConfiguration = view->m_page->configuration();
++    view->m_page->initializeWebPage(pageConfiguration.openedSite(), pageConfiguration.initialSandboxFlags(), pageConfiguration.initialReferrerPolicy());
++    view->m_page->setIntrinsicDeviceScaleFactor(1);
++    view->updateGeometry();
++    return view;
++}
++#endif
 +
 +WebView::WebView(std::shared_ptr<WebViewStateHaiku> state)
 +    : m_state(std::move(state))
@@ -32976,10 +33540,10 @@ index 0000000000000000000000000000000000000000..6e26869d2409355f777c0a09ba519e17
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewPrivate.h b/Source/WebKit/UIProcess/haiku/WebViewPrivate.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..2cdcb470d8fc0e96b7b485eaaba1ab7498158430
+index 0000000000000000000000000000000000000000..2f94d310871ce103f68e9e32b6e89a86bec6b2ce
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewPrivate.h
-@@ -0,0 +1,121 @@
+@@ -0,0 +1,126 @@
 +/*
 +   Copyright (C) 2014 Haiku, inc.
 +
@@ -33008,12 +33572,17 @@ index 0000000000000000000000000000000000000000..2cdcb470d8fc0e96b7b485eaaba1ab74
 +#include "WebViewStateHaiku.h"
 +#include <wtf/CompletionHandler.h>
 +
++namespace API { class PageConfiguration; }
++
 +namespace WebKit {
 +
 +class WebView final : public API::ObjectImpl<API::Object::Type::View>, public PageClient {
 +    WTF_MAKE_TZONE_ALLOCATED(WebView);
 +public:
 +    static Ref<WebView> create(std::shared_ptr<WebViewStateHaiku>);
++#if ENABLE(WK_WEB_EXTENSIONS)
++    static Ref<WebView> createForExtensionBackground(Ref<API::PageConfiguration>&&);
++#endif
 +    ~WebView() override;
 +    void ref() const { API::Object::ref(); }
 +    void deref() const { API::Object::deref(); }

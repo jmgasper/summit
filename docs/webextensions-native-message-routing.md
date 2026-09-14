@@ -39,3 +39,6 @@ engine remain required for that test. The preview still has extensions off.
 
 Promoted patch: `e3a4cf2b5baf68e779cb6cb3fcd8d3bf38f2e242f7aacd7a96645971efb65ea8`.
 Probe baseline: `23064dc4cd0304e24b9c5924d1aa7238c727d76439502b37887affdc1162516c`.
+
+Subsequent native page ownership and UI controller attachment compile
+results are recorded in [background evidence](webextensions-native-background.md).
