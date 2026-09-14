@@ -24591,7 +24591,7 @@ index 0000000000000000000000000000000000000000..964df248231137e87da9c37afbb37b84
 +}
 +#endif
 diff --git a/Source/WebKit/Sources.txt b/Source/WebKit/Sources.txt
-index e229fa1ae53c6c89e7534316dd06a7c5bfec5330..2d1d004eafb05cb4f776887702055388c553ef23 100644
+index e229fa1ae53c6c89e7534316dd06a7c5bfec5330..b0bbd8feb41c408ecf14486028b0e6ac22f18c44 100644
 --- a/Source/WebKit/Sources.txt
 +++ b/Source/WebKit/Sources.txt
 @@ -321,6 +321,7 @@ Shared/Extensions/WebExtensionSQLiteRow.cpp
@@ -24602,7 +24602,7 @@ index e229fa1ae53c6c89e7534316dd06a7c5bfec5330..2d1d004eafb05cb4f776887702055388
  Shared/Extensions/WebExtensionUtilities.cpp
  Shared/Extensions/WebExtensionRegisteredScriptsSQLiteStore.cpp
  
-@@ -609,11 +610,18 @@ UIProcess/Downloads/DownloadProxyMap.cpp
+@@ -609,11 +610,19 @@ UIProcess/Downloads/DownloadProxyMap.cpp
  UIProcess/Extensions/WebExtension.cpp
  UIProcess/Extensions/WebExtensionAlarm.cpp
  UIProcess/Extensions/WebExtensionContext.cpp
@@ -24616,12 +24616,13 @@ index e229fa1ae53c6c89e7534316dd06a7c5bfec5330..2d1d004eafb05cb4f776887702055388
  UIProcess/Extensions/WebExtensionDeclarativeNetRequestSQLiteStore.cpp
 +UIProcess/Extensions/WebExtensionDynamicScripts.cpp
  UIProcess/Extensions/WebExtensionMatchPattern.cpp
++UIProcess/Extensions/WebExtensionWebsiteData.cpp
 +UIProcess/Extensions/WebExtensionMatchPatternProcessPool.cpp
 +UIProcess/Extensions/WebExtensionResources.cpp @no-unify
  UIProcess/Extensions/WebExtensionStorageSQLiteStore.cpp
  
  UIProcess/Extensions/API/WebExtensionContextAPIAlarms.cpp
-@@ -713,11 +721,20 @@ WebProcess/Extensions/WebExtensionContextProxy.cpp
+@@ -713,11 +722,20 @@ WebProcess/Extensions/WebExtensionContextProxy.cpp
  WebProcess/Extensions/WebExtensionControllerProxy.cpp
  
  WebProcess/Extensions/API/WebExtensionAPIAlarms.cpp
@@ -27912,15 +27913,24 @@ index 4ce987fbfe339d6b3d834eb6d2715ac65641357c..990d38e71e8b7a48a2f02da4dfc5cddb
  
  } // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm b/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm
-index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..ba9f6823718509ed1e8c6775a9ee9c9cf916b811 100644
+index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..b6fd274bd01d857f0091d108c48d4e8fedbd2a3a 100644
 --- a/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm
 +++ b/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm
-@@ -261,183 +261,19 @@ void WebExtensionContext::clearError(Error error)
+@@ -29,6 +29,7 @@
+ 
+ #import "config.h"
+ #import "WebExtensionContext.h"
++#import "WebExtensionWebsiteData.h"
+ 
+ #if ENABLE(WK_WEB_EXTENSIONS)
+ 
+@@ -261,183 +262,19 @@ void WebExtensionContext::clearError(Error error)
      }).get());
  }
  
 -void WebExtensionContext::didEncounterScriptError(const String& message, const String& sourceURL, uint32_t lineNumber, uint32_t columnNumber, WebExtensionContentWorldType)
--{
++URL WebExtensionContext::updatePersistedMetadataDuringLoad()
+ {
 -    auto path = sourceURL.isEmpty() ? String() : URL(sourceURL).path().toString();
 -    if (path.startsWith('/'))
 -        path = path.substring(1);
@@ -27934,8 +27944,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..ba9f6823718509ed1e8c6775a9ee9c9c
 -}
 -
 -std::expected<bool, RefPtr<API::Error>> WebExtensionContext::load(WebExtensionController& controller, String storageDirectory)
-+URL WebExtensionContext::updatePersistedMetadataDuringLoad()
- {
+-{
 -    if (isLoaded()) {
 -        RELEASE_LOG_ERROR(Extensions, "Extension context already loaded");
 -        return makeUnexpected(createError(Error::AlreadyLoaded));
@@ -28102,7 +28111,27 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..ba9f6823718509ed1e8c6775a9ee9c9c
  }
  
  NSDictionary *WebExtensionContext::currentState() const
-@@ -581,15 +417,6 @@ void WebExtensionContext::removeStaleExtensionWebsiteData()
+@@ -557,18 +394,7 @@ void WebExtensionContext::removeStaleExtensionWebsiteData()
+ 
+         auto activeExtensionURLs = controller->activeExtensionURLs();
+ 
+-        Vector<WebsiteDataRecord> staleRecords;
+-        for (auto& record : records) {
+-            WebsiteDataRecord staleRecord;
+-            for (auto& origin : record.origins) {
+-                if (WebExtensionMatchPattern::isWebExtensionURL(origin.toURL()) && !activeExtensionURLs.contains(origin.toURL().protocolHostAndPort().convertToASCIILowercase()))
+-                    staleRecord.origins.add(origin);
+-            }
+-            if (!staleRecord.origins.isEmpty()) {
+-                staleRecord.types = record.types;
+-                staleRecords.append(WTF::move(staleRecord));
+-            }
+-        }
++        auto staleRecords = staleWebExtensionWebsiteData(records, activeExtensionURLs);
+ 
+         if (staleRecords.isEmpty()) {
+             FileSystem::overwriteEntireFile(sentinelPath, { });
+@@ -581,15 +407,6 @@ void WebExtensionContext::removeStaleExtensionWebsiteData()
      });
  }
  
@@ -28118,7 +28147,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..ba9f6823718509ed1e8c6775a9ee9c9c
  void WebExtensionContext::setInspectable(bool inspectable)
  {
      m_inspectable = inspectable;
-@@ -900,11 +727,6 @@ void WebExtensionContext::requestPermissions(const PermissionsSet& requestedPerm
+@@ -900,11 +717,6 @@ void WebExtensionContext::requestPermissions(const PermissionsSet& requestedPerm
      }).get()];
  }
  
@@ -28130,17 +28159,17 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..ba9f6823718509ed1e8c6775a9ee9c9c
  Ref<WebExtensionWindow> WebExtensionContext::getOrCreateWindow(WKWebExtensionWindow *delegate) const
  {
      ASSERT(delegate);
-@@ -1631,101 +1453,9 @@ void WebExtensionContext::didChangeTabProperties(WebExtensionTab& tab, OptionSet
+@@ -1631,101 +1443,9 @@ void WebExtensionContext::didChangeTabProperties(WebExtensionTab& tab, OptionSet
      }).get());
  }
  
 -void WebExtensionContext::didStartProvisionalLoadForFrame(WebPageProxyIdentifier pageID, const WebExtensionFrameParameters& frameParameters, WallTime timestamp)
 -{
 -    ASSERT(frameParameters.url);
--
+ 
 -    RefPtr tab = getTab(pageID);
 -    auto& frameURL = *frameParameters.url;
--
+ 
 -    // Dispatch webNavigation events.
 -    if (tab && hasPermission(WebExtensionPermission::webNavigation(), tab.get()) && hasPermission(frameURL, tab.get())) {
 -        constexpr auto eventType = WebExtensionEventListenerType::WebNavigationOnBeforeNavigate;
@@ -28185,12 +28214,12 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..ba9f6823718509ed1e8c6775a9ee9c9c
 -            return true;
 -        });
 -    }
- 
+-
 -    // Dispatch webNavigation events.
 -    if (tab && hasPermission(WebExtensionPermission::webNavigation(), tab.get()) && hasPermission(frameURL, tab.get())) {
 -        constexpr auto committedEventType = WebExtensionEventListenerType::WebNavigationOnCommitted;
 -        constexpr auto contentEventType = WebExtensionEventListenerType::WebNavigationOnDOMContentLoaded;
- 
+-
 -        wakeUpBackgroundContentIfNecessaryToFireEvents({ committedEventType, contentEventType }, [=, this, protectedThis = Ref { *this }] {
 -            sendToProcessesForEvent(committedEventType, Messages::WebExtensionContextProxy::DispatchWebNavigationEvent(committedEventType, tab->identifier(), frameParameters, timestamp));
 -            sendToProcessesForEvent(contentEventType, Messages::WebExtensionContextProxy::DispatchWebNavigationEvent(contentEventType, tab->identifier(), frameParameters, timestamp));
@@ -28232,7 +28261,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..ba9f6823718509ed1e8c6775a9ee9c9c
  
  // MARK: webRequest
  
-@@ -2374,30 +2104,7 @@ void WebExtensionContext::userGesturePerformed(WebExtensionTab& tab)
+@@ -2374,30 +2094,7 @@ void WebExtensionContext::userGesturePerformed(WebExtensionTab& tab)
      didChangeTabProperties(tab, { WebExtensionTab::ChangedProperties::URL, WebExtensionTab::ChangedProperties::Title });
  }
  
@@ -28244,13 +28273,13 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..ba9f6823718509ed1e8c6775a9ee9c9c
 -
 -    return tab.hasActiveUserGesture();
 -}
--
+ 
 -void WebExtensionContext::clearUserGesture(WebExtensionTab& tab)
 -{
 -    ASSERT(isLoaded());
 -    if (!isLoaded())
 -        return;
- 
+-
 -    RefPtr oldTemporaryPermissionMatchPattern = tab.temporaryPermissionMatchPattern();
 -
 -    tab.setActiveUserGesture(false);
@@ -28263,7 +28292,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..ba9f6823718509ed1e8c6775a9ee9c9c
  
  std::optional<WebCore::PageIdentifier> WebExtensionContext::backgroundPageIdentifier(WebProcessProxy& destinationProcess) const
  {
-@@ -2458,74 +2165,9 @@ Vector<WebExtensionContext::PageIdentifierTuple> WebExtensionContext::inspectorP
+@@ -2458,74 +2155,9 @@ Vector<WebExtensionContext::PageIdentifierTuple> WebExtensionContext::inspectorP
  }
  #endif // ENABLE(INSPECTOR_EXTENSIONS)
  
@@ -28314,22 +28343,22 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..ba9f6823718509ed1e8c6775a9ee9c9c
 -
 -    auto tabIdentifier = tab ? std::optional(tab->identifier()) : std::nullopt;
 -    auto windowIdentifier = window ? std::optional(window->identifier()) : std::nullopt;
--
+ 
 -    Ref protectedPage = page;
 -    protectedPage->forEachWebContentProcess([&](auto& webProcess, auto pageID) {
 -        webProcess.send(Messages::WebExtensionContextProxy::AddPopupPageIdentifier(pageID, tabIdentifier, windowIdentifier), identifier());
 -    });
 -}
--
+ 
 -void WebExtensionContext::addExtensionTabPage(WebPageProxy& page, WebExtensionTab& tab)
 -{
 -    m_extensionPageTabMap.set(page, tab.identifier());
- 
+-
 -    RefPtr window = tab.window();
  
 -    auto tabIdentifier = tab.identifier();
 -    auto windowIdentifier = window ? std::optional(window->identifier()) : std::nullopt;
- 
+-
 -    Ref protectedPage = page;
 -    protectedPage->forEachWebContentProcess([&](auto& webProcess, auto pageID) {
 -        webProcess.send(Messages::WebExtensionContextProxy::AddTabPageIdentifier(pageID, tabIdentifier, windowIdentifier), identifier());
@@ -28338,7 +28367,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..ba9f6823718509ed1e8c6775a9ee9c9c
  
  void WebExtensionContext::enumerateExtensionPages(NOESCAPE Function<void(WebPageProxy&, bool&)>&& action)
  {
-@@ -2654,12 +2296,6 @@ WebsiteDataStore* WebExtensionContext::websiteDataStore(std::optional<PAL::Sessi
+@@ -2654,12 +2286,6 @@ WebsiteDataStore* WebExtensionContext::websiteDataStore(std::optional<PAL::Sessi
      return weakDataStore.get();
  }
  
@@ -28351,7 +28380,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..ba9f6823718509ed1e8c6775a9ee9c9c
  
  bool WebExtensionContext::isBackgroundPage(WebPageProxyIdentifier pageProxyIdentifier) const
  {
-@@ -2889,38 +2525,6 @@ void WebExtensionContext::saveBackgroundPageListenersToStorage()
+@@ -2889,38 +2515,6 @@ void WebExtensionContext::saveBackgroundPageListenersToStorage()
          writeStateToStorage();
  }
  
@@ -28390,7 +28419,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..ba9f6823718509ed1e8c6775a9ee9c9c
  #ifndef NDEBUG
  // This is only defined in debug builds since it has a performance impact with little benefit to release builds.
  void WebExtensionContext::reportWebViewConfigurationErrorIfNeeded(const WebExtensionTab& tab) const
-@@ -3386,18 +2990,6 @@ void WebExtensionContext::inspectorEffectiveAppearanceDidChange(API::InspectorEx
+@@ -3386,18 +2980,6 @@ void WebExtensionContext::inspectorEffectiveAppearanceDidChange(API::InspectorEx
  }
  #endif // ENABLE(INSPECTOR_EXTENSIONS)
  
@@ -28409,7 +28438,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..ba9f6823718509ed1e8c6775a9ee9c9c
  
  String WebExtensionContext::declarativeNetRequestContentRuleListFilePath()
  {
-@@ -3410,16 +3002,6 @@ String WebExtensionContext::declarativeNetRequestContentRuleListFilePath()
+@@ -3410,16 +2992,6 @@ String WebExtensionContext::declarativeNetRequestContentRuleListFilePath()
      return m_declarativeNetRequestContentRuleListFilePath;
  }
  
@@ -28426,7 +28455,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..ba9f6823718509ed1e8c6775a9ee9c9c
  
  static NSString *computeStringHashForContentBlockerRules(NSString *rules)
  {
-@@ -3630,19 +3212,6 @@ void WebExtensionContext::saveStorageAccessLevelsToStorage()
+@@ -3630,19 +3202,6 @@ void WebExtensionContext::saveStorageAccessLevelsToStorage()
      writeStateToStorage();
  }
  
@@ -29864,6 +29893,143 @@ index 6cc31666df494b43a9c98c89ad7b6d9fbabd4616..a07f329ffdd6685a0c249ff257c13cdf
  }; // class WebExtensionURLSchemeHandler
  
  } // namespace WebKit
+diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionWebsiteData.cpp b/Source/WebKit/UIProcess/Extensions/WebExtensionWebsiteData.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..ce68d76137a77599b7f417f265ce39b1783f1afe
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/WebExtensionWebsiteData.cpp
+@@ -0,0 +1,86 @@
++/*
++ * Copyright (C) 2022-2025 Apple Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "WebExtensionWebsiteData.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS)
++
++#include "WebExtensionMatchPattern.h"
++
++namespace WebKit {
++
++Vector<WebsiteDataRecord> staleWebExtensionWebsiteData(const Vector<WebsiteDataRecord>& records, const HashSet<String>& activeExtensionURLs)
++{
++    Vector<WebsiteDataRecord> staleRecords;
++    for (auto& record : records) {
++        WebsiteDataRecord staleRecord;
++        for (auto& origin : record.origins) {
++            if (WebExtensionMatchPattern::isWebExtensionURL(origin.toURL()) && !activeExtensionURLs.contains(origin.toURL().protocolHostAndPort().convertToASCIILowercase()))
++                staleRecord.origins.add(origin);
++        }
++        if (!staleRecord.origins.isEmpty()) {
++            staleRecord.types = record.types;
++            staleRecords.append(WTF::move(staleRecord));
++        }
++    }
++    return staleRecords;
++}
++
++OptionSet<WebsiteDataType> webExtensionWebsiteDataTypes()
++{
++    // Match the public and private website data types used by Cocoa cleanup.
++    return {
++        WebsiteDataType::DiskCache,
++        WebsiteDataType::DOMCache,
++        WebsiteDataType::MemoryCache,
++        WebsiteDataType::Cookies,
++        WebsiteDataType::SessionStorage,
++        WebsiteDataType::LocalStorage,
++        WebsiteDataType::IndexedDBDatabases,
++        WebsiteDataType::ServiceWorkerRegistrations,
++        WebsiteDataType::WebSQLDatabases,
++        WebsiteDataType::FileSystem,
++        WebsiteDataType::SearchFieldRecentSearches,
++        WebsiteDataType::MediaKeys,
++        WebsiteDataType::DeviceIdHashSalt,
++        WebsiteDataType::HSTSCache,
++        WebsiteDataType::ResourceLoadStatistics,
++        WebsiteDataType::Credentials,
++        WebsiteDataType::PrivateClickMeasurements,
++        WebsiteDataType::EnhancedSecurityRecord,
++        WebsiteDataType::IsolatedSiteRecord,
++#if HAVE(ALTERNATIVE_SERVICE)
++        WebsiteDataType::AlternativeServices,
++#endif
++#if ENABLE(SCREEN_TIME)
++        WebsiteDataType::ScreenTime,
++#endif
++    };
++}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS)
+diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionWebsiteData.h b/Source/WebKit/UIProcess/Extensions/WebExtensionWebsiteData.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..4e033e185f8037949a47bf5ed7ca4d54093b4173
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/WebExtensionWebsiteData.h
+@@ -0,0 +1,39 @@
++/*
++ * Copyright (C) 2022-2025 Apple Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#pragma once
++
++#if ENABLE(WK_WEB_EXTENSIONS)
++
++#include "WebsiteDataRecord.h"
++
++namespace WebKit {
++
++Vector<WebsiteDataRecord> staleWebExtensionWebsiteData(const Vector<WebsiteDataRecord>&, const HashSet<String>& activeExtensionURLs);
++OptionSet<WebsiteDataType> webExtensionWebsiteDataTypes();
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/UIProcess/Extensions/glib/WebExtensionGLib.cpp b/Source/WebKit/UIProcess/Extensions/glib/WebExtensionGLib.cpp
 index f09e0085d0228b905e0a7cfe7592260e9d4977a9..3ada5a0beca92b82ae14dc44131be6f12c3f7e5f 100644
 --- a/Source/WebKit/UIProcess/Extensions/glib/WebExtensionGLib.cpp
@@ -30861,10 +31027,10 @@ index 0000000000000000000000000000000000000000..881641881048903eab1b5c67971e3dfe
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..ad3c3216d22d29a6f67c229a5cba8d63d10ece69
+index 0000000000000000000000000000000000000000..602baf54bf4eb5b65560a68e8f6833f2c7e57650
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextHaiku.cpp
-@@ -0,0 +1,205 @@
+@@ -0,0 +1,243 @@
 +/*
 + * Copyright (C) 2022-2025 Apple Inc. All rights reserved.
 + * Copyright (C) 2026 KunanyiOS contributors.
@@ -30897,13 +31063,51 @@ index 0000000000000000000000000000000000000000..ad3c3216d22d29a6f67c229a5cba8d63
 +
 +#include "Logging.h"
 +#include "WebExtensionStateHaiku.h"
++#include "WebExtensionWebsiteData.h"
 +#include "WebsiteDataStore.h"
++#include "WebsiteDataFetchOption.h"
 +#include <WebCore/SecurityOriginData.h>
 +#include <wtf/FileSystem.h>
 +#include <wtf/JSONValues.h>
 +#include <wtf/text/MakeString.h>
 +
 +namespace WebKit {
++
++void WebExtensionContext::removeStaleExtensionWebsiteData()
++{
++    if (!storageIsPersistent())
++        return;
++
++    RefPtr controller = extensionController();
++    if (!controller || !controller->markDidRemoveStaleExtensionWebsiteData())
++        return;
++
++    auto sentinelPath = FileSystem::pathByAppendingComponent(controller->configuration().storageDirectory(), "StaleExtensionOriginsCleared"_s);
++    if (FileSystem::fileExists(sentinelPath))
++        return;
++
++    Ref websiteDataStore = controller->configuration().defaultWebsiteDataStore();
++    auto dataTypes = webExtensionWebsiteDataTypes();
++    websiteDataStore->fetchData(dataTypes, { WebsiteDataFetchOption::IncludeAllOrigins }, [protectedThis = Ref { *this }, dataTypes, websiteDataStore, sentinelPath](Vector<WebsiteDataRecord> records) {
++        RefPtr controller = protectedThis->extensionController();
++        if (!controller)
++            return;
++
++        auto activeExtensionURLs = controller->activeExtensionURLs();
++
++        auto staleRecords = staleWebExtensionWebsiteData(records, activeExtensionURLs);
++
++        if (staleRecords.isEmpty()) {
++            FileSystem::overwriteEntireFile(sentinelPath, { });
++            return;
++        }
++
++        websiteDataStore->removeData(dataTypes, staleRecords, [sentinelPath] {
++            FileSystem::overwriteEntireFile(sentinelPath, { });
++        });
++    });
++}
++
 +
 +String WebExtensionContext::declarativeNetRequestContentRuleListFilePath()
 +{
@@ -35697,10 +35901,18 @@ index 0000000000000000000000000000000000000000..2a51b2913800fada0f6279c8919bc190
 +
 +} // namespace WebKit
 diff --git a/Source/WebKit/WebKit.xcodeproj/project.pbxproj b/Source/WebKit/WebKit.xcodeproj/project.pbxproj
-index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ca16da54faa36f519593b47fda2a0bcaa5238edc 100644
+index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..f90b81e1de0621ef446379587ed2cc7863f48dfd 100644
 --- a/Source/WebKit/WebKit.xcodeproj/project.pbxproj
 +++ b/Source/WebKit/WebKit.xcodeproj/project.pbxproj
-@@ -540,6 +540,8 @@
+@@ -123,6 +123,7 @@
+ /* End PBXAggregateTarget section */
+ 
+ /* Begin PBXBuildFile section */
++		C6C09F2C91F040210B83711F /* WebExtensionWebsiteData.h in Headers */ = {isa = PBXBuildFile; fileRef = D5F9FC217E2D98B7D2B1127B /* WebExtensionWebsiteData.h */; };
+ 		005D158F18E4C4EB00734619 /* _WKFindDelegate.h in Headers */ = {isa = PBXBuildFile; fileRef = 005D158E18E4C4EB00734619 /* _WKFindDelegate.h */; settings = {ATTRIBUTES = (Private, ); }; };
+ 		00B9661618E24CBA00CE1F88 /* APIFindClient.h in Headers */ = {isa = PBXBuildFile; fileRef = 00B9661518E24CBA00CE1F88 /* APIFindClient.h */; };
+ 		00B9661A18E25AE100CE1F88 /* FindClient.h in Headers */ = {isa = PBXBuildFile; fileRef = 00B9661818E25AE100CE1F88 /* FindClient.h */; };
+@@ -540,6 +541,8 @@
  		1C2184022233872800BAC700 /* NSAttributedStringPrivate.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C2184012233872800BAC700 /* NSAttributedStringPrivate.h */; settings = {ATTRIBUTES = (Private, ); }; };
  		1C2B4D422A817D7200C528A1 /* WebExtensionAlarmParameters.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C2B4D412A817D6B00C528A1 /* WebExtensionAlarmParameters.h */; };
  		1C2B4D462A8199CD00C528A1 /* WebExtensionAPIAlarms.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C2B4D452A8199CC00C528A1 /* WebExtensionAPIAlarms.h */; };
@@ -35709,7 +35921,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ca16da54faa36f519593b47fda2a0bca
  		1C2BBF932B82BC5D001DBDFC /* WebExtensionError.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C2BBF922B82BC5D001DBDFC /* WebExtensionError.h */; };
  		1C386F302AF4082F004108F0 /* WebExtensionAPINotifications.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C386F2F2AF4082F004108F0 /* WebExtensionAPINotifications.h */; };
  		1C386F352AF409F9004108F0 /* JSWebExtensionAPINotifications.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C386F332AF409F9004108F0 /* JSWebExtensionAPINotifications.h */; };
-@@ -590,6 +592,10 @@
+@@ -590,6 +593,10 @@
  		1C5DC46C290B271E0061EC62 /* WebExtensionAPINamespace.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C5DC44F290888140061EC62 /* WebExtensionAPINamespace.h */; };
  		1C5DC46D290B271E0061EC62 /* WebExtensionAPIExtension.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C5DC468290B239C0061EC62 /* WebExtensionAPIExtension.h */; };
  		1C5DC46E290B27260061EC62 /* JSWebExtensionWrapper.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C5DC45829099F010061EC62 /* JSWebExtensionWrapper.h */; };
@@ -35720,7 +35932,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ca16da54faa36f519593b47fda2a0bca
  		1C5DC46F290B27260061EC62 /* JSWebExtensionWrappable.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C5DC45B29099F010061EC62 /* JSWebExtensionWrappable.h */; };
  		1C62747D288B4C3E00CED3A2 /* CocoaHelpers.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C62747B288B4C3E00CED3A2 /* CocoaHelpers.h */; };
  		1C62900D28EE2CD300C26B60 /* CoreSVGSPI.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C62900C28EE2CD300C26B60 /* CoreSVGSPI.h */; };
-@@ -607,6 +613,7 @@
+@@ -607,6 +614,7 @@
  		1C7316772AC1DFDF007FADA4 /* WKWebExtensionMessagePortInternal.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C7316762AC1DFDF007FADA4 /* WKWebExtensionMessagePortInternal.h */; };
  		1C7316792AC1DFED007FADA4 /* WKWebExtensionMessagePortPrivate.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C7316782AC1DFED007FADA4 /* WKWebExtensionMessagePortPrivate.h */; settings = {ATTRIBUTES = (Private, ); }; };
  		1C73167B2AC1E676007FADA4 /* WebExtensionMessagePort.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C73167A2AC1E676007FADA4 /* WebExtensionMessagePort.h */; };
@@ -35728,7 +35940,16 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ca16da54faa36f519593b47fda2a0bca
  		1C891D6619B124FF00BA79DD /* WebInspectorUI.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C891D6319B124FF00BA79DD /* WebInspectorUI.h */; };
  		1C8B2363289AE89400020CDC /* WKWebExtensionPermission.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C8B2362289AE89400020CDC /* WKWebExtensionPermission.h */; settings = {ATTRIBUTES = (Public, ); }; };
  		1C8E28201275D15400BC7BD0 /* WebInspectorBackend.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C8E281E1275D15400BC7BD0 /* WebInspectorBackend.h */; };
-@@ -4289,6 +4296,8 @@
+@@ -3400,6 +3408,8 @@
+ /* End PBXCopyFilesBuildPhase section */
+ 
+ /* Begin PBXFileReference section */
++		D5F9FC217E2D98B7D2B1127B /* WebExtensionWebsiteData.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = WebExtensionWebsiteData.h; path = UIProcess/Extensions/WebExtensionWebsiteData.h; sourceTree = SOURCE_ROOT; };
++		97D50CE979A0C019DB0E7AD7 /* WebExtensionWebsiteData.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = WebExtensionWebsiteData.cpp; path = UIProcess/Extensions/WebExtensionWebsiteData.cpp; sourceTree = SOURCE_ROOT; };
+ 		005D158E18E4C4EB00734619 /* _WKFindDelegate.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = _WKFindDelegate.h; sourceTree = "<group>"; };
+ 		00B9661518E24CBA00CE1F88 /* APIFindClient.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = APIFindClient.h; sourceTree = "<group>"; };
+ 		00B9661718E25AE100CE1F88 /* FindClient.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = FindClient.mm; sourceTree = "<group>"; };
+@@ -4289,6 +4299,8 @@
  		1C2B4D452A8199CC00C528A1 /* WebExtensionAPIAlarms.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPIAlarms.h; sourceTree = "<group>"; };
  		1C2B4D472A819C4700C528A1 /* WebExtensionAPIAlarms.idl */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionAPIAlarms.idl; sourceTree = "<group>"; };
  		1C2B4D482A819D0C00C528A1 /* JSWebExtensionAPIAlarms.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIAlarms.h; sourceTree = "<group>"; };
@@ -35737,7 +35958,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ca16da54faa36f519593b47fda2a0bca
  		1C2BBF922B82BC5D001DBDFC /* WebExtensionError.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionError.h; sourceTree = "<group>"; };
  		1C386F2E2AF407B1004108F0 /* WebExtensionAPINotifications.idl */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionAPINotifications.idl; sourceTree = "<group>"; };
  		1C386F2F2AF4082F004108F0 /* WebExtensionAPINotifications.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPINotifications.h; sourceTree = "<group>"; };
-@@ -4414,6 +4423,11 @@
+@@ -4414,6 +4426,11 @@
  		1C5DC4532908AC260061EC62 /* JSWebExtensionAPINamespace.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPINamespace.h; sourceTree = "<group>"; };
  		1C5DC45729099F010061EC62 /* JSWebExtensionWrapper.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = JSWebExtensionWrapper.cpp; sourceTree = "<group>"; };
  		1C5DC45829099F010061EC62 /* JSWebExtensionWrapper.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionWrapper.h; sourceTree = "<group>"; };
@@ -35749,7 +35970,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ca16da54faa36f519593b47fda2a0bca
  		1C5DC45A29099F010061EC62 /* JSWebExtensionWrapperCocoa.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = JSWebExtensionWrapperCocoa.mm; sourceTree = "<group>"; };
  		1C5DC45B29099F010061EC62 /* JSWebExtensionWrappable.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionWrappable.h; sourceTree = "<group>"; };
  		1C5DC45D2909A3680061EC62 /* CodeGeneratorExtensions.pm */ = {isa = PBXFileReference; lastKnownFileType = text.script.perl; path = CodeGeneratorExtensions.pm; sourceTree = "<group>"; };
-@@ -4451,6 +4465,7 @@
+@@ -4451,6 +4468,7 @@
  		1C7316762AC1DFDF007FADA4 /* WKWebExtensionMessagePortInternal.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WKWebExtensionMessagePortInternal.h; sourceTree = "<group>"; };
  		1C7316782AC1DFED007FADA4 /* WKWebExtensionMessagePortPrivate.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WKWebExtensionMessagePortPrivate.h; sourceTree = "<group>"; };
  		1C73167A2AC1E676007FADA4 /* WebExtensionMessagePort.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionMessagePort.h; sourceTree = "<group>"; };
@@ -35757,7 +35978,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ca16da54faa36f519593b47fda2a0bca
  		1C73167E2AC1EA27007FADA4 /* WebExtensionMessagePortCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionMessagePortCocoa.mm; sourceTree = "<group>"; };
  		1C739E852347BCF600C621EC /* CoreTextHelpers.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = CoreTextHelpers.mm; sourceTree = "<group>"; };
  		1C739E872347BD0F00C621EC /* CoreTextHelpers.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CoreTextHelpers.h; sourceTree = "<group>"; };
-@@ -4628,7 +4643,7 @@
+@@ -4628,7 +4646,7 @@
  		1C9A15C92ABDEF13002CC12A /* WebExtensionAPIPort.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPIPort.h; sourceTree = "<group>"; };
  		1C9A15CB2ABDF10C002CC12A /* WebExtensionAPIPort.idl */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionAPIPort.idl; sourceTree = "<group>"; };
  		1C9A15CC2ABDF1E1002CC12A /* JSWebExtensionAPIPort.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIPort.h; sourceTree = "<group>"; };
@@ -35766,7 +35987,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ca16da54faa36f519593b47fda2a0bca
  		1C9A15D02ABDF334002CC12A /* WebExtensionAPIPortCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionAPIPortCocoa.mm; sourceTree = "<group>"; };
  		1C9A15D22ABE2F4B002CC12A /* WebExtensionContextAPIPortCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionContextAPIPortCocoa.mm; sourceTree = "<group>"; };
  		1C9DD99028FA19A30093BDB0 /* WebExtensionAPIExtension.idl */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionAPIExtension.idl; sourceTree = "<group>"; };
-@@ -7986,7 +8001,7 @@
+@@ -7986,7 +8004,7 @@
  		B6058CF32B6D98E7006D4C77 /* WebExtensionDataRecord.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionDataRecord.h; sourceTree = "<group>"; };
  		B6058CF42B6D98E8006D4C77 /* WebExtensionDataRecord.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = WebExtensionDataRecord.cpp; sourceTree = "<group>"; };
  		B6114A7C2939498000380B1B /* JSWebExtensionAPIEvent.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIEvent.h; sourceTree = "<group>"; };
@@ -35775,7 +35996,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ca16da54faa36f519593b47fda2a0bca
  		B6114A8B293AE05200380B1B /* WebExtensionEventListenerType.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WebExtensionEventListenerType.h; sourceTree = "<group>"; };
  		B61274A62B7D738100D8ACDA /* WebExtensionAPIWebPageNamespace.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPIWebPageNamespace.h; sourceTree = "<group>"; };
  		B61AFA4629510D0F008220B1 /* JSWebExtensionAPIPermissions.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIPermissions.h; sourceTree = "<group>"; };
-@@ -8003,14 +8018,16 @@
+@@ -8003,14 +8021,16 @@
  		B63403F814910D57001070B5 /* APIObject.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = APIObject.cpp; sourceTree = "<group>"; };
  		B63A99732B7EA000004611FD /* JSWebExtensionAPIWebPageRuntime.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIWebPageRuntime.h; sourceTree = "<group>"; };
  		B63C10322B51C09C004A69B8 /* JSWebExtensionAPIStorageArea.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIStorageArea.h; sourceTree = "<group>"; };
@@ -35794,7 +36015,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ca16da54faa36f519593b47fda2a0bca
  		B651BC5B2B460C9C009654A9 /* WebExtensionAPIStorage.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = WebExtensionAPIStorage.h; path = WebProcess/Extensions/API/WebExtensionAPIStorage.h; sourceTree = SOURCE_ROOT; };
  		B651BC5E2B460CBF009654A9 /* WebExtensionAPIStorageArea.idl */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = WebExtensionAPIStorageArea.idl; sourceTree = "<group>"; };
  		B651BC5F2B460CBF009654A9 /* WebExtensionAPIStorage.idl */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = WebExtensionAPIStorage.idl; sourceTree = "<group>"; };
-@@ -8044,6 +8061,7 @@
+@@ -8044,6 +8064,7 @@
  		B6B1565B2B5E177A004F9894 /* WebExtensionContextParameters.serialization.in */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = WebExtensionContextParameters.serialization.in; sourceTree = "<group>"; };
  		B6CCAAB629A445E90092E846 /* JSWebExtensionAPILocalization.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPILocalization.h; sourceTree = "<group>"; };
  		B6CCAAB729A445E90092E846 /* JSWebExtensionAPILocalization.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = JSWebExtensionAPILocalization.mm; sourceTree = "<group>"; };
@@ -35802,7 +36023,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ca16da54faa36f519593b47fda2a0bca
  		B6D031032AC1F240006C8E0B /* WebExtensionDynamicScripts.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionDynamicScripts.h; sourceTree = "<group>"; };
  		B6D031042AC1F241006C8E0B /* WebExtensionDynamicScriptsCocoa.mm */ = {isa = PBXFileReference; explicitFileType = sourcecode.cpp.objcpp.preprocessed; fileEncoding = 4; path = WebExtensionDynamicScriptsCocoa.mm; sourceTree = "<group>"; };
  		B6D031082AC1F631006C8E0B /* WebExtensionScriptInjectionParameters.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionScriptInjectionParameters.h; sourceTree = "<group>"; };
-@@ -11275,7 +11293,9 @@
+@@ -11275,7 +11296,9 @@
  				B62FB8622AA9180C00E61418 /* WebExtensionAPIScripting.h */,
  				029D6BAB2C4060920068CF99 /* WebExtensionAPISidebarAction.h */,
  				028648C52C3F5A2E00E474D4 /* WebExtensionAPISidePanel.h */,
@@ -35812,7 +36033,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ca16da54faa36f519593b47fda2a0bca
  				B651BC5A2B460C9C009654A9 /* WebExtensionAPIStorageArea.h */,
  				1C5ACFAD2A96F9D300C041C0 /* WebExtensionAPITabs.h */,
  				7DF6CAA52EC1365500AE220C /* WebExtensionAPITest.cpp */,
-@@ -11341,6 +11361,11 @@
+@@ -11341,6 +11364,11 @@
  				1C5DC45B29099F010061EC62 /* JSWebExtensionWrappable.h */,
  				1C5DC45729099F010061EC62 /* JSWebExtensionWrapper.cpp */,
  				1C5DC45829099F010061EC62 /* JSWebExtensionWrapper.h */,
@@ -35824,12 +36045,14 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ca16da54faa36f519593b47fda2a0bca
  			);
  			path = Bindings;
  			sourceTree = "<group>";
-@@ -11866,12 +11891,14 @@
+@@ -11866,12 +11894,16 @@
  				B6058CF32B6D98E7006D4C77 /* WebExtensionDataRecord.h */,
  				7D199FE42E1B4ECF0042147F /* WebExtensionDeclarativeNetRequestSQLiteStore.cpp */,
  				7D199FE32E1B4ECF0042147F /* WebExtensionDeclarativeNetRequestSQLiteStore.h */,
 +				371A79EBB859A410C91935BA /* WebExtensionDynamicScripts.cpp */,
  				B6D031032AC1F240006C8E0B /* WebExtensionDynamicScripts.h */,
++				D5F9FC217E2D98B7D2B1127B /* WebExtensionWebsiteData.h */,
++				97D50CE979A0C019DB0E7AD7 /* WebExtensionWebsiteData.cpp */,
  				1CC78CDA2C95F219003E3CDD /* WebExtensionMatchPattern.cpp */,
  				1C1CE96A288DF31E0098D3A1 /* WebExtensionMatchPattern.h */,
  				1C6B84C92B0D6CDF00E885DD /* WebExtensionMenuItem.cpp */,
@@ -35839,7 +36062,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ca16da54faa36f519593b47fda2a0bca
  				028D30762C616E8A004F4FC6 /* WebExtensionSidebar.h */,
  				7D1A8A0D2D405B34001715DF /* WebExtensionStorageSQLiteStore.cpp */,
  				7D1A8A0C2D405B34001715DF /* WebExtensionStorageSQLiteStore.h */,
-@@ -15897,6 +15924,8 @@
+@@ -15897,6 +15929,8 @@
  				1CF35F492B36089E0079C02C /* WebExtensionCookieParameters.serialization.in */,
  				B6B156582B5E1779004F9894 /* WebExtensionDataType.h */,
  				B624FF1C2ABE54B500F6EDF6 /* WebExtensionDynamicScripts.serialization.in */,
@@ -35848,7 +36071,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ca16da54faa36f519593b47fda2a0bca
  				1C2BBF922B82BC5D001DBDFC /* WebExtensionError.h */,
  				B6114A8B293AE05200380B1B /* WebExtensionEventListenerType.h */,
  				8696CE2F297EB3C90081C800 /* WebExtensionEventListenerType.serialization.in */,
-@@ -17458,7 +17487,7 @@
+@@ -17458,7 +17492,7 @@
  				1C05906A2DFA0FB7000406F9 /* JSWebExtensionAPIDOM.h */,
  				1C05906B2DFA0FB7000406F9 /* JSWebExtensionAPIDOM.mm */,
  				B6114A7C2939498000380B1B /* JSWebExtensionAPIEvent.h */,
@@ -35857,7 +36080,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ca16da54faa36f519593b47fda2a0bca
  				1C5DC462290B1C470061EC62 /* JSWebExtensionAPIExtension.h */,
  				1C5DC460290B1C440061EC62 /* JSWebExtensionAPIExtension.mm */,
  				B6CCAAB629A445E90092E846 /* JSWebExtensionAPILocalization.h */,
-@@ -17472,7 +17501,7 @@
+@@ -17472,7 +17506,7 @@
  				B61AFA4629510D0F008220B1 /* JSWebExtensionAPIPermissions.h */,
  				B61AFA4729510D0F008220B1 /* JSWebExtensionAPIPermissions.mm */,
  				1C9A15CC2ABDF1E1002CC12A /* JSWebExtensionAPIPort.h */,
@@ -35866,7 +36089,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ca16da54faa36f519593b47fda2a0bca
  				7D3D13B1304398C400289ABF /* JSWebExtensionAPIRuntime.cpp */,
  				1C5DC461290B1C470061EC62 /* JSWebExtensionAPIRuntime.h */,
  				B63E9A6C2AAF2B2D005F4561 /* JSWebExtensionAPIScripting.h */,
-@@ -17482,9 +17511,9 @@
+@@ -17482,9 +17516,9 @@
  				029D6BAF2C407AA30068CF99 /* JSWebExtensionAPISidePanel.h */,
  				029D6BB02C407AA30068CF99 /* JSWebExtensionAPISidePanel.mm */,
  				B626B7BD2B4F1DF8008E8DD1 /* JSWebExtensionAPIStorage.h */,
@@ -35878,7 +36101,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ca16da54faa36f519593b47fda2a0bca
  				1C5ACFAA2A96F8D500C041C0 /* JSWebExtensionAPITabs.h */,
  				1C5ACFA92A96F8D400C041C0 /* JSWebExtensionAPITabs.mm */,
  				1C15497E2926C05A001B9E5B /* JSWebExtensionAPITest.cpp */,
-@@ -18657,6 +18686,10 @@
+@@ -18657,6 +18691,10 @@
  				1C5ACFA82A96F8C400C041C0 /* JSWebExtensionAPIWindowsEvent.h in Headers */,
  				1C5DC46F290B27260061EC62 /* JSWebExtensionWrappable.h in Headers */,
  				1C5DC46E290B27260061EC62 /* JSWebExtensionWrapper.h in Headers */,
@@ -35889,16 +36112,17 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ca16da54faa36f519593b47fda2a0bca
  				074A6FC72D5F1FAF0027F958 /* KeyEventInterpretationContext.h in Headers */,
  				E385F3692E86D75800461B0C /* LaunchLogHook.h in Headers */,
  				E385F37C2E87076100461B0C /* LaunchLogMessages.h in Headers */,
-@@ -19257,6 +19290,8 @@
+@@ -19257,6 +19295,9 @@
  				B6058CF52B6D98E8006D4C77 /* WebExtensionDataRecord.h in Headers */,
  				B6B1565C2B5E177A004F9894 /* WebExtensionDataType.h in Headers */,
  				B6D031052AC1F241006C8E0B /* WebExtensionDynamicScripts.h in Headers */,
++				C6C09F2C91F040210B83711F /* WebExtensionWebsiteData.h in Headers */,
 +				7BAC0D267A887D0EADD12397 /* WebExtensionDeferredReply.h in Headers */,
 +				ABCC1D24B73206B09FCB9CA0 /* WebExtensionRegisteredScriptParser.h in Headers */,
  				1C2BBF932B82BC5D001DBDFC /* WebExtensionError.h in Headers */,
  				B6114A8C293AE06800380B1B /* WebExtensionEventListenerType.h in Headers */,
  				1C4A14C62ABB710E00A1018C /* WebExtensionFrameIdentifier.h in Headers */,
-@@ -19268,6 +19303,7 @@
+@@ -19268,6 +19309,7 @@
  				1C6BE79F2B0A910200D01D93 /* WebExtensionMenuItemParameters.h in Headers */,
  				1C6BE7A32B0A94E500D01D93 /* WebExtensionMenuItemType.h in Headers */,
  				1C73167B2AC1E676007FADA4 /* WebExtensionMessagePort.h in Headers */,

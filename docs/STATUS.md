@@ -1407,3 +1407,20 @@ was loaded, matched or applied. See [rule-state evidence](webextensions-native-r
 
 Patch: `c6ab469dacb1003eddb43c03903945104fb676de3ad58b835b6c2eaa69c70e1b`.
 The full build remains frozen on `b330520c...`.
+
+2026-09-14 fifth full extension link result: the frozen `b330520c...` build
+completed compilation and failed at the WebKit shared-library link with 52
+distinct missing symbols. Storage-change dispatch is resolved, with no new
+missing symbols relative to the preceding build. This build predates the
+context-utility, saved-rule-state and website-data cleanup changes. Record:
+`.vm/modern-extensions-storage-api-build-result.json`.
+No feature-enabled WebKit link or extension runtime passed.
+
+2026-09-14 stale extension website data: Haiku now adapts Cocoa's persistent
+cleanup path, sharing its origin-selection loop. All 29 native selection checks
+pass, including mixed records that retain ordinary website origins and exclude
+host/domain deletion metadata. Both final selector/context units compile. No
+website-data fetch/deletion, sentinel handling or extension context was run.
+See [cleanup evidence and limitations](webextensions-native-website-data.md).
+
+Patch: `adb8b391c6e42031b5ccd084b4898216e9634bfc929214306c7a58f63ec23ac6`.
