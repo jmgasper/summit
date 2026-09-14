@@ -22921,10 +22921,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..fd47c5989e6a57131b864e2cfd2cbb6ec35fa5a6
+index 0000000000000000000000000000000000000000..b17137bf2407c57aee8085bd49841854a2c47bff
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,186 @@
+@@ -0,0 +1,187 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -22974,6 +22974,7 @@ index 0000000000000000000000000000000000000000..fd47c5989e6a57131b864e2cfd2cbb6e
 +    UIProcess/API/haiku/WebKitView.cpp
 +    UIProcess/Extensions/haiku/WebExtensionArchiveHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionContextHaiku.cpp
++    UIProcess/Extensions/haiku/WebExtensionContextTestHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionContextBackgroundHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionControllerAPITestHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionControllerConfigurationHaiku.cpp
@@ -25959,10 +25960,10 @@ index 3c07d36552434c56bfa713274bed4cee92489d3a..c142b793471c41bea809b0de71e0f0db
      return isLoadedAndPrivilegedMessage(message) && (hasPermission(WebExtensionPermission::declarativeNetRequest()) || hasPermission(WebExtensionPermission::declarativeNetRequestWithHostAccess()));
 diff --git a/Source/WebKit/UIProcess/Extensions/API/WebExtensionContextAPIEvent.cpp b/Source/WebKit/UIProcess/Extensions/API/WebExtensionContextAPIEvent.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..cd6cc8ce6a5660a0a51dc9ba6fd22dc2f0104840
+index 0000000000000000000000000000000000000000..d914c61d3403f3bef256040ca152a0c684ca7c4c
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/API/WebExtensionContextAPIEvent.cpp
-@@ -0,0 +1,252 @@
+@@ -0,0 +1,256 @@
 +/*
 + * Copyright (C) 2022-2024 Apple Inc. All rights reserved.
 + *
@@ -26031,6 +26032,7 @@ index 0000000000000000000000000000000000000000..cd6cc8ce6a5660a0a51dc9ba6fd22dc2
 +    if (!isTestEventListener(listenerType))
 +        return;
 +
++#if !PLATFORM(HAIKU)
 +    switch (listenerType) {
 +    case WebExtensionEventListenerType::TestOnMessage:
 +        m_testMessageListenersCount++;
@@ -26048,6 +26050,7 @@ index 0000000000000000000000000000000000000000..cd6cc8ce6a5660a0a51dc9ba6fd22dc2
 +        ASSERT_NOT_REACHED();
 +        break;
 +    }
++#endif
 +
 +    sendQueuedTestMessagesIfNeeded(listenerType);
 +}
@@ -26079,6 +26082,7 @@ index 0000000000000000000000000000000000000000..cd6cc8ce6a5660a0a51dc9ba6fd22dc2
 +
 +    m_eventListenerFrames.remove(iterator);
 +
++#if !PLATFORM(HAIKU)
 +    if (!isTestEventListener(listenerType) || !hasTestEventListeners(listenerType))
 +        return;
 +
@@ -26099,6 +26103,7 @@ index 0000000000000000000000000000000000000000..cd6cc8ce6a5660a0a51dc9ba6fd22dc2
 +        ASSERT_NOT_REACHED();
 +        break;
 +    }
++#endif
 +}
 +
 +void WebExtensionContext::didStartProvisionalLoadForFrame(WebPageProxyIdentifier pageID, const WebExtensionFrameParameters& frameParameters, WallTime timestamp)
@@ -27914,7 +27919,7 @@ index 4ce987fbfe339d6b3d834eb6d2715ac65641357c..990d38e71e8b7a48a2f02da4dfc5cddb
  
  } // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm b/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm
-index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..b6fd274bd01d857f0091d108c48d4e8fedbd2a3a 100644
+index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..001b2102cce6746b810995a3c255a43cd261d824 100644
 --- a/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm
 +++ b/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm
 @@ -29,6 +29,7 @@
@@ -28167,10 +28172,10 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..b6fd274bd01d857f0091d108c48d4e8f
 -void WebExtensionContext::didStartProvisionalLoadForFrame(WebPageProxyIdentifier pageID, const WebExtensionFrameParameters& frameParameters, WallTime timestamp)
 -{
 -    ASSERT(frameParameters.url);
- 
+-
 -    RefPtr tab = getTab(pageID);
 -    auto& frameURL = *frameParameters.url;
- 
+-
 -    // Dispatch webNavigation events.
 -    if (tab && hasPermission(WebExtensionPermission::webNavigation(), tab.get()) && hasPermission(frameURL, tab.get())) {
 -        constexpr auto eventType = WebExtensionEventListenerType::WebNavigationOnBeforeNavigate;
@@ -28210,7 +28215,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..b6fd274bd01d857f0091d108c48d4e8f
 -        m_dynamicallyInjectedUserStyleSheets.removeAllMatching([&](auto& styleSheet) {
 -            if (styleSheet->page() != page.get())
 -                return false;
- 
+-
 -            userContentController->removeUserStyleSheet(styleSheet);
 -            return true;
 -        });
@@ -28231,10 +28236,10 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..b6fd274bd01d857f0091d108c48d4e8f
 -void WebExtensionContext::didFinishLoadForFrame(WebPageProxyIdentifier pageID, const WebExtensionFrameParameters& frameParameters, WallTime timestamp)
 -{
 -    ASSERT(frameParameters.url);
--
+ 
 -    RefPtr tab = getTab(pageID);
 -    auto& frameURL = *frameParameters.url;
--
+ 
 -    // Dispatch webNavigation events.
 -    if (tab && hasPermission(WebExtensionPermission::webNavigation(), tab.get()) && hasPermission(frameURL, tab.get())) {
 -        constexpr auto eventType = WebExtensionEventListenerType::WebNavigationOnCompleted;
@@ -28243,7 +28248,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..b6fd274bd01d857f0091d108c48d4e8f
 -        });
 -    }
 -}
--
+ 
 -void WebExtensionContext::didFailLoadForFrame(WebPageProxyIdentifier pageID, const WebExtensionFrameParameters& frameParameters, WallTime timestamp)
 -{
 -    ASSERT(frameParameters.url);
@@ -28274,7 +28279,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..b6fd274bd01d857f0091d108c48d4e8f
 -
 -    return tab.hasActiveUserGesture();
 -}
- 
+-
 -void WebExtensionContext::clearUserGesture(WebExtensionTab& tab)
 -{
 -    ASSERT(isLoaded());
@@ -28282,7 +28287,7 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..b6fd274bd01d857f0091d108c48d4e8f
 -        return;
 -
 -    RefPtr oldTemporaryPermissionMatchPattern = tab.temporaryPermissionMatchPattern();
--
+ 
 -    tab.setActiveUserGesture(false);
 -    tab.setTemporaryPermissionMatchPattern(nullptr);
 -
@@ -28331,32 +28336,32 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..b6fd274bd01d857f0091d108c48d4e8f
 -
 -        result.append({ page->webPageIDInProcess(destinationProcess), tab->identifier(), windowIdentifier });
 -    }
--
+ 
 -    return result;
 -}
--
+ 
 -void WebExtensionContext::addPopupPage(WebPageProxy& page, WebExtensionAction& action)
 -{
 -    m_popupPageActionMap.set(page, action);
--
+ 
 -    RefPtr tab = action.tab();
 -    RefPtr window = tab ? tab->window() : action.window();
 -
 -    auto tabIdentifier = tab ? std::optional(tab->identifier()) : std::nullopt;
 -    auto windowIdentifier = window ? std::optional(window->identifier()) : std::nullopt;
- 
+-
 -    Ref protectedPage = page;
 -    protectedPage->forEachWebContentProcess([&](auto& webProcess, auto pageID) {
 -        webProcess.send(Messages::WebExtensionContextProxy::AddPopupPageIdentifier(pageID, tabIdentifier, windowIdentifier), identifier());
 -    });
 -}
- 
+-
 -void WebExtensionContext::addExtensionTabPage(WebPageProxy& page, WebExtensionTab& tab)
 -{
 -    m_extensionPageTabMap.set(page, tab.identifier());
 -
 -    RefPtr window = tab.window();
- 
+-
 -    auto tabIdentifier = tab.identifier();
 -    auto windowIdentifier = window ? std::optional(window->identifier()) : std::nullopt;
 -
@@ -28476,6 +28481,27 @@ index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..b6fd274bd01d857f0091d108c48d4e8f
  void WebExtensionContext::reloadBackgroundContentForTesting()
  {
      ASSERT(isLoaded() && inTestingMode());
+@@ -3776,20 +3335,6 @@ void WebExtensionContext::sendQueuedTestMessagesIfNeeded(WebExtensionEventListen
+     }
+ }
+ 
+-bool WebExtensionContext::hasTestEventListeners(WebExtensionEventListenerType type)
+-{
+-    switch (type) {
+-    case WebExtensionEventListenerType::TestOnMessage:
+-        return m_testMessageListenersCount;
+-    case WebExtensionEventListenerType::TestOnTestStarted:
+-        return m_testStartedListenersCount;
+-    case WebExtensionEventListenerType::TestOnTestFinished:
+-        return m_testFinishedListenersCount;
+-
+-    default:
+-        return false;
+-    }
+-}
+ 
+ } // namespace WebKit
+ 
 diff --git a/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionDynamicScriptsCocoa.mm b/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionDynamicScriptsCocoa.mm
 index 713a395f6fda1c50c694eef6181a23349c9b5fb2..d6419587d5402f01e573eb5f7335695ab2f79c45 100644
 --- a/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionDynamicScriptsCocoa.mm
@@ -28632,10 +28658,10 @@ index f14860d8e436a90cb7616ae96bb9f05d6517bc50..82194307c95982f947c180baa35828f3
      explicit WebExtension(const JSON::Value& manifest, Resources&& = { });
  
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
-index a156078a37b33ea2704f6a9ba747a0c881bb0009..3e41c55fb081d37e103d925ed358711a339f4535 100644
+index a156078a37b33ea2704f6a9ba747a0c881bb0009..51bf107142461e1c1ca1388b537b87b6ac284972 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
-@@ -34,11 +34,17 @@
+@@ -34,11 +34,18 @@
  #include "InjectUserScriptImmediately.h"
  #include "Logging.h"
  #include "WebExtensionConstants.h"
@@ -28649,12 +28675,35 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..3e41c55fb081d37e103d925ed358711a
  #include "WebPageProxy.h"
 +#if PLATFORM(HAIKU)
 +#include "WebViewPrivate.h"
++#include "haiku/WebExtensionTestMessageQueueHaiku.h"
 +#endif
  #include <WebCore/LocalizedStrings.h>
  #include <WebCore/TextResourceDecoder.h>
  #include <wtf/HashMap.h>
-@@ -51,6 +57,235 @@ namespace WebKit {
+@@ -49,8 +56,257 @@ static constexpr size_t maximumCachedPermissionResults = 256;
  
+ namespace WebKit {
+ 
++bool WebExtensionContext::hasTestEventListeners(WebExtensionEventListenerType type)
++{
++#if PLATFORM(HAIKU)
++    return hasWebExtensionTestEventListenersHaiku(type, m_eventListenerFrames);
++#else
++    switch (type) {
++    case WebExtensionEventListenerType::TestOnMessage:
++        return m_testMessageListenersCount;
++    case WebExtensionEventListenerType::TestOnTestStarted:
++        return m_testStartedListenersCount;
++    case WebExtensionEventListenerType::TestOnTestFinished:
++        return m_testFinishedListenersCount;
++
++    default:
++        return false;
++    }
++#endif
++}
++
++
  using namespace WebCore;
  
 +bool WebExtensionContext::hasActiveUserGesture(WebExtensionTab& tab) const
@@ -28889,7 +28938,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..3e41c55fb081d37e103d925ed358711a
  int WebExtensionContext::toAPIError(WebExtensionContext::Error error)
  {
      switch (error) {
-@@ -1660,7 +1895,13 @@ WebExtensionContext::WebExtensionContext()
+@@ -1660,7 +1916,13 @@ WebExtensionContext::WebExtensionContext()
  }
  
  #if !USE(GLIB)
@@ -28904,7 +28953,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..3e41c55fb081d37e103d925ed358711a
  #endif
  
  WebExtensionContextIdentifier WebExtensionContext::privilegedIdentifier() const
-@@ -1798,9 +2039,17 @@ void WebExtensionContext::loadBackgroundContent(CompletionHandler<void(RefPtr<AP
+@@ -1798,9 +2060,17 @@ void WebExtensionContext::loadBackgroundContent(CompletionHandler<void(RefPtr<AP
          return;
      }
  
@@ -28925,7 +28974,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..3e41c55fb081d37e103d925ed358711a
      });
  }
  
-@@ -2003,6 +2252,128 @@ Ref<WebExtensionRegisteredScriptsSQLiteStore> WebExtensionContext::registeredCon
+@@ -2003,6 +2273,128 @@ Ref<WebExtensionRegisteredScriptsSQLiteStore> WebExtensionContext::registeredCon
      return *m_registeredContentScriptsStorage;
  }
  
@@ -29055,7 +29104,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..3e41c55fb081d37e103d925ed358711a
  
  #endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
-index 05a8676082d56f2c47c9af6120f5120b09f982be..b8ee9316aa4dc8ed7ce45385fc595349ff57c2fc 100644
+index 05a8676082d56f2c47c9af6120f5120b09f982be..b601b648ac6bf34e26c148c48e9d5d4d3e4469ed 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 @@ -52,6 +52,7 @@
@@ -29147,7 +29196,18 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..b8ee9316aa4dc8ed7ce45385fc595349
      using PortQueuedMessageMap = HashMap<PortWorldPair, Vector<PortQueuedMessage>>;
      using NativePortMap = HashMap<WebExtensionPortChannelIdentifier, Ref<WebExtensionMessagePort>>;
  
-@@ -656,6 +675,7 @@ public:
+@@ -630,6 +649,10 @@ public:
+     void sendTestStarted(id argument);
+     void sendTestFinished(id argument);
+     void reloadBackgroundContentForTesting();
++#elif PLATFORM(HAIKU)
++    void sendTestMessage(const String& message, Ref<JSON::Value> argument);
++    void sendTestStarted(Ref<JSON::Value> argument);
++    void sendTestFinished(Ref<JSON::Value> argument);
+ #endif
+ 
+     URL backgroundContentURL();
+@@ -656,6 +679,7 @@ public:
  #endif
  
  #if PLATFORM(COCOA)
@@ -29155,7 +29215,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..b8ee9316aa4dc8ed7ce45385fc595349
      void sendNativeMessage(const String& applicationID, id message, CompletionHandler<void(std::expected<RetainPtr<id>, WebExtensionError>&&)>&&);
  #endif
  
-@@ -749,11 +769,18 @@ private:
+@@ -749,11 +773,18 @@ private:
  #if PLATFORM(COCOA)
      NSDictionary *currentState() const;
      NSDictionary *readStateFromStorage();
@@ -29175,7 +29235,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..b8ee9316aa4dc8ed7ce45385fc595349
  
      void loadStorageAccessLevelsFromStorage();
      void saveStorageAccessLevelsToStorage();
-@@ -796,6 +823,7 @@ private:
+@@ -796,6 +827,7 @@ private:
      void saveBackgroundPageListenersToStorage();
  
      void performTasksAfterBackgroundContentLoads();
@@ -29183,7 +29243,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..b8ee9316aa4dc8ed7ce45385fc595349
  
  #ifdef NDEBUG
      // This is method is a no-op in release builds since it has a performance impact with little benefit to release builds.
-@@ -1034,6 +1062,7 @@ private:
+@@ -1034,6 +1066,7 @@ private:
      void scriptingGetRegisteredScripts(const Vector<String>&, CompletionHandler<void(std::expected<Vector<WebExtensionRegisteredScriptParameters>, WebExtensionError>&&)>&&);
      void scriptingUnregisterContentScripts(const Vector<String>&, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
      bool createInjectedContentForScripts(const Vector<WebExtensionRegisteredScriptParameters>&, WebExtensionDynamicScripts::WebExtensionRegisteredScript::FirstTimeRegistration, DynamicInjectedContentsMap&, NSString *callingAPIName, NSString **errorMessage);
@@ -29191,7 +29251,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..b8ee9316aa4dc8ed7ce45385fc595349
  
      // Sidebar APIs
  #if ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
-@@ -1129,6 +1158,8 @@ private:
+@@ -1129,6 +1162,8 @@ private:
      RetainPtr<NSMutableDictionary> m_state;
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<GKeyFile> m_state;
@@ -29200,7 +29260,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..b8ee9316aa4dc8ed7ce45385fc595349
  #endif
      Vector<Ref<API::Error>> m_errors;
  
-@@ -1194,6 +1225,9 @@ private:
+@@ -1194,6 +1229,9 @@ private:
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<WebKitWebView> m_backgroundWebView;
      GWeakPtr<WebKitWebExtensionContext> m_delegate;
@@ -29210,7 +29270,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..b8ee9316aa4dc8ed7ce45385fc595349
  #endif
      Variant<std::monostate, Ref<ProcessThrottlerActivity>, Ref<ProcessActivityGroup>> m_backgroundWebViewActivity;
      RefPtr<API::Error> m_backgroundContentLoadError;
-@@ -1215,6 +1249,7 @@ private:
+@@ -1215,6 +1253,7 @@ private:
      HashMap<Ref<WebExtensionMatchPattern>, UserScriptVector> m_injectedScriptsPerPatternMap;
      HashMap<Ref<WebExtensionMatchPattern>, UserStyleSheetVector> m_injectedStyleSheetsPerPatternMap;
  
@@ -29218,7 +29278,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..b8ee9316aa4dc8ed7ce45385fc595349
      HashMap<String, Ref<WebExtensionDynamicScripts::WebExtensionRegisteredScript>> m_registeredScriptsMap;
      RefPtr<WebExtensionRegisteredScriptsSQLiteStore> m_registeredContentScriptsStorage;
  
-@@ -1234,7 +1269,7 @@ private:
+@@ -1234,7 +1273,7 @@ private:
  #endif // ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
  
      PortCountedSet m_ports;
@@ -29226,6 +29286,32 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..b8ee9316aa4dc8ed7ce45385fc595349
 +    WebExtensionPagePortMap m_pagePortMap;
      PortQueuedMessageMap m_portQueuedMessages;
      NativePortMap m_nativePortMap;
+ 
+@@ -1274,12 +1313,16 @@ private:
+         String message;
+ #if PLATFORM(COCOA)
+         RetainPtr<id> argument;
++#elif PLATFORM(HAIKU)
++        Ref<JSON::Value> argument;
+ #endif
+     };
+ 
++#if !PLATFORM(HAIKU)
+     size_t m_testMessageListenersCount { 0 };
+     size_t m_testStartedListenersCount { 0 };
+     size_t m_testFinishedListenersCount { 0 };
++#endif
+ 
+     Deque<TestMessage> m_testMessageQueue;
+     Deque<TestMessage> m_testStartedQueue;
+@@ -1289,6 +1332,8 @@ private:
+     void sendQueuedTestMessagesIfNeeded(WebExtensionEventListenerType);
+ #if PLATFORM(COCOA)
+     void addTestMessageToQueue(const String& message, id argument, WebExtensionEventListenerType);
++#elif PLATFORM(HAIKU)
++    void addTestMessageToQueue(const String& message, Ref<JSON::Value> argument, WebExtensionEventListenerType);
+ #endif
+ };
  
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in
 index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..6170ebce4aacfcfd399c77298f0e1e1b6a6d77d1 100644
@@ -31275,6 +31361,168 @@ index 0000000000000000000000000000000000000000..602baf54bf4eb5b65560a68e8f6833f2
 +} // namespace WebKit
 +
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextTestHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextTestHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..f0d39259efea20c5b48abdb23588ef7c5ecd0379
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextTestHaiku.cpp
+@@ -0,0 +1,156 @@
++/*
++ * Copyright (C) 2022-2025 Apple Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "WebExtensionContext.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++
++#include "WebExtensionContextProxyMessages.h"
++#include "WebExtensionTestMessageQueueHaiku.h"
++
++namespace WebKit {
++
++void WebExtensionContext::sendTestMessage(const String& message, Ref<JSON::Value> argument)
++{
++    ASSERT(isLoaded() && inTestingMode());
++    if (!isLoaded() || !inTestingMode())
++        return;
++
++    constexpr auto eventType = WebExtensionEventListenerType::TestOnMessage;
++
++    if (!hasTestEventListeners(eventType)) {
++        addTestMessageToQueue(message, WTF::move(argument), eventType);
++        return;
++    }
++
++    String argumentJSON = argument->toJSONString();
++
++    sendToProcesses(processes(eventType, WebExtensionContentWorldType::WebPage), Messages::WebExtensionContextProxy::DispatchTestMessageEvent(message, argumentJSON, WebExtensionContentWorldType::WebPage));
++
++    sendToContentScriptProcessesForEvent(eventType, Messages::WebExtensionContextProxy::DispatchTestMessageEvent(message, argumentJSON, WebExtensionContentWorldType::ContentScript));
++
++    wakeUpBackgroundContentIfNecessaryToFireEvents({ eventType }, [=, this, protectedThis = Ref { *this }] {
++        sendToProcessesForEvent(eventType, Messages::WebExtensionContextProxy::DispatchTestMessageEvent(message, argumentJSON, WebExtensionContentWorldType::Main));
++    });
++}
++
++void WebExtensionContext::sendTestStarted(Ref<JSON::Value> argument)
++{
++    ASSERT(isLoaded() && inTestingMode());
++    if (!isLoaded() || !inTestingMode())
++        return;
++
++    constexpr auto type = WebExtensionEventListenerType::TestOnTestStarted;
++
++    if (!hasTestEventListeners(type)) {
++        addTestMessageToQueue(nullString(), WTF::move(argument), type);
++        return;
++    }
++
++    String argumentJSON = argument->toJSONString();
++
++    sendToProcesses(processes(type, WebExtensionContentWorldType::WebPage), Messages::WebExtensionContextProxy::DispatchTestStartedEvent(argumentJSON, WebExtensionContentWorldType::WebPage));
++
++    sendToContentScriptProcessesForEvent(type, Messages::WebExtensionContextProxy::DispatchTestStartedEvent(argumentJSON, WebExtensionContentWorldType::ContentScript));
++
++    wakeUpBackgroundContentIfNecessaryToFireEvents({ type }, [=, this, protectedThis = Ref { *this }] {
++        sendToProcessesForEvent(type, Messages::WebExtensionContextProxy::DispatchTestStartedEvent(argumentJSON, WebExtensionContentWorldType::Main));
++    });
++}
++
++void WebExtensionContext::sendTestFinished(Ref<JSON::Value> argument)
++{
++    ASSERT(isLoaded() && inTestingMode());
++    if (!isLoaded() || !inTestingMode())
++        return;
++
++    constexpr auto type = WebExtensionEventListenerType::TestOnTestFinished;
++
++    if (!hasTestEventListeners(type)) {
++        addTestMessageToQueue(nullString(), WTF::move(argument), type);
++        return;
++    }
++
++    String argumentJSON = argument->toJSONString();
++
++    sendToProcesses(processes(type, WebExtensionContentWorldType::WebPage), Messages::WebExtensionContextProxy::DispatchTestFinishedEvent(argumentJSON, WebExtensionContentWorldType::WebPage));
++
++    sendToContentScriptProcessesForEvent(type, Messages::WebExtensionContextProxy::DispatchTestFinishedEvent(argumentJSON, WebExtensionContentWorldType::ContentScript));
++
++    wakeUpBackgroundContentIfNecessaryToFireEvents({ type }, [=, this, protectedThis = Ref { *this }] {
++        sendToProcessesForEvent(type, Messages::WebExtensionContextProxy::DispatchTestFinishedEvent(argumentJSON, WebExtensionContentWorldType::Main));
++    });
++}
++
++void WebExtensionContext::addTestMessageToQueue(const String& message, Ref<JSON::Value> argument, WebExtensionEventListenerType type)
++{
++    switch (type) {
++    case WebExtensionEventListenerType::TestOnMessage:
++        m_testMessageQueue.append({ message, WTF::move(argument) });
++        break;
++
++    case WebExtensionEventListenerType::TestOnTestStarted:
++        m_testStartedQueue.append({ message, WTF::move(argument) });
++        break;
++
++    case WebExtensionEventListenerType::TestOnTestFinished:
++        m_testFinishedQueue.append({ message, WTF::move(argument) });
++        break;
++
++    default:
++        ASSERT_NOT_REACHED();
++        return;
++    }
++}
++
++void WebExtensionContext::sendQueuedTestMessagesIfNeeded(WebExtensionEventListenerType type)
++{
++    auto canSend = [&] { return isLoaded() && inTestingMode() && hasTestEventListeners(type); };
++    switch (type) {
++    case WebExtensionEventListenerType::TestOnMessage:
++        drainWebExtensionTestMessagesHaiku(m_testMessageQueue, canSend, [&](auto message) {
++            sendTestMessage(message.message, WTF::move(message.argument));
++        });
++        break;
++    case WebExtensionEventListenerType::TestOnTestStarted:
++        drainWebExtensionTestMessagesHaiku(m_testStartedQueue, canSend, [&](auto message) {
++            sendTestStarted(WTF::move(message.argument));
++        });
++        break;
++    case WebExtensionEventListenerType::TestOnTestFinished:
++        drainWebExtensionTestMessagesHaiku(m_testFinishedQueue, canSend, [&](auto message) {
++            sendTestFinished(WTF::move(message.argument));
++        });
++        break;
++    default:
++        ASSERT_NOT_REACHED();
++        return;
++    }
++}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionControllerAPITestHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionControllerAPITestHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..0bf56cd8732dcb9f4097f3072fbbf32a2a0d98e7
@@ -31892,6 +32140,78 @@ index 0000000000000000000000000000000000000000..33513664e83e2f9b8cae80550e474ac2
 +
 +// Saved booleans override known manifest defaults; other saved values are ignored.
 +HashSet<String> enabledWebExtensionRulesetsHaiku(const HashMap<String, bool>& manifestDefaults, const JSON::Value* savedState);
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionTestMessageQueueHaiku.h b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionTestMessageQueueHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..41c42fb6848b3ce5783ff3102c0f6afcedd249a0
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionTestMessageQueueHaiku.h
+@@ -0,0 +1,66 @@
++/*
++ * Copyright (C) 2022-2025 Apple Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#pragma once
++
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++
++#include "WebExtensionEventListenerType.h"
++#include <wtf/Deque.h>
++
++namespace WebKit {
++
++// Query the actual weak frame registry. Separate listener totals can remain
++// positive after multiple registrations are removed or a frame disappears.
++template<typename EventListenerMap>
++bool hasWebExtensionTestEventListenersHaiku(WebExtensionEventListenerType type, const EventListenerMap& listeners)
++{
++    switch (type) {
++    case WebExtensionEventListenerType::TestOnMessage:
++    case WebExtensionEventListenerType::TestOnTestStarted:
++    case WebExtensionEventListenerType::TestOnTestFinished:
++        break;
++    default:
++        return false;
++    }
++    for (auto& entry : listeners) {
++        if (entry.key.first == type && !entry.value.isEmptyIgnoringNullReferences())
++            return true;
++    }
++    return false;
++}
++
++// Keep queued messages when delivery is unavailable. Limit each drain to its
++// initial queue size so reentrant enqueues cannot prolong it indefinitely.
++template<typename Message, typename CanSend, typename Send>
++void drainWebExtensionTestMessagesHaiku(Deque<Message>& queue, CanSend&& canSend, Send&& send)
++{
++    for (size_t remaining = queue.size(); remaining && !queue.isEmpty() && canSend(); --remaining)
++        send(queue.takeFirst());
++}
 +
 +} // namespace WebKit
 +

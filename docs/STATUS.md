@@ -1433,3 +1433,21 @@ features and regenerated IPC. No test-message IPC or extension test was run.
 See [test-reporting evidence](webextensions-native-test-reporting.md).
 
 Patch: `8ba00bb96388053d59053815dba4bea5c8d7e2ee28fb67c553a8a2c1949e3c57`.
+
+2026-09-14 sixth full extension link result: the frozen `8ba00bb9...` build
+completes compilation and fails at the WebKit shared-library link with 41
+distinct missing symbols, down from 52. All eleven recent context-utility,
+saved-rule-state, website-data cleanup and test-reporting symbols are resolved,
+with no new missing symbols. Record:
+`.vm/modern-extensions-context-cleanup-build-result.json`.
+No feature-enabled WebKit link or extension runtime passed.
+
+2026-09-14 native test delivery: contexts now retain JSON test arguments while
+queued, then route them to page/content-script listeners and wake background
+content for main-world delivery. Haiku checks the live weak listener registry
+instead of stale duplicate counters. Drains stop when unavailable and have a
+fixed message budget per call. All 70 helper checks and three final integration
+compiles pass. No extension context, actual listener, background wake-up or IPC
+was run. See [test-delivery evidence](webextensions-native-test-delivery.md).
+
+Patch: `5732f4073311cf11bed8a00cb90e5aa3d87ae0bea6c0199dbf15bdf3dfb9464e`.
