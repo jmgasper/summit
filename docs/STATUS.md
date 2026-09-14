@@ -1632,3 +1632,10 @@ error/disconnect, IPC or executable-host runtime was executed. The native host
 SDK and runtime connection path remain unfinished. See [message-port evidence
 and limits](webextensions-native-message-ports.md).
 Patch: `425e5c88a7cb5b221858163374430798efa40a166384bcde3f085be904e3df50`.
+
+2026-09-15 (local) sixteenth full extension link result: the frozen `425e5c88...`
+build compiles native action state and message-port handling, regenerates IPC
+and reaches the WebKit library link. The two action symbols and message-port
+disconnect symbol resolve, reducing missing symbols from 21 to 18, with none
+newly introduced. Evidence: `.vm/modern-extensions-native-port-build-result.json`.
+The feature-enabled library has not linked and no extension has run.

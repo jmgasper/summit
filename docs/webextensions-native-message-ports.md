@@ -82,3 +82,8 @@ link frozen JavaScriptCore/WTF; they do not link WebCore or WebKit.
 
 Promoted patch: `425e5c88a7cb5b221858163374430798efa40a166384bcde3f085be904e3df50`.
 Probe baseline: `dc4675d8cdc40b87b0e5134c6d09fb58c5f2dfc2880d968d3bc98f8dd2282475`.
+
+The combined full build of this patch and the preceding action work reached the
+WebKit shared-library link. `reportDisconnection` and both action symbols resolved.
+The link failed with 18 remaining symbols, down from 21, and no new missing
+symbols. Evidence: `.vm/modern-extensions-native-port-build-result.json`.
