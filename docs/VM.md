@@ -114,3 +114,24 @@ packages in `engine/libzip.lock.json`, verifies package and extracted-file
 hashes, and supplies a private pkg-config file. No system package is replaced.
 A successful configuration or individual compile is not a working extension
 runtime; consult `docs/webextensions-native-integration.md` for current gates.
+
+Repeated engine source uploads compare files up to 8 MiB before creating a
+temporary inode, and skip chmod when permissions already match. Identical
+sources retain their inode and timestamps; changed files receive a current
+mtime so Ninja cannot reuse stale generated outputs. Larger files retain the
+streaming comparison/replacement path. Five synchronization checks passed on
+the host and in Haiku (Python 3.10), covering both paths, mode-only changes,
+symlink replacement, removal boundaries and manifest preservation on an invalid
+archive path: `python3 -m unittest discover -s tests -p test_sync_webkit_sources.py`.
+
+During the September 14 adapter upload, the previous uploader stopped making
+progress and new writes on the boot volume waited; the separate build volume
+continued working. Its exact Python image was verified before diagnostic
+termination. Boot writes resumed afterward. The report contains process/image
+information, without a stopped-thread stack; the underlying cause is not
+established. This was a failed sync, and its manifest remained on the prior
+patch. The optimized retry exited normally with 76,041 identical files and
+published patch `fd009b76e291c55a5ba28f2400c9071c4e620667ccd46b1fadcb860c19f8c192`.
+Evidence: `.vm/extension-native-source-sync-stall.report`,
+`.vm/extension-native-source-sync-stall-debugger.log`, and
+`.vm/extension-native-adapters-baseline-source-sync-retry.log`.

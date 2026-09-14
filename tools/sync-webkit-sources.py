@@ -5,9 +5,12 @@ import json
 import os
 import pathlib
 import re
+import stat
 import sys
 import tarfile
 import tempfile
+
+COMPARE_BUFFER_LIMIT = 8 * 1024 * 1024
 
 
 def relative_path(name):
@@ -57,16 +60,33 @@ def synchronize(destination, patch, stream):
                 continue
             if not member.isfile():
                 raise ValueError('Unsupported engine archive member: ' + member.name)
+            # Most repeated uploads are unchanged. Avoid creating, writing and
+            # unlinking a temporary BFS inode (and changing permissions) for
+            # every one of WebKit's tens of thousands of small source files.
+            data = None
+            if member.size <= COMPARE_BUFFER_LIMIT:
+                with archive.extractfile(member) as source:
+                    data = source.read()
+                if not target.is_symlink() and target.is_file() and target.stat().st_size == len(data):
+                    if target.read_bytes() == data:
+                        unchanged += 1
+                        if stat.S_IMODE(target.stat().st_mode) != member.mode & 0o777:
+                            target.chmod(member.mode & 0o777)
+                        continue
             with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as output:
                 temporary = pathlib.Path(output.name)
                 try:
-                    with archive.extractfile(member) as source:
-                        while chunk := source.read(1024 * 1024):
-                            output.write(chunk)
+                    if data is not None:
+                        output.write(data)
+                    else:
+                        with archive.extractfile(member) as source:
+                            while chunk := source.read(1024 * 1024):
+                                output.write(chunk)
                     output.close()
                     if identical(temporary, target):
                         unchanged += 1
-                        target.chmod(member.mode & 0o777)
+                        if stat.S_IMODE(target.stat().st_mode) != member.mode & 0o777:
+                            target.chmod(member.mode & 0o777)
                     else:
                         temporary.chmod(member.mode & 0o777)
                         # A changed source must be newer than generated files
