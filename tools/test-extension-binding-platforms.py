@@ -105,6 +105,37 @@ def main(generated):
                     checks += 1
                     if not re.search(r'\b' + name + r'\b', result.stdout):
                         raise RuntimeError(f'Missing {interface}.{name}: Haiku={haiku}, source={suffix}')
+    if (generated / 'JSWebExtensionAPITabs.cpp').exists():
+        common = ('query', 'get', 'getCurrent', 'tabIdentifierNone', 'onActivated', 'onAttached', 'onCreated',
+                  'onDetached', 'onHighlighted', 'onMoved', 'onRemoved', 'onReplaced', 'onUpdated')
+        cocoa_only = ('create', 'getSelected', 'duplicate', 'update', 'move', 'remove', 'reload', 'goBack',
+                      'goForward', 'getZoom', 'setZoom', 'detectLanguage', 'toggleReaderMode', 'captureVisibleTab',
+                      'executeScript', 'insertCSS', 'removeCSS', 'sendMessage', 'connect')
+        for haiku in (0, 1):
+            for suffix in ('h', 'cpp'):
+                source = generated / ('JSWebExtensionAPITabs.' + suffix)
+                if digest(source) != generation['files'][source.name]:
+                    raise RuntimeError('Generated tabs binding changed')
+                stripped = re.sub(r'^\s*#(?:include|import|pragma)\b[^\n]*', '', source.read_text(), flags=re.M)
+                prefix = f'#define ENABLE(x) 1\n#define PLATFORM(x) PLATFORM_##x\n#define PLATFORM_HAIKU {haiku}\n#define PLATFORM_COCOA {1-haiku}\n'
+                result = subprocess.run([compiler, '-E', '-P', '-x', 'c++', '-'], input=prefix + stripped,
+                                        text=True, capture_output=True, check=True)
+                for name in common + cocoa_only:
+                    checks += 1
+                    pattern = r'\bstatic JSValueRef ' + name + r'\(' if suffix == 'h' else r'\bJSWebExtensionAPITabs::' + name + r'\('
+                    present = bool(re.search(pattern, result.stdout))
+                    if present != (name in common or not haiku):
+                        raise RuntimeError(f'Incorrect tabs.{name} exposure: Haiku={haiku}, source={suffix}')
+                namespace = generated / ('JSWebExtensionAPINamespace.' + suffix)
+                if digest(namespace) != generation['files'][namespace.name]:
+                    raise RuntimeError('Generated namespace binding changed')
+                stripped = re.sub(r'^\s*#(?:include|import|pragma)\b[^\n]*', '', namespace.read_text(), flags=re.M)
+                result = subprocess.run([compiler, '-E', '-P', '-x', 'c++', '-'], input=prefix + stripped,
+                                        text=True, capture_output=True, check=True)
+                pattern = r'\bstatic JSValueRef tabs\(' if suffix == 'h' else r'\bJSWebExtensionAPINamespace::tabs\('
+                checks += 1
+                if not re.search(pattern, result.stdout):
+                    raise RuntimeError(f'Missing tabs namespace: Haiku={haiku}, source={suffix}')
     report = {'scope': 'actual Perl generation and C++ preprocessing; no Cocoa or Haiku engine compile/runtime',
               'generation': str(generated), 'fixture_sha256': digest(idl), 'command': command,
               'checks': checks, 'cases': records, 'passed': True}

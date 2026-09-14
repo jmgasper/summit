@@ -1776,3 +1776,21 @@ there are no new missing symbols or compiler errors. Both native source
 manifests match the patch, with the feature build enabled and the separate
 baseline disabled. Full extension support remains unfinished, and no extension
 has run. Evidence: `.vm/modern-extensions-permissions-build-result.json`.
+
+2026-09-15 (local) native tab reads/events: implemented `tabs.get`,
+`tabs.getCurrent`, `tabs.query`, and the nine upstream lifecycle event
+dispatchers. Reads use the native registry, private-data checks and separate
+metadata permission checks. The current-tab method excludes background and
+unassociated extension views. Events reuse the existing JavaScriptCore tab
+converter and protect arguments separately for each listener.
+
+**136 native query/converter checks pass**, with no crash-log events and
+unchanged input/library hashes. Nine native integration units compile, and
+252 generated-binding checks pass. Seventeen of 37 interfaces now generate
+C++ bindings. These checks do not execute tab API IPC or browser events.
+Native mutation, navigation, capture, script and messaging methods remain
+unported. See [the native tabs API scope](webextensions-native-tabs-api.md).
+
+Patch `f0952d6df18433d24eff8f132fc8bc1cd5f66c860936e00ff74aa3c644515db6`
+is promoted; its full extension-enabled build is pending. Full extension
+support remains unfinished, and no extension has run.
