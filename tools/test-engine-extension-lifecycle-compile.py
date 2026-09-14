@@ -42,7 +42,9 @@ NATIVE_PAGE_UNITS = {'BrowserTabRegistryHaiku.cpp': 'UIProcess/haiku/BrowserTabR
                      'WebKitContext.cpp': 'UIProcess/API/haiku/WebKitContext.cpp',
                      'WebPageProxy.cpp': 'UIProcess/WebPageProxy.cpp',
                      'WebView.cpp': 'UIProcess/haiku/WebView.cpp'}
-UI_API_UNITS = {'WebExtensionPackageSnapshotHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionPackageSnapshotHaiku.cpp',
+WEB_CORE_UNITS = {'URLFilterParser.cpp': 'contentextensions/URLFilterParser.cpp'}
+UI_API_UNITS = {'WebExtensionDeclarativeNetRequestURLFilter.cpp': 'UIProcess/Extensions/haiku/WebExtensionDeclarativeNetRequestURLFilter.cpp',
+                'WebExtensionPackageSnapshotHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionPackageSnapshotHaiku.cpp',
                 'WebExtensionHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionHaiku.cpp',
                 'WebExtension.cpp': 'UIProcess/Extensions/WebExtension.cpp',
                 'WebExtensionMessagePortHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionMessagePortHaiku.cpp',
@@ -152,7 +154,7 @@ def native(units=None, engine_root=DEFAULT_ENGINE, regenerate=False):
     probe = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(probe)
     probe.OUTPUT = ROOT / 'sources'
-    probe.SOURCES = UNITS + EXTRA_UNITS + GENERATED_UNITS + BINDING_UNITS + tuple(PAGE_UNITS) + tuple(NATIVE_PAGE_UNITS) + tuple(UI_API_UNITS)
+    probe.SOURCES = UNITS + EXTRA_UNITS + GENERATED_UNITS + BINDING_UNITS + tuple(PAGE_UNITS) + tuple(NATIVE_PAGE_UNITS) + tuple(UI_API_UNITS) + tuple(WEB_CORE_UNITS)
     probe.ENGINE = pathlib.Path(engine_root)
     probe.BUILD = probe.ENGINE / 'WebKitBuild/Modern'
     manifest = json.loads((probe.OUTPUT / 'source-manifest.json').read_text())
@@ -205,6 +207,15 @@ def host(overlay=None, units=None, engine_root=DEFAULT_ENGINE, regenerate=False,
             if name in files:
                 raise RuntimeError('Ambiguous staged header: ' + name)
             files[name] = (path, source(path), source(path).read_bytes())
+    if any(name in WEB_CORE_UNITS for name in units or ()):
+        # Preserve quoted sibling headers when flattening a WebCore source unit.
+        # Also stage the namespaced form so those headers cannot fall back to a
+        # different native copy for their own <WebCore/...> includes.
+        for path in sorted((engine / 'Source/WebCore/contentextensions').glob('*.h')):
+            for name in (path.name, 'WebCore/' + path.name):
+                if name in files:
+                    raise RuntimeError('Ambiguous staged WebCore header: ' + name)
+                files[name] = (path, source(path), source(path).read_bytes())
     for name in units or UNITS:
         if name in BINDING_UNITS:
             if not generated_bindings:
@@ -216,7 +227,7 @@ def host(overlay=None, units=None, engine_root=DEFAULT_ENGINE, regenerate=False,
             continue
         directory = 'WebProcess' if name.endswith('Proxy.cpp') or name.startswith(('API/', 'Bindings/')) else 'UIProcess'
         relative = PAGE_UNITS.get(name, NATIVE_PAGE_UNITS.get(name, UI_API_UNITS.get(name, directory + '/Extensions/' + name)))
-        path = engine / 'Source/WebKit' / relative
+        path = engine / 'Source/WebCore' / WEB_CORE_UNITS[name] if name in WEB_CORE_UNITS else engine / 'Source/WebKit' / relative
         files[name] = (path, source(path), source(path).read_bytes())
     if any(name in PAGE_UNITS for name in units or ()) or (overlay and
             (pathlib.Path(overlay).resolve() / 'Source/WebKit/WebProcess/WebPage/WebPage.h').is_file()):
@@ -316,7 +327,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--native', action='store_true')
     parser.add_argument('--overlay', help='Candidate files under Source/; no production source changes')
-    parser.add_argument('--unit', choices=UNITS + EXTRA_UNITS + GENERATED_UNITS + BINDING_UNITS + tuple(PAGE_UNITS) + tuple(NATIVE_PAGE_UNITS) + tuple(UI_API_UNITS), action='append', help='Compile only this unit; repeatable')
+    parser.add_argument('--unit', choices=UNITS + EXTRA_UNITS + GENERATED_UNITS + BINDING_UNITS + tuple(PAGE_UNITS) + tuple(NATIVE_PAGE_UNITS) + tuple(UI_API_UNITS) + tuple(WEB_CORE_UNITS), action='append', help='Compile only this unit; repeatable')
     parser.add_argument('--engine-root', default=DEFAULT_ENGINE, help='Configured native engine source tree')
     parser.add_argument('--regenerate-ipc', action='store_true', help='Generate matching IPC headers in the isolated stage')
     parser.add_argument('--generated-bindings', help='Verified output from generate-extension-bindings-candidate.py')

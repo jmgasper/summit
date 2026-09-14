@@ -1658,3 +1658,15 @@ selection now resolves, reducing missing symbols from 18 to 17, with none newly
 introduced. The remaining symbols are the DNR loader and 16 process-side event
 handlers. Evidence: `.vm/modern-extensions-package-snapshot-build-result.json`.
 The feature-enabled library has not linked and no extension has run.
+
+2026-09-15 (local) native DNR URL-filter foundation: C++ translation now handles
+URL-pattern anchors, wildcards, end-of-URL separators, case sensitivity and
+credential-safe authority matching. Unsupported raw-regex escapes return errors.
+A shared WebCore parser fix preserves anchored nullable expressions instead of
+making their actions unconditional. **120 native checks and 6,608 independent
+matching comparisons pass; two integration units compile.** Tests use the actual
+content-filter parser, NFA/DFA compiler and bytecode interpreter. This helper is
+not yet connected to ruleset loading or browser enforcement; the DNR loader and
+16 process-side event handlers still need implementation. See [DNR URL-filter
+evidence and limits](webextensions-native-dnr-url-filters.md).
+Patch: `4777dc25ab9f24d84579c57fb0a19a258a4c6e536725eb70d9f8fa1f899fb90e`.

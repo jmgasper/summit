@@ -1581,6 +1581,30 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..134f21a4af90dce7fdd16d9ef6c84478
  )
  
  set(CSS_VALUE_PLATFORM_DEFINES "HAVE_OS_DARK_MODE_SUPPORT=1")
+diff --git a/Source/WebCore/contentextensions/URLFilterParser.cpp b/Source/WebCore/contentextensions/URLFilterParser.cpp
+index 19bcf443fcb0f6c51227361c38ba4255bc255806..9b60ff67bd4ab3a6f3574dfe712ea29f42e77466 100644
+--- a/Source/WebCore/contentextensions/URLFilterParser.cpp
++++ b/Source/WebCore/contentextensions/URLFilterParser.cpp
+@@ -63,6 +63,19 @@ public:
+                 break;
+             }
+         }
++        // An empty match at the start does not imply matching every URL when
++        // the pattern must also reach the end. For example, ^a*$ accepts only
++        // strings of a's, and ^$ accepts only the empty string. Preserve those
++        // terms in the automaton instead of turning the action unconditional.
++        if (matchesEverything && m_hasBeginningOfLineAssertion && !m_sunkTerms.isEmpty() && m_sunkTerms.last().isEndOfLineAssertion()) {
++            matchesEverything = false;
++            for (const auto& term : m_sunkTerms) {
++                if (term.isKnownToMatchAnyString()) {
++                    matchesEverything = true;
++                    break;
++                }
++            }
++        }
+         if (matchesEverything) {
+             fail(URLFilterParser::MatchesEverything);
+             return;
 diff --git a/Source/WebCore/crypto/openssl/CryptoAlgorithmHKDFOpenSSL.cpp b/Source/WebCore/crypto/openssl/CryptoAlgorithmHKDFOpenSSL.cpp
 index cef20ab58216d6164b8111aecf3540683667aaad..ad64d8014c99a6037be2fcb10d19748bafd6475e 100644
 --- a/Source/WebCore/crypto/openssl/CryptoAlgorithmHKDFOpenSSL.cpp
@@ -22928,10 +22952,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..6c25e2dbca5cd5689a80b4d07d63c910db66c51a
+index 0000000000000000000000000000000000000000..e8e96e54235140f17443c8b292e5cf857c235d6e
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,198 @@
+@@ -0,0 +1,199 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -22980,6 +23004,7 @@ index 0000000000000000000000000000000000000000..6c25e2dbca5cd5689a80b4d07d63c910
 +    UIProcess/API/haiku/APIContentRuleListStoreHaiku.cpp
 +    UIProcess/API/haiku/WebKitView.cpp
 +    UIProcess/Extensions/haiku/WebExtensionArchiveHaiku.cpp
++    UIProcess/Extensions/haiku/WebExtensionDeclarativeNetRequestURLFilter.cpp
 +    UIProcess/Extensions/haiku/WebExtensionPackageSnapshotHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionContextHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionContextPermissionsHaiku.cpp
@@ -34034,6 +34059,261 @@ index 0000000000000000000000000000000000000000..8fa08cfcc06ebeaf88ebabcedc4bec52
 +} // namespace WebKit
 +
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionDeclarativeNetRequestURLFilter.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionDeclarativeNetRequestURLFilter.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..a2360934964a5b796cc9a8ca998474ebb0fbbe31
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionDeclarativeNetRequestURLFilter.cpp
+@@ -0,0 +1,205 @@
++/*
++ * Copyright (C) 2026 KunanyiOS contributors.
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include "config.h"
++#include "WebExtensionDeclarativeNetRequestURLFilter.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS) && ENABLE(CONTENT_EXTENSIONS)
++
++#include <WebCore/CombinedURLFilters.h>
++#include <WebCore/URLFilterParser.h>
++#include <wtf/ASCIICType.h>
++#include <wtf/text/MakeString.h>
++#include <wtf/text/StringBuilder.h>
++
++namespace WebKit {
++
++std::expected<WebExtensionDeclarativeNetRequestURLFilter, String> WebExtensionDeclarativeNetRequestURLFilter::parse(const JSON::Object& condition, WebExtensionDeclarativeNetRequestURLFilterLimits limits)
++{
++    WebExtensionDeclarativeNetRequestURLFilter result;
++    if (auto sensitive = condition.getValue("isUrlFilterCaseSensitive"_s)) {
++        auto boolean = sensitive->asBoolean();
++        if (!boolean)
++            return makeUnexpected("isUrlFilterCaseSensitive must be a boolean."_s);
++        result.caseSensitive = *boolean;
++    }
++
++    auto urlFilter = condition.getValue("urlFilter"_s);
++    auto regexFilter = condition.getValue("regexFilter"_s);
++    if (urlFilter && regexFilter)
++        return makeUnexpected("Only one of urlFilter and regexFilter may be specified."_s);
++
++    String input;
++    if (urlFilter || regexFilter) {
++        input = (urlFilter ? urlFilter : regexFilter)->asString();
++        if (input.isEmpty())
++            return makeUnexpected("URL filters must be non-empty strings."_s);
++        if (input.length() > limits.maximumInputLength)
++            return makeUnexpected("URL filter exceeds the native input limit."_s);
++        for (auto character : StringView(input).codeUnits()) {
++            if (!isASCII(character) || !character)
++                return makeUnexpected("URL filters must contain ASCII characters without NUL."_s);
++        }
++    }
++
++    size_t outputLength = 0;
++    auto append = [&](String pattern) -> bool {
++        if (result.patterns.size() >= limits.maximumPatternCount || pattern.length() > limits.maximumOutputLength - outputLength)
++            return false;
++        outputLength += pattern.length();
++        result.patterns.append(WTF::move(pattern));
++        return true;
++    };
++    constexpr auto limitError = "URL filter exceeds the native translation limit."_s;
++
++    if (!urlFilter || regexFilter) {
++        result.regularExpression = !!regexFilter;
++        if (regexFilter) {
++            // URLFilterParser uses Yarr's legacy mode with backreferences
++            // disabled. It otherwise accepts \1 as octal and \k as literal k,
++            // silently changing expressions supplied by an extension.
++            for (size_t index = 0; index < input.length(); ++index) {
++                if (input[index] != '\\' || index + 1 == input.length())
++                    continue;
++                auto escaped = input[++index];
++                if (isASCIIDigit(escaped) || escaped == 'k' || escaped == 'g')
++                    return makeUnexpected("Backreferences and numeric escapes are not supported in regexFilter."_s);
++                if (isASCIIAlpha(escaped) && !StringView("fnrtvdDsSwWbBx"_s).contains(escaped))
++                    return makeUnexpected("Unsupported escape in regexFilter."_s);
++                if (escaped == 'x') {
++                    if (index + 2 >= input.length() || !isASCIIHexDigit(input[index + 1]) || !isASCIIHexDigit(input[index + 2]))
++                        return makeUnexpected("Hex escapes in regexFilter require two hexadecimal digits."_s);
++                    if (input[index + 1] == '0' && input[index + 2] == '0')
++                        return makeUnexpected("NUL escapes are not supported in regexFilter."_s);
++                    index += 2;
++                }
++            }
++        }
++        if (!append(regexFilter ? WTF::move(input) : String(".*"_s)))
++            return makeUnexpected(limitError);
++    } else {
++        if (input.startsWith("||*"_s))
++            return makeUnexpected("A urlFilter must not begin with ||*."_s);
++
++        StringView body(input);
++        bool domainAnchor = body.startsWith("||"_s);
++        bool startAnchor = !domainAnchor && body.startsWith('|');
++        if (domainAnchor)
++            body = body.substring(2);
++        else if (startAnchor)
++            body = body.substring(1);
++        bool endAnchor = body.endsWith('|');
++        if (endAnchor)
++            body = body.substring(0, body.length() - 1);
++
++        // A separator can consume no character only if the rest of the pattern
++        // can also finish at end-of-URL. Only '*' and '^' permit that. Emitting
++        // these suffix cases avoids unsupported disjunctions/lookarounds.
++        size_t nullableSuffix = body.length();
++        while (nullableSuffix && (body[nullableSuffix - 1] == '*' || body[nullableSuffix - 1] == '^'))
++            --nullableSuffix;
++
++        auto appendLiteral = [](StringBuilder& builder, char16_t character) {
++            if (StringView("?+[(){}$|\\."_s).contains(character))
++                builder.append('\\');
++            builder.append(character);
++        };
++        auto translateSuffix = [&](const String& prefix, size_t start) -> bool {
++            StringBuilder expression;
++            expression.append(prefix);
++            bool previousWasWildcard = false;
++            for (size_t index = start; index < body.length(); ++index) {
++                auto character = body[index];
++                if (character == '^') {
++                    if (index >= nullableSuffix && !append(makeString(expression.toString(), '$')))
++                        return false;
++                    expression.append("[^a-zA-Z0-9_.%\\-]"_s);
++                } else if (character == '*') {
++                    if (!previousWasWildcard)
++                        expression.append(".*"_s);
++                } else
++                    appendLiteral(expression, character);
++                previousWasWildcard = character == '*';
++                if (expression.length() > limits.maximumOutputLength - outputLength)
++                    return false;
++            }
++            if (endAnchor)
++                expression.append('$');
++            if (expression.isEmpty())
++                expression.append(".*"_s);
++            return append(expression.toString());
++        };
++
++        if (!domainAnchor) {
++            if (!translateSuffix(startAnchor ? String("^"_s) : emptyString(), 0))
++                return makeUnexpected(limitError);
++        } else {
++            // The start must be in the host, not in credentials. Merely making
++            // userinfo optional is insufficient: a regex can choose the branch
++            // without userinfo and match a credential prefix. Until the first
++            // '/', '?' or '#', prohibit '@' in both the pattern and the rest of
++            // the authority. Enumerate the points where a wildcard/separator
++            // could cross that boundary, then translate the suffix normally.
++            StringBuilder authority;
++            authority.append("^[a-zA-Z][a-zA-Z0-9+.-]*://([^/?#@]*@)?([^/?#@:.]+\\.)*"_s);
++            bool finished = false;
++            bool previousWasWildcard = false;
++            for (size_t index = 0; index < body.length(); ++index) {
++                auto character = body[index];
++                if (character == '/' || character == '?' || character == '#') {
++                    appendLiteral(authority, character);
++                    if (!translateSuffix(authority.toString(), index + 1))
++                        return makeUnexpected(limitError);
++                    finished = true;
++                    break;
++                }
++                if (character == '@') {
++                    // Earlier wildcard branches may still match '@' in a path.
++                    finished = true;
++                    break;
++                }
++                if (character == '*') {
++                    if (!previousWasWildcard) {
++                        if (!translateSuffix(makeString(authority.toString(), "[^/?#@]*[/?#].*"_s), index + 1))
++                            return makeUnexpected(limitError);
++                        authority.append("[^/?#@]*"_s);
++                    }
++                } else if (character == '^') {
++                    if (index >= nullableSuffix && !append(makeString(authority.toString(), '$')))
++                        return makeUnexpected(limitError);
++                    if (!translateSuffix(makeString(authority.toString(), "[/?#]"_s), index + 1))
++                        return makeUnexpected(limitError);
++                    authority.append("[^a-zA-Z0-9_.%\\-@/?#]"_s);
++                } else
++                    appendLiteral(authority, character);
++                previousWasWildcard = character == '*';
++                if (authority.length() > limits.maximumOutputLength - outputLength)
++                    return makeUnexpected(limitError);
++            }
++            if (!finished) {
++                authority.append(endAnchor ? "$"_s : "[^/?#@]*([/?#].*)?$"_s);
++                if (!append(authority.toString()))
++                    return makeUnexpected(limitError);
++            }
++        }
++    }
++
++    // Use the same parser as content-rule compilation. A valid JavaScript/RE2
++    // expression need not belong to WebCore's supported regular-expression
++    // subset. Failure must not turn a restricted rule into a match-all rule.
++    using namespace WebCore::ContentExtensions;
++    for (auto& pattern : result.patterns) {
++        CombinedURLFilters filters;
++        URLFilterParser parser(filters);
++        auto status = parser.addPattern(pattern, result.caseSensitive, 1);
++        if (status != URLFilterParser::Ok && status != URLFilterParser::MatchesEverything)
++            return makeUnexpected(makeString("Unsupported content-rule URL filter: "_s, URLFilterParser::statusString(status)));
++    }
++    return result;
++}
++
++} // namespace WebKit
++
++#endif
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionDeclarativeNetRequestURLFilter.h b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionDeclarativeNetRequestURLFilter.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..271b3a38b4570d6f84669706d5c1beb8ae48b688
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionDeclarativeNetRequestURLFilter.h
+@@ -0,0 +1,38 @@
++/*
++ * Copyright (C) 2026 KunanyiOS contributors.
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#if ENABLE(WK_WEB_EXTENSIONS) && ENABLE(CONTENT_EXTENSIONS)
++
++#include <wtf/JSONValues.h>
++#include <wtf/Vector.h>
++#include <wtf/text/WTFString.h>
++#include <expected>
++
++namespace WebKit {
++
++struct WebExtensionDeclarativeNetRequestURLFilterLimits {
++    size_t maximumInputLength { 64 * 1024 };
++    size_t maximumPatternCount { 2048 };
++    size_t maximumOutputLength { 1024 * 1024 };
++};
++
++// Validates and translates only the URL fields of a DNR condition. The caller
++// must separately validate and implement its other conditions and action.
++// Patterns form a union: every pattern must carry the same action/conditions.
++// In particular, '^' can match a separator OR end-of-URL; WebCore's filter
++// compiler cannot express that union inside a single regular expression.
++struct WebExtensionDeclarativeNetRequestURLFilter {
++    Vector<String> patterns;
++    bool caseSensitive { false };
++    bool regularExpression { false };
++
++    static std::expected<WebExtensionDeclarativeNetRequestURLFilter, String> parse(const JSON::Object&, WebExtensionDeclarativeNetRequestURLFilterLimits = { });
++};
++
++} // namespace WebKit
++
++#endif
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..020230db72954a99bb18129d2d6cd813325006a3
