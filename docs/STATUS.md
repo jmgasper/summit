@@ -940,3 +940,11 @@ Evidence: `.vm/modern-network-exit-build.log`,
 - `.vm/modern-close-5c264f3188a0e12c4b1298ec/result.json` (close)
 - `.vm/modern-downloads-f1a46e71c14e4bc6ac7a9596/result.json` (download-ui)
 - `.vm/modern-downloads-d72576c84112a53ead58ea6e/result.json` (download-api)
+
+The corrected `bundle-g3wycs_1` is also preserved under
+`artifacts/modern-browser/bundle-g3wycs_1` with the matching patched source
+archive and rebuild inputs. Copy provenance SHA-256:
+`5c5a9ec6a0603e926519553fce2d24cf429be793e635c02838a239fa36dcdd22`.
+Evidence: `.vm/modern-network-exit-bundle-copy.log` and the artifact's
+`copy-provenance.json`. Earlier bundles remain available with their recorded
+limitations.

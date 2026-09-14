@@ -86,7 +86,7 @@ teardown/reopen runs with native debugger-event monitoring. Broader browsing
 and extension integration remain unfinished. Modern downloads now pass real
 HTTP, HTML-link and native quit-dialog tests; see [download behavior and limits](docs/modern-downloads.md).
 The verified development bundle is
-in `artifacts/modern-browser/bundle-lb1k0wql`;
+in `artifacts/modern-browser/bundle-g3wycs_1`;
 [copy and rebuild instructions](docs/modern-bundle-copy.md) accompany it. [The verification record](docs/STATUS.md)
 records the exact bundles and remaining limitations.
 
