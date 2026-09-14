@@ -1387,3 +1387,13 @@ and key handling need further tests.
 See [storage evidence and limitations](webextensions-native-storage.md).
 
 Patch: `b330520c856f6a9a46eb9e787cba7acdd119772e062f68f96c06aed7c1d350a6`.
+
+2026-09-14 context utilities: temporary user-gesture checking and clearing
+move unchanged to common C++, and Haiku gets the compiled-rule file path
+adapter with a directory-failure check. Both final context units compile;
+no live permission revocation or rule-file lookup was run.
+See [context utility evidence](webextensions-native-context-utilities.md).
+
+Patch: `55798afee3c77e27b9dfc8ab1d46e7833d64568b5b6581a91fab79dfa6f3d5da`.
+The ongoing three-worker full build remains frozen on `b330520c...`; log:
+`.vm/modern-extensions-storage-api-build.log`.
