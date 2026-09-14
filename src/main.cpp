@@ -87,6 +87,11 @@ public:
             StartupError("Could not open the WebKit profile: " + std::string(std::strerror(fWebKitContext->InitCheck())));
             return;
         }
+        initialization = fWebKitContext->SetDownloadListener(BMessenger(this));
+        if (initialization != B_OK) {
+            StartupError("Could not initialize downloads: " + std::string(std::strerror(initialization)));
+            return;
+        }
 #else
         setenv("CURL_COOKIE_JAR_PATH", (fProfile / "cookies.sqlite").c_str(), 1);
         BWebPage::InitializeOnce();
@@ -111,6 +116,13 @@ public:
     void MessageReceived(BMessage* message) override
     {
 #if SUMMIT_MODERN_WEBKIT
+        if (message->what == B_WEBKIT_DOWNLOAD_STARTED || message->what == B_WEBKIT_DOWNLOAD_PROGRESS
+            || message->what == B_WEBKIT_DOWNLOAD_FINISHED) {
+            // The application remains the listener while closing windows and
+            // draining cancellation replies on the WebKit main loop.
+            if (fWindow.IsValid()) fWindow.SendMessage(message);
+            return;
+        }
         if (message->what == summit::kWindowReadyToClose) {
             BMessenger sender;
             if (message->FindMessenger("window", &sender) != B_OK || sender != fWindow)
@@ -156,6 +168,15 @@ public:
             return false;
         }
         if (fWebKitContext) {
+            if (fWebKitContext->HasPendingDownloads()) {
+                if (!fCancellingDownloads) {
+                    fCancellingDownloads = true;
+                    fWebKitContext->CancelAllDownloads();
+                }
+                fWaitingForNativeUI = true;
+                SetPulseRate(100000);
+                return false;
+            }
             fWebKitContext.reset();
             PostMessage(B_QUIT_REQUESTED);
             return false;
@@ -192,6 +213,7 @@ private:
     std::shared_ptr<BWebKitContext> fWebKitContext;
     bool fWaitingForNativeUI = false;
     bool fNativeUIExitReady = false;
+    bool fCancellingDownloads = false;
 #endif
     bool fWebKitInitialized = false;
     int fExitStatus = 0;

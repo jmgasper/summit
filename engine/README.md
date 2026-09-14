@@ -119,8 +119,10 @@ corresponding adaptation, now compiled and exercised in Summit. The adapter does
 address the inherited database's missing SameSite and partitioned-cookie
 support. Its existing non-Curl backend is not an alternate
 validated path. The unfinished Haiku multiprocess API in the patch is enabled
-in the separate modern build and now runs the full browser, with downloads
-and extension execution still unfinished.
+in the separate modern build and now runs the full browser. Basic modern
+downloads are implemented and tested; a full download manager, resume/crash
+recovery and extension execution remain unfinished. See
+[modern download behavior and tests](../docs/modern-downloads.md).
 Platform feature switches inherited from the Haiku
 port (including disabled WebGL, WebAudio and media APIs) must be reviewed
 against the full-browser objective.

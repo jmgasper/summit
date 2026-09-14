@@ -32,6 +32,7 @@ constexpr uint32 kReopenTab = 'rtab';
 constexpr uint32 kOpenFile = 'file';
 constexpr uint32 kShowDownloads = 'down';
 constexpr uint32 kDownloadSave = 'dsav';
+constexpr uint32 kDownloadQuitReply = 'dqre';
 constexpr uint32 kShowExtensions = 'exts';
 constexpr uint32 kInspectExtension = 'exin';
 constexpr uint32 kExtensionSelected = 'exsl';

@@ -22772,10 +22772,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..525da02394929cdfc4074e3d8b8a0b026fe57f05
+index 0000000000000000000000000000000000000000..95794ed6832bb5b51e6ba339ae90c2f225e10626
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,178 @@
+@@ -0,0 +1,179 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -22828,6 +22828,7 @@ index 0000000000000000000000000000000000000000..525da02394929cdfc4074e3d8b8a0b02
 +    UIProcess/Launcher/haiku/ProcessLauncherHaiku.cpp
 +    UIProcess/LegacySessionStateCodingNone.cpp
 +    UIProcess/WebsiteData/haiku/WebsiteDataStoreHaiku.cpp
++    UIProcess/haiku/DownloadRegistryHaiku.cpp
 +    UIProcess/haiku/DrawingAreaProxyHaiku.cpp
 +    UIProcess/haiku/TextCheckerHaiku.cpp
 +    UIProcess/haiku/WebPageProxyHaiku.cpp
@@ -23277,6 +23278,63 @@ index 0000000000000000000000000000000000000000..ee93bdaf3f08d885309473d7532b715e
 +{
 +	notImplemented();
 +    return true;
++}
++
++} // namespace WebKit
+diff --git a/Source/WebKit/Shared/haiku/DownloadFilenameHaiku.h b/Source/WebKit/Shared/haiku/DownloadFilenameHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..ffd9b2ccd7a6dbd801ac9eb70f934a2b7e2945bf
+--- /dev/null
++++ b/Source/WebKit/Shared/haiku/DownloadFilenameHaiku.h
+@@ -0,0 +1,51 @@
++/*
++ * Copyright (c) 2026 KunanyiOS contributors
++ * SPDX-License-Identifier: MIT
++ */
++
++#pragma once
++
++#include <StorageDefs.h>
++#include <String.h>
++#include <algorithm>
++
++namespace WebKit {
++
++inline BString sanitizedDownloadFilename(const BString& suggested)
++{
++    BString name = suggested;
++    int32 separator = std::max(name.FindLast('/'), name.FindLast('\\'));
++    if (separator >= 0)
++        name.Remove(0, separator + 1);
++    for (int32 i = 0; i < name.Length(); ++i) {
++        unsigned char byte = name.ByteAt(i);
++        if (byte < 32 || byte == 127)
++            name.SetByteAt(i, '_');
++    }
++    name.Trim();
++
++    // Leave room for a collision counter, and never split a UTF-8 character.
++    constexpr int32 maximumLength = B_FILE_NAME_LENGTH - 1 - 12;
++    if (name.Length() > maximumLength) {
++        int32 length = maximumLength;
++        while (length && (static_cast<unsigned char>(name.ByteAt(length)) & 0xc0) == 0x80)
++            --length;
++        name.Truncate(length);
++    }
++    if (name.IsEmpty() || name == "." || name == "..")
++        return BString("Download");
++    return name;
++}
++
++inline BString downloadFilenameWithCounter(const BString& sanitizedName, uint32 counter)
++{
++    BString base = sanitizedName;
++    BString extension;
++    int32 extensionStart = base.FindLast('.');
++    if (extensionStart > 0)
++        base.MoveInto(extension, extensionStart, base.Length() - extensionStart);
++    base << "-" << counter;
++    return base.Append(extension);
 +}
 +
 +} // namespace WebKit
@@ -24363,16 +24421,19 @@ index 0000000000000000000000000000000000000000..574ed16658f0c14b1aa2e63208e990b8
 +#define WEBKIT_ENGINE_VERSION_HAIKU "@WebKit_HAIKU_MAJOR_VERSION@.@WebKit_HAIKU_MINOR_VERSION@.@WebKit_HAIKU_TINY_VERSION@"
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitContext.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitContext.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..9752480624aa917d18f2c358e974c7d6d5db93f5
+index 0000000000000000000000000000000000000000..ec75b44c77e1583bb8155b0f75099eb18124bce0
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitContext.cpp
-@@ -0,0 +1,20 @@
+@@ -0,0 +1,64 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
 +#include "WebKitContext.h"
 +
++#include "DownloadRegistryHaiku.h"
 +#include "WebKitView.h"
++#include <Application.h>
++#include <wtf/RunLoop.h>
 +#include "WebViewContextHaiku.h"
 +
 +BWebKitContext::BWebKitContext(const char* profilePath, bool privateBrowsing)
@@ -24387,21 +24448,82 @@ index 0000000000000000000000000000000000000000..9752480624aa917d18f2c358e974c7d6
 +
 +status_t BWebKitContext::InitCheck() const { return m_status; }
 +bool BWebKitContext::IsPrivate() const { return m_private; }
++
++status_t BWebKitContext::SetDownloadListener(const BMessenger& listener)
++{
++    if (m_status != B_OK)
++        return m_status;
++    if (!be_app || be_app->Thread() != find_thread(nullptr))
++        return B_BAD_THREAD_ID;
++    return m_context->downloads()->setListener(listener);
++}
++
++status_t BWebKitContext::SetDownloadDirectory(const char* directory)
++{
++    if (m_status != B_OK)
++        return m_status;
++    if (!be_app || be_app->Thread() != find_thread(nullptr))
++        return B_BAD_THREAD_ID;
++    return m_context->downloads()->setDirectory(directory);
++}
++
++void BWebKitContext::CancelDownload(uint64 identifier)
++{
++    if (m_status != B_OK)
++        return;
++    WTF::RunLoop::mainSingleton().dispatch([context = m_context, identifier] {
++        context->downloads()->cancel(identifier);
++    });
++}
++
++void BWebKitContext::CancelAllDownloads()
++{
++    if (m_status != B_OK)
++        return;
++    WTF::RunLoop::mainSingleton().dispatch([context = m_context] {
++        context->downloads()->cancelAll();
++    });
++}
++
++bool BWebKitContext::HasPendingDownloads() const
++{
++    return m_context && m_context->downloads()->hasPendingDownloads();
++}
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitContext.h b/Source/WebKit/UIProcess/API/haiku/WebKitContext.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..6e232079e5b951703f4c45539001433bed2e19ff
+index 0000000000000000000000000000000000000000..f082105080d2b519fdc238b2301d89aed01abbcb
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitContext.h
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,65 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
 +
 +#include "WKBase.h"
++#include <Messenger.h>
 +#include <SupportDefs.h>
 +#include <memory>
 +
 +namespace WebKit { class WebViewContextHaiku; }
++
++// Download notifications contain identifier (uint64), url/path/filename (strings),
++// current_size (uint64), expected_size (int64; -1 means unknown), and an optional
++// originating view messenger. FINISHED also contains result (uint32), error
++// (int32), error_domain/error_description (strings). There is one terminal event
++// per registered download. The listener must outlive its pending downloads.
++// STARTED registers the operation; path may remain empty until PROGRESS reports
++// that the NetworkProcess has created the destination. FINISHED always carries
++// the final counters, including transfers too short for a progress update.
++enum : uint32 {
++    B_WEBKIT_DOWNLOAD_STARTED = 'wdst',
++    B_WEBKIT_DOWNLOAD_PROGRESS = 'wdpr',
++    B_WEBKIT_DOWNLOAD_FINISHED = 'wdfn'
++};
++enum : uint32 {
++    B_WEBKIT_DOWNLOAD_SUCCEEDED,
++    B_WEBKIT_DOWNLOAD_FAILED,
++    B_WEBKIT_DOWNLOAD_CANCELLED
++};
 +
 +// Create on the BApplication thread after BWebKitInitialize(). All views given
 +// this context share one website data store and process pool. A persistent
@@ -24416,6 +24538,21 @@ index 0000000000000000000000000000000000000000..6e232079e5b951703f4c45539001433b
 +
 +    status_t InitCheck() const;
 +    bool IsPrivate() const;
++
++    // Configure on the application thread before downloads start. The directory
++    // must already exist, be writable, and have an absolute UTF-8 path. Existing
++    // files are never overwritten. Both setters return B_BUSY while downloads
++    // are pending. No directory is chosen implicitly, including in private mode.
++    status_t SetDownloadListener(const BMessenger&);
++    status_t SetDownloadDirectory(const char*);
++    // Cancellation may be requested from any looper while this context is alive.
++    // Completion is asynchronous. An engine finish/failure that wins the race
++    // retains its result; otherwise the terminal result is CANCELLED.
++    void CancelDownload(uint64 identifier);
++    void CancelAllDownloads();
++    // Query on the application thread after queued view commands have drained.
++    // Keep its RunLoop and this context alive until cancellation replies finish.
++    bool HasPendingDownloads() const;
 +
 +private:
 +    friend class BWebKitView;
@@ -24537,10 +24674,10 @@ index 0000000000000000000000000000000000000000..d28a6cad6339adf79b155cf974e85bfd
 +
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..64acb4c5f15f038f166ac4dc19c1756b0b46e6f7
+index 0000000000000000000000000000000000000000..2eb35b00e3e955de784a59c88026e72c7f8ee10e
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp
-@@ -0,0 +1,400 @@
+@@ -0,0 +1,401 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -24637,6 +24774,7 @@ index 0000000000000000000000000000000000000000..64acb4c5f15f038f166ac4dc19c1756b
 +}
 +
 +void BWebKitView::LoadURL(const char* url) { SendCommand(viewLoadHaiku, url); }
++void BWebKitView::DownloadURL(const char* url) { SendCommand(viewDownloadHaiku, url); }
 +void BWebKitView::GoBack() { SendCommand(viewBackHaiku); }
 +void BWebKitView::GoForward() { SendCommand(viewForwardHaiku); }
 +void BWebKitView::Reload() { SendCommand(viewReloadHaiku); }
@@ -24943,10 +25081,10 @@ index 0000000000000000000000000000000000000000..64acb4c5f15f038f166ac4dc19c1756b
 +}
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitView.h b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..8d78d3a485d6dd2a98c91bf2f15b57c5a7e14c58
+index 0000000000000000000000000000000000000000..38ae49a449a3a6a93116d8e58a431d32f1ff9072
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
-@@ -0,0 +1,93 @@
+@@ -0,0 +1,96 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -24988,6 +25126,9 @@ index 0000000000000000000000000000000000000000..8d78d3a485d6dd2a98c91bf2f15b57c5
 +    ~BWebKitView() override;
 +    status_t InitCheck() const;
 +    void LoadURL(const char*);
++    // Queue an explicit download of a valid URL without changing this page.
++    // Uses this view's context, configured download directory and listener.
++    void DownloadURL(const char*);
 +    void GoBack();
 +    void GoForward();
 +    void Reload();
@@ -26800,6 +26941,539 @@ index 0000000000000000000000000000000000000000..e545399afbe8b5539a8026d49532e05a
 +}
 +
 +} // namespace WebKit
+diff --git a/Source/WebKit/UIProcess/haiku/DownloadRegistryHaiku.cpp b/Source/WebKit/UIProcess/haiku/DownloadRegistryHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..9908678c73d07600450c9746ae2de56d5678dee2
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/DownloadRegistryHaiku.cpp
+@@ -0,0 +1,461 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#include "config.h"
++#include "DownloadRegistryHaiku.h"
++
++#include "APIDownloadClient.h"
++#include "DownloadFilenameHaiku.h"
++#include "DownloadProxy.h"
++#include "WebKitContext.h"
++#include <Message.h>
++#include <WebCore/ResourceError.h>
++#include <WebCore/ResourceResponse.h>
++#include <cerrno>
++#include <cstdlib>
++#include <limits>
++#include <sys/stat.h>
++#include <unistd.h>
++#include <utility>
++#include <wtf/FileSystem.h>
++#include <wtf/MonotonicTime.h>
++#include <wtf/RunLoop.h>
++#include <wtf/TZoneMallocInlines.h>
++#include <wtf/text/CString.h>
++
++namespace WebKit {
++
++// A separate client for every registered proxy makes late terminal callbacks
++// harmless without keeping an ever-growing set of completed download IDs.
++class DownloadClientHaiku final : public API::DownloadClient {
++    WTF_MAKE_TZONE_ALLOCATED_INLINE(DownloadClientHaiku);
++public:
++    explicit DownloadClientHaiku(std::weak_ptr<DownloadRegistryHaiku> registry)
++        : m_registry(std::move(registry)) { }
++
++private:
++    void decideDestinationWithSuggestedFilename(DownloadProxy& download, const WebCore::ResourceResponse& response, const String& filename, CompletionHandler<void(AllowOverwrite, String)>&& completion) override
++    {
++        if (!m_terminal) {
++            if (auto registry = m_registry.lock())
++                return registry->decideDestination(download, response, filename, WTF::move(completion));
++        }
++        completion(AllowOverwrite::No, { });
++    }
++
++    void didCreateDestination(DownloadProxy& download, const String& path) override
++    {
++        if (!m_terminal) {
++            if (auto registry = m_registry.lock())
++                registry->didCreateDestination(download, path);
++        }
++    }
++
++    void didReceiveData(DownloadProxy& download, uint64_t bytes, uint64_t, uint64_t) override
++    {
++        if (!m_terminal) {
++            if (auto registry = m_registry.lock())
++                registry->didReceiveData(download, bytes);
++        }
++    }
++
++    void didFinish(DownloadProxy& download) override
++    {
++        if (std::exchange(m_terminal, true))
++            return;
++        if (auto registry = m_registry.lock())
++            registry->didFinish(download);
++    }
++
++    void didFail(DownloadProxy& download, const WebCore::ResourceError& error, API::Data*) override
++    {
++        if (std::exchange(m_terminal, true))
++            return;
++        if (auto registry = m_registry.lock())
++            registry->didFail(download, error);
++    }
++
++    void processDidCrash(DownloadProxy& download) override
++    {
++        // A finish received after cancel was issued deliberately retains the
++        // registry entry until the cancel reply. Invalidation must release that
++        // entry even though a previous terminal callback set m_terminal.
++        m_terminal = true;
++        if (auto registry = m_registry.lock())
++            registry->processDidCrash(download);
++    }
++
++    const std::weak_ptr<DownloadRegistryHaiku> m_registry;
++    bool m_terminal { false };
++};
++
++// WebProcessPool installs this client when it constructs each DownloadProxy.
++// DidStart precedes response/redirect/data IPC in PendingDownload. Registering
++// here also covers downloads whose originating page has already gone away.
++class DownloadBootstrapClientHaiku final : public API::DownloadClient {
++    WTF_MAKE_TZONE_ALLOCATED_INLINE(DownloadBootstrapClientHaiku);
++public:
++    explicit DownloadBootstrapClientHaiku(std::weak_ptr<DownloadRegistryHaiku> registry)
++        : m_registry(std::move(registry)) { }
++
++private:
++    void legacyDidStart(DownloadProxy& download) override
++    {
++        if (auto registry = m_registry.lock())
++            registry->registerDownload(download);
++        else
++            download.cancel([](API::Data*) { });
++    }
++
++    void didFail(DownloadProxy& download, const WebCore::ResourceError& error, API::Data* data) override
++    {
++        if (auto registry = m_registry.lock()) {
++            registry->registerDownload(download);
++            download.client().didFail(download, error, data);
++        }
++    }
++
++    void processDidCrash(DownloadProxy& download) override
++    {
++        if (auto registry = m_registry.lock()) {
++            registry->registerDownload(download);
++            download.client().processDidCrash(download);
++        }
++    }
++
++    const std::weak_ptr<DownloadRegistryHaiku> m_registry;
++};
++
++struct DownloadRegistryHaiku::Entry {
++    explicit Entry(DownloadProxy& proxy, const BMessenger& listener, const String& directory)
++        : download(proxy), target(listener), directory(directory) { }
++
++    Ref<DownloadProxy> download;
++    const BMessenger target;
++    const String directory;
++    BMessenger view;
++    String destination;
++    String responseURL;
++    uint64_t currentSize { 0 };
++    int64_t expectedSize { -1 };
++    MonotonicTime lastProgress;
++    bool cancelling { false };
++    bool cancelIssued { false };
++    uint32_t cancelResult { B_WEBKIT_DOWNLOAD_CANCELLED };
++    int32_t cancelError { B_CANCELED };
++    String cancelDomain { "HaikuDownload"_s };
++    String cancelDescription;
++};
++
++std::shared_ptr<DownloadRegistryHaiku> DownloadRegistryHaiku::create()
++{
++    ASSERT(RunLoop::isMain());
++    return std::shared_ptr<DownloadRegistryHaiku>(new DownloadRegistryHaiku);
++}
++
++DownloadRegistryHaiku::~DownloadRegistryHaiku()
++{
++    ASSERT(RunLoop::isMain());
++    ASSERT(m_downloads.empty());
++}
++
++Ref<API::DownloadClient> DownloadRegistryHaiku::createClient()
++{
++    ASSERT(RunLoop::isMain());
++    return adoptRef(*new DownloadBootstrapClientHaiku(weak_from_this()));
++}
++
++status_t DownloadRegistryHaiku::setListener(const BMessenger& listener)
++{
++    ASSERT(RunLoop::isMain());
++    if (m_shuttingDown)
++        return B_NO_INIT;
++    if (!m_downloads.empty())
++        return B_BUSY;
++    if (!listener.IsValid())
++        return B_BAD_VALUE;
++    m_listener = listener;
++    return B_OK;
++}
++
++status_t DownloadRegistryHaiku::setDirectory(const char* directory)
++{
++    ASSERT(RunLoop::isMain());
++    if (m_shuttingDown)
++        return B_NO_INIT;
++    if (!m_downloads.empty())
++        return B_BUSY;
++    if (!directory || directory[0] != '/' || String::fromUTF8(directory).isNull())
++        return B_BAD_VALUE;
++    std::unique_ptr<char, decltype(&std::free)> canonical(realpath(directory, nullptr), &std::free);
++    if (!canonical)
++        return errno == ENOENT ? B_ENTRY_NOT_FOUND : errno == EACCES ? B_PERMISSION_DENIED : B_IO_ERROR;
++    struct stat info;
++    if (stat(canonical.get(), &info) || !S_ISDIR(info.st_mode))
++        return B_NOT_A_DIRECTORY;
++    if (access(canonical.get(), W_OK | X_OK))
++        return B_PERMISSION_DENIED;
++    auto path = String::fromUTF8(canonical.get());
++    if (path.isNull())
++        return B_BAD_VALUE;
++    m_directory = WTF::move(path);
++    return B_OK;
++}
++
++bool DownloadRegistryHaiku::hasPendingDownloads() const
++{
++    ASSERT(RunLoop::isMain());
++    return !m_downloads.empty();
++}
++
++DownloadRegistryHaiku::Entry* DownloadRegistryHaiku::entry(uint64_t identifier)
++{
++    auto found = m_downloads.find(identifier);
++    return found == m_downloads.end() ? nullptr : found->second.get();
++}
++
++void DownloadRegistryHaiku::registerDownload(DownloadProxy& download, const BMessenger& view)
++{
++    ASSERT(RunLoop::isMain());
++    auto identifier = download.downloadID().toUInt64();
++    if (auto* existing = entry(identifier)) {
++        if (view.IsValid())
++            existing->view = view;
++        return;
++    }
++    auto item = std::make_unique<Entry>(download, m_listener, m_directory);
++    item->view = view;
++    auto* value = item.get();
++    m_downloads.emplace(identifier, std::move(item));
++    download.setClient(adoptRef(*new DownloadClientHaiku(weak_from_this())));
++    auto delivered = notify(*value, B_WEBKIT_DOWNLOAD_STARTED);
++    if (m_shuttingDown)
++        requestCancel(identifier, B_WEBKIT_DOWNLOAD_CANCELLED, B_CANCELED, "Download context closed"_s);
++    else if (delivered != B_OK)
++        requestCancel(identifier, B_WEBKIT_DOWNLOAD_FAILED, delivered, "Download listener is unavailable"_s);
++    else if (value->directory.isEmpty())
++        requestCancel(identifier, B_WEBKIT_DOWNLOAD_FAILED, B_NO_INIT, "Download directory is not configured"_s);
++}
++
++status_t DownloadRegistryHaiku::notify(Entry& item, uint32_t what, uint32_t result, const String& domain, int32_t error, const String& description)
++{
++    BMessage message(what);
++    status_t status = B_OK;
++    auto append = [&status](status_t result) {
++        if (status == B_OK)
++            status = result;
++    };
++    auto appendString = [&](const char* key, const String& value) {
++        append(message.AddString(key, value.isEmpty() ? "" : value.utf8().legacyCStringPointer()));
++    };
++    append(message.AddUInt64("identifier", item.download->downloadID().toUInt64()));
++    appendString("url", item.responseURL.isEmpty() ? item.download->request().url().string() : item.responseURL);
++    appendString("path", item.destination);
++    appendString("filename", FileSystem::pathFileName(item.destination));
++    append(message.AddUInt64("current_size", item.currentSize));
++    append(message.AddInt64("expected_size", item.expectedSize));
++    if (item.view.IsValid())
++        append(message.AddMessenger("view", item.view));
++    if (what == B_WEBKIT_DOWNLOAD_FINISHED) {
++        append(message.AddUInt32("result", result));
++        appendString("error_domain", domain);
++        append(message.AddInt32("error", error));
++        appendString("error_description", description);
++    }
++    if (status != B_OK)
++        return status;
++    // The receiving looper must not synchronously call back into WebKit. All
++    // payloads are values; the registry does not expose an engine pointer.
++    return item.target.SendMessage(&message, static_cast<BHandler*>(nullptr), 0);
++}
++
++String DownloadRegistryHaiku::chooseDestination(const Entry& item, const String& suggestedFilename) const
++{
++    auto name = sanitizedDownloadFilename(BString(suggestedFilename.utf8().legacyCStringPointer()));
++    // This bound also avoids a UI-main-thread loop over an unbounded directory.
++    for (uint32_t attempt = 0; attempt < 10000; ++attempt) {
++        auto leaf = attempt ? downloadFilenameWithCounter(name, attempt - 1) : name;
++        auto destination = FileSystem::pathByAppendingComponent(item.directory, String::fromUTF8(leaf.String()));
++        bool reserved = false;
++        for (const auto& [identifier, other] : m_downloads) {
++            if (other.get() != &item && other->destination == destination) {
++                reserved = true;
++                break;
++            }
++        }
++        if (reserved)
++            continue;
++        struct stat info;
++        if (!lstat(destination.utf8().legacyCStringPointer(), &info))
++            continue;
++        if (errno == ENOENT)
++            return destination;
++        return { };
++    }
++    return { };
++}
++
++void DownloadRegistryHaiku::decideDestination(DownloadProxy& download, const WebCore::ResourceResponse& response, const String& filename, CompletionHandler<void(AllowOverwrite, String)>&& completion)
++{
++    ASSERT(RunLoop::isMain());
++    auto identifier = download.downloadID().toUInt64();
++    auto* item = entry(identifier);
++    if (!item || item->cancelling || m_shuttingDown) {
++        completion(AllowOverwrite::No, { });
++        return;
++    }
++    item->responseURL = response.url().string();
++    item->expectedSize = response.expectedContentLength() < 0 ? -1 : response.expectedContentLength();
++    if (item->destination.isEmpty())
++        item->destination = chooseDestination(*item, filename);
++    if (item->destination.isEmpty()) {
++        completion(AllowOverwrite::No, { });
++        requestCancel(identifier, B_WEBKIT_DOWNLOAD_FAILED, B_IO_ERROR, "Could not choose an unused download destination"_s);
++        return;
++    }
++    // The NetworkProcess performs the actual O_EXCL open; a competing external
++    // creation fails safely. Never pre-create this path or permit overwrite.
++    completion(AllowOverwrite::No, item->destination);
++}
++
++void DownloadRegistryHaiku::didCreateDestination(DownloadProxy& download, const String& path)
++{
++    ASSERT(RunLoop::isMain());
++    auto identifier = download.downloadID().toUInt64();
++    auto* item = entry(identifier);
++    if (!item || item->cancelling)
++        return;
++    item->destination = path;
++    auto result = notify(*item, B_WEBKIT_DOWNLOAD_PROGRESS);
++    if (result != B_OK)
++        requestCancel(identifier, B_WEBKIT_DOWNLOAD_FAILED, result, "Download listener is unavailable"_s);
++}
++
++void DownloadRegistryHaiku::didReceiveData(DownloadProxy& download, uint64_t bytes)
++{
++    ASSERT(RunLoop::isMain());
++    auto identifier = download.downloadID().toUInt64();
++    auto* item = entry(identifier);
++    if (!item || item->cancelling)
++        return;
++    if (bytes > std::numeric_limits<uint64_t>::max() - item->currentSize) {
++        requestCancel(identifier, B_WEBKIT_DOWNLOAD_FAILED, B_BAD_DATA, "Download byte count overflow"_s);
++        return;
++    }
++    item->currentSize += bytes;
++    auto now = MonotonicTime::now();
++    if (item->lastProgress && now - item->lastProgress < 100_ms)
++        return;
++    item->lastProgress = now;
++    auto result = notify(*item, B_WEBKIT_DOWNLOAD_PROGRESS);
++    if (result != B_OK)
++        requestCancel(identifier, B_WEBKIT_DOWNLOAD_FAILED, result, "Download listener is unavailable"_s);
++}
++
++void DownloadRegistryHaiku::finish(uint64_t identifier, uint32_t result, const String& domain, int32_t error, const String& description)
++{
++    ASSERT(RunLoop::isMain());
++    // Remove first: reentrancy and late finish/failure/cancel completions cannot
++    // emit another terminal notification or release the same entry twice.
++    auto found = m_downloads.find(identifier);
++    if (found == m_downloads.end())
++        return;
++    auto item = std::move(found->second);
++    m_downloads.erase(found);
++    notify(*item, B_WEBKIT_DOWNLOAD_FINISHED, result, domain, error, description);
++}
++
++void DownloadRegistryHaiku::didFinish(DownloadProxy& download)
++{
++    ASSERT(RunLoop::isMain());
++    auto identifier = download.downloadID().toUInt64();
++    auto* item = entry(identifier);
++    if (!item)
++        return;
++    if (!item->cancelIssued) {
++        // The engine completed before the queued cancellation ran. Its completed
++        // file and success win; the queued request will find no entry.
++        finish(identifier, B_WEBKIT_DOWNLOAD_SUCCEEDED);
++        return;
++    }
++    // Completion can race an already-issued cancellation. Preserve the observed
++    // success, but retain the entry until the cancellation reply removes the
++    // proxy from DownloadProxyMap. HasPendingDownloads stays true meanwhile.
++    item->cancelResult = B_WEBKIT_DOWNLOAD_SUCCEEDED;
++    item->cancelDomain = { };
++    item->cancelError = B_OK;
++    item->cancelDescription = { };
++}
++
++void DownloadRegistryHaiku::didFail(DownloadProxy& download, const WebCore::ResourceError& error)
++{
++    ASSERT(RunLoop::isMain());
++    auto identifier = download.downloadID().toUInt64();
++    auto* item = entry(identifier);
++    if (!item)
++        return;
++    if (!item->cancelIssued) {
++        finish(identifier, B_WEBKIT_DOWNLOAD_FAILED, error.domain(), error.errorCode(), error.localizedDescription());
++        return;
++    }
++    item->cancelResult = B_WEBKIT_DOWNLOAD_FAILED;
++    item->cancelDomain = error.domain();
++    item->cancelError = error.errorCode();
++    item->cancelDescription = error.localizedDescription();
++}
++
++void DownloadRegistryHaiku::processDidCrash(DownloadProxy& download)
++{
++    ASSERT(RunLoop::isMain());
++    // Release our proxy reference during invalidation. Holding it until a later
++    // cancellation reply could let DownloadProxy try to remove it from the
++    // already-cleared DownloadProxyMap. A crash is a failure, even after a user
++    // requested cancellation; it does not prove that a partial file was removed.
++    finish(download.downloadID().toUInt64(), B_WEBKIT_DOWNLOAD_FAILED, "HaikuDownload"_s, B_ERROR, "Download network process exited"_s);
++}
++
++void DownloadRegistryHaiku::requestCancel(uint64_t identifier, uint32_t result, int32_t error, const String& description)
++{
++    ASSERT(RunLoop::isMain());
++    auto* item = entry(identifier);
++    if (!item || item->cancelling)
++        return;
++    item->cancelling = true;
++    item->cancelResult = result;
++    item->cancelError = error;
++    item->cancelDescription = description;
++    // Defer the map mutation out of download callbacks, in particular the
++    // DownloadProxyMap::invalidate iteration used during process shutdown.
++    RunLoop::mainSingleton().dispatch([registry = shared_from_this(), identifier] {
++        auto* item = registry->entry(identifier);
++        if (!item)
++            return;
++        item->cancelIssued = true;
++        item->download->cancel([registry, identifier](API::Data*) {
++            auto* item = registry->entry(identifier);
++            if (!item)
++                return;
++            registry->finish(identifier, item->cancelResult, item->cancelDomain, item->cancelError, item->cancelDescription);
++        });
++    });
++}
++
++void DownloadRegistryHaiku::cancel(uint64_t identifier)
++{
++    requestCancel(identifier, B_WEBKIT_DOWNLOAD_CANCELLED, B_CANCELED, "Download cancelled"_s);
++}
++
++void DownloadRegistryHaiku::cancelAll()
++{
++    ASSERT(RunLoop::isMain());
++    for (const auto& [identifier, item] : m_downloads)
++        cancel(identifier);
++}
++
++void DownloadRegistryHaiku::shutdown()
++{
++    ASSERT(RunLoop::isMain());
++    m_shuttingDown = true;
++    cancelAll();
++}
++
++} // namespace WebKit
+diff --git a/Source/WebKit/UIProcess/haiku/DownloadRegistryHaiku.h b/Source/WebKit/UIProcess/haiku/DownloadRegistryHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..0fed26281e12215ad2aeefd05ee7d2953febf285
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/DownloadRegistryHaiku.h
+@@ -0,0 +1,60 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#pragma once
++
++#include <Messenger.h>
++#include <SupportDefs.h>
++#include <memory>
++#include <unordered_map>
++#include <wtf/CompletionHandler.h>
++#include <wtf/Ref.h>
++#include <wtf/text/WTFString.h>
++
++namespace API { class DownloadClient; }
++namespace WebCore { class ResourceError; class ResourceResponse; }
++
++namespace WebKit {
++
++class DownloadProxy;
++enum class AllowOverwrite : bool;
++
++// Every method and all engine references are confined to the application's
++// WTF main RunLoop. Clients weakly reference this registry; cancellation replies
++// retain it until shutdown has removed every registered download.
++class DownloadRegistryHaiku final : public std::enable_shared_from_this<DownloadRegistryHaiku> {
++public:
++    static std::shared_ptr<DownloadRegistryHaiku> create();
++    ~DownloadRegistryHaiku();
++    Ref<API::DownloadClient> createClient();
++
++    status_t setListener(const BMessenger&);
++    status_t setDirectory(const char*);
++    bool hasPendingDownloads() const;
++    void cancel(uint64_t);
++    void cancelAll();
++    void shutdown();
++
++    void registerDownload(DownloadProxy&, const BMessenger& = { });
++    void decideDestination(DownloadProxy&, const WebCore::ResourceResponse&, const String&, CompletionHandler<void(AllowOverwrite, String)>&&);
++    void didCreateDestination(DownloadProxy&, const String&);
++    void didReceiveData(DownloadProxy&, uint64_t);
++    void didFinish(DownloadProxy&);
++    void didFail(DownloadProxy&, const WebCore::ResourceError&);
++    void processDidCrash(DownloadProxy&);
++
++private:
++    DownloadRegistryHaiku() = default;
++    struct Entry;
++    Entry* entry(uint64_t);
++    void requestCancel(uint64_t, uint32_t result, int32_t error, const String& description);
++    void finish(uint64_t, uint32_t result, const String& domain = { }, int32_t error = 0, const String& description = { });
++    status_t notify(Entry&, uint32_t what, uint32_t result = 0, const String& domain = { }, int32_t error = 0, const String& description = { });
++    String chooseDestination(const Entry&, const String&) const;
++
++    BMessenger m_listener;
++    String m_directory;
++    bool m_shuttingDown { false };
++    std::unordered_map<uint64_t, std::unique_ptr<Entry>> m_downloads;
++};
++
++} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/DrawingAreaProxyHaiku.cpp b/Source/WebKit/UIProcess/haiku/DrawingAreaProxyHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..4cce66689b940bee023ee7faa7783bca5b82705f
@@ -28115,10 +28789,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..9d6146f5c2b4996f6a15dd0187fd736383331143
+index 0000000000000000000000000000000000000000..88aafc469f8384a5ed28d42444a3c1dc54a33edc
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,825 @@
+@@ -0,0 +1,869 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -28150,6 +28824,8 @@ index 0000000000000000000000000000000000000000..9d6146f5c2b4996f6a15dd0187fd7363
 +#include "APIFrameInfo.h"
 +#include "APINavigationAction.h"
 +#include "APINavigationClient.h"
++#include "APINavigationResponse.h"
++#include "DownloadRegistryHaiku.h"
 +#include "APIPageConfiguration.h"
 +#include "APINavigation.h"
 +#include "APIUIClient.h"
@@ -28309,6 +28985,24 @@ index 0000000000000000000000000000000000000000..9d6146f5c2b4996f6a15dd0187fd7363
 +        listener->use();
 +    }
 +
++    void decidePolicyForNavigationResponse(WebPageProxy&, Ref<API::NavigationResponse>&& navigation, Ref<WebFramePolicyListenerProxy>&& listener) override
++    {
++        const auto& response = navigation->response();
++        if (response.httpStatusCode() == 204 || response.httpStatusCode() == 205)
++            listener->use();
++        else if (navigation->request().url().protocolIsInHTTPFamily()
++            && (response.isAttachment() || !navigation->canShowMIMEType()))
++            listener->download();
++        else if (navigation->canShowMIMEType())
++            listener->use();
++        else
++            listener->ignore();
++    }
++
++    void navigationActionDidBecomeDownload(WebPageProxy&, API::NavigationAction&, DownloadProxy& download) override { registerDownload(download); }
++    void navigationResponseDidBecomeDownload(WebPageProxy&, API::NavigationResponse&, DownloadProxy& download) override { registerDownload(download); }
++    void contextMenuDidCreateDownload(WebPageProxy&, DownloadProxy& download) override { registerDownload(download); }
++
 +    void didStartProvisionalNavigation(WebPageProxy&, const ResourceRequest&, API::Navigation*, API::Object*) override
 +    {
 +        if (auto state = m_state.lock())
@@ -28332,6 +29026,18 @@ index 0000000000000000000000000000000000000000..9d6146f5c2b4996f6a15dd0187fd7363
 +    }
 +
 +private:
++    void registerDownload(DownloadProxy& download)
++    {
++        if (auto state = m_state.lock(); state && state->context) {
++            BMessenger view;
++            {
++                std::lock_guard guard(state->mutex);
++                view = state->view;
++            }
++            state->context->downloads()->registerDownload(download, view);
++        }
++    }
++
 +    const std::weak_ptr<WebViewStateHaiku> m_state;
 +};
 +
@@ -28669,6 +29375,18 @@ index 0000000000000000000000000000000000000000..9d6146f5c2b4996f6a15dd0187fd7363
 +        }
 +        break;
 +    }
++    case viewDownloadHaiku: {
++        URL url { String::fromUTF8(message.FindString("url")) };
++        if (url.isValid()) {
++            BMessenger view;
++            {
++                std::lock_guard guard(m_state->mutex);
++                view = m_state->view;
++            }
++            m_state->context->download(*m_page, ResourceRequest(WTF::move(url)), view);
++        }
++        break;
++    }
 +    case viewBackHaiku:
 +        if (m_page->pageLoadState().canGoBack()) {
 +            navigationChangedHaiku(m_state);
@@ -28946,16 +29664,19 @@ index 0000000000000000000000000000000000000000..9d6146f5c2b4996f6a15dd0187fd7363
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..65539a7ee10546d5f7598214227430b55379d931
+index 0000000000000000000000000000000000000000..e5239a394c8a9e3524a58752e1a67164a07046d1
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp
-@@ -0,0 +1,128 @@
+@@ -0,0 +1,143 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
 +#include "WebViewContextHaiku.h"
 +
++#include "APIDownloadClient.h"
 +#include "APIPageConfiguration.h"
++#include "DownloadProxy.h"
++#include "DownloadRegistryHaiku.h"
 +#include "APIProcessPoolConfiguration.h"
 +#include "StoragePathsHaiku.h"
 +#include "WebsiteDataStore.h"
@@ -28971,13 +29692,16 @@ index 0000000000000000000000000000000000000000..65539a7ee10546d5f7598214227430b5
 +WebViewContextHaiku::WebViewContextHaiku(Ref<WebsiteDataStore>&& dataStore)
 +    : m_dataStore(WTF::move(dataStore))
 +    , m_processPool(WebProcessPool::create(API::ProcessPoolConfiguration::create()))
++    , m_downloads(DownloadRegistryHaiku::create())
 +{
 +    ASSERT(RunLoop::isMain());
++    m_processPool->setLegacyDownloadClient(m_downloads->createClient());
 +}
 +
 +WebViewContextHaiku::~WebViewContextHaiku()
 +{
 +    ASSERT(RunLoop::isMain());
++    m_downloads->shutdown();
 +}
 +
 +std::shared_ptr<WebViewContextHaiku> WebViewContextHaiku::adopt(Ref<WebsiteDataStore>&& dataStore)
@@ -29077,25 +29801,38 @@ index 0000000000000000000000000000000000000000..65539a7ee10546d5f7598214227430b5
 +    configuration.setWebsiteDataStore(m_dataStore.copyRef());
 +}
 +
++void WebViewContextHaiku::download(WebPageProxy& page, const WebCore::ResourceRequest& request, const BMessenger& view)
++{
++    ASSERT(RunLoop::isMain());
++    Ref download = m_processPool->download(m_dataStore.get(), &page, request, { });
++    // Register before a DidStart/error reply so the explicit operation has the
++    // same native client and lifetime rules as a navigation-triggered download.
++    m_downloads->registerDownload(download.get(), view);
++}
++
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..01f2a2a46de0d011a4b84742b5774c3f402739ff
+index 0000000000000000000000000000000000000000..6e26869d2409355f777c0a09ba519e17cd6adba2
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h
-@@ -0,0 +1,33 @@
+@@ -0,0 +1,40 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
 +
++#include <Messenger.h>
 +#include <SupportDefs.h>
 +#include <memory>
 +#include <wtf/Ref.h>
 +
 +namespace API { class PageConfiguration; }
++namespace WebCore { class ResourceRequest; }
 +
 +namespace WebKit {
 +
++class DownloadRegistryHaiku;
++class WebPageProxy;
 +class WebProcessPool;
 +class WebsiteDataStore;
 +
@@ -29107,6 +29844,8 @@ index 0000000000000000000000000000000000000000..01f2a2a46de0d011a4b84742b5774c3f
 +    static std::shared_ptr<WebViewContextHaiku> defaultContext(status_t&);
 +    ~WebViewContextHaiku();
 +    void configure(API::PageConfiguration&) const;
++    const std::shared_ptr<DownloadRegistryHaiku>& downloads() const { return m_downloads; }
++    void download(WebPageProxy&, const WebCore::ResourceRequest&, const BMessenger&);
 +
 +private:
 +    explicit WebViewContextHaiku(Ref<WebsiteDataStore>&&);
@@ -29114,6 +29853,7 @@ index 0000000000000000000000000000000000000000..01f2a2a46de0d011a4b84742b5774c3f
 +
 +    const Ref<WebsiteDataStore> m_dataStore;
 +    const Ref<WebProcessPool> m_processPool;
++    const std::shared_ptr<DownloadRegistryHaiku> m_downloads;
 +};
 +
 +} // namespace WebKit
@@ -29246,7 +29986,7 @@ index 0000000000000000000000000000000000000000..2cdcb470d8fc0e96b7b485eaaba1ab74
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..c0fd7b850f2a31fcd535fc89441f632b30e4d72b
+index 0000000000000000000000000000000000000000..e2bbda7ce05b613263c02901ec4961b7e8999f1f
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
 @@ -0,0 +1,79 @@
@@ -29274,7 +30014,7 @@ index 0000000000000000000000000000000000000000..c0fd7b850f2a31fcd535fc89441f632b
 +
 +enum : uint32_t {
 +    viewFrameHaiku = 'wvfr', viewGeometryHaiku = 'wvge', viewInputHaiku = 'wvin',
-+    viewLoadHaiku = 'wvld', viewBackHaiku = 'wvba', viewForwardHaiku = 'wvfo',
++    viewDownloadHaiku = 'wvdn', viewLoadHaiku = 'wvld', viewBackHaiku = 'wvba', viewForwardHaiku = 'wvfo',
 +    viewReloadHaiku = 'wvrl', viewStopHaiku = 'wvst', viewPresentedHaiku = 'wvpr',
 +    viewCursorHaiku = 'wvcu', viewTooltipHaiku = 'wvtt',
 +    viewFindHaiku = 'wvfi', viewHideFindHaiku = 'wvhf',
@@ -30713,61 +31453,19 @@ rename from Source/WebKitLegacy/WebCoreSupport/WebViewGroup.mm
 rename to Source/WebKitLegacy/WebCoreSupport/WebViewGroup.cpp
 diff --git a/Source/WebKitLegacy/haiku/API/DownloadFilename.h b/Source/WebKitLegacy/haiku/API/DownloadFilename.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..f4b5fe0f1c405c3de9c680fbe5c2073bd41854d7
+index 0000000000000000000000000000000000000000..6b2c031ab9e78c0157d64f6e1c0f488e529d9c73
 --- /dev/null
 +++ b/Source/WebKitLegacy/haiku/API/DownloadFilename.h
-@@ -0,0 +1,51 @@
-+/*
-+ * Copyright (c) 2026 KunanyiOS contributors
-+ * SPDX-License-Identifier: MIT
-+ */
-+
+@@ -0,0 +1,9 @@
++/* Copyright (c) 2026 KunanyiOS contributors. SPDX-License-Identifier: MIT */
 +#pragma once
 +
-+#include <StorageDefs.h>
-+#include <String.h>
-+#include <algorithm>
++#include "../../../WebKit/Shared/haiku/DownloadFilenameHaiku.h"
 +
 +namespace BPrivate {
-+
-+inline BString sanitizedDownloadFilename(const BString& suggested)
-+{
-+    BString name = suggested;
-+    int32 separator = std::max(name.FindLast('/'), name.FindLast('\\'));
-+    if (separator >= 0)
-+        name.Remove(0, separator + 1);
-+    for (int32 i = 0; i < name.Length(); ++i) {
-+        unsigned char byte = name.ByteAt(i);
-+        if (byte < 32 || byte == 127)
-+            name.SetByteAt(i, '_');
-+    }
-+    name.Trim();
-+
-+    // Leave room for a collision counter, and never split a UTF-8 character.
-+    constexpr int32 maximumLength = B_FILE_NAME_LENGTH - 1 - 12;
-+    if (name.Length() > maximumLength) {
-+        int32 length = maximumLength;
-+        while (length && (static_cast<unsigned char>(name.ByteAt(length)) & 0xc0) == 0x80)
-+            --length;
-+        name.Truncate(length);
-+    }
-+    if (name.IsEmpty() || name == "." || name == "..")
-+        return BString("Download");
-+    return name;
++using WebKit::downloadFilenameWithCounter;
++using WebKit::sanitizedDownloadFilename;
 +}
-+
-+inline BString downloadFilenameWithCounter(const BString& sanitizedName, uint32 counter)
-+{
-+    BString base = sanitizedName;
-+    BString extension;
-+    int32 extensionStart = base.FindLast('.');
-+    if (extensionStart > 0)
-+        base.MoveInto(extension, extensionStart, base.Length() - extensionStart);
-+    base << "-" << counter;
-+    return base.Append(extension);
-+}
-+
-+} // namespace BPrivate
 diff --git a/Source/WebKitLegacy/haiku/API/DumpRenderTreeClient.h b/Source/WebKitLegacy/haiku/API/DumpRenderTreeClient.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..6bae00cbadf61b67eccd1e08c699e0299c0f16b8

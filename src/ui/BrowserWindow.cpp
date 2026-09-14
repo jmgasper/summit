@@ -9,6 +9,7 @@
 #include <FilePanel.h>
 #include <FindDirectory.h>
 #include <GroupView.h>
+#include <Invoker.h>
 #include <LayoutBuilder.h>
 #include <ListView.h>
 #include <ListItem.h>
@@ -49,7 +50,6 @@ public:
     }
 };
 
-#if !SUMMIT_MODERN_WEBKIT
 static bool FindDownloads(BPath& path, std::string& error)
 {
     status_t status = find_directory(B_USER_DIRECTORY, &path);
@@ -66,7 +66,6 @@ static bool FindDownloads(BPath& path, std::string& error)
     }
     return true;
 }
-#endif
 
 static void AddItem(BMenu* menu, const char* label, uint32 what, char key = 0, uint32 mods = 0)
 {
@@ -134,9 +133,6 @@ BrowserWindow::BrowserWindow(std::filesystem::path profile, std::string homeURL,
     AddItem(window, "Previous Tab", kPreviousTab);
     AddItem(window, "Downloads", kShowDownloads, 'J');
     menu->AddItem(window);
-#if SUMMIT_MODERN_WEBKIT
-    if (auto* item = menu->FindItem(kShowDownloads)) item->SetEnabled(false);
-#endif
 
     auto* toolbar = new BGroupView(B_HORIZONTAL, 4);
     auto* sidebarButton = new ToolButton("sidebar", "Show / hide sidebar", Icon::Sidebar, kToggleSidebar);
@@ -149,9 +145,6 @@ BrowserWindow::BrowserWindow(std::filesystem::path profile, std::string homeURL,
     fAddress->TextView()->SetAlignment(B_ALIGN_CENTER);
     fAddress->SetToolTip("Search or enter a website address");
     auto* downloadsButton = new ToolButton("downloads", "Open Downloads", Icon::Downloads, kShowDownloads);
-#if SUMMIT_MODERN_WEBKIT
-    downloadsButton->SetEnabled(false);
-#endif
     BLayoutBuilder::Group<>(toolbar)
         .SetInsets(8, 7, 8, 7)
         .Add(sidebarButton).AddStrut(6).Add(fBack).Add(fForward)
@@ -203,7 +196,13 @@ BrowserWindow::BrowserWindow(std::filesystem::path profile, std::string homeURL,
     AddShortcut(B_TAB, B_CONTROL_KEY, new BMessage(kNextTab));
     AddShortcut(B_TAB, B_CONTROL_KEY | B_SHIFT_KEY, new BMessage(kPreviousTab));
     SetSizeLimits(760, 10000, 450, 10000);
-#if !SUMMIT_MODERN_WEBKIT
+#if SUMMIT_MODERN_WEBKIT
+    BPath downloadsPath;
+    std::string downloadsError;
+    if (!FindDownloads(downloadsPath, downloadsError)) ShowError(downloadsError);
+    else if (auto status = fWebKitContext->SetDownloadDirectory(downloadsPath.Path()); status != B_OK)
+        ShowError("Could not configure downloads: " + std::string(std::strerror(status)));
+#else
     BWebPage::SetDownloadListener(BMessenger(this));
 #endif
 
@@ -424,6 +423,7 @@ void BrowserWindow::BeginWindowClose()
     if (fCloseCommitPending) { fWindowCloseQueued = true; return; }
     fWindowCloseQueued = false;
     fWindowCloseInvalidated = false;
+    fDownloadQuitApproved = false;
     // Approval is provisional until every tab agrees. Keep live documents,
     // undo state and the full saved session intact when any tab chooses Stay.
     SaveSession();
@@ -456,6 +456,18 @@ void BrowserWindow::ContinueWindowClose()
     for (auto& tab : fTabs) {
         if (tab.closeApproved) continue;
         StartCloseRequest(tab);
+        return;
+    }
+    if (fDownloadPromptPending) return;
+    if (!fDownloads.empty() && !fDownloadQuitApproved) {
+        auto* reply = new BMessage(kDownloadQuitReply);
+        reply->AddUInt64("generation", ++fDownloadPromptGeneration);
+        auto* prompt = new BAlert("Downloads", "Downloads are still in progress. Quit and cancel them?",
+            "Keep Browsing", "Quit");
+        fDownloadPrompt = BMessenger(prompt);
+        fDownloadPromptPending = true;
+        fClosePromptTab = fSelected;
+        if (prompt->Go(new BInvoker(reply, BMessenger(this))) != B_OK) CancelWindowClose();
         return;
     }
     std::vector<int64> identifiers;
@@ -544,6 +556,11 @@ void BrowserWindow::WebKitCloseCommitted(const BMessage& message)
 
 void BrowserWindow::CancelWindowClose()
 {
+    ++fDownloadPromptGeneration;
+    fDownloadPromptPending = false;
+    fDownloadQuitApproved = false;
+    if (fDownloadPrompt.IsValid()) fDownloadPrompt.SendMessage(B_QUIT_REQUESTED);
+    fDownloadPrompt = BMessenger();
     for (auto& tab : fTabs) {
         tab.closeQueued = tab.closeRequested = tab.closeApproved = false;
         tab.closeFocus.reset();
@@ -699,6 +716,21 @@ void BrowserWindow::MessageReceived(BMessage* message)
     auto* tab = ActiveTab();
     switch (message->what) {
 #if SUMMIT_MODERN_WEBKIT
+        case kDownloadQuitReply: {
+            uint64 generation = 0;
+            int32 which = 0;
+            if (!fClosingWindow || !fDownloadPromptPending
+                || message->FindUInt64("generation", &generation) != B_OK
+                || generation != fDownloadPromptGeneration) break;
+            message->FindInt32("which", &which);
+            fDownloadPromptPending = false;
+            fDownloadPrompt = BMessenger();
+            if (which == 1) {
+                fDownloadQuitApproved = true;
+                ContinueWindowClose();
+            } else CancelWindowClose();
+            break;
+        }
         case kRequestWindowClose: BeginWindowClose(); break;
         case B_WEBKIT_CLOSE_PROMPT: WebKitClosePrompt(*message); break;
         case B_WEBKIT_CLOSE_COMMITTED: WebKitCloseCommitted(*message); break;
@@ -802,7 +834,6 @@ void BrowserWindow::MessageReceived(BMessage* message)
                 if (path.InitCheck() == B_OK) CreateTab(FileURL(path.Path()));
             } break;
         }
-#if !SUMMIT_MODERN_WEBKIT
         case kShowDownloads: {
             BPath path;
             std::string error;
@@ -813,6 +844,7 @@ void BrowserWindow::MessageReceived(BMessage* message)
             if (status != B_OK) ShowError("Could not open Downloads: " + std::string(std::strerror(status)));
             break;
         }
+#if !SUMMIT_MODERN_WEBKIT
         case B_DOWNLOAD_ADDED: {
             BWebDownload* download = nullptr;
             if (message->FindPointer("download", reinterpret_cast<void**>(&download)) != B_OK || !download) break;
@@ -849,9 +881,39 @@ void BrowserWindow::MessageReceived(BMessage* message)
             message->SendReply(B_REPLY); break;
         }
 #else
-        case kShowDownloads:
-            fStatus->SetText("Downloads are not available yet.");
+        case B_WEBKIT_DOWNLOAD_STARTED: {
+            uint64 identifier = 0;
+            if (message->FindUInt64("identifier", &identifier) != B_OK || !identifier) break;
+            fDownloads.insert(identifier);
+            fStatus->SetText("Downloading to your Downloads folder…");
             break;
+        }
+        case B_WEBKIT_DOWNLOAD_PROGRESS: {
+            uint64 current = 0;
+            message->FindUInt64("current_size", &current);
+            std::string status = "Downloaded " + std::to_string(current / 1024) + " KiB";
+            fStatus->SetText(status.c_str());
+            break;
+        }
+        case B_WEBKIT_DOWNLOAD_FINISHED: {
+            uint64 identifier = 0;
+            uint32 result = B_WEBKIT_DOWNLOAD_FAILED;
+            if (message->FindUInt64("identifier", &identifier) != B_OK || !identifier) break;
+            fDownloads.erase(identifier);
+            message->FindUInt32("result", &result);
+            if (result == B_WEBKIT_DOWNLOAD_SUCCEEDED)
+                fStatus->SetText("Download complete — open Downloads to view the file");
+            else if (result == B_WEBKIT_DOWNLOAD_CANCELLED)
+                fStatus->SetText("Download cancelled");
+            else {
+                const char* description = nullptr;
+                message->FindString("error_description", &description);
+                std::string status = "Download failed";
+                if (description && *description) status += ": " + std::string(description);
+                fStatus->SetText(status.c_str());
+            }
+            break;
+        }
         case B_WEBKIT_STATE_CHANGED: case B_WEBKIT_PROCESS_EXITED:
             WebKitStateChanged(*message);
             break;
@@ -886,6 +948,7 @@ void BrowserWindow::MessageReceived(BMessage* message)
             reply.AddString("status", fStatus->Text());
 #if SUMMIT_MODERN_WEBKIT
             reply.AddString("backend", "modern");
+            reply.AddInt32("download_count", fDownloads.size());
             reply.AddBool("closing", fClosingWindow || fWindowCloseQueued || fCloseCommitPending
                 || std::any_of(fTabs.begin(), fTabs.end(), [](const Tab& tab) {
                     return tab.closeRequested || tab.closeQueued || tab.closeApproved;

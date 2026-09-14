@@ -668,6 +668,52 @@ checks; a declared local library alias is preserved. Git-mandated CRLF working
 tree files are checked against their normalized index blobs while their exact
 archived bytes retain separate SHA-256 digests.
 
+Modern downloads now compile and run with patch
+`53450f6f151527b8b1eafdc664c6867b232967589e5baaf06ff7b21d13022f33`.
+The context registry owns download proxies, emits value-only native events,
+chooses sanitized non-overwriting destinations, handles cancellation and
+releases entries on network-process failure. Application-owned notifications
+keep the listener alive while views close. The browser enables Downloads,
+reports progress/results and waits for cancellation replies before shutdown.
+The download quit prompt follows provisional page approvals; Keep Browsing
+resets them without losing edits or address selection.
+
+The API bundle `bundle-u1jofxlx` passes **eight real HTTP download scenarios,
+180 checks**, with normal exit: explicit transfer, colliding attachment,
+unsupported MIME response, progress/cancel/partial-file removal, truncated
+response, deliberate interruption of its verified owned NetworkProcess,
+subsequent recovery and completion after the originating view closes. The
+shared filename helper passes **16 native checks**. The full-browser bundle
+`bundle-lb1k0wql` passes **59 native UI checks**, including a trusted HTML
+`download` link, exact saved bytes, real page and download quit prompts,
+preserved edited document identity and address selection after cancellation,
+fresh page approval on the next quit, cancellation drain and normal browser
+exit with the partial file removed. Both bundles contain the same engine patch.
+The same full-browser bundle also passes the existing **143 close checks** and
+**12 context-storage stages**. The legacy app still builds and its **38 native
+core checks** pass.
+
+The first combined HTML-link fixture clicked before its second same-named
+page finished navigating. That failed test is preserved; its browser required
+forced cleanup and it is not counted as a pass. The harness now observes a new
+document instance before interacting. Its uniquely named completed test file
+was removed only after verifying the expected body. Evidence:
+
+- `.vm/modern-download-registry-build.log`
+- `.vm/modern-download-filename-tests.log`
+- `.vm/modern-downloads-b57427e749df55f2fc6642c5/result.json`
+- `.vm/modern-downloads-d93d31817cde3ee4ae0a1a8b/result.json`
+- `.vm/modern-downloads-b02fdd46b65c824ebe07e78f/result.json` (failed fixture)
+- `.vm/modern-download-failed-fixture-cleanup.json`
+- `.vm/modern-close-78988a46ca7a790a339b07dd/result.json`
+- `.vm/modern-context-b710a2e287b0485f2374e2b5/result.json`
+- `.vm/modern-download-legacy-build-tests.log`
+
+A killed network process can leave an incomplete destination file; the tested
+crash reports failure and releases the registry entry, but does not restore or
+remove that file. Pause/resume, persistent download management and crash
+recovery remain unfinished. See [the download notes](modern-downloads.md).
+
 These results do not establish complete web-platform or extension compatibility.
 
 The native HTML select popup adapter compiles and its real widget passes

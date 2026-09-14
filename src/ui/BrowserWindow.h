@@ -9,6 +9,7 @@
 #include <Messenger.h>
 #include <memory>
 #include <optional>
+#include <set>
 #include <vector>
 
 class BCardLayout;
@@ -118,6 +119,11 @@ private:
     uint64 fSelectionGeneration = 0;
     int64 fClosePromptTab = 0;
     std::optional<CloseFocusState> fWindowCloseFocus;
+    std::set<uint64> fDownloads;
+    BMessenger fDownloadPrompt;
+    uint64 fDownloadPromptGeneration = 0;
+    bool fDownloadQuitApproved = false;
+    bool fDownloadPromptPending = false;
 #else
     Tab* FindTab(BWebView* view);
 #endif
