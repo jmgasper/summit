@@ -1613,3 +1613,11 @@ observer runtime was executed. SDK/toolbar integration, clicks, popups and the
 JavaScript action API remain unfinished. See [action-state evidence and
 limits](webextensions-native-action-state.md).
 Patch: `dc4675d8cdc40b87b0e5134c6d09fb58c5f2dfc2880d968d3bc98f8dd2282475`.
+
+2026-09-15 (local) fifteenth full extension link result: the frozen `61626a3e...`
+build compiles native permission changes and reaches the WebKit library link.
+The two permission callbacks resolve, reducing missing symbols from 23 to 21,
+with no new missing symbols. Evidence:
+`.vm/modern-extensions-native-permissions-build-result.json`.
+This build predates the native action-state patch. No feature-enabled engine
+link or extension runtime passed.

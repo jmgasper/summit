@@ -44,3 +44,9 @@ in place and were not compiled by these checks. No extension has run in Summit.
 
 Promoted patch: `61626a3e1a2fcb8cf9b87008c6543921fa3b338666873e55df51254c11dbeaf5`.
 Probe baseline: `a2a94c217a4b41946fcaf638ff43a297e4a23723b6ab92c148fa88d0f20ae82b`.
+
+The full feature-enabled build of this patch reached the WebKit shared-library
+link. Both permission-change callbacks resolved; the link failed with 21 missing
+symbols, down from 23, and none newly introduced. Evidence:
+`.vm/modern-extensions-native-permissions-build-result.json` and its recorded
+build-log hash. This build predates the later native action-state patch.
