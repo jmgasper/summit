@@ -1011,3 +1011,16 @@ sources and rebuild inputs. Copy provenance SHA-256:
 `2afb85bbcb6566bca96340d22b72eb9fdb9159c3f892f765d24417eb9470487d`.
 Evidence: `.vm/modern-load-errors-bundle-copy.log` and the artifact's
 `copy-provenance.json`.
+
+
+2026-09-14 extension lifecycle port: the native context header now supplies
+WebPageProxy/API configuration/navigation types and JSON state ownership.
+Five common controller/context/process-pool/proxy units compile with both
+extension features enabled in an isolated configuration. The C++ process
+context lifecycle, permission expiry, localization and page tracking moved
+from Cocoa into the common source and passed a final native compile.
+The normal browser still has extensions disabled; no extension executes.
+A separate full feature-enabled source/build tree is being compiled through
+`tools/build-webkit-in-vm.sh --modern-extensions all`. Native controller/context,
+resource serving, bindings and browser delegates remain unfinished.
+Compile evidence and exact limits: [native integration](webextensions-native-integration.md).
