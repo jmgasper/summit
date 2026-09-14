@@ -20,10 +20,12 @@ EXTRA_UNITS = ('haiku/WebExtensionContextBackgroundHaiku.cpp', 'haiku/WebExtensi
                'haiku/WebExtensionStateHaiku.cpp', 'Bindings/JSWebExtensionWrapper.cpp',
                'Bindings/JSWebExtensionMessageReply.cpp', 'Bindings/JSWebExtensionString.cpp',
                'Bindings/JSWebExtensionTabParameters.cpp',
-               'API/WebExtensionAPINamespace.cpp', 'API/WebExtensionAPIRuntime.cpp',
+               'API/WebExtensionAPINamespace.cpp', 'API/WebExtensionAPIWebPageNamespace.cpp',
+               'API/WebExtensionAPIRuntime.cpp',
                'API/WebExtensionAPIEvent.cpp', 'API/WebExtensionAPIPort.cpp')
 GENERATED_UNITS = ('WebExtensionContextMessageReceiver.cpp', 'WebExtensionContextProxyMessageReceiver.cpp')
-BINDING_UNITS = ('JSWebExtensionAPIEvent.cpp', 'JSWebExtensionAPIPort.cpp')
+BINDING_UNITS = ('JSWebExtensionAPIEvent.cpp', 'JSWebExtensionAPIPort.cpp',
+                 'JSWebExtensionAPINamespace.cpp', 'JSWebExtensionAPIWebPageNamespace.cpp')
 PAGE_UNITS = {'WebPage.cpp': 'WebProcess/WebPage/WebPage.cpp',
               'WebLocalFrameLoaderClient.cpp': 'WebProcess/WebCoreSupport/WebLocalFrameLoaderClient.cpp'}
 NATIVE_PAGE_UNITS = {'WebPageProxy.cpp': 'UIProcess/WebPageProxy.cpp',

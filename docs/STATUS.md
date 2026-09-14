@@ -1347,3 +1347,21 @@ No page association or popup/tab delegate was exercised at runtime.
 
 Patch: `b85b0ea4c1b19d2bf6b0c421e1916c5a7d90e6f183f0888f1995bd4320763101`.
 The full build remains frozen on `7f17d7a6...`.
+
+
+2026-09-14 third full extension link result: the `7f17d7a6...` build completed
+compilation and failed at the WebKit shared-library link with 57 distinct
+missing symbols. All eight storage/helper symbols targeted since the prior
+attempt are resolved, with no additional unresolved symbols. Record:
+`.vm/modern-extensions-storage-helpers-build-result.json`. Navigation/cookie
+forwarding and page associations were added after this attempt's source
+freeze. No feature-enabled WebKit link or extension runtime passed.
+
+2026-09-14 runtime namespace gates: the extension and webpage namespace
+bindings now expose their existing runtime getters on Haiku. Both generated
+bindings and both C++ namespace units compile. A native object-symbol audit
+confirms that the getters are present in the new objects and absent from the
+previous full build. See [namespace evidence](webextensions-native-runtime-namespaces.md).
+No `browser.runtime` call or external message was executed.
+
+Patch: `75a0dfd1b1212c05e00e58ec22cd613289a90ac45284517fe47803024adf3b70`.

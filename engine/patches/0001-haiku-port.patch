@@ -37106,6 +37106,46 @@ index cb3eac4c0a556a9fe000ece79903aa86b9fd69c7..686a8e8dfca9ecb8f8adc15e34a26a49
  void WebExtensionContextProxy::dispatchRuntimeMessageEvent(WebExtensionContentWorldType contentWorldType, const String& messageJSON, const std::optional<WebExtensionMessageTargetParameters>& targetParameters, const WebExtensionMessageSenderParameters& senderParameters, bool userGesture, CompletionHandler<void(String&& replyJSON)>&& completionHandler)
  {
      switch (contentWorldType) {
+diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIWebPageNamespace.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIWebPageNamespace.cpp
+index ea08fca0526758a0ad4fc578a8dfb8d463b1f39f..150680554f7c6066f37023e7c057ff09b42458f2 100644
+--- a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIWebPageNamespace.cpp
++++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIWebPageNamespace.cpp
+@@ -51,7 +51,6 @@ bool WebExtensionAPIWebPageNamespace::isPropertyAllowed(const ASCIILiteral& name
+     return false;
+ }
+ 
+-#if PLATFORM(COCOA)
+ WebExtensionAPIWebPageRuntime& WebExtensionAPIWebPageNamespace::runtime() const
+ {
+     // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/runtime
+@@ -63,7 +62,6 @@ WebExtensionAPIWebPageRuntime& WebExtensionAPIWebPageNamespace::runtime() const
+ 
+     return *m_runtime;
+ }
+-#endif
+ 
+ WebExtensionAPITest& WebExtensionAPIWebPageNamespace::test()
+ {
+diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIWebPageNamespace.h b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIWebPageNamespace.h
+index 9326c5f3a4221165ce0ec92abca55dffc0b76498..6dc9f80e6bc271725d4b6db0c040581a6086da44 100644
+--- a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIWebPageNamespace.h
++++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIWebPageNamespace.h
+@@ -42,15 +42,11 @@ class WebExtensionAPIWebPageNamespace : public WebExtensionAPIObject, public JSW
+ 
+ public:
+     bool isPropertyAllowed(const ASCIILiteral& propertyName, WebPage*);
+-#if PLATFORM(COCOA)
+     WebExtensionAPIWebPageRuntime& runtime() const;
+-#endif
+     WebExtensionAPITest& test();
+ 
+ private:
+-#if PLATFORM(COCOA)
+     mutable RefPtr<WebExtensionAPIWebPageRuntime> m_runtime;
+-#endif
+     RefPtr<WebExtensionAPITest> m_test;
+ };
+ 
 diff --git a/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionMessageReply.cpp b/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionMessageReply.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..4c9c0127c6fc188e5243ea2ef28c866ca7787a30
@@ -38081,6 +38121,19 @@ index 25491a911534c611ab59ab4725e41bafeb93894d..d1c62c9c4082a2e4856f1861dde93535
  ] interface WebExtensionAPIEvent {
  
      [NeedsFrameIdentifier] void addListener([CallbackHandler] function listener);
+diff --git a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPINamespace.idl b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPINamespace.idl
+index 8fd7a8880207871662fb33d5b56dcf2fde2dfbc4..73958379daa64f143518e25ccc40199a40e4afdc 100644
+--- a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPINamespace.idl
++++ b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPINamespace.idl
+@@ -57,7 +57,7 @@
+ 
+     [Dynamic, Platform=COCOA] readonly attribute WebExtensionAPILocalization i18n;
+ 
+-    [Dynamic, Platform=COCOA] readonly attribute WebExtensionAPIRuntime runtime;
++    [Dynamic] readonly attribute WebExtensionAPIRuntime runtime;
+ 
+     [MainWorldOnly, Dynamic, Platform=COCOA] readonly attribute WebExtensionAPIMenus menus;
+ 
 diff --git a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIPort.idl b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIPort.idl
 index 2bbcb63b2c07fe3a4ce7209f1a695bfaa02fa81b..7792395c89740e7f4e6e0d4c70a5a42bba47fb35 100644
 --- a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIPort.idl
@@ -38101,6 +38154,19 @@ index 2bbcb63b2c07fe3a4ce7209f1a695bfaa02fa81b..7792395c89740e7f4e6e0d4c70a5a42b
      void disconnect();
  
      readonly attribute WebExtensionAPIEvent onDisconnect;
+diff --git a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIWebPageNamespace.idl b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIWebPageNamespace.idl
+index 6ff72b2f8384cb74d83d6ce24e287fc09a75cdf8..f461cb4b3d816d2d95e3b1c71c92c47554e55900 100644
+--- a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIWebPageNamespace.idl
++++ b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIWebPageNamespace.idl
+@@ -29,7 +29,7 @@
+     UseCPPAPI,
+ ] interface WebExtensionAPIWebPageNamespace {
+ 
+-    [Platform=COCOA] readonly attribute WebExtensionAPIWebPageRuntime runtime;
++    readonly attribute WebExtensionAPIWebPageRuntime runtime;
+     [Dynamic] readonly attribute WebExtensionAPITest test;
+ 
+ };
 diff --git a/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.cpp b/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.cpp
 index 2b2ff5395e73b7978dc8b610d62ffe835fc1a886..e9215d1ae97db698219770ee06d8a0ea6a86bb56 100644
 --- a/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.cpp

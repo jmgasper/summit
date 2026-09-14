@@ -296,7 +296,8 @@ API families, with helpers under `Helpers/cocoa/WebExtensionUtilities.mm`.
 Port their assertions and fixtures to the native embedding while retaining
 API behavior; merely reproducing the small GLib test surface would leave most
 of the browser's requested extension compatibility unverified.
-# Common popup and tab page associations
+
+## Common popup and tab page associations
 
 The context now builds popup/tab page identifier tuples and registers popup
 and extension-tab pages in common C++. These four bodies are unchanged from
