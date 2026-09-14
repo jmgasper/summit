@@ -1293,3 +1293,21 @@ script removal or injection was exercised. See
 Patch: `d5c9a8c180f514ddebb4d39392d4df6b08873769d9e3f733c82b615afb0d6aa8`.
 The full build remains frozen on `1b839dea...`, now finishing WebProcess
 compilation. No feature-enabled WebKit link has passed.
+
+
+2026-09-14 second full extension link result: the build on `1b839dea...`
+completed compilation and failed at the WebKit shared-library link with 65
+distinct missing symbols. Nineteen symbols from the prior attempt are
+resolved; two additional dependencies are exposed. The detailed record is
+`.vm/modern-extensions-native-runtime-build-result.json`. The cache mapping,
+store path, promise and script-ownership fixes landed after this build's
+source freeze and were not included. No extension runtime was reached.
+
+The DNR database now limits its old NSKeyedArchiver migration to Cocoa,
+matching the existing registered-script store. Haiku uses the common schema
+version handling: current JSON databases are retained, and unsupported old
+schemas are reset. This does not import legacy Apple archive data.
+The actual DNR store compiles natively with both extension flags enabled;
+`.vm/extension-lifecycle-inputs.GM67iVUr/result.json` records unchanged inputs
+and configuration. Database migration has not been exercised at runtime.
+Patch: `7be92cbcfb08a29914cf9f58eed2197bd4dd20f7f8755f10f88f5cb3b877a284`.

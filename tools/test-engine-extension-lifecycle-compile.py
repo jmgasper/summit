@@ -13,6 +13,7 @@ import tarfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 UNITS = ('WebExtensionController.cpp', 'WebExtensionContext.cpp',
+         'WebExtensionDeclarativeNetRequestSQLiteStore.cpp',
          'WebExtensionMatchPatternProcessPool.cpp', 'WebExtensionContextProxy.cpp',
          'WebExtensionControllerProxy.cpp')
 EXTRA_UNITS = ('haiku/WebExtensionContextBackgroundHaiku.cpp', 'haiku/WebExtensionURLSchemeHandlerHaiku.cpp', 'haiku/WebExtensionContextHaiku.cpp',
