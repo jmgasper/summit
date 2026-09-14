@@ -37106,10 +37106,19 @@ index 0000000000000000000000000000000000000000..4a70ba007eb5858d0e26eb8ab5e4438d
 +
 +#endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionWrapper.cpp b/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionWrapper.cpp
-index 674db48c5a30980a9ccbe359eeb67e6a7a65c1d2..db445cd9c63f41e7f01579ce3cf0f55b4e3200ff 100644
+index 674db48c5a30980a9ccbe359eeb67e6a7a65c1d2..04c614603f5e48c029515b4e84286c55c9801c4f 100644
 --- a/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionWrapper.cpp
 +++ b/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionWrapper.cpp
-@@ -102,7 +102,7 @@ WebExtensionCallbackHandler::~WebExtensionCallbackHandler()
+@@ -42,6 +42,8 @@
+ #include <WebCore/JSDOMExceptionHandling.h>
+ #include <WebCore/JSDOMGlobalObject.h>
+ 
++#include <wtf/text/StringBuilder.h>
++
+ namespace WebKit {
+ 
+ Ref<WebExtensionCallbackHandler> WebExtensionCallbackHandler::create(JSContextRef context, JSObjectRef resolveFunction, JSObjectRef rejectFunction)
+@@ -102,7 +104,7 @@ WebExtensionCallbackHandler::~WebExtensionCallbackHandler()
  JSValueRef WebExtensionCallbackHandler::callbackFunction() const
  {
      if (!m_globalContext || !m_callbackFunction)
@@ -37118,7 +37127,7 @@ index 674db48c5a30980a9ccbe359eeb67e6a7a65c1d2..db445cd9c63f41e7f01579ce3cf0f55b
  
      return m_callbackFunction;
  }
-@@ -223,16 +223,7 @@ String toString(JSContextRef context, JSValueRef value, NullStringPolicy nullStr
+@@ -223,16 +225,7 @@ String toString(JSContextRef context, JSValueRef value, NullStringPolicy nullStr
          JSRetainPtr string(Adopt, JSValueToStringCopy(context, value, 0));
          return toString(string.get());
      }
@@ -37136,6 +37145,61 @@ index 674db48c5a30980a9ccbe359eeb67e6a7a65c1d2..db445cd9c63f41e7f01579ce3cf0f55b
  }
  
  JSValueRef toWindowObject(JSContextRef context, WebFrame& frame)
+@@ -553,6 +546,54 @@ String toJSONString(JSContextRef context, JSValueRef value)
+     return serializeJSObject(context, value, nullptr);
+ }
+ 
++#if !PLATFORM(COCOA)
++static void writeSortedJSON(JSON::Value& value, StringBuilder& output)
++{
++    if (RefPtr object = value.asObject()) {
++        auto keys = object->keys();
++        std::ranges::sort(keys, codePointCompareLessThan);
++        output.append('{');
++        bool first = true;
++        for (auto& key : keys) {
++            if (!std::exchange(first, false))
++                output.append(',');
++            output.appendQuotedJSONString(key);
++            output.append(':');
++            writeSortedJSON(*object->getValue(key), output);
++        }
++        output.append('}');
++        return;
++    }
++
++    if (RefPtr array = value.asArray()) {
++        output.append('[');
++        bool first = true;
++        for (Ref item : *array) {
++            if (!std::exchange(first, false))
++                output.append(',');
++            writeSortedJSON(item, output);
++        }
++        output.append(']');
++        return;
++    }
++
++    value.writeJSON(output);
++}
++
++String toSortedJSONString(JSContextRef context, JSValueRef value)
++{
++    // Let JavaScriptCore apply JSON serialization semantics once, including
++    // getters and toJSON, before ordering the resulting object keys.
++    RefPtr json = JSON::Value::parseJSON(toJSONString(context, value));
++    if (!json)
++        return nullString();
++
++    StringBuilder output;
++    writeSortedJSON(*json, output);
++    return output.toString();
++}
++#endif // !PLATFORM(COCOA)
++
+ bool isFunction(JSContextRef context, JSValueRef value)
+ {
+     if (!context || !value || !JSValueIsObject(context, value))
 diff --git a/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionWrapper.h b/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionWrapper.h
 index 635dec16788ebb4331ed128000b7123c8d6814e8..70248ca4aab1a86f99ae62a6a82aa6e312b110ce 100644
 --- a/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionWrapper.h

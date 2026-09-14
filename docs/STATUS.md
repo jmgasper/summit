@@ -1311,3 +1311,13 @@ The actual DNR store compiles natively with both extension flags enabled;
 `.vm/extension-lifecycle-inputs.GM67iVUr/result.json` records unchanged inputs
 and configuration. Database migration has not been exercised at runtime.
 Patch: `7be92cbcfb08a29914cf9f58eed2197bd4dd20f7f8755f10f88f5cb3b877a284`.
+
+
+2026-09-14 sorted JSON helper: native extension test reporting can now
+serialize JS values with recursively sorted object keys. All 28 native
+checks pass, including JSON semantics, Unicode, getters, `toJSON`, errors,
+precision and collection. The actual wrapper also compiles with both
+extension features enabled. See [evidence](webextensions-native-sorted-json.md).
+No extension test API or IPC runtime was exercised.
+
+Patch: `7f17d7a6cc8b598ce1774299459c0e953e5002f938c75db14201bced7aff9029`.
