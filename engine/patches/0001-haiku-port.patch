@@ -20413,10 +20413,10 @@ index efb0e18ef3681d9f33b6c784f0fb22f1ff0e80eb..19ec94335716b9ab75d52343c7adcad7
  
      undefined setTopDocumentURLForQuirks(DOMString urlString);
 diff --git a/Source/WebKit/CMakeLists.txt b/Source/WebKit/CMakeLists.txt
-index e516087e3331311877a49df982704f642f6dffe9..c7679747311c58087ee643b29975e91c7b5e0622 100644
+index e516087e3331311877a49df982704f642f6dffe9..e71249248ec7b71be537d12a2631d106053657a9 100644
 --- a/Source/WebKit/CMakeLists.txt
 +++ b/Source/WebKit/CMakeLists.txt
-@@ -153,14 +153,12 @@ set(WebKit_BINDINGS_IN_FILES
+@@ -153,19 +153,15 @@ set(WebKit_BINDINGS_IN_FILES
      WebProcess/Extensions/Interfaces/WebExtensionAPIDevToolsInspectedWindow
      WebProcess/Extensions/Interfaces/WebExtensionAPIDevToolsNetwork
      WebProcess/Extensions/Interfaces/WebExtensionAPIDevToolsPanels
@@ -20431,10 +20431,17 @@ index e516087e3331311877a49df982704f642f6dffe9..c7679747311c58087ee643b29975e91c
      WebProcess/Extensions/Interfaces/WebExtensionAPIScripting
      WebProcess/Extensions/Interfaces/WebExtensionAPISidePanel
      WebProcess/Extensions/Interfaces/WebExtensionAPISidebarAction
-@@ -176,8 +174,10 @@ set(WebKit_BINDINGS_IN_FILES
+-    WebProcess/Extensions/Interfaces/WebExtensionAPIStorage
+-    WebProcess/Extensions/Interfaces/WebExtensionAPIStorageArea
+     WebProcess/Extensions/Interfaces/WebExtensionAPITabs
+     WebProcess/Extensions/Interfaces/WebExtensionAPIWebNavigation
+     WebProcess/Extensions/Interfaces/WebExtensionAPIWebNavigationEvent
+@@ -176,8 +172,12 @@ set(WebKit_BINDINGS_IN_FILES
  )
  
  set(WebKit_CPP_BINDINGS_IN_FILES
++    WebProcess/Extensions/Interfaces/WebExtensionAPIStorage
++    WebProcess/Extensions/Interfaces/WebExtensionAPIStorageArea
 +    WebProcess/Extensions/Interfaces/WebExtensionAPIEvent
      WebProcess/Extensions/Interfaces/WebExtensionAPIAlarms
      WebProcess/Extensions/Interfaces/WebExtensionAPINamespace
@@ -24584,7 +24591,7 @@ index 0000000000000000000000000000000000000000..964df248231137e87da9c37afbb37b84
 +}
 +#endif
 diff --git a/Source/WebKit/Sources.txt b/Source/WebKit/Sources.txt
-index e229fa1ae53c6c89e7534316dd06a7c5bfec5330..58a90146d07af47e234db65e7df441dd4f59fade 100644
+index e229fa1ae53c6c89e7534316dd06a7c5bfec5330..2d1d004eafb05cb4f776887702055388c553ef23 100644
 --- a/Source/WebKit/Sources.txt
 +++ b/Source/WebKit/Sources.txt
 @@ -321,6 +321,7 @@ Shared/Extensions/WebExtensionSQLiteRow.cpp
@@ -24614,7 +24621,7 @@ index e229fa1ae53c6c89e7534316dd06a7c5bfec5330..58a90146d07af47e234db65e7df441dd
  UIProcess/Extensions/WebExtensionStorageSQLiteStore.cpp
  
  UIProcess/Extensions/API/WebExtensionContextAPIAlarms.cpp
-@@ -713,11 +721,17 @@ WebProcess/Extensions/WebExtensionContextProxy.cpp
+@@ -713,11 +721,20 @@ WebProcess/Extensions/WebExtensionContextProxy.cpp
  WebProcess/Extensions/WebExtensionControllerProxy.cpp
  
  WebProcess/Extensions/API/WebExtensionAPIAlarms.cpp
@@ -24622,10 +24629,13 @@ index e229fa1ae53c6c89e7534316dd06a7c5bfec5330..58a90146d07af47e234db65e7df441dd
  WebProcess/Extensions/API/WebExtensionAPIRuntime.cpp
  WebProcess/Extensions/API/WebExtensionAPINamespace.cpp
 +WebProcess/Extensions/API/WebExtensionAPIPort.cpp
++WebProcess/Extensions/API/WebExtensionAPIStorage.cpp
++WebProcess/Extensions/API/WebExtensionAPIStorageArea.cpp
  WebProcess/Extensions/API/WebExtensionAPITest.cpp
  WebProcess/Extensions/API/WebExtensionAPIWebPageNamespace.cpp
  
 +WebProcess/Extensions/Bindings/JSWebExtensionMessageReply.cpp
++WebProcess/Extensions/Bindings/JSWebExtensionStorageValues.cpp
 +WebProcess/Extensions/Bindings/JSWebExtensionString.cpp
 +WebProcess/Extensions/Bindings/JSWebExtensionTabParameters.cpp
 +
@@ -29132,10 +29142,10 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..b8ee9316aa4dc8ed7ce45385fc595349
      NativePortMap m_nativePortMap;
  
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in
-index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..2131f66cf008895c839c3703cbb8a3628164b6db 100644
+index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..6170ebce4aacfcfd399c77298f0e1e1b6a6d77d1 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in
-@@ -31,10 +31,24 @@
+@@ -31,10 +31,33 @@
      DispatchedTo=UI
  ]
  messages -> WebExtensionContext {
@@ -29156,12 +29166,21 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..2131f66cf008895c839c3703cbb8a362
 +    // Port APIs
 +    [Validator=isLoaded] PortPostMessage(WebKit::WebExtensionContentWorldType sourceContentWorldType, WebKit::WebExtensionContentWorldType targetContentWorldType, std::optional<WebKit::WebPageProxyIdentifier> sendingPageProxyIdentifier, WebKit::WebExtensionPortChannelIdentifier channelIdentifier, String messageJSON, bool userGesture)
 +    [Validator=isLoaded] PortRemoved(WebKit::WebExtensionContentWorldType sourceContentWorldType, WebKit::WebExtensionContentWorldType targetContentWorldType, WebKit::WebPageProxyIdentifier pageProxyIdentifier, WebKit::WebExtensionPortChannelIdentifier channelIdentifier)
++
++    // Storage APIs
++    [Validator=isStorageMessageAllowed] StorageGet(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, WebKit::WebExtensionDataType dataType, Vector<String> keys) -> (std::expected<Vector<String>, WebKit::WebExtensionError> result)
++    [Validator=isStorageMessageAllowed] StorageGetKeys(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, WebKit::WebExtensionDataType dataType) -> (std::expected<Vector<String>, WebKit::WebExtensionError> result)
++    [Validator=isStorageMessageAllowed] StorageGetBytesInUse(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, WebKit::WebExtensionDataType dataType, Vector<String> keys) -> (std::expected<uint64_t, WebKit::WebExtensionError> result)
++    [Validator=isStorageMessageAllowed] StorageSet(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, WebKit::WebExtensionDataType dataType, String dataJSON) -> (std::expected<void, WebKit::WebExtensionError> result)
++    [Validator=isStorageMessageAllowed] StorageRemove(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, WebKit::WebExtensionDataType dataType, Vector<String> keys) -> (std::expected<void, WebKit::WebExtensionError> result)
++    [Validator=isStorageMessageAllowed] StorageClear(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, WebKit::WebExtensionDataType dataType) -> (std::expected<void, WebKit::WebExtensionError> result)
++    [Validator=isStorageMessageAllowed] StorageSetAccessLevel(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, WebKit::WebExtensionDataType dataType, WebKit::WebExtensionStorageAccessLevel accessLevel) -> (std::expected<void, WebKit::WebExtensionError> result)
  
 +#if PLATFORM(COCOA)
      // Action APIs
      [Validator=isActionMessageAllowed] ActionGetTitle(std::optional<WebKit::WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier) -> (std::expected<String, WebKit::WebExtensionError> result)
      [Validator=isActionMessageAllowed] ActionSetTitle(std::optional<WebKit::WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, String title) -> (std::expected<void, WebKit::WebExtensionError> result)
-@@ -100,8 +114,6 @@ messages -> WebExtensionContext {
+@@ -100,8 +123,6 @@ messages -> WebExtensionContext {
  #endif
  
      // Event APIs
@@ -29170,7 +29189,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..2131f66cf008895c839c3703cbb8a362
  
      // Extensions APIs
      [Validator=isLoaded] ExtensionIsAllowedIncognitoAccess() -> (bool result)
-@@ -125,20 +137,10 @@ messages -> WebExtensionContext {
+@@ -125,20 +146,10 @@ messages -> WebExtensionContext {
      [Validator=isLoaded] PermissionsRequest(HashSet<String> permissions, HashSet<String> origins) -> (bool success)
      [Validator=isLoaded] PermissionsRemove(HashSet<String> permissions, HashSet<String> origins) -> (bool success)
  
@@ -29191,6 +29210,22 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..2131f66cf008895c839c3703cbb8a362
  
      // Scripting APIs
      [Validator=isScriptingMessageAllowed] ScriptingExecuteScript(WebKit::WebExtensionScriptInjectionParameters parameters, bool userGesture) -> (std::expected<Vector<WebKit::WebExtensionScriptInjectionResultParameters>, WebKit::WebExtensionError> result)
+@@ -165,15 +176,6 @@ messages -> WebExtensionContext {
+     [Validator=isSidebarMessageAllowed] SidebarGetActionClickBehavior() -> (std::expected<WebKit::WebExtensionActionClickBehavior, WebKit::WebExtensionError> result)
+ #endif // ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
+ 
+-    // Storage APIs
+-    [Validator=isStorageMessageAllowed] StorageGet(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, WebKit::WebExtensionDataType dataType, Vector<String> keys) -> (std::expected<Vector<String>, WebKit::WebExtensionError> result)
+-    [Validator=isStorageMessageAllowed] StorageGetKeys(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, WebKit::WebExtensionDataType dataType) -> (std::expected<Vector<String>, WebKit::WebExtensionError> result)
+-    [Validator=isStorageMessageAllowed] StorageGetBytesInUse(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, WebKit::WebExtensionDataType dataType, Vector<String> keys) -> (std::expected<uint64_t, WebKit::WebExtensionError> result)
+-    [Validator=isStorageMessageAllowed] StorageSet(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, WebKit::WebExtensionDataType dataType, String dataJSON) -> (std::expected<void, WebKit::WebExtensionError> result)
+-    [Validator=isStorageMessageAllowed] StorageRemove(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, WebKit::WebExtensionDataType dataType, Vector<String> keys) -> (std::expected<void, WebKit::WebExtensionError> result)
+-    [Validator=isStorageMessageAllowed] StorageClear(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, WebKit::WebExtensionDataType dataType) -> (std::expected<void, WebKit::WebExtensionError> result)
+-    [Validator=isStorageMessageAllowed] StorageSetAccessLevel(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, WebKit::WebExtensionDataType dataType, WebKit::WebExtensionStorageAccessLevel accessLevel) -> (std::expected<void, WebKit::WebExtensionError> result)
+-
+     // Tabs APIs
+     [Validator=isLoadedAndPrivilegedMessage] TabsCreate(std::optional<WebKit::WebPageProxyIdentifier> webPageProxyIdentifier, WebKit::WebExtensionTabParameters creationParameters) -> (std::expected<std::optional<WebKit::WebExtensionTabParameters>, WebKit::WebExtensionError> result)
+     [Validator=isLoadedAndPrivilegedMessage] TabsUpdate(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, WebKit::WebExtensionTabParameters updateParameters) -> (std::expected<std::optional<WebKit::WebExtensionTabParameters>, WebKit::WebExtensionError> result)
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionController.cpp b/Source/WebKit/UIProcess/Extensions/WebExtensionController.cpp
 index 06cec0eb534d3f51d3a04e7ea3b68ac347c6a2cf..f0a9e6fafa0e1d0b06efd7057802f497e99b2118 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionController.cpp
@@ -35557,7 +35592,7 @@ index 0000000000000000000000000000000000000000..2a51b2913800fada0f6279c8919bc190
 +
 +} // namespace WebKit
 diff --git a/Source/WebKit/WebKit.xcodeproj/project.pbxproj b/Source/WebKit/WebKit.xcodeproj/project.pbxproj
-index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..7503594aa9d76907c65a26b2c136ddfb261130e8 100644
+index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ca16da54faa36f519593b47fda2a0bcaa5238edc 100644
 --- a/Source/WebKit/WebKit.xcodeproj/project.pbxproj
 +++ b/Source/WebKit/WebKit.xcodeproj/project.pbxproj
 @@ -540,6 +540,8 @@
@@ -35569,17 +35604,18 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..7503594aa9d76907c65a26b2c136ddfb
  		1C2BBF932B82BC5D001DBDFC /* WebExtensionError.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C2BBF922B82BC5D001DBDFC /* WebExtensionError.h */; };
  		1C386F302AF4082F004108F0 /* WebExtensionAPINotifications.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C386F2F2AF4082F004108F0 /* WebExtensionAPINotifications.h */; };
  		1C386F352AF409F9004108F0 /* JSWebExtensionAPINotifications.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C386F332AF409F9004108F0 /* JSWebExtensionAPINotifications.h */; };
-@@ -590,6 +592,9 @@
+@@ -590,6 +592,10 @@
  		1C5DC46C290B271E0061EC62 /* WebExtensionAPINamespace.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C5DC44F290888140061EC62 /* WebExtensionAPINamespace.h */; };
  		1C5DC46D290B271E0061EC62 /* WebExtensionAPIExtension.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C5DC468290B239C0061EC62 /* WebExtensionAPIExtension.h */; };
  		1C5DC46E290B27260061EC62 /* JSWebExtensionWrapper.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C5DC45829099F010061EC62 /* JSWebExtensionWrapper.h */; };
 +		FB9C1DEFF7F629B71087215A /* JSWebExtensionTabParameters.h in Headers */ = {isa = PBXBuildFile; fileRef = EC4D1D17FC56C731B0E51EBD /* JSWebExtensionTabParameters.h */; };
++		550D413160032A3C6DFEB9DD /* JSWebExtensionStorageValues.h in Headers */ = {isa = PBXBuildFile; fileRef = 33AFE57FDD182AE814C7AB0D /* JSWebExtensionStorageValues.h */; };
 +		BEFCDE2C73C56AE1E7D47766 /* JSWebExtensionString.h in Headers */ = {isa = PBXBuildFile; fileRef = 15C3D64BCCACCF54F3655CD0 /* JSWebExtensionString.h */; };
 +		9894D5547AE5EC1D0217C34D /* JSWebExtensionMessageReply.h in Headers */ = {isa = PBXBuildFile; fileRef = 6072A2C150D41194F11067FD /* JSWebExtensionMessageReply.h */; };
  		1C5DC46F290B27260061EC62 /* JSWebExtensionWrappable.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C5DC45B29099F010061EC62 /* JSWebExtensionWrappable.h */; };
  		1C62747D288B4C3E00CED3A2 /* CocoaHelpers.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C62747B288B4C3E00CED3A2 /* CocoaHelpers.h */; };
  		1C62900D28EE2CD300C26B60 /* CoreSVGSPI.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C62900C28EE2CD300C26B60 /* CoreSVGSPI.h */; };
-@@ -607,6 +612,7 @@
+@@ -607,6 +613,7 @@
  		1C7316772AC1DFDF007FADA4 /* WKWebExtensionMessagePortInternal.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C7316762AC1DFDF007FADA4 /* WKWebExtensionMessagePortInternal.h */; };
  		1C7316792AC1DFED007FADA4 /* WKWebExtensionMessagePortPrivate.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C7316782AC1DFED007FADA4 /* WKWebExtensionMessagePortPrivate.h */; settings = {ATTRIBUTES = (Private, ); }; };
  		1C73167B2AC1E676007FADA4 /* WebExtensionMessagePort.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C73167A2AC1E676007FADA4 /* WebExtensionMessagePort.h */; };
@@ -35587,7 +35623,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..7503594aa9d76907c65a26b2c136ddfb
  		1C891D6619B124FF00BA79DD /* WebInspectorUI.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C891D6319B124FF00BA79DD /* WebInspectorUI.h */; };
  		1C8B2363289AE89400020CDC /* WKWebExtensionPermission.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C8B2362289AE89400020CDC /* WKWebExtensionPermission.h */; settings = {ATTRIBUTES = (Public, ); }; };
  		1C8E28201275D15400BC7BD0 /* WebInspectorBackend.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C8E281E1275D15400BC7BD0 /* WebInspectorBackend.h */; };
-@@ -4289,6 +4295,8 @@
+@@ -4289,6 +4296,8 @@
  		1C2B4D452A8199CC00C528A1 /* WebExtensionAPIAlarms.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPIAlarms.h; sourceTree = "<group>"; };
  		1C2B4D472A819C4700C528A1 /* WebExtensionAPIAlarms.idl */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionAPIAlarms.idl; sourceTree = "<group>"; };
  		1C2B4D482A819D0C00C528A1 /* JSWebExtensionAPIAlarms.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIAlarms.h; sourceTree = "<group>"; };
@@ -35596,17 +35632,19 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..7503594aa9d76907c65a26b2c136ddfb
  		1C2BBF922B82BC5D001DBDFC /* WebExtensionError.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionError.h; sourceTree = "<group>"; };
  		1C386F2E2AF407B1004108F0 /* WebExtensionAPINotifications.idl */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionAPINotifications.idl; sourceTree = "<group>"; };
  		1C386F2F2AF4082F004108F0 /* WebExtensionAPINotifications.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPINotifications.h; sourceTree = "<group>"; };
-@@ -4414,6 +4422,9 @@
+@@ -4414,6 +4423,11 @@
  		1C5DC4532908AC260061EC62 /* JSWebExtensionAPINamespace.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPINamespace.h; sourceTree = "<group>"; };
  		1C5DC45729099F010061EC62 /* JSWebExtensionWrapper.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = JSWebExtensionWrapper.cpp; sourceTree = "<group>"; };
  		1C5DC45829099F010061EC62 /* JSWebExtensionWrapper.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionWrapper.h; sourceTree = "<group>"; };
 +		EC4D1D17FC56C731B0E51EBD /* JSWebExtensionTabParameters.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionTabParameters.h; sourceTree = "<group>"; };
++		8C609B72C7FC2111B36599D1 /* JSWebExtensionStorageValues.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = JSWebExtensionStorageValues.cpp; path = WebProcess/Extensions/Bindings/JSWebExtensionStorageValues.cpp; sourceTree = SOURCE_ROOT; };
++		33AFE57FDD182AE814C7AB0D /* JSWebExtensionStorageValues.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = JSWebExtensionStorageValues.h; path = WebProcess/Extensions/Bindings/JSWebExtensionStorageValues.h; sourceTree = SOURCE_ROOT; };
 +		15C3D64BCCACCF54F3655CD0 /* JSWebExtensionString.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionString.h; sourceTree = "<group>"; };
 +		6072A2C150D41194F11067FD /* JSWebExtensionMessageReply.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionMessageReply.h; sourceTree = "<group>"; };
  		1C5DC45A29099F010061EC62 /* JSWebExtensionWrapperCocoa.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = JSWebExtensionWrapperCocoa.mm; sourceTree = "<group>"; };
  		1C5DC45B29099F010061EC62 /* JSWebExtensionWrappable.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionWrappable.h; sourceTree = "<group>"; };
  		1C5DC45D2909A3680061EC62 /* CodeGeneratorExtensions.pm */ = {isa = PBXFileReference; lastKnownFileType = text.script.perl; path = CodeGeneratorExtensions.pm; sourceTree = "<group>"; };
-@@ -4451,6 +4462,7 @@
+@@ -4451,6 +4465,7 @@
  		1C7316762AC1DFDF007FADA4 /* WKWebExtensionMessagePortInternal.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WKWebExtensionMessagePortInternal.h; sourceTree = "<group>"; };
  		1C7316782AC1DFED007FADA4 /* WKWebExtensionMessagePortPrivate.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WKWebExtensionMessagePortPrivate.h; sourceTree = "<group>"; };
  		1C73167A2AC1E676007FADA4 /* WebExtensionMessagePort.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionMessagePort.h; sourceTree = "<group>"; };
@@ -35614,7 +35652,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..7503594aa9d76907c65a26b2c136ddfb
  		1C73167E2AC1EA27007FADA4 /* WebExtensionMessagePortCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionMessagePortCocoa.mm; sourceTree = "<group>"; };
  		1C739E852347BCF600C621EC /* CoreTextHelpers.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = CoreTextHelpers.mm; sourceTree = "<group>"; };
  		1C739E872347BD0F00C621EC /* CoreTextHelpers.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CoreTextHelpers.h; sourceTree = "<group>"; };
-@@ -4628,7 +4640,7 @@
+@@ -4628,7 +4643,7 @@
  		1C9A15C92ABDEF13002CC12A /* WebExtensionAPIPort.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPIPort.h; sourceTree = "<group>"; };
  		1C9A15CB2ABDF10C002CC12A /* WebExtensionAPIPort.idl */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionAPIPort.idl; sourceTree = "<group>"; };
  		1C9A15CC2ABDF1E1002CC12A /* JSWebExtensionAPIPort.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIPort.h; sourceTree = "<group>"; };
@@ -35623,7 +35661,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..7503594aa9d76907c65a26b2c136ddfb
  		1C9A15D02ABDF334002CC12A /* WebExtensionAPIPortCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionAPIPortCocoa.mm; sourceTree = "<group>"; };
  		1C9A15D22ABE2F4B002CC12A /* WebExtensionContextAPIPortCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionContextAPIPortCocoa.mm; sourceTree = "<group>"; };
  		1C9DD99028FA19A30093BDB0 /* WebExtensionAPIExtension.idl */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionAPIExtension.idl; sourceTree = "<group>"; };
-@@ -7986,7 +7998,7 @@
+@@ -7986,7 +8001,7 @@
  		B6058CF32B6D98E7006D4C77 /* WebExtensionDataRecord.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionDataRecord.h; sourceTree = "<group>"; };
  		B6058CF42B6D98E8006D4C77 /* WebExtensionDataRecord.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = WebExtensionDataRecord.cpp; sourceTree = "<group>"; };
  		B6114A7C2939498000380B1B /* JSWebExtensionAPIEvent.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIEvent.h; sourceTree = "<group>"; };
@@ -35632,7 +35670,26 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..7503594aa9d76907c65a26b2c136ddfb
  		B6114A8B293AE05200380B1B /* WebExtensionEventListenerType.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WebExtensionEventListenerType.h; sourceTree = "<group>"; };
  		B61274A62B7D738100D8ACDA /* WebExtensionAPIWebPageNamespace.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPIWebPageNamespace.h; sourceTree = "<group>"; };
  		B61AFA4629510D0F008220B1 /* JSWebExtensionAPIPermissions.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIPermissions.h; sourceTree = "<group>"; };
-@@ -8044,6 +8056,7 @@
+@@ -8003,14 +8018,16 @@
+ 		B63403F814910D57001070B5 /* APIObject.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = APIObject.cpp; sourceTree = "<group>"; };
+ 		B63A99732B7EA000004611FD /* JSWebExtensionAPIWebPageRuntime.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIWebPageRuntime.h; sourceTree = "<group>"; };
+ 		B63C10322B51C09C004A69B8 /* JSWebExtensionAPIStorageArea.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIStorageArea.h; sourceTree = "<group>"; };
+-		B63C10332B51C09C004A69B8 /* JSWebExtensionAPIStorage.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = JSWebExtensionAPIStorage.mm; sourceTree = "<group>"; };
+-		B63C10362B51C0E5004A69B8 /* JSWebExtensionAPIStorageArea.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = JSWebExtensionAPIStorageArea.mm; sourceTree = "<group>"; };
++		B63C10332B51C09C004A69B8 /* JSWebExtensionAPIStorage.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = JSWebExtensionAPIStorage.cpp; sourceTree = "<group>"; };
++		B63C10362B51C0E5004A69B8 /* JSWebExtensionAPIStorageArea.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = JSWebExtensionAPIStorageArea.cpp; sourceTree = "<group>"; };
+ 		B63E9A6C2AAF2B2D005F4561 /* JSWebExtensionAPIScripting.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIScripting.h; sourceTree = "<group>"; };
+ 		B63E9A6D2AAF2B2D005F4561 /* JSWebExtensionAPIScripting.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = JSWebExtensionAPIScripting.mm; sourceTree = "<group>"; };
+ 		B64AF4E32B7D7E6300357639 /* JSWebExtensionAPIWebPageNamespace.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIWebPageNamespace.h; sourceTree = "<group>"; };
+ 		B651BC562B460932009654A9 /* WebExtensionAPIStorageAreaCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionAPIStorageAreaCocoa.mm; sourceTree = "<group>"; };
+ 		B651BC572B460932009654A9 /* WebExtensionAPIStorageCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionAPIStorageCocoa.mm; sourceTree = "<group>"; };
++		A0C87D5E8E0413C9E60E0572 /* WebExtensionAPIStorageArea.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = WebExtensionAPIStorageArea.cpp; path = WebProcess/Extensions/API/WebExtensionAPIStorageArea.cpp; sourceTree = SOURCE_ROOT; };
+ 		B651BC5A2B460C9C009654A9 /* WebExtensionAPIStorageArea.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = WebExtensionAPIStorageArea.h; path = WebProcess/Extensions/API/WebExtensionAPIStorageArea.h; sourceTree = SOURCE_ROOT; };
++		3CE75CD3C4DB71B54C97B789 /* WebExtensionAPIStorage.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = WebExtensionAPIStorage.cpp; path = WebProcess/Extensions/API/WebExtensionAPIStorage.cpp; sourceTree = SOURCE_ROOT; };
+ 		B651BC5B2B460C9C009654A9 /* WebExtensionAPIStorage.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = WebExtensionAPIStorage.h; path = WebProcess/Extensions/API/WebExtensionAPIStorage.h; sourceTree = SOURCE_ROOT; };
+ 		B651BC5E2B460CBF009654A9 /* WebExtensionAPIStorageArea.idl */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = WebExtensionAPIStorageArea.idl; sourceTree = "<group>"; };
+ 		B651BC5F2B460CBF009654A9 /* WebExtensionAPIStorage.idl */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = WebExtensionAPIStorage.idl; sourceTree = "<group>"; };
+@@ -8044,6 +8061,7 @@
  		B6B1565B2B5E177A004F9894 /* WebExtensionContextParameters.serialization.in */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = WebExtensionContextParameters.serialization.in; sourceTree = "<group>"; };
  		B6CCAAB629A445E90092E846 /* JSWebExtensionAPILocalization.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPILocalization.h; sourceTree = "<group>"; };
  		B6CCAAB729A445E90092E846 /* JSWebExtensionAPILocalization.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = JSWebExtensionAPILocalization.mm; sourceTree = "<group>"; };
@@ -35640,17 +35697,29 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..7503594aa9d76907c65a26b2c136ddfb
  		B6D031032AC1F240006C8E0B /* WebExtensionDynamicScripts.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionDynamicScripts.h; sourceTree = "<group>"; };
  		B6D031042AC1F241006C8E0B /* WebExtensionDynamicScriptsCocoa.mm */ = {isa = PBXFileReference; explicitFileType = sourcecode.cpp.objcpp.preprocessed; fileEncoding = 4; path = WebExtensionDynamicScriptsCocoa.mm; sourceTree = "<group>"; };
  		B6D031082AC1F631006C8E0B /* WebExtensionScriptInjectionParameters.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionScriptInjectionParameters.h; sourceTree = "<group>"; };
-@@ -11341,6 +11354,9 @@
+@@ -11275,7 +11293,9 @@
+ 				B62FB8622AA9180C00E61418 /* WebExtensionAPIScripting.h */,
+ 				029D6BAB2C4060920068CF99 /* WebExtensionAPISidebarAction.h */,
+ 				028648C52C3F5A2E00E474D4 /* WebExtensionAPISidePanel.h */,
++				3CE75CD3C4DB71B54C97B789 /* WebExtensionAPIStorage.cpp */,
+ 				B651BC5B2B460C9C009654A9 /* WebExtensionAPIStorage.h */,
++				A0C87D5E8E0413C9E60E0572 /* WebExtensionAPIStorageArea.cpp */,
+ 				B651BC5A2B460C9C009654A9 /* WebExtensionAPIStorageArea.h */,
+ 				1C5ACFAD2A96F9D300C041C0 /* WebExtensionAPITabs.h */,
+ 				7DF6CAA52EC1365500AE220C /* WebExtensionAPITest.cpp */,
+@@ -11341,6 +11361,11 @@
  				1C5DC45B29099F010061EC62 /* JSWebExtensionWrappable.h */,
  				1C5DC45729099F010061EC62 /* JSWebExtensionWrapper.cpp */,
  				1C5DC45829099F010061EC62 /* JSWebExtensionWrapper.h */,
 +				EC4D1D17FC56C731B0E51EBD /* JSWebExtensionTabParameters.h */,
++				8C609B72C7FC2111B36599D1 /* JSWebExtensionStorageValues.cpp */,
++				33AFE57FDD182AE814C7AB0D /* JSWebExtensionStorageValues.h */,
 +				15C3D64BCCACCF54F3655CD0 /* JSWebExtensionString.h */,
 +				6072A2C150D41194F11067FD /* JSWebExtensionMessageReply.h */,
  			);
  			path = Bindings;
  			sourceTree = "<group>";
-@@ -11866,12 +11882,14 @@
+@@ -11866,12 +11891,14 @@
  				B6058CF32B6D98E7006D4C77 /* WebExtensionDataRecord.h */,
  				7D199FE42E1B4ECF0042147F /* WebExtensionDeclarativeNetRequestSQLiteStore.cpp */,
  				7D199FE32E1B4ECF0042147F /* WebExtensionDeclarativeNetRequestSQLiteStore.h */,
@@ -35665,7 +35734,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..7503594aa9d76907c65a26b2c136ddfb
  				028D30762C616E8A004F4FC6 /* WebExtensionSidebar.h */,
  				7D1A8A0D2D405B34001715DF /* WebExtensionStorageSQLiteStore.cpp */,
  				7D1A8A0C2D405B34001715DF /* WebExtensionStorageSQLiteStore.h */,
-@@ -15897,6 +15915,8 @@
+@@ -15897,6 +15924,8 @@
  				1CF35F492B36089E0079C02C /* WebExtensionCookieParameters.serialization.in */,
  				B6B156582B5E1779004F9894 /* WebExtensionDataType.h */,
  				B624FF1C2ABE54B500F6EDF6 /* WebExtensionDynamicScripts.serialization.in */,
@@ -35674,7 +35743,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..7503594aa9d76907c65a26b2c136ddfb
  				1C2BBF922B82BC5D001DBDFC /* WebExtensionError.h */,
  				B6114A8B293AE05200380B1B /* WebExtensionEventListenerType.h */,
  				8696CE2F297EB3C90081C800 /* WebExtensionEventListenerType.serialization.in */,
-@@ -17458,7 +17478,7 @@
+@@ -17458,7 +17487,7 @@
  				1C05906A2DFA0FB7000406F9 /* JSWebExtensionAPIDOM.h */,
  				1C05906B2DFA0FB7000406F9 /* JSWebExtensionAPIDOM.mm */,
  				B6114A7C2939498000380B1B /* JSWebExtensionAPIEvent.h */,
@@ -35683,7 +35752,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..7503594aa9d76907c65a26b2c136ddfb
  				1C5DC462290B1C470061EC62 /* JSWebExtensionAPIExtension.h */,
  				1C5DC460290B1C440061EC62 /* JSWebExtensionAPIExtension.mm */,
  				B6CCAAB629A445E90092E846 /* JSWebExtensionAPILocalization.h */,
-@@ -17472,7 +17492,7 @@
+@@ -17472,7 +17501,7 @@
  				B61AFA4629510D0F008220B1 /* JSWebExtensionAPIPermissions.h */,
  				B61AFA4729510D0F008220B1 /* JSWebExtensionAPIPermissions.mm */,
  				1C9A15CC2ABDF1E1002CC12A /* JSWebExtensionAPIPort.h */,
@@ -35692,17 +35761,30 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..7503594aa9d76907c65a26b2c136ddfb
  				7D3D13B1304398C400289ABF /* JSWebExtensionAPIRuntime.cpp */,
  				1C5DC461290B1C470061EC62 /* JSWebExtensionAPIRuntime.h */,
  				B63E9A6C2AAF2B2D005F4561 /* JSWebExtensionAPIScripting.h */,
-@@ -18657,6 +18677,9 @@
+@@ -17482,9 +17511,9 @@
+ 				029D6BAF2C407AA30068CF99 /* JSWebExtensionAPISidePanel.h */,
+ 				029D6BB02C407AA30068CF99 /* JSWebExtensionAPISidePanel.mm */,
+ 				B626B7BD2B4F1DF8008E8DD1 /* JSWebExtensionAPIStorage.h */,
+-				B63C10332B51C09C004A69B8 /* JSWebExtensionAPIStorage.mm */,
++				B63C10332B51C09C004A69B8 /* JSWebExtensionAPIStorage.cpp */,
+ 				B63C10322B51C09C004A69B8 /* JSWebExtensionAPIStorageArea.h */,
+-				B63C10362B51C0E5004A69B8 /* JSWebExtensionAPIStorageArea.mm */,
++				B63C10362B51C0E5004A69B8 /* JSWebExtensionAPIStorageArea.cpp */,
+ 				1C5ACFAA2A96F8D500C041C0 /* JSWebExtensionAPITabs.h */,
+ 				1C5ACFA92A96F8D400C041C0 /* JSWebExtensionAPITabs.mm */,
+ 				1C15497E2926C05A001B9E5B /* JSWebExtensionAPITest.cpp */,
+@@ -18657,6 +18686,10 @@
  				1C5ACFA82A96F8C400C041C0 /* JSWebExtensionAPIWindowsEvent.h in Headers */,
  				1C5DC46F290B27260061EC62 /* JSWebExtensionWrappable.h in Headers */,
  				1C5DC46E290B27260061EC62 /* JSWebExtensionWrapper.h in Headers */,
 +				FB9C1DEFF7F629B71087215A /* JSWebExtensionTabParameters.h in Headers */,
++				550D413160032A3C6DFEB9DD /* JSWebExtensionStorageValues.h in Headers */,
 +				BEFCDE2C73C56AE1E7D47766 /* JSWebExtensionString.h in Headers */,
 +				9894D5547AE5EC1D0217C34D /* JSWebExtensionMessageReply.h in Headers */,
  				074A6FC72D5F1FAF0027F958 /* KeyEventInterpretationContext.h in Headers */,
  				E385F3692E86D75800461B0C /* LaunchLogHook.h in Headers */,
  				E385F37C2E87076100461B0C /* LaunchLogMessages.h in Headers */,
-@@ -19257,6 +19280,8 @@
+@@ -19257,6 +19290,8 @@
  				B6058CF52B6D98E8006D4C77 /* WebExtensionDataRecord.h in Headers */,
  				B6B1565C2B5E177A004F9894 /* WebExtensionDataType.h in Headers */,
  				B6D031052AC1F241006C8E0B /* WebExtensionDynamicScripts.h in Headers */,
@@ -35711,7 +35793,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..7503594aa9d76907c65a26b2c136ddfb
  				1C2BBF932B82BC5D001DBDFC /* WebExtensionError.h in Headers */,
  				B6114A8C293AE06800380B1B /* WebExtensionEventListenerType.h in Headers */,
  				1C4A14C62ABB710E00A1018C /* WebExtensionFrameIdentifier.h in Headers */,
-@@ -19268,6 +19293,7 @@
+@@ -19268,6 +19303,7 @@
  				1C6BE79F2B0A910200D01D93 /* WebExtensionMenuItemParameters.h in Headers */,
  				1C6BE7A32B0A94E500D01D93 /* WebExtensionMenuItemType.h in Headers */,
  				1C73167B2AC1E676007FADA4 /* WebExtensionMessagePort.h in Headers */,
@@ -36361,6 +36443,421 @@ index 037b14502f25abbb9a6b08401499864d7ace9b33..b5598e2770b2f1f5ae2d16313406bc7c
 -
 -#endif // ENABLE(WK_WEB_EXTENSIONS)
 +// Runtime bindings, sender conversion and message dispatch now live in common C++.
+diff --git a/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIStorageAreaCocoa.mm b/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIStorageAreaCocoa.mm
+index f6604266f0cec928dc983670fa2f924cd164744a..ddc9e24ed8fcc788f80048325c0b56dd1f2312ab 100644
+--- a/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIStorageAreaCocoa.mm
++++ b/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIStorageAreaCocoa.mm
+@@ -23,296 +23,6 @@
+  * THE POSSIBILITY OF SUCH DAMAGE.
+  */
+ 
+-#if !__has_feature(objc_arc)
+-#error This file requires ARC. Add the "-fobjc-arc" compiler flag for this file.
+-#endif
+-
+ #import "config.h"
+-#import "WebExtensionAPIStorageArea.h"
+-#import "WebExtensionAPIKeys.h"
+-
+-#if ENABLE(WK_WEB_EXTENSIONS)
+-
+-#import "APIData.h"
+-#import "APIObject.h"
+-#import "CocoaHelpers.h"
+-#import "MessageSenderInlines.h"
+-#import "WebExtensionConstants.h"
+-#import "WebExtensionContextMessages.h"
+-#import "WebExtensionContextProxy.h"
+-#import "WebExtensionStorageAccessLevel.h"
+-#import "WebExtensionUtilities.h"
+-#import "WebProcess.h"
+-#import <wtf/cocoa/VectorCocoa.h>
+-
+-
+-namespace WebKit {
+-
+-bool WebExtensionAPIStorageArea::isPropertyAllowed(const ASCIILiteral& propertyName, WebPage*)
+-{
+-    if (protect(extensionContext())->isUnsupportedAPI(propertyPath(), propertyName)) [[unlikely]]
+-        return false;
+-
+-    static NeverDestroyed<HashSet<AtomString>> syncStorageProperties { HashSet { AtomString("QUOTA_BYTES_PER_ITEM"_s), AtomString("MAX_ITEMS"_s), AtomString("MAX_WRITE_OPERATIONS_PER_HOUR"_s), AtomString("MAX_WRITE_OPERATIONS_PER_MINUTE"_s) } };
+-
+-    if (syncStorageProperties.get().contains(propertyName))
+-        return m_type == WebExtensionDataType::Sync;
+-
+-    if (propertyName == "setAccessLevel"_s)
+-        return isForTrustedContext();
+-
+-    ASSERT_NOT_REACHED();
+-    return false;
+-}
+-
+-void WebExtensionAPIStorageArea::get(WebPageProxyIdentifier webPageProxyIdentifier, id items, Ref<WebExtensionCallbackHandler>&& callback, NSString **outExceptionString)
+-{
+-    // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/storage/StorageArea/get
+-
+-    if (!items)
+-        items = NSNull.null;
+-
+-    if (!validateObject(items, @"items", [NSOrderedSet orderedSetWithObjects:NSDictionary.class, NSString.class, @[ NSString.class ], NSNull.class, nil], outExceptionString))
+-        return;
+-
+-    Vector<String> keysVector;
+-    NSDictionary *keysWithDefaultValues = dynamic_objc_cast<NSDictionary>(items);
+-
+-    if (keysWithDefaultValues) {
+-        if (!keysWithDefaultValues.count) {
+-            callback->call(JSObjectMake(callback->globalContext(), nullptr, nullptr));
+-            return;
+-        }
+-
+-        keysVector = makeVector<String>(keysWithDefaultValues.allKeys);
+-    }
+-
+-    if (NSArray *keys = dynamic_objc_cast<NSArray>(items)) {
+-        if (!keys.count) {
+-            callback->call(JSObjectMake(callback->globalContext(), nullptr, nullptr));
+-            return;
+-        }
+-
+-        keysVector = makeVector<String>(keys);
+-    }
+-
+-    if (NSString *key = dynamic_objc_cast<NSString>(items))
+-        keysVector = { key };
+-
+-    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::StorageGet(webPageProxyIdentifier, m_type, keysVector), [keysWithDefaultValues, protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<Vector<String>, WebExtensionError>&& result) {
+-        if (!result) {
+-            callback->reportError(result.error().createNSString().get());
+-            return;
+-        }
+-
+-        auto *deserializedData = [NSDictionary dictionary];
+-        for (auto& serializedJSON : result.value()) {
+-            NSDictionary *data = parseJSON(serializedJSON.createNSString().get());
+-            NSDictionary<NSString *, id> *parsedJSON = mapObjects(data, ^id(NSString *key, NSString *jsonString) {
+-                return parseJSON(jsonString, JSONOptions::FragmentsAllowed);
+-            });
+-
+-            deserializedData = mergeDictionaries(parsedJSON, deserializedData);
+-        }
+-
+-        deserializedData = keysWithDefaultValues ? mergeDictionaries(deserializedData, keysWithDefaultValues) : deserializedData;
+-        callback->call(toJSValueRef(callback->globalContext(), deserializedData));
+-    }, extensionContext().identifier());
+-}
+-
+-void WebExtensionAPIStorageArea::getKeys(WebPageProxyIdentifier webPageProxyIdentifier, Ref<WebExtensionCallbackHandler>&& callback, NSString **outExceptionString)
+-{
+-    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::StorageGetKeys(webPageProxyIdentifier, m_type), [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<Vector<String>, WebExtensionError>&& result) {
+-        if (!result) {
+-            callback->reportError(result.error().createNSString().get());
+-            return;
+-        }
+-
+-        callback->call(fromArray(callback->globalContext(), WTF::move(result.value())));
+-    }, extensionContext().identifier());
+-}
+-
+-void WebExtensionAPIStorageArea::getBytesInUse(WebPageProxyIdentifier webPageProxyIdentifier, id keys, Ref<WebExtensionCallbackHandler>&& callback, NSString **outExceptionString)
+-{
+-    // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/storage/StorageArea/getBytesInUse
+-
+-    if (!keys)
+-        keys = NSNull.null;
+-
+-    if (keys && !validateObject(keys, @"keys", [NSOrderedSet orderedSetWithObjects:NSString.class, @[ NSString.class ], NSNull.class, nil], outExceptionString))
+-        return;
+-
+-    Vector<String> keysVector;
+-    if (NSArray *keysArray = dynamic_objc_cast<NSArray>(keys))
+-        keysVector = makeVector<String>(keysArray);
+-    else if (NSString *key = dynamic_objc_cast<NSString>(keys))
+-        keysVector = { key };
+-
+-    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::StorageGetBytesInUse(webPageProxyIdentifier, m_type, keysVector), [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<uint64_t, WebExtensionError>&& result) {
+-        if (!result)
+-            callback->reportError(result.error().createNSString().get());
+-        else
+-            callback->call(JSValueMakeNumber(callback->globalContext(), result.value()));
+-    }, extensionContext().identifier());
+-}
+-
+-void WebExtensionAPIStorageArea::set(WebPageProxyIdentifier webPageProxyIdentifier, NSDictionary *items, Ref<WebExtensionCallbackHandler>&& callback, NSString **outExceptionString)
+-{
+-    // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/storage/StorageArea/set
+-
+-    if (!items.count) {
+-        callback->call();
+-        return;
+-    }
+-
+-    __block NSString *keyWithError;
+-
+-    auto *serializedData = mapObjects(items, ^NSString *(NSString *key, id object) {
+-        ASSERT([object isKindOfClass:JSValue.class]);
+-
+-        if (((JSValue *)object).isUndefined)
+-            return nil;
+-
+-        if (keyWithError)
+-            return nil;
+-
+-        auto *result = encodeJSONString(object, JSONOptions::FragmentsAllowed);
+-        if (!result) {
+-            keyWithError = key;
+-            return nil;
+-        }
+-
+-        return result;
+-    });
+-
+-    if (keyWithError) {
+-        *outExceptionString = toErrorString(nullString(), adoptNS([[NSString alloc] initWithFormat:@"items[`%@`]", keyWithError]).get(), @"it is not JSON-serializable").createNSString().autorelease();
+-        return;
+-    }
+-
+-    if (m_type == WebExtensionDataType::Sync && anyItemsExceedQuota(serializedData, webExtensionStorageAreaSyncQuotaBytesPerItem, &keyWithError)) {
+-        *outExceptionString = toErrorString(nullString(), adoptNS([[NSString alloc] initWithFormat:@"items[`%@`]", keyWithError]).get(), @"it exceeded maximum size for a single item").createNSString().autorelease();
+-        return;
+-    }
+-
+-    if (storageSizeOf(serializedData) > webExtensionStorageAreaMaximumBytesPerCall) {
+-        *outExceptionString = toErrorString(nullString(), nullString(), @"it exceeded maximum data size allowed per call").createNSString().autorelease();
+-        return;
+-    }
+-
+-    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::StorageSet(webPageProxyIdentifier, m_type, encodeJSONString(serializedData)), [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<void, WebExtensionError>&& result) {
+-        if (!result)
+-            callback->reportError(result.error().createNSString().get());
+-        else
+-            callback->call();
+-    }, extensionContext().identifier());
+-}
+-
+-void WebExtensionAPIStorageArea::remove(WebPageProxyIdentifier webPageProxyIdentifier, id keys, Ref<WebExtensionCallbackHandler>&& callback, NSString **outExceptionString)
+-{
+-    // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/storage/StorageArea/remove
+-
+-    if (!validateObject(keys, @"keys", [NSOrderedSet orderedSetWithObjects:NSString.class, @[ NSString.class ], nil], outExceptionString))
+-        return;
+-
+-    Vector<String> keysVector = [keys isKindOfClass:NSArray.class] ? makeVector<String>((NSArray *)keys) : Vector<String> { keys };
+-
+-    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::StorageRemove(webPageProxyIdentifier, m_type, keysVector), [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<void, WebExtensionError>&& result) {
+-        if (!result)
+-            callback->reportError(result.error().createNSString().get());
+-        else
+-            callback->call();
+-    }, extensionContext().identifier());
+-}
+-
+-void WebExtensionAPIStorageArea::clear(WebPageProxyIdentifier webPageProxyIdentifier, Ref<WebExtensionCallbackHandler>&& callback)
+-{
+-    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::StorageClear(webPageProxyIdentifier, m_type), [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<void, WebExtensionError>&& result) {
+-        if (!result)
+-            callback->reportError(result.error().createNSString().get());
+-        else
+-            callback->call();
+-    }, extensionContext().identifier());
+-}
+-
+-void WebExtensionAPIStorageArea::setAccessLevel(WebPageProxyIdentifier webPageProxyIdentifier, NSDictionary *accessOptions, Ref<WebExtensionCallbackHandler>&& callback, NSString **outExceptionString)
+-{
+-    static auto *requiredKeys = @[
+-        accessLevelKey,
+-    ];
+-
+-    auto *keyTypes = @{
+-        accessLevelKey: NSString.class,
+-    };
+-
+-    if (!validateDictionary(accessOptions, @"accessOptions", requiredKeys, keyTypes, outExceptionString))
+-        return;
+-
+-    NSString *accessLevelString = accessOptions[accessLevelKey];
+-    if (![accessLevelString isEqualToString:accessLevelTrustedContexts] && ![accessLevelString isEqualToString:accessLevelTrustedAndUntrustedContexts]) {
+-        *outExceptionString = toErrorString(nullString(), @"accessLevel", @"it must specify either 'TRUSTED_CONTEXTS' or 'TRUSTED_AND_UNTRUSTED_CONTEXTS'").createNSString().autorelease();
+-        return;
+-    }
+-
+-    WebExtensionStorageAccessLevel accessLevel = [accessLevelString isEqualToString:accessLevelTrustedContexts] ? WebExtensionStorageAccessLevel::TrustedContexts : WebExtensionStorageAccessLevel::TrustedAndUntrustedContexts;
+-
+-    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::StorageSetAccessLevel(webPageProxyIdentifier, m_type, accessLevel), [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<void, WebExtensionError>&& result) {
+-        if (!result)
+-            callback->reportError(result.error().createNSString().get());
+-        else
+-            callback->call();
+-    }, extensionContext().identifier());
+-}
+-
+-WebExtensionAPIEvent& WebExtensionAPIStorageArea::onChanged()
+-{
+-    // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/storage/StorageArea/onChanged
+-
+-    if (!m_onChanged)
+-        m_onChanged = WebExtensionAPIEvent::create(*this, WebExtensionEventListenerType::StorageOnChanged);
+-
+-    return *m_onChanged;
+-}
+-
+-double WebExtensionAPIStorageArea::quotaBytes()
+-{
+-    switch (m_type) {
+-    case WebExtensionDataType::Local:
+-        return webExtensionStorageAreaLocalQuotaBytes;
+-    case WebExtensionDataType::Sync:
+-        return webExtensionStorageAreaSyncQuotaBytes;
+-    case WebExtensionDataType::Session:
+-        return webExtensionStorageAreaSessionQuotaBytes;
+-    }
+-
+-    ASSERT_NOT_REACHED();
+-    return 0;
+-}
+-
+-double WebExtensionAPIStorageArea::quotaBytesPerItem()
+-{
+-    ASSERT(m_type == WebExtensionDataType::Sync);
+-    return webExtensionStorageAreaSyncQuotaBytesPerItem;
+-}
+-
+-double WebExtensionAPIStorageArea::maxItems()
+-{
+-    ASSERT(m_type == WebExtensionDataType::Sync);
+-    return webExtensionStorageAreaSyncMaximumItems;
+-}
+-
+-double WebExtensionAPIStorageArea::maxWriteOperationsPerHour()
+-{
+-    ASSERT(m_type == WebExtensionDataType::Sync);
+-    return webExtensionStorageAreaSyncMaximumWriteOperationsPerHour;
+-}
+-
+-double WebExtensionAPIStorageArea::maxWriteOperationsPerMinute()
+-{
+-    ASSERT(m_type == WebExtensionDataType::Sync);
+-    return webExtensionStorageAreaSyncMaximumWriteOperationsPerMinute;
+-}
+-
+-} // namespace WebKit
+ 
+-#endif // ENABLE(WK_WEB_EXTENSIONS)
++// The storage implementation is shared in WebExtensionAPIStorageArea.cpp.
+diff --git a/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIStorageCocoa.mm b/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIStorageCocoa.mm
+index d67be6f6803714b31abf9a67943e07e1751640d4..5b5bc216346235ef80cc001e91f612735826452d 100644
+--- a/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIStorageCocoa.mm
++++ b/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIStorageCocoa.mm
+@@ -23,107 +23,6 @@
+  * THE POSSIBILITY OF SUCH DAMAGE.
+  */
+ 
+-#if !__has_feature(objc_arc)
+-#error This file requires ARC. Add the "-fobjc-arc" compiler flag for this file.
+-#endif
+-
+ #import "config.h"
+-#import "WebExtensionAPIStorage.h"
+-
+-#if ENABLE(WK_WEB_EXTENSIONS)
+-
+-#import "CocoaHelpers.h"
+-#import "WebExtensionAPINamespace.h"
+-#import "WebExtensionAPIStorageArea.h"
+-#import "WebExtensionContextMessages.h"
+-#import "WebExtensionContextProxy.h"
+-#import "WebExtensionDataType.h"
+-
+-namespace WebKit {
+-
+-bool WebExtensionAPIStorage::isPropertyAllowed(const ASCIILiteral& propertyName, WebPage*)
+-{
+-    if (protect(extensionContext())->isUnsupportedAPI(propertyPath(), propertyName)) [[unlikely]]
+-        return false;
+-
+-    if (isForTrustedContext())
+-        return true;
+-
+-    return extensionContext().isStorageAllowedInUntrustedContexts(toWebExtensionDataType(propertyName));
+-}
+-
+-WebExtensionAPIStorageArea& WebExtensionAPIStorage::local()
+-{
+-    // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/storage/local
+-
+-    if (!m_local)
+-        m_local = WebExtensionAPIStorageArea::create(*this, WebExtensionDataType::Local);
+-
+-    return *m_local;
+-}
+-
+-WebExtensionAPIStorageArea& WebExtensionAPIStorage::session()
+-{
+-    // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/storage/session
+-
+-    if (!m_session)
+-        m_session = WebExtensionAPIStorageArea::create(*this, WebExtensionDataType::Session);
+-
+-    return *m_session;
+-}
+-
+-WebExtensionAPIStorageArea& WebExtensionAPIStorage::sync()
+-{
+-    // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/storage/sync
+-
+-    if (!m_sync)
+-        m_sync = WebExtensionAPIStorageArea::create(*this, WebExtensionDataType::Sync);
+-
+-    return *m_sync;
+-}
+-
+-WebExtensionAPIStorageArea& WebExtensionAPIStorage::storageAreaForType(WebExtensionDataType storageType)
+-{
+-    switch (storageType) {
+-    case WebExtensionDataType::Local:
+-        return local();
+-    case WebExtensionDataType::Session:
+-        return session();
+-    case WebExtensionDataType::Sync:
+-        return sync();
+-    }
+-
+-    ASSERT_NOT_REACHED();
+-    return local();
+-}
+-
+-WebExtensionAPIEvent& WebExtensionAPIStorage::onChanged()
+-{
+-    // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/storage/onChanged
+-
+-    if (!m_onChanged)
+-        m_onChanged = WebExtensionAPIEvent::create(*this, WebExtensionEventListenerType::StorageOnChanged);
+-
+-    return *m_onChanged;
+-}
+-
+-void WebExtensionContextProxy::dispatchStorageChangedEvent(const Vector<String>& changesJSON, WebExtensionDataType dataType, WebExtensionContentWorldType contentWorldType)
+-{
+-    if (!hasDOMWrapperWorld(contentWorldType))
+-        return;
+-
+-    auto *changes = [NSDictionary dictionary];
+-    for (auto& json : changesJSON)
+-        changes = mergeDictionaries(changes, parseJSON(json.createNSString().get()));
+-
+-    RetainPtr areaName = toAPIString(dataType).createNSString();
+-
+-    enumerateFramesAndNamespaceObjects([&](WebFrame&, auto& namespaceObject) {
+-        namespaceObject.storage().onChanged().invokeListenersWithArgument(changes, areaName.get());
+-        namespaceObject.storage().storageAreaForType(dataType).onChanged().invokeListenersWithArgument(changes, areaName.get());
+-    }, toDOMWrapperWorld(contentWorldType));
+-}
+-
+-} // namespace WebKit
+ 
+-#endif // ENABLE(WK_WEB_EXTENSIONS)
++// The storage implementation is shared in WebExtensionAPIStorage.cpp.
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIEvent.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIEvent.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..ee9b5cb263c250952c919c569cb2ec3624a1411a
@@ -36534,7 +37031,7 @@ index 0000000000000000000000000000000000000000..ee9b5cb263c250952c919c569cb2ec36
 +
 +#endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.cpp
-index a631bca164f7da881e64b2ee29f21de7f4179746..029eaae8fe82d068bba7f1e83d5bca99590d052a 100644
+index a631bca164f7da881e64b2ee29f21de7f4179746..7aee97d909fb3cc99a9a23aad57c3f954df0e8a3 100644
 --- a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.cpp
 +++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.cpp
 @@ -268,6 +268,8 @@ WebExtensionAPIPermissions& WebExtensionAPINamespace::permissions()
@@ -36554,6 +37051,55 @@ index a631bca164f7da881e64b2ee29f21de7f4179746..029eaae8fe82d068bba7f1e83d5bca99
  WebExtensionAPIScripting& WebExtensionAPINamespace::scripting()
  {
      // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/scripting
+@@ -324,16 +327,6 @@ WebExtensionAPIBookmarks& WebExtensionAPINamespace::bookmarks()
+ }
+ #endif
+ 
+-WebExtensionAPIStorage& WebExtensionAPINamespace::storage()
+-{
+-    // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/storage
+-
+-    if (!m_storage)
+-        m_storage = WebExtensionAPIStorage::create(*this);
+-
+-    return *m_storage;
+-}
+-
+ WebExtensionAPITabs& WebExtensionAPINamespace::tabs()
+ {
+     // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/tabs
+@@ -345,6 +338,16 @@ WebExtensionAPITabs& WebExtensionAPINamespace::tabs()
+ }
+ #endif
+ 
++WebExtensionAPIStorage& WebExtensionAPINamespace::storage()
++{
++    // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/storage
++
++    if (!m_storage)
++        m_storage = WebExtensionAPIStorage::create(*this);
++
++    return *m_storage;
++}
++
+ WebExtensionAPITest& WebExtensionAPINamespace::test()
+ {
+     // Documentation: None (Testing Only)
+diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.h b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.h
+index 0daeb9f57bccead43bac234e6d71bff821327db7..b687510094bbe8488155f9923725727bf1a97999 100644
+--- a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.h
++++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.h
+@@ -100,9 +100,9 @@ public:
+ #if ENABLE(WK_WEB_EXTENSIONS_BOOKMARKS)
+     WebExtensionAPIBookmarks& bookmarks();
+ #endif
+-    WebExtensionAPIStorage& storage();
+     WebExtensionAPITabs& tabs();
+ #endif
++    WebExtensionAPIStorage& storage();
+     WebExtensionAPITest& test();
+ #if PLATFORM(COCOA)
+     WebExtensionAPIWindows& windows();
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIPort.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIPort.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..876475be6248a8861d8a2ad6ad4257872d24c7a6
@@ -37106,6 +37652,461 @@ index cb3eac4c0a556a9fe000ece79903aa86b9fd69c7..686a8e8dfca9ecb8f8adc15e34a26a49
  void WebExtensionContextProxy::dispatchRuntimeMessageEvent(WebExtensionContentWorldType contentWorldType, const String& messageJSON, const std::optional<WebExtensionMessageTargetParameters>& targetParameters, const WebExtensionMessageSenderParameters& senderParameters, bool userGesture, CompletionHandler<void(String&& replyJSON)>&& completionHandler)
  {
      switch (contentWorldType) {
+diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIStorage.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIStorage.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..e0f0b275c6dd305c4a001403deed07df5f7512d0
+--- /dev/null
++++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIStorage.cpp
+@@ -0,0 +1,144 @@
++/*
++ * Copyright (C) 2024 Apple Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "WebExtensionAPIStorage.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS)
++
++#include "JSWebExtensionString.h"
++#include "Protected.h"
++#include "WebExtensionAPINamespace.h"
++#include "WebExtensionAPIStorageArea.h"
++#include "WebExtensionContextProxy.h"
++#include "WebExtensionDataType.h"
++#include <wtf/JSONValues.h>
++
++namespace WebKit {
++
++bool WebExtensionAPIStorage::isPropertyAllowed(const ASCIILiteral& propertyName, WebPage*)
++{
++    if (protect(extensionContext())->isUnsupportedAPI(propertyPath(), propertyName)) [[unlikely]]
++        return false;
++
++    if (isForTrustedContext())
++        return true;
++
++    return extensionContext().isStorageAllowedInUntrustedContexts(toWebExtensionDataType(propertyName));
++}
++
++WebExtensionAPIStorageArea& WebExtensionAPIStorage::local()
++{
++    // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/storage/local
++
++    if (!m_local)
++        m_local = WebExtensionAPIStorageArea::create(*this, WebExtensionDataType::Local);
++
++    return *m_local;
++}
++
++WebExtensionAPIStorageArea& WebExtensionAPIStorage::session()
++{
++    // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/storage/session
++
++    if (!m_session)
++        m_session = WebExtensionAPIStorageArea::create(*this, WebExtensionDataType::Session);
++
++    return *m_session;
++}
++
++WebExtensionAPIStorageArea& WebExtensionAPIStorage::sync()
++{
++    // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/storage/sync
++
++    if (!m_sync)
++        m_sync = WebExtensionAPIStorageArea::create(*this, WebExtensionDataType::Sync);
++
++    return *m_sync;
++}
++
++WebExtensionAPIStorageArea& WebExtensionAPIStorage::storageAreaForType(WebExtensionDataType storageType)
++{
++    switch (storageType) {
++    case WebExtensionDataType::Local:
++        return local();
++    case WebExtensionDataType::Session:
++        return session();
++    case WebExtensionDataType::Sync:
++        return sync();
++    }
++
++    ASSERT_NOT_REACHED();
++    return local();
++}
++
++WebExtensionAPIEvent& WebExtensionAPIStorage::onChanged()
++{
++    // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/storage/onChanged
++
++    if (!m_onChanged)
++        m_onChanged = WebExtensionAPIEvent::create(*this, WebExtensionEventListenerType::StorageOnChanged);
++
++    return *m_onChanged;
++}
++
++void WebExtensionContextProxy::dispatchStorageChangedEvent(const Vector<String>& changesJSON, WebExtensionDataType dataType, WebExtensionContentWorldType contentWorldType)
++{
++    if (!hasDOMWrapperWorld(contentWorldType))
++        return;
++
++    Ref changes = JSON::Object::create();
++    for (auto& json : changesJSON) {
++        auto parsed = JSON::Value::parseJSON(json);
++        auto object = parsed ? parsed->asObject() : nullptr;
++        if (!object)
++            return;
++        for (auto& entry : *object)
++            changes->setValue(entry.key, entry.value.copyRef());
++    }
++    auto serializedChanges = changes->toJSONString();
++    auto areaName = toAPIString(dataType);
++    auto invokeListeners = [&](WebExtensionAPIEvent& event) {
++        // A listener may add or remove listeners while it runs.
++        auto listeners = event.listeners();
++        for (RefPtr listener : listeners) {
++            auto context = listener->globalContext();
++            auto value = JSValueMakeFromJSONString(context, toJSString(serializedChanges).get());
++            if (!value)
++                continue;
++            Protected<JSValueRef> protectedValue(context, value);
++            listener->call(value, JSValueMakeString(context, toJSString(areaName).get()));
++        }
++    };
++
++    enumerateFramesAndNamespaceObjects([&](WebFrame&, auto& namespaceObject) {
++        invokeListeners(namespaceObject.storage().onChanged());
++        invokeListeners(namespaceObject.storage().storageAreaForType(dataType).onChanged());
++    }, toDOMWrapperWorld(contentWorldType));
++}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS)
+diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIStorage.h b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIStorage.h
+index 426186bbb85f8e28663f29659cc5dbe574048cc4..2c5b122b47f3b89c19bdc33d3f77c43f0236fbbe 100644
+--- a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIStorage.h
++++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIStorage.h
+@@ -40,7 +40,6 @@ class WebExtensionAPIStorage : public WebExtensionAPIObject, public JSWebExtensi
+     WEB_EXTENSION_DECLARE_JS_WRAPPER_CLASS(WebExtensionAPIStorage, storage, storage);
+ 
+ public:
+-#if PLATFORM(COCOA)
+     bool isPropertyAllowed(const ASCIILiteral& propertyName, WebPage*);
+ 
+     WebExtensionAPIStorageArea& local();
+@@ -59,7 +58,6 @@ private:
+     RefPtr<WebExtensionAPIStorageArea> m_sync;
+ 
+     RefPtr<WebExtensionAPIEvent> m_onChanged;
+-#endif
+ };
+ 
+ } // namespace WebKit
+diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIStorageArea.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIStorageArea.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..4307fb48d0e58c881f562ad91a9f4190b3d5182d
+--- /dev/null
++++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIStorageArea.cpp
+@@ -0,0 +1,232 @@
++/*
++ * Copyright (C) 2024 Apple Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "WebExtensionAPIStorageArea.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS)
++
++#include "JSWebExtensionStorageValues.h"
++#include "MessageSenderInlines.h"
++#include "WebExtensionConstants.h"
++#include "WebExtensionContextMessages.h"
++#include "WebExtensionContextProxy.h"
++#include "WebExtensionStorageAccessLevel.h"
++#include "WebExtensionUtilities.h"
++#include "WebProcess.h"
++
++namespace WebKit {
++
++bool WebExtensionAPIStorageArea::isPropertyAllowed(const ASCIILiteral& propertyName, WebPage*)
++{
++    if (protect(extensionContext())->isUnsupportedAPI(propertyPath(), propertyName)) [[unlikely]]
++        return false;
++
++    static NeverDestroyed<HashSet<AtomString>> syncStorageProperties { HashSet { AtomString("QUOTA_BYTES_PER_ITEM"_s), AtomString("MAX_ITEMS"_s), AtomString("MAX_WRITE_OPERATIONS_PER_HOUR"_s), AtomString("MAX_WRITE_OPERATIONS_PER_MINUTE"_s) } };
++
++    if (syncStorageProperties.get().contains(propertyName))
++        return m_type == WebExtensionDataType::Sync;
++
++    if (propertyName == "setAccessLevel"_s)
++        return isForTrustedContext();
++
++    ASSERT_NOT_REACHED();
++    return false;
++}
++
++void WebExtensionAPIStorageArea::get(WebPageProxyIdentifier webPageProxyIdentifier, JSContextRef context, JSValueRef items, Ref<WebExtensionCallbackHandler>&& callback, String& outExceptionString)
++{
++    auto selection = parseWebExtensionStorageKeys(context, items, WebExtensionStorageKeyMode::Get);
++    if (!selection) {
++        outExceptionString = selection.error();
++        return;
++    }
++    if (!selection->allKeys && selection->keys.isEmpty()) {
++        callback->call(JSObjectMake(callback->globalContext(), nullptr, nullptr));
++        return;
++    }
++
++    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::StorageGet(webPageProxyIdentifier, m_type, selection->keys), [defaultValues = WTF::move(selection->defaultValues), protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<Vector<String>, WebExtensionError>&& result) {
++        if (!result) {
++            callback->reportError(result.error());
++            return;
++        }
++        auto values = deserializeWebExtensionStorageValues(callback->globalContext(), *result, defaultValues);
++        if (!values)
++            callback->reportError(values.error());
++        else
++            callback->call(values->get());
++    }, extensionContext().identifier());
++}
++
++void WebExtensionAPIStorageArea::getKeys(WebPageProxyIdentifier webPageProxyIdentifier, Ref<WebExtensionCallbackHandler>&& callback, String& outExceptionString)
++{
++    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::StorageGetKeys(webPageProxyIdentifier, m_type), [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<Vector<String>, WebExtensionError>&& result) {
++        if (!result)
++            callback->reportError(result.error());
++        else
++            callback->call(fromArray(callback->globalContext(), WTF::move(*result)));
++    }, extensionContext().identifier());
++}
++
++void WebExtensionAPIStorageArea::getBytesInUse(WebPageProxyIdentifier webPageProxyIdentifier, JSContextRef context, JSValueRef keys, Ref<WebExtensionCallbackHandler>&& callback, String& outExceptionString)
++{
++    auto selection = parseWebExtensionStorageKeys(context, keys, WebExtensionStorageKeyMode::GetBytesInUse);
++    if (!selection) {
++        outExceptionString = selection.error();
++        return;
++    }
++    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::StorageGetBytesInUse(webPageProxyIdentifier, m_type, selection->keys), [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<uint64_t, WebExtensionError>&& result) {
++        if (!result)
++            callback->reportError(result.error());
++        else
++            callback->call(JSValueMakeNumber(callback->globalContext(), *result));
++    }, extensionContext().identifier());
++}
++
++void WebExtensionAPIStorageArea::set(WebPageProxyIdentifier webPageProxyIdentifier, JSContextRef context, JSValueRef items, Ref<WebExtensionCallbackHandler>&& callback, String& outExceptionString)
++{
++    auto perItemQuota = m_type == WebExtensionDataType::Sync ? std::optional<size_t>(webExtensionStorageAreaSyncQuotaBytesPerItem) : std::nullopt;
++    auto values = serializeWebExtensionStorageValues(context, items, perItemQuota, webExtensionStorageAreaMaximumBytesPerCall);
++    if (!values) {
++        outExceptionString = values.error();
++        return;
++    }
++    if (!values->serializedValues->size()) {
++        callback->call();
++        return;
++    }
++    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::StorageSet(webPageProxyIdentifier, m_type, values->serializedValues->toJSONString()), [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<void, WebExtensionError>&& result) {
++        if (!result)
++            callback->reportError(result.error());
++        else
++            callback->call();
++    }, extensionContext().identifier());
++}
++
++void WebExtensionAPIStorageArea::remove(WebPageProxyIdentifier webPageProxyIdentifier, JSContextRef context, JSValueRef keys, Ref<WebExtensionCallbackHandler>&& callback, String& outExceptionString)
++{
++    auto selection = parseWebExtensionStorageKeys(context, keys, WebExtensionStorageKeyMode::Remove);
++    if (!selection) {
++        outExceptionString = selection.error();
++        return;
++    }
++    if (selection->keys.isEmpty()) {
++        callback->call();
++        return;
++    }
++    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::StorageRemove(webPageProxyIdentifier, m_type, selection->keys), [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<void, WebExtensionError>&& result) {
++        if (!result)
++            callback->reportError(result.error());
++        else
++            callback->call();
++    }, extensionContext().identifier());
++}
++
++void WebExtensionAPIStorageArea::clear(WebPageProxyIdentifier webPageProxyIdentifier, Ref<WebExtensionCallbackHandler>&& callback)
++{
++    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::StorageClear(webPageProxyIdentifier, m_type), [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<void, WebExtensionError>&& result) {
++        if (!result)
++            callback->reportError(result.error());
++        else
++            callback->call();
++    }, extensionContext().identifier());
++}
++
++void WebExtensionAPIStorageArea::setAccessLevel(WebPageProxyIdentifier webPageProxyIdentifier, RefPtr<JSON::Value> accessOptions, Ref<WebExtensionCallbackHandler>&& callback, String& outExceptionString)
++{
++    if (!accessOptions) {
++        outExceptionString = toErrorString(nullString(), "accessOptions"_s, "an object is expected"_s);
++        return;
++    }
++    if (!validateDictionary(accessOptions, "accessOptions"_s, { "accessLevel"_s }, { { "accessLevel"_s, JSON::Value::Type::String } }, outExceptionString))
++        return;
++
++    auto accessLevelString = accessOptions->asObject()->getString("accessLevel"_s);
++    if (accessLevelString != "TRUSTED_CONTEXTS"_s && accessLevelString != "TRUSTED_AND_UNTRUSTED_CONTEXTS"_s) {
++        outExceptionString = toErrorString(nullString(), "accessLevel"_s, "it must specify either 'TRUSTED_CONTEXTS' or 'TRUSTED_AND_UNTRUSTED_CONTEXTS'"_s);
++        return;
++    }
++    auto accessLevel = accessLevelString == "TRUSTED_CONTEXTS"_s ? WebExtensionStorageAccessLevel::TrustedContexts : WebExtensionStorageAccessLevel::TrustedAndUntrustedContexts;
++    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::StorageSetAccessLevel(webPageProxyIdentifier, m_type, accessLevel), [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<void, WebExtensionError>&& result) {
++        if (!result)
++            callback->reportError(result.error());
++        else
++            callback->call();
++    }, extensionContext().identifier());
++}
++
++WebExtensionAPIEvent& WebExtensionAPIStorageArea::onChanged()
++{
++    // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/storage/StorageArea/onChanged
++
++    if (!m_onChanged)
++        m_onChanged = WebExtensionAPIEvent::create(*this, WebExtensionEventListenerType::StorageOnChanged);
++
++    return *m_onChanged;
++}
++
++double WebExtensionAPIStorageArea::quotaBytes()
++{
++    switch (m_type) {
++    case WebExtensionDataType::Local:
++        return webExtensionStorageAreaLocalQuotaBytes;
++    case WebExtensionDataType::Sync:
++        return webExtensionStorageAreaSyncQuotaBytes;
++    case WebExtensionDataType::Session:
++        return webExtensionStorageAreaSessionQuotaBytes;
++    }
++
++    ASSERT_NOT_REACHED();
++    return 0;
++}
++
++double WebExtensionAPIStorageArea::quotaBytesPerItem()
++{
++    ASSERT(m_type == WebExtensionDataType::Sync);
++    return webExtensionStorageAreaSyncQuotaBytesPerItem;
++}
++
++double WebExtensionAPIStorageArea::maxItems()
++{
++    ASSERT(m_type == WebExtensionDataType::Sync);
++    return webExtensionStorageAreaSyncMaximumItems;
++}
++
++double WebExtensionAPIStorageArea::maxWriteOperationsPerHour()
++{
++    ASSERT(m_type == WebExtensionDataType::Sync);
++    return webExtensionStorageAreaSyncMaximumWriteOperationsPerHour;
++}
++
++double WebExtensionAPIStorageArea::maxWriteOperationsPerMinute()
++{
++    ASSERT(m_type == WebExtensionDataType::Sync);
++    return webExtensionStorageAreaSyncMaximumWriteOperationsPerMinute;
++}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS)
+diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIStorageArea.h b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIStorageArea.h
+index ef0880ef23f911b8be87a268bb844b8a3aa4f9e9..5178563c708937f42e8321b6a54195d087d7616f 100644
+--- a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIStorageArea.h
++++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIStorageArea.h
+@@ -33,6 +33,7 @@
+ #include "WebExtensionAPIObject.h"
+ #include "WebExtensionDataType.h"
+ #include "WebPageProxyIdentifier.h"
++#include <wtf/JSONValues.h>
+ 
+ namespace WebKit {
+ 
+@@ -40,20 +41,19 @@ class WebExtensionAPIStorageArea : public WebExtensionAPIObject, public JSWebExt
+     WEB_EXTENSION_DECLARE_JS_WRAPPER_CLASS(WebExtensionAPIStorageArea, storageArea, storageArea);
+ 
+ public:
+-#if PLATFORM(COCOA)
+     bool isPropertyAllowed(const ASCIILiteral& propertyName, WebPage*);
+ 
+-    void get(WebPageProxyIdentifier, id items, Ref<WebExtensionCallbackHandler>&&, NSString **outExceptionString);
+-    void getKeys(WebPageProxyIdentifier, Ref<WebExtensionCallbackHandler>&&, NSString **outExceptionString);
+-    void getBytesInUse(WebPageProxyIdentifier, id keys, Ref<WebExtensionCallbackHandler>&&, NSString **outExceptionString);
+-    void set(WebPageProxyIdentifier, NSDictionary *items, Ref<WebExtensionCallbackHandler>&&, NSString **outExceptionString);
+-    void remove(WebPageProxyIdentifier, id keys, Ref<WebExtensionCallbackHandler>&&, NSString **outExceptionString);
++    void get(WebPageProxyIdentifier, JSContextRef, JSValueRef items, Ref<WebExtensionCallbackHandler>&&, String& outExceptionString);
++    void getKeys(WebPageProxyIdentifier, Ref<WebExtensionCallbackHandler>&&, String& outExceptionString);
++    void getBytesInUse(WebPageProxyIdentifier, JSContextRef, JSValueRef keys, Ref<WebExtensionCallbackHandler>&&, String& outExceptionString);
++    void set(WebPageProxyIdentifier, JSContextRef, JSValueRef items, Ref<WebExtensionCallbackHandler>&&, String& outExceptionString);
++    void remove(WebPageProxyIdentifier, JSContextRef, JSValueRef keys, Ref<WebExtensionCallbackHandler>&&, String& outExceptionString);
+     void clear(WebPageProxyIdentifier, Ref<WebExtensionCallbackHandler>&&);
+ 
+     double NODELETE quotaBytes();
+ 
+     // Only exposed to trusted contexts.
+-    void setAccessLevel(WebPageProxyIdentifier, NSDictionary *, Ref<WebExtensionCallbackHandler>&&, NSString **outExceptionString);
++    void setAccessLevel(WebPageProxyIdentifier, RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String& outExceptionString);
+ 
+     // Exposed only by storage.sync.
+     double NODELETE quotaBytesPerItem();
+@@ -73,7 +73,6 @@ private:
+ 
+     WebExtensionDataType m_type { WebExtensionDataType::Local };
+     RefPtr<WebExtensionAPIEvent> m_onChanged;
+-#endif
+ };
+ 
+ } // namespace WebKit
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIWebPageNamespace.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIWebPageNamespace.cpp
 index ea08fca0526758a0ad4fc578a8dfb8d463b1f39f..150680554f7c6066f37023e7c057ff09b42458f2 100644
 --- a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIWebPageNamespace.cpp
@@ -37301,6 +38302,333 @@ index 0000000000000000000000000000000000000000..c722d1117a692bb4d33d7aa115d772ac
 +Ref<WebExtensionMessageReply> createWebExtensionMessageReply(CompletionHandler<void(String&&)>&&);
 +JSObjectRef createWebExtensionMessageReplyFunction(JSContextRef, Ref<WebExtensionMessageReply>&&);
 +void invokeWebExtensionMessageReplyThenable(JSContextRef, JSValueRef, Ref<WebExtensionMessageReply>&&, JSValueRef& exception);
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS)
+diff --git a/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionStorageValues.cpp b/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionStorageValues.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..a935e14102c78a19eee48fcb5787222befc66bea
+--- /dev/null
++++ b/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionStorageValues.cpp
+@@ -0,0 +1,253 @@
++/*
++ * Copyright (C) 2023 Apple Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "JSWebExtensionStorageValues.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS)
++
++#include "JSWebExtensionString.h"
++#include "JSWebExtensionWrapper.h"
++#include "Protected.h"
++#include "WebExtensionUtilities.h"
++#include <JavaScriptCore/APICast.h>
++#include <JavaScriptCore/TopExceptionScope.h>
++#include <JavaScriptCore/JSLock.h>
++#include <JavaScriptCore/JSObjectInlines.h>
++#include <JavaScriptCore/PropertyNameArray.h>
++#include <JavaScriptCore/ProxyObject.h>
++#include <JavaScriptCore/ArrayConstructor.h>
++#include <cmath>
++#include <limits>
++#include <wtf/text/MakeString.h>
++
++namespace WebKit {
++
++static std::expected<bool, String> storageIsArray(JSContextRef context, JSValueRef value, const String& sourceKey)
++{
++    auto* globalObject = toJS(context);
++    JSC::JSLockHolder lock(globalObject);
++    auto& vm = globalObject->vm();
++    auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
++    // JSValueIsArray only recognizes direct arrays; the intrinsic handles proxies.
++    bool result = JSC::isArray(globalObject, toJS(globalObject, value));
++    if (scope.exception()) {
++        TRY_CLEAR_EXCEPTION(scope, makeUnexpected(toErrorString(nullString(), sourceKey, "its type could not be read"_s)));
++        return makeUnexpected(toErrorString(nullString(), sourceKey, "its type could not be read"_s));
++    }
++    return result;
++}
++
++static std::expected<Vector<String>, String> storageOwnPropertyNames(JSContextRef context, JSObjectRef object, const String& sourceKey)
++{
++    auto* globalObject = toJS(context);
++    JSC::JSLockHolder lock(globalObject);
++    auto& vm = globalObject->vm();
++    auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
++    auto* jsObject = toJS(object);
++    JSC::PropertyNameArrayBuilder names(vm, JSC::PropertyNameMode::Strings, JSC::PrivateSymbolMode::Exclude);
++    jsObject->methodTable()->getOwnPropertyNames(jsObject, globalObject, names, JSC::DontEnumPropertiesMode::Exclude);
++    if (scope.exception()) {
++        TRY_CLEAR_EXCEPTION(scope, makeUnexpected(toErrorString(nullString(), sourceKey, "its properties could not be read"_s)));
++        return makeUnexpected(toErrorString(nullString(), sourceKey, "its properties could not be read"_s));
++    }
++
++    Vector<String> result;
++    for (auto& name : names)
++        result.append(name.string());
++    return result;
++}
++
++std::expected<WebExtensionStorageValues, String> serializeWebExtensionStorageValues(JSContextRef context, JSValueRef items, std::optional<size_t> perItemQuota, size_t maximumBytes)
++{
++    if (!context || !items || !JSValueIsObject(context, items) || isFunction(context, items))
++        return makeUnexpected(toErrorString(nullString(), "items"_s, "an object is expected"_s));
++    auto isArray = storageIsArray(context, items, "items"_s);
++    if (!isArray)
++        return makeUnexpected(isArray.error());
++    if (*isArray)
++        return makeUnexpected(toErrorString(nullString(), "items"_s, "an object is expected"_s));
++
++    auto globalContext = JSContextGetGlobalContext(context);
++    Protected<JSObjectRef> object(globalContext, JSValueToObject(context, items, nullptr));
++    auto names = storageOwnPropertyNames(context, object.get(), "items"_s);
++    if (!names)
++        return makeUnexpected(names.error());
++
++    WebExtensionStorageValues result { JSON::Object::create() };
++    for (auto& key : *names) {
++        auto sourceKey = makeString("items[`"_s, key, "`]"_s);
++        JSValueRef exception = nullptr;
++        Protected<JSValueRef> value(globalContext, JSObjectGetProperty(context, object.get(), toJSString(key).get(), &exception));
++        if (exception || !value.get())
++            return makeUnexpected(toErrorString(nullString(), sourceKey, "its value could not be read"_s));
++        if (JSValueIsUndefined(context, value.get()))
++            continue;
++
++        auto serialized = serializeJSObject(context, value.get(), &exception);
++        if (exception || serialized.isNull())
++            return makeUnexpected(toErrorString(nullString(), sourceKey, "it is not JSON-serializable"_s));
++
++        auto keySize = key.utf8().length();
++        auto valueSize = serialized.utf8().length();
++        if (perItemQuota && (keySize > *perItemQuota || valueSize > *perItemQuota - keySize))
++            return makeUnexpected(toErrorString(nullString(), sourceKey, "it exceeded maximum size for a single item"_s));
++
++        if (keySize > maximumBytes - result.sizeInBytes || valueSize > maximumBytes - result.sizeInBytes - keySize)
++            return makeUnexpected(toErrorString(nullString(), nullString(), "it exceeded maximum data size allowed per call"_s));
++
++        result.sizeInBytes += keySize + valueSize;
++        result.serializedValues->setString(key, serialized);
++    }
++
++    return result;
++}
++
++std::expected<WebExtensionStorageKeySelection, String> parseWebExtensionStorageKeys(JSContextRef context, JSValueRef items, WebExtensionStorageKeyMode mode)
++{
++    auto sourceKey = mode == WebExtensionStorageKeyMode::Get ? "items"_s : "keys"_s;
++    auto invalidKeys = [&] {
++        auto expected = mode == WebExtensionStorageKeyMode::Get ? "an object or a string or an array of strings or null"_s
++            : mode == WebExtensionStorageKeyMode::GetBytesInUse ? "a string or an array of strings or null"_s : "a string or an array of strings"_s;
++        auto provided = "a value of another type"_s;
++        if (context && items) {
++            if (JSValueIsNumber(context, items))
++                provided = "a number"_s;
++            else if (JSValueIsBoolean(context, items))
++                provided = "a boolean"_s;
++            else if (JSValueIsArray(context, items))
++                provided = "an array of other values"_s;
++            else if (JSValueIsObject(context, items))
++                provided = "an object"_s;
++        }
++        return makeUnexpected(toErrorString(nullString(), sourceKey, makeString(expected, " is expected, but "_s, provided, " was provided"_s)));
++    };
++    if (!context)
++        return invalidKeys();
++
++    WebExtensionStorageKeySelection result;
++    if (!items || JSValueIsNull(context, items) || JSValueIsUndefined(context, items)) {
++        if (mode == WebExtensionStorageKeyMode::Remove)
++            return invalidKeys();
++        result.allKeys = true;
++        return result;
++    }
++
++    if (JSValueIsString(context, items)) {
++        result.keys.append(toString(JSRetainPtr(Adopt, JSValueToStringCopy(context, items, nullptr)).get()));
++        return result;
++    }
++    if (!JSValueIsObject(context, items) || isFunction(context, items))
++        return invalidKeys();
++
++    auto globalContext = JSContextGetGlobalContext(context);
++    Protected<JSObjectRef> object(globalContext, JSValueToObject(context, items, nullptr));
++    auto isArray = storageIsArray(context, items, sourceKey);
++    if (!isArray)
++        return makeUnexpected(isArray.error());
++    if (*isArray) {
++        JSValueRef exception = nullptr;
++        auto lengthValue = JSObjectGetProperty(context, object.get(), toJSString("length"_s).get(), &exception);
++        if (exception || !lengthValue || !JSValueIsNumber(context, lengthValue))
++            return invalidKeys();
++        double length = JSValueToNumber(context, lengthValue, nullptr);
++        if (!std::isfinite(length) || length < 0 || length > std::numeric_limits<uint32_t>::max() || std::trunc(length) != length)
++            return invalidKeys();
++        for (uint32_t index = 0; index < length; ++index) {
++            auto value = JSObjectGetPropertyAtIndex(context, object.get(), index, &exception);
++            if (exception || !value || !JSValueIsString(context, value))
++                return invalidKeys();
++            result.keys.append(toString(JSRetainPtr(Adopt, JSValueToStringCopy(context, value, nullptr)).get()));
++        }
++        // The backing store treats an empty key vector as all keys for byte counts.
++        result.allKeys = mode == WebExtensionStorageKeyMode::GetBytesInUse && result.keys.isEmpty();
++        return result;
++    }
++
++    if (mode != WebExtensionStorageKeyMode::Get)
++        return invalidKeys();
++    auto names = storageOwnPropertyNames(context, object.get(), sourceKey);
++    if (!names)
++        return makeUnexpected(names.error());
++    result.keys = WTF::move(*names);
++    for (auto& key : result.keys) {
++        JSValueRef exception = nullptr;
++        auto value = JSObjectGetProperty(context, object.get(), toJSString(key).get(), &exception);
++        if (exception || !value)
++            return makeUnexpected(toErrorString(nullString(), makeString("items[`"_s, key, "`]"_s), "its value could not be read"_s));
++        result.defaultValues.set(key, Protected<JSValueRef>(globalContext, value));
++    }
++    return result;
++}
++
++std::expected<Protected<JSObjectRef>, String> deserializeWebExtensionStorageValues(JSContextRef context, const Vector<String>& serializedChunks, const HashMap<String, Protected<JSValueRef>>& defaultValues)
++{
++    auto invalidData = [] { return makeUnexpected(toErrorString(nullString(), nullString(), "the stored data could not be decoded"_s)); };
++    if (!context)
++        return invalidData();
++
++    auto globalContext = JSContextGetGlobalContext(context);
++    auto* globalObject = toJS(context);
++    JSC::JSLockHolder lock(globalObject);
++    auto& vm = globalObject->vm();
++    Protected<JSObjectRef> result(globalContext, JSObjectMake(context, nullptr, nullptr));
++    // Define own data properties, including __proto__, without invoking setters.
++    auto putValue = [&](const String& key, JSValueRef value) {
++        auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
++        bool success = toJS(result.get())->putDirectMayBeIndex(globalObject, JSC::Identifier::fromString(vm, key), toJS(globalObject, value));
++        if (scope.exception()) {
++            TRY_CLEAR_EXCEPTION(scope, false);
++            return false;
++        }
++        return success;
++    };
++    for (auto& entry : defaultValues) {
++        if (!putValue(entry.key, entry.value.get()))
++            return invalidData();
++    }
++
++    for (auto& chunk : serializedChunks) {
++        auto parsed = JSON::Value::parseJSON(chunk);
++        auto object = parsed ? parsed->asObject() : nullptr;
++        if (!object)
++            return invalidData();
++        for (auto& entry : *object) {
++            auto serialized = entry.value->asString();
++            if (serialized.isNull())
++                return invalidData();
++            auto value = JSValueMakeFromJSONString(context, toJSString(serialized).get());
++            if (!value)
++                return invalidData();
++            Protected<JSValueRef> protectedValue(globalContext, value);
++            if (!putValue(entry.key, value))
++                return invalidData();
++        }
++    }
++    return result;
++}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS)
+diff --git a/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionStorageValues.h b/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionStorageValues.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..46602abcd5d1bce91febd11163c4d9854be58a50
+--- /dev/null
++++ b/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionStorageValues.h
+@@ -0,0 +1,62 @@
++/*
++ * Copyright (C) 2023 Apple Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#pragma once
++
++#if ENABLE(WK_WEB_EXTENSIONS)
++
++#include "Protected.h"
++#include <JavaScriptCore/JavaScript.h>
++#include <wtf/HashMap.h>
++#include <wtf/JSONValues.h>
++#include <wtf/Vector.h>
++#include <wtf/text/WTFString.h>
++#include <expected>
++#include <optional>
++
++namespace WebKit {
++
++struct WebExtensionStorageValues {
++    Ref<JSON::Object> serializedValues;
++    size_t sizeInBytes { 0 };
++};
++
++// Storage's wire format maps each key to its separately serialized JSON value.
++std::expected<WebExtensionStorageValues, String> serializeWebExtensionStorageValues(JSContextRef, JSValueRef, std::optional<size_t> perItemQuota, size_t maximumBytes);
++
++enum class WebExtensionStorageKeyMode : uint8_t { Get, GetBytesInUse, Remove };
++
++struct WebExtensionStorageKeySelection {
++    Vector<String> keys;
++    HashMap<String, Protected<JSValueRef>> defaultValues;
++    bool allKeys { false };
++};
++
++std::expected<WebExtensionStorageKeySelection, String> parseWebExtensionStorageKeys(JSContextRef, JSValueRef, WebExtensionStorageKeyMode);
++std::expected<Protected<JSObjectRef>, String> deserializeWebExtensionStorageValues(JSContextRef, const Vector<String>&, const HashMap<String, Protected<JSValueRef>>& defaultValues);
 +
 +} // namespace WebKit
 +
@@ -38122,7 +39450,7 @@ index 25491a911534c611ab59ab4725e41bafeb93894d..d1c62c9c4082a2e4856f1861dde93535
  
      [NeedsFrameIdentifier] void addListener([CallbackHandler] function listener);
 diff --git a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPINamespace.idl b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPINamespace.idl
-index 8fd7a8880207871662fb33d5b56dcf2fde2dfbc4..73958379daa64f143518e25ccc40199a40e4afdc 100644
+index 8fd7a8880207871662fb33d5b56dcf2fde2dfbc4..7dbefd63a40caf773dd29413391d20e0da712be4 100644
 --- a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPINamespace.idl
 +++ b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPINamespace.idl
 @@ -57,7 +57,7 @@
@@ -38133,6 +39461,15 @@ index 8fd7a8880207871662fb33d5b56dcf2fde2dfbc4..73958379daa64f143518e25ccc40199a
 +    [Dynamic] readonly attribute WebExtensionAPIRuntime runtime;
  
      [MainWorldOnly, Dynamic, Platform=COCOA] readonly attribute WebExtensionAPIMenus menus;
+ 
+@@ -75,7 +75,7 @@
+ 
+     [MainWorldOnly, Dynamic, Platform=COCOA, Conditional=WK_WEB_EXTENSIONS_SIDEBAR] readonly attribute WebExtensionAPISidePanel sidePanel;
+ 
+-    [Dynamic, Platform=COCOA] readonly attribute WebExtensionAPIStorage storage;
++    [Dynamic] readonly attribute WebExtensionAPIStorage storage;
+ 
+     [MainWorldOnly, Dynamic, Platform=COCOA] readonly attribute WebExtensionAPITabs tabs;
  
 diff --git a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIPort.idl b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIPort.idl
 index 2bbcb63b2c07fe3a4ce7209f1a695bfaa02fa81b..7792395c89740e7f4e6e0d4c70a5a42bba47fb35 100644
@@ -38154,6 +39491,48 @@ index 2bbcb63b2c07fe3a4ce7209f1a695bfaa02fa81b..7792395c89740e7f4e6e0d4c70a5a42b
      void disconnect();
  
      readonly attribute WebExtensionAPIEvent onDisconnect;
+diff --git a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIStorage.idl b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIStorage.idl
+index 0e283c6b3f86137a78dfe9b339530784aa3f14d3..208df1aab23e6311ed7f1cdd5386dade34c5190b 100644
+--- a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIStorage.idl
++++ b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIStorage.idl
+@@ -25,6 +25,7 @@
+ 
+ [
+     Conditional=WK_WEB_EXTENSIONS,
++    UseCPPAPI,
+     ReturnsPromiseWhenCallbackIsOmitted,
+ ] interface WebExtensionAPIStorage {
+ 
+diff --git a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIStorageArea.idl b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIStorageArea.idl
+index 866d70a2cdbbe9cfbd525c7be21d6c21db2dfa1a..090b11c6a852e779e830487dcaed395820981b93 100644
+--- a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIStorageArea.idl
++++ b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIStorageArea.idl
+@@ -34,18 +34,19 @@ dictionary WebExtensionStorageChange {
+ 
+ [
+     Conditional=WK_WEB_EXTENSIONS,
++    UseCPPAPI,
+     ReturnsPromiseWhenCallbackIsOmitted,
+     NeedsPageIdentifierWithCallbackHandler,
+ ] interface WebExtensionAPIStorageArea {
+ 
+-    [RaisesException] void get([Optional, NSObject=StopAtTopLevel, DOMString] any items, [Optional, CallbackHandler] function callback);
+-    [RaisesException] void getKeys([Optional, CallbackHandler] function callback);
+-    [RaisesException] void getBytesInUse([Optional, NSObject, DOMString] any keys, [Optional, CallbackHandler] function callback);
+-    [RaisesException] void set([NSDictionary=StopAtTopLevel] any items, [Optional, CallbackHandler] function callback);
+-    [RaisesException] void remove([NSObject] any keys, [Optional, CallbackHandler] function callback);
++    [NeedsScriptContext, RaisesStringException] void get([Optional, ValuesAllowed] any items, [Optional, CallbackHandler] function callback);
++    [RaisesStringException] void getKeys([Optional, CallbackHandler] function callback);
++    [NeedsScriptContext, RaisesStringException] void getBytesInUse([Optional, ValuesAllowed] any keys, [Optional, CallbackHandler] function callback);
++    [NeedsScriptContext, RaisesStringException] void set([ValuesAllowed] any items, [Optional, CallbackHandler] function callback);
++    [NeedsScriptContext, RaisesStringException] void remove([ValuesAllowed] any keys, [Optional, CallbackHandler] function callback);
+     void clear([Optional, CallbackHandler] function callback);
+ 
+-    [RaisesException, Dynamic] void setAccessLevel([NSDictionary] any accessOptions, [Optional, CallbackHandler] function callback);
++    [RaisesStringException, Dynamic] void setAccessLevel([JSONValue] any accessOptions, [Optional, CallbackHandler] function callback);
+ 
+     readonly attribute WebExtensionAPIEvent onChanged;
+ 
 diff --git a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIWebPageNamespace.idl b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIWebPageNamespace.idl
 index 6ff72b2f8384cb74d83d6ce24e287fc09a75cdf8..f461cb4b3d816d2d95e3b1c71c92c47554e55900 100644
 --- a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIWebPageNamespace.idl

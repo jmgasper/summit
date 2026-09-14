@@ -1365,3 +1365,25 @@ previous full build. See [namespace evidence](webextensions-native-runtime-names
 No `browser.runtime` call or external message was executed.
 
 Patch: `75a0dfd1b1212c05e00e58ec22cd613289a90ac45284517fe47803024adf3b70`.
+
+2026-09-14 fourth full extension link result: the frozen `75a0dfd1...` build
+completed compilation and failed at the WebKit shared-library link with 53
+distinct missing symbols. Eight navigation/cookie/page-association symbols
+are resolved. Their callers expose four further dependencies: action
+customization clearing, temporary user-gesture clearing, tab lookup by
+extension ID and the tab's window delegate. Record:
+`.vm/modern-extensions-namespaces-build-result.json`.
+No feature-enabled WebKit link or extension runtime passed.
+
+2026-09-14 native storage bindings: the storage namespace and area methods,
+change dispatch and seven messages now use common C++ on Haiku. Two more
+interfaces use C++ bindings, bringing the total to ten of 37. The value/key
+adapter passes 73 native checks, including proxies, UTF-8 call/item quotas,
+default-value identity, numeric/prototype-looking keys and garbage collection.
+Nine integration units compile with both extension flags and regenerated IPC;
+the final helper has an additional compile check. No storage IPC, SQLite
+persistence, access-level update or extension event was run. Database quota
+and key handling need further tests.
+See [storage evidence and limitations](webextensions-native-storage.md).
+
+Patch: `b330520c856f6a9a46eb9e787cba7acdd119772e062f68f96c06aed7c1d350a6`.

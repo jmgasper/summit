@@ -20,11 +20,14 @@ EXTRA_UNITS = ('haiku/WebExtensionContextBackgroundHaiku.cpp', 'haiku/WebExtensi
                'haiku/WebExtensionStateHaiku.cpp', 'Bindings/JSWebExtensionWrapper.cpp',
                'Bindings/JSWebExtensionMessageReply.cpp', 'Bindings/JSWebExtensionString.cpp',
                'Bindings/JSWebExtensionTabParameters.cpp',
+               'Bindings/JSWebExtensionStorageValues.cpp',
                'API/WebExtensionAPINamespace.cpp', 'API/WebExtensionAPIWebPageNamespace.cpp',
+               'API/WebExtensionAPIStorage.cpp', 'API/WebExtensionAPIStorageArea.cpp',
                'API/WebExtensionAPIRuntime.cpp',
                'API/WebExtensionAPIEvent.cpp', 'API/WebExtensionAPIPort.cpp')
 GENERATED_UNITS = ('WebExtensionContextMessageReceiver.cpp', 'WebExtensionContextProxyMessageReceiver.cpp')
 BINDING_UNITS = ('JSWebExtensionAPIEvent.cpp', 'JSWebExtensionAPIPort.cpp',
+                 'JSWebExtensionAPIStorage.cpp', 'JSWebExtensionAPIStorageArea.cpp',
                  'JSWebExtensionAPINamespace.cpp', 'JSWebExtensionAPIWebPageNamespace.cpp')
 PAGE_UNITS = {'WebPage.cpp': 'WebProcess/WebPage/WebPage.cpp',
               'WebLocalFrameLoaderClient.cpp': 'WebProcess/WebCoreSupport/WebLocalFrameLoaderClient.cpp'}
@@ -35,6 +38,7 @@ UI_API_UNITS = {'WebExtensionDynamicScripts.cpp': 'UIProcess/Extensions/WebExten
                 'WebExtensionContextAPIDeclarativeNetRequest.cpp': 'UIProcess/Extensions/API/WebExtensionContextAPIDeclarativeNetRequest.cpp',
                 'WebExtensionRegisteredScriptParser.cpp': 'Shared/Extensions/WebExtensionRegisteredScriptParser.cpp',
                 'WebExtensionContextAPIScripting.cpp': 'UIProcess/Extensions/API/WebExtensionContextAPIScripting.cpp',
+                'WebExtensionContextAPIStorage.cpp': 'UIProcess/Extensions/API/WebExtensionContextAPIStorage.cpp',
                 'WebExtensionContextAPIEvent.cpp': 'UIProcess/Extensions/API/WebExtensionContextAPIEvent.cpp',
                 'WebExtensionContextAPIPort.cpp': 'UIProcess/Extensions/API/WebExtensionContextAPIPort.cpp',
                 'WebExtensionContextAPIRuntime.cpp': 'UIProcess/Extensions/API/WebExtensionContextAPIRuntime.cpp'}
