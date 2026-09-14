@@ -44,3 +44,8 @@ feature-enabled engine still has not linked or run an extension.
 
 Promoted patch: `d577d67362ab609beaa6d87d67938b3f65eb3476190953d9c2af0313aff0882d`.
 Probe baseline: `e9fa1eff70595ba5e03552f0d8fd811084b56861e630853866ccce3e2361f756`.
+
+The full native build of the promoted patch regenerated resource IPC and
+completed compilation. Its WebKit shared-library link failed with the same 23
+missing symbols as the preceding build; none were added by this change.
+Evidence: `.vm/modern-extensions-web-request-metadata-build-result.json`.
