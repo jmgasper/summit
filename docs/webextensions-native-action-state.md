@@ -25,8 +25,10 @@ The observer active when coalescing finishes is used; replacing it during a
 delivery batch cancels the remaining callbacks in that batch.
 
 This supplies engine state and an observer interface. The browser SDK and
-toolbar do not yet register that observer. Native popup presentation, action
-click handling and the JavaScript action API still need their implementations.
+toolbar do not yet register that observer. Native popup presentation and the
+toolbar click route remain unfinished. The subsequent
+[native action API port](webextensions-native-action-api.md) implements state
+methods and event dispatch, with separate compile/helper evidence.
 Popup-path metadata alone does not display a popup.
 
 **Four final native integration units compile** with both extension features

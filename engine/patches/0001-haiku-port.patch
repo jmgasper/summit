@@ -21048,18 +21048,20 @@ index efb0e18ef3681d9f33b6c784f0fb22f1ff0e80eb..19ec94335716b9ab75d52343c7adcad7
  
      undefined setTopDocumentURLForQuirks(DOMString urlString);
 diff --git a/Source/WebKit/CMakeLists.txt b/Source/WebKit/CMakeLists.txt
-index e516087e3331311877a49df982704f642f6dffe9..921b01f65567cf85f358c4765722b51430224050 100644
+index e516087e3331311877a49df982704f642f6dffe9..88ba3d96097929c499b0ac1d8b25de99ad631e9a 100644
 --- a/Source/WebKit/CMakeLists.txt
 +++ b/Source/WebKit/CMakeLists.txt
-@@ -144,7 +144,6 @@ list(APPEND WebKit_UNIFIED_SOURCE_LIST_FILES
+@@ -142,9 +142,7 @@ list(APPEND WebKit_UNIFIED_SOURCE_LIST_FILES
+ )
+ 
  set(WebKit_BINDINGS_IN_FILES
-     WebProcess/Extensions/Interfaces/WebExtensionAPIAction
+-    WebProcess/Extensions/Interfaces/WebExtensionAPIAction
      WebProcess/Extensions/Interfaces/WebExtensionAPIBookmarks
 -    WebProcess/Extensions/Interfaces/WebExtensionAPICommands
      WebProcess/Extensions/Interfaces/WebExtensionAPICookies
      WebProcess/Extensions/Interfaces/WebExtensionAPIDOM
      WebProcess/Extensions/Interfaces/WebExtensionAPIDeclarativeNetRequest
-@@ -153,31 +152,32 @@ set(WebKit_BINDINGS_IN_FILES
+@@ -153,31 +151,33 @@ set(WebKit_BINDINGS_IN_FILES
      WebProcess/Extensions/Interfaces/WebExtensionAPIDevToolsInspectedWindow
      WebProcess/Extensions/Interfaces/WebExtensionAPIDevToolsNetwork
      WebProcess/Extensions/Interfaces/WebExtensionAPIDevToolsPanels
@@ -21086,6 +21088,7 @@ index e516087e3331311877a49df982704f642f6dffe9..921b01f65567cf85f358c4765722b514
  )
  
  set(WebKit_CPP_BINDINGS_IN_FILES
++    WebProcess/Extensions/Interfaces/WebExtensionAPIAction
 +    WebProcess/Extensions/Interfaces/WebExtensionAPIWindowsEvent
 +    WebProcess/Extensions/Interfaces/WebExtensionAPIWindows
 +    WebProcess/Extensions/Interfaces/WebExtensionAPITabs
@@ -23576,10 +23579,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..cc9b59178dbd429a1c226eba36d56fc5cd974a95
+index 0000000000000000000000000000000000000000..7a3f079d665f277d41d5b4164d0a1ea561177fa6
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,219 @@
+@@ -0,0 +1,222 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -23641,6 +23644,9 @@ index 0000000000000000000000000000000000000000..cc9b59178dbd429a1c226eba36d56fc5
 +    Shared/Extensions/WebExtensionCommandShortcut.cpp
 +    Shared/Extensions/WebExtensionCommandSettings.cpp
 +    Shared/Extensions/WebExtensionPermissionState.cpp
++    Shared/Extensions/WebExtensionActionDetails.cpp
++    UIProcess/Extensions/haiku/WebExtensionContextAPIActionHaiku.cpp
++    WebProcess/Extensions/API/WebExtensionAPIAction.cpp
 +    Shared/Extensions/WebExtensionWindowQueryParser.cpp
 +    WebProcess/Extensions/Bindings/JSWebExtensionWindowParameters.cpp
 +    WebProcess/Extensions/API/WebExtensionAPIWindows.cpp
@@ -23898,6 +23904,98 @@ index 4aa44664bcb8fd583fd38914ebc053fe737f8ce9..2411f2e16b0942622b701ef51dd712b3
          platformFinalize();
  
          return EXIT_SUCCESS;
+diff --git a/Source/WebKit/Shared/Extensions/WebExtensionActionDetails.cpp b/Source/WebKit/Shared/Extensions/WebExtensionActionDetails.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..541b5d748afc47011274ee413d6117b2dd76ee10
+--- /dev/null
++++ b/Source/WebKit/Shared/Extensions/WebExtensionActionDetails.cpp
+@@ -0,0 +1,61 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#include "WebExtensionActionDetails.h"
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++namespace WebKit {
++std::expected<std::optional<WebExtensionTabIdentifier>, String> parseWebExtensionActionTab(const JSON::Value* value)
++{
++    if (!value)
++        return std::optional<WebExtensionTabIdentifier> { };
++    auto number = value->asDouble();
++    auto tab = number ? toWebExtensionTabIdentifier(*number) : std::nullopt;
++    if (!isValid(tab) || *number > 9007199254740991.0)
++        return std::unexpected("tabId must be a valid safe integer identifier"_s);
++    return tab;
++}
++
++std::expected<WebExtensionActionDetails, String> parseWebExtensionActionDetails(const JSON::Value* value, WebExtensionActionDetailsKind kind)
++{
++    WebExtensionActionDetails result;
++    if ((!value || value->type() == JSON::Value::Type::Null) && kind == WebExtensionActionDetailsKind::Get)
++        return result;
++    RefPtr object = value ? value->asObject() : nullptr;
++    if (!object)
++        return std::unexpected("action details must be an object"_s);
++    ASCIILiteral valueKey = kind == WebExtensionActionDetailsKind::Title ? "title"_s
++        : kind == WebExtensionActionDetailsKind::BadgeText ? "text"_s : "popup"_s;
++    bool hasValue = false;
++    for (auto& key : object->keys()) {
++        Ref field = object->getValue(key).releaseNonNull();
++        if (key == "tabId"_s) {
++            auto tab = parseWebExtensionActionTab(field.ptr());
++            if (!tab)
++                return std::unexpected(tab.error());
++            result.tab = *tab;
++        } else if (key == "windowId"_s) {
++            auto number = field->asDouble();
++            auto window = number ? toWebExtensionWindowIdentifier(*number) : std::nullopt;
++            if (!isValid(window) || *number > 9007199254740991.0)
++                return std::unexpected("windowId must be a valid safe integer identifier"_s);
++            result.window = window;
++        } else if (kind != WebExtensionActionDetailsKind::Get && key == valueKey) {
++            hasValue = true;
++            if (field->type() == JSON::Value::Type::Null)
++                result.value = nullString();
++            else if (field->type() == JSON::Value::Type::String) {
++                result.value = field->asString();
++                if (result.value.contains('\0'))
++                    return std::unexpected("action text must not contain null characters"_s);
++            } else
++                return std::unexpected("action text must be a string or null"_s);
++        } else
++            return std::unexpected("unsupported action detail"_s);
++    }
++    if (result.tab && result.window)
++        return std::unexpected("action details cannot specify both tabId and windowId"_s);
++    if (kind != WebExtensionActionDetailsKind::Get && !hasValue)
++        return std::unexpected("the action text field is required"_s);
++    return result;
++}
++}
++#endif
+diff --git a/Source/WebKit/Shared/Extensions/WebExtensionActionDetails.h b/Source/WebKit/Shared/Extensions/WebExtensionActionDetails.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..877a33485aa20ae573870392a47b03732b73d537
+--- /dev/null
++++ b/Source/WebKit/Shared/Extensions/WebExtensionActionDetails.h
+@@ -0,0 +1,19 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++#include "WebExtensionTabIdentifier.h"
++#include "WebExtensionWindowIdentifier.h"
++#include <expected>
++#include <wtf/JSONValues.h>
++namespace WebKit {
++enum class WebExtensionActionDetailsKind : uint8_t { Get, Title, BadgeText, Popup };
++struct WebExtensionActionDetails {
++    std::optional<WebExtensionWindowIdentifier> window;
++    std::optional<WebExtensionTabIdentifier> tab;
++    // A null String resets inherited text; an empty String overrides it.
++    String value;
++};
++std::expected<WebExtensionActionDetails, String> parseWebExtensionActionDetails(const JSON::Value*, WebExtensionActionDetailsKind);
++std::expected<std::optional<WebExtensionTabIdentifier>, String> parseWebExtensionActionTab(const JSON::Value*);
++}
++#endif
 diff --git a/Source/WebKit/Shared/Extensions/WebExtensionCommandSettings.cpp b/Source/WebKit/Shared/Extensions/WebExtensionCommandSettings.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..3cdb03dbd0dcae3cde0d6922de482bb13da167e5
@@ -31676,10 +31774,10 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..76e57cca4e0d342090def90a58a71f8f
  };
  
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in
-index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..a8b6c177d51bba1d6485e5aa8acf0cd9eec1b320 100644
+index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..81defbdb91a702cd5177c203409cd2a6d32056ac 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in
-@@ -31,10 +31,60 @@
+@@ -31,10 +31,70 @@
      DispatchedTo=UI
  ]
  messages -> WebExtensionContext {
@@ -31700,6 +31798,16 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..a8b6c177d51bba1d6485e5aa8acf0cd9
 +    [Validator=isLoadedAndPrivilegedMessage] PermissionsRequest(HashSet<String> permissions, HashSet<String> origins, bool userGesture) -> (std::expected<bool, WebKit::WebExtensionError> result)
 +    [Validator=isLoadedAndPrivilegedMessage] PermissionsRemove(HashSet<String> permissions, HashSet<String> origins) -> (std::expected<bool, WebKit::WebExtensionError> result)
 +#endif
++#if PLATFORM(HAIKU)
++    [Validator=isActionMessageAllowed] ActionGetTitle(std::optional<WebKit::WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier) -> (std::expected<String, WebKit::WebExtensionError> result)
++    [Validator=isActionMessageAllowed] ActionSetTitle(std::optional<WebKit::WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, String title) -> (std::expected<void, WebKit::WebExtensionError> result)
++    [Validator=isActionMessageAllowed] ActionGetPopup(std::optional<WebKit::WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier) -> (std::expected<String, WebKit::WebExtensionError> result)
++    [Validator=isActionMessageAllowed] ActionSetPopup(std::optional<WebKit::WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, String popupPath) -> (std::expected<void, WebKit::WebExtensionError> result)
++    [Validator=isActionMessageAllowed] ActionGetBadgeText(std::optional<WebKit::WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier) -> (std::expected<String, WebKit::WebExtensionError> result)
++    [Validator=isActionMessageAllowed] ActionSetBadgeText(std::optional<WebKit::WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, String text) -> (std::expected<void, WebKit::WebExtensionError> result)
++    [Validator=isActionMessageAllowed] ActionGetEnabled(std::optional<WebKit::WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier) -> (std::expected<bool, WebKit::WebExtensionError> result)
++    [Validator=isActionMessageAllowed] ActionSetEnabled(std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, bool enabled) -> (std::expected<void, WebKit::WebExtensionError> result)
++#endif
      // Runtime Error Reporting
      [Validator=isLoaded] DidEncounterScriptError(String message, String sourceURL, uint32_t lineNumber, uint32_t columnNumber, WebKit::WebExtensionContentWorldType worldType)
 +    [Validator=isLoaded] AddListener(WebCore::FrameIdentifier frameIdentifier, WebKit::WebExtensionEventListenerType listenerType, WebKit::WebExtensionContentWorldType contentWorldType)
@@ -31712,7 +31820,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..a8b6c177d51bba1d6485e5aa8acf0cd9
 +    [Validator=isLoaded] RuntimeConnect(String extensionID, WebKit::WebExtensionPortChannelIdentifier channelIdentifier, String name, struct WebKit::WebExtensionMessageSenderParameters senderParameters, bool userGesture) -> (std::expected<void, WebKit::WebExtensionError> result)
 +    [Validator=isLoaded] RuntimeWebPageSendMessage(String extensionID, String messageJSON, struct WebKit::WebExtensionMessageSenderParameters senderParameters) -> (std::expected<String, WebKit::WebExtensionError> result)
 +    [Validator=isLoaded] RuntimeWebPageConnect(String extensionID, WebKit::WebExtensionPortChannelIdentifier channelIdentifier, String name, struct WebKit::WebExtensionMessageSenderParameters senderParameters) -> (std::expected<void, WebKit::WebExtensionError> result)
- 
++
 +    // Port APIs
 +    [Validator=isLoaded] PortPostMessage(WebKit::WebExtensionContentWorldType sourceContentWorldType, WebKit::WebExtensionContentWorldType targetContentWorldType, std::optional<WebKit::WebPageProxyIdentifier> sendingPageProxyIdentifier, WebKit::WebExtensionPortChannelIdentifier channelIdentifier, String messageJSON, bool userGesture)
 +    [Validator=isLoaded] PortRemoved(WebKit::WebExtensionContentWorldType sourceContentWorldType, WebKit::WebExtensionContentWorldType targetContentWorldType, WebKit::WebPageProxyIdentifier pageProxyIdentifier, WebKit::WebExtensionPortChannelIdentifier channelIdentifier)
@@ -31732,7 +31840,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..a8b6c177d51bba1d6485e5aa8acf0cd9
 +    [Validator=isCommandsMessageAllowed] CommandsUpdate(String name, std::optional<String> description, std::optional<String> shortcut) -> (std::expected<void, WebKit::WebExtensionError> result)
 +    [Validator=isCommandsMessageAllowed] CommandsReset(String name) -> (std::expected<void, WebKit::WebExtensionError> result)
 +#endif
-+
+ 
 +    // Web navigation APIs
 +    [Validator=isWebNavigationMessageAllowed] WebNavigationGetAllFrames(WebKit::WebExtensionTabIdentifier tabIdentifier) -> (std::expected<Vector<WebKit::WebExtensionFrameParameters>, WebKit::WebExtensionError> result)
 +    [Validator=isWebNavigationMessageAllowed] WebNavigationGetFrame(WebKit::WebExtensionTabIdentifier tabIdentifier, WebKit::WebExtensionFrameIdentifier frameIdentifier) -> (std::expected<std::optional<WebKit::WebExtensionFrameParameters>, WebKit::WebExtensionError> result)
@@ -31741,7 +31849,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..a8b6c177d51bba1d6485e5aa8acf0cd9
      // Action APIs
      [Validator=isActionMessageAllowed] ActionGetTitle(std::optional<WebKit::WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier) -> (std::expected<String, WebKit::WebExtensionError> result)
      [Validator=isActionMessageAllowed] ActionSetTitle(std::optional<WebKit::WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, String title) -> (std::expected<void, WebKit::WebExtensionError> result)
-@@ -71,9 +121,6 @@ messages -> WebExtensionContext {
+@@ -71,9 +131,6 @@ messages -> WebExtensionContext {
      [Validator=isBookmarksMessageAllowed] BookmarksRemoveTree(String bookmarkId) -> (std::expected<void, WebKit::WebExtensionError> result)
  #endif // ENABLE(WK_WEB_EXTENSIONS_BOOKMARKS)
  
@@ -31751,7 +31859,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..a8b6c177d51bba1d6485e5aa8acf0cd9
      // Cookies APIs
      [Validator=isCookiesMessageAllowed] CookiesGet(std::optional<PAL::SessionID> sessionID, String name, URL url) -> (std::expected<std::optional<WebKit::WebExtensionCookieParameters>, WebKit::WebExtensionError> result)
      [Validator=isCookiesMessageAllowed] CookiesGetAll(std::optional<PAL::SessionID> sessionID, URL url, struct WebKit::WebExtensionCookieFilterParameters filterParameters) -> (std::expected<Vector<WebKit::WebExtensionCookieParameters>, WebKit::WebExtensionError> result)
-@@ -100,8 +147,6 @@ messages -> WebExtensionContext {
+@@ -100,8 +157,6 @@ messages -> WebExtensionContext {
  #endif
  
      // Event APIs
@@ -31760,7 +31868,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..a8b6c177d51bba1d6485e5aa8acf0cd9
  
      // Extensions APIs
      [Validator=isLoaded] ExtensionIsAllowedIncognitoAccess() -> (bool result)
-@@ -125,20 +170,10 @@ messages -> WebExtensionContext {
+@@ -125,20 +180,10 @@ messages -> WebExtensionContext {
      [Validator=isLoaded] PermissionsRequest(HashSet<String> permissions, HashSet<String> origins) -> (bool success)
      [Validator=isLoaded] PermissionsRemove(HashSet<String> permissions, HashSet<String> origins) -> (bool success)
  
@@ -31781,7 +31889,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..a8b6c177d51bba1d6485e5aa8acf0cd9
  
      // Scripting APIs
      [Validator=isScriptingMessageAllowed] ScriptingExecuteScript(WebKit::WebExtensionScriptInjectionParameters parameters, bool userGesture) -> (std::expected<Vector<WebKit::WebExtensionScriptInjectionResultParameters>, WebKit::WebExtensionError> result)
-@@ -165,15 +200,6 @@ messages -> WebExtensionContext {
+@@ -165,15 +210,6 @@ messages -> WebExtensionContext {
      [Validator=isSidebarMessageAllowed] SidebarGetActionClickBehavior() -> (std::expected<WebKit::WebExtensionActionClickBehavior, WebKit::WebExtensionError> result)
  #endif // ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
  
@@ -31797,7 +31905,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..a8b6c177d51bba1d6485e5aa8acf0cd9
      // Tabs APIs
      [Validator=isLoadedAndPrivilegedMessage] TabsCreate(std::optional<WebKit::WebPageProxyIdentifier> webPageProxyIdentifier, WebKit::WebExtensionTabParameters creationParameters) -> (std::expected<std::optional<WebKit::WebExtensionTabParameters>, WebKit::WebExtensionError> result)
      [Validator=isLoadedAndPrivilegedMessage] TabsUpdate(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, WebKit::WebExtensionTabParameters updateParameters) -> (std::expected<std::optional<WebKit::WebExtensionTabParameters>, WebKit::WebExtensionError> result)
-@@ -198,8 +224,6 @@ messages -> WebExtensionContext {
+@@ -198,8 +234,6 @@ messages -> WebExtensionContext {
      [Validator=isLoadedAndPrivilegedMessage] TabsRemoveCSS(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, WebKit::WebExtensionScriptInjectionParameters parameters) -> (std::expected<void, WebKit::WebExtensionError> result)
  
      // WebNavigation APIs
@@ -34184,6 +34292,181 @@ index 0000000000000000000000000000000000000000..013ab7f75e75ed32931facd798bd3bcd
 +} // namespace WebKit
 +
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPIActionHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPIActionHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..4ab254e9c90c2b20f8e41f972121a1a3b5af12e1
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPIActionHaiku.cpp
+@@ -0,0 +1,169 @@
++/*
++ * Copyright (C) 2023 Apple Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#include "WebExtensionContext.h"
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++#include "WebExtensionAction.h"
++#include "WebExtensionContextProxyMessages.h"
++#include "WebExtensionUtilities.h"
++namespace WebKit {
++enum class CreateAction : bool { No, Yes };
++static std::expected<Ref<WebExtensionAction>, WebExtensionError> actionWithIdentifiers(WebExtensionContext& context,
++    std::optional<WebExtensionWindowIdentifier> windowID, std::optional<WebExtensionTabIdentifier> tabID, CreateAction create, ASCIILiteral api)
++{
++    if ((windowID && tabID) || (windowID && (!isValid(windowID) || (!isCurrent(windowID) && windowID->toUInt64() > 9007199254740991ULL)))
++        || (tabID && (!isValid(tabID) || tabID->toUInt64() > 9007199254740991ULL)))
++        return toWebExtensionError(api, "details"_s, "invalid action target"_s);
++    if (windowID) {
++        RefPtr window = context.getWindow(*windowID);
++        if (!window || !window->isOpen() || !window->extensionHasAccess())
++            return toWebExtensionError(api, nullString(), "window not found"_s);
++        return create == CreateAction::Yes ? context.getOrCreateAction(window.get()) : context.getAction(window.get());
++    }
++    if (tabID) {
++        RefPtr tab = context.getTab(*tabID);
++        if (!tab || !tab->isOpen() || !tab->extensionHasAccess())
++            return toWebExtensionError(api, nullString(), "tab not found"_s);
++        return create == CreateAction::Yes ? context.getOrCreateAction(tab.get()) : context.getAction(tab.get());
++    }
++    return Ref { context.defaultAction() };
++}
++bool WebExtensionContext::isActionMessageAllowed(IPC::Decoder& message)
++{
++    Ref extension = *m_extension;
++    return isLoadedAndPrivilegedMessage(message) && (extension->hasAction() || extension->hasBrowserAction() || extension->hasPageAction());
++}
++void WebExtensionContext::actionGetTitle(std::optional<WebExtensionWindowIdentifier> window, std::optional<WebExtensionTabIdentifier> tab, CompletionHandler<void(std::expected<String, WebExtensionError>&&)>&& completion)
++{
++    auto action = actionWithIdentifiers(*this, window, tab, CreateAction::No, "action.getTitle()"_s);
++    if (!action) {
++        completion(std::unexpected(action.error()));
++        return;
++    }
++    completion((*action)->label(WebExtensionAction::FallbackWhenEmpty::No));
++}
++void WebExtensionContext::actionGetBadgeText(std::optional<WebExtensionWindowIdentifier> window, std::optional<WebExtensionTabIdentifier> tab, CompletionHandler<void(std::expected<String, WebExtensionError>&&)>&& completion)
++{
++    auto action = actionWithIdentifiers(*this, window, tab, CreateAction::No, "action.getBadgeText()"_s);
++    if (!action) {
++        completion(std::unexpected(action.error()));
++        return;
++    }
++    completion((*action)->badgeText());
++}
++void WebExtensionContext::actionGetPopup(std::optional<WebExtensionWindowIdentifier> window, std::optional<WebExtensionTabIdentifier> tab, CompletionHandler<void(std::expected<String, WebExtensionError>&&)>&& completion)
++{
++    auto action = actionWithIdentifiers(*this, window, tab, CreateAction::No, "action.getPopup()"_s);
++    if (!action) {
++        completion(std::unexpected(action.error()));
++        return;
++    }
++    completion((*action)->popupPath());
++}
++void WebExtensionContext::actionGetEnabled(std::optional<WebExtensionWindowIdentifier> window, std::optional<WebExtensionTabIdentifier> tab, CompletionHandler<void(std::expected<bool, WebExtensionError>&&)>&& completion)
++{
++    auto action = actionWithIdentifiers(*this, window, tab, CreateAction::No, "action.isEnabled()"_s);
++    if (!action) {
++        completion(std::unexpected(action.error()));
++        return;
++    }
++    completion((*action)->isEnabled());
++}
++void WebExtensionContext::actionSetTitle(std::optional<WebExtensionWindowIdentifier> window, std::optional<WebExtensionTabIdentifier> tab, const String& value, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&& completion)
++{
++    if (value.contains('\0')) {
++        completion(toWebExtensionError("action.setTitle()"_s, nullString(), "text must not contain null characters"_s));
++        return;
++    }
++    auto action = actionWithIdentifiers(*this, window, tab, CreateAction::Yes, "action.setTitle()"_s);
++    if (!action) {
++        completion(std::unexpected(action.error()));
++        return;
++    }
++    (*action)->setLabel(value);
++    completion({ });
++}
++void WebExtensionContext::actionSetBadgeText(std::optional<WebExtensionWindowIdentifier> window, std::optional<WebExtensionTabIdentifier> tab, const String& value, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&& completion)
++{
++    if (value.contains('\0')) {
++        completion(toWebExtensionError("action.setBadgeText()"_s, nullString(), "text must not contain null characters"_s));
++        return;
++    }
++    auto action = actionWithIdentifiers(*this, window, tab, CreateAction::Yes, "action.setBadgeText()"_s);
++    if (!action) {
++        completion(std::unexpected(action.error()));
++        return;
++    }
++    (*action)->setBadgeText(value);
++    completion({ });
++}
++void WebExtensionContext::actionSetPopup(std::optional<WebExtensionWindowIdentifier> window, std::optional<WebExtensionTabIdentifier> tab, const String& value, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&& completion)
++{
++    if (value.contains('\0')) {
++        completion(toWebExtensionError("action.setPopup()"_s, nullString(), "text must not contain null characters"_s));
++        return;
++    }
++    auto action = actionWithIdentifiers(*this, window, tab, CreateAction::Yes, "action.setPopup()"_s);
++    if (!action) {
++        completion(std::unexpected(action.error()));
++        return;
++    }
++    (*action)->setPopupPath(value);
++    completion({ });
++}
++void WebExtensionContext::actionSetEnabled(std::optional<WebExtensionTabIdentifier> tab, bool enabled, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&& completion)
++{
++    auto action = actionWithIdentifiers(*this, std::nullopt, tab, CreateAction::Yes, enabled ? "action.enable()"_s : "action.disable()"_s);
++    if (!action) {
++        completion(std::unexpected(action.error()));
++        return;
++    }
++    (*action)->setEnabled(enabled);
++    completion({ });
++}
++void WebExtensionContext::fireActionClickedEventIfNeeded(WebExtensionTab* tab)
++{
++    if (!isLoaded() || (tab && (!isValidTab(*tab) || !tab->isOpen() || !tab->extensionHasAccess())))
++        return;
++    Ref action = getAction(tab);
++    if (!action->isEnabled() || action->presentsPopup())
++        return;
++    auto loadIdentifier = privilegedIdentifier();
++    constexpr auto type = WebExtensionEventListenerType::ActionOnClicked;
++    wakeUpBackgroundContentIfNecessaryToFireEvents({ type }, [this, protectedThis = Ref { *this }, tab = RefPtr { tab }, loadIdentifier] {
++        if (!isLoaded() || !m_privilegedIdentifier || *m_privilegedIdentifier != loadIdentifier)
++            return;
++        if (tab && (!isValidTab(*tab) || !tab->isOpen() || !tab->extensionHasAccess()))
++            return;
++        Ref action = getAction(tab.get());
++        if (!action->isEnabled() || action->presentsPopup())
++            return;
++        sendToProcessesForEvent(type, Messages::WebExtensionContextProxy::DispatchActionClickedEvent(tab ? std::optional(tab->parameters()) : std::nullopt));
++    });
++}
++}
++#endif
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPIPermissionsHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPIPermissionsHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..06b7ae6968f52ad877c1747f6f5c6bd48e596741
@@ -43539,7 +43822,7 @@ index 0000000000000000000000000000000000000000..2a51b2913800fada0f6279c8919bc190
 +
 +} // namespace WebKit
 diff --git a/Source/WebKit/WebKit.xcodeproj/project.pbxproj b/Source/WebKit/WebKit.xcodeproj/project.pbxproj
-index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..796fa2d59dfa8525d3c9049ab348578bdaa52a92 100644
+index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..083f0cdd80f227d8786cd26e87cc5db7a11ba98f 100644
 --- a/Source/WebKit/WebKit.xcodeproj/project.pbxproj
 +++ b/Source/WebKit/WebKit.xcodeproj/project.pbxproj
 @@ -123,6 +123,8 @@
@@ -43560,18 +43843,19 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..796fa2d59dfa8525d3c9049ab348578b
  		1C2BBF932B82BC5D001DBDFC /* WebExtensionError.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C2BBF922B82BC5D001DBDFC /* WebExtensionError.h */; };
  		1C386F302AF4082F004108F0 /* WebExtensionAPINotifications.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C386F2F2AF4082F004108F0 /* WebExtensionAPINotifications.h */; };
  		1C386F352AF409F9004108F0 /* JSWebExtensionAPINotifications.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C386F332AF409F9004108F0 /* JSWebExtensionAPINotifications.h */; };
-@@ -590,6 +594,10 @@
+@@ -590,6 +594,11 @@
  		1C5DC46C290B271E0061EC62 /* WebExtensionAPINamespace.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C5DC44F290888140061EC62 /* WebExtensionAPINamespace.h */; };
  		1C5DC46D290B271E0061EC62 /* WebExtensionAPIExtension.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C5DC468290B239C0061EC62 /* WebExtensionAPIExtension.h */; };
  		1C5DC46E290B27260061EC62 /* JSWebExtensionWrapper.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C5DC45829099F010061EC62 /* JSWebExtensionWrapper.h */; };
 +		FB9C1DEFF7F629B71087215A /* JSWebExtensionTabParameters.h in Headers */ = {isa = PBXBuildFile; fileRef = EC4D1D17FC56C731B0E51EBD /* JSWebExtensionTabParameters.h */; };
 +		550D413160032A3C6DFEB9DD /* JSWebExtensionStorageValues.h in Headers */ = {isa = PBXBuildFile; fileRef = 33AFE57FDD182AE814C7AB0D /* JSWebExtensionStorageValues.h */; };
++		FCDB7AC4F7DE6A35DC9CB663 /* JSWebExtensionActionDetails.h in Headers */ = {isa = PBXBuildFile; fileRef = 91F3ECEFEA20C8B7013C4870 /* JSWebExtensionActionDetails.h */; };
 +		BEFCDE2C73C56AE1E7D47766 /* JSWebExtensionString.h in Headers */ = {isa = PBXBuildFile; fileRef = 15C3D64BCCACCF54F3655CD0 /* JSWebExtensionString.h */; };
 +		9894D5547AE5EC1D0217C34D /* JSWebExtensionMessageReply.h in Headers */ = {isa = PBXBuildFile; fileRef = 6072A2C150D41194F11067FD /* JSWebExtensionMessageReply.h */; };
  		1C5DC46F290B27260061EC62 /* JSWebExtensionWrappable.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C5DC45B29099F010061EC62 /* JSWebExtensionWrappable.h */; };
  		1C62747D288B4C3E00CED3A2 /* CocoaHelpers.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C62747B288B4C3E00CED3A2 /* CocoaHelpers.h */; };
  		1C62900D28EE2CD300C26B60 /* CoreSVGSPI.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C62900C28EE2CD300C26B60 /* CoreSVGSPI.h */; };
-@@ -607,6 +615,7 @@
+@@ -607,6 +616,7 @@
  		1C7316772AC1DFDF007FADA4 /* WKWebExtensionMessagePortInternal.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C7316762AC1DFDF007FADA4 /* WKWebExtensionMessagePortInternal.h */; };
  		1C7316792AC1DFED007FADA4 /* WKWebExtensionMessagePortPrivate.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C7316782AC1DFED007FADA4 /* WKWebExtensionMessagePortPrivate.h */; settings = {ATTRIBUTES = (Private, ); }; };
  		1C73167B2AC1E676007FADA4 /* WebExtensionMessagePort.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C73167A2AC1E676007FADA4 /* WebExtensionMessagePort.h */; };
@@ -43579,7 +43863,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..796fa2d59dfa8525d3c9049ab348578b
  		1C891D6619B124FF00BA79DD /* WebInspectorUI.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C891D6319B124FF00BA79DD /* WebInspectorUI.h */; };
  		1C8B2363289AE89400020CDC /* WKWebExtensionPermission.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C8B2362289AE89400020CDC /* WKWebExtensionPermission.h */; settings = {ATTRIBUTES = (Public, ); }; };
  		1C8E28201275D15400BC7BD0 /* WebInspectorBackend.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C8E281E1275D15400BC7BD0 /* WebInspectorBackend.h */; };
-@@ -1014,6 +1023,10 @@
+@@ -1014,6 +1024,10 @@
  		336E07482EBCC1E400B4D635 /* WKAppKitGestureController.h in Headers */ = {isa = PBXBuildFile; fileRef = 336E07462EBCC1C100B4D635 /* WKAppKitGestureController.h */; };
  		337042042B58A2430077FF78 /* WebExtensionAPIWebRequestEvent.h in Headers */ = {isa = PBXBuildFile; fileRef = 337042032B58A2430077FF78 /* WebExtensionAPIWebRequestEvent.h */; };
  		337042092B58A8390077FF78 /* _WKWebExtensionWebRequestFilter.h in Headers */ = {isa = PBXBuildFile; fileRef = 337042072B58A8390077FF78 /* _WKWebExtensionWebRequestFilter.h */; settings = {ATTRIBUTES = (Private, ); }; };
@@ -43590,7 +43874,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..796fa2d59dfa8525d3c9049ab348578b
  		3375A37529429DF50028536D /* WebExtensionAPIWebNavigation.h in Headers */ = {isa = PBXBuildFile; fileRef = 3375A37329429DF50028536D /* WebExtensionAPIWebNavigation.h */; };
  		337822442947F679002106BB /* _WKWebExtensionWebNavigationURLFilter.h in Headers */ = {isa = PBXBuildFile; fileRef = 337822422947F679002106BB /* _WKWebExtensionWebNavigationURLFilter.h */; settings = {ATTRIBUTES = (Private, ); }; };
  		337822472947FBA5002106BB /* WebExtensionUtilities.h in Headers */ = {isa = PBXBuildFile; fileRef = 337822452947FBA4002106BB /* WebExtensionUtilities.h */; };
-@@ -3400,6 +3413,10 @@
+@@ -3400,6 +3414,10 @@
  /* End PBXCopyFilesBuildPhase section */
  
  /* Begin PBXFileReference section */
@@ -43601,7 +43885,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..796fa2d59dfa8525d3c9049ab348578b
  		005D158E18E4C4EB00734619 /* _WKFindDelegate.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = _WKFindDelegate.h; sourceTree = "<group>"; };
  		00B9661518E24CBA00CE1F88 /* APIFindClient.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = APIFindClient.h; sourceTree = "<group>"; };
  		00B9661718E25AE100CE1F88 /* FindClient.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = FindClient.mm; sourceTree = "<group>"; };
-@@ -4289,6 +4306,8 @@
+@@ -4289,6 +4307,8 @@
  		1C2B4D452A8199CC00C528A1 /* WebExtensionAPIAlarms.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPIAlarms.h; sourceTree = "<group>"; };
  		1C2B4D472A819C4700C528A1 /* WebExtensionAPIAlarms.idl */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionAPIAlarms.idl; sourceTree = "<group>"; };
  		1C2B4D482A819D0C00C528A1 /* JSWebExtensionAPIAlarms.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIAlarms.h; sourceTree = "<group>"; };
@@ -43610,7 +43894,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..796fa2d59dfa8525d3c9049ab348578b
  		1C2BBF922B82BC5D001DBDFC /* WebExtensionError.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionError.h; sourceTree = "<group>"; };
  		1C386F2E2AF407B1004108F0 /* WebExtensionAPINotifications.idl */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionAPINotifications.idl; sourceTree = "<group>"; };
  		1C386F2F2AF4082F004108F0 /* WebExtensionAPINotifications.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPINotifications.h; sourceTree = "<group>"; };
-@@ -4398,10 +4417,10 @@
+@@ -4398,10 +4418,10 @@
  		1C5ACF9E2A96E15400C041C0 /* WebExtensionAPIWindows.idl */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionAPIWindows.idl; sourceTree = "<group>"; };
  		1C5ACF9F2A96E15E00C041C0 /* WebExtensionAPITabs.idl */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionAPITabs.idl; sourceTree = "<group>"; };
  		1C5ACFA12A96F8C200C041C0 /* JSWebExtensionAPIWindows.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIWindows.h; sourceTree = "<group>"; };
@@ -43624,19 +43908,20 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..796fa2d59dfa8525d3c9049ab348578b
  		1C5ACFAA2A96F8D500C041C0 /* JSWebExtensionAPITabs.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPITabs.h; sourceTree = "<group>"; };
  		1C5ACFAD2A96F9D300C041C0 /* WebExtensionAPITabs.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPITabs.h; sourceTree = "<group>"; };
  		1C5ACFAF2A96F9F200C041C0 /* WebExtensionAPIWindows.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPIWindows.h; sourceTree = "<group>"; };
-@@ -4414,6 +4433,11 @@
+@@ -4414,6 +4434,12 @@
  		1C5DC4532908AC260061EC62 /* JSWebExtensionAPINamespace.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPINamespace.h; sourceTree = "<group>"; };
  		1C5DC45729099F010061EC62 /* JSWebExtensionWrapper.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = JSWebExtensionWrapper.cpp; sourceTree = "<group>"; };
  		1C5DC45829099F010061EC62 /* JSWebExtensionWrapper.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionWrapper.h; sourceTree = "<group>"; };
 +		EC4D1D17FC56C731B0E51EBD /* JSWebExtensionTabParameters.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionTabParameters.h; sourceTree = "<group>"; };
 +		8C609B72C7FC2111B36599D1 /* JSWebExtensionStorageValues.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = JSWebExtensionStorageValues.cpp; path = WebProcess/Extensions/Bindings/JSWebExtensionStorageValues.cpp; sourceTree = SOURCE_ROOT; };
 +		33AFE57FDD182AE814C7AB0D /* JSWebExtensionStorageValues.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = JSWebExtensionStorageValues.h; path = WebProcess/Extensions/Bindings/JSWebExtensionStorageValues.h; sourceTree = SOURCE_ROOT; };
++		91F3ECEFEA20C8B7013C4870 /* JSWebExtensionActionDetails.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionActionDetails.h; sourceTree = "<group>"; };
 +		15C3D64BCCACCF54F3655CD0 /* JSWebExtensionString.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionString.h; sourceTree = "<group>"; };
 +		6072A2C150D41194F11067FD /* JSWebExtensionMessageReply.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionMessageReply.h; sourceTree = "<group>"; };
  		1C5DC45A29099F010061EC62 /* JSWebExtensionWrapperCocoa.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = JSWebExtensionWrapperCocoa.mm; sourceTree = "<group>"; };
  		1C5DC45B29099F010061EC62 /* JSWebExtensionWrappable.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionWrappable.h; sourceTree = "<group>"; };
  		1C5DC45D2909A3680061EC62 /* CodeGeneratorExtensions.pm */ = {isa = PBXFileReference; lastKnownFileType = text.script.perl; path = CodeGeneratorExtensions.pm; sourceTree = "<group>"; };
-@@ -4451,6 +4475,7 @@
+@@ -4451,6 +4477,7 @@
  		1C7316762AC1DFDF007FADA4 /* WKWebExtensionMessagePortInternal.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WKWebExtensionMessagePortInternal.h; sourceTree = "<group>"; };
  		1C7316782AC1DFED007FADA4 /* WKWebExtensionMessagePortPrivate.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WKWebExtensionMessagePortPrivate.h; sourceTree = "<group>"; };
  		1C73167A2AC1E676007FADA4 /* WebExtensionMessagePort.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionMessagePort.h; sourceTree = "<group>"; };
@@ -43644,7 +43929,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..796fa2d59dfa8525d3c9049ab348578b
  		1C73167E2AC1EA27007FADA4 /* WebExtensionMessagePortCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionMessagePortCocoa.mm; sourceTree = "<group>"; };
  		1C739E852347BCF600C621EC /* CoreTextHelpers.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = CoreTextHelpers.mm; sourceTree = "<group>"; };
  		1C739E872347BD0F00C621EC /* CoreTextHelpers.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CoreTextHelpers.h; sourceTree = "<group>"; };
-@@ -4479,7 +4504,7 @@
+@@ -4479,7 +4506,7 @@
  		1C8ECFE32AFC79E9007BAA62 /* WebExtensionAPICommands.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPICommands.h; sourceTree = "<group>"; };
  		1C8ECFE52AFC79F9007BAA62 /* WebExtensionAPICommandsCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionAPICommandsCocoa.mm; sourceTree = "<group>"; };
  		1C8ECFE72AFC7DCB007BAA62 /* JSWebExtensionAPICommands.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPICommands.h; sourceTree = "<group>"; };
@@ -43653,7 +43938,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..796fa2d59dfa8525d3c9049ab348578b
  		1C8ECFEB2AFC8033007BAA62 /* WebExtensionContextAPICommandsCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionContextAPICommandsCocoa.mm; sourceTree = "<group>"; };
  		1C8ECFED2AFC8355007BAA62 /* WebExtensionCommandParameters.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionCommandParameters.h; sourceTree = "<group>"; };
  		1C8ECFEF2AFC8363007BAA62 /* WebExtensionCommandParameters.serialization.in */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = WebExtensionCommandParameters.serialization.in; sourceTree = "<group>"; };
-@@ -4628,7 +4653,7 @@
+@@ -4628,7 +4655,7 @@
  		1C9A15C92ABDEF13002CC12A /* WebExtensionAPIPort.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPIPort.h; sourceTree = "<group>"; };
  		1C9A15CB2ABDF10C002CC12A /* WebExtensionAPIPort.idl */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionAPIPort.idl; sourceTree = "<group>"; };
  		1C9A15CC2ABDF1E1002CC12A /* JSWebExtensionAPIPort.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIPort.h; sourceTree = "<group>"; };
@@ -43662,7 +43947,16 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..796fa2d59dfa8525d3c9049ab348578b
  		1C9A15D02ABDF334002CC12A /* WebExtensionAPIPortCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionAPIPortCocoa.mm; sourceTree = "<group>"; };
  		1C9A15D22ABE2F4B002CC12A /* WebExtensionContextAPIPortCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionContextAPIPortCocoa.mm; sourceTree = "<group>"; };
  		1C9DD99028FA19A30093BDB0 /* WebExtensionAPIExtension.idl */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionAPIExtension.idl; sourceTree = "<group>"; };
-@@ -5470,7 +5495,7 @@
+@@ -4824,7 +4851,7 @@
+ 		1CC78CD92C95F159003E3CDD /* WebExtension.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = WebExtension.cpp; sourceTree = "<group>"; };
+ 		1CC78CDA2C95F219003E3CDD /* WebExtensionMatchPattern.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = WebExtensionMatchPattern.cpp; sourceTree = "<group>"; };
+ 		1CC94E502AC92E9F0045F269 /* WebExtensionAPIAction.idl */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionAPIAction.idl; sourceTree = "<group>"; };
+-		1CC94E512AC92F190045F269 /* JSWebExtensionAPIAction.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = JSWebExtensionAPIAction.mm; sourceTree = "<group>"; };
++		1CC94E512AC92F190045F269 /* JSWebExtensionAPIAction.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = JSWebExtensionAPIAction.cpp; sourceTree = "<group>"; };
+ 		1CC94E522AC92F190045F269 /* JSWebExtensionAPIAction.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIAction.h; sourceTree = "<group>"; };
+ 		1CC94E552AC92F960045F269 /* WebExtensionAPIAction.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPIAction.h; sourceTree = "<group>"; };
+ 		1CC94E572AC92FA50045F269 /* WebExtensionAPIActionCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionAPIActionCocoa.mm; sourceTree = "<group>"; };
+@@ -5470,7 +5497,7 @@
  		336E07462EBCC1C100B4D635 /* WKAppKitGestureController.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WKAppKitGestureController.h; sourceTree = "<group>"; };
  		336E07472EBCC1C100B4D635 /* WKAppKitGestureController.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WKAppKitGestureController.mm; sourceTree = "<group>"; };
  		337041FF2B5895C00077FF78 /* WebExtensionAPIWebRequestEvent.idl */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionAPIWebRequestEvent.idl; sourceTree = "<group>"; };
@@ -43671,7 +43965,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..796fa2d59dfa8525d3c9049ab348578b
  		337042012B58A0880077FF78 /* JSWebExtensionAPIWebRequestEvent.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIWebRequestEvent.h; sourceTree = "<group>"; };
  		337042032B58A2430077FF78 /* WebExtensionAPIWebRequestEvent.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPIWebRequestEvent.h; sourceTree = "<group>"; };
  		337042052B58A2550077FF78 /* WebExtensionAPIWebRequestEventCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionAPIWebRequestEventCocoa.mm; sourceTree = "<group>"; };
-@@ -5478,8 +5503,23 @@
+@@ -5478,8 +5505,23 @@
  		337042082B58A8390077FF78 /* _WKWebExtensionWebRequestFilter.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = _WKWebExtensionWebRequestFilter.mm; sourceTree = "<group>"; };
  		33750522302D355C00FDB37C /* SystemTracePoints.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = SystemTracePoints.plist; sourceTree = "<group>"; };
  		3375A37029429DDA0028536D /* WebExtensionAPIWebNavigationCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionAPIWebNavigationCocoa.mm; sourceTree = "<group>"; };
@@ -43696,7 +43990,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..796fa2d59dfa8525d3c9049ab348578b
  		337822412947F679002106BB /* _WKWebExtensionWebNavigationURLFilter.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = _WKWebExtensionWebNavigationURLFilter.mm; sourceTree = "<group>"; };
  		337822422947F679002106BB /* _WKWebExtensionWebNavigationURLFilter.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = _WKWebExtensionWebNavigationURLFilter.h; sourceTree = "<group>"; };
  		337822452947FBA4002106BB /* WebExtensionUtilities.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionUtilities.h; sourceTree = "<group>"; };
-@@ -5488,7 +5528,7 @@
+@@ -5488,7 +5530,7 @@
  		3378F2FC2B1FCA5C00362EF3 /* WebExtensionMatchedRuleParameters.serialization.in */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionMatchedRuleParameters.serialization.in; sourceTree = "<group>"; };
  		3399E14E2B59ECEB008BFB60 /* WebExtensionAPIWebRequest.idl */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionAPIWebRequest.idl; sourceTree = "<group>"; };
  		3399E14F2B59EFD6008BFB60 /* JSWebExtensionAPIWebNavigation.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIWebNavigation.h; sourceTree = "<group>"; };
@@ -43705,7 +43999,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..796fa2d59dfa8525d3c9049ab348578b
  		3399E1512B59EFD7008BFB60 /* JSWebExtensionAPIWebRequest.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIWebRequest.h; sourceTree = "<group>"; };
  		3399E1552B59F0E5008BFB60 /* WebExtensionAPIWebRequest.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPIWebRequest.h; sourceTree = "<group>"; };
  		3399E1572B59F0FC008BFB60 /* WebExtensionAPIWebRequestCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionAPIWebRequestCocoa.mm; sourceTree = "<group>"; };
-@@ -5507,7 +5547,7 @@
+@@ -5507,7 +5549,7 @@
  		33F1A0102FEFB66B00BD5D70 /* PositionInformationManager.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = PositionInformationManager.h; sourceTree = "<group>"; };
  		33F1A0112FEFB66B00BD5D70 /* PositionInformationManager.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = PositionInformationManager.cpp; sourceTree = "<group>"; };
  		33F68335293FF6F5005C63C0 /* JSWebExtensionAPIWebNavigationEvent.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIWebNavigationEvent.h; sourceTree = "<group>"; };
@@ -43714,7 +44008,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..796fa2d59dfa8525d3c9049ab348578b
  		33F6833D293FFA4B005C63C0 /* WebExtensionAPIWebNavigationEvent.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPIWebNavigationEvent.h; sourceTree = "<group>"; };
  		33F6833F293FFB3F005C63C0 /* WebExtensionAPIWebNavigationEventCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionAPIWebNavigationEventCocoa.mm; sourceTree = "<group>"; };
  		35541583DC2A3C24CD8C2D87 /* ProxyingNetworkAgent.messages.in */ = {isa = PBXFileReference; lastKnownFileType = text; path = ProxyingNetworkAgent.messages.in; sourceTree = "<group>"; };
-@@ -7986,11 +8026,11 @@
+@@ -7986,11 +8028,11 @@
  		B6058CF32B6D98E7006D4C77 /* WebExtensionDataRecord.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionDataRecord.h; sourceTree = "<group>"; };
  		B6058CF42B6D98E8006D4C77 /* WebExtensionDataRecord.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = WebExtensionDataRecord.cpp; sourceTree = "<group>"; };
  		B6114A7C2939498000380B1B /* JSWebExtensionAPIEvent.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIEvent.h; sourceTree = "<group>"; };
@@ -43728,7 +44022,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..796fa2d59dfa8525d3c9049ab348578b
  		B61F9E7E2F742CFE005CE453 /* WKStageModeOrbitSimulator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WKStageModeOrbitSimulator.h; sourceTree = "<group>"; };
  		B61F9E7F2F742CFE005CE453 /* WKStageModeOrbitSimulator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WKStageModeOrbitSimulator.swift; sourceTree = "<group>"; };
  		B624FF142ABE4CB000F6EDF6 /* WebExtensionContextAPIScriptingCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionContextAPIScriptingCocoa.mm; sourceTree = "<group>"; };
-@@ -8003,14 +8043,16 @@
+@@ -8003,14 +8045,16 @@
  		B63403F814910D57001070B5 /* APIObject.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = APIObject.cpp; sourceTree = "<group>"; };
  		B63A99732B7EA000004611FD /* JSWebExtensionAPIWebPageRuntime.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIWebPageRuntime.h; sourceTree = "<group>"; };
  		B63C10322B51C09C004A69B8 /* JSWebExtensionAPIStorageArea.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIStorageArea.h; sourceTree = "<group>"; };
@@ -43747,7 +44041,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..796fa2d59dfa8525d3c9049ab348578b
  		B651BC5B2B460C9C009654A9 /* WebExtensionAPIStorage.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = WebExtensionAPIStorage.h; path = WebProcess/Extensions/API/WebExtensionAPIStorage.h; sourceTree = SOURCE_ROOT; };
  		B651BC5E2B460CBF009654A9 /* WebExtensionAPIStorageArea.idl */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = WebExtensionAPIStorageArea.idl; sourceTree = "<group>"; };
  		B651BC5F2B460CBF009654A9 /* WebExtensionAPIStorage.idl */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = WebExtensionAPIStorage.idl; sourceTree = "<group>"; };
-@@ -8044,6 +8086,7 @@
+@@ -8044,6 +8088,7 @@
  		B6B1565B2B5E177A004F9894 /* WebExtensionContextParameters.serialization.in */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = WebExtensionContextParameters.serialization.in; sourceTree = "<group>"; };
  		B6CCAAB629A445E90092E846 /* JSWebExtensionAPILocalization.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPILocalization.h; sourceTree = "<group>"; };
  		B6CCAAB729A445E90092E846 /* JSWebExtensionAPILocalization.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = JSWebExtensionAPILocalization.mm; sourceTree = "<group>"; };
@@ -43755,7 +44049,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..796fa2d59dfa8525d3c9049ab348578b
  		B6D031032AC1F240006C8E0B /* WebExtensionDynamicScripts.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionDynamicScripts.h; sourceTree = "<group>"; };
  		B6D031042AC1F241006C8E0B /* WebExtensionDynamicScriptsCocoa.mm */ = {isa = PBXFileReference; explicitFileType = sourcecode.cpp.objcpp.preprocessed; fileEncoding = 4; path = WebExtensionDynamicScriptsCocoa.mm; sourceTree = "<group>"; };
  		B6D031082AC1F631006C8E0B /* WebExtensionScriptInjectionParameters.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionScriptInjectionParameters.h; sourceTree = "<group>"; };
-@@ -11275,11 +11318,28 @@
+@@ -11275,11 +11320,28 @@
  				B62FB8622AA9180C00E61418 /* WebExtensionAPIScripting.h */,
  				029D6BAB2C4060920068CF99 /* WebExtensionAPISidebarAction.h */,
  				028648C52C3F5A2E00E474D4 /* WebExtensionAPISidePanel.h */,
@@ -43784,19 +44078,20 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..796fa2d59dfa8525d3c9049ab348578b
  				3375A37329429DF50028536D /* WebExtensionAPIWebNavigation.h */,
  				33F6833D293FFA4B005C63C0 /* WebExtensionAPIWebNavigationEvent.h */,
  				7DC192E42FEF2D4C0092B7BC /* WebExtensionAPIWebPageNamespace.cpp */,
-@@ -11341,6 +11401,11 @@
+@@ -11341,6 +11403,12 @@
  				1C5DC45B29099F010061EC62 /* JSWebExtensionWrappable.h */,
  				1C5DC45729099F010061EC62 /* JSWebExtensionWrapper.cpp */,
  				1C5DC45829099F010061EC62 /* JSWebExtensionWrapper.h */,
 +				EC4D1D17FC56C731B0E51EBD /* JSWebExtensionTabParameters.h */,
 +				8C609B72C7FC2111B36599D1 /* JSWebExtensionStorageValues.cpp */,
 +				33AFE57FDD182AE814C7AB0D /* JSWebExtensionStorageValues.h */,
++				91F3ECEFEA20C8B7013C4870 /* JSWebExtensionActionDetails.h */,
 +				15C3D64BCCACCF54F3655CD0 /* JSWebExtensionString.h */,
 +				6072A2C150D41194F11067FD /* JSWebExtensionMessageReply.h */,
  			);
  			path = Bindings;
  			sourceTree = "<group>";
-@@ -11866,12 +11931,18 @@
+@@ -11866,12 +11934,18 @@
  				B6058CF32B6D98E7006D4C77 /* WebExtensionDataRecord.h */,
  				7D199FE42E1B4ECF0042147F /* WebExtensionDeclarativeNetRequestSQLiteStore.cpp */,
  				7D199FE32E1B4ECF0042147F /* WebExtensionDeclarativeNetRequestSQLiteStore.h */,
@@ -43815,7 +44110,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..796fa2d59dfa8525d3c9049ab348578b
  				028D30762C616E8A004F4FC6 /* WebExtensionSidebar.h */,
  				7D1A8A0D2D405B34001715DF /* WebExtensionStorageSQLiteStore.cpp */,
  				7D1A8A0C2D405B34001715DF /* WebExtensionStorageSQLiteStore.h */,
-@@ -15897,6 +15968,8 @@
+@@ -15897,6 +15971,8 @@
  				1CF35F492B36089E0079C02C /* WebExtensionCookieParameters.serialization.in */,
  				B6B156582B5E1779004F9894 /* WebExtensionDataType.h */,
  				B624FF1C2ABE54B500F6EDF6 /* WebExtensionDynamicScripts.serialization.in */,
@@ -43824,7 +44119,14 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..796fa2d59dfa8525d3c9049ab348578b
  				1C2BBF922B82BC5D001DBDFC /* WebExtensionError.h */,
  				B6114A8B293AE05200380B1B /* WebExtensionEventListenerType.h */,
  				8696CE2F297EB3C90081C800 /* WebExtensionEventListenerType.serialization.in */,
-@@ -17440,7 +17513,7 @@
+@@ -17434,13 +17510,13 @@
+ 				E3E1B33C2F85021400B584C4 /* com.apple.WebProcess.x86.sb */,
+ 				996D00452D7AA0FD0049C7D8 /* CombinedWebDriverBidiDomains.json */,
+ 				1CC94E522AC92F190045F269 /* JSWebExtensionAPIAction.h */,
+-				1CC94E512AC92F190045F269 /* JSWebExtensionAPIAction.mm */,
++				1CC94E512AC92F190045F269 /* JSWebExtensionAPIAction.cpp */,
+ 				7D3FF7012ECBBDB100A26C20 /* JSWebExtensionAPIAlarms.cpp */,
+ 				1C2B4D482A819D0C00C528A1 /* JSWebExtensionAPIAlarms.h */,
  				96418A5D2DFA4B8100C19CDC /* JSWebExtensionAPIBookmarks.h */,
  				96418A5F2DFA4BA900C19CDC /* JSWebExtensionAPIBookmarks.mm */,
  				1C8ECFE72AFC7DCB007BAA62 /* JSWebExtensionAPICommands.h */,
@@ -43833,7 +44135,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..796fa2d59dfa8525d3c9049ab348578b
  				1C40052B2B2B953D00F2D9EE /* JSWebExtensionAPICookies.h */,
  				1C40052A2B2B953C00F2D9EE /* JSWebExtensionAPICookies.mm */,
  				3311023F2B17B99800B21C8C /* JSWebExtensionAPIDeclarativeNetRequest.h */,
-@@ -17458,7 +17531,7 @@
+@@ -17458,7 +17534,7 @@
  				1C05906A2DFA0FB7000406F9 /* JSWebExtensionAPIDOM.h */,
  				1C05906B2DFA0FB7000406F9 /* JSWebExtensionAPIDOM.mm */,
  				B6114A7C2939498000380B1B /* JSWebExtensionAPIEvent.h */,
@@ -43842,7 +44144,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..796fa2d59dfa8525d3c9049ab348578b
  				1C5DC462290B1C470061EC62 /* JSWebExtensionAPIExtension.h */,
  				1C5DC460290B1C440061EC62 /* JSWebExtensionAPIExtension.mm */,
  				B6CCAAB629A445E90092E846 /* JSWebExtensionAPILocalization.h */,
-@@ -17470,9 +17543,9 @@
+@@ -17470,9 +17546,9 @@
  				1C386F332AF409F9004108F0 /* JSWebExtensionAPINotifications.h */,
  				1C386F342AF409F9004108F0 /* JSWebExtensionAPINotifications.mm */,
  				B61AFA4629510D0F008220B1 /* JSWebExtensionAPIPermissions.h */,
@@ -43854,7 +44156,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..796fa2d59dfa8525d3c9049ab348578b
  				7D3D13B1304398C400289ABF /* JSWebExtensionAPIRuntime.cpp */,
  				1C5DC461290B1C470061EC62 /* JSWebExtensionAPIRuntime.h */,
  				B63E9A6C2AAF2B2D005F4561 /* JSWebExtensionAPIScripting.h */,
-@@ -17482,31 +17555,31 @@
+@@ -17482,31 +17558,31 @@
  				029D6BAF2C407AA30068CF99 /* JSWebExtensionAPISidePanel.h */,
  				029D6BB02C407AA30068CF99 /* JSWebExtensionAPISidePanel.mm */,
  				B626B7BD2B4F1DF8008E8DD1 /* JSWebExtensionAPIStorage.h */,
@@ -43895,18 +44197,19 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..796fa2d59dfa8525d3c9049ab348578b
  				843FD167295234DC00476A01 /* module.private.modulemap */,
  				DD5697CC2DC06F7700050321 /* rdar150228472.swift */,
  				9BF622532C3E8559007F7021 /* SecurityFlags.cpp */,
-@@ -18657,6 +18730,10 @@
+@@ -18657,6 +18733,11 @@
  				1C5ACFA82A96F8C400C041C0 /* JSWebExtensionAPIWindowsEvent.h in Headers */,
  				1C5DC46F290B27260061EC62 /* JSWebExtensionWrappable.h in Headers */,
  				1C5DC46E290B27260061EC62 /* JSWebExtensionWrapper.h in Headers */,
 +				FB9C1DEFF7F629B71087215A /* JSWebExtensionTabParameters.h in Headers */,
 +				550D413160032A3C6DFEB9DD /* JSWebExtensionStorageValues.h in Headers */,
++				FCDB7AC4F7DE6A35DC9CB663 /* JSWebExtensionActionDetails.h in Headers */,
 +				BEFCDE2C73C56AE1E7D47766 /* JSWebExtensionString.h in Headers */,
 +				9894D5547AE5EC1D0217C34D /* JSWebExtensionMessageReply.h in Headers */,
  				074A6FC72D5F1FAF0027F958 /* KeyEventInterpretationContext.h in Headers */,
  				E385F3692E86D75800461B0C /* LaunchLogHook.h in Headers */,
  				E385F37C2E87076100461B0C /* LaunchLogMessages.h in Headers */,
-@@ -19228,6 +19305,10 @@
+@@ -19228,6 +19309,10 @@
  				B651BC5D2B460C9D009654A9 /* WebExtensionAPIStorage.h in Headers */,
  				1C5ACFAE2A96F9D300C041C0 /* WebExtensionAPITabs.h in Headers */,
  				1C15497C2926BF75001B9E5B /* WebExtensionAPITest.h in Headers */,
@@ -43917,7 +44220,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..796fa2d59dfa8525d3c9049ab348578b
  				3375A37529429DF50028536D /* WebExtensionAPIWebNavigation.h in Headers */,
  				33F6833E293FFA4B005C63C0 /* WebExtensionAPIWebNavigationEvent.h in Headers */,
  				B61274A82B7D738100D8ACDA /* WebExtensionAPIWebPageNamespace.h in Headers */,
-@@ -19257,6 +19338,10 @@
+@@ -19257,6 +19342,10 @@
  				B6058CF52B6D98E8006D4C77 /* WebExtensionDataRecord.h in Headers */,
  				B6B1565C2B5E177A004F9894 /* WebExtensionDataType.h in Headers */,
  				B6D031052AC1F241006C8E0B /* WebExtensionDynamicScripts.h in Headers */,
@@ -43928,7 +44231,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..796fa2d59dfa8525d3c9049ab348578b
  				1C2BBF932B82BC5D001DBDFC /* WebExtensionError.h in Headers */,
  				B6114A8C293AE06800380B1B /* WebExtensionEventListenerType.h in Headers */,
  				1C4A14C62ABB710E00A1018C /* WebExtensionFrameIdentifier.h in Headers */,
-@@ -19268,6 +19353,7 @@
+@@ -19268,6 +19357,7 @@
  				1C6BE79F2B0A910200D01D93 /* WebExtensionMenuItemParameters.h in Headers */,
  				1C6BE7A32B0A94E500D01D93 /* WebExtensionMenuItemType.h in Headers */,
  				1C73167B2AC1E676007FADA4 /* WebExtensionMessagePort.h in Headers */,
@@ -43983,6 +44286,181 @@ index 0000000000000000000000000000000000000000..a416ba9f74355c9c3c43af38b518bf6d
 +}
 +
 +}
+diff --git a/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIActionCocoa.mm b/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIActionCocoa.mm
+index fc00f28f1eb9c20bdce32f873b2ba4d6b2bca337..92cf9834801c5c0e0a9b4ee56998c9e6564cd6f2 100644
+--- a/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIActionCocoa.mm
++++ b/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIActionCocoa.mm
+@@ -28,6 +28,7 @@
+ #endif
+ 
+ #import "config.h"
++#import "JSWebExtensionActionDetails.h"
+ #import "WebExtensionAPIAction.h"
+ #import "WebExtensionAPIKeys.h"
+ 
+@@ -56,6 +57,162 @@
+ 
+ namespace WebKit {
+ 
++static NSDictionary *actionDictionary(RefPtr<JSON::Value> value, String& exception)
++{
++    if (!value || value->type() == JSON::Value::Type::Null)
++        return nil;
++    if (!value->asObject()) {
++        exception = "action details must be an object"_s;
++        return nil;
++    }
++    return parseJSON(value->toJSONString().createNSString().get());
++}
++
++void WebExtensionAPIAction::getTitle(RefPtr<JSON::Value> details, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto dictionary = actionDictionary(details, exception);
++    if (!exception.isNull())
++        return;
++    getTitle(dictionary, WTF::move(callback), exception);
++}
++
++void WebExtensionAPIAction::setTitle(RefPtr<JSON::Value> details, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto dictionary = actionDictionary(details, exception);
++    if (!exception.isNull())
++        return;
++    setTitle(dictionary, WTF::move(callback), exception);
++}
++
++void WebExtensionAPIAction::getBadgeText(RefPtr<JSON::Value> details, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto dictionary = actionDictionary(details, exception);
++    if (!exception.isNull())
++        return;
++    NSString *nativeException = nil;
++    getBadgeText(dictionary, WTF::move(callback), &nativeException);
++    if (nativeException)
++        exception = nativeException;
++}
++
++void WebExtensionAPIAction::setBadgeText(RefPtr<JSON::Value> details, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto dictionary = actionDictionary(details, exception);
++    if (!exception.isNull())
++        return;
++    NSString *nativeException = nil;
++    setBadgeText(dictionary, WTF::move(callback), &nativeException);
++    if (nativeException)
++        exception = nativeException;
++}
++
++void WebExtensionAPIAction::getBadgeBackgroundColor(RefPtr<JSON::Value> details, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto dictionary = actionDictionary(details, exception);
++    if (!exception.isNull())
++        return;
++    NSString *nativeException = nil;
++    getBadgeBackgroundColor(dictionary, WTF::move(callback), &nativeException);
++    if (nativeException)
++        exception = nativeException;
++}
++
++void WebExtensionAPIAction::setBadgeBackgroundColor(RefPtr<JSON::Value> details, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto dictionary = actionDictionary(details, exception);
++    if (!exception.isNull())
++        return;
++    NSString *nativeException = nil;
++    setBadgeBackgroundColor(dictionary, WTF::move(callback), &nativeException);
++    if (nativeException)
++        exception = nativeException;
++}
++
++void WebExtensionAPIAction::isEnabled(RefPtr<JSON::Value> details, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto dictionary = actionDictionary(details, exception);
++    if (!exception.isNull())
++        return;
++    NSString *nativeException = nil;
++    isEnabled(dictionary, WTF::move(callback), &nativeException);
++    if (nativeException)
++        exception = nativeException;
++}
++
++void WebExtensionAPIAction::getPopup(RefPtr<JSON::Value> details, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto dictionary = actionDictionary(details, exception);
++    if (!exception.isNull())
++        return;
++    NSString *nativeException = nil;
++    getPopup(dictionary, WTF::move(callback), &nativeException);
++    if (nativeException)
++        exception = nativeException;
++}
++
++void WebExtensionAPIAction::setPopup(RefPtr<JSON::Value> details, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto dictionary = actionDictionary(details, exception);
++    if (!exception.isNull())
++        return;
++    NSString *nativeException = nil;
++    setPopup(dictionary, WTF::move(callback), &nativeException);
++    if (nativeException)
++        exception = nativeException;
++}
++
++void WebExtensionAPIAction::openPopup(WebPageProxyIdentifier page, RefPtr<JSON::Value> details, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto dictionary = actionDictionary(details, exception);
++    if (!exception.isNull())
++        return;
++    NSString *nativeException = nil;
++    openPopup(page, dictionary, WTF::move(callback), &nativeException);
++    if (nativeException)
++        exception = nativeException;
++}
++
++void WebExtensionAPIAction::enable(JSContextRef context, JSValueRef value, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto tab = parseWebExtensionActionTabIdentifier(context, value);
++    if (!tab) {
++        exception = tab.error();
++        return;
++    }
++    double tabID = *tab ? toWebAPI(**tab) : std::numeric_limits<double>::quiet_NaN();
++    NSString *nativeException = nil;
++    enable(tabID, WTF::move(callback), &nativeException);
++    if (nativeException)
++        exception = nativeException;
++}
++
++void WebExtensionAPIAction::disable(JSContextRef context, JSValueRef value, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto tab = parseWebExtensionActionTabIdentifier(context, value);
++    if (!tab) {
++        exception = tab.error();
++        return;
++    }
++    double tabID = *tab ? toWebAPI(**tab) : std::numeric_limits<double>::quiet_NaN();
++    NSString *nativeException = nil;
++    disable(tabID, WTF::move(callback), &nativeException);
++    if (nativeException)
++        exception = nativeException;
++}
++
++void WebExtensionAPIAction::setIcon(WebFrame& frame, JSContextRef context, JSValueRef details, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    if (!JSValueIsObject(context, details) && !JSValueIsNull(context, details)) {
++        exception = "action details must be an object"_s;
++        return;
++    }
++    NSString *nativeException = nil;
++    setIcon(frame, toNSDictionary(context, details, NullValuePolicy::Allowed), WTF::move(callback), &nativeException);
++    if (nativeException)
++        exception = nativeException;
++}
++
++
+ std::expected<void, String> WebExtensionAPIAction::parseActionDetails(NSDictionary *details, std::optional<WebExtensionWindowIdentifier>& windowIdentifier, std::optional<WebExtensionTabIdentifier>& tabIdentifier)
+ {
+     static NSDictionary<NSString *, id> *types = @{
 diff --git a/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIEventCocoa.mm b/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIEventCocoa.mm
 index 3fb6ebfe1e1c5703563b72822b66a69a2546d4a8..b8d68456d7d38b859ceecc144f15646aa837c8b7 100644
 --- a/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIEventCocoa.mm
@@ -46569,6 +47047,274 @@ index 77c4db0966a28ff00141af56b68d0fd16a6a826b..4d8372f4f47e8b05e804aa2bb49fbcf9
  void WebExtensionAPIWindowsEvent::invokeListenersWithArgument(id argument, OptionSet<WindowTypeFilter> windowTypeFilter)
  {
      if (m_listeners.isEmpty())
+diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIAction.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIAction.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..1a30683059ab35ba5bbd99e83ab1a3bed0f17bd0
+--- /dev/null
++++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIAction.cpp
+@@ -0,0 +1,206 @@
++/*
++ * Copyright (C) 2023 Apple Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#include "WebExtensionAPIAction.h"
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++#include "JSWebExtensionActionDetails.h"
++#include "JSWebExtensionTabParameters.h"
++#include "MessageSenderInlines.h"
++#include "WebExtensionActionDetails.h"
++#include "WebExtensionAPINamespace.h"
++#include "WebExtensionContextMessages.h"
++#include "WebExtensionContextProxy.h"
++#include "WebFrame.h"
++#include "WebProcess.h"
++#include <WebCore/Document.h>
++#include <WebCore/LocalFrame.h>
++#include <WebCore/UserGestureIndicator.h>
++namespace WebKit {
++void WebExtensionAPIAction::getTitle(RefPtr<JSON::Value> value, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto details = parseWebExtensionActionDetails(value.get(), WebExtensionActionDetailsKind::Get);
++    if (!details) {
++        exception = details.error();
++        return;
++    }
++    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::ActionGetTitle(details->window, details->tab),
++        [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<String, WebExtensionError>&& result) {
++            if (!result) {
++                callback->reportError(result.error());
++                return;
++            }
++            Protected<JSValueRef> value(callback->globalContext(), JSValueMakeString(callback->globalContext(), toJSString(*result).get()));
++            callback->call(value.get());
++        }, extensionContext().identifier());
++}
++void WebExtensionAPIAction::getBadgeText(RefPtr<JSON::Value> value, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto details = parseWebExtensionActionDetails(value.get(), WebExtensionActionDetailsKind::Get);
++    if (!details) {
++        exception = details.error();
++        return;
++    }
++    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::ActionGetBadgeText(details->window, details->tab),
++        [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<String, WebExtensionError>&& result) {
++            if (!result) {
++                callback->reportError(result.error());
++                return;
++            }
++            Protected<JSValueRef> value(callback->globalContext(), JSValueMakeString(callback->globalContext(), toJSString(*result).get()));
++            callback->call(value.get());
++        }, extensionContext().identifier());
++}
++void WebExtensionAPIAction::getPopup(RefPtr<JSON::Value> value, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto details = parseWebExtensionActionDetails(value.get(), WebExtensionActionDetailsKind::Get);
++    if (!details) {
++        exception = details.error();
++        return;
++    }
++    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::ActionGetPopup(details->window, details->tab),
++        [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<String, WebExtensionError>&& result) {
++            if (!result) {
++                callback->reportError(result.error());
++                return;
++            }
++            Protected<JSValueRef> value(callback->globalContext(), JSValueMakeString(callback->globalContext(), toJSString(*result).get()));
++            callback->call(value.get());
++        }, extensionContext().identifier());
++}
++void WebExtensionAPIAction::isEnabled(RefPtr<JSON::Value> value, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto details = parseWebExtensionActionDetails(value.get(), WebExtensionActionDetailsKind::Get);
++    if (!details) {
++        exception = details.error();
++        return;
++    }
++    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::ActionGetEnabled(details->window, details->tab),
++        [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<bool, WebExtensionError>&& result) {
++            if (!result) {
++                callback->reportError(result.error());
++                return;
++            }
++            Protected<JSValueRef> value(callback->globalContext(), JSValueMakeBoolean(callback->globalContext(), *result));
++            callback->call(value.get());
++        }, extensionContext().identifier());
++}
++void WebExtensionAPIAction::setTitle(RefPtr<JSON::Value> value, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto details = parseWebExtensionActionDetails(value.get(), WebExtensionActionDetailsKind::Title);
++    if (!details) {
++        exception = details.error();
++        return;
++    }
++    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::ActionSetTitle(details->window, details->tab, details->value),
++        [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<void, WebExtensionError>&& result) {
++            if (!result) {
++                callback->reportError(result.error());
++                return;
++            }
++            callback->call();
++        }, extensionContext().identifier());
++}
++void WebExtensionAPIAction::setBadgeText(RefPtr<JSON::Value> value, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto details = parseWebExtensionActionDetails(value.get(), WebExtensionActionDetailsKind::BadgeText);
++    if (!details) {
++        exception = details.error();
++        return;
++    }
++    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::ActionSetBadgeText(details->window, details->tab, details->value),
++        [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<void, WebExtensionError>&& result) {
++            if (!result) {
++                callback->reportError(result.error());
++                return;
++            }
++            callback->call();
++        }, extensionContext().identifier());
++}
++void WebExtensionAPIAction::setPopup(RefPtr<JSON::Value> value, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto details = parseWebExtensionActionDetails(value.get(), WebExtensionActionDetailsKind::Popup);
++    if (!details) {
++        exception = details.error();
++        return;
++    }
++    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::ActionSetPopup(details->window, details->tab, details->value),
++        [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<void, WebExtensionError>&& result) {
++            if (!result) {
++                callback->reportError(result.error());
++                return;
++            }
++            callback->call();
++        }, extensionContext().identifier());
++}
++void WebExtensionAPIAction::enable(JSContextRef context, JSValueRef value, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto tab = parseWebExtensionActionTabIdentifier(context, value);
++    if (!tab) {
++        exception = tab.error();
++        return;
++    }
++    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::ActionSetEnabled(*tab, true),
++        [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<void, WebExtensionError>&& result) {
++            if (!result)
++                callback->reportError(result.error());
++            else
++                callback->call();
++        }, extensionContext().identifier());
++}
++void WebExtensionAPIAction::disable(JSContextRef context, JSValueRef value, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto tab = parseWebExtensionActionTabIdentifier(context, value);
++    if (!tab) {
++        exception = tab.error();
++        return;
++    }
++    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::ActionSetEnabled(*tab, false),
++        [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<void, WebExtensionError>&& result) {
++            if (!result)
++                callback->reportError(result.error());
++            else
++                callback->call();
++        }, extensionContext().identifier());
++}
++WebExtensionAPIEvent& WebExtensionAPIAction::onClicked()
++{
++    if (!m_onClicked)
++        m_onClicked = WebExtensionAPIEvent::create(*this, WebExtensionEventListenerType::ActionOnClicked);
++    return *m_onClicked;
++}
++void WebExtensionContextProxy::dispatchActionClickedEvent(const std::optional<WebExtensionTabParameters>& tab)
++{
++    enumerateFramesAndNamespaceObjects([&](auto& frame, auto& object) {
++        RefPtr coreFrame = frame.coreLocalFrame();
++        WebCore::UserGestureIndicator gesture(WebCore::IsProcessingUserGesture::Yes, protect(coreFrame ? coreFrame->document() : nullptr));
++        object.action().onClicked().template invokeListenersWithArgumentFactory<1>([&](JSGlobalContextRef context) {
++            return std::array { Protected<JSValueRef>(context, tab ? toWebAPI(context, *tab) : JSValueMakeUndefined(context)) };
++        });
++    });
++}
++}
++#endif
+diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIAction.h b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIAction.h
+index 3177d164b2173fb0dc01f039eb7cdaa7730d128c..283188b04d4c88531cae14e44f8ff48808571110 100644
+--- a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIAction.h
++++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIAction.h
+@@ -31,6 +31,7 @@
+ #include "WebExtensionAPIEvent.h"
+ #include "WebExtensionAPIObject.h"
+ #include "WebPageProxyIdentifier.h"
++#include <wtf/JSONValues.h>
+ 
+ OBJC_CLASS NSDictionary;
+ OBJC_CLASS NSString;
+@@ -41,7 +42,24 @@ class WebExtensionAPIAction : public WebExtensionAPIObject, public JSWebExtensio
+     WEB_EXTENSION_DECLARE_JS_WRAPPER_CLASS(WebExtensionAPIAction, action, action);
+ 
+ public:
++    void getTitle(RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String& exception);
++    void setTitle(RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String& exception);
++    void getBadgeText(RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String& exception);
++    void setBadgeText(RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String& exception);
++    void enable(JSContextRef, JSValueRef, Ref<WebExtensionCallbackHandler>&&, String& exception);
++    void disable(JSContextRef, JSValueRef, Ref<WebExtensionCallbackHandler>&&, String& exception);
++    void isEnabled(RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String& exception);
++    void getPopup(RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String& exception);
++    void setPopup(RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String& exception);
++    WebExtensionAPIEvent& onClicked();
++
+ #if PLATFORM(COCOA)
++    void getBadgeBackgroundColor(RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String& exception);
++    void setBadgeBackgroundColor(RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String& exception);
++    void openPopup(WebPageProxyIdentifier, RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String& exception);
++    // Raw ImageData values must reach Cocoa's existing converter unchanged.
++    void setIcon(WebFrame&, JSContextRef, JSValueRef, Ref<WebExtensionCallbackHandler>&&, String& exception);
++
+     void getTitle(NSDictionary *details, Ref<WebExtensionCallbackHandler>&&, String& outExceptionString);
+     void setTitle(NSDictionary *details, Ref<WebExtensionCallbackHandler>&&, String& outExceptionString);
+ 
+@@ -61,7 +79,6 @@ public:
+     void setPopup(NSDictionary *details, Ref<WebExtensionCallbackHandler>&&, NSString **outExceptionString);
+     void openPopup(WebPageProxyIdentifier, NSDictionary *details, Ref<WebExtensionCallbackHandler>&&, NSString **outExceptionString);
+ 
+-    WebExtensionAPIEvent& onClicked();
+ 
+ private:
+     friend class WebExtensionAPIMenus;
+@@ -77,8 +94,9 @@ private:
+ 
+     static std::expected<void, String> parseActionDetails(NSDictionary *, std::optional<WebExtensionWindowIdentifier>&, std::optional<WebExtensionTabIdentifier>&);
+ 
+-    RefPtr<WebExtensionAPIEvent> m_onClicked;
+ #endif
++private:
++    RefPtr<WebExtensionAPIEvent> m_onClicked;
+ };
+ 
+ } // namespace WebKit
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPICommands.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPICommands.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..4b12560dc00b4599cc4c1da0bab25466de9a2d86
@@ -46990,7 +47736,7 @@ index 8e5ecd249ca1330547c03039e959fc77b549f325..9826adea1517e419ad842c2adbb4d22c
  
      void addListener(WebCore::FrameIdentifier, RefPtr<WebExtensionCallbackHandler>);
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.cpp
-index a631bca164f7da881e64b2ee29f21de7f4179746..ed7c05d376918773658355f345d3ddcc8963946b 100644
+index a631bca164f7da881e64b2ee29f21de7f4179746..0ae8809a9b60ea517173d50a6bab5bfdbe2756dd 100644
 --- a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.cpp
 +++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.cpp
 @@ -81,8 +81,14 @@ bool WebExtensionAPINamespace::isPropertyAllowed(const ASCIILiteral& name, WebPa
@@ -47009,7 +47755,23 @@ index a631bca164f7da881e64b2ee29f21de7f4179746..ed7c05d376918773658355f345d3ddcc
  
      if (name == "declarativeNetRequest"_s)
          return extensionContext->hasPermission(name) || extensionContext->hasPermission("declarativeNetRequestWithHostAccess"_s);
-@@ -153,7 +159,6 @@ WebExtensionAPIAlarms& WebExtensionAPINamespace::alarms()
+@@ -131,7 +137,6 @@ finish:
+     return extensionContext->hasPermission(name);
+ }
+ 
+-#if PLATFORM(COCOA)
+ WebExtensionAPIAction& WebExtensionAPINamespace::action()
+ {
+     // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/action
+@@ -141,7 +146,6 @@ WebExtensionAPIAction& WebExtensionAPINamespace::action()
+ 
+     return *m_action;
+ }
+-#endif
+ 
+ WebExtensionAPIAlarms& WebExtensionAPINamespace::alarms()
+ {
+@@ -153,7 +157,6 @@ WebExtensionAPIAlarms& WebExtensionAPINamespace::alarms()
      return *m_alarms;
  }
  
@@ -47017,7 +47779,7 @@ index a631bca164f7da881e64b2ee29f21de7f4179746..ed7c05d376918773658355f345d3ddcc
  WebExtensionAPICommands& WebExtensionAPINamespace::commands()
  {
      // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/commands
-@@ -164,6 +169,7 @@ WebExtensionAPICommands& WebExtensionAPINamespace::commands()
+@@ -164,6 +167,7 @@ WebExtensionAPICommands& WebExtensionAPINamespace::commands()
      return *m_commands;
  }
  
@@ -47025,7 +47787,7 @@ index a631bca164f7da881e64b2ee29f21de7f4179746..ed7c05d376918773658355f345d3ddcc
  WebExtensionAPICookies& WebExtensionAPINamespace::cookies()
  {
      // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/cookies
-@@ -258,6 +264,8 @@ WebExtensionAPINotifications& WebExtensionAPINamespace::notifications()
+@@ -258,6 +262,8 @@ WebExtensionAPINotifications& WebExtensionAPINamespace::notifications()
      return *m_notifications;
  }
  
@@ -47034,7 +47796,7 @@ index a631bca164f7da881e64b2ee29f21de7f4179746..ed7c05d376918773658355f345d3ddcc
  WebExtensionAPIPermissions& WebExtensionAPINamespace::permissions()
  {
      // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/permissions
-@@ -280,6 +288,7 @@ WebExtensionAPIRuntime& WebExtensionAPINamespace::runtime() const
+@@ -280,6 +286,7 @@ WebExtensionAPIRuntime& WebExtensionAPINamespace::runtime() const
      return *m_runtime;
  }
  
@@ -47042,7 +47804,7 @@ index a631bca164f7da881e64b2ee29f21de7f4179746..ed7c05d376918773658355f345d3ddcc
  WebExtensionAPIScripting& WebExtensionAPINamespace::scripting()
  {
      // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/scripting
-@@ -324,15 +333,8 @@ WebExtensionAPIBookmarks& WebExtensionAPINamespace::bookmarks()
+@@ -324,15 +331,8 @@ WebExtensionAPIBookmarks& WebExtensionAPINamespace::bookmarks()
  }
  #endif
  
@@ -47059,7 +47821,7 @@ index a631bca164f7da881e64b2ee29f21de7f4179746..ed7c05d376918773658355f345d3ddcc
  
  WebExtensionAPITabs& WebExtensionAPINamespace::tabs()
  {
-@@ -343,27 +345,15 @@ WebExtensionAPITabs& WebExtensionAPINamespace::tabs()
+@@ -343,27 +343,15 @@ WebExtensionAPITabs& WebExtensionAPINamespace::tabs()
  
      return *m_tabs;
  }
@@ -47068,13 +47830,13 @@ index a631bca164f7da881e64b2ee29f21de7f4179746..ed7c05d376918773658355f345d3ddcc
 -WebExtensionAPITest& WebExtensionAPINamespace::test()
 -{
 -    // Documentation: None (Testing Only)
- 
+-
 -    if (!m_test)
 -        m_test = WebExtensionAPITest::create(*this);
 -
 -    return *m_test;
 -}
--
+ 
 -#if PLATFORM(COCOA)
 -WebExtensionAPIWindows& WebExtensionAPINamespace::windows()
 +WebExtensionAPIStorage& WebExtensionAPINamespace::storage()
@@ -47092,7 +47854,7 @@ index a631bca164f7da881e64b2ee29f21de7f4179746..ed7c05d376918773658355f345d3ddcc
  }
  
  WebExtensionAPIWebNavigation& WebExtensionAPINamespace::webNavigation()
-@@ -385,7 +375,28 @@ WebExtensionAPIWebRequest& WebExtensionAPINamespace::webRequest()
+@@ -385,7 +373,28 @@ WebExtensionAPIWebRequest& WebExtensionAPINamespace::webRequest()
  
      return *m_webRequest;
  }
@@ -47123,31 +47885,38 @@ index a631bca164f7da881e64b2ee29f21de7f4179746..ed7c05d376918773658355f345d3ddcc
  } // namespace WebKit
  
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.h b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.h
-index 0daeb9f57bccead43bac234e6d71bff821327db7..7e6b419126b61e6b261989d89923f00126af648d 100644
+index 0daeb9f57bccead43bac234e6d71bff821327db7..a3d320b58344573ca886c77e2abfa70e32b549b4 100644
 --- a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.h
 +++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.h
-@@ -70,9 +70,9 @@ public:
+@@ -66,13 +66,12 @@ class WebExtensionAPINamespace : public WebExtensionAPIObject, public JSWebExten
+ 
+ public:
+     bool isPropertyAllowed(const ASCIILiteral& propertyName, WebPage*);
+-#if PLATFORM(COCOA)
      WebExtensionAPIAction& action();
- #endif
+-#endif
      WebExtensionAPIAlarms& alarms();
-+    WebExtensionAPICommands& commands();
- #if PLATFORM(COCOA)
-     WebExtensionAPIAction& browserAction() { return action(); }
--    WebExtensionAPICommands& commands();
+-#if PLATFORM(COCOA)
+-    WebExtensionAPIAction& browserAction() { return action(); }
+     WebExtensionAPICommands& commands();
++    WebExtensionAPIAction& browserAction() { return action(); }
++    WebExtensionAPIAction& pageAction() { return action(); }
++#if PLATFORM(COCOA)
      WebExtensionAPICookies& cookies();
      WebExtensionAPIMenus& contextMenus() { return menus(); }
      WebExtensionAPIDeclarativeNetRequest& declarativeNetRequest();
-@@ -88,8 +88,8 @@ public:
+@@ -87,9 +86,8 @@ public:
+ #if ENABLE(WK_WEB_EXTENSIONS_OFFSCREEN)
      WebExtensionAPIOffscreen& offscreen();
  #endif
-     WebExtensionAPIAction& pageAction() { return action(); }
+-    WebExtensionAPIAction& pageAction() { return action(); }
 -    WebExtensionAPIPermissions& permissions();
  #endif
 +    WebExtensionAPIPermissions& permissions();
      WebExtensionAPIRuntime& runtime() const final;
  #if PLATFORM(COCOA)
      WebExtensionAPIScripting& scripting();
-@@ -100,15 +100,13 @@ public:
+@@ -100,15 +98,13 @@ public:
  #if ENABLE(WK_WEB_EXTENSIONS_BOOKMARKS)
      WebExtensionAPIBookmarks& bookmarks();
  #endif
@@ -50194,6 +50963,33 @@ index 0df430648c8583ac2b72082f383085b9203a3254..4feb3e38e19c86532ff9120ab38fbb13
      void removeListener(WebCore::FrameIdentifier, RefPtr<WebExtensionCallbackHandler>);
      bool hasListener(RefPtr<WebExtensionCallbackHandler>);
  
+diff --git a/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionActionDetails.h b/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionActionDetails.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..692bb73d9edfc46fdfa2bf5a6acb1f7801819a36
+--- /dev/null
++++ b/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionActionDetails.h
+@@ -0,0 +1,21 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#if ENABLE(WK_WEB_EXTENSIONS)
++#include "WebExtensionTabIdentifier.h"
++#include <JavaScriptCore/JSValueRef.h>
++#include <expected>
++namespace WebKit {
++inline std::expected<std::optional<WebExtensionTabIdentifier>, String> parseWebExtensionActionTabIdentifier(JSContextRef context, JSValueRef value)
++{
++    if (!value || JSValueIsUndefined(context, value))
++        return std::optional<WebExtensionTabIdentifier> { };
++    if (!JSValueIsNumber(context, value))
++        return std::unexpected("tabId must be a valid safe integer identifier"_s);
++    auto number = JSValueToNumber(context, value, nullptr);
++    auto tab = toWebExtensionTabIdentifier(number);
++    if (!isValid(tab) || number > 9007199254740991.0)
++        return std::unexpected("tabId must be a valid safe integer identifier"_s);
++    return tab;
++}
++}
++#endif
 diff --git a/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionMessageReply.cpp b/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionMessageReply.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..4c9c0127c6fc188e5243ea2ef28c866ca7787a30
@@ -51763,6 +52559,52 @@ index 9f5d039a238bcdbbd16e6592ba8160f26791360d..2ca40e2aec623491dee3b6b99aaf0e40
  
 -#endif // ENABLE(WK_WEB_EXTENSIONS)
 +// The shared C++ implementation lives in WebExtensionControllerProxy.cpp.
+diff --git a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIAction.idl b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIAction.idl
+index 8007e76d0184c070fc23c63acf5f9a6698fe9829..6eb7dce1315e5f2372fda6a9866379852288df3a 100644
+--- a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIAction.idl
++++ b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIAction.idl
+@@ -66,27 +66,28 @@ dictionary WebExtensionActionOpenPopupOptions {
+ [
+     Conditional=WK_WEB_EXTENSIONS,
+     MainWorldOnly,
++    UseCPPAPI,
+     ReturnsPromiseWhenCallbackIsOmitted,
+ ] interface WebExtensionAPIAction {
+ 
+-    [RaisesStringException] void getTitle([Optional, NSDictionary=NullAllowed] any details, [Optional, CallbackHandler] function callback);
+-    [RaisesStringException] void setTitle([NSDictionary=NullAllowed] any details, [Optional, CallbackHandler] function callback);
++    [RaisesStringException] void getTitle([Optional, JSONValue=NullAllowed] any details, [Optional, CallbackHandler] function callback);
++    [RaisesStringException] void setTitle([JSONValue=NullAllowed] any details, [Optional, CallbackHandler] function callback);
+ 
+-    [RaisesException] void getBadgeText([Optional, NSDictionary=NullAllowed] any details, [Optional, CallbackHandler] function callback);
+-    [RaisesException] void setBadgeText([NSDictionary=NullAllowed] any details, [Optional, CallbackHandler] function callback);
++    [RaisesStringException] void getBadgeText([Optional, JSONValue=NullAllowed] any details, [Optional, CallbackHandler] function callback);
++    [RaisesStringException] void setBadgeText([JSONValue=NullAllowed] any details, [Optional, CallbackHandler] function callback);
+ 
+-    [RaisesException] void getBadgeBackgroundColor([Optional, NSDictionary=NullAllowed] any details, [Optional, CallbackHandler] function callback);
+-    [RaisesException] void setBadgeBackgroundColor([NSDictionary=NullAllowed] any details, [Optional, CallbackHandler] function callback);
++    [Platform=COCOA, RaisesStringException] void getBadgeBackgroundColor([Optional, JSONValue=NullAllowed] any details, [Optional, CallbackHandler] function callback);
++    [Platform=COCOA, RaisesStringException] void setBadgeBackgroundColor([JSONValue=NullAllowed] any details, [Optional, CallbackHandler] function callback);
+ 
+-    [RaisesException] void enable([Optional] double tabId, [Optional, CallbackHandler] function callback);
+-    [RaisesException] void disable([Optional] double tabId, [Optional, CallbackHandler] function callback);
+-    [RaisesException] void isEnabled([Optional, NSDictionary=NullAllowed] any details, [Optional, CallbackHandler] function callback);
++    [RaisesStringException, NeedsScriptContext] void enable([Optional, ValuesAllowed] any tabId, [Optional, CallbackHandler] function callback);
++    [RaisesStringException, NeedsScriptContext] void disable([Optional, ValuesAllowed] any tabId, [Optional, CallbackHandler] function callback);
++    [RaisesStringException] void isEnabled([Optional, JSONValue=NullAllowed] any details, [Optional, CallbackHandler] function callback);
+ 
+-    [RaisesException, NeedsFrame] void setIcon([NSDictionary=NullAllowed] any details, [Optional, CallbackHandler] function callback);
++    [Platform=COCOA, RaisesStringException, NeedsFrame, NeedsScriptContext] void setIcon([ValuesAllowed] any details, [Optional, CallbackHandler] function callback);
+ 
+-    [RaisesException] void setPopup([NSDictionary=NullAllowed] any details, [Optional, CallbackHandler] function callback);
+-    [RaisesException] void getPopup([Optional, NSDictionary=NullAllowed] any details, [Optional, CallbackHandler] function callback);
+-    [RaisesException, NeedsPageIdentifier] void openPopup([Optional, NSDictionary=NullAllowed] any options, [Optional, CallbackHandler] function callback);
++    [RaisesStringException] void setPopup([JSONValue=NullAllowed] any details, [Optional, CallbackHandler] function callback);
++    [RaisesStringException] void getPopup([Optional, JSONValue=NullAllowed] any details, [Optional, CallbackHandler] function callback);
++    [Platform=COCOA, RaisesStringException, NeedsPageIdentifier] void openPopup([Optional, JSONValue=NullAllowed] any options, [Optional, CallbackHandler] function callback);
+ 
+     readonly attribute WebExtensionAPIEvent onClicked;
+ 
 diff --git a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPICommands.idl b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPICommands.idl
 index a7907ee1aeea5f7c5fb86a6f7d99e83b69aa2640..4b6be127113d8a81a2f6114642776a14efff6997 100644
 --- a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPICommands.idl
@@ -51795,10 +52637,22 @@ index 25491a911534c611ab59ab4725e41bafeb93894d..d1c62c9c4082a2e4856f1861dde93535
  
      [NeedsFrameIdentifier] void addListener([CallbackHandler] function listener);
 diff --git a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPINamespace.idl b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPINamespace.idl
-index 8fd7a8880207871662fb33d5b56dcf2fde2dfbc4..6f048f4cd11691262fc58743676e777cf23cdab6 100644
+index 8fd7a8880207871662fb33d5b56dcf2fde2dfbc4..771b90065549441d96a819b025dfcffe01a2ff49 100644
 --- a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPINamespace.idl
 +++ b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPINamespace.idl
-@@ -43,7 +43,7 @@
+@@ -33,17 +33,17 @@
+     * in the offscreen web view context) - and automatically grant it in WebExtensionAPINamespace::isPropertyAllowed.
+     */
+ 
+-    [MainWorldOnly, Dynamic, Platform=COCOA] readonly attribute WebExtensionAPIAction action;
++    [MainWorldOnly, Dynamic] readonly attribute WebExtensionAPIAction action;
+ 
+     [MainWorldOnly, Dynamic] readonly attribute WebExtensionAPIAlarms alarms;
+ 
+     [MainWorldOnly, Dynamic, Platform=COCOA, Conditional=WK_WEB_EXTENSIONS_BOOKMARKS] readonly attribute WebExtensionAPIBookmarks bookmarks;
+ 
+-    [MainWorldOnly, Dynamic, Platform=COCOA] readonly attribute WebExtensionAPIAction browserAction;
++    [MainWorldOnly, Dynamic] readonly attribute WebExtensionAPIAction browserAction;
  
      [MainWorldOnly, Dynamic, Platform=COCOA] readonly attribute WebExtensionAPICookies cookies;
  
@@ -51816,9 +52670,12 @@ index 8fd7a8880207871662fb33d5b56dcf2fde2dfbc4..6f048f4cd11691262fc58743676e777c
  
      [MainWorldOnly, Dynamic, Platform=COCOA] readonly attribute WebExtensionAPIMenus menus;
  
-@@ -67,7 +67,7 @@
+@@ -65,9 +65,9 @@
  
-     [MainWorldOnly, Dynamic, Platform=COCOA] readonly attribute WebExtensionAPIAction pageAction;
+     [MainWorldOnly, Dynamic, Platform=COCOA, Conditional=WK_WEB_EXTENSIONS_OFFSCREEN] readonly attribute WebExtensionAPIOffscreen offscreen;
+ 
+-    [MainWorldOnly, Dynamic, Platform=COCOA] readonly attribute WebExtensionAPIAction pageAction;
++    [MainWorldOnly, Dynamic] readonly attribute WebExtensionAPIAction pageAction;
  
 -    [MainWorldOnly, Dynamic, Platform=COCOA] readonly attribute WebExtensionAPIPermissions permissions;
 +    [MainWorldOnly, Dynamic] readonly attribute WebExtensionAPIPermissions permissions;

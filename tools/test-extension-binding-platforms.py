@@ -162,6 +162,37 @@ def main(generated):
                         checks += 1
                         if bool(re.search(pattern, result.stdout)) != (name in common or not haiku):
                             raise RuntimeError(f'Incorrect {interface}.{name} exposure: Haiku={haiku}, source={suffix}')
+    if (generated / 'JSWebExtensionAPIAction.cpp').exists():
+        common = ('getTitle', 'setTitle', 'getBadgeText', 'setBadgeText', 'enable', 'disable', 'isEnabled', 'getPopup', 'setPopup', 'onClicked')
+        cocoa_only = ('getBadgeBackgroundColor', 'setBadgeBackgroundColor', 'setIcon', 'openPopup')
+        for haiku in (0, 1):
+            for suffix in ('h', 'cpp'):
+                prefix = f'#define ENABLE(x) 1\n#define PLATFORM(x) PLATFORM_##x\n#define PLATFORM_HAIKU {haiku}\n#define PLATFORM_COCOA {1-haiku}\n'
+                for interface, names in (('Action', common + cocoa_only), ('Namespace', ('action', 'browserAction', 'pageAction'))):
+                    source = generated / ('JSWebExtensionAPI' + interface + '.' + suffix)
+                    if digest(source) != generation['files'][source.name]:
+                        raise RuntimeError('Generated action binding changed: ' + source.name)
+                    stripped = re.sub(r'^\s*#(?:include|import|pragma)\b[^\n]*', '', source.read_text(), flags=re.M)
+                    result = subprocess.run([compiler, '-E', '-P', '-x', 'c++', '-'], input=prefix + stripped,
+                                            text=True, capture_output=True, check=True)
+                    for name in names:
+                        checks += 1
+                        pattern = r'\bstatic JSValueRef ' + name + r'\(' if suffix == 'h' else r'\bJSWebExtensionAPI' + interface + '::' + name + r'\('
+                        expected = interface == 'Namespace' or name in common or not haiku
+                        if bool(re.search(pattern, result.stdout)) != expected:
+                            raise RuntimeError(f'Incorrect {interface}.{name} exposure: Haiku={haiku}, source={suffix}')
+                    if interface == 'Action' and suffix == 'cpp':
+                        checks += 1
+                        if re.search(r'\b(?:toNSDictionary|NSString|NSDictionary)\b', result.stdout):
+                            raise RuntimeError('Action C++ binding contains Objective-C argument conversion')
+                        for name in ('enable', 'disable'):
+                            checks += 1
+                            if f'impl->{name}(context, tabId,' not in result.stdout:
+                                raise RuntimeError('Action tab identifier must retain its raw JavaScript value')
+                        if not haiku:
+                            checks += 1
+                            if 'impl->setIcon(*frame, context, details,' not in result.stdout:
+                                raise RuntimeError('Cocoa ImageData must retain the raw JavaScript value')
     report = {'scope': 'actual Perl generation and C++ preprocessing; no Cocoa or Haiku engine compile/runtime',
               'generation': str(generated), 'fixture_sha256': digest(idl), 'command': command,
               'checks': checks, 'cases': records, 'passed': True}

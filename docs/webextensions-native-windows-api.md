@@ -7,7 +7,12 @@ registry and uses the existing permission-filtered tab parameters. **No extensio
 
 Engine patch
 `6730e1ed2e25f7c9f9a8071634aed7e8dee6e4f374fce052230b745f627b155e`
-is promoted. Its full extension-enabled engine build is pending.
+is promoted. Its full extension-enabled engine build reached the WebKit link
+with **four missing symbols (eight references), down from five**. The windows
+dispatcher is resolved, with no new missing symbols or compiler errors.
+The remaining symbols cover the DNR loader and menu, action and cookie
+dispatchers. Both native source/configuration checks match this patch.
+Evidence: `.vm/modern-extensions-window-api-build-result.json`.
 
 The four reads require a loaded privileged context. `getCurrent` resolves the
 calling page's window, falling back to the frontmost accessible browser window

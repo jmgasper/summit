@@ -1814,6 +1814,27 @@ candidate, with source/header hashes audited. State/geometry and window mutation
 [the native windows API scope](webextensions-native-windows-api.md).
 
 Windows patch `6730e1ed2e25f7c9f9a8071634aed7e8dee6e4f374fce052230b745f627b155e`
-is promoted; its full extension-enabled engine build is pending.
+is promoted. Its full extension-enabled build reached the WebKit link with
+**four missing symbols (eight references), down from five**. The windows
+dispatcher is resolved, with no new missing symbols or compiler errors. Both
+native source/configuration checks match the patch. Evidence:
+`.vm/modern-extensions-window-api-build-result.json`.
 No extension has executed these APIs or received these native events in a
 browser; the full-browser objective remains unfinished.
+
+2026-09-15 (local) native action API: added title, badge text,
+popup-path state, enable/disable, enabled-state reads and click-event dispatch.
+Receivers validate the loaded privileged context and live accessible targets;
+setters use the existing native action model. Raw JavaScript tab IDs preserve
+numeric arguments, and dictionary conversion retains null resets separately
+from empty overrides. SDK/toolbar clicks, temporary activeTab grants, native
+icon/color APIs and popup presentation remain unfinished.
+
+The isolated native parser/JavaScriptCore helper passes **125 checks**, with
+unchanged source/library inputs and no native crash-log events. **Seven native
+integration units compile** and **393 generated-binding checks pass**; 20 of
+37 interfaces now generate C++ bindings. Source/header hashes
+match the tested inputs. These checks do not execute action API IPC or extension
+runtime. See [the action API scope and evidence](webextensions-native-action-api.md).
+Patch `4b8e914e8509911d780d93e72bae8ccff5d56dd97b51da470dd09ec711bae201`
+is promoted; its full extension-enabled engine build is pending.
