@@ -6,11 +6,12 @@ their profile context exposes it to the SDK. An extension unload cancels
 requests belonging to its old privileged load identifier after invalidating
 that identifier. Profile destruction shuts down the broker.
 
-**`browser.permissions.request()` is not connected to this broker yet.**
-Permission API bindings, manifest validation, applying and persisting grants,
-and actual extension execution remain unfinished. The broker returns a consent
-decision; it does not grant permissions itself. A caller must recheck its load,
-manifest, and current permission state before applying that decision.
+The [native permissions API](webextensions-native-permissions.md) now connects
+`browser.permissions.request()` to this broker and implements manifest
+validation, applying and persisting grants, and permission events. Actual
+extension execution remains unfinished. The broker returns a consent decision;
+the caller rechecks its load, manifest and current permission state before
+applying that decision.
 
 ## Broker contract
 
@@ -92,11 +93,11 @@ compile against the actual WebExtensions-disabled engine configuration.
 - SDK with extensions disabled: `.vm/extension-permission-prompts-disabled-compile.json`
 
 The final native helper used the previous configured source baseline plus the
-complete candidate overlay. The promoted engine patch is
+complete candidate overlay. The consent checkpoint's promoted engine patch was
 `7bdd8bfd20284706a60fc1abf37b82341f6c843500de9c99607af82f138384fe`.
 
-The full extension-enabled engine build compiles the new implementation and
-reaches the WebKit library link. It fails with the same **15 missing symbols
+That checkpoint's full extension-enabled engine build compiled the new
+implementation and reached the WebKit library link. It failed with the same **15 missing symbols
 (19 references)** as the preceding command port, with no new missing symbols
 and no compiler errors. The unresolved DNR loader and extension event
 dispatchers still prevent an extension-enabled browser from linking. The

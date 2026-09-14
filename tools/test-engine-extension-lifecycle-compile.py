@@ -16,7 +16,7 @@ UNITS = ('WebExtensionController.cpp', 'WebExtensionContext.cpp',
          'WebExtensionDeclarativeNetRequestSQLiteStore.cpp',
          'WebExtensionMatchPatternProcessPool.cpp', 'WebExtensionContextProxy.cpp',
          'WebExtensionControllerProxy.cpp')
-EXTRA_UNITS = ('API/WebExtensionAPICommands.cpp',
+EXTRA_UNITS = ('API/WebExtensionAPIPermissions.cpp', 'API/WebExtensionAPICommands.cpp',
                'API/WebExtensionAPIWebRequest.cpp', 'API/WebExtensionAPIWebRequestEvent.cpp', 'haiku/WebExtensionContextBackgroundHaiku.cpp', 'haiku/WebExtensionURLSchemeHandlerHaiku.cpp', 'haiku/WebExtensionContextHaiku.cpp',
                'haiku/WebExtensionContextTestHaiku.cpp',
                'haiku/WebExtensionStateHaiku.cpp', 'Bindings/JSWebExtensionWrapper.cpp',
@@ -31,7 +31,7 @@ EXTRA_UNITS = ('API/WebExtensionAPICommands.cpp',
                'API/WebExtensionAPIRuntime.cpp',
                'API/WebExtensionAPIEvent.cpp', 'API/WebExtensionAPIPort.cpp')
 GENERATED_UNITS = ('WebExtensionContextMessageReceiver.cpp', 'WebExtensionContextProxyMessageReceiver.cpp')
-BINDING_UNITS = ('JSWebExtensionAPICommands.cpp',
+BINDING_UNITS = ('JSWebExtensionAPIPermissions.cpp', 'JSWebExtensionAPICommands.cpp',
                  'JSWebExtensionAPIWebRequest.cpp', 'JSWebExtensionAPIWebRequestEvent.cpp', 'JSWebExtensionAPIWebNavigation.cpp', 'JSWebExtensionAPIWebNavigationEvent.cpp',
                  'JSWebExtensionAPIEvent.cpp', 'JSWebExtensionAPIPort.cpp',
                  'JSWebExtensionAPIStorage.cpp', 'JSWebExtensionAPIStorageArea.cpp',
@@ -48,7 +48,9 @@ NATIVE_PAGE_UNITS = {'ExtensionPermissionPromptHaiku.cpp': 'UIProcess/haiku/Exte
 WEB_CORE_UNITS = {name: 'contentextensions/' + name for name in ('URLFilterParser.cpp', 'DFABytecodeInterpreter.cpp', 'ContentExtension.cpp',
                   'ContentExtensionURLConditions.cpp', 'ContentExtensionRule.cpp', 'ContentExtensionParser.cpp',
                   'ContentExtensionCompiler.cpp', 'ContentExtensionsBackend.cpp')}
-UI_API_UNITS = {'WebExtensionCommandSettings.cpp': 'Shared/Extensions/WebExtensionCommandSettings.cpp',
+UI_API_UNITS = {'WebExtensionPermissionState.cpp': 'Shared/Extensions/WebExtensionPermissionState.cpp',
+                'WebExtensionContextAPIPermissionsHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionContextAPIPermissionsHaiku.cpp',
+                'WebExtensionCommandSettings.cpp': 'Shared/Extensions/WebExtensionCommandSettings.cpp',
                 'WebExtensionCommand.cpp': 'UIProcess/Extensions/WebExtensionCommand.cpp',
                 'WebExtensionCommandHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionCommandHaiku.cpp',
                 'WebExtensionContextCommandsHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionContextCommandsHaiku.cpp',

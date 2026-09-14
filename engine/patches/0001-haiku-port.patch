@@ -21048,7 +21048,7 @@ index efb0e18ef3681d9f33b6c784f0fb22f1ff0e80eb..19ec94335716b9ab75d52343c7adcad7
  
      undefined setTopDocumentURLForQuirks(DOMString urlString);
 diff --git a/Source/WebKit/CMakeLists.txt b/Source/WebKit/CMakeLists.txt
-index e516087e3331311877a49df982704f642f6dffe9..c1fbb92ee4990b773e1afdf8a9db5b864c265bca 100644
+index e516087e3331311877a49df982704f642f6dffe9..60081d78b5eca6d3f05e4479dfce83a69bde303d 100644
 --- a/Source/WebKit/CMakeLists.txt
 +++ b/Source/WebKit/CMakeLists.txt
 @@ -144,7 +144,6 @@ list(APPEND WebKit_UNIFIED_SOURCE_LIST_FILES
@@ -21069,7 +21069,7 @@ index e516087e3331311877a49df982704f642f6dffe9..c1fbb92ee4990b773e1afdf8a9db5b86
      WebProcess/Extensions/Interfaces/WebExtensionAPIMenus
      WebProcess/Extensions/Interfaces/WebExtensionAPINotifications
      WebProcess/Extensions/Interfaces/WebExtensionAPIOffscreen
-     WebProcess/Extensions/Interfaces/WebExtensionAPIPermissions
+-    WebProcess/Extensions/Interfaces/WebExtensionAPIPermissions
 -    WebProcess/Extensions/Interfaces/WebExtensionAPIPort
      WebProcess/Extensions/Interfaces/WebExtensionAPIScripting
      WebProcess/Extensions/Interfaces/WebExtensionAPISidePanel
@@ -21086,6 +21086,7 @@ index e516087e3331311877a49df982704f642f6dffe9..c1fbb92ee4990b773e1afdf8a9db5b86
  )
  
  set(WebKit_CPP_BINDINGS_IN_FILES
++    WebProcess/Extensions/Interfaces/WebExtensionAPIPermissions
 +    WebProcess/Extensions/Interfaces/WebExtensionAPICommands
 +    WebProcess/Extensions/Interfaces/WebExtensionAPIWebRequest
 +    WebProcess/Extensions/Interfaces/WebExtensionAPIWebRequestEvent
@@ -23572,10 +23573,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..c09c39b5fb1150eddc69efafb150479bec3a4f08
+index 0000000000000000000000000000000000000000..c7faf1d6013ad06011640fc1d81fba9366f5b42c
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,207 @@
+@@ -0,0 +1,210 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -23636,6 +23637,9 @@ index 0000000000000000000000000000000000000000..c09c39b5fb1150eddc69efafb150479b
 +    UIProcess/Extensions/haiku/WebExtensionContextCommandsHaiku.cpp
 +    Shared/Extensions/WebExtensionCommandShortcut.cpp
 +    Shared/Extensions/WebExtensionCommandSettings.cpp
++    Shared/Extensions/WebExtensionPermissionState.cpp
++    UIProcess/Extensions/haiku/WebExtensionContextAPIPermissionsHaiku.cpp
++    WebProcess/Extensions/API/WebExtensionAPIPermissions.cpp
 +    WebProcess/Extensions/API/WebExtensionAPICommands.cpp
 +    UIProcess/Extensions/haiku/WebExtensionContextTestHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionContextBackgroundHaiku.cpp
@@ -24352,6 +24356,166 @@ index 0000000000000000000000000000000000000000..786389356ffcf87d818bc62c570e3623
 +} // namespace WebKit
 +
 +#endif // ENABLE(WK_WEB_EXTENSIONS)
+diff --git a/Source/WebKit/Shared/Extensions/WebExtensionPermissionState.cpp b/Source/WebKit/Shared/Extensions/WebExtensionPermissionState.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..be34892f261290a04bff0ac44d63a956111f0ed5
+--- /dev/null
++++ b/Source/WebKit/Shared/Extensions/WebExtensionPermissionState.cpp
+@@ -0,0 +1,108 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#include "config.h"
++#include "WebExtensionPermissionState.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++
++#include <cmath>
++
++namespace WebKit {
++
++static constexpr auto stateKey = "PermissionGrants"_s;
++
++std::expected<WebExtensionPermissionDetails, String> parseWebExtensionPermissionDetails(const JSON::Value* value)
++{
++    RefPtr object = value ? value->asObject() : nullptr;
++    if (!object)
++        return makeUnexpected("permissions must be an object"_s);
++    for (auto& key : object->keys()) {
++        if (key != "permissions"_s && key != "origins"_s)
++            return makeUnexpected("unsupported permission detail field"_s);
++    }
++    WebExtensionPermissionDetails result;
++    for (auto key : { "permissions"_s, "origins"_s }) {
++        RefPtr member = object->getValue(key);
++        if (!member)
++            continue;
++        RefPtr array = member->asArray();
++        if (!array)
++            return makeUnexpected("permissions and origins must be arrays of strings"_s);
++        auto& target = key == "permissions"_s ? result.permissions : result.origins;
++        for (auto& item : *array) {
++            if (item->type() != JSON::Value::Type::String)
++                return makeUnexpected("permissions and origins must contain only strings"_s);
++            auto text = item->asString();
++            if (text.isEmpty() || text.contains('\0'))
++                return makeUnexpected("permission names and origins must be nonempty and contain no NUL"_s);
++            target.add(WTF::move(text));
++        }
++    }
++    return result;
++}
++
++std::expected<WebExtensionPermissionState, String> readWebExtensionPermissionState(const JSON::Object* original, WallTime now)
++{
++    WebExtensionPermissionState result;
++    RefPtr value = original ? original->getValue(stateKey) : nullptr;
++    if (!value)
++        return result;
++    RefPtr saved = value->asObject();
++    if (!saved || saved->getDouble("version"_s) != 1)
++        return makeUnexpected("unsupported or malformed saved permission state"_s);
++    for (auto key : { "permissions"_s, "origins"_s }) {
++        RefPtr grants = saved->getObject(key);
++        if (!grants)
++            return makeUnexpected("saved permission grants must be objects"_s);
++        auto& target = key == "permissions"_s ? result.permissions : result.origins;
++        for (auto& name : grants->keys()) {
++            if (name.isEmpty() || name.contains('\0'))
++                return makeUnexpected("invalid saved permission identifier"_s);
++            Ref entry = grants->getValue(name).releaseNonNull();
++            WallTime expiration = WallTime::infinity();
++            if (entry->type() != JSON::Value::Type::Null) {
++                auto seconds = entry->asDouble();
++                if (!seconds || !std::isfinite(*seconds))
++                    return makeUnexpected("invalid saved permission expiration"_s);
++                expiration = WallTime::fromRawSeconds(*seconds);
++            }
++            if (expiration > now)
++                target.set(name, expiration);
++        }
++    }
++    return result;
++}
++
++std::expected<Ref<JSON::Object>, String> stateWithWebExtensionPermissions(const JSON::Object* original, const WebExtensionPermissionState& permissions)
++{
++    RefPtr<JSON::Object> state;
++    if (original) {
++        RefPtr parsed = JSON::Value::parseJSON(original->toJSONString());
++        state = parsed ? parsed->asObject() : nullptr;
++    } else
++        state = JSON::Object::create();
++    if (!state)
++        return makeUnexpected("could not copy extension state"_s);
++    auto saved = JSON::Object::create();
++    saved->setInteger("version"_s, 1);
++    for (auto key : { "permissions"_s, "origins"_s }) {
++        const auto& source = key == "permissions"_s ? permissions.permissions : permissions.origins;
++        auto grants = JSON::Object::create();
++        for (auto& entry : source) {
++            if (entry.key.isEmpty() || entry.key.contains('\0') || entry.value.isNaN()
++                || entry.value == -WallTime::infinity())
++                return makeUnexpected("invalid permission grant state"_s);
++            if (entry.value == WallTime::infinity())
++                grants->setValue(entry.key, JSON::Value::null());
++            else
++                grants->setDouble(entry.key, entry.value.secondsSinceEpoch().seconds());
++        }
++        saved->setObject(key, WTF::move(grants));
++    }
++    state->setObject(stateKey, WTF::move(saved));
++    return state.releaseNonNull();
++}
++
++} // namespace WebKit
++
++#endif
+diff --git a/Source/WebKit/Shared/Extensions/WebExtensionPermissionState.h b/Source/WebKit/Shared/Extensions/WebExtensionPermissionState.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..4e0623976373a5d68dd31f52d318a99b003bca17
+--- /dev/null
++++ b/Source/WebKit/Shared/Extensions/WebExtensionPermissionState.h
+@@ -0,0 +1,40 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#pragma once
++
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++
++#include <expected>
++#include <wtf/HashMap.h>
++#include <wtf/HashSet.h>
++#include <wtf/JSONValues.h>
++#include <wtf/WallTime.h>
++
++namespace WebKit {
++
++struct WebExtensionPermissionDetails {
++    HashSet<String> permissions;
++    HashSet<String> origins;
++};
++
++struct WebExtensionPermissionState {
++    using Grants = HashMap<String, WallTime>;
++    Grants permissions;
++    Grants origins;
++};
++
++// Parse structure only. Both processes must separately validate permission
++// names, match patterns and manifest declarations for the requested operation.
++std::expected<WebExtensionPermissionDetails, String> parseWebExtensionPermissionDetails(const JSON::Value*);
++
++// Saved data cannot grant unsupported, undeclared or denied capabilities:
++// the context must filter the decoded sets against its current manifest and
++// host policy before installing them. Malformed state fails closed.
++std::expected<WebExtensionPermissionState, String> readWebExtensionPermissionState(const JSON::Object*, WallTime now);
++// Prepare a deep copy, retaining unrelated extension settings. Infinity is
++// encoded as null; finite expirations are epoch seconds. No memory/disk mutation.
++std::expected<Ref<JSON::Object>, String> stateWithWebExtensionPermissions(const JSON::Object*, const WebExtensionPermissionState&);
++
++} // namespace WebKit
++
++#endif
 diff --git a/Source/WebKit/Shared/Extensions/WebExtensionRegisteredScriptParser.cpp b/Source/WebKit/Shared/Extensions/WebExtensionRegisteredScriptParser.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..a7a53fc73bd1b4dacf3e3e950318d9a46e8e9ecf
@@ -30351,7 +30515,7 @@ index 65b9841a9d4469a699b92c47435fecaaaa034d77..0361d615767169f4af1a6c192853c93e
  
      OptionSet<ModifierFlags> modifierFlags() const { return !m_activationKey.isEmpty() ? m_modifierFlags : OptionSet<ModifierFlags> { }; }
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
-index a156078a37b33ea2704f6a9ba747a0c881bb0009..7250ff7246859b1e50b9564dc40d5ea6420f2f59 100644
+index a156078a37b33ea2704f6a9ba747a0c881bb0009..99d2c70140ca3853f15b9389990daf9c96839170 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
 @@ -34,11 +34,19 @@
@@ -30374,7 +30538,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..7250ff7246859b1e50b9564dc40d5ea6
  #include <WebCore/LocalizedStrings.h>
  #include <WebCore/TextResourceDecoder.h>
  #include <wtf/HashMap.h>
-@@ -49,8 +57,280 @@ static constexpr size_t maximumCachedPermissionResults = 256;
+@@ -49,8 +57,288 @@ static constexpr size_t maximumCachedPermissionResults = 256;
  
  namespace WebKit {
  
@@ -30448,10 +30612,18 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..7250ff7246859b1e50b9564dc40d5ea6
 +#endif
 +
 +    m_storageDirectory = storageDirectory;
++#if PLATFORM(HAIKU)
++    if (!readStateFromStorage())
++        return makeUnexpected(createError(Error::Unknown, "could not read saved extension state"_s));
++    if (auto restored = restoreNativePermissionState(); !restored)
++        return makeUnexpected(createError(Error::Unknown, restored.error()));
++#endif
 +    m_extensionController = controller;
 +    m_contentScriptWorld = API::ContentWorld::sharedWorldWithName(makeString("WebExtension-"_s, m_uniqueIdentifier));
 +
++#if !PLATFORM(HAIKU)
 +    readStateFromStorage();
++#endif
 +
 +    auto lastSeenBaseURL = updatePersistedMetadataDuringLoad();
 +
@@ -30655,7 +30827,105 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..7250ff7246859b1e50b9564dc40d5ea6
  int WebExtensionContext::toAPIError(WebExtensionContext::Error error)
  {
      switch (error) {
-@@ -1660,7 +1940,13 @@ WebExtensionContext::WebExtensionContext()
+@@ -282,6 +570,10 @@ const WebExtensionContext::PermissionsMap& WebExtensionContext::grantedPermissio
+ 
+ void WebExtensionContext::setGrantedPermissions(PermissionsMap&& grantedPermissions)
+ {
++#if PLATFORM(HAIKU)
++    if (!m_nativePermissionStateInitialized)
++        m_nativeGrantedPermissionsWereSet = true;
++#endif
+     PermissionsSet removedPermissions;
+     for (auto& entry : m_grantedPermissions)
+         removedPermissions.add(entry.key);
+@@ -348,6 +640,10 @@ const WebExtensionContext::PermissionMatchPatternsMap& WebExtensionContext::gran
+ 
+ void WebExtensionContext::setGrantedPermissionMatchPatterns(PermissionMatchPatternsMap&& grantedPermissionMatchPatterns, EqualityOnly equalityOnly)
+ {
++#if PLATFORM(HAIKU)
++    if (!m_nativePermissionStateInitialized)
++        m_nativeGrantedPatternsWereSet = true;
++#endif
+     MatchPatternSet removedMatchPatterns;
+     for (auto& entry : m_grantedPermissionMatchPatterns)
+         removedMatchPatterns.add(entry.key);
+@@ -576,6 +872,12 @@ bool WebExtensionContext::removePermissionMatchPatterns(PermissionMatchPatternsM
+ 
+ bool WebExtensionContext::removeGrantedPermissionMatchPatterns(MatchPatternSet& matchPatternsToRemove, EqualityOnly equalityOnly)
+ {
++#if PLATFORM(HAIKU)
++    if (!m_nativePermissionStateInitialized) {
++        for (auto& pattern : matchPatternsToRemove)
++            m_nativeRemovedPatternsBeforeLoad.append({ pattern, equalityOnly });
++    }
++#endif
+ #if PLATFORM(COCOA)
+     // Clear activeTab permissions if the patterns match.
+     for (Ref tab : openTabs()) {
+@@ -600,6 +902,10 @@ bool WebExtensionContext::removeGrantedPermissionMatchPatterns(MatchPatternSet&
+ 
+ bool WebExtensionContext::removeGrantedPermissions(PermissionsSet& permissionsToRemove)
+ {
++#if PLATFORM(HAIKU)
++    if (!m_nativePermissionStateInitialized)
++        m_nativeRemovedPermissionsBeforeLoad.addAll(permissionsToRemove);
++#endif
+     return removePermissions(m_grantedPermissions, permissionsToRemove, m_nextGrantedPermissionsExpirationDate, WebExtensionContext::PermissionNotification::GrantedPermissionsWereRemoved);
+ }
+ 
+@@ -623,14 +929,14 @@ WebExtensionContext::PermissionsMap& WebExtensionContext::removeExpired(Permissi
+     WallTime currentTime = WallTime::now();
+ 
+     // If the next expiration date hasn't passed yet, there is nothing to remove.
+-    if (nextExpirationDate != WallTime::nan() && nextExpirationDate > currentTime)
++    if (!nextExpirationDate.isNaN() && nextExpirationDate > currentTime)
+         return permissionMap;
+ 
+     nextExpirationDate = WallTime::infinity();
+ 
+     PermissionsSet removedPermissions;
+     permissionMap.removeIf([&](auto& entry) {
+-        if (entry.value <= currentTime) {
++        if (entry.value.isNaN() || entry.value <= currentTime) {
+             removedPermissions.add(entry.key);
+             return true;
+         }
+@@ -644,7 +950,7 @@ WebExtensionContext::PermissionsMap& WebExtensionContext::removeExpired(Permissi
+     if (removedPermissions.isEmpty() || notification == PermissionNotification::None)
+         return permissionMap;
+ 
+-#if PLATFORM(COCOA)
++#if PLATFORM(COCOA) || PLATFORM(HAIKU)
+     permissionsDidChange(notification, removedPermissions);
+ #endif
+ 
+@@ -656,14 +962,14 @@ WebExtensionContext::PermissionMatchPatternsMap& WebExtensionContext::removeExpi
+     WallTime currentTime = WallTime::now();
+ 
+     // If the next expiration date hasn't passed yet, there is nothing to remove.
+-    if (nextExpirationDate != WallTime::nan() && nextExpirationDate > currentTime)
++    if (!nextExpirationDate.isNaN() && nextExpirationDate > currentTime)
+         return matchPatternMap;
+ 
+     nextExpirationDate = WallTime::infinity();
+ 
+     MatchPatternSet removedMatchPatterns;
+     matchPatternMap.removeIf([&](auto& entry) {
+-        if (entry.value <= currentTime) {
++        if (entry.value.isNaN() || entry.value <= currentTime) {
+             removedMatchPatterns.add(entry.key);
+             return true;
+         }
+@@ -677,7 +983,7 @@ WebExtensionContext::PermissionMatchPatternsMap& WebExtensionContext::removeExpi
+     if (removedMatchPatterns.isEmpty() || notification == PermissionNotification::None)
+         return matchPatternMap;
+ 
+-#if PLATFORM(COCOA)
++#if PLATFORM(COCOA) || PLATFORM(HAIKU)
+     permissionsDidChange(notification, removedMatchPatterns);
+ #endif
+ 
+@@ -1660,7 +1966,13 @@ WebExtensionContext::WebExtensionContext()
  }
  
  #if !USE(GLIB)
@@ -30670,7 +30940,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..7250ff7246859b1e50b9564dc40d5ea6
  #endif
  
  WebExtensionContextIdentifier WebExtensionContext::privilegedIdentifier() const
-@@ -1798,9 +2084,17 @@ void WebExtensionContext::loadBackgroundContent(CompletionHandler<void(RefPtr<AP
+@@ -1798,9 +2110,17 @@ void WebExtensionContext::loadBackgroundContent(CompletionHandler<void(RefPtr<AP
          return;
      }
  
@@ -30691,7 +30961,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..7250ff7246859b1e50b9564dc40d5ea6
      });
  }
  
-@@ -2003,6 +2297,128 @@ Ref<WebExtensionRegisteredScriptsSQLiteStore> WebExtensionContext::registeredCon
+@@ -2003,6 +2323,128 @@ Ref<WebExtensionRegisteredScriptsSQLiteStore> WebExtensionContext::registeredCon
      return *m_registeredContentScriptsStorage;
  }
  
@@ -30821,7 +31091,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..7250ff7246859b1e50b9564dc40d5ea6
  
  #endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
-index 05a8676082d56f2c47c9af6120f5120b09f982be..5433aaaba7475d1db08fc24a33d3a722d5dffc2b 100644
+index 05a8676082d56f2c47c9af6120f5120b09f982be..ff05de481ea200ac6bc3e273b3210730d9329cd4 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 @@ -51,7 +51,11 @@
@@ -30848,7 +31118,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..5433aaaba7475d1db08fc24a33d3a722
  #if ENABLE(INSPECTOR_EXTENSIONS)
  #include "APIInspectorExtension.h"
  #include "APIInspectorExtensionClient.h"
-@@ -144,9 +153,18 @@ namespace PAL {
+@@ -144,9 +153,20 @@ namespace PAL {
  class SessionID;
  }
  
@@ -30860,6 +31130,8 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..5433aaaba7475d1db08fc24a33d3a722
  namespace WebKit {
  
 -#if ENABLE(2022_GLIB_API)
++struct WebExtensionPermissionState;
++
 +#if PLATFORM(HAIKU)
 +using WebViewClass = WebPageProxy;
 +using WebViewConfiguration = RefPtr<API::PageConfiguration>;
@@ -30868,7 +31140,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..5433aaaba7475d1db08fc24a33d3a722
  using WebViewClass = WebKitWebView;
  using WebViewConfiguration = GRefPtr<WebKitSettings>;
  using NavigationPolicyAction = WebKitNavigationPolicyDecision;
-@@ -179,6 +197,10 @@ enum class WebExtensionContextInstallReason : uint8_t {
+@@ -179,6 +199,10 @@ enum class WebExtensionContextInstallReason : uint8_t {
      BrowserUpdate,
  };
  
@@ -30879,7 +31151,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..5433aaaba7475d1db08fc24a33d3a722
  class WebExtensionContext : public API::ObjectImpl<API::Object::Type::WebExtensionContext>, public IPC::MessageReceiver, public Identified<WebExtensionContextIdentifier> {
      WTF_MAKE_NONCOPYABLE(WebExtensionContext);
  
-@@ -198,6 +220,8 @@ public:
+@@ -198,6 +222,8 @@ public:
      {
  #if PLATFORM(COCOA)
          return "State.plist"_s;
@@ -30888,7 +31160,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..5433aaaba7475d1db08fc24a33d3a722
  #else
          return "State.ini"_s;
  #endif
-@@ -206,6 +230,8 @@ public:
+@@ -206,6 +232,8 @@ public:
      static NSMutableDictionary *readStateFromPath(const String&);
  #elif ENABLE(2022_GLIB_API)
      static GRefPtr<GKeyFile> readStateFromPath(const String&);
@@ -30897,7 +31169,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..5433aaaba7475d1db08fc24a33d3a722
  #endif
      static bool readLastBaseURLFromState(const String& filePath, URL& outLastBaseURL);
      static bool readDisplayNameFromState(const String& filePath, String& outDisplayName);
-@@ -214,7 +240,7 @@ public:
+@@ -214,7 +242,7 @@ public:
  
      static WebExtensionContext* NODELETE get(WebExtensionContextIdentifier);
  
@@ -30906,7 +31178,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..5433aaaba7475d1db08fc24a33d3a722
      explicit WebExtensionContext(Ref<WebExtension>&&);
  #elif ENABLE(2022_GLIB_API)
      explicit WebExtensionContext(WebKitWebExtensionContext*);
-@@ -265,11 +291,8 @@ public:
+@@ -265,11 +293,8 @@ public:
          bool userGesture { false };
      };
  
@@ -30918,7 +31190,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..5433aaaba7475d1db08fc24a33d3a722
      using PortQueuedMessageMap = HashMap<PortWorldPair, Vector<PortQueuedMessage>>;
      using NativePortMap = HashMap<WebExtensionPortChannelIdentifier, Ref<WebExtensionMessagePort>>;
  
-@@ -334,6 +357,17 @@ public:
+@@ -334,6 +359,17 @@ public:
          DeniedPermissionMatchPatternsWereRemoved,
      };
  
@@ -30936,7 +31208,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..5433aaaba7475d1db08fc24a33d3a722
      enum class PermissionState : int8_t {
          DeniedExplicitly    = -3,
          DeniedImplicitly    = -2,
-@@ -504,6 +538,12 @@ public:
+@@ -504,6 +540,12 @@ public:
  
      void removePage(WebPageProxy&);
  
@@ -30949,7 +31221,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..5433aaaba7475d1db08fc24a33d3a722
      Ref<WebExtensionWindow> getOrCreateWindow(WKWebExtensionWindow *) const;
      RefPtr<WebExtensionWindow> getWindow(WebExtensionWindowIdentifier, std::optional<WebPageProxyIdentifier> = std::nullopt, IgnoreExtensionAccess = IgnoreExtensionAccess::No) const;
      void forgetWindow(WebExtensionWindowIdentifier) const;
-@@ -630,6 +670,10 @@ public:
+@@ -630,6 +672,10 @@ public:
      void sendTestStarted(id argument);
      void sendTestFinished(id argument);
      void reloadBackgroundContentForTesting();
@@ -30960,7 +31232,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..5433aaaba7475d1db08fc24a33d3a722
  #endif
  
      URL backgroundContentURL();
-@@ -655,6 +699,7 @@ public:
+@@ -655,6 +701,7 @@ public:
      void runOpenPanel(WKWebView *, WKOpenPanelParameters *, void (^)(NSArray *));
  #endif
  
@@ -30968,7 +31240,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..5433aaaba7475d1db08fc24a33d3a722
  #if PLATFORM(COCOA)
      void sendNativeMessage(const String& applicationID, id message, CompletionHandler<void(std::expected<RetainPtr<id>, WebExtensionError>&&)>&&);
  #endif
-@@ -749,19 +794,41 @@ private:
+@@ -749,19 +796,41 @@ private:
  #if PLATFORM(COCOA)
      NSDictionary *currentState() const;
      NSDictionary *readStateFromStorage();
@@ -31011,7 +31283,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..5433aaaba7475d1db08fc24a33d3a722
      void permissionsDidChange(PermissionNotification, const PermissionsSet&);
      void permissionsDidChange(PermissionNotification, const MatchPatternSet&);
  
-@@ -796,6 +863,7 @@ private:
+@@ -796,6 +865,7 @@ private:
      void saveBackgroundPageListenersToStorage();
  
      void performTasksAfterBackgroundContentLoads();
@@ -31019,7 +31291,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..5433aaaba7475d1db08fc24a33d3a722
  
  #ifdef NDEBUG
      // This is method is a no-op in release builds since it has a performance impact with little benefit to release builds.
-@@ -924,6 +992,11 @@ private:
+@@ -924,6 +994,11 @@ private:
      // Commands APIs
      bool isCommandsMessageAllowed(IPC::Decoder&);
      void commandsGetAll(CompletionHandler<void(Vector<WebExtensionCommandParameters>)>&&);
@@ -31031,7 +31303,26 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..5433aaaba7475d1db08fc24a33d3a722
      void fireCommandEventIfNeeded(const WebExtensionCommand&, WebExtensionTab*);
      void fireCommandChangedEventIfNeeded(const WebExtensionCommand&, const String& oldShortcut);
  
-@@ -1000,7 +1073,7 @@ private:
+@@ -988,9 +1063,18 @@ private:
+ 
+     // Permissions APIs
+     void permissionsGetAll(CompletionHandler<void(Vector<String>&& permissions, Vector<String>&& origins)>&&);
++#if PLATFORM(HAIKU)
++    void permissionsContains(HashSet<String> permissions, HashSet<String> origins, CompletionHandler<void(std::expected<bool, WebExtensionError>&&)>&&);
++    void permissionsRequest(HashSet<String> permissions, HashSet<String> origins, bool userGesture, CompletionHandler<void(std::expected<bool, WebExtensionError>&&)>&&);
++    void permissionsRemove(HashSet<String> permissions, HashSet<String> origins, CompletionHandler<void(std::expected<bool, WebExtensionError>&&)>&&);
++    WebExtensionPermissionState nativePermissionState() const;
++    std::expected<void, String> restoreNativePermissionState();
++    std::expected<void, WebExtensionError> commitNativePermissionState(PermissionsMap&&, PermissionMatchPatternsMap&&, const String& callingAPI);
++#else
+     void permissionsContains(HashSet<String> permissions, HashSet<String> origins, CompletionHandler<void(bool)>&&);
+     void permissionsRequest(HashSet<String> permissions, HashSet<String> origins, CompletionHandler<void(bool)>&&);
+     void permissionsRemove(HashSet<String> permissions, HashSet<String> origins, CompletionHandler<void(bool)>&&);
++#endif
+     void firePermissionsEventListenerIfNecessary(WebExtensionEventListenerType, const PermissionsSet&, const MatchPatternSet&);
+ 
+     // Port APIs
+@@ -1000,7 +1084,7 @@ private:
      void disconnectPortsForPage(WebPageProxy&);
      void addPorts(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier, HashCountedSet<WebPageProxyIdentifier>&&);
      void removePort(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier, WebPageProxyIdentifier);
@@ -31040,7 +31331,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..5433aaaba7475d1db08fc24a33d3a722
      void removeNativePort(WebExtensionMessagePort&);
      unsigned openPortCount(WebExtensionContentWorldType, WebExtensionPortChannelIdentifier);
      bool isPortConnected(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier);
-@@ -1009,7 +1082,7 @@ private:
+@@ -1009,7 +1093,7 @@ private:
      void firePortMessageEventsIfNeeded(WebExtensionContentWorldType, std::optional<WebPageProxyIdentifier>, WebExtensionPortChannelIdentifier, const String& messageJSON, bool userGesture);
      void fireQueuedPortMessageEventsIfNeeded(WebExtensionContentWorldType, WebExtensionPortChannelIdentifier);
      void sendQueuedNativePortMessagesIfNeeded(WebExtensionPortChannelIdentifier);
@@ -31049,7 +31340,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..5433aaaba7475d1db08fc24a33d3a722
  
      // Runtime APIs
      void runtimeGetBackgroundPage(CompletionHandler<void(std::expected<std::optional<WebCore::PageIdentifier>, WebExtensionError>&&)>&&);
-@@ -1034,6 +1107,7 @@ private:
+@@ -1034,6 +1118,7 @@ private:
      void scriptingGetRegisteredScripts(const Vector<String>&, CompletionHandler<void(std::expected<Vector<WebExtensionRegisteredScriptParameters>, WebExtensionError>&&)>&&);
      void scriptingUnregisterContentScripts(const Vector<String>&, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
      bool createInjectedContentForScripts(const Vector<WebExtensionRegisteredScriptParameters>&, WebExtensionDynamicScripts::WebExtensionRegisteredScript::FirstTimeRegistration, DynamicInjectedContentsMap&, NSString *callingAPIName, NSString **errorMessage);
@@ -31057,7 +31348,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..5433aaaba7475d1db08fc24a33d3a722
  
      // Sidebar APIs
  #if ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
-@@ -1129,6 +1203,12 @@ private:
+@@ -1129,6 +1214,12 @@ private:
      RetainPtr<NSMutableDictionary> m_state;
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<GKeyFile> m_state;
@@ -31070,7 +31361,23 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..5433aaaba7475d1db08fc24a33d3a722
  #endif
      Vector<Ref<API::Error>> m_errors;
  
-@@ -1172,6 +1252,9 @@ private:
+@@ -1147,6 +1238,15 @@ private:
+ 
+     RefPtr<API::ContentWorld> m_contentScriptWorld;
+ 
++#if PLATFORM(HAIKU)
++    bool m_nativePermissionStateInitialized { false };
++    bool m_nativeGrantedPermissionsWereSet { false };
++    bool m_nativeGrantedPatternsWereSet { false };
++    bool m_nativePermissionTransaction { false };
++    uint64_t m_nativePermissionRevocationGeneration { 0 };
++    PermissionsSet m_nativeRemovedPermissionsBeforeLoad;
++    Vector<std::pair<Ref<WebExtensionMatchPattern>, EqualityOnly>> m_nativeRemovedPatternsBeforeLoad;
++#endif
+     PermissionsMap m_grantedPermissions;
+     PermissionsMap m_deniedPermissions;
+ 
+@@ -1172,6 +1272,9 @@ private:
      EventListenerTypeCountedSet m_backgroundContentEventListeners;
      EventListenerTypeFrameMap m_eventListenerFrames;
  
@@ -31080,7 +31387,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..5433aaaba7475d1db08fc24a33d3a722
      bool m_shouldFireStartupEvent { false };
      InstallReason m_installReason { InstallReason::None };
      String m_previousVersion;
-@@ -1194,6 +1277,9 @@ private:
+@@ -1194,6 +1297,9 @@ private:
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<WebKitWebView> m_backgroundWebView;
      GWeakPtr<WebKitWebExtensionContext> m_delegate;
@@ -31090,7 +31397,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..5433aaaba7475d1db08fc24a33d3a722
  #endif
      Variant<std::monostate, Ref<ProcessThrottlerActivity>, Ref<ProcessActivityGroup>> m_backgroundWebViewActivity;
      RefPtr<API::Error> m_backgroundContentLoadError;
-@@ -1215,6 +1301,7 @@ private:
+@@ -1215,6 +1321,7 @@ private:
      HashMap<Ref<WebExtensionMatchPattern>, UserScriptVector> m_injectedScriptsPerPatternMap;
      HashMap<Ref<WebExtensionMatchPattern>, UserStyleSheetVector> m_injectedStyleSheetsPerPatternMap;
  
@@ -31098,7 +31405,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..5433aaaba7475d1db08fc24a33d3a722
      HashMap<String, Ref<WebExtensionDynamicScripts::WebExtensionRegisteredScript>> m_registeredScriptsMap;
      RefPtr<WebExtensionRegisteredScriptsSQLiteStore> m_registeredContentScriptsStorage;
  
-@@ -1234,7 +1321,7 @@ private:
+@@ -1234,7 +1341,7 @@ private:
  #endif // ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
  
      PortCountedSet m_ports;
@@ -31107,7 +31414,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..5433aaaba7475d1db08fc24a33d3a722
      PortQueuedMessageMap m_portQueuedMessages;
      NativePortMap m_nativePortMap;
  
-@@ -1274,12 +1361,16 @@ private:
+@@ -1274,12 +1381,16 @@ private:
          String message;
  #if PLATFORM(COCOA)
          RetainPtr<id> argument;
@@ -31124,7 +31431,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..5433aaaba7475d1db08fc24a33d3a722
  
      Deque<TestMessage> m_testMessageQueue;
      Deque<TestMessage> m_testStartedQueue;
-@@ -1289,6 +1380,8 @@ private:
+@@ -1289,6 +1400,8 @@ private:
      void sendQueuedTestMessagesIfNeeded(WebExtensionEventListenerType);
  #if PLATFORM(COCOA)
      void addTestMessageToQueue(const String& message, id argument, WebExtensionEventListenerType);
@@ -31134,14 +31441,21 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..5433aaaba7475d1db08fc24a33d3a722
  };
  
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in
-index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..858256d71aee9710bf8f99d4590d6cc5b011d157 100644
+index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..fdb247eee6542e090f00d247109814508f3a40a6 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in
-@@ -31,10 +31,44 @@
+@@ -31,10 +31,51 @@
      DispatchedTo=UI
  ]
  messages -> WebExtensionContext {
 -#if PLATFORM(COCOA)
++#if PLATFORM(HAIKU)
++    // Native permission changes are privileged and revalidated in the UI process.
++    [Validator=isLoadedAndPrivilegedMessage] PermissionsGetAll() -> (Vector<String> permissions, Vector<String> origins)
++    [Validator=isLoadedAndPrivilegedMessage] PermissionsContains(HashSet<String> permissions, HashSet<String> origins) -> (std::expected<bool, WebKit::WebExtensionError> result)
++    [Validator=isLoadedAndPrivilegedMessage] PermissionsRequest(HashSet<String> permissions, HashSet<String> origins, bool userGesture) -> (std::expected<bool, WebKit::WebExtensionError> result)
++    [Validator=isLoadedAndPrivilegedMessage] PermissionsRemove(HashSet<String> permissions, HashSet<String> origins) -> (std::expected<bool, WebKit::WebExtensionError> result)
++#endif
      // Runtime Error Reporting
      [Validator=isLoaded] DidEncounterScriptError(String message, String sourceURL, uint32_t lineNumber, uint32_t columnNumber, WebKit::WebExtensionContentWorldType worldType)
 +    [Validator=isLoaded] AddListener(WebCore::FrameIdentifier frameIdentifier, WebKit::WebExtensionEventListenerType listenerType, WebKit::WebExtensionContentWorldType contentWorldType)
@@ -31158,7 +31472,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..858256d71aee9710bf8f99d4590d6cc5
 +    // Port APIs
 +    [Validator=isLoaded] PortPostMessage(WebKit::WebExtensionContentWorldType sourceContentWorldType, WebKit::WebExtensionContentWorldType targetContentWorldType, std::optional<WebKit::WebPageProxyIdentifier> sendingPageProxyIdentifier, WebKit::WebExtensionPortChannelIdentifier channelIdentifier, String messageJSON, bool userGesture)
 +    [Validator=isLoaded] PortRemoved(WebKit::WebExtensionContentWorldType sourceContentWorldType, WebKit::WebExtensionContentWorldType targetContentWorldType, WebKit::WebPageProxyIdentifier pageProxyIdentifier, WebKit::WebExtensionPortChannelIdentifier channelIdentifier)
-+
+ 
 +    // Storage APIs
 +    [Validator=isStorageMessageAllowed] StorageGet(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, WebKit::WebExtensionDataType dataType, Vector<String> keys) -> (std::expected<Vector<String>, WebKit::WebExtensionError> result)
 +    [Validator=isStorageMessageAllowed] StorageGetKeys(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, WebKit::WebExtensionDataType dataType) -> (std::expected<Vector<String>, WebKit::WebExtensionError> result)
@@ -31178,12 +31492,12 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..858256d71aee9710bf8f99d4590d6cc5
 +    // Web navigation APIs
 +    [Validator=isWebNavigationMessageAllowed] WebNavigationGetAllFrames(WebKit::WebExtensionTabIdentifier tabIdentifier) -> (std::expected<Vector<WebKit::WebExtensionFrameParameters>, WebKit::WebExtensionError> result)
 +    [Validator=isWebNavigationMessageAllowed] WebNavigationGetFrame(WebKit::WebExtensionTabIdentifier tabIdentifier, WebKit::WebExtensionFrameIdentifier frameIdentifier) -> (std::expected<std::optional<WebKit::WebExtensionFrameParameters>, WebKit::WebExtensionError> result)
- 
++
 +#if PLATFORM(COCOA)
      // Action APIs
      [Validator=isActionMessageAllowed] ActionGetTitle(std::optional<WebKit::WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier) -> (std::expected<String, WebKit::WebExtensionError> result)
      [Validator=isActionMessageAllowed] ActionSetTitle(std::optional<WebKit::WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, String title) -> (std::expected<void, WebKit::WebExtensionError> result)
-@@ -71,9 +105,6 @@ messages -> WebExtensionContext {
+@@ -71,9 +112,6 @@ messages -> WebExtensionContext {
      [Validator=isBookmarksMessageAllowed] BookmarksRemoveTree(String bookmarkId) -> (std::expected<void, WebKit::WebExtensionError> result)
  #endif // ENABLE(WK_WEB_EXTENSIONS_BOOKMARKS)
  
@@ -31193,7 +31507,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..858256d71aee9710bf8f99d4590d6cc5
      // Cookies APIs
      [Validator=isCookiesMessageAllowed] CookiesGet(std::optional<PAL::SessionID> sessionID, String name, URL url) -> (std::expected<std::optional<WebKit::WebExtensionCookieParameters>, WebKit::WebExtensionError> result)
      [Validator=isCookiesMessageAllowed] CookiesGetAll(std::optional<PAL::SessionID> sessionID, URL url, struct WebKit::WebExtensionCookieFilterParameters filterParameters) -> (std::expected<Vector<WebKit::WebExtensionCookieParameters>, WebKit::WebExtensionError> result)
-@@ -100,8 +131,6 @@ messages -> WebExtensionContext {
+@@ -100,8 +138,6 @@ messages -> WebExtensionContext {
  #endif
  
      // Event APIs
@@ -31202,7 +31516,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..858256d71aee9710bf8f99d4590d6cc5
  
      // Extensions APIs
      [Validator=isLoaded] ExtensionIsAllowedIncognitoAccess() -> (bool result)
-@@ -125,20 +154,10 @@ messages -> WebExtensionContext {
+@@ -125,20 +161,10 @@ messages -> WebExtensionContext {
      [Validator=isLoaded] PermissionsRequest(HashSet<String> permissions, HashSet<String> origins) -> (bool success)
      [Validator=isLoaded] PermissionsRemove(HashSet<String> permissions, HashSet<String> origins) -> (bool success)
  
@@ -31223,7 +31537,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..858256d71aee9710bf8f99d4590d6cc5
  
      // Scripting APIs
      [Validator=isScriptingMessageAllowed] ScriptingExecuteScript(WebKit::WebExtensionScriptInjectionParameters parameters, bool userGesture) -> (std::expected<Vector<WebKit::WebExtensionScriptInjectionResultParameters>, WebKit::WebExtensionError> result)
-@@ -165,15 +184,6 @@ messages -> WebExtensionContext {
+@@ -165,15 +191,6 @@ messages -> WebExtensionContext {
      [Validator=isSidebarMessageAllowed] SidebarGetActionClickBehavior() -> (std::expected<WebKit::WebExtensionActionClickBehavior, WebKit::WebExtensionError> result)
  #endif // ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
  
@@ -31239,7 +31553,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..858256d71aee9710bf8f99d4590d6cc5
      // Tabs APIs
      [Validator=isLoadedAndPrivilegedMessage] TabsCreate(std::optional<WebKit::WebPageProxyIdentifier> webPageProxyIdentifier, WebKit::WebExtensionTabParameters creationParameters) -> (std::expected<std::optional<WebKit::WebExtensionTabParameters>, WebKit::WebExtensionError> result)
      [Validator=isLoadedAndPrivilegedMessage] TabsUpdate(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, WebKit::WebExtensionTabParameters updateParameters) -> (std::expected<std::optional<WebKit::WebExtensionTabParameters>, WebKit::WebExtensionError> result)
-@@ -198,8 +208,6 @@ messages -> WebExtensionContext {
+@@ -198,8 +215,6 @@ messages -> WebExtensionContext {
      [Validator=isLoadedAndPrivilegedMessage] TabsRemoveCSS(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, WebKit::WebExtensionScriptInjectionParameters parameters) -> (std::expected<void, WebKit::WebExtensionError> result)
  
      // WebNavigation APIs
@@ -33626,6 +33940,398 @@ index 0000000000000000000000000000000000000000..013ab7f75e75ed32931facd798bd3bcd
 +} // namespace WebKit
 +
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPIPermissionsHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPIPermissionsHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..06b7ae6968f52ad877c1747f6f5c6bd48e596741
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPIPermissionsHaiku.cpp
+@@ -0,0 +1,386 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#include "config.h"
++#include "WebExtensionContext.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++
++#include "ExtensionPermissionPromptHaiku.h"
++#include "WebExtensionController.h"
++#include "WebExtensionControllerConfiguration.h"
++#include "WebExtensionPermissionState.h"
++#include "WebExtensionStateHaiku.h"
++#include "WebExtensionUtilities.h"
++#include "WebsiteDataStore.h"
++#include <algorithm>
++#include <wtf/SetForScope.h>
++
++namespace WebKit {
++
++using Patterns = WebExtensionContext::MatchPatternSet;
++using Permissions = WebExtensionContext::PermissionsSet;
++
++static RefPtr<WebExtensionMatchPattern> permissionPattern(const String& origin)
++{
++    if (origin.contains('\0'))
++        return nullptr;
++    auto pattern = WebExtensionMatchPattern::getOrCreate(origin);
++    if (!pattern || !pattern->isSupported())
++        return nullptr;
++    if (pattern->matchesAllURLs())
++        return pattern;
++    // The permissions API always ignores paths, including in saved grants.
++    return WebExtensionMatchPattern::getOrCreate(pattern->scheme(), pattern->host(), "/*"_s);
++}
++
++static bool covers(const WebExtensionMatchPattern& covering, const WebExtensionMatchPattern& requested)
++{
++    return covering.matchesPattern(requested, { WebExtensionMatchPattern::Options::IgnorePaths, WebExtensionMatchPattern::Options::AllowFileScheme });
++}
++
++static bool covers(const Patterns& patterns, const WebExtensionMatchPattern& requested)
++{
++    return std::ranges::any_of(patterns, [&](auto& pattern) { return covers(pattern.get(), requested); });
++}
++
++static bool overlaps(const WebExtensionMatchPattern& first, const WebExtensionMatchPattern& second)
++{
++    // Bidirectional matching compares each component in both directions, so
++    // intersecting scheme and subdomain wildcards need not cover one another.
++    return first.matchesPattern(second, { WebExtensionMatchPattern::Options::IgnorePaths,
++        WebExtensionMatchPattern::Options::MatchBidirectionally, WebExtensionMatchPattern::Options::AllowFileScheme });
++}
++
++static bool containsGrantedPermissions(WebExtensionContext& context, const Permissions& names, const Patterns& patterns)
++{
++    const auto& grantedNames = context.grantedPermissions();
++    const auto& grantedPatterns = context.grantedPermissionMatchPatterns();
++    if (!std::ranges::all_of(names, [&](auto& name) { return grantedNames.contains(name); }))
++        return false;
++    OptionSet options { WebExtensionMatchPattern::Options::IgnorePaths };
++    if (context.hasAccessToFileURLs())
++        options.add(WebExtensionMatchPattern::Options::AllowFileScheme);
++    return std::ranges::all_of(patterns, [&](auto& pattern) {
++        if (pattern->scheme() == "file"_s && !context.hasAccessToFileURLs())
++            return false;
++        return std::ranges::any_of(grantedPatterns, [&](auto& entry) { return entry.key->matchesPattern(pattern.get(), options); });
++    });
++}
++
++enum class PermissionOperation { Contains, Request, Remove };
++
++static std::expected<Patterns, WebExtensionError> validatePermissions(WebExtensionContext& context, const Permissions& permissions, const HashSet<String>& origins, PermissionOperation operation, const String& api)
++{
++    auto& extension = context.extension();
++    auto allowedNames = extension.requestedPermissions().unionWith(extension.optionalPermissions());
++    auto requiredPatterns = extension.allRequestedMatchPatterns();
++    auto allowedPatterns = requiredPatterns.unionWith(extension.optionalPermissionMatchPatterns());
++    for (auto& permission : permissions) {
++        if (!WebExtension::supportedPermissions().contains(permission))
++            return toWebExtensionError(api, "permissions"_s, "unsupported permission"_s);
++        if (operation != PermissionOperation::Contains && !allowedNames.contains(permission))
++            return toWebExtensionError(api, "permissions"_s, "permission was not declared in the manifest"_s);
++        if (operation == PermissionOperation::Remove && extension.requestedPermissions().contains(permission))
++            return toWebExtensionError(api, "permissions"_s, "required permissions cannot be removed"_s);
++    }
++    Patterns patterns;
++    for (auto& origin : origins) {
++        auto pattern = permissionPattern(origin);
++        if (!pattern)
++            return toWebExtensionError(api, "origins"_s, "unsupported or invalid match pattern"_s);
++        if (operation == PermissionOperation::Request && pattern->scheme() == "file"_s && !context.hasAccessToFileURLs())
++            return toWebExtensionError(api, "origins"_s, "file access must first be enabled by the browser"_s);
++        if (operation != PermissionOperation::Contains && !covers(allowedPatterns, *pattern))
++            return toWebExtensionError(api, "origins"_s, "origin was not declared in the manifest"_s);
++        if (operation == PermissionOperation::Remove && std::ranges::any_of(requiredPatterns, [&](auto& required) { return overlaps(required.get(), *pattern); }))
++            return toWebExtensionError(api, "origins"_s, "required host permissions cannot be removed"_s);
++        patterns.add(pattern.releaseNonNull());
++    }
++    return patterns;
++}
++
++WebExtensionPermissionState WebExtensionContext::nativePermissionState() const
++{
++    WebExtensionPermissionState result { m_grantedPermissions, { } };
++    for (auto& entry : m_grantedPermissionMatchPatterns)
++        result.origins.set(entry.key->string(), entry.value);
++    return result;
++}
++
++std::expected<void, String> WebExtensionContext::restoreNativePermissionState()
++{
++    ASSERT(!isLoaded());
++    auto now = WallTime::now();
++    auto saved = readWebExtensionPermissionState(m_state.get(), now);
++    if (!saved)
++        return makeUnexpected(saved.error());
++
++    // A context keeps its current host/API state across unload/reload. A fresh
++    // context restores disk grants, respecting explicit host replacements and
++    // revocations made before load. Nothing is granted merely by declaration.
++    auto names = m_nativePermissionStateInitialized || m_nativeGrantedPermissionsWereSet
++        ? m_grantedPermissions : saved->permissions;
++    if (!m_nativePermissionStateInitialized && !m_nativeGrantedPermissionsWereSet) {
++        for (auto& removed : m_nativeRemovedPermissionsBeforeLoad)
++            names.remove(removed);
++        for (auto& entry : m_grantedPermissions)
++            names.set(entry.key, entry.value);
++    }
++    PermissionMatchPatternsMap patterns;
++    if (m_nativePermissionStateInitialized || m_nativeGrantedPatternsWereSet)
++        patterns = m_grantedPermissionMatchPatterns;
++    else {
++        for (auto& entry : saved->origins) {
++            auto pattern = permissionPattern(entry.key);
++            if (!pattern)
++                continue;
++            bool removed = std::ranges::any_of(m_nativeRemovedPatternsBeforeLoad, [&](auto& removal) {
++                return removal.second == EqualityOnly::Yes ? removal.first.get() == *pattern : covers(removal.first.get(), *pattern);
++            });
++            if (!removed)
++                patterns.set(pattern.releaseNonNull(), entry.value);
++        }
++        for (auto& entry : m_grantedPermissionMatchPatterns)
++            patterns.set(entry.key, entry.value);
++    }
++
++    auto& extension = this->extension();
++    auto allowedNames = extension.requestedPermissions().unionWith(extension.optionalPermissions());
++    auto allowedPatterns = extension.allRequestedMatchPatterns().unionWith(extension.optionalPermissionMatchPatterns());
++    names.removeIf([&](auto& entry) {
++        auto denied = m_deniedPermissions.find(entry.key);
++        return entry.value.isNaN() || entry.value <= now || !allowedNames.contains(entry.key)
++            || !WebExtension::supportedPermissions().contains(entry.key)
++            || (denied != m_deniedPermissions.end() && denied->value > now);
++    });
++    patterns.removeIf([&](auto& entry) {
++        if (entry.value.isNaN() || entry.value <= now || !entry.key->isSupported() || !covers(allowedPatterns, entry.key.get()))
++            return true;
++        return std::ranges::any_of(m_deniedPermissionMatchPatterns, [&](auto& denied) {
++            return denied.value > now && covers(denied.key.get(), entry.key.get());
++        });
++    });
++    WebExtensionPermissionState cleaned { names, { } };
++    for (auto& entry : patterns)
++        cleaned.origins.set(entry.key->string(), entry.value);
++    auto state = stateWithWebExtensionPermissions(m_state.get(), cleaned);
++    if (!state)
++        return makeUnexpected(state.error());
++    // Restore before attaching the controller: no permission events or IPC
++    // may run before the receiving extension contexts have been created.
++    m_grantedPermissions = WTF::move(names);
++    m_grantedPermissionMatchPatterns = WTF::move(patterns);
++    m_nextGrantedPermissionsExpirationDate = WallTime::nan();
++    m_nextGrantedPermissionMatchPatternsExpirationDate = WallTime::nan();
++    clearCachedPermissionStates();
++    m_state = WTF::move(*state);
++    m_nativePermissionStateInitialized = true;
++    m_nativeGrantedPermissionsWereSet = false;
++    m_nativeGrantedPatternsWereSet = false;
++    m_nativeRemovedPermissionsBeforeLoad.clear();
++    m_nativeRemovedPatternsBeforeLoad.clear();
++    return { };
++}
++
++std::expected<void, WebExtensionError> WebExtensionContext::commitNativePermissionState(PermissionsMap&& names, PermissionMatchPatternsMap&& patterns, const String& api)
++{
++    if (!isLoaded())
++        return toWebExtensionError(api, nullString(), "extension is not loaded"_s);
++    WebExtensionPermissionState values { names, { } };
++    for (auto& entry : patterns)
++        values.origins.set(entry.key->string(), entry.value);
++    auto prepared = stateWithWebExtensionPermissions(m_state.get(), values);
++    if (!prepared)
++        return toWebExtensionError(api, nullString(), prepared.error());
++    if (storageIsPersistent()) {
++        if (auto written = writeWebExtensionStateHaiku(stateFilePath(), prepared->get()); !written)
++            return toWebExtensionError(api, nullString(), "could not save permission grants"_s);
++    }
++
++    auto previousNames = m_grantedPermissions;
++    auto previousPatterns = m_grantedPermissionMatchPatterns;
++    m_state = WTF::move(*prepared);
++    {
++        SetForScope transaction(m_nativePermissionTransaction, true);
++        setGrantedPermissions(WTF::move(names));
++        setGrantedPermissionMatchPatterns(WTF::move(patterns));
++    }
++    // A finite grant can expire during the disk write. Compare the actual
++    // installed state, after the common setters have pruned expired entries.
++    Permissions addedNames, removedNames;
++    Patterns addedPatterns, removedPatterns;
++    for (auto& entry : m_grantedPermissions) {
++        if (!previousNames.contains(entry.key))
++            addedNames.add(entry.key);
++    }
++    for (auto& entry : previousNames) {
++        if (!m_grantedPermissions.contains(entry.key))
++            removedNames.add(entry.key);
++    }
++    for (auto& entry : m_grantedPermissionMatchPatterns) {
++        if (!previousPatterns.contains(entry.key))
++            addedPatterns.add(entry.key);
++    }
++    for (auto& entry : previousPatterns) {
++        if (!m_grantedPermissionMatchPatterns.contains(entry.key))
++            removedPatterns.add(entry.key);
++    }
++    // Publish one event containing both categories after the complete new
++    // state is installed. Native observers and engine side effects still run.
++    if (!removedNames.isEmpty() || !removedPatterns.isEmpty())
++        firePermissionsEventListenerIfNecessary(WebExtensionEventListenerType::PermissionsOnRemoved, removedNames, removedPatterns);
++    if (!addedNames.isEmpty() || !addedPatterns.isEmpty())
++        firePermissionsEventListenerIfNecessary(WebExtensionEventListenerType::PermissionsOnAdded, addedNames, addedPatterns);
++    return { };
++}
++
++void WebExtensionContext::permissionsGetAll(CompletionHandler<void(Vector<String>&&, Vector<String>&&)>&& completion)
++{
++    Vector<String> names, origins;
++    for (auto& permission : currentPermissions())
++        names.append(permission);
++    for (auto& pattern : currentPermissionMatchPatterns()) {
++        if (pattern->scheme() != "file"_s || hasAccessToFileURLs())
++            origins.append(pattern->string());
++    }
++    completion(WTF::move(names), WTF::move(origins));
++}
++
++void WebExtensionContext::permissionsContains(HashSet<String> names, HashSet<String> origins, CompletionHandler<void(std::expected<bool, WebExtensionError>&&)>&& completion)
++{
++    auto patterns = validatePermissions(*this, names, origins, PermissionOperation::Contains, "permissions.contains()"_s);
++    if (!patterns) {
++        completion(makeUnexpected(patterns.error()));
++        return;
++    }
++    grantedPermissions();
++    grantedPermissionMatchPatterns();
++    if (!hasAccessToFileURLs() && std::ranges::any_of(*patterns, [](auto& pattern) { return pattern->scheme() == "file"_s; })) {
++        completion(false);
++        return;
++    }
++    completion(containsGrantedPermissions(*this, names, *patterns));
++}
++
++void WebExtensionContext::permissionsRequest(HashSet<String> names, HashSet<String> origins, bool userGesture, CompletionHandler<void(std::expected<bool, WebExtensionError>&&)>&& completion)
++{
++    constexpr auto api = "permissions.request()"_s;
++    if (!userGesture) {
++        completion(toWebExtensionError(api, nullString(), "a user gesture is required"_s));
++        return;
++    }
++    auto patterns = validatePermissions(*this, names, origins, PermissionOperation::Request, api);
++    if (!patterns) {
++        completion(makeUnexpected(patterns.error()));
++        return;
++    }
++    grantedPermissions();
++    grantedPermissionMatchPatterns();
++    if (containsGrantedPermissions(*this, names, *patterns)) {
++        completion(true);
++        return;
++    }
++    RefPtr controller = extensionController();
++    if (!controller) {
++        completion(toWebExtensionError(api, nullString(), "extension has no browser host"_s));
++        return;
++    }
++    ExtensionPermissionPromptHaiku::Details details;
++    details.extensionIdentifier = uniqueIdentifier();
++    details.extensionName = extension().displayName();
++    details.privateBrowsing = !controller->configuration().defaultWebsiteDataStore().isPersistent();
++    Permissions promptedNames;
++    Patterns promptedPatterns;
++    for (auto& name : names) {
++        if (!m_grantedPermissions.contains(name)) {
++            details.permissions.append(name);
++            promptedNames.add(name);
++        }
++    }
++    for (auto& pattern : *patterns) {
++        if (!containsGrantedPermissions(*this, { }, { pattern })) {
++            details.origins.append(pattern->string());
++            promptedPatterns.add(pattern);
++        }
++    }
++    auto loadIdentifier = privilegedIdentifier();
++    auto revocationGeneration = m_nativePermissionRevocationGeneration;
++    ++m_pendingPermissionRequests;
++    controller->nativePermissionPrompts()->request(loadIdentifier.toUInt64(), WTF::move(details),
++        [this, protectedThis = Ref { *this }, loadIdentifier, revocationGeneration, names = WTF::move(names), origins = WTF::move(origins), promptedNames = WTF::move(promptedNames), promptedPatterns = WTF::move(promptedPatterns), completion = WTF::move(completion)](std::expected<bool, status_t> consent) mutable {
++            if (!isLoaded() || !m_privilegedIdentifier || *m_privilegedIdentifier != loadIdentifier) {
++                completion(toWebExtensionError("permissions.request()"_s, nullString(), "extension was unloaded"_s));
++                return;
++            }
++            ASSERT(m_pendingPermissionRequests);
++            --m_pendingPermissionRequests;
++            if (!consent) {
++                auto reason = consent.error() == B_TIMED_OUT ? "permission prompt timed out"_s
++                    : consent.error() == B_CANCELED ? "permission request was cancelled"_s
++                    : consent.error() == B_BUSY ? "permission prompt queue is full"_s
++                    : consent.error() == B_NO_INIT ? "browser has no permission prompt listener"_s
++                    : "permission prompt could not complete"_s;
++                completion(toWebExtensionError("permissions.request()"_s, nullString(), reason));
++                return;
++            }
++            if (!*consent) {
++                completion(false);
++                return;
++            }
++            if (m_nativePermissionRevocationGeneration != revocationGeneration) {
++                completion(toWebExtensionError("permissions.request()"_s, nullString(), "permissions changed while consent was pending"_s));
++                return;
++            }
++            auto checked = validatePermissions(*this, names, origins, PermissionOperation::Request, "permissions.request()"_s);
++            if (!checked) {
++                completion(makeUnexpected(checked.error()));
++                return;
++            }
++            auto updatedNames = grantedPermissions();
++            auto updatedPatterns = grantedPermissionMatchPatterns();
++            // Expiration can itself revoke a grant while taking the snapshots.
++            if (m_nativePermissionRevocationGeneration != revocationGeneration) {
++                completion(toWebExtensionError("permissions.request()"_s, nullString(), "permissions expired while consent was pending"_s));
++                return;
++            }
++            // Existing temporary grants were not displayed in the prompt and
++            // must not silently become permanent when other access is allowed.
++            for (auto& name : promptedNames)
++                updatedNames.set(name, WallTime::infinity());
++            for (auto& pattern : promptedPatterns)
++                updatedPatterns.set(pattern, WallTime::infinity());
++            auto committed = commitNativePermissionState(WTF::move(updatedNames), WTF::move(updatedPatterns), "permissions.request()"_s);
++            if (!committed)
++                completion(makeUnexpected(committed.error()));
++            else
++                completion(containsGrantedPermissions(*this, names, *checked));
++        });
++}
++
++void WebExtensionContext::permissionsRemove(HashSet<String> names, HashSet<String> origins, CompletionHandler<void(std::expected<bool, WebExtensionError>&&)>&& completion)
++{
++    auto patterns = validatePermissions(*this, names, origins, PermissionOperation::Remove, "permissions.remove()"_s);
++    if (!patterns) {
++        completion(makeUnexpected(patterns.error()));
++        return;
++    }
++    auto updatedNames = grantedPermissions();
++    auto updatedPatterns = grantedPermissionMatchPatterns();
++    for (auto& name : names)
++        updatedNames.remove(name);
++    updatedPatterns.removeIf([&](auto& entry) { return covers(*patterns, entry.key.get()); });
++    auto committed = commitNativePermissionState(WTF::move(updatedNames), WTF::move(updatedPatterns), "permissions.remove()"_s);
++    if (!committed) {
++        completion(makeUnexpected(committed.error()));
++        return;
++    }
++    // Removing an absent optional permission (including an empty set) succeeds.
++    // A narrower request cannot claim to remove access retained by a broad grant.
++    bool stillGranted = std::ranges::any_of(names, [&](auto& name) { return m_grantedPermissions.contains(name); })
++        || std::ranges::any_of(*patterns, [&](auto& pattern) { return containsGrantedPermissions(*this, { }, { pattern }); });
++    completion(!stillGranted);
++}
++
++} // namespace WebKit
++
++#endif
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextActionsHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextActionsHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..ed33696667bcedd840e506f2a6ac6f232a88e3b7
@@ -34390,10 +35096,10 @@ index 0000000000000000000000000000000000000000..66137c6dfd30e889af901623632a3f8b
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..8d5cf3070c1649d3873d867aff1e1d1a62e41109
+index 0000000000000000000000000000000000000000..e422f6ebf9ea07267593e715cd6e3993b8cf6745
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextHaiku.cpp
-@@ -0,0 +1,272 @@
+@@ -0,0 +1,286 @@
 +/*
 + * Copyright (C) 2022-2025 Apple Inc. All rights reserved.
 + * Copyright (C) 2026 KunanyiOS contributors.
@@ -34426,6 +35132,7 @@ index 0000000000000000000000000000000000000000..8d5cf3070c1649d3873d867aff1e1d1a
 +
 +#include "Logging.h"
 +#include "WebExtensionStateHaiku.h"
++#include "WebExtensionPermissionState.h"
 +#include "WebExtensionBackgroundListenersHaiku.h"
 +#include "WebExtensionWebsiteData.h"
 +#include "WebsiteDataStore.h"
@@ -34571,9 +35278,14 @@ index 0000000000000000000000000000000000000000..8d5cf3070c1649d3873d867aff1e1d1a
 +RefPtr<JSON::Object> WebExtensionContext::readStateFromStorage()
 +{
 +    resetCommands();
-+    if (storageIsPersistent())
-+        m_state = readStateFromPath(stateFilePath());
-+    else if (!m_state)
++    if (storageIsPersistent()) {
++        auto result = readWebExtensionStateHaiku(stateFilePath());
++        if (!result) {
++            RELEASE_LOG_ERROR(Extensions, "Unable to read extension JSON state: %u", static_cast<unsigned>(result.error()));
++            return nullptr;
++        }
++        m_state = result->ptr();
++    } else if (!m_state)
 +        m_state = JSON::Object::create();
 +    return m_state;
 +}
@@ -34586,6 +35298,14 @@ index 0000000000000000000000000000000000000000..8d5cf3070c1649d3873d867aff1e1d1a
 +    if (!state)
 +        return;
 +
++    if (m_nativePermissionStateInitialized) {
++        auto prepared = stateWithWebExtensionPermissions(state.get(), nativePermissionState());
++        if (!prepared) {
++            RELEASE_LOG_ERROR(Extensions, "Unable to prepare native permission state");
++            return;
++        }
++        state = prepared->ptr();
++    }
 +    if (auto result = writeWebExtensionStateHaiku(stateFilePath(), *state); !result)
 +        RELEASE_LOG_ERROR(Extensions, "Unable to write extension JSON state: %u", static_cast<unsigned>(result.error()));
 +}
@@ -34668,10 +35388,10 @@ index 0000000000000000000000000000000000000000..8d5cf3070c1649d3873d867aff1e1d1a
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextPermissionsHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextPermissionsHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..e4a5c7250e7eca7448193b1dc6ccc25585f50a0b
+index 0000000000000000000000000000000000000000..886748b81caababf0e12031e087cf7f6ecea05c1
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextPermissionsHaiku.cpp
-@@ -0,0 +1,178 @@
+@@ -0,0 +1,193 @@
 +/*
 + * Copyright (C) 2022-2025 Apple Inc. All rights reserved.
 + *
@@ -34703,6 +35423,7 @@ index 0000000000000000000000000000000000000000..e4a5c7250e7eca7448193b1dc6ccc255
 +#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 +
 +#include "WebExtensionContextProxyMessages.h"
++#include "ExtensionPermissionPromptHaiku.h"
 +#include "WebExtensionPermission.h"
 +#include "WebPageProxy.h"
 +#include "WebPreferences.h"
@@ -34737,6 +35458,13 @@ index 0000000000000000000000000000000000000000..e4a5c7250e7eca7448193b1dc6ccc255
 +{
 +    if (permissions.isEmpty() || notification == PermissionNotification::None)
 +        return;
++    if (notification == PermissionNotification::GrantedPermissionsWereRemoved || notification == PermissionNotification::PermissionsWereDenied) {
++        RELEASE_ASSERT(++m_nativePermissionRevocationGeneration);
++        if (isLoaded()) {
++            if (RefPtr controller = extensionController())
++                controller->nativePermissionPrompts()->cancelOwner(privilegedIdentifier().toUInt64());
++        }
++    }
 +
 +    if (isLoaded()) {
 +        RefPtr controller = extensionController();
@@ -34765,6 +35493,13 @@ index 0000000000000000000000000000000000000000..e4a5c7250e7eca7448193b1dc6ccc255
 +{
 +    if (matchPatterns.isEmpty() || notification == PermissionNotification::None)
 +        return;
++    if (notification == PermissionNotification::GrantedPermissionMatchPatternsWereRemoved || notification == PermissionNotification::PermissionMatchPatternsWereDenied) {
++        RELEASE_ASSERT(++m_nativePermissionRevocationGeneration);
++        if (isLoaded()) {
++            if (RefPtr controller = extensionController())
++                controller->nativePermissionPrompts()->cancelOwner(privilegedIdentifier().toUInt64());
++        }
++    }
 +
 +    clearCachedPermissionStates();
 +
@@ -34798,7 +35533,7 @@ index 0000000000000000000000000000000000000000..e4a5c7250e7eca7448193b1dc6ccc255
 +void WebExtensionContext::firePermissionsEventListenerIfNecessary(WebExtensionEventListenerType type, const PermissionsSet& permissions, const MatchPatternSet& matchPatterns)
 +{
 +    ASSERT(type == WebExtensionEventListenerType::PermissionsOnAdded || type == WebExtensionEventListenerType::PermissionsOnRemoved);
-+    if (!isLoaded())
++    if (!isLoaded() || m_nativePermissionTransaction)
 +        return;
 +
 +    auto loadIdentifier = privilegedIdentifier();
@@ -42198,7 +42933,7 @@ index 0000000000000000000000000000000000000000..2a51b2913800fada0f6279c8919bc190
 +
 +} // namespace WebKit
 diff --git a/Source/WebKit/WebKit.xcodeproj/project.pbxproj b/Source/WebKit/WebKit.xcodeproj/project.pbxproj
-index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..2e9f91c36181093f093131f4e5dacf2b1a084625 100644
+index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..4cb7bd0a67a0a0646dc93a4d157f3a44812c8f60 100644
 --- a/Source/WebKit/WebKit.xcodeproj/project.pbxproj
 +++ b/Source/WebKit/WebKit.xcodeproj/project.pbxproj
 @@ -123,6 +123,8 @@
@@ -42359,7 +43094,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..2e9f91c36181093f093131f4e5dacf2b
  		33F6833D293FFA4B005C63C0 /* WebExtensionAPIWebNavigationEvent.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPIWebNavigationEvent.h; sourceTree = "<group>"; };
  		33F6833F293FFB3F005C63C0 /* WebExtensionAPIWebNavigationEventCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionAPIWebNavigationEventCocoa.mm; sourceTree = "<group>"; };
  		35541583DC2A3C24CD8C2D87 /* ProxyingNetworkAgent.messages.in */ = {isa = PBXFileReference; lastKnownFileType = text; path = ProxyingNetworkAgent.messages.in; sourceTree = "<group>"; };
-@@ -7986,7 +8026,7 @@
+@@ -7986,11 +8026,11 @@
  		B6058CF32B6D98E7006D4C77 /* WebExtensionDataRecord.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionDataRecord.h; sourceTree = "<group>"; };
  		B6058CF42B6D98E8006D4C77 /* WebExtensionDataRecord.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = WebExtensionDataRecord.cpp; sourceTree = "<group>"; };
  		B6114A7C2939498000380B1B /* JSWebExtensionAPIEvent.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIEvent.h; sourceTree = "<group>"; };
@@ -42368,6 +43103,11 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..2e9f91c36181093f093131f4e5dacf2b
  		B6114A8B293AE05200380B1B /* WebExtensionEventListenerType.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WebExtensionEventListenerType.h; sourceTree = "<group>"; };
  		B61274A62B7D738100D8ACDA /* WebExtensionAPIWebPageNamespace.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPIWebPageNamespace.h; sourceTree = "<group>"; };
  		B61AFA4629510D0F008220B1 /* JSWebExtensionAPIPermissions.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIPermissions.h; sourceTree = "<group>"; };
+-		B61AFA4729510D0F008220B1 /* JSWebExtensionAPIPermissions.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = JSWebExtensionAPIPermissions.mm; sourceTree = "<group>"; };
++		B61AFA4729510D0F008220B1 /* JSWebExtensionAPIPermissions.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = JSWebExtensionAPIPermissions.cpp; sourceTree = "<group>"; };
+ 		B61F9E7E2F742CFE005CE453 /* WKStageModeOrbitSimulator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WKStageModeOrbitSimulator.h; sourceTree = "<group>"; };
+ 		B61F9E7F2F742CFE005CE453 /* WKStageModeOrbitSimulator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WKStageModeOrbitSimulator.swift; sourceTree = "<group>"; };
+ 		B624FF142ABE4CB000F6EDF6 /* WebExtensionContextAPIScriptingCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionContextAPIScriptingCocoa.mm; sourceTree = "<group>"; };
 @@ -8003,14 +8043,16 @@
  		B63403F814910D57001070B5 /* APIObject.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = APIObject.cpp; sourceTree = "<group>"; };
  		B63A99732B7EA000004611FD /* JSWebExtensionAPIWebPageRuntime.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIWebPageRuntime.h; sourceTree = "<group>"; };
@@ -42482,9 +43222,12 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..2e9f91c36181093f093131f4e5dacf2b
  				1C5DC462290B1C470061EC62 /* JSWebExtensionAPIExtension.h */,
  				1C5DC460290B1C440061EC62 /* JSWebExtensionAPIExtension.mm */,
  				B6CCAAB629A445E90092E846 /* JSWebExtensionAPILocalization.h */,
-@@ -17472,7 +17545,7 @@
+@@ -17470,9 +17543,9 @@
+ 				1C386F332AF409F9004108F0 /* JSWebExtensionAPINotifications.h */,
+ 				1C386F342AF409F9004108F0 /* JSWebExtensionAPINotifications.mm */,
  				B61AFA4629510D0F008220B1 /* JSWebExtensionAPIPermissions.h */,
- 				B61AFA4729510D0F008220B1 /* JSWebExtensionAPIPermissions.mm */,
+-				B61AFA4729510D0F008220B1 /* JSWebExtensionAPIPermissions.mm */,
++				B61AFA4729510D0F008220B1 /* JSWebExtensionAPIPermissions.cpp */,
  				1C9A15CC2ABDF1E1002CC12A /* JSWebExtensionAPIPort.h */,
 -				1C9A15CD2ABDF1E2002CC12A /* JSWebExtensionAPIPort.mm */,
 +				1C9A15CD2ABDF1E2002CC12A /* JSWebExtensionAPIPort.cpp */,
@@ -42755,6 +43498,63 @@ index 3fb6ebfe1e1c5703563b72822b66a69a2546d4a8..b8d68456d7d38b859ceecc144f15646a
  } // namespace WebKit
  
  #endif // ENABLE(WK_WEB_EXTENSIONS)
+diff --git a/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIPermissionsCocoa.mm b/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIPermissionsCocoa.mm
+index 74e567b4be93510fd18d320e233f79303ef0e79d..eb78cbc28e7a4c204a2af96a275b6a6346adf322 100644
+--- a/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIPermissionsCocoa.mm
++++ b/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIPermissionsCocoa.mm
+@@ -46,6 +46,52 @@
+ namespace WebKit {
+ 
+ 
++// Preserve the existing Cocoa implementation behind the C++ JSON bindings.
++static NSDictionary *permissionDetailsDictionary(RefPtr<JSON::Value> details, String& exception)
++{
++    if (!details || !details->asObject()) {
++        exception = "permissions must be an object"_s;
++        return nil;
++    }
++    auto dictionary = dynamic_objc_cast<NSDictionary>(parseJSON(details->toJSONString().createNSString().get()));
++    if (!dictionary)
++        exception = "could not convert permission details"_s;
++    return dictionary;
++}
++
++void WebExtensionAPIPermissions::contains(RefPtr<JSON::Value> details, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto dictionary = permissionDetailsDictionary(WTF::move(details), exception);
++    if (!dictionary)
++        return;
++    NSString *nativeException = nil;
++    contains(dictionary, WTF::move(callback), &nativeException);
++    if (nativeException)
++        exception = nativeException;
++}
++
++void WebExtensionAPIPermissions::request(RefPtr<JSON::Value> details, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto dictionary = permissionDetailsDictionary(WTF::move(details), exception);
++    if (!dictionary)
++        return;
++    NSString *nativeException = nil;
++    request(dictionary, WTF::move(callback), &nativeException);
++    if (nativeException)
++        exception = nativeException;
++}
++
++void WebExtensionAPIPermissions::remove(RefPtr<JSON::Value> details, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto dictionary = permissionDetailsDictionary(WTF::move(details), exception);
++    if (!dictionary)
++        return;
++    NSString *nativeException = nil;
++    remove(dictionary, WTF::move(callback), &nativeException);
++    if (nativeException)
++        exception = nativeException;
++}
++
+ void WebExtensionAPIPermissions::getAll(Ref<WebExtensionCallbackHandler>&& callback)
+ {
+     // Documentation: https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/permissions/getAll
 diff --git a/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIPortCocoa.mm b/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIPortCocoa.mm
 index 55858132b534fbb6995fbaa91370c9a18dc245d9..356282725fd16612a7f7273f12a7869130741577 100644
 --- a/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIPortCocoa.mm
@@ -45106,7 +45906,7 @@ index 8e5ecd249ca1330547c03039e959fc77b549f325..91325573b147ce773b952601c97c59b8
  
      void addListener(WebCore::FrameIdentifier, RefPtr<WebExtensionCallbackHandler>);
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.cpp
-index a631bca164f7da881e64b2ee29f21de7f4179746..1cb6583d4e193c7a18da84d09fa436c43776a761 100644
+index a631bca164f7da881e64b2ee29f21de7f4179746..94cfb39a0f0f68fa3313d045cf8f68d843e1f64a 100644
 --- a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.cpp
 +++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.cpp
 @@ -81,8 +81,14 @@ bool WebExtensionAPINamespace::isPropertyAllowed(const ASCIILiteral& name, WebPa
@@ -45141,15 +45941,15 @@ index a631bca164f7da881e64b2ee29f21de7f4179746..1cb6583d4e193c7a18da84d09fa436c4
  WebExtensionAPICookies& WebExtensionAPINamespace::cookies()
  {
      // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/cookies
-@@ -268,6 +274,8 @@ WebExtensionAPIPermissions& WebExtensionAPINamespace::permissions()
-     return *m_permissions;
+@@ -258,6 +264,8 @@ WebExtensionAPINotifications& WebExtensionAPINamespace::notifications()
+     return *m_notifications;
  }
  
 +#endif // PLATFORM(COCOA)
 +
- WebExtensionAPIRuntime& WebExtensionAPINamespace::runtime() const
+ WebExtensionAPIPermissions& WebExtensionAPINamespace::permissions()
  {
-     // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/runtime
+     // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/permissions
 @@ -280,6 +288,7 @@ WebExtensionAPIRuntime& WebExtensionAPINamespace::runtime() const
      return *m_runtime;
  }
@@ -45226,7 +46026,7 @@ index a631bca164f7da881e64b2ee29f21de7f4179746..1cb6583d4e193c7a18da84d09fa436c4
  {
      // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/webRequest
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.h b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.h
-index 0daeb9f57bccead43bac234e6d71bff821327db7..ad4af7f6ed39fa8e42a89c485fc0b3e97a1c9c8e 100644
+index 0daeb9f57bccead43bac234e6d71bff821327db7..ef387268ce4378bd92445be1ab39558355252d70 100644
 --- a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.h
 +++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.h
 @@ -70,9 +70,9 @@ public:
@@ -45240,6 +46040,16 @@ index 0daeb9f57bccead43bac234e6d71bff821327db7..ad4af7f6ed39fa8e42a89c485fc0b3e9
      WebExtensionAPICookies& cookies();
      WebExtensionAPIMenus& contextMenus() { return menus(); }
      WebExtensionAPIDeclarativeNetRequest& declarativeNetRequest();
+@@ -88,8 +88,8 @@ public:
+     WebExtensionAPIOffscreen& offscreen();
+ #endif
+     WebExtensionAPIAction& pageAction() { return action(); }
+-    WebExtensionAPIPermissions& permissions();
+ #endif
++    WebExtensionAPIPermissions& permissions();
+     WebExtensionAPIRuntime& runtime() const final;
+ #if PLATFORM(COCOA)
+     WebExtensionAPIScripting& scripting();
 @@ -100,14 +100,14 @@ public:
  #if ENABLE(WK_WEB_EXTENSIONS_BOOKMARKS)
      WebExtensionAPIBookmarks& bookmarks();
@@ -45258,6 +46068,167 @@ index 0daeb9f57bccead43bac234e6d71bff821327db7..ad4af7f6ed39fa8e42a89c485fc0b3e9
  #endif
  
  private:
+diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIPermissions.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIPermissions.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..2c2b6cb78107c7ccea9d24343049ae22f7f44346
+--- /dev/null
++++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIPermissions.cpp
+@@ -0,0 +1,124 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#include "config.h"
++#include "WebExtensionAPIPermissions.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++
++#include "MessageSenderInlines.h"
++#include "WebExtensionAPINamespace.h"
++#include "WebExtensionContextMessages.h"
++#include "WebExtensionContextProxy.h"
++#include "WebExtensionPermissionState.h"
++#include "WebExtensionUtilities.h"
++#include "WebProcess.h"
++#include <WebCore/UserGestureIndicator.h>
++
++namespace WebKit {
++
++template<typename Names, typename Origins>
++static Ref<JSON::Object> permissionObject(const Names& names, const Origins& origins)
++{
++    auto object = JSON::Object::create();
++    auto named = JSON::Array::create();
++    auto hosts = JSON::Array::create();
++    for (auto& name : names)
++        named->pushString(name);
++    for (auto& origin : origins)
++        hosts->pushString(origin);
++    object->setArray("permissions"_s, WTF::move(named));
++    object->setArray("origins"_s, WTF::move(hosts));
++    return object;
++}
++
++void WebExtensionAPIPermissions::getAll(Ref<WebExtensionCallbackHandler>&& callback)
++{
++    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::PermissionsGetAll(), [protectedThis = Ref { *this }, callback = WTF::move(callback)](Vector<String> names, Vector<String> origins) {
++        auto json = permissionObject(names, origins)->toJSONString();
++        auto context = callback->globalContext();
++        Protected<JSValueRef> result(context, JSValueMakeFromJSONString(context, toJSString(json).get()));
++        callback->call(result.get());
++    }, extensionContext().identifier());
++}
++
++void WebExtensionAPIPermissions::contains(RefPtr<JSON::Value> details, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto parsed = parseWebExtensionPermissionDetails(details.get());
++    if (!parsed) {
++        exception = parsed.error();
++        return;
++    }
++    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::PermissionsContains(parsed->permissions, parsed->origins), [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<bool, WebExtensionError>&& result) {
++        if (!result)
++            callback->reportError(result.error());
++        else
++            callback->call(JSValueMakeBoolean(callback->globalContext(), *result));
++    }, extensionContext().identifier());
++}
++
++void WebExtensionAPIPermissions::request(RefPtr<JSON::Value> details, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto parsed = parseWebExtensionPermissionDetails(details.get());
++    if (!parsed) {
++        exception = parsed.error();
++        return;
++    }
++    bool userGesture = WebCore::UserGestureIndicator::processingUserGesture();
++    if (!userGesture) {
++        callback->reportError(toWebExtensionError("permissions.request()"_s, nullString(), "a user gesture is required"_s).error());
++        return;
++    }
++    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::PermissionsRequest(parsed->permissions, parsed->origins, userGesture), [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<bool, WebExtensionError>&& result) {
++        if (!result)
++            callback->reportError(result.error());
++        else
++            callback->call(JSValueMakeBoolean(callback->globalContext(), *result));
++    }, extensionContext().identifier());
++}
++
++void WebExtensionAPIPermissions::remove(RefPtr<JSON::Value> details, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto parsed = parseWebExtensionPermissionDetails(details.get());
++    if (!parsed) {
++        exception = parsed.error();
++        return;
++    }
++    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::PermissionsRemove(parsed->permissions, parsed->origins), [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<bool, WebExtensionError>&& result) {
++        if (!result)
++            callback->reportError(result.error());
++        else
++            callback->call(JSValueMakeBoolean(callback->globalContext(), *result));
++    }, extensionContext().identifier());
++}
++
++WebExtensionAPIEvent& WebExtensionAPIPermissions::onAdded()
++{
++    if (!m_onAdded)
++        m_onAdded = WebExtensionAPIEvent::create(*this, WebExtensionEventListenerType::PermissionsOnAdded);
++    return *m_onAdded;
++}
++
++WebExtensionAPIEvent& WebExtensionAPIPermissions::onRemoved()
++{
++    if (!m_onRemoved)
++        m_onRemoved = WebExtensionAPIEvent::create(*this, WebExtensionEventListenerType::PermissionsOnRemoved);
++    return *m_onRemoved;
++}
++
++void WebExtensionContextProxy::dispatchPermissionsEvent(WebExtensionEventListenerType type, HashSet<String> names, HashSet<String> origins)
++{
++    if (type != WebExtensionEventListenerType::PermissionsOnAdded && type != WebExtensionEventListenerType::PermissionsOnRemoved)
++        return;
++    auto json = permissionObject(names, origins)->toJSONString();
++    enumerateNamespaceObjects([&](auto& namespaceObject) {
++        auto& api = namespaceObject.permissions();
++        auto& event = type == WebExtensionEventListenerType::PermissionsOnAdded ? api.onAdded() : api.onRemoved();
++        // The existing event implementation snapshots listeners and creates a
++        // fresh rooted object for each one, preserving listener isolation.
++        event.invokeListenersWithJSONArgument(json);
++    });
++}
++
++} // namespace WebKit
++
++#endif
+diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIPermissions.h b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIPermissions.h
+index 62b570468fb443cd2b4cb8c588ea676749d2b87b..9751d32ddd8d49ff6aa02f3f785b35729afb9406 100644
+--- a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIPermissions.h
++++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIPermissions.h
+@@ -38,12 +38,17 @@ class WebExtensionAPIPermissions : public WebExtensionAPIObject, public JSWebExt
+     WEB_EXTENSION_DECLARE_JS_WRAPPER_CLASS(WebExtensionAPIPermissions, permissions, permissions);
+ 
+ public:
+-#if PLATFORM(COCOA)
+     void getAll(Ref<WebExtensionCallbackHandler>&&);
++    void contains(RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String& outExceptionString);
++    void request(RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String& outExceptionString);
++    void remove(RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String& outExceptionString);
++#if PLATFORM(COCOA)
+     void contains(NSDictionary *details, Ref<WebExtensionCallbackHandler>&&, NSString **outExceptionString);
+     void request(NSDictionary *details, Ref<WebExtensionCallbackHandler>&&, NSString **outExceptionString);
+     void remove(NSDictionary *details, Ref<WebExtensionCallbackHandler>&&, NSString **outExceptionString);
+ 
++#endif
++
+     WebExtensionAPIEvent& onAdded();
+     WebExtensionAPIEvent& onRemoved();
+ 
+@@ -51,6 +56,7 @@ private:
+     RefPtr<WebExtensionAPIEvent> m_onAdded;
+     RefPtr<WebExtensionAPIEvent> m_onRemoved;
+ 
++#if PLATFORM(COCOA)
+     bool parseDetailsDictionary(NSDictionary *, HashSet<String>& permissions, HashSet<String>& origins, NSString *callingAPIName, NSString **outExceptionString);
+     bool verifyRequestedPermissions(HashSet<String>& permissions, HashSet<Ref<WebExtensionMatchPattern>>& matchPatterns, NSString *callingAPIName, NSString **outExceptionString);
+     bool validatePermissionsDetails(HashSet<String>& permissions, HashSet<String>& origins, HashSet<Ref<WebExtensionMatchPattern>>& matchPatterns, NSString *callingAPIName, NSString **outExceptionString);
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIPort.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIPort.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..b6227b9a50ea74f5653e1aa3ba39c9cf1f09ce93
@@ -48949,7 +49920,7 @@ index 25491a911534c611ab59ab4725e41bafeb93894d..d1c62c9c4082a2e4856f1861dde93535
  
      [NeedsFrameIdentifier] void addListener([CallbackHandler] function listener);
 diff --git a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPINamespace.idl b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPINamespace.idl
-index 8fd7a8880207871662fb33d5b56dcf2fde2dfbc4..372b541f9351da85f4dc5e29cd9a1436e2cca7d3 100644
+index 8fd7a8880207871662fb33d5b56dcf2fde2dfbc4..5767e14b2490c5efa5970478aa08c5f6a2e6bc1e 100644
 --- a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPINamespace.idl
 +++ b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPINamespace.idl
 @@ -43,7 +43,7 @@
@@ -48970,6 +49941,15 @@ index 8fd7a8880207871662fb33d5b56dcf2fde2dfbc4..372b541f9351da85f4dc5e29cd9a1436
  
      [MainWorldOnly, Dynamic, Platform=COCOA] readonly attribute WebExtensionAPIMenus menus;
  
+@@ -67,7 +67,7 @@
+ 
+     [MainWorldOnly, Dynamic, Platform=COCOA] readonly attribute WebExtensionAPIAction pageAction;
+ 
+-    [MainWorldOnly, Dynamic, Platform=COCOA] readonly attribute WebExtensionAPIPermissions permissions;
++    [MainWorldOnly, Dynamic] readonly attribute WebExtensionAPIPermissions permissions;
+ 
+     [MainWorldOnly, Dynamic, Platform=COCOA] readonly attribute WebExtensionAPIScripting scripting;
+ 
 @@ -75,15 +75,15 @@
  
      [MainWorldOnly, Dynamic, Platform=COCOA, Conditional=WK_WEB_EXTENSIONS_SIDEBAR] readonly attribute WebExtensionAPISidePanel sidePanel;
@@ -48989,6 +49969,38 @@ index 8fd7a8880207871662fb33d5b56dcf2fde2dfbc4..372b541f9351da85f4dc5e29cd9a1436
  
      [Dynamic] readonly attribute WebExtensionAPITest test;
  
+diff --git a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIPermissions.idl b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIPermissions.idl
+index 00465dbfc18fbe4027b43a5e8b36e52611bbfbf8..fa30ab83442f1ec34f220febc8ad839a9bd17941 100644
+--- a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIPermissions.idl
++++ b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIPermissions.idl
+@@ -30,6 +30,7 @@ dictionary WebExtensionPermissions {
+ 
+ [
+     Conditional=WK_WEB_EXTENSIONS,
++    UseCPPAPI,
+     MainWorldOnly,
+     ReturnsPromiseWhenCallbackIsOmitted,
+ ] interface WebExtensionAPIPermissions {
+@@ -38,16 +39,16 @@ dictionary WebExtensionPermissions {
+     void getAll([Optional, CallbackHandler] function callback);
+ 
+     // Checks if the extension has the specified permissions.
+-    [RaisesException] void contains([NSDictionary] any permissions, [Optional, CallbackHandler] function callback);
++    [RaisesStringException] void contains([JSONValue] any permissions, [Optional, CallbackHandler] function callback);
+ 
+     // Requests access to the specified permissions, displaying a prompt to the user if necessary. These permissions must either be defined
+     // in the optional_permissions field of the manifest or be required permissions that were withheld by the user. Paths on origin patterns
+     // will be ignored. You can request subsets of optional origin permissions; for example, if you specify *://*/* in the optional_permissions
+     // section of the manifest, you can request http://example.com/. If there are any problems requesting the permissions, runtime.lastError will be set.
+-    [RaisesException] void request([NSDictionary] any permissions, [Optional, CallbackHandler] function callback);
++    [RaisesStringException] void request([JSONValue] any permissions, [Optional, CallbackHandler] function callback);
+ 
+     // Removes access to the specified permissions. If there are any problems removing the permissions, runtime.lastError will be set.
+-    [RaisesException] void remove([NSDictionary] any permissions, [Optional, CallbackHandler] function callback);
++    [RaisesStringException] void remove([JSONValue] any permissions, [Optional, CallbackHandler] function callback);
+ 
+     // Fired when the extension acquires new permissions.
+     readonly attribute WebExtensionAPIEvent onAdded;
 diff --git a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIPort.idl b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIPort.idl
 index 2bbcb63b2c07fe3a4ce7209f1a695bfaa02fa81b..3544912a9ee6292cfa629be42cd14e887e0a1f27 100644
 --- a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIPort.idl

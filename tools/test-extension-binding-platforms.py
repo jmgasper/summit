@@ -91,6 +91,20 @@ def main(generated):
                 checks += 1
                 if bool(re.search(r'\b' + name + r'\b', result.stdout)) != present:
                     raise RuntimeError('Incorrect command binding exposure: ' + name)
+            for interface, names in {
+                'Permissions': ('getAll', 'contains', 'request', 'remove', 'onAdded', 'onRemoved'),
+                'Namespace': ('permissions',),
+            }.items():
+                source = generated / ('JSWebExtensionAPI' + interface + '.' + suffix)
+                if digest(source) != generation['files'][source.name]:
+                    raise RuntimeError('Generated binding changed: ' + source.name)
+                stripped = re.sub(r'^\s*#(?:include|import|pragma)\b[^\n]*', '', source.read_text(), flags=re.M)
+                result = subprocess.run([compiler, '-E', '-P', '-x', 'c++', '-'], input=prefix + stripped,
+                                        text=True, capture_output=True, check=True)
+                for name in names:
+                    checks += 1
+                    if not re.search(r'\b' + name + r'\b', result.stdout):
+                        raise RuntimeError(f'Missing {interface}.{name}: Haiku={haiku}, source={suffix}')
     report = {'scope': 'actual Perl generation and C++ preprocessing; no Cocoa or Haiku engine compile/runtime',
               'generation': str(generated), 'fixture_sha256': digest(idl), 'command': command,
               'checks': checks, 'cases': records, 'passed': True}

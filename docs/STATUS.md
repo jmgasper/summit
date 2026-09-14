@@ -1743,8 +1743,9 @@ sources compile. The actual SDK/profile sources also compile with WebExtensions
 disabled. These checks exercise the production broker and native windows;
 the runtime helper does not call the SDK wrapper or run a loaded extension.
 
-Permission API bindings, connecting `permissions.request()` to this broker,
-manifest revalidation, and applying/persisting grants remain unfinished. See
+At this consent checkpoint, permission API bindings, connecting
+`permissions.request()` to the broker, manifest revalidation, and applying/
+persisting grants were still unfinished. See
 [the consent implementation and verification scope](webextensions-native-permission-prompts.md).
 
 The full feature-enabled build of patch
@@ -1752,3 +1753,22 @@ The full feature-enabled build of patch
 reaches the WebKit library link with **the same 15 missing symbols** as the
 preceding command port. There are no new missing symbols or compiler errors.
 The extension-enabled browser still does not link, and no extension has run.
+
+2026-09-15 (local) native permissions API: implemented `getAll`, `contains`,
+`request`, `remove`, and the actual permission event dispatcher. Requests use
+privileged IPC, manifest validation and the native consent broker. Allowed
+grants are saved before becoming active; revoked or expired permissions cannot
+be restored by a late prompt response. State restoration respects current
+declarations and pre-load host changes, and stops on malformed saved state.
+
+**90 native parser/state/atomic-writer checks pass**, with no crash-log events
+and unchanged inputs. Nine additional native integration units compile, and
+120 generated-binding preprocessing checks pass. Sixteen of 37 interfaces now
+generate C++ bindings. These are separate helper/compile checks; they do not
+execute permission APIs inside a browser. See
+[the permissions implementation and limitations](webextensions-native-permissions.md).
+
+The reviewed patch is
+`cf7f9b4e1f7360a5fc273bbc97724e33c56fe7494bea227e3287a4a5474a3314`.
+Its full extension-enabled build is pending. Full extension support remains
+unfinished, and no extension has run.
