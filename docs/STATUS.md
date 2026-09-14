@@ -572,6 +572,42 @@ concurrent native regression test are pending. The original browser team
 continued running. Evidence: `.vm/modern-network-alert-report.report` (report
 team 411140; original browser 411012).
 
+The launcher now uses Haiku's public `fork()` with native heap preparation
+and reset, constructs all C++ arguments before forking, preserves the existing
+child IPC endpoint and signal setup, and reports setup/exec errors through a
+close-on-exec pipe. A native regression runs the real process/SCM_RIGHTS/shared
+mapping checks while 12 threads allocate and free memory. The old launcher
+hangs on its first launch and times out at 100 seconds; its surviving child's
+stack waits in malloc during argument flattening. The replacement passes all
+**900 checks across 50 rounds** in 1.33 seconds. Evidence:
+`.vm/haiku-launch-fork-candidate/result.json` and
+`.vm/haiku-launch-fork-candidate/baseline-child.report`.
+
+The full engine rebuild succeeds with patch
+`dfcb2f1b6c701f0c589920c5b4db859a480b545a35369647cb6bbfd993bd0002`.
+The new native bundle `/boot/home/summit/build-modern-browser/bundle-eih3q6or`
+passes the full **143-check close workflow** and exits normally. Its context
+run passes eight storage stages, then repeats the separate global-looper-lock
+hang before reopen. Diagnostic collection terminates that failed test. One
+NetworkProcess also presents a crash alert; its report is incomplete because
+the native debugger itself crashes while collecting it. The exact remaining
+test helper and debugger were subsequently terminated after image-path checks.
+Evidence: `.vm/modern-fork-launch-build.log`,
+`.vm/modern-close-f7d3876e0c8ee0afe5fdeb64/result.json`,
+`.vm/modern-context-f637ac2d077898045b583d59/result.json`,
+`.vm/modern-fork-context-hang.report` and `.vm/modern-fork-network-crash.report`.
+
+The lock hang now has a native-only signal reproduction. Eight workers each
+complete 100 BLooper lifecycles without signals (800 total, 0.18 seconds).
+With signal interruptions they stop progressing and fail the 15-second limit;
+this also occurs with SA_RESTART and with ordinary SIGCHLD using its default
+handler. The context stack shows the same rw_lock wait returning B_INTERRUPTED.
+The OS wait loop retries without restoring its per-thread wait state; a writer
+handoff can therefore remain unconsumed. An application-side compatibility
+approach remains under investigation; no OS source has been changed. Evidence:
+`.vm/native-looper-signal-probe.json` and
+`.vm/native-looper-signal-variants.json`.
+
 The tested frozen bundle has now been copied to
 `artifacts/modern-browser/bundle-mjs1avo_`, with its app sources, private
 libraries, helpers, exact patched native WebKit source trees, licenses and

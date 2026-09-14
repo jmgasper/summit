@@ -26192,10 +26192,10 @@ index 58f00aff737c58a39b1f8556c134f6b39ba2c43c..39a2b870eb9cc704e34a5bc348d85a7e
      ReadWrite,
 diff --git a/Source/WebKit/UIProcess/Launcher/haiku/HaikuProcess.h b/Source/WebKit/UIProcess/Launcher/haiku/HaikuProcess.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..79046c61ef365eb513fed931d4aa8a8fcba7b582
+index 0000000000000000000000000000000000000000..d109dbf8f9215d26a645303c4ae239a89128d2aa
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Launcher/haiku/HaikuProcess.h
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,134 @@
 +/*
 + * Copyright (c) 2026 KunanyiOS contributors
 + * SPDX-License-Identifier: MIT
@@ -26207,7 +26207,7 @@ index 0000000000000000000000000000000000000000..79046c61ef365eb513fed931d4aa8a8f
 +#include <cstdint>
 +#include <fcntl.h>
 +#include <signal.h>
-+#include <spawn.h>
++#include <sys/wait.h>
 +#include <string>
 +#include <unistd.h>
 +#include <vector>
@@ -26235,47 +26235,97 @@ index 0000000000000000000000000000000000000000..79046c61ef365eb513fed931d4aa8a8f
 +    if (duplicate < 0)
 +        return { 0, errno };
 +
-+    posix_spawn_file_actions_t actions;
-+    int error = posix_spawn_file_actions_init(&actions);
-+    if (error) {
++    int errors[2];
++    if (pipe2(errors, O_CLOEXEC) < 0) {
++        int error = errno;
 +        close(duplicate);
 +        return { 0, error };
 +    }
-+    error = posix_spawn_file_actions_adddup2(&actions, duplicate, 3);
-+    if (!error)
-+        error = posix_spawn_file_actions_addclose(&actions, duplicate);
-+
-+    posix_spawnattr_t attributes;
-+    int attributeError = posix_spawnattr_init(&attributes);
-+    if (!error)
-+        error = attributeError;
-+    if (!error) {
-+        sigset_t signals;
-+        sigemptyset(&signals);
-+        error = posix_spawnattr_setsigmask(&attributes, &signals);
-+        sigaddset(&signals, SIGTERM);
-+        sigaddset(&signals, SIGINT);
-+        sigaddset(&signals, SIGPIPE);
-+        if (!error)
-+            error = posix_spawnattr_setsigdefault(&attributes, &signals);
-+        if (!error)
-+            error = posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF);
++    // The error writer must survive remapping the child's IPC endpoint to 3,
++    // even when the parent has a closed standard descriptor.
++    int errorWriter = fcntl(errors[1], F_DUPFD_CLOEXEC, 4);
++    int error = errorWriter < 0 ? errno : 0;
++    close(errors[1]);
++    if (error) {
++        close(errors[0]);
++        close(duplicate);
++        return { 0, error };
 +    }
 +
-+    pid_t process = 0;
-+    if (!error) {
-+        std::vector<std::string> arguments { executable, std::to_string(processIdentifier), "3" };
-+        arguments.insert(arguments.end(), extraArguments.begin(), extraArguments.end());
-+        std::vector<char*> argv;
-+        for (auto& argument : arguments)
-+            argv.push_back(argument.data());
-+        argv.push_back(nullptr);
-+        error = posix_spawn(&process, executable, &actions, &attributes, argv.data(), environ);
++    std::vector<std::string> arguments { executable, std::to_string(processIdentifier), "3" };
++    arguments.insert(arguments.end(), extraArguments.begin(), extraArguments.end());
++    std::vector<char*> argv;
++    for (auto& argument : arguments)
++        argv.push_back(argument.data());
++    argv.push_back(nullptr);
++    sigset_t signals;
++    sigemptyset(&signals);
++    struct sigaction defaultAction { };
++    defaultAction.sa_handler = SIG_DFL;
++    sigemptyset(&defaultAction.sa_mask);
++
++    // Haiku's posix_spawn with file actions uses vfork(), which calls the raw
++    // kernel fork without libroot's heap preparation/reset hooks. execve then
++    // allocates its flattened arguments and can inherit another thread's heap
++    // lock. The public fork() performs the required native at-fork handling.
++    // Prepare all C++ storage above; only descriptor/signal/exec operations run
++    // in the child before replacing its image.
++    pid_t process = fork();
++    if (!process) {
++        close(errors[0]);
++        if (dup2(duplicate, 3) < 0 || sigprocmask(SIG_SETMASK, &signals, nullptr) < 0
++            || sigaction(SIGTERM, &defaultAction, nullptr) < 0
++            || sigaction(SIGINT, &defaultAction, nullptr) < 0
++            || sigaction(SIGPIPE, &defaultAction, nullptr) < 0)
++            error = errno;
++        close(duplicate);
++        if (!error) {
++            execve(executable, argv.data(), environ);
++            error = errno;
++        }
++        const char* bytes = reinterpret_cast<const char*>(&error);
++        size_t remaining = sizeof(error);
++        while (remaining) {
++            ssize_t written = write(errorWriter, bytes, remaining);
++            if (written < 0 && errno == EINTR)
++                continue;
++            if (written <= 0)
++                break;
++            bytes += written;
++            remaining -= written;
++        }
++        close(errorWriter);
++        _exit(127);
 +    }
-+    if (!attributeError)
-+        posix_spawnattr_destroy(&attributes);
-+    posix_spawn_file_actions_destroy(&actions);
++    if (process < 0)
++        error = errno;
++    close(errorWriter);
 +    close(duplicate);
++    if (process > 0) {
++        size_t received = 0;
++        while (received < sizeof(error)) {
++            ssize_t count = read(errors[0], reinterpret_cast<char*>(&error) + received, sizeof(error) - received);
++            if (count < 0 && errno == EINTR)
++                continue;
++            if (count < 0) {
++                error = errno;
++                break;
++            }
++            if (!count) {
++                if (received)
++                    error = EIO;
++                break;
++            }
++            received += count;
++        }
++        if (error) {
++            // A reported setup/exec failure exits immediately. Reap it here so
++            // callers never receive a live process identifier for that failure.
++            int status;
++            while (waitpid(process, &status, 0) < 0 && errno == EINTR) { }
++        }
++    }
++    close(errors[0]);
 +    return { error ? 0 : process, error };
 +}
 +
