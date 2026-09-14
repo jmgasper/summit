@@ -23450,6 +23450,59 @@ index 0000000000000000000000000000000000000000..a722963c4900d124123b25b53b2299cd
 +} // namespace WebKit
 +
 +#endif // ENABLE(WK_WEB_EXTENSIONS)
+diff --git a/Source/WebKit/Shared/Extensions/WebExtensionUtilities.cpp b/Source/WebKit/Shared/Extensions/WebExtensionUtilities.cpp
+index eaa000452e11a839d09094a2034241fe40866af1..d127fdf0c128e131909e1a3d719d6f53f5e8d0d7 100644
+--- a/Source/WebKit/Shared/Extensions/WebExtensionUtilities.cpp
++++ b/Source/WebKit/Shared/Extensions/WebExtensionUtilities.cpp
+@@ -180,6 +180,25 @@ JSObjectRef toJSError(JSContextRef context, const String& callingAPIName, const
+     return toJSError(context, toErrorString(callingAPIName, sourceKey, underlyingErrorString));
+ }
+ 
++JSObjectRef toJSRejectedPromise(JSContextRef context, const String& callingAPIName, const String& sourceKey, const String& underlyingErrorString)
++{
++    ASSERT(context);
++    JSObjectRef reject = nullptr;
++    JSObjectRef promise = JSObjectMakeDeferredPromise(context, nullptr, &reject, nullptr);
++    if (!promise)
++        return nullptr;
++
++    // Creating the error can allocate and collect. Keep both the promise and
++    // its rejection function rooted until the reason belongs to the promise.
++    JSValueProtect(context, promise);
++    JSValueProtect(context, reject);
++    JSValueRef reason = toJSError(context, callingAPIName, sourceKey, underlyingErrorString);
++    JSObjectCallAsFunction(context, reject, nullptr, 1, &reason, nullptr);
++    JSValueUnprotect(context, reject);
++    JSValueUnprotect(context, promise);
++    return promise;
++}
++
+ static String classToClassString(JSON::Value::Type classType)
+ {
+     switch (classType) {
+diff --git a/Source/WebKit/Shared/Extensions/WebExtensionUtilities.mm b/Source/WebKit/Shared/Extensions/WebExtensionUtilities.mm
+index ef3d8e58a23df74e93afd6c73d32658de87403fc..7499c49b1a2de74c617e0fc7278dcd014cc39f24 100644
+--- a/Source/WebKit/Shared/Extensions/WebExtensionUtilities.mm
++++ b/Source/WebKit/Shared/Extensions/WebExtensionUtilities.mm
+@@ -315,18 +315,6 @@ bool validateObject(NSObject *object, NSString *sourceKey, id expectedValueType,
+     return !errorString;
+ }
+ 
+-static JSObjectRef toJSRejectedPromise(JSContextRef context, NSString *callingAPIName, NSString *sourceKey, NSString *underlyingErrorString)
+-{
+-    auto *error = toJSValue(context, toJSError(context, callingAPIName, sourceKey, underlyingErrorString));
+-    auto *promise = [JSValue valueWithNewPromiseRejectedWithReason:error inContext:toJSContext(context)];
+-    return JSValueToObject(context, promise.JSValueRef, nullptr);
+-}
+-
+-JSObjectRef toJSRejectedPromise(JSContextRef context, const String& callingAPIName, const String& sourceKey, const String& underlyingErrorString)
+-{
+-    return toJSRejectedPromise(context, callingAPIName.createNSString().get(), sourceKey.createNSString().get(), underlyingErrorString.createNSString().get());
+-}
+-
+ NSString *toWebAPI(NSLocale *locale)
+ {
+     if (!locale.languageCode.length)
 diff --git a/Source/WebKit/Shared/NativeWebKeyboardEvent.h b/Source/WebKit/Shared/NativeWebKeyboardEvent.h
 index d19f2b5f32665df6704bbd5ceac3f483ece6822d..489043ab4e7a29948bf94db71c26723cb72fe1e7 100644
 --- a/Source/WebKit/Shared/NativeWebKeyboardEvent.h

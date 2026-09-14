@@ -1266,3 +1266,17 @@ passes. See [platform evidence](content-rule-platform-support.md).
 Patch: `55777c374a27e62895e7404aaea3efe33042b78fe1c7d4d459fe4bc057faf861`.
 The full build remains on frozen `1b839dea...`, now through WebKit shared
 units. No native content-rule store or DNR runtime has been exercised.
+
+
+2026-09-14 rejected-promise helper: the missing binding helper now uses
+common C++ and JavaScriptCore's deferred-promise API. All 20 native checks
+pass, covering rejection/error identity, formatted and UTF-16 reasons,
+replaced global constructors, collection and repeated settlement observers.
+The actual utilities, wrapper and string bridge compile and link against
+frozen JavaScriptCore; the utilities unit also passes the full-feature
+compile probe. No extension binding/context or IPC route was executed.
+See [rejected-promise evidence](webextensions-native-rejected-promises.md).
+
+Patch: `6338f83f047dcaa3b58be944341804d64cb421d092305cbd7b0cffeb083d6069`.
+The full build remains frozen on `1b839dea...` and continues through UI-process
+units. The preview remains `bundle-yqhmejfw`, with extensions disabled.
