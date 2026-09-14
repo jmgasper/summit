@@ -42,9 +42,12 @@ SCRIPT = b'''(async () => {
  results.fetch = response.ok;
  results.networkCookie = cookies.includes('summit_http=yes') && cookies.includes('summit_visible=yes');
  const passed = Object.values(results).every(Boolean);
+ const report = await fetch('/report', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(results)});
+ if (!report.ok) throw new Error('Fixture report failed: ' + report.status);
+ // The native harness navigates as soon as this title appears. Finish all
+ // requests first so back/forward cannot abort the report and overwrite PASS.
  document.querySelector('#result').textContent = JSON.stringify(results, null, 2);
  document.title = passed ? 'Summit fixture PASS' : 'Summit fixture FAIL';
- await fetch('/report', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(results)});
 })().catch(error => { document.title = 'Summit fixture ERROR'; document.querySelector('#result').textContent=String(error); });'''
 
 

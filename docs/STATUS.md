@@ -552,6 +552,40 @@ worker's exit. Neither smaller probe reproduced the hang, and no speculative
 native lock or RunLoop change has been applied. Evidence:
 `.vm/native-looper-stress-long.log`, `.vm/workqueue-teardown-result.json`.
 
+The same current bundle subsequently passes all **33 navigation checks**.
+A repeated-history probe then reproduced the earlier forward failure on cycle
+three: the restored document displayed `TypeError: Load failed`. The fixture
+published PASS before awaiting its final reporting fetch, allowing the harness
+to navigate away and abort that fetch. The fixture now awaits a successful
+report before publishing its final title. With that ordering, **30 consecutive
+back/forward cycles pass** (120 navigation operations), and the exact browser
+team exits normally. No engine history change was needed. Evidence:
+`.vm/modern-navigation-current.log`, `.vm/modern-history-probe.log`,
+`.vm/modern-history-error.log`, `.vm/modern-history-fixed.json` and
+`.vm/modern-history-quit.log`.
+
+A separate crash report from a prewarm launch identifies a forked copy of
+Summit failing in libroot's allocator while `posix_spawn` prepares `execve`
+arguments. Haiku's spawn path uses `vfork` when file actions or signal attributes
+are supplied; this path bypasses the normal fork heap reset. A launcher fix and
+concurrent native regression test are pending. The original browser team
+continued running. Evidence: `.vm/modern-network-alert-report.report` (report
+team 411140; original browser 411012).
+
+The tested frozen bundle has now been copied to
+`artifacts/modern-browser/bundle-mjs1avo_`, with its app sources, private
+libraries, helpers, exact patched native WebKit source trees, licenses and
+rebuild support. Every declared payload hash and matching source fingerprint
+was verified before publication to that new local directory. This is a
+development artifact with the launch/shutdown limitations above, not a claim
+that all helper processes are reliable. Copy evidence:
+`.vm/modern-bundle-copy-result.json`, `.vm/modern-bundle-copy.log` and the
+artifact's `copy-provenance.json`. The exporter also rejects traversal,
+absolute paths, hard links and undeclared symbolic links in synthetic archive
+checks; a declared local library alias is preserved. Git-mandated CRLF working
+tree files are checked against their normalized index blobs while their exact
+archived bytes retain separate SHA-256 digests.
+
 These results do not establish complete web-platform or extension compatibility.
 
 The native HTML select popup adapter compiles and its real widget passes

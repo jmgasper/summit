@@ -68,8 +68,8 @@ The modern configuration enables WebKit's process architecture
 and currently disables the GPU process. The complete modern engine and helper
 processes now link, and its native preview renders the live HTTP/DOM/storage
 fixture with a verified frame on screen. The full browser passes 143 close-workflow checks and the modern API passes
-12 context storage stages. Navigation passes 32 of 33 checks; forward history
-and intermittent shutdown hangs remain under investigation. Its ICU 78
+12 context storage stages. All 33 navigation checks and 30 repeated history cycles pass. Helper launch
+failures and intermittent shutdown hangs remain under investigation. Its ICU 78
 JavaScriptCore passes 31 JIT/interpreter
 smoke checks. Its full conformance run records 101,849 passes, 140 failures and
 486 skipped files, fixing 94 ICU-related failures without any regressions in

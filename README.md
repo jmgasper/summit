@@ -79,9 +79,10 @@ The second command records the frozen native bundle path, including its
 engine, process helpers and browser now link and run natively. The preview
 passes its live HTTP/DOM/storage fixture and native pixel check. The full browser
 passes 143 close-workflow checks, and the modern API passes all 12 context
-storage stages. Navigation currently passes 32 of 33 checks; a forward-history
-failure and intermittent shutdown hangs remain under investigation before a
-modern distribution is published. [The verification record](docs/STATUS.md)
+storage stages. All 33 navigation checks and 30 repeated history cycles pass. Helper launch
+failures and intermittent shutdown hangs remain under investigation. A frozen
+local development bundle is in `artifacts/modern-browser/bundle-mjs1avo_`;
+[copy and rebuild instructions](docs/modern-bundle-copy.md) accompany it. [The verification record](docs/STATUS.md)
 records the exact bundles and remaining limitations.
 
 See [the current verification record](docs/STATUS.md), the complete
