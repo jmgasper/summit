@@ -82,3 +82,9 @@ run exercises the corrected source and expectations.
 
 Patch: `4777dc25ab9f24d84579c57fb0a19a258a4c6e536725eb70d9f8fa1f899fb90e`.
 Probe baseline: `341d7bd1bb1d8d5601a45cd83b1dc5af3eeb3b2f4039f7468d1b212ee32d6ef5`.
+
+The full extension build subsequently compiled the changed parser, rebuilt the
+WebCore archive, and compiled the native helper. WebKit's shared-library link
+failed on the same **17 missing symbols**, with none newly introduced. Evidence:
+`.vm/modern-extensions-dnr-url-filter-build-result.json`. This confirms the full
+build path for the change; it does not establish ruleset loading or enforcement.

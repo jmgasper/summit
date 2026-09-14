@@ -1670,3 +1670,10 @@ not yet connected to ruleset loading or browser enforcement; the DNR loader and
 16 process-side event handlers still need implementation. See [DNR URL-filter
 evidence and limits](webextensions-native-dnr-url-filters.md).
 Patch: `4777dc25ab9f24d84579c57fb0a19a258a4c6e536725eb70d9f8fa1f899fb90e`.
+
+2026-09-15 (local) eighteenth full extension link result: patch `4777dc25...`
+compiles the updated shared filter parser, rebuilds `libWebCore.a`, and compiles
+the native DNR URL helper. The WebKit shared-library link still fails on the
+same 17 symbols as the package-snapshot build, with no newly introduced missing
+symbols. Evidence: `.vm/modern-extensions-dnr-url-filter-build-result.json`.
+No extension runtime was executed.
