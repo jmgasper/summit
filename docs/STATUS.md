@@ -1049,7 +1049,35 @@ test, and no context/controller/browser extension runtime was exercised.
 Evidence and unresolved native dependencies:
 [extension state and resources](webextensions-native-state-and-resources.md).
 Patch: `fd009b76e291c55a5ba28f2400c9071c4e620667ccd46b1fadcb860c19f8c192`.
-The in-flight full extension build still uses its frozen earlier patch
+The first full extension attempt used its frozen earlier patch
 `55fe568fdb25b99463eb0519208f969a9b71b1cc7126d784e0ffa1af150d637c`;
-resynchronize these adapters only after that Ninja invocation finishes.
+that attempt ended after the VM failure described below.
 The verified browser artifact remains `bundle-yqhmejfw` with extensions off.
+
+The first full feature-enabled attempt reached step 6746/7527, with
+JavaScriptCore, jsc and PAL linked, then stalled in native filesystem waits.
+Kernel traces show a compiler in `ModifiedPageQueue::WaitIfOverQuota` and
+other workers waiting on BFS journal locks; another compiler had trapped at
+a null PC. The concurrent page-hook compile probe is also incomplete, and
+its result is recorded as failed. A checkpoint of both disks and VM memory
+was saved before restarting the test VM. It is responsive again, with both
+source manifests intact. Complete the isolated probes before retrying the
+full build with three workers. See [VM recovery evidence](VM.md) and
+`.vm/extension-build-vm-stall.json`. This is not a successful feature-enabled
+engine build or an extension runtime result.
+
+
+2026-09-14 process/event port: common world/namespace binding, navigation sends
+and script-error sends now compile alongside Haiku WebPage/frame hooks. The
+event API and UI listener bookkeeping moved to common C++, with the event IDL
+on the existing C++ generator path. Script-error and listener messages retain
+their loaded-context validators. Five process/page units and four event/IPC
+units passed after the VM restart; the wrapper fix also passes. These remain
+compile checks, with no extension execution or feature-enabled WebKit link.
+
+The promoted patch is
+`1daf0679f17993a8988c64dcd33fa4e04e8ea4cb12e29a79f4a9866849a1d49f`.
+A new separate full build uses three workers and this patch, recorded in
+`.vm/modern-extensions-process-events-build.log`. The preview artifact remains
+`bundle-yqhmejfw`. Exact source scope, failures, evidence and missing runtime
+work: [native process bindings](webextensions-native-process-bindings.md).

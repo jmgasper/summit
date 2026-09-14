@@ -22,6 +22,7 @@ SOURCES = ('WebExtension.cpp', 'WebExtensionMatchPattern.cpp',
            'WebExtensionLocalization.cpp', 'WebExtensionPermission.cpp',
            'WebExtensionUtilities.cpp', 'WebExtensionResources.cpp',
            'haiku/WebExtensionHaiku.cpp')
+EXTRA_WATCHED_INPUTS = ()
 
 
 def digest(path):
@@ -67,7 +68,7 @@ def main():
     args = parser.parse_args()
     OUTPUT.mkdir(exist_ok=True)
     watched_inputs = (BUILD / 'build.ninja', ENGINE / '.summit-source-manifest.json',
-                      ENGINE / 'Source/WebKit/WebKitPrefix.h')
+                      ENGINE / 'Source/WebKit/WebKitPrefix.h', *EXTRA_WATCHED_INPUTS)
     input_snapshot = {str(path): digest(path) for path in watched_inputs}
     fields = {}
     with (BUILD / 'build.ninja').open() as stream:
@@ -103,7 +104,8 @@ def main():
             next(iterator)
         elif not flag.startswith(('-fdiagnostics-color=', '-fmax-errors=')):
             flags.append(flag)
-    flags = ['-I' + str(OUTPUT), '-iquote', str(OUTPUT), *flags,
+    flags = ['-I' + str(OUTPUT), '-I' + str(OUTPUT / 'API'), '-I' + str(OUTPUT / 'Bindings'),
+             '-iquote', str(OUTPUT), *flags,
              '-include', str(prefix), '-fdiagnostics-color=never', '-fmax-errors=5']
     source_manifest = json.loads((OUTPUT / 'source-manifest.json').read_text())
     for name, info in source_manifest['files'].items():

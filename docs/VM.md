@@ -105,7 +105,7 @@ and browser bundles were untouched. Records: `.vm/extension-disk-setup.json`,
 For the separate extension integration build:
 
 ```sh
-SUMMIT_WEBKIT_JOBS=8 bash tools/build-webkit-in-vm.sh --modern-extensions all
+SUMMIT_WEBKIT_JOBS=3 bash tools/build-webkit-in-vm.sh --modern-extensions all
 ```
 
 This enables both `WK_WEB_EXTENSIONS` and `CONTENT_EXTENSIONS`. It prepares
@@ -135,3 +135,22 @@ published patch `fd009b76e291c55a5ba28f2400c9071c4e620667ccd46b1fadcb860c19f8c19
 Evidence: `.vm/extension-native-source-sync-stall.report`,
 `.vm/extension-native-source-sync-stall-debugger.log`, and
 `.vm/extension-native-adapters-baseline-source-sync-retry.log`.
+
+The first full feature-enabled build subsequently stalled at step 6746/7527
+under eight compiler workers. Kernel inspection found a compiler waiting in
+`ModifiedPageQueue::WaitIfOverQuota` through BFS `Inode::WriteAt`, other
+compilers waiting on the extension volume's journal lock, and the separate
+page-hook probe's assembler waiting on the boot volume's journal lock. Another
+`cc1plus` was stopped after a null-PC exception. These are failed/incomplete
+build attempts, not WebKit compile passes. The inspection used Alt-SysRq-D,
+read-only thread/stack commands, then `cont`; no kernel or OS source was changed.
+
+Before restarting, QEMU saved the `extension-stall-20260914-0713` checkpoint
+across both disks, including 17.8 GiB of VM state. A QMP reset restored a
+responsive guest. Both source manifests retained their expected hashes, and
+the existing extension volume was remounted after checking its USB serial.
+The checkpoint remains available; avoid deleting it while investigating this
+failure. Use three workers for the next full attempt and finish isolated
+probes first. Evidence: `.vm/extension-build-vm-stall.json`,
+`.vm/extension-build-vm-stall-kernel-stacks.log`,
+`.vm/extension-stall-checkpoint.json`, and `.vm/extension-stall-restart.json`.

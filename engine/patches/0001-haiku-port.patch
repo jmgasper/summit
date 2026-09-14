@@ -20408,6 +20408,46 @@ index efb0e18ef3681d9f33b6c784f0fb22f1ff0e80eb..19ec94335716b9ab75d52343c7adcad7
      Promise<ImageBufferResourceLimits> getImageBufferResourceLimits();
  
      undefined setTopDocumentURLForQuirks(DOMString urlString);
+diff --git a/Source/WebKit/CMakeLists.txt b/Source/WebKit/CMakeLists.txt
+index e516087e3331311877a49df982704f642f6dffe9..fa9b35f64ebf3181ae770fba729e21e94d50325f 100644
+--- a/Source/WebKit/CMakeLists.txt
++++ b/Source/WebKit/CMakeLists.txt
+@@ -153,7 +153,6 @@ set(WebKit_BINDINGS_IN_FILES
+     WebProcess/Extensions/Interfaces/WebExtensionAPIDevToolsInspectedWindow
+     WebProcess/Extensions/Interfaces/WebExtensionAPIDevToolsNetwork
+     WebProcess/Extensions/Interfaces/WebExtensionAPIDevToolsPanels
+-    WebProcess/Extensions/Interfaces/WebExtensionAPIEvent
+     WebProcess/Extensions/Interfaces/WebExtensionAPIExtension
+     WebProcess/Extensions/Interfaces/WebExtensionAPILocalization
+     WebProcess/Extensions/Interfaces/WebExtensionAPIMenus
+@@ -176,6 +175,7 @@ set(WebKit_BINDINGS_IN_FILES
+ )
+ 
+ set(WebKit_CPP_BINDINGS_IN_FILES
++    WebProcess/Extensions/Interfaces/WebExtensionAPIEvent
+     WebProcess/Extensions/Interfaces/WebExtensionAPIAlarms
+     WebProcess/Extensions/Interfaces/WebExtensionAPINamespace
+     WebProcess/Extensions/Interfaces/WebExtensionAPIRuntime
+diff --git a/Source/WebKit/DerivedSources.make b/Source/WebKit/DerivedSources.make
+index 7f1b4513bad9ff098f373a086052df70970f66e5..bd5f7d3314ecd4bc9f6965a142c7abc084639dbc 100644
+--- a/Source/WebKit/DerivedSources.make
++++ b/Source/WebKit/DerivedSources.make
+@@ -1078,7 +1078,6 @@ EXTENSION_INTERFACES = \
+     WebExtensionAPIDevToolsNetwork \
+     WebExtensionAPIDevToolsPanels \
+     WebExtensionAPIDOM \
+-    WebExtensionAPIEvent \
+     WebExtensionAPIExtension \
+     WebExtensionAPILocalization \
+     WebExtensionAPIMenus \
+@@ -1101,6 +1100,7 @@ EXTENSION_INTERFACES = \
+ #
+ 
+ CPP_EXTENSION_INTERFACES = \
++    WebExtensionAPIEvent \
+ 	WebExtensionAPIAlarms \
+ 	WebExtensionAPINamespace \
+     WebExtensionAPIRuntime \
 diff --git a/Source/WebKit/NetworkProcess/cache/NetworkCacheDataHaiku.cpp b/Source/WebKit/NetworkProcess/cache/NetworkCacheDataHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..18987ccb29fc7459f934d9015ae58c5c57165feb
@@ -22801,10 +22841,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..4ab6da81b363bb54b8d433dad5e882f8d63af391
+index 0000000000000000000000000000000000000000..a3339847fb03d7d34d16e74e05095ebebb90cdb7
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,182 @@
+@@ -0,0 +1,183 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -22869,6 +22909,7 @@ index 0000000000000000000000000000000000000000..4ab6da81b363bb54b8d433dad5e882f8
 +    UIProcess/haiku/WebView.cpp
 +    UIProcess/haiku/WebViewContextHaiku.cpp
 +
++    WebProcess/Extensions/Bindings/JSWebExtensionWrapper.cpp
 +    WebProcess/InjectedBundle/haiku/InjectedBundleHaiku.cpp
 +    WebProcess/WebPage/haiku/DrawingAreaHaiku.cpp
 +    WebProcess/WebPage/haiku/WebPageHaiku.cpp
@@ -24111,10 +24152,16 @@ index 0000000000000000000000000000000000000000..964df248231137e87da9c37afbb37b84
 +}
 +#endif
 diff --git a/Source/WebKit/Sources.txt b/Source/WebKit/Sources.txt
-index e229fa1ae53c6c89e7534316dd06a7c5bfec5330..40b13e3a463b71605c175abec5278a861c4aefdf 100644
+index e229fa1ae53c6c89e7534316dd06a7c5bfec5330..974b98d8a2a04c08abd9693cfd7c7c9a1dac3e50 100644
 --- a/Source/WebKit/Sources.txt
 +++ b/Source/WebKit/Sources.txt
-@@ -614,6 +614,8 @@ UIProcess/Extensions/WebExtensionControllerConfiguration.cpp
+@@ -609,11 +609,14 @@ UIProcess/Downloads/DownloadProxyMap.cpp
+ UIProcess/Extensions/WebExtension.cpp
+ UIProcess/Extensions/WebExtensionAlarm.cpp
+ UIProcess/Extensions/WebExtensionContext.cpp
++UIProcess/Extensions/API/WebExtensionContextAPIEvent.cpp
+ UIProcess/Extensions/WebExtensionController.cpp
+ UIProcess/Extensions/WebExtensionControllerConfiguration.cpp
  UIProcess/Extensions/WebExtensionDataRecord.cpp
  UIProcess/Extensions/WebExtensionDeclarativeNetRequestSQLiteStore.cpp
  UIProcess/Extensions/WebExtensionMatchPattern.cpp
@@ -24123,6 +24170,14 @@ index e229fa1ae53c6c89e7534316dd06a7c5bfec5330..40b13e3a463b71605c175abec5278a86
  UIProcess/Extensions/WebExtensionStorageSQLiteStore.cpp
  
  UIProcess/Extensions/API/WebExtensionContextAPIAlarms.cpp
+@@ -713,6 +716,7 @@ WebProcess/Extensions/WebExtensionContextProxy.cpp
+ WebProcess/Extensions/WebExtensionControllerProxy.cpp
+ 
+ WebProcess/Extensions/API/WebExtensionAPIAlarms.cpp
++WebProcess/Extensions/API/WebExtensionAPIEvent.cpp
+ WebProcess/Extensions/API/WebExtensionAPIRuntime.cpp
+ WebProcess/Extensions/API/WebExtensionAPINamespace.cpp
+ WebProcess/Extensions/API/WebExtensionAPITest.cpp
 diff --git a/Source/WebKit/UIProcess/API/APIUIClient.h b/Source/WebKit/UIProcess/API/APIUIClient.h
 index 9555283cab179e279fb3824cd46cdb76433f069c..e5a925637597156bcce225cd83c90ca4e472b2b8 100644
 --- a/Source/WebKit/UIProcess/API/APIUIClient.h
@@ -25344,6 +25399,270 @@ index 558bc4dbcebf1af98a2fc3b744d3b390b68a56f1..24ce837888d94fcea6d0e960a4af01db
      EnterAcceleratedCompositingMode(uint64_t backingStoreStateID, WebKit::LayerTreeContext context)
      UpdateAcceleratedCompositingMode(uint64_t backingStoreStateID, WebKit::LayerTreeContext context)
      DidFirstLayerFlush(uint64_t backingStoreStateID, WebKit::LayerTreeContext context)
+diff --git a/Source/WebKit/UIProcess/Extensions/API/WebExtensionContextAPIEvent.cpp b/Source/WebKit/UIProcess/Extensions/API/WebExtensionContextAPIEvent.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..90dd2d6a1a426bbd87d4d5089c8c08a36167c5c0
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/API/WebExtensionContextAPIEvent.cpp
+@@ -0,0 +1,134 @@
++/*
++ * Copyright (C) 2022-2024 Apple Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "WebExtensionContext.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS)
++
++#include "WebExtensionController.h"
++#include "WebFrameProxy.h"
++#include "WebProcessProxy.h"
++#include <wtf/EnumTraits.h>
++
++namespace WebKit {
++
++static inline bool NODELETE isTestEventListener(WebExtensionEventListenerType type)
++{
++    return type == WebExtensionEventListenerType::TestOnMessage
++        || type == WebExtensionEventListenerType::TestOnTestStarted
++        || type == WebExtensionEventListenerType::TestOnTestFinished;
++}
++
++void WebExtensionContext::addListener(WebCore::FrameIdentifier frameIdentifier, WebExtensionEventListenerType listenerType, WebExtensionContentWorldType contentWorldType)
++{
++    RefPtr frame = WebFrameProxy::webFrame(frameIdentifier);
++    if (!frame)
++        return;
++
++    RELEASE_LOG_DEBUG(Extensions, "Registered event listener for type %hhu in %" PUBLIC_LOG_STRING " world", std::to_underlying(listenerType), toDebugString(contentWorldType).utf8().legacyCStringPointer());
++
++    if (!protect(extension())->backgroundContentIsPersistent() && isBackgroundPage(frameIdentifier))
++        m_backgroundContentEventListeners.add(listenerType);
++
++    auto result = m_eventListenerFrames.add({ listenerType, contentWorldType }, WeakFrameCountedSet { });
++    result.iterator->value.add(*frame);
++
++    if (!isTestEventListener(listenerType))
++        return;
++
++    switch (listenerType) {
++    case WebExtensionEventListenerType::TestOnMessage:
++        m_testMessageListenersCount++;
++        break;
++
++    case WebExtensionEventListenerType::TestOnTestStarted:
++        m_testStartedListenersCount++;
++        break;
++
++    case WebExtensionEventListenerType::TestOnTestFinished:
++        m_testFinishedListenersCount++;
++        break;
++
++    default:
++        ASSERT_NOT_REACHED();
++        break;
++    }
++
++    sendQueuedTestMessagesIfNeeded(listenerType);
++}
++
++void WebExtensionContext::removeListener(WebCore::FrameIdentifier frameIdentifier, WebExtensionEventListenerType listenerType, WebExtensionContentWorldType contentWorldType, uint64_t removedCount)
++{
++    ASSERT(removedCount);
++
++    RefPtr frame = WebFrameProxy::webFrame(frameIdentifier);
++    if (!frame)
++        return;
++
++    RELEASE_LOG_DEBUG(Extensions, "Unregistered %llu event listener(s) for type %hhu in %" PUBLIC_LOG_STRING " world", removedCount, std::to_underlying(listenerType), toDebugString(contentWorldType).utf8().legacyCStringPointer());
++
++    if (!protect(extension())->backgroundContentIsPersistent() && isBackgroundPage(frameIdentifier)) {
++        for (size_t i = 0; i < removedCount; ++i)
++            m_backgroundContentEventListeners.remove(listenerType);
++    }
++
++    auto iterator = m_eventListenerFrames.find({ listenerType, contentWorldType });
++    if (iterator == m_eventListenerFrames.end())
++        return;
++
++    for (size_t i = 0; i < removedCount; ++i)
++        iterator->value.remove(*frame);
++
++    if (!iterator->value.isEmptyIgnoringNullReferences())
++        return;
++
++    m_eventListenerFrames.remove(iterator);
++
++    if (!isTestEventListener(listenerType) || !hasTestEventListeners(listenerType))
++        return;
++
++    switch (listenerType) {
++    case WebExtensionEventListenerType::TestOnMessage:
++        m_testMessageListenersCount--;
++        break;
++
++    case WebExtensionEventListenerType::TestOnTestStarted:
++        m_testStartedListenersCount--;
++        break;
++
++    case WebExtensionEventListenerType::TestOnTestFinished:
++        m_testFinishedListenersCount--;
++        break;
++
++    default:
++        ASSERT_NOT_REACHED();
++        break;
++    }
++}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS)
+diff --git a/Source/WebKit/UIProcess/Extensions/Cocoa/API/WebExtensionContextAPIEventCocoa.mm b/Source/WebKit/UIProcess/Extensions/Cocoa/API/WebExtensionContextAPIEventCocoa.mm
+index a293c71037b637c24eb1e13d51d9597abd058d89..d0eb6d95e9f1396928f54260583693fd497ea438 100644
+--- a/Source/WebKit/UIProcess/Extensions/Cocoa/API/WebExtensionContextAPIEventCocoa.mm
++++ b/Source/WebKit/UIProcess/Extensions/Cocoa/API/WebExtensionContextAPIEventCocoa.mm
+@@ -23,117 +23,6 @@
+  * THE POSSIBILITY OF SUCH DAMAGE.
+  */
+ 
+-#if !__has_feature(objc_arc)
+-#error This file requires ARC. Add the "-fobjc-arc" compiler flag for this file.
+-#endif
++#include "config.h"
+ 
+-#import "config.h"
+-#import "WebExtensionContext.h"
+-
+-#if ENABLE(WK_WEB_EXTENSIONS)
+-
+-#import "WKWebExtensionControllerInternal.h"
+-#import "WKWebViewInternal.h"
+-#import "WebExtensionController.h"
+-#import "WebProcessProxy.h"
+-#import <wtf/EnumTraits.h>
+-
+-namespace WebKit {
+-
+-static inline bool NODELETE isTestEventListener(WebExtensionEventListenerType type)
+-{
+-    return type == WebExtensionEventListenerType::TestOnMessage
+-        || type == WebExtensionEventListenerType::TestOnTestStarted
+-        || type == WebExtensionEventListenerType::TestOnTestFinished;
+-}
+-
+-void WebExtensionContext::addListener(WebCore::FrameIdentifier frameIdentifier, WebExtensionEventListenerType listenerType, WebExtensionContentWorldType contentWorldType)
+-{
+-    RefPtr frame = WebFrameProxy::webFrame(frameIdentifier);
+-    if (!frame)
+-        return;
+-
+-    RELEASE_LOG_DEBUG(Extensions, "Registered event listener for type %{public}hhu in %{public}@ world", std::to_underlying(listenerType), toDebugString(contentWorldType).createNSString().get());
+-
+-    if (!protect(extension())->backgroundContentIsPersistent() && isBackgroundPage(frameIdentifier))
+-        m_backgroundContentEventListeners.add(listenerType);
+-
+-    auto result = m_eventListenerFrames.add({ listenerType, contentWorldType }, WeakFrameCountedSet { });
+-    result.iterator->value.add(*frame);
+-
+-    if (!isTestEventListener(listenerType))
+-        return;
+-
+-    switch (listenerType) {
+-    case WebExtensionEventListenerType::TestOnMessage:
+-        m_testMessageListenersCount++;
+-        break;
+-
+-    case WebExtensionEventListenerType::TestOnTestStarted:
+-        m_testStartedListenersCount++;
+-        break;
+-
+-    case WebExtensionEventListenerType::TestOnTestFinished:
+-        m_testFinishedListenersCount++;
+-        break;
+-
+-    default:
+-        ASSERT_NOT_REACHED();
+-        break;
+-    }
+-
+-    sendQueuedTestMessagesIfNeeded(listenerType);
+-}
+-
+-void WebExtensionContext::removeListener(WebCore::FrameIdentifier frameIdentifier, WebExtensionEventListenerType listenerType, WebExtensionContentWorldType contentWorldType, uint64_t removedCount)
+-{
+-    ASSERT(removedCount);
+-
+-    RefPtr frame = WebFrameProxy::webFrame(frameIdentifier);
+-    if (!frame)
+-        return;
+-
+-    RELEASE_LOG_DEBUG(Extensions, "Unregistered %{public}llu event listener(s) for type %{public}hhu in %{public}@ world", removedCount, std::to_underlying(listenerType), toDebugString(contentWorldType).createNSString().get());
+-
+-    if (!protect(extension())->backgroundContentIsPersistent() && isBackgroundPage(frameIdentifier)) {
+-        for (size_t i = 0; i < removedCount; ++i)
+-            m_backgroundContentEventListeners.remove(listenerType);
+-    }
+-
+-    auto iterator = m_eventListenerFrames.find({ listenerType, contentWorldType });
+-    if (iterator == m_eventListenerFrames.end())
+-        return;
+-
+-    for (size_t i = 0; i < removedCount; ++i)
+-        iterator->value.remove(*frame);
+-
+-    if (!iterator->value.isEmptyIgnoringNullReferences())
+-        return;
+-
+-    m_eventListenerFrames.remove(iterator);
+-
+-    if (!isTestEventListener(listenerType) || !hasTestEventListeners(listenerType))
+-        return;
+-
+-    switch (listenerType) {
+-    case WebExtensionEventListenerType::TestOnMessage:
+-        m_testMessageListenersCount--;
+-        break;
+-
+-    case WebExtensionEventListenerType::TestOnTestStarted:
+-        m_testStartedListenersCount--;
+-        break;
+-
+-    case WebExtensionEventListenerType::TestOnTestFinished:
+-        m_testFinishedListenersCount--;
+-        break;
+-
+-    default:
+-        ASSERT_NOT_REACHED();
+-        break;
+-    }
+-}
+-
+-} // namespace WebKit
+-
+-#endif // ENABLE(WK_WEB_EXTENSIONS)
++// Shared listener bookkeeping lives in API/WebExtensionContextAPIEvent.cpp.
 diff --git a/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm b/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm
 index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..c852eab393455e4e430b62aa8e5bf4f0256840ee 100644
 --- a/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm
@@ -25941,6 +26260,33 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..5ec5bad17725b1d5476ec331665349f0
  #endif
      Variant<std::monostate, Ref<ProcessThrottlerActivity>, Ref<ProcessActivityGroup>> m_backgroundWebViewActivity;
      RefPtr<API::Error> m_backgroundContentLoadError;
+diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in
+index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..120d0fe9e58e497f644091dd3f80aac7ea36e00b 100644
+--- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in
++++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in
+@@ -31,10 +31,12 @@
+     DispatchedTo=UI
+ ]
+ messages -> WebExtensionContext {
+-#if PLATFORM(COCOA)
+     // Runtime Error Reporting
+     [Validator=isLoaded] DidEncounterScriptError(String message, String sourceURL, uint32_t lineNumber, uint32_t columnNumber, WebKit::WebExtensionContentWorldType worldType)
++    [Validator=isLoaded] AddListener(WebCore::FrameIdentifier frameIdentifier, WebKit::WebExtensionEventListenerType listenerType, WebKit::WebExtensionContentWorldType contentWorldType)
++    [Validator=isLoaded] RemoveListener(WebCore::FrameIdentifier frameIdentifier, WebKit::WebExtensionEventListenerType listenerType, WebKit::WebExtensionContentWorldType contentWorldType, uint64_t removedCount)
+ 
++#if PLATFORM(COCOA)
+     // Action APIs
+     [Validator=isActionMessageAllowed] ActionGetTitle(std::optional<WebKit::WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier) -> (std::expected<String, WebKit::WebExtensionError> result)
+     [Validator=isActionMessageAllowed] ActionSetTitle(std::optional<WebKit::WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, String title) -> (std::expected<void, WebKit::WebExtensionError> result)
+@@ -100,8 +102,6 @@ messages -> WebExtensionContext {
+ #endif
+ 
+     // Event APIs
+-    [Validator=isLoaded] AddListener(WebCore::FrameIdentifier frameIdentifier, WebKit::WebExtensionEventListenerType listenerType, WebKit::WebExtensionContentWorldType contentWorldType)
+-    [Validator=isLoaded] RemoveListener(WebCore::FrameIdentifier frameIdentifier, WebKit::WebExtensionEventListenerType listenerType, WebKit::WebExtensionContentWorldType contentWorldType, uint64_t removedCount)
+ 
+     // Extensions APIs
+     [Validator=isLoaded] ExtensionIsAllowedIncognitoAccess() -> (bool result)
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionController.cpp b/Source/WebKit/UIProcess/Extensions/WebExtensionController.cpp
 index 06cec0eb534d3f51d3a04e7ea3b68ac347c6a2cf..f0a9e6fafa0e1d0b06efd7057802f497e99b2118 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionController.cpp
@@ -31488,6 +31834,28 @@ index 0000000000000000000000000000000000000000..2a51b2913800fada0f6279c8919bc190
 +void dispatchViewMessageHaiku(std::shared_ptr<WebViewStateHaiku>, BMessage&&);
 +
 +} // namespace WebKit
+diff --git a/Source/WebKit/WebKit.xcodeproj/project.pbxproj b/Source/WebKit/WebKit.xcodeproj/project.pbxproj
+index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..b9abb5e6b9b3483830777a295c5383a514c719c5 100644
+--- a/Source/WebKit/WebKit.xcodeproj/project.pbxproj
++++ b/Source/WebKit/WebKit.xcodeproj/project.pbxproj
+@@ -7986,7 +7986,7 @@
+ 		B6058CF32B6D98E7006D4C77 /* WebExtensionDataRecord.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionDataRecord.h; sourceTree = "<group>"; };
+ 		B6058CF42B6D98E8006D4C77 /* WebExtensionDataRecord.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = WebExtensionDataRecord.cpp; sourceTree = "<group>"; };
+ 		B6114A7C2939498000380B1B /* JSWebExtensionAPIEvent.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIEvent.h; sourceTree = "<group>"; };
+-		B6114A7D29394A1500380B1B /* JSWebExtensionAPIEvent.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = JSWebExtensionAPIEvent.mm; sourceTree = "<group>"; };
++		B6114A7D29394A1500380B1B /* JSWebExtensionAPIEvent.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = JSWebExtensionAPIEvent.cpp; sourceTree = "<group>"; };
+ 		B6114A8B293AE05200380B1B /* WebExtensionEventListenerType.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WebExtensionEventListenerType.h; sourceTree = "<group>"; };
+ 		B61274A62B7D738100D8ACDA /* WebExtensionAPIWebPageNamespace.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPIWebPageNamespace.h; sourceTree = "<group>"; };
+ 		B61AFA4629510D0F008220B1 /* JSWebExtensionAPIPermissions.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIPermissions.h; sourceTree = "<group>"; };
+@@ -17458,7 +17458,7 @@
+ 				1C05906A2DFA0FB7000406F9 /* JSWebExtensionAPIDOM.h */,
+ 				1C05906B2DFA0FB7000406F9 /* JSWebExtensionAPIDOM.mm */,
+ 				B6114A7C2939498000380B1B /* JSWebExtensionAPIEvent.h */,
+-				B6114A7D29394A1500380B1B /* JSWebExtensionAPIEvent.mm */,
++				B6114A7D29394A1500380B1B /* JSWebExtensionAPIEvent.cpp */,
+ 				1C5DC462290B1C470061EC62 /* JSWebExtensionAPIExtension.h */,
+ 				1C5DC460290B1C440061EC62 /* JSWebExtensionAPIExtension.mm */,
+ 				B6CCAAB629A445E90092E846 /* JSWebExtensionAPILocalization.h */,
 diff --git a/Source/WebKit/WebProcess/Cookies/haiku/WebCookieManagerHaiku.cpp b/Source/WebKit/WebProcess/Cookies/haiku/WebCookieManagerHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..a416ba9f74355c9c3c43af38b518bf6d8f1db9d1
@@ -31535,14 +31903,376 @@ index 0000000000000000000000000000000000000000..a416ba9f74355c9c3c43af38b518bf6d
 +}
 +
 +}
+diff --git a/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIEventCocoa.mm b/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIEventCocoa.mm
+index 3fb6ebfe1e1c5703563b72822b66a69a2546d4a8..b8d68456d7d38b859ceecc144f15646aa837c8b7 100644
+--- a/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIEventCocoa.mm
++++ b/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIEventCocoa.mm
+@@ -46,49 +46,6 @@ namespace WebKit {
+ 
+ class JSWebExtensionWrappable;
+ 
+-void WebExtensionAPIEvent::invokeListeners()
+-{
+-    if (m_listeners.isEmpty())
+-        return;
+-
+-    // Copy the listeners since call() can trigger a mutation of the listeners.
+-    auto listenersCopy = m_listeners;
+-
+-    for (RefPtr listener : listenersCopy)
+-        listener->call();
+-}
+-
+-void WebExtensionAPIEvent::invokeListenersWithJSONArgument(const String& argument)
+-{
+-    if (m_listeners.isEmpty())
+-        return;
+-
+-    // Copy the listeners since call() can trigger a mutation of the listeners.
+-    auto listenersCopy = m_listeners;
+-
+-    for (RefPtr listener : listenersCopy) {
+-        // This is a safer cpp false positive (rdar://163760990).
+-        SUPPRESS_UNCOUNTED_ARG listener->call(!argument.isEmpty() ? JSValueMakeFromJSONString(listener->globalContext(), toJSString(argument).get()) : JSValueMakeUndefined(listener->globalContext()));
+-    }
+-}
+-
+-void WebExtensionAPIEvent::invokeListenersWithJSONArgument(const String& argument1, const String& argument2)
+-{
+-    if (m_listeners.isEmpty())
+-        return;
+-
+-    // Copy the listeners since call() can trigger a mutation of the listeners.
+-    auto listenersCopy = m_listeners;
+-
+-    for (RefPtr listener : listenersCopy) {
+-        // This is a safer cpp false positive (rdar://163760990).
+-        SUPPRESS_UNCOUNTED_ARG listener->call(
+-            toJSValueRef(listener->globalContext(), argument1),
+-            !argument2.isEmpty() ? JSValueMakeFromJSONString(listener->globalContext(), toJSString(argument2).get()) : JSValueMakeUndefined(listener->globalContext())
+-        );
+-    }
+-}
+-
+ void WebExtensionAPIEvent::invokeListenersWithArgument(id argument1)
+ {
+     if (m_listeners.isEmpty())
+@@ -132,87 +89,6 @@ void WebExtensionAPIEvent::invokeListenersWithArgument(id argument1, id argument
+         );
+ }
+ 
+-void WebExtensionAPIEvent::addListener(WebCore::FrameIdentifier frameIdentifier, RefPtr<WebExtensionCallbackHandler> listener)
+-{
+-    m_frameIdentifier = frameIdentifier;
+-    m_listeners.append(listener);
+-
+-    if (!hasExtensionContext()) {
+-        RefPtr webFrame = WebProcess::singleton().webFrame(m_frameIdentifier);
+-        RefPtr webPage = webFrame ? webFrame->page() : nullptr;
+-        RefPtr webExtensionControllerProxy = webPage ? webPage->webExtensionControllerProxy() : nullptr;
+-
+-        if (webExtensionControllerProxy && webExtensionControllerProxy->inTestingMode()) {
+-            for (Ref extensionContext : webExtensionControllerProxy->extensionContexts()) {
+-                extensionContext->addFrameWithExtensionContent(*webFrame);
+-                WebProcess::singleton().send(Messages::WebExtensionContext::AddListener(*m_frameIdentifier, m_type, contentWorldType()), extensionContext->identifier());
+-            }
+-        }
+-
+-        return;
+-    }
+-
+-    WebProcess::singleton().send(Messages::WebExtensionContext::AddListener(*m_frameIdentifier, m_type, contentWorldType()), extensionContext().identifier());
+-}
+-
+-void WebExtensionAPIEvent::removeListener(WebCore::FrameIdentifier frameIdentifier, RefPtr<WebExtensionCallbackHandler> listener)
+-{
+-    auto removedCount = m_listeners.removeAllMatching([&](auto& entry) {
+-        return entry->callbackFunction() == listener->callbackFunction();
+-    });
+-
+-    if (!removedCount)
+-        return;
+-
+-    ASSERT(frameIdentifier == m_frameIdentifier);
+-
+-    if (!hasExtensionContext()) {
+-        RefPtr webFrame = WebProcess::singleton().webFrame(m_frameIdentifier);
+-        RefPtr webPage = webFrame ? webFrame->page() : nullptr;
+-        RefPtr webExtensionControllerProxy = webPage ? webPage->webExtensionControllerProxy() : nullptr;
+-
+-        if (webExtensionControllerProxy && webExtensionControllerProxy->inTestingMode()) {
+-            for (Ref extensionContext : webExtensionControllerProxy->extensionContexts())
+-                WebProcess::singleton().send(Messages::WebExtensionContext::RemoveListener(*m_frameIdentifier, m_type, contentWorldType(), removedCount), extensionContext->identifier());
+-        }
+-
+-        return;
+-    }
+-
+-    WebProcess::singleton().send(Messages::WebExtensionContext::RemoveListener(*m_frameIdentifier, m_type, contentWorldType(), removedCount), extensionContext().identifier());
+-}
+-
+-bool WebExtensionAPIEvent::hasListener(RefPtr<WebExtensionCallbackHandler> listener)
+-{
+-    return m_listeners.containsIf([&](auto& entry) {
+-        return entry->callbackFunction() == listener->callbackFunction();
+-    });
+-}
+-
+-void WebExtensionAPIEvent::removeAllListeners()
+-{
+-    if (m_listeners.isEmpty())
+-        return;
+-
+-    auto removedCount = m_listeners.size();
+-    m_listeners.clear();
+-
+-    if (!hasExtensionContext()) {
+-        RefPtr webFrame = WebProcess::singleton().webFrame(m_frameIdentifier);
+-        RefPtr webPage = webFrame ? webFrame->page() : nullptr;
+-        RefPtr webExtensionControllerProxy = webPage ? webPage->webExtensionControllerProxy() : nullptr;
+-
+-        if (webExtensionControllerProxy && webExtensionControllerProxy->inTestingMode()) {
+-            for (Ref extensionContext : webExtensionControllerProxy->extensionContexts())
+-                WebProcess::singleton().send(Messages::WebExtensionContext::RemoveListener(*m_frameIdentifier, m_type, contentWorldType(), removedCount), extensionContext->identifier());
+-        }
+-
+-        return;
+-    }
+-
+-    WebProcess::singleton().send(Messages::WebExtensionContext::RemoveListener(*m_frameIdentifier, m_type, contentWorldType(), removedCount), extensionContext().identifier());
+-}
+-
+ } // namespace WebKit
+ 
+ #endif // ENABLE(WK_WEB_EXTENSIONS)
+diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIEvent.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIEvent.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..ee9b5cb263c250952c919c569cb2ec3624a1411a
+--- /dev/null
++++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIEvent.cpp
+@@ -0,0 +1,166 @@
++/*
++ * Copyright (C) 2022 Apple Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "WebExtensionAPIEvent.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS)
++
++#include "MessageSenderInlines.h"
++#include "WebExtensionContextMessages.h"
++#include "WebExtensionControllerProxy.h"
++#include "WebFrame.h"
++#include "WebPage.h"
++#include "WebProcess.h"
++
++namespace WebKit {
++
++void WebExtensionAPIEvent::invokeListeners()
++{
++    if (m_listeners.isEmpty())
++        return;
++
++    // Copy the listeners since call() can trigger a mutation of the listeners.
++    auto listenersCopy = m_listeners;
++
++    for (RefPtr listener : listenersCopy)
++        listener->call();
++}
++
++void WebExtensionAPIEvent::invokeListenersWithJSONArgument(const String& argument)
++{
++    if (m_listeners.isEmpty())
++        return;
++
++    // Copy the listeners since call() can trigger a mutation of the listeners.
++    auto listenersCopy = m_listeners;
++
++    for (RefPtr listener : listenersCopy) {
++        // This is a safer cpp false positive (rdar://163760990).
++        SUPPRESS_UNCOUNTED_ARG listener->call(!argument.isEmpty() ? JSValueMakeFromJSONString(listener->globalContext(), toJSString(argument).get()) : JSValueMakeUndefined(listener->globalContext()));
++    }
++}
++
++void WebExtensionAPIEvent::invokeListenersWithJSONArgument(const String& argument1, const String& argument2)
++{
++    if (m_listeners.isEmpty())
++        return;
++
++    // Copy the listeners since call() can trigger a mutation of the listeners.
++    auto listenersCopy = m_listeners;
++
++    for (RefPtr listener : listenersCopy) {
++        // This is a safer cpp false positive (rdar://163760990).
++        SUPPRESS_UNCOUNTED_ARG listener->call(
++            toJSValueRef(listener->globalContext(), argument1),
++            !argument2.isEmpty() ? JSValueMakeFromJSONString(listener->globalContext(), toJSString(argument2).get()) : JSValueMakeUndefined(listener->globalContext())
++        );
++    }
++}
++
++void WebExtensionAPIEvent::addListener(WebCore::FrameIdentifier frameIdentifier, RefPtr<WebExtensionCallbackHandler> listener)
++{
++    m_frameIdentifier = frameIdentifier;
++    m_listeners.append(listener);
++
++    if (!hasExtensionContext()) {
++        RefPtr webFrame = WebProcess::singleton().webFrame(m_frameIdentifier);
++        RefPtr webPage = webFrame ? webFrame->page() : nullptr;
++        RefPtr webExtensionControllerProxy = webPage ? webPage->webExtensionControllerProxy() : nullptr;
++
++        if (webExtensionControllerProxy && webExtensionControllerProxy->inTestingMode()) {
++            for (Ref extensionContext : webExtensionControllerProxy->extensionContexts()) {
++                extensionContext->addFrameWithExtensionContent(*webFrame);
++                WebProcess::singleton().send(Messages::WebExtensionContext::AddListener(*m_frameIdentifier, m_type, contentWorldType()), extensionContext->identifier());
++            }
++        }
++
++        return;
++    }
++
++    WebProcess::singleton().send(Messages::WebExtensionContext::AddListener(*m_frameIdentifier, m_type, contentWorldType()), extensionContext().identifier());
++}
++
++void WebExtensionAPIEvent::removeListener(WebCore::FrameIdentifier frameIdentifier, RefPtr<WebExtensionCallbackHandler> listener)
++{
++    auto removedCount = m_listeners.removeAllMatching([&](auto& entry) {
++        return entry->callbackFunction() == listener->callbackFunction();
++    });
++
++    if (!removedCount)
++        return;
++
++    ASSERT(frameIdentifier == m_frameIdentifier);
++
++    if (!hasExtensionContext()) {
++        RefPtr webFrame = WebProcess::singleton().webFrame(m_frameIdentifier);
++        RefPtr webPage = webFrame ? webFrame->page() : nullptr;
++        RefPtr webExtensionControllerProxy = webPage ? webPage->webExtensionControllerProxy() : nullptr;
++
++        if (webExtensionControllerProxy && webExtensionControllerProxy->inTestingMode()) {
++            for (Ref extensionContext : webExtensionControllerProxy->extensionContexts())
++                WebProcess::singleton().send(Messages::WebExtensionContext::RemoveListener(*m_frameIdentifier, m_type, contentWorldType(), removedCount), extensionContext->identifier());
++        }
++
++        return;
++    }
++
++    WebProcess::singleton().send(Messages::WebExtensionContext::RemoveListener(*m_frameIdentifier, m_type, contentWorldType(), removedCount), extensionContext().identifier());
++}
++
++bool WebExtensionAPIEvent::hasListener(RefPtr<WebExtensionCallbackHandler> listener)
++{
++    return m_listeners.containsIf([&](auto& entry) {
++        return entry->callbackFunction() == listener->callbackFunction();
++    });
++}
++
++void WebExtensionAPIEvent::removeAllListeners()
++{
++    if (m_listeners.isEmpty())
++        return;
++
++    auto removedCount = m_listeners.size();
++    m_listeners.clear();
++
++    if (!hasExtensionContext()) {
++        RefPtr webFrame = WebProcess::singleton().webFrame(m_frameIdentifier);
++        RefPtr webPage = webFrame ? webFrame->page() : nullptr;
++        RefPtr webExtensionControllerProxy = webPage ? webPage->webExtensionControllerProxy() : nullptr;
++
++        if (webExtensionControllerProxy && webExtensionControllerProxy->inTestingMode()) {
++            for (Ref extensionContext : webExtensionControllerProxy->extensionContexts())
++                WebProcess::singleton().send(Messages::WebExtensionContext::RemoveListener(*m_frameIdentifier, m_type, contentWorldType(), removedCount), extensionContext->identifier());
++        }
++
++        return;
++    }
++
++    WebProcess::singleton().send(Messages::WebExtensionContext::RemoveListener(*m_frameIdentifier, m_type, contentWorldType(), removedCount), extensionContext().identifier());
++}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS)
+diff --git a/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionWrapper.cpp b/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionWrapper.cpp
+index 674db48c5a30980a9ccbe359eeb67e6a7a65c1d2..79eb9d9f5c6885f02d4441147476f70ce880057a 100644
+--- a/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionWrapper.cpp
++++ b/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionWrapper.cpp
+@@ -102,7 +102,7 @@ WebExtensionCallbackHandler::~WebExtensionCallbackHandler()
+ JSValueRef WebExtensionCallbackHandler::callbackFunction() const
+ {
+     if (!m_globalContext || !m_callbackFunction)
+-        return nil;
++        return nullptr;
+ 
+     return m_callbackFunction;
+ }
+@@ -223,6 +223,7 @@ String toString(JSContextRef context, JSValueRef value, NullStringPolicy nullStr
+         JSRetainPtr string(Adopt, JSValueToStringCopy(context, value, 0));
+         return toString(string.get());
+     }
++    RELEASE_ASSERT_NOT_REACHED();
+ }
+ 
+ String toString(JSStringRef string)
 diff --git a/Source/WebKit/WebProcess/Extensions/Cocoa/WebExtensionContextProxyCocoa.mm b/Source/WebKit/WebProcess/Extensions/Cocoa/WebExtensionContextProxyCocoa.mm
-index caccdbec0d1bb1fea403caca4bde05e5f3aafb40..0812886ea3135711d1b93c67cdca9efbc86e68ec 100644
+index caccdbec0d1bb1fea403caca4bde05e5f3aafb40..caa45e0d1dcd179d40945226721ce2b1079c0276 100644
 --- a/Source/WebKit/WebProcess/Extensions/Cocoa/WebExtensionContextProxyCocoa.mm
 +++ b/Source/WebKit/WebProcess/Extensions/Cocoa/WebExtensionContextProxyCocoa.mm
-@@ -49,161 +49,6 @@
+@@ -23,192 +23,6 @@
+  * THE POSSIBILITY OF SUCH DAMAGE.
+  */
  
- namespace WebKit {
+-#if !__has_feature(objc_arc)
+-#error This file requires ARC. Add the "-fobjc-arc" compiler flag for this file.
+-#endif
++#include "config.h"
  
+-#import "config.h"
+-#import "WebExtensionContextProxy.h"
+-
+-#if ENABLE(WK_WEB_EXTENSIONS)
+-
+-#import "CocoaHelpers.h"
+-#import "JSWebExtensionWrapper.h"
+-#import "MessageSenderInlines.h"
+-#import "WebExtensionAPINamespace.h"
+-#import "WebExtensionContextMessages.h"
+-#import "WebExtensionContextProxyMessages.h"
+-#import "WebExtensionControllerProxy.h"
+-#import "WebExtensionLocalization.h"
+-#import "WebPage.h"
+-#import "WebProcess.h"
+-#import <wtf/HashMap.h>
+-#import <wtf/NeverDestroyed.h>
+-#import <wtf/ObjectIdentifier.h>
+-#import <wtf/text/MakeString.h>
+-
+-namespace WebKit {
+-
 -static HashMap<WebExtensionContextIdentifier, WeakPtr<WebExtensionContextProxy>>& NODELETE webExtensionContextProxies()
 -{
 -    static MainRunLoopNeverDestroyed<HashMap<WebExtensionContextIdentifier, WeakPtr<WebExtensionContextProxy>>> contexts;
@@ -31698,20 +32428,265 @@ index caccdbec0d1bb1fea403caca4bde05e5f3aafb40..0812886ea3135711d1b93c67cdca9efb
 -    }
 -}
 -
- void WebExtensionContextProxy::didEncounterScriptError(const String& message, const String& sourceURL, unsigned lineNumber, unsigned columnNumber, WebExtensionContentWorldType worldType)
- {
-     WebProcess::singleton().send(Messages::WebExtensionContext::DidEncounterScriptError(message, sourceURL, lineNumber, columnNumber, worldType), identifier());
+-void WebExtensionContextProxy::didEncounterScriptError(const String& message, const String& sourceURL, unsigned lineNumber, unsigned columnNumber, WebExtensionContentWorldType worldType)
+-{
+-    WebProcess::singleton().send(Messages::WebExtensionContext::DidEncounterScriptError(message, sourceURL, lineNumber, columnNumber, worldType), identifier());
+-}
+-
+-} // namespace WebKit
+-
+-#endif // ENABLE(WK_WEB_EXTENSIONS)
++// The shared C++ implementation lives in WebExtensionContextProxy.cpp.
+diff --git a/Source/WebKit/WebProcess/Extensions/Cocoa/WebExtensionControllerProxyCocoa.mm b/Source/WebKit/WebProcess/Extensions/Cocoa/WebExtensionControllerProxyCocoa.mm
+index 9f5d039a238bcdbbd16e6592ba8160f26791360d..2ca40e2aec623491dee3b6b99aaf0e40f7ce8391 100644
+--- a/Source/WebKit/WebProcess/Extensions/Cocoa/WebExtensionControllerProxyCocoa.mm
++++ b/Source/WebKit/WebProcess/Extensions/Cocoa/WebExtensionControllerProxyCocoa.mm
+@@ -23,217 +23,6 @@
+  * THE POSSIBILITY OF SUCH DAMAGE.
+  */
+ 
+-#if !__has_feature(objc_arc)
+-#error This file requires ARC. Add the "-fobjc-arc" compiler flag for this file.
+-#endif
+-
+ #include "config.h"
+-#include "WebExtensionControllerProxy.h"
+-
+-#if ENABLE(WK_WEB_EXTENSIONS)
+-
+-#include "JSWebExtensionAPINamespace.h"
+-#include "JSWebExtensionAPIWebPageNamespace.h"
+-#include "JSWebExtensionWrapper.h"
+-#include "MessageSenderInlines.h"
+-#include "WebExtensionAPINamespace.h"
+-#include "WebExtensionAPIWebPageNamespace.h"
+-#include "WebExtensionContextProxy.h"
+-#include "WebExtensionControllerMessages.h"
+-#include "WebExtensionFrameIdentifier.h"
+-#include "WebFrame.h"
+-#include "WebPage.h"
+-#include "WebProcess.h"
+-#include <JavaScriptCore/APICast.h>
+-#include <WebCore/JSDOMGlobalObject.h>
+-
+-namespace WebKit {
+-
+-using namespace WebCore;
+-
+-void WebExtensionControllerProxy::globalObjectIsAvailableForFrame(WebPage& page, WebFrame& frame, DOMWrapperWorld& world)
+-{
+-    RefPtr extension = extensionContext(frame, world);
+-    bool isMainWorld = world.isNormal();
+-
+-    if (!extension && isMainWorld) {
+-        addBindingsToWebPageFrameIfNecessary(frame, world);
+-        return;
+-    }
+-
+-    if (!extension)
+-        return;
+-
+-    auto context = frame.jsContextForWorld(world);
+-    auto globalObject = JSContextGetGlobalObject(context);
+-
+-    JSRetainPtr browserString = toJSString("browser"_s);
+-    if (!browserString)
+-        return;
+-
+-    // This is a safer cpp false positive (rdar://163760990).
+-    SUPPRESS_UNCOUNTED_ARG auto namespaceObject = JSObjectGetProperty(context, globalObject, browserString.get(), nullptr);
+-    if (namespaceObject && JSValueIsObject(context, namespaceObject))
+-        return;
+-
+-    extension->addFrameWithExtensionContent(frame);
+-
+-    if (!isMainWorld)
+-        extension->setContentScriptWorld(world);
+-
+-    auto contentWorldType = isMainWorld ? WebExtensionContentWorldType::Main : WebExtensionContentWorldType::ContentScript;
+-
+-#if ENABLE(INSPECTOR_EXTENSIONS)
+-    if (page.isInspectorPage() || extension->isInspectorBackgroundPage(page)) {
+-        // Inspector pages have a limited set of APIs (like content scripts).
+-        contentWorldType = WebExtensionContentWorldType::Inspector;
+-    }
+-#endif
+-
+-    namespaceObject = toJS(context, WebExtensionAPINamespace::create(contentWorldType, *extension).ptr());
+-
+-    // This is a safer cpp false positive (rdar://163760990).
+-    SUPPRESS_UNCOUNTED_ARG JSObjectSetProperty(context, globalObject, browserString.get(), namespaceObject, kJSPropertyAttributeNone, nullptr);
+-
+-    if (JSRetainPtr chromeString = toJSString("chrome"_s)) {
+-        // This is a safer cpp false positive (rdar://163760990).
+-        SUPPRESS_UNCOUNTED_ARG JSObjectSetProperty(context, globalObject, chromeString.get(), namespaceObject, kJSPropertyAttributeNone, nullptr);
+-    }
+-
+-    if (auto* domGlobalObject = dynamicDowncast<JSDOMGlobalObject>(toJS(context))) {
+-        domGlobalObject->addScriptErrorCallback([extension = Ref { *extension }, contentWorldType](const String& message, const String& sourceURL, unsigned lineNumber, unsigned columnNumber) {
+-            extension->didEncounterScriptError(message, sourceURL, lineNumber, columnNumber, contentWorldType);
+-        });
+-    }
+-}
+-
+-void WebExtensionControllerProxy::serviceWorkerGlobalObjectIsAvailableForFrame(WebPage& page, WebFrame& frame, DOMWrapperWorld& world)
+-{
+-    RELEASE_ASSERT(world.isNormal());
+-
+-    RefPtr extension = extensionContext(frame, world);
+-    if (!extension)
+-        return;
+-
+-    auto context = frame.jsContextForServiceWorkerWorld(world);
+-    auto globalObject = JSContextGetGlobalObject(context);
+-
+-    JSRetainPtr browserString = toJSString("browser"_s);
+-    if (!browserString)
+-        return;
+-
+-    // This is a safer cpp false positive (rdar://163760990).
+-    SUPPRESS_UNCOUNTED_ARG auto namespaceObject = JSObjectGetProperty(context, globalObject, browserString.get(), nullptr);
+-    if (namespaceObject && JSValueIsObject(context, namespaceObject))
+-        return;
+-
+-    extension->addFrameWithExtensionContent(frame);
+-
+-    namespaceObject = toJS(context, WebExtensionAPINamespace::create(WebExtensionContentWorldType::Main, *extension).ptr());
+-
+-    // This is a safer cpp false positive (rdar://163760990).
+-    SUPPRESS_UNCOUNTED_ARG JSObjectSetProperty(context, globalObject, browserString.get(), namespaceObject, kJSPropertyAttributeNone, nullptr);
+-    if (JSRetainPtr chromeString = toJSString("chrome"_s)) {
+-        // This is a safer cpp false positive (rdar://163760990).
+-        SUPPRESS_UNCOUNTED_ARG JSObjectSetProperty(context, globalObject, chromeString.get(), namespaceObject, kJSPropertyAttributeNone, nullptr);
+-    }
+-
+-    if (auto* domGlobalObject = dynamicDowncast<JSDOMGlobalObject>(toJS(context))) {
+-        domGlobalObject->addScriptErrorCallback([extension = Ref { *extension }](const String& message, const String& sourceURL, unsigned lineNumber, unsigned columnNumber) {
+-            extension->didEncounterScriptError(message, sourceURL, lineNumber, columnNumber, WebExtensionContentWorldType::Main);
+-        });
+-    }
+-}
+-
+-void WebExtensionControllerProxy::addBindingsToWebPageFrameIfNecessary(WebFrame& frame, DOMWrapperWorld& world)
+-{
+-    auto context = frame.jsContextForWorld(world);
+-    auto globalObject = JSContextGetGlobalObject(context);
+-
+-    JSRetainPtr browserString = toJSString("browser"_s);
+-    if (!browserString)
+-        return;
+-
+-    // This is a safer cpp false positive (rdar://163760990).
+-    SUPPRESS_UNCOUNTED_ARG auto namespaceObject = JSObjectGetProperty(context, globalObject, browserString.get(), nullptr);
+-    bool browserAlreadySet = namespaceObject && JSValueIsObject(context, namespaceObject);
+-
+-    auto* domGlobalObject = dynamicDowncast<JSDOMGlobalObject>(toJS(context));
+-    bool callbacksAlreadyRegistered = !domGlobalObject || domGlobalObject->hasScriptErrorCallbacks();
+-
+-    // If both browser and callbacks are already set up, nothing to do.
+-    if (browserAlreadySet && callbacksAlreadyRegistered)
+-        return;
+-
+-    if (!browserAlreadySet) {
+-        namespaceObject = toJS(context, WebExtensionAPIWebPageNamespace::create(WebExtensionContentWorldType::WebPage).ptr());
+-
+-        // This is a safer cpp false positive (rdar://163760990).
+-        SUPPRESS_UNCOUNTED_ARG JSObjectSetProperty(context, globalObject, browserString.get(), namespaceObject, kJSPropertyAttributeNone, nullptr);
+-    }
+-
+-    // For each loaded extension, install a callback that fires only when an error's sourceURL
+-    // originates from that extension (main-world content script case). Guard against registering
+-    // duplicate callbacks: if no callbacks are registered yet (e.g. extension contexts were not
+-    // yet loaded when the global object was first created), register them now.
+-    if (domGlobalObject && !domGlobalObject->hasScriptErrorCallbacks()) {
+-        for (Ref extensionContext : m_extensionContexts) {
+-            domGlobalObject->addScriptErrorCallback([extensionContext = extensionContext.copyRef()](const String& message, const String& sourceURL, unsigned lineNumber, unsigned columnNumber) {
+-                if (!extensionContext->isURLForThisExtension(URL(URL(), sourceURL)))
+-                    return;
+-
+-                extensionContext->didEncounterScriptError(message, sourceURL, lineNumber, columnNumber, WebExtensionContentWorldType::Main);
+-            });
+-        }
+-    }
+-}
+-
+-static WebExtensionFrameParameters toFrameParameters(WebFrame& frame, const URL& url, bool includeDocumentIdentifier = true)
+-{
+-    auto parentFrameIdentifier = WebExtensionFrameConstants::NoneIdentifier;
+-    if (RefPtr parentFrame = frame.parentFrame())
+-        parentFrameIdentifier = toWebExtensionFrameIdentifier(*parentFrame);
+-
+-    return {
+-        .url = url,
+-        .parentFrameIdentifier = parentFrameIdentifier,
+-        .frameIdentifier = toWebExtensionFrameIdentifier(frame),
+-        .documentIdentifier = includeDocumentIdentifier ? toDocumentIdentifier(frame) : std::nullopt
+-    };
+-}
+-
+-void WebExtensionControllerProxy::didStartProvisionalLoadForFrame(WebPage& page, WebFrame& frame, const URL& url)
+-{
+-    if (!hasLoadedContexts())
+-        return;
+-
+-    WebProcess::singleton().send(Messages::WebExtensionController::DidStartProvisionalLoadForFrame(page.webPageProxyIdentifier(), toFrameParameters(frame, url, false), WallTime::now()), identifier());
+-}
+-
+-void WebExtensionControllerProxy::didCommitLoadForFrame(WebPage& page, WebFrame& frame, const URL& url)
+-{
+-    if (!hasLoadedContexts())
+-        return;
+-
+-    WebProcess::singleton().send(Messages::WebExtensionController::DidCommitLoadForFrame(page.webPageProxyIdentifier(), toFrameParameters(frame, url), WallTime::now()), identifier());
+-}
+-
+-void WebExtensionControllerProxy::didFinishLoadForFrame(WebPage& page, WebFrame& frame, const URL& url)
+-{
+-    if (!hasLoadedContexts())
+-        return;
+-
+-    WebProcess::singleton().send(Messages::WebExtensionController::DidFinishLoadForFrame(page.webPageProxyIdentifier(), toFrameParameters(frame, url), WallTime::now()), identifier());
+-}
+-
+-void WebExtensionControllerProxy::didFailLoadForFrame(WebPage& page, WebFrame& frame, const URL& url)
+-{
+-    if (!hasLoadedContexts())
+-        return;
+-
+-    WebProcess::singleton().send(Messages::WebExtensionController::DidFailLoadForFrame(page.webPageProxyIdentifier(), toFrameParameters(frame, url), WallTime::now()), identifier());
+-}
+-
+-} // namespace WebKit
+ 
+-#endif // ENABLE(WK_WEB_EXTENSIONS)
++// The shared C++ implementation lives in WebExtensionControllerProxy.cpp.
+diff --git a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIEvent.idl b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIEvent.idl
+index 25491a911534c611ab59ab4725e41bafeb93894d..d1c62c9c4082a2e4856f1861dde93535ceb63f39 100644
+--- a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIEvent.idl
++++ b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIEvent.idl
+@@ -25,6 +25,7 @@
+ 
+ [
+     Conditional=WK_WEB_EXTENSIONS,
++    UseCPPAPI,
+ ] interface WebExtensionAPIEvent {
+ 
+     [NeedsFrameIdentifier] void addListener([CallbackHandler] function listener);
 diff --git a/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.cpp b/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.cpp
-index 2b2ff5395e73b7978dc8b610d62ffe835fc1a886..0eb34a25dc1d4fa03e53f961caf43106bed915a4 100644
+index 2b2ff5395e73b7978dc8b610d62ffe835fc1a886..e9215d1ae97db698219770ee06d8a0ea6a86bb56 100644
 --- a/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.cpp
 +++ b/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.cpp
-@@ -33,12 +33,17 @@
+@@ -31,14 +31,21 @@
+ #include "JSWebExtensionAPINamespace.h"
+ #include "JSWebExtensionAPIWebPageNamespace.h"
  #include "JSWebExtensionWrapper.h"
++#include "MessageSenderInlines.h"
  #include "WebExtensionAPINamespace.h"
  #include "WebExtensionAPIWebPageNamespace.h"
++#include "WebExtensionContextMessages.h"
 +#include "WebExtensionContextProxyMessages.h"
-+#include "WebExtensionLocalization.h"
  #include "WebExtensionControllerProxy.h"
++#include "WebExtensionLocalization.h"
  #include "WebFrame.h"
  #include "WebPage.h"
  #include "WebProcess.h"
@@ -31723,7 +32698,7 @@ index 2b2ff5395e73b7978dc8b610d62ffe835fc1a886..0eb34a25dc1d4fa03e53f961caf43106
  
  namespace WebKit {
  
-@@ -46,6 +51,162 @@ using namespace WebCore;
+@@ -46,6 +53,162 @@ using namespace WebCore;
  
  WTF_MAKE_TZONE_ALLOCATED_IMPL(WebExtensionContextProxy);
  
@@ -31886,6 +32861,234 @@ index 2b2ff5395e73b7978dc8b610d62ffe835fc1a886..0eb34a25dc1d4fa03e53f961caf43106
  WebExtensionControllerProxy* WebExtensionContextProxy::extensionControllerProxy() const
  {
      return m_extensionControllerProxy.get();
+@@ -267,6 +430,11 @@ void WebExtensionContextProxy::enumerateFramesAndWebPageNamespaceObjects(NOESCAP
+     });
+ }
+ 
++void WebExtensionContextProxy::didEncounterScriptError(const String& message, const String& sourceURL, unsigned lineNumber, unsigned columnNumber, WebExtensionContentWorldType worldType)
++{
++    WebProcess::singleton().send(Messages::WebExtensionContext::DidEncounterScriptError(message, sourceURL, lineNumber, columnNumber, worldType), identifier());
++}
++
+ } // namespace WebKit
+ 
+ #endif // ENABLE(WK_WEB_EXTENSIONS)
+diff --git a/Source/WebKit/WebProcess/Extensions/WebExtensionControllerProxy.cpp b/Source/WebKit/WebProcess/Extensions/WebExtensionControllerProxy.cpp
+index 83216ed3967b6cdc9fa10e8588406734a4be6426..75a2d11544ae8d71d71fbd8b1993c5b77b77de38 100644
+--- a/Source/WebKit/WebProcess/Extensions/WebExtensionControllerProxy.cpp
++++ b/Source/WebKit/WebProcess/Extensions/WebExtensionControllerProxy.cpp
+@@ -28,11 +28,21 @@
+ 
+ #if ENABLE(WK_WEB_EXTENSIONS)
+ 
++#include "JSWebExtensionAPINamespace.h"
++#include "JSWebExtensionAPIWebPageNamespace.h"
++#include "JSWebExtensionWrapper.h"
++#include "MessageSenderInlines.h"
++#include "WebExtensionAPINamespace.h"
++#include "WebExtensionAPIWebPageNamespace.h"
+ #include "WebExtensionContextProxy.h"
+ #include "WebExtensionControllerMessages.h"
+ #include "WebExtensionControllerProxyMessages.h"
++#include "WebExtensionFrameIdentifier.h"
+ #include "WebFrame.h"
++#include "WebPage.h"
+ #include "WebProcess.h"
++#include <JavaScriptCore/APICast.h>
++#include <WebCore/JSDOMGlobalObject.h>
+ #include <wtf/HashMap.h>
+ #include <wtf/NeverDestroyed.h>
+ #include <wtf/TZoneMallocInlines.h>
+@@ -144,6 +154,189 @@ RefPtr<WebExtensionContextProxy> WebExtensionControllerProxy::extensionContext(W
+     return extensionContext(frame.url());
+ }
+ 
++void WebExtensionControllerProxy::globalObjectIsAvailableForFrame(WebPage& page, WebFrame& frame, DOMWrapperWorld& world)
++{
++    RefPtr extension = extensionContext(frame, world);
++    bool isMainWorld = world.isNormal();
++
++    if (!extension && isMainWorld) {
++        addBindingsToWebPageFrameIfNecessary(frame, world);
++        return;
++    }
++
++    if (!extension)
++        return;
++
++    auto context = frame.jsContextForWorld(world);
++    auto globalObject = JSContextGetGlobalObject(context);
++
++    JSRetainPtr browserString = toJSString("browser"_s);
++    if (!browserString)
++        return;
++
++    // This is a safer cpp false positive (rdar://163760990).
++    SUPPRESS_UNCOUNTED_ARG auto namespaceObject = JSObjectGetProperty(context, globalObject, browserString.get(), nullptr);
++    if (namespaceObject && JSValueIsObject(context, namespaceObject))
++        return;
++
++    extension->addFrameWithExtensionContent(frame);
++
++    if (!isMainWorld)
++        extension->setContentScriptWorld(world);
++
++    auto contentWorldType = isMainWorld ? WebExtensionContentWorldType::Main : WebExtensionContentWorldType::ContentScript;
++
++#if ENABLE(INSPECTOR_EXTENSIONS)
++    if (page.isInspectorPage() || extension->isInspectorBackgroundPage(page)) {
++        // Inspector pages have a limited set of APIs (like content scripts).
++        contentWorldType = WebExtensionContentWorldType::Inspector;
++    }
++#endif
++
++    namespaceObject = toJS(context, WebExtensionAPINamespace::create(contentWorldType, *extension).ptr());
++
++    // This is a safer cpp false positive (rdar://163760990).
++    SUPPRESS_UNCOUNTED_ARG JSObjectSetProperty(context, globalObject, browserString.get(), namespaceObject, kJSPropertyAttributeNone, nullptr);
++
++    if (JSRetainPtr chromeString = toJSString("chrome"_s)) {
++        // This is a safer cpp false positive (rdar://163760990).
++        SUPPRESS_UNCOUNTED_ARG JSObjectSetProperty(context, globalObject, chromeString.get(), namespaceObject, kJSPropertyAttributeNone, nullptr);
++    }
++
++    if (auto* domGlobalObject = dynamicDowncast<JSDOMGlobalObject>(toJS(context))) {
++        domGlobalObject->addScriptErrorCallback([extension = Ref { *extension }, contentWorldType](const String& message, const String& sourceURL, unsigned lineNumber, unsigned columnNumber) {
++            extension->didEncounterScriptError(message, sourceURL, lineNumber, columnNumber, contentWorldType);
++        });
++    }
++}
++
++void WebExtensionControllerProxy::serviceWorkerGlobalObjectIsAvailableForFrame(WebPage& page, WebFrame& frame, DOMWrapperWorld& world)
++{
++    RELEASE_ASSERT(world.isNormal());
++
++    RefPtr extension = extensionContext(frame, world);
++    if (!extension)
++        return;
++
++    auto context = frame.jsContextForServiceWorkerWorld(world);
++    auto globalObject = JSContextGetGlobalObject(context);
++
++    JSRetainPtr browserString = toJSString("browser"_s);
++    if (!browserString)
++        return;
++
++    // This is a safer cpp false positive (rdar://163760990).
++    SUPPRESS_UNCOUNTED_ARG auto namespaceObject = JSObjectGetProperty(context, globalObject, browserString.get(), nullptr);
++    if (namespaceObject && JSValueIsObject(context, namespaceObject))
++        return;
++
++    extension->addFrameWithExtensionContent(frame);
++
++    namespaceObject = toJS(context, WebExtensionAPINamespace::create(WebExtensionContentWorldType::Main, *extension).ptr());
++
++    // This is a safer cpp false positive (rdar://163760990).
++    SUPPRESS_UNCOUNTED_ARG JSObjectSetProperty(context, globalObject, browserString.get(), namespaceObject, kJSPropertyAttributeNone, nullptr);
++    if (JSRetainPtr chromeString = toJSString("chrome"_s)) {
++        // This is a safer cpp false positive (rdar://163760990).
++        SUPPRESS_UNCOUNTED_ARG JSObjectSetProperty(context, globalObject, chromeString.get(), namespaceObject, kJSPropertyAttributeNone, nullptr);
++    }
++
++    if (auto* domGlobalObject = dynamicDowncast<JSDOMGlobalObject>(toJS(context))) {
++        domGlobalObject->addScriptErrorCallback([extension = Ref { *extension }](const String& message, const String& sourceURL, unsigned lineNumber, unsigned columnNumber) {
++            extension->didEncounterScriptError(message, sourceURL, lineNumber, columnNumber, WebExtensionContentWorldType::Main);
++        });
++    }
++}
++
++void WebExtensionControllerProxy::addBindingsToWebPageFrameIfNecessary(WebFrame& frame, DOMWrapperWorld& world)
++{
++    auto context = frame.jsContextForWorld(world);
++    auto globalObject = JSContextGetGlobalObject(context);
++
++    JSRetainPtr browserString = toJSString("browser"_s);
++    if (!browserString)
++        return;
++
++    // This is a safer cpp false positive (rdar://163760990).
++    SUPPRESS_UNCOUNTED_ARG auto namespaceObject = JSObjectGetProperty(context, globalObject, browserString.get(), nullptr);
++    bool browserAlreadySet = namespaceObject && JSValueIsObject(context, namespaceObject);
++
++    auto* domGlobalObject = dynamicDowncast<JSDOMGlobalObject>(toJS(context));
++    bool callbacksAlreadyRegistered = !domGlobalObject || domGlobalObject->hasScriptErrorCallbacks();
++
++    // If both browser and callbacks are already set up, nothing to do.
++    if (browserAlreadySet && callbacksAlreadyRegistered)
++        return;
++
++    if (!browserAlreadySet) {
++        namespaceObject = toJS(context, WebExtensionAPIWebPageNamespace::create(WebExtensionContentWorldType::WebPage).ptr());
++
++        // This is a safer cpp false positive (rdar://163760990).
++        SUPPRESS_UNCOUNTED_ARG JSObjectSetProperty(context, globalObject, browserString.get(), namespaceObject, kJSPropertyAttributeNone, nullptr);
++    }
++
++    // For each loaded extension, install a callback that fires only when an error's sourceURL
++    // originates from that extension (main-world content script case). Guard against registering
++    // duplicate callbacks: if no callbacks are registered yet (e.g. extension contexts were not
++    // yet loaded when the global object was first created), register them now.
++    if (domGlobalObject && !domGlobalObject->hasScriptErrorCallbacks()) {
++        for (Ref extensionContext : m_extensionContexts) {
++            domGlobalObject->addScriptErrorCallback([extensionContext = extensionContext.copyRef()](const String& message, const String& sourceURL, unsigned lineNumber, unsigned columnNumber) {
++                if (!extensionContext->isURLForThisExtension(URL(URL(), sourceURL)))
++                    return;
++
++                extensionContext->didEncounterScriptError(message, sourceURL, lineNumber, columnNumber, WebExtensionContentWorldType::Main);
++            });
++        }
++    }
++}
++
++static WebExtensionFrameParameters toFrameParameters(WebFrame& frame, const URL& url, bool includeDocumentIdentifier = true)
++{
++    auto parentFrameIdentifier = WebExtensionFrameConstants::NoneIdentifier;
++    if (RefPtr parentFrame = frame.parentFrame())
++        parentFrameIdentifier = toWebExtensionFrameIdentifier(*parentFrame);
++
++    return {
++        .url = url,
++        .parentFrameIdentifier = parentFrameIdentifier,
++        .frameIdentifier = toWebExtensionFrameIdentifier(frame),
++        .documentIdentifier = includeDocumentIdentifier ? toDocumentIdentifier(frame) : std::nullopt
++    };
++}
++
++void WebExtensionControllerProxy::didStartProvisionalLoadForFrame(WebPage& page, WebFrame& frame, const URL& url)
++{
++    if (!hasLoadedContexts())
++        return;
++
++    WebProcess::singleton().send(Messages::WebExtensionController::DidStartProvisionalLoadForFrame(page.webPageProxyIdentifier(), toFrameParameters(frame, url, false), WallTime::now()), identifier());
++}
++
++void WebExtensionControllerProxy::didCommitLoadForFrame(WebPage& page, WebFrame& frame, const URL& url)
++{
++    if (!hasLoadedContexts())
++        return;
++
++    WebProcess::singleton().send(Messages::WebExtensionController::DidCommitLoadForFrame(page.webPageProxyIdentifier(), toFrameParameters(frame, url), WallTime::now()), identifier());
++}
++
++void WebExtensionControllerProxy::didFinishLoadForFrame(WebPage& page, WebFrame& frame, const URL& url)
++{
++    if (!hasLoadedContexts())
++        return;
++
++    WebProcess::singleton().send(Messages::WebExtensionController::DidFinishLoadForFrame(page.webPageProxyIdentifier(), toFrameParameters(frame, url), WallTime::now()), identifier());
++}
++
++void WebExtensionControllerProxy::didFailLoadForFrame(WebPage& page, WebFrame& frame, const URL& url)
++{
++    if (!hasLoadedContexts())
++        return;
++
++    WebProcess::singleton().send(Messages::WebExtensionController::DidFailLoadForFrame(page.webPageProxyIdentifier(), toFrameParameters(frame, url), WallTime::now()), identifier());
++}
++
+ } // namespace WebKit
+ 
+ #endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/WebProcess/GPU/graphics/ImageBufferShareableBitmapBackend.h b/Source/WebKit/WebProcess/GPU/graphics/ImageBufferShareableBitmapBackend.h
 index c9973ac027de13c1754694f6a91b11865f4edcf4..e2d399efe8f4ba2a3c5aa40cf784a9b5a0a09f2a 100644
 --- a/Source/WebKit/WebProcess/GPU/graphics/ImageBufferShareableBitmapBackend.h
@@ -31988,6 +33191,91 @@ index de1365cbd5a6babca6154348d0ddbbecf5ed5f4d..8cfc876a52a323c1281a625e89fedccc
      void postAccessibilityNotification(WebCore::AccessibilityObject&, WebCore::AXNotification) final;
      void postAccessibilityNodeTextChangeNotification(WebCore::AccessibilityObject*, WebCore::AXTextChange, unsigned, const String&) final;
      void postAccessibilityFrameLoadingEventNotification(WebCore::AccessibilityObject*, WebCore::AXLoadingEvent) final;
+diff --git a/Source/WebKit/WebProcess/WebCoreSupport/WebLocalFrameLoaderClient.cpp b/Source/WebKit/WebProcess/WebCoreSupport/WebLocalFrameLoaderClient.cpp
+index 7f814064bfdf3ffadc7cce58fe6552ab841d2620..bca0f8fa8fadef2e3824e7ca22a115ca81740344 100644
+--- a/Source/WebKit/WebProcess/WebCoreSupport/WebLocalFrameLoaderClient.cpp
++++ b/Source/WebKit/WebProcess/WebCoreSupport/WebLocalFrameLoaderClient.cpp
+@@ -120,7 +120,7 @@
+ #include <WebCore/DocumentFullscreen.h>
+ #endif
+ 
+-#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(COCOA)
++#if ENABLE(WK_WEB_EXTENSIONS) && (PLATFORM(COCOA) || PLATFORM(HAIKU))
+ #include "WebExtensionControllerProxy.h"
+ #endif
+ 
+@@ -609,7 +609,7 @@ void WebLocalFrameLoaderClient::dispatchDidStartProvisionalLoad()
+     auto& url = provisionalLoader->url();
+     auto& unreachableURL = provisionalLoader->unreachableURL();
+ 
+-#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(COCOA)
++#if ENABLE(WK_WEB_EXTENSIONS) && (PLATFORM(COCOA) || PLATFORM(HAIKU))
+     // Notify the extensions controller.
+     if (RefPtr extensionControllerProxy = webPage->webExtensionControllerProxy())
+         extensionControllerProxy->didStartProvisionalLoadForFrame(*webPage, m_frame, url);
+@@ -672,7 +672,7 @@ void WebLocalFrameLoaderClient::dispatchDidCommitLoad(std::optional<HasInsecureC
+     });
+     hasInsecureContent = hasInsecureContent ? *hasInsecureContent : (certificateInfo.containsNonRootSHA1SignedCertificate() ? HasInsecureContent::Yes : HasInsecureContent::No);
+ 
+-#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(COCOA)
++#if ENABLE(WK_WEB_EXTENSIONS) && (PLATFORM(COCOA) || PLATFORM(HAIKU))
+     // Notify the extensions controller.
+     if (RefPtr extensionControllerProxy = webPage->webExtensionControllerProxy())
+         extensionControllerProxy->didCommitLoadForFrame(*webPage, frame.get(), frame->url());
+@@ -713,7 +713,7 @@ void WebLocalFrameLoaderClient::dispatchDidFailProvisionalLoad(const ResourceErr
+     // Notify the bundle client.
+     webPage->injectedBundleLoaderClient().didFailProvisionalLoadWithErrorForFrame(*webPage, m_frame, error, userData);
+ 
+-#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(COCOA)
++#if ENABLE(WK_WEB_EXTENSIONS) && (PLATFORM(COCOA) || PLATFORM(HAIKU))
+     // Notify the extensions controller.
+     if (RefPtr extensionControllerProxy = webPage->webExtensionControllerProxy())
+         extensionControllerProxy->didFailLoadForFrame(*webPage, m_frame, m_localFrame->loader().provisionalLoadErrorBeingHandledURL());
+@@ -758,7 +758,7 @@ void WebLocalFrameLoaderClient::dispatchDidFailLoad(const ResourceError& error)
+     // Notify the bundle client.
+     webPage->injectedBundleLoaderClient().didFailLoadWithErrorForFrame(*webPage, m_frame, error, userData);
+ 
+-#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(COCOA)
++#if ENABLE(WK_WEB_EXTENSIONS) && (PLATFORM(COCOA) || PLATFORM(HAIKU))
+     // Notify the extensions controller.
+     if (RefPtr extensionControllerProxy = webPage->webExtensionControllerProxy())
+         extensionControllerProxy->didFailLoadForFrame(*webPage, m_frame, m_frame->url());
+@@ -801,7 +801,7 @@ void WebLocalFrameLoaderClient::dispatchDidFinishLoad()
+     // Notify the bundle client.
+     webPage->injectedBundleLoaderClient().didFinishLoadForFrame(*webPage, m_frame, userData);
+ 
+-#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(COCOA)
++#if ENABLE(WK_WEB_EXTENSIONS) && (PLATFORM(COCOA) || PLATFORM(HAIKU))
+     // Notify the extensions controller.
+     if (RefPtr extensionControllerProxy = webPage->webExtensionControllerProxy())
+         extensionControllerProxy->didFinishLoadForFrame(*webPage, m_frame, m_frame->url());
+@@ -1962,7 +1962,7 @@ void WebLocalFrameLoaderClient::dispatchGlobalObjectAvailable(DOMWrapperWorld& w
+     if (!webPage)
+         return;
+ 
+-#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(COCOA)
++#if ENABLE(WK_WEB_EXTENSIONS) && (PLATFORM(COCOA) || PLATFORM(HAIKU))
+     if (RefPtr extensionControllerProxy = webPage->webExtensionControllerProxy())
+         extensionControllerProxy->globalObjectIsAvailableForFrame(*webPage, m_frame, world);
+ #endif
+@@ -1976,7 +1976,7 @@ void WebLocalFrameLoaderClient::dispatchServiceWorkerGlobalObjectAvailable(DOMWr
+     if (!webPage)
+         return;
+ 
+-#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(COCOA)
++#if ENABLE(WK_WEB_EXTENSIONS) && (PLATFORM(COCOA) || PLATFORM(HAIKU))
+     if (RefPtr extensionControllerProxy = webPage->webExtensionControllerProxy())
+         extensionControllerProxy->serviceWorkerGlobalObjectIsAvailableForFrame(*webPage, m_frame, world);
+ #endif
+@@ -1990,7 +1990,7 @@ void WebLocalFrameLoaderClient::willInjectUserScript(DOMWrapperWorld& world)
+     if (!webPage)
+         return;
+ 
+-#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(COCOA)
++#if ENABLE(WK_WEB_EXTENSIONS) && (PLATFORM(COCOA) || PLATFORM(HAIKU))
+     if (RefPtr extensionControllerProxy = webPage->webExtensionControllerProxy())
+         extensionControllerProxy->globalObjectIsAvailableForFrame(*webPage, m_frame, world);
+ #endif
 diff --git a/Source/WebKit/WebProcess/WebCoreSupport/haiku/WebErrorsHaiku.cpp b/Source/WebKit/WebProcess/WebCoreSupport/haiku/WebErrorsHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..06e5d2054d87db887c39f2fea694476392074eb9
@@ -32266,9 +33554,27 @@ index e6fbb8c1896bf99dc0f7322868052566b8629598..d84e2ecbc70d219a63eb074c1fd4b1c9
      UpdateGeometry(WebCore::IntSize size) -> ()
  #endif
 diff --git a/Source/WebKit/WebProcess/WebPage/WebPage.cpp b/Source/WebKit/WebProcess/WebPage/WebPage.cpp
-index 48f9e1c5cff34a053ed104c3d2cfd3ac6e0a2bdc..a95170323c3bf858c0fe0610637c5bb016c7a40e 100644
+index 48f9e1c5cff34a053ed104c3d2cfd3ac6e0a2bdc..a114a32c297c57a4d53db213a0540af18d4aeac0 100644
 --- a/Source/WebKit/WebProcess/WebPage/WebPage.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/WebPage.cpp
+@@ -500,7 +500,7 @@
+ #import <pal/spi/cg/CoreGraphicsSPI.h>
+ #endif
+ 
+-#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(COCOA)
++#if ENABLE(WK_WEB_EXTENSIONS) && (PLATFORM(COCOA) || PLATFORM(HAIKU))
+ #include "WebExtensionControllerProxy.h"
+ #endif
+ 
+@@ -875,7 +875,7 @@ WebPage::WebPage(PageIdentifier pageID, WebPageCreationParameters&& parameters)
+     pageConfiguration.deviceOrientationUpdateProvider = WebDeviceOrientationUpdateProvider::create(*this);
+ #endif
+ 
+-#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(COCOA)
++#if ENABLE(WK_WEB_EXTENSIONS) && (PLATFORM(COCOA) || PLATFORM(HAIKU))
+     if (parameters.webExtensionControllerParameters)
+         m_webExtensionController = WebExtensionControllerProxy::getOrCreate(parameters.webExtensionControllerParameters.value(), this);
+ #endif
 @@ -5406,7 +5406,7 @@ void WebPage::updatePreferences(const WebPreferencesStore& store)
  
      updateSettingsGenerated(store, settings);
@@ -32278,6 +33584,28 @@ index 48f9e1c5cff34a053ed104c3d2cfd3ac6e0a2bdc..a95170323c3bf858c0fe0610637c5bb0
      if (!settings.acceleratedCompositingEnabled()) {
          WEBPAGE_RELEASE_LOG(Layers, "updatePreferences: acceleratedCompositingEnabled setting was false. WebKit cannot function in this mode; changing setting to true");
          settings.setAcceleratedCompositingEnabled(true);
+diff --git a/Source/WebKit/WebProcess/WebPage/WebPage.h b/Source/WebKit/WebProcess/WebPage/WebPage.h
+index 36777a70a757d8f40fea959e16bd1659baeebc96..dba0ad18f45d7784f5fb0e18dd09909cf24e4d70 100644
+--- a/Source/WebKit/WebProcess/WebPage/WebPage.h
++++ b/Source/WebKit/WebProcess/WebPage/WebPage.h
+@@ -1868,7 +1868,7 @@ public:
+ #if ENABLE(WK_WEB_EXTENSIONS)
+     WebExtensionControllerProxy* webExtensionControllerProxy() const
+     {
+-#if PLATFORM(COCOA)
++#if PLATFORM(COCOA) || PLATFORM(HAIKU)
+         return m_webExtensionController.get();
+ #else
+         return nullptr;
+@@ -3031,7 +3031,7 @@ private:
+ 
+     const Ref<WebUserContentController> m_userContentController;
+ 
+-#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(COCOA)
++#if ENABLE(WK_WEB_EXTENSIONS) && (PLATFORM(COCOA) || PLATFORM(HAIKU))
+     RefPtr<WebExtensionControllerProxy> m_webExtensionController;
+ #endif
+ 
 diff --git a/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.cpp b/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..b02ae539b37a4831b77d094a4911cbaaff351d54
