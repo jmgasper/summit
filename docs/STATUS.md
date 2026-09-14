@@ -1024,3 +1024,12 @@ A separate full feature-enabled source/build tree is being compiled through
 `tools/build-webkit-in-vm.sh --modern-extensions all`. Native controller/context,
 resource serving, bindings and browser delegates remain unfinished.
 Compile evidence and exact limits: [native integration](webextensions-native-integration.md).
+
+
+The first full extension build configuration failed because the privately
+unpacked libzip used by archive tests was absent from pkg-config's search path
+(`.vm/modern-extensions-first-build.log`). The build now prepares a private,
+checksum-locked libzip prefix and configures successfully. Its separate
+source tree was verified onto a new 64 GiB build volume before compilation
+started (`.vm/modern-extensions-private-zip-build.log`). No full feature-enabled
+link or extension runtime has passed yet.

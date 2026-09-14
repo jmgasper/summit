@@ -1,7 +1,8 @@
 # Summit's Haiku test VM
 
 Summit has an independent QEMU/KVM VM, with 12 vCPUs and 20 GiB RAM.
-Its 24 GiB disk is `summit/.vm/work.qcow2`. Kiri's disk and VM are separate.
+Its 24 GiB boot disk is `summit/.vm/work.qcow2`. A separate 64 GiB build
+disk is `summit/.vm/extensions.qcow2`. Kiri's disk and VM are separate.
 
 - SSH: `127.0.0.1:2225`, through `bash tools/haiku.sh`.
 - VNC: `127.0.0.1:5905`.
@@ -82,3 +83,34 @@ automatically, using an executable-specific `report` action in
 `~/config/settings/system/debug_server/settings`. Other applications retain
 Haiku's normal prompt. Reports are written to the guest Desktop; this avoids
 leaving unattended conformance runs behind modal crash dialogs.
+
+
+The extension build uses a second BFS volume named `SummitExtensions`, attached
+through the existing USB 3 controller with serial `SUMMITEXTENSIONS01`.
+`run-vm.sh` attaches this disk when `.vm/extensions.qcow2` exists. Its guest
+mount point is `/SummitExtensions`; `/boot/home/summit-webkit-extensions` is
+a symlink to `/SummitExtensions/WebKit`. If it is not automatically mounted
+after a restart, identify that serial with `listusb -v` and mount its existing
+BFS volume at `/SummitExtensions`. Do not initialize it again.
+
+The disk was added live on September 14 after the boot volume reached
+19.6/24 GiB used. Its new device was checked against the QMP image, USB serial
+and blank first/last sectors before initialization. The isolated source tree
+was copied and 76,741 files verified by SHA-256 before switching the symlink.
+The original tree remains at
+`/boot/home/summit-webkit-extensions.before-volume`; the normal engine tree
+and browser bundles were untouched. Records: `.vm/extension-disk-setup.json`,
+`.vm/extension-volume-migration.log`, `.vm/extension-build-environment.log`.
+
+For the separate extension integration build:
+
+```sh
+SUMMIT_WEBKIT_JOBS=8 bash tools/build-webkit-in-vm.sh --modern-extensions all
+```
+
+This enables both `WK_WEB_EXTENSIONS` and `CONTENT_EXTENSIONS`. It prepares
+libzip 1.11.4 under `/boot/home/summit-deps/libzip-1.11.4` from the exact native
+packages in `engine/libzip.lock.json`, verifies package and extracted-file
+hashes, and supplies a private pkg-config file. No system package is replaced.
+A successful configuration or individual compile is not a working extension
+runtime; consult `docs/webextensions-native-integration.md` for current gates.

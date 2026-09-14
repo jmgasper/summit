@@ -38,6 +38,7 @@ SUPPORT = (
     'engine/sources.lock.json', 'engine/icu.lock.json', 'engine/README.md',
     'tools/haiku.sh', 'tools/prepare-webkit.py', 'tools/build-webkit-in-vm.sh',
     'tools/sync-webkit-sources.py', 'tools/build-icu-in-vm.sh',
+    'tools/prepare-extension-deps.py', 'engine/libzip.lock.json',
     'tools/build-modern-browser-in-vm.sh', 'tools/copy-modern-browser-bundle.py',
     'docs/modern-bundle-copy.md',
 )
