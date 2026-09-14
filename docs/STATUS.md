@@ -1208,3 +1208,16 @@ not media playback or IPC transport. See [media validator evidence](media-engine
 Patch: `2ea935a16cbd980a09e5bc20229863c257a22e09e2fc48c29afcc8837d7936b6`.
 The running full engine build remains frozen on `1daf0679...` and continues
 through WebKit UI-process units. It does not yet contain this correction.
+
+
+2026-09-14 registered script restoration: common C++ now parses saved JSON,
+validates resources/match patterns and constructs injected content. A
+restore generation and loaded/permission checks reject stale database
+callbacks after unload or reset. All 46 native parser checks pass; the
+parser, common context and corrected scripting unit compile with both
+extension features enabled. SQLite restoration, callback invalidation and
+script injection still need runtime verification. See [registered-script evidence](webextensions-native-registered-scripts.md).
+
+Patch: `1d075f46ad782a384ae548bd1a2f1b390ace18e0ea342e8ea44ace3322cb0543`.
+The full build remains on frozen `1daf0679...`, now through WebProcess units.
+The verified preview remains `bundle-yqhmejfw`, with extensions disabled.

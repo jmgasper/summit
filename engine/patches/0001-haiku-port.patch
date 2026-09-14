@@ -23209,6 +23209,193 @@ index 0000000000000000000000000000000000000000..786389356ffcf87d818bc62c570e3623
 +} // namespace WebKit
 +
 +#endif // ENABLE(WK_WEB_EXTENSIONS)
+diff --git a/Source/WebKit/Shared/Extensions/WebExtensionRegisteredScriptParser.cpp b/Source/WebKit/Shared/Extensions/WebExtensionRegisteredScriptParser.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..a7a53fc73bd1b4dacf3e3e950318d9a46e8e9ecf
+--- /dev/null
++++ b/Source/WebKit/Shared/Extensions/WebExtensionRegisteredScriptParser.cpp
+@@ -0,0 +1,134 @@
++/*
++ * Copyright (C) 2023 Apple Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "WebExtensionRegisteredScriptParser.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS)
++
++#include <wtf/text/MakeString.h>
++
++namespace WebKit {
++
++std::expected<Vector<WebExtensionRegisteredScriptParameters>, String> parseWebExtensionRegisteredScripts(const Vector<Ref<JSON::Object>>& scripts, WebExtensionRegisteredScriptParseMode mode)
++{
++    Vector<WebExtensionRegisteredScriptParameters> result;
++    for (auto& script : scripts) {
++        auto invalid = [](ASCIILiteral key, ASCIILiteral message) {
++            return makeUnexpected(makeString("Invalid '"_s, key, "': "_s, message));
++        };
++        for (auto key : { "id"_s, "runAt"_s, "cssOrigin"_s, "world"_s }) {
++            if (RefPtr value = script->getValue(key); value && value->type() != JSON::Value::Type::String)
++                return invalid(key, "expected a string"_s);
++        }
++        for (auto key : { "allFrames"_s, "matchOriginAsFallback"_s, "persistAcrossSessions"_s }) {
++            if (RefPtr value = script->getValue(key); value && value->type() != JSON::Value::Type::Boolean)
++                return invalid(key, "expected a boolean"_s);
++        }
++        for (auto key : { "css"_s, "js"_s, "matches"_s, "excludeMatches"_s }) {
++            RefPtr value = script->getValue(key);
++            if (!value)
++                continue;
++            RefPtr array = value->asArray();
++            if (!array)
++                return invalid(key, "expected an array of strings"_s);
++            for (auto& item : *array) {
++                if (item->type() != JSON::Value::Type::String)
++                    return invalid(key, "expected an array of strings"_s);
++            }
++        }
++
++        WebExtensionRegisteredScriptParameters parameters;
++        parameters.identifier = script->getString("id"_s);
++        if (parameters.identifier.isEmpty())
++            return invalid("id"_s, "it must not be empty"_s);
++        if (parameters.identifier[0] == '_')
++            return invalid("id"_s, "it must not start with '_'"_s);
++
++        auto strings = [&](ASCIILiteral key) -> std::optional<Vector<String>> {
++            RefPtr array = script->getArray(key);
++            if (!array)
++                return std::nullopt;
++            Vector<String> items;
++            for (auto& item : *array)
++                items.append(item->asString());
++            return items;
++        };
++        parameters.css = strings("css"_s);
++        parameters.js = strings("js"_s);
++        parameters.matchPatterns = strings("matches"_s);
++        parameters.excludeMatchPatterns = strings("excludeMatches"_s);
++
++        bool registration = mode == WebExtensionRegisteredScriptParseMode::Registration;
++        if (registration && (!parameters.matchPatterns || parameters.matchPatterns->isEmpty()))
++            return invalid("matches"_s, "it must specify at least one match pattern"_s);
++        if (parameters.matchPatterns && parameters.matchPatterns->isEmpty())
++            return invalid("matches"_s, "it must not be empty"_s);
++        if (registration && (!parameters.js || parameters.js->isEmpty()) && (!parameters.css || parameters.css->isEmpty()))
++            return invalid("details"_s, "it must specify at least one 'css' or 'js' file"_s);
++
++        if (script->getValue("runAt"_s)) {
++            auto value = script->getString("runAt"_s);
++            if (value == "document_start"_s)
++                parameters.injectionTime = WebExtension::InjectionTime::DocumentStart;
++            else if (value == "document_end"_s)
++                parameters.injectionTime = WebExtension::InjectionTime::DocumentEnd;
++            else if (value == "document_idle"_s)
++                parameters.injectionTime = WebExtension::InjectionTime::DocumentIdle;
++            else
++                return invalid("runAt"_s, "it must specify either 'document_start', 'document_end', or 'document_idle'"_s);
++        }
++        if (script->getValue("cssOrigin"_s)) {
++            auto value = script->getString("cssOrigin"_s);
++            if (equalIgnoringASCIICase(value, "user"_s))
++                parameters.styleLevel = WebCore::UserStyleLevel::User;
++            else if (equalIgnoringASCIICase(value, "author"_s))
++                parameters.styleLevel = WebCore::UserStyleLevel::Author;
++            else
++                return invalid("cssOrigin"_s, "it must specify either 'author' or 'user'"_s);
++        }
++        if (script->getValue("world"_s)) {
++            auto value = script->getString("world"_s);
++            if (equalIgnoringASCIICase(value, "main"_s))
++                parameters.world = WebExtensionContentWorldType::Main;
++            else if (equalIgnoringASCIICase(value, "isolated"_s))
++                parameters.world = WebExtensionContentWorldType::ContentScript;
++            else
++                return invalid("world"_s, "it must specify either 'isolated' or 'main'"_s);
++        }
++        parameters.allFrames = script->getBoolean("allFrames"_s);
++        if (auto matchParent = script->getBoolean("matchOriginAsFallback"_s))
++            parameters.matchParentFrame = *matchParent ? WebCore::UserContentMatchParentFrame::ForOpaqueOrigins : WebCore::UserContentMatchParentFrame::Never;
++        parameters.persistent = script->getBoolean("persistAcrossSessions"_s);
++        if (registration && !parameters.persistent)
++            parameters.persistent = true;
++        result.append(WTF::move(parameters));
++    }
++    return result;
++}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS)
+diff --git a/Source/WebKit/Shared/Extensions/WebExtensionRegisteredScriptParser.h b/Source/WebKit/Shared/Extensions/WebExtensionRegisteredScriptParser.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..a722963c4900d124123b25b53b2299cda04cdf16
+--- /dev/null
++++ b/Source/WebKit/Shared/Extensions/WebExtensionRegisteredScriptParser.h
+@@ -0,0 +1,41 @@
++/*
++ * Copyright (C) 2023 Apple Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#pragma once
++
++#if ENABLE(WK_WEB_EXTENSIONS)
++
++#include "WebExtensionRegisteredScriptParameters.h"
++#include <wtf/JSONValues.h>
++
++namespace WebKit {
++
++enum class WebExtensionRegisteredScriptParseMode : bool { Registration, Update };
++
++std::expected<Vector<WebExtensionRegisteredScriptParameters>, String> parseWebExtensionRegisteredScripts(const Vector<Ref<JSON::Object>>&, WebExtensionRegisteredScriptParseMode);
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/Shared/NativeWebKeyboardEvent.h b/Source/WebKit/Shared/NativeWebKeyboardEvent.h
 index d19f2b5f32665df6704bbd5ceac3f483ece6822d..489043ab4e7a29948bf94db71c26723cb72fe1e7 100644
 --- a/Source/WebKit/Shared/NativeWebKeyboardEvent.h
@@ -24242,16 +24429,25 @@ index 0000000000000000000000000000000000000000..964df248231137e87da9c37afbb37b84
 +}
 +#endif
 diff --git a/Source/WebKit/Sources.txt b/Source/WebKit/Sources.txt
-index e229fa1ae53c6c89e7534316dd06a7c5bfec5330..2b7d11bbce2b273e801fa22dad2d4230bd4c351f 100644
+index e229fa1ae53c6c89e7534316dd06a7c5bfec5330..d88fb6eb7b997f9c0c0d77bd2957032a4eaa6465 100644
 --- a/Source/WebKit/Sources.txt
 +++ b/Source/WebKit/Sources.txt
-@@ -609,11 +609,16 @@ UIProcess/Downloads/DownloadProxyMap.cpp
+@@ -321,6 +321,7 @@ Shared/Extensions/WebExtensionSQLiteRow.cpp
+ Shared/Extensions/WebExtensionSQLiteStore.cpp
+ Shared/Extensions/WebExtensionLocalization.cpp
+ Shared/Extensions/WebExtensionPermission.cpp
++Shared/Extensions/WebExtensionRegisteredScriptParser.cpp
+ Shared/Extensions/WebExtensionUtilities.cpp
+ Shared/Extensions/WebExtensionRegisteredScriptsSQLiteStore.cpp
+ 
+@@ -609,11 +610,17 @@ UIProcess/Downloads/DownloadProxyMap.cpp
  UIProcess/Extensions/WebExtension.cpp
  UIProcess/Extensions/WebExtensionAlarm.cpp
  UIProcess/Extensions/WebExtensionContext.cpp
 +UIProcess/Extensions/API/WebExtensionContextAPIEvent.cpp
 +UIProcess/Extensions/API/WebExtensionContextAPIPort.cpp
 +UIProcess/Extensions/API/WebExtensionContextAPIRuntime.cpp
++UIProcess/Extensions/API/WebExtensionContextAPIScripting.cpp
  UIProcess/Extensions/WebExtensionController.cpp
  UIProcess/Extensions/WebExtensionControllerConfiguration.cpp
  UIProcess/Extensions/WebExtensionDataRecord.cpp
@@ -24262,7 +24458,7 @@ index e229fa1ae53c6c89e7534316dd06a7c5bfec5330..2b7d11bbce2b273e801fa22dad2d4230
  UIProcess/Extensions/WebExtensionStorageSQLiteStore.cpp
  
  UIProcess/Extensions/API/WebExtensionContextAPIAlarms.cpp
-@@ -713,11 +718,17 @@ WebProcess/Extensions/WebExtensionContextProxy.cpp
+@@ -713,11 +720,17 @@ WebProcess/Extensions/WebExtensionContextProxy.cpp
  WebProcess/Extensions/WebExtensionControllerProxy.cpp
  
  WebProcess/Extensions/API/WebExtensionAPIAlarms.cpp
@@ -26274,6 +26470,198 @@ index 0000000000000000000000000000000000000000..84cc0fc4951d3e47bacbe759f5d2395a
 +} // namespace WebKit
 +
 +#endif // ENABLE(WK_WEB_EXTENSIONS)
+diff --git a/Source/WebKit/UIProcess/Extensions/API/WebExtensionContextAPIScripting.cpp b/Source/WebKit/UIProcess/Extensions/API/WebExtensionContextAPIScripting.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..764a81fecb54c6239e8d49cb65bcb9929223f55a
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/API/WebExtensionContextAPIScripting.cpp
+@@ -0,0 +1,186 @@
++/*
++ * Copyright (C) 2023-2024 Apple Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "WebExtensionContext.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS)
++
++#include "Logging.h"
++#include "WebExtensionPermission.h"
++#include "WebExtensionRegisteredScriptParser.h"
++#include "WebExtensionUtilities.h"
++
++namespace WebKit {
++
++using namespace WebExtensionDynamicScripts;
++using FirstTimeRegistration = WebExtensionRegisteredScript::FirstTimeRegistration;
++
++void WebExtensionContext::loadRegisteredContentScripts()
++{
++    auto generation = ++m_registeredContentScriptsGeneration;
++    if (!hasPermission(WebExtensionPermission::scripting()))
++        return;
++
++    registeredContentScriptsStore()->getScripts([this, protectedThis = Ref { *this }, generation](Vector<Ref<JSON::Object>> scripts, const String& errorMessage) mutable {
++        if (!isLoaded() || generation != m_registeredContentScriptsGeneration || !hasPermission(WebExtensionPermission::scripting()))
++            return;
++        if (!errorMessage.isEmpty()) {
++            RELEASE_LOG_ERROR(Extensions, "Unable to get registered scripts: %s", errorMessage.utf8().legacyCStringPointer());
++            return;
++        }
++
++        auto parsed = parseWebExtensionRegisteredScripts(scripts, WebExtensionRegisteredScriptParseMode::Registration);
++        if (!parsed) {
++            RELEASE_LOG_ERROR(Extensions, "Failed to parse registered scripts: %s", parsed.error().utf8().legacyCStringPointer());
++            return;
++        }
++        auto parametersVector = WTF::move(*parsed);
++        DynamicInjectedContentsMap injectedContentsMap;
++        String validationError;
++        if (!createInjectedContentForScripts(parametersVector, FirstTimeRegistration::Yes, injectedContentsMap, nullString(), &validationError)) {
++            RELEASE_LOG_ERROR(Extensions, "Failed to create injected content: %s", validationError.utf8().legacyCStringPointer());
++            return;
++        }
++
++        InjectedContentVector injectedContents;
++        for (auto& parameters : parametersVector) {
++            auto injectedContent = injectedContentsMap.get(parameters.identifier);
++            m_registeredScriptsMap.set(parameters.identifier, WebExtensionRegisteredScript::create(*this, parameters, injectedContent));
++            injectedContents.append(WTF::move(injectedContent));
++        }
++        addInjectedContent(injectedContents);
++    });
++}
++
++void WebExtensionContext::clearRegisteredContentScripts()
++{
++    ++m_registeredContentScriptsGeneration;
++    m_registeredScriptsMap.clear();
++
++    registeredContentScriptsStore()->deleteDatabase([](const String& errorMessage) {
++        if (!errorMessage.isEmpty())
++            RELEASE_LOG_ERROR(Extensions, "Failed to delete registered content scripts database. Error: %s", errorMessage.utf8().legacyCStringPointer());
++    });
++}
++
++bool WebExtensionContext::createInjectedContentForScripts(const Vector<WebExtensionRegisteredScriptParameters>& scripts, FirstTimeRegistration firstTimeRegistration, DynamicInjectedContentsMap& injectedContentsMap, const String& callingAPIName, String* errorMessage)
++{
++    *errorMessage = { };
++    Vector<String> idsToAdd;
++
++    for (auto& parameters : scripts) {
++        auto scriptID = parameters.identifier;
++
++        if (firstTimeRegistration == FirstTimeRegistration::Yes && (m_registeredScriptsMap.contains(scriptID) || idsToAdd.contains(scriptID))) {
++            *errorMessage = toErrorString(callingAPIName, nullString(), makeString("duplicate ID '"_s, scriptID, "'"_s));
++            return false;
++        }
++
++        idsToAdd.append(scriptID);
++
++        HashSet<Ref<WebExtensionMatchPattern>> includeMatchPatterns;
++        HashSet<Ref<WebExtensionMatchPattern>> excludeMatchPatterns;
++
++        // Optional. The list of JavaScript files to be injected into matching pages. These are injected in the order they appear in this array.
++        auto scriptPaths = parameters.js.value_or(Vector<String> { });
++        scriptPaths.removeAllMatching([](auto& path) { return path.isEmpty(); });
++
++        RefPtr extension = m_extension;
++        for (auto& scriptPath : scriptPaths) {
++            if (auto scriptValue = extension->resourceStringForPath(scriptPath); !scriptValue) {
++                recordErrorIfNeeded(scriptValue.error());
++                *errorMessage = toErrorString(callingAPIName, nullString(), makeString("invalid resource '"_s, String(scriptPath), "'"_s));
++                return false;
++            }
++        }
++
++        // Optional. The list of CSS files to be injected into matching pages. These are injected in the order they appear in this array, before any DOM is constructed or displayed for the page.
++        auto styleSheetPaths = parameters.css.value_or(Vector<String> { });
++        styleSheetPaths.removeAllMatching([](auto& path) { return path.isEmpty(); });
++
++        for (auto& styleSheetPath : styleSheetPaths) {
++            if (auto styleSheetValue = extension->resourceStringForPath(styleSheetPath); !styleSheetValue) {
++                recordErrorIfNeeded(styleSheetValue.error());
++                *errorMessage = toErrorString(callingAPIName, nullString(), makeString("invalid resource '"_s, String(styleSheetPath), "'"_s));
++                return false;
++            }
++        }
++
++        // Required for first time registration. Specifies which pages the specified scripts and stylesheets will be injected into.
++        auto matchesArray = parameters.matchPatterns.value_or(Vector<String> { });
++        for (auto& matchPatternString : matchesArray) {
++            if (matchPatternString.isEmpty()) {
++                *errorMessage = toErrorString(callingAPIName, nullString(), makeString("script with ID '"_s, scriptID, "' contains an empty match pattern"_s));
++                return false;
++            }
++
++            RefPtr matchPattern = WebExtensionMatchPattern::getOrCreate(matchPatternString);
++            if (!matchPattern || !matchPattern->isSupported()) {
++                *errorMessage = toErrorString(callingAPIName, nullString(), makeString("script with ID '"_s, scriptID, "' has an invalid match pattern '"_s, String(matchPatternString), "'"_s));
++                return false;
++            }
++
++            includeMatchPatterns.add(matchPattern.releaseNonNull());
++        }
++
++        // Optional. Excludes pages that this content script would otherwise be injected into.
++        auto excludeMatchesArray = parameters.excludeMatchPatterns.value_or(Vector<String> { });
++        for (auto& matchPatternString : excludeMatchesArray) {
++            if (matchPatternString.isEmpty()) {
++                *errorMessage = toErrorString(callingAPIName, nullString(), makeString("script with ID '"_s, scriptID, "' contains an empty exclude match pattern"_s));
++                return false;
++            }
++
++            RefPtr matchPattern = WebExtensionMatchPattern::getOrCreate(matchPatternString);
++            if (!matchPattern || !matchPattern->isSupported()) {
++                *errorMessage = toErrorString(callingAPIName, nullString(), makeString("script with ID '"_s, scriptID, "' has an invalid exclude match pattern '"_s, String(matchPatternString), "'"_s));
++                return false;
++            }
++
++            excludeMatchPatterns.add(matchPattern.releaseNonNull());
++        }
++
++        InjectedContentData injectedContentData;
++        injectedContentData.identifier = parameters.identifier;
++        injectedContentData.includeMatchPatterns = WTF::move(includeMatchPatterns);
++        injectedContentData.excludeMatchPatterns = WTF::move(excludeMatchPatterns);
++        injectedContentData.injectionTime = parameters.injectionTime.value_or(WebExtension::InjectionTime::DocumentIdle);
++        injectedContentData.injectsIntoAllFrames = parameters.allFrames.value_or(false);
++        injectedContentData.matchParentFrame = parameters.matchParentFrame.value_or(WebCore::UserContentMatchParentFrame::Never);
++        injectedContentData.contentWorldType = parameters.world.value_or(WebExtensionContentWorldType::ContentScript);
++        injectedContentData.styleLevel = parameters.styleLevel.value_or(WebCore::UserStyleLevel::Author);
++        injectedContentData.scriptPaths = WTF::move(scriptPaths);
++        injectedContentData.styleSheetPaths = WTF::move(styleSheetPaths);
++
++        injectedContentsMap.add(scriptID, WTF::move(injectedContentData));
++    }
++
++    return true;
++}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/UIProcess/Extensions/Cocoa/API/WebExtensionContextAPIEventCocoa.mm b/Source/WebKit/UIProcess/Extensions/Cocoa/API/WebExtensionContextAPIEventCocoa.mm
 index a293c71037b637c24eb1e13d51d9597abd058d89..d0eb6d95e9f1396928f54260583693fd497ea438 100644
 --- a/Source/WebKit/UIProcess/Extensions/Cocoa/API/WebExtensionContextAPIEventCocoa.mm
@@ -26972,6 +27360,163 @@ index 35d91f0e8beddbc09d7e9fcf3de39490a35e1f16..12164f5aeb0c46185b10862f993667f2
  } // namespace WebKit
  
  #endif // ENABLE(WK_WEB_EXTENSIONS)
+diff --git a/Source/WebKit/UIProcess/Extensions/Cocoa/API/WebExtensionContextAPIScriptingCocoa.mm b/Source/WebKit/UIProcess/Extensions/Cocoa/API/WebExtensionContextAPIScriptingCocoa.mm
+index 4ce987fbfe339d6b3d834eb6d2715ac65641357c..990d38e71e8b7a48a2f02da4dfc5cddbdafd0765 100644
+--- a/Source/WebKit/UIProcess/Extensions/Cocoa/API/WebExtensionContextAPIScriptingCocoa.mm
++++ b/Source/WebKit/UIProcess/Extensions/Cocoa/API/WebExtensionContextAPIScriptingCocoa.mm
+@@ -361,148 +361,12 @@ void WebExtensionContext::scriptingUnregisterContentScripts(const Vector<String>
+     });
+ }
+ 
+-void WebExtensionContext::loadRegisteredContentScripts()
+-{
+-    if (!hasPermission(WebExtensionPermission::scripting()))
+-        return;
+-
+-    registeredContentScriptsStore()->getScripts([this, protectedThis = Ref { *this }](Vector<Ref<JSON::Object>> scripts, const String& errorMessage) mutable {
+-        if (!errorMessage.isEmpty()) {
+-            RELEASE_LOG_ERROR(Extensions, "Unable to get registered scripts for extension %{private}@. Error: %{public}@", m_uniqueIdentifier.createNSString().get(), errorMessage.createNSString().get());
+-            return;
+-        }
+-
+-        Vector<WebExtensionRegisteredScriptParameters> parametersVector;
+-        NSString *exceptionString;
+-        if (!WebExtensionAPIScripting::parseRegisteredContentScripts(toWebAPI(scripts), FirstTimeRegistration::Yes, parametersVector, &exceptionString)) {
+-            RELEASE_LOG_ERROR(Extensions, "Failed to parse injected content data for extension %{private}@. Error: %{public}@", m_uniqueIdentifier.createNSString().get(), exceptionString);
+-            return;
+-        }
+-
+-        DynamicInjectedContentsMap injectedContentsMap;
+-        createInjectedContentForScripts(parametersVector, FirstTimeRegistration::Yes, injectedContentsMap, nil, &exceptionString);
+-        if (exceptionString) {
+-            RELEASE_LOG_ERROR(Extensions, "Failed to create injected content data for extension %{private}@. Error: %{public}@", m_uniqueIdentifier.createNSString().get(), exceptionString);
+-            return;
+-        }
+-
+-        InjectedContentVector injectedContents;
+-        for (auto& parameters : parametersVector) {
+-            auto injectedContent = injectedContentsMap.get(parameters.identifier);
+-            m_registeredScriptsMap.set(parameters.identifier, WebExtensionRegisteredScript::create(*this, parameters, injectedContent));
+-            injectedContents.append(WTF::move(injectedContent));
+-        }
+-
+-        addInjectedContent(injectedContents);
+-    });
+-}
+-
+-void WebExtensionContext::clearRegisteredContentScripts()
+-{
+-    m_registeredScriptsMap.clear();
+-
+-    registeredContentScriptsStore()->deleteDatabase([](const String& errorMessage) {
+-        if (!errorMessage.isEmpty())
+-            RELEASE_LOG_ERROR(Extensions, "Failed to delete registered content scripts database. Error: %s", errorMessage.utf8().legacyCStringPointer());
+-    });
+-}
+-
+ bool WebExtensionContext::createInjectedContentForScripts(const Vector<WebExtensionRegisteredScriptParameters>& scripts, FirstTimeRegistration firstTimeRegistration, DynamicInjectedContentsMap& injectedContentsMap, NSString *callingAPIName, NSString **errorMessage)
+ {
+-    Vector<String> idsToAdd;
+-
+-    for (auto& parameters : scripts) {
+-        auto scriptID = parameters.identifier;
+-
+-        if (firstTimeRegistration == FirstTimeRegistration::Yes && (m_registeredScriptsMap.contains(scriptID) || idsToAdd.contains(scriptID))) {
+-            *errorMessage = toErrorString(callingAPIName, nullString(), makeString("duplicate ID '"_s, scriptID, "'"_s)).createNSString().autorelease();
+-            return false;
+-        }
+-
+-        idsToAdd.append(scriptID);
+-
+-        HashSet<Ref<WebExtensionMatchPattern>> includeMatchPatterns;
+-        HashSet<Ref<WebExtensionMatchPattern>> excludeMatchPatterns;
+-
+-        // Optional. The list of JavaScript files to be injected into matching pages. These are injected in the order they appear in this array.
+-        auto *scriptPaths = parameters.js ? createNSArray(parameters.js.value()).get() : @[ ];
+-        scriptPaths = filterObjects(scriptPaths, ^(id key, NSString *string) {
+-            return !!string.length;
+-        });
+-
+-        RefPtr extension = m_extension;
+-        for (NSString *scriptPath in scriptPaths) {
+-            if (auto scriptValue = extension->resourceStringForPath(scriptPath); !scriptValue) {
+-                recordErrorIfNeeded(scriptValue.error());
+-                *errorMessage = toErrorString(callingAPIName, nullString(), makeString("invalid resource '"_s, String(scriptPath), "'"_s)).createNSString().autorelease();
+-                return false;
+-            }
+-        }
+-
+-        // Optional. The list of CSS files to be injected into matching pages. These are injected in the order they appear in this array, before any DOM is constructed or displayed for the page.
+-        auto *styleSheetPaths = parameters.css ? createNSArray(parameters.css.value()).get() : @[ ];
+-        styleSheetPaths = filterObjects(styleSheetPaths, ^(id key, NSString *string) {
+-            return !!string.length;
+-        });
+-
+-        for (NSString *styleSheetPath in styleSheetPaths) {
+-            if (auto styleSheetValue = extension->resourceStringForPath(styleSheetPath); !styleSheetValue) {
+-                recordErrorIfNeeded(styleSheetValue.error());
+-                *errorMessage = toErrorString(callingAPIName, nullString(), makeString("invalid resource '"_s, String(styleSheetPath), "'"_s)).createNSString().autorelease();
+-                return false;
+-            }
+-        }
+-
+-        // Required for first time registration. Specifies which pages the specified scripts and stylesheets will be injected into.
+-        auto *matchesArray = parameters.matchPatterns ? createNSArray(parameters.matchPatterns.value()).get() : @[ ];
+-        for (NSString *matchPatternString in matchesArray) {
+-            if (!matchPatternString.length) {
+-                *errorMessage = toErrorString(callingAPIName, nullString(), makeString("script with ID '"_s, scriptID, "' contains an empty match pattern"_s)).createNSString().autorelease();
+-                return false;
+-            }
+-
+-            RefPtr matchPattern = WebExtensionMatchPattern::getOrCreate(matchPatternString);
+-            if (!matchPattern || !matchPattern->isSupported()) {
+-                *errorMessage = toErrorString(callingAPIName, nullString(), makeString("script with ID '"_s, scriptID, "' has an invalid match pattern '"_s, String(matchPatternString), "'"_s)).createNSString().autorelease();
+-                return false;
+-            }
+-
+-            includeMatchPatterns.add(matchPattern.releaseNonNull());
+-        }
+-
+-        // Optional. Excludes pages that this content script would otherwise be injected into.
+-        auto *excludeMatchesArray = parameters.excludeMatchPatterns ? createNSArray(parameters.excludeMatchPatterns.value()).get() : @[ ];
+-        for (NSString *matchPatternString in excludeMatchesArray) {
+-            if (!matchPatternString.length) {
+-                *errorMessage = toErrorString(callingAPIName, nullString(), makeString("script with ID '"_s, scriptID, "' contains an empty exclude match pattern"_s)).createNSString().autorelease();
+-                return false;
+-            }
+-
+-            RefPtr matchPattern = WebExtensionMatchPattern::getOrCreate(matchPatternString);
+-            if (!matchPattern || !matchPattern->isSupported()) {
+-                *errorMessage = toErrorString(callingAPIName, nullString(), makeString("script with ID '"_s, scriptID, "' has an invalid exclude match pattern '"_s, String(matchPatternString), "'"_s)).createNSString().autorelease();
+-                return false;
+-            }
+-
+-            excludeMatchPatterns.add(matchPattern.releaseNonNull());
+-        }
+-
+-        InjectedContentData injectedContentData;
+-        injectedContentData.identifier = parameters.identifier;
+-        injectedContentData.includeMatchPatterns = WTF::move(includeMatchPatterns);
+-        injectedContentData.excludeMatchPatterns = WTF::move(excludeMatchPatterns);
+-        injectedContentData.injectionTime = parameters.injectionTime.value_or(WebExtension::InjectionTime::DocumentIdle);
+-        injectedContentData.injectsIntoAllFrames = parameters.allFrames.value_or(false);
+-        injectedContentData.matchParentFrame = parameters.matchParentFrame.value_or(WebCore::UserContentMatchParentFrame::Never);
+-        injectedContentData.contentWorldType = parameters.world.value_or(WebExtensionContentWorldType::ContentScript);
+-        injectedContentData.styleLevel = parameters.styleLevel.value_or(WebCore::UserStyleLevel::Author);
+-        injectedContentData.scriptPaths = makeVector<String>(scriptPaths);
+-        injectedContentData.styleSheetPaths = makeVector<String>(styleSheetPaths);
+-
+-        injectedContentsMap.add(scriptID, WTF::move(injectedContentData));
+-    }
+-
+-    return true;
++    String error;
++    bool result = createInjectedContentForScripts(scripts, firstTimeRegistration, injectedContentsMap, String(callingAPIName), &error);
++    *errorMessage = result ? nil : error.createNSString().autorelease();
++    return result;
+ }
+ 
+ } // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm b/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm
 index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..051e3946402ea30548d38f068426d30a4b0666c3 100644
 --- a/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm
@@ -27307,7 +27852,7 @@ index f14860d8e436a90cb7616ae96bb9f05d6517bc50..82194307c95982f947c180baa35828f3
      explicit WebExtension(const JSON::Value& manifest, Resources&& = { });
  
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
-index a156078a37b33ea2704f6a9ba747a0c881bb0009..a48451a981a94b2bdea9a3ca7820431e5135ccdb 100644
+index a156078a37b33ea2704f6a9ba747a0c881bb0009..19cd73a8416c1a8140c440afc86d289462e1c3e4 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
 @@ -36,9 +36,13 @@
@@ -27324,7 +27869,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..a48451a981a94b2bdea9a3ca7820431e
  #include <WebCore/LocalizedStrings.h>
  #include <WebCore/TextResourceDecoder.h>
  #include <wtf/HashMap.h>
-@@ -51,6 +55,209 @@ namespace WebKit {
+@@ -51,6 +55,210 @@ namespace WebKit {
  
  using namespace WebCore;
  
@@ -27422,6 +27967,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..a48451a981a94b2bdea9a3ca7820431e
 +    m_safeToLoadBackgroundContent = false;
 +    m_backgroundContentLoadError = nullptr;
 +
++    ++m_registeredContentScriptsGeneration;
 +    m_registeredScriptsMap.clear();
 +    m_dynamicallyInjectedUserStyleSheets.clear();
 +    m_injectedScriptsPerPatternMap.clear();
@@ -27534,7 +28080,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..a48451a981a94b2bdea9a3ca7820431e
  int WebExtensionContext::toAPIError(WebExtensionContext::Error error)
  {
      switch (error) {
-@@ -1660,7 +1867,13 @@ WebExtensionContext::WebExtensionContext()
+@@ -1660,7 +1868,13 @@ WebExtensionContext::WebExtensionContext()
  }
  
  #if !USE(GLIB)
@@ -27549,7 +28095,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..a48451a981a94b2bdea9a3ca7820431e
  #endif
  
  WebExtensionContextIdentifier WebExtensionContext::privilegedIdentifier() const
-@@ -1798,9 +2011,17 @@ void WebExtensionContext::loadBackgroundContent(CompletionHandler<void(RefPtr<AP
+@@ -1798,9 +2012,17 @@ void WebExtensionContext::loadBackgroundContent(CompletionHandler<void(RefPtr<AP
          return;
      }
  
@@ -27570,7 +28116,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..a48451a981a94b2bdea9a3ca7820431e
      });
  }
  
-@@ -2003,6 +2224,59 @@ Ref<WebExtensionRegisteredScriptsSQLiteStore> WebExtensionContext::registeredCon
+@@ -2003,6 +2225,59 @@ Ref<WebExtensionRegisteredScriptsSQLiteStore> WebExtensionContext::registeredCon
      return *m_registeredContentScriptsStorage;
  }
  
@@ -27631,7 +28177,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..a48451a981a94b2bdea9a3ca7820431e
  
  #endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
-index 05a8676082d56f2c47c9af6120f5120b09f982be..4f4994e271ddd34dce35f1054df919a44baba500 100644
+index 05a8676082d56f2c47c9af6120f5120b09f982be..b8ee9316aa4dc8ed7ce45385fc595349ff57c2fc 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 @@ -52,6 +52,7 @@
@@ -27759,7 +28305,15 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..4f4994e271ddd34dce35f1054df919a4
  
  #ifdef NDEBUG
      // This is method is a no-op in release builds since it has a performance impact with little benefit to release builds.
-@@ -1129,6 +1157,8 @@ private:
+@@ -1034,6 +1062,7 @@ private:
+     void scriptingGetRegisteredScripts(const Vector<String>&, CompletionHandler<void(std::expected<Vector<WebExtensionRegisteredScriptParameters>, WebExtensionError>&&)>&&);
+     void scriptingUnregisterContentScripts(const Vector<String>&, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
+     bool createInjectedContentForScripts(const Vector<WebExtensionRegisteredScriptParameters>&, WebExtensionDynamicScripts::WebExtensionRegisteredScript::FirstTimeRegistration, DynamicInjectedContentsMap&, NSString *callingAPIName, NSString **errorMessage);
++    bool createInjectedContentForScripts(const Vector<WebExtensionRegisteredScriptParameters>&, WebExtensionDynamicScripts::WebExtensionRegisteredScript::FirstTimeRegistration, DynamicInjectedContentsMap&, const String& callingAPIName, String* errorMessage);
+ 
+     // Sidebar APIs
+ #if ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
+@@ -1129,6 +1158,8 @@ private:
      RetainPtr<NSMutableDictionary> m_state;
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<GKeyFile> m_state;
@@ -27768,7 +28322,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..4f4994e271ddd34dce35f1054df919a4
  #endif
      Vector<Ref<API::Error>> m_errors;
  
-@@ -1194,6 +1224,9 @@ private:
+@@ -1194,6 +1225,9 @@ private:
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<WebKitWebView> m_backgroundWebView;
      GWeakPtr<WebKitWebExtensionContext> m_delegate;
@@ -27778,7 +28332,15 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..4f4994e271ddd34dce35f1054df919a4
  #endif
      Variant<std::monostate, Ref<ProcessThrottlerActivity>, Ref<ProcessActivityGroup>> m_backgroundWebViewActivity;
      RefPtr<API::Error> m_backgroundContentLoadError;
-@@ -1234,7 +1267,7 @@ private:
+@@ -1215,6 +1249,7 @@ private:
+     HashMap<Ref<WebExtensionMatchPattern>, UserScriptVector> m_injectedScriptsPerPatternMap;
+     HashMap<Ref<WebExtensionMatchPattern>, UserStyleSheetVector> m_injectedStyleSheetsPerPatternMap;
+ 
++    uint64_t m_registeredContentScriptsGeneration { 0 };
+     HashMap<String, Ref<WebExtensionDynamicScripts::WebExtensionRegisteredScript>> m_registeredScriptsMap;
+     RefPtr<WebExtensionRegisteredScriptsSQLiteStore> m_registeredContentScriptsStorage;
+ 
+@@ -1234,7 +1269,7 @@ private:
  #endif // ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
  
      PortCountedSet m_ports;
@@ -34048,18 +34610,19 @@ index 0000000000000000000000000000000000000000..2a51b2913800fada0f6279c8919bc190
 +
 +} // namespace WebKit
 diff --git a/Source/WebKit/WebKit.xcodeproj/project.pbxproj b/Source/WebKit/WebKit.xcodeproj/project.pbxproj
-index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..7f04d3450e645c60d6f8c7b48c3e53d553392a83 100644
+index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..e34adc57f35391935bd82e6d0198e0f1a385816c 100644
 --- a/Source/WebKit/WebKit.xcodeproj/project.pbxproj
 +++ b/Source/WebKit/WebKit.xcodeproj/project.pbxproj
-@@ -540,6 +540,7 @@
+@@ -540,6 +540,8 @@
  		1C2184022233872800BAC700 /* NSAttributedStringPrivate.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C2184012233872800BAC700 /* NSAttributedStringPrivate.h */; settings = {ATTRIBUTES = (Private, ); }; };
  		1C2B4D422A817D7200C528A1 /* WebExtensionAlarmParameters.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C2B4D412A817D6B00C528A1 /* WebExtensionAlarmParameters.h */; };
  		1C2B4D462A8199CD00C528A1 /* WebExtensionAPIAlarms.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C2B4D452A8199CC00C528A1 /* WebExtensionAPIAlarms.h */; };
 +		7BAC0D267A887D0EADD12397 /* WebExtensionDeferredReply.h in Headers */ = {isa = PBXBuildFile; fileRef = EE7AE8C394C949578F3D5B9F /* WebExtensionDeferredReply.h */; };
++		ABCC1D24B73206B09FCB9CA0 /* WebExtensionRegisteredScriptParser.h in Headers */ = {isa = PBXBuildFile; fileRef = 35E0390079C740860AF02915 /* WebExtensionRegisteredScriptParser.h */; };
  		1C2BBF932B82BC5D001DBDFC /* WebExtensionError.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C2BBF922B82BC5D001DBDFC /* WebExtensionError.h */; };
  		1C386F302AF4082F004108F0 /* WebExtensionAPINotifications.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C386F2F2AF4082F004108F0 /* WebExtensionAPINotifications.h */; };
  		1C386F352AF409F9004108F0 /* JSWebExtensionAPINotifications.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C386F332AF409F9004108F0 /* JSWebExtensionAPINotifications.h */; };
-@@ -590,6 +591,9 @@
+@@ -590,6 +592,9 @@
  		1C5DC46C290B271E0061EC62 /* WebExtensionAPINamespace.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C5DC44F290888140061EC62 /* WebExtensionAPINamespace.h */; };
  		1C5DC46D290B271E0061EC62 /* WebExtensionAPIExtension.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C5DC468290B239C0061EC62 /* WebExtensionAPIExtension.h */; };
  		1C5DC46E290B27260061EC62 /* JSWebExtensionWrapper.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C5DC45829099F010061EC62 /* JSWebExtensionWrapper.h */; };
@@ -34069,7 +34632,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..7f04d3450e645c60d6f8c7b48c3e53d5
  		1C5DC46F290B27260061EC62 /* JSWebExtensionWrappable.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C5DC45B29099F010061EC62 /* JSWebExtensionWrappable.h */; };
  		1C62747D288B4C3E00CED3A2 /* CocoaHelpers.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C62747B288B4C3E00CED3A2 /* CocoaHelpers.h */; };
  		1C62900D28EE2CD300C26B60 /* CoreSVGSPI.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C62900C28EE2CD300C26B60 /* CoreSVGSPI.h */; };
-@@ -607,6 +611,7 @@
+@@ -607,6 +612,7 @@
  		1C7316772AC1DFDF007FADA4 /* WKWebExtensionMessagePortInternal.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C7316762AC1DFDF007FADA4 /* WKWebExtensionMessagePortInternal.h */; };
  		1C7316792AC1DFED007FADA4 /* WKWebExtensionMessagePortPrivate.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C7316782AC1DFED007FADA4 /* WKWebExtensionMessagePortPrivate.h */; settings = {ATTRIBUTES = (Private, ); }; };
  		1C73167B2AC1E676007FADA4 /* WebExtensionMessagePort.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C73167A2AC1E676007FADA4 /* WebExtensionMessagePort.h */; };
@@ -34077,15 +34640,16 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..7f04d3450e645c60d6f8c7b48c3e53d5
  		1C891D6619B124FF00BA79DD /* WebInspectorUI.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C891D6319B124FF00BA79DD /* WebInspectorUI.h */; };
  		1C8B2363289AE89400020CDC /* WKWebExtensionPermission.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C8B2362289AE89400020CDC /* WKWebExtensionPermission.h */; settings = {ATTRIBUTES = (Public, ); }; };
  		1C8E28201275D15400BC7BD0 /* WebInspectorBackend.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C8E281E1275D15400BC7BD0 /* WebInspectorBackend.h */; };
-@@ -4289,6 +4294,7 @@
+@@ -4289,6 +4295,8 @@
  		1C2B4D452A8199CC00C528A1 /* WebExtensionAPIAlarms.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPIAlarms.h; sourceTree = "<group>"; };
  		1C2B4D472A819C4700C528A1 /* WebExtensionAPIAlarms.idl */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionAPIAlarms.idl; sourceTree = "<group>"; };
  		1C2B4D482A819D0C00C528A1 /* JSWebExtensionAPIAlarms.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIAlarms.h; sourceTree = "<group>"; };
 +		EE7AE8C394C949578F3D5B9F /* WebExtensionDeferredReply.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionDeferredReply.h; sourceTree = "<group>"; };
++		35E0390079C740860AF02915 /* WebExtensionRegisteredScriptParser.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionRegisteredScriptParser.h; sourceTree = "<group>"; };
  		1C2BBF922B82BC5D001DBDFC /* WebExtensionError.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionError.h; sourceTree = "<group>"; };
  		1C386F2E2AF407B1004108F0 /* WebExtensionAPINotifications.idl */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionAPINotifications.idl; sourceTree = "<group>"; };
  		1C386F2F2AF4082F004108F0 /* WebExtensionAPINotifications.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPINotifications.h; sourceTree = "<group>"; };
-@@ -4414,6 +4420,9 @@
+@@ -4414,6 +4422,9 @@
  		1C5DC4532908AC260061EC62 /* JSWebExtensionAPINamespace.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPINamespace.h; sourceTree = "<group>"; };
  		1C5DC45729099F010061EC62 /* JSWebExtensionWrapper.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = JSWebExtensionWrapper.cpp; sourceTree = "<group>"; };
  		1C5DC45829099F010061EC62 /* JSWebExtensionWrapper.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionWrapper.h; sourceTree = "<group>"; };
@@ -34095,7 +34659,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..7f04d3450e645c60d6f8c7b48c3e53d5
  		1C5DC45A29099F010061EC62 /* JSWebExtensionWrapperCocoa.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = JSWebExtensionWrapperCocoa.mm; sourceTree = "<group>"; };
  		1C5DC45B29099F010061EC62 /* JSWebExtensionWrappable.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionWrappable.h; sourceTree = "<group>"; };
  		1C5DC45D2909A3680061EC62 /* CodeGeneratorExtensions.pm */ = {isa = PBXFileReference; lastKnownFileType = text.script.perl; path = CodeGeneratorExtensions.pm; sourceTree = "<group>"; };
-@@ -4451,6 +4460,7 @@
+@@ -4451,6 +4462,7 @@
  		1C7316762AC1DFDF007FADA4 /* WKWebExtensionMessagePortInternal.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WKWebExtensionMessagePortInternal.h; sourceTree = "<group>"; };
  		1C7316782AC1DFED007FADA4 /* WKWebExtensionMessagePortPrivate.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WKWebExtensionMessagePortPrivate.h; sourceTree = "<group>"; };
  		1C73167A2AC1E676007FADA4 /* WebExtensionMessagePort.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionMessagePort.h; sourceTree = "<group>"; };
@@ -34103,7 +34667,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..7f04d3450e645c60d6f8c7b48c3e53d5
  		1C73167E2AC1EA27007FADA4 /* WebExtensionMessagePortCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionMessagePortCocoa.mm; sourceTree = "<group>"; };
  		1C739E852347BCF600C621EC /* CoreTextHelpers.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = CoreTextHelpers.mm; sourceTree = "<group>"; };
  		1C739E872347BD0F00C621EC /* CoreTextHelpers.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CoreTextHelpers.h; sourceTree = "<group>"; };
-@@ -4628,7 +4638,7 @@
+@@ -4628,7 +4640,7 @@
  		1C9A15C92ABDEF13002CC12A /* WebExtensionAPIPort.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPIPort.h; sourceTree = "<group>"; };
  		1C9A15CB2ABDF10C002CC12A /* WebExtensionAPIPort.idl */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionAPIPort.idl; sourceTree = "<group>"; };
  		1C9A15CC2ABDF1E1002CC12A /* JSWebExtensionAPIPort.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIPort.h; sourceTree = "<group>"; };
@@ -34112,7 +34676,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..7f04d3450e645c60d6f8c7b48c3e53d5
  		1C9A15D02ABDF334002CC12A /* WebExtensionAPIPortCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionAPIPortCocoa.mm; sourceTree = "<group>"; };
  		1C9A15D22ABE2F4B002CC12A /* WebExtensionContextAPIPortCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionContextAPIPortCocoa.mm; sourceTree = "<group>"; };
  		1C9DD99028FA19A30093BDB0 /* WebExtensionAPIExtension.idl */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionAPIExtension.idl; sourceTree = "<group>"; };
-@@ -7986,7 +7996,7 @@
+@@ -7986,7 +7998,7 @@
  		B6058CF32B6D98E7006D4C77 /* WebExtensionDataRecord.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionDataRecord.h; sourceTree = "<group>"; };
  		B6058CF42B6D98E8006D4C77 /* WebExtensionDataRecord.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = WebExtensionDataRecord.cpp; sourceTree = "<group>"; };
  		B6114A7C2939498000380B1B /* JSWebExtensionAPIEvent.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIEvent.h; sourceTree = "<group>"; };
@@ -34121,7 +34685,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..7f04d3450e645c60d6f8c7b48c3e53d5
  		B6114A8B293AE05200380B1B /* WebExtensionEventListenerType.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WebExtensionEventListenerType.h; sourceTree = "<group>"; };
  		B61274A62B7D738100D8ACDA /* WebExtensionAPIWebPageNamespace.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPIWebPageNamespace.h; sourceTree = "<group>"; };
  		B61AFA4629510D0F008220B1 /* JSWebExtensionAPIPermissions.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIPermissions.h; sourceTree = "<group>"; };
-@@ -11341,6 +11351,9 @@
+@@ -11341,6 +11353,9 @@
  				1C5DC45B29099F010061EC62 /* JSWebExtensionWrappable.h */,
  				1C5DC45729099F010061EC62 /* JSWebExtensionWrapper.cpp */,
  				1C5DC45829099F010061EC62 /* JSWebExtensionWrapper.h */,
@@ -34131,7 +34695,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..7f04d3450e645c60d6f8c7b48c3e53d5
  			);
  			path = Bindings;
  			sourceTree = "<group>";
-@@ -11872,6 +11885,7 @@
+@@ -11872,6 +11887,7 @@
  				1C6B84C92B0D6CDF00E885DD /* WebExtensionMenuItem.cpp */,
  				1C6B84CB2B0D6CF500E885DD /* WebExtensionMenuItem.h */,
  				1C73167A2AC1E676007FADA4 /* WebExtensionMessagePort.h */,
@@ -34139,15 +34703,16 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..7f04d3450e645c60d6f8c7b48c3e53d5
  				028D30762C616E8A004F4FC6 /* WebExtensionSidebar.h */,
  				7D1A8A0D2D405B34001715DF /* WebExtensionStorageSQLiteStore.cpp */,
  				7D1A8A0C2D405B34001715DF /* WebExtensionStorageSQLiteStore.h */,
-@@ -15897,6 +15911,7 @@
+@@ -15897,6 +15913,8 @@
  				1CF35F492B36089E0079C02C /* WebExtensionCookieParameters.serialization.in */,
  				B6B156582B5E1779004F9894 /* WebExtensionDataType.h */,
  				B624FF1C2ABE54B500F6EDF6 /* WebExtensionDynamicScripts.serialization.in */,
 +				EE7AE8C394C949578F3D5B9F /* WebExtensionDeferredReply.h */,
++				35E0390079C740860AF02915 /* WebExtensionRegisteredScriptParser.h */,
  				1C2BBF922B82BC5D001DBDFC /* WebExtensionError.h */,
  				B6114A8B293AE05200380B1B /* WebExtensionEventListenerType.h */,
  				8696CE2F297EB3C90081C800 /* WebExtensionEventListenerType.serialization.in */,
-@@ -17458,7 +17473,7 @@
+@@ -17458,7 +17476,7 @@
  				1C05906A2DFA0FB7000406F9 /* JSWebExtensionAPIDOM.h */,
  				1C05906B2DFA0FB7000406F9 /* JSWebExtensionAPIDOM.mm */,
  				B6114A7C2939498000380B1B /* JSWebExtensionAPIEvent.h */,
@@ -34156,7 +34721,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..7f04d3450e645c60d6f8c7b48c3e53d5
  				1C5DC462290B1C470061EC62 /* JSWebExtensionAPIExtension.h */,
  				1C5DC460290B1C440061EC62 /* JSWebExtensionAPIExtension.mm */,
  				B6CCAAB629A445E90092E846 /* JSWebExtensionAPILocalization.h */,
-@@ -17472,7 +17487,7 @@
+@@ -17472,7 +17490,7 @@
  				B61AFA4629510D0F008220B1 /* JSWebExtensionAPIPermissions.h */,
  				B61AFA4729510D0F008220B1 /* JSWebExtensionAPIPermissions.mm */,
  				1C9A15CC2ABDF1E1002CC12A /* JSWebExtensionAPIPort.h */,
@@ -34165,7 +34730,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..7f04d3450e645c60d6f8c7b48c3e53d5
  				7D3D13B1304398C400289ABF /* JSWebExtensionAPIRuntime.cpp */,
  				1C5DC461290B1C470061EC62 /* JSWebExtensionAPIRuntime.h */,
  				B63E9A6C2AAF2B2D005F4561 /* JSWebExtensionAPIScripting.h */,
-@@ -18657,6 +18672,9 @@
+@@ -18657,6 +18675,9 @@
  				1C5ACFA82A96F8C400C041C0 /* JSWebExtensionAPIWindowsEvent.h in Headers */,
  				1C5DC46F290B27260061EC62 /* JSWebExtensionWrappable.h in Headers */,
  				1C5DC46E290B27260061EC62 /* JSWebExtensionWrapper.h in Headers */,
@@ -34175,15 +34740,16 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..7f04d3450e645c60d6f8c7b48c3e53d5
  				074A6FC72D5F1FAF0027F958 /* KeyEventInterpretationContext.h in Headers */,
  				E385F3692E86D75800461B0C /* LaunchLogHook.h in Headers */,
  				E385F37C2E87076100461B0C /* LaunchLogMessages.h in Headers */,
-@@ -19257,6 +19275,7 @@
+@@ -19257,6 +19278,8 @@
  				B6058CF52B6D98E8006D4C77 /* WebExtensionDataRecord.h in Headers */,
  				B6B1565C2B5E177A004F9894 /* WebExtensionDataType.h in Headers */,
  				B6D031052AC1F241006C8E0B /* WebExtensionDynamicScripts.h in Headers */,
 +				7BAC0D267A887D0EADD12397 /* WebExtensionDeferredReply.h in Headers */,
++				ABCC1D24B73206B09FCB9CA0 /* WebExtensionRegisteredScriptParser.h in Headers */,
  				1C2BBF932B82BC5D001DBDFC /* WebExtensionError.h in Headers */,
  				B6114A8C293AE06800380B1B /* WebExtensionEventListenerType.h in Headers */,
  				1C4A14C62ABB710E00A1018C /* WebExtensionFrameIdentifier.h in Headers */,
-@@ -19268,6 +19287,7 @@
+@@ -19268,6 +19291,7 @@
  				1C6BE79F2B0A910200D01D93 /* WebExtensionMenuItemParameters.h in Headers */,
  				1C6BE7A32B0A94E500D01D93 /* WebExtensionMenuItemType.h in Headers */,
  				1C73167B2AC1E676007FADA4 /* WebExtensionMessagePort.h in Headers */,
