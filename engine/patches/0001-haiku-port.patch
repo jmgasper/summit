@@ -12932,10 +12932,10 @@ index 0000000000000000000000000000000000000000..b643509345de3c578337c746965cade3
 +#endif // SearchPopupMenuHaiku_h
 diff --git a/Source/WebCore/platform/haiku/SharedMemoryHaiku.cpp b/Source/WebCore/platform/haiku/SharedMemoryHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..583a0e05168d879e7c6ceeef77cdd25bf8494d58
+index 0000000000000000000000000000000000000000..d74ea7e8b2f8e4c3066db1f922fd2b11a5f59285
 --- /dev/null
 +++ b/Source/WebCore/platform/haiku/SharedMemoryHaiku.cpp
-@@ -0,0 +1,179 @@
+@@ -0,0 +1,183 @@
 +/*
 + * Copyright (C) 2019 Haiku, Inc. All rights reserved.
 + *
@@ -13072,8 +13072,12 @@ index 0000000000000000000000000000000000000000..583a0e05168d879e7c6ceeef77cdd25b
 +    RefPtr<SharedMemory> memory = adoptRef(new SharedMemory);
 +    memory->m_size = size;
 +    memory->m_data = data;
-+    memory->m_fileDescriptor = UnixFileDescriptor { descriptor, UnixFileDescriptor::Borrow };
++    memory->m_fileDescriptor = UnixFileDescriptor { descriptor, UnixFileDescriptor::Duplicate };
 +    memory->m_isWrappingMap = true;
++    if (!memory->m_fileDescriptor)
++        return nullptr;
++    if ((fcntl(memory->m_fileDescriptor.value(), F_GETFL) & O_ACCMODE) == O_RDONLY)
++        memory->m_readOnlyFileDescriptor = memory->m_fileDescriptor.duplicate();
 +    return memory;
 +}
 +
@@ -20468,6 +20472,55 @@ index 7f1b4513bad9ff098f373a086052df70970f66e5..f5546aaa38388666b6678dbea27b6c65
      WebExtensionAPIRuntime \
      WebExtensionAPITest \
  	WebExtensionAPIWebPageNamespace \
+diff --git a/Source/WebKit/NetworkProcess/cache/NetworkCacheData.h b/Source/WebKit/NetworkProcess/cache/NetworkCacheData.h
+index 44e007fe363106a596ab96dea93ea1c94f283da2..8fd62640b883ec6a8ef507abed5cc7c7544884c8 100644
+--- a/Source/WebKit/NetworkProcess/cache/NetworkCacheData.h
++++ b/Source/WebKit/NetworkProcess/cache/NetworkCacheData.h
+@@ -108,6 +108,9 @@ private:
+ #endif
+ #if USE(CURL)
+     Box<Variant<Vector<uint8_t>, FileSystem::MappedFileData>> m_buffer;
++#if PLATFORM(HAIKU)
++    Box<FileSystem::FileHandle> m_fileHandle;
++#endif
+ #endif
+     bool m_isMap { false };
+ };
+diff --git a/Source/WebKit/NetworkProcess/cache/NetworkCacheDataCurl.cpp b/Source/WebKit/NetworkProcess/cache/NetworkCacheDataCurl.cpp
+index b6dddae5d270e332a7dbb3f8153e0542e0dfe4c9..8e20544939f972fe08d9a4975b87b6de91631ebb 100644
+--- a/Source/WebKit/NetworkProcess/cache/NetworkCacheDataCurl.cpp
++++ b/Source/WebKit/NetworkProcess/cache/NetworkCacheDataCurl.cpp
+@@ -108,9 +108,14 @@ Data concatenate(const Data& a, const Data& b)
+ Data Data::adoptMap(FileSystem::MappedFileData&& mappedFile, FileSystem::FileHandle&& fileHandle)
+ {
+     ASSERT(mappedFile);
++#if PLATFORM(HAIKU)
++    Data data { WTF::move(mappedFile) };
++    data.m_fileHandle = Box<FileSystem::FileHandle>::create(WTF::move(fileHandle));
++    return data;
++#else
+     fileHandle = { };
+-
+     return { WTF::move(mappedFile) };
++#endif
+ }
+ 
+ #if ENABLE(SHAREABLE_RESOURCE) && OS(WINDOWS)
+@@ -125,6 +130,14 @@ RefPtr<WebCore::SharedMemory> Data::tryCreateSharedMemory() const
+ 
+     return WebCore::SharedMemory::map({ WTF::move(newHandle), size() }, WebCore::SharedMemory::Protection::ReadOnly);
+ }
++#elif PLATFORM(HAIKU)
++RefPtr<WebCore::SharedMemory> Data::tryCreateSharedMemory() const
++{
++    if (isNull() || !isMap() || !m_fileHandle || !*m_fileHandle)
++        return nullptr;
++    auto bytes = span();
++    return WebCore::SharedMemory::wrapMap(const_cast<uint8_t*>(bytes.data()), bytes.size(), m_fileHandle->platformHandle());
++}
+ #endif
+ 
+ } // namespace NetworkCache
 diff --git a/Source/WebKit/NetworkProcess/cache/NetworkCacheDataHaiku.cpp b/Source/WebKit/NetworkProcess/cache/NetworkCacheDataHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..18987ccb29fc7459f934d9015ae58c5c57165feb
@@ -22861,10 +22914,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..732261e7895dfe0805086908e22f00d8a4acd370
+index 0000000000000000000000000000000000000000..4e7a9a5fa6a4a559fa3484e4045fe71d13ce3ae6
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,184 @@
+@@ -0,0 +1,185 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -22910,6 +22963,7 @@ index 0000000000000000000000000000000000000000..732261e7895dfe0805086908e22f00d8
 +    UIProcess/DefaultUndoController.cpp
 +    UIProcess/API/haiku/WebKitContext.cpp
 +    UIProcess/API/haiku/WebKitInfo.cpp
++    UIProcess/API/haiku/APIContentRuleListStoreHaiku.cpp
 +    UIProcess/API/haiku/WebKitView.cpp
 +    UIProcess/Extensions/haiku/WebExtensionArchiveHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionContextHaiku.cpp
@@ -24664,6 +24718,54 @@ index 0000000000000000000000000000000000000000..23ef0de7f5c5892922479a85b153ca94
 +
 +#endif /* WKView_h */
 +
+diff --git a/Source/WebKit/UIProcess/API/haiku/APIContentRuleListStoreHaiku.cpp b/Source/WebKit/UIProcess/API/haiku/APIContentRuleListStoreHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..21a901f84f8f9a2904f5a79805ec1422dbbcd54a
+--- /dev/null
++++ b/Source/WebKit/UIProcess/API/haiku/APIContentRuleListStoreHaiku.cpp
+@@ -0,0 +1,42 @@
++/*
++ * Copyright (C) 2026 KunanyiOS contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "APIContentRuleListStore.h"
++
++#if ENABLE(CONTENT_EXTENSIONS)
++
++#include "StoragePathsHaiku.h"
++
++namespace API {
++
++WTF::String ContentRuleListStore::defaultStorePath()
++{
++    return WebKit::storageDirectoryPathHaiku(false, nullString(), "ContentRuleLists"_s, true);
++}
++
++} // namespace API
++
++#endif // ENABLE(CONTENT_EXTENSIONS)
 diff --git a/Source/WebKit/UIProcess/API/haiku/APIWebsiteDataStoreHaiku.cpp b/Source/WebKit/UIProcess/API/haiku/APIWebsiteDataStoreHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..737cf4eece3b67d3e5548b867e8d3254ed404a63

@@ -1252,3 +1252,17 @@ A subsequent three-worker build is now frozen on
 which includes the intervening porting work. It reuses compiled dependencies
 and rebuilds 267 steps after regeneration; log:
 `.vm/modern-extensions-native-runtime-build.log`.
+
+
+2026-09-14 content-rule platform closure: the native default store path now
+uses application-specific settings storage, and mapped Curl cache data can
+supply shared memory while retaining its file handle. Wrappers own a
+duplicate descriptor and export read-only capabilities for read-only files.
+All 17 focused mapping checks and all 39 existing shared-memory regression
+checks pass natively; the store adapter compiles. An earlier failed runtime
+probe caught a borrowed-descriptor ownership error, corrected before these
+passes. See [platform evidence](content-rule-platform-support.md).
+
+Patch: `55777c374a27e62895e7404aaea3efe33042b78fe1c7d4d459fe4bc057faf861`.
+The full build remains on frozen `1b839dea...`, now through WebKit shared
+units. No native content-rule store or DNR runtime has been exercised.
