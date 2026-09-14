@@ -1486,3 +1486,18 @@ final integration compiles pass. No queued test, API object, DOM context or IPC
 was run. See [executor evidence and limits](webextensions-native-test-executor.md).
 
 Patch: `ba1ee173c7963284ecede95c47830e7109b13fad531aca9c2c4495f2212f221f`.
+
+2026-09-14 ninth full extension link result: the frozen `ba1ee173...` build
+completes compilation and fails at the WebKit shared-library link with 36
+missing symbols. Queued test execution resolves `WebExtensionAPITest::addTest`
+and introduces no new unresolved symbols. Evidence:
+`.vm/modern-extensions-test-executor-build-result.json`.
+The feature-enabled engine has not linked or run an extension.
+
+2026-09-14 native navigation bindings: the process-side API, URL-filter parser,
+event payloads and frame-query messages now use common C++. **136 native helper
+checks pass** and **11 units compile**, including generated bindings and IPC.
+Two additional interfaces use C++ bindings, bringing the total to 12 of 37.
+Native frame-query handling and tab integration are still missing; no extension
+API or navigation event was run. See [navigation API evidence and limits](webextensions-native-navigation-api.md).
+Patch: `5358cf199868ababff67cf59212eb911603ae30f75b7980e3fae366f1b993945`.

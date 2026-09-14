@@ -25,18 +25,23 @@ EXTRA_UNITS = ('haiku/WebExtensionContextBackgroundHaiku.cpp', 'haiku/WebExtensi
                'Bindings/JSWebExtensionPromise.cpp',
                'API/WebExtensionAPINamespace.cpp', 'API/WebExtensionAPIWebPageNamespace.cpp',
                'API/WebExtensionAPIStorage.cpp', 'API/WebExtensionAPIStorageArea.cpp',
+               'API/WebExtensionAPIWebNavigation.cpp', 'API/WebExtensionAPIWebNavigationEvent.cpp',
                'API/WebExtensionAPITest.cpp',
                'API/WebExtensionAPIRuntime.cpp',
                'API/WebExtensionAPIEvent.cpp', 'API/WebExtensionAPIPort.cpp')
 GENERATED_UNITS = ('WebExtensionContextMessageReceiver.cpp', 'WebExtensionContextProxyMessageReceiver.cpp')
-BINDING_UNITS = ('JSWebExtensionAPIEvent.cpp', 'JSWebExtensionAPIPort.cpp',
+BINDING_UNITS = ('JSWebExtensionAPIWebNavigation.cpp', 'JSWebExtensionAPIWebNavigationEvent.cpp',
+                 'JSWebExtensionAPIEvent.cpp', 'JSWebExtensionAPIPort.cpp',
                  'JSWebExtensionAPIStorage.cpp', 'JSWebExtensionAPIStorageArea.cpp',
                  'JSWebExtensionAPINamespace.cpp', 'JSWebExtensionAPIWebPageNamespace.cpp')
 PAGE_UNITS = {'WebPage.cpp': 'WebProcess/WebPage/WebPage.cpp',
               'WebLocalFrameLoaderClient.cpp': 'WebProcess/WebCoreSupport/WebLocalFrameLoaderClient.cpp'}
 NATIVE_PAGE_UNITS = {'WebPageProxy.cpp': 'UIProcess/WebPageProxy.cpp',
                      'WebView.cpp': 'UIProcess/haiku/WebView.cpp'}
-UI_API_UNITS = {'WebExtensionDynamicScripts.cpp': 'UIProcess/Extensions/WebExtensionDynamicScripts.cpp',
+UI_API_UNITS = {'WebExtensionNavigationURLFilter.cpp': 'WebProcess/Extensions/WebExtensionNavigationURLFilter.cpp',
+                'WebExtensionNavigationParameters.cpp': 'WebProcess/Extensions/WebExtensionNavigationParameters.cpp',
+                'WebExtensionContextAPIWebNavigation.cpp': 'UIProcess/Extensions/API/WebExtensionContextAPIWebNavigation.cpp',
+                'WebExtensionDynamicScripts.cpp': 'UIProcess/Extensions/WebExtensionDynamicScripts.cpp',
                 'WebExtensionControllerAPITestHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionControllerAPITestHaiku.cpp',
                 'WebExtensionWebsiteData.cpp': 'UIProcess/Extensions/WebExtensionWebsiteData.cpp',
                 'WebExtensionUtilities.cpp': 'Shared/Extensions/WebExtensionUtilities.cpp',
