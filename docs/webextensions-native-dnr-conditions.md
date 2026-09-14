@@ -21,9 +21,16 @@ exclusion removes only its own action. It does not introduce an
 The existing `url-filter` is still required. An optional non-empty
 `url-filter-alternatives` array supplies additional base patterns. All base
 patterns share the trigger's case flag, request flags, conditions and serialized
-action location. Overlapping matches therefore produce one action. This is
-needed for the URL translator's separator/end-of-URL alternatives, including
-actions such as appending a header that cannot safely run twice.
+action location. This is needed for the URL translator's separator/end-of-URL
+alternatives, including actions such as appending a header that cannot safely
+run twice.
+
+The backend removes repeated serialized action locations when merging unflagged
+universal and URL-specific matches. This prevents an overlapping alternative
+from repeating an action. Distinct conditional rules retain separate locations
+and remain independently effective. The real pipeline test below exposed and
+verified this fix; the earlier helper tests combined matches in a set and missed
+that backend boundary.
 
 Legacy top/frame URL conditions remain supported. A trigger cannot combine
 legacy conditions with the new groups. Each new group's case sensitivity is
@@ -77,4 +84,42 @@ isolated extension-enabled configuration and candidate source snapshots.
 
 Promoted engine patch:
 `656209ed1a5461930864b0bc5ee25d29edce7c026f34754e2f4397797a5d16f0`.
-The full extension-enabled build is running; no full-build result is claimed yet.
+The full extension-enabled build rebuilt WebCore and reached WebKit's library
+link. It failed on the same 17 unresolved symbols as the previous build, with
+none newly introduced. Evidence:
+`.vm/modern-extensions-dnr-conditions-build-result.json`.
+
+A stronger pipeline test links the rebuilt WebCore archive and exercises
+the real rule-list parser, compiler, URL caches, backend, action deserializer and
+a header change on an in-memory `ResourceRequest`. On the initial `656209ed...`
+patch it reported **84 passing checks and two failures**, both from unflagged
+universal/specific
+overlaps returning the same action twice. The other cases cover compound clauses,
+distinct conditional actions, legacy methods, first null-URL cache lookups and
+cache transitions, parser rejection, and compiler failure without finalization.
+There were no native crashes, and input/library hashes stayed unchanged.
+Evidence: `.vm/content-rule-pipeline.72m2NrMW/runtime-result.json`.
+This test does not link WebKit or run an extension, persistent rule store, IPC,
+browser or network request.
+
+The backend deduplication fix is in patch
+`dbfa7e97e15983e2e645a9b200e91472f3213239d3b7ae0157463e6ef1f2a7cc`.
+The identical pipeline source now passes **all 86 checks**, with no native crashes
+and unchanged inputs/libraries. Evidence:
+`.vm/content-rule-pipeline.rzdrhT4E/result.json` and
+`.vm/extension-dnr-action-union-validation.json`. The incremental full build
+recompiled the backend's unity unit and rebuilt WebCore; WebKit's link still
+fails on the same 17 unresolved symbols. Evidence:
+`.vm/modern-extensions-dnr-action-union-build-result.json`.
+
+Run the pipeline after rebuilding the feature-enabled WebCore archive:
+
+```sh
+python3 tools/test-engine-content-rule-pipeline.py
+```
+
+The tool also supports compiling the harness with `--compile-only` and later
+resuming the printed native staging directory with `--resume`. It verifies that
+the archive is up to date, records 850 compiler input dependencies for this test,
+and hashes the actual linked archive and explicit library inputs. A failed check
+or native crash makes the run fail.

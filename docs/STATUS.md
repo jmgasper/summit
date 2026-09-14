@@ -1688,3 +1688,22 @@ The harness uses actual filter bytecode but does not execute the full parser,
 cache, actions, extension loader or browser enforcement. See [compound condition
 evidence and limits](webextensions-native-dnr-conditions.md).
 Patch: `656209ed1a5461930864b0bc5ee25d29edce7c026f34754e2f4397797a5d16f0`.
+
+2026-09-15 (local) nineteenth full extension link result: the compound-condition
+patch rebuilds WebCore successfully. WebKit reaches its shared-library link and
+fails on the same 17 unresolved symbols, with none newly introduced. Evidence:
+`.vm/modern-extensions-dnr-conditions-build-result.json`. A separate executable
+linked the rebuilt WebCore archive and tested its actual rule-list pipeline:
+84 checks passed and two universal/specific overlap cases exposed duplicate
+actions. No WebKit extension or browser runtime was executed by that test.
+
+2026-09-15 (local) actual content-rule pipeline: the backend now deduplicates
+serialized action locations when merging universal and URL-specific matches.
+The unchanged native pipeline fixture passes **all 86 checks**, including the
+two previously failing overlaps. It also verifies real parsing, compilation,
+URL caches, action deserialization and a header change on `ResourceRequest`.
+Distinct conditional rules remain separate. No native crashes or input/library
+changes were detected. Evidence: `.vm/content-rule-pipeline.rzdrhT4E/result.json`.
+The twentieth full extension link attempt rebuilt WebCore and still failed on
+the same 17 WebKit symbols, with none new. No extension has run in Summit.
+Patch: `dbfa7e97e15983e2e645a9b200e91472f3213239d3b7ae0157463e6ef1f2a7cc`.
