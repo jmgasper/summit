@@ -55,10 +55,9 @@ Probe baseline: `e3a4cf2b5baf68e779cb6cb3fcd8d3bf38f2e242f7aacd7a96645971efb65ea
 
 These are native compilation results. Background document/worker execution,
 failure recovery, unload races, privacy isolation and port continuity still
-need tests against a linked feature-enabled engine. Cancellation of waiting
-callbacks after load failure/unload and reentrant post-load task draining
-remain follow-up work; the extracted post-load sequence preserves its
-existing behavior. Native listener/install
+need tests against a linked feature-enabled engine. Subsequent cancellation
+and post-load task draining changes are recorded in
+[deferred replies](webextensions-native-deferred-replies.md). Native install
 state, tab/window delegates, controller platform/client setup and browser
 attachment remain incomplete. No extension has run in the preview, which
 continues to use its verified extension-disabled bundle.

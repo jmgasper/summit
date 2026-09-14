@@ -1183,3 +1183,17 @@ Patch: `a3972b1c21db2ef8fef493e3883a3e588064909cd30365febaaeb0317ec0f89a`.
 See [listener-state evidence](webextensions-native-background-listeners.md).
 The full three-worker engine build continues on frozen `1daf0679...` through
 WebCore worker units. The preview remains `bundle-yqhmejfw`, extensions off.
+
+
+2026-09-14 deferred background replies: pending runtime operations now retain
+an explicit fallback until they start; cancelling the queue completes these
+replies. Background task draining uses a local snapshot and page/context
+identity guards around callbacks. All 18 native lifetime-helper assertions
+pass, and the UI runtime, common context and native background units compile
+with both extension features enabled. The context's cancellation timing and
+reentrancy still need runtime checks. See [deferred reply evidence](webextensions-native-deferred-replies.md).
+
+Patch: `c711e3e700a24caf8c796eee55989f36d12d139e3129f92aeea80fd5d3db26cb`.
+The full engine build on frozen `1daf0679...` has created `libWebCore.a` and
+continues through WebKit units. A feature-enabled WebKit link and extension
+runtime remain unverified. The preview remains `bundle-yqhmejfw`, extensions off.

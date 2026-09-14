@@ -23148,6 +23148,67 @@ index 4aa44664bcb8fd583fd38914ebc053fe737f8ce9..2411f2e16b0942622b701ef51dd712b3
          platformFinalize();
  
          return EXIT_SUCCESS;
+diff --git a/Source/WebKit/Shared/Extensions/WebExtensionDeferredReply.h b/Source/WebKit/Shared/Extensions/WebExtensionDeferredReply.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..786389356ffcf87d818bc62c570e36233072c896
+--- /dev/null
++++ b/Source/WebKit/Shared/Extensions/WebExtensionDeferredReply.h
+@@ -0,0 +1,55 @@
++/*
++ * Copyright (C) 2024 Apple Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#pragma once
++
++#if ENABLE(WK_WEB_EXTENSIONS)
++
++#include <wtf/CallbackAggregator.h>
++
++namespace WebKit {
++
++template<typename Result>
++using DeferredWebExtensionReply = EagerCallbackAggregator<void(Result)>;
++
++// Pending background tasks can be discarded. Retain a reply with an explicit
++// fallback until the task starts, then resume its normal completion handler.
++template<typename Result>
++Ref<DeferredWebExtensionReply<Result>> deferWebExtensionReply(CompletionHandler<void(Result&&)>&& reply, std::type_identity_t<Result>&& fallback)
++{
++    return DeferredWebExtensionReply<Result>::create(WTF::move(reply), WTF::move(fallback));
++}
++
++template<typename Result>
++CompletionHandler<void(Result&&)> resumeWebExtensionReply(Ref<DeferredWebExtensionReply<Result>>&& reply)
++{
++    return [reply = WTF::move(reply)](Result&& result) {
++        reply.get()(WTF::move(result));
++    };
++}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/Shared/NativeWebKeyboardEvent.h b/Source/WebKit/Shared/NativeWebKeyboardEvent.h
 index d19f2b5f32665df6704bbd5ceac3f483ece6822d..489043ab4e7a29948bf94db71c26723cb72fe1e7 100644
 --- a/Source/WebKit/Shared/NativeWebKeyboardEvent.h
@@ -25864,10 +25925,10 @@ index 0000000000000000000000000000000000000000..9646cfed1402f767f2a17e856f964e92
 +#endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/UIProcess/Extensions/API/WebExtensionContextAPIRuntime.cpp b/Source/WebKit/UIProcess/Extensions/API/WebExtensionContextAPIRuntime.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..415efb11368f64d17868fad5bedf3074a52bab9b
+index 0000000000000000000000000000000000000000..84cc0fc4951d3e47bacbe759f5d2395a8d00d764
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/API/WebExtensionContextAPIRuntime.cpp
-@@ -0,0 +1,326 @@
+@@ -0,0 +1,337 @@
 +/*
 + * Copyright (C) 2023-2024 Apple Inc. All rights reserved.
 + *
@@ -25901,6 +25962,7 @@ index 0000000000000000000000000000000000000000..415efb11368f64d17868fad5bedf3074
 +#include "Logging.h"
 +#include "MessageSenderInlines.h"
 +#include "WebExtensionContextProxyMessages.h"
++#include "WebExtensionDeferredReply.h"
 +#include "WebExtensionMessageSenderParameters.h"
 +#include "WebExtensionMessageTargetParameters.h"
 +#include "WebExtensionTab.h"
@@ -25914,7 +25976,9 @@ index 0000000000000000000000000000000000000000..415efb11368f64d17868fad5bedf3074
 +
 +void WebExtensionContext::runtimeGetBackgroundPage(CompletionHandler<void(std::expected<std::optional<WebCore::PageIdentifier>, WebExtensionError>&&)>&& completionHandler)
 +{
-+    wakeUpBackgroundContentIfNecessary([this, protectedThis = Ref { *this }, completionHandler = WTF::move(completionHandler)]() mutable {
++    auto pendingReply = deferWebExtensionReply(WTF::move(completionHandler), toWebExtensionError("runtime.getBackgroundPage()"_s, nullString(), "background content is unavailable"_s));
++    wakeUpBackgroundContentIfNecessary([this, protectedThis = Ref { *this }, pendingReply = WTF::move(pendingReply)]() mutable {
++        auto completionHandler = resumeWebExtensionReply(WTF::move(pendingReply));
 +        completionHandler(backgroundPageIdentifierInOwnProcess());
 +    });
 +}
@@ -25950,7 +26014,9 @@ index 0000000000000000000000000000000000000000..415efb11368f64d17868fad5bedf3074
 +    constexpr auto targetContentWorldType = WebExtensionContentWorldType::Main;
 +    constexpr auto eventType = WebExtensionEventListenerType::RuntimeOnMessage;
 +
-+    wakeUpBackgroundContentIfNecessaryToFireEvents({ eventType }, [=, this, protectedThis = Ref { *this }, completionHandler = WTF::move(completionHandler)]() mutable {
++    auto pendingReply = deferWebExtensionReply(WTF::move(completionHandler), toWebExtensionError(apiName, nullString(), "background content is unavailable"_s));
++    wakeUpBackgroundContentIfNecessaryToFireEvents({ eventType }, [=, this, protectedThis = Ref { *this }, pendingReply = WTF::move(pendingReply)]() mutable {
++        auto completionHandler = resumeWebExtensionReply(WTF::move(pendingReply));
 +        auto mainWorldProcesses = processes(eventType, targetContentWorldType);
 +        if (mainWorldProcesses.isEmpty()) {
 +            completionHandler({ });
@@ -26001,7 +26067,9 @@ index 0000000000000000000000000000000000000000..415efb11368f64d17868fad5bedf3074
 +    bool resolvedUserGesture = userGesture && senderParameters.contentWorldType != WebExtensionContentWorldType::ContentScript;
 +    constexpr auto eventType = WebExtensionEventListenerType::RuntimeOnConnect;
 +
-+    wakeUpBackgroundContentIfNecessaryToFireEvents({ eventType }, [=, this, protectedThis = Ref { *this }, completionHandler = WTF::move(completionHandler)]() mutable {
++    auto pendingReply = deferWebExtensionReply(WTF::move(completionHandler), toWebExtensionError(apiName, nullString(), "background content is unavailable"_s));
++    wakeUpBackgroundContentIfNecessaryToFireEvents({ eventType }, [=, this, protectedThis = Ref { *this }, pendingReply = WTF::move(pendingReply)]() mutable {
++        auto completionHandler = resumeWebExtensionReply(WTF::move(pendingReply));
 +        auto mainWorldProcesses = processes(eventType, targetContentWorldType);
 +        if (mainWorldProcesses.isEmpty()) {
 +            completionHandler(toWebExtensionError(apiName, nullString(), "no runtime.onConnect listeners found"_s));
@@ -26068,7 +26136,9 @@ index 0000000000000000000000000000000000000000..415efb11368f64d17868fad5bedf3074
 +    constexpr bool resolvedUserGesture = false;
 +    constexpr auto eventType = WebExtensionEventListenerType::RuntimeOnMessageExternal;
 +
-+    wakeUpBackgroundContentIfNecessaryToFireEvents({ eventType }, [=, this, protectedThis = Ref { *this }, completionHandler = WTF::move(completionHandler)]() mutable {
++    auto pendingReply = deferWebExtensionReply(WTF::move(completionHandler), std::expected<String, WebExtensionError> { });
++    wakeUpBackgroundContentIfNecessaryToFireEvents({ eventType }, [=, this, protectedThis = Ref { *this }, pendingReply = WTF::move(pendingReply)]() mutable {
++        auto completionHandler = resumeWebExtensionReply(WTF::move(pendingReply));
 +        auto mainWorldProcesses = processes(eventType, WebExtensionContentWorldType::Main);
 +        if (mainWorldProcesses.isEmpty()) {
 +            completionHandler({ });
@@ -26137,7 +26207,9 @@ index 0000000000000000000000000000000000000000..415efb11368f64d17868fad5bedf3074
 +    constexpr bool resolvedUserGesture = false;
 +    constexpr auto eventType = WebExtensionEventListenerType::RuntimeOnConnectExternal;
 +
-+    wakeUpBackgroundContentIfNecessaryToFireEvents({ eventType }, [=, this, protectedThis = Ref { *this }, completionHandler = WTF::move(completionHandler)]() mutable {
++    auto pendingReply = deferWebExtensionReply(WTF::move(completionHandler), toWebExtensionError(apiName, nullString(), "background content is unavailable"_s));
++    wakeUpBackgroundContentIfNecessaryToFireEvents({ eventType }, [=, this, protectedThis = Ref { *this }, pendingReply = WTF::move(pendingReply)]() mutable {
++        auto completionHandler = resumeWebExtensionReply(WTF::move(pendingReply));
 +        auto mainWorldProcesses = processes(eventType, targetContentWorldType);
 +        if (mainWorldProcesses.isEmpty()) {
 +            completionHandler(toWebExtensionError(apiName, nullString(), "no runtime.onConnectExternal listeners found"_s));
@@ -27227,10 +27299,14 @@ index f14860d8e436a90cb7616ae96bb9f05d6517bc50..82194307c95982f947c180baa35828f3
      explicit WebExtension(const JSON::Value& manifest, Resources&& = { });
  
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
-index a156078a37b33ea2704f6a9ba747a0c881bb0009..b40063e7ea4a76191157c0e8562d18bc77bfbd11 100644
+index a156078a37b33ea2704f6a9ba747a0c881bb0009..a48451a981a94b2bdea9a3ca7820431e5135ccdb 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
-@@ -39,6 +39,9 @@
+@@ -36,9 +36,13 @@
+ #include "WebExtensionConstants.h"
+ #include "WebExtensionContextParameters.h"
+ #include "WebExtensionContextProxyMessages.h"
++#include "WebExtensionDeferredReply.h"
  #include "WebExtensionController.h"
  #include "WebExtensionPermission.h"
  #include "WebPageProxy.h"
@@ -27240,7 +27316,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..b40063e7ea4a76191157c0e8562d18bc
  #include <WebCore/LocalizedStrings.h>
  #include <WebCore/TextResourceDecoder.h>
  #include <wtf/HashMap.h>
-@@ -51,6 +54,209 @@ namespace WebKit {
+@@ -51,6 +55,209 @@ namespace WebKit {
  
  using namespace WebCore;
  
@@ -27329,7 +27405,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..b40063e7ea4a76191157c0e8562d18bc
 +
 +    m_privilegedIdentifier = std::nullopt;
 +
-+    m_actionsToPerformAfterBackgroundContentLoads.clear();
++    cancelBackgroundContentTasks();
 +    m_backgroundContentEventListeners.clear();
 +    m_backgroundContentHasLoadedOnce = false;
 +    m_eventListenerFrames.clear();
@@ -27450,7 +27526,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..b40063e7ea4a76191157c0e8562d18bc
  int WebExtensionContext::toAPIError(WebExtensionContext::Error error)
  {
      switch (error) {
-@@ -1660,7 +1866,13 @@ WebExtensionContext::WebExtensionContext()
+@@ -1660,7 +1867,13 @@ WebExtensionContext::WebExtensionContext()
  }
  
  #if !USE(GLIB)
@@ -27465,10 +27541,39 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..b40063e7ea4a76191157c0e8562d18bc
  #endif
  
  WebExtensionContextIdentifier WebExtensionContext::privilegedIdentifier() const
-@@ -2003,6 +2215,46 @@ Ref<WebExtensionRegisteredScriptsSQLiteStore> WebExtensionContext::registeredCon
+@@ -1798,9 +2011,17 @@ void WebExtensionContext::loadBackgroundContent(CompletionHandler<void(RefPtr<AP
+         return;
+     }
+ 
+-    wakeUpBackgroundContentIfNecessary([this, protectedThis = Ref { *this }, completionHandler = WTF::move(completionHandler)]() mutable {
+-        if (completionHandler)
+-            completionHandler(backgroundContentLoadError());
++    if (!completionHandler) {
++        wakeUpBackgroundContentIfNecessary([] { });
++        return;
++    }
++    auto pendingReply = deferWebExtensionReply<RefPtr<API::Error>>(
++        [completionHandler = WTF::move(completionHandler)](RefPtr<API::Error>&& error) mutable {
++            completionHandler(WTF::move(error));
++        }, createError(Error::BackgroundContentFailedToLoad, "Background content became unavailable before it finished loading"_s));
++    wakeUpBackgroundContentIfNecessary([this, protectedThis = Ref { *this }, pendingReply = WTF::move(pendingReply)]() mutable {
++        auto completionHandler = resumeWebExtensionReply(WTF::move(pendingReply));
++        completionHandler(backgroundContentLoadError());
+     });
+ }
+ 
+@@ -2003,6 +2224,59 @@ Ref<WebExtensionRegisteredScriptsSQLiteStore> WebExtensionContext::registeredCon
      return *m_registeredContentScriptsStorage;
  }
  
++void WebExtensionContext::cancelBackgroundContentTasks()
++{
++    if (m_actionsToPerformAfterBackgroundContentLoads.isEmpty())
++        return;
++    auto tasks = std::exchange(m_actionsToPerformAfterBackgroundContentLoads, { });
++    RunLoop::mainSingleton().dispatch([tasks = WTF::move(tasks)]() mutable { tasks.clear(); });
++}
++
 +void WebExtensionContext::removePage(WebPageProxy& page)
 +{
 +    disconnectPortsForPage(page);
@@ -27477,9 +27582,10 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..b40063e7ea4a76191157c0e8562d18bc
 +#if PLATFORM(COCOA) || PLATFORM(HAIKU)
 +void WebExtensionContext::performTasksAfterBackgroundContentLoads()
 +{
-+    if (!isLoaded())
++    if (!isLoaded() || !m_backgroundWebView)
 +        return;
 +
++    auto background = m_backgroundWebView;
 +    RELEASE_LOG_DEBUG(Extensions, "Background content loaded");
 +
 +    if (m_shouldFireStartupEvent) {
@@ -27496,12 +27602,16 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..b40063e7ea4a76191157c0e8562d18bc
 +
 +    RELEASE_LOG_DEBUG(Extensions, "Performing %{public}zu task(s) after background content loaded", m_actionsToPerformAfterBackgroundContentLoads.size());
 +
-+    for (auto& action : m_actionsToPerformAfterBackgroundContentLoads)
-+        action();
-+
 +    m_backgroundContentIsLoaded = true;
 +    m_backgroundContentHasLoadedOnce = true;
-+    m_actionsToPerformAfterBackgroundContentLoads.clear();
++    auto actions = std::exchange(m_actionsToPerformAfterBackgroundContentLoads, { });
++    for (auto& action : actions) {
++        if (!isLoaded() || m_backgroundWebView != background)
++            return;
++        action();
++    }
++    if (!isLoaded() || m_backgroundWebView != background)
++        return;
 +
 +    saveBackgroundPageListenersToStorage();
 +    scheduleBackgroundContentToUnload();
@@ -27513,7 +27623,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..b40063e7ea4a76191157c0e8562d18bc
  
  #endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
-index 05a8676082d56f2c47c9af6120f5120b09f982be..00d836d0aa8189c6e9269c96400067c6bc27c0c1 100644
+index 05a8676082d56f2c47c9af6120f5120b09f982be..4f4994e271ddd34dce35f1054df919a44baba500 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 @@ -52,6 +52,7 @@
@@ -27633,7 +27743,15 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..00d836d0aa8189c6e9269c96400067c6
  
      void loadStorageAccessLevelsFromStorage();
      void saveStorageAccessLevelsToStorage();
-@@ -1129,6 +1156,8 @@ private:
+@@ -796,6 +823,7 @@ private:
+     void saveBackgroundPageListenersToStorage();
+ 
+     void performTasksAfterBackgroundContentLoads();
++    void cancelBackgroundContentTasks();
+ 
+ #ifdef NDEBUG
+     // This is method is a no-op in release builds since it has a performance impact with little benefit to release builds.
+@@ -1129,6 +1157,8 @@ private:
      RetainPtr<NSMutableDictionary> m_state;
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<GKeyFile> m_state;
@@ -27642,7 +27760,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..00d836d0aa8189c6e9269c96400067c6
  #endif
      Vector<Ref<API::Error>> m_errors;
  
-@@ -1194,6 +1223,9 @@ private:
+@@ -1194,6 +1224,9 @@ private:
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<WebKitWebView> m_backgroundWebView;
      GWeakPtr<WebKitWebExtensionContext> m_delegate;
@@ -27652,7 +27770,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..00d836d0aa8189c6e9269c96400067c6
  #endif
      Variant<std::monostate, Ref<ProcessThrottlerActivity>, Ref<ProcessActivityGroup>> m_backgroundWebViewActivity;
      RefPtr<API::Error> m_backgroundContentLoadError;
-@@ -1234,7 +1266,7 @@ private:
+@@ -1234,7 +1267,7 @@ private:
  #endif // ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
  
      PortCountedSet m_ports;
@@ -28748,10 +28866,10 @@ index 0000000000000000000000000000000000000000..5747ef0450f630fa084fa505521db945
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextBackgroundHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextBackgroundHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..f61c723b771220b0dbc110de0d53bc05ce398a8c
+index 0000000000000000000000000000000000000000..881641881048903eab1b5c67971e3dfea99764af
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextBackgroundHaiku.cpp
-@@ -0,0 +1,380 @@
+@@ -0,0 +1,381 @@
 +/*
 + * Copyright (C) 2022-2025 Apple Inc. All rights reserved.
 + * Copyright (C) 2026 KunanyiOS contributors.
@@ -29031,6 +29149,7 @@ index 0000000000000000000000000000000000000000..f61c723b771220b0dbc110de0d53bc05
 +
 +void WebExtensionContext::unloadBackgroundWebView()
 +{
++    cancelBackgroundContentTasks();
 +    m_backgroundContentIsLoaded = false;
 +    m_unloadBackgroundWebViewTimer = nullptr;
 +    m_backgroundWebViewActivity = { };
@@ -33921,10 +34040,18 @@ index 0000000000000000000000000000000000000000..2a51b2913800fada0f6279c8919bc190
 +
 +} // namespace WebKit
 diff --git a/Source/WebKit/WebKit.xcodeproj/project.pbxproj b/Source/WebKit/WebKit.xcodeproj/project.pbxproj
-index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ae19156cb1bb4cd3c5cf49c1616bf016844eed01 100644
+index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..7f04d3450e645c60d6f8c7b48c3e53d553392a83 100644
 --- a/Source/WebKit/WebKit.xcodeproj/project.pbxproj
 +++ b/Source/WebKit/WebKit.xcodeproj/project.pbxproj
-@@ -590,6 +590,9 @@
+@@ -540,6 +540,7 @@
+ 		1C2184022233872800BAC700 /* NSAttributedStringPrivate.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C2184012233872800BAC700 /* NSAttributedStringPrivate.h */; settings = {ATTRIBUTES = (Private, ); }; };
+ 		1C2B4D422A817D7200C528A1 /* WebExtensionAlarmParameters.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C2B4D412A817D6B00C528A1 /* WebExtensionAlarmParameters.h */; };
+ 		1C2B4D462A8199CD00C528A1 /* WebExtensionAPIAlarms.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C2B4D452A8199CC00C528A1 /* WebExtensionAPIAlarms.h */; };
++		7BAC0D267A887D0EADD12397 /* WebExtensionDeferredReply.h in Headers */ = {isa = PBXBuildFile; fileRef = EE7AE8C394C949578F3D5B9F /* WebExtensionDeferredReply.h */; };
+ 		1C2BBF932B82BC5D001DBDFC /* WebExtensionError.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C2BBF922B82BC5D001DBDFC /* WebExtensionError.h */; };
+ 		1C386F302AF4082F004108F0 /* WebExtensionAPINotifications.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C386F2F2AF4082F004108F0 /* WebExtensionAPINotifications.h */; };
+ 		1C386F352AF409F9004108F0 /* JSWebExtensionAPINotifications.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C386F332AF409F9004108F0 /* JSWebExtensionAPINotifications.h */; };
+@@ -590,6 +591,9 @@
  		1C5DC46C290B271E0061EC62 /* WebExtensionAPINamespace.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C5DC44F290888140061EC62 /* WebExtensionAPINamespace.h */; };
  		1C5DC46D290B271E0061EC62 /* WebExtensionAPIExtension.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C5DC468290B239C0061EC62 /* WebExtensionAPIExtension.h */; };
  		1C5DC46E290B27260061EC62 /* JSWebExtensionWrapper.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C5DC45829099F010061EC62 /* JSWebExtensionWrapper.h */; };
@@ -33934,7 +34061,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ae19156cb1bb4cd3c5cf49c1616bf016
  		1C5DC46F290B27260061EC62 /* JSWebExtensionWrappable.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C5DC45B29099F010061EC62 /* JSWebExtensionWrappable.h */; };
  		1C62747D288B4C3E00CED3A2 /* CocoaHelpers.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C62747B288B4C3E00CED3A2 /* CocoaHelpers.h */; };
  		1C62900D28EE2CD300C26B60 /* CoreSVGSPI.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C62900C28EE2CD300C26B60 /* CoreSVGSPI.h */; };
-@@ -607,6 +610,7 @@
+@@ -607,6 +611,7 @@
  		1C7316772AC1DFDF007FADA4 /* WKWebExtensionMessagePortInternal.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C7316762AC1DFDF007FADA4 /* WKWebExtensionMessagePortInternal.h */; };
  		1C7316792AC1DFED007FADA4 /* WKWebExtensionMessagePortPrivate.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C7316782AC1DFED007FADA4 /* WKWebExtensionMessagePortPrivate.h */; settings = {ATTRIBUTES = (Private, ); }; };
  		1C73167B2AC1E676007FADA4 /* WebExtensionMessagePort.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C73167A2AC1E676007FADA4 /* WebExtensionMessagePort.h */; };
@@ -33942,7 +34069,15 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ae19156cb1bb4cd3c5cf49c1616bf016
  		1C891D6619B124FF00BA79DD /* WebInspectorUI.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C891D6319B124FF00BA79DD /* WebInspectorUI.h */; };
  		1C8B2363289AE89400020CDC /* WKWebExtensionPermission.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C8B2362289AE89400020CDC /* WKWebExtensionPermission.h */; settings = {ATTRIBUTES = (Public, ); }; };
  		1C8E28201275D15400BC7BD0 /* WebInspectorBackend.h in Headers */ = {isa = PBXBuildFile; fileRef = 1C8E281E1275D15400BC7BD0 /* WebInspectorBackend.h */; };
-@@ -4414,6 +4418,9 @@
+@@ -4289,6 +4294,7 @@
+ 		1C2B4D452A8199CC00C528A1 /* WebExtensionAPIAlarms.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPIAlarms.h; sourceTree = "<group>"; };
+ 		1C2B4D472A819C4700C528A1 /* WebExtensionAPIAlarms.idl */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionAPIAlarms.idl; sourceTree = "<group>"; };
+ 		1C2B4D482A819D0C00C528A1 /* JSWebExtensionAPIAlarms.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIAlarms.h; sourceTree = "<group>"; };
++		EE7AE8C394C949578F3D5B9F /* WebExtensionDeferredReply.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionDeferredReply.h; sourceTree = "<group>"; };
+ 		1C2BBF922B82BC5D001DBDFC /* WebExtensionError.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionError.h; sourceTree = "<group>"; };
+ 		1C386F2E2AF407B1004108F0 /* WebExtensionAPINotifications.idl */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionAPINotifications.idl; sourceTree = "<group>"; };
+ 		1C386F2F2AF4082F004108F0 /* WebExtensionAPINotifications.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPINotifications.h; sourceTree = "<group>"; };
+@@ -4414,6 +4420,9 @@
  		1C5DC4532908AC260061EC62 /* JSWebExtensionAPINamespace.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPINamespace.h; sourceTree = "<group>"; };
  		1C5DC45729099F010061EC62 /* JSWebExtensionWrapper.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = JSWebExtensionWrapper.cpp; sourceTree = "<group>"; };
  		1C5DC45829099F010061EC62 /* JSWebExtensionWrapper.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionWrapper.h; sourceTree = "<group>"; };
@@ -33952,7 +34087,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ae19156cb1bb4cd3c5cf49c1616bf016
  		1C5DC45A29099F010061EC62 /* JSWebExtensionWrapperCocoa.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = JSWebExtensionWrapperCocoa.mm; sourceTree = "<group>"; };
  		1C5DC45B29099F010061EC62 /* JSWebExtensionWrappable.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionWrappable.h; sourceTree = "<group>"; };
  		1C5DC45D2909A3680061EC62 /* CodeGeneratorExtensions.pm */ = {isa = PBXFileReference; lastKnownFileType = text.script.perl; path = CodeGeneratorExtensions.pm; sourceTree = "<group>"; };
-@@ -4451,6 +4458,7 @@
+@@ -4451,6 +4460,7 @@
  		1C7316762AC1DFDF007FADA4 /* WKWebExtensionMessagePortInternal.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WKWebExtensionMessagePortInternal.h; sourceTree = "<group>"; };
  		1C7316782AC1DFED007FADA4 /* WKWebExtensionMessagePortPrivate.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WKWebExtensionMessagePortPrivate.h; sourceTree = "<group>"; };
  		1C73167A2AC1E676007FADA4 /* WebExtensionMessagePort.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionMessagePort.h; sourceTree = "<group>"; };
@@ -33960,7 +34095,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ae19156cb1bb4cd3c5cf49c1616bf016
  		1C73167E2AC1EA27007FADA4 /* WebExtensionMessagePortCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionMessagePortCocoa.mm; sourceTree = "<group>"; };
  		1C739E852347BCF600C621EC /* CoreTextHelpers.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = CoreTextHelpers.mm; sourceTree = "<group>"; };
  		1C739E872347BD0F00C621EC /* CoreTextHelpers.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CoreTextHelpers.h; sourceTree = "<group>"; };
-@@ -4628,7 +4636,7 @@
+@@ -4628,7 +4638,7 @@
  		1C9A15C92ABDEF13002CC12A /* WebExtensionAPIPort.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPIPort.h; sourceTree = "<group>"; };
  		1C9A15CB2ABDF10C002CC12A /* WebExtensionAPIPort.idl */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionAPIPort.idl; sourceTree = "<group>"; };
  		1C9A15CC2ABDF1E1002CC12A /* JSWebExtensionAPIPort.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIPort.h; sourceTree = "<group>"; };
@@ -33969,7 +34104,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ae19156cb1bb4cd3c5cf49c1616bf016
  		1C9A15D02ABDF334002CC12A /* WebExtensionAPIPortCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionAPIPortCocoa.mm; sourceTree = "<group>"; };
  		1C9A15D22ABE2F4B002CC12A /* WebExtensionContextAPIPortCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionContextAPIPortCocoa.mm; sourceTree = "<group>"; };
  		1C9DD99028FA19A30093BDB0 /* WebExtensionAPIExtension.idl */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionAPIExtension.idl; sourceTree = "<group>"; };
-@@ -7986,7 +7994,7 @@
+@@ -7986,7 +7996,7 @@
  		B6058CF32B6D98E7006D4C77 /* WebExtensionDataRecord.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionDataRecord.h; sourceTree = "<group>"; };
  		B6058CF42B6D98E8006D4C77 /* WebExtensionDataRecord.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = WebExtensionDataRecord.cpp; sourceTree = "<group>"; };
  		B6114A7C2939498000380B1B /* JSWebExtensionAPIEvent.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIEvent.h; sourceTree = "<group>"; };
@@ -33978,7 +34113,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ae19156cb1bb4cd3c5cf49c1616bf016
  		B6114A8B293AE05200380B1B /* WebExtensionEventListenerType.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WebExtensionEventListenerType.h; sourceTree = "<group>"; };
  		B61274A62B7D738100D8ACDA /* WebExtensionAPIWebPageNamespace.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionAPIWebPageNamespace.h; sourceTree = "<group>"; };
  		B61AFA4629510D0F008220B1 /* JSWebExtensionAPIPermissions.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPIPermissions.h; sourceTree = "<group>"; };
-@@ -11341,6 +11349,9 @@
+@@ -11341,6 +11351,9 @@
  				1C5DC45B29099F010061EC62 /* JSWebExtensionWrappable.h */,
  				1C5DC45729099F010061EC62 /* JSWebExtensionWrapper.cpp */,
  				1C5DC45829099F010061EC62 /* JSWebExtensionWrapper.h */,
@@ -33988,7 +34123,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ae19156cb1bb4cd3c5cf49c1616bf016
  			);
  			path = Bindings;
  			sourceTree = "<group>";
-@@ -11872,6 +11883,7 @@
+@@ -11872,6 +11885,7 @@
  				1C6B84C92B0D6CDF00E885DD /* WebExtensionMenuItem.cpp */,
  				1C6B84CB2B0D6CF500E885DD /* WebExtensionMenuItem.h */,
  				1C73167A2AC1E676007FADA4 /* WebExtensionMessagePort.h */,
@@ -33996,7 +34131,15 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ae19156cb1bb4cd3c5cf49c1616bf016
  				028D30762C616E8A004F4FC6 /* WebExtensionSidebar.h */,
  				7D1A8A0D2D405B34001715DF /* WebExtensionStorageSQLiteStore.cpp */,
  				7D1A8A0C2D405B34001715DF /* WebExtensionStorageSQLiteStore.h */,
-@@ -17458,7 +17470,7 @@
+@@ -15897,6 +15911,7 @@
+ 				1CF35F492B36089E0079C02C /* WebExtensionCookieParameters.serialization.in */,
+ 				B6B156582B5E1779004F9894 /* WebExtensionDataType.h */,
+ 				B624FF1C2ABE54B500F6EDF6 /* WebExtensionDynamicScripts.serialization.in */,
++				EE7AE8C394C949578F3D5B9F /* WebExtensionDeferredReply.h */,
+ 				1C2BBF922B82BC5D001DBDFC /* WebExtensionError.h */,
+ 				B6114A8B293AE05200380B1B /* WebExtensionEventListenerType.h */,
+ 				8696CE2F297EB3C90081C800 /* WebExtensionEventListenerType.serialization.in */,
+@@ -17458,7 +17473,7 @@
  				1C05906A2DFA0FB7000406F9 /* JSWebExtensionAPIDOM.h */,
  				1C05906B2DFA0FB7000406F9 /* JSWebExtensionAPIDOM.mm */,
  				B6114A7C2939498000380B1B /* JSWebExtensionAPIEvent.h */,
@@ -34005,7 +34148,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ae19156cb1bb4cd3c5cf49c1616bf016
  				1C5DC462290B1C470061EC62 /* JSWebExtensionAPIExtension.h */,
  				1C5DC460290B1C440061EC62 /* JSWebExtensionAPIExtension.mm */,
  				B6CCAAB629A445E90092E846 /* JSWebExtensionAPILocalization.h */,
-@@ -17472,7 +17484,7 @@
+@@ -17472,7 +17487,7 @@
  				B61AFA4629510D0F008220B1 /* JSWebExtensionAPIPermissions.h */,
  				B61AFA4729510D0F008220B1 /* JSWebExtensionAPIPermissions.mm */,
  				1C9A15CC2ABDF1E1002CC12A /* JSWebExtensionAPIPort.h */,
@@ -34014,7 +34157,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ae19156cb1bb4cd3c5cf49c1616bf016
  				7D3D13B1304398C400289ABF /* JSWebExtensionAPIRuntime.cpp */,
  				1C5DC461290B1C470061EC62 /* JSWebExtensionAPIRuntime.h */,
  				B63E9A6C2AAF2B2D005F4561 /* JSWebExtensionAPIScripting.h */,
-@@ -18657,6 +18669,9 @@
+@@ -18657,6 +18672,9 @@
  				1C5ACFA82A96F8C400C041C0 /* JSWebExtensionAPIWindowsEvent.h in Headers */,
  				1C5DC46F290B27260061EC62 /* JSWebExtensionWrappable.h in Headers */,
  				1C5DC46E290B27260061EC62 /* JSWebExtensionWrapper.h in Headers */,
@@ -34024,7 +34167,15 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..ae19156cb1bb4cd3c5cf49c1616bf016
  				074A6FC72D5F1FAF0027F958 /* KeyEventInterpretationContext.h in Headers */,
  				E385F3692E86D75800461B0C /* LaunchLogHook.h in Headers */,
  				E385F37C2E87076100461B0C /* LaunchLogMessages.h in Headers */,
-@@ -19268,6 +19283,7 @@
+@@ -19257,6 +19275,7 @@
+ 				B6058CF52B6D98E8006D4C77 /* WebExtensionDataRecord.h in Headers */,
+ 				B6B1565C2B5E177A004F9894 /* WebExtensionDataType.h in Headers */,
+ 				B6D031052AC1F241006C8E0B /* WebExtensionDynamicScripts.h in Headers */,
++				7BAC0D267A887D0EADD12397 /* WebExtensionDeferredReply.h in Headers */,
+ 				1C2BBF932B82BC5D001DBDFC /* WebExtensionError.h in Headers */,
+ 				B6114A8C293AE06800380B1B /* WebExtensionEventListenerType.h in Headers */,
+ 				1C4A14C62ABB710E00A1018C /* WebExtensionFrameIdentifier.h in Headers */,
+@@ -19268,6 +19287,7 @@
  				1C6BE79F2B0A910200D01D93 /* WebExtensionMenuItemParameters.h in Headers */,
  				1C6BE7A32B0A94E500D01D93 /* WebExtensionMenuItemType.h in Headers */,
  				1C73167B2AC1E676007FADA4 /* WebExtensionMessagePort.h in Headers */,

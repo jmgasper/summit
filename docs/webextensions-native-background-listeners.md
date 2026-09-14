@@ -47,10 +47,10 @@ exact multiplicity and removals, full unsigned counts, JSON round trips,
 version/type/range failures, nonfinite values, unknown event identities,
 whole-cache rejection and preservation of unrelated state.
 
-Native install/update metadata, waiting-callback cancellation, reentrant
-post-load draining, tab/window delegates, controller setup and browser
-attachment still require work. No browser extension or background document
-was executed by these checks.
+Native install/update metadata, tab/window delegates, controller setup and
+browser attachment still require work. Subsequent cancellation and post-load
+changes are recorded in [deferred replies](webextensions-native-deferred-replies.md).
+No browser extension or background document was executed by these checks.
 
 Promoted patch: `a3972b1c21db2ef8fef493e3883a3e588064909cd30365febaaeb0317ec0f89a`.
 Probe baseline: `208a07045b9623b53979da1eab879dd1c16db9a88c39e59bc0b22c4181602426`.
