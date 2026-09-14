@@ -16,7 +16,8 @@ UNITS = ('WebExtensionController.cpp', 'WebExtensionContext.cpp',
          'WebExtensionDeclarativeNetRequestSQLiteStore.cpp',
          'WebExtensionMatchPatternProcessPool.cpp', 'WebExtensionContextProxy.cpp',
          'WebExtensionControllerProxy.cpp')
-EXTRA_UNITS = ('API/WebExtensionAPIWebRequest.cpp', 'API/WebExtensionAPIWebRequestEvent.cpp', 'haiku/WebExtensionContextBackgroundHaiku.cpp', 'haiku/WebExtensionURLSchemeHandlerHaiku.cpp', 'haiku/WebExtensionContextHaiku.cpp',
+EXTRA_UNITS = ('API/WebExtensionAPICommands.cpp',
+               'API/WebExtensionAPIWebRequest.cpp', 'API/WebExtensionAPIWebRequestEvent.cpp', 'haiku/WebExtensionContextBackgroundHaiku.cpp', 'haiku/WebExtensionURLSchemeHandlerHaiku.cpp', 'haiku/WebExtensionContextHaiku.cpp',
                'haiku/WebExtensionContextTestHaiku.cpp',
                'haiku/WebExtensionStateHaiku.cpp', 'Bindings/JSWebExtensionWrapper.cpp',
                'Bindings/JSWebExtensionMessageReply.cpp', 'Bindings/JSWebExtensionString.cpp',
@@ -30,7 +31,8 @@ EXTRA_UNITS = ('API/WebExtensionAPIWebRequest.cpp', 'API/WebExtensionAPIWebReque
                'API/WebExtensionAPIRuntime.cpp',
                'API/WebExtensionAPIEvent.cpp', 'API/WebExtensionAPIPort.cpp')
 GENERATED_UNITS = ('WebExtensionContextMessageReceiver.cpp', 'WebExtensionContextProxyMessageReceiver.cpp')
-BINDING_UNITS = ('JSWebExtensionAPIWebRequest.cpp', 'JSWebExtensionAPIWebRequestEvent.cpp', 'JSWebExtensionAPIWebNavigation.cpp', 'JSWebExtensionAPIWebNavigationEvent.cpp',
+BINDING_UNITS = ('JSWebExtensionAPICommands.cpp',
+                 'JSWebExtensionAPIWebRequest.cpp', 'JSWebExtensionAPIWebRequestEvent.cpp', 'JSWebExtensionAPIWebNavigation.cpp', 'JSWebExtensionAPIWebNavigationEvent.cpp',
                  'JSWebExtensionAPIEvent.cpp', 'JSWebExtensionAPIPort.cpp',
                  'JSWebExtensionAPIStorage.cpp', 'JSWebExtensionAPIStorageArea.cpp',
                  'JSWebExtensionAPINamespace.cpp', 'JSWebExtensionAPIWebPageNamespace.cpp')
@@ -45,7 +47,12 @@ NATIVE_PAGE_UNITS = {'BrowserTabRegistryHaiku.cpp': 'UIProcess/haiku/BrowserTabR
 WEB_CORE_UNITS = {name: 'contentextensions/' + name for name in ('URLFilterParser.cpp', 'DFABytecodeInterpreter.cpp', 'ContentExtension.cpp',
                   'ContentExtensionURLConditions.cpp', 'ContentExtensionRule.cpp', 'ContentExtensionParser.cpp',
                   'ContentExtensionCompiler.cpp', 'ContentExtensionsBackend.cpp')}
-UI_API_UNITS = {'APIContentRuleListStore.cpp': 'UIProcess/API/APIContentRuleListStore.cpp',
+UI_API_UNITS = {'WebExtensionCommandSettings.cpp': 'Shared/Extensions/WebExtensionCommandSettings.cpp',
+                'WebExtensionCommand.cpp': 'UIProcess/Extensions/WebExtensionCommand.cpp',
+                'WebExtensionCommandHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionCommandHaiku.cpp',
+                'WebExtensionContextCommandsHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionContextCommandsHaiku.cpp',
+                'WebExtensionCommandShortcut.cpp': 'Shared/Extensions/WebExtensionCommandShortcut.cpp',
+                'APIContentRuleListStore.cpp': 'UIProcess/API/APIContentRuleListStore.cpp',
                 'WebExtensionDeclarativeNetRequestURLFilter.cpp': 'UIProcess/Extensions/haiku/WebExtensionDeclarativeNetRequestURLFilter.cpp',
                 'WebExtensionPackageSnapshotHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionPackageSnapshotHaiku.cpp',
                 'WebExtensionHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionHaiku.cpp',

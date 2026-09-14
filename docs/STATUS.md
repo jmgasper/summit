@@ -1707,3 +1707,24 @@ changes were detected. Evidence: `.vm/content-rule-pipeline.rzdrhT4E/result.json
 The twentieth full extension link attempt rebuilt WebCore and still failed on
 the same 17 WebKit symbols, with none new. No extension has run in Summit.
 Patch: `dbfa7e97e15983e2e645a9b200e91472f3213239d3b7ae0157463e6ef1f2a7cc`.
+
+2026-09-15 (local) native extension commands: `getAll`, Firefox-style `update`
+and `reset`, persisted shortcut overrides, native command models and both
+command event dispatchers are implemented. Ctrl maps to native Control;
+shortcut validation, clearing, reset isolation and MV3 action migration share
+helpers. Deferred events recheck the context's load and command identity;
+command tab parameters are generated after liveness/access checks. The native
+namespace allows an empty command query, with privileged IPC validation.
+
+**161 native helper checks and 92 binding platform-guard checks pass.** Twelve
+distinct native integration units compile with their source hashes audited.
+The binding generator now supports platform guards on operations; commands is
+the **15th of 37 extension interfaces** using C++ bindings. The full build of
+patch `4665ca569eb1404566c3f87c095450f66ac374f3226af0fa38c1746b364cd855`
+reached the WebKit library link and failed with **15 missing symbols, down from
+17**: both command dispatchers are resolved, with no new missing symbols.
+
+Keyboard routing, action invocation/popup UI and the extension SDK still need
+integration. No command listener, promise, context state write or physical
+shortcut has run in an extension. No extension-enabled browser build is yet
+available. See [the command implementation and evidence](webextensions-native-commands.md).

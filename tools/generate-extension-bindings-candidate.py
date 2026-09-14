@@ -39,10 +39,18 @@ def generate(overlay):
     scripts = ENGINE / 'Source/WebKit/WebProcess/Extensions/Bindings/Scripts'
     core_scripts = ENGINE / 'Source/WebCore/bindings/scripts'
     watched = [cmake, *idls]
-    watched += [path for directory in (scripts, core_scripts) for path in sorted(directory.iterdir())
+    watched += [effective(path) for directory in (scripts, core_scripts) for path in sorted(directory.iterdir())
                 if path.suffix in ('.pl', '.pm', '.json')]
     snapshot = {str(path): digest(path) for path in watched}
     output = Path(tempfile.mkdtemp(prefix='extension-bindings-generated-', dir=ROOT / '.vm'))
+    # Stage the effective generator too, so candidate attributes and generator
+    # changes can be validated before promoting the engine patch.
+    staged_scripts = output / 'generator'
+    staged_scripts.mkdir()
+    for path in sorted(scripts.iterdir()):
+        if path.is_file():
+            shutil.copyfile(effective(path), staged_scripts / path.name)
+    scripts = staged_scripts
     listing = output / 'WebExtensionIDLFileNamesList.txt'
     listing.write_text('\n'.join(map(str, idls)) + '\n')
     command = [shutil.which('perl'), '-I', str(scripts), str(core_scripts / 'generate-bindings.pl'),
