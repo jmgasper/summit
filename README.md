@@ -82,8 +82,8 @@ passes 143 close-workflow checks, and the modern API passes all 12 context
 storage stages. All 33 navigation checks and 30 repeated history cycles pass.
 Native helper-launch and looper-lock fixes now pass the concurrent launch stress
 regression and three consecutive profile teardown/reopen runs. Broader browsing
-and extension integration remain unfinished. An earlier frozen local development
-bundle is in `artifacts/modern-browser/bundle-mjs1avo_`;
+and extension integration remain unfinished. The verified development bundle is
+in `artifacts/modern-browser/bundle-ihenjatl`;
 [copy and rebuild instructions](docs/modern-bundle-copy.md) accompany it. [The verification record](docs/STATUS.md)
 records the exact bundles and remaining limitations.
 

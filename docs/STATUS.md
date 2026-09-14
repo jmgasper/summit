@@ -645,6 +645,15 @@ they do not establish general platform or extension completeness. Evidence:
 - `.vm/jsc-rwlock-validation.k8_m101o/results/result.json`
 - `.vm/rwlock-wtf-postlink-results.json`
 
+The corrected `bundle-ihenjatl` has also been copied to
+`artifacts/modern-browser/bundle-ihenjatl` with the matching patched engine
+source archive, native binaries, helpers, private libraries and rebuild inputs.
+The exporter verified every payload digest and unchanged before/after source
+fingerprints. Provenance SHA-256:
+`fc9a91f509a269f0a8362b7a5b810841e8e306fc046ec23d94ad8347561e525d`.
+Evidence: `.vm/modern-webkit-rwlock-bundle-copy.log` and the artifact's
+`copy-provenance.json`. The earlier artifact below is preserved.
+
 The tested frozen bundle has now been copied to
 `artifacts/modern-browser/bundle-mjs1avo_`, with its app sources, private
 libraries, helpers, exact patched native WebKit source trees, licenses and

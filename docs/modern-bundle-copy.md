@@ -53,8 +53,10 @@ The original `build-manifest.json` and `host-bundle-report.json` are preserved.
 before/after fingerprints and a file inventory of the final payload excluding
 the provenance file itself. The final command output reports the provenance
 digest. These hashes establish the copied inputs; they do not establish browser
-runtime behavior. The first real browser copy completed for `bundle-mjs1avo_`; see
-[the verification record](STATUS.md) for runtime results and known limitations.
+runtime behavior. The current verified copy is `bundle-ihenjatl`, including the
+native launcher and looper-lock fixes. The earlier `bundle-mjs1avo_` is preserved.
+See [the verification record](STATUS.md) for exact runtime results and remaining
+limitations.
 
 ## Building from the preserved inputs
 
