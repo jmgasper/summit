@@ -1639,3 +1639,15 @@ and reaches the WebKit library link. The two action symbols and message-port
 disconnect symbol resolve, reducing missing symbols from 21 to 18, with none
 newly introduced. Evidence: `.vm/modern-extensions-native-port-build-result.json`.
 The feature-enabled library has not linked and no extension has run.
+
+2026-09-15 (local) native package identity and install state: filesystem packages
+now load from owned, fingerprinted resource snapshots. In-memory resources copy
+caller-owned data before hashing. Context load uses saved version/content identity
+to distinguish first install, update and reenable; a consumed host-supplied purpose
+controls startup/browser-update/private behavior. Invalidated package state clears
+listener/ruleset caches and requests registered-script removal. **64 native helper
+checks pass and six final integration units compile.** No WebExtension constructor,
+context, lifecycle event, database removal or browser runtime was executed. The
+browser SDK must still wire startup/update intent. See [package identity evidence
+and limits](webextensions-native-package-identity.md).
+Patch: `341d7bd1bb1d8d5601a45cd83b1dc5af3eeb3b2f4039f7468d1b212ee32d6ef5`.

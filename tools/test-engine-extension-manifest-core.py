@@ -104,7 +104,7 @@ def main():
             next(iterator)
         elif not flag.startswith(('-fdiagnostics-color=', '-fmax-errors=')):
             flags.append(flag)
-    flags = ['-I' + str(OUTPUT), '-I' + str(OUTPUT / 'API'), '-I' + str(OUTPUT / 'Bindings'),
+    flags = ['-I' + str(OUTPUT), '-I' + str(OUTPUT / 'API'), '-I' + str(OUTPUT / 'Bindings'), '-I' + str(OUTPUT / 'haiku'),
              '-iquote', str(OUTPUT), *flags,
              '-include', str(prefix), '-fdiagnostics-color=never', '-fmax-errors=5']
     source_manifest = json.loads((OUTPUT / 'source-manifest.json').read_text())

@@ -22928,10 +22928,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..5de7e1a51e2c3ad7bf93f4ca4c719306ff039bc0
+index 0000000000000000000000000000000000000000..6c25e2dbca5cd5689a80b4d07d63c910db66c51a
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,197 @@
+@@ -0,0 +1,198 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -22980,6 +22980,7 @@ index 0000000000000000000000000000000000000000..5de7e1a51e2c3ad7bf93f4ca4c719306
 +    UIProcess/API/haiku/APIContentRuleListStoreHaiku.cpp
 +    UIProcess/API/haiku/WebKitView.cpp
 +    UIProcess/Extensions/haiku/WebExtensionArchiveHaiku.cpp
++    UIProcess/Extensions/haiku/WebExtensionPackageSnapshotHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionContextHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionContextPermissionsHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionContextActionsHaiku.cpp
@@ -29026,7 +29027,7 @@ index 713a395f6fda1c50c694eef6181a23349c9b5fb2..d6419587d5402f01e573eb5f7335695a
  } // namespace WebExtensionDynamicScripts
  
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtension.cpp b/Source/WebKit/UIProcess/Extensions/WebExtension.cpp
-index fac1522cfb35558dda22d0d441b493abf1669ee8..36eda8af3bf5e5157f99e5128f9b1d9931132979 100644
+index fac1522cfb35558dda22d0d441b493abf1669ee8..4fdf07e97c7d6ad094fe4b144d51e7583c5d8a34 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtension.cpp
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtension.cpp
 @@ -48,6 +48,10 @@
@@ -29040,7 +29041,27 @@ index fac1522cfb35558dda22d0d441b493abf1669ee8..36eda8af3bf5e5157f99e5128f9b1d99
  namespace WebKit {
  
  using namespace WebCore;
-@@ -527,6 +531,9 @@ URL WebExtension::resourceFileURLForPath(const String& originalPath)
+@@ -189,6 +193,9 @@ WebExtension::WebExtension(const JSON::Value& manifest, Resources&& resources)
+     RELEASE_ASSERT(manifestString);
+ 
+     m_stringResources.set("manifest.json"_s, manifestString);
++#if PLATFORM(HAIKU)
++    initializeNativeResourceSnapshot();
++#endif
+ }
+ 
+ WebExtension::WebExtension(Resources&& resources)
+@@ -196,6 +203,9 @@ WebExtension::WebExtension(Resources&& resources)
+     , m_dataResources(toDataResources(resources))
+     , m_stringResources(toStringResources(resources))
+ {
++#if PLATFORM(HAIKU)
++    initializeNativeResourceSnapshot();
++#endif
+ }
+ 
+ WebExtension::~WebExtension()
+@@ -527,6 +537,9 @@ URL WebExtension::resourceFileURLForPath(const String& originalPath)
  {
      ASSERT(originalPath);
  
@@ -29050,7 +29071,7 @@ index fac1522cfb35558dda22d0d441b493abf1669ee8..36eda8af3bf5e5157f99e5128f9b1d99
      String path = originalPath;
      if (path.startsWith('/'))
          path = path.substring(1);
-@@ -541,12 +548,13 @@ URL WebExtension::resourceFileURLForPath(const String& originalPath)
+@@ -541,12 +554,13 @@ URL WebExtension::resourceFileURLForPath(const String& originalPath)
      // Don't allow escaping the base URL with "../".
      auto basePath = FileSystem::realPath(m_resourceBaseURL.fileSystemPath());
      auto resourcePath = FileSystem::realPath(result.fileSystemPath());
@@ -29066,7 +29087,7 @@ index fac1522cfb35558dda22d0d441b493abf1669ee8..36eda8af3bf5e5157f99e5128f9b1d99
  
  String WebExtension::resourceMIMETypeForPath(const String& path)
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtension.h b/Source/WebKit/UIProcess/Extensions/WebExtension.h
-index f14860d8e436a90cb7616ae96bb9f05d6517bc50..82194307c95982f947c180baa35828f3deaae048 100644
+index f14860d8e436a90cb7616ae96bb9f05d6517bc50..16adb9906bd4a2806229ef97c0cf0146a430ae45 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtension.h
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtension.h
 @@ -75,8 +75,10 @@ public:
@@ -29081,8 +29102,31 @@ index f14860d8e436a90cb7616ae96bb9f05d6517bc50..82194307c95982f947c180baa35828f3
  #endif
      explicit WebExtension(const JSON::Value& manifest, Resources&& = { });
  
+@@ -238,6 +240,10 @@ public:
+     NSData *bundleHash() const;
+ #endif
+ 
++#if PLATFORM(HAIKU)
++    const String& nativeResourceFingerprint() const { return m_nativeResourceFingerprint; }
++#endif
++
+ #if PLATFORM(MAC)
+     bool validateResourceData(NSURL *, NSData *, NSError **);
+ #endif
+@@ -409,6 +415,11 @@ private:
+     mutable RetainPtr<SecStaticCodeRef> m_bundleStaticCode;
+ #endif
+ 
++#if PLATFORM(HAIKU)
++    void initializeNativeResourceSnapshot();
++    String m_nativeResourceFingerprint;
++#endif
++
+     URL m_resourceBaseURL;
+     bool m_resourcesAreTemporary { false };
+     Ref<const JSON::Value> m_manifestJSON;
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
-index a156078a37b33ea2704f6a9ba747a0c881bb0009..13d44cb92adf96de0437aa946072ca51750b2f0f 100644
+index a156078a37b33ea2704f6a9ba747a0c881bb0009..146be7910f22f67db277958fa919d6d3d4096ed3 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
 @@ -34,11 +34,18 @@
@@ -29104,7 +29148,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..13d44cb92adf96de0437aa946072ca51
  #include <WebCore/LocalizedStrings.h>
  #include <WebCore/TextResourceDecoder.h>
  #include <wtf/HashMap.h>
-@@ -49,8 +56,268 @@ static constexpr size_t maximumCachedPermissionResults = 256;
+@@ -49,8 +56,273 @@ static constexpr size_t maximumCachedPermissionResults = 256;
  
  namespace WebKit {
  
@@ -29170,6 +29214,11 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..13d44cb92adf96de0437aa946072ca51
 +        RELEASE_LOG_ERROR(Extensions, "Cannot load persistent background content on this platform");
 +        return makeUnexpected(extension->createError(WebExtension::Error::InvalidBackgroundPersistence));
 +    }
++#endif
++
++#if PLATFORM(HAIKU)
++    if (!m_extension->manifestParsedSuccessfully() || m_extension->version().isEmpty() || m_extension->nativeResourceFingerprint().isEmpty())
++        return makeUnexpected(m_extension->createError(WebExtension::Error::InvalidManifest));
 +#endif
 +
 +    m_storageDirectory = storageDirectory;
@@ -29373,7 +29422,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..13d44cb92adf96de0437aa946072ca51
  int WebExtensionContext::toAPIError(WebExtensionContext::Error error)
  {
      switch (error) {
-@@ -1660,7 +1927,13 @@ WebExtensionContext::WebExtensionContext()
+@@ -1660,7 +1932,13 @@ WebExtensionContext::WebExtensionContext()
  }
  
  #if !USE(GLIB)
@@ -29388,7 +29437,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..13d44cb92adf96de0437aa946072ca51
  #endif
  
  WebExtensionContextIdentifier WebExtensionContext::privilegedIdentifier() const
-@@ -1798,9 +2071,17 @@ void WebExtensionContext::loadBackgroundContent(CompletionHandler<void(RefPtr<AP
+@@ -1798,9 +2076,17 @@ void WebExtensionContext::loadBackgroundContent(CompletionHandler<void(RefPtr<AP
          return;
      }
  
@@ -29409,7 +29458,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..13d44cb92adf96de0437aa946072ca51
      });
  }
  
-@@ -2003,6 +2284,128 @@ Ref<WebExtensionRegisteredScriptsSQLiteStore> WebExtensionContext::registeredCon
+@@ -2003,6 +2289,128 @@ Ref<WebExtensionRegisteredScriptsSQLiteStore> WebExtensionContext::registeredCon
      return *m_registeredContentScriptsStorage;
  }
  
@@ -29539,18 +29588,22 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..13d44cb92adf96de0437aa946072ca51
  
  #endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
-index 05a8676082d56f2c47c9af6120f5120b09f982be..bc172fb9dabca331f576ce851201e21eae5b2c53 100644
+index 05a8676082d56f2c47c9af6120f5120b09f982be..a2f303dfdb6e80a6177a4841816836adec9b6a14 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
-@@ -52,6 +52,7 @@
+@@ -51,7 +51,11 @@
+ #include "WebExtensionMatchedRuleParameters.h"
  #include "WebExtensionMenuItem.h"
  #include "WebExtensionMessagePort.h"
++#if PLATFORM(HAIKU)
++#include "haiku/WebExtensionInstallStateHaiku.h"
++#endif
  #include "WebExtensionMessageSenderParameters.h"
 +#include "WebExtensionPagePortMap.h"
  #include "WebExtensionPortChannelIdentifier.h"
  #include "WebExtensionRegisteredScriptsSQLiteStore.h"
  #include "WebExtensionStorageAccessLevel.h"
-@@ -85,6 +86,11 @@
+@@ -85,6 +89,11 @@
  #include <wtf/WeakHashMap.h>
  #include <wtf/WeakPtr.h>
  
@@ -29562,7 +29615,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..bc172fb9dabca331f576ce851201e21e
  #if ENABLE(INSPECTOR_EXTENSIONS)
  #include "APIInspectorExtension.h"
  #include "APIInspectorExtensionClient.h"
-@@ -144,9 +150,18 @@ namespace PAL {
+@@ -144,9 +153,18 @@ namespace PAL {
  class SessionID;
  }
  
@@ -29582,7 +29635,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..bc172fb9dabca331f576ce851201e21e
  using WebViewClass = WebKitWebView;
  using WebViewConfiguration = GRefPtr<WebKitSettings>;
  using NavigationPolicyAction = WebKitNavigationPolicyDecision;
-@@ -179,6 +194,10 @@ enum class WebExtensionContextInstallReason : uint8_t {
+@@ -179,6 +197,10 @@ enum class WebExtensionContextInstallReason : uint8_t {
      BrowserUpdate,
  };
  
@@ -29593,7 +29646,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..bc172fb9dabca331f576ce851201e21e
  class WebExtensionContext : public API::ObjectImpl<API::Object::Type::WebExtensionContext>, public IPC::MessageReceiver, public Identified<WebExtensionContextIdentifier> {
      WTF_MAKE_NONCOPYABLE(WebExtensionContext);
  
-@@ -198,6 +217,8 @@ public:
+@@ -198,6 +220,8 @@ public:
      {
  #if PLATFORM(COCOA)
          return "State.plist"_s;
@@ -29602,7 +29655,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..bc172fb9dabca331f576ce851201e21e
  #else
          return "State.ini"_s;
  #endif
-@@ -206,6 +227,8 @@ public:
+@@ -206,6 +230,8 @@ public:
      static NSMutableDictionary *readStateFromPath(const String&);
  #elif ENABLE(2022_GLIB_API)
      static GRefPtr<GKeyFile> readStateFromPath(const String&);
@@ -29611,7 +29664,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..bc172fb9dabca331f576ce851201e21e
  #endif
      static bool readLastBaseURLFromState(const String& filePath, URL& outLastBaseURL);
      static bool readDisplayNameFromState(const String& filePath, String& outDisplayName);
-@@ -214,7 +237,7 @@ public:
+@@ -214,7 +240,7 @@ public:
  
      static WebExtensionContext* NODELETE get(WebExtensionContextIdentifier);
  
@@ -29620,7 +29673,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..bc172fb9dabca331f576ce851201e21e
      explicit WebExtensionContext(Ref<WebExtension>&&);
  #elif ENABLE(2022_GLIB_API)
      explicit WebExtensionContext(WebKitWebExtensionContext*);
-@@ -265,11 +288,8 @@ public:
+@@ -265,11 +291,8 @@ public:
          bool userGesture { false };
      };
  
@@ -29632,7 +29685,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..bc172fb9dabca331f576ce851201e21e
      using PortQueuedMessageMap = HashMap<PortWorldPair, Vector<PortQueuedMessage>>;
      using NativePortMap = HashMap<WebExtensionPortChannelIdentifier, Ref<WebExtensionMessagePort>>;
  
-@@ -334,6 +354,17 @@ public:
+@@ -334,6 +357,17 @@ public:
          DeniedPermissionMatchPatternsWereRemoved,
      };
  
@@ -29650,7 +29703,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..bc172fb9dabca331f576ce851201e21e
      enum class PermissionState : int8_t {
          DeniedExplicitly    = -3,
          DeniedImplicitly    = -2,
-@@ -504,6 +535,12 @@ public:
+@@ -504,6 +538,12 @@ public:
  
      void removePage(WebPageProxy&);
  
@@ -29663,7 +29716,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..bc172fb9dabca331f576ce851201e21e
      Ref<WebExtensionWindow> getOrCreateWindow(WKWebExtensionWindow *) const;
      RefPtr<WebExtensionWindow> getWindow(WebExtensionWindowIdentifier, std::optional<WebPageProxyIdentifier> = std::nullopt, IgnoreExtensionAccess = IgnoreExtensionAccess::No) const;
      void forgetWindow(WebExtensionWindowIdentifier) const;
-@@ -630,6 +667,10 @@ public:
+@@ -630,6 +670,10 @@ public:
      void sendTestStarted(id argument);
      void sendTestFinished(id argument);
      void reloadBackgroundContentForTesting();
@@ -29674,7 +29727,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..bc172fb9dabca331f576ce851201e21e
  #endif
  
      URL backgroundContentURL();
-@@ -655,6 +696,7 @@ public:
+@@ -655,6 +699,7 @@ public:
      void runOpenPanel(WKWebView *, WKOpenPanelParameters *, void (^)(NSArray *));
  #endif
  
@@ -29682,7 +29735,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..bc172fb9dabca331f576ce851201e21e
  #if PLATFORM(COCOA)
      void sendNativeMessage(const String& applicationID, id message, CompletionHandler<void(std::expected<RetainPtr<id>, WebExtensionError>&&)>&&);
  #endif
-@@ -749,11 +791,18 @@ private:
+@@ -749,19 +794,41 @@ private:
  #if PLATFORM(COCOA)
      NSDictionary *currentState() const;
      NSDictionary *readStateFromStorage();
@@ -29702,7 +29755,19 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..bc172fb9dabca331f576ce851201e21e
  
      void loadStorageAccessLevelsFromStorage();
      void saveStorageAccessLevelsToStorage();
-@@ -762,6 +811,10 @@ private:
+ 
+     void determineInstallReasonDuringLoad();
++#if PLATFORM(HAIKU)
++    // The browser host sets the purpose before load; it is consumed once.
++    bool setNativeLoadPurpose(WebExtensionLoadPurposeHaiku purpose)
++    {
++        ASSERT(isMainThread());
++        if (isLoaded())
++            return false;
++        m_nativeLoadPurpose = purpose;
++        return true;
++    }
++#endif
      void moveLocalStorageIfNeeded(const URL& previousBaseURL, CompletionHandler<void()>&&);
      void removeStaleExtensionWebsiteData();
  
@@ -29713,7 +29778,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..bc172fb9dabca331f576ce851201e21e
      void permissionsDidChange(PermissionNotification, const PermissionsSet&);
      void permissionsDidChange(PermissionNotification, const MatchPatternSet&);
  
-@@ -796,6 +849,7 @@ private:
+@@ -796,6 +863,7 @@ private:
      void saveBackgroundPageListenersToStorage();
  
      void performTasksAfterBackgroundContentLoads();
@@ -29721,7 +29786,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..bc172fb9dabca331f576ce851201e21e
  
  #ifdef NDEBUG
      // This is method is a no-op in release builds since it has a performance impact with little benefit to release builds.
-@@ -1000,7 +1054,7 @@ private:
+@@ -1000,7 +1068,7 @@ private:
      void disconnectPortsForPage(WebPageProxy&);
      void addPorts(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier, HashCountedSet<WebPageProxyIdentifier>&&);
      void removePort(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier, WebPageProxyIdentifier);
@@ -29730,7 +29795,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..bc172fb9dabca331f576ce851201e21e
      void removeNativePort(WebExtensionMessagePort&);
      unsigned openPortCount(WebExtensionContentWorldType, WebExtensionPortChannelIdentifier);
      bool isPortConnected(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier);
-@@ -1009,7 +1063,7 @@ private:
+@@ -1009,7 +1077,7 @@ private:
      void firePortMessageEventsIfNeeded(WebExtensionContentWorldType, std::optional<WebPageProxyIdentifier>, WebExtensionPortChannelIdentifier, const String& messageJSON, bool userGesture);
      void fireQueuedPortMessageEventsIfNeeded(WebExtensionContentWorldType, WebExtensionPortChannelIdentifier);
      void sendQueuedNativePortMessagesIfNeeded(WebExtensionPortChannelIdentifier);
@@ -29739,7 +29804,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..bc172fb9dabca331f576ce851201e21e
  
      // Runtime APIs
      void runtimeGetBackgroundPage(CompletionHandler<void(std::expected<std::optional<WebCore::PageIdentifier>, WebExtensionError>&&)>&&);
-@@ -1034,6 +1088,7 @@ private:
+@@ -1034,6 +1102,7 @@ private:
      void scriptingGetRegisteredScripts(const Vector<String>&, CompletionHandler<void(std::expected<Vector<WebExtensionRegisteredScriptParameters>, WebExtensionError>&&)>&&);
      void scriptingUnregisterContentScripts(const Vector<String>&, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
      bool createInjectedContentForScripts(const Vector<WebExtensionRegisteredScriptParameters>&, WebExtensionDynamicScripts::WebExtensionRegisteredScript::FirstTimeRegistration, DynamicInjectedContentsMap&, NSString *callingAPIName, NSString **errorMessage);
@@ -29747,7 +29812,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..bc172fb9dabca331f576ce851201e21e
  
      // Sidebar APIs
  #if ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
-@@ -1129,6 +1184,12 @@ private:
+@@ -1129,6 +1198,12 @@ private:
      RetainPtr<NSMutableDictionary> m_state;
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<GKeyFile> m_state;
@@ -29760,7 +29825,17 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..bc172fb9dabca331f576ce851201e21e
  #endif
      Vector<Ref<API::Error>> m_errors;
  
-@@ -1194,6 +1255,9 @@ private:
+@@ -1172,6 +1247,9 @@ private:
+     EventListenerTypeCountedSet m_backgroundContentEventListeners;
+     EventListenerTypeFrameMap m_eventListenerFrames;
+ 
++#if PLATFORM(HAIKU)
++    WebExtensionLoadPurposeHaiku m_nativeLoadPurpose { WebExtensionLoadPurposeHaiku::UserInitiated };
++#endif
+     bool m_shouldFireStartupEvent { false };
+     InstallReason m_installReason { InstallReason::None };
+     String m_previousVersion;
+@@ -1194,6 +1272,9 @@ private:
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<WebKitWebView> m_backgroundWebView;
      GWeakPtr<WebKitWebExtensionContext> m_delegate;
@@ -29770,7 +29845,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..bc172fb9dabca331f576ce851201e21e
  #endif
      Variant<std::monostate, Ref<ProcessThrottlerActivity>, Ref<ProcessActivityGroup>> m_backgroundWebViewActivity;
      RefPtr<API::Error> m_backgroundContentLoadError;
-@@ -1215,6 +1279,7 @@ private:
+@@ -1215,6 +1296,7 @@ private:
      HashMap<Ref<WebExtensionMatchPattern>, UserScriptVector> m_injectedScriptsPerPatternMap;
      HashMap<Ref<WebExtensionMatchPattern>, UserStyleSheetVector> m_injectedStyleSheetsPerPatternMap;
  
@@ -29778,7 +29853,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..bc172fb9dabca331f576ce851201e21e
      HashMap<String, Ref<WebExtensionDynamicScripts::WebExtensionRegisteredScript>> m_registeredScriptsMap;
      RefPtr<WebExtensionRegisteredScriptsSQLiteStore> m_registeredContentScriptsStorage;
  
-@@ -1234,7 +1299,7 @@ private:
+@@ -1234,7 +1316,7 @@ private:
  #endif // ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
  
      PortCountedSet m_ports;
@@ -29787,7 +29862,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..bc172fb9dabca331f576ce851201e21e
      PortQueuedMessageMap m_portQueuedMessages;
      NativePortMap m_nativePortMap;
  
-@@ -1274,12 +1339,16 @@ private:
+@@ -1274,12 +1356,16 @@ private:
          String message;
  #if PLATFORM(COCOA)
          RetainPtr<id> argument;
@@ -29804,7 +29879,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..bc172fb9dabca331f576ce851201e21e
  
      Deque<TestMessage> m_testMessageQueue;
      Deque<TestMessage> m_testStartedQueue;
-@@ -1289,6 +1358,8 @@ private:
+@@ -1289,6 +1375,8 @@ private:
      void sendQueuedTestMessagesIfNeeded(WebExtensionEventListenerType);
  #if PLATFORM(COCOA)
      void addTestMessageToQueue(const String& message, id argument, WebExtensionEventListenerType);
@@ -32760,10 +32835,10 @@ index 0000000000000000000000000000000000000000..881641881048903eab1b5c67971e3dfe
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..602baf54bf4eb5b65560a68e8f6833f2c7e57650
+index 0000000000000000000000000000000000000000..ebcee5abe1e9fe720f913d2987ad739eba680457
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextHaiku.cpp
-@@ -0,0 +1,243 @@
+@@ -0,0 +1,271 @@
 +/*
 + * Copyright (C) 2022-2025 Apple Inc. All rights reserved.
 + * Copyright (C) 2026 KunanyiOS contributors.
@@ -32796,6 +32871,7 @@ index 0000000000000000000000000000000000000000..602baf54bf4eb5b65560a68e8f6833f2
 +
 +#include "Logging.h"
 +#include "WebExtensionStateHaiku.h"
++#include "WebExtensionBackgroundListenersHaiku.h"
 +#include "WebExtensionWebsiteData.h"
 +#include "WebsiteDataStore.h"
 +#include "WebsiteDataFetchOption.h"
@@ -32805,6 +32881,33 @@ index 0000000000000000000000000000000000000000..602baf54bf4eb5b65560a68e8f6833f2
 +#include <wtf/text/MakeString.h>
 +
 +namespace WebKit {
++
++void WebExtensionContext::determineInstallReasonDuringLoad()
++{
++    ASSERT(isLoaded());
++    Ref extension = *m_extension;
++    auto purpose = std::exchange(m_nativeLoadPurpose, WebExtensionLoadPurposeHaiku::UserInitiated);
++    RefPtr controller = extensionController();
++    if (!controller)
++        return;
++    if (controller->configuration().defaultWebsiteDataStore().sessionID().isEphemeral())
++        purpose = WebExtensionLoadPurposeHaiku::PrivateBrowsing;
++    auto decision = updateWebExtensionInstallStateHaiku(*m_state, extension->version(), extension->nativeResourceFingerprint(), purpose);
++    m_previousVersion = WTF::move(decision.previousVersion);
++    m_shouldFireStartupEvent = decision.fireStartup;
++    switch (decision.reason) {
++    case WebExtensionInstallReasonHaiku::None: m_installReason = InstallReason::None; break;
++    case WebExtensionInstallReasonHaiku::Install: m_installReason = InstallReason::ExtensionInstall; break;
++    case WebExtensionInstallReasonHaiku::Update: m_installReason = InstallReason::ExtensionUpdate; break;
++    case WebExtensionInstallReasonHaiku::BrowserUpdate: m_installReason = InstallReason::BrowserUpdate; break;
++    }
++    if (decision.clearCachedState) {
++        clearBackgroundListenersHaiku(*m_state);
++        m_backgroundContentEventListeners.clear();
++        clearDeclarativeNetRequestRulesetState();
++        clearRegisteredContentScripts();
++    }
++}
 +
 +void WebExtensionContext::removeStaleExtensionWebsiteData()
 +{
@@ -33933,10 +34036,10 @@ index 0000000000000000000000000000000000000000..8fa08cfcc06ebeaf88ebabcedc4bec52
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..0fad592e47df78032bff706631ce21c5873ec2fc
+index 0000000000000000000000000000000000000000..020230db72954a99bb18129d2d6cd813325006a3
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionHaiku.cpp
-@@ -0,0 +1,156 @@
+@@ -0,0 +1,182 @@
 +/*
 + * Copyright (C) 2026 KunanyiOS contributors.
 + *
@@ -33967,6 +34070,7 @@ index 0000000000000000000000000000000000000000..0fad592e47df78032bff706631ce21c5
 +#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 +
 +#include "WebExtensionArchiveHaiku.h"
++#include "WebExtensionPackageSnapshotHaiku.h"
 +#include "WebExtensionResourcePathsHaiku.h"
 +#include "WebExtensionUtilities.h"
 +#include <WebCore/BitmapImage.h>
@@ -34006,22 +34110,47 @@ index 0000000000000000000000000000000000000000..0fad592e47df78032bff706631ce21c5
 +        canonicalDirectory = archiveDirectory->path();
 +    }
 +
-+    // Relative manifest resources must resolve inside this directory, including
-+    // when its native spelling contains spaces, percent signs or Unicode.
-+    m_resourceBaseURL = fileURLForWebExtensionPathHaiku(makeString(canonicalDirectory, canonicalDirectory.endsWith('/') ? ""_s : "/"_s));
++    auto snapshot = snapshotWebExtensionPackageHaiku(canonicalDirectory);
++    if (!snapshot) {
++        outError = createError(Error::ResourceNotFound, WEB_UI_STRING("The extension resources could not be copied into a consistent package snapshot.", "WKWebExtensionErrorResourceNotFound description for failed native package snapshot"));
++        recordErrorIfNeeded(outError);
++        return;
++    }
++    m_resourceBaseURL = fileURLForWebExtensionPathHaiku(makeString(snapshot->path(), '/'));
++    m_nativeResourceFingerprint = snapshot->fingerprint();
 +    if (!manifestParsedSuccessfully()) {
 +        ASSERT(!m_errors.isEmpty());
 +        outError = m_errors.last().ptr();
-+        // The local archive owner removes incomplete resources immediately.
-+        if (archiveDirectory)
-+            m_resourceBaseURL = { };
++        m_resourceBaseURL = { };
++        m_nativeResourceFingerprint = { };
 +        return;
 +    }
++    snapshot->release();
++    m_resourcesAreTemporary = true;
++    // Any archive extraction remains locally owned and is now removed. All
++    // future resource reads use the fingerprinted snapshot above.
++}
 +
-+    if (archiveDirectory) {
-+        archiveDirectory->release();
-+        m_resourcesAreTemporary = true;
++void WebExtension::initializeNativeResourceSnapshot()
++{
++    // API::Data can wrap caller-owned memory. Copy it before hashing so later
++    // reads and lazy resource caches cannot diverge from the recorded package.
++    for (auto& entry : m_dataResources)
++        entry.value = API::Data::create(entry.value->span());
++    auto manifest = m_manifestJSON->toJSONString();
++    if (auto copy = JSON::Value::parseJSON(manifest))
++        m_manifestJSON = copy.releaseNonNull();
++    Vector<WebExtensionMemoryResourceHaiku> data;
++    for (auto& entry : m_dataResources)
++        data.append({ entry.key, entry.value->span() });
++    Vector<UTF8CString> ownedStrings;
++    ownedStrings.reserveInitialCapacity(m_stringResources.size());
++    Vector<WebExtensionMemoryResourceHaiku> strings;
++    for (auto& entry : m_stringResources) {
++        ownedStrings.append(entry.value.utf8());
++        strings.append({ entry.key, byteCast<uint8_t>(ownedStrings.last().span()) });
 +    }
++    m_nativeResourceFingerprint = fingerprintWebExtensionMemoryResourcesHaiku(manifest, WTF::move(data), WTF::move(strings));
 +}
 +
 +Vector<double> availableScreenScales()
@@ -34088,6 +34217,94 @@ index 0000000000000000000000000000000000000000..0fad592e47df78032bff706631ce21c5
 +    if (RefPtr icon = WebCore::Icon::create(WTF::move(nativeImage)))
 +        return icon.releaseNonNull();
 +    return fail();
++}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionInstallStateHaiku.h b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionInstallStateHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..8497b77b9421e19463d3d39fe80088913fd448fa
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionInstallStateHaiku.h
+@@ -0,0 +1,82 @@
++/*
++ * Copyright (C) 2026 KunanyiOS contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are met:
++ * 1. Redistributions of source code must retain the above copyright notice,
++ *    this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright notice,
++ *    this list of conditions and the following disclaimer in the documentation
++ *    and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#pragma once
++
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++
++#include <wtf/JSONValues.h>
++#include <wtf/ASCIICType.h>
++
++namespace WebKit {
++
++enum class WebExtensionLoadPurposeHaiku : uint8_t { UserInitiated, BrowserStartup, BrowserUpdate, PrivateBrowsing };
++enum class WebExtensionInstallReasonHaiku : uint8_t { None, Install, Update, BrowserUpdate };
++struct WebExtensionInstallDecisionHaiku {
++    WebExtensionInstallReasonHaiku reason { WebExtensionInstallReasonHaiku::None };
++    String previousVersion;
++    bool fireStartup { false };
++    bool clearCachedState { false };
++};
++
++inline WebExtensionInstallDecisionHaiku updateWebExtensionInstallStateHaiku(JSON::Object& state, const String& version, const String& fingerprint, WebExtensionLoadPurposeHaiku purpose)
++{
++    constexpr auto versionKey = "LastSeenVersion"_s;
++    constexpr auto fingerprintKey = "LastSeenResourceFingerprint"_s;
++    constexpr auto formatKey = "ResourceFingerprintFormat"_s;
++    auto previousVersion = state.getString(versionKey);
++    auto previousFingerprint = state.getString(fingerprintKey);
++    bool validFingerprint = state.getDouble(formatKey) == 1 && previousFingerprint.length() == 64;
++    if (validFingerprint) {
++        for (auto character : StringView(previousFingerprint).codeUnits()) {
++            if (!isASCIIHexDigit(character)) {
++                validFingerprint = false;
++                break;
++            }
++        }
++    }
++    bool previouslyInstalled = !previousVersion.isEmpty() || validFingerprint;
++    bool versionChanged = !previousVersion.isEmpty() && previousVersion != version;
++    bool contentsChanged = validFingerprint && previousFingerprint != fingerprint;
++    WebExtensionInstallDecisionHaiku result;
++    result.previousVersion = previousVersion;
++    result.clearCachedState = versionChanged || contentsChanged || !validFingerprint;
++    if (purpose != WebExtensionLoadPurposeHaiku::PrivateBrowsing) {
++        if (!previouslyInstalled)
++            result.reason = WebExtensionInstallReasonHaiku::Install;
++        else if (versionChanged || contentsChanged)
++            result.reason = WebExtensionInstallReasonHaiku::Update;
++        else if (purpose == WebExtensionLoadPurposeHaiku::BrowserUpdate)
++            result.reason = WebExtensionInstallReasonHaiku::BrowserUpdate;
++        result.fireStartup = previouslyInstalled && (purpose == WebExtensionLoadPurposeHaiku::BrowserStartup || purpose == WebExtensionLoadPurposeHaiku::BrowserUpdate);
++    }
++    state.setString(versionKey, version);
++    state.setString(fingerprintKey, fingerprint);
++    state.setInteger(formatKey, 1);
++    return result;
 +}
 +
 +} // namespace WebKit
@@ -34421,6 +34638,415 @@ index 0000000000000000000000000000000000000000..e5bc0db9179485a0737b400bba575be5
 +} // namespace WebKit
 +
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionPackageSnapshotHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionPackageSnapshotHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..096eddd96c75f984f67bc38565701efa3a86fe8a
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionPackageSnapshotHaiku.cpp
+@@ -0,0 +1,334 @@
++/*
++ * Copyright (C) 2026 KunanyiOS contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are met:
++ * 1. Redistributions of source code must retain the above copyright notice,
++ *    this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright notice,
++ *    this list of conditions and the following disclaimer in the documentation
++ *    and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "WebExtensionPackageSnapshotHaiku.h"
++
++#if PLATFORM(HAIKU)
++
++#include "WebExtensionResourcePathsHaiku.h"
++#include <algorithm>
++#include <array>
++#include <cerrno>
++#include <dirent.h>
++#include <fcntl.h>
++#include <filesystem>
++#include <pal/crypto/CryptoDigest.h>
++#include <string>
++#include <sys/stat.h>
++#include <unistd.h>
++#include <utility>
++#include <vector>
++#include <wtf/FileSystem.h>
++
++namespace WebKit {
++
++WebExtensionPackageSnapshotHaiku::WebExtensionPackageSnapshotHaiku(String&& path, String&& fingerprint)
++    : m_path(WTF::move(path)), m_fingerprint(WTF::move(fingerprint)) { }
++WebExtensionPackageSnapshotHaiku::WebExtensionPackageSnapshotHaiku(WebExtensionPackageSnapshotHaiku&& other)
++    : m_path(other.release()), m_fingerprint(WTF::move(other.m_fingerprint)) { }
++WebExtensionPackageSnapshotHaiku::~WebExtensionPackageSnapshotHaiku()
++{
++    if (!m_path.isEmpty())
++        FileSystem::deleteNonEmptyDirectory(m_path);
++}
++String WebExtensionPackageSnapshotHaiku::release() { return std::exchange(m_path, { }); }
++
++namespace {
++using Error = WebExtensionPackageErrorHaiku;
++using Digest = PAL::Crypto::CryptoDigest;
++
++class Descriptor {
++public:
++    explicit Descriptor(int value = -1) : m_value(value) { }
++    Descriptor(const Descriptor&) = delete;
++    ~Descriptor() { if (m_value >= 0) close(m_value); }
++    int get() const { return m_value; }
++    explicit operator bool() const { return m_value >= 0; }
++    void reset(int value) { if (m_value >= 0) close(m_value); m_value = value; }
++private:
++    int m_value;
++};
++
++void addSize(Digest& digest, uint64_t size)
++{
++    std::array<uint8_t, 8> bytes;
++    for (size_t index = 0; index < bytes.size(); ++index)
++        bytes[index] = size >> ((7 - index) * 8);
++    digest.addBytes(bytes);
++}
++
++void addFrame(Digest& digest, uint8_t type, const std::string& path, uint64_t length)
++{
++    digest.addBytes(std::span { &type, 1 });
++    addSize(digest, path.size());
++    digest.addBytes(std::span { reinterpret_cast<const uint8_t*>(path.data()), path.size() });
++    addSize(digest, length);
++}
++
++bool sameStatus(const struct stat& a, const struct stat& b)
++{
++    return a.st_dev == b.st_dev && a.st_ino == b.st_ino && a.st_mode == b.st_mode && a.st_size == b.st_size
++        && a.st_mtim.tv_sec == b.st_mtim.tv_sec && a.st_mtim.tv_nsec == b.st_mtim.tv_nsec
++        && a.st_ctim.tv_sec == b.st_ctim.tv_sec && a.st_ctim.tv_nsec == b.st_ctim.tv_nsec;
++}
++
++struct Walker {
++    String root;
++    const WebExtensionArchiveLimitsHaiku& limits;
++    int rootDescriptor;
++    std::unique_ptr<Digest> digest { Digest::create(Digest::Algorithm::SHA_256) };
++    uint64_t bytes { 0 };
++    unsigned entries { 0 };
++    std::vector<std::pair<dev_t, ino_t>> ancestors;
++
++    Walker(const String& root, const WebExtensionArchiveLimitsHaiku& limits, int rootDescriptor) : root(root), limits(limits), rootDescriptor(rootDescriptor)
++    {
++        auto domain = String("Kunanyi-WebExtension-Package-v1"_s).utf8();
++        digest->addBytes(byteCast<uint8_t>(domain.span()));
++    }
++
++    int openContained(const String& path)
++    {
++        if (path == root)
++            return openat(rootDescriptor, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
++        auto bytes = path.utf8();
++        auto rootBytes = root.utf8();
++        std::string relative(bytes.legacyCStringPointer() + rootBytes.length() + (root.endsWith('/') ? 0 : 1));
++        Descriptor parent(dup(rootDescriptor));
++        if (!parent)
++            return -1;
++        size_t begin = 0;
++        for (;;) {
++            auto end = relative.find('/', begin);
++            auto component = relative.substr(begin, end == std::string::npos ? end : end - begin);
++            if (end == std::string::npos)
++                return openat(parent.get(), component.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
++            parent.reset(openat(parent.get(), component.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
++            if (!parent)
++                return -1;
++            begin = end + 1;
++        }
++    }
++
++    std::expected<void, Error> walk(int source, int destination, const std::string& physical, const std::string& logical, unsigned depth)
++    {
++        if (depth > limits.pathDepth || logical.size() > limits.pathBytes)
++            return std::unexpected(Error::ExpansionLimit);
++        struct stat before { };
++        if (fstat(source, &before) || !S_ISDIR(before.st_mode))
++            return std::unexpected(Error::FileSystem);
++        auto identity = std::make_pair(before.st_dev, before.st_ino);
++        if (std::find(ancestors.begin(), ancestors.end(), identity) != ancestors.end())
++            return std::unexpected(Error::InvalidPath);
++        ancestors.push_back(identity);
++        addFrame(*digest, 'D', logical, 0);
++        int enumerationDescriptor = dup(source);
++        if (enumerationDescriptor < 0)
++            return std::unexpected(Error::FileSystem);
++        std::unique_ptr<DIR, decltype(&closedir)> directory(fdopendir(enumerationDescriptor), &closedir);
++        if (!directory) {
++            close(enumerationDescriptor);
++            return std::unexpected(Error::FileSystem);
++        }
++        std::vector<std::string> names;
++        errno = 0;
++        while (auto* item = readdir(directory.get())) {
++            std::string name(item->d_name);
++            if (name == "." || name == "..")
++                continue;
++            if (String::fromUTF8(name).isNull())
++                return std::unexpected(Error::InvalidPath);
++            if (++entries > limits.entries)
++                return std::unexpected(Error::ExpansionLimit);
++            names.push_back(WTF::move(name));
++            errno = 0;
++        }
++        if (errno)
++            return std::unexpected(Error::FileSystem);
++        std::sort(names.begin(), names.end());
++        for (auto& name : names) {
++            auto relative = logical.empty() ? name : logical + "/" + name;
++            if (depth + 1 > limits.pathDepth || relative.size() > limits.pathBytes)
++                return std::unexpected(Error::ExpansionLimit);
++            struct stat entryBefore { };
++            if (fstatat(source, name.c_str(), &entryBefore, AT_SYMLINK_NOFOLLOW))
++                return std::unexpected(Error::SourceChanged);
++            auto sourcePath = physical + "/" + name;
++            auto canonical = canonicalWebExtensionPathHaiku(String::fromUTF8(sourcePath));
++            if (canonical.isEmpty() || (canonical != root && !FileSystem::isAncestor(root, canonical)))
++                return std::unexpected(Error::InvalidPath);
++            auto resolvedBytes = canonical.utf8();
++            bool symbolic = S_ISLNK(entryBefore.st_mode);
++            Descriptor input(symbolic ? openContained(canonical)
++                                      : openat(source, name.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
++            struct stat opened { };
++            if (!input || fstat(input.get(), &opened))
++                return std::unexpected(Error::FileSystem);
++            if (!symbolic && !sameStatus(entryBefore, opened))
++                return std::unexpected(Error::SourceChanged);
++            if (S_ISDIR(opened.st_mode)) {
++                if (destination >= 0 && mkdirat(destination, name.c_str(), 0700))
++                    return std::unexpected(Error::FileSystem);
++                Descriptor output(destination >= 0 ? openat(destination, name.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW) : -1);
++                if (destination >= 0 && !output)
++                    return std::unexpected(Error::FileSystem);
++                auto result = walk(input.get(), output.get(), resolvedBytes.legacyCStringPointer(), relative, depth + 1);
++                if (!result)
++                    return result;
++            } else if (S_ISREG(opened.st_mode)) {
++                if (opened.st_size < 0 || static_cast<uint64_t>(opened.st_size) > limits.fileBytes
++                    || static_cast<uint64_t>(opened.st_size) > limits.expandedBytes - bytes)
++                    return std::unexpected(Error::ExpansionLimit);
++                bytes += opened.st_size;
++                Descriptor output(destination >= 0 ? openat(destination, name.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600) : -1);
++                if (destination >= 0 && !output)
++                    return std::unexpected(Error::FileSystem);
++                addFrame(*digest, 'F', relative, opened.st_size);
++                std::array<uint8_t, 64 * 1024> buffer;
++                uint64_t copied = 0;
++                for (;;) {
++                    auto count = read(input.get(), buffer.data(), buffer.size());
++                    if (count < 0 && errno == EINTR)
++                        continue;
++                    if (count < 0)
++                        return std::unexpected(Error::FileSystem);
++                    if (!count)
++                        break;
++                    if (static_cast<uint64_t>(count) > static_cast<uint64_t>(opened.st_size) - copied)
++                        return std::unexpected(Error::SourceChanged);
++                    copied += count;
++                    auto span = std::span { buffer }.first(count);
++                    digest->addBytes(span);
++                    if (destination >= 0) {
++                        size_t written = 0;
++                        while (written < span.size()) {
++                            auto count = write(output.get(), span.data() + written, span.size() - written);
++                            if (count < 0 && errno == EINTR)
++                                continue;
++                            if (count <= 0)
++                                return std::unexpected(Error::FileSystem);
++                            written += count;
++                        }
++                    }
++                }
++                if (copied != static_cast<uint64_t>(opened.st_size))
++                    return std::unexpected(Error::SourceChanged);
++                if (destination >= 0 && fsync(output.get()))
++                    return std::unexpected(Error::FileSystem);
++            } else
++                return std::unexpected(Error::InvalidPath);
++            struct stat after { }, entryAfter { };
++            if (fstat(input.get(), &after) || fstatat(source, name.c_str(), &entryAfter, AT_SYMLINK_NOFOLLOW)
++                || !sameStatus(opened, after) || !sameStatus(entryBefore, entryAfter)
++                || canonicalWebExtensionPathHaiku(String::fromUTF8(sourcePath)) != canonical)
++                return std::unexpected(Error::SourceChanged);
++        }
++        struct stat after { };
++        if (fstat(source, &after) || !sameStatus(before, after))
++            return std::unexpected(Error::SourceChanged);
++        ancestors.pop_back();
++        return { };
++    }
++};
++} // namespace
++
++std::expected<WebExtensionPackageSnapshotHaiku, WebExtensionPackageErrorHaiku> snapshotWebExtensionPackageHaiku(const String& directory, const WebExtensionArchiveLimitsHaiku& limits, const String& temporaryParent)
++{
++    auto root = canonicalWebExtensionPathHaiku(directory);
++    if (root.isEmpty())
++        return std::unexpected(Error::InvalidPath);
++    auto rootBytes = root.utf8();
++    Descriptor source(open(rootBytes.legacyCStringPointer(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
++    struct stat before { };
++    if (!source || fstat(source.get(), &before))
++        return std::unexpected(Error::InvalidPath);
++    String parent = temporaryParent;
++    if (parent.isEmpty()) {
++        std::error_code error;
++        auto temporary = std::filesystem::temp_directory_path(error);
++        if (error)
++            return std::unexpected(Error::FileSystem);
++        parent = String::fromUTF8(temporary.string());
++    }
++    auto canonicalParent = canonicalWebExtensionPathHaiku(parent);
++    if (canonicalParent.isEmpty() || canonicalParent == root || FileSystem::isAncestor(root, canonicalParent))
++        return std::unexpected(Error::InvalidPath);
++    std::string path = canonicalParent.utf8().legacyCStringPointer();
++    path += "/WebKitPackage-XXXXXX";
++    if (!mkdtemp(path.data()))
++        return std::unexpected(Error::FileSystem);
++    WebExtensionPackageSnapshotHaiku owner(String::fromUTF8(path), { });
++    Descriptor destination(open(path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
++    if (!destination)
++        return std::unexpected(Error::FileSystem);
++    Walker copy(root, limits, source.get());
++    auto copied = copy.walk(source.get(), destination.get(), rootBytes.legacyCStringPointer(), { }, 0);
++    if (!copied)
++        return std::unexpected(copied.error());
++    auto fingerprint = copy.digest->toHexString();
++    // Reopen, enumerate and hash the source again. This catches changes to an
++    // earlier file after it was copied, as well as additions/removals and aliases.
++    Descriptor verifySource(open(rootBytes.legacyCStringPointer(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
++    struct stat current { };
++    if (!verifySource || fstat(verifySource.get(), &current) || !sameStatus(before, current))
++        return std::unexpected(Error::SourceChanged);
++    Walker verify(root, limits, verifySource.get());
++    auto verified = verify.walk(verifySource.get(), -1, rootBytes.legacyCStringPointer(), { }, 0);
++    if (!verified)
++        return std::unexpected(verified.error());
++    if (verify.digest->toHexString() != fingerprint)
++        return std::unexpected(Error::SourceChanged);
++    return WebExtensionPackageSnapshotHaiku(owner.release(), WTF::move(fingerprint));
++}
++
++String fingerprintWebExtensionMemoryResourcesHaiku(const String& manifestJSON, Vector<WebExtensionMemoryResourceHaiku>&& data, Vector<WebExtensionMemoryResourceHaiku>&& strings)
++{
++    auto digest = Digest::create(Digest::Algorithm::SHA_256);
++    auto domain = String("Kunanyi-WebExtension-Memory-v1"_s).utf8();
++    digest->addBytes(byteCast<uint8_t>(domain.span()));
++    auto manifest = manifestJSON.utf8();
++    addFrame(*digest, 'M', { }, manifest.length());
++    digest->addBytes(byteCast<uint8_t>(manifest.span()));
++    auto add = [&](auto& resources, uint8_t type) {
++        struct Entry { std::string path; std::span<const uint8_t> bytes; };
++        std::vector<Entry> entries;
++        for (auto& resource : resources) {
++            auto bytes = resource.path.utf8();
++            entries.push_back({ std::string(bytes.legacyCStringPointer(), bytes.length()), resource.bytes });
++        }
++        std::sort(entries.begin(), entries.end(), [](auto& a, auto& b) { return a.path < b.path; });
++        for (auto& entry : entries) {
++            addFrame(*digest, type, entry.path, entry.bytes.size());
++            digest->addBytes(entry.bytes);
++        }
++    };
++    add(data, 'B');
++    add(strings, 'S');
++    return digest->toHexString();
++}
++
++} // namespace WebKit
++
++#endif // PLATFORM(HAIKU)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionPackageSnapshotHaiku.h b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionPackageSnapshotHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..3051d45d0d71f7f52f3e609350e70f0c0515e325
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionPackageSnapshotHaiku.h
+@@ -0,0 +1,63 @@
++/*
++ * Copyright (C) 2026 KunanyiOS contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are met:
++ * 1. Redistributions of source code must retain the above copyright notice,
++ *    this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright notice,
++ *    this list of conditions and the following disclaimer in the documentation
++ *    and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#pragma once
++
++#if PLATFORM(HAIKU)
++
++#include "WebExtensionArchiveHaiku.h"
++#include <wtf/Forward.h>
++#include <wtf/Vector.h>
++
++namespace WebKit {
++
++enum class WebExtensionPackageErrorHaiku : uint8_t { InvalidPath, FileSystem, SourceChanged, ExpansionLimit };
++
++class WebExtensionPackageSnapshotHaiku {
++public:
++    WebExtensionPackageSnapshotHaiku(String&& path, String&& fingerprint);
++    WebExtensionPackageSnapshotHaiku(WebExtensionPackageSnapshotHaiku&&);
++    WebExtensionPackageSnapshotHaiku(const WebExtensionPackageSnapshotHaiku&) = delete;
++    ~WebExtensionPackageSnapshotHaiku();
++    const String& path() const { return m_path; }
++    const String& fingerprint() const { return m_fingerprint; }
++    String release();
++private:
++    String m_path;
++    String m_fingerprint;
++};
++
++// Copy and hash the exact resources which will be loaded. Contained symbolic
++// links are materialized; escapes, cycles and observed concurrent changes fail.
++std::expected<WebExtensionPackageSnapshotHaiku, WebExtensionPackageErrorHaiku> snapshotWebExtensionPackageHaiku(const String& directory, const WebExtensionArchiveLimitsHaiku& = { }, const String& temporaryParent = { });
++
++struct WebExtensionMemoryResourceHaiku {
++    String path;
++    std::span<const uint8_t> bytes;
++};
++String fingerprintWebExtensionMemoryResourcesHaiku(const String& manifestJSON, Vector<WebExtensionMemoryResourceHaiku>&& data, Vector<WebExtensionMemoryResourceHaiku>&& strings);
++
++} // namespace WebKit
++
++#endif // PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionResourcePathsHaiku.h b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionResourcePathsHaiku.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..6ebc5963dbf6ae3b340e55b4701edaeb2afc3ca0
@@ -42625,7 +43251,7 @@ index 5adbf62a81fabfdb9858be69af623037d0987c75..bd64e5243c036135472125d017cfd6f3
  
      const RefPtr<WebExtensionAPIEvent> m_onMessage;
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIRuntime.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIRuntime.cpp
-index cb3eac4c0a556a9fe000ece79903aa86b9fd69c7..686a8e8dfca9ecb8f8adc15e34a26a499d3a7ffa 100644
+index cb3eac4c0a556a9fe000ece79903aa86b9fd69c7..940ebf9e351e7d4a8ae603f8dfe9d14c680bc349 100644
 --- a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIRuntime.cpp
 +++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIRuntime.cpp
 @@ -30,6 +30,8 @@
@@ -42847,6 +43473,15 @@ index cb3eac4c0a556a9fe000ece79903aa86b9fd69c7..686a8e8dfca9ecb8f8adc15e34a26a49
  void WebExtensionContextProxy::dispatchRuntimeMessageEvent(WebExtensionContentWorldType contentWorldType, const String& messageJSON, const std::optional<WebExtensionMessageTargetParameters>& targetParameters, const WebExtensionMessageSenderParameters& senderParameters, bool userGesture, CompletionHandler<void(String&& replyJSON)>&& completionHandler)
  {
      switch (contentWorldType) {
+@@ -718,7 +799,7 @@ void WebExtensionContextProxy::dispatchRuntimeInstalledEvent(WebExtensionContext
+ 
+     details->setString(reasonKey, toWebAPI(installReason));
+ 
+-    if (installReason == WebExtensionContext::InstallReason::ExtensionUpdate)
++    if (installReason == WebExtensionContext::InstallReason::ExtensionUpdate && !previousVersion.isEmpty())
+         details->setString(previousVersionKey, previousVersion);
+ 
+     enumerateNamespaceObjects([&](auto& namespaceObject) {
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIRuntime.h b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIRuntime.h
 index f8a0b0260957a0d8e21debde8ce80acdb0f98f1d..39d5bf764826d811f5e8754f76b8a0c6781ad778 100644
 --- a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIRuntime.h
