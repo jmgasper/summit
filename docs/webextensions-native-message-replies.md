@@ -69,3 +69,6 @@ The probes used baseline
 and isolated candidate sources. Cocoa/Xcode compilation has not been run;
 the retained Cocoa definition and project header references were checked.
 Aggregate: `.vm/extension-reply-native-results.json`.
+
+Subsequent work moved sender conversion into common C++ and validated its
+tab helper separately; see [message metadata](webextensions-native-message-parameters.md).

@@ -1128,3 +1128,16 @@ Patch: `afeb9db214b575cddb072d8f65e890cb1cb10d0508b6a55bae32a00089e1074e`.
 The separate full engine build remains frozen on `1daf0679...` and is
 progressing through WebCore HTML units. The verified preview remains
 `bundle-yqhmejfw`, with extensions disabled.
+
+
+2026-09-14 message metadata: sender conversion now lives in common C++ and
+uses the new JavaScript tab converter. All 27 native tab assertions pass,
+including missing/false properties, identifier sentinels, NaN indices,
+URL fragments and UTF-16 titles. The helper, runtime sender conversion
+and port unit compile with both extension features enabled. No extension
+context or metadata IPC path was run. See [message metadata](webextensions-native-message-parameters.md).
+
+Patch: `23064dc4cd0304e24b9c5924d1aa7238c727d76439502b37887affdc1162516c`.
+The separate full engine build continues on frozen `1daf0679...` through
+WebCore page units. The verified preview remains `bundle-yqhmejfw`, with
+extensions disabled.
