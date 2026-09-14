@@ -16,6 +16,7 @@
 #include <MenuBar.h>
 #include <MenuItem.h>
 #include <MessageRunner.h>
+#include <MessageFilter.h>
 #include <Path.h>
 #include <Roster.h>
 #include <ScrollView.h>
@@ -37,9 +38,35 @@
 #include <utility>
 
 namespace summit {
+class AddressEnterFilter final : public BMessageFilter {
+public:
+    explicit AddressEnterFilter(BTextControl& control)
+        : BMessageFilter(B_KEY_DOWN), fControl(control) { }
+
+    filter_result Filter(BMessage* message, BHandler**) override
+    {
+        const char* bytes = nullptr;
+        if (message->FindString("bytes", &bytes) != B_OK || !bytes
+            || bytes[0] != B_ENTER || bytes[1] != '\0') return B_DISPATCH_MESSAGE;
+        if (fControl.IsEnabled() && fControl.TextView()->IsFocus()) {
+            // BTextControl normally suppresses Enter when the text matches its
+            // saved value. An address must remain submit-able for retry/reload.
+            fControl.Invoke();
+            fControl.TextView()->SelectAll();
+        }
+        return B_SKIP_MESSAGE;
+    }
+
+private:
+    BTextControl& fControl;
+};
+
 class AddressControl final : public BTextControl {
 public:
-    AddressControl() : BTextControl("address", nullptr, "", new BMessage(kNavigate)) { }
+    AddressControl() : BTextControl("address", nullptr, "", new BMessage(kNavigate))
+    {
+        TextView()->AddFilter(new AddressEnterFilter(*this));
+    }
 
     status_t Invoke(BMessage* message = nullptr) override
     {
@@ -327,8 +354,7 @@ void BrowserWindow::SelectTab(int64 id, bool forClose)
         SetCurrentWebView(fTabs[i].view);
         fTabs[i].view->WebPage()->ResendNotifications();
 #else
-        fStatus->SetText(fTabs[i].processExited ? fTabs[i].processError.c_str()
-            : fTabs[i].loading ? "Loading…" : "Ready");
+        ShowTabStatus(fTabs[i]);
 #endif
         fTabs[i].view->MakeFocus();
         fAddress->SetText(fTabs[i].url == "summit:home" ? "" : fTabs[i].url.c_str());
@@ -968,6 +994,16 @@ void BrowserWindow::MessageReceived(BMessage* message)
 #if SUMMIT_MODERN_WEBKIT
                 item.AddDouble("pageZoom", page.pageZoom);
                 item.AddDouble("textZoom", page.textZoom);
+                item.AddBool("loadError", !page.loadError.empty());
+                item.AddString("loadErrorText", page.loadError.c_str());
+                item.AddString("loadErrorDescription", page.loadErrorDescription.c_str());
+                item.AddString("loadErrorDomain", page.loadErrorDomain.c_str());
+                item.AddString("loadErrorURL", page.loadErrorURL.c_str());
+                item.AddInt32("loadErrorCode", page.loadErrorCode);
+                item.AddBool("loadErrorProvisional", page.loadErrorProvisional);
+                item.AddUInt64("loadGeneration", page.loadGeneration);
+                item.AddString("loadOutcome", page.loadOutcome.c_str());
+                item.AddUInt64("loadSuccessSequence", page.loadSuccessSequence);
 #endif
                 reply.AddMessage("tab", &item);
             }
@@ -1017,8 +1053,40 @@ void BrowserWindow::WebKitStateChanged(const BMessage& message)
     bool closeInvalidated = false;
     if (message.FindBool("closeApprovalInvalidated", &closeInvalidated) == B_OK && closeInvalidated)
         InvalidateWindowClose();
-    const bool wasLoading = tab->loading;
     const char* value = nullptr;
+    uint64 generation;
+    // Error fields are a copied snapshot, never a native pointer into WebKit.
+    // Older generations may still carry ordinary progress/close state, but
+    // cannot restore a previous navigation's load error.
+    if (message.FindUInt64("loadGeneration", &generation) == B_OK && generation >= tab->loadGeneration) {
+        tab->loadGeneration = generation;
+        if (message.FindString("loadOutcome", &value) == B_OK && value) tab->loadOutcome = value;
+        bool failed = false;
+        if (message.FindBool("loadError", &failed) == B_OK) {
+            tab->loadError.clear();
+            tab->loadErrorDescription.clear();
+            tab->loadErrorDomain.clear();
+            tab->loadErrorURL.clear();
+            tab->loadErrorCode = 0;
+            tab->loadErrorProvisional = false;
+            if (failed) {
+                if (message.FindString("loadErrorDescription", &value) == B_OK && value) tab->loadErrorDescription = value;
+                if (message.FindString("loadErrorDomain", &value) == B_OK && value) tab->loadErrorDomain = value;
+                if (message.FindString("loadErrorURL", &value) == B_OK && value) tab->loadErrorURL = value;
+                message.FindInt32("loadErrorCode", &tab->loadErrorCode);
+                message.FindBool("loadErrorProvisional", &tab->loadErrorProvisional);
+                tab->loadError = tab->loadErrorProvisional ? "Could not load " : "Loading was interrupted for ";
+                tab->loadError += tab->loadErrorURL.empty() ? "this page" : tab->loadErrorURL;
+                tab->loadError += ": " + (tab->loadErrorDescription.empty()
+                    ? std::string("The request failed.") : tab->loadErrorDescription);
+                tab->loadError += " Enter the address again to retry.";
+                // Keep native status text on one line; retain the original
+                // diagnostic strings separately in the state probe.
+                for (auto& character : tab->loadError)
+                    if (static_cast<unsigned char>(character) < 0x20 || character == 0x7f) character = ' ';
+            }
+        }
+    }
     if (message.FindString("url", &value) == B_OK && value && *value) tab->url = StoredURL(value);
     if (message.FindString("title", &value) == B_OK && value)
         tab->title = *value ? value : tab->url == "summit:home" ? "Start Page" : tab->url;
@@ -1035,14 +1103,37 @@ void BrowserWindow::WebKitStateChanged(const BMessage& message)
         tab->processExited = false;
         tab->processError.clear();
     }
-    if (wasLoading && !tab->loading && !tab->processExited) fProfile.Visit({tab->url, tab->title});
-    for (auto& page : fProfile.history) if (page.url == tab->url) page.title = tab->title;
+    uint64 successSequence;
+    if (message.FindUInt64("loadSuccessSequence", &successSequence) == B_OK
+        && successSequence > tab->loadSuccessSequence) {
+        tab->loadSuccessSequence = successSequence;
+        const char* successURL = nullptr;
+        const char* successTitle = nullptr;
+        if (message.FindString("loadSuccessURL", &successURL) == B_OK && successURL && *successURL
+            && message.FindString("loadSuccessTitle", &successTitle) == B_OK && successTitle)
+            fProfile.Visit({StoredURL(successURL), successTitle});
+    }
+    const char* successfulURL = nullptr;
+    if (tab->loadOutcome == "succeeded"
+        && message.FindString("loadSuccessURL", &successfulURL) == B_OK && successfulURL
+        && StoredURL(successfulURL) == tab->url) {
+        for (auto& page : fProfile.history) if (page.url == tab->url) page.title = tab->title;
+    }
     if (fSidebarHistory) RefreshSidebar(true);
     if (tab->id == fSelected) {
         if (!fAddress->TextView()->IsFocus()) fAddress->SetText(tab->url == "summit:home" ? "" : tab->url.c_str());
-        fStatus->SetText(tab->processExited ? tab->processError.c_str() : tab->loading ? "Loading…" : "Ready");
+        ShowTabStatus(*tab);
     }
     RefreshChrome();
+}
+
+void BrowserWindow::ShowTabStatus(const Tab& tab)
+{
+    const char* text = tab.processExited ? tab.processError.c_str()
+        : !tab.loadError.empty() ? tab.loadError.c_str()
+        : tab.loading ? "Loading…" : "Ready";
+    fStatus->SetText(text);
+    fStatus->SetToolTip(tab.loadError.empty() && !tab.processExited ? nullptr : text);
 }
 #else
 void BrowserWindow::NavigationRequested(const BString& url, BWebView* view)

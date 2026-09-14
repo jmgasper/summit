@@ -28818,10 +28818,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..88aafc469f8384a5ed28d42444a3c1dc54a33edc
+index 0000000000000000000000000000000000000000..a530d6c56d08f9ab768f14d1639825df64417d28
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,869 @@
+@@ -0,0 +1,1104 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -28851,6 +28851,7 @@ index 0000000000000000000000000000000000000000..88aafc469f8384a5ed28d42444a3c1dc
 +#include "WebViewPrivate.h"
 +
 +#include "APIFrameInfo.h"
++#include "APIError.h"
 +#include "APINavigationAction.h"
 +#include "APINavigationClient.h"
 +#include "APINavigationResponse.h"
@@ -28880,6 +28881,7 @@ index 0000000000000000000000000000000000000000..88aafc469f8384a5ed28d42444a3c1dc
 +#include "WebViewContextHaiku.h"
 +#include <WebCore/Cursor.h>
 +#include <WebCore/DOMPasteAccess.h>
++#include <WebCore/ResourceError.h>
 +#include <WebCore/ResourceRequest.h>
 +#include <wtf/RunLoop.h>
 +#include <wtf/TZoneMallocInlines.h>
@@ -28995,6 +28997,121 @@ index 0000000000000000000000000000000000000000..88aafc469f8384a5ed28d42444a3c1dc
 +        });
 +}
 +
++static void notifyLoadStateHaiku(const std::shared_ptr<WebViewStateHaiku>& state)
++{
++    if (RefPtr client = state->client)
++        client->notifyState();
++}
++
++static void clearLoadErrorHaiku(WebViewStateHaiku::LoadState& load)
++{
++    load.errorDescription = { };
++    load.errorDomain = { };
++    load.errorURL = { };
++    load.errorCode = 0;
++    load.errorProvisional = false;
++}
++
++static void beginUnidentifiedLoadHaiku(const std::shared_ptr<WebViewStateHaiku>& state)
++{
++    auto& load = state->load;
++    ++load.generation;
++    load.identified = false;
++    load.pending = true;
++    load.stopped = false;
++    load.committed = false;
++    load.sameDocumentIdentifier = std::nullopt;
++    load.sameDocumentURL = { };
++    load.outcome = "loading";
++    clearLoadErrorHaiku(load);
++}
++
++static bool trackLoadHaiku(const std::shared_ptr<WebViewStateHaiku>& state, API::Navigation* navigation)
++{
++    if (!navigation || state->closed)
++        return false;
++    auto& load = state->load;
++    auto identifier = navigation->navigationID().toUInt64();
++    // API::Navigation allocates these IDs in the UI process with the
++    // monotonically increasing ObjectIdentifierMainThreadAccessTraits.
++    // In particular, a delayed policy/start for A must not supersede a newer
++    // explicit API request B, even when both use the same URL.
++    if (identifier < load.navigationIdentifier
++        || (identifier == load.navigationIdentifier && !load.identified))
++        return false;
++    if (identifier == load.navigationIdentifier)
++        return true;
++    beginUnidentifiedLoadHaiku(state);
++    load.navigationIdentifier = identifier;
++    load.identified = true;
++    notifyLoadStateHaiku(state);
++    return true;
++}
++
++static bool matchesLoadHaiku(const WebViewStateHaiku& state, API::Navigation* navigation)
++{
++    return !state.closed && state.load.pending && state.load.identified && navigation
++        && state.load.navigationIdentifier == navigation->navigationID().toUInt64();
++}
++
++static void finishLoadHaiku(const std::shared_ptr<WebViewStateHaiku>& state, WebPageProxy& page)
++{
++    auto& load = state->load;
++    load.pending = false;
++    load.outcome = load.stopped ? "cancelled" : "succeeded";
++    clearLoadErrorHaiku(load);
++    if (!load.stopped) {
++        ++load.successSequence;
++        load.successURL = page.pageLoadState().url().string();
++        load.successTitle = page.pageLoadState().title();
++    }
++    notifyLoadStateHaiku(state);
++}
++
++static void failLoadHaiku(const std::shared_ptr<WebViewStateHaiku>& state,
++    const URL& requestURL, const ResourceError& error, bool provisional)
++{
++    auto& load = state->load;
++    load.pending = false;
++    // A download/policy handoff uses a general ResourceError, not the
++    // Cancellation type. It leaves the previous document alive.
++    bool cancelled = load.stopped || error.isCancellation()
++        || (error.domain() == API::Error::webKitNetworkErrorDomain()
++            && error.errorCode() == API::Error::Network::Cancelled)
++        || (error.domain() == API::Error::webKitPolicyErrorDomain()
++            && error.errorCode() == API::Error::Policy::FrameLoadInterruptedByPolicyChange);
++    load.outcome = cancelled ? "cancelled" : "failed";
++    clearLoadErrorHaiku(load);
++    if (!cancelled) {
++        load.errorDescription = error.localizedDescription();
++        if (load.errorDescription.isEmpty())
++            load.errorDescription = "The page could not be loaded."_s;
++        load.errorDomain = error.domain();
++        load.errorCode = error.errorCode();
++        load.errorURL = (error.failingURL().isEmpty() ? requestURL : error.failingURL()).string();
++        load.errorProvisional = provisional;
++    }
++    notifyLoadStateHaiku(state);
++}
++
++static void stopLoadHaiku(const std::shared_ptr<WebViewStateHaiku>& state)
++{
++    if (!state->load.pending)
++        return;
++    state->load.stopped = true;
++    state->load.pending = false;
++    state->load.outcome = "cancelled";
++    notifyLoadStateHaiku(state);
++}
++
++static void documentChangedLoadHaiku(const std::shared_ptr<WebViewStateHaiku>& state)
++{
++    beginUnidentifiedLoadHaiku(state);
++    state->load.pending = false;
++    state->load.outcome = "idle";
++    notifyLoadStateHaiku(state);
++}
++
 +class CloseNavigationClientHaiku final : public API::NavigationClient {
 +    WTF_MAKE_TZONE_ALLOCATED_INLINE(CloseNavigationClientHaiku);
 +public:
@@ -29010,6 +29127,7 @@ index 0000000000000000000000000000000000000000..88aafc469f8384a5ed28d42444a3c1dc
 +            RefPtr navigation = action->mainFrameNavigation();
 +            if (!navigation || state->nativeNavigationIdentifier != navigation->navigationID())
 +                navigationChangedHaiku(state);
++            trackLoadHaiku(state, navigation.get());
 +        }
 +        listener->use();
 +    }
@@ -29032,10 +29150,26 @@ index 0000000000000000000000000000000000000000..88aafc469f8384a5ed28d42444a3c1dc
 +    void navigationResponseDidBecomeDownload(WebPageProxy&, API::NavigationResponse&, DownloadProxy& download) override { registerDownload(download); }
 +    void contextMenuDidCreateDownload(WebPageProxy&, DownloadProxy& download) override { registerDownload(download); }
 +
-+    void didStartProvisionalNavigation(WebPageProxy&, const ResourceRequest&, API::Navigation*, API::Object*) override
++    void didStartProvisionalNavigation(WebPageProxy& page, const ResourceRequest&, API::Navigation* navigation, API::Object*) override
 +    {
-+        if (auto state = m_state.lock())
++        if (auto state = m_state.lock()) {
 +            navigationChangedHaiku(state);
++            if (navigation)
++                trackLoadHaiku(state, navigation);
++            else if (!page.pageLoadState().pendingAPIRequest().navigationID) {
++                // Some back/forward-cache loads have no Navigation object.
++                // Invalidate older IDs; only a matching committed document
++                // can identify their terminal callbacks below.
++                beginUnidentifiedLoadHaiku(state);
++                notifyLoadStateHaiku(state);
++            }
++        }
++    }
++
++    void didCommitNavigation(WebPageProxy&, API::Navigation* navigation, API::Object*) override
++    {
++        if (auto state = m_state.lock(); state && matchesLoadHaiku(*state, navigation))
++            state->load.committed = true;
 +    }
 +
 +    void didCommitLoadForFrame(WebPageProxy&, ResourceRequest&&, FrameInfoData&& frame) override
@@ -29045,13 +29179,58 @@ index 0000000000000000000000000000000000000000..88aafc469f8384a5ed28d42444a3c1dc
 +        if (auto state = m_state.lock()) {
 +            state->documentIdentifier = frame.documentID ? std::optional { *frame.documentID } : std::nullopt;
 +            navigationChangedHaiku(state);
++            if (!state->load.identified)
++                state->load.committed = true;
 +        }
 +    }
 +
-+    void didSameDocumentNavigation(WebPageProxy&, API::Navigation*, SameDocumentNavigationType, API::Object*) override
++    void didFailProvisionalNavigationWithError(WebPageProxy&, FrameInfoData&& frame,
++        API::Navigation* navigation, const URL& requestURL, const ResourceError& error, API::Object*) override
 +    {
-+        if (auto state = m_state.lock())
++        if (auto state = m_state.lock(); state && frame.isMainFrame && matchesLoadHaiku(*state, navigation))
++            failLoadHaiku(state, requestURL, error, true);
++        // An uncommitted failure without a Navigation ID has no document
++        // identity. Do not attribute it to a newer same-URL request.
++    }
++
++    void didFailNavigationWithError(WebPageProxy& page, const FrameInfoData& frame,
++        API::Navigation* navigation, const URL& requestURL, const ResourceError& error, API::Object*) override
++    {
++        if (auto state = m_state.lock(); state && frame.isMainFrame
++            && (matchesLoadHaiku(*state, navigation) || (!navigation && matchesUnidentifiedDocument(*state, page, frame))))
++            failLoadHaiku(state, requestURL, error, false);
++    }
++
++    void didFinishNavigation(WebPageProxy& page, API::Navigation* navigation, API::Object*) override
++    {
++        if (auto state = m_state.lock(); state && matchesLoadHaiku(*state, navigation))
++            finishLoadHaiku(state, page);
++    }
++
++    void didFinishLoadForFrame(WebPageProxy& page, ResourceRequest&&, FrameInfoData&& frame) override
++    {
++        if (auto state = m_state.lock(); state && matchesUnidentifiedDocument(*state, page, frame))
++            finishLoadHaiku(state, page);
++    }
++
++    void didSameDocumentNavigation(WebPageProxy& page, API::Navigation* navigation, SameDocumentNavigationType, API::Object*) override
++    {
++        if (auto state = m_state.lock()) {
 +            navigationChangedHaiku(state);
++            // Anchor callbacks carry the existing DocumentLoader's navigation
++            // ID, rather than the new UI API request's ID. Match only an
++            // explicitly requested fragment within that unchanged document.
++            bool requestedFragment = state->load.pending && state->load.sameDocumentIdentifier
++                && state->load.sameDocumentIdentifier == state->documentIdentifier
++                && state->load.sameDocumentURL == page.pageLoadState().url().string();
++            if (matchesLoadHaiku(*state, navigation) || requestedFragment
++                || (!state->load.pending && !page.pageLoadState().pendingAPIRequest().navigationID)) {
++                // Fragment/history API navigation succeeds without a main
++                // resource load, but still updates the address and history.
++                beginUnidentifiedLoadHaiku(state);
++                finishLoadHaiku(state, page);
++            }
++        }
 +    }
 +
 +private:
@@ -29065,6 +29244,16 @@ index 0000000000000000000000000000000000000000..88aafc469f8384a5ed28d42444a3c1dc
 +            }
 +            state->context->downloads()->registerDownload(download, view);
 +        }
++    }
++
++    static bool matchesUnidentifiedDocument(const WebViewStateHaiku& state,
++        WebPageProxy& page, const FrameInfoData& frame)
++    {
++        return !state.closed && state.load.pending && !state.load.identified && state.load.committed
++            && frame.isMainFrame && frame.documentID && state.documentIdentifier
++            && *frame.documentID == *state.documentIdentifier
++            && !page.pageLoadState().pendingAPIRequest().navigationID
++            && page.pageLoadState().provisionalURL().isEmpty();
 +    }
 +
 +    const std::weak_ptr<WebViewStateHaiku> m_state;
@@ -29109,8 +29298,10 @@ index 0000000000000000000000000000000000000000..88aafc469f8384a5ed28d42444a3c1dc
 +
 +    void didExplicitOpen(WebPageProxy*) override
 +    {
-+        if (auto state = m_state.lock())
++        if (auto state = m_state.lock()) {
 +            navigationChangedHaiku(state);
++            documentChangedLoadHaiku(state);
++        }
 +    }
 +
 +    bool canRunBeforeUnloadConfirmPanel() const override { return true; }
@@ -29359,6 +29550,18 @@ index 0000000000000000000000000000000000000000..88aafc469f8384a5ed28d42444a3c1dc
 +    message.AddDouble("pageZoom", m_page->pageZoomFactor());
 +    message.AddDouble("textZoom", m_page->textZoomFactor());
 +    message.AddBool("closeApprovalInvalidated", m_state->closeApprovalInvalidated);
++    const auto& load = m_state->load;
++    message.AddUInt64("loadGeneration", load.generation);
++    message.AddString("loadOutcome", load.outcome);
++    message.AddBool("loadError", !load.errorDescription.isEmpty());
++    message.AddString("loadErrorDescription", load.errorDescription.utf8().legacyCStringPointer());
++    message.AddString("loadErrorDomain", load.errorDomain.utf8().legacyCStringPointer());
++    message.AddString("loadErrorURL", load.errorURL.utf8().legacyCStringPointer());
++    message.AddInt32("loadErrorCode", load.errorCode);
++    message.AddBool("loadErrorProvisional", load.errorProvisional);
++    message.AddUInt64("loadSuccessSequence", load.successSequence);
++    message.AddString("loadSuccessURL", load.successURL.utf8().legacyCStringPointer());
++    message.AddString("loadSuccessTitle", load.successTitle.utf8().legacyCStringPointer());
 +    {
 +        std::lock_guard guard(m_state->mutex);
 +        message.AddMessenger("view", m_state->view);
@@ -29382,8 +29585,10 @@ index 0000000000000000000000000000000000000000..88aafc469f8384a5ed28d42444a3c1dc
 +        // Stop an existing load before the ordered TryClose IPC assesses the
 +        // current document. Failed/stalled loads must not trap the close path.
 +        // A new observed navigation after this point still invalidates it.
-+        if (m_page && m_page->pageLoadState().isLoading())
++        if (m_page && m_page->pageLoadState().isLoading()) {
++            stopLoadHaiku(m_state);
 +            m_page->stopLoading();
++        }
 +        m_state->closeRequestPending = true;
 +        m_state->closeApprovalInvalidated = false;
 +        m_state->closeNavigationGeneration = m_state->navigationGeneration;
@@ -29399,8 +29604,18 @@ index 0000000000000000000000000000000000000000..88aafc469f8384a5ed28d42444a3c1dc
 +    case viewLoadHaiku: {
 +        URL url { String::fromUTF8(message.FindString("url")) };
 +        if (url.isValid()) {
++            auto fragmentDocument = url.hasFragmentIdentifier()
++                && equalIgnoringFragmentIdentifier(url, m_page->pageLoadState().url())
++                ? m_state->documentIdentifier : std::nullopt;
++            String fragmentURL = fragmentDocument ? url.string() : String();
 +            navigationChangedHaiku(m_state);
-+            rememberNativeNavigationHaiku(*m_state, m_page->loadRequest(ResourceRequest(WTF::move(url))));
++            beginUnidentifiedLoadHaiku(m_state);
++            RefPtr navigation = m_page->loadRequest(ResourceRequest(WTF::move(url)));
++            trackLoadHaiku(m_state, navigation.get());
++            m_state->load.sameDocumentIdentifier = fragmentDocument;
++            m_state->load.sameDocumentURL = WTF::move(fragmentURL);
++            rememberNativeNavigationHaiku(*m_state, WTF::move(navigation));
++            notifyState();
 +        }
 +        break;
 +    }
@@ -29419,20 +29634,36 @@ index 0000000000000000000000000000000000000000..88aafc469f8384a5ed28d42444a3c1dc
 +    case viewBackHaiku:
 +        if (m_page->pageLoadState().canGoBack()) {
 +            navigationChangedHaiku(m_state);
-+            rememberNativeNavigationHaiku(*m_state, m_page->goBack());
++            beginUnidentifiedLoadHaiku(m_state);
++            RefPtr navigation = m_page->goBack();
++            trackLoadHaiku(m_state, navigation.get());
++            rememberNativeNavigationHaiku(*m_state, WTF::move(navigation));
++            notifyState();
 +        }
 +        break;
 +    case viewForwardHaiku:
 +        if (m_page->pageLoadState().canGoForward()) {
 +            navigationChangedHaiku(m_state);
-+            rememberNativeNavigationHaiku(*m_state, m_page->goForward());
++            beginUnidentifiedLoadHaiku(m_state);
++            RefPtr navigation = m_page->goForward();
++            trackLoadHaiku(m_state, navigation.get());
++            rememberNativeNavigationHaiku(*m_state, WTF::move(navigation));
++            notifyState();
 +        }
 +        break;
-+    case viewReloadHaiku:
++    case viewReloadHaiku: {
 +        navigationChangedHaiku(m_state);
-+        rememberNativeNavigationHaiku(*m_state, m_page->reload({ }));
++        beginUnidentifiedLoadHaiku(m_state);
++        RefPtr navigation = m_page->reload({ });
++        trackLoadHaiku(m_state, navigation.get());
++        rememberNativeNavigationHaiku(*m_state, WTF::move(navigation));
++        notifyState();
 +        break;
-+    case viewStopHaiku: m_page->stopLoading(); break;
++    }
++    case viewStopHaiku:
++        stopLoadHaiku(m_state);
++        m_page->stopLoading();
++        break;
 +    case viewEditHaiku: {
 +        uint32 command;
 +        if (message.FindUInt32("command", &command) != B_OK)
@@ -29601,6 +29832,10 @@ index 0000000000000000000000000000000000000000..88aafc469f8384a5ed28d42444a3c1dc
 +
 +void WebView::processDidExit()
 +{
++    m_state->load.pending = false;
++    m_state->load.identified = false;
++    m_state->load.outcome = "process-exited";
++    clearLoadErrorHaiku(m_state->load);
 +    m_state->dialogs->cancelAll();
 +    BMessage dismissDialogs(javaScriptDialogsCancelHaiku);
 +    sendToView(dismissDialogs);
@@ -30015,10 +30250,10 @@ index 0000000000000000000000000000000000000000..2cdcb470d8fc0e96b7b485eaaba1ab74
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..e2bbda7ce05b613263c02901ec4961b7e8999f1f
+index 0000000000000000000000000000000000000000..2a51b2913800fada0f6279c8919bc19096a277b7
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,103 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -30035,6 +30270,7 @@ index 0000000000000000000000000000000000000000..e2bbda7ce05b613263c02901ec4961b7
 +#include <optional>
 +#include <vector>
 +#include <wtf/RefPtr.h>
++#include <wtf/text/WTFString.h>
 +
 +namespace WebKit {
 +
@@ -30078,6 +30314,29 @@ index 0000000000000000000000000000000000000000..e2bbda7ce05b613263c02901ec4961b7
 +    // This reference is read, assigned and released only on the WebKit main
 +    // thread. Native windows retain the state without touching the client.
 +    RefPtr<WebView> client;
++    // Main-thread load bookkeeping, separate from the close-handshake
++    // generation: policy/start/commit can all describe the same navigation.
++    struct LoadState {
++        uint64_t navigationIdentifier { 0 };
++        uint64_t generation { 0 };
++        bool identified { false };
++        bool pending { false };
++        bool stopped { false };
++        bool committed { false };
++        std::optional<WebCore::ScriptExecutionContextIdentifier> sameDocumentIdentifier;
++        String sameDocumentURL;
++        const char* outcome { "idle" };
++        String errorDescription;
++        String errorDomain;
++        String errorURL;
++        int errorCode { 0 };
++        bool errorProvisional { false };
++        // Keep the last successful load in every snapshot so a dropped
++        // progress notification cannot turn a failed load into a visit.
++        uint64_t successSequence { 0 };
++        String successURL;
++        String successTitle;
++    } load;
 +    // These close-handshake flags are also confined to the WebKit main thread.
 +    bool closeRequestPending { false };
 +    bool closeRequestApproved { false };

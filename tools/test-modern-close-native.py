@@ -68,7 +68,9 @@ def main():
     mode.add_argument('--bundle')
     parser.add_argument('--base-url')
     parser.add_argument('--run-token')
-    parser.add_argument('--downloads', action='store_true', help='Run the full-browser download harness')
+    scenario = parser.add_mutually_exclusive_group()
+    scenario.add_argument('--downloads', action='store_true', help='Run the full-browser download harness')
+    scenario.add_argument('--load-errors', action='store_true', help='Run the navigation error harness')
     args = parser.parse_args()
     inputs = json.loads((ROOT / 'inputs.json').read_text())
     for relative, expected in inputs['sha256'].items():
@@ -82,7 +84,8 @@ def main():
             raise RuntimeError('Runtime requires dedicated fixture URL and run token')
         bundle, manifest, before = verified_bundle(args.bundle)
         source = bundle / 'source'
-    harness = 'ModernBrowserDownloadTests' if args.downloads else 'ModernCloseTests'
+    harness = ('ModernLoadErrorTests' if args.load_errors else
+               'ModernBrowserDownloadTests' if args.downloads else 'ModernCloseTests')
     target = ROOT / (harness + ('.o' if args.compile_only else ''))
     command = ['c++', '-std=c++23', '-O2', '-Wall', '-Wextra', '-Wno-multichar',
                '-I' + str(source / 'src'), '-I' + str(source / 'vendor'),
@@ -91,7 +94,9 @@ def main():
     command += ['-o', str(target)]
     result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     print(result.stdout, end='', flush=True)
-    report = {'kind': 'compile-only' if args.compile_only else 'modern-browser-downloads' if args.downloads else 'modern-close-runtime', 'stage': str(ROOT),
+    kind = ('compile-only' if args.compile_only else 'modern-load-errors' if args.load_errors else
+            'modern-browser-downloads' if args.downloads else 'modern-close-runtime')
+    report = {'kind': kind, 'stage': str(ROOT),
               'inputs': inputs, 'compile_command': command, 'compile_exit': result.returncode}
     report_path = ROOT / 'result.json'
     def save():
@@ -159,10 +164,12 @@ def main():
     print(output, end='', flush=True)
     verified_bundle(str(bundle))
     report['bundle_unchanged'] = all(digest(pathlib.Path(path)) == expected for path, expected in before.items())
+    marker = ('LOAD_ERROR_RESULT PASS checks=' if args.load_errors else
+              'DOWNLOAD_UI_RESULT PASS checks=' if args.downloads else 'CLOSE_RESULT PASS checks=')
     report['passed'] = (report['runtime_exit'] == 0 and report['browser_exit'] == 0
                         and not report.get('forced_cleanup') and report['bundle_unchanged']
                         and report['native_crash_log']['passed']
-                        and ('DOWNLOAD_UI_RESULT PASS checks=' if args.downloads else 'CLOSE_RESULT PASS checks=') in output)
+                        and marker in output)
     save()
     return 0 if report['passed'] else 1
 

@@ -85,6 +85,8 @@ regression. The NetworkProcess exit fix passes five consecutive profile
 teardown/reopen runs with native debugger-event monitoring. Broader browsing
 and extension integration remain unfinished. Modern downloads now pass real
 HTTP, HTML-link and native quit-dialog tests; see [download behavior and limits](docs/modern-downloads.md).
+Navigation errors, unchanged-address retry and successful-only history pass
+90 native assertions; see [navigation behavior](docs/modern-navigation-errors.md).
 The verified development bundle is
 in `artifacts/modern-browser/bundle-g3wycs_1`;
 [copy and rebuild instructions](docs/modern-bundle-copy.md) accompany it. [The verification record](docs/STATUS.md)

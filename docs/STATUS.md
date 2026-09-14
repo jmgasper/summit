@@ -948,3 +948,59 @@ archive and rebuild inputs. Copy provenance SHA-256:
 Evidence: `.vm/modern-network-exit-bundle-copy.log` and the artifact's
 `copy-provenance.json`. Earlier bundles remain available with their recorded
 limitations.
+
+## Native navigation outcomes and history
+
+Patch `b6ffb54286c7f699389f0502021540bd8b79d9a7b100d242b68e09b8e8889686`
+builds all modern targets and is frozen with the browser in `bundle-yqhmejfw`.
+Main-frame failures now retain the actual URL/domain/code/description and
+distinguish failures before and after document commit. Errors stay with their
+tabs, clear on another navigation, and appear in native status text/tooltips.
+Stop and attachment navigation handoffs finish as cancellations. History records
+successful documents and fragments, excludes failed/stopped requests and
+preserves a successful visit's title when a reload fails. The focused native
+address control now submits unchanged text on Enter; focus loss still preserves
+unsubmitted drafts. See [the navigation error notes](modern-navigation-errors.md)
+for the native notification fields and test commands.
+
+The original document's NavigationIdentifier can accompany an anchor callback.
+The adapter checks an explicit fragment target and its unchanged document
+identity without treating a newer unrelated request or reload as complete.
+Native close-handshake identity remains separate from load bookkeeping.
+
+The frozen bundle passes **90 native navigation-error assertions**, with actual
+HTTP fixture requests and JavaScript reports verified independently. Cases cover
+dropped connections, a committed truncated response, retrying an unchanged URL,
+a failed reload, a valid 404 document, cancellation after request dispatch,
+overlapping requests to the same URL, tab-local errors, fragment replacement,
+back/forward navigation and saved history. All **143 close checks**, **63 browser
+download checks** and **12 context-storage stages** also pass. Download checks
+confirm that handoffs do not show load errors, attachment navigation settles as
+cancelled while its download continues, and download URLs are absent from saved
+page history. Every run exits normally, preserves frozen bundle hashes and
+reports complete native log coverage with no new debugger events. The updated
+application also builds with the legacy engine and passes its 38 portable checks.
+
+Passing evidence:
+
+- `.vm/modern-load-errors-fragment-build.log`
+- `.vm/modern-load-errors-fragment-bundle.json`
+- `.vm/modern-load-errors-dba6147b8774d4cd0eaf71ba/result.json`
+- `.vm/modern-close-367320962a730451efc16e7a/result.json`
+- `.vm/modern-downloads-6e039080359c03cd509312e0/result.json`
+- `.vm/modern-context-156fde849d22b5339bd4c3b2/result.json`
+- `.vm/modern-load-errors-enter-legacy-build.log`
+
+Three earlier runs remain failed. `bundle-z8o5tug8` exposed Haiku text control's
+suppression of Enter for an unchanged address; `bundle-f0em3ep4` exposed the
+original-document ID in anchor callbacks. A first `bundle-yqhmejfw` run passed
+all 90 native assertions but failed its fixture gate because Stop cancelled the
+slow request before HTTP dispatch. The harness now allows dispatch time and
+still requires independent server receipt. These are recorded in:
+
+- `.vm/modern-load-errors-432aea1d587fa6efb14e21ad/result.json`
+- `.vm/modern-load-errors-c57fa8f10a43a7cfac72624e/result.json`
+- `.vm/modern-load-errors-5981023ddbef8c440e8f48d9/result.json`
+
+Certificate/authentication UX, a dedicated recovery error page, wider network
+failure coverage and extension runtime remain unfinished.

@@ -83,6 +83,11 @@ private:
         BMessenger messenger { };
         bool processExited = false;
         std::string processError;
+        std::string loadError { }, loadErrorDescription { }, loadErrorDomain { }, loadErrorURL { };
+        std::string loadOutcome { "idle" };
+        int32 loadErrorCode = 0;
+        bool loadErrorProvisional = false;
+        uint64 loadGeneration = 0, loadSuccessSequence = 0;
         bool closeQueued = false;
         bool closeRequested = false;
         bool closeApproved = false;
@@ -93,6 +98,7 @@ private:
 #if SUMMIT_MODERN_WEBKIT
     Tab* FindTab(const BMessenger& view);
     void WebKitStateChanged(const BMessage& message);
+    void ShowTabStatus(const Tab&);
     void WebKitFindResult(const BMessage& message);
     void WebKitCloseResult(const BMessage& message);
     void WebKitClosePrompt(const BMessage& message);

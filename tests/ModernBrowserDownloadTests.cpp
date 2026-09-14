@@ -73,11 +73,24 @@ int main(int argc, char** argv)
             std::string body { std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>() };
             Require(body == "summit download ui-complete\n", "browser output matches the exact fixture body");
         }
+        {
+            auto state = State(window);
+            BMessage page;
+            state.FindMessage("tab", Index(state, Selected(state)), &page);
+            Require(!page.GetBool("loadError", true), "HTML download handoff does not display a navigation error");
+        }
         Send(window, summit::kNavigate, -1, std::string(argv[3]) + "?case=ui-cancel");
         Require(Wait([&] {
             return State(window).GetInt32("download_count", -1) == 1
                 && std::filesystem::exists(partial) && std::filesystem::file_size(partial) > 0;
         }), "slow download is active and has written a real partial file");
+        Require(Wait([&] {
+            auto state = State(window);
+            BMessage page;
+            state.FindMessage("tab", Index(state, Selected(state)), &page);
+            return String(page, "loadOutcome") == "cancelled" && !page.GetBool("loadError", true)
+                && !page.GetBool("loading", true);
+        }), "attachment navigation finishes as cancellation while the download continues");
         const auto selected = Selected(State(window));
         const auto linkDocument = Document(State(window), selected);
         Send(window, summit::kNavigate, -1, origin + "/native-close.html?run=" + argv[4] + "&name=A&guard=1");
@@ -119,6 +132,15 @@ int main(int argc, char** argv)
         Require(Wait([&] { team_info current; return get_team_info(team, &current) != B_OK; }),
             "confirmed quit drains cancellation and exits the exact browser");
         Require(!std::filesystem::exists(partial), "confirmed quit removes the partial download");
+        {
+            std::ifstream saved(std::filesystem::path(argv[5]) / "profile.json");
+            const json profile = json::parse(saved, nullptr, false);
+            Require(profile.is_object() && profile.contains("history"), "download test saves native browsing history");
+            bool downloadVisited = false;
+            for (const auto& page : profile["history"])
+                downloadVisited |= page.value("url", std::string()).find("/download?case=") != std::string::npos;
+            Require(!downloadVisited, "download URLs are not recorded as successful page visits");
+        }
         // Remove only our completed fixture after verifying its content again.
         std::ifstream stream(complete, std::ios::binary);
         const std::string body { std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>() };
