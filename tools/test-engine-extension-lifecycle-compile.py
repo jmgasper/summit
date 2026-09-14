@@ -16,7 +16,7 @@ UNITS = ('WebExtensionController.cpp', 'WebExtensionContext.cpp',
          'WebExtensionDeclarativeNetRequestSQLiteStore.cpp',
          'WebExtensionMatchPatternProcessPool.cpp', 'WebExtensionContextProxy.cpp',
          'WebExtensionControllerProxy.cpp')
-EXTRA_UNITS = ('haiku/WebExtensionContextBackgroundHaiku.cpp', 'haiku/WebExtensionURLSchemeHandlerHaiku.cpp', 'haiku/WebExtensionContextHaiku.cpp',
+EXTRA_UNITS = ('API/WebExtensionAPIWebRequest.cpp', 'API/WebExtensionAPIWebRequestEvent.cpp', 'haiku/WebExtensionContextBackgroundHaiku.cpp', 'haiku/WebExtensionURLSchemeHandlerHaiku.cpp', 'haiku/WebExtensionContextHaiku.cpp',
                'haiku/WebExtensionContextTestHaiku.cpp',
                'haiku/WebExtensionStateHaiku.cpp', 'Bindings/JSWebExtensionWrapper.cpp',
                'Bindings/JSWebExtensionMessageReply.cpp', 'Bindings/JSWebExtensionString.cpp',
@@ -30,7 +30,7 @@ EXTRA_UNITS = ('haiku/WebExtensionContextBackgroundHaiku.cpp', 'haiku/WebExtensi
                'API/WebExtensionAPIRuntime.cpp',
                'API/WebExtensionAPIEvent.cpp', 'API/WebExtensionAPIPort.cpp')
 GENERATED_UNITS = ('WebExtensionContextMessageReceiver.cpp', 'WebExtensionContextProxyMessageReceiver.cpp')
-BINDING_UNITS = ('JSWebExtensionAPIWebNavigation.cpp', 'JSWebExtensionAPIWebNavigationEvent.cpp',
+BINDING_UNITS = ('JSWebExtensionAPIWebRequest.cpp', 'JSWebExtensionAPIWebRequestEvent.cpp', 'JSWebExtensionAPIWebNavigation.cpp', 'JSWebExtensionAPIWebNavigationEvent.cpp',
                  'JSWebExtensionAPIEvent.cpp', 'JSWebExtensionAPIPort.cpp',
                  'JSWebExtensionAPIStorage.cpp', 'JSWebExtensionAPIStorageArea.cpp',
                  'JSWebExtensionAPINamespace.cpp', 'JSWebExtensionAPIWebPageNamespace.cpp')
@@ -41,7 +41,9 @@ NATIVE_PAGE_UNITS = {'BrowserTabRegistryHaiku.cpp': 'UIProcess/haiku/BrowserTabR
                      'WebKitContext.cpp': 'UIProcess/API/haiku/WebKitContext.cpp',
                      'WebPageProxy.cpp': 'UIProcess/WebPageProxy.cpp',
                      'WebView.cpp': 'UIProcess/haiku/WebView.cpp'}
-UI_API_UNITS = {'WebExtensionTabHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionTabHaiku.cpp',
+UI_API_UNITS = {'WebExtensionWebRequestFilter.cpp': 'WebProcess/Extensions/WebExtensionWebRequestFilter.cpp',
+                'WebExtensionWebRequestBody.cpp': 'WebProcess/Extensions/WebExtensionWebRequestBody.cpp',
+                'WebExtensionTabHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionTabHaiku.cpp',
                 'WebExtensionWindowHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionWindowHaiku.cpp',
                 'WebExtensionContextTabsHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionContextTabsHaiku.cpp',
                 'WebExtensionContextWebNavigationHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionContextWebNavigationHaiku.cpp',

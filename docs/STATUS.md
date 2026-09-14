@@ -1535,3 +1535,19 @@ compile**. Tab/window mutation and event APIs remain unfinished; no wrapper,
 frame query, IPC or extension runtime was executed. See [tab/frame evidence and
 limits](webextensions-native-tabs-and-frames.md).
 Patch: `e9e643ec3a02d6b3f73f386db7b4a5e05eda99c45832c506dc1a34ce6db43502`.
+
+2026-09-15 (local) eleventh full extension link result: the frozen `e9e643ec...`
+build completes compilation and fails at the WebKit shared-library link with
+29 missing symbols, down from 37. All eight targeted controller, tab/window
+lookup, metadata and navigation-query symbols are resolved, with no new missing
+symbols. Evidence: `.vm/modern-extensions-native-tabs-build-result.json`.
+The feature-enabled engine has not linked or run an extension.
+
+2026-09-15 (local) request-event bindings: the WebRequest namespace and event
+interface now use common C++, including six process notification handlers,
+request filters and upload-body conversion. **125 native helper checks pass**
+with an explicitly isolated API initialization adapter; **nine final integration
+units compile**. Native UI event forwarding, blocking requests, full compatibility
+and actual extension runtime remain unfinished. See [request-event evidence and
+limits](webextensions-native-web-request.md).
+Patch: `c9587d431175525e047288be50e42c7b97fc365ad93831a1cf9e3c6a78073a71`.
