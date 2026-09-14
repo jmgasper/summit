@@ -1321,3 +1321,19 @@ extension features enabled. See [evidence](webextensions-native-sorted-json.md).
 No extension test API or IPC runtime was exercised.
 
 Patch: `7f17d7a6cc8b598ce1774299459c0e953e5002f938c75db14201bced7aff9029`.
+
+A three-worker full build is now frozen on this patch, including the tested
+cache mapping, store path, promise, ownership, migration and sorted-JSON
+changes. It rebuilds 53 steps after regeneration; log:
+`.vm/modern-extensions-storage-helpers-build.log`.
+
+
+2026-09-14 navigation and cookie events: six existing context methods move
+unchanged into common C++, and the cookie-store observer now forwards native
+notifications to the controller. Both final units compile with both extension
+flags enabled and regenerated IPC. No live extension event was exercised;
+tab/action delegates and process dispatch remain incomplete.
+See [event-forwarding evidence](webextensions-native-navigation-events.md).
+
+Patch: `a3f30d1b01848597f29ffa1009bc53cee272ecb4dcc48fa09631d8e7fac2e469`.
+The running full build remains frozen on `7f17d7a6...`.
