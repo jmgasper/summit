@@ -1397,3 +1397,13 @@ See [context utility evidence](webextensions-native-context-utilities.md).
 Patch: `55798afee3c77e27b9dfc8ab1d46e7833d64568b5b6581a91fab79dfa6f3d5da`.
 The ongoing three-worker full build remains frozen on `b330520c...`; log:
 `.vm/modern-extensions-storage-api-build.log`.
+
+2026-09-14 saved rule state: native context loading now restores valid saved
+ruleset booleans over manifest defaults; missing, malformed and unknown entries
+do not suppress unaffected defaults. The state helper passes 54 native checks,
+including a persisted ruleset round trip and the existing 100-replacement
+concurrency test. Both final helper/context units compile. No extension rule
+was loaded, matched or applied. See [rule-state evidence](webextensions-native-rule-state.md).
+
+Patch: `c6ab469dacb1003eddb43c03903945104fb676de3ad58b835b6c2eaa69c70e1b`.
+The full build remains frozen on `b330520c...`.

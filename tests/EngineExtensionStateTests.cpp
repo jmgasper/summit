@@ -41,10 +41,52 @@ static Ref<JSON::Object> state(unsigned generation)
     return result;
 }
 
+static void checkRulesetState()
+{
+    HashMap<String, bool> defaults { { "default-on"_s, true }, { "default-off"_s, false }, { "new-on"_s, true } };
+    auto restore = [&](const String& json) {
+        auto saved = JSON::Value::parseJSON(json);
+        return enabledWebExtensionRulesetsHaiku(defaults, saved.get());
+    };
+    HashSet<String> defaultEnabled { "default-on"_s, "new-on"_s };
+    check(enabledWebExtensionRulesetsHaiku(defaults, nullptr) == defaultEnabled, "missing rule state uses manifest defaults");
+    check(restore("{}"_s) == defaultEnabled, "empty rule state uses manifest defaults");
+    check(restore("null"_s) == defaultEnabled, "null rule state uses manifest defaults");
+    check(restore("[]"_s) == defaultEnabled && restore("true"_s) == defaultEnabled && restore("17"_s) == defaultEnabled,
+        "non-object rule state uses manifest defaults");
+    check(restore(R"JSON({"default-on":false})JSON"_s) == HashSet<String> { "new-on"_s },
+        "disabling one saved ruleset preserves other manifest defaults");
+    check(restore(R"JSON({"default-off":true})JSON"_s) == HashSet<String> { "default-on"_s, "default-off"_s, "new-on"_s },
+        "enabling one saved ruleset preserves other manifest defaults");
+    check(restore(R"JSON({"default-on":false,"default-off":true,"new-on":false})JSON"_s) == HashSet<String> { "default-off"_s },
+        "explicit saved booleans override both enabled and disabled defaults");
+    check(restore(R"JSON({"unknown":true,"removed-id":false})JSON"_s) == defaultEnabled,
+        "unknown or removed ruleset identifiers are ignored");
+    check(restore(R"JSON({"default-on":false,"unknown":true})JSON"_s) == HashSet<String> { "new-on"_s },
+        "unknown identifiers do not suppress valid overrides");
+    for (const auto& value : { "null"_s, "0"_s, "1"_s, "\"false\""_s, "[]"_s, "{}"_s }) {
+        auto json = makeString("{\"default-on\":"_s, value, ",\"default-off\":"_s, value, '}');
+        check(restore(json) == defaultEnabled, "malformed saved values cannot override manifest defaults");
+    }
+    HashMap<String, bool> renamed { { "replacement"_s, true } };
+    auto old = JSON::Value::parseJSON(R"JSON({"default-on":true,"default-off":true})JSON"_s);
+    check(enabledWebExtensionRulesetsHaiku(renamed, old.get()) == HashSet<String> { "replacement"_s },
+        "a changed manifest only enables currently declared rulesets");
+    check(enabledWebExtensionRulesetsHaiku({ }, old.get()).isEmpty(), "an empty manifest cannot revive saved rulesets");
+    HashMap<String, bool> unicode { { String::fromUTF8("雪 rules"), true }, { "__proto__"_s, false } };
+    auto values = JSON::Value::parseJSON(String::fromUTF8(R"JSON({"雪 rules":false,"__proto__":true})JSON"));
+    check(enabledWebExtensionRulesetsHaiku(unicode, values.get()) == HashSet<String> { "__proto__"_s },
+        "Unicode and prototype-looking identifiers are ordinary state keys");
+    auto before = values->toJSONString();
+    enabledWebExtensionRulesetsHaiku(unicode, values.get());
+    check(values->toJSONString() == before && unicode.get(String::fromUTF8("雪 rules")), "restoring state does not mutate either input");
+}
+
 int main()
 {
     BApplication application("application/x-vnd.Kunanyi-Summit-extension-state-tests");
     WTF::initializeMainThread();
+    checkRulesetState();
     char temporary[] = "/tmp/summit-extension-state-XXXXXX";
     if (!mkdtemp(temporary))
         return 2;
@@ -69,6 +111,17 @@ int main()
     RefPtr levels = loaded ? loaded.value()->getObject("StorageAccessLevels"_s) : nullptr;
     check(levels && levels->getString("session"_s) == "TRUSTED_CONTEXTS"_s,
         "nested access-level state survives serialization");
+    Ref ruleState = state(0);
+    Ref overrides = JSON::Object::create();
+    overrides->setBoolean("disabled-by-user"_s, false);
+    overrides->setBoolean("enabled-by-user"_s, true);
+    ruleState->setObject("DeclarativeNetRequestRulesetState"_s, WTF::move(overrides));
+    check(writeWebExtensionStateHaiku(nativePath(path), ruleState).has_value(), "rule overrides are saved through the native state writer");
+    auto persisted = read();
+    auto savedRulesets = persisted ? persisted.value()->getValue("DeclarativeNetRequestRulesetState"_s) : nullptr;
+    HashMap<String, bool> ruleDefaults { { "disabled-by-user"_s, true }, { "enabled-by-user"_s, false }, { "new-default"_s, true } };
+    check(persisted && savedRulesets && enabledWebExtensionRulesetsHaiku(ruleDefaults, savedRulesets.get()) == HashSet<String> { "enabled-by-user"_s, "new-default"_s },
+        "persisted overrides restore alongside a newly introduced manifest default");
     struct stat info;
     check(!stat(path.c_str(), &info) && (info.st_mode & 0777) == 0600, "state is private to the owning user");
     check(write(1).has_value(), "existing state is replaced");

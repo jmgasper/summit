@@ -30861,10 +30861,10 @@ index 0000000000000000000000000000000000000000..881641881048903eab1b5c67971e3dfe
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..740cfaf8bb1baf3cfffe414f0a7b6272a30b58a3
+index 0000000000000000000000000000000000000000..ad3c3216d22d29a6f67c229a5cba8d63d10ece69
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextHaiku.cpp
-@@ -0,0 +1,187 @@
+@@ -0,0 +1,205 @@
 +/*
 + * Copyright (C) 2022-2025 Apple Inc. All rights reserved.
 + * Copyright (C) 2026 KunanyiOS contributors.
@@ -30921,6 +30921,7 @@ index 0000000000000000000000000000000000000000..740cfaf8bb1baf3cfffe414f0a7b6272
 +
 +static constexpr auto lastSeenBaseURLStateKey = "LastSeenBaseURL"_s;
 +static constexpr auto lastSeenDisplayNameStateKey = "LastSeenDisplayName"_s;
++static constexpr auto declarativeNetRequestRulesetStateKey = "DeclarativeNetRequestRulesetState"_s;
 +static constexpr auto storageAccessLevelsKey = "StorageAccessLevels"_s;
 +static constexpr auto sessionStorageAllowedInContentScriptsKey = "SessionStorageAllowedInContentScripts"_s;
 +
@@ -31002,6 +31003,23 @@ index 0000000000000000000000000000000000000000..740cfaf8bb1baf3cfffe414f0a7b6272
 +    if (!displayName.isNull())
 +        m_state->setString(lastSeenDisplayNameStateKey, displayName);
 +    return previousBaseURL;
++}
++
++void WebExtensionContext::loadDeclarativeNetRequestRulesetStateFromStorage()
++{
++    ASSERT(m_state);
++    HashMap<String, bool> defaults;
++    for (auto& ruleset : protect(extension())->declarativeNetRequestRulesets())
++        defaults.set(ruleset.rulesetID, ruleset.enabled);
++    auto savedState = m_state->getValue(declarativeNetRequestRulesetStateKey);
++    m_enabledStaticRulesetIDs = enabledWebExtensionRulesetsHaiku(defaults, savedState.get());
++}
++
++void WebExtensionContext::clearDeclarativeNetRequestRulesetState()
++{
++    ASSERT(m_state);
++    m_state->remove(declarativeNetRequestRulesetStateKey);
++    m_enabledStaticRulesetIDs.clear();
 +}
 +
 +void WebExtensionContext::loadStorageAccessLevelsFromStorage()
@@ -31396,10 +31414,10 @@ index 0000000000000000000000000000000000000000..6ebc5963dbf6ae3b340e55b4701edaeb
 +#endif // PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionStateHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionStateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..cd87dd6b7aa0457b39315003537e3f26d4ae412b
+index 0000000000000000000000000000000000000000..c0c663993f1df39723e3e129e64de9763058ad45
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionStateHaiku.cpp
-@@ -0,0 +1,86 @@
+@@ -0,0 +1,98 @@
 +/*
 + * Copyright (C) 2026 KunanyiOS contributors.
 + *
@@ -31483,15 +31501,27 @@ index 0000000000000000000000000000000000000000..cd87dd6b7aa0457b39315003537e3f26
 +    return { };
 +}
 +
++HashSet<String> enabledWebExtensionRulesetsHaiku(const HashMap<String, bool>& manifestDefaults, const JSON::Value* savedState)
++{
++    auto saved = savedState ? savedState->asObject() : nullptr;
++    HashSet<String> enabledRulesets;
++    for (auto& entry : manifestDefaults) {
++        auto savedValue = saved ? saved->getBoolean(entry.key) : std::nullopt;
++        if (savedValue.value_or(entry.value))
++            enabledRulesets.addVoid(entry.key);
++    }
++    return enabledRulesets;
++}
++
 +} // namespace WebKit
 +
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionStateHaiku.h b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionStateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..e2a1f547295a7e22bea259cc16dc5c4f4bfe014e
+index 0000000000000000000000000000000000000000..33513664e83e2f9b8cae80550e474ac2c45a9a93
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionStateHaiku.h
-@@ -0,0 +1,48 @@
+@@ -0,0 +1,53 @@
 +/*
 + * Copyright (C) 2026 KunanyiOS contributors.
 + *
@@ -31521,6 +31551,8 @@ index 0000000000000000000000000000000000000000..e2a1f547295a7e22bea259cc16dc5c4f
 +#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 +
 +#include <expected>
++#include <wtf/HashMap.h>
++#include <wtf/HashSet.h>
 +#include <wtf/JSONValues.h>
 +
 +namespace WebKit {
@@ -31536,6 +31568,9 @@ index 0000000000000000000000000000000000000000..e2a1f547295a7e22bea259cc16dc5c4f
 +
 +std::expected<Ref<JSON::Object>, WebExtensionStateErrorHaiku> readWebExtensionStateHaiku(const String& path);
 +std::expected<void, WebExtensionStateErrorHaiku> writeWebExtensionStateHaiku(const String& path, const JSON::Object&);
++
++// Saved booleans override known manifest defaults; other saved values are ignored.
++HashSet<String> enabledWebExtensionRulesetsHaiku(const HashMap<String, bool>& manifestDefaults, const JSON::Value* savedState);
 +
 +} // namespace WebKit
 +

@@ -41,7 +41,7 @@ def native():
     config = watched[1].read_text()
     if config.count('#define ENABLE_WK_WEB_EXTENSIONS 0') != 1:
         raise RuntimeError('Expected the configured feature-disabled baseline')
-    (output / 'cmakeconfig.h').write_text(config.replace('#define ENABLE_WK_WEB_EXTENSIONS 0', '#define ENABLE_WK_WEB_EXTENSIONS 1'))
+    (output / 'cmakeconfig.h').write_text(config.replace('#define ENABLE_WK_WEB_EXTENSIONS 0', '#define ENABLE_WK_WEB_EXTENSIONS 1').replace('#define ENABLE_CONTENT_EXTENSIONS 0', '#define ENABLE_CONTENT_EXTENSIONS 1'))
     fields = {}
     target = 'Source/WebKit/CMakeFiles/WebKit.dir/UIProcess/API/haiku/WebKitView.cpp.o'
     with watched[0].open() as stream:
@@ -62,7 +62,7 @@ def native():
             flags.append(flag)
     flags = ['-I' + str(output), '-iquote', str(output), *flags,
              '-include', str(watched[3]), '-fdiagnostics-color=never', '-fmax-errors=5']
-    report = {'scope': 'native JSON state-file helper only; no WebExtension, context, controller or browser runtime',
+    report = {'scope': 'native JSON state-file and ruleset-state helpers only; no WebExtension, context, controller or browser runtime',
               'source_manifest': manifest, 'native_inputs': snapshot, 'frozen_libraries': hashes,
               'compile_results': [], 'linked_webcore_or_webkit': False}
     objects = []
@@ -77,9 +77,14 @@ def native():
         (output / 'results.json').write_text(json.dumps(report, indent=2) + '\n')
         return 1
     executable = output / 'run'
-    subprocess.run(['c++', *map(str, objects), str(libraries[0]), '-lbe', '-lnetwork',
+    link = subprocess.run(['c++', *map(str, objects), str(libraries[0]), '-lbe', '-lnetwork',
                     '-Wl,--no-export-dynamic', '-Wl,--gc-sections', '-Wl,-rpath,' + str(FROZEN),
-                    '-o', str(executable)], check=True)
+                    '-o', str(executable)], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    report['link'] = {'exit': link.returncode, 'output': link.stdout}
+    print(link.stdout, end='', flush=True)
+    if link.returncode:
+        (output / 'results.json').write_text(json.dumps(report, indent=2) + '\n')
+        return 1
     dynamic = subprocess.check_output(['readelf', '-d', str(executable)], text=True)
     if 'libWebKit' in dynamic or 'libWebCore' in dynamic:
         raise RuntimeError('State helper unexpectedly links WebCore or WebKit')
