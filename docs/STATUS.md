@@ -1169,3 +1169,17 @@ Patch: `208a07045b9623b53979da1eab879dd1c16db9a88c39e59bc0b22c4181602426`.
 See [background evidence and remaining lifecycle work](webextensions-native-background.md).
 The full three-worker build continues on frozen `1daf0679...` through
 WebCore style units. The preview remains `bundle-yqhmejfw`, extensions off.
+
+
+2026-09-14 background listener persistence: native JSON state now stores
+named events with exact listener counts, rejects malformed/stale caches
+and preserves unrelated state. All 44 helper assertions pass in each of
+two native enum layouts; the optional event shifts `RuntimeOnMessage` from
+28 to 29 without changing decoded saved names. A count-collapsing mutation
+fails five checks as expected. The native background adapter also compiles
+with the new persistence helper and fresh-registration cache reset.
+
+Patch: `a3972b1c21db2ef8fef493e3883a3e588064909cd30365febaaeb0317ec0f89a`.
+See [listener-state evidence](webextensions-native-background-listeners.md).
+The full three-worker engine build continues on frozen `1daf0679...` through
+WebCore worker units. The preview remains `bundle-yqhmejfw`, extensions off.

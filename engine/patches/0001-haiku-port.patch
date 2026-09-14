@@ -28634,12 +28634,124 @@ index 0000000000000000000000000000000000000000..8116761679d10df7d8286d4c19d66865
 +} // namespace WebKit
 +
 +#endif // PLATFORM(HAIKU)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionBackgroundListenersHaiku.h b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionBackgroundListenersHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..5747ef0450f630fa084fa505521db945be3fa9a0
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionBackgroundListenersHaiku.h
+@@ -0,0 +1,106 @@
++/*
++ * Copyright (C) 2026 KunanyiOS contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are met:
++ * 1. Redistributions of source code must retain the above copyright notice,
++ *    this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright notice,
++ *    this list of conditions and the following disclaimer in the documentation
++ *    and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#pragma once
++
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++
++#include "WebExtensionEventListenerType.h"
++#include <cmath>
++#include <limits>
++#include <wtf/EnumTraits.h>
++#include <wtf/HashCountedSet.h>
++#include <wtf/JSONValues.h>
++
++namespace WebKit {
++
++inline constexpr auto backgroundContentEventListenersKeyHaiku = "BackgroundContentEventListeners"_s;
++inline constexpr auto backgroundContentEventListenersVersionKeyHaiku = "BackgroundContentEventListenersVersion"_s;
++// Bump with the Cocoa/GLib state version when the event enum gains a new event.
++inline constexpr unsigned currentBackgroundContentListenerStateVersionHaiku = 4;
++
++using BackgroundListenerCountsHaiku = HashCountedSet<WebExtensionEventListenerType>;
++
++inline std::optional<BackgroundListenerCountsHaiku> readBackgroundListenersHaiku(const JSON::Object& state)
++{
++    if (state.getDouble(backgroundContentEventListenersVersionKeyHaiku) != currentBackgroundContentListenerStateVersionHaiku)
++        return std::nullopt;
++    RefPtr saved = state.getObject(backgroundContentEventListenersKeyHaiku);
++    if (!saved)
++        return std::nullopt;
++
++    BackgroundListenerCountsHaiku result;
++    constexpr auto names = WTF::enumNames<WebExtensionEventListenerType>();
++    for (auto& entry : *saved) {
++        auto count = entry.value->asDouble();
++        if (!count || !std::isfinite(*count) || *count < 1 || *count > std::numeric_limits<unsigned>::max() || std::trunc(*count) != *count)
++            return std::nullopt;
++
++        bool found = false;
++        for (size_t i = 1; i < names.size(); ++i) {
++            if (names[i].isEmpty() || entry.key != names[i])
++                continue;
++            result.add(static_cast<WebExtensionEventListenerType>(i), static_cast<unsigned>(*count));
++            found = true;
++            break;
++        }
++        if (!found)
++            return std::nullopt;
++    }
++    return result;
++}
++
++inline void clearBackgroundListenersHaiku(JSON::Object& state)
++{
++    state.remove(backgroundContentEventListenersKeyHaiku);
++    state.remove(backgroundContentEventListenersVersionKeyHaiku);
++}
++
++inline bool saveBackgroundListenersHaiku(JSON::Object& state, const BackgroundListenerCountsHaiku& listeners)
++{
++    // Store enum names, not values: feature-gated events can shift numeric IDs
++    // without changing the saved format version. Counts preserve removals of
++    // individual registrations after restoring the listener set.
++    Ref saved = JSON::Object::create();
++    constexpr auto names = WTF::enumNames<WebExtensionEventListenerType>();
++    for (size_t i = 1; i < names.size(); ++i) {
++        if (names[i].isEmpty())
++            continue;
++        auto count = listeners.count(static_cast<WebExtensionEventListenerType>(i));
++        if (count)
++            saved->setDouble(names[i], count);
++    }
++    RefPtr previous = state.getObject(backgroundContentEventListenersKeyHaiku);
++    if (state.getDouble(backgroundContentEventListenersVersionKeyHaiku) == currentBackgroundContentListenerStateVersionHaiku
++        && previous && previous->toJSONString() == saved->toJSONString())
++        return false;
++
++    state.setObject(backgroundContentEventListenersKeyHaiku, WTF::move(saved));
++    state.setInteger(backgroundContentEventListenersVersionKeyHaiku, currentBackgroundContentListenerStateVersionHaiku);
++    return true;
++}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextBackgroundHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextBackgroundHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..cc819c61a1773a773ca2be38a66198af8616c574
+index 0000000000000000000000000000000000000000..f61c723b771220b0dbc110de0d53bc05ce398a8c
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextBackgroundHaiku.cpp
-@@ -0,0 +1,351 @@
+@@ -0,0 +1,380 @@
 +/*
 + * Copyright (C) 2022-2025 Apple Inc. All rights reserved.
 + * Copyright (C) 2026 KunanyiOS contributors.
@@ -28679,6 +28791,7 @@ index 0000000000000000000000000000000000000000..cc819c61a1773a773ca2be38a66198af
 +#include "MessageSenderInlines.h"
 +#include "ProcessActivityGroup.h"
 +#include "WebExtensionContextProxyMessages.h"
++#include "WebExtensionBackgroundListenersHaiku.h"
 +#include "WebExtensionPermission.h"
 +#include "WebFramePolicyListenerProxy.h"
 +#include "WebFrameProxy.h"
@@ -28874,6 +28987,11 @@ index 0000000000000000000000000000000000000000..cc819c61a1773a773ca2be38a66198af
 +    ASSERT(!m_backgroundPageClient);
 +    ASSERT(!m_backgroundContentIsLoaded);
 +
++    // Saved listeners select wake-up events. The new document's registrations
++    // replace that cache; counting both would accumulate stale registrations.
++    m_backgroundContentEventListeners.clear();
++    m_backgroundContentHasLoadedOnce = false;
++
 +    RefPtr configuration = webViewConfiguration(WebViewPurpose::Background);
 +    if (!configuration)
 +        return;
@@ -28986,6 +29104,29 @@ index 0000000000000000000000000000000000000000..cc819c61a1773a773ca2be38a66198af
 +    unloadBackgroundWebView();
 +    if (isLoaded() && protect(extension())->backgroundContentIsPersistent())
 +        loadBackgroundWebView();
++}
++
++void WebExtensionContext::loadBackgroundPageListenersFromStorage()
++{
++    if (!storageIsPersistent() || protect(extension())->backgroundContentIsPersistent())
++        return;
++    m_backgroundContentEventListeners.clear();
++    if (auto listeners = readBackgroundListenersHaiku(*m_state)) {
++        m_backgroundContentEventListeners = WTF::move(*listeners);
++        return;
++    }
++    // Discard stale or malformed state so initial background loading discovers
++    // the current listener set, including events enabled by a new build.
++    clearBackgroundListenersHaiku(*m_state);
++    writeStateToStorage();
++}
++
++void WebExtensionContext::saveBackgroundPageListenersToStorage()
++{
++    if (!storageIsPersistent() || protect(extension())->backgroundContentIsPersistent())
++        return;
++    if (saveBackgroundListenersHaiku(*m_state, m_backgroundContentEventListeners))
++        writeStateToStorage();
 +}
 +
 +} // namespace WebKit

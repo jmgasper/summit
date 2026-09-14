@@ -62,3 +62,6 @@ existing behavior. Native listener/install
 state, tab/window delegates, controller platform/client setup and browser
 attachment remain incomplete. No extension has run in the preview, which
 continues to use its verified extension-disabled bundle.
+
+Subsequent native listener persistence and enum-layout checks are recorded
+in [background listener state](webextensions-native-background-listeners.md).
