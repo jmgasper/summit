@@ -96,3 +96,17 @@ permission fields are outside the pinned upstream interface. Unsupported
 details fields are rejected rather than treated as an empty successful
 request. Packaging, installation/update consent, a native extension manager,
 full API coverage and actual extension compatibility remain unfinished.
+
+## Full engine build
+
+The full native build of patch
+`cf7f9b4e1f7360a5fc273bbc97724e33c56fe7494bea227e3287a4a5474a3314`
+reaches the WebKit library link with **14 missing symbols (18 references), down
+from 15**. The permission event dispatcher is resolved, with no new missing
+symbols and no compiler errors. The DNR loader and 13 other event dispatchers
+still prevent an extension-enabled browser from linking.
+
+Both native source manifests match the patch. The feature configuration has
+WebExtensions and content extensions enabled; the separate probe baseline
+remains disabled. The terminal build result and exact unresolved symbols are
+recorded in `.vm/modern-extensions-permissions-build-result.json`.

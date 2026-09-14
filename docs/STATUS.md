@@ -1770,5 +1770,9 @@ execute permission APIs inside a browser. See
 
 The reviewed patch is
 `cf7f9b4e1f7360a5fc273bbc97724e33c56fe7494bea227e3287a4a5474a3314`.
-Its full extension-enabled build is pending. Full extension support remains
-unfinished, and no extension has run.
+Its full extension-enabled build reaches the WebKit link with **14 missing
+symbols (18 references), down from 15**. The permissions dispatcher is resolved;
+there are no new missing symbols or compiler errors. Both native source
+manifests match the patch, with the feature build enabled and the separate
+baseline disabled. Full extension support remains unfinished, and no extension
+has run. Evidence: `.vm/modern-extensions-permissions-build-result.json`.
