@@ -23572,10 +23572,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..63d14a27b2ea9126357759a38aa38d871ef780d1
+index 0000000000000000000000000000000000000000..c09c39b5fb1150eddc69efafb150479bec3a4f08
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,205 @@
+@@ -0,0 +1,207 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -23653,6 +23653,7 @@ index 0000000000000000000000000000000000000000..63d14a27b2ea9126357759a38aa38d87
 +    UIProcess/LegacySessionStateCodingNone.cpp
 +    UIProcess/WebsiteData/haiku/WebsiteDataStoreHaiku.cpp
 +    UIProcess/haiku/DownloadRegistryHaiku.cpp
++    UIProcess/haiku/ExtensionPermissionPromptHaiku.cpp
 +    UIProcess/haiku/DrawingAreaProxyHaiku.cpp
 +    UIProcess/haiku/TextCheckerHaiku.cpp
 +    UIProcess/haiku/WebPageProxyHaiku.cpp
@@ -23771,6 +23772,7 @@ index 0000000000000000000000000000000000000000..63d14a27b2ea9126357759a38aa38d87
 +list(APPEND WebKit_PUBLIC_FRAMEWORK_HEADERS
 +    Shared/API/c/haiku/WKBaseHaiku.h
 +    UIProcess/API/haiku/WebKitContext.h
++    UIProcess/API/haiku/WebKitExtensionPermission.h
 +    UIProcess/API/haiku/WebKitInfo.h
 +    UIProcess/API/haiku/WebKitView.h
 +)
@@ -26128,10 +26130,10 @@ index 0000000000000000000000000000000000000000..574ed16658f0c14b1aa2e63208e990b8
 +#define WEBKIT_ENGINE_VERSION_HAIKU "@WebKit_HAIKU_MAJOR_VERSION@.@WebKit_HAIKU_MINOR_VERSION@.@WebKit_HAIKU_TINY_VERSION@"
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitContext.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitContext.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..0068e6c197cbd96a9fb55e438ddf0abee2d92a57
+index 0000000000000000000000000000000000000000..cc701b877f09cf5f3a0856edc65dd8d70a90afb3
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitContext.cpp
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,163 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -26139,6 +26141,7 @@ index 0000000000000000000000000000000000000000..0068e6c197cbd96a9fb55e438ddf0abe
 +
 +#include "BrowserTabRegistryHaiku.h"
 +#include "DownloadRegistryHaiku.h"
++#include "ExtensionPermissionPromptHaiku.h"
 +#include "WebPageProxy.h"
 +#include "WebViewPrivate.h"
 +#include "WebViewStateHaiku.h"
@@ -26160,6 +26163,37 @@ index 0000000000000000000000000000000000000000..0068e6c197cbd96a9fb55e438ddf0abe
 +
 +status_t BWebKitContext::InitCheck() const { return m_status; }
 +bool BWebKitContext::IsPrivate() const { return m_private; }
++
++status_t BWebKitContext::SetExtensionPermissionListener(const BMessenger& listener)
++{
++    if (m_status != B_OK)
++        return m_status;
++    if (!be_app || be_app->Thread() != find_thread(nullptr))
++        return B_BAD_THREAD_ID;
++    auto prompts = m_context->permissionPrompts();
++    return prompts ? prompts->setListener(listener) : B_NOT_SUPPORTED;
++}
++
++void BWebKitContext::RespondToExtensionPermissionRequest(const char* identifier, bool allowed)
++{
++    if (m_status != B_OK || !identifier)
++        return;
++    auto copiedIdentifier = String::fromUTF8(identifier).isolatedCopy();
++    WTF::RunLoop::mainSingleton().dispatch([context = m_context, identifier = WTF::move(copiedIdentifier), allowed] {
++        if (auto prompts = context->permissionPrompts())
++            prompts->respond(identifier, allowed);
++    });
++}
++
++void BWebKitContext::CancelExtensionPermissionRequests()
++{
++    if (m_status != B_OK)
++        return;
++    WTF::RunLoop::mainSingleton().dispatch([context = m_context] {
++        if (auto prompts = context->permissionPrompts())
++            prompts->cancelAll();
++    });
++}
 +
 +status_t BWebKitContext::SetDownloadListener(const BMessenger& listener)
 +{
@@ -26265,15 +26299,16 @@ index 0000000000000000000000000000000000000000..0068e6c197cbd96a9fb55e438ddf0abe
 +}
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitContext.h b/Source/WebKit/UIProcess/API/haiku/WebKitContext.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..746579046cf27009e6483bc2c513d79e88bb1af5
+index 0000000000000000000000000000000000000000..a4f8e4edcb52c9244dbdd54a6be5207436463525
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitContext.h
-@@ -0,0 +1,78 @@
+@@ -0,0 +1,88 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
 +
 +#include "WKBase.h"
++#include "WebKitExtensionPermission.h"
 +#include <Messenger.h>
 +#include <SupportDefs.h>
 +#include <memory>
@@ -26326,6 +26361,15 @@ index 0000000000000000000000000000000000000000..746579046cf27009e6483bc2c513d79e
 +    void SetBrowserWindowTabs(const BMessenger& window, const std::vector<BWebKitView*>&,
 +        BWebKitView* activeView, bool focused, const BMessenger& reply = BMessenger(), uint64 identifier = 0);
 +
++    // Configure permission consent on the application thread. B_NOT_SUPPORTED
++    // means this WebKit build has extensions disabled. B_BUSY prevents listener
++    // replacement while requests are pending. Only local targets are accepted.
++    status_t SetExtensionPermissionListener(const BMessenger&);
++    // Replies/cancellation can be submitted from any looper. Only a live,
++    // displayed request accepts a decision; duplicate/stale IDs are ignored.
++    void RespondToExtensionPermissionRequest(const char* identifier, bool allowed);
++    void CancelExtensionPermissionRequests();
++
 +    // Configure on the application thread before downloads start. The directory
 +    // must already exist, be writable, and have an absolute UTF-8 path. Existing
 +    // files are never overwritten. Both setters return B_BUSY while downloads
@@ -26346,6 +26390,27 @@ index 0000000000000000000000000000000000000000..746579046cf27009e6483bc2c513d79e
 +    std::shared_ptr<WebKit::WebViewContextHaiku> m_context;
 +    status_t m_status { B_NO_INIT };
 +    const bool m_private;
++};
+diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitExtensionPermission.h b/Source/WebKit/UIProcess/API/haiku/WebKitExtensionPermission.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..d03169be8c4d0a0a0c93c7fcf2d0d32428a34989
+--- /dev/null
++++ b/Source/WebKit/UIProcess/API/haiku/WebKitExtensionPermission.h
+@@ -0,0 +1,15 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#pragma once
++
++#include <SupportDefs.h>
++
++// A request contains identifier (opaque string), extension_identifier and
++// extension_name (strings), private_browsing (bool), deadline (int64, system_time
++// microseconds), and repeated permission/origin strings. All capabilities in
++// this one request require one decision. Cancellation contains identifier only.
++// Hosts must dismiss cancelled/expired requests and ignore late UI responses.
++enum : uint32 {
++    B_WEBKIT_EXTENSION_PERMISSION_REQUESTED = 'wepr',
++    B_WEBKIT_EXTENSION_PERMISSION_CANCELLED = 'wepc'
 +};
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitInfo.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitInfo.cpp
 new file mode 100644
@@ -30286,10 +30351,10 @@ index 65b9841a9d4469a699b92c47435fecaaaa034d77..0361d615767169f4af1a6c192853c93e
  
      OptionSet<ModifierFlags> modifierFlags() const { return !m_activationKey.isEmpty() ? m_modifierFlags : OptionSet<ModifierFlags> { }; }
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
-index a156078a37b33ea2704f6a9ba747a0c881bb0009..146be7910f22f67db277958fa919d6d3d4096ed3 100644
+index a156078a37b33ea2704f6a9ba747a0c881bb0009..7250ff7246859b1e50b9564dc40d5ea6420f2f59 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
-@@ -34,11 +34,18 @@
+@@ -34,11 +34,19 @@
  #include "InjectUserScriptImmediately.h"
  #include "Logging.h"
  #include "WebExtensionConstants.h"
@@ -30303,12 +30368,13 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..146be7910f22f67db277958fa919d6d3
  #include "WebPageProxy.h"
 +#if PLATFORM(HAIKU)
 +#include "WebViewPrivate.h"
++#include "ExtensionPermissionPromptHaiku.h"
 +#include "haiku/WebExtensionTestMessageQueueHaiku.h"
 +#endif
  #include <WebCore/LocalizedStrings.h>
  #include <WebCore/TextResourceDecoder.h>
  #include <wtf/HashMap.h>
-@@ -49,8 +56,273 @@ static constexpr size_t maximumCachedPermissionResults = 256;
+@@ -49,8 +57,280 @@ static constexpr size_t maximumCachedPermissionResults = 256;
  
  namespace WebKit {
  
@@ -30458,7 +30524,14 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..146be7910f22f67db277958fa919d6d3
 +    invalidateStorage();
 +    unloadDeclarativeNetRequestState();
 +
++#if PLATFORM(HAIKU)
++    auto oldPrivilegedIdentifier = std::exchange(m_privilegedIdentifier, std::nullopt);
++    // Invalidate the load before delivering queued cancellation completions.
++    if (oldPrivilegedIdentifier && extensionController())
++        extensionController()->nativePermissionPrompts()->cancelOwner(oldPrivilegedIdentifier.value().toUInt64());
++#else
 +    m_privilegedIdentifier = std::nullopt;
++#endif
 +
 +    cancelBackgroundContentTasks();
 +    m_backgroundContentEventListeners.clear();
@@ -30582,7 +30655,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..146be7910f22f67db277958fa919d6d3
  int WebExtensionContext::toAPIError(WebExtensionContext::Error error)
  {
      switch (error) {
-@@ -1660,7 +1932,13 @@ WebExtensionContext::WebExtensionContext()
+@@ -1660,7 +1940,13 @@ WebExtensionContext::WebExtensionContext()
  }
  
  #if !USE(GLIB)
@@ -30597,7 +30670,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..146be7910f22f67db277958fa919d6d3
  #endif
  
  WebExtensionContextIdentifier WebExtensionContext::privilegedIdentifier() const
-@@ -1798,9 +2076,17 @@ void WebExtensionContext::loadBackgroundContent(CompletionHandler<void(RefPtr<AP
+@@ -1798,9 +2084,17 @@ void WebExtensionContext::loadBackgroundContent(CompletionHandler<void(RefPtr<AP
          return;
      }
  
@@ -30618,7 +30691,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..146be7910f22f67db277958fa919d6d3
      });
  }
  
-@@ -2003,6 +2289,128 @@ Ref<WebExtensionRegisteredScriptsSQLiteStore> WebExtensionContext::registeredCon
+@@ -2003,6 +2297,128 @@ Ref<WebExtensionRegisteredScriptsSQLiteStore> WebExtensionContext::registeredCon
      return *m_registeredContentScriptsStorage;
  }
  
@@ -31509,7 +31582,7 @@ index 06cec0eb534d3f51d3a04e7ea3b68ac347c6a2cf..f0a9e6fafa0e1d0b06efd7057802f497
  
  WebExtensionController::~WebExtensionController()
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionController.h b/Source/WebKit/UIProcess/Extensions/WebExtensionController.h
-index 4f8b8ba294dfafd7a17c0f3a440b16f93283e583..8291604dca1c862ad99cc7ab8242de530ae90129 100644
+index 4f8b8ba294dfafd7a17c0f3a440b16f93283e583..15463803d9667459eac62443d42197de9bee55b4 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionController.h
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionController.h
 @@ -45,6 +45,7 @@
@@ -31520,25 +31593,27 @@ index 4f8b8ba294dfafd7a17c0f3a440b16f93283e583..8291604dca1c862ad99cc7ab8242de53
  #include <wtf/Identified.h>
  #include <wtf/RunLoop.h>
  #include <wtf/TZoneMallocInlines.h>
-@@ -66,6 +67,7 @@ class WebsitePolicies;
+@@ -66,6 +67,8 @@ class WebsitePolicies;
  
  namespace WebKit {
  
 +class BrowserTabRegistryHaiku;
++class ExtensionPermissionPromptHaiku;
  class ContextMenuContextData;
  class WebExtensionContext;
  class WebExtensionDataRecord;
-@@ -113,6 +115,9 @@ public:
+@@ -113,6 +116,10 @@ public:
      enum class ForPrivateBrowsing { No, Yes };
  
      WebExtensionControllerConfiguration& configuration() const LIFETIME_BOUND { return m_configuration.get(); }
 +#if PLATFORM(HAIKU)
 +    const std::shared_ptr<BrowserTabRegistryHaiku>& nativeBrowserTabs() const { return m_nativeBrowserTabs; }
++    const std::shared_ptr<ExtensionPermissionPromptHaiku>& nativePermissionPrompts() const { return m_nativePermissionPrompts; }
 +#endif
      WebExtensionControllerParameters parameters(const API::PageConfiguration&, WebProcessProxy& destinationProcess) const;
  
      bool operator==(const WebExtensionController& other) const { return (this == &other); }
-@@ -266,10 +271,8 @@ private:
+@@ -266,10 +273,8 @@ private:
          {
              // FIXME: <https://webkit.org/b/267514> Add support for changeInfo.
  
@@ -31549,12 +31624,13 @@ index 4f8b8ba294dfafd7a17c0f3a440b16f93283e583..8291604dca1c862ad99cc7ab8242de53
          }
  
          WeakPtr<WebExtensionController> m_extensionController;
-@@ -277,6 +280,9 @@ private:
+@@ -277,6 +282,10 @@ private:
  
  
      const Ref<WebExtensionControllerConfiguration> m_configuration;
 +#if PLATFORM(HAIKU)
 +    std::shared_ptr<BrowserTabRegistryHaiku> m_nativeBrowserTabs;
++    std::shared_ptr<ExtensionPermissionPromptHaiku> m_nativePermissionPrompts;
 +#endif
  
  #if PLATFORM(COCOA)
@@ -35487,10 +35563,10 @@ index 0000000000000000000000000000000000000000..a5f9aae43990067335545cb019b2e4f0
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionControllerHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionControllerHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..8fa08cfcc06ebeaf88ebabcedc4bec52e6dac87f
+index 0000000000000000000000000000000000000000..c4fb5c82897fdc6b1b6bcc47637fd2171d4c9e32
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionControllerHaiku.cpp
-@@ -0,0 +1,23 @@
+@@ -0,0 +1,25 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -35499,6 +35575,7 @@ index 0000000000000000000000000000000000000000..8fa08cfcc06ebeaf88ebabcedc4bec52
 +#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 +
 +#include "BrowserTabRegistryHaiku.h"
++#include "ExtensionPermissionPromptHaiku.h"
 +
 +namespace WebKit {
 +
@@ -35509,6 +35586,7 @@ index 0000000000000000000000000000000000000000..8fa08cfcc06ebeaf88ebabcedc4bec52
 +    // Page configurations, the native SDK and loaded extension contexts share
 +    // this controller's host state without retaining native windows or pages.
 +    m_nativeBrowserTabs = std::make_shared<BrowserTabRegistryHaiku>();
++    m_nativePermissionPrompts = ExtensionPermissionPromptHaiku::create();
 +}
 +
 +} // namespace WebKit
@@ -39013,6 +39091,292 @@ index 0000000000000000000000000000000000000000..0bee5b6e8a1234d768064bc9f9802ecd
 +};
 +
 +} // namespace WebKit
+diff --git a/Source/WebKit/UIProcess/haiku/ExtensionPermissionPromptHaiku.cpp b/Source/WebKit/UIProcess/haiku/ExtensionPermissionPromptHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c1bab28d8f87342a6cf17306d6748bcd1f8af9b6
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/ExtensionPermissionPromptHaiku.cpp
+@@ -0,0 +1,210 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#include "config.h"
++#include "ExtensionPermissionPromptHaiku.h"
++
++#include "WebKitExtensionPermission.h"
++#include <algorithm>
++#include <wtf/UUID.h>
++
++namespace WebKit {
++
++std::shared_ptr<ExtensionPermissionPromptHaiku> ExtensionPermissionPromptHaiku::create(bigtime_t timeout)
++{
++    ASSERT(RunLoop::isMain());
++    return std::shared_ptr<ExtensionPermissionPromptHaiku>(new ExtensionPermissionPromptHaiku(timeout));
++}
++
++ExtensionPermissionPromptHaiku::ExtensionPermissionPromptHaiku(bigtime_t timeout)
++    : m_timer(RunLoop::mainSingleton(), "ExtensionPermissionPromptHaiku"_s, [this] { pump(); })
++    , m_timeout(std::clamp<bigtime_t>(timeout, 100000, 120000000))
++{
++}
++
++ExtensionPermissionPromptHaiku::~ExtensionPermissionPromptHaiku()
++{
++    shutdown();
++}
++
++status_t ExtensionPermissionPromptHaiku::setListener(const BMessenger& listener)
++{
++    ASSERT(RunLoop::isMain());
++    if (m_shutdown)
++        return B_CANCELED;
++    if (!m_requests.empty())
++        return B_BUSY;
++    // Consent is a trusted application UI operation, never an external team.
++    if (listener.IsValid() && !listener.IsTargetLocal())
++        return B_NOT_ALLOWED;
++    m_listener = listener;
++    return B_OK;
++}
++
++void ExtensionPermissionPromptHaiku::dispatch(Completion&& completion, std::expected<bool, status_t> result)
++{
++    RunLoop::mainSingleton().dispatch([completion = WTF::move(completion), result]() mutable {
++        completion(result);
++    });
++}
++
++String ExtensionPermissionPromptHaiku::request(uint64_t owner, Details&& details, Completion&& completion)
++{
++    ASSERT(RunLoop::isMain());
++    status_t error = B_OK;
++    if (m_shutdown)
++        error = B_CANCELED;
++    else if (!m_listener.IsValid())
++        error = B_NO_INIT;
++    else if (m_requests.size() >= 32)
++        error = B_BUSY;
++    else if (!owner || details.extensionIdentifier.isEmpty() || details.extensionName.isEmpty()
++        || details.permissions.size() + details.origins.size() > 256
++        || (details.permissions.isEmpty() && details.origins.isEmpty()))
++        error = B_BAD_VALUE;
++    if (error != B_OK) {
++        dispatch(WTF::move(completion), std::unexpected(error));
++        return { };
++    }
++
++    size_t length = 0;
++    auto validate = [&](const String& text) {
++        if (text.isEmpty() || text.contains('\0') || text.length() > 8192)
++            error = B_BAD_VALUE;
++        length += text.length();
++    };
++    validate(details.extensionIdentifier);
++    validate(details.extensionName);
++    for (auto& permission : details.permissions)
++        validate(permission);
++    for (auto& origin : details.origins)
++        validate(origin);
++    if (length > 16384)
++        error = B_BAD_VALUE;
++    if (error != B_OK) {
++        dispatch(WTF::move(completion), std::unexpected(error));
++        return { };
++    }
++
++    auto identifier = WTF::UUID::createVersion4().toString();
++    auto deadline = system_time() + m_timeout;
++    BMessage message(B_WEBKIT_EXTENSION_PERMISSION_REQUESTED);
++    auto add = [&](const char* field, const String& value) {
++        if (error == B_OK)
++            error = message.AddString(field, value.utf8().legacyCStringPointer());
++    };
++    add("identifier", identifier);
++    add("extension_identifier", details.extensionIdentifier);
++    add("extension_name", details.extensionName);
++    for (auto& permission : details.permissions)
++        add("permission", permission);
++    for (auto& origin : details.origins)
++        add("origin", origin);
++    if (error == B_OK)
++        error = message.AddInt64("deadline", deadline);
++    if (error == B_OK)
++        error = message.AddBool("private_browsing", details.privateBrowsing);
++    if (error != B_OK) {
++        dispatch(WTF::move(completion), std::unexpected(error));
++        return { };
++    }
++    m_requests.push_back(std::make_unique<Request>(Request { owner, identifier, message, WTF::move(completion), deadline }));
++    pump();
++    return identifier;
++}
++
++void ExtensionPermissionPromptHaiku::complete(std::unique_ptr<Request> request, std::expected<bool, status_t> result, bool dismiss)
++{
++    if (dismiss && request->delivered) {
++        BMessage message(B_WEBKIT_EXTENSION_PERMISSION_CANCELLED);
++        if (message.AddString("identifier", request->identifier.utf8().legacyCStringPointer()) == B_OK)
++            m_listener.SendMessage(&message, static_cast<BHandler*>(nullptr), 0);
++        // A host also receives the absolute deadline; queue congestion cannot
++        // make a stale prompt live indefinitely. Its response is already inert.
++    }
++    dispatch(WTF::move(request->completion), result);
++}
++
++void ExtensionPermissionPromptHaiku::pump()
++{
++    ASSERT(RunLoop::isMain());
++    auto now = system_time();
++    for (auto it = m_requests.begin(); it != m_requests.end();) {
++        if (now >= (*it)->deadline || !m_listener.IsValid()) {
++            auto request = std::move(*it);
++            it = m_requests.erase(it);
++            auto error = now >= request->deadline ? B_TIMED_OUT : B_BAD_PORT_ID;
++            complete(std::move(request), std::unexpected(error), true);
++        } else
++            ++it;
++    }
++    while (!m_requests.empty() && !m_requests.front()->delivered) {
++        auto& request = *m_requests.front();
++        if (!request.deliveryDeadline)
++            request.deliveryDeadline = std::min(now + 1000000, request.deadline);
++        auto error = m_listener.SendMessage(&request.message, static_cast<BHandler*>(nullptr), 0);
++        if (error == B_OK) {
++            request.delivered = true;
++            break;
++        }
++        if ((error == B_WOULD_BLOCK || error == B_TIMED_OUT) && now < request.deliveryDeadline)
++            break;
++        auto failed = std::move(m_requests.front());
++        m_requests.pop_front();
++        complete(std::move(failed), std::unexpected(error), false);
++    }
++    if (m_requests.empty())
++        m_timer.stop();
++    else if (!m_timer.isActive())
++        m_timer.startRepeating(100_ms);
++}
++
++void ExtensionPermissionPromptHaiku::respond(const String& identifier, bool allowed)
++{
++    ASSERT(RunLoop::isMain());
++    if (m_requests.empty() || !m_requests.front()->delivered || m_requests.front()->identifier != identifier)
++        return;
++    auto request = std::move(m_requests.front());
++    m_requests.pop_front();
++    auto result = system_time() < request->deadline ? std::expected<bool, status_t>(allowed) : std::unexpected(B_TIMED_OUT);
++    complete(std::move(request), result, true);
++    pump();
++}
++
++void ExtensionPermissionPromptHaiku::cancelOwner(uint64_t owner)
++{
++    ASSERT(RunLoop::isMain());
++    for (auto it = m_requests.begin(); it != m_requests.end();) {
++        if ((*it)->owner == owner) {
++            auto request = std::move(*it);
++            it = m_requests.erase(it);
++            complete(std::move(request), std::unexpected(B_CANCELED), true);
++        } else
++            ++it;
++    }
++    pump();
++}
++
++void ExtensionPermissionPromptHaiku::cancelAll()
++{
++    ASSERT(RunLoop::isMain());
++    auto requests = std::exchange(m_requests, { });
++    m_timer.stop();
++    for (auto& request : requests)
++        complete(std::move(request), std::unexpected(B_CANCELED), true);
++}
++
++void ExtensionPermissionPromptHaiku::shutdown()
++{
++    ASSERT(RunLoop::isMain());
++    m_shutdown = true;
++    cancelAll();
++    m_listener = { };
++}
++
++bool ExtensionPermissionPromptHaiku::hasPendingRequests() const
++{
++    ASSERT(RunLoop::isMain());
++    return !m_requests.empty();
++}
++
++} // namespace WebKit
+diff --git a/Source/WebKit/UIProcess/haiku/ExtensionPermissionPromptHaiku.h b/Source/WebKit/UIProcess/haiku/ExtensionPermissionPromptHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..59c492253640a0611a637d38d7ae20016ed0f224
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/ExtensionPermissionPromptHaiku.h
+@@ -0,0 +1,64 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#pragma once
++
++#include <Message.h>
++#include <Messenger.h>
++#include <deque>
++#include <expected>
++#include <memory>
++#include <wtf/CompletionHandler.h>
++#include <wtf/RunLoop.h>
++#include <wtf/Vector.h>
++#include <wtf/text/WTFString.h>
++
++namespace WebKit {
++
++// Main RunLoop only. This broker collects consent; the extension context must
++// revalidate its load, manifest and current grants before applying the result.
++class ExtensionPermissionPromptHaiku final {
++public:
++    struct Details {
++        String extensionIdentifier;
++        String extensionName;
++        Vector<String> permissions;
++        Vector<String> origins;
++        bool privateBrowsing { false };
++    };
++    using Completion = CompletionHandler<void(std::expected<bool, status_t>)>;
++
++    static std::shared_ptr<ExtensionPermissionPromptHaiku> create(bigtime_t timeout = 120000000);
++    ~ExtensionPermissionPromptHaiku();
++    status_t setListener(const BMessenger&);
++    // owner identifies a single extension load and is never sent to the host.
++    // Every completion is asynchronous, including validation failures.
++    String request(uint64_t owner, Details&&, Completion&&);
++    void respond(const String& identifier, bool allowed);
++    void cancelOwner(uint64_t owner);
++    void cancelAll();
++    void shutdown();
++    bool hasPendingRequests() const;
++
++private:
++    explicit ExtensionPermissionPromptHaiku(bigtime_t);
++    struct Request {
++        uint64_t owner;
++        String identifier;
++        BMessage message;
++        Completion completion;
++        bigtime_t deadline;
++        bigtime_t deliveryDeadline { 0 };
++        bool delivered { false };
++    };
++    void pump();
++    void complete(std::unique_ptr<Request>, std::expected<bool, status_t>, bool dismiss);
++    static void dispatch(Completion&&, std::expected<bool, status_t>);
++
++    BMessenger m_listener;
++    std::deque<std::unique_ptr<Request>> m_requests;
++    RunLoop::Timer m_timer;
++    const bigtime_t m_timeout;
++    bool m_shutdown { false };
++};
++
++} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/JavaScriptDialogHaiku.h b/Source/WebKit/UIProcess/haiku/JavaScriptDialogHaiku.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..15401027888088266cf858cb7282d33ea2607e04
@@ -41341,10 +41705,10 @@ index 0000000000000000000000000000000000000000..ccc91dbcfaf46a506236d172c929f452
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..e6af1fd6a8512e13f111153d1093817f1454df03
+index 0000000000000000000000000000000000000000..aa982542310f26b28975b2972dafb9eb7ec02b01
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp
-@@ -0,0 +1,178 @@
+@@ -0,0 +1,191 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -41355,6 +41719,7 @@ index 0000000000000000000000000000000000000000..e6af1fd6a8512e13f111153d1093817f
 +#include "APIPageConfiguration.h"
 +#include "DownloadProxy.h"
 +#include "DownloadRegistryHaiku.h"
++#include "ExtensionPermissionPromptHaiku.h"
 +#include "APIProcessPoolConfiguration.h"
 +#include "StoragePathsHaiku.h"
 +#include "WebsiteDataStore.h"
@@ -41403,6 +41768,18 @@ index 0000000000000000000000000000000000000000..e6af1fd6a8512e13f111153d1093817f
 +{
 +    ASSERT(RunLoop::isMain());
 +    m_downloads->shutdown();
++    if (auto prompts = permissionPrompts())
++        prompts->shutdown();
++}
++
++std::shared_ptr<ExtensionPermissionPromptHaiku> WebViewContextHaiku::permissionPrompts() const
++{
++    ASSERT(RunLoop::isMain());
++#if ENABLE(WK_WEB_EXTENSIONS)
++    return m_extensionController->nativePermissionPrompts();
++#else
++    return nullptr;
++#endif
 +}
 +
 +std::shared_ptr<WebViewContextHaiku> WebViewContextHaiku::adopt(Ref<WebsiteDataStore>&& dataStore, String extensionStorageDirectory)
@@ -41525,10 +41902,10 @@ index 0000000000000000000000000000000000000000..e6af1fd6a8512e13f111153d1093817f
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..821add2ccb452d08beb3302bb0adcae94b699ae2
+index 0000000000000000000000000000000000000000..d33e05ef17576b1e1c484460b0fdd58a85e0b49b
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h
-@@ -0,0 +1,48 @@
+@@ -0,0 +1,50 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -41546,6 +41923,7 @@ index 0000000000000000000000000000000000000000..821add2ccb452d08beb3302bb0adcae9
 +
 +class BrowserTabRegistryHaiku;
 +class DownloadRegistryHaiku;
++class ExtensionPermissionPromptHaiku;
 +class WebExtensionController;
 +class WebPageProxy;
 +class WebProcessPool;
@@ -41561,6 +41939,7 @@ index 0000000000000000000000000000000000000000..821add2ccb452d08beb3302bb0adcae9
 +    void configure(API::PageConfiguration&) const;
 +    const std::shared_ptr<DownloadRegistryHaiku>& downloads() const { return m_downloads; }
 +    const std::shared_ptr<BrowserTabRegistryHaiku>& browserTabs() const { return m_browserTabs; }
++    std::shared_ptr<ExtensionPermissionPromptHaiku> permissionPrompts() const;
 +    void download(WebPageProxy&, const WebCore::ResourceRequest&, const BMessenger&);
 +
 +private:

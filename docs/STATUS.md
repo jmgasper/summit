@@ -1728,3 +1728,27 @@ Keyboard routing, action invocation/popup UI and the extension SDK still need
 integration. No command listener, promise, context state write or physical
 shortcut has run in an extension. No extension-enabled browser build is yet
 available. See [the command implementation and evidence](webextensions-native-commands.md).
+
+2026-09-15 (local) native extension consent: added a controller-owned prompt
+broker, public SDK listener/reply/cancellation methods, and Summit's native
+permission dialog. Requests use opaque UUIDs, a bounded FIFO queue and deadlines;
+unload cancels the old load's requests. The dialog lists every requested
+permission/site, labels private profiles, sanitizes extension-supplied display
+text, defaults to Deny, and closes safely on cancellation or application exit.
+
+**165 native broker/UI checks pass**, with no crash-log events and unchanged
+source/library hashes. The SDK/controller/context integration sources compile;
+all six modern application sources and the two changed legacy application
+sources compile. The actual SDK/profile sources also compile with WebExtensions
+disabled. These checks exercise the production broker and native windows;
+the runtime helper does not call the SDK wrapper or run a loaded extension.
+
+Permission API bindings, connecting `permissions.request()` to this broker,
+manifest revalidation, and applying/persisting grants remain unfinished. See
+[the consent implementation and verification scope](webextensions-native-permission-prompts.md).
+
+The full feature-enabled build of patch
+`7bdd8bfd20284706a60fc1abf37b82341f6c843500de9c99607af82f138384fe`
+reaches the WebKit library link with **the same 15 missing symbols** as the
+preceding command port. There are no new missing symbols or compiler errors.
+The extension-enabled browser still does not link, and no extension has run.

@@ -39,7 +39,8 @@ BINDING_UNITS = ('JSWebExtensionAPICommands.cpp',
 PAGE_UNITS = {'WebLoaderStrategy.cpp': 'WebProcess/Network/WebLoaderStrategy.cpp',
               'WebPage.cpp': 'WebProcess/WebPage/WebPage.cpp',
               'WebLocalFrameLoaderClient.cpp': 'WebProcess/WebCoreSupport/WebLocalFrameLoaderClient.cpp'}
-NATIVE_PAGE_UNITS = {'BrowserTabRegistryHaiku.cpp': 'UIProcess/haiku/BrowserTabRegistryHaiku.cpp',
+NATIVE_PAGE_UNITS = {'ExtensionPermissionPromptHaiku.cpp': 'UIProcess/haiku/ExtensionPermissionPromptHaiku.cpp',
+                     'BrowserTabRegistryHaiku.cpp': 'UIProcess/haiku/BrowserTabRegistryHaiku.cpp',
                      'WebViewContextHaiku.cpp': 'UIProcess/haiku/WebViewContextHaiku.cpp',
                      'WebKitContext.cpp': 'UIProcess/API/haiku/WebKitContext.cpp',
                      'WebPageProxy.cpp': 'UIProcess/WebPageProxy.cpp',
@@ -274,6 +275,8 @@ def host(overlay=None, units=None, engine_root=DEFAULT_ENGINE, regenerate=False,
             (pathlib.Path(overlay).resolve() / 'Source/WebKit/UIProcess/haiku/WebViewPrivate.h').is_file()):
         for relative in ('UIProcess/haiku/WebViewPrivate.h', 'UIProcess/haiku/WebViewContextHaiku.h',
                          'UIProcess/haiku/WebViewStateHaiku.h', 'UIProcess/haiku/BrowserTabRegistryHaiku.h',
+                         'UIProcess/haiku/ExtensionPermissionPromptHaiku.h',
+                         'UIProcess/API/haiku/WebKitExtensionPermission.h',
                          'UIProcess/API/haiku/WebKitContext.h', 'UIProcess/API/haiku/WebKitView.h'):
             path = engine / 'Source/WebKit' / relative
             if not source(path).is_file():

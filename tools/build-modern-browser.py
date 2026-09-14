@@ -234,7 +234,7 @@ def main():
         flags += ['-DSUMMIT_MODERN_WEBKIT=1', '-I' + str(ROOT / 'src'),
                   '-I' + str(ROOT / 'vendor'), '-I/boot/system/develop/headers/private/netservices']
         sources = ['src/main.cpp', 'src/core/Address.cpp', 'src/core/Profile.cpp',
-                   'src/ui/BrowserWindow.cpp', 'src/ui/Chrome.cpp']
+                   'src/ui/BrowserWindow.cpp', 'src/ui/Chrome.cpp', 'src/ui/ExtensionPermissionPrompt.cpp']
     objects = [work / pathlib.Path(source).with_suffix('.o') for source in sources]
     commands = [flags + ['-c', str(ROOT / source), '-o', str(output)]
                 for source, output in zip(sources, objects)]

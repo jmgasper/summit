@@ -1,5 +1,6 @@
 #include "ui/BrowserWindow.h"
 #include "ui/Messages.h"
+#include "ui/ExtensionPermissionPrompt.h"
 #include "core/Address.h"
 #include <Alert.h>
 #include <Application.h>
@@ -92,6 +93,20 @@ public:
             StartupError("Could not initialize downloads: " + std::string(std::strerror(initialization)));
             return;
         }
+        fPermissionPrompts = std::make_unique<summit::ExtensionPermissionPrompt>(
+            [context = std::weak_ptr<BWebKitContext>(fWebKitContext)](const std::string& identifier, bool allowed) {
+                if (auto liveContext = context.lock())
+                    liveContext->RespondToExtensionPermissionRequest(identifier.c_str(), allowed);
+            });
+        AddHandler(fPermissionPrompts.get());
+        initialization = fWebKitContext->SetExtensionPermissionListener(BMessenger(fPermissionPrompts.get()));
+        if (initialization == B_NOT_SUPPORTED) {
+            RemoveHandler(fPermissionPrompts.get());
+            fPermissionPrompts.reset();
+        } else if (initialization != B_OK) {
+            StartupError("Could not initialize extension permissions: " + std::string(std::strerror(initialization)));
+            return;
+        }
 #else
         setenv("CURL_COOKIE_JAR_PATH", (fProfile / "cookies.sqlite").c_str(), 1);
         BWebPage::InitializeOnce();
@@ -168,6 +183,17 @@ public:
             return false;
         }
         if (fWebKitContext) {
+            if (fPermissionPrompts) {
+                fWebKitContext->CancelExtensionPermissionRequests();
+                fPermissionPrompts->Shutdown();
+                if (fPermissionPrompts->HasOpenWindows()) {
+                    fWaitingForNativeUI = true;
+                    SetPulseRate(100000);
+                    return false;
+                }
+                RemoveHandler(fPermissionPrompts.get());
+                fPermissionPrompts.reset();
+            }
             if (fWebKitContext->HasPendingDownloads()) {
                 if (!fCancellingDownloads) {
                     fCancellingDownloads = true;
@@ -211,6 +237,7 @@ private:
     BMessenger fWindow;
 #if SUMMIT_MODERN_WEBKIT
     std::shared_ptr<BWebKitContext> fWebKitContext;
+    std::unique_ptr<summit::ExtensionPermissionPrompt> fPermissionPrompts;
     bool fWaitingForNativeUI = false;
     bool fNativeUIExitReady = false;
     bool fCancellingDownloads = false;
