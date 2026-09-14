@@ -42,7 +42,9 @@ NATIVE_PAGE_UNITS = {'BrowserTabRegistryHaiku.cpp': 'UIProcess/haiku/BrowserTabR
                      'WebKitContext.cpp': 'UIProcess/API/haiku/WebKitContext.cpp',
                      'WebPageProxy.cpp': 'UIProcess/WebPageProxy.cpp',
                      'WebView.cpp': 'UIProcess/haiku/WebView.cpp'}
-UI_API_UNITS = {'WebExtensionContextPermissionsHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionContextPermissionsHaiku.cpp',
+UI_API_UNITS = {'WebExtensionActionHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionActionHaiku.cpp',
+                'WebExtensionContextActionsHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionContextActionsHaiku.cpp',
+                'WebExtensionContextPermissionsHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionContextPermissionsHaiku.cpp',
                 'WebExtensionControllerWebRequest.cpp': 'UIProcess/Extensions/WebExtensionControllerWebRequest.cpp',
                 'WebExtensionContextWebRequest.cpp': 'UIProcess/Extensions/WebExtensionContextWebRequest.cpp',
                 'WebExtensionWebRequestFilter.cpp': 'WebProcess/Extensions/WebExtensionWebRequestFilter.cpp',

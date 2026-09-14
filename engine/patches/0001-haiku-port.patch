@@ -22928,10 +22928,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..1cd0953e71d6b80ddb9a2978f0c5b51027fdd692
+index 0000000000000000000000000000000000000000..dc7c36da9974b3b503f4577617a386dca18019e8
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,194 @@
+@@ -0,0 +1,196 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -22982,6 +22982,8 @@ index 0000000000000000000000000000000000000000..1cd0953e71d6b80ddb9a2978f0c5b510
 +    UIProcess/Extensions/haiku/WebExtensionArchiveHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionContextHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionContextPermissionsHaiku.cpp
++    UIProcess/Extensions/haiku/WebExtensionContextActionsHaiku.cpp
++    UIProcess/Extensions/haiku/WebExtensionActionHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionContextTestHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionContextBackgroundHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionControllerAPITestHaiku.cpp
@@ -29497,7 +29499,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..51bf107142461e1c1ca1388b537b87b6
  
  #endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
-index 05a8676082d56f2c47c9af6120f5120b09f982be..fbcffc7df4a0ffa1ba13f0c6d1bbb0759b5f58cb 100644
+index 05a8676082d56f2c47c9af6120f5120b09f982be..86076ccbbc472d3141f00a13fa5a96d6b6a9a06c 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 @@ -52,6 +52,7 @@
@@ -29590,7 +29592,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..fbcffc7df4a0ffa1ba13f0c6d1bbb075
      using PortQueuedMessageMap = HashMap<PortWorldPair, Vector<PortQueuedMessage>>;
      using NativePortMap = HashMap<WebExtensionPortChannelIdentifier, Ref<WebExtensionMessagePort>>;
  
-@@ -334,6 +354,13 @@ public:
+@@ -334,6 +354,17 @@ public:
          DeniedPermissionMatchPatternsWereRemoved,
      };
  
@@ -29599,12 +29601,16 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..fbcffc7df4a0ffa1ba13f0c6d1bbb075
 +    // deliveries; permission and pattern sets describe the recorded change.
 +    using NativePermissionChangeHandler = SharedTask<void(PermissionNotification, const PermissionsSet&, const MatchPatternSet&)>;
 +    void setNativePermissionChangeHandler(RefPtr<NativePermissionChangeHandler>&&);
++
++    using NativeActionChangeHandler = SharedTask<void(WebExtensionAction&)>;
++    void setNativeActionChangeHandler(RefPtr<NativeActionChangeHandler>&&);
++    void nativeActionPropertiesDidChange(WebExtensionAction&);
 +#endif
 +
      enum class PermissionState : int8_t {
          DeniedExplicitly    = -3,
          DeniedImplicitly    = -2,
-@@ -504,6 +531,12 @@ public:
+@@ -504,6 +535,12 @@ public:
  
      void removePage(WebPageProxy&);
  
@@ -29617,7 +29623,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..fbcffc7df4a0ffa1ba13f0c6d1bbb075
      Ref<WebExtensionWindow> getOrCreateWindow(WKWebExtensionWindow *) const;
      RefPtr<WebExtensionWindow> getWindow(WebExtensionWindowIdentifier, std::optional<WebPageProxyIdentifier> = std::nullopt, IgnoreExtensionAccess = IgnoreExtensionAccess::No) const;
      void forgetWindow(WebExtensionWindowIdentifier) const;
-@@ -630,6 +663,10 @@ public:
+@@ -630,6 +667,10 @@ public:
      void sendTestStarted(id argument);
      void sendTestFinished(id argument);
      void reloadBackgroundContentForTesting();
@@ -29628,7 +29634,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..fbcffc7df4a0ffa1ba13f0c6d1bbb075
  #endif
  
      URL backgroundContentURL();
-@@ -656,6 +693,7 @@ public:
+@@ -656,6 +697,7 @@ public:
  #endif
  
  #if PLATFORM(COCOA)
@@ -29636,7 +29642,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..fbcffc7df4a0ffa1ba13f0c6d1bbb075
      void sendNativeMessage(const String& applicationID, id message, CompletionHandler<void(std::expected<RetainPtr<id>, WebExtensionError>&&)>&&);
  #endif
  
-@@ -749,11 +787,18 @@ private:
+@@ -749,11 +791,18 @@ private:
  #if PLATFORM(COCOA)
      NSDictionary *currentState() const;
      NSDictionary *readStateFromStorage();
@@ -29656,7 +29662,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..fbcffc7df4a0ffa1ba13f0c6d1bbb075
  
      void loadStorageAccessLevelsFromStorage();
      void saveStorageAccessLevelsToStorage();
-@@ -762,6 +807,10 @@ private:
+@@ -762,6 +811,10 @@ private:
      void moveLocalStorageIfNeeded(const URL& previousBaseURL, CompletionHandler<void()>&&);
      void removeStaleExtensionWebsiteData();
  
@@ -29667,7 +29673,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..fbcffc7df4a0ffa1ba13f0c6d1bbb075
      void permissionsDidChange(PermissionNotification, const PermissionsSet&);
      void permissionsDidChange(PermissionNotification, const MatchPatternSet&);
  
-@@ -796,6 +845,7 @@ private:
+@@ -796,6 +849,7 @@ private:
      void saveBackgroundPageListenersToStorage();
  
      void performTasksAfterBackgroundContentLoads();
@@ -29675,7 +29681,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..fbcffc7df4a0ffa1ba13f0c6d1bbb075
  
  #ifdef NDEBUG
      // This is method is a no-op in release builds since it has a performance impact with little benefit to release builds.
-@@ -1034,6 +1084,7 @@ private:
+@@ -1034,6 +1088,7 @@ private:
      void scriptingGetRegisteredScripts(const Vector<String>&, CompletionHandler<void(std::expected<Vector<WebExtensionRegisteredScriptParameters>, WebExtensionError>&&)>&&);
      void scriptingUnregisterContentScripts(const Vector<String>&, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
      bool createInjectedContentForScripts(const Vector<WebExtensionRegisteredScriptParameters>&, WebExtensionDynamicScripts::WebExtensionRegisteredScript::FirstTimeRegistration, DynamicInjectedContentsMap&, NSString *callingAPIName, NSString **errorMessage);
@@ -29683,7 +29689,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..fbcffc7df4a0ffa1ba13f0c6d1bbb075
  
      // Sidebar APIs
  #if ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
-@@ -1129,6 +1180,10 @@ private:
+@@ -1129,6 +1184,12 @@ private:
      RetainPtr<NSMutableDictionary> m_state;
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<GKeyFile> m_state;
@@ -29691,10 +29697,12 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..fbcffc7df4a0ffa1ba13f0c6d1bbb075
 +    RefPtr<JSON::Object> m_state;
 +    RefPtr<NativePermissionChangeHandler> m_nativePermissionChangeHandler;
 +    uint64_t m_nativePermissionChangeHandlerGeneration { 0 };
++    RefPtr<NativeActionChangeHandler> m_nativeActionChangeHandler;
++    uint64_t m_nativeActionChangeHandlerGeneration { 0 };
  #endif
      Vector<Ref<API::Error>> m_errors;
  
-@@ -1194,6 +1249,9 @@ private:
+@@ -1194,6 +1255,9 @@ private:
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<WebKitWebView> m_backgroundWebView;
      GWeakPtr<WebKitWebExtensionContext> m_delegate;
@@ -29704,7 +29712,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..fbcffc7df4a0ffa1ba13f0c6d1bbb075
  #endif
      Variant<std::monostate, Ref<ProcessThrottlerActivity>, Ref<ProcessActivityGroup>> m_backgroundWebViewActivity;
      RefPtr<API::Error> m_backgroundContentLoadError;
-@@ -1215,6 +1273,7 @@ private:
+@@ -1215,6 +1279,7 @@ private:
      HashMap<Ref<WebExtensionMatchPattern>, UserScriptVector> m_injectedScriptsPerPatternMap;
      HashMap<Ref<WebExtensionMatchPattern>, UserStyleSheetVector> m_injectedStyleSheetsPerPatternMap;
  
@@ -29712,7 +29720,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..fbcffc7df4a0ffa1ba13f0c6d1bbb075
      HashMap<String, Ref<WebExtensionDynamicScripts::WebExtensionRegisteredScript>> m_registeredScriptsMap;
      RefPtr<WebExtensionRegisteredScriptsSQLiteStore> m_registeredContentScriptsStorage;
  
-@@ -1234,7 +1293,7 @@ private:
+@@ -1234,7 +1299,7 @@ private:
  #endif // ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
  
      PortCountedSet m_ports;
@@ -29721,7 +29729,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..fbcffc7df4a0ffa1ba13f0c6d1bbb075
      PortQueuedMessageMap m_portQueuedMessages;
      NativePortMap m_nativePortMap;
  
-@@ -1274,12 +1333,16 @@ private:
+@@ -1274,12 +1339,16 @@ private:
          String message;
  #if PLATFORM(COCOA)
          RetainPtr<id> argument;
@@ -29738,7 +29746,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..fbcffc7df4a0ffa1ba13f0c6d1bbb075
  
      Deque<TestMessage> m_testMessageQueue;
      Deque<TestMessage> m_testStartedQueue;
-@@ -1289,6 +1352,8 @@ private:
+@@ -1289,6 +1358,8 @@ private:
      void sendQueuedTestMessagesIfNeeded(WebExtensionEventListenerType);
  #if PLATFORM(COCOA)
      void addTestMessageToQueue(const String& message, id argument, WebExtensionEventListenerType);
@@ -31167,6 +31175,414 @@ index f09e0085d0228b905e0a7cfe7592260e9d4977a9..3ada5a0beca92b82ae14dc44131be6f1
  } // namespace WebKit
  
  #endif // ENABLE(WK_WEB_EXTENSIONS)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionActionHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionActionHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..dde3685557295df73e9ce3fa614030ba7c8961e4
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionActionHaiku.cpp
+@@ -0,0 +1,402 @@
++/*
++ * Copyright (C) 2023-2024 Apple Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "WebExtensionAction.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++
++#include "WebExtensionContext.h"
++#include "WebExtensionUtilities.h"
++#include <limits>
++
++namespace WebKit {
++
++WebExtensionAction::WebExtensionAction(WebExtensionContext& extensionContext)
++    : m_extensionContext(extensionContext)
++{
++}
++
++WebExtensionAction::WebExtensionAction(WebExtensionContext& extensionContext, WebExtensionTab& tab)
++    : m_extensionContext(extensionContext)
++    , m_tab(&tab)
++{
++}
++
++WebExtensionAction::WebExtensionAction(WebExtensionContext& extensionContext, WebExtensionWindow& window)
++    : m_extensionContext(extensionContext)
++    , m_window(&window)
++{
++}
++
++bool WebExtensionAction::operator==(const WebExtensionAction& other) const
++{
++    return this == &other || (m_extensionContext == other.m_extensionContext && m_tab == other.m_tab && m_window == other.m_window);
++}
++
++WebExtensionContext* WebExtensionAction::extensionContext() const
++{
++    return m_extensionContext.get();
++}
++
++void WebExtensionAction::clearCustomizations()
++{
++#if ENABLE(WK_WEB_EXTENSIONS_ICON_VARIANTS)
++    if (!m_customIcons && !m_customIconVariants && m_customPopupPath.isNull() && m_customLabel.isNull() && m_customBadgeText.isNull() && !m_customEnabled && !m_blockedResourceCount && !m_hasUnreadBadgeText)
++#else
++    if (!m_customIcons && m_customPopupPath.isNull() && m_customLabel.isNull() && m_customBadgeText.isNull() && !m_customEnabled && !m_blockedResourceCount && !m_hasUnreadBadgeText)
++#endif
++        return;
++
++    m_customIcons = nullptr;
++#if ENABLE(WK_WEB_EXTENSIONS_ICON_VARIANTS)
++    m_customIconVariants = nullptr;
++#endif
++    m_customPopupPath = nullString();
++    m_customLabel = nullString();
++    m_customBadgeText = nullString();
++    m_customEnabled = std::nullopt;
++    m_blockedResourceCount = 0;
++    m_hasUnreadBadgeText = std::nullopt;
++
++#if PLATFORM(MAC)
++    // Reset the popover appearance until the color-scheme CSS can be checked on the next load.
++    m_popoverAppearance = Appearance::Default;
++#endif
++
++    clearIconCache();
++    propertiesDidChange();
++}
++
++RefPtr<WebExtensionAction> WebExtensionAction::fallbackAction() const
++{
++    RefPtr extensionContext = this->extensionContext();
++    if (!extensionContext)
++        return nullptr;
++
++    // Tab actions whose tab references have not dropped fallback to the window action.
++    if (RefPtr tab = this->tab())
++        return extensionContext->getAction(tab->window().get());
++
++    // Window actions and tab actions whose tab references have dropped fallback to the default action.
++    if (m_window.has_value() || m_tab.has_value())
++        return extensionContext->defaultAction();
++
++    // Default actions have no fallback.
++    return nullptr;
++}
++
++RefPtr<WebCore::Icon> WebExtensionAction::icon(WebCore::FloatSize idealSize)
++{
++    RefPtr extensionContext = this->extensionContext();
++    if (!extensionContext)
++        return nullptr;
++
++#if ENABLE(WK_WEB_EXTENSIONS_ICON_VARIANTS)
++    if (m_customIconVariants || m_customIcons)
++#else
++    if (m_customIcons)
++#endif
++    {
++        // Clear the cache if the display scales change (connecting display, etc.)
++        auto currentScales = availableScreenScales();
++        if (currentScales != m_cachedIconScales)
++            clearIconCache();
++
++        if (m_cachedIcon && idealSize == m_cachedIconIdealSize)
++            return m_cachedIcon;
++
++        RefPtr<WebCore::Icon> result;
++
++#if ENABLE(WK_WEB_EXTENSIONS_ICON_VARIANTS)
++        if (m_customIconVariants) {
++            result = protect(extensionContext->extension())->bestIconVariant(m_customIconVariants, WebCore::FloatSize(idealSize), [&](Ref<API::Error> error) {
++                extensionContext->recordError(error);
++            });
++        } else
++#endif // ENABLE(WK_WEB_EXTENSIONS_ICON_VARIANTS)
++        if (m_customIcons) {
++            result = protect(extensionContext->extension())->bestIcon(m_customIcons, WebCore::FloatSize(idealSize), [&](Ref<API::Error> error) {
++                extensionContext->recordError(error);
++            });
++        }
++
++        if (result) {
++            m_cachedIcon = result;
++            m_cachedIconScales = currentScales;
++            m_cachedIconIdealSize = idealSize;
++
++            return result;
++        }
++
++        clearIconCache();
++
++        // If custom icons fail, fallback.
++    }
++
++    if (RefPtr fallback = fallbackAction())
++        return fallback->icon(idealSize);
++
++    // Default
++    return protect(extensionContext->extension())->actionIcon(WebCore::FloatSize(idealSize));
++}
++
++void WebExtensionAction::setIcons(RefPtr<JSON::Object> icons)
++{
++    if (m_customIcons == icons)
++        return;
++
++    m_customIcons = icons && icons->size() ? icons : nullptr;
++#if ENABLE(WK_WEB_EXTENSIONS_ICON_VARIANTS)
++    m_customIconVariants = nullptr;
++#endif
++
++    clearIconCache();
++    propertiesDidChange();
++}
++
++#if ENABLE(WK_WEB_EXTENSIONS_ICON_VARIANTS)
++void WebExtensionAction::setIconVariants(RefPtr<JSON::Array> iconVariants)
++{
++    if (m_customIconVariants == iconVariants)
++        return;
++
++    m_customIconVariants = iconVariants && iconVariants->length() ? iconVariants : nullptr;
++    m_customIcons = nullptr;
++
++    clearIconCache();
++    propertiesDidChange();
++}
++#endif
++
++void WebExtensionAction::clearIconCache()
++{
++    m_cachedIcon = nullptr;
++    m_cachedIconScales = { };
++    m_cachedIconIdealSize = { };
++}
++
++String WebExtensionAction::popupPath() const
++{
++    RefPtr extensionContext = this->extensionContext();
++    if (!extensionContext)
++        return emptyString();
++
++    if (!m_customPopupPath.isNull())
++        return m_customPopupPath;
++
++    if (RefPtr fallback = fallbackAction())
++        return fallback->popupPath();
++
++    // Default
++    return protect(extensionContext->extension())->actionPopupPath();
++}
++
++void WebExtensionAction::setPopupPath(String path)
++{
++    if (m_customPopupPath == path)
++        return;
++
++    m_customPopupPath = path;
++
++#if PLATFORM(MAC)
++    // Reset the popover appearance until the color-scheme CSS can be checked on the next load.
++    m_popoverAppearance = Appearance::Default;
++#endif
++
++    propertiesDidChange();
++}
++
++String WebExtensionAction::label(FallbackWhenEmpty fallbackWhenEmpty) const
++{
++    RefPtr extensionContext = this->extensionContext();
++    if (!extensionContext)
++        return emptyString();
++
++    if (!m_customLabel.isNull()) {
++        if (!m_customLabel.isEmpty() || fallbackWhenEmpty == FallbackWhenEmpty::No)
++            return m_customLabel;
++
++        return protect(extensionContext->extension())->displayName();
++    }
++
++    if (RefPtr fallback = fallbackAction())
++        return fallback->label(fallbackWhenEmpty);
++
++    // Default
++    Ref extension = extensionContext->extension();
++    if (auto defaultLabel = extension->displayActionLabel(); !defaultLabel.isEmpty() || fallbackWhenEmpty == FallbackWhenEmpty::No)
++        return defaultLabel;
++
++    return extension->displayName();
++}
++
++void WebExtensionAction::setLabel(String label)
++{
++    if (m_customLabel == label)
++        return;
++
++    m_customLabel = label;
++
++    propertiesDidChange();
++}
++
++String WebExtensionAction::badgeText() const
++{
++    if (!extensionContext())
++        return emptyString();
++
++    if (!m_customBadgeText.isNull())
++        return m_customBadgeText;
++
++    if (m_blockedResourceCount)
++        return String::number(m_blockedResourceCount);
++
++    if (RefPtr fallback = fallbackAction())
++        return fallback->badgeText();
++
++    // Default
++    return emptyString();
++}
++
++void WebExtensionAction::setBadgeText(String badgeText)
++{
++    if (m_customBadgeText == badgeText)
++        return;
++
++    m_customBadgeText = badgeText;
++
++    if (!badgeText.isNull())
++        m_hasUnreadBadgeText = !badgeText.isEmpty();
++    else
++        m_hasUnreadBadgeText = std::nullopt;
++
++    propertiesDidChange();
++}
++
++bool WebExtensionAction::hasUnreadBadgeText() const
++{
++    if (!extensionContext() || badgeText().isEmpty())
++        return false;
++
++    if (m_hasUnreadBadgeText)
++        return m_hasUnreadBadgeText.value();
++
++    if (RefPtr fallback = fallbackAction())
++        return fallback->hasUnreadBadgeText();
++
++    // Default
++    return false;
++}
++
++void WebExtensionAction::setHasUnreadBadgeText(bool hasUnreadBadgeText)
++{
++    auto newValue = !badgeText().isEmpty() ? std::optional(hasUnreadBadgeText) : std::nullopt;
++    if (m_hasUnreadBadgeText == newValue)
++        return;
++
++    m_hasUnreadBadgeText = newValue;
++
++    // Only propagate the change if we're setting it to false.
++    if (RefPtr fallback = fallbackAction(); fallback && !hasUnreadBadgeText)
++        fallback->setHasUnreadBadgeText(false);
++
++    propertiesDidChange();
++}
++
++bool WebExtensionAction::isEnabled() const
++{
++    if (!extensionContext())
++        return false;
++
++    if (m_customEnabled)
++        return m_customEnabled.value();
++
++    if (RefPtr fallback = fallbackAction())
++        return fallback->isEnabled();
++
++    // Default
++    return true;
++}
++
++void WebExtensionAction::setEnabled(std::optional<bool> enabled)
++{
++    if (m_customEnabled == enabled)
++        return;
++
++    m_customEnabled = enabled;
++
++    propertiesDidChange();
++}
++
++void WebExtensionAction::clearBlockedResourceCount()
++{
++    if (!m_blockedResourceCount)
++        return;
++    m_blockedResourceCount = 0;
++    if (badgeText().isEmpty())
++        m_hasUnreadBadgeText = std::nullopt;
++    propertiesDidChange();
++}
++
++void WebExtensionAction::incrementBlockedResourceCount(ssize_t amount)
++{
++    if (!amount)
++        return;
++    auto previousCount = m_blockedResourceCount;
++    if (amount > 0) {
++        constexpr auto maximum = std::numeric_limits<ssize_t>::max();
++        m_blockedResourceCount = amount > maximum - previousCount ? maximum : previousCount + amount;
++    } else
++        m_blockedResourceCount = amount <= -previousCount ? 0 : previousCount + amount;
++    if (m_blockedResourceCount == previousCount)
++        return;
++    if (!badgeText().isEmpty())
++        m_hasUnreadBadgeText = true;
++    else
++        m_hasUnreadBadgeText = std::nullopt;
++    propertiesDidChange();
++}
++
++void WebExtensionAction::propertiesDidChange()
++{
++    if (m_updatePending)
++        return;
++    RefPtr context = extensionContext();
++    if (!context || !context->isLoaded())
++        return;
++    m_updatePending = true;
++    auto loadIdentifier = context->privilegedIdentifier();
++    RunLoop::mainSingleton().dispatchAfter(25_ms, [this, protectedThis = Ref { *this }, context = WTF::move(context), loadIdentifier] {
++        m_updatePending = false;
++        if (!context->isLoaded() || context->privilegedIdentifier() != loadIdentifier)
++            return;
++        context->nativeActionPropertiesDidChange(*this);
++    });
++}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionArchiveHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionArchiveHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..b31351ac379724cd397ea8819a3baa081f26c2d1
@@ -31651,6 +32067,185 @@ index 0000000000000000000000000000000000000000..5747ef0450f630fa084fa505521db945
 +    state.setObject(backgroundContentEventListenersKeyHaiku, WTF::move(saved));
 +    state.setInteger(backgroundContentEventListenersVersionKeyHaiku, currentBackgroundContentListenerStateVersionHaiku);
 +    return true;
++}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextActionsHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextActionsHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..ed33696667bcedd840e506f2a6ac6f232a88e3b7
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextActionsHaiku.cpp
+@@ -0,0 +1,173 @@
++/*
++ * Copyright (C) 2023-2024 Apple Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "WebExtensionContext.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++
++#include <wtf/MainThread.h>
++
++namespace WebKit {
++
++WebExtensionAction& WebExtensionContext::defaultAction()
++{
++    if (!m_defaultAction)
++        m_defaultAction = WebExtensionAction::create(*this);
++
++    return *m_defaultAction;
++}
++
++Ref<WebExtensionAction> WebExtensionContext::getAction(WebExtensionWindow* window)
++{
++    if (!window)
++        return defaultAction();
++
++    if (RefPtr windowAction = m_actionWindowMap.get(*window))
++        return *windowAction;
++
++    return defaultAction();
++}
++
++Ref<WebExtensionAction> WebExtensionContext::getAction(WebExtensionTab* tab)
++{
++    if (!tab)
++        return defaultAction();
++
++    if (RefPtr tabAction = m_actionTabMap.get(*tab))
++        return *tabAction;
++
++    return getAction(tab->window().get());
++}
++
++Ref<WebExtensionAction> WebExtensionContext::getOrCreateAction(WebExtensionWindow* window)
++{
++    if (!window)
++        return defaultAction();
++
++    return m_actionWindowMap.ensure(*window, [&] {
++        return WebExtensionAction::create(*this, *window);
++    }).iterator->value;
++}
++
++Ref<WebExtensionAction> WebExtensionContext::getOrCreateAction(WebExtensionTab* tab)
++{
++    if (!tab)
++        return defaultAction();
++
++    return m_actionTabMap.ensure(*tab, [&] {
++        return WebExtensionAction::create(*this, *tab);
++    }).iterator->value;
++}
++
++void WebExtensionContext::setNativeActionChangeHandler(RefPtr<NativeActionChangeHandler>&& handler)
++{
++    ASSERT(isMainThread());
++    RELEASE_ASSERT(++m_nativeActionChangeHandlerGeneration);
++    m_nativeActionChangeHandler = WTF::move(handler);
++}
++
++void WebExtensionContext::nativeActionPropertiesDidChange(WebExtensionAction& action)
++{
++    ASSERT(isMainThread());
++    RefPtr handler = m_nativeActionChangeHandler;
++    if (!isLoaded() || !handler)
++        return;
++
++    auto validAction = [&](WebExtensionAction& candidate) {
++        if (candidate.extensionContext() != this)
++            return false;
++        if (candidate.isDefaultAction())
++            return m_defaultAction.get() == &candidate;
++        if (candidate.isTabAction()) {
++            RefPtr tab = candidate.tab();
++            if (!tab || !isValidTab(*tab) || !tab->isOpen() || !tab->extensionHasAccess())
++                return false;
++            RefPtr current = m_actionTabMap.get(*tab);
++            return current.get() == &candidate;
++        }
++        RefPtr window = candidate.window();
++        if (!window || !isValidWindow(*window) || !window->extensionHasAccess())
++            return false;
++        RefPtr current = m_actionWindowMap.get(*window);
++        return current.get() == &candidate;
++    };
++    if (!validAction(action))
++        return;
++
++    Vector<Ref<WebExtensionAction>> targets { Ref { action } };
++    if (action.isDefaultAction()) {
++        for (auto entry : m_actionWindowMap) {
++            Ref candidate { entry.value.get() };
++            if (validAction(candidate.get()))
++                targets.append(WTF::move(candidate));
++        }
++    }
++    if (!action.isTabAction()) {
++        RefPtr window = action.window();
++        for (auto entry : m_actionTabMap) {
++            Ref candidate { entry.value.get() };
++            if (!validAction(candidate.get()))
++                continue;
++            if (action.isDefaultAction() || candidate->tab()->window() == window)
++                targets.append(WTF::move(candidate));
++        }
++    }
++
++    auto generation = m_nativeActionChangeHandlerGeneration;
++    auto loadIdentifier = privilegedIdentifier();
++    for (Ref target : targets) {
++        if (!isLoaded() || !m_privilegedIdentifier || *m_privilegedIdentifier != loadIdentifier
++            || generation != m_nativeActionChangeHandlerGeneration || m_nativeActionChangeHandler != handler)
++            return;
++        if (validAction(target))
++            handler->run(target);
++    }
++}
++
++bool WebExtensionContext::shouldDisplayBlockedResourceCountAsBadgeText()
++{
++    return m_state && m_state->getBoolean("DisplayBlockedResourceCountAsBadgeText"_s).value_or(false);
++}
++
++void WebExtensionContext::saveShouldDisplayBlockedResourceCountAsBadgeText(bool display)
++{
++    if (!m_state)
++        m_state = JSON::Object::create();
++    m_state->setBoolean("DisplayBlockedResourceCountAsBadgeText"_s, display);
++    writeStateToStorage();
++}
++
++void WebExtensionContext::incrementActionCountForTab(WebExtensionTab& tab, ssize_t amount)
++{
++    if (!isLoaded() || !isValidTab(tab) || !tab.isOpen() || !tab.extensionHasAccess()
++        || !shouldDisplayBlockedResourceCountAsBadgeText())
++        return;
++    getOrCreateAction(&tab)->incrementBlockedResourceCount(amount);
 +}
 +
 +} // namespace WebKit

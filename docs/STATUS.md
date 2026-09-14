@@ -1603,3 +1603,13 @@ observer interface is available but not yet wired into the SDK or extension UI.
 **Four native units compile**; no permission or observer runtime was executed.
 See [permission-change evidence and limits](webextensions-native-permission-changes.md).
 Patch: `61626a3e1a2fcb8cf9b87008c6543921fa3b338666873e55df51254c11dbeaf5`.
+
+2026-09-15 (local) native action state: default/window/tab actions now manage
+labels, badges, icons, enabled state and popup paths, with an observer for
+affected scopes. Clearing customizations resets unread state; blocked-resource
+counts use bounded arithmetic. **Four final native units compile** after fixing
+a reference-deduction error in the first context-action probe. No action or
+observer runtime was executed. SDK/toolbar integration, clicks, popups and the
+JavaScript action API remain unfinished. See [action-state evidence and
+limits](webextensions-native-action-state.md).
+Patch: `dc4675d8cdc40b87b0e5134c6d09fb58c5f2dfc2880d968d3bc98f8dd2282475`.
