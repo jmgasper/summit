@@ -1567,3 +1567,17 @@ notification, permission race, network request or extension runtime was executed
 Native CORS permission prompts remain unfinished. See [forwarding evidence and
 limits](webextensions-native-web-request-forwarding.md).
 Patch: `e9fa1eff70595ba5e03552f0d8fd811084b56861e630853866ccce3e2361f756`.
+
+2026-09-15 (local) thirteenth full extension link result: the frozen `e9fa1eff...`
+build compiles the native resource forwarding and reaches the WebKit library
+link. It fails with the same 23 missing symbols; no new missing symbols appear.
+Evidence: `.vm/modern-extensions-web-request-ui-build-result.json`.
+The feature-enabled engine has not linked or run an extension.
+
+2026-09-15 (local) request metadata: status lines now include the actual HTTP
+version, status code and reason. Resource IPC carries main-frame identity
+captured before background wake-up, allowing a known main-frame parent to map
+to zero. **147 native helper checks pass and five integration units compile**.
+No live frame lookup, navigation race, request event or IPC was executed.
+See [metadata evidence and limits](webextensions-native-web-request-metadata.md).
+Patch: `d577d67362ab609beaa6d87d67938b3f65eb3476190953d9c2af0313aff0882d`.

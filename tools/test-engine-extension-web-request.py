@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run native extension navigation URL filter checks with frozen JavaScriptCore/WTF."""
+"""Run native extension request metadata, filter and body checks with frozen JavaScriptCore/WTF."""
 import argparse
 import hashlib
 import io
@@ -107,7 +107,7 @@ def native():
         return 1
     dynamic = subprocess.check_output(['readelf', '-d', str(executable)], text=True)
     if 'libWebKit' in dynamic or 'libWebCore' in dynamic:
-        raise RuntimeError('Test-message queue helper unexpectedly links WebCore or WebKit')
+        raise RuntimeError('Request helper unexpectedly links WebCore or WebKit')
     report['objects'] = {path.name: digest(path) for path in objects}
     report['executable_sha256'] = digest(executable)
     environment = os.environ.copy()
@@ -121,7 +121,7 @@ def native():
         report['output'] = result.stdout
     except subprocess.TimeoutExpired:
         report['exit'] = None
-        report['output'] = 'Native navigation URL filter test timed out and was terminated; failed run'
+        report['output'] = 'Native request helper test timed out and was terminated; failed run'
     report['native_crash_log'] = crash_log.finish()
     report['inputs_unchanged'] = all(digest(Path(path)) == expected for path, expected in snapshot.items())
     report['libraries_unchanged'] = all(digest(Path(path)) == expected for path, expected in hashes.items())

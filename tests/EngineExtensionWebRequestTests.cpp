@@ -97,7 +97,7 @@ int main()
         input->setArray("urls"_s, WTF::move(urls)); input->setArray("types"_s, WTF::move(types));
         auto filter = WebExtensionWebRequestFilter::parse(input);
         auto load = resource(test.type, true);
-        auto details = webExtensionWebRequestDetails(load, WebExtensionTabIdentifier { 7 });
+        auto details = webExtensionWebRequestDetails(load, WebExtensionTabIdentifier { 7 }, std::nullopt);
         check(details->getString("type"_s) == test.name, "payload uses the resource's concrete type");
         check(filter && filter->matches(load, WebExtensionTabIdentifier { 7 }, WebExtensionWindowIdentifier { 9 }), "filter agrees with resource payload type");
     }
@@ -107,7 +107,7 @@ int main()
     input->getArray("types"_s)->setString(0, "image"_s);
     input->setDouble("tabId"_s, 8);
     check(snapshot && snapshot->matches(main, WebExtensionTabIdentifier { 7 }, WebExtensionWindowIdentifier { 9 }), "registration owns its filter values after caller mutation");
-    auto details = webExtensionWebRequestDetails(main, WebExtensionTabIdentifier { 7 });
+    auto details = webExtensionWebRequestDetails(main, WebExtensionTabIdentifier { 7 }, WebCore::FrameIdentifier { 31 });
     check(details->getString("requestId"_s) == "9007199254740993"_s, "request ID serialization retains integers beyond JS number precision");
     check(details->getDouble("timeStamp"_s) == 12345, "time stamp is integer milliseconds");
     check(details->getDouble("frameId"_s) == 0 && details->getDouble("parentFrameId"_s) == -1, "main frame sentinels use WebExtension values");
@@ -115,13 +115,55 @@ int main()
     check(details->getString("url"_s) == main.originalURL.string(), "resource URL is preserved including query and fragment");
     check(!details->getValue("documentId"_s), "absent document UUID is omitted");
     child.documentID = WTF::UUID::createVersion4();
-    auto childDetails = webExtensionWebRequestDetails(child, WebExtensionTabConstants::NoneIdentifier);
+    auto childDetails = webExtensionWebRequestDetails(child, WebExtensionTabConstants::NoneIdentifier, std::nullopt);
     check(childDetails->getString("type"_s) == "sub_frame"_s, "child document payload has subframe type");
     check(childDetails->getDouble("frameId"_s) == 31 && childDetails->getDouble("parentFrameId"_s) == 21, "actual child and parent IDs are preserved");
     check(childDetails->getString("documentId"_s) == child.documentID->toString(), "actual document UUID is preserved");
     check(childDetails->getDouble("tabId"_s) == -1, "unassociated tab is serialized as none");
+    auto directChild = webExtensionWebRequestDetails(child, WebExtensionTabIdentifier { 7 }, WebCore::FrameIdentifier { 21 });
+    check(directChild->getDouble("frameId"_s) == 31 && directChild->getDouble("parentFrameId"_s) == 0,
+        "an immediate child reports the main frame as parent zero");
+    auto nestedChild = webExtensionWebRequestDetails(child, WebExtensionTabIdentifier { 7 }, WebCore::FrameIdentifier { 11 });
+    check(nestedChild->getDouble("frameId"_s) == 31 && nestedChild->getDouble("parentFrameId"_s) == 21,
+        "a nested frame keeps the actual non-root parent identifier");
+    for (auto type : { ResourceLoadInfo::Type::Document, ResourceLoadInfo::Type::Image, ResourceLoadInfo::Type::Fetch,
+             ResourceLoadInfo::Type::XMLHTTPRequest, ResourceLoadInfo::Type::Script }) {
+        auto load = resource(type, true);
+        auto originalFrame = load.frameID;
+        auto originalParent = load.parentFrameID;
+        auto payload = webExtensionWebRequestDetails(load, WebExtensionTabIdentifier { 7 }, WebCore::FrameIdentifier { 21 });
+        check(payload->getDouble("frameId"_s) == 31 && payload->getDouble("parentFrameId"_s) == 0,
+            "child documents and subresources normalize the same main-frame parent");
+        check(load.frameID == originalFrame && load.parentFrameID == originalParent,
+            "serialization does not replace Core identifiers with extension sentinels");
+    }
+    auto missingFrame = child;
+    missingFrame.frameID = std::nullopt;
+    auto missingFrameDetails = webExtensionWebRequestDetails(missingFrame, WebExtensionTabIdentifier { 7 }, WebCore::FrameIdentifier { 21 });
+    check(missingFrameDetails->getDouble("frameId"_s) == -1 && missingFrameDetails->getDouble("parentFrameId"_s) == 0,
+        "missing child identity does not discard a known main-frame parent");
+    missingFrame.parentFrameID = std::nullopt;
+    auto noFrames = webExtensionWebRequestDetails(missingFrame, WebExtensionTabIdentifier { 7 }, WebCore::FrameIdentifier { 21 });
+    check(noFrames->getDouble("frameId"_s) == -1 && noFrames->getDouble("parentFrameId"_s) == -1,
+        "a known page root does not fabricate missing request frame metadata");
     child.frameID = std::nullopt;
-    check(webExtensionWebRequestDetails(child, WebExtensionTabConstants::NoneIdentifier)->getDouble("frameId"_s) == -1, "missing frame metadata does not assert or fabricate an ID");
+    check(webExtensionWebRequestDetails(child, WebExtensionTabConstants::NoneIdentifier, std::nullopt)->getDouble("frameId"_s) == -1, "missing frame metadata does not assert or fabricate an ID");
+    check(webExtensionWebRequestStatusLine("HTTP/1.1"_s, 200, "OK"_s) == "HTTP/1.1 200 OK"_s,
+        "HTTP 1.1 status includes protocol, status code and reason");
+    check(webExtensionWebRequestStatusLine("HTTP/1.0"_s, 404, "Not Found"_s) == "HTTP/1.0 404 Not Found"_s,
+        "HTTP 1.0 error status retains its actual protocol and multiword reason");
+    check(webExtensionWebRequestStatusLine("HTTP/2"_s, 204, emptyString()) == "HTTP/2 204"_s,
+        "HTTP 2 without a reason does not fabricate one or add a trailing space");
+    check(webExtensionWebRequestStatusLine("HTTP/3"_s, 307, "Temporary Redirect"_s) == "HTTP/3 307 Temporary Redirect"_s,
+        "HTTP 3 response metadata is retained");
+    check(webExtensionWebRequestStatusLine("HTTP/1.1"_s, 401, "Custom server reason"_s) == "HTTP/1.1 401 Custom server reason"_s,
+        "server reason text is preserved instead of being replaced by a standard phrase");
+    check(webExtensionWebRequestStatusLine("HTTP/0.9"_s, 200, "OK"_s) == "HTTP/0.9 200 OK"_s,
+        "an explicitly supplied HTTP 0.9 version is preserved");
+    check(webExtensionWebRequestStatusLine(emptyString(), 200, "OK"_s).isEmpty(),
+        "an absent HTTP version is not inferred from a success code");
+    check(webExtensionWebRequestStatusLine("HTTP/1.1"_s, 0, emptyString()).isEmpty(),
+        "an absent HTTP status does not become a fabricated response");
     auto setBody = [&](const String& name, std::span<const WebCore::FormDataElement> elements, const String& contentType) {
         JSValueRef exception = nullptr;
         auto body = webExtensionWebRequestBody(context, elements, contentType, exception);

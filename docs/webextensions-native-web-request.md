@@ -52,20 +52,20 @@ Earlier probes remain recorded: `.DZ4C4oyL` failed a test compilation,
 adapter compile errors, and `.OYH3d32H` had one failed assertion caused by a
 non-ASCII C++ test literal. The final test checks the decoded Unicode code point.
 
-Native UI/controller resource forwarding is still Cocoa-only, so the native
-browser does not yet produce these events. No event listener, request IPC,
-extension, network request or browser was executed by these checks. The
-feature-enabled engine still has not linked. Cocoa compilation/runtime is also
-unverified after moving its bindings to common C++.
+Native UI/controller resource forwarding has since been ported; see the
+[forwarding evidence](webextensions-native-web-request-forwarding.md). No event
+listener, request IPC, extension, network request or browser was executed by
+these checks. The feature-enabled engine still has not linked. Cocoa
+compilation/runtime is also unverified after moving its bindings to common C++.
 
 Compatibility work remains. The `incognito` filter is rejected because this IPC
 path lacks request privacy metadata. Websocket filters are accepted but the
 current ResourceLoadInfo type has no websocket event source. Multipart uploads
-remain raw, and complete cookie/header parity is unfinished. Parent frame IDs
-retain the upstream numeric mapping; normalizing a main-frame parent to zero
-requires more UI-side frame identity information. The inherited `statusLine`
-representation still contains the response reason text, rather than a complete
-HTTP status line. These limitations are not full Chrome/Firefox/Safari support.
+remain raw, and complete cookie/header parity is unfinished. The existing network
+notification path omits upload bodies larger than 1 MiB. Status-line formatting
+and known main-frame parents have since been corrected; see the
+[metadata evidence and remaining limits](webextensions-native-web-request-metadata.md).
+Full Chrome/Firefox/Safari compatibility remains unfinished.
 
 Promoted patch: `c9587d431175525e047288be50e42c7b97fc365ad93831a1cf9e3c6a78073a71`.
 Probe baseline: `e9e643ec3a02d6b3f73f386db7b4a5e05eda99c45832c506dc1a34ce6db43502`.

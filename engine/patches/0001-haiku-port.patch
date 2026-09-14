@@ -29771,10 +29771,10 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..1b0b6adda64558f01bef254b545f91d5
      [Validator=isLoadedAndPrivilegedMessage] WindowsCreate(WebKit::WebExtensionWindowParameters creationParameters) -> (std::expected<std::optional<WebKit::WebExtensionWindowParameters>, WebKit::WebExtensionError> result)
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContextWebRequest.cpp b/Source/WebKit/UIProcess/Extensions/WebExtensionContextWebRequest.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..444fdfe41363ead30e248e648c5219486faf6420
+index 0000000000000000000000000000000000000000..b5a17393623897b91dee01412b7ae9046d154c14
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContextWebRequest.cpp
-@@ -0,0 +1,247 @@
+@@ -0,0 +1,272 @@
 +/*
 + * Copyright (C) 2022 Apple Inc. All rights reserved.
 + *
@@ -29813,6 +29813,8 @@ index 0000000000000000000000000000000000000000..444fdfe41363ead30e248e648c521948
 +#include "WebExtensionContextProxyMessages.h"
 +#include "WebExtensionPermission.h"
 +#include "WebFrameProxy.h"
++#include "WebPageProxy.h"
++#include "WebProcessProxy.h"
 +#include <WebCore/AuthenticationChallenge.h>
 +#include <WebCore/FormData.h>
 +#include <WebCore/ResourceError.h>
@@ -29820,6 +29822,23 @@ index 0000000000000000000000000000000000000000..444fdfe41363ead30e248e648c521948
 +#include <WebCore/ResourceResponse.h>
 +
 +namespace WebKit {
++
++static std::optional<WebCore::FrameIdentifier> mainFrameIdentifierForWebRequest(WebPageProxyIdentifier pageIdentifier, const ResourceLoadInfo& resource)
++{
++    RefPtr page = WebProcessProxy::webPage(pageIdentifier);
++    if (!page || page->isClosed())
++        return std::nullopt;
++
++    // A response can belong to a provisional or replaced frame. Prefer a live
++    // parent that is itself a main frame for this page over the current root.
++    if (resource.parentFrameID) {
++        RefPtr parent = WebFrameProxy::webFrame(*resource.parentFrameID);
++        if (parent && parent->page() == page.get() && parent->isMainFrame())
++            return parent->frameID();
++    }
++    RefPtr mainFrame = page->mainFrame();
++    return mainFrame ? std::optional { mainFrame->frameID() } : std::nullopt;
++}
 +
 +bool WebExtensionContext::hasPermissionToSendWebRequestEvent(WebExtensionTab* tab, const URL& resourceURL, const ResourceLoadInfo& loadInfo)
 +{
@@ -29851,6 +29870,7 @@ index 0000000000000000000000000000000000000000..444fdfe41363ead30e248e648c521948
 +
 +    RefPtr window = tab->window();
 +    auto windowIdentifier = window ? window->identifier() : WebExtensionWindowConstants::NoneIdentifier;
++    auto mainFrameIdentifier = mainFrameIdentifierForWebRequest(pageID, loadInfo);
 +
 +    std::optional<IPC::FormDataReference> formDataReference;
 +    if (RefPtr formData = request.httpBody()) {
@@ -29868,7 +29888,7 @@ index 0000000000000000000000000000000000000000..444fdfe41363ead30e248e648c521948
 +        if (!hasPermissionToSendWebRequestEvent(tab.get(), request.url(), loadInfo))
 +            return;
 +
-+        sendToProcessesForEvents({ beforeRequestType, beforeSendHeadersType, sendHeadersType }, Messages::WebExtensionContextProxy::ResourceLoadDidSendRequest(tab->identifier(), windowIdentifier, request, loadInfo, formDataReference));
++        sendToProcessesForEvents({ beforeRequestType, beforeSendHeadersType, sendHeadersType }, Messages::WebExtensionContextProxy::ResourceLoadDidSendRequest(tab->identifier(), windowIdentifier, request, loadInfo, formDataReference, mainFrameIdentifier));
 +    });
 +}
 +
@@ -29880,6 +29900,7 @@ index 0000000000000000000000000000000000000000..444fdfe41363ead30e248e648c521948
 +
 +    RefPtr window = tab->window();
 +    auto windowIdentifier = window ? window->identifier() : WebExtensionWindowConstants::NoneIdentifier;
++    auto mainFrameIdentifier = mainFrameIdentifierForWebRequest(pageID, loadInfo);
 +
 +    constexpr auto headersReceivedType = WebExtensionEventListenerType::WebRequestOnHeadersReceived;
 +    constexpr auto redirectType = WebExtensionEventListenerType::WebRequestOnBeforeRedirect;
@@ -29890,7 +29911,7 @@ index 0000000000000000000000000000000000000000..444fdfe41363ead30e248e648c521948
 +        if (!hasPermissionToSendWebRequestEvent(tab.get(), request.url(), loadInfo))
 +            return;
 +
-+        sendToProcessesForEvents({ headersReceivedType, redirectType }, Messages::WebExtensionContextProxy::ResourceLoadDidPerformHTTPRedirection(tab->identifier(), windowIdentifier, response, loadInfo, request));
++        sendToProcessesForEvents({ headersReceivedType, redirectType }, Messages::WebExtensionContextProxy::ResourceLoadDidPerformHTTPRedirection(tab->identifier(), windowIdentifier, response, loadInfo, request, mainFrameIdentifier));
 +    });
 +
 +    // After dispatching the redirect events, also dispatch the `didSendRequest` events for the redirection.
@@ -29905,6 +29926,7 @@ index 0000000000000000000000000000000000000000..444fdfe41363ead30e248e648c521948
 +
 +    RefPtr window = tab->window();
 +    auto windowIdentifier = window ? window->identifier() : WebExtensionWindowConstants::NoneIdentifier;
++    auto mainFrameIdentifier = mainFrameIdentifierForWebRequest(pageID, loadInfo);
 +
 +    constexpr auto authRequiredType = WebExtensionEventListenerType::WebRequestOnAuthRequired;
 +
@@ -29914,7 +29936,7 @@ index 0000000000000000000000000000000000000000..444fdfe41363ead30e248e648c521948
 +        if (!hasPermissionToSendWebRequestEvent(tab.get(), URL { }, loadInfo))
 +            return;
 +
-+        sendToProcessesForEvent(authRequiredType, Messages::WebExtensionContextProxy::ResourceLoadDidReceiveChallenge(tab->identifier(), windowIdentifier, challenge, loadInfo));
++        sendToProcessesForEvent(authRequiredType, Messages::WebExtensionContextProxy::ResourceLoadDidReceiveChallenge(tab->identifier(), windowIdentifier, challenge, loadInfo, mainFrameIdentifier));
 +    });
 +}
 +
@@ -29926,6 +29948,7 @@ index 0000000000000000000000000000000000000000..444fdfe41363ead30e248e648c521948
 +
 +    RefPtr window = tab->window();
 +    auto windowIdentifier = window ? window->identifier() : WebExtensionWindowConstants::NoneIdentifier;
++    auto mainFrameIdentifier = mainFrameIdentifierForWebRequest(pageID, loadInfo);
 +
 +    constexpr auto headersReceivedType = WebExtensionEventListenerType::WebRequestOnHeadersReceived;
 +    constexpr auto responseStartedType = WebExtensionEventListenerType::WebRequestOnResponseStarted;
@@ -29936,7 +29959,7 @@ index 0000000000000000000000000000000000000000..444fdfe41363ead30e248e648c521948
 +        if (!hasPermissionToSendWebRequestEvent(tab.get(), response.url(), loadInfo))
 +            return;
 +
-+        sendToProcessesForEvents({ headersReceivedType, responseStartedType }, Messages::WebExtensionContextProxy::ResourceLoadDidReceiveResponse(tab->identifier(), windowIdentifier, response, loadInfo));
++        sendToProcessesForEvents({ headersReceivedType, responseStartedType }, Messages::WebExtensionContextProxy::ResourceLoadDidReceiveResponse(tab->identifier(), windowIdentifier, response, loadInfo, mainFrameIdentifier));
 +    });
 +}
 +
@@ -29964,6 +29987,7 @@ index 0000000000000000000000000000000000000000..444fdfe41363ead30e248e648c521948
 +
 +    RefPtr window = tab->window();
 +    auto windowIdentifier = window ? window->identifier() : WebExtensionWindowConstants::NoneIdentifier;
++    auto mainFrameIdentifier = mainFrameIdentifierForWebRequest(pageID, loadInfo);
 +
 +    constexpr auto errorOccurredType = WebExtensionEventListenerType::WebRequestOnErrorOccurred;
 +    constexpr auto completedType = WebExtensionEventListenerType::WebRequestOnCompleted;
@@ -29974,7 +29998,7 @@ index 0000000000000000000000000000000000000000..444fdfe41363ead30e248e648c521948
 +        if (!hasPermissionToSendWebRequestEvent(tab.get(), response.url(), loadInfo))
 +            return;
 +
-+        sendToProcessesForEvents({ errorOccurredType, completedType }, Messages::WebExtensionContextProxy::ResourceLoadDidCompleteWithError(tab->identifier(), windowIdentifier, response, error, loadInfo));
++        sendToProcessesForEvents({ errorOccurredType, completedType }, Messages::WebExtensionContextProxy::ResourceLoadDidCompleteWithError(tab->identifier(), windowIdentifier, response, error, loadInfo, mainFrameIdentifier));
 +    });
 +}
 +
@@ -30000,6 +30024,7 @@ index 0000000000000000000000000000000000000000..444fdfe41363ead30e248e648c521948
 +
 +    RefPtr window = tab->window();
 +    auto windowIdentifier = window ? window->identifier() : WebExtensionWindowConstants::NoneIdentifier;
++    auto mainFrameIdentifier = mainFrameIdentifierForWebRequest(pageID, loadInfo);
 +
 +    constexpr auto beforeRequestType = WebExtensionEventListenerType::WebRequestOnBeforeRequest;
 +    constexpr auto errorOccurredType = WebExtensionEventListenerType::WebRequestOnErrorOccurred;
@@ -30012,8 +30037,8 @@ index 0000000000000000000000000000000000000000..444fdfe41363ead30e248e648c521948
 +        if (!hasPermissionToSendWebRequestEvent(tab.get(), info.url, loadInfo))
 +            return;
 +
-+        sendToProcessesForEvent(beforeRequestType, Messages::WebExtensionContextProxy::ResourceLoadDidBlockBeforeRequest(tab->identifier(), windowIdentifier, loadInfo));
-+        sendToProcessesForEvent(errorOccurredType, Messages::WebExtensionContextProxy::ResourceLoadDidCompleteWithError(tab->identifier(), windowIdentifier, WebCore::ResourceResponse { }, error, loadInfo));
++        sendToProcessesForEvent(beforeRequestType, Messages::WebExtensionContextProxy::ResourceLoadDidBlockBeforeRequest(tab->identifier(), windowIdentifier, loadInfo, mainFrameIdentifier));
++        sendToProcessesForEvent(errorOccurredType, Messages::WebExtensionContextProxy::ResourceLoadDidCompleteWithError(tab->identifier(), windowIdentifier, WebCore::ResourceResponse { }, error, loadInfo, mainFrameIdentifier));
 +    });
 +}
 +
@@ -42549,7 +42574,7 @@ index 9326c5f3a4221165ce0ec92abca55dffc0b76498..6dc9f80e6bc271725d4b6db0c040581a
  
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIWebRequest.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIWebRequest.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..8778ebec6fbc6b9f615e3d8357ae28d657830598
+index 0000000000000000000000000000000000000000..2fb14f2f9d0791c56aacf4483cf43a4ba50f89fa
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIWebRequest.cpp
 @@ -0,0 +1,295 @@
@@ -42703,11 +42728,11 @@ index 0000000000000000000000000000000000000000..8778ebec6fbc6b9f615e3d8357ae28d6
 +    return result;
 +}
 +
-+static Ref<JSON::Object> webRequestResponseDetails(const ResourceLoadInfo& resource, WebExtensionTabIdentifier tab, const WebCore::ResourceResponse& response)
++static Ref<JSON::Object> webRequestResponseDetails(const ResourceLoadInfo& resource, WebExtensionTabIdentifier tab, const WebCore::ResourceResponse& response, std::optional<WebCore::FrameIdentifier> mainFrameIdentifier)
 +{
-+    auto details = webExtensionWebRequestDetails(resource, tab);
++    auto details = webExtensionWebRequestDetails(resource, tab, mainFrameIdentifier);
 +    details->setInteger("statusCode"_s, response.httpStatusCode());
-+    details->setString("statusLine"_s, response.httpStatusText());
++    details->setString("statusLine"_s, webExtensionWebRequestStatusLine(response.httpVersion(), response.httpStatusCode(), response.httpStatusText()));
 +    details->setBoolean("fromCache"_s, resource.loadedFromCache);
 +    return details;
 +}
@@ -42750,9 +42775,9 @@ index 0000000000000000000000000000000000000000..8778ebec6fbc6b9f615e3d8357ae28d6
 +    });
 +}
 +
-+void WebExtensionContextProxy::resourceLoadDidSendRequest(WebExtensionTabIdentifier tab, WebExtensionWindowIdentifier window, const WebCore::ResourceRequest& request, const ResourceLoadInfo& resource, const std::optional<IPC::FormDataReference>& formData)
++void WebExtensionContextProxy::resourceLoadDidSendRequest(WebExtensionTabIdentifier tab, WebExtensionWindowIdentifier window, const WebCore::ResourceRequest& request, const ResourceLoadInfo& resource, const std::optional<IPC::FormDataReference>& formData, std::optional<WebCore::FrameIdentifier> mainFrameIdentifier)
 +{
-+    auto details = webExtensionWebRequestDetails(resource, tab);
++    auto details = webExtensionWebRequestDetails(resource, tab, mainFrameIdentifier);
 +    RefPtr body = formData ? formData->data() : nullptr;
 +    auto contentType = request.httpContentType();
 +    enumerateNamespaceObjects([&](auto& object) {
@@ -42765,17 +42790,17 @@ index 0000000000000000000000000000000000000000..8778ebec6fbc6b9f615e3d8357ae28d6
 +    });
 +}
 +
-+void WebExtensionContextProxy::resourceLoadDidBlockBeforeRequest(WebExtensionTabIdentifier tab, WebExtensionWindowIdentifier window, const ResourceLoadInfo& resource)
++void WebExtensionContextProxy::resourceLoadDidBlockBeforeRequest(WebExtensionTabIdentifier tab, WebExtensionWindowIdentifier window, const ResourceLoadInfo& resource, std::optional<WebCore::FrameIdentifier> mainFrameIdentifier)
 +{
-+    auto details = webExtensionWebRequestDetails(resource, tab);
++    auto details = webExtensionWebRequestDetails(resource, tab, mainFrameIdentifier);
 +    enumerateNamespaceObjects([&](auto& object) {
 +        deliverWebRequest(object.webRequest().onBeforeRequest(), details, tab, window, resource);
 +    });
 +}
 +
-+void WebExtensionContextProxy::resourceLoadDidPerformHTTPRedirection(WebExtensionTabIdentifier tab, WebExtensionWindowIdentifier window, const WebCore::ResourceResponse& response, const ResourceLoadInfo& resource, const WebCore::ResourceRequest& request)
++void WebExtensionContextProxy::resourceLoadDidPerformHTTPRedirection(WebExtensionTabIdentifier tab, WebExtensionWindowIdentifier window, const WebCore::ResourceResponse& response, const ResourceLoadInfo& resource, const WebCore::ResourceRequest& request, std::optional<WebCore::FrameIdentifier> mainFrameIdentifier)
 +{
-+    auto details = webRequestResponseDetails(resource, tab, response);
++    auto details = webRequestResponseDetails(resource, tab, response, mainFrameIdentifier);
 +    auto headers = webRequestHeaders(response.httpHeaderFields());
 +    enumerateNamespaceObjects([&](auto& object) {
 +        deliverWebRequest(object.webRequest().onHeadersReceived(), details, tab, window, resource, "responseHeaders"_s, headers.copyRef());
@@ -42797,12 +42822,12 @@ index 0000000000000000000000000000000000000000..8778ebec6fbc6b9f615e3d8357ae28d6
 +    }
 +}
 +
-+void WebExtensionContextProxy::resourceLoadDidReceiveChallenge(WebExtensionTabIdentifier tab, WebExtensionWindowIdentifier window, const WebCore::AuthenticationChallenge& challenge, const ResourceLoadInfo& resource)
++void WebExtensionContextProxy::resourceLoadDidReceiveChallenge(WebExtensionTabIdentifier tab, WebExtensionWindowIdentifier window, const WebCore::AuthenticationChallenge& challenge, const ResourceLoadInfo& resource, std::optional<WebCore::FrameIdentifier> mainFrameIdentifier)
 +{
 +    auto& response = challenge.failureResponse();
 +    if (response.httpStatusCode() != 401 && response.httpStatusCode() != 407)
 +        return;
-+    auto details = webRequestResponseDetails(resource, tab, response);
++    auto details = webRequestResponseDetails(resource, tab, response, mainFrameIdentifier);
 +    auto& protectionSpace = challenge.protectionSpace();
 +    details->setString("scheme"_s, webRequestAuthenticationScheme(protectionSpace.authenticationScheme()));
 +    auto challenger = JSON::Object::create();
@@ -42818,9 +42843,9 @@ index 0000000000000000000000000000000000000000..8778ebec6fbc6b9f615e3d8357ae28d6
 +    });
 +}
 +
-+void WebExtensionContextProxy::resourceLoadDidReceiveResponse(WebExtensionTabIdentifier tab, WebExtensionWindowIdentifier window, const WebCore::ResourceResponse& response, const ResourceLoadInfo& resource)
++void WebExtensionContextProxy::resourceLoadDidReceiveResponse(WebExtensionTabIdentifier tab, WebExtensionWindowIdentifier window, const WebCore::ResourceResponse& response, const ResourceLoadInfo& resource, std::optional<WebCore::FrameIdentifier> mainFrameIdentifier)
 +{
-+    auto details = webRequestResponseDetails(resource, tab, response);
++    auto details = webRequestResponseDetails(resource, tab, response, mainFrameIdentifier);
 +    auto headers = webRequestHeaders(response.httpHeaderFields());
 +    enumerateNamespaceObjects([&](auto& object) {
 +        deliverWebRequest(object.webRequest().onHeadersReceived(), details, tab, window, resource, "responseHeaders"_s, headers.copyRef());
@@ -42828,17 +42853,17 @@ index 0000000000000000000000000000000000000000..8778ebec6fbc6b9f615e3d8357ae28d6
 +    });
 +}
 +
-+void WebExtensionContextProxy::resourceLoadDidCompleteWithError(WebExtensionTabIdentifier tab, WebExtensionWindowIdentifier window, const WebCore::ResourceResponse& response, const WebCore::ResourceError& error, const ResourceLoadInfo& resource)
++void WebExtensionContextProxy::resourceLoadDidCompleteWithError(WebExtensionTabIdentifier tab, WebExtensionWindowIdentifier window, const WebCore::ResourceResponse& response, const WebCore::ResourceError& error, const ResourceLoadInfo& resource, std::optional<WebCore::FrameIdentifier> mainFrameIdentifier)
 +{
 +    if (!error.isNull()) {
-+        auto details = webExtensionWebRequestDetails(resource, tab);
++        auto details = webExtensionWebRequestDetails(resource, tab, mainFrameIdentifier);
 +        details->setString("error"_s, error.localizedDescription());
 +        enumerateNamespaceObjects([&](auto& object) {
 +            deliverWebRequest(object.webRequest().onErrorOccurred(), details, tab, window, resource);
 +        });
 +        return;
 +    }
-+    auto details = webRequestResponseDetails(resource, tab, response);
++    auto details = webRequestResponseDetails(resource, tab, response, mainFrameIdentifier);
 +    auto headers = webRequestHeaders(response.httpHeaderFields());
 +    enumerateNamespaceObjects([&](auto& object) {
 +        deliverWebRequest(object.webRequest().onCompleted(), details, tab, window, resource, "responseHeaders"_s, headers.copyRef());
@@ -44901,6 +44926,52 @@ index 2b2ff5395e73b7978dc8b610d62ffe835fc1a886..e9215d1ae97db698219770ee06d8a0ea
  } // namespace WebKit
  
  #endif // ENABLE(WK_WEB_EXTENSIONS)
+diff --git a/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.h b/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.h
+index 1b514e1106295ebe5b2cc26520a9970b6c35633c..e4fbf6c338ad92e915b611048a97ccba94983c81 100644
+--- a/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.h
++++ b/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.h
+@@ -238,12 +238,12 @@ private:
+     void dispatchWebNavigationEvent(WebExtensionEventListenerType, WebExtensionTabIdentifier, const WebExtensionFrameParameters&, WallTime);
+ 
+     // Web Request
+-    void resourceLoadDidSendRequest(WebExtensionTabIdentifier, WebExtensionWindowIdentifier, const WebCore::ResourceRequest&, const ResourceLoadInfo&, const std::optional<IPC::FormDataReference>&);
+-    void resourceLoadDidBlockBeforeRequest(WebExtensionTabIdentifier, WebExtensionWindowIdentifier, const ResourceLoadInfo&);
+-    void resourceLoadDidPerformHTTPRedirection(WebExtensionTabIdentifier, WebExtensionWindowIdentifier, const WebCore::ResourceResponse&, const ResourceLoadInfo&, const WebCore::ResourceRequest& newRequest);
+-    void resourceLoadDidReceiveChallenge(WebExtensionTabIdentifier, WebExtensionWindowIdentifier, const WebCore::AuthenticationChallenge&, const ResourceLoadInfo&);
+-    void resourceLoadDidReceiveResponse(WebExtensionTabIdentifier, WebExtensionWindowIdentifier, const WebCore::ResourceResponse&, const ResourceLoadInfo&);
+-    void resourceLoadDidCompleteWithError(WebExtensionTabIdentifier, WebExtensionWindowIdentifier, const WebCore::ResourceResponse&, const WebCore::ResourceError&, const ResourceLoadInfo&);
++    void resourceLoadDidSendRequest(WebExtensionTabIdentifier, WebExtensionWindowIdentifier, const WebCore::ResourceRequest&, const ResourceLoadInfo&, const std::optional<IPC::FormDataReference>&, std::optional<WebCore::FrameIdentifier> mainFrameIdentifier);
++    void resourceLoadDidBlockBeforeRequest(WebExtensionTabIdentifier, WebExtensionWindowIdentifier, const ResourceLoadInfo&, std::optional<WebCore::FrameIdentifier> mainFrameIdentifier);
++    void resourceLoadDidPerformHTTPRedirection(WebExtensionTabIdentifier, WebExtensionWindowIdentifier, const WebCore::ResourceResponse&, const ResourceLoadInfo&, const WebCore::ResourceRequest& newRequest, std::optional<WebCore::FrameIdentifier> mainFrameIdentifier);
++    void resourceLoadDidReceiveChallenge(WebExtensionTabIdentifier, WebExtensionWindowIdentifier, const WebCore::AuthenticationChallenge&, const ResourceLoadInfo&, std::optional<WebCore::FrameIdentifier> mainFrameIdentifier);
++    void resourceLoadDidReceiveResponse(WebExtensionTabIdentifier, WebExtensionWindowIdentifier, const WebCore::ResourceResponse&, const ResourceLoadInfo&, std::optional<WebCore::FrameIdentifier> mainFrameIdentifier);
++    void resourceLoadDidCompleteWithError(WebExtensionTabIdentifier, WebExtensionWindowIdentifier, const WebCore::ResourceResponse&, const WebCore::ResourceError&, const ResourceLoadInfo&, std::optional<WebCore::FrameIdentifier> mainFrameIdentifier);
+ 
+     // Windows
+     void dispatchWindowsEvent(WebExtensionEventListenerType, const std::optional<WebExtensionWindowParameters>&);
+diff --git a/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.messages.in b/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.messages.in
+index 7e5207762fe78057c1b72f80bc18bf9bdd0042e6..a1b88b3b497c0bd2af5a751b1fd42985bbfcf659 100644
+--- a/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.messages.in
++++ b/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.messages.in
+@@ -109,12 +109,12 @@ messages -> WebExtensionContextProxy {
+     DispatchWebNavigationEvent(WebKit::WebExtensionEventListenerType type, WebKit::WebExtensionTabIdentifier tabID, struct WebKit::WebExtensionFrameParameters frameParamaters, WallTime timestamp)
+ 
+     // Web Request
+-    ResourceLoadDidSendRequest(WebKit::WebExtensionTabIdentifier tabIdentifier, WebKit::WebExtensionWindowIdentifier windowIdentifier, WebCore::ResourceRequest request, struct WebKit::ResourceLoadInfo resourceLoadInfo, std::optional<IPC::FormDataReference> formData)
+-    ResourceLoadDidBlockBeforeRequest(WebKit::WebExtensionTabIdentifier tabIdentifier, WebKit::WebExtensionWindowIdentifier windowIdentifier, struct WebKit::ResourceLoadInfo resourceLoadInfo)
+-    ResourceLoadDidPerformHTTPRedirection(WebKit::WebExtensionTabIdentifier tabIdentifier, WebKit::WebExtensionWindowIdentifier windowIdentifier, WebCore::ResourceResponse response, struct WebKit::ResourceLoadInfo resourceLoadInfo, WebCore::ResourceRequest newRequest)
+-    ResourceLoadDidReceiveChallenge(WebKit::WebExtensionTabIdentifier tabIdentifier, WebKit::WebExtensionWindowIdentifier windowIdentifier, WebCore::AuthenticationChallenge challenge, struct WebKit::ResourceLoadInfo resourceLoadInfo)
+-    ResourceLoadDidReceiveResponse(WebKit::WebExtensionTabIdentifier tabIdentifier, WebKit::WebExtensionWindowIdentifier windowIdentifier, WebCore::ResourceResponse response, struct WebKit::ResourceLoadInfo resourceLoadInfo)
+-    ResourceLoadDidCompleteWithError(WebKit::WebExtensionTabIdentifier tabIdentifier, WebKit::WebExtensionWindowIdentifier windowIdentifier, WebCore::ResourceResponse response, WebCore::ResourceError error, struct WebKit::ResourceLoadInfo resourceLoadInfo)
++    ResourceLoadDidSendRequest(WebKit::WebExtensionTabIdentifier tabIdentifier, WebKit::WebExtensionWindowIdentifier windowIdentifier, WebCore::ResourceRequest request, struct WebKit::ResourceLoadInfo resourceLoadInfo, std::optional<IPC::FormDataReference> formData, std::optional<WebCore::FrameIdentifier> mainFrameIdentifier)
++    ResourceLoadDidBlockBeforeRequest(WebKit::WebExtensionTabIdentifier tabIdentifier, WebKit::WebExtensionWindowIdentifier windowIdentifier, struct WebKit::ResourceLoadInfo resourceLoadInfo, std::optional<WebCore::FrameIdentifier> mainFrameIdentifier)
++    ResourceLoadDidPerformHTTPRedirection(WebKit::WebExtensionTabIdentifier tabIdentifier, WebKit::WebExtensionWindowIdentifier windowIdentifier, WebCore::ResourceResponse response, struct WebKit::ResourceLoadInfo resourceLoadInfo, WebCore::ResourceRequest newRequest, std::optional<WebCore::FrameIdentifier> mainFrameIdentifier)
++    ResourceLoadDidReceiveChallenge(WebKit::WebExtensionTabIdentifier tabIdentifier, WebKit::WebExtensionWindowIdentifier windowIdentifier, WebCore::AuthenticationChallenge challenge, struct WebKit::ResourceLoadInfo resourceLoadInfo, std::optional<WebCore::FrameIdentifier> mainFrameIdentifier)
++    ResourceLoadDidReceiveResponse(WebKit::WebExtensionTabIdentifier tabIdentifier, WebKit::WebExtensionWindowIdentifier windowIdentifier, WebCore::ResourceResponse response, struct WebKit::ResourceLoadInfo resourceLoadInfo, std::optional<WebCore::FrameIdentifier> mainFrameIdentifier)
++    ResourceLoadDidCompleteWithError(WebKit::WebExtensionTabIdentifier tabIdentifier, WebKit::WebExtensionWindowIdentifier windowIdentifier, WebCore::ResourceResponse response, WebCore::ResourceError error, struct WebKit::ResourceLoadInfo resourceLoadInfo, std::optional<WebCore::FrameIdentifier> mainFrameIdentifier)
+ 
+     // Windows
+     DispatchWindowsEvent(WebKit::WebExtensionEventListenerType type, std::optional<WebKit::WebExtensionWindowParameters> windowParameters)
 diff --git a/Source/WebKit/WebProcess/Extensions/WebExtensionControllerProxy.cpp b/Source/WebKit/WebProcess/Extensions/WebExtensionControllerProxy.cpp
 index 83216ed3967b6cdc9fa10e8588406734a4be6426..75a2d11544ae8d71d71fbd8b1993c5b77b77de38 100644
 --- a/Source/WebKit/WebProcess/Extensions/WebExtensionControllerProxy.cpp
@@ -45644,10 +45715,10 @@ index 0000000000000000000000000000000000000000..8632934ea2d621688b51df26a89089f2
 +#endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/WebProcess/Extensions/WebExtensionWebRequestFilter.cpp b/Source/WebKit/WebProcess/Extensions/WebExtensionWebRequestFilter.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..e92a10a278215d21fe3d191382fc462d1ffe09e5
+index 0000000000000000000000000000000000000000..100b4e9b4e79bf004768e6d6a2e8fd72d0aaf220
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/Extensions/WebExtensionWebRequestFilter.cpp
-@@ -0,0 +1,123 @@
+@@ -0,0 +1,142 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -45683,14 +45754,22 @@ index 0000000000000000000000000000000000000000..e92a10a278215d21fe3d191382fc462d
 +    return "other"_s;
 +}
 +
-+Ref<JSON::Object> webExtensionWebRequestDetails(const ResourceLoadInfo& resource, WebExtensionTabIdentifier tab)
++Ref<JSON::Object> webExtensionWebRequestDetails(const ResourceLoadInfo& resource, WebExtensionTabIdentifier tab, std::optional<WebCore::FrameIdentifier> mainFrameIdentifier)
 +{
 +    auto result = JSON::Object::create();
-+    // Missing frame metadata is unassociated, not a fabricated child frame ID.
-+    auto frame = !resource.frameID ? WebExtensionFrameConstants::NoneIdentifier
-+        : resource.parentFrameID ? toWebExtensionFrameIdentifier(resource.frameID)
-+        : WebExtensionFrameConstants::MainFrameIdentifier;
-+    auto parent = resource.parentFrameID ? toWebExtensionFrameIdentifier(resource.parentFrameID) : WebExtensionFrameConstants::NoneIdentifier;
++    // ResourceLoadInfo retains actual Core identifiers. Normalize only the
++    // known main frame to the WebExtension sentinel, including a child's parent.
++    // The UI process snapshots main-frame identity before any background wake.
++    auto normalizedFrame = [&](std::optional<WebCore::FrameIdentifier> identifier) {
++        if (!identifier)
++            return WebExtensionFrameConstants::NoneIdentifier;
++        if (identifier == mainFrameIdentifier)
++            return WebExtensionFrameConstants::MainFrameIdentifier;
++        return toWebExtensionFrameIdentifier(identifier);
++    };
++    auto frame = resource.frameID && !resource.parentFrameID
++        ? WebExtensionFrameConstants::MainFrameIdentifier : normalizedFrame(resource.frameID);
++    auto parent = normalizedFrame(resource.parentFrameID);
 +    result->setDouble("frameId"_s, toWebAPI(frame));
 +    result->setDouble("parentFrameId"_s, toWebAPI(parent));
 +    result->setString("requestId"_s, makeString(resource.resourceLoadID.toUInt64()));
@@ -45702,6 +45781,17 @@ index 0000000000000000000000000000000000000000..e92a10a278215d21fe3d191382fc462d
 +    if (resource.documentID)
 +        result->setString("documentId"_s, resource.documentID->toString());
 +    return result;
++}
++
++String webExtensionWebRequestStatusLine(const String& httpVersion, int statusCode, const String& statusText)
++{
++    // Non-HTTP and incomplete responses need not have protocol/status metadata.
++    // Do not invent an HTTP version or a successful response for them.
++    if (httpVersion.isEmpty() || statusCode <= 0)
++        return emptyString();
++    if (statusText.isEmpty())
++        return makeString(httpVersion, ' ', statusCode);
++    return makeString(httpVersion, ' ', statusCode, ' ', statusText);
 +}
 +
 +std::expected<WebExtensionWebRequestFilter, String> WebExtensionWebRequestFilter::parse(const JSON::Value& value)
@@ -45773,10 +45863,10 @@ index 0000000000000000000000000000000000000000..e92a10a278215d21fe3d191382fc462d
 +#endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/WebProcess/Extensions/WebExtensionWebRequestFilter.h b/Source/WebKit/WebProcess/Extensions/WebExtensionWebRequestFilter.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..01f87d41023f10c3699012c71c581c52f506f4df
+index 0000000000000000000000000000000000000000..f1ff93f4aee6f1e4c5ac9973d18b852277260706
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/Extensions/WebExtensionWebRequestFilter.h
-@@ -0,0 +1,32 @@
+@@ -0,0 +1,34 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -45792,7 +45882,9 @@ index 0000000000000000000000000000000000000000..01f87d41023f10c3699012c71c581c52
 +namespace WebKit {
 +
 +String webExtensionWebRequestResourceType(const ResourceLoadInfo&);
-+Ref<JSON::Object> webExtensionWebRequestDetails(const ResourceLoadInfo&, WebExtensionTabIdentifier);
++Ref<JSON::Object> webExtensionWebRequestDetails(const ResourceLoadInfo&, WebExtensionTabIdentifier, std::optional<WebCore::FrameIdentifier> mainFrameIdentifier);
++
++String webExtensionWebRequestStatusLine(const String& httpVersion, int statusCode, const String& statusText);
 +
 +class WebExtensionWebRequestFilter {
 +public:

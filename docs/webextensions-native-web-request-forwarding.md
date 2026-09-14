@@ -32,7 +32,8 @@ revocation, private-tab transition, resource event or IPC. End-to-end extension
 runtime remains unverified because the feature-enabled engine has not linked.
 Cocoa compilation/runtime was not tested. The nonblocking-only behavior and
 other [request-event compatibility limits](webextensions-native-web-request.md)
-remain, including incomplete status-line and parent-frame mapping.
+remain. Later [metadata fixes](webextensions-native-web-request-metadata.md)
+improve status-line and parent-frame mapping.
 
 Promoted patch: `e9fa1eff70595ba5e03552f0d8fd811084b56861e630853866ccce3e2361f756`.
 Probe baseline: `c9587d431175525e047288be50e42c7b97fc365ad93831a1cf9e3c6a78073a71`.
