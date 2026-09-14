@@ -14,22 +14,29 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 UNITS = ('WebExtensionController.cpp', 'WebExtensionContext.cpp',
          'WebExtensionMatchPatternProcessPool.cpp', 'WebExtensionContextProxy.cpp',
          'WebExtensionControllerProxy.cpp')
+EXTRA_UNITS = ('haiku/WebExtensionURLSchemeHandlerHaiku.cpp', 'haiku/WebExtensionContextHaiku.cpp',
+               'haiku/WebExtensionStateHaiku.cpp')
+DEFAULT_ENGINE = '/boot/home/summit-webkit'
 
 
-def native(units=None):
+def native(units=None, engine_root=DEFAULT_ENGINE):
     spec = importlib.util.spec_from_file_location('extension_compile_probe',
         ROOT / 'tools/test-engine-extension-manifest-core.py')
     probe = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(probe)
     probe.OUTPUT = ROOT / 'sources'
-    probe.SOURCES = UNITS
+    probe.SOURCES = UNITS + EXTRA_UNITS
+    probe.ENGINE = pathlib.Path(engine_root)
+    probe.BUILD = probe.ENGINE / 'WebKitBuild/Modern'
     manifest = json.loads((probe.OUTPUT / 'source-manifest.json').read_text())
     engine = json.loads((probe.ENGINE / '.summit-source-manifest.json').read_text())
     if engine['patch_sha256'] != manifest['host_engine_patch_sha256']:
         raise RuntimeError('Native configured source does not match the staged host engine patch')
     import sys
     sys.argv = [sys.argv[0], '--content-extensions']
-    for unit in units or ():
+    if '#define ENABLE_WK_WEB_EXTENSIONS 1' in (probe.BUILD / 'cmakeconfig.h').read_text():
+        sys.argv += ['--configured-extensions']
+    for unit in units or UNITS:
         sys.argv += ['--source', unit]
     failure = None
     try:
@@ -48,7 +55,7 @@ def native(units=None):
     return 0
 
 
-def host(overlay=None, units=None):
+def host(overlay=None, units=None, engine_root=DEFAULT_ENGINE):
     engine = ROOT / '.cache/WebKit'
     files = {}
     def source(path):
@@ -56,11 +63,18 @@ def host(overlay=None, units=None):
         return candidate if candidate.is_file() else path
     for directory in ('Source/WebKit/UIProcess/Extensions', 'Source/WebKit/Shared/Extensions',
                       'Source/WebKit/WebProcess/Extensions'):
-        for path in sorted((engine / directory).glob('*.h')):
-            if path.name in files:
-                raise RuntimeError('Ambiguous staged header: ' + path.name)
-            files[path.name] = (path, source(path), source(path).read_bytes())
-    for name in UNITS:
+        directory_path = engine / directory
+        paths = set(directory_path.glob('*.h')) | set(directory_path.glob('haiku/*.h'))
+        if overlay:
+            candidate_directory = pathlib.Path(overlay).resolve() / directory
+            for candidate in candidate_directory.glob('haiku/*.h'):
+                paths.add(directory_path / candidate.relative_to(candidate_directory))
+        for path in sorted(paths):
+            name = str(path.relative_to(directory_path))
+            if name in files:
+                raise RuntimeError('Ambiguous staged header: ' + name)
+            files[name] = (path, source(path), source(path).read_bytes())
+    for name in units or UNITS:
         directory = 'WebProcess' if name.endswith('Proxy.cpp') else 'UIProcess'
         path = engine / 'Source/WebKit' / directory / 'Extensions' / name
         files[name] = (path, source(path), source(path).read_bytes())
@@ -68,7 +82,7 @@ def host(overlay=None, units=None):
     manifest = {'upstream_commit': lock['upstream']['commit'], 'host_engine_patch_sha256': lock['patch']['sha256'],
                 'candidate_overlay': str(pathlib.Path(overlay).resolve()) if overlay else None,
                 'files': {name: {'source': str(path), 'baseline_source': str(base.relative_to(ROOT)),
-                                 'baseline_sha256': hashlib.sha256(base.read_bytes()).hexdigest(),
+                                 'baseline_sha256': hashlib.sha256(base.read_bytes()).hexdigest() if base.is_file() else None,
                                  'sha256': hashlib.sha256(data).hexdigest()}
                           for name, (base, path, data) in files.items()}}
     content = {'sources/' + name: data for name, (_, _, data) in files.items()}
@@ -91,7 +105,8 @@ def host(overlay=None, units=None):
     output.mkdir(exist_ok=False)
     remote('tar -xzf - -C ' + shlex.quote(stage), input=archive.getvalue(), check=True)
     print('Native extension compile stage: ' + stage, flush=True)
-    command = ['python3.10', stage + '/tools/test-engine-extension-lifecycle-compile.py', '--native']
+    command = ['python3.10', stage + '/tools/test-engine-extension-lifecycle-compile.py', '--native',
+               '--engine-root', engine_root]
     for unit in units or ():
         command += ['--unit', unit]
     with (output / 'native.log').open('w') as log:
@@ -109,6 +124,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--native', action='store_true')
     parser.add_argument('--overlay', help='Candidate files under Source/; no production source changes')
-    parser.add_argument('--unit', choices=UNITS, action='append', help='Compile only this unit; repeatable')
+    parser.add_argument('--unit', choices=UNITS + EXTRA_UNITS, action='append', help='Compile only this unit; repeatable')
+    parser.add_argument('--engine-root', default=DEFAULT_ENGINE, help='Configured native engine source tree')
     args = parser.parse_args()
-    raise SystemExit(native(args.unit) if args.native else host(args.overlay, args.unit))
+    raise SystemExit(native(args.unit, args.engine_root) if args.native else host(args.overlay, args.unit, args.engine_root))

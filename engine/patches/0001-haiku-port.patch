@@ -22801,10 +22801,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..95794ed6832bb5b51e6ba339ae90c2f225e10626
+index 0000000000000000000000000000000000000000..4ab6da81b363bb54b8d433dad5e882f8d63af391
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,179 @@
+@@ -0,0 +1,182 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -22852,8 +22852,11 @@ index 0000000000000000000000000000000000000000..95794ed6832bb5b51e6ba339ae90c2f2
 +    UIProcess/API/haiku/WebKitInfo.cpp
 +    UIProcess/API/haiku/WebKitView.cpp
 +    UIProcess/Extensions/haiku/WebExtensionArchiveHaiku.cpp
++    UIProcess/Extensions/haiku/WebExtensionContextHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionControllerConfigurationHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionHaiku.cpp
++    UIProcess/Extensions/haiku/WebExtensionStateHaiku.cpp
++    UIProcess/Extensions/haiku/WebExtensionURLSchemeHandlerHaiku.cpp
 +    UIProcess/Launcher/haiku/ProcessLauncherHaiku.cpp
 +    UIProcess/LegacySessionStateCodingNone.cpp
 +    UIProcess/WebsiteData/haiku/WebsiteDataStoreHaiku.cpp
@@ -25341,6 +25344,233 @@ index 558bc4dbcebf1af98a2fc3b744d3b390b68a56f1..24ce837888d94fcea6d0e960a4af01db
      EnterAcceleratedCompositingMode(uint64_t backingStoreStateID, WebKit::LayerTreeContext context)
      UpdateAcceleratedCompositingMode(uint64_t backingStoreStateID, WebKit::LayerTreeContext context)
      DidFirstLayerFlush(uint64_t backingStoreStateID, WebKit::LayerTreeContext context)
+diff --git a/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm b/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm
+index 81c02405c6925c8d7ce1141111eb5e520a0c54b3..c852eab393455e4e430b62aa8e5bf4f0256840ee 100644
+--- a/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm
++++ b/Source/WebKit/UIProcess/Extensions/Cocoa/WebExtensionContextCocoa.mm
+@@ -261,183 +261,19 @@ void WebExtensionContext::clearError(Error error)
+     }).get());
+ }
+ 
+-void WebExtensionContext::didEncounterScriptError(const String& message, const String& sourceURL, uint32_t lineNumber, uint32_t columnNumber, WebExtensionContentWorldType)
+-{
+-    auto path = sourceURL.isEmpty() ? String() : URL(sourceURL).path().toString();
+-    if (path.startsWith('/'))
+-        path = path.substring(1);
+-    auto location = !path.isEmpty() ? (columnNumber ? makeString(path, ':', lineNumber, ':', columnNumber) : makeString(path, ':', lineNumber)) : String();
+-    String description;
+-    if (message.isEmpty())
+-        description = !location.isEmpty() ? makeString('(', location, ')') : String();
+-    else
+-        description = !location.isEmpty() ? makeString(message, " ("_s, location, ')') : message;
+-    recordError(createError(Error::ScriptExecutionError, description));
+-}
+-
+-std::expected<bool, RefPtr<API::Error>> WebExtensionContext::load(WebExtensionController& controller, String storageDirectory)
++URL WebExtensionContext::updatePersistedMetadataDuringLoad()
+ {
+-    if (isLoaded()) {
+-        RELEASE_LOG_ERROR(Extensions, "Extension context already loaded");
+-        return makeUnexpected(createError(Error::AlreadyLoaded));
+-    }
+-
+-#if PLATFORM(IOS) || PLATFORM(VISION)
+-    RefPtr extension = m_extension;
+-    if (extension->backgroundContentIsPersistent()) {
+-        RELEASE_LOG_ERROR(Extensions, "Cannot load persistent background content on this platform");
+-        return makeUnexpected(extension->createError(WebExtension::Error::InvalidBackgroundPersistence));
+-    }
+-#endif
+-
+-    m_storageDirectory = storageDirectory;
+-    m_extensionController = controller;
+-    m_contentScriptWorld = API::ContentWorld::sharedWorldWithName(makeString("WebExtension-"_s, m_uniqueIdentifier));
+-
+-    readStateFromStorage();
+-
+     auto lastSeenBaseURL = URL { objectForKey<NSString>(m_state, lastSeenBaseURLStateKey) };
+     [m_state setObject:m_baseURL.string().createNSString().get() forKey:lastSeenBaseURLStateKey];
+ 
+     if (RetainPtr displayName = protect(m_extension)->displayName().createNSString())
+         [m_state setObject:displayName.get() forKey:lastSeenDisplayNameStateKey];
+-
+-    loadStorageAccessLevelsFromStorage();
+-
+-    determineInstallReasonDuringLoad();
+-
+-    writeStateToStorage();
+-
+-    populateWindowsAndTabs();
+-
+-    moveLocalStorageIfNeeded(lastSeenBaseURL, [this, protectedThis = Ref { *this }] {
+-        // The extension could have been unloaded before this was called.
+-        if (!isLoaded())
+-            return;
+-
+-        removeStaleExtensionWebsiteData();
+-
+-        m_safeToInjectContent = true;
+-
+-        loadBackgroundWebViewDuringLoad();
+-
+-#if ENABLE(INSPECTOR_EXTENSIONS)
+-        loadInspectorBackgroundPagesDuringLoad();
+-#endif
+-
+-        loadRegisteredContentScripts();
+-
+-        loadDeclarativeNetRequestRulesetStateFromStorage();
+-        loadDeclarativeNetRequestRules([](bool) { });
+-
+-        // Notify the WebProcess that the extension loaded before we inject content scripts.
+-        // This will ensure that the content world is set up correctly (e.g. configured with the `browser` namespace).
+-        if (RefPtr controller = extensionController())
+-            controller->dispatchDidLoad(*this);
+-
+-        addInjectedContent();
+-    });
+-
+-    return true;
++    return lastSeenBaseURL;
+ }
+ 
+-std::expected<bool, RefPtr<API::Error>> WebExtensionContext::unload()
++void WebExtensionContext::clearTabDelegateMap()
+ {
+-    if (!isLoaded()) {
+-        RELEASE_LOG_ERROR(Extensions, "Extension context not loaded");
+-        return makeUnexpected(createError(Error::NotLoaded));
+-    }
+-
+-    writeStateToStorage();
+-
+-    unloadBackgroundWebView();
+-#if ENABLE(WK_WEB_EXTENSIONS_OFFSCREEN)
+-    unloadOffscreenWebView();
+-#endif
+-
+-    removeInjectedContent();
+-
+-    invalidateStorage();
+-    unloadDeclarativeNetRequestState();
+-
+-    m_privilegedIdentifier = std::nullopt;
+-
+-    m_actionsToPerformAfterBackgroundContentLoads.clear();
+-    m_backgroundContentEventListeners.clear();
+-    m_backgroundContentHasLoadedOnce = false;
+-    m_eventListenerFrames.clear();
+-    m_installReason = InstallReason::None;
+-    m_previousVersion = nullString();
+-    m_safeToLoadBackgroundContent = false;
+-    m_backgroundContentLoadError = nil;
+-
+-    m_registeredScriptsMap.clear();
+-    m_dynamicallyInjectedUserStyleSheets.clear();
+-    m_injectedScriptsPerPatternMap.clear();
+-    m_injectedStyleSheetsPerPatternMap.clear();
+-    m_safeToInjectContent = false;
+-
+-    m_extensionController = nullptr;
+-    m_contentScriptWorld = nullptr;
+-
+-    m_tabMap.clear();
+-    m_extensionPageTabMap.clear();
+     [m_tabDelegateToIdentifierMap removeAllObjects];
+-
+-    m_windowMap.clear();
+-    m_windowOrderVector.clear();
+-    m_focusedWindowIdentifier = std::nullopt;
+-
+-    m_actionWindowMap.clear();
+-    m_actionTabMap.clear();
+-    m_defaultAction = nullptr;
+-#if ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
+-    m_sidebarWindowMap.clear();
+-    m_sidebarTabMap.clear();
+-    m_sidebarPageMap.clear();
+-    m_defaultSidebar = nullptr;
+-#endif
+-    m_popupPageActionMap.clear();
+-
+-    m_ports.clear();
+-    m_pagePortMap.clear();
+-    m_portQueuedMessages.clear();
+-    m_nativePortMap.clear();
+-
+-    m_alarmMap.clear();
+-
+-    m_commands.clear();
+-    m_populatedCommands = false;
+-
+-    m_menuItems.clear();
+-    m_mainMenuItems.clear();
+-
+-#if ENABLE(INSPECTOR_EXTENSIONS)
+-    m_inspectorContextMap.clear();
+-#endif
+-
+-    m_pendingPermissionRequests = 0;
+-
+-    return true;
+-}
+-
+-std::expected<bool, RefPtr<API::Error>> WebExtensionContext::reload()
+-{
+-    if (!isLoaded()) {
+-        RELEASE_LOG_ERROR(Extensions, "Extension context not loaded");
+-        return makeUnexpected(createError(Error::NotLoaded));
+-    }
+-
+-    Ref controller = *m_extensionController;
+-    auto unloadResult = controller->unload(*this);
+-    if (!unloadResult)
+-        return makeUnexpected(unloadResult.error());
+-
+-    auto loadResult = controller->load(*this);
+-    if (!loadResult)
+-        return makeUnexpected(loadResult.error());
+-
+-    return true;
+ }
+ 
+ NSDictionary *WebExtensionContext::currentState() const
+@@ -581,15 +417,6 @@ void WebExtensionContext::removeStaleExtensionWebsiteData()
+     });
+ }
+ 
+-void WebExtensionContext::invalidateStorage()
+-{
+-    m_registeredContentScriptsStorage = nullptr;
+-    m_localStorageStore = nullptr;
+-    m_sessionStorageStore = nullptr;
+-    m_syncStorageStore = nullptr;
+-    m_storageAccessLevels.clear();
+-}
+-
+ void WebExtensionContext::setInspectable(bool inspectable)
+ {
+     m_inspectable = inspectable;
+@@ -3630,19 +3457,6 @@ void WebExtensionContext::saveStorageAccessLevelsToStorage()
+     writeStateToStorage();
+ }
+ 
+-void WebExtensionContext::setStorageAccessLevel(WebExtensionDataType dataType, WebExtensionStorageAccessLevel accessLevel)
+-{
+-    m_storageAccessLevels.set(dataType, accessLevel);
+-
+-    saveStorageAccessLevelsToStorage();
+-
+-    if (!isLoaded())
+-        return;
+-
+-    if (RefPtr extensionController = this->extensionController())
+-        extensionController->sendToAllProcesses(Messages::WebExtensionContextProxy::SetStorageAccessLevel(dataType, accessLevel), identifier());
+-}
+-
+ void WebExtensionContext::reloadBackgroundContentForTesting()
+ {
+     ASSERT(isLoaded() && inTestingMode());
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtension.cpp b/Source/WebKit/UIProcess/Extensions/WebExtension.cpp
 index fac1522cfb35558dda22d0d441b493abf1669ee8..36eda8af3bf5e5157f99e5128f9b1d9931132979 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtension.cpp
@@ -25397,8 +25627,222 @@ index f14860d8e436a90cb7616ae96bb9f05d6517bc50..82194307c95982f947c180baa35828f3
  #endif
      explicit WebExtension(const JSON::Value& manifest, Resources&& = { });
  
+diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
+index a156078a37b33ea2704f6a9ba747a0c881bb0009..04cda3b073a7dec2cd1ef8d0944161aebca5d2cb 100644
+--- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
++++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
+@@ -51,6 +51,209 @@ namespace WebKit {
+ 
+ using namespace WebCore;
+ 
++#if PLATFORM(COCOA) || PLATFORM(HAIKU)
++
++std::expected<bool, RefPtr<API::Error>> WebExtensionContext::load(WebExtensionController& controller, String storageDirectory)
++{
++    if (isLoaded()) {
++        RELEASE_LOG_ERROR(Extensions, "Extension context already loaded");
++        return makeUnexpected(createError(Error::AlreadyLoaded));
++    }
++
++#if PLATFORM(IOS) || PLATFORM(VISION)
++    RefPtr extension = m_extension;
++    if (extension->backgroundContentIsPersistent()) {
++        RELEASE_LOG_ERROR(Extensions, "Cannot load persistent background content on this platform");
++        return makeUnexpected(extension->createError(WebExtension::Error::InvalidBackgroundPersistence));
++    }
++#endif
++
++    m_storageDirectory = storageDirectory;
++    m_extensionController = controller;
++    m_contentScriptWorld = API::ContentWorld::sharedWorldWithName(makeString("WebExtension-"_s, m_uniqueIdentifier));
++
++    readStateFromStorage();
++
++    auto lastSeenBaseURL = updatePersistedMetadataDuringLoad();
++
++    loadStorageAccessLevelsFromStorage();
++
++    determineInstallReasonDuringLoad();
++
++    writeStateToStorage();
++
++    populateWindowsAndTabs();
++
++    moveLocalStorageIfNeeded(lastSeenBaseURL, [this, protectedThis = Ref { *this }] {
++        // The extension could have been unloaded before this was called.
++        if (!isLoaded())
++            return;
++
++        removeStaleExtensionWebsiteData();
++
++        m_safeToInjectContent = true;
++
++        loadBackgroundWebViewDuringLoad();
++
++#if ENABLE(INSPECTOR_EXTENSIONS)
++        loadInspectorBackgroundPagesDuringLoad();
++#endif
++
++        loadRegisteredContentScripts();
++
++        loadDeclarativeNetRequestRulesetStateFromStorage();
++        loadDeclarativeNetRequestRules([](bool) { });
++
++        // Notify the WebProcess that the extension loaded before we inject content scripts.
++        // This will ensure that the content world is set up correctly (e.g. configured with the `browser` namespace).
++        if (RefPtr controller = extensionController())
++            controller->dispatchDidLoad(*this);
++
++        addInjectedContent();
++    });
++
++    return true;
++}
++
++std::expected<bool, RefPtr<API::Error>> WebExtensionContext::unload()
++{
++    if (!isLoaded()) {
++        RELEASE_LOG_ERROR(Extensions, "Extension context not loaded");
++        return makeUnexpected(createError(Error::NotLoaded));
++    }
++
++    writeStateToStorage();
++
++    unloadBackgroundWebView();
++#if ENABLE(WK_WEB_EXTENSIONS_OFFSCREEN)
++    unloadOffscreenWebView();
++#endif
++
++    removeInjectedContent();
++
++    invalidateStorage();
++    unloadDeclarativeNetRequestState();
++
++    m_privilegedIdentifier = std::nullopt;
++
++    m_actionsToPerformAfterBackgroundContentLoads.clear();
++    m_backgroundContentEventListeners.clear();
++    m_backgroundContentHasLoadedOnce = false;
++    m_eventListenerFrames.clear();
++    m_installReason = InstallReason::None;
++    m_previousVersion = nullString();
++    m_safeToLoadBackgroundContent = false;
++    m_backgroundContentLoadError = nullptr;
++
++    m_registeredScriptsMap.clear();
++    m_dynamicallyInjectedUserStyleSheets.clear();
++    m_injectedScriptsPerPatternMap.clear();
++    m_injectedStyleSheetsPerPatternMap.clear();
++    m_safeToInjectContent = false;
++
++    m_extensionController = nullptr;
++    m_contentScriptWorld = nullptr;
++
++    m_tabMap.clear();
++    m_extensionPageTabMap.clear();
++#if PLATFORM(COCOA)
++    clearTabDelegateMap();
++#endif
++
++    m_windowMap.clear();
++    m_windowOrderVector.clear();
++    m_focusedWindowIdentifier = std::nullopt;
++
++    m_actionWindowMap.clear();
++    m_actionTabMap.clear();
++    m_defaultAction = nullptr;
++#if ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
++    m_sidebarWindowMap.clear();
++    m_sidebarTabMap.clear();
++    m_sidebarPageMap.clear();
++    m_defaultSidebar = nullptr;
++#endif
++    m_popupPageActionMap.clear();
++
++    m_ports.clear();
++    m_pagePortMap.clear();
++    m_portQueuedMessages.clear();
++    m_nativePortMap.clear();
++
++    m_alarmMap.clear();
++
++    m_commands.clear();
++    m_populatedCommands = false;
++
++    m_menuItems.clear();
++    m_mainMenuItems.clear();
++
++#if ENABLE(INSPECTOR_EXTENSIONS)
++    m_inspectorContextMap.clear();
++#endif
++
++    m_pendingPermissionRequests = 0;
++
++    return true;
++}
++
++std::expected<bool, RefPtr<API::Error>> WebExtensionContext::reload()
++{
++    if (!isLoaded()) {
++        RELEASE_LOG_ERROR(Extensions, "Extension context not loaded");
++        return makeUnexpected(createError(Error::NotLoaded));
++    }
++
++    Ref controller = *m_extensionController;
++    auto unloadResult = controller->unload(*this);
++    if (!unloadResult)
++        return makeUnexpected(unloadResult.error());
++
++    auto loadResult = controller->load(*this);
++    if (!loadResult)
++        return makeUnexpected(loadResult.error());
++
++    return true;
++}
++
++#endif // PLATFORM(COCOA) || PLATFORM(HAIKU)
++
++void WebExtensionContext::invalidateStorage()
++{
++    m_registeredContentScriptsStorage = nullptr;
++    m_localStorageStore = nullptr;
++    m_sessionStorageStore = nullptr;
++    m_syncStorageStore = nullptr;
++    m_storageAccessLevels.clear();
++}
++
++void WebExtensionContext::setStorageAccessLevel(WebExtensionDataType dataType, WebExtensionStorageAccessLevel accessLevel)
++{
++    m_storageAccessLevels.set(dataType, accessLevel);
++
++    saveStorageAccessLevelsToStorage();
++
++    if (!isLoaded())
++        return;
++
++    if (RefPtr extensionController = this->extensionController())
++        extensionController->sendToAllProcesses(Messages::WebExtensionContextProxy::SetStorageAccessLevel(dataType, accessLevel), identifier());
++}
++
++void WebExtensionContext::didEncounterScriptError(const String& message, const String& sourceURL, uint32_t lineNumber, uint32_t columnNumber, WebExtensionContentWorldType)
++{
++    auto path = sourceURL.isEmpty() ? String() : URL(sourceURL).path().toString();
++    if (path.startsWith('/'))
++        path = path.substring(1);
++    auto location = !path.isEmpty() ? (columnNumber ? makeString(path, ':', lineNumber, ':', columnNumber) : makeString(path, ':', lineNumber)) : String();
++    String description;
++    if (message.isEmpty())
++        description = !location.isEmpty() ? makeString('(', location, ')') : String();
++    else
++        description = !location.isEmpty() ? makeString(message, " ("_s, location, ')') : message;
++    recordError(createError(Error::ScriptExecutionError, description));
++}
++
+ int WebExtensionContext::toAPIError(WebExtensionContext::Error error)
+ {
+     switch (error) {
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
-index 05a8676082d56f2c47c9af6120f5120b09f982be..e019382b70afb7b634c1ff8c0cef2673a8dbd213 100644
+index 05a8676082d56f2c47c9af6120f5120b09f982be..5ec5bad17725b1d5476ec331665349f09cf6db5b 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 @@ -85,6 +85,10 @@
@@ -25426,7 +25870,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..e019382b70afb7b634c1ff8c0cef2673
 -#if ENABLE(2022_GLIB_API)
 +#if PLATFORM(HAIKU)
 +using WebViewClass = WebPageProxy;
-+using WebViewConfiguration = Ref<API::PageConfiguration>;
++using WebViewConfiguration = RefPtr<API::PageConfiguration>;
 +using NavigationPolicyAction = API::NavigationAction;
 +#elif ENABLE(2022_GLIB_API)
  using WebViewClass = WebKitWebView;
@@ -25459,7 +25903,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..e019382b70afb7b634c1ff8c0cef2673
      explicit WebExtensionContext(Ref<WebExtension>&&);
  #elif ENABLE(2022_GLIB_API)
      explicit WebExtensionContext(WebKitWebExtensionContext*);
-@@ -749,9 +766,12 @@ private:
+@@ -749,11 +766,18 @@ private:
  #if PLATFORM(COCOA)
      NSDictionary *currentState() const;
      NSDictionary *readStateFromStorage();
@@ -25468,12 +25912,18 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..e019382b70afb7b634c1ff8c0cef2673
      GRefPtr<GKeyFile> currentState() const;
      GRefPtr<GKeyFile> readStateFromStorage();
 +#elif PLATFORM(HAIKU)
-+    RefPtr<JSON::Object> currentState() const;
++    RefPtr<const JSON::Object> currentState() const;
 +    RefPtr<JSON::Object> readStateFromStorage();
  #endif
      void writeStateToStorage() const;
++    URL updatePersistedMetadataDuringLoad();
++#if PLATFORM(COCOA)
++    void clearTabDelegateMap();
++#endif
  
-@@ -1129,6 +1149,8 @@ private:
+     void loadStorageAccessLevelsFromStorage();
+     void saveStorageAccessLevelsToStorage();
+@@ -1129,6 +1153,8 @@ private:
      RetainPtr<NSMutableDictionary> m_state;
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<GKeyFile> m_state;
@@ -25482,7 +25932,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..e019382b70afb7b634c1ff8c0cef2673
  #endif
      Vector<Ref<API::Error>> m_errors;
  
-@@ -1194,6 +1216,8 @@ private:
+@@ -1194,6 +1220,8 @@ private:
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<WebKitWebView> m_backgroundWebView;
      GWeakPtr<WebKitWebExtensionContext> m_delegate;
@@ -25491,6 +25941,61 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..e019382b70afb7b634c1ff8c0cef2673
  #endif
      Variant<std::monostate, Ref<ProcessThrottlerActivity>, Ref<ProcessActivityGroup>> m_backgroundWebViewActivity;
      RefPtr<API::Error> m_backgroundContentLoadError;
+diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionController.cpp b/Source/WebKit/UIProcess/Extensions/WebExtensionController.cpp
+index 06cec0eb534d3f51d3a04e7ea3b68ac347c6a2cf..f0a9e6fafa0e1d0b06efd7057802f497e99b2118 100644
+--- a/Source/WebKit/UIProcess/Extensions/WebExtensionController.cpp
++++ b/Source/WebKit/UIProcess/Extensions/WebExtensionController.cpp
+@@ -42,20 +42,13 @@
+ #include <wtf/HashMap.h>
+ #include <wtf/NeverDestroyed.h>
+ 
+-#if PLATFORM(COCOA)
+-#include <wtf/BlockPtr.h>
+-#include <wtf/darwin/DispatchExtras.h>
+-#endif
+-
+ namespace WebKit {
+ 
+-#if PLATFORM(COCOA)
+ constexpr auto freshlyCreatedTimeout = 5_s;
+-#endif
+ 
+ static void addContextMessageReceivers(WebProcessPool& processPool, WebExtensionContext& context)
+ {
+-#if PLATFORM(COCOA)
++#if PLATFORM(COCOA) || PLATFORM(HAIKU)
+     processPool.addMessageReceiver(Messages::WebExtensionContext::messageReceiverName(), context.identifier(), context);
+     processPool.addMessageReceiver(Messages::WebExtensionContext::messageReceiverName(), context.privilegedIdentifier(), context);
+ #else
+@@ -66,7 +59,7 @@ static void addContextMessageReceivers(WebProcessPool& processPool, WebExtension
+ 
+ static void removeContextMessageReceivers(WebProcessPool& processPool, WebExtensionContext& context)
+ {
+-#if PLATFORM(COCOA)
++#if PLATFORM(COCOA) || PLATFORM(HAIKU)
+     processPool.removeMessageReceiver(Messages::WebExtensionContext::messageReceiverName(), context.identifier());
+     processPool.removeMessageReceiver(Messages::WebExtensionContext::messageReceiverName(), context.privilegedIdentifier());
+ #else
+@@ -96,16 +89,14 @@ WebExtensionController::WebExtensionController(Ref<WebExtensionControllerConfigu
+ 
+     // A freshly created extension controller will be used to determine if the startup event
+     // should be fired for any loaded extensions during a brief time window. Start a timer
+-    // when the first extension is about to be loaded.
++    // when this controller is created.
+ 
+-#if PLATFORM(COCOA)
+-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(freshlyCreatedTimeout.seconds() * NSEC_PER_SEC)), mainDispatchQueueSingleton(), makeBlockPtr([this, weakThis = WeakPtr { *this }] {
++    RunLoop::mainSingleton().dispatchAfter(freshlyCreatedTimeout, [this, weakThis = WeakPtr { *this }] {
+         if (!weakThis)
+             return;
+ 
+         m_freshlyCreated = false;
+-    }).get());
+-#endif
++    });
+ }
+ 
+ WebExtensionController::~WebExtensionController()
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionControllerConfiguration.cpp b/Source/WebKit/UIProcess/Extensions/WebExtensionControllerConfiguration.cpp
 index ddcfc1880bc1e51da6b6074feb17725c10723b44..b1c7675bc4b77c80e38c276904af4a573abd9a4c 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionControllerConfiguration.cpp
@@ -25742,6 +26247,39 @@ index 0000000000000000000000000000000000000000..458c7617bf4678c2cbe4d7c0b9b22b77
 +} // namespace WebKit
 +
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && !PLATFORM(COCOA)
+diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionURLSchemeHandler.h b/Source/WebKit/UIProcess/Extensions/WebExtensionURLSchemeHandler.h
+index 6cc31666df494b43a9c98c89ad7b6d9fbabd4616..a07f329ffdd6685a0c249ff257c13cdfa8e7fda9 100644
+--- a/Source/WebKit/UIProcess/Extensions/WebExtensionURLSchemeHandler.h
++++ b/Source/WebKit/UIProcess/Extensions/WebExtensionURLSchemeHandler.h
+@@ -29,10 +29,16 @@
+ 
+ #include "WebURLSchemeHandler.h"
+ #include <wtf/Forward.h>
++#if PLATFORM(COCOA)
+ #include <wtf/RetainPtr.h>
++#else
++#include <wtf/HashSet.h>
++#endif
+ #include <wtf/WeakPtr.h>
+ 
++#if PLATFORM(COCOA)
+ OBJC_CLASS NSBlockOperation;
++#endif
+ 
+ namespace WebKit {
+ 
+@@ -53,7 +59,11 @@ private:
+     void platformTaskCompleted(WebURLSchemeTask&) final;
+ 
+     WeakPtr<WebExtensionController> m_webExtensionController;
++#if PLATFORM(COCOA)
+     HashMap<Ref<WebURLSchemeTask>, RetainPtr<NSBlockOperation>> m_operations;
++#else
++    HashSet<Ref<WebURLSchemeTask>> m_pendingTasks;
++#endif
+ }; // class WebExtensionURLSchemeHandler
+ 
+ } // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/Extensions/glib/WebExtensionGLib.cpp b/Source/WebKit/UIProcess/Extensions/glib/WebExtensionGLib.cpp
 index f09e0085d0228b905e0a7cfe7592260e9d4977a9..3ada5a0beca92b82ae14dc44131be6f12c3f7e5f 100644
 --- a/Source/WebKit/UIProcess/Extensions/glib/WebExtensionGLib.cpp
@@ -26238,6 +26776,185 @@ index 0000000000000000000000000000000000000000..8116761679d10df7d8286d4c19d66865
 +} // namespace WebKit
 +
 +#endif // PLATFORM(HAIKU)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..220e193ba1efec44becf1cdbf63f771bd203284f
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextHaiku.cpp
+@@ -0,0 +1,173 @@
++/*
++ * Copyright (C) 2022-2025 Apple Inc. All rights reserved.
++ * Copyright (C) 2026 KunanyiOS contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are met:
++ * 1. Redistributions of source code must retain the above copyright notice,
++ *    this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright notice,
++ *    this list of conditions and the following disclaimer in the documentation
++ *    and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "WebExtensionContext.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++
++#include "Logging.h"
++#include "WebExtensionStateHaiku.h"
++#include "WebsiteDataStore.h"
++#include <WebCore/SecurityOriginData.h>
++#include <wtf/FileSystem.h>
++#include <wtf/JSONValues.h>
++#include <wtf/text/MakeString.h>
++
++namespace WebKit {
++
++static constexpr auto lastSeenBaseURLStateKey = "LastSeenBaseURL"_s;
++static constexpr auto lastSeenDisplayNameStateKey = "LastSeenDisplayName"_s;
++static constexpr auto storageAccessLevelsKey = "StorageAccessLevels"_s;
++static constexpr auto sessionStorageAllowedInContentScriptsKey = "SessionStorageAllowedInContentScripts"_s;
++
++WebExtensionContext::WebExtensionContext(Ref<WebExtension>&& extension)
++    : WebExtensionContext()
++{
++    m_extension = WTF::move(extension);
++    m_state = JSON::Object::create();
++    m_baseURL = URL { makeString("webkit-extension://"_s, uniqueIdentifier(), '/') };
++}
++
++void WebExtensionContext::recordError(Ref<API::Error> error)
++{
++    RELEASE_LOG_ERROR(Extensions, "Error recorded: %" PUBLIC_LOG_STRING, error->localizedDescription().utf8().legacyCStringPointer());
++    if (m_errors.containsIf([&](auto& existing) { return existing->localizedDescription() == error->localizedDescription(); }))
++        return;
++    m_errors.append(WTF::move(error));
++}
++
++void WebExtensionContext::clearError(Error error)
++{
++    auto code = toAPIError(error);
++    m_errors.removeAllMatching([&](auto& existing) { return existing->errorCode() == code; });
++}
++
++RefPtr<JSON::Object> WebExtensionContext::readStateFromPath(const String& path)
++{
++    auto result = readWebExtensionStateHaiku(path);
++    if (result)
++        return result.value().ptr();
++    RELEASE_LOG_ERROR(Extensions, "Unable to read extension JSON state: %u", static_cast<unsigned>(result.error()));
++    return JSON::Object::create();
++}
++
++bool WebExtensionContext::readLastBaseURLFromState(const String& path, URL& outLastBaseURL)
++{
++    outLastBaseURL = URL { readStateFromPath(path)->getString(lastSeenBaseURLStateKey) };
++    return outLastBaseURL.isValid();
++}
++
++bool WebExtensionContext::readDisplayNameFromState(const String& path, String& outDisplayName)
++{
++    outDisplayName = readStateFromPath(path)->getString(lastSeenDisplayNameStateKey);
++    return !outDisplayName.isEmpty();
++}
++
++RefPtr<const JSON::Object> WebExtensionContext::currentState() const
++{
++    return m_state;
++}
++
++RefPtr<JSON::Object> WebExtensionContext::readStateFromStorage()
++{
++    if (storageIsPersistent())
++        m_state = readStateFromPath(stateFilePath());
++    else if (!m_state)
++        m_state = JSON::Object::create();
++    return m_state;
++}
++
++void WebExtensionContext::writeStateToStorage() const
++{
++    if (!storageIsPersistent())
++        return;
++    RefPtr state = currentState();
++    if (!state)
++        return;
++
++    if (auto result = writeWebExtensionStateHaiku(stateFilePath(), *state); !result)
++        RELEASE_LOG_ERROR(Extensions, "Unable to write extension JSON state: %u", static_cast<unsigned>(result.error()));
++}
++
++URL WebExtensionContext::updatePersistedMetadataDuringLoad()
++{
++    ASSERT(m_state);
++    URL previousBaseURL { m_state->getString(lastSeenBaseURLStateKey) };
++    m_state->setString(lastSeenBaseURLStateKey, m_baseURL.string());
++    auto displayName = protect(m_extension)->displayName();
++    if (!displayName.isNull())
++        m_state->setString(lastSeenDisplayNameStateKey, displayName);
++    return previousBaseURL;
++}
++
++void WebExtensionContext::loadStorageAccessLevelsFromStorage()
++{
++    ASSERT(m_state);
++    RefPtr savedLevels = m_state->getObject(storageAccessLevelsKey);
++    bool legacyAllowed = m_state->getBoolean(sessionStorageAllowedInContentScriptsKey).value_or(false);
++    m_state->remove(sessionStorageAllowedInContentScriptsKey);
++    if (savedLevels) {
++        for (auto dataType : allWebExtensionDataTypes()) {
++            auto value = savedLevels->getString(toAPIString(dataType));
++            // Reject malformed saved values without passing them to the enum
++            // converter, whose debug assertion assumes API-validated input.
++            if (value != "TRUSTED_CONTEXTS"_s && value != "TRUSTED_AND_UNTRUSTED_CONTEXTS"_s)
++                continue;
++            if (auto accessLevel = toWebExtensionStorageAccessLevel(value))
++                m_storageAccessLevels.set(dataType, *accessLevel);
++        }
++        return;
++    }
++    if (legacyAllowed) {
++        m_storageAccessLevels.set(WebExtensionDataType::Session, WebExtensionStorageAccessLevel::TrustedAndUntrustedContexts);
++        saveStorageAccessLevelsToStorage();
++    }
++}
++
++void WebExtensionContext::saveStorageAccessLevelsToStorage()
++{
++    ASSERT(m_state);
++    Ref levels = JSON::Object::create();
++    for (auto [dataType, accessLevel] : m_storageAccessLevels)
++        levels->setString(toAPIString(dataType), toAPIString(accessLevel));
++    m_state->setObject(storageAccessLevelsKey, WTF::move(levels));
++    writeStateToStorage();
++}
++
++void WebExtensionContext::moveLocalStorageIfNeeded(const URL& previousBaseURL, CompletionHandler<void()>&& completionHandler)
++{
++    if (!previousBaseURL.isValid() || previousBaseURL == baseURL()) {
++        completionHandler();
++        return;
++    }
++    extensionController()->configuration().defaultWebsiteDataStore().renameOriginInWebsiteData(
++        WebCore::SecurityOriginData::fromURL(previousBaseURL), WebCore::SecurityOriginData::fromURL(baseURL()),
++        { WebsiteDataType::IndexedDBDatabases, WebsiteDataType::LocalStorage }, WTF::move(completionHandler));
++}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionControllerConfigurationHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionControllerConfigurationHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..a5f9aae43990067335545cb019b2e4f06dc804e5
@@ -26580,6 +27297,326 @@ index 0000000000000000000000000000000000000000..6ebc5963dbf6ae3b340e55b4701edaeb
 +} // namespace WebKit
 +
 +#endif // PLATFORM(HAIKU)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionStateHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionStateHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..cd87dd6b7aa0457b39315003537e3f26d4ae412b
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionStateHaiku.cpp
+@@ -0,0 +1,86 @@
++/*
++ * Copyright (C) 2026 KunanyiOS contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are met:
++ * 1. Redistributions of source code must retain the above copyright notice,
++ *    this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright notice,
++ *    this list of conditions and the following disclaimer in the documentation
++ *    and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "WebExtensionStateHaiku.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++
++#include <cerrno>
++#include <cstdio>
++#include <sys/stat.h>
++#include <wtf/FileSystem.h>
++#include <wtf/FileHandle.h>
++#include <wtf/Scope.h>
++
++namespace WebKit {
++
++std::expected<Ref<JSON::Object>, WebExtensionStateErrorHaiku> readWebExtensionStateHaiku(const String& path)
++{
++    if (!path.startsWith('/') || path.contains(static_cast<UChar>(0)))
++        return makeUnexpected(WebExtensionStateErrorHaiku::InvalidPath);
++    struct stat status;
++    if (::stat(FileSystem::fileSystemRepresentation(path).legacyCStringPointer(), &status)) {
++        if (errno == ENOENT)
++            return JSON::Object::create();
++        return makeUnexpected(WebExtensionStateErrorHaiku::ReadFailed);
++    }
++    if (!S_ISREG(status.st_mode))
++        return makeUnexpected(WebExtensionStateErrorHaiku::ReadFailed);
++    if (!status.st_size)
++        return makeUnexpected(WebExtensionStateErrorHaiku::InvalidJSON);
++    auto data = FileSystem::readEntireFile(path);
++    if (!data)
++        return makeUnexpected(WebExtensionStateErrorHaiku::ReadFailed);
++    if (RefPtr value = JSON::Value::parseJSON(String::fromUTF8(data->span()))) {
++        if (RefPtr state = value->asObject())
++            return state.releaseNonNull();
++    }
++    return makeUnexpected(WebExtensionStateErrorHaiku::InvalidJSON);
++}
++
++std::expected<void, WebExtensionStateErrorHaiku> writeWebExtensionStateHaiku(const String& path, const JSON::Object& state)
++{
++    if (!path.startsWith('/') || path.contains(static_cast<UChar>(0)))
++        return makeUnexpected(WebExtensionStateErrorHaiku::InvalidPath);
++    auto [temporaryPath, handle] = FileSystem::openTemporaryFile("State-"_s, ".json"_s, FileSystem::parentPath(path));
++    if (!handle)
++        return makeUnexpected(WebExtensionStateErrorHaiku::TemporaryFileFailed);
++    auto cleanup = makeScopeExit([&] { FileSystem::deleteFile(temporaryPath); });
++    auto bytes = state.toJSONString().utf8();
++    if (handle.write(byteCast<uint8_t>(bytes.span())) != bytes.length() || !handle.flush())
++        return makeUnexpected(WebExtensionStateErrorHaiku::WriteFailed);
++    handle = { };
++
++    // An atomic rename in the same directory preserves the old state if
++    // replacement fails. A fallback copy could instead truncate that state.
++    if (::rename(FileSystem::fileSystemRepresentation(temporaryPath).legacyCStringPointer(), FileSystem::fileSystemRepresentation(path).legacyCStringPointer()))
++        return makeUnexpected(WebExtensionStateErrorHaiku::ReplaceFailed);
++    cleanup.release();
++    return { };
++}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionStateHaiku.h b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionStateHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..e2a1f547295a7e22bea259cc16dc5c4f4bfe014e
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionStateHaiku.h
+@@ -0,0 +1,48 @@
++/*
++ * Copyright (C) 2026 KunanyiOS contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are met:
++ * 1. Redistributions of source code must retain the above copyright notice,
++ *    this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright notice,
++ *    this list of conditions and the following disclaimer in the documentation
++ *    and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#pragma once
++
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++
++#include <expected>
++#include <wtf/JSONValues.h>
++
++namespace WebKit {
++
++enum class WebExtensionStateErrorHaiku {
++    InvalidPath,
++    ReadFailed,
++    InvalidJSON,
++    TemporaryFileFailed,
++    WriteFailed,
++    ReplaceFailed,
++};
++
++std::expected<Ref<JSON::Object>, WebExtensionStateErrorHaiku> readWebExtensionStateHaiku(const String& path);
++std::expected<void, WebExtensionStateErrorHaiku> writeWebExtensionStateHaiku(const String& path, const JSON::Object&);
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionURLSchemeHandlerHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionURLSchemeHandlerHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..769a2d9242a9a3966bbf75bfc378522e0adaadc5
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionURLSchemeHandlerHaiku.cpp
+@@ -0,0 +1,168 @@
++/*
++ * Copyright (C) 2022 Apple Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "WebExtensionURLSchemeHandler.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++
++#include "APIData.h"
++#include "APIFrameHandle.h"
++#include "APIFrameInfo.h"
++#include "APIPageConfiguration.h"
++#include "WebExtension.h"
++#include "WebExtensionContext.h"
++#include "WebExtensionController.h"
++#include "WebExtensionTab.h"
++#include "WebFrameProxy.h"
++#include "WebPageProxy.h"
++#include "WebURLSchemeTask.h"
++#include <Errors.h>
++#include <WebCore/HTTPHeaderNames.h>
++#include <WebCore/ResourceError.h>
++#include <WebCore/ResourceResponse.h>
++#include <WebCore/SharedBuffer.h>
++#include <wtf/RunLoop.h>
++
++namespace WebKit {
++
++using namespace WebCore;
++
++WebExtensionURLSchemeHandler::WebExtensionURLSchemeHandler(WebExtensionController& controller)
++    : m_webExtensionController(controller)
++{
++}
++
++void WebExtensionURLSchemeHandler::platformStartTask(WebPageProxy& page, WebURLSchemeTask& task)
++{
++    ASSERT(RunLoop::isMain());
++    m_pendingTasks.add(task);
++    RunLoop::mainSingleton().dispatch([this, protectedThis = Ref { *this }, task = Ref { task }, page = Ref { page }] {
++        // stop() can remove a task before this queued operation reaches the main loop.
++        if (!m_pendingTasks.contains(task))
++            return;
++
++        URL frameDocumentURL = task->frameInfo().request().url();
++        URL requestURL = task->request().url();
++
++        if (frameDocumentURL.isEmpty() || frameDocumentURL.isAboutBlank()) {
++            frameDocumentURL = task->request().firstPartyForCookies();
++            if (!task->frameInfo().isMainFrame()) {
++                if (RefPtr parentFrameHandle = task->frameInfo().parentFrameHandle()) {
++                    if (RefPtr parent = WebFrameProxy::webFrame(parentFrameHandle->frameID()))
++                        frameDocumentURL = parent->url();
++                }
++            }
++        }
++
++        auto denyAccess = [&] {
++            // Missing/disabled extensions and inaccessible resources have identical errors.
++            // Distinguishing them would expose which extensions the user has installed.
++            task->didComplete(ResourceError("WebExtensionResourceError"_s, B_PERMISSION_DENIED, requestURL,
++                "The extension resource is not accessible."_s, ResourceError::Type::AccessControl));
++        };
++
++        RefPtr controller = m_webExtensionController.get();
++        if (!controller) {
++            denyAccess();
++            return;
++        }
++
++        RefPtr context = controller->extensionContext(requestURL);
++        if (!context) {
++            denyAccess();
++            return;
++        }
++
++        Ref extension = context->extension();
++#if ENABLE(INSPECTOR_EXTENSIONS)
++        if (!frameDocumentURL.protocolIs("inspector-resource"_s) && !protocolHostAndPortAreEqual(frameDocumentURL, requestURL))
++#else
++        if (!protocolHostAndPortAreEqual(frameDocumentURL, requestURL))
++#endif
++        {
++            if (!extension->isWebAccessibleResource(requestURL, frameDocumentURL)) {
++                denyAccess();
++                return;
++            }
++        }
++
++        bool loadingExtensionMainFrame = false;
++        if (task->frameInfo().isMainFrame() && requestURL == frameDocumentURL) {
++            if (!context->isURLForThisExtension(page->configuration().requiredWebExtensionBaseURL())) {
++                task->didComplete(ResourceError("WebExtensionResourceError"_s, B_NOT_ALLOWED, requestURL,
++                    "The page is not configured for this extension."_s));
++                return;
++            }
++            loadingExtensionMainFrame = true;
++        }
++
++        auto result = extension->resourceDataForPath(requestURL.path().toString());
++        if (!result) {
++            context->recordErrorIfNeeded(result.error());
++            task->didComplete(ResourceError("WebExtensionResourceError"_s, B_ENTRY_NOT_FOUND, requestURL,
++                "The extension resource could not be read."_s));
++            return;
++        }
++        Ref resourceData = result.value();
++
++        if (loadingExtensionMainFrame) {
++            if (auto tab = context->getTab(page->identifier()))
++                context->addExtensionTabPage(page, *tab);
++        }
++
++        auto mimeType = extension->resourceMIMETypeForPath(requestURL.path().toString());
++        resourceData = context->localizedResourceData(WTF::move(resourceData), mimeType).releaseNonNull();
++
++        ResourceResponse response(URL { requestURL }, String { mimeType }, resourceData->size(), { });
++        response.setHTTPStatusCode(200);
++        response.setHTTPHeaderField(HTTPHeaderName::AccessControlAllowOrigin, "*"_s);
++        response.setHTTPHeaderField(HTTPHeaderName::ContentSecurityPolicy, extension->contentSecurityPolicy());
++        response.setHTTPHeaderField(HTTPHeaderName::ContentLength, String::number(resourceData->size()));
++        response.setHTTPHeaderField(HTTPHeaderName::ContentType, mimeType);
++
++        if (task->didReceiveResponse(WTF::move(response)) != WebURLSchemeTask::ExceptionType::None)
++            return;
++        if (task->didReceiveData(SharedBuffer::create(resourceData->span())) != WebURLSchemeTask::ExceptionType::None)
++            return;
++        task->didComplete({ });
++    });
++}
++
++void WebExtensionURLSchemeHandler::platformStopTask(WebPageProxy&, WebURLSchemeTask& task)
++{
++    ASSERT(RunLoop::isMain());
++    m_pendingTasks.remove(task);
++}
++
++void WebExtensionURLSchemeHandler::platformTaskCompleted(WebURLSchemeTask& task)
++{
++    ASSERT(RunLoop::isMain());
++    m_pendingTasks.remove(task);
++}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Launcher/ProcessLauncher.h b/Source/WebKit/UIProcess/Launcher/ProcessLauncher.h
 index 58f00aff737c58a39b1f8556c134f6b39ba2c43c..39a2b870eb9cc704e34a5bc348d85a7e9da274dd 100644
 --- a/Source/WebKit/UIProcess/Launcher/ProcessLauncher.h

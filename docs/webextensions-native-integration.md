@@ -3,8 +3,11 @@ Native WebExtensions integration investigation, 2026-09-14
 This records the native integration route for upstream WebKit
 `00991b6cdc59937da6076c69a22ae6a9460a4445` and the implemented extension
 resource adapters. Verification comprises **7 production translation units
-compiled with extensions enabled, 27 native resource-path checks, and 111
-native archive checks**. The archive helper and updated constructor also
+compiled with extensions enabled, 27 native resource-path checks, 111
+native archive checks, and 33 native state-file checks**. Controller/context
+and resource-handler adapters also have individual compile passes; their
+[exact scope and remaining dependencies](webextensions-native-state-and-resources.md)
+are recorded separately. The archive helper and updated constructor also
 have separate native compile evidence. Reports and exact scope are in the
 [manifest/resource notes](../tools/test-engine-extension-manifest-core-notes.md)
 and [ZIP/XPI notes](../tools/test-engine-extension-archives-notes.md).
@@ -43,7 +46,7 @@ subsequent native edits may shift those line numbers.
 | Common sources | `Source/WebKit/Sources.txt:317`, `:609` and `:712` already list common extension storage, manifest, context/controller and proxy sources. `SourcesGTK.txt` and `SourcesWPE.txt` add the GLib resource/background adapters. New native adapters belong in `PlatformHaiku.cmake`; common extractions should remain in `Sources.txt`. |
 | JS generation | `Source/WebKit/CMakeLists.txt:144` and `:178` split Objective-C and C++ IDLs; `GENERATE_IDL_BINDINGS` produces `JSWebExtensionAPIUnified.mm` and `.cpp`. Of 37 extension IDLs, only six have `UseCPPAPI`: alarms, namespace, runtime, test, web-page namespace and web-page runtime. `CodeGeneratorExtensions.pm:304` selects `.cpp` using that attribute. Most APIs still need conversion to its existing C++ path. |
 | Namespace exposure | `WebExtensionAPINamespace.idl:36` onward marks almost every useful API, including `runtime`, `storage`, `tabs`, `scripting` and `webRequest`, `Platform=COCOA`. Matching methods in `WebExtensionAPINamespace.cpp` are also guarded. Moving an API to C++ requires changing the IDL, implementation and matching IPC gates together. |
-| Context IPC | `WebExtensionController.cpp:56` registers both the normal and privileged context receivers only on Cocoa. `WebExtensionContext.messages.in` leaves alarms outside its Cocoa gates, with most other messages inside. Preserve both identifiers and each `[Validator=...]` when making these paths native. |
+| Context IPC | `WebExtensionController.cpp` now registers both normal and privileged context receivers on Cocoa and Haiku. `WebExtensionContext.messages.in` leaves alarms outside its Cocoa gates, with most other messages inside. Preserve both identifiers and each `[Validator=...]` when making these paths native. |
 | Request filtering | `ENABLE_CONTENT_EXTENSIONS` is a separate CMake option, off by default and enabled by GTK/WPE. Haiku needs it for the existing content-rule engine. The declarative-net-request translator remains `_WKWebExtensionDeclarativeNetRequestTranslator.mm`; existing common SQLite/rule bookkeeping is not the translator or blocking WebRequest implementation. |
 | Service workers | `Source/WTF/Scripts/Preferences/UnifiedWebPreferences.yaml:5451` defaults `ServiceWorkersEnabled` to true for modern WebKit, false otherwise. This is a runtime preference in this checkout, not a missing `ENABLE_SERVICE_WORKER` CMake flag. Extension-scheme registration, worker JS bindings and lifecycle still need native integration. |
 | Additional APIs | `WK_WEB_EXTENSIONS_ICON_VARIANTS`, `WK_WEB_EXTENSIONS_OFFSCREEN`, `WK_WEB_EXTENSIONS_SIDEBAR`, `WK_WEB_EXTENSIONS_BOOKMARKS`, `INSPECTOR_EXTENSIONS` and `DNR_ON_RULE_MATCHED_DEBUG` occur in source feature guards. They are not all independent CMake options here. Add deliberate port definitions and implementation as each becomes available; do not assume passing similarly named `-D` values exposes an API. |
@@ -177,7 +180,7 @@ configuration runtime tests need a matching feature-enabled WebKit dependency
 closure, including the generated headers/serializers and any process
 executables they use. Keep these probes compile-only until that closure is
 available; linking selected feature-enabled objects to the baseline
-feature-disabled `libWebKit.so` is unsafe. The standalone native path/archive
+feature-disabled `libWebKit.so` is unsafe. The standalone native path/archive/state-file
 helper checks do not cross this boundary and do not demonstrate controller
 execution.
 
@@ -187,23 +190,25 @@ owner of the profile's process pool and data store; it should also own the
 controller and attach it in `configure(API::PageConfiguration&)`. Preserve
 the common controller load/unload implementation at
 `WebExtensionController.cpp:147`, including duplicate-context/base-URL
-rejection, rollback and process notifications. Proposed implementation files
-under `UIProcess/Extensions/haiku` are:
+rejection, rollback and process notifications. Native implementation status
+under `UIProcess/Extensions/haiku` is:
 
-| Proposed file; not implemented | Required scope |
+| File or proposed file | Implemented and remaining scope |
 | --- | --- |
-| `WebExtensionControllerHaiku.cpp` | Native platform/client initialization. Port the five-second freshly-created expiry at `WebExtensionController.cpp:101`; generated controller message dispatch also needs the seven test callbacks currently in `Cocoa/API/WebExtensionControllerAPITestCocoa.mm:42`. |
-| `WebExtensionContextHaiku.cpp` | Native extension construction, state/errors, load/unload/reload, storage invalidation and page identities. Preserve the sequencing and cleanup in `Cocoa/WebExtensionContextCocoa.mm:278`, including asynchronous unloaded-context checks and notifying WebProcesses before injection. |
-| `WebExtensionURLSchemeHandlerHaiku.cpp` | Constructor plus start/stop/completed task methods, preserving the resource permission, response and cancellation semantics at `Cocoa/WebExtensionURLSchemeHandlerCocoa.mm:58`. |
+| `WebExtensionControllerHaiku.cpp` (not implemented) | Native platform/client initialization and seven generated test callbacks remain. The five-second freshly-created expiry now uses the common RunLoop, and both receiver IDs register on Haiku. |
+| `WebExtensionContextHaiku.cpp` | Native construction, JSON state/errors, storage access levels and origin migration compile. Common load/unload/reload and storage invalidation were extracted from Cocoa. Native background/page identities, install metadata, script/rule state and UI delegates remain. |
+| `WebExtensionStateHaiku.cpp` | Atomic JSON state-file helper passes 33 native checks. It contains no context/controller object ABI. |
+| `WebExtensionURLSchemeHandlerHaiku.cpp` | Native queued task cancellation, permission checks, resource reading/localization and response headers compile. Full scheme-serving runtime tests require the feature-enabled engine closure. |
 
 The header now declares the native extension constructor and maps native
 view/navigation types to `WebPageProxy`, `API::PageConfiguration` and
 `API::NavigationAction`. Native state uses a JSON object and `State.json`;
 background ownership uses `RefPtr<WebPageProxy>`. GLib state declarations
-are limited to their feature guard. These declarations do not yet implement
-native state persistence, background construction or context load/unload. `CocoaMenuItem`
-declarations and the `NSBlockOperation` map at
-`WebExtensionURLSchemeHandler.h:56` also require platform separation.
+are limited to their feature guard. Native view configuration is nullable,
+matching unloaded-context semantics. State persistence and common lifecycle
+sequencing are implemented, but native background construction and several
+load/unload dependencies remain. Native scheme tasks use a pending-task set;
+Cocoa retains its NSBlockOperation map. Native menu/delegate work remains.
 Adding only an empty controller platform hook cannot supply this runtime.
 The first lifecycle fixture against matching dependencies can use a manifest
 without scripts or background content to verify registration, duplicate rejection, rollback,
@@ -213,12 +218,12 @@ page integration gates below.
 
 | Required port work after the manifest-core compile | Existing implementation to preserve |
 | --- | --- |
-| Context construction, load/unload and state | `WebExtensionContextCocoa.mm:278` performs controller attachment, content-world creation, persisted state, install reason, tab population, data migration, registered scripts, rules and load notification. GLib implements state-file helpers and background views, but does not implement the complete load/unload path. Extract common sequencing and replace only persisted-value and native view/delegate access. |
-| Required load ordering | The Cocoa `load` path calls `controller->dispatchDidLoad(*this)` before `addInjectedContent()`, so the WebProcess knows the extension world before a content script runs. Preserve this order and unloaded-context checks in asynchronous callbacks. |
-| Resource scheme | `WebExtensionURLSchemeHandler.h` derives from the existing `WebURLSchemeHandler`; its only implementation is `Cocoa/WebExtensionURLSchemeHandlerCocoa.mm`. Replace `NSBlockOperation`, NSError and NSHTTPURLResponse with cancellable main-loop tasks and WebCore responses/errors. Keep the controller lookup, same-origin/`web_accessible_resources` checks, required extension base URL, CSP, MIME type, localization, task cancellation and indistinguishable permission failures. |
+| Context construction, load/unload and state | The load/unload/reload sequence now lives in common `WebExtensionContext.cpp`, with platform metadata and Cocoa tab-map helpers. Native JSON persistence, storage access levels and origin migration compile. Install/update metadata, tab population, background content, registered scripts and rules still need native implementations before this sequence can run. |
+| Required load ordering | The extracted common `load` path calls `controller->dispatchDidLoad(*this)` before `addInjectedContent()`, so the WebProcess knows the extension world before a content script runs. Preserve this order and unloaded-context checks in asynchronous callbacks. |
+| Resource scheme | `WebExtensionURLSchemeHandlerHaiku.cpp` now uses cancellable main-loop tasks and WebCore responses/errors. Its native compile pass covers controller lookup, same-origin/`web_accessible_resources` checks, required extension base URL, CSP, MIME type, localization and identical permission failures for absent/inaccessible extensions. Prove those behaviors through the real task/IPC path once the full engine links. |
 | Scheme registration | `WebExtensionMatchPattern.cpp` defaults to `webkit-extension`; the unchanged `registerCustomURLScheme` body now lives in `WebExtensionMatchPatternProcessPool.cpp` and updates match-pattern sets, service-worker-client registration and existing WebProcesses. Use the existing base URL mechanism. Chrome/Firefox URL identity expectations require explicit compatibility tests before adopting additional schemes. |
 | Background documents/workers | GLib's `loadBackgroundWebView` configures MV2/MV3 preferences, foreground process activity, load/failure/process-exit handlers and either URL loading or worker loading. Native hidden `WebPageProxy` instances should follow the same lifecycle. `WebPageProxy::loadServiceWorker`, implemented in common `WebPageProxy.cpp:18701`, is the worker entry point. Retain persistent/event-background behavior, listeners, wake-up tasks and unload timers. |
-| WebProcess context lifecycle | Constructors, `getOrCreate`, state updates, permission expiry, localization parsing and receiver registration now live in common `WebExtensionContextProxy.cpp`. The extraction preserves privileged identifier distribution and frame/page tracking. Script-error IPC remains in the Cocoa file until the native UI receiver exists. |
+| WebProcess context lifecycle | Constructors, `getOrCreate`, state updates, permission expiry, localization parsing and receiver registration now live in common `WebExtensionContextProxy.cpp`. The extraction preserves privileged identifier distribution and frame/page tracking. Script-error formatting and recording now exist in common UI context code. The process-side send remains in the Cocoa file until the message gate and native binding hooks move together. |
 | JS world binding | `WebExtensionControllerProxyCocoa.mm:54` installs `browser` and `chrome` onto the correct normal or isolated world using the generated wrapper. Much of this file is already C++ and can move to a common source. `WebLocalFrameLoaderClient.cpp:1965`, `:1979` and `:1993` still invoke the hooks only for Cocoa, including the service-worker and pre-user-script hooks. Broaden those gates only together with the working native implementation. |
 | Content scripts and permission changes | Common `WebExtensionContext.cpp:1221` onward converts injected content to `API::UserScript`/`API::UserStyleSheet`, computes granted patterns and installs them through `WebUserContentControllerProxy`. `toContentWorld` chooses the extension's isolated world. Permission-change broadcasting and several removal/revocation side effects still live in Cocoa. Preserve those transitions as well as initial grants. |
 | Core API messages | Convert existing event, runtime/port and storage bindings through `UseCPPAPI`, with `JSONValue`/WTF types and existing callbacks. `JSWebExtensionWrapper.cpp` exists but is not in common `Sources.txt`; include it when native bindings are linked. Move generated interfaces between CMake lists when their IDL output changes. The namespace exposure, API methods, context messages and message validators must agree. |

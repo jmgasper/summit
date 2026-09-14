@@ -62,6 +62,8 @@ def main():
                         help='Also move the intact scheme-registration method to its own copied translation unit.')
     parser.add_argument('--content-extensions', action='store_true',
                         help='Also enable the content-rule feature in the isolated configuration.')
+    parser.add_argument('--configured-extensions', action='store_true',
+                        help='Use a feature-enabled configuration without changing its feature gates.')
     args = parser.parse_args()
     OUTPUT.mkdir(exist_ok=True)
     watched_inputs = (BUILD / 'build.ninja', ENGINE / '.summit-source-manifest.json',
@@ -81,14 +83,14 @@ def main():
         raise SystemExit('Configure the native Modern WebKit target before this compile preflight.')
 
     config = (BUILD / 'cmakeconfig.h').read_text()
-    original_gate = '#define ENABLE_WK_WEB_EXTENSIONS 0'
+    original_gate = '#define ENABLE_WK_WEB_EXTENSIONS ' + ('1' if args.configured_extensions else '0')
     if config.count(original_gate) != 1:
-        raise SystemExit('Expected exactly one disabled extension feature in the Modern configuration.')
+        raise SystemExit('Expected exactly one matching extension feature in the Modern configuration.')
     isolated_config = config.replace(original_gate, '#define ENABLE_WK_WEB_EXTENSIONS 1')
     if args.content_extensions:
-        content_gate = '#define ENABLE_CONTENT_EXTENSIONS 0'
+        content_gate = '#define ENABLE_CONTENT_EXTENSIONS ' + ('1' if args.configured_extensions else '0')
         if isolated_config.count(content_gate) != 1:
-            raise SystemExit('Expected one disabled content-rule feature in the Modern configuration.')
+            raise SystemExit('Expected one matching content-rule feature in the Modern configuration.')
         isolated_config = isolated_config.replace(content_gate, '#define ENABLE_CONTENT_EXTENSIONS 1')
     (OUTPUT / 'cmakeconfig.h').write_text(isolated_config)
     # Preserve the production prefix, but do not consume its feature-disabled PCH.
@@ -142,6 +144,7 @@ def main():
         'proposed_header_fix': header_fix,
         'proposed_scheme_registration_extraction': extraction,
         'content_extensions_enabled_for_probe': args.content_extensions,
+        'uses_feature_enabled_configuration': args.configured_extensions,
         'units': [],
     }
     for name in args.source or SOURCES:

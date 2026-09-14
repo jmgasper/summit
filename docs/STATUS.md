@@ -1033,3 +1033,23 @@ checksum-locked libzip prefix and configures successfully. Its separate
 source tree was verified onto a new 64 GiB build volume before compilation
 started (`.vm/modern-extensions-private-zip-build.log`). No full feature-enabled
 link or extension runtime has passed yet.
+
+
+2026-09-14 native extension adapters: the common load/unload/reload sequence,
+storage invalidation, storage-level broadcasting and script-error formatting
+were extracted from Cocoa. Native context construction/state/access-level
+migration/origin migration and the resource scheme handler compile. Controller
+startup expiry now uses RunLoop, and native context receivers preserve both
+identifiers. Native JSON state uses private temporary files and atomic rename.
+Its standalone test passes **33 checks**, including 100 replacements observed
+through **3,455 concurrent reads**, with no new debugger event and unchanged
+source/dependency hashes. No WebCore or WebKit library is linked by that helper
+test, and no context/controller/browser extension runtime was exercised.
+
+Evidence and unresolved native dependencies:
+[extension state and resources](webextensions-native-state-and-resources.md).
+Patch: `fd009b76e291c55a5ba28f2400c9071c4e620667ccd46b1fadcb860c19f8c192`.
+The in-flight full extension build still uses its frozen earlier patch
+`55fe568fdb25b99463eb0519208f969a9b71b1cc7126d784e0ffa1af150d637c`;
+resynchronize these adapters only after that Ninja invocation finishes.
+The verified browser artifact remains `bundle-yqhmejfw` with extensions off.
