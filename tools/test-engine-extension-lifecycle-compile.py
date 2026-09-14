@@ -46,6 +46,7 @@ UI_API_UNITS = {'WebExtensionNavigationURLFilter.cpp': 'WebProcess/Extensions/We
                 'WebExtensionContextAPIWebNavigation.cpp': 'UIProcess/Extensions/API/WebExtensionContextAPIWebNavigation.cpp',
                 'WebExtensionDynamicScripts.cpp': 'UIProcess/Extensions/WebExtensionDynamicScripts.cpp',
                 'WebExtensionControllerAPITestHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionControllerAPITestHaiku.cpp',
+                'WebExtensionControllerHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionControllerHaiku.cpp',
                 'WebExtensionWebsiteData.cpp': 'UIProcess/Extensions/WebExtensionWebsiteData.cpp',
                 'WebExtensionUtilities.cpp': 'Shared/Extensions/WebExtensionUtilities.cpp',
                 'WebExtensionContextAPIDeclarativeNetRequest.cpp': 'UIProcess/Extensions/API/WebExtensionContextAPIDeclarativeNetRequest.cpp',

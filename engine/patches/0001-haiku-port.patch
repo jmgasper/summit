@@ -22926,10 +22926,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..df6e4e6ac41d62d9385139ddb157a7d1731b8d60
+index 0000000000000000000000000000000000000000..031e53b8478de6b35eef8e75568c03434226fa31
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,188 @@
+@@ -0,0 +1,189 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -22983,6 +22983,7 @@ index 0000000000000000000000000000000000000000..df6e4e6ac41d62d9385139ddb157a7d1
 +    UIProcess/Extensions/haiku/WebExtensionContextBackgroundHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionControllerAPITestHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionControllerConfigurationHaiku.cpp
++    UIProcess/Extensions/haiku/WebExtensionControllerHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionStateHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionURLSchemeHandlerHaiku.cpp
@@ -29626,10 +29627,36 @@ index 06cec0eb534d3f51d3a04e7ea3b68ac347c6a2cf..f0a9e6fafa0e1d0b06efd7057802f497
  
  WebExtensionController::~WebExtensionController()
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionController.h b/Source/WebKit/UIProcess/Extensions/WebExtensionController.h
-index 4f8b8ba294dfafd7a17c0f3a440b16f93283e583..d84b70b4a3ce822071839cdf1eadfd28329b68d7 100644
+index 4f8b8ba294dfafd7a17c0f3a440b16f93283e583..8291604dca1c862ad99cc7ab8242de530ae90129 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionController.h
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionController.h
-@@ -266,10 +266,8 @@ private:
+@@ -45,6 +45,7 @@
+ #include <WebCore/ContentRuleListResults.h>
+ #include <WebCore/Timer.h>
+ #include <wtf/Forward.h>
++#include <memory>
+ #include <wtf/Identified.h>
+ #include <wtf/RunLoop.h>
+ #include <wtf/TZoneMallocInlines.h>
+@@ -66,6 +67,7 @@ class WebsitePolicies;
+ 
+ namespace WebKit {
+ 
++class BrowserTabRegistryHaiku;
+ class ContextMenuContextData;
+ class WebExtensionContext;
+ class WebExtensionDataRecord;
+@@ -113,6 +115,9 @@ public:
+     enum class ForPrivateBrowsing { No, Yes };
+ 
+     WebExtensionControllerConfiguration& configuration() const LIFETIME_BOUND { return m_configuration.get(); }
++#if PLATFORM(HAIKU)
++    const std::shared_ptr<BrowserTabRegistryHaiku>& nativeBrowserTabs() const { return m_nativeBrowserTabs; }
++#endif
+     WebExtensionControllerParameters parameters(const API::PageConfiguration&, WebProcessProxy& destinationProcess) const;
+ 
+     bool operator==(const WebExtensionController& other) const { return (this == &other); }
+@@ -266,10 +271,8 @@ private:
          {
              // FIXME: <https://webkit.org/b/267514> Add support for changeInfo.
  
@@ -29640,6 +29667,16 @@ index 4f8b8ba294dfafd7a17c0f3a440b16f93283e583..d84b70b4a3ce822071839cdf1eadfd28
          }
  
          WeakPtr<WebExtensionController> m_extensionController;
+@@ -277,6 +280,9 @@ private:
+ 
+ 
+     const Ref<WebExtensionControllerConfiguration> m_configuration;
++#if PLATFORM(HAIKU)
++    std::shared_ptr<BrowserTabRegistryHaiku> m_nativeBrowserTabs;
++#endif
+ 
+ #if PLATFORM(COCOA)
+     RetainPtr<_WKWebExtensionControllerHelper> m_webExtensionControllerHelper;
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionControllerConfiguration.cpp b/Source/WebKit/UIProcess/Extensions/WebExtensionControllerConfiguration.cpp
 index ddcfc1880bc1e51da6b6074feb17725c10723b44..b1c7675bc4b77c80e38c276904af4a573abd9a4c 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionControllerConfiguration.cpp
@@ -31878,6 +31915,35 @@ index 0000000000000000000000000000000000000000..a5f9aae43990067335545cb019b2e4f0
 +    result->m_storageDirectory = m_storageDirectory;
 +    result->m_defaultWebsiteDataStore = m_defaultWebsiteDataStore;
 +    return result;
++}
++
++} // namespace WebKit
++
++#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionControllerHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionControllerHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..8fa08cfcc06ebeaf88ebabcedc4bec52e6dac87f
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionControllerHaiku.cpp
+@@ -0,0 +1,23 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#include "config.h"
++#include "WebExtensionController.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++
++#include "BrowserTabRegistryHaiku.h"
++
++namespace WebKit {
++
++void WebExtensionController::initializePlatform()
++{
++    ASSERT(RunLoop::isMain());
++    ASSERT(!m_nativeBrowserTabs);
++    // Page configurations, the native SDK and loaded extension contexts share
++    // this controller's host state without retaining native windows or pages.
++    m_nativeBrowserTabs = std::make_shared<BrowserTabRegistryHaiku>();
 +}
 +
 +} // namespace WebKit
@@ -36260,10 +36326,10 @@ index 0000000000000000000000000000000000000000..ccc91dbcfaf46a506236d172c929f452
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..779449030821b3e77472d2e82db851c18e95d802
+index 0000000000000000000000000000000000000000..e6af1fd6a8512e13f111153d1093817f1454df03
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp
-@@ -0,0 +1,145 @@
+@@ -0,0 +1,178 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -36278,6 +36344,10 @@ index 0000000000000000000000000000000000000000..779449030821b3e77472d2e82db851c1
 +#include "StoragePathsHaiku.h"
 +#include "WebsiteDataStore.h"
 +#include "WebsiteDataStoreConfiguration.h"
++#if ENABLE(WK_WEB_EXTENSIONS)
++#include "WebExtensionController.h"
++#include "WebExtensionControllerConfiguration.h"
++#endif
 +#include "WebProcessPool.h"
 +#include <pal/SessionID.h>
 +#include <wtf/FileSystem.h>
@@ -36286,11 +36356,29 @@ index 0000000000000000000000000000000000000000..779449030821b3e77472d2e82db851c1
 +
 +namespace WebKit {
 +
-+WebViewContextHaiku::WebViewContextHaiku(Ref<WebsiteDataStore>&& dataStore)
-+    : m_browserTabs(std::make_shared<BrowserTabRegistryHaiku>())
-+    , m_dataStore(WTF::move(dataStore))
++#if ENABLE(WK_WEB_EXTENSIONS)
++static Ref<WebExtensionController> createNativeExtensionController(WebsiteDataStore& store, const String& storageDirectory)
++{
++    auto configuration = store.isPersistent() ? WebExtensionControllerConfiguration::createDefault() : WebExtensionControllerConfiguration::createNonPersistent();
++    if (store.isPersistent()) {
++        ASSERT(!storageDirectory.isEmpty());
++        configuration->setStorageDirectory(storageDirectory);
++    }
++    configuration->setDefaultWebsiteDataStore(&store);
++    return WebExtensionController::create(WTF::move(configuration));
++}
++#endif
++
++WebViewContextHaiku::WebViewContextHaiku(Ref<WebsiteDataStore>&& dataStore, [[maybe_unused]] String extensionStorageDirectory)
++    : m_dataStore(WTF::move(dataStore))
 +    , m_processPool(WebProcessPool::create(API::ProcessPoolConfiguration::create()))
 +    , m_downloads(DownloadRegistryHaiku::create())
++#if ENABLE(WK_WEB_EXTENSIONS)
++    , m_extensionController(createNativeExtensionController(m_dataStore.get(), extensionStorageDirectory))
++    , m_browserTabs(m_extensionController->nativeBrowserTabs())
++#else
++    , m_browserTabs(std::make_shared<BrowserTabRegistryHaiku>())
++#endif
 +{
 +    ASSERT(RunLoop::isMain());
 +    m_processPool->setLegacyDownloadClient(m_downloads->createClient());
@@ -36302,9 +36390,9 @@ index 0000000000000000000000000000000000000000..779449030821b3e77472d2e82db851c1
 +    m_downloads->shutdown();
 +}
 +
-+std::shared_ptr<WebViewContextHaiku> WebViewContextHaiku::adopt(Ref<WebsiteDataStore>&& dataStore)
++std::shared_ptr<WebViewContextHaiku> WebViewContextHaiku::adopt(Ref<WebsiteDataStore>&& dataStore, String extensionStorageDirectory)
 +{
-+    return { new WebViewContextHaiku(WTF::move(dataStore)), [](WebViewContextHaiku* context) {
++    return { new WebViewContextHaiku(WTF::move(dataStore), WTF::move(extensionStorageDirectory)), [](WebViewContextHaiku* context) {
 +        if (RunLoop::isMain())
 +            delete context;
 +        else
@@ -36375,7 +36463,15 @@ index 0000000000000000000000000000000000000000..779449030821b3e77472d2e82db851c1
 +    }
 +    // JavaScriptConfiguration is a Cocoa-only configuration input. Its common
 +    // Haiku default stays empty instead of enabling an unrelated configuration.
-+    return adopt(WebsiteDataStore::create(WTF::move(configuration), PAL::SessionID::generatePersistentSessionID()));
++    String extensionStorageDirectory;
++#if ENABLE(WK_WEB_EXTENSIONS)
++    extensionStorageDirectory = storageDirectoryPathHaiku(false, profile, "WebExtensions"_s, true);
++    if (extensionStorageDirectory.isEmpty()) {
++        status = B_IO_ERROR;
++        return nullptr;
++    }
++#endif
++    return adopt(WebsiteDataStore::create(WTF::move(configuration), PAL::SessionID::generatePersistentSessionID()), WTF::move(extensionStorageDirectory));
 +}
 +
 +std::shared_ptr<WebViewContextHaiku> WebViewContextHaiku::defaultContext(status_t& status)
@@ -36397,6 +36493,9 @@ index 0000000000000000000000000000000000000000..779449030821b3e77472d2e82db851c1
 +    ASSERT(RunLoop::isMain());
 +    configuration.setProcessPool(m_processPool.copyRef());
 +    configuration.setWebsiteDataStore(m_dataStore.copyRef());
++#if ENABLE(WK_WEB_EXTENSIONS)
++    configuration.setWebExtensionController(m_extensionController.copyRef());
++#endif
 +}
 +
 +void WebViewContextHaiku::download(WebPageProxy& page, const WebCore::ResourceRequest& request, const BMessenger& view)
@@ -36411,10 +36510,10 @@ index 0000000000000000000000000000000000000000..779449030821b3e77472d2e82db851c1
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..5a3913e555f8cde1e32665a1de9cb8c4d5aeba35
+index 0000000000000000000000000000000000000000..821add2ccb452d08beb3302bb0adcae94b699ae2
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h
-@@ -0,0 +1,43 @@
+@@ -0,0 +1,48 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -36423,6 +36522,7 @@ index 0000000000000000000000000000000000000000..5a3913e555f8cde1e32665a1de9cb8c4
 +#include <SupportDefs.h>
 +#include <memory>
 +#include <wtf/Ref.h>
++#include <wtf/text/WTFString.h>
 +
 +namespace API { class PageConfiguration; }
 +namespace WebCore { class ResourceRequest; }
@@ -36431,6 +36531,7 @@ index 0000000000000000000000000000000000000000..5a3913e555f8cde1e32665a1de9cb8c4
 +
 +class BrowserTabRegistryHaiku;
 +class DownloadRegistryHaiku;
++class WebExtensionController;
 +class WebPageProxy;
 +class WebProcessPool;
 +class WebsiteDataStore;
@@ -36448,13 +36549,16 @@ index 0000000000000000000000000000000000000000..5a3913e555f8cde1e32665a1de9cb8c4
 +    void download(WebPageProxy&, const WebCore::ResourceRequest&, const BMessenger&);
 +
 +private:
-+    explicit WebViewContextHaiku(Ref<WebsiteDataStore>&&);
-+    static std::shared_ptr<WebViewContextHaiku> adopt(Ref<WebsiteDataStore>&&);
++    explicit WebViewContextHaiku(Ref<WebsiteDataStore>&&, String extensionStorageDirectory);
++    static std::shared_ptr<WebViewContextHaiku> adopt(Ref<WebsiteDataStore>&&, String extensionStorageDirectory = { });
 +
-+    const std::shared_ptr<BrowserTabRegistryHaiku> m_browserTabs;
 +    const Ref<WebsiteDataStore> m_dataStore;
 +    const Ref<WebProcessPool> m_processPool;
 +    const std::shared_ptr<DownloadRegistryHaiku> m_downloads;
++#if ENABLE(WK_WEB_EXTENSIONS)
++    const Ref<WebExtensionController> m_extensionController;
++#endif
++    const std::shared_ptr<BrowserTabRegistryHaiku> m_browserTabs;
 +};
 +
 +} // namespace WebKit

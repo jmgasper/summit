@@ -1509,3 +1509,12 @@ engine units compile** and **five browser units compile**. SDK/browser runtime
 and extension delegate integration remain unverified. See [registry evidence
 and limits](native-browser-tab-registry.md).
 Patch: `0f24f49c6189020ec84b14732cd10bfa31b4c7f4a555ebaa224c18f9c63d5209`.
+
+2026-09-14 native extension controller host: feature-enabled browsing contexts
+now configure pages with a controller that shares the native tab registry and
+their exact website data store. Extension storage is bound to that profile;
+private contexts use nonpersistent configuration. **Three native units compile**;
+controller/profile/page runtime remains unverified. Native storage-deletion
+notifications and tab/window delegates are still missing. See [controller host
+evidence and limits](webextensions-native-controller-host.md).
+Patch: `7d5fe9b8cc4f898dae1bcda278c6468dc4eee5cedd4904d0b146d40f230188ce`.
