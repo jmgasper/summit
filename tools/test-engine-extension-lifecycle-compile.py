@@ -27,7 +27,8 @@ PAGE_UNITS = {'WebPage.cpp': 'WebProcess/WebPage/WebPage.cpp',
               'WebLocalFrameLoaderClient.cpp': 'WebProcess/WebCoreSupport/WebLocalFrameLoaderClient.cpp'}
 NATIVE_PAGE_UNITS = {'WebPageProxy.cpp': 'UIProcess/WebPageProxy.cpp',
                      'WebView.cpp': 'UIProcess/haiku/WebView.cpp'}
-UI_API_UNITS = {'WebExtensionRegisteredScriptParser.cpp': 'Shared/Extensions/WebExtensionRegisteredScriptParser.cpp',
+UI_API_UNITS = {'WebExtensionContextAPIDeclarativeNetRequest.cpp': 'UIProcess/Extensions/API/WebExtensionContextAPIDeclarativeNetRequest.cpp',
+                'WebExtensionRegisteredScriptParser.cpp': 'Shared/Extensions/WebExtensionRegisteredScriptParser.cpp',
                 'WebExtensionContextAPIScripting.cpp': 'UIProcess/Extensions/API/WebExtensionContextAPIScripting.cpp',
                 'WebExtensionContextAPIEvent.cpp': 'UIProcess/Extensions/API/WebExtensionContextAPIEvent.cpp',
                 'WebExtensionContextAPIPort.cpp': 'UIProcess/Extensions/API/WebExtensionContextAPIPort.cpp',

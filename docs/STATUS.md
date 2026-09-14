@@ -1221,3 +1221,18 @@ script injection still need runtime verification. See [registered-script evidenc
 Patch: `1d075f46ad782a384ae548bd1a2f1b390ace18e0ea342e8ea44ace3322cb0543`.
 The full build remains on frozen `1daf0679...`, now through WebProcess units.
 The verified preview remains `bundle-yqhmejfw`, with extensions disabled.
+
+
+2026-09-14 network-rule unload cleanup: the existing rule-removal and
+DNR-state-unload methods now live in common C++, preserving both bodies.
+Removal visits all controller content stores, including any previously used
+for private browsing; unload clears rule IDs/matches and releases the two
+SQLite stores. The actual common DNR unit passes native compilation with
+both extension features and regenerated IPC:
+`.vm/extension-lifecycle-inputs.z9DsNtGX/result.json`. Input/configuration
+snapshots and the final source hash match. This is compilation evidence;
+DNR translation, native state loading and runtime removal remain unverified.
+
+Patch: `1b839dea86a02bbebcf8210d82f7ba85c51c7b1fea0421f09ebea8622f254f27`.
+The full build remains frozen on `1daf0679...` and is finishing WebProcess
+compilation. No feature-enabled WebKit link has passed yet.
