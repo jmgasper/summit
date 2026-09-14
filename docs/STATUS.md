@@ -1451,3 +1451,13 @@ compiles pass. No extension context, actual listener, background wake-up or IPC
 was run. See [test-delivery evidence](webextensions-native-test-delivery.md).
 
 Patch: `5732f4073311cf11bed8a00cb90e5aa3d87ae0bea6c0199dbf15bdf3dfb9464e`.
+
+2026-09-14 promise assertions: `browser.test.assertRejects` and `assertResolves`
+now use common C++ with intrinsic promise transformation and traced callback
+captures. Forty native helper checks pass, including thenable competition,
+exceptions, capture lifetime and rejection-message getters/proxies. Both final
+helper/API units compile with extension features and regenerated IPC. No
+assertion API, report IPC or extension was run; queued-test execution remains
+Cocoa-only. See [promise assertion evidence](webextensions-native-promise-assertions.md).
+
+Patch: `35dcd668ac188e1ef81ca581f5be6303a44db6f16a5614f5e0948d9f06838643`.

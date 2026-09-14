@@ -22,8 +22,10 @@ EXTRA_UNITS = ('haiku/WebExtensionContextBackgroundHaiku.cpp', 'haiku/WebExtensi
                'Bindings/JSWebExtensionMessageReply.cpp', 'Bindings/JSWebExtensionString.cpp',
                'Bindings/JSWebExtensionTabParameters.cpp',
                'Bindings/JSWebExtensionStorageValues.cpp',
+               'Bindings/JSWebExtensionPromise.cpp',
                'API/WebExtensionAPINamespace.cpp', 'API/WebExtensionAPIWebPageNamespace.cpp',
                'API/WebExtensionAPIStorage.cpp', 'API/WebExtensionAPIStorageArea.cpp',
+               'API/WebExtensionAPITest.cpp',
                'API/WebExtensionAPIRuntime.cpp',
                'API/WebExtensionAPIEvent.cpp', 'API/WebExtensionAPIPort.cpp')
 GENERATED_UNITS = ('WebExtensionContextMessageReceiver.cpp', 'WebExtensionContextProxyMessageReceiver.cpp')
