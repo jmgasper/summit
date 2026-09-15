@@ -60,16 +60,21 @@ The original `build-manifest.json` and `host-bundle-report.json` are preserved.
 before/after fingerprints and a file inventory of the final payload excluding
 the provenance file itself. The final command output reports the provenance
 digest. These hashes establish the copied inputs; they do not establish browser
-runtime behavior. The current extension-enabled copy is `bundle-tz1tfyzh`,
-including the native extension manager, real XPI/folder picker and approved
-extension startup across browser process restarts. Its provenance digest is
-`b034304aa77ca4c250ad718c0b4dedd3e014ed81823ed8a93ed7b7c869b0bb3e`.
+runtime behavior. The current extension-enabled copy is `bundle-mo8zo6d4`,
+including the native extension manager, real XPI/folder picker, Chrome manifest
+key identities and approved extension startup across browser process restarts.
+Its provenance digest is
+`f0fc447700311f16763ae5f28f85b3f4fc8175b0a7b715c516da16dbe2cd6fbd`.
 Its engine source archive digest is
 `47cfdc4589a682fe7d987d0f177b6276b55e62b5b7d0f591bb02b4ee35e70c0a`.
-The copy records host revision `858221f`; avoid committing while copying,
+The copy records host revision `9c67f33`; avoid committing while copying,
 because changing that recorded revision also invalidates the before/after
-provenance comparison. A copy attempted during that commit was discarded;
-the subsequent copy has matching source and support fingerprints.
+provenance comparison. The previous manager bundle `bundle-tz1tfyzh` remains
+available with provenance digest
+`b034304aa77ca4c250ad718c0b4dedd3e014ed81823ed8a93ed7b7c869b0bb3e`.
+Its first copy attempt overlapped commit `858221f` and was discarded; the
+subsequent successful copy and the current copy have matching source and
+support fingerprints.
 The ordinary modern copy `bundle-yqhmejfw` also remains available with its
 recorded native process, download, navigation and history checks.
 Earlier artifacts are preserved with their recorded limitations.

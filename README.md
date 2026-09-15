@@ -19,10 +19,11 @@ remains unfinished; see [startup evidence](docs/modern-extension-startup.md).
 ## Build and try
 
 The extension-enabled modern development bundle is
-`artifacts/modern-browser/bundle-tz1tfyzh/`. Copy the whole directory to Haiku
+`artifacts/modern-browser/bundle-mo8zo6d4/`. Copy the whole directory to Haiku
 R1/beta6 x86_64 and run `./run-browser.sh`. It includes private helpers and
 libraries, frozen application inputs, the matching patched WebKit source
-archive, and copy provenance. Its [installer and lifecycle verification](docs/modern-extension-manager.md)
+archive, and copy provenance. It includes [Chrome manifest-key identity](docs/extension-identity.md).
+Its [installer and lifecycle verification](docs/modern-extension-manager.md)
 does not establish compatibility with arbitrary extensions.
 
 The current-engine development bundle is `artifacts/current-browser/`. Copy that

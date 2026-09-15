@@ -2177,3 +2177,15 @@ This is identity compatibility; CRX/signature validation, authenticated
 updates, URL-scheme aliases and broad Chrome API compatibility remain
 unfinished. Engine patch `2972cc15e98b23f6dd04186631cf3f4370fe3a7d3a573175c6fd126a3fbdd3ca`
 is unchanged.
+
+The verified identity-enabled bundle is copied to
+`artifacts/modern-browser/bundle-mo8zo6d4`, with provenance SHA-256
+`f0fc447700311f16763ae5f28f85b3f4fc8175b0a7b715c516da16dbe2cd6fbd`
+and engine source archive SHA-256
+`47cfdc4589a682fe7d987d0f177b6276b55e62b5b7d0f591bb02b4ee35e70c0a`.
+The native report, executables, and before/after source/support fingerprints
+match; the copy records commit `9c67f33`. Evidence:
+`.vm/modern-chrome-identity-bundle-copy.log`. A separate isolated native build
+of the system-WebKit Makefile target links successfully with OpenSSL and
+passes its 38 core checks. This does not claim extension support in that
+legacy backend.

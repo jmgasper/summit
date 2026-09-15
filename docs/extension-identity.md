@@ -52,6 +52,16 @@ checks on that same bundle in
 `.vm/modern-extension-manager-6e025759766b1b92a3c86046/result.json`, with clean
 process exits, drained groups, a clean crash-log interval and unchanged inputs.
 
+The native system-WebKit Makefile target also compiles and links with the
+explicit crypto dependency, and its 38 core checks pass. Evidence is in
+`.vm/legacy-chrome-identity-build-result.json`; this verifies that build path,
+not extension execution in the legacy backend.
+
+The verified modern bundle and matching engine sources are available at
+`artifacts/modern-browser/bundle-mo8zo6d4`. Its copy provenance digest is
+`f0fc447700311f16763ae5f28f85b3f4fc8175b0a7b715c516da16dbe2cd6fbd`.
+See [copy and rebuild details](modern-bundle-copy.md).
+
 ```sh
 ctest --test-dir build-host --output-on-failure
 python3 tools/test-modern-extension-startup.py --manager --chrome-key --bundle /absolute/guest/bundle
