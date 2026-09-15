@@ -38,6 +38,14 @@ The same bundle passes the existing native popup regression (342 checks and 41
 commands), with clean lifecycle and unchanged inputs:
 `.vm/modern-extension-open-popup-079b7efbab2be9c103d419f5/result.json`.
 
+The newer `bundle-_s5lmdfe` also passes these same 57 cases and 234 native checks:
+`.vm/modern-extension-tab-messaging-ffca4e5a3a6025ad44c8d35c/result.json`.
+Its [content-world identity fix](webextensions-messaging-lifecycle.md) additionally
+passes four native disable/reenable cycles, preventing retained script worlds
+with the same extension name from replacing the current message receivers.
+The popup regression remains green on that bundle (342 checks):
+`.vm/modern-extension-open-popup-fbdaacac49211fc5fb0a7d28/result.json`.
+
 The baseline run against `bundle-lbm_guj3` reaches the expected missing-method
 failure after installing both fixtures and checking all four sender identities.
 It exits normally with an empty crash interval and unchanged sources, packages

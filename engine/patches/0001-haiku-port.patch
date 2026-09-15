@@ -25629,6 +25629,44 @@ index 0000000000000000000000000000000000000000..93749fc48be41dd0c06adc15d7e76c0b
 +} // namespace WebKit
 +
 +#endif // ENABLE(WK_WEB_EXTENSIONS)
+diff --git a/Source/WebKit/Shared/Extensions/WebExtensionContextParameters.h b/Source/WebKit/Shared/Extensions/WebExtensionContextParameters.h
+index 5a37064b581c95dd43cff22bee36264fa4800a40..28de8960d07fb09cfa985c350a8ac2026b641814 100644
+--- a/Source/WebKit/Shared/Extensions/WebExtensionContextParameters.h
++++ b/Source/WebKit/Shared/Extensions/WebExtensionContextParameters.h
+@@ -28,6 +28,9 @@
+ #if ENABLE(WK_WEB_EXTENSIONS)
+ 
+ #include "APIData.h"
++#if PLATFORM(HAIKU)
++#include "ContentWorldShared.h"
++#endif
+ #include "WebExtensionContext.h"
+ #include "WebExtensionContextIdentifier.h"
+ #include "WebExtensionStorageAccessLevel.h"
+@@ -44,6 +47,9 @@ struct WebExtensionContextParameters {
+ 
+     URL baseURL;
+     String uniqueIdentifier;
++#if PLATFORM(HAIKU)
++    std::optional<ContentWorldIdentifier> contentScriptWorldIdentifier;
++#endif
+     HashSet<String> unsupportedAPIs;
+ 
+     HashMap<String, WallTime> grantedPermissions;
+diff --git a/Source/WebKit/Shared/Extensions/WebExtensionContextParameters.serialization.in b/Source/WebKit/Shared/Extensions/WebExtensionContextParameters.serialization.in
+index 97ec7c434b41f997ad18082ffa2477a4cdb0699f..ca56634f77b7310675bed37c1b7f35e53873ff54 100644
+--- a/Source/WebKit/Shared/Extensions/WebExtensionContextParameters.serialization.in
++++ b/Source/WebKit/Shared/Extensions/WebExtensionContextParameters.serialization.in
+@@ -28,6 +28,9 @@ struct WebKit::WebExtensionContextParameters {
+ 
+     URL baseURL;
+     String uniqueIdentifier;
++#if PLATFORM(HAIKU)
++    std::optional<WebKit::ContentWorldIdentifier> contentScriptWorldIdentifier;
++#endif
+     HashSet<String> unsupportedAPIs;
+ 
+     HashMap<String, WallTime> grantedPermissions;
 diff --git a/Source/WebKit/Shared/Extensions/WebExtensionCookieQueryParser.cpp b/Source/WebKit/Shared/Extensions/WebExtensionCookieQueryParser.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..1221b82398e90b060ad3204172180a52386a550f
@@ -33552,7 +33590,7 @@ index 65b9841a9d4469a699b92c47435fecaaaa034d77..0361d615767169f4af1a6c192853c93e
  
      OptionSet<ModifierFlags> modifierFlags() const { return !m_activationKey.isEmpty() ? m_modifierFlags : OptionSet<ModifierFlags> { }; }
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
-index a156078a37b33ea2704f6a9ba747a0c881bb0009..09e611a9580d57d3428b94a6284312b4d3b11be8 100644
+index a156078a37b33ea2704f6a9ba747a0c881bb0009..8d9561bc6611157c267700136adf223f219907a7 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
 @@ -34,11 +34,20 @@
@@ -34176,7 +34214,17 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..09e611a9580d57d3428b94a6284312b4
  #endif
  
  WebExtensionContextIdentifier WebExtensionContext::privilegedIdentifier() const
-@@ -1798,9 +2211,17 @@ void WebExtensionContext::loadBackgroundContent(CompletionHandler<void(RefPtr<AP
+@@ -1686,6 +2099,9 @@ WebExtensionContextParameters WebExtensionContext::parameters(IncludePrivilegedI
+         includePrivilegedIdentifier == IncludePrivilegedIdentifier::Yes ? std::optional(privilegedIdentifier()) : std::nullopt,
+         baseURL(),
+         uniqueIdentifier(),
++#if PLATFORM(HAIKU)
++        m_contentScriptWorld ? std::optional(m_contentScriptWorld->identifier()) : std::nullopt,
++#endif
+         unsupportedAPIs(),
+         m_grantedPermissions,
+         extension->serializeLocalization(),
+@@ -1798,9 +2214,17 @@ void WebExtensionContext::loadBackgroundContent(CompletionHandler<void(RefPtr<AP
          return;
      }
  
@@ -34197,7 +34245,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..09e611a9580d57d3428b94a6284312b4
      });
  }
  
-@@ -2003,6 +2424,128 @@ Ref<WebExtensionRegisteredScriptsSQLiteStore> WebExtensionContext::registeredCon
+@@ -2003,6 +2427,128 @@ Ref<WebExtensionRegisteredScriptsSQLiteStore> WebExtensionContext::registeredCon
      return *m_registeredContentScriptsStorage;
  }
  
@@ -61450,14 +61498,15 @@ index d7751fadf02bf7a0dc7542d087b546d5e4bc2606..cb5bbc0220fffec20c931603020f9186
      boolean hasListener([CallbackHandler] function listener);
  
 diff --git a/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.cpp b/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.cpp
-index 2b2ff5395e73b7978dc8b610d62ffe835fc1a886..bca2925c66070ba7847c86a529636dbcf455c87c 100644
+index 2b2ff5395e73b7978dc8b610d62ffe835fc1a886..443a5b3005437f3a7ec05ce7b4eca60d2099a074 100644
 --- a/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.cpp
 +++ b/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.cpp
-@@ -25,20 +25,34 @@
+@@ -25,20 +25,35 @@
  
  #include "config.h"
  #include "WebExtensionContextProxy.h"
 +#if PLATFORM(HAIKU)
++#include "InjectedBundleScriptWorld.h"
 +#include "WebExtensionMenuClickHandlerStore.h"
 +#endif
  
@@ -61488,7 +61537,7 @@ index 2b2ff5395e73b7978dc8b610d62ffe835fc1a886..bca2925c66070ba7847c86a529636dbc
  
  namespace WebKit {
  
-@@ -46,6 +60,168 @@ using namespace WebCore;
+@@ -46,6 +61,173 @@ using namespace WebCore;
  
  WTF_MAKE_TZONE_ALLOCATED_IMPL(WebExtensionContextProxy);
  
@@ -61524,6 +61573,11 @@ index 2b2ff5395e73b7978dc8b610d62ffe835fc1a886..bca2925c66070ba7847c86a529636dbc
 +        context.m_extensionControllerProxy = extensionControllerProxy;
 +        context.m_baseURL = parameters.baseURL;
 +        context.m_uniqueIdentifier = parameters.uniqueIdentifier;
++#if PLATFORM(HAIKU)
++        if (context.m_contentScriptWorldIdentifier != parameters.contentScriptWorldIdentifier)
++            context.m_contentScriptWorld = nullptr;
++        context.m_contentScriptWorldIdentifier = parameters.contentScriptWorldIdentifier;
++#endif
 +        context.m_unsupportedAPIs = parameters.unsupportedAPIs;
 +        context.m_grantedPermissions = parameters.grantedPermissions;
 +        context.m_localization = parseLocalization(parameters.localizationJSON, parameters.baseURL);
@@ -61657,7 +61711,23 @@ index 2b2ff5395e73b7978dc8b610d62ffe835fc1a886..bca2925c66070ba7847c86a529636dbc
  WebExtensionControllerProxy* WebExtensionContextProxy::extensionControllerProxy() const
  {
      return m_extensionControllerProxy.get();
-@@ -224,6 +400,19 @@ void WebExtensionContextProxy::enumerateFramesAndNamespaceObjects(NOESCAPE const
+@@ -217,6 +399,15 @@ void WebExtensionContextProxy::setContentScriptWorld(WebCore::DOMWrapperWorld& w
+     world.setClosedShadowRootIsExposedForExtensions();
+ }
+ 
++#if PLATFORM(HAIKU)
++bool WebExtensionContextProxy::matchesContentScriptWorld(const WebCore::DOMWrapperWorld& world) const
++{
++    RefPtr scriptWorld = InjectedBundleScriptWorld::get(world);
++    return scriptWorld && m_contentScriptWorldIdentifier
++        && scriptWorld->identifier() == *m_contentScriptWorldIdentifier;
++}
++#endif
++
+ void WebExtensionContextProxy::enumerateFramesAndNamespaceObjects(NOESCAPE const Function<void(WebFrame&, WebExtensionAPINamespace&)>& function, Ref<DOMWrapperWorld>&& world)
+ {
+     m_extensionContentFrames.forEach([&](auto& frame) {
+@@ -224,6 +415,19 @@ void WebExtensionContextProxy::enumerateFramesAndNamespaceObjects(NOESCAPE const
          if (!page)
              return;
  
@@ -61677,7 +61747,7 @@ index 2b2ff5395e73b7978dc8b610d62ffe835fc1a886..bca2925c66070ba7847c86a529636dbc
          // We only support calling jsContextForServiceWorkerWorld() for the normal world.
          if (page->isServiceWorkerPage() && !world->isNormal())
              return;
-@@ -267,6 +456,11 @@ void WebExtensionContextProxy::enumerateFramesAndWebPageNamespaceObjects(NOESCAP
+@@ -267,6 +471,11 @@ void WebExtensionContextProxy::enumerateFramesAndWebPageNamespaceObjects(NOESCAP
      });
  }
  
@@ -61690,7 +61760,7 @@ index 2b2ff5395e73b7978dc8b610d62ffe835fc1a886..bca2925c66070ba7847c86a529636dbc
  
  #endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.h b/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.h
-index 1b514e1106295ebe5b2cc26520a9970b6c35633c..7adbab1e548cf6c75e80305b0dd8e5155a14a883 100644
+index 1b514e1106295ebe5b2cc26520a9970b6c35633c..fcda7dd69517ecf638dde41ce7824044a15408cc 100644
 --- a/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.h
 +++ b/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.h
 @@ -41,9 +41,12 @@
@@ -61706,7 +61776,14 @@ index 1b514e1106295ebe5b2cc26520a9970b6c35633c..7adbab1e548cf6c75e80305b0dd8e515
  class WebExtensionAPIStorage;
  class WebExtensionAPIWebPageNamespace;
  class WebExtensionControllerProxy;
-@@ -108,6 +111,9 @@ public:
+@@ -104,10 +107,16 @@ public:
+     static WebCore::DOMWrapperWorld& mainWorldSingleton() { return WebCore::mainThreadNormalWorldSingleton(); }
+ 
+     bool hasContentScriptWorld() const { return !!m_contentScriptWorld; }
++#if PLATFORM(HAIKU)
++    bool matchesContentScriptWorld(const WebCore::DOMWrapperWorld&) const;
++#endif
+     WebCore::DOMWrapperWorld& contentScriptWorld() const { RELEASE_ASSERT(hasContentScriptWorld()); return *m_contentScriptWorld; }
      void setContentScriptWorld(WebCore::DOMWrapperWorld&);
  
      void addFrameWithExtensionContent(WebFrame&);
@@ -61716,7 +61793,7 @@ index 1b514e1106295ebe5b2cc26520a9970b6c35633c..7adbab1e548cf6c75e80305b0dd8e515
  
      void didEncounterScriptError(const String& message, const String& sourceURL, unsigned lineNumber, unsigned columnNumber, WebExtensionContentWorldType);
  
-@@ -167,7 +173,11 @@ private:
+@@ -167,7 +176,11 @@ private:
      void dispatchCommandsChangedEvent(const String& identifier, const String& oldShortcut, const String& newShortcut);
  
      // Cookies
@@ -61728,7 +61805,7 @@ index 1b514e1106295ebe5b2cc26520a9970b6c35633c..7adbab1e548cf6c75e80305b0dd8e515
  
  #if ENABLE(DNR_ON_RULE_MATCHED_DEBUG)
      // DeclarativeNetRequest
-@@ -195,7 +205,13 @@ private:
+@@ -195,7 +208,13 @@ private:
  #endif
  
      // Menus
@@ -61742,7 +61819,7 @@ index 1b514e1106295ebe5b2cc26520a9970b6c35633c..7adbab1e548cf6c75e80305b0dd8e515
  
      // Permissions
      void updateGrantedPermissions(PermissionsMap&&);
-@@ -203,10 +219,10 @@ private:
+@@ -203,10 +222,10 @@ private:
  
      // Port
      void dispatchPortMessageEvent(std::optional<WebPageProxyIdentifier>, WebExtensionPortChannelIdentifier, const String& messageJSON, bool userGesture);
@@ -61755,7 +61832,7 @@ index 1b514e1106295ebe5b2cc26520a9970b6c35633c..7adbab1e548cf6c75e80305b0dd8e515
      void internalDispatchRuntimeConnectEvent(WebExtensionContentWorldType, WebExtensionPortChannelIdentifier, const String& name, const std::optional<WebExtensionMessageTargetParameters>&, const WebExtensionMessageSenderParameters&, bool userGesture, CompletionHandler<void(HashCountedSet<WebPageProxyIdentifier>&&)>&&);
      void dispatchRuntimeMessageEvent(WebExtensionContentWorldType, const String& messageJSON, const std::optional<WebExtensionMessageTargetParameters>&, const WebExtensionMessageSenderParameters&, bool userGesture, CompletionHandler<void(String&& replyJSON)>&&);
      void dispatchRuntimeConnectEvent(WebExtensionContentWorldType, WebExtensionPortChannelIdentifier, const String& name, const std::optional<WebExtensionMessageTargetParameters>&, const WebExtensionMessageSenderParameters&, bool userGesture, CompletionHandler<void(HashCountedSet<WebPageProxyIdentifier>&&)>&&);
-@@ -219,6 +235,9 @@ private:
+@@ -219,6 +238,9 @@ private:
      void dispatchStorageChangedEvent(const Vector<String>& onChangedJSON, WebExtensionDataType, WebExtensionContentWorldType);
  
      // Tabs
@@ -61765,7 +61842,7 @@ index 1b514e1106295ebe5b2cc26520a9970b6c35633c..7adbab1e548cf6c75e80305b0dd8e515
      void dispatchTabsCreatedEvent(const WebExtensionTabParameters&);
      void dispatchTabsUpdatedEvent(const WebExtensionTabParameters&, const WebExtensionTabParameters& changedParameters);
      void dispatchTabsReplacedEvent(WebExtensionTabIdentifier replacedTabIdentifier, WebExtensionTabIdentifier newTabIdentifier);
-@@ -238,12 +257,12 @@ private:
+@@ -238,12 +260,12 @@ private:
      void dispatchWebNavigationEvent(WebExtensionEventListenerType, WebExtensionTabIdentifier, const WebExtensionFrameParameters&, WallTime);
  
      // Web Request
@@ -61784,9 +61861,13 @@ index 1b514e1106295ebe5b2cc26520a9970b6c35633c..7adbab1e548cf6c75e80305b0dd8e515
  
      // Windows
      void dispatchWindowsEvent(WebExtensionEventListenerType, const std::optional<WebExtensionWindowParameters>&);
-@@ -266,6 +285,9 @@ private:
+@@ -265,7 +287,13 @@ private:
+     mutable PermissionsMap m_grantedPermissions;
      mutable WallTime m_nextGrantedPermissionsExpirationDate { WallTime::nan() };
      RefPtr<WebCore::DOMWrapperWorld> m_contentScriptWorld;
++#if PLATFORM(HAIKU)
++    std::optional<ContentWorldIdentifier> m_contentScriptWorldIdentifier;
++#endif
      WeakFrameSet m_extensionContentFrames;
 +#if PLATFORM(HAIKU)
 +    WeakHashSet<WebExtensionMenuClickHandlerStore> m_menuClickHandlerStores;
@@ -61860,7 +61941,7 @@ index 7e5207762fe78057c1b72f80bc18bf9bdd0042e6..01c94e2cd8f6e007b5bb61d6394db6f5
      // Windows
      DispatchWindowsEvent(WebKit::WebExtensionEventListenerType type, std::optional<WebKit::WebExtensionWindowParameters> windowParameters)
 diff --git a/Source/WebKit/WebProcess/Extensions/WebExtensionControllerProxy.cpp b/Source/WebKit/WebProcess/Extensions/WebExtensionControllerProxy.cpp
-index 83216ed3967b6cdc9fa10e8588406734a4be6426..75a2d11544ae8d71d71fbd8b1993c5b77b77de38 100644
+index 83216ed3967b6cdc9fa10e8588406734a4be6426..e8ada5331818c89dbd53161124cb56c38cd0f32f 100644
 --- a/Source/WebKit/WebProcess/Extensions/WebExtensionControllerProxy.cpp
 +++ b/Source/WebKit/WebProcess/Extensions/WebExtensionControllerProxy.cpp
 @@ -28,11 +28,21 @@
@@ -61885,7 +61966,21 @@ index 83216ed3967b6cdc9fa10e8588406734a4be6426..75a2d11544ae8d71d71fbd8b1993c5b7
  #include <wtf/HashMap.h>
  #include <wtf/NeverDestroyed.h>
  #include <wtf/TZoneMallocInlines.h>
-@@ -144,6 +154,189 @@ RefPtr<WebExtensionContextProxy> WebExtensionControllerProxy::extensionContext(W
+@@ -138,12 +148,203 @@ RefPtr<WebExtensionContextProxy> WebExtensionControllerProxy::extensionContext(W
+ 
+         auto prefixLength = prefix.length();
+         auto uniqueIdentifier = world.name().substring(prefixLength);
++#if PLATFORM(HAIKU)
++        // Old documents can keep an unloaded extension's world alive. Its
++        // name is reused on reenable, but it must never replace the current
++        // world's bindings or receive the new extension's messages.
++        RefPtr context = extensionContext(uniqueIdentifier);
++        return context && context->matchesContentScriptWorld(world) ? context : nullptr;
++#else
+         return extensionContext(uniqueIdentifier);
++#endif
+     }
+ 
      return extensionContext(frame.url());
  }
  

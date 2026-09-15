@@ -68,8 +68,8 @@ Diagnostic evidence is
 The temporary WebChromeClient trace is tracked in
 `.vm/darkreader-console-baseline/manifest.json`. It has been removed from the
 [tab-messaging implementation](webextensions-tab-messaging.md), which now passes
-its full native build and 57-case messaging suite. These published extension
-failures remain open compatibility requirements until this package passes.
+its full native build and 57-case messaging suite. The other missing APIs and
+popup controls remain compatibility requirements; subsequent results follow.
 
 With tab messaging available in `bundle-9lg9p4yz`, the unchanged package now
 applies its dynamic dark theme after installation. Actual body colors change
@@ -81,8 +81,8 @@ checks. Its popup screenshot still shows "Loading, please wait". The browser
 exits normally with drained processes, a clean crash interval and unchanged
 archive, extracted/installed package, harness and bundle bytes. Evidence:
 `.vm/modern-darkreader-08b345bc4bf5c11a9dc863b9/result.json` and its
-`enabled.ppm`, `popup.ppm` and `failure.ppm` screenshots. Reenable behavior and
-popup readiness remain separate unresolved runtime requirements.
+`enabled.ppm`, `popup.ppm` and `failure.ppm` screenshots. That run left reenable
+behavior and popup readiness unresolved.
 
 A console-tracing rebuild of the same messaging implementation,
 `bundle-orjipckr`, reproduces the reenable failure. Its trace shows a second
@@ -94,8 +94,19 @@ receiver is unavailable. The unsupported `discarded` query and missing
 `.vm/modern-darkreader-5c6ee8f81276dfda9f281577/result.json` and `console.log`.
 The browser exits normally, its process group drains, the crash interval is
 clean, and package, harness and bundle bytes remain unchanged. The diagnostic
-trace was removed from the working source after this run; the verified
-`bundle-9lg9p4yz` remains the VNC preview and exported artifact.
+trace was removed from the working source after this run. At that point, the
+verified `bundle-9lg9p4yz` remained the VNC preview and exported artifact.
+
+The [content-world identity fix](webextensions-messaging-lifecycle.md) resolves
+the reenable failure. The clean `bundle-_s5lmdfe` passes the page-theme probe's
+66 checks: installation applies the dark theme, disabling restores light colors
+on a fresh page, and reenabling restores the same dark colors and nine generated
+stylesheets. The browser exits normally, its processes drain, the crash interval
+is clean, and all archive, package, harness and bundle bytes remain unchanged.
+Evidence: `.vm/modern-darkreader-e390d12b986d7b5947791030/result.json` and its
+`reenabled.ppm` screenshot. The popup screenshot still shows "Loading, please
+wait". This is a passing installation/page-theme/lifecycle probe, not a claim
+that the popup controls or all Dark Reader functionality work.
 
 A subsequent `discarded` query/metadata candidate is staged separately in
 `.vm/tabs-discarded-candidate`. Four affected native source files compile with
