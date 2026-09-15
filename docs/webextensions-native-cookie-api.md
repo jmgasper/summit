@@ -5,8 +5,9 @@ The port connects `cookies.get`, `getAll`, `set`, `remove` and
 It includes generated C++ bindings, privileged context IPC and populated
 `cookies.onChanged` delivery. The 48-file implementation is integrated as patch
 `64e36654...`. **No extension has executed these APIs.** Full engine compilation
-and linking of this patch are running. The previous full link lacked the DNR
-loader, menu-click dispatcher and cookie-change dispatcher.
+reaches linking with two missing symbols (six references): the DNR loader and
+menu-click dispatcher. The cookie dispatcher is defined and resolves, with no
+new missing symbols or compiler errors. The engine has not linked successfully.
 
 Receivers require a loaded privileged context and the `cookies` API permission.
 Host checks use existing grants, ignore match-pattern paths, honor expiration
@@ -71,7 +72,8 @@ The connected API/event path and helpers have **24 unique native integration
 units** compiled, including both event receivers and the full generated network
 serializer. The latest network-process ownership and observer-restart changes
 also compile. The source audit covers all 48 files. Full-build CMake
-configuration has run and WebCore has rebuilt; WebKit compilation is underway.
+configuration, WebCore and WebKit compilation have run; the full link remains
+incomplete on the two dependencies above.
 The Cocoa adapter has only been source-reviewed. No API IPC, asynchronous permission change,
 private-store access, process restart or extension/browser runtime was tested.
 
@@ -90,6 +92,7 @@ Evidence:
 - `.vm/extension-lifecycle-inputs.mmqQpxpj/result.json` — current ownership/restart path
 - `.vm/extension-cookie-delivery-validation.json` — current aggregate audit
 - `.vm/extension-cookie-api-promotion.json` — integrated patch and source hashes
+- `.vm/modern-extensions-cookie-delivery-build-result.json` — completed full build attempt
 - `.vm/extension-cookie-api-validation.json` — historical 33-file API audit
 
 The [backend port](webextensions-native-cookie-backend.md) records the

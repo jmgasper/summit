@@ -1878,13 +1878,15 @@ checks pass** across Haiku/Cocoa surfaces. The source audit matches all 48
 integrated files. Cocoa SDK compilation remains untested.
 
 Both native source trees match the promoted patch. Its full Extensions-enabled
-build has configured and rebuilt WebCore; WebKit compilation/linking is still
-running. The preceding three-symbol link failure remains the last completed
-link result until this build terminates. No extension has executed an API or
+build has completed WebCore and WebKit compilation and reached linking with
+**two missing symbols (six references)**: the DNR loader and menu-click
+dispatcher. The typed cookie dispatcher is defined and resolves. There are no
+new missing symbols or compiler errors; five existing `#import` warnings come
+from `WebExtensionCommand.cpp`. No extension has executed an API or
 received an event. Partitioned cookies, Firefox container/first-party isolation,
 eviction, network SameSite enforcement and full extension/browser compatibility
 remain unfinished. See [the cookie API port](webextensions-native-cookie-api.md)
 and [event verification](webextensions-native-cookie-changes.md). Current evidence:
 `.vm/extension-cookie-delivery-validation.json`,
 `.vm/extension-cookie-api-promotion.json`, and
-`.vm/modern-extensions-cookie-delivery-build.log`.
+`.vm/modern-extensions-cookie-delivery-build-result.json`.

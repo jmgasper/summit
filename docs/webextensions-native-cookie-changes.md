@@ -3,7 +3,9 @@
 The Curl cookie database now produces typed, populated change batches after
 successful SQL commits. A native run-loop timer removes expired persistent
 cookies while a database observer is registered. The 48-file implementation
-is integrated as engine patch `64e36654...`, with the full build running.
+is integrated as engine patch `64e36654...`. Full engine compilation reaches
+linking with the cookie dispatcher resolved. Two missing symbols remain: the
+DNR loader and menu-click dispatcher (six references). The engine has not linked.
 **No extension has received these events in a runtime test.**
 
 `CookieChange` carries the stored cookie, a removal flag and the backend cause.
@@ -60,8 +62,10 @@ The full path and API helpers have **24 unique native integration units**
 compiled. The broader validation includes **136 JSC/query/changeInfo checks**,
 **40 host-grant checks** and **431 binding checks**. Both native event receivers
 and the full generated network serializer compile. Source/header hashes match
-the integrated implementation. The full build has completed CMake configuration
-and rebuilt WebCore; WebKit compilation and linking are still running.
+the integrated implementation. The full build completed CMake configuration,
+WebCore and WebKit compilation, then failed linking on the two dependencies
+above. It introduced no missing symbols or compiler errors. Five existing
+`#import` deprecation warnings came from `WebExtensionCommand.cpp`.
 
 Evidence:
 
@@ -75,7 +79,8 @@ Evidence:
 - `.vm/extension-cookie-delivery-validation.json` — current 48-file source audit
 - `.vm/audit-cookie-delivery.py` — audit reproducer
 - `.vm/extension-cookie-api-promotion.json` — integrated patch and source hashes
-- `.vm/modern-extensions-cookie-delivery-build.log` — running full build
+- `.vm/modern-extensions-cookie-delivery-build-result.json` — completed full build attempt
+- `.vm/modern-extensions-cookie-delivery-build.log` — full build log
 
 ## Connected delivery path and remaining validation
 
@@ -95,9 +100,9 @@ is exposed in generated bindings. Generic cookie-store clients still receive
 one invalidation per batch; they do not cause duplicate extension events.
 
 These UI, restart, private-store and asynchronous permission paths have compiled
-but have **not run in a full engine**. The last completed full link was on patch
-`71a2c16e...` and lacked the DNR loader, menu-click dispatcher and cookie-change
-dispatcher. The current full build must establish the new dependency state.
+but have **not run in a full engine**. The completed full build attempt on
+`64e36654...` confirms that the typed cookie dispatcher resolves, reducing the
+missing dependency count from three symbols/seven references to two/six.
 Partitioned cookies, Firefox container/first-party isolation, eviction and
 network SameSite enforcement remain incomplete.
 

@@ -3,7 +3,8 @@
 The cookie API port exposed missing behavior in the Curl backend. This port
 repairs storage metadata, expiry and exact cookie deletion, and implements the
 native network session's URL lookup. It is integrated as engine patch
-`64e36654...`; its full build is running. Tests use isolated
+`64e36654...`; its full engine compilation reaches linking, which still lacks
+the DNR loader and menu-click dispatcher. Tests use isolated
 copies of the candidate with recorded source and library hashes.
 Cookie API receivers and bindings are connected in the
 [API port](webextensions-native-cookie-api.md). The typed event path is connected
