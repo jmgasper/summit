@@ -2110,3 +2110,13 @@ patch `2972cc15e98b23f6dd04186631cf3f4370fe3a7d3a573175c6fd126a3fbdd3ca`.
 results, preserved failures, repeat command and remaining work. There is still
 no native extension installation/management UI or broad Safari/Chrome/Firefox
 compatibility claim. The original full-browser objective remains unfinished.
+
+The frozen bundle and matching engine sources are now copied to
+`artifacts/modern-browser/bundle-w5i95j6u`. Copy provenance SHA-256 is
+`bd7049ffaefe54669d8a8c8514799a8cfa052d2aa2eb0f0b2cde126f9c4a71d9`;
+the patched source archive SHA-256 is
+`47cfdc4589a682fe7d987d0f177b6276b55e62b5b7d0f591bb02b4ee35e70c0a`.
+Source and build-support fingerprints match before and after copying, and the
+copied native report and executable digests match the tested guest bundle.
+Evidence: `.vm/modern-extension-startup-bundle-copy.log` and the artifact's
+`copy-provenance.json`.

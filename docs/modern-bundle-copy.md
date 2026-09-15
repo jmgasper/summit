@@ -60,8 +60,12 @@ The original `build-manifest.json` and `host-bundle-report.json` are preserved.
 before/after fingerprints and a file inventory of the final payload excluding
 the provenance file itself. The final command output reports the provenance
 digest. These hashes establish the copied inputs; they do not establish browser
-runtime behavior. The current verified copy is `bundle-yqhmejfw`, including the
-native process fixes, basic download UI, navigation errors and history handling.
+runtime behavior. The current extension-enabled copy is `bundle-w5i95j6u`,
+including approved extension startup across browser process restarts and the
+UI-process exit correction. Its provenance digest is
+`bd7049ffaefe54669d8a8c8514799a8cfa052d2aa2eb0f0b2cde126f9c4a71d9`.
+The ordinary modern copy `bundle-yqhmejfw` also remains available with its
+recorded native process, download, navigation and history checks.
 Earlier artifacts are preserved with their recorded limitations.
 See [the verification record](STATUS.md) for exact runtime results and remaining
 limitations.
@@ -122,9 +126,11 @@ replacing the ordinary modern report. The bundler checks that both process
 targets are fully rebuilt before copying them. `--compile-only` can compile the
 browser against isolated staged headers while an engine build is running; it
 does not link, bundle, or establish runtime behavior. Extension-enabled browser
-`bundle-9jahww_j` now passes 90 real HTTP/JavaScript navigation checks. Its
-engine still has the separately recorded cookie-observer lifecycle failure;
-see [STATUS.md](STATUS.md) for the tested scope and current limitations.
+`bundle-w5i95j6u` passes approved startup and storage checks across separate
+browser processes; [the startup record](modern-extension-startup.md) describes
+that evidence and the preceding navigation/close regressions. The older
+`bundle-9jahww_j` remains preserved with its recorded cookie-observer lifecycle
+failure. See [STATUS.md](STATUS.md) for tested scopes and current limitations.
 
 The source archive also supplies those full patched trees for a direct native
 CMake build without fetching Git. It is already patched: do not apply the patch

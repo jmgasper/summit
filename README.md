@@ -16,6 +16,13 @@ extension compatibility remain unfinished; see [startup evidence](docs/modern-ex
 
 ## Build and try
 
+The extension-enabled modern development bundle is
+`artifacts/modern-browser/bundle-w5i95j6u/`. Copy the whole directory to Haiku
+R1/beta6 x86_64 and run `./run-browser.sh`. It includes private helpers and
+libraries, frozen application inputs, the matching patched WebKit source
+archive, and copy provenance. Its [startup verification](docs/modern-extension-startup.md)
+does not establish compatibility with arbitrary extensions.
+
 The current-engine development bundle is `artifacts/current-browser/`. Copy that
 whole directory to Haiku R1/beta6 x86_64 and run its `Summit` executable. Its
 private WebKit libraries, source archive and build manifest accompany the app.
