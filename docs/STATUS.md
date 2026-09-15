@@ -1837,4 +1837,22 @@ integration units compile** and **393 generated-binding checks pass**; 20 of
 match the tested inputs. These checks do not execute action API IPC or extension
 runtime. See [the action API scope and evidence](webextensions-native-action-api.md).
 Patch `4b8e914e8509911d780d93e72bae8ccff5d56dd97b51da470dd09ec711bae201`
-is promoted; its full extension-enabled engine build is pending.
+is promoted; its full extension-enabled engine build reached the WebKit link.
+The action dispatcher is resolved, but its `LocalFrame::document()` call lacks
+the header containing that inline definition. The result remains **four missing
+symbols (eight references)**: this new inline dependency plus the existing DNR
+loader, menus dispatcher and cookies dispatcher. There are no compiler errors;
+the inline-definition warning explains the new link failure. Evidence:
+`.vm/modern-extensions-action-api-build-result.json`.
+
+The missing inline header is corrected in follow-up patch
+`71a2c16ef1345fb2225b97bd8017adc654ab4aa923ae759785d67eb8f074dad5`.
+The isolated Action source compiles without warnings using regenerated IPC,
+and object-symbol inspection confirms the inline dependency is resolved. Its
+full engine build reaches linking with **three missing symbols (seven references)**,
+no new missing symbols and no compiler errors. The remaining symbols are the
+DNR loader, menu-click dispatcher and cookie-change dispatcher. The Action
+dispatcher and its inline dependency are resolved. Both native source trees
+match the promoted patch; extension-enabled engine linking and extension
+runtime remain unfinished. Evidence: `.vm/extension-action-inline-validation.json`
+and `.vm/modern-extensions-action-inline-build-result.json`.

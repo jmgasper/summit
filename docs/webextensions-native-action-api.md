@@ -4,9 +4,18 @@ The Haiku port adds `getTitle`, `setTitle`, `getBadgeText`, `setBadgeText`,
 `getPopup`, `setPopup`, `enable`, `disable`, `isEnabled`, and `onClicked` to
 the native action bindings. The namespace retains the pinned manifest checks
 for `action`, `browserAction`, and `pageAction`. **No extension has run these
-APIs.** Patch
-`4b8e914e8509911d780d93e72bae8ccff5d56dd97b51da470dd09ec711bae201`
-is promoted. Its full extension-enabled engine build is pending.
+APIs.** Current patch
+`71a2c16ef1345fb2225b97bd8017adc654ab4aa923ae759785d67eb8f074dad5`
+is promoted. Its full extension-enabled build reaches linking with **three
+missing symbols (seven references)**: the DNR loader, menu-click dispatcher and
+cookie-change dispatcher. The Action dependencies are resolved, with no new
+missing symbols or compiler errors. The engine has not linked successfully.
+
+The preceding Action build exposed a missing inline definition. The follow-up
+replaces `LocalFrame.h` with `LocalFrameInlines.h`, which contains
+the definition used by click-event dispatch. The isolated native source compiles
+with regenerated IPC and no warnings, and its undefined-symbol list no longer
+contains `LocalFrame::document()`. The full build confirms that fix.
 
 Reads and writes cross the actual context IPC boundary. Receivers require a
 loaded privileged context whose manifest declares an action. They independently
@@ -81,3 +90,6 @@ Evidence:
 - `.vm/extension-lifecycle-inputs.yawnB3OU/result.json`
 - `.vm/extension-bindings-generated-37zlp8gp/binding-generation.json`
 - `.vm/extension-binding-platforms-gtlumi_b/result.json`
+- `.vm/modern-extensions-action-api-build-result.json`
+- `.vm/extension-action-inline-validation.json`
+- `.vm/modern-extensions-action-inline-build-result.json`
