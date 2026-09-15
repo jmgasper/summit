@@ -10,8 +10,7 @@ test covers keyboard activation, rapid dismissal and shutdown with the menu open
 
 The newer [native badge-color implementation](webextensions-native-badge-colors.md)
 adds CSS/RGBA background and text colors, scoped inheritance and actual screen-pixel
-verification. Its current bundle and test evidence are documented separately below
-the earlier toolbar and overflow results.
+verification. Its current bundle and test evidence are recorded on that page.
 
 Clicking an action with a popup opens its actual extension HTML in a native
 floating window. The page has the extension's origin, CSP, privileged APIs and

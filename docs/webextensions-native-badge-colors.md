@@ -80,3 +80,25 @@ service-worker support or arbitrary Safari, Chrome or Firefox extension
 compatibility. Rendering across theme changes, partially transparent and
 disabled badges needs more pixel coverage. Dynamic icon APIs, `openPopup`,
 multi-window/private contexts and the broader extension corpus remain work.
+
+## Copied artifact and VNC preview
+
+The verified artifact is `artifacts/modern-browser/bundle-lzht66nf/`. Copy the
+whole directory to Haiku R1/beta6 x86_64 and run `./run-browser.sh`. It contains
+the private runtime, frozen application inputs and matching patched WebKit source.
+The copy records source commit `466f4b1` and these SHA-256 digests:
+
+- Copy provenance: `4892ae8ab988b1f8bc57c24256a5b293f1cfbc4df27ac2545821410b5b812b23`.
+- WebKit source archive: `f92213370e7b2ab90373c317b9c2cfe2b8ef3525f5348de7ee69f16e402ea1dc`.
+
+All 399 artifact entries match the recorded inventory. Native and host reports,
+source fingerprints and build-support fingerprints match. The complete copy log
+is `.vm/modern-browser-badge-colors-bundle-copy.log`; the independent inventory
+check is `.vm/badge-color-artifact-verification.json`.
+
+The VNC desktop at `127.0.0.1:5905` uses a separate clone of the test's preview
+profile. Its original 19 files remained unchanged. The reopened extension
+completed all 58 color assertions and loaded its saved popup state. The screenshot
+shows actual popup JavaScript changing the badge to purple with white text.
+
+![Native extension popup with a purple badge and white text](screenshots/extension-badge-colors.png)

@@ -12,7 +12,8 @@ process restarts. Its native SDK runs extension background pages and dedicated
 extension views. Its [native extension manager](docs/modern-extension-manager.md)
 reviews and installs ZIP/XPI packages or folders, and enables, disables and
 removes installations. Its [native toolbar actions](docs/modern-extension-actions.md)
-display live extension state and open real extension HTML popups. Broad Safari,
+display live extension state, including [badge colors](docs/webextensions-native-badge-colors.md),
+and open real extension HTML popups. Broad Safari,
 Chrome and Firefox extension compatibility
 remains unfinished; see [startup evidence](docs/modern-extension-startup.md).
 
@@ -21,11 +22,12 @@ remains unfinished; see [startup evidence](docs/modern-extension-startup.md).
 ## Build and try
 
 The extension-enabled modern development bundle is
-`artifacts/modern-browser/bundle-7ve4k1a6/`. Copy the whole directory to Haiku
+`artifacts/modern-browser/bundle-lzht66nf/`. Copy the whole directory to Haiku
 R1/beta6 x86_64 and run `./run-browser.sh`. It includes private helpers and
 libraries, frozen application inputs, the matching patched WebKit source
 archive, and copy provenance. It includes [Chrome manifest-key identity](docs/extension-identity.md)
-and [native extension toolbar actions, popups and keyboard overflow](docs/modern-extension-actions.md).
+and [native extension toolbar actions, popups and keyboard overflow](docs/modern-extension-actions.md),
+plus [CSS/RGBA badge colors](docs/webextensions-native-badge-colors.md).
 Its [installer and lifecycle verification](docs/modern-extension-manager.md)
 does not establish compatibility with arbitrary extensions.
 

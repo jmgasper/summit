@@ -159,3 +159,13 @@ is copied and verified. Its provenance digest is
 and its matching engine source archive digest is
 `40b83599ce48235f5dc8b30dc2d743290081140a16cb3c22c976fafa64eae62e`.
 Runtime evidence and feature limits are in [native extension actions](modern-extension-actions.md).
+
+The newer badge-color bundle `artifacts/modern-browser/bundle-lzht66nf` is also
+copied and verified, with source commit `466f4b1` recorded in copy support.
+Its provenance digest is
+`4892ae8ab988b1f8bc57c24256a5b293f1cfbc4df27ac2545821410b5b812b23`;
+its matching WebKit source archive digest is
+`f92213370e7b2ab90373c317b9c2cfe2b8ef3525f5348de7ee69f16e402ea1dc`.
+All 399 artifact entries match their recorded hashes. Native/host reports,
+source fingerprints and build-support fingerprints match. The native action,
+color, popup and overflow results are in [native badge colors](webextensions-native-badge-colors.md).

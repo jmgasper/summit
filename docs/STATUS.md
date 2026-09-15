@@ -2268,6 +2268,12 @@ groups drain and native crash intervals remain clean. Input fingerprints match.
 Another 509 binding-generation/preprocessing checks pass. Exact evidence and
 compatibility limits are in [native badge colors](webextensions-native-badge-colors.md).
 
-The native bundle is verified; host artifact copying and VNC preview restoration
-are the next packaging steps. Broader extension compatibility and the original
-full-browser goal remain incomplete.
+The verified artifact is `artifacts/modern-browser/bundle-lzht66nf/`, copied with
+matching source and build support from host commit `466f4b1`. Its provenance
+digest is `4892ae8ab988b1f8bc57c24256a5b293f1cfbc4df27ac2545821410b5b812b23`;
+the WebKit archive digest is
+`f92213370e7b2ab90373c317b9c2cfe2b8ef3525f5348de7ee69f16e402ea1dc`.
+All 399 artifact entries match the recorded inventory. A separate VNC preview
+profile again runs the verified extension and real popup; the test source profile
+remains unchanged. Broader extension compatibility and the original full-browser
+goal remain incomplete.
