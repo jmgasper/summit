@@ -2,6 +2,11 @@
 #include "Messages.h"
 #include <Window.h>
 #include <Message.h>
+#if SUMMIT_MODERN_WEBKIT
+#include "ExtensionInstaller.h"
+#include <Bitmap.h>
+#include <cstring>
+#endif
 #include <algorithm>
 #include <cmath>
 
@@ -28,6 +33,9 @@ void ToolButton::Draw(BRect)
         StrokeLine(c + BPoint(x1, y1), c + BPoint(x2, y2));
     };
     switch (fIcon) {
+        case Icon::More:
+            for (float x : {-6.0f, 0.0f, 6.0f}) FillEllipse(c + BPoint(x, 0), 1.3f, 1.3f);
+            break;
         case Icon::Back: line(3, -6, -3, 0); line(-3, 0, 3, 6); break;
         case Icon::Forward: line(-3, -6, 3, 0); line(3, 0, -3, 6); break;
         case Icon::Plus: line(-6, 0, 6, 0); line(0, -6, 0, 6); break;
@@ -56,6 +64,95 @@ void ToolButton::Draw(BRect)
     }
     SetPenSize(1);
 }
+
+#if SUMMIT_MODERN_WEBKIT
+ExtensionActionButton::ExtensionActionButton(const char* identifier)
+    : BButton((std::string("extension-action-") + identifier).c_str(), "", nullptr)
+{
+    SetExplicitMinSize(BSize(34, 32));
+    SetExplicitMaxSize(BSize(34, 32));
+}
+ExtensionActionButton::~ExtensionActionButton() = default;
+
+void ExtensionActionButton::SetAction(const BMessage& action, uint64 snapshot)
+{
+    const char* title = "";
+    action.FindString("title", &title);
+    if (!*title) action.FindString("name", &title);
+    auto label = ExtensionDisplayText(title);
+    SetLabel(label.c_str());
+    const char* badge = "";
+    action.FindString("badge", &badge);
+    fBadge = ExtensionDisplayText(badge);
+    SetToolTip((label + (fBadge.empty() ? "" : " — " + fBadge)).c_str());
+    auto* message = new BMessage(action);
+    message->what = kActivateExtensionAction;
+    message->AddUInt64("snapshot", snapshot);
+    SetMessage(message);
+    fBitmap.reset();
+    const void* pixels = nullptr;
+    ssize_t length = 0;
+    if (action.FindData("icon_bgra", B_RAW_TYPE, &pixels, &length) == B_OK && length == 16 * 16 * 4) {
+        auto bitmap = std::make_unique<BBitmap>(BRect(0, 0, 15, 15), B_RGBA32);
+        if (bitmap->InitCheck() == B_OK) {
+            for (int row = 0; row < 16; ++row)
+                std::memcpy(static_cast<uint8*>(bitmap->Bits()) + row * bitmap->BytesPerRow(),
+                    static_cast<const uint8*>(pixels) + row * 64, 64);
+            fBitmap = std::move(bitmap);
+        }
+    }
+    SetEnabled(action.GetBool("enabled", false));
+    Invalidate();
+}
+
+void ExtensionActionButton::Draw(BRect)
+{
+    SetDrawingMode(B_OP_COPY);
+    SetHighColor(ui_color(B_PANEL_BACKGROUND_COLOR));
+    FillRect(Bounds());
+    if (Value() || IsFocus()) {
+        SetHighColor(Value() ? rgb_color{212, 225, 222, 255} : rgb_color{225, 232, 230, 255});
+        FillRoundRect(Bounds().InsetByCopy(2, 2), 5, 5);
+    }
+    const BPoint origin((Bounds().Width() - 15) / 2, (Bounds().Height() - 15) / 2);
+    if (fBitmap) {
+        SetDrawingMode(B_OP_ALPHA);
+        SetBlendingMode(B_PIXEL_ALPHA, B_ALPHA_OVERLAY);
+        DrawBitmap(fBitmap.get(), origin);
+        SetDrawingMode(B_OP_COPY);
+    } else {
+        SetHighColor(IsEnabled() ? rgb_color{49, 99, 84, 255} : rgb_color{163, 170, 168, 255});
+        SetPenSize(1.5f);
+        StrokeRoundRect(BRect(origin, origin + BPoint(15, 15)), 3, 3);
+        StrokeLine(origin + BPoint(4, 7.5f), origin + BPoint(11, 7.5f));
+        StrokeLine(origin + BPoint(7.5f, 4), origin + BPoint(7.5f, 11));
+        SetPenSize(1);
+    }
+    if (!IsEnabled() && fBitmap) {
+        SetDrawingMode(B_OP_ALPHA);
+        SetBlendingMode(B_CONSTANT_ALPHA, B_ALPHA_OVERLAY);
+        auto color = ui_color(B_PANEL_BACKGROUND_COLOR); color.alpha = 160;
+        SetHighColor(color);
+        FillRect(BRect(origin, origin + BPoint(15, 15)));
+        SetDrawingMode(B_OP_COPY);
+    }
+    if (!fBadge.empty()) {
+        BFont font(be_bold_font); font.SetSize(9);
+        SetFont(&font);
+        BString badge(fBadge.c_str());
+        TruncateString(&badge, B_TRUNCATE_END, 21);
+        float width = std::max(12.0f, StringWidth(badge.String()) + 4);
+        BRect rect(Bounds().right - width, 1, Bounds().right, 13);
+        SetHighColor(IsEnabled() ? rgb_color{38, 105, 83, 255} : rgb_color{130, 140, 136, 255});
+        FillRoundRect(rect, 3, 3);
+        SetHighColor(255, 255, 255);
+        SetDrawingMode(B_OP_OVER);
+        DrawString(badge.String(), BPoint(rect.left + 2, 10));
+        SetDrawingMode(B_OP_COPY);
+        SetFont(be_plain_font);
+    }
+}
+#endif
 
 TabStrip::TabStrip() : BView("tabs", B_WILL_DRAW | B_FRAME_EVENTS)
 {

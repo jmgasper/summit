@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import threading
 import time
@@ -105,15 +106,21 @@ def run(args):
     monitor = NativeCrashLog()
     publisher.start()
     try:
-        for phase in ('install', 'remove', 'after-removal'):
+        phases = ('install', 'popup-quit', 'remove', 'after-removal') if args.actions else ('install', 'remove', 'after-removal')
+        for phase in phases:
             record = {'phase': phase, 'forced_cleanup': False}
             report['runs'].append(record)
             with (ROOT / (phase + '-browser.log')).open('w') as browser_log, (ROOT / (phase + '-harness.log')).open('w') as harness_log:
-                browser = subprocess.Popen([str(bundle / 'Summit'), '--profile', str(profile)], env=environment,
+                browser_command = [str(bundle / 'Summit'), '--profile', str(profile)]
+                if args.actions:
+                    browser_command.append(args.base_url + '/page?run=' + args.run_token)
+                browser = subprocess.Popen(browser_command, env=environment,
                     stdout=browser_log, stderr=subprocess.STDOUT, start_new_session=True)
                 record['pid'] = record['process_group'] = browser.pid
                 record['command'] = [str(executable), str(browser.pid), str(bundle / 'Summit'), str(profile),
                                      str(ROOT / 'package'), str(observations), args.run_token, phase, args.extension_id]
+                if args.actions:
+                    record['command'].append('watch-actions' if args.watch else 'actions')
                 save()
                 try:
                     result = subprocess.run(record['command'], stdout=harness_log, stderr=subprocess.STDOUT, timeout=180)
@@ -148,12 +155,30 @@ def run(args):
             print(record['output'], end='', flush=True)
             if not record['passed']:
                 raise RuntimeError('Native extension manager phase failed: ' + phase)
+            if args.actions and phase == 'install':
+                # Browser and helpers have exited: preserve a consistent,
+                # separate demonstration profile before removal tests.
+                preview = ROOT / 'preview-profile'
+                shutil.copytree(profile, preview)
+                report['preview_profile'] = str(preview)
+                save()
         report['observations'] = fetch()
         expected = [{'id': args.extension_id, 'boot': i, 'nonce': args.run_token,
                      'previousNonce': None if i == 1 else args.run_token, 'granted': True, 'optionalGranted': False}
-                    for i in (1, 2, 3)]
-        if report['observations'] != {'reports': expected, 'errors': []}:
+                    for i in ((1, 2, 3, 4) if args.actions else (1, 2, 3))]
+        startup_reports = [item for item in report['observations']['reports'] if 'kind' not in item]
+        action_reports = [item for item in report['observations']['reports'] if 'kind' in item]
+        if startup_reports != expected or report['observations']['errors']:
             raise RuntimeError('Unexpected background execution or restored permissions')
+        if args.actions:
+            expected_kinds = ['popup', 'popup', 'popup-button', 'clicked', 'clicked', 'popup', 'popup', 'popup', 'popup']
+            if [item.get('kind') for item in action_reports] != expected_kinds:
+                raise RuntimeError('Unexpected extension action execution: ' + repr(action_reports))
+            if [item.get('count') for item in action_reports if item['kind'] == 'popup'] != [1, 2, 3, 4, 5, 6]:
+                raise RuntimeError('Popup storage did not persist across page destruction and browser restart')
+            report['scope'] += '; actual browserAction title/badge/icon/enabled state, trusted toolbar clicks, popup HTML/JavaScript/storage, tab scoping, stale page/load rejection, popup close and unload'
+        elif action_reports:
+            raise RuntimeError('Unexpected action reports without action test mode')
         report['passed'] = True
     except Exception as error:
         report['error'] = str(error)

@@ -3,9 +3,12 @@
 #include <View.h>
 #include <string>
 #include <vector>
+#include <memory>
+
+class BBitmap;
 
 namespace summit {
-enum class Icon { Sidebar, Back, Forward, Reload, Stop, Plus, Bookmark, Downloads, Home };
+enum class Icon { Sidebar, Back, Forward, Reload, Stop, Plus, Bookmark, Downloads, Home, More };
 class ToolButton : public BButton {
 public:
     ToolButton(const char* name, const char* tooltip, Icon icon, uint32 message);
@@ -14,6 +17,18 @@ public:
 private:
     Icon fIcon;
 };
+#if SUMMIT_MODERN_WEBKIT
+class ExtensionActionButton : public BButton {
+public:
+    explicit ExtensionActionButton(const char* identifier);
+    ~ExtensionActionButton() override;
+    void SetAction(const BMessage&, uint64 snapshot);
+    void Draw(BRect update) override;
+private:
+    std::unique_ptr<BBitmap> fBitmap;
+    std::string fBadge;
+};
+#endif
 struct TabLabel { int64 id; std::string title; bool loading; };
 class TabStrip : public BView {
 public:

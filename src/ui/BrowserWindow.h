@@ -7,6 +7,7 @@
 #include <WebWindow.h>
 #endif
 #include <Messenger.h>
+#include <Message.h>
 #include <memory>
 #include <optional>
 #include <set>
@@ -25,6 +26,7 @@ class BWebDownload;
 
 namespace summit {
 class ToolButton;
+class ExtensionActionButton;
 class TabStrip;
 class ProgressLine;
 #if SUMMIT_MODERN_WEBKIT
@@ -141,6 +143,18 @@ private:
     void RefreshChrome();
 #if SUMMIT_MODERN_WEBKIT
     void SyncBrowserWindow();
+    void RefreshExtensionActions();
+    void ExtensionActionsReceived(const BMessage&);
+    void ActivateExtensionAction(const BMessage&);
+    void ShowExtensionActions();
+    bool fExtensionsEnabled = false;
+    BGroupView* fExtensionActions = nullptr;
+    ToolButton* fExtensionActionsOverflow = nullptr;
+    std::vector<ExtensionActionButton*> fExtensionActionButtons;
+    std::vector<BMessage> fExtensionActionState;
+    uint64 fExtensionActionRequest = 0;
+    uint64 fExtensionActionSnapshot = 0;
+    uint64 fExtensionActionInvocation = 0;
 #endif
     void RefreshSidebar(bool history);
     void SaveSession();

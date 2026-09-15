@@ -111,6 +111,13 @@ public:
             StartupError("Could not initialize extension permissions: " + std::string(std::strerror(initialization)));
             return;
         }
+        if (fPermissionPrompts) {
+            initialization = fWebKitContext->SetExtensionActionListener(BMessenger(this));
+            if (initialization != B_OK) {
+                StartupError("Could not initialize extension actions: " + std::string(std::strerror(initialization)));
+                return;
+            }
+        }
 #else
         setenv("CURL_COOKIE_JAR_PATH", (fProfile / "cookies.sqlite").c_str(), 1);
         BWebPage::InitializeOnce();
@@ -149,6 +156,10 @@ public:
     void MessageReceived(BMessage* message) override
     {
 #if SUMMIT_MODERN_WEBKIT
+        if (message->what == B_WEBKIT_EXTENSION_ACTIONS_CHANGED) {
+            if (fWindow.IsValid()) fWindow.SendMessage(message);
+            return;
+        }
         if (message->what == summit::kShowExtensions) {
             if (!fWindow.IsValid() || !fExtensions || !fInstaller) return;
             if (!fExtensionWindow.IsValid()) {
@@ -250,6 +261,7 @@ public:
             return false;
         }
         if (fWebKitContext) {
+            fWebKitContext->SetExtensionActionListener({});
             if (fExtensionWindow.IsValid()) fExtensionWindow.SendMessage(summit::kCloseExtensionManager);
             if (fInstaller) fInstaller->Shutdown();
             if (fExtensions) fExtensions->Shutdown();

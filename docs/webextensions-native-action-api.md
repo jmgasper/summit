@@ -45,11 +45,13 @@ The native click-event producer checks the current load, tab access and enabled
 state, and suppresses events when a popup is configured. It wakes background
 content and checks those conditions again before sending permission-filtered
 tab parameters. The web-process dispatcher creates fresh protected values for
-each listener within a WebCore user-gesture scope. The actual SDK/toolbar click
-route and temporary `activeTab` host grants remain unfinished, so this event
-producer is not yet called by a native toolbar action.
+each listener within a WebCore user-gesture scope. The public SDK and Summit
+toolbar now call this path, with real native action/popup integration tests.
+Dedicated temporary `activeTab` grant-transition coverage remains work; see
+[current SDK and toolbar evidence](modern-extension-actions.md).
 
-Native icon APIs, badge background colors and `openPopup` remain unavailable.
+Dynamic icon APIs, badge background colors and `openPopup` remain unavailable.
+The SDK does display decoded manifest action icons.
 The Cocoa bindings retain those methods and adapt ordinary details to their
 existing Objective-C implementations. Icon details reach Cocoa as raw
 JavaScript values so its existing `ImageData` conversion is preserved. The

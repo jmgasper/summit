@@ -43,5 +43,7 @@ constexpr uint32 kExtensionEnable = 'exen';
 constexpr uint32 kExtensionRemove = 'exrm';
 constexpr uint32 kExtensionManagerClosed = 'exmc';
 constexpr uint32 kCloseExtensionManager = 'excl';
+constexpr uint32 kActivateExtensionAction = 'exac';
+constexpr uint32 kShowExtensionActions = 'exam';
 constexpr uint32 kBrowserState = 'stat';
 }

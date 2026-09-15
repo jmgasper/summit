@@ -2189,3 +2189,27 @@ match; the copy records commit `9c67f33`. Evidence:
 of the system-WebKit Makefile target links successfully with OpenSSL and
 passes its 38 core checks. This does not claim extension support in that
 legacy backend.
+
+## Public action SDK, native toolbar and real popup execution
+
+Engine patch `063c724e002819e42a378056225eced55802f309254caf6640bed79c7534469e`
+connects the existing action state and popup host to public snapshot,
+invalidation and trusted activation APIs. Summit displays action icons, titles,
+badges and enabled state with tab/load validation. The full feature-enabled
+engine and browser bundle `bundle-p214ja9w` build successfully.
+
+The Gecko-ID fixture passes 202 native checks. The Chrome-key fixture passes
+217 native UI checks plus 29 identity checks across four actual browser
+processes, including application shutdown with a popup open. These tests install
+through the real picker and consent UI, execute real extension popup HTML/JS,
+verify shared saved storage, click a DOM control, dispatch action click events
+with the selected tab, preserve tab-specific overrides, reject stale page/load
+activation and remove an extension with its popup open. All owned groups drain
+normally; crash intervals and frozen-input checks pass. A QEMU screenshot shows
+the actual rendered popup. Exact paths, commands, SDK contract and remaining
+coverage are in [native extension actions](modern-extension-actions.md).
+
+This supersedes earlier notes that the toolbar/popup path had only compile or
+native-host evidence. Overflow, direct button anchoring, remaining action APIs,
+activeTab grant transitions, private/multi-window behavior and the broader real
+extension corpus remain unfinished. The original full-browser goal is active.

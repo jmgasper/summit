@@ -11,7 +11,9 @@ now restores approved installed extensions, permissions and storage across
 process restarts. Its native SDK runs extension background pages and dedicated
 extension views. Its [native extension manager](docs/modern-extension-manager.md)
 reviews and installs ZIP/XPI packages or folders, and enables, disables and
-removes installations. Broad Safari, Chrome and Firefox extension compatibility
+removes installations. Its [native toolbar actions](docs/modern-extension-actions.md)
+display live extension state and open real extension HTML popups. Broad Safari,
+Chrome and Firefox extension compatibility
 remains unfinished; see [startup evidence](docs/modern-extension-startup.md).
 
 ![Summit running current WebKit natively in Haiku](docs/screenshots/current-webkit.png)

@@ -28573,10 +28573,10 @@ index 0000000000000000000000000000000000000000..574ed16658f0c14b1aa2e63208e990b8
 +#define WEBKIT_ENGINE_VERSION_HAIKU "@WebKit_HAIKU_MAJOR_VERSION@.@WebKit_HAIKU_MINOR_VERSION@.@WebKit_HAIKU_TINY_VERSION@"
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitContext.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitContext.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..106e03ebd968cee0786cf16f3c7a32542fe89e32
+index 0000000000000000000000000000000000000000..ed6a95ab17620070ef1b64ed8ff45d616fafe1de
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitContext.cpp
-@@ -0,0 +1,322 @@
+@@ -0,0 +1,383 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -28766,6 +28766,67 @@ index 0000000000000000000000000000000000000000..106e03ebd968cee0786cf16f3c7a3254
 +#endif
 +}
 +
++status_t BWebKitContext::SetExtensionActionListener(const BMessenger& listener)
++{
++    if (m_status != B_OK)
++        return m_status;
++    if (!RunLoop::isMain())
++        return B_BAD_THREAD_ID;
++#if ENABLE(WK_WEB_EXTENSIONS)
++    return m_context->extensionPackages()->setActionListener(listener);
++#else
++    UNUSED_PARAM(listener);
++    return B_NOT_SUPPORTED;
++#endif
++}
++
++status_t BWebKitContext::GetExtensionActions(const BMessenger& window, const BMessenger& reply, uint64 identifier)
++{
++    if (m_status != B_OK)
++        return m_status;
++    if (!window.IsValid() || !window.IsTargetLocal() || !reply.IsValid() || !reply.IsTargetLocal()
++        || !identifier || identifier == std::numeric_limits<uint64>::max())
++        return B_BAD_VALUE;
++#if ENABLE(WK_WEB_EXTENSIONS)
++    auto operation = [context = m_context, window, reply, identifier] {
++        context->extensionPackages()->actions(window, reply, identifier);
++    };
++    if (RunLoop::isMain())
++        operation();
++    else
++        RunLoop::mainSingleton().dispatch(WTF::move(operation));
++    return B_OK;
++#else
++    return B_NOT_SUPPORTED;
++#endif
++}
++
++status_t BWebKitContext::ActivateExtensionAction(const char* extensionIdentifier, const BMessenger& window,
++    uint64 loadIdentifier, uint64 pageIdentifier, const BMessenger& reply, uint64 identifier)
++{
++    if (m_status != B_OK)
++        return m_status;
++    if (!extensionIdentifier || !*extensionIdentifier || !window.IsValid() || !window.IsTargetLocal()
++        || !reply.IsValid() || !reply.IsTargetLocal() || !identifier || identifier == std::numeric_limits<uint64>::max()
++        || !loadIdentifier || !pageIdentifier)
++        return B_BAD_VALUE;
++#if ENABLE(WK_WEB_EXTENSIONS)
++    auto name = String::fromUTF8(extensionIdentifier).isolatedCopy();
++    if (name.isEmpty())
++        return B_BAD_VALUE;
++    auto operation = [context = m_context, name = WTF::move(name), window, loadIdentifier, pageIdentifier, reply, identifier] {
++        context->extensionPackages()->activateAction(name, window, loadIdentifier, pageIdentifier, reply, identifier);
++    };
++    if (RunLoop::isMain())
++        operation();
++    else
++        RunLoop::mainSingleton().dispatch(WTF::move(operation));
++    return B_OK;
++#else
++    return B_NOT_SUPPORTED;
++#endif
++}
++
 +status_t BWebKitContext::SetExtensionPermissionListener(const BMessenger& listener)
 +{
 +    if (m_status != B_OK)
@@ -28901,10 +28962,10 @@ index 0000000000000000000000000000000000000000..106e03ebd968cee0786cf16f3c7a3254
 +}
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitContext.h b/Source/WebKit/UIProcess/API/haiku/WebKitContext.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..ce9fc296e7d71bac6e1a246bc39827edb55aded3
+index 0000000000000000000000000000000000000000..fef33772fd05abe82aff7d51f4fc7e8e050dc406
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitContext.h
-@@ -0,0 +1,148 @@
+@@ -0,0 +1,169 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -28938,7 +28999,10 @@ index 0000000000000000000000000000000000000000..ce9fc296e7d71bac6e1a246bc39827ed
 +    B_WEBKIT_EXTENSION_PACKAGE_PREPARED = 'wepk',
 +    B_WEBKIT_EXTENSION_PACKAGE_DISCARDED = 'wepd',
 +    B_WEBKIT_EXTENSION_LOADED = 'weld',
-+    B_WEBKIT_EXTENSION_UNLOADED = 'weul'
++    B_WEBKIT_EXTENSION_UNLOADED = 'weul',
++    B_WEBKIT_EXTENSION_ACTIONS_CHANGED = 'weac',
++    B_WEBKIT_EXTENSION_ACTIONS = 'weas',
++    B_WEBKIT_EXTENSION_ACTION_ACTIVATED = 'weaa'
 +};
 +enum : uint32 {
 +    B_WEBKIT_DOWNLOAD_SUCCEEDED,
@@ -29031,6 +29095,24 @@ index 0000000000000000000000000000000000000000..ce9fc296e7d71bac6e1a246bc39827ed
 +    // UNLOADED carries identifier/error/extension_identifier. This disables the
 +    // runtime; it does not remove the installed package or its stored data.
 +    status_t UnloadExtension(const char* extensionIdentifier, const BMessenger& reply, uint64 identifier);
++
++    // Configure on the application thread. A local listener receives CHANGED
++    // invalidations after load/unload or live action-property changes. An
++    // invalid messenger clears it. Query again after changing the active tab.
++    status_t SetExtensionActionListener(const BMessenger&);
++    // Submit from any looper. ACTIONS contains identifier/error and repeated
++    // action messages for this window's active page. Each action contains
++    // extension_identifier/name/title/badge strings, enabled/has_popup bools,
++    // load_identifier and page_identifier uint64 values. Optional icon_bgra is
++    // exactly 16*16*4 bytes of unpremultiplied BGRA pixels, top row first.
++    status_t GetExtensionActions(const BMessenger& window, const BMessenger& reply, uint64 identifier);
++    // Trusted native user input only. Both IDs must come from the displayed
++    // snapshot. The window must still be focused on that page, the extension
++    // must still have that load identity and its current action must be enabled.
++    // B_OK in ACTIVATED means dispatch accepted; popup loading is asynchronous.
++    // This grants the normal action user gesture/activeTab permission.
++    status_t ActivateExtensionAction(const char* extensionIdentifier, const BMessenger& window,
++        uint64 loadIdentifier, uint64 pageIdentifier, const BMessenger& reply, uint64 identifier);
 +
 +    // Configure on the application thread before downloads start. The directory
 +    // must already exist, be writable, and have an absolute UTF-8 path. Existing
@@ -45497,10 +45579,10 @@ index 0000000000000000000000000000000000000000..0bee5b6e8a1234d768064bc9f9802ecd
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/ExtensionPackageRegistryHaiku.cpp b/Source/WebKit/UIProcess/haiku/ExtensionPackageRegistryHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..16fabad1e5e65ebb9322cabf9c363e315924effc
+index 0000000000000000000000000000000000000000..d816befec38e8553a4bba81f3537b48802edd8cb
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/ExtensionPackageRegistryHaiku.cpp
-@@ -0,0 +1,371 @@
+@@ -0,0 +1,506 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#include "config.h"
 +#include "ExtensionPackageRegistryHaiku.h"
@@ -45508,10 +45590,17 @@ index 0000000000000000000000000000000000000000..16fabad1e5e65ebb9322cabf9c363e31
 +#if ENABLE(WK_WEB_EXTENSIONS)
 +#include "APIError.h"
 +#include "APIPageConfiguration.h"
++#include "BrowserTabRegistryHaiku.h"
++#include "WebExtensionAction.h"
++#include "WebExtensionTab.h"
 +#include "WebExtensionMatchPattern.h"
 +#include "WebExtensionControllerConfiguration.h"
 +#include "haiku/WebExtensionStateHaiku.h"
 +#include "WebKitContext.h"
++#include <WebCore/GraphicsContext.h>
++#include <WebCore/Icon.h>
++#include <WebCore/ImageBuffer.h>
++#include <WebCore/PixelBuffer.h>
 +#include <algorithm>
 +#include <limits>
 +#include <utility>
@@ -45674,11 +45763,13 @@ index 0000000000000000000000000000000000000000..16fabad1e5e65ebb9322cabf9c363e31
 +{
 +    ASSERT(RunLoop::isMain());
 +    m_shutdown = true;
++    m_actionListener = { };
 +    auto pending = std::exchange(m_requests, { });
 +    for (auto& request : pending)
 +        reply(request.value.target, B_WEBKIT_EXTENSION_PACKAGE_PREPARED, request.key, B_CANCELED);
 +    auto loaded = std::exchange(m_loaded, { });
 +    for (auto& entry : loaded) {
++        entry.value->setNativeActionChangeHandler(nullptr);
 +        if (entry.value->isLoaded())
 +            m_controller->unload(entry.value.get());
 +    }
@@ -45823,12 +45914,17 @@ index 0000000000000000000000000000000000000000..16fabad1e5e65ebb9322cabf9c363e31
 +        return;
 +    }
 +    m_loaded.add(uniqueIdentifier, context.copyRef());
++    context->setNativeActionChangeHandler(createSharedTask<void(WebExtensionAction&)>([weakThis = weak_from_this()](WebExtensionAction&) {
++        if (auto registry = weakThis.lock())
++            registry->actionsDidChange();
++    }));
 +    auto error = details.AddString("fingerprint", extension->nativeResourceFingerprint().utf8().legacyCStringPointer());
 +    if (error == B_OK)
 +        error = details.AddString("base_url", context->baseURL().string().utf8().legacyCStringPointer());
 +    auto delivered = error == B_OK ? respond(B_OK) : error;
 +    if (delivered == B_OK) {
 +        m_prepared.remove(token);
++        actionsDidChange();
 +        return;
 +    }
 +    // If the host cannot receive the activation receipt, restore the prepared
@@ -45836,6 +45932,7 @@ index 0000000000000000000000000000000000000000..16fabad1e5e65ebb9322cabf9c363e31
 +    auto unloaded = m_controller->unload(context.get());
 +    if (unloaded && *unloaded)
 +        m_loaded.remove(uniqueIdentifier);
++    actionsDidChange();
 +    respond(delivered);
 +}
 +
@@ -45861,8 +45958,10 @@ index 0000000000000000000000000000000000000000..16fabad1e5e65ebb9322cabf9c363e31
 +    Ref context = found->value.copyRef();
 +    auto result = m_controller->unload(context.get());
 +    if (result && *result) {
++        context->setNativeActionChangeHandler(nullptr);
 +        m_loaded.remove(extensionIdentifier);
 +        reply(target, B_WEBKIT_EXTENSION_UNLOADED, identifier, B_OK, &details);
++        actionsDidChange();
 +        return;
 +    }
 +    if (!result && result.error())
@@ -45870,14 +45969,132 @@ index 0000000000000000000000000000000000000000..16fabad1e5e65ebb9322cabf9c363e31
 +    reply(target, B_WEBKIT_EXTENSION_UNLOADED, identifier, B_ERROR, &details);
 +}
 +
++status_t ExtensionPackageRegistryHaiku::setActionListener(const BMessenger& listener)
++{
++    ASSERT(RunLoop::isMain());
++    if (m_shutdown)
++        return B_CANCELED;
++    if (listener.IsValid() && !listener.IsTargetLocal())
++        return B_BAD_VALUE;
++    m_actionListener = listener;
++    actionsDidChange();
++    return B_OK;
++}
++
++void ExtensionPackageRegistryHaiku::actionsDidChange()
++{
++    ASSERT(RunLoop::isMain());
++    if (!m_shutdown && m_actionListener.IsValid()) {
++        BMessage changed(B_WEBKIT_EXTENSION_ACTIONS_CHANGED);
++        m_actionListener.SendMessage(&changed, static_cast<BHandler*>(nullptr), 0);
++    }
++}
++
++void ExtensionPackageRegistryHaiku::actions(const BMessenger& owner, const BMessenger& target, uint64_t identifier)
++{
++    ASSERT(RunLoop::isMain());
++    if (m_shutdown) {
++        reply(target, B_WEBKIT_EXTENSION_ACTIONS, identifier, B_CANCELED);
++        return;
++    }
++    auto windows = m_controller->nativeBrowserTabs()->windows();
++    auto window = std::ranges::find_if(windows, [&](auto& entry) { return entry.messenger == owner; });
++    if (!owner.IsValid() || window == windows.end() || !window->activePage) {
++        reply(target, B_WEBKIT_EXTENSION_ACTIONS, identifier, B_NAME_NOT_FOUND);
++        return;
++    }
++    BMessage details;
++    status_t error = B_OK;
++    Vector<String> identities;
++    for (auto& entry : m_loaded)
++        identities.append(entry.key);
++    std::sort(identities.begin(), identities.end(), WTF::codePointCompareLessThan);
++    for (auto& identity : identities) {
++        RefPtr context = m_loaded.get(identity);
++        if (!context || !context->isLoaded())
++            continue;
++        auto& extension = context->extension();
++        if (!(extension.hasAction() || extension.hasBrowserAction() || extension.hasPageAction()))
++            continue;
++        RefPtr tab = context->getOrCreateNativeTab(*window->activePage);
++        if (!tab || !tab->isValid() || !tab->extensionHasAccess())
++            continue;
++        Ref action = context->getOrCreateAction(tab.get());
++        BMessage item;
++        auto add = [&](const char* key, const String& value) {
++            if (error == B_OK)
++                error = item.AddString(key, value.utf8().legacyCStringPointer());
++        };
++        add("extension_identifier", identity);
++        add("name", extension.displayName().left(512));
++        add("title", action->label().left(512));
++        add("badge", action->badgeText().left(64));
++        if (error == B_OK)
++            error = item.AddUInt64("load_identifier", context->privilegedIdentifier().toUInt64());
++        if (error == B_OK)
++            error = item.AddUInt64("page_identifier", window->activePage->toUInt64());
++        if (error == B_OK)
++            error = item.AddBool("enabled", action->isEnabled());
++        if (error == B_OK)
++            error = item.AddBool("has_popup", action->presentsPopup());
++        if (RefPtr icon = action->icon({ 16, 16 })) {
++            RefPtr buffer = WebCore::ImageBuffer::create({ 16, 16 }, WebCore::RenderingMode::Unaccelerated,
++                WebCore::RenderingPurpose::DOM, 1, WebCore::ColorSpace::SRGB(), WebCore::PixelFormat::BGRA8);
++            if (buffer) {
++                icon->paint(buffer->context(), { 0, 0, 16, 16 });
++                auto pixels = buffer->getPixelBuffer({ WebCore::AlphaPremultiplication::Unpremultiplied, WebCore::PixelFormat::BGRA8, WebCore::ColorSpace::SRGB() }, { 0, 0, 16, 16 });
++                if (error == B_OK && pixels && pixels->bytes().size() == 16 * 16 * 4)
++                    error = item.AddData("icon_bgra", B_RAW_TYPE, pixels->bytes().data(), pixels->bytes().size());
++            }
++        }
++        if (error == B_OK)
++            error = details.AddMessage("action", &item);
++        if (error != B_OK)
++            break;
++    }
++    reply(target, B_WEBKIT_EXTENSION_ACTIONS, identifier, error, error == B_OK ? &details : nullptr);
++}
++
++void ExtensionPackageRegistryHaiku::activateAction(const String& identity, const BMessenger& owner, uint64_t loadIdentifier,
++    uint64_t pageIdentifier, const BMessenger& target, uint64_t identifier)
++{
++    ASSERT(RunLoop::isMain());
++    BMessage details;
++    details.AddString("extension_identifier", identity.utf8().legacyCStringPointer());
++    auto respond = [&](status_t error) { reply(target, B_WEBKIT_EXTENSION_ACTION_ACTIVATED, identifier, error, &details); };
++    RefPtr context = m_loaded.get(identity);
++    if (m_shutdown || !context || !context->isLoaded() || context->privilegedIdentifier().toUInt64() != loadIdentifier) {
++        respond(B_CANCELED);
++        return;
++    }
++    auto registry = m_controller->nativeBrowserTabs();
++    auto windows = registry->windows();
++    auto window = std::ranges::find_if(windows, [&](auto& entry) { return entry.messenger == owner; });
++    if (!owner.IsValid() || window == windows.end() || !window->activePage || window->activePage->toUInt64() != pageIdentifier
++        || registry->focusedWindow() != window->identifier) {
++        respond(B_CANCELED);
++        return;
++    }
++    RefPtr tab = context->getOrCreateNativeTab(*window->activePage);
++    auto& extension = context->extension();
++    if (!tab || !tab->isValid() || !tab->extensionHasAccess()
++        || !(extension.hasAction() || extension.hasBrowserAction() || extension.hasPageAction())
++        || !context->getAction(tab.get())->isEnabled()) {
++        respond(B_NOT_ALLOWED);
++        return;
++    }
++    context->performAction(tab.get(), WebExtensionContext::UserTriggered::Yes);
++    respond(B_OK);
++}
++
 +} // namespace WebKit
 +#endif
 diff --git a/Source/WebKit/UIProcess/haiku/ExtensionPackageRegistryHaiku.h b/Source/WebKit/UIProcess/haiku/ExtensionPackageRegistryHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..d6f28ba1440782b6f88ce57ad6f82a795e04dd6e
+index 0000000000000000000000000000000000000000..1a72bba0c842ec3126abf4e9b42ba3b616f216f1
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/ExtensionPackageRegistryHaiku.h
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,56 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#pragma once
 +
@@ -45907,6 +46124,10 @@ index 0000000000000000000000000000000000000000..d6f28ba1440782b6f88ce57ad6f82a79
 +    void load(const String& token, const BWebKitExtensionLoadOptions&, const BMessenger&, uint64_t identifier);
 +    void unload(const String& extensionIdentifier, const BMessenger&, uint64_t identifier);
 +    RefPtr<API::PageConfiguration> viewConfiguration(const String& extensionIdentifier) const;
++    status_t setActionListener(const BMessenger&);
++    void actions(const BMessenger& window, const BMessenger& reply, uint64_t identifier);
++    void activateAction(const String& extensionIdentifier, const BMessenger& window, uint64_t loadIdentifier,
++        uint64_t pageIdentifier, const BMessenger& reply, uint64_t identifier);
 +    void shutdown();
 +    bool hasPendingPreparations() const { return m_inFlight; }
 +
@@ -45914,6 +46135,7 @@ index 0000000000000000000000000000000000000000..d6f28ba1440782b6f88ce57ad6f82a79
 +    ExtensionPackageRegistryHaiku(Ref<WebExtensionController>&&, bool privateBrowsing);
 +    void complete(uint64_t, uint64_t operation, std::expected<WebExtensionPackageSnapshotHaiku, WebExtensionPackageErrorHaiku>&&);
 +    static status_t reply(const BMessenger&, uint32 what, uint64_t, status_t, BMessage* = nullptr);
++    void actionsDidChange();
 +    Ref<WebExtensionController> m_controller;
 +    const bool m_privateBrowsing;
 +    Ref<WorkQueue> m_queue;
@@ -45921,6 +46143,7 @@ index 0000000000000000000000000000000000000000..d6f28ba1440782b6f88ce57ad6f82a79
 +    HashMap<uint64_t, Request> m_requests;
 +    HashMap<String, Ref<WebExtension>> m_prepared;
 +    HashMap<String, Ref<WebExtensionContext>> m_loaded;
++    BMessenger m_actionListener;
 +    unsigned m_inFlight { 0 };
 +    uint64_t m_nextOperation { 0 };
 +    bool m_shutdown { false };

@@ -1,10 +1,12 @@
 # Native extension action popup
 
-Engine patch `4bd2ca81e2ab0c0e2d5a10f9e776e0bf41cd04e392427c57961edf6c6775ba4b`
-adds the native WebKit action popup bridge. The window host passes 88 checks in
-Haiku and ten connected engine units compile. The full build reached the linker
-without compiler errors; only the request-rule loader remained undefined.
-No extension popup HTML has rendered and no extension code has executed this path.
+The native WebKit action popup now runs real extension HTML and JavaScript
+through Summit's toolbar and public SDK. The complete engine builds and the
+browser tests cover actual popup input, storage, tab changes, unload and
+shutdown. See [current implementation and native evidence](modern-extension-actions.md).
+The earlier host-only stage used engine patch
+`4bd2ca81e2ab0c0e2d5a10f9e776e0bf41cd04e392427c57961edf6c6775ba4b`;
+its narrower evidence is retained below.
 
 The host creates a floating subset window for its browser owner, keeps it hidden
 until requested, clamps its size and position to the screen, and dismisses on
@@ -37,7 +39,7 @@ producer. An action with a popup creates the page and window; its presented flag
 is set only after native presentation. Programmatic invocation does not grant
 `activeTab` access.
 
-## Evidence
+## Earlier host-only evidence
 
 `python3 tools/test-native-extension-popup.py --overlay .vm/extension-action-popup-candidate`
 passed all 88 checks in `.vm/native-extension-popup.GpRFd4dG/result.json`.
@@ -76,9 +78,9 @@ and native test attempts remain preserved in `.vm`.
 
 ## Remaining work
 
-Complete and inspect the engine build, then exercise actual popup HTML/JavaScript,
-rendering, input, sizing, navigation, permission revocation, process failure and
-lifetime in QEMU. Native toolbar/keyboard/context-menu input and
-`action.openPopup()` bindings still need their respective UI/API integration.
-Request-rule loading remains another required engine implementation. This work
-does not establish complete Chrome, Firefox or Safari extension compatibility.
+Extend integrated coverage to navigation/CSP rejection, permission revocation,
+process failure and modal dialogs. Individual-button anchoring, overflow and
+context-menu input and remaining programmatic action APIs also need work.
+The current end-to-end tests and their limits are recorded in
+[native toolbar actions](modern-extension-actions.md). This work does not
+establish complete Chrome, Firefox or Safari extension compatibility.

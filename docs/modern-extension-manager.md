@@ -36,10 +36,14 @@ receive a local identity that remains in their installation record. Duplicate
 declared identities are rejected before activation. See
 [identity behavior and tests](extension-identity.md), including mixed-manifest
 precedence. CRX and Safari bundle import, signatures/store authentication,
-updates, data erasure, action/popups,
+updates, data erasure, remaining action APIs,
 private browsing controls and broad extension API compatibility remain
 unfinished. A lost SDK reply has no operation deadline yet; cancellation after
 submitting a load also needs further native integration coverage.
+
+Live [toolbar actions and real extension popups](modern-extension-actions.md)
+are now connected to installed extensions. Their integrated tests also exercise
+this manager's actual picker, consent, disable/enable and removal flows.
 
 ## Verification
 

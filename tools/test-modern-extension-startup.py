@@ -203,6 +203,14 @@ class Reports(http.server.BaseHTTPRequestHandler):
                 except (KeyError, ValueError, AttributeError) as error:
                     self.server.errors.append(str(error))
             elif request.path != '/status':
+                if request.path == '/page':
+                    body = b'<!doctype html><title>Summit action test page</title><h1>Extension action test</h1><p>This browser tab owns the extension action.</p>'
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'text/html; charset=utf-8')
+                    self.send_header('Content-Length', str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
                 self.send_error(404)
                 return
             body = json.dumps({'reports': self.server.reports, 'errors': self.server.errors}).encode()
@@ -219,7 +227,7 @@ def host(args):
     def remote(command, **kwargs):
         return subprocess.run(['bash', str(ROOT / 'tools/haiku.sh'), command], **kwargs)
     token = secrets.token_hex(12)
-    output = ROOT / '.vm' / (('modern-extension-manager-' if args.manager else 'modern-extension-startup-') + token)
+    output = ROOT / '.vm' / (('modern-extension-actions-' if args.actions else 'modern-extension-manager-' if args.manager else 'modern-extension-startup-') + token)
     output.mkdir()
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Reports)
     server.token, server.reports, server.errors, server.lock = token, [], [], threading.Lock()
@@ -258,6 +266,16 @@ def host(args):
                 'previousNonce: old.nonce || null, granted, optionalGranted: await browser.permissions.contains({permissions: ["tabs"]})};').encode()
             if args.chrome_key:
                 files['package/background.js'] = files['package/background.js'].replace(b'browser.runtime.id', b'chrome.runtime.id')
+            if args.actions:
+                manifest['browser_action'] = {'default_title': 'Manifest title', 'default_popup': 'popup.html', 'default_icon': 'icon.png'}
+                manifest['background']['scripts'].append('action.js')
+                files['package/manifest.json'] = json.dumps(manifest).encode()
+                for path in sorted((ROOT / 'tests/fixtures/extensions/actions').iterdir()):
+                    original[str(path.relative_to(ROOT))] = digest(path)
+                    data = path.read_bytes()
+                    if path.suffix in ('.js', '.html'):
+                        data = data.replace(b'@NONCE@', token.encode()).replace(b'@REPORT_URL@', (base_url + '/report?run=' + token).encode())
+                    files['package/' + path.name] = data
             package_archive = io.BytesIO()
             with zipfile.ZipFile(package_archive, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
                 for name, data in files.items():
@@ -284,6 +302,10 @@ def host(args):
             command.append('--manager')
         if args.chrome_key:
             command += ['--chrome-key', '--extension-id', server.extension_id]
+        if args.actions:
+            command.append('--actions')
+        if args.watch:
+            command.append('--watch')
         with (output / 'native.log').open('w') as log:
             result = remote(shlex.join(command), stdout=log, stderr=subprocess.STDOUT)
         print((output / 'native.log').read_text(), end='', flush=True)
@@ -311,12 +333,18 @@ if __name__ == '__main__':
     parser.add_argument('--native', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--manager', action='store_true', help='Exercise native installer/manager controls and restart the installed browser profile')
     parser.add_argument('--chrome-key', action='store_true', help='With --manager, install a keyed package and verify the Chromium test-vector ID')
+    parser.add_argument('--actions', action='store_true', help='With --manager, exercise real toolbar actions and extension popup documents')
+    parser.add_argument('--watch', action='store_true', help='Pause briefly on each popup so the native UI can be watched over VNC')
     parser.add_argument('--extension-id', default='summit-startup-fixture', help=argparse.SUPPRESS)
     parser.add_argument('--base-url', help=argparse.SUPPRESS)
     parser.add_argument('--run-token', help=argparse.SUPPRESS)
     arguments = parser.parse_args()
     if arguments.chrome_key and not arguments.manager:
         parser.error('--chrome-key requires --manager')
+    if arguments.actions and not arguments.manager:
+        parser.error('--actions requires --manager')
+    if arguments.watch and not arguments.actions:
+        parser.error('--watch requires --actions')
     if arguments.native and arguments.manager:
         from extension_manager_runtime import run
         sys.exit(run(arguments))

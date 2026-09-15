@@ -24,6 +24,8 @@
 #include <TextControl.h>
 #include <TextView.h>
 #if SUMMIT_MODERN_WEBKIT
+#include "ExtensionInstaller.h"
+#include <PopUpMenu.h>
 #include <WebKit/WebKitInfo.h>
 #else
 #include <WebDownload.h>
@@ -111,6 +113,9 @@ BrowserWindow::BrowserWindow(std::filesystem::path profile, std::string homeURL,
 #endif
       fProfilePath(std::move(profile)), fHomeURL(std::move(homeURL))
 {
+#if SUMMIT_MODERN_WEBKIT
+    fExtensionsEnabled = extensionsEnabled;
+#endif
     std::string error;
     fProfile = Profile::Load(fProfilePath, error);
     fProfileWritable = error.empty();
@@ -183,7 +188,13 @@ BrowserWindow::BrowserWindow(std::filesystem::path profile, std::string homeURL,
         .AddGlue().Add(fAddress, 3).Add(fReload).AddGlue()
         .Add(new ToolButton("bookmark", "Bookmark this page", Icon::Bookmark, kBookmark))
         .Add(downloadsButton)
+#if SUMMIT_MODERN_WEBKIT
+        .Add(fExtensionActions = new BGroupView("extension-actions", B_HORIZONTAL, 2))
+#endif
         .Add(new ToolButton("new-tab", "New tab", Icon::Plus, kNewTab));
+#if SUMMIT_MODERN_WEBKIT
+    fExtensionActions->Hide();
+#endif
     fTabStrip = new TabStrip();
     fProgress = new ProgressLine();
     fSidebar = new BGroupView(B_VERTICAL, 8);
@@ -700,6 +711,113 @@ void BrowserWindow::SyncBrowserWindow()
         views.push_back(tab.view);
     auto* active = ActiveTab();
     fWebKitContext->SetBrowserWindowTabs(BMessenger(this), views, active ? active->view : nullptr, IsActive());
+    // Registration is dispatched to the application looper. A queued window
+    // invalidation also works during construction on the application thread.
+    if (fExtensionsEnabled) PostMessage(B_WEBKIT_EXTENSION_ACTIONS_CHANGED);
+}
+
+void BrowserWindow::RefreshExtensionActions()
+{
+    if (!fExtensionsEnabled) return;
+    fExtensionActionSnapshot = 0;
+    for (auto* button : fExtensionActionButtons) button->SetEnabled(false);
+    if (fExtensionActionsOverflow) fExtensionActionsOverflow->SetEnabled(false);
+    const auto status = fWebKitContext->GetExtensionActions(BMessenger(this), BMessenger(this), ++fExtensionActionRequest);
+    if (status != B_OK) {
+        BMessage reply(B_WEBKIT_EXTENSION_ACTIONS);
+        reply.AddUInt64("identifier", fExtensionActionRequest);
+        reply.AddInt32("error", status);
+        ExtensionActionsReceived(reply);
+    }
+}
+
+void BrowserWindow::ExtensionActionsReceived(const BMessage& message)
+{
+    uint64 request = 0;
+    if (!fExtensionsEnabled || message.FindUInt64("identifier", &request) != B_OK || request != fExtensionActionRequest) return;
+    std::vector<BMessage> actions;
+    if (message.GetInt32("error", B_ERROR) == B_OK) {
+        BMessage action;
+        for (int32 index = 0; message.FindMessage("action", index, &action) == B_OK; ++index) {
+            const char* identity = nullptr;
+            if (action.FindString("extension_identifier", &identity) != B_OK || !*identity
+                || !action.GetUInt64("load_identifier", 0) || !action.GetUInt64("page_identifier", 0)) continue;
+            actions.push_back(action);
+        }
+    }
+    const auto visible = std::min(size_t(4), actions.size());
+    bool sameButtons = visible == fExtensionActionButtons.size() && bool(fExtensionActionsOverflow) == (actions.size() > visible);
+    for (size_t i = 0; sameButtons && i < visible; ++i) {
+        const char* identity = "";
+        actions[i].FindString("extension_identifier", &identity);
+        sameButtons = std::string(fExtensionActionButtons[i]->Name()) == std::string("extension-action-") + identity;
+    }
+    if (!sameButtons) {
+        while (auto* child = fExtensionActions->ChildAt(0)) { child->RemoveSelf(); delete child; }
+        fExtensionActionButtons.clear();
+        fExtensionActionsOverflow = nullptr;
+        for (size_t i = 0; i < visible; ++i) {
+            const char* identity = "";
+            actions[i].FindString("extension_identifier", &identity);
+            auto* button = new ExtensionActionButton(identity);
+            BLayoutBuilder::Group<>(fExtensionActions).Add(button);
+            button->SetTarget(this);
+            fExtensionActionButtons.push_back(button);
+        }
+        if (actions.size() > visible) {
+            fExtensionActionsOverflow = new ToolButton("extension-actions-more", "More extension actions", Icon::More, kShowExtensionActions);
+            BLayoutBuilder::Group<>(fExtensionActions).Add(fExtensionActionsOverflow);
+            fExtensionActionsOverflow->SetTarget(this);
+        }
+    }
+    fExtensionActionState = std::move(actions);
+    fExtensionActionSnapshot = request;
+    for (size_t i = 0; i < visible; ++i) fExtensionActionButtons[i]->SetAction(fExtensionActionState[i], request);
+    if (fExtensionActionsOverflow) fExtensionActionsOverflow->SetEnabled(true);
+    if (fExtensionActionState.empty()) {
+        if (!fExtensionActions->IsHidden()) fExtensionActions->Hide();
+    } else if (fExtensionActions->IsHidden()) fExtensionActions->Show();
+}
+
+void BrowserWindow::ActivateExtensionAction(const BMessage& message)
+{
+    if (!fExtensionsEnabled || !fExtensionActionSnapshot || message.GetUInt64("snapshot", 0) != fExtensionActionSnapshot
+        || fClosingWindow || fCloseCommitPending || !IsActive()) return;
+    const char* identity = nullptr;
+    if (message.FindString("extension_identifier", &identity) != B_OK) return;
+    const auto load = message.GetUInt64("load_identifier", 0);
+    const auto page = message.GetUInt64("page_identifier", 0);
+    const auto status = fWebKitContext->ActivateExtensionAction(identity, BMessenger(this), load, page,
+        BMessenger(this), ++fExtensionActionInvocation);
+    if (status != B_OK) {
+        fStatus->SetText(("Could not activate extension: " + std::string(std::strerror(status))).c_str());
+        RefreshExtensionActions();
+    }
+}
+
+void BrowserWindow::ShowExtensionActions()
+{
+    if (!fExtensionActionSnapshot || !fExtensionActionsOverflow) return;
+    auto* menu = new BPopUpMenu("Extension actions", false, false);
+    menu->SetAsyncAutoDestruct(true);
+    for (size_t i = fExtensionActionButtons.size(); i < fExtensionActionState.size(); ++i) {
+        const auto& action = fExtensionActionState[i];
+        const char* title = "";
+        action.FindString("title", &title);
+        if (!*title) action.FindString("name", &title);
+        auto label = ExtensionDisplayText(title);
+        const char* badge = "";
+        action.FindString("badge", &badge);
+        if (*badge) label += " (" + ExtensionDisplayText(badge) + ")";
+        auto* invocation = new BMessage(action);
+        invocation->what = kActivateExtensionAction;
+        invocation->AddUInt64("snapshot", fExtensionActionSnapshot);
+        auto* item = new BMenuItem(label.c_str(), invocation);
+        item->SetTarget(BMessenger(this));
+        item->SetEnabled(action.GetBool("enabled", false));
+        menu->AddItem(item);
+    }
+    menu->Go(fExtensionActionsOverflow->ConvertToScreen(fExtensionActionsOverflow->Bounds().LeftBottom()), true, true, true);
 }
 
 void BrowserWindow::WindowActivated(bool active)
@@ -775,6 +893,16 @@ void BrowserWindow::MessageReceived(BMessage* message)
     auto* tab = ActiveTab();
     switch (message->what) {
 #if SUMMIT_MODERN_WEBKIT
+        case B_WEBKIT_EXTENSION_ACTIONS_CHANGED: RefreshExtensionActions(); break;
+        case B_WEBKIT_EXTENSION_ACTIONS: ExtensionActionsReceived(*message); break;
+        case kActivateExtensionAction: ActivateExtensionAction(*message); break;
+        case kShowExtensionActions: ShowExtensionActions(); break;
+        case B_WEBKIT_EXTENSION_ACTION_ACTIVATED:
+            if (message->GetUInt64("identifier", 0) == fExtensionActionInvocation && message->GetInt32("error", B_ERROR) != B_OK) {
+                fStatus->SetText("The extension action changed before it could open. Please try again.");
+                RefreshExtensionActions();
+            }
+            break;
         case kDownloadQuitReply: {
             uint64 generation = 0;
             int32 which = 0;
@@ -1009,6 +1137,9 @@ void BrowserWindow::MessageReceived(BMessage* message)
 #if SUMMIT_MODERN_WEBKIT
             reply.AddString("backend", "modern");
             reply.AddInt32("download_count", fDownloads.size());
+            reply.AddUInt64("extension_action_snapshot", fExtensionActionSnapshot);
+            if (fExtensionActionSnapshot)
+                for (const auto& action : fExtensionActionState) reply.AddMessage("extension_action", &action);
             reply.AddBool("closing", fClosingWindow || fWindowCloseQueued || fCloseCommitPending
                 || std::any_of(fTabs.begin(), fTabs.end(), [](const Tab& tab) {
                     return tab.closeRequested || tab.closeQueued || tab.closeApproved;
