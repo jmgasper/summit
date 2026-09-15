@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import signal
 import subprocess
@@ -23,7 +24,8 @@ EXTENSION_RUNTIME_TEST = 'EngineExtensionRuntimeTests.cpp'
 IPC_VALIDATION_TEST = 'EngineIPCValidationTests.cpp'
 COOKIE_OBSERVER_TEST = 'EngineCookieObserverRuntimeTests.cpp'
 PACKAGE_PREPARATION_TEST = 'EngineExtensionPackagePreparationTests.cpp'
-PROCESS_TESTS = (EXTENSION_RUNTIME_TEST, IPC_VALIDATION_TEST, COOKIE_OBSERVER_TEST, PACKAGE_PREPARATION_TEST)
+PACKAGE_ACTIVATION_TEST = 'EngineExtensionPackageActivationTests.cpp'
+PROCESS_TESTS = (EXTENSION_RUNTIME_TEST, IPC_VALIDATION_TEST, COOKIE_OBSERVER_TEST, PACKAGE_PREPARATION_TEST, PACKAGE_ACTIVATION_TEST)
 EXTENSION_STARTUP = 'cold'
 EXTENSION_FIXTURE = 'storage'
 TRACE_IPC = False
@@ -163,6 +165,8 @@ def native(compile_only, run_only):
             report['scope'] = 'actual API cookie store, NetworkProcess, committed cookie receipts and typed observer delivery after rapid unregister/register; no extension JavaScript or HTTP request'
         elif TEST == PACKAGE_PREPARATION_TEST:
             report['scope'] = 'actual public BWebKitContext extension package preparation, background filesystem work, manifest metadata, cancellation, token ownership and cleanup; no extension execution or installation'
+        elif TEST == PACKAGE_ACTIVATION_TEST:
+            report['scope'] = 'actual public BWebKitContext preparation/loading/unloading, approved snapshots, saved grants, native BWebKitView extension pages, background execution, storage and cookies; context reload within one browser process, not browser restart or installer UI'
         fields = ninja_fields(lambda line: line.startswith('build Source/WebKit/CMakeFiles/WebKit.dir/UIProcess/API/haiku/WebKitView.cpp.o:'))
         raw = iter(shlex.split(' '.join(fields[key] for key in ('DEFINES', 'INCLUDES', 'FLAGS'))))
         flags = []
@@ -197,9 +201,9 @@ def native(compile_only, run_only):
         libraries = [str(BUILD / 'lib/libWebKit.so'), *[flag for flag in libraries if not flag.endswith('.a')]]
     paths = {Path(flag) if Path(flag).is_absolute() else BUILD / flag for flag in libraries if not flag.startswith('-')}
     report['libraries'] = {str(path): digest(path) for path in sorted(paths)}
-    if TEST in (EXTENSION_RUNTIME_TEST, COOKIE_OBSERVER_TEST):
+    if TEST in (EXTENSION_RUNTIME_TEST, COOKIE_OBSERVER_TEST, PACKAGE_ACTIVATION_TEST):
         report['runtime_helpers'] = {str(BUILD / 'bin' / name): digest(BUILD / 'bin' / name)
-                                     for name in (('WebProcess', 'NetworkProcess') if TEST == EXTENSION_RUNTIME_TEST else ('NetworkProcess',))}
+                                     for name in (('NetworkProcess',) if TEST == COOKIE_OBSERVER_TEST else ('WebProcess', 'NetworkProcess'))}
     executable = output / 'run'
     command = ['c++', str(output / 'test.o'), '-Wl,--gc-sections', '-Wl,--disable-new-dtags', *libraries, '-o', str(executable)]
     result = subprocess.run(command, cwd=BUILD, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -222,10 +226,12 @@ def native(compile_only, run_only):
         environment.pop(name, None)
     if full_engine:
         environment['LIBRARY_PATH'] = ':'.join(map(str, (BUILD / 'lib', Path('/boot/home/summit-deps/icu78/lib'), Path('/boot/home/summit-deps/libzip-1.11.4/lib'), Path('/boot/system/lib'))))
-    if TEST in (EXTENSION_RUNTIME_TEST, COOKIE_OBSERVER_TEST):
+    if TEST in (EXTENSION_RUNTIME_TEST, COOKIE_OBSERVER_TEST, PACKAGE_ACTIVATION_TEST):
         environment['WEBKIT_EXEC_PATH'] = str(BUILD / 'bin')
     if TEST == PACKAGE_PREPARATION_TEST:
         environment['SUMMIT_EXTENSION_PREPARATION_ARCHIVE'] = str(output / 'preparation.xpi')
+    if TEST == PACKAGE_ACTIVATION_TEST:
+        environment['SUMMIT_EXTENSION_ACTIVATION_PACKAGE'] = str(output / 'activation-package')
     if TEST == EXTENSION_RUNTIME_TEST:
         environment['SUMMIT_EXTENSION_STARTUP'] = EXTENSION_STARTUP
         environment['SUMMIT_EXTENSION_FIXTURE'] = EXTENSION_FIXTURE
@@ -243,7 +249,7 @@ def native(compile_only, run_only):
     crash_log = NativeCrashLog()
     if TEST in PROCESS_TESTS:
         runtime = run_extension_fixture(executable, output, environment,
-            timeout={EXTENSION_RUNTIME_TEST: 240, IPC_VALIDATION_TEST: 30, COOKIE_OBSERVER_TEST: 90, PACKAGE_PREPARATION_TEST: 120}[TEST])
+            timeout={EXTENSION_RUNTIME_TEST: 240, IPC_VALIDATION_TEST: 30, COOKIE_OBSERVER_TEST: 90, PACKAGE_PREPARATION_TEST: 120, PACKAGE_ACTIVATION_TEST: 180}[TEST])
         report['exit'], report['output'] = runtime['exit'], runtime.pop('output')
         report['runtime_processes'] = runtime
     else:
@@ -264,6 +270,14 @@ def native(compile_only, run_only):
     if 'runtime_helpers' in report:
         report['runtime_helpers_unchanged'] = unchanged(report['runtime_helpers'])
         report['passed'] = report['passed'] and report['runtime_helpers_unchanged']
+    if TEST == PACKAGE_ACTIVATION_TEST:
+        pages = [match.groups() for line in report['output'].splitlines()
+                 if (match := re.fullmatch(r'EXTENSION_PAGE SUMMIT ACTIVATION (\d+-\d+) ([123]) PASS (\d+)', line))]
+        report['extension_page_reports'] = pages
+        report['extension_page_reports_passed'] = (len(pages) == 3
+            and len({page[0] for page in pages}) == 1
+            and [(page[1], page[2]) for page in pages] == [('1', '7'), ('2', '6'), ('3', '4')])
+        report['passed'] = report['passed'] and report['extension_page_reports_passed']
     if TEST == EXTENSION_RUNTIME_TEST:
         reports = []
         for line in report['output'].splitlines():
@@ -301,6 +315,13 @@ def host(compile_only, resume, overlay=None):
         manifest = {'engine_patch_sha256': json.loads((ROOT / 'engine/sources.lock.json').read_text())['patch']['sha256'],
                     'test_source': str(test), 'test_sha256': digest(test)}
         files = {'sources/' + TEST: test.read_bytes()}
+        if TEST == PACKAGE_ACTIVATION_TEST:
+            manifest['helpers'] = {}
+            for name in ('manifest.json', 'background.html', 'background.js', 'probe.html', 'probe.js'):
+                path = ROOT / 'tests/fixtures/extensions/activation' / name
+                relative = 'activation-package/' + name
+                files['sources/' + relative] = path.read_bytes()
+                manifest['helpers'][relative] = {'source': str(path), 'sha256': digest(path)}
         if TEST == PACKAGE_PREPARATION_TEST:
             package = io.BytesIO()
             manifest['package_sources'] = {}
@@ -364,6 +385,8 @@ def host(compile_only, resume, overlay=None):
         command.append('--cookie-observers')
     elif TEST == PACKAGE_PREPARATION_TEST:
         command.append('--extension-package-preparation')
+    elif TEST == PACKAGE_ACTIVATION_TEST:
+        command.append('--extension-package-activation')
     if compile_only:
         command.append('--compile-only')
     if resume:
@@ -390,6 +413,7 @@ if __name__ == '__main__':
     mode.add_argument('--ipc-validation', action='store_true', help='Test invalid dispatch flags through actual native WebKit connections')
     mode.add_argument('--cookie-observers', action='store_true', help='Test real network cookie observation across rapid unregister/register')
     mode.add_argument('--extension-package-preparation', action='store_true', help='Test public extension preparation, cancellation and owned package cleanup')
+    mode.add_argument('--extension-package-activation', action='store_true', help='Test public extension loading, saved grants and native extension pages')
     parser.add_argument('--extension-startup', choices=('cold', 'deferred', 'network', 'page'), default='cold',
                         help='Diagnostic startup preparation for the extension runtime fixture (default: cold)')
     parser.add_argument('--extension-fixture', choices=('storage', 'cookies'), default='storage',
@@ -411,6 +435,8 @@ if __name__ == '__main__':
         TEST = COOKIE_OBSERVER_TEST
     elif args.extension_package_preparation:
         TEST = PACKAGE_PREPARATION_TEST
+    elif args.extension_package_activation:
+        TEST = PACKAGE_ACTIVATION_TEST
     EXTENSION_STARTUP = args.extension_startup
     EXTENSION_FIXTURE = args.extension_fixture
     TRACE_IPC = args.trace_ipc

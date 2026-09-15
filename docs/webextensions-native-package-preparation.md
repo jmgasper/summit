@@ -43,7 +43,7 @@ RunLoop alive until `HasPendingExtensionPreparations()` returns false.
 ## Native verification
 
 The complete extension-enabled engine builds and links at patch
-`c628d96005f26833fd0ce12529c7e0af40a73e8f0b3c30292202fc71e513cebe`.
+`2972cc15e98b23f6dd04186631cf3f4370fe3a7d3a573175c6fd126a3fbdd3ca`.
 The public preparation fixture passes 63 native checks in QEMU. The same build
 passes the extension storage regression (14 native and 10 JavaScript assertions)
 and cookie regression (14 native and 28 JavaScript assertions). All three runs
@@ -60,10 +60,10 @@ down to 100 ms increments. Native testing also exposed a cleanup defect in
 `std::filesystem::remove_all` with a trailing slash. Extension destruction now
 removes the resource URL's final slash before deleting the owned package.
 
-Evidence: `.vm/extension-package-preparation-cleanup-tests-result.json`,
-`.vm/content-rule-pipeline.7v2fho7m/result.json`,
-`.vm/content-rule-pipeline.7UqivO6e/result.json`, and
-`.vm/content-rule-pipeline.aebPJQPC/result.json`. The failed initial run is retained
+Evidence: `.vm/extension-page-view-tests-result.json`,
+`.vm/content-rule-pipeline.9pbUaJrF/result.json`,
+`.vm/content-rule-pipeline.IiFIAalz/result.json`, and
+`.vm/content-rule-pipeline.w7pm6uEX/result.json`. The failed initial run is retained
 at `.vm/content-rule-pipeline.cP7abb2i/result.json`; it timed out and required
 fixture-group cleanup. The successful runs above use fresh stages.
 
@@ -71,6 +71,8 @@ fixture-group cleanup. The successful runs above use fresh stages.
 python3 tools/test-engine-content-rule-pipeline.py --extension-package-preparation
 ```
 
-The preparation API is not an installer. Public activation/unloading, persisted
-installed-package identity and grants, installation UI, CRX/Safari packages,
-signature verification, and broader extension API support remain unfinished.
+The preparation API supplies the snapshot for [native activation and dedicated
+extension views](webextensions-native-package-activation.md). The browser also
+has [catalog and package staging storage](extension-catalog.md). Native installer
+UI, startup integration, CRX/Safari packages, signature verification, and broader
+extension API support remain unfinished.
