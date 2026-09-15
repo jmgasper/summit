@@ -103,7 +103,7 @@ def native(args):
         report['output'] = (ROOT / 'harness.log').read_text()
         print(report['output'], end='', flush=True)
         report['passed'] = (report.get('harness_exit') == 0 and report.get('browser_exit') == 0
-            and report['group_drained'] and not report['forced_cleanup'] and 'EXTENSION_ICONS_RESULT PASS cases=47 observations=53 checks=' in report['output'])
+            and report['group_drained'] and not report['forced_cleanup'] and 'EXTENSION_ICONS_RESULT PASS cases=49 observations=55 checks=' in report['output'])
     except Exception as error:
         report['error'] = str(error)
     finally:

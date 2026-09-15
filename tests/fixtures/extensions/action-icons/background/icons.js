@@ -91,6 +91,17 @@ const cases = [
     ["malformed data rejection", async () => {
         for (const path of ["data:", "data:image/png;base64,%%%%", "data:image/png;base64,QUJDRA=="])
             await rejected({path}, true);
+        for (const text of [
+            "not an SVG document",
+            '<svg xmlns="http://example.invalid/not-svg" width="16" height="16"/>',
+            '<html xmlns="http://www.w3.org/1999/xhtml"><body>not an icon</body></html>',
+            '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect></svg>',
+            '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"/>trailing',
+        ]) {
+            const path = "data:image/svg+xml," + encodeURIComponent(text);
+            await rejected({path}, true);
+            await rejected({path: {16: "../icons/red.svg", 32: path}}, true);
+        }
     }],
     ["ImageData lookalike rejection", () => rejected({imageData: {width: 16, height: 16, data: new Uint8ClampedArray(1024)}})],
     ["invalid size rejection", async () => {
@@ -125,6 +136,8 @@ const cases = [
     ["tab empty reset", tab => action.setIcon({tabId: tab.id, imageData: {}})],
     ["closed tab rejection", () => rejected({tabId: firstTab, path: "../icons/red.svg"}, true)],
     ["global reset", () => action.setIcon({imageData: undefined})],
+    ["empty SVG", () => action.setIcon({path: 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"/>')})],
+    ["SVG without dimensions", () => action.setIcon({path: 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect width="16" height="16" fill="rgb(144,48,176)"/></svg>')})],
     ["SVG alpha", () => action.setIcon({path: svg("rgba(80,160,224,0.5)")})],
     ["isolated SVG", () => action.setIcon({path: svg("rgb(144,48,176)", '<script>document.querySelector("rect").setAttribute("fill","black")</script>')})],
     ["SVG embedded PNG", () => action.setIcon({path: svg("rgb(144,48,176)", '<image width="16" height="16" href="' + embeddedPNG() + '"/>')})],

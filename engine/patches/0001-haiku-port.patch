@@ -42120,10 +42120,10 @@ index 0000000000000000000000000000000000000000..271b3a38b4570d6f84669706d5c1beb8
 +#endif
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..011337942842cac25cb8aba9846804358be1f166
+index 0000000000000000000000000000000000000000..63cdb3eff16063a5eb019cd9e96c717714b0c08e
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionHaiku.cpp
-@@ -0,0 +1,318 @@
+@@ -0,0 +1,325 @@
 +/*
 + * Copyright (C) 2026 KunanyiOS contributors.
 + *
@@ -42406,6 +42406,13 @@ index 0000000000000000000000000000000000000000..011337942842cac25cb8aba984680435
 +        ensureIconPlatformStrategies();
 +        Ref svg = WebCore::SVGImage::create(nullptr);
 +        if (svg->setData(WTF::move(encodedData), true) != WebCore::EncodedDataStatus::Complete)
++            return fail();
++        // SVGImage reports Complete after creating its utility Page, even if
++        // parsing failed or produced another XML document type. An empty but
++        // valid SVG is an icon; an XML error document must not replace one.
++        RefPtr page = svg->internalPage();
++        RefPtr document = page ? page->localTopDocument() : nullptr;
++        if (!document || !document->wellFormed() || !document->hasSVGRootNode())
 +            return fail();
 +        auto rasterSize = sizeForResizing.isZero() ? svg->resolvedIntrinsicSize() : sizeForResizing;
 +        rasterSize.scale(scale);

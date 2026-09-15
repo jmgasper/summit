@@ -1,13 +1,19 @@
 # Native dynamic action icons
 
-The native icon suite passes against `bundle-_inqiw0r`: **47 API cases, 53 SDK
-and desktop pixel observations, and 439 native checks**. The owned browser and
+The native icon suite passes against `bundle-ptx4moys`: **49 API cases, 55 SDK
+and desktop pixel observations, and 455 native checks**. The owned browser and
 helpers exit cleanly, the crash monitor passes, and the frozen bundle and staged
 inputs remain unchanged. The same bundle also passes 238 action/popup checks
 and 169 overflow checks with clean native exits and no crash events.
 The full browser and arbitrary extension compatibility remain unfinished.
 
-The verified bundle is preserved at
+The current native bundle is
+`/SummitExtensions/summit/build-modern-browser/bundle-ptx4moys`. Its selected
+report is `.vm/modern-browser-action-icons-malformed-svg-bundle-result.json`.
+The larger volume avoids the boot filesystem allocation failure encountered
+while copying the new library.
+
+The previous verified bundle is preserved at
 `artifacts/modern-browser/bundle-_inqiw0r`. Copy provenance is
 `1474b16a3a8c78464c5067e44d7c4769d1fed85af7959c5566b0cdf5b19a4dbb`;
 the matching WebKit source archive digest is
@@ -16,7 +22,7 @@ The copy records host revision `6cc95e9`, after native implementation commit
 `e94637d`, and verifies 399 artifact entries. Source and support fingerprints
 match before and after the copy.
 
-QEMU's VNC display `127.0.0.1:5905` runs the same native bundle. Its owned preview
+QEMU's VNC display `127.0.0.1:5905` runs `bundle-ptx4moys`. Its owned preview
 uses a fresh copy of the passing icon-test profile; the 22 source-profile files
 remain unchanged. `.vm/vnc-follow-along-browser.json` records its live ownership
 and profile. Close that owned preview before another exclusive native suite.
@@ -39,6 +45,14 @@ provides the required platform loader, which accepts only inline data resources
 in SVG image frames and completes their decoding before rasterization. Scripting
 and media stay disabled. SVG files, scripted SVG isolation, embedded PNGs, and
 malformed embedded images are covered by the native pixel suite.
+
+A completed SVG image load does not itself prove that XML parsing succeeded.
+The decoder now requires a well-formed document with an SVG root before an
+icon can replace its predecessor. Tests reject plain text, a wrong SVG
+namespace, XHTML, mismatched tags and trailing content, both directly and as
+one entry in a representation dictionary. Valid empty SVGs remain transparent
+icons, and viewBox-only SVGs render without explicit width/height attributes.
+The new rejection case failed against the previous bundle before this fix.
 
 The tests also exposed a Haiku image-buffer mismatch: B_RGBA32 stores straight
 alpha, while the common pixel helpers assumed premultiplied storage. The Haiku
@@ -67,18 +81,25 @@ and runtime have not been tested.
 ## Evidence
 
 Engine patch:
-`e71fe35768f9d28d5475179f0d782b7820e3027bdfb48f2bea1036ff583b65ca`.
+`0cc5c59e2d4732fe3b02d38b898ce74b5cec00c477980cad43863d93f1071d70`.
 
-- `.vm/modern-browser-action-icons-alpha-bundle-result.json`: immutable native
+- `.vm/modern-browser-action-icons-malformed-svg-bundle-result.json`: immutable native
   browser bundle built from the completed engine.
-- `.vm/modern-extension-icons-84b00bb1c07e04c0733b6753/result.json`: passing native
+- `.vm/modern-extension-icons-217bac07928b10ec344a04a1/result.json`: passing native
   icon suite, clean process exits and crash monitor, unchanged source inputs and
-  bundle. Native stage: `/boot/home/summit/extension-icon-inputs.gjmB8MWG`.
-- `.vm/modern-extension-actions-794d107692da6f7924ff2192/result.json`: 238
+  bundle. Native stage: `/boot/home/summit/extension-icon-inputs.BhS9aEbp`.
+- `.vm/modern-extension-actions-acd7aa8b4afd4b451d0737fb/result.json`: 238
   action/popup checks over installation, popup quit, removal and restart phases.
-- `.vm/modern-extension-overflow-e5498aeb8666afc19bb4f864/result.json`: 169 native
+- `.vm/modern-extension-overflow-0d8ea8619623bd7ea575781a/result.json`: 169 native
   overflow checks. Both regression reports preserve bundle/staged input hashes,
   record clean browser/helper exits and have passing crash monitors.
+- `.vm/modern-extension-icons-eae529207fe9df60c59584a0/result.json`:
+  the old bundle accepts malformed SVG and fails the new rejection case.
+- `.vm/action-icon-malformed-svg-engine-build.log`: successful rebuild/link
+  after document validation; `.vm/extension-lifecycle-inputs.nWmmUuQY/result.json`
+  records its isolated compile.
+- `.vm/bundle-copy-diagnostic.json`: boot-volume copy failure at 72,679,424 bytes
+  with 310,343,680 bytes still free; the full bundle succeeds on the larger volume.
 - `.vm/action-icon-alpha-engine-build.log`: successful WebCore, WebKit,
   NetworkProcess and WebProcess build/link after the alpha correction.
 - `.vm/extension-lifecycle-inputs.YNxUk7WV/result.json`: isolated native compile
@@ -108,7 +129,6 @@ preserved. The first run's manifest SVG crash is recorded in
 `.vm/action-icon-svg-crash.report`; subsequent SVG/alpha diagnostic runs and the
 passing icon run have clean native exits and crash logs.
 
-Further work includes malformed SVG document rejection, external SVG resource
-coverage, private/multiwindow scenarios, programmatic `openPopup`, MV3 service
+Further work includes external SVG resource coverage, private/multiwindow scenarios, programmatic `openPopup`, MV3 service
 workers, and representative Safari/Chrome/Firefox extensions. Passing this
 fixture does not establish arbitrary third-party extension compatibility.
