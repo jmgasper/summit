@@ -38,7 +38,7 @@ class BrowserWindow : public BrowserWindowBase {
 public:
 #if SUMMIT_MODERN_WEBKIT
     BrowserWindow(std::filesystem::path profile, std::string homeURL, const std::vector<std::string>& urls,
-        std::shared_ptr<BWebKitContext> context);
+        std::shared_ptr<BWebKitContext> context, bool extensionsEnabled = false);
 #else
     BrowserWindow(std::filesystem::path profile, std::string homeURL, const std::vector<std::string>& urls);
 #endif

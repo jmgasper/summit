@@ -17,6 +17,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -218,7 +219,7 @@ def host(args):
     def remote(command, **kwargs):
         return subprocess.run(['bash', str(ROOT / 'tools/haiku.sh'), command], **kwargs)
     token = secrets.token_hex(12)
-    output = ROOT / '.vm' / ('modern-extension-startup-' + token)
+    output = ROOT / '.vm' / (('modern-extension-manager-' if args.manager else 'modern-extension-startup-') + token)
     output.mkdir()
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Reports)
     server.token, server.reports, server.errors, server.lock = token, [], [], threading.Lock()
@@ -229,12 +230,32 @@ def host(args):
     try:
         names = ('tests/ExtensionStartupSeed.cpp', 'tests/ModernCloseTests.cpp', 'tools/test-modern-extension-startup.py',
                  'tools/test-modern-close-native.py', 'tools/native_crash_log.py')
+        if args.manager:
+            names += ('tests/ModernExtensionManagerTests.cpp', 'tools/extension_manager_runtime.py')
         files = {name: (ROOT / name).read_bytes() for name in names}
         original = {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}
         for path in sorted((ROOT / 'tests/fixtures/extensions/startup').iterdir()):
             original[str(path.relative_to(ROOT))] = digest(path)
             files['package/' + path.name] = path.read_text().replace('@NONCE@', token).replace(
                 '@REPORT_URL@', base_url + '/report?run=' + token).encode()
+        if args.manager:
+            manifest = json.loads(files['package/manifest.json'])
+            manifest['browser_specific_settings'] = {'gecko': {'id': 'summit-startup-fixture'}}
+            manifest['permissions'].append('summitUnknownPermission')
+            manifest['optional_permissions'] = ['tabs']
+            files['package/manifest.json'] = json.dumps(manifest).encode()
+            background = files['package/background.js'].decode()
+            expected = 'previousNonce: old.nonce || null, granted};'
+            if background.count(expected) != 1:
+                raise RuntimeError('Startup fixture report shape changed')
+            files['package/background.js'] = background.replace(expected,
+                'previousNonce: old.nonce || null, granted, optionalGranted: await browser.permissions.contains({permissions: ["tabs"]})};').encode()
+            package_archive = io.BytesIO()
+            with zipfile.ZipFile(package_archive, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+                for name, data in files.items():
+                    if name.startswith('package/'):
+                        archive.writestr(name.removeprefix('package/'), data)
+            files['package.xpi'] = package_archive.getvalue()
         inputs = {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}
         files['inputs.json'] = (json.dumps(inputs, indent=2) + '\n').encode()
         archive = io.BytesIO()
@@ -251,6 +272,8 @@ def host(args):
         print(json.dumps({'stage': stage, 'output': str(output), 'base_url': base_url}), flush=True)
         command = ['python3.10', stage + '/tools/test-modern-extension-startup.py', '--native', '--bundle', args.bundle,
                    '--base-url', base_url, '--run-token', token]
+        if args.manager:
+            command.append('--manager')
         with (output / 'native.log').open('w') as log:
             result = remote(shlex.join(command), stdout=log, stderr=subprocess.STDOUT)
         print((output / 'native.log').read_text(), end='', flush=True)
@@ -276,7 +299,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--bundle', required=True)
     parser.add_argument('--native', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--manager', action='store_true', help='Exercise native installer/manager controls and restart the installed browser profile')
     parser.add_argument('--base-url', help=argparse.SUPPRESS)
     parser.add_argument('--run-token', help=argparse.SUPPRESS)
     arguments = parser.parse_args()
+    if arguments.native and arguments.manager:
+        from extension_manager_runtime import run
+        sys.exit(run(arguments))
     sys.exit(native(arguments) if arguments.native else host(arguments))

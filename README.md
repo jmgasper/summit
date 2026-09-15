@@ -9,8 +9,10 @@ bookmarks, history, downloads and saved sessions. The WebKit snapshot pinned on
 September 13 builds and runs in Summit. The modern extension-enabled browser
 now restores approved installed extensions, permissions and storage across
 process restarts. Its native SDK runs extension background pages and dedicated
-extension views. The installer UI and broad Safari, Chrome and Firefox
-extension compatibility remain unfinished; see [startup evidence](docs/modern-extension-startup.md).
+extension views. Its [native extension manager](docs/modern-extension-manager.md)
+reviews and installs ZIP/XPI packages or folders, and enables, disables and
+removes installations. Broad Safari, Chrome and Firefox extension compatibility
+remains unfinished; see [startup evidence](docs/modern-extension-startup.md).
 
 ![Summit running current WebKit natively in Haiku](docs/screenshots/current-webkit.png)
 

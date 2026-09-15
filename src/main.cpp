@@ -2,6 +2,8 @@
 #include "ui/Messages.h"
 #include "ui/ExtensionPermissionPrompt.h"
 #include "ui/ExtensionController.h"
+#include "ui/ExtensionInstaller.h"
+#include "ui/ExtensionManager.h"
 #include "core/Address.h"
 #include <Alert.h>
 #include <Application.h>
@@ -14,6 +16,7 @@
 #include <WebSettings.h>
 #endif
 #include <filesystem>
+#include <atomic>
 #include <string>
 #include <vector>
 #include <cstdio>
@@ -123,22 +126,78 @@ public:
         }
         auto* window = new summit::BrowserWindow(fProfile / "profile.json", summit::FileURL(home.string()), fURLs
 #if SUMMIT_MODERN_WEBKIT
-            , fWebKitContext
+            , fWebKitContext, bool(fPermissionPrompts)
 #endif
         );
         fWindow = BMessenger(window);
         window->Show();
 #if SUMMIT_MODERN_WEBKIT
         if (fPermissionPrompts) {
-            fExtensions = std::make_unique<summit::ExtensionController>(fWebKitContext, fProfile / "Extensions");
+            fExtensions = std::make_unique<summit::ExtensionController>(fWebKitContext, fProfile / "Extensions",
+                [this] { RefreshExtensions(); });
             AddHandler(fExtensions.get());
             fExtensions->Start();
+            fInstaller = std::make_unique<summit::ExtensionInstaller>(fWebKitContext, fProfile / "Extensions",
+                [this](summit::InstalledExtension entry, std::string baseURL, std::string error, bool installed) {
+                    fExtensions->AddLoaded(std::move(entry), std::move(baseURL), std::move(error), installed);
+                }, [this] { RefreshExtensions(); });
+            AddHandler(fInstaller.get());
+            fInstaller->Start();
         }
 #endif
     }
     void MessageReceived(BMessage* message) override
     {
 #if SUMMIT_MODERN_WEBKIT
+        if (message->what == summit::kShowExtensions) {
+            if (!fWindow.IsValid() || !fExtensions || !fInstaller) return;
+            if (!fExtensionWindow.IsValid()) {
+                auto* manager = new summit::ExtensionManager(BMessenger(this), fExtensionWindows);
+                fExtensionWindow = BMessenger(manager);
+                manager->Show();
+            } else fExtensionWindow.SendMessage(summit::kShowExtensions);
+            RefreshExtensions();
+            return;
+        }
+        if (message->what == summit::kExtensionSelected || message->what == summit::kExtensionApprove
+            || message->what == summit::kExtensionCancel || message->what == summit::kExtensionEnable
+            || message->what == summit::kExtensionRemove || message->what == summit::kExtensionManagerClosed) {
+            BMessenger sender;
+            if (!fInstaller || !fExtensions || message->FindMessenger("window", &sender) != B_OK || sender != fExtensionWindow) return;
+            uint64 generation = 0;
+            message->FindUInt64("generation", &generation);
+            if (message->what == summit::kExtensionManagerClosed) {
+                fExtensionWindow = {};
+                // The window may close before the first import snapshot has
+                // reached it. Closing the owning manager cancels its current
+                // import even when that window still has an older generation.
+                fInstaller->Cancel(fInstaller->Generation());
+                return;
+            }
+            if (!fWindow.IsValid()) return;
+            if (message->what == summit::kExtensionSelected && fExtensions->IsReady() && !fInstaller->IsBusy()) {
+                entry_ref ref;
+                if (message->FindRef("refs", &ref) == B_OK) {
+                    BPath path(&ref);
+                    if (path.InitCheck() == B_OK) fInstaller->Import(path.Path());
+                }
+            } else if (message->what == summit::kExtensionApprove) {
+                bool files = false;
+                if (message->FindBool("allow_files", &files) == B_OK) fInstaller->Approve(generation, files, false);
+            } else if (message->what == summit::kExtensionCancel) fInstaller->Cancel(generation);
+            else if (!fInstaller->IsBusy()) {
+                const char* identifier = nullptr;
+                if (message->FindString("extension_identifier", &identifier) == B_OK) {
+                    if (message->what == summit::kExtensionRemove) fExtensions->Remove(identifier);
+                    else {
+                        bool enabled = false;
+                        if (message->FindBool("enabled", &enabled) == B_OK) fExtensions->SetEnabled(identifier, enabled);
+                    }
+                }
+            }
+            RefreshExtensions();
+            return;
+        }
         if (message->what == B_WEBKIT_DOWNLOAD_STARTED || message->what == B_WEBKIT_DOWNLOAD_PROGRESS
             || message->what == B_WEBKIT_DOWNLOAD_FINISHED) {
             // The application remains the listener while closing windows and
@@ -191,13 +250,20 @@ public:
             return false;
         }
         if (fWebKitContext) {
+            if (fExtensionWindow.IsValid()) fExtensionWindow.SendMessage(summit::kCloseExtensionManager);
+            if (fInstaller) fInstaller->Shutdown();
+            if (fExtensions) fExtensions->Shutdown();
+            if (fExtensionWindows->load() || (fInstaller && fInstaller->HasPendingWork())
+                || (fExtensions && fExtensions->HasPendingWork())) {
+                fWaitingForNativeUI = true;
+                SetPulseRate(100000);
+                return false;
+            }
+            if (fInstaller) {
+                RemoveHandler(fInstaller.get());
+                fInstaller.reset();
+            }
             if (fExtensions) {
-                fExtensions->Shutdown();
-                if (fExtensions->HasPendingWork()) {
-                    fWaitingForNativeUI = true;
-                    SetPulseRate(100000);
-                    return false;
-                }
                 RemoveHandler(fExtensions.get());
                 fExtensions.reset();
             }
@@ -244,6 +310,28 @@ public:
     bool WebKitInitialized() const { return fWebKitInitialized; }
     int ExitStatus() const { return fExitStatus; }
 private:
+#if SUMMIT_MODERN_WEBKIT
+    void RefreshExtensions()
+    {
+        if (!fExtensionWindow.IsValid() || !fExtensions || !fInstaller) return;
+        BMessage state = fInstaller->Snapshot();
+        state.what = summit::kExtensionsState;
+        state.AddBool("ready", fExtensions->IsReady());
+        state.AddString("catalog_error", fExtensions->CatalogError().c_str());
+        for (const auto& entry : fExtensions->Entries()) {
+            BMessage item;
+            item.AddString("identifier", entry.installation.identifier.c_str());
+            item.AddString("name", entry.installation.name.c_str());
+            item.AddString("version", entry.installation.version.c_str());
+            item.AddString("error", entry.error.c_str());
+            item.AddBool("enabled", entry.installation.enabled);
+            item.AddBool("loaded", entry.loaded);
+            item.AddBool("installed", entry.installed);
+            state.AddMessage("entry", &item);
+        }
+        fExtensionWindow.SendMessage(&state, static_cast<BHandler*>(nullptr), 0);
+    }
+#endif
     void StartupError(const std::string& message)
     {
         fExitStatus = 1;
@@ -257,6 +345,9 @@ private:
     std::shared_ptr<BWebKitContext> fWebKitContext;
     std::unique_ptr<summit::ExtensionPermissionPrompt> fPermissionPrompts;
     std::unique_ptr<summit::ExtensionController> fExtensions;
+    std::unique_ptr<summit::ExtensionInstaller> fInstaller;
+    BMessenger fExtensionWindow;
+    std::shared_ptr<std::atomic<unsigned>> fExtensionWindows = std::make_shared<std::atomic<unsigned>>(0);
     bool fWaitingForNativeUI = false;
     bool fNativeUIExitReady = false;
     bool fCancellingDownloads = false;

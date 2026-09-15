@@ -21,11 +21,13 @@ behavior: remaining worker TLS destructors must not race destruction of libbe's
 global handler-token table. Normal window, profile and context cleanup still
 runs before that final exit.
 
-The installer/consent UI, extension manager, update and removal flows are not
-implemented yet. The controller does not provide an operation timeout if an
-SDK reply is lost. Its normal startup/shutdown path is tested; cancellation
-while loading and prolonged use need further integration coverage. This work
-does not establish general Safari, Chrome or Firefox extension compatibility.
+The [native installer and manager](modern-extension-manager.md) now use the
+same catalog and public SDK for approval, enable/disable and removal. Updates
+and erasure of retained package/data files remain unfinished. The controller
+does not provide an operation timeout if an SDK reply is lost. Its normal
+startup/shutdown path is tested; cancellation while loading and prolonged use
+need further integration coverage. This work does not establish general
+Safari, Chrome or Firefox extension compatibility.
 
 ## Native verification
 

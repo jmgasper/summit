@@ -18,6 +18,7 @@ public:
         bool loaded = false;
         std::string baseURL;
         std::string error;
+        bool installed = true;
     };
     ExtensionController(std::shared_ptr<BWebKitContext>, std::filesystem::path catalogRoot,
         std::function<void()> changed = { });
@@ -27,12 +28,19 @@ public:
     void MessageReceived(BMessage*) override;
     const std::vector<Entry>& Entries() const { return fEntries; }
     const std::string& CatalogError() const { return fCatalogError; }
+    bool IsReady() const;
+    bool SetEnabled(const std::string& identifier, bool enabled);
+    bool Remove(const std::string& identifier);
+    void AddLoaded(InstalledExtension, std::string baseURL, std::string error = {}, bool installed = true);
 private:
     enum class Pending { None, Prepare, Load, Unload };
+    enum class Operation { None, Enable, Disable, Remove };
     void Next();
     void Fail(const std::string&);
     void Changed();
     void DiscardToken();
+    void Advance();
+    void FinishRemovalOrDisable();
     std::shared_ptr<BWebKitContext> fContext;
     ExtensionCatalog fCatalog;
     std::function<void()> fChanged;
@@ -41,6 +49,7 @@ private:
     size_t fIndex = 0;
     uint64 fRequest = 0;
     Pending fPending = Pending::None;
+    Operation fOperation = Operation::None;
     bool fStarted = false, fStopping = false;
 };
 }

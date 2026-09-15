@@ -2120,3 +2120,27 @@ Source and build-support fingerprints match before and after copying, and the
 copied native report and executable digests match the tested guest bundle.
 Evidence: `.vm/modern-extension-startup-bundle-copy.log` and the artifact's
 `copy-provenance.json`.
+
+## Native extension installer and manager
+
+**Window → Extensions…** now opens a native manager with a real file picker,
+permission review, installation and enable/disable/remove controls. Packages
+are staged on a worker and prepared through the public SDK; generation and
+fingerprint checks bind approval to the reviewed snapshot. Optional grants,
+file access and private access stay off by default. Removal unloads and forgets
+the startup record while explicitly retaining package files and saved data.
+
+The actual picker and lifecycle test passes **123 checks** on
+`bundle-tz1tfyzh`. A folder installation and a subsequent XPI installation run
+both preserve approved grants and storage across distinct browser processes,
+reject duplicate identities, and remove the extension from later startup.
+Cancellation, stale approvals, closing during import, and quitting with the
+manager/file picker still open pass. Browser/helper groups drain normally,
+native crash-log intervals are clean, and all frozen/staged/host input hashes
+stay unchanged. Both portable test suites also pass.
+
+See [installer behavior and exact evidence](modern-extension-manager.md).
+Package signatures and store authentication, updates, retained-data erasure,
+Chrome key identity, CRX/Safari bundles, action UI and broad API/extension corpus
+compatibility remain unfinished. Engine patch `2972cc15e98b23f6dd04186631cf3f4370fe3a7d3a573175c6fd126a3fbdd3ca`
+is unchanged for this application integration.

@@ -36,5 +36,12 @@ constexpr uint32 kDownloadQuitReply = 'dqre';
 constexpr uint32 kShowExtensions = 'exts';
 constexpr uint32 kInspectExtension = 'exin';
 constexpr uint32 kExtensionSelected = 'exsl';
+constexpr uint32 kExtensionsState = 'exst';
+constexpr uint32 kExtensionApprove = 'exap';
+constexpr uint32 kExtensionCancel = 'exca';
+constexpr uint32 kExtensionEnable = 'exen';
+constexpr uint32 kExtensionRemove = 'exrm';
+constexpr uint32 kExtensionManagerClosed = 'exmc';
+constexpr uint32 kCloseExtensionManager = 'excl';
 constexpr uint32 kBrowserState = 'stat';
 }

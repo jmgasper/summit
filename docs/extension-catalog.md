@@ -3,7 +3,7 @@
 `src/core/ExtensionCatalog` provides the filesystem storage needed by Summit's
 native installer and startup loader. It is included in `summit_core` and works
 on both the host and Haiku. The modern extension-enabled browser uses it for
-automatic startup; the native installer and management UI remain unfinished.
+automatic startup and its [native installer and manager](modern-extension-manager.md).
 
 An `ExtensionCatalog` owns a dedicated profile directory containing
 `catalog.json` and a `packages` directory. Each installation records its stable
@@ -22,7 +22,7 @@ subsequent preparation step must validate containment and materialize accepted
 links. Special filesystem entries and imports into their own storage tree are
 rejected.
 
-The intended installer sequence is:
+The application installer sequence is:
 
 1. Stage the selected package on a worker.
 2. Pass its owned `Path()` to `BWebKitContext::PrepareExtension`.
@@ -46,8 +46,9 @@ keeps the prior catalog intact. Reads are bounded to 4 MiB even if a file grows
 while being read; malformed, duplicate, unsupported-version, or unsafe-path
 records cause an error without replacing the caller's current list or rewriting
 the file. `SetEnabled` persists an existing installation's enabled state.
-`Forget` removes only its record, leaving package bytes and WebKit data for a
-separate removal operation after runtime teardown.
+`Forget` removes only its record. The manager unloads the runtime first and
+explicitly tells the user that package bytes and WebKit data are retained.
+Erasing that retained data and automatic updates remain future work.
 
 The host core suite passes, and `ExtensionCatalogTests.cpp` passes 57 checks in
 Haiku. The native run has unchanged input hashes and a clean crash-log interval:

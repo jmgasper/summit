@@ -3,6 +3,7 @@
 #include <WebKit/WebKitContext.h>
 #include <Message.h>
 #include <Messenger.h>
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <utility>
@@ -51,9 +52,68 @@ void ExtensionController::Fail(const std::string& error)
     std::fprintf(stderr, "Summit extension %s: %s\n", entry.installation.identifier.c_str(), error.c_str());
     DiscardToken();
     fPending = Pending::None;
-    ++fIndex;
+    Advance();
+}
+void ExtensionController::Advance()
+{
+    if (fOperation != Operation::None) {
+        fOperation = Operation::None;
+        fIndex = fStopping ? 0 : fEntries.size();
+    } else ++fIndex;
     Changed();
     Next();
+}
+bool ExtensionController::IsReady() const
+{
+    return fStarted && !fStopping && fCatalogError.empty() && fIndex == fEntries.size() && !HasPendingWork();
+}
+void ExtensionController::AddLoaded(InstalledExtension entry, std::string baseURL, std::string error, bool installed)
+{
+    // The app serializes installer operations with this controller.
+    fEntries.push_back({ std::move(entry), true, std::move(baseURL), std::move(error), installed });
+    if (!fStopping) fIndex = fEntries.size();
+    Changed();
+    if (fStopping) Next();
+}
+bool ExtensionController::SetEnabled(const std::string& identifier, bool enabled)
+{
+    if (!IsReady()) return false;
+    auto found = std::find_if(fEntries.begin(), fEntries.end(), [&](const auto& entry) { return entry.installation.identifier == identifier; });
+    if (found == fEntries.end() || !found->installed) return false;
+    if (enabled && found->loaded) return true;
+    fIndex = found - fEntries.begin();
+    fOperation = enabled ? Operation::Enable : Operation::Disable;
+    found->error.clear();
+    if (enabled) {
+        if (!fCatalog.SetEnabled(identifier, true, found->error)) { Advance(); return false; }
+        found->installation.enabled = true;
+    }
+    Changed();
+    Next();
+    return true;
+}
+bool ExtensionController::Remove(const std::string& identifier)
+{
+    if (!IsReady()) return false;
+    auto found = std::find_if(fEntries.begin(), fEntries.end(), [&](const auto& entry) { return entry.installation.identifier == identifier; });
+    if (found == fEntries.end()) return false;
+    fIndex = found - fEntries.begin();
+    fOperation = Operation::Remove;
+    found->error.clear();
+    Changed();
+    Next();
+    return true;
+}
+void ExtensionController::FinishRemovalOrDisable()
+{
+    auto& entry = fEntries[fIndex];
+    if (fOperation == Operation::Remove) {
+        if (entry.installed && !fCatalog.Forget(entry.installation.identifier, entry.error)) { Advance(); return; }
+        fEntries.erase(fEntries.begin() + fIndex);
+    } else {
+        if (fCatalog.SetEnabled(entry.installation.identifier, false, entry.error)) entry.installation.enabled = false;
+    }
+    Advance();
 }
 void ExtensionController::Next()
 {
@@ -62,6 +122,13 @@ void ExtensionController::Next()
         auto& entry = fEntries[fIndex];
         if (fStopping) {
             if (!entry.loaded) { ++fIndex; continue; }
+            fPending = Pending::Unload;
+            auto status = fContext->UnloadExtension(entry.installation.identifier.c_str(), BMessenger(this), ++fRequest);
+            if (status != B_OK) Fail(std::strerror(status));
+            return;
+        }
+        if (fOperation == Operation::Disable || fOperation == Operation::Remove) {
+            if (!entry.loaded) { FinishRemovalOrDisable(); return; }
             fPending = Pending::Unload;
             auto status = fContext->UnloadExtension(entry.installation.identifier.c_str(), BMessenger(this), ++fRequest);
             if (status != B_OK) Fail(std::strerror(status));
@@ -103,6 +170,7 @@ void ExtensionController::MessageReceived(BMessage* message)
             fToken.clear();
         }
         DiscardToken();
+        fOperation = Operation::None;
         fIndex = 0;
         Next();
         return;
@@ -132,9 +200,9 @@ void ExtensionController::MessageReceived(BMessage* message)
     entry.baseURL = entry.loaded ? field(*message, "base_url") : std::string();
     entry.error.clear();
     fToken.clear();
-    ++fIndex;
-    Changed();
-    Next();
+    if (pending == Pending::Unload && (fOperation == Operation::Disable || fOperation == Operation::Remove))
+        FinishRemovalOrDisable();
+    else Advance();
 }
 void ExtensionController::Shutdown()
 {

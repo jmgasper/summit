@@ -101,7 +101,7 @@ static void AddItem(BMenu* menu, const char* label, uint32 what, char key = 0, u
 BrowserWindow::BrowserWindow(std::filesystem::path profile, std::string homeURL,
     const std::vector<std::string>& urls
 #if SUMMIT_MODERN_WEBKIT
-    , std::shared_ptr<BWebKitContext> context
+    , std::shared_ptr<BWebKitContext> context, bool extensionsEnabled
 #endif
     )
     : BrowserWindowBase(BRect(75, 65, 1195, 745), "Summit", B_TITLED_WINDOW_LOOK, B_NORMAL_WINDOW_FEEL,
@@ -159,6 +159,11 @@ BrowserWindow::BrowserWindow(std::filesystem::path profile, std::string homeURL,
     AddItem(window, "Next Tab", kNextTab);
     AddItem(window, "Previous Tab", kPreviousTab);
     AddItem(window, "Downloads", kShowDownloads, 'J');
+#if SUMMIT_MODERN_WEBKIT
+    auto* extensions = new BMenuItem("Extensions…", new BMessage(kShowExtensions));
+    extensions->SetEnabled(extensionsEnabled);
+    window->AddItem(extensions);
+#endif
     menu->AddItem(window);
 
     auto* toolbar = new BGroupView(B_HORIZONTAL, 4);
@@ -835,6 +840,7 @@ void BrowserWindow::MessageReceived(BMessage* message)
         case kShowBookmarks: case kShowHistory:
             if (fSidebar->IsHidden()) fSidebar->Show();
             RefreshSidebar(message->what == kShowHistory); break;
+        case kShowExtensions: be_app->PostMessage(kShowExtensions); break;
         case kOpenSaved: {
             int32 index = fSavedList->CurrentSelection();
             if (index >= 0 && size_t(index) < fSidebarPages.size()) Navigate(fSidebarPages[index].url);
