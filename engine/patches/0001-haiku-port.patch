@@ -54652,10 +54652,10 @@ index 0000000000000000000000000000000000000000..928b5089cc6ae1383f4cde7956e180da
 +#endif
 diff --git a/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionMenuItemParameters.cpp b/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionMenuItemParameters.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..cb1fd09114a4488fa98978b4675253f5ab9ce08f
+index 0000000000000000000000000000000000000000..1883d4363bc0bef87d989b1a1e760e21d29bb31e
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionMenuItemParameters.cpp
-@@ -0,0 +1,264 @@
+@@ -0,0 +1,272 @@
 +/*
 + * Copyright (C) 2023-2024 Apple Inc. All rights reserved.
 + *
@@ -54883,22 +54883,27 @@ index 0000000000000000000000000000000000000000..cb1fd09114a4488fa98978b4675253f5
 +    }
 +    if (details.frameIdentifier && !isNone(details.frameIdentifier) && !isMainFrame(details.frameIdentifier) && details.frameIdentifier->toUInt64() > 9007199254740991ULL)
 +        return JSValueMakeNull(context);
-+    auto global = JSContextGetGlobalContext(context);
-+    Protected<JSObjectRef> result(global, JSObjectMake(context, nullptr, nullptr));
-+    auto set = [&](ASCIILiteral key, JSValueRef value) {
-+        JSObjectSetProperty(context, result.get(), toJSString(key).get(), value, kJSPropertyAttributeNone, nullptr);
++    Ref result = JSON::Object::create();
++    auto identifier = [&](ASCIILiteral key, const String& nativeKey) {
++        // Both identifiers were validated above. Decode into native JSON values
++        // so serialization preserves string/integer identity without running JS.
++        auto value = decodeWebExtensionMenuIdentifier(nativeKey);
++        if (auto* text = std::get_if<String>(&*value))
++            result->setString(key, *text);
++        else
++            result->setDouble(key, static_cast<double>(std::get<int64_t>(*value)));
 +    };
 +    auto string = [&](ASCIILiteral key, const String& value) {
-+        set(key, JSValueMakeString(context, toJSString(value).get()));
++        result->setString(key, value);
 +    };
-+    set("menuItemId"_s, toWebAPIMenuIdentifier(context, parameters.identifier));
++    identifier("menuItemId"_s, parameters.identifier);
 +    if (parameters.parentIdentifier)
-+        set("parentMenuItemId"_s, toWebAPIMenuIdentifier(context, *parameters.parentIdentifier));
++        identifier("parentMenuItemId"_s, *parameters.parentIdentifier);
 +    if (isCheckedType(*parameters.type)) {
-+        set("checked"_s, JSValueMakeBoolean(context, parameters.checked.value_or(false)));
-+        set("wasChecked"_s, JSValueMakeBoolean(context, wasChecked));
++        result->setBoolean("checked"_s, parameters.checked.value_or(false));
++        result->setBoolean("wasChecked"_s, wasChecked);
 +    }
-+    set("editable"_s, JSValueMakeBoolean(context, details.editable));
++    result->setBoolean("editable"_s, details.editable);
 +    if (!details.selectionString.isNull())
 +        string("selectionText"_s, details.selectionString);
 +    if (!details.sourceURL.isNull()) {
@@ -54913,10 +54918,13 @@ index 0000000000000000000000000000000000000000..cb1fd09114a4488fa98978b4675253f5
 +    if (!details.linkText.isNull())
 +        string("linkText"_s, details.linkText);
 +    if (isValid(details.frameIdentifier) && !details.frameURL.isNull()) {
-+        set("frameId"_s, JSValueMakeNumber(context, toWebAPI(*details.frameIdentifier)));
++        result->setDouble("frameId"_s, toWebAPI(*details.frameIdentifier));
 +        string(isMainFrame(details.frameIdentifier) ? "pageUrl"_s : "frameUrl"_s, details.frameURL.string());
 +    }
-+    return result.get();
++    // JSC's native JSON parser creates ordinary own data properties. Assigning
++    // through JSObjectSetProperty could invoke an extension's inherited setters.
++    // This C API entry point does not call the replaceable global JSON.parse.
++    return JSValueMakeFromJSONString(context, toJSString(result->toJSONString()).get());
 +}
 +}
 +#endif

@@ -182,6 +182,37 @@ static void checkIdentifiersAndValues()
     verify("other !== info && (info.menuItemId = 'changed', other.menuItemId === '001')"_s, "independent listeners get independent event objects");
     JSGarbageCollect(context);
     verify("other.menuItemId === '001' && other.selectionText === 'selected'"_s, "published event values survive garbage collection");
+    evaluate(R"((globalThis.prototypeWrites=0, globalThis.jsonHookCalls=0,
+        globalThis.menuFieldNames=['menuItemId','parentMenuItemId','checked','wasChecked','editable','frameId','pageUrl','linkUrl','linkText','selectionText','srcUrl','mediaType'],
+        menuFieldNames.forEach(key => Object.defineProperty(Object.prototype, key, {configurable:true, set(value){++prototypeWrites; throw Error('inherited setter');}})),
+        globalThis.savedParse=JSON.parse, globalThis.savedStringify=JSON.stringify,
+        JSON.parse=JSON.stringify=function(){++jsonHookCalls;throw Error('overridden JSON hook');}))"_s);
+    publish("guardedInfo"_s, toWebAPIMenuClickInfo(context, item, false, details));
+    verify("prototypeWrites === 0 && guardedInfo.menuItemId === '001' && guardedInfo.parentMenuItemId === 7 && guardedInfo.selectionText === 'selected' && Object.keys(guardedInfo).length === 12"_s,
+        "click construction creates own data fields without invoking inherited setters");
+    verify("menuFieldNames.every(key => {const d=Object.getOwnPropertyDescriptor(guardedInfo,key);return d && d.writable && d.enumerable && d.configurable && 'value' in d;})"_s,
+        "click fields keep ordinary writable enumerable configurable data descriptors");
+    verify("jsonHookCalls === 0"_s, "click construction does not invoke replaceable global JSON helpers");
+    evaluate("(menuFieldNames.forEach(key => delete Object.prototype[key]), JSON.parse=savedParse, JSON.stringify=savedStringify)"_s);
+    auto roundTripItem = item;
+    for (auto script : { R"('quote"slash\\line\n\uDFFF')"_s, R"('\uD83D\uDE80')"_s, "9007199254740991"_s, "-9007199254740991"_s }) {
+        Protected<JSValueRef> original(context, evaluate(script));
+        auto key = parseWebExtensionMenuIdentifier(context, original.get());
+        check(!!key, "escaped Unicode and boundary numeric menu IDs remain valid");
+        if (!key)
+            continue;
+        roundTripItem.identifier = *key;
+        Protected<JSValueRef> converted(context, toWebAPIMenuClickInfo(context, roundTripItem, false, details));
+        auto value = JSObjectGetProperty(context, JSValueToObject(context, converted.get(), nullptr), toJSString("menuItemId"_s).get(), nullptr);
+        check(JSValueIsStrictEqual(context, value, original.get()), "click serialization preserves Unicode, escapes and safe integer boundary IDs exactly");
+    }
+    Protected<JSValueRef> selected(context, evaluate(R"('line\nnul\u0000quote"slash\\pair\uD83D\uDE80lone\uDFFF')"_s));
+    JSRetainPtr selectedString(Adopt, JSValueToStringCopy(context, selected.get(), nullptr));
+    auto textDetails = details;
+    textDetails.selectionString = toString(selectedString.get());
+    Protected<JSValueRef> textInfo(context, toWebAPIMenuClickInfo(context, item, false, textDetails));
+    auto selectedResult = JSObjectGetProperty(context, JSValueToObject(context, textInfo.get(), nullptr), toJSString("selectionText"_s).get(), nullptr);
+    check(JSValueIsStrictEqual(context, selectedResult, selected.get()), "click serialization preserves selection control characters, embedded NUL and unpaired surrogates");
     item.type = WebExtensionMenuItemType::Normal;
     item.parentIdentifier = std::nullopt;
     details = { };

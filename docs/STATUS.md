@@ -1905,9 +1905,26 @@ listener removals remain tied to the original load.
 
 **169 native helper checks, 501 binding checks and 13 connected translation
 units pass.** The 25-file source audit matches the integrated patch. Native CMake
-configuration succeeds; the full Extensions-enabled build is running. The
-preceding cookie build's two missing symbols/six references remain the last
-completed linker result. No extension has run and no native extension menu has
+configuration succeeds. The full Extensions-enabled build compiled all sources
+and resolved the menu dispatcher, then failed to link on **three missing native
+functions (seven references)**: DNR rule loading, command dispatch and user-gesture
+handling. No extension has run and no native extension menu has
 been displayed. Model/callback lifecycle runtime, trusted native click routing,
 activeTab access and background menu persistence remain unfinished. See the
 [menu port](webextensions-native-menu-items.md) for the tested scope and evidence.
+
+Patch `ee89662671ea95fac79949f6ef426a052d9939f96be7baf39d89d2f46a78dfb6`
+corrects click-info construction so inherited JavaScript setters cannot swallow
+event fields or run during native conversion. JSC's native JSON parser creates
+own data properties and ignores replacements of global JSON functions. Two
+regression failures were reproduced against the preceding patch; **181 native
+checks pass** with the correction, and the changed helper compiles with Extensions
+enabled. The incremental full-target build compiles the changed helper without
+warnings and reaches the same three missing functions/seven references. The current 25-file source audit
+combines the original menu evidence and the one-file correction; all current
+native sources and generated target membership match. Evidence:
+`.vm/extension-menu-current-validation.json` and
+`.vm/modern-extensions-menu-own-properties-build-result.json`.
+
+The live QEMU desktop is available through VNC on host port **5905**. A visible
+Terminal now shows ongoing build output and milestones; see [VM access](VM.md).

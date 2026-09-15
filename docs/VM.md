@@ -12,6 +12,21 @@ disk is `summit/.vm/extensions.qcow2`. Kiri's disk and VM are separate.
 - Upstream engine checkout: `/boot/home/summit-webkit`.
 - Engine install prefix: `/boot/home/summit-webkit-install`.
 
+Connect a VNC viewer to `127.0.0.1:5905` on the development host. Viewers that
+accept a display number can use `127.0.0.1:5`. From another computer, first
+forward the port through SSH:
+
+```sh
+ssh -N -L 5905:127.0.0.1:5905 your-user@development-host
+```
+
+Then connect the viewer to local port 5905. The current development session has
+a **Summit - live build progress** Terminal window following
+`/boot/home/summit/live-progress.log`; the host mirrors build output and milestone
+updates into it. Compilation normally runs over SSH. GUI test windows appear
+on this same desktop when those tests run. Move the pointer or press Shift if
+the screen saver has blanked the display.
+
 The initial guest disk was created with QEMU's live `drive-backup` of Kiri's
 development VM. The backup job completed without error before this copy was
 booted. Its SSH host key was checked against the source VM's trusted key.
