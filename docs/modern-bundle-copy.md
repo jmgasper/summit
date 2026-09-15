@@ -169,3 +169,16 @@ its matching WebKit source archive digest is
 All 399 artifact entries match their recorded hashes. Native/host reports,
 source fingerprints and build-support fingerprints match. The native action,
 color, popup and overflow results are in [native badge colors](webextensions-native-badge-colors.md).
+
+## Dynamic action icons
+
+The verified dynamic-icon bundle is
+`artifacts/modern-browser/bundle-_inqiw0r`, with copy source revision `6cc95e9`
+and engine patch `e71fe35768f9d28d5475179f0d782b7820e3027bdfb48f2bea1036ff583b65ca`.
+Its provenance digest is
+`1474b16a3a8c78464c5067e44d7c4769d1fed85af7959c5566b0cdf5b19a4dbb`.
+All 399 artifact entries were checked, with matching source/support fingerprints
+before and after copying. The native run passes 47 icon cases, 53 pixel
+observations (439 checks), 238 action/popup checks and 169 overflow checks;
+process exits and crash monitors are clean. See
+[dynamic icon evidence](webextensions-native-action-icons.md).

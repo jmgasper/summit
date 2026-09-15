@@ -7,6 +7,20 @@ inputs remain unchanged. The same bundle also passes 238 action/popup checks
 and 169 overflow checks with clean native exits and no crash events.
 The full browser and arbitrary extension compatibility remain unfinished.
 
+The verified bundle is preserved at
+`artifacts/modern-browser/bundle-_inqiw0r`. Copy provenance is
+`1474b16a3a8c78464c5067e44d7c4769d1fed85af7959c5566b0cdf5b19a4dbb`;
+the matching WebKit source archive digest is
+`55292ce7df17670c59740adb716631477e3975e3ce0f8be52678bf2f50f6a49f`.
+The copy records host revision `6cc95e9`, after native implementation commit
+`e94637d`, and verifies 399 artifact entries. Source and support fingerprints
+match before and after the copy.
+
+QEMU's VNC display `127.0.0.1:5905` runs the same native bundle. Its owned preview
+uses a fresh copy of the passing icon-test profile; the 22 source-profile files
+remain unchanged. `.vm/vnc-follow-along-browser.json` records its live ownership
+and profile. Close that owned preview before another exclusive native suite.
+
 ## Behavior
 
 `setIcon` accepts paths, size-to-path dictionaries, genuine `ImageData`, and
