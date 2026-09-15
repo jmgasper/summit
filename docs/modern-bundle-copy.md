@@ -213,3 +213,23 @@ source revision `a807a22` and 399 checked artifact entries. Copy provenance is
 `800941a35e53700d2b83c77721bcd9d4d9d645f6c89a195b1c3f33ef705af6d6`;
 the matching WebKit source archive digest is
 `beba5136830221cd40d24865288ab2f29fb59e97fc5d49f896c93da497a96b54`.
+
+## Programmatic action popups
+
+The verified copy is `artifacts/modern-browser/bundle-en85evku`, from native
+bundle `/SummitExtensions/summit/build-modern-browser/bundle-en85evku`, recording
+host source revision `9f4cc5b` and engine patch
+`591548f4b18259ad3de2ac4eeac855d882176d083f6718b15f41f5b2fd424c34`.
+Its copy provenance digest is
+`091676aa7f4624f88e1e5cd9132ac77e1eb87e4216fa09b75df8b0481e333fb6`;
+the matching WebKit source archive digest is
+`6e64763b4c7fd117b821cc2670b30bd461b5044beac088db269a2da9fa758d26`.
+
+All 399 artifact entries match their recorded hashes, modes, and link targets.
+The native inventory contains 375 entries and 177 files, and source/support
+fingerprints match before and after copying. The selected report is
+`.vm/modern-browser-action-open-popup-bundle-result.json`; independent host
+validation is `.vm/action-open-popup-artifact-validation.json`.
+The bundle passes 342 programmatic popup checks on each of three fresh profiles,
+455 icon checks, 238 toolbar-action/popup checks, 29 identity checks, and 169
+overflow checks. See [popup behavior and runtime evidence](webextensions-native-open-popup.md).

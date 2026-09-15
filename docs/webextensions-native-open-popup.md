@@ -7,8 +7,14 @@ adds the API, IPC receiver, and native presentation completion. The tested nativ
 bundle is `/SummitExtensions/summit/build-modern-browser/bundle-en85evku`.
 The preceding distribution, `bundle-ptx4moys` with patch `0cc5c59e...`, does not
 expose this API. The new bundle also passes the icon, toolbar-action, and overflow
-regressions. Its host distribution copy is still pending.
+regressions. Its verified host copy is
+`artifacts/modern-browser/bundle-en85evku`; see [copy provenance](modern-bundle-copy.md#programmatic-action-popups).
 Full browser and Safari/Chrome/Firefox extension compatibility remain unfinished.
+
+Actual QEMU preview: [programmatic popup](screenshots/native-programmatic-popup.png).
+The popup was opened by the background API over the fixture's loopback control
+channel. Its response and popup script both reported redacted page metadata and
+zero action clicks.
 
 ## Behavior
 
