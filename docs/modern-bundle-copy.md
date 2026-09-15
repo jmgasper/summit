@@ -207,3 +207,9 @@ The newer `bundle-ptx4moys` is built directly on the mounted larger volume at
 `.vm/modern-browser-action-icons-malformed-svg-bundle-result.json`;
 [the icon record](webextensions-native-action-icons.md) includes malformed SVG
 rejection and the successful native results.
+
+Its verified host copy is `artifacts/modern-browser/bundle-ptx4moys`, recording
+source revision `a807a22` and 399 checked artifact entries. Copy provenance is
+`800941a35e53700d2b83c77721bcd9d4d9d645f6c89a195b1c3f33ef705af6d6`;
+the matching WebKit source archive digest is
+`beba5136830221cd40d24865288ab2f29fb59e97fc5d49f896c93da497a96b54`.

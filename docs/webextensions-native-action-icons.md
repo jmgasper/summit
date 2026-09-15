@@ -13,6 +13,14 @@ report is `.vm/modern-browser-action-icons-malformed-svg-bundle-result.json`.
 The larger volume avoids the boot filesystem allocation failure encountered
 while copying the new library.
 
+The matching host copy is `artifacts/modern-browser/bundle-ptx4moys`, from
+source revision `a807a22` after the SVG fix in `5375aea`. Its provenance digest is
+`800941a35e53700d2b83c77721bcd9d4d9d645f6c89a195b1c3f33ef705af6d6`;
+the WebKit source archive digest is
+`beba5136830221cd40d24865288ab2f29fb59e97fc5d49f896c93da497a96b54`.
+All 399 artifact entries match their recorded hashes, with matching source and
+support fingerprints before and after copying.
+
 The previous verified bundle is preserved at
 `artifacts/modern-browser/bundle-_inqiw0r`. Copy provenance is
 `1474b16a3a8c78464c5067e44d7c4769d1fed85af7959c5566b0cdf5b19a4dbb`;
