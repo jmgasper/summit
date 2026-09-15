@@ -60,7 +60,9 @@ The original `build-manifest.json` and `host-bundle-report.json` are preserved.
 before/after fingerprints and a file inventory of the final payload excluding
 the provenance file itself. The final command output reports the provenance
 digest. These hashes establish the copied inputs; they do not establish browser
-runtime behavior. The current extension-enabled copy is `bundle-mo8zo6d4`,
+runtime behavior. The latest extension-enabled copy is `bundle-p214ja9w`,
+with [native action/popup evidence and provenance](modern-extension-actions.md).
+The earlier identity-enabled copy is `bundle-mo8zo6d4`,
 including the native extension manager, real XPI/folder picker, Chrome manifest
 key identities and approved extension startup across browser process restarts.
 Its provenance digest is
@@ -150,3 +152,10 @@ the Git checkout expected by `prepare-webkit.py`. Consult the preserved
 `tools/build-webkit-in-vm.sh` for the exact native CMake configuration and paths.
 Rebuilding is separate from copying and does not promise identical binary hashes
 or substitute for testing the rebuilt browser.
+
+The toolbar/action/popup bundle `artifacts/modern-browser/bundle-p214ja9w`
+is copied and verified. Its provenance digest is
+`fe620c5e42a9f5c783f3b62ec40c3854a4b99eaec38001b7acf3d9a01e2ba056`
+and its matching engine source archive digest is
+`40b83599ce48235f5dc8b30dc2d743290081140a16cb3c22c976fafa64eae62e`.
+Runtime evidence and feature limits are in [native extension actions](modern-extension-actions.md).

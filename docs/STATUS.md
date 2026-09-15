@@ -2213,3 +2213,11 @@ This supersedes earlier notes that the toolbar/popup path had only compile or
 native-host evidence. Overflow, direct button anchoring, remaining action APIs,
 activeTab grant transitions, private/multi-window behavior and the broader real
 extension corpus remain unfinished. The original full-browser goal is active.
+
+The tested toolbar/popup bundle and matching WebKit source are copied to
+`artifacts/modern-browser/bundle-p214ja9w`. Copy provenance SHA-256 is
+`fe620c5e42a9f5c783f3b62ec40c3854a4b99eaec38001b7acf3d9a01e2ba056`;
+engine source archive SHA-256 is
+`40b83599ce48235f5dc8b30dc2d743290081140a16cb3c22c976fafa64eae62e`.
+The copy completed normally, with matching source/support fingerprints,
+native report, binary and launcher digests. Earlier artifacts remain intact.

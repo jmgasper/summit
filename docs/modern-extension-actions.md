@@ -50,6 +50,14 @@ tool exit receipt was lost during context compaction. A subsequent native
 `ninja -n all` returns zero with no work pending, and the bundled engine runs
 the actual tests below. Browser bundle: `bundle-p214ja9w`.
 
+The verified bundle is available at `artifacts/modern-browser/bundle-p214ja9w/`
+with matching frozen application inputs and WebKit sources. Copy provenance
+SHA-256: `fe620c5e42a9f5c783f3b62ec40c3854a4b99eaec38001b7acf3d9a01e2ba056`.
+Engine source archive SHA-256:
+`40b83599ce48235f5dc8b30dc2d743290081140a16cb3c22c976fafa64eae62e`.
+The native report, binary/launcher digests and before/after source/support
+fingerprints match. Copy log: `.vm/modern-browser-action-toolbar-bundle-copy.log`.
+
 ```sh
 python3 tools/test-modern-extension-startup.py --manager --actions \
   --bundle /boot/home/summit/build-modern-browser/bundle-p214ja9w
