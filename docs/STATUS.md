@@ -2277,3 +2277,23 @@ All 399 artifact entries match the recorded inventory. A separate VNC preview
 profile again runs the verified extension and real popup; the test source profile
 remains unchanged. Broader extension compatibility and the original full-browser
 goal remain incomplete.
+
+## Native extension localization and initial injected styles
+
+Bundle `bundle-omqykez8` exposes five localization methods on Haiku and collects
+injected author styles before the initial render-tree style resolution. This
+fixes extension CSS on pages without their own stylesheets. The native suites
+pass 329 localization checks, 342 programmatic popup checks and 455 icon checks.
+All runs exit normally, drain their processes, retain their recorded input hashes
+and cover the native crash log without debugger events.
+
+The matching artifact is `artifacts/modern-browser/bundle-omqykez8/`, copied at
+host revision `886704c`. All 399 artifact entries match, with unchanged source and
+build-support fingerprints. Its provenance digest is
+`2367a3fb5d5bb8b2c9f3df90b3de8daf9ae66c635072a1a0fb4911fe0ba13ef2`.
+The matching WebKit archive digest is
+`4c4d3311e203bb514517d6c833b29739f4e05634f43fd24e517a5b9e03b2a5be`.
+The current VNC preview uses a separate profile with this bundle. See
+[the localization record](webextensions-localization.md) for exact evidence,
+the preceding CSS diagnosis and remaining locale/published-extension coverage.
+Full Safari, Chrome and Firefox extension compatibility remains incomplete.

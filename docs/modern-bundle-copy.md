@@ -60,8 +60,10 @@ The original `build-manifest.json` and `host-bundle-report.json` are preserved.
 before/after fingerprints and a file inventory of the final payload excluding
 the provenance file itself. The final command output reports the provenance
 digest. These hashes establish the copied inputs; they do not establish browser
-runtime behavior. The latest extension-enabled copy is `bundle-p214ja9w`,
-with [native action/popup evidence and provenance](modern-extension-actions.md).
+runtime behavior. The latest extension-enabled copy is `bundle-omqykez8`,
+with [localization, injected stylesheet, popup and icon evidence](webextensions-localization.md).
+The earlier `bundle-p214ja9w` retains its
+[native action/popup evidence and provenance](modern-extension-actions.md).
 The earlier identity-enabled copy is `bundle-mo8zo6d4`,
 including the native extension manager, real XPI/folder picker, Chrome manifest
 key identities and approved extension startup across browser process restarts.

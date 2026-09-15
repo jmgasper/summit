@@ -13,6 +13,16 @@ All three runs exited normally, drained their owned processes, preserved all rec
 source/package/bundle hashes, and recorded complete crash-log coverage without
 debugger events. This does not establish published-extension compatibility.
 
+The matching host artifact is `artifacts/modern-browser/bundle-omqykez8/`.
+The copy records host revision `886704cfab7dcbbbe0c220f8c01ccc41de43523c`;
+source and build-support fingerprints match before and after archiving, and
+all 399 artifact entries match the final inventory. Its provenance digest is
+`2367a3fb5d5bb8b2c9f3df90b3de8daf9ae66c635072a1a0fb4911fe0ba13ef2`;
+the matching WebKit source archive digest is
+`4c4d3311e203bb514517d6c833b29739f4e05634f43fd24e517a5b9e03b2a5be`.
+Validation is recorded in `.vm/i18n-css-fixed-artifact-validation.json`.
+A separate preview profile runs this bundle in [VNC on port 5905](VM.md).
+
 The implementation exposes the five localization methods already defined by the
 pinned WebKit interface through C++ bindings on Haiku. It also repairs shared
 message processing: replacement text is appended without scanning it again,
@@ -37,7 +47,7 @@ were unchanged throughout that run. Evidence:
 
 - `.vm/extension-localization-tests.xCgQ2AKH/runtime.json`: initial failures.
 - `.vm/extension-localization-tests.7jawQXs5/runtime.json`: 44 passing assertions.
-- `.vm/i18n-next.json`: current work and remaining verification.
+- `.vm/i18n-next.json`: current work and remaining compatibility coverage.
 
 To compile the candidate helper:
 
