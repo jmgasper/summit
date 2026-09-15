@@ -15,6 +15,7 @@ ENGINE = Path('/boot/home/summit-webkit-extensions')
 BUILD = ENGINE / 'WebKitBuild/Modern'
 TEST = 'EngineContentRulePipelineTests.cpp'
 DNR_TEST = 'EngineExtensionDNRRulesTests.cpp'
+STORE_TEST = 'EngineContentRuleStoreTests.cpp'
 
 
 def digest(path):
@@ -73,6 +74,8 @@ def native(compile_only, run_only):
                   'runtime_executed': False, 'passed': False, 'linked_webcore_archive': False, 'linked_webkit': False}
         if TEST == DNR_TEST:
             report['scope'] = 'native DNR translator through real WebCore parser, compiler and backend; no extension loader, persistent store, IPC, browser or network request'
+        elif TEST == STORE_TEST:
+            report['scope'] = 'actual WebKit persistent content-rule store and main-loop callbacks; no extension context, privileged IPC or browser/network request'
         fields = ninja_fields(lambda line: line.startswith('build Source/WebKit/CMakeFiles/WebKit.dir/UIProcess/API/haiku/WebKitView.cpp.o:'))
         raw = iter(shlex.split(' '.join(fields[key] for key in ('DEFINES', 'INCLUDES', 'FLAGS'))))
         flags = []
@@ -97,11 +100,14 @@ def native(compile_only, run_only):
             return result.returncode
 
     # Refuse to link an older archive while its source changes are still building.
-    ready = subprocess.run(['ninja', '-C', str(BUILD), '-n', 'lib/libWebCore.a'], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    targets = ['WebKit', 'WebProcess', 'NetworkProcess'] if TEST == STORE_TEST else ['lib/libWebCore.a']
+    ready = subprocess.run(['ninja', '-C', str(BUILD), '-n', *targets], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     if ready.returncode or 'ninja: no work to do.' not in ready.stdout:
-        raise RuntimeError('WebCore archive is not fully rebuilt: ' + ready.stdout[-2000:])
+        raise RuntimeError('Required engine targets are not fully rebuilt: ' + ready.stdout[-2000:])
     fields = ninja_fields(lambda line: ': CXX_SHARED_LIBRARY_LINKER__WebKit_' in line)
     libraries = shlex.split(fields['LINK_LIBRARIES'])
+    if TEST == STORE_TEST:
+        libraries = [str(BUILD / 'lib/libWebKit.so'), *[flag for flag in libraries if not flag.endswith('.a')]]
     paths = {Path(flag) if Path(flag).is_absolute() else BUILD / flag for flag in libraries if not flag.startswith('-')}
     report['libraries'] = {str(path): digest(path) for path in sorted(paths)}
     executable = output / 'run'
@@ -113,14 +119,19 @@ def native(compile_only, run_only):
     if result.returncode:
         return result.returncode
     dynamic = subprocess.check_output(['readelf', '-d', str(executable)], text=True)
-    if 'libWebKit' in dynamic:
+    if TEST == STORE_TEST and 'libWebKit' not in dynamic:
+        raise RuntimeError('Store test must link the actual WebKit library')
+    if TEST != STORE_TEST and 'libWebKit' in dynamic:
         raise RuntimeError('Pipeline test unexpectedly links WebKit')
-    report['linked_webcore_archive'] = True
+    report['linked_webcore_archive'] = TEST != STORE_TEST
+    report['linked_webkit'] = TEST == STORE_TEST
     report['executable_sha256'] = digest(executable)
     report['dynamic_dependencies'] = dynamic
     environment = os.environ.copy()
     for name in ('LD_PRELOAD', 'LD_PRELOAD_ADDONS', 'DISABLE_ASLR'):
         environment.pop(name, None)
+    if TEST == STORE_TEST:
+        environment['LIBRARY_PATH'] = ':'.join(map(str, (BUILD / 'lib', Path('/boot/home/summit-deps/icu78/lib'), Path('/boot/home/summit-deps/libzip-1.11.4/lib'), Path('/boot/system/lib'))))
     from native_crash_log import NativeCrashLog
     crash_log = NativeCrashLog()
     try:
@@ -181,6 +192,8 @@ def host(compile_only, resume, overlay=None):
     command = ['python3.10', stage + '/tools/test-engine-content-rule-pipeline.py', '--native']
     if TEST == DNR_TEST:
         command.append('--dnr')
+    elif TEST == STORE_TEST:
+        command.append('--store')
     if compile_only:
         command.append('--compile-only')
     if resume:
@@ -200,13 +213,17 @@ if __name__ == '__main__':
     parser.add_argument('--compile-only', action='store_true')
     parser.add_argument('--run-only', action='store_true')
     parser.add_argument('--resume', help='Resume a compiled native staging directory after WebCore has rebuilt')
-    parser.add_argument('--dnr', action='store_true', help='Run the native DNR translation pipeline fixture')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--dnr', action='store_true', help='Run the native DNR translation pipeline fixture')
+    mode.add_argument('--store', action='store_true', help='Run the persistent WebKit rule store fixture')
     parser.add_argument('--overlay', help='Candidate translator sources under Source/; requires --dnr')
     args = parser.parse_args()
     if args.overlay and not args.dnr:
         parser.error('--overlay requires --dnr')
     if args.dnr:
         TEST = DNR_TEST
+    elif args.store:
+        TEST = STORE_TEST
     if args.compile_only and (args.run_only or args.resume):
         parser.error('Compile-only and resume/run-only are mutually exclusive')
     raise SystemExit(native(args.compile_only, args.run_only) if args.native else host(args.compile_only, args.resume, args.overlay))

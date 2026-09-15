@@ -33398,7 +33398,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..09e611a9580d57d3428b94a6284312b4
  
  #endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
-index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f671142ad9 100644
+index 05a8676082d56f2c47c9af6120f5120b09f982be..496a19f12f86573f50b07596560a47fb561d599e 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 @@ -51,7 +51,11 @@
@@ -33425,11 +33425,12 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
  #if ENABLE(INSPECTOR_EXTENSIONS)
  #include "APIInspectorExtension.h"
  #include "APIInspectorExtensionClient.h"
-@@ -144,9 +153,20 @@ namespace PAL {
+@@ -144,9 +153,21 @@ namespace PAL {
  class SessionID;
  }
  
 +namespace API {
++class ContentRuleList;
 +class NavigationAction;
 +class PageConfiguration;
 +}
@@ -33447,7 +33448,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
  using WebViewClass = WebKitWebView;
  using WebViewConfiguration = GRefPtr<WebKitSettings>;
  using NavigationPolicyAction = WebKitNavigationPolicyDecision;
-@@ -179,6 +199,11 @@ enum class WebExtensionContextInstallReason : uint8_t {
+@@ -179,6 +200,11 @@ enum class WebExtensionContextInstallReason : uint8_t {
      BrowserUpdate,
  };
  
@@ -33459,7 +33460,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
  class WebExtensionContext : public API::ObjectImpl<API::Object::Type::WebExtensionContext>, public IPC::MessageReceiver, public Identified<WebExtensionContextIdentifier> {
      WTF_MAKE_NONCOPYABLE(WebExtensionContext);
  
-@@ -198,6 +223,8 @@ public:
+@@ -198,6 +224,8 @@ public:
      {
  #if PLATFORM(COCOA)
          return "State.plist"_s;
@@ -33468,7 +33469,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
  #else
          return "State.ini"_s;
  #endif
-@@ -206,6 +233,8 @@ public:
+@@ -206,6 +234,8 @@ public:
      static NSMutableDictionary *readStateFromPath(const String&);
  #elif ENABLE(2022_GLIB_API)
      static GRefPtr<GKeyFile> readStateFromPath(const String&);
@@ -33477,7 +33478,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
  #endif
      static bool readLastBaseURLFromState(const String& filePath, URL& outLastBaseURL);
      static bool readDisplayNameFromState(const String& filePath, String& outDisplayName);
-@@ -214,7 +243,7 @@ public:
+@@ -214,7 +244,7 @@ public:
  
      static WebExtensionContext* NODELETE get(WebExtensionContextIdentifier);
  
@@ -33486,7 +33487,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
      explicit WebExtensionContext(Ref<WebExtension>&&);
  #elif ENABLE(2022_GLIB_API)
      explicit WebExtensionContext(WebKitWebExtensionContext*);
-@@ -265,11 +294,8 @@ public:
+@@ -265,11 +295,8 @@ public:
          bool userGesture { false };
      };
  
@@ -33498,7 +33499,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
      using PortQueuedMessageMap = HashMap<PortWorldPair, Vector<PortQueuedMessage>>;
      using NativePortMap = HashMap<WebExtensionPortChannelIdentifier, Ref<WebExtensionMessagePort>>;
  
-@@ -334,6 +360,21 @@ public:
+@@ -334,6 +361,21 @@ public:
          DeniedPermissionMatchPatternsWereRemoved,
      };
  
@@ -33520,7 +33521,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
      enum class PermissionState : int8_t {
          DeniedExplicitly    = -3,
          DeniedImplicitly    = -2,
-@@ -504,6 +545,14 @@ public:
+@@ -504,6 +546,14 @@ public:
  
      void removePage(WebPageProxy&);
  
@@ -33535,7 +33536,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
      Ref<WebExtensionWindow> getOrCreateWindow(WKWebExtensionWindow *) const;
      RefPtr<WebExtensionWindow> getWindow(WebExtensionWindowIdentifier, std::optional<WebPageProxyIdentifier> = std::nullopt, IgnoreExtensionAccess = IgnoreExtensionAccess::No) const;
      void forgetWindow(WebExtensionWindowIdentifier) const;
-@@ -596,6 +645,9 @@ public:
+@@ -596,6 +646,9 @@ public:
      const CommandsVector& commands();
      WebExtensionCommand* command(const String& identifier);
      void performCommand(WebExtensionCommand&, UserTriggered = UserTriggered::No);
@@ -33545,7 +33546,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
      void resetCommands();
  
  #if TARGET_OS_IPHONE
-@@ -630,6 +682,10 @@ public:
+@@ -630,6 +683,10 @@ public:
      void sendTestStarted(id argument);
      void sendTestFinished(id argument);
      void reloadBackgroundContentForTesting();
@@ -33556,7 +33557,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
  #endif
  
      URL backgroundContentURL();
-@@ -655,6 +711,7 @@ public:
+@@ -655,6 +712,7 @@ public:
      void runOpenPanel(WKWebView *, WKOpenPanelParameters *, void (^)(NSArray *));
  #endif
  
@@ -33564,7 +33565,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
  #if PLATFORM(COCOA)
      void sendNativeMessage(const String& applicationID, id message, CompletionHandler<void(std::expected<RetainPtr<id>, WebExtensionError>&&)>&&);
  #endif
-@@ -700,7 +757,11 @@ public:
+@@ -700,7 +758,11 @@ public:
  
      WebsiteDataStore* websiteDataStore(std::optional<PAL::SessionID> = std::nullopt) const;
  
@@ -33576,7 +33577,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
  
      void loadBackgroundContent(CompletionHandler<void(RefPtr<API::Error>)>&&);
  
-@@ -749,19 +810,41 @@ private:
+@@ -749,19 +811,41 @@ private:
  #if PLATFORM(COCOA)
      NSDictionary *currentState() const;
      NSDictionary *readStateFromStorage();
@@ -33619,7 +33620,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
      void permissionsDidChange(PermissionNotification, const PermissionsSet&);
      void permissionsDidChange(PermissionNotification, const MatchPatternSet&);
  
-@@ -796,6 +879,7 @@ private:
+@@ -796,6 +880,7 @@ private:
      void saveBackgroundPageListenersToStorage();
  
      void performTasksAfterBackgroundContentLoads();
@@ -33627,7 +33628,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
  
  #ifdef NDEBUG
      // This is method is a no-op in release builds since it has a performance impact with little benefit to release builds.
-@@ -844,6 +928,9 @@ private:
+@@ -844,6 +929,9 @@ private:
      void loadDeclarativeNetRequestRules(CompletionHandler<void(bool)>&&);
      void compileDeclarativeNetRequestRules(NSDictionary *, CompletionHandler<void(bool)>&&);
      void unloadDeclarativeNetRequestState();
@@ -33637,7 +33638,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
      String declarativeNetRequestContentRuleListFilePath();
  
      // Updating user content controllers with new rules.
-@@ -882,6 +969,10 @@ private:
+@@ -882,6 +970,10 @@ private:
      Ref<WebExtensionStorageSQLiteStore> syncStorageStore();
  
      void fetchCookies(WebsiteDataStore&, const URL&, const WebExtensionCookieFilterParameters&, CompletionHandler<void(std::expected<Vector<WebExtensionCookieParameters>, WebExtensionError>&&)>&&);
@@ -33648,7 +33649,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
  
      // Action APIs
      bool isActionMessageAllowed(IPC::Decoder&);
-@@ -924,6 +1015,11 @@ private:
+@@ -924,6 +1016,11 @@ private:
      // Commands APIs
      bool isCommandsMessageAllowed(IPC::Decoder&);
      void commandsGetAll(CompletionHandler<void(Vector<WebExtensionCommandParameters>)>&&);
@@ -33660,7 +33661,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
      void fireCommandEventIfNeeded(const WebExtensionCommand&, WebExtensionTab*);
      void fireCommandChangedEventIfNeeded(const WebExtensionCommand&, const String& oldShortcut);
  
-@@ -934,7 +1030,9 @@ private:
+@@ -934,7 +1031,9 @@ private:
      void cookiesSet(std::optional<PAL::SessionID>, const WebExtensionCookieParameters&, CompletionHandler<void(std::expected<std::optional<WebExtensionCookieParameters>, WebExtensionError>&&)>&&);
      void cookiesRemove(std::optional<PAL::SessionID>, const String& name, const URL&, CompletionHandler<void(std::expected<std::optional<WebExtensionCookieParameters>, WebExtensionError>&&)>&&);
      void cookiesGetAllCookieStores(CompletionHandler<void(std::expected<HashMap<PAL::SessionID, Vector<WebExtensionTabIdentifier>>, WebExtensionError>&&)>&&);
@@ -33670,7 +33671,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
  
      // DeclarativeNetRequest APIs
      bool isDeclarativeNetRequestMessageAllowed(IPC::Decoder&);
-@@ -971,6 +1069,11 @@ private:
+@@ -971,6 +1070,11 @@ private:
  
      // Menus APIs
      bool isMenusMessageAllowed(IPC::Decoder&);
@@ -33682,7 +33683,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
      void menusCreate(const WebExtensionMenuItemParameters&, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
      void menusUpdate(const String& identifier, const WebExtensionMenuItemParameters&, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
      void menusRemove(const String& identifier, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
-@@ -988,9 +1091,18 @@ private:
+@@ -988,9 +1092,18 @@ private:
  
      // Permissions APIs
      void permissionsGetAll(CompletionHandler<void(Vector<String>&& permissions, Vector<String>&& origins)>&&);
@@ -33701,7 +33702,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
      void firePermissionsEventListenerIfNecessary(WebExtensionEventListenerType, const PermissionsSet&, const MatchPatternSet&);
  
      // Port APIs
-@@ -1000,7 +1112,7 @@ private:
+@@ -1000,7 +1113,7 @@ private:
      void disconnectPortsForPage(WebPageProxy&);
      void addPorts(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier, HashCountedSet<WebPageProxyIdentifier>&&);
      void removePort(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier, WebPageProxyIdentifier);
@@ -33710,7 +33711,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
      void removeNativePort(WebExtensionMessagePort&);
      unsigned openPortCount(WebExtensionContentWorldType, WebExtensionPortChannelIdentifier);
      bool isPortConnected(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier);
-@@ -1009,7 +1121,7 @@ private:
+@@ -1009,7 +1122,7 @@ private:
      void firePortMessageEventsIfNeeded(WebExtensionContentWorldType, std::optional<WebPageProxyIdentifier>, WebExtensionPortChannelIdentifier, const String& messageJSON, bool userGesture);
      void fireQueuedPortMessageEventsIfNeeded(WebExtensionContentWorldType, WebExtensionPortChannelIdentifier);
      void sendQueuedNativePortMessagesIfNeeded(WebExtensionPortChannelIdentifier);
@@ -33719,7 +33720,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
  
      // Runtime APIs
      void runtimeGetBackgroundPage(CompletionHandler<void(std::expected<std::optional<WebCore::PageIdentifier>, WebExtensionError>&&)>&&);
-@@ -1034,6 +1146,7 @@ private:
+@@ -1034,6 +1147,7 @@ private:
      void scriptingGetRegisteredScripts(const Vector<String>&, CompletionHandler<void(std::expected<Vector<WebExtensionRegisteredScriptParameters>, WebExtensionError>&&)>&&);
      void scriptingUnregisterContentScripts(const Vector<String>&, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
      bool createInjectedContentForScripts(const Vector<WebExtensionRegisteredScriptParameters>&, WebExtensionDynamicScripts::WebExtensionRegisteredScript::FirstTimeRegistration, DynamicInjectedContentsMap&, NSString *callingAPIName, NSString **errorMessage);
@@ -33727,7 +33728,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
  
      // Sidebar APIs
  #if ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
-@@ -1129,6 +1242,13 @@ private:
+@@ -1129,6 +1243,13 @@ private:
      RetainPtr<NSMutableDictionary> m_state;
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<GKeyFile> m_state;
@@ -33741,7 +33742,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
  #endif
      Vector<Ref<API::Error>> m_errors;
  
-@@ -1147,6 +1267,15 @@ private:
+@@ -1147,6 +1268,15 @@ private:
  
      RefPtr<API::ContentWorld> m_contentScriptWorld;
  
@@ -33757,7 +33758,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
      PermissionsMap m_grantedPermissions;
      PermissionsMap m_deniedPermissions;
  
-@@ -1172,6 +1301,9 @@ private:
+@@ -1172,6 +1302,9 @@ private:
      EventListenerTypeCountedSet m_backgroundContentEventListeners;
      EventListenerTypeFrameMap m_eventListenerFrames;
  
@@ -33767,7 +33768,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
      bool m_shouldFireStartupEvent { false };
      InstallReason m_installReason { InstallReason::None };
      String m_previousVersion;
-@@ -1194,6 +1326,9 @@ private:
+@@ -1194,6 +1327,9 @@ private:
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<WebKitWebView> m_backgroundWebView;
      GWeakPtr<WebKitWebExtensionContext> m_delegate;
@@ -33777,7 +33778,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
  #endif
      Variant<std::monostate, Ref<ProcessThrottlerActivity>, Ref<ProcessActivityGroup>> m_backgroundWebViewActivity;
      RefPtr<API::Error> m_backgroundContentLoadError;
-@@ -1215,6 +1350,7 @@ private:
+@@ -1215,6 +1351,7 @@ private:
      HashMap<Ref<WebExtensionMatchPattern>, UserScriptVector> m_injectedScriptsPerPatternMap;
      HashMap<Ref<WebExtensionMatchPattern>, UserStyleSheetVector> m_injectedStyleSheetsPerPatternMap;
  
@@ -33785,7 +33786,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
      HashMap<String, Ref<WebExtensionDynamicScripts::WebExtensionRegisteredScript>> m_registeredScriptsMap;
      RefPtr<WebExtensionRegisteredScriptsSQLiteStore> m_registeredContentScriptsStorage;
  
-@@ -1234,11 +1370,14 @@ private:
+@@ -1234,11 +1371,14 @@ private:
  #endif // ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
  
      PortCountedSet m_ports;
@@ -33801,7 +33802,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
      mutable WindowIdentifierVector m_windowOrderVector;
      mutable std::optional<WebExtensionWindowIdentifier> m_focusedWindowIdentifier;
  
-@@ -1254,6 +1393,11 @@ private:
+@@ -1254,6 +1394,11 @@ private:
      bool m_populatedCommands { false };
  
      String m_declarativeNetRequestContentRuleListFilePath;
@@ -33813,7 +33814,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
      DeclarativeNetRequestMatchedRuleVector m_matchedRules;
      RefPtr<WebExtensionDeclarativeNetRequestSQLiteStore> m_declarativeNetRequestDynamicRulesStore;
      RefPtr<WebExtensionDeclarativeNetRequestSQLiteStore> m_declarativeNetRequestSessionRulesStore;
-@@ -1261,6 +1405,9 @@ private:
+@@ -1261,6 +1406,9 @@ private:
      HashSet<double> m_sessionRulesIDs;
      HashSet<double> m_dynamicRulesIDs;
  
@@ -33823,7 +33824,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
      MenuItemMap m_menuItems;
      MenuItemVector m_mainMenuItems;
  
-@@ -1274,12 +1421,16 @@ private:
+@@ -1274,12 +1422,16 @@ private:
          String message;
  #if PLATFORM(COCOA)
          RetainPtr<id> argument;
@@ -33840,7 +33841,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d21c2e5d9c55c6661e4687ca6459c2f6
  
      Deque<TestMessage> m_testMessageQueue;
      Deque<TestMessage> m_testStartedQueue;
-@@ -1289,6 +1440,8 @@ private:
+@@ -1289,6 +1441,8 @@ private:
      void sendQueuedTestMessagesIfNeeded(WebExtensionEventListenerType);
  #if PLATFORM(COCOA)
      void addTestMessageToQueue(const String& message, id argument, WebExtensionEventListenerType);

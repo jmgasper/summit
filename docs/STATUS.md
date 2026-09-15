@@ -1987,3 +1987,12 @@ have not been tested. DNR JavaScript bindings remain disabled pending transactio
 error fixes, lifecycle tests and broader compatibility work. See
 [native request-rule loading](webextensions-native-dnr-loader.md) for evidence
 and the remaining scope.
+
+The first combined DNR build exposed a missing `API::ContentRuleList` forward
+declaration and was stopped after those compiler failures, before linking.
+Correction patch `c8b960d698b09f68d906606c00f4ac52e7a2d14fda74a42b2bb7ac49037fb81b`
+passes all three affected units; its full build is running. A new fixture for
+the actual persistent content-rule store compiles against the corrected tree.
+Its callback, persistence and cleanup checks have not run yet; execution awaits
+the combined engine link. Both native source trees are synchronized, and the
+idle feature-disabled binaries remain unchanged.

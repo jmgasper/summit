@@ -1,9 +1,15 @@
 # Native declarative request-rule loading
 
 Engine patch `c3ff5b56144df26ae0b6d85df42c1ca453867d6a77f3fefa8a87966cc092519b`
-integrates this loader. The full Extensions-enabled build is running; the
-preceding popup build reached the linker with this function as its only missing
-symbol. A successful combined engine link has not yet been demonstrated.
+integrates this loader. The preceding popup build reached the linker with this
+function as its only missing symbol. Its first combined build exposed a missing
+`API::ContentRuleList` forward declaration in three other users of the shared
+context header. That known-failed build was stopped before linking.
+
+Patch `c8b960d698b09f68d906606c00f4ac52e7a2d14fda74a42b2bb7ac49037fb81b`
+adds the declaration; all three previously failing units compile with it. The
+corrected full build is running. A combined engine link has not yet been
+demonstrated.
 
 The native loader reads session and dynamic rules from their SQLite stores,
 collects enabled static rulesets, translates them off the WebKit main loop and
@@ -48,8 +54,8 @@ normal unload; persistent cache reuse and crash-orphan cleanup remain future wor
 
 The content-rule store's background JSON parse-error path now dispatches its
 completion to the main loop, matching the successful and compiler-error paths.
-The loader relies on that thread ownership; a dedicated runtime check of the
-store failure callback is still required.
+The loader relies on that thread ownership. A dedicated persistent-store fixture
+compiles, but its runtime check still requires the engine to link.
 
 ## Evidence and limits
 
@@ -70,7 +76,11 @@ integration. Evidence: `.vm/content-rule-pipeline.qTVYOVho/result.json`.
 The promoted source audit is
 `.vm/extension-dnr-loader-current-validation.json`; all ten integrated files
 match the tested candidate. Full-build output is mirrored to the visible QEMU
-progress Terminal from `.vm/modern-extensions-dnr-loader-build.log`.
+progress Terminal. The initial build log is
+`.vm/modern-extensions-dnr-loader-build.log`; the correction is being built in
+`.vm/modern-extensions-dnr-declaration-build.log`. The declaration and three
+successful compile checks are recorded in
+`.vm/extension-dnr-declaration-current-validation.json`.
 
 Seven affected engine translation units compile. The translator and loader pass
 in `.vm/extension-lifecycle-inputs.x504Y4da/result.json`; that stage's separate
@@ -78,6 +88,30 @@ store unit failed because the older feature-disabled build lacked a generated
 WebCore header. The store, context, native context, permission observer and DNR
 API lifecycle unit then pass against the configured feature-enabled tree in
 `.vm/extension-lifecycle-inputs.uL5cSOY7/result.json`.
+
+The declaration correction passes `WebExtensionControllerAPITestHaiku.cpp`,
+`WebExtensionControllerHaiku.cpp` and `WebViewContextHaiku.cpp` in
+`.vm/extension-lifecycle-inputs.fv0lNpoH/result.json`. Both native source trees
+contain all ten current DNR files. The idle feature-disabled libraries were not
+rebuilt; the feature-enabled combined build remains pending.
+
+The new `EngineContentRuleStoreTests.cpp` fixture compiles against that corrected
+configuration in `.vm/content-rule-pipeline.Kb5j7cuM/result.json`. It uses the real
+`API::ContentRuleListStore`, with an isolated temporary directory and application
+main loop. It is intended to check asynchronous parse/compiler/write failures,
+successful persistence, reopening, replacement, source recovery, deletion and
+completion lifetime after the caller releases the store. **It has not run yet.**
+
+After the full engine build completes:
+
+```sh
+python3 tools/test-engine-content-rule-pipeline.py --store \
+  --resume /boot/home/summit/content-rule-pipeline.Kb5j7cuM
+```
+
+The runner refuses stale engine targets or changed compile inputs, links the
+actual WebKit library and audits the native crash log. This fixture does not
+instantiate an extension or make a browser request.
 
 These tests do not execute loader persistence, privileged IPC, a browser request,
 permission revocation, stale completions or an extension. The DNR JavaScript
