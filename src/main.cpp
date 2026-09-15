@@ -1,6 +1,7 @@
 #include "ui/BrowserWindow.h"
 #include "ui/Messages.h"
 #include "ui/ExtensionPermissionPrompt.h"
+#include "ui/ExtensionController.h"
 #include "core/Address.h"
 #include <Alert.h>
 #include <Application.h>
@@ -127,6 +128,13 @@ public:
         );
         fWindow = BMessenger(window);
         window->Show();
+#if SUMMIT_MODERN_WEBKIT
+        if (fPermissionPrompts) {
+            fExtensions = std::make_unique<summit::ExtensionController>(fWebKitContext, fProfile / "Extensions");
+            AddHandler(fExtensions.get());
+            fExtensions->Start();
+        }
+#endif
     }
     void MessageReceived(BMessage* message) override
     {
@@ -183,6 +191,16 @@ public:
             return false;
         }
         if (fWebKitContext) {
+            if (fExtensions) {
+                fExtensions->Shutdown();
+                if (fExtensions->HasPendingWork()) {
+                    fWaitingForNativeUI = true;
+                    SetPulseRate(100000);
+                    return false;
+                }
+                RemoveHandler(fExtensions.get());
+                fExtensions.reset();
+            }
             if (fPermissionPrompts) {
                 fWebKitContext->CancelExtensionPermissionRequests();
                 fPermissionPrompts->Shutdown();
@@ -238,6 +256,7 @@ private:
 #if SUMMIT_MODERN_WEBKIT
     std::shared_ptr<BWebKitContext> fWebKitContext;
     std::unique_ptr<summit::ExtensionPermissionPrompt> fPermissionPrompts;
+    std::unique_ptr<summit::ExtensionController> fExtensions;
     bool fWaitingForNativeUI = false;
     bool fNativeUIExitReady = false;
     bool fCancellingDownloads = false;
@@ -248,7 +267,7 @@ private:
     std::vector<std::string> fURLs;
 };
 
-int main()
+static int RunApplication()
 {
     umask(0077);
     status_t status = B_NO_INIT;
@@ -264,4 +283,19 @@ int main()
     if (app.WebKitInitialized()) BWebPage::ShutdownOnce();
 #endif
     return app.ExitStatus();
+}
+
+int main()
+{
+    const int status = RunApplication();
+#if SUMMIT_MODERN_WEBKIT
+    // RunApplication destroys the native application after its asynchronous
+    // window/context cleanup. WebKit worker TLS destructors may still be
+    // finishing, so do not race them with libbe's global handler-token table
+    // destruction. This matches the Haiku WebKit helper-process exit path.
+    std::fflush(nullptr);
+    std::_Exit(status);
+#else
+    return status;
+#endif
 }

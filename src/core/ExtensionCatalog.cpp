@@ -44,7 +44,9 @@ void validate(const InstalledExtension& entry)
     if (!identifierValid(entry.identifier) || !textValid(entry.name) || !textValid(entry.version)
         || !packageValid(entry.package) || entry.fingerprint.size() != 64
         || !std::all_of(entry.fingerprint.begin(), entry.fingerprint.end(), [](unsigned char c) {
-            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+            // WebKit's native digest formatter returns uppercase hexadecimal.
+            // Retain the exact SDK value because approval compares it verbatim.
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
         }))
         throw std::runtime_error("Invalid installed extension record");
 }

@@ -2086,3 +2086,27 @@ Browser extension installation, store packages and signatures, MV3 workers,
 action UI, DNR enforcement and full Safari/Chrome/Firefox compatibility remain
 unfinished. The public SDK still needs extension preparation/load/unload APIs
 before the browser can install packages through its native interface.
+
+## Application extension startup and native process exit
+
+The modern extension-enabled browser now reads the installed catalog and
+loads enabled, unchanged packages using saved WebKit approval. Native startup
+verification passes across a setup process and two separate full-browser
+processes: permissions and storage survive, background boot counters advance
+1/2/3, disabled packages are skipped, changed packages require approval, and
+all owned process groups drain without forced cleanup or debugger events.
+The catalog now preserves the uppercase hexadecimal fingerprints emitted by
+the SDK; 57 host and 57 native catalog checks pass.
+
+A reproduced UI-process exit race also has a verified correction: after normal
+application cleanup, the modern entry point uses the same final process-exit
+behavior as the Haiku WebKit helpers, avoiding libbe static teardown while
+worker TLS destructors finish. Five consecutive navigation runs (90 checks
+each) and 143 native close checks pass with clean native log intervals.
+
+The current verified guest bundle is `bundle-w5i95j6u`, with unchanged engine
+patch `2972cc15e98b23f6dd04186631cf3f4370fe3a7d3a573175c6fd126a3fbdd3ca`.
+[Startup behavior and evidence](modern-extension-startup.md) lists the exact
+results, preserved failures, repeat command and remaining work. There is still
+no native extension installation/management UI or broad Safari/Chrome/Firefox
+compatibility claim. The original full-browser objective remains unfinished.

@@ -2,13 +2,16 @@
 
 `src/core/ExtensionCatalog` provides the filesystem storage needed by Summit's
 native installer and startup loader. It is included in `summit_core` and works
-on both the host and Haiku. It is not yet connected to the application UI.
+on both the host and Haiku. The modern extension-enabled browser uses it for
+automatic startup; the native installer and management UI remain unfinished.
 
 An `ExtensionCatalog` owns a dedicated profile directory containing
 `catalog.json` and a `packages` directory. Each installation records its stable
 identity, display name, version, approved resource fingerprint, owned package
 name, enabled state, and explicit file/private-access flags. Runtime permission
 grants remain in WebKit's saved state; the catalog does not grant permissions.
+Fingerprints retain their exact hexadecimal spelling, including the uppercase
+digits returned by WebKit's native digest formatter.
 
 `Stage(source, error)` creates a private owned copy of an archive or directory.
 The returned `StagedExtensionPackage` removes that copy on destruction unless
@@ -46,14 +49,12 @@ the file. `SetEnabled` persists an existing installation's enabled state.
 `Forget` removes only its record, leaving package bytes and WebKit data for a
 separate removal operation after runtime teardown.
 
-The host core suite passes, and `ExtensionCatalogTests.cpp` passes 53 checks in
+The host core suite passes, and `ExtensionCatalogTests.cpp` passes 57 checks in
 Haiku. The native run has unchanged input hashes and a clean crash-log interval:
-`.vm/extension-catalog.3ICcSa3l/result.json`. This verifies catalog storage and
-staging, not integrated installation or automatic startup activation.
-The modern browser's explicit source list also includes the catalog. All seven
-application units compile against the promoted activation SDK in Haiku
-(`.vm/modern-browser-extension-catalog-compile-result.json`); that check does not
-link or replace the current browser bundle.
+`.vm/extension-catalog.UuD5DdlP/result.json`. A separate integration test seeds
+approval through the public SDK and launches the actual browser twice. It
+verifies automatic activation, saved permissions and extension storage across
+process exits; see [startup behavior and evidence](modern-extension-startup.md).
 
 ```sh
 cmake --build build-host

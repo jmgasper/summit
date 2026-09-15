@@ -88,6 +88,19 @@ int main()
         CHECK(duplicate && !catalog.Install(*duplicate, invalidText, error));
         CHECK(read(storage / "catalog.json") == saved && fs::exists(duplicate->Path()));
     }
+    {
+        ExtensionCatalog uppercaseCatalog(root / "Uppercase");
+        auto uppercaseStage = uppercaseCatalog.Stage(source, error);
+        auto uppercase = entry;
+        uppercase.fingerprint = "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF";
+        auto invalidDigest = uppercase;
+        invalidDigest.fingerprint[0] = 'G';
+        CHECK(uppercaseStage && !uppercaseCatalog.Install(*uppercaseStage, invalidDigest, error));
+        CHECK(uppercaseStage && uppercaseCatalog.Install(*uppercaseStage, uppercase, error));
+        std::vector<InstalledExtension> restored;
+        CHECK(uppercaseCatalog.Load(restored, error) && restored.size() == 1);
+        CHECK(restored.size() == 1 && restored[0].fingerprint == uppercase.fingerprint);
+    }
     auto directory = root / "directory";
     fs::create_directories(directory / "nested");
     put(directory / "manifest.json", "{\"manifest_version\":2}");
