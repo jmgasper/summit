@@ -50,6 +50,10 @@ The host core suite passes, and `ExtensionCatalogTests.cpp` passes 53 checks in
 Haiku. The native run has unchanged input hashes and a clean crash-log interval:
 `.vm/extension-catalog.3ICcSa3l/result.json`. This verifies catalog storage and
 staging, not integrated installation or automatic startup activation.
+The modern browser's explicit source list also includes the catalog. All seven
+application units compile against the promoted activation SDK in Haiku
+(`.vm/modern-browser-extension-catalog-compile-result.json`); that check does not
+link or replace the current browser bundle.
 
 ```sh
 cmake --build build-host
