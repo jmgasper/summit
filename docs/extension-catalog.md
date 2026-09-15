@@ -1,0 +1,58 @@
+# Installed extension catalog
+
+`src/core/ExtensionCatalog` provides the filesystem storage needed by Summit's
+native installer and startup loader. It is included in `summit_core` and works
+on both the host and Haiku. It is not yet connected to the application UI.
+
+An `ExtensionCatalog` owns a dedicated profile directory containing
+`catalog.json` and a `packages` directory. Each installation records its stable
+identity, display name, version, approved resource fingerprint, owned package
+name, enabled state, and explicit file/private-access flags. Runtime permission
+grants remain in WebKit's saved state; the catalog does not grant permissions.
+
+`Stage(source, error)` creates a private owned copy of an archive or directory.
+The returned `StagedExtensionPackage` removes that copy on destruction unless
+`Install` successfully commits it. Archive copies are limited to 128 MiB;
+directory imports to 256 MiB total, 64 MiB per file, 10,000 entries, and 32 nested
+levels. Directory links are preserved without copying their targets. WebKit's
+subsequent preparation step must validate containment and materialize accepted
+links. Special filesystem entries and imports into their own storage tree are
+rejected.
+
+The intended installer sequence is:
+
+1. Stage the selected package on a worker.
+2. Pass its owned `Path()` to `BWebKitContext::PrepareExtension`.
+3. Present the returned manifest requirements for consent, retaining the
+   preparation token and fingerprint.
+4. Load the approved snapshot with explicit grants and commit its installation
+   record. If catalog persistence fails after loading, unload the runtime.
+5. On later startup, prepare each enabled stored package and use the recorded
+   fingerprint with `BrowserStartup`. WebKit checks saved resource identity
+   before restoring grants.
+
+`Install` refuses duplicate identities and stages belonging to another catalog.
+It does not independently validate a manifest, authenticate package signatures,
+or verify the caller-supplied fingerprint. These responsibilities remain with
+package preparation, approval, and loading. The application must serialize
+catalog mutations and coordinate runtime changes with metadata writes.
+
+The catalog validates every record before replacing its file. Writes use a
+private temporary file, complete writes, `fsync`, and rename. A failed write
+keeps the prior catalog intact. Reads are bounded to 4 MiB even if a file grows
+while being read; malformed, duplicate, unsupported-version, or unsafe-path
+records cause an error without replacing the caller's current list or rewriting
+the file. `SetEnabled` persists an existing installation's enabled state.
+`Forget` removes only its record, leaving package bytes and WebKit data for a
+separate removal operation after runtime teardown.
+
+The host core suite passes, and `ExtensionCatalogTests.cpp` passes 53 checks in
+Haiku. The native run has unchanged input hashes and a clean crash-log interval:
+`.vm/extension-catalog.3ICcSa3l/result.json`. This verifies catalog storage and
+staging, not integrated installation or automatic startup activation.
+
+```sh
+cmake --build build-host
+ctest --test-dir build-host --output-on-failure
+python3 tools/test-extension-catalog-in-vm.py
+```
