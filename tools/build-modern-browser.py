@@ -19,6 +19,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCE = pathlib.Path('/boot/home/summit-webkit')
 ENGINE = SOURCE / 'WebKitBuild/Modern'
 ICU = pathlib.Path('/boot/home/summit-deps/icu78')
+LIBZIP = pathlib.Path('/boot/home/summit-deps/libzip-1.11.4')
 
 
 def digest(path):
@@ -73,7 +74,9 @@ def engine_inputs(inputs):
     cache_path = ENGINE / 'CMakeCache.txt'
     cache = dict(re.findall(r'^([A-Za-z_][A-Za-z0-9_-]*):[^=\r\n]*=([^\r\n]*)$', cache_path.read_text(), re.MULTILINE))
     expected = {'PORT': 'Haiku', 'ENABLE_WEBKIT': 'ON', 'ENABLE_WEBKIT_LEGACY': 'OFF',
-                'CMAKE_HOME_DIRECTORY': str(SOURCE), 'ICU_ROOT': str(ICU)}
+                'CMAKE_HOME_DIRECTORY': str(SOURCE), 'ICU_ROOT': str(ICU),
+                'ENABLE_WK_WEB_EXTENSIONS': 'ON' if 'libzip' in inputs else 'OFF',
+                'ENABLE_CONTENT_EXTENSIONS': 'ON' if 'libzip' in inputs else 'OFF'}
     mismatches = [f'{key}: expected {value!r}, found {cache.get(key)!r}'
                   for key, value in expected.items() if cache.get(key) != value]
     if mismatches:
@@ -97,6 +100,16 @@ def engine_inputs(inputs):
               for name in ['libWebKit.so', 'libJavaScriptCore.so']]
     paths += [(ICU / 'lib' / name).resolve(strict=True)
               for name in ['libicudata.so', 'libicui18n.so', 'libicuuc.so']]
+    if 'libzip' in inputs:
+        lock = inputs['libzip']
+        if lock['version'] != '1.11.4':
+            raise RuntimeError('Update the private libzip prefix for the new locked version')
+        for source, relative in [('lib/libzip.so.5.5', 'lib/libzip.so.5.5'),
+                                 ('develop/headers/zip.h', 'include/zip.h')]:
+            path = LIBZIP / relative
+            if digest(path) != lock['files'][source]:
+                raise RuntimeError('Private libzip differs from its locked input: ' + relative)
+            paths.append(path)
     return expected, paths
 
 
@@ -126,6 +139,8 @@ def freeze(work, inputs, commands, before, configuration, build, executable_name
         libraries += [library(name, ICU / 'lib') for name in ['libicudata.so', 'libicui18n.so', 'libicuuc.so']]
         if inputs['icu']['version'] != '78.3' or any('.so.78' not in soname for _, soname, _ in libraries[2:]):
             raise RuntimeError('The app requires the pinned private ICU 78.3 build')
+        if 'libzip' in inputs:
+            libraries.append(library('libzip.so', LIBZIP / 'lib'))
         files = {executable_name: work / executable_name, 'WebProcess': ENGINE / 'bin/WebProcess',
                  'NetworkProcess': ENGINE / 'bin/NetworkProcess'}
         files.update({'lib/' + source.name: source for _, _, source in libraries})
@@ -143,7 +158,7 @@ def freeze(work, inputs, commands, before, configuration, build, executable_name
         dependencies = {name: dynamic(bundle / name, 'NEEDED') for name in files}
         for name, needed in dependencies.items():
             for dependency in needed:
-                if dependency.startswith(('libWebKit', 'libJavaScriptCore', 'libicu')) and not (bundle / 'lib' / dependency).is_file():
+                if dependency.startswith(('libWebKit', 'libJavaScriptCore', 'libicu', 'libzip')) and not (bundle / 'lib' / dependency).is_file():
                     raise RuntimeError(f'{name} has an unbundled engine dependency: {dependency}')
         shutil.copy2(ROOT / 'LICENSE-Summit', bundle / 'LICENSE-Summit')
         assets = []
@@ -159,6 +174,14 @@ def freeze(work, inputs, commands, before, configuration, build, executable_name
         icu_license = pathlib.Path('/boot/home/summit-deps/icu-78.3/LICENSE')
         (bundle / 'licenses/ICU').mkdir(parents=True)
         shutil.copy2(icu_license, bundle / 'licenses/ICU/LICENSE')
+        if 'libzip' in inputs:
+            # The locked development header contains libzip's complete notice.
+            # Haiku's binary package does not include a separate license file.
+            (bundle / 'licenses/libzip').mkdir(parents=True)
+            shutil.copy2(LIBZIP / 'include/zip.h', bundle / 'licenses/libzip/zip.h')
+            if digest(bundle / 'licenses/libzip/zip.h') != before[str(LIBZIP / 'include/zip.h')]:
+                raise RuntimeError('The libzip license header changed during copying')
+            assets.append('licenses/libzip/zip.h')
         launcher = bundle / ('run-browser.sh' if browser else 'run-preview.sh')
         launcher.write_text(
             '#!/bin/sh\nset -eu\n'
@@ -176,6 +199,8 @@ def freeze(work, inputs, commands, before, configuration, build, executable_name
              'Run ./run-preview.sh [URL], or --smoke with tools/serve-fixtures.py on the host.\n') +
             'WebProcess and NetworkProcess are resolved beside the app executable.\n'
             'Private WebKit, JavaScriptCore and ICU libraries are in lib with relative runtime paths.\n'
+            + ('The extension-enabled engine includes pinned libzip; its license notice is in licenses/libzip/zip.h.\n'
+               if 'libzip' in inputs else '') +
             'The app source and build inputs are preserved in source.\n')
         shutil.copytree(ROOT, bundle / 'source')
         for name, expected in inputs['sha256'].items():
@@ -207,12 +232,18 @@ def freeze(work, inputs, commands, before, configuration, build, executable_name
 
 
 def main():
+    global SOURCE, ENGINE
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--compile-only', action='store_true')
     mode.add_argument('--bundle', action='store_true')
     arguments = parser.parse_args()
     inputs = json.loads((ROOT / 'inputs.json').read_text())
+    variant = inputs.get('engine_variant', 'modern')
+    if variant not in ('modern', 'modern-extensions') or ('libzip' in inputs) != (variant == 'modern-extensions'):
+        raise RuntimeError('Unknown engine variant or inconsistent libzip input')
+    SOURCE = pathlib.Path('/boot/home/summit-webkit' + ('-extensions' if variant == 'modern-extensions' else ''))
+    ENGINE = SOURCE / 'WebKitBuild/Modern'
     target = inputs.get('target', 'preview')
     if target not in ('preview', 'browser'):
         raise RuntimeError('Unknown native app target: ' + str(target))
@@ -242,7 +273,8 @@ def main():
         commands.append(['c++', *map(str, objects), '-L' + str(ENGINE / 'lib'),
                          '-lWebKit', '-lbe', '-lnetwork',
                          *(['-lbnetapi', '-ltranslation', '-ltracker'] if browser else []),
-                         '-Wl,-rpath,' + str(ENGINE / 'lib') + ':' + str(ICU / 'lib'),
+                         '-Wl,-rpath,' + ':'.join(map(str, [ENGINE / 'lib', ICU / 'lib']
+                             + ([LIBZIP / 'lib'] if 'libzip' in inputs else []))),
                          '-o', str(work / executable_name)])
         if browser:
             commands += [['rc', '-o', str(work / 'Summit.rsrc'), str(ROOT / 'resources/Summit.rdef')],

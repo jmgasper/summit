@@ -5,6 +5,7 @@ SUMMIT_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$SUMMIT_ROOT"
 SUMMIT_MODE=--bundle
 SUMMIT_TARGET=preview
+SUMMIT_VARIANT=modern
 SUMMIT_MODE_SEEN=0
 for SUMMIT_ARGUMENT in "$@"; do
     case "$SUMMIT_ARGUMENT" in
@@ -17,7 +18,8 @@ for SUMMIT_ARGUMENT in "$@"; do
             SUMMIT_MODE_SEEN=1
             ;;
         --browser) SUMMIT_TARGET=browser ;;
-        *) echo 'Usage: build-modern-browser-in-vm.sh [--bundle|--compile-only] [--browser]' >&2; exit 2 ;;
+        --modern-extensions) SUMMIT_VARIANT=modern-extensions ;;
+        *) echo 'Usage: build-modern-browser-in-vm.sh [--bundle|--compile-only] [--browser] [--modern-extensions]' >&2; exit 2 ;;
     esac
 done
 mkdir -p .vm
@@ -38,7 +40,7 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
-python3 - "$SUMMIT_STAGE" "$SUMMIT_TARGET" <<'PY'
+python3 - "$SUMMIT_STAGE" "$SUMMIT_TARGET" "$SUMMIT_VARIANT" <<'PY'
 import hashlib, json, pathlib, shutil, sys
 root = pathlib.Path.cwd()
 stage = pathlib.Path(sys.argv[1])
@@ -73,13 +75,17 @@ for destination, source in files.items():
     output.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(root / source, output)
     hashes[destination] = hashlib.sha256(output.read_bytes()).hexdigest()
-(stage / 'inputs.json').write_text(json.dumps({
+inputs = {
     'engine': lock,
     'icu': json.loads((root / 'engine/icu.lock.json').read_text()),
+    'engine_variant': sys.argv[3],
     'public_headers': headers,
     'target': target,
     'sha256': hashes,
-}, indent=2) + '\n')
+}
+if sys.argv[3] == 'modern-extensions':
+    inputs['libzip'] = json.loads((root / 'engine/libzip.lock.json').read_text())
+(stage / 'inputs.json').write_text(json.dumps(inputs, indent=2) + '\n')
 PY
 SUMMIT_REMOTE_STAGE=$(bash tools/haiku.sh 'mkdir -p /boot/home/summit && mktemp -d /boot/home/summit/modern-preview-inputs.XXXXXXXX')
 if [[ ! $SUMMIT_REMOTE_STAGE =~ ^/boot/home/summit/modern-preview-inputs\.[A-Za-z0-9]+$ ]]; then
@@ -91,7 +97,7 @@ tar -C "$SUMMIT_STAGE" -czf - . |
 bash tools/haiku.sh "python3.10 '$SUMMIT_REMOTE_STAGE/tools/build-modern-browser.py' '$SUMMIT_MODE'" |
     tee "$SUMMIT_RESULT"
 if [[ $SUMMIT_MODE == --compile-only ]]; then
-    mv -- "$SUMMIT_RESULT" ".vm/modern-$SUMMIT_TARGET-compile.json"
+    mv -- "$SUMMIT_RESULT" ".vm/$SUMMIT_VARIANT-$SUMMIT_TARGET-compile.json"
 else
-    mv -- "$SUMMIT_RESULT" ".vm/modern-$SUMMIT_TARGET-bundle.json"
+    mv -- "$SUMMIT_RESULT" ".vm/$SUMMIT_VARIANT-$SUMMIT_TARGET-bundle.json"
 fi

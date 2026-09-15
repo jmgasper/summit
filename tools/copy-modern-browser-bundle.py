@@ -24,11 +24,12 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCE_ROOTS = ('CMakeLists.txt', 'Configurations', 'Source', 'Tools')
 HASH = re.compile(r'[0-9a-f]{64}\Z')
-LIBRARY = re.compile(r'lib/(libWebKit|libJavaScriptCore|libicudata|libicui18n|libicuuc)\.so(?:\.[0-9]+)*\Z')
+LIBRARY = re.compile(r'lib/(libWebKit|libJavaScriptCore|libicudata|libicui18n|libicuuc|libzip)\.so(?:\.[0-9]+)*\Z')
 LIBRARIES = {'libWebKit', 'libJavaScriptCore', 'libicudata', 'libicui18n', 'libicuuc'}
 HEADERS = {
     'WebKitView.h': 'UIProcess/API/haiku/WebKitView.h',
     'WebKitContext.h': 'UIProcess/API/haiku/WebKitContext.h',
+    'WebKitExtensionPermission.h': 'UIProcess/API/haiku/WebKitExtensionPermission.h',
     'WebKitInfo.h': 'UIProcess/API/haiku/WebKitInfo.h',
     'WKBase.h': 'Shared/API/c/WKBase.h',
     'WKDeclarationSpecifiers.h': 'Shared/API/c/WKDeclarationSpecifiers.h',
@@ -87,11 +88,11 @@ def relative(name):
     return name
 
 
-def hashes(value, label, absolute=False):
+def hashes(value, label, absolute=False, extra_roots=()):
     require(isinstance(value, dict) and value, f'Missing {label} hash map')
     for name, expected in value.items():
         if absolute:
-            require(isinstance(name, str) and name.startswith('/boot/home/')
+            require(isinstance(name, str) and name.startswith(('/boot/home/', *extra_roots))
                     and str(pathlib.PurePosixPath(name)) == name
                     and '..' not in pathlib.PurePosixPath(name).parts,
                     f'Invalid original input path: {name!r}')
@@ -114,13 +115,25 @@ def validate_report(report, target):
         '/boot/home/summit/build-modern-' + target + r'/bundle-[A-Za-z0-9_-]+', native),
         'Unexpected native bundle path')
     inputs = report['inputs']
-    require(isinstance(inputs, dict) and set(inputs) == {'engine', 'icu', 'public_headers', 'target', 'sha256'},
+    require(isinstance(inputs, dict), 'Staged inputs must be an object')
+    legacy = 'engine_variant' not in inputs
+    variant = inputs.get('engine_variant', 'modern')
+    require(variant in ('modern', 'modern-extensions'), 'Unknown engine variant')
+    extensions = variant == 'modern-extensions'
+    input_keys = {'engine', 'icu', 'public_headers', 'target', 'sha256'}
+    if not legacy:
+        input_keys.add('engine_variant')
+    if extensions:
+        input_keys.add('libzip')
+    require(set(inputs) == input_keys,
             'Unknown or incomplete staged input format')
-    require(inputs['target'] == target and inputs['public_headers'] == HEADERS,
+    headers = inputs['public_headers']
+    legacy_headers = {name: path for name, path in HEADERS.items() if name != 'WebKitExtensionPermission.h'}
+    require(inputs['target'] == target and (headers == HEADERS or (legacy and headers == legacy_headers)),
             'Staged target or public header mapping differs from this copier')
     source_hashes = hashes(inputs['sha256'], 'app source')
     required = {'tests/ModernBrowser.cpp', 'tools/build-modern-browser.py', 'LICENSE-Summit'}
-    required.update('include/WebKit/' + name for name in HEADERS)
+    required.update('include/WebKit/' + name for name in headers)
     if target == 'browser':
         required.update({'src/main.cpp', 'src/core/Address.cpp', 'src/core/Profile.cpp',
                          'src/ui/BrowserWindow.cpp', 'src/ui/Chrome.cpp', 'resources/start.html'})
@@ -128,25 +141,44 @@ def validate_report(report, target):
     for name in source_hashes:
         require(name in required or (target == 'browser' and name.split('/')[0] in {'src', 'vendor', 'resources'}),
                 'Unexpected staged app source: ' + name)
-    require(report['configuration'] == {
+    configuration = {
         'PORT': 'Haiku', 'ENABLE_WEBKIT': 'ON', 'ENABLE_WEBKIT_LEGACY': 'OFF',
-        'CMAKE_HOME_DIRECTORY': '/boot/home/summit-webkit', 'ICU_ROOT': '/boot/home/summit-deps/icu78'},
-        'Manifest is not the expected modern native/private ICU configuration')
+        'CMAKE_HOME_DIRECTORY': '/boot/home/summit-webkit' + ('-extensions' if extensions else ''),
+        'ICU_ROOT': '/boot/home/summit-deps/icu78'}
+    if not legacy:
+        configuration.update(ENABLE_WK_WEB_EXTENSIONS='ON' if extensions else 'OFF',
+                             ENABLE_CONTENT_EXTENSIONS='ON' if extensions else 'OFF')
+    require(report['configuration'] == configuration,
+            'Manifest is not the expected modern native/private ICU configuration')
     require(isinstance(report['compiler'], str) and report['compiler'], 'Missing native compiler provenance')
     commands = report['compile_commands']
     require(isinstance(commands, list) and commands and all(
         isinstance(command, list) and command and all(isinstance(arg, str) for arg in command)
         for command in commands), 'Missing native compile commands')
-    hashes(report['original_sha256'], 'original native', absolute=True)
+    hashes(report['original_sha256'], 'original native', absolute=True,
+           extra_roots=('/SummitExtensions/WebKit/',) if extensions else ())
     bundled = hashes(report['bundled_sha256'], 'bundled')
     executable, launcher = ('Summit', 'run-browser.sh') if target == 'browser' else ('SummitModernPreview', 'run-preview.sh')
     regular = {executable, launcher, 'WebProcess', 'NetworkProcess'}
     if target == 'browser':
         regular.add('resources/start.html')
+    libraries = LIBRARIES | ({'libzip'} if extensions else set())
+    if extensions:
+        regular.add('licenses/libzip/zip.h')
+        lock = inputs['libzip']
+        require(isinstance(lock, dict) and lock.get('version') == '1.11.4', 'Unexpected private libzip version')
+        locked_files = hashes(lock.get('files'), 'private libzip')
+        require({'lib/libzip.so.5.5', 'develop/headers/zip.h'} <= locked_files.keys(),
+                'Incomplete private libzip lock')
+        require(bundled.get('licenses/libzip/zip.h') == locked_files['develop/headers/zip.h']
+                and bundled.get('lib/libzip.so.5.5') == locked_files['lib/libzip.so.5.5']
+                and report['original_sha256'].get('/boot/home/summit-deps/libzip-1.11.4/lib/libzip.so.5.5')
+                == locked_files['lib/libzip.so.5.5'],
+                'The bundled libzip or its license notice differs from the lock')
     library_files = set(bundled) - regular
-    require(regular <= bundled.keys() and len(library_files) == len(LIBRARIES)
+    require(regular <= bundled.keys() and len(library_files) == len(libraries)
             and all(LIBRARY.fullmatch(name) for name in library_files)
-            and {LIBRARY.fullmatch(name)[1] for name in library_files} == LIBRARIES,
+            and {LIBRARY.fullmatch(name)[1] for name in library_files} == libraries,
             'Incomplete or unexpected bundled executable/library list')
     symlinks = report['symlinks']
     require(isinstance(symlinks, dict), 'Invalid library symlink map')
@@ -157,7 +189,7 @@ def validate_report(report, target):
         require(source_match and target_match and source_match[1] == target_match[1]
                 and 'lib/' + link in library_files and name not in bundled,
                 'Library link must name its declared regular library in the same directory: ' + name)
-    require(all('lib/' + name + '.so' in library_files | symlinks.keys() for name in LIBRARIES),
+    require(all('lib/' + name + '.so' in library_files | symlinks.keys() for name in libraries),
             'Missing unversioned private library names')
     elf_files = library_files | {executable, 'WebProcess', 'NetworkProcess'}
     require(isinstance(report['needed'], dict) and isinstance(report['runtime_search_paths'], dict)
@@ -168,12 +200,12 @@ def validate_report(report, target):
         require(isinstance(needed, list) and all(isinstance(item, str) and '/' not in item
                 and item not in ('', '.', '..') for item in needed), 'Invalid dependency names: ' + name)
         for dependency in needed:
-            if dependency.startswith(('libWebKit', 'libJavaScriptCore', 'libicu')):
+            if dependency.startswith(('libWebKit', 'libJavaScriptCore', 'libicu', 'libzip')):
                 require('lib/' + dependency in library_files | symlinks.keys(),
                         'Unbundled private dependency: ' + dependency)
         paths = report['runtime_search_paths'][name]
         expected = ['$ORIGIN'] if name.startswith('lib/') else ['$ORIGIN/lib']
-        require(paths == expected or (name.startswith('lib/libicu') and paths == []),
+        require(paths == expected or (name.startswith(('lib/libicu', 'lib/libzip')) and paths == []),
                 'Unexpected runtime library search path: ' + name)
     return executable, launcher
 
@@ -203,6 +235,9 @@ def support_snapshot(root, report):
     lock, icu = json_bytes(lock_data), json_bytes(icu_data)
     require(lock == report['inputs']['engine'] and icu == report['inputs']['icu'],
             'The frozen bundle and current engine/ICU locks differ; do not attach newer sources')
+    if report['inputs'].get('engine_variant') == 'modern-extensions':
+        require(json_bytes((root / 'engine/libzip.lock.json').read_bytes()) == report['inputs']['libzip'],
+                'The frozen bundle and current private libzip lock differ')
     patch = relative(lock['patch']['path'])
     require(patch.startswith('engine/patches/') and HASH.fullmatch(lock['patch']['sha256']),
             'Invalid locked engine patch')
@@ -421,7 +456,7 @@ def validate_bundle(bundle, report, source, native_manifest):
     if report['inputs']['target'] == 'browser':
         require(expected['resources/start.html'] == expected['source/resources/start.html'],
                 'Bundled start page differs from its frozen app source')
-    for name, path in HEADERS.items():
+    for name, path in report['inputs']['public_headers'].items():
         require(source['entries']['Source/WebKit/' + path]['sha256'] == report['inputs']['sha256']['include/WebKit/' + name],
                 'Frozen public header differs from the exact locked engine source: ' + name)
     return files

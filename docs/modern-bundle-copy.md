@@ -9,6 +9,8 @@ python3 tools/copy-modern-browser-bundle.py
 python3 tools/copy-modern-browser-bundle.py .vm/modern-browser-bundle.json
 # The separate preview bundle is also supported:
 python3 tools/copy-modern-browser-bundle.py --preview
+# An extension-enabled browser has a separate report:
+python3 tools/copy-modern-browser-bundle.py .vm/modern-extensions-browser-bundle.json
 ```
 
 The default report is `.vm/modern-browser-bundle.json`; `--preview` selects
@@ -28,6 +30,11 @@ Only declared library aliases pointing to their regular library in `lib/` are
 accepted; archive traversal, hard links, special files and undeclared source
 files are rejected. Summit and WebKit licenses are checked against their matching
 source; the bundled private ICU license is preserved and its digest recorded.
+Extension-enabled bundles also contain the locked private libzip library and
+its complete license notice from the locked `zip.h` header. Their manifest
+records the selected engine variant and requires both extension CMake options
+to be ON; ordinary modern bundles require both options OFF. Older manifests
+remain readable with their original configuration and header mapping.
 
 The cached `.cache/WebKit` must already have the bundled upstream commit and
 patch. The exact `git diff --binary --full-index HEAD` digest must equal the
@@ -100,6 +107,22 @@ bash tools/build-modern-browser-in-vm.sh --browser
 # For a preview source bundle, use the following command instead:
 # bash tools/build-modern-browser-in-vm.sh
 ```
+
+For an extension-enabled bundle, use `--modern-extensions` on both the engine
+build and app bundler instead:
+
+```sh
+SUMMIT_WEBKIT_JOBS=3 bash tools/build-webkit-in-vm.sh --modern-extensions
+bash tools/build-modern-browser-in-vm.sh --browser --modern-extensions
+```
+
+This uses `/boot/home/summit-webkit-extensions`, preserves the private libzip
+dependency, and writes `.vm/modern-extensions-browser-bundle.json` without
+replacing the ordinary modern report. The bundler checks that both process
+targets are fully rebuilt before copying them. `--compile-only` can compile the
+browser against isolated staged headers while an engine build is running; it
+does not link, bundle, or establish runtime behavior. Extension-enabled browser
+runtime verification is still pending; see [STATUS.md](STATUS.md).
 
 The source archive also supplies those full patched trees for a direct native
 CMake build without fetching Git. It is already patched: do not apply the patch
