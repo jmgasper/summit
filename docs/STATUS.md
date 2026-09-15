@@ -1,4 +1,4 @@
-# Development verification — September 14, 2026
+# Development verification — September 15, 2026
 
 The original full-browser objective is **not complete**. Summit now builds and
 runs with the pinned latest upstream WebKit in Haiku. Extensions and the modern
@@ -1942,8 +1942,26 @@ its native popup implementation and the DNR loader remain unfinished.
 
 **61 native helper checks and nine connected translation units pass.** The
 first full build exposed the missing `haiku/` prefix on the shared tab header's
-new include. That one-line correction is promoted and the full build is running.
+new include. The corrected full build compiled without errors and reached the
+linker: request-rule loading and `performAction` remain undefined (seven references).
 No extension or trusted native input has executed this path. Automatic injection,
 fetch/CORS behavior and actual asynchronous lifecycle checks remain unverified
 or unfinished. See [temporary tab access](webextensions-native-active-tab.md)
 for the implemented behavior, test scope and evidence.
+
+
+### Native extension action popup host and page bridge
+
+Patch `4bd2ca81e2ab0c0e2d5a10f9e776e0bf41cd04e392427c57961edf6c6775ba4b`
+adds a floating native action popup with an extension-configured WebKit page,
+content sizing, originating-tab lookup and lifecycle dismissal. New action
+invocations supersede earlier popups in the same profile. Trusted calls validate
+the current tab/action before granting the existing user gesture; actions without
+a popup use the existing click-event producer.
+
+**88 native window-host checks and ten engine translation units pass.** The full
+Extensions-enabled engine build is running. No extension HTML has rendered in
+this host and no extension has executed the action path. Native toolbar input,
+`action.openPopup()` bindings, real lifecycle/rendering tests and request-rule
+loading still require work. See [native action popups](webextensions-native-action-popup.md)
+for the exact evidence and remaining scope.

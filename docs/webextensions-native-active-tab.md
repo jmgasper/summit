@@ -4,8 +4,10 @@ Engine patch `ccacaaa8748dde7ba4432cd53707f5731332951c7b8d727f82d0d45599ff3b5d`
 connects native user gestures to temporary tab permissions and command dispatch.
 The helper passes 61 checks in Haiku; nine connected engine translation units
 compile. The first full build found a missing `haiku/` include path in the shared
-tab header. That include is corrected and a full build is running. **No extension
-has executed these paths, and the engine has not linked successfully.**
+tab header. With that include corrected, the full build reached the linker
+without compiler errors. At that patch it still needed the native action entry
+point and request-rule loader. **No extension has executed these paths, and the engine has not linked
+successfully.**
 
 A grant belongs to one extension's tab and uses its committed security origin,
 including the scheme, host and port. It never uses a provisional address-bar URL.
@@ -40,7 +42,8 @@ checking access, so an inaccessible private window cannot redirect the command
 to another browser window. Trusted invocations call the new user-gesture path;
 programmatic calls do not manufacture a gesture. Ordinary commands use the
 existing background-wake/event dispatcher. Reserved action commands call
-`performAction`; its native popup implementation remains unfinished.
+`performAction`; the [native popup bridge](webextensions-native-action-popup.md)
+now compiles, but has not executed in an extension.
 
 The intended temporary-access behavior follows [Chrome's activeTab reference](https://developer.chrome.com/docs/extensions/develop/concepts/activeTab).
 Command/action separation follows [Chrome's commands reference](https://developer.chrome.com/docs/extensions/reference/api/commands?hl=en).
@@ -69,7 +72,9 @@ This work does not establish complete Chrome, Firefox or Safari compatibility.
 - `.vm/extension-active-tab-header-promotion.json` records the one-line include correction.
 - `.vm/modern-extensions-active-tab-build-result.json` records the failed full build:
   99 occurrences of the same missing-header error; linking was not reached.
-- `.vm/modern-extensions-active-tab-header-build.log` is the corrected full build.
+- `.vm/modern-extensions-active-tab-header-build-result.json` records the corrected
+  full build: no compiler errors, two missing functions with seven linker references.
+  The log is `.vm/modern-extensions-active-tab-header-build.log`.
 
 Native menu/toolbar/shortcut input, popup presentation, asynchronous lifecycle
 checks in a running extension, background persistence and request-rule loading

@@ -42,6 +42,8 @@ PAGE_UNITS = {'WebLoaderStrategy.cpp': 'WebProcess/Network/WebLoaderStrategy.cpp
               'WebPage.cpp': 'WebProcess/WebPage/WebPage.cpp',
               'WebLocalFrameLoaderClient.cpp': 'WebProcess/WebCoreSupport/WebLocalFrameLoaderClient.cpp'}
 NATIVE_PAGE_UNITS = {'ExtensionPermissionPromptHaiku.cpp': 'UIProcess/haiku/ExtensionPermissionPromptHaiku.cpp',
+                     'ExtensionActionPopupHaiku.cpp': 'UIProcess/Extensions/haiku/ExtensionActionPopupHaiku.cpp',
+                     'WebKitView.cpp': 'UIProcess/API/haiku/WebKitView.cpp',
                      'BrowserTabRegistryHaiku.cpp': 'UIProcess/haiku/BrowserTabRegistryHaiku.cpp',
                      'WebViewContextHaiku.cpp': 'UIProcess/haiku/WebViewContextHaiku.cpp',
                      'WebKitContext.cpp': 'UIProcess/API/haiku/WebKitContext.cpp',
@@ -377,6 +379,8 @@ def host(overlay=None, units=None, engine_root=DEFAULT_ENGINE, regenerate=False,
     if any(name in NATIVE_PAGE_UNITS or name.endswith('Haiku.cpp') for name in units or ()) or (overlay and
             (pathlib.Path(overlay).resolve() / 'Source/WebKit/UIProcess/haiku/WebViewPrivate.h').is_file()):
         for relative in ('UIProcess/haiku/WebViewPrivate.h', 'UIProcess/haiku/WebViewContextHaiku.h',
+                         'UIProcess/haiku/NativeExtensionPopupHaiku.h', 'UIProcess/haiku/JavaScriptDialogRequestsHaiku.h',
+                         'UIProcess/haiku/JavaScriptDialogHaiku.h',
                          'UIProcess/haiku/WebViewStateHaiku.h', 'UIProcess/haiku/BrowserTabRegistryHaiku.h',
                          'UIProcess/haiku/ExtensionPermissionPromptHaiku.h',
                          'UIProcess/API/haiku/WebKitExtensionPermission.h',

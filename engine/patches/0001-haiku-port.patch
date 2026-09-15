@@ -24507,10 +24507,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..3cad4bdd2dddd7ba2c8dfb4a896930a4485c460e
+index 0000000000000000000000000000000000000000..02861f3efc5338b26252cc85ffa97b4fa6b89c67
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,238 @@
+@@ -0,0 +1,239 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -24569,6 +24569,7 @@ index 0000000000000000000000000000000000000000..3cad4bdd2dddd7ba2c8dfb4a896930a4
 +    UIProcess/Extensions/WebExtensionCommand.cpp
 +    UIProcess/Extensions/haiku/WebExtensionCommandHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionContextCommandsHaiku.cpp
++    UIProcess/Extensions/haiku/ExtensionActionPopupHaiku.cpp
 +    Shared/Extensions/WebExtensionCommandShortcut.cpp
 +    Shared/Extensions/WebExtensionCommandSettings.cpp
 +    Shared/Extensions/WebExtensionPermissionState.cpp
@@ -28728,10 +28729,10 @@ index 0000000000000000000000000000000000000000..d28a6cad6339adf79b155cf974e85bfd
 +
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..2eb35b00e3e955de784a59c88026e72c7f8ee10e
+index 0000000000000000000000000000000000000000..4f2d5a8c5667e02ccc5b5455ac72dc2eb2c7845d
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp
-@@ -0,0 +1,401 @@
+@@ -0,0 +1,415 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -28740,6 +28741,7 @@ index 0000000000000000000000000000000000000000..2eb35b00e3e955de784a59c88026e72c
 +#include "WebKit2Initialize.h"
 +#include "JavaScriptDialogHaiku.h"
 +#include "NativeSelectPopupHaiku.h"
++#include "NativeExtensionPopupHaiku.h"
 +#include "WebViewPrivate.h"
 +#include "WebViewStateHaiku.h"
 +#include <Application.h>
@@ -28773,7 +28775,7 @@ index 0000000000000000000000000000000000000000..2eb35b00e3e955de784a59c88026e72c
 +
 +bool BWebKitHasPendingNativeUI()
 +{
-+    return JavaScriptDialogHaiku::activeCount() || NativeSelectPopupHaiku::activeCount();
++    return JavaScriptDialogHaiku::activeCount() || NativeSelectPopupHaiku::activeCount() || NativeExtensionPopupHaiku::activeCount();
 +}
 +
 +BWebKitView::BWebKitView(BRect frame, const char* name, BMessenger target, uint32 resizingMode, std::shared_ptr<BWebKitContext> context)
@@ -28797,6 +28799,19 @@ index 0000000000000000000000000000000000000000..2eb35b00e3e955de784a59c88026e72c
 +        if (!state->closed)
 +            state->client = WebView::create(state);
 +    });
++}
++
++// Internal extension views adopt a page created with the extension configuration.
++// The native window thread owns only this view and the shared native state.
++BWebKitView::BWebKitView(BRect frame, const char* name, std::shared_ptr<WebViewStateHaiku> state)
++    : BView(frame, name, B_FOLLOW_ALL, B_WILL_DRAW | B_FRAME_EVENTS | B_NAVIGABLE | B_FULL_UPDATE_ON_RESIZE)
++    , m_state(std::move(state))
++{
++    SetViewColor(B_TRANSPARENT_COLOR);
++    m_status = webKitInitializedHaiku && !m_state->closed ? m_state->status.load() : B_NO_INIT;
++    m_state->status = m_status;
++    if (m_status == B_OK)
++        UpdateGeometry();
 +}
 +
 +BWebKitView::~BWebKitView()
@@ -29135,10 +29150,10 @@ index 0000000000000000000000000000000000000000..2eb35b00e3e955de784a59c88026e72c
 +}
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitView.h b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..76e0d3db5f131fff71c6985a8d2d2620f562d202
+index 0000000000000000000000000000000000000000..bae34bf4607ac263391eb98a9fffa58162f49aec
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,99 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -29150,7 +29165,7 @@ index 0000000000000000000000000000000000000000..76e0d3db5f131fff71c6985a8d2d2620
 +#include <memory>
 +#include <vector>
 +
-+namespace WebKit { struct WebViewStateHaiku; class JavaScriptDialogHostHaiku; }
++namespace WebKit { struct WebViewStateHaiku; class JavaScriptDialogHostHaiku; class ExtensionActionPopupHaiku; }
 +class BCursor;
 +
 +// Call on the BApplication thread before creating any modern web views.
@@ -29226,6 +29241,8 @@ index 0000000000000000000000000000000000000000..76e0d3db5f131fff71c6985a8d2d2620
 +
 +private:
 +    friend class BWebKitContext;
++    friend class WebKit::ExtensionActionPopupHaiku;
++    BWebKitView(BRect, const char*, std::shared_ptr<WebKit::WebViewStateHaiku>);
 +    void UpdateGeometry();
 +    void SendInput(const BMessage&, BPoint = BPoint());
 +    void SendCommand(uint32, const char* = nullptr);
@@ -29413,10 +29430,10 @@ index 3c07d36552434c56bfa713274bed4cee92489d3a..c142b793471c41bea809b0de71e0f0db
      return isLoadedAndPrivilegedMessage(message) && (hasPermission(WebExtensionPermission::declarativeNetRequest()) || hasPermission(WebExtensionPermission::declarativeNetRequestWithHostAccess()));
 diff --git a/Source/WebKit/UIProcess/Extensions/API/WebExtensionContextAPIEvent.cpp b/Source/WebKit/UIProcess/Extensions/API/WebExtensionContextAPIEvent.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..a5aa24578c3bc34ed4aaffa6236380ffdfd9e4eb
+index 0000000000000000000000000000000000000000..cedd3c87bd75e9bd0863dee455691389a384a583
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/API/WebExtensionContextAPIEvent.cpp
-@@ -0,0 +1,265 @@
+@@ -0,0 +1,270 @@
 +/*
 + * Copyright (C) 2022-2024 Apple Inc. All rights reserved.
 + *
@@ -29565,6 +29582,10 @@ index 0000000000000000000000000000000000000000..a5aa24578c3bc34ed4aaffa6236380ff
 +
 +    RefPtr tab = getTab(pageID);
 +    auto& frameURL = *frameParameters.url;
++#if PLATFORM(HAIKU)
++    if (tab && frameParameters.frameIdentifier && isMainFrame(*frameParameters.frameIdentifier))
++        closeNativeActionPopupForTab(*tab);
++#endif
 +
 +    // Dispatch webNavigation events.
 +    if (tab && hasPermission(WebExtensionPermission::webNavigation(), tab.get()) && hasPermission(frameURL, tab.get())) {
@@ -29595,6 +29616,7 @@ index 0000000000000000000000000000000000000000..a5aa24578c3bc34ed4aaffa6236380ff
 +            tabAction->clearCustomizations();
 +
 +#if PLATFORM(HAIKU)
++        closeNativeActionPopupForTab(*tab);
 +        // Same-origin navigations retain the tab grant. A new origin (including
 +        // a changed port or an opaque document) revokes it before event delivery.
 +        tab->nativeDidCommitNavigation();
@@ -32543,6 +32565,20 @@ index f14860d8e436a90cb7616ae96bb9f05d6517bc50..e15b43ebf9bfecdf380896aa73b6d121
      URL m_resourceBaseURL;
      bool m_resourcesAreTemporary { false };
      Ref<const JSON::Value> m_manifestJSON;
+diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionAction.h b/Source/WebKit/UIProcess/Extensions/WebExtensionAction.h
+index fac3a3b3cc2786da7bd9ac826eef6f75899f3af7..b96ae38f2632ccc4f391da9ebeef895e0d567457 100644
+--- a/Source/WebKit/UIProcess/Extensions/WebExtensionAction.h
++++ b/Source/WebKit/UIProcess/Extensions/WebExtensionAction.h
+@@ -153,6 +153,9 @@ public:
+ #endif
+ 
+ private:
++#if PLATFORM(HAIKU)
++    friend class ExtensionActionPopupHaiku;
++#endif
+     RefPtr<WebExtensionAction> fallbackAction() const;
+ 
+     void clearIconCache();
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionCommand.h b/Source/WebKit/UIProcess/Extensions/WebExtensionCommand.h
 index 65b9841a9d4469a699b92c47435fecaaaa034d77..0361d615767169f4af1a6c192853c93efd6f48a7 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionCommand.h
@@ -32562,10 +32598,10 @@ index 65b9841a9d4469a699b92c47435fecaaaa034d77..0361d615767169f4af1a6c192853c93e
  
      OptionSet<ModifierFlags> modifierFlags() const { return !m_activationKey.isEmpty() ? m_modifierFlags : OptionSet<ModifierFlags> { }; }
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
-index a156078a37b33ea2704f6a9ba747a0c881bb0009..21f925365f4a5ebeb6c984b146cf51c8c906ff1a 100644
+index a156078a37b33ea2704f6a9ba747a0c881bb0009..c7a10f8127e3782cb17c7499f664771920a4f3f4 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.cpp
-@@ -34,11 +34,19 @@
+@@ -34,11 +34,20 @@
  #include "InjectUserScriptImmediately.h"
  #include "Logging.h"
  #include "WebExtensionConstants.h"
@@ -32580,12 +32616,13 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..21f925365f4a5ebeb6c984b146cf51c8
 +#if PLATFORM(HAIKU)
 +#include "WebViewPrivate.h"
 +#include "ExtensionPermissionPromptHaiku.h"
++#include "haiku/ExtensionActionPopupHaiku.h"
 +#include "haiku/WebExtensionTestMessageQueueHaiku.h"
 +#endif
  #include <WebCore/LocalizedStrings.h>
  #include <WebCore/TextResourceDecoder.h>
  #include <wtf/HashMap.h>
-@@ -49,8 +57,311 @@ static constexpr size_t maximumCachedPermissionResults = 256;
+@@ -49,8 +58,312 @@ static constexpr size_t maximumCachedPermissionResults = 256;
  
  namespace WebKit {
  
@@ -32732,6 +32769,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..21f925365f4a5ebeb6c984b146cf51c8
 +    }
 +
 +#if PLATFORM(HAIKU)
++    closeNativeActionPopup();
 +    Vector<WTF::UUID> removedMenuCallbacks;
 +    for (auto& token : m_menuClickHandlerIdentifiers.values())
 +        removedMenuCallbacks.append(token);
@@ -32897,10 +32935,13 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..21f925365f4a5ebeb6c984b146cf51c8
  int WebExtensionContext::toAPIError(WebExtensionContext::Error error)
  {
      switch (error) {
-@@ -230,6 +541,14 @@ void WebExtensionContext::setHasAccessToPrivateData(bool hasAccess)
+@@ -230,6 +543,17 @@ void WebExtensionContext::setHasAccessToPrivateData(bool hasAccess)
          return;
  
      m_hasAccessToPrivateData = hasAccess;
++#if PLATFORM(HAIKU)
++    validateNativeActionPopup();
++#endif
 +#if PLATFORM(HAIKU)
 +    if (!hasAccess && isLoaded()) {
 +        for (Ref tab : openTabs(IgnoreExtensionAccess::Yes)) {
@@ -32912,7 +32953,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..21f925365f4a5ebeb6c984b146cf51c8
  
      if (!safeToInjectContent())
          return;
-@@ -261,6 +580,15 @@ void WebExtensionContext::setHasAccessToFileURLs(bool hasAccess)
+@@ -261,6 +585,15 @@ void WebExtensionContext::setHasAccessToFileURLs(bool hasAccess)
          return;
  
      m_hasAccessToFileURLs = hasAccess;
@@ -32928,7 +32969,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..21f925365f4a5ebeb6c984b146cf51c8
  
      if (!safeToInjectContent())
          return;
-@@ -282,6 +610,10 @@ const WebExtensionContext::PermissionsMap& WebExtensionContext::grantedPermissio
+@@ -282,6 +615,10 @@ const WebExtensionContext::PermissionsMap& WebExtensionContext::grantedPermissio
  
  void WebExtensionContext::setGrantedPermissions(PermissionsMap&& grantedPermissions)
  {
@@ -32939,7 +32980,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..21f925365f4a5ebeb6c984b146cf51c8
      PermissionsSet removedPermissions;
      for (auto& entry : m_grantedPermissions)
          removedPermissions.add(entry.key);
-@@ -348,6 +680,10 @@ const WebExtensionContext::PermissionMatchPatternsMap& WebExtensionContext::gran
+@@ -348,6 +685,10 @@ const WebExtensionContext::PermissionMatchPatternsMap& WebExtensionContext::gran
  
  void WebExtensionContext::setGrantedPermissionMatchPatterns(PermissionMatchPatternsMap&& grantedPermissionMatchPatterns, EqualityOnly equalityOnly)
  {
@@ -32950,7 +32991,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..21f925365f4a5ebeb6c984b146cf51c8
      MatchPatternSet removedMatchPatterns;
      for (auto& entry : m_grantedPermissionMatchPatterns)
          removedMatchPatterns.add(entry.key);
-@@ -576,7 +912,23 @@ bool WebExtensionContext::removePermissionMatchPatterns(PermissionMatchPatternsM
+@@ -576,7 +917,23 @@ bool WebExtensionContext::removePermissionMatchPatterns(PermissionMatchPatternsM
  
  bool WebExtensionContext::removeGrantedPermissionMatchPatterns(MatchPatternSet& matchPatternsToRemove, EqualityOnly equalityOnly)
  {
@@ -32975,7 +33016,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..21f925365f4a5ebeb6c984b146cf51c8
      // Clear activeTab permissions if the patterns match.
      for (Ref tab : openTabs()) {
          auto temporaryPattern = tab->temporaryPermissionMatchPattern();
-@@ -590,8 +942,13 @@ bool WebExtensionContext::removeGrantedPermissionMatchPatterns(MatchPatternSet&
+@@ -590,8 +947,13 @@ bool WebExtensionContext::removeGrantedPermissionMatchPatterns(MatchPatternSet&
      }
  #endif
  
@@ -32990,7 +33031,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..21f925365f4a5ebeb6c984b146cf51c8
  
      removeInjectedContent(matchPatternsToRemove);
  
-@@ -600,6 +957,10 @@ bool WebExtensionContext::removeGrantedPermissionMatchPatterns(MatchPatternSet&
+@@ -600,6 +962,10 @@ bool WebExtensionContext::removeGrantedPermissionMatchPatterns(MatchPatternSet&
  
  bool WebExtensionContext::removeGrantedPermissions(PermissionsSet& permissionsToRemove)
  {
@@ -33001,7 +33042,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..21f925365f4a5ebeb6c984b146cf51c8
      return removePermissions(m_grantedPermissions, permissionsToRemove, m_nextGrantedPermissionsExpirationDate, WebExtensionContext::PermissionNotification::GrantedPermissionsWereRemoved);
  }
  
-@@ -623,14 +984,14 @@ WebExtensionContext::PermissionsMap& WebExtensionContext::removeExpired(Permissi
+@@ -623,14 +989,14 @@ WebExtensionContext::PermissionsMap& WebExtensionContext::removeExpired(Permissi
      WallTime currentTime = WallTime::now();
  
      // If the next expiration date hasn't passed yet, there is nothing to remove.
@@ -33018,7 +33059,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..21f925365f4a5ebeb6c984b146cf51c8
              removedPermissions.add(entry.key);
              return true;
          }
-@@ -644,7 +1005,7 @@ WebExtensionContext::PermissionsMap& WebExtensionContext::removeExpired(Permissi
+@@ -644,7 +1010,7 @@ WebExtensionContext::PermissionsMap& WebExtensionContext::removeExpired(Permissi
      if (removedPermissions.isEmpty() || notification == PermissionNotification::None)
          return permissionMap;
  
@@ -33027,7 +33068,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..21f925365f4a5ebeb6c984b146cf51c8
      permissionsDidChange(notification, removedPermissions);
  #endif
  
-@@ -656,14 +1017,14 @@ WebExtensionContext::PermissionMatchPatternsMap& WebExtensionContext::removeExpi
+@@ -656,14 +1022,14 @@ WebExtensionContext::PermissionMatchPatternsMap& WebExtensionContext::removeExpi
      WallTime currentTime = WallTime::now();
  
      // If the next expiration date hasn't passed yet, there is nothing to remove.
@@ -33044,7 +33085,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..21f925365f4a5ebeb6c984b146cf51c8
              removedMatchPatterns.add(entry.key);
              return true;
          }
-@@ -677,7 +1038,7 @@ WebExtensionContext::PermissionMatchPatternsMap& WebExtensionContext::removeExpi
+@@ -677,7 +1043,7 @@ WebExtensionContext::PermissionMatchPatternsMap& WebExtensionContext::removeExpi
      if (removedMatchPatterns.isEmpty() || notification == PermissionNotification::None)
          return matchPatternMap;
  
@@ -33053,7 +33094,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..21f925365f4a5ebeb6c984b146cf51c8
      permissionsDidChange(notification, removedMatchPatterns);
  #endif
  
-@@ -836,7 +1197,11 @@ WebExtensionContext::PermissionState WebExtensionContext::permissionState(const
+@@ -836,7 +1202,11 @@ WebExtensionContext::PermissionState WebExtensionContext::permissionState(const
  {
      ASSERT(!permission.isEmpty());
  
@@ -33066,7 +33107,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..21f925365f4a5ebeb6c984b146cf51c8
      if (tab && permission == WebExtensionPermission::tabs()) {
          if (tab->extensionHasTemporaryPermission())
              return PermissionState::GrantedExplicitly;
-@@ -869,6 +1234,10 @@ WebExtensionContext::PermissionState WebExtensionContext::permissionState(const
+@@ -869,6 +1239,10 @@ WebExtensionContext::PermissionState WebExtensionContext::permissionState(const
  
  WebExtensionContext::PermissionState WebExtensionContext::permissionState(const URL& url, WebExtensionTab* tab, OptionSet<PermissionStateOptions> options)
  {
@@ -33077,7 +33118,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..21f925365f4a5ebeb6c984b146cf51c8
      if (url.isEmpty())
          return PermissionState::Unknown;
  
-@@ -881,11 +1250,16 @@ WebExtensionContext::PermissionState WebExtensionContext::permissionState(const
+@@ -881,11 +1255,16 @@ WebExtensionContext::PermissionState WebExtensionContext::permissionState(const
      if (url.protocolIsFile() && !m_hasAccessToFileURLs)
          return PermissionState::Unknown;
  
@@ -33094,7 +33135,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..21f925365f4a5ebeb6c984b146cf51c8
  
      bool skipRequestedPermissions = options.contains(PermissionStateOptions::SkipRequestedPermissions);
  
-@@ -1001,6 +1375,10 @@ WebExtensionContext::PermissionState WebExtensionContext::permissionState(const
+@@ -1001,6 +1380,10 @@ WebExtensionContext::PermissionState WebExtensionContext::permissionState(const
  
  WebExtensionContext::PermissionState WebExtensionContext::permissionState(const WebExtensionMatchPattern& pattern, WebExtensionTab* tab, OptionSet<PermissionStateOptions> options)
  {
@@ -33105,7 +33146,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..21f925365f4a5ebeb6c984b146cf51c8
      if (!pattern.isValid())
          return PermissionState::Unknown;
  
-@@ -1013,11 +1391,15 @@ WebExtensionContext::PermissionState WebExtensionContext::permissionState(const
+@@ -1013,11 +1396,15 @@ WebExtensionContext::PermissionState WebExtensionContext::permissionState(const
      if (!pattern.matchesAllURLs() && pattern.scheme() == "file"_s && !m_hasAccessToFileURLs)
          return PermissionState::Unknown;
  
@@ -33121,7 +33162,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..21f925365f4a5ebeb6c984b146cf51c8
  
      // Access the maps here to remove any expired entries, and only do it once for this call.
      auto& grantedPermissionMatchPatterns = this->grantedPermissionMatchPatterns();
-@@ -1660,7 +2042,13 @@ WebExtensionContext::WebExtensionContext()
+@@ -1660,7 +2047,14 @@ WebExtensionContext::WebExtensionContext()
  }
  
  #if !USE(GLIB)
@@ -33130,13 +33171,14 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..21f925365f4a5ebeb6c984b146cf51c8
 +{
 +    webExtensionContexts().remove(identifier());
 +#if PLATFORM(HAIKU)
++    closeNativeActionPopup();
 +    unloadBackgroundWebView();
 +#endif
 +}
  #endif
  
  WebExtensionContextIdentifier WebExtensionContext::privilegedIdentifier() const
-@@ -1798,9 +2186,17 @@ void WebExtensionContext::loadBackgroundContent(CompletionHandler<void(RefPtr<AP
+@@ -1798,9 +2192,17 @@ void WebExtensionContext::loadBackgroundContent(CompletionHandler<void(RefPtr<AP
          return;
      }
  
@@ -33157,7 +33199,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..21f925365f4a5ebeb6c984b146cf51c8
      });
  }
  
-@@ -2003,6 +2399,128 @@ Ref<WebExtensionRegisteredScriptsSQLiteStore> WebExtensionContext::registeredCon
+@@ -2003,6 +2405,128 @@ Ref<WebExtensionRegisteredScriptsSQLiteStore> WebExtensionContext::registeredCon
      return *m_registeredContentScriptsStorage;
  }
  
@@ -33287,7 +33329,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..21f925365f4a5ebeb6c984b146cf51c8
  
  #endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
-index 05a8676082d56f2c47c9af6120f5120b09f982be..f9045cae4b88161a139b23507351c424db977a1f 100644
+index 05a8676082d56f2c47c9af6120f5120b09f982be..e92a054e6ae8c6a86cd12c51f07894973d80527c 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 @@ -51,7 +51,11 @@
@@ -33336,18 +33378,19 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..f9045cae4b88161a139b23507351c424
  using WebViewClass = WebKitWebView;
  using WebViewConfiguration = GRefPtr<WebKitSettings>;
  using NavigationPolicyAction = WebKitNavigationPolicyDecision;
-@@ -179,6 +199,10 @@ enum class WebExtensionContextInstallReason : uint8_t {
+@@ -179,6 +199,11 @@ enum class WebExtensionContextInstallReason : uint8_t {
      BrowserUpdate,
  };
  
 +#if PLATFORM(HAIKU)
 +class WebView;
++class ExtensionActionPopupHaiku;
 +#endif
 +
  class WebExtensionContext : public API::ObjectImpl<API::Object::Type::WebExtensionContext>, public IPC::MessageReceiver, public Identified<WebExtensionContextIdentifier> {
      WTF_MAKE_NONCOPYABLE(WebExtensionContext);
  
-@@ -198,6 +222,8 @@ public:
+@@ -198,6 +223,8 @@ public:
      {
  #if PLATFORM(COCOA)
          return "State.plist"_s;
@@ -33356,7 +33399,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..f9045cae4b88161a139b23507351c424
  #else
          return "State.ini"_s;
  #endif
-@@ -206,6 +232,8 @@ public:
+@@ -206,6 +233,8 @@ public:
      static NSMutableDictionary *readStateFromPath(const String&);
  #elif ENABLE(2022_GLIB_API)
      static GRefPtr<GKeyFile> readStateFromPath(const String&);
@@ -33365,7 +33408,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..f9045cae4b88161a139b23507351c424
  #endif
      static bool readLastBaseURLFromState(const String& filePath, URL& outLastBaseURL);
      static bool readDisplayNameFromState(const String& filePath, String& outDisplayName);
-@@ -214,7 +242,7 @@ public:
+@@ -214,7 +243,7 @@ public:
  
      static WebExtensionContext* NODELETE get(WebExtensionContextIdentifier);
  
@@ -33374,7 +33417,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..f9045cae4b88161a139b23507351c424
      explicit WebExtensionContext(Ref<WebExtension>&&);
  #elif ENABLE(2022_GLIB_API)
      explicit WebExtensionContext(WebKitWebExtensionContext*);
-@@ -265,11 +293,8 @@ public:
+@@ -265,11 +294,8 @@ public:
          bool userGesture { false };
      };
  
@@ -33386,7 +33429,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..f9045cae4b88161a139b23507351c424
      using PortQueuedMessageMap = HashMap<PortWorldPair, Vector<PortQueuedMessage>>;
      using NativePortMap = HashMap<WebExtensionPortChannelIdentifier, Ref<WebExtensionMessagePort>>;
  
-@@ -334,6 +359,17 @@ public:
+@@ -334,6 +360,21 @@ public:
          DeniedPermissionMatchPatternsWereRemoved,
      };
  
@@ -33399,12 +33442,16 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..f9045cae4b88161a139b23507351c424
 +    using NativeActionChangeHandler = SharedTask<void(WebExtensionAction&)>;
 +    void setNativeActionChangeHandler(RefPtr<NativeActionChangeHandler>&&);
 +    void nativeActionPropertiesDidChange(WebExtensionAction&);
++    void closeNativeActionPopup();
++    void closeNativeActionPopupForTab(WebExtensionTab&);
++    void validateNativeActionPopup();
++    friend class ExtensionActionPopupHaiku;
 +#endif
 +
      enum class PermissionState : int8_t {
          DeniedExplicitly    = -3,
          DeniedImplicitly    = -2,
-@@ -504,6 +540,14 @@ public:
+@@ -504,6 +545,14 @@ public:
  
      void removePage(WebPageProxy&);
  
@@ -33419,7 +33466,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..f9045cae4b88161a139b23507351c424
      Ref<WebExtensionWindow> getOrCreateWindow(WKWebExtensionWindow *) const;
      RefPtr<WebExtensionWindow> getWindow(WebExtensionWindowIdentifier, std::optional<WebPageProxyIdentifier> = std::nullopt, IgnoreExtensionAccess = IgnoreExtensionAccess::No) const;
      void forgetWindow(WebExtensionWindowIdentifier) const;
-@@ -596,6 +640,9 @@ public:
+@@ -596,6 +645,9 @@ public:
      const CommandsVector& commands();
      WebExtensionCommand* command(const String& identifier);
      void performCommand(WebExtensionCommand&, UserTriggered = UserTriggered::No);
@@ -33429,7 +33476,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..f9045cae4b88161a139b23507351c424
      void resetCommands();
  
  #if TARGET_OS_IPHONE
-@@ -630,6 +677,10 @@ public:
+@@ -630,6 +682,10 @@ public:
      void sendTestStarted(id argument);
      void sendTestFinished(id argument);
      void reloadBackgroundContentForTesting();
@@ -33440,7 +33487,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..f9045cae4b88161a139b23507351c424
  #endif
  
      URL backgroundContentURL();
-@@ -655,6 +706,7 @@ public:
+@@ -655,6 +711,7 @@ public:
      void runOpenPanel(WKWebView *, WKOpenPanelParameters *, void (^)(NSArray *));
  #endif
  
@@ -33448,7 +33495,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..f9045cae4b88161a139b23507351c424
  #if PLATFORM(COCOA)
      void sendNativeMessage(const String& applicationID, id message, CompletionHandler<void(std::expected<RetainPtr<id>, WebExtensionError>&&)>&&);
  #endif
-@@ -700,7 +752,11 @@ public:
+@@ -700,7 +757,11 @@ public:
  
      WebsiteDataStore* websiteDataStore(std::optional<PAL::SessionID> = std::nullopt) const;
  
@@ -33460,7 +33507,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..f9045cae4b88161a139b23507351c424
  
      void loadBackgroundContent(CompletionHandler<void(RefPtr<API::Error>)>&&);
  
-@@ -749,19 +805,41 @@ private:
+@@ -749,19 +810,41 @@ private:
  #if PLATFORM(COCOA)
      NSDictionary *currentState() const;
      NSDictionary *readStateFromStorage();
@@ -33503,7 +33550,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..f9045cae4b88161a139b23507351c424
      void permissionsDidChange(PermissionNotification, const PermissionsSet&);
      void permissionsDidChange(PermissionNotification, const MatchPatternSet&);
  
-@@ -796,6 +874,7 @@ private:
+@@ -796,6 +879,7 @@ private:
      void saveBackgroundPageListenersToStorage();
  
      void performTasksAfterBackgroundContentLoads();
@@ -33511,7 +33558,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..f9045cae4b88161a139b23507351c424
  
  #ifdef NDEBUG
      // This is method is a no-op in release builds since it has a performance impact with little benefit to release builds.
-@@ -882,6 +961,10 @@ private:
+@@ -882,6 +966,10 @@ private:
      Ref<WebExtensionStorageSQLiteStore> syncStorageStore();
  
      void fetchCookies(WebsiteDataStore&, const URL&, const WebExtensionCookieFilterParameters&, CompletionHandler<void(std::expected<Vector<WebExtensionCookieParameters>, WebExtensionError>&&)>&&);
@@ -33522,7 +33569,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..f9045cae4b88161a139b23507351c424
  
      // Action APIs
      bool isActionMessageAllowed(IPC::Decoder&);
-@@ -924,6 +1007,11 @@ private:
+@@ -924,6 +1012,11 @@ private:
      // Commands APIs
      bool isCommandsMessageAllowed(IPC::Decoder&);
      void commandsGetAll(CompletionHandler<void(Vector<WebExtensionCommandParameters>)>&&);
@@ -33534,7 +33581,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..f9045cae4b88161a139b23507351c424
      void fireCommandEventIfNeeded(const WebExtensionCommand&, WebExtensionTab*);
      void fireCommandChangedEventIfNeeded(const WebExtensionCommand&, const String& oldShortcut);
  
-@@ -934,7 +1022,9 @@ private:
+@@ -934,7 +1027,9 @@ private:
      void cookiesSet(std::optional<PAL::SessionID>, const WebExtensionCookieParameters&, CompletionHandler<void(std::expected<std::optional<WebExtensionCookieParameters>, WebExtensionError>&&)>&&);
      void cookiesRemove(std::optional<PAL::SessionID>, const String& name, const URL&, CompletionHandler<void(std::expected<std::optional<WebExtensionCookieParameters>, WebExtensionError>&&)>&&);
      void cookiesGetAllCookieStores(CompletionHandler<void(std::expected<HashMap<PAL::SessionID, Vector<WebExtensionTabIdentifier>>, WebExtensionError>&&)>&&);
@@ -33544,7 +33591,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..f9045cae4b88161a139b23507351c424
  
      // DeclarativeNetRequest APIs
      bool isDeclarativeNetRequestMessageAllowed(IPC::Decoder&);
-@@ -971,6 +1061,11 @@ private:
+@@ -971,6 +1066,11 @@ private:
  
      // Menus APIs
      bool isMenusMessageAllowed(IPC::Decoder&);
@@ -33556,7 +33603,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..f9045cae4b88161a139b23507351c424
      void menusCreate(const WebExtensionMenuItemParameters&, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
      void menusUpdate(const String& identifier, const WebExtensionMenuItemParameters&, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
      void menusRemove(const String& identifier, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
-@@ -988,9 +1083,18 @@ private:
+@@ -988,9 +1088,18 @@ private:
  
      // Permissions APIs
      void permissionsGetAll(CompletionHandler<void(Vector<String>&& permissions, Vector<String>&& origins)>&&);
@@ -33575,7 +33622,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..f9045cae4b88161a139b23507351c424
      void firePermissionsEventListenerIfNecessary(WebExtensionEventListenerType, const PermissionsSet&, const MatchPatternSet&);
  
      // Port APIs
-@@ -1000,7 +1104,7 @@ private:
+@@ -1000,7 +1109,7 @@ private:
      void disconnectPortsForPage(WebPageProxy&);
      void addPorts(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier, HashCountedSet<WebPageProxyIdentifier>&&);
      void removePort(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier, WebPageProxyIdentifier);
@@ -33584,7 +33631,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..f9045cae4b88161a139b23507351c424
      void removeNativePort(WebExtensionMessagePort&);
      unsigned openPortCount(WebExtensionContentWorldType, WebExtensionPortChannelIdentifier);
      bool isPortConnected(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier);
-@@ -1009,7 +1113,7 @@ private:
+@@ -1009,7 +1118,7 @@ private:
      void firePortMessageEventsIfNeeded(WebExtensionContentWorldType, std::optional<WebPageProxyIdentifier>, WebExtensionPortChannelIdentifier, const String& messageJSON, bool userGesture);
      void fireQueuedPortMessageEventsIfNeeded(WebExtensionContentWorldType, WebExtensionPortChannelIdentifier);
      void sendQueuedNativePortMessagesIfNeeded(WebExtensionPortChannelIdentifier);
@@ -33593,7 +33640,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..f9045cae4b88161a139b23507351c424
  
      // Runtime APIs
      void runtimeGetBackgroundPage(CompletionHandler<void(std::expected<std::optional<WebCore::PageIdentifier>, WebExtensionError>&&)>&&);
-@@ -1034,6 +1138,7 @@ private:
+@@ -1034,6 +1143,7 @@ private:
      void scriptingGetRegisteredScripts(const Vector<String>&, CompletionHandler<void(std::expected<Vector<WebExtensionRegisteredScriptParameters>, WebExtensionError>&&)>&&);
      void scriptingUnregisterContentScripts(const Vector<String>&, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
      bool createInjectedContentForScripts(const Vector<WebExtensionRegisteredScriptParameters>&, WebExtensionDynamicScripts::WebExtensionRegisteredScript::FirstTimeRegistration, DynamicInjectedContentsMap&, NSString *callingAPIName, NSString **errorMessage);
@@ -33601,7 +33648,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..f9045cae4b88161a139b23507351c424
  
      // Sidebar APIs
  #if ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
-@@ -1129,6 +1234,12 @@ private:
+@@ -1129,6 +1239,13 @@ private:
      RetainPtr<NSMutableDictionary> m_state;
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<GKeyFile> m_state;
@@ -33609,12 +33656,13 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..f9045cae4b88161a139b23507351c424
 +    RefPtr<JSON::Object> m_state;
 +    RefPtr<NativePermissionChangeHandler> m_nativePermissionChangeHandler;
 +    uint64_t m_nativePermissionChangeHandlerGeneration { 0 };
++    RefPtr<ExtensionActionPopupHaiku> m_nativeActionPopup;
 +    RefPtr<NativeActionChangeHandler> m_nativeActionChangeHandler;
 +    uint64_t m_nativeActionChangeHandlerGeneration { 0 };
  #endif
      Vector<Ref<API::Error>> m_errors;
  
-@@ -1147,6 +1258,15 @@ private:
+@@ -1147,6 +1264,15 @@ private:
  
      RefPtr<API::ContentWorld> m_contentScriptWorld;
  
@@ -33630,7 +33678,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..f9045cae4b88161a139b23507351c424
      PermissionsMap m_grantedPermissions;
      PermissionsMap m_deniedPermissions;
  
-@@ -1172,6 +1292,9 @@ private:
+@@ -1172,6 +1298,9 @@ private:
      EventListenerTypeCountedSet m_backgroundContentEventListeners;
      EventListenerTypeFrameMap m_eventListenerFrames;
  
@@ -33640,7 +33688,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..f9045cae4b88161a139b23507351c424
      bool m_shouldFireStartupEvent { false };
      InstallReason m_installReason { InstallReason::None };
      String m_previousVersion;
-@@ -1194,6 +1317,9 @@ private:
+@@ -1194,6 +1323,9 @@ private:
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<WebKitWebView> m_backgroundWebView;
      GWeakPtr<WebKitWebExtensionContext> m_delegate;
@@ -33650,7 +33698,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..f9045cae4b88161a139b23507351c424
  #endif
      Variant<std::monostate, Ref<ProcessThrottlerActivity>, Ref<ProcessActivityGroup>> m_backgroundWebViewActivity;
      RefPtr<API::Error> m_backgroundContentLoadError;
-@@ -1215,6 +1341,7 @@ private:
+@@ -1215,6 +1347,7 @@ private:
      HashMap<Ref<WebExtensionMatchPattern>, UserScriptVector> m_injectedScriptsPerPatternMap;
      HashMap<Ref<WebExtensionMatchPattern>, UserStyleSheetVector> m_injectedStyleSheetsPerPatternMap;
  
@@ -33658,7 +33706,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..f9045cae4b88161a139b23507351c424
      HashMap<String, Ref<WebExtensionDynamicScripts::WebExtensionRegisteredScript>> m_registeredScriptsMap;
      RefPtr<WebExtensionRegisteredScriptsSQLiteStore> m_registeredContentScriptsStorage;
  
-@@ -1234,11 +1361,14 @@ private:
+@@ -1234,11 +1367,14 @@ private:
  #endif // ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
  
      PortCountedSet m_ports;
@@ -33674,7 +33722,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..f9045cae4b88161a139b23507351c424
      mutable WindowIdentifierVector m_windowOrderVector;
      mutable std::optional<WebExtensionWindowIdentifier> m_focusedWindowIdentifier;
  
-@@ -1261,6 +1391,9 @@ private:
+@@ -1261,6 +1397,9 @@ private:
      HashSet<double> m_sessionRulesIDs;
      HashSet<double> m_dynamicRulesIDs;
  
@@ -33684,7 +33732,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..f9045cae4b88161a139b23507351c424
      MenuItemMap m_menuItems;
      MenuItemVector m_mainMenuItems;
  
-@@ -1274,12 +1407,16 @@ private:
+@@ -1274,12 +1413,16 @@ private:
          String message;
  #if PLATFORM(COCOA)
          RetainPtr<id> argument;
@@ -33701,7 +33749,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..f9045cae4b88161a139b23507351c424
  
      Deque<TestMessage> m_testMessageQueue;
      Deque<TestMessage> m_testStartedQueue;
-@@ -1289,6 +1426,8 @@ private:
+@@ -1289,6 +1432,8 @@ private:
      void sendQueuedTestMessagesIfNeeded(WebExtensionEventListenerType);
  #if PLATFORM(COCOA)
      void addTestMessageToQueue(const String& message, id argument, WebExtensionEventListenerType);
@@ -35320,6 +35368,468 @@ index f09e0085d0228b905e0a7cfe7592260e9d4977a9..3ada5a0beca92b82ae14dc44131be6f1
  } // namespace WebKit
  
  #endif // ENABLE(WK_WEB_EXTENSIONS)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/ExtensionActionPopupHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/ExtensionActionPopupHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..d86a6dedf3fc92852d630a15b15555148c43c466
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/ExtensionActionPopupHaiku.cpp
+@@ -0,0 +1,389 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#include "ExtensionActionPopupHaiku.h"
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++#include "APIFrameInfo.h"
++#include "APINavigationAction.h"
++#include "APINavigationClient.h"
++#include "APIPageConfiguration.h"
++#include "BrowserTabRegistryHaiku.h"
++#include "PageLoadState.h"
++#include "WebExtensionAction.h"
++#include "WebExtensionContext.h"
++#include "WebExtensionController.h"
++#include "WebExtensionTab.h"
++#include "WebExtensionWindow.h"
++#include "WebFramePolicyListenerProxy.h"
++#include "WebKitView.h"
++#include "WebPageProxy.h"
++#include "WebViewPrivate.h"
++#include "WebViewStateHaiku.h"
++#include <Application.h>
++#include <WebCore/ResourceRequest.h>
++#include <wtf/SharedTask.h>
++
++namespace WebKit {
++
++struct ExtensionActionPopupHaiku::MainDelivery {
++    // Accessed only on main. Clear before native workers release this box, so
++    // neither the callback nor its WeakPtr is ever destroyed on a window thread.
++    RefPtr<SharedTask<void(NativeExtensionPopupHaiku::Event, status_t)>> callback;
++};
++
++class ExtensionPopupNavigationClientHaiku final : public API::NavigationClient {
++    WTF_MAKE_TZONE_ALLOCATED_INLINE(ExtensionPopupNavigationClientHaiku);
++public:
++    explicit ExtensionPopupNavigationClientHaiku(ExtensionActionPopupHaiku& popup) : m_popup(popup) { }
++private:
++    RefPtr<ExtensionActionPopupHaiku> popupForPage(WebPageProxy& page) const
++    {
++        auto* popup = m_popup.get();
++        if (!popup || popup->page() != &page)
++            return nullptr;
++        return popup;
++    }
++    void decidePolicyForNavigationAction(WebPageProxy& page, Ref<API::NavigationAction>&& action, Ref<WebFramePolicyListenerProxy>&& listener) final
++    {
++        RefPtr popup = popupForPage(page);
++        RefPtr frame = action->targetFrame();
++        // A popup's top-level document must remain inside its extension. Child
++        // frames retain the extension configuration's normal CSP checks.
++        if (popup && popup->isCurrent() && ((frame && !frame->isMainFrame()) || popup->allowsNavigation(action->request().url())))
++            listener->use();
++        else
++            listener->ignore();
++    }
++    void didFinishDocumentLoad(WebPageProxy& page, API::Navigation*, API::Object*) final
++    {
++        if (RefPtr popup = popupForPage(page))
++            popup->documentLoaded();
++    }
++    void didFailProvisionalNavigationWithError(WebPageProxy& page, FrameInfoData&& frame, API::Navigation*, const URL&, const WebCore::ResourceError&, API::Object*) final
++    {
++        if (frame.isMainFrame) {
++            if (RefPtr popup = popupForPage(page))
++                popup->fail("The extension popup document could not be loaded."_s);
++        }
++    }
++    void didFailNavigationWithError(WebPageProxy& page, const FrameInfoData& frame, API::Navigation*, const URL&, const WebCore::ResourceError&, API::Object*) final
++    {
++        if (frame.isMainFrame) {
++            if (RefPtr popup = popupForPage(page))
++                popup->fail("The extension popup navigation failed."_s);
++        }
++    }
++    bool processDidTerminate(WebPageProxy& page, ProcessTerminationReason) final
++    {
++        if (RefPtr popup = popupForPage(page))
++            popup->fail("The extension popup web process terminated."_s);
++        return true;
++    }
++    WeakPtr<ExtensionActionPopupHaiku> m_popup;
++};
++
++Ref<ExtensionActionPopupHaiku> ExtensionActionPopupHaiku::create(WebExtensionContext& context, WebExtensionAction& action, WebExtensionTab& tab)
++{
++    return adoptRef(*new ExtensionActionPopupHaiku(context, action, tab));
++}
++
++ExtensionActionPopupHaiku::ExtensionActionPopupHaiku(WebExtensionContext& context, WebExtensionAction& action, WebExtensionTab& tab)
++    : BHandler("WebKit extension action popup")
++    , m_context(context)
++    , m_action(action)
++    , m_tab(tab)
++    , m_loadIdentifier(context.privilegedIdentifier())
++    , m_popupURL(context.baseURL(), action.popupPath())
++    , m_ownerURL(tab.nativePage() ? tab.nativePage()->pageLoadState().url() : URL { })
++    , m_ownerWindowIdentifier(tab.window() ? tab.window()->nativeWindowIdentifier() : 0)
++    , m_delivery(std::make_shared<MainDelivery>())
++    , m_timer(RunLoop::mainSingleton(), "ExtensionActionPopupHaiku::Timer"_s, this, &ExtensionActionPopupHaiku::tick)
++{
++    ASSERT(RunLoop::isMain());
++    ASSERT(be_app && be_app->Thread() == find_thread(nullptr));
++    be_app->AddHandler(this);
++    m_state = std::make_shared<WebViewStateHaiku>(BMessenger(this));
++    m_state->geometry.size = { 360, 240 };
++    m_state->status = B_OK;
++}
++
++ExtensionActionPopupHaiku::~ExtensionActionPopupHaiku()
++{
++    ASSERT(RunLoop::isMain());
++    ASSERT(m_closed && !m_page && !m_state->client && !m_delivery->callback);
++    if (Looper())
++        Looper()->RemoveHandler(this);
++}
++
++bool ExtensionActionPopupHaiku::isForTab(const WebExtensionTab& tab) const { return m_tab.ptr() == &tab; }
++
++bool ExtensionActionPopupHaiku::isCurrent() const
++{
++    ASSERT(RunLoop::isMain());
++    auto* context = m_context.get();
++    if (m_closed || m_state->closed || !context || !context->isLoaded() || context->privilegedIdentifier() != m_loadIdentifier
++        || context->m_nativeActionPopup.get() != this || !context->isValidTab(m_tab) || !m_tab->isOpen() || !m_tab->extensionHasAccess()
++        || context->getAction(m_tab.ptr()).ptr() != m_action.ptr() || !m_action->isEnabled() || !m_action->presentsPopup()
++        || URL { context->baseURL(), m_action->popupPath() } != m_popupURL)
++        return false;
++    RefPtr ownerPage = m_tab->nativePage();
++    RefPtr window = m_tab->window();
++    return ownerPage && !ownerPage->isClosed() && ownerPage->pageLoadState().url() == m_ownerURL
++        && window && window->isOpen() && window->nativeWindowIdentifier() == m_ownerWindowIdentifier && window->activeTab().get() == m_tab.ptr()
++        && (!m_page || !m_page->isClosed());
++}
++
++bool ExtensionActionPopupHaiku::allowsNavigation(const URL& url) const
++{
++    return isCurrent() && m_context->isURLForThisExtension(url);
++}
++
++bool ExtensionActionPopupHaiku::start()
++{
++    ASSERT(RunLoop::isMain());
++    Ref protectedThis { *this };
++    if (!isCurrent() || !allowsNavigation(m_popupURL)) {
++        fail("The extension popup has no valid action or tab."_s);
++        return false;
++    }
++    RefPtr context = m_context.get();
++    RefPtr controller = context->extensionController();
++    RefPtr window = m_tab->window();
++    auto nativeWindow = controller ? controller->nativeBrowserTabs()->window(window->nativeWindowIdentifier()) : std::nullopt;
++    RefPtr ownerPage = m_tab->nativePage();
++    RefPtr pageClient = ownerPage ? ownerPage->pageClient() : nullptr;
++    RefPtr configuration = context->webViewConfiguration(WebExtensionContext::WebViewPurpose::Popup);
++    if (!nativeWindow || !nativeWindow->messenger.IsValid() || !pageClient || !configuration) {
++        fail("The extension popup has no native browser window."_s);
++        return false;
++    }
++    // Anchor at the browser content's top-right corner, below the toolbar.
++    auto size = pageClient->viewSize();
++    auto anchor = pageClient->rootViewToScreen(WebCore::IntPoint { std::max(0, size.width() - 1), 0 });
++    m_state->client = WebView::createForExtensionPopup(m_state, configuration.releaseNonNull());
++    m_page = m_state->client->page();
++    if (!m_page) {
++        fail("The extension popup web page could not be created."_s);
++        return false;
++    }
++    m_page->setNavigationClient(makeUniqueRef<ExtensionPopupNavigationClientHaiku>(*this));
++    m_page->setMinimumSizeForAutoLayout({ 25, 25 });
++    m_page->setSizeToContentAutoSizeMaximumSize({ 800, 600 });
++    m_page->setAutoSizingShouldExpandToViewHeight(false);
++    context->addPopupPage(*m_page, m_action);
++    m_action->m_presentsPopupWhenReady = true;
++    m_action->m_popupPresented = false;
++    m_delivery->callback = createSharedTask<void(NativeExtensionPopupHaiku::Event, status_t)>([weakThis = WeakPtr { *this }](auto event, status_t status) {
++        if (RefPtr popup = weakThis.get())
++            popup->nativeEvent(event, status);
++    });
++    m_state->contentSizeChanged = createSharedTask<void(const WebCore::IntSize&)>([weakThis = WeakPtr { *this }](const auto& size) {
++        if (RefPtr popup = weakThis.get())
++            popup->contentSizeChanged(size);
++    });
++    auto title = m_action->label().utf8();
++    m_native = std::make_unique<NativeExtensionPopupHaiku>(nativeWindow->messenger, BRect(anchor.x(), anchor.y(), anchor.x(), anchor.y()),
++        std::string(title.legacyCStringPointer(), title.length()), [state = m_state](BRect frame) -> BView* {
++            if (state->closed)
++                return nullptr;
++            auto view = std::unique_ptr<BWebKitView>(new BWebKitView(frame, "extension-popup-content", state));
++            if (view->InitCheck() != B_OK || state->closed)
++                return nullptr;
++            return view.release();
++        }, [delivery = m_delivery](auto event, status_t status) {
++            RunLoop::mainSingleton().dispatch([delivery, event, status] {
++                if (auto callback = delivery->callback)
++                    callback->run(event, status);
++            });
++        }, [dialogs = m_state->dialogs] { return dialogs->hasPending(); });
++    auto status = m_native->start();
++    if (status != B_OK) {
++        fail("The native extension popup window could not be started."_s);
++        return false;
++    }
++    m_startedAt = MonotonicTime::now();
++    m_timer.startRepeating(100_ms);
++    m_page->loadRequest(WebCore::ResourceRequest { URL { m_popupURL } });
++    return true;
++}
++
++void ExtensionActionPopupHaiku::documentLoaded()
++{
++    Ref protectedThis { *this };
++    if (!isCurrent()) {
++        close();
++        return;
++    }
++    if (m_native)
++        m_native->show();
++}
++
++void ExtensionActionPopupHaiku::contentSizeChanged(const WebCore::IntSize& size)
++{
++    if (isCurrent() && m_native && size.width() > 0 && size.height() > 0)
++        m_native->resize(BSize(size.width(), size.height()));
++}
++
++void ExtensionActionPopupHaiku::nativeEvent(NativeExtensionPopupHaiku::Event event, status_t status)
++{
++    ASSERT(RunLoop::isMain());
++    Ref protectedThis { *this };
++    if (m_closed)
++        return;
++    if (event == NativeExtensionPopupHaiku::Event::Closed) {
++        if (status != B_OK && status != B_CANCELED)
++            fail("The native extension popup window could not be created."_s);
++        else
++            close();
++        return;
++    }
++    if (!isCurrent()) {
++        close();
++        return;
++    }
++    if (event == NativeExtensionPopupHaiku::Event::Shown) {
++        m_shown = true;
++        m_action->m_presentsPopupWhenReady = false;
++        m_action->m_popupPresented = true;
++        m_action->setHasUnreadBadgeText(false);
++    }
++}
++
++void ExtensionActionPopupHaiku::validate()
++{
++    Ref protectedThis { *this };
++    if (!isCurrent())
++        close();
++}
++
++void ExtensionActionPopupHaiku::tick()
++{
++    Ref protectedThis { *this };
++    if (!isCurrent()) {
++        close();
++        return;
++    }
++    if (!m_shown && MonotonicTime::now() - m_startedAt >= 30_s)
++        fail("The extension popup did not finish loading before its deadline."_s);
++}
++
++void ExtensionActionPopupHaiku::MessageReceived(BMessage* message)
++{
++    ASSERT(RunLoop::isMain());
++    Ref protectedThis { *this };
++    if (message->what == B_WEBKIT_CLOSE_REQUESTED || message->what == B_WEBKIT_PROCESS_EXITED) {
++        BMessenger view;
++        {
++            std::lock_guard guard(m_state->mutex);
++            view = m_state->view;
++        }
++        BMessenger messageView;
++        if (view.IsValid() && message->FindMessenger("view", &messageView) == B_OK && messageView == view)
++            close();
++        return;
++    }
++    BHandler::MessageReceived(message);
++}
++
++void ExtensionActionPopupHaiku::fail(const String& message)
++{
++    ASSERT(RunLoop::isMain());
++    Ref protectedThis { *this };
++    if (m_closed)
++        return;
++    if (auto* context = m_context.get(); context && context->isLoaded() && context->privilegedIdentifier() == m_loadIdentifier)
++        context->recordErrorIfNeeded(context->createError(WebExtensionContext::Error::Unknown, message));
++    close();
++}
++
++void ExtensionActionPopupHaiku::close()
++{
++    ASSERT(RunLoop::isMain());
++    Ref protectedThis { *this };
++    if (std::exchange(m_closed, true))
++        return;
++    m_timer.stop();
++    m_delivery->callback = nullptr;
++    m_state->contentSizeChanged = nullptr;
++    m_state->closed = true;
++    m_action->m_presentsPopupWhenReady = false;
++    m_action->m_popupPresented = false;
++    if (auto* context = m_context.get()) {
++        if (m_page)
++            context->m_popupPageActionMap.remove(*m_page);
++        if (context->m_nativeActionPopup.get() == this)
++            context->m_nativeActionPopup = nullptr;
++    }
++    m_context = nullptr;
++    // Clear identity before closing a page can invoke its navigation client.
++    m_page = nullptr;
++    if (auto client = std::exchange(m_state->client, nullptr))
++        client->close();
++    m_state->dialogs->cancelAll(true);
++    m_state->presenter.close();
++    if (m_native)
++        m_native->cancel();
++}
++
++void WebExtensionContext::closeNativeActionPopup()
++{
++    if (auto popup = std::exchange(m_nativeActionPopup, nullptr))
++        popup->close();
++}
++
++void WebExtensionContext::closeNativeActionPopupForTab(WebExtensionTab& tab)
++{
++    if (m_nativeActionPopup && m_nativeActionPopup->isForTab(tab))
++        closeNativeActionPopup();
++}
++
++void WebExtensionContext::validateNativeActionPopup()
++{
++    if (RefPtr popup = m_nativeActionPopup)
++        popup->validate();
++}
++
++void WebExtensionContext::performAction(WebExtensionTab* tab, UserTriggered userTriggered)
++{
++    ASSERT(RunLoop::isMain());
++    Ref protectedThis { *this };
++    if (!isLoaded() || !(extension().hasAction() || extension().hasBrowserAction() || extension().hasPageAction()))
++        return;
++    RefPtr target = tab;
++    if (!target) {
++        if (RefPtr window = frontmostWindow(IgnoreExtensionAccess::Yes))
++            target = window->activeTab();
++    }
++    if (!target || !isValidTab(*target) || !target->isOpen() || !target->extensionHasAccess())
++        return;
++    Ref action = getOrCreateAction(target.get());
++    if (!action->isEnabled())
++        return;
++    auto loadIdentifier = privilegedIdentifier();
++    if (userTriggered == UserTriggered::Yes)
++        userGesturePerformed(*target);
++    // A later action invocation supersedes any pending popup for this browser
++    // profile, including another extension's page that has not finished loading.
++    Vector<Ref<ExtensionActionPopupHaiku>> previousPopups;
++    if (RefPtr controller = extensionController()) {
++        for (auto& context : controller->extensionContexts()) {
++            if (context->m_nativeActionPopup)
++                previousPopups.append(*context->m_nativeActionPopup);
++        }
++    }
++    for (auto& popup : previousPopups)
++        popup->close();
++    closeNativeActionPopup();
++    if (!isLoaded() || privilegedIdentifier() != loadIdentifier || !isValidTab(*target) || !target->isOpen()
++        || !target->extensionHasAccess() || getAction(target.get()).ptr() != action.ptr() || !action->isEnabled())
++        return;
++    if (!action->presentsPopup()) {
++        fireActionClickedEventIfNeeded(target.get());
++        return;
++    }
++    Ref popup = ExtensionActionPopupHaiku::create(*this, action, *target);
++    m_nativeActionPopup = popup.copyRef();
++    popup->start();
++}
++
++} // namespace WebKit
++#endif
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/ExtensionActionPopupHaiku.h b/Source/WebKit/UIProcess/Extensions/haiku/ExtensionActionPopupHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..771b300f35b4d34909a9344986717af8550fc72f
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/ExtensionActionPopupHaiku.h
+@@ -0,0 +1,61 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++#include "NativeExtensionPopupHaiku.h"
++#include "WebExtensionContextIdentifier.h"
++#include <Handler.h>
++#include <wtf/MonotonicTime.h>
++#include <wtf/RefCountedAndCanMakeWeakPtr.h>
++#include <wtf/RunLoop.h>
++#include <wtf/URL.h>
++
++namespace WebCore { class IntSize; }
++
++namespace WebKit {
++class WebExtensionAction;
++class WebExtensionContext;
++class WebExtensionTab;
++class WebPageProxy;
++struct WebViewStateHaiku;
++
++// Engine references and BHandler messages belong to the application/main loop.
++// The native host retains only shared native state and a main-loop delivery box.
++class ExtensionActionPopupHaiku final : public RefCountedAndCanMakeWeakPtr<ExtensionActionPopupHaiku>, public BHandler {
++public:
++    static Ref<ExtensionActionPopupHaiku> create(WebExtensionContext&, WebExtensionAction&, WebExtensionTab&);
++    ~ExtensionActionPopupHaiku() override;
++    bool start();
++    void close();
++    void validate();
++    bool isForTab(const WebExtensionTab&) const;
++    bool isCurrent() const;
++    WebPageProxy* page() const { return m_page.get(); }
++    bool allowsNavigation(const URL&) const;
++    void documentLoaded();
++    void fail(const String&);
++    void MessageReceived(BMessage*) override;
++
++private:
++    ExtensionActionPopupHaiku(WebExtensionContext&, WebExtensionAction&, WebExtensionTab&);
++    void nativeEvent(NativeExtensionPopupHaiku::Event, status_t);
++    void contentSizeChanged(const WebCore::IntSize&);
++    void tick();
++    struct MainDelivery;
++    WeakPtr<WebExtensionContext> m_context;
++    const Ref<WebExtensionAction> m_action;
++    const Ref<WebExtensionTab> m_tab;
++    const WebExtensionContextIdentifier m_loadIdentifier;
++    const URL m_popupURL;
++    const URL m_ownerURL;
++    const uint64_t m_ownerWindowIdentifier;
++    std::shared_ptr<WebViewStateHaiku> m_state;
++    std::shared_ptr<MainDelivery> m_delivery;
++    std::unique_ptr<NativeExtensionPopupHaiku> m_native;
++    RefPtr<WebPageProxy> m_page;
++    RunLoop::Timer m_timer;
++    MonotonicTime m_startedAt;
++    bool m_shown { false };
++    bool m_closed { false };
++};
++} // namespace WebKit
++#endif
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionActionHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionActionHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..dde3685557295df73e9ce3fa614030ba7c8961e4
@@ -37767,10 +38277,10 @@ index 0000000000000000000000000000000000000000..33f7bab5229c2d0070a056f67f8aeb0e
 +#endif
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextActionsHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextActionsHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..ed33696667bcedd840e506f2a6ac6f232a88e3b7
+index 0000000000000000000000000000000000000000..cdba2fb439048f5b8dda6962e4b1c9168219f8d5
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextActionsHaiku.cpp
-@@ -0,0 +1,173 @@
+@@ -0,0 +1,174 @@
 +/*
 + * Copyright (C) 2023-2024 Apple Inc. All rights reserved.
 + *
@@ -37865,6 +38375,7 @@ index 0000000000000000000000000000000000000000..ed33696667bcedd840e506f2a6ac6f23
 +void WebExtensionContext::nativeActionPropertiesDidChange(WebExtensionAction& action)
 +{
 +    ASSERT(isMainThread());
++    validateNativeActionPopup();
 +    RefPtr handler = m_nativeActionChangeHandler;
 +    if (!isLoaded() || !handler)
 +        return;
@@ -38560,10 +39071,10 @@ index 0000000000000000000000000000000000000000..01e68ea0a058aa7ed1c1941635c0a107
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..e422f6ebf9ea07267593e715cd6e3993b8cf6745
+index 0000000000000000000000000000000000000000..5b3ea4ce008573ecd0cf7a66beef183ac98a86f5
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextHaiku.cpp
-@@ -0,0 +1,286 @@
+@@ -0,0 +1,287 @@
 +/*
 + * Copyright (C) 2022-2025 Apple Inc. All rights reserved.
 + * Copyright (C) 2026 KunanyiOS contributors.
@@ -38595,6 +39106,7 @@ index 0000000000000000000000000000000000000000..e422f6ebf9ea07267593e715cd6e3993
 +#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 +
 +#include "Logging.h"
++#include "ExtensionActionPopupHaiku.h"
 +#include "WebExtensionStateHaiku.h"
 +#include "WebExtensionPermissionState.h"
 +#include "WebExtensionBackgroundListenersHaiku.h"
@@ -39084,10 +39596,10 @@ index 0000000000000000000000000000000000000000..ffc1ccd2f34221d3dd1a7a0e03e1f596
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextTabsHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextTabsHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..11440287a64d6b93597a79b91ec71fd25546c49e
+index 0000000000000000000000000000000000000000..d3e572779b1c328e07d2613ecce7d2e4c786d5bc
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextTabsHaiku.cpp
-@@ -0,0 +1,243 @@
+@@ -0,0 +1,255 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -39224,10 +39736,22 @@ index 0000000000000000000000000000000000000000..11440287a64d6b93597a79b91ec71fd2
 +            return nullptr;
 +        if (RefPtr window = frontmostWindow(ignoreExtensionAccess))
 +            tab = window->activeTab();
-+    } else
-+        tab = getOrCreateNativeTab(identifier);
-+    // Popup and sidebar host associations require their own native integration.
-+    // Only explicitly registered browser pages are ordinary tabs here.
++    } else {
++        bool popupPage = false;
++        for (auto entry : m_popupPageActionMap) {
++            if (entry.key.identifier() != identifier)
++                continue;
++            popupPage = true;
++            if (includeExtensionViews == IncludeExtensionViews::No)
++                return nullptr;
++            tab = entry.value->tab();
++            break;
++        }
++        if (!popupPage)
++            tab = getOrCreateNativeTab(identifier);
++    }
++    if (tab && !tab->isOpen())
++        return nullptr;
 +    if (tab && ignoreExtensionAccess == IgnoreExtensionAccess::No && !tab->extensionHasAccess())
 +        return nullptr;
 +    return tab;
@@ -39614,10 +40138,10 @@ index 0000000000000000000000000000000000000000..14a233b25aa096a498b05c278b688416
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextWindowsHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextWindowsHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..ed73ff799bad074fd641f491af2986edd5de4f8d
+index 0000000000000000000000000000000000000000..39b5b3f544744bc30da68b4202db2ae8c118ae8e
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextWindowsHaiku.cpp
-@@ -0,0 +1,78 @@
+@@ -0,0 +1,79 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#include "config.h"
 +#include "WebExtensionContext.h"
@@ -39634,6 +40158,7 @@ index 0000000000000000000000000000000000000000..ed73ff799bad074fd641f491af2986ed
 +    RefPtr controller = extensionController();
 +    if (!controller)
 +        return;
++    validateNativeActionPopup();
 +    bool allowed = controller->configuration().defaultWebsiteDataStore().isPersistent() || hasAccessToPrivateData();
 +    Vector<WebExtensionWindowParameters> removed;
 +    // A dead native messenger may already have pruned its wrapper. Keep the
@@ -42736,7 +43261,7 @@ index a4299803aa31a4a1705aebf669aba3190bcb878a..d0f3a47edf7d2b080af70b57cf1193ad
      virtual void requestScroll(const WebCore::FloatPoint& scrollPosition, const WebCore::IntPoint& scrollOrigin, WebCore::ScrollIsAnimated, WebCore::InterruptScrollAnimation) = 0;
  
 diff --git a/Source/WebKit/UIProcess/WebPageProxy.cpp b/Source/WebKit/UIProcess/WebPageProxy.cpp
-index dcb789361fd321de76e3f647c18328ad2f4af9fc..35438315d14c147e5a196bd3ac83f3dbf11c3f73 100644
+index dcb789361fd321de76e3f647c18328ad2f4af9fc..6d96e9aa39c0d0254220ab8524d6553d8b0aacc0 100644
 --- a/Source/WebKit/UIProcess/WebPageProxy.cpp
 +++ b/Source/WebKit/UIProcess/WebPageProxy.cpp
 @@ -466,7 +466,7 @@
@@ -42886,7 +43411,17 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..35438315d14c147e5a196bd3ac83f3db
      m_uiClient->close(this);
  }
  
-@@ -12500,7 +12537,7 @@ WebInspectorUIProxy* WebPageProxy::inspector() const
+@@ -12303,6 +12340,9 @@ void WebPageProxy::didChangeIntrinsicContentSize(const IntSize& intrinsicContent
+ #if USE(APPKIT)
+     if (RefPtr pageClient = this->pageClient())
+         pageClient->intrinsicContentSizeDidChange(intrinsicContentSize);
++#elif PLATFORM(HAIKU)
++    if (RefPtr pageClient = this->pageClient())
++        pageClient->didChangeContentSize(intrinsicContentSize);
+ #endif
+ }
+ 
+@@ -12500,7 +12540,7 @@ WebInspectorUIProxy* WebPageProxy::inspector() const
  
  void WebPageProxy::resourceLoadDidSendRequest(ResourceLoadInfo&& loadInfo, WebCore::ResourceRequest&& request)
  {
@@ -42895,7 +43430,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..35438315d14c147e5a196bd3ac83f3db
      if (RefPtr webExtensionController = this->webExtensionController())
          webExtensionController->resourceLoadDidSendRequest(identifier(), loadInfo, request);
  #endif
-@@ -12511,7 +12548,7 @@ void WebPageProxy::resourceLoadDidSendRequest(ResourceLoadInfo&& loadInfo, WebCo
+@@ -12511,7 +12551,7 @@ void WebPageProxy::resourceLoadDidSendRequest(ResourceLoadInfo&& loadInfo, WebCo
  
  void WebPageProxy::resourceLoadDidPerformHTTPRedirection(ResourceLoadInfo&& loadInfo, WebCore::ResourceResponse&& response, WebCore::ResourceRequest&& request)
  {
@@ -42904,7 +43439,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..35438315d14c147e5a196bd3ac83f3db
      if (RefPtr webExtensionController = this->webExtensionController())
          webExtensionController->resourceLoadDidPerformHTTPRedirection(identifier(), loadInfo, response, request);
  #endif
-@@ -12522,7 +12559,7 @@ void WebPageProxy::resourceLoadDidPerformHTTPRedirection(ResourceLoadInfo&& load
+@@ -12522,7 +12562,7 @@ void WebPageProxy::resourceLoadDidPerformHTTPRedirection(ResourceLoadInfo&& load
  
  void WebPageProxy::resourceLoadDidReceiveChallenge(ResourceLoadInfo&& loadInfo, WebCore::AuthenticationChallenge&& challenge)
  {
@@ -42913,7 +43448,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..35438315d14c147e5a196bd3ac83f3db
      if (RefPtr webExtensionController = this->webExtensionController())
          webExtensionController->resourceLoadDidReceiveChallenge(identifier(), loadInfo, challenge);
  #endif
-@@ -12533,7 +12570,7 @@ void WebPageProxy::resourceLoadDidReceiveChallenge(ResourceLoadInfo&& loadInfo,
+@@ -12533,7 +12573,7 @@ void WebPageProxy::resourceLoadDidReceiveChallenge(ResourceLoadInfo&& loadInfo,
  
  void WebPageProxy::resourceLoadDidReceiveResponse(ResourceLoadInfo&& loadInfo, WebCore::ResourceResponse&& response)
  {
@@ -42922,7 +43457,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..35438315d14c147e5a196bd3ac83f3db
      if (RefPtr webExtensionController = this->webExtensionController())
          webExtensionController->resourceLoadDidReceiveResponse(identifier(), loadInfo, response);
  #endif
-@@ -12544,7 +12581,7 @@ void WebPageProxy::resourceLoadDidReceiveResponse(ResourceLoadInfo&& loadInfo, W
+@@ -12544,7 +12584,7 @@ void WebPageProxy::resourceLoadDidReceiveResponse(ResourceLoadInfo&& loadInfo, W
  
  void WebPageProxy::resourceLoadDidCompleteWithError(ResourceLoadInfo&& loadInfo, WebCore::ResourceResponse&& response, WebCore::ResourceError&& error)
  {
@@ -42931,7 +43466,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..35438315d14c147e5a196bd3ac83f3db
      if (RefPtr webExtensionController = this->webExtensionController())
          webExtensionController->resourceLoadDidCompleteWithError(identifier(), loadInfo, response, error);
  #endif
-@@ -14815,7 +14852,7 @@ WebPageCreationParameters WebPageProxy::creationParameters(WebProcessProxy& proc
+@@ -14815,7 +14855,7 @@ WebPageCreationParameters WebPageProxy::creationParameters(WebProcessProxy& proc
      parameters.hasResourceLoadClient = !!m_resourceLoadClient;
      parameters.portsForUpgradingInsecureSchemeForTesting = m_configuration->portsForUpgradingInsecureSchemeForTesting();
  
@@ -44515,10 +45050,10 @@ index 0000000000000000000000000000000000000000..15401027888088266cf858cb7282d33e
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/JavaScriptDialogRequestsHaiku.h b/Source/WebKit/UIProcess/haiku/JavaScriptDialogRequestsHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..57f5eeb4902e21afc628362e9090894effbbdf13
+index 0000000000000000000000000000000000000000..fb3e33f0bce8a0e7a7f240e8f730855049849e26
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/JavaScriptDialogRequestsHaiku.h
-@@ -0,0 +1,77 @@
+@@ -0,0 +1,83 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -44553,6 +45088,12 @@ index 0000000000000000000000000000000000000000..57f5eeb4902e21afc628362e9090894e
 +        }
 +        completion(false, { });
 +        return 0;
++    }
++
++    bool hasPending() const
++    {
++        std::lock_guard guard(m_mutex);
++        return !m_requests.empty();
 +    }
 +
 +    bool contains(uint64_t identifier) const
@@ -44595,6 +45136,284 @@ index 0000000000000000000000000000000000000000..57f5eeb4902e21afc628362e9090894e
 +    std::map<uint64_t, Completion> m_requests;
 +};
 +
++} // namespace WebKit
+diff --git a/Source/WebKit/UIProcess/haiku/NativeExtensionPopupHaiku.h b/Source/WebKit/UIProcess/haiku/NativeExtensionPopupHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..ab676ff0f5804c0eba73f143c3608ca497ea5145
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/NativeExtensionPopupHaiku.h
+@@ -0,0 +1,272 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#include <Application.h>
++#include <MessageRunner.h>
++#include <Messenger.h>
++#include <Screen.h>
++#include <View.h>
++#include <Window.h>
++#include <algorithm>
++#include <atomic>
++#include <cmath>
++#include <functional>
++#include <memory>
++#include <mutex>
++#include <string>
++#include <utility>
++
++namespace WebKit {
++
++// Owns only native objects. Native workers never inspect WebKit references;
++// their bridge callbacks must submit engine work to its owning run loop.
++class NativeExtensionPopupHaiku final {
++public:
++    enum class Event { Created, Shown, Closed };
++    using Notification = std::function<void(Event, status_t)>;
++    using ViewFactory = std::function<BView*(BRect)>;
++
++    NativeExtensionPopupHaiku(BMessenger owner, BRect anchor, std::string title, ViewFactory factory, Notification notification, std::function<bool()> hasModalChild = { })
++        : m_control(std::make_shared<Control>(owner, anchor, std::move(title), std::move(factory), std::move(notification), std::move(hasModalChild))) { }
++    ~NativeExtensionPopupHaiku() { cancel(); }
++    static uint32_t activeCount() { return s_active.load(); }
++
++    status_t start()
++    {
++        if (std::exchange(m_started, true))
++            return B_NOT_ALLOWED;
++        auto anchor = m_control->anchor;
++        if (!m_control->factory || !m_control->notification || !anchor.IsValid()
++            || !std::isfinite(anchor.left) || !std::isfinite(anchor.top) || !std::isfinite(anchor.right) || !std::isfinite(anchor.bottom))
++            return B_BAD_VALUE;
++        auto* data = new std::shared_ptr<Control>(m_control);
++        ++s_active;
++        auto thread = spawn_thread([](void* pointer) -> int32 {
++            std::unique_ptr<std::shared_ptr<Control>> data(static_cast<std::shared_ptr<Control>*>(pointer));
++            auto control = *data;
++            status_t status = B_TIMED_OUT;
++            const auto deadline = system_time() + 2000000;
++            while (!control->cancelled && system_time() < deadline) {
++                status = control->owner.LockTargetWithTimeout(50000);
++                if (status == B_OK)
++                    break;
++                if (status != B_TIMED_OUT && status != B_WOULD_BLOCK)
++                    break;
++            }
++            if (control->cancelled) {
++                if (status == B_OK) {
++                    BLooper* looper = nullptr;
++                    control->owner.Target(&looper);
++                    if (looper)
++                        looper->Unlock();
++                }
++                finish(control, B_CANCELED);
++            } else if (status != B_OK)
++                finish(control, status);
++            else {
++                BLooper* looper = nullptr;
++                auto* owner = dynamic_cast<BWindow*>(control->owner.Target(&looper));
++                if (!owner || owner != looper || owner->IsHidden() || owner->IsMinimized()) {
++                    if (looper)
++                        looper->Unlock();
++                    finish(control, B_BAD_VALUE);
++                } else {
++                    auto* window = new Window(control);
++                    status = window->AddToSubset(owner);
++                    looper->Unlock();
++                    if (status == B_OK && !control->cancelled && window->hasContent()) {
++                        {
++                            std::lock_guard guard(control->mutex);
++                            control->target = BMessenger(window);
++                        }
++                        control->notification(Event::Created, B_OK);
++                        if (window->Run() < B_OK) {
++                            control->closeStatus = B_ERROR;
++                            delete window;
++                        }
++                        // Run transferred window lifetime to its native looper.
++                    } else {
++                        control->closeStatus = status != B_OK ? status : (control->cancelled ? B_CANCELED : B_NO_INIT);
++                        delete window;
++                    }
++                }
++            }
++            --s_active;
++            return B_OK;
++        }, "WebKit extension popup", B_NORMAL_PRIORITY, data);
++        if (thread < B_OK) {
++            --s_active;
++            delete data;
++            return thread;
++        }
++        auto status = resume_thread(thread);
++        if (status != B_OK) {
++            kill_thread(thread);
++            --s_active;
++            delete data;
++        }
++        return status;
++    }
++
++    void show() { m_control->showRequested = true; wake(); }
++    void cancel() { m_control->cancelled = true; wake(); }
++    void resize(BSize size)
++    {
++        if (!std::isfinite(size.width) || !std::isfinite(size.height) || size.width <= 0 || size.height <= 0)
++            return;
++        {
++            std::lock_guard guard(m_control->mutex);
++            m_control->size = size;
++            ++m_control->sizeGeneration;
++        }
++        wake();
++    }
++    BMessenger target() const
++    {
++        std::lock_guard guard(m_control->mutex);
++        return m_control->target;
++    }
++
++    static BRect frameForSize(BRect anchor, BSize size, BRect screen)
++    {
++        auto maximumWidth = std::max(1.0f, std::min(800.0f, screen.Width() - 16));
++        auto maximumHeight = std::max(1.0f, std::min(600.0f, screen.Height() - 16));
++        auto width = std::clamp(std::isfinite(size.width) ? std::ceil(size.width) : 360.0f, std::min(25.0f, maximumWidth), maximumWidth);
++        auto height = std::clamp(std::isfinite(size.height) ? std::ceil(size.height) : 240.0f, std::min(25.0f, maximumHeight), maximumHeight);
++        auto x = anchor.right - width + 1;
++        auto y = anchor.bottom + 1;
++        if (y + height > screen.bottom && anchor.top - height >= screen.top)
++            y = anchor.top - height;
++        x = std::clamp(x, screen.left, std::max(screen.left, screen.right - width + 1));
++        y = std::clamp(y, screen.top, std::max(screen.top, screen.bottom - height + 1));
++        return { x, y, x + width - 1, y + height - 1 };
++    }
++
++private:
++    static constexpr uint32 updateMessage = 'expu';
++    struct Control {
++        Control(BMessenger owner, BRect anchor, std::string title, ViewFactory factory, Notification notification, std::function<bool()> hasModalChild)
++            : owner(owner), anchor(anchor), title(std::move(title)), factory(std::move(factory)), notification(std::move(notification)), hasModalChild(std::move(hasModalChild)) { }
++        const BMessenger owner;
++        const BRect anchor;
++        const std::string title;
++        const ViewFactory factory;
++        const Notification notification;
++        const std::function<bool()> hasModalChild;
++        std::mutex mutex;
++        BMessenger target;
++        BSize size { 360, 240 };
++        uint64_t sizeGeneration { 1 };
++        std::atomic<bool> cancelled { false };
++        std::atomic<bool> showRequested { false };
++        std::atomic<bool> finished { false };
++        std::atomic<status_t> closeStatus { B_OK };
++    };
++    static void finish(const std::shared_ptr<Control>& control, status_t status)
++    {
++        if (!control->finished.exchange(true))
++            control->notification(Event::Closed, status);
++    }
++    void wake()
++    {
++        BMessage message(updateMessage);
++        target().SendMessage(&message, static_cast<BHandler*>(nullptr), 0);
++        // The periodic native update also observes state if the port is full.
++    }
++    class Activity {
++    protected:
++        Activity() { ++s_active; }
++        ~Activity() { --s_active; }
++    };
++    class CompletionAfterDestruction {
++    protected:
++        explicit CompletionAfterDestruction(std::shared_ptr<Control> control) : m_control(std::move(control)) { }
++        ~CompletionAfterDestruction() { finish(m_control, m_control->closeStatus); }
++    private:
++        std::shared_ptr<Control> m_control;
++    };
++    // Complete after the native window and all child views have been destroyed;
++    // keep activity nonzero until the completion has been submitted.
++    class Window final : private Activity, private CompletionAfterDestruction, public BWindow {
++    public:
++        explicit Window(std::shared_ptr<Control> control)
++            : CompletionAfterDestruction(control)
++            , BWindow(frameForSize(control->anchor, BSize(360, 240), BScreen().Frame()), control->title.c_str(), B_BORDERED_WINDOW_LOOK, B_FLOATING_SUBSET_WINDOW_FEEL,
++                B_ASYNCHRONOUS_CONTROLS | B_NOT_RESIZABLE | B_NOT_ZOOMABLE | B_NOT_MINIMIZABLE | B_NOT_MOVABLE | B_CLOSE_ON_ESCAPE)
++            , m_control(std::move(control))
++        {
++            if (!m_control->cancelled) {
++                m_content = m_control->factory(Bounds());
++                if (m_content) {
++                    AddChild(m_content);
++                    m_content->MakeFocus();
++                }
++            }
++            BMessage update(updateMessage);
++            m_update = std::make_unique<BMessageRunner>(BMessenger(this), &update, 100000);
++        }
++        bool hasContent() const { return m_content && m_content->Window() == this && m_update->InitCheck() == B_OK; }
++        bool QuitRequested() override { m_control->cancelled = true; return true; }
++        void WindowActivated(bool active) override
++        {
++            BWindow::WindowActivated(active);
++            if (active) {
++                m_activated = true;
++                m_deactivatedAt = 0;
++            } else if (m_activated)
++                m_deactivatedAt = system_time();
++        }
++        void MessageReceived(BMessage* message) override
++        {
++            if (message->what != updateMessage) {
++                BWindow::MessageReceived(message);
++                return;
++            }
++            bool ownerAvailable = m_control->owner.IsValid();
++            if (ownerAvailable && m_control->owner.LockTargetWithTimeout(0) == B_OK) {
++                BLooper* looper = nullptr;
++                auto* owner = dynamic_cast<BWindow*>(m_control->owner.Target(&looper));
++                ownerAvailable = owner && !owner->IsHidden() && !owner->IsMinimized();
++                if (looper)
++                    looper->Unlock();
++            }
++            bool lostFocus = m_deactivatedAt && system_time() - m_deactivatedAt >= 100000
++                && !(m_control->hasModalChild && m_control->hasModalChild());
++            if (m_control->cancelled || !ownerAvailable || lostFocus) {
++                PostMessage(B_QUIT_REQUESTED);
++                return;
++            }
++            BSize size;
++            uint64_t generation;
++            {
++                std::lock_guard guard(m_control->mutex);
++                size = m_control->size;
++                generation = m_control->sizeGeneration;
++            }
++            if (generation != m_sizeGeneration) {
++                m_sizeGeneration = generation;
++                auto rect = frameForSize(m_control->anchor, size, BScreen(this).Frame());
++                ResizeTo(rect.Width(), rect.Height());
++                MoveTo(rect.LeftTop());
++            }
++            if (!m_shown && m_control->showRequested) {
++                m_shown = true;
++                Show();
++                Activate(true);
++                m_content->MakeFocus();
++                m_control->notification(Event::Shown, B_OK);
++            }
++        }
++    private:
++        const std::shared_ptr<Control> m_control;
++        std::unique_ptr<BMessageRunner> m_update;
++        BView* m_content { nullptr };
++        uint64_t m_sizeGeneration { 0 };
++        bigtime_t m_deactivatedAt { 0 };
++        bool m_shown { false };
++        bool m_activated { false };
++    };
++    const std::shared_ptr<Control> m_control;
++    bool m_started { false };
++    static inline std::atomic<uint32_t> s_active { 0 };
++};
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/NativeSelectPopupHaiku.h b/Source/WebKit/UIProcess/haiku/NativeSelectPopupHaiku.h
 new file mode 100644
@@ -45426,10 +46245,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..ccc91dbcfaf46a506236d172c929f452cc25572f
+index 0000000000000000000000000000000000000000..13ad58a818b22bd1d4893997936f3c92614231cf
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,1124 @@
+@@ -0,0 +1,1146 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -46052,6 +46871,20 @@ index 0000000000000000000000000000000000000000..ccc91dbcfaf46a506236d172c929f452
 +}
 +
 +#if ENABLE(WK_WEB_EXTENSIONS)
++Ref<WebView> WebView::createForExtensionPopup(std::shared_ptr<WebViewStateHaiku> state, Ref<API::PageConfiguration>&& configuration)
++{
++    ASSERT(RunLoop::isMain());
++    Ref view = adoptRef(*new WebView(std::move(state)));
++    auto& pool = configuration->processPool();
++    view->m_page = pool.createWebPage(view.get(), WTF::move(configuration));
++    view->m_page->setUIClient(makeUnique<JavaScriptUIClientHaiku>(view->m_state));
++    auto& pageConfiguration = view->m_page->configuration();
++    view->m_page->initializeWebPage(pageConfiguration.openedSite(), pageConfiguration.initialSandboxFlags(), pageConfiguration.initialReferrerPolicy());
++    view->m_page->setIntrinsicDeviceScaleFactor(1);
++    view->updateGeometry();
++    return view;
++}
++
 +Ref<WebView> WebView::createForExtensionBackground(Ref<API::PageConfiguration>&& configuration)
 +{
 +    ASSERT(RunLoop::isMain());
@@ -46127,10 +46960,18 @@ index 0000000000000000000000000000000000000000..ccc91dbcfaf46a506236d172c929f452
 +        std::exchange(m_presentationCallback, { })();
 +}
 +
++void WebView::didChangeContentSize(const WebCore::IntSize& size)
++{
++    ASSERT(RunLoop::isMain());
++    if (auto callback = m_state->contentSizeChanged)
++        callback->run(size);
++}
++
 +void WebView::close()
 +{
 +    ASSERT(RunLoop::isMain());
 +    Ref protectedThis { *this };
++    m_state->contentSizeChanged = nullptr;
 +    m_state->dialogs->cancelAll(true);
 +    BMessage dismissDialogs(javaScriptDialogsCancelHaiku);
 +    sendToView(dismissDialogs);
@@ -46809,10 +47650,10 @@ index 0000000000000000000000000000000000000000..d33e05ef17576b1e1c484460b0fdd58a
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewPrivate.h b/Source/WebKit/UIProcess/haiku/WebViewPrivate.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..2f94d310871ce103f68e9e32b6e89a86bec6b2ce
+index 0000000000000000000000000000000000000000..18944b1715f21be0c0be97644335e93ec38f2bf2
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewPrivate.h
-@@ -0,0 +1,126 @@
+@@ -0,0 +1,127 @@
 +/*
 +   Copyright (C) 2014 Haiku, inc.
 +
@@ -46851,6 +47692,7 @@ index 0000000000000000000000000000000000000000..2f94d310871ce103f68e9e32b6e89a86
 +    static Ref<WebView> create(std::shared_ptr<WebViewStateHaiku>);
 +#if ENABLE(WK_WEB_EXTENSIONS)
 +    static Ref<WebView> createForExtensionBackground(Ref<API::PageConfiguration>&&);
++    static Ref<WebView> createForExtensionPopup(std::shared_ptr<WebViewStateHaiku>, Ref<API::PageConfiguration>&&);
 +#endif
 +    ~WebView() override;
 +    void ref() const { API::Object::ref(); }
@@ -46908,7 +47750,7 @@ index 0000000000000000000000000000000000000000..2f94d310871ce103f68e9e32b6e89a86
 +    void enterAcceleratedCompositingMode(const LayerTreeContext&) override { }
 +    void exitAcceleratedCompositingMode() override { }
 +    void updateAcceleratedCompositingMode(const LayerTreeContext&) override { }
-+    void didChangeContentSize(const WebCore::IntSize&) override { }
++    void didChangeContentSize(const WebCore::IntSize&) override;
 +    void didCommitLoadForMainFrame(const String&, bool) override { notifyState(); }
 +    void didFinishLoadingDataForCustomContentProvider(const String&, std::span<const uint8_t>) override { }
 +    void navigationGestureDidBegin() override { }
@@ -46941,10 +47783,10 @@ index 0000000000000000000000000000000000000000..2f94d310871ce103f68e9e32b6e89a86
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..2a51b2913800fada0f6279c8919bc19096a277b7
+index 0000000000000000000000000000000000000000..327aea274e5514ddc0b1df0e244a1da2d5ee8996
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
-@@ -0,0 +1,103 @@
+@@ -0,0 +1,106 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -46961,6 +47803,7 @@ index 0000000000000000000000000000000000000000..2a51b2913800fada0f6279c8919bc190
 +#include <optional>
 +#include <vector>
 +#include <wtf/RefPtr.h>
++#include <wtf/SharedTask.h>
 +#include <wtf/text/WTFString.h>
 +
 +namespace WebKit {
@@ -47005,6 +47848,8 @@ index 0000000000000000000000000000000000000000..2a51b2913800fada0f6279c8919bc190
 +    // This reference is read, assigned and released only on the WebKit main
 +    // thread. Native windows retain the state without touching the client.
 +    RefPtr<WebView> client;
++    // Read, invoked and cleared only on the WebKit main thread.
++    RefPtr<SharedTask<void(const WebCore::IntSize&)>> contentSizeChanged;
 +    // Main-thread load bookkeeping, separate from the close-handshake
 +    // generation: policy/start/commit can all describe the same navigation.
 +    struct LoadState {
