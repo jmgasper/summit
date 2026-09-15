@@ -16,7 +16,7 @@ UNITS = ('WebExtensionController.cpp', 'WebExtensionContext.cpp',
          'WebExtensionDeclarativeNetRequestSQLiteStore.cpp',
          'WebExtensionMatchPatternProcessPool.cpp', 'WebExtensionContextProxy.cpp',
          'WebExtensionControllerProxy.cpp')
-EXTRA_UNITS = ('API/WebExtensionAPILocalization.cpp', 'API/WebExtensionAPIMenus.cpp', 'API/WebExtensionMenuClickHandlerStore.cpp', 'API/WebExtensionAPICookies.cpp', 'Bindings/JSWebExtensionCookieParameters.cpp', 'API/WebExtensionAPIAction.cpp', 'API/WebExtensionAPIWindows.cpp', 'API/WebExtensionAPIWindowsEvent.cpp',
+EXTRA_UNITS = ('API/WebExtensionAPIExtension.cpp', 'API/WebExtensionAPILocalization.cpp', 'API/WebExtensionAPIMenus.cpp', 'API/WebExtensionMenuClickHandlerStore.cpp', 'API/WebExtensionAPICookies.cpp', 'Bindings/JSWebExtensionCookieParameters.cpp', 'API/WebExtensionAPIAction.cpp', 'API/WebExtensionAPIWindows.cpp', 'API/WebExtensionAPIWindowsEvent.cpp',
                'Bindings/JSWebExtensionWindowParameters.cpp', 'API/WebExtensionAPITabs.cpp', 'API/WebExtensionAPIPermissions.cpp', 'API/WebExtensionAPICommands.cpp',
                'API/WebExtensionAPIWebRequest.cpp', 'API/WebExtensionAPIWebRequestEvent.cpp', 'haiku/WebExtensionContextBackgroundHaiku.cpp', 'haiku/WebExtensionURLSchemeHandlerHaiku.cpp', 'haiku/WebExtensionContextHaiku.cpp',
                'haiku/WebExtensionContextTestHaiku.cpp',
@@ -31,9 +31,10 @@ EXTRA_UNITS = ('API/WebExtensionAPILocalization.cpp', 'API/WebExtensionAPIMenus.
                'API/WebExtensionAPITest.cpp',
                'API/WebExtensionAPIRuntime.cpp',
                'API/WebExtensionAPIEvent.cpp', 'API/WebExtensionAPIPort.cpp')
-SERIALIZER_UNITS = ('GeneratedSerializersSharedWebCoreArgumentCodersNetwork.cpp',)
+SERIALIZER_UNITS = ('GeneratedSerializersSharedWebCoreArgumentCodersNetwork.cpp',
+                    'GeneratedSerializersSharedExtensions.cpp')
 GENERATED_UNITS = ('NetworkProcessProxyMessageReceiver.cpp', 'WebExtensionContextMessageReceiver.cpp', 'WebExtensionContextProxyMessageReceiver.cpp', 'WebCookieManagerMessageReceiver.cpp')
-BINDING_UNITS = ('JSWebExtensionAPILocalization.cpp', 'JSWebExtensionAPIMenus.cpp', 'JSWebExtensionAPICookies.cpp', 'JSWebExtensionAPIAction.cpp', 'JSWebExtensionAPIWindows.cpp', 'JSWebExtensionAPIWindowsEvent.cpp', 'JSWebExtensionAPITabs.cpp', 'JSWebExtensionAPIPermissions.cpp', 'JSWebExtensionAPICommands.cpp',
+BINDING_UNITS = ('JSWebExtensionAPIExtension.cpp', 'JSWebExtensionAPILocalization.cpp', 'JSWebExtensionAPIMenus.cpp', 'JSWebExtensionAPICookies.cpp', 'JSWebExtensionAPIAction.cpp', 'JSWebExtensionAPIWindows.cpp', 'JSWebExtensionAPIWindowsEvent.cpp', 'JSWebExtensionAPITabs.cpp', 'JSWebExtensionAPIPermissions.cpp', 'JSWebExtensionAPICommands.cpp',
                  'JSWebExtensionAPIWebRequest.cpp', 'JSWebExtensionAPIWebRequestEvent.cpp', 'JSWebExtensionAPIWebNavigation.cpp', 'JSWebExtensionAPIWebNavigationEvent.cpp',
                  'JSWebExtensionAPIEvent.cpp', 'JSWebExtensionAPIPort.cpp',
                  'JSWebExtensionAPIStorage.cpp', 'JSWebExtensionAPIStorageArea.cpp',
@@ -53,7 +54,8 @@ NATIVE_PAGE_UNITS = {'ExtensionPermissionPromptHaiku.cpp': 'UIProcess/haiku/Exte
 WEB_CORE_UNITS = {name: 'contentextensions/' + name for name in ('URLFilterParser.cpp', 'DFABytecodeInterpreter.cpp', 'ContentExtension.cpp',
                   'ContentExtensionURLConditions.cpp', 'ContentExtensionRule.cpp', 'ContentExtensionParser.cpp',
                   'ContentExtensionCompiler.cpp', 'ContentExtensionsBackend.cpp')}
-UI_API_UNITS = {'WebExtensionContextAPIMenusHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionContextAPIMenusHaiku.cpp',
+UI_API_UNITS = {'WebExtensionContextAPIExtensionHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionContextAPIExtensionHaiku.cpp',
+                'WebExtensionContextAPIMenusHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionContextAPIMenusHaiku.cpp',
                 'WebExtensionDeclarativeNetRequestRulesHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionDeclarativeNetRequestRulesHaiku.cpp',
                 'WebExtensionContextDeclarativeNetRequestHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionContextDeclarativeNetRequestHaiku.cpp',
                 'WebExtensionMenuItem.cpp': 'UIProcess/Extensions/WebExtensionMenuItem.cpp',

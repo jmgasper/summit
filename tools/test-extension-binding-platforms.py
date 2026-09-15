@@ -106,11 +106,11 @@ def main(generated):
                     if not re.search(r'\b' + name + r'\b', result.stdout):
                         raise RuntimeError(f'Missing {interface}.{name}: Haiku={haiku}, source={suffix}')
     if (generated / 'JSWebExtensionAPITabs.cpp').exists():
-        common = ('query', 'get', 'getCurrent', 'tabIdentifierNone', 'onActivated', 'onAttached', 'onCreated',
+        common = ('query', 'get', 'getCurrent', 'sendMessage', 'tabIdentifierNone', 'onActivated', 'onAttached', 'onCreated',
                   'onDetached', 'onHighlighted', 'onMoved', 'onRemoved', 'onReplaced', 'onUpdated')
         cocoa_only = ('create', 'getSelected', 'duplicate', 'update', 'move', 'remove', 'reload', 'goBack',
                       'goForward', 'getZoom', 'setZoom', 'detectLanguage', 'toggleReaderMode', 'captureVisibleTab',
-                      'executeScript', 'insertCSS', 'removeCSS', 'sendMessage', 'connect')
+                      'executeScript', 'insertCSS', 'removeCSS', 'connect')
         for haiku in (0, 1):
             for suffix in ('h', 'cpp'):
                 source = generated / ('JSWebExtensionAPITabs.' + suffix)
@@ -126,6 +126,14 @@ def main(generated):
                     present = bool(re.search(pattern, result.stdout))
                     if present != (name in common or not haiku):
                         raise RuntimeError(f'Incorrect tabs.{name} exposure: Haiku={haiku}, source={suffix}')
+                if suffix == 'cpp':
+                    method = re.search(r'JSValueRef JSWebExtensionAPITabs::sendMessage\([^\n]*\)\n\{(.*?)\n\}', result.stdout, re.S)
+                    checks += 1
+                    if not method or 'impl->isForMainWorld()' not in method[1] or 'JSObjectMakeDeferredPromise' not in method[1]:
+                        raise RuntimeError('Tab messaging lost main-world restriction or promise support')
+                    checks += 1
+                    if 'impl->sendMessage(*frame, tabID, message, options, callback.releaseNonNull(), exceptionString)' not in method[1]:
+                        raise RuntimeError('Tab messaging lost actual sending frame or callback adapter')
                 namespace = generated / ('JSWebExtensionAPINamespace.' + suffix)
                 if digest(namespace) != generation['files'][namespace.name]:
                     raise RuntimeError('Generated namespace binding changed')
@@ -136,6 +144,41 @@ def main(generated):
                 checks += 1
                 if not re.search(pattern, result.stdout):
                     raise RuntimeError(f'Missing tabs namespace: Haiku={haiku}, source={suffix}')
+    if (generated / 'JSWebExtensionAPIExtension.cpp').exists():
+        methods = ('getURL', 'getBackgroundPage', 'getViews', 'inIncognitoContext',
+                   'isAllowedIncognitoAccess', 'isAllowedFileSchemeAccess')
+        privileged = ('getBackgroundPage', 'getViews', 'isAllowedIncognitoAccess', 'isAllowedFileSchemeAccess')
+        for haiku in (0, 1):
+            prefix = f'#define ENABLE(x) 1\n#define PLATFORM(x) PLATFORM_##x\n#define PLATFORM_HAIKU {haiku}\n#define PLATFORM_COCOA {1-haiku}\n'
+            for suffix in ('h', 'cpp'):
+                source = generated / ('JSWebExtensionAPIExtension.' + suffix)
+                if digest(source) != generation['files'][source.name]:
+                    raise RuntimeError('Generated extension binding changed')
+                stripped = re.sub(r'^\s*#(?:include|import|pragma)\b[^\n]*', '', source.read_text(), flags=re.M)
+                result = subprocess.run([compiler, '-E', '-P', '-x', 'c++', '-'], input=prefix + stripped,
+                                        text=True, capture_output=True, check=True)
+                for name in methods:
+                    checks += 1
+                    binding_name = 'isInIncognitoContext' if name == 'inIncognitoContext' else name
+                    pattern = r'\bstatic JSValueRef ' + binding_name + r'\(' if suffix == 'h' else r'\bJSWebExtensionAPIExtension::' + binding_name + r'\('
+                    if not re.search(pattern, result.stdout):
+                        raise RuntimeError('Missing extension API: ' + name)
+                    if suffix == 'cpp':
+                        method = re.search(r'JSValueRef JSWebExtensionAPIExtension::' + binding_name + r'\([^\n]*\)\n\{(.*?)\n\}', result.stdout, re.S)
+                        checks += 1
+                        # Per-operation MainWorldOnly is enforced by property
+                        # enumeration/lookup; interface-wide restrictions also
+                        # produce a guard inside each generated callback.
+                        lookup = 'isForMainWorld && JSStringIsEqualToUTF8CString(propertyName, "' + name + '")'
+                        if not method or ((lookup in result.stdout) != (name in privileged)):
+                            raise RuntimeError('Incorrect extension content-world restriction: ' + name)
+                        checks += 1
+                        if ('JSObjectMakeDeferredPromise' in method[1]) != name.startswith('isAllowed'):
+                            raise RuntimeError('Incorrect extension synchronous/promise behavior: ' + name)
+                if suffix == 'cpp':
+                    checks += 1
+                    if re.search(r'\b(?:NSString|NSDictionary|NSArray|toNSDictionary|toNSObject)\b', result.stdout):
+                        raise RuntimeError('C++ extension bindings contain Objective-C conversion')
     if (generated / 'JSWebExtensionAPIWindows.cpp').exists():
         surfaces = {
             'Windows': (('get', 'getCurrent', 'getLastFocused', 'getAll', 'windowIdentifierNone',

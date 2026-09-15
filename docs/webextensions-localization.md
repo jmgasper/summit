@@ -21,7 +21,8 @@ all 399 artifact entries match the final inventory. Its provenance digest is
 the matching WebKit source archive digest is
 `4c4d3311e203bb514517d6c833b29739f4e05634f43fd24e517a5b9e03b2a5be`.
 Validation is recorded in `.vm/i18n-css-fixed-artifact-validation.json`.
-A separate preview profile runs this bundle in [VNC on port 5905](VM.md).
+The [VNC preview on port 5905](VM.md) advances to later verified bundles;
+`.vm/vnc-follow-along-browser.json` records its current bundle and owned process.
 
 The implementation exposes the five localization methods already defined by the
 pinned WebKit interface through C++ bindings on Haiku. It also repairs shared

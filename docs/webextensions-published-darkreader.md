@@ -66,5 +66,42 @@ existing tabs; that path requires verification after query support is added.
 Diagnostic evidence is
 `.vm/modern-darkreader-7199380f209f48a7f4fd5c32/result.json` and its `console.log`.
 The temporary WebChromeClient trace is tracked in
-`.vm/darkreader-console-baseline/manifest.json` and must be removed before a
-distribution is verified. These failures remain open compatibility requirements.
+`.vm/darkreader-console-baseline/manifest.json`. It has been removed from the
+[tab-messaging implementation](webextensions-tab-messaging.md), which now passes
+its full native build and 57-case messaging suite. These published extension
+failures remain open compatibility requirements until this package passes.
+
+With tab messaging available in `bundle-9lg9p4yz`, the unchanged package now
+applies its dynamic dark theme after installation. Actual body colors change
+from `rgb(255, 255, 255)` to `rgb(24, 26, 27)`, text and panel colors change, and
+the document reports dynamic-theme attributes and nine Dark Reader stylesheets.
+Disabling the extension restores the original colors on a fresh page. Reenabling
+it still leaves the next page light, so the run fails after 63 passing native
+checks. Its popup screenshot still shows "Loading, please wait". The browser
+exits normally with drained processes, a clean crash interval and unchanged
+archive, extracted/installed package, harness and bundle bytes. Evidence:
+`.vm/modern-darkreader-08b345bc4bf5c11a9dc863b9/result.json` and its
+`enabled.ppm`, `popup.ppm` and `failure.ppm` screenshots. Reenable behavior and
+popup readiness remain separate unresolved runtime requirements.
+
+A subsequent `discarded` query/metadata candidate is staged separately in
+`.vm/tabs-discarded-candidate`. Four affected native source files compile with
+unchanged configured inputs (`.vm/extension-lifecycle-inputs.f6SPmzoR/result.json`).
+The regenerated extension IPC serializers also compile in isolation, including
+the new field's encoders and decoders
+(`.vm/extension-lifecycle-inputs.T4tdD2Vj/result.json`).
+It is not yet promoted, linked or runtime-tested. The native browser currently
+retains each open tab's page when another tab is selected, so the proposed
+metadata reports `discarded: false` and uses that state to filter queries.
+A native tab-discard operation and automatic reload on activation remain absent.
+
+The separate `.vm/extension-access-candidate` ports the existing `extension`
+interface to C++ bindings and adds native permission queries, extension-view
+lookup, `getURL` and `inIncognitoContext`. File/private access queries read the
+UI context's saved settings. The candidate passes 614 binding checks and six
+native compile checks; an additional compile verifies native call-time guards.
+Evidence is `.vm/extension-binding-platforms-havuz_58/result.json`,
+`.vm/extension-lifecycle-inputs.2kfGSQ4L/result.json` and
+`.vm/extension-lifecycle-inputs.sGOjYnCZ/result.json`. It is not promoted or
+runtime-verified. Permission changes, view filtering, context restrictions and
+Cocoa adapter compilation remain to be checked.
