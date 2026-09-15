@@ -164,9 +164,9 @@ def main(generated):
                             raise RuntimeError(f'Incorrect {interface}.{name} exposure: Haiku={haiku}, source={suffix}')
     if (generated / 'JSWebExtensionAPIAction.cpp').exists():
         common = ('getTitle', 'setTitle', 'getBadgeText', 'setBadgeText', 'getBadgeBackgroundColor', 'setBadgeBackgroundColor',
-                  'enable', 'disable', 'isEnabled', 'getPopup', 'setPopup', 'setIcon', 'onClicked')
+                  'enable', 'disable', 'isEnabled', 'getPopup', 'setPopup', 'setIcon', 'openPopup', 'onClicked')
         haiku_only = ('getBadgeTextColor', 'setBadgeTextColor')
-        cocoa_only = ('openPopup',)
+        cocoa_only = ()
         for haiku in (0, 1):
             for suffix in ('h', 'cpp'):
                 prefix = f'#define ENABLE(x) 1\n#define PLATFORM(x) PLATFORM_##x\n#define PLATFORM_HAIKU {haiku}\n#define PLATFORM_COCOA {1-haiku}\n'
@@ -194,6 +194,9 @@ def main(generated):
                         checks += 1
                         if 'impl->setIcon(*frame, context, details,' not in result.stdout:
                             raise RuntimeError('Icon ImageData must retain the raw JavaScript value')
+                        checks += 1
+                        if 'impl->openPopup(page->webPageProxyIdentifier(), options,' not in result.stdout:
+                            raise RuntimeError('Popup API lost its originating page identity')
     if (generated / 'JSWebExtensionAPICookies.cpp').exists():
         for haiku in (0, 1):
             for interface, members in (('Cookies', {'get': True, 'getAll': True, 'set': True, 'remove': True,

@@ -48,13 +48,17 @@ content and checks those conditions again before sending permission-filtered
 tab parameters. The web-process dispatcher creates fresh protected values for
 each listener within a WebCore user-gesture scope. The public SDK and Summit
 toolbar now call this path, with real native action/popup integration tests.
-Dedicated temporary `activeTab` grant-transition coverage remains work; see
+The [programmatic popup suite](webextensions-native-open-popup.md) now verifies
+that programmatic calls preserve redaction, real toolbar clicks grant access,
+same-origin navigation retains it, and a different origin revokes it. See also
 [current SDK and toolbar evidence](modern-extension-actions.md).
 
 Dynamic `setIcon` now has a [native implementation](webextensions-native-action-icons.md)
 with a passing 49-case browser suite and 55 SDK/desktop pixel observations,
 including SVG and ImageData transparency. The same bundle passes 238 existing
-action/popup checks and 169 overflow checks. `openPopup` remains unavailable.
+action/popup checks and 169 overflow checks. That verified distribution does not
+expose `openPopup`; its [new native implementation](webextensions-native-open-popup.md)
+passes 342 browser checks on three fresh profiles.
 Badge background and text colors now have a
 [verified native implementation](webextensions-native-badge-colors.md).
 The SDK does display decoded manifest action icons.

@@ -9,7 +9,7 @@
 using WebKit::NativeExtensionPopupHaiku;
 namespace {
 constexpr uint32 nativeEvent = 'epnt';
-constexpr std::array names { "hidden-show-resize-cancel", "escape", "focus-loss", "owner-destroyed", "modal-child-focus", "cancel-before-start", "factory-failure", "invalid-owner" };
+constexpr std::array names { "hidden-show-resize-cancel", "escape", "focus-loss", "owner-destroyed", "modal-child-focus", "cancel-before-start", "factory-failure", "invalid-owner", "focused-owner-show", "unfocused-owner-show", "focus-loss-before-show" };
 std::atomic<unsigned> destroyedViews { 0 };
 std::atomic<bool> modalChild { false };
 class TestView final : public BView {
@@ -59,7 +59,12 @@ public:
             m_shownAt = system_time();
         } else {
             check(++m_closed == 1, "native closure completes exactly once");
-            check(destroyedViews == (m_test < 5 || m_test == 6 ? 1u : 0u), "closure is reported after all created child views are destroyed");
+            check(destroyedViews == (m_test < 5 || m_test == 6 || m_test >= 8 ? 1u : 0u), "closure is reported after all created child views are destroyed");
+            if (m_test >= 9) {
+                check(m_shown == 0, "an unfocused programmatic request never reports native presentation");
+                check(message->GetInt32("status", B_ERROR) == B_CANCELED, "lost owner focus cancels the pending native request");
+                check(active(m_competitor), "rejected popup leaves the competing native window focused");
+            }
             m_finishedAt = system_time();
             m_popup.reset();
         }
@@ -72,6 +77,10 @@ public:
         if (m_finishedAt) {
             if (NativeExtensionPopupHaiku::activeCount() || system_time() - m_finishedAt < 250000)
                 return;
+            if (m_competitor.IsValid()) {
+                BMessage quit(B_QUIT_REQUESTED); m_competitor.SendMessage(&quit);
+                return;
+            }
             if (m_owner.IsValid()) {
                 BMessage quit(B_QUIT_REQUESTED); m_owner.SendMessage(&quit);
                 return;
@@ -87,6 +96,7 @@ public:
             if (!m_timeout) {
                 check(false, "native popup test completed before its deadline");
                 m_timeout = true;
+                releaseBlockedPopup();
                 if (m_popup) m_popup->cancel();
             }
             if (!NativeExtensionPopupHaiku::activeCount()) {
@@ -95,20 +105,41 @@ public:
             }
             return;
         }
-        if (!m_popup || m_test >= 5)
+        if (!m_popup || (m_test >= 5 && m_test <= 7))
             return;
+        if (m_blockedPopup) {
+            if (!active(m_owner) && active(m_competitor)) {
+                check(m_shown == 0, "focus changes after request while native presentation is still queued");
+                releaseBlockedPopup();
+            }
+            return;
+        }
         auto target = m_popup->target();
         if (!target.IsValid())
             return;
         if (!m_requestedShow && m_createdAt && system_time() - m_createdAt > 300000) {
+            if ((m_test == 8 || m_test == 10) && !active(m_owner))
+                return;
+            if (m_test == 9 && (active(m_owner) || !active(m_competitor)))
+                return;
             if (target.LockTargetWithTimeout(0) != B_OK)
                 return;
             BLooper* looper = nullptr;
             auto* window = dynamic_cast<BWindow*>(target.Target(&looper));
             check(window && window->IsHidden(), "popup remains hidden until the engine requests presentation");
-            looper->Unlock();
             m_requestedShow = true;
-            m_popup->show();
+            if (m_test >= 8) {
+                check(m_test == 9 ? !active(m_owner) : active(m_owner), "programmatic request has the intended initial owner focus");
+                m_popup->show(true);
+            } else
+                m_popup->show();
+            if (m_test == 10) {
+                // Hold the native popup's looper across pulses so its queued
+                // presentation runs only after an actual focus transition.
+                m_blockedPopup = looper;
+                createCompetitor();
+            } else
+                looper->Unlock();
             return;
         }
         if (!m_shownAt || system_time() - m_shownAt < 500000)
@@ -117,6 +148,11 @@ public:
             check(m_pulses >= 4, "application stays responsive while popup is open");
             m_acted = true;
             m_actionAt = system_time();
+            if (m_test >= 8) {
+                check(m_test == 8 && active(target), "focused programmatic popup receives native focus");
+                m_popup->cancel();
+                return;
+            }
             if (m_test == 0) { m_popup->resize(BSize(420, 310)); return; }
             if (m_test == 1) {
                 BMessage key(B_KEY_DOWN); const char escape[] = { B_ESCAPE, 0 };
@@ -154,6 +190,28 @@ public:
             check(!m_closed, "a modal child temporarily prevents focus-loss dismissal");
     }
 private:
+    static bool active(const BMessenger& target)
+    {
+        if (target.LockTargetWithTimeout(0) != B_OK)
+            return false;
+        BLooper* looper = nullptr;
+        auto* window = dynamic_cast<BWindow*>(target.Target(&looper));
+        bool result = window && window->IsActive();
+        if (looper) looper->Unlock();
+        return result;
+    }
+    void createCompetitor()
+    {
+        auto* window = new BWindow(BRect(180, 220, 740, 550), "Summit competing focus window", B_TITLED_WINDOW, B_ASYNCHRONOUS_CONTROLS);
+        m_competitor = BMessenger(window);
+        window->Show();
+        window->Activate(true);
+    }
+    void releaseBlockedPopup()
+    {
+        if (auto* looper = std::exchange(m_blockedPopup, nullptr))
+            looper->Unlock();
+    }
     void check(bool passed, const char* text)
     {
         ++m_checks; m_failed |= !passed;
@@ -166,6 +224,7 @@ private:
         m_requestedShow = m_acted = false; destroyedViews = 0; modalChild = false;
         auto* owner = new BWindow(BRect(100, 130, 850, 660), "Summit popup test owner", B_TITLED_WINDOW, B_ASYNCHRONOUS_CONTROLS);
         m_owner = BMessenger(owner); owner->Show();
+        if (m_test == 9) createCompetitor();
         const auto test = m_test;
         m_popup = std::make_unique<NativeExtensionPopupHaiku>(m_test == 7 ? BMessenger() : m_owner, BRect(780, 180, 820, 195), "Summit extension popup test",
             [test](BRect frame) -> BView* { if (test == 6) { auto view = std::make_unique<TestView>(frame); return nullptr; } return new TestView(frame); },
@@ -180,12 +239,16 @@ private:
     void finish()
     {
         if (m_done) return;
+        releaseBlockedPopup();
+        if (m_competitor.IsValid()) { BMessage quit(B_QUIT_REQUESTED); m_competitor.SendMessage(&quit); }
         m_done = true;
         check(!NativeExtensionPopupHaiku::activeCount(), "all native popup workers and windows have drained");
         std::printf("EXTENSION_POPUP_RESULT %s checks=%u\n", m_failed ? "FAIL" : "PASS", m_checks); std::fflush(stdout);
         PostMessage(B_QUIT_REQUESTED);
     }
     BMessenger m_owner;
+    BMessenger m_competitor;
+    BLooper* m_blockedPopup { nullptr };
     std::unique_ptr<NativeExtensionPopupHaiku> m_popup;
     size_t m_test { 0 };
     unsigned m_checks { 0 }, m_created { 0 }, m_shown { 0 }, m_closed { 0 }, m_pulses { 0 };
