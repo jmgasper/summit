@@ -147,7 +147,13 @@ def freeze(work, inputs, commands, before, configuration, build, executable_name
         before = {**before, str(work / executable_name): digest(work / executable_name)}
         for relative, source in files.items():
             destination = bundle / relative
-            shutil.copy2(source, destination)
+            try:
+                shutil.copy2(source, destination)
+            except OSError as error:
+                copied = destination.stat().st_size if destination.exists() else 0
+                raise RuntimeError(f'Cannot copy {source} to {destination}: {error}; '
+                                   f'{copied} of {source.stat().st_size} bytes copied, '
+                                   f'{shutil.disk_usage(bundle).free} bytes free') from error
             if digest(destination) != before[str(source)]:
                 raise RuntimeError(f'{source.name} changed while being copied')
             relocate(destination, '$ORIGIN' if relative.startswith('lib/') else '$ORIGIN/lib',
@@ -237,6 +243,8 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--compile-only', action='store_true')
     mode.add_argument('--bundle', action='store_true')
+    parser.add_argument('--build-root', default='/boot/home/summit',
+                        choices=('/boot/home/summit', '/SummitExtensions/summit'))
     arguments = parser.parse_args()
     inputs = json.loads((ROOT / 'inputs.json').read_text())
     variant = inputs.get('engine_variant', 'modern')
@@ -249,7 +257,12 @@ def main():
         raise RuntimeError('Unknown native app target: ' + str(target))
     browser = target == 'browser'
     executable_name = 'Summit' if browser else 'SummitModernPreview'
-    build = pathlib.Path('/boot/home/summit/build-modern-' + target)
+    build_root = pathlib.Path(arguments.build_root)
+    if build_root.parts[1] == 'SummitExtensions' and not os.path.ismount('/SummitExtensions'):
+        raise RuntimeError('The SummitExtensions volume must be mounted before building there')
+    build = build_root / ('build-modern-' + target)
+    if build.resolve() != build:
+        raise RuntimeError('The native build directory must not use an indirect path')
     for name, expected in inputs['sha256'].items():
         if digest(ROOT / name) != expected:
             raise RuntimeError('Staged input hash mismatch: ' + name)

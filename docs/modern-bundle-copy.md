@@ -145,6 +145,23 @@ that evidence and the preceding navigation/close regressions. The older
 `bundle-9jahww_j` remains preserved with its recorded cookie-observer lifecycle
 failure. See [STATUS.md](STATUS.md) for tested scopes and current limitations.
 
+When the boot volume cannot allocate another engine library, new bundles can
+be built on the mounted `SummitExtensions` volume:
+
+```sh
+SUMMIT_NATIVE_BUILD_ROOT=/SummitExtensions/summit \
+  bash tools/build-modern-browser-in-vm.sh --browser --modern-extensions
+```
+
+This creates new compile and bundle directories under
+`/SummitExtensions/summit/build-modern-browser`. Existing bundles retain their
+paths. The volume must be mounted, and build paths must be direct rather than
+symlinks. The selected report records the actual native bundle path; runtime
+tests and the copy command consume that report/path with the same hash checks.
+The default root remains `/boot/home/summit`. Library copy failures report the
+source, destination, partial size and remaining space, since a fragmented BFS
+volume can report `File too large` before its free space is exhausted.
+
 The source archive also supplies those full patched trees for a direct native
 CMake build without fetching Git. It is already patched: do not apply the patch
 again. It has no `.git`, so extracting it into `.cache/WebKit` does not create
@@ -172,7 +189,7 @@ color, popup and overflow results are in [native badge colors](webextensions-nat
 
 ## Dynamic action icons
 
-The verified dynamic-icon bundle is
+The earlier verified dynamic-icon bundle is
 `artifacts/modern-browser/bundle-_inqiw0r`, with copy source revision `6cc95e9`
 and engine patch `e71fe35768f9d28d5475179f0d782b7820e3027bdfb48f2bea1036ff583b65ca`.
 Its provenance digest is
@@ -182,3 +199,11 @@ before and after copying. The native run passes 47 icon cases, 53 pixel
 observations (439 checks), 238 action/popup checks and 169 overflow checks;
 process exits and crash monitors are clean. See
 [dynamic icon evidence](webextensions-native-action-icons.md).
+
+The newer `bundle-ptx4moys` is built directly on the mounted larger volume at
+`/SummitExtensions/summit/build-modern-browser/bundle-ptx4moys`. It passes
+49 icon cases, 55 pixel observations (455 checks), 238 action/popup checks and
+169 overflow checks. The selected report is
+`.vm/modern-browser-action-icons-malformed-svg-bundle-result.json`;
+[the icon record](webextensions-native-action-icons.md) includes malformed SVG
+rejection and the successful native results.

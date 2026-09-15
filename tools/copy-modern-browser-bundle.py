@@ -112,7 +112,7 @@ def validate_report(report, target):
     require(report['kind'] == 'modern-native-' + target, 'Manifest has the wrong bundle kind')
     native = report['bundle']
     require(isinstance(native, str) and re.fullmatch(
-        '/boot/home/summit/build-modern-' + target + r'/bundle-[A-Za-z0-9_-]+', native),
+        r'(?:/boot/home/summit|/SummitExtensions/summit)/build-modern-' + target + r'/bundle-[A-Za-z0-9_-]+', native),
         'Unexpected native bundle path')
     inputs = report['inputs']
     require(isinstance(inputs, dict), 'Staged inputs must be an object')
@@ -156,7 +156,8 @@ def validate_report(report, target):
         isinstance(command, list) and command and all(isinstance(arg, str) for arg in command)
         for command in commands), 'Missing native compile commands')
     hashes(report['original_sha256'], 'original native', absolute=True,
-           extra_roots=('/SummitExtensions/WebKit/',) if extensions else ())
+           extra_roots=('/SummitExtensions/summit/build-modern-' + target + '/',
+                        *(('/SummitExtensions/WebKit/',) if extensions else ())))
     bundled = hashes(report['bundled_sha256'], 'bundled')
     executable, launcher = ('Summit', 'run-browser.sh') if target == 'browser' else ('SummitModernPreview', 'run-preview.sh')
     regular = {executable, launcher, 'WebProcess', 'NetworkProcess'}

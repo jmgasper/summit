@@ -7,6 +7,11 @@ SUMMIT_MODE=--bundle
 SUMMIT_TARGET=preview
 SUMMIT_VARIANT=modern
 SUMMIT_MODE_SEEN=0
+SUMMIT_NATIVE_BUILD_ROOT=${SUMMIT_NATIVE_BUILD_ROOT:-/boot/home/summit}
+case "$SUMMIT_NATIVE_BUILD_ROOT" in
+    /boot/home/summit|/SummitExtensions/summit) ;;
+    *) echo 'SUMMIT_NATIVE_BUILD_ROOT must be /boot/home/summit or /SummitExtensions/summit.' >&2; exit 2 ;;
+esac
 for SUMMIT_ARGUMENT in "$@"; do
     case "$SUMMIT_ARGUMENT" in
         --bundle|--compile-only)
@@ -94,7 +99,7 @@ if [[ ! $SUMMIT_REMOTE_STAGE =~ ^/boot/home/summit/modern-preview-inputs\.[A-Za-
 fi
 tar -C "$SUMMIT_STAGE" -czf - . |
     bash tools/haiku.sh "tar -xzf - -C '$SUMMIT_REMOTE_STAGE'"
-bash tools/haiku.sh "python3.10 '$SUMMIT_REMOTE_STAGE/tools/build-modern-browser.py' '$SUMMIT_MODE'" |
+bash tools/haiku.sh "python3.10 '$SUMMIT_REMOTE_STAGE/tools/build-modern-browser.py' '$SUMMIT_MODE' --build-root '$SUMMIT_NATIVE_BUILD_ROOT'" |
     tee "$SUMMIT_RESULT"
 if [[ $SUMMIT_MODE == --compile-only ]]; then
     mv -- "$SUMMIT_RESULT" ".vm/$SUMMIT_VARIANT-$SUMMIT_TARGET-compile.json"
