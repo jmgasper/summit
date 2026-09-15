@@ -1,0 +1,55 @@
+# Published Dark Reader integration
+
+The native compatibility probe uses the unmodified Chrome MV2 release of Dark
+Reader 4.9.131 from `compatibility/extensions.lock.json`. Its archive SHA-256 is
+`c267d7663633fbe6981af46cb42e2176fb00a46e409789b82ea3cfe8e9afe311`.
+All 88 archive entries are extracted without changing their contents. The runner
+checks the source archive, extracted tree, installed package, staged harness and
+frozen browser inputs. A passing API fixture is not evidence for this package.
+
+```sh
+python3 tools/test-modern-darkreader.py --bundle NATIVE_BUNDLE --watch
+```
+
+The harness installs through the native folder picker and consent UI. Its
+controlled target page starts with known light colors and reports actual computed
+colors, Dark Reader's dynamic-theme attributes and generated stylesheet classes.
+The intended checks cover native popup presentation, page recoloring, fresh-page
+behavior after disabling and reenabling through the native manager, and clean
+shutdown. The extension receives no test script or rewritten configuration.
+Screenshots preserve visible popup/page output. Popup control functionality and
+browser restart persistence require additional checks.
+
+The first runtime run against `bundle-omqykez8` **fails before consent**. The light
+control page reports correctly, but the browser exits with a segment violation
+while its `ExtensionPackages` worker snapshots `ui/assets/fonts`. Four recursive
+`Walker::walk` frames each reserve about 64 KiB for a file-copy buffer, exhausting
+the worker stack. This is a package-preparation failure, before Dark Reader's
+background or content scripts execute. The owned process group drains, and all
+recorded source/archive/bundle hashes remain unchanged. The native crash interval
+contains the debugger event and is explicitly a failed interval.
+
+Evidence:
+
+- `.vm/modern-darkreader-753082efbff1659244f1111a/result.json`: first runtime failure.
+- `.vm/modern-darkreader-753082efbff1659244f1111a/native-crash.report`: native worker stack and disassembly.
+- `.vm/darkreader-stack-candidate/manifest.json`: baseline and candidate source fingerprints.
+
+The fix moves the copy buffer into heap storage owned by the traversal,
+shared across recursive calls. The public asynchronous package-preparation test
+now includes a resource at the supported 32-component path limit, larger than one
+copy buffer, and verifies the retained snapshot bytes. Engine patch
+`2bff61f9155eb0a4d401cf456d516cc1f030c8e8a46686bb84d5030220d367ca`
+builds successfully; the asynchronous test passes 65 checks with unchanged native
+inputs and libraries, normal exit, drained processes and a clean crash interval.
+Evidence: `.vm/content-rule-pipeline.ygicfIYh/result.json`.
+
+The subsequent run against `bundle-lbm_guj3` installs Dark Reader successfully and
+displays its native action and popup. **The compatibility probe still fails:** the
+popup stays on "Loading, please wait" and the controlled page retains its original
+light colors, without dynamic-theme attributes. The browser exits normally,
+its process group drains, and its crash interval has no debugger events.
+All archive, extracted and installed package bytes, staged sources and frozen
+bundle hashes remain unchanged. Evidence:
+`.vm/modern-darkreader-82638d1eb796352e4f39d0bd/result.json`.
+This establishes the installation-crash fix, not a working Dark Reader runtime.

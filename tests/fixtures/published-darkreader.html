@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Summit — published Dark Reader test</title>
+<style>
+body { background: rgb(255,255,255); color: rgb(17,34,51); font: 20px sans-serif; margin: 48px; }
+#panel { background: rgb(240,244,248); padding: 24px; border: 2px solid rgb(64,96,128); }
+#sample { color: rgb(17,34,51); }
+</style>
+<h1>Dark Reader compatibility</h1>
+<div id="panel"><p id="sample">This page starts with light colors. The unmodified extension must apply its dynamic theme.</p></div>
+<script>
+"use strict";
+const phase = location.pathname.split("/").pop();
+const endpoint = location.pathname.replace(/\/target\/[^/]+$/, "/report/" + phase);
+let sequence = 0, previous = "", busy = false;
+function luminance(color) {
+    const values = color.match(/[\d.]+/g)?.map(Number);
+    return values?.length >= 3 ? values[0] * .2126 + values[1] * .7152 + values[2] * .0722 : -1;
+}
+async function observe() {
+    if (busy) return;
+    const body = getComputedStyle(document.body), sample = getComputedStyle(document.getElementById("sample")), panel = getComputedStyle(document.getElementById("panel"));
+    const value = {phase, mode: document.documentElement.getAttribute("data-darkreader-mode") || "",
+        scheme: document.documentElement.getAttribute("data-darkreader-scheme") || "",
+        bodyBackground: body.backgroundColor, textColor: sample.color, panelBackground: panel.backgroundColor,
+        bodyLuminance: luminance(body.backgroundColor), textLuminance: luminance(sample.color), panelLuminance: luminance(panel.backgroundColor),
+        darkreaderStyles: [...document.querySelectorAll("style.darkreader")].map(style => style.className)};
+    const current = JSON.stringify(value);
+    if (current === previous) return;
+    busy = true;
+    try {
+        const response = await fetch(endpoint, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({...value, sequence: ++sequence})});
+        if (response.ok) previous = current;
+    } finally { busy = false; }
+}
+observe(); setInterval(observe, 100);
+</script>

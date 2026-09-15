@@ -43460,10 +43460,10 @@ index 0000000000000000000000000000000000000000..e5bc0db9179485a0737b400bba575be5
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionPackageSnapshotHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionPackageSnapshotHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..8f5808888c994fd1abcf38866434b93db92aab70
+index 0000000000000000000000000000000000000000..e589fc45b894f638d8ecd3e0cb9cb7f9d85465e3
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionPackageSnapshotHaiku.cpp
-@@ -0,0 +1,356 @@
+@@ -0,0 +1,358 @@
 +/*
 + * Copyright (C) 2026 KunanyiOS contributors.
 + *
@@ -43590,8 +43590,11 @@ index 0000000000000000000000000000000000000000..8f5808888c994fd1abcf38866434b93d
 +    uint64_t bytes { 0 };
 +    unsigned entries { 0 };
 +    std::vector<std::pair<dev_t, ino_t>> ancestors;
++    // Share a heap buffer across the traversal; recursive frames must fit on
++    // the package worker's small native stack even at the path-depth limit.
++    std::vector<uint8_t> buffer;
 +
-+    Walker(const String& root, const WebExtensionArchiveLimitsHaiku& limits, int rootDescriptor) : root(root), limits(limits), rootDescriptor(rootDescriptor)
++    Walker(const String& root, const WebExtensionArchiveLimitsHaiku& limits, int rootDescriptor) : root(root), limits(limits), rootDescriptor(rootDescriptor), buffer(64 * 1024)
 +    {
 +        auto domain = String("Kunanyi-WebExtension-Package-v1"_s).utf8();
 +        digest->addBytes(byteCast<uint8_t>(domain.span()));
@@ -43694,7 +43697,6 @@ index 0000000000000000000000000000000000000000..8f5808888c994fd1abcf38866434b93d
 +                if (destination >= 0 && !output)
 +                    return std::unexpected(Error::FileSystem);
 +                addFrame(*digest, 'F', relative, opened.st_size);
-+                std::array<uint8_t, 64 * 1024> buffer;
 +                uint64_t copied = 0;
 +                for (;;) {
 +                    auto count = read(input.get(), buffer.data(), buffer.size());

@@ -4,6 +4,10 @@ These are unmodified official release packages selected for native Summit
 compatibility testing. Download and archive inspection are complete. **None has
 passed a native Summit runtime test.** They complement the focused API fixtures;
 successful fixtures do not establish compatibility with these extensions.
+The [first Dark Reader native run](../docs/webextensions-published-darkreader.md)
+reproduces a package-copying stack overflow before installation consent. The fix
+allows installation, but its popup remains loading and page recoloring still
+fails; the package has not passed compatibility testing.
 
 | Project | Pinned release | Package | Manifest |
 | --- | --- | --- | --- |

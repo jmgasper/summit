@@ -40,6 +40,20 @@ std::string read(const fs::path& path)
     std::ifstream input(path, std::ios::binary);
     return { std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>() };
 }
+fs::path deepestResource()
+{
+    fs::path path;
+    // The package limit includes the leaf file: 31 directories + 1 resource.
+    for (unsigned depth = 0; depth < 31; ++depth)
+        path /= "nested";
+    return path / "leaf.bin";
+}
+std::string deepResourceBytes()
+{
+    std::string bytes(64 * 1024 + 17, 'D');
+    bytes.back() = 'Z';
+    return bytes;
+}
 std::set<fs::path> snapshots(const fs::path& directory)
 {
     std::set<fs::path> result;
@@ -183,8 +197,11 @@ public:
             }
             unsigned originalDirectories = 0;
             for (auto& path : m_originalSnapshots)
-                if (read(path / "manifest.json").find("Summit directory package") != std::string::npos)
+                if (read(path / "manifest.json").find("Summit directory package") != std::string::npos) {
                     ++originalDirectories;
+                    check(read(path / deepestResource()) == deepResourceBytes(),
+                        "worker preparation preserves a multi-buffer resource at the supported path-depth limit");
+                }
             check(originalDirectories == 2, "earlier prepared snapshots retain their original manifest after source edits");
             m_tokens.push_back(field(*message, "token"));
             check(snapshots(m_root / "temporary").size() == 5, "only successful prepared packages retain directories");
@@ -278,6 +295,7 @@ int main()
     put(root / "directory/background.html", "<!doctype html><script src=background.js></script>");
     put(root / "directory/background.js", "throw new Error('Preparation must not execute extension code');");
     put(root / "directory/payload.bin", std::string(32 * 1024 * 1024, 'A'));
+    put(root / "directory" / deepestResource(), deepResourceBytes());
     put(root / "bad.xpi", "invalid archive");
     put(root / "bad-manifest/manifest.json", "{ invalid JSON");
     {
