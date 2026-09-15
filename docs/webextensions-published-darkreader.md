@@ -84,6 +84,19 @@ archive, extracted/installed package, harness and bundle bytes. Evidence:
 `enabled.ppm`, `popup.ppm` and `failure.ppm` screenshots. Reenable behavior and
 popup readiness remain separate unresolved runtime requirements.
 
+A console-tracing rebuild of the same messaging implementation,
+`bundle-orjipckr`, reproduces the reenable failure. Its trace shows a second
+background script starting under the reenabled context's new extension URL,
+followed by `tabs.sendMessage` errors reporting no receiving end. This establishes
+that the background script starts again; it does not yet identify why the target
+receiver is unavailable. The unsupported `discarded` query and missing
+`extension.isAllowedFileSchemeAccess` are also still reported. Evidence:
+`.vm/modern-darkreader-5c6ee8f81276dfda9f281577/result.json` and `console.log`.
+The browser exits normally, its process group drains, the crash interval is
+clean, and package, harness and bundle bytes remain unchanged. The diagnostic
+trace was removed from the working source after this run; the verified
+`bundle-9lg9p4yz` remains the VNC preview and exported artifact.
+
 A subsequent `discarded` query/metadata candidate is staged separately in
 `.vm/tabs-discarded-candidate`. Four affected native source files compile with
 unchanged configured inputs (`.vm/extension-lifecycle-inputs.f6SPmzoR/result.json`).
