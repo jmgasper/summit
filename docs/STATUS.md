@@ -2035,8 +2035,10 @@ initial delivery works, but a confirmed cookie write after repeated observer
 unregister/register produces no event. The final unregister-only phase is not
 reached. Evidence: `.vm/content-rule-pipeline.F0ocC1xc/runtime-result.json`.
 Registration uses the priority IPC queue and removal remains ordinary, allowing
-later registrations to overtake removals. The follow-up ordering fix remains
-pending; this fixture does not test JavaScript cookie listeners.
+later registrations to overtake removals. Patch `b42d85ea...` gives removal the
+same dispatch priority. The full engine links, **all 21 observer checks pass**,
+and the IPC and cold extension regressions also pass. This fixture does not test
+JavaScript cookie listeners.
 See [native runtime evidence](webextensions-native-runtime.md) for the exact
 scope and next diagnostic boundary. Build/test milestones remain visible over
 [VNC](VM.md).
@@ -2060,3 +2062,27 @@ Evidence: `.vm/modern-extensions-browser-bundle.json`,
 `.vm/modern-extensions-browser-bundle-check.json` and
 `.vm/modern-extensions-browser-compile-check.json`. See
 [bundle instructions](modern-bundle-copy.md).
+
+### Extension cookie APIs and incremental IPC generation
+
+Patch `32b97d3a...` corrects IPC metadata for declarations whose dispatch flags
+differ by platform, and preserves unchanged generated-file timestamps. All nine
+host generator tests pass. The native engine rebuild completes in **seven steps**;
+only `MessageNames.cpp` changes among 377 generated files. WebKit and both helper
+executables link, and Ninja confirms no pending work. See
+[generation evidence](ipc-message-generation.md).
+
+The actual extension cookie package passes **14 native checks and 28 JavaScript
+assertions** across two cold-start contexts. It verifies promise and Chrome
+callback cookie APIs, secure HttpOnly fields, ordered overwrite and deletion
+events, listener removal, and cookies surviving extension context recreation.
+The storage package also passes **14 native checks and ten JavaScript assertions**
+with the updated runner. Both have unchanged source/package/library/helper hashes,
+clean crash-log intervals, and clean helper-process teardown. Evidence:
+`.vm/content-rule-pipeline.CmGvDVb2/result.json` and
+`.vm/content-rule-pipeline.kvjSYIF4/result.json`.
+
+Browser extension installation, store packages and signatures, MV3 workers,
+action UI, DNR enforcement and full Safari/Chrome/Firefox compatibility remain
+unfinished. The public SDK still needs extension preparation/load/unload APIs
+before the browser can install packages through its native interface.

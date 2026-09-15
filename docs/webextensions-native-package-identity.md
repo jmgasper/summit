@@ -77,8 +77,11 @@ Evidence: `.vm/extension-package-snapshot-tests.CTdRS8kL/result.json`.
 The tests do not construct a WebExtension, launch a browser, execute a startup or
 installed event, modify the real registered-script database, or exercise concurrent
 source mutation. They do not prove snapshot construction can run in the eventual
-installer's threading model. The extension-enabled WebKit library still has not
-linked, and no extension has run in Summit.
+installer's threading model. These helper checks preceded the full engine link.
+The engine has since linked and the isolated native package/controller fixture
+executes extension JavaScript on direct startup; see
+[current runtime evidence](webextensions-native-runtime.md). Public SDK loading,
+installer threading and actual installed/startup event behavior remain pending.
 
 **Six final native integration units compile** with extension and content-rule
 features enabled: the snapshot implementation, native and common WebExtension

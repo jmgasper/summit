@@ -21927,10 +21927,10 @@ index aae7c64b12a52b95b2b29cd27e26a62c3bff2587..33cce98eada3c5ad6297c08d4f298aca
      void deleteAllCookies(PAL::SessionID, CompletionHandler<void()>&&);
      void deleteAllCookiesModifiedSince(PAL::SessionID, WallTime, CompletionHandler<void()>&&);
 diff --git a/Source/WebKit/NetworkProcess/Cookies/WebCookieManager.messages.in b/Source/WebKit/NetworkProcess/Cookies/WebCookieManager.messages.in
-index 2689d3fbfea88cfe39148e799aebab0406fbc39c..983da07b6f550bb8f298871b8c757f26fbe2962b 100644
+index 2689d3fbfea88cfe39148e799aebab0406fbc39c..513bbfd703c707a27be7402be00955e0a43afa83 100644
 --- a/Source/WebKit/NetworkProcess/Cookies/WebCookieManager.messages.in
 +++ b/Source/WebKit/NetworkProcess/Cookies/WebCookieManager.messages.in
-@@ -38,12 +38,22 @@ messages -> WebCookieManager {
+@@ -38,13 +38,24 @@ messages -> WebCookieManager {
      void GetAllCookies(PAL::SessionID sessionID) -> (Vector<WebCore::Cookie> cookies)
      void GetCookies(PAL::SessionID sessionID, URL url) -> (Vector<WebCore::Cookie> cookies)
      void DeleteCookie(PAL::SessionID sessionID, struct WebCore::Cookie cookie) -> ()
@@ -21944,15 +21944,17 @@ index 2689d3fbfea88cfe39148e799aebab0406fbc39c..983da07b6f550bb8f298871b8c757f26
      void GetHTTPCookieAcceptPolicy(PAL::SessionID sessionID) -> (enum:uint8_t WebCore::HTTPCookieAcceptPolicy policy)
      
 +#if PLATFORM(HAIKU) && USE(CURL)
-+    // Native session recreation reinstalls observers before WebProcess connects.
++    // Preserve observer lifecycle order alongside native session recreation.
 +    void StartObservingCookieChanges(PAL::SessionID sessionID) AllowedWhenWaitingForSyncReply
++    void StopObservingCookieChanges(PAL::SessionID sessionID) AllowedWhenWaitingForSyncReply
 +#endif
 +#if !PLATFORM(HAIKU) || !USE(CURL)
      void StartObservingCookieChanges(PAL::SessionID sessionID)
-+#endif
      void StopObservingCookieChanges(PAL::SessionID sessionID)
++#endif
  
  #if USE(SOUP)
+     void ReplaceCookies(PAL::SessionID sessionID, Vector<WebCore::Cookie> cookies) -> ()
 diff --git a/Source/WebKit/NetworkProcess/Cookies/curl/CookieStorageCurl.cpp b/Source/WebKit/NetworkProcess/Cookies/curl/CookieStorageCurl.cpp
 index 5cf8ccaa0f959a5a91bacc1837a16f7ec2a7c3d2..ab6c0bafcf81b6dd8f9fb4a3789eb08f70dba4b4 100644
 --- a/Source/WebKit/NetworkProcess/Cookies/curl/CookieStorageCurl.cpp
@@ -24776,6 +24778,136 @@ index 0000000000000000000000000000000000000000..16512952616e04293f5813d18a7d052c
 +    SKIP_PRECOMPILE_HEADERS ON
 +    INCLUDE_DIRECTORIES "/system/develop/headers/private/shared;/system/develop/headers/private/libroot;/system/develop/headers/private/system"
 +)
+diff --git a/Source/WebKit/Scripts/generate-message-receiver.py b/Source/WebKit/Scripts/generate-message-receiver.py
+index ab343ef829cf78a7a6f9f87a838a07eb198daf67..bedf5c97c3e662ae1314a04f09b850718ebf3864 100644
+--- a/Source/WebKit/Scripts/generate-message-receiver.py
++++ b/Source/WebKit/Scripts/generate-message-receiver.py
+@@ -33,6 +33,19 @@ import webkit.messages
+ import webkit.parser
+ import webkit.model
+ 
++
++def write_output_if_changed(filename, contents):
++    data = contents.encode('utf-8')
++    try:
++        with open(filename, 'rb') as existing:
++            if existing.read() == data:
++                return
++    except FileNotFoundError:
++        pass
++    with open(filename, 'wb') as output:
++        output.write(data)
++
++
+ def main(argv):
+     parser = argparse.ArgumentParser(description='Generate message receivers from input files')
+     parser.add_argument('base_dir', help='Base directory for message receiver files')
+@@ -52,13 +65,14 @@ def main(argv):
+                 m = re.match(r'^(\w+)MessageReceiver\.cpp\b\s*(.*)', line)
+                 if m:
+                     attrs_by_name[m.group(1)] = m.group(2).strip()
+-        with open(args.output_sources, 'w') as f:
+-            for message_receiver in args.message_receivers:
+-                name = message_receiver.rsplit('/', 1).pop()
+-                receiver_dir = os.path.dirname(message_receiver) if args.preserve_subdirs else ''
+-                path = os.path.join(receiver_dir, '%sMessageReceiver.cpp' % name)
+-                attrs = attrs_by_name.get(name, '')
+-                f.write('%s %s\n' % (path, attrs) if attrs else '%s\n' % path)
++        contents = []
++        for message_receiver in args.message_receivers:
++            name = message_receiver.rsplit('/', 1).pop()
++            receiver_dir = os.path.dirname(message_receiver) if args.preserve_subdirs else ''
++            path = os.path.join(receiver_dir, '%sMessageReceiver.cpp' % name)
++            attrs = attrs_by_name.get(name, '')
++            contents.append('%s %s\n' % (path, attrs) if attrs else '%s\n' % path)
++        write_output_if_changed(args.output_sources, ''.join(contents))
+         return 0
+ 
+     receivers = []
+@@ -110,25 +124,22 @@ def main(argv):
+         receiver_dir = receiver_dirs.get(receiver.name, '')
+         if receiver_dir and not os.path.isdir(output_path(receiver_dir)):
+             os.makedirs(output_path(receiver_dir))
+-        with open(output_path(os.path.join(receiver_dir, '%sMessageReceiver.cpp' % receiver.name)), "w+") as implementation_output:
+-            implementation_output.write(webkit.messages.generate_message_handler(receiver))
++        write_output_if_changed(output_path(os.path.join(receiver_dir, '%sMessageReceiver.cpp' % receiver.name)),
++            webkit.messages.generate_message_handler(receiver))
+         if receiver.swift_receiver or receiver.swift_receiver_build_enabled_by:
+-            with open(output_path('%sMessageReceiver.swift' % receiver.name), "w+") as swift_implementation_output:
+-                swift_implementation_output.write(webkit.messages.generate_swift_message_handler(receiver))
++            write_output_if_changed(output_path('%sMessageReceiver.swift' % receiver.name),
++                webkit.messages.generate_swift_message_handler(receiver))
+ 
+         receiver_message_header = '%sMessages.h' % receiver.name
+         receiver_header_files.append(receiver_message_header)
+-        with open(output_path(receiver_message_header), "w+") as header_output:
+-            header_output.write(webkit.messages.generate_messages_header(receiver))
++        write_output_if_changed(output_path(receiver_message_header), webkit.messages.generate_messages_header(receiver))
+ 
+-    with open(output_path('MessageNames.h'), "w+") as message_names_header_output:
+-        message_names_header_output.write(webkit.messages.generate_message_names_header(receivers))
++    write_output_if_changed(output_path('MessageNames.h'), webkit.messages.generate_message_names_header(receivers))
+ 
+-    with open(output_path('MessageNames.cpp'), "w+") as message_names_implementation_output:
+-        message_names_implementation_output.write(webkit.messages.generate_message_names_implementation(receivers))
++    write_output_if_changed(output_path('MessageNames.cpp'), webkit.messages.generate_message_names_implementation(receivers))
+ 
+-    with open(output_path('MessageArgumentDescriptions.cpp'), "w+") as message_descriptions_implementation_output:
+-        message_descriptions_implementation_output.write(webkit.messages.generate_message_argument_description_implementation(receivers, receiver_header_files))
++    write_output_if_changed(output_path('MessageArgumentDescriptions.cpp'),
++        webkit.messages.generate_message_argument_description_implementation(receivers, receiver_header_files))
+ 
+     return 0
+ 
+diff --git a/Source/WebKit/Scripts/webkit/messages.py b/Source/WebKit/Scripts/webkit/messages.py
+index b1618c8ccb7334b09c689d0f88cbb9e2503e9ba5..6651b2bc98614f44ef9896c610760a3ab04adb63 100644
+--- a/Source/WebKit/Scripts/webkit/messages.py
++++ b/Source/WebKit/Scripts/webkit/messages.py
+@@ -2323,18 +2323,32 @@ def generate_message_names_implementation(receivers):
+         if condition:
+             result.append('#if %s\n' % condition)
+         for enumerator in enumerators:
+-            result.append('    MessageDescription { "%s"_s, ReceiverName::%s' % (enumerator, enumerator.receiver.name))
+-            for attr_list in sorted(attributes_to_generate_validators.values()):
+-                value = "true" if (set(attr_list).intersection(set(enumerator.messages[0].attributes).union(set(enumerator.receiver.attributes))) and not enumerator.messages[0].is_async_reply) else "false"
+-                result.append(', %s' % value)
+-            result.append(', %s' % ("true" if enumerator.messages[0].is_async_reply else "false"))
+-            if enumerator.messages[0].is_async_reply:
+-                result.append(', ProcessName::%s' % process_name_enumerator(enumerator.receiver.receiver_dispatched_to))
+-                result.append(', ProcessName::%s' % process_name_enumerator(enumerator.receiver.receiver_dispatched_from))
+-            else:
+-                result.append(', ProcessName::%s' % process_name_enumerator(enumerator.receiver.receiver_dispatched_from))
+-                result.append(', ProcessName::%s' % process_name_enumerator(enumerator.receiver.receiver_dispatched_to))
+-            result.append(' },\n')
++            descriptions = []
++            for message in enumerator.messages:
++                attributes = message.attributes.union(enumerator.receiver.attributes)
++                flags = tuple(bool(attributes.intersection(attr_list)) and not message.is_async_reply
++                    for attr_list in sorted(attributes_to_generate_validators.values())) + (message.is_async_reply,)
++                descriptions.append((message, flags))
++            conditional_descriptions = any(flags != descriptions[0][1] for _, flags in descriptions)
++            if not conditional_descriptions:
++                descriptions = descriptions[:1]
++            for message, flags in descriptions:
++                # Conditional overloads share one enumerator, but their dispatch
++                # permissions must come from the active declaration.
++                if conditional_descriptions and message.condition:
++                    result.append('#if %s\n' % message.condition)
++                result.append('    MessageDescription { "%s"_s, ReceiverName::%s' % (enumerator, enumerator.receiver.name))
++                for flag in flags:
++                    result.append(', %s' % ("true" if flag else "false"))
++                if message.is_async_reply:
++                    result.append(', ProcessName::%s' % process_name_enumerator(enumerator.receiver.receiver_dispatched_to))
++                    result.append(', ProcessName::%s' % process_name_enumerator(enumerator.receiver.receiver_dispatched_from))
++                else:
++                    result.append(', ProcessName::%s' % process_name_enumerator(enumerator.receiver.receiver_dispatched_from))
++                    result.append(', ProcessName::%s' % process_name_enumerator(enumerator.receiver.receiver_dispatched_to))
++                result.append(' },\n')
++                if conditional_descriptions and message.condition:
++                    result.append('#endif\n')
+         if condition:
+             result.append('#endif\n')
+     result.append('    MessageDescription { "<invalid message name>"_s, ReceiverName::Invalid%s, false, ProcessName::Unknown, ProcessName::Unknown }\n' % (", false" * len(attributes_to_generate_validators)))
 diff --git a/Source/WebKit/Shared/API/c/WKBase.h b/Source/WebKit/Shared/API/c/WKBase.h
 index f920a7cd3f564700db2a4b293b79c4949a78f84c..4e6df27d9c74bc96bccc623ac1f51b25bc674fc5 100644
 --- a/Source/WebKit/Shared/API/c/WKBase.h
@@ -27932,7 +28064,7 @@ index d4d415b3d8dfa723539f4f93c8c08972048d7a05..71e5c7982f118a2d571275b815abedc1
      static ContentRuleListStore& defaultStoreSingleton();
      static Ref<ContentRuleListStore> storeWithPath(const WTF::String& storePath);
 diff --git a/Source/WebKit/UIProcess/API/APIHTTPCookieStore.cpp b/Source/WebKit/UIProcess/API/APIHTTPCookieStore.cpp
-index 232e124c97dd5eb474644203a2231e92eba77e65..de5f6cc1456f7ffe0bc3e9a39269a5d8004a0566 100644
+index 232e124c97dd5eb474644203a2231e92eba77e65..3dca9b1311102adfc8c9b1702ac966fec065aa63 100644
 --- a/Source/WebKit/UIProcess/API/APIHTTPCookieStore.cpp
 +++ b/Source/WebKit/UIProcess/API/APIHTTPCookieStore.cpp
 @@ -173,6 +173,26 @@ void HTTPCookieStore::deleteAllCookies(CompletionHandler<void()>&& completionHan
@@ -27977,7 +28109,22 @@ index 232e124c97dd5eb474644203a2231e92eba77e65..de5f6cc1456f7ffe0bc3e9a39269a5d8
  }
  
  void HTTPCookieStore::unregisterObserver(HTTPCookieStoreObserver& observer)
-@@ -241,6 +266,22 @@ void HTTPCookieStore::cookiesDidChange()
+@@ -222,8 +247,13 @@ void HTTPCookieStore::unregisterObserver(HTTPCookieStoreObserver& observer)
+     if (!m_observers.isEmptyIgnoringNullReferences())
+         return;
+ 
+-    if (RefPtr networkProcess = networkProcessIfExists())
++    if (RefPtr networkProcess = networkProcessIfExists()) {
++#if PLATFORM(HAIKU) && USE(CURL)
++        networkProcess->send(Messages::WebCookieManager::StopObservingCookieChanges(m_sessionID), 0, IPC::SendOption::DispatchMessageEvenWhenWaitingForSyncReply);
++#else
+         networkProcess->send(Messages::WebCookieManager::StopObservingCookieChanges(m_sessionID), 0);
++#endif
++    }
+ }
+ 
+ bool HTTPCookieStore::isOptInCookiePartitioningEnabled() const
+@@ -241,6 +271,22 @@ void HTTPCookieStore::cookiesDidChange()
          observer->cookiesDidChange(*this);
  }
  

@@ -49,7 +49,7 @@ public:
     void didReceiveInvalidMessage(IPC::Connection& connection, IPC::MessageName name, const Vector<uint32_t>&) final
     {
         check(RunLoop::isMain(), "invalid dispatch flag is reported on the application main loop");
-        check(name == IPC::MessageName::WebCookieManager_StopObservingCookieChanges, "rejection identifies the actual malformed message");
+        check(name == IPC::MessageName::WebCookieManager_DeleteAllCookies, "rejection identifies the actual malformed message");
         ++invalid;
         if (rejected)
             rejected(connection);
@@ -78,13 +78,15 @@ public:
             if (m_receiver->invalid == 2) {
                 send(IPC::MessageName::WebCookieManager_StartObservingCookieChanges, 40,
                     IPC::ShouldDispatchWhenWaitingForSyncReply::No, IPC::SendOption::DispatchMessageEvenWhenWaitingForSyncReply);
-                send(IPC::MessageName::WebCookieManager_StopObservingCookieChanges, 2);
+                send(IPC::MessageName::WebCookieManager_DeleteAllCookies, 2);
             }
         };
         // Set the wire flag directly, leaving sender options ordinary. This
         // deliberately models a malformed peer instead of a valid API sender.
-        send(IPC::MessageName::WebCookieManager_StopObservingCookieChanges, 1, IPC::ShouldDispatchWhenWaitingForSyncReply::Yes);
-        send(IPC::MessageName::WebCookieManager_StopObservingCookieChanges, 1, IPC::ShouldDispatchWhenWaitingForSyncReply::YesDuringUnboundedIPC);
+        // DeleteAllCookies remains ordinary. Both endpoints use this fixture's
+        // client and payload; no actual cookie manager handles these packets.
+        send(IPC::MessageName::WebCookieManager_DeleteAllCookies, 1, IPC::ShouldDispatchWhenWaitingForSyncReply::Yes);
+        send(IPC::MessageName::WebCookieManager_DeleteAllCookies, 1, IPC::ShouldDispatchWhenWaitingForSyncReply::YesDuringUnboundedIPC);
     }
 
     void Pulse() final
@@ -102,7 +104,7 @@ public:
             if (!openPair())
                 return finish();
             m_receiver->rejected = [](auto& connection) { connection.invalidate(); };
-            send(IPC::MessageName::WebCookieManager_StopObservingCookieChanges, 1, IPC::ShouldDispatchWhenWaitingForSyncReply::Yes);
+            send(IPC::MessageName::WebCookieManager_DeleteAllCookies, 1, IPC::ShouldDispatchWhenWaitingForSyncReply::Yes);
         } else if (m_fatal && m_receiver->invalid == 1 && m_sender->closed == 1) {
             check(!m_receiver->received, "invalid-message callback can close its connection without delivering malformed data");
             finish();

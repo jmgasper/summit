@@ -149,13 +149,51 @@ process exits without forced cleanup.
 
 Registration is dispatched through the priority queue while removal remains
 ordinary; later registrations can overtake pending removals and leave observation
-disabled. The follow-up correction must preserve ordering between both lifecycle
-messages. This failure does not invalidate the separately verified direct-startup
-or IPC-rejection results.
+disabled. Follow-up patch `b42d85ea...` gives native removal the same dispatch
+metadata and sender flag as registration. Its full rebuild links successfully,
+and all **21 observer checks pass** in
+`.vm/content-rule-pipeline.QSQqviNE/runtime-result.json`, including delivery after
+32 unregister/register cycles and silence after final removal. The same engine
+also passes all **23 IPC checks** in `.vm/content-rule-pipeline.27UXXcU8/runtime-result.json`
+and **14 native plus ten JavaScript extension checks** in
+`.vm/content-rule-pipeline.aXshZMyg/runtime-result.json`. All three runs preserve
+their input/library hashes, have clean crash-log intervals, and drain their owned
+process groups without forced cleanup. The IPC rejection fixture now uses the still-ordinary
+`DeleteAllCookies` message name with its own socket clients and payload, because
+native observer removal is now intentionally allowed in the priority queue.
+This failure does not invalidate the separately verified direct-startup or
+IPC-rejection results.
 
 ```sh
 python3 tools/test-engine-content-rule-pipeline.py --cookie-observers
 ```
+
+## Cookie APIs in an actual extension
+
+The runtime fixture can load the checked-in cookie package with explicitly
+granted `cookies` and `https://summit-cookie.invalid/*` permissions:
+
+```sh
+python3 tools/test-engine-content-rule-pipeline.py --extension-runtime --extension-fixture cookies
+```
+
+At patch `32b97d3a...`, `.vm/content-rule-pipeline.CmGvDVb2/result.json` records
+**14 native checks and 28 JavaScript assertions passed** across two cold-start
+extension contexts. The background page uses promise and Chrome callback forms
+to set, query, overwrite and remove secure HttpOnly cookies. It verifies the
+committed cookie fields, ordered overwrite removal/addition events, deletion
+events, silence after listener removal, and a cookie surviving destruction and
+recreation of the extension context. Both rounds deliver nonce-matched completion
+messages and success reports through privileged test IPC.
+
+The package resources are staged with hashes, checked before execution and
+included in the input snapshot checked afterward. Sources, headers, libraries
+and helpers remain unchanged, the crash-log interval is clean, and all owned
+helper processes exit without forced cleanup. This run does not cover cookies
+created by HTTP responses, browser restart persistence, or permission revocation.
+The default storage package also passes with the updated fixture and runner:
+`.vm/content-rule-pipeline.kvjSYIF4/result.json` records 14 native checks, ten
+JavaScript assertions, unchanged inputs/binaries, and clean process teardown.
 
 The fixture does not implement browser installation UI, store distribution, signature
 verification, manifest-v3 workers, action UI, DNR enforcement or complete

@@ -9,6 +9,7 @@
 #include "WebExtensionContext.h"
 #include "WebExtensionController.h"
 #include "WebExtensionControllerConfiguration.h"
+#include "WebExtensionMatchPattern.h"
 #include "WebKitView.h"
 #include "WebPageProxy.h"
 #include "WebPreferences.h"
@@ -29,6 +30,7 @@
 #include <filesystem>
 #include <fstream>
 #include <set>
+#include <string_view>
 #include <unistd.h>
 
 using namespace WTF;
@@ -115,9 +117,10 @@ Children children()
 
 class ExtensionTests final : public BApplication {
 public:
-    explicit ExtensionTests(const fs::path& root)
+    explicit ExtensionTests(const fs::path& root, bool cookies)
         : BApplication("application/x-vnd.Kunanyi-Summit-ExtensionRuntimeTests")
         , m_root(root)
+        , m_cookies(cookies)
     {
     }
 
@@ -247,7 +250,7 @@ public:
             }
         }
         if (system_time() > m_deadline) {
-            check(false, "extension completes its native message and storage round trip before the deadline");
+            check(false, "extension completes its native message and API round trip before the deadline");
             close();
         }
     }
@@ -298,7 +301,11 @@ private:
         m_context = WebExtensionContext::create(WTF::move(extension));
         m_context->setUniqueIdentifier("summit-runtime-fixture"_s);
         // This is the test package's explicit grant, scoped to its isolated profile.
-        m_context->setPermissionState(WebExtensionContext::PermissionState::GrantedExplicitly, "storage"_s);
+        auto permission = m_cookies ? "cookies"_s : "storage"_s;
+        m_context->setPermissionState(WebExtensionContext::PermissionState::GrantedExplicitly, permission);
+        RefPtr cookiePattern = m_cookies ? WebExtensionMatchPattern::getOrCreate("https://summit-cookie.invalid/*"_s) : nullptr;
+        if (cookiePattern)
+            m_context->setPermissionState(WebExtensionContext::PermissionState::GrantedExplicitly, *cookiePattern);
         auto loaded = m_controller->load(*m_context);
         if (!loaded || !*loaded) {
             if (!loaded && loaded.error()) printf("Load error: %s\n", loaded.error()->localizedDescription().utf8().legacyCStringPointer());
@@ -306,7 +313,9 @@ private:
             close();
             return;
         }
-        check(m_context->isLoaded() && m_context->hasPermission("storage"_s), "loaded context has its explicit storage grant");
+        check(m_context->isLoaded() && m_context->hasPermission(permission)
+            && (!m_cookies || (cookiePattern && m_context->hasPermission(*cookiePattern))),
+            "loaded context has the fixture's explicit API and host grants");
         Ref input = JSON::Object::create();
         input->setInteger("round"_s, m_round);
         input->setString("nonce"_s, m_nonce);
@@ -335,6 +344,7 @@ private:
     }
 
     fs::path m_root;
+    bool m_cookies;
     RefPtr<WebView> m_controlView;
     RefPtr<WebsiteDataStore> m_dataStore;
     RefPtr<WebExtensionController> m_controller;
@@ -351,16 +361,38 @@ private:
 
 int main()
 {
+    const char* fixture = getenv("SUMMIT_EXTENSION_FIXTURE");
+    bool cookies = fixture && std::string_view(fixture) == "cookies";
+    if (fixture && !cookies && std::string_view(fixture) != "storage")
+        return 2;
+    printf("EXTENSION_FIXTURE %s\n", cookies ? "cookies" : "storage");
     char temporary[] = "/tmp/summit-extension-runtime-XXXXXX";
     if (!mkdtemp(temporary))
         return 2;
     fs::path root(temporary);
     fs::create_directory(root / "package");
-    std::ofstream(root / "package/manifest.json") << R"JSON({"manifest_version":2,"name":"Summit runtime fixture","version":"1.0","permissions":["storage"],"background":{"page":"background.html","persistent":true}})JSON";
-    std::ofstream(root / "package/background.html") << "<!doctype html><meta charset=utf-8><title>SUMMIT EXTENSION STARTING</title><script src=background.js></script>";
-    std::ofstream(root / "package/background.js") << backgroundScript;
+    if (cookies) {
+        const char* source = getenv("SUMMIT_EXTENSION_PACKAGE_DIR");
+        std::error_code error;
+        if (!source || !fs::path(source).is_absolute()) {
+            fs::remove_all(root, error);
+            return 2;
+        }
+        for (const char* name : { "manifest.json", "background.html", "background.js" }) {
+            fs::copy_file(fs::path(source) / name, root / "package" / name, error);
+            if (error) {
+                fprintf(stderr, "Cannot stage extension fixture: %s\n", error.message().c_str());
+                fs::remove_all(root, error);
+                return 2;
+            }
+        }
+    } else {
+        std::ofstream(root / "package/manifest.json") << R"JSON({"manifest_version":2,"name":"Summit runtime fixture","version":"1.0","permissions":["storage"],"background":{"page":"background.html","persistent":true}})JSON";
+        std::ofstream(root / "package/background.html") << "<!doctype html><meta charset=utf-8><title>SUMMIT EXTENSION STARTING</title><script src=background.js></script>";
+        std::ofstream(root / "package/background.js") << backgroundScript;
+    }
     {
-        ExtensionTests application(root);
+        ExtensionTests application(root, cookies);
         application.Run();
     }
     auto active = children();

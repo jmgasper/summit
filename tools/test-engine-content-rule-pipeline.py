@@ -23,6 +23,7 @@ IPC_VALIDATION_TEST = 'EngineIPCValidationTests.cpp'
 COOKIE_OBSERVER_TEST = 'EngineCookieObserverRuntimeTests.cpp'
 PROCESS_TESTS = (EXTENSION_RUNTIME_TEST, IPC_VALIDATION_TEST, COOKIE_OBSERVER_TEST)
 EXTENSION_STARTUP = 'cold'
+EXTENSION_FIXTURE = 'storage'
 TRACE_IPC = False
 
 
@@ -120,7 +121,9 @@ def native(compile_only, run_only):
     source_manifest = json.loads((output / 'source-manifest.json').read_text())
     for name, record in source_manifest.get('helpers', {}).items():
         if digest(output / name) != record['sha256']:
-            raise RuntimeError('Staged DNR input changed: ' + name)
+            raise RuntimeError('Staged fixture input changed: ' + name)
+    if TEST == EXTENSION_RUNTIME_TEST and source_manifest.get('extension_fixture', 'storage') != EXTENSION_FIXTURE:
+        raise RuntimeError('Selected extension fixture differs from its staged package')
     source = output / TEST
     if digest(source) != source_manifest['test_sha256']:
         raise RuntimeError('Staged test source changed')
@@ -130,7 +133,10 @@ def native(compile_only, run_only):
     config = (BUILD / 'cmakeconfig.h').read_text()
     if '#define ENABLE_WK_WEB_EXTENSIONS 1' not in config or '#define ENABLE_CONTENT_EXTENSIONS 1' not in config:
         raise RuntimeError('The real extension-enabled configuration is required')
-    watched = [engine_manifest, BUILD / 'build.ninja', BUILD / 'cmakeconfig.h', ENGINE / 'Source/WebKit/WebKitPrefix.h']
+    prefix_header = ENGINE / 'Source/WebKit/WebKitPrefix.h'
+    watched = [engine_manifest, BUILD / 'build.ninja', BUILD / 'cmakeconfig.h', prefix_header]
+    fixture_inputs = [output / name for name in source_manifest.get('helpers', {})]
+    watched.extend([source, output / 'source-manifest.json', *fixture_inputs])
     if run_only:
         report = json.loads(report_path.read_text())
         if not report.get('compiled') or not unchanged(report['native_inputs']) or not unchanged(report['headers']):
@@ -146,7 +152,9 @@ def native(compile_only, run_only):
         elif TEST == STORE_TEST:
             report['scope'] = 'actual WebKit persistent content-rule store and main-loop callbacks; no extension context, privileged IPC or browser/network request'
         elif TEST == EXTENSION_RUNTIME_TEST:
-            report['scope'] = 'actual native extension package, controller, background document, storage bindings, test-message IPC and context reload; not full extension compatibility or browser UI installation'
+            report['scope'] = ('actual native extension package, controller, background document, '
+                               + ('cookie API and event delivery' if EXTENSION_FIXTURE == 'cookies' else 'storage bindings')
+                               + ', test-message IPC and context reload; not full extension compatibility or browser UI installation')
         elif TEST == IPC_VALIDATION_TEST:
             report['scope'] = 'actual WebKit Connection endpoints over native sockets, malformed dispatch flags, main-loop rejection and continued valid traffic; both endpoints in one fixture process'
         elif TEST == COOKIE_OBSERVER_TEST:
@@ -159,7 +167,7 @@ def native(compile_only, run_only):
                 next(raw)
             elif not flag.startswith(('-O', '-fdiagnostics-color=', '-fmax-errors=')):
                 flags.append(flag)
-        command = ['c++', '-O1', *flags, '-include', str(watched[-1]), '-fdiagnostics-color=never', '-fmax-errors=5',
+        command = ['c++', '-O1', *flags, '-include', str(prefix_header), '-fdiagnostics-color=never', '-fmax-errors=5',
                    '-MMD', '-MF', str(output / 'test.d'), '-c', str(source), '-o', str(output / 'test.o')]
         result = subprocess.run(command, cwd=BUILD, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         report['compile'] = {'command': command, 'exit': result.returncode, 'output': result.stdout}
@@ -214,7 +222,12 @@ def native(compile_only, run_only):
         environment['WEBKIT_EXEC_PATH'] = str(BUILD / 'bin')
     if TEST == EXTENSION_RUNTIME_TEST:
         environment['SUMMIT_EXTENSION_STARTUP'] = EXTENSION_STARTUP
+        environment['SUMMIT_EXTENSION_FIXTURE'] = EXTENSION_FIXTURE
+        environment.pop('SUMMIT_EXTENSION_PACKAGE_DIR', None)
+        if EXTENSION_FIXTURE == 'cookies':
+            environment['SUMMIT_EXTENSION_PACKAGE_DIR'] = str(output / 'extension-package')
         report['extension_startup'] = EXTENSION_STARTUP
+        report['extension_fixture'] = EXTENSION_FIXTURE
         if TRACE_IPC:
             environment['SUMMIT_TRACE_IPC'] = '1'
         else:
@@ -256,7 +269,7 @@ def native(compile_only, run_only):
         assertions = [item for item in reports if item.get('type') == 'assertion']
         reports_passed = (len(completions) == 2 and [item.get('round') for item in completions] == [1, 2]
                           and bool(completions[0].get('nonce')) and completions[0]['nonce'] == completions[1].get('nonce')
-                          and len(finished) == 2 and len(assertions) == 10
+                          and len(finished) == 2 and len(assertions) == (28 if EXTENSION_FIXTURE == 'cookies' else 10)
                           and {item.get('message') for item in finished} == {'summit-runtime-round-1', 'summit-runtime-round-2'}
                           and all(item.get('result') is not False for item in reports)
                           and all(item.get('sourceURL', '').startswith('webkit-extension://') for item in reports))
@@ -282,6 +295,15 @@ def host(compile_only, resume, overlay=None):
         manifest = {'engine_patch_sha256': json.loads((ROOT / 'engine/sources.lock.json').read_text())['patch']['sha256'],
                     'test_source': str(test), 'test_sha256': digest(test)}
         files = {'sources/' + TEST: test.read_bytes()}
+        if TEST == EXTENSION_RUNTIME_TEST:
+            manifest['extension_fixture'] = EXTENSION_FIXTURE
+            if EXTENSION_FIXTURE == 'cookies':
+                manifest['helpers'] = {}
+                for name in ('manifest.json', 'background.html', 'background.js'):
+                    path = ROOT / 'tests/fixtures/extensions/cookies' / name
+                    relative = 'extension-package/' + name
+                    files['sources/' + relative] = path.read_bytes()
+                    manifest['helpers'][relative] = {'source': str(path), 'sha256': digest(path)}
         if TEST == DNR_TEST:
             manifest['helpers'] = {}
             for stem in ('WebExtensionDeclarativeNetRequestRulesHaiku', 'WebExtensionDeclarativeNetRequestURLFilter'):
@@ -315,6 +337,8 @@ def host(compile_only, resume, overlay=None):
         command.append('--store')
     elif TEST == EXTENSION_RUNTIME_TEST:
         command.extend(['--extension-runtime', '--extension-startup', EXTENSION_STARTUP])
+        if EXTENSION_FIXTURE != 'storage':
+            command.extend(['--extension-fixture', EXTENSION_FIXTURE])
         if TRACE_IPC:
             command.append('--trace-ipc')
     elif TEST == IPC_VALIDATION_TEST:
@@ -348,6 +372,8 @@ if __name__ == '__main__':
     mode.add_argument('--cookie-observers', action='store_true', help='Test real network cookie observation across rapid unregister/register')
     parser.add_argument('--extension-startup', choices=('cold', 'deferred', 'network', 'page'), default='cold',
                         help='Diagnostic startup preparation for the extension runtime fixture (default: cold)')
+    parser.add_argument('--extension-fixture', choices=('storage', 'cookies'), default='storage',
+                        help='Extension API package to exercise (default: storage)')
     parser.add_argument('--trace-ipc', action='store_true', help='Enable metadata tracing in an instrumented engine build')
     parser.add_argument('--overlay', help='Candidate translator sources under Source/; requires --dnr')
     args = parser.parse_args()
@@ -364,11 +390,14 @@ if __name__ == '__main__':
     elif args.cookie_observers:
         TEST = COOKIE_OBSERVER_TEST
     EXTENSION_STARTUP = args.extension_startup
+    EXTENSION_FIXTURE = args.extension_fixture
     TRACE_IPC = args.trace_ipc
     if TRACE_IPC and not args.extension_runtime:
         parser.error('IPC tracing requires --extension-runtime')
     if EXTENSION_STARTUP != 'cold' and not args.extension_runtime:
         parser.error('Extension startup preparation requires --extension-runtime')
+    if EXTENSION_FIXTURE != 'storage' and not args.extension_runtime:
+        parser.error('Extension fixture selection requires --extension-runtime')
     if args.compile_only and (args.run_only or args.resume):
         parser.error('Compile-only and resume/run-only are mutually exclusive')
     raise SystemExit(native(args.compile_only, args.run_only) if args.native else host(args.compile_only, args.resume, args.overlay))
