@@ -51,7 +51,10 @@ toolbar now call this path, with real native action/popup integration tests.
 Dedicated temporary `activeTab` grant-transition coverage remains work; see
 [current SDK and toolbar evidence](modern-extension-actions.md).
 
-Dynamic icon APIs and `openPopup` remain unavailable.
+Dynamic `setIcon` now has a [native implementation](webextensions-native-action-icons.md)
+with a passing 47-case browser suite and 53 SDK/desktop pixel observations,
+including SVG and ImageData transparency. The same bundle passes 238 existing
+action/popup checks and 169 overflow checks. `openPopup` remains unavailable.
 Badge background and text colors now have a
 [verified native implementation](webextensions-native-badge-colors.md).
 The SDK does display decoded manifest action icons.

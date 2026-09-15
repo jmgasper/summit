@@ -57,6 +57,7 @@ static BMessage MenuItemProperty(const BMessenger& menu, int32 index, const char
     return Query(menu, request);
 }
 
+#ifndef SUMMIT_EXTENSION_OVERFLOW_HELPERS_ONLY
 int main(int argc, char** argv)
 {
     if (argc == 3 && std::string(argv[1]) == "--check-executable-unused") return SummitCloseHarnessEntry(argc, argv);
@@ -178,3 +179,4 @@ int main(int argc, char** argv)
         return 1;
     }
 }
+#endif
