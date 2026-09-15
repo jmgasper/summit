@@ -1960,8 +1960,30 @@ the current tab/action before granting the existing user gesture; actions withou
 a popup use the existing click-event producer.
 
 **88 native window-host checks and ten engine translation units pass.** The full
-Extensions-enabled engine build is running. No extension HTML has rendered in
+Extensions-enabled build reached the linker without compiler errors; only the
+DNR loader remained undefined, with five references. No extension HTML has rendered in
 this host and no extension has executed the action path. Native toolbar input,
 `action.openPopup()` bindings, real lifecycle/rendering tests and request-rule
 loading still require work. See [native action popups](webextensions-native-action-popup.md)
 for the exact evidence and remaining scope.
+
+
+### Native declarative request-rule loader
+
+Patch `c3ff5b56144df26ae0b6d85df42c1ca453867d6a77f3fefa8a87966cc092519b`
+integrates session, dynamic and enabled static ruleset loading with the real
+content-rule store. The initial translator supports URL/resource conditions and
+priority-ordered `block`/`allow` rules. Unsupported semantics reject the ruleset;
+host-access-only DNR and broader actions/conditions still require integration.
+Generation checks and unique compiled paths prevent obsolete loads from
+installing or deleting a newer list. Unload and permission revocation clear it.
+
+**95 real WebCore pipeline checks and seven affected translation units pass.**
+All ten promoted source files match that candidate. The full Extensions-enabled
+engine build is running, with output visible through [VNC](VM.md). The preceding
+build's only undefined function was this loader; a combined engine link remains
+unverified. Loader/store callbacks, browser requests and extension execution
+have not been tested. DNR JavaScript bindings remain disabled pending transaction
+error fixes, lifecycle tests and broader compatibility work. See
+[native request-rule loading](webextensions-native-dnr-loader.md) for evidence
+and the remaining scope.

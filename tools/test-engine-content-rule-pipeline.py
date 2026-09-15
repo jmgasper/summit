@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ENGINE = Path('/boot/home/summit-webkit-extensions')
 BUILD = ENGINE / 'WebKitBuild/Modern'
 TEST = 'EngineContentRulePipelineTests.cpp'
+DNR_TEST = 'EngineExtensionDNRRulesTests.cpp'
 
 
 def digest(path):
@@ -47,6 +48,9 @@ def native(compile_only, run_only):
     output = ROOT / 'sources'
     report_path = output / 'results.json'
     source_manifest = json.loads((output / 'source-manifest.json').read_text())
+    for name, record in source_manifest.get('helpers', {}).items():
+        if digest(output / name) != record['sha256']:
+            raise RuntimeError('Staged DNR input changed: ' + name)
     source = output / TEST
     if digest(source) != source_manifest['test_sha256']:
         raise RuntimeError('Staged test source changed')
@@ -67,6 +71,8 @@ def native(compile_only, run_only):
         report = {'scope': 'actual WebCore rule-list JSON parser, compiler, URL caches, backend, action deserialization and in-memory ResourceRequest header mutation; no WebKit context, extension loader, IPC, persistent rule store or browser/network runtime',
                   'source_manifest': source_manifest, 'native_inputs': {str(path): digest(path) for path in watched},
                   'runtime_executed': False, 'passed': False, 'linked_webcore_archive': False, 'linked_webkit': False}
+        if TEST == DNR_TEST:
+            report['scope'] = 'native DNR translator through real WebCore parser, compiler and backend; no extension loader, persistent store, IPC, browser or network request'
         fields = ninja_fields(lambda line: line.startswith('build Source/WebKit/CMakeFiles/WebKit.dir/UIProcess/API/haiku/WebKitView.cpp.o:'))
         raw = iter(shlex.split(' '.join(fields[key] for key in ('DEFINES', 'INCLUDES', 'FLAGS'))))
         flags = []
@@ -133,7 +139,7 @@ def native(compile_only, run_only):
     return 0 if report['passed'] else 1
 
 
-def host(compile_only, resume):
+def host(compile_only, resume, overlay=None):
     def remote(command, **kwargs):
         return subprocess.run(['bash', str(ROOT / 'tools/haiku.sh'), command], **kwargs)
     if resume:
@@ -145,7 +151,18 @@ def host(compile_only, resume):
         test = ROOT / 'tests' / TEST
         manifest = {'engine_patch_sha256': json.loads((ROOT / 'engine/sources.lock.json').read_text())['patch']['sha256'],
                     'test_source': str(test), 'test_sha256': digest(test)}
-        files = {'sources/' + TEST: test.read_bytes(), 'sources/source-manifest.json': (json.dumps(manifest, indent=2) + '\n').encode()}
+        files = {'sources/' + TEST: test.read_bytes()}
+        if TEST == DNR_TEST:
+            manifest['helpers'] = {}
+            for stem in ('WebExtensionDeclarativeNetRequestRulesHaiku', 'WebExtensionDeclarativeNetRequestURLFilter'):
+                for suffix in ('.h', '.cpp'):
+                    name = stem + suffix
+                    relative = Path('Source/WebKit/UIProcess/Extensions/haiku') / name
+                    candidate = Path(overlay).resolve() / relative if overlay else None
+                    path = candidate if candidate and candidate.is_file() else ROOT / '.cache/WebKit' / relative
+                    files['sources/' + name] = path.read_bytes()
+                    manifest['helpers'][name] = {'source': str(path), 'sha256': digest(path)}
+        files['sources/source-manifest.json'] = (json.dumps(manifest, indent=2) + '\n').encode()
         for name in ('test-engine-content-rule-pipeline.py', 'native_crash_log.py'):
             files['tools/' + name] = (ROOT / 'tools' / name).read_bytes()
         archive = io.BytesIO()
@@ -162,6 +179,8 @@ def host(compile_only, resume):
         remote('tar -xzf - -C ' + shlex.quote(stage), input=archive.getvalue(), check=True)
     print('Native content-rule pipeline stage: ' + stage, flush=True)
     command = ['python3.10', stage + '/tools/test-engine-content-rule-pipeline.py', '--native']
+    if TEST == DNR_TEST:
+        command.append('--dnr')
     if compile_only:
         command.append('--compile-only')
     if resume:
@@ -181,7 +200,13 @@ if __name__ == '__main__':
     parser.add_argument('--compile-only', action='store_true')
     parser.add_argument('--run-only', action='store_true')
     parser.add_argument('--resume', help='Resume a compiled native staging directory after WebCore has rebuilt')
+    parser.add_argument('--dnr', action='store_true', help='Run the native DNR translation pipeline fixture')
+    parser.add_argument('--overlay', help='Candidate translator sources under Source/; requires --dnr')
     args = parser.parse_args()
+    if args.overlay and not args.dnr:
+        parser.error('--overlay requires --dnr')
+    if args.dnr:
+        TEST = DNR_TEST
     if args.compile_only and (args.run_only or args.resume):
         parser.error('Compile-only and resume/run-only are mutually exclusive')
-    raise SystemExit(native(args.compile_only, args.run_only) if args.native else host(args.compile_only, args.resume))
+    raise SystemExit(native(args.compile_only, args.run_only) if args.native else host(args.compile_only, args.resume, args.overlay))

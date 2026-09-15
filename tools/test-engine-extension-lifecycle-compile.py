@@ -53,6 +53,8 @@ WEB_CORE_UNITS = {name: 'contentextensions/' + name for name in ('URLFilterParse
                   'ContentExtensionURLConditions.cpp', 'ContentExtensionRule.cpp', 'ContentExtensionParser.cpp',
                   'ContentExtensionCompiler.cpp', 'ContentExtensionsBackend.cpp')}
 UI_API_UNITS = {'WebExtensionContextAPIMenusHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionContextAPIMenusHaiku.cpp',
+                'WebExtensionDeclarativeNetRequestRulesHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionDeclarativeNetRequestRulesHaiku.cpp',
+                'WebExtensionContextDeclarativeNetRequestHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionContextDeclarativeNetRequestHaiku.cpp',
                 'WebExtensionMenuItem.cpp': 'UIProcess/Extensions/WebExtensionMenuItem.cpp',
                 'WebExtensionMenuItemHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionMenuItemHaiku.cpp',
                 'WebExtensionMenuItemParser.cpp': 'Shared/Extensions/WebExtensionMenuItemParser.cpp',

@@ -2,7 +2,8 @@
 
 Engine patch `4bd2ca81e2ab0c0e2d5a10f9e776e0bf41cd04e392427c57961edf6c6775ba4b`
 adds the native WebKit action popup bridge. The window host passes 88 checks in
-Haiku and ten connected engine units compile. The full engine build is running.
+Haiku and ten connected engine units compile. The full build reached the linker
+without compiler errors; only the request-rule loader remained undefined.
 No extension popup HTML has rendered and no extension code has executed this path.
 
 The host creates a floating subset window for its browser owner, keeps it hidden
@@ -65,7 +66,9 @@ stages; the full engine build remains the test of their combined integration.
 - `.vm/extension-lifecycle-inputs.VaVbCdcS/result.json`: popup controller and native `performAction`.
 - `.vm/extension-lifecycle-inputs.fLiNB1mT/result.json`: popup-to-tab association.
 - `.vm/extension-action-popup-current-validation.json`: hashes covering all 19 promoted source files, the selected successful units and the native host test.
-- `.vm/modern-extensions-action-popup-build.log`: full engine build in progress.
+- `.vm/modern-extensions-action-popup-build-result.json`: completed full build,
+  one undefined function (`loadDeclarativeNetRequestRules`) with five references.
+  Its log is `.vm/modern-extensions-action-popup-build.log`.
 
 These checks do not execute a WebKit page, extension context, privileged IPC,
 JavaScript dialog, action input or permission lifecycle. Failed compile attempts
