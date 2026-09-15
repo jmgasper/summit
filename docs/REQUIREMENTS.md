@@ -17,6 +17,11 @@ deliverable; the original objective remains active.
 | Safari extensions | Shared WebExtension runtime foundation; no Safari bundle or representative Safari extension verified. | Safari WebExtension bundle/resource import and API behavior, representative Safari WebExtension verification. Native macOS Safari App Extensions are a separate binary/platform problem, not demonstrated by WebExtension support. |
 | QEMU test workflow | Separate running x86_64 beta6 guest, SSH/QMP tools, native latest-engine tests, HTTP/platform fixtures and visual HTTPS verification. | Extension isolation and compatibility tests, OS integration and current-engine package regression checks. |
 
+The [published extension corpus](../compatibility/README.md) now pins six
+unmodified uBlock Origin and Dark Reader release packages, including Chromium
+CRX/ZIP, Firefox XPI and an MV3 service-worker package. Download hashes and
+archive inspection are verified; native compatibility remains untested.
+
 Extension acceptance includes adversarial checks: a page must not obtain
 privileged extension APIs, one extension must not access another's data,
 content scripts must respect origin grants, revoked permissions must take
