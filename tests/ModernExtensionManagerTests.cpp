@@ -2,6 +2,8 @@
 #define main SummitCloseHarnessEntry
 #include "ModernCloseTests.cpp"
 #undef main
+#include <Bitmap.h>
+#include <Screen.h>
 
 static BMessenger NamedWindow(const BMessenger& app, const char* title)
 {
@@ -73,6 +75,50 @@ static BMessage ActionState(const BMessenger& window)
     return action;
 }
 
+static void BadgeColors(const BMessenger& browser, uint32 background, uint32 foreground)
+{
+    Require(Wait([&] { const auto action = ActionState(browser);
+        return action.GetUInt32("badge_background_rgba", 0) == background
+            && action.GetUInt32("badge_text_rgba", 0) == foreground;
+    }), "effective badge colors reach the native toolbar snapshot");
+}
+
+static void BadgePixels(const BMessenger& browser, const char* name)
+{
+    auto target = View(browser, name);
+    BRect windowFrame;
+    Require(Property(browser, "Frame").FindRect("result", &windowFrame) == B_OK, "browser has native screen bounds for badge capture");
+    BRect frame;
+    std::function<bool(const BMessenger&, BPoint, int)> find = [&](const BMessenger& parent, BPoint origin, int depth) {
+        if (depth > 12) return false;
+        const auto count = Property(parent, "View", B_COUNT_PROPERTIES).GetInt32("result", 0);
+        for (int32 i = 0; i < count; ++i) {
+            auto child = Child(parent, i);
+            BRect local;
+            if (Property(child, "Frame").FindRect("result", &local) != B_OK) continue;
+            local.OffsetBy(origin);
+            if (child == target) { frame = local; return true; }
+            if (find(child, local.LeftTop(), depth + 1)) return true;
+        }
+        return false;
+    };
+    Require(find(browser, windowFrame.LeftTop(), 0), "locate actual badge control through native view hierarchy");
+    BScreen screen;
+    Require(frame.Width() >= 12 && frame.Height() >= 13 && screen.Frame().Contains(frame),
+        "badge capture has valid dimensions and lies inside the native screen");
+    BBitmap bitmap(BRect(0, 0, frame.Width(), frame.Height()), B_RGBA32);
+    Require(Wait([&] {
+        if (bitmap.InitCheck() != B_OK || screen.ReadBitmap(&bitmap, false, &frame) != B_OK) return false;
+        bool background = false, foreground = false;
+        for (int y = 2; y <= 12; ++y) for (int x = int(frame.Width()) - 11; x < int(frame.Width()); ++x) {
+            auto* pixel = static_cast<const uint8*>(bitmap.Bits()) + y * bitmap.BytesPerRow() + x * 4;
+            background |= pixel[2] == 24 && pixel[1] == 72 && pixel[0] == 120;
+            foreground |= pixel[2] > 200 && pixel[1] > 170 && pixel[0] > 90 && pixel[0] < 180;
+        }
+        return background && foreground;
+    }), "actual toolbar pixels render the extension's blue badge and yellow text");
+}
+
 #ifndef SUMMIT_EXTENSION_MANAGER_HELPERS_ONLY
 int main(int argc, char** argv)
 {
@@ -109,7 +155,7 @@ int main(int argc, char** argv)
             auto value = ReadJSON(observations);
             json result = json::array();
             if (value.is_object() && value.contains("reports"))
-                for (const auto& item : value["reports"]) if (item.contains("kind")) result.push_back(item);
+                for (const auto& item : value["reports"]) if (item.contains("kind") && item.value("kind", "") != "badge-colors") result.push_back(item);
             return result;
         };
         const auto count = [&]() { return reports().size(); };
@@ -147,6 +193,7 @@ int main(int argc, char** argv)
             BRect frame;
             Require(Property(window, "Frame").FindRect("result", &frame) == B_OK && frame.Width() >= 300 && frame.Width() <= 800
                 && frame.Height() >= 175 && frame.Height() <= 600, "native popup is visible at a bounded content size");
+            BadgeColors(browser, 0x502878FF, 0xFFFFFFFF);
             if (watch) snooze(2500000);
             return window;
         };
@@ -234,6 +281,8 @@ int main(int argc, char** argv)
                 Require(Wait([&] { return actionTitle() == "Summit popup ready" && Enabled(browser, actionName.c_str()); }),
                     "live background title and enabled state reach the native toolbar");
                 originalAction = ActionState(browser);
+                BadgeColors(browser, 0x184878FF, 0xFFE080FF);
+                BadgePixels(browser, actionName.c_str());
                 const void* pixels = nullptr;
                 ssize_t length = 0;
                 Require(originalAction.GetUInt64("load_identifier", 0) && originalAction.GetUInt64("page_identifier", 0)
@@ -261,6 +310,7 @@ int main(int argc, char** argv)
                     && actionTitle() == "Summit clicked tab" && !Enabled(browser, actionName.c_str()); }),
                     "action without a popup dispatches onClicked with the real active tab and applies its disabled state");
                 BMessage firstState = ActionState(browser);
+                BadgeColors(browser, 0xC03040FF, 0xFFFFFFFF);
                 BMessage currentTab;
                 State(browser).FindMessage("tab", &currentTab);
                 Send(browser, summit::kNewTab, -1, String(currentTab, "url") + "&second=1");
@@ -268,6 +318,7 @@ int main(int argc, char** argv)
                     && actionTitle() == "Summit click ready" && Enabled(browser, actionName.c_str()); }),
                     "new active tab inherits default action instead of another tab's disabled override");
                 const auto secondTab = Selected(State(browser));
+                BadgeColors(browser, 0x502878FF, 0xFFFFFFFF);
                 auto current = ActionState(browser);
                 auto oldTabClick = firstState;
                 oldTabClick.what = summit::kActivateExtensionAction;
@@ -286,11 +337,18 @@ int main(int argc, char** argv)
                 SelectTab(browser, firstTab);
                 Require(Wait([&] { return !ActionPopup(app).IsValid() && actionTitle() == "Summit clicked tab"
                     && !Enabled(browser, actionName.c_str()); }), "tab switch closes popup and restores the first tab's title and disabled state");
+                BadgeColors(browser, 0xC03040FF, 0xFFFFFFFF);
                 SelectTab(browser, secondTab);
                 actionClick();
                 auto fourthPopup = popup(4);
                 Send(fourthPopup, B_QUIT_REQUESTED);
                 Require(Wait([&] { return !ActionPopup(app).IsValid(); }), "reopened popup closes cleanly");
+                SelectTab(browser, firstTab);
+                Send(browser, summit::kNavigate, -1, String(currentTab, "url") + "&badge-reset=1");
+                Require(Wait([&] { return actionTitle() == "Summit popup again" && Enabled(browser, actionName.c_str()); }),
+                    "committed navigation clears the original tab's action overrides");
+                BadgeColors(browser, 0x502878FF, 0xFFFFFFFF);
+                SelectTab(browser, secondTab);
                 FocusWindow(manager);
             }
             selectPackage(package);

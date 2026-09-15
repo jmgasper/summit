@@ -51,7 +51,9 @@ toolbar now call this path, with real native action/popup integration tests.
 Dedicated temporary `activeTab` grant-transition coverage remains work; see
 [current SDK and toolbar evidence](modern-extension-actions.md).
 
-Dynamic icon APIs, badge background colors and `openPopup` remain unavailable.
+Dynamic icon APIs and `openPopup` remain unavailable.
+Badge background and text colors now have a
+[verified native implementation](webextensions-native-badge-colors.md).
 The SDK does display decoded manifest action icons.
 The Cocoa bindings retain those methods and adapt ordinary details to their
 existing Objective-C implementations. Icon details reach Cocoa as raw

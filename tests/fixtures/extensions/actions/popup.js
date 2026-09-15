@@ -8,6 +8,8 @@ const report = async (kind, data = {}) => {
     if (state.nonce !== "@NONCE@") throw new Error("popup did not share the approved extension storage");
     const count = (state.popupCount || 0) + 1;
     await browser.storage.local.set({popupCount: count});
+    await browser.browserAction.setBadgeBackgroundColor({color: "rgb(80, 40, 120)"});
+    await browser.browserAction.setBadgeTextColor({color: null});
     document.getElementById("status").textContent = "Popup " + count + " · saved state verified";
     await report("popup", {count, storedNonce: state.nonce});
     document.getElementById("switch").addEventListener("click", async () => {

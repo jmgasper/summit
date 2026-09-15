@@ -163,12 +163,14 @@ def main(generated):
                         if bool(re.search(pattern, result.stdout)) != (name in common or not haiku):
                             raise RuntimeError(f'Incorrect {interface}.{name} exposure: Haiku={haiku}, source={suffix}')
     if (generated / 'JSWebExtensionAPIAction.cpp').exists():
-        common = ('getTitle', 'setTitle', 'getBadgeText', 'setBadgeText', 'enable', 'disable', 'isEnabled', 'getPopup', 'setPopup', 'onClicked')
-        cocoa_only = ('getBadgeBackgroundColor', 'setBadgeBackgroundColor', 'setIcon', 'openPopup')
+        common = ('getTitle', 'setTitle', 'getBadgeText', 'setBadgeText', 'getBadgeBackgroundColor', 'setBadgeBackgroundColor',
+                  'enable', 'disable', 'isEnabled', 'getPopup', 'setPopup', 'onClicked')
+        haiku_only = ('getBadgeTextColor', 'setBadgeTextColor')
+        cocoa_only = ('setIcon', 'openPopup')
         for haiku in (0, 1):
             for suffix in ('h', 'cpp'):
                 prefix = f'#define ENABLE(x) 1\n#define PLATFORM(x) PLATFORM_##x\n#define PLATFORM_HAIKU {haiku}\n#define PLATFORM_COCOA {1-haiku}\n'
-                for interface, names in (('Action', common + cocoa_only), ('Namespace', ('action', 'browserAction', 'pageAction'))):
+                for interface, names in (('Action', common + haiku_only + cocoa_only), ('Namespace', ('action', 'browserAction', 'pageAction'))):
                     source = generated / ('JSWebExtensionAPI' + interface + '.' + suffix)
                     if digest(source) != generation['files'][source.name]:
                         raise RuntimeError('Generated action binding changed: ' + source.name)
@@ -178,7 +180,7 @@ def main(generated):
                     for name in names:
                         checks += 1
                         pattern = r'\bstatic JSValueRef ' + name + r'\(' if suffix == 'h' else r'\bJSWebExtensionAPI' + interface + '::' + name + r'\('
-                        expected = interface == 'Namespace' or name in common or not haiku
+                        expected = interface == 'Namespace' or name in common or name in (haiku_only if haiku else cocoa_only)
                         if bool(re.search(pattern, result.stdout)) != expected:
                             raise RuntimeError(f'Incorrect {interface}.{name} exposure: Haiku={haiku}, source={suffix}')
                     if interface == 'Action' and suffix == 'cpp':

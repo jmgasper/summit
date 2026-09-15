@@ -2249,3 +2249,25 @@ the unchanged engine archive digest is
 The copy records host commit `954815f`. Native/host reports, executables,
 launcher and source/support fingerprints match. The VNC preview uses a
 separate copy of the six-extension profile after the test's clean exit.
+
+## Native extension badge colors
+
+The complete engine builds with patch
+`23a657589a6f9ff50f14517951d8bfc880645945263a9d994118b4dabf0ea986`.
+Browser bundle `bundle-lzht66nf` adds actual CSS/RGBA badge background and text
+APIs, tab/window/global inheritance, automatic contrast and native alpha drawing.
+The original accessor compile failure is fixed and the incremental engine build
+exits zero.
+
+The real Chrome-keyed MV2 fixture passes 238 native UI checks, 29 identity checks
+and 58 JavaScript color assertions on each of four loads. Coverage includes
+promise and callback bindings, invalid-input atomicity, navigation resets,
+popup-driven updates and actual blue/yellow badge pixels. The overflow regression
+passes 169 checks. All five browsers exit zero without forced cleanup, their
+groups drain and native crash intervals remain clean. Input fingerprints match.
+Another 509 binding-generation/preprocessing checks pass. Exact evidence and
+compatibility limits are in [native badge colors](webextensions-native-badge-colors.md).
+
+The native bundle is verified; host artifact copying and VNC preview restoration
+are the next packaging steps. Broader extension compatibility and the original
+full-browser goal remain incomplete.

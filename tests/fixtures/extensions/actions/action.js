@@ -10,6 +10,8 @@ browser.browserAction.onClicked.addListener(async tab => {
         if (click === 1) {
             await browser.browserAction.setTitle({tabId: tab.id, title: "Summit clicked tab"});
             await browser.browserAction.setBadgeText({tabId: tab.id, text: "1"});
+            await browser.browserAction.setBadgeBackgroundColor({tabId: tab.id, color: "#c03040"});
+            await browser.browserAction.setBadgeTextColor({tabId: tab.id, color: "white"});
             await browser.browserAction.disable(tab.id);
         } else {
             await browser.browserAction.setTitle({title: "Summit popup again"});
@@ -19,6 +21,8 @@ browser.browserAction.onClicked.addListener(async tab => {
     } catch (error) { await actionReport("action-error", {error: String(error)}); }
 });
 (async () => {
+    const colors = await verifyBadgeColors();
+    await actionReport("badge-colors", colors);
     await browser.browserAction.setTitle({title: "Summit popup ready"});
     await browser.browserAction.setBadgeText({text: "R"});
     await browser.browserAction.setPopup({popup: "popup.html"});

@@ -8,6 +8,11 @@ button control. The menu includes Manage extensions, skips disabled actions,
 and truncates long labels to preserve a usable width. Its six-extension native
 test covers keyboard activation, rapid dismissal and shutdown with the menu open.
 
+The newer [native badge-color implementation](webextensions-native-badge-colors.md)
+adds CSS/RGBA background and text colors, scoped inheritance and actual screen-pixel
+verification. Its current bundle and test evidence are documented separately below
+the earlier toolbar and overflow results.
+
 Clicking an action with a popup opens its actual extension HTML in a native
 floating window. The page has the extension's origin, CSP, privileged APIs and
 storage. An action without a popup dispatches its real `onClicked` event with
@@ -151,7 +156,7 @@ binary/launcher digests and unchanged source/support fingerprints. Copy log:
 
 These fixtures prove the listed action paths, not arbitrary Chrome, Firefox or
 Safari extension compatibility. MV3/service workers, remaining action APIs,
-badge colors, dynamic icon changes, direct button anchoring, overflow pointer input,
+badge alpha/theme rendering coverage, dynamic icon changes, direct button anchoring, overflow pointer input,
 private contexts, multi-window behavior and a real extension corpus need more
 implementation or runtime coverage. Active-tab permission transitions, popup
 navigation/CSP rejection, modal dialogs, renderer failure and permission

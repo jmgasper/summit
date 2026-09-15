@@ -27,6 +27,8 @@ public:
 private:
     std::unique_ptr<BBitmap> fBitmap;
     std::string fBadge;
+    rgb_color fBadgeBackground { 217, 0, 0, 255 };
+    rgb_color fBadgeTextColor { 255, 255, 255, 255 };
 };
 #endif
 struct TabLabel { int64 id; std::string title; bool loading; };

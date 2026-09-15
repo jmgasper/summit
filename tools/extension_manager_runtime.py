@@ -167,17 +167,23 @@ def run(args):
                      'previousNonce': None if i == 1 else args.run_token, 'granted': True, 'optionalGranted': False}
                     for i in ((1, 2, 3, 4) if args.actions else (1, 2, 3))]
         startup_reports = [item for item in report['observations']['reports'] if 'kind' not in item]
-        action_reports = [item for item in report['observations']['reports'] if 'kind' in item]
+        action_reports = [item for item in report['observations']['reports'] if 'kind' in item and item['kind'] != 'badge-colors']
+        color_reports = [item for item in report['observations']['reports'] if item.get('kind') == 'badge-colors']
         if startup_reports != expected or report['observations']['errors']:
             raise RuntimeError('Unexpected background execution or restored permissions')
         if args.actions:
+            if len(color_reports) != 4 or any(item.get('id') != args.extension_id or item.get('nonce') != args.run_token
+                    or item.get('background') != [24, 72, 120, 255] or item.get('foreground') != [255, 224, 128, 255]
+                    or len(item.get('checks', [])) != 58 or item.get('tabId', 0) <= 0 or item.get('windowId', 0) <= 0
+                    for item in color_reports):
+                raise RuntimeError('Badge color promise/callback and scope checks did not complete in all four extension loads')
             expected_kinds = ['popup', 'popup', 'popup-button', 'clicked', 'clicked', 'popup', 'popup', 'popup', 'popup']
             if [item.get('kind') for item in action_reports] != expected_kinds:
                 raise RuntimeError('Unexpected extension action execution: ' + repr(action_reports))
             if [item.get('count') for item in action_reports if item['kind'] == 'popup'] != [1, 2, 3, 4, 5, 6]:
                 raise RuntimeError('Popup storage did not persist across page destruction and browser restart')
-            report['scope'] += '; actual browserAction title/badge/icon/enabled state, trusted toolbar clicks, popup HTML/JavaScript/storage, tab scoping, stale page/load rejection, popup close and unload'
-        elif action_reports:
+            report['scope'] += '; actual browserAction title/badge/icon/enabled state, CSS/RGBA badge colors and callbacks, tab/window inheritance and navigation resets, rendered badge pixels, trusted toolbar clicks, popup HTML/JavaScript/storage, tab scoping, stale page/load rejection, popup close and unload'
+        elif action_reports or color_reports:
             raise RuntimeError('Unexpected action reports without action test mode')
         report['passed'] = True
     except Exception as error:

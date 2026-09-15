@@ -84,6 +84,11 @@ void ExtensionActionButton::SetAction(const BMessage& action, uint64 snapshot)
     const char* badge = "";
     action.FindString("badge", &badge);
     fBadge = ExtensionDisplayText(badge);
+    const auto unpack = [](uint32 color) {
+        return rgb_color { uint8(color >> 24), uint8(color >> 16), uint8(color >> 8), uint8(color) };
+    };
+    fBadgeBackground = unpack(action.GetUInt32("badge_background_rgba", 0xD90000FF));
+    fBadgeTextColor = unpack(action.GetUInt32("badge_text_rgba", 0xFFFFFFFF));
     SetToolTip((label + (fBadge.empty() ? "" : " — " + fBadge)).c_str());
     auto* message = new BMessage(action);
     message->what = kActivateExtensionAction;
@@ -143,10 +148,17 @@ void ExtensionActionButton::Draw(BRect)
         TruncateString(&badge, B_TRUNCATE_END, 21);
         float width = std::max(12.0f, StringWidth(badge.String()) + 4);
         BRect rect(Bounds().right - width, 1, Bounds().right, 13);
-        SetHighColor(IsEnabled() ? rgb_color{38, 105, 83, 255} : rgb_color{130, 140, 136, 255});
+        auto background = fBadgeBackground;
+        auto foreground = fBadgeTextColor;
+        if (!IsEnabled()) {
+            background.alpha = uint8(background.alpha * 0.55f);
+            foreground.alpha = uint8(foreground.alpha * 0.55f);
+        }
+        SetDrawingMode(B_OP_ALPHA);
+        SetBlendingMode(B_PIXEL_ALPHA, B_ALPHA_OVERLAY);
+        SetHighColor(background);
         FillRoundRect(rect, 3, 3);
-        SetHighColor(255, 255, 255);
-        SetDrawingMode(B_OP_OVER);
+        SetHighColor(foreground);
         DrawString(badge.String(), BPoint(rect.left + 2, 10));
         SetDrawingMode(B_OP_COPY);
         SetFont(be_plain_font);

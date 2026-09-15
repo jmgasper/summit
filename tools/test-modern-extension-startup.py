@@ -241,6 +241,8 @@ def host(args):
                  'tools/test-modern-close-native.py', 'tools/native_crash_log.py')
         if args.manager:
             names += ('tests/ModernExtensionManagerTests.cpp', 'tools/extension_manager_runtime.py')
+        if args.actions:
+            names += ('tools/vm.py',)
         if args.chrome_key:
             names += ('tests/ExtensionIdentityTests.cpp', 'tests/fixtures/extensions/chrome-key/public-key.txt')
         files = {name: (ROOT / name).read_bytes() for name in names}
@@ -268,7 +270,7 @@ def host(args):
                 files['package/background.js'] = files['package/background.js'].replace(b'browser.runtime.id', b'chrome.runtime.id')
             if args.actions:
                 manifest['browser_action'] = {'default_title': 'Manifest title', 'default_popup': 'popup.html', 'default_icon': 'icon.png'}
-                manifest['background']['scripts'].append('action.js')
+                manifest['background']['scripts'].extend(['badge-colors.js', 'action.js'])
                 files['package/manifest.json'] = json.dumps(manifest).encode()
                 for path in sorted((ROOT / 'tests/fixtures/extensions/actions').iterdir()):
                     original[str(path.relative_to(ROOT))] = digest(path)
@@ -306,6 +308,11 @@ def host(args):
             command.append('--actions')
         if args.watch:
             command.append('--watch')
+        if args.actions:
+            # Native scripting messages do not wake Haiku's screen saver.
+            # The badge assertion reads actual desktop pixels, so send one
+            # harmless input-server key before native compilation and tests.
+            subprocess.run([sys.executable, str(ROOT / 'tools/vm.py'), 'key', 'shift'], check=True)
         with (output / 'native.log').open('w') as log:
             result = remote(shlex.join(command), stdout=log, stderr=subprocess.STDOUT)
         print((output / 'native.log').read_text(), end='', flush=True)

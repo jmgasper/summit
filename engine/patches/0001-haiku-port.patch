@@ -25010,14 +25010,15 @@ index 4aa44664bcb8fd583fd38914ebc053fe737f8ce9..2411f2e16b0942622b701ef51dd712b3
          return EXIT_SUCCESS;
 diff --git a/Source/WebKit/Shared/Extensions/WebExtensionActionDetails.cpp b/Source/WebKit/Shared/Extensions/WebExtensionActionDetails.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..541b5d748afc47011274ee413d6117b2dd76ee10
+index 0000000000000000000000000000000000000000..ca415b69a30ba85033ffd65c55367770ee1ca7b5
 --- /dev/null
 +++ b/Source/WebKit/Shared/Extensions/WebExtensionActionDetails.cpp
-@@ -0,0 +1,61 @@
+@@ -0,0 +1,75 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#include "config.h"
 +#include "WebExtensionActionDetails.h"
 +#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++#include <cmath>
 +namespace WebKit {
 +std::expected<std::optional<WebExtensionTabIdentifier>, String> parseWebExtensionActionTab(const JSON::Value* value)
 +{
@@ -25038,7 +25039,8 @@ index 0000000000000000000000000000000000000000..541b5d748afc47011274ee413d6117b2
 +    RefPtr object = value ? value->asObject() : nullptr;
 +    if (!object)
 +        return std::unexpected("action details must be an object"_s);
-+    ASCIILiteral valueKey = kind == WebExtensionActionDetailsKind::Title ? "title"_s
++    const bool isColor = kind == WebExtensionActionDetailsKind::BadgeBackgroundColor || kind == WebExtensionActionDetailsKind::BadgeTextColor;
++    ASCIILiteral valueKey = isColor ? "color"_s : kind == WebExtensionActionDetailsKind::Title ? "title"_s
 +        : kind == WebExtensionActionDetailsKind::BadgeText ? "text"_s : "popup"_s;
 +    bool hasValue = false;
 +    for (auto& key : object->keys()) {
@@ -25058,29 +25060,41 @@ index 0000000000000000000000000000000000000000..541b5d748afc47011274ee413d6117b2
 +            hasValue = true;
 +            if (field->type() == JSON::Value::Type::Null)
 +                result.value = nullString();
-+            else if (field->type() == JSON::Value::Type::String) {
++            else if (isColor && field->type() == JSON::Value::Type::Array) {
++                Ref array = field->asArray().releaseNonNull();
++                if (array->length() != 4)
++                    return std::unexpected("action color must contain four RGBA bytes"_s);
++                uint32_t packed = 0;
++                for (auto& component : array.get()) {
++                    auto number = component->asDouble();
++                    if (!number || !std::isfinite(*number) || std::trunc(*number) != *number || *number < 0 || *number > 255)
++                        return std::unexpected("action color components must be integers from 0 to 255"_s);
++                    packed = (packed << 8) | static_cast<uint32_t>(*number);
++                }
++                result.color = packed;
++            } else if (field->type() == JSON::Value::Type::String) {
 +                result.value = field->asString();
-+                if (result.value.contains('\0'))
++                if (!isColor && result.value.contains('\0'))
 +                    return std::unexpected("action text must not contain null characters"_s);
 +            } else
-+                return std::unexpected("action text must be a string or null"_s);
++                return std::unexpected(isColor ? "action color must be CSS text, an RGBA array or null"_s : "action text must be a string or null"_s);
 +        } else
 +            return std::unexpected("unsupported action detail"_s);
 +    }
 +    if (result.tab && result.window)
 +        return std::unexpected("action details cannot specify both tabId and windowId"_s);
-+    if (kind != WebExtensionActionDetailsKind::Get && !hasValue)
-+        return std::unexpected("the action text field is required"_s);
++    if (kind != WebExtensionActionDetailsKind::Get && kind != WebExtensionActionDetailsKind::BadgeTextColor && !hasValue)
++        return std::unexpected(isColor ? "the action color field is required"_s : "the action text field is required"_s);
 +    return result;
 +}
 +}
 +#endif
 diff --git a/Source/WebKit/Shared/Extensions/WebExtensionActionDetails.h b/Source/WebKit/Shared/Extensions/WebExtensionActionDetails.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..877a33485aa20ae573870392a47b03732b73d537
+index 0000000000000000000000000000000000000000..44b4f588bf560ff32b7e956b4c02874d0d52c405
 --- /dev/null
 +++ b/Source/WebKit/Shared/Extensions/WebExtensionActionDetails.h
-@@ -0,0 +1,19 @@
+@@ -0,0 +1,22 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#pragma once
 +#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
@@ -25089,12 +25103,15 @@ index 0000000000000000000000000000000000000000..877a33485aa20ae573870392a47b0373
 +#include <expected>
 +#include <wtf/JSONValues.h>
 +namespace WebKit {
-+enum class WebExtensionActionDetailsKind : uint8_t { Get, Title, BadgeText, Popup };
++enum class WebExtensionActionDetailsKind : uint8_t { Get, Title, BadgeText, Popup, BadgeBackgroundColor, BadgeTextColor };
 +struct WebExtensionActionDetails {
 +    std::optional<WebExtensionWindowIdentifier> window;
 +    std::optional<WebExtensionTabIdentifier> tab;
 +    // A null String resets inherited text; an empty String overrides it.
 +    String value;
++    // RGBA arrays are packed as 0xRRGGBBAA. CSS strings remain in value for
++    // asynchronous parsing in the UI process. Both absent means reset.
++    std::optional<uint32_t> color;
 +};
 +std::expected<WebExtensionActionDetails, String> parseWebExtensionActionDetails(const JSON::Value*, WebExtensionActionDetailsKind);
 +std::expected<std::optional<WebExtensionTabIdentifier>, String> parseWebExtensionActionTab(const JSON::Value*);
@@ -28962,10 +28979,10 @@ index 0000000000000000000000000000000000000000..ed6a95ab17620070ef1b64ed8ff45d61
 +}
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitContext.h b/Source/WebKit/UIProcess/API/haiku/WebKitContext.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..fef33772fd05abe82aff7d51f4fc7e8e050dc406
+index 0000000000000000000000000000000000000000..60c6bbecd864d10a6c538026c908a8c6fd9a9989
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitContext.h
-@@ -0,0 +1,169 @@
+@@ -0,0 +1,170 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -29103,7 +29120,8 @@ index 0000000000000000000000000000000000000000..fef33772fd05abe82aff7d51f4fc7e8e
 +    // Submit from any looper. ACTIONS contains identifier/error and repeated
 +    // action messages for this window's active page. Each action contains
 +    // extension_identifier/name/title/badge strings, enabled/has_popup bools,
-+    // load_identifier and page_identifier uint64 values. Optional icon_bgra is
++    // load_identifier and page_identifier uint64 values, and badge_background_rgba
++    // and badge_text_rgba uint32 colors packed as 0xRRGGBBAA. Optional icon_bgra is
 +    // exactly 16*16*4 bytes of unpremultiplied BGRA pixels, top row first.
 +    status_t GetExtensionActions(const BMessenger& window, const BMessenger& reply, uint64 identifier);
 +    // Trusted native user input only. Both IDs must come from the displayed
@@ -33138,19 +33156,45 @@ index f14860d8e436a90cb7616ae96bb9f05d6517bc50..4573a4059a77ee38cc898c7221315a1d
      bool m_resourcesAreTemporary { false };
      Ref<const JSON::Value> m_manifestJSON;
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionAction.h b/Source/WebKit/UIProcess/Extensions/WebExtensionAction.h
-index fac3a3b3cc2786da7bd9ac826eef6f75899f3af7..b96ae38f2632ccc4f391da9ebeef895e0d567457 100644
+index fac3a3b3cc2786da7bd9ac826eef6f75899f3af7..ea4b1e0b7e1bd1b2d9fb4b0de92b54f912635ff9 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionAction.h
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionAction.h
-@@ -153,6 +153,9 @@ public:
+@@ -103,6 +103,13 @@ public:
+ 
+     String badgeText() const;
+     void setBadgeText(String);
++#if PLATFORM(HAIKU)
++    // Packed 0xRRGGBBAA; null setters restore scope inheritance.
++    uint32_t badgeBackgroundColor() const;
++    uint32_t badgeTextColor() const;
++    void setBadgeBackgroundColor(std::optional<uint32_t>);
++    void setBadgeTextColor(std::optional<uint32_t>);
++#endif
+ 
+     bool hasUnreadBadgeText() const;
+     void setHasUnreadBadgeText(bool);
+@@ -153,6 +160,10 @@ public:
  #endif
  
  private:
 +#if PLATFORM(HAIKU)
 +    friend class ExtensionActionPopupHaiku;
++    std::optional<uint32_t> customBadgeTextColor() const;
 +#endif
      RefPtr<WebExtensionAction> fallbackAction() const;
  
      void clearIconCache();
+@@ -191,6 +202,10 @@ private:
+ #endif
+     String m_customLabel;
+     String m_customBadgeText;
++#if PLATFORM(HAIKU)
++    std::optional<uint32_t> m_customBadgeBackgroundColor;
++    std::optional<uint32_t> m_customBadgeTextColor;
++#endif
+     ssize_t m_blockedResourceCount { 0 };
+     std::optional<bool> m_customEnabled;
+     std::optional<bool> m_hasUnreadBadgeText;
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionCommand.h b/Source/WebKit/UIProcess/Extensions/WebExtensionCommand.h
 index 65b9841a9d4469a699b92c47435fecaaaa034d77..0361d615767169f4af1a6c192853c93efd6f48a7 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionCommand.h
@@ -33945,7 +33989,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..09e611a9580d57d3428b94a6284312b4
  
  #endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
-index 05a8676082d56f2c47c9af6120f5120b09f982be..d661b85599ee22dab2064e3612cc5bd749e82c8f 100644
+index 05a8676082d56f2c47c9af6120f5120b09f982be..9a97d0da0fdfbd0db5b6415f1dd0bee8a6340324 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 @@ -51,7 +51,11 @@
@@ -34202,7 +34246,18 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d661b85599ee22dab2064e3612cc5bd7
  
      // Action APIs
      bool isActionMessageAllowed(IPC::Decoder&);
-@@ -924,6 +1016,11 @@ private:
+@@ -893,6 +985,10 @@ private:
+     void actionOpenPopup(WebPageProxyIdentifier, std::optional<WebExtensionWindowIdentifier>, std::optional<WebExtensionTabIdentifier>, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
+     void actionGetBadgeText(std::optional<WebExtensionWindowIdentifier>, std::optional<WebExtensionTabIdentifier>, CompletionHandler<void(std::expected<String, WebExtensionError>&&)>&&);
+     void actionSetBadgeText(std::optional<WebExtensionWindowIdentifier>, std::optional<WebExtensionTabIdentifier>, const String& text, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
++#if PLATFORM(HAIKU)
++    void actionGetBadgeColor(std::optional<WebExtensionWindowIdentifier>, std::optional<WebExtensionTabIdentifier>, bool background, CompletionHandler<void(std::expected<uint32_t, WebExtensionError>&&)>&&);
++    void actionSetBadgeColor(std::optional<WebExtensionWindowIdentifier>, std::optional<WebExtensionTabIdentifier>, bool background, const String& cssColor, std::optional<uint32_t> color, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
++#endif
+     void actionGetEnabled(std::optional<WebExtensionWindowIdentifier>, std::optional<WebExtensionTabIdentifier>, CompletionHandler<void(std::expected<bool, WebExtensionError>&&)>&&);
+     void actionSetEnabled(std::optional<WebExtensionTabIdentifier>, bool enabled, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
+     void fireActionClickedEventIfNeeded(WebExtensionTab*);
+@@ -924,6 +1020,11 @@ private:
      // Commands APIs
      bool isCommandsMessageAllowed(IPC::Decoder&);
      void commandsGetAll(CompletionHandler<void(Vector<WebExtensionCommandParameters>)>&&);
@@ -34214,7 +34269,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d661b85599ee22dab2064e3612cc5bd7
      void fireCommandEventIfNeeded(const WebExtensionCommand&, WebExtensionTab*);
      void fireCommandChangedEventIfNeeded(const WebExtensionCommand&, const String& oldShortcut);
  
-@@ -934,7 +1031,9 @@ private:
+@@ -934,7 +1035,9 @@ private:
      void cookiesSet(std::optional<PAL::SessionID>, const WebExtensionCookieParameters&, CompletionHandler<void(std::expected<std::optional<WebExtensionCookieParameters>, WebExtensionError>&&)>&&);
      void cookiesRemove(std::optional<PAL::SessionID>, const String& name, const URL&, CompletionHandler<void(std::expected<std::optional<WebExtensionCookieParameters>, WebExtensionError>&&)>&&);
      void cookiesGetAllCookieStores(CompletionHandler<void(std::expected<HashMap<PAL::SessionID, Vector<WebExtensionTabIdentifier>>, WebExtensionError>&&)>&&);
@@ -34224,7 +34279,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d661b85599ee22dab2064e3612cc5bd7
  
      // DeclarativeNetRequest APIs
      bool isDeclarativeNetRequestMessageAllowed(IPC::Decoder&);
-@@ -971,6 +1070,11 @@ private:
+@@ -971,6 +1074,11 @@ private:
  
      // Menus APIs
      bool isMenusMessageAllowed(IPC::Decoder&);
@@ -34236,7 +34291,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d661b85599ee22dab2064e3612cc5bd7
      void menusCreate(const WebExtensionMenuItemParameters&, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
      void menusUpdate(const String& identifier, const WebExtensionMenuItemParameters&, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
      void menusRemove(const String& identifier, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
-@@ -988,9 +1092,18 @@ private:
+@@ -988,9 +1096,18 @@ private:
  
      // Permissions APIs
      void permissionsGetAll(CompletionHandler<void(Vector<String>&& permissions, Vector<String>&& origins)>&&);
@@ -34255,7 +34310,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d661b85599ee22dab2064e3612cc5bd7
      void firePermissionsEventListenerIfNecessary(WebExtensionEventListenerType, const PermissionsSet&, const MatchPatternSet&);
  
      // Port APIs
-@@ -1000,7 +1113,7 @@ private:
+@@ -1000,7 +1117,7 @@ private:
      void disconnectPortsForPage(WebPageProxy&);
      void addPorts(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier, HashCountedSet<WebPageProxyIdentifier>&&);
      void removePort(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier, WebPageProxyIdentifier);
@@ -34264,7 +34319,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d661b85599ee22dab2064e3612cc5bd7
      void removeNativePort(WebExtensionMessagePort&);
      unsigned openPortCount(WebExtensionContentWorldType, WebExtensionPortChannelIdentifier);
      bool isPortConnected(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier);
-@@ -1009,7 +1122,7 @@ private:
+@@ -1009,7 +1126,7 @@ private:
      void firePortMessageEventsIfNeeded(WebExtensionContentWorldType, std::optional<WebPageProxyIdentifier>, WebExtensionPortChannelIdentifier, const String& messageJSON, bool userGesture);
      void fireQueuedPortMessageEventsIfNeeded(WebExtensionContentWorldType, WebExtensionPortChannelIdentifier);
      void sendQueuedNativePortMessagesIfNeeded(WebExtensionPortChannelIdentifier);
@@ -34273,7 +34328,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d661b85599ee22dab2064e3612cc5bd7
  
      // Runtime APIs
      void runtimeGetBackgroundPage(CompletionHandler<void(std::expected<std::optional<WebCore::PageIdentifier>, WebExtensionError>&&)>&&);
-@@ -1034,6 +1147,7 @@ private:
+@@ -1034,6 +1151,7 @@ private:
      void scriptingGetRegisteredScripts(const Vector<String>&, CompletionHandler<void(std::expected<Vector<WebExtensionRegisteredScriptParameters>, WebExtensionError>&&)>&&);
      void scriptingUnregisterContentScripts(const Vector<String>&, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
      bool createInjectedContentForScripts(const Vector<WebExtensionRegisteredScriptParameters>&, WebExtensionDynamicScripts::WebExtensionRegisteredScript::FirstTimeRegistration, DynamicInjectedContentsMap&, NSString *callingAPIName, NSString **errorMessage);
@@ -34281,7 +34336,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d661b85599ee22dab2064e3612cc5bd7
  
      // Sidebar APIs
  #if ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
-@@ -1129,6 +1243,13 @@ private:
+@@ -1129,6 +1247,13 @@ private:
      RetainPtr<NSMutableDictionary> m_state;
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<GKeyFile> m_state;
@@ -34295,7 +34350,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d661b85599ee22dab2064e3612cc5bd7
  #endif
      Vector<Ref<API::Error>> m_errors;
  
-@@ -1147,6 +1268,15 @@ private:
+@@ -1147,6 +1272,15 @@ private:
  
      RefPtr<API::ContentWorld> m_contentScriptWorld;
  
@@ -34311,7 +34366,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d661b85599ee22dab2064e3612cc5bd7
      PermissionsMap m_grantedPermissions;
      PermissionsMap m_deniedPermissions;
  
-@@ -1172,6 +1302,9 @@ private:
+@@ -1172,6 +1306,9 @@ private:
      EventListenerTypeCountedSet m_backgroundContentEventListeners;
      EventListenerTypeFrameMap m_eventListenerFrames;
  
@@ -34321,7 +34376,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d661b85599ee22dab2064e3612cc5bd7
      bool m_shouldFireStartupEvent { false };
      InstallReason m_installReason { InstallReason::None };
      String m_previousVersion;
-@@ -1194,6 +1327,9 @@ private:
+@@ -1194,6 +1331,9 @@ private:
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<WebKitWebView> m_backgroundWebView;
      GWeakPtr<WebKitWebExtensionContext> m_delegate;
@@ -34331,7 +34386,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d661b85599ee22dab2064e3612cc5bd7
  #endif
      Variant<std::monostate, Ref<ProcessThrottlerActivity>, Ref<ProcessActivityGroup>> m_backgroundWebViewActivity;
      RefPtr<API::Error> m_backgroundContentLoadError;
-@@ -1215,6 +1351,7 @@ private:
+@@ -1215,6 +1355,7 @@ private:
      HashMap<Ref<WebExtensionMatchPattern>, UserScriptVector> m_injectedScriptsPerPatternMap;
      HashMap<Ref<WebExtensionMatchPattern>, UserStyleSheetVector> m_injectedStyleSheetsPerPatternMap;
  
@@ -34339,7 +34394,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d661b85599ee22dab2064e3612cc5bd7
      HashMap<String, Ref<WebExtensionDynamicScripts::WebExtensionRegisteredScript>> m_registeredScriptsMap;
      RefPtr<WebExtensionRegisteredScriptsSQLiteStore> m_registeredContentScriptsStorage;
  
-@@ -1234,11 +1371,14 @@ private:
+@@ -1234,11 +1375,14 @@ private:
  #endif // ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
  
      PortCountedSet m_ports;
@@ -34355,7 +34410,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d661b85599ee22dab2064e3612cc5bd7
      mutable WindowIdentifierVector m_windowOrderVector;
      mutable std::optional<WebExtensionWindowIdentifier> m_focusedWindowIdentifier;
  
-@@ -1254,6 +1394,11 @@ private:
+@@ -1254,6 +1398,11 @@ private:
      bool m_populatedCommands { false };
  
      String m_declarativeNetRequestContentRuleListFilePath;
@@ -34367,7 +34422,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d661b85599ee22dab2064e3612cc5bd7
      DeclarativeNetRequestMatchedRuleVector m_matchedRules;
      RefPtr<WebExtensionDeclarativeNetRequestSQLiteStore> m_declarativeNetRequestDynamicRulesStore;
      RefPtr<WebExtensionDeclarativeNetRequestSQLiteStore> m_declarativeNetRequestSessionRulesStore;
-@@ -1261,6 +1406,9 @@ private:
+@@ -1261,6 +1410,9 @@ private:
      HashSet<double> m_sessionRulesIDs;
      HashSet<double> m_dynamicRulesIDs;
  
@@ -34377,7 +34432,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d661b85599ee22dab2064e3612cc5bd7
      MenuItemMap m_menuItems;
      MenuItemVector m_mainMenuItems;
  
-@@ -1274,12 +1422,16 @@ private:
+@@ -1274,12 +1426,16 @@ private:
          String message;
  #if PLATFORM(COCOA)
          RetainPtr<id> argument;
@@ -34394,7 +34449,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d661b85599ee22dab2064e3612cc5bd7
  
      Deque<TestMessage> m_testMessageQueue;
      Deque<TestMessage> m_testStartedQueue;
-@@ -1289,6 +1441,8 @@ private:
+@@ -1289,6 +1445,8 @@ private:
      void sendQueuedTestMessagesIfNeeded(WebExtensionEventListenerType);
  #if PLATFORM(COCOA)
      void addTestMessageToQueue(const String& message, id argument, WebExtensionEventListenerType);
@@ -34404,10 +34459,10 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..d661b85599ee22dab2064e3612cc5bd7
  };
  
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in
-index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..37bf46f4e5d33ca58c4b3dba45591b8ac2d252c0 100644
+index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..00e9fd9b0189ac19dd1db0b6bbb6b0b60fe49a15 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in
-@@ -31,10 +31,76 @@
+@@ -31,10 +31,78 @@
      DispatchedTo=UI
  ]
  messages -> WebExtensionContext {
@@ -34435,6 +34490,8 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..37bf46f4e5d33ca58c4b3dba45591b8a
 +    [Validator=isActionMessageAllowed] ActionSetPopup(std::optional<WebKit::WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, String popupPath) -> (std::expected<void, WebKit::WebExtensionError> result)
 +    [Validator=isActionMessageAllowed] ActionGetBadgeText(std::optional<WebKit::WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier) -> (std::expected<String, WebKit::WebExtensionError> result)
 +    [Validator=isActionMessageAllowed] ActionSetBadgeText(std::optional<WebKit::WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, String text) -> (std::expected<void, WebKit::WebExtensionError> result)
++    [Validator=isActionMessageAllowed] ActionGetBadgeColor(std::optional<WebKit::WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, bool background) -> (std::expected<uint32_t, WebKit::WebExtensionError> result)
++    [Validator=isActionMessageAllowed] ActionSetBadgeColor(std::optional<WebKit::WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, bool background, String cssColor, std::optional<uint32_t> color) -> (std::expected<void, WebKit::WebExtensionError> result)
 +    [Validator=isActionMessageAllowed] ActionGetEnabled(std::optional<WebKit::WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier) -> (std::expected<bool, WebKit::WebExtensionError> result)
 +    [Validator=isActionMessageAllowed] ActionSetEnabled(std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, bool enabled) -> (std::expected<void, WebKit::WebExtensionError> result)
 +#endif
@@ -34485,7 +34542,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..37bf46f4e5d33ca58c4b3dba45591b8a
      // Action APIs
      [Validator=isActionMessageAllowed] ActionGetTitle(std::optional<WebKit::WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier) -> (std::expected<String, WebKit::WebExtensionError> result)
      [Validator=isActionMessageAllowed] ActionSetTitle(std::optional<WebKit::WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, String title) -> (std::expected<void, WebKit::WebExtensionError> result)
-@@ -48,6 +114,14 @@ messages -> WebExtensionContext {
+@@ -48,6 +116,14 @@ messages -> WebExtensionContext {
      [Validator=isActionMessageAllowed] ActionSetEnabled(std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, bool enabled) -> (std::expected<void, WebKit::WebExtensionError> result)
  #endif
  
@@ -34500,7 +34557,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..37bf46f4e5d33ca58c4b3dba45591b8a
      // Alarms APIs
      [Validator=isAlarmsMessageAllowed] AlarmsCreate(String name, Seconds initialInterval, Seconds repeatInterval) -> ()
      [Validator=isAlarmsMessageAllowed] AlarmsGet(String name) -> (struct std::optional<WebKit::WebExtensionAlarmParameters> alarmInfo)
-@@ -71,9 +145,6 @@ messages -> WebExtensionContext {
+@@ -71,9 +147,6 @@ messages -> WebExtensionContext {
      [Validator=isBookmarksMessageAllowed] BookmarksRemoveTree(String bookmarkId) -> (std::expected<void, WebKit::WebExtensionError> result)
  #endif // ENABLE(WK_WEB_EXTENSIONS_BOOKMARKS)
  
@@ -34510,7 +34567,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..37bf46f4e5d33ca58c4b3dba45591b8a
      // Cookies APIs
      [Validator=isCookiesMessageAllowed] CookiesGet(std::optional<PAL::SessionID> sessionID, String name, URL url) -> (std::expected<std::optional<WebKit::WebExtensionCookieParameters>, WebKit::WebExtensionError> result)
      [Validator=isCookiesMessageAllowed] CookiesGetAll(std::optional<PAL::SessionID> sessionID, URL url, struct WebKit::WebExtensionCookieFilterParameters filterParameters) -> (std::expected<Vector<WebKit::WebExtensionCookieParameters>, WebKit::WebExtensionError> result)
-@@ -100,8 +171,6 @@ messages -> WebExtensionContext {
+@@ -100,8 +173,6 @@ messages -> WebExtensionContext {
  #endif
  
      // Event APIs
@@ -34519,7 +34576,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..37bf46f4e5d33ca58c4b3dba45591b8a
  
      // Extensions APIs
      [Validator=isLoaded] ExtensionIsAllowedIncognitoAccess() -> (bool result)
-@@ -125,20 +194,10 @@ messages -> WebExtensionContext {
+@@ -125,20 +196,10 @@ messages -> WebExtensionContext {
      [Validator=isLoaded] PermissionsRequest(HashSet<String> permissions, HashSet<String> origins) -> (bool success)
      [Validator=isLoaded] PermissionsRemove(HashSet<String> permissions, HashSet<String> origins) -> (bool success)
  
@@ -34540,7 +34597,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..37bf46f4e5d33ca58c4b3dba45591b8a
  
      // Scripting APIs
      [Validator=isScriptingMessageAllowed] ScriptingExecuteScript(WebKit::WebExtensionScriptInjectionParameters parameters, bool userGesture) -> (std::expected<Vector<WebKit::WebExtensionScriptInjectionResultParameters>, WebKit::WebExtensionError> result)
-@@ -165,15 +224,6 @@ messages -> WebExtensionContext {
+@@ -165,15 +226,6 @@ messages -> WebExtensionContext {
      [Validator=isSidebarMessageAllowed] SidebarGetActionClickBehavior() -> (std::expected<WebKit::WebExtensionActionClickBehavior, WebKit::WebExtensionError> result)
  #endif // ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
  
@@ -34556,7 +34613,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..37bf46f4e5d33ca58c4b3dba45591b8a
      // Tabs APIs
      [Validator=isLoadedAndPrivilegedMessage] TabsCreate(std::optional<WebKit::WebPageProxyIdentifier> webPageProxyIdentifier, WebKit::WebExtensionTabParameters creationParameters) -> (std::expected<std::optional<WebKit::WebExtensionTabParameters>, WebKit::WebExtensionError> result)
      [Validator=isLoadedAndPrivilegedMessage] TabsUpdate(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, WebKit::WebExtensionTabParameters updateParameters) -> (std::expected<std::optional<WebKit::WebExtensionTabParameters>, WebKit::WebExtensionError> result)
-@@ -198,8 +248,6 @@ messages -> WebExtensionContext {
+@@ -198,8 +250,6 @@ messages -> WebExtensionContext {
      [Validator=isLoadedAndPrivilegedMessage] TabsRemoveCSS(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, WebKit::WebExtensionScriptInjectionParameters parameters) -> (std::expected<void, WebKit::WebExtensionError> result)
  
      // WebNavigation APIs
@@ -36477,10 +36534,10 @@ index 0000000000000000000000000000000000000000..771b300f35b4d34909a9344986717af8
 +#endif
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionActionHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionActionHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..dde3685557295df73e9ce3fa614030ba7c8961e4
+index 0000000000000000000000000000000000000000..bdd4597391ac33f43ce902747482732755164f88
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionActionHaiku.cpp
-@@ -0,0 +1,402 @@
+@@ -0,0 +1,459 @@
 +/*
 + * Copyright (C) 2023-2024 Apple Inc. All rights reserved.
 + *
@@ -36513,6 +36570,8 @@ index 0000000000000000000000000000000000000000..dde3685557295df73e9ce3fa614030ba
 +
 +#include "WebExtensionContext.h"
 +#include "WebExtensionUtilities.h"
++#include <InterfaceDefs.h>
++#include <cmath>
 +#include <limits>
 +
 +namespace WebKit {
@@ -36547,9 +36606,9 @@ index 0000000000000000000000000000000000000000..dde3685557295df73e9ce3fa614030ba
 +void WebExtensionAction::clearCustomizations()
 +{
 +#if ENABLE(WK_WEB_EXTENSIONS_ICON_VARIANTS)
-+    if (!m_customIcons && !m_customIconVariants && m_customPopupPath.isNull() && m_customLabel.isNull() && m_customBadgeText.isNull() && !m_customEnabled && !m_blockedResourceCount && !m_hasUnreadBadgeText)
++    if (!m_customIcons && !m_customIconVariants && m_customPopupPath.isNull() && m_customLabel.isNull() && m_customBadgeText.isNull() && !m_customEnabled && !m_blockedResourceCount && !m_hasUnreadBadgeText && !m_customBadgeBackgroundColor && !m_customBadgeTextColor)
 +#else
-+    if (!m_customIcons && m_customPopupPath.isNull() && m_customLabel.isNull() && m_customBadgeText.isNull() && !m_customEnabled && !m_blockedResourceCount && !m_hasUnreadBadgeText)
++    if (!m_customIcons && m_customPopupPath.isNull() && m_customLabel.isNull() && m_customBadgeText.isNull() && !m_customEnabled && !m_blockedResourceCount && !m_hasUnreadBadgeText && !m_customBadgeBackgroundColor && !m_customBadgeTextColor)
 +#endif
 +        return;
 +
@@ -36560,6 +36619,8 @@ index 0000000000000000000000000000000000000000..dde3685557295df73e9ce3fa614030ba
 +    m_customPopupPath = nullString();
 +    m_customLabel = nullString();
 +    m_customBadgeText = nullString();
++    m_customBadgeBackgroundColor = std::nullopt;
++    m_customBadgeTextColor = std::nullopt;
 +    m_customEnabled = std::nullopt;
 +    m_blockedResourceCount = 0;
 +    m_hasUnreadBadgeText = std::nullopt;
@@ -36776,6 +36837,59 @@ index 0000000000000000000000000000000000000000..dde3685557295df73e9ce3fa614030ba
 +    else
 +        m_hasUnreadBadgeText = std::nullopt;
 +
++    propertiesDidChange();
++}
++
++uint32_t WebExtensionAction::badgeBackgroundColor() const
++{
++    if (m_customBadgeBackgroundColor)
++        return *m_customBadgeBackgroundColor;
++    if (RefPtr fallback = fallbackAction())
++        return fallback->badgeBackgroundColor();
++    return 0xD90000FF;
++}
++
++std::optional<uint32_t> WebExtensionAction::customBadgeTextColor() const
++{
++    if (m_customBadgeTextColor)
++        return m_customBadgeTextColor;
++    if (RefPtr fallback = fallbackAction())
++        return fallback->customBadgeTextColor();
++    return std::nullopt;
++}
++
++uint32_t WebExtensionAction::badgeTextColor() const
++{
++    if (auto custom = customBadgeTextColor())
++        return *custom;
++    // Inherit explicit foreground overrides, but compute automatic contrast
++    // using this action's effective background, including a tab override.
++    const auto background = badgeBackgroundColor();
++    const auto panel = ui_color(B_PANEL_BACKGROUND_COLOR);
++    const double alpha = (background & 255) / 255.0;
++    const auto linear = [alpha](unsigned component, uint8_t panelComponent) {
++        double value = (component * alpha + panelComponent * (1 - alpha)) / 255.0;
++        return value <= 0.04045 ? value / 12.92 : std::pow((value + 0.055) / 1.055, 2.4);
++    };
++    const double luminance = 0.2126 * linear(background >> 24, panel.red)
++        + 0.7152 * linear((background >> 16) & 255, panel.green)
++        + 0.0722 * linear((background >> 8) & 255, panel.blue);
++    return (luminance + 0.05) / 0.05 >= 1.05 / (luminance + 0.05) ? 0x000000FF : 0xFFFFFFFF;
++}
++
++void WebExtensionAction::setBadgeBackgroundColor(std::optional<uint32_t> color)
++{
++    if (m_customBadgeBackgroundColor == color)
++        return;
++    m_customBadgeBackgroundColor = color;
++    propertiesDidChange();
++}
++
++void WebExtensionAction::setBadgeTextColor(std::optional<uint32_t> color)
++{
++    if (m_customBadgeTextColor == color)
++        return;
++    m_customBadgeTextColor = color;
 +    propertiesDidChange();
 +}
 +
@@ -37569,10 +37683,10 @@ index 0000000000000000000000000000000000000000..013ab7f75e75ed32931facd798bd3bcd
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPIActionHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPIActionHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..4ab254e9c90c2b20f8e41f972121a1a3b5af12e1
+index 0000000000000000000000000000000000000000..84f559c5098284b9035ff6deae32eb04d889a76e
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPIActionHaiku.cpp
-@@ -0,0 +1,169 @@
+@@ -0,0 +1,211 @@
 +/*
 + * Copyright (C) 2023 Apple Inc. All rights reserved.
 + *
@@ -37605,6 +37719,8 @@ index 0000000000000000000000000000000000000000..4ab254e9c90c2b20f8e41f972121a1a3
 +#include "WebExtensionAction.h"
 +#include "WebExtensionContextProxyMessages.h"
 +#include "WebExtensionUtilities.h"
++#include <WebCore/CSSPropertyParserConsumer+Color.h>
++#include <WebCore/Color.h>
 +namespace WebKit {
 +enum class CreateAction : bool { No, Yes };
 +static std::expected<Ref<WebExtensionAction>, WebExtensionError> actionWithIdentifiers(WebExtensionContext& context,
@@ -37631,6 +37747,46 @@ index 0000000000000000000000000000000000000000..4ab254e9c90c2b20f8e41f972121a1a3
 +{
 +    Ref extension = *m_extension;
 +    return isLoadedAndPrivilegedMessage(message) && (extension->hasAction() || extension->hasBrowserAction() || extension->hasPageAction());
++}
++void WebExtensionContext::actionGetBadgeColor(std::optional<WebExtensionWindowIdentifier> window, std::optional<WebExtensionTabIdentifier> tab, bool background, CompletionHandler<void(std::expected<uint32_t, WebExtensionError>&&)>&& completion)
++{
++    auto action = actionWithIdentifiers(*this, window, tab, CreateAction::No, background ? "action.getBadgeBackgroundColor()"_s : "action.getBadgeTextColor()"_s);
++    if (!action) {
++        completion(std::unexpected(action.error()));
++        return;
++    }
++    completion(background ? (*action)->badgeBackgroundColor() : (*action)->badgeTextColor());
++}
++void WebExtensionContext::actionSetBadgeColor(std::optional<WebExtensionWindowIdentifier> window, std::optional<WebExtensionTabIdentifier> tab, bool background, const String& cssColor, std::optional<uint32_t> color, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&& completion)
++{
++    const auto api = background ? "action.setBadgeBackgroundColor()"_s : "action.setBadgeTextColor()"_s;
++    if (!cssColor.isNull()) {
++        // Badge settings have no document from which to resolve currentColor,
++        // system colors or CSS variables. Parse absolute CSS colors in WebCore.
++        auto parsed = WebCore::CSSPropertyParserHelpers::deprecatedParseColorRawWithoutContext(cssColor,
++            { .allowedColorTypes = { WebCore::CSS::ColorType::Absolute } });
++        if (color || cssColor.contains('\0') || !parsed.isValid()) {
++            completion(toWebExtensionError(api, "color"_s, "invalid badge color"_s));
++            return;
++        }
++        const auto [red, green, blue, alpha] = parsed.toColorTypeLossy<WebCore::SRGBA<uint8_t>>().resolved();
++        color = (uint32_t(red) << 24) | (uint32_t(green) << 16) | (uint32_t(blue) << 8) | alpha;
++    }
++    if (!background && color && !(*color & 255)) {
++        completion(toWebExtensionError(api, "color"_s, "badge text must not be fully transparent"_s));
++        return;
++    }
++    // Resolve and validate access before creating or modifying scoped state.
++    auto action = actionWithIdentifiers(*this, window, tab, CreateAction::Yes, api);
++    if (!action) {
++        completion(std::unexpected(action.error()));
++        return;
++    }
++    if (background)
++        (*action)->setBadgeBackgroundColor(color);
++    else
++        (*action)->setBadgeTextColor(color);
++    completion({ });
 +}
 +void WebExtensionContext::actionGetTitle(std::optional<WebExtensionWindowIdentifier> window, std::optional<WebExtensionTabIdentifier> tab, CompletionHandler<void(std::expected<String, WebExtensionError>&&)>&& completion)
 +{
@@ -45579,10 +45735,10 @@ index 0000000000000000000000000000000000000000..0bee5b6e8a1234d768064bc9f9802ecd
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/ExtensionPackageRegistryHaiku.cpp b/Source/WebKit/UIProcess/haiku/ExtensionPackageRegistryHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..d816befec38e8553a4bba81f3537b48802edd8cb
+index 0000000000000000000000000000000000000000..929a4524b853f7219b06e726a8224177df39be9b
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/ExtensionPackageRegistryHaiku.cpp
-@@ -0,0 +1,506 @@
+@@ -0,0 +1,510 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#include "config.h"
 +#include "ExtensionPackageRegistryHaiku.h"
@@ -46029,6 +46185,10 @@ index 0000000000000000000000000000000000000000..d816befec38e8553a4bba81f3537b488
 +        add("name", extension.displayName().left(512));
 +        add("title", action->label().left(512));
 +        add("badge", action->badgeText().left(64));
++        if (error == B_OK)
++            error = item.AddUInt32("badge_background_rgba", action->badgeBackgroundColor());
++        if (error == B_OK)
++            error = item.AddUInt32("badge_text_rgba", action->badgeTextColor());
 +        if (error == B_OK)
 +            error = item.AddUInt64("load_identifier", context->privilegedIdentifier().toUInt64());
 +        if (error == B_OK)
@@ -52929,10 +53089,10 @@ index 77c4db0966a28ff00141af56b68d0fd16a6a826b..4d8372f4f47e8b05e804aa2bb49fbcf9
      if (m_listeners.isEmpty())
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIAction.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIAction.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..4d03fbd9afea0471f1cef412933e111b64657697
+index 0000000000000000000000000000000000000000..55f1e04f67d05641b43c9b688571796fd01c2a39
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIAction.cpp
-@@ -0,0 +1,206 @@
+@@ -0,0 +1,257 @@
 +/*
 + * Copyright (C) 2023 Apple Inc. All rights reserved.
 + *
@@ -52975,6 +53135,57 @@ index 0000000000000000000000000000000000000000..4d03fbd9afea0471f1cef412933e111b
 +#include <WebCore/LocalFrameInlines.h>
 +#include <WebCore/UserGestureIndicator.h>
 +namespace WebKit {
++void WebExtensionAPIAction::getBadgeBackgroundColor(RefPtr<JSON::Value> value, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    getBadgeColor(true, WTF::move(value), WTF::move(callback), exception);
++}
++void WebExtensionAPIAction::getBadgeTextColor(RefPtr<JSON::Value> value, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    getBadgeColor(false, WTF::move(value), WTF::move(callback), exception);
++}
++void WebExtensionAPIAction::setBadgeBackgroundColor(RefPtr<JSON::Value> value, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    setBadgeColor(true, WTF::move(value), WTF::move(callback), exception);
++}
++void WebExtensionAPIAction::setBadgeTextColor(RefPtr<JSON::Value> value, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    setBadgeColor(false, WTF::move(value), WTF::move(callback), exception);
++}
++void WebExtensionAPIAction::getBadgeColor(bool background, RefPtr<JSON::Value> value, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto details = parseWebExtensionActionDetails(value.get(), WebExtensionActionDetailsKind::Get);
++    if (!details) {
++        exception = details.error();
++        return;
++    }
++    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::ActionGetBadgeColor(details->window, details->tab, background),
++        [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<uint32_t, WebExtensionError>&& result) {
++            if (!result) {
++                callback->reportError(result.error());
++                return;
++            }
++            auto context = callback->globalContext();
++            JSValueRef components[] = { JSValueMakeNumber(context, *result >> 24), JSValueMakeNumber(context, (*result >> 16) & 255),
++                JSValueMakeNumber(context, (*result >> 8) & 255), JSValueMakeNumber(context, *result & 255) };
++            Protected<JSValueRef> color(context, JSObjectMakeArray(context, 4, components, nullptr));
++            callback->call(color.get());
++        }, extensionContext().identifier());
++}
++void WebExtensionAPIAction::setBadgeColor(bool background, RefPtr<JSON::Value> value, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto details = parseWebExtensionActionDetails(value.get(), background ? WebExtensionActionDetailsKind::BadgeBackgroundColor : WebExtensionActionDetailsKind::BadgeTextColor);
++    if (!details) {
++        exception = details.error();
++        return;
++    }
++    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::ActionSetBadgeColor(details->window, details->tab, background, details->value, details->color),
++        [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<void, WebExtensionError>&& result) {
++            if (!result)
++                callback->reportError(result.error());
++            else
++                callback->call();
++        }, extensionContext().identifier());
++}
 +void WebExtensionAPIAction::getTitle(RefPtr<JSON::Value> value, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
 +{
 +    auto details = parseWebExtensionActionDetails(value.get(), WebExtensionActionDetailsKind::Get);
@@ -53140,7 +53351,7 @@ index 0000000000000000000000000000000000000000..4d03fbd9afea0471f1cef412933e111b
 +}
 +#endif
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIAction.h b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIAction.h
-index 3177d164b2173fb0dc01f039eb7cdaa7730d128c..283188b04d4c88531cae14e44f8ff48808571110 100644
+index 3177d164b2173fb0dc01f039eb7cdaa7730d128c..ca389908b663ed0dd7b885f0c6abed74c511158b 100644
 --- a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIAction.h
 +++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIAction.h
 @@ -31,6 +31,7 @@
@@ -53151,7 +53362,7 @@ index 3177d164b2173fb0dc01f039eb7cdaa7730d128c..283188b04d4c88531cae14e44f8ff488
  
  OBJC_CLASS NSDictionary;
  OBJC_CLASS NSString;
-@@ -41,7 +42,24 @@ class WebExtensionAPIAction : public WebExtensionAPIObject, public JSWebExtensio
+@@ -41,7 +42,28 @@ class WebExtensionAPIAction : public WebExtensionAPIObject, public JSWebExtensio
      WEB_EXTENSION_DECLARE_JS_WRAPPER_CLASS(WebExtensionAPIAction, action, action);
  
  public:
@@ -53166,9 +53377,13 @@ index 3177d164b2173fb0dc01f039eb7cdaa7730d128c..283188b04d4c88531cae14e44f8ff488
 +    void setPopup(RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String& exception);
 +    WebExtensionAPIEvent& onClicked();
 +
- #if PLATFORM(COCOA)
 +    void getBadgeBackgroundColor(RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String& exception);
 +    void setBadgeBackgroundColor(RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String& exception);
++#if PLATFORM(HAIKU)
++    void getBadgeTextColor(RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String& exception);
++    void setBadgeTextColor(RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String& exception);
++#endif
+ #if PLATFORM(COCOA)
 +    void openPopup(WebPageProxyIdentifier, RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String& exception);
 +    // Raw ImageData values must reach Cocoa's existing converter unchanged.
 +    void setIcon(WebFrame&, JSContextRef, JSValueRef, Ref<WebExtensionCallbackHandler>&&, String& exception);
@@ -53176,7 +53391,7 @@ index 3177d164b2173fb0dc01f039eb7cdaa7730d128c..283188b04d4c88531cae14e44f8ff488
      void getTitle(NSDictionary *details, Ref<WebExtensionCallbackHandler>&&, String& outExceptionString);
      void setTitle(NSDictionary *details, Ref<WebExtensionCallbackHandler>&&, String& outExceptionString);
  
-@@ -61,7 +79,6 @@ public:
+@@ -61,7 +83,6 @@ public:
      void setPopup(NSDictionary *details, Ref<WebExtensionCallbackHandler>&&, NSString **outExceptionString);
      void openPopup(WebPageProxyIdentifier, NSDictionary *details, Ref<WebExtensionCallbackHandler>&&, NSString **outExceptionString);
  
@@ -53184,13 +53399,17 @@ index 3177d164b2173fb0dc01f039eb7cdaa7730d128c..283188b04d4c88531cae14e44f8ff488
  
  private:
      friend class WebExtensionAPIMenus;
-@@ -77,8 +94,9 @@ private:
+@@ -77,8 +98,13 @@ private:
  
      static std::expected<void, String> parseActionDetails(NSDictionary *, std::optional<WebExtensionWindowIdentifier>&, std::optional<WebExtensionTabIdentifier>&);
  
 -    RefPtr<WebExtensionAPIEvent> m_onClicked;
  #endif
 +private:
++#if PLATFORM(HAIKU)
++    void getBadgeColor(bool background, RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String& exception);
++    void setBadgeColor(bool background, RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String& exception);
++#endif
 +    RefPtr<WebExtensionAPIEvent> m_onClicked;
  };
  
@@ -59488,10 +59707,10 @@ index 9f5d039a238bcdbbd16e6592ba8160f26791360d..2ca40e2aec623491dee3b6b99aaf0e40
 -#endif // ENABLE(WK_WEB_EXTENSIONS)
 +// The shared C++ implementation lives in WebExtensionControllerProxy.cpp.
 diff --git a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIAction.idl b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIAction.idl
-index 8007e76d0184c070fc23c63acf5f9a6698fe9829..6eb7dce1315e5f2372fda6a9866379852288df3a 100644
+index 8007e76d0184c070fc23c63acf5f9a6698fe9829..09b6121a08a1574a8f623934fa9d0d1ab20d8612 100644
 --- a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIAction.idl
 +++ b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIAction.idl
-@@ -66,27 +66,28 @@ dictionary WebExtensionActionOpenPopupOptions {
+@@ -66,27 +66,30 @@ dictionary WebExtensionActionOpenPopupOptions {
  [
      Conditional=WK_WEB_EXTENSIONS,
      MainWorldOnly,
@@ -59511,8 +59730,10 @@ index 8007e76d0184c070fc23c63acf5f9a6698fe9829..6eb7dce1315e5f2372fda6a986637985
  
 -    [RaisesException] void getBadgeBackgroundColor([Optional, NSDictionary=NullAllowed] any details, [Optional, CallbackHandler] function callback);
 -    [RaisesException] void setBadgeBackgroundColor([NSDictionary=NullAllowed] any details, [Optional, CallbackHandler] function callback);
-+    [Platform=COCOA, RaisesStringException] void getBadgeBackgroundColor([Optional, JSONValue=NullAllowed] any details, [Optional, CallbackHandler] function callback);
-+    [Platform=COCOA, RaisesStringException] void setBadgeBackgroundColor([JSONValue=NullAllowed] any details, [Optional, CallbackHandler] function callback);
++    [RaisesStringException] void getBadgeBackgroundColor([Optional, JSONValue=NullAllowed] any details, [Optional, CallbackHandler] function callback);
++    [RaisesStringException] void setBadgeBackgroundColor([JSONValue=NullAllowed] any details, [Optional, CallbackHandler] function callback);
++    [Platform=HAIKU, RaisesStringException] void getBadgeTextColor([Optional, JSONValue=NullAllowed] any details, [Optional, CallbackHandler] function callback);
++    [Platform=HAIKU, RaisesStringException] void setBadgeTextColor([JSONValue=NullAllowed] any details, [Optional, CallbackHandler] function callback);
  
 -    [RaisesException] void enable([Optional] double tabId, [Optional, CallbackHandler] function callback);
 -    [RaisesException] void disable([Optional] double tabId, [Optional, CallbackHandler] function callback);
