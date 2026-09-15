@@ -50,13 +50,13 @@ static void Button(const BMessenger& manager, const char* name)
 int main(int argc, char** argv)
 {
     if (argc == 3 && std::string(argv[1]) == "--check-executable-unused") return SummitCloseHarnessEntry(argc, argv);
-    if (argc != 8) return 2;
+    if (argc != 9) return 2;
     status_t status;
     BApplication application("application/x-vnd.Kunanyi-Summit-extension-manager-tests", &status);
     if (status != B_OK) return 1;
     const auto team = static_cast<team_id>(std::strtol(argv[1], nullptr, 10));
     const std::filesystem::path profile(argv[3]), package(argv[4]), observations(argv[5]);
-    const std::string nonce(argv[6]), phase(argv[7]);
+    const std::string nonce(argv[6]), phase(argv[7]), identity(argv[8]);
     const auto catalogPath = profile / "Extensions/catalog.json";
     BMessenger app, manager;
     bool verified = false;
@@ -78,7 +78,7 @@ int main(int argc, char** argv)
             Require(Wait([&] {
                 auto list = reports();
                 return list.size() == size_t(number) && list.back().value("boot", 0) == number
-                    && list.back().value("nonce", "") == nonce && list.back().value("id", "") == "summit-startup-fixture"
+                    && list.back().value("nonce", "") == nonce && list.back().value("id", "") == identity
                     && list.back().value("granted", false) && !list.back().value("optionalGranted", true);
             }), "actual background reports boot " + std::to_string(number) + " with approved but no optional grants");
         };
@@ -163,7 +163,7 @@ int main(int argc, char** argv)
             Require(Wait([&] { return Entries(manager) == 1 && Enabled(manager, "extension-toggle"); }), "approved extension appears in native manager");
             auto saved = catalog();
             Require(saved.is_object() && saved["extensions"].size() == 1
-                && saved["extensions"][0]["identifier"] == "summit-startup-fixture"
+                && saved["extensions"][0]["identifier"] == identity
                 && saved["extensions"][0]["enabled"] == true, "approval commits stable identity and enabled installation");
             Require(saved["extensions"][0]["allow_file_urls"] == false && saved["extensions"][0]["allow_private_browsing"] == false,
                 "file and private access stay disabled by default");

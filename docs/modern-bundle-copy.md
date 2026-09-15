@@ -60,10 +60,16 @@ The original `build-manifest.json` and `host-bundle-report.json` are preserved.
 before/after fingerprints and a file inventory of the final payload excluding
 the provenance file itself. The final command output reports the provenance
 digest. These hashes establish the copied inputs; they do not establish browser
-runtime behavior. The current extension-enabled copy is `bundle-w5i95j6u`,
-including approved extension startup across browser process restarts and the
-UI-process exit correction. Its provenance digest is
-`bd7049ffaefe54669d8a8c8514799a8cfa052d2aa2eb0f0b2cde126f9c4a71d9`.
+runtime behavior. The current extension-enabled copy is `bundle-tz1tfyzh`,
+including the native extension manager, real XPI/folder picker and approved
+extension startup across browser process restarts. Its provenance digest is
+`b034304aa77ca4c250ad718c0b4dedd3e014ed81823ed8a93ed7b7c869b0bb3e`.
+Its engine source archive digest is
+`47cfdc4589a682fe7d987d0f177b6276b55e62b5b7d0f591bb02b4ee35e70c0a`.
+The copy records host revision `858221f`; avoid committing while copying,
+because changing that recorded revision also invalidates the before/after
+provenance comparison. A copy attempted during that commit was discarded;
+the subsequent copy has matching source and support fingerprints.
 The ordinary modern copy `bundle-yqhmejfw` also remains available with its
 recorded native process, download, navigation and history checks.
 Earlier artifacts are preserved with their recorded limitations.

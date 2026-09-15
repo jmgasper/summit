@@ -2144,3 +2144,36 @@ Package signatures and store authentication, updates, retained-data erasure,
 Chrome key identity, CRX/Safari bundles, action UI and broad API/extension corpus
 compatibility remain unfinished. Engine patch `2972cc15e98b23f6dd04186631cf3f4370fe3a7d3a573175c6fd126a3fbdd3ca`
 is unchanged for this application integration.
+
+The native manager bundle `bundle-tz1tfyzh` and matching engine sources are now
+available in `artifacts/modern-browser/bundle-tz1tfyzh`. The successful copy's
+provenance digest is
+`b034304aa77ca4c250ad718c0b4dedd3e014ed81823ed8a93ed7b7c869b0bb3e`;
+its source archive digest is
+`47cfdc4589a682fe7d987d0f177b6276b55e62b5b7d0f591bb02b4ee35e70c0a`.
+Source/build-support fingerprints and executable digests match. The earlier
+copy attempt was discarded because the host Git revision changed during the
+copy; `.vm/modern-extension-manager-committed-bundle-copy.log` records the
+successful retry at revision `858221f`.
+
+## Chrome manifest-key identity
+
+Chrome packages with a manifest `key` and no declared Gecko ID now receive
+Chromium's expected ID. The installer derives it with OpenSSL, rejects malformed
+keys and persists it in the installation record. Existing Gecko and local
+identity selection remains supported. Mixed Gecko/key manifests currently keep
+Gecko precedence; explicit import provenance/format selection remains work.
+
+All **29 identity checks** pass on Linux and native Haiku against independent
+Chromium test vectors. On the new frozen browser `bundle-mo8zo6d4`, the keyed
+package passes **123 native picker and lifecycle checks** with actual
+`chrome.runtime.id`, restored grants and persisted storage across browser
+processes. The Gecko-ID regression passes another 123 checks on that bundle.
+Both runs have clean exits, drained groups, no native debugger events and
+unchanged inputs. All three portable CTest suites pass. See
+[identity semantics, exact results and limitations](extension-identity.md).
+
+This is identity compatibility; CRX/signature validation, authenticated
+updates, URL-scheme aliases and broad Chrome API compatibility remain
+unfinished. Engine patch `2972cc15e98b23f6dd04186631cf3f4370fe3a7d3a573175c6fd126a3fbdd3ca`
+is unchanged.

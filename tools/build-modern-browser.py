@@ -264,7 +264,7 @@ def main():
     if browser:
         flags += ['-DSUMMIT_MODERN_WEBKIT=1', '-I' + str(ROOT / 'src'),
                   '-I' + str(ROOT / 'vendor'), '-I/boot/system/develop/headers/private/netservices']
-        sources = ['src/main.cpp', 'src/core/Address.cpp', 'src/core/Profile.cpp', 'src/core/ExtensionCatalog.cpp',
+        sources = ['src/main.cpp', 'src/core/Address.cpp', 'src/core/Profile.cpp', 'src/core/ExtensionCatalog.cpp', 'src/core/ExtensionIdentity.cpp',
                    'src/ui/BrowserWindow.cpp', 'src/ui/Chrome.cpp', 'src/ui/ExtensionPermissionPrompt.cpp',
                    'src/ui/ExtensionController.cpp', 'src/ui/ExtensionInstaller.cpp', 'src/ui/ExtensionManager.cpp']
     objects = [work / pathlib.Path(source).with_suffix('.o') for source in sources]
@@ -272,7 +272,7 @@ def main():
                 for source, output in zip(sources, objects)]
     if not arguments.compile_only:
         commands.append(['c++', *map(str, objects), '-L' + str(ENGINE / 'lib'),
-                         '-lWebKit', '-lbe', '-lnetwork',
+                         '-lWebKit', '-lbe', '-lnetwork', '-lcrypto',
                          *(['-lbnetapi', '-ltranslation', '-ltracker'] if browser else []),
                          '-Wl,-rpath,' + ':'.join(map(str, [ENGINE / 'lib', ICU / 'lib']
                              + ([LIBZIP / 'lib'] if 'libzip' in inputs else []))),

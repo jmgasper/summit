@@ -197,7 +197,7 @@ class Reports(http.server.BaseHTTPRequestHandler):
                     if len(payload) > 4096:
                         raise ValueError('oversized report')
                     item = json.loads(payload)
-                    if item.get('id') != 'summit-startup-fixture' or item.get('nonce') != self.server.token:
+                    if item.get('id') != self.server.extension_id or item.get('nonce') != self.server.token:
                         raise ValueError('unexpected extension identity or nonce')
                     self.server.reports.append(item)
                 except (KeyError, ValueError, AttributeError) as error:
@@ -223,6 +223,7 @@ def host(args):
     output.mkdir()
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Reports)
     server.token, server.reports, server.errors, server.lock = token, [], [], threading.Lock()
+    server.extension_id = 'melddjfinppjdikinhbgehiennejpfhp' if args.chrome_key else 'summit-startup-fixture'
     server.daemon_threads = True
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
@@ -232,6 +233,8 @@ def host(args):
                  'tools/test-modern-close-native.py', 'tools/native_crash_log.py')
         if args.manager:
             names += ('tests/ModernExtensionManagerTests.cpp', 'tools/extension_manager_runtime.py')
+        if args.chrome_key:
+            names += ('tests/ExtensionIdentityTests.cpp', 'tests/fixtures/extensions/chrome-key/public-key.txt')
         files = {name: (ROOT / name).read_bytes() for name in names}
         original = {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}
         for path in sorted((ROOT / 'tests/fixtures/extensions/startup').iterdir()):
@@ -241,6 +244,9 @@ def host(args):
         if args.manager:
             manifest = json.loads(files['package/manifest.json'])
             manifest['browser_specific_settings'] = {'gecko': {'id': 'summit-startup-fixture'}}
+            if args.chrome_key:
+                del manifest['browser_specific_settings']
+                manifest['key'] = files['tests/fixtures/extensions/chrome-key/public-key.txt'].decode().strip()
             manifest['permissions'].append('summitUnknownPermission')
             manifest['optional_permissions'] = ['tabs']
             files['package/manifest.json'] = json.dumps(manifest).encode()
@@ -250,6 +256,8 @@ def host(args):
                 raise RuntimeError('Startup fixture report shape changed')
             files['package/background.js'] = background.replace(expected,
                 'previousNonce: old.nonce || null, granted, optionalGranted: await browser.permissions.contains({permissions: ["tabs"]})};').encode()
+            if args.chrome_key:
+                files['package/background.js'] = files['package/background.js'].replace(b'browser.runtime.id', b'chrome.runtime.id')
             package_archive = io.BytesIO()
             with zipfile.ZipFile(package_archive, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
                 for name, data in files.items():
@@ -274,6 +282,8 @@ def host(args):
                    '--base-url', base_url, '--run-token', token]
         if args.manager:
             command.append('--manager')
+        if args.chrome_key:
+            command += ['--chrome-key', '--extension-id', server.extension_id]
         with (output / 'native.log').open('w') as log:
             result = remote(shlex.join(command), stdout=log, stderr=subprocess.STDOUT)
         print((output / 'native.log').read_text(), end='', flush=True)
@@ -300,9 +310,13 @@ if __name__ == '__main__':
     parser.add_argument('--bundle', required=True)
     parser.add_argument('--native', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--manager', action='store_true', help='Exercise native installer/manager controls and restart the installed browser profile')
+    parser.add_argument('--chrome-key', action='store_true', help='With --manager, install a keyed package and verify the Chromium test-vector ID')
+    parser.add_argument('--extension-id', default='summit-startup-fixture', help=argparse.SUPPRESS)
     parser.add_argument('--base-url', help=argparse.SUPPRESS)
     parser.add_argument('--run-token', help=argparse.SUPPRESS)
     arguments = parser.parse_args()
+    if arguments.chrome_key and not arguments.manager:
+        parser.error('--chrome-key requires --manager')
     if arguments.native and arguments.manager:
         from extension_manager_runtime import run
         sys.exit(run(arguments))

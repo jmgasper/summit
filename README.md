@@ -19,10 +19,10 @@ remains unfinished; see [startup evidence](docs/modern-extension-startup.md).
 ## Build and try
 
 The extension-enabled modern development bundle is
-`artifacts/modern-browser/bundle-w5i95j6u/`. Copy the whole directory to Haiku
+`artifacts/modern-browser/bundle-tz1tfyzh/`. Copy the whole directory to Haiku
 R1/beta6 x86_64 and run `./run-browser.sh`. It includes private helpers and
 libraries, frozen application inputs, the matching patched WebKit source
-archive, and copy provenance. Its [startup verification](docs/modern-extension-startup.md)
+archive, and copy provenance. Its [installer and lifecycle verification](docs/modern-extension-manager.md)
 does not establish compatibility with arbitrary extensions.
 
 The current-engine development bundle is `artifacts/current-browser/`. Copy that
@@ -59,7 +59,8 @@ pkgman install ./artifacts/summit-0.1.0~dev1-1-x86_64.hpkg
 
 ## Development
 
-The portable tests run on Linux as well as Haiku:
+The portable tests run on Linux as well as Haiku. They require OpenSSL's
+development headers and crypto library for Chrome manifest-key identities:
 
 ```sh
 cmake -S . -B build-host -DCMAKE_BUILD_TYPE=Debug

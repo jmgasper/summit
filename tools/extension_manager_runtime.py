@@ -44,6 +44,22 @@ def run(args):
     if compiled.returncode:
         return 1
     report['executable_sha256'] = digest(executable)
+    if args.chrome_key:
+        identity_test = ROOT / 'ExtensionIdentityTests'
+        identity_command = ['c++', '-std=c++23', '-O2', '-Wall', '-Wextra', '-I' + str(source / 'src'),
+            '-I' + str(source / 'vendor'), str(ROOT / 'tests/ExtensionIdentityTests.cpp'),
+            str(source / 'src/core/ExtensionIdentity.cpp'), '-lcrypto', '-o', str(identity_test)]
+        result = subprocess.run(identity_command, capture_output=True, text=True)
+        report['identity_compile'] = {'command': identity_command, 'exit': result.returncode, 'output': result.stdout + result.stderr}
+        save()
+        if result.returncode:
+            return 1
+        result = subprocess.run([str(identity_test), str(ROOT / 'tests/fixtures/extensions/chrome-key/public-key.txt')], capture_output=True, text=True)
+        report['identity_tests'] = {'exit': result.returncode, 'output': result.stdout + result.stderr, 'sha256': digest(identity_test)}
+        save()
+        print(report['identity_tests']['output'], end='', flush=True)
+        if result.returncode or 'EXTENSION_IDENTITY_RESULT checks=' not in result.stdout or 'failures=0' not in result.stdout:
+            return 1
     for name in ('Summit', 'WebProcess', 'NetworkProcess'):
         subprocess.run([str(executable), '--check-executable-unused', str(bundle / name)], check=True, timeout=30)
     profile = ROOT / 'profile'
@@ -97,7 +113,7 @@ def run(args):
                     stdout=browser_log, stderr=subprocess.STDOUT, start_new_session=True)
                 record['pid'] = record['process_group'] = browser.pid
                 record['command'] = [str(executable), str(browser.pid), str(bundle / 'Summit'), str(profile),
-                                     str(ROOT / 'package'), str(observations), args.run_token, phase]
+                                     str(ROOT / 'package'), str(observations), args.run_token, phase, args.extension_id]
                 save()
                 try:
                     result = subprocess.run(record['command'], stdout=harness_log, stderr=subprocess.STDOUT, timeout=180)
@@ -133,7 +149,7 @@ def run(args):
             if not record['passed']:
                 raise RuntimeError('Native extension manager phase failed: ' + phase)
         report['observations'] = fetch()
-        expected = [{'id': 'summit-startup-fixture', 'boot': i, 'nonce': args.run_token,
+        expected = [{'id': args.extension_id, 'boot': i, 'nonce': args.run_token,
                      'previousNonce': None if i == 1 else args.run_token, 'granted': True, 'optionalGranted': False}
                     for i in (1, 2, 3)]
         if report['observations'] != {'reports': expected, 'errors': []}:

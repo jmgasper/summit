@@ -30,10 +30,13 @@ waits for installer work and manager/file-picker window destruction before
 releasing the shared WebKit context.
 
 Declared `browser_specific_settings.gecko.id` or `applications.gecko.id` is
-used as the stable identity. Packages without one receive a local identity
-that remains in their installation record. Duplicate declared identities are
-rejected before activation. Chrome public-key identity, CRX and Safari bundle
-import, signatures/store authentication, updates, data erasure, action/popups,
+used as the stable identity. Otherwise a Chrome manifest `key` now derives
+the matching Chromium ID from its decoded bytes. Packages without either
+receive a local identity that remains in their installation record. Duplicate
+declared identities are rejected before activation. See
+[identity behavior and tests](extension-identity.md), including mixed-manifest
+precedence. CRX and Safari bundle import, signatures/store authentication,
+updates, data erasure, action/popups,
 private browsing controls and broad extension API compatibility remain
 unfinished. A lost SDK reply has no operation deadline yet; cancellation after
 submitting a load also needs further native integration coverage.

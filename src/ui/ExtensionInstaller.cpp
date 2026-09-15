@@ -1,5 +1,6 @@
 #include "ExtensionInstaller.h"
 #if SUMMIT_MODERN_WEBKIT
+#include "core/ExtensionIdentity.h"
 #include <WebKit/WebKitContext.h>
 #include <MessageRunner.h>
 #include <nlohmann/json.hpp>
@@ -29,14 +30,6 @@ std::vector<std::string> values(const BMessage& message, const char* name)
         result.emplace_back(value);
     }
     return result;
-}
-bool validIdentity(const std::string& value)
-{
-    return !value.empty() && value.size() <= 255 && value != "." && value != ".."
-        && std::all_of(value.begin(), value.end(), [](unsigned char c) {
-            return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
-                || c == '.' || c == '_' || c == '-' || c == '@' || c == '{' || c == '}';
-        });
 }
 }
 std::string ExtensionDisplayText(std::string text)
@@ -245,12 +238,7 @@ void ExtensionInstaller::MessageReceived(BMessage* message)
             || draft.entry.version.empty() || draft.entry.version.size() > 4096 || draft.entry.fingerprint.size() != 64
             || manifestText.empty() || manifestText.size() > 1024 * 1024) throw std::runtime_error("Incomplete or oversized extension metadata.");
         auto manifest = nlohmann::json::parse(manifestText);
-        for (const char* key : { "applications", "browser_specific_settings" }) {
-            if (manifest.contains(key) && manifest[key].is_object() && manifest[key].contains("gecko")
-                && manifest[key]["gecko"].is_object() && manifest[key]["gecko"].contains("id"))
-                draft.entry.identifier = manifest[key]["gecko"]["id"].get<std::string>();
-        }
-        if (!validIdentity(draft.entry.identifier)) throw std::runtime_error("The extension declares an invalid identity.");
+        draft.entry.identifier = ExtensionIdentity(manifest, draft.entry.identifier);
         std::vector<InstalledExtension> entries;
         std::string error;
         if (!fCatalog.Load(entries, error)) throw std::runtime_error(error);
