@@ -2210,7 +2210,7 @@ the actual rendered popup. Exact paths, commands, SDK contract and remaining
 coverage are in [native extension actions](modern-extension-actions.md).
 
 This supersedes earlier notes that the toolbar/popup path had only compile or
-native-host evidence. Overflow, direct button anchoring, remaining action APIs,
+native-host evidence. Direct button anchoring, remaining action APIs,
 activeTab grant transitions, private/multi-window behavior and the broader real
 extension corpus remain unfinished. The original full-browser goal is active.
 
@@ -2221,3 +2221,22 @@ engine source archive SHA-256 is
 `40b83599ce48235f5dc8b30dc2d743290081140a16cb3c22c976fafa64eae62e`.
 The copy completed normally, with matching source/support fingerprints,
 native report, binary and launcher digests. Earlier artifacts remain intact.
+
+## Native extension overflow keyboard and lifetime fixes
+
+Bundle `bundle-7ve4k1a6` fixes asynchronous native menu cancellation, quick
+keyboard choices and focus-only action refreshes. The overflow menu keeps
+Manage extensions reachable, skips disabled actions and bounds long titles.
+Actual action-data changes cancel old menus, and browser shutdown wakes the
+menu tracking loop before window destruction waits for it.
+
+The six-extension fixture passes 169 native checks, including actual picker
+installation, independent popup JavaScript, timed Enter/Escape behavior and
+application shutdown with the menu open. The action regression passes another
+217 native UI checks plus 29 identity checks. All processes exit normally,
+groups drain, crash intervals remain clean and frozen-input checks pass. Exact
+evidence is in [native extension actions](modern-extension-actions.md).
+
+The engine patch remains `063c724e002819e42a378056225eced55802f309254caf6640bed79c7534469e`.
+Overflow pointer input and broader compatibility coverage remain work; this
+does not complete the full browser or cross-browser extension goal.

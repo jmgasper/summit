@@ -40,6 +40,84 @@
 #include <utility>
 
 namespace summit {
+#if SUMMIT_MODERN_WEBKIT
+class ExtensionActionMenuItem final : public BMenuItem {
+public:
+    ExtensionActionMenuItem(const char* label, BMessage* message) : BMenuItem(label, message) { }
+    bool Selected() const { return IsSelected(); }
+    status_t Activate() { return Invoke(); }
+};
+class ExtensionActionsMenu final : public BPopUpMenu {
+public:
+    explicit ExtensionActionsMenu(std::shared_ptr<std::atomic<bool>> cancelled)
+        : BPopUpMenu("Extension actions", false, false), fCancelled(std::move(cancelled))
+    {
+        SetAsyncAutoDestruct(true);
+        SetTrackingHook([](BMenu*, void* state) {
+            return static_cast<std::atomic<bool>*>(state)->load();
+        }, fCancelled.get());
+    }
+    void AttachedToWindow() override
+    {
+        BPopUpMenu::AttachedToWindow();
+        BMessage tick('exmt');
+        fTimer = std::make_unique<BMessageRunner>(BMessenger(this), &tick, 50000);
+        if (fTimer->InitCheck() != B_OK) *fCancelled = true;
+    }
+    void DetachedFromWindow() override
+    {
+        fTimer.reset();
+        BPopUpMenu::DetachedFromWindow();
+    }
+    void MessageReceived(BMessage* message) override
+    {
+        if (message->what == 'exmt') {
+            // Haiku's tracking hook is outside its mouse-idle wait loop.
+            // Deliver Escape on the menu looper to wake that loop as well.
+            if (fCancelled->load()) { const char escape = B_ESCAPE; KeyDown(&escape, 1); }
+            return;
+        }
+        BPopUpMenu::MessageReceived(message);
+    }
+    void KeyDown(const char* bytes, int32 count) override
+    {
+        if (count && (bytes[0] == B_ENTER || bytes[0] == B_SPACE)) {
+            for (int32 i = 0; i < CountItems(); ++i) {
+                auto* item = dynamic_cast<ExtensionActionMenuItem*>(ItemAt(i));
+                if (!item || !item->Selected() || !item->IsEnabled()) continue;
+                // BPopUpMenu::Go can repeat tracking during its opening-click
+                // interval and discard a quick keyboard choice. Deliver once
+                // here, then cancel tracking without leaving a chosen item.
+                item->Activate();
+                *fCancelled = true;
+                const char escape = B_ESCAPE;
+                BPopUpMenu::KeyDown(&escape, 1);
+                return;
+            }
+        }
+        BPopUpMenu::KeyDown(bytes, count);
+        if (!Window()) {
+            // Escape and native mnemonic activation can also finish during
+            // the opening-click interval. Do not restart a dismissed menu.
+            *fCancelled = true;
+            return;
+        }
+        if (count && bytes[0] == B_DOWN_ARROW) {
+            // Haiku's first Down traversal skips the final item when no item
+            // was selected. If all actions are disabled, reach Manage as well.
+            for (int32 i = 0; i < CountItems(); ++i)
+                if (auto* item = dynamic_cast<ExtensionActionMenuItem*>(ItemAt(i)); item && item->Selected()) return;
+            const char up = B_UP_ARROW;
+            BPopUpMenu::KeyDown(&up, 1);
+        }
+    }
+private:
+    // The native tracking thread can outlive its browser window's derived
+    // members. Keep the cancellation flag alive until the menu is destroyed.
+    std::shared_ptr<std::atomic<bool>> fCancelled;
+    std::unique_ptr<BMessageRunner> fTimer;
+};
+#endif
 class AddressEnterFilter final : public BMessageFilter {
 public:
     explicit AddressEnterFilter(BTextControl& control)
@@ -266,6 +344,7 @@ BrowserWindow::BrowserWindow(std::filesystem::path profile, std::string homeURL,
 BrowserWindow::~BrowserWindow()
 {
 #if SUMMIT_MODERN_WEBKIT
+    if (fExtensionMenuCancelled) *fExtensionMenuCancelled = true;
     fWebKitContext->SetBrowserWindowTabs(BMessenger(this), { }, nullptr, false);
     SaveSession();
     fSaveTimer.reset();
@@ -468,6 +547,7 @@ void BrowserWindow::WebKitClosePrompt(const BMessage& message)
 
 void BrowserWindow::BeginWindowClose()
 {
+    if (fExtensionMenuCancelled) *fExtensionMenuCancelled = true;
     if (fClosingWindow) return;
     if (fCloseCommitPending) { fWindowCloseQueued = true; return; }
     fWindowCloseQueued = false;
@@ -746,6 +826,13 @@ void BrowserWindow::ExtensionActionsReceived(const BMessage& message)
         }
     }
     const auto visible = std::min(size_t(4), actions.size());
+    bool sameState = actions.size() == fExtensionActionState.size();
+    for (size_t i = 0; sameState && i < actions.size(); ++i)
+        sameState = actions[i].HasSameData(fExtensionActionState[i]);
+    if (!sameState || !fExtensionActionRevision) {
+        ++fExtensionActionRevision;
+        if (fExtensionMenuCancelled) *fExtensionMenuCancelled = true;
+    }
     bool sameButtons = visible == fExtensionActionButtons.size() && bool(fExtensionActionsOverflow) == (actions.size() > visible);
     for (size_t i = 0; sameButtons && i < visible; ++i) {
         const char* identity = "";
@@ -771,8 +858,8 @@ void BrowserWindow::ExtensionActionsReceived(const BMessage& message)
         }
     }
     fExtensionActionState = std::move(actions);
-    fExtensionActionSnapshot = request;
-    for (size_t i = 0; i < visible; ++i) fExtensionActionButtons[i]->SetAction(fExtensionActionState[i], request);
+    fExtensionActionSnapshot = fExtensionActionRevision;
+    for (size_t i = 0; i < visible; ++i) fExtensionActionButtons[i]->SetAction(fExtensionActionState[i], fExtensionActionSnapshot);
     if (fExtensionActionsOverflow) fExtensionActionsOverflow->SetEnabled(true);
     if (fExtensionActionState.empty()) {
         if (!fExtensionActions->IsHidden()) fExtensionActions->Hide();
@@ -798,8 +885,9 @@ void BrowserWindow::ActivateExtensionAction(const BMessage& message)
 void BrowserWindow::ShowExtensionActions()
 {
     if (!fExtensionActionSnapshot || !fExtensionActionsOverflow) return;
-    auto* menu = new BPopUpMenu("Extension actions", false, false);
-    menu->SetAsyncAutoDestruct(true);
+    if (fExtensionMenuCancelled) *fExtensionMenuCancelled = true;
+    fExtensionMenuCancelled = std::make_shared<std::atomic<bool>>(false);
+    auto* menu = new ExtensionActionsMenu(fExtensionMenuCancelled);
     for (size_t i = fExtensionActionButtons.size(); i < fExtensionActionState.size(); ++i) {
         const auto& action = fExtensionActionState[i];
         const char* title = "";
@@ -809,14 +897,20 @@ void BrowserWindow::ShowExtensionActions()
         const char* badge = "";
         action.FindString("badge", &badge);
         if (*badge) label += " (" + ExtensionDisplayText(badge) + ")";
+        BString menuLabel(label.c_str());
+        menu->TruncateString(&menuLabel, B_TRUNCATE_END, 360);
         auto* invocation = new BMessage(action);
         invocation->what = kActivateExtensionAction;
         invocation->AddUInt64("snapshot", fExtensionActionSnapshot);
-        auto* item = new BMenuItem(label.c_str(), invocation);
+        auto* item = new ExtensionActionMenuItem(menuLabel.String(), invocation);
         item->SetTarget(BMessenger(this));
         item->SetEnabled(action.GetBool("enabled", false));
         menu->AddItem(item);
     }
+    menu->AddSeparatorItem();
+    auto* manage = new ExtensionActionMenuItem("Manage extensions…", new BMessage(kShowExtensions));
+    manage->SetTarget(BMessenger(this));
+    menu->AddItem(manage);
     menu->Go(fExtensionActionsOverflow->ConvertToScreen(fExtensionActionsOverflow->Bounds().LeftBottom()), true, true, true);
 }
 
@@ -898,9 +992,13 @@ void BrowserWindow::MessageReceived(BMessage* message)
         case kActivateExtensionAction: ActivateExtensionAction(*message); break;
         case kShowExtensionActions: ShowExtensionActions(); break;
         case B_WEBKIT_EXTENSION_ACTION_ACTIVATED:
-            if (message->GetUInt64("identifier", 0) == fExtensionActionInvocation && message->GetInt32("error", B_ERROR) != B_OK) {
-                fStatus->SetText("The extension action changed before it could open. Please try again.");
-                RefreshExtensionActions();
+            if (message->GetUInt64("identifier", 0) == fExtensionActionInvocation) {
+                fExtensionActionResultIdentifier = fExtensionActionInvocation;
+                fExtensionActionResultError = message->GetInt32("error", B_ERROR);
+                if (fExtensionActionResultError != B_OK) {
+                    fStatus->SetText("The extension action changed before it could open. Please try again.");
+                    RefreshExtensionActions();
+                }
             }
             break;
         case kDownloadQuitReply: {
@@ -1138,6 +1236,8 @@ void BrowserWindow::MessageReceived(BMessage* message)
             reply.AddString("backend", "modern");
             reply.AddInt32("download_count", fDownloads.size());
             reply.AddUInt64("extension_action_snapshot", fExtensionActionSnapshot);
+            reply.AddUInt64("extension_action_result_identifier", fExtensionActionResultIdentifier);
+            reply.AddInt32("extension_action_result_error", fExtensionActionResultError);
             if (fExtensionActionSnapshot)
                 for (const auto& action : fExtensionActionState) reply.AddMessage("extension_action", &action);
             reply.AddBool("closing", fClosingWindow || fWindowCloseQueued || fCloseCommitPending

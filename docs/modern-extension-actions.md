@@ -4,8 +4,9 @@ The modern extension-enabled Summit browser now displays live extension action
 buttons. A button uses the extension's title, decoded icon, badge and enabled
 state for the active tab. Four buttons fit beside the address bar; additional
 actions appear in a native overflow menu. Keyboard activation uses the native
-button control. The overflow path is implemented but still needs a dedicated
-multi-extension runtime test.
+button control. The menu includes Manage extensions, skips disabled actions,
+and truncates long labels to preserve a usable width. Its six-extension native
+test covers keyboard activation, rapid dismissal and shutdown with the menu open.
 
 Clicking an action with a popup opens its actual extension HTML in a native
 floating window. The page has the extension's origin, CSP, privileged APIs and
@@ -30,6 +31,11 @@ popup state, the current extension load and active page IDs, and an optional
 16 × 16 unpremultiplied BGRA icon. Failed replies supply no partial action list.
 Summit ignores superseded query replies and disables controls while refreshing.
 Untrusted extension labels are sanitized using the manager's existing rules.
+Displayed snapshot revisions change only when action data changes, so a
+focus-only refresh does not invalidate an otherwise unchanged open menu.
+Changed action data and window closure cancel native menu tracking on its
+own looper. The cancellation flag remains alive until the asynchronous menu
+is destroyed.
 
 `ActivateExtensionAction` requires trusted native input and the load/page IDs
 from the displayed snapshot. The engine checks the current loaded context,
@@ -38,7 +44,9 @@ enabled state before dispatching the normal action user gesture. Summit also
 rejects outdated UI snapshots and clicks during window closure. An accepted
 receipt confirms dispatch; it does not claim that asynchronous popup loading
 has completed. The browser's existing read-only state diagnostics include the
-displayed action snapshot for native integration testing.
+displayed action snapshot and the last activation receipt ID/error for native
+integration testing. Negative tests inspect the engine's actual cancellation
+receipt instead of assuming every refresh changes the displayed revision.
 
 ## Native evidence
 
@@ -93,11 +101,46 @@ remains ungranted throughout installation and restarts.
 separate demonstration profile after a clean browser exit and before removal
 tests; this does not change the profile used to verify removal.
 
+## Overflow runtime verification
+
+Browser bundle `bundle-7ve4k1a6` contains the menu lifetime, keyboard and
+snapshot-revision fixes, with the same engine patch as the toolbar bundle.
+
+```sh
+python3 tools/test-modern-extension-overflow.py \
+  --bundle /boot/home/summit/build-modern-browser/bundle-7ve4k1a6
+python3 tools/test-modern-extension-startup.py --manager --actions --chrome-key --watch \
+  --bundle /boot/home/summit/build-modern-browser/bundle-7ve4k1a6
+```
+
+The overflow fixture passes **169 native checks** in
+`.vm/modern-extension-overflow-ac4790e3620d51484595f780/result.json`.
+It installs six independent Gecko-ID extensions through the actual picker and
+consent UI. Four actions remain on the toolbar. A disabled fifth action with a
+long Unicode title stays bounded in the menu, and the enabled sixth action runs
+its own popup JavaScript without changing the fifth extension. Manage extensions
+is keyboard-accessible even when the only overflow action is disabled.
+
+Timing assertions prove that the engine accepts Enter, and that Escape finishes,
+before the native menu's opening-click interval ends. Dismissal remains effective
+after that interval and does not activate an extension. Quitting with an open
+menu exits normally. The harness locates menu hosts through the native looper
+list because Haiku excludes menu windows from ordinary window enumeration.
+
+The full action regression on this bundle passes **217 native UI checks plus
+29 identity checks** in
+`.vm/modern-extension-actions-af2da144d89229bf2ce91813/result.json`.
+All five browser processes across these two tests exit zero, their process groups
+drain without forced cleanup, and no new native crash events appear. Frozen
+bundles, staged inputs and host test sources remain unchanged. Earlier failed
+overflow results remain preserved; they are superseded only for the paths these
+tests cover.
+
 ## Remaining coverage and compatibility
 
 These fixtures prove the listed action paths, not arbitrary Chrome, Firefox or
 Safari extension compatibility. MV3/service workers, remaining action APIs,
-badge colors, dynamic icon changes, direct button anchoring, overflow input,
+badge colors, dynamic icon changes, direct button anchoring, overflow pointer input,
 private contexts, multi-window behavior and a real extension corpus need more
 implementation or runtime coverage. Active-tab permission transitions, popup
 navigation/CSP rejection, modal dialogs, renderer failure and permission

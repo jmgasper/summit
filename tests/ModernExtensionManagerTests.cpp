@@ -73,6 +73,7 @@ static BMessage ActionState(const BMessenger& window)
     return action;
 }
 
+#ifndef SUMMIT_EXTENSION_MANAGER_HELPERS_ONLY
 int main(int argc, char** argv)
 {
     if (argc == 3 && std::string(argv[1]) == "--check-executable-unused") return SummitCloseHarnessEntry(argc, argv);
@@ -271,9 +272,10 @@ int main(int argc, char** argv)
                 auto oldTabClick = firstState;
                 oldTabClick.what = summit::kActivateExtensionAction;
                 oldTabClick.ReplaceUInt64("snapshot", current.GetUInt64("snapshot", 0));
+                auto previousResult = State(browser).GetUInt64("extension_action_result_identifier", 0);
                 Query(browser, oldTabClick);
-                Require(Wait([&] { auto refreshed = ActionState(browser); return refreshed.GetUInt64("snapshot", 0)
-                    && refreshed.GetUInt64("snapshot", 0) != current.GetUInt64("snapshot", 0); }), "SDK rejects old-page activation and refreshes controls");
+                Require(Wait([&] { auto state = State(browser); return state.GetUInt64("extension_action_result_identifier", 0) > previousResult
+                    && state.GetInt32("extension_action_result_error", B_OK) == B_CANCELED; }), "SDK rejects old-page activation and refreshes controls");
                 Require(actionEvents().size() == 4 && !ActionPopup(app).IsValid(), "old-page action grants no invocation to the newly selected tab");
                 actionClick();
                 Require(Wait([&] { auto events = actionEvents(); return events.size() == 5
@@ -314,9 +316,10 @@ int main(int argc, char** argv)
                 auto oldLoadClick = current;
                 oldLoadClick.what = summit::kActivateExtensionAction;
                 oldLoadClick.ReplaceUInt64("load_identifier", originalAction.GetUInt64("load_identifier", 0));
+                auto previousResult = State(browser).GetUInt64("extension_action_result_identifier", 0);
                 Query(browser, oldLoadClick);
-                Require(Wait([&] { auto refreshed = ActionState(browser); return refreshed.GetUInt64("snapshot", 0)
-                    && refreshed.GetUInt64("snapshot", 0) != current.GetUInt64("snapshot", 0); }), "SDK rejects activation from a previous extension load");
+                Require(Wait([&] { auto state = State(browser); return state.GetUInt64("extension_action_result_identifier", 0) > previousResult
+                    && state.GetInt32("extension_action_result_error", B_OK) == B_CANCELED; }), "SDK rejects activation from a previous extension load");
                 Require(actionEvents().size() == 7 && !ActionPopup(app).IsValid(), "stale load cannot open a replacement extension's popup");
             }
         } else if (phase == "popup-quit" && actions) {
@@ -355,3 +358,4 @@ int main(int argc, char** argv)
         return 1;
     }
 }
+#endif

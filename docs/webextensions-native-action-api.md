@@ -3,13 +3,14 @@
 The Haiku port adds `getTitle`, `setTitle`, `getBadgeText`, `setBadgeText`,
 `getPopup`, `setPopup`, `enable`, `disable`, `isEnabled`, and `onClicked` to
 the native action bindings. The namespace retains the pinned manifest checks
-for `action`, `browserAction`, and `pageAction`. **No extension has run these
-APIs.** Current patch
+for `action`, `browserAction`, and `pageAction`. Real extensions now execute
+the action state and click/popup paths through Summit's native toolbar; see
+[current integrated evidence](modern-extension-actions.md). The earlier
+compile-only stage below used patch
 `71a2c16ef1345fb2225b97bd8017adc654ab4aa923ae759785d67eb8f074dad5`
-is promoted. Its full extension-enabled build reaches linking with **three
-missing symbols (seven references)**: the DNR loader, menu-click dispatcher and
-cookie-change dispatcher. The Action dependencies are resolved, with no new
-missing symbols or compiler errors. The engine has not linked successfully.
+and reached linking with three missing symbols: the DNR loader, menu-click
+dispatcher and cookie-change dispatcher. Those historical link failures no
+longer describe the current complete engine build.
 
 The preceding Action build exposed a missing inline definition. The follow-up
 replaces `LocalFrame.h` with `LocalFrameInlines.h`, which contains
@@ -58,7 +59,7 @@ JavaScript values so its existing `ImageData` conversion is preserved. The
 Xcode project registers the new argument helper in its bindings group and
 header build phase. Cocoa compilation and runtime behavior have not been tested.
 
-## Verification
+## Earlier isolated verification
 
 The isolated native helper passes **125 checks**. It runs the actual structural
 parser, the raw JavaScript tab-ID converter and the existing WebKit dictionary
@@ -81,9 +82,9 @@ unrelated exported WebCore-dependent functions. The final isolated helper uses
 hidden symbol visibility and section collection, as existing helpers do; it
 does not stub those functions or link a mismatched engine library.
 
-These results do not execute action API IPC, model inheritance, observer
+These earlier isolated results do not execute action API IPC, model inheritance, observer
 delivery, permission decisions, real click events, popup presentation or an
-extension in the browser.
+extension in the browser. Current integrated results are linked above.
 
 Evidence:
 

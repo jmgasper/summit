@@ -8,6 +8,7 @@
 #endif
 #include <Messenger.h>
 #include <Message.h>
+#include <atomic>
 #include <memory>
 #include <optional>
 #include <set>
@@ -154,7 +155,11 @@ private:
     std::vector<BMessage> fExtensionActionState;
     uint64 fExtensionActionRequest = 0;
     uint64 fExtensionActionSnapshot = 0;
+    uint64 fExtensionActionRevision = 0;
     uint64 fExtensionActionInvocation = 0;
+    uint64 fExtensionActionResultIdentifier = 0;
+    status_t fExtensionActionResultError = B_OK;
+    std::shared_ptr<std::atomic<bool>> fExtensionMenuCancelled;
 #endif
     void RefreshSidebar(bool history);
     void SaveSession();
