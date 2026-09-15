@@ -1890,3 +1890,24 @@ and [event verification](webextensions-native-cookie-changes.md). Current eviden
 `.vm/extension-cookie-delivery-validation.json`,
 `.vm/extension-cookie-api-promotion.json`, and
 `.vm/modern-extensions-cookie-delivery-build-result.json`.
+
+
+### Native menu API and callback ownership
+
+Engine patch `e4ad8a2c8983a8606a261b1d54935ad334cdbaec4dbed55e4c21fa4bc37ce331`
+connects native `menus` / `contextMenus` bindings, typed IPC, model operations and
+menu-click dispatch. Both aliases use main-world permission gates. Create returns
+a typed ID synchronously; update/remove/removeAll support optional promises.
+Per-item handlers use unique tokens across renames and identifier reuse, register
+before requests, and clear across processes on removal or replacement. Document
+stop/destruction and extension-load changes clear retained callbacks while
+listener removals remain tied to the original load.
+
+**169 native helper checks, 501 binding checks and 13 connected translation
+units pass.** The 25-file source audit matches the integrated patch. Native CMake
+configuration succeeds; the full Extensions-enabled build is running. The
+preceding cookie build's two missing symbols/six references remain the last
+completed linker result. No extension has run and no native extension menu has
+been displayed. Model/callback lifecycle runtime, trusted native click routing,
+activeTab access and background menu persistence remain unfinished. See the
+[menu port](webextensions-native-menu-items.md) for the tested scope and evidence.

@@ -220,6 +220,53 @@ def main(generated):
                             raise RuntimeError('C++ cookie bindings retain an Objective-C exception path')
                     records.append({'source': source.name, 'haiku': haiku,
                                     'preprocessed_sha256': hashlib.sha256(result.stdout.encode()).hexdigest()})
+    if (generated / 'JSWebExtensionAPIMenus.cpp').exists():
+        methods = ('create', 'update', 'remove', 'removeAll', 'onClicked', 'actionMenuTopLevelLimit')
+        calls = ('impl->createMenu(*page, *frame, context, properties,',
+                 'impl->update(*page, *frame, context, identifier, properties,',
+                 'impl->remove(context, identifier,', 'impl->removeAll(')
+        for haiku in (0, 1):
+            for interface, names in (('Menus', methods), ('Namespace', ('menus', 'contextMenus'))):
+                for suffix in ('h', 'cpp'):
+                    source = generated / ('JSWebExtensionAPI' + interface + '.' + suffix)
+                    if digest(source) != generation['files'][source.name]:
+                        raise RuntimeError('Generated menu binding changed: ' + source.name)
+                    stripped = re.sub(r'^\s*#(?:include|import|pragma)\b[^\n]*', '', source.read_text(), flags=re.M)
+                    prefix = f'#define ENABLE(x) 1\n#define PLATFORM(x) PLATFORM_##x\n#define PLATFORM_HAIKU {haiku}\n#define PLATFORM_COCOA {1-haiku}\n'
+                    result = subprocess.run([compiler, '-E', '-P', '-x', 'c++', '-'], input=prefix + stripped,
+                                            text=True, capture_output=True, check=True)
+                    for name in names:
+                        checks += 1
+                        pattern = r'\bstatic JSValueRef ' + name + r'\(' if suffix == 'h' else r'\bJSWebExtensionAPI' + interface + '::' + name + r'\('
+                        if not re.search(pattern, result.stdout):
+                            raise RuntimeError('Missing native or Cocoa menu surface: ' + name)
+                    if suffix == 'cpp' and interface == 'Menus':
+                        for call in calls:
+                            checks += 1
+                            if call not in result.stdout:
+                                raise RuntimeError('Menu method lost its raw C++ adapter: ' + call)
+                        checks += 1
+                        if re.search(r'\b(?:toNSDictionary|toNSObject|NSString|NSDictionary)\b', result.stdout):
+                            raise RuntimeError('C++ menu bindings contain Objective-C conversion')
+                    if suffix == 'cpp':
+                        for name in names:
+                            match = re.search(r'JSValueRef JSWebExtensionAPI' + interface + '::' + name + r'\([^\n]*\)\n\{(.*?)\n\}', result.stdout, re.S)
+                            checks += 1
+                            if not match:
+                                raise RuntimeError('Missing menu getter or operation: ' + name)
+                            if interface == 'Namespace':
+                                checks += 1
+                                gate = f'isForMainWorld && JSStringIsEqualToUTF8CString(propertyName, "{name}") && impl->isPropertyAllowed("{name}"_s, page.get())'
+                                if gate not in result.stdout:
+                                    raise RuntimeError('Menu alias lost its dynamic main-world permission gate: ' + name)
+                            elif 'impl->isForMainWorld()' not in match[1]:
+                                raise RuntimeError('Menu operation lost its main-world restriction: ' + name)
+                            if interface == 'Menus' and name in ('create', 'update', 'remove', 'removeAll'):
+                                checks += 1
+                                if ('JSObjectMakeDeferredPromise' in match[1]) != (name != 'create'):
+                                    raise RuntimeError('Menu synchronous ID or optional promise behavior changed: ' + name)
+                    records.append({'source': source.name, 'haiku': haiku,
+                                    'preprocessed_sha256': hashlib.sha256(result.stdout.encode()).hexdigest()})
     report = {'scope': 'actual Perl generation and C++ preprocessing; no Cocoa or Haiku engine compile/runtime',
               'generation': str(generated), 'fixture_sha256': digest(idl), 'command': command,
               'checks': checks, 'cases': records, 'passed': True}
