@@ -42,6 +42,7 @@ PAGE_UNITS = {'WebLoaderStrategy.cpp': 'WebProcess/Network/WebLoaderStrategy.cpp
               'WebPage.cpp': 'WebProcess/WebPage/WebPage.cpp',
               'WebLocalFrameLoaderClient.cpp': 'WebProcess/WebCoreSupport/WebLocalFrameLoaderClient.cpp'}
 NATIVE_PAGE_UNITS = {'ExtensionPermissionPromptHaiku.cpp': 'UIProcess/haiku/ExtensionPermissionPromptHaiku.cpp',
+                     'ExtensionPackageRegistryHaiku.cpp': 'UIProcess/haiku/ExtensionPackageRegistryHaiku.cpp',
                      'ExtensionActionPopupHaiku.cpp': 'UIProcess/Extensions/haiku/ExtensionActionPopupHaiku.cpp',
                      'WebKitView.cpp': 'UIProcess/API/haiku/WebKitView.cpp',
                      'BrowserTabRegistryHaiku.cpp': 'UIProcess/haiku/BrowserTabRegistryHaiku.cpp',
@@ -385,6 +386,7 @@ def host(overlay=None, units=None, engine_root=DEFAULT_ENGINE, regenerate=False,
                          'UIProcess/haiku/JavaScriptDialogHaiku.h',
                          'UIProcess/haiku/WebViewStateHaiku.h', 'UIProcess/haiku/BrowserTabRegistryHaiku.h',
                          'UIProcess/haiku/ExtensionPermissionPromptHaiku.h',
+                         'UIProcess/haiku/ExtensionPackageRegistryHaiku.h',
                          'UIProcess/API/haiku/WebKitExtensionPermission.h',
                          'UIProcess/API/haiku/WebKitContext.h', 'UIProcess/API/haiku/WebKitView.h'):
             path = engine / 'Source/WebKit' / relative

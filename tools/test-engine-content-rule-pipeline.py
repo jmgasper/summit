@@ -11,6 +11,7 @@ import signal
 import subprocess
 import tarfile
 import time
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 ENGINE = Path('/boot/home/summit-webkit-extensions')
@@ -21,7 +22,8 @@ STORE_TEST = 'EngineContentRuleStoreTests.cpp'
 EXTENSION_RUNTIME_TEST = 'EngineExtensionRuntimeTests.cpp'
 IPC_VALIDATION_TEST = 'EngineIPCValidationTests.cpp'
 COOKIE_OBSERVER_TEST = 'EngineCookieObserverRuntimeTests.cpp'
-PROCESS_TESTS = (EXTENSION_RUNTIME_TEST, IPC_VALIDATION_TEST, COOKIE_OBSERVER_TEST)
+PACKAGE_PREPARATION_TEST = 'EngineExtensionPackagePreparationTests.cpp'
+PROCESS_TESTS = (EXTENSION_RUNTIME_TEST, IPC_VALIDATION_TEST, COOKIE_OBSERVER_TEST, PACKAGE_PREPARATION_TEST)
 EXTENSION_STARTUP = 'cold'
 EXTENSION_FIXTURE = 'storage'
 TRACE_IPC = False
@@ -159,6 +161,8 @@ def native(compile_only, run_only):
             report['scope'] = 'actual WebKit Connection endpoints over native sockets, malformed dispatch flags, main-loop rejection and continued valid traffic; both endpoints in one fixture process'
         elif TEST == COOKIE_OBSERVER_TEST:
             report['scope'] = 'actual API cookie store, NetworkProcess, committed cookie receipts and typed observer delivery after rapid unregister/register; no extension JavaScript or HTTP request'
+        elif TEST == PACKAGE_PREPARATION_TEST:
+            report['scope'] = 'actual public BWebKitContext extension package preparation, background filesystem work, manifest metadata, cancellation, token ownership and cleanup; no extension execution or installation'
         fields = ninja_fields(lambda line: line.startswith('build Source/WebKit/CMakeFiles/WebKit.dir/UIProcess/API/haiku/WebKitView.cpp.o:'))
         raw = iter(shlex.split(' '.join(fields[key] for key in ('DEFINES', 'INCLUDES', 'FLAGS'))))
         flags = []
@@ -220,6 +224,8 @@ def native(compile_only, run_only):
         environment['LIBRARY_PATH'] = ':'.join(map(str, (BUILD / 'lib', Path('/boot/home/summit-deps/icu78/lib'), Path('/boot/home/summit-deps/libzip-1.11.4/lib'), Path('/boot/system/lib'))))
     if TEST in (EXTENSION_RUNTIME_TEST, COOKIE_OBSERVER_TEST):
         environment['WEBKIT_EXEC_PATH'] = str(BUILD / 'bin')
+    if TEST == PACKAGE_PREPARATION_TEST:
+        environment['SUMMIT_EXTENSION_PREPARATION_ARCHIVE'] = str(output / 'preparation.xpi')
     if TEST == EXTENSION_RUNTIME_TEST:
         environment['SUMMIT_EXTENSION_STARTUP'] = EXTENSION_STARTUP
         environment['SUMMIT_EXTENSION_FIXTURE'] = EXTENSION_FIXTURE
@@ -237,7 +243,7 @@ def native(compile_only, run_only):
     crash_log = NativeCrashLog()
     if TEST in PROCESS_TESTS:
         runtime = run_extension_fixture(executable, output, environment,
-            timeout={EXTENSION_RUNTIME_TEST: 240, IPC_VALIDATION_TEST: 30, COOKIE_OBSERVER_TEST: 90}[TEST])
+            timeout={EXTENSION_RUNTIME_TEST: 240, IPC_VALIDATION_TEST: 30, COOKIE_OBSERVER_TEST: 90, PACKAGE_PREPARATION_TEST: 120}[TEST])
         report['exit'], report['output'] = runtime['exit'], runtime.pop('output')
         report['runtime_processes'] = runtime
     else:
@@ -295,6 +301,17 @@ def host(compile_only, resume, overlay=None):
         manifest = {'engine_patch_sha256': json.loads((ROOT / 'engine/sources.lock.json').read_text())['patch']['sha256'],
                     'test_source': str(test), 'test_sha256': digest(test)}
         files = {'sources/' + TEST: test.read_bytes()}
+        if TEST == PACKAGE_PREPARATION_TEST:
+            package = io.BytesIO()
+            manifest['package_sources'] = {}
+            with zipfile.ZipFile(package, 'w') as archive:
+                for name in ('manifest.json', 'background.html', 'background.js'):
+                    path = ROOT / 'tests/fixtures/extensions/preparation' / name
+                    archive.writestr(zipfile.ZipInfo(name), path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED)
+                    manifest['package_sources'][name] = {'source': str(path), 'sha256': digest(path)}
+            files['sources/preparation.xpi'] = package.getvalue()
+            manifest['helpers'] = {'preparation.xpi': {'source': 'generated ZIP of package_sources',
+                                   'sha256': hashlib.sha256(package.getvalue()).hexdigest()}}
         if TEST == EXTENSION_RUNTIME_TEST:
             manifest['extension_fixture'] = EXTENSION_FIXTURE
             if EXTENSION_FIXTURE == 'cookies':
@@ -345,6 +362,8 @@ def host(compile_only, resume, overlay=None):
         command.append('--ipc-validation')
     elif TEST == COOKIE_OBSERVER_TEST:
         command.append('--cookie-observers')
+    elif TEST == PACKAGE_PREPARATION_TEST:
+        command.append('--extension-package-preparation')
     if compile_only:
         command.append('--compile-only')
     if resume:
@@ -370,6 +389,7 @@ if __name__ == '__main__':
     mode.add_argument('--extension-runtime', action='store_true', help='Run an actual extension background/storage/message fixture')
     mode.add_argument('--ipc-validation', action='store_true', help='Test invalid dispatch flags through actual native WebKit connections')
     mode.add_argument('--cookie-observers', action='store_true', help='Test real network cookie observation across rapid unregister/register')
+    mode.add_argument('--extension-package-preparation', action='store_true', help='Test public extension preparation, cancellation and owned package cleanup')
     parser.add_argument('--extension-startup', choices=('cold', 'deferred', 'network', 'page'), default='cold',
                         help='Diagnostic startup preparation for the extension runtime fixture (default: cold)')
     parser.add_argument('--extension-fixture', choices=('storage', 'cookies'), default='storage',
@@ -389,6 +409,8 @@ if __name__ == '__main__':
         TEST = IPC_VALIDATION_TEST
     elif args.cookie_observers:
         TEST = COOKIE_OBSERVER_TEST
+    elif args.extension_package_preparation:
+        TEST = PACKAGE_PREPARATION_TEST
     EXTENSION_STARTUP = args.extension_startup
     EXTENSION_FIXTURE = args.extension_fixture
     TRACE_IPC = args.trace_ipc
