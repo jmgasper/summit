@@ -3,7 +3,10 @@
 The 25-file candidate connects menu property validation, typed identifiers,
 JavaScript bindings, UI IPC, menu model operations and callback dispatch.
 Both `menus` and `contextMenus` use the same native API object and require
-menu permission in the extension's main world. **Integrated engine patch: `ee896626...`.**
+menu permission in the extension's main world. **Menu/click-info snapshot: `ee896626...`.**
+Current patch `ccacaaa8...` adds [temporary tab access and command routing](webextensions-native-active-tab.md).
+The verification below records the menu snapshot; the linked document tracks
+the follow-up and its current build.
 No native menu has been displayed, and no extension has called these methods.
 The preceding `e4ad8a2c...` full build compiled all sources and resolved the
 menu-click dispatcher. Linking exposed three missing native functions (seven

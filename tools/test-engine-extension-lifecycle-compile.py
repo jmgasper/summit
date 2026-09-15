@@ -62,6 +62,7 @@ UI_API_UNITS = {'WebExtensionContextAPIMenusHaiku.cpp': 'UIProcess/Extensions/ha
                 'NetworkStorageSessionCurl.cpp': 'NetworkProcess/curl/NetworkStorageSessionCurl.cpp',
                 'WebExtensionContextAPICookiesHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionContextAPICookiesHaiku.cpp',
                 'WebExtensionCookieHostAccess.cpp': 'UIProcess/Extensions/haiku/WebExtensionCookieHostAccess.cpp',
+                'WebExtensionActiveTabGrant.cpp': 'UIProcess/Extensions/haiku/WebExtensionActiveTabGrant.cpp',
                 'WebExtensionCookieWriteParser.cpp': 'Shared/Extensions/WebExtensionCookieWriteParser.cpp',
                 'WebExtensionCookieQueryParser.cpp': 'Shared/Extensions/WebExtensionCookieQueryParser.cpp',
                 'WebExtensionCookieStoreIdentifier.cpp': 'Shared/Extensions/WebExtensionCookieStoreIdentifier.cpp',

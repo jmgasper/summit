@@ -1928,3 +1928,22 @@ native sources and generated target membership match. Evidence:
 
 The live QEMU desktop is available through VNC on host port **5905**. A visible
 Terminal now shows ongoing build output and milestones; see [VM access](VM.md).
+
+
+### Native temporary tab access and command routing
+
+Patch `ccacaaa8748dde7ba4432cd53707f5731332951c7b8d727f82d0d45599ff3b5d`
+connects user gestures to per-tab grants from the committed security origin,
+with exact scheme/host/port scope, private/file access gates, denial handling,
+navigation and lifecycle revocation. Temporary grants bypass global permission
+notifications. Native command dispatch retains a menu's clicked tab and rejects
+inaccessible frontmost windows. Action commands reach the action entry point;
+its native popup implementation and the DNR loader remain unfinished.
+
+**61 native helper checks and nine connected translation units pass.** The
+first full build exposed the missing `haiku/` prefix on the shared tab header's
+new include. That one-line correction is promoted and the full build is running.
+No extension or trusted native input has executed this path. Automatic injection,
+fetch/CORS behavior and actual asynchronous lifecycle checks remain unverified
+or unfinished. See [temporary tab access](webextensions-native-active-tab.md)
+for the implemented behavior, test scope and evidence.
