@@ -193,6 +193,33 @@ def main(generated):
                             checks += 1
                             if 'impl->setIcon(*frame, context, details,' not in result.stdout:
                                 raise RuntimeError('Cocoa ImageData must retain the raw JavaScript value')
+    if (generated / 'JSWebExtensionAPICookies.cpp').exists():
+        for haiku in (0, 1):
+            for interface, members in (('Cookies', {'get': True, 'getAll': True, 'set': True, 'remove': True,
+                                                  'getAllCookieStores': True, 'onChanged': True}),
+                                       ('Namespace', {'cookies': True})):
+                for suffix in ('h', 'cpp'):
+                    source = generated / ('JSWebExtensionAPI' + interface + '.' + suffix)
+                    if digest(source) != generation['files'][source.name]:
+                        raise RuntimeError('Generated cookie binding changed: ' + source.name)
+                    stripped = re.sub(r'^\s*#(?:include|import|pragma)\b[^\n]*', '', source.read_text(), flags=re.M)
+                    prefix = f'#define ENABLE(x) 1\n#define PLATFORM(x) PLATFORM_##x\n#define PLATFORM_HAIKU {haiku}\n#define PLATFORM_COCOA {1-haiku}\n'
+                    result = subprocess.run([compiler, '-E', '-P', '-x', 'c++', '-'], input=prefix + stripped,
+                                            text=True, capture_output=True, check=True)
+                    for name, present in members.items():
+                        checks += 1
+                        if bool(re.search(r'\b' + name + r'\b', result.stdout)) != present:
+                            raise RuntimeError('Incorrect cookie binding exposure: ' + name)
+                    if interface == 'Cookies' and suffix == 'cpp':
+                        for name in ('get', 'getAll', 'set', 'remove'):
+                            checks += 1
+                            if f'impl->{name}(details, callback.releaseNonNull(), exceptionString)' not in result.stdout:
+                                raise RuntimeError('Cookie method lost its C++ details/exception adapter: ' + name)
+                        checks += 1
+                        if 'String exceptionString;' not in result.stdout or 'NSString' in result.stdout:
+                            raise RuntimeError('C++ cookie bindings retain an Objective-C exception path')
+                    records.append({'source': source.name, 'haiku': haiku,
+                                    'preprocessed_sha256': hashlib.sha256(result.stdout.encode()).hexdigest()})
     report = {'scope': 'actual Perl generation and C++ preprocessing; no Cocoa or Haiku engine compile/runtime',
               'generation': str(generated), 'fixture_sha256': digest(idl), 'command': command,
               'checks': checks, 'cases': records, 'passed': True}

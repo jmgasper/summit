@@ -1223,7 +1223,7 @@ index 5f4a893485a9b9e1904cf2d342085ea83c5315c1..6522ed0048f3fd2cd4d63096941c38d0
      PREFIX WebCoreJSBindingsPrefix.h
      PREFIX_LANGUAGES CXX
 diff --git a/Source/WebCore/Headers.cmake b/Source/WebCore/Headers.cmake
-index 341db75e1e661ce171e21d818a544a19c5ecdbbd..a7ec26f8aa10a8c50c370e4c0dfc95fe032454ab 100644
+index 341db75e1e661ce171e21d818a544a19c5ecdbbd..9d0bd598ef39373c6843cc2a15e2e448cdfe60c7 100644
 --- a/Source/WebCore/Headers.cmake
 +++ b/Source/WebCore/Headers.cmake
 @@ -1018,6 +1018,7 @@ set(WebCore_PRIVATE_FRAMEWORK_HEADERS
@@ -1234,7 +1234,15 @@ index 341db75e1e661ce171e21d818a544a19c5ecdbbd..a7ec26f8aa10a8c50c370e4c0dfc95fe
      contentextensions/ContentExtensionsBackend.h
      contentextensions/ContentExtensionsDebugging.h
      contentextensions/ContentRuleListBlockedLoadInfo.h
-@@ -2938,6 +2939,8 @@ set(WebCore_PRIVATE_FRAMEWORK_HEADERS
+@@ -2231,6 +2232,7 @@ set(WebCore_PRIVATE_FRAMEWORK_HEADERS
+     platform/ContextMenu.h
+     platform/ContextMenuItem.h
+     platform/Cookie.h
++    platform/CookieChange.h
+     platform/CountedUserActivity.h
+     platform/Cursor.h
+     platform/DataListSuggestionPicker.h
+@@ -2938,6 +2940,8 @@ set(WebCore_PRIVATE_FRAMEWORK_HEADERS
      platform/mediastream/libwebrtc/LibWebRTCVideoFrameUtilities.h
      platform/mediastream/libwebrtc/VideoFrameLibWebRTC.h
  
@@ -2373,6 +2381,34 @@ index 89f2b38d398b9fb7d5319d06bf0b918cfc569e1b..fbd1eea56e97654861c4b24b25c0da6e
  #include "MouseEventWithHitTestResults.h"
  #include "NotImplemented.h"
  #include "Page.h"
+diff --git a/Source/WebCore/platform/CookieChange.h b/Source/WebCore/platform/CookieChange.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..a20566ed620a8f242de49978ae98d3ae48b110e0
+--- /dev/null
++++ b/Source/WebCore/platform/CookieChange.h
+@@ -0,0 +1,22 @@
++#pragma once
++
++#include "Cookie.h"
++
++namespace WebCore {
++
++// Only causes produced by the cookie backend are represented here. Curl does
++// not yet evict cookies, so it must not fabricate an eviction notification.
++enum class CookieChangeCause : uint8_t {
++    Explicit,
++    Overwrite,
++    Expired,
++    ExpiredOverwrite,
++};
++
++struct CookieChange {
++    Cookie cookie;
++    bool removed { false };
++    CookieChangeCause cause { CookieChangeCause::Explicit };
++};
++
++} // namespace WebCore
 diff --git a/Source/WebCore/platform/Curl.cmake b/Source/WebCore/platform/Curl.cmake
 index 6f41d983e804e857f5a4359c695301cc7f4b39bc..7e46183534090790690feacdceddb96d4614db7a 100644
 --- a/Source/WebCore/platform/Curl.cmake
@@ -15162,11 +15198,653 @@ index 1373e6e9b7b3e517f8570d11022f02a40ce42c27..97f95743448a1c0b9baa0c092916ac81
  {
  }
  
+diff --git a/Source/WebCore/platform/network/curl/CookieJarDB.cpp b/Source/WebCore/platform/network/curl/CookieJarDB.cpp
+index f638a07d7e0c3d2c8ff1e75512bee86ca39c4ce9..f468d470900ca699f6b2cf8982409508798db1af 100644
+--- a/Source/WebCore/platform/network/curl/CookieJarDB.cpp
++++ b/Source/WebCore/platform/network/curl/CookieJarDB.cpp
+@@ -31,10 +31,12 @@
+ #include "PublicSuffixStore.h"
+ #include "RegistrableDomain.h"
+ #include "SQLiteFileSystem.h"
++#include "SQLiteTransaction.h"
++#include <algorithm>
++#include <cmath>
+ #include <wtf/DateMath.h>
+ #include <wtf/FileHandle.h>
+ #include <wtf/FileSystem.h>
+-#include <wtf/MonotonicTime.h>
+ #include <wtf/TZoneMallocInlines.h>
+ #include <wtf/URL.h>
+ #include <wtf/Vector.h>
+@@ -59,6 +61,8 @@ WTF_MAKE_TZONE_ALLOCATED_IMPL(CookieJarDB);
+     "  session INTEGER NOT NULL,"\
+     "  httponly INTEGER NOT NULL DEFAULT 0,"\
+     "  secure INTEGER NOT NULL DEFAULT 0,"\
++    "  created REAL NOT NULL DEFAULT 0,"\
++    "  samesite INTEGER NOT NULL DEFAULT 0,"\
+     "  lastupdated INTEGER NOT NULL DEFAULT CURRENT_TIMESTAMP, "\
+     "  UNIQUE(name, domain, path));"_s
+ #define CREATE_DOMAIN_INDEX_SQL \
+@@ -72,8 +76,13 @@ WTF_MAKE_TZONE_ALLOCATED_IMPL(CookieJarDB);
+ #define CHECK_EXISTS_HTTPONLY_COOKIE_SQL \
+     "SELECT name FROM Cookie WHERE (name = ?) AND (domain = ?) AND (path = ?) AND (httponly = 1);"_s
+ #define SET_COOKIE_SQL \
+-    "INSERT OR REPLACE INTO Cookie (name, value, domain, path, expires, size, session, httponly, secure) "\
+-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);"_s
++    "INSERT INTO Cookie (name, value, domain, path, expires, size, session, httponly, secure, created, samesite) "\
++    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "\
++    "ON CONFLICT(name, domain, path) DO UPDATE SET value=excluded.value, expires=excluded.expires, "\
++    "size=excluded.size, session=excluded.session, httponly=excluded.httponly, secure=excluded.secure, "\
++    "samesite=excluded.samesite, created=COALESCE(NULLIF(Cookie.created, 0), excluded.created), lastupdated=CURRENT_TIMESTAMP;"_s
++#define SELECT_COOKIE_COLUMNS_SQL \
++    "SELECT name, value, domain, path, expires, httponly, secure, session, created, samesite FROM Cookie "
+ #define DELETE_COOKIE_BY_NAME_DOMAIN_PATH_SQL \
+     "DELETE FROM Cookie WHERE name = ? AND domain = ? AND path = ?;"_s
+ #define DELETE_COOKIE_BY_NAME_DOMAIN_SQL \
+@@ -91,7 +100,7 @@ WTF_MAKE_TZONE_ALLOCATED_IMPL(CookieJarDB);
+ // If the database schema is updated:
+ // - Increment schemaVersion
+ // - Add upgrade logic in verifySchemaVersion to migrate databases from the previous schema version
+-static constexpr int schemaVersion = 1;
++static constexpr int schemaVersion = 2;
+ 
+ 
+ CookieJarDB::CookieJarDB(const String& databasePath)
+@@ -101,6 +110,7 @@ CookieJarDB::CookieJarDB(const String& databasePath)
+ 
+ CookieJarDB::~CookieJarDB()
+ {
++    m_cookieExpirationTimer = nullptr;
+     closeDatabase();
+     m_database.setDidBeginCheckedPtrDeletion();
+ }
+@@ -124,9 +134,7 @@ bool CookieJarDB::openDatabase()
+ 
+     if (existsDatabaseFile) {
+         if (m_database.open(m_databasePath)) {
+-            if (checkDatabaseValidity())
+-                executeSQLStatement(m_database.prepareStatement(DELETE_ALL_SESSION_COOKIE_SQL));
+-            else {
++            if (!checkDatabaseValidity()) {
+                 // delete database and try to re-create again
+                 LOG_ERROR("Cookie database validity check failed, attempting to recreate the database");
+                 m_database.close();
+@@ -153,7 +161,10 @@ bool CookieJarDB::openDatabase()
+     if (!isOnMemory() && !m_database.turnOnIncrementalAutoVacuum())
+         LOG_ERROR("Unable to turn on incremental auto-vacuum (%d %s)", m_database.lastError(), m_database.lastErrorMsg());
+ 
+-    verifySchemaVersion();
++    if (!verifySchemaVersion()) {
++        m_database.close();
++        return false;
++    }
+ 
+     if (!existsDatabaseFile || !m_database.tableExists("Cookie"_s)) {
+         bool ok = executeSQLStatement(m_database.prepareStatement(CREATE_COOKIE_TABLE_SQL))
+@@ -171,14 +182,23 @@ bool CookieJarDB::openDatabase()
+     m_database.setSynchronous(SQLiteDatabase::SyncNormal);
+ 
+     // create prepared statements
+-    createPrepareStatement(SET_COOKIE_SQL);
+-    createPrepareStatement(CHECK_EXISTS_COOKIE_SQL);
+-    createPrepareStatement(CHECK_EXISTS_HTTPONLY_COOKIE_SQL);
+-    createPrepareStatement(DELETE_COOKIE_BY_NAME_DOMAIN_PATH_SQL);
+-    createPrepareStatement(DELETE_COOKIE_BY_NAME_DOMAIN_SQL);
+-    createPrepareStatement(DELETE_COOKIES_BY_DOMAIN_SQL);
+-    createPrepareStatement(DELETE_COOKIES_BY_DOMAIN_EXCEPT_HTTP_ONLY_SQL);
++    if (!createPrepareStatement(SET_COOKIE_SQL)
++        || !createPrepareStatement(CHECK_EXISTS_COOKIE_SQL)
++        || !createPrepareStatement(CHECK_EXISTS_HTTPONLY_COOKIE_SQL)
++        || !createPrepareStatement(DELETE_COOKIE_BY_NAME_DOMAIN_PATH_SQL)
++        || !createPrepareStatement(DELETE_COOKIE_BY_NAME_DOMAIN_SQL)
++        || !createPrepareStatement(DELETE_COOKIES_BY_DOMAIN_SQL)
++        || !createPrepareStatement(DELETE_COOKIES_BY_DOMAIN_EXCEPT_HTTP_ONLY_SQL)) {
++        closeDatabase();
++        return false;
++    }
+ 
++    if (existsDatabaseFile && !executeSQLStatement(m_database.prepareStatement(DELETE_ALL_SESSION_COOKIE_SQL))) {
++        closeDatabase();
++        return false;
++    }
++
++    scheduleCookieExpiration();
+     return true;
+ }
+ 
+@@ -190,32 +210,36 @@ void CookieJarDB::closeDatabase()
+     }
+ }
+ 
+-void CookieJarDB::verifySchemaVersion()
++bool CookieJarDB::verifySchemaVersion()
+ {
+-    if (isOnMemory())
+-        return;
+-
+     auto statement = m_database.prepareStatement("PRAGMA user_version"_s);
+-    int version = statement ? statement->columnInt(0) : 0;
++    if (!statement || statement->step() != SQLITE_ROW)
++        return false;
++    int version = statement->columnInt(0);
++    statement = nullptr;
+     if (version == schemaVersion)
+-        return;
+-
+-    switch (version) {
+-        // Placeholder for schema version upgrade logic
+-        // Ensure cases fall through to the next version's upgrade logic
+-
+-    case 0:
+-        deleteAllTables();
+-        break;
+-    default:
+-        // This case can be reached when downgrading versions
+-        LOG_ERROR("Unknown cookie database version: %d", version);
+-        deleteAllTables();
+-        break;
++        return true;
++    if (version < 0 || version > schemaVersion) {
++        LOG_ERROR("Unsupported cookie database version: %d", version);
++        return false;
+     }
+ 
+-    // Update version
+-    executeSQLStatement(m_database.prepareStatementSlow(makeString("PRAGMA user_version="_s, schemaVersion)));
++    bool hasCookies = m_database.tableExists("Cookie"_s);
++    SQLiteTransaction transaction(m_database);
++    transaction.begin();
++    if (!transaction.inProgress())
++        return false;
++    // Version zero with an existing table is the legacy, unversioned schema.
++    // New databases get the complete current schema below in openDatabase().
++    if (hasCookies && version <= 1) {
++        if (!m_database.executeCommand("ALTER TABLE Cookie ADD COLUMN created REAL NOT NULL DEFAULT 0"_s)
++            || !m_database.executeCommand("ALTER TABLE Cookie ADD COLUMN samesite INTEGER NOT NULL DEFAULT 0"_s))
++            return false;
++    }
++    if (!m_database.executeCommandSlow(makeString("PRAGMA user_version="_s, schemaVersion)))
++        return false;
++    transaction.commit();
++    return !transaction.inProgress();
+ }
+ 
+ void CookieJarDB::deleteAllTables()
+@@ -385,13 +409,13 @@ std::optional<Vector<Cookie>> CookieJarDB::searchCookies(const URL& firstParty,
+ 
+     RegistrableDomain registrableDomain { requestUrl };
+ 
+-    auto pstmt = m_database.prepareStatement("SELECT name, value, domain, path, expires, httponly, secure, session FROM Cookie WHERE "\
+-        "(NOT ((session = 0) AND (expires < ?)))"
++    auto pstmt = m_database.prepareStatement("SELECT name, value, domain, path, expires, httponly, secure, session, created, samesite FROM Cookie WHERE "\
++        "(NOT ((session = 0) AND (expires <= ?)))"
+         "AND (httponly = COALESCE(NULLIF(?, -1), httponly)) "\
+         "AND (secure = COALESCE(NULLIF(?, -1), secure)) "\
+         "AND (session = COALESCE(NULLIF(?, -1), session)) "\
+         "AND ((domain = ?) OR (domain GLOB ?)) "\
+-        "ORDER BY length(path) DESC, lastupdated"_s);
++        "ORDER BY length(path) DESC, created, rowid"_s);
+     if (!pstmt)
+         return std::nullopt;
+ 
+@@ -410,9 +434,6 @@ std::optional<Vector<Cookie>> CookieJarDB::searchCookies(const URL& firstParty,
+ 
+     while (pstmt->step() == SQLITE_ROW) {
+ 
+-        if (results.size() > MAX_COOKIE_PER_DOMAIN)
+-            break;
+-
+         String cookieName = pstmt->columnText(0);
+         String cookieValue = pstmt->columnText(1);
+         String cookieDomain = pstmt->columnText(2).convertToASCIILowercase();
+@@ -443,6 +464,10 @@ std::optional<Vector<Cookie>> CookieJarDB::searchCookies(const URL& firstParty,
+         cookie.httpOnly = cookieHttpOnly;
+         cookie.secure = cookieSecure;
+         cookie.session = cookieSession;
++        cookie.created = pstmt->columnDouble(8);
++        auto sameSite = pstmt->columnInt(9);
++        if (sameSite >= 0 && sameSite <= static_cast<int>(Cookie::SameSitePolicy::Strict))
++            cookie.sameSite = static_cast<Cookie::SameSitePolicy>(sameSite);
+         results.append(WTF::move(cookie));
+     }
+ 
+@@ -455,10 +480,11 @@ Vector<Cookie> CookieJarDB::getAllCookies()
+     if (!isEnabled() || !m_database.isOpen())
+         return result;
+ 
+-    auto pstmt = m_database.prepareStatement("SELECT name, value, domain, path, expires, httponly, secure, session FROM Cookie"_s);
++    auto pstmt = m_database.prepareStatement("SELECT name, value, domain, path, expires, httponly, secure, session, created, samesite FROM Cookie WHERE session = 1 OR expires > ? ORDER BY length(path) DESC, created, rowid"_s);
+     if (!pstmt)
+         return result;
+ 
++    pstmt->bindInt64(1, WallTime::now().secondsSinceEpoch().milliseconds());
+     while (pstmt->step() == SQLITE_ROW) {
+         Cookie cookie;
+         cookie.name = pstmt->columnText(0);
+@@ -471,6 +497,10 @@ Vector<Cookie> CookieJarDB::getAllCookies()
+         cookie.httpOnly = (pstmt->columnInt(5) == 1);
+         cookie.secure = (pstmt->columnInt(6) == 1);
+         cookie.session = (pstmt->columnInt(7) == 1);
++        cookie.created = pstmt->columnDouble(8);
++        auto sameSite = pstmt->columnInt(9);
++        if (sameSite >= 0 && sameSite <= static_cast<int>(Cookie::SameSitePolicy::Strict))
++            cookie.sameSite = static_cast<Cookie::SameSitePolicy>(sameSite);
+         result.append(WTF::move(cookie));
+     }
+     return result;
+@@ -517,25 +547,176 @@ bool CookieJarDB::canAcceptCookie(const Cookie& cookie, const URL& firstParty, c
+     return true;
+ }
+ 
++static std::optional<Cookie> cookieFromRow(SQLiteStatement& statement)
++{
++    Cookie cookie;
++    cookie.name = statement.columnText(0);
++    cookie.value = statement.columnText(1);
++    cookie.domain = statement.columnText(2);
++    cookie.path = statement.columnText(3);
++    cookie.session = statement.columnInt(7) == 1;
++    if (!cookie.session)
++        cookie.expires = static_cast<double>(statement.columnInt64(4));
++    cookie.httpOnly = statement.columnInt(5) == 1;
++    cookie.secure = statement.columnInt(6) == 1;
++    cookie.created = statement.columnDouble(8);
++    auto sameSite = statement.columnInt(9);
++    if (sameSite < 0 || sameSite > static_cast<int>(Cookie::SameSitePolicy::Strict))
++        return std::nullopt;
++    cookie.sameSite = static_cast<Cookie::SameSitePolicy>(sameSite);
++    return cookie;
++}
++
++static bool isExpired(const Cookie& cookie, double now)
++{
++    return !cookie.session && cookie.expires.value_or(0) <= now;
++}
++
++bool CookieJarDB::readCookie(const Cookie& key, std::optional<Cookie>& cookie)
++{
++    cookie = std::nullopt;
++    auto statement = m_database.prepareStatement(SELECT_COOKIE_COLUMNS_SQL "WHERE name = ? AND domain = ? AND path = ?"_s);
++    if (!statement || statement->bindText(1, key.name) != SQLITE_OK
++        || statement->bindText(2, key.domain) != SQLITE_OK || statement->bindText(3, key.path) != SQLITE_OK)
++        return false;
++    auto code = statement->step();
++    if (code == SQLITE_DONE)
++        return true;
++    if (code != SQLITE_ROW) {
++        checkSQLiteReturnCode(code);
++        return false;
++    }
++    cookie = cookieFromRow(*statement);
++    if (!cookie || statement->step() != SQLITE_DONE) {
++        cookie = std::nullopt;
++        return false;
++    }
++    return true;
++}
++
++void CookieJarDB::setCookieChangeHandler(RefPtr<ChangeHandler>&& handler)
++{
++    m_cookieChangeHandler = WTF::move(handler);
++    if (!m_cookieChangeHandler) {
++        m_cookieExpirationTimer = nullptr;
++        return;
++    }
++    if (!m_cookieExpirationTimer) {
++        m_cookieExpirationTimer = makeUnique<RunLoop::Timer>(Ref { RunLoop::currentSingleton() }, "CookieJarDB::expiration"_s, [this] {
++            cookieExpirationTimerFired();
++        });
++    }
++    scheduleCookieExpiration();
++}
++
++void CookieJarDB::scheduleCookieExpiration()
++{
++    if (!m_cookieExpirationTimer)
++        return;
++    if (!isEnabled() || !m_database.isOpen()) {
++        m_cookieExpirationTimer->stop();
++        return;
++    }
++    auto statement = m_database.prepareStatement("SELECT MIN(expires), COUNT(*) FROM Cookie WHERE session = 0"_s);
++    if (!statement || statement->step() != SQLITE_ROW) {
++        m_cookieExpirationTimer->startOneShot(1_s);
++        return;
++    }
++    if (!statement->columnInt64(1)) {
++        m_cookieExpirationTimer->stop();
++        return;
++    }
++    auto delay = Seconds::fromMilliseconds(statement->columnInt64(0) - WallTime::now().secondsSinceEpoch().milliseconds());
++    // Recheck the wall clock at least once per minute while persistent cookies
++    // exist. A clock adjustment must not postpone expiry for days.
++    m_cookieExpirationTimer->startOneShot(std::clamp(delay, 1_ms, 60_s));
++}
++
++void CookieJarDB::cookieExpirationTimerFired()
++{
++    // A failed SQL deletion retries later. A successful sweep schedules the
++    // next expiry before notifying observers, which may destroy this database.
++    m_cookieExpirationTimer->startOneShot(1_s);
++    deleteExpiredCookies();
++}
++
++void CookieJarDB::notifyCookieChanges(Vector<CookieChange>&& changes)
++{
++    // Keep the callback alive if it unregisters itself. All transactions and
++    // statements have finished, and callers must not touch this database after
++    // delivery: the callback may re-enter a mutation or destroy its owner.
++    scheduleCookieExpiration();
++    RefPtr handler = m_cookieChangeHandler;
++    if (handler && !changes.isEmpty())
++        handler->run(WTF::move(changes));
++}
++
+ bool CookieJarDB::setCookie(const Cookie& cookie)
+ {
+-    auto expires = cookie.expires.value_or(0.0);
+-    if (!cookie.session && MonotonicTime::fromRawSeconds(expires / msPerSecond) <= MonotonicTime::now())
+-        return deleteCookieInternal(cookie.name, cookie.domain, cookie.path);
++    std::optional<Cookie> storedCookie;
++    return setCookieWithResult(cookie, storedCookie);
++}
+ 
+-    auto& statement = preparedStatement(SET_COOKIE_SQL);
++bool CookieJarDB::setCookieWithResult(const Cookie& cookie, std::optional<Cookie>& storedCookie)
++{
++    storedCookie = std::nullopt;
++    if (!isEnabled() || !m_database.isOpen() || !cookie.partitionKey.isEmpty())
++        return false;
++    auto expires = cookie.expires.value_or(0.0);
++    if (!std::isfinite(expires) || expires < static_cast<double>(std::numeric_limits<int64_t>::min())
++        || expires >= static_cast<double>(std::numeric_limits<int64_t>::max()))
++        return false;
+ 
+-    // FIXME: We should have some eviction policy when a domain goes over MAX_COOKIE_PER_DOMAIN
+-    statement.bindText(1, cookie.name);
+-    statement.bindText(2, cookie.value);
+-    statement.bindText(3, cookie.domain);
+-    statement.bindText(4, cookie.path);
+-    statement.bindInt64(5, cookie.session ? 0 : static_cast<int64_t>(expires));
+-    statement.bindInt(6, cookie.value.length());
+-    statement.bindInt(7, cookie.session ? 1 : 0);
+-    statement.bindInt(8, cookie.httpOnly ? 1 : 0);
+-    statement.bindInt(9, cookie.secure ? 1 : 0);
+-    return checkSQLiteReturnCode(statement.step());
++    Vector<CookieChange> changes;
++    std::optional<Cookie> result;
++    {
++        SQLiteTransaction transaction(m_database);
++        transaction.begin();
++        if (!transaction.inProgress())
++            return false;
++        std::optional<Cookie> previous;
++        if (!readCookie(cookie, previous))
++            return false;
++        auto now = WallTime::now().secondsSinceEpoch().milliseconds();
++        bool previousExpired = previous && isExpired(*previous, now);
++        bool expiredReplacement = !cookie.session && expires <= now;
++        if (previous && (previousExpired || expiredReplacement)) {
++            auto statement = m_database.prepareStatement(DELETE_COOKIE_BY_NAME_DOMAIN_PATH_SQL);
++            if (!statement || statement->bindText(1, cookie.name) != SQLITE_OK
++                || statement->bindText(2, cookie.domain) != SQLITE_OK || statement->bindText(3, cookie.path) != SQLITE_OK
++                || !checkSQLiteReturnCode(statement->step()) || m_database.lastChanges() != 1)
++                return false;
++        }
++        if (!expiredReplacement) {
++            auto statement = m_database.prepareStatement(SET_COOKIE_SQL);
++            // FIXME: Add an eviction policy before reporting eviction events.
++            if (!statement || statement->bindText(1, cookie.name) != SQLITE_OK
++                || statement->bindText(2, cookie.value) != SQLITE_OK || statement->bindText(3, cookie.domain) != SQLITE_OK
++                || statement->bindText(4, cookie.path) != SQLITE_OK
++                || statement->bindInt64(5, cookie.session ? 0 : static_cast<int64_t>(expires)) != SQLITE_OK
++                || statement->bindInt(6, cookie.value.length()) != SQLITE_OK
++                || statement->bindInt(7, cookie.session ? 1 : 0) != SQLITE_OK
++                || statement->bindInt(8, cookie.httpOnly ? 1 : 0) != SQLITE_OK
++                || statement->bindInt(9, cookie.secure ? 1 : 0) != SQLITE_OK
++                || statement->bindDouble(10, std::isfinite(cookie.created) && cookie.created > 0 ? cookie.created : now) != SQLITE_OK
++                || statement->bindInt(11, static_cast<int>(cookie.sameSite)) != SQLITE_OK
++                || !checkSQLiteReturnCode(statement->step()) || m_database.lastChanges() != 1)
++                return false;
++            if (!readCookie(cookie, result) || !result)
++                return false;
++        }
++        if (previous)
++            changes.append({ WTF::move(*previous), true, previousExpired ? CookieChangeCause::Expired : expiredReplacement ? CookieChangeCause::ExpiredOverwrite : CookieChangeCause::Overwrite });
++        if (result)
++            changes.append({ *result, false, CookieChangeCause::Explicit });
++        transaction.commit();
++        if (transaction.inProgress())
++            return false;
++    }
++    // Capture the receipt before callbacks can perform another write.
++    storedCookie = WTF::move(result);
++    notifyCookieChanges(WTF::move(changes));
++    return true;
+ }
+ 
+ bool CookieJarDB::setCookie(const URL& firstParty, const URL& url, const String& body, CookieJarDB::Source source, std::optional<Seconds> cappedLifetime)
+@@ -586,6 +767,17 @@ HashSet<String> CookieJarDB::allDomains()
+     return domains;
+ }
+ 
++bool CookieJarDB::deleteCookie(const Cookie& cookie)
++{
++    if (!cookie.partitionKey.isEmpty())
++        return false;
++    // An empty path is still an exact key for this API.
++    return deleteCookiesMatching(SELECT_COOKIE_COLUMNS_SQL "WHERE name = ? AND domain = ? AND path = ? ORDER BY rowid"_s,
++        DELETE_COOKIE_BY_NAME_DOMAIN_PATH_SQL, [&cookie](SQLiteStatement& statement) {
++            return statement.bindText(1, cookie.name) == SQLITE_OK && statement.bindText(2, cookie.domain) == SQLITE_OK && statement.bindText(3, cookie.path) == SQLITE_OK;
++        }, CookieChangeCause::Explicit);
++}
++
+ bool CookieJarDB::deleteCookie(const String& url, const String& name)
+ {
+     if (!isEnabled() || !m_database.isOpen())
+@@ -607,12 +799,55 @@ bool CookieJarDB::deleteCookie(const String& url, const String& name)
+ 
+ bool CookieJarDB::deleteCookieInternal(const String& name, const String& domain, const String& path)
+ {
+-    auto& statement = preparedStatement(path.isEmpty() ? DELETE_COOKIE_BY_NAME_DOMAIN_SQL : DELETE_COOKIE_BY_NAME_DOMAIN_PATH_SQL);
+-    statement.bindText(1, name);
+-    statement.bindText(2, domain);
+-    if (!path.isEmpty())
+-        statement.bindText(3, path);
+-    return checkSQLiteReturnCode(statement.step());
++    return deleteCookiesMatching(path.isEmpty() ? SELECT_COOKIE_COLUMNS_SQL "WHERE name = ? AND domain = ? ORDER BY rowid"_s
++        : SELECT_COOKIE_COLUMNS_SQL "WHERE name = ? AND domain = ? AND path = ? ORDER BY rowid"_s,
++        path.isEmpty() ? DELETE_COOKIE_BY_NAME_DOMAIN_SQL : DELETE_COOKIE_BY_NAME_DOMAIN_PATH_SQL,
++        [&name, &domain, &path](SQLiteStatement& statement) {
++            return statement.bindText(1, name) == SQLITE_OK && statement.bindText(2, domain) == SQLITE_OK
++                && (path.isEmpty() || statement.bindText(3, path) == SQLITE_OK);
++        }, CookieChangeCause::Explicit);
++}
++
++bool CookieJarDB::deleteCookiesMatching(ASCIILiteral selectSQL, ASCIILiteral deleteSQL, Function<bool(SQLiteStatement&)>&& bind, CookieChangeCause cause)
++{
++    if (!isEnabled() || !m_database.isOpen())
++        return false;
++    Vector<CookieChange> changes;
++    {
++        SQLiteTransaction transaction(m_database);
++        transaction.begin();
++        if (!transaction.inProgress())
++            return false;
++        auto now = WallTime::now().secondsSinceEpoch().milliseconds();
++        {
++            auto select = m_database.prepareStatement(selectSQL);
++            if (!select || !bind(*select))
++                return false;
++            int code;
++            while ((code = select->step()) == SQLITE_ROW) {
++                auto cookie = cookieFromRow(*select);
++                if (!cookie)
++                    return false;
++                auto removalCause = isExpired(*cookie, now) ? CookieChangeCause::Expired : cause;
++                changes.append({ WTF::move(*cookie), true, removalCause });
++            }
++            if (code != SQLITE_DONE) {
++                checkSQLiteReturnCode(code);
++                return false;
++            }
++        }
++        {
++            auto statement = m_database.prepareStatement(deleteSQL);
++            if (!statement || !bind(*statement) || !checkSQLiteReturnCode(statement->step())
++                || static_cast<size_t>(m_database.lastChanges()) != changes.size())
++                return false;
++        }
++        transaction.commit();
++        if (transaction.inProgress())
++            return false;
++    }
++    notifyCookieChanges(WTF::move(changes));
++    return true;
+ }
+ 
+ bool CookieJarDB::deleteCookies(const String&)
+@@ -624,24 +859,34 @@ bool CookieJarDB::deleteCookies(const String&)
+ 
+ bool CookieJarDB::deleteCookiesForHostname(const String& hostname, IncludeHttpOnlyCookies includeHttpOnlyCookies)
+ {
+-    auto& statement = preparedStatement(includeHttpOnlyCookies == IncludeHttpOnlyCookies::Yes ? DELETE_COOKIES_BY_DOMAIN_SQL : DELETE_COOKIES_BY_DOMAIN_EXCEPT_HTTP_ONLY_SQL);
+-    statement.bindText(1, hostname);
+-    return checkSQLiteReturnCode(statement.step());
++    return deleteCookiesMatching(includeHttpOnlyCookies == IncludeHttpOnlyCookies::Yes
++        ? SELECT_COOKIE_COLUMNS_SQL "WHERE domain = ? ORDER BY rowid"_s
++        : SELECT_COOKIE_COLUMNS_SQL "WHERE domain = ? AND httponly = 0 ORDER BY rowid"_s,
++        includeHttpOnlyCookies == IncludeHttpOnlyCookies::Yes ? DELETE_COOKIES_BY_DOMAIN_SQL : DELETE_COOKIES_BY_DOMAIN_EXCEPT_HTTP_ONLY_SQL,
++        [&hostname](SQLiteStatement& statement) { return statement.bindText(1, hostname) == SQLITE_OK; }, CookieChangeCause::Explicit);
+ }
+ 
+ bool CookieJarDB::deleteAllCookies()
+ {
+-    if (!isEnabled() || !m_database.isOpen())
+-        return false;
++    return deleteCookiesMatching(SELECT_COOKIE_COLUMNS_SQL "ORDER BY rowid"_s, DELETE_ALL_COOKIE_SQL,
++        [](SQLiteStatement&) { return true; }, CookieChangeCause::Explicit);
++}
+ 
+-    return executeSQLStatement(m_database.prepareStatement(DELETE_ALL_COOKIE_SQL));
++bool CookieJarDB::deleteExpiredCookies()
++{
++    auto now = static_cast<int64_t>(WallTime::now().secondsSinceEpoch().milliseconds());
++    return deleteCookiesMatching(SELECT_COOKIE_COLUMNS_SQL "WHERE session = 0 AND expires <= ? ORDER BY rowid"_s,
++        "DELETE FROM Cookie WHERE session = 0 AND expires <= ?"_s,
++        [now](SQLiteStatement& statement) { return statement.bindInt64(1, now) == SQLITE_OK; }, CookieChangeCause::Expired);
+ }
+ 
+-void CookieJarDB::createPrepareStatement(ASCIILiteral sql)
++bool CookieJarDB::createPrepareStatement(ASCIILiteral sql)
+ {
+     auto statement = m_database.prepareStatement(sql);
+-    ASSERT(statement);
++    if (!statement)
++        return false;
+     m_statements.add(sql, WTF::move(statement));
++    return true;
+ }
+ 
+ SQLiteStatement& CookieJarDB::preparedStatement(const String& sql)
+@@ -654,7 +899,8 @@ SQLiteStatement& CookieJarDB::preparedStatement(const String& sql)
+ 
+ bool CookieJarDB::executeSQLStatement(std::unique_ptr<SQLiteStatement>&& statement)
+ {
+-    if (!statement && !checkSQLiteReturnCode(m_database.lastError())) {
++    if (!statement) {
++        checkSQLiteReturnCode(m_database.lastError());
+         LOG_ERROR("Failed to prepare sql statement with error: %s", m_database.lastErrorMsg());
+         return false;
+     }
+diff --git a/Source/WebCore/platform/network/curl/CookieJarDB.h b/Source/WebCore/platform/network/curl/CookieJarDB.h
+index 81dd17092439fa65a2bbcefb55cc98f77eccf2f0..61d795fd41c597a94a654ff2759e5127d97162c5 100644
+--- a/Source/WebCore/platform/network/curl/CookieJarDB.h
++++ b/Source/WebCore/platform/network/curl/CookieJarDB.h
+@@ -24,12 +24,15 @@
+ 
+ #pragma once
+ 
+-#include "Cookie.h"
++#include "CookieChange.h"
+ #include "CookieJar.h"
+ #include "SQLiteDatabase.h"
+ #include "SQLiteStatement.h"
++#include <wtf/Function.h>
+ #include <wtf/HashMap.h>
+ #include <wtf/Noncopyable.h>
++#include <wtf/RunLoop.h>
++#include <wtf/SharedTask.h>
+ #include <wtf/TZoneMalloc.h>
+ #include <wtf/text/StringHash.h>
+ 
+@@ -55,7 +58,7 @@ public:
+     WEBCORE_EXPORT void open();
+     bool isEnabled() const;
+ 
+-    void setAcceptPolicy(CookieAcceptPolicy policy) { m_acceptPolicy = policy; }
++    void setAcceptPolicy(CookieAcceptPolicy policy) { m_acceptPolicy = policy; scheduleCookieExpiration(); }
+     CookieAcceptPolicy acceptPolicy() const { return m_acceptPolicy; }
+ 
+     WEBCORE_EXPORT HashSet<String> allDomains();
+@@ -63,11 +66,20 @@ public:
+     WEBCORE_EXPORT Vector<Cookie> getAllCookies();
+     WEBCORE_EXPORT bool setCookie(const URL& firstParty, const URL&, const String& cookie, Source, std::optional<Seconds> cappedLifetime = std::nullopt);
+     WEBCORE_EXPORT bool setCookie(const Cookie&);
++    // Returns the row actually stored, including preserved creation time and
++    // normalized expiry. Successful expiry/deletion returns an empty cookie.
++    WEBCORE_EXPORT bool setCookieWithResult(const Cookie&, std::optional<Cookie>&);
+ 
++    WEBCORE_EXPORT bool deleteCookie(const Cookie&);
+     WEBCORE_EXPORT bool deleteCookie(const String& url, const String& name);
+     bool deleteCookies(const String& url);
+     WEBCORE_EXPORT bool deleteCookiesForHostname(const String& hostname, IncludeHttpOnlyCookies);
+     WEBCORE_EXPORT bool deleteAllCookies();
++    WEBCORE_EXPORT bool deleteExpiredCookies();
++
++    using ChangeHandler = SharedTask<void(Vector<CookieChange>&&)>;
++    // A replacement is delivered as one ordered batch, after the SQL commit.
++    WEBCORE_EXPORT void setCookieChangeHandler(RefPtr<ChangeHandler>&&);
+ 
+     WEBCORE_EXPORT CookieJarDB(const String& databasePath);
+     WEBCORE_EXPORT ~CookieJarDB();
+@@ -91,14 +103,22 @@ private:
+     bool checkDatabaseValidity();
+     void deleteAllDatabaseFiles();
+ 
+-    void verifySchemaVersion();
++    bool verifySchemaVersion();
+     void deleteAllTables();
+ 
+-    void createPrepareStatement(ASCIILiteral);
++    bool createPrepareStatement(ASCIILiteral);
+     SQLiteStatement& preparedStatement(const String&);
+     bool executeSQLStatement(std::unique_ptr<SQLiteStatement>&&);
+ 
+     bool deleteCookieInternal(const String& name, const String& domain, const String& path);
++    bool readCookie(const Cookie&, std::optional<Cookie>&);
++    bool deleteCookiesMatching(ASCIILiteral selectSQL, ASCIILiteral deleteSQL, Function<bool(SQLiteStatement&)>&&, CookieChangeCause);
++    void notifyCookieChanges(Vector<CookieChange>&&);
++    void scheduleCookieExpiration();
++    void cookieExpirationTimerFired();
++    RefPtr<ChangeHandler> m_cookieChangeHandler;
++    std::unique_ptr<RunLoop::Timer> m_cookieExpirationTimer;
++
+     bool hasHttpOnlyCookie(const String& name, const String& domain, const String& path);
+     bool canAcceptCookie(const Cookie&, const URL& firstParty, const URL&, CookieJarDB::Source);
+     bool checkCookieAcceptPolicy(const URL& firstParty, const URL&);
 diff --git a/Source/WebCore/platform/network/curl/CookieUtil.cpp b/Source/WebCore/platform/network/curl/CookieUtil.cpp
-index 7d0ffb01d0cfc846045fea9ad8a4b2e7a7d63e8c..34817cb46214bf9423137af4685733e906df5494 100644
+index 7d0ffb01d0cfc846045fea9ad8a4b2e7a7d63e8c..6635b56b82d892e8c385a661b7158bd35cb9505c 100644
 --- a/Source/WebCore/platform/network/curl/CookieUtil.cpp
 +++ b/Source/WebCore/platform/network/curl/CookieUtil.cpp
-@@ -60,25 +60,17 @@ bool isIPAddress(const String& hostname)
+@@ -55,30 +55,24 @@ namespace CookieUtil {
+ 
+ bool isIPAddress(const String& hostname)
+ {
++    if (hostname.startsWith('[') && hostname.endsWith(']'))
++        return URL::hostIsIPAddress(StringView(hostname).substring(1, hostname.length() - 2));
+     return URL::hostIsIPAddress(hostname);
+ }
  
  bool domainMatch(const String& cookieDomain, const String& host)
  {
@@ -15201,7 +15879,23 @@ index 7d0ffb01d0cfc846045fea9ad8a4b2e7a7d63e8c..34817cb46214bf9423137af4685733e9
  }
  
  static std::optional<double> parseExpiresMS(std::span<const Latin1Character> expires)
-@@ -177,8 +169,10 @@ std::optional<Cookie> parseCookieHeader(const String& cookieLine)
+@@ -107,7 +101,14 @@ static void parseCookieAttributes(const String& attribute, bool& hasMaxAge, Cook
+         result.httpOnly = true;
+     else if (equalLettersIgnoringASCIICase(attributeName, "secure"_s))
+         result.secure = true;
+-    else if (equalLettersIgnoringASCIICase(attributeName, "domain"_s)) {
++    else if (equalLettersIgnoringASCIICase(attributeName, "samesite"_s)) {
++        if (equalLettersIgnoringASCIICase(attributeValue, "lax"_s))
++            result.sameSite = Cookie::SameSitePolicy::Lax;
++        else if (equalLettersIgnoringASCIICase(attributeValue, "strict"_s))
++            result.sameSite = Cookie::SameSitePolicy::Strict;
++        else
++            result.sameSite = Cookie::SameSitePolicy::None;
++    } else if (equalLettersIgnoringASCIICase(attributeName, "domain"_s)) {
+         if (attributeValue.isEmpty())
+             return;
+ 
+@@ -177,8 +178,10 @@ std::optional<Cookie> parseCookieHeader(const String& cookieLine)
      bool hasMaxAge = false;
      cookie.session = true;
  
@@ -21048,20 +21742,21 @@ index efb0e18ef3681d9f33b6c784f0fb22f1ff0e80eb..19ec94335716b9ab75d52343c7adcad7
  
      undefined setTopDocumentURLForQuirks(DOMString urlString);
 diff --git a/Source/WebKit/CMakeLists.txt b/Source/WebKit/CMakeLists.txt
-index e516087e3331311877a49df982704f642f6dffe9..88ba3d96097929c499b0ac1d8b25de99ad631e9a 100644
+index e516087e3331311877a49df982704f642f6dffe9..50fd33e0123442df23409f37a042174adc0749d5 100644
 --- a/Source/WebKit/CMakeLists.txt
 +++ b/Source/WebKit/CMakeLists.txt
-@@ -142,9 +142,7 @@ list(APPEND WebKit_UNIFIED_SOURCE_LIST_FILES
+@@ -142,10 +142,7 @@ list(APPEND WebKit_UNIFIED_SOURCE_LIST_FILES
  )
  
  set(WebKit_BINDINGS_IN_FILES
 -    WebProcess/Extensions/Interfaces/WebExtensionAPIAction
      WebProcess/Extensions/Interfaces/WebExtensionAPIBookmarks
 -    WebProcess/Extensions/Interfaces/WebExtensionAPICommands
-     WebProcess/Extensions/Interfaces/WebExtensionAPICookies
+-    WebProcess/Extensions/Interfaces/WebExtensionAPICookies
      WebProcess/Extensions/Interfaces/WebExtensionAPIDOM
      WebProcess/Extensions/Interfaces/WebExtensionAPIDeclarativeNetRequest
-@@ -153,31 +151,33 @@ set(WebKit_BINDINGS_IN_FILES
+     WebProcess/Extensions/Interfaces/WebExtensionAPIDevTools
+@@ -153,31 +150,34 @@ set(WebKit_BINDINGS_IN_FILES
      WebProcess/Extensions/Interfaces/WebExtensionAPIDevToolsInspectedWindow
      WebProcess/Extensions/Interfaces/WebExtensionAPIDevToolsNetwork
      WebProcess/Extensions/Interfaces/WebExtensionAPIDevToolsPanels
@@ -21088,6 +21783,7 @@ index e516087e3331311877a49df982704f642f6dffe9..88ba3d96097929c499b0ac1d8b25de99
  )
  
  set(WebKit_CPP_BINDINGS_IN_FILES
++    WebProcess/Extensions/Interfaces/WebExtensionAPICookies
 +    WebProcess/Extensions/Interfaces/WebExtensionAPIAction
 +    WebProcess/Extensions/Interfaces/WebExtensionAPIWindowsEvent
 +    WebProcess/Extensions/Interfaces/WebExtensionAPIWindows
@@ -21137,6 +21833,189 @@ index 7f1b4513bad9ff098f373a086052df70970f66e5..f5546aaa38388666b6678dbea27b6c65
      WebExtensionAPIRuntime \
      WebExtensionAPITest \
  	WebExtensionAPIWebPageNamespace \
+diff --git a/Source/WebKit/NetworkProcess/Cookies/CookieStorage.h b/Source/WebKit/NetworkProcess/Cookies/CookieStorage.h
+index 3498558f5a876ac4be33c33cc434d1cac17f8f71..86b79f1bf4491ad67cff700c55c7168bbc2c620e 100644
+--- a/Source/WebKit/NetworkProcess/Cookies/CookieStorage.h
++++ b/Source/WebKit/NetworkProcess/Cookies/CookieStorage.h
+@@ -26,6 +26,10 @@
+ #pragma once
+ 
+ #include <wtf/Function.h>
++#if USE(CURL)
++#include <WebCore/CookieChange.h>
++#include <wtf/Vector.h>
++#endif
+ 
+ namespace WebKit {
+ 
+@@ -33,6 +37,9 @@ class NetworkStorageSession;
+ 
+ void startObservingCookieChanges(NetworkStorageSession&, Function<void()>&&);
+ void stopObservingCookieChanges(NetworkStorageSession&);
++#if USE(CURL)
++void startObservingCookieChangesWithDetails(NetworkStorageSession&, Function<void(Vector<WebCore::CookieChange>&&)>&&);
++#endif
+ 
+ }
+ 
+diff --git a/Source/WebKit/NetworkProcess/Cookies/WebCookieManager.cpp b/Source/WebKit/NetworkProcess/Cookies/WebCookieManager.cpp
+index 76b6404c6bc5b528955987a8d5d79afddc9e9158..4904495da6309b7971f001d11608508a742b7281 100644
+--- a/Source/WebKit/NetworkProcess/Cookies/WebCookieManager.cpp
++++ b/Source/WebKit/NetworkProcess/Cookies/WebCookieManager.cpp
+@@ -149,13 +149,29 @@ void WebCookieManager::notifyCookiesDidChange(PAL::SessionID sessionID)
+     protect(m_process)->send(Messages::NetworkProcessProxy::CookiesDidChange(sessionID), 0);
+ }
+ 
++#if PLATFORM(HAIKU) && USE(CURL)
++void WebCookieManager::notifyCookiesDidChange(PAL::SessionID sessionID, Vector<CookieChange>&& changes)
++{
++    ASSERT(RunLoop::isMain());
++    if (!changes.isEmpty())
++        protect(m_process)->send(Messages::NetworkProcessProxy::CookiesDidChangeWithDetails(sessionID, changes), 0);
++}
++#endif
++
+ void WebCookieManager::startObservingCookieChanges(PAL::SessionID sessionID)
+ {
+     if (CheckedPtr storageSession = m_process->storageSession(sessionID)) {
++#if PLATFORM(HAIKU) && USE(CURL)
++        WebKit::startObservingCookieChangesWithDetails(*storageSession, [weakThis = WeakPtr { *this }, sessionID](Vector<CookieChange>&& changes) {
++            if (RefPtr protectedThis = weakThis.get())
++                protectedThis->notifyCookiesDidChange(sessionID, WTF::move(changes));
++        });
++#else
+         WebKit::startObservingCookieChanges(*storageSession, [weakThis = WeakPtr { *this }, sessionID] {
+             if (RefPtr protectedThis = weakThis.get())
+                 protectedThis->notifyCookiesDidChange(sessionID);
+         });
++#endif
+     }
+ }
+ 
+diff --git a/Source/WebKit/NetworkProcess/Cookies/WebCookieManager.h b/Source/WebKit/NetworkProcess/Cookies/WebCookieManager.h
+index aae7c64b12a52b95b2b29cd27e26a62c3bff2587..33cce98eada3c5ad6297c08d4f298aca6433933c 100644
+--- a/Source/WebKit/NetworkProcess/Cookies/WebCookieManager.h
++++ b/Source/WebKit/NetworkProcess/Cookies/WebCookieManager.h
+@@ -43,6 +43,7 @@ OBJC_CLASS NSHTTPCookieStorage;
+ 
+ namespace WebCore {
+ struct Cookie;
++struct CookieChange;
+ enum class HTTPCookieAcceptPolicy : uint8_t;
+ }
+ 
+@@ -69,6 +70,9 @@ public:
+ #endif
+ 
+     void notifyCookiesDidChange(PAL::SessionID);
++#if PLATFORM(HAIKU) && USE(CURL)
++    void notifyCookiesDidChange(PAL::SessionID, Vector<WebCore::CookieChange>&&);
++#endif
+ 
+ private:
+     // IPC::MessageReceiver
+@@ -77,6 +81,10 @@ private:
+     void getHostnamesWithCookies(PAL::SessionID, CompletionHandler<void(Vector<String>&&)>&&);
+ 
+     void deleteCookie(PAL::SessionID, const WebCore::Cookie&, CompletionHandler<void()>&&);
++#if PLATFORM(HAIKU) && USE(CURL)
++    void setCookieWithResult(PAL::SessionID, const WebCore::Cookie&, uint64_t cookiesVersion, CompletionHandler<void(bool, std::optional<WebCore::Cookie>&&)>&&);
++    void deleteCookieWithResult(PAL::SessionID, const WebCore::Cookie&, CompletionHandler<void(bool)>&&);
++#endif
+     void deleteCookiesForHostnames(PAL::SessionID, const Vector<String>&, CompletionHandler<void()>&&);
+     void deleteAllCookies(PAL::SessionID, CompletionHandler<void()>&&);
+     void deleteAllCookiesModifiedSince(PAL::SessionID, WallTime, CompletionHandler<void()>&&);
+diff --git a/Source/WebKit/NetworkProcess/Cookies/WebCookieManager.messages.in b/Source/WebKit/NetworkProcess/Cookies/WebCookieManager.messages.in
+index 2689d3fbfea88cfe39148e799aebab0406fbc39c..fd96400bb1a82bb9b692ea8aef56a6be5ee7539f 100644
+--- a/Source/WebKit/NetworkProcess/Cookies/WebCookieManager.messages.in
++++ b/Source/WebKit/NetworkProcess/Cookies/WebCookieManager.messages.in
+@@ -38,6 +38,10 @@ messages -> WebCookieManager {
+     void GetAllCookies(PAL::SessionID sessionID) -> (Vector<WebCore::Cookie> cookies)
+     void GetCookies(PAL::SessionID sessionID, URL url) -> (Vector<WebCore::Cookie> cookies)
+     void DeleteCookie(PAL::SessionID sessionID, struct WebCore::Cookie cookie) -> ()
++#if PLATFORM(HAIKU) && USE(CURL)
++    void SetCookieWithResult(PAL::SessionID sessionID, struct WebCore::Cookie cookie, uint64_t cookiesVersion) -> (bool success, std::optional<WebCore::Cookie> storedCookie)
++    void DeleteCookieWithResult(PAL::SessionID sessionID, struct WebCore::Cookie cookie) -> (bool success)
++#endif
+     void DeleteAllCookiesModifiedSince(PAL::SessionID sessionID, WallTime time) -> ()
+ 
+     void SetHTTPCookieAcceptPolicy(PAL::SessionID sessionID, enum:uint8_t WebCore::HTTPCookieAcceptPolicy policy) -> ()
+diff --git a/Source/WebKit/NetworkProcess/Cookies/curl/CookieStorageCurl.cpp b/Source/WebKit/NetworkProcess/Cookies/curl/CookieStorageCurl.cpp
+index 5cf8ccaa0f959a5a91bacc1837a16f7ec2a7c3d2..ab6c0bafcf81b6dd8f9fb4a3789eb08f70dba4b4 100644
+--- a/Source/WebKit/NetworkProcess/Cookies/curl/CookieStorageCurl.cpp
++++ b/Source/WebKit/NetworkProcess/Cookies/curl/CookieStorageCurl.cpp
+@@ -28,18 +28,26 @@
+ 
+ #if USE(CURL)
+ 
+-#include <WebCore/NotImplemented.h>
++#include "NetworkStorageSession.h"
++#include <wtf/SharedTask.h>
+ 
+ namespace WebKit {
+ 
+-void startObservingCookieChanges(NetworkStorageSession&, Function<void()>&&)
++void startObservingCookieChanges(NetworkStorageSession& session, Function<void()>&& callback)
+ {
+-    notImplemented();
++    startObservingCookieChangesWithDetails(session, [callback = WTF::move(callback)](Vector<WebCore::CookieChange>&&) mutable {
++        callback();
++    });
+ }
+ 
+-void stopObservingCookieChanges(NetworkStorageSession&)
++void startObservingCookieChangesWithDetails(NetworkStorageSession& session, Function<void(Vector<WebCore::CookieChange>&&)>&& callback)
+ {
+-    notImplemented();
++    session.setCookieChangeHandler(createSharedTask<void(Vector<WebCore::CookieChange>&&)>(WTF::move(callback)));
++}
++
++void stopObservingCookieChanges(NetworkStorageSession& session)
++{
++    session.setCookieChangeHandler(nullptr);
+ }
+ 
+ }
+diff --git a/Source/WebKit/NetworkProcess/Cookies/curl/WebCookieManagerCurl.cpp b/Source/WebKit/NetworkProcess/Cookies/curl/WebCookieManagerCurl.cpp
+index b02792fe46e6dcf5849043e487a9596fc30d3d01..01cd68d2ffffbdfd17625d991a5337f31da2b32b 100644
+--- a/Source/WebKit/NetworkProcess/Cookies/curl/WebCookieManagerCurl.cpp
++++ b/Source/WebKit/NetworkProcess/Cookies/curl/WebCookieManagerCurl.cpp
+@@ -28,6 +28,7 @@
+ 
+ #include "NetworkProcess.h"
+ #include "NetworkStorageSession.h"
++#include <WebCore/CookieJarDB.h>
+ #include <WebCore/HTTPCookieAcceptPolicy.h>
+ 
+ namespace WebKit {
+@@ -58,4 +59,27 @@ void WebCookieManager::platformSetHTTPCookieAcceptPolicy(PAL::SessionID sessionI
+     completionHandler();
+ }
+ 
++#if PLATFORM(HAIKU)
++void WebCookieManager::setCookieWithResult(PAL::SessionID sessionID, const Cookie& cookie, uint64_t cookiesVersion, CompletionHandler<void(bool, std::optional<Cookie>&&)>&& completionHandler)
++{
++    CheckedPtr storageSession = protect(m_process)->storageSession(sessionID);
++    if (!storageSession) {
++        completionHandler(false, std::nullopt);
++        return;
++    }
++    std::optional<Cookie> storedCookie;
++    bool success = storageSession->cookieDatabase().setCookieWithResult(cookie, storedCookie);
++    // The operation has finished even when the database rejects the write.
++    // Release waiting loads without presenting failure as a stored cookie.
++    storageSession->setCookiesVersion(cookiesVersion);
++    completionHandler(success, WTF::move(storedCookie));
++}
++
++void WebCookieManager::deleteCookieWithResult(PAL::SessionID sessionID, const Cookie& cookie, CompletionHandler<void(bool)>&& completionHandler)
++{
++    CheckedPtr storageSession = protect(m_process)->storageSession(sessionID);
++    completionHandler(storageSession && storageSession->cookieDatabase().deleteCookie(cookie));
++}
++#endif
++
+ } // namespace WebKit
 diff --git a/Source/WebKit/NetworkProcess/cache/NetworkCacheData.h b/Source/WebKit/NetworkProcess/cache/NetworkCacheData.h
 index 44e007fe363106a596ab96dea93ea1c94f283da2..8fd62640b883ec6a8ef507abed5cc7c7544884c8 100644
 --- a/Source/WebKit/NetworkProcess/cache/NetworkCacheData.h
@@ -21452,6 +22331,54 @@ index 7c9075474552a6beaffbeffe6838dd4e5b24b0d0..63ecf65d7718f6b8e24e27b37f2ea6ea
  }
  
  } // namespace WebKit
+diff --git a/Source/WebKit/NetworkProcess/curl/NetworkStorageSessionCurl.cpp b/Source/WebKit/NetworkProcess/curl/NetworkStorageSessionCurl.cpp
+index 20aff066ab01aa0fa12c7bf47741b0109d927eea..57ea260d4b799fa629783ba698ea1a5d967532c3 100644
+--- a/Source/WebKit/NetworkProcess/curl/NetworkStorageSessionCurl.cpp
++++ b/Source/WebKit/NetworkProcess/curl/NetworkStorageSessionCurl.cpp
+@@ -105,7 +105,16 @@ NetworkStorageSession::~NetworkStorageSession()
+ 
+ void NetworkStorageSession::setCookieDatabase(UniqueRef<CookieJarDB>&& cookieDatabase)
+ {
++    m_cookieDatabase->setCookieChangeHandler(nullptr);
+     m_cookieDatabase = WTF::move(cookieDatabase);
++    if (m_cookieChangeHandler)
++        this->cookieDatabase().setCookieChangeHandler(m_cookieChangeHandler.copyRef());
++}
++
++void NetworkStorageSession::setCookieChangeHandler(RefPtr<CookieJarDB::ChangeHandler>&& handler)
++{
++    m_cookieChangeHandler = WTF::move(handler);
++    cookieDatabase().setCookieChangeHandler(m_cookieChangeHandler.copyRef());
+ }
+ 
+ CookieJarDB& NetworkStorageSession::cookieDatabase() const
+@@ -182,8 +191,7 @@ void NetworkStorageSession::setCookie(const Cookie& cookie, const URL&, const UR
+ 
+ void NetworkStorageSession::deleteCookie(const Cookie& cookie, CompletionHandler<void()>&& completionHandler)
+ {
+-    String url = makeString(cookie.secure ? "https"_s : "http"_s, "://"_s, cookie.domain, cookie.path);
+-    cookieDatabase().deleteCookie(url, cookie.name);
++    cookieDatabase().deleteCookie(cookie);
+     completionHandler();
+ }
+ 
+@@ -222,10 +230,13 @@ void NetworkStorageSession::getHostnamesWithCookies(HashSet<String>& hostnames)
+     hostnames = cookieDatabase().allDomains();
+ }
+ 
+-Vector<Cookie> NetworkStorageSession::getCookies(const URL&)
++Vector<Cookie> NetworkStorageSession::getCookies(const URL& url)
+ {
+-    // FIXME: Implement for WebKit to use.
+-    return { };
++    if (!url.isValid() || !url.protocolIsInHTTPFamily())
++        return { };
++    std::optional<bool> secureFilter = url.protocolIs("https"_s) ? std::nullopt : std::optional<bool> { false };
++    auto cookies = cookieDatabase().searchCookies(url, url, std::nullopt, secureFilter, std::nullopt);
++    return cookies ? WTF::move(*cookies) : Vector<Cookie> { };
+ }
+ 
+ void NetworkStorageSession::hasCookies(const RegistrableDomain&, CompletionHandler<void(bool)>&& completionHandler) const
 diff --git a/Source/WebKit/NetworkProcess/haiku/NetworkProcessHaiku.cpp b/Source/WebKit/NetworkProcess/haiku/NetworkProcessHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..3501f834cd938d6300470bb89a245e322368e057
@@ -23579,10 +24506,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..7a3f079d665f277d41d5b4164d0a1ea561177fa6
+index 0000000000000000000000000000000000000000..1fcdb9c123549be39e3015b0a17b140b00209fd0
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,222 @@
+@@ -0,0 +1,229 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -23647,6 +24574,13 @@ index 0000000000000000000000000000000000000000..7a3f079d665f277d41d5b4164d0a1ea5
 +    Shared/Extensions/WebExtensionActionDetails.cpp
 +    UIProcess/Extensions/haiku/WebExtensionContextAPIActionHaiku.cpp
 +    WebProcess/Extensions/API/WebExtensionAPIAction.cpp
++    Shared/Extensions/WebExtensionCookieStoreIdentifier.cpp
++    Shared/Extensions/WebExtensionCookieQueryParser.cpp
++    Shared/Extensions/WebExtensionCookieWriteParser.cpp
++    WebProcess/Extensions/Bindings/JSWebExtensionCookieParameters.cpp
++    WebProcess/Extensions/API/WebExtensionAPICookies.cpp
++    UIProcess/Extensions/haiku/WebExtensionContextAPICookiesHaiku.cpp
++    UIProcess/Extensions/haiku/WebExtensionCookieHostAccess.cpp
 +    Shared/Extensions/WebExtensionWindowQueryParser.cpp
 +    WebProcess/Extensions/Bindings/JSWebExtensionWindowParameters.cpp
 +    WebProcess/Extensions/API/WebExtensionAPIWindows.cpp
@@ -24405,6 +25339,327 @@ index 0000000000000000000000000000000000000000..93749fc48be41dd0c06adc15d7e76c0b
 +} // namespace WebKit
 +
 +#endif // ENABLE(WK_WEB_EXTENSIONS)
+diff --git a/Source/WebKit/Shared/Extensions/WebExtensionCookieQueryParser.cpp b/Source/WebKit/Shared/Extensions/WebExtensionCookieQueryParser.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..1221b82398e90b060ad3204172180a52386a550f
+--- /dev/null
++++ b/Source/WebKit/Shared/Extensions/WebExtensionCookieQueryParser.cpp
+@@ -0,0 +1,58 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#include "WebExtensionCookieQueryParser.h"
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++#include "WebExtensionCookieStoreIdentifier.h"
++namespace WebKit {
++std::expected<WebExtensionCookieQuery, String> parseWebExtensionCookieQuery(const JSON::Value* value, WebExtensionCookieQueryKind kind)
++{
++    RefPtr object = value ? value->asObject() : nullptr;
++    if (!object)
++        return std::unexpected("cookie details must be an object"_s);
++    WebExtensionCookieQuery result;
++    for (auto& key : object->keys()) {
++        Ref field = object->getValue(key).releaseNonNull();
++        if (kind == WebExtensionCookieQueryKind::GetAll && (key == "secure"_s || key == "session"_s)) {
++            auto flag = field->asBoolean();
++            if (!flag)
++                return std::unexpected("cookie filter flags must be booleans"_s);
++            if (key == "secure"_s)
++                result.filter.secure = *flag;
++            else
++                result.filter.session = *flag;
++            continue;
++        }
++        bool common = key == "name"_s || key == "url"_s || key == "storeId"_s;
++        if (!common && (kind != WebExtensionCookieQueryKind::GetAll || (key != "domain"_s && key != "path"_s)))
++            return std::unexpected("unsupported cookie query field"_s);
++        if (field->type() != JSON::Value::Type::String)
++            return std::unexpected("cookie query text must be a string"_s);
++        auto text = field->asString();
++        if (text.contains('\0'))
++            return std::unexpected("cookie query text must not contain null characters"_s);
++        if (key == "name"_s)
++            result.filter.name = text;
++        else if (key == "url"_s) {
++            result.url = URL { text };
++            if (!result.url.isValid() || !result.url.protocolIsInHTTPFamily() || result.url.host().isEmpty())
++                return std::unexpected("cookie URL must be a valid HTTP or HTTPS URL"_s);
++        } else if (key == "storeId"_s) {
++            result.session = parseWebExtensionCookieStoreIdentifier(text);
++            if (!result.session)
++                return std::unexpected("invalid cookie store identifier"_s);
++        } else if (key == "path"_s)
++            result.filter.path = text;
++        else {
++            if (text.startsWith('.'))
++                text = text.substring(1);
++            if (text.contains(':') && text.startsWith('[') && text.endsWith(']'))
++                text = text.substring(1, text.length() - 2);
++            result.filter.domain = text;
++        }
++    }
++    if (kind == WebExtensionCookieQueryKind::Get && (!result.filter.name || !result.url.isValid()))
++        return std::unexpected("cookie get requires name and url"_s);
++    return result;
++}
++}
++#endif
+diff --git a/Source/WebKit/Shared/Extensions/WebExtensionCookieQueryParser.h b/Source/WebKit/Shared/Extensions/WebExtensionCookieQueryParser.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..ad6077ff74c4d951fa37eed2d1b8849b0c6e48b0
+--- /dev/null
++++ b/Source/WebKit/Shared/Extensions/WebExtensionCookieQueryParser.h
+@@ -0,0 +1,17 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++#include "WebExtensionCookieParameters.h"
++#include <expected>
++#include <wtf/JSONValues.h>
++namespace WebKit {
++enum class WebExtensionCookieQueryKind : uint8_t { Get, GetAll };
++struct WebExtensionCookieQuery {
++    std::optional<PAL::SessionID> session;
++    URL url;
++    WebExtensionCookieFilterParameters filter;
++};
++// This is structural validation. It never resolves a store or grants access.
++std::expected<WebExtensionCookieQuery, String> parseWebExtensionCookieQuery(const JSON::Value*, WebExtensionCookieQueryKind);
++}
++#endif
+diff --git a/Source/WebKit/Shared/Extensions/WebExtensionCookieStoreIdentifier.cpp b/Source/WebKit/Shared/Extensions/WebExtensionCookieStoreIdentifier.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..1e5dd3e2678ce4e0002fd006ac825a9b47ca4c1e
+--- /dev/null
++++ b/Source/WebKit/Shared/Extensions/WebExtensionCookieStoreIdentifier.cpp
+@@ -0,0 +1,39 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#include "WebExtensionCookieStoreIdentifier.h"
++#if ENABLE(WK_WEB_EXTENSIONS)
++#include <wtf/text/MakeString.h>
++namespace WebKit {
++std::optional<PAL::SessionID> parseWebExtensionCookieStoreIdentifier(const String& value)
++{
++    constexpr auto persistentPrefix = "persistent-"_s;
++    constexpr auto ephemeralPrefix = "ephemeral-"_s;
++    bool ephemeral = value.startsWith(ephemeralPrefix);
++    if (!ephemeral && !value.startsWith(persistentPrefix))
++        return std::nullopt;
++    unsigned offset = ephemeral ? ephemeralPrefix.length() : persistentPrefix.length();
++    if (offset == value.length())
++        return std::nullopt;
++    constexpr uint64_t maximum = PAL::SessionID::EphemeralSessionMask - 1;
++    uint64_t number = 0;
++    for (; offset < value.length(); ++offset) {
++        auto character = value[offset];
++        if (character < '0' || character > '9')
++            return std::nullopt;
++        unsigned digit = character - '0';
++        if (number > (maximum - digit) / 10)
++            return std::nullopt;
++        number = number * 10 + digit;
++    }
++    PAL::SessionID result(number | (ephemeral ? uint64_t { PAL::SessionID::EphemeralSessionMask } : 0));
++    return result.isValid() ? std::optional(result) : std::nullopt;
++}
++String webExtensionCookieStoreIdentifier(PAL::SessionID session)
++{
++    if (!session.isValid())
++        return nullString();
++    return makeString(session.isEphemeral() ? "ephemeral-"_s : "persistent-"_s,
++        session.toUInt64() & ~PAL::SessionID::EphemeralSessionMask);
++}
++}
++#endif
+diff --git a/Source/WebKit/Shared/Extensions/WebExtensionCookieStoreIdentifier.h b/Source/WebKit/Shared/Extensions/WebExtensionCookieStoreIdentifier.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..cb6243b681180200ed4ce67b70ec8f7393848774
+--- /dev/null
++++ b/Source/WebKit/Shared/Extensions/WebExtensionCookieStoreIdentifier.h
+@@ -0,0 +1,11 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#if ENABLE(WK_WEB_EXTENSIONS)
++#include <pal/SessionID.h>
++#include <wtf/text/WTFString.h>
++namespace WebKit {
++// Session identity conversion only. The context must separately check access.
++std::optional<PAL::SessionID> parseWebExtensionCookieStoreIdentifier(const String&);
++String webExtensionCookieStoreIdentifier(PAL::SessionID);
++}
++#endif
+diff --git a/Source/WebKit/Shared/Extensions/WebExtensionCookieWriteParser.cpp b/Source/WebKit/Shared/Extensions/WebExtensionCookieWriteParser.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..8fada5b8640879308e3eb62de5608d6c673d9123
+--- /dev/null
++++ b/Source/WebKit/Shared/Extensions/WebExtensionCookieWriteParser.cpp
+@@ -0,0 +1,143 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#include "WebExtensionCookieWriteParser.h"
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++#include "WebExtensionCookieStoreIdentifier.h"
++#include <WebCore/PublicSuffixStore.h>
++#include <WebCore/SecurityOrigin.h>
++#include <cmath>
++#include <limits>
++#include <wtf/WallTime.h>
++#include <wtf/text/MakeString.h>
++namespace WebKit {
++static bool hasInvalidCookieText(const String& text)
++{
++    for (unsigned index = 0; index < text.length(); ++index) {
++        auto character = text[index];
++        if (character < 0x20 || character == 0x7f || character == ';')
++            return true;
++    }
++    return false;
++}
++
++std::expected<WebExtensionCookieWrite, String> parseWebExtensionCookieWrite(const JSON::Value* value)
++{
++    RefPtr object = value ? value->asObject() : nullptr;
++    if (!object)
++        return std::unexpected("cookie details must be an object"_s);
++    WebExtensionCookieWrite result;
++    auto& cookie = result.cookie;
++    cookie.name = emptyString();
++    cookie.value = emptyString();
++    cookie.session = true;
++    std::optional<String> domain;
++    std::optional<String> path;
++    bool explicitNoRestriction = false;
++    for (auto& key : object->keys()) {
++        Ref field = object->getValue(key).releaseNonNull();
++        if (key == "secure"_s || key == "httpOnly"_s) {
++            auto flag = field->asBoolean();
++            if (!flag)
++                return std::unexpected("cookie flags must be booleans"_s);
++            if (key == "secure"_s)
++                cookie.secure = *flag;
++            else
++                cookie.httpOnly = *flag;
++            continue;
++        }
++        if (key == "expirationDate"_s) {
++            auto seconds = field->asDouble();
++            auto milliseconds = seconds ? *seconds * 1000.0 : std::numeric_limits<double>::quiet_NaN();
++            if (!std::isfinite(milliseconds) || milliseconds < static_cast<double>(std::numeric_limits<int64_t>::min())
++                || milliseconds >= static_cast<double>(std::numeric_limits<int64_t>::max()))
++                return std::unexpected("cookie expirationDate must be a finite representable number"_s);
++            cookie.expires = milliseconds;
++            cookie.session = false;
++            continue;
++        }
++        if (key != "url"_s && key != "name"_s && key != "value"_s && key != "domain"_s
++            && key != "path"_s && key != "sameSite"_s && key != "storeId"_s)
++            return std::unexpected("unsupported cookie write field"_s);
++        if (field->type() != JSON::Value::Type::String)
++            return std::unexpected("cookie text fields must be strings"_s);
++        auto text = field->asString();
++        if (text.contains('\0'))
++            return std::unexpected("cookie text must not contain null characters"_s);
++        if (key == "url"_s) {
++            result.url = URL { text };
++            if (!result.url.isValid() || !result.url.protocolIsInHTTPFamily() || result.url.host().isEmpty())
++                return std::unexpected("cookie URL must be a valid HTTP or HTTPS URL"_s);
++        } else if (key == "name"_s)
++            cookie.name = text;
++        else if (key == "value"_s)
++            cookie.value = text;
++        else if (key == "domain"_s)
++            domain = text;
++        else if (key == "path"_s)
++            path = text;
++        else if (key == "storeId"_s) {
++            result.session = parseWebExtensionCookieStoreIdentifier(text);
++            if (!result.session)
++                return std::unexpected("invalid cookie store identifier"_s);
++        } else if (text == "lax"_s)
++            cookie.sameSite = WebCore::Cookie::SameSitePolicy::Lax;
++        else if (text == "strict"_s)
++            cookie.sameSite = WebCore::Cookie::SameSitePolicy::Strict;
++        else if (text == "no_restriction"_s)
++            explicitNoRestriction = true;
++        else
++            return std::unexpected("unsupported cookie SameSite value"_s);
++    }
++    if (!result.url.isValid())
++        return std::unexpected("cookie set requires url"_s);
++    if (hasInvalidCookieText(cookie.name) || hasInvalidCookieText(cookie.value) || cookie.name.contains('='))
++        return std::unexpected("invalid cookie name or value"_s);
++    if (cookie.name.utf8().length() + cookie.value.utf8().length() > 4096)
++        return std::unexpected("cookie name and value exceed 4096 bytes"_s);
++
++    auto host = result.url.host().toString();
++    cookie.domain = host;
++    bool hasDomainAttribute = domain && !domain->isEmpty();
++    if (hasDomainAttribute) {
++        auto text = *domain;
++        if (text.startsWith('.'))
++            text = text.substring(1);
++        if (text.isEmpty() || text.startsWith('.') || hasInvalidCookieText(text) || text.contains('/')
++            || text.contains('\\') || text.contains('@') || text.contains('?') || text.contains('#'))
++            return std::unexpected("invalid cookie domain"_s);
++        if (text.contains(':') && !text.startsWith('['))
++            text = makeString('[', text, ']');
++        URL domainURL { makeString("https://"_s, text, '/') };
++        if (!domainURL.isValid() || domainURL.host().isEmpty() || domainURL.port() || !domainURL.user().isEmpty() || !domainURL.password().isEmpty())
++            return std::unexpected("invalid cookie domain"_s);
++        auto canonicalDomain = domainURL.host().toString();
++        // URL::host() retains IPv6 brackets; hostIsIPAddress expects the address.
++        auto address = host.startsWith('[') && host.endsWith(']') ? host.substring(1, host.length() - 2) : host;
++        bool isIPAddress = URL::hostIsIPAddress(address);
++        if (host != canonicalDomain && (isIPAddress || !host.endsWith(makeString('.', canonicalDomain))))
++            return std::unexpected("cookie domain does not match its URL"_s);
++        auto suffix = canonicalDomain.endsWith('.') ? canonicalDomain.left(canonicalDomain.length() - 1) : canonicalDomain;
++        bool isPublicSuffix = WebCore::PublicSuffixStore::singleton().isPublicSuffix(suffix);
++        if (isPublicSuffix && host != canonicalDomain)
++            return std::unexpected("cookie domain is a public suffix"_s);
++        if (!isIPAddress && !isPublicSuffix)
++            cookie.domain = makeString('.', canonicalDomain);
++    }
++    cookie.path = path && !path->isEmpty() ? *path : WebCore::CookieUtil::defaultPathForURL(result.url);
++    if (!cookie.path.startsWith('/') || hasInvalidCookieText(cookie.path))
++        return std::unexpected("invalid cookie path"_s);
++    if (cookie.secure && !WebCore::SecurityOrigin::create(result.url)->isPotentiallyTrustworthy())
++        return std::unexpected("secure cookies require a trustworthy URL"_s);
++    if (explicitNoRestriction && !cookie.secure)
++        return std::unexpected("SameSite no_restriction requires secure"_s);
++    if (cookie.name.startsWith("__Secure-"_s) && !cookie.secure)
++        return std::unexpected("__Secure- cookies require secure"_s);
++    if (cookie.name.startsWith("__Host-"_s) && (!cookie.secure || hasDomainAttribute || cookie.path != "/"_s))
++        return std::unexpected("__Host- cookies require secure, path / and no domain"_s);
++    if ((cookie.name.startsWith("__Http-"_s) || cookie.name.startsWith("__Host-Http-"_s)) && (!cookie.secure || !cookie.httpOnly))
++        return std::unexpected("HTTP-prefixed cookies require secure and httpOnly"_s);
++    cookie.created = WallTime::now().secondsSinceEpoch().milliseconds();
++    return result;
++}
++}
++#endif
+diff --git a/Source/WebKit/Shared/Extensions/WebExtensionCookieWriteParser.h b/Source/WebKit/Shared/Extensions/WebExtensionCookieWriteParser.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..217222a79d1095838980ccc6708ee5fe4022353c
+--- /dev/null
++++ b/Source/WebKit/Shared/Extensions/WebExtensionCookieWriteParser.h
+@@ -0,0 +1,17 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++#include "WebExtensionCookieParameters.h"
++#include <expected>
++#include <wtf/JSONValues.h>
++namespace WebKit {
++struct WebExtensionCookieWrite {
++    std::optional<PAL::SessionID> session;
++    URL url;
++    WebCore::Cookie cookie;
++};
++// Both processes parse the original details. This validates cookie structure
++// and origin/domain relationships; it never grants access to a host or store.
++std::expected<WebExtensionCookieWrite, String> parseWebExtensionCookieWrite(const JSON::Value*);
++}
++#endif
 diff --git a/Source/WebKit/Shared/Extensions/WebExtensionDeferredReply.h b/Source/WebKit/Shared/Extensions/WebExtensionDeferredReply.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..786389356ffcf87d818bc62c570e36233072c896
@@ -25254,6 +26509,26 @@ index 25960ae4ce9923740dd3f84bfa522a0f08b84cb0..f2f331a52388e494f3aa176c342215ca
  #elif PLATFORM(WIN)
      NativeWebWheelEvent(WebWheelEventInit&&, const MSG&);
  
+diff --git a/Source/WebKit/Shared/NetworkStorageSession.h b/Source/WebKit/Shared/NetworkStorageSession.h
+index 23ebd4a75995ae9f57a82f860a97794ca3ee454f..dc9c8105e8da7e5bcb761413f637115a8f773360 100644
+--- a/Source/WebKit/Shared/NetworkStorageSession.h
++++ b/Source/WebKit/Shared/NetworkStorageSession.h
+@@ -135,6 +135,7 @@ public:
+ 
+     WebCore::CookieJarDB& cookieDatabase() const;
+     void setCookieDatabase(UniqueRef<WebCore::CookieJarDB>&&);
++    void setCookieChangeHandler(RefPtr<WebCore::CookieJarDB::ChangeHandler>&&);
+     void setCookiesFromHTTPResponse(const URL& firstParty, const URL&, const String&) const;
+     void setCookieAcceptPolicy(WebCore::CookieAcceptPolicy) const;
+     void setProxySettings(const WebCore::CurlProxySettings&);
+@@ -268,6 +269,7 @@ private:
+     Function<void ()> m_cookieObserverHandler;
+ #elif USE(CURL)
+     mutable UniqueRef<WebCore::CookieJarDB> m_cookieDatabase;
++    RefPtr<WebCore::CookieJarDB::ChangeHandler> m_cookieChangeHandler;
+ #endif
+ 
+ #if HAVE(COOKIE_CHANGE_LISTENER_API)
 diff --git a/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in b/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in
 index 575a1f68f3bd19cbe2259aae39f94dcadb552392..dc9f2822a50ec9d0e27fee4637c1444e78b107ff 100644
 --- a/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in
@@ -25287,6 +26562,34 @@ index 575a1f68f3bd19cbe2259aae39f94dcadb552392..dc9f2822a50ec9d0e27fee4637c1444e
  
  enum class WebCore::ContentExtensionDefaultEnablement : bool
  using WebCore::ContentExtensionEnablement = std::pair<WebCore::ContentExtensionDefaultEnablement, HashSet<String>>;
+diff --git a/Source/WebKit/Shared/WebCoreArgumentCodersNetwork.serialization.in b/Source/WebKit/Shared/WebCoreArgumentCodersNetwork.serialization.in
+index 219204814dae3776eaa86c1e91724afc8e57f886..a07920c19c053450070e8ee201e36ed4d97c6a16 100644
+--- a/Source/WebKit/Shared/WebCoreArgumentCodersNetwork.serialization.in
++++ b/Source/WebKit/Shared/WebCoreArgumentCodersNetwork.serialization.in
+@@ -76,6 +76,23 @@ struct WebCore::Cookie {
+     WebCore::Cookie::SameSitePolicy sameSite;
+ };
+ 
++#if PLATFORM(HAIKU) && USE(CURL)
++headers: <WebCore/CookieChange.h>
++
++[CustomHeader] enum class WebCore::CookieChangeCause : uint8_t {
++    Explicit
++    Overwrite
++    Expired
++    ExpiredOverwrite
++};
++
++struct WebCore::CookieChange {
++    WebCore::Cookie cookie;
++    bool removed;
++    WebCore::CookieChangeCause cause;
++};
++#endif
++
+ [Nested, CustomHeader] struct WebCore::HTTPHeaderMap::CommonHeader {
+     WebCore::HTTPHeaderName key;
+     String value;
 diff --git a/Source/WebKit/Shared/WebCoreFont.serialization.in b/Source/WebKit/Shared/WebCoreFont.serialization.in
 index 43b2a51c28b1c3f1116605c7064c22555e5750b8..dd5e2a9d209b6b9240a703eb3e6230518b58fbea 100644
 --- a/Source/WebKit/Shared/WebCoreFont.serialization.in
@@ -26237,6 +27540,107 @@ index d4d415b3d8dfa723539f4f93c8c08972048d7a05..71e5c7982f118a2d571275b815abedc1
  
      static ContentRuleListStore& defaultStoreSingleton();
      static Ref<ContentRuleListStore> storeWithPath(const WTF::String& storePath);
+diff --git a/Source/WebKit/UIProcess/API/APIHTTPCookieStore.cpp b/Source/WebKit/UIProcess/API/APIHTTPCookieStore.cpp
+index 232e124c97dd5eb474644203a2231e92eba77e65..881251f0f24e46c7c19a47addadf85498bad73bd 100644
+--- a/Source/WebKit/UIProcess/API/APIHTTPCookieStore.cpp
++++ b/Source/WebKit/UIProcess/API/APIHTTPCookieStore.cpp
+@@ -173,6 +173,26 @@ void HTTPCookieStore::deleteAllCookies(CompletionHandler<void()>&& completionHan
+         networkProcess->sendWithAsyncReply(Messages::WebCookieManager::DeleteAllCookies(m_sessionID), [callbackAggregator] { });
+ }
+ 
++#if PLATFORM(HAIKU) && USE(CURL)
++void HTTPCookieStore::setCookieWithResult(const WebCore::Cookie& cookie, CompletionHandler<void(bool, std::optional<WebCore::Cookie>&&)>&& completionHandler)
++{
++    if (RefPtr dataStore = m_owningDataStore.get())
++        dataStore->setCookieWithResult(cookie, WTF::move(completionHandler));
++    else
++        completionHandler(false, std::nullopt);
++}
++
++void HTTPCookieStore::deleteCookieWithResult(const WebCore::Cookie& cookie, CompletionHandler<void(bool)>&& completionHandler)
++{
++    RefPtr networkProcess = networkProcessLaunchingIfNecessary();
++    if (!networkProcess) {
++        completionHandler(false);
++        return;
++    }
++    networkProcess->sendWithAsyncReply(Messages::WebCookieManager::DeleteCookieWithResult(m_sessionID, cookie), WTF::move(completionHandler));
++}
++#endif
++
+ void HTTPCookieStore::deleteCookiesForHostnames(const Vector<WTF::String>& hostnames, CompletionHandler<void()>&& completionHandler)
+ {
+     if (RefPtr networkProcess = networkProcessIfExists())
+@@ -241,6 +261,22 @@ void HTTPCookieStore::cookiesDidChange()
+         observer->cookiesDidChange(*this);
+ }
+ 
++#if PLATFORM(HAIKU) && USE(CURL)
++void HTTPCookieStore::cookiesDidChange(const Vector<WebCore::CookieChange>& changes)
++{
++    Ref protectedThis { *this };
++    // Each observer gets one notification per batch. The default typed method
++    // preserves generic invalidation for clients that do not inspect cookies.
++    Vector<Ref<HTTPCookieStoreObserver>> observers;
++    for (Ref observer : m_observers)
++        observers.append(WTF::move(observer));
++    for (auto& observer : observers) {
++        if (m_observers.contains(observer.get()))
++            observer->cookiesDidChange(*this, changes);
++    }
++}
++#endif
++
+ WebKit::NetworkProcessProxy* HTTPCookieStore::networkProcessIfExists()
+ {
+     if (auto* dataStore = m_owningDataStore.get())
+diff --git a/Source/WebKit/UIProcess/API/APIHTTPCookieStore.h b/Source/WebKit/UIProcess/API/APIHTTPCookieStore.h
+index fd697cbee3dcc5567ee77f1f47ac8cbf9df8d857..c2d9b1ce5d96dc8d7fdda9335435010587c970aa 100644
+--- a/Source/WebKit/UIProcess/API/APIHTTPCookieStore.h
++++ b/Source/WebKit/UIProcess/API/APIHTTPCookieStore.h
+@@ -27,6 +27,9 @@
+ 
+ #include "APIObject.h"
+ #include <WebCore/Cookie.h>
++#if PLATFORM(HAIKU) && USE(CURL)
++#include <WebCore/CookieChange.h>
++#endif
+ #include <pal/SessionID.h>
+ #include <wtf/CompletionHandler.h>
+ #include <wtf/Forward.h>
+@@ -57,6 +60,9 @@ class HTTPCookieStoreObserver : public RefCountedAndCanMakeWeakPtr<HTTPCookieSto
+ public:
+     virtual ~HTTPCookieStoreObserver() { }
+     virtual void cookiesDidChange(HTTPCookieStore&) = 0;
++#if PLATFORM(HAIKU) && USE(CURL)
++    virtual void cookiesDidChange(HTTPCookieStore& store, const Vector<WebCore::CookieChange>&) { cookiesDidChange(store); }
++#endif
+ };
+ 
+ class HTTPCookieStore final : public ObjectImpl<Object::Type::HTTPCookieStore> {
+@@ -72,6 +78,10 @@ public:
+     void cookiesForURL(WTF::URL&&, CompletionHandler<void(Vector<WebCore::Cookie>&&)>&&, RefPtr<WTF::WorkQueue> replyQueue = nullptr);
+     void setCookies(Vector<WebCore::Cookie>&&, CompletionHandler<void()>&&);
+     void deleteCookie(const WebCore::Cookie&, CompletionHandler<void()>&&);
++#if PLATFORM(HAIKU) && USE(CURL)
++    void setCookieWithResult(const WebCore::Cookie&, CompletionHandler<void(bool, std::optional<WebCore::Cookie>&&)>&&);
++    void deleteCookieWithResult(const WebCore::Cookie&, CompletionHandler<void(bool)>&&);
++#endif
+     void deleteCookiesForHostnames(const Vector<WTF::String>&, CompletionHandler<void()>&&);
+     
+     void deleteAllCookies(CompletionHandler<void()>&&);
+@@ -83,6 +93,11 @@ public:
+     void unregisterObserver(HTTPCookieStoreObserver&);
+ 
+     void cookiesDidChange();
++#if PLATFORM(HAIKU) && USE(CURL)
++    void cookiesDidChange(const Vector<WebCore::CookieChange>&);
++    PAL::SessionID sessionID() const { return m_sessionID; }
++    bool hasObservers() const { return !m_observers.isEmptyIgnoringNullReferences(); }
++#endif
+ 
+     void filterAppBoundCookies(Vector<WebCore::Cookie>&&, CompletionHandler<void(Vector<WebCore::Cookie>&&)>&&);
+ 
 diff --git a/Source/WebKit/UIProcess/API/APIUIClient.h b/Source/WebKit/UIProcess/API/APIUIClient.h
 index 9555283cab179e279fb3824cd46cdb76433f069c..e5a925637597156bcce225cd83c90ca4e472b2b8 100644
 --- a/Source/WebKit/UIProcess/API/APIUIClient.h
@@ -27696,10 +29100,10 @@ index 3c07d36552434c56bfa713274bed4cee92489d3a..c142b793471c41bea809b0de71e0f0db
      return isLoadedAndPrivilegedMessage(message) && (hasPermission(WebExtensionPermission::declarativeNetRequest()) || hasPermission(WebExtensionPermission::declarativeNetRequestWithHostAccess()));
 diff --git a/Source/WebKit/UIProcess/Extensions/API/WebExtensionContextAPIEvent.cpp b/Source/WebKit/UIProcess/Extensions/API/WebExtensionContextAPIEvent.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..d914c61d3403f3bef256040ca152a0c684ca7c4c
+index 0000000000000000000000000000000000000000..ae915ee43828b984460781baf4cb484005cf279c
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/API/WebExtensionContextAPIEvent.cpp
-@@ -0,0 +1,256 @@
+@@ -0,0 +1,259 @@
 +/*
 + * Copyright (C) 2022-2024 Apple Inc. All rights reserved.
 + *
@@ -27938,6 +29342,7 @@ index 0000000000000000000000000000000000000000..d914c61d3403f3bef256040ca152a0c6
 +    }
 +}
 +
++#if !PLATFORM(HAIKU)
 +void WebExtensionContext::cookiesDidChange(API::HTTPCookieStore&)
 +{
 +    // FIXME: <https://webkit.org/b/267514> Add support for changeInfo.
@@ -27952,6 +29357,8 @@ index 0000000000000000000000000000000000000000..d914c61d3403f3bef256040ca152a0c6
 +        sendToProcessesForEvent(type, Messages::WebExtensionContextProxy::DispatchCookiesChangedEvent());
 +    });
 +}
++
++#endif // !PLATFORM(HAIKU)
 +
 +} // namespace WebKit
 +
@@ -31415,7 +32822,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..777f1a9b2b1992cd5ad4dadd68cbad29
  
  #endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
-index 05a8676082d56f2c47c9af6120f5120b09f982be..76e57cca4e0d342090def90a58a71f8fd682788a 100644
+index 05a8676082d56f2c47c9af6120f5120b09f982be..466a6cdfb69a7570fb5ea0d58021b35ab0e799fd 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 @@ -51,7 +51,11 @@
@@ -31566,7 +32973,19 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..76e57cca4e0d342090def90a58a71f8f
  #if PLATFORM(COCOA)
      void sendNativeMessage(const String& applicationID, id message, CompletionHandler<void(std::expected<RetainPtr<id>, WebExtensionError>&&)>&&);
  #endif
-@@ -749,19 +798,41 @@ private:
+@@ -700,7 +749,11 @@ public:
+ 
+     WebsiteDataStore* websiteDataStore(std::optional<PAL::SessionID> = std::nullopt) const;
+ 
++#if PLATFORM(HAIKU) && USE(CURL)
++    void cookiesDidChange(API::HTTPCookieStore&, const Vector<WebCore::CookieChange>&);
++#else
+     void cookiesDidChange(API::HTTPCookieStore&);
++#endif
+ 
+     void loadBackgroundContent(CompletionHandler<void(RefPtr<API::Error>)>&&);
+ 
+@@ -749,19 +802,41 @@ private:
  #if PLATFORM(COCOA)
      NSDictionary *currentState() const;
      NSDictionary *readStateFromStorage();
@@ -31609,7 +33028,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..76e57cca4e0d342090def90a58a71f8f
      void permissionsDidChange(PermissionNotification, const PermissionsSet&);
      void permissionsDidChange(PermissionNotification, const MatchPatternSet&);
  
-@@ -796,6 +867,7 @@ private:
+@@ -796,6 +871,7 @@ private:
      void saveBackgroundPageListenersToStorage();
  
      void performTasksAfterBackgroundContentLoads();
@@ -31617,7 +33036,18 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..76e57cca4e0d342090def90a58a71f8f
  
  #ifdef NDEBUG
      // This is method is a no-op in release builds since it has a performance impact with little benefit to release builds.
-@@ -924,6 +996,11 @@ private:
+@@ -882,6 +958,10 @@ private:
+     Ref<WebExtensionStorageSQLiteStore> syncStorageStore();
+ 
+     void fetchCookies(WebsiteDataStore&, const URL&, const WebExtensionCookieFilterParameters&, CompletionHandler<void(std::expected<Vector<WebExtensionCookieParameters>, WebExtensionError>&&)>&&);
++#if PLATFORM(HAIKU)
++    void fetchCookies(WebsiteDataStore&, const URL&, const WebExtensionCookieFilterParameters&, bool requireCookieHostPermission, CompletionHandler<void(std::expected<Vector<WebExtensionCookieParameters>, WebExtensionError>&&)>&&);
++    void cookiesSetJSON(const String&, CompletionHandler<void(std::expected<std::optional<WebExtensionCookieParameters>, WebExtensionError>&&)>&&);
++#endif
+ 
+     // Action APIs
+     bool isActionMessageAllowed(IPC::Decoder&);
+@@ -924,6 +1004,11 @@ private:
      // Commands APIs
      bool isCommandsMessageAllowed(IPC::Decoder&);
      void commandsGetAll(CompletionHandler<void(Vector<WebExtensionCommandParameters>)>&&);
@@ -31629,7 +33059,17 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..76e57cca4e0d342090def90a58a71f8f
      void fireCommandEventIfNeeded(const WebExtensionCommand&, WebExtensionTab*);
      void fireCommandChangedEventIfNeeded(const WebExtensionCommand&, const String& oldShortcut);
  
-@@ -988,9 +1065,18 @@ private:
+@@ -934,7 +1019,9 @@ private:
+     void cookiesSet(std::optional<PAL::SessionID>, const WebExtensionCookieParameters&, CompletionHandler<void(std::expected<std::optional<WebExtensionCookieParameters>, WebExtensionError>&&)>&&);
+     void cookiesRemove(std::optional<PAL::SessionID>, const String& name, const URL&, CompletionHandler<void(std::expected<std::optional<WebExtensionCookieParameters>, WebExtensionError>&&)>&&);
+     void cookiesGetAllCookieStores(CompletionHandler<void(std::expected<HashMap<PAL::SessionID, Vector<WebExtensionTabIdentifier>>, WebExtensionError>&&)>&&);
++#if !PLATFORM(HAIKU)
+     void fireCookiesChangedEventIfNeeded();
++#endif
+ 
+     // DeclarativeNetRequest APIs
+     bool isDeclarativeNetRequestMessageAllowed(IPC::Decoder&);
+@@ -988,9 +1075,18 @@ private:
  
      // Permissions APIs
      void permissionsGetAll(CompletionHandler<void(Vector<String>&& permissions, Vector<String>&& origins)>&&);
@@ -31648,7 +33088,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..76e57cca4e0d342090def90a58a71f8f
      void firePermissionsEventListenerIfNecessary(WebExtensionEventListenerType, const PermissionsSet&, const MatchPatternSet&);
  
      // Port APIs
-@@ -1000,7 +1086,7 @@ private:
+@@ -1000,7 +1096,7 @@ private:
      void disconnectPortsForPage(WebPageProxy&);
      void addPorts(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier, HashCountedSet<WebPageProxyIdentifier>&&);
      void removePort(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier, WebPageProxyIdentifier);
@@ -31657,7 +33097,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..76e57cca4e0d342090def90a58a71f8f
      void removeNativePort(WebExtensionMessagePort&);
      unsigned openPortCount(WebExtensionContentWorldType, WebExtensionPortChannelIdentifier);
      bool isPortConnected(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier);
-@@ -1009,7 +1095,7 @@ private:
+@@ -1009,7 +1105,7 @@ private:
      void firePortMessageEventsIfNeeded(WebExtensionContentWorldType, std::optional<WebPageProxyIdentifier>, WebExtensionPortChannelIdentifier, const String& messageJSON, bool userGesture);
      void fireQueuedPortMessageEventsIfNeeded(WebExtensionContentWorldType, WebExtensionPortChannelIdentifier);
      void sendQueuedNativePortMessagesIfNeeded(WebExtensionPortChannelIdentifier);
@@ -31666,7 +33106,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..76e57cca4e0d342090def90a58a71f8f
  
      // Runtime APIs
      void runtimeGetBackgroundPage(CompletionHandler<void(std::expected<std::optional<WebCore::PageIdentifier>, WebExtensionError>&&)>&&);
-@@ -1034,6 +1120,7 @@ private:
+@@ -1034,6 +1130,7 @@ private:
      void scriptingGetRegisteredScripts(const Vector<String>&, CompletionHandler<void(std::expected<Vector<WebExtensionRegisteredScriptParameters>, WebExtensionError>&&)>&&);
      void scriptingUnregisterContentScripts(const Vector<String>&, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
      bool createInjectedContentForScripts(const Vector<WebExtensionRegisteredScriptParameters>&, WebExtensionDynamicScripts::WebExtensionRegisteredScript::FirstTimeRegistration, DynamicInjectedContentsMap&, NSString *callingAPIName, NSString **errorMessage);
@@ -31674,7 +33114,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..76e57cca4e0d342090def90a58a71f8f
  
      // Sidebar APIs
  #if ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
-@@ -1129,6 +1216,12 @@ private:
+@@ -1129,6 +1226,12 @@ private:
      RetainPtr<NSMutableDictionary> m_state;
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<GKeyFile> m_state;
@@ -31687,7 +33127,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..76e57cca4e0d342090def90a58a71f8f
  #endif
      Vector<Ref<API::Error>> m_errors;
  
-@@ -1147,6 +1240,15 @@ private:
+@@ -1147,6 +1250,15 @@ private:
  
      RefPtr<API::ContentWorld> m_contentScriptWorld;
  
@@ -31703,7 +33143,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..76e57cca4e0d342090def90a58a71f8f
      PermissionsMap m_grantedPermissions;
      PermissionsMap m_deniedPermissions;
  
-@@ -1172,6 +1274,9 @@ private:
+@@ -1172,6 +1284,9 @@ private:
      EventListenerTypeCountedSet m_backgroundContentEventListeners;
      EventListenerTypeFrameMap m_eventListenerFrames;
  
@@ -31713,7 +33153,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..76e57cca4e0d342090def90a58a71f8f
      bool m_shouldFireStartupEvent { false };
      InstallReason m_installReason { InstallReason::None };
      String m_previousVersion;
-@@ -1194,6 +1299,9 @@ private:
+@@ -1194,6 +1309,9 @@ private:
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<WebKitWebView> m_backgroundWebView;
      GWeakPtr<WebKitWebExtensionContext> m_delegate;
@@ -31723,7 +33163,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..76e57cca4e0d342090def90a58a71f8f
  #endif
      Variant<std::monostate, Ref<ProcessThrottlerActivity>, Ref<ProcessActivityGroup>> m_backgroundWebViewActivity;
      RefPtr<API::Error> m_backgroundContentLoadError;
-@@ -1215,6 +1323,7 @@ private:
+@@ -1215,6 +1333,7 @@ private:
      HashMap<Ref<WebExtensionMatchPattern>, UserScriptVector> m_injectedScriptsPerPatternMap;
      HashMap<Ref<WebExtensionMatchPattern>, UserStyleSheetVector> m_injectedStyleSheetsPerPatternMap;
  
@@ -31731,7 +33171,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..76e57cca4e0d342090def90a58a71f8f
      HashMap<String, Ref<WebExtensionDynamicScripts::WebExtensionRegisteredScript>> m_registeredScriptsMap;
      RefPtr<WebExtensionRegisteredScriptsSQLiteStore> m_registeredContentScriptsStorage;
  
-@@ -1234,11 +1343,14 @@ private:
+@@ -1234,11 +1353,14 @@ private:
  #endif // ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
  
      PortCountedSet m_ports;
@@ -31747,7 +33187,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..76e57cca4e0d342090def90a58a71f8f
      mutable WindowIdentifierVector m_windowOrderVector;
      mutable std::optional<WebExtensionWindowIdentifier> m_focusedWindowIdentifier;
  
-@@ -1274,12 +1386,16 @@ private:
+@@ -1274,12 +1396,16 @@ private:
          String message;
  #if PLATFORM(COCOA)
          RetainPtr<id> argument;
@@ -31764,7 +33204,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..76e57cca4e0d342090def90a58a71f8f
  
      Deque<TestMessage> m_testMessageQueue;
      Deque<TestMessage> m_testStartedQueue;
-@@ -1289,6 +1405,8 @@ private:
+@@ -1289,6 +1415,8 @@ private:
      void sendQueuedTestMessagesIfNeeded(WebExtensionEventListenerType);
  #if PLATFORM(COCOA)
      void addTestMessageToQueue(const String& message, id argument, WebExtensionEventListenerType);
@@ -31774,7 +33214,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..76e57cca4e0d342090def90a58a71f8f
  };
  
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in
-index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..81defbdb91a702cd5177c203409cd2a6d32056ac 100644
+index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..e5666ae482668776ed9bd29d6f1e90ff4f941033 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in
 @@ -31,10 +31,70 @@
@@ -31849,7 +33289,22 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..81defbdb91a702cd5177c203409cd2a6
      // Action APIs
      [Validator=isActionMessageAllowed] ActionGetTitle(std::optional<WebKit::WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier) -> (std::expected<String, WebKit::WebExtensionError> result)
      [Validator=isActionMessageAllowed] ActionSetTitle(std::optional<WebKit::WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, String title) -> (std::expected<void, WebKit::WebExtensionError> result)
-@@ -71,9 +131,6 @@ messages -> WebExtensionContext {
+@@ -48,6 +108,14 @@ messages -> WebExtensionContext {
+     [Validator=isActionMessageAllowed] ActionSetEnabled(std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, bool enabled) -> (std::expected<void, WebKit::WebExtensionError> result)
+ #endif
+ 
++#if PLATFORM(HAIKU)
++    [Validator=isCookiesMessageAllowed] CookiesGet(std::optional<PAL::SessionID> sessionID, String name, URL url) -> (std::expected<std::optional<WebKit::WebExtensionCookieParameters>, WebKit::WebExtensionError> result)
++    [Validator=isCookiesMessageAllowed] CookiesGetAll(std::optional<PAL::SessionID> sessionID, URL url, struct WebKit::WebExtensionCookieFilterParameters filterParameters) -> (std::expected<Vector<WebKit::WebExtensionCookieParameters>, WebKit::WebExtensionError> result)
++    [Validator=isCookiesMessageAllowed] CookiesSetJSON(String detailsJSON) -> (std::expected<std::optional<WebKit::WebExtensionCookieParameters>, WebKit::WebExtensionError> result)
++    [Validator=isCookiesMessageAllowed] CookiesRemove(std::optional<PAL::SessionID> sessionID, String name, URL url) -> (std::expected<std::optional<WebKit::WebExtensionCookieParameters>, WebKit::WebExtensionError> result)
++    [Validator=isCookiesMessageAllowed] CookiesGetAllCookieStores() -> (std::expected<HashMap<PAL::SessionID, Vector<WebKit::WebExtensionTabIdentifier>>, WebKit::WebExtensionError> result)
++#endif
++
+     // Alarms APIs
+     [Validator=isAlarmsMessageAllowed] AlarmsCreate(String name, Seconds initialInterval, Seconds repeatInterval) -> ()
+     [Validator=isAlarmsMessageAllowed] AlarmsGet(String name) -> (struct std::optional<WebKit::WebExtensionAlarmParameters> alarmInfo)
+@@ -71,9 +139,6 @@ messages -> WebExtensionContext {
      [Validator=isBookmarksMessageAllowed] BookmarksRemoveTree(String bookmarkId) -> (std::expected<void, WebKit::WebExtensionError> result)
  #endif // ENABLE(WK_WEB_EXTENSIONS_BOOKMARKS)
  
@@ -31859,7 +33314,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..81defbdb91a702cd5177c203409cd2a6
      // Cookies APIs
      [Validator=isCookiesMessageAllowed] CookiesGet(std::optional<PAL::SessionID> sessionID, String name, URL url) -> (std::expected<std::optional<WebKit::WebExtensionCookieParameters>, WebKit::WebExtensionError> result)
      [Validator=isCookiesMessageAllowed] CookiesGetAll(std::optional<PAL::SessionID> sessionID, URL url, struct WebKit::WebExtensionCookieFilterParameters filterParameters) -> (std::expected<Vector<WebKit::WebExtensionCookieParameters>, WebKit::WebExtensionError> result)
-@@ -100,8 +157,6 @@ messages -> WebExtensionContext {
+@@ -100,8 +165,6 @@ messages -> WebExtensionContext {
  #endif
  
      // Event APIs
@@ -31868,7 +33323,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..81defbdb91a702cd5177c203409cd2a6
  
      // Extensions APIs
      [Validator=isLoaded] ExtensionIsAllowedIncognitoAccess() -> (bool result)
-@@ -125,20 +180,10 @@ messages -> WebExtensionContext {
+@@ -125,20 +188,10 @@ messages -> WebExtensionContext {
      [Validator=isLoaded] PermissionsRequest(HashSet<String> permissions, HashSet<String> origins) -> (bool success)
      [Validator=isLoaded] PermissionsRemove(HashSet<String> permissions, HashSet<String> origins) -> (bool success)
  
@@ -31889,7 +33344,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..81defbdb91a702cd5177c203409cd2a6
  
      // Scripting APIs
      [Validator=isScriptingMessageAllowed] ScriptingExecuteScript(WebKit::WebExtensionScriptInjectionParameters parameters, bool userGesture) -> (std::expected<Vector<WebKit::WebExtensionScriptInjectionResultParameters>, WebKit::WebExtensionError> result)
-@@ -165,15 +210,6 @@ messages -> WebExtensionContext {
+@@ -165,15 +218,6 @@ messages -> WebExtensionContext {
      [Validator=isSidebarMessageAllowed] SidebarGetActionClickBehavior() -> (std::expected<WebKit::WebExtensionActionClickBehavior, WebKit::WebExtensionError> result)
  #endif // ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
  
@@ -31905,7 +33360,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..81defbdb91a702cd5177c203409cd2a6
      // Tabs APIs
      [Validator=isLoadedAndPrivilegedMessage] TabsCreate(std::optional<WebKit::WebPageProxyIdentifier> webPageProxyIdentifier, WebKit::WebExtensionTabParameters creationParameters) -> (std::expected<std::optional<WebKit::WebExtensionTabParameters>, WebKit::WebExtensionError> result)
      [Validator=isLoadedAndPrivilegedMessage] TabsUpdate(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, WebKit::WebExtensionTabParameters updateParameters) -> (std::expected<std::optional<WebKit::WebExtensionTabParameters>, WebKit::WebExtensionError> result)
-@@ -198,8 +234,6 @@ messages -> WebExtensionContext {
+@@ -198,8 +242,6 @@ messages -> WebExtensionContext {
      [Validator=isLoadedAndPrivilegedMessage] TabsRemoveCSS(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, WebKit::WebExtensionScriptInjectionParameters parameters) -> (std::expected<void, WebKit::WebExtensionError> result)
  
      // WebNavigation APIs
@@ -32193,7 +33648,7 @@ index 0000000000000000000000000000000000000000..b5a17393623897b91dee01412b7ae904
 +
 +#endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionController.cpp b/Source/WebKit/UIProcess/Extensions/WebExtensionController.cpp
-index 06cec0eb534d3f51d3a04e7ea3b68ac347c6a2cf..f0a9e6fafa0e1d0b06efd7057802f497e99b2118 100644
+index 06cec0eb534d3f51d3a04e7ea3b68ac347c6a2cf..99600dfdc6271bb56e5af45df67bde68be75963e 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionController.cpp
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionController.cpp
 @@ -42,20 +42,13 @@
@@ -32247,8 +33702,34 @@ index 06cec0eb534d3f51d3a04e7ea3b68ac347c6a2cf..f0a9e6fafa0e1d0b06efd7057802f497
  }
  
  WebExtensionController::~WebExtensionController()
+@@ -406,11 +397,24 @@ void WebExtensionController::didFailLoadForFrame(WebPageProxyIdentifier pageID,
+ 
+ void WebExtensionController::cookiesDidChange(API::HTTPCookieStore& cookieStore)
+ {
++#if PLATFORM(HAIKU)
++    // Generic invalidations have no cookie identity or cause. Extension events
++    // use the typed observer entry point below; never invent an empty payload.
++    UNUSED_PARAM(cookieStore);
++#else
+     // FIXME: <https://webkit.org/b/267514> Add support for changeInfo.
+-
+     for (Ref context : m_extensionContexts)
+         context->cookiesDidChange(cookieStore);
++#endif
++}
++
++#if PLATFORM(HAIKU) && USE(CURL)
++void WebExtensionController::cookiesDidChange(API::HTTPCookieStore& cookieStore, const Vector<WebCore::CookieChange>& changes)
++{
++    for (Ref context : m_extensionContexts)
++        context->cookiesDidChange(cookieStore, changes);
+ }
++#endif
+ 
+ RefPtr<WebExtensionContext> WebExtensionController::extensionContext(const WebExtension& extension) const
+ {
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionController.h b/Source/WebKit/UIProcess/Extensions/WebExtensionController.h
-index 4f8b8ba294dfafd7a17c0f3a440b16f93283e583..15463803d9667459eac62443d42197de9bee55b4 100644
+index 4f8b8ba294dfafd7a17c0f3a440b16f93283e583..0bbba9b4ed92658bfc6f4ff910c7378e60403ce8 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionController.h
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionController.h
 @@ -45,6 +45,7 @@
@@ -32279,7 +33760,17 @@ index 4f8b8ba294dfafd7a17c0f3a440b16f93283e583..15463803d9667459eac62443d42197de
      WebExtensionControllerParameters parameters(const API::PageConfiguration&, WebProcessProxy& destinationProcess) const;
  
      bool operator==(const WebExtensionController& other) const { return (this == &other); }
-@@ -266,10 +273,8 @@ private:
+@@ -163,6 +170,9 @@ public:
+     WebExtensionSet extensions() const;
+ 
+     void cookiesDidChange(API::HTTPCookieStore&);
++#if PLATFORM(HAIKU) && USE(CURL)
++    void cookiesDidChange(API::HTTPCookieStore&, const Vector<WebCore::CookieChange>&);
++#endif
+ 
+     template<typename T>
+     void sendToAllProcesses(const T& message, const ObjectIdentifierGenericBase& destinationID);
+@@ -266,17 +276,27 @@ private:
          {
              // FIXME: <https://webkit.org/b/267514> Add support for changeInfo.
  
@@ -32289,8 +33780,16 @@ index 4f8b8ba294dfafd7a17c0f3a440b16f93283e583..15463803d9667459eac62443d42197de
 -#endif
          }
  
++#if PLATFORM(HAIKU) && USE(CURL)
++        void cookiesDidChange(API::HTTPCookieStore& cookieStore, const Vector<WebCore::CookieChange>& changes) final
++        {
++            if (RefPtr extensionController = m_extensionController)
++                extensionController->cookiesDidChange(cookieStore, changes);
++        }
++#endif
++
          WeakPtr<WebExtensionController> m_extensionController;
-@@ -277,6 +282,10 @@ private:
+     };
  
  
      const Ref<WebExtensionControllerConfiguration> m_configuration;
@@ -34464,6 +35963,274 @@ index 0000000000000000000000000000000000000000..4ab254e9c90c2b20f8e41f972121a1a3
 +            return;
 +        sendToProcessesForEvent(type, Messages::WebExtensionContextProxy::DispatchActionClickedEvent(tab ? std::optional(tab->parameters()) : std::nullopt));
 +    });
++}
++}
++#endif
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPICookiesHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPICookiesHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..a66084db987eeaa2e5d20feac0587b73201c44d8
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPICookiesHaiku.cpp
+@@ -0,0 +1,262 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#include "WebExtensionContext.h"
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++#include "APIHTTPCookieStore.h"
++#include "WebExtensionCookieHostAccess.h"
++#include "WebExtensionCookieWriteParser.h"
++#include "WebExtensionContextProxyMessages.h"
++#include "WebExtensionPermission.h"
++#include "WebExtensionUtilities.h"
++#include "WebPageProxy.h"
++#include "WebsiteDataStore.h"
++#include <algorithm>
++#include <cmath>
++#include <wtf/text/MakeString.h>
++namespace WebKit {
++static bool validCookieURL(const URL& url)
++{
++    return url.isValid() && url.protocolIsInHTTPFamily() && !url.host().isEmpty();
++}
++static bool hasCookieHostPermission(WebExtensionContext& context, const URL& url)
++{
++    if (!validCookieURL(url))
++        return false;
++    // Cookie access is profile-wide. Do not use tab metadata permissions or
++    // temporary activeTab grants. Host permissions ignore match-pattern paths.
++    auto& granted = context.grantedPermissionMatchPatterns();
++    auto& denied = context.deniedPermissionMatchPatterns();
++    return hasWebExtensionCookieHostAccess(url, granted, denied, WallTime::now());
++}
++static bool isCurrentCookieRequest(WebExtensionContext& context, WebsiteDataStore& store, WebExtensionContextIdentifier loadIdentifier, const URL& url)
++{
++    return context.isLoaded() && context.privilegedIdentifier() == loadIdentifier
++        && context.hasPermission(WebExtensionPermission::cookies()) && context.websiteDataStore(store.sessionID()) == &store
++        && (url.isEmpty() || hasCookieHostPermission(context, url));
++}
++static String normalizedCookieDomain(String domain)
++{
++    if (domain.startsWith('.'))
++        domain = domain.substring(1);
++    if (domain.startsWith('[') && domain.endsWith(']'))
++        domain = domain.substring(1, domain.length() - 2);
++    return domain.convertToASCIILowercase();
++}
++static URL cookieOrigin(const WebCore::Cookie& cookie)
++{
++    auto domain = normalizedCookieDomain(cookie.domain);
++    if (domain.isEmpty() || domain.contains('/') || domain.contains('\\') || domain.contains('@')
++        || domain.contains('?') || domain.contains('#') || domain.contains('\0'))
++        return { };
++    if (domain.contains(':'))
++        domain = makeString('[', domain, ']');
++    return URL { makeString(cookie.secure ? "https://"_s : "http://"_s, domain, '/') };
++}
++void WebExtensionContext::cookiesDidChange(API::HTTPCookieStore& cookieStore, const Vector<WebCore::CookieChange>& changes)
++{
++    if (!isLoaded() || !hasPermission(WebExtensionPermission::cookies()))
++        return;
++    RefPtr store = websiteDataStore(cookieStore.sessionID());
++    if (!store || &store->cookieStore() != &cookieStore)
++        return;
++    Vector<WebCore::CookieChange> permittedChanges;
++    for (auto& change : changes) {
++        if (change.cookie.partitionKey.isEmpty() && hasCookieHostPermission(*this, cookieOrigin(change.cookie)))
++            permittedChanges.append(change);
++    }
++    if (permittedChanges.isEmpty())
++        return;
++    auto loadIdentifier = privilegedIdentifier();
++    constexpr auto type = WebExtensionEventListenerType::CookiesOnChanged;
++    wakeUpBackgroundContentIfNecessaryToFireEvents({ type }, [this, protectedThis = Ref { *this }, store = Ref { *store }, loadIdentifier, changes = WTF::move(permittedChanges)]() mutable {
++        if (!isCurrentCookieRequest(*this, store.get(), loadIdentifier, { }))
++            return;
++        changes.removeAllMatching([&](auto& change) {
++            return !hasCookieHostPermission(*this, cookieOrigin(change.cookie));
++        });
++        if (!changes.isEmpty())
++            sendToProcessesForEvent(type, Messages::WebExtensionContextProxy::DispatchCookiesChangedEvent(store->sessionID(), changes));
++    });
++}
++
++WebsiteDataStore* WebExtensionContext::websiteDataStore(std::optional<PAL::SessionID> session) const
++{
++    RefPtr controller = extensionController();
++    if (!controller || (session && !session->isValid()))
++        return nullptr;
++    RefPtr store = controller->websiteDataStore(session);
++    if (store && !store->isPersistent() && !hasAccessToPrivateData()
++        && store.get() != &controller->configuration().defaultWebsiteDataStore())
++        return nullptr;
++    return store.get();
++}
++bool WebExtensionContext::isCookiesMessageAllowed(IPC::Decoder& message)
++{
++    return isLoadedAndPrivilegedMessage(message) && hasPermission(WebExtensionPermission::cookies());
++}
++void WebExtensionContext::fetchCookies(WebsiteDataStore& store, const URL& url, const WebExtensionCookieFilterParameters& filter, bool requireCookieHostPermission, CompletionHandler<void(std::expected<Vector<WebExtensionCookieParameters>, WebExtensionError>&&)>&& completion)
++{
++    if (!isLoaded() || !hasPermission(WebExtensionPermission::cookies()) || websiteDataStore(store.sessionID()) != &store
++        || (!url.isEmpty() && !hasCookieHostPermission(*this, url))) {
++        completion(toWebExtensionError("cookies"_s, nullString(), "cookie store or host permission is unavailable"_s));
++        return;
++    }
++    for (auto* value : { &filter.name, &filter.domain, &filter.path }) {
++        if (*value && (*value)->contains('\0')) {
++            completion(toWebExtensionError("cookies"_s, nullString(), "invalid cookie filter"_s));
++            return;
++        }
++    }
++    auto loadIdentifier = privilegedIdentifier();
++    auto received = [this, protectedThis = Ref { *this }, store = Ref { store }, url, filter, requireCookieHostPermission, loadIdentifier, completion = WTF::move(completion)](Vector<WebCore::Cookie>&& cookies) mutable {
++        if (!isCurrentCookieRequest(*this, store.get(), loadIdentifier, url)) {
++            completion(toWebExtensionError("cookies"_s, nullString(), "cookie access changed while the request was pending"_s));
++            return;
++        }
++        Vector<WebExtensionCookieParameters> result;
++        auto now = WallTime::now().secondsSinceEpoch().milliseconds();
++        for (auto& cookie : cookies) {
++            if (!cookie.partitionKey.isEmpty() || (!cookie.session && (!cookie.expires || !std::isfinite(*cookie.expires) || *cookie.expires <= now)))
++                continue;
++            if ((filter.name && cookie.name != *filter.name) || (filter.path && cookie.path != *filter.path)
++                || (filter.secure && cookie.secure != *filter.secure) || (filter.session && cookie.session != *filter.session))
++                continue;
++            if (filter.domain) {
++                auto domain = normalizedCookieDomain(cookie.domain);
++                auto requestedDomain = normalizedCookieDomain(*filter.domain);
++                if (requestedDomain.isEmpty() || (domain != requestedDomain && !domain.endsWith(makeString('.', requestedDomain))))
++                    continue;
++            }
++            if (requireCookieHostPermission && !hasCookieHostPermission(*this, cookieOrigin(cookie)))
++                continue;
++            result.append({ store->sessionID(), WTF::move(cookie) });
++        }
++        std::stable_sort(result.begin(), result.end(), [](auto& first, auto& second) {
++            if (first.cookie.path.length() != second.cookie.path.length())
++                return first.cookie.path.length() > second.cookie.path.length();
++            auto firstCreated = std::isfinite(first.cookie.created) ? first.cookie.created : 0;
++            auto secondCreated = std::isfinite(second.cookie.created) ? second.cookie.created : 0;
++            return firstCreated < secondCreated;
++        });
++        completion(WTF::move(result));
++    };
++    if (url.isEmpty())
++        protect(store.cookieStore())->cookies(WTF::move(received));
++    else
++        protect(store.cookieStore())->cookiesForURL(url.isolatedCopy(), WTF::move(received));
++}
++void WebExtensionContext::cookiesGet(std::optional<PAL::SessionID> session, const String& name, const URL& url, CompletionHandler<void(std::expected<std::optional<WebExtensionCookieParameters>, WebExtensionError>&&)>&& completion)
++{
++    RefPtr store = websiteDataStore(session);
++    if (!store || !validCookieURL(url) || name.contains('\0')) {
++        completion(toWebExtensionError("cookies.get()"_s, nullString(), "invalid cookie store, name or URL"_s));
++        return;
++    }
++    WebExtensionCookieFilterParameters filter;
++    filter.name = name;
++    fetchCookies(*store, url, filter, false, [completion = WTF::move(completion)](auto&& result) mutable {
++        if (!result)
++            completion(std::unexpected(result.error()));
++        else if (result->isEmpty())
++            completion({ std::nullopt });
++        else
++            completion({ WTF::move(result->first()) });
++    });
++}
++void WebExtensionContext::cookiesGetAll(std::optional<PAL::SessionID> session, const URL& url, const WebExtensionCookieFilterParameters& filter, CompletionHandler<void(std::expected<Vector<WebExtensionCookieParameters>, WebExtensionError>&&)>&& completion)
++{
++    RefPtr store = websiteDataStore(session);
++    if (!store || (!url.isEmpty() && !validCookieURL(url))) {
++        completion(toWebExtensionError("cookies.getAll()"_s, nullString(), "invalid cookie store or URL"_s));
++        return;
++    }
++    fetchCookies(*store, url, filter, true, WTF::move(completion));
++}
++void WebExtensionContext::cookiesSetJSON(const String& details, CompletionHandler<void(std::expected<std::optional<WebExtensionCookieParameters>, WebExtensionError>&&)>&& completion)
++{
++    auto parsed = parseWebExtensionCookieWrite(JSON::Value::parseJSON(details).get());
++    if (!parsed) {
++        completion(toWebExtensionError("cookies.set()"_s, nullString(), parsed.error()));
++        return;
++    }
++    RefPtr store = websiteDataStore(parsed->session);
++    if (!store || !hasPermission(WebExtensionPermission::cookies()) || !hasCookieHostPermission(*this, parsed->url)) {
++        completion(toWebExtensionError("cookies.set()"_s, nullString(), "cookie store or host permission is unavailable"_s));
++        return;
++    }
++    auto loadIdentifier = privilegedIdentifier();
++    store->cookieStore().setCookieWithResult(parsed->cookie, [this, protectedThis = Ref { *this }, store, loadIdentifier, url = parsed->url, completion = WTF::move(completion)](bool success, std::optional<WebCore::Cookie>&& cookie) mutable {
++        if (!isCurrentCookieRequest(*this, *store, loadIdentifier, url)) {
++            completion(toWebExtensionError("cookies.set()"_s, nullString(), "cookie access changed while the request was pending"_s));
++            return;
++        }
++        if (!success) {
++            completion(toWebExtensionError("cookies.set()"_s, nullString(), "cookie write could not be confirmed"_s));
++            return;
++        }
++        if (!cookie)
++            completion({ std::nullopt });
++        else
++            completion({ WebExtensionCookieParameters { store->sessionID(), WTF::move(*cookie) } });
++    });
++}
++void WebExtensionContext::cookiesRemove(std::optional<PAL::SessionID> session, const String& name, const URL& url, CompletionHandler<void(std::expected<std::optional<WebExtensionCookieParameters>, WebExtensionError>&&)>&& completion)
++{
++    RefPtr store = websiteDataStore(session);
++    if (!store || !validCookieURL(url) || name.contains('\0')) {
++        completion(toWebExtensionError("cookies.remove()"_s, nullString(), "invalid cookie store, name or URL"_s));
++        return;
++    }
++    auto loadIdentifier = privilegedIdentifier();
++    WebExtensionCookieFilterParameters filter;
++    filter.name = name;
++    fetchCookies(*store, url, filter, false, [this, protectedThis = Ref { *this }, store, url, loadIdentifier, completion = WTF::move(completion)](std::expected<Vector<WebExtensionCookieParameters>, WebExtensionError>&& result) mutable {
++        if (!result) {
++            completion(std::unexpected(result.error()));
++            return;
++        }
++        if (!isCurrentCookieRequest(*this, *store, loadIdentifier, url)) {
++            completion(toWebExtensionError("cookies.remove()"_s, nullString(), "cookie access changed while the request was pending"_s));
++            return;
++        }
++        if (result->isEmpty()) {
++            completion({ std::nullopt });
++            return;
++        }
++        auto cookie = WTF::move(result->first());
++        // Keep a distinct key copy: the callback captures the selected cookie.
++        auto key = cookie.cookie;
++        store->cookieStore().deleteCookieWithResult(key, [this, protectedThis = Ref { *this }, store, url, loadIdentifier, cookie = WTF::move(cookie), completion = WTF::move(completion)](bool success) mutable {
++            if (!isCurrentCookieRequest(*this, *store, loadIdentifier, url))
++                completion(toWebExtensionError("cookies.remove()"_s, nullString(), "cookie access changed while the request was pending"_s));
++            else if (!success)
++                completion(toWebExtensionError("cookies.remove()"_s, nullString(), "cookie deletion could not be confirmed"_s));
++            else
++                completion({ WTF::move(cookie) });
++        });
++    });
++}
++void WebExtensionContext::cookiesGetAllCookieStores(CompletionHandler<void(std::expected<HashMap<PAL::SessionID, Vector<WebExtensionTabIdentifier>>, WebExtensionError>&&)>&& completion)
++{
++    RefPtr controller = extensionController();
++    if (!controller || !hasPermission(WebExtensionPermission::cookies())) {
++        completion(toWebExtensionError("cookies.getAllCookieStores()"_s, nullString(), "cookie permission is unavailable"_s));
++        return;
++    }
++    HashMap<PAL::SessionID, Vector<WebExtensionTabIdentifier>> stores;
++    stores.set(controller->configuration().defaultWebsiteDataStore().sessionID(), Vector<WebExtensionTabIdentifier> { });
++    for (Ref tab : openTabs()) {
++        if (!tab->isOpen() || !tab->extensionHasAccess())
++            continue;
++        RefPtr page = tab->nativePage();
++        if (!page)
++            continue;
++        auto session = page->websiteDataStore().sessionID();
++        if (websiteDataStore(session) != &page->websiteDataStore())
++            continue;
++        stores.ensure(session, [] { return Vector<WebExtensionTabIdentifier> { }; }).iterator->value.append(tab->identifier());
++    }
++    completion(WTF::move(stores));
 +}
 +}
 +#endif
@@ -37170,6 +38937,59 @@ index 0000000000000000000000000000000000000000..e93a494877eb220e0f139e7a701c5957
 +} // namespace WebKit
 +
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionCookieHostAccess.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionCookieHostAccess.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..eb2eab65bc51e4d1f7a1f85ec698eb9f0af59aca
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionCookieHostAccess.cpp
+@@ -0,0 +1,28 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#include "WebExtensionCookieHostAccess.h"
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++namespace WebKit {
++bool hasWebExtensionCookieHostAccess(const URL& url, const HashMap<Ref<WebExtensionMatchPattern>, WallTime>& granted,
++    const HashMap<Ref<WebExtensionMatchPattern>, WallTime>& denied, WallTime now)
++{
++    if (!url.isValid() || !url.protocolIsInHTTPFamily() || url.host().isEmpty())
++        return false;
++    // Preserve the context's explicit-host versus wildcard-host precedence.
++    // Match paths are not part of a cookie host permission.
++    for (bool allHosts : { false, true }) {
++        for (auto& entry : denied) {
++            if (entry.value > now && entry.key->matchesAllHosts() == allHosts
++                && entry.key->matchesURL(url, WebExtensionMatchPattern::Options::IgnorePaths))
++                return false;
++        }
++        for (auto& entry : granted) {
++            if (entry.value > now && entry.key->matchesAllHosts() == allHosts
++                && entry.key->matchesURL(url, WebExtensionMatchPattern::Options::IgnorePaths))
++                return true;
++        }
++    }
++    return false;
++}
++}
++#endif
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionCookieHostAccess.h b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionCookieHostAccess.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..3782c3ce8537852e5840002a582790e506e44413
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionCookieHostAccess.h
+@@ -0,0 +1,13 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++#include "WebExtensionMatchPattern.h"
++#include <wtf/HashMap.h>
++#include <wtf/WallTime.h>
++namespace WebKit {
++// Evaluate existing profile-wide host grants, including expiration and denial.
++// Cookie API permission, context lifetime and private-store access are separate.
++bool hasWebExtensionCookieHostAccess(const URL&, const HashMap<Ref<WebExtensionMatchPattern>, WallTime>& granted,
++    const HashMap<Ref<WebExtensionMatchPattern>, WallTime>& denied, WallTime now);
++}
++#endif
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionDeclarativeNetRequestURLFilter.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionDeclarativeNetRequestURLFilter.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..a2360934964a5b796cc9a8ca998474ebb0fbbe31
@@ -39509,10 +41329,20 @@ index 0000000000000000000000000000000000000000..f0d827e69a42a3717accff5f30c55629
 +
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/Network/NetworkProcessProxy.cpp b/Source/WebKit/UIProcess/Network/NetworkProcessProxy.cpp
-index 610ed35519af0442e109655604b981ee835db31d..efc5714a0e7c5abee897bf3df83beff54855b8f6 100644
+index 610ed35519af0442e109655604b981ee835db31d..bfe1015ccee5e2bc7d109d35cfcf66b29a981330 100644
 --- a/Source/WebKit/UIProcess/Network/NetworkProcessProxy.cpp
 +++ b/Source/WebKit/UIProcess/Network/NetworkProcessProxy.cpp
-@@ -214,7 +214,7 @@ void NetworkProcessProxy::sendCreationParametersToNewProcess()
+@@ -31,6 +31,9 @@
+ #include "APIDataTask.h"
+ #include "APIDataTaskClient.h"
+ #include "APIHTTPCookieStore.h"
++#if PLATFORM(HAIKU) && USE(CURL)
++#include "WebCookieManagerMessages.h"
++#endif
+ #include "APINavigation.h"
+ #include "APIPageConfiguration.h"
+ #include "APIURLRequest.h"
+@@ -214,7 +217,7 @@ void NetworkProcessProxy::sendCreationParametersToNewProcess()
      parameters.urlSchemesRegisteredForCustomProtocols = WebProcessPool::urlSchemesWithCustomProtocolHandlers();
      parameters.localhostAliasesForTesting = LegacyGlobalSettings::singleton().hostnamesToRegisterAsLocal();
  
@@ -39521,6 +41351,76 @@ index 610ed35519af0442e109655604b981ee835db31d..efc5714a0e7c5abee897bf3df83beff5
      parameters.websiteDataStoreParameters = WebsiteDataStore::parametersFromEachWebsiteDataStore();
      WebsiteDataStore::forEachWebsiteDataStore([&](auto& websiteDataStore) {
          addSession(websiteDataStore, SendParametersToNetworkProcess::No);
+@@ -1472,6 +1475,12 @@ void NetworkProcessProxy::addSession(WebsiteDataStore& store, SendParametersToNe
+     // DispatchMessageEvenWhenWaitingForSyncReply flag.
+     if (canSendMessage() && sendParametersToNetworkProcess == SendParametersToNetworkProcess::Yes)
+         send(Messages::NetworkProcess::AddWebsiteDataStore { store.parameters() }, 0, IPC::SendOption::DispatchMessageEvenWhenWaitingForSyncReply);
++#if PLATFORM(HAIKU) && USE(CURL)
++    // The UI observer set survives a NetworkProcess restart. Reinstall the
++    // backend observer after the session is recreated on this connection.
++    if (canSendMessage() && store.cookieStore().hasObservers())
++        send(Messages::WebCookieManager::StartObservingCookieChanges(store.sessionID()), 0, IPC::SendOption::DispatchMessageEvenWhenWaitingForSyncReply);
++#endif
+ }
+ 
+ void NetworkProcessProxy::removeSession(WebsiteDataStore& websiteDataStore, CompletionHandler<void(String&&)>&& completionHandler)
+@@ -1992,6 +2001,20 @@ void NetworkProcessProxy::cookiesDidChange(PAL::SessionID sessionID)
+         protect(websiteDataStore->cookieStore())->cookiesDidChange();
+ }
+ 
++#if PLATFORM(HAIKU) && USE(CURL)
++void NetworkProcessProxy::cookiesDidChangeWithDetails(PAL::SessionID sessionID, const Vector<WebCore::CookieChange>& changes)
++{
++    if (changes.isEmpty())
++        return;
++    if (RefPtr websiteDataStore = websiteDataStoreFromSessionID(sessionID)) {
++        // The session lookup is global. Accept details only from the process
++        // currently owning this registered store, including after a restart.
++        if (websiteDataStore->networkProcessIfExists() == this && m_websiteDataStores.contains(*websiteDataStore))
++            protect(websiteDataStore->cookieStore())->cookiesDidChange(changes);
++    }
++}
++#endif
++
+ void NetworkProcessProxy::notifyMediaStreamingActivity(bool activity)
+ {
+     if (!canSendMessage())
+diff --git a/Source/WebKit/UIProcess/Network/NetworkProcessProxy.h b/Source/WebKit/UIProcess/Network/NetworkProcessProxy.h
+index 0f1235be77a19d1366c18f07b486a0af7256e12e..7f70e7a49f58409c886eed6b4d732c211f75fba0 100644
+--- a/Source/WebKit/UIProcess/Network/NetworkProcessProxy.h
++++ b/Source/WebKit/UIProcess/Network/NetworkProcessProxy.h
+@@ -78,6 +78,7 @@ class SessionID;
+ }
+ 
+ namespace WebCore {
++struct CookieChange;
+ class AuthenticationChallenge;
+ class CertificateInfo;
+ class SharedBuffer;
+@@ -361,6 +362,9 @@ public:
+     void navigateServiceWorkerClient(WebCore::FrameIdentifier, WebCore::ScriptExecutionContextIdentifier, const URL&, CompletionHandler<void(std::optional<WebCore::PageIdentifier>, std::optional<WebCore::FrameIdentifier>)>&&);
+ 
+     void cookiesDidChange(PAL::SessionID);
++#if PLATFORM(HAIKU) && USE(CURL)
++    void cookiesDidChangeWithDetails(PAL::SessionID, const Vector<WebCore::CookieChange>&);
++#endif
+ 
+ #if ENABLE(INSPECTOR_NETWORK_THROTTLING)
+     void setEmulatedConditions(PAL::SessionID, std::optional<uint64_t> bandwidthBytesPerSecond, Seconds latency);
+diff --git a/Source/WebKit/UIProcess/Network/NetworkProcessProxy.messages.in b/Source/WebKit/UIProcess/Network/NetworkProcessProxy.messages.in
+index 3e5f83fe2ace16999a0cd12e7a9c561c46463303..329832ec0a3b40a27ca4c535a3ca3bbb479f60e9 100644
+--- a/Source/WebKit/UIProcess/Network/NetworkProcessProxy.messages.in
++++ b/Source/WebKit/UIProcess/Network/NetworkProcessProxy.messages.in
+@@ -104,6 +104,9 @@ messages -> NetworkProcessProxy WantsDispatchMessage {
+     ReportConsoleMessage(PAL::SessionID sessionID, URL scriptURL, WebCore::SecurityOriginData serviceWorkerOrigin, enum:uint8_t JSC::MessageSource messageSource, enum:uint8_t JSC::MessageLevel messageLevel, String message, uint64_t requestIdentifier)
+ 
+     CookiesDidChange(PAL::SessionID sessionID)
++#if PLATFORM(HAIKU) && USE(CURL)
++    CookiesDidChangeWithDetails(PAL::SessionID sessionID, Vector<WebCore::CookieChange> changes)
++#endif
+ 
+     DeleteWebsiteDataInWebProcessesForOrigin(OptionSet<WebKit::WebsiteDataType> websiteDataTypes, struct WebCore::ClientOrigin origin, PAL::SessionID sessionID, WebKit::WebPageProxyIdentifier webPageProxyID) -> ()
+     ReloadExecutionContextsForOrigin(struct WebCore::ClientOrigin origin, PAL::SessionID sessionID, std::optional<WebCore::FrameIdentifier> triggeringFrame) -> ()
 diff --git a/Source/WebKit/UIProcess/PageClient.h b/Source/WebKit/UIProcess/PageClient.h
 index a4299803aa31a4a1705aebf669aba3190bcb878a..d0f3a47edf7d2b080af70b57cf1193adae733387 100644
 --- a/Source/WebKit/UIProcess/PageClient.h
@@ -39757,7 +41657,7 @@ index bc3b24188d37a1517e0cbb152e7634211b111243..226044918059bdd29b0892f573e24c7e
      WebCore::Color underlayColor;
      RunLoop::Timer updateReportedMediaCaptureStateTimer;
 diff --git a/Source/WebKit/UIProcess/WebsiteData/WebsiteDataStore.cpp b/Source/WebKit/UIProcess/WebsiteData/WebsiteDataStore.cpp
-index 2d72030b58aed216674703f4eda8ae5e77ca7d34..133fa9b1cec5931074e9054e2d57a3449314ad6c 100644
+index 2d72030b58aed216674703f4eda8ae5e77ca7d34..f5e9ba70ee264aec821868929d81906e4941185e 100644
 --- a/Source/WebKit/UIProcess/WebsiteData/WebsiteDataStore.cpp
 +++ b/Source/WebKit/UIProcess/WebsiteData/WebsiteDataStore.cpp
 @@ -318,7 +318,12 @@ SOAuthorizationCoordinator& WebsiteDataStore::soAuthorizationCoordinator(const W
@@ -39774,6 +41674,35 @@ index 2d72030b58aed216674703f4eda8ae5e77ca7d34..133fa9b1cec5931074e9054e2d57a344
      if (sessionID.isEphemeral()) {
          // Reuse a previous persistent session network process for ephemeral sessions.
          for (auto& dataStore : allDataStores().values()) {
+@@ -3049,6 +3054,14 @@ void WebsiteDataStore::setCookies(Vector<WebCore::Cookie>&& cookies, CompletionH
+     protect(networkProcess())->sendWithAsyncReply(Messages::WebCookieManager::SetCookie(m_sessionID, WTF::move(cookies), ++m_cookiesVersion), WTF::move(completionHandler));
+ }
+ 
++#if PLATFORM(HAIKU) && USE(CURL)
++void WebsiteDataStore::setCookieWithResult(const WebCore::Cookie& cookie, CompletionHandler<void(bool, std::optional<WebCore::Cookie>&&)>&& completionHandler)
++{
++    // Preserve the cookie-version barrier used when starting resource loads.
++    protect(networkProcess())->sendWithAsyncReply(Messages::WebCookieManager::SetCookieWithResult(m_sessionID, cookie, ++m_cookiesVersion), WTF::move(completionHandler));
++}
++#endif
++
+ void WebsiteDataStore::setStorageAccessPermissionForTesting(bool granted, WebPageProxyIdentifier webPageProxyID, const String& topFrame, const String& subFrame, CompletionHandler<void()>&& completionHandler)
+ {
+     protect(networkProcess())->sendWithAsyncReply(Messages::NetworkProcess::SetStorageAccessPermissionForTesting(m_sessionID, granted, webPageProxyID, WebCore::RegistrableDomain(URL(topFrame)), WebCore::RegistrableDomain(URL(subFrame))), WTF::move(completionHandler));
+diff --git a/Source/WebKit/UIProcess/WebsiteData/WebsiteDataStore.h b/Source/WebKit/UIProcess/WebsiteData/WebsiteDataStore.h
+index ecb6cfb0c657114e0bcddecb521274702fe15aa5..852a7d22dc7b743d7e710b3c6cb9c1206be1d986 100644
+--- a/Source/WebKit/UIProcess/WebsiteData/WebsiteDataStore.h
++++ b/Source/WebKit/UIProcess/WebsiteData/WebsiteDataStore.h
+@@ -533,6 +533,9 @@ public:
+ 
+     bool isRemovingData() const { return!!m_removeDataTaskCounter.value(); }
+     uint64_t cookiesVersion() const { return m_cookiesVersion; }
++#if PLATFORM(HAIKU) && USE(CURL)
++    void setCookieWithResult(const WebCore::Cookie&, CompletionHandler<void(bool, std::optional<WebCore::Cookie>&&)>&&);
++#endif
+     void setCookies(Vector<WebCore::Cookie>&&, CompletionHandler<void()>&&);
+ 
+     void setStorageAccessPermissionForTesting(bool, WebPageProxyIdentifier, const String& topFrameDomain, const String& subFrameDomain, CompletionHandler<void()>&&);
 diff --git a/Source/WebKit/UIProcess/WebsiteData/haiku/WebsiteDataStoreHaiku.cpp b/Source/WebKit/UIProcess/WebsiteData/haiku/WebsiteDataStoreHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..e545399afbe8b5539a8026d49532e05ab3fbb017
@@ -44461,6 +46390,70 @@ index fc00f28f1eb9c20bdce32f873b2ba4d6b2bca337..92cf9834801c5c0e0a9b4ee56998c9e6
  std::expected<void, String> WebExtensionAPIAction::parseActionDetails(NSDictionary *details, std::optional<WebExtensionWindowIdentifier>& windowIdentifier, std::optional<WebExtensionTabIdentifier>& tabIdentifier)
  {
      static NSDictionary<NSString *, id> *types = @{
+diff --git a/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPICookiesCocoa.mm b/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPICookiesCocoa.mm
+index 82231dd3b02a633190f32f27c62078fb69a229ba..a9f9acf9eb4651052aa298de296eda7da4dd6279 100644
+--- a/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPICookiesCocoa.mm
++++ b/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPICookiesCocoa.mm
+@@ -46,6 +46,59 @@
+ 
+ namespace WebKit {
+ 
++void WebExtensionAPICookies::get(RefPtr<JSON::Value> details, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto object = details ? dynamic_objc_cast<NSDictionary>(parseJSON(details->toJSONString().createNSString().get(), JSONOptions::FragmentsAllowed)) : nil;
++    if (!object) {
++        exception = "cookie details must be an object"_s;
++        return;
++    }
++    NSString *nativeException = nil;
++    get(object, WTF::move(callback), &nativeException);
++    if (nativeException)
++        exception = nativeException;
++}
++
++void WebExtensionAPICookies::getAll(RefPtr<JSON::Value> details, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto object = details ? dynamic_objc_cast<NSDictionary>(parseJSON(details->toJSONString().createNSString().get(), JSONOptions::FragmentsAllowed)) : nil;
++    if (!object) {
++        exception = "cookie details must be an object"_s;
++        return;
++    }
++    NSString *nativeException = nil;
++    getAll(object, WTF::move(callback), &nativeException);
++    if (nativeException)
++        exception = nativeException;
++}
++
++void WebExtensionAPICookies::set(RefPtr<JSON::Value> details, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto object = details ? dynamic_objc_cast<NSDictionary>(parseJSON(details->toJSONString().createNSString().get(), JSONOptions::FragmentsAllowed)) : nil;
++    if (!object) {
++        exception = "cookie details must be an object"_s;
++        return;
++    }
++    NSString *nativeException = nil;
++    set(object, WTF::move(callback), &nativeException);
++    if (nativeException)
++        exception = nativeException;
++}
++
++void WebExtensionAPICookies::remove(RefPtr<JSON::Value> details, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto object = details ? dynamic_objc_cast<NSDictionary>(parseJSON(details->toJSONString().createNSString().get(), JSONOptions::FragmentsAllowed)) : nil;
++    if (!object) {
++        exception = "cookie details must be an object"_s;
++        return;
++    }
++    NSString *nativeException = nil;
++    remove(object, WTF::move(callback), &nativeException);
++    if (nativeException)
++        exception = nativeException;
++}
++
++
+ static inline std::optional<PAL::SessionID> toImpl(NSString *storeID)
+ {
+     ASSERT(storeID.length);
 diff --git a/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIEventCocoa.mm b/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIEventCocoa.mm
 index 3fb6ebfe1e1c5703563b72822b66a69a2546d4a8..b8d68456d7d38b859ceecc144f15646aa837c8b7 100644
 --- a/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIEventCocoa.mm
@@ -47470,6 +49463,178 @@ index 38061a1b048dc7bc0c9da1b8202168f0603c876a..3dcbef42ab33c5a9d1648408ac0ce5b2
  };
  
  } // namespace WebKit
+diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPICookies.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPICookies.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..a346a7aa8ca9f3aeff3680e42bd3c991a34cc400
+--- /dev/null
++++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPICookies.cpp
+@@ -0,0 +1,122 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#include "WebExtensionAPICookies.h"
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++#include "JSWebExtensionCookieParameters.h"
++#include "WebExtensionAPINamespace.h"
++#include "MessageSenderInlines.h"
++#include "WebExtensionContextMessages.h"
++#include "WebExtensionContextProxy.h"
++#include "WebExtensionCookieQueryParser.h"
++#include "WebExtensionCookieWriteParser.h"
++#include "WebProcess.h"
++#include "WebExtensionPermission.h"
++namespace WebKit {
++static void callWithCookie(WebExtensionCallbackHandler& callback, std::expected<std::optional<WebExtensionCookieParameters>, WebExtensionError>&& result)
++{
++    if (!result) {
++        callback.reportError(result.error());
++        return;
++    }
++    auto context = callback.globalContext();
++    Protected<JSValueRef> value(context, *result ? toWebAPI(context, **result) : JSValueMakeNull(context));
++    callback.call(value.get());
++}
++void WebExtensionAPICookies::get(RefPtr<JSON::Value> details, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto query = parseWebExtensionCookieQuery(details.get(), WebExtensionCookieQueryKind::Get);
++    if (!query) {
++        exception = query.error();
++        return;
++    }
++    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::CookiesGet(query->session, *query->filter.name, query->url),
++        [protectedThis = Ref { *this }, callback = WTF::move(callback)](auto&& result) {
++            callWithCookie(callback.get(), WTF::move(result));
++        }, extensionContext().identifier());
++}
++void WebExtensionAPICookies::getAll(RefPtr<JSON::Value> details, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto query = parseWebExtensionCookieQuery(details.get(), WebExtensionCookieQueryKind::GetAll);
++    if (!query) {
++        exception = query.error();
++        return;
++    }
++    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::CookiesGetAll(query->session, query->url, query->filter),
++        [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<Vector<WebExtensionCookieParameters>, WebExtensionError>&& result) {
++            if (!result) {
++                callback->reportError(result.error());
++                return;
++            }
++            auto context = callback->globalContext();
++            Protected<JSValueRef> value(context, toWebAPI(context, *result));
++            callback->call(value.get());
++        }, extensionContext().identifier());
++}
++void WebExtensionAPICookies::set(RefPtr<JSON::Value> details, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto parsed = parseWebExtensionCookieWrite(details.get());
++    if (!parsed) {
++        exception = parsed.error();
++        return;
++    }
++    // Send the original details, including URL, for independent UI validation.
++    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::CookiesSetJSON(details->toJSONString()),
++        [protectedThis = Ref { *this }, callback = WTF::move(callback)](auto&& result) {
++            callWithCookie(callback.get(), WTF::move(result));
++        }, extensionContext().identifier());
++}
++void WebExtensionAPICookies::remove(RefPtr<JSON::Value> details, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    auto query = parseWebExtensionCookieQuery(details.get(), WebExtensionCookieQueryKind::Get);
++    if (!query) {
++        exception = query.error();
++        return;
++    }
++    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::CookiesRemove(query->session, *query->filter.name, query->url),
++        [protectedThis = Ref { *this }, callback = WTF::move(callback), url = query->url](std::expected<std::optional<WebExtensionCookieParameters>, WebExtensionError>&& result) {
++            if (!result) {
++                callback->reportError(result.error());
++                return;
++            }
++            auto context = callback->globalContext();
++            Protected<JSValueRef> value(context, *result ? toWebAPICookieRemoval(context, url, **result) : JSValueMakeNull(context));
++            callback->call(value.get());
++        }, extensionContext().identifier());
++}
++void WebExtensionAPICookies::getAllCookieStores(Ref<WebExtensionCallbackHandler>&& callback)
++{
++    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::CookiesGetAllCookieStores(),
++        [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<HashMap<PAL::SessionID, Vector<WebExtensionTabIdentifier>>, WebExtensionError>&& result) {
++            if (!result) {
++                callback->reportError(result.error());
++                return;
++            }
++            auto context = callback->globalContext();
++            Protected<JSValueRef> value(context, toWebAPI(context, *result, protectedThis->extensionContext().defaultSessionID()));
++            callback->call(value.get());
++        }, extensionContext().identifier());
++}
++WebExtensionAPIEvent& WebExtensionAPICookies::onChanged()
++{
++    if (!m_onChanged)
++        m_onChanged = WebExtensionAPIEvent::create(*this, WebExtensionEventListenerType::CookiesOnChanged);
++    return *m_onChanged;
++}
++void WebExtensionContextProxy::dispatchCookiesChangedEvent(PAL::SessionID sessionID, const Vector<WebCore::CookieChange>& changes)
++{
++    if (!sessionID.isValid() || !hasPermission(WebExtensionPermission::cookies()))
++        return;
++    // Deliver each committed batch in order. The factory allocates a new
++    // changeInfo and nested cookie for every listener and JavaScript context.
++    for (auto& change : changes) {
++        enumerateFramesAndNamespaceObjects([&](auto&, auto& object) {
++            if (!hasPermission(WebExtensionPermission::cookies()))
++                return;
++            object.cookies().onChanged().template invokeListenersWithArgumentFactory<1>([&](JSGlobalContextRef context) {
++                return std::array { Protected<JSValueRef>(context, toWebAPICookieChange(context, sessionID, change)) };
++            });
++        });
++    }
++}
++}
++#endif
+diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPICookies.h b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPICookies.h
+index 24ddaf37b94ee3e18eadfffb6455c2dfccb79c66..a9812ee585ef238c75d32d8017e4e632695f2394 100644
+--- a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPICookies.h
++++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPICookies.h
+@@ -30,6 +30,7 @@
+ #include "JSWebExtensionAPICookies.h"
+ #include "WebExtensionAPIEvent.h"
+ #include "WebExtensionAPIObject.h"
++#include <wtf/JSONValues.h>
+ 
+ OBJC_CLASS NSDictionary;
+ OBJC_CLASS NSString;
+@@ -40,6 +41,12 @@ class WebExtensionAPICookies : public WebExtensionAPIObject, public JSWebExtensi
+     WEB_EXTENSION_DECLARE_JS_WRAPPER_CLASS(WebExtensionAPICookies, cookies, cookies);
+ 
+ public:
++    void get(RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String&);
++    void getAll(RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String&);
++    void set(RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String&);
++    void remove(RefPtr<JSON::Value>, Ref<WebExtensionCallbackHandler>&&, String&);
++    void getAllCookieStores(Ref<WebExtensionCallbackHandler>&&);
++    WebExtensionAPIEvent& onChanged();
+ #if PLATFORM(COCOA)
+     void get(NSDictionary *details, Ref<WebExtensionCallbackHandler>&&, NSString **outExceptionString);
+     void getAll(NSDictionary *details, Ref<WebExtensionCallbackHandler>&&, NSString **outExceptionString);
+@@ -47,16 +54,13 @@ public:
+     void set(NSDictionary *details, Ref<WebExtensionCallbackHandler>&&, NSString **outExceptionString);
+     void remove(NSDictionary *details, Ref<WebExtensionCallbackHandler>&&, NSString **outExceptionString);
+ 
+-    void getAllCookieStores(Ref<WebExtensionCallbackHandler>&&);
+-
+-    WebExtensionAPIEvent& onChanged();
+-
+ private:
+     using ParsedDetails = std::tuple<std::optional<PAL::SessionID>, String, URL>;
+     static std::optional<ParsedDetails> parseCookieDetails(NSDictionary *details, NSArray *requiredKeys, NSString **outExceptionString);
+ 
+-    RefPtr<WebExtensionAPIEvent> m_onChanged;
+ #endif
++private:
++    RefPtr<WebExtensionAPIEvent> m_onChanged;
+ };
+ 
+ } // namespace WebKit
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIEvent.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIEvent.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..b4a6d234658215095a32988042d85f840676c887
@@ -47736,7 +49901,7 @@ index 8e5ecd249ca1330547c03039e959fc77b549f325..9826adea1517e419ad842c2adbb4d22c
  
      void addListener(WebCore::FrameIdentifier, RefPtr<WebExtensionCallbackHandler>);
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.cpp
-index a631bca164f7da881e64b2ee29f21de7f4179746..0ae8809a9b60ea517173d50a6bab5bfdbe2756dd 100644
+index a631bca164f7da881e64b2ee29f21de7f4179746..db59aabb95c7ec9b49f2b346548256faa182d1bc 100644
 --- a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.cpp
 +++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.cpp
 @@ -81,8 +81,14 @@ bool WebExtensionAPINamespace::isPropertyAllowed(const ASCIILiteral& name, WebPa
@@ -47779,14 +49944,14 @@ index a631bca164f7da881e64b2ee29f21de7f4179746..0ae8809a9b60ea517173d50a6bab5bfd
  WebExtensionAPICommands& WebExtensionAPINamespace::commands()
  {
      // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/commands
-@@ -164,6 +167,7 @@ WebExtensionAPICommands& WebExtensionAPINamespace::commands()
-     return *m_commands;
+@@ -174,6 +177,7 @@ WebExtensionAPICookies& WebExtensionAPINamespace::cookies()
+     return *m_cookies;
  }
  
 +#if PLATFORM(COCOA)
- WebExtensionAPICookies& WebExtensionAPINamespace::cookies()
+ WebExtensionAPIDeclarativeNetRequest& WebExtensionAPINamespace::declarativeNetRequest()
  {
-     // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/cookies
+     // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/declarativeNetRequest
 @@ -258,6 +262,8 @@ WebExtensionAPINotifications& WebExtensionAPINamespace::notifications()
      return *m_notifications;
  }
@@ -47885,10 +50050,10 @@ index a631bca164f7da881e64b2ee29f21de7f4179746..0ae8809a9b60ea517173d50a6bab5bfd
  } // namespace WebKit
  
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.h b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.h
-index 0daeb9f57bccead43bac234e6d71bff821327db7..a3d320b58344573ca886c77e2abfa70e32b549b4 100644
+index 0daeb9f57bccead43bac234e6d71bff821327db7..a194cbe9718b577a53a9c66f15e73d97faa894b7 100644
 --- a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.h
 +++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.h
-@@ -66,13 +66,12 @@ class WebExtensionAPINamespace : public WebExtensionAPIObject, public JSWebExten
+@@ -66,14 +66,13 @@ class WebExtensionAPINamespace : public WebExtensionAPIObject, public JSWebExten
  
  public:
      bool isPropertyAllowed(const ASCIILiteral& propertyName, WebPage*);
@@ -47901,10 +50066,11 @@ index 0daeb9f57bccead43bac234e6d71bff821327db7..a3d320b58344573ca886c77e2abfa70e
      WebExtensionAPICommands& commands();
 +    WebExtensionAPIAction& browserAction() { return action(); }
 +    WebExtensionAPIAction& pageAction() { return action(); }
-+#if PLATFORM(COCOA)
      WebExtensionAPICookies& cookies();
++#if PLATFORM(COCOA)
      WebExtensionAPIMenus& contextMenus() { return menus(); }
      WebExtensionAPIDeclarativeNetRequest& declarativeNetRequest();
+ #if ENABLE(INSPECTOR_EXTENSIONS)
 @@ -87,9 +86,8 @@ public:
  #if ENABLE(WK_WEB_EXTENSIONS_OFFSCREEN)
      WebExtensionAPIOffscreen& offscreen();
@@ -50990,6 +53156,140 @@ index 0000000000000000000000000000000000000000..692bb73d9edfc46fdfa2bf5a6acb1f78
 +}
 +}
 +#endif
+diff --git a/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionCookieParameters.cpp b/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionCookieParameters.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..14acd6337443cfde1ac9dbb8d6ae4f8bbe26124c
+--- /dev/null
++++ b/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionCookieParameters.cpp
+@@ -0,0 +1,105 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#include "JSWebExtensionCookieParameters.h"
++#if ENABLE(WK_WEB_EXTENSIONS)
++#include "JSWebExtensionString.h"
++#include "Protected.h"
++#include "WebExtensionCookieStoreIdentifier.h"
++#include <cmath>
++namespace WebKit {
++JSValueRef toWebAPICookieChange(JSContextRef context, PAL::SessionID session, const WebCore::CookieChange& change)
++{
++    if (!session.isValid() || !change.cookie.partitionKey.isEmpty())
++        return JSValueMakeNull(context);
++    ASCIILiteral cause;
++    switch (change.cause) {
++    case WebCore::CookieChangeCause::Explicit: cause = "explicit"_s; break;
++    case WebCore::CookieChangeCause::Overwrite: cause = "overwrite"_s; break;
++    case WebCore::CookieChangeCause::Expired: cause = "expired"_s; break;
++    case WebCore::CookieChangeCause::ExpiredOverwrite: cause = "expired_overwrite"_s; break;
++    default: return JSValueMakeNull(context);
++    }
++    if (!change.removed && change.cause != WebCore::CookieChangeCause::Explicit)
++        return JSValueMakeNull(context);
++    auto global = JSContextGetGlobalContext(context);
++    Protected<JSObjectRef> result(global, JSObjectMake(context, nullptr, nullptr));
++    Protected<JSValueRef> cookie(global, toWebAPI(context, WebExtensionCookieParameters { session, change.cookie }));
++    JSObjectSetProperty(context, result.get(), toJSString("cookie"_s).get(), cookie.get(), kJSPropertyAttributeNone, nullptr);
++    JSObjectSetProperty(context, result.get(), toJSString("removed"_s).get(), JSValueMakeBoolean(context, change.removed), kJSPropertyAttributeNone, nullptr);
++    JSObjectSetProperty(context, result.get(), toJSString("cause"_s).get(), JSValueMakeString(context, toJSString(cause).get()), kJSPropertyAttributeNone, nullptr);
++    return result.get();
++}
++JSValueRef toWebAPICookieRemoval(JSContextRef context, const URL& url, const WebExtensionCookieParameters& parameters)
++{
++    if (!parameters.sessionIdentifier || !parameters.sessionIdentifier->isValid())
++        return JSValueMakeNull(context);
++    Protected<JSObjectRef> result(JSContextGetGlobalContext(context), JSObjectMake(context, nullptr, nullptr));
++    auto set = [&](ASCIILiteral key, const String& value) {
++        JSObjectSetProperty(context, result.get(), toJSString(key).get(), JSValueMakeString(context, toJSString(value).get()), kJSPropertyAttributeNone, nullptr);
++    };
++    set("url"_s, url.string());
++    set("name"_s, parameters.cookie.name);
++    set("storeId"_s, webExtensionCookieStoreIdentifier(*parameters.sessionIdentifier));
++    return result.get();
++}
++JSValueRef toWebAPI(JSContextRef context, const WebExtensionCookieParameters& parameters)
++{
++    if (!parameters.sessionIdentifier || !parameters.sessionIdentifier->isValid())
++        return JSValueMakeNull(context);
++    auto& cookie = parameters.cookie;
++    Protected<JSObjectRef> result(JSContextGetGlobalContext(context), JSObjectMake(context, nullptr, nullptr));
++    auto set = [&](ASCIILiteral key, JSValueRef value) {
++        JSObjectSetProperty(context, result.get(), toJSString(key).get(), value, kJSPropertyAttributeNone, nullptr);
++    };
++    auto string = [&](const String& value) { return JSValueMakeString(context, toJSString(value).get()); };
++    set("domain"_s, string(cookie.domain));
++    set("hostOnly"_s, JSValueMakeBoolean(context, !cookie.domain.startsWith('.')));
++    set("httpOnly"_s, JSValueMakeBoolean(context, cookie.httpOnly));
++    set("name"_s, string(cookie.name));
++    set("path"_s, string(cookie.path));
++    ASCIILiteral sameSite = "no_restriction"_s;
++    switch (cookie.sameSite) {
++    case WebCore::Cookie::SameSitePolicy::None: break;
++    case WebCore::Cookie::SameSitePolicy::Lax: sameSite = "lax"_s; break;
++    case WebCore::Cookie::SameSitePolicy::Strict: sameSite = "strict"_s; break;
++    }
++    set("sameSite"_s, string(sameSite));
++    set("secure"_s, JSValueMakeBoolean(context, cookie.secure));
++    set("session"_s, JSValueMakeBoolean(context, cookie.session));
++    set("storeId"_s, string(webExtensionCookieStoreIdentifier(*parameters.sessionIdentifier)));
++    set("value"_s, string(cookie.value));
++    if (!cookie.session && cookie.expires && std::isfinite(*cookie.expires))
++        set("expirationDate"_s, JSValueMakeNumber(context, *cookie.expires / 1000.0));
++    return result.get();
++}
++JSValueRef toWebAPI(JSContextRef context, const Vector<WebExtensionCookieParameters>& cookies)
++{
++    auto global = JSContextGetGlobalContext(context);
++    Protected<JSObjectRef> result(global, JSObjectMakeArray(context, 0, nullptr, nullptr));
++    unsigned index = 0;
++    for (auto& cookie : cookies) {
++        Protected<JSValueRef> value(global, toWebAPI(context, cookie));
++        JSObjectSetPropertyAtIndex(context, result.get(), index++, value.get(), nullptr);
++    }
++    return result.get();
++}
++JSValueRef toWebAPI(JSContextRef context, const HashMap<PAL::SessionID, Vector<WebExtensionTabIdentifier>>& stores, PAL::SessionID ownSession)
++{
++    auto global = JSContextGetGlobalContext(context);
++    Protected<JSObjectRef> result(global, JSObjectMakeArray(context, 0, nullptr, nullptr));
++    unsigned index = 0;
++    for (auto& entry : stores) {
++        Protected<JSObjectRef> store(global, JSObjectMake(context, nullptr, nullptr));
++        Protected<JSObjectRef> tabs(global, JSObjectMakeArray(context, 0, nullptr, nullptr));
++        unsigned tabIndex = 0;
++        for (auto tab : entry.value)
++            JSObjectSetPropertyAtIndex(context, tabs.get(), tabIndex++, JSValueMakeNumber(context, toWebAPI(tab)), nullptr);
++        JSObjectSetProperty(context, store.get(), toJSString("id"_s).get(), JSValueMakeString(context, toJSString(webExtensionCookieStoreIdentifier(entry.key)).get()), kJSPropertyAttributeNone, nullptr);
++        JSObjectSetProperty(context, store.get(), toJSString("tabIds"_s).get(), tabs.get(), kJSPropertyAttributeNone, nullptr);
++        JSObjectSetProperty(context, store.get(), toJSString("incognito"_s).get(), JSValueMakeBoolean(context, entry.key.isEphemeral() && entry.key != ownSession), kJSPropertyAttributeNone, nullptr);
++        JSObjectSetPropertyAtIndex(context, result.get(), index++, store.get(), nullptr);
++    }
++    return result.get();
++}
++}
++#endif
+diff --git a/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionCookieParameters.h b/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionCookieParameters.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..928b5089cc6ae1383f4cde7956e180da5c896cf2
+--- /dev/null
++++ b/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionCookieParameters.h
+@@ -0,0 +1,17 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#if ENABLE(WK_WEB_EXTENSIONS)
++#include "WebExtensionCookieParameters.h"
++#include "WebExtensionTabIdentifier.h"
++#include <JavaScriptCore/JavaScript.h>
++#include <WebCore/CookieChange.h>
++#include <pal/SessionID.h>
++#include <wtf/HashMap.h>
++namespace WebKit {
++JSValueRef toWebAPI(JSContextRef, const WebExtensionCookieParameters&);
++JSValueRef toWebAPICookieChange(JSContextRef, PAL::SessionID, const WebCore::CookieChange&);
++JSValueRef toWebAPICookieRemoval(JSContextRef, const URL&, const WebExtensionCookieParameters&);
++JSValueRef toWebAPI(JSContextRef, const Vector<WebExtensionCookieParameters>&);
++JSValueRef toWebAPI(JSContextRef, const HashMap<PAL::SessionID, Vector<WebExtensionTabIdentifier>>&, PAL::SessionID ownSession);
++}
++#endif
 diff --git a/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionMessageReply.cpp b/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionMessageReply.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..4c9c0127c6fc188e5243ea2ef28c866ca7787a30
@@ -52624,6 +54924,30 @@ index a7907ee1aeea5f7c5fb86a6f7d99e83b69aa2640..4b6be127113d8a81a2f6114642776a14
  
      readonly attribute WebExtensionAPIEvent onCommand;
      readonly attribute WebExtensionAPIEvent onChanged;
+diff --git a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPICookies.idl b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPICookies.idl
+index 47269bffaea122d173c5b7095608c14e20fb3e01..f1237fec7a943696750e1b7a7a9c179b606bafea 100644
+--- a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPICookies.idl
++++ b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPICookies.idl
+@@ -75,14 +75,15 @@ dictionary WebExtensionCookieSetDetails {
+ [
+     Conditional=WK_WEB_EXTENSIONS,
+     MainWorldOnly,
++    UseCPPAPI,
+     ReturnsPromiseWhenCallbackIsOmitted,
+ ] interface WebExtensionAPICookies {
+ 
+-    [RaisesException] void get([NSDictionary] any details, [Optional, CallbackHandler] function callback);
+-    [RaisesException] void getAll([NSDictionary] any details, [Optional, CallbackHandler] function callback);
++    [RaisesStringException] void get([JSONValue] any details, [Optional, CallbackHandler] function callback);
++    [RaisesStringException] void getAll([JSONValue] any details, [Optional, CallbackHandler] function callback);
+ 
+-    [RaisesException] void set([NSDictionary] any details, [Optional, CallbackHandler] function callback);
+-    [RaisesException] void remove([NSDictionary] any details, [Optional, CallbackHandler] function callback);
++    [RaisesStringException] void set([JSONValue] any details, [Optional, CallbackHandler] function callback);
++    [RaisesStringException] void remove([JSONValue] any details, [Optional, CallbackHandler] function callback);
+ 
+     void getAllCookieStores([Optional, CallbackHandler] function callback);
+ 
 diff --git a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIEvent.idl b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIEvent.idl
 index 25491a911534c611ab59ab4725e41bafeb93894d..d1c62c9c4082a2e4856f1861dde93535ceb63f39 100644
 --- a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIEvent.idl
@@ -52637,7 +54961,7 @@ index 25491a911534c611ab59ab4725e41bafeb93894d..d1c62c9c4082a2e4856f1861dde93535
  
      [NeedsFrameIdentifier] void addListener([CallbackHandler] function listener);
 diff --git a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPINamespace.idl b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPINamespace.idl
-index 8fd7a8880207871662fb33d5b56dcf2fde2dfbc4..771b90065549441d96a819b025dfcffe01a2ff49 100644
+index 8fd7a8880207871662fb33d5b56dcf2fde2dfbc4..6f7484770fe58f0ab61a6179dda7adf18f9228d3 100644
 --- a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPINamespace.idl
 +++ b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPINamespace.idl
 @@ -33,17 +33,17 @@
@@ -52654,7 +54978,8 @@ index 8fd7a8880207871662fb33d5b56dcf2fde2dfbc4..771b90065549441d96a819b025dfcffe
 -    [MainWorldOnly, Dynamic, Platform=COCOA] readonly attribute WebExtensionAPIAction browserAction;
 +    [MainWorldOnly, Dynamic] readonly attribute WebExtensionAPIAction browserAction;
  
-     [MainWorldOnly, Dynamic, Platform=COCOA] readonly attribute WebExtensionAPICookies cookies;
+-    [MainWorldOnly, Dynamic, Platform=COCOA] readonly attribute WebExtensionAPICookies cookies;
++    [MainWorldOnly, Dynamic] readonly attribute WebExtensionAPICookies cookies;
  
 -    [MainWorldOnly, Dynamic, Platform=COCOA] readonly attribute WebExtensionAPICommands commands;
 +    [MainWorldOnly, Dynamic] readonly attribute WebExtensionAPICommands commands;
@@ -53197,10 +55522,31 @@ index 2b2ff5395e73b7978dc8b610d62ffe835fc1a886..e9215d1ae97db698219770ee06d8a0ea
  
  #endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.h b/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.h
-index 1b514e1106295ebe5b2cc26520a9970b6c35633c..f406445f187c56b1c2a20304ae8c2f79358e2ddb 100644
+index 1b514e1106295ebe5b2cc26520a9970b6c35633c..1fd2bd15fd6a6d1ab64f02bda5a14befc35c7d77 100644
 --- a/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.h
 +++ b/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.h
-@@ -203,7 +203,7 @@ private:
+@@ -41,6 +41,8 @@
+ OBJC_CLASS JSValue;
+ OBJC_CLASS NSDictionary;
+ 
++namespace WebCore { struct CookieChange; }
++
+ namespace WebKit {
+ 
+ class WebExtensionAPINamespace;
+@@ -167,7 +169,11 @@ private:
+     void dispatchCommandsChangedEvent(const String& identifier, const String& oldShortcut, const String& newShortcut);
+ 
+     // Cookies
++#if PLATFORM(HAIKU) && USE(CURL)
++    void dispatchCookiesChangedEvent(PAL::SessionID, const Vector<WebCore::CookieChange>&);
++#else
+     void dispatchCookiesChangedEvent();
++#endif
+ 
+ #if ENABLE(DNR_ON_RULE_MATCHED_DEBUG)
+     // DeclarativeNetRequest
+@@ -203,7 +209,7 @@ private:
  
      // Port
      void dispatchPortMessageEvent(std::optional<WebPageProxyIdentifier>, WebExtensionPortChannelIdentifier, const String& messageJSON, bool userGesture);
@@ -53209,7 +55555,7 @@ index 1b514e1106295ebe5b2cc26520a9970b6c35633c..f406445f187c56b1c2a20304ae8c2f79
  
      // Runtime
      void internalDispatchRuntimeMessageEvent(WebExtensionContentWorldType, const String& messageJSON, const std::optional<WebExtensionMessageTargetParameters>&, const WebExtensionMessageSenderParameters&, bool userGesture, CompletionHandler<void(String&& replyJSON)>&&);
-@@ -238,12 +238,12 @@ private:
+@@ -238,12 +244,12 @@ private:
      void dispatchWebNavigationEvent(WebExtensionEventListenerType, WebExtensionTabIdentifier, const WebExtensionFrameParameters&, WallTime);
  
      // Web Request
@@ -53229,10 +55575,23 @@ index 1b514e1106295ebe5b2cc26520a9970b6c35633c..f406445f187c56b1c2a20304ae8c2f79
      // Windows
      void dispatchWindowsEvent(WebExtensionEventListenerType, const std::optional<WebExtensionWindowParameters>&);
 diff --git a/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.messages.in b/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.messages.in
-index 7e5207762fe78057c1b72f80bc18bf9bdd0042e6..d07e957b5ee34e74e8cba3b24b3d1071b924ff67 100644
+index 7e5207762fe78057c1b72f80bc18bf9bdd0042e6..0133e032c0af84ab80feaeb42309097f19dd9fd8 100644
 --- a/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.messages.in
 +++ b/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.messages.in
-@@ -77,7 +77,7 @@ messages -> WebExtensionContextProxy {
+@@ -41,7 +41,12 @@ messages -> WebExtensionContextProxy {
+     DispatchCommandsChangedEvent(String identifier, String oldShortcut, String newShortcut)
+ 
+     // Cookies
++#if PLATFORM(HAIKU) && USE(CURL)
++    DispatchCookiesChangedEvent(PAL::SessionID sessionID, Vector<WebCore::CookieChange> changes)
++#endif
++#if !(PLATFORM(HAIKU) && USE(CURL))
+     DispatchCookiesChangedEvent()
++#endif
+ 
+ #if ENABLE(DNR_ON_RULE_MATCHED_DEBUG)
+     // DeclarativeNetRequest
+@@ -77,7 +82,7 @@ messages -> WebExtensionContextProxy {
  
      // Ports
      DispatchPortMessageEvent(std::optional<WebKit::WebPageProxyIdentifier> sendingPageProxyIdentifier, WebKit::WebExtensionPortChannelIdentifier channelIdentifier, String messageJSON, bool userGesture)
@@ -53241,7 +55600,7 @@ index 7e5207762fe78057c1b72f80bc18bf9bdd0042e6..d07e957b5ee34e74e8cba3b24b3d1071
  
      // Runtime
      DispatchRuntimeMessageEvent(WebKit::WebExtensionContentWorldType contentWorldType, String messageJSON, struct std::optional<WebKit::WebExtensionMessageTargetParameters> targetParameters, struct WebKit::WebExtensionMessageSenderParameters senderParameters, bool userGesture) -> (String replyJSON)
-@@ -109,12 +109,12 @@ messages -> WebExtensionContextProxy {
+@@ -109,12 +114,12 @@ messages -> WebExtensionContextProxy {
      DispatchWebNavigationEvent(WebKit::WebExtensionEventListenerType type, WebKit::WebExtensionTabIdentifier tabID, struct WebKit::WebExtensionFrameParameters frameParamaters, WallTime timestamp)
  
      // Web Request

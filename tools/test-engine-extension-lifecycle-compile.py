@@ -16,7 +16,7 @@ UNITS = ('WebExtensionController.cpp', 'WebExtensionContext.cpp',
          'WebExtensionDeclarativeNetRequestSQLiteStore.cpp',
          'WebExtensionMatchPatternProcessPool.cpp', 'WebExtensionContextProxy.cpp',
          'WebExtensionControllerProxy.cpp')
-EXTRA_UNITS = ('API/WebExtensionAPIAction.cpp', 'API/WebExtensionAPIWindows.cpp', 'API/WebExtensionAPIWindowsEvent.cpp',
+EXTRA_UNITS = ('API/WebExtensionAPICookies.cpp', 'Bindings/JSWebExtensionCookieParameters.cpp', 'API/WebExtensionAPIAction.cpp', 'API/WebExtensionAPIWindows.cpp', 'API/WebExtensionAPIWindowsEvent.cpp',
                'Bindings/JSWebExtensionWindowParameters.cpp', 'API/WebExtensionAPITabs.cpp', 'API/WebExtensionAPIPermissions.cpp', 'API/WebExtensionAPICommands.cpp',
                'API/WebExtensionAPIWebRequest.cpp', 'API/WebExtensionAPIWebRequestEvent.cpp', 'haiku/WebExtensionContextBackgroundHaiku.cpp', 'haiku/WebExtensionURLSchemeHandlerHaiku.cpp', 'haiku/WebExtensionContextHaiku.cpp',
                'haiku/WebExtensionContextTestHaiku.cpp',
@@ -31,8 +31,9 @@ EXTRA_UNITS = ('API/WebExtensionAPIAction.cpp', 'API/WebExtensionAPIWindows.cpp'
                'API/WebExtensionAPITest.cpp',
                'API/WebExtensionAPIRuntime.cpp',
                'API/WebExtensionAPIEvent.cpp', 'API/WebExtensionAPIPort.cpp')
-GENERATED_UNITS = ('WebExtensionContextMessageReceiver.cpp', 'WebExtensionContextProxyMessageReceiver.cpp')
-BINDING_UNITS = ('JSWebExtensionAPIAction.cpp', 'JSWebExtensionAPIWindows.cpp', 'JSWebExtensionAPIWindowsEvent.cpp', 'JSWebExtensionAPITabs.cpp', 'JSWebExtensionAPIPermissions.cpp', 'JSWebExtensionAPICommands.cpp',
+SERIALIZER_UNITS = ('GeneratedSerializersSharedWebCoreArgumentCodersNetwork.cpp',)
+GENERATED_UNITS = ('NetworkProcessProxyMessageReceiver.cpp', 'WebExtensionContextMessageReceiver.cpp', 'WebExtensionContextProxyMessageReceiver.cpp', 'WebCookieManagerMessageReceiver.cpp')
+BINDING_UNITS = ('JSWebExtensionAPICookies.cpp', 'JSWebExtensionAPIAction.cpp', 'JSWebExtensionAPIWindows.cpp', 'JSWebExtensionAPIWindowsEvent.cpp', 'JSWebExtensionAPITabs.cpp', 'JSWebExtensionAPIPermissions.cpp', 'JSWebExtensionAPICommands.cpp',
                  'JSWebExtensionAPIWebRequest.cpp', 'JSWebExtensionAPIWebRequestEvent.cpp', 'JSWebExtensionAPIWebNavigation.cpp', 'JSWebExtensionAPIWebNavigationEvent.cpp',
                  'JSWebExtensionAPIEvent.cpp', 'JSWebExtensionAPIPort.cpp',
                  'JSWebExtensionAPIStorage.cpp', 'JSWebExtensionAPIStorageArea.cpp',
@@ -49,7 +50,19 @@ NATIVE_PAGE_UNITS = {'ExtensionPermissionPromptHaiku.cpp': 'UIProcess/haiku/Exte
 WEB_CORE_UNITS = {name: 'contentextensions/' + name for name in ('URLFilterParser.cpp', 'DFABytecodeInterpreter.cpp', 'ContentExtension.cpp',
                   'ContentExtensionURLConditions.cpp', 'ContentExtensionRule.cpp', 'ContentExtensionParser.cpp',
                   'ContentExtensionCompiler.cpp', 'ContentExtensionsBackend.cpp')}
-UI_API_UNITS = {'WebExtensionActionDetails.cpp': 'Shared/Extensions/WebExtensionActionDetails.cpp',
+UI_API_UNITS = {'CookieStorageCurl.cpp': 'NetworkProcess/Cookies/curl/CookieStorageCurl.cpp',
+                'WebCookieManager.cpp': 'NetworkProcess/Cookies/WebCookieManager.cpp',
+                'NetworkProcessProxy.cpp': 'UIProcess/Network/NetworkProcessProxy.cpp',
+                'NetworkStorageSessionCurl.cpp': 'NetworkProcess/curl/NetworkStorageSessionCurl.cpp',
+                'WebExtensionContextAPICookiesHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionContextAPICookiesHaiku.cpp',
+                'WebExtensionCookieHostAccess.cpp': 'UIProcess/Extensions/haiku/WebExtensionCookieHostAccess.cpp',
+                'WebExtensionCookieWriteParser.cpp': 'Shared/Extensions/WebExtensionCookieWriteParser.cpp',
+                'WebExtensionCookieQueryParser.cpp': 'Shared/Extensions/WebExtensionCookieQueryParser.cpp',
+                'WebExtensionCookieStoreIdentifier.cpp': 'Shared/Extensions/WebExtensionCookieStoreIdentifier.cpp',
+                'WebCookieManagerCurl.cpp': 'NetworkProcess/Cookies/curl/WebCookieManagerCurl.cpp',
+                'APIHTTPCookieStore.cpp': 'UIProcess/API/APIHTTPCookieStore.cpp',
+                'WebsiteDataStore.cpp': 'UIProcess/WebsiteData/WebsiteDataStore.cpp',
+                'WebExtensionActionDetails.cpp': 'Shared/Extensions/WebExtensionActionDetails.cpp',
                 'WebExtensionContextAPIActionHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionContextAPIActionHaiku.cpp', 'WebExtensionContextWindowsHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionContextWindowsHaiku.cpp', 'WebExtensionWindowQueryParser.cpp': 'Shared/Extensions/WebExtensionWindowQueryParser.cpp',
                 'WebExtensionContextAPIWindowsHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionContextAPIWindowsHaiku.cpp', 'WebExtensionTabQueryParser.cpp': 'Shared/Extensions/WebExtensionTabQueryParser.cpp',
                 'WebExtensionContextAPITabsHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionContextAPITabsHaiku.cpp',
@@ -166,15 +179,74 @@ def regenerate_ipc(probe, manifest, units):
     (probe.OUTPUT / 'source-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
 
 
+def regenerate_serializers(probe, manifest, units):
+    """Regenerate the complete configured serializer set in an isolated tree."""
+    source_root = probe.ENGINE / 'Source/WebKit'
+    generator = source_root / 'Scripts/generate-serializers.py'
+    commands = [line.split(' = ', 1)[1] for line in (probe.BUILD / 'build.ninja').read_text().splitlines()
+                if line.startswith('  COMMAND = ') and str(generator) in line]
+    if len(commands) != 1:
+        raise RuntimeError('Expected one configured serializer generation command')
+    words = shlex.split(commands[0])
+    index = words.index(str(generator))
+    interpreter = pathlib.Path(words[index - 1])
+    arguments = words[index + 1:words.index('--output-dir', index)]
+    if arguments[:2] != ['cpp', '--split-by-directory'] or not interpreter.is_file():
+        raise RuntimeError('Unexpected native serializer generation command')
+    inputs = probe.OUTPUT / 'serialization-inputs'
+    watched = [generator]
+    original_hashes = {}
+    staged = []
+    for item in arguments[2:]:
+        original = pathlib.Path(item)
+        if original.is_relative_to(source_root):
+            relative = pathlib.Path('Source/WebKit') / original.relative_to(source_root)
+        elif original.is_relative_to(probe.BUILD):
+            relative = pathlib.Path('DerivedInputs') / original.relative_to(probe.BUILD)
+        else:
+            raise RuntimeError('Serializer input is outside the configured source/build trees: ' + item)
+        if not relative.name.endswith('.serialization.in'):
+            raise RuntimeError('Unexpected serializer input: ' + item)
+        target = inputs / relative
+        if not target.exists():
+            data = original.read_bytes()
+            original_hashes[str(original)] = hashlib.sha256(data).hexdigest()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        watched.append(original)
+        staged.append(str(target))
+        name = str(target.relative_to(probe.OUTPUT))
+        if name not in manifest['files']:
+            manifest['files'][name] = {'source': str(target), 'sha256': probe.digest(target)}
+    snapshot = {str(path): probe.digest(path) for path in watched}
+    command = [str(interpreter), str(generator), 'cpp', '--split-by-directory', *staged, '--output-dir', str(probe.OUTPUT)]
+    subprocess.run(command, cwd=inputs, check=True)
+    if any(probe.digest(pathlib.Path(path)) != expected for path, expected in snapshot.items()):
+        raise RuntimeError('Native serialization inputs changed during generation')
+    generated = {path.name: probe.digest(path) for path in probe.OUTPUT.glob('GeneratedSerializers*')}
+    cookie_schema = inputs / 'Source/WebKit/Shared/WebCoreArgumentCodersNetwork.serialization.in'
+    if cookie_schema.exists() and 'struct WebCore::CookieChange {' in cookie_schema.read_text():
+        if 'ArgumentCoder<WebCore::CookieChange>' not in (probe.OUTPUT / 'GeneratedSerializersSharedWebCoreArgumentCodersNetwork.cpp').read_text():
+            raise RuntimeError('Cookie changes were not emitted in their configured Network serializer bundle')
+    for name in units:
+        if name in SERIALIZER_UNITS:
+            manifest['files'][name] = {'source': str(probe.OUTPUT / name), 'sha256': generated[name], 'generated_from_serialization': True}
+    manifest['serialization_generation'] = {'command': command, 'input_count': len(staged),
+        'native_inputs': snapshot, 'copied_inputs': original_hashes, 'generated_files': generated}
+    probe.EXTRA_WATCHED_INPUTS = (*getattr(probe, 'EXTRA_WATCHED_INPUTS', ()), *watched)
+    (probe.OUTPUT / 'source-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+
+
 def native(units=None, engine_root=DEFAULT_ENGINE, regenerate=False):
     spec = importlib.util.spec_from_file_location('extension_compile_probe',
         ROOT / 'tools/test-engine-extension-manifest-core.py')
     probe = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(probe)
     probe.OUTPUT = ROOT / 'sources'
-    probe.SOURCES = UNITS + EXTRA_UNITS + GENERATED_UNITS + BINDING_UNITS + tuple(PAGE_UNITS) + tuple(NATIVE_PAGE_UNITS) + tuple(UI_API_UNITS) + tuple(WEB_CORE_UNITS)
+    probe.SOURCES = UNITS + EXTRA_UNITS + GENERATED_UNITS + SERIALIZER_UNITS + BINDING_UNITS + tuple(PAGE_UNITS) + tuple(NATIVE_PAGE_UNITS) + tuple(UI_API_UNITS) + tuple(WEB_CORE_UNITS)
     probe.ENGINE = pathlib.Path(engine_root)
     probe.BUILD = probe.ENGINE / 'WebKitBuild/Modern'
+    probe.EXTRA_INCLUDE_DIRECTORIES = (probe.BUILD / 'WebCore/PrivateHeaders/WebCore',)
     if any(name in WEB_CORE_UNITS for name in units or ()):
         # WebKit's compile command omits WebCore's unexported sibling headers.
         # Use the configured WebCore search paths after the staged candidates.
@@ -195,6 +267,8 @@ def native(units=None, engine_root=DEFAULT_ENGINE, regenerate=False):
         raise RuntimeError('Native configured source does not match the staged host engine patch')
     if regenerate:
         regenerate_ipc(probe, manifest, units or UNITS)
+        if any(name.startswith('serialization-inputs/') for name in manifest['files']):
+            regenerate_serializers(probe, manifest, units or UNITS)
     import sys
     sys.argv = [sys.argv[0], '--content-extensions']
     if '#define ENABLE_WK_WEB_EXTENSIONS 1' in (probe.BUILD / 'cmakeconfig.h').read_text():
@@ -253,6 +327,21 @@ def host(overlay=None, units=None, engine_root=DEFAULT_ENGINE, regenerate=False,
                 if name in files:
                     raise RuntimeError('Ambiguous staged WebCore header: ' + name)
                 files[name] = (path, source(path), source(path).read_bytes())
+    if overlay or any(name in (units or ()) for name in ('NetworkStorageSessionCurl.cpp', 'WebCookieManagerCurl.cpp')):
+        for relative in ('platform/network/curl/CookieJarDB.h', 'platform/CookieChange.h', 'platform/Cookie.h'):
+            path = engine / 'Source/WebCore' / relative
+            if not source(path).is_file():
+                continue
+            for name in (path.name, 'WebCore/' + path.name):
+                if name in files:
+                    raise RuntimeError('Ambiguous staged cookie backend header: ' + name)
+                files[name] = (path, source(path), source(path).read_bytes())
+    for relative in ('Shared/NetworkStorageSession.h', 'UIProcess/Network/NetworkProcessProxy.h', 'NetworkProcess/Cookies/CookieStorage.h', 'UIProcess/API/APIHTTPCookieStore.h', 'NetworkProcess/Cookies/WebCookieManager.h', 'UIProcess/WebsiteData/WebsiteDataStore.h'):
+        path = engine / 'Source/WebKit' / relative
+        if source(path) != path or any(name in (units or ()) for name in ('APIHTTPCookieStore.cpp', 'WebCookieManagerCurl.cpp', 'WebCookieManagerMessageReceiver.cpp', 'WebsiteDataStore.cpp')):
+            if path.name in files:
+                raise RuntimeError('Ambiguous staged cookie API header: ' + path.name)
+            files[path.name] = (path, source(path), source(path).read_bytes())
     if 'APIContentRuleListStore.cpp' in (units or ()):
         path = engine / 'Source/WebKit/UIProcess/API/APIContentRuleListStore.h'
         if path.name in files:
@@ -263,7 +352,7 @@ def host(overlay=None, units=None, engine_root=DEFAULT_ENGINE, regenerate=False,
             if not generated_bindings:
                 raise RuntimeError('Generated binding units require --generated-bindings')
             continue
-        if name in GENERATED_UNITS:
+        if name in GENERATED_UNITS + SERIALIZER_UNITS:
             if not regenerate:
                 raise RuntimeError('Generated receiver units require --regenerate-ipc')
             continue
@@ -296,6 +385,11 @@ def host(overlay=None, units=None, engine_root=DEFAULT_ENGINE, regenerate=False,
             relative = candidate.relative_to(pathlib.Path(overlay).resolve() / 'Source/WebKit')
             base = engine / 'Source/WebKit' / relative
             files['ipc-inputs/' + str(relative)] = (base, candidate, candidate.read_bytes())
+    if regenerate and overlay:
+        for candidate in sorted((pathlib.Path(overlay).resolve() / 'Source/WebKit').rglob('*.serialization.in')):
+            relative = candidate.relative_to(pathlib.Path(overlay).resolve() / 'Source/WebKit')
+            base = engine / 'Source/WebKit' / relative
+            files['serialization-inputs/Source/WebKit/' + str(relative)] = (base, candidate, candidate.read_bytes())
     lock = json.loads((ROOT / 'engine/sources.lock.json').read_text())
     manifest = {'upstream_commit': lock['upstream']['commit'], 'host_engine_patch_sha256': lock['patch']['sha256'],
                 'candidate_overlay': str(pathlib.Path(overlay).resolve()) if overlay else None,
@@ -371,7 +465,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--native', action='store_true')
     parser.add_argument('--overlay', help='Candidate files under Source/; no production source changes')
-    parser.add_argument('--unit', choices=UNITS + EXTRA_UNITS + GENERATED_UNITS + BINDING_UNITS + tuple(PAGE_UNITS) + tuple(NATIVE_PAGE_UNITS) + tuple(UI_API_UNITS) + tuple(WEB_CORE_UNITS), action='append', help='Compile only this unit; repeatable')
+    parser.add_argument('--unit', choices=UNITS + EXTRA_UNITS + GENERATED_UNITS + SERIALIZER_UNITS + BINDING_UNITS + tuple(PAGE_UNITS) + tuple(NATIVE_PAGE_UNITS) + tuple(UI_API_UNITS) + tuple(WEB_CORE_UNITS), action='append', help='Compile only this unit; repeatable')
     parser.add_argument('--engine-root', default=DEFAULT_ENGINE, help='Configured native engine source tree')
     parser.add_argument('--regenerate-ipc', action='store_true', help='Generate matching IPC headers in the isolated stage')
     parser.add_argument('--generated-bindings', help='Verified output from generate-extension-bindings-candidate.py')

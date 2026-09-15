@@ -1856,3 +1856,35 @@ dispatcher and its inline dependency are resolved. Both native source trees
 match the promoted patch; extension-enabled engine linking and extension
 runtime remain unfinished. Evidence: `.vm/extension-action-inline-validation.json`
 and `.vm/modern-extensions-action-inline-build-result.json`.
+
+2026-09-15 (local) native cookie API and events: patch
+`64e366546a2089731d72ba13c1681809f4db6563e83f00c64b5712f3f760ece1`
+connects `get`, `getAll`, `set`, `remove`, `getAllCookieStores` and populated
+`onChanged` payloads. The Curl backend preserves cookie metadata, migrates its
+SQLite schema transactionally, reports actual mutation results and publishes
+ordered committed change batches. A native run-loop timer expires persistent
+cookies while observed. Typed IPC carries those batches through the network
+cookie manager, owning UI data store and permission-filtered extension context
+to fresh JavaScript listener values. Observers are reinstalled when a network
+process is recreated. Those cross-process and lifecycle paths have compiled;
+they have not run.
+
+The isolated native checks pass **227 database/parser/event/IPC checks**,
+**136 JSC/query/changeInfo checks** and **40 host-grant checks**, with unchanged
+inputs/libraries and no native crash-log events. The IPC test uses production
+codecs in one process; it does not execute NetworkProcess or extension
+receivers. **24 unique native integration units compile** and **431 binding
+checks pass** across Haiku/Cocoa surfaces. The source audit matches all 48
+integrated files. Cocoa SDK compilation remains untested.
+
+Both native source trees match the promoted patch. Its full Extensions-enabled
+build has configured and rebuilt WebCore; WebKit compilation/linking is still
+running. The preceding three-symbol link failure remains the last completed
+link result until this build terminates. No extension has executed an API or
+received an event. Partitioned cookies, Firefox container/first-party isolation,
+eviction, network SameSite enforcement and full extension/browser compatibility
+remain unfinished. See [the cookie API port](webextensions-native-cookie-api.md)
+and [event verification](webextensions-native-cookie-changes.md). Current evidence:
+`.vm/extension-cookie-delivery-validation.json`,
+`.vm/extension-cookie-api-promotion.json`, and
+`.vm/modern-extensions-cookie-delivery-build.log`.
