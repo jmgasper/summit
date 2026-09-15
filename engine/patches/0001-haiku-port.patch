@@ -27844,10 +27844,42 @@ index e229fa1ae53c6c89e7534316dd06a7c5bfec5330..9388aa4f02c1c22ffeac08c115d9f7de
  
  WebProcess/FullScreen/WebFullScreenManager.cpp @cost:8
 diff --git a/Source/WebKit/UIProcess/API/APIContentRuleListStore.cpp b/Source/WebKit/UIProcess/API/APIContentRuleListStore.cpp
-index c6711c26a1e13b36c8cbc3b3cd22e376207b1bf1..21950a8ca31d34e3e7e7c736b408e1407ba19566 100644
+index c6711c26a1e13b36c8cbc3b3cd22e376207b1bf1..8bfc7789886180cb58ad7419f4c370bd41befe83 100644
 --- a/Source/WebKit/UIProcess/API/APIContentRuleListStore.cpp
 +++ b/Source/WebKit/UIProcess/API/APIContentRuleListStore.cpp
-@@ -640,8 +640,12 @@ void ContentRuleListStore::compileContentRuleListFile(WTF::String&& filePath, WT
+@@ -51,6 +51,7 @@
+ #include <wtf/HashMap.h>
+ #include <wtf/NeverDestroyed.h>
+ #include <wtf/RunLoop.h>
++#include <wtf/Scope.h>
+ #include <wtf/StdLibExtras.h>
+ #include <wtf/WeakRandom.h>
+ #include <wtf/WorkQueue.h>
+@@ -432,6 +433,14 @@ static std::expected<MappedData, std::error_code> compiledToFile(WTF::String&& j
+         return makeUnexpected(ContentRuleListStore::Error::CompileFailed);
+     }
+ 
++    // Rejected rules and failed writes must not leave partial files which
++    // identifier enumeration would mistake for persistent rule lists. Close
++    // the original handle too when failure precedes its transfer to the client.
++    auto removeTemporaryFile = makeScopeExit([&] {
++        temporaryFileHandle = { };
++        deleteFile(temporaryFilePath);
++    });
++
+     std::array<uint8_t, currentVersionFileHeaderSize> invalidHeader;
+     invalidHeader.fill(0xFF);
+ 
+@@ -463,6 +472,8 @@ static std::expected<MappedData, std::error_code> compiledToFile(WTF::String&& j
+         return makeUnexpected(ContentRuleListStore::Error::CompileFailed);
+     }
+ 
++    removeTemporaryFile.release();
++
+     if (!FileSystem::makeSafeToUseMemoryMapForPath(finalFilePath)) {
+         RELEASE_LOG_ERROR(ContentRuleLists, "Content Rule List compiling failed: makeSafeToUseMemoryMapForPath failed.");
+         return makeUnexpected(ContentRuleListStore::Error::CompileFailed);
+@@ -640,8 +651,12 @@ void ContentRuleListStore::compileContentRuleListFile(WTF::String&& filePath, WT
      m_workQueue->dispatch([protectedThis = Ref { *this }, filePath = WTF::move(filePath).isolatedCopy(), identifier = WTF::move(identifier).isolatedCopy(), json = WTF::move(json).isolatedCopy(), parsedRules = crossThreadCopy(WTF::move(parsedRules).value()), storePath = m_storePath.isolatedCopy(), completionHandler = WTF::move(completionHandler), cssSelectorsAllowed] () mutable {
          if (cssSelectorsAllowed == WebCore::ContentExtensions::CSSSelectorsAllowed::No) {
              auto parsedRulesOnBackgroundQueue = WebCore::ContentExtensions::parseRuleList(json, cssSelectorsAllowed);

@@ -7,9 +7,10 @@ function as its only missing symbol. Its first combined build exposed a missing
 context header. That known-failed build was stopped before linking.
 
 Patch `c8b960d698b09f68d906606c00f4ac52e7a2d14fda74a42b2bb7ac49037fb81b`
-adds the declaration; all three previously failing units compile with it. The
-corrected full build is running. A combined engine link has not yet been
-demonstrated.
+adds the declaration; all three previously failing units compile with it. This
+patch completed the first full Extensions-enabled build of `libWebKit`,
+`WebProcess` and `NetworkProcess`, with no compiler errors or undefined symbols.
+Its result is `.vm/modern-extensions-dnr-declaration-build-result.json`.
 
 The native loader reads session and dynamic rules from their SQLite stores,
 collects enabled static rulesets, translates them off the WebKit main loop and
@@ -54,8 +55,8 @@ normal unload; persistent cache reuse and crash-orphan cleanup remain future wor
 
 The content-rule store's background JSON parse-error path now dispatches its
 completion to the main loop, matching the successful and compiler-error paths.
-The loader relies on that thread ownership. A dedicated persistent-store fixture
-compiles, but its runtime check still requires the engine to link.
+The loader relies on that thread ownership. The actual persistent-store fixture
+now verifies those callback paths against the linked engine.
 
 ## Evidence and limits
 
@@ -77,7 +78,7 @@ The promoted source audit is
 `.vm/extension-dnr-loader-current-validation.json`; all ten integrated files
 match the tested candidate. Full-build output is mirrored to the visible QEMU
 progress Terminal. The initial build log is
-`.vm/modern-extensions-dnr-loader-build.log`; the correction is being built in
+`.vm/modern-extensions-dnr-loader-build.log`; the successful correction build is
 `.vm/modern-extensions-dnr-declaration-build.log`. The declaration and three
 successful compile checks are recorded in
 `.vm/extension-dnr-declaration-current-validation.json`.
@@ -92,21 +93,31 @@ API lifecycle unit then pass against the configured feature-enabled tree in
 The declaration correction passes `WebExtensionControllerAPITestHaiku.cpp`,
 `WebExtensionControllerHaiku.cpp` and `WebViewContextHaiku.cpp` in
 `.vm/extension-lifecycle-inputs.fv0lNpoH/result.json`. Both native source trees
-contain all ten current DNR files. The idle feature-disabled libraries were not
-rebuilt; the feature-enabled combined build remains pending.
+contained all ten DNR files at that patch. The idle feature-disabled libraries
+were not rebuilt. The feature-enabled combined build completed successfully.
 
-The new `EngineContentRuleStoreTests.cpp` fixture compiles against that corrected
-configuration in `.vm/content-rule-pipeline.Kb5j7cuM/result.json`. It uses the real
-`API::ContentRuleListStore`, with an isolated temporary directory and application
-main loop. It is intended to check asynchronous parse/compiler/write failures,
-successful persistence, reopening, replacement, source recovery, deletion and
-completion lifetime after the caller releases the store. **It has not run yet.**
+The first `EngineContentRuleStoreTests.cpp` runtime exposed a cleanup defect:
+rejected regular expressions left partially compiled `ContentRuleList-*` files,
+which enumeration treated as stored identifiers. **108 checks passed and three
+failed** in `.vm/content-rule-pipeline.Kb5j7cuM/runtime-result.json`.
 
-After the full engine build completes:
+Patch `284266a9d79e372f7c617cbf1e6694b6d309035c9b725b850197da34e5a49011`
+adds scoped temporary-file cleanup on failure and releases that cleanup after a
+successful rename. The changed engine unit compiles, the full engine rebuild
+links, and **all 111 runtime checks pass** in
+`.vm/content-rule-pipeline.OnYVmSd0/runtime-result.json`. Input and library hashes
+remain unchanged and the native crash-log interval contains no debugger events.
+
+The fixture uses the real `API::ContentRuleListStore`, with an isolated temporary
+directory and application main loop. It verifies asynchronous parse, compiler and
+write failures; persistence, reopening, replacement, source recovery, enumeration
+and deletion; and callback/capture lifetime after the caller releases the store.
+All 19 asynchronous operations complete once, with callbacks and capture
+destruction on the main loop. These checks include the earlier background-JSON
+callback correction. The existing final-file replacement behavior is unchanged.
 
 ```sh
-python3 tools/test-engine-content-rule-pipeline.py --store \
-  --resume /boot/home/summit/content-rule-pipeline.Kb5j7cuM
+python3 tools/test-engine-content-rule-pipeline.py --store
 ```
 
 The runner refuses stale engine targets or changed compile inputs, links the
@@ -120,3 +131,8 @@ existing transaction pipeline: a successful rollback currently reports success
 for a failed update, and commit failures are only logged. Serialization of
 concurrent updates, full rule semantics and real network enforcement remain
 part of the browser goal.
+
+The first actual extension fixture loads its native context and starts both
+helper processes, but its background page stalls before provisional navigation
+is reported. No extension JavaScript execution is demonstrated yet. See
+[native extension runtime](webextensions-native-runtime.md).

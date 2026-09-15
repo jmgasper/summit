@@ -7,8 +7,10 @@ import json
 import os
 from pathlib import Path
 import shlex
+import signal
 import subprocess
 import tarfile
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 ENGINE = Path('/boot/home/summit-webkit-extensions')
@@ -16,6 +18,7 @@ BUILD = ENGINE / 'WebKitBuild/Modern'
 TEST = 'EngineContentRulePipelineTests.cpp'
 DNR_TEST = 'EngineExtensionDNRRulesTests.cpp'
 STORE_TEST = 'EngineContentRuleStoreTests.cpp'
+EXTENSION_RUNTIME_TEST = 'EngineExtensionRuntimeTests.cpp'
 
 
 def digest(path):
@@ -28,6 +31,66 @@ def digest(path):
 
 def unchanged(snapshot):
     return all(digest(Path(path)) == expected for path, expected in snapshot.items())
+
+
+def run_extension_fixture(executable, output, environment, timeout=240):
+    # The native process launcher uses fork/exec and inherits this isolated
+    # process group. File output cannot hang waiting for an orphan's pipe.
+    runtime_log = output / 'runtime.log'
+    result = {'timeout': False, 'forced_group_cleanup': False}
+    with runtime_log.open('w') as log:
+        process = subprocess.Popen([str(executable)], env=environment, stdout=log,
+                                   stderr=subprocess.STDOUT, start_new_session=True)
+        result['process_group'] = process.pid
+
+        def group_members():
+            # On Haiku killpg(group, 0) can keep succeeding after every live
+            # team has exited. Inspect the kernel's live team list instead.
+            lines = subprocess.check_output(['ps', '-o', 'Id'], text=True).splitlines()
+            if not lines or lines[0].strip() != 'Id':
+                raise RuntimeError('Could not enumerate native live teams')
+            members = []
+            for line in lines[1:]:
+                identifier = int(line.strip())
+                try:
+                    if os.getpgid(identifier) == process.pid:
+                        members.append(identifier)
+                except ProcessLookupError:
+                    pass
+            return members
+
+        def group_exists():
+            return bool(group_members())
+
+        try:
+            result['exit'] = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            result['timeout'] = True
+            result['exit'] = None
+        # Reap only this fixture's group. A leftover child makes the run fail,
+        # even if the parent reported success; no other VM process is targeted.
+        deadline = time.monotonic() + 1
+        while group_exists() and process.poll() is not None and time.monotonic() < deadline:
+            time.sleep(0.1)
+        if group_exists():
+            result['forced_group_cleanup'] = True
+            for action in (signal.SIGTERM, signal.SIGKILL):
+                try:
+                    os.killpg(process.pid, action)
+                except ProcessLookupError:
+                    break
+                deadline = time.monotonic() + 5
+                while group_exists() and time.monotonic() < deadline:
+                    process.poll()
+                    time.sleep(0.1)
+                if not group_exists():
+                    break
+        result['remaining_processes'] = group_members()
+        result['group_drained'] = not result['remaining_processes']
+        if process.poll() is None:
+            raise RuntimeError('Fixture process did not exit after its group was terminated')
+    result['output'] = runtime_log.read_text(errors='replace')
+    return result
 
 
 def ninja_fields(predicate):
@@ -46,6 +109,7 @@ def ninja_fields(predicate):
 
 
 def native(compile_only, run_only):
+    full_engine = TEST in (STORE_TEST, EXTENSION_RUNTIME_TEST)
     output = ROOT / 'sources'
     report_path = output / 'results.json'
     source_manifest = json.loads((output / 'source-manifest.json').read_text())
@@ -76,6 +140,8 @@ def native(compile_only, run_only):
             report['scope'] = 'native DNR translator through real WebCore parser, compiler and backend; no extension loader, persistent store, IPC, browser or network request'
         elif TEST == STORE_TEST:
             report['scope'] = 'actual WebKit persistent content-rule store and main-loop callbacks; no extension context, privileged IPC or browser/network request'
+        elif TEST == EXTENSION_RUNTIME_TEST:
+            report['scope'] = 'actual native extension package, controller, background document, storage bindings, test-message IPC and context reload; not full extension compatibility or browser UI installation'
         fields = ninja_fields(lambda line: line.startswith('build Source/WebKit/CMakeFiles/WebKit.dir/UIProcess/API/haiku/WebKitView.cpp.o:'))
         raw = iter(shlex.split(' '.join(fields[key] for key in ('DEFINES', 'INCLUDES', 'FLAGS'))))
         flags = []
@@ -100,16 +166,19 @@ def native(compile_only, run_only):
             return result.returncode
 
     # Refuse to link an older archive while its source changes are still building.
-    targets = ['WebKit', 'WebProcess', 'NetworkProcess'] if TEST == STORE_TEST else ['lib/libWebCore.a']
+    targets = ['WebKit', 'WebProcess', 'NetworkProcess'] if full_engine else ['lib/libWebCore.a']
     ready = subprocess.run(['ninja', '-C', str(BUILD), '-n', *targets], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     if ready.returncode or 'ninja: no work to do.' not in ready.stdout:
         raise RuntimeError('Required engine targets are not fully rebuilt: ' + ready.stdout[-2000:])
     fields = ninja_fields(lambda line: ': CXX_SHARED_LIBRARY_LINKER__WebKit_' in line)
     libraries = shlex.split(fields['LINK_LIBRARIES'])
-    if TEST == STORE_TEST:
+    if full_engine:
         libraries = [str(BUILD / 'lib/libWebKit.so'), *[flag for flag in libraries if not flag.endswith('.a')]]
     paths = {Path(flag) if Path(flag).is_absolute() else BUILD / flag for flag in libraries if not flag.startswith('-')}
     report['libraries'] = {str(path): digest(path) for path in sorted(paths)}
+    if TEST == EXTENSION_RUNTIME_TEST:
+        report['runtime_helpers'] = {str(BUILD / 'bin' / name): digest(BUILD / 'bin' / name)
+                                     for name in ('WebProcess', 'NetworkProcess')}
     executable = output / 'run'
     command = ['c++', str(output / 'test.o'), '-Wl,--gc-sections', '-Wl,--disable-new-dtags', *libraries, '-o', str(executable)]
     result = subprocess.run(command, cwd=BUILD, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -119,32 +188,59 @@ def native(compile_only, run_only):
     if result.returncode:
         return result.returncode
     dynamic = subprocess.check_output(['readelf', '-d', str(executable)], text=True)
-    if TEST == STORE_TEST and 'libWebKit' not in dynamic:
-        raise RuntimeError('Store test must link the actual WebKit library')
-    if TEST != STORE_TEST and 'libWebKit' in dynamic:
+    if full_engine and 'libWebKit' not in dynamic:
+        raise RuntimeError('Full-engine fixture must link the actual WebKit library')
+    if not full_engine and 'libWebKit' in dynamic:
         raise RuntimeError('Pipeline test unexpectedly links WebKit')
-    report['linked_webcore_archive'] = TEST != STORE_TEST
-    report['linked_webkit'] = TEST == STORE_TEST
+    report['linked_webcore_archive'] = not full_engine
+    report['linked_webkit'] = full_engine
     report['executable_sha256'] = digest(executable)
     report['dynamic_dependencies'] = dynamic
     environment = os.environ.copy()
     for name in ('LD_PRELOAD', 'LD_PRELOAD_ADDONS', 'DISABLE_ASLR'):
         environment.pop(name, None)
-    if TEST == STORE_TEST:
+    if full_engine:
         environment['LIBRARY_PATH'] = ':'.join(map(str, (BUILD / 'lib', Path('/boot/home/summit-deps/icu78/lib'), Path('/boot/home/summit-deps/libzip-1.11.4/lib'), Path('/boot/system/lib'))))
+    if TEST == EXTENSION_RUNTIME_TEST:
+        environment['WEBKIT_EXEC_PATH'] = str(BUILD / 'bin')
     from native_crash_log import NativeCrashLog
     crash_log = NativeCrashLog()
-    try:
-        result = subprocess.run([str(executable)], env=environment, timeout=120, text=True,
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        report['exit'], report['output'] = result.returncode, result.stdout
-    except subprocess.TimeoutExpired:
-        report['exit'], report['output'] = None, 'Native pipeline test timed out and was terminated; failed run'
+    if TEST == EXTENSION_RUNTIME_TEST:
+        runtime = run_extension_fixture(executable, output, environment)
+        report['exit'], report['output'] = runtime['exit'], runtime.pop('output')
+        report['runtime_processes'] = runtime
+    else:
+        try:
+            result = subprocess.run([str(executable)], env=environment, timeout=120, text=True,
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            report['exit'], report['output'] = result.returncode, result.stdout
+        except subprocess.TimeoutExpired:
+            report['exit'], report['output'] = None, 'Native pipeline test timed out and was terminated; failed run'
     report['native_crash_log'] = crash_log.finish()
     report['runtime_executed'] = True
     report['inputs_unchanged'] = unchanged(report['native_inputs']) and unchanged(report['headers'])
     report['libraries_unchanged'] = unchanged(report['libraries'])
     report['passed'] = report['exit'] == 0 and report['native_crash_log']['passed'] and report['inputs_unchanged'] and report['libraries_unchanged']
+    if TEST == EXTENSION_RUNTIME_TEST:
+        reports = []
+        for line in report['output'].splitlines():
+            if 'WebExtension test: ' in line:
+                reports.append(json.loads(line.split('WebExtension test: ', 1)[1]))
+        completions = [json.loads(item['argumentJSON']) for item in reports
+                       if item.get('type') == 'message' and item.get('message') == 'summit-runtime-complete']
+        finished = [item for item in reports if item.get('type') == 'finished' and item.get('result') is True]
+        assertions = [item for item in reports if item.get('type') == 'assertion']
+        reports_passed = (len(completions) == 2 and [item.get('round') for item in completions] == [1, 2]
+                          and bool(completions[0].get('nonce')) and completions[0]['nonce'] == completions[1].get('nonce')
+                          and len(finished) == 2 and len(assertions) == 10
+                          and {item.get('message') for item in finished} == {'summit-runtime-round-1', 'summit-runtime-round-2'}
+                          and all(item.get('result') is not False for item in reports)
+                          and all(item.get('sourceURL', '').startswith('webkit-extension://') for item in reports))
+        report['extension_reports'] = reports
+        report['extension_reports_passed'] = reports_passed
+        report['runtime_helpers_unchanged'] = unchanged(report['runtime_helpers'])
+        report['passed'] = (report['passed'] and reports_passed and report['runtime_helpers_unchanged']
+                            and runtime['group_drained'] and not runtime['forced_group_cleanup'] and not runtime['timeout'])
     report_path.write_text(json.dumps(report, indent=2) + '\n')
     print(report['output'], end='', flush=True)
     return 0 if report['passed'] else 1
@@ -194,6 +290,8 @@ def host(compile_only, resume, overlay=None):
         command.append('--dnr')
     elif TEST == STORE_TEST:
         command.append('--store')
+    elif TEST == EXTENSION_RUNTIME_TEST:
+        command.append('--extension-runtime')
     if compile_only:
         command.append('--compile-only')
     if resume:
@@ -216,6 +314,7 @@ if __name__ == '__main__':
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--dnr', action='store_true', help='Run the native DNR translation pipeline fixture')
     mode.add_argument('--store', action='store_true', help='Run the persistent WebKit rule store fixture')
+    mode.add_argument('--extension-runtime', action='store_true', help='Run an actual extension background/storage/message fixture')
     parser.add_argument('--overlay', help='Candidate translator sources under Source/; requires --dnr')
     args = parser.parse_args()
     if args.overlay and not args.dnr:
@@ -224,6 +323,8 @@ if __name__ == '__main__':
         TEST = DNR_TEST
     elif args.store:
         TEST = STORE_TEST
+    elif args.extension_runtime:
+        TEST = EXTENSION_RUNTIME_TEST
     if args.compile_only and (args.run_only or args.resume):
         parser.error('Compile-only and resume/run-only are mutually exclusive')
     raise SystemExit(native(args.compile_only, args.run_only) if args.native else host(args.compile_only, args.resume, args.overlay))

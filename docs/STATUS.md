@@ -1979,11 +1979,8 @@ Generation checks and unique compiled paths prevent obsolete loads from
 installing or deleting a newer list. Unload and permission revocation clear it.
 
 **95 real WebCore pipeline checks and seven affected translation units pass.**
-All ten promoted source files match that candidate. The full Extensions-enabled
-engine build is running, with output visible through [VNC](VM.md). The preceding
-build's only undefined function was this loader; a combined engine link remains
-unverified. Loader/store callbacks, browser requests and extension execution
-have not been tested. DNR JavaScript bindings remain disabled pending transaction
+All ten originally promoted source files match that candidate. The preceding
+build's only undefined function was this loader. DNR JavaScript bindings remain disabled pending transaction
 error fixes, lifecycle tests and broader compatibility work. See
 [native request-rule loading](webextensions-native-dnr-loader.md) for evidence
 and the remaining scope.
@@ -1991,8 +1988,27 @@ and the remaining scope.
 The first combined DNR build exposed a missing `API::ContentRuleList` forward
 declaration and was stopped after those compiler failures, before linking.
 Correction patch `c8b960d698b09f68d906606c00f4ac52e7a2d14fda74a42b2bb7ac49037fb81b`
-passes all three affected units; its full build is running. A new fixture for
-the actual persistent content-rule store compiles against the corrected tree.
-Its callback, persistence and cleanup checks have not run yet; execution awaits
-the combined engine link. Both native source trees are synchronized, and the
-idle feature-disabled binaries remain unchanged.
+passes all three affected units and completes the first full Extensions-enabled
+engine link: `libWebKit`, `WebProcess` and `NetworkProcess`. The successful build
+has no compiler errors or undefined symbols. This does not establish extension
+execution or compatibility.
+
+### Persistent rule-store runtime and first extension startup attempt
+
+The first real WebKit store run passed 108 checks and exposed three failures
+caused by temporary files left after invalid regular expressions. Patch
+`284266a9d79e372f7c617cbf1e6694b6d309035c9b725b850197da34e5a49011`
+cleans up those partial files. Its full rebuild links and **all 111 store checks
+pass**, including main-loop callbacks/capture destruction, persistence,
+replacement, lookup, enumeration, deletion and outstanding-work ownership.
+Sources and linked libraries are unchanged during the test, with no debugger
+events. Evidence: `.vm/content-rule-pipeline.OnYVmSd0/runtime-result.json`.
+
+The actual extension fixture accepts its package and native context, grants its
+isolated storage permission and launches both helper processes. It then stalls
+with a pending background URL, before a provisional URL or title is reported.
+Both attempts time out without JavaScript test reports, then cleanly tear down
+the owned processes. **No extension JavaScript execution is demonstrated.**
+See [native runtime evidence](webextensions-native-runtime.md) for the exact
+scope and next diagnostic boundary. Build/test milestones remain visible over
+[VNC](VM.md).
