@@ -8,9 +8,13 @@ also completes all engine targets. Both builds enable `WK_WEB_EXTENSIONS` and
 `CONTENT_EXTENSIONS` and use the private ICU/libzip dependencies.
 
 The real persistent rule store passes **111 checks**; see
-[request-rule loading](webextensions-native-dnr-loader.md). Extension JavaScript
-execution remains unproven: the first two extension runs load their native
-context but do not complete background navigation.
+[request-rule loading](webextensions-native-dnr-loader.md). The first successful
+extension run executes its background JavaScript, privileged storage operations
+and native test-message IPC after an ordinary page has loaded. Patch
+`96ce44b447dd95dc56a01cbe6b016043500cbdf8b984fb4f6f77a79b392da1bb`
+then fixes direct startup: both contexts execute without page preparation,
+passing **14 native checks and ten JavaScript assertions**. A separate real
+cookie-observer test exposes lost event delivery after rapid unregister/register.
 
 ## Actual extension fixture
 
@@ -66,9 +70,93 @@ the deadline. Again there are six native passes, one failure, no JavaScript
 reports, no debugger events and no remaining owned helper processes. All source,
 header, library and helper hashes remain unchanged during both runs.
 
-The next diagnostic boundary is between the UI process's pending load request
-and the first provisional-load notification from WebProcess. This fixture has
-not exercised storage IPC or extension test-message delivery successfully.
-It does not implement browser installation UI, store distribution, signature
+## First successful extension execution and startup controls
+
+An ordinary offscreen page, using the same native page client, successfully
+executes JavaScript before the extension is loaded. After that control page is
+closed and its WebProcess is explicitly terminated, both extension rounds
+succeed: **15 native checks and ten JavaScript assertions pass**, with two native
+completion messages and two success reports. Storage survives destruction and
+recreation of the extension context, and both promise and callback API forms
+cross privileged IPC. Evidence: `.vm/content-rule-pipeline.ZgViMefk/result.json`.
+All input/library/helper hashes remain unchanged, the crash-log interval is
+clean and all owned helper processes exit without forced runner cleanup.
+
+The fixture now offers diagnostic startup modes while keeping direct startup
+as its default:
+
+```sh
+python3 tools/test-engine-content-rule-pipeline.py --extension-runtime --extension-startup page
+```
+
+At patch `284266a9d79e372f7c617cbf1e6694b6d309035c9b725b850197da34e5a49011`,
+the `cold` and `deferred` modes reproduce the stall without any JavaScript
+reports. Results are preserved in `.vm/extension-startup-{cold,deferred}-284-result.json`.
+An earlier `network`-labelled attempt also stalls, but its private-store fetch
+could complete without launching NetworkProcess. That result does not establish
+actual network preparation. The fixture now explicitly launches the process
+before fetching data and requires its owned child to be present at completion.
+Each earlier run has unchanged inputs and binaries, no debugger event, and a
+clean process-group exit. The warm-page success establishes actual extension
+execution, but does not resolve the direct-startup defect.
+
+## IPC startup diagnosis
+
+Temporary message tracing at patch
+`1c3818e80445d7b70578342c0105d0c27de0cdea34161af6d805731ef6249199`
+shows WebProcess waiting for its network connection while NetworkProcess stops
+dispatching after receiving `StartObservingCookieChanges`. The result is
+`.vm/content-rule-pipeline.AqZZFI1F/runtime-result.json`.
+
+Native session recreation sends that message with
+`DispatchMessageEvenWhenWaitingForSyncReply`, but its receiver metadata did not
+allow the flag. The invalid-flag branch also called the error dispatcher while
+holding the same incoming-message lock that the dispatcher reacquires.
+
+The startup correction gives native cookie observation matching metadata and
+flags on both send paths, and releases the incoming-message locks before
+scheduling invalid-flag rejection. It removes the temporary tracing. The full
+build links WebKit and both helper executables without compiler errors or
+undefined symbols. `EngineIPCValidationTests.cpp`
+exercises malformed flags, subsequent valid traffic and invalidation from the
+error callback through actual WebKit connection endpoints and native sockets;
+both endpoints live in the fixture process. **All 23 IPC checks pass** in
+`.vm/content-rule-pipeline.XFrD2pQI/runtime-result.json`.
+
+The direct-startup run is
+`.vm/content-rule-pipeline.ZJOxn6oV/runtime-result.json`: **14 native checks,
+ten JavaScript assertions, two nonce-matched completion messages and two success
+reports pass**. It uses the default `cold` mode and no ordinary control page.
+Storage survives destruction and recreation of the extension context. Both
+runtimes have unchanged inputs/libraries, no debugger events and clean process
+groups without forced cleanup. The extension helper hashes also remain unchanged.
+
+`EngineCookieObserverRuntimeTests.cpp` adds a separate full-engine regression
+for the observer lifecycle. It creates an owned nonpersistent website data
+store, writes through the real API cookie store and verifies both the committed
+receipt and typed event. It then unregisters and registers the observer 32
+times without waiting, uses a network query as a barrier, and checks that the
+next write still produces exactly one populated event. Finally it unregisters
+the observer and verifies a confirmed write produces no event. This tests
+NetworkProcess delivery and registration ordering, not JavaScript listeners.
+Its first runtime has **13 passes and one failure** in
+`.vm/content-rule-pipeline.F0ocC1xc/runtime-result.json`. Initial registration
+delivers the correct typed event. After the repeated unregister/register calls,
+the write receipt and subsequent query confirm the new cookie, but no event
+arrives before the deadline. The final unregister-only phase is not reached.
+All source/library/helper hashes match, no debugger event occurs and the owned
+process exits without forced cleanup.
+
+Registration is dispatched through the priority queue while removal remains
+ordinary; later registrations can overtake pending removals and leave observation
+disabled. The follow-up correction must preserve ordering between both lifecycle
+messages. This failure does not invalidate the separately verified direct-startup
+or IPC-rejection results.
+
+```sh
+python3 tools/test-engine-content-rule-pipeline.py --cookie-observers
+```
+
+The fixture does not implement browser installation UI, store distribution, signature
 verification, manifest-v3 workers, action UI, DNR enforcement or complete
 Safari/Chrome/Firefox compatibility. Those remain part of the browser goal.

@@ -19,6 +19,11 @@ TEST = 'EngineContentRulePipelineTests.cpp'
 DNR_TEST = 'EngineExtensionDNRRulesTests.cpp'
 STORE_TEST = 'EngineContentRuleStoreTests.cpp'
 EXTENSION_RUNTIME_TEST = 'EngineExtensionRuntimeTests.cpp'
+IPC_VALIDATION_TEST = 'EngineIPCValidationTests.cpp'
+COOKIE_OBSERVER_TEST = 'EngineCookieObserverRuntimeTests.cpp'
+PROCESS_TESTS = (EXTENSION_RUNTIME_TEST, IPC_VALIDATION_TEST, COOKIE_OBSERVER_TEST)
+EXTENSION_STARTUP = 'cold'
+TRACE_IPC = False
 
 
 def digest(path):
@@ -109,7 +114,7 @@ def ninja_fields(predicate):
 
 
 def native(compile_only, run_only):
-    full_engine = TEST in (STORE_TEST, EXTENSION_RUNTIME_TEST)
+    full_engine = TEST in (STORE_TEST, *PROCESS_TESTS)
     output = ROOT / 'sources'
     report_path = output / 'results.json'
     source_manifest = json.loads((output / 'source-manifest.json').read_text())
@@ -142,6 +147,10 @@ def native(compile_only, run_only):
             report['scope'] = 'actual WebKit persistent content-rule store and main-loop callbacks; no extension context, privileged IPC or browser/network request'
         elif TEST == EXTENSION_RUNTIME_TEST:
             report['scope'] = 'actual native extension package, controller, background document, storage bindings, test-message IPC and context reload; not full extension compatibility or browser UI installation'
+        elif TEST == IPC_VALIDATION_TEST:
+            report['scope'] = 'actual WebKit Connection endpoints over native sockets, malformed dispatch flags, main-loop rejection and continued valid traffic; both endpoints in one fixture process'
+        elif TEST == COOKIE_OBSERVER_TEST:
+            report['scope'] = 'actual API cookie store, NetworkProcess, committed cookie receipts and typed observer delivery after rapid unregister/register; no extension JavaScript or HTTP request'
         fields = ninja_fields(lambda line: line.startswith('build Source/WebKit/CMakeFiles/WebKit.dir/UIProcess/API/haiku/WebKitView.cpp.o:'))
         raw = iter(shlex.split(' '.join(fields[key] for key in ('DEFINES', 'INCLUDES', 'FLAGS'))))
         flags = []
@@ -176,9 +185,9 @@ def native(compile_only, run_only):
         libraries = [str(BUILD / 'lib/libWebKit.so'), *[flag for flag in libraries if not flag.endswith('.a')]]
     paths = {Path(flag) if Path(flag).is_absolute() else BUILD / flag for flag in libraries if not flag.startswith('-')}
     report['libraries'] = {str(path): digest(path) for path in sorted(paths)}
-    if TEST == EXTENSION_RUNTIME_TEST:
+    if TEST in (EXTENSION_RUNTIME_TEST, COOKIE_OBSERVER_TEST):
         report['runtime_helpers'] = {str(BUILD / 'bin' / name): digest(BUILD / 'bin' / name)
-                                     for name in ('WebProcess', 'NetworkProcess')}
+                                     for name in (('WebProcess', 'NetworkProcess') if TEST == EXTENSION_RUNTIME_TEST else ('NetworkProcess',))}
     executable = output / 'run'
     command = ['c++', str(output / 'test.o'), '-Wl,--gc-sections', '-Wl,--disable-new-dtags', *libraries, '-o', str(executable)]
     result = subprocess.run(command, cwd=BUILD, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -201,12 +210,21 @@ def native(compile_only, run_only):
         environment.pop(name, None)
     if full_engine:
         environment['LIBRARY_PATH'] = ':'.join(map(str, (BUILD / 'lib', Path('/boot/home/summit-deps/icu78/lib'), Path('/boot/home/summit-deps/libzip-1.11.4/lib'), Path('/boot/system/lib'))))
-    if TEST == EXTENSION_RUNTIME_TEST:
+    if TEST in (EXTENSION_RUNTIME_TEST, COOKIE_OBSERVER_TEST):
         environment['WEBKIT_EXEC_PATH'] = str(BUILD / 'bin')
+    if TEST == EXTENSION_RUNTIME_TEST:
+        environment['SUMMIT_EXTENSION_STARTUP'] = EXTENSION_STARTUP
+        report['extension_startup'] = EXTENSION_STARTUP
+        if TRACE_IPC:
+            environment['SUMMIT_TRACE_IPC'] = '1'
+        else:
+            environment.pop('SUMMIT_TRACE_IPC', None)
+        report['ipc_trace_requested'] = TRACE_IPC
     from native_crash_log import NativeCrashLog
     crash_log = NativeCrashLog()
-    if TEST == EXTENSION_RUNTIME_TEST:
-        runtime = run_extension_fixture(executable, output, environment)
+    if TEST in PROCESS_TESTS:
+        runtime = run_extension_fixture(executable, output, environment,
+            timeout={EXTENSION_RUNTIME_TEST: 240, IPC_VALIDATION_TEST: 30, COOKIE_OBSERVER_TEST: 90}[TEST])
         report['exit'], report['output'] = runtime['exit'], runtime.pop('output')
         report['runtime_processes'] = runtime
     else:
@@ -221,6 +239,12 @@ def native(compile_only, run_only):
     report['inputs_unchanged'] = unchanged(report['native_inputs']) and unchanged(report['headers'])
     report['libraries_unchanged'] = unchanged(report['libraries'])
     report['passed'] = report['exit'] == 0 and report['native_crash_log']['passed'] and report['inputs_unchanged'] and report['libraries_unchanged']
+    if TEST in PROCESS_TESTS:
+        report['passed'] = (report['passed'] and runtime['group_drained']
+                            and not runtime['forced_group_cleanup'] and not runtime['timeout'])
+    if 'runtime_helpers' in report:
+        report['runtime_helpers_unchanged'] = unchanged(report['runtime_helpers'])
+        report['passed'] = report['passed'] and report['runtime_helpers_unchanged']
     if TEST == EXTENSION_RUNTIME_TEST:
         reports = []
         for line in report['output'].splitlines():
@@ -238,7 +262,6 @@ def native(compile_only, run_only):
                           and all(item.get('sourceURL', '').startswith('webkit-extension://') for item in reports))
         report['extension_reports'] = reports
         report['extension_reports_passed'] = reports_passed
-        report['runtime_helpers_unchanged'] = unchanged(report['runtime_helpers'])
         report['passed'] = (report['passed'] and reports_passed and report['runtime_helpers_unchanged']
                             and runtime['group_drained'] and not runtime['forced_group_cleanup'] and not runtime['timeout'])
     report_path.write_text(json.dumps(report, indent=2) + '\n')
@@ -291,7 +314,13 @@ def host(compile_only, resume, overlay=None):
     elif TEST == STORE_TEST:
         command.append('--store')
     elif TEST == EXTENSION_RUNTIME_TEST:
-        command.append('--extension-runtime')
+        command.extend(['--extension-runtime', '--extension-startup', EXTENSION_STARTUP])
+        if TRACE_IPC:
+            command.append('--trace-ipc')
+    elif TEST == IPC_VALIDATION_TEST:
+        command.append('--ipc-validation')
+    elif TEST == COOKIE_OBSERVER_TEST:
+        command.append('--cookie-observers')
     if compile_only:
         command.append('--compile-only')
     if resume:
@@ -315,6 +344,11 @@ if __name__ == '__main__':
     mode.add_argument('--dnr', action='store_true', help='Run the native DNR translation pipeline fixture')
     mode.add_argument('--store', action='store_true', help='Run the persistent WebKit rule store fixture')
     mode.add_argument('--extension-runtime', action='store_true', help='Run an actual extension background/storage/message fixture')
+    mode.add_argument('--ipc-validation', action='store_true', help='Test invalid dispatch flags through actual native WebKit connections')
+    mode.add_argument('--cookie-observers', action='store_true', help='Test real network cookie observation across rapid unregister/register')
+    parser.add_argument('--extension-startup', choices=('cold', 'deferred', 'network', 'page'), default='cold',
+                        help='Diagnostic startup preparation for the extension runtime fixture (default: cold)')
+    parser.add_argument('--trace-ipc', action='store_true', help='Enable metadata tracing in an instrumented engine build')
     parser.add_argument('--overlay', help='Candidate translator sources under Source/; requires --dnr')
     args = parser.parse_args()
     if args.overlay and not args.dnr:
@@ -325,6 +359,16 @@ if __name__ == '__main__':
         TEST = STORE_TEST
     elif args.extension_runtime:
         TEST = EXTENSION_RUNTIME_TEST
+    elif args.ipc_validation:
+        TEST = IPC_VALIDATION_TEST
+    elif args.cookie_observers:
+        TEST = COOKIE_OBSERVER_TEST
+    EXTENSION_STARTUP = args.extension_startup
+    TRACE_IPC = args.trace_ipc
+    if TRACE_IPC and not args.extension_runtime:
+        parser.error('IPC tracing requires --extension-runtime')
+    if EXTENSION_STARTUP != 'cold' and not args.extension_runtime:
+        parser.error('Extension startup preparation requires --extension-runtime')
     if args.compile_only and (args.run_only or args.resume):
         parser.error('Compile-only and resume/run-only are mutually exclusive')
     raise SystemExit(native(args.compile_only, args.run_only) if args.native else host(args.compile_only, args.resume, args.overlay))

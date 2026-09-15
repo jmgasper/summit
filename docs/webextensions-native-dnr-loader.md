@@ -132,7 +132,8 @@ for a failed update, and commit failures are only logged. Serialization of
 concurrent updates, full rule semantics and real network enforcement remain
 part of the browser goal.
 
-The first actual extension fixture loads its native context and starts both
-helper processes, but its background page stalls before provisional navigation
-is reported. No extension JavaScript execution is demonstrated yet. See
+The actual extension fixture now executes background JavaScript, storage IPC and
+native test messages on direct startup after the IPC metadata/locking correction.
+Both contexts pass 14 native checks and ten JavaScript assertions. These checks
+do not exercise DNR enforcement. See
 [native extension runtime](webextensions-native-runtime.md).

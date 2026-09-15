@@ -2007,8 +2007,56 @@ events. Evidence: `.vm/content-rule-pipeline.OnYVmSd0/runtime-result.json`.
 The actual extension fixture accepts its package and native context, grants its
 isolated storage permission and launches both helper processes. It then stalls
 with a pending background URL, before a provisional URL or title is reported.
-Both attempts time out without JavaScript test reports, then cleanly tear down
-the owned processes. **No extension JavaScript execution is demonstrated.**
+The first two attempts time out without JavaScript test reports, then cleanly
+tear down the owned processes.
+
+A subsequent run loads an ordinary offscreen page first and then successfully
+executes both extension rounds: **15 native checks and ten JavaScript assertions
+pass**, including `browser`/`chrome` bindings, storage promises and callbacks,
+native test-message IPC, and storage after context recreation. Evidence:
+`.vm/content-rule-pipeline.ZgViMefk/result.json`. There are no debugger events,
+changed inputs/binaries or remaining helper processes. Direct and deferred
+startup reproduce the stall at that patch. IPC tracing identifies a cookie-observer
+dispatch-flag mismatch and a lock deadlock in invalid-message rejection.
+
+Correction patch
+`96ce44b447dd95dc56a01cbe6b016043500cbdf8b984fb4f6f77a79b392da1bb`
+completes the full engine rebuild without compiler errors or undefined symbols.
+The real IPC rejection/continued-traffic regression passes **23 checks** in
+`.vm/content-rule-pipeline.XFrD2pQI/runtime-result.json`. Direct extension startup
+now passes **14 native checks and ten JavaScript assertions**, with two matching
+completion messages and two success reports, in
+`.vm/content-rule-pipeline.ZJOxn6oV/runtime-result.json`. No ordinary page is
+loaded first. Both runs have unchanged inputs/binaries, no debugger events and
+clean process-group teardown.
+
+The new real cookie-observer lifecycle test passes **13 checks and fails one**:
+initial delivery works, but a confirmed cookie write after repeated observer
+unregister/register produces no event. The final unregister-only phase is not
+reached. Evidence: `.vm/content-rule-pipeline.F0ocC1xc/runtime-result.json`.
+Registration uses the priority IPC queue and removal remains ordinary, allowing
+later registrations to overtake removals. The follow-up ordering fix remains
+pending; this fixture does not test JavaScript cookie listeners.
 See [native runtime evidence](webextensions-native-runtime.md) for the exact
 scope and next diagnostic boundary. Build/test milestones remain visible over
 [VNC](VM.md).
+
+The full browser bundler now accepts `--modern-extensions`, selects the separate
+ON/ON engine tree, and includes the locked libzip library and its license notice.
+It records both extension configuration flags and keeps the ordinary modern
+bundle report separate. All **six full-browser native compilation units pass**
+against the current public headers, including the extension permission prompt;
+this initial check was compile-only. The existing
+browser and preview bundle reports still pass copier manifest validation.
+The subsequent native build links and freezes the actual extension-enabled full
+browser as `bundle-9jahww_j`, with private WebKit/JSC/ICU/libzip libraries and
+matching sources. Its host manifest validation passes, and the actual browser
+passes **90 navigation checks** with isolated HTTP/JavaScript fixtures covering
+successful loads, dropped/truncated responses, retry, HTTP errors, cancellation,
+same-document navigation and history. Both the browser and harness exit normally,
+the bundle remains unchanged and no debugger event occurs. Evidence:
+`.vm/modern-load-errors-e805a3d821fb3354dbf995d0/result.json`.
+Evidence: `.vm/modern-extensions-browser-bundle.json`,
+`.vm/modern-extensions-browser-bundle-check.json` and
+`.vm/modern-extensions-browser-compile-check.json`. See
+[bundle instructions](modern-bundle-copy.md).

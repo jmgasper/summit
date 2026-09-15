@@ -3,10 +3,13 @@
 The Curl cookie database now produces typed, populated change batches after
 successful SQL commits. A native run-loop timer removes expired persistent
 cookies while a database observer is registered. The 48-file implementation
-is integrated as engine patch `64e36654...`. Full engine compilation reaches
-linking with the cookie dispatcher resolved. Two missing symbols remain: the
-DNR loader and menu-click dispatcher (six references). The engine has not linked.
-**No extension has received these events in a runtime test.**
+is integrated as engine patch `64e36654...`. That first full build reaches linking
+with the cookie dispatcher resolved and two missing dependencies. Subsequent
+integration completes the full engine link. The first real NetworkProcess/API
+observer test at `96ce44b4...` confirms initial typed event delivery, then exposes
+lost observation after rapid unregister/register: **13 checks pass and one fails**.
+See [current runtime evidence](webextensions-native-runtime.md). **No extension
+JavaScript listener has received these events in a runtime test.**
 
 `CookieChange` carries the stored cookie, a removal flag and the backend cause.
 The database handles mutations as follows:

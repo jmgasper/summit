@@ -21927,10 +21927,10 @@ index aae7c64b12a52b95b2b29cd27e26a62c3bff2587..33cce98eada3c5ad6297c08d4f298aca
      void deleteAllCookies(PAL::SessionID, CompletionHandler<void()>&&);
      void deleteAllCookiesModifiedSince(PAL::SessionID, WallTime, CompletionHandler<void()>&&);
 diff --git a/Source/WebKit/NetworkProcess/Cookies/WebCookieManager.messages.in b/Source/WebKit/NetworkProcess/Cookies/WebCookieManager.messages.in
-index 2689d3fbfea88cfe39148e799aebab0406fbc39c..fd96400bb1a82bb9b692ea8aef56a6be5ee7539f 100644
+index 2689d3fbfea88cfe39148e799aebab0406fbc39c..983da07b6f550bb8f298871b8c757f26fbe2962b 100644
 --- a/Source/WebKit/NetworkProcess/Cookies/WebCookieManager.messages.in
 +++ b/Source/WebKit/NetworkProcess/Cookies/WebCookieManager.messages.in
-@@ -38,6 +38,10 @@ messages -> WebCookieManager {
+@@ -38,12 +38,22 @@ messages -> WebCookieManager {
      void GetAllCookies(PAL::SessionID sessionID) -> (Vector<WebCore::Cookie> cookies)
      void GetCookies(PAL::SessionID sessionID, URL url) -> (Vector<WebCore::Cookie> cookies)
      void DeleteCookie(PAL::SessionID sessionID, struct WebCore::Cookie cookie) -> ()
@@ -21941,6 +21941,18 @@ index 2689d3fbfea88cfe39148e799aebab0406fbc39c..fd96400bb1a82bb9b692ea8aef56a6be
      void DeleteAllCookiesModifiedSince(PAL::SessionID sessionID, WallTime time) -> ()
  
      void SetHTTPCookieAcceptPolicy(PAL::SessionID sessionID, enum:uint8_t WebCore::HTTPCookieAcceptPolicy policy) -> ()
+     void GetHTTPCookieAcceptPolicy(PAL::SessionID sessionID) -> (enum:uint8_t WebCore::HTTPCookieAcceptPolicy policy)
+     
++#if PLATFORM(HAIKU) && USE(CURL)
++    // Native session recreation reinstalls observers before WebProcess connects.
++    void StartObservingCookieChanges(PAL::SessionID sessionID) AllowedWhenWaitingForSyncReply
++#endif
++#if !PLATFORM(HAIKU) || !USE(CURL)
+     void StartObservingCookieChanges(PAL::SessionID sessionID)
++#endif
+     void StopObservingCookieChanges(PAL::SessionID sessionID)
+ 
+ #if USE(SOUP)
 diff --git a/Source/WebKit/NetworkProcess/Cookies/curl/CookieStorageCurl.cpp b/Source/WebKit/NetworkProcess/Cookies/curl/CookieStorageCurl.cpp
 index 5cf8ccaa0f959a5a91bacc1837a16f7ec2a7c3d2..ab6c0bafcf81b6dd8f9fb4a3789eb08f70dba4b4 100644
 --- a/Source/WebKit/NetworkProcess/Cookies/curl/CookieStorageCurl.cpp
@@ -22532,10 +22544,22 @@ index a3668ff9135fd5779ff38f61604f8336fa5e78ce..7d9c39addac9404e6e52868530aa8527
  namespace IPC {
  
 diff --git a/Source/WebKit/Platform/IPC/Connection.cpp b/Source/WebKit/Platform/IPC/Connection.cpp
-index 122733d20088dcfcf96c151b6f4f1d4a62a895a4..f8fa9434ed211b05897b732d4163a1b66fd8a37e 100644
+index 122733d20088dcfcf96c151b6f4f1d4a62a895a4..5657d51ae49b47c2170be9f94feca19cdb1d1185 100644
 --- a/Source/WebKit/Platform/IPC/Connection.cpp
 +++ b/Source/WebKit/Platform/IPC/Connection.cpp
-@@ -1715,7 +1715,7 @@ void Connection::dispatchToClientWithIncomingMessagesLock(F&& clientRunLoopTask)
+@@ -1144,6 +1144,11 @@ void Connection::processIncomingMessage(UniqueRef<Decoder> message)
+     }
+ 
+     if ((message->shouldDispatchMessageWhenWaitingForSyncReply() == ShouldDispatchWhenWaitingForSyncReply::YesDuringUnboundedIPC && !message->isAllowedWhenWaitingForUnboundedSyncReply()) || (message->shouldDispatchMessageWhenWaitingForSyncReply() == ShouldDispatchWhenWaitingForSyncReply::Yes && !message->isAllowedWhenWaitingForSyncReply())) {
++        // dispatchDidReceiveInvalidMessage reacquires m_incomingMessagesLock.
++        // Drop the shared sync state under that lock before scheduling rejection.
++        syncState = nullptr;
++        incomingMessagesLocker.unlockEarly();
++        waitForMessagesLocker.unlockEarly();
+         dispatchDidReceiveInvalidMessage(message->messageName(), message->indicesOfObjectsFailingDecoding());
+         return;
+     }
+@@ -1715,7 +1720,7 @@ void Connection::dispatchToClientWithIncomingMessagesLock(F&& clientRunLoopTask)
      dispatcher()->dispatch(WTF::move(clientRunLoopTask));
  }
  
@@ -27908,7 +27932,7 @@ index d4d415b3d8dfa723539f4f93c8c08972048d7a05..71e5c7982f118a2d571275b815abedc1
      static ContentRuleListStore& defaultStoreSingleton();
      static Ref<ContentRuleListStore> storeWithPath(const WTF::String& storePath);
 diff --git a/Source/WebKit/UIProcess/API/APIHTTPCookieStore.cpp b/Source/WebKit/UIProcess/API/APIHTTPCookieStore.cpp
-index 232e124c97dd5eb474644203a2231e92eba77e65..881251f0f24e46c7c19a47addadf85498bad73bd 100644
+index 232e124c97dd5eb474644203a2231e92eba77e65..de5f6cc1456f7ffe0bc3e9a39269a5d8004a0566 100644
 --- a/Source/WebKit/UIProcess/API/APIHTTPCookieStore.cpp
 +++ b/Source/WebKit/UIProcess/API/APIHTTPCookieStore.cpp
 @@ -173,6 +173,26 @@ void HTTPCookieStore::deleteAllCookies(CompletionHandler<void()>&& completionHan
@@ -27938,7 +27962,22 @@ index 232e124c97dd5eb474644203a2231e92eba77e65..881251f0f24e46c7c19a47addadf8549
  void HTTPCookieStore::deleteCookiesForHostnames(const Vector<WTF::String>& hostnames, CompletionHandler<void()>&& completionHandler)
  {
      if (RefPtr networkProcess = networkProcessIfExists())
-@@ -241,6 +261,22 @@ void HTTPCookieStore::cookiesDidChange()
+@@ -212,8 +232,13 @@ void HTTPCookieStore::registerObserver(HTTPCookieStoreObserver& observer)
+     if (wasObserving)
+         return;
+ 
+-    if (RefPtr networkProcess = networkProcessLaunchingIfNecessary())
++    if (RefPtr networkProcess = networkProcessLaunchingIfNecessary()) {
++#if PLATFORM(HAIKU) && USE(CURL)
++        networkProcess->send(Messages::WebCookieManager::StartObservingCookieChanges(m_sessionID), 0, IPC::SendOption::DispatchMessageEvenWhenWaitingForSyncReply);
++#else
+         networkProcess->send(Messages::WebCookieManager::StartObservingCookieChanges(m_sessionID), 0);
++#endif
++    }
+ }
+ 
+ void HTTPCookieStore::unregisterObserver(HTTPCookieStoreObserver& observer)
+@@ -241,6 +266,22 @@ void HTTPCookieStore::cookiesDidChange()
          observer->cookiesDidChange(*this);
  }
  

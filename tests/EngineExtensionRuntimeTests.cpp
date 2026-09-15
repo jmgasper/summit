@@ -1,6 +1,8 @@
 /* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 #include "config.h"
 #include "APIError.h"
+#include "APINavigation.h"
+#include "APIPageConfiguration.h"
 #include "PageLoadState.h"
 #include "ProcessTerminationReason.h"
 #include "WebExtension.h"
@@ -9,8 +11,12 @@
 #include "WebExtensionControllerConfiguration.h"
 #include "WebKitView.h"
 #include "WebPageProxy.h"
+#include "WebPreferences.h"
 #include "WebProcessProxy.h"
+#include "WebViewPrivate.h"
 #include "WebsiteDataStore.h"
+#include "WebsiteDataRecord.h"
+#include <WebCore/ResourceRequest.h>
 #include <Application.h>
 #include <OS.h>
 #include <image.h>
@@ -131,7 +137,26 @@ public:
         m_controller = WebExtensionController::create(WTF::move(configuration));
         m_controller->setTestingMode(true);
         SetPulseRate(100000);
-        startRound();
+        std::string startup = std::getenv("SUMMIT_EXTENSION_STARTUP") ?: "cold";
+        printf("STARTUP_MODE %s\n", startup.c_str());
+        if (startup == "page")
+            startControl();
+        else if (startup == "deferred")
+            RunLoop::mainSingleton().dispatch([this] { startRound(); });
+        else if (startup == "network") {
+            m_waitingForNetwork = true;
+            m_deadline = system_time() + 30000000;
+            // A nonpersistent store fetch only visits an existing process.
+            m_dataStore->networkProcess();
+            m_dataStore->fetchData({ WebsiteDataType::LocalStorage }, { }, [this](Vector<WebsiteDataRecord>) {
+                if (m_closing)
+                    return;
+                m_waitingForNetwork = false;
+                check(!children().network.empty(), "owned network process answers before direct extension startup");
+                startRound();
+            });
+        } else
+            startRound();
     }
 
     void Pulse() final
@@ -144,6 +169,33 @@ public:
             } else if (system_time() > m_deadline) {
                 check(false, "owned processes finish teardown before the deadline");
                 PostMessage(B_QUIT_REQUESTED);
+            }
+            return;
+        }
+        if (m_waitingForNetwork) {
+            if (system_time() > m_deadline) {
+                check(false, "network process answers before the deadline");
+                close();
+            }
+            return;
+        }
+        if (m_controlView) {
+            Ref page = *m_controlView->page();
+            auto phase = makeString("process="_s, page->hasRunningProcess(), " loading="_s,
+                page->pageLoadState().isLoading(), " active="_s, page->pageLoadState().activeURL().string(),
+                " provisional="_s, page->pageLoadState().provisionalURL().string());
+            if (phase != m_lastPhase) {
+                printf("CONTROL_PHASE %s\n", phase.utf8().legacyCStringPointer());
+                fflush(stdout);
+                m_lastPhase = phase;
+            }
+            if (page->pageLoadState().title() == makeString("SUMMIT CONTROL PASS "_s, m_nonce)) {
+                check(true, "ordinary offscreen page executes JavaScript in the Extensions-enabled engine");
+                closeControl();
+                RunLoop::mainSingleton().dispatch([this] { startRound(); });
+            } else if (system_time() > m_deadline) {
+                check(false, "ordinary offscreen page executes JavaScript before the deadline");
+                close();
             }
             return;
         }
@@ -201,6 +253,33 @@ public:
     }
 
 private:
+    void startControl()
+    {
+        // Exercise the same native offscreen page client without extension
+        // configuration or resource handling before loading the package.
+        Ref configuration = API::PageConfiguration::create();
+        configuration->setWebsiteDataStore(m_dataStore.get());
+        configuration->preferences().setAcceleratedCompositingEnabled(false);
+        configuration->preferences().setForceCompositingMode(false);
+        configuration->preferences().setThreadedScrollingEnabled(false);
+        m_controlView = WebView::createForExtensionBackground(WTF::move(configuration));
+        m_deadline = system_time() + 30000000;
+        URL url { makeString("data:text/html,<script>document.title='SUMMIT CONTROL PASS "_s, m_nonce, "'</script>"_s) };
+        m_controlView->page()->loadRequest(WebCore::ResourceRequest { WTF::move(url) });
+    }
+
+    void closeControl()
+    {
+        if (!m_controlView)
+            return;
+        Vector<Ref<WebProcessProxy>> processes;
+        m_controlView->page()->forEachWebContentProcess([&](auto& process, auto) { processes.append(process); });
+        m_controlView->close();
+        m_controlView = nullptr;
+        for (Ref process : processes)
+            process->requestTermination(ProcessTerminationReason::RequestedByClient);
+    }
+
     void startRound()
     {
         ++m_round;
@@ -241,6 +320,7 @@ private:
             return;
         m_closing = true;
         m_deadline = system_time() + 30000000;
+        closeControl();
         if (m_controller) {
             auto processes = m_controller->allProcesses();
             m_controller->unloadAll();
@@ -255,6 +335,7 @@ private:
     }
 
     fs::path m_root;
+    RefPtr<WebView> m_controlView;
     RefPtr<WebsiteDataStore> m_dataStore;
     RefPtr<WebExtensionController> m_controller;
     RefPtr<WebExtensionContext> m_context;
@@ -264,6 +345,7 @@ private:
     unsigned m_round { 0 };
     bigtime_t m_deadline { 0 };
     bool m_closing { false };
+    bool m_waitingForNetwork { false };
 };
 } // namespace
 

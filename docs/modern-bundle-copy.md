@@ -122,7 +122,9 @@ replacing the ordinary modern report. The bundler checks that both process
 targets are fully rebuilt before copying them. `--compile-only` can compile the
 browser against isolated staged headers while an engine build is running; it
 does not link, bundle, or establish runtime behavior. Extension-enabled browser
-runtime verification is still pending; see [STATUS.md](STATUS.md).
+`bundle-9jahww_j` now passes 90 real HTTP/JavaScript navigation checks. Its
+engine still has the separately recorded cookie-observer lifecycle failure;
+see [STATUS.md](STATUS.md) for the tested scope and current limitations.
 
 The source archive also supplies those full patched trees for a direct native
 CMake build without fetching Git. It is already patched: do not apply the patch
