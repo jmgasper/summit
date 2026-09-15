@@ -34,8 +34,25 @@ Textual references include comments, feature checks and optional branches, and
 can miss aliases or computed properties. They are evidence for choosing runtime
 tests, not a dependency graph or a compatibility score. In particular, Dark
 Reader's background and UI scripts mention `i18n.getMessage` and
-`i18n.getUILanguage`; the current Haiku namespace IDL still restricts `i18n` to
-Cocoa. Its MV3 package also requires the unfinished service-worker path.
+`i18n.getUILanguage`. The i18n implementation now exposes five methods on Haiku.
+The native integration suite passes 329 checks across background, popup and
+content scripts, including localized CSS and a package without a catalog.
+See [the localization record](../docs/webextensions-localization.md).
+The MV3 package also requires the unfinished service-worker path.
+
+The pinned MV2 variants need distinct runtime runs. Chromium requests `alarms`,
+`fontSettings`, `storage`, `tabs` and `<all_urls>`; Firefox requests `alarms`,
+`contextMenus`, `storage`, `tabs`, `theme` and `<all_urls>`. Firefox also declares
+its fallback script in `MAIN` and its main injection script in `ISOLATED`, whereas
+the Chromium package has one content-script declaration. Both inject at
+`document_start` into all frames, including matching blank frames. These facts
+come from the hash-verified archived manifests, not runtime observations.
+
+For a controlled target page, verify the extension's dynamic theme through both
+its `data-darkreader-mode`/`data-darkreader-scheme` attributes and actual computed
+page colors. A fallback stylesheet alone is insufficient evidence that its
+background/message pipeline started. The source package must remain unmodified;
+target-page observation belongs in the harness, not inside the extension.
 
 Native testing must establish installation and identity, background startup,
 popup UI, the extension's actual page behavior, persistence, permissions and

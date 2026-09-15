@@ -16,7 +16,7 @@ UNITS = ('WebExtensionController.cpp', 'WebExtensionContext.cpp',
          'WebExtensionDeclarativeNetRequestSQLiteStore.cpp',
          'WebExtensionMatchPatternProcessPool.cpp', 'WebExtensionContextProxy.cpp',
          'WebExtensionControllerProxy.cpp')
-EXTRA_UNITS = ('API/WebExtensionAPIMenus.cpp', 'API/WebExtensionMenuClickHandlerStore.cpp', 'API/WebExtensionAPICookies.cpp', 'Bindings/JSWebExtensionCookieParameters.cpp', 'API/WebExtensionAPIAction.cpp', 'API/WebExtensionAPIWindows.cpp', 'API/WebExtensionAPIWindowsEvent.cpp',
+EXTRA_UNITS = ('API/WebExtensionAPILocalization.cpp', 'API/WebExtensionAPIMenus.cpp', 'API/WebExtensionMenuClickHandlerStore.cpp', 'API/WebExtensionAPICookies.cpp', 'Bindings/JSWebExtensionCookieParameters.cpp', 'API/WebExtensionAPIAction.cpp', 'API/WebExtensionAPIWindows.cpp', 'API/WebExtensionAPIWindowsEvent.cpp',
                'Bindings/JSWebExtensionWindowParameters.cpp', 'API/WebExtensionAPITabs.cpp', 'API/WebExtensionAPIPermissions.cpp', 'API/WebExtensionAPICommands.cpp',
                'API/WebExtensionAPIWebRequest.cpp', 'API/WebExtensionAPIWebRequestEvent.cpp', 'haiku/WebExtensionContextBackgroundHaiku.cpp', 'haiku/WebExtensionURLSchemeHandlerHaiku.cpp', 'haiku/WebExtensionContextHaiku.cpp',
                'haiku/WebExtensionContextTestHaiku.cpp',
@@ -33,7 +33,7 @@ EXTRA_UNITS = ('API/WebExtensionAPIMenus.cpp', 'API/WebExtensionMenuClickHandler
                'API/WebExtensionAPIEvent.cpp', 'API/WebExtensionAPIPort.cpp')
 SERIALIZER_UNITS = ('GeneratedSerializersSharedWebCoreArgumentCodersNetwork.cpp',)
 GENERATED_UNITS = ('NetworkProcessProxyMessageReceiver.cpp', 'WebExtensionContextMessageReceiver.cpp', 'WebExtensionContextProxyMessageReceiver.cpp', 'WebCookieManagerMessageReceiver.cpp')
-BINDING_UNITS = ('JSWebExtensionAPIMenus.cpp', 'JSWebExtensionAPICookies.cpp', 'JSWebExtensionAPIAction.cpp', 'JSWebExtensionAPIWindows.cpp', 'JSWebExtensionAPIWindowsEvent.cpp', 'JSWebExtensionAPITabs.cpp', 'JSWebExtensionAPIPermissions.cpp', 'JSWebExtensionAPICommands.cpp',
+BINDING_UNITS = ('JSWebExtensionAPILocalization.cpp', 'JSWebExtensionAPIMenus.cpp', 'JSWebExtensionAPICookies.cpp', 'JSWebExtensionAPIAction.cpp', 'JSWebExtensionAPIWindows.cpp', 'JSWebExtensionAPIWindowsEvent.cpp', 'JSWebExtensionAPITabs.cpp', 'JSWebExtensionAPIPermissions.cpp', 'JSWebExtensionAPICommands.cpp',
                  'JSWebExtensionAPIWebRequest.cpp', 'JSWebExtensionAPIWebRequestEvent.cpp', 'JSWebExtensionAPIWebNavigation.cpp', 'JSWebExtensionAPIWebNavigationEvent.cpp',
                  'JSWebExtensionAPIEvent.cpp', 'JSWebExtensionAPIPort.cpp',
                  'JSWebExtensionAPIStorage.cpp', 'JSWebExtensionAPIStorageArea.cpp',
@@ -110,6 +110,7 @@ UI_API_UNITS = {'WebExtensionContextAPIMenusHaiku.cpp': 'UIProcess/Extensions/ha
                 'WebExtensionControllerHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionControllerHaiku.cpp',
                 'WebExtensionWebsiteData.cpp': 'UIProcess/Extensions/WebExtensionWebsiteData.cpp',
                 'WebExtensionUtilities.cpp': 'Shared/Extensions/WebExtensionUtilities.cpp',
+                'WebExtensionLocalization.cpp': 'Shared/Extensions/WebExtensionLocalization.cpp',
                 'WebExtensionContextAPIDeclarativeNetRequest.cpp': 'UIProcess/Extensions/API/WebExtensionContextAPIDeclarativeNetRequest.cpp',
                 'WebExtensionRegisteredScriptParser.cpp': 'Shared/Extensions/WebExtensionRegisteredScriptParser.cpp',
                 'WebExtensionContextAPIScripting.cpp': 'UIProcess/Extensions/API/WebExtensionContextAPIScripting.cpp',

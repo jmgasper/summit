@@ -2203,6 +2203,20 @@ index cef20ab58216d6164b8111aecf3540683667aaad..ad64d8014c99a6037be2fcb10d19748b
      const unsigned char* inKey, size_t inKeySize,
      const unsigned char* inSalt, size_t inSaltSize,
      const unsigned char* inInfo, size_t inInfoSize)
+diff --git a/Source/WebCore/dom/Document.cpp b/Source/WebCore/dom/Document.cpp
+index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..0e56bdb8754dc85beac232b8370b4360c8e2db16 100644
+--- a/Source/WebCore/dom/Document.cpp
++++ b/Source/WebCore/dom/Document.cpp
+@@ -3494,6 +3494,9 @@ void Document::createRenderTree()
+ 
+     renderView->setIsInWindow(true);
+ 
++    // Collect injected author styles even when the document has no stylesheet
++    // nodes to trigger an active stylesheet update.
++    styleScope().didChangeActiveStyleSheetCandidates();
+     resolveStyle(ResolveStyleType::Rebuild);
+ 
+ #if PLATFORM(MAC)
 diff --git a/Source/WebCore/dom/make_names.pl b/Source/WebCore/dom/make_names.pl
 index 7f18cb986d1972948b04893b511de16598d7f103..68525703b1263997f5100c89a1c31dd939c8245f 100755
 --- a/Source/WebCore/dom/make_names.pl
@@ -21163,6 +21177,31 @@ index 0000000000000000000000000000000000000000..09e42d8e9a598aa58a68373c51c4d590
 +
 +#endif
 +
+diff --git a/Source/WebCore/platform/text/LocaleICU.cpp b/Source/WebCore/platform/text/LocaleICU.cpp
+index 05f80353a0b97b8e4f727e3ed1642c8955ee34fb..9d64f08600f7ca3b72b4526536cc0f0e8d191a11 100644
+--- a/Source/WebCore/platform/text/LocaleICU.cpp
++++ b/Source/WebCore/platform/text/LocaleICU.cpp
+@@ -89,7 +89,19 @@ Locale::WritingDirection LocaleICU::defaultWritingDirection() const
+         return WritingDirection::Default;
+     }
+ #else
+-    return WritingDirection::Default;
++    // Ports without HarfBuzz still have ICU's locale direction data.
++    UErrorCode status = U_ZERO_ERROR;
++    auto orientation = uloc_getCharacterOrientation(m_locale.data(), &status);
++    if (U_FAILURE(status))
++        return WritingDirection::Default;
++    switch (orientation) {
++    case ULOC_LAYOUT_LTR:
++        return WritingDirection::LeftToRight;
++    case ULOC_LAYOUT_RTL:
++        return WritingDirection::RightToLeft;
++    default:
++        return WritingDirection::Default;
++    }
+ #endif
+ }
+ 
 diff --git a/Source/WebCore/platform/text/haiku/StringHaiku.cpp b/Source/WebCore/platform/text/haiku/StringHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..61ea71ea73a945cf4fea7a961443c30a88a4fb8c
@@ -21771,7 +21810,7 @@ index efb0e18ef3681d9f33b6c784f0fb22f1ff0e80eb..19ec94335716b9ab75d52343c7adcad7
  
      undefined setTopDocumentURLForQuirks(DOMString urlString);
 diff --git a/Source/WebKit/CMakeLists.txt b/Source/WebKit/CMakeLists.txt
-index e516087e3331311877a49df982704f642f6dffe9..26f694aadd343dae6a6113c06f84f978f73dec9a 100644
+index e516087e3331311877a49df982704f642f6dffe9..47e627fadbd8bd6209b0f0ed7664f7196e5d7478 100644
 --- a/Source/WebKit/CMakeLists.txt
 +++ b/Source/WebKit/CMakeLists.txt
 @@ -142,10 +142,7 @@ list(APPEND WebKit_UNIFIED_SOURCE_LIST_FILES
@@ -21791,7 +21830,7 @@ index e516087e3331311877a49df982704f642f6dffe9..26f694aadd343dae6a6113c06f84f978
      WebProcess/Extensions/Interfaces/WebExtensionAPIDevToolsPanels
 -    WebProcess/Extensions/Interfaces/WebExtensionAPIEvent
      WebProcess/Extensions/Interfaces/WebExtensionAPIExtension
-     WebProcess/Extensions/Interfaces/WebExtensionAPILocalization
+-    WebProcess/Extensions/Interfaces/WebExtensionAPILocalization
 -    WebProcess/Extensions/Interfaces/WebExtensionAPIMenus
      WebProcess/Extensions/Interfaces/WebExtensionAPINotifications
      WebProcess/Extensions/Interfaces/WebExtensionAPIOffscreen
@@ -21812,6 +21851,7 @@ index e516087e3331311877a49df982704f642f6dffe9..26f694aadd343dae6a6113c06f84f978
  )
  
  set(WebKit_CPP_BINDINGS_IN_FILES
++    WebProcess/Extensions/Interfaces/WebExtensionAPILocalization
 +    WebProcess/Extensions/Interfaces/WebExtensionAPIMenus
 +    WebProcess/Extensions/Interfaces/WebExtensionAPICookies
 +    WebProcess/Extensions/Interfaces/WebExtensionAPIAction
@@ -25971,6 +26011,232 @@ index 0000000000000000000000000000000000000000..786389356ffcf87d818bc62c570e3623
 +} // namespace WebKit
 +
 +#endif // ENABLE(WK_WEB_EXTENSIONS)
+diff --git a/Source/WebKit/Shared/Extensions/WebExtensionLocalization.cpp b/Source/WebKit/Shared/Extensions/WebExtensionLocalization.cpp
+index 317611129ddac169588b9beb935fda27d62eef36..5c5342d1548673ce767803b6615f08aa8d697b51 100644
+--- a/Source/WebKit/Shared/Extensions/WebExtensionLocalization.cpp
++++ b/Source/WebKit/Shared/Extensions/WebExtensionLocalization.cpp
+@@ -34,7 +34,6 @@
+ #include <JavaScriptCore/RegularExpression.h>
+ #include <wtf/Language.h>
+ #include <wtf/text/StringBuilder.h>
+-#include <wtf/text/StringToIntegerConversion.h>
+ #include <wtf/text/WTFString.h>
+ 
+ namespace WebKit {
+@@ -155,7 +154,7 @@ RefPtr<JSON::Object> WebExtensionLocalization::localizedJSONforJSON(RefPtr<JSON:
+     return newObject;
+ }
+ 
+-String WebExtensionLocalization::localizedStringForKey(String key, Vector<String> placeholders)
++String WebExtensionLocalization::localizedStringForKey(String key, Vector<String> placeholders, bool escapeLessThan)
+ {
+     if (placeholders.size() > 9)
+         return emptyString();
+@@ -163,10 +162,8 @@ String WebExtensionLocalization::localizedStringForKey(String key, Vector<String
+     if (!m_localizationJSON || !m_localizationJSON->size())
+         return emptyString();
+ 
+-    if (key.contains("__MSG_"_s)) {
+-        key = key.substring(6, key.length());
+-        key = key.substring(0, key.length() - 2);
+-    }
++    if (key.startsWith("__MSG_"_s) && key.endsWith("__"_s) && key.length() >= 8)
++        key = key.substring(6, key.length() - 8);
+ 
+     RefPtr localizationJSON = m_localizationJSON;
+     if (!localizationJSON)
+@@ -183,10 +180,12 @@ String WebExtensionLocalization::localizedStringForKey(String key, Vector<String
+     RefPtr namedPlaceholders = jsonWithLowercaseKeys(stringJSON->getObject(placeholdersKey));
+ 
+     localizedString = stringByReplacingNamedPlaceholdersInString(localizedString, namedPlaceholders);
++    // Escape translation text after named placeholder expansion, before
++    // inserting the caller-provided positional substitutions.
++    if (escapeLessThan)
++        localizedString = makeStringByReplacingAll(localizedString, "<"_s, "&lt;"_s);
+     localizedString = stringByReplacingPositionalPlaceholdersInString(localizedString, placeholders);
+ 
+-    localizedString = localizedString.impl()->replace("$$"_s, "$"_s);
+-
+     return localizedString;
+ }
+ 
+@@ -215,26 +214,20 @@ RefPtr<JSON::Array> WebExtensionLocalization::localizedArrayForArray(RefPtr<JSON
+ 
+ String WebExtensionLocalization::localizedStringForString(String sourceString)
+ {
+-    String localizedString = sourceString;
+-
++    StringBuilder result;
+     auto localizableStringRegularExpression = JSC::Yarr::RegularExpression("__MSG_([A-Za-z0-9_@]+)__"_s, { });
+-
+-    int index = 0;
+-    while (index < static_cast<int>(localizedString.length())) {
++    unsigned offset = 0;
++    while (offset < sourceString.length()) {
+         int matchLength;
+-        index = localizableStringRegularExpression.match(localizedString, index, &matchLength);
++        int index = localizableStringRegularExpression.match(sourceString, offset, &matchLength);
+         if (index < 0)
+             break;
+-
+-        auto key = localizedString.substring(index, matchLength);
+-        auto localizedReplacement = localizedStringForKey(key);
+-
+-        localizedString = makeStringByReplacingAll(localizedString, key, localizedReplacement);
+-
+-        index += localizedReplacement.length();
++        result.append(StringView { sourceString }.substring(offset, index - offset));
++        result.append(localizedStringForKey(sourceString.substring(index, matchLength)));
++        offset = index + matchLength;
+     }
+-
+-    return localizedString;
++    result.append(StringView { sourceString }.substring(offset));
++    return result.toString();
+ }
+ 
+ RefPtr<JSON::Object> WebExtensionLocalization::localizationJSONForWebExtension(WebExtension& webExtension, const String& locale)
+@@ -267,7 +260,7 @@ Ref<JSON::Object> WebExtensionLocalization::predefinedMessages()
+     };
+ 
+     if (CheckedPtr locale = m_locale.get(); locale && !m_localeString.isEmpty()) {
+-        if (locale->defaultWritingDirection() == WebCore::Locale::WritingDirection::LeftToRight) {
++        if (locale->defaultWritingDirection() != WebCore::Locale::WritingDirection::RightToLeft) {
+             predefinedMessages->setObject(predefinedMessageLanguageDirection, createMessageKey(predefinedMessageValueLeftToRight));
+             predefinedMessages->setObject(predefinedMessageLanguageDirectionReversed, createMessageKey(predefinedMessageValueRightToLeft));
+             predefinedMessages->setObject(predefinedMessageTextLeadingEdge, createMessageKey(predefinedMessageValueTextEdgeLeft));
+@@ -291,69 +284,61 @@ Ref<JSON::Object> WebExtensionLocalization::predefinedMessages()
+ 
+ String WebExtensionLocalization::stringByReplacingNamedPlaceholdersInString(String sourceString, RefPtr<JSON::Object> placeholders)
+ {
+-    String localizedString = sourceString;
+-
+-    auto localizableStringRegularExpression = JSC::Yarr::RegularExpression("(?:[^$]|^)(\\$([A-Za-z0-9_@]+)\\$)"_s, { });
+-
+-    int index = 0;
+-    while (index < static_cast<int>(localizedString.length())) {
+-        int matchLength;
+-        index = localizableStringRegularExpression.match(localizedString, index, &matchLength);
+-        if (index < 0)
+-            break;
+-
+-        auto originalKey = localizedString.substring(index, matchLength);
+-
+-        if (!originalKey.startsWith('$'))
+-            originalKey = localizedString.substring(index + 1, matchLength - 1);
+-
+-        auto key = originalKey.substring(1, originalKey.length() - 2).convertToASCIILowercase();
+-
+-        auto localizedReplacement = (placeholders && placeholders->getObject(key)) ? placeholders->getObject(key)->getString(placeholderDictionaryContentKey) : emptyString();
+-
+-        localizedString = makeStringByReplacingAll(localizedString, originalKey, localizedReplacement);
+-
+-        index += std::max(0, static_cast<int>(localizedReplacement.length()) - 1);
++    StringBuilder result;
++    for (unsigned index = 0; index < sourceString.length();) {
++        if (sourceString[index] != '$') {
++            result.append(sourceString[index++]);
++            continue;
++        }
++        if (index + 1 < sourceString.length() && sourceString[index + 1] == '$') {
++            // Preserve escaped runs for the positional pass. They must not
++            // become named placeholders while scanning this catalog text.
++            do {
++                result.append('$');
++                ++index;
++            } while (index < sourceString.length() && sourceString[index] == '$');
++            continue;
++        }
++        unsigned end = index + 1;
++        while (end < sourceString.length() && (isASCIIAlphanumeric(sourceString[end]) || sourceString[end] == '_' || sourceString[end] == '@'))
++            ++end;
++        if (end > index + 1 && end < sourceString.length() && sourceString[end] == '$') {
++            auto key = sourceString.substring(index + 1, end - index - 1).convertToASCIILowercase();
++            if (RefPtr placeholder = placeholders ? placeholders->getObject(key) : nullptr)
++                result.append(placeholder->getString(placeholderDictionaryContentKey));
++            index = end + 1;
++        } else
++            result.append(sourceString[index++]);
+     }
+-
+-    return localizedString;
++    return result.toString();
+ }
+ 
+ String WebExtensionLocalization::stringByReplacingPositionalPlaceholdersInString(String sourceString, Vector<String> placeholders)
+ {
+-    auto localizedString = sourceString;
+-
+-    auto localizableStringRegularExpression = JSC::Yarr::RegularExpression("(?:[^$]|^)(\\$([0-9]))"_s, { });
+-
+-    int index = 0;
+-    while (index < static_cast<int>(localizedString.length())) {
+-        int matchLength;
+-        index = localizableStringRegularExpression.match(localizedString, index, &matchLength);
+-        if (index < 0)
+-            break;
+-
+-        auto originalKey = localizedString.substring(index, matchLength);
+-
+-        if (!originalKey.startsWith('$'))
+-            originalKey = localizedString.substring(index + 1, matchLength - 1);
+-
+-        auto keyInteger = parseInteger<size_t>(originalKey.substring(1, originalKey.length() - 1));
+-
+-        String replacement;
+-        if (keyInteger && placeholders.size() && *keyInteger <= placeholders.size() && keyInteger > 0)
+-            replacement = placeholders[*keyInteger - 1];
+-        else
+-            replacement = emptyString();
+-
+-        localizedString = makeStringByReplacingAll(localizedString, originalKey, replacement);
+-
+-        if (!matchLength)
+-            break;
+-
+-        index += std::max(0, static_cast<int>(replacement.length()) - 1);
++    StringBuilder result;
++    for (unsigned index = 0; index < sourceString.length();) {
++        if (sourceString[index] != '$' || index + 1 == sourceString.length()) {
++            result.append(sourceString[index++]);
++            continue;
++        }
++        auto next = sourceString[index + 1];
++        if (next == '$') {
++            // Consume one escape character per run, before inserting any
++            // caller text. Inserted dollar patterns are never scanned again.
++            ++index;
++            do {
++                result.append('$');
++                ++index;
++            } while (index < sourceString.length() && sourceString[index] == '$');
++        } else if (isASCIIDigit(next)) {
++            unsigned position = next - '0';
++            if (position && position <= placeholders.size())
++                result.append(placeholders[position - 1]);
++            index += 2;
++        } else
++            result.append(sourceString[index++]);
+     }
+-
+-    return localizedString;
++    return result.toString();
+ }
+ 
+ } // namespace WebKit
+diff --git a/Source/WebKit/Shared/Extensions/WebExtensionLocalization.h b/Source/WebKit/Shared/Extensions/WebExtensionLocalization.h
+index 7b6ccdaa7ceab34d0f5cdee1db4ed79a1b4a406a..23d3e0a2626e7dfb6034c2b4d1eee82aa66206ed 100644
+--- a/Source/WebKit/Shared/Extensions/WebExtensionLocalization.h
++++ b/Source/WebKit/Shared/Extensions/WebExtensionLocalization.h
+@@ -51,7 +51,7 @@ public:
+     RefPtr<JSON::Object> localizationJSON() { return m_localizationJSON; };
+ 
+     RefPtr<JSON::Object> localizedJSONforJSON(RefPtr<JSON::Object>);
+-    String localizedStringForKey(String key, Vector<String> placeholders = { });
++    String localizedStringForKey(String key, Vector<String> placeholders = { }, bool escapeLessThan = false);
+     String localizedStringForString(String);
+ 
+ private:
 diff --git a/Source/WebKit/Shared/Extensions/WebExtensionMenuItemParser.cpp b/Source/WebKit/Shared/Extensions/WebExtensionMenuItemParser.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..c11752c81e5e3f8d040915391f51ae01c98ba134
@@ -28014,7 +28280,7 @@ index 0000000000000000000000000000000000000000..964df248231137e87da9c37afbb37b84
 +}
 +#endif
 diff --git a/Source/WebKit/Sources.txt b/Source/WebKit/Sources.txt
-index e229fa1ae53c6c89e7534316dd06a7c5bfec5330..9388aa4f02c1c22ffeac08c115d9f7de56040ae0 100644
+index e229fa1ae53c6c89e7534316dd06a7c5bfec5330..3681a68c232a98df013a11d5f236caa36dcf754d 100644
 --- a/Source/WebKit/Sources.txt
 +++ b/Source/WebKit/Sources.txt
 @@ -321,6 +321,7 @@ Shared/Extensions/WebExtensionSQLiteRow.cpp
@@ -28048,7 +28314,7 @@ index e229fa1ae53c6c89e7534316dd06a7c5bfec5330..9388aa4f02c1c22ffeac08c115d9f7de
  UIProcess/Extensions/WebExtensionStorageSQLiteStore.cpp
  
  UIProcess/Extensions/API/WebExtensionContextAPIAlarms.cpp
-@@ -711,13 +723,31 @@ WebProcess/EncryptedMedia/MediaKeySystemPermissionRequestManager.cpp
+@@ -711,13 +723,32 @@ WebProcess/EncryptedMedia/MediaKeySystemPermissionRequestManager.cpp
  
  WebProcess/Extensions/WebExtensionContextProxy.cpp
  WebProcess/Extensions/WebExtensionControllerProxy.cpp
@@ -28059,6 +28325,7 @@ index e229fa1ae53c6c89e7534316dd06a7c5bfec5330..9388aa4f02c1c22ffeac08c115d9f7de
  
  WebProcess/Extensions/API/WebExtensionAPIAlarms.cpp
 +WebProcess/Extensions/API/WebExtensionAPIEvent.cpp
++WebProcess/Extensions/API/WebExtensionAPILocalization.cpp
  WebProcess/Extensions/API/WebExtensionAPIRuntime.cpp
  WebProcess/Extensions/API/WebExtensionAPINamespace.cpp
 +WebProcess/Extensions/API/WebExtensionAPIPort.cpp
@@ -50144,7 +50411,7 @@ index 0000000000000000000000000000000000000000..327aea274e5514ddc0b1df0e244a1da2
 +
 +} // namespace WebKit
 diff --git a/Source/WebKit/WebKit.xcodeproj/project.pbxproj b/Source/WebKit/WebKit.xcodeproj/project.pbxproj
-index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..083f0cdd80f227d8786cd26e87cc5db7a11ba98f 100644
+index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..24635a41f45dd5556d895ff6b5996375d65ae8c5 100644
 --- a/Source/WebKit/WebKit.xcodeproj/project.pbxproj
 +++ b/Source/WebKit/WebKit.xcodeproj/project.pbxproj
 @@ -123,6 +123,8 @@
@@ -50363,15 +50630,32 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..083f0cdd80f227d8786cd26e87cc5db7
  		B651BC5B2B460C9C009654A9 /* WebExtensionAPIStorage.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = WebExtensionAPIStorage.h; path = WebProcess/Extensions/API/WebExtensionAPIStorage.h; sourceTree = SOURCE_ROOT; };
  		B651BC5E2B460CBF009654A9 /* WebExtensionAPIStorageArea.idl */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = WebExtensionAPIStorageArea.idl; sourceTree = "<group>"; };
  		B651BC5F2B460CBF009654A9 /* WebExtensionAPIStorage.idl */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = WebExtensionAPIStorage.idl; sourceTree = "<group>"; };
-@@ -8044,6 +8088,7 @@
+@@ -8043,13 +8087,15 @@
+ 		B6B1565A2B5E177A004F9894 /* WebExtensionStorageAccessLevel.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionStorageAccessLevel.h; sourceTree = "<group>"; };
  		B6B1565B2B5E177A004F9894 /* WebExtensionContextParameters.serialization.in */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = WebExtensionContextParameters.serialization.in; sourceTree = "<group>"; };
  		B6CCAAB629A445E90092E846 /* JSWebExtensionAPILocalization.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JSWebExtensionAPILocalization.h; sourceTree = "<group>"; };
- 		B6CCAAB729A445E90092E846 /* JSWebExtensionAPILocalization.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = JSWebExtensionAPILocalization.mm; sourceTree = "<group>"; };
+-		B6CCAAB729A445E90092E846 /* JSWebExtensionAPILocalization.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = JSWebExtensionAPILocalization.mm; sourceTree = "<group>"; };
++		B6CCAAB729A445E90092E846 /* JSWebExtensionAPILocalization.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = JSWebExtensionAPILocalization.cpp; sourceTree = "<group>"; };
 +		371A79EBB859A410C91935BA /* WebExtensionDynamicScripts.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = WebExtensionDynamicScripts.cpp; sourceTree = "<group>"; };
  		B6D031032AC1F240006C8E0B /* WebExtensionDynamicScripts.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionDynamicScripts.h; sourceTree = "<group>"; };
  		B6D031042AC1F241006C8E0B /* WebExtensionDynamicScriptsCocoa.mm */ = {isa = PBXFileReference; explicitFileType = sourcecode.cpp.objcpp.preprocessed; fileEncoding = 4; path = WebExtensionDynamicScriptsCocoa.mm; sourceTree = "<group>"; };
  		B6D031082AC1F631006C8E0B /* WebExtensionScriptInjectionParameters.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = WebExtensionScriptInjectionParameters.h; sourceTree = "<group>"; };
-@@ -11275,11 +11320,28 @@
+ 		B6D2210F2FC0FEE6004CB546 /* CoreRESPI.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CoreRESPI.h; sourceTree = "<group>"; };
+ 		B6DC00352F892F0300FD75E1 /* CALayer+CoreRE.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CALayer+CoreRE.swift"; sourceTree = "<group>"; };
+ 		B6E5F2A3299C0FFB00DBCEA3 /* WebExtensionAPILocalization.idl */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebExtensionAPILocalization.idl; sourceTree = "<group>"; };
++		F1A61D0AE72C443FB49621D8 /* WebExtensionAPILocalization.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = WebExtensionAPILocalization.cpp; path = WebProcess/Extensions/API/WebExtensionAPILocalization.cpp; sourceTree = SOURCE_ROOT; };
+ 		B6E5F2A4299C105500DBCEA3 /* WebExtensionAPILocalization.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = WebExtensionAPILocalization.h; path = WebProcess/Extensions/API/WebExtensionAPILocalization.h; sourceTree = SOURCE_ROOT; };
+ 		B6E5F2A6299C10B100DBCEA3 /* WebExtensionAPILocalizationCocoa.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = WebExtensionAPILocalizationCocoa.mm; sourceTree = "<group>"; };
+ 		B6F2010F2EAC1EA700BBF4AA /* ShareableSpatialImage.serialization.in */ = {isa = PBXFileReference; lastKnownFileType = text; path = ShareableSpatialImage.serialization.in; sourceTree = "<group>"; };
+@@ -11262,6 +11308,7 @@
+ 				B6544F912937E45000034EB0 /* WebExtensionAPIEvent.h */,
+ 				1C5DC468290B239C0061EC62 /* WebExtensionAPIExtension.h */,
+ 				760CF4A4920709706E98B98C /* WebExtensionAPIKeys.h */,
++				F1A61D0AE72C443FB49621D8 /* WebExtensionAPILocalization.cpp */,
+ 				B6E5F2A4299C105500DBCEA3 /* WebExtensionAPILocalization.h */,
+ 				1CCEE4542B098B070034E059 /* WebExtensionAPIMenus.h */,
+ 				7DC192E32FEF2CD20092B7BC /* WebExtensionAPINamespace.cpp */,
+@@ -11275,11 +11322,28 @@
  				B62FB8622AA9180C00E61418 /* WebExtensionAPIScripting.h */,
  				029D6BAB2C4060920068CF99 /* WebExtensionAPISidebarAction.h */,
  				028648C52C3F5A2E00E474D4 /* WebExtensionAPISidePanel.h */,
@@ -50400,7 +50684,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..083f0cdd80f227d8786cd26e87cc5db7
  				3375A37329429DF50028536D /* WebExtensionAPIWebNavigation.h */,
  				33F6833D293FFA4B005C63C0 /* WebExtensionAPIWebNavigationEvent.h */,
  				7DC192E42FEF2D4C0092B7BC /* WebExtensionAPIWebPageNamespace.cpp */,
-@@ -11341,6 +11403,12 @@
+@@ -11341,6 +11405,12 @@
  				1C5DC45B29099F010061EC62 /* JSWebExtensionWrappable.h */,
  				1C5DC45729099F010061EC62 /* JSWebExtensionWrapper.cpp */,
  				1C5DC45829099F010061EC62 /* JSWebExtensionWrapper.h */,
@@ -50413,7 +50697,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..083f0cdd80f227d8786cd26e87cc5db7
  			);
  			path = Bindings;
  			sourceTree = "<group>";
-@@ -11866,12 +11934,18 @@
+@@ -11866,12 +11936,18 @@
  				B6058CF32B6D98E7006D4C77 /* WebExtensionDataRecord.h */,
  				7D199FE42E1B4ECF0042147F /* WebExtensionDeclarativeNetRequestSQLiteStore.cpp */,
  				7D199FE32E1B4ECF0042147F /* WebExtensionDeclarativeNetRequestSQLiteStore.h */,
@@ -50432,7 +50716,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..083f0cdd80f227d8786cd26e87cc5db7
  				028D30762C616E8A004F4FC6 /* WebExtensionSidebar.h */,
  				7D1A8A0D2D405B34001715DF /* WebExtensionStorageSQLiteStore.cpp */,
  				7D1A8A0C2D405B34001715DF /* WebExtensionStorageSQLiteStore.h */,
-@@ -15897,6 +15971,8 @@
+@@ -15897,6 +15973,8 @@
  				1CF35F492B36089E0079C02C /* WebExtensionCookieParameters.serialization.in */,
  				B6B156582B5E1779004F9894 /* WebExtensionDataType.h */,
  				B624FF1C2ABE54B500F6EDF6 /* WebExtensionDynamicScripts.serialization.in */,
@@ -50441,7 +50725,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..083f0cdd80f227d8786cd26e87cc5db7
  				1C2BBF922B82BC5D001DBDFC /* WebExtensionError.h */,
  				B6114A8B293AE05200380B1B /* WebExtensionEventListenerType.h */,
  				8696CE2F297EB3C90081C800 /* WebExtensionEventListenerType.serialization.in */,
-@@ -17434,13 +17510,13 @@
+@@ -17434,13 +17512,13 @@
  				E3E1B33C2F85021400B584C4 /* com.apple.WebProcess.x86.sb */,
  				996D00452D7AA0FD0049C7D8 /* CombinedWebDriverBidiDomains.json */,
  				1CC94E522AC92F190045F269 /* JSWebExtensionAPIAction.h */,
@@ -50457,7 +50741,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..083f0cdd80f227d8786cd26e87cc5db7
  				1C40052B2B2B953D00F2D9EE /* JSWebExtensionAPICookies.h */,
  				1C40052A2B2B953C00F2D9EE /* JSWebExtensionAPICookies.mm */,
  				3311023F2B17B99800B21C8C /* JSWebExtensionAPIDeclarativeNetRequest.h */,
-@@ -17458,7 +17534,7 @@
+@@ -17458,11 +17536,11 @@
  				1C05906A2DFA0FB7000406F9 /* JSWebExtensionAPIDOM.h */,
  				1C05906B2DFA0FB7000406F9 /* JSWebExtensionAPIDOM.mm */,
  				B6114A7C2939498000380B1B /* JSWebExtensionAPIEvent.h */,
@@ -50466,7 +50750,12 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..083f0cdd80f227d8786cd26e87cc5db7
  				1C5DC462290B1C470061EC62 /* JSWebExtensionAPIExtension.h */,
  				1C5DC460290B1C440061EC62 /* JSWebExtensionAPIExtension.mm */,
  				B6CCAAB629A445E90092E846 /* JSWebExtensionAPILocalization.h */,
-@@ -17470,9 +17546,9 @@
+-				B6CCAAB729A445E90092E846 /* JSWebExtensionAPILocalization.mm */,
++				B6CCAAB729A445E90092E846 /* JSWebExtensionAPILocalization.cpp */,
+ 				1CCEE4502B0989FC0034E059 /* JSWebExtensionAPIMenus.h */,
+ 				1CCEE4512B0989FC0034E059 /* JSWebExtensionAPIMenus.mm */,
+ 				7D3E8A4A2FEFB4D800C57922 /* JSWebExtensionAPINamespace.cpp */,
+@@ -17470,9 +17548,9 @@
  				1C386F332AF409F9004108F0 /* JSWebExtensionAPINotifications.h */,
  				1C386F342AF409F9004108F0 /* JSWebExtensionAPINotifications.mm */,
  				B61AFA4629510D0F008220B1 /* JSWebExtensionAPIPermissions.h */,
@@ -50478,7 +50767,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..083f0cdd80f227d8786cd26e87cc5db7
  				7D3D13B1304398C400289ABF /* JSWebExtensionAPIRuntime.cpp */,
  				1C5DC461290B1C470061EC62 /* JSWebExtensionAPIRuntime.h */,
  				B63E9A6C2AAF2B2D005F4561 /* JSWebExtensionAPIScripting.h */,
-@@ -17482,31 +17558,31 @@
+@@ -17482,31 +17560,31 @@
  				029D6BAF2C407AA30068CF99 /* JSWebExtensionAPISidePanel.h */,
  				029D6BB02C407AA30068CF99 /* JSWebExtensionAPISidePanel.mm */,
  				B626B7BD2B4F1DF8008E8DD1 /* JSWebExtensionAPIStorage.h */,
@@ -50519,7 +50808,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..083f0cdd80f227d8786cd26e87cc5db7
  				843FD167295234DC00476A01 /* module.private.modulemap */,
  				DD5697CC2DC06F7700050321 /* rdar150228472.swift */,
  				9BF622532C3E8559007F7021 /* SecurityFlags.cpp */,
-@@ -18657,6 +18733,11 @@
+@@ -18657,6 +18735,11 @@
  				1C5ACFA82A96F8C400C041C0 /* JSWebExtensionAPIWindowsEvent.h in Headers */,
  				1C5DC46F290B27260061EC62 /* JSWebExtensionWrappable.h in Headers */,
  				1C5DC46E290B27260061EC62 /* JSWebExtensionWrapper.h in Headers */,
@@ -50531,7 +50820,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..083f0cdd80f227d8786cd26e87cc5db7
  				074A6FC72D5F1FAF0027F958 /* KeyEventInterpretationContext.h in Headers */,
  				E385F3692E86D75800461B0C /* LaunchLogHook.h in Headers */,
  				E385F37C2E87076100461B0C /* LaunchLogMessages.h in Headers */,
-@@ -19228,6 +19309,10 @@
+@@ -19228,6 +19311,10 @@
  				B651BC5D2B460C9D009654A9 /* WebExtensionAPIStorage.h in Headers */,
  				1C5ACFAE2A96F9D300C041C0 /* WebExtensionAPITabs.h in Headers */,
  				1C15497C2926BF75001B9E5B /* WebExtensionAPITest.h in Headers */,
@@ -50542,7 +50831,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..083f0cdd80f227d8786cd26e87cc5db7
  				3375A37529429DF50028536D /* WebExtensionAPIWebNavigation.h in Headers */,
  				33F6833E293FFA4B005C63C0 /* WebExtensionAPIWebNavigationEvent.h in Headers */,
  				B61274A82B7D738100D8ACDA /* WebExtensionAPIWebPageNamespace.h in Headers */,
-@@ -19257,6 +19342,10 @@
+@@ -19257,6 +19344,10 @@
  				B6058CF52B6D98E8006D4C77 /* WebExtensionDataRecord.h in Headers */,
  				B6B1565C2B5E177A004F9894 /* WebExtensionDataType.h in Headers */,
  				B6D031052AC1F241006C8E0B /* WebExtensionDynamicScripts.h in Headers */,
@@ -50553,7 +50842,7 @@ index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..083f0cdd80f227d8786cd26e87cc5db7
  				1C2BBF932B82BC5D001DBDFC /* WebExtensionError.h in Headers */,
  				B6114A8C293AE06800380B1B /* WebExtensionEventListenerType.h in Headers */,
  				1C4A14C62ABB710E00A1018C /* WebExtensionFrameIdentifier.h in Headers */,
-@@ -19268,6 +19357,7 @@
+@@ -19268,6 +19359,7 @@
  				1C6BE79F2B0A910200D01D93 /* WebExtensionMenuItemParameters.h in Headers */,
  				1C6BE7A32B0A94E500D01D93 /* WebExtensionMenuItemType.h in Headers */,
  				1C73167B2AC1E676007FADA4 /* WebExtensionMessagePort.h in Headers */,
@@ -50989,6 +51278,50 @@ index 3fb6ebfe1e1c5703563b72822b66a69a2546d4a8..b8d68456d7d38b859ceecc144f15646a
  } // namespace WebKit
  
  #endif // ENABLE(WK_WEB_EXTENSIONS)
+diff --git a/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPILocalizationCocoa.mm b/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPILocalizationCocoa.mm
+index b5b1cc3414a34bc8469fac492041172aa98ee743..b3e2ffff0e6f4e3a1b23c7fd0c2c329cac5fd8f4 100644
+--- a/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPILocalizationCocoa.mm
++++ b/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPILocalizationCocoa.mm
+@@ -51,13 +51,19 @@ namespace WebKit {
+ 
+ class JSWebExtensionWrappable;
+ 
+-NSString *WebExtensionAPILocalization::getMessage(NSString* messageName, JSValue *substitutions)
++JSValueRef WebExtensionAPILocalization::getMessage(JSContextRef context, const String& messageName, JSValueRef substitutionsValue, JSValueRef optionsValue, String&)
+ {
+     // Documentation: https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/i18n/getMessage
+ 
++    JSContext *scriptContext = [JSContext contextWithJSGlobalContextRef:JSContextGetGlobalContext(context)];
++    JSValue *substitutions = substitutionsValue ? [JSValue valueWithJSValueRef:substitutionsValue inContext:scriptContext] : nil;
++    JSValue *options = optionsValue ? [JSValue valueWithJSValueRef:optionsValue inContext:scriptContext] : nil;
++    JSValue *escape = options.isObject ? [options valueForProperty:@"escapeLt"] : nil;
++    bool escapeLessThan = escape.isBoolean && escape.toBool;
++
+     RefPtr localization = extensionContext().localization();
+     if (!localization)
+-        return @"";
++        return toJSValueRef(context, emptyString());
+ 
+     Vector<String> substitutionsVector;
+ 
+@@ -71,14 +77,14 @@ NSString *WebExtensionAPILocalization::getMessage(NSString* messageName, JSValue
+             substitutionsVector.append(String { [substitutions toString] });
+     }
+ 
+-    return localization->localizedStringForKey(messageName, WTF::move(substitutionsVector)).createNSString().autorelease();
++    return toJSValueRef(context, localization->localizedStringForKey(messageName, WTF::move(substitutionsVector), escapeLessThan));
+ }
+ 
+-NSString *WebExtensionAPILocalization::getUILanguage()
++String WebExtensionAPILocalization::getUILanguage()
+ {
+     // Documentation: https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/i18n/getUILanguage
+ 
+-    return toWebAPI(NSLocale.currentLocale);
++    return String { toWebAPI(NSLocale.currentLocale) };
+ }
+ 
+ void WebExtensionAPILocalization::getAcceptLanguages(Ref<WebExtensionCallbackHandler>&& callback)
 diff --git a/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIMenusCocoa.mm b/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIMenusCocoa.mm
 index 97e57b813dd441300c3a781cc9befad1667fe275..ad76d32ac12fe46743035ad187d2fb2318f8ee17 100644
 --- a/Source/WebKit/WebProcess/Extensions/API/Cocoa/WebExtensionAPIMenusCocoa.mm
@@ -54601,6 +54934,142 @@ index 8e5ecd249ca1330547c03039e959fc77b549f325..9826adea1517e419ad842c2adbb4d22c
      const ListenerVector& listeners() const LIFETIME_BOUND { return m_listeners; }
  
      void addListener(WebCore::FrameIdentifier, RefPtr<WebExtensionCallbackHandler>);
+diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPILocalization.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPILocalization.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..a288b8310f3fd115343e5537c19dffcc8f64913a
+--- /dev/null
++++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPILocalization.cpp
+@@ -0,0 +1,113 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#include "WebExtensionAPILocalization.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++#include "JSWebExtensionString.h"
++#include "WebExtensionContextProxy.h"
++#include "WebExtensionLocalization.h"
++#include <JavaScriptCore/APICast.h>
++#include <JavaScriptCore/JSLock.h>
++#include <JavaScriptCore/JSObjectInlines.h>
++#include <JavaScriptCore/PropertyNameArray.h>
++#include <JavaScriptCore/TopExceptionScope.h>
++#include <wtf/Language.h>
++
++namespace WebKit {
++
++static std::expected<bool, String> localizationEscapeOption(JSContextRef context, JSValueRef options)
++{
++    if (!options || JSValueIsUndefined(context, options) || JSValueIsNull(context, options))
++        return false;
++    if (!JSValueIsObject(context, options) || JSValueIsArray(context, options) || isFunction(context, options))
++        return makeUnexpected("options must be an object"_s);
++    auto* globalObject = toJS(context);
++    JSC::JSLockHolder lock(globalObject);
++    auto& vm = globalObject->vm();
++    auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
++    auto* object = toJS(JSValueToObject(context, options, nullptr));
++    JSC::PropertyNameArrayBuilder names(vm, JSC::PropertyNameMode::Strings, JSC::PrivateSymbolMode::Exclude);
++    object->methodTable()->getOwnPropertyNames(object, globalObject, names, JSC::DontEnumPropertiesMode::Include);
++    if (scope.exception()) {
++        TRY_CLEAR_EXCEPTION(scope, makeUnexpected("options properties could not be read"_s));
++        return makeUnexpected("options properties could not be read"_s);
++    }
++    bool escape = false;
++    for (auto& name : names) {
++        if (name.string() != "escapeLt"_s)
++            return makeUnexpected("options contains an unknown property"_s);
++        auto value = object->get(globalObject, name);
++        if (scope.exception()) {
++            TRY_CLEAR_EXCEPTION(scope, makeUnexpected("options.escapeLt could not be read"_s));
++            return makeUnexpected("options.escapeLt could not be read"_s);
++        }
++        if (value.isUndefinedOrNull())
++            continue;
++        if (!value.isBoolean())
++            return makeUnexpected("options.escapeLt must be a boolean"_s);
++        escape = value.asBoolean();
++    }
++    return escape;
++}
++
++JSValueRef WebExtensionAPILocalization::getMessage(JSContextRef context, const String& name, JSValueRef substitutions, JSValueRef options, String& exceptionString)
++{
++    auto escapeOption = localizationEscapeOption(context, options);
++    if (!escapeOption) {
++        exceptionString = escapeOption.error();
++        return JSValueMakeUndefined(context);
++    }
++    RefPtr localization = extensionContext().localization();
++    if (!localization)
++        return toJSValueRef(context, emptyString());
++    Vector<String> values;
++    JSValueRef exception = nullptr;
++    if (substitutions && JSValueIsArray(context, substitutions)) {
++        auto array = JSValueToObject(context, substitutions, &exception);
++        auto lengthValue = JSObjectGetProperty(context, array, toJSString("length"_s).get(), &exception);
++        auto length = JSValueToNumber(context, lengthValue, &exception);
++        if (exception || length > 9)
++            return JSValueMakeUndefined(context);
++        for (unsigned i = 0; i < length; ++i) {
++            auto value = JSObjectGetPropertyAtIndex(context, array, i, &exception);
++            if (exception)
++                return JSValueMakeUndefined(context);
++            auto string = adopt(JSValueToStringCopy(context, value, &exception));
++            // Match Chromium's conversion of array elements: a failed ToString
++            // is ignored, whereas a throwing index getter aborts the lookup.
++            if (!exception && string)
++                values.append(toString(string.get()));
++            exception = nullptr;
++        }
++    } else if (substitutions && JSValueIsString(context, substitutions)) {
++        auto string = adopt(JSValueToStringCopy(context, substitutions, &exception));
++        if (exception || !string)
++            return JSValueMakeUndefined(context);
++        values.append(toString(string.get()));
++    }
++    return toJSValueRef(context, localization->localizedStringForKey(name, WTF::move(values), *escapeOption));
++}
++
++String WebExtensionAPILocalization::getUILanguage()
++{
++    return defaultLanguage(ShouldMinimizeLanguages::No);
++}
++
++void WebExtensionAPILocalization::getAcceptLanguages(Ref<WebExtensionCallbackHandler>&& callback)
++{
++    // Use the same list as CurlRequest's Accept-Language header.
++    callback->call(fromArray(callback->globalContext(), userPreferredLanguages()));
++}
++
++void WebExtensionAPILocalization::getPreferredSystemLanguages(Ref<WebExtensionCallbackHandler>&& callback)
++{
++    callback->call(fromArray(callback->globalContext(), userPreferredLanguages(ShouldMinimizeLanguages::No)));
++}
++
++void WebExtensionAPILocalization::getSystemUILanguage(Ref<WebExtensionCallbackHandler>&& callback)
++{
++    callback->call(toJSValueRef(callback->globalContext(), defaultLanguage(ShouldMinimizeLanguages::No)));
++}
++
++} // namespace WebKit
++#endif
+diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPILocalization.h b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPILocalization.h
+index 0c5e00f3c7818b937c2dec3c94c53b8f374af41f..9c6bfe4622ea3411673e5b2e1febd399efc9d8b1 100644
+--- a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPILocalization.h
++++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPILocalization.h
+@@ -36,10 +36,8 @@ class WebExtensionAPILocalization : public WebExtensionAPIObject, public JSWebEx
+     WEB_EXTENSION_DECLARE_JS_WRAPPER_CLASS(WebExtensionAPILocalization, localization, i18n);
+ 
+ public:
+-#if PLATFORM(COCOA)
+-    NSString *getMessage(NSString* messageName, JSValue *substitutions);
+-    NSString *getUILanguage();
+-#endif
++    JSValueRef getMessage(JSContextRef, const String& messageName, JSValueRef substitutions, JSValueRef options, String& exception);
++    String getUILanguage();
+     void getAcceptLanguages(Ref<WebExtensionCallbackHandler>&&);
+     void getPreferredSystemLanguages(Ref<WebExtensionCallbackHandler>&&);
+     void getSystemUILanguage(Ref<WebExtensionCallbackHandler>&&);
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIMenus.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIMenus.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..6ab7cd3aa32d24e70c7ef6d58d8c2d8b0efb5955
@@ -54823,7 +55292,7 @@ index 9801362ea7d8196b1ede6cb81e85cf45ef0fb6d7..575ecdd802c55256d56d1b4885118035
  
  } // namespace WebKit
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.cpp
-index a631bca164f7da881e64b2ee29f21de7f4179746..20cd5c494084fdee0240d64ab6a88ad364018341 100644
+index a631bca164f7da881e64b2ee29f21de7f4179746..0e054a8811638d84d79fd2ca0771adf7aac10f4b 100644
 --- a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.cpp
 +++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.cpp
 @@ -81,8 +81,14 @@ bool WebExtensionAPINamespace::isPropertyAllowed(const ASCIILiteral& name, WebPa
@@ -54895,22 +55364,42 @@ index a631bca164f7da881e64b2ee29f21de7f4179746..20cd5c494084fdee0240d64ab6a88ad3
  WebExtensionAPICookies& WebExtensionAPINamespace::cookies()
  {
      // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/cookies
-@@ -174,6 +192,7 @@ WebExtensionAPICookies& WebExtensionAPINamespace::cookies()
+@@ -174,6 +192,17 @@ WebExtensionAPICookies& WebExtensionAPINamespace::cookies()
      return *m_cookies;
  }
  
++WebExtensionAPILocalization& WebExtensionAPINamespace::i18n()
++{
++    // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/i18n
++
++    if (!m_i18n)
++        m_i18n = WebExtensionAPILocalization::create(*this);
++
++    return *m_i18n;
++}
++
 +#if PLATFORM(COCOA)
  WebExtensionAPIDeclarativeNetRequest& WebExtensionAPINamespace::declarativeNetRequest()
  {
      // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/declarativeNetRequest
-@@ -226,15 +245,6 @@ WebExtensionAPILocalization& WebExtensionAPINamespace::i18n()
-     return *m_i18n;
+@@ -216,25 +245,7 @@ WebExtensionAPIExtension& WebExtensionAPINamespace::extension()
+     return *m_extension;
  }
  
+-WebExtensionAPILocalization& WebExtensionAPINamespace::i18n()
+-{
+-    // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/i18n
+-
+-    if (!m_i18n)
+-        m_i18n = WebExtensionAPILocalization::create(*this);
+-
+-    return *m_i18n;
+-}
+-
 -WebExtensionAPIMenus& WebExtensionAPINamespace::menus()
 -{
 -    // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/menus
--
+ 
 -    if (!m_menus)
 -        m_menus = WebExtensionAPIMenus::create(*this);
 -
@@ -54919,7 +55408,7 @@ index a631bca164f7da881e64b2ee29f21de7f4179746..20cd5c494084fdee0240d64ab6a88ad3
  
  #if ENABLE(WK_WEB_EXTENSIONS_OFFSCREEN)
  WebExtensionAPIOffscreen& WebExtensionAPINamespace::offscreen()
-@@ -258,6 +268,8 @@ WebExtensionAPINotifications& WebExtensionAPINamespace::notifications()
+@@ -258,6 +269,8 @@ WebExtensionAPINotifications& WebExtensionAPINamespace::notifications()
      return *m_notifications;
  }
  
@@ -54928,7 +55417,7 @@ index a631bca164f7da881e64b2ee29f21de7f4179746..20cd5c494084fdee0240d64ab6a88ad3
  WebExtensionAPIPermissions& WebExtensionAPINamespace::permissions()
  {
      // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/permissions
-@@ -280,6 +292,7 @@ WebExtensionAPIRuntime& WebExtensionAPINamespace::runtime() const
+@@ -280,6 +293,7 @@ WebExtensionAPIRuntime& WebExtensionAPINamespace::runtime() const
      return *m_runtime;
  }
  
@@ -54936,29 +55425,29 @@ index a631bca164f7da881e64b2ee29f21de7f4179746..20cd5c494084fdee0240d64ab6a88ad3
  WebExtensionAPIScripting& WebExtensionAPINamespace::scripting()
  {
      // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/scripting
-@@ -324,15 +337,8 @@ WebExtensionAPIBookmarks& WebExtensionAPINamespace::bookmarks()
+@@ -324,15 +338,8 @@ WebExtensionAPIBookmarks& WebExtensionAPINamespace::bookmarks()
  }
  #endif
  
 -WebExtensionAPIStorage& WebExtensionAPINamespace::storage()
 -{
 -    // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/storage
- 
+-
 -    if (!m_storage)
 -        m_storage = WebExtensionAPIStorage::create(*this);
--
+ 
 -    return *m_storage;
 -}
 +#endif
  
  WebExtensionAPITabs& WebExtensionAPINamespace::tabs()
  {
-@@ -343,27 +349,15 @@ WebExtensionAPITabs& WebExtensionAPINamespace::tabs()
+@@ -343,27 +350,15 @@ WebExtensionAPITabs& WebExtensionAPINamespace::tabs()
  
      return *m_tabs;
  }
 -#endif
- 
+-
 -WebExtensionAPITest& WebExtensionAPINamespace::test()
 -{
 -    // Documentation: None (Testing Only)
@@ -54968,7 +55457,7 @@ index a631bca164f7da881e64b2ee29f21de7f4179746..20cd5c494084fdee0240d64ab6a88ad3
 -
 -    return *m_test;
 -}
--
+ 
 -#if PLATFORM(COCOA)
 -WebExtensionAPIWindows& WebExtensionAPINamespace::windows()
 +WebExtensionAPIStorage& WebExtensionAPINamespace::storage()
@@ -54986,7 +55475,7 @@ index a631bca164f7da881e64b2ee29f21de7f4179746..20cd5c494084fdee0240d64ab6a88ad3
  }
  
  WebExtensionAPIWebNavigation& WebExtensionAPINamespace::webNavigation()
-@@ -385,7 +379,28 @@ WebExtensionAPIWebRequest& WebExtensionAPINamespace::webRequest()
+@@ -385,7 +380,28 @@ WebExtensionAPIWebRequest& WebExtensionAPINamespace::webRequest()
  
      return *m_webRequest;
  }
@@ -55017,10 +55506,10 @@ index a631bca164f7da881e64b2ee29f21de7f4179746..20cd5c494084fdee0240d64ab6a88ad3
  } // namespace WebKit
  
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.h b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.h
-index 0daeb9f57bccead43bac234e6d71bff821327db7..00fbe6f6e6cf1d1c050b448470a6243bf82c7a07 100644
+index 0daeb9f57bccead43bac234e6d71bff821327db7..7a67c2fbbe3b9d88e86dda4757cae70181c44e7e 100644
 --- a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.h
 +++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPINamespace.h
-@@ -66,15 +66,15 @@ class WebExtensionAPINamespace : public WebExtensionAPIObject, public JSWebExten
+@@ -66,30 +66,28 @@ class WebExtensionAPINamespace : public WebExtensionAPIObject, public JSWebExten
  
  public:
      bool isPropertyAllowed(const ASCIILiteral& propertyName, WebPage*);
@@ -55033,6 +55522,7 @@ index 0daeb9f57bccead43bac234e6d71bff821327db7..00fbe6f6e6cf1d1c050b448470a6243b
      WebExtensionAPICommands& commands();
 +    WebExtensionAPIAction& browserAction() { return action(); }
 +    WebExtensionAPIAction& pageAction() { return action(); }
++    WebExtensionAPILocalization& i18n();
      WebExtensionAPICookies& cookies();
 +    WebExtensionAPIMenus& menus();
      WebExtensionAPIMenus& contextMenus() { return menus(); }
@@ -55040,10 +55530,10 @@ index 0daeb9f57bccead43bac234e6d71bff821327db7..00fbe6f6e6cf1d1c050b448470a6243b
      WebExtensionAPIDeclarativeNetRequest& declarativeNetRequest();
  #if ENABLE(INSPECTOR_EXTENSIONS)
      WebExtensionAPIDevTools& devtools();
-@@ -82,14 +82,12 @@ public:
+ #endif
      WebExtensionAPIDOM& dom();
      WebExtensionAPIExtension& extension();
-     WebExtensionAPILocalization& i18n();
+-    WebExtensionAPILocalization& i18n();
 -    WebExtensionAPIMenus& menus();
      WebExtensionAPINotifications& notifications();
  #if ENABLE(WK_WEB_EXTENSIONS_OFFSCREEN)
@@ -60404,6 +60894,23 @@ index 25491a911534c611ab59ab4725e41bafeb93894d..d1c62c9c4082a2e4856f1861dde93535
  ] interface WebExtensionAPIEvent {
  
      [NeedsFrameIdentifier] void addListener([CallbackHandler] function listener);
+diff --git a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPILocalization.idl b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPILocalization.idl
+index cb3ae0278403074d327bd3b1debc78628eac74d1..7c8dee3bba9ab9228a9e1c0225a0668ac260fd25 100644
+--- a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPILocalization.idl
++++ b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPILocalization.idl
+@@ -31,10 +31,11 @@ dictionary WebExtensionLanguageDetectionResult {
+ [
+     Conditional=WK_WEB_EXTENSIONS,
+     ReturnsPromiseWhenCallbackIsOmitted,
++    UseCPPAPI,
+ ] interface WebExtensionAPILocalization {
+ 
+     // Get the localized string for the given message in the current locale, optionally providing up 9 substitutions.
+-    DOMString getMessage([CannotBeEmpty] DOMString name, [Optional, ValuesAllowed] any substitutions);
++    [RaisesStringException, NeedsScriptContext, ProcessArgumentsLeftToRight] any getMessage(DOMString name, [Optional, ValuesAllowed] any substitutions, [Optional, ValuesAllowed] any options);
+ 
+     // Get the UI language of the browser.
+     DOMString getUILanguage();
 diff --git a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIMenus.idl b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIMenus.idl
 index 2868b8c1b322da84dda89344451196e063c4264d..adf8a12013a530323b5c8e07befc9155d63fce62 100644
 --- a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPIMenus.idl
@@ -60426,7 +60933,7 @@ index 2868b8c1b322da84dda89344451196e063c4264d..adf8a12013a530323b5c8e07befc9155
  
      readonly attribute WebExtensionAPIEvent onClicked;
 diff --git a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPINamespace.idl b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPINamespace.idl
-index 8fd7a8880207871662fb33d5b56dcf2fde2dfbc4..d541086c2e05c3d2c81a24c634081d8b2920a76a 100644
+index 8fd7a8880207871662fb33d5b56dcf2fde2dfbc4..00dd0a303364eeb027acee39a08c225a1465175b 100644
 --- a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPINamespace.idl
 +++ b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPINamespace.idl
 @@ -33,19 +33,19 @@
@@ -60454,9 +60961,12 @@ index 8fd7a8880207871662fb33d5b56dcf2fde2dfbc4..d541086c2e05c3d2c81a24c634081d8b
  
      [MainWorldOnly, Dynamic, Platform=COCOA] readonly attribute WebExtensionAPIDeclarativeNetRequest declarativeNetRequest;
  
-@@ -57,17 +57,17 @@
+@@ -55,19 +55,19 @@
  
-     [Dynamic, Platform=COCOA] readonly attribute WebExtensionAPILocalization i18n;
+     [Dynamic, Platform=COCOA] readonly attribute WebExtensionAPIExtension extension;
+ 
+-    [Dynamic, Platform=COCOA] readonly attribute WebExtensionAPILocalization i18n;
++    [Dynamic] readonly attribute WebExtensionAPILocalization i18n;
  
 -    [Dynamic, Platform=COCOA] readonly attribute WebExtensionAPIRuntime runtime;
 +    [Dynamic] readonly attribute WebExtensionAPIRuntime runtime;

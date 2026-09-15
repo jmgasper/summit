@@ -271,6 +271,41 @@ def main(generated):
                                     raise RuntimeError('Menu synchronous ID or optional promise behavior changed: ' + name)
                     records.append({'source': source.name, 'haiku': haiku,
                                     'preprocessed_sha256': hashlib.sha256(result.stdout.encode()).hexdigest()})
+    if (generated / 'JSWebExtensionAPILocalization.cpp').exists():
+        methods = ('getMessage', 'getUILanguage', 'getAcceptLanguages',
+                   'getPreferredSystemLanguages', 'getSystemUILanguage')
+        for haiku in (0, 1):
+            for interface, names in (('Localization', methods), ('Namespace', ('i18n',))):
+                for suffix in ('h', 'cpp'):
+                    source = generated / ('JSWebExtensionAPI' + interface + '.' + suffix)
+                    if digest(source) != generation['files'][source.name]:
+                        raise RuntimeError('Generated localization binding changed: ' + source.name)
+                    stripped = re.sub(r'^\s*#(?:include|import|pragma)\b[^\n]*', '', source.read_text(), flags=re.M)
+                    prefix = f'#define ENABLE(x) 1\n#define PLATFORM(x) PLATFORM_##x\n#define PLATFORM_HAIKU {haiku}\n#define PLATFORM_COCOA {1-haiku}\n'
+                    result = subprocess.run([compiler, '-E', '-P', '-x', 'c++', '-'], input=prefix + stripped,
+                                            text=True, capture_output=True, check=True)
+                    for name in names:
+                        pattern = r'\bstatic JSValueRef ' + name + r'\(' if suffix == 'h' else r'\bJSWebExtensionAPI' + interface + '::' + name + r'\('
+                        checks += 1
+                        if not re.search(pattern, result.stdout):
+                            raise RuntimeError('Missing native or Cocoa localization surface: ' + name)
+                    if suffix == 'cpp' and interface == 'Localization':
+                        checks += 1
+                        if 'impl->getMessage(context, name, substitutions, options, exceptionString)' not in result.stdout:
+                            raise RuntimeError('Localization lost its positional raw-JavaScript argument adapter')
+                        checks += 1
+                        if re.search(r'\b(?:toNSDictionary|toNSObject|NSString|NSDictionary)\b', result.stdout):
+                            raise RuntimeError('C++ localization bindings contain Objective-C conversion')
+                        for name in methods:
+                            match = re.search(r'JSValueRef JSWebExtensionAPILocalization::' + name + r'\([^\n]*\)\n\{(.*?)\n\}', result.stdout, re.S)
+                            checks += 1
+                            if not match or 'impl->isForMainWorld()' in match[1]:
+                                raise RuntimeError('Localization method is missing or unavailable to content scripts: ' + name)
+                            checks += 1
+                            if ('JSObjectMakeDeferredPromise' in match[1]) != (name not in ('getMessage', 'getUILanguage')):
+                                raise RuntimeError('Localization synchronous/promise return behavior changed: ' + name)
+                    records.append({'source': source.name, 'haiku': haiku,
+                                    'preprocessed_sha256': hashlib.sha256(result.stdout.encode()).hexdigest()})
     report = {'scope': 'actual Perl generation and C++ preprocessing; no Cocoa or Haiku engine compile/runtime',
               'generation': str(generated), 'fixture_sha256': digest(idl), 'command': command,
               'checks': checks, 'cases': records, 'passed': True}
