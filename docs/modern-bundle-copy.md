@@ -153,9 +153,9 @@ the Git checkout expected by `prepare-webkit.py`. Consult the preserved
 Rebuilding is separate from copying and does not promise identical binary hashes
 or substitute for testing the rebuilt browser.
 
-The toolbar/action/popup bundle `artifacts/modern-browser/bundle-p214ja9w`
+The toolbar/action/popup/overflow bundle `artifacts/modern-browser/bundle-7ve4k1a6`
 is copied and verified. Its provenance digest is
-`fe620c5e42a9f5c783f3b62ec40c3854a4b99eaec38001b7acf3d9a01e2ba056`
+`1e64738d2b33617b4546e3762330bccc6de216b9efedaa1d4f0af4765cc87992`
 and its matching engine source archive digest is
 `40b83599ce48235f5dc8b30dc2d743290081140a16cb3c22c976fafa64eae62e`.
 Runtime evidence and feature limits are in [native extension actions](modern-extension-actions.md).

@@ -2240,3 +2240,12 @@ evidence is in [native extension actions](modern-extension-actions.md).
 The engine patch remains `063c724e002819e42a378056225eced55802f309254caf6640bed79c7534469e`.
 Overflow pointer input and broader compatibility coverage remain work; this
 does not complete the full browser or cross-browser extension goal.
+
+The verified bundle is copied to `artifacts/modern-browser/bundle-7ve4k1a6`,
+including matching WebKit source and provenance. Provenance SHA-256 is
+`1e64738d2b33617b4546e3762330bccc6de216b9efedaa1d4f0af4765cc87992`;
+the unchanged engine archive digest is
+`40b83599ce48235f5dc8b30dc2d743290081140a16cb3c22c976fafa64eae62e`.
+The copy records host commit `954815f`. Native/host reports, executables,
+launcher and source/support fingerprints match. The VNC preview uses a
+separate copy of the six-extension profile after the test's clean exit.

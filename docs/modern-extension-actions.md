@@ -136,6 +136,17 @@ bundles, staged inputs and host test sources remain unchanged. Earlier failed
 overflow results remain preserved; they are superseded only for the paths these
 tests cover.
 
+The complete artifact is `artifacts/modern-browser/bundle-7ve4k1a6/`.
+Copy provenance SHA-256:
+`1e64738d2b33617b4546e3762330bccc6de216b9efedaa1d4f0af4765cc87992`.
+Its engine archive retains SHA-256
+`40b83599ce48235f5dc8b30dc2d743290081140a16cb3c22c976fafa64eae62e`.
+The copy records host commit `954815f`, matching native and host reports,
+binary/launcher digests and unchanged source/support fingerprints. Copy log:
+`.vm/modern-browser-overflow-bundle-copy.log`.
+
+![Six installed extensions with the native overflow menu open](screenshots/extension-overflow.png)
+
 ## Remaining coverage and compatibility
 
 These fixtures prove the listed action paths, not arbitrary Chrome, Firefox or
