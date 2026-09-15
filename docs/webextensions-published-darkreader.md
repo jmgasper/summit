@@ -53,3 +53,18 @@ All archive, extracted and installed package bytes, staged sources and frozen
 bundle hashes remain unchanged. Evidence:
 `.vm/modern-darkreader-82638d1eb796352e4f39d0bd/result.json`.
 This establishes the installation-crash fix, not a working Dark Reader runtime.
+
+A temporary diagnostic build, `bundle-mu6e9qwk`, forwards console messages from
+WebProcess when the runner's `--trace-console` option is used. Its run preserves
+all package/bundle inputs and exits normally with no debugger events, while
+retaining the failed page-theme assertion. Console output identifies unavailable
+`tabs.sendMessage` and `tabs.create`, rejection of the `discarded` tab-query field,
+and the missing `extension.isAllowedFileSchemeAccess` used while collecting popup
+data. The published package also calls `tabs.executeScript` for reinjection into
+existing tabs; that path requires verification after query support is added.
+
+Diagnostic evidence is
+`.vm/modern-darkreader-7199380f209f48a7f4fd5c32/result.json` and its `console.log`.
+The temporary WebChromeClient trace is tracked in
+`.vm/darkreader-console-baseline/manifest.json` and must be removed before a
+distribution is verified. These failures remain open compatibility requirements.

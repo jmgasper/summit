@@ -165,6 +165,11 @@ def native(args):
                   archive_entries_sha256=package_inputs, extension_bytes_modified=False)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     environment = dict(os.environ, WEBKIT_EXEC_PATH=str(bundle), LIBRARY_PATH=str(bundle / 'lib') + ':/boot/system/lib')
+    if args.trace_console:
+        environment['SUMMIT_TRACE_EXTENSION_CONSOLE'] = '1'
+    else:
+        environment.pop('SUMMIT_TRACE_EXTENSION_CONSOLE', None)
+    report['diagnostic_console_requested'] = args.trace_console
     for key in ('LD_PRELOAD', 'LD_PRELOAD_ADDONS', 'DISABLE_ASLR'):
         environment.pop(key, None)
     def members(group):
@@ -289,6 +294,8 @@ def host(args):
     command = ['python3.10', stage + '/tools/' + SCRIPT, '--native', '--bundle', args.bundle]
     if args.watch:
         command.append('--watch')
+    if args.trace_console:
+        command.append('--trace-console')
     if args.compile_only:
         command.append('--compile-only')
     else:
@@ -317,6 +324,7 @@ if __name__ == '__main__':
     parser.add_argument('--bundle', required=True)
     parser.add_argument('--compile-only', action='store_true')
     parser.add_argument('--watch', action='store_true')
+    parser.add_argument('--trace-console', action='store_true', help='Request console output from an instrumented diagnostic engine')
     parser.add_argument('--native', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
     raise SystemExit(native(args) if args.native else host(args))
