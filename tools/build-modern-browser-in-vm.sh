@@ -40,7 +40,7 @@ SUMMIT_REMOTE_STAGE=
 cleanup() {
     rm -rf -- "$SUMMIT_STAGE"
     rm -f -- "$SUMMIT_RESULT"
-    if [[ $SUMMIT_REMOTE_STAGE =~ ^/boot/home/summit/modern-preview-inputs\.[A-Za-z0-9]+$ ]]; then
+    if [[ $SUMMIT_REMOTE_STAGE =~ ^(/boot/home/summit|/SummitExtensions/summit)/modern-preview-inputs\.[A-Za-z0-9]+$ ]]; then
         bash tools/haiku.sh "rm -rf -- '$SUMMIT_REMOTE_STAGE'" || true
     fi
 }
@@ -92,14 +92,14 @@ if sys.argv[3] == 'modern-extensions':
     inputs['libzip'] = json.loads((root / 'engine/libzip.lock.json').read_text())
 (stage / 'inputs.json').write_text(json.dumps(inputs, indent=2) + '\n')
 PY
-SUMMIT_REMOTE_STAGE=$(bash tools/haiku.sh 'mkdir -p /boot/home/summit && mktemp -d /boot/home/summit/modern-preview-inputs.XXXXXXXX')
-if [[ ! $SUMMIT_REMOTE_STAGE =~ ^/boot/home/summit/modern-preview-inputs\.[A-Za-z0-9]+$ ]]; then
+SUMMIT_REMOTE_STAGE=$(bash tools/haiku.sh "mkdir -p '$SUMMIT_NATIVE_BUILD_ROOT' '$SUMMIT_NATIVE_BUILD_ROOT/tmp' && mktemp -d '$SUMMIT_NATIVE_BUILD_ROOT/modern-preview-inputs.XXXXXXXX'")
+if [[ ! $SUMMIT_REMOTE_STAGE =~ ^(/boot/home/summit|/SummitExtensions/summit)/modern-preview-inputs\.[A-Za-z0-9]+$ ]]; then
     echo 'The VM returned an unexpected staging path.' >&2
     exit 1
 fi
 tar -C "$SUMMIT_STAGE" -czf - . |
     bash tools/haiku.sh "tar -xzf - -C '$SUMMIT_REMOTE_STAGE'"
-bash tools/haiku.sh "python3.10 '$SUMMIT_REMOTE_STAGE/tools/build-modern-browser.py' '$SUMMIT_MODE' --build-root '$SUMMIT_NATIVE_BUILD_ROOT'" |
+bash tools/haiku.sh "env TMPDIR='$SUMMIT_NATIVE_BUILD_ROOT/tmp' python3.10 '$SUMMIT_REMOTE_STAGE/tools/build-modern-browser.py' '$SUMMIT_MODE' --build-root '$SUMMIT_NATIVE_BUILD_ROOT'" |
     tee "$SUMMIT_RESULT"
 if [[ $SUMMIT_MODE == --compile-only ]]; then
     mv -- "$SUMMIT_RESULT" ".vm/$SUMMIT_VARIANT-$SUMMIT_TARGET-compile.json"

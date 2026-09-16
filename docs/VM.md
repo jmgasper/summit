@@ -22,7 +22,7 @@ ssh -N -L 5905:127.0.0.1:5905 your-user@development-host
 
 Then connect the viewer to local port 5905. The current development session has
 a **Summit - live build progress** Terminal window following
-`/boot/home/summit/live-progress.log`; the host mirrors build output and milestone
+`/SummitExtensions/summit/live-progress.log`; the host mirrors build output and milestone
 updates into it. Compilation normally runs over SSH. GUI test windows appear
 on this same desktop when those tests run. Move the pointer or press Shift if
 the screen saver has blanked the display.
@@ -44,6 +44,24 @@ python3 tools/vm.py screenshot
 `run-vm.sh` refuses to restart when an existing QMP socket or live PID is
 present. A transient SSH or QMP timeout is not proof that QEMU has stopped.
 Inspect the existing process and handle before changing VM state.
+
+With the extension disk mounted, test harness compilers can also use its
+temporary directory. Create the directory first, then set `SUMMIT_NATIVE_TMPDIR`
+on the host command:
+
+```sh
+bash tools/haiku.sh 'test -d /SummitExtensions/WebKit && mkdir -p /SummitExtensions/summit/tmp'
+SUMMIT_NATIVE_TMPDIR=/SummitExtensions/summit/tmp \
+  python3 tools/test-modern-darkreader.py --bundle /SummitExtensions/summit/build-modern-browser/BUNDLE
+```
+
+`haiku.sh` forwards this value as the guest command's `TMPDIR`, including for
+commands launched by Python test runners. The directory must already exist;
+otherwise some native tools may fall back to the boot volume. This setting
+controls compiler temporary files; each test runner still chooses its own
+profile and result directories. The extension engine build uses its own
+`WebKitBuild/Modern/tmp`, and bundle staging and compiler temporaries follow
+`SUMMIT_NATIVE_BUILD_ROOT`.
 
 To recreate from scratch, install the official Haiku beta6 x86_64 release
 into a new disk, add development tools and a dedicated SSH key, then use the
