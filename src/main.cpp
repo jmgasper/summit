@@ -239,7 +239,25 @@ public:
                 || message->FindString("url", &url) != B_OK || !target.LockTarget()) return;
             BLooper* looper = nullptr;
             auto* window = dynamic_cast<summit::BrowserWindow*>(target.Target(&looper));
-            if (window) window->CreateTab(url, select);
+            if (window) {
+#if SUMMIT_MODERN_WEBKIT
+                std::string extensionIdentifier;
+                if (fExtensions) {
+                    for (const auto& entry : fExtensions->Entries()) {
+                        // Load receipts contain the canonical origin with its
+                        // trailing slash, so a hostname prefix cannot match.
+                        if (entry.loaded && !entry.baseURL.empty() && entry.baseURL.back() == '/'
+                            && std::string_view(url).starts_with(entry.baseURL)) {
+                            extensionIdentifier = entry.installation.identifier;
+                            break;
+                        }
+                    }
+                }
+                window->CreateTab(url, select, extensionIdentifier.c_str());
+#else
+                window->CreateTab(url, select);
+#endif
+            }
             if (looper) looper->Unlock();
             return;
         }

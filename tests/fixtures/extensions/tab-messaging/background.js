@@ -37,6 +37,36 @@ async function run() {
     check("real-frame-identifiers", a.frameId === 0 && b.frameId === 0 && ac.frameId > 0 && bc.frameId > 0 && ac.frameId !== bc.frameId);
     check("real-document-identifiers", [a,ac,b,bc].every(sender => uuid.test(sender.documentId)) && new Set([a,ac,b,bc].map(sender => sender.documentId)).size === 4);
     check("content-sender-identity", [a,ac,b,bc].every(sender => sender.id === browser.runtime.id));
+    const liveTabIDs = [a.tab.id, b.tab.id].sort((x, y) => x - y);
+    const sameTabs = (tabs, ids) => JSON.stringify(tabs.map(tab => tab.id).sort((x, y) => x - y)) === JSON.stringify(ids);
+    const ordinary = await browser.tabs.query({});
+    check("discarded-omitted-query", sameTabs(ordinary, liveTabIDs));
+    check("discarded-query-metadata", ordinary.every(tab => tab.discarded === false));
+    check("discarded-sender-metadata", [a, ac, b, bc].every(sender => sender.tab.discarded === false));
+    check("discarded-get-metadata", (await browser.tabs.get(a.tab.id)).discarded === false);
+    check("discarded-false-query", sameTabs(await browser.tabs.query({discarded: false}), liveTabIDs));
+    check("discarded-true-query", (await browser.tabs.query({discarded: true})).length === 0);
+    check("discarded-active-query", sameTabs(await browser.tabs.query({discarded: false, active: true}), [b.tab.id]));
+    check("discarded-inactive-query", sameTabs(await browser.tabs.query({discarded: false, active: false}), [a.tab.id]));
+    check("discarded-window-query", sameTabs(await browser.tabs.query({discarded: false, windowId: a.tab.windowId}), liveTabIDs));
+    check("discarded-combined-query", sameTabs(await browser.tabs.query({discarded: false, active: false, currentWindow: true,
+        url: "http://127.0.0.1" + new URL(a.url).pathname}), [a.tab.id]));
+    check("discarded-true-combined-query", (await browser.tabs.query({discarded: true, active: false, windowId: a.tab.windowId})).length === 0);
+    const callbackTabs = await new Promise((resolve, fail) => chrome.tabs.query({discarded: false}, tabs => {
+        const error = chrome.runtime.lastError;
+        error ? fail(new Error(error.message)) : resolve(tabs);
+    }));
+    check("discarded-chrome-callback", sameTabs(callbackTabs, liveTabIDs) && callbackTabs.every(tab => tab.discarded === false));
+    // Chromium and Firefox normalize null/undefined optional dictionary fields as omitted.
+    check("discarded-null-query", sameTabs(await browser.tabs.query({discarded: null}), liveTabIDs));
+    check("discarded-undefined-query", sameTabs(await browser.tabs.query({discarded: undefined}), liveTabIDs));
+    const nullCallbackTabs = await new Promise((resolve, fail) => chrome.tabs.query({discarded: null}, tabs => {
+        const error = chrome.runtime.lastError;
+        error ? fail(new Error(error.message)) : resolve(tabs);
+    }));
+    check("discarded-chrome-null-callback", sameTabs(nullCallbackTabs, liveTabIDs));
+    for (const [label, invalid] of [["zero", 0], ["one", 1], ["string", "false"], ["array", []], ["object", {}]])
+        await reject("discarded-invalid-" + label, () => browser.tabs.query({discarded: invalid}));
     const payload = {nested: [false, null, 0, "雪"], text: "message"};
     const send = (tab, tag, options, kind = "probe") => browser.tabs.sendMessage(tab, {kind, tag, payload}, options);
     let reply = await send(a.tab.id, "main", {frameId: 0});

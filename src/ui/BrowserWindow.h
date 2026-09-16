@@ -49,7 +49,7 @@ public:
     void MessageReceived(BMessage* message) override;
     bool QuitRequested() override;
 #if SUMMIT_MODERN_WEBKIT
-    void CreateTab(const std::string& url, bool select = true);
+    void CreateTab(const std::string& url, bool select = true, const char* extensionIdentifier = nullptr);
     void WindowActivated(bool active) override;
 #else
     void NavigationRequested(const BString& url, BWebView* view) override;

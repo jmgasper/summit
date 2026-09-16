@@ -384,7 +384,7 @@ std::string BrowserWindow::StoredURL(const BString& url) const
     return value;
 }
 #if SUMMIT_MODERN_WEBKIT
-void BrowserWindow::CreateTab(const std::string& input, bool select)
+void BrowserWindow::CreateTab(const std::string& input, bool select, const char* extensionIdentifier)
 #else
 void BrowserWindow::CreateTab(const std::string& input, bool select, BWebView* adopted)
 #endif
@@ -408,7 +408,25 @@ void BrowserWindow::CreateTab(const std::string& input, bool select, BWebView* a
     const auto address = ResolveAddress(input);
     if (!address.error.empty()) { ShowError(address.error); return; }
 #if SUMMIT_MODERN_WEBKIT
-    auto* webView = new BWebKitView(BRect(0, 0, 319, 199), "web-page", BMessenger(this), B_FOLLOW_ALL, fWebKitContext);
+    const bool extensionPage = address.url.starts_with("webkit-extension:");
+    if (extensionPage && !extensionIdentifier) {
+        // The application owns the live extension catalog. Resolve its current
+        // origin and create the privileged view on WebKit's application thread.
+        BMessage create(kCreateTabOnApp);
+        create.AddString("url", address.url.c_str());
+        create.AddBool("select", select);
+        create.AddMessenger("window", BMessenger(this));
+        be_app->PostMessage(&create);
+        return;
+    }
+    BWebKitView* webView = nullptr;
+    if (extensionPage) {
+        if (!*extensionIdentifier) { ShowError("This extension is not available."); return; }
+        status_t status;
+        webView = fWebKitContext->CreateExtensionView(BRect(0, 0, 319, 199), "web-page", extensionIdentifier, BMessenger(this), &status);
+        if (!webView) { ShowError("Could not open the extension page: " + std::string(std::strerror(status))); return; }
+    } else
+        webView = new BWebKitView(BRect(0, 0, 319, 199), "web-page", BMessenger(this), B_FOLLOW_ALL, fWebKitContext);
     if (webView->InitCheck() != B_OK) {
         const status_t status = webView->InitCheck();
         delete webView;

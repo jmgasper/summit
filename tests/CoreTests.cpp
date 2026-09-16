@@ -20,6 +20,10 @@ int main()
     CHECK(ResolveAddress("HTTPS://example.com/a").url == "https://example.com/a");
     CHECK(ResolveAddress("http://10.0.2.2:8765/").url == "http://10.0.2.2:8765/");
     CHECK(ResolveAddress("about:blank").url == "about:blank");
+    CHECK(ResolveAddress("webkit-extension://12345678-1234-4234-8234-123456789abc/view.html?kind=tab").url
+        == "webkit-extension://12345678-1234-4234-8234-123456789abc/view.html?kind=tab");
+    CHECK(ResolveAddress("WEBKIT-EXTENSION://12345678-1234-4234-8234-123456789abc/options.html").url
+        == "webkit-extension://12345678-1234-4234-8234-123456789abc/options.html");
     CHECK(ResolveAddress("/boot/home/test.html").url == "file:///boot/home/test.html");
     CHECK(ResolveAddress("/").url == "file:///");
     CHECK(ResolveAddress("/boot/home/a #?%/café.html").url == "file:///boot/home/a%20%23%3F%25/caf%C3%A9.html");

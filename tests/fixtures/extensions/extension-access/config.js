@@ -1,0 +1,1 @@
+const ACCESS_CONTROL = __CONTROL_JSON__;
