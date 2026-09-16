@@ -24,7 +24,7 @@ remains unfinished; see [startup evidence](docs/modern-extension-startup.md).
 ## Build and try
 
 The extension-enabled modern development bundle is
-`artifacts/modern-browser/bundle-zwmpgvis/`. Copy the whole directory to Haiku
+`artifacts/modern-browser/bundle-o7hhvrm9/`. Copy the whole directory to Haiku
 R1/beta6 x86_64 and run `./run-browser.sh`. It includes private helpers and
 libraries, frozen application inputs, the matching patched WebKit source
 archive, and copy provenance. It includes [Chrome manifest-key identity](docs/extension-identity.md)
@@ -110,7 +110,7 @@ HTTP, HTML-link and native quit-dialog tests; see [download behavior and limits]
 Navigation errors, unchanged-address retry and successful-only history pass
 90 native assertions; see [navigation behavior](docs/modern-navigation-errors.md).
 The verified development bundle is
-in `artifacts/modern-browser/bundle-zwmpgvis`;
+in `artifacts/modern-browser/bundle-o7hhvrm9`;
 [copy and rebuild instructions](docs/modern-bundle-copy.md) accompany it. [The verification record](docs/STATUS.md)
 records the exact bundles and remaining limitations.
 

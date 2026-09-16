@@ -102,3 +102,7 @@ Evidence is `.vm/modern-extension-tab-script-b64e8d1a5d86f20693f202da/result.jso
 and `.vm/modern-darkreader-438f2446a7514a57d7ea9f89/result.json`.
 The expanded fixture reproduces the thenable failure on the earlier bundle
 in `.vm/modern-extension-tab-script-51fa45dd4a6aed5ad09a2341/result.json`.
+
+The verified export is `artifacts/modern-browser/bundle-o7hhvrm9/`, including
+the matching engine source. [Copy provenance and artifact digests](modern-bundle-copy.md#thenable-script-results)
+record the 399-entry inventory check.

@@ -271,3 +271,20 @@ Complete WebKit source archive SHA-256:
 Six native suites pass 2,026 checks, including 113 unique script-injection
 cases and published Dark Reader theming of an already-open tab. See
 [scope and remaining compatibility work](webextensions-tab-script.md).
+
+## Thenable script results
+
+`artifacts/modern-browser/bundle-o7hhvrm9/` includes the thenable correction,
+copied at host commit `1d498a9` with engine patch
+`5922459b937953f3744459c266e3cc5baf5d0240e92ef0c5c171c48fd83db54b`.
+All 399 artifact entries match their inventory, including the 375 native
+entries. Source and build-support fingerprints remained unchanged during
+copying, and the native and host manifests match. Validation is
+`.vm/thenable-artifact-validation.json`.
+
+Copy provenance SHA-256:
+`cc5d72e814022f41e3ee2cc6a6636b97508b36b8a3065fbbe7235bebb5c5eba0`.
+Complete WebKit source archive SHA-256:
+`4b81f372de5996901d021cae7136092375036383d6b0520dc19b7f2ae8ac2b9c`.
+This bundle passes 129 unique injection cases / 585 native checks and 78
+published Dark Reader checks. See [the result contract and remaining work](webextensions-script-results.md).
