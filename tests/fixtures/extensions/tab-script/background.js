@@ -100,6 +100,22 @@ async function run() {
     check("resolved-promise", await one("Promise.resolve(42)") === 42);
     check("delayed-promise", await one('new Promise(resolve => setTimeout(() => resolve("later"), 25))') === "later");
     await reject("rejected-promise", () => execute('Promise.reject(new Error("script rejection"))'));
+    check("thenable-resolved", await one('({then(resolve) { resolve(42); }})') === 42);
+    check("thenable-delayed", await one('({then(resolve) { setTimeout(() => resolve("thenable later"), 25); }})') === "thenable later");
+    check("thenable-nested", await one('({then(resolve) { resolve({then(next) { next(Promise.resolve(42)); }}); }})') === 42);
+    check("thenable-receiver", await one('({answer:42, then(resolve) { resolve(this.answer); }})') === 42);
+    check("thenable-inherited", await one('Object.create({then(resolve) { resolve(42); }})') === 42);
+    check("thenable-getter-once", await one('var thenReads = 0; ({get then() { ++thenReads; return resolve => resolve(thenReads); }})') === 1);
+    check("thenable-first-settlement", await one('({then(resolve, reject) { resolve(42); reject(new Error("ignored")); resolve(99); throw new Error("ignored throw"); }})') === 42);
+    let thenableError;
+    try { await execute('({get then() { throw new Error("then getter failure"); }})'); } catch (error) { thenableError = error; }
+    check("thenable-getter-error", !!thenableError && thenableError.message.includes("then getter failure"));
+    await reject("thenable-rejected", () => execute('({then(resolve, reject) { reject(new Error("thenable rejection")); }})'));
+    await reject("thenable-method-throws", () => execute('({then() { throw new Error("thenable method failure"); }})'));
+    await reject("thenable-uncloneable-result", () => execute('({then(resolve) { resolve(() => 42); }})'));
+    check("thenable-noncallable", (await one('({then:42, answer:"plain object"})')).answer === "plain object");
+    check("promise-custom-then", await one('var customThenPromise = Promise.resolve(99); customThenPromise.then = resolve => resolve(42); customThenPromise') === 42);
+    check("thenable-intrinsic-resolution", await one('var savedPromise = globalThis.Promise; globalThis.Promise = function() { throw new Error("replaced constructor"); }; ({then(resolve) { globalThis.Promise = savedPromise; resolve(42); }})') === 42);
     await reject("synchronous-exception", () => execute('throw new Error("script exception")'));
     await reject("syntax-error", () => execute("let = ;"));
     result = await one('({nested:[false,null,0,"雪"], value:42})');
@@ -173,6 +189,12 @@ async function run() {
     await until(async () => (await (await fetch(CONTROL + "/state")).json()).observations.some(item => item.label === "a/main" && item.pending === "waiting"));
     check("pending-script-started", await one('document.documentElement.dataset.pending') === "waiting");
     check("pending-result-waits", !pendingSettled);
+    let pendingThenableSettled = false;
+    const pendingThenable = execute('({then() { document.documentElement.dataset.pendingThenable = "waiting"; }})').then(
+        value => { pendingThenableSettled = true; return {value}; },
+        error => { pendingThenableSettled = true; return {error}; });
+    await until(async () => await one('document.documentElement.dataset.pendingThenable') === "waiting");
+    check("pending-thenable-waits", !pendingThenableSettled);
     await post("initial", {frames});
     await stage("timing");
     const readiness = '({ready:document.readyState, parser:document.documentElement.dataset.parserReleased || ""})';
@@ -203,6 +225,8 @@ async function run() {
     await stage("navigated");
     const cancelled = await pending;
     check("pending-navigation-cancelled", !!cancelled.error && typeof cancelled.error.message === "string" && cancelled.error.message.length > 0);
+    const cancelledThenable = await pendingThenable;
+    check("pending-thenable-navigation-cancelled", !!cancelledThenable.error && typeof cancelledThenable.error.message === "string" && cancelledThenable.error.message.length > 0);
     await reject("stale-main-document", () => execute("true", {documentId: main.sender.documentId}));
     await reject("stale-child-document", () => execute("true", {documentId: child.sender.documentId}));
     await reject("stale-child-frame", () => execute("true", {frameId: child.sender.frameId}));

@@ -63614,10 +63614,10 @@ index 0000000000000000000000000000000000000000..ef414274ea6c550c9f912275911eb033
 +#endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/WebProcess/Extensions/WebExtensionTabScriptExecution.cpp b/Source/WebKit/WebProcess/Extensions/WebExtensionTabScriptExecution.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..23b22aa57020d104269248ba5df78236a68f98f8
+index 0000000000000000000000000000000000000000..e2cbbc8ab382dd89a61f81d3143f69cb18e205b0
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/Extensions/WebExtensionTabScriptExecution.cpp
-@@ -0,0 +1,238 @@
+@@ -0,0 +1,249 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#include "config.h"
 +#include "WebExtensionTabScriptExecution.h"
@@ -63772,7 +63772,7 @@ index 0000000000000000000000000000000000000000..23b22aa57020d104269248ba5df78236
 +        }
 +    }
 +
-+    void receiveValue(JSC::JSValue value)
++    void receiveValue(JSC::JSValue value, bool didAwait = false)
 +    {
 +        if (!m_resultCompletion)
 +            return;
@@ -63790,14 +63790,25 @@ index 0000000000000000000000000000000000000000..23b22aa57020d104269248ba5df78236
 +        auto* global = coreFrame->script().globalObject(m_world->coreWorld());
 +        auto& vm = global->vm();
 +        auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
-+        if (auto* promise = dynamicDowncast<JSC::JSPromise>(value)) {
++        if (!didAwait) {
++            // Async script results assimilate arbitrary thenables, including
++            // inherited then methods and native promises with an own then.
++            // Use an intrinsic fresh promise; extension code can replace the
++            // global Promise constructor or its resolve method.
++            auto* promise = JSC::JSPromise::create(vm, global->promiseStructure());
 +            m_promise = DOMPromise::create(*global, *promise);
++            promise->resolve(global, vm, value);
++            if (scope.exception()) {
++                scope.clearExceptionExceptTermination();
++                fail("unable to resolve the script result"_s);
++                return;
++            }
 +            auto registered = m_promise->whenSettledWithResult([weakThis = WeakPtr { *this }](JSDOMGlobalObject* global, bool fulfilled, JSC::JSValue result) {
 +                RefPtr pending = weakThis.get();
 +                if (!pending || !pending->m_resultCompletion)
 +                    return;
 +                if (fulfilled) {
-+                    pending->receiveValue(result);
++                    pending->receiveValue(result, true);
 +                    return;
 +                }
 +                auto scope = DECLARE_TOP_EXCEPTION_SCOPE(global->vm());

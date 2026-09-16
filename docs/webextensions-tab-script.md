@@ -10,7 +10,7 @@ grants, and checks access again after document readiness. The `tabs` metadata
 grant cannot authorize execution. File/private access remains separate. The
 web process revalidates the document path, authorized URL, live extension
 controller and isolated-world identity before evaluating ordinary script.
-Global declarations persist; last-statement values and resolved promises return
+Global declarations persist; last-statement values, resolved promises and thenables return
 through the existing structured-clone IPC transport.
 
 Main-frame execution is the default. Frame/document targets, all frames and
@@ -79,9 +79,26 @@ after readiness; it does not immediately cancel a never-ready document solely
 on revocation. Remote ancestor IDs may be unavailable in a local frame tree
 when site isolation is enabled.
 
-Both namespaces currently await returned promises. Exact historical Chrome MV2
+Both namespaces currently await returned promises and thenables. Exact historical Chrome MV2
 promise-result behavior remains compatibility work; its original execution
-path differs from Firefox's awaited result. See the [Chromium MV2 implementation](https://raw.githubusercontent.com/chromium/chromium/130.0.6723.58/extensions/browser/api/execute_code_function.cc).
+path differs from Firefox's awaited result. The [result compatibility investigation](webextensions-script-results.md)
+documents why package origin must be considered alongside namespace spelling.
 Structured-clone side data, other Dark Reader controls and restart persistence
 also remain unverified. The full browser and Safari/Chrome/Firefox extension
 compatibility requirements remain active.
+
+## Thenable follow-up verification
+
+The newer `bundle-o7hhvrm9` builds and links with engine patch
+`5922459b937953f3744459c266e3cc5baf5d0240e92ef0c5c171c48fd83db54b`.
+Its injection suite passes **129 unique JavaScript cases / 585 native checks**,
+including 16 additional thenable cases. Unmodified Dark Reader 4.9.131 passes
+its **78 native checks** on the same bundle. Both browsers exit normally,
+their process groups drain, all recorded inputs remain unchanged, and complete
+crash-log intervals contain no events. These two runs total 663 native checks;
+the six-suite table above records the earlier bundle's verification.
+
+Evidence is `.vm/modern-extension-tab-script-b64e8d1a5d86f20693f202da/result.json`
+and `.vm/modern-darkreader-438f2446a7514a57d7ea9f89/result.json`.
+The expanded fixture reproduces the thenable failure on the earlier bundle
+in `.vm/modern-extension-tab-script-51fa45dd4a6aed5ad09a2341/result.json`.

@@ -1,4 +1,4 @@
-# Development verification — September 15, 2026
+# Development verification — September 16, 2026
 
 The original full-browser objective is **not complete**. Summit now builds and
 runs with the pinned latest upstream WebKit in Haiku. Extensions and the modern
@@ -2320,3 +2320,18 @@ copy provenance from host revision `1364589`. Independent validation checks
 all 399 artifact entries, unchanged source/support fingerprints, and matching
 native/host manifests. Exact artifact digests are in
 [the copy record](modern-bundle-copy.md#native-extension-script-injection).
+
+## Thenable script results
+
+Bundle `o7hhvrm9`, patch
+`5922459b937953f3744459c266e3cc5baf5d0240e92ef0c5c171c48fd83db54b`,
+corrects Firefox-style injection results to assimilate arbitrary thenables.
+The new fixture first reproduced the old bundle's uncloneable-result failure.
+The full native build then passed 129 unique injection cases / 585 native
+checks and 78 unmodified Dark Reader checks. Both processes shut down normally,
+drained their groups and recorded clean crash intervals with unchanged inputs.
+
+The [result compatibility investigation](webextensions-script-results.md)
+also identifies package-origin handling needed for exact Chrome MV2 results;
+choosing behavior from `chrome` versus `browser` alone would be insufficient.
+The full browser and extension compatibility goal remains incomplete.
