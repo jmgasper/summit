@@ -43,12 +43,14 @@ def native(args):
     inputs = json.loads((ROOT / 'inputs.json').read_text())
     if not all(digest(ROOT / name) == value for name, value in inputs.items()): raise RuntimeError('Staged inputs changed')
     report = {'scope': __doc__, 'bundle': str(bundle), 'engine': manifest['inputs']['engine'], 'inputs': inputs,
-              'runs': [], 'passed': False, 'runtime_verified': False, 'extension_bytes_modified': False}
+              'runs': [], 'passed': False, 'runtime_verified': False, 'extension_bytes_modified': False,
+              'diagnostic_console_requested': args.trace_console}
     def save(): (ROOT / 'result.json').write_text(json.dumps(report, indent=2) + '\n')
     save()
     temporary = ROOT / 'tmp'; temporary.mkdir(mode=0o700)
     environment = dict(os.environ, TMPDIR=str(temporary), WEBKIT_EXEC_PATH=str(bundle), LIBRARY_PATH=str(bundle / 'lib') + ':/boot/system/lib')
     for key in ('LD_PRELOAD', 'LD_PRELOAD_ADDONS', 'DISABLE_ASLR', 'SUMMIT_TRACE_EXTENSION_CONSOLE'): environment.pop(key, None)
+    if args.trace_console: environment['SUMMIT_TRACE_EXTENSION_CONSOLE'] = '1'
     source = bundle / 'source'; executable = ROOT / 'ModernUBlockTests'
     command = ['c++', '-std=c++23', '-O2', '-Wall', '-Wextra', '-Wno-multichar', '-Wno-unused-function', '-fmax-errors=3',
         '-I' + str(source / 'src'), '-I' + str(source / 'vendor'), str(ROOT / 'tests/ModernUBlockTests.cpp'), '-lbe', '-o', str(executable)]
@@ -179,7 +181,7 @@ def native(args):
             report['retained_crx_unchanged'] = retained.is_file() and digest(retained) == package['sha256']
         report['screenshots'] = {path.name: digest(path) for path in control.glob('*.ppm')}
         report['passed'] = report['passed'] and report['bundle_unchanged'] and report['inputs_unchanged'] and report['retained_crx_unchanged'] and report['native_crash_log']['passed'] and not errors
-        report['runtime_verified'] = report['passed']; save()
+        report['runtime_verified'] = report['passed'] and not args.trace_console; save()
     return 0 if report['passed'] else 1
 
 
@@ -219,7 +221,8 @@ def host(args):
     command = ['python3.10', stage + '/tools/' + SCRIPT, '--native', '--bundle', args.bundle]
     if args.watch: command.append('--watch')
     if args.compile_only: command.append('--compile-only')
-    else: subprocess.run(['python3', str(ROOT / 'tools/vm.py'), 'key', 'shift'], check=True)
+    if args.trace_console: command.append('--trace-console')
+    if not args.compile_only: subprocess.run(['python3', str(ROOT / 'tools/vm.py'), 'key', 'shift'], check=True)
     with (output / 'native.log').open('w') as log: result = remote(shlex.join(command), stdout=log, stderr=subprocess.STDOUT)
     fetched = remote('cat ' + shlex.quote(stage + '/result.json'), capture_output=True, text=True, check=True)
     report = {'native': json.loads(fetched.stdout), 'source_sha256': original, 'sources_unchanged': all(digest(Path(name)) == value for name, value in original.items())}
@@ -238,6 +241,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--bundle', required=True)
     parser.add_argument('--compile-only', action='store_true')
+    parser.add_argument('--trace-console', action='store_true', help='Enable extension console diagnostics; does not establish a clean runtime pass')
     parser.add_argument('--watch', action='store_true')
     parser.add_argument('--native', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()

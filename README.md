@@ -20,7 +20,7 @@ without reloading and passes real popup On/Off tests. Broad Safari,
 Chrome and Firefox extension compatibility
 remains unfinished; see [startup evidence](docs/modern-extension-startup.md).
 The [published uBlock runtime baseline](docs/webextensions-published-ublock.md)
-installs successfully but fails background readiness; filtering remains unverified.
+installs successfully but stops on the missing privacy API; filtering remains unverified.
 
 ![Summit running current WebKit natively in Haiku](docs/screenshots/current-webkit.png)
 
