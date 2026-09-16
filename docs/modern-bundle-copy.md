@@ -253,3 +253,21 @@ the complete patched WebKit source archive SHA-256 is
 Validation is `.vm/extension-access-artifact-validation.json`. The five native
 suites pass 1,500 checks after the additional Dark Reader On/Off regression;
 see [extension access evidence and limits](webextensions-extension-access.md).
+
+## Native extension script injection
+
+`artifacts/modern-browser/bundle-zwmpgvis/` is the verified script-injection
+bundle, copied at host commit `1364589` with engine patch
+`0ebce0e871f549817c218e0e8a92a4f441408201d46d3aedd2f60e66a6ace206`.
+All 399 artifact entries and 375 native entries match their inventories.
+The native/host manifests match, and source/support fingerprints stayed
+unchanged during copying. `.vm/tab-script-artifact-validation.json` records
+independent artifact validation.
+
+Copy provenance SHA-256:
+`fcc40a10273a9cf02dd13184ccb989ce03074f55ea9d69bf0dc7733886a474c2`.
+Complete WebKit source archive SHA-256:
+`5d3b9e91c512b757c44d37c2b5dc55aa0adbf906e4c6fa798ddcec321dc096e2`.
+Six native suites pass 2,026 checks, including 113 unique script-injection
+cases and published Dark Reader theming of an already-open tab. See
+[scope and remaining compatibility work](webextensions-tab-script.md).

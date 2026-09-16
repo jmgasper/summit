@@ -37,6 +37,14 @@ All browsers exit normally, groups drain, crash intervals are clean, and
 source/package/bundle hashes match. Aggregate evidence is
 `.vm/tabs-execute-script-runtime-validation.json`.
 
+The distributable is `artifacts/modern-browser/bundle-zwmpgvis/`, copied with
+matching engine source at host revision `1364589`. Its 399 artifact entries
+match their inventory. Copy provenance SHA-256 is
+`fcc40a10273a9cf02dd13184ccb989ce03074f55ea9d69bf0dc7733886a474c2`;
+the complete WebKit source archive SHA-256 is
+`5d3b9e91c512b757c44d37c2b5dc55aa0adbf906e4c6fa798ddcec321dc096e2`.
+Validation is `.vm/tab-script-artifact-validation.json`.
+
 The injection suite has **113 unique JavaScript cases**, installed through the
 real picker and consent UI after the target documents load. Its four reports
 contain 95, 103, 110 and 113 cumulative cases. It verifies code/files, optional

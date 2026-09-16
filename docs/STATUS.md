@@ -2313,3 +2313,10 @@ groups, clean crash intervals and matching input hashes. Exact reports and
 remaining compatibility work are recorded in
 [native script injection](webextensions-tab-script.md). This milestone does
 not complete the original full-browser or extension compatibility goal.
+
+The script-injection bundle is exported to
+`artifacts/modern-browser/bundle-zwmpgvis/`, with matching engine source and
+copy provenance from host revision `1364589`. Independent validation checks
+all 399 artifact entries, unchanged source/support fingerprints, and matching
+native/host manifests. Exact artifact digests are in
+[the copy record](modern-bundle-copy.md#native-extension-script-injection).

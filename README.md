@@ -24,12 +24,13 @@ remains unfinished; see [startup evidence](docs/modern-extension-startup.md).
 ## Build and try
 
 The extension-enabled modern development bundle is
-`artifacts/modern-browser/bundle-lzht66nf/`. Copy the whole directory to Haiku
+`artifacts/modern-browser/bundle-zwmpgvis/`. Copy the whole directory to Haiku
 R1/beta6 x86_64 and run `./run-browser.sh`. It includes private helpers and
 libraries, frozen application inputs, the matching patched WebKit source
 archive, and copy provenance. It includes [Chrome manifest-key identity](docs/extension-identity.md)
 and [native extension toolbar actions, popups and keyboard overflow](docs/modern-extension-actions.md),
-plus [CSS/RGBA badge colors](docs/webextensions-native-badge-colors.md).
+plus [CSS/RGBA badge colors](docs/webextensions-native-badge-colors.md) and
+[script injection into existing tabs](docs/webextensions-tab-script.md).
 Its [installer and lifecycle verification](docs/modern-extension-manager.md)
 does not establish compatibility with arbitrary extensions.
 
@@ -91,8 +92,8 @@ can repeat the host copy without rebuilding when the engine inputs still match.
 The experimental multiprocess backend uses a separate engine build and profile:
 
 ```sh
-bash tools/build-webkit-in-vm.sh --modern all
-bash tools/build-modern-browser-in-vm.sh --browser --bundle
+bash tools/build-webkit-in-vm.sh --modern-extensions all
+bash tools/build-modern-browser-in-vm.sh --browser --bundle --modern-extensions
 ```
 
 The second command records the frozen native bundle path, including its
@@ -109,7 +110,7 @@ HTTP, HTML-link and native quit-dialog tests; see [download behavior and limits]
 Navigation errors, unchanged-address retry and successful-only history pass
 90 native assertions; see [navigation behavior](docs/modern-navigation-errors.md).
 The verified development bundle is
-in `artifacts/modern-browser/bundle-yqhmejfw`;
+in `artifacts/modern-browser/bundle-zwmpgvis`;
 [copy and rebuild instructions](docs/modern-bundle-copy.md) accompany it. [The verification record](docs/STATUS.md)
 records the exact bundles and remaining limitations.
 
