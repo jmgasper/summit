@@ -36,14 +36,24 @@ API exposure and borrowed-method restrictions still require runtime coverage.
 
 The full engine build passes. The September 16 native bundle `bundle-7v5zjcgj`
 passes all five suites: extension access (538 checks across four launches),
-published Dark Reader (66), lifecycle messaging (251), tab messaging (294,
+published Dark Reader (75), lifecycle messaging (251), tab messaging (294,
 including 77 JavaScript cases), and programmatic popups (342). Every owned
 browser group drains normally, the monitored crash intervals are clean, and
 the bundle, installed packages and test inputs remain unchanged. Evidence is
 recorded in `.vm/extension-access-runtime-validation.json`.
 
-Dark Reader's popup now renders its full controls; control interaction still
-needs testing. The access suite also exposed a native-tab integration gap:
+The matching host artifact is `artifacts/modern-browser/bundle-7v5zjcgj`, copied
+from source revision `b549420`. Its 399 inventory entries match their recorded
+hashes, including the full native WebKit source archive. Copy provenance SHA-256
+is `660bb53b43de9955734f5c36d735261aa549bb2cee3e49965bcab833ebe99ad6`;
+validation is in `.vm/extension-access-artifact-validation.json`.
+
+Dark Reader's popup now renders its full controls. Its automated suite sends
+native pointer events to Off and On without reloading: the page returns to its
+exact original light colors, then restores the dynamic dark theme. The report
+is `.vm/modern-darkreader-47b0a400cbcf643cb9fa13dd/result.json`; a preceding live
+QMP check is recorded in `.vm/darkreader-popup-toggle-live-verification.json`.
+Other controls remain unchecked. The access suite also exposed a native-tab integration gap:
 ordinary page configurations cannot load a privileged extension page. The
 browser now resolves new extension tabs against the live load receipts and
 uses `CreateExtensionView` on the application thread. The suite verifies the

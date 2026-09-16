@@ -17,8 +17,9 @@ colors, Dark Reader's dynamic-theme attributes and generated stylesheet classes.
 The intended checks cover native popup presentation, page recoloring, fresh-page
 behavior after disabling and reenabling through the native manager, and clean
 shutdown. The extension receives no test script or rewritten configuration.
-Screenshots preserve visible popup/page output. Popup control functionality and
-browser restart persistence require additional checks.
+Screenshots preserve visible popup/page output. The current harness also checks
+popup On/Off controls without reloading. Other controls and browser restart
+persistence require additional checks.
 
 The first runtime run against `bundle-omqykez8` **fails before consent**. The light
 control page reports correctly, but the browser exits with a segment violation
@@ -108,16 +109,41 @@ Evidence: `.vm/modern-darkreader-e390d12b986d7b5947791030/result.json` and its
 wait". This is a passing installation/page-theme/lifecycle probe, not a claim
 that the popup controls or all Dark Reader functionality work.
 
-A subsequent `discarded` query/metadata candidate is staged separately in
+A subsequent `discarded` query/metadata candidate was staged separately in
 `.vm/tabs-discarded-candidate`. Four affected native source files compile with
 unchanged configured inputs (`.vm/extension-lifecycle-inputs.f6SPmzoR/result.json`).
 The regenerated extension IPC serializers also compile in isolation, including
 the new field's encoders and decoders
 (`.vm/extension-lifecycle-inputs.T4tdD2Vj/result.json`).
-It is not yet promoted, linked or runtime-tested. The native browser currently
+At that stage it was not yet promoted, linked or runtime-tested. The native browser currently
 retains each open tab's page when another tab is selected, so the proposed
 metadata reports `discarded: false` and uses that state to filter queries.
 A native tab-discard operation and automatic reload on activation remain absent.
+
+The September 16 [extension access implementation](webextensions-extension-access.md)
+and discarded-tab query support are now linked into `bundle-7v5zjcgj`. The
+unmodified published package passes all 66 theme/lifecycle checks and its popup
+renders the On/Off, Dark/Light, brightness, contrast, sepia and grayscale controls.
+Evidence: `.vm/modern-darkreader-6d958be67bbe63df92945c85/result.json` and
+`popup.ppm`. The four companion native suites also pass on this bundle.
+
+A separate live pointer check on a cloned profile turns the popup Off and On.
+Without a reload, Off restores the exact original body, panel and text colors
+and removes the theme attributes/stylesheets. On restores the dark theme and
+nine stylesheets. `.vm/darkreader-popup-toggle-live-verification.json` records
+the pointer coordinates, sequential page observations and screenshots. This
+check uses the unchanged published package and controlled page. Other popup controls, restart persistence and
+reinjection into existing documents through `tabs.executeScript` still need
+verification or implementation.
+
+The same two controls now have automated native coverage. On the unchanged
+`bundle-7v5zjcgj`, the expanded suite passes 75 checks, including native pointer
+events to Off and On, the exact light colors, restored dark attributes/colors,
+and increasing observation sequences on the same document. The installed
+published package, fixture, harness inputs and bundle remain unchanged during
+the run; shutdown is normal and the monitored crash interval is clean. Evidence:
+`.vm/modern-darkreader-47b0a400cbcf643cb9fa13dd/result.json` and its
+`popup-off.ppm` and `popup-on.ppm` screenshots.
 
 The separate `.vm/extension-access-candidate` ports the existing `extension`
 interface to C++ bindings and adds native permission queries, extension-view

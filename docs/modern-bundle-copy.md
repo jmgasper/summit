@@ -235,3 +235,21 @@ validation is `.vm/action-open-popup-artifact-validation.json`.
 The bundle passes 342 programmatic popup checks on each of three fresh profiles,
 455 icon checks, 238 toolbar-action/popup checks, 29 identity checks, and 169
 overflow checks. See [popup behavior and runtime evidence](webextensions-native-open-popup.md).
+
+## Extension access and native extension tabs
+
+`artifacts/modern-browser/bundle-7v5zjcgj` contains the September 16 extension
+access and tab configuration changes, with copy support recording source
+revision `b549420` and engine patch
+`6bd3c0367b53d84b356f22fc9ca4fac930c9f1312810adf4bd7917377ad220e9`.
+All 399 artifact entries match their hashes, modes and link targets; the
+native inventory contains 375 entries. Native/host manifests and the source
+and build-support fingerprints match.
+
+Copy provenance SHA-256 is
+`660bb53b43de9955734f5c36d735261aa549bb2cee3e49965bcab833ebe99ad6`;
+the complete patched WebKit source archive SHA-256 is
+`24b5a76009f460b0806bd81908406da379b535a325002c8d2a5751ff7cb8b2be`.
+Validation is `.vm/extension-access-artifact-validation.json`. The five native
+suites pass 1,500 checks after the additional Dark Reader On/Off regression;
+see [extension access evidence and limits](webextensions-extension-access.md).

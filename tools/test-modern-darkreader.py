@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Install pinned unmodified Dark Reader and observe its real page theme and native popup.
 
-This does not establish popup control functionality, restart persistence, or broad
+This checks popup On/Off controls, but not other controls, restart persistence, or broad
 extension compatibility. The target page is instrumented; extension bytes are not.
 """
 import argparse

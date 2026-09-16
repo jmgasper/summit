@@ -89,6 +89,24 @@ int main(int argc, char** argv)
         Require(Wait([&] { auto popup = ActionPopup(app); return popup.IsValid() && !Property(popup, "Hidden").GetBool("result", true); }), "published popup has a visible native host");
         snooze(watch ? 5000000 : 1500000);
         SaveScreen(control / "popup.ppm");
+        auto popup = ActionPopup(app);
+        auto content = View(popup, "extension-popup-content");
+        const auto frame = Property(content, "Frame").GetRect("result", BRect());
+        Require(content.IsValid() && frame.IsValid() && frame.Width() >= 250 && frame.Height() >= 100,
+            "published popup exposes its native content view");
+        FocusWindow(popup);
+        // The pinned 4.9.131 popup places its On/Off control in the upper-right
+        // header. Send real native pointer events, then observe the page's CSS.
+        const auto beforeToggle = report("enabled").at("sequence").get<int>();
+        Click(content, BPoint(frame.Width() - 45, 64));
+        Require(Wait([&] { const auto value = report("enabled"); return light(value)
+            && value.at("sequence").get<int>() > beforeToggle; }), "published popup Off restores page colors without a reload");
+        SaveScreen(control / "popup-off.ppm");
+        const auto offSequence = report("enabled").at("sequence").get<int>();
+        Click(content, BPoint(frame.Width() - 95, 64));
+        Require(Wait([&] { const auto value = report("enabled"); return dark(value)
+            && value.at("sequence").get<int>() > offSequence; }), "published popup On restores the dynamic theme without a reload");
+        SaveScreen(control / "popup-on.ppm");
         Send(ActionPopup(app), B_QUIT_REQUESTED);
         Require(Wait([&] { return !ActionPopup(app).IsValid(); }), "published popup closes cleanly");
         const bool themed = Wait([&] { return dark(report("enabled")); }, 30000000);
