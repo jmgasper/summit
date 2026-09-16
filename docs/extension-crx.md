@@ -47,7 +47,10 @@ bundles and complete browser-specific API semantics remain unfinished.
 
 The verified engine patch is
 `d5887e4f3e31b5c580a90cd501a9917853bfffccd32fe5a239fe6a8da6bd809c`.
-The full engine and browser built with unchanged inputs as native bundle
+The exported bundle is `artifacts/modern-browser/bundle-d0h_6xzg/`;
+[copy provenance and source archive digests](modern-bundle-copy.md#verified-crx3-import)
+identify its 399 verified artifact entries. The full engine and browser built
+with unchanged inputs as native bundle
 `/SummitExtensions/summit/build-modern-browser/bundle-d0h_6xzg`.
 The frozen build report is `.vm/modern-browser-crx-import-bundle-result.json`
 (SHA-256 `09a7a136584e8e57178efd81988b24cd40ae71a123e01d89df87526d481b6310`).

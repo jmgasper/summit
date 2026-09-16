@@ -2360,3 +2360,10 @@ CRX2, store authentication, XPI signature verification, Safari package support,
 automatic updates, complete API compatibility profiles and the remaining full
 browser requirements are unfinished. This checkpoint does not complete the
 original objective.
+
+The verified distributable is `artifacts/modern-browser/bundle-d0h_6xzg/`,
+including all private libraries/helpers and the matching complete WebKit build
+source trees. All 399 artifact entries and 375 native entries pass independent
+inventory verification; [copy provenance](modern-bundle-copy.md#verified-crx3-import)
+records their digests. The new bundle's live Dark Reader preview is restored
+at VNC `127.0.0.1:5905`, with the progress terminal below it.

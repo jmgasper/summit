@@ -60,8 +60,8 @@ The original `build-manifest.json` and `host-bundle-report.json` are preserved.
 before/after fingerprints and a file inventory of the final payload excluding
 the provenance file itself. The final command output reports the provenance
 digest. These hashes establish the copied inputs; they do not establish browser
-runtime behavior. The latest extension-enabled copy is `bundle-omqykez8`,
-with [localization, injected stylesheet, popup and icon evidence](webextensions-localization.md).
+runtime behavior. The latest extension-enabled copy is `bundle-d0h_6xzg`,
+with [verified CRX3 import and published Dark Reader regression evidence](extension-crx.md).
 The earlier `bundle-p214ja9w` retains its
 [native action/popup evidence and provenance](modern-extension-actions.md).
 The earlier identity-enabled copy is `bundle-mo8zo6d4`,
@@ -288,3 +288,21 @@ Complete WebKit source archive SHA-256:
 `4b81f372de5996901d021cae7136092375036383d6b0520dc19b7f2ae8ac2b9c`.
 This bundle passes 129 unique injection cases / 585 native checks and 78
 published Dark Reader checks. See [the result contract and remaining work](webextensions-script-results.md).
+
+## Verified CRX3 import
+
+`artifacts/modern-browser/bundle-d0h_6xzg/` contains the CRX3 signature verifier,
+signer identity propagation, native consent and retained-package startup checks.
+It was copied at host commit `16c277222b6fc19b03f52c069934982ca8fbc6eb`, with
+engine patch `d5887e4f3e31b5c580a90cd501a9917853bfffccd32fe5a239fe6a8da6bd809c`.
+All 399 artifact entries and 375 native entries match their inventories. The
+source/support fingerprints remain unchanged and both manifests agree.
+Independent validation is `.vm/crx-artifact-validation.json`.
+
+Copy provenance SHA-256:
+`1e9f4a8b8c4237623d7fdf9c5b6b37cf1372432da68197667c88aa9f628b840b`.
+Complete WebKit source archive SHA-256:
+`927a2b2ef5ab569a7f474d12b2481cd6ad99a75badada723f3bab43e10df9142`.
+The new bundle passes 205 SDK/browser CRX checks and 78 published Dark Reader
+checks. The production verifier/extractor separately passes 620 native checks.
+See [the implementation, exact evidence and remaining compatibility work](extension-crx.md).
