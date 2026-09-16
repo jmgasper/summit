@@ -39,8 +39,10 @@ use a bundled browser-namespace polyfill. Neither the spelling of the API nor
 the presence of a callback reliably determines package origin.
 
 The current catalog stores identity, fingerprint, package path and access
-settings, but no compatibility origin. Archive preparation normalizes ZIP/XPI
-and directory inputs into snapshots. A complete solution needs explicit,
+settings, but no complete API compatibility profile. [CRX3 import](extension-crx.md)
+now preserves verified signer identity through snapshots and re-verifies the
+retained CRX on startup. ZIP/XPI and directory inputs still have no authenticated
+compatibility origin. A complete solution needs explicit,
 persistent compatibility metadata from import through engine context creation,
 with deterministic handling for generic ZIP files and unpacked extensions.
 The filename extension alone is insufficient evidence for all packages.

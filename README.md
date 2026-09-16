@@ -10,7 +10,8 @@ September 13 builds and runs in Summit. The modern extension-enabled browser
 now restores approved installed extensions, permissions and storage across
 process restarts. Its native SDK runs extension background pages and dedicated
 extension views. Its [native extension manager](docs/modern-extension-manager.md)
-reviews and installs ZIP/XPI packages or folders, and enables, disables and
+reviews and installs [signed CRX3](docs/extension-crx.md), ZIP/XPI packages or
+folders, and enables, disables and
 removes installations. Its [native toolbar actions](docs/modern-extension-actions.md)
 display live extension state, including [badge colors](docs/webextensions-native-badge-colors.md),
 and open real extension HTML popups. [Native script injection](docs/webextensions-tab-script.md)

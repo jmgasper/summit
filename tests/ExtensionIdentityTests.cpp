@@ -33,6 +33,14 @@ int main(int argc, char** argv)
     check(id({{"key", "-----BEGIN PUBLIC KEY-----\n" + publicKey.substr(0, 64) + "\r\n" + publicKey.substr(64) + "\n-----END PUBLIC KEY-----\n"}})
         == "melddjfinppjdikinhbgehiennejpfhp", "PEM wrapping preserves the public-key identity");
     check(id(json::object()) == "summit-pkg-abc123", "unkeyed package retains its installation identity");
+    const std::string signedID = "fkgkibajhfbepljeaefdnfnegdcjomkh";
+    check(summit::ExtensionIdentity(json::object(), "local", signedID) == signedID, "verified CRX without manifest key retains signer identity");
+    check(summit::ExtensionIdentity({{"key", publicKey}, {"browser_specific_settings", {{"gecko", {{"id", "other@example.test"}}}}}}, "local", signedID) == signedID,
+        "verified CRX signer takes precedence over mixed manifest identities");
+    for (const auto& invalid : { "short", "Fkgkibajhfbepljeaefdnfnegdcjomkh", "zkgkibajhfbepljeaefdnfnegdcjomkh" }) {
+        try { summit::ExtensionIdentity(json::object(), "local", invalid); check(false, "malformed signed ID is rejected"); }
+        catch (const std::exception&) { check(true, "malformed signed ID is rejected"); }
+    }
     check(id({{"applications", {{"gecko", {{"id", "legacy@example.test"}}}}}}) == "legacy@example.test", "legacy Gecko identity is retained");
     check(id({{"browser_specific_settings", {{"gecko", {{"id", "modern@example.test"}}}}}}) == "modern@example.test", "current Gecko identity is retained");
     check(id({{"key", publicKey}, {"applications", {{"gecko", {{"id", "legacy@example.test"}}}}},

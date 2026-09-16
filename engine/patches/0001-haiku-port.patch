@@ -24611,10 +24611,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..2268e1d023164eae278e59316655f413d5a632c2
+index 0000000000000000000000000000000000000000..cf976990473c00fa1a0bd951c2f923670cdc9003
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,248 @@
+@@ -0,0 +1,249 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -24663,6 +24663,7 @@ index 0000000000000000000000000000000000000000..2268e1d023164eae278e59316655f413
 +    UIProcess/API/haiku/APIContentRuleListStoreHaiku.cpp
 +    UIProcess/API/haiku/WebKitView.cpp
 +    UIProcess/Extensions/haiku/WebExtensionArchiveHaiku.cpp
++    UIProcess/Extensions/haiku/WebExtensionCRXHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionDeclarativeNetRequestURLFilter.cpp
 +    UIProcess/Extensions/haiku/WebExtensionDeclarativeNetRequestRulesHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionContextDeclarativeNetRequestHaiku.cpp
@@ -24794,7 +24795,7 @@ index 0000000000000000000000000000000000000000..2268e1d023164eae278e59316655f413
 +if (ENABLE_WK_WEB_EXTENSIONS)
 +    find_package(PkgConfig REQUIRED)
 +    pkg_check_modules(LIBZIP REQUIRED IMPORTED_TARGET libzip>=1.11)
-+    list(APPEND WebKit_LIBRARIES PkgConfig::LIBZIP)
++    list(APPEND WebKit_LIBRARIES PkgConfig::LIBZIP OpenSSL::Crypto)
 +endif ()
 +
 +list(APPEND WebKit_SERIALIZATION_IN_FILES
@@ -29773,10 +29774,10 @@ index 0000000000000000000000000000000000000000..ed6a95ab17620070ef1b64ed8ff45d61
 +}
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitContext.h b/Source/WebKit/UIProcess/API/haiku/WebKitContext.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..60c6bbecd864d10a6c538026c908a8c6fd9a9989
+index 0000000000000000000000000000000000000000..f3fe450aba38d963bd3003534d6bb8895ffe8a7a
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitContext.h
-@@ -0,0 +1,170 @@
+@@ -0,0 +1,173 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -29868,10 +29869,13 @@ index 0000000000000000000000000000000000000000..60c6bbecd864d10a6c538026c908a8c6
 +    // reply must be a live local messenger; identifier must be in [1, UINT64_MAX-1].
 +    // PREPARED contains identifier/error and, on success, token/name/version/
 +    // description/fingerprint strings, manifest_version (double), the complete
-+    // parsed/localized manifest_json, and repeated recognized permission/origin
++    // parsed/localized manifest_json, verified_crx_id (empty for other formats),
++    // and repeated recognized permission/origin
 +    // strings (including content-script origins). Inspect manifest_json for
 +    // requirements WebKit does not recognize. The token owns a package snapshot
-+    // in this context. Preparation grants no permissions and executes no code.
++    // in this context. CRX3 loads must use the verified signer ID. This verifies
++    // package integrity/identity, not Chrome Web Store provenance.
++    // Preparation grants no permissions and executes no code.
 +    // At most eight preparations/snapshots may be outstanding per context.
 +    status_t PrepareExtension(const char* path, const BMessenger& reply, uint64 identifier);
 +    void CancelExtensionPreparation(uint64 identifier);
@@ -33886,7 +33890,7 @@ index fac1522cfb35558dda22d0d441b493abf1669ee8..32779be9d73ac589cad0509bbabfcc56
                  const auto macPlatform = "mac"_s;
                  const auto iosPlatform = "ios"_s;
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtension.h b/Source/WebKit/UIProcess/Extensions/WebExtension.h
-index f14860d8e436a90cb7616ae96bb9f05d6517bc50..4573a4059a77ee38cc898c7221315a1d5f19dd50 100644
+index f14860d8e436a90cb7616ae96bb9f05d6517bc50..41244dad5860f0ff56ad4654b7bf41f4ca1eb3a0 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtension.h
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtension.h
 @@ -29,6 +29,7 @@
@@ -33933,18 +33937,19 @@ index f14860d8e436a90cb7616ae96bb9f05d6517bc50..4573a4059a77ee38cc898c7221315a1d
  
      static constexpr OptionSet<ModifierFlags> allModifierFlags()
      {
-@@ -238,6 +239,10 @@ public:
+@@ -238,6 +239,11 @@ public:
      NSData *bundleHash() const;
  #endif
  
 +#if PLATFORM(HAIKU)
 +    const String& nativeResourceFingerprint() const { return m_nativeResourceFingerprint; }
++    const String& nativeVerifiedCRXIdentifier() const { return m_nativeVerifiedCRXIdentifier; }
 +#endif
 +
  #if PLATFORM(MAC)
      bool validateResourceData(NSURL *, NSData *, NSError **);
  #endif
-@@ -409,6 +414,12 @@ private:
+@@ -409,6 +415,13 @@ private:
      mutable RetainPtr<SecStaticCodeRef> m_bundleStaticCode;
  #endif
  
@@ -33952,6 +33957,7 @@ index f14860d8e436a90cb7616ae96bb9f05d6517bc50..4573a4059a77ee38cc898c7221315a1d
 +    void initializeNativeResourceSnapshot();
 +    void initializeNativeResourceSnapshot(WebExtensionPackageSnapshotHaiku&&, RefPtr<API::Error>&);
 +    String m_nativeResourceFingerprint;
++    String m_nativeVerifiedCRXIdentifier;
 +#endif
 +
      URL m_resourceBaseURL;
@@ -38031,10 +38037,10 @@ index 0000000000000000000000000000000000000000..59c2a6b6ce1f09b3fdd4b32986a14cc3
 +#endif
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionArchiveHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionArchiveHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..b31351ac379724cd397ea8819a3baa081f26c2d1
+index 0000000000000000000000000000000000000000..876f84d93150ed60659835592c1d9058fec1283c
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionArchiveHaiku.cpp
-@@ -0,0 +1,292 @@
+@@ -0,0 +1,330 @@
 +/*
 + * Copyright (C) 2026 KunanyiOS contributors.
 + *
@@ -38065,6 +38071,7 @@ index 0000000000000000000000000000000000000000..b31351ac379724cd397ea8819a3baa08
 +#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 +
 +#include "WebExtensionResourcePathsHaiku.h"
++#include "WebExtensionCRXHaiku.h"
 +#include <zip.h>
 +#include <array>
 +#include <cerrno>
@@ -38083,13 +38090,13 @@ index 0000000000000000000000000000000000000000..b31351ac379724cd397ea8819a3baa08
 +
 +namespace WebKit {
 +
-+WebExtensionTemporaryDirectoryHaiku::WebExtensionTemporaryDirectoryHaiku(String&& path)
-+    : m_path(WTF::move(path))
++WebExtensionTemporaryDirectoryHaiku::WebExtensionTemporaryDirectoryHaiku(String&& path, String&& verifiedCRXIdentifier)
++    : m_path(WTF::move(path)), m_verifiedCRXIdentifier(WTF::move(verifiedCRXIdentifier))
 +{
 +}
 +
 +WebExtensionTemporaryDirectoryHaiku::WebExtensionTemporaryDirectoryHaiku(WebExtensionTemporaryDirectoryHaiku&& other)
-+    : m_path(other.release())
++    : m_path(other.release()), m_verifiedCRXIdentifier(std::exchange(other.m_verifiedCRXIdentifier, { }))
 +{
 +}
 +
@@ -38171,26 +38178,63 @@ index 0000000000000000000000000000000000000000..b31351ac379724cd397ea8819a3baa08
 +    auto inputBytes = archivePath.utf8();
 +    if (inputBytes.isNull())
 +        return std::unexpected(Error::InvalidArchive);
-+    FileDescriptor input(open(inputBytes.legacyCStringPointer(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW));
++    FileDescriptor input(open(inputBytes.legacyCStringPointer(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
 +    struct stat inputStatus { };
 +    if (!input || fstat(input.get(), &inputStatus) || !S_ISREG(inputStatus.st_mode) || inputStatus.st_size < 0)
 +        return std::unexpected(Error::InvalidArchive);
 +    if (static_cast<uint64_t>(inputStatus.st_size) > limits.archiveBytes)
 +        return std::unexpected(Error::ExpansionLimit);
 +
-+    // Accept ordinary ZIP/XPI containers, not self-extracting executables or
-+    // CRX wrappers which a general archive reader might otherwise scan past.
 +    std::array<unsigned char, 4> signature;
-+    if (pread(input.get(), signature.data(), signature.size(), 0) != static_cast<ssize_t>(signature.size())
-+        || signature[0] != 'P' || signature[1] != 'K'
-+        || !((signature[2] == 3 && signature[3] == 4) || (signature[2] == 5 && signature[3] == 6)))
++    if (pread(input.get(), signature.data(), signature.size(), 0) != static_cast<ssize_t>(signature.size()))
 +        return std::unexpected(Error::InvalidArchive);
-+
-+    int archiveError = 0;
-+    std::unique_ptr<zip_t, decltype(&zip_discard)> reader(zip_fdopen(input.get(), ZIP_RDONLY | ZIP_CHECKCONS, &archiveError), &zip_discard);
++    // Keep verified bytes alive for libzip. It sees only the authenticated ZIP
++    // payload, never CRX header bytes or a mutable source descriptor.
++    std::vector<uint8_t> crxBytes;
++    String verifiedCRXIdentifier;
++    std::unique_ptr<zip_t, decltype(&zip_discard)> reader(nullptr, &zip_discard);
++    if (signature == std::array<unsigned char, 4> { 'C', 'r', '2', '4' }) {
++        crxBytes.resize(static_cast<size_t>(inputStatus.st_size));
++        size_t offset = 0;
++        while (offset < crxBytes.size()) {
++            auto count = pread(input.get(), crxBytes.data() + offset, crxBytes.size() - offset, offset);
++            if (count < 0 && errno == EINTR) continue;
++            if (count <= 0) return std::unexpected(Error::InvalidArchive);
++            offset += static_cast<size_t>(count);
++        }
++        struct stat after { };
++        unsigned char extra;
++        if (fstat(input.get(), &after) || after.st_size != inputStatus.st_size
++            || after.st_mtime != inputStatus.st_mtime || after.st_ctime != inputStatus.st_ctime
++            || pread(input.get(), &extra, 1, inputStatus.st_size) != 0)
++            return std::unexpected(Error::InvalidArchive);
++        auto verified = verifyWebExtensionCRXHaiku(crxBytes);
++        if (!verified)
++            return std::unexpected(verified.error() == WebExtensionCRXErrorHaiku::LimitExceeded ? Error::ExpansionLimit : Error::InvalidArchive);
++        verifiedCRXIdentifier = String::fromUTF8(verified->identifier);
++        zip_error_t error;
++        zip_error_init(&error);
++        auto* source = zip_source_buffer_create(crxBytes.data() + verified->archiveOffset, crxBytes.size() - verified->archiveOffset, 0, &error);
++        if (source) {
++            // Published Chromium archives can declare ZIP 4.5 locally and 2.0
++            // centrally. libzip's extra consistency mode rejects that benign
++            // mismatch. Read the verified immutable payload normally; resource
++            // paths, types, sizes, encryption, CRC and cleanup remain checked.
++            reader.reset(zip_open_from_source(source, ZIP_RDONLY, &error));
++            if (!reader) zip_source_free(source);
++        }
++        zip_error_fini(&error);
++    } else {
++        // Ordinary ZIP/XPI containers cannot hide an executable/CRX prefix.
++        if (signature[0] != 'P' || signature[1] != 'K'
++            || !((signature[2] == 3 && signature[3] == 4) || (signature[2] == 5 && signature[3] == 6)))
++            return std::unexpected(Error::InvalidArchive);
++        int archiveError = 0;
++        reader.reset(zip_fdopen(input.get(), ZIP_RDONLY | ZIP_CHECKCONS, &archiveError));
++        if (reader) input.release(); // libzip owns the descriptor after success.
++    }
 +    if (!reader)
 +        return std::unexpected(Error::InvalidArchive);
-+    input.release(); // zip_fdopen owns the descriptor after success.
 +    auto entryCount = zip_get_num_entries(reader.get(), 0);
 +    if (entryCount < 0)
 +        return std::unexpected(Error::InvalidArchive);
@@ -38213,7 +38257,7 @@ index 0000000000000000000000000000000000000000..b31351ac379724cd397ea8819a3baa08
 +    directoryTemplate += "/WebKitExtension-XXXXXX";
 +    if (!mkdtemp(directoryTemplate.data()))
 +        return std::unexpected(Error::FileSystem);
-+    WebExtensionTemporaryDirectoryHaiku directory(String::fromUTF8(directoryTemplate.c_str()));
++    WebExtensionTemporaryDirectoryHaiku directory(String::fromUTF8(directoryTemplate.c_str()), WTF::move(verifiedCRXIdentifier));
 +    FileDescriptor root(open(directoryTemplate.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
 +    if (!root)
 +        return std::unexpected(Error::FileSystem);
@@ -38329,10 +38373,10 @@ index 0000000000000000000000000000000000000000..b31351ac379724cd397ea8819a3baa08
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionArchiveHaiku.h b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionArchiveHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..8116761679d10df7d8286d4c19d66865e6a9913b
+index 0000000000000000000000000000000000000000..1abaf938599f4601a4f1a53999fffe84f73fd039
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionArchiveHaiku.h
-@@ -0,0 +1,73 @@
+@@ -0,0 +1,75 @@
 +/*
 + * Copyright (C) 2026 KunanyiOS contributors.
 + *
@@ -38388,7 +38432,7 @@ index 0000000000000000000000000000000000000000..8116761679d10df7d8286d4c19d66865
 +// then uses its existing m_resourcesAreTemporary destructor ownership.
 +class WebExtensionTemporaryDirectoryHaiku {
 +public:
-+    explicit WebExtensionTemporaryDirectoryHaiku(String&&);
++    explicit WebExtensionTemporaryDirectoryHaiku(String&&, String&& verifiedCRXIdentifier = { });
 +    WebExtensionTemporaryDirectoryHaiku(WebExtensionTemporaryDirectoryHaiku&&);
 +    WebExtensionTemporaryDirectoryHaiku(const WebExtensionTemporaryDirectoryHaiku&) = delete;
 +    WebExtensionTemporaryDirectoryHaiku& operator=(const WebExtensionTemporaryDirectoryHaiku&) = delete;
@@ -38396,9 +38440,11 @@ index 0000000000000000000000000000000000000000..8116761679d10df7d8286d4c19d66865
 +
 +    const String& path() const { return m_path; }
 +    String release();
++    const String& verifiedCRXIdentifier() const { return m_verifiedCRXIdentifier; }
 +
 +private:
 +    String m_path;
++    String m_verifiedCRXIdentifier;
 +};
 +
 +std::expected<WebExtensionTemporaryDirectoryHaiku, WebExtensionArchiveErrorHaiku> extractWebExtensionArchiveHaiku(const String& archivePath, const WebExtensionArchiveLimitsHaiku& = { }, const String& temporaryParent = { });
@@ -38518,6 +38564,211 @@ index 0000000000000000000000000000000000000000..5747ef0450f630fa084fa505521db945
 +} // namespace WebKit
 +
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionCRXHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionCRXHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..0d733374896587861b36f57ae8aed2079dd6650e
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionCRXHaiku.cpp
+@@ -0,0 +1,174 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#include "WebExtensionCRXHaiku.h"
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++#include <algorithm>
++#include <array>
++#include <limits>
++#include <memory>
++#include <openssl/evp.h>
++#include <openssl/rsa.h>
++#include <openssl/x509.h>
++#include <vector>
++
++namespace WebKit {
++namespace {
++using Bytes = std::span<const uint8_t>;
++using Error = WebExtensionCRXErrorHaiku;
++constexpr size_t maximumHeaderBytes = 1024 * 1024;
++constexpr size_t maximumProofs = 64;
++constexpr size_t maximumKeyBytes = 16 * 1024;
++constexpr size_t maximumSignatureBytes = 16 * 1024;
++
++uint32_t littleEndian32(Bytes bytes)
++{
++    return uint32_t(bytes[0]) | uint32_t(bytes[1]) << 8 | uint32_t(bytes[2]) << 16 | uint32_t(bytes[3]) << 24;
++}
++struct Field { uint32_t number; unsigned wire; Bytes bytes; };
++// A bounded protobuf wire reader. Preserve signed_header_data byte-for-byte;
++// never reserialize it. Unknown fields, groups and repeated singular fields
++// retain protobuf behavior, with a depth limit for unknown nested groups.
++class Reader {
++public:
++    explicit Reader(Bytes input) : m_bytes(input) { }
++    bool done() const { return m_bytes.empty(); }
++    bool next(Field& field)
++    {
++        uint64_t tag;
++        if (!varint(tag) || tag > std::numeric_limits<uint32_t>::max() || !(tag >> 3))
++            return false;
++        field = { static_cast<uint32_t>(tag >> 3), static_cast<unsigned>(tag & 7), { } };
++        return consume(field, 0);
++    }
++private:
++    bool varint(uint64_t& value)
++    {
++        value = 0;
++        for (unsigned index = 0; index < 10; ++index) {
++            if (m_bytes.empty()) return false;
++            auto byte = m_bytes.front(); m_bytes = m_bytes.subspan(1);
++            if (index == 9 && byte > 1) return false;
++            value |= uint64_t(byte & 127) << (index * 7);
++            if (!(byte & 128)) return true;
++        }
++        return false;
++    }
++    bool consume(Field& field, unsigned depth)
++    {
++        uint64_t length = 0;
++        switch (field.wire) {
++        case 0: return varint(length);
++        case 1: length = 8; break;
++        case 2: if (!varint(length)) return false; break;
++        case 3: {
++            if (depth >= 64) return false;
++            while (!m_bytes.empty()) {
++                uint64_t tag;
++                if (!varint(tag) || tag > std::numeric_limits<uint32_t>::max() || !(tag >> 3)) return false;
++                Field child { static_cast<uint32_t>(tag >> 3), static_cast<unsigned>(tag & 7), { } };
++                if (child.wire == 4) return child.number == field.number;
++                if (!consume(child, depth + 1)) return false;
++            }
++            return false;
++        }
++        case 5: length = 4; break;
++        default: return false;
++        }
++        if (length > m_bytes.size()) return false;
++        field.bytes = m_bytes.first(static_cast<size_t>(length));
++        m_bytes = m_bytes.subspan(static_cast<size_t>(length));
++        return true;
++    }
++    Bytes m_bytes;
++};
++struct Proof { unsigned algorithm; Bytes key; Bytes signature; };
++std::expected<Proof, Error> parseProof(unsigned algorithm, Bytes bytes)
++{
++    Proof result { algorithm, { }, { } };
++    Reader reader(bytes);
++    while (!reader.done()) {
++        Field field;
++        if (!reader.next(field)) return std::unexpected(Error::InvalidHeader);
++        if (field.wire != 2) continue;
++        if (field.number == 1) result.key = field.bytes;
++        if (field.number == 2) result.signature = field.bytes;
++    }
++    if (result.key.empty() || result.signature.empty()) return std::unexpected(Error::InvalidHeader);
++    if (result.key.size() > maximumKeyBytes || result.signature.size() > maximumSignatureBytes) return std::unexpected(Error::LimitExceeded);
++    return result;
++}
++bool verify(const Proof& proof, Bytes signedHeader, Bytes archive)
++{
++    const auto* pointer = proof.key.data();
++    std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> key(d2i_PUBKEY(nullptr, &pointer, static_cast<long>(proof.key.size())), EVP_PKEY_free);
++    if (!key || pointer != proof.key.data() + proof.key.size()) return false;
++    if ((proof.algorithm == 2 && EVP_PKEY_base_id(key.get()) != EVP_PKEY_RSA)
++        || (proof.algorithm == 3 && EVP_PKEY_base_id(key.get()) != EVP_PKEY_EC)) return false;
++    std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> context(EVP_MD_CTX_new(), EVP_MD_CTX_free);
++    EVP_PKEY_CTX* keyContext = nullptr;
++    if (!context || EVP_DigestVerifyInit(context.get(), &keyContext, EVP_sha256(), nullptr, key.get()) != 1) return false;
++    // Chromium's implementation uses PKCS#1 v1.5, despite the old PSS comment
++    // in crx3.proto. Do not guess the algorithm from that comment.
++    if (proof.algorithm == 2 && EVP_PKEY_CTX_set_rsa_padding(keyContext, RSA_PKCS1_PADDING) != 1) return false;
++    static constexpr char prefix[] = "CRX3 SignedData"; // Include the terminating NUL.
++    auto size = static_cast<uint32_t>(signedHeader.size());
++    std::array<uint8_t, 4> length { uint8_t(size), uint8_t(size >> 8), uint8_t(size >> 16), uint8_t(size >> 24) };
++    return EVP_DigestVerifyUpdate(context.get(), prefix, sizeof(prefix)) == 1
++        && EVP_DigestVerifyUpdate(context.get(), length.data(), length.size()) == 1
++        && EVP_DigestVerifyUpdate(context.get(), signedHeader.data(), signedHeader.size()) == 1
++        && EVP_DigestVerifyUpdate(context.get(), archive.data(), archive.size()) == 1
++        && EVP_DigestVerifyFinal(context.get(), proof.signature.data(), proof.signature.size()) == 1;
++}
++}
++
++std::expected<WebExtensionVerifiedCRXHaiku, WebExtensionCRXErrorHaiku> verifyWebExtensionCRXHaiku(std::span<const uint8_t> bytes)
++{
++    if (bytes.size() < 12 || !std::equal(bytes.begin(), bytes.begin() + 4, "Cr24")) return std::unexpected(Error::InvalidHeader);
++    if (littleEndian32(bytes.subspan(4, 4)) != 3) return std::unexpected(Error::UnsupportedVersion);
++    size_t headerSize = littleEndian32(bytes.subspan(8, 4));
++    if (headerSize > maximumHeaderBytes) return std::unexpected(Error::LimitExceeded);
++    if (headerSize > bytes.size() - 12) return std::unexpected(Error::InvalidHeader);
++    auto header = bytes.subspan(12, headerSize);
++    auto archive = bytes.subspan(12 + headerSize);
++    if (archive.size() < 4 || archive[0] != 'P' || archive[1] != 'K'
++        || !((archive[2] == 3 && archive[3] == 4) || (archive[2] == 5 && archive[3] == 6))) return std::unexpected(Error::InvalidHeader);
++    Bytes signedHeader;
++    std::vector<Proof> proofs;
++    Reader reader(header);
++    while (!reader.done()) {
++        Field field;
++        if (!reader.next(field)) return std::unexpected(Error::InvalidHeader);
++        if (field.wire != 2) continue;
++        if (field.number == 10000) signedHeader = field.bytes;
++        if (field.number != 2 && field.number != 3) continue;
++        if (proofs.size() >= maximumProofs) return std::unexpected(Error::LimitExceeded);
++        auto proof = parseProof(field.number, field.bytes);
++        if (!proof) return std::unexpected(proof.error());
++        proofs.push_back(*proof);
++    }
++    Bytes identifier;
++    Reader signedReader(signedHeader);
++    while (!signedReader.done()) {
++        Field field;
++        if (!signedReader.next(field)) return std::unexpected(Error::InvalidHeader);
++        if (field.number == 1 && field.wire == 2) identifier = field.bytes;
++    }
++    if (identifier.size() != 16) return std::unexpected(Error::InvalidHeader);
++    bool developer = false;
++    for (const auto& proof : proofs) {
++        std::array<uint8_t, EVP_MAX_MD_SIZE> hash;
++        unsigned size = 0;
++        if (EVP_Digest(proof.key.data(), proof.key.size(), hash.data(), &size, EVP_sha256(), nullptr) != 1 || size != 32)
++            return std::unexpected(Error::InvalidSignature);
++        developer |= std::equal(identifier.begin(), identifier.end(), hash.begin());
++        if (!verify(proof, signedHeader, archive)) return std::unexpected(Error::InvalidSignature);
++    }
++    if (!developer) return std::unexpected(Error::MissingDeveloperProof);
++    std::string name;
++    for (auto byte : identifier) {
++        name += static_cast<char>('a' + (byte >> 4)); name += static_cast<char>('a' + (byte & 15));
++    }
++    return WebExtensionVerifiedCRXHaiku { 12 + headerSize, std::move(name) };
++}
++}
++#endif
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionCRXHaiku.h b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionCRXHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..2994f8c91cd6919deb0b7504f969800d1d8b1164
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionCRXHaiku.h
+@@ -0,0 +1,19 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#include <cstddef>
++#include <cstdint>
++#include <expected>
++#include <span>
++#include <string>
++
++namespace WebKit {
++enum class WebExtensionCRXErrorHaiku : uint8_t { InvalidHeader, UnsupportedVersion, LimitExceeded, InvalidSignature, MissingDeveloperProof };
++struct WebExtensionVerifiedCRXHaiku {
++    size_t archiveOffset;
++    std::string identifier;
++};
++// Verifies every CRX3 proof over the exact signed header and ZIP bytes, and
++// requires a developer key whose SHA-256 prefix matches the signed ID. This
++// authenticates package integrity/identity, not Chrome Web Store provenance.
++std::expected<WebExtensionVerifiedCRXHaiku, WebExtensionCRXErrorHaiku> verifyWebExtensionCRXHaiku(std::span<const uint8_t>);
++}
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionCommandHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionCommandHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..013ab7f75e75ed32931facd798bd3bcdddbc18ec
@@ -43219,10 +43470,10 @@ index 0000000000000000000000000000000000000000..271b3a38b4570d6f84669706d5c1beb8
 +#endif
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..63cdb3eff16063a5eb019cd9e96c717714b0c08e
+index 0000000000000000000000000000000000000000..274120f41b45ccdf1b69a75ed37e18e23e3de9ed
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionHaiku.cpp
-@@ -0,0 +1,325 @@
+@@ -0,0 +1,327 @@
 +/*
 + * Copyright (C) 2026 KunanyiOS contributors.
 + *
@@ -43438,11 +43689,13 @@ index 0000000000000000000000000000000000000000..63cdb3eff16063a5eb019cd9e96c7177
 +{
 +    m_resourceBaseURL = fileURLForWebExtensionPathHaiku(makeString(snapshot.path(), '/'));
 +    m_nativeResourceFingerprint = snapshot.fingerprint();
++    m_nativeVerifiedCRXIdentifier = snapshot.verifiedCRXIdentifier();
 +    if (!manifestParsedSuccessfully()) {
 +        ASSERT(!m_errors.isEmpty());
 +        outError = m_errors.last().ptr();
 +        m_resourceBaseURL = { };
 +        m_nativeResourceFingerprint = { };
++        m_nativeVerifiedCRXIdentifier = { };
 +        return;
 +    }
 +    snapshot.release();
@@ -44207,10 +44460,10 @@ index 0000000000000000000000000000000000000000..e5bc0db9179485a0737b400bba575be5
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionPackageSnapshotHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionPackageSnapshotHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..e589fc45b894f638d8ecd3e0cb9cb7f9d85465e3
+index 0000000000000000000000000000000000000000..0b901253a53d8958b274157e54f3de8a40501239
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionPackageSnapshotHaiku.cpp
-@@ -0,0 +1,358 @@
+@@ -0,0 +1,361 @@
 +/*
 + * Copyright (C) 2026 KunanyiOS contributors.
 + *
@@ -44257,10 +44510,10 @@ index 0000000000000000000000000000000000000000..e589fc45b894f638d8ecd3e0cb9cb7f9
 +
 +namespace WebKit {
 +
-+WebExtensionPackageSnapshotHaiku::WebExtensionPackageSnapshotHaiku(String&& path, String&& fingerprint)
-+    : m_path(WTF::move(path)), m_fingerprint(WTF::move(fingerprint)) { }
++WebExtensionPackageSnapshotHaiku::WebExtensionPackageSnapshotHaiku(String&& path, String&& fingerprint, String&& verifiedCRXIdentifier)
++    : m_path(WTF::move(path)), m_fingerprint(WTF::move(fingerprint)), m_verifiedCRXIdentifier(WTF::move(verifiedCRXIdentifier)) { }
 +WebExtensionPackageSnapshotHaiku::WebExtensionPackageSnapshotHaiku(WebExtensionPackageSnapshotHaiku&& other)
-+    : m_path(other.release()), m_fingerprint(WTF::move(other.m_fingerprint)) { }
++    : m_path(other.release()), m_fingerprint(WTF::move(other.m_fingerprint)), m_verifiedCRXIdentifier(WTF::move(other.m_verifiedCRXIdentifier)) { }
 +WebExtensionPackageSnapshotHaiku::~WebExtensionPackageSnapshotHaiku()
 +{
 +    if (!m_path.isEmpty())
@@ -44270,7 +44523,7 @@ index 0000000000000000000000000000000000000000..e589fc45b894f638d8ecd3e0cb9cb7f9
 +
 +WebExtensionPackageSnapshotHaiku WebExtensionPackageSnapshotHaiku::isolatedCopy() &&
 +{
-+    return { release().isolatedCopy(), std::exchange(m_fingerprint, { }).isolatedCopy() };
++    return { release().isolatedCopy(), std::exchange(m_fingerprint, { }).isolatedCopy(), std::exchange(m_verifiedCRXIdentifier, { }).isolatedCopy() };
 +}
 +
 +std::expected<WebExtensionPackageSnapshotHaiku, WebExtensionPackageErrorHaiku> prepareWebExtensionPackageHaiku(const String& path, const WebExtensionArchiveLimitsHaiku& limits, const String& temporaryParent)
@@ -44287,7 +44540,10 @@ index 0000000000000000000000000000000000000000..e589fc45b894f638d8ecd3e0cb9cb7f9
 +        extraction.emplace(WTF::move(*result));
 +        directory = extraction->path();
 +    }
-+    return snapshotWebExtensionPackageHaiku(directory, limits, temporaryParent);
++    auto snapshot = snapshotWebExtensionPackageHaiku(directory, limits, temporaryParent);
++    if (!snapshot || !extraction)
++        return snapshot;
++    return WebExtensionPackageSnapshotHaiku(snapshot->release(), String(snapshot->fingerprint()), String(extraction->verifiedCRXIdentifier()));
 +}
 +
 +namespace {
@@ -44571,10 +44827,10 @@ index 0000000000000000000000000000000000000000..e589fc45b894f638d8ecd3e0cb9cb7f9
 +#endif // PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionPackageSnapshotHaiku.h b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionPackageSnapshotHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..93cf2ece28ff7728aa1ea5de48ae20035c3109af
+index 0000000000000000000000000000000000000000..f506226d72904060b084b7289e3c40cb11b589d2
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionPackageSnapshotHaiku.h
-@@ -0,0 +1,70 @@
+@@ -0,0 +1,73 @@
 +/*
 + * Copyright (C) 2026 KunanyiOS contributors.
 + *
@@ -44613,19 +44869,21 @@ index 0000000000000000000000000000000000000000..93cf2ece28ff7728aa1ea5de48ae2003
 +
 +class WebExtensionPackageSnapshotHaiku {
 +public:
-+    WebExtensionPackageSnapshotHaiku(String&& path, String&& fingerprint);
++    WebExtensionPackageSnapshotHaiku(String&& path, String&& fingerprint, String&& verifiedCRXIdentifier = { });
 +    WebExtensionPackageSnapshotHaiku(WebExtensionPackageSnapshotHaiku&&);
 +    WebExtensionPackageSnapshotHaiku(const WebExtensionPackageSnapshotHaiku&) = delete;
 +    ~WebExtensionPackageSnapshotHaiku();
 +    const String& path() const { return m_path; }
 +    const String& fingerprint() const { return m_fingerprint; }
 +    String release();
++    const String& verifiedCRXIdentifier() const { return m_verifiedCRXIdentifier; }
 +    // Transfer directory ownership and isolate string storage before dispatching
 +    // this value to another thread. The original no longer owns any resources.
 +    WebExtensionPackageSnapshotHaiku isolatedCopy() &&;
 +private:
 +    String m_path;
 +    String m_fingerprint;
++    String m_verifiedCRXIdentifier;
 +};
 +
 +// Copy and hash the exact resources which will be loaded. Contained symbolic
@@ -44634,6 +44892,7 @@ index 0000000000000000000000000000000000000000..93cf2ece28ff7728aa1ea5de48ae2003
 +
 +// Filesystem-only preparation; safe on a worker queue. ZIP/XPI archives are
 +// extracted and directories are copied into the same owned snapshot format.
++// CRX3 signer identity survives extraction, snapshotting and worker dispatch.
 +std::expected<WebExtensionPackageSnapshotHaiku, WebExtensionPackageErrorHaiku> prepareWebExtensionPackageHaiku(const String& path, const WebExtensionArchiveLimitsHaiku& = { }, const String& temporaryParent = { });
 +
 +struct WebExtensionMemoryResourceHaiku {
@@ -47114,10 +47373,10 @@ index 0000000000000000000000000000000000000000..0bee5b6e8a1234d768064bc9f9802ecd
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/ExtensionPackageRegistryHaiku.cpp b/Source/WebKit/UIProcess/haiku/ExtensionPackageRegistryHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..929a4524b853f7219b06e726a8224177df39be9b
+index 0000000000000000000000000000000000000000..ebbc6370e3a3f5bde016823634d3dd0adc1b39bd
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/ExtensionPackageRegistryHaiku.cpp
-@@ -0,0 +1,510 @@
+@@ -0,0 +1,515 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#include "config.h"
 +#include "ExtensionPackageRegistryHaiku.h"
@@ -47243,6 +47502,7 @@ index 0000000000000000000000000000000000000000..929a4524b853f7219b06e726a8224177
 +    add("version", extension->version());
 +    add("description", extension->displayDescription());
 +    add("fingerprint", extension->nativeResourceFingerprint());
++    add("verified_crx_id", extension->nativeVerifiedCRXIdentifier());
 +    // Keep the complete parsed manifest available to the installer. WebKit's
 +    // permission sets omit names it does not recognize; that omission must not
 +    // hide a package requirement from the host's compatibility/consent UI.
@@ -47352,6 +47612,10 @@ index 0000000000000000000000000000000000000000..929a4524b853f7219b06e726a8224177
 +    }
 +    Ref extension = found->value.copyRef();
 +    if (String::fromUTF8(options.expectedFingerprint) != extension->nativeResourceFingerprint()) {
++        respond(B_NOT_ALLOWED);
++        return;
++    }
++    if (!extension->nativeVerifiedCRXIdentifier().isEmpty() && extension->nativeVerifiedCRXIdentifier() != uniqueIdentifier) {
 +        respond(B_NOT_ALLOWED);
 +        return;
 +    }

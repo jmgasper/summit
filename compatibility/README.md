@@ -1,13 +1,15 @@
 # Published extension compatibility corpus
 
 These are unmodified official release packages selected for native Summit
-compatibility testing. Download and archive inspection are complete. **None has
-passed a native Summit runtime test.** They complement the focused API fixtures;
+compatibility testing. Download and archive inspection are complete. The
+Chromium MV2 Dark Reader package passes native installation, theming and popup
+On/Off tests. The other packages still need native runtime verification.
+They complement the focused API fixtures;
 successful fixtures do not establish compatibility with these extensions.
-The [first Dark Reader native run](../docs/webextensions-published-darkreader.md)
-reproduces a package-copying stack overflow before installation consent. The fix
-allows installation, but its popup remains loading and page recoloring still
-fails; the package has not passed compatibility testing.
+The [Dark Reader runtime record](../docs/webextensions-published-darkreader.md)
+documents the original failures and subsequent fixes. Its latest 78 native
+checks also prove theming an already-open tab without reloading; see the
+[current script-injection verification](../docs/webextensions-tab-script.md#thenable-follow-up-verification).
 
 | Project | Pinned release | Package | Manifest |
 | --- | --- | --- | --- |
@@ -20,8 +22,11 @@ fails; the package has not passed compatibility testing.
 
 Exact release URLs, byte lengths and SHA-256 digests are in
 [`extensions.lock.json`](extensions.lock.json). Each digest matches the publisher's
-GitHub release-asset metadata. This checks downloaded bytes; it does not verify
-an embedded CRX or Mozilla signature.
+GitHub release-asset metadata. The corpus downloader checks those bytes without
+verifying embedded signatures. The separate [CRX3 importer tests](../docs/extension-crx.md)
+verify the published uBlock CRX signature, extract all 779 resources and prepare
+it through the public SDK. uBlock execution/filtering and Mozilla signature
+verification remain unverified.
 
 ```sh
 python3 tools/fetch-extension-corpus.py

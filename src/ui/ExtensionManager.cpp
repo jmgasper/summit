@@ -161,7 +161,7 @@ void ExtensionManager::Render()
         fDetails->SetText(body.c_str());
     } else {
         fHeading->SetText("No extensions installed");
-        fDetails->SetText("Add a ZIP/XPI package or an unpacked extension folder. You can review its requested access before installing it.");
+        fDetails->SetText("Add a CRX3, ZIP or XPI package, or an unpacked extension folder. You can review its requested access before installing it.");
     }
     fStatus->SetText(ExtensionDisplayText(fStatusText).c_str());
     fStatus->SetToolTip(fStatusText.c_str());

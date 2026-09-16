@@ -238,7 +238,8 @@ void ExtensionInstaller::MessageReceived(BMessage* message)
             || draft.entry.version.empty() || draft.entry.version.size() > 4096 || draft.entry.fingerprint.size() != 64
             || manifestText.empty() || manifestText.size() > 1024 * 1024) throw std::runtime_error("Incomplete or oversized extension metadata.");
         auto manifest = nlohmann::json::parse(manifestText);
-        draft.entry.identifier = ExtensionIdentity(manifest, draft.entry.identifier);
+        const auto verifiedCRXIdentity = field(*message, "verified_crx_id");
+        draft.entry.identifier = ExtensionIdentity(manifest, draft.entry.identifier, verifiedCRXIdentity);
         std::vector<InstalledExtension> entries;
         std::string error;
         if (!fCatalog.Load(entries, error)) throw std::runtime_error(error);
@@ -262,9 +263,11 @@ void ExtensionInstaller::MessageReceived(BMessage* message)
         collect("optional_host_permissions", optional);
         requested.insert(draft.permissions.begin(), draft.permissions.end());
         requested.insert(draft.origins.begin(), draft.origins.end());
-        draft.body = ExtensionDisplayText(draft.entry.name) + "\nVersion " + ExtensionDisplayText(draft.entry.version)
-            + "\n\nThis package has not been signature-verified. Install only packages you trust."
-              "\nCompatibility with this extension has not been verified.\n\nRequested access:\n";
+        draft.body = ExtensionDisplayText(draft.entry.name) + "\nVersion " + ExtensionDisplayText(draft.entry.version);
+        draft.body += verifiedCRXIdentity.empty()
+            ? "\n\nThis package has not been signature-verified. Install only packages you trust."
+            : "\n\nPackage signature verified. Chrome Web Store provenance has not been verified.";
+        draft.body += "\nCompatibility with this extension has not been verified.\n\nRequested access:\n";
         if (requested.empty()) draft.body += "  No additional permissions requested.\n";
         for (const auto& value : requested) draft.body += "  • " + ExtensionDisplayText(value) + "\n";
         if (!draft.origins.empty()) draft.body += "\nWebsite permissions allow access to data on the listed sites.\n";

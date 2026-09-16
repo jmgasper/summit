@@ -2335,3 +2335,28 @@ The [result compatibility investigation](webextensions-script-results.md)
 also identifies package-origin handling needed for exact Chrome MV2 results;
 choosing behavior from `chrome` versus `browser` alone would be insufficient.
 The full browser and extension compatibility goal remains incomplete.
+
+## Verified CRX3 import (September 16, 2026)
+
+The modern engine now verifies CRX3 RSA/ECDSA signatures, preserves the signer
+ID through worker preparation and immutable resource snapshots, and refuses
+activation under a different ID. The native installer displays signature and
+store-provenance status, requests consent, retains the exact CRX bytes, and
+re-verifies them on startup. Changed signed resources require new approval.
+
+The engine/browser build passes for `bundle-d0h_6xzg` with unchanged inputs
+and patch `d5887e4f3e31b5c580a90cd501a9917853bfffccd32fe5a239fe6a8da6bd809c`.
+Production signature/extraction tests pass 620 native checks. The new public
+SDK and real browser picker/consent/restart tests pass 205 checks; unmodified
+Chromium MV2 Dark Reader passes another 78 on this bundle. All integration
+process groups drain normally, no native debugger event occurs, and fixture,
+bundle, catalog and retained-package checks pass. The three host CTest suites
+pass. [CRX3 behavior, evidence and reproduction](extension-crx.md) records the
+exact reports, digests and source references.
+
+Published uBlock Origin 1.74.0 CRX signature, all 779 resources and public SDK
+preparation are verified; uBlock execution/filtering is still unverified.
+CRX2, store authentication, XPI signature verification, Safari package support,
+automatic updates, complete API compatibility profiles and the remaining full
+browser requirements are unfinished. This checkpoint does not complete the
+original objective.

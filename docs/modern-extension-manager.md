@@ -1,15 +1,15 @@
 # Native extension installation and management
 
 In the modern extension-enabled browser, **Window → Extensions…** opens the
-native manager. **Add extension…** opens Haiku's file picker for a ZIP/XPI
+native manager. **Add extension…** opens Haiku's file picker for a CRX3/ZIP/XPI
 archive or unpacked extension folder. Package staging runs on a worker, then
 the public WebKit SDK validates and prepares an immutable snapshot.
 
 Before code executes, the manager displays the localized name/version and
 requested API and website permissions. It includes unknown manifest permission
 names and separately lists optional permissions, which installation does not
-grant. The review explains that signatures and compatibility have not been
-verified. File access defaults to off; private browsing access is not offered
+grant. The review distinguishes verified CRX3 signatures from unverified ZIP/XPI/folder
+packages, and explains that store provenance and compatibility are unverified. File access defaults to off; private browsing access is not offered
 and remains off. Approval applies only to the current preparation generation,
 token and resource fingerprint.
 
@@ -29,13 +29,14 @@ explicitly says package files and saved data remain in the profile. Shutdown
 waits for installer work and manager/file-picker window destruction before
 releasing the shared WebKit context.
 
-Declared `browser_specific_settings.gecko.id` or `applications.gecko.id` is
-used as the stable identity. Otherwise a Chrome manifest `key` now derives
+For [verified CRX3 packages](extension-crx.md), the signer supplies the stable
+identity. For other packages, declared `browser_specific_settings.gecko.id` or
+`applications.gecko.id` is used as the stable identity. Otherwise a Chrome manifest `key` now derives
 the matching Chromium ID from its decoded bytes. Packages without either
 receive a local identity that remains in their installation record. Duplicate
 declared identities are rejected before activation. See
 [identity behavior and tests](extension-identity.md), including mixed-manifest
-precedence. CRX and Safari bundle import, signatures/store authentication,
+precedence. Safari bundle import, XPI signatures/store authentication,
 updates, data erasure, remaining action APIs,
 private browsing controls and broad extension API compatibility remain
 unfinished. A lost SDK reply has no operation deadline yet; cancellation after

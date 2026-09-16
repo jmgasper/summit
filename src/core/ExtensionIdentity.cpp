@@ -70,9 +70,14 @@ bool validIdentity(std::string_view value)
         });
 }
 }
-std::string ExtensionIdentity(const nlohmann::json& manifest, std::string_view localIdentity)
+std::string ExtensionIdentity(const nlohmann::json& manifest, std::string_view localIdentity, std::string_view verifiedCRXIdentity)
 {
     if (!manifest.is_object()) throw std::runtime_error("Invalid extension manifest.");
+    if (!verifiedCRXIdentity.empty()) {
+        if (verifiedCRXIdentity.size() != 32 || !std::all_of(verifiedCRXIdentity.begin(), verifiedCRXIdentity.end(), [](char c) { return c >= 'a' && c <= 'p'; }))
+            throw std::runtime_error("The engine returned an invalid signed Chrome identity.");
+        return std::string(verifiedCRXIdentity);
+    }
     const nlohmann::json* geckoIdentity = nullptr;
     for (const char* key : { "applications", "browser_specific_settings" }) {
         auto settings = manifest.find(key);

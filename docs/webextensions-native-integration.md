@@ -250,11 +250,12 @@ corruption/encryption, expansion bounds and temporary-directory cleanup.
 Those tests do not instantiate WebExtension or run its manifest parser.
 
 The native loader does not call the upstream CRX-prefix conversion or the
-non-Cocoa `FileSystem::extractTemporaryZipArchive` stub. CRX/self-extracting
-prefixes and non-ZIP formats are rejected. Archive extraction is distinct
-from a complete installation/update flow: package identity and signature
-verification, trust decisions, permissions, durable installation, rollback
-and update migration remain to be implemented and tested.
+non-Cocoa `FileSystem::extractTemporaryZipArchive` stub. The later
+[CRX3 importer](extension-crx.md) verifies signatures before passing only the
+authenticated ZIP slice to this extractor. Generic self-extracting prefixes
+and other formats remain unsupported. The subsequent native manager adds
+consent, durable installation and approved startup; automatic updates, store
+publisher authentication and broader extension compatibility remain unfinished.
 
 Native resource containment now uses explicit canonicalization failure,
 separator-aware ancestry and correctly escaped file URLs. Its **27 native

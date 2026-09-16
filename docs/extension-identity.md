@@ -1,7 +1,8 @@
 # Extension identity
 
-The installer resolves identity from the prepared manifest before consent and
-activation. An existing `browser_specific_settings.gecko.id` takes precedence
+For [verified CRX3 packages](extension-crx.md), the signer determines identity
+before consent and activation, overriding manifest declarations. For other
+packages, the installer resolves identity from the prepared manifest. An existing `browser_specific_settings.gecko.id` takes precedence
 over `applications.gecko.id`. A declared Gecko ID takes precedence over a Chrome
 key, preserving Summit's existing behavior for mixed manifests. Otherwise the
 manifest `key` determines the Chrome ID. Packages with neither declaration
@@ -19,16 +20,21 @@ OpenSSL's crypto library supplies decoding and SHA-256, and is linked explicitly
 by the portable, Makefile and frozen native browser builds.
 
 An ID derived from a public key does not authenticate a package or publisher.
-CRX signature verification and authenticated store updates remain unfinished.
-Mixed manifests with both Gecko and Chrome identities still need an explicit
-format choice or import provenance to select Chrome semantics. Existing
+CRX3 signature verification is now implemented and tested separately; authenticated
+store updates remain unfinished. Mixed unsigned manifests with both Gecko and
+Chrome identities still need an explicit format choice or import provenance to
+select Chrome semantics. Verified CRX identity does not yet select all Chrome API
+result conventions. Existing
 installations keep their recorded IDs; this change does not migrate previously
 installed unkeyed/local identities. Extension resource URLs still use WebKit's
 separate base URL, so this does not add `chrome-extension://` URL aliases.
 
 ## Verification
 
-`ExtensionIdentityTests.cpp` passes **29 checks** on Linux and native Haiku.
+The original `ExtensionIdentityTests.cpp` suite passes **29 checks** on Linux and
+native Haiku. The CRX follow-up extends the host suite to **34 checks**; its
+separate native SDK/browser run verifies signer identity through installation
+and execution.
 The known public-key ID and two byte-string IDs come from
 [Chromium's independent test vectors](https://github.com/chromium/chromium/blob/main/components/crx_file/id_util_unittest.cc).
 Tests also cover PEM wrapping, local/Gecko fallback and precedence, malformed

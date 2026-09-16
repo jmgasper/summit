@@ -1,0 +1,117 @@
+# Signed CRX3 extension import
+
+Summit's modern extension-enabled browser imports CRX3 packages through
+**Window → Extensions… → Add extension…**. Before presenting consent, the engine
+verifies the package signature, extracts its authenticated ZIP payload, and
+prepares an immutable resource snapshot. A verified signature does not establish
+Chrome Web Store provenance or extension compatibility. Requested access still
+requires the user's approval.
+
+The verified developer public key determines the 32-letter Chrome extension ID.
+This identity takes precedence over a manifest key or Gecko ID inside that CRX.
+The public SDK returns it as `verified_crx_id` in the preparation receipt and
+rejects activation under any other identity. ZIP/XPI packages and folders return
+an empty value and retain the existing manifest/local identity rules. Neither
+format nor the choice of `chrome` versus `browser` namespace selects a complete
+API compatibility profile yet.
+
+The installation retains the original CRX bytes. Startup prepares and verifies
+that package again, then restores saved approval only if its resource fingerprint
+matches. Corruption is rejected. A valid signature over changed resources still
+requires fresh approval; this does not implement automatic extension updates.
+
+## Verification and extraction
+
+The verifier follows the CRX3 wire format and
+[Chromium's verifier implementation](https://github.com/chromium/chromium/blob/main/components/crx_file/crx_verifier.cc).
+RSA proofs use PKCS#1 v1.5 with SHA-256; ECDSA proofs use SHA-256. The historical
+PSS comment in [crx3.proto](https://github.com/chromium/chromium/blob/main/components/crx_file/crx3.proto)
+does not describe the RSA algorithm used by Chromium's implementation.
+Every supplied RSA/ECDSA proof must verify, and at least one developer key must
+match the signed ID. Signatures cover the exact signed-header bytes and complete
+ZIP payload. The reader bounds header size, proof count, key/signature sizes,
+varints, field lengths and nested unknown protobuf groups.
+
+Extraction passes only the authenticated ZIP slice to libzip. CRX input is read
+into an immutable buffer and checked for source changes. The existing path,
+entry-type, duplicate-name, CRC, expansion and cleanup checks remain enforced.
+Ordinary ZIP/XPI inputs retain `ZIP_CHECKCONS`. Signed CRX uses libzip's normal
+read mode: the published uBlock CRX has local/central ZIP version metadata that
+libzip's additional consistency mode rejects, although its payload is readable.
+The signed hostile-archive tests cover this separate path.
+
+CRX2, Mozilla XPI signature validation, store publisher authentication, Safari
+bundles and complete browser-specific API semantics remain unfinished.
+
+## Native results
+
+The verified engine patch is
+`d5887e4f3e31b5c580a90cd501a9917853bfffccd32fe5a239fe6a8da6bd809c`.
+The full engine and browser built with unchanged inputs as native bundle
+`/SummitExtensions/summit/build-modern-browser/bundle-d0h_6xzg`.
+The frozen build report is `.vm/modern-browser-crx-import-bundle-result.json`
+(SHA-256 `09a7a136584e8e57178efd81988b24cd40ae71a123e01d89df87526d481b6310`).
+
+The production verifier/extractor passes **620 native checks**: 201 signature
+checks, 308 CRX extraction checks, and all 111 existing ZIP/XPI checks. These
+include independent RSA/ECDSA signatures, invalid extra proofs, tampering,
+malformed protobuf, signed hostile ZIPs, and all 779 resources of the unmodified
+published uBlock Origin 1.74.0 CRX. The native result is
+`.vm/native-crx-f2f77ff6607354eb7945469a/result.json`.
+
+The public SDK and actual browser pass **205 checks**:
+
+- 72 SDK checks establish signer propagation, rejection of conflicting caller
+  IDs, immutable prepared snapshots, RSA/ECDSA execution, resource bytes,
+  storage across reload and complete snapshot cleanup. The unmodified uBlock
+  package prepares with ID `fkgkibajhfbepljeaefdnfnegdcjomkh`; this run does not
+  execute uBlock or test its filtering.
+- 78 installation checks exercise the native picker, corrupt-package rejection,
+  signature/provenance consent text, cancellation, installation despite a
+  conflicting manifest ID, actual runtime ID and popup execution.
+- Four further browser processes pass 17, 10, 11 and 17 checks respectively:
+  startup restores saved state; corruption prevents startup; a newly signed
+  update requires approval; restoring the original bytes restores the runtime
+  without an extra background boot from either rejected package.
+
+All six process groups exit normally and drain without forced cleanup. The
+native debugger-log interval is clean. Source, bundle, fixture, original CRX
+and approved catalog checks pass. Consent and restored-popup screenshots were
+also inspected. The runtime result is
+`.vm/modern-extension-crx-cbeaee46835bcb92b29d31eb/result.json`
+(SHA-256 `e36bcdd03c6686514cb92e311d53991b88f68be6f63853d2e0d4b7281c2f6b57`).
+
+All three host CTest suites pass, including 34 identity checks. The production
+signature verifier passes its 201 host checks under AddressSanitizer and
+UndefinedBehaviorSanitizer; the runtime fixture envelopes add 16 passing checks.
+
+The unchanged published Chromium MV2 Dark Reader 4.9.131 package also passes
+all **78 native checks** on this bundle, including initial injection into an
+already-open page, popup On/Off, and disable/re-enable. Its result is
+`.vm/modern-darkreader-ef4aa1354e5979354fb9a707/result.json`
+(SHA-256 `c64cd8b4237c0596c30ba2c0e271519ce3b699ad9d1aaea2c2d6b1bdffa11988`),
+with unchanged package/bundle inputs, a clean debugger-log interval and no
+forced cleanup.
+
+## Reproduce
+
+The host fixture generators require Python's `cryptography` package (tested
+with 41.0.7). Each generation creates fresh ephemeral signing keys; freeze the
+resulting directories for the duration of a run. The published package is
+checked against its existing corpus pin.
+
+```sh
+python3 tools/fetch-extension-corpus.py
+python3 tools/test-engine-extension-crx-fixtures.py .vm/crx-fixtures
+python3 tools/test-modern-extension-crx-fixtures.py .vm/crx-runtime-fixtures
+python3 tools/test-engine-extension-crx.py \
+  --fixtures .vm/crx-fixtures --bundle /absolute/guest/bundle
+python3 tools/test-modern-extension-crx.py \
+  --fixtures .vm/crx-runtime-fixtures --archive-fixtures .vm/crx-fixtures \
+  --bundle /absolute/guest/bundle --watch
+```
+
+Run native integration suites serially with other browser/crash-log tests.
+`--suite sdk` or `--suite browser` selects a narrower runtime run;
+`--compile-only` verifies harness compilation without executing extensions.
+The broader [browser and extension requirements](REQUIREMENTS.md) remain active.
