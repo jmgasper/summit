@@ -1,0 +1,28 @@
+<!doctype html><meta charset="utf-8"><title>Summit — published uBlock request test</title>
+<style>body{font:20px sans-serif;margin:40px;background:#f2f5f8;color:#183044}pre{white-space:pre-wrap;padding:20px;background:white;border:1px solid #9ab}</style>
+<h1>uBlock Origin compatibility</h1><p>This controlled page loads a normal script and a script matched by the published package's EasyList.</p><pre id="result">Waiting for request results…</pre>
+<script>
+const token = __SUMMIT_TOKEN__;
+const phase = location.pathname.split('/').pop();
+const root = '/' + token;
+const marker = token + ':' + phase;
+const outcomes = {};
+let reported = false;
+async function report(timedOut = false) {
+    if (reported) return;
+    if (!timedOut && Object.keys(outcomes).length !== 2) return;
+    reported = true;
+    const value = {phase, timedOut, allowed: globalThis.summitAllowed === marker,
+        advert: globalThis.summitAdvert === marker, allowedEvent: outcomes.allowed || '', advertEvent: outcomes.advert || ''};
+    document.getElementById('result').textContent = JSON.stringify(value, null, 2);
+    await fetch(root + '/report/' + phase, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(value)});
+}
+for (const [name, file] of [['allowed','content.js'],['advert','ads/custom_ads.js']]) {
+    const element = document.createElement('script');
+    element.src = root + '/resource/' + phase + '/' + file;
+    element.onload = () => { outcomes[name] = 'load'; report(); };
+    element.onerror = () => { outcomes[name] = 'error'; report(); };
+    document.head.append(element);
+}
+setTimeout(() => report(true), 15000);
+</script>
