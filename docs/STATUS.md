@@ -2297,3 +2297,19 @@ The current VNC preview uses a separate profile with this bundle. See
 [the localization record](webextensions-localization.md) for exact evidence,
 the preceding CSS diagnosis and remaining locale/published-extension coverage.
 Full Safari, Chrome and Firefox extension compatibility remains incomplete.
+
+## Native extension script injection
+
+The September 16 `bundle-zwmpgvis` builds and links with engine patch
+`0ebce0e871f549817c218e0e8a92a4f441408201d46d3aedd2f60e66a6ace206`.
+Manifest V2 extensions can execute scripts and packaged files in existing
+tabs, with isolated worlds, document-bound targets, readiness waits and
+permission checks. The native suite passes 113 unique JavaScript cases and
+523 native checks. Published Dark Reader additionally themes an already-open
+tab without reloading and retains working popup Off/On behavior.
+
+All six native suites pass 2,026 checks with normal shutdown, drained process
+groups, clean crash intervals and matching input hashes. Exact reports and
+remaining compatibility work are recorded in
+[native script injection](webextensions-tab-script.md). This milestone does
+not complete the original full-browser or extension compatibility goal.

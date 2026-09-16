@@ -1,0 +1,1 @@
+const CONTROL = __CONTROL_JSON__;

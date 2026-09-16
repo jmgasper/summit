@@ -20,7 +20,12 @@ deliverable; the original objective remains active.
 The [published extension corpus](../compatibility/README.md) now pins six
 unmodified uBlock Origin and Dark Reader release packages, including Chromium
 CRX/ZIP, Firefox XPI and an MV3 service-worker package. Download hashes and
-archive inspection are verified; native compatibility remains untested.
+archive inspection are verified. The unmodified Chromium MV2 Dark Reader
+4.9.131 package now passes native installation, theming, enable/disable and
+popup On/Off checks, including theming an already-open tab without reloading.
+The [script-injection suite](webextensions-tab-script.md) verifies 113 cases
+using installed fixtures. The remaining published corpus and complete
+cross-browser behavior still need verification.
 
 Extension acceptance includes adversarial checks: a page must not obtain
 privileged extension APIs, one extension must not access another's data,

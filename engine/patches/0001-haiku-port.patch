@@ -21810,7 +21810,7 @@ index efb0e18ef3681d9f33b6c784f0fb22f1ff0e80eb..19ec94335716b9ab75d52343c7adcad7
  
      undefined setTopDocumentURLForQuirks(DOMString urlString);
 diff --git a/Source/WebKit/CMakeLists.txt b/Source/WebKit/CMakeLists.txt
-index e516087e3331311877a49df982704f642f6dffe9..eacbc049e9ef53f9da23dc196aa08b3af3acd3ac 100644
+index e516087e3331311877a49df982704f642f6dffe9..2200ad768726289d2a7e13f2d8d5cc77a3e397f9 100644
 --- a/Source/WebKit/CMakeLists.txt
 +++ b/Source/WebKit/CMakeLists.txt
 @@ -142,10 +142,7 @@ list(APPEND WebKit_UNIFIED_SOURCE_LIST_FILES
@@ -21874,6 +21874,14 @@ index e516087e3331311877a49df982704f642f6dffe9..eacbc049e9ef53f9da23dc196aa08b3a
      WebProcess/Extensions/Interfaces/WebExtensionAPIRuntime
      WebProcess/Extensions/Interfaces/WebExtensionAPITest
      WebProcess/Extensions/Interfaces/WebExtensionAPIWebPageNamespace
+@@ -627,6 +627,7 @@ set(WebKit_SERIALIZATION_IN_FILES
+     Shared/Extensions/WebExtensionSidebarParameters.serialization.in
+     Shared/Extensions/WebExtensionStorage.serialization.in
+     Shared/Extensions/WebExtensionTab.serialization.in
++    Shared/Extensions/WebExtensionTabScriptParameters.serialization.in
+     Shared/Extensions/WebExtensionWindow.serialization.in
+ 
+     Shared/Gamepad/GamepadData.serialization.in
 diff --git a/Source/WebKit/DerivedSources.make b/Source/WebKit/DerivedSources.make
 index 7f1b4513bad9ff098f373a086052df70970f66e5..f5546aaa38388666b6678dbea27b6c655cddc156 100644
 --- a/Source/WebKit/DerivedSources.make
@@ -24603,10 +24611,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..7eade29c6c7e866b463810473db107f2a78035f5
+index 0000000000000000000000000000000000000000..2268e1d023164eae278e59316655f413d5a632c2
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,244 @@
+@@ -0,0 +1,248 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -24697,8 +24705,12 @@ index 0000000000000000000000000000000000000000..7eade29c6c7e866b463810473db107f2
 +    UIProcess/Extensions/haiku/WebExtensionContextWindowsHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionContextAPIWindowsHaiku.cpp
 +    Shared/Extensions/WebExtensionTabQueryParser.cpp
++    Shared/Extensions/WebExtensionTabScriptParser.cpp
++    Shared/Extensions/WebExtensionTabScriptTarget.cpp
 +    UIProcess/Extensions/haiku/WebExtensionContextAPITabsHaiku.cpp
++    UIProcess/Extensions/haiku/WebExtensionContextAPITabScriptHaiku.cpp
 +    WebProcess/Extensions/API/WebExtensionAPITabs.cpp
++    WebProcess/Extensions/WebExtensionTabScriptExecution.cpp
 +    WebProcess/Extensions/API/WebExtensionAPIExtension.cpp
 +    UIProcess/Extensions/haiku/WebExtensionContextAPIExtensionHaiku.cpp
 +    UIProcess/Extensions/haiku/WebExtensionContextAPIPermissionsHaiku.cpp
@@ -24933,10 +24945,27 @@ index ab343ef829cf78a7a6f9f87a838a07eb198daf67..bedf5c97c3e662ae1314a04f09b85071
      return 0
  
 diff --git a/Source/WebKit/Scripts/webkit/messages.py b/Source/WebKit/Scripts/webkit/messages.py
-index b1618c8ccb7334b09c689d0f88cbb9e2503e9ba5..6651b2bc98614f44ef9896c610760a3ab04adb63 100644
+index b1618c8ccb7334b09c689d0f88cbb9e2503e9ba5..20940206be8c608c79e54d8b0f014573542ee3b8 100644
 --- a/Source/WebKit/Scripts/webkit/messages.py
 +++ b/Source/WebKit/Scripts/webkit/messages.py
-@@ -2323,18 +2323,32 @@ def generate_message_names_implementation(receivers):
+@@ -720,6 +720,8 @@ def types_that_cannot_be_forward_declared():
+         'WebKit::WebExtensionStorageAccessLevel',
+         'WebKit::WebExtensionTabParameters',
+         'WebKit::WebExtensionTabQueryParameters',
++        'WebKit::WebExtensionTabScriptParameters',
++        'WebKit::WebExtensionTabScriptTarget',
+         'WebKit::WebExtensionWindowParameters',
+         'WebKit::WebTransportSessionIdentifier',
+         'WebKit::WebUndoStepID',
+@@ -1151,6 +1153,7 @@ def headers_for_type(type, for_implementation_file=False):
+     header_infos_and_types = class_template_headers(type)
+ 
+     special_cases = {
++        'WebKit::WebExtensionTabScriptRunAt': ['"WebExtensionTabScriptParameters.h"'],
+         'CVPixelBufferRef': ['<WebCore/CVUtilities.h>'],
+         'GCGLint': ['<WebCore/GraphicsTypesGL.h>'],
+         'GenericPromise::Result': ['<wtf/NativePromise.h>'],
+@@ -2323,18 +2326,32 @@ def generate_message_names_implementation(receivers):
          if condition:
              result.append('#if %s\n' % condition)
          for enumerator in enumerators:
@@ -27115,6 +27144,354 @@ index 0000000000000000000000000000000000000000..64252ad7f10dfeb93f90d3d38a4f2fe7
 +// Structural validation is shared. The privileged receiver also validates
 +// match patterns against supported schemes before inspecting browser tabs.
 +std::expected<WebExtensionTabQueryParameters, String> parseWebExtensionTabQuery(const JSON::Value*);
++}
++#endif
+diff --git a/Source/WebKit/Shared/Extensions/WebExtensionTabScriptExecution.h b/Source/WebKit/Shared/Extensions/WebExtensionTabScriptExecution.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..290ea8a98992ba28c065aa4fdda427612dd97f07
+--- /dev/null
++++ b/Source/WebKit/Shared/Extensions/WebExtensionTabScriptExecution.h
+@@ -0,0 +1,12 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++#include "ContentWorldData.h"
++#include "WebExtensionContextIdentifier.h"
++#include "WebExtensionTabScriptTarget.h"
++#include <WebCore/SerializedScriptValue.h>
++
++namespace WebKit {
++using WebExtensionTabScriptExecutionResult = std::expected<RefPtr<WebCore::SerializedScriptValue>, String>;
++}
++#endif
+diff --git a/Source/WebKit/Shared/Extensions/WebExtensionTabScriptParameters.h b/Source/WebKit/Shared/Extensions/WebExtensionTabScriptParameters.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..319da707107fcb1af1237ea2c6a590985d75b368
+--- /dev/null
++++ b/Source/WebKit/Shared/Extensions/WebExtensionTabScriptParameters.h
+@@ -0,0 +1,19 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++#include "WebExtensionFrameIdentifier.h"
++#include <wtf/UUID.h>
++#include <wtf/text/WTFString.h>
++namespace WebKit {
++enum class WebExtensionTabScriptRunAt : uint8_t { DocumentStart, DocumentEnd, DocumentIdle };
++struct WebExtensionTabScriptParameters {
++    std::optional<String> code;
++    std::optional<String> file;
++    std::optional<WebExtensionFrameIdentifier> frameIdentifier;
++    std::optional<WTF::UUID> documentIdentifier;
++    WebExtensionTabScriptRunAt runAt { WebExtensionTabScriptRunAt::DocumentIdle };
++    bool allFrames { false };
++    bool matchAboutBlank { false };
++};
++}
++#endif
+diff --git a/Source/WebKit/Shared/Extensions/WebExtensionTabScriptParameters.serialization.in b/Source/WebKit/Shared/Extensions/WebExtensionTabScriptParameters.serialization.in
+new file mode 100644
+index 0000000000000000000000000000000000000000..e5c4ea01b5a8bd66adf3901db6bc69316af67a5c
+--- /dev/null
++++ b/Source/WebKit/Shared/Extensions/WebExtensionTabScriptParameters.serialization.in
+@@ -0,0 +1,33 @@
++# Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++
++headers: "WebExtensionTabScriptParameters.h" "WebExtensionTabScriptTarget.h"
++
++[CustomHeader] struct WebKit::WebExtensionTabScriptDocument {
++    WebCore::FrameIdentifier frameIdentifier;
++    WebCore::ScriptExecutionContextIdentifier documentIdentifier;
++    URL url;
++}
++
++struct WebKit::WebExtensionTabScriptTarget {
++    WebKit::WebPageProxyIdentifier pageIdentifier;
++    Vector<WebKit::WebExtensionTabScriptDocument> documents;
++}
++
++struct WebKit::WebExtensionTabScriptParameters {
++    std::optional<String> code;
++    std::optional<String> file;
++    std::optional<WebKit::WebExtensionFrameIdentifier> frameIdentifier;
++    std::optional<WTF::UUID> documentIdentifier;
++    WebKit::WebExtensionTabScriptRunAt runAt;
++    bool allFrames;
++    bool matchAboutBlank;
++}
++
++enum class WebKit::WebExtensionTabScriptRunAt : uint8_t {
++    DocumentStart,
++    DocumentEnd,
++    DocumentIdle,
++}
++
++#endif
+diff --git a/Source/WebKit/Shared/Extensions/WebExtensionTabScriptParser.cpp b/Source/WebKit/Shared/Extensions/WebExtensionTabScriptParser.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..b3e13befa0a62d363269a98be14bc57453b13768
+--- /dev/null
++++ b/Source/WebKit/Shared/Extensions/WebExtensionTabScriptParser.cpp
+@@ -0,0 +1,70 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#include "WebExtensionTabScriptParser.h"
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++#include <cmath>
++namespace WebKit {
++std::expected<WebExtensionTabScriptParameters, String> parseWebExtensionTabScript(const JSON::Value* input)
++{
++    RefPtr object = input ? input->asObject() : nullptr;
++    if (!object)
++        return makeUnexpected("script details must be an object"_s);
++    WebExtensionTabScriptParameters result;
++    for (auto& key : object->keys()) {
++        Ref value = object->getValue(key).releaseNonNull();
++        if (key == "code"_s || key == "file"_s) {
++            if (value->type() != JSON::Value::Type::String)
++                return makeUnexpected("script code and file must be strings"_s);
++            if (key == "code"_s)
++                result.code = value->asString();
++            else {
++                auto path = value->asString();
++                if (path.isEmpty() || path.contains('\0'))
++                    return makeUnexpected("script file must be a nonempty resource path without NUL"_s);
++                result.file = WTF::move(path);
++            }
++        } else if (key == "allFrames"_s || key == "matchAboutBlank"_s) {
++            auto flag = value->asBoolean();
++            if (!flag)
++                return makeUnexpected("script frame flags must be booleans"_s);
++            if (key == "allFrames"_s)
++                result.allFrames = *flag;
++            else
++                result.matchAboutBlank = *flag;
++        } else if (key == "frameId"_s) {
++            auto number = value->asDouble();
++            if (!number || !std::isfinite(*number) || std::trunc(*number) != *number || *number < 0 || *number > 9007199254740991.0)
++                return makeUnexpected("frameId must be a nonnegative safe integer"_s);
++            result.frameIdentifier = toWebExtensionFrameIdentifier(*number);
++            if (!isValid(result.frameIdentifier))
++                return makeUnexpected("frameId is not a valid frame identifier"_s);
++        } else if (key == "documentId"_s) {
++            if (value->type() != JSON::Value::Type::String)
++                return makeUnexpected("documentId must be a UUID string"_s);
++            result.documentIdentifier = WTF::UUID::parse(value->asString());
++            if (!result.documentIdentifier)
++                return makeUnexpected("documentId must be a valid UUID"_s);
++        } else if (key == "runAt"_s) {
++            auto when = value->asString();
++            if (when == "document_start"_s)
++                result.runAt = WebExtensionTabScriptRunAt::DocumentStart;
++            else if (when == "document_end"_s)
++                result.runAt = WebExtensionTabScriptRunAt::DocumentEnd;
++            else if (when == "document_idle"_s)
++                result.runAt = WebExtensionTabScriptRunAt::DocumentIdle;
++            else
++                return makeUnexpected("runAt must be document_start, document_end or document_idle"_s);
++        } else
++            return makeUnexpected("unsupported script detail field"_s);
++    }
++    if (result.code.has_value() == result.file.has_value())
++        return makeUnexpected("script details must specify exactly one of code or file"_s);
++    if ((result.allFrames && (result.frameIdentifier || result.documentIdentifier))
++        || (result.frameIdentifier && result.documentIdentifier))
++        return makeUnexpected("allFrames, frameId and documentId cannot select competing targets"_s);
++    if (!result.allFrames && !result.frameIdentifier && !result.documentIdentifier)
++        result.frameIdentifier = WebExtensionFrameConstants::MainFrameIdentifier;
++    return result;
++}
++}
++#endif
+diff --git a/Source/WebKit/Shared/Extensions/WebExtensionTabScriptParser.h b/Source/WebKit/Shared/Extensions/WebExtensionTabScriptParser.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..14bb1096faa8574d452de76f0cf1728ad4365aed
+--- /dev/null
++++ b/Source/WebKit/Shared/Extensions/WebExtensionTabScriptParser.h
+@@ -0,0 +1,12 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++#include "WebExtensionTabScriptParameters.h"
++#include <expected>
++#include <wtf/JSONValues.h>
++namespace WebKit {
++// Parse the request only. Frame ownership, current-document identity, resource
++// resolution, permissions and runAt scheduling belong to the execution path.
++std::expected<WebExtensionTabScriptParameters, String> parseWebExtensionTabScript(const JSON::Value*);
++}
++#endif
+diff --git a/Source/WebKit/Shared/Extensions/WebExtensionTabScriptTarget.cpp b/Source/WebKit/Shared/Extensions/WebExtensionTabScriptTarget.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..2f3b20cdea960d434acee60ef756db24ed72caae
+--- /dev/null
++++ b/Source/WebKit/Shared/Extensions/WebExtensionTabScriptTarget.cpp
+@@ -0,0 +1,116 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#include "WebExtensionTabScriptTarget.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++#include "FrameTreeNodeData.h"
++
++namespace WebKit {
++
++static bool validFrame(const FrameInfoData& frame, WebPageProxyIdentifier pageIdentifier, const FrameInfoData* parent)
++{
++    return frame.webPageProxyID && *frame.webPageProxyID == pageIdentifier
++        && frame.documentID && *frame.documentID
++        && frame.isMainFrame == !parent
++        && (parent ? frame.parentFrameID && *frame.parentFrameID == parent->frameID : !frame.parentFrameID);
++}
++
++std::expected<Vector<WebExtensionTabScriptTarget>, String> captureWebExtensionTabScriptTargets(const FrameTreeNodeData& root, WebPageProxyIdentifier pageIdentifier, const WebExtensionTabScriptParameters& parameters)
++{
++    if ((parameters.allFrames && (parameters.frameIdentifier || parameters.documentIdentifier))
++        || (parameters.frameIdentifier && parameters.documentIdentifier))
++        return makeUnexpected("conflicting script targets"_s);
++
++    struct PendingFrame {
++        const FrameTreeNodeData* node;
++        Vector<const FrameInfoData*> ancestors;
++    };
++    Vector<PendingFrame> pending;
++    pending.append({ &root, { } });
++    Vector<WebExtensionTabScriptTarget> targets;
++    while (!pending.isEmpty()) {
++        auto current = pending.takeLast();
++        const auto& info = current.node->info;
++        bool matches = parameters.allFrames;
++        if (parameters.documentIdentifier)
++            matches = info.documentID && info.documentID->object() == *parameters.documentIdentifier;
++        else if (!parameters.allFrames) {
++            auto identifier = parameters.frameIdentifier.value_or(WebExtensionFrameConstants::MainFrameIdentifier);
++            matches = isMainFrame(identifier) ? info.isMainFrame : !info.isMainFrame && info.frameID.toUInt64() == identifier.toUInt64();
++        }
++
++        current.ancestors.append(&info);
++        if (matches) {
++            WebExtensionTabScriptTarget target { pageIdentifier, { } };
++            const FrameInfoData* parent = nullptr;
++            for (const auto* frame : current.ancestors) {
++                if (!validFrame(*frame, pageIdentifier, parent))
++                    return makeUnexpected("the target document is unavailable"_s);
++                target.documents.append({ frame->frameID, *frame->documentID, frame->request.url() });
++                parent = frame;
++            }
++            targets.append(WTF::move(target));
++        }
++
++        // Reverse insertion preserves tree order with an iterative traversal.
++        // A deeply nested frame tree must not consume the native call stack.
++        const auto& children = current.node->children;
++        for (size_t i = children.size(); i; --i)
++            pending.append({ &children[i - 1], current.ancestors });
++    }
++    if (targets.isEmpty())
++        return makeUnexpected("the requested frame or document was not found"_s);
++    if (!parameters.allFrames && targets.size() != 1)
++        return makeUnexpected("the requested frame or document is ambiguous"_s);
++    return targets;
++}
++
++std::expected<URL, String> webExtensionTabScriptPermissionURL(const WebExtensionTabScriptTarget& target, bool matchAboutBlank)
++{
++    for (size_t i = target.documents.size(); i; --i) {
++        const auto& url = target.documents[i - 1].url;
++        if (url.isValid() && (url.protocolIsInHTTPFamily() || url.protocolIs("file"_s)))
++            return url;
++        if (!matchAboutBlank || (!url.isAboutBlank() && !url.isAboutSrcDoc()))
++            return makeUnexpected("scripts cannot be injected into this document"_s);
++        if (i == 1)
++            return makeUnexpected("scripts cannot be injected into a top-level blank document"_s);
++    }
++    return makeUnexpected("the target document is unavailable"_s);
++}
++
++std::expected<WebExtensionTabScriptTarget, String> refreshWebExtensionTabScriptTarget(const WebExtensionTabScriptTarget& target, const FrameTreeNodeData& root)
++{
++    if (target.documents.isEmpty())
++        return makeUnexpected("the target document is unavailable"_s);
++
++    WebExtensionTabScriptTarget refreshed { target.pageIdentifier, { } };
++    const FrameTreeNodeData* node = &root;
++    const FrameInfoData* parent = nullptr;
++    for (size_t i = 0; i < target.documents.size(); ++i) {
++        const auto& expected = target.documents[i];
++        if (!node || !validFrame(node->info, target.pageIdentifier, parent)
++            || node->info.frameID != expected.frameIdentifier
++            || *node->info.documentID != expected.documentIdentifier)
++            return makeUnexpected("the target document changed before script execution"_s);
++
++        refreshed.documents.append({ node->info.frameID, *node->info.documentID, node->info.request.url() });
++        parent = &node->info;
++        if (i + 1 < target.documents.size()) {
++            const auto nextFrameIdentifier = target.documents[i + 1].frameIdentifier;
++            const FrameTreeNodeData* next = nullptr;
++            for (const auto& child : node->children) {
++                if (child.info.frameID != nextFrameIdentifier)
++                    continue;
++                if (next)
++                    return makeUnexpected("the target document is ambiguous"_s);
++                next = &child;
++            }
++            node = next;
++        }
++    }
++    return refreshed;
++}
++
++}
++#endif
+diff --git a/Source/WebKit/Shared/Extensions/WebExtensionTabScriptTarget.h b/Source/WebKit/Shared/Extensions/WebExtensionTabScriptTarget.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..10edfa7e5a993c496f926a3f21c009fda2def52f
+--- /dev/null
++++ b/Source/WebKit/Shared/Extensions/WebExtensionTabScriptTarget.h
+@@ -0,0 +1,44 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++#include "WebExtensionTabScriptParameters.h"
++#include "WebPageProxyIdentifier.h"
++#include <WebCore/FrameIdentifier.h>
++#include <WebCore/ScriptExecutionContextIdentifier.h>
++#include <expected>
++#include <wtf/URL.h>
++#include <wtf/Vector.h>
++
++namespace WebKit {
++
++struct FrameTreeNodeData;
++
++struct WebExtensionTabScriptDocument {
++    WebCore::FrameIdentifier frameIdentifier;
++    WebCore::ScriptExecutionContextIdentifier documentIdentifier;
++    URL url;
++};
++
++struct WebExtensionTabScriptTarget {
++    WebPageProxyIdentifier pageIdentifier;
++    // Root through target, inclusive. Keep process-qualified document IDs:
++    // frame IDs and URLs alone survive replacement of a document.
++    Vector<WebExtensionTabScriptDocument> documents;
++};
++
++// Capture before requesting permission. The returned order always starts with
++// the main frame when it is selected. No extension permissions are granted here.
++std::expected<Vector<WebExtensionTabScriptTarget>, String> captureWebExtensionTabScriptTargets(const FrameTreeNodeData&, WebPageProxyIdentifier, const WebExtensionTabScriptParameters&);
++
++// Resolve the URL the caller must authorize against current host, activeTab,
++// file and private-access permissions. Reject privileged schemes; blank frames
++// can inherit only through their captured parent chain, never from an opener.
++std::expected<URL, String> webExtensionTabScriptPermissionURL(const WebExtensionTabScriptTarget&, bool matchAboutBlank);
++
++// After a wait, refresh URLs only if every document in the captured path still
++// exists. The caller must check permissions again using the refreshed target.
++std::expected<WebExtensionTabScriptTarget, String> refreshWebExtensionTabScriptTarget(const WebExtensionTabScriptTarget&, const FrameTreeNodeData&);
++
 +}
 +#endif
 diff --git a/Source/WebKit/Shared/Extensions/WebExtensionUtilities.cpp b/Source/WebKit/Shared/Extensions/WebExtensionUtilities.cpp
@@ -34424,10 +34801,10 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..8d9561bc6611157c267700136adf223f
  
  #endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
-index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a74c059e82 100644
+index 05a8676082d56f2c47c9af6120f5120b09f982be..55bdb3a04ed914277f213dfd9f355a371faab660 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
-@@ -51,7 +51,11 @@
+@@ -51,13 +51,20 @@
  #include "WebExtensionMatchedRuleParameters.h"
  #include "WebExtensionMenuItem.h"
  #include "WebExtensionMessagePort.h"
@@ -34439,7 +34816,16 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
  #include "WebExtensionPortChannelIdentifier.h"
  #include "WebExtensionRegisteredScriptsSQLiteStore.h"
  #include "WebExtensionStorageAccessLevel.h"
-@@ -85,6 +89,11 @@
+ #include "WebExtensionStorageSQLiteStore.h"
+ #include "WebExtensionTab.h"
+ #include "WebExtensionTabIdentifier.h"
++#if PLATFORM(HAIKU)
++#include "WebExtensionTabScriptExecution.h"
++#endif
+ #include "WebExtensionUtilities.h"
+ #include "WebExtensionWindow.h"
+ #include "WebExtensionWindowIdentifier.h"
+@@ -85,6 +92,11 @@
  #include <wtf/WeakHashMap.h>
  #include <wtf/WeakPtr.h>
  
@@ -34451,7 +34837,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
  #if ENABLE(INSPECTOR_EXTENSIONS)
  #include "APIInspectorExtension.h"
  #include "APIInspectorExtensionClient.h"
-@@ -144,9 +153,21 @@ namespace PAL {
+@@ -144,9 +156,21 @@ namespace PAL {
  class SessionID;
  }
  
@@ -34474,7 +34860,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
  using WebViewClass = WebKitWebView;
  using WebViewConfiguration = GRefPtr<WebKitSettings>;
  using NavigationPolicyAction = WebKitNavigationPolicyDecision;
-@@ -179,6 +200,11 @@ enum class WebExtensionContextInstallReason : uint8_t {
+@@ -179,6 +203,11 @@ enum class WebExtensionContextInstallReason : uint8_t {
      BrowserUpdate,
  };
  
@@ -34486,7 +34872,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
  class WebExtensionContext : public API::ObjectImpl<API::Object::Type::WebExtensionContext>, public IPC::MessageReceiver, public Identified<WebExtensionContextIdentifier> {
      WTF_MAKE_NONCOPYABLE(WebExtensionContext);
  
-@@ -198,6 +224,8 @@ public:
+@@ -198,6 +227,8 @@ public:
      {
  #if PLATFORM(COCOA)
          return "State.plist"_s;
@@ -34495,7 +34881,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
  #else
          return "State.ini"_s;
  #endif
-@@ -206,6 +234,8 @@ public:
+@@ -206,6 +237,8 @@ public:
      static NSMutableDictionary *readStateFromPath(const String&);
  #elif ENABLE(2022_GLIB_API)
      static GRefPtr<GKeyFile> readStateFromPath(const String&);
@@ -34504,7 +34890,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
  #endif
      static bool readLastBaseURLFromState(const String& filePath, URL& outLastBaseURL);
      static bool readDisplayNameFromState(const String& filePath, String& outDisplayName);
-@@ -214,7 +244,7 @@ public:
+@@ -214,7 +247,7 @@ public:
  
      static WebExtensionContext* NODELETE get(WebExtensionContextIdentifier);
  
@@ -34513,7 +34899,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
      explicit WebExtensionContext(Ref<WebExtension>&&);
  #elif ENABLE(2022_GLIB_API)
      explicit WebExtensionContext(WebKitWebExtensionContext*);
-@@ -265,11 +295,8 @@ public:
+@@ -265,11 +298,8 @@ public:
          bool userGesture { false };
      };
  
@@ -34525,7 +34911,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
      using PortQueuedMessageMap = HashMap<PortWorldPair, Vector<PortQueuedMessage>>;
      using NativePortMap = HashMap<WebExtensionPortChannelIdentifier, Ref<WebExtensionMessagePort>>;
  
-@@ -334,6 +361,21 @@ public:
+@@ -334,6 +364,21 @@ public:
          DeniedPermissionMatchPatternsWereRemoved,
      };
  
@@ -34547,7 +34933,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
      enum class PermissionState : int8_t {
          DeniedExplicitly    = -3,
          DeniedImplicitly    = -2,
-@@ -416,6 +458,17 @@ public:
+@@ -416,6 +461,17 @@ public:
  
      const String& uniqueIdentifier() const LIFETIME_BOUND { return m_uniqueIdentifier; }
      void setUniqueIdentifier(String&&);
@@ -34565,7 +34951,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
  
      RefPtr<WebExtensionLocalization> localization();
  
-@@ -504,6 +557,14 @@ public:
+@@ -504,6 +560,14 @@ public:
  
      void removePage(WebPageProxy&);
  
@@ -34580,7 +34966,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
      Ref<WebExtensionWindow> getOrCreateWindow(WKWebExtensionWindow *) const;
      RefPtr<WebExtensionWindow> getWindow(WebExtensionWindowIdentifier, std::optional<WebPageProxyIdentifier> = std::nullopt, IgnoreExtensionAccess = IgnoreExtensionAccess::No) const;
      void forgetWindow(WebExtensionWindowIdentifier) const;
-@@ -596,6 +657,9 @@ public:
+@@ -596,6 +660,9 @@ public:
      const CommandsVector& commands();
      WebExtensionCommand* command(const String& identifier);
      void performCommand(WebExtensionCommand&, UserTriggered = UserTriggered::No);
@@ -34590,7 +34976,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
      void resetCommands();
  
  #if TARGET_OS_IPHONE
-@@ -630,6 +694,10 @@ public:
+@@ -630,6 +697,10 @@ public:
      void sendTestStarted(id argument);
      void sendTestFinished(id argument);
      void reloadBackgroundContentForTesting();
@@ -34601,7 +34987,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
  #endif
  
      URL backgroundContentURL();
-@@ -655,6 +723,7 @@ public:
+@@ -655,6 +726,7 @@ public:
      void runOpenPanel(WKWebView *, WKOpenPanelParameters *, void (^)(NSArray *));
  #endif
  
@@ -34609,7 +34995,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
  #if PLATFORM(COCOA)
      void sendNativeMessage(const String& applicationID, id message, CompletionHandler<void(std::expected<RetainPtr<id>, WebExtensionError>&&)>&&);
  #endif
-@@ -700,7 +769,11 @@ public:
+@@ -700,7 +772,11 @@ public:
  
      WebsiteDataStore* websiteDataStore(std::optional<PAL::SessionID> = std::nullopt) const;
  
@@ -34621,7 +35007,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
  
      void loadBackgroundContent(CompletionHandler<void(RefPtr<API::Error>)>&&);
  
-@@ -749,11 +822,18 @@ private:
+@@ -749,11 +825,18 @@ private:
  #if PLATFORM(COCOA)
      NSDictionary *currentState() const;
      NSDictionary *readStateFromStorage();
@@ -34641,7 +35027,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
  
      void loadStorageAccessLevelsFromStorage();
      void saveStorageAccessLevelsToStorage();
-@@ -762,6 +842,10 @@ private:
+@@ -762,6 +845,10 @@ private:
      void moveLocalStorageIfNeeded(const URL& previousBaseURL, CompletionHandler<void()>&&);
      void removeStaleExtensionWebsiteData();
  
@@ -34652,7 +35038,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
      void permissionsDidChange(PermissionNotification, const PermissionsSet&);
      void permissionsDidChange(PermissionNotification, const MatchPatternSet&);
  
-@@ -796,6 +880,7 @@ private:
+@@ -796,6 +883,7 @@ private:
      void saveBackgroundPageListenersToStorage();
  
      void performTasksAfterBackgroundContentLoads();
@@ -34660,7 +35046,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
  
  #ifdef NDEBUG
      // This is method is a no-op in release builds since it has a performance impact with little benefit to release builds.
-@@ -844,6 +929,9 @@ private:
+@@ -844,6 +932,9 @@ private:
      void loadDeclarativeNetRequestRules(CompletionHandler<void(bool)>&&);
      void compileDeclarativeNetRequestRules(NSDictionary *, CompletionHandler<void(bool)>&&);
      void unloadDeclarativeNetRequestState();
@@ -34670,7 +35056,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
      String declarativeNetRequestContentRuleListFilePath();
  
      // Updating user content controllers with new rules.
-@@ -882,6 +970,10 @@ private:
+@@ -882,6 +973,10 @@ private:
      Ref<WebExtensionStorageSQLiteStore> syncStorageStore();
  
      void fetchCookies(WebsiteDataStore&, const URL&, const WebExtensionCookieFilterParameters&, CompletionHandler<void(std::expected<Vector<WebExtensionCookieParameters>, WebExtensionError>&&)>&&);
@@ -34681,7 +35067,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
  
      // Action APIs
      bool isActionMessageAllowed(IPC::Decoder&);
-@@ -893,6 +985,10 @@ private:
+@@ -893,6 +988,10 @@ private:
      void actionOpenPopup(WebPageProxyIdentifier, std::optional<WebExtensionWindowIdentifier>, std::optional<WebExtensionTabIdentifier>, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
      void actionGetBadgeText(std::optional<WebExtensionWindowIdentifier>, std::optional<WebExtensionTabIdentifier>, CompletionHandler<void(std::expected<String, WebExtensionError>&&)>&&);
      void actionSetBadgeText(std::optional<WebExtensionWindowIdentifier>, std::optional<WebExtensionTabIdentifier>, const String& text, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
@@ -34692,7 +35078,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
      void actionGetEnabled(std::optional<WebExtensionWindowIdentifier>, std::optional<WebExtensionTabIdentifier>, CompletionHandler<void(std::expected<bool, WebExtensionError>&&)>&&);
      void actionSetEnabled(std::optional<WebExtensionTabIdentifier>, bool enabled, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
      void fireActionClickedEventIfNeeded(WebExtensionTab*);
-@@ -924,6 +1020,11 @@ private:
+@@ -924,6 +1023,11 @@ private:
      // Commands APIs
      bool isCommandsMessageAllowed(IPC::Decoder&);
      void commandsGetAll(CompletionHandler<void(Vector<WebExtensionCommandParameters>)>&&);
@@ -34704,7 +35090,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
      void fireCommandEventIfNeeded(const WebExtensionCommand&, WebExtensionTab*);
      void fireCommandChangedEventIfNeeded(const WebExtensionCommand&, const String& oldShortcut);
  
-@@ -934,7 +1035,9 @@ private:
+@@ -934,7 +1038,9 @@ private:
      void cookiesSet(std::optional<PAL::SessionID>, const WebExtensionCookieParameters&, CompletionHandler<void(std::expected<std::optional<WebExtensionCookieParameters>, WebExtensionError>&&)>&&);
      void cookiesRemove(std::optional<PAL::SessionID>, const String& name, const URL&, CompletionHandler<void(std::expected<std::optional<WebExtensionCookieParameters>, WebExtensionError>&&)>&&);
      void cookiesGetAllCookieStores(CompletionHandler<void(std::expected<HashMap<PAL::SessionID, Vector<WebExtensionTabIdentifier>>, WebExtensionError>&&)>&&);
@@ -34714,7 +35100,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
  
      // DeclarativeNetRequest APIs
      bool isDeclarativeNetRequestMessageAllowed(IPC::Decoder&);
-@@ -965,12 +1068,20 @@ private:
+@@ -965,12 +1071,20 @@ private:
  
      // Extension APIs
      void extensionIsAllowedIncognitoAccess(CompletionHandler<void(bool)>&&);
@@ -34735,7 +35121,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
      void menusCreate(const WebExtensionMenuItemParameters&, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
      void menusUpdate(const String& identifier, const WebExtensionMenuItemParameters&, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
      void menusRemove(const String& identifier, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
-@@ -988,9 +1099,18 @@ private:
+@@ -988,9 +1102,18 @@ private:
  
      // Permissions APIs
      void permissionsGetAll(CompletionHandler<void(Vector<String>&& permissions, Vector<String>&& origins)>&&);
@@ -34754,7 +35140,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
      void firePermissionsEventListenerIfNecessary(WebExtensionEventListenerType, const PermissionsSet&, const MatchPatternSet&);
  
      // Port APIs
-@@ -1000,7 +1120,7 @@ private:
+@@ -1000,7 +1123,7 @@ private:
      void disconnectPortsForPage(WebPageProxy&);
      void addPorts(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier, HashCountedSet<WebPageProxyIdentifier>&&);
      void removePort(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier, WebPageProxyIdentifier);
@@ -34763,7 +35149,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
      void removeNativePort(WebExtensionMessagePort&);
      unsigned openPortCount(WebExtensionContentWorldType, WebExtensionPortChannelIdentifier);
      bool isPortConnected(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier);
-@@ -1009,7 +1129,7 @@ private:
+@@ -1009,7 +1132,7 @@ private:
      void firePortMessageEventsIfNeeded(WebExtensionContentWorldType, std::optional<WebPageProxyIdentifier>, WebExtensionPortChannelIdentifier, const String& messageJSON, bool userGesture);
      void fireQueuedPortMessageEventsIfNeeded(WebExtensionContentWorldType, WebExtensionPortChannelIdentifier);
      void sendQueuedNativePortMessagesIfNeeded(WebExtensionPortChannelIdentifier);
@@ -34772,7 +35158,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
  
      // Runtime APIs
      void runtimeGetBackgroundPage(CompletionHandler<void(std::expected<std::optional<WebCore::PageIdentifier>, WebExtensionError>&&)>&&);
-@@ -1034,6 +1154,7 @@ private:
+@@ -1034,6 +1157,7 @@ private:
      void scriptingGetRegisteredScripts(const Vector<String>&, CompletionHandler<void(std::expected<Vector<WebExtensionRegisteredScriptParameters>, WebExtensionError>&&)>&&);
      void scriptingUnregisterContentScripts(const Vector<String>&, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
      bool createInjectedContentForScripts(const Vector<WebExtensionRegisteredScriptParameters>&, WebExtensionDynamicScripts::WebExtensionRegisteredScript::FirstTimeRegistration, DynamicInjectedContentsMap&, NSString *callingAPIName, NSString **errorMessage);
@@ -34780,7 +35166,17 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
  
      // Sidebar APIs
  #if ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
-@@ -1129,6 +1250,13 @@ private:
+@@ -1082,6 +1206,9 @@ private:
+     void tabsSetZoom(WebPageProxyIdentifier, std::optional<WebExtensionTabIdentifier>, double, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
+     void tabsMove(Vector<WebExtensionTabIdentifier>, std::optional<WebExtensionWindowIdentifier>, double, CompletionHandler<void(std::expected<Vector<WebExtensionTabParameters>, WebExtensionError>&&)>&&);
+     void tabsRemove(Vector<WebExtensionTabIdentifier>, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
++#if PLATFORM(HAIKU)
++    void tabsExecuteScriptNative(WebPageProxyIdentifier, std::optional<WebExtensionTabIdentifier>, const WebExtensionTabScriptParameters&, bool userGesture, CompletionHandler<void(std::expected<Vector<RefPtr<WebCore::SerializedScriptValue>>, WebExtensionError>&&)>&&);
++#endif
+     void tabsExecuteScript(WebPageProxyIdentifier, std::optional<WebExtensionTabIdentifier>, const WebExtensionScriptInjectionParameters&, bool userGesture, CompletionHandler<void(std::expected<Vector<WebExtensionScriptInjectionResultParameters>, WebExtensionError>&&)>&&);
+     void tabsInsertCSS(WebPageProxyIdentifier, std::optional<WebExtensionTabIdentifier>, const WebExtensionScriptInjectionParameters&, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
+     void tabsRemoveCSS(WebPageProxyIdentifier, std::optional<WebExtensionTabIdentifier>, const WebExtensionScriptInjectionParameters&, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
+@@ -1129,6 +1256,13 @@ private:
      RetainPtr<NSMutableDictionary> m_state;
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<GKeyFile> m_state;
@@ -34794,7 +35190,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
  #endif
      Vector<Ref<API::Error>> m_errors;
  
-@@ -1147,6 +1275,15 @@ private:
+@@ -1147,6 +1281,15 @@ private:
  
      RefPtr<API::ContentWorld> m_contentScriptWorld;
  
@@ -34810,7 +35206,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
      PermissionsMap m_grantedPermissions;
      PermissionsMap m_deniedPermissions;
  
-@@ -1172,6 +1309,9 @@ private:
+@@ -1172,6 +1315,9 @@ private:
      EventListenerTypeCountedSet m_backgroundContentEventListeners;
      EventListenerTypeFrameMap m_eventListenerFrames;
  
@@ -34820,7 +35216,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
      bool m_shouldFireStartupEvent { false };
      InstallReason m_installReason { InstallReason::None };
      String m_previousVersion;
-@@ -1194,6 +1334,9 @@ private:
+@@ -1194,6 +1340,9 @@ private:
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<WebKitWebView> m_backgroundWebView;
      GWeakPtr<WebKitWebExtensionContext> m_delegate;
@@ -34830,7 +35226,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
  #endif
      Variant<std::monostate, Ref<ProcessThrottlerActivity>, Ref<ProcessActivityGroup>> m_backgroundWebViewActivity;
      RefPtr<API::Error> m_backgroundContentLoadError;
-@@ -1215,6 +1358,7 @@ private:
+@@ -1215,6 +1364,7 @@ private:
      HashMap<Ref<WebExtensionMatchPattern>, UserScriptVector> m_injectedScriptsPerPatternMap;
      HashMap<Ref<WebExtensionMatchPattern>, UserStyleSheetVector> m_injectedStyleSheetsPerPatternMap;
  
@@ -34838,7 +35234,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
      HashMap<String, Ref<WebExtensionDynamicScripts::WebExtensionRegisteredScript>> m_registeredScriptsMap;
      RefPtr<WebExtensionRegisteredScriptsSQLiteStore> m_registeredContentScriptsStorage;
  
-@@ -1234,11 +1378,14 @@ private:
+@@ -1234,11 +1384,14 @@ private:
  #endif // ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
  
      PortCountedSet m_ports;
@@ -34854,7 +35250,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
      mutable WindowIdentifierVector m_windowOrderVector;
      mutable std::optional<WebExtensionWindowIdentifier> m_focusedWindowIdentifier;
  
-@@ -1254,6 +1401,11 @@ private:
+@@ -1254,6 +1407,11 @@ private:
      bool m_populatedCommands { false };
  
      String m_declarativeNetRequestContentRuleListFilePath;
@@ -34866,7 +35262,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
      DeclarativeNetRequestMatchedRuleVector m_matchedRules;
      RefPtr<WebExtensionDeclarativeNetRequestSQLiteStore> m_declarativeNetRequestDynamicRulesStore;
      RefPtr<WebExtensionDeclarativeNetRequestSQLiteStore> m_declarativeNetRequestSessionRulesStore;
-@@ -1261,6 +1413,9 @@ private:
+@@ -1261,6 +1419,9 @@ private:
      HashSet<double> m_sessionRulesIDs;
      HashSet<double> m_dynamicRulesIDs;
  
@@ -34876,7 +35272,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
      MenuItemMap m_menuItems;
      MenuItemVector m_mainMenuItems;
  
-@@ -1274,12 +1429,16 @@ private:
+@@ -1274,12 +1435,16 @@ private:
          String message;
  #if PLATFORM(COCOA)
          RetainPtr<id> argument;
@@ -34893,7 +35289,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
  
      Deque<TestMessage> m_testMessageQueue;
      Deque<TestMessage> m_testStartedQueue;
-@@ -1289,6 +1448,8 @@ private:
+@@ -1289,6 +1454,8 @@ private:
      void sendQueuedTestMessagesIfNeeded(WebExtensionEventListenerType);
  #if PLATFORM(COCOA)
      void addTestMessageToQueue(const String& message, id argument, WebExtensionEventListenerType);
@@ -34903,10 +35299,10 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..8e50607238e7a31be3279a6bcf1dd7a7
  };
  
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in
-index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..62413b4cc48f4cfd3b366442ca664b151e6d51b1 100644
+index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..0762ae944e4a6c3dcabce570bf28860971bb2d9e 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in
-@@ -31,10 +31,83 @@
+@@ -31,10 +31,84 @@
      DispatchedTo=UI
  ]
  messages -> WebExtensionContext {
@@ -34915,6 +35311,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..62413b4cc48f4cfd3b366442ca664b15
 +    [Validator=isLoadedAndPrivilegedMessage] ExtensionIsAllowedFileSchemeAccess() -> (bool result)
 +    [Validator=isLoadedAndPrivilegedMessage] ExtensionIsAllowedIncognitoAccess() -> (bool result)
 +    [Validator=isLoadedAndPrivilegedMessage] TabsSendMessage(WebKit::WebExtensionTabIdentifier tabIdentifier, String messageJSON, struct WebKit::WebExtensionMessageTargetParameters targetParameters, struct WebKit::WebExtensionMessageSenderParameters senderParameters, bool userGesture) -> (std::expected<String, WebKit::WebExtensionError> result)
++    [Validator=isLoadedAndPrivilegedMessage] TabsExecuteScriptNative(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, struct WebKit::WebExtensionTabScriptParameters parameters, bool userGesture) -> (std::expected<Vector<RefPtr<WebCore::SerializedScriptValue>>, WebKit::WebExtensionError> result)
 +    [Validator=isLoadedAndPrivilegedMessage] TabsGet(WebKit::WebExtensionTabIdentifier tabIdentifier) -> (std::expected<std::optional<WebKit::WebExtensionTabParameters>, WebKit::WebExtensionError> result)
 +    [Validator=isLoadedAndPrivilegedMessage] TabsGetCurrent(WebKit::WebPageProxyIdentifier webPageProxyIdentifier) -> (std::expected<std::optional<WebKit::WebExtensionTabParameters>, WebKit::WebExtensionError> result)
 +    [Validator=isLoadedAndPrivilegedMessage] TabsQuery(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, WebKit::WebExtensionTabQueryParameters queryParameters) -> (std::expected<Vector<WebKit::WebExtensionTabParameters>, WebKit::WebExtensionError> result)
@@ -34991,7 +35388,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..62413b4cc48f4cfd3b366442ca664b15
      // Action APIs
      [Validator=isActionMessageAllowed] ActionGetTitle(std::optional<WebKit::WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier) -> (std::expected<String, WebKit::WebExtensionError> result)
      [Validator=isActionMessageAllowed] ActionSetTitle(std::optional<WebKit::WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, String title) -> (std::expected<void, WebKit::WebExtensionError> result)
-@@ -48,6 +121,14 @@ messages -> WebExtensionContext {
+@@ -48,6 +122,14 @@ messages -> WebExtensionContext {
      [Validator=isActionMessageAllowed] ActionSetEnabled(std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, bool enabled) -> (std::expected<void, WebKit::WebExtensionError> result)
  #endif
  
@@ -35006,7 +35403,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..62413b4cc48f4cfd3b366442ca664b15
      // Alarms APIs
      [Validator=isAlarmsMessageAllowed] AlarmsCreate(String name, Seconds initialInterval, Seconds repeatInterval) -> ()
      [Validator=isAlarmsMessageAllowed] AlarmsGet(String name) -> (struct std::optional<WebKit::WebExtensionAlarmParameters> alarmInfo)
-@@ -71,9 +152,6 @@ messages -> WebExtensionContext {
+@@ -71,9 +153,6 @@ messages -> WebExtensionContext {
      [Validator=isBookmarksMessageAllowed] BookmarksRemoveTree(String bookmarkId) -> (std::expected<void, WebKit::WebExtensionError> result)
  #endif // ENABLE(WK_WEB_EXTENSIONS_BOOKMARKS)
  
@@ -35016,7 +35413,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..62413b4cc48f4cfd3b366442ca664b15
      // Cookies APIs
      [Validator=isCookiesMessageAllowed] CookiesGet(std::optional<PAL::SessionID> sessionID, String name, URL url) -> (std::expected<std::optional<WebKit::WebExtensionCookieParameters>, WebKit::WebExtensionError> result)
      [Validator=isCookiesMessageAllowed] CookiesGetAll(std::optional<PAL::SessionID> sessionID, URL url, struct WebKit::WebExtensionCookieFilterParameters filterParameters) -> (std::expected<Vector<WebKit::WebExtensionCookieParameters>, WebKit::WebExtensionError> result)
-@@ -100,8 +178,6 @@ messages -> WebExtensionContext {
+@@ -100,8 +179,6 @@ messages -> WebExtensionContext {
  #endif
  
      // Event APIs
@@ -35025,7 +35422,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..62413b4cc48f4cfd3b366442ca664b15
  
      // Extensions APIs
      [Validator=isLoaded] ExtensionIsAllowedIncognitoAccess() -> (bool result)
-@@ -125,20 +201,10 @@ messages -> WebExtensionContext {
+@@ -125,20 +202,10 @@ messages -> WebExtensionContext {
      [Validator=isLoaded] PermissionsRequest(HashSet<String> permissions, HashSet<String> origins) -> (bool success)
      [Validator=isLoaded] PermissionsRemove(HashSet<String> permissions, HashSet<String> origins) -> (bool success)
  
@@ -35046,7 +35443,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..62413b4cc48f4cfd3b366442ca664b15
  
      // Scripting APIs
      [Validator=isScriptingMessageAllowed] ScriptingExecuteScript(WebKit::WebExtensionScriptInjectionParameters parameters, bool userGesture) -> (std::expected<Vector<WebKit::WebExtensionScriptInjectionResultParameters>, WebKit::WebExtensionError> result)
-@@ -165,15 +231,6 @@ messages -> WebExtensionContext {
+@@ -165,15 +232,6 @@ messages -> WebExtensionContext {
      [Validator=isSidebarMessageAllowed] SidebarGetActionClickBehavior() -> (std::expected<WebKit::WebExtensionActionClickBehavior, WebKit::WebExtensionError> result)
  #endif // ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
  
@@ -35062,7 +35459,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..62413b4cc48f4cfd3b366442ca664b15
      // Tabs APIs
      [Validator=isLoadedAndPrivilegedMessage] TabsCreate(std::optional<WebKit::WebPageProxyIdentifier> webPageProxyIdentifier, WebKit::WebExtensionTabParameters creationParameters) -> (std::expected<std::optional<WebKit::WebExtensionTabParameters>, WebKit::WebExtensionError> result)
      [Validator=isLoadedAndPrivilegedMessage] TabsUpdate(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, WebKit::WebExtensionTabParameters updateParameters) -> (std::expected<std::optional<WebKit::WebExtensionTabParameters>, WebKit::WebExtensionError> result)
-@@ -198,8 +255,6 @@ messages -> WebExtensionContext {
+@@ -198,8 +256,6 @@ messages -> WebExtensionContext {
      [Validator=isLoadedAndPrivilegedMessage] TabsRemoveCSS(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, WebKit::WebExtensionScriptInjectionParameters parameters) -> (std::expected<void, WebKit::WebExtensionError> result)
  
      // WebNavigation APIs
@@ -39486,6 +39883,147 @@ index 0000000000000000000000000000000000000000..06b7ae6968f52ad877c1747f6f5c6bd4
 +
 +} // namespace WebKit
 +
++#endif
+diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPITabScriptHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPITabScriptHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..17efa98590eecc8feb56779e9ff0f9c92c5e011d
+--- /dev/null
++++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPITabScriptHaiku.cpp
+@@ -0,0 +1,135 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#include "WebExtensionContext.h"
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++#include "APIContentWorld.h"
++#include "FrameTreeNodeData.h"
++#include "MessageSenderInlines.h"
++#include "WebExtensionConstants.h"
++#include "WebExtensionTabScriptExecution.h"
++#include "WebPageMessages.h"
++#include "WebPageProxy.h"
++#include <wtf/Box.h>
++#include <wtf/CallbackAggregator.h>
++
++namespace WebKit {
++
++void WebExtensionContext::tabsExecuteScriptNative(WebPageProxyIdentifier callingPage, std::optional<WebExtensionTabIdentifier> identifier, const WebExtensionTabScriptParameters& parameters, bool userGesture, CompletionHandler<void(std::expected<Vector<RefPtr<WebCore::SerializedScriptValue>>, WebExtensionError>&&)>&& completion)
++{
++    constexpr auto apiName = "tabs.executeScript()"_s;
++    RefPtr<WebExtensionTab> tab;
++    if (identifier)
++        tab = getTab(*identifier);
++    else if (RefPtr window = getWindow(WebExtensionWindowConstants::CurrentIdentifier, callingPage))
++        tab = window->activeTab();
++    RefPtr page = tab ? tab->nativePage() : nullptr;
++    if (!tab || !page || !tab->isOpen() || !tab->extensionHasAccess() || !safeToInjectContent() || !m_contentScriptWorld || extension().supportsManifestVersion(3)) {
++        completion(toWebExtensionError(apiName, nullString(), "the target tab or extension is unavailable"_s));
++        return;
++    }
++    if (parameters.code.has_value() == parameters.file.has_value()) {
++        completion(toWebExtensionError(apiName, nullString(), "exactly one code or file source is required"_s));
++        return;
++    }
++    String source;
++    URL sourceURL;
++    if (parameters.code)
++        source = *parameters.code;
++    else {
++        sourceURL = URL { baseURL(), *parameters.file };
++        if (!isURLForThisExtension(sourceURL)) {
++            completion(toWebExtensionError(apiName, "file"_s, "the script must be packaged with this extension"_s));
++            return;
++        }
++        auto resource = extension().resourceStringForPath(*parameters.file, WebExtension::CacheResult::Yes);
++        if (!resource) {
++            completion(toWebExtensionError(apiName, "file"_s, "the script resource could not be loaded"_s));
++            return;
++        }
++        source = WTF::move(*resource);
++    }
++    if (source.length() > webExtensionMaxMessageLength) {
++        completion(toWebExtensionError(apiName, nullString(), "the script exceeds the maximum size"_s));
++        return;
++    }
++    Ref world = *m_contentScriptWorld;
++    auto stillCurrent = [protectedThis = Ref { *this }, tab, page, world] {
++        return protectedThis->safeToInjectContent() && protectedThis->m_contentScriptWorld == world.ptr()
++            && tab->isOpen() && tab->extensionHasAccess() && tab->nativePage() == page;
++    };
++    page->getAllFrames([this, protectedThis = Ref { *this }, tab, page, world, parameters, source, sourceURL, userGesture, stillCurrent, completion = WTF::move(completion)](std::optional<FrameTreeNodeData>&& frames) mutable {
++        if (!frames || !stillCurrent()) {
++            completion(toWebExtensionError("tabs.executeScript()"_s, nullString(), "the target document is unavailable"_s));
++            return;
++        }
++        auto captured = captureWebExtensionTabScriptTargets(*frames, page->identifier(), parameters);
++        if (!captured) {
++            completion(toWebExtensionError("tabs.executeScript()"_s, nullString(), captured.error()));
++            return;
++        }
++        Vector<WebExtensionTabScriptTarget> targets;
++        for (const auto& target : *captured) {
++            auto url = webExtensionTabScriptPermissionURL(target, parameters.matchAboutBlank);
++            if (!url || (url->protocolIs("file"_s) && !hasAccessToFileURLs())) {
++                // MV2 allFrames keeps successful child results, but a failure
++                // in the requested root frame rejects the operation.
++                if (targets.isEmpty()) {
++                    completion(toWebExtensionError("tabs.executeScript()"_s, nullString(), "this extension cannot inject into the requested document"_s));
++                    return;
++                }
++                continue;
++            }
++            targets.append(target);
++        }
++        // Use host or activeTab grants already approved by the native browser.
++        // The tabs metadata permission must not authorize script execution.
++        auto results = Box<Vector<WebExtensionTabScriptExecutionResult>>::create();
++        results->resize(targets.size());
++        Ref aggregator = MainRunLoopCallbackAggregator::create([results, completion = WTF::move(completion)]() mutable {
++            if (results->isEmpty() || !results->first() || !*results->first()) {
++                String error = !results->isEmpty() && !results->first() ? results->first().error() : "the requested frame did not execute the script"_s;
++                completion(toWebExtensionError("tabs.executeScript()"_s, nullString(), error));
++                return;
++            }
++            Vector<RefPtr<WebCore::SerializedScriptValue>> values;
++            for (auto& result : *results) {
++                if (result && *result)
++                    values.append(WTF::move(*result));
++            }
++            completion(WTF::move(values));
++        });
++        for (size_t index = 0; index < targets.size(); ++index) {
++            auto target = targets[index];
++            auto url = webExtensionTabScriptPermissionURL(target, parameters.matchAboutBlank);
++            if (!url || !hasPermission(*url, tab.get(), { })) {
++                (*results)[index] = makeUnexpected("this extension does not have host access to the frame"_s);
++                continue;
++            }
++            auto frameIdentifier = target.documents.last().frameIdentifier;
++            Ref process = page->processContainingFrame(frameIdentifier);
++            process->sendWithAsyncReply(Messages::WebPage::WaitForExtensionTabScript(this->identifier(), world->identifier(), target, parameters.runAt),
++                [this, protectedThis, tab, page, world, parameters, source, sourceURL, userGesture, stillCurrent, frameIdentifier, results, index, aggregator](std::expected<WebExtensionTabScriptTarget, String>&& ready) mutable {
++                    if (!ready || !stillCurrent()) {
++                        (*results)[index] = makeUnexpected(ready ? "the extension or tab changed while waiting to inject"_s : ready.error());
++                        return;
++                    }
++                    auto url = webExtensionTabScriptPermissionURL(*ready, parameters.matchAboutBlank);
++                    // Recheck after document readiness; a grant may expire
++                    // or be revoked while the request waits for resources.
++                    if (!url || (url->protocolIs("file"_s) && !hasAccessToFileURLs()) || !hasPermission(*url, tab.get(), { })) {
++                        (*results)[index] = makeUnexpected("host access was lost before script execution"_s);
++                        return;
++                    }
++                    Ref process = page->processContainingFrame(frameIdentifier);
++                    auto worldData = world->worldDataForProcess(process);
++                    process->sendWithAsyncReply(Messages::WebPage::ExecuteExtensionTabScript(this->identifier(), worldData, *ready, *url, parameters.matchAboutBlank, source, sourceURL, userGesture),
++                        [results, index, aggregator](WebExtensionTabScriptExecutionResult&& result) mutable {
++                            (*results)[index] = WTF::move(result);
++                        }, page->webPageIDInProcess(process));
++                }, page->webPageIDInProcess(process));
++        }
++    });
++}
++
++}
 +#endif
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPITabsHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPITabsHaiku.cpp
 new file mode 100644
@@ -57286,10 +57824,10 @@ index ef0880ef23f911b8be87a268bb844b8a3aa4f9e9..5178563c708937f42e8321b6a54195d0
  } // namespace WebKit
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPITabs.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPITabs.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..e931bd417f3eeac98ec48f0fcbae27e8e467375f
+index 0000000000000000000000000000000000000000..baafb057e8aba7f579918a319b219bf05b5a3ec6
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPITabs.cpp
-@@ -0,0 +1,339 @@
+@@ -0,0 +1,397 @@
 +/*
 + * Copyright (C) 2023 Apple Inc. All rights reserved.
 + *
@@ -57327,6 +57865,8 @@ index 0000000000000000000000000000000000000000..e931bd417f3eeac98ec48f0fcbae27e8
 +#include "WebExtensionMessageSenderParameters.h"
 +#include "WebExtensionMessageTargetParameters.h"
 +#include "WebExtensionTabQueryParser.h"
++#include "WebExtensionTabScriptParser.h"
++#include <WebCore/SerializedScriptValue.h>
 +#include "WebExtensionUtilities.h"
 +#include "JSWebExtensionTabParameters.h"
 +#include "WebFrame.h"
@@ -57455,6 +57995,62 @@ index 0000000000000000000000000000000000000000..e931bd417f3eeac98ec48f0fcbae27e8
 +                return;
 +            }
 +            callback->call(fromJSON(callback->globalContext(), JSON::Value::parseJSON(*result)));
++        }, extensionContext().identifier());
++}
++
++bool WebExtensionAPITabs::isPropertyAllowed(const ASCIILiteral& name, WebPage*)
++{
++    Ref context = extensionContext();
++    return name == "executeScript"_s && isForMainWorld() && !context->supportsManifestVersion(3)
++        && !context->isUnsupportedAPI(propertyPath(), name);
++}
++
++void WebExtensionAPITabs::executeScript(WebPageProxyIdentifier page, double tabID, RefPtr<JSON::Value> details, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++{
++    if (!isForMainWorld() || extensionContext().supportsManifestVersion(3)) {
++        exception = "tabs.executeScript is available only to Manifest V2 extension pages"_s;
++        return;
++    }
++    std::optional<WebExtensionTabIdentifier> tab;
++    if (!std::isnan(tabID)) {
++        tab = toWebExtensionTabIdentifier(tabID);
++        if (!isValid(tab) || tabID > 9007199254740991.0) {
++            exception = "tabID must be a valid tab identifier"_s;
++            return;
++        }
++    }
++    auto parameters = parseWebExtensionTabScript(details.get());
++    if (!parameters) {
++        exception = parameters.error();
++        return;
++    }
++    bool userGesture = WebCore::UserGestureIndicator::processingUserGesture();
++    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::TabsExecuteScriptNative(page, tab, *parameters, userGesture),
++        [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<Vector<RefPtr<WebCore::SerializedScriptValue>>, WebExtensionError>&& result) {
++            if (!result) {
++                callback->reportError(result.error());
++                return;
++            }
++            auto context = callback->globalContext();
++            Vector<Protected<JSValueRef>> values;
++            Vector<JSValueRef> arguments;
++            for (auto& serialized : *result) {
++                JSValueRef exception = nullptr;
++                auto value = serialized ? serialized->deserialize(context, &exception) : nullptr;
++                if (!value || exception) {
++                    callback->reportError("the script result could not be cloned into this extension"_s);
++                    return;
++                }
++                values.append(Protected<JSValueRef>(context, value));
++                arguments.append(values.last().get());
++            }
++            JSValueRef exception = nullptr;
++            Protected<JSObjectRef> array(context, JSObjectMakeArray(context, arguments.size(), arguments.span().data(), &exception));
++            if (!array.get() || exception) {
++                callback->reportError("the script result array could not be created"_s);
++                return;
++            }
++            callback->call(array.get());
 +        }, extensionContext().identifier());
 +}
 +
@@ -57630,13 +58226,14 @@ index 0000000000000000000000000000000000000000..e931bd417f3eeac98ec48f0fcbae27e8
 +}
 +#endif
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPITabs.h b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPITabs.h
-index d0158582421dee1de4d03bd9344567bc7f0e4acd..e1eeea1055ec3c9e892c3ee21c8f7d5a9f349c8a 100644
+index d0158582421dee1de4d03bd9344567bc7f0e4acd..0806b61474f51cd6b81081b6731c85844f76c842 100644
 --- a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPITabs.h
 +++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPITabs.h
-@@ -49,7 +49,42 @@ class WebExtensionAPITabs : public WebExtensionAPIObject, public JSWebExtensionW
+@@ -49,15 +49,49 @@ class WebExtensionAPITabs : public WebExtensionAPIObject, public JSWebExtensionW
      WEB_EXTENSION_DECLARE_JS_WRAPPER_CLASS(WebExtensionAPITabs, tabs, tabs);
  
  public:
+-#if PLATFORM(COCOA)
 +    void getCurrent(WebPageProxyIdentifier, Ref<WebExtensionCallbackHandler>&&);
 +    double tabIdentifierNone() const { return -1; }
 +
@@ -57653,7 +58250,9 @@ index d0158582421dee1de4d03bd9344567bc7f0e4acd..e1eeea1055ec3c9e892c3ee21c8f7d5a
 +    void query(WebPageProxyIdentifier page, RefPtr<JSON::Value> info, Ref<WebExtensionCallbackHandler>&& callback, String& exception);
 +    void get(double tabID, Ref<WebExtensionCallbackHandler>&& callback, String& exception);
 +    void sendMessage(WebFrame& frame, double tabID, const String& message, RefPtr<JSON::Value> options, Ref<WebExtensionCallbackHandler>&& callback, String& exception);
- #if PLATFORM(COCOA)
++    void executeScript(WebPageProxyIdentifier page, double tabID, RefPtr<JSON::Value> options, Ref<WebExtensionCallbackHandler>&& callback, String& exception);
+     bool isPropertyAllowed(const ASCIILiteral& propertyName, WebPage*);
++#if PLATFORM(COCOA)
 +    void createTab(WebPageProxyIdentifier page, RefPtr<JSON::Value> properties, Ref<WebExtensionCallbackHandler>&& callback, String& exception);
 +    void getSelected(WebPageProxyIdentifier page, double windowID, Ref<WebExtensionCallbackHandler>&& callback, String& exception);
 +    void duplicate(double tabID, RefPtr<JSON::Value> properties, Ref<WebExtensionCallbackHandler>&& callback, String& exception);
@@ -57669,14 +58268,12 @@ index d0158582421dee1de4d03bd9344567bc7f0e4acd..e1eeea1055ec3c9e892c3ee21c8f7d5a
 +    void toggleReaderMode(WebPageProxyIdentifier page, double tabID, Ref<WebExtensionCallbackHandler>&& callback, String& exception);
 +    void captureVisibleTab(WebPageProxyIdentifier page, double windowID, RefPtr<JSON::Value> options, Ref<WebExtensionCallbackHandler>&& callback, String& exception);
 +    RefPtr<WebExtensionAPIPort> connect(WebFrame& frame, JSContextRef context, double tabID, RefPtr<JSON::Value> options, String& exception);
-+    void executeScript(WebPageProxyIdentifier page, double tabID, RefPtr<JSON::Value> options, Ref<WebExtensionCallbackHandler>&& callback, String& exception);
 +    void insertCSS(WebPageProxyIdentifier page, double tabID, RefPtr<JSON::Value> options, Ref<WebExtensionCallbackHandler>&& callback, String& exception);
 +    void removeCSS(WebPageProxyIdentifier page, double tabID, RefPtr<JSON::Value> options, Ref<WebExtensionCallbackHandler>&& callback, String& exception);
 +
-     bool isPropertyAllowed(const ASCIILiteral& propertyName, WebPage*);
  
      void createTab(WebPageProxyIdentifier, NSDictionary *properties, Ref<WebExtensionCallbackHandler>&&, NSString **outExceptionString);
-@@ -57,7 +92,6 @@ public:
+ 
      void query(WebPageProxyIdentifier, NSDictionary *info, Ref<WebExtensionCallbackHandler>&&, NSString **outExceptionString);
  
      void get(double tabID, Ref<WebExtensionCallbackHandler>&&, NSString **outExceptionString);
@@ -60903,7 +61500,7 @@ index 635dec16788ebb4331ed128000b7123c8d6814e8..70248ca4aab1a86f99ae62a6a82aa6e3
  
  JSValueRef deserializeJSONString(JSContextRef, const String& jsonString);
 diff --git a/Source/WebKit/WebProcess/Extensions/Bindings/Scripts/CodeGeneratorExtensions.pm b/Source/WebKit/WebProcess/Extensions/Bindings/Scripts/CodeGeneratorExtensions.pm
-index e3dea68dbcfe67d9772c19dd56d66eb1c3c2af67..4b30752aa4cf317e4869d73fd5e85e17e5054fb4 100644
+index e3dea68dbcfe67d9772c19dd56d66eb1c3c2af67..1f28659a370c8165ec4cdf591c6b6f0e7c98316b 100644
 --- a/Source/WebKit/WebProcess/Extensions/Bindings/Scripts/CodeGeneratorExtensions.pm
 +++ b/Source/WebKit/WebProcess/Extensions/Bindings/Scripts/CodeGeneratorExtensions.pm
 @@ -475,7 +475,7 @@ EOF
@@ -60915,7 +61512,15 @@ index e3dea68dbcfe67d9772c19dd56d66eb1c3c2af67..4b30752aa4cf317e4869d73fd5e85e17
              push(@contents, <<EOF) if $conditionalString;
  #if ${conditionalString}
  EOF
-@@ -1477,6 +1477,7 @@ sub _javaScriptTypeCondition
+@@ -528,6 +528,7 @@ EOF
+ 
+             foreach my $parameter (@specifiedParameters) {
+                 $self->_includeHeaders(\%contentsIncludes, $parameter->type, $parameter);
++                $contentsIncludes{"<cmath>"} = 1 if $parameter->extendedAttributes->{"Finite"};
+                 $optionalArgumentCount++ if $parameter->extendedAttributes->{"Optional"};
+                 $needsPage = 1 if $parameter->extendedAttributes->{"CallbackHandler"} && $interface->extendedAttributes->{"NeedsPageWithCallbackHandler"};
+                 $needsPageIdentifier = 1 if $parameter->extendedAttributes->{"CallbackHandler"} && $interface->extendedAttributes->{"NeedsPageIdentifierWithCallbackHandler"};
+@@ -1477,6 +1478,7 @@ sub _javaScriptTypeCondition
      $nullOrUndefined = " || JSValueIsNull(context, ${argument}) || JSValueIsUndefined(context, ${argument})" if $signature->extendedAttributes->{"Optional"};
  
      return "isDictionary(context, ${argument}) || JSValueIsString(context, ${argument})${nullOrUndefined}" if $idlTypeName eq "any" && $signature->extendedAttributes->{"NSObject"} && $signature->extendedAttributes->{"DOMString"};
@@ -60923,7 +61528,23 @@ index e3dea68dbcfe67d9772c19dd56d66eb1c3c2af67..4b30752aa4cf317e4869d73fd5e85e17
      return "(!JSValueIsNull(context, ${argument}) && !JSValueIsUndefined(context, ${argument}) && !JSObjectIsFunction(context, JSValueToObject(context, ${argument}, nullptr)))${nullOrUndefined}" if $idlTypeName eq "any" && $signature->extendedAttributes->{"Serialization"};
      return "isDictionary(context, ${argument})${nullOrUndefined}" if $idlTypeName eq "any" && ($signature->extendedAttributes->{"NSDictionary"} || $signature->extendedAttributes->{"JSONValue"});
      return "JSValueIsObject(context, ${argument})${nullOrUndefined}" if $idlTypeName eq "any" && $signature->extendedAttributes->{"NSObject"};
-@@ -1674,7 +1675,7 @@ sub _staticFunctionsGetterImplementation
+@@ -1485,6 +1487,7 @@ sub _javaScriptTypeCondition
+     return "JSValueIsBoolean(context, ${argument})${nullOrUndefined}" if $idlTypeName eq "boolean";
+     return "JSValueIsArray(context, ${argument})${nullOrUndefined}" if $idlTypeName eq "array";
+     return "JSValueIsString(context, ${argument})${nullOrUndefined}" if $$self{codeGenerator}->IsStringType($idlType);
++    return "(JSValueIsNumber(context, ${argument}) && std::isfinite(JSValueToNumber(context, ${argument}, nullptr)))${nullOrUndefined}" if $$self{codeGenerator}->IsPrimitiveType($idlType) && $signature->extendedAttributes->{"Finite"};
+     return "JSValueIsNumber(context, ${argument})${nullOrUndefined}"  if $$self{codeGenerator}->IsPrimitiveType($idlType);
+     return $argument;
+ }
+@@ -1563,6 +1566,7 @@ sub _platformTypeConstructor
+     return "[NSURL URLWithString:toString(context, $argumentName, $nullStringPolicy).createNSString().get()]" if !$interface->extendedAttributes->{"UseCPPAPI"} && $$self{codeGenerator}->IsStringType($idlType) && $signature->extendedAttributes->{"URL"};
+     return "URL { toString(context, $argumentName, $nullStringPolicy) }" if $interface->extendedAttributes->{"UseCPPAPI"} && $$self{codeGenerator}->IsStringType($idlType) && $signature->extendedAttributes->{"URL"};
+     return "toString(context, $argumentName, $nullStringPolicy)" if $$self{codeGenerator}->IsStringType($idlType);
++    return "(JSValueIsNull(context, $argumentName) || JSValueIsUndefined(context, $argumentName) ? std::numeric_limits<double>::quiet_NaN() : JSValueToNumber(context, $argumentName, nullptr))" if $$self{codeGenerator}->IsPrimitiveType($idlType) && $signature->extendedAttributes->{"Finite"} && $signature->extendedAttributes->{"Optional"};
+     return "JSValueToNumber(context, $argumentName, nullptr)" if $$self{codeGenerator}->IsPrimitiveType($idlType);
+     return "to" . _implementationClassName($idlType) . "(context, $argumentName)";
+ }
+@@ -1674,7 +1678,7 @@ sub _staticFunctionsGetterImplementation
          my @attributes = ();
          push(@attributes, "kJSPropertyAttributeDontEnum") if $_->extendedAttributes->{"DontEnum"};
          my $jsproperties = scalar @attributes == 0 ? "kJSPropertyAttributeNone" : join(" | ", @attributes);
@@ -60932,7 +61553,7 @@ index e3dea68dbcfe67d9772c19dd56d66eb1c3c2af67..4b30752aa4cf317e4869d73fd5e85e17
  
          return "#if ${conditionalString}\n        { \"$name\", $name, $jsproperties },\n        #endif" if $conditionalString;
          return "{ \"$name\", $name, $jsproperties },";
-@@ -1927,7 +1928,7 @@ EOF
+@@ -1927,7 +1931,7 @@ EOF
              my $condition = "JSStringIsEqualToUTF8CString(propertyName, \"${name}\")" if $hasMainWorldOnlyProperties and !$hasDynamicProperties;
              $condition = &$generateCondition($function, "JSStringIsEqualToUTF8CString(propertyName, \"${name}\")") if $hasDynamicProperties;
  
@@ -60942,7 +61563,7 @@ index e3dea68dbcfe67d9772c19dd56d66eb1c3c2af67..4b30752aa4cf317e4869d73fd5e85e17
              push(@contents, "#if ${conditionalString}\n") if $conditionalString;
              push(@contents, "    if (${condition})\n");
 diff --git a/Source/WebKit/WebProcess/Extensions/Bindings/Scripts/IDLAttributes.json b/Source/WebKit/WebProcess/Extensions/Bindings/Scripts/IDLAttributes.json
-index 3a20f9d1694c78175c5ce007ac7a252dad6e5c22..10b8f6b1b777b87d8e1ec30e8e9eaa9a08eea390 100644
+index 3a20f9d1694c78175c5ce007ac7a252dad6e5c22..298e5a1171e1b5935dc39e1285d3092ef43735d8 100644
 --- a/Source/WebKit/WebProcess/Extensions/Bindings/Scripts/IDLAttributes.json
 +++ b/Source/WebKit/WebProcess/Extensions/Bindings/Scripts/IDLAttributes.json
 @@ -24,7 +24,7 @@
@@ -60954,6 +61575,16 @@ index 3a20f9d1694c78175c5ce007ac7a252dad6e5c22..10b8f6b1b777b87d8e1ec30e8e9eaa9a
              "values": ["*"]
          },
          "CallbackHandler": {
+@@ -122,6 +122,9 @@
+         "NSObject": {
+             "contextsAllowed": ["argument", "attribute", "operation"]
+         },
++        "Finite": {
++            "contextsAllowed": ["argument"]
++        },
+         "Optional": {
+             "contextsAllowed": ["argument"]
+         },
 diff --git a/Source/WebKit/WebProcess/Extensions/Cocoa/WebExtensionContextProxyCocoa.mm b/Source/WebKit/WebProcess/Extensions/Cocoa/WebExtensionContextProxyCocoa.mm
 index caccdbec0d1bb1fea403caca4bde05e5f3aafb40..caa45e0d1dcd179d40945226721ce2b1079c0276 100644
 --- a/Source/WebKit/WebProcess/Extensions/Cocoa/WebExtensionContextProxyCocoa.mm
@@ -61713,7 +62344,7 @@ index 866d70a2cdbbe9cfbd525c7be21d6c21db2dfa1a..090b11c6a852e779e830487dcaed3958
      readonly attribute WebExtensionAPIEvent onChanged;
  
 diff --git a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPITabs.idl b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPITabs.idl
-index a744e37f5fd4c546a27627a69573d8eeb454312b..a352cdf276f6a55f75b992aa0bb09c68f3e9284b 100644
+index a744e37f5fd4c546a27627a69573d8eeb454312b..f36031f822ec3a85b3f0bf2739fe5d681c2ccc93 100644
 --- a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPITabs.idl
 +++ b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPITabs.idl
 @@ -69,42 +69,43 @@ dictionary WebExtensionTabCreateProperties {
@@ -61770,7 +62401,7 @@ index a744e37f5fd4c546a27627a69573d8eeb454312b..a352cdf276f6a55f75b992aa0bb09c68
 -    [RaisesException, Dynamic, NeedsPageIdentifier] void executeScript([Optional] double tabID, [NSDictionary] any details, [Optional, CallbackHandler] function callback);
 -    [RaisesException, Dynamic, NeedsPageIdentifier] void insertCSS([Optional] double tabID, [NSDictionary] any details, [Optional, CallbackHandler] function callback);
 -    [RaisesException, Dynamic, NeedsPageIdentifier] void removeCSS([Optional] double tabID, [NSDictionary] any details, [Optional, CallbackHandler] function callback);
-+    [Platform=COCOA, RaisesStringException, Dynamic, NeedsPageIdentifier] void executeScript([Optional] double tabID, [JSONValue] any details, [Optional, CallbackHandler] function callback);
++    [RaisesStringException, Dynamic, NeedsPageIdentifier] void executeScript([Optional, Finite] double tabID, [JSONValue] any details, [Optional, CallbackHandler] function callback);
 +    [Platform=COCOA, RaisesStringException, Dynamic, NeedsPageIdentifier] void insertCSS([Optional] double tabID, [JSONValue] any details, [Optional, CallbackHandler] function callback);
 +    [Platform=COCOA, RaisesStringException, Dynamic, NeedsPageIdentifier] void removeCSS([Optional] double tabID, [JSONValue] any details, [Optional, CallbackHandler] function callback);
  
@@ -62172,7 +62803,7 @@ index 2b2ff5395e73b7978dc8b610d62ffe835fc1a886..443a5b3005437f3a7ec05ce7b4eca60d
  
  #endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.h b/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.h
-index 1b514e1106295ebe5b2cc26520a9970b6c35633c..fcda7dd69517ecf638dde41ce7824044a15408cc 100644
+index 1b514e1106295ebe5b2cc26520a9970b6c35633c..ca3519e8890ab0909581e5502685b2d4343262f4 100644
 --- a/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.h
 +++ b/Source/WebKit/WebProcess/Extensions/WebExtensionContextProxy.h
 @@ -41,9 +41,12 @@
@@ -62188,12 +62819,13 @@ index 1b514e1106295ebe5b2cc26520a9970b6c35633c..fcda7dd69517ecf638dde41ce7824044
  class WebExtensionAPIStorage;
  class WebExtensionAPIWebPageNamespace;
  class WebExtensionControllerProxy;
-@@ -104,10 +107,16 @@ public:
+@@ -104,10 +107,17 @@ public:
      static WebCore::DOMWrapperWorld& mainWorldSingleton() { return WebCore::mainThreadNormalWorldSingleton(); }
  
      bool hasContentScriptWorld() const { return !!m_contentScriptWorld; }
 +#if PLATFORM(HAIKU)
 +    bool matchesContentScriptWorld(const WebCore::DOMWrapperWorld&) const;
++    std::optional<ContentWorldIdentifier> contentScriptWorldIdentifier() const { return m_contentScriptWorldIdentifier; }
 +#endif
      WebCore::DOMWrapperWorld& contentScriptWorld() const { RELEASE_ASSERT(hasContentScriptWorld()); return *m_contentScriptWorld; }
      void setContentScriptWorld(WebCore::DOMWrapperWorld&);
@@ -62205,7 +62837,7 @@ index 1b514e1106295ebe5b2cc26520a9970b6c35633c..fcda7dd69517ecf638dde41ce7824044
  
      void didEncounterScriptError(const String& message, const String& sourceURL, unsigned lineNumber, unsigned columnNumber, WebExtensionContentWorldType);
  
-@@ -167,7 +176,11 @@ private:
+@@ -167,7 +177,11 @@ private:
      void dispatchCommandsChangedEvent(const String& identifier, const String& oldShortcut, const String& newShortcut);
  
      // Cookies
@@ -62217,7 +62849,7 @@ index 1b514e1106295ebe5b2cc26520a9970b6c35633c..fcda7dd69517ecf638dde41ce7824044
  
  #if ENABLE(DNR_ON_RULE_MATCHED_DEBUG)
      // DeclarativeNetRequest
-@@ -195,7 +208,13 @@ private:
+@@ -195,7 +209,13 @@ private:
  #endif
  
      // Menus
@@ -62231,7 +62863,7 @@ index 1b514e1106295ebe5b2cc26520a9970b6c35633c..fcda7dd69517ecf638dde41ce7824044
  
      // Permissions
      void updateGrantedPermissions(PermissionsMap&&);
-@@ -203,10 +222,10 @@ private:
+@@ -203,10 +223,10 @@ private:
  
      // Port
      void dispatchPortMessageEvent(std::optional<WebPageProxyIdentifier>, WebExtensionPortChannelIdentifier, const String& messageJSON, bool userGesture);
@@ -62244,7 +62876,7 @@ index 1b514e1106295ebe5b2cc26520a9970b6c35633c..fcda7dd69517ecf638dde41ce7824044
      void internalDispatchRuntimeConnectEvent(WebExtensionContentWorldType, WebExtensionPortChannelIdentifier, const String& name, const std::optional<WebExtensionMessageTargetParameters>&, const WebExtensionMessageSenderParameters&, bool userGesture, CompletionHandler<void(HashCountedSet<WebPageProxyIdentifier>&&)>&&);
      void dispatchRuntimeMessageEvent(WebExtensionContentWorldType, const String& messageJSON, const std::optional<WebExtensionMessageTargetParameters>&, const WebExtensionMessageSenderParameters&, bool userGesture, CompletionHandler<void(String&& replyJSON)>&&);
      void dispatchRuntimeConnectEvent(WebExtensionContentWorldType, WebExtensionPortChannelIdentifier, const String& name, const std::optional<WebExtensionMessageTargetParameters>&, const WebExtensionMessageSenderParameters&, bool userGesture, CompletionHandler<void(HashCountedSet<WebPageProxyIdentifier>&&)>&&);
-@@ -219,6 +238,9 @@ private:
+@@ -219,6 +239,9 @@ private:
      void dispatchStorageChangedEvent(const Vector<String>& onChangedJSON, WebExtensionDataType, WebExtensionContentWorldType);
  
      // Tabs
@@ -62254,7 +62886,7 @@ index 1b514e1106295ebe5b2cc26520a9970b6c35633c..fcda7dd69517ecf638dde41ce7824044
      void dispatchTabsCreatedEvent(const WebExtensionTabParameters&);
      void dispatchTabsUpdatedEvent(const WebExtensionTabParameters&, const WebExtensionTabParameters& changedParameters);
      void dispatchTabsReplacedEvent(WebExtensionTabIdentifier replacedTabIdentifier, WebExtensionTabIdentifier newTabIdentifier);
-@@ -238,12 +260,12 @@ private:
+@@ -238,12 +261,12 @@ private:
      void dispatchWebNavigationEvent(WebExtensionEventListenerType, WebExtensionTabIdentifier, const WebExtensionFrameParameters&, WallTime);
  
      // Web Request
@@ -62273,7 +62905,7 @@ index 1b514e1106295ebe5b2cc26520a9970b6c35633c..fcda7dd69517ecf638dde41ce7824044
  
      // Windows
      void dispatchWindowsEvent(WebExtensionEventListenerType, const std::optional<WebExtensionWindowParameters>&);
-@@ -265,7 +287,13 @@ private:
+@@ -265,7 +288,13 @@ private:
      mutable PermissionsMap m_grantedPermissions;
      mutable WallTime m_nextGrantedPermissionsExpirationDate { WallTime::nan() };
      RefPtr<WebCore::DOMWrapperWorld> m_contentScriptWorld;
@@ -62980,6 +63612,250 @@ index 0000000000000000000000000000000000000000..ef414274ea6c550c9f912275911eb033
 +} // namespace WebKit
 +
 +#endif // ENABLE(WK_WEB_EXTENSIONS)
+diff --git a/Source/WebKit/WebProcess/Extensions/WebExtensionTabScriptExecution.cpp b/Source/WebKit/WebProcess/Extensions/WebExtensionTabScriptExecution.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..23b22aa57020d104269248ba5df78236a68f98f8
+--- /dev/null
++++ b/Source/WebKit/WebProcess/Extensions/WebExtensionTabScriptExecution.cpp
+@@ -0,0 +1,238 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#include "WebExtensionTabScriptExecution.h"
++
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++#include "FrameTreeNodeData.h"
++#include "InjectedBundleScriptWorld.h"
++#include "WebExtensionConstants.h"
++#include "WebExtensionContextProxy.h"
++#include "WebExtensionControllerProxy.h"
++#include "WebFrame.h"
++#include "WebPage.h"
++#include "WebProcess.h"
++#include "WebUserContentController.h"
++#include <JavaScriptCore/TopExceptionScope.h>
++#include <JavaScriptCore/JSLock.h>
++#include <JavaScriptCore/JSPromise.h>
++#include <WebCore/CommonVM.h>
++#include <WebCore/Document.h>
++#include <WebCore/JSDOMPromise.h>
++#include <WebCore/JSDOMWindowBase.h>
++#include <WebCore/LocalFrame.h>
++#include <WebCore/LocalFrameInlines.h>
++#include <WebCore/RunJavaScriptParameters.h>
++#include <WebCore/ScriptController.h>
++#include <wtf/RunLoop.h>
++#include <wtf/TZoneMallocInlines.h>
++
++namespace WebKit {
++using namespace WebCore;
++
++class PendingTabScript final : public RefCounted<PendingTabScript>, public CanMakeWeakPtr<PendingTabScript> {
++    WTF_MAKE_TZONE_ALLOCATED_INLINE(PendingTabScript);
++public:
++    static void wait(WebPage& page, WebExtensionContextIdentifier context, ContentWorldIdentifier world, const WebExtensionTabScriptTarget& target, WebExtensionTabScriptRunAt runAt, CompletionHandler<void(std::expected<WebExtensionTabScriptTarget, String>&&)>&& completion)
++    {
++        Ref pending = adoptRef(*new PendingTabScript(page, context, world, target));
++        pending->m_runAt = runAt;
++        pending->m_readyCompletion = WTF::move(completion);
++        pending->poll();
++    }
++
++    static void execute(WebPage& page, WebExtensionContextIdentifier context, InjectedBundleScriptWorld& world, const WebExtensionTabScriptTarget& target, const URL& authorizedURL, bool matchAboutBlank, const String& source, const URL& sourceURL, bool userGesture, CompletionHandler<void(WebExtensionTabScriptExecutionResult&&)>&& completion)
++    {
++        Ref pending = adoptRef(*new PendingTabScript(page, context, world.identifier(), target));
++        pending->m_resultCompletion = WTF::move(completion);
++        JSC::JSLockHolder lock(commonVM());
++        auto current = pending->currentTarget();
++        if (!current) {
++            pending->fail(current.error());
++            return;
++        }
++        auto permissionURL = webExtensionTabScriptPermissionURL(*current, matchAboutBlank);
++        if (!permissionURL || *permissionURL != authorizedURL) {
++            pending->fail("the document URL changed after authorization"_s);
++            return;
++        }
++        RefPtr frame = pending->currentFrame();
++        RefPtr coreFrame = frame ? frame->coreLocalFrame() : nullptr;
++        if (!coreFrame || !coreFrame->document() || coreFrame->document()->isPluginDocument()) {
++            pending->fail("scripts cannot be injected into this document"_s);
++            return;
++        }
++        RefPtr extension = WebExtensionContextProxy::get(context);
++        if (!extension || !extension->matchesContentScriptWorld(world.coreWorld())) {
++            pending->fail("the extension content world is no longer available"_s);
++            return;
++        }
++        extension->setContentScriptWorld(world.coreWorld());
++        pending->m_world = world;
++        // Evaluate ordinary script source, preserving global declarations and
++        // its last-statement completion. Await promises separately below.
++        WebCore::RunJavaScriptParameters parameters { source, JSC::SourceTaintedOrigin::Untainted, URL { sourceURL }, false, std::nullopt, userGesture, RemoveTransientActivation::No };
++        coreFrame->script().executeAsynchronousUserAgentScriptInWorld(world.coreWorld(), WTF::move(parameters),
++            [pending](ValueOrException result) {
++                if (!result) {
++                    pending->fail(result.error().message);
++                    return;
++                }
++                pending->receiveValue(result.value());
++            });
++    }
++
++private:
++    PendingTabScript(WebPage& page, WebExtensionContextIdentifier context, ContentWorldIdentifier world, const WebExtensionTabScriptTarget& target)
++        : m_page(page), m_context(context), m_worldIdentifier(world), m_target(target) { }
++
++    std::expected<WebExtensionTabScriptTarget, String> currentTarget() const
++    {
++        RefPtr page = m_page.get();
++        RefPtr extension = WebExtensionContextProxy::get(m_context);
++        RefPtr controller = page ? page->webExtensionControllerProxy() : nullptr;
++        if (!page || !extension || !controller || extension->unprivilegedIdentifier() != m_context
++            || controller->extensionContext(extension->uniqueIdentifier()) != extension
++            || extension->contentScriptWorldIdentifier() != m_worldIdentifier)
++            return makeUnexpected("the extension was unloaded or its content world changed"_s);
++        return refreshWebExtensionTabScriptTarget(m_target, page->mainWebFrame().frameTreeData());
++    }
++
++    RefPtr<WebFrame> currentFrame() const
++    {
++        if (m_target.documents.isEmpty())
++            return nullptr;
++        return WebProcess::singleton().webFrame(m_target.documents.last().frameIdentifier);
++    }
++
++    void schedulePoll()
++    {
++        RunLoop::mainSingleton().dispatchAfter(16_ms, [protectedThis = Ref { *this }] { protectedThis->poll(); });
++    }
++
++    void poll()
++    {
++        if (!m_readyCompletion && !m_resultCompletion)
++            return;
++        JSC::JSLockHolder lock(commonVM());
++        auto current = currentTarget();
++        if (!current) {
++            fail(current.error());
++            return;
++        }
++        if (m_readyCompletion) {
++            RefPtr frame = currentFrame();
++            RefPtr coreFrame = frame ? frame->coreLocalFrame() : nullptr;
++            RefPtr document = coreFrame ? coreFrame->document() : nullptr;
++            if (!document || document->isPluginDocument()) {
++                fail("the target document is unavailable for script execution"_s);
++                return;
++            }
++            bool ready = m_runAt == WebExtensionTabScriptRunAt::DocumentStart
++                || (m_runAt == WebExtensionTabScriptRunAt::DocumentEnd && document->readyState() != Document::ReadyState::Loading)
++                || (m_runAt == WebExtensionTabScriptRunAt::DocumentIdle && document->readyState() == Document::ReadyState::Complete);
++            if (ready) {
++                auto completion = WTF::move(m_readyCompletion);
++                completion(WTF::move(*current));
++                return;
++            }
++        }
++        schedulePoll();
++    }
++
++    void fail(const String& error)
++    {
++        m_promise = nullptr;
++        if (m_readyCompletion) {
++            auto completion = WTF::move(m_readyCompletion);
++            completion(makeUnexpected(error));
++        }
++        if (m_resultCompletion) {
++            auto completion = WTF::move(m_resultCompletion);
++            completion(makeUnexpected(error));
++        }
++    }
++
++    void receiveValue(JSC::JSValue value)
++    {
++        if (!m_resultCompletion)
++            return;
++        auto current = currentTarget();
++        if (!current) {
++            fail(current.error());
++            return;
++        }
++        RefPtr frame = currentFrame();
++        RefPtr coreFrame = frame ? frame->coreLocalFrame() : nullptr;
++        if (!coreFrame || !m_world) {
++            fail("the script result document is no longer available"_s);
++            return;
++        }
++        auto* global = coreFrame->script().globalObject(m_world->coreWorld());
++        auto& vm = global->vm();
++        auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
++        if (auto* promise = dynamicDowncast<JSC::JSPromise>(value)) {
++            m_promise = DOMPromise::create(*global, *promise);
++            auto registered = m_promise->whenSettledWithResult([weakThis = WeakPtr { *this }](JSDOMGlobalObject* global, bool fulfilled, JSC::JSValue result) {
++                RefPtr pending = weakThis.get();
++                if (!pending || !pending->m_resultCompletion)
++                    return;
++                if (fulfilled) {
++                    pending->receiveValue(result);
++                    return;
++                }
++                auto scope = DECLARE_TOP_EXCEPTION_SCOPE(global->vm());
++                String error = result.toWTFString(global);
++                if (scope.exception()) {
++                    scope.clearExceptionExceptTermination();
++                    error = "the script returned a rejected promise"_s;
++                }
++                pending->fail(error);
++            });
++            if (registered == DOMPromise::IsCallbackRegistered::No) {
++                fail("unable to observe the script's promise result"_s);
++                return;
++            }
++            schedulePoll();
++            return;
++        }
++        RefPtr serialized = SerializedScriptValue::create(*global, value, SerializationForStorage::No, SerializationErrorMode::NonThrowing);
++        if (scope.exception())
++            scope.clearExceptionExceptTermination();
++        if (!serialized || serialized->wireBytes().size() > webExtensionMaxMessageLength) {
++            fail("the script result cannot be cloned or exceeds the maximum size"_s);
++            return;
++        }
++        m_promise = nullptr;
++        auto completion = WTF::move(m_resultCompletion);
++        completion(WTF::move(serialized));
++    }
++
++    WeakPtr<WebPage> m_page;
++    WebExtensionContextIdentifier m_context;
++    ContentWorldIdentifier m_worldIdentifier;
++    WebExtensionTabScriptTarget m_target;
++    WebExtensionTabScriptRunAt m_runAt { WebExtensionTabScriptRunAt::DocumentStart };
++    RefPtr<InjectedBundleScriptWorld> m_world;
++    RefPtr<DOMPromise> m_promise;
++    CompletionHandler<void(std::expected<WebExtensionTabScriptTarget, String>&&)> m_readyCompletion;
++    CompletionHandler<void(WebExtensionTabScriptExecutionResult&&)> m_resultCompletion;
++};
++
++void WebPage::waitForExtensionTabScript(WebExtensionContextIdentifier context, ContentWorldIdentifier world, const WebExtensionTabScriptTarget& target, WebExtensionTabScriptRunAt runAt, CompletionHandler<void(std::expected<WebExtensionTabScriptTarget, String>&&)>&& completion)
++{
++    PendingTabScript::wait(*this, context, world, target, runAt, WTF::move(completion));
++}
++
++void WebPage::executeExtensionTabScript(WebExtensionContextIdentifier context, const ContentWorldData& worldData, const WebExtensionTabScriptTarget& target, const URL& authorizedURL, bool matchAboutBlank, const String& source, const URL& sourceURL, bool userGesture, CompletionHandler<void(WebExtensionTabScriptExecutionResult&&)>&& completion)
++{
++    m_userContentController->addContentWorldIfNecessary(worldData);
++    RefPtr world = m_userContentController->worldForIdentifier(worldData.identifier);
++    if (!world) {
++        completion(makeUnexpected("the extension content world is unavailable"_s));
++        return;
++    }
++    PendingTabScript::execute(*this, context, *world, target, authorizedURL, matchAboutBlank, source, sourceURL, userGesture, WTF::move(completion));
++}
++
++}
++#endif
 diff --git a/Source/WebKit/WebProcess/Extensions/WebExtensionWebRequestBody.cpp b/Source/WebKit/WebProcess/Extensions/WebExtensionWebRequestBody.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..338c2daa0c7c799ed217f6bea8a1ea80096fc226
@@ -63818,10 +64694,21 @@ index 48f9e1c5cff34a053ed104c3d2cfd3ac6e0a2bdc..a114a32c297c57a4d53db213a0540af1
          WEBPAGE_RELEASE_LOG(Layers, "updatePreferences: acceleratedCompositingEnabled setting was false. WebKit cannot function in this mode; changing setting to true");
          settings.setAcceleratedCompositingEnabled(true);
 diff --git a/Source/WebKit/WebProcess/WebPage/WebPage.h b/Source/WebKit/WebProcess/WebPage/WebPage.h
-index 36777a70a757d8f40fea959e16bd1659baeebc96..dba0ad18f45d7784f5fb0e18dd09909cf24e4d70 100644
+index 36777a70a757d8f40fea959e16bd1659baeebc96..c4f68688bbf4640fa0b2a1c5901fab69e281d112 100644
 --- a/Source/WebKit/WebProcess/WebPage/WebPage.h
 +++ b/Source/WebKit/WebProcess/WebPage/WebPage.h
-@@ -1868,7 +1868,7 @@ public:
+@@ -25,6 +25,10 @@
+ 
+ #pragma once
+ 
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++#include "WebExtensionTabScriptExecution.h"
++#endif
++
+ #include "APIObject.h"
+ #include "MessageReceiver.h"
+ #include "MessageSender.h"
+@@ -1868,7 +1872,7 @@ public:
  #if ENABLE(WK_WEB_EXTENSIONS)
      WebExtensionControllerProxy* webExtensionControllerProxy() const
      {
@@ -63830,7 +64717,18 @@ index 36777a70a757d8f40fea959e16bd1659baeebc96..dba0ad18f45d7784f5fb0e18dd09909c
          return m_webExtensionController.get();
  #else
          return nullptr;
-@@ -3031,7 +3031,7 @@ private:
+@@ -2477,6 +2481,10 @@ private:
+     void runJavaScript(WebFrame*, RunJavaScriptParameters&&, ContentWorldIdentifier, bool, CompletionHandler<void(RunJavaScriptResult&&)>&&);
+     void runJavaScriptInFrameInScriptWorld(RunJavaScriptParameters&&, std::optional<WebCore::FrameIdentifier>, const ContentWorldData&, bool, CompletionHandler<void(RunJavaScriptResult&&)>&&);
+     void clearContentWorld(ContentWorldIdentifier, CompletionHandler<void()>&&);
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++    void waitForExtensionTabScript(WebExtensionContextIdentifier, ContentWorldIdentifier, const WebExtensionTabScriptTarget&, WebExtensionTabScriptRunAt, CompletionHandler<void(std::expected<WebExtensionTabScriptTarget, String>&&)>&&);
++    void executeExtensionTabScript(WebExtensionContextIdentifier, const ContentWorldData&, const WebExtensionTabScriptTarget&, const URL& authorizedURL, bool matchAboutBlank, const String& source, const URL& sourceURL, bool userGesture, CompletionHandler<void(WebExtensionTabScriptExecutionResult&&)>&&);
++#endif
+     void getAccessibilityTreeData(CompletionHandler<void(const std::optional<IPC::SharedBufferReference>&)>&&);
+     void updateRenderingWithForcedRepaint(CompletionHandler<void()>&&);
+     void takeSnapshot(WebCore::IntRect snapshotRect, WebCore::IntSize bitmapSize, SnapshotOptions, CompletionHandler<void(std::optional<ImageBufferBackendHandle>&&, WebCore::Headroom)>&&);
+@@ -3031,7 +3039,7 @@ private:
  
      const Ref<WebUserContentController> m_userContentController;
  
@@ -63838,6 +64736,21 @@ index 36777a70a757d8f40fea959e16bd1659baeebc96..dba0ad18f45d7784f5fb0e18dd09909c
 +#if ENABLE(WK_WEB_EXTENSIONS) && (PLATFORM(COCOA) || PLATFORM(HAIKU))
      RefPtr<WebExtensionControllerProxy> m_webExtensionController;
  #endif
+ 
+diff --git a/Source/WebKit/WebProcess/WebPage/WebPage.messages.in b/Source/WebKit/WebProcess/WebPage/WebPage.messages.in
+index b1c001380f46a63c1403d8592fe5ac4a062be694..2bee67b0da7f3dfd7102f781ae522ae125664a96 100644
+--- a/Source/WebKit/WebProcess/WebPage/WebPage.messages.in
++++ b/Source/WebKit/WebProcess/WebPage/WebPage.messages.in
+@@ -281,6 +281,10 @@ messages -> WebPage WantsAsyncDispatchMessage {
+ #endif
+ 
+     RunJavaScriptInFrameInScriptWorld(struct WebKit::RunJavaScriptParameters parameters, std::optional<WebCore::FrameIdentifier> frameID, struct WebKit::ContentWorldData world, bool wantsResult) -> (std::expected<WebKit::JavaScriptEvaluationResult, std::optional<WebCore::ExceptionDetails>> result)
++#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
++    WaitForExtensionTabScript(WebKit::WebExtensionContextIdentifier contextIdentifier, WebKit::ContentWorldIdentifier worldIdentifier, struct WebKit::WebExtensionTabScriptTarget target, enum:uint8_t WebKit::WebExtensionTabScriptRunAt runAt) -> (std::expected<WebKit::WebExtensionTabScriptTarget, String> result)
++    ExecuteExtensionTabScript(WebKit::WebExtensionContextIdentifier contextIdentifier, struct WebKit::ContentWorldData world, struct WebKit::WebExtensionTabScriptTarget target, URL authorizedURL, bool matchAboutBlank, String source, URL sourceURL, bool userGesture) -> (std::expected<RefPtr<WebCore::SerializedScriptValue>, String> result)
++#endif
+ 
+     ClearContentWorld(WebKit::ContentWorldIdentifier worldIdentifier) -> ()
  
 diff --git a/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.cpp b/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.cpp
 new file mode 100644

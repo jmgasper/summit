@@ -132,9 +132,11 @@ Without a reload, Off restores the exact original body, panel and text colors
 and removes the theme attributes/stylesheets. On restores the dark theme and
 nine stylesheets. `.vm/darkreader-popup-toggle-live-verification.json` records
 the pointer coordinates, sequential page observations and screenshots. This
-check uses the unchanged published package and controlled page. Other popup controls, restart persistence and
-reinjection into existing documents through `tabs.executeScript` still need
-verification or implementation.
+check uses the unchanged published package and controlled page. At that
+checkpoint, other popup controls, restart persistence and reinjection into
+existing documents through `tabs.executeScript` still needed verification or
+implementation. The later script-injection milestone below supersedes the
+existing-document limitation.
 
 The same two controls now have automated native coverage. On the unchanged
 `bundle-7v5zjcgj`, the expanded suite passes 75 checks, including native pointer
@@ -155,3 +157,17 @@ Evidence is `.vm/extension-binding-platforms-havuz_58/result.json`,
 `.vm/extension-lifecycle-inputs.sGOjYnCZ/result.json`. It is not promoted or
 runtime-verified. Permission changes, view filtering, context restrictions and
 Cocoa adapter compilation remain to be checked.
+
+## Script injection into an already-open tab
+
+Bundle `bundle-zwmpgvis` implements native `tabs.executeScript`. The expanded
+published-package suite passes 78 checks, including initial theming of a tab
+that was loaded before installation. Its native tab identifier and
+`loadSuccessSequence` remain unchanged. The existing popup Off/On and
+manager enable/disable checks also pass, with normal shutdown, a clean crash
+interval and unchanged package/bundle/fixture hashes.
+
+Evidence: `.vm/modern-darkreader-2f787a410b4545772a98aa5d/result.json`.
+The companion [script-injection suite](webextensions-tab-script.md) verifies
+113 JavaScript cases with three installed fixtures. Other popup controls,
+restart persistence and the broader published extension corpus remain work.

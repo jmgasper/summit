@@ -61,6 +61,12 @@ int main(int argc, char** argv)
                 && value.value("textLuminance", 0.0) > 150;
         };
         Require(Wait([&] { return loaded(std::string(argv[5]) + "/setup") && light(report("setup")); }), "control page is light before extension installation");
+        const auto setupState = State(window);
+        const auto setupIdentifier = Selected(setupState);
+        BMessage setupTab;
+        Require(setupState.FindMessage("tab", Index(setupState, setupIdentifier), &setupTab) == B_OK,
+            "capture the existing document before installing Dark Reader");
+        const auto setupLoadSequence = setupTab.GetUInt64("loadSuccessSequence", 0);
         BMessage open(B_EXECUTE_PROPERTY); open.AddSpecifier("MenuItem", "Extensions…"); open.AddSpecifier("Menu", "Window");
         open.AddSpecifier("View", "menu"); open.AddSpecifier("Window", int32(0));
         const auto openManager = [&] {
@@ -78,6 +84,14 @@ int main(int argc, char** argv)
         std::ofstream(control / "installed.json") << entry.dump(2) << '\n';
         Send(manager, B_QUIT_REQUESTED);
         Require(Wait([&] { return !manager.IsValid(); }), "manager closes after installation");
+        Require(Wait([&] { return loaded(std::string(argv[5]) + "/setup") && dark(report("setup")); }, 30000000),
+            "published Dark Reader themes the tab that was open before installation");
+        const auto injectedState = State(window);
+        BMessage injectedTab;
+        Require(Selected(injectedState) == setupIdentifier
+            && injectedState.FindMessage("tab", Index(injectedState, setupIdentifier), &injectedTab) == B_OK
+            && setupLoadSequence > 0 && injectedTab.GetUInt64("loadSuccessSequence", 0) == setupLoadSequence,
+            "published extension applies its initial theme without reloading the existing document");
         const auto navigate = [&](const std::string& phase) {
             Send(window, summit::kNavigate, -1, std::string(argv[5]) + "/" + phase);
             Require(Wait([&] { return loaded(std::string(argv[5]) + "/" + phase) && report(phase).is_object(); }), phase + " observation page loads");

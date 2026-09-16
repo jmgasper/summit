@@ -13,7 +13,9 @@ extension views. Its [native extension manager](docs/modern-extension-manager.md
 reviews and installs ZIP/XPI packages or folders, and enables, disables and
 removes installations. Its [native toolbar actions](docs/modern-extension-actions.md)
 display live extension state, including [badge colors](docs/webextensions-native-badge-colors.md),
-and open real extension HTML popups. Broad Safari,
+and open real extension HTML popups. [Native script injection](docs/webextensions-tab-script.md)
+now runs in existing tabs; published Dark Reader themes an already-open page
+without reloading and passes real popup On/Off tests. Broad Safari,
 Chrome and Firefox extension compatibility
 remains unfinished; see [startup evidence](docs/modern-extension-startup.md).
 
