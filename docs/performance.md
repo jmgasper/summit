@@ -103,6 +103,54 @@ newly exposed tiles. Until then software painting stays the default, which it
 is in practice: the stock Haiku Mesa cannot initialize EGL, so GL is only
 chosen when the private Mesa is on `LIBRARY_PATH`.
 
+## What painting is made of (September 21, 2026)
+
+`SUMMIT_FRAME_STATS` now also tallies what each frame asks the port to draw,
+which is how the guesses above were replaced with numbers. A second line goes
+with the frame line:
+
+```
+Summit painting: per frame drawing calls 14.37 ms of which 11 text runs
+  (410 glyphs) 0.07 ms, 83 images 2.05 ms; 32 fills, 0 strokes, 41 clips,
+  558 state changes 0.01 ms
+```
+
+Measuring it costs about 3.5% (44.9 fps becomes 43.4), and nothing at all when
+`SUMMIT_FRAME_STATS` is unset.
+
+On the scroll page, at 1913x935, painting a frame was 20.65 ms and **text was
+0.07 ms of it** — drawing glyphs, the thing that looked most suspicious in the
+code, is not worth optimising. What the tally did show:
+
+- **Shadow templates were thrashing a one-slot cache.** The cards carry two
+  shadows (`0 1px 3px` and `0 8px 20px`), and `ShadowBlur`'s scratch buffer held
+  exactly one template, so the two evicted each other and *every* draw redrew
+  and reblurred its template, with a `getPixelBuffer`/`putPixelBuffer` round
+  trip each time. The scratch buffer now keeps four templates, chosen by what
+  they were drawn from and evicted least-recently-used
+  (`SUMMIT_SHADOW_CACHE=0` restores an `ImageBuffer` per shadow).
+- **Every `PopState()` flushed the link to app_server.** `BView::PopState()`
+  calls `_FlushIfNotInTransaction()`, and WebKit brackets nearly everything in
+  a state saver: 558 save/restore pairs a frame, so 558 forced `write_port`
+  calls and no batching at all. Painting a frame, and drawing into an
+  `ImageBuffer`, now runs inside a `BWindow` view transaction, which holds the
+  flushes back until the drawing is done (`SUMMIT_BATCH_DRAWING=0` turns it
+  off).
+
+| Scroll page, workstation | Painting | Scrolling |
+| --- | --- | --- |
+| before this round | 20.65 ms | 42.1 fps |
+| four shadow template slots | 19.5 ms | 42.7 fps |
+| + batched drawing | **17.2 ms** | **44.9 fps** |
+
+What is left of those 17.2 ms: 14.4 ms inside the port's drawing calls and
+2.8 ms of WebCore deciding what to draw. Inside the drawing calls, images are
+2.1 ms, text is 0.1 ms, and the remaining ~12 ms belongs to 32 fills, 41 clips
+and **558 state changes** — about seventeen `PushState()`/`PopState()` pairs for
+every drawing operation. Most of those pairs enclose no drawing at all, so the
+next thing to do is to stop sending them: keep the pushes pending and only
+apply them to the view when a call actually needs the state.
+
 ## Speedometer 3.1 against Firefox (September 21, 2026)
 
 Workstation, local copy of the benchmark, 10 iterations, full-screen window:
@@ -110,9 +158,13 @@ Workstation, local copy of the benchmark, 10 iterations, full-screen window:
 | Browser | Score |
 | --- | --- |
 | Firefox 155.0 | **8.34 ± 0.37** |
-| Summit | 3.05 ± 0.085 |
+| Summit, after the shadow and batching work above | 3.23 ± 0.083 |
+| Summit, before it | 3.05 ± 0.085 |
 
-Firefox is 2.7x faster. The frame statistics say where Summit's time goes: per
+Firefox is 2.6x faster. A run is only comparable on a quiet machine: with
+`vncserver` polling the frame buffer (about one core) the same build scored
+1.94 ± 0.40, and `run.json` records the load so a contended run can be told
+apart from a real change. The frame statistics say where Summit's time goes: per
 frame about 40 ms of style, layout and script, about 40 ms of painting for only
 0.3–0.5 Mpx of dirty area, and 9–30 ms of presentation, for a frame every
 100–120 ms. Waiting for app_server is 0.04 ms, so painting is 95 ms per

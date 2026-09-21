@@ -23,9 +23,14 @@ Work moved to the owner's Haiku workstation (Threadripper 1950X, GeForce GTX
   automatically and renders correctly — and is **four times slower** than
   software, because a scroll invalidates the whole non-composited layer and
   every tile is repainted through the same CPU path. Software stays the default.
-- **Speedometer 3.1: Summit 3.05 ± 0.085, Firefox 155 8.34 ± 0.37** on the same
-  machine and the same local copy. Painting is 95 ms per megapixel inside the
-  web process, on one thread.
+- **Speedometer 3.1: Summit 3.23 ± 0.083, Firefox 155 8.34 ± 0.37** on the same
+  machine and the same local copy. Painting is inside the web process, on one
+  thread; measuring what it consists of showed that drawing glyphs costs
+  0.07 ms a frame, that a one-slot shadow template cache was thrashing between
+  an element's two shadows, and that `BView::PopState()` flushed the app_server
+  link 558 times a frame. Fixing the last two took the scroll page from 42.1 to
+  44.9 fps and Speedometer from 3.05 to 3.23; the state changes themselves are
+  what remains.
 - **NVDEC is reached by Summit** (0.11–0.25 cores decoding 1080p H.264), but the
   plugin crashes in its own error path: `NVDecPlugin.cpp` keeps a pointer to a
   stack-local `char reason[256]` (`nvdec_h264.c:237`). YouTube additionally
