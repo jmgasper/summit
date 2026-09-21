@@ -33,10 +33,13 @@
 #include <WebPage.h>
 #include <WebView.h>
 #endif
+#include <app/AppMisc.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <utility>
 
 namespace summit {
@@ -374,6 +377,75 @@ BrowserWindow::Tab* BrowserWindow::ActiveTab()
     for (auto& tab : fTabs) if (tab.id == fSelected) return &tab;
     return nullptr;
 }
+// Posts the burst from its own thread: the window thread has to stay free to
+// draw the frames whose pacing is being measured.
+status_t BrowserWindow::RunScrollBurst(void* data)
+{
+    std::unique_ptr<ScrollBurst> burst(static_cast<ScrollBurst*>(data));
+    for (int32 index = 0; index < burst->count; ++index) {
+        // A full view port throttles the burst instead of dropping events.
+        if (burst->view.SendMessage(&burst->event, static_cast<BHandler*>(nullptr), 2000000) != B_OK)
+            return B_ERROR;
+        if (burst->interval) snooze(burst->interval);
+    }
+    return B_OK;
+}
+void BrowserWindow::SimulateScroll(const BMessage& message, BMessage& reply)
+{
+    const char* enabled = std::getenv("SUMMIT_ENABLE_INPUT_SYNTHESIS");
+    if (!enabled || std::strcmp(enabled, "1") != 0) {
+        reply.AddString("error", "input synthesis is disabled");
+        return;
+    }
+    auto* tab = ActiveTab();
+    if (!tab || !tab->view) {
+        reply.AddString("error", "no active tab");
+        return;
+    }
+    const int32 count = message.GetInt32("count", 60);
+    const int32 interval = message.GetInt32("interval_ms", 16);
+    const float delta = message.GetFloat("delta", 3.0f);
+    if (count < 1 || count > 100000 || interval < 0 || interval > 10000
+        || !std::isfinite(delta) || std::fabs(delta) > 1000) {
+        reply.AddString("error", "unusable burst parameters");
+        return;
+    }
+    auto burst = std::make_unique<ScrollBurst>();
+    status_t status = B_OK;
+    burst->view = BMessenger(tab->view, this, &status);
+    if (status != B_OK || !burst->view.IsValid()) {
+        reply.AddString("error", "the page view cannot be addressed");
+        return;
+    }
+    burst->count = count;
+    burst->interval = bigtime_t(interval) * 1000;
+    burst->event.what = B_MOUSE_WHEEL_CHANGED;
+    burst->event.AddFloat("be:wheel_delta_x", 0.0f);
+    burst->event.AddFloat("be:wheel_delta_y", delta);
+    // A wheel notch applies where the pointer is. Name the middle of the page
+    // instead of moving the pointer, so a burst does not take the mouse away
+    // from whoever is using the machine.
+    BRect bounds = tab->view->Bounds();
+    BPoint centre(bounds.left + bounds.Width() / 2, bounds.top + bounds.Height() / 2);
+    burst->event.AddPoint("summit:view_where", centre);
+    // BWindow routes a wheel message to the view named by "_view_token", and
+    // only falls back to whichever view the pointer last moved over. Without
+    // the token a synthesized notch is delivered to that other view, or
+    // dropped, and the page never scrolls.
+    burst->event.AddInt32("_view_token", _get_object_token_(tab->view));
+    thread_id thread = spawn_thread(&BrowserWindow::RunScrollBurst, "summit scroll burst",
+        B_DISPLAY_PRIORITY, burst.get());
+    if (thread < 0) {
+        reply.AddString("error", "no thread for the burst");
+        return;
+    }
+    burst.release();
+    resume_thread(thread);
+    reply.AddInt32("count", count);
+    reply.AddInt32("interval_ms", interval);
+    reply.AddFloat("delta", delta);
+    reply.AddPoint("at", centre);
+}
 std::string BrowserWindow::StoredURL(const BString& url) const
 {
     // Haiku's URL notification can use file:/path before WebKit commits
@@ -384,13 +456,21 @@ std::string BrowserWindow::StoredURL(const BString& url) const
     return value;
 }
 #if SUMMIT_MODERN_WEBKIT
-void BrowserWindow::CreateTab(const std::string& input, bool select, const char* extensionIdentifier)
+void BrowserWindow::CreateTab(const std::string& input, bool select, const char* extensionIdentifier, int32 index, uint64 command, int64 replaces)
 #else
 void BrowserWindow::CreateTab(const std::string& input, bool select, BWebView* adopted)
 #endif
 {
 #if SUMMIT_MODERN_WEBKIT
-    if (fClosingWindow) return;
+    // An extension learns about a failure through its own promise; only the
+    // user's own requests interrupt with an alert.
+    auto fail = [&](const std::string& error) {
+        if (command) TabOpenedForCommand(command, nullptr, error);
+        else ShowError(error);
+    };
+    if (fClosingWindow) { if (command) TabOpenedForCommand(command, nullptr, "The window is closing."); return; }
+#else
+    auto fail = [&](const std::string& error) { ShowError(error); };
 #endif
 #if !SUMMIT_MODERN_WEBKIT
     // BWebPage is owned by the application looper. Its constructor accesses
@@ -404,9 +484,9 @@ void BrowserWindow::CreateTab(const std::string& input, bool select, BWebView* a
         return;
     }
 #endif
-    if (fTabs.size() >= 512) { ShowError("The session has reached its 512-tab limit."); return; }
+    if (fTabs.size() >= 512) { fail("The session has reached its 512-tab limit."); return; }
     const auto address = ResolveAddress(input);
-    if (!address.error.empty()) { ShowError(address.error); return; }
+    if (!address.error.empty()) { fail(address.error); return; }
 #if SUMMIT_MODERN_WEBKIT
     const bool extensionPage = address.url.starts_with("webkit-extension:");
     if (extensionPage && !extensionIdentifier) {
@@ -416,21 +496,24 @@ void BrowserWindow::CreateTab(const std::string& input, bool select, BWebView* a
         create.AddString("url", address.url.c_str());
         create.AddBool("select", select);
         create.AddMessenger("window", BMessenger(this));
-        be_app->PostMessage(&create);
+        create.AddInt32("index", index);
+        create.AddUInt64("command", command);
+        create.AddInt64("replaces", replaces);
+        if (be_app->PostMessage(&create) != B_OK) fail("Could not open the extension page.");
         return;
     }
     BWebKitView* webView = nullptr;
     if (extensionPage) {
-        if (!*extensionIdentifier) { ShowError("This extension is not available."); return; }
+        if (!*extensionIdentifier) { fail("This extension is not available."); return; }
         status_t status;
         webView = fWebKitContext->CreateExtensionView(BRect(0, 0, 319, 199), "web-page", extensionIdentifier, BMessenger(this), &status);
-        if (!webView) { ShowError("Could not open the extension page: " + std::string(std::strerror(status))); return; }
+        if (!webView) { fail("Could not open the extension page: " + std::string(std::strerror(status))); return; }
     } else
         webView = new BWebKitView(BRect(0, 0, 319, 199), "web-page", BMessenger(this), B_FOLLOW_ALL, fWebKitContext);
     if (webView->InitCheck() != B_OK) {
         const status_t status = webView->InitCheck();
         delete webView;
-        ShowError("Could not create the web page: " + std::string(std::strerror(status)));
+        fail("Could not create the web page: " + std::string(std::strerror(status)));
         return;
     }
 #else
@@ -438,12 +521,29 @@ void BrowserWindow::CreateTab(const std::string& input, bool select, BWebView* a
 #endif
     webView->SetExplicitMinSize(BSize(320, 200));
     webView->SetExplicitMaxSize(BSize(B_SIZE_UNLIMITED, B_SIZE_UNLIMITED));
+#if SUMMIT_MODERN_WEBKIT
+    // The card layout and the tab list share one order; keep them in step.
+    const size_t position = index < 0 ? fTabs.size() : std::min(static_cast<size_t>(index), fTabs.size());
+    fCards->AddView(static_cast<int32>(position), webView);
+    Tab created { };
+    created.id = fNextID++;
+    created.view = webView;
+    created.url = address.url;
+    created.title = address.url == "summit:home" ? "Start Page" : "Loading…";
+    created.messenger = BMessenger(webView);
+    const int64 createdID = created.id;
+    fTabs.insert(fTabs.begin() + position, std::move(created));
+    if (select || fSelected == 0) SelectTab(createdID);
+    else if (auto* active = ActiveTab()) {
+        // Inserting before the visible card shifts its index.
+        for (size_t i = 0; i < fTabs.size(); ++i)
+            if (fTabs[i].id == active->id) fCards->SetVisibleItem(static_cast<int32>(i));
+    }
+#else
     fCards->AddView(webView);
     fTabs.push_back({fNextID++, webView, address.url, address.url == "summit:home" ? "Start Page" : "Loading…"});
-#if SUMMIT_MODERN_WEBKIT
-    fTabs.back().messenger = BMessenger(webView);
-#endif
     if (select || fSelected == 0) SelectTab(fTabs.back().id);
+#endif
 #if SUMMIT_MODERN_WEBKIT
     webView->LoadURL(address.url == "summit:home" ? fHomeURL.c_str() : address.url.c_str());
 #else
@@ -454,7 +554,31 @@ void BrowserWindow::CreateTab(const std::string& input, bool select, BWebView* a
     SyncBrowserWindow();
 #endif
     RefreshChrome();
+#if SUMMIT_MODERN_WEBKIT
+    if (replaces && replaces != createdID) CloseTab(replaces);
+    // Answer after the registry submission above, so the engine can already
+    // resolve the new view as a tab of this window.
+    if (command) {
+        auto created = std::find_if(fTabs.begin(), fTabs.end(), [&](const Tab& tab) { return tab.id == createdID; });
+        TabOpenedForCommand(command, created == fTabs.end() ? nullptr : &*created, "The tab closed before it could be reported.");
+    }
+#endif
 }
+#if SUMMIT_MODERN_WEBKIT
+void BrowserWindow::ReplaceTabView(const Tab& tab, const std::string& url)
+{
+    int32 index = -1;
+    for (size_t i = 0; i < fTabs.size(); ++i) if (fTabs[i].id == tab.id) index = static_cast<int32>(i);
+    // Views are created on the application thread; the old tab closes once the new one exists.
+    BMessage create(kCreateTabOnApp);
+    create.AddString("url", url.c_str());
+    create.AddBool("select", tab.id == fSelected);
+    create.AddMessenger("window", BMessenger(this));
+    create.AddInt32("index", index);
+    create.AddInt64("replaces", tab.id);
+    be_app->PostMessage(&create);
+}
+#endif
 void BrowserWindow::SelectTab(int64 id, bool forClose)
 {
 #if !SUMMIT_MODERN_WEBKIT
@@ -693,6 +817,7 @@ void BrowserWindow::WebKitCloseCommitted(const BMessage& message)
             found->closeApproved = found->closeRequested = found->closeQueued = false;
             found->closeFocus.reset();
             found->view->ResetCloseRequest();
+            TabCloseSettled(id, false);
         }
         if (restoreFocus) RestoreCloseFocus(*focus);
     }
@@ -713,6 +838,8 @@ void BrowserWindow::CancelWindowClose()
         tab.closeFocus.reset();
         tab.view->ResetCloseRequest();
     }
+    // Tab closes an extension asked for were absorbed by this window close.
+    while (!fCloseCommands.empty()) TabCloseSettled(*fCloseCommands.front().tabs.begin(), false);
     fClosingWindow = false;
     fWindowCloseInvalidated = false;
     fWindowCloseQueued = false;
@@ -732,6 +859,7 @@ void BrowserWindow::WebKitCloseResult(const BMessage& message)
     if (message.what == B_WEBKIT_CLOSE_CANCELLED) {
         if (!tab->closeRequested) return;
         tab->closeRequested = false;
+        if (!fClosingWindow) TabCloseSettled(tab->id, false);
         if (fClosingWindow)
             CancelWindowClose();
         else {
@@ -785,6 +913,9 @@ void BrowserWindow::FinishCloseTab(int64 id)
         SyncBrowserWindow();
 #endif
         RefreshChrome();
+#if SUMMIT_MODERN_WEBKIT
+        TabCloseSettled(id, true);
+#endif
         return;
     }
 }
@@ -812,6 +943,204 @@ void BrowserWindow::SyncBrowserWindow()
     // Registration is dispatched to the application looper. A queued window
     // invalidation also works during construction on the application thread.
     if (fExtensionsEnabled) PostMessage(B_WEBKIT_EXTENSION_ACTIONS_CHANGED);
+}
+
+void BrowserWindow::RespondToCommand(uint64 identifier, status_t status, const std::vector<BWebKitView*>& views, const char* error)
+{
+    fWebKitContext->RespondToBrowserCommand(identifier, status, views, error);
+}
+
+bool BrowserWindow::PrepareTabNavigation(const Tab& tab)
+{
+    // A tab whose close is being committed no longer accepts navigation.
+    if (fCloseCommitPending && (fCommitWholeWindow
+        || std::find(fCommitTabs.begin(), fCommitTabs.end(), tab.id) != fCommitTabs.end()))
+        return false;
+    if (tab.id == fSelected) ++fSelectionGeneration;
+    InvalidateWindowClose();
+    return true;
+}
+
+void BrowserWindow::TabOpenedForCommand(uint64 command, Tab* tab, const std::string& error)
+{
+    auto found = std::find_if(fOpenCommands.begin(), fOpenCommands.end(),
+        [command](const OpenCommand& pending) { return pending.identifier == command; });
+    if (found == fOpenCommands.end()) return; // The engine stopped waiting.
+    if (tab) {
+        found->views.push_back(tab->view);
+        if (found->window) fExtensionWindowTabs[found->extension].push_back(tab->id);
+    } else if (found->error.empty()) found->error = error;
+    if (found->pending && --found->pending) return;
+    auto finished = std::move(*found);
+    fOpenCommands.erase(found);
+    if (finished.views.empty()) RespondToCommand(finished.identifier, B_ERROR, { }, finished.error.c_str());
+    else RespondToCommand(finished.identifier, B_OK, finished.views);
+}
+
+void BrowserWindow::TabCloseSettled(int64 id, bool closed)
+{
+    for (auto& entry : fExtensionWindowTabs)
+        if (closed) std::erase(entry.second, id);
+    for (auto command = fCloseCommands.begin(); command != fCloseCommands.end();) {
+        if (!command->tabs.contains(id)) { ++command; continue; }
+        if (!closed) {
+            // One kept tab fails the whole request, like a rejected tabs.remove().
+            const auto identifier = command->identifier;
+            command = fCloseCommands.erase(command);
+            RespondToCommand(identifier, B_CANCELED, { }, "The tab was kept open.");
+            continue;
+        }
+        command->tabs.erase(id);
+        if (!command->tabs.empty()) { ++command; continue; }
+        const auto identifier = command->identifier;
+        command = fCloseCommands.erase(command);
+        RespondToCommand(identifier, B_OK);
+    }
+}
+
+void BrowserWindow::CloseTabsForCommand(uint64 identifier, const std::vector<int64>& tabs)
+{
+    if (fClosingWindow) { RespondToCommand(identifier, B_BUSY, { }, "The window is closing."); return; }
+    CloseCommand command;
+    command.identifier = identifier;
+    for (auto id : tabs)
+        if (std::any_of(fTabs.begin(), fTabs.end(), [id](const Tab& tab) { return tab.id == id; })) command.tabs.insert(id);
+    // Tabs that are already gone count as closed.
+    if (command.tabs.empty()) { RespondToCommand(identifier, B_OK); return; }
+    const auto pending = command.tabs;
+    fCloseCommands.push_back(std::move(command));
+    // The usual asynchronous handshake runs beforeunload one tab at a time and
+    // never blocks this looper; its outcome arrives through TabCloseSettled.
+    for (auto id : pending) CloseTab(id);
+}
+
+void BrowserWindow::OpenTabsForCommand(const BMessage& message, uint64 identifier, bool window)
+{
+    OpenCommand command;
+    command.identifier = identifier;
+    command.window = window;
+    command.extension = message.GetString("extension_identifier", "");
+    std::vector<std::string> urls;
+    const char* url = nullptr;
+    for (int32 i = 0; message.FindString("url", i, &url) == B_OK; ++i) urls.push_back(url);
+    bool select = message.GetBool(window ? "focused" : "active", true);
+    if (window) {
+        // This browser has one window: windows.create() opens its pages as
+        // tabs here. Existing tabs named by the request already live here.
+        BMessenger view;
+        for (int32 i = 0; message.FindMessenger("view", i, &view) == B_OK; ++i) {
+            auto* tab = FindTab(view);
+            if (!tab) continue;
+            command.views.push_back(tab->view);
+            fExtensionWindowTabs[command.extension].push_back(tab->id);
+            if (select) { SelectTab(tab->id); select = false; }
+        }
+        if (urls.empty() && command.views.empty()) urls.push_back("summit:home");
+        if (urls.empty()) { RespondToCommand(identifier, B_OK, command.views); return; }
+    } else if (urls.empty()) urls.push_back("summit:home");
+    const int32 index = window ? -1 : message.GetInt32("index", -1);
+    command.pending = urls.size();
+    fOpenCommands.push_back(std::move(command));
+    for (const auto& address : urls) {
+        // Only the first page of a new "window" takes the selection.
+        CreateTab(address, select, nullptr, index, identifier);
+        select = false;
+    }
+}
+
+void BrowserWindow::BrowserCommand(const BMessage& message)
+{
+    uint64 identifier = 0;
+    uint32 command = 0;
+    if (message.FindUInt64("identifier", &identifier) != B_OK || !identifier) return;
+    if (message.what == B_WEBKIT_BROWSER_COMMAND_CANCELLED) {
+        std::erase_if(fOpenCommands, [identifier](const OpenCommand& pending) { return pending.identifier == identifier; });
+        std::erase_if(fCloseCommands, [identifier](const CloseCommand& pending) { return pending.identifier == identifier; });
+        return;
+    }
+    if (message.FindUInt32("command", &command) != B_OK) { RespondToCommand(identifier, B_BAD_VALUE); return; }
+    BMessenger view;
+    auto* tab = message.FindMessenger("view", &view) == B_OK ? FindTab(view) : nullptr;
+    switch (command) {
+        case B_WEBKIT_BROWSER_OPEN_TAB: OpenTabsForCommand(message, identifier, false); return;
+        case B_WEBKIT_BROWSER_OPEN_WINDOW: OpenTabsForCommand(message, identifier, true); return;
+        case B_WEBKIT_BROWSER_CLOSE_TABS: {
+            std::vector<int64> tabs;
+            for (int32 i = 0; message.FindMessenger("view", i, &view) == B_OK; ++i)
+                if (auto* closing = FindTab(view)) tabs.push_back(closing->id);
+            CloseTabsForCommand(identifier, tabs);
+            return;
+        }
+        case B_WEBKIT_BROWSER_CLOSE_WINDOW: {
+            // Never let an extension close the only browser window. It may
+            // close the tabs this window opened for its windows.create() calls.
+            const auto tabs = fExtensionWindowTabs[message.GetString("extension_identifier", "")];
+            if (tabs.empty()) RespondToCommand(identifier, B_NOT_ALLOWED, { }, "Summit has a single window, which extensions cannot close.");
+            else CloseTabsForCommand(identifier, tabs);
+            return;
+        }
+        case B_WEBKIT_BROWSER_FOCUS_WINDOW:
+            if (IsMinimized()) Minimize(false);
+            Activate(true);
+            RespondToCommand(identifier, B_OK);
+            return;
+        case B_WEBKIT_BROWSER_SET_WINDOW_STATE: {
+            const std::string state = message.GetString("state", "");
+            if (state == "minimized") Minimize(true);
+            else if (state == "normal") { if (IsMinimized()) Minimize(false); }
+            else { RespondToCommand(identifier, B_NOT_SUPPORTED); return; }
+            RespondToCommand(identifier, B_OK);
+            return;
+        }
+        default: break;
+    }
+    if (!tab) { RespondToCommand(identifier, B_ENTRY_NOT_FOUND, { }, "The tab is not open in this window."); return; }
+    switch (command) {
+        case B_WEBKIT_BROWSER_ACTIVATE_TAB:
+            if (fClosingWindow) { RespondToCommand(identifier, B_BUSY, { }, "The window is closing."); return; }
+            SelectTab(tab->id);
+            RespondToCommand(identifier, B_OK);
+            return;
+        case B_WEBKIT_BROWSER_NAVIGATE_TAB: {
+            const auto address = ResolveAddress(message.GetString("url", ""));
+            if (!address.error.empty()) { RespondToCommand(identifier, B_BAD_VALUE, { }, address.error.c_str()); return; }
+            // Extension pages need the privileged view that CreateTab makes;
+            // an ordinary web view cannot become one.
+            const bool extensionPage = address.url.starts_with("webkit-extension:");
+            const bool extensionTab = tab->url.starts_with("webkit-extension:");
+            if (extensionPage != extensionTab || (extensionPage
+                && address.url.substr(0, address.url.find('/', 19)) != tab->url.substr(0, tab->url.find('/', 19)))) {
+                // The page needs the other kind of view: replace the tab's view in place.
+                ReplaceTabView(*tab, address.url);
+                RespondToCommand(identifier, B_OK);
+                return;
+            }
+            if (!PrepareTabNavigation(*tab)) { RespondToCommand(identifier, B_BUSY, { }, "The tab is closing."); return; }
+            if (tab->id == fSelected) fAddress->SetText(address.url == "summit:home" ? "" : address.url.c_str());
+            tab->view->LoadURL(address.url == "summit:home" ? fHomeURL.c_str() : address.url.c_str());
+            RespondToCommand(identifier, B_OK);
+            return;
+        }
+        case B_WEBKIT_BROWSER_RELOAD_TAB:
+            // The view has no cache-bypassing reload yet; bypass_cache reloads normally.
+            if (!PrepareTabNavigation(*tab)) { RespondToCommand(identifier, B_BUSY, { }, "The tab is closing."); return; }
+            tab->view->Reload();
+            RespondToCommand(identifier, B_OK);
+            return;
+        case B_WEBKIT_BROWSER_GO_BACK: case B_WEBKIT_BROWSER_GO_FORWARD: {
+            const bool back = command == B_WEBKIT_BROWSER_GO_BACK;
+            if (!(back ? tab->back : tab->forward)) {
+                RespondToCommand(identifier, B_ERROR, { }, back ? "There is no page to go back to." : "There is no page to go forward to.");
+                return;
+            }
+            if (!PrepareTabNavigation(*tab)) { RespondToCommand(identifier, B_BUSY, { }, "The tab is closing."); return; }
+            if (back) tab->view->GoBack(); else tab->view->GoForward();
+            RespondToCommand(identifier, B_OK);
+            return;
+        }
+        default:
+            RespondToCommand(identifier, B_NOT_SUPPORTED);
+    }
 }
 
 void BrowserWindow::RefreshExtensionActions()
@@ -1006,6 +1335,7 @@ void BrowserWindow::MessageReceived(BMessage* message)
     switch (message->what) {
 #if SUMMIT_MODERN_WEBKIT
         case B_WEBKIT_EXTENSION_ACTIONS_CHANGED: RefreshExtensionActions(); break;
+        case B_WEBKIT_BROWSER_COMMAND: case B_WEBKIT_BROWSER_COMMAND_CANCELLED: BrowserCommand(*message); break;
         case B_WEBKIT_EXTENSION_ACTIONS: ExtensionActionsReceived(*message); break;
         case kActivateExtensionAction: ActivateExtensionAction(*message); break;
         case kShowExtensionActions: ShowExtensionActions(); break;
@@ -1039,6 +1369,15 @@ void BrowserWindow::MessageReceived(BMessage* message)
         case B_WEBKIT_CLOSE_COMMITTED: WebKitCloseCommitted(*message); break;
         case B_WEBKIT_CLOSE_REQUESTED: case B_WEBKIT_CLOSE_CANCELLED:
             WebKitCloseResult(*message); break;
+        case B_WEBKIT_EXTERNAL_NAVIGATION_REQUESTED: {
+            // An extension page sent its tab to a web page (for example a sign-in page).
+            BMessenger view;
+            const char* url = nullptr;
+            if (message->FindMessenger("view", &view) != B_OK || message->FindString("url", &url) != B_OK) break;
+            if (auto* tab = FindTab(view); tab && !tab->closeRequested && !tab->closeQueued)
+                ReplaceTabView(*tab, url);
+            break;
+        }
 #endif
         case kNavigate: {
             const char* url = nullptr;
@@ -1245,6 +1584,12 @@ void BrowserWindow::MessageReceived(BMessage* message)
 #endif
             if (CurrentFocus()) PostMessage(message, CurrentFocus());
             break;
+        case kSimulateScroll: {
+            BMessage reply(B_REPLY);
+            SimulateScroll(*message, reply);
+            message->SendReply(&reply);
+            break;
+        }
         case kBrowserState: {
             BMessage reply(B_REPLY);
             reply.AddInt32("count", fTabs.size()); reply.AddInt64("selected", fSelected);

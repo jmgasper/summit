@@ -1,5 +1,6 @@
 #pragma once
 #include <filesystem>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -14,6 +15,7 @@ struct InstalledExtension {
     bool enabled = true;
     bool allowFileURLs = false;
     bool allowPrivateBrowsing = false;
+    uint64_t installationOrder = 0;
 };
 
 // An import owns a private copy until Install commits it to the catalog. Pass
@@ -39,6 +41,7 @@ class ExtensionCatalog final {
 public:
     explicit ExtensionCatalog(std::filesystem::path root);
     bool Load(std::vector<InstalledExtension>&, std::string& error) const;
+    static uint64_t NextInstallationOrder(const std::vector<InstalledExtension>&);
     std::unique_ptr<StagedExtensionPackage> Stage(const std::filesystem::path& source, std::string& error) const;
     bool Install(StagedExtensionPackage&, InstalledExtension, std::string& error) const;
     bool SetEnabled(const std::string& identifier, bool enabled, std::string& error) const;

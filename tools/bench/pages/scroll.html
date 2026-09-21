@@ -1,0 +1,155 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Summit scroll benchmark</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root { color-scheme: light dark; }
+body { font: 14px/1.5 system-ui, sans-serif; margin: 0; background: #f4f5f7; color: #16181d; }
+header { position: sticky; top: 0; z-index: 5; padding: 10px 16px; background: #1b1f27; color: #fff;
+         box-shadow: 0 2px 8px rgba(0,0,0,.35); display: flex; gap: 16px; align-items: baseline; }
+header b { font-size: 15px; }
+#status { font: 12px/1.4 ui-monospace, monospace; white-space: pre; }
+main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+.card { background: #fff; border-radius: 10px; padding: 14px 16px; margin: 0 0 14px;
+        box-shadow: 0 1px 3px rgba(16,20,32,.14), 0 8px 20px rgba(16,20,32,.06);
+        display: grid; grid-template-columns: 96px 1fr; gap: 14px; }
+.thumb { width: 96px; height: 96px; border-radius: 8px; }
+.card h2 { font-size: 15px; margin: 0 0 4px; }
+.meta { color: #5a6377; font-size: 12px; margin: 0 0 6px; }
+.tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.tag { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: #eceff5; color: #39415a; }
+.bar { height: 6px; border-radius: 3px; margin-top: 8px;
+       background: linear-gradient(90deg, #4f7cff, #22c1a3); }
+@media (prefers-color-scheme: dark) {
+  body { background: #101218; color: #e8eaf0; }
+  .card { background: #191c24; box-shadow: 0 1px 3px rgba(0,0,0,.5), 0 8px 20px rgba(0,0,0,.35); }
+  .meta { color: #98a1b5; } .tag { background: #232735; color: #c4cbdb; }
+}
+</style>
+<header><b>Summit scroll benchmark</b><span id="status">building the page…</span></header>
+<script>
+// ?style=flat drops the box shadows and gradients, which separates the cost of
+// painting effects from the cost of laying out and drawing the same content.
+{
+    const style = new URLSearchParams(location.search).get("style");
+    const rules = [];
+    if (style === "flat" || style === "noshadow")
+        rules.push(".card { box-shadow: none; border: 1px solid #d7dbe4; }");
+    if (style === "flat" || style === "nogradient")
+        rules.push(".thumb { background-image: none !important; background-color: #6f86d6; }",
+                   ".bar { background-image: none; background-color: #4f7cff; }");
+    if (rules.length) {
+        const sheet = document.createElement("style");
+        sheet.textContent = rules.join("");
+        document.head.appendChild(sheet);
+    }
+}
+</script>
+<main id="feed"></main>
+<script>
+"use strict";
+// A content-heavy page that scrolls itself from requestAnimationFrame and
+// reports the frame intervals: what a person feels when they turn the wheel,
+// measured the same way in any browser. See docs/performance.md.
+const params = new URLSearchParams(location.search);
+const number = (name, fallback) => {
+    const value = Number(params.get(name));
+    return Number.isFinite(value) && value > 0 ? value : fallback;
+};
+const cards = number("cards", 400);
+const settleMs = number("settle", 2000);
+const idleFrames = number("idleFrames", 120);
+const scrollFrames = number("frames", 600);
+const step = number("step", 40);
+// Served by tools/bench/serve-speedometer.py, which records this as probe.json.
+const report = params.get("report") || "/__bench/probe";
+const status = document.getElementById("status");
+
+const words = ("haiku kernel scheduler bitmap compositor texture raster glyph cache latency thread "
+    + "frame budget pipeline layout paint style invalidation reflow shadow gradient decode").split(" ");
+const phrase = (count, seed) => {
+    let text = [];
+    for (let i = 0; i < count; i++) text.push(words[(seed * 7 + i * 13) % words.length]);
+    return text.join(" ");
+};
+const feed = document.getElementById("feed");
+const fragment = document.createDocumentFragment();
+for (let i = 0; i < cards; i++) {
+    const card = document.createElement("article");
+    card.className = "card";
+    const hue = (i * 37) % 360;
+    card.innerHTML =
+        `<div class="thumb" style="background:linear-gradient(135deg,hsl(${hue} 70% 62%),hsl(${(hue + 60) % 360} 70% 45%))"></div>`
+        + `<div><h2>${phrase(5, i)}</h2>`
+        + `<p class="meta">posted by user${i % 97} · ${i % 60} minutes ago · ${i * 13 % 900} comments</p>`
+        + `<p>${phrase(38, i + 3)}</p>`
+        + `<div class="tags">${[0, 1, 2, 3].map(t => `<span class="tag">${words[(i + t * 5) % words.length]}</span>`).join("")}</div>`
+        + `<div class="bar" style="width:${30 + (i * 17) % 70}%"></div></div>`;
+    fragment.appendChild(card);
+}
+feed.appendChild(fragment);
+
+const nextFrame = () => new Promise(resolve => requestAnimationFrame(resolve));
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+function summarize(intervals) {
+    const sorted = intervals.slice().sort((a, b) => a - b);
+    const at = q => sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))] : 0;
+    const total = intervals.reduce((a, b) => a + b, 0);
+    const round = value => Math.round(value * 100) / 100;
+    return {
+        frames: intervals.length,
+        fps: round(intervals.length ? 1000 * intervals.length / total : 0),
+        meanMs: round(intervals.length ? total / intervals.length : 0),
+        medianMs: round(at(0.5)), p95Ms: round(at(0.95)), p99Ms: round(at(0.99)),
+        maxMs: round(sorted.length ? sorted[sorted.length - 1] : 0),
+        over33Ms: intervals.filter(v => v > 33).length,
+        over100Ms: intervals.filter(v => v > 100).length,
+    };
+}
+
+async function collect(count, onFrame) {
+    const intervals = [];
+    let previous = await nextFrame();
+    for (let i = 0; i < count; i++) {
+        if (onFrame) onFrame(i);
+        const now = await nextFrame();
+        intervals.push(now - previous);
+        previous = now;
+    }
+    return intervals;
+}
+
+async function run() {
+    status.textContent = `settling (${cards} cards)…`;
+    await sleep(settleMs);
+    status.textContent = "measuring the idle frame rate…";
+    const idle = summarize(await collect(idleFrames));
+    window.scrollTo(0, 0);
+    await sleep(300);
+    status.textContent = `scrolling ${scrollFrames} frames…`;
+    let wrapped = 0;
+    const limit = () => Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+    const scroll = summarize(await collect(scrollFrames, () => {
+        if (window.scrollY + step >= limit()) { window.scrollTo(0, 0); wrapped++; }
+        else window.scrollBy(0, step);
+    }));
+    const result = {
+        at: new Date().toISOString(), userAgent: navigator.userAgent, cards, step, wrapped,
+        viewport: { width: innerWidth, height: innerHeight },
+        documentHeight: document.documentElement.scrollHeight,
+        devicePixelRatio: window.devicePixelRatio, idle, scroll,
+    };
+    status.textContent = `done — scroll ${scroll.fps} fps, median ${scroll.medianMs} ms, p95 ${scroll.p95Ms} ms`
+        + `  (idle ${idle.fps} fps)`;
+    document.title = `scroll: ${scroll.fps} fps`;
+    console.log("summit-scroll " + JSON.stringify(result));
+    if (report) {
+        try {
+            await fetch(report, { method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(result) });
+        } catch (error) { status.textContent += "  (report failed: " + error + ")"; }
+    }
+}
+run().catch(error => { status.textContent = "failed: " + error; });
+</script>

@@ -30,7 +30,7 @@ EXTRA_UNITS = ('API/WebExtensionAPIExtension.cpp', 'API/WebExtensionAPILocalizat
                'API/WebExtensionAPIWebNavigation.cpp', 'API/WebExtensionAPIWebNavigationEvent.cpp',
                'API/WebExtensionAPITest.cpp',
                'API/WebExtensionAPIRuntime.cpp',
-               'API/WebExtensionAPIEvent.cpp', 'API/WebExtensionAPIPort.cpp')
+               'API/WebExtensionAPIEvent.cpp', 'API/WebExtensionAPIPort.cpp', 'API/WebExtensionAPIPrivacy.cpp')
 SERIALIZER_UNITS = ('GeneratedSerializersSharedWebCoreArgumentCodersNetwork.cpp',
                     'GeneratedSerializersSharedExtensions.cpp')
 GENERATED_UNITS = ('NetworkProcessProxyMessageReceiver.cpp', 'WebExtensionContextMessageReceiver.cpp', 'WebExtensionContextProxyMessageReceiver.cpp', 'WebCookieManagerMessageReceiver.cpp')
@@ -38,7 +38,8 @@ BINDING_UNITS = ('JSWebExtensionAPIExtension.cpp', 'JSWebExtensionAPILocalizatio
                  'JSWebExtensionAPIWebRequest.cpp', 'JSWebExtensionAPIWebRequestEvent.cpp', 'JSWebExtensionAPIWebNavigation.cpp', 'JSWebExtensionAPIWebNavigationEvent.cpp',
                  'JSWebExtensionAPIEvent.cpp', 'JSWebExtensionAPIPort.cpp',
                  'JSWebExtensionAPIStorage.cpp', 'JSWebExtensionAPIStorageArea.cpp',
-                 'JSWebExtensionAPINamespace.cpp', 'JSWebExtensionAPIWebPageNamespace.cpp')
+                 'JSWebExtensionAPINamespace.cpp', 'JSWebExtensionAPIWebPageNamespace.cpp',
+                 'JSWebExtensionAPIPrivacy.cpp', 'JSWebExtensionAPIPrivacyCategory.cpp', 'JSWebExtensionAPIPrivacySetting.cpp')
 PAGE_UNITS = {'WebLoaderStrategy.cpp': 'WebProcess/Network/WebLoaderStrategy.cpp',
               'WebPage.cpp': 'WebProcess/WebPage/WebPage.cpp',
               'WebLocalFrameLoaderClient.cpp': 'WebProcess/WebCoreSupport/WebLocalFrameLoaderClient.cpp'}
@@ -54,7 +55,11 @@ NATIVE_PAGE_UNITS = {'ExtensionPermissionPromptHaiku.cpp': 'UIProcess/haiku/Exte
 WEB_CORE_UNITS = {name: 'contentextensions/' + name for name in ('URLFilterParser.cpp', 'DFABytecodeInterpreter.cpp', 'ContentExtension.cpp',
                   'ContentExtensionURLConditions.cpp', 'ContentExtensionRule.cpp', 'ContentExtensionParser.cpp',
                   'ContentExtensionCompiler.cpp', 'ContentExtensionsBackend.cpp')}
+WEB_CORE_UNITS.update({name: 'loader/' + name for name in ('LinkLoader.cpp', 'DocumentPrefetcher.cpp')})
 UI_API_UNITS = {'WebExtensionContextAPIExtensionHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionContextAPIExtensionHaiku.cpp',
+                'WebExtensionPrivacySettingsHaiku.cpp': 'Shared/Extensions/WebExtensionPrivacySettingsHaiku.cpp',
+                'WebExtensionPrivacyControllerHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionPrivacyControllerHaiku.cpp',
+                'WebExtensionContextAPIPrivacyHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionContextAPIPrivacyHaiku.cpp',
                 'WebExtensionContextAPIMenusHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionContextAPIMenusHaiku.cpp',
                 'WebExtensionDeclarativeNetRequestRulesHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionDeclarativeNetRequestRulesHaiku.cpp',
                 'WebExtensionContextDeclarativeNetRequestHaiku.cpp': 'UIProcess/Extensions/haiku/WebExtensionContextDeclarativeNetRequestHaiku.cpp',
@@ -269,6 +274,11 @@ def native(units=None, engine_root=DEFAULT_ENGINE, regenerate=False):
         for line in (probe.BUILD / 'build.ninja').read_text().splitlines():
             if line.startswith('build '):
                 core_object = line.startswith('build Source/WebCore/CMakeFiles/WebCore.dir/') and '.cpp.o:' in line
+                if core_object and all(name in WEB_CORE_UNITS for name in units):
+                    # Use WebCore's actual defines, quoted include paths and
+                    # prefix when the probe contains only WebCore sources.
+                    probe.OBJECT = line.removeprefix('build ').split(':', 1)[0]
+                    probe.PREFIX_HEADER = probe.ENGINE / 'Source/WebCore/WebCorePrefix.h'
             elif core_object and line.startswith('  INCLUDES = '):
                 includes = shlex.split(line.split(' = ', 1)[1])
                 probe.EXTRA_INCLUDE_DIRECTORIES = (probe.BUILD / 'WebCore/PrivateHeaders/WebCore',
@@ -307,7 +317,7 @@ def native(units=None, engine_root=DEFAULT_ENGINE, regenerate=False):
     return 0
 
 
-def host(overlay=None, units=None, engine_root=DEFAULT_ENGINE, regenerate=False, generated_bindings=None):
+def host(overlay=None, units=None, engine_root=DEFAULT_ENGINE, regenerate=False, generated_bindings=None, generated_preferences=None):
     engine = ROOT / '.cache/WebKit'
     files = {}
     def source(path):
@@ -382,6 +392,27 @@ def host(overlay=None, units=None, engine_root=DEFAULT_ENGINE, regenerate=False,
             if path.name in files:
                 raise RuntimeError('Ambiguous staged page header: ' + path.name)
             files[path.name] = (path, source(path), source(path).read_bytes())
+    if 'WebPageProxy.cpp' in (units or ()) or (overlay and
+            (pathlib.Path(overlay).resolve() / 'Source/WebKit/UIProcess/WebPageProxy.h').is_file()):
+        # Copy the page header and its transitive sibling consumers. Unrelated
+        # copied headers can also be reached through untouched nested native
+        # headers, defeating #pragma once and defining the same type twice.
+        directory = engine / 'Source/WebKit/UIProcess'
+        headers = {path.name: path for path in directory.glob('*.h')}
+        dependencies = {name: set(re.findall(r'^\s*#\s*include\s+"([^"/]+)"', source(path).read_text(), re.M)) & headers.keys()
+                        for name, path in headers.items()}
+        required = {'WebPageProxy.h'}
+        while True:
+            consumers = {name for name, includes in dependencies.items() if includes & required}
+            if consumers <= required:
+                break
+            required |= consumers
+        for path in sorted(headers[name] for name in required):
+            if path.name in files:
+                if files[path.name][0] == path:
+                    continue
+                raise RuntimeError('Ambiguous staged UI page header: ' + path.name)
+            files[path.name] = (path, source(path), source(path).read_bytes())
     if any(name in NATIVE_PAGE_UNITS or name.endswith('Haiku.cpp') for name in units or ()) or (overlay and
             (pathlib.Path(overlay).resolve() / 'Source/WebKit/UIProcess/haiku/WebViewPrivate.h').is_file()):
         for relative in ('UIProcess/haiku/WebViewPrivate.h', 'UIProcess/haiku/WebViewContextHaiku.h',
@@ -438,6 +469,28 @@ def host(overlay=None, units=None, engine_root=DEFAULT_ENGINE, regenerate=False,
             content['sources/' + name] = data
             manifest['files'][name] = {'source': str(path), 'sha256': expected, 'generated_binding': True}
         manifest['binding_generation'] = generation
+    if generated_preferences:
+        generated_preferences = pathlib.Path(generated_preferences).resolve()
+        generation = json.loads((generated_preferences / 'preferences-generation.json').read_text())
+        if not generation['passed'] or generation['engine_patch_sha256'] != lock['patch']['sha256']:
+            raise RuntimeError('Preference generation did not pass against this engine patch')
+        for path, expected in generation['inputs'].items():
+            if hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest() != expected:
+                raise RuntimeError('Preference generation input changed: ' + path)
+        for name, expected in generation['files'].items():
+            if pathlib.Path(name).name != name:
+                raise RuntimeError('Invalid generated preference filename')
+            path = generated_preferences / name
+            data = path.read_bytes()
+            if hashlib.sha256(data).hexdigest() != expected:
+                raise RuntimeError('Generated preference changed: ' + name)
+            if not name.endswith('.h'):
+                continue
+            if 'sources/' + name in content:
+                raise RuntimeError('Ambiguous generated preference header: ' + name)
+            content['sources/' + name] = data
+            manifest['files'][name] = {'source': str(path), 'sha256': expected, 'generated_preference': True}
+        manifest['preference_generation'] = generation
     content['sources/source-manifest.json'] = (json.dumps(manifest, indent=2) + '\n').encode()
     for name in ('test-engine-extension-manifest-core.py', 'test-engine-extension-lifecycle-compile.py'):
         content['tools/' + name] = (ROOT / 'tools' / name).read_bytes()
@@ -487,5 +540,6 @@ if __name__ == '__main__':
     parser.add_argument('--engine-root', default=DEFAULT_ENGINE, help='Configured native engine source tree')
     parser.add_argument('--regenerate-ipc', action='store_true', help='Generate matching IPC headers in the isolated stage')
     parser.add_argument('--generated-bindings', help='Verified output from generate-extension-bindings-candidate.py')
+    parser.add_argument('--generated-preferences', help='Verified isolated output with preferences-generation.json')
     args = parser.parse_args()
-    raise SystemExit(native(args.unit, args.engine_root, args.regenerate_ipc) if args.native else host(args.overlay, args.unit, args.engine_root, args.regenerate_ipc, args.generated_bindings))
+    raise SystemExit(native(args.unit, args.engine_root, args.regenerate_ipc) if args.native else host(args.overlay, args.unit, args.engine_root, args.regenerate_ipc, args.generated_bindings, args.generated_preferences))

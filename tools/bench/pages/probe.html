@@ -1,0 +1,183 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Summit platform probe: running</title>
+<style>
+body { font: 14px/1.4 sans-serif; margin: 24px; }
+pre { background: #f2f2f2; padding: 12px; white-space: pre-wrap; }
+#stage { width: 760px; height: 120px; overflow: hidden; border: 1px solid #999; }
+#stage span { display: inline-block; padding: 1px 4px; margin: 1px; background: #dde; }
+</style>
+<h1>Summit platform probe</h1>
+<p>Port-level latencies that Speedometer's numbers are built from. Not a benchmark; see docs/performance.md.</p>
+<div id="stage"></div>
+<pre id="out">running…</pre>
+<script>
+"use strict";
+const out = document.getElementById("out");
+const stage = document.getElementById("stage");
+const stats = (values) => {
+    const sorted = [...values].sort((a, b) => a - b);
+    const sum = sorted.reduce((a, b) => a + b, 0);
+    const at = (q) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
+    return { n: sorted.length, mean: sum / sorted.length, min: sorted[0], p50: at(0.5), p90: at(0.9), max: sorted[sorted.length - 1] };
+};
+const nextFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+const nextTask = () => new Promise((resolve) => { const c = new MessageChannel(); c.port1.onmessage = () => resolve(); c.port2.postMessage(0); });
+const nextTimeout = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// performance.now() granularity: smallest observed positive step.
+function clockResolution() {
+    let smallest = Infinity;
+    for (let i = 0; i < 200; i++) {
+        const start = performance.now();
+        let now = start;
+        while (now === start) now = performance.now();
+        smallest = Math.min(smallest, now - start);
+    }
+    return smallest;
+}
+
+// Tier check. The same numeric kernel is timed in 12 consecutive rounds. With the
+// optimizing JITs the later rounds are many times faster than the first and the
+// steady state is well under ~100 ms; an interpreter-only engine stays flat at seconds.
+function jitKernel(n) {
+    let a = 0, b = 1;
+    for (let i = 0; i < n; i++) { const t = (a + b * 3 + (i ^ (i >>> 3))) | 0; a = b; b = t; }
+    return a ^ b;
+}
+function jitRounds() {
+    const rounds = [];
+    for (let r = 0; r < 12; r++) { const s = performance.now(); jitKernel(20000000); rounds.push(performance.now() - s); }
+    return rounds;
+}
+// Property access / allocation / call heavy code, closer to framework JS.
+function objectKernel() {
+    const s = performance.now();
+    let total = 0;
+    for (let r = 0; r < 40; r++) {
+        const items = [];
+        for (let i = 0; i < 50000; i++) items.push({ id: i, title: "item " + i, done: (i & 1) === 0 });
+        total += items.filter((item) => item.done).map((item) => item.title.length).reduce((x, y) => x + y, 0);
+    }
+    return { ms: performance.now() - s, total };
+}
+
+// The next four kernels separate the places a DOM-heavy workload spends its time:
+// GC-heap allocation (no malloc), malloc-backed engine strings, malloc-backed DOM
+// nodes without style/layout, and style+layout without allocation.
+function gcObjectKernel() {
+    const s = performance.now();
+    let keep = 0;
+    for (let r = 0; r < 40; r++) {
+        const items = new Array(100000);
+        for (let i = 0; i < 100000; i++) items[i] = { a: i, b: i + 1, c: null };
+        keep += items[r].b;
+    }
+    return { ms: performance.now() - s, keep };
+}
+function stringAllocKernel() {
+    const s = performance.now();
+    let total = 0;
+    for (let i = 0; i < 2000000; i++) total += String(i * 7).charCodeAt(0);
+    return { ms: performance.now() - s, total };
+}
+function detachedDomKernel() {
+    const s = performance.now();
+    let count = 0;
+    for (let r = 0; r < 20; r++) {
+        const holder = document.createElement("div");
+        for (let i = 0; i < 10000; i++) { const el = document.createElement("span"); el.setAttribute("data-i", "v"); holder.appendChild(el); count++; }
+    }
+    return { ms: performance.now() - s, count };
+}
+function layoutOnlyKernel() {
+    const fragment = document.createDocumentFragment();
+    for (let i = 0; i < 2000; i++) { const span = document.createElement("span"); span.textContent = "w" + i; fragment.appendChild(span); }
+    stage.replaceChildren(fragment);
+    void stage.offsetHeight;
+    const s = performance.now();
+    for (let r = 0; r < 50; r++) { stage.style.width = (700 + (r % 2) * 40) + "px"; void stage.offsetHeight; }
+    const ms = performance.now() - s;
+    stage.style.width = "";
+    stage.replaceChildren(document.createElement("span"));
+    return { ms };
+}
+
+async function timerChain(count) {
+    const gaps = [];
+    let last = performance.now();
+    for (let i = 0; i < count; i++) { await nextTimeout(0); const now = performance.now(); gaps.push(now - last); last = now; }
+    return stats(gaps);
+}
+async function taskChain(count) {
+    const gaps = [];
+    let last = performance.now();
+    for (let i = 0; i < count; i++) { await nextTask(); const now = performance.now(); gaps.push(now - last); last = now; }
+    return stats(gaps);
+}
+async function frameIntervals(count, mutate) {
+    const gaps = [];
+    let last = await nextFrame();
+    for (let i = 0; i < count; i++) {
+        if (mutate) stage.firstChild.textContent = "frame " + i;
+        const now = await nextFrame();
+        gaps.push(now - last); last = now;
+    }
+    return stats(gaps);
+}
+// Speedometer's async window: from the end of work done in a rAF callback to a
+// zero-delay timer scheduled from a second rAF callback of the same frame. It
+// contains style+layout+paint+frame hand-off for whatever the rAF work dirtied.
+async function asyncWindow(count, work) {
+    const gaps = [];
+    for (let i = 0; i < count; i++) {
+        gaps.push(await new Promise((resolve) => {
+            let start = 0;
+            requestAnimationFrame(() => { work(i); start = performance.now(); });
+            requestAnimationFrame(() => setTimeout(() => resolve(performance.now() - start), 0));
+        }));
+    }
+    return stats(gaps);
+}
+function domChurn() {
+    const s = performance.now();
+    for (let r = 0; r < 20; r++) {
+        const fragment = document.createDocumentFragment();
+        for (let i = 0; i < 2000; i++) { const span = document.createElement("span"); span.className = "c" + (i % 7); span.textContent = "n" + i; fragment.appendChild(span); }
+        stage.replaceChildren(fragment);
+        void stage.offsetHeight; // style + layout, no paint
+    }
+    const ms = performance.now() - s;
+    stage.replaceChildren(document.createElement("span"));
+    return ms;
+}
+
+(async () => {
+    const result = { userAgent: navigator.userAgent, crossOriginIsolated: self.crossOriginIsolated === true,
+        viewport: [innerWidth, innerHeight], hardwareConcurrency: navigator.hardwareConcurrency };
+    stage.appendChild(document.createElement("span"));
+    await nextTimeout(500);
+    result.clockResolutionMs = clockResolution();
+    result.jitRoundsMs = jitRounds();
+    result.objectKernel = objectKernel();
+    result.domChurn20x2000Ms = domChurn();
+    result.gcObjects4M = gcObjectKernel();
+    result.stringAlloc2M = stringAllocKernel();
+    result.detachedDom200k = detachedDomKernel();
+    result.layoutOnly50x2000 = layoutOnlyKernel();
+    result.setTimeout0 = await timerChain(100);          // HTML clamps nested timers to 4 ms after 5 levels
+    result.messageChannelTask = await taskChain(300);    // unclamped run-loop task latency
+    result.rafIdle = await frameIntervals(90, false);    // nothing dirty
+    result.rafSmallMutation = await frameIntervals(90, true);
+    result.asyncWindowNoChange = await asyncWindow(40, () => {});
+    result.asyncWindowSmallChange = await asyncWindow(40, (i) => { stage.firstChild.textContent = "tick " + i; });
+    result.asyncWindow100Nodes = await asyncWindow(40, (i) => {
+        const fragment = document.createDocumentFragment();
+        for (let k = 0; k < 100; k++) { const span = document.createElement("span"); span.textContent = "item " + (i * 100 + k); fragment.appendChild(span); }
+        stage.replaceChildren(fragment);
+    });
+    out.textContent = JSON.stringify(result, null, 1);
+    await fetch("/__bench/probe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(result) });
+    document.title = "Summit platform probe: done";
+})().catch((error) => { out.textContent = String(error && error.stack || error); document.title = "Summit platform probe: error"; });
+</script>

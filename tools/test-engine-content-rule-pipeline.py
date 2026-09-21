@@ -10,6 +10,7 @@ import re
 import shlex
 import signal
 import subprocess
+import sys
 import tarfile
 import time
 import zipfile
@@ -25,7 +26,10 @@ IPC_VALIDATION_TEST = 'EngineIPCValidationTests.cpp'
 COOKIE_OBSERVER_TEST = 'EngineCookieObserverRuntimeTests.cpp'
 PACKAGE_PREPARATION_TEST = 'EngineExtensionPackagePreparationTests.cpp'
 PACKAGE_ACTIVATION_TEST = 'EngineExtensionPackageActivationTests.cpp'
-PROCESS_TESTS = (EXTENSION_RUNTIME_TEST, IPC_VALIDATION_TEST, COOKIE_OBSERVER_TEST, PACKAGE_PREPARATION_TEST, PACKAGE_ACTIVATION_TEST)
+HYPERLINK_TEST = 'EngineHyperlinkAuditingTests.cpp'
+PRIVACY_TEST = 'EngineExtensionPrivacyTests.cpp'
+PRIVACY_NETWORK_TEST = 'EngineExtensionPrivacyNetworkTests.cpp'
+PROCESS_TESTS = (EXTENSION_RUNTIME_TEST, IPC_VALIDATION_TEST, COOKIE_OBSERVER_TEST, PACKAGE_PREPARATION_TEST, PACKAGE_ACTIVATION_TEST, HYPERLINK_TEST, PRIVACY_TEST, PRIVACY_NETWORK_TEST)
 EXTENSION_STARTUP = 'cold'
 EXTENSION_FIXTURE = 'storage'
 TRACE_IPC = False
@@ -167,6 +171,12 @@ def native(compile_only, run_only):
             report['scope'] = 'actual public BWebKitContext extension package preparation, background filesystem work, manifest metadata, cancellation, token ownership and cleanup; no extension execution or installation'
         elif TEST == PACKAGE_ACTIVATION_TEST:
             report['scope'] = 'actual public BWebKitContext preparation/loading/unloading, approved snapshots, saved grants, native BWebKitView extension pages, background execution, storage and cookies; context reload within one browser process, not browser restart or installer UI'
+        elif TEST == HYPERLINK_TEST:
+            report['scope'] = 'actual native page preferences and HTTP ping, navigation and beacon traffic across default, disabled, re-enabled and initially disabled pages; no extension privacy API runtime'
+        elif TEST == PRIVACY_TEST:
+            report['scope'] = 'actual extension privacy bindings, privileged IPC, callback/Promise replies, onChange, installation arbitration, saved state and effective regular/private page preferences; no HTTP/TLS network proof, browser restart or private-window UI integration'
+        elif TEST == PRIVACY_NETWORK_TEST:
+            report['scope'] = 'actual extension privacy setters and HTTPS requests across cached/fresh prefetch candidates, existing/new pages, pings and unaffected ordinary scripts, beacons and navigation; local TLS leaf is explicitly pinned, not general certificate-trust verification'
         fields = ninja_fields(lambda line: line.startswith('build Source/WebKit/CMakeFiles/WebKit.dir/UIProcess/API/haiku/WebKitView.cpp.o:'))
         raw = iter(shlex.split(' '.join(fields[key] for key in ('DEFINES', 'INCLUDES', 'FLAGS'))))
         flags = []
@@ -191,6 +201,8 @@ def native(compile_only, run_only):
             return result.returncode
 
     # Refuse to link an older archive while its source changes are still building.
+    if TEST in (PRIVACY_TEST, PRIVACY_NETWORK_TEST) and not (ENGINE / 'Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPIPrivacyHaiku.cpp').is_file():
+        raise RuntimeError('The real privacy backend is not integrated into this engine; a compile preflight cannot be run as a privacy API test')
     targets = ['WebKit', 'WebProcess', 'NetworkProcess'] if full_engine else ['lib/libWebCore.a']
     ready = subprocess.run(['ninja', '-C', str(BUILD), '-n', *targets], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     if ready.returncode or 'ninja: no work to do.' not in ready.stdout:
@@ -201,7 +213,7 @@ def native(compile_only, run_only):
         libraries = [str(BUILD / 'lib/libWebKit.so'), *[flag for flag in libraries if not flag.endswith('.a')]]
     paths = {Path(flag) if Path(flag).is_absolute() else BUILD / flag for flag in libraries if not flag.startswith('-')}
     report['libraries'] = {str(path): digest(path) for path in sorted(paths)}
-    if TEST in (EXTENSION_RUNTIME_TEST, COOKIE_OBSERVER_TEST, PACKAGE_ACTIVATION_TEST):
+    if TEST in (EXTENSION_RUNTIME_TEST, COOKIE_OBSERVER_TEST, PACKAGE_ACTIVATION_TEST, HYPERLINK_TEST, PRIVACY_TEST, PRIVACY_NETWORK_TEST):
         report['runtime_helpers'] = {str(BUILD / 'bin' / name): digest(BUILD / 'bin' / name)
                                      for name in (('NetworkProcess',) if TEST == COOKIE_OBSERVER_TEST else ('WebProcess', 'NetworkProcess'))}
     executable = output / 'run'
@@ -226,12 +238,14 @@ def native(compile_only, run_only):
         environment.pop(name, None)
     if full_engine:
         environment['LIBRARY_PATH'] = ':'.join(map(str, (BUILD / 'lib', Path('/boot/home/summit-deps/icu78/lib'), Path('/boot/home/summit-deps/libzip-1.11.4/lib'), Path('/boot/system/lib'))))
-    if TEST in (EXTENSION_RUNTIME_TEST, COOKIE_OBSERVER_TEST, PACKAGE_ACTIVATION_TEST):
+    if TEST in (EXTENSION_RUNTIME_TEST, COOKIE_OBSERVER_TEST, PACKAGE_ACTIVATION_TEST, HYPERLINK_TEST, PRIVACY_TEST, PRIVACY_NETWORK_TEST):
         environment['WEBKIT_EXEC_PATH'] = str(BUILD / 'bin')
     if TEST == PACKAGE_PREPARATION_TEST:
         environment['SUMMIT_EXTENSION_PREPARATION_ARCHIVE'] = str(output / 'preparation.xpi')
     if TEST == PACKAGE_ACTIVATION_TEST:
         environment['SUMMIT_EXTENSION_ACTIVATION_PACKAGE'] = str(output / 'activation-package')
+    if TEST in (PRIVACY_TEST, PRIVACY_NETWORK_TEST):
+        environment['SUMMIT_PRIVACY_PACKAGE'] = str(output / 'privacy-package')
     if TEST == EXTENSION_RUNTIME_TEST:
         environment['SUMMIT_EXTENSION_STARTUP'] = EXTENSION_STARTUP
         environment['SUMMIT_EXTENSION_FIXTURE'] = EXTENSION_FIXTURE
@@ -246,10 +260,31 @@ def native(compile_only, run_only):
             environment.pop('SUMMIT_TRACE_IPC', None)
         report['ipc_trace_requested'] = TRACE_IPC
     from native_crash_log import NativeCrashLog
+    hyperlink_fixture = None
+    privacy_network_fixture = None
+    if TEST == HYPERLINK_TEST:
+        sys.path.insert(0, str(output))
+        from hyperlink_auditing_fixture import HyperlinkAuditingFixture
+        hyperlink_fixture = HyperlinkAuditingFixture()
+        environment['SUMMIT_HYPERLINK_BASE_URL'] = hyperlink_fixture.base
+        environment['SUMMIT_HYPERLINK_NONCE'] = hyperlink_fixture.nonce
+    if TEST == PRIVACY_NETWORK_TEST:
+        sys.path.insert(0, str(output))
+        from privacy_network_fixture import PrivacyNetworkFixture
+        privacy_network_fixture = PrivacyNetworkFixture()
+        environment['SUMMIT_PRIVACY_NETWORK_BASE'] = privacy_network_fixture.base
+        environment['SUMMIT_PRIVACY_NETWORK_NONCE'] = privacy_network_fixture.nonce
+        environment['SUMMIT_PRIVACY_NETWORK_CERTIFICATE'] = str(privacy_network_fixture.certificate)
     crash_log = NativeCrashLog()
     if TEST in PROCESS_TESTS:
-        runtime = run_extension_fixture(executable, output, environment,
-            timeout={EXTENSION_RUNTIME_TEST: 240, IPC_VALIDATION_TEST: 30, COOKIE_OBSERVER_TEST: 90, PACKAGE_PREPARATION_TEST: 120, PACKAGE_ACTIVATION_TEST: 180}[TEST])
+        try:
+            runtime = run_extension_fixture(executable, output, environment,
+                timeout={EXTENSION_RUNTIME_TEST: 240, IPC_VALIDATION_TEST: 30, COOKIE_OBSERVER_TEST: 90, PACKAGE_PREPARATION_TEST: 120, PACKAGE_ACTIVATION_TEST: 180, HYPERLINK_TEST: 130, PRIVACY_TEST: 420, PRIVACY_NETWORK_TEST: 300}[TEST])
+        finally:
+            if hyperlink_fixture:
+                report['hyperlink_network'] = hyperlink_fixture.finish()
+            if privacy_network_fixture:
+                report['privacy_network'] = privacy_network_fixture.finish()
         report['exit'], report['output'] = runtime['exit'], runtime.pop('output')
         report['runtime_processes'] = runtime
     else:
@@ -270,6 +305,51 @@ def native(compile_only, run_only):
     if 'runtime_helpers' in report:
         report['runtime_helpers_unchanged'] = unchanged(report['runtime_helpers'])
         report['passed'] = report['passed'] and report['runtime_helpers_unchanged']
+    if TEST == HYPERLINK_TEST:
+        rounds = [match.groups() for line in report['output'].splitlines()
+                  if (match := re.fullmatch(r'HYPERLINK_ROUND ([0-3]) (enabled|disabled) ([a-f0-9]{32})', line))]
+        report['hyperlink_rounds'] = rounds
+        report['hyperlink_rounds_passed'] = rounds == [(str(number), 'enabled' if number in (0, 2) else 'disabled', hyperlink_fixture.nonce) for number in range(4)]
+        report['passed'] = report['passed'] and report['hyperlink_rounds_passed'] and report['hyperlink_network']['passed']
+    if TEST == PRIVACY_TEST:
+        plans = re.findall(r'^PRIVACY_PLAN steps=(\d+) commands=(\d+)$', report['output'], re.M)
+        results = re.findall(r'^PRIVACY_API_RESULT PASS steps=(\d+) commands=(\d+) checks=(\d+) failures=0$', report['output'], re.M)
+        responses = [json.loads(line.removeprefix('PRIVACY_RESPONSE ')) for line in report['output'].splitlines()
+                     if line.startswith('PRIVACY_RESPONSE ')]
+        events = [json.loads(line.split('WebExtension test: ', 1)[1]) for line in report['output'].splitlines()
+                  if 'WebExtension test: ' in line]
+        messages = [json.loads(event['argumentJSON']) for event in events
+                    if event.get('type') == 'message' and event.get('message') == 'summit-privacy-response']
+        sequences = [value.get('sequence') for value in responses]
+        report['privacy_responses'] = responses
+        report['privacy_reports_passed'] = (len(plans) == len(results) == 1 and plans[0] == results[0][:2]
+            and int(plans[0][0]) >= 60 and int(plans[0][1]) >= 40 and int(results[0][2]) > 100
+            and len(responses) == int(plans[0][1]) and messages == responses
+            and all(isinstance(value, int) for value in sequences) and sequences == sorted(set(sequences))
+            and len({value.get('nonce') for value in responses}) == 1 and bool(responses[0].get('nonce'))
+            and all(event.get('result') is not False and event.get('sourceURL', '').startswith('webkit-extension://') for event in events))
+        report['passed'] = report['passed'] and report['privacy_reports_passed']
+    if TEST == PRIVACY_NETWORK_TEST:
+        rounds = re.findall(r'^PRIVACY_NETWORK_ROUND ([0-4]) (enabled|disabled) ([a-f0-9]{32})$', report['output'], re.M)
+        results = re.findall(r'^PRIVACY_NETWORK_RESULT PASS rounds=5 api_commands=12 tls_pins=(\d+) failures=0$', report['output'], re.M)
+        responses = [json.loads(line.removeprefix('PRIVACY_NETWORK_API ')) for line in report['output'].splitlines()
+                     if line.startswith('PRIVACY_NETWORK_API ')]
+        events = [json.loads(line.split('WebExtension test: ', 1)[1]) for line in report['output'].splitlines()
+                  if 'WebExtension test: ' in line]
+        messages = [json.loads(event['argumentJSON']) for event in events
+                    if event.get('type') == 'message' and event.get('message') == 'summit-privacy-response']
+        report['privacy_network_rounds'] = rounds
+        report['privacy_network_responses'] = responses
+        report['privacy_network_reports_passed'] = (
+            rounds == [(str(number), 'enabled' if number in (0, 4) else 'disabled', privacy_network_fixture.nonce) for number in range(5)]
+            and len(results) == 1 and int(results[0]) > 0
+            and len(responses) == 12 and messages == responses
+            and [value.get('sequence') for value in responses] == list(range(1, 13))
+            and all(value.get('ok') is True and value.get('nonce') == privacy_network_fixture.nonce
+                    and value.get('extension') == 'summit-privacy-network' for value in responses)
+            and all(value.get('callbacks') == 1 and value.get('lastErrorCleared') is True for value in responses[1::2])
+            and all(event.get('result') is not False and event.get('sourceURL', '').startswith('webkit-extension://') for event in events))
+        report['passed'] = report['passed'] and report['privacy_network_reports_passed'] and report['privacy_network']['passed']
     if TEST == PACKAGE_ACTIVATION_TEST:
         pages = [match.groups() for line in report['output'].splitlines()
                  if (match := re.fullmatch(r'EXTENSION_PAGE SUMMIT ACTIVATION (\d+-\d+) ([123]) PASS (\d+)', line))]
@@ -315,6 +395,21 @@ def host(compile_only, resume, overlay=None):
         manifest = {'engine_patch_sha256': json.loads((ROOT / 'engine/sources.lock.json').read_text())['patch']['sha256'],
                     'test_source': str(test), 'test_sha256': digest(test)}
         files = {'sources/' + TEST: test.read_bytes()}
+        if TEST == HYPERLINK_TEST:
+            path = ROOT / 'tools/hyperlink_auditing_fixture.py'
+            files['sources/' + path.name] = path.read_bytes()
+            manifest['helpers'] = {path.name: {'source': str(path), 'sha256': digest(path)}}
+        if TEST in (PRIVACY_TEST, PRIVACY_NETWORK_TEST):
+            manifest['helpers'] = {}
+            for name in ('manifest.json', 'background.html', 'background.js'):
+                path = ROOT / 'tests/fixtures/extensions/privacy' / name
+                relative = 'privacy-package/' + name
+                files['sources/' + relative] = path.read_bytes()
+                manifest['helpers'][relative] = {'source': str(path), 'sha256': digest(path)}
+            if TEST == PRIVACY_NETWORK_TEST:
+                path = ROOT / 'tools/privacy_network_fixture.py'
+                files['sources/' + path.name] = path.read_bytes()
+                manifest['helpers'][path.name] = {'source': str(path), 'sha256': digest(path)}
         if TEST == PACKAGE_ACTIVATION_TEST:
             manifest['helpers'] = {}
             for name in ('manifest.json', 'background.html', 'background.js', 'probe.html', 'probe.js'):
@@ -387,6 +482,12 @@ def host(compile_only, resume, overlay=None):
         command.append('--extension-package-preparation')
     elif TEST == PACKAGE_ACTIVATION_TEST:
         command.append('--extension-package-activation')
+    elif TEST == HYPERLINK_TEST:
+        command.append('--hyperlink-auditing')
+    elif TEST == PRIVACY_TEST:
+        command.append('--extension-privacy')
+    elif TEST == PRIVACY_NETWORK_TEST:
+        command.append('--extension-privacy-network')
     if compile_only:
         command.append('--compile-only')
     if resume:
@@ -414,6 +515,9 @@ if __name__ == '__main__':
     mode.add_argument('--cookie-observers', action='store_true', help='Test real network cookie observation across rapid unregister/register')
     mode.add_argument('--extension-package-preparation', action='store_true', help='Test public extension preparation, cancellation and owned package cleanup')
     mode.add_argument('--extension-package-activation', action='store_true', help='Test public extension loading, saved grants and native extension pages')
+    mode.add_argument('--hyperlink-auditing', action='store_true', help='Test actual native hyperlink ping controls and unaffected navigation and beacons')
+    mode.add_argument('--extension-privacy', action='store_true', help='Test actual privacy bindings, lifecycle, saved-state failures and regular/private page preferences')
+    mode.add_argument('--extension-privacy-network', action='store_true', help='Test real privacy setters against unfiltered HTTPS prefetch, ping, beacon and navigation requests')
     parser.add_argument('--extension-startup', choices=('cold', 'deferred', 'network', 'page'), default='cold',
                         help='Diagnostic startup preparation for the extension runtime fixture (default: cold)')
     parser.add_argument('--extension-fixture', choices=('storage', 'cookies'), default='storage',
@@ -437,6 +541,12 @@ if __name__ == '__main__':
         TEST = PACKAGE_PREPARATION_TEST
     elif args.extension_package_activation:
         TEST = PACKAGE_ACTIVATION_TEST
+    elif args.hyperlink_auditing:
+        TEST = HYPERLINK_TEST
+    elif args.extension_privacy:
+        TEST = PRIVACY_TEST
+    elif args.extension_privacy_network:
+        TEST = PRIVACY_NETWORK_TEST
     EXTENSION_STARTUP = args.extension_startup
     EXTENSION_FIXTURE = args.extension_fixture
     TRACE_IPC = args.trace_ipc

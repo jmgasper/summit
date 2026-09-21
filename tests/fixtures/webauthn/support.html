@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<!-- Reports the Web Authentication surface a page can see. A password manager
+     extension replaces these entry points from its own script, so the page has
+     to expose them before it can offer a passkey. -->
+<meta charset="utf-8">
+<title>Web Authentication support</title>
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 2rem; }
+  table { border-collapse: collapse; }
+  td { border: 1px solid #ccc; padding: 4px 10px; }
+  .yes { background: #d7f3d7; }
+  .no { background: #f8d7d7; }
+  #verdict { font-size: 18px; font-weight: bold; margin-bottom: 1rem; }
+</style>
+<div id="verdict">checking…</div>
+<table id="results"></table>
+<script>
+const rows = [];
+function record(name, ok, detail) {
+    rows.push({ name, ok, detail });
+    const tr = document.createElement("tr");
+    const label = document.createElement("td");
+    label.textContent = name;
+    const value = document.createElement("td");
+    value.className = ok ? "yes" : "no";
+    value.textContent = (ok ? "yes" : "no") + (detail ? " — " + detail : "");
+    tr.append(label, value);
+    document.getElementById("results").append(tr);
+}
+
+record("navigator.credentials", !!navigator.credentials, typeof navigator.credentials);
+record("credentials.create", typeof navigator.credentials?.create === "function");
+record("credentials.get", typeof navigator.credentials?.get === "function");
+record("window.PublicKeyCredential", typeof window.PublicKeyCredential !== "undefined");
+record("PublicKeyCredential.prototype", !!window.PublicKeyCredential?.prototype);
+for (const name of ["isUserVerifyingPlatformAuthenticatorAvailable", "isConditionalMediationAvailable", "getClientCapabilities", "parseCreationOptionsFromJSON", "parseRequestOptionsFromJSON"])
+    record("PublicKeyCredential." + name, typeof window.PublicKeyCredential?.[name] === "function");
+record("AuthenticatorAttestationResponse", typeof window.AuthenticatorAttestationResponse !== "undefined");
+record("AuthenticatorAssertionResponse", typeof window.AuthenticatorAssertionResponse !== "undefined");
+
+const hookable = !!window.PublicKeyCredential && typeof navigator.credentials?.get === "function";
+document.getElementById("verdict").textContent = hookable
+    ? "WEBAUTHN SURFACE PRESENT — an extension can offer passkeys"
+    : "WEBAUTHN SURFACE MISSING — extensions report passkeys unsupported";
+document.title = hookable ? "webauthn: present" : "webauthn: missing";
+
+// Asynchronous answers come from the browser's own authenticator, which this
+// machine may not have; an extension overrides them before they are called.
+(async () => {
+    for (const name of ["isUserVerifyingPlatformAuthenticatorAvailable", "isConditionalMediationAvailable"]) {
+        if (typeof window.PublicKeyCredential?.[name] !== "function")
+            continue;
+        try {
+            record(name + "()", true, String(await window.PublicKeyCredential[name]()));
+        } catch (error) {
+            record(name + "()", false, String(error));
+        }
+    }
+    if (typeof window.PublicKeyCredential?.getClientCapabilities === "function") {
+        try {
+            const capabilities = await window.PublicKeyCredential.getClientCapabilities();
+            record("getClientCapabilities()", true, Object.keys(capabilities || {}).length + " capabilities");
+        } catch (error) {
+            record("getClientCapabilities()", false, String(error));
+        }
+    }
+})();
+</script>

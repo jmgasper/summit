@@ -26,9 +26,20 @@ installs successfully but stops on the missing privacy API; filtering remains un
 
 ## Build and try
 
-The extension-enabled modern development bundle is
-`artifacts/modern-browser/bundle-d0h_6xzg/`. Copy the whole directory to Haiku
-R1/beta6 x86_64 and run `./run-browser.sh`. It includes private helpers and
+The current development bundle is `artifacts/modern-browser/bundle-dxx4tx8e/`
+(September 20): GL compositing where a hardware EGL/GLES driver is available
+(software painting otherwise), WebKit's mimalloc, and Speedometer 3.1 at 3.67
+on browserbench.org in the QEMU VM. Unmodified published uBlock Origin
+(filtering, popup, restart: 97 checks) and Dark Reader (79 checks) pass their
+native suites; 1Password signs in, fills its inline icon on login forms and
+offers passkeys through [Web Authentication](docs/webauthn-passkeys.md).
+Extension packages are staged beside the profile, so a small or full system
+temporary volume no longer leaves a window without its extensions. See [status](docs/STATUS.md), [performance](docs/performance.md),
+[GPU validation](docs/gpu-validation.md) and [1Password](docs/webextensions-1password.md).
+Copy the whole directory to Haiku R1/beta6 x86_64 and run `./run-browser.sh`.
+
+The previous extension-enabled development bundle is
+`artifacts/modern-browser/bundle-d0h_6xzg/`. It includes private helpers and
 libraries, frozen application inputs, the matching patched WebKit source
 archive, and copy provenance. It includes [verified CRX3 import](docs/extension-crx.md),
 [Chrome manifest-key identity](docs/extension-identity.md)

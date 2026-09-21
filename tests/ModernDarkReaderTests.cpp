@@ -84,7 +84,15 @@ int main(int argc, char** argv)
         std::ofstream(control / "installed.json") << entry.dump(2) << '\n';
         Send(manager, B_QUIT_REQUESTED);
         Require(Wait([&] { return !manager.IsValid(); }), "manager closes after installation");
-        Require(Wait([&] { return loaded(std::string(argv[5]) + "/setup") && dark(report("setup")); }, 30000000),
+        // Dark Reader opens its help page in a new, selected tab on installation (tabs.create),
+        // as it does in Chrome, and defers theming hidden documents until they are shown.
+        // Return to the original tab the way a user would; the document must not reload.
+        // The help tab can open after the manager closes, so keep returning while waiting.
+        Require(Wait([&] {
+            if (Selected(State(window)) != setupIdentifier)
+                Send(window, summit::kSelectTab, setupIdentifier);
+            return loaded(std::string(argv[5]) + "/setup") && dark(report("setup"));
+        }, 30000000),
             "published Dark Reader themes the tab that was open before installation");
         const auto injectedState = State(window);
         BMessage injectedTab;

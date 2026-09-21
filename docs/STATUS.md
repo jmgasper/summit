@@ -1,3 +1,153 @@
+# Development verification
+
+## September 21, 2026: rendering performance on real hardware
+
+Work moved to the owner's Haiku workstation (Threadripper 1950X, GeForce GTX
+1070), which is now a build and measurement target of its own
+([workstation](workstation.md)). Details and tables in
+[performance](performance.md).
+
+- **Scrolling is 2.8x faster** on a 400-card feed (12.2 -> 34.8 fps in the VM;
+  42.1 fps on the workstation at 1913x935). The drawing area now reports what it
+  does with every frame (`SUMMIT_FRAME_STATS`), schedules a frame one display
+  period after the previous frame *started* rather than after the UI process
+  acknowledged it, moves the pixels a scroll keeps on screen inside the frame
+  bitmap instead of repainting them, and recycles presentation bitmaps.
+- **`box-shadow` was two thirds of a frame's painting.** Upstream keeps the
+  blurred shadow template in a scratch `ImageBuffer`, but only for Core
+  Graphics; every other port allocated one per shadow per frame, which on Haiku
+  is an app_server offscreen window each time. Enabled for Haiku.
+- **OpenGL ES on the GeForce works** through a private Mesa 25.3.6 built with
+  the `zink` driver over NVK (Haiku's own Mesa has EGL disabled and the
+  installed Zink add-on only serves `BGLView`). GPU compositing is selected
+  automatically and renders correctly — and is **four times slower** than
+  software, because a scroll invalidates the whole non-composited layer and
+  every tile is repainted through the same CPU path. Software stays the default.
+- **Speedometer 3.1: Summit 3.05 ± 0.085, Firefox 155 8.34 ± 0.37** on the same
+  machine and the same local copy. Painting is 95 ms per megapixel inside the
+  web process, on one thread.
+- **NVDEC is reached by Summit** (0.11–0.25 cores decoding 1080p H.264), but the
+  plugin crashes in its own error path: `NVDecPlugin.cpp` keeps a pointer to a
+  stack-local `char reason[256]` (`nvdec_h264.c:237`). YouTube additionally
+  needs Media Source Extensions, which are not built.
+
+## September 19, 2026 continuation (in progress)
+
+Work resumed with three owner priorities: GPU-accelerated rendering where the
+hardware supports it, a working 1Password extension, and Speedometer 3.1
+benchmarking with speedups. This section is a summary; details are in the linked
+notes. Nothing here has been through the exhaustive per-bundle evidence process
+used below, and items marked *unverified* have not run yet.
+
+- **1Password (Firefox MV2 8.12.32.33).** The unmodified package, in the
+  owner's existing profile and without reinstalling, now completes background
+  start-up, and its toolbar button opens the welcome/permission-setup page,
+  which renders as designed ([screenshot](screenshots/1password-welcome.png)).
+  Missing pieces were found with a new API gap tracer and implemented:
+  `notifications`, `idle`, `management`, `privacy.services`, `webRequest`
+  listener options, clean native-messaging failure, WebAssembly MIME types,
+  Firefox menu contexts, extra `runtime` and `webNavigation` members, a
+  restore-time permission upgrade, and the `tabs`/`windows`/`scripting`
+  mutation APIs with an engine-to-app command protocol. Sign-in, unlock and
+  autofill need a real account and are *unverified*. See
+  [1Password](webextensions-1password.md) and
+  [tab commands](webextensions-tab-commands.md).
+- **Owner-reported issues (`bundle-nr1le5v_`).** Opening reddit.com crashed
+  `media_addon_server`: Haiku's audio mixer dereferences a null output when a
+  sound player connects on a machine without sound hardware (the VM). Summit now
+  creates a sound player only when an audio output exists and the decoded format
+  is fully specified; reddit loads and plays its video muted
+  ([platform issue 6](kunanyios-platform-issues.md)). 1Password's "Sign in"
+  button navigates its extension tab to `start.1password.com`, which extension
+  views refused. Such http(s) navigations are now handed to the app, which
+  replaces the tab with an ordinary web tab in the same position; the same path
+  serves `tabs.update(url)` between extension and web pages. The user agent
+  now reports Safari 26, which removes 1Password's "update your browser"
+  banner. uBlock (97) and Dark Reader (79) still pass on this bundle.
+- **Extensions silently absent after start-up.** Loading an extension copies its
+  package to a staging directory, and that copy went to the system temporary
+  directory. In the VM `/tmp` is on the boot volume, which was 99.5% full, so
+  staging the two installed extensions (about 110 MB) either failed or crawled,
+  and the browser came up with no extension icons and nothing logged. Staged
+  copies now go to `<profile>/ExtensionStaging/<team>`, on the profile's own
+  volume; a run that is killed leaves its directory behind, and the next start
+  removes the directories of teams that are gone
+  (`WebExtensionStagingDirectoryHaiku.cpp`, set from the profile in
+  `WebViewContextHaiku::create`). Runs that ended abruptly were a red herring:
+  they left staged copies behind, which made the next start more likely to run
+  out of room. The full boot volume also wedged BFS (unkillable `rm` threads
+  blocked every write), which needed a VM reset.
+- **Extension origin churn (data loss).** Each load gave an extension a fresh
+  `webkit-extension://<uuid>` origin and renamed its website data to the new
+  origin at start-up. A run that ended before that rename stranded the data
+  under the previous origin, which is how 1Password lost its account and asked
+  to sign in again. The persisted `LastSeenBaseURL` is now restored at load
+  (`WebExtensionController::restoreNativeBaseURL`), so the origin is stable and
+  nothing has to be renamed. Verified: the origin and the IndexedDB directory
+  survive consecutive launches and a `kill -9`, with `storage.local` intact.
+- **Passkeys (Web Authentication).** `ENABLE_WEB_AUTHN` was off, so
+  `PublicKeyCredential` and `navigator.credentials` did not exist and 1Password
+  reported "WebAuthn isn't supported". The feature is now built for the Haiku
+  port with an authenticator coordinator that declines natively, because the
+  credential comes from the password manager, which can only extend an API the
+  page exposes. On `bundle-dxx4tx8e` the page sees the complete surface
+  ([screenshot](screenshots/webauthn-surface.png)) and 1Password offers a
+  passkey on github.com
+  ([screenshot](screenshots/1password-passkey-prompt.png)); completing the
+  sign-in needs the owner's unlocked vault and is *unverified*. Enabling the
+  feature needed eight upstream portability fixes (Cocoa keychain types in
+  shared headers, Xcode-only include forms, DER helpers filed under
+  `crypto/cocoa`, Touch ID strings, sources listed only for Apple's CMake
+  build) and leaves out Apple's authenticator stack. uBlock (90 + 7) and Dark
+  Reader (79) pass on this build. See [passkeys](webauthn-passkeys.md).
+- **1Password on login pages.** With the extensions loaded, the published
+  package fills its inline field icon on an ordinary login form and offers to
+  unlock ([screenshot](screenshots/1password-inline-icon.png)). The earlier
+  report of nothing appearing was the staging failure above, together with the
+  Deskbar entry still launching the September 13 legacy build, which has no
+  extension support and its own empty profile. That package is retired; the
+  desktop entry now starts the current bundle with the profile that holds the
+  installed extensions.
+- **Published extensions.** On `bundle-ivx_6ahj` the unmodified uBlock Origin
+  1.74.0 CRX passes its complete native suite, 90 install-mode + 7 restart
+  checks: signed install, EasyList filtering where the matched request never
+  reaches the server, the popup power switch off/on, disable/re-enable and
+  filtering after restart. On theguardian.com it blocks 29 requests and its
+  popup renders ([screenshot](screenshots/ublock-popup.png)). The published
+  Dark Reader passes its 79 checks. This needed blocking `webRequest`
+  ([design](webextensions-webrequest-blocking.md)), `declarativeNetRequest` and
+  `downloads` ([notes](webextensions-dnr-downloads.md)), API functions callable
+  without their namespace object (`const f = browser.runtime.getURL; f("")`),
+  a real `sender.origin` for extension pages, `requestIdleCallback`, tolerant
+  menu URL patterns, presenting frames painted for an earlier geometry,
+  damped popup size oscillation, and not reporting pre-existing tabs as created.
+  The Dark Reader harness now returns to the original tab after installation,
+  because Dark Reader opens its help page in a new tab (as in Chrome).
+- **Rendering fixes.** Text and images inside `opacity < 1` elements were not
+  painted (app_server layer bounding-box bug, worked around); fills ignored the
+  context's global alpha (SVG `fill-opacity`, canvas `globalAlpha`); SVG/canvas
+  pattern fills were unimplemented and drew black. See
+  [platform issues](kunanyios-platform-issues.md).
+- **Performance.** Speedometer 3.1, uncontended: 0.575 → **3.53 ± 0.21**
+  (local copy, 6.1x); the official browserbench.org page, which previously
+  crashed its page process through the Screen Wake Lock API, now completes at
+  **3.67 ± 0.099**. Changes: timers no longer go through `BMessageRunner` (2000
+  chained zero-delay timers 484 ms → 2.5 ms); the drawing area repaints only
+  invalidated regions into a reused bitmap and keeps its app_server drawing
+  context; WebKit's bundled mimalloc replaces Haiku's `malloc` (+15%); the disk
+  cache stores bodies on BFS (no hard links). See [performance](performance.md).
+- **GPU compositing.** TextureMapper (OpenGL ES via EGL) compositing with
+  read-back into the frame bitmap and runtime fallback is built in the
+  `ModernGL` configuration (with mimalloc) and **runs**: with the private Mesa
+  25.3.6 in the VM (llvmpipe, forced) it renders the compositing fixture like the
+  software path and scores the same on Speedometer. It is selected automatically
+  only on a hardware GL renderer; the stock Haiku Mesa cannot initialize EGL, so
+  those systems keep software painting. Real-GPU validation is pending. See
+  [GPU compositing](gpu-compositing.md), [validation](gpu-validation.md) and
+  [VM EGL stack](vm-egl-stack.md).
+- **VM.** Haiku's `profile` tool kernel-panics this guest (`profiling_event`);
+  do not use it. `/SummitExtensions` needs a manual `mount` after a reset.
+
 # Development verification — September 16, 2026
 
 The original full-browser objective is **not complete**. Summit now builds and

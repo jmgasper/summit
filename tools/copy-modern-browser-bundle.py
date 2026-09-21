@@ -125,6 +125,11 @@ def validate_report(report, target):
         input_keys.add('engine_variant')
     if extensions:
         input_keys.add('libzip')
+    # Bundles from a named engine build directory (for example ModernGL) record it.
+    if 'engine_build_name' in inputs:
+        require(isinstance(inputs['engine_build_name'], str) and inputs['engine_build_name'].isalnum(),
+                'Invalid engine build name')
+        input_keys.add('engine_build_name')
     require(set(inputs) == input_keys,
             'Unknown or incomplete staged input format')
     headers = inputs['public_headers']

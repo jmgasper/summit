@@ -17,6 +17,8 @@ HELPERS = {
     'WebExtensionInstallStateHaiku.h': Path('Source/WebKit/UIProcess/Extensions/haiku/WebExtensionInstallStateHaiku.h'),
     'WebExtensionPackageSnapshotHaiku.h': Path('Source/WebKit/UIProcess/Extensions/haiku/WebExtensionPackageSnapshotHaiku.h'),
     'WebExtensionPackageSnapshotHaiku.cpp': Path('Source/WebKit/UIProcess/Extensions/haiku/WebExtensionPackageSnapshotHaiku.cpp'),
+    'WebExtensionStagingDirectoryHaiku.h': Path('Source/WebKit/UIProcess/Extensions/haiku/WebExtensionStagingDirectoryHaiku.h'),
+    'WebExtensionStagingDirectoryHaiku.cpp': Path('Source/WebKit/UIProcess/Extensions/haiku/WebExtensionStagingDirectoryHaiku.cpp'),
     'WebExtensionResourcePathsHaiku.h': Path('Source/WebKit/UIProcess/Extensions/haiku/WebExtensionResourcePathsHaiku.h'),
     'WebExtensionArchiveHaiku.h': Path('Source/WebKit/UIProcess/Extensions/haiku/WebExtensionArchiveHaiku.h'),
     'pal/crypto/CryptoDigest.h': Path('Source/WebCore/PAL/pal/crypto/CryptoDigest.h'),
@@ -77,7 +79,8 @@ def native():
               'source_manifest': manifest, 'native_inputs': snapshot, 'frozen_libraries': hashes,
               'compile_results': [], 'linked_webcore_or_webkit': False}
     objects = []
-    for name in ('CryptoDigestOpenSSL.cpp', 'WebExtensionPackageSnapshotHaiku.cpp', 'EngineExtensionPackageSnapshotTests.cpp'):
+    for name in ('CryptoDigestOpenSSL.cpp', 'WebExtensionPackageSnapshotHaiku.cpp', 'WebExtensionStagingDirectoryHaiku.cpp',
+                 'EngineExtensionPackageArchiveStubs.cpp', 'EngineExtensionPackageSnapshotTests.cpp'):
         obj = output / (Path(name).stem + '.o')
         command = ['c++', *flags, '-c', str(output / name), '-o', str(obj)]
         result = subprocess.run(command, cwd=build, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -126,8 +129,9 @@ def host(overlay):
         if overlay and (Path(overlay).resolve() / relative).is_file():
             source = Path(overlay).resolve() / relative
         files[name] = (source, source.read_bytes())
-    test = ROOT / 'tests/EngineExtensionPackageSnapshotTests.cpp'
-    files[test.name] = (test, test.read_bytes())
+    for name in ('EngineExtensionPackageSnapshotTests.cpp', 'EngineExtensionPackageArchiveStubs.cpp'):
+        test = ROOT / 'tests' / name
+        files[test.name] = (test, test.read_bytes())
     manifest = {'engine_patch_sha256': json.loads((ROOT / 'engine/sources.lock.json').read_text())['patch']['sha256'],
                 'files': {name: {'source': str(path), 'sha256': hashlib.sha256(data).hexdigest()}
                           for name, (path, data) in files.items()}}

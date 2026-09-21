@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <fcntl.h>
 #include <fstream>
+#include <limits>
 #include <set>
 #include <stdexcept>
 #include <sys/stat.h>
@@ -173,12 +174,28 @@ bool ExtensionCatalog::Load(std::vector<InstalledExtension>& result, std::string
             throw std::runtime_error("Unsupported extension catalog format");
         std::vector<InstalledExtension> entries;
         std::set<std::string> identities, packages;
-        for (const auto& item : data.at("extensions")) {
+        std::set<uint64_t> orders;
+        const auto& items = data.at("extensions");
+        const bool hasOrder = !items.empty() && items.front().contains("installation_order");
+        for (const auto& item : items) {
             InstalledExtension entry { item.at("identifier"), item.at("name"), item.at("version"),
                 item.at("fingerprint"), item.at("package"), item.at("enabled"),
                 item.at("allow_file_urls"), item.at("allow_private_browsing") };
+            if (item.contains("installation_order") != hasOrder)
+                throw std::runtime_error("Incomplete extension installation order metadata");
+            if (hasOrder) {
+                const auto& order = item.at("installation_order");
+                if (!order.is_number_unsigned() || !order.get<uint64_t>())
+                    throw std::runtime_error("Invalid extension installation order");
+                entry.installationOrder = order.get<uint64_t>();
+            } else {
+                // Legacy catalogs append installations and preserve their order.
+                // Migrate in memory; a read alone must not rewrite the catalog.
+                entry.installationOrder = entries.size() + 1;
+            }
             validate(entry);
-            if (!identities.insert(entry.identifier).second || !packages.insert(entry.package).second)
+            if (!identities.insert(entry.identifier).second || !packages.insert(entry.package).second
+                || !orders.insert(entry.installationOrder).second)
                 throw std::runtime_error("Duplicate extension catalog entry");
             entries.push_back(std::move(entry));
         }
@@ -190,6 +207,15 @@ bool ExtensionCatalog::Load(std::vector<InstalledExtension>& result, std::string
     }
 }
 
+uint64_t ExtensionCatalog::NextInstallationOrder(const std::vector<InstalledExtension>& entries)
+{
+    uint64_t latest = 0;
+    for (const auto& entry : entries) latest = std::max(latest, entry.installationOrder);
+    if (latest == std::numeric_limits<uint64_t>::max())
+        throw std::runtime_error("Extension installation order is exhausted");
+    return latest + 1;
+}
+
 bool ExtensionCatalog::Save(const std::vector<InstalledExtension>& entries, std::string& error) const
 {
     std::string temporary;
@@ -197,11 +223,15 @@ bool ExtensionCatalog::Save(const std::vector<InstalledExtension>& entries, std:
     try {
         if (entries.size() > 256) throw std::runtime_error("Too many installed extensions");
         json items = json::array();
+        std::set<uint64_t> orders;
         for (const auto& entry : entries) {
             validate(entry);
+            if (!entry.installationOrder || !orders.insert(entry.installationOrder).second)
+                throw std::runtime_error("Invalid extension installation order");
             items.push_back({{"identifier", entry.identifier}, {"name", entry.name}, {"version", entry.version},
                 {"fingerprint", entry.fingerprint}, {"package", entry.package}, {"enabled", entry.enabled},
-                {"allow_file_urls", entry.allowFileURLs}, {"allow_private_browsing", entry.allowPrivateBrowsing}});
+                {"allow_file_urls", entry.allowFileURLs}, {"allow_private_browsing", entry.allowPrivateBrowsing},
+                {"installation_order", entry.installationOrder}});
         }
         auto data = json{{"format", 1}, {"extensions", std::move(items)}}.dump(2);
         if (data.size() > catalogLimit) throw std::runtime_error("Extension catalog is too large");
@@ -269,6 +299,10 @@ bool ExtensionCatalog::Install(StagedExtensionPackage& staged, InstalledExtensio
         if (!Load(entries, error)) return false;
         if (std::any_of(entries.begin(), entries.end(), [&](const auto& old) { return old.identifier == entry.identifier; }))
             throw std::runtime_error("This extension identity is already installed");
+        const auto nextOrder = NextInstallationOrder(entries);
+        if (entry.installationOrder && entry.installationOrder != nextOrder)
+            throw std::runtime_error("Extension installation order changed during approval");
+        entry.installationOrder = nextOrder;
         entries.push_back(std::move(entry));
         if (!Save(entries, error)) return false;
         staged.fInstalled = true;

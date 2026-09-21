@@ -5,6 +5,7 @@
 #include <Messenger.h>
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <utility>
 
@@ -14,6 +15,11 @@ std::string field(const BMessage& message, const char* name)
 {
     const char* value = nullptr;
     return message.FindString(name, &value) == B_OK && value ? value : "";
+}
+bool developerModeAcceptsChangedPackages()
+{
+    const char* value = std::getenv("SUMMIT_EXTENSION_DEVELOPER_MODE");
+    return value && !std::strcmp(value, "1");
 }
 }
 ExtensionController::ExtensionController(std::shared_ptr<BWebKitContext> context,
@@ -181,18 +187,33 @@ void ExtensionController::MessageReceived(BMessage* message)
         return;
     }
     if (pending == Pending::Prepare) {
-        if (fToken.empty() || field(*message, "fingerprint") != entry.installation.fingerprint) {
+        auto fingerprint = field(*message, "fingerprint");
+        if (!fToken.empty() && fingerprint != entry.installation.fingerprint && developerModeAcceptsChangedPackages()) {
+            // Extension development: an edited package keeps its approval for this session only.
+            std::fprintf(stderr, "Summit extension %s: developer mode accepted changed package %s\n",
+                entry.installation.identifier.c_str(), fingerprint.c_str());
+            entry.installation.fingerprint = fingerprint;
+        }
+        if (fToken.empty() || fingerprint != entry.installation.fingerprint) {
             Fail("The installed package has changed and requires new approval.");
             return;
         }
         BWebKitExtensionLoadOptions options;
         options.uniqueIdentifier = entry.installation.identifier;
         options.expectedFingerprint = entry.installation.fingerprint;
+        BWebKitExtensionInstallation installation { entry.installation.package, entry.installation.installationOrder };
         options.purpose = BWebKitExtensionLoadOptions::Purpose::BrowserStartup;
+        // The install consent listed every required manifest permission, including ones an
+        // older engine lacked. Name the currently supported ones so an engine update can add them.
+        const char* permission = nullptr;
+        for (int32 i = 0; i < 256 && message->FindString("permission", i, &permission) == B_OK; ++i) {
+            if (permission && *permission && std::strlen(permission) <= 4096)
+                options.permissions.emplace_back(permission);
+        }
         options.allowFileURLs = entry.installation.allowFileURLs;
         options.allowPrivateBrowsing = entry.installation.allowPrivateBrowsing;
         fPending = Pending::Load;
-        auto status = fContext->LoadPreparedExtension(fToken.c_str(), options, BMessenger(this), ++fRequest);
+        auto status = fContext->LoadPreparedExtension(fToken.c_str(), options, installation, BMessenger(this), ++fRequest);
         if (status != B_OK) Fail(std::strerror(status));
         return;
     }

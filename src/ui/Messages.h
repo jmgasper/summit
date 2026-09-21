@@ -46,4 +46,6 @@ constexpr uint32 kCloseExtensionManager = 'excl';
 constexpr uint32 kActivateExtensionAction = 'exac';
 constexpr uint32 kShowExtensionActions = 'exam';
 constexpr uint32 kBrowserState = 'stat';
+// Benchmark input synthesis, refused unless SUMMIT_ENABLE_INPUT_SYNTHESIS=1.
+constexpr uint32 kSimulateScroll = 'sscr';
 }

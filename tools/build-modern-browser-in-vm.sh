@@ -3,6 +3,15 @@
 set -euo pipefail
 SUMMIT_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$SUMMIT_ROOT"
+# The build host is selected with SUMMIT_REMOTE_SHELL: tools/haiku.sh (the QEMU
+# VM, the default) or tools/ws.sh (the workstation). SUMMIT_REMOTE_TAG names the
+# host in the host-side lock files so both can build at the same time.
+SUMMIT_REMOTE_SHELL=${SUMMIT_REMOTE_SHELL:-tools/haiku.sh}
+SUMMIT_REMOTE_TAG=${SUMMIT_REMOTE_TAG:-vm}
+if [[ ! $SUMMIT_REMOTE_SHELL =~ ^tools/(haiku|ws)\.sh$ || ! $SUMMIT_REMOTE_TAG =~ ^[a-z][a-z0-9-]{0,15}$ ]]; then
+    echo 'SUMMIT_REMOTE_SHELL must be tools/haiku.sh or tools/ws.sh.' >&2
+    exit 2
+fi
 SUMMIT_MODE=--bundle
 SUMMIT_TARGET=preview
 SUMMIT_VARIANT=modern
@@ -29,9 +38,9 @@ for SUMMIT_ARGUMENT in "$@"; do
 done
 mkdir -p .vm
 if [[ $SUMMIT_MODE == --bundle ]]; then
-    exec 9>.vm/engine-build.lock
+    exec 9>".vm/engine-build-$SUMMIT_REMOTE_TAG-${SUMMIT_ENGINE_BUILD_NAME:-Modern}.lock"
     flock -n 9 || { echo 'An engine build is active; wait for it before bundling the app.' >&2; exit 1; }
-    exec 8>.vm/icu-build.lock
+    exec 8>".vm/icu-build-$SUMMIT_REMOTE_TAG.lock"
     flock -n 8 || { echo 'A private ICU build is active; wait for it before bundling the app.' >&2; exit 1; }
 fi
 SUMMIT_STAGE=$(mktemp -d .vm/modern-preview-inputs.XXXXXX)
@@ -41,12 +50,12 @@ cleanup() {
     rm -rf -- "$SUMMIT_STAGE"
     rm -f -- "$SUMMIT_RESULT"
     if [[ $SUMMIT_REMOTE_STAGE =~ ^(/boot/home/summit|/SummitExtensions/summit)/modern-preview-inputs\.[A-Za-z0-9]+$ ]]; then
-        bash tools/haiku.sh "rm -rf -- '$SUMMIT_REMOTE_STAGE'" || true
+        bash "$SUMMIT_REMOTE_SHELL" "rm -rf -- '$SUMMIT_REMOTE_STAGE'" || true
     fi
 }
 trap cleanup EXIT
 python3 - "$SUMMIT_STAGE" "$SUMMIT_TARGET" "$SUMMIT_VARIANT" <<'PY'
-import hashlib, json, pathlib, shutil, sys
+import hashlib, json, os, pathlib, shutil, sys
 root = pathlib.Path.cwd()
 stage = pathlib.Path(sys.argv[1])
 target = sys.argv[2]
@@ -84,6 +93,7 @@ inputs = {
     'engine': lock,
     'icu': json.loads((root / 'engine/icu.lock.json').read_text()),
     'engine_variant': sys.argv[3],
+    'engine_build_name': os.environ.get('SUMMIT_ENGINE_BUILD_NAME', 'Modern'),
     'public_headers': headers,
     'target': target,
     'sha256': hashes,
@@ -92,17 +102,17 @@ if sys.argv[3] == 'modern-extensions':
     inputs['libzip'] = json.loads((root / 'engine/libzip.lock.json').read_text())
 (stage / 'inputs.json').write_text(json.dumps(inputs, indent=2) + '\n')
 PY
-SUMMIT_REMOTE_STAGE=$(bash tools/haiku.sh "mkdir -p '$SUMMIT_NATIVE_BUILD_ROOT' '$SUMMIT_NATIVE_BUILD_ROOT/tmp' && mktemp -d '$SUMMIT_NATIVE_BUILD_ROOT/modern-preview-inputs.XXXXXXXX'")
+SUMMIT_REMOTE_STAGE=$(bash "$SUMMIT_REMOTE_SHELL" "mkdir -p '$SUMMIT_NATIVE_BUILD_ROOT' '$SUMMIT_NATIVE_BUILD_ROOT/tmp' && mktemp -d '$SUMMIT_NATIVE_BUILD_ROOT/modern-preview-inputs.XXXXXXXX'")
 if [[ ! $SUMMIT_REMOTE_STAGE =~ ^(/boot/home/summit|/SummitExtensions/summit)/modern-preview-inputs\.[A-Za-z0-9]+$ ]]; then
     echo 'The VM returned an unexpected staging path.' >&2
     exit 1
 fi
 tar -C "$SUMMIT_STAGE" -czf - . |
-    bash tools/haiku.sh "tar -xzf - -C '$SUMMIT_REMOTE_STAGE'"
-bash tools/haiku.sh "env TMPDIR='$SUMMIT_NATIVE_BUILD_ROOT/tmp' python3.10 '$SUMMIT_REMOTE_STAGE/tools/build-modern-browser.py' '$SUMMIT_MODE' --build-root '$SUMMIT_NATIVE_BUILD_ROOT'" |
+    bash "$SUMMIT_REMOTE_SHELL" "tar -xzf - -C '$SUMMIT_REMOTE_STAGE'"
+bash "$SUMMIT_REMOTE_SHELL" "env TMPDIR='$SUMMIT_NATIVE_BUILD_ROOT/tmp' python3.10 '$SUMMIT_REMOTE_STAGE/tools/build-modern-browser.py' '$SUMMIT_MODE' --build-root '$SUMMIT_NATIVE_BUILD_ROOT'" |
     tee "$SUMMIT_RESULT"
 if [[ $SUMMIT_MODE == --compile-only ]]; then
-    mv -- "$SUMMIT_RESULT" ".vm/$SUMMIT_VARIANT-$SUMMIT_TARGET-compile.json"
+    mv -- "$SUMMIT_RESULT" ".vm/$SUMMIT_REMOTE_TAG-$SUMMIT_VARIANT-$SUMMIT_TARGET-compile.json"
 else
-    mv -- "$SUMMIT_RESULT" ".vm/$SUMMIT_VARIANT-$SUMMIT_TARGET-bundle.json"
+    mv -- "$SUMMIT_RESULT" ".vm/$SUMMIT_REMOTE_TAG-$SUMMIT_VARIANT-$SUMMIT_TARGET-bundle.json"
 fi

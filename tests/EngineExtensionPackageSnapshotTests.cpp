@@ -1,5 +1,6 @@
 #include "config.h"
 #include "WebExtensionPackageSnapshotHaiku.h"
+#include "WebExtensionStagingDirectoryHaiku.h"
 #include "WebExtensionInstallStateHaiku.h"
 #include <Application.h>
 #include <cstdio>
@@ -219,6 +220,34 @@ int main()
     legacy->remove("LastSeenVersion"_s);
     decision = updateWebExtensionInstallStateHaiku(legacy.get(), "3"_s, fingerprint, Purpose::UserInitiated);
     check(decision.reason == Reason::Update && decision.previousVersion.isEmpty(), "known package change does not fabricate missing previous version");
+
+    // Staging directory: package copies are as large as the installed extension,
+    // so they must land on the profile's volume instead of the system temporary
+    // directory, and a run that dies without cleaning up must not strand them.
+    fs::path profile = root / "profile", staging = profile / "ExtensionStaging";
+    fs::create_directories(profile);
+    setWebExtensionStagingDirectoryHaiku(string(profile));
+    auto configured = webExtensionStagingDirectoryHaiku();
+    fs::path expected = staging / std::to_string(getpid());
+    check(configured == string(expected) && fs::is_directory(expected), "staging directory is created for this run inside the profile");
+    auto staged = snapshotWebExtensionPackageHaiku(string(first));
+    check(staged.has_value(), "package is staged without an explicit parent");
+    if (staged) {
+        fs::path stagedPath(staged->path().utf8().legacyCStringPointer());
+        // Staging resolves its parent, so compare resolved paths: the system
+        // temporary directory reaches this test through a symbolic link.
+        check(stagedPath.parent_path() == fs::canonical(expected), "package is staged inside the configured staging directory");
+        check(get(stagedPath / "manifest.json") == get(first / "manifest.json"), "staged package holds the copied resources");
+    }
+    put(staging / "999999" / "leftover.bin", "abandoned");
+    put(staging / "not-a-team" / "leftover.bin", "abandoned");
+    auto removed = removeAbandonedWebExtensionStagingDirectoriesHaiku(string(staging));
+    check(removed == 2 && !fs::exists(staging / "999999") && !fs::exists(staging / "not-a-team"),
+        "directories from runs that are gone are removed");
+    check(fs::is_directory(expected), "the staging directory of the running team is kept");
+    setWebExtensionStagingDirectoryHaiku(emptyString());
+    check(webExtensionStagingDirectoryHaiku().isEmpty(), "clearing the staging directory restores the system temporary directory");
+    check(!removeAbandonedWebExtensionStagingDirectoriesHaiku(emptyString()), "no staging root removes nothing");
 
     fs::remove_all(root);
     std::printf("%u package snapshot checks, %u failures\n", checks, failures);

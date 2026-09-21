@@ -117,6 +117,12 @@ public:
                 StartupError("Could not initialize extension actions: " + std::string(std::strerror(initialization)));
                 return;
             }
+            // Extensions change tabs and windows by asking this application.
+            initialization = fWebKitContext->SetBrowserCommandListener(BMessenger(this));
+            if (initialization != B_OK && initialization != B_NOT_SUPPORTED) {
+                StartupError("Could not initialize extension tab commands: " + std::string(std::strerror(initialization)));
+                return;
+            }
         }
 #else
         setenv("CURL_COOKIE_JAR_PATH", (fProfile / "cookies.sqlite").c_str(), 1);
@@ -158,6 +164,16 @@ public:
 #if SUMMIT_MODERN_WEBKIT
         if (message->what == B_WEBKIT_EXTENSION_ACTIONS_CHANGED) {
             if (fWindow.IsValid()) fWindow.SendMessage(message);
+            return;
+        }
+        if (message->what == B_WEBKIT_BROWSER_COMMAND || message->what == B_WEBKIT_BROWSER_COMMAND_CANCELLED) {
+            // The single browser window performs every command, including
+            // windows.create(), and answers through the shared context.
+            if (fWindow.IsValid() && fWindow.SendMessage(message) == B_OK) return;
+            uint64 identifier = 0;
+            if (message->what == B_WEBKIT_BROWSER_COMMAND && fWebKitContext
+                && message->FindUInt64("identifier", &identifier) == B_OK)
+                fWebKitContext->RespondToBrowserCommand(identifier, B_ERROR, { }, "The browser window is not available.");
             return;
         }
         if (message->what == summit::kShowExtensions) {
@@ -235,10 +251,26 @@ public:
             const char* url = nullptr;
             bool select = true;
             message->FindBool("select", &select);
+#if SUMMIT_MODERN_WEBKIT
+            const int32 index = message->GetInt32("index", -1);
+            const uint64 command = message->GetUInt64("command", 0);
+            const int64 replaces = message->GetInt64("replaces", 0);
+#endif
             if (message->FindMessenger("window", &target) != B_OK
-                || message->FindString("url", &url) != B_OK || !target.LockTarget()) return;
+                || message->FindString("url", &url) != B_OK || !target.LockTarget()) {
+#if SUMMIT_MODERN_WEBKIT
+                // An extension is waiting for this tab; do not leave it to time out.
+                if (command && fWebKitContext)
+                    fWebKitContext->RespondToBrowserCommand(command, B_ERROR, { }, "The browser window is not available.");
+#endif
+                return;
+            }
             BLooper* looper = nullptr;
             auto* window = dynamic_cast<summit::BrowserWindow*>(target.Target(&looper));
+#if SUMMIT_MODERN_WEBKIT
+            if (!window && command && fWebKitContext)
+                fWebKitContext->RespondToBrowserCommand(command, B_ERROR, { }, "The browser window is not available.");
+#endif
             if (window) {
 #if SUMMIT_MODERN_WEBKIT
                 std::string extensionIdentifier;
@@ -253,7 +285,7 @@ public:
                         }
                     }
                 }
-                window->CreateTab(url, select, extensionIdentifier.c_str());
+                window->CreateTab(url, select, extensionIdentifier.c_str(), index, command, replaces);
 #else
                 window->CreateTab(url, select);
 #endif
@@ -280,6 +312,7 @@ public:
         }
         if (fWebKitContext) {
             fWebKitContext->SetExtensionActionListener({});
+            fWebKitContext->SetBrowserCommandListener({});
             if (fExtensionWindow.IsValid()) fExtensionWindow.SendMessage(summit::kCloseExtensionManager);
             if (fInstaller) fInstaller->Shutdown();
             if (fExtensions) fExtensions->Shutdown();

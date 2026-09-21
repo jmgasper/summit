@@ -9,6 +9,7 @@
 #include <Messenger.h>
 #include <Message.h>
 #include <atomic>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -49,7 +50,12 @@ public:
     void MessageReceived(BMessage* message) override;
     bool QuitRequested() override;
 #if SUMMIT_MODERN_WEBKIT
-    void CreateTab(const std::string& url, bool select = true, const char* extensionIdentifier = nullptr);
+    // index < 0 appends. A nonzero command is an extension's browser command
+    // that is answered once this tab exists or could not be created.
+    // A nonzero replaces closes that tab once the new one exists: extension pages and web
+    // pages need different kinds of view, so moving a tab between them swaps its view.
+    void CreateTab(const std::string& url, bool select = true, const char* extensionIdentifier = nullptr,
+        int32 index = -1, uint64 command = 0, int64 replaces = 0);
     void WindowActivated(bool active) override;
 #else
     void NavigationRequested(const BString& url, BWebView* view) override;
@@ -138,12 +144,53 @@ private:
     Tab* FindTab(BWebView* view);
 #endif
     Tab* ActiveTab();
+    // Benchmark input synthesis: posts a paced burst of mouse wheel or key
+    // events to the active page, so scrolling can be measured the way a person
+    // produces it. Refused unless SUMMIT_ENABLE_INPUT_SYNTHESIS=1 (see
+    // docs/performance.md); nothing in the browser sends this by itself.
+    void SimulateScroll(const BMessage&, BMessage& reply);
+    struct ScrollBurst {
+        BMessenger view;
+        BMessage event;
+        int32 count = 0;
+        bigtime_t interval = 16666;
+    };
+    static status_t RunScrollBurst(void* burst);
     void SelectTab(int64 id, bool forClose = false);
     void CloseTab(int64 id);
+#if SUMMIT_MODERN_WEBKIT
+    void ReplaceTabView(const Tab& tab, const std::string& url);
+#endif
     void Navigate(const std::string& text);
     void RefreshChrome();
 #if SUMMIT_MODERN_WEBKIT
     void SyncBrowserWindow();
+    // Extension requests to change tabs and windows (B_WEBKIT_BROWSER_COMMAND).
+    // Every accepted command is answered exactly once through the context.
+    struct OpenCommand {
+        uint64 identifier = 0;
+        size_t pending = 0;
+        std::vector<BWebKitView*> views;
+        std::string error;
+        bool window = false;
+        std::string extension;
+    };
+    struct CloseCommand {
+        uint64 identifier = 0;
+        std::set<int64> tabs;
+    };
+    void BrowserCommand(const BMessage&);
+    void OpenTabsForCommand(const BMessage&, uint64 identifier, bool window);
+    void CloseTabsForCommand(uint64 identifier, const std::vector<int64>&);
+    void TabOpenedForCommand(uint64 command, Tab*, const std::string& error);
+    void TabCloseSettled(int64 id, bool closed);
+    void RespondToCommand(uint64 identifier, status_t, const std::vector<BWebKitView*>& = { }, const char* error = nullptr);
+    bool PrepareTabNavigation(const Tab&);
+    std::vector<OpenCommand> fOpenCommands;
+    std::vector<CloseCommand> fCloseCommands;
+    // Tabs opened for windows.create(), per extension. This single-window
+    // browser closes those, never itself, when that extension removes "its" window.
+    std::map<std::string, std::vector<int64>> fExtensionWindowTabs;
     void RefreshExtensionActions();
     void ExtensionActionsReceived(const BMessage&);
     void ActivateExtensionAction(const BMessage&);

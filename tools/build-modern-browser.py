@@ -251,7 +251,10 @@ def main():
     if variant not in ('modern', 'modern-extensions') or ('libzip' in inputs) != (variant == 'modern-extensions'):
         raise RuntimeError('Unknown engine variant or inconsistent libzip input')
     SOURCE = pathlib.Path('/boot/home/summit-webkit' + ('-extensions' if variant == 'modern-extensions' else ''))
-    ENGINE = SOURCE / 'WebKitBuild/Modern'
+    engine_build_name = inputs.get('engine_build_name', 'Modern')
+    if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]{0,31}', engine_build_name):
+        raise RuntimeError('Invalid engine build name')
+    ENGINE = SOURCE / 'WebKitBuild' / engine_build_name
     target = inputs.get('target', 'preview')
     if target not in ('preview', 'browser'):
         raise RuntimeError('Unknown native app target: ' + str(target))
@@ -276,7 +279,10 @@ def main():
     sources = ['tests/ModernBrowser.cpp']
     if browser:
         flags += ['-DSUMMIT_MODERN_WEBKIT=1', '-I' + str(ROOT / 'src'),
-                  '-I' + str(ROOT / 'vendor'), '-I/boot/system/develop/headers/private/netservices']
+                  '-I' + str(ROOT / 'vendor'), '-I/boot/system/develop/headers/private/netservices',
+                  # app/AppMisc.h, for the view token a synthesized mouse wheel
+                  # message needs to reach the page (see BrowserWindow::SimulateScroll).
+                  '-I/boot/system/develop/headers/private']
         sources = ['src/main.cpp', 'src/core/Address.cpp', 'src/core/Profile.cpp', 'src/core/ExtensionCatalog.cpp', 'src/core/ExtensionIdentity.cpp',
                    'src/ui/BrowserWindow.cpp', 'src/ui/Chrome.cpp', 'src/ui/ExtensionPermissionPrompt.cpp',
                    'src/ui/ExtensionController.cpp', 'src/ui/ExtensionInstaller.cpp', 'src/ui/ExtensionManager.cpp']

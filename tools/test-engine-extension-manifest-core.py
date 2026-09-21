@@ -24,6 +24,7 @@ SOURCES = ('WebExtension.cpp', 'WebExtensionMatchPattern.cpp',
            'haiku/WebExtensionHaiku.cpp')
 EXTRA_WATCHED_INPUTS = ()
 EXTRA_INCLUDE_DIRECTORIES = ()
+PREFIX_HEADER = None
 
 
 def digest(path):
@@ -68,8 +69,9 @@ def main():
                         help='Use a feature-enabled configuration without changing its feature gates.')
     args = parser.parse_args()
     OUTPUT.mkdir(exist_ok=True)
+    prefix = PREFIX_HEADER or ENGINE / 'Source/WebKit/WebKitPrefix.h'
     watched_inputs = (BUILD / 'build.ninja', ENGINE / '.summit-source-manifest.json',
-                      ENGINE / 'Source/WebKit/WebKitPrefix.h', *EXTRA_WATCHED_INPUTS)
+                      prefix, *EXTRA_WATCHED_INPUTS)
     input_snapshot = {str(path): digest(path) for path in watched_inputs}
     fields = {}
     with (BUILD / 'build.ninja').open() as stream:
@@ -96,7 +98,6 @@ def main():
         isolated_config = isolated_config.replace(content_gate, '#define ENABLE_CONTENT_EXTENSIONS 1')
     (OUTPUT / 'cmakeconfig.h').write_text(isolated_config)
     # Preserve the production prefix, but do not consume its feature-disabled PCH.
-    prefix = ENGINE / 'Source/WebKit/WebKitPrefix.h'
     raw_flags = shlex.split(' '.join(fields[key] for key in ('DEFINES', 'INCLUDES', 'FLAGS')))
     flags = []
     iterator = iter(raw_flags)

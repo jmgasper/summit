@@ -167,13 +167,14 @@ void ExtensionInstaller::Approve(uint64 generation, bool allowFiles, bool allowP
     BWebKitExtensionLoadOptions options;
     options.uniqueIdentifier = fDraft->entry.identifier;
     options.expectedFingerprint = fDraft->entry.fingerprint;
+    BWebKitExtensionInstallation installation { fDraft->entry.package, fDraft->entry.installationOrder };
     options.permissions = fDraft->permissions;
     options.origins = fDraft->origins;
     options.allowFileURLs = allowFiles;
     options.allowPrivateBrowsing = allowPrivate;
     fPending = B_WEBKIT_EXTENSION_LOADED;
     fStatus = "Installing extension…";
-    auto status = fContext->LoadPreparedExtension(fDraft->token.c_str(), options, BMessenger(this), ++fRequest);
+    auto status = fContext->LoadPreparedExtension(fDraft->token.c_str(), options, installation, BMessenger(this), ++fRequest);
     if (status != B_OK) Finish(std::strerror(status));
     else Changed();
 }
@@ -212,8 +213,12 @@ void ExtensionInstaller::MessageReceived(BMessage* message)
         fDraft->loaded = true;
         fDraft->token.clear();
         fDraft->baseURL = field(*message, "base_url");
+        uint64 installationOrder = 0;
         if (field(*message, "extension_identifier") != fDraft->entry.identifier
             || field(*message, "fingerprint") != fDraft->entry.fingerprint
+            || field(*message, "installation_identifier") != fDraft->entry.package
+            || message->FindUInt64("installation_order", &installationOrder) != B_OK
+            || installationOrder != fDraft->entry.installationOrder
             || !fDraft->baseURL.starts_with("webkit-extension://")) {
             Rollback("The loaded extension did not match the approved package.");
             return;
@@ -243,6 +248,7 @@ void ExtensionInstaller::MessageReceived(BMessage* message)
         std::vector<InstalledExtension> entries;
         std::string error;
         if (!fCatalog.Load(entries, error)) throw std::runtime_error(error);
+        draft.entry.installationOrder = ExtensionCatalog::NextInstallationOrder(entries);
         if (std::any_of(entries.begin(), entries.end(), [&](const auto& entry) { return entry.identifier == draft.entry.identifier; }))
             throw std::runtime_error("An extension with this identity is already installed. Remove it before installing a replacement.");
         draft.permissions = values(*message, "permission");

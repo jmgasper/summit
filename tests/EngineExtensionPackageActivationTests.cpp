@@ -19,6 +19,9 @@ namespace fs = std::filesystem;
 namespace {
 constexpr uint32 heartbeat = 'akhb', afterViewClose = 'akvc';
 constexpr const char* extensionID = "summit-activation-fixture";
+constexpr const char* installationID = "summit-pkg-activation-fixture";
+// Exceeds JavaScript's exact integer range: the native receipt must retain all bits.
+constexpr uint64 installationOrder = 9007199254740993ULL;
 unsigned passed, failed;
 void check(bool condition, const char* label)
 {
@@ -225,8 +228,18 @@ private:
     void load(const std::string& token, const BWebKitExtensionLoadOptions& options,
         status_t error, const char* label, Reply callback)
     {
+        if (!m_legacyLoad) {
+            loadWithInstallation(token, options, { installationID, installationOrder }, error, label, std::move(callback));
+            return;
+        }
         auto id = expect(B_WEBKIT_EXTENSION_LOADED, error, label, std::move(callback));
         submit(m_context->LoadPreparedExtension(token.c_str(), options, BMessenger(this), id));
+    }
+    void loadWithInstallation(const std::string& token, const BWebKitExtensionLoadOptions& options,
+        const BWebKitExtensionInstallation& installation, status_t error, const char* label, Reply callback)
+    {
+        auto id = expect(B_WEBKIT_EXTENSION_LOADED, error, label, std::move(callback));
+        submit(m_context->LoadPreparedExtension(token.c_str(), options, installation, BMessenger(this), id));
     }
     void discard(const std::string& token, status_t error, Reply callback)
     {
@@ -256,15 +269,48 @@ private:
             label = "startup cannot restore approval from a missing installation state";
             break;
         default:
-            load(m_token, options, B_OK, "approved retained snapshot loads through the public SDK", [this](const BMessage& result) {
-                loaded(result);
-                discard(m_token, B_NAME_NOT_FOUND, [this](const BMessage&) {
-                    load(m_reloadToken, approved(), B_NAME_IN_USE, "duplicate identity cannot replace a loaded extension", [this](const BMessage&) { openPage(); });
-                });
-            });
+            validateInstallation();
             return;
         }
         load(m_token, options, error, label, [this](const BMessage&) { validateNext(); });
+    }
+    void validateInstallation()
+    {
+        BWebKitExtensionInstallation installation { installationID, installationOrder };
+        const char* label;
+        switch (m_installationValidation++) {
+        case 0: installation.identifier.clear(); label = "installation order requires an installation identity"; break;
+        case 1: installation.order = 0; label = "installation identity requires a nonzero order"; break;
+        case 2: installation.identifier = "../unsafe"; label = "installation identity rejects a path"; break;
+        case 3: installation.identifier = std::string("safe\0hidden", 11); label = "installation identity rejects an embedded NUL"; break;
+        case 4: installation.identifier = std::string(256, 'a'); label = "installation identity is bounded"; break;
+        default:
+            load(m_token, approved(), B_OK, "approved retained snapshot loads through the public SDK", [this](const BMessage& result) {
+                loaded(result);
+                discard(m_token, B_NAME_NOT_FOUND, [this](const BMessage&) { validateDuplicateInstallation(); });
+            });
+            return;
+        }
+        loadWithInstallation(m_token, approved(), installation, B_BAD_VALUE, label,
+            [this](const BMessage&) { validateInstallation(); });
+    }
+    void validateDuplicateInstallation()
+    {
+        auto options = approved();
+        options.uniqueIdentifier += "-second";
+        BWebKitExtensionInstallation installation { "summit-pkg-second", installationOrder + 1 };
+        const char* label;
+        switch (m_duplicateValidation++) {
+        case 0: installation.order = installationOrder; label = "another extension cannot reuse a loaded installation order"; break;
+        case 1: installation.identifier = installationID; label = "another extension cannot reuse a loaded installation identity"; break;
+        default:
+            options = approved();
+            loadWithInstallation(m_reloadToken, options, installation, B_NAME_IN_USE,
+                "duplicate runtime identity is rejected even with distinct installation metadata", [this](const BMessage&) { openPage(); });
+            return;
+        }
+        loadWithInstallation(m_reloadToken, options, installation, B_NAME_IN_USE, label,
+            [this](const BMessage&) { validateDuplicateInstallation(); });
     }
     void loaded(const BMessage& message)
     {
@@ -272,6 +318,12 @@ private:
         check(field(message, "extension_identifier") == extensionID
             && field(message, "fingerprint") == m_fingerprint && m_baseURL.starts_with("webkit-extension://"),
             "activation receipt identifies the approved runtime and its resource URL");
+        uint64 order = 0;
+        check(message.FindUInt64("installation_order", &order) == B_OK
+            && order == (m_legacyLoad ? 0 : installationOrder)
+            && field(message, "installation_identifier") == (m_legacyLoad ? "" : installationID),
+            m_legacyLoad ? "legacy SDK overload retains empty installation metadata"
+                         : "activation receipt preserves exact installation identity and 64-bit priority");
     }
     void openPage()
     {
@@ -339,6 +391,7 @@ private:
                                 check(field(result, "fingerprint") == m_fingerprint, "original package restores its original fingerprint");
                                 auto options = approved();
                                 options.permissions.clear(); options.origins.clear();
+                                m_legacyLoad = true;
                                 load(field(result, "token"), options, B_OK, "fresh empty approval replaces saved grants", [this](const BMessage& loadedResult) {
                                     loaded(loadedResult); m_round = 3; openPage();
                                 });
@@ -402,6 +455,8 @@ private:
     status_t m_expectedError { B_ERROR };
     bigtime_t m_deadline { 0 };
     unsigned m_validation { 0 }, m_round { 1 }, m_cleanupTurns { 0 };
+    unsigned m_installationValidation { 0 }, m_duplicateValidation { 0 };
+    bool m_legacyLoad { false };
     bool m_waitingPage { false }, m_closingPage { false }, m_testingNavigation { false }, m_finishing { false }, m_done { false };
 };
 }

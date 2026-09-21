@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -100,6 +101,81 @@ int main()
         std::vector<InstalledExtension> restored;
         CHECK(uppercaseCatalog.Load(restored, error) && restored.size() == 1);
         CHECK(restored.size() == 1 && restored[0].fingerprint == uppercase.fingerprint);
+    }
+    {
+        const auto orderRoot = root / "Order";
+        ExtensionCatalog ordered(orderRoot);
+        std::vector<InstalledExtension> restored;
+        auto install = [&](const char* identity, uint64_t order = 0) {
+            auto package = ordered.Stage(source, error);
+            auto item = entry;
+            item.identifier = identity;
+            item.installationOrder = order;
+            CHECK(package && ordered.Install(*package, item, error));
+        };
+        install("older", 1);
+        install("newer", 2);
+        CHECK(ordered.Load(restored, error) && restored.size() == 2);
+        CHECK(restored[0].installationOrder == 1 && restored[1].installationOrder == 2);
+        CHECK(ordered.SetEnabled("older", false, error) && ordered.SetEnabled("older", true, error));
+        CHECK(ordered.Load(restored, error) && restored[0].installationOrder == 1);
+        auto data = nlohmann::json::parse(read(orderRoot / "catalog.json"));
+        std::swap(data["extensions"][0], data["extensions"][1]);
+        put(orderRoot / "catalog.json", data.dump());
+        CHECK(ordered.Load(restored, error) && restored[0].identifier == "newer");
+        CHECK(restored[0].installationOrder == 2 && restored[1].installationOrder == 1);
+        CHECK(ExtensionCatalog::NextInstallationOrder(restored) == 3);
+        CHECK(ordered.Forget("older", error));
+        install("third", 3);
+        CHECK(ordered.Load(restored, error) && restored[0].installationOrder == 2 && restored[1].installationOrder == 3);
+        // A consent review cannot silently acquire a different precedence if
+        // the catalog changes before the native runtime is committed.
+        auto stale = ordered.Stage(source, error);
+        auto staleEntry = entry; staleEntry.identifier = "stale"; staleEntry.installationOrder = 3;
+        const auto approved = read(orderRoot / "catalog.json");
+        CHECK(stale && !ordered.Install(*stale, staleEntry, error));
+        CHECK(read(orderRoot / "catalog.json") == approved && fs::exists(stale->Path()));
+        // Legacy reads assign the existing append order without rewriting data.
+        data = nlohmann::json::parse(approved);
+        for (auto& item : data["extensions"]) item.erase("installation_order");
+        const auto legacy = data.dump(); put(orderRoot / "catalog.json", legacy);
+        CHECK(ordered.Load(restored, error) && restored[0].installationOrder == 1 && restored[1].installationOrder == 2);
+        CHECK(read(orderRoot / "catalog.json") == legacy);
+        CHECK(ordered.SetEnabled("newer", false, error));
+        data = nlohmann::json::parse(read(orderRoot / "catalog.json"));
+        CHECK(data["extensions"][0]["installation_order"] == 1 && data["extensions"][1]["installation_order"] == 2);
+        const auto migrated = data;
+        for (const auto& invalidOrder : {nlohmann::json(0), nlohmann::json(-1), nlohmann::json(1.5), nlohmann::json("2"), nlohmann::json(true)}) {
+            data = migrated; data["extensions"][0]["installation_order"] = invalidOrder;
+            put(orderRoot / "catalog.json", data.dump());
+            CHECK(!ordered.Load(restored, error));
+            CHECK(restored.size() == 2 && restored[0].installationOrder == 1);
+        }
+        data = migrated; data["extensions"][1]["installation_order"] = 1;
+        put(orderRoot / "catalog.json", data.dump());
+        CHECK(!ordered.Load(restored, error));
+        data = migrated; data["extensions"][1].erase("installation_order");
+        put(orderRoot / "catalog.json", data.dump());
+        CHECK(!ordered.Load(restored, error));
+        std::swap(data["extensions"][0], data["extensions"][1]);
+        put(orderRoot / "catalog.json", data.dump());
+        CHECK(!ordered.Load(restored, error));
+        data = migrated; data["extensions"][1]["installation_order"] = std::numeric_limits<uint64_t>::max();
+        put(orderRoot / "catalog.json", data.dump());
+        CHECK(ordered.Load(restored, error) && restored[1].installationOrder == std::numeric_limits<uint64_t>::max());
+        bool exhausted = false;
+        try { ExtensionCatalog::NextInstallationOrder(restored); } catch (const std::exception&) { exhausted = true; }
+        CHECK(exhausted);
+        staleEntry.installationOrder = 0;
+        CHECK(!ordered.Install(*stale, staleEntry, error));
+        CHECK(read(orderRoot / "catalog.json") == data.dump());
+        put(orderRoot / "catalog.json", migrated.dump());
+        CHECK(ordered.Load(restored, error));
+        const auto oldPackage = restored[1].package;
+        CHECK(ordered.Forget("third", error));
+        install("third");
+        CHECK(ordered.Load(restored, error) && restored[1].package != oldPackage);
+        CHECK(restored[1].installationOrder > restored[0].installationOrder);
     }
     auto directory = root / "directory";
     fs::create_directories(directory / "nested");
