@@ -1059,16 +1059,63 @@ What it took to get from "WebCore compiles" to that:
   `ScrollbarsControllerCoordinated` derives from, so the base stands down for
   this configuration.
 
+### Coordinated graphics renders
+
+The whole pipeline runs and the page appears:
+
+```
+web process display created      EGL, through the private Mesa's zink on NVK
+renderer layer tree surface 1    the coordinated layer tree, not the fallback
+layer tree updateRendering       the rendering update reaches the layer tree
+compositor renderLayerTree       the compositor thread renders it
+willRenderFrame 1276x711         the surface hands it a render target
+buffer 1, buffer 2               shared memory buffers, published to the UI process
+frame 1 bitmap=1                 a frame arrives and is presented
+```
+
+`AcceleratedSurface`'s counterpart in the UI process is
+`AcceleratedBackingStore`, which GTK and WPE each implement. Haiku's
+(`Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.cpp`) keeps the shared
+memory buffers by identifier, presents the committed one with
+`presentBitmapHaiku` -- the hook the software drawing area already uses, so the
+pixels reach the `BView` the way they always did -- and answers `FrameDone` so
+the web process may paint again. The DMA-BUF message is guarded by `USE(GBM)`
+so the generated receiver does not ask Haiku for Linux buffer types.
+
+Three more things had to be true, and each was silently absent:
+
+- **The view has to own one.** It is created when the drawing area reports a
+  surface, through the page client's `enterAcceleratedCompositingMode`.
+- **Accelerated compositing has to be on.** The port turned it off in the UI
+  process, from when GL compositing was opt-in and slower. With it off the
+  coordinated drawing area quietly chooses its non-composited renderer, which
+  paints the whole page on one thread: no tiles, and so no `SkiaPaintingEngine`
+  and no worker pool. That one line was holding up the point of the exercise.
+- **The web process needs a shared `PlatformDisplay`.** The coordinated drawing
+  area asks for one as soon as a page is created, and `sharedDisplay()` asserts
+  rather than making one; `LayerTreeHostHaiku` used to create it on the way into
+  GL compositing and is not built any more. The GLib and PlayStation ports set
+  theirs in `platformInitializeWebProcess`, and Haiku now does too. There is no
+  software fallback: without EGL the web process dies on that assertion, and on
+  this machine EGL comes from the private Mesa, so `LIBRARY_PATH` must include
+  `/boot/home/summit-mesa/prefix/lib`. It is `LIBRARY_PATH` on Haiku, not
+  `LD_LIBRARY_PATH`.
+
+And the one that hid longest: **`RunLoopObserver` has to do something.**
+`RunLoopObserver::schedule()` is an empty stub on any port that is neither CF
+nor GLib, and `isScheduled()` answers false forever. The coordinated renderers
+drive *every* rendering update through that observer, so the layer tree, the
+compositor and the surface all started correctly and then waited on something
+that could not fire. Haiku's implementation dispatches to the run loop, which
+runs the callback on the next turn rather than as the loop goes idle -- close
+enough, and it keeps the update off the caller's stack.
+
 ### What is left
 
-`AcceleratedSurface` has a counterpart in the UI process,
-`AcceleratedBackingStore`, which receives the buffers and the frames; GTK and WPE
-each implement one. Haiku's is written
-(`Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.cpp`): it keeps the
-shared-memory buffers by identifier, hands the committed one to the view through
-a small `Client` interface, and answers `FrameDone` so the web process may paint
-the next frame. The DMA-BUF message is guarded by `USE(GBM)` so the generated
-receiver does not ask Haiku for Linux buffer types.
+The web process exits shortly after the first frames: Wikipedia draws its text,
+links, headings and logo, and then the page process goes. That is the next thing
+to find. Until it is fixed there is nothing worth measuring, so there are still
+no numbers here for the worker pool.
 
 Presenting the frames. The backing store above has no caller: the Haiku view has
 to own one, call `updateSurfaceID` when the drawing area gives it a surface, and
