@@ -3263,6 +3263,88 @@ index f24497c99ab0e49d3b157e148b8907b31379b695..47a7e9ca55c598b80fccee61ad6a0502
  #if PLATFORM(GTK)
      enum class IsTouch : bool { No, Yes };
  
+diff --git a/Source/WebCore/platform/RunLoopObserver.cpp b/Source/WebCore/platform/RunLoopObserver.cpp
+index 7896afc9dadf5595dc274c19b102d9957c69f4f3..ef8cb0d6d558eaf64a620671ca5988d743f934d6 100644
+--- a/Source/WebCore/platform/RunLoopObserver.cpp
++++ b/Source/WebCore/platform/RunLoopObserver.cpp
+@@ -49,7 +49,44 @@ void RunLoopObserver::runLoopObserverFired()
+     m_callback();
+ }
+ 
+-#if !USE(CF) && !USE(GLIB_EVENT_LOOP)
++#if PLATFORM(HAIKU)
++
++// The coordinated renderers drive every rendering update through this observer,
++// so a port without one paints nothing at all. CF and GLib run the callback as
++// their loop goes idle; dispatching to the run loop runs it on the next turn,
++// which is close enough and keeps the update out of the caller's stack.
++void RunLoopObserver::schedule(PlatformRunLoop, OptionSet<Activity>)
++{
++    if (m_scheduled)
++        return;
++
++    m_scheduled = std::make_shared<bool>(true);
++    RunLoop::currentSingleton().dispatch([this, scheduled = m_scheduled] {
++        // invalidate() clears the flag, and the destructor with it; either way
++        // this task has nothing left to do.
++        if (!*scheduled)
++            return;
++        *scheduled = false;
++        if (m_scheduled == scheduled)
++            m_scheduled = nullptr;
++        runLoopObserverFired();
++    });
++}
++
++void RunLoopObserver::invalidate()
++{
++    if (!m_scheduled)
++        return;
++    *m_scheduled = false;
++    m_scheduled = nullptr;
++}
++
++bool RunLoopObserver::isScheduled() const
++{
++    return !!m_scheduled;
++}
++
++#elif !USE(CF) && !USE(GLIB_EVENT_LOOP)
+ 
+ void RunLoopObserver::schedule(PlatformRunLoop, OptionSet<Activity>)
+ {
+@@ -64,6 +101,6 @@ bool RunLoopObserver::isScheduled() const
+     return false;
+ }
+ 
+-#endif // !USE(CF) && !USE(GLIB_EVENT_LOOP)
++#endif // PLATFORM(HAIKU)
+ 
+ } // namespace WebCore
+diff --git a/Source/WebCore/platform/RunLoopObserver.h b/Source/WebCore/platform/RunLoopObserver.h
+index 70775a55f2b1657ebe15cbeb6b7a6dd2c49a5e14..e0971c2068106cc4c10b3e4f4fb83d3b13d1c889 100644
+--- a/Source/WebCore/platform/RunLoopObserver.h
++++ b/Source/WebCore/platform/RunLoopObserver.h
+@@ -31,6 +31,7 @@
+ #include <wtf/RetainPtr.h>
+ #include <wtf/RunLoop.h>
+ #include <wtf/TZoneMalloc.h>
++#include <memory>
+ 
+ #if USE(GLIB_EVENT_LOOP)
+ #include <wtf/Lock.h>
+@@ -107,6 +108,11 @@ private:
+     WellKnownOrder m_order { WellKnownOrder::GraphicsCommit };
+     mutable Lock m_runLoopObserverLock;
+     RefPtr<ActivityObserver> m_runLoopObserver WTF_GUARDED_BY_LOCK(m_runLoopObserverLock);
++#elif PLATFORM(HAIKU)
++    // A dispatch to the run loop stands in for the CF and GLib observers. The
++    // flag is shared with the dispatched task so that it can tell whether the
++    // observer is still alive and still wants to fire.
++    std::shared_ptr<bool> m_scheduled;
+ #endif
+ };
+ 
 diff --git a/Source/WebCore/platform/ScrollbarsController.cpp b/Source/WebCore/platform/ScrollbarsController.cpp
 index a160424a2cbed2d1562892b8500407c8f2d342e1..4d8c15c1c51fa90a6c143eacebc77883ad50eae2 100644
 --- a/Source/WebCore/platform/ScrollbarsController.cpp
@@ -55428,10 +55510,10 @@ index 8ace95c1b44f471e9072adcce4b7875472a98436..79fa9c1bfc4f6499439c6ab8bc4f4a17
  #if OS(ANDROID)
 diff --git a/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.cpp b/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..eba022d82a18fcaec27aa1687fce54474214e245
+index 0000000000000000000000000000000000000000..0116b46a74367fd08ce5bfb77259a751b24a1a6e
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.cpp
-@@ -0,0 +1,101 @@
+@@ -0,0 +1,105 @@
 +/*
 + * Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause
 + */
@@ -55443,6 +55525,7 @@ index 0000000000000000000000000000000000000000..eba022d82a18fcaec27aa1687fce5447
 +
 +#include "AcceleratedBackingStoreMessages.h"
 +#include "AcceleratedSurfaceMessages.h"
++#include "PageClient.h"
 +#include "WebPageProxy.h"
 +#include "WebProcessProxy.h"
 +#include <wtf/TZoneMallocInlines.h>
@@ -55452,14 +55535,13 @@ index 0000000000000000000000000000000000000000..eba022d82a18fcaec27aa1687fce5447
 +
 +WTF_MAKE_TZONE_ALLOCATED_IMPL(AcceleratedBackingStore);
 +
-+Ref<AcceleratedBackingStore> AcceleratedBackingStore::create(WebPageProxy& webPage, Client& client)
++Ref<AcceleratedBackingStore> AcceleratedBackingStore::create(WebPageProxy& webPage)
 +{
-+    return adoptRef(*new AcceleratedBackingStore(webPage, client));
++    return adoptRef(*new AcceleratedBackingStore(webPage));
 +}
 +
-+AcceleratedBackingStore::AcceleratedBackingStore(WebPageProxy& webPage, Client& client)
++AcceleratedBackingStore::AcceleratedBackingStore(WebPageProxy& webPage)
 +    : m_webPage(webPage)
-+    , m_client(client)
 +{
 +}
 +
@@ -55475,10 +55557,9 @@ index 0000000000000000000000000000000000000000..eba022d82a18fcaec27aa1687fce5447
 +
 +    if (m_surfaceID) {
 +        // The web process is waiting on a frame this surface will never show.
-+        if (m_committedBuffer)
++        if (m_isWaitingForFrameDone)
 +            frameDone();
 +        m_buffers.clear();
-+        m_committedBuffer = nullptr;
 +        if (RefPtr process = m_legacyMainFrameProcess)
 +            process->removeMessageReceiver(Messages::AcceleratedBackingStore::messageReceiverName(), m_surfaceID);
 +        m_legacyMainFrameProcess = nullptr;
@@ -55506,26 +55587,31 @@ index 0000000000000000000000000000000000000000..eba022d82a18fcaec27aa1687fce5447
 +    m_buffers.remove(id);
 +}
 +
-+void AcceleratedBackingStore::frame(uint64_t id, Rects&& damage, WTF::UnixFileDescriptor&&)
++void AcceleratedBackingStore::frame(uint64_t id, Rects&&, WTF::UnixFileDescriptor&&)
 +{
-+    // The sync file descriptor orders GPU work between processes; nothing is
-+    // shared here but memory the web process has already finished writing.
++    // The sync file descriptor orders GPU work between processes. Nothing is
++    // shared here but memory the web process has finished writing.
 +    RefPtr bitmap = m_buffers.get(id);
-+    if (!bitmap) {
++    RefPtr webPage = m_webPage.get();
++    RefPtr client = webPage ? webPage->pageClient() : nullptr;
++    if (!bitmap || !client) {
 +        frameDone();
 +        return;
 +    }
 +
-+    m_committedBuffer = bitmap;
-+    m_client.presentFrame(*bitmap, damage);
-+
-+    // The surface paints the next frame into another buffer as soon as this
-+    // returns, so the pixels must be on screen, or copied, by now.
-+    frameDone();
++    m_isWaitingForFrameDone = true;
++    auto size = bitmap->size();
++    float scale = webPage->deviceScaleFactor();
++    // presentBitmapHaiku answers once the pixels are on screen, or immediately
++    // if they cannot be; either way the web process may paint the next frame.
++    client->presentBitmapHaiku(bitmap.releaseNonNull(), size, scale, [protectedThis = Ref { *this }] {
++        protectedThis->frameDone();
++    });
 +}
 +
 +void AcceleratedBackingStore::frameDone()
 +{
++    m_isWaitingForFrameDone = false;
 +    if (RefPtr process = m_legacyMainFrameProcess)
 +        process->send(Messages::AcceleratedSurface::FrameDone(), m_surfaceID);
 +}
@@ -55535,10 +55621,10 @@ index 0000000000000000000000000000000000000000..eba022d82a18fcaec27aa1687fce5447
 +#endif // USE(COORDINATED_GRAPHICS)
 diff --git a/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.h b/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..c16fd7ffe7057ecf77e92c7b500de0b270508023
+index 0000000000000000000000000000000000000000..78fd6217b9e6b39a793846bf503623f83720e527
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.h
-@@ -0,0 +1,76 @@
+@@ -0,0 +1,67 @@
 +/*
 + * Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause
 + */
@@ -55562,38 +55648,30 @@ index 0000000000000000000000000000000000000000..c16fd7ffe7057ecf77e92c7b500de0b2
 +class WebProcessProxy;
 +
 +// The UI process end of AcceleratedSurface. The web process paints a frame into
-+// a ShareableBitmap, tells us which buffer it used, and waits for FrameDone
-+// before it paints the next one. Everything this port needs arrives through the
-+// shared memory buffer messages; the DMA-BUF and Android ones belong to
-+// platforms that can pass GPU buffers between processes.
++// a ShareableBitmap, says which buffer it used, and waits for FrameDone before
++// painting the next one. The frame is handed to the page client through
++// presentBitmapHaiku, the same way the software drawing area delivers one.
++//
++// Only the shared memory buffer messages are answered. The DMA-BUF and Android
++// ones belong to platforms that can pass GPU buffers between processes.
 +class AcceleratedBackingStore final : public IPC::MessageReceiver, public RefCounted<AcceleratedBackingStore> {
 +    WTF_MAKE_TZONE_ALLOCATED(AcceleratedBackingStore);
 +    WTF_MAKE_NONCOPYABLE(AcceleratedBackingStore);
 +public:
 +    using Rects = Vector<WebCore::IntRect, 1>;
 +
-+    // What the view does with a finished frame. It is called on the main
-+    // thread, and the bitmap stays alive until the next frame replaces it.
-+    class Client {
-+    public:
-+        virtual ~Client() = default;
-+        virtual void presentFrame(WebCore::ShareableBitmap&, const Rects& damage) = 0;
-+    };
-+
-+    static Ref<AcceleratedBackingStore> create(WebPageProxy&, Client&);
++    static Ref<AcceleratedBackingStore> create(WebPageProxy&);
 +    ~AcceleratedBackingStore();
 +
 +    void ref() const final { RefCounted::ref(); }
 +    void deref() const final { RefCounted::deref(); }
 +
-+    // The surface is recreated whenever the page is resized, and each one has
-+    // its own identifier to receive messages on.
++    // A surface is made for each size the page takes, and each has its own
++    // identifier to receive messages on. Zero detaches from the current one.
 +    void updateSurfaceID(uint64_t);
 +
-+    WebCore::ShareableBitmap* committedBuffer() const { return m_committedBuffer.get(); }
-+
 +private:
-+    AcceleratedBackingStore(WebPageProxy&, Client&);
++    explicit AcceleratedBackingStore(WebPageProxy&);
 +
 +    // IPC::MessageReceiver; the body is generated from
 +    // UIProcess/glib/AcceleratedBackingStore.messages.in.
@@ -55606,10 +55684,9 @@ index 0000000000000000000000000000000000000000..c16fd7ffe7057ecf77e92c7b500de0b2
 +
 +    WeakPtr<WebPageProxy> m_webPage;
 +    RefPtr<WebProcessProxy> m_legacyMainFrameProcess;
-+    Client& m_client;
 +    uint64_t m_surfaceID { 0 };
 +    HashMap<uint64_t, RefPtr<WebCore::ShareableBitmap>> m_buffers;
-+    RefPtr<WebCore::ShareableBitmap> m_committedBuffer;
++    bool m_isWaitingForFrameDone { false };
 +};
 +
 +} // namespace WebKit
@@ -59232,10 +59309,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..5349a69b7ed78e131fa59b0a23016c1d33e897af
+index 0000000000000000000000000000000000000000..cc259706a9c327d6fc2477f84a235e9996c436c2
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,1202 @@
+@@ -0,0 +1,1227 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -59275,6 +59352,9 @@ index 0000000000000000000000000000000000000000..5349a69b7ed78e131fa59b0a23016c1d
 +#include "APINavigation.h"
 +#include "APIUIClient.h"
 +#include "DrawingAreaProxyHaiku.h"
++#if USE(COORDINATED_GRAPHICS)
++#include "AcceleratedBackingStore.h"
++#endif
 +#if USE(COORDINATED_GRAPHICS)
 +#include "DrawingAreaProxyCoordinatedGraphics.h"
 +#endif
@@ -59950,9 +60030,19 @@ index 0000000000000000000000000000000000000000..5349a69b7ed78e131fa59b0a23016c1d
 +        configuration = API::PageConfiguration::create();
 +        m_state->context->configure(*configuration);
 +    }
++#if USE(COORDINATED_GRAPHICS)
++    // The coordinated layer tree is the whole point of this configuration: it
++    // is what paints tiles, and SkiaPaintingEngine paints those on a worker
++    // pool. Without compositing the drawing area falls back to its
++    // non-composited renderer, which paints the page on one thread.
++    configuration->preferences().setAcceleratedCompositingEnabled(true);
++    configuration->preferences().setForceCompositingMode(true);
++    configuration->preferences().setThreadedScrollingEnabled(true);
++#else
 +    configuration->preferences().setAcceleratedCompositingEnabled(false);
 +    configuration->preferences().setForceCompositingMode(false);
 +    configuration->preferences().setThreadedScrollingEnabled(false);
++#endif
 +    // There is no native way to keep the display awake yet, and a granted request ended the
 +    // page's process (seen on browserbench.org). Pages must see the API as absent.
 +    configuration->preferences().setScreenWakeLockAPIEnabled(false);
@@ -60314,6 +60404,18 @@ index 0000000000000000000000000000000000000000..5349a69b7ed78e131fa59b0a23016c1d
 +    BMessage message(viewFrameHaiku);
 +    sendToView(message);
 +}
++
++#if USE(COORDINATED_GRAPHICS)
++void WebView::updateAcceleratedSurface(uint64_t surfaceID)
++{
++    if (!m_acceleratedBackingStore) {
++        if (!surfaceID)
++            return;
++        m_acceleratedBackingStore = AcceleratedBackingStore::create(*m_page);
++    }
++    m_acceleratedBackingStore->updateSurfaceID(surfaceID);
++}
++#endif
 +
 +void WebView::presentBitmapHaiku(Ref<ShareableBitmap>&& bitmap, const IntSize& size, float scale, CompletionHandler<void()>&& callback)
 +{
@@ -60741,10 +60843,10 @@ index 0000000000000000000000000000000000000000..a47b97e41dddeab317f84058af42bd8b
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewPrivate.h b/Source/WebKit/UIProcess/haiku/WebViewPrivate.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..09184bc36d68357b48c874b0e46dc5e720b33dce
+index 0000000000000000000000000000000000000000..c17a5d33f99334ad594ef4ab9104f7c81dd31152
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewPrivate.h
-@@ -0,0 +1,134 @@
+@@ -0,0 +1,151 @@
 +/*
 +   Copyright (C) 2014 Haiku, inc.
 +
@@ -60776,6 +60878,10 @@ index 0000000000000000000000000000000000000000..09184bc36d68357b48c874b0e46dc5e7
 +namespace API { class PageConfiguration; }
 +
 +namespace WebKit {
++
++#if USE(COORDINATED_GRAPHICS)
++class AcceleratedBackingStore;
++#endif
 +
 +class WebView final : public API::ObjectImpl<API::Object::Type::View>, public PageClient {
 +    WTF_MAKE_TZONE_ALLOCATED(WebView);
@@ -60845,9 +60951,18 @@ index 0000000000000000000000000000000000000000..09184bc36d68357b48c874b0e46dc5e7
 +    RefPtr<WebColorPicker> createColorPicker(WebPageProxy&, const WebCore::Color&, const WebCore::IntRect&, ColorControlSupportsAlpha, Vector<WebCore::Color>&&, std::optional<WebCore::FrameIdentifier>) override;
 +    RefPtr<WebDataListSuggestionsDropdown> createDataListSuggestionsDropdown(WebPageProxy&) override;
 +    RefPtr<WebDateTimePicker> createDateTimePicker(WebPageProxy&) override;
++#if USE(COORDINATED_GRAPHICS)
++    // The layer tree context carries the identifier of the surface the web
++    // process paints into; the backing store receives its frames.
++    void enterAcceleratedCompositingMode(const LayerTreeContext& context) override { updateAcceleratedSurface(context.contextID); }
++    void exitAcceleratedCompositingMode() override { updateAcceleratedSurface(0); }
++    void updateAcceleratedCompositingMode(const LayerTreeContext& context) override { updateAcceleratedSurface(context.contextID); }
++    void updateAcceleratedSurface(uint64_t);
++#else
 +    void enterAcceleratedCompositingMode(const LayerTreeContext&) override { }
 +    void exitAcceleratedCompositingMode() override { }
 +    void updateAcceleratedCompositingMode(const LayerTreeContext&) override { }
++#endif
 +    void didChangeContentSize(const WebCore::IntSize&) override;
 +    void didCommitLoadForMainFrame(const String&, bool) override { notifyState(); }
 +    void didFinishLoadingDataForCustomContentProvider(const String&, std::span<const uint8_t>) override { }
@@ -60876,6 +60991,10 @@ index 0000000000000000000000000000000000000000..09184bc36d68357b48c874b0e46dc5e7
 +    CompletionHandler<void()> m_presentationCallback;
 +    uint64_t m_presentationIdentifier { 0 };
 +    uint32_t m_buttons { 0 };
++
++#if USE(COORDINATED_GRAPHICS)
++    RefPtr<AcceleratedBackingStore> m_acceleratedBackingStore;
++#endif
 +};
 +
 +} // namespace WebKit
@@ -78107,10 +78226,34 @@ index 7a3949d2103f0c1b5b5780cf810fa3f764da50dc..26a73f643e188d40a861837499753c2a
  #include "UpdateInfo.h"
  #include "WebDisplayRefreshMonitor.h"
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphicsGLib.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphicsGLib.cpp
-index e621738966cd3699821513e76fd51bdea8ff18b6..8b6da80ae137f4058fa67da403f5ce3030a1b8bf 100644
+index e621738966cd3699821513e76fd51bdea8ff18b6..0b01cab46b26b5f09c352ddf610e5ff3ba8695b7 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphicsGLib.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphicsGLib.cpp
-@@ -236,10 +236,12 @@ void DrawingAreaCoordinatedGraphics::triggerRenderingUpdate()
+@@ -145,10 +145,22 @@ void DrawingAreaCoordinatedGraphics::updatePreferences(const WebPreferencesStore
+ bool DrawingAreaCoordinatedGraphics::enterAcceleratedCompositingModeIfNeeded()
+ {
+     Ref webPage = m_webPage;
+-    if (webPage->corePage()->settings().acceleratedCompositingEnabled())
++    // SUMMIT_COORDINATED_COMPOSITING=0 takes the non-composited renderer, which
++    // paints the page with Skia on the CPU and needs no GL context. It is the
++    // way to tell a compositing problem apart from a painting one.
++    static const bool compositingAllowed = [] {
++        const char* value = getenv("SUMMIT_COORDINATED_COMPOSITING");
++        return !value || strcmp(value, "0");
++    }();
++    if (compositingAllowed && webPage->corePage()->settings().acceleratedCompositingEnabled())
+         m_renderer = LayerTreeHost::create(webPage.get());
+     else
+         m_renderer = NonCompositedFrameRenderer::create(webPage.get());
++    if (getenv("SUMMIT_FRAME_STATS")) {
++        WTFLogAlways("Summit coordinated: renderer %s surface %llu",
++            m_renderer ? (compositingAllowed && webPage->corePage()->settings().acceleratedCompositingEnabled() ? "layer tree" : "non-composited") : "none",
++            m_renderer ? (unsigned long long)m_renderer->surfaceID() : 0ull);
++    }
+ 
+     if (m_renderer) {
+         if (m_layerTreeStateIsFrozen)
+@@ -236,10 +248,12 @@ void DrawingAreaCoordinatedGraphics::triggerRenderingUpdate()
      m_renderer->scheduleRenderingUpdate();
  }
  
@@ -79926,10 +80069,10 @@ index 0000000000000000000000000000000000000000..6549d7f5c9eac54d993817a051d3965d
 +resource app_flags B_MULTIPLE_LAUNCH | B_BACKGROUND_APP;
 diff --git a/Source/WebKit/WebProcess/haiku/WebProcessHaiku.cpp b/Source/WebKit/WebProcess/haiku/WebProcessHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..d6ac95e6822fcbd1bf68ecd96a72244fe3bd9d2e
+index 0000000000000000000000000000000000000000..2a53a27a3c2d0efec8bbd12a600ae6920f2d7ec7
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/haiku/WebProcessHaiku.cpp
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,118 @@
 +/*
 + * Copyright (C) 2014,2019 Haiku, Inc.
 + *
@@ -79961,6 +80104,9 @@ index 0000000000000000000000000000000000000000..d6ac95e6822fcbd1bf68ecd96a72244f
 +#include "WebProcessCreationParameters.h"
 +#include "WebProcessDataStoreParameters.h"
 +#include <Application.h>
++#if USE(COORDINATED_GRAPHICS)
++#include <WebCore/PlatformDisplayHaiku.h>
++#endif
 +#include <wtf/Assertions.h>
 +
 +namespace WebKit {
@@ -79985,6 +80131,22 @@ index 0000000000000000000000000000000000000000..d6ac95e6822fcbd1bf68ecd96a72244f
 +void WebProcess::platformInitializeWebProcess(WebProcessCreationParameters& parameters)
 +{
 +    applyProcessCreationParameters(WTF::move(parameters.auxiliaryProcessParameters));
++#if USE(COORDINATED_GRAPHICS)
++    // The coordinated drawing area asks for the shared display as soon as a page
++    // is created, and sharedDisplay() asserts rather than making one. The GLib
++    // and PlayStation ports set theirs here too. LayerTreeHostHaiku used to
++    // create it on the way into GL compositing, and it is not built any more.
++    if (!WebCore::PlatformDisplay::sharedDisplayIfExists()) {
++        auto display = WebCore::PlatformDisplayHaiku::create();
++        if (!display) {
++            // Coordinated graphics has no software path: sharedDisplay() asserts.
++            WTFLogAlways("Summit: no EGL display in the web process. Coordinated graphics needs one; "
++                "on this machine EGL comes from the private Mesa, so LIBRARY_PATH must include its prefix.");
++        }
++        if (display)
++            WebCore::PlatformDisplay::setSharedDisplay(WTF::move(display));
++    }
++#endif
 +}
 +
 +void WebProcess::platformSetWebsiteDataStoreParameters(WebProcessDataStoreParameters&& parameters)
