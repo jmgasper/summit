@@ -775,6 +775,21 @@ index 2a916946b7a034407bbad8f1fe9e92a611f20bc6..a138d0ed4d2f79bebdf5dec01e3c324b
  #elif USE(GENERIC_EVENT_LOOP)
      void scheduleWithLock(TimerBase::ScheduledTask&) WTF_REQUIRES_LOCK(m_loopLock);
      void unscheduleWithLock(TimerBase::ScheduledTask&) WTF_REQUIRES_LOCK(m_loopLock);
+diff --git a/Source/WTF/wtf/SystemTracing.h b/Source/WTF/wtf/SystemTracing.h
+index 9e0f95a55d99623f40a10c694312280ecf4c23fa..2b4979682610625c521809dfe8f98e3499a6ad01 100644
+--- a/Source/WTF/wtf/SystemTracing.h
++++ b/Source/WTF/wtf/SystemTracing.h
+@@ -187,7 +187,9 @@ enum TracePointCode {
+     WakeUpAndApplyDisplayListStart,
+     WakeUpAndApplyDisplayListEnd,
+ 
+-#if PLATFORM(GTK) || PLATFORM(WPE)
++// Named for where they started; the coordinated LayerTreeHost that emits them
++// is shared with the Haiku port now.
++#if PLATFORM(GTK) || PLATFORM(WPE) || PLATFORM(HAIKU)
+     GTKWPEPortRange = 20000,
+ 
+     LayerTreeHostRenderingUpdateStart,
 diff --git a/Source/WTF/wtf/URL.h b/Source/WTF/wtf/URL.h
 index 3ed98dc3dbaef25c50446b187d68975c7323e3cd..84f89195d99dfa3bec558d4145b5f96e47017a3c 100644
 --- a/Source/WTF/wtf/URL.h
@@ -1580,7 +1595,7 @@ index b29212ad5b98d332ff7c1db7814cb2575988ec5f..b6c50d32873f6c712e3409ca1c5e2ec5
      String m_accessGroup;
  };
 diff --git a/Source/WebCore/PlatformHaiku.cmake b/Source/WebCore/PlatformHaiku.cmake
-index 16a88804a1baa39ccdd9fc2870b6e2524d941298..46bbb2084e5c5b0716284d91cdd1f59c714982c2 100644
+index 16a88804a1baa39ccdd9fc2870b6e2524d941298..ef01bde52f417bb7f75b0b7abf0fd0b4c2a04598 100644
 --- a/Source/WebCore/PlatformHaiku.cmake
 +++ b/Source/WebCore/PlatformHaiku.cmake
 @@ -1,8 +1,87 @@
@@ -1834,7 +1849,7 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..46bbb2084e5c5b0716284d91cdd1f59c
    textencoding
    translation
    ${WEBP_LIBRARIES}
-@@ -61,6 +254,194 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
+@@ -61,6 +254,198 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
    ${SQLITE_INCLUDE_DIR}
    ${WEBP_INCLUDE_DIRS}
    ${ZLIB_INCLUDE_DIRS}
@@ -1959,6 +1974,10 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..46bbb2084e5c5b0716284d91cdd1f59c
 +    if (USE_COORDINATED_GRAPHICS)
 +        # The coordinated layer tree, its tiles, and SkiaPaintingEngine.
 +        include(platform/CoordinatedGraphics.cmake)
++        # ScrollbarsControllerCoordinated derives from this one.
++        list(APPEND WebCore_SOURCES
++            platform/generic/ScrollbarsControllerGeneric.cpp
++        )
 +    endif ()
 +
 +else ()
@@ -3243,6 +3262,19 @@ index f24497c99ab0e49d3b157e148b8907b31379b695..47a7e9ca55c598b80fccee61ad6a0502
 +
  #if PLATFORM(GTK)
      enum class IsTouch : bool { No, Yes };
+ 
+diff --git a/Source/WebCore/platform/ScrollbarsController.cpp b/Source/WebCore/platform/ScrollbarsController.cpp
+index a160424a2cbed2d1562892b8500407c8f2d342e1..4d8c15c1c51fa90a6c143eacebc77883ad50eae2 100644
+--- a/Source/WebCore/platform/ScrollbarsController.cpp
++++ b/Source/WebCore/platform/ScrollbarsController.cpp
+@@ -32,7 +32,7 @@
+ 
+ namespace WebCore {
+ 
+-#if !PLATFORM(MAC) && !PLATFORM(WPE) && !PLATFORM(GTK)
++#if !PLATFORM(MAC) && !PLATFORM(WPE) && !PLATFORM(GTK) && !(PLATFORM(HAIKU) && USE(COORDINATED_GRAPHICS))
+ 
+ WTF_MAKE_TZONE_ALLOCATED_IMPL(ScrollbarsController);
  
 diff --git a/Source/WebCore/platform/SharedMemory.h b/Source/WebCore/platform/SharedMemory.h
 index 68f798ab3b4a968c6dba787ac524e4c39e326bd2..20f3145e8d62462c19fbe78fdf228dfcc7eb5ce2 100644
@@ -26713,10 +26745,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..760a0c3a39cc75c51e2cae8988bc7c712cfe64bf
+index 0000000000000000000000000000000000000000..1bde45c9df5c89cf238d741f72a6e7363cabb470
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,390 @@
+@@ -0,0 +1,400 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -26850,12 +26882,20 @@ index 0000000000000000000000000000000000000000..760a0c3a39cc75c51e2cae8988bc7c71
 +
 +    WebProcess/Extensions/Bindings/JSWebExtensionWrapper.cpp
 +    WebProcess/InjectedBundle/haiku/InjectedBundleHaiku.cpp
-+    WebProcess/WebPage/haiku/DrawingAreaHaiku.cpp
-+    WebProcess/WebPage/haiku/LayerTreeHostHaiku.cpp
 +    WebProcess/WebPage/haiku/WebPageHaiku.cpp
 +    WebProcess/haiku/WebProcessHaiku.cpp
 +    WebProcess/haiku/WebProcessMainHaiku.cpp
 +)
++
++if (NOT USE_COORDINATED_GRAPHICS)
++    # The port's own drawing area and its compositor. Coordinated graphics
++    # replaces both, and GraphicsLayerTextureMapper, which LayerTreeHostHaiku
++    # is built on, is not compiled beside GraphicsLayerCoordinated.
++    list(APPEND WebKit_SOURCES
++        WebProcess/WebPage/haiku/DrawingAreaHaiku.cpp
++        WebProcess/WebPage/haiku/LayerTreeHostHaiku.cpp
++    )
++endif ()
 +
 +if (USE_COORDINATED_GRAPHICS)
 +    # RenderProcessInfo.h and RendererBufferFormat.h are plain WTF structs that
@@ -26871,13 +26911,15 @@ index 0000000000000000000000000000000000000000..760a0c3a39cc75c51e2cae8988bc7c71
 +    # TextureMapper. DrawingAreaCoordinatedGraphics is the plain one, as used by
 +    # the Windows and PlayStation ports; GTK and WPE use a GLib variant instead.
 +    list(APPEND WebKit_SOURCES
++        UIProcess/skia/BackingStoreSkia.cpp
++
 +        UIProcess/CoordinatedGraphics/DrawingAreaProxyCoordinatedGraphics.cpp
 +        UIProcess/haiku/AcceleratedBackingStore.cpp
 +
 +        WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
 +        WebProcess/WebPage/CoordinatedGraphics/CompositingRunLoop.cpp
 +        WebProcess/WebPage/CoordinatedGraphics/CoordinatedSceneState.cpp
-+        WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphics.cpp
++        WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphicsGLib.cpp
 +        WebProcess/WebPage/CoordinatedGraphics/FrameRenderer.cpp
 +        WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
 +        WebProcess/WebPage/CoordinatedGraphics/NonCompositedFrameRenderer.cpp
@@ -77749,7 +77791,7 @@ index 0000000000000000000000000000000000000000..abc82f6d26d2b1374740dc304282ae75
 +
 +}
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
-index cf4d54b7869d7a7cded74482922d8fdda53af21d..3e33fc79c828914a8193a3855225b865efeea705 100644
+index cf4d54b7869d7a7cded74482922d8fdda53af21d..905e6578946878edbf0a1fd31496b918e2a5eeb5 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
 @@ -53,10 +53,12 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
@@ -77784,16 +77826,26 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..3e33fc79c828914a8193a3855225b865
  WTF_MAKE_TZONE_ALLOCATED_IMPL(AcceleratedSurface::RenderTargetShareableBuffer);
  
  AcceleratedSurface::RenderTargetShareableBuffer::RenderTargetShareableBuffer(AcceleratedSurface& surface, const IntSize& size)
-@@ -516,7 +518,7 @@ AcceleratedSurface::RenderTargetTexture::RenderTargetTexture(AcceleratedSurface&
+@@ -460,6 +462,7 @@ void AcceleratedSurface::RenderTargetSHMImage::didRenderFrame()
+     glReadPixels(0, 0, m_bitmap->size().width(), m_bitmap->size().height(), GL_BGRA, GL_UNSIGNED_BYTE, m_bitmap->mutableSpan().data());
+ }
+ 
++#if PLATFORM(GTK) || ENABLE(WPE_PLATFORM)
+ std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::RenderTargetTexture::create(AcceleratedSurface& surface, const IntSize& size)
+ {
+     auto texture = BitmapTexture::create(size);
+@@ -515,8 +518,9 @@ AcceleratedSurface::RenderTargetTexture::RenderTargetTexture(AcceleratedSurface&
+ }
  
  AcceleratedSurface::RenderTargetTexture::~RenderTargetTexture() = default;
++#endif
  
 -#endif // PLATFORM(GTK) || ENABLE(WPE_PLATFORM)
 +#endif // PLATFORM(GTK) || ENABLE(WPE_PLATFORM) || PLATFORM(HAIKU)
  
  #if USE(WPE_RENDERER)
  std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::RenderTargetWPEBackend::create(AcceleratedSurface& surface, const IntSize& initialSize, UnixFileDescriptor&& hostFD)
-@@ -594,7 +596,7 @@ void AcceleratedSurface::RenderTargetWPEBackend::didRenderFrame()
+@@ -594,7 +598,7 @@ void AcceleratedSurface::RenderTargetWPEBackend::didRenderFrame()
  AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
      : m_surface(surface)
  {
@@ -77802,16 +77854,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..3e33fc79c828914a8193a3855225b865
      if (!m_surface->hardwareAccelerationEnabled()) {
          m_type = Type::SharedMemory;
          return;
-@@ -603,7 +605,7 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
- 
-     auto& display = PlatformDisplay::sharedDisplay();
-     switch (display.type()) {
--#if PLATFORM(GTK) || ENABLE(WPE_PLATFORM)
-+#if PLATFORM(GTK) || ENABLE(WPE_PLATFORM) || PLATFORM(HAIKU)
-     case PlatformDisplay::Type::Surfaceless:
-         if (display.eglExtensions().MESA_image_dma_buf_export && WebProcess::singleton().rendererBufferTransportMode().contains(RendererBufferTransportMode::Hardware))
-             m_type = Type::Texture;
-@@ -632,7 +634,7 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
+@@ -632,7 +636,7 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
      case PlatformDisplay::Type::GBM:
  #endif
          break;
@@ -77820,7 +77863,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..3e33fc79c828914a8193a3855225b865
  #if USE(WPE_RENDERER)
      case PlatformDisplay::Type::WPE:
          m_type = Type::WPEBackend;
-@@ -646,11 +648,19 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
+@@ -646,11 +650,19 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
      case PlatformDisplay::Type::Default:
          break;
  #endif // PLATFORM(GTK)
@@ -77841,7 +77884,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..3e33fc79c828914a8193a3855225b865
  void AcceleratedSurface::SwapChain::setupBufferFormat()
  {
      if (m_type != Type::EGLImage)
-@@ -749,7 +759,7 @@ bool AcceleratedSurface::SwapChain::resize(const IntSize& size)
+@@ -749,7 +761,7 @@ bool AcceleratedSurface::SwapChain::resize(const IntSize& size)
  
  bool AcceleratedSurface::SwapChain::handleBufferFormatChangeIfNeeded()
  {
@@ -77850,7 +77893,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..3e33fc79c828914a8193a3855225b865
      if (m_type == Type::EGLImage) {
          Locker locker { m_bufferFormatLock };
          if (m_bufferFormatChanged) {
-@@ -765,7 +775,7 @@ bool AcceleratedSurface::SwapChain::handleBufferFormatChangeIfNeeded()
+@@ -765,7 +777,7 @@ bool AcceleratedSurface::SwapChain::handleBufferFormatChangeIfNeeded()
  std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::SwapChain::createTarget() const
  {
      switch (m_type) {
@@ -77859,7 +77902,19 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..3e33fc79c828914a8193a3855225b865
  #if USE(GBM) || OS(ANDROID)
      case Type::EGLImage: {
          Locker locker { m_bufferFormatLock };
-@@ -929,7 +939,7 @@ bool AcceleratedSurface::shouldPaintMirrored() const
+@@ -773,7 +785,11 @@ std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::SwapChain:
+     }
+ #endif
+     case Type::Texture:
++#if PLATFORM(GTK) || ENABLE(WPE_PLATFORM)
+         return RenderTargetTexture::create(m_surface.get(), m_size);
++#else
++        break;
++#endif
+     case Type::SharedMemory:
+         return RenderTargetSHMImage::create(m_surface.get(), m_size);
+ #endif
+@@ -929,7 +945,7 @@ bool AcceleratedSurface::shouldPaintMirrored() const
      switch (m_swapChain.type()) {
      case SwapChain::Type::Invalid:
          return false;
@@ -77868,7 +77923,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..3e33fc79c828914a8193a3855225b865
      case SwapChain::Type::Texture:
  #if USE(GBM) || OS(ANDROID)
      case SwapChain::Type::EGLImage:
-@@ -1000,7 +1010,7 @@ void AcceleratedSurface::backgroundColorDidChange()
+@@ -1000,7 +1016,7 @@ void AcceleratedSurface::backgroundColorDidChange()
      if (isOpaque == wasOpaque)
          return;
  
@@ -77877,7 +77932,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..3e33fc79c828914a8193a3855225b865
      m_swapChain.setupBufferFormat();
  #endif
  }
-@@ -1022,7 +1032,7 @@ void AcceleratedSurface::didCreateCompositingRunLoop(RunLoop& runLoop)
+@@ -1022,7 +1038,7 @@ void AcceleratedSurface::didCreateCompositingRunLoop(RunLoop& runLoop)
  #if USE(GLIB_EVENT_LOOP)
      m_releaseUnusedBuffersTimer->setPriority(RunLoopSourcePriority::ReleaseUnusedResourcesTimer);
  #endif
@@ -77886,7 +77941,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..3e33fc79c828914a8193a3855225b865
      WebProcess::singleton().parentProcessConnection()->addMessageReceiver(runLoop, *this, Messages::AcceleratedSurface::messageReceiverName(), m_id);
  #endif
  }
-@@ -1043,7 +1053,7 @@ void AcceleratedSurface::willDestroyCompositingRunLoop()
+@@ -1043,7 +1059,7 @@ void AcceleratedSurface::willDestroyCompositingRunLoop()
              protectedThis->m_releaseUnusedBuffersTimer = nullptr;
          });
      }
@@ -77895,7 +77950,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..3e33fc79c828914a8193a3855225b865
      WebProcess::singleton().parentProcessConnection()->removeMessageReceiver(Messages::AcceleratedSurface::messageReceiverName(), m_id);
  #endif
  }
-@@ -1188,7 +1198,7 @@ const std::optional<Damage>& AcceleratedSurface::renderTargetDamage()
+@@ -1188,7 +1204,7 @@ const std::optional<Damage>& AcceleratedSurface::renderTargetDamage()
  }
  #endif
  
@@ -77905,10 +77960,16 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..3e33fc79c828914a8193a3855225b865
  {
  #if USE(WPE_RENDERER)
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.h b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.h
-index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..36e1b582582dcce9817ac6959c9b4e0bff4aafbb 100644
+index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..178542aa7dd94d3deba144b3c414d609dd12c1c4 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.h
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.h
-@@ -30,7 +30,9 @@
+@@ -27,10 +27,15 @@
+ 
+ #if USE(COORDINATED_GRAPHICS)
+ 
++#if USE(LIBEPOXY)
++#include <epoxy/egl.h>
++#endif
  #include "MessageReceiver.h"
  #include <WebCore/Color.h>
  #include <WebCore/CoordinatedCompositionReason.h>
@@ -77918,7 +77979,7 @@ index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..36e1b582582dcce9817ac6959c9b4e0b
  #include <WebCore/Damage.h>
  #include <WebCore/IntSize.h>
  #include <atomic>
-@@ -94,7 +96,7 @@ enum class TargetContents : bool {
+@@ -94,7 +99,7 @@ enum class TargetContents : bool {
  };
  
  class AcceleratedSurface final : public ThreadSafeRefCountedAndCanMakeThreadSafeWeakPtr<AcceleratedSurface, WTF::DestructionThread::MainRunLoop>, public CanMakeThreadSafeCheckedPtr<AcceleratedSurface>
@@ -77927,7 +77988,7 @@ index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..36e1b582582dcce9817ac6959c9b4e0b
      , public IPC::MessageReceiver
  #endif
  {
-@@ -109,7 +111,7 @@ public:
+@@ -109,7 +114,7 @@ public:
      static Ref<AcceleratedSurface> create(WebPage&, Function<void()>&& frameCompleteHandler, RenderingPurpose);
      ~AcceleratedSurface();
  
@@ -77936,7 +77997,7 @@ index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..36e1b582582dcce9817ac6959c9b4e0b
      void ref() const final { ThreadSafeRefCountedAndCanMakeThreadSafeWeakPtr::ref(); }
      void deref() const final { ThreadSafeRefCountedAndCanMakeThreadSafeWeakPtr::deref(); }
  #endif
-@@ -118,12 +120,16 @@ public:
+@@ -118,12 +123,13 @@ public:
      uint64_t surfaceID() const { return m_id; }
      bool shouldPaintMirrored() const;
  
@@ -77947,9 +78008,6 @@ index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..36e1b582582dcce9817ac6959c9b4e0b
      constexpr bool usesGL() const { return true; }
  #endif
  
-+#if PLATFORM(HAIKU)
-+    bool usesGL() const { return false; }
-+#endif
 +
      SkCanvas* canvas();
  
@@ -77980,16 +78038,27 @@ index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..36e1b582582dcce9817ac6959c9b4e0b
      class RenderTargetShareableBuffer : public RenderTarget {
          WTF_MAKE_TZONE_ALLOCATED(RenderTargetShareableBuffer);
      public:
-@@ -334,7 +340,7 @@ private:
+@@ -323,6 +329,9 @@ private:
+         const Ref<WebCore::ShareableBitmap> m_bitmap;
+     };
+ 
++    // Exports the framebuffer as a DMA-BUF, so it stays with the platforms that
++    // have one; Haiku uses RenderTargetSHMImage above.
++#if PLATFORM(GTK) || ENABLE(WPE_PLATFORM)
+     class RenderTargetTexture final : public RenderTargetShareableBuffer {
+     public:
+         static std::unique_ptr<RenderTarget> create(AcceleratedSurface&, const WebCore::IntSize&);
+@@ -334,7 +343,8 @@ private:
  
          Ref<WebCore::BitmapTexture> m_texture;
      };
 -#endif // PLATFORM(GTK) || ENABLE(WPE_PLATFORM)
++#endif
 +#endif // PLATFORM(GTK) || ENABLE(WPE_PLATFORM) || PLATFORM(HAIKU)
  
  #if USE(WPE_RENDERER)
      class RenderTargetWPEBackend final : public RenderTarget {
-@@ -361,7 +367,7 @@ private:
+@@ -361,7 +371,7 @@ private:
  
          enum class Type {
              Invalid,
@@ -77998,7 +78067,7 @@ index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..36e1b582582dcce9817ac6959c9b4e0b
  #if USE(GBM) || OS(ANDROID)
              EGLImage,
  #endif
-@@ -392,7 +398,7 @@ private:
+@@ -392,7 +402,7 @@ private:
          }
  #endif
  
@@ -78007,7 +78076,7 @@ index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..36e1b582582dcce9817ac6959c9b4e0b
          void setupBufferFormat();
  #endif
  
-@@ -413,7 +419,7 @@ private:
+@@ -413,7 +423,7 @@ private:
          Vector<std::unique_ptr<RenderTarget>, s_maximumBuffers> m_freeTargets;
          Vector<std::unique_ptr<RenderTarget>, s_maximumBuffers> m_lockedTargets;
          bool m_initialTargetsCreated { false };
@@ -78016,7 +78085,7 @@ index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..36e1b582582dcce9817ac6959c9b4e0b
          mutable Lock m_bufferFormatLock;
          BufferFormat m_bufferFormat WTF_GUARDED_BY_LOCK(m_bufferFormatLock);
          bool m_bufferFormatChanged WTF_GUARDED_BY_LOCK(m_bufferFormatLock) { false };
-@@ -478,7 +484,7 @@ private:
+@@ -478,7 +488,7 @@ private:
      bool m_useSkia { false };
      uint64_t m_id { 0 };
      RenderingPurpose m_renderingPurpose { RenderingPurpose::Composited };
@@ -78025,25 +78094,84 @@ index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..36e1b582582dcce9817ac6959c9b4e0b
      bool m_hardwareAccelerationEnabled { true };
  #endif
      mutable Lock m_backgroundColorLock;
+diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphics.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphics.cpp
+index 7a3949d2103f0c1b5b5780cf810fa3f764da50dc..26a73f643e188d40a861837499753c2a2d9a22a8 100644
+--- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphics.cpp
++++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphics.cpp
+@@ -29,6 +29,7 @@
+ #include "DrawingAreaCoordinatedGraphics.h"
+ 
+ #include "DrawingAreaProxyMessages.h"
++#include "LayerTreeHost.h"
+ #include "MessageSenderInlines.h"
+ #include "UpdateInfo.h"
+ #include "WebDisplayRefreshMonitor.h"
+diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphicsGLib.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphicsGLib.cpp
+index e621738966cd3699821513e76fd51bdea8ff18b6..8b6da80ae137f4058fa67da403f5ce3030a1b8bf 100644
+--- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphicsGLib.cpp
++++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphicsGLib.cpp
+@@ -236,10 +236,12 @@ void DrawingAreaCoordinatedGraphics::triggerRenderingUpdate()
+     m_renderer->scheduleRenderingUpdate();
+ }
+ 
++#if HAVE(DISPLAY_LINK)
+ RefPtr<DisplayRefreshMonitor> DrawingAreaCoordinatedGraphics::createDisplayRefreshMonitor(PlatformDisplayID displayID)
+ {
+     return WebDisplayRefreshMonitor::create(displayID);
+ }
++#endif // HAVE(DISPLAY_LINK)
+ 
+ void DrawingAreaCoordinatedGraphics::activityStateDidChange(OptionSet<ActivityState> changed, ActivityStateChangeID, CompletionHandler<void()>&& completionHandler)
+ {
+diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphicsGLib.h b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphicsGLib.h
+index d382293c217c69e8672fb8f587a78e03574df4ba..5192b4bf4f5b2b3b17854164f56c82d5b973ff6a 100644
+--- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphicsGLib.h
++++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphicsGLib.h
+@@ -85,7 +85,9 @@ private:
+     void setRootCompositingLayer(WebCore::Frame&, WebCore::GraphicsLayer*) override;
+     void triggerRenderingUpdate() override;
+ 
++#if HAVE(DISPLAY_LINK)
+     RefPtr<WebCore::DisplayRefreshMonitor> createDisplayRefreshMonitor(WebCore::PlatformDisplayID) override;
++#endif
+ 
+     void activityStateDidChange(OptionSet<WebCore::ActivityState>, ActivityStateChangeID, CompletionHandler<void()>&&) override;
+     void attachViewOverlayGraphicsLayer(WebCore::FrameIdentifier, WebCore::GraphicsLayer*) override;
+diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
+index a12c4f6edd9998271fda260c7193a3226bf1957a..6bdd77ed52e5f24c6c9e8ce873b778d50cea0e12 100644
+--- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
++++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
+@@ -187,7 +187,10 @@ void LayerTreeHost::updateRendering()
+     Ref page = m_webPage;
+     page->updateRendering();
+     page->flushPendingEditorStateUpdate();
++#if PLATFORM(MAC) || PLATFORM(WPE) || PLATFORM(GTK)
++    // ThemeColorChanged is declared for those ports only.
+     page->flushPendingThemeColorChange();
++#endif
+ 
+     if (m_overlayCompositingLayer)
+         m_overlayCompositingLayer->flushCompositingState(visibleContentsRect());
 diff --git a/Source/WebKit/WebProcess/WebPage/DrawingArea.cpp b/Source/WebKit/WebProcess/WebPage/DrawingArea.cpp
-index 5ac78eb5880335f49a9a6f2690626e46fbcac7f4..fdbe95a8e9202c553055bd43e5ec834f8a937410 100644
+index 5ac78eb5880335f49a9a6f2690626e46fbcac7f4..f194e2b1d31ba2b71312db5ed1833b4933d65ad0 100644
 --- a/Source/WebKit/WebProcess/WebPage/DrawingArea.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/DrawingArea.cpp
-@@ -41,7 +41,12 @@
+@@ -41,7 +41,13 @@
  #include <wtf/TZoneMallocInlines.h>
  
  // Subclasses
 -#if PLATFORM(COCOA)
 +#if PLATFORM(HAIKU)
-+#include "DrawingAreaHaiku.h"
 +#if USE(COORDINATED_GRAPHICS)
-+#include "DrawingAreaCoordinatedGraphics.h"
++#include "DrawingAreaCoordinatedGraphicsGLib.h"
++#else
++#include "DrawingAreaHaiku.h"
 +#endif
 +#elif PLATFORM(COCOA)
  #include "RemoteLayerTreeDrawingAreaMac.h"
  #include "TiledCoreAnimationDrawingArea.h"
  #elif USE(COORDINATED_GRAPHICS) || USE(TEXTURE_MAPPER)
-@@ -62,7 +67,15 @@ WTF_MAKE_TZONE_ALLOCATED_IMPL(DrawingArea);
+@@ -62,7 +68,15 @@ WTF_MAKE_TZONE_ALLOCATED_IMPL(DrawingArea);
  
  RefPtr<DrawingArea> DrawingArea::create(WebPage& webPage, const WebPageCreationParameters& parameters)
  {
@@ -78060,7 +78188,7 @@ index 5ac78eb5880335f49a9a6f2690626e46fbcac7f4..fdbe95a8e9202c553055bd43e5ec834f
      SandboxExtension::consumePermanently(parameters.renderServerMachExtensionHandle);
      switch (parameters.drawingAreaType) {
      case DrawingAreaType::TiledCoreAnimation:
-@@ -158,7 +171,7 @@ bool DrawingArea::supportsGPUProcessRendering()
+@@ -158,7 +172,7 @@ bool DrawingArea::supportsGPUProcessRendering()
      return true;
  #elif USE(GRAPHICS_LAYER_WC)
      return true;
@@ -78070,21 +78198,47 @@ index 5ac78eb5880335f49a9a6f2690626e46fbcac7f4..fdbe95a8e9202c553055bd43e5ec834f
  #endif
  }
 diff --git a/Source/WebKit/WebProcess/WebPage/DrawingArea.h b/Source/WebKit/WebProcess/WebPage/DrawingArea.h
-index ad563a42133321423bc14f1f47e2beebe0027e1a..d3928a1012135ac9cb9a277e31a88c22d8cb5e93 100644
+index ad563a42133321423bc14f1f47e2beebe0027e1a..869435e0726dfc31dae68c53fbf0e3c44add2030 100644
 --- a/Source/WebKit/WebProcess/WebPage/DrawingArea.h
 +++ b/Source/WebKit/WebProcess/WebPage/DrawingArea.h
-@@ -169,6 +169,11 @@ public:
+@@ -169,6 +169,16 @@ public:
      virtual void updateGeometryWC(uint64_t, WebCore::IntSize, float deviceScaleFactor, float intrinsicDeviceScaleFactor) { };
  #endif
  
 +#if PLATFORM(HAIKU)
-+    virtual void updateGeometryHaiku(uint64_t, const WebCore::IntSize&, float, CompletionHandler<void()>&&) = 0;
-+    virtual void didPresentBitmapHaiku(uint64_t) = 0;
++    // DrawingAreaHaiku's own protocol: the UI process asks it to resize, and
++    // tells it when a frame bitmap has reached the screen. A coordinated
++    // drawing area publishes frames through AcceleratedSurface instead and
++    // hears about neither, so these answer for the drawing areas that do not
++    // implement them rather than being pure.
++    virtual void updateGeometryHaiku(uint64_t, const WebCore::IntSize&, float, CompletionHandler<void()>&& completionHandler) { completionHandler(); }
++    virtual void didPresentBitmapHaiku(uint64_t) { }
 +#endif
 +
  #if USE(COORDINATED_GRAPHICS) || USE(TEXTURE_MAPPER)
      virtual void updateGeometry(const WebCore::IntSize&, CompletionHandler<void()>&&) = 0;
      virtual bool enterAcceleratedCompositingModeIfNeeded() = 0;
+@@ -185,6 +195,11 @@ public:
+ 
+ #if PLATFORM(GTK) || PLATFORM(WPE)
+     virtual void dispatchPendingCallbacksAfterEnsuringDrawing() = 0;
++#elif PLATFORM(HAIKU)
++    // The coordinated drawing area keeps presentation callbacks and overrides
++    // this. DrawingAreaHaiku has none, and the message that would ask for them
++    // is not declared for this port either.
++    virtual void dispatchPendingCallbacksAfterEnsuringDrawing() { }
+ #endif
+ 
+ #if ENABLE(DAMAGE_TRACKING)
+@@ -245,6 +260,8 @@ private:
+ 
+ #if PLATFORM(COCOA) || PLATFORM(GTK) || PLATFORM(WPE)
+     virtual void dispatchAfterEnsuringDrawing(IPC::AsyncReplyID) = 0;
++#elif PLATFORM(HAIKU)
++    virtual void dispatchAfterEnsuringDrawing(IPC::AsyncReplyID) { }
+ #endif
+ 
+ #if PLATFORM(COCOA) || PLATFORM(GTK)
 diff --git a/Source/WebKit/WebProcess/WebPage/DrawingArea.messages.in b/Source/WebKit/WebProcess/WebPage/DrawingArea.messages.in
 index e6fbb8c1896bf99dc0f7322868052566b8629598..d84e2ecbc70d219a63eb074c1fd4b1c95079bdd3 100644
 --- a/Source/WebKit/WebProcess/WebPage/DrawingArea.messages.in
@@ -78863,13 +79017,14 @@ index 0000000000000000000000000000000000000000..05b715645c6ba783cf32a1945ac7d05e
 +} // namespace WebKit
 diff --git a/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.h b/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..35d45b0c332869d9666d65fdaf637e48f831dd63
+index 0000000000000000000000000000000000000000..3fbdb891367700b88586c40ced6315b49818da85
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.h
-@@ -0,0 +1,142 @@
+@@ -0,0 +1,143 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
++
 +
 +#include "DrawingArea.h"
 +#include <WebCore/GraphicsContext.h>

@@ -1020,6 +1020,45 @@ to get WebCore through:
 WebCore builds and links in this configuration, which is the half that contains
 the tile painting. The UI process half is where the work remains.
 
+### It builds, runs and loads pages
+
+The coordinated configuration now links -- `libWebKit.so`, `WebProcess`,
+`NetworkProcess` -- and a bundle built from it starts, opens its window, loads
+`http://example.com`, sets the tab title from the page and reports "Ready". The
+content area is blank, and the reason is known rather than mysterious: nothing
+constructs the `AcceleratedBackingStore`. The web process paints a frame into a
+shared memory buffer and publishes it; in the UI process no one is listening,
+because `AcceleratedBackingStore::create` has no caller and `updateSurfaceID`
+is never called. Wiring it to the Haiku view, and implementing `presentFrame`
+on top of the `BBitmap` path the port already has, is the next piece.
+
+What it took to get from "WebCore compiles" to that:
+
+- **The right drawing area.** The port had been given
+  `DrawingAreaCoordinatedGraphics.cpp`, which is what Windows and PlayStation
+  build. GTK and WPE build `DrawingAreaCoordinatedGraphicsGLib.cpp`, and that is
+  the one that matches this `LayerTreeHost` -- despite the name it contains no
+  GLib at all, only its own `#include`.
+- **The port's own compositor stands down.** `LayerTreeHostHaiku` is built on
+  `GraphicsLayerTextureMapper`, and coordinated graphics supplies
+  `GraphicsLayerCoordinated` instead; only one of the two may define
+  `GraphicsLayer::create`. `DrawingAreaHaiku` and `LayerTreeHostHaiku` are
+  therefore not compiled in this configuration, and `DrawingArea::create`
+  returns the coordinated one.
+- **The DMA-BUF render target stays behind.** Haiku had been put in the same
+  condition as GTK and WPE, which brought the texture target that exports the
+  framebuffer as a DMA-BUF along with it. That one is now guarded to the
+  platforms that have one; Haiku keeps only the shared memory target.
+- **Smaller platform lists that predate a third coordinated port:** the
+  `WebDisplayRefreshMonitor` override needs `HAVE(DISPLAY_LINK)` and without it
+  the base returns nullptr and WebCore drives rendering from a timer;
+  `dispatchAfterEnsuringDrawing` and its pending-callback partner are pure for
+  GTK and WPE and now have defaults for the Haiku drawing area, whose own
+  message for them is not declared either; and `ScrollbarsController::create` is
+  defined both by the base and by the generic controller that
+  `ScrollbarsControllerCoordinated` derives from, so the base stands down for
+  this configuration.
+
 ### What is left
 
 `AcceleratedSurface` has a counterpart in the UI process,
@@ -1031,19 +1070,10 @@ a small `Client` interface, and answers `FrameDone` so the web process may paint
 the next frame. The DMA-BUF message is guarded by `USE(GBM)` so the generated
 receiver does not ask Haiku for Linux buffer types.
 
-Three things still block the build, all in the same family -- code that assumed
-the only coordinated ports are the GLib ones:
+Presenting the frames. The backing store above has no caller: the Haiku view has
+to own one, call `updateSurfaceID` when the drawing area gives it a surface, and
+implement `presentFrame` by putting the shared memory pixels on screen, which is
+what `BitmapPresenterHaiku` already does for the software path.
 
-- `DrawingAreaCoordinatedGraphics` is abstract here; GTK completes it with
-  `DrawingAreaCoordinatedGraphicsGLib`, and Windows and PlayStation complete it
-  their own way.
-- `LayerTreeHost.cpp` uses tracing points (`LayerTreeHostRenderingUpdateStart`
-  and its end) that only the GLib build defines.
-- It also calls `WebPage::flushPendingThemeColorChange`, which is a GLib-only
-  method.
-
-None of these is deep; each needs a decision about whether to make the upstream
-piece portable or to supply a Haiku equivalent. Until they are settled the
-coordinated build does not link, and no measurement of the worker pool is
-possible -- so there are no numbers for it yet, and this section deliberately
-offers none.
+Until that is connected the page renders into a buffer nobody reads, so there are
+still no numbers for the worker pool and this section deliberately offers none.
