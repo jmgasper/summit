@@ -978,3 +978,72 @@ The Speedometer confidence interval is worth noting: ± 0.551 against ± 0.058 f
 the app_server backend, on an equally quiet machine. Something in this
 configuration is far less consistent run to run, and that is worth understanding
 before reading much into the mean.
+
+## Coordinated graphics: what it takes on Haiku (September 21, 2026)
+
+Stage three is the one that matters for the cores: `SkiaPaintingEngine` paints
+tiles on a `WTF::WorkerPool`, and it is compiled only with
+`USE(COORDINATED_GRAPHICS) && USE(SKIA)`. The port's own comment said coordinated
+graphics "must stay off ... its tile painting requires Skia or Cairo"; with Skia
+that reason is gone, and the option now follows `USE_SKIA` whenever GL
+compositing is built.
+
+The configuration is `-DUSE_SKIA=ON -DUSE_HAIKU_GL_COMPOSITING=ON
+-DENABLE_ASYNC_SCROLLING=ON`, built in its own directory (`SkiaCG`). What it took
+to get WebCore through:
+
+- **The portable render target.** `AcceleratedSurface` can back a frame with a
+  DMA-BUF, a GL texture or a `ShareableBitmap`, and only the last is portable.
+  Haiku selects `Type::SharedMemory`, which is the buffer the port already
+  carries to the UI process. The surface's shared-memory paths were written
+  `#if PLATFORM(GTK) || ENABLE(WPE_PLATFORM)`; Haiku is now in that condition,
+  and the DMA-BUF includes that came with it are guarded by `USE(GBM)`.
+- **Async scrolling and the scrolling thread.** The coordinated scrolling nodes
+  only exist with `ENABLE(ASYNC_SCROLLING)`, as on GTK, and the tree they build
+  runs on its own thread -- `PlatformEnableGlib.h` turns that on for every port
+  that reaches coordinated graphics through GLib, and the same rule now applies
+  to Haiku. The tree also asks wheel events which part of a gesture they are,
+  which is `ENABLE(KINETIC_SCROLLING)`; the answers are inline in
+  `PlatformWheelEvent.h`, so it costs the port nothing. That define has to be
+  set before `PlatformEnable.h` reaches its own default, which is 0.
+- **libepoxy.** The coordinated renderers include `<epoxy/egl.h>` directly. It
+  is in HaikuPorts (`libepoxy_devel`). Haiku's build of it declares the Khronos
+  enums itself instead of including `KHR/khrplatform.h`, so whichever of the two
+  a translation unit sees first wins and the other conflicts; `GLContext.h` and
+  the port's own two GL files now prefer epoxy when `USE(LIBEPOXY)` is set, as
+  the rest of WebCore already did.
+- **`RenderProcessInfo`.** Every coordinated renderer includes it, and it is a
+  plain WTF struct that happens to live in `Shared/glib` beside the GLib
+  argument coders. The port puts that directory on the search path; nothing else
+  in there is picked up, because the rest is named for GLib.
+
+WebCore builds and links in this configuration, which is the half that contains
+the tile painting. The UI process half is where the work remains.
+
+### What is left
+
+`AcceleratedSurface` has a counterpart in the UI process,
+`AcceleratedBackingStore`, which receives the buffers and the frames; GTK and WPE
+each implement one. Haiku's is written
+(`Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.cpp`): it keeps the
+shared-memory buffers by identifier, hands the committed one to the view through
+a small `Client` interface, and answers `FrameDone` so the web process may paint
+the next frame. The DMA-BUF message is guarded by `USE(GBM)` so the generated
+receiver does not ask Haiku for Linux buffer types.
+
+Three things still block the build, all in the same family -- code that assumed
+the only coordinated ports are the GLib ones:
+
+- `DrawingAreaCoordinatedGraphics` is abstract here; GTK completes it with
+  `DrawingAreaCoordinatedGraphicsGLib`, and Windows and PlayStation complete it
+  their own way.
+- `LayerTreeHost.cpp` uses tracing points (`LayerTreeHostRenderingUpdateStart`
+  and its end) that only the GLib build defines.
+- It also calls `WebPage::flushPendingThemeColorChange`, which is a GLib-only
+  method.
+
+None of these is deep; each needs a decision about whether to make the upstream
+piece portable or to supply a Haiku equivalent. Until they are settled the
+coordinated build does not link, and no measurement of the worker pool is
+possible -- so there are no numbers for it yet, and this section deliberately
+offers none.
