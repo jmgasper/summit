@@ -147,9 +147,91 @@ What is left of those 17.2 ms: 14.4 ms inside the port's drawing calls and
 2.8 ms of WebCore deciding what to draw. Inside the drawing calls, images are
 2.1 ms, text is 0.1 ms, and the remaining ~12 ms belongs to 32 fills, 41 clips
 and **558 state changes** — about seventeen `PushState()`/`PopState()` pairs for
-every drawing operation. Most of those pairs enclose no drawing at all, so the
-next thing to do is to stop sending them: keep the pushes pending and only
-apply them to the view when a call actually needs the state.
+every drawing operation. Most of those pairs enclose no drawing at all, which
+suggested holding the pushes back and applying them only when a call needs the
+state. That was tried next, and measured at 0.07 ms; the section below has what
+the time is really spent on.
+
+## Two hypotheses, measured and dropped (September 21, 2026)
+
+The paint tally above ended with a prediction: that the 558 state changes a
+frame were the next thing worth removing. The tally was extended to time them,
+and to count the one cost it had not yet looked at — the calls that *read* state
+back out of app_server. Both halves of the prediction turned out to be wrong,
+and one of them turned out to be dangerous.
+
+```
+Summit painting: per frame drawing calls 14.65 ms of which 11 text runs
+  (420 glyphs) 0.07 ms, 83 images 2.04 ms; 32 fills 18.02 ms, 0 strokes,
+  41 clips 0.05 ms, 558 state changes 0.01 ms (0.07 ms in save/restore),
+  75 app_server round trips 2.09 ms (10 for the clip)
+```
+
+- **State save/restore is 0.07 ms a frame.** Once the flushes were held back by
+  the view transaction, the 558 `PushState()`/`PopState()` pairs cost almost
+  nothing: they are a few bytes each into an already-batched `PortLink`. A lazy
+  scheme that kept the pushes pending and applied them only when a drawing call
+  needed the state was written, measured at 0.07 ms, and then **reverted** — see
+  below.
+- **Text is still 0.07 ms.** Confirmed a second time, with glyph counts.
+- **Reading state back is 2.09 ms a frame.** This is the one real finding. A
+  `BView` getter like `HighColor()`, `PenSize()`, `DrawingMode()`, `FillRule()`
+  or `Transform()` is not a local field read: it is `FlushWithReply()`, a
+  synchronous round trip to app_server. Each one measured about 28 µs, and a
+  frame was making 75 of them. They also defeat the batching, because every one
+  flushes the link.
+
+Six of those call sites were reading back a value the port already knows, to
+save and restore it around a drawing call, and were replaced with the value from
+`GraphicsContext`'s own state: `drawLine`, `strokeRect` and `drawLinesForText`
+now restore the pen with `strokeThickness()`, `fillRoundedRectImpl` and
+`fillPath` compute the colour with `withGlobalAlpha(...)` and the drawing mode
+with a new `drawingModeForCompositeHaiku()`, and `clipPath` restores the fill
+rule from `fillRule()`. Rendering is unchanged: the scroll page and Wikipedia
+both came back **0 pixels different**.
+
+| Workstation | Scrolling | Speedometer 3.1 |
+| --- | --- | --- |
+| after the shadow and batching round | 44.94 fps | 3.23 ± 0.083 |
+| + six read-backs removed | **46.33 fps** | 3.28 ± 0.058 |
+
+Scrolling moved; Speedometer did not. The two confidence intervals overlap, so
+the honest reading is that removing 0.2 ms of round trips per frame is not
+measurable on a benchmark whose frames are 100–120 ms long. Both runs were on a
+quiet machine (0.05 foreign cores, `vncserver` stopped).
+
+That is 3%, which is what a 2.09 ms cost is worth against a 21 ms frame — and
+most of it is still there. Of the 75 round trips, 65 are `Transform()` inside
+`getCTM()` and `concatCTM()` and 10 are `GetClippingRegion()` inside
+`clipBounds()`. `GetClippingRegion()` genuinely has to ask the server, because
+app_server owns the clip; `Transform()` does not, and mirroring the CTM in the
+port would remove the remaining 1.8 ms. It is left for the drawing-model work
+rather than done here, because a mirrored CTM has to stay correct across
+`PushState`/`PopState`, layers and `ImageBuffer` switches, and the payoff is
+under two milliseconds.
+
+**The lazy save/restore experiment was reverted.** Making `PushState()` lazy
+rendered Wikipedia nearly blank, with truncated text; `SUMMIT_LAZY_STATE=0`
+produced a pixel-identical image to the previous bundle, which both isolated the
+cause and cleared the read-back removals. The likely reason is that
+`beginTransparencyLayer()` needs its `PushState()` to have reached the view
+before `BeginLayer()`, and there are probably other such orderings. Since the
+whole mechanism was worth 0.07 ms, it was removed rather than fixed.
+
+### What this round actually says
+
+Per frame, painting is 14.6 ms inside the port's drawing calls. Text is 0.07 ms,
+state changes are 0.07 ms, clips are 0.05 ms, images are 2.0 ms and round trips
+are 2.1 ms. Everything else — about 10 ms — is inside 32 fill calls, spread
+across gradients, rounded rectangles, shadows and image scaling, with no single
+call worth removing. Three successive micro-optimisation hypotheses (glyphs,
+state changes, read-backs) have now been tested; the first two were worth
+nothing and the third was worth 3%. There is no fourth one that is worth more.
+
+The remaining structural facts are unchanged and much larger: painting is
+~95 ms per megapixel inside the web process, one thread does all of it, and 31
+cores are idle while it does. The next step is the drawing model itself —
+painting in parallel — not another pass over the drawing calls.
 
 ## Speedometer 3.1 against Firefox (September 21, 2026)
 
@@ -158,6 +240,7 @@ Workstation, local copy of the benchmark, 10 iterations, full-screen window:
 | Browser | Score |
 | --- | --- |
 | Firefox 155.0 | **8.34 ± 0.37** |
+| Summit, after removing the app_server read-backs | 3.28 ± 0.058 |
 | Summit, after the shadow and batching work above | 3.23 ± 0.083 |
 | Summit, before it | 3.05 ± 0.085 |
 

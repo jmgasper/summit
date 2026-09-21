@@ -297,7 +297,8 @@ def main():
                              + ([LIBZIP / 'lib'] if 'libzip' in inputs else []))),
                          '-o', str(work / executable_name)])
         if browser:
-            commands += [['rc', '-o', str(work / 'Summit.rsrc'), str(ROOT / 'resources/Summit.rdef')],
+            commands += [['rc', '-I', str(ROOT / 'resources'),
+                          '-o', str(work / 'Summit.rsrc'), str(ROOT / 'resources/Summit.rdef')],
                          ['xres', '-o', str(work / executable_name), str(work / 'Summit.rsrc')]]
     before = {str(path): digest(path) for path in original_paths}
     try:

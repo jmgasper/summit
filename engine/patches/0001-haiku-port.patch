@@ -6293,10 +6293,10 @@ index 0000000000000000000000000000000000000000..3b15b78d60159f55a47836add578e3e8
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/GraphicsContextHaiku.cpp b/Source/WebCore/platform/graphics/haiku/GraphicsContextHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..0a72659ce40711a5bac03de6fcff2234f91af3cb
+index 0000000000000000000000000000000000000000..84934046ae6a42edc719ebeaf6d7c16e0afdf9eb
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/GraphicsContextHaiku.cpp
-@@ -0,0 +1,1141 @@
+@@ -0,0 +1,1185 @@
 +/*
 + * Copyright (C) 2007 Ryan Leavengood <leavengood@gmail.com>
 + * Copyright (C) 2010 Stephan Aßmus <superstippi@gmx.de>
@@ -6354,6 +6354,8 @@ index 0000000000000000000000000000000000000000..0a72659ce40711a5bac03de6fcff2234
 +#include <Shape.h>
 +#include <Window.h>
 +#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
 +
 +//#define TRACE_GRAPHICS_HAIKU
 +#ifdef TRACE_GRAPHICS_HAIKU
@@ -6381,6 +6383,22 @@ index 0000000000000000000000000000000000000000..0a72659ce40711a5bac03de6fcff2234
 +}
 +
 +namespace WebCore {
++
++// app_server answers HighColor(), PenSize(), DrawingMode() and FillRule() with a
++// synchronous round trip, and PopState() invalidates the client's copy, so a
++// page that saves and restores state constantly asked over and over for values
++// this port set itself. These four restore from the state instead.
++static drawing_mode drawingModeForCompositeHaiku(CompositeOperator operation)
++{
++    // Mirrors what didUpdateState() sends for Change::CompositeMode.
++    switch (operation) {
++    case CompositeOperator::Copy:
++        return B_OP_COPY;
++    default:
++        return B_OP_ALPHA;
++    }
++}
++
 +
 +// The context's global alpha multiplies every color it draws with.
 +static rgb_color withGlobalAlpha(rgb_color color, float alpha)
@@ -6424,6 +6442,7 @@ index 0000000000000000000000000000000000000000..0a72659ce40711a5bac03de6fcff2234
 +void GraphicsContextHaiku::drawRect(const FloatRect& rect, float borderThickness)
 +{
 +    PrimitiveTimerHaiku primitiveTimer;
++    PaintTimerHaiku bucketTimer(paintStatisticsHaiku().fillTime);
 +    if (auto& paintStatistics = paintStatisticsHaiku(); paintStatistics.enabled)
 +        ++paintStatistics.fills;
 +    HGTRACE(("drawRect: [%f:%f] [%f:%f]\n", rect.x(), rect.y(), rect.width(), rect.height()));
@@ -6490,7 +6509,7 @@ index 0000000000000000000000000000000000000000..0a72659ce40711a5bac03de6fcff2234
 +    BPoint end = point2;
 +    // This test breaks for a vertical line as wide as long, but in that
 +    // case there's no information to tell vertical and horizontal apart.
-+    if (fabs(end.y - start.y - m_view->PenSize()) < 1) {
++    if (fabs(end.y - start.y - strokeThickness()) < 1) {
 +        // Horizontal line
 +        end.y = start.y = (end.y + start.y) / 2;
 +        end.x--;
@@ -6506,6 +6525,7 @@ index 0000000000000000000000000000000000000000..0a72659ce40711a5bac03de6fcff2234
 +void GraphicsContextHaiku::drawEllipse(const FloatRect& rect)
 +{
 +    PrimitiveTimerHaiku primitiveTimer;
++    PaintTimerHaiku bucketTimer(paintStatisticsHaiku().fillTime);
 +    if (auto& paintStatistics = paintStatisticsHaiku(); paintStatistics.enabled)
 +        ++paintStatistics.fills;
 +    HGTRACE(("drawEllipse: [%f:%f] [%f:%f]\n", rect.x(), rect.y(), rect.width(), rect.height()));
@@ -6534,11 +6554,10 @@ index 0000000000000000000000000000000000000000..0a72659ce40711a5bac03de6fcff2234
 +    if (strokeStyle() == WebCore::StrokeStyle::NoStroke || width <= 0.0f || !strokeColor().isVisible())
 +        return;
 +
-+    float oldSize = m_view->PenSize();
 +    m_view->SetPenSize(width);
 +    // TODO stroke the shadow
 +    m_view->StrokeRect(rect, m_strokeStyle);
-+    m_view->SetPenSize(oldSize);
++    m_view->SetPenSize(strokeThickness());
 +}
 +
 +void GraphicsContextHaiku::strokePath(const Path& path)
@@ -6565,6 +6584,7 @@ index 0000000000000000000000000000000000000000..0a72659ce40711a5bac03de6fcff2234
 +void GraphicsContextHaiku::fillRect(const FloatRect& rect, const Color& color)
 +{
 +    PrimitiveTimerHaiku primitiveTimer;
++    PaintTimerHaiku bucketTimer(paintStatisticsHaiku().fillTime);
 +    if (auto& paintStatistics = paintStatisticsHaiku(); paintStatistics.enabled)
 +        ++paintStatistics.fills;
 +    HGTRACE(("fillRect(color): [%f:%f] [%f:%f]\n", rect.x(), rect.y(), rect.width(), rect.height()));
@@ -6594,6 +6614,7 @@ index 0000000000000000000000000000000000000000..0a72659ce40711a5bac03de6fcff2234
 +void GraphicsContextHaiku::fillRect(const FloatRect& rect, RequiresClipToRect requiresClipToRect)
 +{
 +    PrimitiveTimerHaiku primitiveTimer;
++    PaintTimerHaiku bucketTimer(paintStatisticsHaiku().fillTime);
 +    if (auto& paintStatistics = paintStatisticsHaiku(); paintStatistics.enabled)
 +        ++paintStatistics.fills;
 +    HGTRACE(("fillRect: [%f:%f] [%f:%f]\n", rect.x(), rect.y(), rect.width(), rect.height()));
@@ -6632,6 +6653,7 @@ index 0000000000000000000000000000000000000000..0a72659ce40711a5bac03de6fcff2234
 +void GraphicsContextHaiku::fillRect(const WebCore::FloatRect& r, WebCore::Gradient& g, const WebCore::AffineTransform&, RequiresClipToRect requiresClipToRect)
 +{
 +    PrimitiveTimerHaiku primitiveTimer;
++    PaintTimerHaiku bucketTimer(paintStatisticsHaiku().fillTime);
 +    if (auto& paintStatistics = paintStatisticsHaiku(); paintStatistics.enabled)
 +        ++paintStatistics.fills;
 +    HGTRACE(("fillRect(gradient): [%f:%f] [%f:%f]\n", r.x(), r.y(), r.width(), r.height()));
@@ -6647,6 +6669,7 @@ index 0000000000000000000000000000000000000000..0a72659ce40711a5bac03de6fcff2234
 +void GraphicsContextHaiku::fillClipWithPattern(Pattern& pattern, const FloatRect& bounds)
 +{
 +    PrimitiveTimerHaiku primitiveTimer;
++    PaintTimerHaiku bucketTimer(paintStatisticsHaiku().fillTime);
 +    if (auto& paintStatistics = paintStatisticsHaiku(); paintStatistics.enabled)
 +        ++paintStatistics.fills;
 +    RefPtr image = pattern.tileNativeImage();
@@ -6690,6 +6713,7 @@ index 0000000000000000000000000000000000000000..0a72659ce40711a5bac03de6fcff2234
 +void GraphicsContextHaiku::fillRoundedRectImpl(const FloatRoundedRect& roundRect, const Color& color)
 +{
 +    PrimitiveTimerHaiku primitiveTimer;
++    PaintTimerHaiku bucketTimer(paintStatisticsHaiku().fillTime);
 +    if (auto& paintStatistics = paintStatisticsHaiku(); paintStatistics.enabled)
 +        ++paintStatistics.fills;
 +    HGTRACE(("fillRoundedRectImpl: [%f:%f] [%f:%f]\n", roundRect.rect().x(), roundRect.rect().y(), roundRect.rect().width(), roundRect.rect().height()));
@@ -6749,16 +6773,17 @@ index 0000000000000000000000000000000000000000..0a72659ce40711a5bac03de6fcff2234
 +    shape.Close(); // Automatically completes the shape with the top border
 +
 +    m_view->MovePenTo(B_ORIGIN);
-+    // The high color is the stroke color; restore it so later strokes are not affected.
-+    rgb_color strokeColor = m_view->HighColor();
++    // The high color is the stroke color; put it back so later strokes are not
++    // affected. didUpdateState() derives it from the state, so this does too.
 +    m_view->SetHighColor(withGlobalAlpha(color, alpha()));
 +    m_view->FillShape(&shape);
-+    m_view->SetHighColor(strokeColor);
++    m_view->SetHighColor(withGlobalAlpha(m_state.strokeBrush().color(), alpha()));
 +}
 +
 +void GraphicsContextHaiku::fillRectWithRoundedHole(const FloatRect& rect, const FloatRoundedRect& roundedHoleRect, const Color& color)
 +{
 +    PrimitiveTimerHaiku primitiveTimer;
++    PaintTimerHaiku bucketTimer(paintStatisticsHaiku().fillTime);
 +    if (auto& paintStatistics = paintStatisticsHaiku(); paintStatistics.enabled)
 +        ++paintStatistics.fills;
 +    HGTRACE(("fillRectWithRoundedHole: [%f:%f] [%f:%f] hole: [%f:%f] [%f:%f]\n",
@@ -6797,6 +6822,7 @@ index 0000000000000000000000000000000000000000..0a72659ce40711a5bac03de6fcff2234
 +void GraphicsContextHaiku::fillPath(const Path& path)
 +{
 +    PrimitiveTimerHaiku primitiveTimer;
++    PaintTimerHaiku bucketTimer(paintStatisticsHaiku().fillTime);
 +    if (auto& paintStatistics = paintStatisticsHaiku(); paintStatistics.enabled)
 +        ++paintStatistics.fills;
 +#if 0
@@ -6859,7 +6885,7 @@ index 0000000000000000000000000000000000000000..0a72659ce40711a5bac03de6fcff2234
 +    m_view->MovePenTo(B_ORIGIN);
 +
 +    // TODO: Render the shadow (cf shadowAndFillCurrentCairoPath)
-+    drawing_mode mode = m_view->DrawingMode();
++    drawing_mode mode = drawingModeForCompositeHaiku(compositeOperation());
 +
 +    if (RefPtr pattern = m_state.fillBrush().pattern()) {
 +        GraphicsContextStateSaver stateSaver(*this);
@@ -6871,7 +6897,8 @@ index 0000000000000000000000000000000000000000..0a72659ce40711a5bac03de6fcff2234
 +        const BGradient& gradient = m_state.fillBrush().gradient()->getHaikuGradient();
 +        m_view->FillShape(path.platformPath(), gradient);
 +    } else {
-+        if (m_view->HighColor().alpha < 255)
++        // The shape is filled with the low colour, which is the fill brush.
++        if (withGlobalAlpha(m_state.fillBrush().color(), alpha()).alpha < 255)
 +            m_view->SetDrawingMode(B_OP_ALPHA);
 +
 +        m_view->FillShape(path.platformPath(), B_SOLID_LOW);
@@ -6883,6 +6910,7 @@ index 0000000000000000000000000000000000000000..0a72659ce40711a5bac03de6fcff2234
 +void GraphicsContextHaiku::clip(const FloatRect& rect)
 +{
 +    PrimitiveTimerHaiku primitiveTimer;
++    PaintTimerHaiku bucketTimer(paintStatisticsHaiku().clipTime);
 +    if (auto& paintStatistics = paintStatisticsHaiku(); paintStatistics.enabled)
 +        ++paintStatistics.clips;
 +    HGTRACE(("clip: [%f:%f] [%f:%f]\n", rect.x(), rect.y(), rect.width(), rect.height()));
@@ -6892,20 +6920,19 @@ index 0000000000000000000000000000000000000000..0a72659ce40711a5bac03de6fcff2234
 +void GraphicsContextHaiku::clipPath(const Path& path, WindRule windRule)
 +{
 +    PrimitiveTimerHaiku primitiveTimer;
++    PaintTimerHaiku bucketTimer(paintStatisticsHaiku().clipTime);
 +    if (auto& paintStatistics = paintStatisticsHaiku(); paintStatistics.enabled)
 +        ++paintStatistics.clips;
 +    HGTRACE(("clipPath: (--todo print values)\n"));
-+    int32 fillRule = m_view->FillRule();
-+
 +    m_view->SetFillRule(windRule == WindRule::EvenOdd ? B_EVEN_ODD : B_NONZERO);
 +    m_view->ClipToShape(path.platformPath());
-+
-+    m_view->SetFillRule(fillRule);
++    m_view->SetFillRule(fillRule() == WindRule::NonZero ? B_NONZERO : B_EVEN_ODD);
 +}
 +
 +void GraphicsContextHaiku::clipToImageBuffer(WebCore::ImageBuffer& imageBuffer, WebCore::FloatRect const& destRect)
 +{
 +    PrimitiveTimerHaiku primitiveTimer;
++    PaintTimerHaiku bucketTimer(paintStatisticsHaiku().clipTime);
 +    if (auto& paintStatistics = paintStatisticsHaiku(); paintStatistics.enabled)
 +        ++paintStatistics.clips;
 +    HGTRACE(("clipToImageBuffer [%f:%f] [%f:%f]\n", destRect.x(), destRect.y(), destRect.width(), destRect.height()));
@@ -6929,6 +6956,7 @@ index 0000000000000000000000000000000000000000..0a72659ce40711a5bac03de6fcff2234
 +void GraphicsContextHaiku::resetClip()
 +{
 +    PrimitiveTimerHaiku primitiveTimer;
++    PaintTimerHaiku bucketTimer(paintStatisticsHaiku().clipTime);
 +    if (auto& paintStatistics = paintStatisticsHaiku(); paintStatistics.enabled)
 +        ++paintStatistics.clips;
 +    HGTRACE(("resetClip\n"));
@@ -6973,6 +7001,7 @@ index 0000000000000000000000000000000000000000..0a72659ce40711a5bac03de6fcff2234
 +void GraphicsContextHaiku::clipOut(const Path& path)
 +{
 +    PrimitiveTimerHaiku primitiveTimer;
++    PaintTimerHaiku bucketTimer(paintStatisticsHaiku().clipTime);
 +    if (auto& paintStatistics = paintStatisticsHaiku(); paintStatistics.enabled)
 +        ++paintStatistics.clips;
 +    HGTRACE(("clipOut(path): (--todo print values)\n"));
@@ -6985,6 +7014,7 @@ index 0000000000000000000000000000000000000000..0a72659ce40711a5bac03de6fcff2234
 +void GraphicsContextHaiku::clipOut(const FloatRect& rect)
 +{
 +    PrimitiveTimerHaiku primitiveTimer;
++    PaintTimerHaiku bucketTimer(paintStatisticsHaiku().clipTime);
 +    if (auto& paintStatistics = paintStatisticsHaiku(); paintStatistics.enabled)
 +        ++paintStatistics.clips;
 +    HGTRACE(("clipOut: [%f:%f] [%f:%f]\n", rect.x(), rect.y(), rect.width(), rect.height()));
@@ -7055,7 +7085,6 @@ index 0000000000000000000000000000000000000000..0a72659ce40711a5bac03de6fcff2234
 +
 +    float y = bounds.center().y();
 +
-+    float oldSize = m_view->PenSize();
 +    m_view->SetPenSize(bounds.height());
 +
 +    // TODO would be faster to use BeginLineArray/EndLineArray here
@@ -7064,8 +7093,7 @@ index 0000000000000000000000000000000000000000..0a72659ce40711a5bac03de6fcff2234
 +        m_view->StrokeLine(BPoint(bounds.x() + width.begin, y),
 +            BPoint(bounds.x() + width.end, y));
 +    }
-+
-+    m_view->SetPenSize(oldSize);
++    m_view->SetPenSize(strokeThickness());
 +}
 +
 +void GraphicsContextHaiku::drawDotsForDocumentMarker(WebCore::FloatRect const&,
@@ -7082,6 +7110,7 @@ index 0000000000000000000000000000000000000000..0a72659ce40711a5bac03de6fcff2234
 +void GraphicsContextHaiku::clearRect(const FloatRect& rect)
 +{
 +    PrimitiveTimerHaiku primitiveTimer;
++    PaintTimerHaiku bucketTimer(paintStatisticsHaiku().fillTime);
 +    if (auto& paintStatistics = paintStatisticsHaiku(); paintStatistics.enabled)
 +        ++paintStatistics.fills;
 +    HGTRACE(("clearRect: [%f:%f] [%f:%f]\n", rect.x(), rect.y(), rect.width(), rect.height()));
@@ -7144,6 +7173,9 @@ index 0000000000000000000000000000000000000000..0a72659ce40711a5bac03de6fcff2234
 +
 +AffineTransform GraphicsContextHaiku::getCTM(IncludeDeviceScale) const
 +{
++    if (auto& paintStatistics = paintStatisticsHaiku(); paintStatistics.enabled)
++        ++paintStatistics.roundTrips;
++    PaintTimerHaiku roundTripTimer(paintStatisticsHaiku().roundTripTime);
 +    BAffineTransform t = m_view->Transform();
 +    HGTRACE(("getCTM: out[%f %f %f %f %f %f]\n", t.sx, t.shy, t.shx, t.sy, t.tx, t.ty));
 +    	// TODO: we actually need to use the combined transform here?
@@ -7178,6 +7210,9 @@ index 0000000000000000000000000000000000000000..0a72659ce40711a5bac03de6fcff2234
 +void GraphicsContextHaiku::concatCTM(const AffineTransform& transform)
 +{
 +    HGTRACE(("concatCTM: (--todo print values)\n"));
++    if (auto& paintStatistics = paintStatisticsHaiku(); paintStatistics.enabled)
++        ++paintStatistics.roundTrips;
++    PaintTimerHaiku roundTripTimer(paintStatisticsHaiku().roundTripTime);
 +    BAffineTransform current = m_view->Transform();
 +    current.Multiply(transform);
 +    m_view->SetTransform(current);
@@ -7394,8 +7429,15 @@ index 0000000000000000000000000000000000000000..0a72659ce40711a5bac03de6fcff2234
 +    // So, we get the current clipping region, and convert it back to drawing
 +    // space by applying the reverse of the view transform.
 +
++    if (auto& paintStatistics = paintStatisticsHaiku(); paintStatistics.enabled) {
++        ++paintStatistics.roundTrips;
++        ++paintStatistics.clipQueries;
++    }
 +    BRegion region;
-+    m_view->GetClippingRegion(&region);
++    {
++        PaintTimerHaiku roundTripTimer(paintStatisticsHaiku().roundTripTime);
++        m_view->GetClippingRegion(&region);
++    }
 +    BRect rect = region.Frame();
 +
 +    BPoint points[4];
@@ -7419,6 +7461,7 @@ index 0000000000000000000000000000000000000000..0a72659ce40711a5bac03de6fcff2234
 +void GraphicsContextHaiku::save(GraphicsContextState::Purpose)
 +{
 +    PrimitiveTimerHaiku primitiveTimer;
++    PaintTimerHaiku bucketTimer(paintStatisticsHaiku().saveTime);
 +    if (auto& paintStatistics = paintStatisticsHaiku(); paintStatistics.enabled)
 +        ++paintStatistics.stateChanges;
 +    HGTRACE(("save: no values\n"));
@@ -7429,6 +7472,7 @@ index 0000000000000000000000000000000000000000..0a72659ce40711a5bac03de6fcff2234
 +void GraphicsContextHaiku::restore(GraphicsContextState::Purpose)
 +{
 +    PrimitiveTimerHaiku primitiveTimer;
++    PaintTimerHaiku bucketTimer(paintStatisticsHaiku().saveTime);
 +    if (auto& paintStatistics = paintStatisticsHaiku(); paintStatistics.enabled)
 +        ++paintStatistics.stateChanges;
 +    HGTRACE(("restore: no values\n"));
@@ -9253,10 +9297,10 @@ index 0000000000000000000000000000000000000000..8a9be616e65d18875e79acb1028c2713
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/haiku/PaintStatisticsHaiku.h b/Source/WebCore/platform/graphics/haiku/PaintStatisticsHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..d43fa1c25443e7ab67f36d38045ad185c8a5811b
+index 0000000000000000000000000000000000000000..b43446adfa357260b28a2dadc89ed0be860f2acb
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/PaintStatisticsHaiku.h
-@@ -0,0 +1,96 @@
+@@ -0,0 +1,103 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -9280,9 +9324,16 @@ index 0000000000000000000000000000000000000000..d43fa1c25443e7ab67f36d38045ad185
 +    unsigned strokes { 0 };
 +    unsigned clips { 0 };
 +    unsigned stateChanges { 0 };
++    // Times the port asked app_server for something and waited for the answer.
++    unsigned roundTrips { 0 };
++    unsigned clipQueries { 0 };
++    Seconds roundTripTime;
 +    Seconds glyphTime;
 +    Seconds imageTime;
 +    Seconds stateTime;
++    Seconds fillTime;
++    Seconds clipTime;
++    Seconds saveTime;
 +    // All time spent inside the port's drawing calls, counted once even when
 +    // one of them calls another. What painting costs beyond this is WebCore
 +    // deciding what to draw.
@@ -77432,10 +77483,10 @@ index b1c001380f46a63c1403d8592fe5ac4a062be694..2bee67b0da7f3dfd7102f781ae522ae1
  
 diff --git a/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.cpp b/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..b49fca73abdce939618465bfe92f3d8bcc827052
+index 0000000000000000000000000000000000000000..f71bb2bf1dfaab8c3d3bedc3b22a51a951246d22
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.cpp
-@@ -0,0 +1,616 @@
+@@ -0,0 +1,628 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -77835,9 +77886,15 @@ index 0000000000000000000000000000000000000000..b49fca73abdce939618465bfe92f3d8b
 +    statistics.strokes += painting.strokes;
 +    statistics.clips += painting.clips;
 +    statistics.stateChanges += painting.stateChanges;
++    statistics.roundTrips += painting.roundTrips;
++    statistics.clipQueries += painting.clipQueries;
++    statistics.roundTripTime += painting.roundTripTime;
 +    statistics.glyphTime += painting.glyphTime;
 +    statistics.imageTime += painting.imageTime;
 +    statistics.stateTime += painting.stateTime;
++    statistics.fillTime += painting.fillTime;
++    statistics.clipTime += painting.clipTime;
++    statistics.saveTime += painting.saveTime;
 +    statistics.primitiveTime += painting.primitiveTime;
 +    painting.clear();
 +
@@ -77866,12 +77923,18 @@ index 0000000000000000000000000000000000000000..b49fca73abdce939618465bfe92f3d8b
 +    // Second line: what those frames asked the port to draw, per frame.
 +    auto perFrame = [&](double total) { return statistics.frames ? total / statistics.frames : 0.0; };
 +    WTFLogAlways("Summit painting: per frame drawing calls %.2f ms of which %.0f text runs (%.0f glyphs) %.2f ms, "
-+        "%.0f images %.2f ms; %.0f fills, %.0f strokes, %.0f clips, %.0f state changes %.2f ms",
++        "%.0f images %.2f ms; %.0f fills %.2f ms, %.0f strokes, %.0f clips %.2f ms, "
++        "%.0f state changes %.2f ms (%.2f ms in save/restore), "
++        "%.0f app_server round trips %.2f ms (%.0f for the clip)",
 +        perFrame(statistics.primitiveTime.milliseconds()),
 +        perFrame(statistics.glyphRuns), perFrame(statistics.glyphs), perFrame(statistics.glyphTime.milliseconds()),
 +        perFrame(statistics.images), perFrame(statistics.imageTime.milliseconds()),
-+        perFrame(statistics.fills), perFrame(statistics.strokes), perFrame(statistics.clips),
-+        perFrame(statistics.stateChanges), perFrame(statistics.stateTime.milliseconds()));
++        perFrame(statistics.fills), perFrame(statistics.fillTime.milliseconds()),
++        perFrame(statistics.strokes),
++        perFrame(statistics.clips), perFrame(statistics.clipTime.milliseconds()),
++        perFrame(statistics.stateChanges), perFrame(statistics.stateTime.milliseconds()),
++        perFrame(statistics.saveTime.milliseconds()), perFrame(statistics.roundTrips),
++        perFrame(statistics.roundTripTime.milliseconds()), perFrame(statistics.clipQueries));
 +    auto period = statistics.period;
 +    auto previousStart = statistics.previousStart;
 +    statistics = FrameStatistics();
@@ -78054,10 +78117,10 @@ index 0000000000000000000000000000000000000000..b49fca73abdce939618465bfe92f3d8b
 +} // namespace WebKit
 diff --git a/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.h b/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..c829087502a403219eadae80fe153648907a6fa8
+index 0000000000000000000000000000000000000000..35d45b0c332869d9666d65fdaf637e48f831dd63
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.h
-@@ -0,0 +1,136 @@
+@@ -0,0 +1,142 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -78177,9 +78240,15 @@ index 0000000000000000000000000000000000000000..c829087502a403219eadae80fe153648
 +        unsigned strokes { 0 };
 +        unsigned clips { 0 };
 +        unsigned stateChanges { 0 };
++        unsigned roundTrips { 0 };
++        unsigned clipQueries { 0 };
++        Seconds roundTripTime;
 +        Seconds glyphTime;
 +        Seconds imageTime;
 +        Seconds stateTime;
++        Seconds fillTime;
++        Seconds clipTime;
++        Seconds saveTime;
 +        Seconds primitiveTime;
 +    };
 +    std::unique_ptr<FrameStatistics> m_statistics;

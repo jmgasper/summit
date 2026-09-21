@@ -29,8 +29,25 @@ Work moved to the owner's Haiku workstation (Threadripper 1950X, GeForce GTX
   0.07 ms a frame, that a one-slot shadow template cache was thrashing between
   an element's two shadows, and that `BView::PopState()` flushed the app_server
   link 558 times a frame. Fixing the last two took the scroll page from 42.1 to
-  44.9 fps and Speedometer from 3.05 to 3.23; the state changes themselves are
-  what remains.
+  44.9 fps and Speedometer from 3.05 to 3.23.
+- **Reading state back from app_server was 2.09 ms a frame.** `BView::HighColor()`
+  and friends are not field reads, they are synchronous round trips
+  (`FlushWithReply`), and a frame made 75 of them at ~28 µs. Six call sites were
+  restoring a value the port already knew and now take it from
+  `GraphicsContext`'s own state; rendering is pixel-identical on the scroll page
+  and on Wikipedia. Scrolling 44.9 -> **46.3 fps**, Speedometer 3.23 ± 0.083 ->
+  3.28 ± 0.058 (i.e. unchanged). The remaining round trips are 65 `Transform()`
+  and 10 `GetClippingRegion()`.
+- **Making `PushState()` lazy was tried and reverted.** It rendered Wikipedia
+  nearly blank; `SUMMIT_LAZY_STATE=0` was pixel-identical to the prior bundle,
+  which isolated it. `beginTransparencyLayer()` appears to need its push to have
+  reached the view before `BeginLayer()`. It was worth 0.07 ms, so it was
+  removed rather than fixed.
+- **Micro-optimisation is done.** Glyphs (0.07 ms), state changes (0.07 ms) and
+  read-backs (2.1 ms, 3% of a frame) were each measured; ~10 ms of the 14.6 ms
+  of per-frame drawing is diffuse work inside 32 fill calls with no single
+  culprit. Painting is still ~95 ms per megapixel, on one thread, with 31 cores
+  idle — the next work is the drawing model itself.
 - **NVDEC is reached by Summit** (0.11–0.25 cores decoding 1080p H.264), but the
   plugin crashes in its own error path: `NVDecPlugin.cpp` keeps a pointer to a
   stack-local `char reason[256]` (`nvdec_h264.c:237`). YouTube additionally

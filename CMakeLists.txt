@@ -42,8 +42,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Haiku")
     endif()
     target_link_libraries(Summit PRIVATE summit_core ${SUMMIT_WEBKIT_LIBRARY} be network bnetapi translation tracker)
     set_property(TARGET Summit APPEND PROPERTY LINK_DEPENDS ${CMAKE_SOURCE_DIR}/resources/Summit.rdef)
+    set_property(TARGET Summit APPEND PROPERTY LINK_DEPENDS ${CMAKE_SOURCE_DIR}/resources/Summit.hvif)
     add_custom_command(TARGET Summit POST_BUILD
-        COMMAND ${HAIKU_RC} -o $<TARGET_FILE_DIR:Summit>/Summit.rsrc ${CMAKE_SOURCE_DIR}/resources/Summit.rdef
+        COMMAND ${HAIKU_RC} -I ${CMAKE_SOURCE_DIR}/resources -o $<TARGET_FILE_DIR:Summit>/Summit.rsrc ${CMAKE_SOURCE_DIR}/resources/Summit.rdef
         COMMAND ${HAIKU_XRES} -o $<TARGET_FILE:Summit> $<TARGET_FILE_DIR:Summit>/Summit.rsrc
         COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:Summit>/resources
         COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_SOURCE_DIR}/resources/start.html $<TARGET_FILE_DIR:Summit>/resources/start.html)

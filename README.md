@@ -1,5 +1,7 @@
 # Summit
 
+<img src="docs/summit-icon.png" alt="Summit icon" width="128">
+
 A native browser for KunanyiOS and Haiku, with a Safari-inspired layout.
 
 **Development preview — the complete browser is still under construction.**
@@ -61,6 +63,11 @@ make -j6
 make check
 ./build-haiku/Summit
 ```
+
+The application icon is a Haiku vector icon, `resources/Summit.hvif`. It is
+traced from `docs/summit-icon.png` by `tools/make-summit-icon.py`; run that
+script to regenerate the icon after editing the tracing, and `rc` imports the
+result into the `BEOS:ICON` resource.
 
 The app uses native Interface Kit controls. Haiku's default Command modifier
 is **Alt**: Alt+L focuses the address field; Alt+T creates a tab; Alt+W closes

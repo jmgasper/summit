@@ -28,9 +28,9 @@ UI_OBJ = $(UI:%.cpp=$(BUILD)/%.o)
 LIBS = -L$(WEBKIT_LIBRARY_DIR) -l$(WEBKIT_LINK_LIBRARY) -lbe -lnetwork -lbnetapi -ltranslation -ltracker -lcrypto
 .PHONY: all check clean package browser-smoke
 all: $(BUILD)/Summit $(BUILD)/resources/start.html
-$(BUILD)/Summit: $(CORE_OBJ) $(UI_OBJ) resources/Summit.rdef
+$(BUILD)/Summit: $(CORE_OBJ) $(UI_OBJ) resources/Summit.rdef resources/Summit.hvif
 	$(CXX) $(LDFLAGS) -o $@.new $(CORE_OBJ) $(UI_OBJ) $(LIBS)
-	rc -o $(BUILD)/Summit.rsrc resources/Summit.rdef
+	rc -I resources -o $(BUILD)/Summit.rsrc resources/Summit.rdef
 	xres -o $@.new $(BUILD)/Summit.rsrc
 	mv $@.new $@
 $(BUILD)/resources/start.html: resources/start.html
