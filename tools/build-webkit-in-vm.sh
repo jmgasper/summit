@@ -57,8 +57,8 @@ fi
 case "$SUMMIT_ENGINE_MODE:$SUMMIT_ENGINE_TARGET" in
     legacy:all|legacy:JavaScriptCore|legacy:jsc|legacy:WebCore|legacy:WebKitLegacy) ;;
     modern:all|modern:JavaScriptCore|modern:jsc|modern:WebCore|modern:WebKit|modern:WebProcess|modern:NetworkProcess) ;;
-    extensions:all|extensions:JavaScriptCore|extensions:jsc|extensions:WebCore|extensions:WebKit|extensions:WebProcess|extensions:NetworkProcess) ;;
-    *) echo 'Usage: build-webkit-in-vm.sh [--modern|--modern-extensions] [all|JavaScriptCore|jsc|WebCore|WebKitLegacy|WebKit|WebProcess|NetworkProcess]' >&2; exit 2 ;;
+    extensions:all|extensions:JavaScriptCore|extensions:jsc|extensions:WebCore|extensions:WebKit|extensions:WebProcess|extensions:NetworkProcess|extensions:Skia) ;;
+    *) echo 'Usage: build-webkit-in-vm.sh [--modern|--modern-extensions] [all|JavaScriptCore|jsc|WebCore|WebKitLegacy|WebKit|WebProcess|NetworkProcess|Skia]' >&2; exit 2 ;;
 esac
 if (( $# > 1 )); then
     echo 'Only one engine target can be selected.' >&2

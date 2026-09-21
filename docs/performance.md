@@ -796,3 +796,71 @@ cores busy throughout.
   noise and I draw nothing from them.
 - The wide confidence interval of the j6jimkn8 runs is the cold first iteration, not
   measurement noise; without it the iterations span 2.24-2.56.
+
+## Skia builds on Haiku (September 21, 2026)
+
+The measurements above closed out micro-optimisation: three hypotheses tested,
+two worth nothing and one worth 3%, with the remaining ~10 ms a frame spread
+diffusely across 32 fill calls. What is left is structural -- one thread paints
+at about 95 ms per megapixel while 31 cores idle -- so the next work is the
+drawing model.
+
+That work turns out to be mostly *adoption*, not invention. The pinned engine
+tree already carries Skia (`Source/ThirdParty/skia`, 216 MB, fully vendored)
+and `SkiaPaintingEngine`, which is upstream's parallel tile painter: a
+`WTF::WorkerPool` sized to half the cores, tunable with
+`WEBKIT_SKIA_CPU_PAINTING_THREADS`, plus a second pool for GPU painting. GTK and
+WPE ship it. It is gated on `USE(COORDINATED_GRAPHICS) && USE(SKIA)`, but the
+Windows port sets `USE_SKIA` with `USE_TEXTURE_MAPPER` and no coordinated
+graphics, so the two can be adopted in stages.
+
+Adopting it answers all three goals with one architecture rather than three:
+tiles make a scroll a compositor translate instead of a repaint (which is also
+exactly why GPU compositing measured four times *slower* -- `DrawingAreaHaiku`
+invalidates the whole layer on scroll), TextureMapper composites through the
+zink/NVK GL stack that already works on the GTX 1070, and painting moves off the
+single web-process thread. It also removes the cost structure this round was
+chipping at, since Skia rasterises in-process: no app_server IPC per drawing
+call and no state round trips at all.
+
+So the first step is the cheapest possible test of the riskiest assumption --
+does Skia even build on Haiku?
+
+**It does.** `libSkia.a`, 787 objects, from the vendored sources with one
+one-line port fix. The build needs `freetype_devel`, `fontconfig_devel`,
+`harfbuzz_devel`, `glib2_devel`, `expat_devel` and `libwebp_devel`, all of which
+exist in HaikuPorts and had to be fetched with `curl` (see
+[workstation](workstation.md) -- `pkgman` still cannot download on that machine).
+
+The port fix: Skia's `include/private/SkFeatures.h` tests for `linux`,
+`__FreeBSD__`, `__GLIBC__`, `__unix__` and friends, none of which Haiku defines,
+so it fell through to its last resort and chose `SK_BUILD_FOR_MAC`. Three files
+then asked for Grand Central Dispatch (`dispatch/dispatch.h`), `xlocale.h` and
+`malloc/malloc.h`. The other 784 objects compiled unmodified. Everything Skia
+wants on Haiku -- pthreads, mmap, dlopen, FreeType, fontconfig -- is its Unix
+configuration, so `Source/ThirdParty/skia/CMakeLists.txt` now defines
+`SK_BUILD_FOR_UNIX` for Haiku. It has to be a command line definition: several
+sources include `SkFeatures.h` before the `SK_USER_CONFIG_HEADER` is read, so
+putting it in `WebKitSkiaConfig.h` is too late, which the first build proved.
+
+Build it with:
+
+```
+SUMMIT_REMOTE_SHELL=tools/ws.sh SUMMIT_REMOTE_TAG=ws \
+SUMMIT_ENGINE_BUILD_NAME=SkiaSpike SUMMIT_ENGINE_CMAKE_EXTRA="-DUSE_SKIA=ON" \
+tools/build-webkit-in-vm.sh --modern-extensions Skia
+```
+
+### What stage two needs
+
+`WebCore`'s Skia support is wired as one `include(platform/Skia.cmake)`, the
+same line GTK, WPE, Windows and PlayStation use; it brings 81 sources and the
+private headers. The Haiku port would add that line, drop the roughly 25 files
+in `platform/graphics/haiku` that Skia supersedes (`GraphicsContextHaiku`, the
+`Font*` family, `Path`, `Gradient`, `NativeImage`, `Image`, the `ImageBuffer`
+backends, the tile store), and keep the dozen that Skia has no opinion about
+(the `IntRect`/`FloatRect` conversions, `IconHaiku`, `MediaPlayerPrivateHaiku`,
+`PlatformDisplayHaiku`, `ShareableBitmapHaiku`, `SystemFontDatabaseHaiku`). The
+new Haiku-specific code is the present path: get the pixels out of Skia's
+surface and into the `BBitmap` that `DrawingAreaHaiku` already hands to the UI
+process. That is the stage that has to be gated on a pixel comparison.
