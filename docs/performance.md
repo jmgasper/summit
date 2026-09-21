@@ -1110,12 +1110,38 @@ that could not fire. Haiku's implementation dispatches to the run loop, which
 runs the callback on the next turn rather than as the loop goes idle -- close
 enough, and it keeps the update off the caller's stack.
 
+The worker pool is running: the web process has eight `SkiaCPUWorker` threads,
+which is `SkiaPaintingEngine` painting tiles on half the cores.
+
 ### What is left
 
-The web process exits shortly after the first frames: Wikipedia draws its text,
-links, headings and logo, and then the page process goes. That is the next thing
-to find. Until it is fixed there is nothing worth measuring, so there are still
-no numbers here for the worker pool.
+Two things, both found and both understood.
+
+**Nothing drives animation.** `HAVE_DISPLAY_LINK` is defined for Mac, GTK and
+WPE, and those ports answer `createDisplayRefreshMonitor` with a display link
+that paces `requestAnimationFrame`. Haiku has none, so the coordinated drawing
+area returns nullptr and there is no vsync source: the page paints when
+something invalidates it and never again on its own. The scroll benchmark drives
+itself with `requestAnimationFrame`, which is why it fetched its page and then
+reported nothing at all -- no crash, no frames, no result. That is why this
+section still has no scrolling number for the coordinated build. PlayStation has
+the shape of the answer in `ThreadedDisplayRefreshMonitorPlayStation`: a monitor
+the compositor ticks when it finishes a frame. Haiku could do the same, or
+implement a display link of its own over `BScreen::WaitForRetrace`.
+
+**Image decodes finish on the wrong thread.** Loading Wikipedia draws the page
+and then kills the web process in `MemoryCache::singleton()`, which is
+`RELEASE_ASSERT(isMainThread())`. The path is
+`AsyncImageDecoder` -> `BitmapImageSource::imageFrameDecodeAtIndexHasFinished`
+-> `CachedImage::CachedImageObserver::decodedSizeChanged` ->
+`CachedResource::setDecodedSize`. The decoder does hop threads before calling
+back, but to `RunLoop::currentSingleton()` as captured when the decode was
+requested; a decode requested while a worker paints a tile therefore completes
+on that worker, and the memory cache is main-thread-only. This did not happen
+before because nothing painted off the main thread. It needs a considered fix
+rather than a guess -- either the request is not meant to be made from a paint,
+or the completion has to be forced to the main thread -- so nothing has been
+changed here yet.
 
 Presenting the frames. The backing store above has no caller: the Haiku view has
 to own one, call `updateSurfaceID` when the drawing area gives it a surface, and
