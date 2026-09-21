@@ -199,3 +199,36 @@ from JSON rather than from a screenshot.
 - `~/config/settings/system/debug_server/settings` now asks for a report
   instead of a dialog when `WebProcess` or `NetworkProcess` crashes, so an
   unattended run is not stopped by an alert waiting to be answered.
+
+## fontconfig has no conf.d
+
+Haiku's `fontconfig` package installs `/boot/system/data/fontconfig/conf.avail`
+but no `conf.d`, and `/boot/system/settings/fonts/fonts.conf` includes `conf.d`
+with `ignore_missing="yes"`. None of the standard configuration is therefore
+active -- including `45-generic.conf` and `60-generic.conf`, which define the
+`serif`, `sans-serif` and `monospace` aliases.
+
+`fc-match` conceals it, because it answers every query with a best effort, but a
+program asking fontconfig to match a family gets nothing back. In Summit's Skia
+build that crashed the web process on every Speedometer run: the last-resort
+fallback fell through to `SkTypeface::MakeEmpty()`, and the empty font tripped a
+hash table assertion (see [performance](performance.md)).
+
+The fix is the ordinary fontconfig layout:
+
+```
+D=/boot/system/settings/fonts/conf.d
+A=/boot/system/data/fontconfig/conf.avail
+mkdir -p "$D"
+for c in 10-hinting-slight 10-scale-bitmap-fonts 10-yes-antialias \
+         11-lcdfilter-default 20-unhint-small-vera 25-unhint-nonlatin \
+         30-metric-aliases 35-lang-normalize 40-nonlatin 45-generic 45-latin \
+         48-guessfamily 48-spacing 49-sansserif 50-user 51-local 60-generic \
+         60-latin 65-fonts-persian 65-khmer 65-nonlatin 69-unifont \
+         80-delicious 90-synthetic; do
+    ln -sf "$A/$c.conf" "$D/$c.conf"
+done
+```
+
+Afterwards `fc-match serif`, `sans-serif` and `monospace` answer Noto Serif,
+Noto Sans and Noto Sans Mono; before, all three answered Noto Sans.

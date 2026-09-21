@@ -619,10 +619,10 @@ index 37efb86df101ead42bb909421bfce1c9a47e683a..b3df25d8c5dcaa68426dd7122657c0e0
  #include <ucontext.h>
  #else
 diff --git a/Source/WTF/wtf/PlatformUse.h b/Source/WTF/wtf/PlatformUse.h
-index a49b2f86ed54af526692b47ef4ba02887f403e69..70a87f357d27c2bbc430133240ca02c5441b6c09 100644
+index a49b2f86ed54af526692b47ef4ba02887f403e69..14708e44b08e220e16bf2b615c3a48682cc40f57 100644
 --- a/Source/WTF/wtf/PlatformUse.h
 +++ b/Source/WTF/wtf/PlatformUse.h
-@@ -83,6 +83,10 @@
+@@ -83,6 +83,19 @@
  #define USE_SOUP 1
  #endif
  
@@ -630,10 +630,19 @@ index a49b2f86ed54af526692b47ef4ba02887f403e69..70a87f357d27c2bbc430133240ca02c5
 +#define USE_HAIKU 1
 +#endif
 +
++/* The Haiku port draws through app_server, with BView as the drawing target and
++   BFont, BBitmap, BGradient and BShape as its platform types. USE(SKIA) selects
++   Skia instead, which rasterises in process and can paint on a worker pool. Use
++   USE(HAIKU_GRAPHICS) for the app_server backend and USE(HAIKU) for everything
++   about the platform that the choice of renderer does not change. */
++#if PLATFORM(HAIKU) && !USE(SKIA)
++#define USE_HAIKU_GRAPHICS 1
++#endif
++
  #if USE(COORDINATED_GRAPHICS) && USE(THEME_ADWAITA) && USE(SKIA)
  #define USE_COORDINATED_GRAPHICS_ASYNC_SCROLLBAR 1
  #endif
-@@ -119,7 +123,7 @@
+@@ -119,7 +132,7 @@
  #define USE_WEB_THREAD 1
  #endif
  
@@ -642,7 +651,7 @@ index a49b2f86ed54af526692b47ef4ba02887f403e69..70a87f357d27c2bbc430133240ca02c5
  #define USE_PTHREADS 1
  #endif
  
-@@ -224,6 +228,8 @@
+@@ -224,6 +237,8 @@
  #elif PLATFORM(COCOA)
  /* OS X and IOS. Use CoreFoundation & GCD abstraction. */
  #define USE_COCOA_EVENT_LOOP 1
@@ -1535,7 +1544,7 @@ index b29212ad5b98d332ff7c1db7814cb2575988ec5f..b6c50d32873f6c712e3409ca1c5e2ec5
      String m_accessGroup;
  };
 diff --git a/Source/WebCore/PlatformHaiku.cmake b/Source/WebCore/PlatformHaiku.cmake
-index 16a88804a1baa39ccdd9fc2870b6e2524d941298..530bffaa974c6a4b2d26e88096bb633b8888c448 100644
+index 16a88804a1baa39ccdd9fc2870b6e2524d941298..b9057a39ff01991d4387ca19a49d842d7407cdd7 100644
 --- a/Source/WebCore/PlatformHaiku.cmake
 +++ b/Source/WebCore/PlatformHaiku.cmake
 @@ -1,8 +1,87 @@
@@ -1627,7 +1636,7 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..530bffaa974c6a4b2d26e88096bb633b
  )
  
  list(APPEND WebCore_SOURCES
-@@ -11,42 +90,133 @@ list(APPEND WebCore_SOURCES
+@@ -11,42 +90,156 @@ list(APPEND WebCore_SOURCES
  
    editing/glib/EditorGLib.cpp
  
@@ -1658,53 +1667,71 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..530bffaa974c6a4b2d26e88096bb633b
 +  platform/haiku/PlatformMouseEventHaiku.cpp
 +  platform/haiku/PlatformScreenHaiku.cpp
 +  platform/haiku/PopupMenuHaiku.cpp
-+  platform/haiku/ScrollbarThemeHaiku.cpp
 +  platform/haiku/SearchPopupMenuHaiku.cpp
 +  platform/haiku/SharedMemoryHaiku.cpp
 +  platform/haiku/SharedTimerHaiku.cpp
 +  platform/haiku/SoundHaiku.cpp
 +  platform/haiku/TemporaryLinkStubs.cpp
-+  platform/haiku/ThemeHaiku.cpp
 +  platform/haiku/UserAgentHaiku.cpp
 +  platform/haiku/WidgetHaiku.cpp
 +
-+  platform/image-decoders/haiku/ImageDecoderHaiku.cpp
 +
    platform/graphics/PlatformDisplay.cpp
    platform/graphics/WOFFFileFormat.cpp
  
 +  platform/graphics/haiku/AffineTransformHaiku.cpp
-+  platform/graphics/haiku/BitmapImageHaiku.cpp
 +  platform/graphics/haiku/ColorHaiku.cpp
++  platform/graphics/haiku/SystemFontDatabaseHaiku.cpp
++  platform/graphics/haiku/FloatPointHaiku.cpp
++  platform/graphics/haiku/FloatRectHaiku.cpp
++  platform/graphics/haiku/FloatSizeHaiku.cpp
++  platform/graphics/haiku/IntPointHaiku.cpp
++  platform/graphics/haiku/IntRectHaiku.cpp
++  platform/graphics/haiku/IntSizeHaiku.cpp
++  platform/graphics/haiku/IconHaiku.cpp
++  platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
++)
++
++if (USE_SKIA)
++  # Skia brings its own graphics context, fonts, paths, gradients, images and
++  # image buffers; see platform/SourcesSkia.txt. Only the Haiku pieces it has no
++  # equivalent for stay above.
++  include(platform/Skia.cmake)
++  # The Haiku themes draw with BControlLook, which needs a BView to draw into.
++  # Adwaita is the theme the other Skia ports use and paints through
++  # GraphicsContext alone, so it works whatever is behind the context.
++  include(platform/Adwaita.cmake)
++else ()
++  list(APPEND WebCore_SOURCES
++  platform/graphics/haiku/BitmapImageHaiku.cpp
 +  platform/graphics/haiku/ComplexTextControllerHaiku.cpp
 +  platform/graphics/haiku/FontCacheHaiku.cpp
 +  platform/graphics/haiku/FontCustomPlatformData.cpp
 +  platform/graphics/opentype/OpenTypeUtilities.cpp
 +  platform/graphics/haiku/FontDescriptionHaiku.cpp
 +  platform/graphics/haiku/FontPlatformDataHaiku.cpp
-+  platform/graphics/haiku/FloatPointHaiku.cpp
-+  platform/graphics/haiku/FloatRectHaiku.cpp
-+  platform/graphics/haiku/FloatSizeHaiku.cpp
 +  platform/graphics/haiku/FontHaiku.cpp
-+  platform/graphics/haiku/FontPlatformDataHaiku.cpp
 +  platform/graphics/haiku/GlyphPageTreeNodeHaiku.cpp
 +  platform/graphics/haiku/GradientHaiku.cpp
 +  platform/graphics/haiku/GraphicsContextHaiku.cpp
-+  platform/graphics/haiku/IconHaiku.cpp
 +  platform/graphics/haiku/ImageBufferHaiku.cpp
 +  platform/graphics/haiku/ImageHaiku.cpp
-+  platform/graphics/haiku/IntPointHaiku.cpp
-+  platform/graphics/haiku/IntRectHaiku.cpp
-+  platform/graphics/haiku/IntSizeHaiku.cpp
-+  platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 +  platform/graphics/haiku/NativeImageHaiku.cpp
 +  platform/graphics/haiku/PathHaiku.cpp
 +  platform/graphics/haiku/ShareableBitmapHaiku.cpp
 +  platform/graphics/haiku/SimpleFontDataHaiku.cpp
-+  platform/graphics/haiku/SystemFontDatabaseHaiku.cpp
 +  platform/graphics/haiku/TileHaiku.cpp
 +  platform/graphics/haiku/TiledBackingStoreHaiku.cpp
 +
++  platform/haiku/ScrollbarThemeHaiku.cpp
++  platform/haiku/ThemeHaiku.cpp
++  rendering/haiku/RenderThemeHaiku.cpp
++
++  platform/image-decoders/haiku/ImageDecoderHaiku.cpp
++  )
++endif ()
++
++list(APPEND WebCore_SOURCES
 +  platform/network/haiku/NetworkStateNotifierHaiku.cpp
 +
    platform/mock/GeolocationClientMock.cpp
@@ -1716,8 +1743,10 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..530bffaa974c6a4b2d26e88096bb633b
 +
    platform/unix/LoggingUnix.cpp
    platform/unix/SharedMemoryUnix.cpp
-+
-+  rendering/haiku/RenderThemeHaiku.cpp
+-)
+ 
+-list(APPEND WebCore_USER_AGENT_STYLE_SHEETS
+-    ${WebCore_DERIVED_SOURCES_DIR}/ModernMediaControls.css
 +
 +  inspector/LegacyWebSocketInspectorInstrumentation.cpp
  )
@@ -1730,10 +1759,14 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..530bffaa974c6a4b2d26e88096bb633b
 +	)
 +endif ()
 +
- list(APPEND WebCore_USER_AGENT_STYLE_SHEETS
-     ${WebCore_DERIVED_SOURCES_DIR}/ModernMediaControls.css
- )
- 
++# Adwaita.cmake already lists this one, and listing it twice concatenates the
++# stylesheet into the user agent sheet twice.
++if (NOT USE_SKIA)
++  list(APPEND WebCore_USER_AGENT_STYLE_SHEETS
++      ${WebCore_DERIVED_SOURCES_DIR}/ModernMediaControls.css
++  )
++endif ()
++
 +if (WTF_USE_COORDINATED_GRAPHICS)
 +    list(APPEND WebCore_SOURCES
 +        platform/graphics/texmap/coordinated/CoordinatedTile.cpp
@@ -1746,7 +1779,9 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..530bffaa974c6a4b2d26e88096bb633b
      ${WebCore_DERIVED_SOURCES_DIR}/ModernMediaControls.js
  )
  
-+set(WebCore_USER_AGENT_SCRIPTS_DEPENDENCIES ${WEBCORE_DIR}/rendering/haiku/RenderThemeHaiku.cpp)
++if (NOT USE_SKIA)
++  set(WebCore_USER_AGENT_SCRIPTS_DEPENDENCIES ${WEBCORE_DIR}/rendering/haiku/RenderThemeHaiku.cpp)
++endif ()
 +
  list(APPEND WebCore_LIBRARIES
    be
@@ -1763,7 +1798,7 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..530bffaa974c6a4b2d26e88096bb633b
    textencoding
    translation
    ${WEBP_LIBRARIES}
-@@ -61,6 +231,169 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
+@@ -61,6 +254,189 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
    ${SQLITE_INCLUDE_DIR}
    ${WEBP_INCLUDE_DIRS}
    ${ZLIB_INCLUDE_DIRS}
@@ -1885,15 +1920,39 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..530bffaa974c6a4b2d26e88096bb633b
 +    # GraphicsLayerHaiku.cpp. Exactly one of the two may be compiled.
 +    include(platform/TextureMapper.cmake)
 +
++else ()
 +    list(APPEND WebCore_SOURCES
-+        platform/graphics/egl/BitmapTexture.cpp
-+        platform/graphics/egl/BitmapTexturePool.cpp
++        platform/graphics/haiku/GraphicsLayerHaiku.cpp
++    )
++endif ()
++
++# GraphicsContextSkia and the accelerated ImageBuffer backend call into
++# GLContext even when they rasterise on the CPU, so Skia needs these whether or
++# not TextureMapper is compositing.
++if (USE_TEXTURE_MAPPER OR USE_SKIA)
++    list(APPEND WebCore_SOURCES
 +        platform/graphics/egl/GLContext.cpp
-+        platform/graphics/egl/GLContextWrapper.cpp
 +        platform/graphics/egl/GLDisplay.cpp
 +
 +        platform/graphics/haiku/PlatformDisplayHaiku.cpp
 +    )
++
++    # SkiaGPUAtlas uploads through BitmapTexture and synchronises with GLFence,
++    # so both are needed even without TextureMapper compositing. BitmapTexture
++    # only wants TextureMapperFlags.h from the texmap directory.
++    list(APPEND WebCore_SOURCES
++        platform/graphics/egl/BitmapTexture.cpp
++        platform/graphics/egl/BitmapTexturePool.cpp
++        platform/graphics/egl/GLContextWrapper.cpp
++        platform/graphics/egl/GLFence.cpp
++        platform/graphics/egl/GLFenceEGL.cpp
++        platform/graphics/egl/GLFenceGL.cpp
++    )
++
++    list(APPEND WebCore_PRIVATE_INCLUDE_DIRECTORIES
++        "${WEBCORE_DIR}/platform/graphics/texmap"
++    )
++
 +
 +    list(APPEND WebCore_PRIVATE_FRAMEWORK_HEADERS
 +        platform/graphics/haiku/PlatformDisplayHaiku.h
@@ -1909,10 +1968,6 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..530bffaa974c6a4b2d26e88096bb633b
 +    list(APPEND WebCore_LIBRARIES
 +        ${EGL_LIBRARIES}
 +        OpenGL::GLES
-+    )
-+else ()
-+    list(APPEND WebCore_SOURCES
-+        platform/graphics/haiku/GraphicsLayerHaiku.cpp
 +    )
 +endif ()
 +
@@ -3704,14 +3759,14 @@ index 04af25a76bbc73ea7b8a6afb9720e254c53b9cf1..f034faa4232d358890579354019886f0
      static constexpr auto black = SRGBA<uint8_t> { 0, 0, 0 };
      static constexpr auto white = SRGBA<uint8_t> { 255, 255, 255 };
 diff --git a/Source/WebCore/platform/graphics/ComplexTextController.h b/Source/WebCore/platform/graphics/ComplexTextController.h
-index ce4c06a790160ac521e85613f5ff360c17f45e60..1871248b245af10dd9ef65d47bc01a1838619f40 100644
+index ce4c06a790160ac521e85613f5ff360c17f45e60..0ccb530b83d1fd46af4baea456c1eea84cc92d83 100644
 --- a/Source/WebCore/platform/graphics/ComplexTextController.h
 +++ b/Source/WebCore/platform/graphics/ComplexTextController.h
 @@ -37,7 +37,11 @@
  #include <wtf/WeakRef.h>
  #include <wtf/text/WTFString.h>
  
-+#if USE(HAIKU)
++#if USE(HAIKU_GRAPHICS)
 +typedef unsigned int CGGlyph;
 +#else
  typedef unsigned short CGGlyph;
@@ -3847,28 +3902,28 @@ index 4de87fc1084923a6162a846ce16198e2eeaca920..b63fb303596b57949c1fd1e5969298a6
      WEBCORE_EXPORT explicit FloatSize(const CGSize&); // don't do this implicitly since it's lossy
      WEBCORE_EXPORT operator CGSize() const;
 diff --git a/Source/WebCore/platform/graphics/FontCascadeInlines.h b/Source/WebCore/platform/graphics/FontCascadeInlines.h
-index 0d6614511f09d72d85b3e92e5c49da5a70ac245e..e2fde18a1734f9ec3064aaca732b5fdc69504fc2 100644
+index 0d6614511f09d72d85b3e92e5c49da5a70ac245e..3e013e8361bcb105e8e648808633bed992f59597 100644
 --- a/Source/WebCore/platform/graphics/FontCascadeInlines.h
 +++ b/Source/WebCore/platform/graphics/FontCascadeInlines.h
 @@ -210,5 +210,9 @@ inline float FontCascade::widthOfSpaceString() const
  
  #include <WebCore/FontCascadeWinInlines.h>
  
-+#elif USE(HAIKU)
++#elif USE(HAIKU_GRAPHICS)
 +
 +#include <WebCore/FontCascadeHaikuInlines.h>
 +
  #endif
  
 diff --git a/Source/WebCore/platform/graphics/FontCustomPlatformData.h b/Source/WebCore/platform/graphics/FontCustomPlatformData.h
-index 3541aa2e6d3942c0cbd2b6f30d08af65a017620d..276f3bbdc2132a62bb3f69340db868cf137bd297 100644
+index 3541aa2e6d3942c0cbd2b6f30d08af65a017620d..0ed13d3cab5f00223fdf045ecbd9c1ec9d5b93a1 100644
 --- a/Source/WebCore/platform/graphics/FontCustomPlatformData.h
 +++ b/Source/WebCore/platform/graphics/FontCustomPlatformData.h
 @@ -44,6 +44,8 @@
  
  typedef struct CGFont* CGFontRef;
  typedef const struct __CTFontDescriptor* CTFontDescriptorRef;
-+#elif USE(HAIKU)
++#elif USE(HAIKU_GRAPHICS)
 +#include <Font.h>
  #elif USE(CAIRO)
  #include "RefPtrCairo.h"
@@ -3877,7 +3932,7 @@ index 3541aa2e6d3942c0cbd2b6f30d08af65a017620d..276f3bbdc2132a62bb3f69340db868cf
          , m_renderingResourceIdentifier(RenderingResourceIdentifier::generate())
      {
      }
-+#elif USE(HAIKU)
++#elif USE(HAIKU_GRAPHICS)
 +    FontCustomPlatformData(area_id area, BFont font, FontPlatformData::CreationData&& creationData)
 +        : m_font(font)
 +        , m_area(area)
@@ -3892,14 +3947,14 @@ index 3541aa2e6d3942c0cbd2b6f30d08af65a017620d..276f3bbdc2132a62bb3f69340db868cf
      String name;
  #elif USE(CORE_TEXT)
      RetainPtr<CTFontDescriptorRef> fontDescriptor;
-+#elif USE(HAIKU)
++#elif USE(HAIKU_GRAPHICS)
 +    BFont m_font;
 +    area_id m_area;
  #elif USE(CAIRO)
      RefPtr<cairo_font_face_t> m_fontFace;
  #elif USE(SKIA)
 diff --git a/Source/WebCore/platform/graphics/FontPlatformData.cpp b/Source/WebCore/platform/graphics/FontPlatformData.cpp
-index 9ff17f4c5813fcd673c7a3ac627ee2b3f5e73420..438812961e85b098467acaf0e2df918fd66c2587 100644
+index 9ff17f4c5813fcd673c7a3ac627ee2b3f5e73420..5d2008de54938c678d4b426199b447a74de90d7b 100644
 --- a/Source/WebCore/platform/graphics/FontPlatformData.cpp
 +++ b/Source/WebCore/platform/graphics/FontPlatformData.cpp
 @@ -80,7 +80,7 @@ FontPlatformData FontPlatformData::cloneWithSize(const FontPlatformData& source,
@@ -3907,19 +3962,19 @@ index 9ff17f4c5813fcd673c7a3ac627ee2b3f5e73420..438812961e85b098467acaf0e2df918f
  }
  
 -#if !USE(SKIA)
-+#if !PLATFORM(HAIKU) && !USE(SKIA)
++#if !USE(HAIKU_GRAPHICS) && !USE(SKIA)
  void FontPlatformData::updateSize(float size)
  {
      m_metadata.pointSize = size;
 diff --git a/Source/WebCore/platform/graphics/FontPlatformData.h b/Source/WebCore/platform/graphics/FontPlatformData.h
-index b80f3b4ee212fcdbbd5ea70a05637b4c1b318a8b..6204bfeb75774b3f2cceec93d1081478cbd74259 100644
+index b80f3b4ee212fcdbbd5ea70a05637b4c1b318a8b..f59e7d5a55662d0480b16c6a9efe1ab16cfe60dd 100644
 --- a/Source/WebCore/platform/graphics/FontPlatformData.h
 +++ b/Source/WebCore/platform/graphics/FontPlatformData.h
 @@ -59,6 +59,15 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
  #include <memory>
  #endif
  
-+#if PLATFORM(HAIKU)
++#if USE(HAIKU_GRAPHICS)
 +#include <memory>
 +
 +#include <interface/Font.h>
@@ -3935,7 +3990,7 @@ index b80f3b4ee212fcdbbd5ea70a05637b4c1b318a8b..6204bfeb75774b3f2cceec93d1081478
      friend bool operator==(const FontMetadata&, const FontMetadata&) = default;
  };
  
-+#if USE(HAIKU)
++#if USE(HAIKU_GRAPHICS)
 +struct FontPlatformSerializedData {
 +    String family;
 +    String style;
@@ -3954,7 +4009,7 @@ index b80f3b4ee212fcdbbd5ea70a05637b4c1b318a8b..6204bfeb75774b3f2cceec93d1081478
          : m_metadata(metadata)
          { }
  
-+#if USE(HAIKU)
++#if USE(HAIKU_GRAPHICS)
 +    FontPlatformDataAttributes(const FontMetadata& metadata, FontPlatformSerializedData font)
 +        : m_metadata(metadata)
 +        , m_font(WTF::move(font))
@@ -3968,7 +4023,7 @@ index b80f3b4ee212fcdbbd5ea70a05637b4c1b318a8b..6204bfeb75774b3f2cceec93d1081478
      SkString m_familyName;
      SkFontStyle m_style;
      Vector<hb_feature_t> m_features;
-+#elif USE(HAIKU)
++#elif USE(HAIKU_GRAPHICS)
 +    FontPlatformSerializedData m_font;
  #endif
  };
@@ -3977,7 +4032,7 @@ index b80f3b4ee212fcdbbd5ea70a05637b4c1b318a8b..6204bfeb75774b3f2cceec93d1081478
      LOGFONT logFont;
  #endif
  };
-+#elif USE(HAIKU)
++#elif USE(HAIKU_GRAPHICS)
 +struct CustomFontCreationData {
 +    Vector<uint8_t> fontFaceData;
 +    String itemInCollection;
@@ -3990,7 +4045,7 @@ index b80f3b4ee212fcdbbd5ea70a05637b4c1b318a8b..6204bfeb75774b3f2cceec93d1081478
      WEBCORE_EXPORT FontPlatformData(RetainPtr<CTFontRef>&&, const FontMetadata&, const FontCustomPlatformData* = nullptr);
  #endif
  
-+#if PLATFORM(HAIKU)
++#if USE(HAIKU_GRAPHICS)
 +    FontPlatformData(const FontDescription& fontDescription, const AtomString& familyName);
 +    FontPlatformData(const BFont&, const FontDescription& fontDescription);
 +    FontPlatformData(const BFont&, const FontDescription&, const FontCustomPlatformData*, const FontMetricsOverrides& = { });
@@ -4007,7 +4062,7 @@ index b80f3b4ee212fcdbbd5ea70a05637b4c1b318a8b..6204bfeb75774b3f2cceec93d1081478
      WEBCORE_EXPORT FontPlatformData(sk_sp<SkTypeface>&&, const FontMetadata&, Vector<hb_feature_t>&&, const FontCustomPlatformData* = nullptr);
  #endif
  
-+#if PLATFORM(HAIKU)
++#if USE(HAIKU_GRAPHICS)
 +    const BFont* font() const { return m_font.get(); }
 +#endif
 +
@@ -4018,7 +4073,7 @@ index b80f3b4ee212fcdbbd5ea70a05637b4c1b318a8b..6204bfeb75774b3f2cceec93d1081478
  #if USE(FREETYPE) && USE(CAIRO)
      void buildScaledFont(cairo_font_face_t*);
  #endif
-+#if PLATFORM(HAIKU)
++#if USE(HAIKU_GRAPHICS)
 +    static void findMatchingFontFamily(const AtomString& familyName, font_family& fontFamily);
 +    std::shared_ptr<BFont> m_font;
 +#endif
@@ -4039,7 +4094,7 @@ index b80f3b4ee212fcdbbd5ea70a05637b4c1b318a8b..6204bfeb75774b3f2cceec93d1081478
  #endif
      // The values above are common to all ports
  
-+#if PLATFORM(HAIKU)
++#if USE(HAIKU_GRAPHICS)
 +    static font_family m_FallbackSerifFontFamily;
 +    static font_family m_FallbackSansSerifFontFamily;
 +    static font_family m_FallbackFixedFontFamily;
@@ -4049,14 +4104,14 @@ index b80f3b4ee212fcdbbd5ea70a05637b4c1b318a8b..6204bfeb75774b3f2cceec93d1081478
  #if USE(FREETYPE)
      bool m_fixedWidth { false };
 diff --git a/Source/WebCore/platform/graphics/Glyph.h b/Source/WebCore/platform/graphics/Glyph.h
-index b37438df5c55a0cddb59d4cbc6543fb1308f3cd1..30cfbec309eaf7d46cb773999592e213e4688330 100644
+index b37438df5c55a0cddb59d4cbc6543fb1308f3cd1..495138f892e30993bce97e560b5703b4ddeddb77 100644
 --- a/Source/WebCore/platform/graphics/Glyph.h
 +++ b/Source/WebCore/platform/graphics/Glyph.h
 @@ -31,6 +31,10 @@
  
  namespace WebCore {
  
-+#if USE(HAIKU)
++#if USE(HAIKU_GRAPHICS)
 +typedef unsigned int Glyph;
 +#else
  typedef unsigned short Glyph;
@@ -4064,7 +4119,7 @@ index b37438df5c55a0cddb59d4cbc6543fb1308f3cd1..30cfbec309eaf7d46cb773999592e213
  
  } // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/Gradient.h b/Source/WebCore/platform/graphics/Gradient.h
-index abb9596c50094b7f9f4a201fcae49d8e03d9510a..26588546b56177a184d5b982e273c863141e79ab 100644
+index abb9596c50094b7f9f4a201fcae49d8e03d9510a..fb1ecadfaedac112204e878a7e71697af0f6b8ed 100644
 --- a/Source/WebCore/platform/graphics/Gradient.h
 +++ b/Source/WebCore/platform/graphics/Gradient.h
 @@ -53,6 +53,12 @@ typedef struct CGContext* CGContextRef;
@@ -4084,7 +4139,7 @@ index abb9596c50094b7f9f4a201fcae49d8e03d9510a..26588546b56177a184d5b982e273c863
      RefPtr<cairo_pattern_t> createPattern(float globalAlpha, const AffineTransform&);
  #endif
  
-+#if USE(HAIKU)
++#if USE(HAIKU_GRAPHICS)
 +    const BGradient& getHaikuGradient();
 +#endif
 +
@@ -4095,7 +4150,7 @@ index abb9596c50094b7f9f4a201fcae49d8e03d9510a..26588546b56177a184d5b982e273c863
      std::optional<GradientRendererCG> m_platformRenderer;
  #endif
  
-+#if USE(HAIKU)
++#if USE(HAIKU_GRAPHICS)
 +    std::unique_ptr<BGradient> m_gradient;
 +#endif
 +
@@ -4103,14 +4158,14 @@ index abb9596c50094b7f9f4a201fcae49d8e03d9510a..26588546b56177a184d5b982e273c863
      bool m_isTransient { true };
  };
 diff --git a/Source/WebCore/platform/graphics/GradientImage.cpp b/Source/WebCore/platform/graphics/GradientImage.cpp
-index 1edbed14cf714f36ad7dc5841bb2a212467f74bf..10cb4637234a1cea822dea457039dde55711f047 100644
+index 1edbed14cf714f36ad7dc5841bb2a212467f74bf..517ca64e02c4ec2b8c2dcf83b9f3a075b38a422a 100644
 --- a/Source/WebCore/platform/graphics/GradientImage.cpp
 +++ b/Source/WebCore/platform/graphics/GradientImage.cpp
 @@ -30,6 +30,10 @@
  #include "GraphicsContext.h"
  #include "ImageBuffer.h"
  
-+#if PLATFORM(HAIKU)
++#if USE(HAIKU_GRAPHICS)
 +#include <View.h>
 +#endif
 +
@@ -4121,7 +4176,7 @@ index 1edbed14cf714f36ad7dc5841bb2a212467f74bf..10cb4637234a1cea822dea457039dde5
      GraphicsContextStateSaver stateSaver(destContext);
      destContext.setCompositeOperation(options.compositeOperator(), options.blendMode());
      destContext.clip(destRect);
-+#if PLATFORM(HAIKU)
++#if USE(HAIKU_GRAPHICS)
 +    // FIXME on Haiku, translate() will also translate the current state
 +    // clipping. We push the clipping in another state to avoid that.
 +    destContext.platformContext()->PushState();
@@ -4132,7 +4187,7 @@ index 1edbed14cf714f36ad7dc5841bb2a212467f74bf..10cb4637234a1cea822dea457039dde5
      destContext.translate(-srcRect.location());
      destContext.fillRect(FloatRect(FloatPoint(), size()), m_gradient.get());
 +
-+#if PLATFORM(HAIKU)
++#if USE(HAIKU_GRAPHICS)
 +    destContext.platformContext()->PopState();
 +#endif
      return ImageDrawResult::DidDraw;
@@ -4183,14 +4238,14 @@ index 55e87d1025ca3540c0ea7f19dfe3a410631beab4..544cdfd0d5f06bb4fe89988a040b6a45
  };
  
 diff --git a/Source/WebCore/platform/graphics/ImageBuffer.cpp b/Source/WebCore/platform/graphics/ImageBuffer.cpp
-index ea2bca619dd073dbaa7c73c7db5f4ec334fb7b46..40e59b33d1665f418160e42e30da1c4b7bc2db23 100644
+index ea2bca619dd073dbaa7c73c7db5f4ec334fb7b46..36c7e291ee0cfd63331534f633ce217a82e44501 100644
 --- a/Source/WebCore/platform/graphics/ImageBuffer.cpp
 +++ b/Source/WebCore/platform/graphics/ImageBuffer.cpp
 @@ -49,6 +49,10 @@
  #include "ImageBufferCGPDFDocumentBackend.h"
  #endif
  
-+#if USE(HAIKU)
++#if USE(HAIKU_GRAPHICS)
 +#include "ImageBufferUtilitiesHaiku.h"
 +#endif
 +
@@ -4198,14 +4253,14 @@ index ea2bca619dd073dbaa7c73c7db5f4ec334fb7b46..40e59b33d1665f418160e42e30da1c4b
  #include "GLContext.h"
  #include "ImageBufferSkiaAcceleratedBackend.h"
 diff --git a/Source/WebCore/platform/graphics/ImageBufferPlatformBackend.h b/Source/WebCore/platform/graphics/ImageBufferPlatformBackend.h
-index 273ae0526c97ae7781401f3bce589413f8a0dcbe..9aafe3f97bd8f8a564b60851608e4e489b354d58 100644
+index 273ae0526c97ae7781401f3bce589413f8a0dcbe..52b97dd351a66bb3493af60bb46b702a9a7dd02d 100644
 --- a/Source/WebCore/platform/graphics/ImageBufferPlatformBackend.h
 +++ b/Source/WebCore/platform/graphics/ImageBufferPlatformBackend.h
 @@ -29,6 +29,8 @@
  #include "ImageBufferCGBitmapBackend.h"
  #elif USE(CAIRO)
  #include "ImageBufferCairoImageSurfaceBackend.h"
-+#elif USE(HAIKU)
++#elif USE(HAIKU_GRAPHICS)
 +#include "ImageBufferHaikuSurfaceBackend.h"
  #elif USE(SKIA)
  #include "ImageBufferSkiaUnacceleratedBackend.h"
@@ -4214,7 +4269,7 @@ index 273ae0526c97ae7781401f3bce589413f8a0dcbe..9aafe3f97bd8f8a564b60851608e4e48
  #elif USE(CAIRO)
  using ImageBufferPlatformBackend = ImageBufferCairoBackend;
  using ImageBufferPlatformBitmapBackend = ImageBufferCairoImageSurfaceBackend;
-+#elif USE(HAIKU)
++#elif USE(HAIKU_GRAPHICS)
 +using ImageBufferPlatformBitmapBackend = ImageBufferHaikuSurfaceBackend;
  #elif USE(SKIA)
  using ImageBufferPlatformBackend = ImageBufferSkiaBackend;
@@ -4344,14 +4399,14 @@ index 581158cda1f9e8041c2f596273e5b937398f06d8..f0b480165ef43f12fe66ba7d4a109b6f
      MediaFoundation,
      MockMSE,
 diff --git a/Source/WebCore/platform/graphics/Pattern.h b/Source/WebCore/platform/graphics/Pattern.h
-index b885cbbef48b2d18b96f6157f983bb288f3cf978..44017d7ab7a6980ceb9a54df10ad67c739603424 100644
+index b885cbbef48b2d18b96f6157f983bb288f3cf978..1a10ece7769e7c97967cf0c48c161daf9ef8b983 100644
 --- a/Source/WebCore/platform/graphics/Pattern.h
 +++ b/Source/WebCore/platform/graphics/Pattern.h
 @@ -40,6 +40,9 @@ typedef RetainPtr<CGPatternRef> PlatformPatternPtr;
  #elif USE(CAIRO)
  typedef struct _cairo_pattern cairo_pattern_t;
  typedef cairo_pattern_t* PlatformPatternPtr;
-+#elif PLATFORM(HAIKU)
++#elif USE(HAIKU_GRAPHICS)
 +#include <interface/GraphicsDefs.h>
 +typedef pattern* PlatformPatternPtr;
  #elif USE(SKIA)
@@ -4372,28 +4427,28 @@ index 904b4b70582be0758920b2e939a01993d84451f0..7badae148581b0814cf93b74016339f5
          WPE,
  #endif
 diff --git a/Source/WebCore/platform/graphics/PlatformGraphicsContext.h b/Source/WebCore/platform/graphics/PlatformGraphicsContext.h
-index 9b23f5286f8abb8b1aa42e98f2e934778432bd79..06e7e9c25a8eac5e089bf6681eba10b666b5ffe7 100644
+index 9b23f5286f8abb8b1aa42e98f2e934778432bd79..8c9b225ebe3d77ef9575ac138c0c40b137f9b101 100644
 --- a/Source/WebCore/platform/graphics/PlatformGraphicsContext.h
 +++ b/Source/WebCore/platform/graphics/PlatformGraphicsContext.h
 @@ -48,6 +48,9 @@ namespace WebCore {
  class GraphicsContextCairo;
  }
  using PlatformGraphicsContext = WebCore::GraphicsContextCairo;
-+#elif USE(HAIKU)
++#elif USE(HAIKU_GRAPHICS)
 +#include <View.h>
 +using PlatformGraphicsContext = BView;
  #elif USE(SKIA)
  class SkCanvas;
  using PlatformGraphicsContext = SkCanvas;
 diff --git a/Source/WebCore/platform/graphics/PlatformImage.h b/Source/WebCore/platform/graphics/PlatformImage.h
-index bfec7161aa5f550d593d66ce7214618e873e2849..00a820ee7b4b321470dd1f66549ae1c471962879 100644
+index bfec7161aa5f550d593d66ce7214618e873e2849..d8eda564ebcd65bc6d9118d2415ac2c0a26c72cd 100644
 --- a/Source/WebCore/platform/graphics/PlatformImage.h
 +++ b/Source/WebCore/platform/graphics/PlatformImage.h
 @@ -32,6 +32,9 @@
  typedef struct CGImage* CGImageRef;
  #elif USE(CAIRO)
  #include "RefPtrCairo.h"
-+#elif USE(HAIKU)
++#elif USE(HAIKU_GRAPHICS)
 +#include <Bitmap.h>
 +#include <wtf/RefCounted.h>
  #elif USE(SKIA)
@@ -4403,7 +4458,7 @@ index bfec7161aa5f550d593d66ce7214618e873e2849..00a820ee7b4b321470dd1f66549ae1c4
  using PlatformImagePtr = RetainPtr<CGImageRef>;
  #elif USE(CAIRO)
  using PlatformImagePtr = RefPtr<cairo_surface_t>;
-+#elif USE(HAIKU)
++#elif USE(HAIKU_GRAPHICS)
 +class BitmapRef: public BBitmap, public RefCounted<BitmapRef>
 +{
 +    public:
@@ -4436,14 +4491,14 @@ index bfec7161aa5f550d593d66ce7214618e873e2849..00a820ee7b4b321470dd1f66549ae1c4
  using PlatformImagePtr = sk_sp<SkImage>;
  #endif
 diff --git a/Source/WebCore/platform/graphics/PlatformPath.h b/Source/WebCore/platform/graphics/PlatformPath.h
-index 72094e4386de77c6ad5a69a002f5cd9170e13873..ab632ded267f1f0ee882e2b31773a12939271707 100644
+index 72094e4386de77c6ad5a69a002f5cd9170e13873..adf5c7a4b18b185ec8805978df8b2c3ddd2aec82 100644
 --- a/Source/WebCore/platform/graphics/PlatformPath.h
 +++ b/Source/WebCore/platform/graphics/PlatformPath.h
 @@ -36,6 +36,9 @@ typedef struct CGPath PlatformPath;
  typedef PlatformPath* PlatformPathPtr;
  #elif USE(CAIRO)
  typedef cairo_t* PlatformPathPtr;
-+#elif USE(HAIKU)
++#elif USE(HAIKU_GRAPHICS)
 +class BShape;
 +typedef BShape* PlatformPathPtr;
  #elif USE(SKIA)
@@ -4453,21 +4508,21 @@ index 72094e4386de77c6ad5a69a002f5cd9170e13873..ab632ded267f1f0ee882e2b31773a129
  #elif USE(CAIRO)
  class PathCairo;
  using PlatformPathImpl = PathCairo;
-+#elif USE(HAIKU)
++#elif USE(HAIKU_GRAPHICS)
 +class PathHaiku;
 +using PlatformPathImpl = PathHaiku;
  #elif USE(SKIA)
  class PathSkia;
  using PlatformPathImpl = PathSkia;
 diff --git a/Source/WebCore/platform/graphics/PlatformPathImpl.h b/Source/WebCore/platform/graphics/PlatformPathImpl.h
-index 1b1e327400bb705c9cc4aab4d063a268f1d6cecd..afe386f6521f22a5cad24d4f943aa6dc0d16f5d8 100644
+index 1b1e327400bb705c9cc4aab4d063a268f1d6cecd..6c031348ce0ad374ba69940599fcf2c9ca825beb 100644
 --- a/Source/WebCore/platform/graphics/PlatformPathImpl.h
 +++ b/Source/WebCore/platform/graphics/PlatformPathImpl.h
 @@ -29,6 +29,8 @@
  #include <WebCore/PathCG.h>
  #elif USE(CAIRO)
  #include <WebCore/PathCairo.h>
-+#elif USE(HAIKU)
++#elif USE(HAIKU_GRAPHICS)
 +#include <WebCore/PathHaiku.h>
  #elif USE(SKIA)
  #include <WebCore/PathSkia.h>
@@ -4763,14 +4818,14 @@ index 583c2f2b023cd8f3698252f251df5bc6cabcb5c5..38d61a0a11c01f5f2b09271c9d037946
      // Take ownership of the memory for process memory accounting purposes.
      WEBCORE_EXPORT void takeOwnershipOfMemory(MemoryLedger) const;
 diff --git a/Source/WebCore/platform/graphics/egl/BitmapTexture.cpp b/Source/WebCore/platform/graphics/egl/BitmapTexture.cpp
-index da8b5baeb5040357ab6f783dc31d72c3926cbc56..698f2621cc1671cb536311bbfc5d52221785609e 100644
+index da8b5baeb5040357ab6f783dc31d72c3926cbc56..ace472c4e9d3740c1ced8df89e80549f19fa492e 100644
 --- a/Source/WebCore/platform/graphics/egl/BitmapTexture.cpp
 +++ b/Source/WebCore/platform/graphics/egl/BitmapTexture.cpp
 @@ -394,6 +394,57 @@ void BitmapTexture::updateContents(NativeImage* frameImage, const IntRect& targe
      SkPixmap pixmap;
      if (surface->peekPixels(&pixmap))
          updateContents(pixmap.addr(), targetRect, offset, pixmap.rowBytes(), PixelFormat::BGRA8);
-+#elif USE(HAIKU)
++#elif USE(HAIKU_GRAPHICS)
 +    // B_RGBA32 and B_RGB32 are BGRA in memory, like the Cairo and Skia sources
 +    // above, but B_RGBA32 stores straight alpha (see ImageBufferHaiku.cpp) and
 +    // the fourth byte of B_RGB32 is undefined. TextureMapper blends with
@@ -7696,10 +7751,10 @@ index 0000000000000000000000000000000000000000..740c848aa5379c979b37382f4099a149
 +}
 diff --git a/Source/WebCore/platform/graphics/haiku/IconHaiku.cpp b/Source/WebCore/platform/graphics/haiku/IconHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..64f8e39b6f4b5d718822e168655ea0146e9cf228
+index 0000000000000000000000000000000000000000..e6d08ef95b47dae535f28f27f26a51ef8ea1e048
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/IconHaiku.cpp
-@@ -0,0 +1,71 @@
+@@ -0,0 +1,93 @@
 +/*
 + * Copyright (C) 2007 Ryan Leavengood <leavengood@gmail.com>
 + *
@@ -7730,6 +7785,13 @@ index 0000000000000000000000000000000000000000..64f8e39b6f4b5d718822e168655ea014
 +#include "NativeImage.h"
 +#include <Entry.h>
 +#include <NodeInfo.h>
++#if USE(SKIA)
++#include <Bitmap.h>
++WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
++#include <skia/core/SkColorSpace.h>
++#include <skia/core/SkPixmap.h>
++WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
++#endif
 +#include <wtf/Vector.h>
 +#include <wtf/text/CString.h>
 +#include <wtf/text/WTFString.h>
@@ -7764,10 +7826,25 @@ index 0000000000000000000000000000000000000000..64f8e39b6f4b5d718822e168655ea014
 +    entry_ref reference;
 +    if (entry.GetRef(&reference) != B_OK)
 +        return nullptr;
++#if USE(HAIKU_GRAPHICS)
 +    PlatformImagePtr bitmap = adoptRef(*new BitmapRef(BRect(0, 0, 31, 31), B_RGBA32, false));
 +    if (!bitmap->IsValid() || BNodeInfo::GetTrackerIcon(&reference, bitmap.get(), B_LARGE_ICON) != B_OK)
 +        return nullptr;
 +    return create(NativeImage::create(WTF::move(bitmap)));
++#else
++    // Tracker still draws the icon into a BBitmap; only the image it becomes
++    // afterwards differs. B_RGBA32 holds straight alpha, hence kUnpremul.
++    BBitmap bitmap(BRect(0, 0, 31, 31), B_RGBA32, false);
++    if (!bitmap.IsValid() || BNodeInfo::GetTrackerIcon(&reference, &bitmap, B_LARGE_ICON) != B_OK)
++        return nullptr;
++    auto info = SkImageInfo::Make(bitmap.Bounds().IntegerWidth() + 1, bitmap.Bounds().IntegerHeight() + 1,
++        kBGRA_8888_SkColorType, kUnpremul_SkAlphaType, SkColorSpace::MakeSRGB());
++    SkPixmap pixmap(info, bitmap.Bits(), bitmap.BytesPerRow());
++    auto image = SkImages::RasterFromPixmapCopy(pixmap);
++    if (!image)
++        return nullptr;
++    return create(NativeImage::create(WTF::move(image)));
++#endif
 +}
 +
 +} // namespace WebCore
@@ -8535,10 +8612,10 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..ab6684e41ecded9eaad7dad5c1b2ca0d480faa60
+index 0000000000000000000000000000000000000000..72f21ca2bb66a9104b5d9a4574ff580b32f2dc88
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,552 @@
+@@ -0,0 +1,573 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -8559,6 +8636,13 @@ index 0000000000000000000000000000000000000000..ab6684e41ecded9eaad7dad5c1b2ca0d
 + */
 +
 +#include "config.h"
++#if USE(SKIA)
++#include "NativeImage.h"
++WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
++#include <skia/core/SkColorSpace.h>
++#include <skia/core/SkPixmap.h>
++WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
++#endif
 +#include "ColorSpace.h"
 +#include "MediaPlayerPrivateHaiku.h"
 +
@@ -8954,11 +9038,25 @@ index 0000000000000000000000000000000000000000..ab6684e41ecded9eaad7dad5c1b2ca0d
 +    if (context.paintingDisabled())
 +        return;
 +
-+    if (m_frameBuffer) {
-+        BView* target = context.platformContext();
-+        target->SetDrawingMode(B_OP_COPY);
-+        target->DrawBitmap(m_frameBuffer, r);
++    if (!m_frameBuffer)
++        return;
++#if USE(HAIKU_GRAPHICS)
++    BView* target = context.platformContext();
++    target->SetDrawingMode(B_OP_COPY);
++    target->DrawBitmap(m_frameBuffer, r);
++#else
++    // The decoder still hands us a BBitmap. Borrow its pixels rather than copy
++    // them: the draw happens before this returns, and the frame outlives it.
++    // B_RGBA32 is BGRA with straight alpha.
++    BRect bounds = m_frameBuffer->Bounds();
++    auto info = SkImageInfo::Make(bounds.IntegerWidth() + 1, bounds.IntegerHeight() + 1,
++        kBGRA_8888_SkColorType, kUnpremul_SkAlphaType, SkColorSpace::MakeSRGB());
++    SkPixmap pixmap(info, m_frameBuffer->Bits(), m_frameBuffer->BytesPerRow());
++    if (auto image = SkImages::RasterFromPixmap(pixmap, nullptr, nullptr)) {
++        if (auto frame = NativeImage::create(WTF::move(image)))
++            context.drawNativeImage(*frame, r, FloatRect({ }, frame->size()));
 +    }
++#endif
 +}
 +
 +// #pragma mark - private methods
@@ -26551,10 +26649,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..95ade13458406a8fdeb22b62ef67bca4ce572d07
+index 0000000000000000000000000000000000000000..bcd94a1b2ee4129bb3277f5f6d065ef29a19c142
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,349 @@
+@@ -0,0 +1,355 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -26785,9 +26883,15 @@ index 0000000000000000000000000000000000000000..95ade13458406a8fdeb22b62ef67bca4
 +    list(APPEND WebKit_LIBRARIES PkgConfig::LIBZIP OpenSSL::Crypto)
 +endif ()
 +
-+list(APPEND WebKit_SERIALIZATION_IN_FILES
-+    Shared/haiku/WebCoreFontHaiku.serialization.in
-+)
++if (USE_SKIA)
++    # Brings the Skia coders, including the one for FontPlatformSerializedData,
++    # which is a different struct under Skia than the Haiku one below.
++    include(Platform/Skia.cmake)
++else ()
++    list(APPEND WebKit_SERIALIZATION_IN_FILES
++        Shared/haiku/WebCoreFontHaiku.serialization.in
++    )
++endif ()
 +
 +list(APPEND WebProcess_SOURCES
 +    WebProcess/EntryPoint/unix/WebProcessMain.cpp
@@ -31260,7 +31364,7 @@ index 23ebd4a75995ae9f57a82f860a97794ca3ee454f..dc9c8105e8da7e5bcb761413f637115a
  
  #if HAVE(COOKIE_CHANGE_LISTENER_API)
 diff --git a/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in b/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in
-index 575a1f68f3bd19cbe2259aae39f94dcadb552392..dc9f2822a50ec9d0e27fee4637c1444e78b107ff 100644
+index 575a1f68f3bd19cbe2259aae39f94dcadb552392..f1fbfa38f6d05f36a5363f1e2ed2116c3ff11f70 100644
 --- a/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in
 +++ b/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in
 @@ -1689,7 +1689,7 @@ header: <wtf/MachSendRight.h>
@@ -31284,7 +31388,7 @@ index 575a1f68f3bd19cbe2259aae39f94dcadb552392..dc9f2822a50ec9d0e27fee4637c1444e
  #else
  using WebCore::GlyphBufferGlyph = WebCore::Glyph
  #endif
-+#if USE(HAIKU)
++#if USE(HAIKU_GRAPHICS)
 +using WebCore::Glyph = unsigned int
 +#else
  using WebCore::Glyph = unsigned short
@@ -31321,14 +31425,14 @@ index 219204814dae3776eaa86c1e91724afc8e57f886..a07920c19c053450070e8ee201e36ed4
      WebCore::HTTPHeaderName key;
      String value;
 diff --git a/Source/WebKit/Shared/WebCoreFont.serialization.in b/Source/WebKit/Shared/WebCoreFont.serialization.in
-index 43b2a51c28b1c3f1116605c7064c22555e5750b8..dd5e2a9d209b6b9240a703eb3e6230518b58fbea 100644
+index 43b2a51c28b1c3f1116605c7064c22555e5750b8..c5802301827677244a265401fee3626d3d5c5add 100644
 --- a/Source/WebKit/Shared/WebCoreFont.serialization.in
 +++ b/Source/WebKit/Shared/WebCoreFont.serialization.in
 @@ -99,6 +99,9 @@ header: <WebCore/FontPlatformData.h>
      SkFontStyle m_style;
      Vector<hb_feature_t> m_features;
  #endif
-+#if USE(HAIKU)
++#if USE(HAIKU_GRAPHICS)
 +    WebCore::FontPlatformSerializedData m_font;
 +#endif
  };
@@ -31531,10 +31635,10 @@ index 0000000000000000000000000000000000000000..e1531920fb9a5369a7bd708f8e888cf3
 +} // namespace WebKit
 diff --git a/Source/WebKit/Shared/haiku/NativeWebEventsHaiku.cpp b/Source/WebKit/Shared/haiku/NativeWebEventsHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..2a7d7cff21bccacc3bd958506222ba20ee5ed521
+index 0000000000000000000000000000000000000000..be6f65447fd5881e72214b940c4dbcb55675449b
 --- /dev/null
 +++ b/Source/WebKit/Shared/haiku/NativeWebEventsHaiku.cpp
-@@ -0,0 +1,164 @@
+@@ -0,0 +1,165 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -31544,6 +31648,7 @@ index 0000000000000000000000000000000000000000..2a7d7cff21bccacc3bd958506222ba20
 +
 +#include <InterfaceDefs.h>
 +#include <String.h>
++#include <View.h>
 +#include <WebCore/PlatformKeyboardEvent.h>
 +#include <WebCore/Scrollbar.h>
 +#include <algorithm>
@@ -31949,13 +32054,13 @@ index 0000000000000000000000000000000000000000..92e6a5ad332ada635bf11487a9bf9166
 +
 diff --git a/Source/WebKit/Shared/haiku/WebCoreFontHaiku.serialization.in b/Source/WebKit/Shared/haiku/WebCoreFontHaiku.serialization.in
 new file mode 100644
-index 0000000000000000000000000000000000000000..89cbf4bd629a0eeaade24011bd2f58dfee9951d4
+index 0000000000000000000000000000000000000000..d1933e23208faaa8d4e1580b7d6f1f8035ee0b3a
 --- /dev/null
 +++ b/Source/WebKit/Shared/haiku/WebCoreFontHaiku.serialization.in
 @@ -0,0 +1,22 @@
 +# Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause
 +
-+#if USE(HAIKU)
++#if USE(HAIKU_GRAPHICS)
 +header: <WebCore/FontPlatformData.h>
 +[CustomHeader] struct WebCore::FontPlatformSerializedData {
 +    String family;
@@ -76910,14 +77015,14 @@ index 0000000000000000000000000000000000000000..f1ff93f4aee6f1e4c5ac9973d18b8522
 +
 +#endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/WebProcess/GPU/graphics/ImageBufferShareableBitmapBackend.h b/Source/WebKit/WebProcess/GPU/graphics/ImageBufferShareableBitmapBackend.h
-index c9973ac027de13c1754694f6a91b11865f4edcf4..e2d399efe8f4ba2a3c5aa40cf784a9b5a0a09f2a 100644
+index c9973ac027de13c1754694f6a91b11865f4edcf4..f653a3c605c7347eee5aa37ffd5d262994e302da 100644
 --- a/Source/WebKit/WebProcess/GPU/graphics/ImageBufferShareableBitmapBackend.h
 +++ b/Source/WebKit/WebProcess/GPU/graphics/ImageBufferShareableBitmapBackend.h
 @@ -33,6 +33,8 @@
  #include <WebCore/ImageBufferCGBackend.h>
  #elif USE(CAIRO)
  #include <WebCore/ImageBufferCairoBackend.h>
-+#elif USE(HAIKU)
++#elif USE(HAIKU_GRAPHICS)
 +#include <WebCore/ImageBufferHaikuSurfaceBackend.h>
  #elif USE(SKIA)
  #include <WebCore/ImageBufferSkiaBackend.h>
@@ -76926,7 +77031,7 @@ index c9973ac027de13c1754694f6a91b11865f4edcf4..e2d399efe8f4ba2a3c5aa40cf784a9b5
  using ImageBufferShareableBitmapBackendBase = WebCore::ImageBufferCGBackend;
  #elif USE(CAIRO)
  using ImageBufferShareableBitmapBackendBase = WebCore::ImageBufferCairoBackend;
-+#elif USE(HAIKU)
++#elif USE(HAIKU_GRAPHICS)
 +using ImageBufferShareableBitmapBackendBase = WebCore::ImageBufferHaikuSurfaceBackend;
  #elif USE(SKIA)
  using ImageBufferShareableBitmapBackendBase = WebCore::ImageBufferSkiaBackend;
@@ -77506,10 +77611,10 @@ index b1c001380f46a63c1403d8592fe5ac4a062be694..2bee67b0da7f3dfd7102f781ae522ae1
  
 diff --git a/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.cpp b/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..f71bb2bf1dfaab8c3d3bedc3b22a51a951246d22
+index 0000000000000000000000000000000000000000..05b715645c6ba783cf32a1945ac7d05e2224b777
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.cpp
-@@ -0,0 +1,628 @@
+@@ -0,0 +1,665 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -77629,11 +77734,25 @@ index 0000000000000000000000000000000000000000..f71bb2bf1dfaab8c3d3bedc3b22a51a9
 +// The frame bitmap survives between frames, so what a scroll kept on screen can
 +// be moved inside it instead of being painted again. Only the strip that came
 +// into view is then dirty. SUMMIT_SCROLL_COPY=0 goes back to repainting it all.
++//
++// Moving pixels assumes the previous frame, shifted by a whole number of device
++// rows, is still what the page would paint. That holds for app_server, which
++// lays glyphs out on whole pixels, and not for Skia, which positions them at
++// subpixel offsets: the moved text no longer lands where it was drawn, and over
++// a few hundred frames the difference collects into bands of doubled text. So
++// it is off by default under Skia, where tiled compositing is the answer
++// instead. SUMMIT_SCROLL_COPY=1 turns it back on to look at the artefact.
 +static bool scrollCopyEnabledHaiku()
 +{
 +    static const bool enabled = [] {
 +        const char* value = getenv("SUMMIT_SCROLL_COPY");
-+        return !value || strcmp(value, "0");
++        if (value)
++            return !!strcmp(value, "0");
++#if USE(HAIKU_GRAPHICS)
++        return true;
++#else
++        return false;
++#endif
 +    }();
 +    return enabled;
 +}
@@ -77689,10 +77808,13 @@ index 0000000000000000000000000000000000000000..f71bb2bf1dfaab8c3d3bedc3b22a51a9
 +    if (area.isEmpty() || !delta || std::abs(delta) >= area.height())
 +        return false;
 +
++#if USE(HAIKU_GRAPHICS)
 +    // app_server draws into this memory from its own team; make sure the
 +    // previous frame's drawing has landed before moving rows underneath it.
++    // Skia rasterises on this thread, so its pixels are already there.
 +    if (m_frameContext)
 +        m_frameContext->platformContext()->Sync();
++#endif
 +
 +    auto pixels = bitmap.mutableSpan();
 +    const size_t stride = bitmap.bytesPerRow();
@@ -77943,8 +78065,11 @@ index 0000000000000000000000000000000000000000..f71bb2bf1dfaab8c3d3bedc3b22a51a9
 +        statistics.longestInterval.milliseconds(), statistics.longestFrame.milliseconds(),
 +        statistics.presented ? statistics.dirtyPixels / (1e6 * statistics.presented) : 0.0,
 +        path);
-+    // Second line: what those frames asked the port to draw, per frame.
++    // Second line: what those frames asked the port to draw, per frame. Only
++    // GraphicsContextHaiku keeps this tally, so with Skia there is nothing to
++    // report rather than a line of zeroes.
 +    auto perFrame = [&](double total) { return statistics.frames ? total / statistics.frames : 0.0; };
++#if USE(HAIKU_GRAPHICS)
 +    WTFLogAlways("Summit painting: per frame drawing calls %.2f ms of which %.0f text runs (%.0f glyphs) %.2f ms, "
 +        "%.0f images %.2f ms; %.0f fills %.2f ms, %.0f strokes, %.0f clips %.2f ms, "
 +        "%.0f state changes %.2f ms (%.2f ms in save/restore), "
@@ -77958,6 +78083,9 @@ index 0000000000000000000000000000000000000000..f71bb2bf1dfaab8c3d3bedc3b22a51a9
 +        perFrame(statistics.stateChanges), perFrame(statistics.stateTime.milliseconds()),
 +        perFrame(statistics.saveTime.milliseconds()), perFrame(statistics.roundTrips),
 +        perFrame(statistics.roundTripTime.milliseconds()), perFrame(statistics.clipQueries));
++#else
++    UNUSED_PARAM(perFrame);
++#endif
 +    auto period = statistics.period;
 +    auto previousStart = statistics.previousStart;
 +    statistics = FrameStatistics();
@@ -78083,11 +78211,13 @@ index 0000000000000000000000000000000000000000..f71bb2bf1dfaab8c3d3bedc3b22a51a9
 +            if (rects.isEmpty())
 +                result = FrameResult::Unchanged;
 +            else if (auto* context = frameContext(*bitmap, scale)) {
++#if USE(HAIKU_GRAPHICS)
 +                // BView flushes its link to app_server on every PopState(), and
 +                // WebKit saves and restores state hundreds of times a frame. A
 +                // view transaction holds those flushes back until the frame is
 +                // painted, so the commands travel in whole buffers instead of
 +                // one port write each. SUMMIT_BATCH_DRAWING=0 turns it off.
++                // Skia issues no commands to app_server, so it needs none of it.
 +                static const bool batchedDrawing = [] {
 +                    const char* value = getenv("SUMMIT_BATCH_DRAWING");
 +                    return !value || strcmp(value, "0");
@@ -78095,22 +78225,34 @@ index 0000000000000000000000000000000000000000..f71bb2bf1dfaab8c3d3bedc3b22a51a9
 +                BWindow* batchWindow = batchedDrawing ? context->platformContext()->Window() : nullptr;
 +                if (batchWindow)
 +                    batchWindow->BeginViewTransaction();
++#endif
 +                // No explicit color means the default opaque base background. Only a page that
 +                // was given a translucent one can show the previous frame through its repaint.
 +                bool clearsFirst = page->backgroundColor() && !page->backgroundColor()->isOpaque();
++                // SUMMIT_DEBUG_DAMAGE=1 paints the damage instead of the page,
++                // so a screenshot shows exactly which pixels a frame claimed.
++                static const bool showDamage = [] {
++                    const char* value = getenv("SUMMIT_DEBUG_DAMAGE");
++                    return value && !strcmp(value, "1");
++                }();
 +                for (auto& rect : rects) {
 +                    GraphicsContextStateSaver stateSaver(*context);
 +                    context->clip(rect);
 +                    if (clearsFirst)
 +                        context->clearRect(rect);
-+                    page->drawRect(*context, rect);
++                    if (showDamage)
++                        context->fillRect(rect, WebCore::Color::magenta);
++                    else
++                        page->drawRect(*context, rect);
 +                    dirtyPixels += static_cast<uint64_t>(rect.width()) * rect.height();
 +                }
 +                afterDraw = MonotonicTime::now();
++#if USE(HAIKU_GRAPHICS)
 +                // Finish app_server writes before publishing the shared pixels.
 +                if (batchWindow)
 +                    batchWindow->EndViewTransaction();
 +                context->platformContext()->Sync();
++#endif
 +                result = FrameResult::Painted;
 +            } else
 +                m_needsFullRepaint = true;
@@ -95018,10 +95160,10 @@ index 121e64b01bce34e387deacf3bbbca93adf0f59da..7926cd9c3edf141bc52f7db0253c37c0
  endif ()
 diff --git a/Source/cmake/OptionsHaiku.cmake b/Source/cmake/OptionsHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..4d2c709226da28cb2f3e021a323714e74b6ed35c
+index 0000000000000000000000000000000000000000..e4cf5d6bafc96f1d531773385fb1365d44ca8c11
 --- /dev/null
 +++ b/Source/cmake/OptionsHaiku.cmake
-@@ -0,0 +1,284 @@
+@@ -0,0 +1,309 @@
 +include(GNUInstallDirs)
 +include(VersioningUtils)
 +
@@ -95115,6 +95257,11 @@ index 0000000000000000000000000000000000000000..4d2c709226da28cb2f3e021a323714e7
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_SMOOTH_SCROLLING PRIVATE OFF)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_WEBGL PRIVATE OFF)
 +
++# Skia replaces the app_server drawing path: it rasterises in the web process,
++# so there is no IPC per drawing call, and it is what SkiaPaintingEngine needs
++# to paint tiles on a worker pool. Off by default until the port's present path
++# has moved over; -DUSE_SKIA=ON selects it.
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_SKIA PRIVATE OFF)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_SYSTEM_MALLOC PRIVATE ON)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_AVIF PUBLIC ON)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_LCMS PUBLIC ON)
@@ -95125,6 +95272,19 @@ index 0000000000000000000000000000000000000000..4d2c709226da28cb2f3e021a323714e7
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_LAYOUT_TESTS PRIVATE ON)
 +
 +WEBKIT_OPTION_END()
++
++# Skia needs HarfBuzz for shaping; the ICU component provides the Unicode
++# functions it uses for it. Both come from HaikuPorts (harfbuzz_devel).
++if (USE_SKIA)
++    find_package(HarfBuzz 2.7.4 REQUIRED COMPONENTS ICU)
++    # The Haiku themes need a BView to hand to BControlLook, which Skia does not
++    # provide. Adwaita paints through GraphicsContext and is what the other Skia
++    # ports use.
++    SET_AND_EXPOSE_TO_BUILD(USE_THEME_ADWAITA TRUE)
++    # Skia shapes text with HarfBuzz (SkiaHarfBuzzFont), so the HarfBuzz helpers
++    # in platform/graphics/harfbuzz have to be compiled in too.
++    SET_AND_EXPOSE_TO_BUILD(USE_HARFBUZZ ON)
++endif ()
 +
 +IF (ENABLE_WEB_AUDIO)
 +    SET(USE_FFMPEG 1)
@@ -95182,6 +95342,13 @@ index 0000000000000000000000000000000000000000..4d2c709226da28cb2f3e021a323714e7
 +
 +        set(USE_GRAPHICS_SURFACE 1)
 +    endif ()
++endif ()
++
++# GLContext.cpp compiles to nothing without USE(EGL), and Skia's graphics
++# context refers to it whether or not anything is accelerated yet.
++if (USE_SKIA AND NOT EGL_FOUND)
++    find_package(EGL REQUIRED)
++    SET_AND_EXPOSE_TO_BUILD(USE_EGL TRUE)
 +endif ()
 +
 +SET_AND_EXPOSE_TO_BUILD(USE_INSPECTOR_SOCKET_SERVER ${ENABLE_REMOTE_INSPECTOR})

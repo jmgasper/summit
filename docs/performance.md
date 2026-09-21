@@ -864,3 +864,117 @@ backends, the tile store), and keep the dozen that Skia has no opinion about
 new Haiku-specific code is the present path: get the pixels out of Skia's
 surface and into the `BBitmap` that `DrawingAreaHaiku` already hands to the UI
 process. That is the stage that has to be gated on a pixel comparison.
+
+## Skia draws the page (September 21, 2026)
+
+`USE_SKIA=ON` now builds the whole port: `libWebCore.a`, `libWebKit.so`,
+`WebProcess`, `NetworkProcess` and a browser bundle, and it **renders**. The
+scroll benchmark and a live Wikipedia article both come out correct -- text,
+images, gradients, rounded rectangles, shadows, SVG icons and form controls.
+
+The port keeps both renderers. `USE(HAIKU_GRAPHICS)` is the new name for "the
+app_server backend": the port had been using `PLATFORM(HAIKU)` and `USE(HAIKU)`
+to mean that, which stopped being true the moment Skia became selectable. 26
+sites moved to the new macro; the ones that are about the platform rather than
+the renderer -- the `BRect`/`BPoint` conversions, the event loop, the network
+stack -- kept `USE(HAIKU)`.
+
+What the switch involved, beyond the source lists:
+
+- **The themes.** `ScrollbarThemeHaiku`, `ThemeHaiku` and `RenderThemeHaiku`
+  paint with `BControlLook`, which needs a `BView` to draw into, and under Skia
+  `platformContext()` is an `SkCanvas`. Under Skia the port now includes
+  `platform/Adwaita.cmake` -- the theme GTK, WPE, Windows and PlayStation all
+  use, painted entirely through `GraphicsContext`. The native Haiku look stays
+  in the app_server configuration.
+- **Fonts.** Skia finds fonts through fontconfig, which on Haiku already knows
+  about `/boot/system/data/fonts`: `fc-list` reports 117 fonts and `fc-match
+  sans-serif` resolves to Noto Sans. `USE_HARFBUZZ` is on, because Skia shapes
+  text with `SkiaHarfBuzzFont`.
+- **IPC.** `FontPlatformSerializedData` is a different struct under each
+  renderer, so the WebKit layer includes `Platform/Skia.cmake` for the Skia
+  coders instead of `WebCoreFontHaiku.serialization.in`.
+- **GL.** `GraphicsContextSkia` and `SkiaGPUAtlas` call `GLContext`, `GLFence`
+  and `BitmapTexture` even when rasterising on the CPU, and the port only
+  compiled those with TextureMapper. They now build under Skia too, with
+  `USE_EGL` set so they are not compiled away to nothing.
+- **Images.** `IconHaiku` and `MediaPlayerPrivateHaiku` still get a `BBitmap`
+  from Tracker and from the media decoder; both now wrap those pixels as an
+  `SkImage` (`kUnpremul`, because `B_RGBA32` holds straight alpha). The video
+  frame borrows the pixels rather than copying them, since the draw finishes
+  before the call returns.
+- **The present path needed nothing.** `DrawingAreaHaiku` already paints through
+  `ShareableBitmap::createGraphicsContext()`, and the UI process copies raw
+  pixels into a `BBitmap`. `ShareableBitmapSkia` wraps the same shared memory
+  with `SkSurfaces::WrapPixels`, and Skia's N32 is BGRA on little-endian, like
+  `B_RGBA32`.
+
+### Scroll copying does not survive the change
+
+| Scroll page, workstation | Scrolling | Rendering |
+| --- | --- | --- |
+| app_server backend | 44.4 fps | correct |
+| Skia, scroll copy on | 41.0 fps | **bands of doubled text** |
+| Skia, scroll copy off | 7.7 fps | correct |
+
+Moving the pixels a scroll keeps on screen assumes the previous frame, shifted
+by a whole number of device rows, is still what the page would paint. app_server
+lays glyphs out on whole pixels, so it is. Skia positions them at subpixel
+offsets, so it is not, and over a couple of hundred frames the difference
+collects into bands where a line of text is drawn over the ghost of itself. The
+same page on the same machine is clean under app_server, so this is about the
+renderer and not about the benchmark.
+
+Two fixes were tried and neither explained it, so both were removed rather than
+left in as folklore: clearing the uncovered strip before repainting it changed
+nothing at all (the affected rows are not in any repaint rectangle), and
+widening every repaint rectangle by a pixel made the tag pills legible again but
+left the text bands. The clip is not antialiased -- `GraphicsContextSkia::clip`
+passes `false` -- so a blend at the boundary was not the mechanism either.
+
+Scroll copying is therefore off by default when Skia draws (`SUMMIT_SCROLL_COPY=1`
+turns it back on to look at the artefact). The honest cost is 41 fps to 7.7, and
+the honest reading is that a full repaint of 1.8 megapixels through one thread is
+what scrolling costs without it. That is the problem tiles solve: with tiled
+compositing a scroll is a translate of already-painted tiles and nothing is
+repainted or moved at all, which is stage three.
+
+### Haiku's fontconfig has no conf.d, and that crashed the web process
+
+Speedometer killed the web process every run, in
+`FontCache::fontForPlatformData` -> `WTF::HashTable::validateKey`: an empty font
+was being used as a hash key. The path is
+`FontCache::lastResortFallbackFont()`, which asks for `serif`, and when that
+does not resolve falls back to `SkTypeface::MakeEmpty()` -- a font whose
+`FontPlatformData` is indistinguishable from the hash table's empty value.
+
+`serif` did not resolve because Haiku's `fontconfig` package installs
+`conf.avail` and no `conf.d`, so none of the standard configuration is active,
+including `45-generic.conf` and `60-generic.conf`, which are what define the
+`serif`, `sans-serif` and `monospace` aliases. `fc-match` hides this -- it
+answers every query with a best effort -- but an in-process family match returns
+nothing. Before: `fc-match serif`, `sans-serif` and `monospace` all answered
+"Noto Sans". After linking the standard set into
+`/boot/system/settings/fonts/conf.d`: Noto Serif, Noto Sans and Noto Sans Mono.
+
+This is a property of the machine, not of Summit, and it affects any fontconfig
+client on Haiku. It is written up in [workstation](workstation.md).
+
+### Where Skia stands
+
+| Workstation | Scrolling | Speedometer 3.1 |
+| --- | --- | --- |
+| app_server backend | 44.4 fps | 3.28 ± 0.058 |
+| Skia | 7.7 fps | 2.59 ± 0.551 |
+| Firefox 155 | -- | 8.34 ± 0.37 |
+
+Skia is behind on both, and neither number is the point yet: this is the first
+build, it paints on one thread, scroll copying is off, and none of the work that
+made Skia worth adopting -- tiles, a worker pool, compositing through GL -- is
+turned on. What the round establishes is that the engine's Skia port runs on
+Haiku and draws real pages correctly, which is the thing stage three needs.
+
+The Speedometer confidence interval is worth noting: ± 0.551 against ± 0.058 for
+the app_server backend, on an equally quiet machine. Something in this
+configuration is far less consistent run to run, and that is worth understanding
+before reading much into the mean.

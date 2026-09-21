@@ -53,6 +53,42 @@ Work moved to the owner's Haiku workstation (Threadripper 1950X, GeForce GTX
   stack-local `char reason[256]` (`nvdec_h264.c:237`). YouTube additionally
   needs Media Source Extensions, which are not built.
 
+## September 21, 2026: Skia draws the page
+
+`USE_SKIA=ON` builds the whole Haiku port and renders correctly -- the scroll
+benchmark and a live Wikipedia article both come out right, with text, images,
+SVG icons, gradients, shadows and form controls. Details in
+[performance](performance.md).
+
+- **Why Skia.** Three micro-optimisation rounds had run out: glyphs 0.07 ms a
+  frame, state changes 0.07 ms, app_server read-backs 3%. The engine tree
+  already vendors Skia and `SkiaPaintingEngine`, upstream's parallel tile
+  painter, so the remaining structural problem -- one thread painting at 95 ms
+  per megapixel while 31 cores idle -- has an answer that is adoption rather
+  than invention.
+- **Both renderers stay.** `USE(HAIKU_GRAPHICS)` now names the app_server
+  backend; the port had used `PLATFORM(HAIKU)` and `USE(HAIKU)` for it, which
+  stopped being true once Skia became selectable.
+- **Adwaita under Skia.** The Haiku themes paint with `BControlLook`, which
+  needs a `BView`. Under Skia the port uses the same Adwaita theme as GTK, WPE,
+  Windows and PlayStation. The native look stays in the app_server build.
+- **Scroll copying is off under Skia.** Moving the pixels a scroll keeps on
+  screen assumes the previous frame, shifted by whole device rows, is still what
+  the page would paint. Skia positions glyphs at subpixel offsets, so it is not,
+  and the error collects into bands of doubled text. The same page is clean
+  under app_server. Two candidate fixes were tried, neither explained it, and
+  both were removed rather than kept as folklore. Tiles make the optimisation
+  unnecessary, which is the next step.
+- **Haiku's fontconfig ships no `conf.d`**, so `serif`, `sans-serif` and
+  `monospace` never resolved. Skia's last-resort fallback then used an empty
+  typeface as a hash key and the web process died on every Speedometer run.
+  Linking the standard configuration in fixes it; see
+  [workstation](workstation.md).
+- **Numbers so far:** scrolling 7.7 fps against 44.4 for app_server, Speedometer
+  2.59 ± 0.551 against 3.28 ± 0.058. Skia is behind on both, and that is
+  expected of a first build that paints on one thread with tiles, the worker
+  pool and GL compositing all still off.
+
 ## September 19, 2026 continuation (in progress)
 
 Work resumed with three owner priorities: GPU-accelerated rendering where the
