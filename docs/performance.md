@@ -1849,6 +1849,15 @@ The same bundle's controlled 400-card scroll test reached 59.03 fps over 600
 frames, p95 18 ms, maximum 23 ms, and no frame over 33 ms
 (`.vm/bench/probe-20260923-062113-summit-summit-hls-scroll-regression/`).
 
+A live `/r/popular/` follow-up visually moved from the first post to later feed
+content after all 300 paced wheel events. Its trace selected NVDEC repeatedly
+and exercised the new HLS path with separate NVDEC H.264 and AAC tracks. The
+page still delivered only 26.30 native-view frames/s during the burst, with a
+713.1 ms worst interval, while UI queue delay remained below 0.3 ms
+(`.vm/bench/scroll-20260923-063455-reddit-hls-current/`). This confirms that
+Reddit media playback is restored in the live feed and again locates the
+remaining scroll stalls above the native event and presentation queue.
+
 ### Fixed-width inline layout reuse experiment
 
 `SUMMIT_FIXED_INLINE_LAYOUT_REUSE=1` now enables a guarded Haiku experiment
