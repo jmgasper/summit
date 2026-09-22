@@ -1614,4 +1614,22 @@ final capture. This matters on a busy page because each wheel send can block
 for up to two seconds; the requested interval alone cannot prove that every
 notch was delivered. A failed or incomplete burst is reported separately from
 a completed frame-rate measurement. The browser and controller compile checks
-passed; a bundled runtime check remains pending.
+passed.
+
+The bundled runtime check passed on `/r/popular/`: both allocator variants
+delivered all 300 requested wheel notches in about 4.81 seconds, and the
+before/after screenshots show different posts. The opt-in native view counter
+is reset at burst start so a long quiet period before scrolling is not counted
+as a scroll stall. In the system-allocator capture
+(`.vm/bench/scroll-20260923-023428-reddit-system-reset/`), the longest gap
+between delivered frames was 1725 ms, with seven gaps over 33 ms. The mimalloc
+capture (`.vm/bench/scroll-20260923-023806-reddit-mimalloc-awake/`) had a
+650 ms longest gap and nine gaps over 33 ms. Different live feed posts loaded
+in the two runs, so this is evidence of remaining real-site jank, not a
+controlled allocator win. The view counted frame deliveries, which can exceed
+the display refresh rate and should not be read as visible presentation fps.
+
+An intervening mimalloc capture produced black before/after screenshots after
+Haiku's screen blanker reactivated. Its frame numbers are excluded. The
+real-site harness now wakes the display during settling and rejects a black
+capture instead of recording it as a completed measurement.

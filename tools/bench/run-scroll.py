@@ -27,6 +27,7 @@ import statistics
 import subprocess
 import sys
 import time
+from PIL import Image
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import guest  # noqa: E402
@@ -49,6 +50,17 @@ UI_FRAME_LINE = re.compile(
 
 def log(message):
     print(time.strftime('[%H:%M:%S] ') + message, flush=True)
+
+
+def capture_visible(path):
+    for _ in range(2):
+        guest.wake_display()
+        time.sleep(0.5)
+        guest.screenshot(path)
+        with Image.open(path) as screenshot:
+            if any(high > 10 for _, high in screenshot.convert('RGB').getextrema()):
+                return
+    raise RuntimeError('Display stayed blank after waking it; scroll capture is invalid')
 
 
 def parse_frame_lines(text):
@@ -165,11 +177,17 @@ def main():
         if not args.keep_sidebar:
             guest.ctl(ctl, team, 'sidebar')
         time.sleep(3)
+        guest.wake_display()
         log(f'launched Summit team {team}; loading {args.url}')
         guest.ctl(ctl, team, 'navigate', args.url, timeout_ms=15000)
-        time.sleep(args.settle)
+        remaining = args.settle
+        while remaining > 0:
+            interval = min(20, remaining)
+            time.sleep(interval)
+            remaining -= interval
+            guest.wake_display()
         run['stateBeforeBurst'] = guest.state(ctl, team)
-        guest.screenshot(directory / 'before.png')
+        capture_visible(directory / 'before.png')
         guest.fetch_file(remote_log, directory / 'before.log')
         before = (directory / 'before.log').read_text('utf-8', 'replace')
         engine_before = parse_frame_lines(before)
@@ -212,7 +230,7 @@ def main():
         run['burstSeconds'] = round(time.monotonic() - burst_started, 1)
         # Let the one-second frame counter flush its last partial window.
         time.sleep(1.1)
-        guest.screenshot(directory / 'final.png')
+        capture_visible(directory / 'final.png')
         guest.fetch_file(remote_log, directory / 'browser.log')
         text = (directory / 'browser.log').read_text('utf-8', 'replace')
         engine_samples = parse_frame_lines(text)[len(engine_before):]

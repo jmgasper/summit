@@ -51,6 +51,15 @@ class FrameStatsWebKitView final : public BWebKitView {
 public:
     using BWebKitView::BWebKitView;
 
+    void ResetFrameStats()
+    {
+        fWindowStart = 0;
+        fLastFrame = 0;
+        fLongestGap = 0;
+        fLongGaps = 0;
+        fFrames = 0;
+    }
+
     void MessageReceived(BMessage* message) override
     {
         if (message->what == 'wvfr') {
@@ -496,6 +505,10 @@ void BrowserWindow::SimulateScroll(const BMessage& message, BMessage& reply)
         reply.AddString("error", "no thread for the burst");
         return;
     }
+#if SUMMIT_MODERN_WEBKIT
+    if (auto* statsView = dynamic_cast<FrameStatsWebKitView*>(tab->view))
+        statsView->ResetFrameStats();
+#endif
     burst.release();
     fScrollBurstActive = true;
     fScrollBurstRequested = count;
