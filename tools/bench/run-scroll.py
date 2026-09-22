@@ -47,6 +47,15 @@ UI_FRAME_LINE = re.compile(
     r'Summit UI frames: (?P<fps>[\d.]+)/s frames=(?P<frames>\d+) '
     r'longest=(?P<longest>[\d.]+) ms over33=(?P<over33>\d+)'
     r'(?: queueMax=(?P<queueMax>[\d.]+) ms queueOver33=(?P<queueOver33>\d+))?')
+FIXED_INLINE_LAYOUT_LINE = re.compile(
+    r'Summit fixed inline layout: calls=(?P<calls>\d+) relayout=(?P<relayoutCalls>\d+) '
+    r'renderers=(?P<renderers>\d+) eligible=(?P<eligible>\d+) reused=(?P<reused>\d+) '
+    r'excluded=(?P<excludedFromNormalLayout>\d+) notBox=(?P<notBox>\d+) dirty=(?P<alreadyDirty>\d+) '
+    r'dirtySelf=(?P<dirtySelf>\d+) dirtyNormalChild=(?P<dirtyNormalChild>\d+) '
+    r'dirtyOutOfFlowChild=(?P<dirtyOutOfFlowChild>\d+) dirtySimplified=(?P<dirtySimplified>\d+) '
+    r'dirtyOutOfFlowMovement=(?P<dirtyOutOfFlowMovement>\d+) '
+    r'block=(?P<blockLevel>\d+) replaced=(?P<replaced>\d+) relative=(?P<relativeDimensions>\d+) '
+    r'nonFixed=(?P<nonFixedWidth>\d+) percentPadding=(?P<percentagePadding>\d+)')
 
 
 def log(message):
@@ -77,6 +86,20 @@ def parse_frame_lines(text):
 def parse_ui_frame_lines(text):
     return [{name: float(value) for name, value in match.groupdict().items() if value is not None}
             for match in UI_FRAME_LINE.finditer(text)]
+
+
+def parse_fixed_inline_layout_lines(text):
+    return [{name: int(value) for name, value in match.groupdict().items()}
+            for match in FIXED_INLINE_LAYOUT_LINE.finditer(text)]
+
+
+def summarize_fixed_inline_layout(samples):
+    if not samples:
+        return {}
+    total = {name: sum(sample[name] for sample in samples) for name in samples[0]}
+    total['periods'] = len(samples)
+    total['eligiblePercent'] = round(total['eligible'] * 100 / total['renderers'], 2) if total['renderers'] else 0
+    return total
 
 
 def summarize_ui(samples):
@@ -193,12 +216,23 @@ def main():
             remaining -= interval
             guest.wake_display()
         run['stateBeforeBurst'] = guest.state(ctl, team)
+        # Preserve idle samples before VNC capture, which can synchronously
+        # hold the app_server and create a long native-view queue delay.
+        guest.fetch_file(remote_log, directory / 'before.log')
+        idle_text = (directory / 'before.log').read_text('utf-8', 'replace')
+        idle_engine = parse_frame_lines(idle_text)
+        idle_ui = parse_ui_frame_lines(idle_text)
         capture_visible(directory / 'before.png')
+        # Let the screenshot's frame-stat window close, then use the resulting
+        # log length as the scroll baseline so capture work is not attributed
+        # to the wheel burst.
+        time.sleep(1.1)
         guest.fetch_file(remote_log, directory / 'before.log')
         before = (directory / 'before.log').read_text('utf-8', 'replace')
         engine_before = parse_frame_lines(before)
         ui_before = parse_ui_frame_lines(before)
-        run['idle'] = summarize(engine_before[-5:]) if engine_before else summarize_ui(ui_before[-5:])
+        fixed_inline_before = parse_fixed_inline_layout_lines(before)
+        run['idle'] = summarize(idle_engine[-5:]) if idle_engine else summarize_ui(idle_ui[-5:])
         log(f"idle: {run['idle'].get('fps', 0)} fps")
 
         seconds = args.notches * args.interval_ms / 1000
@@ -236,16 +270,22 @@ def main():
         run['burstSeconds'] = round(time.monotonic() - burst_started, 1)
         # Let the one-second frame counter flush its last partial window.
         time.sleep(1.1)
-        capture_visible(directory / 'final.png')
+        # Cut the measured log before taking the final VNC screenshot. Capture
+        # can hold app_server long enough to resemble a page-update stall.
         guest.fetch_file(remote_log, directory / 'browser.log')
         text = (directory / 'browser.log').read_text('utf-8', 'replace')
         engine_samples = parse_frame_lines(text)[len(engine_before):]
         ui_samples = parse_ui_frame_lines(text)[len(ui_before):]
+        fixed_inline_samples = parse_fixed_inline_layout_lines(text)[len(fixed_inline_before):]
         during = engine_samples or ui_samples
         run['frameStatsAvailable'] = bool(during)
         if during:
             run['frameSamples'] = during
             run['scroll'] = summarize(engine_samples) if engine_samples else summarize_ui(ui_samples)
+        if fixed_inline_samples:
+            run['fixedInlineLayoutSamples'] = fixed_inline_samples
+            run['fixedInlineLayout'] = summarize_fixed_inline_layout(fixed_inline_samples)
+        capture_visible(directory / 'final.png')
         run['stateAfterBurst'] = guest.state(ctl, team)
         run['outcome'] = ('completed' if run['completionVerified'] else 'captured-unverified-delivery') \
             if during else 'captured-uninstrumented'
@@ -260,7 +300,8 @@ def main():
             run['shutdown'] = guest.terminate(ctl, team, group=group)
         save()
         print(json.dumps({'id': run_id, 'outcome': run['outcome'],
-                          'idle': run.get('idle'), 'scroll': run.get('scroll')}, indent=1))
+                          'idle': run.get('idle'), 'scroll': run.get('scroll'),
+                          'fixedInlineLayout': run.get('fixedInlineLayout')}, indent=1))
 
 
 if __name__ == '__main__':

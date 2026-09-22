@@ -1887,6 +1887,35 @@ experiment. With the switch enabled, the controlled scrolling probe ran at
 59.10 fps, p95 18 ms, maximum 23 ms, and no frame above 33 ms
 (`.vm/bench/probe-20260923-063308-summit-fixed-inline-reuse-scroll/`).
 
+`SUMMIT_FIXED_INLINE_LAYOUT_TRACE=1` reports one-second coverage counters
+without changing layout decisions. The counters separate eligible fixed-width
+inline boxes from dirty, block-level, replaced, relative-sized, automatic-width,
+percentage-padding, and excluded descendants. `run-scroll.py` stores both the
+per-second samples and an aggregate in `run.json`; this makes a live Reddit
+wheel pass the gate for deciding whether the guarded reuse path has enough
+coverage to warrant further work.
+
+That gate found no coverage on live Reddit. During the refined wheel pass,
+24,195 descendants were visited in full child relayouts. Of those, 21,115
+were text or another non-box renderer and all 3,080 boxes were already dirty;
+3,076 carried their own layout bit, often together with child-layout bits.
+Zero boxes reached the fixed-width eligibility checks
+(`.vm/bench/scroll-20260923-094303-reddit-dirty-inline-reasons/`). Broadening
+the shortcut would therefore skip real Reddit style or content invalidation,
+so the experiment stays disabled and is not a Reddit optimization.
+
+The scroll harness now cuts its measured log before taking the final VNC
+screenshot and flushes the initial capture before starting the wheel burst.
+The old order could attribute app_server capture time to scrolling; one run
+recorded a 659.3 ms UI queue delay from that final capture. With capture work
+isolated and the layout trace disabled, the current bundle delivered 39.56
+native-view frames/s, had a 702.9 ms worst page interval, and kept UI queue
+delay below 0.3 ms. The same run selected NVDEC H.264 repeatedly and resolved
+Reddit's finite HLS video and audio
+(`.vm/bench/scroll-20260923-095232-reddit-current-capture-isolated/`). The
+remaining visible pauses are still page work rather than wheel delivery or
+the native presentation queue.
+
 ### Cross-suite TipTap slowdown isolation
 
 The current HLS-capable bundle `bundle-jiito6mn` scored **6.526 ± 0.324** in
@@ -1981,5 +2010,15 @@ The first ten-iteration result was 6.238 ± 0.229 with steady iterations from
 neutral against the long-term generic control of 6.293 ± 0.302 and below the
 unusually fast 6.526 run above. The cold TipTap pass fell from the usual
 roughly 510 ms to 362 ms in this run, while steady full-suite passes remained
-270–321 ms. The direct redundant lookup is removed, but a matched alternating
-benchmark is still needed before attributing an end-to-end gain.
+270–321 ms.
+
+A recovered-host A-B-A comparison then produced 6.438 ± 0.240 with the cache,
+6.243 ± 0.321 on the pre-cache HLS bundle, and 6.431 ± 0.220 after returning
+to the cached bundle. The corresponding sums of suite means were 3,676,
+3,804, and 3,682 ms per iteration
+(`.vm/bench/speedometer-20260923-094406-inline-coverage-trace-off/`,
+`.vm/bench/speedometer-20260923-094604-pre-font-cache-alternating-control/`,
+and
+`.vm/bench/speedometer-20260923-094800-post-font-cache-alternating-repeat/`).
+This is a reproducible roughly 3% gain in the alternating comparison, while
+the absolute score remains below Firefox 155's 8.338 ± 0.374 baseline.
