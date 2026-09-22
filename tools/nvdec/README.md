@@ -34,8 +34,7 @@ On 2026-09-23 the workstation's installed add-on selected
 `H.264 on the graphics card (NVDEC)` for `/boot/home/bbb12s.mp4` and decoded
 60 of its 1920×1080 frames in 674.9 ms. An engine compile was active, so that
 elapsed time is a functional check rather than a throughput benchmark. Summit's
-own selected codec still needs to be logged from `BMediaTrack::GetCodecInfo()`
-after `DecodedFormat()` on a real video source.
+own codec selection is checked below.
 
 A browser-process check on 2026-09-23 opened the Reddit H.264 CMAF URL in
 `bundle-kou9exyv`. The video played to its 12.7-second `ended` event with no
@@ -58,6 +57,16 @@ c++ -std=c++17 -O2 tools/nvdec/check-codec.cpp -lbe -lmedia -o check-codec
 
 On the same Reddit CMAF file, it selected `H.264 on the graphics card (NVDEC)`
 and decoded one 720×1280 frame successfully. This confirms that Media Kit
-selects NVDEC for the file and format request Summit uses. The browser-level
-codec identity still needs direct logging to exclude any difference in its
-runtime path.
+selects NVDEC for the file and format request Summit uses.
+
+The browser now supports opt-in `SUMMIT_MEDIA_CODEC_TRACE=1` logging after
+`DecodedFormat()`. On 2026-09-23, the mimalloc bundle `bundle-vlgss17_`
+reported `H.264 on the graphics card (NVDEC) (nvdec h264), status=0` while
+playing that direct Reddit CMAF file to its 12.7-second `ended` event without
+an error (`.vm/bench/probe-20260923-025529-summit-mimalloc-browser-codec/`).
+A separate `/r/popular/` feed scroll logged the same selected decoder for
+multiple video tracks
+(`.vm/bench/scroll-20260923-025633-reddit-mimalloc-codec-feed/`). This proves
+that the actual Reddit page reaches the accelerated decoder path. Still-image
+captures do not establish that every feed video plays smoothly from start to
+finish; the direct file probe establishes completion for one URL.

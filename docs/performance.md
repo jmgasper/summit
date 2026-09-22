@@ -1658,3 +1658,22 @@ event without a media error
 defaults to mimalloc while retaining CMake overrides for allocator experiments.
 The 6.28 mean is still below Firefox's measured 8.34; the remaining editor,
 layout, and callback costs need further work.
+
+A fresh `AllocatorDefaultsCheck` CMake configuration, without allocator
+override flags, resolved `USE_MIMALLOC=ON` and `USE_SYSTEM_MALLOC=OFF`
+(`.vm/configure-allocator-defaults.log`). The temporary configure directory
+was removed after checking its cache. The updated mimalloc engine rebuilt and
+linked cleanly.
+
+With `SUMMIT_MEDIA_CODEC_TRACE=1`, its WebProcess identified the selected
+decoder as `H.264 on the graphics card (NVDEC)` while the direct Reddit CMAF
+file played to `ended`
+(`.vm/bench/probe-20260923-025529-summit-mimalloc-browser-codec/`). A live
+`/r/popular/` feed scroll logged 18 NVDEC selections and showed video imagery
+in its screenshots
+(`.vm/bench/scroll-20260923-025633-reddit-mimalloc-codec-feed/`). The same
+scroll still had a 663 ms maximum delivered-frame gap and 13 gaps over 33 ms.
+Several Media Kit messages said it could not detect HLS from a nonstandard
+extension and MIME type. Those messages warrant investigation for feed videos
+that fail despite working H.264 MP4 decoding; a still screenshot does not
+prove complete playback of every feed video.
