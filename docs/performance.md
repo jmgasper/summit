@@ -1758,3 +1758,11 @@ was removed because it did not restore playback. Reddit's direct CMAF MP4 path
 continues to play to `ended` with the NVDEC H.264 decoder, and live feed pages
 select that decoder; complete HLS support needs a demux path that can retain
 the playlist URL or supply its video and audio streams together.
+
+The clean default-paced bundle `bundle-0xc87hol` passed both regressions. Its
+600-frame 400-card scroll probe ran at 58.83 fps, p95 18 ms, maximum 31 ms,
+with no interval over 33 ms
+(`.vm/bench/probe-20260923-041115-summit-default-paced-scroll/`). The direct
+Reddit 720p CMAF video selected `H.264 on the graphics card (NVDEC)` and reached
+its 12.7-second `ended` event without a media error
+(`.vm/bench/probe-20260923-041020-summit-reddit-cmaf-default-paced/`).
