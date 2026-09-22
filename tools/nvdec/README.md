@@ -29,3 +29,10 @@ The installed add-on is at
 before replacing it. Check that `mediadecode /boot/home/bbb12s.mp4 60` names
 the NVDEC decoder and produces frames. This check exercises the decoder but
 does not establish playback on a website.
+
+On 2026-09-23 the workstation's installed add-on selected
+`H.264 on the graphics card (NVDEC)` for `/boot/home/bbb12s.mp4` and decoded
+60 of its 1920×1080 frames in 674.9 ms. An engine compile was active, so that
+elapsed time is a functional check rather than a throughput benchmark. Summit's
+own selected codec still needs to be logged from `BMediaTrack::GetCodecInfo()`
+after `DecodedFormat()` on a real video source.
