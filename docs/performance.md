@@ -1214,6 +1214,7 @@ Measured with `tools/bench/run-probe.py --page scroll.html` on the workstation,
 | app_server backend | 44.4 fps | 3.28 ± 0.058 |
 | Skia, single-threaded, no compositor | 7.7 fps | 2.59 ± 0.551 |
 | Skia + coordinated graphics | **62.3 fps** | not yet (see below) |
+| ... with async scrolling off | 59.3 fps | 6.41 on the one suite measured |
 | Firefox 155 | -- | 8.34 ± 0.37 |
 
 The scroll run is 600 frames at 62.3 fps, mean 16.05 ms, p95 17 ms, p99 18 ms,
@@ -1221,6 +1222,10 @@ longest 19 ms, **zero frames over 33 ms**. Idle is 65.6 fps. That is the frame
 pacing the rendering-update timer asks for, held for the whole burst on a page
 with 400 cards and an 84,000 px document -- 1.4x the app_server backend and 8x
 the first Skia build, with the jitter gone.
+
+`AsyncImageDecoder`'s fix is verified on the page that first showed the
+problem: `en.wikipedia.org` loads, lays out and draws its text, links, infobox
+and images with the web process intact.
 
 ### Speedometer does not finish yet
 
@@ -1238,10 +1243,35 @@ stuck:
 
 Everything is idle and consistent: the compositor has nothing pending, no
 document has a `requestAnimationFrame` callback waiting, and nothing has asked
-for a rendering update. So the page is blocked on something else -- a timer, a
-dispatched task or a promise that never resolves -- and the next step is to say
-which, by reporting the main thread's timer heap and dispatch queues from the
-same watchdog.
+for a rendering update. Reporting the main thread's dispatch queues and timer
+heap from the same watchdog said the same thing -- `dispatchSuspended=0
+hasSuspended=0 currentQueue=0 nextQueue=0`, DOM timer throttling off, and the
+timer heap's next entry a legitimate second away. The page is waiting on
+something in its own JavaScript, not on the engine.
+
+One of the two causes is known. The suite that hangs, `Editor-CodeMirror`, has
+a scroll step, and it completes with the scrolling thread out of the picture:
+
+| Editor-CodeMirror alone, 1 iteration | Result |
+| --- | --- |
+| Skia, no compositor (`bundle-xknrxz_v`) | completes, 3.030 |
+| coordinated, async scrolling on | **hangs**, same step every time |
+| coordinated, `SUMMIT_DISABLE_ASYNC_SCROLLING=1` | completes, **6.410** |
+
+So where the coordinated build finishes, it is 2.1x the build it replaces. The
+switch is new and Haiku-only: upstream's `WEBKIT_DISABLE_ASYNC_SCROLLING` is
+behind `ENABLE(DEVELOPER_MODE)`, which release builds do not set.
+
+It costs about 5% of scroll frame rate and none of the pacing -- 59.3 fps,
+p99 19 ms, still no frame over 33 ms -- so it is a usable default until the
+scrolling tree is fixed.
+
+With it set, the full ten-iteration run still stops, at a different suite
+(`TodoMVC-Lit-Complex-DOM`) with the benchmark's iframe blank, and one-iteration
+runs pass that same suite. So there is a second cause, and it is intermittent.
+Finding what the page is waiting for -- through the Web Inspector or
+`run-speedometer.py --progress-beacons` -- is more use now than more engine
+instrumentation.
 
 Two measurement traps were fixed along the way, both in the harness rather than
 the browser:
