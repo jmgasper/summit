@@ -1,0 +1,35 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Summit media probe</title>
+<style>body { font: 16px sans-serif; } video { width: 640px; max-width: 100%; }</style>
+<h1>Media playback probe</h1>
+<video id="video" controls muted playsinline></video>
+<pre id="status"></pre>
+<script>
+"use strict";
+const params = new URLSearchParams(location.search);
+const video = document.getElementById("video");
+const status = document.getElementById("status");
+const events = [];
+const started = performance.now();
+for (const name of ["loadstart", "loadedmetadata", "loadeddata", "canplay", "playing",
+                    "timeupdate", "waiting", "stalled", "error", "ended"])
+    video.addEventListener(name, () => {
+        events.push({event: name, atMs: Math.round(performance.now() - started), time: video.currentTime});
+        status.textContent = JSON.stringify(events, null, 2);
+    });
+video.src = params.get("src") || "";
+video.play().catch(error => events.push({event: "play-rejected", message: String(error)}));
+setTimeout(async () => {
+    const result = {
+        src: video.src, events, time: video.currentTime, duration: video.duration,
+        readyState: video.readyState, networkState: video.networkState,
+        width: video.videoWidth, height: video.videoHeight,
+        error: video.error && {code: video.error.code, message: video.error.message},
+    };
+    document.title = `media: ${video.currentTime.toFixed(2)}s`;
+    status.textContent = JSON.stringify(result, null, 2);
+    await fetch("/__bench/probe", {method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(result)});
+}, 18000);
+</script>

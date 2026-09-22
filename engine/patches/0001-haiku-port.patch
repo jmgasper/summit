@@ -8999,10 +8999,10 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..6768bff15de640ba8084abcbb79c127ad86dd32f
+index 0000000000000000000000000000000000000000..68e34ba9d81e221630fa1942de6034cacb48e32c
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,605 @@
+@@ -0,0 +1,722 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -9044,6 +9044,7 @@ index 0000000000000000000000000000000000000000..6768bff15de640ba8084abcbb79c127a
 +#include <Bitmap.h>
 +#include <DataIO.h>
 +#include <Entry.h>
++#include <File.h>
 +#include <HttpRequest.h>
 +#include <MediaDefs.h>
 +#include <MediaFile.h>
@@ -9053,6 +9054,13 @@ index 0000000000000000000000000000000000000000..6768bff15de640ba8084abcbb79c127a
 +#include <View.h>
 +#include <OS.h>
 +#include <cmath>
++#include <cstdio>
++#include <cstdlib>
++#include <unistd.h>
++
++#if USE(CURL)
++#include <curl/curl.h>
++#endif
 +
 +
 +namespace WebCore {
@@ -9163,10 +9171,20 @@ index 0000000000000000000000000000000000000000..6768bff15de640ba8084abcbb79c127a
 +
 +    delete m_mediaFile;
 +    m_mediaFile = nullptr;
++    delete m_downloadFile;
++    m_downloadFile = nullptr;
 +    m_audioTrack = nullptr;
 +    m_videoTrack = nullptr;
++    m_hasVideo = false;
 +    delete m_frameBuffer;
 +    m_frameBuffer = nullptr;
++    m_currentTime = 0;
++    m_duration = 0;
++    m_ended = false;
++    if (!m_downloadPath.isEmpty()) {
++        unlink(m_downloadPath.utf8().legacyCStringPointer());
++        m_downloadPath = { };
++    }
 +    m_mediaLock.Unlock();
 +}
 +
@@ -9185,20 +9203,30 @@ index 0000000000000000000000000000000000000000..6768bff15de640ba8084abcbb79c127a
 +        return;
 +
 +    if (player->m_audioTrack) {
-+        player->m_currentTime = player->m_audioTrack->CurrentTime() / 1000000.f;
++        // BMediaTrack::CurrentTime() counts decoded audio rather than the time
++        // heard by the output device. It advances far too slowly on some MP4s;
++        // the video thread supplies the presentation clock when there is video.
++        if (!player->m_hasVideo)
++            player->m_currentTime = player->m_audioTrack->CurrentTime() / 1000000.f;
 +
 +        int64 size64;
 +        if (player->m_audioTrack->ReadFrames(buffer, &size64) != B_OK)
 +        {
-+            player->m_currentTime = player->m_audioTrack->Duration() / 1000000.f;
++            if (!player->m_hasVideo)
++                player->m_currentTime = player->m_audioTrack->Duration() / 1000000.f;
 +            player->m_soundPlayer->Stop(false);
 +
-+            callOnMainThread([p = WeakPtr(player)] {
-+                if (p)
-+                    p->m_player.timeChanged();
-+            });
-+
 +            player->m_audioTrack = nullptr;
++            if (!player->m_videoTrack && !player->m_ended.exchange(true)) {
++                player->m_currentTime = player->m_duration.load();
++                player->m_paused = true;
++                callOnMainThread([p = WeakPtr(player)] {
++                    if (p) {
++                        p->m_player.timeChanged();
++                        p->m_player.playbackStateChanged();
++                    }
++                });
++            }
 +        }
 +    }
 +    player->m_mediaLock.Unlock();
@@ -9263,18 +9291,12 @@ index 0000000000000000000000000000000000000000..6768bff15de640ba8084abcbb79c127a
 +            }
 +
 +            bigtime_t videoTime = player->m_videoTrack->CurrentTime();
-+            bigtime_t audioTime;
++            bigtime_t playbackTime = startMediaTime + (system_time() - startTime);
 +
-+            if (player->m_audioTrack) {
-+                audioTime = player->m_audioTrack->CurrentTime();
-+            } else {
-+                audioTime = startMediaTime + (system_time() - startTime);
-+            }
-+
-+            player->m_currentTime = audioTime / 1000000.f;
++            player->m_currentTime = playbackTime / 1000000.f;
 +            lastObservedTime = player->m_currentTime;
 +
-+            if (videoTime < audioTime) {
++            if (videoTime < playbackTime) {
 +                int64 count;
 +                if (player->m_videoTrack->ReadFrames(player->m_frameBuffer->Bits(), &count) == B_OK) {
 +                    callOnMainThread([player = WeakPtr(player)] {
@@ -9283,6 +9305,16 @@ index 0000000000000000000000000000000000000000..6768bff15de640ba8084abcbb79c127a
 +                    });
 +                } else {
 +                    player->m_videoTrack = nullptr;
++                    if (!player->m_audioTrack && !player->m_ended.exchange(true)) {
++                        player->m_currentTime = player->m_duration.load();
++                        player->m_paused = true;
++                        callOnMainThread([player = WeakPtr(player)] {
++                            if (player) {
++                                player->m_player.timeChanged();
++                                player->m_player.playbackStateChanged();
++                            }
++                        });
++                    }
 +                }
 +            } else {
 +                snooze(5000);
@@ -9338,15 +9370,14 @@ index 0000000000000000000000000000000000000000..6768bff15de640ba8084abcbb79c127a
 +
 +WTF::MediaTime MediaPlayerPrivate::duration() const
 +{
-+    BMediaTrack* track = m_audioTrack ? m_audioTrack : m_videoTrack;
-+    if (!track)
-+        return WTF::MediaTime();
-+    return WTF::MediaTime::createWithDouble(track->Duration() / 1000000.f);
++    return WTF::MediaTime::createWithDouble(m_duration);
 +}
 +
 +WTF::MediaTime MediaPlayerPrivate::currentTime() const
 +{
-+    return WTF::MediaTime::createWithDouble(m_currentTime);
++    float duration = m_duration;
++    float currentTime = m_currentTime;
++    return WTF::MediaTime::createWithDouble(duration > 0 ? std::min(currentTime, duration) : currentTime);
 +}
 +
 +Ref<MediaTimePromise> MediaPlayerPrivate::seekToTarget(const SeekTarget& time)
@@ -9369,6 +9400,7 @@ index 0000000000000000000000000000000000000000..6768bff15de640ba8084abcbb79c127a
 +    }
 +
 +    m_currentTime = newTime / 1000000.f;
++    m_ended = false;
 +
 +    if (m_paused && m_videoTrack && m_frameBuffer) {
 +        int64 count = 1;
@@ -9463,6 +9495,68 @@ index 0000000000000000000000000000000000000000..6768bff15de640ba8084abcbb79c127a
 +    return true;
 +}
 +
++#if USE(CURL)
++static bool downloadMediaFile(const BUrl& url, std::atomic<bool>& abort, String& path)
++{
++    char name[] = "/tmp/summit-media-XXXXXX";
++    int descriptor = mkstemp(name);
++    if (descriptor < 0)
++        return false;
++    FILE* output = fdopen(descriptor, "wb");
++    if (!output) {
++        close(descriptor);
++        unlink(name);
++        return false;
++    }
++
++    struct Download {
++        FILE* output;
++        std::atomic<bool>& abort;
++        size_t bytes { 0 };
++    } download { output, abort };
++
++    CURL* request = curl_easy_init();
++    CURLcode result = CURLE_FAILED_INIT;
++    long response = 0;
++    if (request) {
++        curl_easy_setopt(request, CURLOPT_URL, url.UrlString().String());
++        curl_easy_setopt(request, CURLOPT_FOLLOWLOCATION, 1L);
++        curl_easy_setopt(request, CURLOPT_MAXREDIRS, 5L);
++        curl_easy_setopt(request, CURLOPT_PROTOCOLS_STR, "http,https");
++        curl_easy_setopt(request, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
++        curl_easy_setopt(request, CURLOPT_CONNECTTIMEOUT, 15L);
++        curl_easy_setopt(request, CURLOPT_LOW_SPEED_LIMIT, 1024L);
++        curl_easy_setopt(request, CURLOPT_LOW_SPEED_TIME, 30L);
++        curl_easy_setopt(request, CURLOPT_NOPROGRESS, 0L);
++        curl_easy_setopt(request, CURLOPT_XFERINFODATA, &download);
++        curl_easy_setopt(request, CURLOPT_XFERINFOFUNCTION, +[](void* context, curl_off_t, curl_off_t, curl_off_t, curl_off_t) -> int {
++            return static_cast<Download*>(context)->abort ? 1 : 0;
++        });
++        curl_easy_setopt(request, CURLOPT_WRITEDATA, &download);
++        curl_easy_setopt(request, CURLOPT_WRITEFUNCTION, +[](char* bytes, size_t size, size_t count, void* context) -> size_t {
++            auto& download = *static_cast<Download*>(context);
++            size_t length = size * count;
++            constexpr size_t maxMediaBytes = 256 * 1024 * 1024;
++            if (download.abort || length > maxMediaBytes - download.bytes)
++                return 0;
++            size_t written = fwrite(bytes, 1, length, download.output);
++            download.bytes += written;
++            return written;
++        });
++        result = curl_easy_perform(request);
++        curl_easy_getinfo(request, CURLINFO_RESPONSE_CODE, &response);
++        curl_easy_cleanup(request);
++    }
++    bool closed = fclose(output) == 0;
++    if (result != CURLE_OK || response < 200 || response >= 300 || !closed || !download.bytes || abort) {
++        unlink(name);
++        return false;
++    }
++    path = String::fromUTF8(name);
++    return true;
++}
++#endif
++
 +void MediaPlayerPrivate::IdentifyTracks(const String& url)
 +{
 +    // Use Media Kit's file reader for local files. BUrl::HasHost() is true for
@@ -9478,7 +9572,19 @@ index 0000000000000000000000000000000000000000..6768bff15de640ba8084abcbb79c127a
 +        BString path = BUrl::UrlDecode(mediaURL.Path());
 +        hasLocalFile = get_ref_for_path(path.String(), &ref) == B_OK;
 +    }
-+    m_mediaFile = hasLocalFile ? new BMediaFile(&ref) : new BMediaFile(mediaURL);
++#if USE(CURL)
++    if (!hasLocalFile && (mediaURL.Protocol() == "http" || mediaURL.Protocol() == "https")) {
++        String path;
++        if (!downloadMediaFile(mediaURL, m_abort, path))
++            return;
++        m_downloadPath = path;
++        m_downloadFile = new BFile(path.utf8().legacyCStringPointer(), B_READ_ONLY);
++        if (m_downloadFile->InitCheck() != B_OK)
++            return;
++    }
++#endif
++    m_mediaFile = m_downloadFile ? new BMediaFile(m_downloadFile)
++        : hasLocalFile ? new BMediaFile(&ref) : new BMediaFile(mediaURL);
 +
 +    if (m_mediaFile->InitCheck() == B_OK) {
 +        for (int i = m_mediaFile->CountTracks() - 1; i >= 0; i--)
@@ -9512,6 +9618,7 @@ index 0000000000000000000000000000000000000000..6768bff15de640ba8084abcbb79c127a
 +                    continue;
 +                }
 +                m_videoTrack = track;
++                m_hasVideo = true;
 +
 +                m_frameBuffer = new BBitmap(
 +                    BRect(0, 0, format.Width() - 1, format.Height() - 1),
@@ -9550,11 +9657,21 @@ index 0000000000000000000000000000000000000000..6768bff15de640ba8084abcbb79c127a
 +
 +        }
 +
++        if (BMediaTrack* track = m_audioTrack ? m_audioTrack : m_videoTrack)
++            m_duration = track->Duration() / 1000000.f;
++
 +        if (m_videoTrack) {
 +            m_videoThread = spawn_thread(videoThread, "video decoder", B_NORMAL_PRIORITY, this);
 +            if (m_videoThread >= 0)
 +                resume_thread(m_videoThread);
 +        }
++    }
++
++    // The BFile remains open until after BMediaFile is destroyed. Removing its
++    // directory entry also cleans up when the WebProcess is killed.
++    if (!m_downloadPath.isEmpty()) {
++        unlink(m_downloadPath.utf8().legacyCStringPointer());
++        m_downloadPath = { };
 +    }
 +}
 +
@@ -9610,10 +9727,10 @@ index 0000000000000000000000000000000000000000..6768bff15de640ba8084abcbb79c127a
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..7361d7fdaacf6eb250a749efe9b9e5981b12d1b8
+index 0000000000000000000000000000000000000000..42d1381916e8e8489b0fba8bbf0e15d1cef9e784
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
-@@ -0,0 +1,141 @@
+@@ -0,0 +1,148 @@
 +/*
 + * Copyright (C) 2014 Haiku, Inc.
 + *
@@ -9648,6 +9765,7 @@ index 0000000000000000000000000000000000000000..7361d7fdaacf6eb250a749efe9b9e598
 +
 +class BBitmap;
 +class BDataIO;
++class BFile;
 +class BMediaFile;
 +class BMediaTrack;
 +class BSoundPlayer;
@@ -9699,6 +9817,7 @@ index 0000000000000000000000000000000000000000..7361d7fdaacf6eb250a749efe9b9e598
 +
 +        Ref<MediaTimePromise> seekToTarget(const SeekTarget&) final;
 +        bool paused() const override;
++        bool ended() const override { return m_ended; }
 +
 +        void setVolume(float) override;
 +
@@ -9730,6 +9849,7 @@ index 0000000000000000000000000000000000000000..7361d7fdaacf6eb250a749efe9b9e598
 +
 +        mutable bool m_didReceiveData;
 +        BMediaFile* m_mediaFile;
++        BFile* m_downloadFile { nullptr };
 +        BMediaTrack* m_audioTrack;
 +        BMediaTrack* m_videoTrack;
 +        BSoundPlayer* m_soundPlayer;
@@ -9741,13 +9861,17 @@ index 0000000000000000000000000000000000000000..7361d7fdaacf6eb250a749efe9b9e598
 +        MediaPlayer::ReadyState m_readyState;
 +
 +        float m_volume;
-+        float m_currentTime;
++        std::atomic<float> m_currentTime;
++        std::atomic<float> m_duration { 0 };
++        std::atomic<bool> m_hasVideo { false };
++        std::atomic<bool> m_ended { false };
 +        std::atomic<bool> m_paused;
 +        std::atomic<bool> m_abort;
 +
 +        thread_id m_loadingThread;
 +        thread_id m_videoThread;
 +        String m_url;
++        String m_downloadPath;
 +};
 +
 +

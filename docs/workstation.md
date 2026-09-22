@@ -181,9 +181,25 @@ H.264/AAC MP4 passed the former 0.6 s stall, and a video-only copy played to
 its 12.24 s end. Reloading the video in the same tab also continued playback.
 The patched plugin decoded all 366 source frames separately in 2.83 s.
 
-The browser's HTTP media path and Reddit playback still need direct checks.
-`ENABLE_MEDIA_SOURCE` is off, so sites that require Media Source Extensions
-cannot use this backend yet.
+The HTTP path now has a direct check. Media Kit's `BMediaFile(BUrl)` reader
+reported corrupt packets and a partial MP4 near the file's end, and its audio
+track clock advanced only about 0.05 seconds per real second. Summit now
+downloads HTTP(S) media on the cancellable loader thread (up to 256 MiB),
+opens the completed file as a `BFile`/`BDataIO` for Media Kit, and removes its
+temporary pathname while the file handle stays open. Video uses the monotonic
+clock; the backend keeps duration and signals end of stream after the tracks
+finish. The HTTP probe is `tools/bench/pages/media.html`.
+
+In `bundle-kqw134os`, the 12-second H.264/AAC file served over HTTP reached
+`ended` at 12.45 seconds with `currentTime` advancing at normal speed
+(`.vm/bench/probe-20260922-222126-summit-http-media-ended/`). A 720x1280
+H.264 stream from a Reddit post played over HTTPS to `ended` at 12.7 seconds
+(`.vm/bench/probe-20260922-222214-summit-reddit-cmaf/`). The Reddit post page
+also loaded in Summit and showed its player at 0:12/0:12 with the completion
+overlay (`.vm/bench/reddit-site-20260922/final.png`). The first full download
+must finish before playback starts. `ENABLE_MEDIA_SOURCE` is still off, so
+other sites or Reddit streams that require Media Source Extensions remain
+unsupported.
 
 ## Firefox, for comparison
 
