@@ -14,6 +14,7 @@ Only the browser instance launched by this script is ever signalled.
 Examples:
   python3 tools/bench/run-speedometer.py                       # official 10 iterations
   python3 tools/bench/run-speedometer.py --iterations 3        # quick check
+  python3 tools/bench/run-speedometer.py --suites Editor-TipTap --haiku-profile
   python3 tools/bench/run-speedometer.py --wait-quiet 120      # poll up to 2 h for an idle VM first
   python3 tools/bench/run-speedometer.py --official
   python3 tools/bench/run-speedometer.py --annotate .vm/bench/<run-id> --score 4.21 --ci 0.13
@@ -136,6 +137,8 @@ def main():
     parser.add_argument('--cache-policy', choices=['official', 'revalidate', 'no-store'], default='official')
     parser.add_argument('--progress-beacons', action='store_true',
                         help='per-test progress beacons (diagnosis of hangs; marks the result instrumented)')
+    parser.add_argument('--haiku-profile', action='store_true',
+                        help='run Summit under Haiku\'s inclusive sampling profiler and save profile.txt')
     parser.add_argument('--env', action='append', default=[], metavar='NAME=VALUE', help='extra browser environment')
     parser.add_argument('--window', default='4,1,1270,797' if guest.IS_VM else '4,1,1916,1076',
                         metavar='L,T,R,B',
@@ -150,6 +153,8 @@ def main():
     args = parser.parse_args()
     if args.annotate:
         return annotate(args)
+    if args.haiku_profile and args.keep_open:
+        parser.error('--haiku-profile cannot be combined with --keep-open because the profile is written at exit')
 
     run_id = time.strftime('speedometer-%Y%m%d-%H%M%S') + ('-official' if args.official else '') \
         + (f'-{args.label}' if args.label else '')
@@ -166,6 +171,7 @@ def main():
     run = {'id': run_id, 'mode': 'official' if args.official else 'local', 'url': url, 'bundle': args.bundle,
            'iterations': args.iterations, 'suites': args.suites, 'directory': str(directory), 'machine': guest.HOST, 'vm': MACHINE_CONFIG[guest.HOST],
            'cachePolicy': None if args.official else args.cache_policy, 'progressBeacons': args.progress_beacons,
+           'haikuProfile': args.haiku_profile,
            'startedAt': time.strftime('%Y-%m-%dT%H:%M:%S%z'), 'outcome': 'not-started', 'load': {}, 'events': []}
 
     def save():
@@ -210,8 +216,9 @@ def main():
         # Start on the built-in start page so the window can be sized before the
         # benchmark (which starts itself on load) is on screen. Speedometer asks for a
         # viewport of at least 850x650; the 1280x800 guest screen only just allows it.
+        wrapper = ('profile', '-f', '-S', '-o', f'{guest_dir}/profile.txt') if args.haiku_profile else ()
         group = guest.launch(args.bundle, f'{guest_dir}/profile', 'summit:home', f'{guest_dir}/browser.log',
-                             extra_env)
+                             extra_env, wrapper)
         run['group'] = group
         run['outcome'] = 'starting'
         save()
@@ -340,6 +347,11 @@ def main():
                 guest.fetch_file(f'{guest_dir}/browser.log', directory / 'browser.log', tail_bytes=4 * 1024 * 1024)
             except Exception as error:
                 run['events'].append({'browserLogError': str(error)})
+            if args.haiku_profile:
+                try:
+                    guest.fetch_file(f'{guest_dir}/profile.txt', directory / 'profile.txt')
+                except Exception as error:
+                    run['events'].append({'profileFetchError': str(error)})
             if not args.keep_open:
                 guest.ssh(f'rm -rf {guest_dir}/profile', check=False, timeout=300)
         if server:
