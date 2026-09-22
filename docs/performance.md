@@ -1469,3 +1469,14 @@ diagnosis: it logs every compositor frame and can affect timing.
 The paced build also completed the controlled 400-card probe at 59.79
 frames/s over 120 scroll frames, with p95 19 ms, maximum 20 ms, and no gap
 over 33 ms (`.vm/bench/probe-20260922-225543-summit-paced-scroll/`).
+
+Additional opt-in timing narrows the remaining long gaps. With
+`SUMMIT_MEDIA_CANCEL_TIMING=1`, one media cancellation took 128 ms, including
+119 ms in `BSoundPlayer::Stop()`
+(`.vm/bench/reddit-media-cancel-trace-20260922/`). It occurred near a 798 ms
+frame gap, but other gaps had no matching cancellation. With
+`SUMMIT_RENDER_UPDATE_TIMING=1`, `LayerTreeHost::updateRendering()` took up to
+1042 ms, 593 ms, and 304 ms during a wheel pass. Almost all of that time was
+inside `Page::updateRendering()`, while scene flush took less than 0.1 ms
+(`.vm/bench/reddit-render-update-trace-20260922/`). The next measurement
+should split the WebCore page update into layout and script callback phases.

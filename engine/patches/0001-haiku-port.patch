@@ -8999,10 +8999,10 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..68e34ba9d81e221630fa1942de6034cacb48e32c
+index 0000000000000000000000000000000000000000..374f05348e7c80cd85334063bf7a86788454e2fc
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,722 @@
+@@ -0,0 +1,739 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -9146,6 +9146,13 @@ index 0000000000000000000000000000000000000000..68e34ba9d81e221630fa1942de6034ca
 +
 +void MediaPlayerPrivate::cancelLoad()
 +{
++    static const bool logCancelTiming = [] {
++        const char* value = std::getenv("SUMMIT_MEDIA_CANCEL_TIMING");
++        return value && value[0] == '1' && !value[1];
++    }();
++    bigtime_t began = logCancelTiming ? system_time() : 0;
++    bool hadLoader = m_loadingThread >= 0;
++    bool hadVideo = m_videoThread >= 0;
 +    m_abort = true;
 +
 +    // Neither the decoder thread nor the sound callback can finish while the
@@ -9155,15 +9162,18 @@ index 0000000000000000000000000000000000000000..68e34ba9d81e221630fa1942de6034ca
 +        wait_for_thread(m_loadingThread, &status);
 +        m_loadingThread = -1;
 +    }
++    bigtime_t loaderDone = logCancelTiming ? system_time() : 0;
 +
 +    if (m_videoThread >= 0) {
 +        status_t status;
 +        wait_for_thread(m_videoThread, &status);
 +        m_videoThread = -1;
 +    }
++    bigtime_t videoDone = logCancelTiming ? system_time() : 0;
 +
 +    if (m_soundPlayer)
 +        m_soundPlayer->Stop();
++    bigtime_t soundDone = logCancelTiming ? system_time() : 0;
 +
 +    m_mediaLock.Lock();
 +    delete m_soundPlayer;
@@ -9186,6 +9196,13 @@ index 0000000000000000000000000000000000000000..68e34ba9d81e221630fa1942de6034ca
 +        m_downloadPath = { };
 +    }
 +    m_mediaLock.Unlock();
++    if (logCancelTiming) {
++        bigtime_t ended = system_time();
++        if (ended - began > 33000)
++            fprintf(stderr, "Summit media cancel: loader=%d video=%d waitLoader=%.1fms waitVideo=%.1fms stopSound=%.1fms cleanup=%.1fms total=%.1fms\n",
++                hadLoader, hadVideo, (loaderDone - began) / 1000.0, (videoDone - loaderDone) / 1000.0,
++                (soundDone - videoDone) / 1000.0, (ended - soundDone) / 1000.0, (ended - began) / 1000.0);
++    }
 +}
 +
 +
@@ -78733,12 +78750,39 @@ index d382293c217c69e8672fb8f587a78e03574df4ba..5192b4bf4f5b2b3b17854164f56c82d5
      void activityStateDidChange(OptionSet<WebCore::ActivityState>, ActivityStateChangeID, CompletionHandler<void()>&&) override;
      void attachViewOverlayGraphicsLayer(WebCore::FrameIdentifier, WebCore::GraphicsLayer*) override;
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
-index a12c4f6edd9998271fda260c7193a3226bf1957a..6bdd77ed52e5f24c6c9e8ce873b778d50cea0e12 100644
+index a12c4f6edd9998271fda260c7193a3226bf1957a..bbd168f184aafef705a89cc9fa94c1955121ccf3 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
-@@ -187,7 +187,10 @@ void LayerTreeHost::updateRendering()
+@@ -58,6 +58,10 @@
+ #include <wtf/TZoneMallocInlines.h>
+ #include <wtf/glib/RunLoopSourcePriority.h>
+ #include <wtf/text/StringToIntegerConversion.h>
++#if PLATFORM(HAIKU)
++#include <cstdio>
++#include <cstdlib>
++#endif
+ 
+ namespace WebKit {
+ using namespace WebCore;
+@@ -182,12 +186,26 @@ void LayerTreeHost::updateRendering()
+ 
+     SetForScope<bool> reentrancyProtector(m_isUpdatingRendering, true);
+ 
++#if PLATFORM(HAIKU)
++    static const bool logRenderUpdateTiming = [] {
++        const char* value = std::getenv("SUMMIT_RENDER_UPDATE_TIMING");
++        return value && value[0] == '1' && !value[1];
++    }();
++    MonotonicTime timingStart = logRenderUpdateTiming ? MonotonicTime::now() : MonotonicTime { };
++#endif
++
+     TraceScope traceScope(LayerTreeHostRenderingUpdateStart, LayerTreeHostRenderingUpdateEnd);
+ 
      Ref page = m_webPage;
      page->updateRendering();
++#if PLATFORM(HAIKU)
++    MonotonicTime timingPage = logRenderUpdateTiming ? MonotonicTime::now() : MonotonicTime { };
++#endif
      page->flushPendingEditorStateUpdate();
 +#if PLATFORM(MAC) || PLATFORM(WPE) || PLATFORM(GTK)
 +    // ThemeColorChanged is declared for those ports only.
@@ -78747,6 +78791,43 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..6bdd77ed52e5f24c6c9e8ce873b778d5
  
      if (m_overlayCompositingLayer)
          m_overlayCompositingLayer->flushCompositingState(visibleContentsRect());
+@@ -200,6 +218,9 @@ void LayerTreeHost::updateRendering()
+     flags.add(FinalizeRenderingUpdateFlags::ApplyScrollingTreeLayerPositions);
+ #endif
+     page->finalizeRenderingUpdate(flags);
++#if PLATFORM(HAIKU)
++    MonotonicTime timingFinalize = logRenderUpdateTiming ? MonotonicTime::now() : MonotonicTime { };
++#endif
+ 
+     if (m_pendingResize) {
+         m_compositor->setSize(page->size(), page->deviceScaleFactor());
+@@ -219,6 +240,9 @@ void LayerTreeHost::updateRendering()
+         drawingArea->dispatchPendingCallbacksAfterEnsuringDrawing();
+ 
+     bool didChangeSceneState = m_sceneState->flush();
++#if PLATFORM(HAIKU)
++    MonotonicTime timingScene = logRenderUpdateTiming ? MonotonicTime::now() : MonotonicTime { };
++#endif
+     if (m_compositionRequired || m_pendingResize || m_forceFrameSync || didChangeSceneState)
+         requestCompositionForRenderingUpdate();
+ 
+@@ -237,6 +261,16 @@ void LayerTreeHost::updateRendering()
+         m_sceneState->waitUntilPaintingComplete();
+         m_waitUntilPaintingComplete = false;
+     }
++#if PLATFORM(HAIKU)
++    if (logRenderUpdateTiming) {
++        MonotonicTime timingEnd = MonotonicTime::now();
++        if (timingEnd - timingStart > 33_ms)
++            fprintf(stderr, "Summit render update: page=%.1fms finalize=%.1fms scene=%.1fms finish=%.1fms total=%.1fms\n",
++                (timingPage - timingStart).milliseconds(), (timingFinalize - timingPage).milliseconds(),
++                (timingScene - timingFinalize).milliseconds(), (timingEnd - timingScene).milliseconds(),
++                (timingEnd - timingStart).milliseconds());
++    }
++#endif
+ }
+ 
+ void LayerTreeHost::updateRootLayer()
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
 index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..c0c2e81c33b730088bb29ec0624d32603c9c6ead 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
