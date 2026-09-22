@@ -8934,10 +8934,10 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..72f21ca2bb66a9104b5d9a4574ff580b32f2dc88
+index 0000000000000000000000000000000000000000..a7333e5054b9b90210e2e0637845f7130d143717
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,573 @@
+@@ -0,0 +1,583 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -8978,6 +8978,7 @@ index 0000000000000000000000000000000000000000..72f21ca2bb66a9104b5d9a4574ff580b
 +#include <support/Locker.h>
 +#include <Bitmap.h>
 +#include <DataIO.h>
++#include <Entry.h>
 +#include <HttpRequest.h>
 +#include <MediaDefs.h>
 +#include <MediaFile.h>
@@ -9044,11 +9045,7 @@ index 0000000000000000000000000000000000000000..72f21ca2bb66a9104b5d9a4574ff580b
 +
 +MediaPlayerPrivate::~MediaPlayerPrivate()
 +{
-+    m_mediaLock.Lock();
-+
 +    cancelLoad();
-+    delete m_frameBuffer;
-+    m_mediaLock.Unlock();
 +}
 +
 +#if ENABLE(MEDIA_SOURCE)
@@ -9060,8 +9057,9 @@ index 0000000000000000000000000000000000000000..72f21ca2bb66a9104b5d9a4574ff580b
 +
 +void MediaPlayerPrivate::load(const String& url)
 +{
-+    m_mediaLock.Lock();
 +    cancelLoad();
++
++    m_mediaLock.Lock();
 +    m_abort = false;
 +    m_url = url;
 +
@@ -9077,7 +9075,8 @@ index 0000000000000000000000000000000000000000..72f21ca2bb66a9104b5d9a4574ff580b
 +{
 +    m_abort = true;
 +
-+    // Do not hold the lock while waiting for threads, as they need it to finish
++    // Neither the decoder thread nor the sound callback can finish while the
++    // caller holds m_mediaLock. Join and stop them before taking it.
 +    if (m_loadingThread >= 0) {
 +        status_t status;
 +        wait_for_thread(m_loadingThread, &status);
@@ -9090,9 +9089,10 @@ index 0000000000000000000000000000000000000000..72f21ca2bb66a9104b5d9a4574ff580b
 +        m_videoThread = -1;
 +    }
 +
-+    m_mediaLock.Lock();
 +    if (m_soundPlayer)
 +        m_soundPlayer->Stop();
++
++    m_mediaLock.Lock();
 +    delete m_soundPlayer;
 +    m_soundPlayer = nullptr;
 +
@@ -9100,6 +9100,8 @@ index 0000000000000000000000000000000000000000..72f21ca2bb66a9104b5d9a4574ff580b
 +    m_mediaFile = nullptr;
 +    m_audioTrack = nullptr;
 +    m_videoTrack = nullptr;
++    delete m_frameBuffer;
++    m_frameBuffer = nullptr;
 +    m_mediaLock.Unlock();
 +}
 +
@@ -9398,14 +9400,22 @@ index 0000000000000000000000000000000000000000..72f21ca2bb66a9104b5d9a4574ff580b
 +
 +void MediaPlayerPrivate::IdentifyTracks(const String& url)
 +{
-+    // TODO something here is blocking inside the Media Kit. We should rework
-+    // things so that this is run in a separate thread (Media Thread?). This
-+    // would avoid the annoying freeze whenever a media is being loaded.
++    // The URL constructor uses the network reader even for file: URLs. That
++    // reader can return truncated MP4 packets on local files; the native file
++    // reader does not. IdentifyTracks already runs on the media loader thread.
 +#if B_HAIKU_VERSION <= B_HAIKU_VERSION_1_BETA_5
-+    m_mediaFile = new BMediaFile(BUrl(url.utf8().legacyCStringPointer()));
++    BUrl mediaURL(url.utf8().legacyCStringPointer());
 +#else
-+    m_mediaFile = new BMediaFile(BUrl(url.utf8().legacyCStringPointer(), false));
++    BUrl mediaURL(url.utf8().legacyCStringPointer(), false);
 +#endif
++    if (mediaURL.Protocol() == "file" && (!mediaURL.HasHost() || mediaURL.Host() == "localhost")) {
++        entry_ref ref;
++        BString path = BUrl::UrlDecode(mediaURL.Path());
++        if (get_ref_for_path(path.String(), &ref) == B_OK)
++            m_mediaFile = new BMediaFile(&ref);
++    }
++    if (!m_mediaFile)
++        m_mediaFile = new BMediaFile(mediaURL);
 +
 +    if (m_mediaFile->InitCheck() == B_OK) {
 +        for (int i = m_mediaFile->CountTracks() - 1; i >= 0; i--)
@@ -9513,10 +9523,10 @@ index 0000000000000000000000000000000000000000..72f21ca2bb66a9104b5d9a4574ff580b
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..63f70781bd9b677516198c0348a530a96df19af8
+index 0000000000000000000000000000000000000000..7361d7fdaacf6eb250a749efe9b9e5981b12d1b8
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
-@@ -0,0 +1,140 @@
+@@ -0,0 +1,141 @@
 +/*
 + * Copyright (C) 2014 Haiku, Inc.
 + *
@@ -9543,6 +9553,7 @@ index 0000000000000000000000000000000000000000..63f70781bd9b677516198c0348a530a9
 +#include "MediaPlayerPrivate.h"
 +
 +#include <wtf/WeakPtr.h>
++#include <atomic>
 +
 +#include <Locker.h>
 +#include <ObjectList.h>
@@ -9644,8 +9655,8 @@ index 0000000000000000000000000000000000000000..63f70781bd9b677516198c0348a530a9
 +
 +        float m_volume;
 +        float m_currentTime;
-+        bool m_paused;
-+        bool m_abort;
++        std::atomic<bool> m_paused;
++        std::atomic<bool> m_abort;
 +
 +        thread_id m_loadingThread;
 +        thread_id m_videoThread;

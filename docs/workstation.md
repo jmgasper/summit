@@ -163,13 +163,14 @@ thread 49419: video decoder   state: Exception (Segment violation)
   decoder: { reason: Bad address ... }
 ```
 
-`NVDecPlugin.cpp` declares `char reason[256]` as a local of the setup function
-and hands it to `nvdecH264Create(fEngine, reason, sizeof(reason))`, which keeps
-the pointer in `decoder->reason`. Once setup returns, that stack is reused, and
-the first `snprintf(why, sizeof(why), "%s", decoder->reason ...)` during
-decoding reads freed stack. Giving the buffer the decoder's lifetime (a member
-array) should be all it needs. Reports are kept in
-`/boot/home/summit/bench/reports/`.
+`NVDecPlugin.cpp` passed a stack-local `char reason[256]` to
+`nvdecH264Create()`, which kept the pointer in `decoder->reason`. The fix in
+[`tools/nvdec/reason-lifetime.patch`](../tools/nvdec/reason-lifetime.patch)
+makes the buffer a decoder member. The patched add-on is installed on the
+workstation, with the old binary saved as `nvdec.before-summit`. The owner's
+`mediadecode` now reads 60 frames of `/boot/home/bbb12s.mp4` through NVDEC in
+612 ms (98 frames/s), without a crash. This checks the plugin separately from
+Summit. Earlier crash reports are in `/boot/home/summit/bench/reports/`.
 
 With the plugin moved aside the ffmpeg decoder renders the same file, so the
 rest of Summit's media path works; playback then stalls with
