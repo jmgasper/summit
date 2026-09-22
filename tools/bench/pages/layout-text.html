@@ -1,0 +1,70 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Summit text layout probe: running</title>
+<style>
+body { font: 14px/1.4 sans-serif; margin: 24px; }
+#stage { width: 760px; height: 120px; overflow: hidden; border: 1px solid #999; }
+#stage span { display: inline-block; padding: 1px 4px; margin: 1px; }
+pre { white-space: pre-wrap; }
+</style>
+<h1>Text layout probe</h1>
+<p>Repeated width-dependent layout with the same box geometry and different text reuse.</p>
+<div id="stage"></div>
+<pre id="out">running…</pre>
+<script>
+"use strict";
+const stage = document.getElementById("stage");
+const out = document.getElementById("out");
+const round = value => Math.round(value * 100) / 100;
+const summary = values => {
+    const sorted = [...values].sort((a, b) => a - b);
+    const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+    const at = fraction => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * fraction))];
+    return {totalMs: round(values.reduce((sum, value) => sum + value, 0)), meanMs: round(mean),
+        medianMs: round(at(0.5)), p95Ms: round(at(0.95)), first5Ms: values.slice(0, 5).map(round),
+        last10MeanMs: round(values.slice(-10).reduce((sum, value) => sum + value, 0) / 10)};
+};
+
+function populate(textForIndex) {
+    const fragment = document.createDocumentFragment();
+    for (let index = 0; index < 2000; ++index) {
+        const span = document.createElement("span");
+        const text = textForIndex(index);
+        if (text)
+            span.textContent = text;
+        fragment.appendChild(span);
+    }
+    stage.replaceChildren(fragment);
+    void stage.offsetHeight;
+}
+
+function measure(textForIndex) {
+    populate(textForIndex);
+    const rounds = [];
+    for (let index = 0; index < 50; ++index) {
+        const start = performance.now();
+        stage.style.width = `${700 + (index % 2) * 40}px`;
+        void stage.offsetHeight;
+        rounds.push(performance.now() - start);
+    }
+    return summary(rounds);
+}
+
+(async () => {
+    await new Promise(resolve => setTimeout(resolve, 500));
+    const result = {userAgent: navigator.userAgent, viewport: [innerWidth, innerHeight],
+        hardwareConcurrency: navigator.hardwareConcurrency};
+    result.empty = measure(() => "");
+    result.sameText = measure(() => "word");
+    result.uniqueText = measure(index => `w${index}`);
+    result.uniqueTextSecondPass = measure(index => `w${index}`);
+    stage.replaceChildren();
+    out.textContent = JSON.stringify(result, null, 2);
+    await fetch("/__bench/probe", {method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(result)});
+    document.title = "Summit text layout probe: done";
+})().catch(error => {
+    out.textContent = String(error && error.stack || error);
+    document.title = "Summit text layout probe: error";
+});
+</script>
