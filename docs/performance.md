@@ -1827,3 +1827,24 @@ from 39.92 to 36.60 ms per layout, and repeated fixed-width text fell from
 (`.vm/bench/probe-20260923-061455-summit-summit-layout-text-znver1-native/`).
 Those 8% and 6% improvements confirm that generated code affects the isolated
 layout loop, but they did not improve the complete browser benchmark.
+
+### Reddit HLS playback restored
+
+The Haiku media backend now handles Reddit's finite, unencrypted byte-range
+CMAF form of HLS. It parses the master playlist, selects the highest-bandwidth
+variant and its audio group, verifies that each child playlist is a finite
+same-resource byte-range playlist, then gives the completed video and audio
+MP4 resources to separate Media Kit readers. Unsupported encrypted, live,
+discontinuous, or multi-resource playlists still take the normal format-error
+path rather than being partially decoded.
+
+On `bundle-enb94pi0`, the previously failing Reddit master playlist loaded
+metadata in 756 ms and played its 720×1280 video through to the 12.7-second
+`ended` event with no media error. Codec tracing selected
+`H.264 on the graphics card (NVDEC)` for video and `AAC` for audio
+(`.vm/bench/probe-20260923-061923-summit-summit-reddit-hls-cmaf/`). The direct
+CMAF MP4 regression also played to `ended` with NVDEC
+(`.vm/bench/probe-20260923-062025-summit-summit-reddit-cmaf-hls-regression/`).
+The same bundle's controlled 400-card scroll test reached 59.03 fps over 600
+frames, p95 18 ms, maximum 23 ms, and no frame over 33 ms
+(`.vm/bench/probe-20260923-062113-summit-summit-hls-scroll-regression/`).
