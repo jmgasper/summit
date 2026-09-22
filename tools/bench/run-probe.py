@@ -31,6 +31,8 @@ def main():
     parser.add_argument('--browser', choices=['summit', 'firefox'], default='summit')
     parser.add_argument('--window', default='4,1,1270,797' if guest.IS_VM else '4,1,1916,1076')
     parser.add_argument('--env', action='append', default=[], metavar='NAME=VALUE')
+    parser.add_argument('--haiku-profile', action='store_true',
+                        help='run Summit under the Haiku sampling profiler and save profile.txt')
     parser.add_argument('--label', default='')
     args = parser.parse_args()
 
@@ -49,7 +51,7 @@ def main():
                               stdout=(directory / 'server.log').open('w'), stderr=subprocess.STDOUT)
     time.sleep(1)
     guest.wake_display()
-    team = None
+    team = group = None
     outcome = 'timeout'
     url = f'http://{guest.HOST_ADDRESS}:{args.port}/__bench/pages/{args.page}'
     try:
@@ -58,9 +60,10 @@ def main():
             guest.ssh(f'/boot/system/apps/Firefox/Firefox --no-remote --profile {guest_dir}/profile '
                       f'"{url}" > {guest_dir}/browser.log 2>&1 &')
         else:
-            team = guest.launch(args.bundle, f'{guest_dir}/profile', 'summit:home', f'{guest_dir}/browser.log',
-                                dict(item.split('=', 1) for item in args.env))
-            guest.find_browser(ctl, team)
+            wrapper = ('profile', '-f', '-S', '-o', f'{guest_dir}/profile.txt') if args.haiku_profile else ()
+            group = guest.launch(args.bundle, f'{guest_dir}/profile', 'summit:home', f'{guest_dir}/browser.log',
+                                 dict(item.split('=', 1) for item in args.env), wrapper)
+            team = guest.find_browser(ctl, group)
             guest.ctl(ctl, team, 'frame', *args.window.split(','))
             guest.ctl(ctl, team, 'sidebar')
             time.sleep(3)
@@ -84,15 +87,18 @@ def main():
         guest.screenshot(directory / 'final.png')
     finally:
         if team is not None:
-            guest.terminate(ctl, team)
+            guest.terminate(ctl, team, group=group)
         if args.browser == 'firefox':
             guest.ssh(r'ps | /bin/grep "[F]irefox" | awk "{print \$(NF-3)}" | xargs -r kill -9 2>/dev/null; true', check=False)
         guest.fetch_file(f'{guest_dir}/browser.log', directory / 'browser.log', tail_bytes=1024 * 1024)
+        if args.haiku_profile:
+            guest.fetch_file(f'{guest_dir}/profile.txt', directory / 'profile.txt')
         guest.ssh(f'rm -rf {guest_dir}/profile', check=False, timeout=300)
         server.terminate()
     after = guest.load_report(ctl, (), 3000)
     report = {'id': run_id, 'outcome': outcome, 'browser': args.browser, 'page': args.page,
               'machine': guest.HOST, 'bundle': args.bundle, 'env': args.env,
+              'haikuProfile': args.haiku_profile,
               'load': {'before': before, 'after': after}, 'contended': before['contended'] or after['contended']}
     if outcome == 'completed':
         report['probe'] = json.loads((directory / 'probe.json').read_text())['payload']

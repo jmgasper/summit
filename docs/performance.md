@@ -1764,3 +1764,49 @@ with no interval over 33 ms
 Reddit 720p CMAF video selected `H.264 on the graphics card (NVDEC)` and reached
 its 12.7-second `ended` event without a media error
 (`.vm/bench/probe-20260923-041020-summit-reddit-cmaf-default-paced/`).
+
+The same bundle reproduced its Speedometer result after the compiler was
+stopped: 6.293 ± 0.302, with at most 0.05 foreign CPU cores
+(`.vm/bench/speedometer-20260923-051716-mimalloc-generic-control-fresh/`).
+Increasing JSC's global worklist limit from three to eight and setting four
+Baseline, DFG, and FTL compiler threads scored 6.085 ± 0.307
+(`.vm/bench/speedometer-20260923-051911-mimalloc-jsc-workers-8/`). The wider
+pool provides no gain on this workload and is not enabled by default.
+
+### Focused inline text layout result
+
+`tools/bench/pages/layout-text.html` forces 50 width-dependent layouts over
+2,000 inline blocks. It holds the box geometry constant while comparing empty,
+repeated-text, unique-text, simplified-text, and fixed-width cases. Uncontended
+runs on the workstation measured:
+
+| Case, milliseconds per layout | Summit | Firefox 155 |
+| --- | ---: | ---: |
+| empty, automatic width | 10.80 | 5.90 |
+| repeated text, automatic width | 39.92 | 6.56 |
+| unique text, automatic width | 40.52 | 6.54 |
+| repeated text, `optimizeSpeed` | 40.10 | 6.62 |
+| unique text, `optimizeSpeed` | 40.80 | 6.66 |
+| empty, fixed width | 9.76 | 6.64 |
+| repeated text, fixed width | 33.66 | 6.80 |
+| unique text, fixed width | 34.24 | 6.90 |
+
+The artifacts are
+`.vm/bench/probe-20260923-052334-summit-layout-text-fixed-generic/` and
+`.vm/bench/probe-20260923-052420-firefox-layout-text-fixed-firefox/`.
+Repeated and unique strings are effectively identical, and disabling kerning
+and ligatures through `text-rendering: optimizeSpeed` does not move the result.
+Fixed widths remove about 6 ms from Summit but leave about 24 ms of text work
+above its empty-box case. This rules out the sampled string-width cache and
+advanced shaping features as the main cause; the remaining gap is in repeated
+inline text layout and display-content construction.
+
+The probe harness can now run Summit under Haiku's inclusive sampling profiler
+with `--haiku-profile`. Its focused profile records 15,323 samples in layout,
+14,941 in `LineLayout::layout`, and 14,711 in
+`InlineFormattingContext::layout`; width measurement itself has only 54
+samples. These are inclusive stacks, not a CPU-time partition. The profile is
+in `.vm/bench/probe-20260923-052551-summit-layout-text-profile/profile.txt`.
+An exclusive profiler attempt hung Haiku during profiler shutdown and required
+a NanoKVM power cycle, so the harness deliberately exposes only the verified
+inclusive mode.
