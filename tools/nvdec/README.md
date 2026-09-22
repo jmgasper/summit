@@ -46,3 +46,18 @@ active WebProcess. This establishes that the NVDEC add-on was available inside
 Summit's decoding process, but loading an add-on does not prove that Media Kit
 selected its decoder for this track. The WebKit engine build was active during
 the playback check, so its timing is not a throughput measurement.
+
+`check-codec.cpp` reproduces Summit's HTTP media path more closely: it opens
+the downloaded MP4 through `BFile`, requests RGB32 from `DecodedFormat()`,
+prints `GetCodecInfo()`, and reads a decoded frame. Build and run it on Haiku:
+
+```sh
+c++ -std=c++17 -O2 tools/nvdec/check-codec.cpp -lbe -lmedia -o check-codec
+./check-codec reddit-cmaf-720.mp4
+```
+
+On the same Reddit CMAF file, it selected `H.264 on the graphics card (NVDEC)`
+and decoded one 720×1280 frame successfully. This confirms that Media Kit
+selects NVDEC for the file and format request Summit uses. The browser-level
+codec identity still needs direct logging to exclude any difference in its
+runtime path.
