@@ -1573,6 +1573,16 @@ and honoring `WEBKIT_SKIA_CPU_PAINTING_THREADS` for experiments. The paths are
 `.vm/bench/probe-20260923-00*skia-workers*/`. This controlled page does not
 reproduce Reddit's layout and animation callback stalls.
 
+The fast and slow four-worker result files also show a runtime-wide change,
+not just a first-iteration warmup difference. Every iteration total in the
+3.01-point run was 1.6–2.0 times the corresponding total in the 5.20-point
+run. React Stockcharts panning grew from 73 to 329 ms; its synchronous and
+asynchronous portions grew 4.4 and 4.5 times respectively. CodeMirror's long
+edit grew from 65 to 162 ms, with its synchronous portion growing 3.1 times.
+The same bundle and worker count produced both results. A future controlled
+run should capture process CPU and clock state during the test before
+attributing this variation to a WebKit code change.
+
 The rebuilt default bundle `bundle-kou9exyv` scored 5.11 ± 0.21 in an
 uncontended 10-iteration run with no worker override
 (`.vm/bench/speedometer-20260923-004746-skia-two-default/`). Its 400-card
