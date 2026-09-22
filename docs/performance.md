@@ -1677,3 +1677,21 @@ Several Media Kit messages said it could not detect HLS from a nonstandard
 extension and MIME type. Those messages warrant investigation for feed videos
 that fail despite working H.264 MP4 decoding; a still screenshot does not
 prove complete playback of every feed video.
+
+With mimalloc, forcing four Skia CPU paint workers scored 6.30 ± 0.31 in an
+uncontended ten-iteration Speedometer run
+(`.vm/bench/speedometer-20260923-030034-mimalloc-skia-workers-4/`). That is
+effectively the same as the two-worker scores, so the lower worker count stays
+the default for now.
+
+An active-process Haiku sampling profile of a five-iteration CodeMirror and
+TipTap run is saved at
+`.vm/bench/speedometer-20260923-030521-mimalloc-profile-late/profile.txt`.
+Its inclusive stacks include `Page::updateRendering` (8455 samples),
+request-animation-frame callbacks (about 6350), layout (about 2800), a Skia
+tile replay worker (2141), and a separate DFG JIT compile worker (5751).
+These counts overlap along call stacks and are not a CPU-time partition; JIT
+generated code is also not fully symbolized. They support profiling the page
+update, script callback, and layout path before investing in Skia GPU tile
+painting. An earlier system-wide profile started before WebProcess launched and
+did not include it; its result is excluded.
