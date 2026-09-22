@@ -1886,3 +1886,52 @@ the mismatch is an existing layout behavior rather than a result of this
 experiment. With the switch enabled, the controlled scrolling probe ran at
 59.10 fps, p95 18 ms, maximum 23 ms, and no frame above 33 ms
 (`.vm/bench/probe-20260923-063308-summit-fixed-inline-reuse-scroll/`).
+
+### Cross-suite TipTap slowdown isolation
+
+The current HLS-capable bundle `bundle-jiito6mn` scored **6.526 ± 0.324** in
+ten uncontended iterations
+(`.vm/bench/speedometer-20260923-065031-current-full-after-hls/`). TipTap took
+512 ms cold and 252–286 ms thereafter. The same bundle running only TipTap took
+535 ms cold and 128–139 ms thereafter
+(`.vm/bench/speedometer-20260923-064333-tiptap-alone-control/`). Running either
+half of the preceding default application suites before TipTap preserved its
+fast steady state; combining both halves reproduced the slowdown. This is a
+cumulative working-set effect rather than one conflicting suite.
+
+Controlled diagnostics ruled out several plausible global causes:
+
+- Recreating the benchmark iframe for every suite did not improve TipTap.
+- Disabling WebKit's back-forward cache reduced the overall score by about
+  3.5% and left TipTap slow.
+- A forced full JSC collection after every frame load and a ten-second idle
+  before every TipTap pass both left its steady time at 269 ms or more.
+- Reversing all 20 suites moved TipTap near the front but left its warm passes
+  at 259 ms or more.
+- Raising the inline text breaking cache from 500 KB to 4 MB and raising the
+  shared shaped-text cache from 3,000 to 12,000 entries did not help. The latter
+  scored 6.281 ± 0.769 over five iterations with 267 ms as its best TipTap pass
+  (`.vm/bench/speedometer-20260923-080501-shaped-text-cache-12000/`). Both
+  changes were reverted.
+
+JavaScriptCore cache reuse is beneficial but is not the source of the extra
+full-suite cost. TipTap alone with `JSC_useCodeCache=0` settled at 163–178 ms
+instead of 128–139 ms
+(`.vm/bench/speedometer-20260923-074203-tiptap-no-jsc-code-cache-diagnostic/`).
+The complete benchmark with that cache disabled fell to 5.504 ± 0.285 and
+TipTap settled at 312 ms or more
+(`.vm/bench/speedometer-20260923-074724-full-no-jsc-code-cache-diagnostic/`).
+Disabling shared Baseline JIT code likewise made the isolated suite modestly
+slower. Retaining those caches is the correct direction.
+
+Safe inclusive profiling is now available through
+`run-speedometer.py --haiku-profile`. A 50-iteration TipTap-only profile shows
+`Document::updateLayout` on 26.8% of all one-millisecond samples, flex layout
+on about 22%, selection canonical-position work on about 13%, intrinsic width
+work on about 10%, and DFG compilation on a separate worker on about 20%.
+Painting was about 1%. A complete three-iteration profile independently puts
+layout near 9%, style near 14%, JIT work near 19%, and Skia tile work near 8%.
+The percentages are inclusive and overlap; they identify the remaining work
+above painting without forming an exclusive CPU-time partition. Artifacts are
+`.vm/bench/speedometer-20260923-063838-tiptap-profile/` and
+`.vm/bench/speedometer-20260923-065529-full-profile-cross-suite/`.
