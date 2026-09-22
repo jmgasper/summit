@@ -2952,6 +2952,94 @@ index 3dbc23ec4a0818ed58ab2e0b2648056ab360a2ff..8254fb1525db8f69c8c4d1191e04b9b9
      virtual void receivedCancellation(const AuthenticationChallenge&);
  
  #if USE(QUICK_LOOK)
+diff --git a/Source/WebCore/page/Page.cpp b/Source/WebCore/page/Page.cpp
+index a26485a6771a1d63e0d0f5ff3800f30221a77304..3f6db7c37e917cc69347849119606a49d9134986 100644
+--- a/Source/WebCore/page/Page.cpp
++++ b/Source/WebCore/page/Page.cpp
+@@ -233,6 +233,10 @@
+ #include <wtf/text/MakeString.h>
+ #include <wtf/text/StringHash.h>
+ #include <wtf/text/TextStream.h>
++#if PLATFORM(HAIKU)
++#include <cstdio>
++#include <cstdlib>
++#endif
+ 
+ #if ENABLE(APPLE_PAY_AMS_UI)
+ #include "ApplePayAMSUIPaymentHandler.h"
+@@ -2378,7 +2382,18 @@ void Page::updateRendering()
+     if (!isSVGImagePage)
+         tracePoint(RenderingUpdateStart);
+ 
++#if PLATFORM(HAIKU)
++    static const bool logPageUpdateTiming = [] {
++        const char* value = std::getenv("SUMMIT_PAGE_UPDATE_TIMING");
++        return value && value[0] == '1' && !value[1];
++    }();
++    MonotonicTime timingStart = logPageUpdateTiming ? MonotonicTime::now() : MonotonicTime { };
++#endif
++
+     layoutIfNeeded();
++#if PLATFORM(HAIKU)
++    MonotonicTime timingInitialLayout = logPageUpdateTiming ? MonotonicTime::now() : MonotonicTime { };
++#endif
+ 
+     auto runProcessingStep = [&](RenderingUpdateStep step, NOESCAPE const Function<void(Document&)>& perDocumentFunction) {
+         m_renderingUpdateRemainingSteps.last().remove(step);
+@@ -2450,16 +2465,25 @@ void Page::updateRendering()
+     runProcessingStep(RenderingUpdateStep::VideoFrameCallbacks, [] (Document& document) {
+         document.serviceRequestVideoFrameCallbacks();
+     });
++#if PLATFORM(HAIKU)
++    MonotonicTime timingBeforeAnimationFrame = logPageUpdateTiming ? MonotonicTime::now() : MonotonicTime { };
++#endif
+ 
+     runProcessingStep(RenderingUpdateStep::AnimationFrameCallbacks, [] (Document& document) {
+         document.serviceRequestAnimationFrameCallbacks();
+     });
++#if PLATFORM(HAIKU)
++    MonotonicTime timingAnimationFrame = logPageUpdateTiming ? MonotonicTime::now() : MonotonicTime { };
++#endif
+ 
+     runProcessingStep(RenderingUpdateStep::CaretAnimation, [] (Document& document) {
+         document.serviceCaretAnimation();
+     });
+ 
+     layoutIfNeeded();
++#if PLATFORM(HAIKU)
++    MonotonicTime timingSecondLayout = logPageUpdateTiming ? MonotonicTime::now() : MonotonicTime { };
++#endif
+ 
+     runProcessingStep(RenderingUpdateStep::ResizeObservations, [&] (Document& document) {
+         document.updateResizeObservations(*this);
+@@ -2520,9 +2544,27 @@ void Page::updateRendering()
+     if (m_isTrackingRenderingUpdates)
+         ++m_renderingUpdateCount;
+ 
++#if PLATFORM(HAIKU)
++    MonotonicTime timingBeforeFinalLayout = logPageUpdateTiming ? MonotonicTime::now() : MonotonicTime { };
++#endif
+     layoutIfNeeded(LayoutOptions::UpdateCompositingLayers);
++#if PLATFORM(HAIKU)
++    MonotonicTime timingFinalLayout = logPageUpdateTiming ? MonotonicTime::now() : MonotonicTime { };
++#endif
+     doAfterUpdateRendering();
+ 
++#if PLATFORM(HAIKU)
++    if (logPageUpdateTiming) {
++        MonotonicTime timingEnd = MonotonicTime::now();
++        if (timingEnd - timingStart > 33_ms)
++            fprintf(stderr, "Summit page update: initialLayout=%.1fms preRAF=%.1fms raf=%.1fms secondLayout=%.1fms observers=%.1fms finalLayout=%.1fms after=%.1fms total=%.1fms\n",
++                (timingInitialLayout - timingStart).milliseconds(), (timingBeforeAnimationFrame - timingInitialLayout).milliseconds(),
++                (timingAnimationFrame - timingBeforeAnimationFrame).milliseconds(), (timingSecondLayout - timingAnimationFrame).milliseconds(),
++                (timingBeforeFinalLayout - timingSecondLayout).milliseconds(), (timingFinalLayout - timingBeforeFinalLayout).milliseconds(),
++                (timingEnd - timingFinalLayout).milliseconds(), (timingEnd - timingStart).milliseconds());
++    }
++#endif
++
+     if (!isSVGImagePage)
+         tracePoint(RenderingUpdateEnd);
+ }
 diff --git a/Source/WebCore/page/haiku/EventHandlerHaiku.cpp b/Source/WebCore/page/haiku/EventHandlerHaiku.cpp
 index 89f2b38d398b9fb7d5319d06bf0b918cfc569e1b..fbd1eea56e97654861c4b24b25c0da6e9f750604 100644
 --- a/Source/WebCore/page/haiku/EventHandlerHaiku.cpp
@@ -8999,10 +9087,10 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..374f05348e7c80cd85334063bf7a86788454e2fc
+index 0000000000000000000000000000000000000000..a842fee02f3965aa2bd7eecb55c207cea9a0ebe7
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,739 @@
+@@ -0,0 +1,741 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -9171,8 +9259,10 @@ index 0000000000000000000000000000000000000000..374f05348e7c80cd85334063bf7a8678
 +    }
 +    bigtime_t videoDone = logCancelTiming ? system_time() : 0;
 +
++    // The blocking form sleeps for the output latency even after playback has
++    // stopped. Destruction below releases the node after the threads have exited.
 +    if (m_soundPlayer)
-+        m_soundPlayer->Stop();
++        m_soundPlayer->Stop(false);
 +    bigtime_t soundDone = logCancelTiming ? system_time() : 0;
 +
 +    m_mediaLock.Lock();

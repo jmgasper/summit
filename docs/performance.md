@@ -1480,3 +1480,27 @@ frame gap, but other gaps had no matching cancellation. With
 inside `Page::updateRendering()`, while scene flush took less than 0.1 ms
 (`.vm/bench/reddit-render-update-trace-20260922/`). The next measurement
 should split the WebCore page update into layout and script callback phases.
+
+`SUMMIT_PAGE_UPDATE_TIMING=1` performed that split in
+`.vm/bench/reddit-page-update-trace-20260922/`. A 390 ms page update spent
+360 ms in initial layout. A later 731 ms update spent 436 ms before animation
+frame callbacks and 262 ms in a second layout. Another 467 ms update spent
+186 ms before callbacks, 213 ms in animation frame callbacks, and 55 ms in
+final layout. Thus both layout and page callback work cause the remaining
+stalls; the compositor frame itself is comparatively cheap. The media
+cancellation next to these updates spent 118 ms in `BSoundPlayer::Stop()`.
+Haiku's local SoundPlayer implementation shows that blocking `Stop()` sleeps
+for the audio output latency after stopping, whereas `Stop(false)` skips that
+sleep. Summit now uses the nonblocking form during teardown.
+
+The same 12-second H.264/AAC file played for one second and then had its
+`video.src` cleared in `media-cancel.html`. With blocking stop, that JavaScript
+operation took 154 ms, of which 142 ms was the sound stop. With nonblocking
+stop it took 15 ms (`.vm/bench/probe-20260922-231754-summit-blocking-cancel/`
+and `.vm/bench/probe-20260922-231832-summit-nonblocking-cancel/`). The new
+bundle still played the Reddit CMAF H.264 video to its 12.7-second `ended`
+event without a media error
+(`.vm/bench/probe-20260922-231448-summit-nonblocking-media/`). A further
+Reddit feed trace still had a 727 ms frame gap attributable to long page
+updates, so the media stop fix removes one independent pause but does not
+resolve the heavy page layout and script work.

@@ -1,0 +1,34 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Media cancel probe</title>
+<video id="video" autoplay muted playsinline></video>
+<pre id="status"></pre>
+<script>
+"use strict";
+const video = document.getElementById("video");
+const events = [];
+let done = false;
+async function finish(result) {
+    if (done) return;
+    done = true;
+    result.events = events;
+    document.getElementById("status").textContent = JSON.stringify(result, null, 2);
+    await fetch("/__bench/probe", {method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(result)});
+}
+for (const event of ["loadedmetadata", "playing", "error"])
+    video.addEventListener(event, () => events.push({event, at: performance.now()}));
+video.addEventListener("playing", () => setTimeout(() => {
+    const started = performance.now();
+    video.removeAttribute("src");
+    video.load();
+    finish({cancelMs: performance.now() - started, played: true});
+}, 1000), {once: true});
+const source = new URLSearchParams(location.search).get("src");
+if (source) {
+    video.src = source;
+    video.play().catch(error => finish({played: false, error: String(error)}));
+} else
+    finish({played: false, error: "src query parameter required"});
+setTimeout(() => finish({played: false, timeout: true}), 15000);
+</script>
