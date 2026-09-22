@@ -1445,3 +1445,27 @@ upward pass over previously seen content began at 56.4 frames/s, then fell to
 3.7 and 2.8 frames/s, with a maximum 638 ms gap. Screenshots in that directory
 confirm page movement. These measurements implicate work beyond loading new
 posts; the source of the stalls still needs isolation.
+
+The follow-up `SUMMIT_COMPOSITOR_TIMING=1` trace measured compositor preparation,
+scene flush, painting, and frame send. In
+`.vm/bench/reddit-compositor-trace-20260922/`, the compositor's median frame
+took 2.0 ms and p95 took 3.4 ms. The 590–867 ms gaps occurred between frames,
+so most of that lost time was not spent inside the compositing stages. The
+trace also exposed an uncontrolled redraw loop: Reddit produced 350–363
+coordinated frames/s while no user input was being sent. Haiku's shared-memory
+target does not wait for vertical sync during `swapBuffers()`.
+
+The Haiku compositor now schedules its next render at least 1/60 second after
+the last render started. Two fresh `/r/popular/` wheel passes used a title-bar
+focus click and confirmed feed movement without navigating away. The unpaced
+bundle (`.vm/bench/reddit-unpaced-titlebar-20260922/`) rendered 250–350
+frames/s in most windows. The paced bundle
+(`.vm/bench/reddit-paced-titlebar-20260922/`) rendered mostly 56–61 frames/s
+with about 16.8 ms median spacing. It still had two approximately 775 ms
+inter-frame gaps, so pacing removes excess redraw work but does not yet make
+real Reddit scrolling reliably smooth. Use `SUMMIT_COMPOSITOR_TIMING=1` only for
+diagnosis: it logs every compositor frame and can affect timing.
+
+The paced build also completed the controlled 400-card probe at 59.79
+frames/s over 120 scroll frames, with p95 19 ms, maximum 20 ms, and no gap
+over 33 ms (`.vm/bench/probe-20260922-225543-summit-paced-scroll/`).
