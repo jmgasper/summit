@@ -1529,3 +1529,21 @@ and removing the frame statistics hook scored 4.01 ± 0.13. Each was a
 completed, uncontended 10-iteration local Speedometer run. The cause of the
 slow warmup in these newer bundles remains open, separate from the rejected
 pacing policy.
+
+An older bundle produced just after HTTP media repair and before the frame
+probe scored 5.18 ± 0.26 on a fresh control run
+(`.vm/bench/speedometer-20260923-000923-http-media-control/`). A later bundle
+with the frame probe scored 4.42 ± 0.38
+(`.vm/bench/speedometer-20260923-000635-post-media-control/`), and the current
+probe-free bundle scored 4.01 ± 0.13. The JavaScriptCore library hashes are
+identical. Disabling concurrent JIT on the current bundle scored 3.69 ± 0.14
+(`.vm/bench/speedometer-20260923-001215-no-concurrent-jit/`). A temporary
+rebuild with the old blocking media stop scored 4.11 ± 0.25
+(`.vm/bench/speedometer-20260923-001802-blocking-stop-control/`), ruling out
+the nonblocking stop as the cause. The current code retains `Stop(false)` and
+the verified media cancellation improvement. The JavaScriptCore binaries are
+identical; the newer WebKit builds have different `.text` contents from the
+older 5.18-point bundle, though a rebuild of the same current source produced
+identical `.text`. The remaining Speedometer warmup difference needs
+investigation at the WebKit build/runtime level. The restored nonblocking
+bundle is `bundle-viu0mveh` in the workstation's latest-bundle manifest.
