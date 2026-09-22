@@ -1587,3 +1587,12 @@ editor suites are among the largest remaining gaps: TipTap took 375.5 versus
 28.9%. These are per-suite timings from the two completed local-copy runs,
 not a function-level profile; allocation, text, and layout costs still need
 separate measurement before attributing the gaps.
+
+The `summitctl scroll` synthetic wheel burst now visibly moves a real Reddit
+feed. In `.vm/bench/scroll-20260923-011441-reddit-synthetic-wheel/`, 100 wheel
+notches took `/r/popular/` from its initial top post to several later posts;
+`before.png` and `final.png` preserve the positions. This run used the
+production bundle while an engine compile was active, so it establishes input
+delivery and page movement only. No per-frame timing was emitted. The
+real-site harness now labels such a capture `captured-uninstrumented` instead
+of reporting an empty frame-rate result as a completed measurement.

@@ -10,8 +10,9 @@ actually emits them; production bundles no longer include that hook.
 Everything for one run lands in .vm/bench/<run-id>/.
 
 Check the screenshots before treating a synthetic burst as real scrolling. An
-older bundle accepted the notches without moving the page; the view-token fix
-has not yet been retested with this harness on a real site.
+older bundle accepted the notches without moving the page. The view-token fix
+did move Reddit's /r/popular/ feed on 2026-09-23, but movement still needs
+visual confirmation for each run.
 
 Examples:
   SUMMIT_BENCH_HOST=workstation python3 tools/bench/run-scroll.py --bundle <path> https://www.reddit.com/
