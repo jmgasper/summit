@@ -9011,10 +9011,10 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..0a9e3215e84b5d9b604271cea49e22d495744da3
+index 0000000000000000000000000000000000000000..0822095d9db17a625b976b1c6e177ea74365ee19
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,724 @@
+@@ -0,0 +1,732 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -9060,6 +9060,7 @@ index 0000000000000000000000000000000000000000..0a9e3215e84b5d9b604271cea49e22d4
 +#include <HttpRequest.h>
 +#include <MediaDefs.h>
 +#include <MediaFile.h>
++#include <MediaFormats.h>
 +#include <MediaRoster.h>
 +#include <MediaTrack.h>
 +#include <SoundPlayer.h>
@@ -9630,6 +9631,13 @@ index 0000000000000000000000000000000000000000..0a9e3215e84b5d9b604271cea49e22d4
 +                if (m_videoTrack) {
 +                    m_mediaFile->ReleaseTrack(track);
 +                    continue;
++                }
++                if (const char* trace = std::getenv("SUMMIT_MEDIA_CODEC_TRACE"); trace && trace[0] == '1' && !trace[1]) {
++                    media_codec_info codec = { };
++                    status_t codecStatus = track->GetCodecInfo(&codec);
++                    std::fprintf(stderr, "Summit media video codec: %s (%s), status=%ld\n",
++                        codecStatus == B_OK ? codec.pretty_name : "unknown",
++                        codecStatus == B_OK ? codec.short_name : "unknown", long(codecStatus));
 +                }
 +                m_videoTrack = track;
 +                m_hasVideo = true;
@@ -96523,10 +96531,10 @@ index 121e64b01bce34e387deacf3bbbca93adf0f59da..7926cd9c3edf141bc52f7db0253c37c0
  endif ()
 diff --git a/Source/cmake/OptionsHaiku.cmake b/Source/cmake/OptionsHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..b689234bb46e4616d83b8a6af11ae41fe8f2885f
+index 0000000000000000000000000000000000000000..261574cba0598df9bf6be2427286175129761791
 --- /dev/null
 +++ b/Source/cmake/OptionsHaiku.cmake
-@@ -0,0 +1,331 @@
+@@ -0,0 +1,334 @@
 +include(GNUInstallDirs)
 +include(VersioningUtils)
 +
@@ -96632,7 +96640,10 @@ index 0000000000000000000000000000000000000000..b689234bb46e4616d83b8a6af11ae41f
 +    WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_ASYNC_SCROLLING PRIVATE ON)
 +endif ()
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_SKIA PRIVATE OFF)
-+WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_SYSTEM_MALLOC PRIVATE ON)
++# On the Haiku Skia/GL browser, mimalloc improved two uncontended Speedometer
++# 3.1 runs by about 21% over the system allocator without a scroll regression.
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_SYSTEM_MALLOC PRIVATE OFF)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_MIMALLOC PRIVATE ON)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_AVIF PUBLIC ON)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_LCMS PUBLIC ON)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_JPEGXL PUBLIC OFF)

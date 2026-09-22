@@ -1633,3 +1633,28 @@ An intervening mimalloc capture produced black before/after screenshots after
 Haiku's screen blanker reactivated. Its frame numbers are excluded. The
 real-site harness now wakes the display during settling and rejects a black
 capture instead of recording it as a completed measurement.
+
+### Mimalloc allocator comparison
+
+Two alternating, uncontended ten-iteration Speedometer 3.1 pairs used the
+same Summit source and native view, the same Mesa prefix and 800×600 benchmark
+viewport, and separately bundled `SkiaCG` and `SkiaCGMi` engines. The system
+allocator scored 5.08 ± 0.24 and 5.28 ± 0.23; mimalloc scored 6.26 ± 0.28
+and 6.31 ± 0.31. The mean score rose from 5.18 to 6.28, about 21%. Results
+are in `.vm/bench/speedometer-20260923-023954-skia-two-system-control/`,
+`.vm/bench/speedometer-20260923-024212-skia-two-mimalloc/`,
+`.vm/bench/speedometer-20260923-024414-skia-two-system-repeat/`, and
+`.vm/bench/speedometer-20260923-024630-skia-two-mimalloc-repeat/`. The
+previous same-bundle 4-worker variation is why the allocator was tested in
+alternating pairs.
+
+The matched 600-frame static scroll probes reached 61.81 fps with system
+malloc and 62.18 fps with mimalloc, with no interval over 33 ms in either
+(`.vm/bench/probe-20260923-024839-summit-system-scroll-control/` and
+`.vm/bench/probe-20260923-024927-summit-mimalloc-scroll/`). The mimalloc
+bundle also played the Reddit H.264 CMAF video to its 12.7-second `ended`
+event without a media error
+(`.vm/bench/probe-20260923-025013-summit-mimalloc-media/`). Haiku now
+defaults to mimalloc while retaining CMake overrides for allocator experiments.
+The 6.28 mean is still below Firefox's measured 8.34; the remaining editor,
+layout, and callback costs need further work.
