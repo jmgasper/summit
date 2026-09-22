@@ -1,38 +1,36 @@
 # Summit performance: Speedometer 3.1 baseline, where the time goes, stress test
 
-## Current coordinated Skia result (September 22, 2026)
+## Current coordinated Skia result (September 23, 2026)
 
-The workstation's coordinated graphics build now completes all 580 steps of
-Speedometer 3.1 after fixing a lock inversion in `BitmapTexturePool`.
-`acquireTexture()` held the pool lock while querying a timer on the main Haiku
-`BLooper`; a firing timer held that looper lock while waiting for the pool lock.
-Timer operations are now dispatched to their owning run loop. The fix is in
-`7340592`; the ten-iteration run is recorded in
-`.vm/bench/speedometer-20260922-215228-pool-timer-clean/`.
+The workstation's current coordinated graphics build uses Skia CPU tile
+painting with two workers, mimalloc, asynchronous scrolling, and display-rate
+composition pacing. It completes all 580 steps of Speedometer 3.1. The current
+ten-iteration run is recorded in
+`.vm/bench/speedometer-20260923-033627-mimalloc-compositor-60/`.
 
 | Browser | Speedometer 3.1, 10 iterations, 1913x935 |
 | --- | ---: |
-| Summit, Skia + coordinated graphics | **5.067 ± 0.215** |
+| Summit, Skia + coordinated graphics + mimalloc | **6.269 ± 0.301** |
 | Firefox 155 on the same workstation | **8.338 ± 0.374** |
 
-The Summit run was uncontended (at most 0.05 foreign CPU cores). A single
-diagnostic iteration scored 3.405 because its cold first iteration is slower;
-the ten individual scores rose from 4.35 to 5.34. The new score is about 54%
-higher than the previous 3.28 Summit result, although that result used the old
-app_server rendering path. The gap to Firefox remains 1.65x. Most of the gap is
-in suites such as Editor-TipTap and Charts-chartjs; TodoMVC-jQuery is level
-with Firefox. `tools/bench/compare-runs.py` gives the per-suite sync and async
+The Summit run was uncontended. Its first cold iteration scored 5.09 and the
+remaining nine scored 6.29 to 6.51. Mimalloc accounts for about a 21% gain over
+the matched system-allocator runs described below. The remaining gap to
+Firefox is 1.33x by score. TipTap is 2.47x slower and Chart.js is 2.07x slower
+than Firefox; several TodoMVC suites are near parity or faster.
+`tools/bench/compare-runs.py` gives the per-suite synchronous and asynchronous
 split from the saved results.
 
 The workstation reports 32 logical processors (16 physical cores) through
-both Haiku's system information and `sysconf`. WebKit's Skia CPU painter uses
-its upstream default of eight workers here: half the reported cores, capped
-at eight. The frame rate on the 400-card scrolling probe was 60.69 fps over
-600 frames after the media fixes, with p95 18 ms, p99 19 ms, a 22 ms maximum,
-and no frame above 33 ms
-(`.vm/bench/probe-20260922-212230-summit-media-fix-scroll/`). This establishes
-smooth scrolling on that synthetic feed; real Reddit scrolling still needs a
-direct measurement.
+both Haiku's system information and `sysconf`. WebKit's JSC and garbage
+collector discover that count independently. Summit caps Skia CPU tile
+painting at two workers on Haiku because the controlled sweep below found no
+Speedometer gain from four and a large regression from eight. The current
+400-card scrolling probe ran at 58.83 fps over 600 frames, with p95 18 ms,
+p99 23 ms, a 31 ms maximum, and no frame above 33 ms
+(`.vm/bench/probe-20260923-041115-summit-default-paced-scroll/`). Live Reddit
+scrolls still show occasional 650–790 ms gaps, now attributed to page update,
+layout, or script work rather than the native view queue or wheel routing.
 
 ## Scrolling (September 21, 2026)
 
