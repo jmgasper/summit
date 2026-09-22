@@ -78866,6 +78866,66 @@ index e6fbb8c1896bf99dc0f7322868052566b8629598..d84e2ecbc70d219a63eb074c1fd4b1c9
  #if USE(COORDINATED_GRAPHICS) || USE(TEXTURE_MAPPER)
      UpdateGeometry(WebCore::IntSize size) -> ()
  #endif
+diff --git a/Source/WebKit/WebProcess/WebPage/EventDispatcher.cpp b/Source/WebKit/WebProcess/WebPage/EventDispatcher.cpp
+index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..63b3468d8206bf2d3fd36421b3b2ca23ec0926fe 100644
+--- a/Source/WebKit/WebProcess/WebPage/EventDispatcher.cpp
++++ b/Source/WebKit/WebProcess/WebPage/EventDispatcher.cpp
+@@ -46,6 +46,11 @@
+ #include <wtf/RunLoop.h>
+ #include <wtf/SystemTracing.h>
+ 
++#if PLATFORM(HAIKU)
++#include <cstdio>
++#include <cstdlib>
++#endif
++
+ #if ENABLE(ASYNC_SCROLLING)
+ #include <WebCore/AsyncScrollingCoordinator.h>
+ #endif
+@@ -65,6 +70,17 @@
+ namespace WebKit {
+ using namespace WebCore;
+ 
++#if PLATFORM(HAIKU)
++static bool traceWheelRoute()
++{
++    static bool enabled = [] {
++        const char* value = std::getenv("SUMMIT_WHEEL_ROUTE_TRACE");
++        return value && value[0] == '1' && !value[1];
++    }();
++    return enabled;
++}
++#endif
++
+ EventDispatcher::EventDispatcher(WebProcess& process)
+     : m_process(process)
+     , m_queue(WorkQueue::create("com.apple.WebKit.EventDispatcher"_s, WorkQueue::QOS::UserInteractive))
+@@ -145,6 +161,10 @@ void EventDispatcher::internalWheelEvent(PageIdentifier pageID, const WebWheelEv
+         Locker locker { m_scrollingTreesLock };
+         RefPtr scrollingTree = m_scrollingTrees.get(pageID);
+         if (!scrollingTree) {
++#if PLATFORM(HAIKU)
++            if (traceWheelRoute())
++                std::fprintf(stderr, "Summit wheel route: no tree, main thread\n");
++#endif
+             dispatchWheelEventViaMainThread(pageID, wheelEvent, processingSteps, WTF::move(completionHandler));
+             break;
+         }
+@@ -166,6 +186,14 @@ void EventDispatcher::internalWheelEvent(PageIdentifier pageID, const WebWheelEv
+             useMainThreadForScrolling = false;
+ #endif
+ 
++#if PLATFORM(HAIKU)
++        if (traceWheelRoute())
++            std::fprintf(stderr, "Summit wheel route: tree=1 sync=%d blockingDOM=%d route=%s phase=%d\n",
++                processingSteps.contains(WheelEventProcessingSteps::SynchronousScrolling),
++                processingSteps.contains(WheelEventProcessingSteps::BlockingDOMEventDispatch),
++                useMainThreadForScrolling ? "main" : "scrolling", int(platformWheelEvent.phase()));
++#endif
++
+         scrollingTree->willProcessWheelEvent();
+ 
+         ScrollingThread::dispatch([scrollingTree, wheelEvent = Ref<const WebWheelEvent> { wheelEvent }, platformWheelEvent, processingSteps, useMainThreadForScrolling, pageID, this, protectedThis = Ref { *this }, completionHandler = WTF::move(completionHandler)] mutable {
 diff --git a/Source/WebKit/WebProcess/WebPage/WebPage.cpp b/Source/WebKit/WebProcess/WebPage/WebPage.cpp
 index 48f9e1c5cff34a053ed104c3d2cfd3ac6e0a2bdc..a114a32c297c57a4d53db213a0540af18d4aeac0 100644
 --- a/Source/WebKit/WebProcess/WebPage/WebPage.cpp
