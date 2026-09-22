@@ -1914,6 +1914,16 @@ Controlled diagnostics ruled out several plausible global causes:
   (`.vm/bench/speedometer-20260923-080501-shaped-text-cache-12000/`). Both
   changes were reverted.
 
+Repeating TipTap immediately after its normal full-suite pass changes the
+picture: the normal passes took 498, 268, and 267 ms, while the duplicate took
+149, 141, and 142 ms
+(`.vm/bench/speedometer-20260923-080822-full-immediate-tiptap-repeat-diagnostic/`).
+An isolated duplicate remained fast after a deliberate ten-second delay at
+149, 146, and 145 ms
+(`.vm/bench/speedometer-20260923-084238-tiptap-ten-second-repeat-diagnostic/`).
+The loss therefore requires intervening application work; it is not a simple
+ten-second expiry or persistent machine state.
+
 JavaScriptCore cache reuse is beneficial but is not the source of the extra
 full-suite cost. TipTap alone with `JSC_useCodeCache=0` settled at 163–178 ms
 instead of 128–139 ms
@@ -1924,8 +1934,17 @@ TipTap settled at 312 ms or more
 Disabling shared Baseline JIT code likewise made the isolated suite modestly
 slower. Retaining those caches is the correct direction.
 
-Safe inclusive profiling is now available through
-`run-speedometer.py --haiku-profile`. A 50-iteration TipTap-only profile shows
+Increasing the unlinked-code working set to 60 seconds, 64 MB, and 8,000
+entries scored 6.300 ± 0.754 and left TipTap at 268 ms or more. Lowering DFG
+tier-up thresholds to 200 scored 6.279 ± 0.719 and left it at 266 ms or more.
+Disabling JSC collection entirely for a bounded three-iteration diagnostic
+scored 5.862 ± 1.780 and left the warm TipTap passes at 279 ms or more
+(`.vm/bench/speedometer-20260923-085005-full-no-jsc-gc-diagnostic/`). These
+tests rule out unlinked-code cache capacity, late tier-up, and full collection
+as the state transition. All diagnostic settings were reverted.
+
+Archived inclusive profiles remain useful for locating broad costs. A
+50-iteration TipTap-only profile shows
 `Document::updateLayout` on 26.8% of all one-millisecond samples, flex layout
 on about 22%, selection canonical-position work on about 13%, intrinsic width
 work on about 10%, and DFG compilation on a separate worker on about 20%.
@@ -1935,3 +1954,32 @@ The percentages are inclusive and overlap; they identify the remaining work
 above painting without forming an exclusive CPU-time partition. Artifacts are
 `.vm/bench/speedometer-20260923-063838-tiptap-profile/` and
 `.vm/bench/speedometer-20260923-065529-full-profile-cross-suite/`.
+
+Haiku's profiler shutdown later hung the workstation after a second complete
+inclusive run, just as the earlier exclusive attempt did. No profile was
+written for that run. Both benchmark harnesses now reject `--haiku-profile` on
+the workstation; it remains available in the disposable VM.
+
+### Cache Skia system typeface matches
+
+The full profile also put `SkFontMgr_fontconfig::onMatchFamilyStyle` on 5.15%
+of samples and fontconfig's pattern filtering on 4.53%. WebCore already caches
+complete platform font data, but that key includes size and other properties.
+Creating another size of the same family and style therefore repeated the
+expensive fontconfig search.
+
+The Skia font cache now retains the matched system `SkTypeface` by family,
+weight, width, and slant. Font size, OpenType features, synthesis, orientation,
+and metrics are still computed for every `FontPlatformData`, and normal font
+cache invalidation clears the new map. This cache stores both successful and
+failed matches so fallback family lists do not repeatedly query a missing
+face.
+
+The first ten-iteration result was 6.238 ± 0.229 with steady iterations from
+6.28 to 6.38
+(`.vm/bench/speedometer-20260923-090242-skia-typeface-match-cache/`). That is
+neutral against the long-term generic control of 6.293 ± 0.302 and below the
+unusually fast 6.526 run above. The cold TipTap pass fell from the usual
+roughly 510 ms to 362 ms in this run, while steady full-suite passes remained
+270–321 ms. The direct redundant lookup is removed, but a matched alternating
+benchmark is still needed before attributing an end-to-end gain.

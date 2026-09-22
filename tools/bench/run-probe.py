@@ -35,6 +35,8 @@ def main():
                         help='run Summit under the Haiku sampling profiler and save profile.txt')
     parser.add_argument('--label', default='')
     args = parser.parse_args()
+    if args.haiku_profile and guest.HOST == 'workstation':
+        parser.error('--haiku-profile is disabled on the workstation because Haiku profile shutdown can hang the machine')
 
     run_id = (time.strftime('probe-%Y%m%d-%H%M%S') + f'-{args.browser}'
               + (f'-{args.label}' if args.label else ''))

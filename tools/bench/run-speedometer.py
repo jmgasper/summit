@@ -14,7 +14,7 @@ Only the browser instance launched by this script is ever signalled.
 Examples:
   python3 tools/bench/run-speedometer.py                       # official 10 iterations
   python3 tools/bench/run-speedometer.py --iterations 3        # quick check
-  python3 tools/bench/run-speedometer.py --suites Editor-TipTap --haiku-profile
+  python3 tools/bench/run-speedometer.py --suites Editor-TipTap --haiku-profile # VM only
   python3 tools/bench/run-speedometer.py --wait-quiet 120      # poll up to 2 h for an idle VM first
   python3 tools/bench/run-speedometer.py --official
   python3 tools/bench/run-speedometer.py --annotate .vm/bench/<run-id> --score 4.21 --ci 0.13
@@ -153,6 +153,8 @@ def main():
     args = parser.parse_args()
     if args.annotate:
         return annotate(args)
+    if args.haiku_profile and guest.HOST == 'workstation':
+        parser.error('--haiku-profile is disabled on the workstation because Haiku profile shutdown can hang the machine')
     if args.haiku_profile and args.keep_open:
         parser.error('--haiku-profile cannot be combined with --keep-open because the profile is written at exit')
 

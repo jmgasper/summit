@@ -4216,6 +4216,26 @@ index 4de87fc1084923a6162a846ce16198e2eeaca920..b63fb303596b57949c1fd1e5969298a6
  #if USE(CG)
      WEBCORE_EXPORT explicit FloatSize(const CGSize&); // don't do this implicitly since it's lossy
      WEBCORE_EXPORT operator CGSize() const;
+diff --git a/Source/WebCore/platform/graphics/FontCache.h b/Source/WebCore/platform/graphics/FontCache.h
+index 55268404e5cf55f6e69fe7846d941cbef72b5e04..d7d4f2ef1805f1c2a293dd1b9098e216b55f5a32 100644
+--- a/Source/WebCore/platform/graphics/FontCache.h
++++ b/Source/WebCore/platform/graphics/FontCache.h
+@@ -43,6 +43,7 @@
+ #include <wtf/CrossThreadCopier.h>
+ #include <wtf/Forward.h>
+ #include <wtf/HashFunctions.h>
++#include <wtf/HashMap.h>
+ #include <wtf/HashTraits.h>
+ #include <wtf/OrderedHashSet.h>
+ #include <wtf/Platform.h>
+@@ -285,6 +286,7 @@ private:
+ 
+ #if USE(SKIA)
+     mutable sk_sp<SkFontMgr> m_fontManager;
++    HashMap<std::pair<String, unsigned>, sk_sp<SkTypeface>> m_skiaMatchedTypefaceCache;
+     SkiaHarfBuzzFontCache m_harfBuzzFontCache;
+ #if !OS(ANDROID) && !PLATFORM(WIN)
+     SkiaSystemFallbackFontCache m_skiaSystemFallbackFontCache;
 diff --git a/Source/WebCore/platform/graphics/FontCascadeInlines.h b/Source/WebCore/platform/graphics/FontCascadeInlines.h
 index 0d6614511f09d72d85b3e92e5c49da5a70ac245e..3e013e8361bcb105e8e648808633bed992f59597 100644
 --- a/Source/WebCore/platform/graphics/FontCascadeInlines.h
@@ -12183,6 +12203,44 @@ index 6cc3e9febb8c00ec5829ca476fc21b1b693c81a3..fc5107b6ced726a345ccd053cbc48fca
  
  } // namespace WebCore
  
+diff --git a/Source/WebCore/platform/graphics/skia/FontCacheSkia.cpp b/Source/WebCore/platform/graphics/skia/FontCacheSkia.cpp
+index 74cfeb60ac3daa537785693be3917358aa26a2b5..db188c89ec849735d75d032387288f9f2d17b841 100644
+--- a/Source/WebCore/platform/graphics/skia/FontCacheSkia.cpp
++++ b/Source/WebCore/platform/graphics/skia/FontCacheSkia.cpp
+@@ -111,6 +111,13 @@ static SkFontStyle skiaFontStyle(const FontDescription& fontDescription)
+     return SkFontStyle(skWeight, skWidth, skSlant);
+ }
+ 
++static unsigned skiaFontStyleCacheKey(const SkFontStyle& style)
++{
++    return static_cast<unsigned>(style.weight())
++        | static_cast<unsigned>(style.width()) << 11
++        | static_cast<unsigned>(style.slant()) << 15;
++}
++
+ static std::pair<bool, bool> computeSynthesisProperties(const SkTypeface& typeface, const FontDescription& fontDescription, OptionSet<FontLookupOptions> synthesisOptions)
+ {
+     if (FontPlatformData::skiaTypefaceHasAnySupportedColorTable(typeface))
+@@ -417,7 +424,10 @@ std::unique_ptr<FontPlatformData> FontCache::createFontPlatformData(const FontDe
+         return nullptr;
+     auto familyName = getFamilyNameStringFromFamily(family);
+     auto skFontStyle = skiaFontStyle(fontDescription);
+-    auto typeface = fontManager().matchFamilyStyle(familyName.utf8().legacyCStringPointer(), skFontStyle);
++    auto addResult = m_skiaMatchedTypefaceCache.add({ familyName, skiaFontStyleCacheKey(skFontStyle) }, nullptr);
++    if (addResult.isNewEntry)
++        addResult.iterator->value = fontManager().matchFamilyStyle(familyName.utf8().legacyCStringPointer(), skFontStyle);
++    auto typeface = addResult.iterator->value;
+     if (!typeface)
+         return nullptr;
+ 
+@@ -449,6 +459,7 @@ void FontCache::platformReleaseNoncriticalMemory()
+ 
+ void FontCache::platformInvalidate()
+ {
++    m_skiaMatchedTypefaceCache.clear();
+ }
+ 
+ void FontCache::platformPurgeInactiveFontData()
 diff --git a/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp b/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp
 index 30343ff03299542f8673d98b486c7fdd78bddeb9..acc620650ea4ee0cb807a1b49194a9495ef0e4f2 100644
 --- a/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp
