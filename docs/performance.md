@@ -1108,45 +1108,148 @@ drive *every* rendering update through that observer, so the layer tree, the
 compositor and the surface all started correctly and then waited on something
 that could not fire. Haiku's implementation dispatches to the run loop, which
 runs the callback on the next turn rather than as the loop goes idle -- close
-enough, and it keeps the update off the caller's stack.
+enough, and it keeps the update off the caller's stack. (That first
+implementation was not enough on its own -- see "Rendering updates run" below,
+where it had to learn which run loop it was asked for.)
 
 The worker pool is running: the web process has eight `SkiaCPUWorker` threads,
 which is `SkiaPaintingEngine` painting tiles on half the cores.
 
-### What is left
+## Rendering updates run (September 22, 2026)
 
-Two things, both found and both understood.
+The coordinated build painted two or three frames and then froze. Both of the
+things the previous round left open turned out to be the same kind of mistake --
+work ending up on a thread that cannot do it -- and fixing them is what turned
+the configuration from "renders once" into a browser that scrolls at the
+refresh rate.
 
-**Nothing drives animation.** `HAVE_DISPLAY_LINK` is defined for Mac, GTK and
-WPE, and those ports answer `createDisplayRefreshMonitor` with a display link
-that paces `requestAnimationFrame`. Haiku has none, so the coordinated drawing
-area returns nullptr and there is no vsync source: the page paints when
-something invalidates it and never again on its own. The scroll benchmark drives
-itself with `requestAnimationFrame`, which is why it fetched its page and then
-reported nothing at all -- no crash, no frames, no result. That is why this
-section still has no scrolling number for the coordinated build. PlayStation has
-the shape of the answer in `ThreadedDisplayRefreshMonitorPlayStation`: a monitor
-the compositor ticks when it finishes a frame. Haiku could do the same, or
-implement a display link of its own over `BScreen::WaitForRetrace`.
+### The rendering update was running on the compositor thread
 
-**Image decodes finish on the wrong thread.** Loading Wikipedia draws the page
-and then kills the web process in `MemoryCache::singleton()`, which is
-`RELEASE_ASSERT(isMainThread())`. The path is
-`AsyncImageDecoder` -> `BitmapImageSource::imageFrameDecodeAtIndexHasFinished`
--> `CachedImage::CachedImageObserver::decodedSizeChanged` ->
-`CachedResource::setDecodedSize`. The decoder does hop threads before calling
-back, but to `RunLoop::currentSingleton()` as captured when the decode was
-requested; a decode requested while a worker paints a tile therefore completes
-on that worker, and the memory cache is main-thread-only. This did not happen
-before because nothing painted off the main thread. It needs a considered fix
-rather than a guess -- either the request is not meant to be made from a paint,
-or the completion has to be forced to the main thread -- so nothing has been
-changed here yet.
+The symptom was that `RenderingUpdateScheduler::scheduleRenderingUpdate()` was
+called 642 times and returned early every time, because its fallback timer said
+it was already scheduled; the timer itself never fired. Instrumenting it showed
+the timer `isActive()` and overdue by a growing margin, which a `WebCore::Timer`
+can only be when it is in a `ThreadTimers` heap that nothing services -- that
+is, when it was started on a thread other than the one it belongs to. Logging
+`isMainThread()` in `startTimer()` confirmed it: the first two updates came from
+the main thread, the third from a thread named `ThreadedCompositor`, and from
+then on the page was dead.
 
-Presenting the frames. The backing store above has no caller: the Haiku view has
-to own one, call `updateSurfaceID` when the drawing area gives it a surface, and
-implement `presentFrame` by putting the shared memory pixels on screen, which is
-what `BitmapPresenterHaiku` already does for the software path.
+The backtrace named the path exactly:
 
-Until that is connected the page renders into a buffer nobody reads, so there are
-still no numbers for the worker pool and this section deliberately offers none.
+    WebCore::Page::scheduleRenderingUpdateInternal()
+    WebCore::Page::renderingUpdateCompleted()
+    WebKit::WebPage::finalizeRenderingUpdate(...)
+    WebKit::LayerTreeHost::updateRendering()
+    WTF::LoopHandler::MessageReceived(BMessage*)     <- compositor's run loop
+
+`LayerTreeHost::updateRendering()` is reached from a `RunLoopObserver`, and
+`ThreadedCompositor::renderLayerTree()` -- which runs on the compositor thread
+-- schedules its did-composite observer like this:
+
+    m_didCompositeRunLoopObserver->schedule(&RunLoop::mainSingleton());
+
+The run loop is an argument because the observer is armed from one thread and
+has to fire on another. Haiku's implementation ignored it and used
+`RunLoop::currentSingleton()`, so the callback ran on the compositor thread, and
+with it `didComposite`, `updateRendering`, the whole rendering update and every
+timer it starts. The fix is to honour the argument: `PlatformRunLoop` is
+`RunLoop*` on Haiku, and `schedule()` targets the loop it is given.
+
+Two details matter in that implementation:
+
+- **The flag, not the timer, answers `isScheduled()`.** The timer can fire on
+  the target thread before `dispatchAfter()` has even returned, so a `RefPtr`
+  member is not a reliable record of whether the observer is pending. A bool
+  under a lock is, and the callback checks it before running.
+- **Only the owning thread may arm a timer.** `RunLoop::TimerBase::start()`
+  takes the target `BLooper`'s lock, and the thread being armed holds that lock
+  for as long as it is dispatching a message -- including while it waits on the
+  thread doing the arming. Cross-thread scheduling therefore uses
+  `RunLoop::dispatch()`, which needs no lock. The timer exists only to dodge
+  `breakToAllowRenderingUpdate()`'s one-cycle dispatch suspension, and that
+  suspension lifts by itself, so a dispatched observer is at worst one turn
+  late.
+
+### Image decodes finish on the main thread
+
+`AsyncImageDecoder` hops back to `RunLoop::currentSingleton()` as captured when
+the decode was requested. Once tiles are painted on a worker pool, a decode
+requested from a paint completes on that worker, and the completion walks into
+`CachedResource::setDecodedSize` -> `MemoryCache::singleton()`, which is
+`RELEASE_ASSERT(isMainThread())`. The reply run loop is now the current one only
+when the request came from the main thread, and `RunLoop::mainSingleton()`
+otherwise.
+
+### Buffers were never returned to the swap chain
+
+With frames actually flowing, the web process started dying with "Failed to
+create handle for shared memory buffer". `AcceleratedSurface::SwapChain` hands
+out a render target per frame and only gets one back when the UI process sends
+`AcceleratedSurface::ReleaseBuffer`. Haiku's `AcceleratedBackingStore` presented
+the frame and answered `FrameDone`, but never released the buffer, so the chain
+allocated a new `ShareableBitmap` -- two file descriptors -- for every frame
+until the process ran out. (The upstream guard is an `ASSERT` on
+`s_maximumBuffers`, which is nothing in a release build.) `presentBitmapHaiku`
+copies the pixels into a `BBitmap` before it returns, so the buffer is free the
+moment the frame call is done and is released right there.
+
+### A dropped wake-up could suspend dispatch for good
+
+`RunLoop::wakeUp()` posted `'loop'` to the handler and ignored the result. That
+is the one message that must not be lost: `performWork()` is what lifts
+`suspendFunctionDispatchForCurrentCycle()`, and nothing posts again to a queue
+that is already non-empty, so a single dropped wake-up stops every
+`RunLoop::dispatch()` in the process permanently. It now retries from the timer
+thread, the same way a dropped timer notification already did. Retrying on the
+calling thread would deadlock when the caller is the looper itself.
+
+### Where the coordinated build stands
+
+Measured with `tools/bench/run-probe.py --page scroll.html` on the workstation,
+1913x935 viewport:
+
+| Workstation | Scrolling | Speedometer 3.1 |
+| --- | --- | --- |
+| app_server backend | 44.4 fps | 3.28 ± 0.058 |
+| Skia, single-threaded, no compositor | 7.7 fps | 2.59 ± 0.551 |
+| Skia + coordinated graphics | **62.3 fps** | not yet (see below) |
+| Firefox 155 | -- | 8.34 ± 0.37 |
+
+The scroll run is 600 frames at 62.3 fps, mean 16.05 ms, p95 17 ms, p99 18 ms,
+longest 19 ms, **zero frames over 33 ms**. Idle is 65.6 fps. That is the frame
+pacing the rendering-update timer asks for, held for the whole burst on a page
+with 400 cards and an 84,000 px document -- 1.4x the app_server backend and 8x
+the first Skia build, with the jitter gone.
+
+### Speedometer does not finish yet
+
+Speedometer 3.1 runs but stops partway -- reproducibly inside
+`Editor-CodeMirror`, at the same step -- and the process then sits at 0% CPU.
+The watchdog added for this says the rendering pipeline is not the thing that is
+stuck:
+
+    Summit stall: 3.4 s with no rendering update; waitingForRenderer=0
+      scheduledWhileWaiting=0 frozen=0 suspended=0 observerScheduled=0 updating=0
+      | state=Idle reasons=0 waitingForTiles=no renderTimerActive=no
+        didCompositeFn=none pendingTiles=no suspended=0
+    Summit stall: page | pageScheduled=no remainingSteps=0 unfulfilled=0
+      visible=yes throttling=0 updateInterval=15 rafDocuments=0 | ...
+
+Everything is idle and consistent: the compositor has nothing pending, no
+document has a `requestAnimationFrame` callback waiting, and nothing has asked
+for a rendering update. So the page is blocked on something else -- a timer, a
+dispatched task or a promise that never resolves -- and the next step is to say
+which, by reporting the main thread's timer heap and dispatch queues from the
+same watchdog.
+
+Two measurement traps were fixed along the way, both in the harness rather than
+the browser:
+
+- `guest.wake_display()` built its kill command with `awk "{print $2}"` inside a
+  single-quoted Python string, so the remote login shell ate `$2` and the screen
+  blanker was never killed. A blanked screen stops app_server drawing, the UI
+  process stops acknowledging frames, and the browser looks frozen -- which is
+  exactly what the first three scroll runs recorded as "timeout".
+- `run-probe.py` woke the display once, before the run. It now does so every
+  30 seconds, because the blanker comes back on every idle period.

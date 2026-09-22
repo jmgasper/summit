@@ -66,8 +66,14 @@ def main():
             time.sleep(3)
             guest.ctl(ctl, team, 'navigate', url)
         deadline = time.time() + args.timeout
+        ticks = 0
         while time.time() < deadline:
             time.sleep(5)
+            # The blanker comes back on every idle period, and a blanked screen
+            # stops app_server drawing, which is what the page is measuring.
+            ticks += 1
+            if not ticks % 6:
+                guest.wake_display()
             if (directory / 'probe.json').exists():
                 outcome = 'completed'
                 break

@@ -859,10 +859,10 @@ index f7c1f5175e14e27e4c67598f5424782e2af77050..cde8501928cd6510cb4386b3afb6edd1
  
 diff --git a/Source/WTF/wtf/haiku/RunLoopHaiku.cpp b/Source/WTF/wtf/haiku/RunLoopHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..59c4e2f7354539eabb5c39890115f8d1aa8b6628
+index 0000000000000000000000000000000000000000..37da313b93ce0cd7429b46c962faa63d9e8569fd
 --- /dev/null
 +++ b/Source/WTF/wtf/haiku/RunLoopHaiku.cpp
-@@ -0,0 +1,390 @@
+@@ -0,0 +1,445 @@
 +/*
 + * Copyright (C) 2014, 2024 Haiku, Inc
 + *
@@ -927,8 +927,26 @@ index 0000000000000000000000000000000000000000..59c4e2f7354539eabb5c39890115f8d1
 +            std::lock_guard locker(m_lock);
 +            removeWithLock(timer);
 +            Key key { fireTime, ++m_sequence };
-+            m_deadlines.emplace(key, Entry { target, timer, identifier });
++            m_deadlines.emplace(key, Entry { target, timer, timer, identifier });
 +            m_keys.insert_or_assign(timer, key);
++        }
++        m_condition.notify_one();
++    }
++
++    // A wake-up that is dropped because the looper's port is full suspends
++    // RunLoop::dispatch() for good: performWork() is what lifts the suspension,
++    // and nothing posts again to a queue that is already non-empty. Retrying on
++    // the caller's thread would deadlock when the caller is the looper itself,
++    // so the deadline thread carries the retry instead.
++    void scheduleWakeUp(const BMessenger& target, BHandler* handler)
++    {
++        {
++            std::lock_guard locker(m_lock);
++            if (m_keys.contains(handler))
++                return;
++            Key key { MonotonicTime::now() + 1_ms, ++m_sequence };
++            m_deadlines.emplace(key, Entry { target, nullptr, handler, 0 });
++            m_keys.insert_or_assign(handler, key);
 +        }
 +        m_condition.notify_one();
 +    }
@@ -939,13 +957,21 @@ index 0000000000000000000000000000000000000000..59c4e2f7354539eabb5c39890115f8d1
 +        removeWithLock(timer);
 +    }
 +
-+    static void post(const BMessenger& target, RunLoop::TimerBase* timer, int64 identifier)
++    void cancelWakeUp(BHandler* handler)
++    {
++        std::lock_guard locker(m_lock);
++        removeWithLock(handler);
++    }
++
++    // The receiver rejects notifications for stopped, restarted or destroyed timers.
++    // Answers whether the notification was delivered: a full port must not be
++    // taken for a fired timer, because nothing would ever arm it again.
++    static status_t post(const BMessenger& target, RunLoop::TimerBase* timer, int64 identifier)
 +    {
 +        BMessage message('tmrf');
 +        message.AddPointer("timer", timer);
 +        message.AddInt64("identifier", identifier);
-+        // The receiver rejects notifications for stopped, restarted or destroyed timers.
-+        target.SendMessage(&message, static_cast<BHandler*>(nullptr), 0);
++        return target.SendMessage(&message, static_cast<BHandler*>(nullptr), 0);
 +    }
 +
 +private:
@@ -953,17 +979,26 @@ index 0000000000000000000000000000000000000000..59c4e2f7354539eabb5c39890115f8d1
 +    struct Entry {
 +        BMessenger target;
 +        RunLoop::TimerBase* timer;
++        void* key;
 +        int64 identifier;
 +    };
++
++    static status_t post(const Entry& entry)
++    {
++        if (entry.timer)
++            return post(entry.target, entry.timer, entry.identifier);
++        BMessage message('loop');
++        return entry.target.SendMessage(&message, static_cast<BHandler*>(nullptr), 0);
++    }
 +
 +    TimerScheduler()
 +    {
 +        std::thread([this] { run(); }).detach();
 +    }
 +
-+    void removeWithLock(RunLoop::TimerBase* timer)
++    void removeWithLock(void* key)
 +    {
-+        auto found = m_keys.find(timer);
++        auto found = m_keys.find(key);
 +        if (found == m_keys.end())
 +            return;
 +        m_deadlines.erase(found->second);
@@ -986,18 +1021,30 @@ index 0000000000000000000000000000000000000000..59c4e2f7354539eabb5c39890115f8d1
 +                continue;
 +            }
 +            Entry entry = next->second;
-+            m_keys.erase(entry.timer);
++            m_keys.erase(entry.key);
 +            m_deadlines.erase(next);
 +            locker.unlock();
-+            post(entry.target, entry.timer, entry.identifier);
++            status_t posted = post(entry);
 +            locker.lock();
++            if (posted != B_OK) {
++                // The owner's port was full. Losing the notification would stop
++                // this timer for good -- and the timer that stops is as likely
++                // to be the one driving rendering updates as any other -- so
++                // put the deadline back and try again shortly. Only if the
++                // timer was armed again in the meantime does this one lapse.
++                if (!m_keys.contains(entry.key)) {
++                    Key retry { MonotonicTime::now() + 1_ms, ++m_sequence };
++                    m_deadlines.emplace(retry, entry);
++                    m_keys.insert_or_assign(entry.key, retry);
++                }
++            }
 +        }
 +    }
 +
 +    std::mutex m_lock;
 +    std::condition_variable m_condition;
 +    std::map<Key, Entry> m_deadlines;
-+    std::unordered_map<RunLoop::TimerBase*, Key> m_keys;
++    std::unordered_map<void*, Key> m_keys;
 +    uint64_t m_sequence { 0 };
 +};
 +
@@ -1037,6 +1084,7 @@ index 0000000000000000000000000000000000000000..59c4e2f7354539eabb5c39890115f8d1
 +    {
 +        for (auto& [timer, state] : timers)
 +            TimerScheduler::singleton().cancel(timer);
++        TimerScheduler::singleton().cancelWakeUp(this);
 +    }
 +
 +    static void initialize(RunLoop& runLoop)
@@ -1154,8 +1202,11 @@ index 0000000000000000000000000000000000000000..59c4e2f7354539eabb5c39890115f8d1
 +
 +void RunLoop::wakeUp()
 +{
-+    if (m_handler && m_handler->Looper())
-+        m_handler->Looper()->PostMessage('loop', m_handler);
++    if (!m_handler || !m_handler->Looper())
++        return;
++    if (m_handler->Looper()->PostMessage('loop', m_handler) == B_OK)
++        return;
++    TimerScheduler::singleton().scheduleWakeUp(BMessenger(m_handler), m_handler);
 +}
 +
 +RunLoop::TimerBase::TimerBase(Ref<RunLoop>&& runLoop, ASCIILiteral description)
@@ -1199,9 +1250,13 @@ index 0000000000000000000000000000000000000000..59c4e2f7354539eabb5c39890115f8d1
 +    handler->timers.insert_or_assign(this, LoopHandler::TimerState { identifier, fireTime, interval, repeat });
 +    // WebKit uses zero for work that should run on the next turn, including Promise
 +    // completion. Queue that directly behind the messages already waiting.
-+    if (interval <= 0_s)
-+        TimerScheduler::post(BMessenger(handler), this, identifier);
-+    else
++    // A zero interval means "next turn", which is a message queued behind the
++    // ones already waiting. If the port cannot take it, fall back to the
++    // scheduler rather than drop the timer.
++    if (interval <= 0_s) {
++        if (TimerScheduler::post(BMessenger(handler), this, identifier) != B_OK)
++            TimerScheduler::singleton().schedule(BMessenger(handler), this, identifier, fireTime);
++    } else
 +        TimerScheduler::singleton().schedule(BMessenger(handler), this, identifier, fireTime);
 +}
 +
@@ -3264,10 +3319,10 @@ index f24497c99ab0e49d3b157e148b8907b31379b695..47a7e9ca55c598b80fccee61ad6a0502
      enum class IsTouch : bool { No, Yes };
  
 diff --git a/Source/WebCore/platform/RunLoopObserver.cpp b/Source/WebCore/platform/RunLoopObserver.cpp
-index 7896afc9dadf5595dc274c19b102d9957c69f4f3..ef8cb0d6d558eaf64a620671ca5988d743f934d6 100644
+index 7896afc9dadf5595dc274c19b102d9957c69f4f3..c1d885b0a82a6289a9d1444cf15be4b21d99b2f7 100644
 --- a/Source/WebCore/platform/RunLoopObserver.cpp
 +++ b/Source/WebCore/platform/RunLoopObserver.cpp
-@@ -49,7 +49,44 @@ void RunLoopObserver::runLoopObserverFired()
+@@ -49,7 +49,91 @@ void RunLoopObserver::runLoopObserverFired()
      m_callback();
  }
  
@@ -3276,44 +3331,91 @@ index 7896afc9dadf5595dc274c19b102d9957c69f4f3..ef8cb0d6d558eaf64a620671ca5988d7
 +
 +// The coordinated renderers drive every rendering update through this observer,
 +// so a port without one paints nothing at all. CF and GLib run the callback as
-+// their loop goes idle; dispatching to the run loop runs it on the next turn,
-+// which is close enough and keeps the update out of the caller's stack.
-+void RunLoopObserver::schedule(PlatformRunLoop, OptionSet<Activity>)
++// their loop goes idle.
++//
++// This has to be a timer rather than RunLoop::dispatch(). When the layer tree
++// schedules the observer it also calls WindowEventLoop::breakToAllowRenderingUpdate(),
++// which suspends function dispatch for the cycle so that the update happens
++// before any more tasks run -- a dispatched observer would be deferred by the
++// very thing that is waiting for it, and with an animation scheduling an update
++// every cycle it would be deferred for good. Timers are not suspended.
++void RunLoopObserver::schedule(PlatformRunLoop runLoop, OptionSet<Activity>)
 +{
-+    if (m_scheduled)
-+        return;
++    // The compositor thread schedules its did-composite observer on the main
++    // run loop. Running the callback on whichever thread happened to arm it
++    // would take the whole rendering update off the main thread, where the
++    // timers it starts belong to a thread that never fires them.
++    Ref target = runLoop ? Ref<RunLoop> { *runLoop } : Ref<RunLoop> { RunLoop::currentSingleton() };
 +
-+    m_scheduled = std::make_shared<bool>(true);
-+    RunLoop::currentSingleton().dispatch([this, scheduled = m_scheduled] {
-+        // invalidate() clears the flag, and the destructor with it; either way
-+        // this task has nothing left to do.
-+        if (!*scheduled)
++    {
++        Locker locker { m_timerLock };
++        if (m_isScheduled)
 +            return;
-+        *scheduled = false;
-+        if (m_scheduled == scheduled)
-+            m_scheduled = nullptr;
++        m_isScheduled = true;
++    }
++
++    // Arming a timer on another thread's loop takes that loop's BLooper lock,
++    // which the thread being armed holds for as long as it is dispatching a
++    // message -- including while it waits for this thread. Only the owning
++    // thread may use the timer; everyone else dispatches, which needs no lock.
++    // The suspension that the timer exists to avoid is lifted after one cycle,
++    // so a dispatched observer is at worst one turn late.
++    if (!target->isCurrent()) {
++        target->dispatch([this] {
++            {
++                Locker locker { m_timerLock };
++                if (!m_isScheduled)
++                    return;
++                m_isScheduled = false;
++            }
++            runLoopObserverFired();
++        });
++        return;
++    }
++
++    // Arming the timer takes the target loop's own lock, and the callback takes
++    // this one while holding it, so this lock is never held across either call.
++    RefPtr<RunLoop::DispatchTimer> timer = target->dispatchAfter(0_s, [this] {
++        {
++            Locker locker { m_timerLock };
++            if (!m_isScheduled)
++                return;
++            m_isScheduled = false;
++            m_timer = nullptr;
++        }
 +        runLoopObserverFired();
 +    });
++
++    // The timer may already have fired on the target thread by now, in which
++    // case the flag says so and there is nothing left to keep.
++    Locker locker { m_timerLock };
++    if (m_isScheduled)
++        m_timer = WTF::move(timer);
 +}
 +
 +void RunLoopObserver::invalidate()
 +{
-+    if (!m_scheduled)
-+        return;
-+    *m_scheduled = false;
-+    m_scheduled = nullptr;
++    RefPtr<RunLoop::DispatchTimer> timer;
++    {
++        Locker locker { m_timerLock };
++        m_isScheduled = false;
++        timer = std::exchange(m_timer, nullptr);
++    }
++    if (timer)
++        timer->stop();
 +}
 +
 +bool RunLoopObserver::isScheduled() const
 +{
-+    return !!m_scheduled;
++    Locker locker { m_timerLock };
++    return m_isScheduled;
 +}
 +
 +#elif !USE(CF) && !USE(GLIB_EVENT_LOOP)
  
  void RunLoopObserver::schedule(PlatformRunLoop, OptionSet<Activity>)
  {
-@@ -64,6 +101,6 @@ bool RunLoopObserver::isScheduled() const
+@@ -64,6 +148,6 @@ bool RunLoopObserver::isScheduled() const
      return false;
  }
  
@@ -3322,26 +3424,42 @@ index 7896afc9dadf5595dc274c19b102d9957c69f4f3..ef8cb0d6d558eaf64a620671ca5988d7
  
  } // namespace WebCore
 diff --git a/Source/WebCore/platform/RunLoopObserver.h b/Source/WebCore/platform/RunLoopObserver.h
-index 70775a55f2b1657ebe15cbeb6b7a6dd2c49a5e14..e0971c2068106cc4c10b3e4f4fb83d3b13d1c889 100644
+index 70775a55f2b1657ebe15cbeb6b7a6dd2c49a5e14..812b144a774f7b11a67f1687e347b37c6ad2b155 100644
 --- a/Source/WebCore/platform/RunLoopObserver.h
 +++ b/Source/WebCore/platform/RunLoopObserver.h
-@@ -31,6 +31,7 @@
- #include <wtf/RetainPtr.h>
- #include <wtf/RunLoop.h>
- #include <wtf/TZoneMalloc.h>
-+#include <memory>
- 
+@@ -35,6 +35,8 @@
  #if USE(GLIB_EVENT_LOOP)
  #include <wtf/Lock.h>
-@@ -107,6 +108,11 @@ private:
+ #include <wtf/glib/ActivityObserver.h>
++#elif PLATFORM(HAIKU)
++#include <wtf/Lock.h>
+ #endif
+ 
+ #if USE(CF)
+@@ -43,6 +45,11 @@ using PlatformRunLoop = struct __CFRunLoop*;
+ #elif USE(GLIB)
+ using PlatformRunLoopObserver = ActivityObserver;
+ using PlatformRunLoop = RefPtr<RunLoop>;
++#elif PLATFORM(HAIKU)
++// The compositor schedules its observers on the main run loop from its own
++// thread, so the run loop that is asked for has to be carried through.
++using PlatformRunLoopObserver = void*;
++using PlatformRunLoop = RunLoop*;
+ #else
+ using PlatformRunLoopObserver = void*;
+ using PlatformRunLoop = void*;
+@@ -107,6 +114,14 @@ private:
      WellKnownOrder m_order { WellKnownOrder::GraphicsCommit };
      mutable Lock m_runLoopObserverLock;
      RefPtr<ActivityObserver> m_runLoopObserver WTF_GUARDED_BY_LOCK(m_runLoopObserverLock);
 +#elif PLATFORM(HAIKU)
-+    // A dispatch to the run loop stands in for the CF and GLib observers. The
-+    // flag is shared with the dispatched task so that it can tell whether the
-+    // observer is still alive and still wants to fire.
-+    std::shared_ptr<bool> m_scheduled;
++    // A zero delay timer stands in for the CF and GLib observers. It must be a
++    // timer rather than RunLoop::dispatch(): see the implementation. It is
++    // armed from one thread and fires on another, so both it and the flag that
++    // answers isScheduled() are held under a lock, as they are for GLib.
++    mutable Lock m_timerLock;
++    bool m_isScheduled WTF_GUARDED_BY_LOCK(m_timerLock) { false };
++    RefPtr<RunLoop::DispatchTimer> m_timer WTF_GUARDED_BY_LOCK(m_timerLock);
  #endif
  };
  
@@ -3886,6 +4004,36 @@ index 0000000000000000000000000000000000000000..7938b1b3f5c9c40f352ba61ef8282c38
 +} // WebCore
 +
 +#endif // ENABLE(WEB_AUDIO)
+diff --git a/Source/WebCore/platform/graphics/AsyncImageDecoder.cpp b/Source/WebCore/platform/graphics/AsyncImageDecoder.cpp
+index 3b7a53f05cae5d35892390e4907d74a8f4b4112c..e1f7f04d7e6e0b26ae59e2fae76423dcc3345bcd 100644
+--- a/Source/WebCore/platform/graphics/AsyncImageDecoder.cpp
++++ b/Source/WebCore/platform/graphics/AsyncImageDecoder.cpp
+@@ -30,6 +30,7 @@
+ #include "ImageDecoderClient.h"
+ #include "Logging.h"
+ #include "NativeImage.h"
++#include <wtf/MainThread.h>
+ #include <wtf/SystemTracing.h>
+ #include <wtf/text/TextStream.h>
+ 
+@@ -68,7 +69,16 @@ void AsyncImageDecoder::startWorkQueue()
+ 
+     m_workQueue = WorkQueue::create("org.webkit.ImageDecoder"_s, WorkQueue::QOS::Default);
+ 
+-    protect(m_workQueue)->dispatch([protectedThis = Ref { *this }, weakRunLoop = ThreadSafeWeakPtr { RunLoop::currentSingleton() }, protectedWorkQueue = Ref { *m_workQueue }, protectedClient = m_client.get(), protectedRequestQueue = Ref { requestQueue() }] () mutable {
++    // Finished decodes are handed back on the run loop of whichever thread first
++    // asked for one. That is the owning thread when the request comes from a
++    // rendering update, and it is not when a paint asks: SkiaPaintingEngine
++    // paints tiles on a worker pool, and a decode requested there would report
++    // back on a worker. The client's answer walks into CachedResource and
++    // MemoryCache, whose singleton asserts the main thread, so a decode asked
++    // for anywhere else still has to be answered on it.
++    RunLoop& replyRunLoop = isMainThread() ? RunLoop::currentSingleton() : RunLoop::mainSingleton();
++
++    protect(m_workQueue)->dispatch([protectedThis = Ref { *this }, weakRunLoop = ThreadSafeWeakPtr { replyRunLoop }, protectedWorkQueue = Ref { *m_workQueue }, protectedClient = m_client.get(), protectedRequestQueue = Ref { requestQueue() }] () mutable {
+         Request request;
+         while (protectedRequestQueue->dequeue(request)) {
+             TraceScope tracingScope(AsyncImageDecodeStart, AsyncImageDecodeEnd);
 diff --git a/Source/WebCore/platform/graphics/Color.h b/Source/WebCore/platform/graphics/Color.h
 index 04af25a76bbc73ea7b8a6afb9720e254c53b9cf1..f034faa4232d358890579354019886f0734c3c0e 100644
 --- a/Source/WebCore/platform/graphics/Color.h
@@ -55510,10 +55658,10 @@ index 8ace95c1b44f471e9072adcce4b7875472a98436..79fa9c1bfc4f6499439c6ab8bc4f4a17
  #if OS(ANDROID)
 diff --git a/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.cpp b/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..0116b46a74367fd08ce5bfb77259a751b24a1a6e
+index 0000000000000000000000000000000000000000..2c29d3e04770a863b4594c5decbd666379a44ada
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.cpp
-@@ -0,0 +1,105 @@
+@@ -0,0 +1,116 @@
 +/*
 + * Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause
 + */
@@ -55556,9 +55704,8 @@ index 0000000000000000000000000000000000000000..0116b46a74367fd08ce5bfb77259a751
 +        return;
 +
 +    if (m_surfaceID) {
-+        // The web process is waiting on a frame this surface will never show.
-+        if (m_isWaitingForFrameDone)
-+            frameDone();
++        // The web process may be waiting on a frame this surface will never show.
++        frameDone();
 +        m_buffers.clear();
 +        if (RefPtr process = m_legacyMainFrameProcess)
 +            process->removeMessageReceiver(Messages::AcceleratedBackingStore::messageReceiverName(), m_surfaceID);
@@ -55595,23 +55742,35 @@ index 0000000000000000000000000000000000000000..0116b46a74367fd08ce5bfb77259a751
 +    RefPtr webPage = m_webPage.get();
 +    RefPtr client = webPage ? webPage->pageClient() : nullptr;
 +    if (!bitmap || !client) {
++        if (bitmap)
++            releaseBuffer(id);
 +        frameDone();
 +        return;
 +    }
 +
-+    m_isWaitingForFrameDone = true;
 +    auto size = bitmap->size();
 +    float scale = webPage->deviceScaleFactor();
-+    // presentBitmapHaiku answers once the pixels are on screen, or immediately
-+    // if they cannot be; either way the web process may paint the next frame.
-+    client->presentBitmapHaiku(bitmap.releaseNonNull(), size, scale, [protectedThis = Ref { *this }] {
-+        protectedThis->frameDone();
-+    });
++    // presentBitmapHaiku's callback says when the view has drawn. The compositor
++    // must not wait for that: it cannot paint another frame until FrameDone, and
++    // a view that draws in response to a frame would then be waiting on itself.
++    // Waiting is unnecessary anyway -- publish() copies the pixels into a BBitmap
++    // before it returns, so the buffer is free the moment this call is done.
++    client->presentBitmapHaiku(bitmap.releaseNonNull(), size, scale, [] { });
++    releaseBuffer(id);
++    frameDone();
++}
++
++// The buffer goes back to the surface's swap chain. Without this the chain
++// never sees a free target and allocates another one for every frame, until
++// the web process runs out of file descriptors and dies.
++void AcceleratedBackingStore::releaseBuffer(uint64_t id)
++{
++    if (RefPtr process = m_legacyMainFrameProcess)
++        process->send(Messages::AcceleratedSurface::ReleaseBuffer(id, WTF::UnixFileDescriptor { }), m_surfaceID);
 +}
 +
 +void AcceleratedBackingStore::frameDone()
 +{
-+    m_isWaitingForFrameDone = false;
 +    if (RefPtr process = m_legacyMainFrameProcess)
 +        process->send(Messages::AcceleratedSurface::FrameDone(), m_surfaceID);
 +}
@@ -55621,7 +55780,7 @@ index 0000000000000000000000000000000000000000..0116b46a74367fd08ce5bfb77259a751
 +#endif // USE(COORDINATED_GRAPHICS)
 diff --git a/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.h b/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..78fd6217b9e6b39a793846bf503623f83720e527
+index 0000000000000000000000000000000000000000..243ad3ede0dbc9b0dc774548e4101d71e8fb2f57
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.h
 @@ -0,0 +1,67 @@
@@ -55680,13 +55839,13 @@ index 0000000000000000000000000000000000000000..78fd6217b9e6b39a793846bf503623f8
 +    void didCreateSHMBuffer(uint64_t id, WebCore::ShareableBitmapHandle&&);
 +    void didDestroyBuffer(uint64_t id);
 +    void frame(uint64_t id, Rects&&, WTF::UnixFileDescriptor&&);
++    void releaseBuffer(uint64_t id);
 +    void frameDone();
 +
 +    WeakPtr<WebPageProxy> m_webPage;
 +    RefPtr<WebProcessProxy> m_legacyMainFrameProcess;
 +    uint64_t m_surfaceID { 0 };
 +    HashMap<uint64_t, RefPtr<WebCore::ShareableBitmap>> m_buffers;
-+    bool m_isWaitingForFrameDone { false };
 +};
 +
 +} // namespace WebKit
@@ -78226,10 +78385,28 @@ index 7a3949d2103f0c1b5b5780cf810fa3f764da50dc..26a73f643e188d40a861837499753c2a
  #include "UpdateInfo.h"
  #include "WebDisplayRefreshMonitor.h"
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphicsGLib.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphicsGLib.cpp
-index e621738966cd3699821513e76fd51bdea8ff18b6..0b01cab46b26b5f09c352ddf610e5ff3ba8695b7 100644
+index e621738966cd3699821513e76fd51bdea8ff18b6..0190e6db1cfa1967014678962447fe72eb6212d3 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphicsGLib.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphicsGLib.cpp
-@@ -145,10 +145,22 @@ void DrawingAreaCoordinatedGraphics::updatePreferences(const WebPreferencesStore
+@@ -133,6 +133,17 @@ void DrawingAreaCoordinatedGraphics::updatePreferences(const WebPreferencesStore
+             m_supportsAsyncScrolling = false;
+     }
+ #endif
++#if PLATFORM(HAIKU)
++    // The upstream switch above is behind ENABLE(DEVELOPER_MODE), which release
++    // builds do not set. SUMMIT_DISABLE_ASYNC_SCROLLING=1 keeps the scrolling
++    // thread out of the picture, which is how a scrolling problem is told apart
++    // from a painting one.
++    if (m_supportsAsyncScrolling) {
++        const char* value = getenv("SUMMIT_DISABLE_ASYNC_SCROLLING");
++        if (value && strcmp(value, "0"))
++            m_supportsAsyncScrolling = false;
++    }
++#endif
+ 
+     // If async scrolling is disabled, we have to force-disable async frame and overflow scrolling
+     // to keep the non-async scrolling on those elements working.
+@@ -145,10 +156,22 @@ void DrawingAreaCoordinatedGraphics::updatePreferences(const WebPreferencesStore
  bool DrawingAreaCoordinatedGraphics::enterAcceleratedCompositingModeIfNeeded()
  {
      Ref webPage = m_webPage;
@@ -78253,7 +78430,7 @@ index e621738966cd3699821513e76fd51bdea8ff18b6..0b01cab46b26b5f09c352ddf610e5ff3
  
      if (m_renderer) {
          if (m_layerTreeStateIsFrozen)
-@@ -236,10 +248,12 @@ void DrawingAreaCoordinatedGraphics::triggerRenderingUpdate()
+@@ -236,10 +259,12 @@ void DrawingAreaCoordinatedGraphics::triggerRenderingUpdate()
      m_renderer->scheduleRenderingUpdate();
  }
  
@@ -78295,6 +78472,21 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..6bdd77ed52e5f24c6c9e8ce873b778d5
  
      if (m_overlayCompositingLayer)
          m_overlayCompositingLayer->flushCompositingState(visibleContentsRect());
+diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
+index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..f25f6f5719a8afe823f742702335a106eb10013b 100644
+--- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
++++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
+@@ -647,8 +647,9 @@ void ThreadedCompositor::requestCompositionForRenderingUpdate(Function<void()>&&
+     m_state.reasons.add(CompositionReason::RenderingUpdate);
+     ASSERT(!m_state.didCompositeRenderingUpdateFunction);
+     m_state.didCompositeRenderingUpdateFunction = WTF::move(didCompositeFunction);
+-    if (m_sceneState->pendingTiles())
++    if (m_sceneState->pendingTiles()) {
+         m_state.isWaitingForTiles = true;
++    }
+     scheduleUpdateLocked();
+ }
+ 
 diff --git a/Source/WebKit/WebProcess/WebPage/DrawingArea.cpp b/Source/WebKit/WebProcess/WebPage/DrawingArea.cpp
 index 5ac78eb5880335f49a9a6f2690626e46fbcac7f4..f194e2b1d31ba2b71312db5ed1833b4933d65ad0 100644
 --- a/Source/WebKit/WebProcess/WebPage/DrawingArea.cpp

@@ -344,7 +344,8 @@ def wake_display(x=1276, y=330):
         # never acknowledges a frame and the browser looks frozen. Stop the
         # blanker instead of faking input; it comes back on the next idle
         # period, so this is repeated for the length of a run.
-        ssh('kill $(ps | /bin/grep "[s]creen_blanker" | awk "{print $2}") 2>/dev/null; true',
+        # awk's own $2 has to survive the remote login shell, so it stays single quoted.
+        ssh("kill $(ps | /bin/grep '[s]creen_blanker' | awk '{print $2}') 2>/dev/null; true",
             check=False, timeout=30)
         return
     sys.path.insert(0, str(ROOT / 'tools'))
