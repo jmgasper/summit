@@ -70,7 +70,7 @@ if (!client) {
     const wrap = (name, after) => {
         const original = client[name];
         client[name] = function (...args) {
-            const value = original.apply(this, args);
+            const value = typeof original === "function" ? original.apply(this, args) : undefined;
             try {
                 const pending = after.apply(this, args);
                 if (pending && pending.catch)
@@ -109,8 +109,27 @@ if (!client) {
 # results collected this way are marked "instrumented").
 PROGRESS_HOOK = r'''
     let step = 0;
-    wrap("willRunTest", (suite, test) => navigator.sendBeacon("/__bench/progress",
-        JSON.stringify({ step: step++, suite: suite.name, test: test.name, at: Date.now() })));
+    let last = null;
+    const beacon = (phase, suite, test) => {
+        last = { phase, suite: suite && suite.name, test: test && test.name, at: Date.now() };
+        navigator.sendBeacon("/__bench/progress", JSON.stringify({ step: step++, ...last }));
+    };
+    wrap("willRunTest", (suite, test) => beacon("will", suite, test));
+    wrap("didRunTest", (suite, test) => beacon("did", suite, test));
+    wrap("didRunSuites", () => beacon("didSuites", null, null));
+    // A hang shows up as "the last beacon stopped moving". Beacons travel through
+    // the network process, so the tick also goes into the document title, which
+    // the harness reads over the browser's own control channel: if the title
+    // keeps counting while the beacons stop, the page is alive and the network
+    // path is not.
+    let tick = 0;
+    const baseTitle = document.title;
+    setInterval(() => {
+        ++tick;
+        document.title = baseTitle + " [tick " + tick + "]";
+        navigator.sendBeacon("/__bench/progress",
+            JSON.stringify({ step: -1, phase: "alive", tick, since: last && (Date.now() - last.at), last }));
+    }, 2000);
 '''
 
 

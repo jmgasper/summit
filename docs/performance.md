@@ -1246,8 +1246,25 @@ document has a `requestAnimationFrame` callback waiting, and nothing has asked
 for a rendering update. Reporting the main thread's dispatch queues and timer
 heap from the same watchdog said the same thing -- `dispatchSuspended=0
 hasSuspended=0 currentQueue=0 nextQueue=0`, DOM timer throttling off, and the
-timer heap's next entry a legitimate second away. The page is waiting on
-something in its own JavaScript, not on the engine.
+timer heap's next entry a legitimate second away.
+
+That reading was wrong, and the page said so. With `--progress-beacons` the
+benchmark reports each test as it starts and finishes, and a two-second
+`setInterval` reports that the page's own event loop is still turning. At the
+hang the test beacons stop *and so does the interval* -- and because beacons
+travel through the network process, the same tick also goes into
+`document.title`, which the harness reads over the browser's own control
+channel. That title froze at `[tick 4]` and stayed there while the control
+channel kept answering in 50 microseconds.
+
+So the page is not waiting on its own JavaScript: **its DOM timers have
+stopped**. That is consistent with the engine dump after all -- a timer heap
+whose front is a second away, a shared timer that says it is armed, and nothing
+firing -- and it makes the notification that drives
+`MainThreadSharedTimer` the place to look. Note the asymmetry worth keeping in
+mind: the watchdog's own `RunLoop::Timer` kept firing every second throughout,
+so it is not that Haiku's timers stopped, it is that one particular timer's
+notification went missing.
 
 One of the two causes is known. The suite that hangs, `Editor-CodeMirror`, has
 a scroll step, and it completes with the scrolling thread out of the picture:
@@ -1267,11 +1284,58 @@ p99 19 ms, still no frame over 33 ms -- so it is a usable default until the
 scrolling tree is fixed.
 
 With it set, the full ten-iteration run still stops, at a different suite
-(`TodoMVC-Lit-Complex-DOM`) with the benchmark's iframe blank, and one-iteration
-runs pass that same suite. So there is a second cause, and it is intermittent.
-Finding what the page is waiting for -- through the Web Inspector or
-`run-speedometer.py --progress-beacons` -- is more use now than more engine
-instrumentation.
+(`TodoMVC-Lit-Complex-DOM`, and in other runs the last test of the first
+iteration) with the benchmark's iframe blank. Where it lands varies, which is
+the signature of a race rather than of a particular test.
+
+### Which timer stops, and where it stops
+
+The beacons narrowed it to "DOM timers stop"; two rounds of instrumentation in
+`RunLoopHaiku.cpp` then said exactly which timer and on which side of the port.
+
+The deadline thread keeps its own time, so it can still speak when a looper has
+gone quiet. Asked what it was holding at the hang, the web process answered:
+
+    Summit sch: deadlines=1 front=JSRunLoopTimer::Manager::PerVMData::Timer in 3655939 ms
+    Summit reg: handler 0xc92fa73aa0 holds 1 timers: JSRunLoopTimer::Manager::PerVMData::Timer -3655.9s
+
+One deadline, an hour out, and **`MainThreadSharedTimer::timer` is not there at
+all** -- not overdue, not waiting, not registered. It was stopped and never
+armed again.
+
+That rules out the two explanations that looked most likely. It is not a dropped
+`'tmrf'`: a recovery pass that re-posts notifications for timers that are
+registered, overdue and unknown to the scheduler was added, and it never fired
+once, because there was nothing registered to recover. And it is not the
+rejected notifications the log is full of -- those are the ordinary kind, a
+stale identifier superseded by a newer arming.
+
+So the loss is above the port, in WebCore. `ThreadTimers::updateSharedTimer()`
+is the only thing that arms the shared timer, and it stops it here:
+
+    if (m_firingTimers || m_timerHeap.isEmpty()) {
+        m_pendingSharedTimerFireTime = MonotonicTime { };
+        protect(m_sharedTimer)->stop();
+    } else { ...arm... }
+
+and `TimerBase::setNextFireTime()` only calls `updateSharedTimer()` again when
+the heap's *front* changes:
+
+    if (wasFirstTimerInHeap || isFirstTimerInHeap)
+        threadGlobalDataSingleton().threadTimers().updateSharedTimer();
+
+Those two together are the trap. The earlier engine dump caught the heap in
+exactly the fatal shape -- seven timers, front about a second away -- with the
+shared timer stopped. No DOM timer can run, so nothing can change the front, so
+nothing ever calls `updateSharedTimer()` again. The process is wedged by
+construction, and every DOM timer in it is dead.
+
+What is still unknown is which call stopped it: the `m_firingTimers` branch runs
+while the fire loop is in progress, and `sharedTimerFiredInternal()` ends with
+`updateSharedTimer()`, which should re-arm. Logging in `updateSharedTimer()`
+whenever it stops the timer with a non-empty heap -- with `m_firingTimers` and
+the caller -- is the next step, and it is a one-file change on the WebCore side.
+
 
 Two measurement traps were fixed along the way, both in the harness rather than
 the browser:
