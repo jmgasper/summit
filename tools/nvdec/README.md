@@ -36,3 +36,13 @@ On 2026-09-23 the workstation's installed add-on selected
 elapsed time is a functional check rather than a throughput benchmark. Summit's
 own selected codec still needs to be logged from `BMediaTrack::GetCodecInfo()`
 after `DecodedFormat()` on a real video source.
+
+A browser-process check on 2026-09-23 opened the Reddit H.264 CMAF URL in
+`bundle-kou9exyv`. The video played to its 12.7-second `ended` event with no
+media error (`.vm/bench/probe-20260923-015416-summit-codec-image-check/`).
+While it played, `listimage` showed both the system FFmpeg media plugin and
+`/boot/home/config/non-packaged/add-ons/media/plugins/nvdec` loaded in the
+active WebProcess. This establishes that the NVDEC add-on was available inside
+Summit's decoding process, but loading an add-on does not prove that Media Kit
+selected its decoder for this track. The WebKit engine build was active during
+the playback check, so its timing is not a throughput measurement.
