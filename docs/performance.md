@@ -1810,3 +1810,20 @@ in `.vm/bench/probe-20260923-052551-summit-layout-text-profile/profile.txt`.
 An exclusive profiler attempt hung Haiku during profiler shutdown and required
 a NanoKVM power cycle, so the harness deliberately exposes only the verified
 inclusive mode.
+
+### Workstation-specific compiler result
+
+A separate engine build targeted the workstation's first-generation Zen CPU
+with `-march=znver1 -mtune=znver1`. Its clean bundle
+`bundle-osto12r7` scored 6.279 ± 0.292 over ten uncontended Speedometer
+iterations
+(`.vm/bench/speedometer-20260923-061249-mimalloc-znver1-native-mesa/`). This is
+indistinguishable from the generic bundle's 6.293 ± 0.302, so the native flags
+are not enabled in the production build.
+
+The focused text-layout probe did move: repeated automatic-width text fell
+from 39.92 to 36.60 ms per layout, and repeated fixed-width text fell from
+33.66 to 31.72 ms
+(`.vm/bench/probe-20260923-061455-summit-summit-layout-text-znver1-native/`).
+Those 8% and 6% improvements confirm that generated code affects the isolated
+layout loop, but they did not improve the complete browser benchmark.
