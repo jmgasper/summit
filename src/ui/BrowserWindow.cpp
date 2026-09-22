@@ -17,6 +17,7 @@
 #include <MenuItem.h>
 #include <MessageRunner.h>
 #include <MessageFilter.h>
+#include <OS.h>
 #include <Path.h>
 #include <Roster.h>
 #include <ScrollView.h>
@@ -44,6 +45,47 @@
 
 namespace summit {
 #if SUMMIT_MODERN_WEBKIT
+// The engine sends one 'wvfr' message when a coordinated frame reaches its
+// native view. Count those deliveries only in explicit performance runs.
+class FrameStatsWebKitView final : public BWebKitView {
+public:
+    using BWebKitView::BWebKitView;
+
+    void MessageReceived(BMessage* message) override
+    {
+        if (message->what == 'wvfr') {
+            const bigtime_t now = system_time();
+            if (!fWindowStart)
+                fWindowStart = now;
+            if (fLastFrame) {
+                const bigtime_t gap = now - fLastFrame;
+                fLongestGap = std::max(fLongestGap, gap);
+                if (gap > 33000)
+                    ++fLongGaps;
+            }
+            fLastFrame = now;
+            ++fFrames;
+            const bigtime_t elapsed = now - fWindowStart;
+            if (elapsed >= 1000000) {
+                std::fprintf(stderr, "Summit UI frames: %.1f/s frames=%u longest=%.1f ms over33=%u\n",
+                    1000000.0 * fFrames / elapsed, fFrames, fLongestGap / 1000.0, fLongGaps);
+                fWindowStart = now;
+                fFrames = 0;
+                fLongestGap = 0;
+                fLongGaps = 0;
+            }
+        }
+        BWebKitView::MessageReceived(message);
+    }
+
+private:
+    bigtime_t fWindowStart { 0 };
+    bigtime_t fLastFrame { 0 };
+    bigtime_t fLongestGap { 0 };
+    unsigned fFrames { 0 };
+    unsigned fLongGaps { 0 };
+};
+
 class ExtensionActionMenuItem final : public BMenuItem {
 public:
     ExtensionActionMenuItem(const char* label, BMessage* message) : BMenuItem(label, message) { }
@@ -508,8 +550,13 @@ void BrowserWindow::CreateTab(const std::string& input, bool select, BWebView* a
         status_t status;
         webView = fWebKitContext->CreateExtensionView(BRect(0, 0, 319, 199), "web-page", extensionIdentifier, BMessenger(this), &status);
         if (!webView) { fail("Could not open the extension page: " + std::string(std::strerror(status))); return; }
-    } else
-        webView = new BWebKitView(BRect(0, 0, 319, 199), "web-page", BMessenger(this), B_FOLLOW_ALL, fWebKitContext);
+    } else {
+        const char* frameStats = std::getenv("SUMMIT_UI_FRAME_STATS");
+        if (frameStats && std::strcmp(frameStats, "1") == 0)
+            webView = new FrameStatsWebKitView(BRect(0, 0, 319, 199), "web-page", BMessenger(this), B_FOLLOW_ALL, fWebKitContext);
+        else
+            webView = new BWebKitView(BRect(0, 0, 319, 199), "web-page", BMessenger(this), B_FOLLOW_ALL, fWebKitContext);
+    }
     if (webView->InitCheck() != B_OK) {
         const status_t status = webView->InitCheck();
         delete webView;

@@ -4,8 +4,8 @@
 The page is given time to settle, then a paced burst of mouse wheel notches is
 delivered through the browser's input path (summitctl scroll, which needs
 SUMMIT_ENABLE_INPUT_SYNTHESIS=1). Before/after screenshots record visible
-movement. Frame statistics are reported only when an instrumented engine
-actually emits them; production bundles no longer include that hook.
+movement. Frame statistics are reported only when the engine or an opt-in
+Summit view actually emits them.
 
 Everything for one run lands in .vm/bench/<run-id>/.
 
@@ -42,6 +42,9 @@ FRAME_LINE = re.compile(
     r'present=(?P<present>[\d.]+) ms '
     r'interval=(?P<interval>[\d.]+) ms \(max (?P<maxInterval>[\d.]+)\) '
     r'longest frame=(?P<longestFrame>[\d.]+) ms dirty=(?P<dirty>[\d.]+) Mpx/frame(?P<gl> \[gl\])?')
+UI_FRAME_LINE = re.compile(
+    r'Summit UI frames: (?P<fps>[\d.]+)/s frames=(?P<frames>\d+) '
+    r'longest=(?P<longest>[\d.]+) ms over33=(?P<over33>\d+)')
 
 
 def log(message):
@@ -56,6 +59,24 @@ def parse_frame_lines(text):
         sample['gl'] = bool(match.group('gl'))
         samples.append(sample)
     return samples
+
+
+def parse_ui_frame_lines(text):
+    return [{name: float(value) for name, value in match.groupdict().items()}
+            for match in UI_FRAME_LINE.finditer(text)]
+
+
+def summarize_ui(samples):
+    if not samples:
+        return {}
+    frames = sum(sample['frames'] for sample in samples)
+    seconds = sum(sample['frames'] / sample['fps'] for sample in samples if sample['fps'])
+    return {
+        'source': 'native-view', 'periods': len(samples), 'frames': int(frames),
+        'seconds': round(seconds, 2), 'fps': round(frames / seconds, 2) if seconds else 0,
+        'worstIntervalMs': max(sample['longest'] for sample in samples),
+        'over33Ms': int(sum(sample['over33'] for sample in samples)),
+    }
 
 
 def summarize(samples):
@@ -92,7 +113,8 @@ def main():
     parser.add_argument('--notches', type=int, default=600, help='wheel notches in the burst')
     parser.add_argument('--interval-ms', type=int, default=16, help='milliseconds between notches')
     parser.add_argument('--delta', type=float, default=3.0, help='wheel delta per notch')
-    parser.add_argument('--stats-period', type=float, default=0, help='seconds per frame statistics line on an instrumented bundle (default: off)')
+    parser.add_argument('--stats-period', type=float, default=0, help='seconds per frame statistics line on an instrumented engine (default: off)')
+    parser.add_argument('--ui-frame-stats', action='store_true', help='count coordinated frame messages delivered to the Summit view')
     parser.add_argument('--window', default='', metavar='L,T,R,B', help='browser window frame (default: full screen)')
     parser.add_argument('--keep-sidebar', action='store_true')
     parser.add_argument('--env', action='append', default=[], metavar='NAME=VALUE')
@@ -126,6 +148,8 @@ def main():
     extra_env = dict(item.split('=', 1) for item in args.env)
     if args.stats_period > 0:
         extra_env.setdefault('SUMMIT_FRAME_STATS', str(args.stats_period))
+    if args.ui_frame_stats:
+        extra_env['SUMMIT_UI_FRAME_STATS'] = '1'
     extra_env['SUMMIT_ENABLE_INPUT_SYNTHESIS'] = '1'
     run['extraEnv'] = extra_env
     remote_log = f'{guest_dir}/browser.log'
@@ -148,7 +172,9 @@ def main():
         guest.screenshot(directory / 'before.png')
         guest.fetch_file(remote_log, directory / 'before.log')
         before = (directory / 'before.log').read_text('utf-8', 'replace')
-        run['idle'] = summarize(parse_frame_lines(before)[-5:])
+        engine_before = parse_frame_lines(before)
+        ui_before = parse_ui_frame_lines(before)
+        run['idle'] = summarize(engine_before[-5:]) if engine_before else summarize_ui(ui_before[-5:])
         log(f"idle: {run['idle'].get('fps', 0)} fps")
 
         seconds = args.notches * args.interval_ms / 1000
@@ -164,13 +190,14 @@ def main():
         guest.screenshot(directory / 'final.png')
         guest.fetch_file(remote_log, directory / 'browser.log')
         text = (directory / 'browser.log').read_text('utf-8', 'replace')
-        samples = parse_frame_lines(text)
-        during = samples[len(parse_frame_lines(before)):]
+        engine_samples = parse_frame_lines(text)[len(engine_before):]
+        ui_samples = parse_ui_frame_lines(text)[len(ui_before):]
+        during = engine_samples or ui_samples
         run['burstSeconds'] = round(time.time() - burst_started, 1)
         run['frameStatsAvailable'] = bool(during)
         if during:
             run['frameSamples'] = during
-            run['scroll'] = summarize(during)
+            run['scroll'] = summarize(engine_samples) if engine_samples else summarize_ui(ui_samples)
         run['stateAfterBurst'] = guest.state(ctl, team)
         run['outcome'] = 'completed' if during else 'captured-uninstrumented'
     except KeyboardInterrupt:
