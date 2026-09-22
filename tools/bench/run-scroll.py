@@ -1,21 +1,17 @@
 #!/usr/bin/env python3
-"""Measure scrolling in Summit on a real site and record the engine's frame pacing.
+"""Capture a real-site wheel burst in Summit and, when available, frame pacing.
 
-The browser is started with the drawing area's frame statistics on
-(SUMMIT_FRAME_STATS), the page is given time to settle, and then a paced burst
-of mouse wheel notches is delivered to the page through the browser's own input
-path (summitctl scroll, which needs SUMMIT_ENABLE_INPUT_SYNTHESIS=1). What the
-engine reports for the burst is the result: frames per second, how long a frame
-took to paint, and how long the UI process needed to present it.
+The page is given time to settle, then a paced burst of mouse wheel notches is
+delivered through the browser's input path (summitctl scroll, which needs
+SUMMIT_ENABLE_INPUT_SYNTHESIS=1). Before/after screenshots record visible
+movement. Frame statistics are reported only when an instrumented engine
+actually emits them; production bundles no longer include that hook.
 
 Everything for one run lands in .vm/bench/<run-id>/.
 
-Known limitation: the synthesized wheel burst reaches the page view but does not
-move the page yet (the frame statistics show rendering updates that paint
-nothing), so `scroll` comes back empty on a real site. Until that is understood,
-scrolling is measured with tools/bench/pages/scroll.html through
-tools/bench/run-probe.py, which scrolls from requestAnimationFrame and goes
-through the same drawing-area path.
+Check the screenshots before treating a synthetic burst as real scrolling. An
+older bundle accepted the notches without moving the page; the view-token fix
+has not yet been retested with this harness on a real site.
 
 Examples:
   SUMMIT_BENCH_HOST=workstation python3 tools/bench/run-scroll.py --bundle <path> https://www.reddit.com/
@@ -95,7 +91,7 @@ def main():
     parser.add_argument('--notches', type=int, default=600, help='wheel notches in the burst')
     parser.add_argument('--interval-ms', type=int, default=16, help='milliseconds between notches')
     parser.add_argument('--delta', type=float, default=3.0, help='wheel delta per notch')
-    parser.add_argument('--stats-period', type=float, default=1.0, help='seconds per frame statistics line')
+    parser.add_argument('--stats-period', type=float, default=0, help='seconds per frame statistics line on an instrumented bundle (default: off)')
     parser.add_argument('--window', default='', metavar='L,T,R,B', help='browser window frame (default: full screen)')
     parser.add_argument('--keep-sidebar', action='store_true')
     parser.add_argument('--env', action='append', default=[], metavar='NAME=VALUE')
@@ -127,7 +123,8 @@ def main():
     save()
 
     extra_env = dict(item.split('=', 1) for item in args.env)
-    extra_env.setdefault('SUMMIT_FRAME_STATS', str(args.stats_period))
+    if args.stats_period > 0:
+        extra_env.setdefault('SUMMIT_FRAME_STATS', str(args.stats_period))
     extra_env['SUMMIT_ENABLE_INPUT_SYNTHESIS'] = '1'
     run['extraEnv'] = extra_env
     remote_log = f'{guest_dir}/browser.log'
@@ -147,6 +144,7 @@ def main():
         guest.ctl(ctl, team, 'navigate', args.url, timeout_ms=15000)
         time.sleep(args.settle)
         run['stateBeforeBurst'] = guest.state(ctl, team)
+        guest.screenshot(directory / 'before.png')
         guest.fetch_file(remote_log, directory / 'before.log')
         before = (directory / 'before.log').read_text('utf-8', 'replace')
         run['idle'] = summarize(parse_frame_lines(before)[-5:])
@@ -168,10 +166,12 @@ def main():
         samples = parse_frame_lines(text)
         during = samples[len(parse_frame_lines(before)):]
         run['burstSeconds'] = round(time.time() - burst_started, 1)
-        run['frameSamples'] = during
-        run['scroll'] = summarize(during)
+        run['frameStatsAvailable'] = bool(during)
+        if during:
+            run['frameSamples'] = during
+            run['scroll'] = summarize(during)
         run['stateAfterBurst'] = guest.state(ctl, team)
-        run['outcome'] = 'completed'
+        run['outcome'] = 'completed' if during else 'captured-uninstrumented'
     except KeyboardInterrupt:
         run['outcome'] = 'interrupted'
     except Exception as error:
