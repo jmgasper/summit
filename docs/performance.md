@@ -1432,7 +1432,7 @@ the browser:
 
 ### Real Reddit scroll, 2026-09-22
 
-`SUMMIT_FRAME_STATS=1` reports UI-process coordinated frame delivery over
+An opt-in `SUMMIT_FRAME_STATS=1` build reported UI-process coordinated frame delivery over
 one-second windows, including median, p95, maximum inter-frame time, and the
 number of gaps over 33 ms. The synthetic 400-card scroll probe measured 62.0
 frames/s in the UI process, matching the page's 62.02 frames/s. Its 60 fps
@@ -1455,7 +1455,7 @@ trace also exposed an uncontrolled redraw loop: Reddit produced 350–363
 coordinated frames/s while no user input was being sent. Haiku's shared-memory
 target does not wait for vertical sync during `swapBuffers()`.
 
-The Haiku compositor now schedules its next render at least 1/60 second after
+An experiment scheduled Haiku compositor renders at least 1/60 second after
 the last render started. Two fresh `/r/popular/` wheel passes used a title-bar
 focus click and confirmed feed movement without navigating away. The unpaced
 bundle (`.vm/bench/reddit-unpaced-titlebar-20260922/`) rendered 250–350
@@ -1463,14 +1463,14 @@ frames/s in most windows. The paced bundle
 (`.vm/bench/reddit-paced-titlebar-20260922/`) rendered mostly 56–61 frames/s
 with about 16.8 ms median spacing. It still had two approximately 775 ms
 inter-frame gaps, so pacing removes excess redraw work but does not yet make
-real Reddit scrolling reliably smooth. Use `SUMMIT_COMPOSITOR_TIMING=1` only for
-diagnosis: it logs every compositor frame and can affect timing.
+real Reddit scrolling reliably smooth. The temporary compositor trace logged
+every frame and was removed after this measurement.
 
 The paced build also completed the controlled 400-card probe at 59.79
 frames/s over 120 scroll frames, with p95 19 ms, maximum 20 ms, and no gap
 over 33 ms (`.vm/bench/probe-20260922-225543-summit-paced-scroll/`).
 
-Additional opt-in timing narrows the remaining long gaps. With
+Additional temporary timing narrows the remaining long gaps. With
 `SUMMIT_MEDIA_CANCEL_TIMING=1`, one media cancellation took 128 ms, including
 119 ms in `BSoundPlayer::Stop()`
 (`.vm/bench/reddit-media-cancel-trace-20260922/`). It occurred near a 798 ms
@@ -1478,8 +1478,8 @@ frame gap, but other gaps had no matching cancellation. With
 `SUMMIT_RENDER_UPDATE_TIMING=1`, `LayerTreeHost::updateRendering()` took up to
 1042 ms, 593 ms, and 304 ms during a wheel pass. Almost all of that time was
 inside `Page::updateRendering()`, while scene flush took less than 0.1 ms
-(`.vm/bench/reddit-render-update-trace-20260922/`). The next measurement
-should split the WebCore page update into layout and script callback phases.
+(`.vm/bench/reddit-render-update-trace-20260922/`). This located the stall
+inside the WebCore page update.
 
 `SUMMIT_PAGE_UPDATE_TIMING=1` performed that split in
 `.vm/bench/reddit-page-update-trace-20260922/`. A 390 ms page update spent
@@ -1504,3 +1504,28 @@ event without a media error
 Reddit feed trace still had a 727 ms frame gap attributable to long page
 updates, so the media stop fix removes one independent pause but does not
 resolve the heavy page layout and script work.
+
+The 60 Hz pacing experiment reduced Speedometer 3.1 from a 5.17 ± 0.24
+unpaced control rerun to 3.96 ± 0.21 (ten iterations each, uncontended).
+Pacing compositor-only animation frames scored 4.29 ± 0.19. Waiting until a
+page had made no rendering update request for a second scored 4.87 ± 0.14,
+but Reddit still rendered 200–250 frames/s while idle because it kept making
+WebCore updates. Those results are in `.vm/bench/speedometer-20260922-233001-baseline-rerun/`,
+`.vm/bench/speedometer-20260922-231944-paced-media/`,
+`.vm/bench/speedometer-20260922-232702-animation-only-pacing/`, and
+`.vm/bench/speedometer-20260922-233638-idle-animation-pacing/`. The pacing
+policy was reverted: it did not remove the measured long page-update stalls
+and it made the benchmark slower. Avoid reintroducing a broad 60 Hz timer
+without a different rendering hand-off design.
+
+The one-off frame, compositor, page, rendering-update, and media-cancel timing
+hooks were subsequently removed from the production path. Their captured
+logs remain in the bench directories above.
+
+Removing those probes did not restore the 5.17 control score. The unpaced
+build with all probes scored 4.40 ± 0.40; removing the Page probe scored
+4.12 ± 0.19; removing the remaining rendering probes scored 4.20 ± 0.35;
+and removing the frame statistics hook scored 4.01 ± 0.13. Each was a
+completed, uncontended 10-iteration local Speedometer run. The cause of the
+slow warmup in these newer bundles remains open, separate from the rejected
+pacing policy.

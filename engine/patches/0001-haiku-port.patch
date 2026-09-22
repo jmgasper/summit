@@ -2953,93 +2953,17 @@ index 3dbc23ec4a0818ed58ab2e0b2648056ab360a2ff..8254fb1525db8f69c8c4d1191e04b9b9
  
  #if USE(QUICK_LOOK)
 diff --git a/Source/WebCore/page/Page.cpp b/Source/WebCore/page/Page.cpp
-index a26485a6771a1d63e0d0f5ff3800f30221a77304..3f6db7c37e917cc69347849119606a49d9134986 100644
+index a26485a6771a1d63e0d0f5ff3800f30221a77304..80e75f8697bc6aa17dc263903b1948a30f8b88f6 100644
 --- a/Source/WebCore/page/Page.cpp
 +++ b/Source/WebCore/page/Page.cpp
-@@ -233,6 +233,10 @@
- #include <wtf/text/MakeString.h>
- #include <wtf/text/StringHash.h>
- #include <wtf/text/TextStream.h>
-+#if PLATFORM(HAIKU)
-+#include <cstdio>
-+#include <cstdlib>
-+#endif
- 
- #if ENABLE(APPLE_PAY_AMS_UI)
- #include "ApplePayAMSUIPaymentHandler.h"
-@@ -2378,7 +2382,18 @@ void Page::updateRendering()
-     if (!isSVGImagePage)
-         tracePoint(RenderingUpdateStart);
- 
-+#if PLATFORM(HAIKU)
-+    static const bool logPageUpdateTiming = [] {
-+        const char* value = std::getenv("SUMMIT_PAGE_UPDATE_TIMING");
-+        return value && value[0] == '1' && !value[1];
-+    }();
-+    MonotonicTime timingStart = logPageUpdateTiming ? MonotonicTime::now() : MonotonicTime { };
-+#endif
-+
-     layoutIfNeeded();
-+#if PLATFORM(HAIKU)
-+    MonotonicTime timingInitialLayout = logPageUpdateTiming ? MonotonicTime::now() : MonotonicTime { };
-+#endif
- 
-     auto runProcessingStep = [&](RenderingUpdateStep step, NOESCAPE const Function<void(Document&)>& perDocumentFunction) {
-         m_renderingUpdateRemainingSteps.last().remove(step);
-@@ -2450,16 +2465,25 @@ void Page::updateRendering()
+@@ -2450,7 +2450,6 @@ void Page::updateRendering()
      runProcessingStep(RenderingUpdateStep::VideoFrameCallbacks, [] (Document& document) {
          document.serviceRequestVideoFrameCallbacks();
      });
-+#if PLATFORM(HAIKU)
-+    MonotonicTime timingBeforeAnimationFrame = logPageUpdateTiming ? MonotonicTime::now() : MonotonicTime { };
-+#endif
- 
+-
      runProcessingStep(RenderingUpdateStep::AnimationFrameCallbacks, [] (Document& document) {
          document.serviceRequestAnimationFrameCallbacks();
      });
-+#if PLATFORM(HAIKU)
-+    MonotonicTime timingAnimationFrame = logPageUpdateTiming ? MonotonicTime::now() : MonotonicTime { };
-+#endif
- 
-     runProcessingStep(RenderingUpdateStep::CaretAnimation, [] (Document& document) {
-         document.serviceCaretAnimation();
-     });
- 
-     layoutIfNeeded();
-+#if PLATFORM(HAIKU)
-+    MonotonicTime timingSecondLayout = logPageUpdateTiming ? MonotonicTime::now() : MonotonicTime { };
-+#endif
- 
-     runProcessingStep(RenderingUpdateStep::ResizeObservations, [&] (Document& document) {
-         document.updateResizeObservations(*this);
-@@ -2520,9 +2544,27 @@ void Page::updateRendering()
-     if (m_isTrackingRenderingUpdates)
-         ++m_renderingUpdateCount;
- 
-+#if PLATFORM(HAIKU)
-+    MonotonicTime timingBeforeFinalLayout = logPageUpdateTiming ? MonotonicTime::now() : MonotonicTime { };
-+#endif
-     layoutIfNeeded(LayoutOptions::UpdateCompositingLayers);
-+#if PLATFORM(HAIKU)
-+    MonotonicTime timingFinalLayout = logPageUpdateTiming ? MonotonicTime::now() : MonotonicTime { };
-+#endif
-     doAfterUpdateRendering();
- 
-+#if PLATFORM(HAIKU)
-+    if (logPageUpdateTiming) {
-+        MonotonicTime timingEnd = MonotonicTime::now();
-+        if (timingEnd - timingStart > 33_ms)
-+            fprintf(stderr, "Summit page update: initialLayout=%.1fms preRAF=%.1fms raf=%.1fms secondLayout=%.1fms observers=%.1fms finalLayout=%.1fms after=%.1fms total=%.1fms\n",
-+                (timingInitialLayout - timingStart).milliseconds(), (timingBeforeAnimationFrame - timingInitialLayout).milliseconds(),
-+                (timingAnimationFrame - timingBeforeAnimationFrame).milliseconds(), (timingSecondLayout - timingAnimationFrame).milliseconds(),
-+                (timingBeforeFinalLayout - timingSecondLayout).milliseconds(), (timingFinalLayout - timingBeforeFinalLayout).milliseconds(),
-+                (timingEnd - timingFinalLayout).milliseconds(), (timingEnd - timingStart).milliseconds());
-+    }
-+#endif
-+
-     if (!isSVGImagePage)
-         tracePoint(RenderingUpdateEnd);
- }
 diff --git a/Source/WebCore/page/haiku/EventHandlerHaiku.cpp b/Source/WebCore/page/haiku/EventHandlerHaiku.cpp
 index 89f2b38d398b9fb7d5319d06bf0b918cfc569e1b..fbd1eea56e97654861c4b24b25c0da6e9f750604 100644
 --- a/Source/WebCore/page/haiku/EventHandlerHaiku.cpp
@@ -9087,10 +9011,10 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..a842fee02f3965aa2bd7eecb55c207cea9a0ebe7
+index 0000000000000000000000000000000000000000..0a9e3215e84b5d9b604271cea49e22d495744da3
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,741 @@
+@@ -0,0 +1,724 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -9234,13 +9158,6 @@ index 0000000000000000000000000000000000000000..a842fee02f3965aa2bd7eecb55c207ce
 +
 +void MediaPlayerPrivate::cancelLoad()
 +{
-+    static const bool logCancelTiming = [] {
-+        const char* value = std::getenv("SUMMIT_MEDIA_CANCEL_TIMING");
-+        return value && value[0] == '1' && !value[1];
-+    }();
-+    bigtime_t began = logCancelTiming ? system_time() : 0;
-+    bool hadLoader = m_loadingThread >= 0;
-+    bool hadVideo = m_videoThread >= 0;
 +    m_abort = true;
 +
 +    // Neither the decoder thread nor the sound callback can finish while the
@@ -9250,20 +9167,17 @@ index 0000000000000000000000000000000000000000..a842fee02f3965aa2bd7eecb55c207ce
 +        wait_for_thread(m_loadingThread, &status);
 +        m_loadingThread = -1;
 +    }
-+    bigtime_t loaderDone = logCancelTiming ? system_time() : 0;
 +
 +    if (m_videoThread >= 0) {
 +        status_t status;
 +        wait_for_thread(m_videoThread, &status);
 +        m_videoThread = -1;
 +    }
-+    bigtime_t videoDone = logCancelTiming ? system_time() : 0;
 +
 +    // The blocking form sleeps for the output latency even after playback has
 +    // stopped. Destruction below releases the node after the threads have exited.
 +    if (m_soundPlayer)
 +        m_soundPlayer->Stop(false);
-+    bigtime_t soundDone = logCancelTiming ? system_time() : 0;
 +
 +    m_mediaLock.Lock();
 +    delete m_soundPlayer;
@@ -9286,13 +9200,6 @@ index 0000000000000000000000000000000000000000..a842fee02f3965aa2bd7eecb55c207ce
 +        m_downloadPath = { };
 +    }
 +    m_mediaLock.Unlock();
-+    if (logCancelTiming) {
-+        bigtime_t ended = system_time();
-+        if (ended - began > 33000)
-+            fprintf(stderr, "Summit media cancel: loader=%d video=%d waitLoader=%.1fms waitVideo=%.1fms stopSound=%.1fms cleanup=%.1fms total=%.1fms\n",
-+                hadLoader, hadVideo, (loaderDone - began) / 1000.0, (videoDone - loaderDone) / 1000.0,
-+                (soundDone - videoDone) / 1000.0, (ended - soundDone) / 1000.0, (ended - began) / 1000.0);
-+    }
 +}
 +
 +
@@ -55987,10 +55894,10 @@ index 8ace95c1b44f471e9072adcce4b7875472a98436..79fa9c1bfc4f6499439c6ab8bc4f4a17
  #if OS(ANDROID)
 diff --git a/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.cpp b/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..d64a9deb9d71ed2f47d14b386f055e8953ee30da
+index 0000000000000000000000000000000000000000..2c29d3e04770a863b4594c5decbd666379a44ada
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.cpp
-@@ -0,0 +1,161 @@
+@@ -0,0 +1,116 @@
 +/*
 + * Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause
 + */
@@ -56007,10 +55914,6 @@ index 0000000000000000000000000000000000000000..d64a9deb9d71ed2f47d14b386f055e89
 +#include "WebProcessProxy.h"
 +#include <wtf/TZoneMallocInlines.h>
 +#include <wtf/unix/UnixFileDescriptor.h>
-+#include <algorithm>
-+#include <cmath>
-+#include <cstdio>
-+#include <cstdlib>
 +
 +namespace WebKit {
 +
@@ -56024,12 +55927,6 @@ index 0000000000000000000000000000000000000000..d64a9deb9d71ed2f47d14b386f055e89
 +AcceleratedBackingStore::AcceleratedBackingStore(WebPageProxy& webPage)
 +    : m_webPage(webPage)
 +{
-+    if (const char* value = getenv("SUMMIT_FRAME_STATS")) {
-+        char* end = nullptr;
-+        double period = strtod(value, &end);
-+        if (end != value && std::isfinite(period) && period > 0)
-+            m_frameStatsPeriod = period;
-+    }
 +}
 +
 +AcceleratedBackingStore::~AcceleratedBackingStore()
@@ -56097,41 +55994,6 @@ index 0000000000000000000000000000000000000000..d64a9deb9d71ed2f47d14b386f055e89
 +    client->presentBitmapHaiku(bitmap.releaseNonNull(), size, scale, [] { });
 +    releaseBuffer(id);
 +    frameDone();
-+    recordFrameForDiagnostics();
-+}
-+
-+void AcceleratedBackingStore::recordFrameForDiagnostics()
-+{
-+    if (!m_frameStatsPeriod)
-+        return;
-+
-+    MonotonicTime now = MonotonicTime::now();
-+    if (m_framesInStatsPeriod && now - m_lastStatsFrame > 1_s) {
-+        m_framesInStatsPeriod = 0;
-+        m_frameIntervals.clear();
-+    }
-+    if (!m_framesInStatsPeriod)
-+        m_statsPeriodStart = now;
-+    else
-+        m_frameIntervals.append((now - m_lastStatsFrame).milliseconds());
-+    m_lastStatsFrame = now;
-+    ++m_framesInStatsPeriod;
-+
-+    double elapsed = (now - m_statsPeriodStart).seconds();
-+    if (elapsed < m_frameStatsPeriod)
-+        return;
-+
-+    Vector<double> sorted = m_frameIntervals;
-+    std::sort(sorted.begin(), sorted.end());
-+    auto percentile = [&](double fraction) {
-+        return sorted.isEmpty() ? 0.0 : sorted[std::min(sorted.size() - 1, static_cast<size_t>(fraction * sorted.size()))];
-+    };
-+    unsigned over33 = std::count_if(sorted.begin(), sorted.end(), [](double milliseconds) { return milliseconds > 33; });
-+    fprintf(stderr, "Summit coordinated frames: %.1f/s over %.2fs (frames=%u) median=%.1fms p95=%.1fms max=%.1fms over33=%u\n",
-+        m_framesInStatsPeriod / elapsed, elapsed, m_framesInStatsPeriod, percentile(.5), percentile(.95),
-+        sorted.isEmpty() ? 0.0 : sorted.last(), over33);
-+    m_framesInStatsPeriod = 0;
-+    m_frameIntervals.clear();
 +}
 +
 +// The buffer goes back to the surface's swap chain. Without this the chain
@@ -56154,10 +56016,10 @@ index 0000000000000000000000000000000000000000..d64a9deb9d71ed2f47d14b386f055e89
 +#endif // USE(COORDINATED_GRAPHICS)
 diff --git a/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.h b/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..5dc7a90f7ace2bbc2daa37e14a00affb70539513
+index 0000000000000000000000000000000000000000..80d133c858175cebaf0542cda64a6ea285480046
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.h
-@@ -0,0 +1,75 @@
+@@ -0,0 +1,68 @@
 +/*
 + * Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause
 + */
@@ -56170,7 +56032,6 @@ index 0000000000000000000000000000000000000000..5dc7a90f7ace2bbc2daa37e14a00affb
 +#include <WebCore/IntRect.h>
 +#include <WebCore/ShareableBitmap.h>
 +#include <wtf/HashMap.h>
-+#include <wtf/MonotonicTime.h>
 +#include <wtf/RefCounted.h>
 +#include <wtf/RefPtr.h>
 +#include <wtf/TZoneMalloc.h>
@@ -56215,7 +56076,6 @@ index 0000000000000000000000000000000000000000..5dc7a90f7ace2bbc2daa37e14a00affb
 +    void didCreateSHMBuffer(uint64_t id, WebCore::ShareableBitmapHandle&&);
 +    void didDestroyBuffer(uint64_t id);
 +    void frame(uint64_t id, Rects&&, WTF::UnixFileDescriptor&&);
-+    void recordFrameForDiagnostics();
 +    void releaseBuffer(uint64_t id);
 +    void frameDone();
 +
@@ -56223,11 +56083,6 @@ index 0000000000000000000000000000000000000000..5dc7a90f7ace2bbc2daa37e14a00affb
 +    RefPtr<WebProcessProxy> m_legacyMainFrameProcess;
 +    uint64_t m_surfaceID { 0 };
 +    HashMap<uint64_t, RefPtr<WebCore::ShareableBitmap>> m_buffers;
-+    double m_frameStatsPeriod { 0 };
-+    unsigned m_framesInStatsPeriod { 0 };
-+    MonotonicTime m_statsPeriodStart;
-+    MonotonicTime m_lastStatsFrame;
-+    Vector<double> m_frameIntervals;
 +};
 +
 +} // namespace WebKit
@@ -78840,39 +78695,18 @@ index d382293c217c69e8672fb8f587a78e03574df4ba..5192b4bf4f5b2b3b17854164f56c82d5
      void activityStateDidChange(OptionSet<WebCore::ActivityState>, ActivityStateChangeID, CompletionHandler<void()>&&) override;
      void attachViewOverlayGraphicsLayer(WebCore::FrameIdentifier, WebCore::GraphicsLayer*) override;
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
-index a12c4f6edd9998271fda260c7193a3226bf1957a..bbd168f184aafef705a89cc9fa94c1955121ccf3 100644
+index a12c4f6edd9998271fda260c7193a3226bf1957a..c8cbe05806a9334a320bd4869e22b65668234de8 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
-@@ -58,6 +58,10 @@
- #include <wtf/TZoneMallocInlines.h>
- #include <wtf/glib/RunLoopSourcePriority.h>
- #include <wtf/text/StringToIntegerConversion.h>
-+#if PLATFORM(HAIKU)
-+#include <cstdio>
-+#include <cstdlib>
-+#endif
- 
- namespace WebKit {
- using namespace WebCore;
-@@ -182,12 +186,26 @@ void LayerTreeHost::updateRendering()
+@@ -182,12 +182,16 @@ void LayerTreeHost::updateRendering()
  
      SetForScope<bool> reentrancyProtector(m_isUpdatingRendering, true);
  
-+#if PLATFORM(HAIKU)
-+    static const bool logRenderUpdateTiming = [] {
-+        const char* value = std::getenv("SUMMIT_RENDER_UPDATE_TIMING");
-+        return value && value[0] == '1' && !value[1];
-+    }();
-+    MonotonicTime timingStart = logRenderUpdateTiming ? MonotonicTime::now() : MonotonicTime { };
-+#endif
 +
      TraceScope traceScope(LayerTreeHostRenderingUpdateStart, LayerTreeHostRenderingUpdateEnd);
  
      Ref page = m_webPage;
      page->updateRendering();
-+#if PLATFORM(HAIKU)
-+    MonotonicTime timingPage = logRenderUpdateTiming ? MonotonicTime::now() : MonotonicTime { };
-+#endif
      page->flushPendingEditorStateUpdate();
 +#if PLATFORM(MAC) || PLATFORM(WPE) || PLATFORM(GTK)
 +    // ThemeColorChanged is declared for those ports only.
@@ -78881,161 +78715,23 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..bbd168f184aafef705a89cc9fa94c195
  
      if (m_overlayCompositingLayer)
          m_overlayCompositingLayer->flushCompositingState(visibleContentsRect());
-@@ -200,6 +218,9 @@ void LayerTreeHost::updateRendering()
-     flags.add(FinalizeRenderingUpdateFlags::ApplyScrollingTreeLayerPositions);
- #endif
-     page->finalizeRenderingUpdate(flags);
-+#if PLATFORM(HAIKU)
-+    MonotonicTime timingFinalize = logRenderUpdateTiming ? MonotonicTime::now() : MonotonicTime { };
-+#endif
- 
-     if (m_pendingResize) {
-         m_compositor->setSize(page->size(), page->deviceScaleFactor());
-@@ -219,6 +240,9 @@ void LayerTreeHost::updateRendering()
-         drawingArea->dispatchPendingCallbacksAfterEnsuringDrawing();
- 
-     bool didChangeSceneState = m_sceneState->flush();
-+#if PLATFORM(HAIKU)
-+    MonotonicTime timingScene = logRenderUpdateTiming ? MonotonicTime::now() : MonotonicTime { };
-+#endif
-     if (m_compositionRequired || m_pendingResize || m_forceFrameSync || didChangeSceneState)
-         requestCompositionForRenderingUpdate();
- 
-@@ -237,6 +261,16 @@ void LayerTreeHost::updateRendering()
-         m_sceneState->waitUntilPaintingComplete();
-         m_waitUntilPaintingComplete = false;
-     }
-+#if PLATFORM(HAIKU)
-+    if (logRenderUpdateTiming) {
-+        MonotonicTime timingEnd = MonotonicTime::now();
-+        if (timingEnd - timingStart > 33_ms)
-+            fprintf(stderr, "Summit render update: page=%.1fms finalize=%.1fms scene=%.1fms finish=%.1fms total=%.1fms\n",
-+                (timingPage - timingStart).milliseconds(), (timingFinalize - timingPage).milliseconds(),
-+                (timingScene - timingFinalize).milliseconds(), (timingEnd - timingScene).milliseconds(),
-+                (timingEnd - timingStart).milliseconds());
-+    }
-+#endif
- }
- 
- void LayerTreeHost::updateRootLayer()
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
-index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..c0c2e81c33b730088bb29ec0624d32603c9c6ead 100644
+index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..9b5b73e24bdbfa69f67e08b080fe8f6e40d3a65d 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
-@@ -52,6 +52,10 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
- #include <wtf/SystemTracing.h>
- #include <wtf/TZoneMallocInlines.h>
- #include <wtf/text/StringToIntegerConversion.h>
-+#if PLATFORM(HAIKU)
-+#include <cstdio>
-+#include <cstdlib>
-+#endif
- 
- #if USE(GLIB_EVENT_LOOP)
- #include <wtf/glib/RunLoopSourcePriority.h>
-@@ -216,8 +220,18 @@ void ThreadedCompositor::updateRenderTimer()
-     }
- 
-     if (m_state.isRenderTimerActive) {
--        if (!m_renderTimer.isActive())
-+        if (!m_renderTimer.isActive()) {
-+#if PLATFORM(HAIKU)
-+            // Other ports block at swapBuffers/vsync. Haiku's shared-memory
-+            // target does not, so a continuously animated page otherwise
-+            // repaints hundreds of times per second and monopolizes a core.
-+            auto now = MonotonicTime::now();
-+            auto nextFrame = m_lastRenderStart ? m_lastRenderStart + Seconds { 1.0 / 60.0 } : now;
-+            m_renderTimer.startOneShot(std::max(0_s, nextFrame - now));
-+#else
-             m_renderTimer.startOneShot(0_s);
-+#endif
-+        }
-     } else
-         m_renderTimer.stop();
- }
-@@ -582,6 +596,10 @@ void ThreadedCompositor::renderLayerTree()
-         m_state.state = State::InProgress;
-     }
- 
-+#if PLATFORM(HAIKU)
-+    m_lastRenderStart = MonotonicTime::now();
-+#endif
-+
- #if USE(TEXTURE_MAPPER)
-     if (!m_context || !m_context->makeContextCurrent())
-         return;
-@@ -599,10 +617,21 @@ void ThreadedCompositor::renderLayerTree()
+@@ -599,6 +599,7 @@ void ThreadedCompositor::renderLayerTree()
      if (viewportSize.isEmpty())
          return;
  
-+#if PLATFORM(HAIKU)
-+    static const bool logCompositorTiming = [] {
-+        const char* value = std::getenv("SUMMIT_COMPOSITOR_TIMING");
-+        return value && value[0] == '1' && !value[1];
-+    }();
-+    MonotonicTime timingStart = logCompositorTiming ? MonotonicTime::now() : MonotonicTime { };
-+#endif
 +
      TransformationMatrix viewportTransform;
      viewportTransform.scale(deviceScaleFactor);
  
-     m_surface->willRenderFrame(viewportSize);
-+#if PLATFORM(HAIKU)
-+    MonotonicTime timingWillRender = logCompositorTiming ? MonotonicTime::now() : MonotonicTime { };
-+#endif
- 
-     RunLoop::mainSingleton().dispatch([this, protectedThis = Ref { *this }] {
-         if (m_layerTreeHost)
-@@ -611,10 +640,16 @@ void ThreadedCompositor::renderLayerTree()
- 
-     WTFBeginSignpost(this, FlushCompositingState);
-     flushCompositingState(reasons);
-+#if PLATFORM(HAIKU)
-+    MonotonicTime timingFlush = logCompositorTiming ? MonotonicTime::now() : MonotonicTime { };
-+#endif
-     WTFEndSignpost(this, FlushCompositingState);
- 
-     WTFBeginSignpost(this, PaintToGLContext);
-     const auto targetContents = paintToCurrentGLContext(viewportTransform, viewportSize, reasons);
-+#if PLATFORM(HAIKU)
-+    MonotonicTime timingPaint = logCompositorTiming ? MonotonicTime::now() : MonotonicTime { };
-+#endif
-     WTFEndSignpost(this, PaintToGLContext);
- 
-     updateFPSCounter();
-@@ -634,6 +669,16 @@ void ThreadedCompositor::renderLayerTree()
-     m_surface->didRenderFrame(targetContents);
-     m_surface->sendFrame();
- 
-+#if PLATFORM(HAIKU)
-+    if (logCompositorTiming) {
-+        MonotonicTime timingEnd = MonotonicTime::now();
-+        fprintf(stderr, "Summit compositor frame: prepare=%.1fms flush=%.1fms paint=%.1fms send=%.1fms total=%.1fms\n",
-+            (timingWillRender - timingStart).milliseconds(), (timingFlush - timingWillRender).milliseconds(),
-+            (timingPaint - timingFlush).milliseconds(), (timingEnd - timingPaint).milliseconds(),
-+            (timingEnd - timingStart).milliseconds());
-+    }
-+#endif
-+
-     RunLoop::mainSingleton().dispatch([this, protectedThis = Ref { *this }] {
-         if (m_layerTreeHost)
-             m_layerTreeHost->didRenderFrame();
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.h b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.h
-index 6665a0cc3570425e2ad5d26dc6c443e3b8280665..c20b6b7b8e36ef8f37810e9e7eae4ebbb266fb8b 100644
+index 6665a0cc3570425e2ad5d26dc6c443e3b8280665..13c60f221b739ef063c1b8060fb37a19aaf78035 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.h
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.h
-@@ -194,6 +194,10 @@ private:
-     } m_attributes;
- 
-     RunLoop::Timer m_renderTimer;
-+#if PLATFORM(HAIKU)
-+    // The shared-memory target has no swap-interval wait to pace animations.
-+    MonotonicTime m_lastRenderStart;
-+#endif
- #if USE(TEXTURE_MAPPER)
-     std::unique_ptr<WebCore::TextureMapper> m_textureMapper;
- #endif
-@@ -234,4 +238,3 @@ private:
+@@ -234,4 +234,3 @@ private:
  } // namespace WebKit
  
  #endif // USE(COORDINATED_GRAPHICS)
