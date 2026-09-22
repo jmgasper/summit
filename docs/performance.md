@@ -1429,3 +1429,19 @@ the browser:
   exactly what the first three scroll runs recorded as "timeout".
 - `run-probe.py` woke the display once, before the run. It now does so every
   30 seconds, because the blanker comes back on every idle period.
+
+### Real Reddit scroll, 2026-09-22
+
+`SUMMIT_FRAME_STATS=1` reports UI-process coordinated frame delivery over
+one-second windows, including median, p95, maximum inter-frame time, and the
+number of gaps over 33 ms. The synthetic 400-card scroll probe measured 62.0
+frames/s in the UI process, matching the page's 62.02 frames/s. Its 60 fps
+result does not predict real Reddit scrolling.
+
+On `https://www.reddit.com/r/popular/`, VNC wheel input moved the feed in both
+directions. In `.vm/bench/reddit-vnc-down-up-20260922/`, the downward pass fell
+from 32.9 and 28.4 frames/s to 2.4 frames/s, with a maximum 897 ms gap. The
+upward pass over previously seen content began at 56.4 frames/s, then fell to
+3.7 and 2.8 frames/s, with a maximum 638 ms gap. Screenshots in that directory
+confirm page movement. These measurements implicate work beyond loading new
+posts; the source of the stalls still needs isolation.

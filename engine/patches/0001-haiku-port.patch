@@ -55880,10 +55880,10 @@ index 8ace95c1b44f471e9072adcce4b7875472a98436..79fa9c1bfc4f6499439c6ab8bc4f4a17
  #if OS(ANDROID)
 diff --git a/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.cpp b/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..2c29d3e04770a863b4594c5decbd666379a44ada
+index 0000000000000000000000000000000000000000..d64a9deb9d71ed2f47d14b386f055e8953ee30da
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.cpp
-@@ -0,0 +1,116 @@
+@@ -0,0 +1,161 @@
 +/*
 + * Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause
 + */
@@ -55900,6 +55900,10 @@ index 0000000000000000000000000000000000000000..2c29d3e04770a863b4594c5decbd6663
 +#include "WebProcessProxy.h"
 +#include <wtf/TZoneMallocInlines.h>
 +#include <wtf/unix/UnixFileDescriptor.h>
++#include <algorithm>
++#include <cmath>
++#include <cstdio>
++#include <cstdlib>
 +
 +namespace WebKit {
 +
@@ -55913,6 +55917,12 @@ index 0000000000000000000000000000000000000000..2c29d3e04770a863b4594c5decbd6663
 +AcceleratedBackingStore::AcceleratedBackingStore(WebPageProxy& webPage)
 +    : m_webPage(webPage)
 +{
++    if (const char* value = getenv("SUMMIT_FRAME_STATS")) {
++        char* end = nullptr;
++        double period = strtod(value, &end);
++        if (end != value && std::isfinite(period) && period > 0)
++            m_frameStatsPeriod = period;
++    }
 +}
 +
 +AcceleratedBackingStore::~AcceleratedBackingStore()
@@ -55980,6 +55990,41 @@ index 0000000000000000000000000000000000000000..2c29d3e04770a863b4594c5decbd6663
 +    client->presentBitmapHaiku(bitmap.releaseNonNull(), size, scale, [] { });
 +    releaseBuffer(id);
 +    frameDone();
++    recordFrameForDiagnostics();
++}
++
++void AcceleratedBackingStore::recordFrameForDiagnostics()
++{
++    if (!m_frameStatsPeriod)
++        return;
++
++    MonotonicTime now = MonotonicTime::now();
++    if (m_framesInStatsPeriod && now - m_lastStatsFrame > 1_s) {
++        m_framesInStatsPeriod = 0;
++        m_frameIntervals.clear();
++    }
++    if (!m_framesInStatsPeriod)
++        m_statsPeriodStart = now;
++    else
++        m_frameIntervals.append((now - m_lastStatsFrame).milliseconds());
++    m_lastStatsFrame = now;
++    ++m_framesInStatsPeriod;
++
++    double elapsed = (now - m_statsPeriodStart).seconds();
++    if (elapsed < m_frameStatsPeriod)
++        return;
++
++    Vector<double> sorted = m_frameIntervals;
++    std::sort(sorted.begin(), sorted.end());
++    auto percentile = [&](double fraction) {
++        return sorted.isEmpty() ? 0.0 : sorted[std::min(sorted.size() - 1, static_cast<size_t>(fraction * sorted.size()))];
++    };
++    unsigned over33 = std::count_if(sorted.begin(), sorted.end(), [](double milliseconds) { return milliseconds > 33; });
++    fprintf(stderr, "Summit coordinated frames: %.1f/s over %.2fs (frames=%u) median=%.1fms p95=%.1fms max=%.1fms over33=%u\n",
++        m_framesInStatsPeriod / elapsed, elapsed, m_framesInStatsPeriod, percentile(.5), percentile(.95),
++        sorted.isEmpty() ? 0.0 : sorted.last(), over33);
++    m_framesInStatsPeriod = 0;
++    m_frameIntervals.clear();
 +}
 +
 +// The buffer goes back to the surface's swap chain. Without this the chain
@@ -56002,10 +56047,10 @@ index 0000000000000000000000000000000000000000..2c29d3e04770a863b4594c5decbd6663
 +#endif // USE(COORDINATED_GRAPHICS)
 diff --git a/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.h b/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..243ad3ede0dbc9b0dc774548e4101d71e8fb2f57
+index 0000000000000000000000000000000000000000..5dc7a90f7ace2bbc2daa37e14a00affb70539513
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.h
-@@ -0,0 +1,67 @@
+@@ -0,0 +1,75 @@
 +/*
 + * Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause
 + */
@@ -56018,9 +56063,11 @@ index 0000000000000000000000000000000000000000..243ad3ede0dbc9b0dc774548e4101d71
 +#include <WebCore/IntRect.h>
 +#include <WebCore/ShareableBitmap.h>
 +#include <wtf/HashMap.h>
++#include <wtf/MonotonicTime.h>
 +#include <wtf/RefCounted.h>
 +#include <wtf/RefPtr.h>
 +#include <wtf/TZoneMalloc.h>
++#include <wtf/Vector.h>
 +#include <wtf/WeakPtr.h>
 +
 +namespace WebKit {
@@ -56061,6 +56108,7 @@ index 0000000000000000000000000000000000000000..243ad3ede0dbc9b0dc774548e4101d71
 +    void didCreateSHMBuffer(uint64_t id, WebCore::ShareableBitmapHandle&&);
 +    void didDestroyBuffer(uint64_t id);
 +    void frame(uint64_t id, Rects&&, WTF::UnixFileDescriptor&&);
++    void recordFrameForDiagnostics();
 +    void releaseBuffer(uint64_t id);
 +    void frameDone();
 +
@@ -56068,6 +56116,11 @@ index 0000000000000000000000000000000000000000..243ad3ede0dbc9b0dc774548e4101d71
 +    RefPtr<WebProcessProxy> m_legacyMainFrameProcess;
 +    uint64_t m_surfaceID { 0 };
 +    HashMap<uint64_t, RefPtr<WebCore::ShareableBitmap>> m_buffers;
++    double m_frameStatsPeriod { 0 };
++    unsigned m_framesInStatsPeriod { 0 };
++    MonotonicTime m_statsPeriodStart;
++    MonotonicTime m_lastStatsFrame;
++    Vector<double> m_frameIntervals;
 +};
 +
 +} // namespace WebKit
