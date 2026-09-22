@@ -1741,3 +1741,20 @@ baseline (`.vm/bench/speedometer-20260923-033627-mimalloc-compositor-60/`).
 Haiku now defaults to the screen's nominal refresh rate, or 60 fps when that
 rate is unavailable. `SUMMIT_COMPOSITOR_MAX_FPS=0` disables the limit and a
 value from 30 through 240 overrides it for diagnosis or high-refresh displays.
+
+The suspected Reddit HLS failure is reproducible independently of the feed.
+The current completed-file HTTP path downloads
+`https://v.redd.it/u5pu7ad5rcdh1/HLSPlaylist.m3u8` to an extensionless file;
+Media Kit rejects it with media error 4 at time zero and reports that it cannot
+detect HLS without a standard extension or MIME type
+(`.vm/bench/probe-20260923-034125-summit-reddit-hls-downloaded-control/`).
+Passing the original HTTPS URL directly also returns error 4
+(`.vm/bench/probe-20260923-034501-summit-reddit-hls-direct/`). An experimental
+local mirror downloaded the master playlist, child playlists, and CMAF assets.
+Giving Media Kit the mirrored file URL removed its format-detection warning,
+but still produced no tracks and error 4
+(`.vm/bench/probe-20260923-040418-summit-reddit-hls-file-url/`). That experiment
+was removed because it did not restore playback. Reddit's direct CMAF MP4 path
+continues to play to `ended` with the NVDEC H.264 decoder, and live feed pages
+select that decoder; complete HLS support needs a demux path that can retain
+the playlist URL or supply its video and audio streams together.
