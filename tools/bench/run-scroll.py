@@ -179,27 +179,52 @@ def main():
 
         seconds = args.notches * args.interval_ms / 1000
         log(f'scrolling: {args.notches} notches over about {seconds:.0f} s')
+        burst_started = time.monotonic()
         code, out, err = guest.ctl(ctl, team, 'scroll', args.notches, args.interval_ms, args.delta,
                                    timeout_ms=15000)
         if code:
             run['outcome'] = 'scroll-refused'
             run['scrollError'] = err.strip() or out.strip()
             raise RuntimeError(run['scrollError'])
-        burst_started = time.time()
-        time.sleep(seconds + 3)
+        deadline = burst_started + max(30, seconds * 10)
+        while True:
+            progress = guest.state(ctl, team)
+            if not progress.get('ok'):
+                raise RuntimeError('Cannot read scroll progress: ' + progress.get('error', 'unknown error'))
+            if progress.get('scrollRequested') != args.notches:
+                # Older browser bundles do not expose completion state.
+                time.sleep(seconds + 3)
+                run['completionVerified'] = False
+                break
+            if not progress['scrollActive']:
+                run['completionVerified'] = True
+                run['scrollDelivery'] = {key: progress[key] for key in
+                    ('scrollRequested', 'scrollSent', 'scrollStatus', 'scrollDurationMicros')}
+                if progress['scrollSent'] != args.notches or progress['scrollStatus'] != 0:
+                    run['outcome'] = 'scroll-incomplete'
+                    raise RuntimeError(f"Delivered {progress['scrollSent']} of {args.notches} wheel notches "
+                                       f"(status {progress['scrollStatus']})")
+                break
+            if time.monotonic() >= deadline:
+                run['outcome'] = 'scroll-timeout'
+                raise RuntimeError('Wheel burst did not complete before the measurement deadline')
+            time.sleep(0.2)
+        run['burstSeconds'] = round(time.monotonic() - burst_started, 1)
+        # Let the one-second frame counter flush its last partial window.
+        time.sleep(1.1)
         guest.screenshot(directory / 'final.png')
         guest.fetch_file(remote_log, directory / 'browser.log')
         text = (directory / 'browser.log').read_text('utf-8', 'replace')
         engine_samples = parse_frame_lines(text)[len(engine_before):]
         ui_samples = parse_ui_frame_lines(text)[len(ui_before):]
         during = engine_samples or ui_samples
-        run['burstSeconds'] = round(time.time() - burst_started, 1)
         run['frameStatsAvailable'] = bool(during)
         if during:
             run['frameSamples'] = during
             run['scroll'] = summarize(engine_samples) if engine_samples else summarize_ui(ui_samples)
         run['stateAfterBurst'] = guest.state(ctl, team)
-        run['outcome'] = 'completed' if during else 'captured-uninstrumented'
+        run['outcome'] = ('completed' if run['completionVerified'] else 'captured-unverified-delivery') \
+            if during else 'captured-uninstrumented'
     except KeyboardInterrupt:
         run['outcome'] = 'interrupted'
     except Exception as error:

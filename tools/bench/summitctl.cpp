@@ -223,13 +223,18 @@ int main(int argc, char** argv)
         const bigtime_t elapsed = system_time() - before;
         if (status == B_TIMED_OUT || status == B_WOULD_BLOCK) { std::fputs("window did not reply\n", stderr); return 4; }
         if (status != B_OK) { std::fprintf(stderr, "state: %s\n", std::strerror(status)); return 5; }
-        int32 count = -1; int64 selected = -1; bool closing = false;
+        int32 count = -1; int64 selected = -1; bool closing = false, scrollActive = false;
         state.FindInt32("count", &count); state.FindInt64("selected", &selected); state.FindBool("closing", &closing);
+        state.FindBool("scroll_active", &scrollActive);
         std::printf("{\"team\":%ld,\"replyMicros\":%lld,\"count\":%ld,\"selected\":%lld,\"closing\":%s,"
+            "\"scrollActive\":%s,\"scrollRequested\":%ld,\"scrollSent\":%ld,\"scrollStatus\":%ld,\"scrollDurationMicros\":%lld,"
             "\"address\":\"%s\",\"status\":\"%s\",\"backend\":\"%s\",\"webkit\":\"%s\",\"haikuWebkit\":\"%s\","
             "\"webkitRevision\":\"%s\",\"tabs\":[",
             long(team), static_cast<long long>(elapsed), long(count), static_cast<long long>(selected),
-            closing ? "true" : "false", Escape(String(state, "address")).c_str(), Escape(String(state, "status")).c_str(),
+            closing ? "true" : "false", scrollActive ? "true" : "false",
+            long(state.GetInt32("scroll_requested", 0)), long(state.GetInt32("scroll_sent", 0)),
+            long(state.GetInt32("scroll_status", 0)), static_cast<long long>(state.GetInt64("scroll_duration_us", 0)),
+            Escape(String(state, "address")).c_str(), Escape(String(state, "status")).c_str(),
             Escape(String(state, "backend")).c_str(), Escape(String(state, "webkit")).c_str(),
             Escape(String(state, "haiku_webkit")).c_str(), Escape(String(state, "webkit_revision")).c_str());
         BMessage tab;

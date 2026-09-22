@@ -424,13 +424,23 @@ BrowserWindow::Tab* BrowserWindow::ActiveTab()
 status_t BrowserWindow::RunScrollBurst(void* data)
 {
     std::unique_ptr<ScrollBurst> burst(static_cast<ScrollBurst*>(data));
+    const bigtime_t started = system_time();
+    int32 sent = 0;
+    status_t result = B_OK;
     for (int32 index = 0; index < burst->count; ++index) {
         // A full view port throttles the burst instead of dropping events.
-        if (burst->view.SendMessage(&burst->event, static_cast<BHandler*>(nullptr), 2000000) != B_OK)
-            return B_ERROR;
+        result = burst->view.SendMessage(&burst->event, static_cast<BHandler*>(nullptr), 2000000);
+        if (result != B_OK)
+            break;
+        ++sent;
         if (burst->interval) snooze(burst->interval);
     }
-    return B_OK;
+    BMessage completed(kScrollBurstCompleted);
+    completed.AddInt32("sent", sent);
+    completed.AddInt32("status", result);
+    completed.AddInt64("duration_us", system_time() - started);
+    burst->window.SendMessage(&completed);
+    return result;
 }
 void BrowserWindow::SimulateScroll(const BMessage& message, BMessage& reply)
 {
@@ -442,6 +452,10 @@ void BrowserWindow::SimulateScroll(const BMessage& message, BMessage& reply)
     auto* tab = ActiveTab();
     if (!tab || !tab->view) {
         reply.AddString("error", "no active tab");
+        return;
+    }
+    if (fScrollBurstActive) {
+        reply.AddString("error", "a scroll burst is already active");
         return;
     }
     const int32 count = message.GetInt32("count", 60);
@@ -459,6 +473,7 @@ void BrowserWindow::SimulateScroll(const BMessage& message, BMessage& reply)
         reply.AddString("error", "the page view cannot be addressed");
         return;
     }
+    burst->window = BMessenger(this);
     burst->count = count;
     burst->interval = bigtime_t(interval) * 1000;
     burst->event.what = B_MOUSE_WHEEL_CHANGED;
@@ -482,6 +497,11 @@ void BrowserWindow::SimulateScroll(const BMessage& message, BMessage& reply)
         return;
     }
     burst.release();
+    fScrollBurstActive = true;
+    fScrollBurstRequested = count;
+    fScrollBurstSent = 0;
+    fScrollBurstDuration = 0;
+    fScrollBurstStatus = B_OK;
     resume_thread(thread);
     reply.AddInt32("count", count);
     reply.AddInt32("interval_ms", interval);
@@ -1637,9 +1657,20 @@ void BrowserWindow::MessageReceived(BMessage* message)
             message->SendReply(&reply);
             break;
         }
+        case kScrollBurstCompleted:
+            fScrollBurstSent = message->GetInt32("sent", 0);
+            fScrollBurstStatus = message->GetInt32("status", B_ERROR);
+            fScrollBurstDuration = message->GetInt64("duration_us", 0);
+            fScrollBurstActive = false;
+            break;
         case kBrowserState: {
             BMessage reply(B_REPLY);
             reply.AddInt32("count", fTabs.size()); reply.AddInt64("selected", fSelected);
+            reply.AddBool("scroll_active", fScrollBurstActive);
+            reply.AddInt32("scroll_requested", fScrollBurstRequested);
+            reply.AddInt32("scroll_sent", fScrollBurstSent);
+            reply.AddInt32("scroll_status", fScrollBurstStatus);
+            reply.AddInt64("scroll_duration_us", fScrollBurstDuration);
             reply.AddString("address", fAddress->Text());
             reply.AddString("status", fStatus->Text());
 #if SUMMIT_MODERN_WEBKIT

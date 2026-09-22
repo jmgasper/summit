@@ -151,10 +151,16 @@ private:
     void SimulateScroll(const BMessage&, BMessage& reply);
     struct ScrollBurst {
         BMessenger view;
+        BMessenger window;
         BMessage event;
         int32 count = 0;
         bigtime_t interval = 16666;
     };
+    bool fScrollBurstActive = false;
+    int32 fScrollBurstRequested = 0;
+    int32 fScrollBurstSent = 0;
+    bigtime_t fScrollBurstDuration = 0;
+    status_t fScrollBurstStatus = B_OK;
     static status_t RunScrollBurst(void* burst);
     void SelectTab(int64 id, bool forClose = false);
     void CloseTab(int64 id);

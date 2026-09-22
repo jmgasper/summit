@@ -1596,3 +1596,12 @@ production bundle while an engine compile was active, so it establishes input
 delivery and page movement only. No per-frame timing was emitted. The
 real-site harness now labels such a capture `captured-uninstrumented` instead
 of reporting an empty frame-rate result as a completed measurement.
+
+The native scroll test interface now reports burst completion, delivered wheel
+messages, elapsed delivery time, and the final send status through
+`summitctl state`. The real-site harness waits for that completion before its
+final capture. This matters on a busy page because each wheel send can block
+for up to two seconds; the requested interval alone cannot prove that every
+notch was delivered. A failed or incomplete burst is reported separately from
+a completed frame-rate measurement. The browser and controller compile checks
+passed; a bundled runtime check remains pending.
