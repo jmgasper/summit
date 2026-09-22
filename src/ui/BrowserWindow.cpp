@@ -58,6 +58,8 @@ public:
         fLongestGap = 0;
         fLongGaps = 0;
         fFrames = 0;
+        fLongestQueueDelay = 0;
+        fLongQueueDelays = 0;
     }
 
     void MessageReceived(BMessage* message) override
@@ -74,14 +76,24 @@ public:
             }
             fLastFrame = now;
             ++fFrames;
+            int64 queuedMicros = 0;
+            if (message->FindInt64("summit:queuedMicros", &queuedMicros) == B_OK && queuedMicros > 0 && queuedMicros <= now) {
+                const bigtime_t delay = now - queuedMicros;
+                fLongestQueueDelay = std::max(fLongestQueueDelay, delay);
+                if (delay > 33000)
+                    ++fLongQueueDelays;
+            }
             const bigtime_t elapsed = now - fWindowStart;
             if (elapsed >= 1000000) {
-                std::fprintf(stderr, "Summit UI frames: %.1f/s frames=%u longest=%.1f ms over33=%u\n",
-                    1000000.0 * fFrames / elapsed, fFrames, fLongestGap / 1000.0, fLongGaps);
+                std::fprintf(stderr, "Summit UI frames: %.1f/s frames=%u longest=%.1f ms over33=%u queueMax=%.1f ms queueOver33=%u\n",
+                    1000000.0 * fFrames / elapsed, fFrames, fLongestGap / 1000.0, fLongGaps,
+                    fLongestQueueDelay / 1000.0, fLongQueueDelays);
                 fWindowStart = now;
                 fFrames = 0;
                 fLongestGap = 0;
                 fLongGaps = 0;
+                fLongestQueueDelay = 0;
+                fLongQueueDelays = 0;
             }
         }
         BWebKitView::MessageReceived(message);
@@ -93,6 +105,8 @@ private:
     bigtime_t fLongestGap { 0 };
     unsigned fFrames { 0 };
     unsigned fLongGaps { 0 };
+    bigtime_t fLongestQueueDelay { 0 };
+    unsigned fLongQueueDelays { 0 };
 };
 
 class ExtensionActionMenuItem final : public BMenuItem {

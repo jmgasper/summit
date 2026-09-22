@@ -45,7 +45,8 @@ FRAME_LINE = re.compile(
     r'longest frame=(?P<longestFrame>[\d.]+) ms dirty=(?P<dirty>[\d.]+) Mpx/frame(?P<gl> \[gl\])?')
 UI_FRAME_LINE = re.compile(
     r'Summit UI frames: (?P<fps>[\d.]+)/s frames=(?P<frames>\d+) '
-    r'longest=(?P<longest>[\d.]+) ms over33=(?P<over33>\d+)')
+    r'longest=(?P<longest>[\d.]+) ms over33=(?P<over33>\d+)'
+    r'(?: queueMax=(?P<queueMax>[\d.]+) ms queueOver33=(?P<queueOver33>\d+))?')
 
 
 def log(message):
@@ -74,7 +75,7 @@ def parse_frame_lines(text):
 
 
 def parse_ui_frame_lines(text):
-    return [{name: float(value) for name, value in match.groupdict().items()}
+    return [{name: float(value) for name, value in match.groupdict().items() if value is not None}
             for match in UI_FRAME_LINE.finditer(text)]
 
 
@@ -83,12 +84,17 @@ def summarize_ui(samples):
         return {}
     frames = sum(sample['frames'] for sample in samples)
     seconds = sum(sample['frames'] / sample['fps'] for sample in samples if sample['fps'])
-    return {
+    summary = {
         'source': 'native-view', 'periods': len(samples), 'frames': int(frames),
         'seconds': round(seconds, 2), 'fps': round(frames / seconds, 2) if seconds else 0,
         'worstIntervalMs': max(sample['longest'] for sample in samples),
         'over33Ms': int(sum(sample['over33'] for sample in samples)),
     }
+    queue_samples = [sample for sample in samples if 'queueMax' in sample]
+    if queue_samples:
+        summary['worstQueueDelayMs'] = max(sample['queueMax'] for sample in queue_samples)
+        summary['queueOver33Ms'] = int(sum(sample['queueOver33'] for sample in queue_samples))
+    return summary
 
 
 def summarize(samples):

@@ -1695,3 +1695,33 @@ generated code is also not fully symbolized. They support profiling the page
 update, script callback, and layout path before investing in Skia GPU tile
 painting. An earlier system-wide profile started before WebProcess launched and
 did not include it; its result is excluded.
+
+An exclusive Haiku sampler run over the same editor suites was dominated by
+unsymbolized JIT addresses, so it cannot attribute the remaining cost to a
+specific engine function
+(`.vm/bench/speedometer-20260923-031114-mimalloc-editor-exclusive/`).
+Disabling FTL JIT scored 6.37 ± 0.31 in ten Speedometer iterations, within
+the variation of the mimalloc baseline; FTL remains enabled. The JSC
+SamplingProfiler flag emitted no report on WebProcess shutdown in this setup.
+
+An opt-in wheel-route trace on live `/r/popular/` recorded all 100 synthetic
+wheel events on WebKit's scrolling tree: `tree=1 sync=0 blockingDOM=0
+route=scrolling`. Delivery completed in 1.604 seconds with no send error.
+The before and after screenshots show different Reddit posts
+(`.vm/bench/scroll-20260923-032157-reddit-wheel-route-native/`). That run did
+not request view frame statistics. It establishes that these wheel events
+reach the scrolling thread; it does not identify whether the long frame gaps
+seen in earlier captures occur during composition, the native bitmap copy,
+or view-message delivery. The next instrumented capture timestamps the view
+message after bitmap publication and measures its queue delay separately.
+
+The timestamped follow-up
+(`.vm/bench/scroll-20260923-032824-reddit-queue-attribution/`) delivered all
+300 wheel events. During the burst, the native-view counter saw 603 frame
+messages at 111.58/s, an interval as long as 790.3 ms, and 11 intervals over
+33 ms. The longest delay between bitmap publication and the view handler was
+only 3.6 ms, with no queue delay over 33 ms. The idle sample likewise saw
+133.9 messages/s while its maximum queue delay was 0.2 ms. The UI message
+queue is therefore not causing the long gaps; Reddit is also driving the
+compositor well above the display rate and spending CPU on frames that cannot
+all be shown.
