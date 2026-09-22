@@ -1848,3 +1848,32 @@ CMAF MP4 regression also played to `ended` with NVDEC
 The same bundle's controlled 400-card scroll test reached 59.03 fps over 600
 frames, p95 18 ms, maximum 23 ms, and no frame over 33 ms
 (`.vm/bench/probe-20260923-062113-summit-summit-hls-scroll-regression/`).
+
+### Fixed-width inline layout reuse experiment
+
+`SUMMIT_FIXED_INLINE_LAYOUT_REUSE=1` now enables a guarded Haiku experiment
+that retains an already-laid-out inline block's contents when its containing
+block changes width but the inline block has a fixed logical width. Replaced
+content, relative sizes, percentage padding, dirty boxes, and block-level
+boxes are excluded. The switch remains off by default.
+
+On the same generic bundle, repeated fixed-width text fell from 33.18 to 4.70
+ms per forced layout, and unique text fell from 34.12 to 4.70 ms. Automatic
+width cases were unchanged
+(`.vm/bench/probe-20260923-062552-summit-summit-fixed-inline-reuse-control/`
+and
+`.vm/bench/probe-20260923-062638-summit-summit-fixed-inline-reuse-enabled/`).
+The complete Speedometer result remained neutral at 6.303 ± 0.312
+(`.vm/bench/speedometer-20260923-062736-mimalloc-fixed-inline-reuse/`).
+
+The dedicated correctness probe compares reused boxes with freshly created
+equivalents through seven widths in both LTR and RTL. It found zero geometry
+mismatches among the 3,360 boxes eligible for reuse, including nested
+percentage-width content, relative offsets, and percentage margins
+(`.vm/bench/probe-20260923-063228-summit-fixed-inline-correctness-candidates/`).
+It also reproduced 144 nested-width mismatches in percentage-padding boxes in
+both the disabled and enabled runs; those boxes are excluded from reuse, and
+the mismatch is an existing layout behavior rather than a result of this
+experiment. With the switch enabled, the controlled scrolling probe ran at
+59.10 fps, p95 18 ms, maximum 23 ms, and no frame above 33 ms
+(`.vm/bench/probe-20260923-063308-summit-fixed-inline-reuse-scroll/`).

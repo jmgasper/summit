@@ -23477,6 +23477,47 @@ index c534f8fe7e32b62d5c1b9584aaaa109e836086ff..bcfba160da5797070c6d5cdee5b0bb4e
  
  #include <errno.h>
  #include <fcntl.h>
+diff --git a/Source/WebCore/rendering/RenderBlockFlow.cpp b/Source/WebCore/rendering/RenderBlockFlow.cpp
+index ea03bcbb4b167323afa11643cc204dd4c40e5b55..18a863ae65492319446db7748ce9d66fab8da4ac 100644
+--- a/Source/WebCore/rendering/RenderBlockFlow.cpp
++++ b/Source/WebCore/rendering/RenderBlockFlow.cpp
+@@ -83,6 +83,7 @@
+ #include "TextBoxTrimmer.h"
+ #include "TextUtil.h"
+ #include "VisiblePosition.h"
++#include <cstdlib>
+ #include <ranges>
+ #include <wtf/Scope.h>
+ #include <wtf/TZoneMallocInlines.h>
+@@ -4307,7 +4308,27 @@ RenderBlockFlow::InlineContentStatus RenderBlockFlow::markInlineContentDirtyForL
+         auto isInFlowBlockLevelElement = box && box->isBlockLevelBox() && box->isInFlow();
+         hasInFlowBlockLevelElement |= isInFlowBlockLevelElement;
+         hasDirtyInFlowBlockLevelElement |= (isInFlowBlockLevelElement && box->needsLayout());
+-        auto childNeedsLayout = !renderer.isExcludedFromNormalLayout() && (relayoutChildren == RelayoutChildren::Yes || (box && box->hasRelativeDimensions() && !box->isBlockLevelBox()));
++        auto canReuseFixedInlineBoxLayout = [&] {
++#if PLATFORM(HAIKU)
++            static bool enabled = [] {
++                const char* value = std::getenv("SUMMIT_FIXED_INLINE_LAYOUT_REUSE");
++                return value && value[0] == '1' && !value[1];
++            }();
++            if (!enabled || relayoutChildren != RelayoutChildren::Yes || !box || box->needsLayout()
++                || box->isBlockLevelBox() || box->isRenderReplaced() || box->hasRelativeDimensions()
++                || !box->style().logicalWidth().isFixed())
++                return false;
++            auto& style = box->style();
++            return !style.paddingStart().isPercentOrCalculated()
++                && !style.paddingEnd().isPercentOrCalculated()
++                && !style.paddingBefore().isPercentOrCalculated()
++                && !style.paddingAfter().isPercentOrCalculated();
++#else
++            return false;
++#endif
++        }();
++        auto childNeedsLayout = !renderer.isExcludedFromNormalLayout() && !canReuseFixedInlineBoxLayout
++            && (relayoutChildren == RelayoutChildren::Yes || (box && box->hasRelativeDimensions() && !box->isBlockLevelBox()));
+         auto childNeedsIntrinsicWidthComputation = !renderer.isExcludedFromNormalLayout() && relayoutChildren == RelayoutChildren::Yes && box && box->shouldInvalidateContentWidths();
+ 
+         if (childNeedsLayout)
 diff --git a/Source/WebCore/rendering/haiku/RenderThemeHaiku.cpp b/Source/WebCore/rendering/haiku/RenderThemeHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..92d20a3ff6fd83acdf255b10fa5b68cdfff528ae

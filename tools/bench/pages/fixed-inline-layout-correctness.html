@@ -1,0 +1,98 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Summit fixed inline layout correctness probe: running</title>
+<style>
+body { font: 14px/1.3 sans-serif; margin: 16px; }
+.stage { border: 2px solid #777; margin: 8px; }
+.item { display: inline-block; width: 40px; padding: 2px 5px; margin: 1px 2px;
+    border: 1px solid #aaa; vertical-align: middle; white-space: normal; }
+.item:nth-child(7n) { width: 64px; box-sizing: border-box; }
+.item:nth-child(11n) { position: relative; inset-inline-start: 3%; }
+.item:nth-child(13n) { margin-inline-start: 2%; }
+.item:nth-child(17n) { padding-inline-start: 2%; box-sizing: border-box; }
+.item > span { display: block; width: 50%; height: 3px; background: #4682b4; }
+.rtl { direction: rtl; }
+pre { white-space: pre-wrap; }
+</style>
+<h1>Fixed inline layout correctness probe</h1>
+<div id="reuse" class="stage"></div>
+<div id="fresh" class="stage"></div>
+<pre id="out">running…</pre>
+<script>
+"use strict";
+const reuse = document.getElementById("reuse");
+const fresh = document.getElementById("fresh");
+const out = document.getElementById("out");
+const widths = [713, 741, 689, 760, 701, 739, 713];
+const round = value => Math.round(value * 64) / 64;
+
+function populate(stage) {
+    const fragment = document.createDocumentFragment();
+    for (let index = 0; index < 240; ++index) {
+        const item = document.createElement("span");
+        item.className = "item";
+        item.append(`word${index % 19} text`);
+        const nested = document.createElement("span");
+        item.append(nested);
+        fragment.append(item);
+    }
+    stage.replaceChildren(fragment);
+}
+
+function geometry(stage) {
+    const root = stage.getBoundingClientRect();
+    return {
+        scrollWidth: stage.scrollWidth,
+        scrollHeight: stage.scrollHeight,
+        children: [...stage.children].map(child => {
+            const box = child.getBoundingClientRect();
+            const nested = child.lastElementChild.getBoundingClientRect();
+            return [round(box.x - root.x), round(box.y - root.y), round(box.width), round(box.height),
+                round(nested.x - root.x), round(nested.y - root.y), round(nested.width), round(nested.height)];
+        })
+    };
+}
+
+function compare(actual, expected, label, mismatches) {
+    if (actual.scrollWidth !== expected.scrollWidth || actual.scrollHeight !== expected.scrollHeight)
+        mismatches.push({label, kind: "scroll", candidate: true, actual: [actual.scrollWidth, actual.scrollHeight],
+            expected: [expected.scrollWidth, expected.scrollHeight]});
+    for (let index = 0; index < actual.children.length; ++index) {
+        if (JSON.stringify(actual.children[index]) !== JSON.stringify(expected.children[index]))
+            mismatches.push({label, kind: "child", index, candidate: (index + 1) % 17 !== 0,
+                actual: actual.children[index], expected: expected.children[index]});
+    }
+}
+
+(async () => {
+    await new Promise(resolve => setTimeout(resolve, 500));
+    populate(reuse);
+    void reuse.offsetHeight;
+    const mismatches = [];
+    let comparisons = 0;
+    for (const direction of ["ltr", "rtl"]) {
+        reuse.classList.toggle("rtl", direction === "rtl");
+        fresh.classList.toggle("rtl", direction === "rtl");
+        for (const width of widths) {
+            reuse.style.width = `${width}px`;
+            void reuse.offsetHeight;
+            fresh.style.width = `${width}px`;
+            populate(fresh);
+            void fresh.offsetHeight;
+            compare(geometry(reuse), geometry(fresh), `${direction}-${width}`, mismatches);
+            ++comparisons;
+        }
+    }
+    const candidateMismatchCount = mismatches.filter(item => item.candidate).length;
+    const result = {userAgent: navigator.userAgent, comparisons, boxesPerComparison: reuse.children.length,
+        candidateMismatchCount, excludedMismatchCount: mismatches.length - candidateMismatchCount,
+        mismatches: mismatches.slice(0, 20)};
+    out.textContent = JSON.stringify(result, null, 2);
+    await fetch("/__bench/probe", {method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(result)});
+    document.title = `Summit fixed inline layout correctness probe: ${candidateMismatchCount ? "failed" : "done"}`;
+})().catch(error => {
+    out.textContent = String(error && error.stack || error);
+    document.title = "Summit fixed inline layout correctness probe: error";
+});
+</script>
