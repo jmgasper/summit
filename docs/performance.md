@@ -1545,5 +1545,36 @@ the verified media cancellation improvement. The JavaScriptCore binaries are
 identical; the newer WebKit builds have different `.text` contents from the
 older 5.18-point bundle, though a rebuild of the same current source produced
 identical `.text`. The remaining Speedometer warmup difference needs
-investigation at the WebKit build/runtime level. The restored nonblocking
+investigation at runtime as well as the build level. The restored nonblocking
 bundle is `bundle-viu0mveh` in the workstation's latest-bundle manifest.
+
+### Skia worker count on the 32-logical-core workstation
+
+WebKit obtains Haiku's online processor count through `sysconf` and normally
+uses half of it, capped at eight, for CPU tile painting. With the same
+`bundle-viu0mveh`, Mesa prefix, 800×600 Speedometer viewport, fresh profile,
+and ten iterations per run, the worker-count sweep was:
+
+| CPU paint workers | Speedometer 3.1 score | 400-card scroll fps | Gaps over 33 ms |
+| --- | ---: | ---: | ---: |
+| 1 | not run | 56.91 | 27 |
+| 2 | 5.19 ± 0.22; 5.14 ± 0.27 | 60.43 | 0 |
+| 4 | 5.20 ± 0.24; 4.32 ± 0.40; 3.01 ± 0.12 | 62.32 | 0 |
+| 8 | 2.85 ± 0.12 | 60.78 | 0 |
+
+All runs were classified uncontended by the harness. The four-worker scores
+varied substantially on the *same bundle*, so the slow-bundle explanation
+above is incomplete. No Summit/WebKit process was left running between tests;
+`sysinfo` showed normal CPU frequencies. Two workers gave both stable
+Speedometer scores and a scroll result without long gaps. Haiku now caps its
+default at two CPU paint workers while still scaling down on smaller machines
+and honoring `WEBKIT_SKIA_CPU_PAINTING_THREADS` for experiments. The paths are
+`.vm/bench/speedometer-20260923-00*skia-workers*/` and
+`.vm/bench/probe-20260923-00*skia-workers*/`. This controlled page does not
+reproduce Reddit's layout and animation callback stalls.
+
+The rebuilt default bundle `bundle-kou9exyv` scored 5.11 ± 0.21 in an
+uncontended 10-iteration run with no worker override
+(`.vm/bench/speedometer-20260923-004746-skia-two-default/`). Its 400-card
+scroll probe reached 61.21 fps, p95 18 ms, maximum 23 ms, and no gaps over
+33 ms (`.vm/bench/probe-20260923-005006-summit-skia-two-default/`).

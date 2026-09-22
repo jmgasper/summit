@@ -11894,6 +11894,26 @@ index 6cc3e9febb8c00ec5829ca476fc21b1b693c81a3..fc5107b6ced726a345ccd053cbc48fca
  
  } // namespace WebCore
  
+diff --git a/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp b/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp
+index 30343ff03299542f8673d98b486c7fdd78bddeb9..acc620650ea4ee0cb807a1b49194a9495ef0e4f2 100644
+--- a/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp
++++ b/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp
+@@ -310,7 +310,15 @@ unsigned SkiaPaintingEngine::numberOfCPUPaintingThreads()
+     static unsigned numberOfThreads = 0;
+ 
+     std::call_once(onceFlag, [] {
++#if PLATFORM(HAIKU)
++        // The shared-memory compositor leaves layout and script work on the
++        // WebProcess main thread. On the 32-logical-core workstation two tile
++        // painters avoid the severe Speedometer stalls seen with eight, while
++        // keeping the 400-card scroll probe at display cadence.
++        numberOfThreads = std::max(1, std::min(2, WTF::numberOfProcessorCores() / 2));
++#else
+         numberOfThreads = std::max(1, std::min(8, WTF::numberOfProcessorCores() / 2)); // By default, use half the CPU cores, capped at 8.
++#endif
+ 
+         if (const char* envString = getenv("WEBKIT_SKIA_CPU_PAINTING_THREADS")) {
+             auto newValue = parseInteger<unsigned>(StringView::fromLatin1(envString));
 diff --git a/Source/WebCore/platform/graphics/transforms/AffineTransform.h b/Source/WebCore/platform/graphics/transforms/AffineTransform.h
 index 3ae8339850008d049df5f38d9d53a1c776827c67..d901f787833f48b776c9c77e78f914df8496f8fd 100644
 --- a/Source/WebCore/platform/graphics/transforms/AffineTransform.h
