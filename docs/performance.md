@@ -1578,3 +1578,12 @@ uncontended 10-iteration run with no worker override
 (`.vm/bench/speedometer-20260923-004746-skia-two-default/`). Its 400-card
 scroll probe reached 61.21 fps, p95 18 ms, maximum 23 ms, and no gaps over
 33 ms (`.vm/bench/probe-20260923-005006-summit-skia-two-default/`).
+
+Against Firefox's 8.34 ± 0.37 run at the same 800×600 viewport, Summit's
+editor suites are among the largest remaining gaps: TipTap took 375.5 versus
+124.8 ms (3.01×) and CodeMirror 120.2 versus 51.5 ms (2.33×). Chart.js was
+2.25× slower. The sum of Summit's suite means was 4525 ms per iteration, with
+36.3% in Speedometer's asynchronous portion, versus Firefox's 3050 ms and
+28.9%. These are per-suite timings from the two completed local-copy runs,
+not a function-level profile; allocation, text, and layout costs still need
+separate measurement before attributing the gaps.
