@@ -172,11 +172,18 @@ workstation, with the old binary saved as `nvdec.before-summit`. The owner's
 612 ms (98 frames/s), without a crash. This checks the plugin separately from
 Summit. Earlier crash reports are in `/boot/home/summit/bench/reports/`.
 
-With the plugin moved aside the ffmpeg decoder renders the same file, so the
-rest of Summit's media path works; playback then stalls with
-`partial file` / `Invalid NAL unit size`, which is `BMediaFile` reading the URL
-itself rather than anything in the page. `ENABLE_MEDIA_SOURCE` is off, so
-YouTube, which needs Media Source Extensions, cannot use any of this yet.
+Summit's `MediaPlayerPrivateHaiku` now opens local `file:` media through an
+`entry_ref`. Haiku's `BUrl` reports an empty host as present for `file:///`, so
+checking only `HasHost()` silently selected the URL reader and produced
+`partial file` / `Invalid NAL unit size` errors. The native file reader removes
+those errors. In the Skia coordinated build (`bundle-2apsm5d1`), a 12.24 s
+H.264/AAC MP4 passed the former 0.6 s stall, and a video-only copy played to
+its 12.24 s end. Reloading the video in the same tab also continued playback.
+The patched plugin decoded all 366 source frames separately in 2.83 s.
+
+The browser's HTTP media path and Reddit playback still need direct checks.
+`ENABLE_MEDIA_SOURCE` is off, so sites that require Media Source Extensions
+cannot use this backend yet.
 
 ## Firefox, for comparison
 

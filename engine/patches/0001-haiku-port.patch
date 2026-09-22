@@ -8934,10 +8934,10 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..a7333e5054b9b90210e2e0637845f7130d143717
+index 0000000000000000000000000000000000000000..6768bff15de640ba8084abcbb79c127ad86dd32f
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,583 @@
+@@ -0,0 +1,605 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -9273,10 +9273,10 @@ index 0000000000000000000000000000000000000000..a7333e5054b9b90210e2e0637845f713
 +
 +WTF::MediaTime MediaPlayerPrivate::duration() const
 +{
-+    // TODO handle the case where there is a video, but no audio track.
-+    if (!m_audioTrack)
++    BMediaTrack* track = m_audioTrack ? m_audioTrack : m_videoTrack;
++    if (!track)
 +        return WTF::MediaTime();
-+    return WTF::MediaTime::createWithDouble(m_audioTrack->Duration() / 1000000.f);
++    return WTF::MediaTime::createWithDouble(track->Duration() / 1000000.f);
 +}
 +
 +WTF::MediaTime MediaPlayerPrivate::currentTime() const
@@ -9400,37 +9400,52 @@ index 0000000000000000000000000000000000000000..a7333e5054b9b90210e2e0637845f713
 +
 +void MediaPlayerPrivate::IdentifyTracks(const String& url)
 +{
-+    // The URL constructor uses the network reader even for file: URLs. That
-+    // reader can return truncated MP4 packets on local files; the native file
-+    // reader does not. IdentifyTracks already runs on the media loader thread.
++    // Use Media Kit's file reader for local files. BUrl::HasHost() is true for
++    // file:/// URLs even though Host() is empty, so test the host string.
 +#if B_HAIKU_VERSION <= B_HAIKU_VERSION_1_BETA_5
 +    BUrl mediaURL(url.utf8().legacyCStringPointer());
 +#else
 +    BUrl mediaURL(url.utf8().legacyCStringPointer(), false);
 +#endif
-+    if (mediaURL.Protocol() == "file" && (!mediaURL.HasHost() || mediaURL.Host() == "localhost")) {
-+        entry_ref ref;
++    entry_ref ref;
++    bool hasLocalFile = false;
++    if (mediaURL.Protocol() == "file" && (mediaURL.Host().IsEmpty() || mediaURL.Host() == "localhost")) {
 +        BString path = BUrl::UrlDecode(mediaURL.Path());
-+        if (get_ref_for_path(path.String(), &ref) == B_OK)
-+            m_mediaFile = new BMediaFile(&ref);
++        hasLocalFile = get_ref_for_path(path.String(), &ref) == B_OK;
 +    }
-+    if (!m_mediaFile)
-+        m_mediaFile = new BMediaFile(mediaURL);
++    m_mediaFile = hasLocalFile ? new BMediaFile(&ref) : new BMediaFile(mediaURL);
 +
 +    if (m_mediaFile->InitCheck() == B_OK) {
 +        for (int i = m_mediaFile->CountTracks() - 1; i >= 0; i--)
 +        {
 +            BMediaTrack* track = m_mediaFile->TrackAt(i);
 +
-+            media_format format;
++            media_format encodedFormat = { };
++            if (track->EncodedFormat(&encodedFormat) != B_OK) {
++                m_mediaFile->ReleaseTrack(track);
++                continue;
++            }
++
++            media_format format = { };
++            if (encodedFormat.type == B_MEDIA_ENCODED_VIDEO) {
++                format.type = B_MEDIA_RAW_VIDEO;
++                format.u.raw_video.display.format = B_RGB32;
++            } else if (encodedFormat.type == B_MEDIA_ENCODED_AUDIO)
++                format.type = B_MEDIA_RAW_AUDIO;
++            else {
++                m_mediaFile->ReleaseTrack(track);
++                continue;
++            }
 +            if (track->DecodedFormat(&format) != B_OK) {
 +                m_mediaFile->ReleaseTrack(track);
 +                continue;
 +            }
 +
 +            if (format.IsVideo()) {
-+                if (m_videoTrack)
++                if (m_videoTrack) {
++                    m_mediaFile->ReleaseTrack(track);
 +                    continue;
++                }
 +                m_videoTrack = track;
 +
 +                m_frameBuffer = new BBitmap(
@@ -9442,13 +9457,17 @@ index 0000000000000000000000000000000000000000..a7333e5054b9b90210e2e0637845f713
 +            }
 +
 +            if (format.IsAudio()) {
-+                if (m_audioTrack)
++                if (m_audioTrack) {
++                    m_mediaFile->ReleaseTrack(track);
 +                    continue;
++                }
 +                // Without an audio output, connecting a sound player crashes the
 +                // system mixer (it starts a missing output node); a format with
 +                // wildcards takes the same path. Play such media without sound.
-+                if (!canPlayAudio(format.u.raw_audio))
++                if (!canPlayAudio(format.u.raw_audio)) {
++                    m_mediaFile->ReleaseTrack(track);
 +                    continue;
++                }
 +                m_audioTrack = track;
 +
 +                m_soundPlayer = new BSoundPlayer(&format.u.raw_audio,
@@ -9460,6 +9479,9 @@ index 0000000000000000000000000000000000000000..a7333e5054b9b90210e2e0637845f713
 +                if (m_videoTrack && m_audioTrack)
 +                    break;
 +            }
++
++            if (!format.IsVideo() && !format.IsAudio())
++                m_mediaFile->ReleaseTrack(track);
 +
 +        }
 +
