@@ -1330,11 +1330,59 @@ shared timer stopped. No DOM timer can run, so nothing can change the front, so
 nothing ever calls `updateSharedTimer()` again. The process is wedged by
 construction, and every DOM timer in it is dead.
 
-What is still unknown is which call stopped it: the `m_firingTimers` branch runs
-while the fire loop is in progress, and `sharedTimerFiredInternal()` ends with
-`updateSharedTimer()`, which should re-arm. Logging in `updateSharedTimer()`
-whenever it stops the timer with a non-empty heap -- with `m_firingTimers` and
-the caller -- is the next step, and it is a one-file change on the WebCore side.
+
+### The fire loop never finishes, so no timer ever fires again
+
+Tagging the trace with the process id -- several processes write to the same
+log, which had made one earlier reading ambiguous -- finishes the story. These
+are the last things the *web* process's `ThreadTimers` did:
+
+    Summit tt[242096]: stop with 61 queued, firing=1, front in -1 ms
+    Summit tt[242096]: stop with 60 queued, firing=1, front in -1 ms
+    Summit tt[242096]: stop with 59 queued, firing=1, front in -0 ms
+
+and then nothing. No `fire loop done`. `sharedTimerFiredInternal()` never
+reached its end, so the main thread is still inside `item->timer().fired()`.
+
+That single fact explains everything seen so far, and it is worse than a stuck
+page:
+
+    m_firingTimers = true;
+    while (...) { ... item->timer().fired(); ... }
+    m_firingTimers = false;          // <- plain assignment, no RAII
+
+While the loop is running, `updateSharedTimer()` takes its first branch --
+`if (m_firingTimers || m_timerHeap.isEmpty())` -- and *stops* the shared timer,
+which is safe only because the loop arms it again on the way out. If the loop
+never gets out, the shared timer stays stopped with 59 timers queued, and
+`TimerBase::setNextFireTime()` only calls `updateSharedTimer()` when the heap's
+front changes, which nothing can now do. **Every DOM timer in the process is
+dead, and stays dead even if the blocking call later returns.** That is why the
+page's `setInterval` stops, why `document.title` freezes, and why the engine
+looks perfectly idle and healthy while it does.
+
+It also explains why the Haiku-side recovery never fired: the shared timer is
+not "registered but unnotified", it is deliberately stopped. Nothing below
+WebCore is broken.
+
+So the remaining question is a much smaller one than it looked: **what does the
+timer callback block on?** The process sits at 0% CPU, so it is a wait, not a
+spin, and the coordinated-graphics work supplies the obvious suspects -- a
+synchronous wait on the compositor such as
+`CoordinatedSceneState::waitUntilPaintingComplete()`, a `sendSync` to the UI
+process, or one of the scrolling-tree waits. A backtrace of the web process's
+main thread at the hang answers it outright, and the hang reproduces in about
+seven minutes:
+
+    Debugger --cli --thread <main thread id>      # then: thread <id>, bt
+
+with no other debugger attached. Note that the control channel keeps answering
+in microseconds throughout, because that is the UI process; it says nothing
+about the web process's main thread.
+
+Worth fixing on its own account, whatever the blocking call turns out to be:
+`m_firingTimers` deserves a `SetForScope`, so that a callback that exits the
+loop by any route cannot leave the process with no timers at all.
 
 
 Two measurement traps were fixed along the way, both in the harness rather than
