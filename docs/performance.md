@@ -1725,3 +1725,19 @@ only 3.6 ms, with no queue delay over 33 ms. The idle sample likewise saw
 queue is therefore not causing the long gaps; Reddit is also driving the
 compositor well above the display rate and spending CPU on frames that cannot
 all be shown.
+
+A same-bundle follow-up compared the optional 60 fps compositor limit with an
+uncapped control. The uncapped capture delivered 175.22 frame messages/s idle
+and 109.79/s during the wheel burst, with a 1037.5 ms worst burst interval
+(`.vm/bench/scroll-20260923-033507-reddit-compositor-uncapped-control/`). The
+60 fps capture delivered 45.34/s idle and 34.17/s during its burst, with a
+649.2 ms worst interval
+(`.vm/bench/scroll-20260923-033411-reddit-compositor-60/`). Live feed content
+differed and the capped run had one 630.9 ms UI queue outlier, so the gap
+change is directional rather than a controlled frame-latency result. The cap
+does clearly coalesce redundant composition work. It scored 6.269 ± 0.301 in
+an uncontended ten-iteration Speedometer run, matching the uncapped mimalloc
+baseline (`.vm/bench/speedometer-20260923-033627-mimalloc-compositor-60/`).
+Haiku now defaults to the screen's nominal refresh rate, or 60 fps when that
+rate is unavailable. `SUMMIT_COMPOSITOR_MAX_FPS=0` disables the limit and a
+value from 30 through 240 overrides it for diagnosis or high-refresh displays.

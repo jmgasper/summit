@@ -78747,10 +78747,57 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..c8cbe05806a9334a320bd4869e22b656
      if (m_overlayCompositingLayer)
          m_overlayCompositingLayer->flushCompositingState(visibleContentsRect());
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
-index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..9b5b73e24bdbfa69f67e08b080fe8f6e40d3a65d 100644
+index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..b877e108714805ecf9230b8cedc5ea368b5a32da 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
-@@ -599,6 +599,7 @@ void ThreadedCompositor::renderLayerTree()
+@@ -90,6 +90,16 @@ ThreadedCompositor::ThreadedCompositor(WebPage& webPage, LayerTreeHost& layerTre
+ {
+     ASSERT(RunLoop::isMain());
+ 
++#if PLATFORM(HAIKU)
++    unsigned framesPerSecond = webPage.corePage()->displayNominalFramesPerSecond().value_or(60);
++    if (const char* value = getenv("SUMMIT_COMPOSITOR_MAX_FPS")) {
++        if (auto override = parseInteger<unsigned>(StringView::fromLatin1(value)); override && (!*override || (*override >= 30 && *override <= 240)))
++            framesPerSecond = *override;
++    }
++    if (framesPerSecond)
++        m_minimumFrameInterval = 1_s / framesPerSecond;
++#endif
++
+     m_didCompositeRunLoopObserver = makeUnique<RunLoopObserver>(RunLoopObserver::WellKnownOrder::GraphicsCommit, [this] {
+         this->didCompositeRunLoopObserverFired();
+     });
+@@ -216,8 +226,17 @@ void ThreadedCompositor::updateRenderTimer()
+     }
+ 
+     if (m_state.isRenderTimerActive) {
+-        if (!m_renderTimer.isActive())
+-            m_renderTimer.startOneShot(0_s);
++        if (!m_renderTimer.isActive()) {
++            Seconds delay;
++#if PLATFORM(HAIKU)
++            if (m_minimumFrameInterval && m_lastRenderTimestamp) {
++                Seconds elapsed = MonotonicTime::now() - m_lastRenderTimestamp;
++                if (elapsed < m_minimumFrameInterval)
++                    delay = m_minimumFrameInterval - elapsed;
++            }
++#endif
++            m_renderTimer.startOneShot(delay);
++        }
+     } else
+         m_renderTimer.stop();
+ }
+@@ -580,6 +599,9 @@ void ThreadedCompositor::renderLayerTree()
+ 
+         ASSERT(m_state.state == State::Scheduled);
+         m_state.state = State::InProgress;
++#if PLATFORM(HAIKU)
++        m_lastRenderTimestamp = MonotonicTime::now();
++#endif
+     }
+ 
+ #if USE(TEXTURE_MAPPER)
+@@ -599,6 +621,7 @@ void ThreadedCompositor::renderLayerTree()
      if (viewportSize.isEmpty())
          return;
  
@@ -78759,10 +78806,21 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..9b5b73e24bdbfa69f67e08b080fe8f6e
      viewportTransform.scale(deviceScaleFactor);
  
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.h b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.h
-index 6665a0cc3570425e2ad5d26dc6c443e3b8280665..13c60f221b739ef063c1b8060fb37a19aaf78035 100644
+index 6665a0cc3570425e2ad5d26dc6c443e3b8280665..c8edb3d0577aaf779dfa9fc24e2adb2fb4eabc6a 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.h
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.h
-@@ -234,4 +234,3 @@ private:
+@@ -194,6 +194,10 @@ private:
+     } m_attributes;
+ 
+     RunLoop::Timer m_renderTimer;
++#if PLATFORM(HAIKU)
++    Seconds m_minimumFrameInterval;
++    MonotonicTime m_lastRenderTimestamp;
++#endif
+ #if USE(TEXTURE_MAPPER)
+     std::unique_ptr<WebCore::TextureMapper> m_textureMapper;
+ #endif
+@@ -234,4 +238,3 @@ private:
  } // namespace WebKit
  
  #endif // USE(COORDINATED_GRAPHICS)
