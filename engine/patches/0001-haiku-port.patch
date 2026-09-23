@@ -4040,6 +4040,42 @@ index 89f2b38d398b9fb7d5319d06bf0b918cfc569e1b..fbd1eea56e97654861c4b24b25c0da6e
  #include "MouseEventWithHitTestResults.h"
  #include "NotImplemented.h"
  #include "Page.h"
+diff --git a/Source/WebCore/page/scrolling/ScrollingTree.cpp b/Source/WebCore/page/scrolling/ScrollingTree.cpp
+index 351fcd027e1481abf32eeb6f82f5ffaa5aff5fd8..2afed204ed1b72119cbba8ffa53c3c5cfa4d75c1 100644
+--- a/Source/WebCore/page/scrolling/ScrollingTree.cpp
++++ b/Source/WebCore/page/scrolling/ScrollingTree.cpp
+@@ -47,6 +47,11 @@
+ #include <wtf/TZoneMallocInlines.h>
+ #include <wtf/text/TextStream.h>
+ 
++#if PLATFORM(HAIKU)
++#include <cstdio>
++#include <cstdlib>
++#endif
++
+ namespace WebCore {
+ 
+ WTF_MAKE_TZONE_ALLOCATED_IMPL(ScrollingTree);
+@@ -214,6 +219,19 @@ WheelEventHandlingResult ScrollingTree::handleWheelEvent(const PlatformWheelEven
+ 
+     static constexpr OptionSet<WheelEventProcessingSteps> mainThreadSteps = { WheelEventProcessingSteps::NonBlockingDOMEventDispatch, WheelEventProcessingSteps::BlockingDOMEventDispatch };
+     result.steps.add(processingSteps & mainThreadSteps);
++#if PLATFORM(HAIKU)
++    static bool tracePosition = [] {
++        const char* value = std::getenv("SUMMIT_SCROLL_POSITION_TRACE");
++        return value && value[0] == '1' && !value[1];
++    }();
++    if (tracePosition && m_rootNode) {
++        auto position = m_rootNode->currentScrollPosition();
++        auto maximum = m_rootNode->maximumScrollPosition();
++        std::fprintf(stderr, "Summit wheel position: y=%.1f max=%.1f content=%.1f view=%.1f delta=%.1f handled=%d\n",
++            position.y(), maximum.y(), m_rootNode->totalContentsSize().height(),
++            m_rootNode->scrollableAreaSize().height(), wheelEvent.delta().height(), result.wasHandled);
++    }
++#endif
+     return result;
+ }
+ 
 diff --git a/Source/WebCore/platform/CookieChange.h b/Source/WebCore/platform/CookieChange.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..a20566ed620a8f242de49978ae98d3ae48b110e0

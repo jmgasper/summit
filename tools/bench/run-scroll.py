@@ -70,6 +70,10 @@ GRID_ITEM_LAYOUT_LINE = re.compile(
 MEDIA_LIFECYCLE_LINE = re.compile(
     r'Summit media lifecycle: player=\S+ operation=(?P<operation>[A-Za-z]+) '
     r'(?P<metrics>(?:[A-Za-z]+=[\d.]+ ?)+)')
+WHEEL_POSITION_LINE = re.compile(
+    r'Summit wheel position: y=(?P<y>-?[\d.]+) max=(?P<maximum>-?[\d.]+) '
+    r'content=(?P<content>-?[\d.]+) view=(?P<view>-?[\d.]+) '
+    r'delta=(?P<delta>-?[\d.]+) handled=(?P<handled>[01])')
 
 
 def log(message):
@@ -100,6 +104,35 @@ def parse_frame_lines(text):
 def parse_ui_frame_lines(text):
     return [{name: float(value) for name, value in match.groupdict().items() if value is not None}
             for match in UI_FRAME_LINE.finditer(text)]
+
+
+def parse_wheel_position_lines(text):
+    return [{name: (int(value) if name == 'handled' else float(value))
+             for name, value in match.groupdict().items()}
+            for match in WHEEL_POSITION_LINE.finditer(text)]
+
+
+def summarize_wheel_positions(samples):
+    if not samples:
+        return {}
+    at_max = [sample['y'] >= sample['maximum'] - 0.5 for sample in samples]
+    final_max = samples[-1]['maximum']
+    content_changes = [
+        {'event': index + 1, 'content': sample['content'], 'maximum': sample['maximum']}
+        for index, sample in enumerate(samples)
+        if index == 0 or sample['content'] != samples[index - 1]['content']
+    ]
+    return {
+        'events': len(samples),
+        'handled': sum(sample['handled'] for sample in samples),
+        'atMaximum': sum(at_max),
+        'firstMaximumEvent': next((index + 1 for index, reached in enumerate(at_max) if reached), None),
+        'firstFinalMaximumEvent': next((index + 1 for index, sample in enumerate(samples)
+                                        if sample['y'] >= final_max - 0.5), None),
+        'lastPosition': samples[-1]['y'],
+        'lastMaximum': final_max,
+        'contentChanges': content_changes,
+    }
 
 
 def parse_fixed_inline_layout_lines(text):
@@ -409,6 +442,7 @@ def main():
         renderer_layouts_before = parse_renderer_layout_lines(before)
         grid_item_layouts_before = parse_grid_item_layout_lines(before)
         media_lifecycle_before = parse_media_lifecycle_lines(before)
+        wheel_positions_before = parse_wheel_position_lines(before)
         run['idle'] = summarize(idle_engine[-5:]) if idle_engine else summarize_ui(idle_ui[-5:])
         log(f"idle: {run['idle'].get('fps', 0)} fps")
 
@@ -472,6 +506,7 @@ def main():
         renderer_layout_samples = parse_renderer_layout_lines(text)[len(renderer_layouts_before):]
         grid_item_layout_samples = parse_grid_item_layout_lines(text)[len(grid_item_layouts_before):]
         media_lifecycle_samples = parse_media_lifecycle_lines(text)[len(media_lifecycle_before):]
+        wheel_position_samples = parse_wheel_position_lines(text)[len(wheel_positions_before):]
         during = engine_samples or ui_samples or frame_snapshot
         run['frameStatsAvailable'] = bool(during)
         if during:
@@ -498,6 +533,8 @@ def main():
         if media_lifecycle_samples:
             run['mediaLifecycleSamples'] = media_lifecycle_samples
             run['mediaLifecycle'] = summarize_media_lifecycle(media_lifecycle_samples)
+        if wheel_position_samples:
+            run['wheelPositions'] = summarize_wheel_positions(wheel_position_samples)
         capture_visible(directory / 'final.png')
         run['stateAfterBurst'] = guest.state(ctl, team)
         run['outcome'] = ('completed' if run['completionVerified'] else 'captured-unverified-delivery') \

@@ -2903,3 +2903,30 @@ the private Mesa path was omitted and the WebProcess exited before scrolling.
 The two reported runs both used `SUMMIT_LIBRARY_PATH_PREFIX` to select the
 workstation's Mesa (`.vm/bench/scroll-20260923-224807-reddit-refresh-80-valid/`
 and `.vm/bench/scroll-20260923-224905-reddit-control-80/`).
+
+`SUMMIT_SCROLL_POSITION_TRACE=1` now records the main-frame scrolling tree's
+position, current maximum, content height, and wheel handling result under
+the tree lock. `run-scroll.py` summarizes the first event at the current
+maximum, subsequent content-size changes, and the first event at the final
+maximum. This distinguishes a long pause while a finite feed is at its
+boundary from a scrolling tree that is still advancing; frame rate alone
+cannot make that distinction.
+
+In a 300-notch safe-build run, the first 3,038-px Reddit document reached its
+scroll maximum on event 21. The document expanded to 17,736 px on event 126,
+and the tree reached its new maximum on event 248. Overall 158 of 300 wheel
+events found the tree at its then-current maximum, 144 were handled, and the
+native view delivered 24.47 frames/s with a 2.94-second pending gap. The final
+image still showed a post rather than the new maximum; this confirms that
+scrolling-tree position and visible layer position can diverge without display
+refresh pulses (`.vm/bench/scroll-20260923-225629-reddit-position-300/`).
+
+An additional 180-notch pair illustrates the unresolved tradeoff. With refresh
+pulses, the native view delivered 54.85 frames/s but the final feed was blank.
+Without pulses, it delivered 34.97 frames/s and showed a post. In that safe
+run the first maximum arrived at event 21, content expanded at event 131, and
+the tree advanced to 8,488 px by event 180. Live content differed between the
+two passes, so their frame rates do not isolate the pulse's cost. The pulse
+remains disabled until scrolling can advance visibly without leaving a blank
+feed (`.vm/bench/scroll-20260923-225828-reddit-refresh-180/` and
+`.vm/bench/scroll-20260923-225929-reddit-safe-180/`).
