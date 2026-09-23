@@ -2420,3 +2420,25 @@ candidate played the direct Reddit 720x1280 CMAF regression stream through its
 12.7-second `ended` event with no media error. The browser trace selected
 `H.264 on the graphics card (NVDEC)` with status 0
 (`.vm/bench/probe-20260923-173116-summit-window-frame-cache-reddit-nvdec/`).
+
+### Perf Dashboard layout investigation
+
+After removing the mouse-event IPC cost, 23 `getBoundingClientRect()` calls in
+Perf Dashboard still spent about 18--20 ms per iteration in layout. Phase
+timing showed that virtually all of this time was inside
+`RenderBlockFlow::layout()`; coordinate conversion itself took about 0.006 ms
+per call. A trial that allowed a clean canvas leaf through WebKit's partial
+layout eligibility check did not improve the focused result (285.4 ms versus a
+287.0 ms control).
+
+A one-run dirty-renderer trace explained why. Before the canvas rectangle is
+read, the application changes normal-flow text in its heading, navigation,
+status view, and table cells. The canvas is clean, but these nodes share its
+ancestor chain and carry real `selfNeedsLayout` and `normalChildNeedsLayout`
+state. The relevant ancestor also has an out-of-flow child awaiting layout.
+Skipping layout for left/top geometry in this state could return stale canvas
+coordinates, so the trial shortcut and all tracing were removed
+(`.vm/bench/speedometer-20260923-174935-perf-dashboard-layout-phase-split/`,
+`.vm/bench/speedometer-20260923-180135-perf-dashboard-clean-replaced-geometry/`,
+and
+`.vm/bench/speedometer-20260923-182839-perf-dashboard-dirty-renderers/`).
