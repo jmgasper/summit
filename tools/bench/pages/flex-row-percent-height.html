@@ -1,0 +1,54 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Summit row flex percentage-height probe: running</title>
+<style>
+body { font: 14px/1.35 sans-serif; margin: 12px; }
+.outer { display: flex; width: 430px; margin: 0 0 10px; border: 1px solid #678; }
+.row { flex-direction: row; }
+.column { flex-direction: column; height: 130px; }
+.definite { height: 130px; }
+.start { align-items: flex-start; }
+.inner { display: flex; min-width: 0; flex: 1 1 auto; border: 1px solid #4682b4; }
+.cell { flex: 1 1 0; min-width: 0; padding: 2px; }
+.percent { height: 50%; background: #b3d8ed; }
+.content { width: 210px; }
+pre { white-space: pre-wrap; }
+</style>
+<div id="row-auto" class="outer row"><div class="inner"><div class="cell"><div class="percent">First</div><div class="content">Words that wrap when the container becomes narrow.</div></div><div class="cell"><div class="percent">Second</div></div></div></div>
+<div id="row-definite" class="outer row definite"><div class="inner"><div class="cell"><div class="percent">First</div><div class="content">Words that wrap when the container becomes narrow.</div></div><div class="cell"><div class="percent">Second</div></div></div></div>
+<div id="row-start" class="outer row start"><div class="inner"><div class="cell"><div class="percent">First</div><div class="content">Words that wrap when the container becomes narrow.</div></div><div class="cell"><div class="percent">Second</div></div></div></div>
+<div id="column" class="outer column"><div class="inner"><div class="cell"><div class="percent">First</div><div class="content">Words that wrap when the container becomes narrow.</div></div><div class="cell"><div class="percent">Second</div></div></div></div>
+<pre id="out">running…</pre>
+<script>
+"use strict";
+const ids = ["row-auto", "row-definite", "row-start", "column"];
+const round = value => Math.round(value * 64) / 64;
+function geometry(root) {
+    const base = root.getBoundingClientRect();
+    return [root, ...root.querySelectorAll(".inner, .cell, .percent, .content")].map(node => {
+        const box = node.getBoundingClientRect();
+        return [round(box.x - base.x), round(box.y - base.y), round(box.width), round(box.height), node.scrollWidth, node.scrollHeight];
+    });
+}
+(async () => {
+    const snapshots = [];
+    for (let step = 0; step < 5; ++step) {
+        for (const id of ids) {
+            const root = document.getElementById(id);
+            root.style.width = `${[430, 320, 430, 360, 430][step]}px`;
+            root.querySelector(".content").textContent = step % 2
+                ? "Longer text that wraps onto several lines when the container becomes narrow and changes the flex item's content height."
+                : "Words that wrap when the container becomes narrow.";
+        }
+        // Force layout after each content and width change, as editor actions do.
+        snapshots.push(Object.fromEntries(ids.map(id => [id, geometry(document.getElementById(id))])));
+    }
+    const result = {snapshots};
+    document.getElementById("out").textContent = JSON.stringify(result, null, 2);
+    await fetch("/__bench/probe", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(result)});
+    document.title = "Summit row flex percentage-height probe: done";
+})().catch(error => {
+    document.getElementById("out").textContent = String(error && error.stack || error);
+    document.title = "Summit row flex percentage-height probe: error";
+});
+</script>

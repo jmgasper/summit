@@ -2538,3 +2538,35 @@ that inclusive subtree. The cold pass had two roughly 100 ms layouts. These
 samples point to repeated flex and inline layout of the editor view, not a
 slow candidate-position walk
 (`.vm/bench/speedometer-20260923-192710-tiptap-layout-renderers/`).
+
+### Why TipTap repeats its nested flex layout
+
+An opt-in phase trace split the outer one-item flex box's warm layout into
+roughly 15 ms of base sizing and 16--22 ms of content sizing. Its nested
+two-item flex box consumed nearly all of each phase; alignment and final rect
+placement were under 0.1 ms. The first cold pass took about 100 ms per layout
+(`.vm/bench/speedometer-20260923-193145-tiptap-flex-phase-trace/`).
+
+The expensive final child layout reported an unchanged row main size,
+percentage-height descendants, and a request to relayout. A narrow Haiku
+trial suppressed that percentage-height request for row items, since their
+unchanged inline-size override does not itself change block-size definiteness.
+The five-step `flex-row-percent-height.html` fixture matched the opt-out
+exactly for auto-height, definite-height, flex-start, and column controls
+(`.vm/bench/probe-20260923-194213-summit-flex-row-percent-control/` and
+`.vm/bench/probe-20260923-194244-summit-flex-row-percent-candidate/`).
+
+The trial did not save a layout. In matched 20-iteration TipTap runs on the
+same bundle, the opt-out averaged 146.5 ms (132.8 ms warm) and the candidate
+147.1 ms (134.0 ms warm). The candidate's layout trace retained the same
+16--22 ms nested flex calls. A final dirty-state trace found that the child
+already had `needsLayout` on entry to final sizing, before either the
+unchanged-width override or the percentage-height rule. Intrinsic-width
+measurement in base sizing is the likely source of that invalidation, so
+clearing only the percentage-height relayout request cannot avoid the final
+pass. The ineffective engine change and all temporary traces were removed;
+the workstation production engine was rebuilt clean
+(`.vm/bench/speedometer-20260923-194320-tiptap-row-flex-control/`,
+`.vm/bench/speedometer-20260923-194406-tiptap-row-flex-candidate/`,
+`.vm/bench/speedometer-20260923-194502-tiptap-row-flex-candidate-layout/`, and
+`.vm/bench/speedometer-20260923-194803-tiptap-flex-candidate-dirty/`).
