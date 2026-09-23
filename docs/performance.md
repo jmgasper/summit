@@ -2279,3 +2279,49 @@ the cause of the roughly twofold Firefox gap, and remains enabled by default
 (`.vm/bench/speedometer-20260923-153400-chartjs-canvas-default/`,
 `.vm/bench/speedometer-20260923-153449-chartjs-canvas-cpu/`, and
 `.vm/bench/speedometer-20260923-153542-chartjs-canvas-default-repeat/`).
+
+### Canvas damage coalescing
+
+The larger Chart.js cost was coordinated layer invalidation. Each canvas fill
+or stroke sent a dirty rectangle through the canvas element, renderer,
+compositing layer, and graphics layer. The 5,366-point scatter plot therefore
+sent more than ten thousand notifications per draw even though they all belong
+to one frame.
+
+Haiku now unions HTML canvas damage within a frame and skips a notification
+when the accumulated rectangle already contains the new damage. Drawing and
+cached-image invalidation still happen for every operation. Offscreen canvases
+retain the existing behavior, and `SUMMIT_CANVAS_DAMAGE_COALESCING=0` provides
+an exact opt-out. This trades some extra pixels in the bounding damage area for
+far fewer main-thread calls into the renderer and layer tree.
+
+A 30-iteration Chart.js control averaged 356.7 ms. Two coalesced candidates
+averaged 250.1 and 247.3 ms, and the final default implementation averaged
+244.3 ms. In the first comparison, translucent scatter drawing fell from
+136.6 to 99.9 ms, tooltip redraw from 111.0 to 77.2 ms, and opaque scatter
+drawing from 109.1 to 72.9 ms
+(`.vm/bench/speedometer-20260923-154323-chartjs-damage-control/`,
+`.vm/bench/speedometer-20260923-154417-chartjs-damage-coalesced/`,
+`.vm/bench/speedometer-20260923-154518-chartjs-damage-coalesced-repeat/`, and
+`.vm/bench/speedometer-20260923-160041-chartjs-damage-default-final/`).
+
+On the full benchmark, the coalesced candidate scored **6.605 ± 0.237** with a
+3,509 ms sum of suite means. The immediate same-bundle opt-out control scored
+**6.366 ± 0.222** with a 3,717 ms sum. Chart.js fell from 391.9 to 255.3 ms and
+Perf Dashboard from 362.3 to 312.4 ms, while TipTap was unchanged at about
+289 ms. This is a 3.8% score increase and a 5.6% reduction in aggregate suite
+time. A final default-on build repeated the improvement at **6.508 ± 0.235**
+and a 3,561 ms suite sum
+(`.vm/bench/speedometer-20260923-154611-canvas-damage-coalesced-full/` and
+`.vm/bench/speedometer-20260923-154847-canvas-damage-full-control/`, and
+`.vm/bench/speedometer-20260923-160224-canvas-damage-default-final/`).
+
+The deterministic `canvas-damage.html` fixture draws 5,000 dispersed marks and
+four corner blocks across two display cycles. The default candidate rendered
+all marks, returned the exact expected RGBA values at all four corners, and
+produced a visually complete screenshot
+(`.vm/bench/probe-20260923-160145-summit-canvas-damage-default-final/`). A live
+Reddit pass retained the grid improvement at 54.64 native-view frames/s, a
+257.2 ms worst interval, two intervals over 33 ms, and 0.3 ms maximum native
+queue delay. Its media log selected NVDEC H.264 twice and AAC once with status
+0 (`.vm/bench/scroll-20260923-155049-reddit-canvas-damage-coalesced/`).

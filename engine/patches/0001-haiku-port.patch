@@ -2909,6 +2909,33 @@ index 7f18cb986d1972948b04893b511de16598d7f103..68525703b1263997f5100c89a1c31dd9
  } elsif ($Config::Config{"osname"} eq "darwin" && $ENV{SDKROOT}) {
      chomp($ccLocation = `xcrun -find cc -sdk '$ENV{SDKROOT}'`);
  } else {
+diff --git a/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.cpp b/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.cpp
+index 50c7fe12885a08e9650329a04bc561a391823a1c..f52e7fbc0333efd816cd4c8cbd0f43c4ab0459de 100644
+--- a/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.cpp
++++ b/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.cpp
+@@ -2465,10 +2465,21 @@ void CanvasRenderingContext2DBase::willUpdateContents(std::optional<FloatRect> r
+         if (context->shouldAntialias())
+             dirtyRect.inflate(1);
+ #if USE(COORDINATED_GRAPHICS)
++#if PLATFORM(HAIKU)
++        static bool coalesceCanvasDamage = [] {
++            const char* value = std::getenv("SUMMIT_CANVAS_DAMAGE_COALESCING");
++            return !value || std::strcmp(value, "0");
++        }();
++        if (coalesceCanvasDamage && is<HTMLCanvasElement>(canvasBase())) {
++            if (m_dirtyRect.contains(dirtyRect))
++                return;
++            m_dirtyRect.unite(dirtyRect);
++        } else
++#endif
+         // In COORDINATED_GRAPHICS graphics layer is tiled and tiling logic handles dirty rects
+         // internally and thus no unification of rects is needed here because that causes
+         // unnecessary invalidation of tiles which are actually not dirty
+-        m_dirtyRect = dirtyRect;
++            m_dirtyRect = dirtyRect;
+ #else
+         m_dirtyRect.unite(dirtyRect);
+ #endif
 diff --git a/Source/WebCore/layout/formattingContexts/grid/GridFormattingContext.cpp b/Source/WebCore/layout/formattingContexts/grid/GridFormattingContext.cpp
 index 775116301ea7823abf38e4931847db3f482d4582..68a45bc27c2078d4519d25bf8e6dde1955e7d2a3 100644
 --- a/Source/WebCore/layout/formattingContexts/grid/GridFormattingContext.cpp

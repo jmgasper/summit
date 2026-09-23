@@ -1,0 +1,66 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Summit canvas damage probe: running</title>
+<style>
+body { font: 14px/1.4 sans-serif; margin: 20px; background: #eee; }
+canvas { width: 800px; height: 500px; border: 2px solid #222; background: white; }
+pre { white-space: pre-wrap; }
+</style>
+<h1>Canvas damage coalescing</h1>
+<canvas id="canvas" width="800" height="500"></canvas>
+<pre id="out">running…</pre>
+<script>
+"use strict";
+const canvas = document.getElementById("canvas");
+const context = canvas.getContext("2d");
+let seed = 0x5eed1234;
+function random() {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed / 0x100000000;
+}
+function pixel(x, y) {
+    return [...context.getImageData(x, y, 1, 1).data];
+}
+function nextFrame() {
+    return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+}
+(async () => {
+    context.fillStyle = "white";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    for (let index = 0; index < 5000; ++index) {
+        context.fillStyle = `hsl(${Math.floor(random() * 360)} 70% 55% / .7)`;
+        context.fillRect(Math.floor(random() * 796), Math.floor(random() * 496), 4, 4);
+    }
+    context.fillStyle = "rgb(0, 0, 255)";
+    context.fillRect(10, 10, 40, 40);
+    context.fillStyle = "rgb(255, 0, 0)";
+    context.fillRect(750, 450, 40, 40);
+    await nextFrame();
+
+    context.fillStyle = "rgb(0, 128, 0)";
+    context.fillRect(750, 10, 40, 40);
+    context.fillStyle = "rgb(255, 165, 0)";
+    context.fillRect(10, 450, 40, 40);
+    await nextFrame();
+
+    const result = {
+        topLeft: pixel(30, 30),
+        topRight: pixel(770, 30),
+        bottomLeft: pixel(30, 470),
+        bottomRight: pixel(770, 470)
+    };
+    const expected = {
+        topLeft: [0, 0, 255, 255],
+        topRight: [0, 128, 0, 255],
+        bottomLeft: [255, 165, 0, 255],
+        bottomRight: [255, 0, 0, 255]
+    };
+    result.matches = Object.keys(expected).every(key => result[key].every((value, index) => value === expected[key][index]));
+    document.getElementById("out").textContent = JSON.stringify(result, null, 2);
+    await fetch("/__bench/probe", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(result)});
+    document.title = result.matches ? "Summit canvas damage probe: done" : "Summit canvas damage probe: failed";
+})().catch(error => {
+    document.getElementById("out").textContent = String(error && error.stack || error);
+    document.title = "Summit canvas damage probe: error";
+});
+</script>
