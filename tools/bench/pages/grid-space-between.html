@@ -7,6 +7,8 @@ body { font: 14px/1.4 sans-serif; margin: 20px; }
 .item { height: 28px; border: 1px solid #4682b4; }
 #narrow { width: 180px; }
 .percent .item { width: 50%; }
+.overflow .item { width: 50%; overflow-x: hidden; overflow-y: auto; }
+.overflow-content { width: 150px; height: 60px; background: #dc143c; }
 .rows { width: 100px; height: 600px; grid-template-columns: 100px; grid-template-rows: 100px 100px; align-content: space-between; justify-content: normal; }
 .rows .item { height: auto; }
 #short { height: 180px; }
@@ -16,6 +18,8 @@ pre { white-space: pre-wrap; }
 <div id="wide" class="grid"><div class="item"></div><div class="item"></div></div>
 <div id="narrow" class="grid"><div class="item"></div><div class="item"></div></div>
 <div id="percent" class="grid percent"><div class="item"></div><div class="item"></div></div>
+<div id="fallback" class="grid percent"><div class="item"></div><div class="item"></div></div>
+<div id="overflow" class="grid overflow"><div class="item"><div class="overflow-content"></div></div><div class="item"><div class="overflow-content"></div></div></div>
 <div id="tall" class="grid rows"><div class="item"></div><div class="item"></div></div>
 <div id="short" class="grid rows"><div class="item"></div><div class="item"></div></div>
 <pre id="out">running…</pre>
@@ -30,9 +34,25 @@ function geometry(id) {
         return [round(box.x - root.x), round(box.y - root.y), round(box.width), round(box.height)];
     });
 }
+function overflowMetrics() {
+    const item = document.querySelector("#overflow .item");
+    const child = item.firstElementChild;
+    const itemBox = item.getBoundingClientRect();
+    const childBox = child.getBoundingClientRect();
+    return {
+        items: geometry("overflow"),
+        client: [item.clientWidth, item.clientHeight],
+        scroll: [item.scrollWidth, item.scrollHeight],
+        child: [round(childBox.x - itemBox.x), round(childBox.y - itemBox.y), round(childBox.width), round(childBox.height)]
+    };
+}
 (async () => {
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    const result = {wide: geometry("wide"), narrow: geometry("narrow"), percent: geometry("percent"), tall: geometry("tall"), short: geometry("short")};
+    const fallbackBefore = geometry("fallback");
+    for (const item of document.querySelectorAll("#fallback .item"))
+        item.style.boxSizing = "border-box";
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const result = {wide: geometry("wide"), narrow: geometry("narrow"), percent: geometry("percent"), fallback: {before: fallbackBefore, after: geometry("fallback")}, overflow: overflowMetrics(), tall: geometry("tall"), short: geometry("short")};
     document.getElementById("out").textContent = JSON.stringify(result, null, 2);
     await fetch("/__bench/probe", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(result)});
     document.title = "Summit grid space-between probe: done";

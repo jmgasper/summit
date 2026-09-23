@@ -2170,6 +2170,42 @@ with a 569.8 ms worst interval and 0.3 ms maximum native queue delay; it also
 selected NVDEC H.264 and AAC successfully
 (`.vm/bench/scroll-20260923-144313-reddit-grid-gfc-percent-width/`).
 
+The hot item resolves to `overflow-x: hidden` and `overflow-y: auto`. A first
+guarded attempt to admit that pair exposed why the existing coverage check was
+needed: the modern path initially produced a 302 px item where legacy produced
+52 px, and changed its 150 px scroll width to 300 px
+(`.vm/bench/probe-20260923-145340-summit-grid-overflow-legacy/` and
+`.vm/bench/probe-20260923-145403-summit-grid-overflow-gfc/`). The integration
+layer set the grid area's 100 px containing-block width only during the
+immediate item layout, then cleared it. A later overflow-layer relayout
+therefore resolved the item's 50% width against the 600 px grid container.
+
+Final modern grid layout now keeps each in-flow item's grid-area width on its
+renderer, as the legacy grid does. If coverage later rejects that grid, the
+fallback path clears the retained sizes before rebuilding the legacy grid.
+With this lifetime fix, the modern and legacy paths match every fixture
+rectangle, client size, 150 by 60 scroll extent, and overflowing child
+rectangle. A dynamic test also switches an initially modern grid to an
+unsupported border-box item; its before and after geometry matches legacy and
+the trace records fallback reason 26, validating the cleanup path
+(`.vm/bench/probe-20260923-150654-summit-grid-dynamic-fallback-legacy/` and
+`.vm/bench/probe-20260923-150718-summit-grid-dynamic-fallback-gfc/`).
+
+The corrected guarded path moves Reddit's hot grid to the modern formatter.
+In an A-B-A sequence, modern runs reached 57.79 and 55.25 native-view frames/s
+with 207.9 and 261.6 ms worst intervals, while the intervening legacy control
+reached 41.51 frames/s with a 565.3 ms worst interval. Native queue delay
+stayed at 0.3 ms in all three runs. The tradeoff is front-loaded layout work:
+the modern traces recorded 5.14 and 4.43 seconds of slow layout versus 1.79
+seconds in the control. During the measured scroll, however, Reddit's repeated
+slow scroll-listener layouts disappeared and only two frame intervals exceeded
+33 ms in each modern run, compared with eight in the control. The rendered
+feed remained visually coherent, and the first modern run selected NVDEC
+H.264 and AAC successfully
+(`.vm/bench/scroll-20260923-150154-reddit-grid-gfc-overflow-fix/`,
+`.vm/bench/scroll-20260923-150340-reddit-grid-legacy-overflow-control/`, and
+`.vm/bench/scroll-20260923-150443-reddit-grid-gfc-overflow-repeat/`).
+
 ### libstdc++ assertion experiment
 
 The normal Release configuration still enables libstdc++ container assertions.

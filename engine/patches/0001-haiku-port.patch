@@ -3027,8 +3027,20 @@ index 05283a7d359f0d9b30a90594ccddc0c185e0b13e..da6ad038252ee3ca92f8401b2ad20c10
  }
  }
 -
+diff --git a/Source/WebCore/layout/integration/LayoutIntegrationFormattingContextLayout.cpp b/Source/WebCore/layout/integration/LayoutIntegrationFormattingContextLayout.cpp
+index 762711231f70a6f41d0945a45118bfd1535b8d8a..9ac3284587a606b9eb13e3dfe95fa3ebc24bbb2b 100644
+--- a/Source/WebCore/layout/integration/LayoutIntegrationFormattingContextLayout.cpp
++++ b/Source/WebCore/layout/integration/LayoutIntegrationFormattingContextLayout.cpp
+@@ -101,7 +101,6 @@ void layoutGridItemWithFormattingContext(const Layout::ElementBox& box, std::opt
+     // against it below rather than against the grid container's content box.
+     renderer->setGridAreaContentLogicalWidth(gridAreaInlineSize);
+     layoutRendererAndUpdateBoxGeometry(box, renderer.get(), overridingBorderBoxLogicalWidth, overridingBorderBoxLogicalHeight, gridAreaInlineSize, layoutState);
+-    renderer->clearGridAreaContentSize();
+ }
+ 
+ static inline void populateRootRendererWithFloatsFromIFC(auto& rootBlockContainer, auto& placedFloats)
 diff --git a/Source/WebCore/layout/integration/grid/LayoutIntegrationGridCoverage.cpp b/Source/WebCore/layout/integration/grid/LayoutIntegrationGridCoverage.cpp
-index f9aaa86c85c2812857ce04585ea7db2e257b02fc..fc8f5bbd7f46e962f2537bdcffecfc6257b99302 100644
+index f9aaa86c85c2812857ce04585ea7db2e257b02fc..6a54605c934afcb9c8b04cfc80e99fd438318b5a 100644
 --- a/Source/WebCore/layout/integration/grid/LayoutIntegrationGridCoverage.cpp
 +++ b/Source/WebCore/layout/integration/grid/LayoutIntegrationGridCoverage.cpp
 @@ -34,6 +34,9 @@
@@ -3130,7 +3142,32 @@ index f9aaa86c85c2812857ce04585ea7db2e257b02fc..fc8f5bbd7f46e962f2537bdcffecfc62
  
          if (gridItemWidth.isAuto() && !canComputeAutomaticSize(gridItem))
              ADD_REASON_AND_RETURN_IF_NEEDED(GridAvoidanceReason::GridItemHasUnsupportedAutomaticInlineSizing, reasons, reasonCollectionMode);
-@@ -919,6 +965,45 @@ bool canUseForGridLayout(const RenderGrid& renderGrid)
+@@ -641,8 +687,23 @@ static EnumSet<GridAvoidanceReason> gridLayoutAvoidanceReason(const RenderGrid&
+         if (gridItemStyle->aspectRatio().hasRatio())
+             ADD_REASON_AND_RETURN_IF_NEEDED(GridAvoidanceReason::GridItemHasAspectRatio, reasons, reasonCollectionMode);
+ 
+-        if (!gridItemStyle->isOverflowVisible())
++        auto hasSupportedExperimentalOverflow = [&] {
++#if PLATFORM(HAIKU)
++            return summitExtendedGridIntegrationEnabled()
++                && gridItemStyle->overflowX() == Overflow::Hidden
++                && gridItemStyle->overflowY() == Overflow::Auto;
++#else
++            return false;
++#endif
++        };
++        if (!gridItemStyle->isOverflowVisible() && !hasSupportedExperimentalOverflow()) {
++#if PLATFORM(HAIKU)
++            if (summitPageUpdateTraceEnabled())
++                WTFLogAlways("Summit legacy grid item overflow: grid=%p item=%p x=%u y=%u\n", &renderGrid, gridItem.ptr(),
++                    static_cast<unsigned>(gridItemStyle->overflowX()), static_cast<unsigned>(gridItemStyle->overflowY()));
++#endif
+             ADD_REASON_AND_RETURN_IF_NEEDED(GridAvoidanceReason::GridItemHasNonVisibleOverflow, reasons, reasonCollectionMode);
++        }
+ 
+         if (gridItemStyle->usedContain().contains(Style::ContainValue::Size))
+             ADD_REASON_AND_RETURN_IF_NEEDED(GridAvoidanceReason::GridItemHasContainsSize, reasons, reasonCollectionMode);
+@@ -919,6 +980,45 @@ bool canUseForGridLayout(const RenderGrid& renderGrid)
      });
  #endif
      auto reasons = gridLayoutAvoidanceReason(renderGrid, ReasonCollectionMode::FirstOnly);
@@ -3176,6 +3213,27 @@ index f9aaa86c85c2812857ce04585ea7db2e257b02fc..fc8f5bbd7f46e962f2537bdcffecfc62
      return reasons.isEmpty();
  }
  
+diff --git a/Source/WebCore/layout/integration/grid/LayoutIntegrationGridLayout.cpp b/Source/WebCore/layout/integration/grid/LayoutIntegrationGridLayout.cpp
+index ee6bed5204479d0249cff5cc06fa62d97406c6f1..05c5cf6b8afb9cd2b70d939cab36c3a52fc3d445 100644
+--- a/Source/WebCore/layout/integration/grid/LayoutIntegrationGridLayout.cpp
++++ b/Source/WebCore/layout/integration/grid/LayoutIntegrationGridLayout.cpp
+@@ -33,6 +33,7 @@
+ #include "GridLayoutUtils.h"
+ #include "LayoutIntegrationBoxGeometryUpdater.h"
+ #include "LayoutIntegrationBoxTreeUpdater.h"
++#include "RenderChildIterator.h"
+ #include "RenderGrid.h"
+ #include "RenderView.h"
+ #include "StyleKeyword+Logging.h"
+@@ -210,6 +211,8 @@ void GridLayout::updateFormattingContextRootRenderer(const Layout::GridLayoutCon
+ void GridLayout::invalidateFormattingContextRootRenderer(RenderGrid& renderGrid)
+ {
+     renderGrid.currentGrid().setNeedsItemsPlacement(true);
++    for (CheckedRef gridItem : childrenOfType<RenderBox>(renderGrid))
++        gridItem->clearGridAreaContentSize();
+ }
+ 
+ std::pair<LayoutUnit, LayoutUnit> GridLayout::computeIntrinsicWidths()
 diff --git a/Source/WebCore/loader/CookieJar.cpp b/Source/WebCore/loader/CookieJar.cpp
 index 7a100df953c393486f1ca28b3da8507ab505cf08..5ed82dff72b910fa49f63baadf18d590d3295f42 100644
 --- a/Source/WebCore/loader/CookieJar.cpp
