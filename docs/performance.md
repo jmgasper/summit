@@ -3175,3 +3175,16 @@ that records JavaScript IntersectionObserver callback duration at unload in
 result is marked instrumented. Comparing those callback times with the
 native observer-phase trace should separate JavaScript notification work
 from geometry updates before changing WebCore's observer path.
+
+The first instrumented 20-iteration CodeMirror run uploaded one iframe record
+per iteration. Its 60 constructed observers made 60 callbacks in total; the
+callbacks accumulated 304 ms, while the browser's page-update trace recorded
+305.0 ms in the intersection-observation phase. The third constructed
+observer contributed almost all callback time, usually 14–15 ms per
+iteration (22 ms at most). The two totals are independently measured and
+close enough to make JavaScript callback work the leading explanation for
+CodeMirror's observer-phase cost; optimizing native observer geometry alone
+is unlikely to close this gap. The instrumented suite scored 13.471 ± 0.780,
+similar to the earlier traced CodeMirror-only 13.447 ± 0.760, but instrumented
+scores are diagnostic rather than benchmark baselines
+(`.vm/bench/speedometer-20260924-092520-codemirror-observer-callbacks/`).
