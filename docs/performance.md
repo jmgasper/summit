@@ -2487,3 +2487,21 @@ a real improvement
 (`.vm/bench/speedometer-20260923-185904-fixed-repeat-margin-production-control/`,
 `.vm/bench/speedometer-20260923-190055-fixed-repeat-only-full/`, and
 `.vm/bench/speedometer-20260923-185710-fixed-repeat-margin-full/`).
+
+### Why the legacy grid lays out the item twice
+
+The hot Reddit grid runs its flex item once to measure intrinsic row height and
+again for final placement. A focused `RenderGrid` trace found that the grid
+area width remained 1121 px across those passes. Row sizing temporarily
+cleared the area's height, and final placement restored a definite height.
+The item has percentage-height descendants; WebKit's stretch requirement
+therefore requested another layout even when the requested outer height
+matched its current height. Those descendants can resolve differently between
+the indefinite intrinsic pass and the definite final pass. Skipping the second
+layout based only on unchanged outer dimensions would be unsafe.
+
+The temporary area and stretch logs were removed after the check. They
+produced tens of thousands of lines and severely distorted frame timing, so
+their scroll fps is excluded from performance comparisons. The dependency is
+visible in `.vm/bench/scroll-20260923-190821-reddit-grid-area-sizes/` and
+`.vm/bench/scroll-20260923-191117-reddit-grid-stretch-values/`.
