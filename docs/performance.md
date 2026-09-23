@@ -3132,3 +3132,24 @@ The same bundle completed the typed Reddit HLS fixture at 720×1280 through
 its 12.7-second `ended` event with no media error. The backend decoded 381
 frames using NVDEC H.264 plus AAC and reported five- and ten-second progress
 (`.vm/bench/probe-20260924-085410-summit-reddit-hls-current/`).
+
+The current diagnostic bundle also completed a fresh, uncontended ten-iteration
+Speedometer 3.1 run at the Firefox-matched 1280×887 content viewport. It scored
+6.760 ± 0.286 against the saved Firefox 155 result of 8.338 ± 0.374. Svelte,
+CodeMirror, and Preact took 1.68×, 1.66×, and 1.66× Firefox's time. Preact's
+`Adding100Items` and `CompletingAllItems` async steps took 30.0 and 24.5 ms
+versus Firefox's 16.9 and 13.0 ms; Svelte's took 27.2 and 21.0 ms versus
+14.4 and 10.4 ms. CodeMirror's `Long` step took 26.2 ms sync and 22.7 ms
+async, versus 15.5 and 11.1 ms. This identifies the steps to investigate;
+it does not by itself assign the delay to the frame scheduler, JavaScript,
+or layout (`.vm/bench/speedometer-20260924-085646-current-diagnostics-matched/`).
+
+A 20-iteration focused run of those three suites with
+`SUMMIT_PAGE_UPDATE_TRACE=2` scored 15.080 ± 0.520 and recorded 22 page
+updates over 33 ms. Their 850.9 ms of traced time included 519.1 ms inside
+animation-frame callbacks and 293.1 ms in intersection observers; 40 layouts
+crossed the separate 10 ms layout-trace threshold. These are aggregate page
+logs, without a suite identifier, and the trace omits shorter updates. They
+are useful leads but cannot establish which part of each measured async step
+is spent in a callback or waiting for the next frame
+(`.vm/bench/speedometer-20260924-085957-focused-page-update-trace/`).
