@@ -2505,3 +2505,26 @@ produced tens of thousands of lines and severely distorted frame timing, so
 their scroll fps is excluded from performance comparisons. The dependency is
 visible in `.vm/bench/scroll-20260923-190821-reddit-grid-area-sizes/` and
 `.vm/bench/scroll-20260923-191117-reddit-grid-stretch-values/`.
+
+### TipTap selection canonicalization phases
+
+The earlier TipTap sampler put `VisiblePosition::canonicalPosition` on 13.4%
+of inclusive samples. A temporary Haiku timer separated its mandatory
+`Document::updateLayoutIgnorePendingStylesheets()` call from the subsequent
+upstream/downstream candidate search. In a 15-iteration TipTap-only run, the
+first 160 recorded canonicalizations spent 656.6 ms in layout and only 1.35 ms
+in candidate search. The suite averaged 153.5 ms including its cold pass
+(`.vm/bench/speedometer-20260923-192145-tiptap-canonical-position-phases/`).
+
+A three-iteration full-suite trace recorded 420 canonicalizations across all
+suites. Their cumulative layout time was 270.7 ms and candidate search was
+0.81 ms; almost all layout time arrived in two large bursts after calls 130
+and 280. The full run's TipTap mean was 321.3 ms, but this aggregate trace
+does not tag individual calls by suite, so it cannot assign those bursts or
+the entire cross-suite regression to TipTap
+(`.vm/bench/speedometer-20260923-192259-full-canonical-position-phase-trace/`).
+
+Canonicalization's search is already cheap. The useful target is the forced
+layout of the editor's flex and inline content after DOM changes, subject to
+selection correctness. The diagnostic timer was removed and the production
+WebProcess and NetworkProcess rebuilt from the committed engine source.
