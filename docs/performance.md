@@ -2146,6 +2146,30 @@ the modern path and was removed rather than weakening layout correctness
 modern-grid optimization now requires implementing content-distribution
 positions and corresponding layout coverage, rather than bypassing its guard.
 
+The modern grid formatter now implements `space-between` track distribution
+on both axes. It carries the start and between-track offsets with the used
+track sizes, includes distributed gutters in grid-area sizes, and applies the
+same offsets to final item positions. The Haiku-only
+`SUMMIT_EXTENDED_GRID_INTEGRATION=1` experiment admits the exact additional
+features observed on Reddit: `minmax()` columns, horizontal and vertical
+`space-between`, and percentage grid-item widths. Production coverage remains
+unchanged while the complete Reddit case is still being qualified.
+
+`tools/bench/pages/grid-space-between.html` compares deterministic legacy and
+modern geometry for positive and negative free space on each axis and for a
+50% item width. All five cases matched exactly, and the trace confirmed that
+the candidate fixture grids used the modern formatter
+(`.vm/bench/probe-20260923-144209-summit-grid-percent-legacy/` and
+`.vm/bench/probe-20260923-144232-summit-grid-percent-gfc/`). Successive live
+Reddit probes then advanced the hot grid through the `minmax()`, justify,
+align, and percentage-width guards. Its next rejection is reason 32, a grid
+item with non-visible overflow, so the hot hierarchy still uses the legacy
+algorithm and the observed frame-rate differences are not attributable to the
+new formatter. The latest complete pass reached 36.19 native-view frames/s,
+with a 569.8 ms worst interval and 0.3 ms maximum native queue delay; it also
+selected NVDEC H.264 and AAC successfully
+(`.vm/bench/scroll-20260923-144313-reddit-grid-gfc-percent-width/`).
+
 ### libstdc++ assertion experiment
 
 The normal Release configuration still enables libstdc++ container assertions.

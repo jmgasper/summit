@@ -1,0 +1,43 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Summit grid space-between probe: running</title>
+<style>
+body { font: 14px/1.4 sans-serif; margin: 20px; }
+.grid { box-sizing: content-box; display: grid; width: 600px; grid-template-columns: minmax(0, 100px) minmax(0, 100px); gap: 20px; justify-content: space-between; margin-bottom: 12px; }
+.item { height: 28px; border: 1px solid #4682b4; }
+#narrow { width: 180px; }
+.percent .item { width: 50%; }
+.rows { width: 100px; height: 600px; grid-template-columns: 100px; grid-template-rows: 100px 100px; align-content: space-between; justify-content: normal; }
+.rows .item { height: auto; }
+#short { height: 180px; }
+pre { white-space: pre-wrap; }
+</style>
+<h1>Grid space-between geometry</h1>
+<div id="wide" class="grid"><div class="item"></div><div class="item"></div></div>
+<div id="narrow" class="grid"><div class="item"></div><div class="item"></div></div>
+<div id="percent" class="grid percent"><div class="item"></div><div class="item"></div></div>
+<div id="tall" class="grid rows"><div class="item"></div><div class="item"></div></div>
+<div id="short" class="grid rows"><div class="item"></div><div class="item"></div></div>
+<pre id="out">running…</pre>
+<script>
+"use strict";
+const round = value => Math.round(value * 64) / 64;
+function geometry(id) {
+    const grid = document.getElementById(id);
+    const root = grid.getBoundingClientRect();
+    return [...grid.children].map(child => {
+        const box = child.getBoundingClientRect();
+        return [round(box.x - root.x), round(box.y - root.y), round(box.width), round(box.height)];
+    });
+}
+(async () => {
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const result = {wide: geometry("wide"), narrow: geometry("narrow"), percent: geometry("percent"), tall: geometry("tall"), short: geometry("short")};
+    document.getElementById("out").textContent = JSON.stringify(result, null, 2);
+    await fetch("/__bench/probe", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(result)});
+    document.title = "Summit grid space-between probe: done";
+})().catch(error => {
+    document.getElementById("out").textContent = String(error && error.stack || error);
+    document.title = "Summit grid space-between probe: error";
+});
+</script>

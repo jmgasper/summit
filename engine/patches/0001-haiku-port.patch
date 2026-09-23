@@ -2909,8 +2909,126 @@ index 7f18cb986d1972948b04893b511de16598d7f103..68525703b1263997f5100c89a1c31dd9
  } elsif ($Config::Config{"osname"} eq "darwin" && $ENV{SDKROOT}) {
      chomp($ccLocation = `xcrun -find cc -sdk '$ENV{SDKROOT}'`);
  } else {
+diff --git a/Source/WebCore/layout/formattingContexts/grid/GridFormattingContext.cpp b/Source/WebCore/layout/formattingContexts/grid/GridFormattingContext.cpp
+index 775116301ea7823abf38e4931847db3f482d4582..68a45bc27c2078d4519d25bf8e6dde1955e7d2a3 100644
+--- a/Source/WebCore/layout/formattingContexts/grid/GridFormattingContext.cpp
++++ b/Source/WebCore/layout/formattingContexts/grid/GridFormattingContext.cpp
+@@ -242,8 +242,10 @@ GridLayoutResult GridFormattingContext::layout(GridLayoutConstraints layoutConst
+ 
+         for (auto& gridItemRect : gridItemRects) {
+             auto& lineNumbersForGridArea = gridItemRect.lineNumbersForGridArea;
+-            auto columnPosition = GridLayoutUtils::computeGridLinePosition(lineNumbersForGridArea.columnStartLine, usedTrackSizes.columnSizes, layoutState.usedColumnGap);
+-            auto rowPosition = GridLayoutUtils::computeGridLinePosition(lineNumbersForGridArea.rowStartLine, usedTrackSizes.rowSizes, layoutState.usedRowGap);
++            auto columnPosition = usedTrackSizes.columnAlignment.position + GridLayoutUtils::computeGridLinePosition(lineNumbersForGridArea.columnStartLine,
++                usedTrackSizes.columnSizes, layoutState.usedColumnGap + usedTrackSizes.columnAlignment.distribution);
++            auto rowPosition = usedTrackSizes.rowAlignment.position + GridLayoutUtils::computeGridLinePosition(lineNumbersForGridArea.rowStartLine,
++                usedTrackSizes.rowSizes, layoutState.usedRowGap + usedTrackSizes.rowAlignment.distribution);
+ 
+             gridItemRect.borderBoxRect.moveBy(LayoutPoint { columnPosition, rowPosition });
+         }
+diff --git a/Source/WebCore/layout/formattingContexts/grid/GridLayout.cpp b/Source/WebCore/layout/formattingContexts/grid/GridLayout.cpp
+index 80c101f356bbea9a8776268930adf6f7b168caf9..f607bfd7530aeb42875fd8aaecbaa249f253fc79 100644
+--- a/Source/WebCore/layout/formattingContexts/grid/GridLayout.cpp
++++ b/Source/WebCore/layout/formattingContexts/grid/GridLayout.cpp
+@@ -40,6 +40,7 @@
+ #include "TrackSizingFunctions.h"
+ #include "UnplacedGridItem.h"
+ #include "UsedTrackSizes.h"
++#include <numeric>
+ #include <wtf/Vector.h>
+ 
+ namespace WebCore {
+@@ -87,8 +88,11 @@ auto computeGridItemRects = [](const PlacedGridItems& placedGridItems, const Bor
+     return gridItemRects;
+ };
+ 
+-static GridAreaSizes computeGridAreaSizes(const PlacedGridItems& gridItems, const LayoutUnit usedColumnGap, const LayoutUnit usedRowGap, const UsedTrackSizes& usedTrackSizes)
++static GridAreaSizes computeGridAreaSizes(const PlacedGridItems& gridItems, LayoutUnit usedColumnGap, LayoutUnit usedRowGap, const UsedTrackSizes& usedTrackSizes)
+ {
++    usedColumnGap += usedTrackSizes.columnAlignment.distribution;
++    usedRowGap += usedTrackSizes.rowAlignment.distribution;
++
+     auto gridItemsCount = gridItems.size();
+     GridAreaSizes gridAreaSizes;
+     gridAreaSizes.inlineSizes.reserveInitialCapacity(gridItemsCount);
+@@ -103,6 +107,21 @@ static GridAreaSizes computeGridAreaSizes(const PlacedGridItems& gridItems, cons
+     return gridAreaSizes;
+ }
+ 
++static TrackAlignmentOffsets computeTrackAlignmentOffsets(const AxisConstraint& axisConstraint, const TrackSizes& trackSizes, LayoutUnit gap, const StyleContentAlignmentData& contentAlignment)
++{
++    if (axisConstraint.scenario() != AxisConstraint::FreeSpaceScenario::Definite || trackSizes.size() < 2)
++        return { };
++    if (contentAlignment.distribution() != ContentDistribution::SpaceBetween)
++        return { };
++
++    auto tracksSize = std::reduce(trackSizes.begin(), trackSizes.end(), 0_lu);
++    auto guttersSize = GridLayoutUtils::totalGuttersSize(trackSizes.size(), gap);
++    auto freeSpace = axisConstraint.availableSpace() - tracksSize - guttersSize;
++    if (freeSpace <= 0_lu)
++        return { };
++    return { 0_lu, freeSpace / (trackSizes.size() - 1) };
++}
++
+ // https://drafts.csswg.org/css-grid-1/#layout-algorithm
+ GridLayoutResult GridLayout::layout(const UnplacedGridItems& unplacedGridItems, LeadingImplicitTracks leadingImplicitTracks, const GridLayoutState& gridLayoutState, GridLayoutScope scope)
+ {
+@@ -126,13 +145,17 @@ GridLayoutResult GridLayout::layout(const UnplacedGridItems& unplacedGridItems,
+     // skip row sizing, grid-item layout, and alignment.
+     if (scope == GridLayoutScope::ColumnSizingOnly) {
+         TrackSizes columnSizes = GridSizer { formattingContext, gridLayoutState }.sizeColumnsOnlyFastPath(placedGridItems, columnTrackSizingFunctionsList, rowTrackSizingFunctionsList);
+-        return { { columnSizes, { } }, { } };
++        return { { columnSizes, { }, { }, { } }, { } };
+     }
+ 
+     // 2. FIXME: Find the size of the grid container.
+ 
+     // 3. Given the resulting grid container size, run the Grid Sizing Algorithm to size the grid.
+     UsedTrackSizes usedTrackSizes = GridSizer { formattingContext, gridLayoutState }.sizeGrid(placedGridItems, columnTrackSizingFunctionsList, rowTrackSizingFunctionsList);
++    usedTrackSizes.columnAlignment = computeTrackAlignmentOffsets(gridLayoutState.gridLayoutConstraints.inlineAxis, usedTrackSizes.columnSizes,
++        gridLayoutState.usedColumnGap, gridLayoutState.usedJustifyContent);
++    usedTrackSizes.rowAlignment = computeTrackAlignmentOffsets(gridLayoutState.gridLayoutConstraints.blockAxis, usedTrackSizes.rowSizes,
++        gridLayoutState.usedRowGap, gridLayoutState.usedAlignContent);
+ 
+     CheckedRef formattingContextRootStyle = formattingContext.root().style();
+     auto gridAreaSizes = computeGridAreaSizes(placedGridItems, gridLayoutState.usedColumnGap, gridLayoutState.usedRowGap, usedTrackSizes);
+diff --git a/Source/WebCore/layout/formattingContexts/grid/GridSizer.cpp b/Source/WebCore/layout/formattingContexts/grid/GridSizer.cpp
+index 3aa67807a4ce84afb8ba7fffb591609214d08b12..9fcac495e5bb1427435ff68432613eab82bad104 100644
+--- a/Source/WebCore/layout/formattingContexts/grid/GridSizer.cpp
++++ b/Source/WebCore/layout/formattingContexts/grid/GridSizer.cpp
+@@ -194,7 +194,7 @@ UsedTrackSizes GridSizer::sizeGrid(const PlacedGridItems& placedGridItems, const
+     };
+     UNUSED_VARIABLE(resolveGridRowSizesIfAnyMinContentContributionChanged);
+ 
+-    return { columnSizes, rowSizes };
++    return { columnSizes, rowSizes, { }, { } };
+ }
+ 
+ } // namespace Layout
+diff --git a/Source/WebCore/layout/formattingContexts/grid/UsedTrackSizes.h b/Source/WebCore/layout/formattingContexts/grid/UsedTrackSizes.h
+index 05283a7d359f0d9b30a90594ccddc0c185e0b13e..da6ad038252ee3ca92f8401b2ad20c106d087571 100644
+--- a/Source/WebCore/layout/formattingContexts/grid/UsedTrackSizes.h
++++ b/Source/WebCore/layout/formattingContexts/grid/UsedTrackSizes.h
+@@ -30,10 +30,16 @@
+ 
+ namespace WebCore {
+ namespace Layout {
++struct TrackAlignmentOffsets {
++    LayoutUnit position;
++    LayoutUnit distribution;
++};
++
+ struct UsedTrackSizes {
+     TrackSizes columnSizes;
+     TrackSizes rowSizes;
++    TrackAlignmentOffsets columnAlignment;
++    TrackAlignmentOffsets rowAlignment;
+ };
+ }
+ }
+-
 diff --git a/Source/WebCore/layout/integration/grid/LayoutIntegrationGridCoverage.cpp b/Source/WebCore/layout/integration/grid/LayoutIntegrationGridCoverage.cpp
-index f9aaa86c85c2812857ce04585ea7db2e257b02fc..6b4b4a5c96e16f1a4aba85a52216df48d06bc8ab 100644
+index f9aaa86c85c2812857ce04585ea7db2e257b02fc..fc8f5bbd7f46e962f2537bdcffecfc6257b99302 100644
 --- a/Source/WebCore/layout/integration/grid/LayoutIntegrationGridCoverage.cpp
 +++ b/Source/WebCore/layout/integration/grid/LayoutIntegrationGridCoverage.cpp
 @@ -34,6 +34,9 @@
@@ -2923,23 +3041,113 @@ index f9aaa86c85c2812857ce04585ea7db2e257b02fc..6b4b4a5c96e16f1a4aba85a52216df48
  #include <pal/Logging.h>
  #include <wtf/text/TextStream.h>
  
-@@ -919,6 +922,44 @@ bool canUseForGridLayout(const RenderGrid& renderGrid)
+@@ -106,6 +109,26 @@ enum class GridAvoidanceReason : uint8_t {
+     GridFormattingContextIntegrationDisabled,
+ };
+ 
++#if PLATFORM(HAIKU)
++static bool summitExtendedGridIntegrationEnabled()
++{
++    static bool enabled = [] {
++        const char* value = std::getenv("SUMMIT_EXTENDED_GRID_INTEGRATION");
++        return value && value[0] == '1' && !value[1];
++    }();
++    return enabled;
++}
++
++static bool summitPageUpdateTraceEnabled()
++{
++    static bool enabled = [] {
++        const char* value = std::getenv("SUMMIT_PAGE_UPDATE_TRACE");
++        return value && value[0] == '1' && !value[1];
++    }();
++    return enabled;
++}
++#endif
++
+ #if ASSERT_ENABLED
+ static bool avoidanceReasonIsColumnPlacementRelated(GridAvoidanceReason gridAvoidanceReason)
+ {
+@@ -254,6 +277,10 @@ static bool hasValidRowEnd(const Style::GridPositionExplicit& explicitRowStart,
+ 
+ static bool gridItemHasValidWidth(const Style::PreferredSize& width)
+ {
++#if PLATFORM(HAIKU)
++    if (summitExtendedGridIntegrationEnabled() && width.isPercent())
++        return true;
++#endif
+     return WTF::switchOn(width,
+         [&](const CSS::Keyword::Auto&) {
+             return true;
+@@ -355,7 +382,11 @@ static EnumSet<GridAvoidanceReason> gridLayoutAvoidanceReason(const RenderGrid&
+             [&](const Style::GridTrackSize& trackSize) -> std::optional<GridAvoidanceReason> {
+                 // Since a GridTrackSize type of Breadth sets the MinTrackBreadth and
+                 // MaxTrackBreadth to the same value we only need to check one.
+-                if (!trackSize.isBreadth())
++                if (!trackSize.isBreadth()
++#if PLATFORM(HAIKU)
++                    && !(summitExtendedGridIntegrationEnabled() && trackSize.isMinMax())
++#endif
++                )
+                     return GridAvoidanceReason::GridHasUnsupportedGridTemplateColumns;
+                 return { };
+             },
+@@ -420,10 +451,18 @@ static EnumSet<GridAvoidanceReason> gridLayoutAvoidanceReason(const RenderGrid&
+     if (renderGridStyle->usedContain().contains(Style::ContainValue::Size))
+         ADD_REASON_AND_RETURN_IF_NEEDED(GridAvoidanceReason::GridHasContainsSize, reasons, reasonCollectionMode);
+ 
+-    if (!renderGridStyle->justifyContent().isNormal())
++    if (!renderGridStyle->justifyContent().isNormal()
++#if PLATFORM(HAIKU)
++        && !(summitExtendedGridIntegrationEnabled() && renderGridStyle->justifyContent().resolve().distribution() == ContentDistribution::SpaceBetween)
++#endif
++    )
+         ADD_REASON_AND_RETURN_IF_NEEDED(GridAvoidanceReason::GridHasUnsupportedJustifyContent, reasons, reasonCollectionMode);
+ 
+-    if (!renderGridStyle->alignContent().isNormal())
++    if (!renderGridStyle->alignContent().isNormal()
++#if PLATFORM(HAIKU)
++        && !(summitExtendedGridIntegrationEnabled() && renderGridStyle->alignContent().resolve().distribution() == ContentDistribution::SpaceBetween)
++#endif
++    )
+         ADD_REASON_AND_RETURN_IF_NEEDED(GridAvoidanceReason::GridHasUnsupportedAlignContent, reasons, reasonCollectionMode);
+ 
+     // GFC cannot yet resolve intrinsic (min-content/max-content/fit-content) sizing on the grid container itself.
+@@ -487,8 +526,15 @@ static EnumSet<GridAvoidanceReason> gridLayoutAvoidanceReason(const RenderGrid&
+             ADD_REASON_AND_RETURN_IF_NEEDED(GridAvoidanceReason::GridItemHasUnsupportedInlineAxisAlignment, reasons, reasonCollectionMode);
+ 
+         auto& gridItemWidth = gridItemStyle->width();
+-        if (!gridItemHasValidWidth(gridItemWidth))
++        if (!gridItemHasValidWidth(gridItemWidth)) {
++#if PLATFORM(HAIKU)
++            if (summitPageUpdateTraceEnabled())
++                WTFLogAlways("Summit legacy grid item width: grid=%p item=%p percent=%u calculated=%u minContent=%u maxContent=%u fitContent=%u stretch=%u\n",
++                    &renderGrid, gridItem.ptr(), gridItemWidth.isPercent(), gridItemWidth.isCalculated(), gridItemWidth.isMinContent(),
++                    gridItemWidth.isMaxContent(), gridItemWidth.isFitContent(), gridItemWidth.isStretch());
++#endif
+             ADD_REASON_AND_RETURN_IF_NEEDED(GridAvoidanceReason::GridItemHasUnsupportedWidthValue, reasons, reasonCollectionMode);
++        }
+ 
+         if (gridItemWidth.isAuto() && !canComputeAutomaticSize(gridItem))
+             ADD_REASON_AND_RETURN_IF_NEEDED(GridAvoidanceReason::GridItemHasUnsupportedAutomaticInlineSizing, reasons, reasonCollectionMode);
+@@ -919,6 +965,45 @@ bool canUseForGridLayout(const RenderGrid& renderGrid)
      });
  #endif
      auto reasons = gridLayoutAvoidanceReason(renderGrid, ReasonCollectionMode::FirstOnly);
 +#if PLATFORM(HAIKU)
-+    static bool summitPageUpdateTraceEnabled = [] {
-+        const char* value = std::getenv("SUMMIT_PAGE_UPDATE_TRACE");
-+        return value && value[0] == '1' && !value[1];
-+    }();
-+    if (summitPageUpdateTraceEnabled && !reasons.isEmpty())
++    if (summitPageUpdateTraceEnabled() && !reasons.isEmpty())
 +        WTFLogAlways("Summit legacy grid: grid=%p firstReason=%u\n", &renderGrid, static_cast<unsigned>(*reasons.begin()));
-+    if (summitPageUpdateTraceEnabled && reasons.contains(GridAvoidanceReason::GridHasUnsupportedJustifyContent)) {
++    if (summitPageUpdateTraceEnabled() && reasons.contains(GridAvoidanceReason::GridHasUnsupportedJustifyContent)) {
 +        auto justifyContent = renderGrid.style().justifyContent().resolve();
 +        WTFLogAlways("Summit legacy grid justify-content: grid=%p position=%u distribution=%u overflow=%u\n", &renderGrid,
 +            static_cast<unsigned>(justifyContent.position()), static_cast<unsigned>(justifyContent.distribution()), static_cast<unsigned>(justifyContent.overflow()));
 +    }
-+    if (summitPageUpdateTraceEnabled && reasons.contains(GridAvoidanceReason::GridHasUnsupportedGridTemplateColumns)) {
++    if (summitPageUpdateTraceEnabled() && reasons.contains(GridAvoidanceReason::GridHasUnsupportedAlignContent)) {
++        auto alignContent = renderGrid.style().alignContent().resolve();
++        WTFLogAlways("Summit legacy grid align-content: grid=%p position=%u distribution=%u overflow=%u\n", &renderGrid,
++            static_cast<unsigned>(alignContent.position()), static_cast<unsigned>(alignContent.distribution()), static_cast<unsigned>(alignContent.overflow()));
++    }
++    if (summitPageUpdateTraceEnabled() && reasons.contains(GridAvoidanceReason::GridHasUnsupportedGridTemplateColumns)) {
 +        auto& columns = renderGrid.style().gridTemplateColumns().list;
 +        if (columns.isEmpty())
 +            WTFLogAlways("Summit legacy grid columns: grid=%p detail=empty\n", &renderGrid);
