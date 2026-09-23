@@ -2984,6 +2984,21 @@ The packaged diagnostic build, with the timer left off, completed an
 its final screenshot showed rendered posts
 (`.vm/bench/scroll-20260924-074549-reddit-refresh-diagnostic-safe/`).
 
+An opt-in `SUMMIT_SCROLL_DOM_TRACE=1` probe now hit-tests two points in the
+WebCore viewport when a timed scroll burst stops. It logs the element ancestry
+and bounds, without page text. During a reverse 80-notch burst after a 300-notch
+forward burst, the final screenshot showed a blank Reddit feed at scrolling-tree
+position 4,674 px (maximum 26,630 px). The corresponding DOM trace found an
+image inside `SHREDDIT-POST` at viewport y=200 and a link inside another
+`SHREDDIT-POST` at y=400, with rectangles covering those points. A later
+screenshot, without additional input, showed the post image at that position.
+Thus Reddit had produced the post elements while the feed was blank; this is
+strong evidence of delayed painting or layer presentation after asynchronous
+scrolling, rather than an empty DOM. The trace and screenshot are close in time
+but are not atomic. The next investigation should compare the committed layer
+state and tile damage with the scrolling tree's position
+(`.vm/bench/scroll-20260924-080715-reddit-refresh-dom-reverse/`).
+
 ### TipTap intrinsic-width rebuilding
 
 An opt-in `SUMMIT_FLEX_WIDTH_TRACE=1` probe narrowed TipTap's flex sizing
