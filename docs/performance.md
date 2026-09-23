@@ -2528,3 +2528,13 @@ Canonicalization's search is already cheap. The useful target is the forced
 layout of the editor's flex and inline content after DOM changes, subject to
 selection correctness. The diagnostic timer was removed and the production
 WebProcess and NetworkProcess rebuilt from the committed engine source.
+
+The production bundle's existing page-update trace confirms the layout shape
+in five focused TipTap iterations. Each warm pass produced two slow
+render-tree layouts of about 31--37 ms, nested in animation-frame callbacks
+lasting about 59--72 ms. A `RenderFlexibleBox` contained a 16--21 ms
+`RenderBlock` layout in each pass; the rest of the render-tree time is outside
+that inclusive subtree. The cold pass had two roughly 100 ms layouts. These
+samples point to repeated flex and inline layout of the editor view, not a
+slow candidate-position walk
+(`.vm/bench/speedometer-20260923-192710-tiptap-layout-renderers/`).
