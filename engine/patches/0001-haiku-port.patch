@@ -80630,10 +80630,41 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..c8cbe05806a9334a320bd4869e22b656
      if (m_overlayCompositingLayer)
          m_overlayCompositingLayer->flushCompositingState(visibleContentsRect());
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
-index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..b877e108714805ecf9230b8cedc5ea368b5a32da 100644
+index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..f30527855afe5c5f98d8b415cf92fb957a6b019a 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
-@@ -90,6 +90,16 @@ ThreadedCompositor::ThreadedCompositor(WebPage& webPage, LayerTreeHost& layerTre
+@@ -53,6 +53,12 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
+ #include <wtf/TZoneMallocInlines.h>
+ #include <wtf/text/StringToIntegerConversion.h>
+ 
++#if PLATFORM(HAIKU)
++#include <OS.h>
++#include <cstdio>
++#include <cstdlib>
++#endif
++
+ #if USE(GLIB_EVENT_LOOP)
+ #include <wtf/glib/RunLoopSourcePriority.h>
+ #endif
+@@ -73,6 +79,17 @@ using namespace WebCore;
+ 
+ WTF_MAKE_TZONE_ALLOCATED_IMPL(ThreadedCompositor);
+ 
++#if PLATFORM(HAIKU)
++static bool traceCompositorTiming()
++{
++    static bool enabled = [] {
++        const char* value = std::getenv("SUMMIT_COMPOSITOR_TIMING_TRACE");
++        return value && value[0] == '1' && !value[1];
++    }();
++    return enabled;
++}
++#endif
++
+ Ref<ThreadedCompositor> ThreadedCompositor::create(WebPage& webPage, LayerTreeHost& layerTreeHost, CoordinatedSceneState& sceneState)
+ {
+     return adoptRef(*new ThreadedCompositor(webPage, layerTreeHost, sceneState));
+@@ -90,6 +107,16 @@ ThreadedCompositor::ThreadedCompositor(WebPage& webPage, LayerTreeHost& layerTre
  {
      ASSERT(RunLoop::isMain());
  
@@ -80650,7 +80681,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..b877e108714805ecf9230b8cedc5ea36
      m_didCompositeRunLoopObserver = makeUnique<RunLoopObserver>(RunLoopObserver::WellKnownOrder::GraphicsCommit, [this] {
          this->didCompositeRunLoopObserverFired();
      });
-@@ -216,8 +226,17 @@ void ThreadedCompositor::updateRenderTimer()
+@@ -216,8 +243,17 @@ void ThreadedCompositor::updateRenderTimer()
      }
  
      if (m_state.isRenderTimerActive) {
@@ -80670,7 +80701,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..b877e108714805ecf9230b8cedc5ea36
      } else
          m_renderTimer.stop();
  }
-@@ -580,6 +599,9 @@ void ThreadedCompositor::renderLayerTree()
+@@ -580,8 +616,16 @@ void ThreadedCompositor::renderLayerTree()
  
          ASSERT(m_state.state == State::Scheduled);
          m_state.state = State::InProgress;
@@ -80679,14 +80710,74 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..b877e108714805ecf9230b8cedc5ea36
 +#endif
      }
  
++#if PLATFORM(HAIKU)
++    const bool traceTiming = traceCompositorTiming();
++    const bigtime_t startedAt = traceTiming ? system_time() : 0;
++#endif
++
  #if USE(TEXTURE_MAPPER)
-@@ -599,6 +621,7 @@ void ThreadedCompositor::renderLayerTree()
+     if (!m_context || !m_context->makeContextCurrent())
+         return;
+@@ -599,10 +643,14 @@ void ThreadedCompositor::renderLayerTree()
      if (viewportSize.isEmpty())
          return;
  
 +
      TransformationMatrix viewportTransform;
      viewportTransform.scale(deviceScaleFactor);
+ 
+     m_surface->willRenderFrame(viewportSize);
++#if PLATFORM(HAIKU)
++    const bigtime_t surfaceAt = traceTiming ? system_time() : 0;
++#endif
+ 
+     RunLoop::mainSingleton().dispatch([this, protectedThis = Ref { *this }] {
+         if (m_layerTreeHost)
+@@ -612,10 +660,16 @@ void ThreadedCompositor::renderLayerTree()
+     WTFBeginSignpost(this, FlushCompositingState);
+     flushCompositingState(reasons);
+     WTFEndSignpost(this, FlushCompositingState);
++#if PLATFORM(HAIKU)
++    const bigtime_t flushedAt = traceTiming ? system_time() : 0;
++#endif
+ 
+     WTFBeginSignpost(this, PaintToGLContext);
+     const auto targetContents = paintToCurrentGLContext(viewportTransform, viewportSize, reasons);
+     WTFEndSignpost(this, PaintToGLContext);
++#if PLATFORM(HAIKU)
++    const bigtime_t paintedAt = traceTiming ? system_time() : 0;
++#endif
+ 
+     updateFPSCounter();
+ 
+@@ -633,6 +687,14 @@ void ThreadedCompositor::renderLayerTree()
+ 
+     m_surface->didRenderFrame(targetContents);
+     m_surface->sendFrame();
++#if PLATFORM(HAIKU)
++    if (traceTiming)
++        std::fprintf(stderr, "Summit compositor timing: at=%lld async=%d update=%d surface=%.1f flush=%.1f paint=%.1f send=%.1f total=%.1f\n",
++            static_cast<long long>(startedAt), reasons.contains(CompositionReason::AsyncScrolling),
++            reasons.contains(CompositionReason::RenderingUpdate), (surfaceAt - startedAt) / 1000.0,
++            (flushedAt - surfaceAt) / 1000.0, (paintedAt - flushedAt) / 1000.0,
++            (system_time() - paintedAt) / 1000.0, (system_time() - startedAt) / 1000.0);
++#endif
+ 
+     RunLoop::mainSingleton().dispatch([this, protectedThis = Ref { *this }] {
+         if (m_layerTreeHost)
+@@ -656,6 +718,13 @@ void ThreadedCompositor::requestComposition(CompositionReason reason)
+ {
+     Locker locker { m_state.lock };
+     m_state.reasons.add(reason);
++#if PLATFORM(HAIKU)
++    if (traceCompositorTiming())
++        std::fprintf(stderr, "Summit compositor request: at=%lld async=%d update=%d state=%d waitingTiles=%d timer=%d\n",
++            static_cast<long long>(system_time()), reason == CompositionReason::AsyncScrolling,
++            reason == CompositionReason::RenderingUpdate, static_cast<int>(m_state.state),
++            m_state.isWaitingForTiles, m_state.isRenderTimerActive);
++#endif
+     scheduleUpdateLocked();
+ }
  
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.h b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.h
 index 6665a0cc3570425e2ad5d26dc6c443e3b8280665..c8edb3d0577aaf779dfa9fc24e2adb2fb4eabc6a 100644
@@ -80811,7 +80902,7 @@ index e6fbb8c1896bf99dc0f7322868052566b8629598..d84e2ecbc70d219a63eb074c1fd4b1c9
      UpdateGeometry(WebCore::IntSize size) -> ()
  #endif
 diff --git a/Source/WebKit/WebProcess/WebPage/EventDispatcher.cpp b/Source/WebKit/WebProcess/WebPage/EventDispatcher.cpp
-index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..63b3468d8206bf2d3fd36421b3b2ca23ec0926fe 100644
+index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..7990b3a4aa23621fbf50754a58dcf63b46f55513 100644
 --- a/Source/WebKit/WebProcess/WebPage/EventDispatcher.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/EventDispatcher.cpp
 @@ -46,6 +46,11 @@
@@ -80826,7 +80917,7 @@ index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..63b3468d8206bf2d3fd36421b3b2ca23
  #if ENABLE(ASYNC_SCROLLING)
  #include <WebCore/AsyncScrollingCoordinator.h>
  #endif
-@@ -65,6 +70,17 @@
+@@ -65,6 +70,18 @@
  namespace WebKit {
  using namespace WebCore;
  
@@ -80839,12 +80930,13 @@ index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..63b3468d8206bf2d3fd36421b3b2ca23
 +    }();
 +    return enabled;
 +}
++
 +#endif
 +
  EventDispatcher::EventDispatcher(WebProcess& process)
      : m_process(process)
      , m_queue(WorkQueue::create("com.apple.WebKit.EventDispatcher"_s, WorkQueue::QOS::UserInteractive))
-@@ -145,6 +161,10 @@ void EventDispatcher::internalWheelEvent(PageIdentifier pageID, const WebWheelEv
+@@ -145,6 +162,10 @@ void EventDispatcher::internalWheelEvent(PageIdentifier pageID, const WebWheelEv
          Locker locker { m_scrollingTreesLock };
          RefPtr scrollingTree = m_scrollingTrees.get(pageID);
          if (!scrollingTree) {
@@ -80855,7 +80947,7 @@ index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..63b3468d8206bf2d3fd36421b3b2ca23
              dispatchWheelEventViaMainThread(pageID, wheelEvent, processingSteps, WTF::move(completionHandler));
              break;
          }
-@@ -166,6 +186,14 @@ void EventDispatcher::internalWheelEvent(PageIdentifier pageID, const WebWheelEv
+@@ -166,6 +187,14 @@ void EventDispatcher::internalWheelEvent(PageIdentifier pageID, const WebWheelEv
              useMainThreadForScrolling = false;
  #endif
  
@@ -80870,6 +80962,21 @@ index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..63b3468d8206bf2d3fd36421b3b2ca23
          scrollingTree->willProcessWheelEvent();
  
          ScrollingThread::dispatch([scrollingTree, wheelEvent = Ref<const WebWheelEvent> { wheelEvent }, platformWheelEvent, processingSteps, useMainThreadForScrolling, pageID, this, protectedThis = Ref { *this }, completionHandler = WTF::move(completionHandler)] mutable {
+@@ -178,6 +207,14 @@ void EventDispatcher::internalWheelEvent(PageIdentifier pageID, const WebWheelEv
+ 
+             auto result = scrollingTree->handleWheelEvent(platformWheelEvent, processingSteps);
+ 
++#if PLATFORM(HAIKU)
++            if (traceWheelRoute())
++                std::fprintf(stderr, "Summit wheel result: handled=%d needsMain=%d sync=%d blockingDOM=%d\n",
++                    result.wasHandled, result.needsMainThreadProcessing(),
++                    result.steps.contains(WheelEventProcessingSteps::SynchronousScrolling),
++                    result.steps.contains(WheelEventProcessingSteps::BlockingDOMEventDispatch));
++#endif
++
+             if (result.needsMainThreadProcessing()) {
+                 if (result.steps.contains(WheelEventProcessingSteps::SynchronousScrolling)) {
+                     dispatchWheelEventViaMainThread(pageID, wheelEvent, result.steps, WTF::move(completionHandler));
 diff --git a/Source/WebKit/WebProcess/WebPage/WebPage.cpp b/Source/WebKit/WebProcess/WebPage/WebPage.cpp
 index 48f9e1c5cff34a053ed104c3d2cfd3ac6e0a2bdc..a114a32c297c57a4d53db213a0540af18d4aeac0 100644
 --- a/Source/WebKit/WebProcess/WebPage/WebPage.cpp

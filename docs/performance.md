@@ -2857,3 +2857,39 @@ posts. Scrolling still had 2.78- and 2.97-second presentation gaps in those
 passes (`.vm/bench/probe-20260923-220638-summit-playback-trace-hls/`,
 `.vm/bench/scroll-20260923-220732-reddit-playback-trace/`, and
 `.vm/bench/scroll-20260923-221449-reddit-playback-track-fix/`).
+
+### Async wheel scrolling and coordinated composition
+
+The workstation build enables `ENABLE_ASYNC_SCROLLING`, Haiku's scrolling
+thread, and Summit's threaded-scrolling preference. A 300-notch live Reddit
+trace found a scrolling tree for every event and routed all 300 to that
+thread with no blocking DOM-dispatch step. The expanded result trace showed
+132 events handled there and 168 unhandled, with none requesting main-thread
+wheel processing. The burst still delivered 26.77 native-view frames/s and
+had a 2.76-second pending presentation gap with a 0.6 ms maximum UI queue
+delay (`.vm/bench/scroll-20260923-223047-reddit-wheel-result/`).
+
+An opt-in compositor timing trace measured 367 composed frames in a separate
+run. Its median frame time was 4.7 ms, p95 was 9.9 ms, and the maximum was
+108.6 ms; there was only one explicit async-scrolling composition request.
+That run's longest completed-frame gap was 0.81 seconds and its burst snapshot
+had a 0.81-second pending gap, while other live passes still had multi-second
+gaps. The timing trace therefore points to missing or delayed composition
+requests and page content production more than cost inside an ordinary
+compositor frame (`.vm/bench/scroll-20260923-222641-reddit-compositor-timing/`).
+
+Haiku does not define `HAVE_DISPLAY_LINK`; WebKit normally uses its display
+refresh callback to advance `ThreadedScrollingTree` layer positions. A
+temporary opt-in trial pulsed that tree after handled wheel events. It raised
+explicit async-scrolling composition requests from one to 136 in the traced
+300-notch pass. In an uninstrumented A/B/A sequence on the same bundle,
+native-view rates were 23.32, 48.50, and 21.45 frames/s, with pending gaps
+of 3.05, 0.94, and 2.85 seconds. However, both trial screenshots showed a
+blank Reddit feed where the controls showed posts: composited scrolling ran
+ahead of painted tiles and lazy content. The pulse was removed. A future
+refresh source needs to account for tile availability and content readiness
+before enabling it by default
+(`.vm/bench/scroll-20260923-223705-reddit-wheel-refresh-candidate/`,
+`.vm/bench/scroll-20260923-223819-reddit-refresh-control/`,
+`.vm/bench/scroll-20260923-223905-reddit-refresh-candidate/`, and
+`.vm/bench/scroll-20260923-223955-reddit-refresh-control-repeat/`).
