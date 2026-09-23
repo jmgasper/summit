@@ -2602,3 +2602,45 @@ queueing is still short during these bursts
 (`.vm/bench/scroll-20260923-200020-reddit-workers2-control/`,
 `.vm/bench/scroll-20260923-200104-reddit-workers4-candidate/`, and
 `.vm/bench/scroll-20260923-200144-reddit-workers2-repeat/`).
+
+### Complete native-view burst snapshots
+
+The prior `SUMMIT_UI_FRAME_STATS` log reported a window only when another
+frame arrived. If Reddit stopped presenting near the end of a wheel burst,
+`run-scroll.py` could cut its log before the ongoing gap was reported. The
+browser's opt-in native view now keeps cumulative counts from the exact moment
+the burst starts. `summitctl framestats` reads the count, elapsed time,
+completed gaps, pending gap, and UI queue delay on the window thread. The
+harness prefers that snapshot and also records one 1.1 seconds later. Older
+bundles still use the periodic logs; that fallback completed on
+`bundle-h0em65eq`
+(`.vm/bench/scroll-20260923-201311-reddit-old-bundle-frame-fallback/`).
+
+Two uninstrumented 300-notch `/r/popular/` passes on the snapshot bundle
+delivered 147 frames in 5.21 seconds and 165 frames in 5.04 seconds: **28.2**
+and **32.8 native-view frames/s** across the full bursts. At burst end they
+had pending presentation gaps of 2.62 and 2.05 seconds, with UI queue delays
+below 0.4 ms. In the second pass no new frame arrived during the following
+1.1 seconds, so its pending gap grew to at least 3.28 seconds. Before/after
+screenshots confirm that the feed moved. Earlier periodic-window scroll rates
+can overstate long-burst smoothness when their reported windows cover only a
+small part of the burst
+(`.vm/bench/scroll-20260923-201123-reddit-frame-snapshot-check/` and
+`.vm/bench/scroll-20260923-201529-reddit-frame-snapshot-uninstrumented-repeat/`).
+
+An opt-in page trace during another 300-notch run saw one 1.71-second
+document-scroll event dispatch, with repeated flex, grid, and block layouts
+inside it. Its 15,000 renderer lines materially affect timing, so its frame
+rate and 4.08-second completed gap are diagnostic rather than production
+comparisons. The uninstrumented snapshots independently prove a multi-second
+presentation stall above the native queue
+(`.vm/bench/scroll-20260923-201421-reddit-frame-snapshot-page-phases/`).
+
+Media remains verified for the finite Reddit CMAF case: the current bundle
+loaded its HLS metadata in 468 ms, played 720×1280 video to `ended` at 12.7
+seconds with no media error, and selected NVDEC H.264 plus AAC. A live feed
+trace also selected those decoders with status 0, though Media Kit emitted a
+stream-2 decoder warning; decoder selection alone does not prove that every
+feed post completes playback
+(`.vm/bench/probe-20260923-200527-summit-reddit-current-direct-hls-media-check/`
+and `.vm/bench/scroll-20260923-200427-reddit-live-media-codec-lifecycle/`).
