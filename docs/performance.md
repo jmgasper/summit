@@ -2381,3 +2381,42 @@ benchmark scored **6.419 ± 0.217**. Its aggregate suite time was neutral within
 normal run variance, while Perf Dashboard improved from the previous final
 bundle's 314.7 to 303.7 ms
 (`.vm/bench/speedometer-20260923-164803-canvas-fill-oval-full/`).
+
+### Cached Haiku window geometry
+
+Speedometer's Perf Dashboard driver synthesizes 23 mouse events per iteration.
+For every event it reads `screenX` and `screenY` while constructing the DOM
+event. Each property used to call `WebChromeClient::windowRect()`, which made a
+synchronous IPC request to the UI process. The Haiku UI client did not supply a
+window frame, so the two round trips also returned the wrong zero origin.
+
+Stage timing around those 23 events attributed 11--14 ms per iteration to
+event construction before the change. Haiku now records `BWindow::Frame()` in
+the view geometry snapshot and sends it to the WebProcess whenever that
+snapshot changes. `windowRect()` reads the cached value there. With the cache,
+the benchmark observed the correct `(4, 1)` origin from its requested window
+frame, and event construction fell to 1--2 ms. Total measured mouse-event work
+fell from 36--37 to 24--25 ms
+(`.vm/bench/speedometer-20260923-165401-perf-dashboard-mouse-event-timers/`
+and
+`.vm/bench/speedometer-20260923-172205-perf-dashboard-window-frame-cache-timers/`).
+
+In clean ten-iteration focused runs, Perf Dashboard fell from 308.0 to
+287.0 ms. Its range-selection test, which contains most of these synthesized
+events, fell from 140.4 to 124.4 ms. The full ten-iteration candidate scored
+**6.582 ± 0.239**, with 3,498 ms of aggregate suite time and a 289.5 ms Perf
+Dashboard mean. The previous final bundle scored **6.508 ± 0.235**, with
+3,561 ms aggregate time and a 314.7 ms Perf Dashboard mean
+(`.vm/bench/speedometer-20260923-172405-perf-dashboard-window-frame-cache/`
+and
+`.vm/bench/speedometer-20260923-172723-window-frame-cache-full/`).
+
+A live `/r/popular/` check delivered all 48 paced wheel events at 60.7 native
+view frames/s. Its worst interval was 26.6 ms, no interval exceeded 33 ms, and
+the native queue delay stayed below 0.1 ms. Before and after screenshots confirm
+that the feed moved
+(`.vm/bench/scroll-20260923-172917-window-frame-cache-reddit/`). The same
+candidate played the direct Reddit 720x1280 CMAF regression stream through its
+12.7-second `ended` event with no media error. The browser trace selected
+`H.264 on the graphics card (NVDEC)` with status 0
+(`.vm/bench/probe-20260923-173116-summit-window-frame-cache-reddit-nvdec/`).

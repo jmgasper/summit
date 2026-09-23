@@ -36194,10 +36194,10 @@ index 0000000000000000000000000000000000000000..d28a6cad6339adf79b155cf974e85bfd
 +
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..4c5061e9b1c7bd3446235526ec3470394f3d7653
+index 0000000000000000000000000000000000000000..1a9d16a3751ad0227322a6639ea09392d73b37ad
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp
-@@ -0,0 +1,437 @@
+@@ -0,0 +1,442 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -36438,6 +36438,11 @@ index 0000000000000000000000000000000000000000..4c5061e9b1c7bd3446235526ec347039
 +    if (auto* window = Window()) {
 +        BPoint origin = ConvertToScreen(BPoint());
 +        current.screenOrigin = { static_cast<int>(std::round(origin.x)), static_cast<int>(std::round(origin.y)) };
++        BRect windowFrame = window->Frame();
++        current.windowFrame = {
++            { static_cast<int>(std::round(windowFrame.left)), static_cast<int>(std::round(windowFrame.top)) },
++            { viewDimensionHaiku(windowFrame.Width()), viewDimensionHaiku(windowFrame.Height()) }
++        };
 +        current.visible = !IsHidden() && !window->IsHidden();
 +        current.active = window->IsActive();
 +        messenger = BMessenger(this);
@@ -61432,10 +61437,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..115bbf18a13c33d0d2fac5623b49a63482f4e795
+index 0000000000000000000000000000000000000000..431d305c2499def7c9e25d082b965f6a6e6482be
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,1235 @@
+@@ -0,0 +1,1238 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -61495,10 +61500,12 @@ index 0000000000000000000000000000000000000000..115bbf18a13c33d0d2fac5623b49a634
 +#include "WebDateTimePicker.h"
 +#include "WebFindOptions.h"
 +#include "WebKitView.h"
++#include "WebPageMessages.h"
 +#include "WebPopupMenuProxy.h"
 +#include "WebPopupMenuProxyHaiku.h"
 +#include "WebPreferences.h"
 +#include "WebProcessPool.h"
++#include "WebProcessProxy.h"
 +#include "WebViewContextHaiku.h"
 +#include <WebCore/Cursor.h>
 +#include <WebCore/DOMPasteAccess.h>
@@ -62520,6 +62527,7 @@ index 0000000000000000000000000000000000000000..115bbf18a13c33d0d2fac5623b49a634
 +    if (!m_page)
 +        return;
 +    auto current = geometry();
++    m_page->legacyMainFrameProcess().send(Messages::WebPage::SetWindowFrameHaiku(FloatRect(current.windowFrame)), m_page->webPageIDInMainFrameProcess());
 +    if (auto* drawingArea = m_page->drawingArea())
 +        drawingArea->setSize(current.size);
 +    m_page->activityStateDidChange({ ActivityState::IsFocused, ActivityState::WindowIsActive,
@@ -63131,10 +63139,10 @@ index 0000000000000000000000000000000000000000..c17a5d33f99334ad594ef4ab9104f7c8
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..327aea274e5514ddc0b1df0e244a1da2d5ee8996
+index 0000000000000000000000000000000000000000..bde70e52e3e8bc46c0a659d7fad0d47f7df35859
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
-@@ -0,0 +1,106 @@
+@@ -0,0 +1,107 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -63172,6 +63180,7 @@ index 0000000000000000000000000000000000000000..327aea274e5514ddc0b1df0e244a1da2
 +struct WebViewGeometryHaiku {
 +    WebCore::IntSize size;
 +    WebCore::IntPoint screenOrigin;
++    WebCore::IntRect windowFrame;
 +    bool attached { false };
 +    bool visible { false };
 +    bool focused { false };
@@ -79729,10 +79738,19 @@ index 8677b9d9f5c1e61cbe8b0a184b669022d8db3eed..3ef5c5295f89885202331129b3eb86ac
  #include "MessageSenderInlines.h"
  #include "WebAuthenticatorCoordinatorProxyMessages.h"
 diff --git a/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.cpp b/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.cpp
-index 335b456329f885a77d3880fc2a98b2b58cb4bee8..848d43f645144b2ebe55e6a2725a8be652ab2b9c 100644
+index 335b456329f885a77d3880fc2a98b2b58cb4bee8..c95197b680dae30c884afaf3ce7ff1898d8b1e34 100644
 --- a/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.cpp
 +++ b/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.cpp
-@@ -2282,7 +2282,7 @@ void WebChromeClient::setMockWebAuthenticationConfiguration(const MockWebAuthent
+@@ -268,6 +268,8 @@ FloatRect WebChromeClient::windowRect() const
+ #if PLATFORM(MAC)
+     if (page->hasCachedWindowFrame())
+         return page->windowFrameInUnflippedScreenCoordinates();
++#elif PLATFORM(HAIKU)
++    return page->windowFrameHaiku();
+ #endif
+ 
+     auto sendResult = protect(WebProcess::singleton().parentProcessConnection())->sendSync(Messages::WebPageProxy::GetWindowFrame(), page->identifier());
+@@ -2282,7 +2284,7 @@ void WebChromeClient::setMockWebAuthenticationConfiguration(const MockWebAuthent
  }
  #endif
  
@@ -80723,7 +80741,7 @@ index 48f9e1c5cff34a053ed104c3d2cfd3ac6e0a2bdc..a114a32c297c57a4d53db213a0540af1
          WEBPAGE_RELEASE_LOG(Layers, "updatePreferences: acceleratedCompositingEnabled setting was false. WebKit cannot function in this mode; changing setting to true");
          settings.setAcceleratedCompositingEnabled(true);
 diff --git a/Source/WebKit/WebProcess/WebPage/WebPage.h b/Source/WebKit/WebProcess/WebPage/WebPage.h
-index 36777a70a757d8f40fea959e16bd1659baeebc96..c4f68688bbf4640fa0b2a1c5901fab69e281d112 100644
+index 36777a70a757d8f40fea959e16bd1659baeebc96..6795be381f0ba99bd125f359474a4fe317114f2c 100644
 --- a/Source/WebKit/WebProcess/WebPage/WebPage.h
 +++ b/Source/WebKit/WebProcess/WebPage/WebPage.h
 @@ -25,6 +25,10 @@
@@ -80737,7 +80755,18 @@ index 36777a70a757d8f40fea959e16bd1659baeebc96..c4f68688bbf4640fa0b2a1c5901fab69
  #include "APIObject.h"
  #include "MessageReceiver.h"
  #include "MessageSender.h"
-@@ -1868,7 +1872,7 @@ public:
+@@ -910,6 +914,10 @@ public:
+     void suspendForProcessSwap(CompletionHandler<void(std::optional<bool>)>&&);
+ 
+     void sendSetWindowFrame(const WebCore::FloatRect&);
++#if PLATFORM(HAIKU)
++    void setWindowFrameHaiku(const WebCore::FloatRect&);
++    const WebCore::FloatRect& windowFrameHaiku() const LIFETIME_BOUND { return m_windowFrameHaiku; }
++#endif
+ 
+     double textZoomFactor() const;
+     void didSetTextZoomFactor(double);
+@@ -1868,7 +1876,7 @@ public:
  #if ENABLE(WK_WEB_EXTENSIONS)
      WebExtensionControllerProxy* webExtensionControllerProxy() const
      {
@@ -80746,7 +80775,7 @@ index 36777a70a757d8f40fea959e16bd1659baeebc96..c4f68688bbf4640fa0b2a1c5901fab69
          return m_webExtensionController.get();
  #else
          return nullptr;
-@@ -2477,6 +2481,10 @@ private:
+@@ -2477,6 +2485,10 @@ private:
      void runJavaScript(WebFrame*, RunJavaScriptParameters&&, ContentWorldIdentifier, bool, CompletionHandler<void(RunJavaScriptResult&&)>&&);
      void runJavaScriptInFrameInScriptWorld(RunJavaScriptParameters&&, std::optional<WebCore::FrameIdentifier>, const ContentWorldData&, bool, CompletionHandler<void(RunJavaScriptResult&&)>&&);
      void clearContentWorld(ContentWorldIdentifier, CompletionHandler<void()>&&);
@@ -80757,17 +80786,21 @@ index 36777a70a757d8f40fea959e16bd1659baeebc96..c4f68688bbf4640fa0b2a1c5901fab69
      void getAccessibilityTreeData(CompletionHandler<void(const std::optional<IPC::SharedBufferReference>&)>&&);
      void updateRenderingWithForcedRepaint(CompletionHandler<void()>&&);
      void takeSnapshot(WebCore::IntRect snapshotRect, WebCore::IntSize bitmapSize, SnapshotOptions, CompletionHandler<void(std::optional<ImageBufferBackendHandle>&&, WebCore::Headroom)>&&);
-@@ -3031,7 +3039,7 @@ private:
+@@ -3031,7 +3043,11 @@ private:
  
      const Ref<WebUserContentController> m_userContentController;
  
 -#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(COCOA)
++#if PLATFORM(HAIKU)
++    WebCore::FloatRect m_windowFrameHaiku;
++#endif
++
 +#if ENABLE(WK_WEB_EXTENSIONS) && (PLATFORM(COCOA) || PLATFORM(HAIKU))
      RefPtr<WebExtensionControllerProxy> m_webExtensionController;
  #endif
  
 diff --git a/Source/WebKit/WebProcess/WebPage/WebPage.messages.in b/Source/WebKit/WebProcess/WebPage/WebPage.messages.in
-index b1c001380f46a63c1403d8592fe5ac4a062be694..2bee67b0da7f3dfd7102f781ae522ae125664a96 100644
+index b1c001380f46a63c1403d8592fe5ac4a062be694..7e158297641e2914c3ce38990fb5aa12ab5a17d2 100644
 --- a/Source/WebKit/WebProcess/WebPage/WebPage.messages.in
 +++ b/Source/WebKit/WebProcess/WebPage/WebPage.messages.in
 @@ -281,6 +281,10 @@ messages -> WebPage WantsAsyncDispatchMessage {
@@ -80781,6 +80814,16 @@ index b1c001380f46a63c1403d8592fe5ac4a062be694..2bee67b0da7f3dfd7102f781ae522ae1
  
      ClearContentWorld(WebKit::ContentWorldIdentifier worldIdentifier) -> ()
  
+@@ -617,6 +621,9 @@ messages -> WebPage WantsAsyncDispatchMessage {
+     SetWritingSuggestion(String text, struct WebKit::EditingRange selectionRange)
+     ConfirmCompositionAsync()
+ #endif
++#if PLATFORM(HAIKU)
++    SetWindowFrameHaiku(WebCore::FloatRect windowFrame)
++#endif
+ #if PLATFORM(MAC)
+     AttributedSubstringForCharacterRangeAsync(struct WebKit::EditingRange range) -> (struct WebCore::AttributedString string, struct WebKit::EditingRange range)
+     RequestAcceptsFirstMouse(int eventNumber, Ref<WebKit::WebMouseEvent> event) AllowedWhenWaitingForSyncReplyDuringUnboundedIPC
 diff --git a/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.cpp b/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..05b715645c6ba783cf32a1945ac7d05e2224b777
@@ -82209,10 +82252,10 @@ index 0000000000000000000000000000000000000000..7459ce25f180160a1c12431c73926a1f
 +
 diff --git a/Source/WebKit/WebProcess/WebPage/haiku/WebPageHaiku.cpp b/Source/WebKit/WebProcess/WebPage/haiku/WebPageHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..2dba937436256e14115db78836472cfbba98946d
+index 0000000000000000000000000000000000000000..ddd457397b3aa6ab142c4d59d33f47cbd372412c
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/WebPage/haiku/WebPageHaiku.cpp
-@@ -0,0 +1,140 @@
+@@ -0,0 +1,145 @@
 +/*
 + * Copyright (C) 2014 Haiku, inc.
 + *
@@ -82274,6 +82317,11 @@ index 0000000000000000000000000000000000000000..2dba937436256e14115db78836472cfb
 +
 +void WebPage::platformDetach()
 +{
++}
++
++void WebPage::setWindowFrameHaiku(const FloatRect& windowFrame)
++{
++    m_windowFrameHaiku = windowFrame;
 +}
 +
 +#if HAVE(ACCESSIBILITY)
