@@ -2058,3 +2058,33 @@ These runs move the primary Reddit stall from generic rendering or input
 delivery to synchronous work initiated by Reddit's document scroll listener.
 Skipping or delaying the standards event would change page behavior; the next
 useful split is inside its JavaScript and synchronous media work.
+
+### libstdc++ assertion experiment
+
+The normal Release configuration still enables libstdc++ container assertions.
+A clean `SkiaCGMiNoStdAssert` engine build tested
+`-DUSE_CXX_STDLIB_ASSERTIONS=OFF` while retaining Skia, coordinated graphics,
+mimalloc, the same engine patch, and the private Mesa runtime. This rebuilds
+JavaScriptCore and WebCore, so it directly covers the JIT, DOM, style, and
+layout paths that dominate Speedometer rather than changing only the browser
+shell.
+
+The assertion-free bundle scored **6.363 ± 0.226** over ten uncontended
+Speedometer 3.1 iterations, with a 3,732 ms sum of suite means
+(`.vm/bench/speedometer-20260923-123625-no-stdlib-assertions/`). An immediate
+ten-iteration assertion-enabled control scored **6.471 ± 0.245** with a
+3,652 ms suite sum
+(`.vm/bench/speedometer-20260923-123829-stdlib-assertions-control-post/`). Both
+runs began with 0.05 foreign CPU cores of load. Disabling the assertions was
+1.7% slower by score and 2.2% slower by aggregate suite time, consistent with
+the two earlier assertion-enabled controls at 6.438 and 6.431. The production
+build therefore keeps its current setting.
+
+The candidate also completed a live 300-notch `/r/popular/` pass at 47.94
+native-view frames/s. Its native UI queue stayed below 0.3 ms while the worst
+visual interval reached 598.7 ms, again matching the document-listener stall
+rather than an input queue delay. Media tracing selected NVDEC H.264 six times
+and AAC once, all with status 0
+(`.vm/bench/scroll-20260923-124028-reddit-no-stdlib-assertions/`). This confirms
+that the clean candidate retained accelerated Reddit playback, but provides no
+reason to adopt the slower assertion setting.
