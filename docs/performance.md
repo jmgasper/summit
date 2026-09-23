@@ -2107,6 +2107,17 @@ of their combined time was the render-tree walk. Style resolution is therefore
 not the source of these forced-layout pauses
 (`.vm/bench/scroll-20260923-132029-reddit-layout-phases/`).
 
+The same opt-in trace now records dirty renderer layouts that take at least
+10 ms. These timings are inclusive: a parent includes the children it lays
+out, so their totals must not be added. A follow-up live pass found one stable
+hot hierarchy across the burst: 47 slow `RenderFlexibleBox` calls contained
+47 slow calls on the same `RenderGrid`, and that grid laid out the same
+`RenderBlock` twice on nearly every pass (92 slow block calls). The flex and
+grid calls each covered about 2.2 seconds of the 2.28 seconds spent in slow
+render-tree passes. This narrows the next investigation to the grid's intrinsic
+and final item sizing passes
+(`.vm/bench/scroll-20260923-132721-reddit-renderer-layout/`).
+
 ### libstdc++ assertion experiment
 
 The normal Release configuration still enables libstdc++ container assertions.

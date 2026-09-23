@@ -60,6 +60,8 @@ PAGE_UPDATE_LINE = re.compile(r'Summit page update: page=\S+ (?P<metrics>(?:[A-Z
 PAGE_UPDATE_METRIC = re.compile(r'(?P<name>[A-Za-z]+)=(?P<value>[\d.]+)')
 SCROLL_STEPS_LINE = re.compile(r'Summit scroll steps: document=\S+ (?P<metrics>(?:[A-Za-z]+=[\d.]+ ?)+)')
 LAYOUT_PHASE_LINE = re.compile(r'Summit layout phases: context=\S+ (?P<metrics>(?:[A-Za-z]+=[\d.]+ ?)+)')
+RENDERER_LAYOUT_LINE = re.compile(
+    r'Summit renderer layout: renderer=\S+ type=(?P<rendererType>.+?) total=(?P<total>[\d.]+)')
 MEDIA_LIFECYCLE_LINE = re.compile(
     r'Summit media lifecycle: player=\S+ operation=(?P<operation>[A-Za-z]+) '
     r'(?P<metrics>(?:[A-Za-z]+=[\d.]+ ?)+)')
@@ -181,6 +183,26 @@ def summarize_layout_phases(samples):
             name: round(sum(sample.get(name, 0) for sample in samples), 1)
             for name in phase_names
         },
+    }
+
+
+def parse_renderer_layout_lines(text):
+    return [
+        {'rendererType': match.group('rendererType'), 'total': float(match.group('total'))}
+        for match in RENDERER_LAYOUT_LINE.finditer(text)
+    ]
+
+
+def summarize_renderer_layouts(samples):
+    by_type = {}
+    for sample in samples:
+        entry = by_type.setdefault(sample['rendererType'], {'calls': 0, 'inclusiveMs': 0, 'worstMs': 0})
+        entry['calls'] += 1
+        entry['inclusiveMs'] = round(entry['inclusiveMs'] + sample['total'], 1)
+        entry['worstMs'] = max(entry['worstMs'], sample['total'])
+    return {
+        'slowCalls': len(samples),
+        'byType': dict(sorted(by_type.items(), key=lambda item: item[1]['inclusiveMs'], reverse=True)),
     }
 
 
@@ -345,6 +367,7 @@ def main():
         page_update_before = parse_page_update_lines(before)
         scroll_steps_before = parse_scroll_step_lines(before)
         layout_phases_before = parse_layout_phase_lines(before)
+        renderer_layouts_before = parse_renderer_layout_lines(before)
         media_lifecycle_before = parse_media_lifecycle_lines(before)
         run['idle'] = summarize(idle_engine[-5:]) if idle_engine else summarize_ui(idle_ui[-5:])
         log(f"idle: {run['idle'].get('fps', 0)} fps")
@@ -394,6 +417,7 @@ def main():
         page_update_samples = parse_page_update_lines(text)[len(page_update_before):]
         scroll_step_samples = parse_scroll_step_lines(text)[len(scroll_steps_before):]
         layout_phase_samples = parse_layout_phase_lines(text)[len(layout_phases_before):]
+        renderer_layout_samples = parse_renderer_layout_lines(text)[len(renderer_layouts_before):]
         media_lifecycle_samples = parse_media_lifecycle_lines(text)[len(media_lifecycle_before):]
         during = engine_samples or ui_samples
         run['frameStatsAvailable'] = bool(during)
@@ -412,6 +436,9 @@ def main():
         if layout_phase_samples:
             run['layoutPhaseSamples'] = layout_phase_samples
             run['layoutPhases'] = summarize_layout_phases(layout_phase_samples)
+        if renderer_layout_samples:
+            run['rendererLayoutSamples'] = renderer_layout_samples
+            run['rendererLayouts'] = summarize_renderer_layouts(renderer_layout_samples)
         if media_lifecycle_samples:
             run['mediaLifecycleSamples'] = media_lifecycle_samples
             run['mediaLifecycle'] = summarize_media_lifecycle(media_lifecycle_samples)
@@ -435,6 +462,7 @@ def main():
                           'pageUpdates': run.get('pageUpdates'),
                           'scrollSteps': run.get('scrollSteps'),
                           'layoutPhases': run.get('layoutPhases'),
+                          'rendererLayouts': run.get('rendererLayouts'),
                           'mediaLifecycle': run.get('mediaLifecycle')}, indent=1))
 
 

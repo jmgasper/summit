@@ -24392,6 +24392,42 @@ index ea03bcbb4b167323afa11643cc204dd4c40e5b55..60a10f363d44e68a7a778645c6ed3237
      return { hasSimpleOutOfFlowContentOnly, hasDirtyInFlowBlockLevelElement, hasInFlowBlockLevelElement ? contentNeedsNormalChildLayoutOnly : std::nullopt };
  }
  
+diff --git a/Source/WebCore/rendering/RenderElement.cpp b/Source/WebCore/rendering/RenderElement.cpp
+index b26360017f62da5e5b84a480a480dabf428f16b3..5e062dce9d5e192f619b582034d928cb5ce8af00 100644
+--- a/Source/WebCore/rendering/RenderElement.cpp
++++ b/Source/WebCore/rendering/RenderElement.cpp
+@@ -114,7 +114,9 @@
+ #include "TextAutoSizing.h"
+ #include "TextManipulationController.h"
+ #include "ViewTransition.h"
++#include <cstdlib>
+ #include <wtf/MathExtras.h>
++#include <wtf/MonotonicTime.h>
+ #include <wtf/StackStats.h>
+ #include <wtf/TZoneMallocInlines.h>
+ #include <wtf/text/TextStream.h>
+@@ -2897,7 +2899,21 @@ void RenderElement::layoutIfNeeded()
+         clearNeedsLayoutForSkippedContent();
+         return;
+     }
++#if PLATFORM(HAIKU)
++    static bool summitPageUpdateTraceEnabled = [] {
++        const char* value = std::getenv("SUMMIT_PAGE_UPDATE_TRACE");
++        return value && value[0] == '1' && !value[1];
++    }();
++    auto traceStart = summitPageUpdateTraceEnabled ? MonotonicTime::now() : MonotonicTime { };
++#endif
+     layout();
++#if PLATFORM(HAIKU)
++    if (summitPageUpdateTraceEnabled) {
++        auto duration = MonotonicTime::now() - traceStart;
++        if (duration >= 10_ms)
++            WTFLogAlways("Summit renderer layout: renderer=%p type=%s total=%.1f\n", this, renderName().characters(), duration.milliseconds());
++    }
++#endif
+     if (Style::AnchorPositionEvaluator::isAnchorPositioned(style()))
+         Style::AnchorPositionEvaluator::captureScrollSnapshots(downcast<RenderBox>(*this));
+ }
 diff --git a/Source/WebCore/rendering/haiku/RenderThemeHaiku.cpp b/Source/WebCore/rendering/haiku/RenderThemeHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..92d20a3ff6fd83acdf255b10fa5b68cdfff528ae
