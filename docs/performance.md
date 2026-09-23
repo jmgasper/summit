@@ -3022,6 +3022,14 @@ backing-store coverage as the immediate source of that blank interval. The
 next trial should reduce or coalesce redundant main-thread scroll-update
 notifications while preserving wheel-event test deferrals
 (`.vm/bench/scroll-20260924-083224-reddit-layer-handoff/`).
+An opt-in notification-coalescing trial kept those deferrals but reduced
+forward-burst main-thread notifications from 115 to 13 in same-bundle runs.
+The 300-notch candidate and control delivered 47.02 and 47.69 native-view
+frames/s, with 699 and 726 ms pending gaps respectively. Both reverse-scroll
+screenshots still contained blank feed regions. Fewer notifications did not
+make the renderer catch up, so the trial was removed
+(`.vm/bench/scroll-20260924-084114-reddit-notification-coalesce/` and
+`.vm/bench/scroll-20260924-084235-reddit-notification-control/`).
 With both new traces disabled and the refresh timer left off, the same bundle
 completed an 80-notch Reddit smoke at 56.02 native-view frames/s with a 9.5 ms
 pending gap and visible feed posts; it emitted no layer or tile trace lines
