@@ -3,21 +3,21 @@
 ## Current coordinated Skia result (September 23, 2026)
 
 The workstation's current coordinated graphics build uses Skia CPU tile
-painting with two workers, mimalloc, asynchronous scrolling, and display-rate
-composition pacing. It completes all 580 steps of Speedometer 3.1. The latest
-ten-iteration runs are recorded in
-`.vm/bench/speedometer-20260923-210142-hls-capability-current/` and
-`.vm/bench/speedometer-20260923-210422-matched-firefox-viewport/`.
+painting with two workers, mimalloc, asynchronous scrolling, display-rate
+composition pacing, and guarded reuse of exact text widths. It completes all
+580 steps of Speedometer 3.1. The latest matched-viewport ten-iteration run is
+`.vm/bench/speedometer-20260923-235224-text-width-default-matched/`.
 
 | Browser | Content viewport | Speedometer 3.1, 10 iterations |
 | --- | ---: | ---: |
-| Summit, Skia + coordinated graphics + mimalloc | 1913×945 | **6.591 ± 0.240** |
-| Summit, matched to Firefox | 1280×887 | **6.779 ± 0.258** |
+| Summit, previous full-screen build | 1913×945 | **6.591 ± 0.240** |
+| Summit, matched to Firefox, current build | 1280×887 | **6.923 ± 0.333** |
+| Summit, previous matched build | 1280×887 | **6.779 ± 0.258** |
 | Firefox 155 on the same workstation | 1280×887 | **8.338 ± 0.374** |
 
-Both new Summit runs were uncontended. The same-size gap to Firefox is 1.23x
-by score. TipTap is 2.27x slower, while Chart.js is 1.30x slower; the news and
-jQuery suites match or beat Firefox. Mimalloc accounts for about a 21% gain
+These Summit runs were uncontended. The current same-size gap to Firefox is
+1.20x by score. TipTap took 148.2 ms versus Firefox's 124.8 ms, while
+Chart.js took 264.1 ms versus Firefox's 202.9 ms. Mimalloc accounts for about a 21% gain
 over the matched system-allocator runs described below. Older score
 comparisons in this log used different viewport sizes and should be treated
 as directional. `tools/bench/compare-runs.py` now flags that mismatch.
@@ -2962,3 +2962,45 @@ preserving edits, instead of changing vector capacity
 (`.vm/bench/speedometer-20260923-231939-tiptap-inline-reserve-control/`,
 `.vm/bench/speedometer-20260923-232026-tiptap-inline-reserve-candidate/`,
 and `.vm/bench/speedometer-20260923-232114-tiptap-inline-reserve-control-repeat/`).
+
+### Reusing measured text widths
+
+The archived TipTap profile assigned 8.65% of samples to rebuilding text items
+from cached breaking positions. Disabling that cache increased isolated
+20-iteration TipTap time from 149.8 to 161.6 ms; a repeated cached control
+was 149.7 ms. The break-position cache is useful even though most expensive
+inline roots are fresh
+(`.vm/bench/speedometer-20260923-232953-tiptap-break-cache-control/`,
+`.vm/bench/speedometer-20260923-233041-tiptap-break-cache-disabled/`, and
+`.vm/bench/speedometer-20260923-233131-tiptap-break-cache-control-repeat/`).
+
+`SUMMIT_TEXT_BREAK_STATS=1` showed 9,600 hits in 10,835 TipTap lookups, but
+zero width-cache hits. All 9,600 hit text boxes lacked the simplified
+measuring flag, while none had glyph overflow, content adjustment, letter or
+word spacing, first-line font mismatch, or position-dependent content. The
+Haiku width-cache rule now also accepts simple-font-code-path text when these
+conditions hold, the text is not a synthesized glyph or combined text, and
+it has no bidi override. Existing font-generation invalidation and the
+breaking-position cache's text, context, origin, and font-cascade keys remain
+in force. `SUMMIT_VERIFY_TEXT_WIDTH_CACHE=1` remeasures each cache hit and
+reports mismatches; an eight-iteration TipTap run reused widths on 3,454 of
+3,700 break-cache hits with no mismatch. A three-iteration full Speedometer
+run also reported no mismatch across all suites
+(`.vm/bench/speedometer-20260923-234457-tiptap-text-width-verify/` and
+`.vm/bench/speedometer-20260923-234824-full-text-width-verify/`).
+
+On the same trial bundle, uncontended isolated TipTap control/candidate/control
+means were 147.3, 130.8, and 153.4 ms over 20 iterations each. Full
+Speedometer at the Firefox-matched 1280×887 content viewport scored
+5.891 ± 0.172 with the existing rule and 6.787 ± 0.286 with width reuse,
+both over ten iterations on that bundle. The clean default bundle scored
+6.923 ± 0.333 in ten iterations; it remains below Firefox's 8.338 ± 0.374.
+Its TipTap mean was 148.2 ms versus 307.0 ms in the same-bundle control.
+The isolated result is a more direct measure of the editor's cache benefit;
+the full runs also reflect interactions among suites
+(`.vm/bench/speedometer-20260923-234550-tiptap-text-width-control/`,
+`.vm/bench/speedometer-20260923-234637-tiptap-text-width-candidate/`,
+`.vm/bench/speedometer-20260923-234725-tiptap-text-width-control-repeat/`,
+`.vm/bench/speedometer-20260923-235421-text-width-full-control-matched/`,
+`.vm/bench/speedometer-20260923-235613-text-width-full-candidate-matched/`,
+and `.vm/bench/speedometer-20260923-235224-text-width-default-matched/`).
