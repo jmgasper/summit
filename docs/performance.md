@@ -2930,3 +2930,33 @@ two passes, so their frame rates do not isolate the pulse's cost. The pulse
 remains disabled until scrolling can advance visibly without leaving a blank
 feed (`.vm/bench/scroll-20260923-225828-reddit-refresh-180/` and
 `.vm/bench/scroll-20260923-225929-reddit-safe-180/`).
+
+### TipTap intrinsic-width rebuilding
+
+An opt-in `SUMMIT_FLEX_WIDTH_TRACE=1` probe narrowed TipTap's flex sizing
+cost. In eight isolated iterations, 17 `min-content` contributions exceeded
+0.5 ms and totaled about 404 ms. The two cold calls took roughly 98 and 88
+ms; warm calls on the editor's flex item took about 14--16 ms. Every slow
+call entered with invalid intrinsic widths and a dirty renderer, then returned
+the same 598.8-px minimum width. Equality of the answer does not make the
+cached value reusable after the editor's content changes. The nearby explicit
+max-content and table min-content helpers produced no calls over 0.5 ms; the
+cost is in `computeMainAxisExtentForFlexItem`'s ordinary minimum-size branch
+(`.vm/bench/speedometer-20260923-230957-tiptap-minimum-width-trace/` and
+`.vm/bench/speedometer-20260923-231515-tiptap-intrinsic-phase-trace/`).
+
+`SUMMIT_INTRINSIC_WIDTH_TRACE=1` split nested inline width work. Among 119
+`minimumMaximumContentSize` calls over 0.5 ms in the same eight-iteration
+run, 130.6 of 131.6 ms was rebuilding inline-item lists, including lists of
+over 3,000 items. These are inclusive nested timings with a reporting
+threshold, so they cannot be subtracted from the outer flex call total.
+
+A guarded trial reserved a fresh inline-item vector from the previous list's
+length, capped at 4,096 entries. In same-bundle, uncontended 20-iteration
+TipTap control/candidate/control runs, suite means were 148.2, 150.4, and
+147.6 ms. The hint did not improve the editor and was removed. Future work
+needs to reduce per-item rebuilding or reuse unaffected inline content while
+preserving edits, instead of changing vector capacity
+(`.vm/bench/speedometer-20260923-231939-tiptap-inline-reserve-control/`,
+`.vm/bench/speedometer-20260923-232026-tiptap-inline-reserve-candidate/`,
+and `.vm/bench/speedometer-20260923-232114-tiptap-inline-reserve-control-repeat/`).

@@ -3054,6 +3054,76 @@ index 05283a7d359f0d9b30a90594ccddc0c185e0b13e..da6ad038252ee3ca92f8401b2ad20c10
  }
  }
 -
+diff --git a/Source/WebCore/layout/formattingContexts/inline/InlineFormattingContext.cpp b/Source/WebCore/layout/formattingContexts/inline/InlineFormattingContext.cpp
+index 1ebb47a675b0eb389f38feca6f500f1d550a5448..77fe9bb32585a83d6e285f2270773eb6f1dd9304 100644
+--- a/Source/WebCore/layout/formattingContexts/inline/InlineFormattingContext.cpp
++++ b/Source/WebCore/layout/formattingContexts/inline/InlineFormattingContext.cpp
+@@ -59,6 +59,12 @@
+ #include <wtf/TZoneMallocInlines.h>
+ #include <wtf/text/TextStream.h>
+ 
++#if PLATFORM(HAIKU)
++#include <OS.h>
++#include <cstdio>
++#include <cstdlib>
++#endif
++
+ namespace WebCore {
+ namespace Layout {
+ 
+@@ -197,6 +203,13 @@ std::unique_ptr<InlineLayoutResult> InlineFormattingContext::layout(const Constr
+ 
+ std::pair<LayoutUnit, LayoutUnit> InlineFormattingContext::minimumMaximumContentSize(InlineDamage* lineDamage)
+ {
++#if PLATFORM(HAIKU)
++    static bool traceIntrinsicWidth = [] {
++        const char* value = std::getenv("SUMMIT_INTRINSIC_WIDTH_TRACE");
++        return value && value[0] == '1' && !value[1];
++    }();
++    const bigtime_t startedAt = traceIntrinsicWidth ? system_time() : 0;
++#endif
+     auto& inlineContentCache = this->inlineContentCache();
+     auto minimumContentSize = inlineContentCache.minimumContentSize();
+     auto maximumContentSize = inlineContentCache.maximumContentSize();
+@@ -205,6 +218,9 @@ std::pair<LayoutUnit, LayoutUnit> InlineFormattingContext::minimumMaximumContent
+         return { ceiledLayoutUnit(*minimumContentSize), ceiledLayoutUnit(*maximumContentSize) };
+ 
+     rebuildInlineItemListIfNeeded(lineDamage);
++#if PLATFORM(HAIKU)
++    const bigtime_t builtAt = traceIntrinsicWidth ? system_time() : 0;
++#endif
+     auto& inlineItems = inlineContentCache.inlineItems();
+ 
+     if (!isEmptyInlineContent(inlineItems.content())) {
+@@ -212,11 +228,23 @@ std::pair<LayoutUnit, LayoutUnit> InlineFormattingContext::minimumMaximumContent
+ 
+         if (!minimumContentSize)
+             minimumContentSize = intrinsicWidthHandler.minimumContentSize();
++#if PLATFORM(HAIKU)
++        const bigtime_t minimumAt = traceIntrinsicWidth ? system_time() : 0;
++#endif
+         if (!maximumContentSize) {
+             maximumContentSize = intrinsicWidthHandler.maximumContentSize();
+             if (intrinsicWidthHandler.maximumIntrinsicWidthLineContent())
+                 inlineContentCache.setMaximumIntrinsicWidthLineContent(WTF::move(*intrinsicWidthHandler.maximumIntrinsicWidthLineContent()));
+         }
++#if PLATFORM(HAIKU)
++        if (traceIntrinsicWidth) {
++            auto elapsed = system_time() - startedAt;
++            if (elapsed >= 500)
++                std::fprintf(stderr, "Summit intrinsic width: root=%p items=%zu damage=%d build=%.2f minimum=%.2f maximum=%.2f total=%.2f\n",
++                    &root(), inlineItems.content().size(), !!lineDamage, (builtAt - startedAt) / 1000.0,
++                    (minimumAt - builtAt) / 1000.0, (system_time() - minimumAt) / 1000.0, elapsed / 1000.0);
++        }
++#endif
+     } else {
+         minimumContentSize = minimumContentSize.value_or(0.f);
+         maximumContentSize = maximumContentSize.value_or(0.f);
+@@ -651,4 +679,3 @@ void InlineFormattingContext::rebuildInlineItemListIfNeeded(InlineDamage* lineDa
+ 
+ }
+ }
+-
 diff --git a/Source/WebCore/layout/integration/LayoutIntegrationFormattingContextLayout.cpp b/Source/WebCore/layout/integration/LayoutIntegrationFormattingContextLayout.cpp
 index 762711231f70a6f41d0945a45118bfd1535b8d8a..9ac3284587a606b9eb13e3dfe95fa3ebc24bbb2b 100644
 --- a/Source/WebCore/layout/integration/LayoutIntegrationFormattingContextLayout.cpp
@@ -3066,6 +3136,67 @@ index 762711231f70a6f41d0945a45118bfd1535b8d8a..9ac3284587a606b9eb13e3dfe95fa3eb
  }
  
  static inline void populateRootRendererWithFloatsFromIFC(auto& rootBlockContainer, auto& placedFloats)
+diff --git a/Source/WebCore/layout/integration/flex/FlexIntegrationUtils.cpp b/Source/WebCore/layout/integration/flex/FlexIntegrationUtils.cpp
+index 2a01b6c02ef3a712915fccbaa3c521c800235f72..b1f880a774d985688df3295a60871bc1062e3f0a 100644
+--- a/Source/WebCore/layout/integration/flex/FlexIntegrationUtils.cpp
++++ b/Source/WebCore/layout/integration/flex/FlexIntegrationUtils.cpp
+@@ -26,6 +26,12 @@
+ #include "config.h"
+ #include "FlexIntegrationUtils.h"
+ 
++#if PLATFORM(HAIKU)
++#include <OS.h>
++#include <cstdio>
++#include <cstdlib>
++#endif
++
+ #include "LocalFrameView.h"
+ #include "RenderBlockFlow.h"
+ #include "RenderBoxInlines.h"
+@@ -47,6 +53,17 @@ namespace LayoutIntegration {
+ 
+ WTF_MAKE_TZONE_ALLOCATED_IMPL(FlexItemContentCache);
+ 
++#if PLATFORM(HAIKU)
++static bool traceFlexWidth()
++{
++    static bool enabled = [] {
++        const char* value = std::getenv("SUMMIT_FLEX_WIDTH_TRACE");
++        return value && value[0] == '1' && !value[1];
++    }();
++    return enabled;
++}
++#endif
++
+ FlexIntegrationUtils::FlexIntegrationUtils(RenderFlexibleBox& flexBox, FlexLayoutState& flexLayoutState, FlexItemContentCache& flexItemContentCache)
+     : m_flexBox(flexBox)
+     , m_flexLayoutState(flexLayoutState)
+@@ -515,8 +532,24 @@ std::optional<LayoutUnit> FlexIntegrationUtils::computeMainAxisExtentForFlexItem
+         // (Compare code in RenderBlock::computeIntrinsicLogicalWidthContributions)
+         if (flexLayoutItem.style().logicalWidth().isAuto() && !FlexFormattingUtils::flexItemHasAspectRatio(flexItem)) {
+             if (size.isMinContent()) {
++#if PLATFORM(HAIKU)
++                const bool trace = traceFlexWidth();
++                const bigtime_t startedAt = trace ? system_time() : 0;
++                const bool invalidBefore = trace && flexItem->hasInvalidContentLogicalWidths();
++                const bool needsLayoutBefore = trace && flexItem->needsLayout();
++#endif
+                 invalidateFlexItemContentLogicalWidthsIfNeeded(flexLayoutItem);
+-                return flexItem->minContentLogicalWidthContribution() - flexItem->borderAndPaddingLogicalWidth();
++                auto result = flexItem->minContentLogicalWidthContribution() - flexItem->borderAndPaddingLogicalWidth();
++#if PLATFORM(HAIKU)
++                if (trace) {
++                    auto elapsed = system_time() - startedAt;
++                    if (elapsed >= 500)
++                        std::fprintf(stderr, "Summit flex width: phase=minimum item=%p us=%lld invalidBefore=%d needsLayoutBefore=%d invalidAfter=%d width=%.1f\n",
++                            &flexItem.get(), static_cast<long long>(elapsed), invalidBefore, needsLayoutBefore,
++                            flexItem->hasInvalidContentLogicalWidths(), result.toFloat());
++                }
++#endif
++                return result;
+             }
+             if (size.isMaxContent()) {
+                 invalidateFlexItemContentLogicalWidthsIfNeeded(flexLayoutItem);
 diff --git a/Source/WebCore/layout/integration/grid/LayoutIntegrationGridCoverage.cpp b/Source/WebCore/layout/integration/grid/LayoutIntegrationGridCoverage.cpp
 index f9aaa86c85c2812857ce04585ea7db2e257b02fc..1595be42ee3df21f2fdab3356f9730353a83b601 100644
 --- a/Source/WebCore/layout/integration/grid/LayoutIntegrationGridCoverage.cpp
