@@ -2734,3 +2734,49 @@ frames/s during its 3.29-second burst and had a 1.15-second pending frame
 gap. This verifies live feed decoder selection, not completion of every feed
 post; the scrolling bottleneck remains
 (`.vm/bench/scroll-20260923-205917-reddit-hls-capability-live/`).
+
+### Matched-viewport Speedometer and timer investigation
+
+On the current HLS-capable bundle, a fresh full-screen, 1913×945 content-view
+Speedometer run scored 6.591 ± 0.240. The saved Firefox 155 baseline used a
+1280×887 content view, so Summit was rerun at exactly that size and scored
+6.779 ± 0.258 against Firefox's 8.338 ± 0.374. TipTap took 282.8 ms versus
+Firefox's 124.8 ms; Preact and Svelte took 70.6 and 64.1 ms versus 43.4 and
+39.6 ms. `compare-runs.py` now warns if the two content viewports differ
+(`.vm/bench/speedometer-20260923-210142-hls-capability-current/` and
+`.vm/bench/speedometer-20260923-210422-matched-firefox-viewport/`).
+
+An A/B/A 20-iteration Preact/Svelte/Lit check at the matched viewport scored
+14.828 with display-rate compositor pacing, 14.281 with its cap disabled,
+then 13.747 after restoring the cap. The downward drift makes the pacing
+comparison inconclusive; no compositor setting changed
+(`.vm/bench/speedometer-20260923-210831-dom-async-pacing-control/`,
+`.vm/bench/speedometer-20260923-210941-dom-async-pacing-uncapped/`, and
+`.vm/bench/speedometer-20260923-211053-dom-async-pacing-repeat/`).
+
+The platform probe's 50 forced layouts over 2,000 inline blocks took 1,966 ms
+in Summit versus 361 ms in Firefox, and nested zero-delay timers had an 8 ms
+versus 4 ms median. The existing inline-reuse coverage trace in a 20-pass
+isolated TipTap benchmark found zero eligible inline boxes: its hot layout is
+flex content, so extending that guarded inline shortcut would miss TipTap
+(`.vm/bench/probe-20260923-211312-summit-current-async-window/`,
+`.vm/bench/probe-20260923-211353-firefox-current-async-window-firefox/`, and
+`.vm/bench/speedometer-20260923-211557-tiptap-inline-coverage/`).
+
+A temporary run-loop trace showed that the main shared timer's 8 ms samples
+were mostly deadlines armed at about 7.87 ms; median delivery lateness was
+roughly 0.06 ms. Raising the timer thread's priority did not change the
+8 ms nested-timer median. An opt-in trial removed only the extra 4 ms
+alignment for visible, maximally nested Haiku timers while retaining WebKit's
+4 ms minimum and hidden-page throttling. It moved the nested-timer median to
+4 ms and the shared-timer deadline to about 3.97 ms. The benchmark's small
+asynchronous-window probe was unchanged, however. Full matched-viewport
+Speedometer A/B/A runs scored 6.513, 6.447, and 6.676, with TipTap around
+287–289 ms in all three. The change did not improve the requested benchmark;
+the trial and trace were removed and the production workstation engine was
+rebuilt with the committed timer behavior
+(`.vm/bench/probe-20260923-211857-summit-timer-priority-control/`,
+`.vm/bench/probe-20260923-211936-summit-timer-priority-candidate/`,
+`.vm/bench/probe-20260923-212957-summit-named-timer-latency/`,
+`.vm/bench/probe-20260923-213454-summit-timer-no-alignment-probe/`,
+`.vm/bench/speedometer-20260923-*-no-alignment-*/`).
