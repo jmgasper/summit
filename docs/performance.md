@@ -3118,3 +3118,17 @@ without a media error, and selected NVDEC H.264 plus AAC with status 0. The
 decoder still logged its usual last-buffer warning at end of stream
 (`.vm/bench/scroll-20260923-235918-text-width-reddit-smoke/` and
 `.vm/bench/probe-20260924-000155-summit-text-width-hls-codec-smoke/`).
+
+On the current September 24 diagnostic bundle, a fresh live `/r/popular/`
+pass selected NVDEC H.264 for six videos. An HLS player with separate video
+and audio decoded its first frame, but the scrolling pass moved past it before
+five seconds of playback. A second 60-notch pass again selected NVDEC for six
+live videos; its visible endpoint was an image post. These feed samples show
+successful decoder selection and at least one decoded frame, not sustained
+playback of a stationary Reddit post
+(`.vm/bench/scroll-20260924-085039-reddit-live-media-current/` and
+`.vm/bench/scroll-20260924-085150-reddit-live-video-stationary/`).
+The same bundle completed the typed Reddit HLS fixture at 720×1280 through
+its 12.7-second `ended` event with no media error. The backend decoded 381
+frames using NVDEC H.264 plus AAC and reported five- and ten-second progress
+(`.vm/bench/probe-20260924-085410-summit-reddit-hls-current/`).
