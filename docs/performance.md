@@ -17,7 +17,7 @@ composition pacing, and guarded reuse of exact text widths. It completes all
 
 These Summit runs were uncontended. The current same-size gap to Firefox is
 1.20x by score. TipTap took 148.2 ms versus Firefox's 124.8 ms, while
-Chart.js took 264.1 ms versus Firefox's 202.9 ms. Mimalloc accounts for about a 21% gain
+Chart.js took 264.1 ms versus Firefox's 189.1 ms. Mimalloc accounts for about a 21% gain
 over the matched system-allocator runs described below. Older score
 comparisons in this log used different viewport sizes and should be treated
 as directional. `tools/bench/compare-runs.py` now flags that mismatch.
