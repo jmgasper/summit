@@ -10095,10 +10095,10 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..a24e24605e8d5bdb50aa114a2e4d0f242c9e7b3a
+index 0000000000000000000000000000000000000000..80be303779cb64ca4a16f75ad1c3c8f6ed6912ed
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,1114 @@
+@@ -0,0 +1,1148 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -10176,6 +10176,15 @@ index 0000000000000000000000000000000000000000..a24e24605e8d5bdb50aa114a2e4d0f24
 +        return trace && trace[0] == '1' && !trace[1] ? 1 : 0;
 +    }();
 +    return level;
++}
++
++static bool mediaPlaybackTraceEnabled()
++{
++    static bool enabled = [] {
++        const char* trace = std::getenv("SUMMIT_MEDIA_PLAYBACK_TRACE");
++        return trace && trace[0] == '1' && !trace[1];
++    }();
++    return enabled;
 +}
 +
 +class MediaPlayerFactoryHaiku final : public MediaPlayerFactory {
@@ -10403,6 +10412,11 @@ index 0000000000000000000000000000000000000000..a24e24605e8d5bdb50aa114a2e4d0f24
 +    MediaPlayerPrivate* player = (MediaPlayerPrivate*)cookie;
 +    player->IdentifyTracks(player->m_url);
 +
++    if (mediaPlaybackTraceEnabled())
++        std::fprintf(stderr, "Summit media playback: player=%p loaded file=%d video=%d audio=%d abort=%d duration=%.2f\n",
++            player, player->m_mediaFile && player->m_mediaFile->InitCheck() == B_OK,
++            !!player->m_videoTrack, !!player->m_audioTrack, bool(player->m_abort), player->m_duration.load());
++
 +    if (player->m_abort)
 +        return B_OK;
 +
@@ -10410,7 +10424,11 @@ index 0000000000000000000000000000000000000000..a24e24605e8d5bdb50aa114a2e4d0f24
 +        if (!player)
 +            return;
 +
-+        if (player->m_mediaFile && player->m_mediaFile->InitCheck() == B_OK) {
++        // Media Kit can recognize a container while rejecting every track.
++        // Reporting that as loaded leaves HTMLMediaElement playing forever at
++        // time zero and prevents a following <source> from being considered.
++        if (player->m_mediaFile && player->m_mediaFile->InitCheck() == B_OK
++            && (player->m_videoTrack || player->m_audioTrack)) {
 +            player->m_player.characteristicChanged();
 +            player->m_player.durationChanged();
 +            player->m_player.sizeChanged();
@@ -10435,6 +10453,9 @@ index 0000000000000000000000000000000000000000..a24e24605e8d5bdb50aa114a2e4d0f24
 +    bigtime_t startTime = system_time();
 +    bigtime_t startMediaTime = 0;
 +    float lastObservedTime = 0;
++    unsigned decodedFrames = 0;
++    int lastTraceSecond = -1;
++    const bool tracePlayback = mediaPlaybackTraceEnabled();
 +
 +    while (!player->m_abort) {
 +        if (player->m_paused) {
@@ -10463,12 +10484,25 @@ index 0000000000000000000000000000000000000000..a24e24605e8d5bdb50aa114a2e4d0f24
 +
 +            if (videoTime < playbackTime) {
 +                int64 count;
-+                if (player->m_videoTrack->ReadFrames(player->m_frameBuffer->Bits(), &count) == B_OK) {
++                status_t decodeStatus = player->m_videoTrack->ReadFrames(player->m_frameBuffer->Bits(), &count);
++                if (decodeStatus == B_OK) {
++                    if (tracePlayback) {
++                        ++decodedFrames;
++                        int second = static_cast<int>(player->m_currentTime.load());
++                        if (lastTraceSecond < 0 || second >= lastTraceSecond + 5) {
++                            lastTraceSecond = second;
++                            std::fprintf(stderr, "Summit media playback: player=%p videoFrames=%u time=%.2f duration=%.2f\n",
++                                player, decodedFrames, player->m_currentTime.load(), player->m_duration.load());
++                        }
++                    }
 +                    callOnMainThread([player = WeakPtr(player)] {
 +                        if (player)
 +                            player->m_player.repaint();
 +                    });
 +                } else {
++                    if (tracePlayback)
++                        std::fprintf(stderr, "Summit media playback: player=%p videoEnd status=%ld frames=%u time=%.2f duration=%.2f\n",
++                            player, long(decodeStatus), decodedFrames, player->m_currentTime.load(), player->m_duration.load());
 +                    player->m_videoTrack = nullptr;
 +                    if (!player->m_audioTrack && !player->m_ended.exchange(true)) {
 +                        player->m_currentTime = player->m_duration.load();

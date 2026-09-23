@@ -2823,3 +2823,37 @@ The workstation engine was rebuilt with the original CPU tile path after the
 trial. Vulkan through Zink is already exercised for compositing; a native
 Skia Vulkan backend would require separate buffer sharing and synchronization
 work rather than a backend switch alone.
+
+### Reject media containers with no usable tracks
+
+The Haiku media loader treated a recognized container as successfully loaded
+even when Media Kit could not decode any of its tracks. A 775-byte MP4 with
+only a `mov_text` subtitle track reproduced this: Media Kit rejected stream
+zero, while the page emitted `loadedmetadata`, `canplay`, and `playing` with
+zero dimensions and time stuck at zero. A following Reddit HLS `<source>` was
+never tried (`.vm/bench/probe-20260923-220915-summit-unsupported-track-control/`
+and `.vm/bench/probe-20260923-221045-summit-unsupported-track-fallback-control/`).
+
+The loader now requires at least one decoded video or audio track before it
+reports `Loaded`. With the same source list, Summit skipped the unsupported
+MP4, selected Reddit's HLS playlist, decoded 381 H.264 frames through NVDEC
+with AAC audio, and reached `ended` at 12.7 seconds without a media error.
+The fixture is `tools/bench/pages/unsupported-track.mp4`, generated from a
+single subtitle cue with `ffmpeg -f srt -i unsupported-track.srt -c:s mov_text`;
+the browser probe is `tools/bench/pages/media-track-fallback.html`
+(`.vm/bench/probe-20260923-221321-summit-unsupported-track-fallback-candidate/`).
+The final rebuilt bundle repeated that `ended` result with the diagnostic
+trace disabled (`.vm/bench/probe-20260923-221823-summit-unsupported-track-fallback-final/`).
+
+The new opt-in `SUMMIT_MEDIA_PLAYBACK_TRACE=1` records each player's usable
+track count, first decoded video frame, five-second progress, and decode end.
+It is disabled by default. A direct Reddit HLS control reached its 12.7-second
+`ended` event with 381 decoded NVDEC frames. Live `/r/popular/` passes before
+and after the track fix each loaded NVDEC video plus AAC for HLS posts and
+decoded a visible video past five seconds. No loaded container without usable
+tracks appeared in those two feed samples, so the fix is verified for the
+reproduced source-fallback failure, not as an explanation for all Reddit
+posts. Scrolling still had 2.78- and 2.97-second presentation gaps in those
+passes (`.vm/bench/probe-20260923-220638-summit-playback-trace-hls/`,
+`.vm/bench/scroll-20260923-220732-reddit-playback-trace/`, and
+`.vm/bench/scroll-20260923-221449-reddit-playback-track-fix/`).
