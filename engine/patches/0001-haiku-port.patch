@@ -3126,7 +3126,7 @@ index 3dbc23ec4a0818ed58ab2e0b2648056ab360a2ff..8254fb1525db8f69c8c4d1191e04b9b9
  
  #if USE(QUICK_LOOK)
 diff --git a/Source/WebCore/page/LocalFrameViewLayoutContext.cpp b/Source/WebCore/page/LocalFrameViewLayoutContext.cpp
-index 61749fa2eecc674d3bc7d185a5b3944181454f73..f55d1cfd8fcfd05dbc222480075ea91965301c64 100644
+index 61749fa2eecc674d3bc7d185a5b3944181454f73..702a1b5fc8517e1545854ca6c61717a1034b811c 100644
 --- a/Source/WebCore/page/LocalFrameViewLayoutContext.cpp
 +++ b/Source/WebCore/page/LocalFrameViewLayoutContext.cpp
 @@ -61,6 +61,7 @@
@@ -3196,6 +3196,80 @@ index 61749fa2eecc674d3bc7d185a5b3944181454f73..f55d1cfd8fcfd05dbc222480075ea919
  }
  
  void LocalFrameViewLayoutContext::interleavedLayout()
+@@ -219,6 +255,27 @@ void LocalFrameViewLayoutContext::performLayout(bool canDeferUpdateLayerPosition
+         return;
+     }
+ 
++#if PLATFORM(HAIKU)
++    static bool summitPageUpdateTraceEnabled = [] {
++        const char* value = std::getenv("SUMMIT_PAGE_UPDATE_TRACE");
++        return value && value[0] == '1' && !value[1];
++    }();
++    auto traceStart = summitPageUpdateTraceEnabled ? MonotonicTime::now() : MonotonicTime { };
++    auto traceLast = traceStart;
++    Seconds preLayoutDuration;
++    Seconds renderTreeDuration;
++    Seconds viewSizeDuration;
++    Seconds postLayoutDuration;
++    bool beganWithSubtreeLayout = summitPageUpdateTraceEnabled && !!subtreeLayoutRoot();
++    auto markTracePhase = [&](Seconds& duration) {
++        if (!summitPageUpdateTraceEnabled)
++            return;
++        auto now = MonotonicTime::now();
++        duration += now - traceLast;
++        traceLast = now;
++    };
++#endif
++
+     LayoutFrameScope layoutFrameScope(*this);
+     TraceScope tracingScope(PerformLayoutStart, PerformLayoutEnd);
+     ScriptDisallowedScope::InMainThread scriptDisallowedScope;
+@@ -262,6 +319,9 @@ void LocalFrameViewLayoutContext::performLayout(bool canDeferUpdateLayerPosition
+         protect(view())->willDoLayout(layoutRoot);
+         m_firstLayout = false;
+     }
++#if PLATFORM(HAIKU)
++    markTracePhase(preLayoutDuration);
++#endif
+ 
+     Vector<FloatQuad> layoutAreas;
+     {
+@@ -311,6 +371,9 @@ void LocalFrameViewLayoutContext::performLayout(bool canDeferUpdateLayerPosition
+             showRenderTree(renderView());
+ #endif
+     }
++#if PLATFORM(HAIKU)
++    markTracePhase(renderTreeDuration);
++#endif
+     {
+         SetForScope layoutPhase(m_layoutPhase, LayoutPhase::InViewSizeAdjust);
+         ScriptDisallowedScope::InMainThread scriptDisallowedScope;
+@@ -324,6 +387,9 @@ void LocalFrameViewLayoutContext::performLayout(bool canDeferUpdateLayerPosition
+                 return;
+         }
+     }
++#if PLATFORM(HAIKU)
++    markTracePhase(viewSizeDuration);
++#endif
+     {
+         SetForScope layoutPhase(m_layoutPhase, LayoutPhase::InPostLayout);
+         if (m_needsFullRepaint)
+@@ -334,6 +400,15 @@ void LocalFrameViewLayoutContext::performLayout(bool canDeferUpdateLayerPosition
+     }
+     InspectorInstrumentation::didLayout(frame, *layoutRoot, layoutAreas);
+     DebugPageOverlays::didLayout(frame);
++#if PLATFORM(HAIKU)
++    markTracePhase(postLayoutDuration);
++    auto traceTotal = traceLast - traceStart;
++    if (traceTotal >= 10_ms) {
++        WTFLogAlways("Summit layout phases: context=%p total=%.1f pre=%.1f renderTree=%.1f viewSize=%.1f post=%.1f subtree=%u deferredLayerPositions=%u\n",
++            this, traceTotal.milliseconds(), preLayoutDuration.milliseconds(), renderTreeDuration.milliseconds(),
++            viewSizeDuration.milliseconds(), postLayoutDuration.milliseconds(), beganWithSubtreeLayout, canDeferUpdateLayerPositions);
++    }
++#endif
+ }
+ 
+ void LocalFrameViewLayoutContext::runOrScheduleAsynchronousTasks(bool canDeferUpdateLayerPositions)
 diff --git a/Source/WebCore/page/Page.cpp b/Source/WebCore/page/Page.cpp
 index a26485a6771a1d63e0d0f5ff3800f30221a77304..f008c5a7b1d088fc0c59d5c3d2be1cff71ba3566 100644
 --- a/Source/WebCore/page/Page.cpp

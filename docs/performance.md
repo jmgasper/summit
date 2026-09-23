@@ -2096,6 +2096,17 @@ direct HLS probe played the complete 12.7-second clip to `ended` at 720 by
 1280 with no media error, again using NVDEC H.264 and AAC
 (`.vm/bench/probe-20260923-130915-summit-reddit-hls-wakeup/`).
 
+The page-update trace now also divides each layout pass into style and
+preparation, render-tree layout, view sizing, and post-layout work.
+`run-scroll.py` stores the individual passes and aggregate phase totals. In a
+live measured burst, 48 slow layout passes took 2,730.2 ms: render-tree layout
+accounted for 2,698.9 ms (98.9%), while preparation took 8.9 ms, view sizing
+0.4 ms, and post-layout work 20.4 ms. The worst 593.3 ms Reddit scroll
+listener forced three full layouts of 78.3, 134.1, and 100.4 ms; about 300 ms
+of their combined time was the render-tree walk. Style resolution is therefore
+not the source of these forced-layout pauses
+(`.vm/bench/scroll-20260923-132029-reddit-layout-phases/`).
+
 ### libstdc++ assertion experiment
 
 The normal Release configuration still enables libstdc++ container assertions.
