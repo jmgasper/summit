@@ -3168,3 +3168,10 @@ identify which part is expensive
 (`.vm/bench/speedometer-20260924-090259-preact-page-update-trace/`,
 `.vm/bench/speedometer-20260924-090531-svelte-page-update-trace/`, and
 `.vm/bench/speedometer-20260924-090359-codemirror-page-update-trace/`).
+For the next isolated CodeMirror diagnostic, `run-speedometer.py
+--suites Editor-CodeMirror --intersection-trace` serves an instrumented iframe
+that records JavaScript IntersectionObserver callback duration at unload in
+`progress.jsonl`. The source benchmark checkout stays unchanged and the
+result is marked instrumented. Comparing those callback times with the
+native observer-phase trace should separate JavaScript notification work
+from geometry updates before changing WebCore's observer path.

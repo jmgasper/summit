@@ -137,6 +137,8 @@ def main():
     parser.add_argument('--cache-policy', choices=['official', 'revalidate', 'no-store'], default='official')
     parser.add_argument('--progress-beacons', action='store_true',
                         help='per-test progress beacons (diagnosis of hangs; marks the result instrumented)')
+    parser.add_argument('--intersection-trace', action='store_true',
+                        help='time CodeMirror IntersectionObserver callbacks (diagnostic; marks the result instrumented)')
     parser.add_argument('--haiku-profile', action='store_true',
                         help='run Summit under Haiku\'s inclusive sampling profiler and save profile.txt')
     parser.add_argument('--env', action='append', default=[], metavar='NAME=VALUE', help='extra browser environment')
@@ -153,6 +155,8 @@ def main():
     args = parser.parse_args()
     if args.annotate:
         return annotate(args)
+    if args.official and args.intersection_trace:
+        parser.error('--intersection-trace requires the local Speedometer copy')
     if args.haiku_profile and guest.HOST == 'workstation':
         parser.error('--haiku-profile is disabled on the workstation because Haiku profile shutdown can hang the machine')
     if args.haiku_profile and args.keep_open:
@@ -173,6 +177,7 @@ def main():
     run = {'id': run_id, 'mode': 'official' if args.official else 'local', 'url': url, 'bundle': args.bundle,
            'iterations': args.iterations, 'suites': args.suites, 'directory': str(directory), 'machine': guest.HOST, 'vm': MACHINE_CONFIG[guest.HOST],
            'cachePolicy': None if args.official else args.cache_policy, 'progressBeacons': args.progress_beacons,
+           'intersectionTrace': args.intersection_trace,
            'haikuProfile': args.haiku_profile,
            'startedAt': time.strftime('%Y-%m-%dT%H:%M:%S%z'), 'outcome': 'not-started', 'load': {}, 'events': []}
 
@@ -203,6 +208,8 @@ def main():
                    '--out-dir', str(directory), '--cache-policy', args.cache_policy]
         if args.progress_beacons:
             command.append('--progress-beacons')
+        if args.intersection_trace:
+            command.append('--intersection-trace')
         server = subprocess.Popen(command, stdout=(directory / 'server.log').open('w'), stderr=subprocess.STDOUT)
         time.sleep(1.0)
         if server.poll() is not None:

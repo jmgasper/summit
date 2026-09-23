@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Serve a pristine Speedometer 3.1 checkout to the Summit test VM and collect its results.
 
-The benchmark files under .cache/speedometer-3.1 are never modified. The only
-difference from the official deployment is one inline module script added to the
-served top-level index.html. It wraps two *client callbacks* on
+The benchmark files under .cache/speedometer-3.1 are never modified. Normally,
+the only difference from the official deployment is one inline module script
+added to the served top-level index.html. It wraps two *client callbacks* on
 ``globalThis.benchmarkClient`` (``didFinishLastIteration`` and ``handleError``),
 which the runner invokes once, after the last measured iteration. Nothing runs
 inside the measured sync/async windows and no timers or observers are installed.
+An optional CodeMirror-only diagnostic wraps IntersectionObserver callbacks in
+the served iframe and uploads their aggregate duration when the iframe unloads.
 
 Response headers mirror https://browserbench.org/Speedometer3.1/ (checked
 2026-09-18): ETag + Last-Modified validators without Cache-Control, plus
@@ -132,13 +134,49 @@ PROGRESS_HOOK = r'''
     }, 2000);
 '''
 
+INTERSECTION_TRACE = r'''<script id="summit-intersection-trace">
+(() => {
+    const NativeObserver = window.IntersectionObserver;
+    if (!NativeObserver)
+        return;
+    const observers = [];
+    function TracedObserver(callback, options) {
+        const record = { callbacks: 0, entries: 0, duration: 0, maxDuration: 0 };
+        const observer = new NativeObserver((entries, instance) => {
+            const start = performance.now();
+            try {
+                return callback(entries, instance);
+            } finally {
+                const duration = performance.now() - start;
+                ++record.callbacks;
+                record.entries += entries.length;
+                record.duration += duration;
+                record.maxDuration = Math.max(record.maxDuration, duration);
+            }
+        }, options);
+        observers.push(record);
+        return observer;
+    }
+    TracedObserver.prototype = NativeObserver.prototype;
+    Object.setPrototypeOf(TracedObserver, NativeObserver);
+    window.IntersectionObserver = TracedObserver;
+    window.addEventListener("pagehide", () => {
+        navigator.sendBeacon("/__bench/progress", JSON.stringify({
+            phase: "intersection-callbacks", page: location.pathname, observers,
+        }));
+    });
+})();
+</script>
+'''
+
 
 class State:
-    def __init__(self, source, out_dir, cache_policy, progress):
+    def __init__(self, source, out_dir, cache_policy, progress, intersection_trace):
         self.source = source
         self.out_dir = out_dir
         self.cache_policy = cache_policy
         self.progress = progress
+        self.intersection_trace = intersection_trace
         self.lock = threading.Lock()
         self.started = time.time()
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -220,12 +258,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         base_is_source = not split.path.startswith('/__bench/')
         data = target.read_bytes()
         if is_entry:
-            script = COLLECTOR.replace('/*PROGRESS*/false', 'true' if self.state.progress else 'false')
+            script = COLLECTOR.replace('/*PROGRESS*/false', 'true' if (self.state.progress or self.state.intersection_trace) else 'false')
             script = script.replace('/*PROGRESS_HOOK*/', PROGRESS_HOOK if self.state.progress else '')
             marker = b'</head>'
             if data.count(marker) != 1:
                 return self.respond(500, b'Unexpected Speedometer index.html layout\n', head=head)
             data = data.replace(marker, script.encode() + marker)
+        elif self.state.intersection_trace and split.path == '/resources/editors/dist/codemirror.html':
+            marker = b'<script type="module" crossorigin src="./assets/codemirror-521de7ab.js"></script>'
+            if data.count(marker) != 1:
+                return self.respond(500, b'Unexpected CodeMirror iframe layout\n', head=head)
+            data = data.replace(marker, INTERSECTION_TRACE.encode() + marker)
         stat = target.stat()
         etag = '"' + hashlib.sha256(data).hexdigest()[:24] + '"'
         # Heuristic freshness is a fraction of (now - Last-Modified). A fresh clone has
@@ -293,12 +336,14 @@ def main():
                              'revalidate: Cache-Control no-cache; no-store: never cached')
     parser.add_argument('--progress-beacons', action='store_true',
                         help='also report each test start (adds network activity; result marked instrumented)')
+    parser.add_argument('--intersection-trace', action='store_true',
+                        help='time CodeMirror IntersectionObserver callbacks (diagnostic; result marked instrumented)')
     args = parser.parse_args()
     source = args.source.resolve()
     if not (source / 'resources/benchmark-runner.mjs').is_file():
         sys.exit(f'{source} is not a Speedometer checkout; see docs/performance.md')
     out_dir = (args.out_dir or ROOT / '.vm/bench' / time.strftime('manual-%Y%m%d-%H%M%S')).resolve()
-    Handler.state = State(source, out_dir, args.cache_policy, args.progress_beacons)
+    Handler.state = State(source, out_dir, args.cache_policy, args.progress_beacons, args.intersection_trace)
     server = Server((args.bind, args.port), Handler)
     print(f'[serve-speedometer] {source} on http://{args.bind}:{args.port}/'
           f' cache={args.cache_policy} out={out_dir}', flush=True)
