@@ -3188,3 +3188,9 @@ is unlikely to close this gap. The instrumented suite scored 13.471 ± 0.780,
 similar to the earlier traced CodeMirror-only 13.447 ± 0.760, but instrumented
 scores are diagnostic rather than benchmark baselines
 (`.vm/bench/speedometer-20260924-092520-codemirror-observer-callbacks/`).
+The CodeMirror bundle has observers for tooltips, the editor content, and
+virtualized document gaps. Its gap-observer callback calls `onScrollChanged()`,
+which can synchronously call `view.measure()`. The slow third observer is
+consistent with that path, but the existing run did not label targets. The
+opt-in trace now records a few observed target tags and classes so a follow-up
+can establish that mapping before optimizing the measurement path.

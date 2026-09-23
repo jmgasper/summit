@@ -141,7 +141,7 @@ INTERSECTION_TRACE = r'''<script id="summit-intersection-trace">
         return;
     const observers = [];
     function TracedObserver(callback, options) {
-        const record = { callbacks: 0, entries: 0, duration: 0, maxDuration: 0 };
+        const record = { callbacks: 0, entries: 0, duration: 0, maxDuration: 0, targets: [] };
         const observer = new NativeObserver((entries, instance) => {
             const start = performance.now();
             try {
@@ -154,6 +154,14 @@ INTERSECTION_TRACE = r'''<script id="summit-intersection-trace">
                 record.maxDuration = Math.max(record.maxDuration, duration);
             }
         }, options);
+        const nativeObserve = observer.observe.bind(observer);
+        observer.observe = (target) => {
+            if (record.targets.length < 4) {
+                const classes = typeof target.className === "string" ? target.className.split(/\s+/).slice(0, 3).join(".") : "";
+                record.targets.push(`${target.tagName || "?"}${classes ? "." + classes : ""}`);
+            }
+            return nativeObserve(target);
+        };
         observers.push(record);
         return observer;
     }
