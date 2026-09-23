@@ -80918,7 +80918,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..c8cbe05806a9334a320bd4869e22b656
      if (m_overlayCompositingLayer)
          m_overlayCompositingLayer->flushCompositingState(visibleContentsRect());
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
-index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..f30527855afe5c5f98d8b415cf92fb957a6b019a 100644
+index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..da1bc05a09903d3d09056674aaad1540031e6c54 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
 @@ -53,6 +53,12 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
@@ -81059,10 +81059,10 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..f30527855afe5c5f98d8b415cf92fb95
      m_state.reasons.add(reason);
 +#if PLATFORM(HAIKU)
 +    if (traceCompositorTiming())
-+        std::fprintf(stderr, "Summit compositor request: at=%lld async=%d update=%d state=%d waitingTiles=%d timer=%d\n",
++        std::fprintf(stderr, "Summit compositor request: at=%lld async=%d update=%d state=%d waitingTiles=%d pendingTiles=%u timer=%d\n",
 +            static_cast<long long>(system_time()), reason == CompositionReason::AsyncScrolling,
 +            reason == CompositionReason::RenderingUpdate, static_cast<int>(m_state.state),
-+            m_state.isWaitingForTiles, m_state.isRenderTimerActive);
++            m_state.isWaitingForTiles, m_sceneState->pendingTiles(), m_state.isRenderTimerActive);
 +#endif
      scheduleUpdateLocked();
  }
@@ -81190,7 +81190,7 @@ index e6fbb8c1896bf99dc0f7322868052566b8629598..d84e2ecbc70d219a63eb074c1fd4b1c9
      UpdateGeometry(WebCore::IntSize size) -> ()
  #endif
 diff --git a/Source/WebKit/WebProcess/WebPage/EventDispatcher.cpp b/Source/WebKit/WebProcess/WebPage/EventDispatcher.cpp
-index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..7990b3a4aa23621fbf50754a58dcf63b46f55513 100644
+index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..956a275cc0ff22703175742a2313bbd491eb4bfe 100644
 --- a/Source/WebKit/WebProcess/WebPage/EventDispatcher.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/EventDispatcher.cpp
 @@ -46,6 +46,11 @@
@@ -81265,6 +81265,102 @@ index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..7990b3a4aa23621fbf50754a58dcf63b
              if (result.needsMainThreadProcessing()) {
                  if (result.steps.contains(WheelEventProcessingSteps::SynchronousScrolling)) {
                      dispatchWheelEventViaMainThread(pageID, wheelEvent, result.steps, WTF::move(completionHandler));
+@@ -207,8 +244,69 @@ void EventDispatcher::wheelEvent(PageIdentifier pageID, Ref<WebWheelEvent>&& whe
+     }
+ #endif
+     internalWheelEvent(pageID, wheelEvent, rubberBandableEdges, WTF::move(completionHandler));
++#if PLATFORM(HAIKU) && ENABLE(ASYNC_SCROLLING) && ENABLE(SCROLLING_THREAD)
++    scheduleHaikuScrollRefresh();
++#endif
+ }
+ 
++#if PLATFORM(HAIKU) && ENABLE(ASYNC_SCROLLING) && ENABLE(SCROLLING_THREAD)
++static Seconds haikuScrollRefreshInterval()
++{
++    static Seconds interval = [] {
++        const char* value = std::getenv("SUMMIT_SCROLL_REFRESH_TIMER");
++        if (!value || !value[0])
++            return 0_s;
++        char* end = nullptr;
++        auto milliseconds = std::strtol(value, &end, 10);
++        if (*end || milliseconds < 0)
++            return 0_s;
++        if (milliseconds == 1)
++            milliseconds = 16;
++        if (milliseconds < 16 || milliseconds > 100)
++            return 0_s;
++        return Seconds::fromMilliseconds(milliseconds);
++    }();
++    return interval;
++}
++
++void EventDispatcher::scheduleHaikuScrollRefresh()
++{
++    // Haiku has no display link. Keep layer positions in step with wheel
++    // scrolling, but stop the timer as soon as the scrolling tree is inactive.
++    auto interval = haikuScrollRefreshInterval();
++    if (!interval || m_haikuScrollRefreshScheduled)
++        return;
++
++    m_haikuScrollRefreshScheduled = true;
++    m_queue->dispatchAfter(interval, [this, protectedThis = Ref { *this }] {
++        refreshHaikuScrollingTrees();
++    });
++}
++
++void EventDispatcher::refreshHaikuScrollingTrees()
++{
++    bool hasActiveTree = false;
++    {
++        Locker locker { m_scrollingTreesLock };
++        for (Ref scrollingTree : m_scrollingTrees.values()) {
++            if (!scrollingTree->hasRecentActivity())
++                continue;
++            hasActiveTree = true;
++            scrollingTree->displayDidRefresh(scrollingTree->displayID());
++        }
++    }
++
++    if (!hasActiveTree) {
++        m_haikuScrollRefreshScheduled = false;
++        return;
++    }
++
++    m_queue->dispatchAfter(haikuScrollRefreshInterval(), [this, protectedThis = Ref { *this }] {
++        refreshHaikuScrollingTrees();
++    });
++}
++#endif
++
+ #if ENABLE(MAC_GESTURE_EVENTS)
+ void EventDispatcher::gestureEvent(FrameIdentifier frameID, PageIdentifier pageID, Ref<WebGestureEvent>&& gestureEvent, CompletionHandler<void(std::optional<WebEventType>, bool, std::optional<RemoteUserInputEventData>)>&& completionHandler)
+ {
+diff --git a/Source/WebKit/WebProcess/WebPage/EventDispatcher.h b/Source/WebKit/WebProcess/WebPage/EventDispatcher.h
+index e55e9b49ddc60a60653f73a9c4f813d157c8b354..76def840e3d88dd49c382d2bf67724e43d62f6c7 100644
+--- a/Source/WebKit/WebProcess/WebPage/EventDispatcher.h
++++ b/Source/WebKit/WebProcess/WebPage/EventDispatcher.h
+@@ -139,6 +139,11 @@ private:
+ 
+     void internalWheelEvent(WebCore::PageIdentifier, const WebWheelEvent&, WebCore::RectEdges<WebCore::RubberBandingBehavior> rubberBandableEdges, CompletionHandler<void(bool)>&&);
+ 
++#if PLATFORM(HAIKU) && ENABLE(ASYNC_SCROLLING) && ENABLE(SCROLLING_THREAD)
++    void scheduleHaikuScrollRefresh();
++    void refreshHaikuScrollingTrees();
++#endif
++
+ #if ENABLE(IOS_TOUCH_EVENTS)
+     void dispatchTouchEvents();
+ #endif
+@@ -175,6 +180,9 @@ private:
+ #if ENABLE(ASYNC_SCROLLING) && ENABLE(SCROLLING_THREAD)
+     Lock m_scrollingTreesLock;
+     HashMap<WebCore::PageIdentifier, Ref<WebCore::ThreadedScrollingTree>> m_scrollingTrees WTF_GUARDED_BY_LOCK(m_scrollingTreesLock);
++#if PLATFORM(HAIKU)
++    bool m_haikuScrollRefreshScheduled { false };
++#endif
+ #endif
+     std::unique_ptr<WebCore::WheelEventDeltaFilter> m_recentWheelEventDeltaFilter;
+ #if ENABLE(IOS_TOUCH_EVENTS)
 diff --git a/Source/WebKit/WebProcess/WebPage/WebPage.cpp b/Source/WebKit/WebProcess/WebPage/WebPage.cpp
 index 48f9e1c5cff34a053ed104c3d2cfd3ac6e0a2bdc..a114a32c297c57a4d53db213a0540af18d4aeac0 100644
 --- a/Source/WebKit/WebProcess/WebPage/WebPage.cpp

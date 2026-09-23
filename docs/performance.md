@@ -2931,6 +2931,59 @@ remains disabled until scrolling can advance visibly without leaving a blank
 feed (`.vm/bench/scroll-20260923-225828-reddit-refresh-180/` and
 `.vm/bench/scroll-20260923-225929-reddit-safe-180/`).
 
+### Periodic Haiku scrolling refresh trial (September 24)
+
+The current text-width build still produced a 1.48-second pending frame gap in
+a 300-notch `/r/popular/` burst. Its scrolling tree advanced to 16,256 px of
+a 16,652-px maximum while the final image showed an earlier post. A Haiku-only
+trial calls `ThreadedScrollingTree::displayDidRefresh()` on the event queue at
+`SUMMIT_SCROLL_REFRESH_TIMER=16` (or `=1`) during recent wheel activity; `=33`
+tests a slower cadence. The timer stops when the trees become inactive and is
+**disabled by default**. Haiku has no system display-link callback for this
+path.
+
+On one trial bundle, a 300-notch timer run delivered 55.96 native-view
+frames/s with a 10.3 ms pending gap, versus 36.29 frames/s and a 1.42-second
+gap with the timer off. The timer screenshot showed a post and Reddit's loading
+spinner at the then-current scroll maximum. An 180-notch pair delivered 54.45
+versus 47.51 frames/s, with visible feed posts in the timer screenshot. These
+passes establish that missing refreshes account for much of the long frame
+gap (`.vm/bench/scroll-20260924-071341-width-cache-reddit-long/`,
+`.vm/bench/scroll-20260924-072114-reddit-refresh-timer-candidate/`,
+`.vm/bench/scroll-20260924-072229-reddit-refresh-timer-control/`,
+`.vm/bench/scroll-20260924-072340-reddit-refresh-timer-180-candidate/`, and
+`.vm/bench/scroll-20260924-072422-reddit-refresh-timer-180-control/`).
+
+The timer is not ready for general use. A packaged default-on 16 ms run
+delivered 54.02 frames/s but ended with a blank feed at 13,084 px, still 2,337
+px short of the current document maximum. A 33 ms trial also ended blank and
+delivered only 37.02 frames/s with an 826 ms gap. A later 16 ms run reproduced
+the blank feed. Opt-in `SUMMIT_COMPOSITOR_TIMING_TRACE=1` now includes the
+scene's pending-tile count: 69 of 70 async composition requests in that blank
+run reported zero pending tiles. The count does not prove the page had painted
+content at the newly exposed position; it rules out a simple wait on the
+compositor's counted tile jobs as the full explanation. Follow-up work needs
+to distinguish Reddit's content production from tile invalidation and
+composition at the tree's current position
+(`.vm/bench/scroll-20260924-073417-reddit-refresh-default-300/`,
+`.vm/bench/scroll-20260924-073758-reddit-refresh-33ms-300/`, and
+`.vm/bench/scroll-20260924-074350-reddit-refresh-pending-tiles/`).
+
+Matched-viewport ten-iteration Speedometer scores with the opt-in timer were
+6.214 and 6.967, bracketing a 6.727 timer-off control. A complete traced
+Speedometer iteration routed zero wheel events, so the refresh timer was not
+started by that benchmark; the score spread should not be attributed to the
+timer without further evidence
+(`.vm/bench/speedometer-20260924-072513-scroll-refresh-timer-speedometer-candidate/`,
+`.vm/bench/speedometer-20260924-072705-scroll-refresh-timer-speedometer-control/`,
+`.vm/bench/speedometer-20260924-072906-scroll-refresh-timer-speedometer-candidate-repeat/`,
+and `.vm/bench/speedometer-20260924-073108-scroll-refresh-timer-wheel-count/`).
+
+The packaged diagnostic build, with the timer left off, completed an
+80-notch Reddit smoke at 56.54 native-view frames/s with a 5.9 ms pending gap;
+its final screenshot showed rendered posts
+(`.vm/bench/scroll-20260924-074549-reddit-refresh-diagnostic-safe/`).
+
 ### TipTap intrinsic-width rebuilding
 
 An opt-in `SUMMIT_FLEX_WIDTH_TRACE=1` probe narrowed TipTap's flex sizing
