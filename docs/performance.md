@@ -2131,6 +2131,21 @@ to preserve the intrinsic and stretched sizes while avoiding one of these
 full child layouts; their overlapping renderer totals cannot be treated as
 independent savings.
 
+The intrinsic-height cache cannot be reused for this case. On every hot-grid
+invalidation the block had dirty normal-flow descendants, so its content height
+could have changed. A second trace also classified the grid formatting context
+rejection: the hot grid uses `minmax()` columns. An opt-in experiment admitted
+that supported sizing primitive through the remaining coverage checks, which
+then correctly rejected the same multi-column grid for
+`justify-content: space-between`. The modern grid path does not yet apply those
+between-track distribution offsets. The experiment therefore never selected
+the modern path and was removed rather than weakening layout correctness
+(`.vm/bench/scroll-20260923-134538-reddit-grid-invalidation/`,
+`.vm/bench/scroll-20260923-135547-reddit-grid-minmax-justify/`, and
+`.vm/bench/scroll-20260923-140008-reddit-grid-gfc-single-column/`). A useful
+modern-grid optimization now requires implementing content-distribution
+positions and corresponding layout coverage, rather than bypassing its guard.
+
 ### libstdc++ assertion experiment
 
 The normal Release configuration still enables libstdc++ container assertions.

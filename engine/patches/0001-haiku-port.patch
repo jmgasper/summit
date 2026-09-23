@@ -2910,7 +2910,7 @@ index 7f18cb986d1972948b04893b511de16598d7f103..68525703b1263997f5100c89a1c31dd9
      chomp($ccLocation = `xcrun -find cc -sdk '$ENV{SDKROOT}'`);
  } else {
 diff --git a/Source/WebCore/layout/integration/grid/LayoutIntegrationGridCoverage.cpp b/Source/WebCore/layout/integration/grid/LayoutIntegrationGridCoverage.cpp
-index f9aaa86c85c2812857ce04585ea7db2e257b02fc..e42d5bceffef4cde9341e7e85132de09cdf91fdb 100644
+index f9aaa86c85c2812857ce04585ea7db2e257b02fc..6b4b4a5c96e16f1a4aba85a52216df48d06bc8ab 100644
 --- a/Source/WebCore/layout/integration/grid/LayoutIntegrationGridCoverage.cpp
 +++ b/Source/WebCore/layout/integration/grid/LayoutIntegrationGridCoverage.cpp
 @@ -34,6 +34,9 @@
@@ -2923,7 +2923,7 @@ index f9aaa86c85c2812857ce04585ea7db2e257b02fc..e42d5bceffef4cde9341e7e85132de09
  #include <pal/Logging.h>
  #include <wtf/text/TextStream.h>
  
-@@ -919,6 +922,14 @@ bool canUseForGridLayout(const RenderGrid& renderGrid)
+@@ -919,6 +922,44 @@ bool canUseForGridLayout(const RenderGrid& renderGrid)
      });
  #endif
      auto reasons = gridLayoutAvoidanceReason(renderGrid, ReasonCollectionMode::FirstOnly);
@@ -2934,6 +2934,36 @@ index f9aaa86c85c2812857ce04585ea7db2e257b02fc..e42d5bceffef4cde9341e7e85132de09
 +    }();
 +    if (summitPageUpdateTraceEnabled && !reasons.isEmpty())
 +        WTFLogAlways("Summit legacy grid: grid=%p firstReason=%u\n", &renderGrid, static_cast<unsigned>(*reasons.begin()));
++    if (summitPageUpdateTraceEnabled && reasons.contains(GridAvoidanceReason::GridHasUnsupportedJustifyContent)) {
++        auto justifyContent = renderGrid.style().justifyContent().resolve();
++        WTFLogAlways("Summit legacy grid justify-content: grid=%p position=%u distribution=%u overflow=%u\n", &renderGrid,
++            static_cast<unsigned>(justifyContent.position()), static_cast<unsigned>(justifyContent.distribution()), static_cast<unsigned>(justifyContent.overflow()));
++    }
++    if (summitPageUpdateTraceEnabled && reasons.contains(GridAvoidanceReason::GridHasUnsupportedGridTemplateColumns)) {
++        auto& columns = renderGrid.style().gridTemplateColumns().list;
++        if (columns.isEmpty())
++            WTFLogAlways("Summit legacy grid columns: grid=%p detail=empty\n", &renderGrid);
++        else {
++            for (auto& entry : columns) {
++                const char* detail = WTF::switchOn(entry,
++                    [](const Style::GridTrackSize& trackSize) -> const char* {
++                        if (trackSize.isMinMax())
++                            return "minmax";
++                        if (trackSize.isFitContent())
++                            return "fitContent";
++                        return nullptr;
++                    },
++                    [](const Style::GridLineNames& names) -> const char* { return names.isEmpty() ? nullptr : "lineNames"; },
++                    [](const Style::GridTrackEntryRepeat&) -> const char* { return "repeat"; },
++                    [](const Style::GridTrackEntryAutoRepeat&) -> const char* { return "autoRepeat"; },
++                    [](const Style::GridTrackEntrySubgrid&) -> const char* { return "subgrid"; });
++                if (detail) {
++                    WTFLogAlways("Summit legacy grid columns: grid=%p detail=%s\n", &renderGrid, detail);
++                    break;
++                }
++            }
++        }
++    }
 +#endif
      return reasons.isEmpty();
  }
@@ -24497,7 +24527,7 @@ index b26360017f62da5e5b84a480a480dabf428f16b3..5e062dce9d5e192f619b582034d928cb
          Style::AnchorPositionEvaluator::captureScrollSnapshots(downcast<RenderBox>(*this));
  }
 diff --git a/Source/WebCore/rendering/RenderGrid.cpp b/Source/WebCore/rendering/RenderGrid.cpp
-index bbc577b4dc47a315d4a9125d061367fdabc0fe8f..d9ff23b40d6e24f7e71880b2e342fe2fe08b7067 100644
+index bbc577b4dc47a315d4a9125d061367fdabc0fe8f..3276570b646bc237ae9e53811052111fd31529d4 100644
 --- a/Source/WebCore/rendering/RenderGrid.cpp
 +++ b/Source/WebCore/rendering/RenderGrid.cpp
 @@ -48,6 +48,10 @@
@@ -24534,6 +24564,27 @@ index bbc577b4dc47a315d4a9125d061367fdabc0fe8f..d9ff23b40d6e24f7e71880b2e342fe2f
  
          // We need pending layouts to be done in order to compute auto-margins properly.
          GridLayoutFunctions::updateAutoMarginsIfNeeded(gridItem, writingMode());
+@@ -2704,8 +2723,19 @@ void RenderGrid::updateIntrinsicLogicalHeightsForRowSizingFirstPassCacheAvailabi
+ 
+     if (canCreateIntrinsicLogicalHeightsCacheForRowSizingFirstPass && m_intrinsicLogicalHeightsForRowSizingFirstPass) {
+         for (auto& gridItem : childrenOfType<RenderBox>(*this)) {
+-            if (gridItem.needsLayout())
++            if (gridItem.needsLayout()) {
++#if PLATFORM(HAIKU)
++                static bool summitPageUpdateTraceEnabled = [] {
++                    const char* value = std::getenv("SUMMIT_PAGE_UPDATE_TRACE");
++                    return value && value[0] == '1' && !value[1];
++                }();
++                if (summitPageUpdateTraceEnabled && m_intrinsicLogicalHeightsForRowSizingFirstPass->sizeForItem(gridItem))
++                    WTFLogAlways("Summit grid cache invalidation: grid=%p item=%p self=%u normalChild=%u outOfFlowChild=%u simplified=%u movement=%u\n",
++                        this, &gridItem, gridItem.selfNeedsLayout(), gridItem.normalChildNeedsLayout(), gridItem.outOfFlowChildNeedsLayout(),
++                        gridItem.needsSimplifiedNormalFlowLayout(), gridItem.needsOutOfFlowMovementLayout());
++#endif
+                 m_intrinsicLogicalHeightsForRowSizingFirstPass->invalidateSizeForItem(gridItem);
++            }
+         }
+     } else if (canCreateIntrinsicLogicalHeightsCacheForRowSizingFirstPass)
+         m_intrinsicLogicalHeightsForRowSizingFirstPass.emplace();
 diff --git a/Source/WebCore/rendering/haiku/RenderThemeHaiku.cpp b/Source/WebCore/rendering/haiku/RenderThemeHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..92d20a3ff6fd83acdf255b10fa5b68cdfff528ae
