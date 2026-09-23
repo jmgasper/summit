@@ -2570,3 +2570,20 @@ the workstation production engine was rebuilt clean
 `.vm/bench/speedometer-20260923-194406-tiptap-row-flex-candidate/`,
 `.vm/bench/speedometer-20260923-194502-tiptap-row-flex-candidate-layout/`, and
 `.vm/bench/speedometer-20260923-194803-tiptap-flex-candidate-dirty/`).
+
+A narrower cross-size trace ruled out one proposed cause. On each warm TipTap
+pass, the nested flex item's intrinsic-width measurement entered its
+cross-size scope clean and remained clean after both setting the temporary
+size and invalidating cached content widths. Its prior block-size override
+was present. The dirty state seen at final row sizing therefore does not
+originate in that particular cache-invalidation call
+(`.vm/bench/speedometer-20260923-195422-tiptap-flex-cross-size-invalidation/`).
+
+A second trace around flex-base and min/max measurement found the hot row
+child already dirty at the start of base sizing and still dirty after both
+measurements. Its measured base was zero while its current content width was
+790 px. This establishes why merely suppressing the percentage-height
+request had no effect: base sizing has not completed a final layout for that
+row child. A faster implementation would have to reuse intrinsic work while
+still laying out real dirty content, or optimize that layout itself
+(`.vm/bench/speedometer-20260923-195744-tiptap-flex-base-dirty/`).
