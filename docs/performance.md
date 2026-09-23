@@ -2762,6 +2762,11 @@ flex content, so extending that guarded inline shortcut would miss TipTap
 (`.vm/bench/probe-20260923-211312-summit-current-async-window/`,
 `.vm/bench/probe-20260923-211353-firefox-current-async-window-firefox/`, and
 `.vm/bench/speedometer-20260923-211557-tiptap-inline-coverage/`).
+The Preact/Svelte/Lit focused run likewise found only 18 eligible fixed inline
+boxes across 3,597 renderer visits; 2,970 were non-box renderers and 609
+were dirty. The large synthetic inline-layout gap is real, but extending the
+current clean-box shortcut has too little coverage to close these suite gaps
+(`.vm/bench/speedometer-20260923-214643-dom-inline-coverage/`).
 
 A temporary run-loop trace showed that the main shared timer's 8 ms samples
 were mostly deadlines armed at about 7.87 ms; median delivery lateness was
