@@ -2587,3 +2587,18 @@ request had no effect: base sizing has not completed a final layout for that
 row child. A faster implementation would have to reuse intrinsic work while
 still laying out real dirty content, or optimize that layout itself
 (`.vm/bench/speedometer-20260923-195744-tiptap-flex-base-dirty/`).
+
+### Live Reddit CPU paint-worker check
+
+The production bundle was run through a live `/r/popular/` 180-notch A/B/A
+sequence with two, four, then two Skia CPU painting threads. The measured
+native-view scroll windows reached 55.54, 58.05, and 58.07 frames/s; their
+worst intervals were 68.5, 61.9, and 47.6 ms, with maximum native queue
+delays of 0.5, 1.0, and 0.1 ms. The harness captured two seconds in the first
+two scroll windows and three seconds in the last, while the live feed and idle
+load also varied. These runs do not establish a four-worker advantage, so the
+two-worker production default remains unchanged. They do show that native
+queueing is still short during these bursts
+(`.vm/bench/scroll-20260923-200020-reddit-workers2-control/`,
+`.vm/bench/scroll-20260923-200104-reddit-workers4-candidate/`, and
+`.vm/bench/scroll-20260923-200144-reddit-workers2-repeat/`).
