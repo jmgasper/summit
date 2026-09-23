@@ -62,6 +62,9 @@ SCROLL_STEPS_LINE = re.compile(r'Summit scroll steps: document=\S+ (?P<metrics>(
 LAYOUT_PHASE_LINE = re.compile(r'Summit layout phases: context=\S+ (?P<metrics>(?:[A-Za-z]+=[\d.]+ ?)+)')
 RENDERER_LAYOUT_LINE = re.compile(
     r'Summit renderer layout: renderer=\S+ type=(?P<rendererType>.+?) total=(?P<total>[\d.]+)')
+GRID_ITEM_LAYOUT_LINE = re.compile(
+    r'Summit grid item layout: grid=(?P<grid>\S+) item=(?P<item>\S+) '
+    r'phase=(?P<phase>[A-Za-z]+)(?: state=(?P<state>\d+))? total=(?P<total>[\d.]+)')
 MEDIA_LIFECYCLE_LINE = re.compile(
     r'Summit media lifecycle: player=\S+ operation=(?P<operation>[A-Za-z]+) '
     r'(?P<metrics>(?:[A-Za-z]+=[\d.]+ ?)+)')
@@ -204,6 +207,25 @@ def summarize_renderer_layouts(samples):
         'slowCalls': len(samples),
         'byType': dict(sorted(by_type.items(), key=lambda item: item[1]['inclusiveMs'], reverse=True)),
     }
+
+
+def parse_grid_item_layout_lines(text):
+    return [
+        {'grid': match.group('grid'), 'item': match.group('item'),
+         'phase': match.group('phase'), 'state': int(match.group('state')) if match.group('state') else None,
+         'total': float(match.group('total'))}
+        for match in GRID_ITEM_LAYOUT_LINE.finditer(text)
+    ]
+
+
+def summarize_grid_item_layouts(samples):
+    by_phase = {}
+    for sample in samples:
+        entry = by_phase.setdefault(sample['phase'], {'calls': 0, 'totalMs': 0, 'worstMs': 0})
+        entry['calls'] += 1
+        entry['totalMs'] = round(entry['totalMs'] + sample['total'], 1)
+        entry['worstMs'] = max(entry['worstMs'], sample['total'])
+    return {'slowCalls': len(samples), 'byPhase': by_phase}
 
 
 def parse_media_lifecycle_lines(text):
@@ -368,6 +390,7 @@ def main():
         scroll_steps_before = parse_scroll_step_lines(before)
         layout_phases_before = parse_layout_phase_lines(before)
         renderer_layouts_before = parse_renderer_layout_lines(before)
+        grid_item_layouts_before = parse_grid_item_layout_lines(before)
         media_lifecycle_before = parse_media_lifecycle_lines(before)
         run['idle'] = summarize(idle_engine[-5:]) if idle_engine else summarize_ui(idle_ui[-5:])
         log(f"idle: {run['idle'].get('fps', 0)} fps")
@@ -418,6 +441,7 @@ def main():
         scroll_step_samples = parse_scroll_step_lines(text)[len(scroll_steps_before):]
         layout_phase_samples = parse_layout_phase_lines(text)[len(layout_phases_before):]
         renderer_layout_samples = parse_renderer_layout_lines(text)[len(renderer_layouts_before):]
+        grid_item_layout_samples = parse_grid_item_layout_lines(text)[len(grid_item_layouts_before):]
         media_lifecycle_samples = parse_media_lifecycle_lines(text)[len(media_lifecycle_before):]
         during = engine_samples or ui_samples
         run['frameStatsAvailable'] = bool(during)
@@ -439,6 +463,9 @@ def main():
         if renderer_layout_samples:
             run['rendererLayoutSamples'] = renderer_layout_samples
             run['rendererLayouts'] = summarize_renderer_layouts(renderer_layout_samples)
+        if grid_item_layout_samples:
+            run['gridItemLayoutSamples'] = grid_item_layout_samples
+            run['gridItemLayouts'] = summarize_grid_item_layouts(grid_item_layout_samples)
         if media_lifecycle_samples:
             run['mediaLifecycleSamples'] = media_lifecycle_samples
             run['mediaLifecycle'] = summarize_media_lifecycle(media_lifecycle_samples)
@@ -463,6 +490,7 @@ def main():
                           'scrollSteps': run.get('scrollSteps'),
                           'layoutPhases': run.get('layoutPhases'),
                           'rendererLayouts': run.get('rendererLayouts'),
+                          'gridItemLayouts': run.get('gridItemLayouts'),
                           'mediaLifecycle': run.get('mediaLifecycle')}, indent=1))
 
 

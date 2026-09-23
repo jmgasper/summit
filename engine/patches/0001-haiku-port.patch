@@ -2909,6 +2909,35 @@ index 7f18cb986d1972948b04893b511de16598d7f103..68525703b1263997f5100c89a1c31dd9
  } elsif ($Config::Config{"osname"} eq "darwin" && $ENV{SDKROOT}) {
      chomp($ccLocation = `xcrun -find cc -sdk '$ENV{SDKROOT}'`);
  } else {
+diff --git a/Source/WebCore/layout/integration/grid/LayoutIntegrationGridCoverage.cpp b/Source/WebCore/layout/integration/grid/LayoutIntegrationGridCoverage.cpp
+index f9aaa86c85c2812857ce04585ea7db2e257b02fc..e42d5bceffef4cde9341e7e85132de09cdf91fdb 100644
+--- a/Source/WebCore/layout/integration/grid/LayoutIntegrationGridCoverage.cpp
++++ b/Source/WebCore/layout/integration/grid/LayoutIntegrationGridCoverage.cpp
+@@ -34,6 +34,9 @@
+ #include "RenderText.h"
+ #include "RenderView.h"
+ #include "Settings.h"
++#if PLATFORM(HAIKU)
++#include <cstdlib>
++#endif
+ #include <pal/Logging.h>
+ #include <wtf/text/TextStream.h>
+ 
+@@ -919,6 +922,14 @@ bool canUseForGridLayout(const RenderGrid& renderGrid)
+     });
+ #endif
+     auto reasons = gridLayoutAvoidanceReason(renderGrid, ReasonCollectionMode::FirstOnly);
++#if PLATFORM(HAIKU)
++    static bool summitPageUpdateTraceEnabled = [] {
++        const char* value = std::getenv("SUMMIT_PAGE_UPDATE_TRACE");
++        return value && value[0] == '1' && !value[1];
++    }();
++    if (summitPageUpdateTraceEnabled && !reasons.isEmpty())
++        WTFLogAlways("Summit legacy grid: grid=%p firstReason=%u\n", &renderGrid, static_cast<unsigned>(*reasons.begin()));
++#endif
+     return reasons.isEmpty();
+ }
+ 
 diff --git a/Source/WebCore/loader/CookieJar.cpp b/Source/WebCore/loader/CookieJar.cpp
 index 7a100df953c393486f1ca28b3da8507ab505cf08..5ed82dff72b910fa49f63baadf18d590d3295f42 100644
 --- a/Source/WebCore/loader/CookieJar.cpp
@@ -24228,6 +24257,45 @@ index c534f8fe7e32b62d5c1b9584aaaa109e836086ff..bcfba160da5797070c6d5cdee5b0bb4e
  
  #include <errno.h>
  #include <fcntl.h>
+diff --git a/Source/WebCore/rendering/GridTrackSizingAlgorithm.cpp b/Source/WebCore/rendering/GridTrackSizingAlgorithm.cpp
+index c08712a55b877c6835a885a79e6516ebb0042ba0..5b8653de4a8b8c8669d7017c15b1d49511bc9d88 100644
+--- a/Source/WebCore/rendering/GridTrackSizingAlgorithm.cpp
++++ b/Source/WebCore/rendering/GridTrackSizingAlgorithm.cpp
+@@ -40,6 +40,10 @@
+ #include "StylePrimitiveNumericTypes+Evaluation.h"
+ #include "StylePrimitiveNumericTypes+EvaluationMinimum.h"
+ #include "StyleSelfAlignmentData.h"
++#if PLATFORM(HAIKU)
++#include <cstdlib>
++#include <wtf/MonotonicTime.h>
++#endif
+ #include <ranges>
+ #include <wtf/Range.h>
+ #include <wtf/StdMap.h>
+@@ -1085,7 +1089,23 @@ LayoutUnit GridTrackSizingAlgorithmStrategy::logicalHeightForGridItem(RenderBox&
+     if (gridItem.needsLayout())
+         gridItem.clearOverridingSize();
+ 
++#if PLATFORM(HAIKU)
++    static bool summitPageUpdateTraceEnabled = [] {
++        const char* value = std::getenv("SUMMIT_PAGE_UPDATE_TRACE");
++        return value && value[0] == '1' && !value[1];
++    }();
++    bool traceLayout = summitPageUpdateTraceEnabled && gridItem.needsLayout();
++    auto traceStart = traceLayout ? MonotonicTime::now() : MonotonicTime { };
++#endif
+     gridItem.layoutIfNeeded();
++#if PLATFORM(HAIKU)
++    if (traceLayout) {
++        auto duration = MonotonicTime::now() - traceStart;
++        if (duration >= 10_ms)
++            WTFLogAlways("Summit grid item layout: grid=%p item=%p phase=rowSizing state=%u total=%.1f\n",
++                renderGrid(), &gridItem, static_cast<unsigned>(sizingState()), duration.milliseconds());
++    }
++#endif
+ 
+     auto gridItemLogicalHeight = gridItem.logicalHeight() + GridLayoutFunctions::marginLogicalSizeForGridItem(*renderGrid(), gridItemBlockDirection, gridItem) + m_algorithm.baselineOffsetForGridItem(gridItem, direction());
+     if (intrinsicLogicalHeightsForRowSizingFirstPass && sizingState() == GridTrackSizingAlgorithm::SizingState::RowSizingFirstIteration)
 diff --git a/Source/WebCore/rendering/RenderBlockFlow.cpp b/Source/WebCore/rendering/RenderBlockFlow.cpp
 index ea03bcbb4b167323afa11643cc204dd4c40e5b55..60a10f363d44e68a7a778645c6ed3237179a627e 100644
 --- a/Source/WebCore/rendering/RenderBlockFlow.cpp
@@ -24428,6 +24496,44 @@ index b26360017f62da5e5b84a480a480dabf428f16b3..5e062dce9d5e192f619b582034d928cb
      if (Style::AnchorPositionEvaluator::isAnchorPositioned(style()))
          Style::AnchorPositionEvaluator::captureScrollSnapshots(downcast<RenderBox>(*this));
  }
+diff --git a/Source/WebCore/rendering/RenderGrid.cpp b/Source/WebCore/rendering/RenderGrid.cpp
+index bbc577b4dc47a315d4a9125d061367fdabc0fe8f..d9ff23b40d6e24f7e71880b2e342fe2fe08b7067 100644
+--- a/Source/WebCore/rendering/RenderGrid.cpp
++++ b/Source/WebCore/rendering/RenderGrid.cpp
+@@ -48,6 +48,10 @@
+ #include "StyleFitTolerance.h"
+ #include "StyleGridPositionsResolver.h"
+ #include "StylePrimitiveNumericTypes+Evaluation.h"
++#if PLATFORM(HAIKU)
++#include <cstdlib>
++#include <wtf/MonotonicTime.h>
++#endif
+ #include <ranges>
+ #include <wtf/Range.h>
+ #include <wtf/Scope.h>
+@@ -1696,7 +1700,22 @@ void RenderGrid::layoutGridItems(RenderGridLayoutState& gridLayoutState, GridLan
+         applyStretchAlignmentToGridItemIfNeeded(gridItem, gridLayoutState);
+         applySubgridStretchAlignmentToGridItemIfNeeded(gridItem);
+ 
++#if PLATFORM(HAIKU)
++        static bool summitPageUpdateTraceEnabled = [] {
++            const char* value = std::getenv("SUMMIT_PAGE_UPDATE_TRACE");
++            return value && value[0] == '1' && !value[1];
++        }();
++        bool traceLayout = summitPageUpdateTraceEnabled && gridItem.needsLayout();
++        auto traceStart = traceLayout ? MonotonicTime::now() : MonotonicTime { };
++#endif
+         gridItem.layoutIfNeeded();
++#if PLATFORM(HAIKU)
++        if (traceLayout) {
++            auto duration = MonotonicTime::now() - traceStart;
++            if (duration >= 10_ms)
++                WTFLogAlways("Summit grid item layout: grid=%p item=%p phase=final total=%.1f\n", this, &gridItem, duration.milliseconds());
++        }
++#endif
+ 
+         // We need pending layouts to be done in order to compute auto-margins properly.
+         GridLayoutFunctions::updateAutoMarginsIfNeeded(gridItem, writingMode());
 diff --git a/Source/WebCore/rendering/haiku/RenderThemeHaiku.cpp b/Source/WebCore/rendering/haiku/RenderThemeHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..92d20a3ff6fd83acdf255b10fa5b68cdfff528ae

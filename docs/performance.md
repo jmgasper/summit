@@ -2118,6 +2118,19 @@ render-tree passes. This narrows the next investigation to the grid's intrinsic
 and final item sizing passes
 (`.vm/bench/scroll-20260923-132721-reddit-renderer-layout/`).
 
+Focused grid call-site timing confirms that both layouts of the hot block are
+real work on the same grid/item pair. Of 88 slow child layouts, 46 intrinsic
+row-sizing calls took 1,184.3 ms and 42 final placement calls took 765.5 ms.
+All intrinsic calls were the first row-sizing iteration. The grid formatting
+context rejected the hot grid because its template columns are outside the
+currently supported subset, so it stayed on the legacy algorithm. The measured
+burst reached 43.87 native-view frames/s, with a 601.9 ms worst interval and a
+0.3 ms maximum native queue delay
+(`.vm/bench/scroll-20260923-133824-reddit-grid-phases/`). The next change needs
+to preserve the intrinsic and stretched sizes while avoiding one of these
+full child layouts; their overlapping renderer totals cannot be treated as
+independent savings.
+
 ### libstdc++ assertion experiment
 
 The normal Release configuration still enables libstdc++ container assertions.
