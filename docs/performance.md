@@ -2149,11 +2149,11 @@ positions and corresponding layout coverage, rather than bypassing its guard.
 The modern grid formatter now implements `space-between` track distribution
 on both axes. It carries the start and between-track offsets with the used
 track sizes, includes distributed gutters in grid-area sizes, and applies the
-same offsets to final item positions. The Haiku-only
-`SUMMIT_EXTENDED_GRID_INTEGRATION=1` experiment admits the exact additional
-features observed on Reddit: `minmax()` columns, horizontal and vertical
-`space-between`, and percentage grid-item widths. Production coverage remains
-unchanged while the complete Reddit case is still being qualified.
+same offsets to final item positions. Haiku's additional coverage admits the
+exact features observed on Reddit: `minmax()` columns, horizontal and vertical
+`space-between`, percentage grid-item widths, and the validated hidden-X / auto-Y
+overflow pair. `SUMMIT_EXTENDED_GRID_INTEGRATION=0` restores the previous
+coverage for comparison or rollback.
 
 `tools/bench/pages/grid-space-between.html` compares deterministic legacy and
 modern geometry for positive and negative free space on each axis and for a
@@ -2205,6 +2205,27 @@ H.264 and AAC successfully
 (`.vm/bench/scroll-20260923-150154-reddit-grid-gfc-overflow-fix/`,
 `.vm/bench/scroll-20260923-150340-reddit-grid-legacy-overflow-control/`, and
 `.vm/bench/scroll-20260923-150443-reddit-grid-gfc-overflow-repeat/`).
+
+Two uncontended ten-iteration Speedometer 3.1 runs with the extended coverage
+scored **6.315 ± 0.249** and **6.346 ± 0.320**, both with a 3,748 ms sum of
+suite means. The intervening exact opt-out control scored **6.178 ± 0.185**
+with a 3,827 ms suite sum. This is a neutral-to-positive result against
+Summit's longer-term 6.3–6.4 range and gives no benchmark reason to withhold
+the Reddit improvement
+(`.vm/bench/speedometer-20260923-150923-extended-grid-speedometer/`,
+`.vm/bench/speedometer-20260923-151131-extended-grid-speedometer-control/`, and
+`.vm/bench/speedometer-20260923-151340-extended-grid-speedometer-repeat/`).
+
+The coverage is therefore enabled by default on Haiku. A final no-flag
+geometry run matched the exact `0` opt-out result, including overflow metrics
+and the dynamic fallback transition
+(`.vm/bench/probe-20260923-151859-summit-grid-default-optout-legacy/` and
+`.vm/bench/probe-20260923-151924-summit-grid-default-modern/`). The final
+default `/r/popular/` validation reached 55.27 native-view frames/s with a
+261.8 ms worst interval, two intervals over 33 ms, and a 1.6 ms maximum native
+queue delay. The hot grid had no fallback reason, and media tracing selected
+NVDEC H.264 and AAC successfully
+(`.vm/bench/scroll-20260923-152006-reddit-grid-default-modern/`).
 
 ### libstdc++ assertion experiment
 
