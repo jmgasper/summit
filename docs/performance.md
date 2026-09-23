@@ -2949,7 +2949,9 @@ cost is in `computeMainAxisExtentForFlexItem`'s ordinary minimum-size branch
 `minimumMaximumContentSize` calls over 0.5 ms in the same eight-iteration
 run, 130.6 of 131.6 ms was rebuilding inline-item lists, including lists of
 over 3,000 items. These are inclusive nested timings with a reporting
-threshold, so they cannot be subtracted from the outer flex call total.
+threshold, so they cannot be subtracted from the outer flex call total. The
+119 slow records identified 118 distinct inline roots; most expensive lists
+were fresh, which also limits the value of reserving from a previous list.
 
 A guarded trial reserved a fresh inline-item vector from the previous list's
 length, capped at 4,096 entries. In same-bundle, uncontended 20-iteration
