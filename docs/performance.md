@@ -2022,3 +2022,39 @@ and
 `.vm/bench/speedometer-20260923-094800-post-font-cache-alternating-repeat/`).
 This is a reproducible roughly 3% gain in the alternating comparison, while
 the absolute score remains below Firefox 155's 8.338 ± 0.374 baseline.
+
+### Live Reddit page-update phase trace
+
+`SUMMIT_PAGE_UPDATE_TRACE=1` now records only rendering updates slower than
+33 ms and splits them across each HTML rendering step. On Haiku it also emits
+slow `Document::runScrollSteps()` dispatches, JavaScript scroll listeners, and
+layouts so the nested work can be correlated. The disabled path reads the
+environment switch once and does not read the clock. `run-scroll.py` stores
+the page-update and scroll-step samples plus aggregate phase totals in
+`run.json`.
+
+The first capture-isolated `/r/popular/` pass found five slow updates totaling
+1,741.5 ms. The scroll step accounted for 1,084.8 ms, ahead of second layout
+at 204.2 ms, animation-frame callbacks at 186.6 ms, and initial layout at
+185.5 ms
+(`.vm/bench/scroll-20260923-100942-reddit-page-update-phases/`). A refined
+repeat found that three slow scroll steps spent all 1,523.2 ms dispatching one
+document scroll event each. Native scroll animation service, scroll anchoring,
+target lookup, and visual-viewport delivery rounded to 0.0 ms. The individual
+event dispatches took 455.9, 595.3, and 472.0 ms
+(`.vm/bench/scroll-20260923-101608-reddit-scroll-step-phases/`).
+
+A third pass traced the listener itself. Every slow dispatch invoked the same
+single bubbling JavaScript listener; the slow calls took 64.1, 180.6, 270.9,
+and 241.7 ms. Layouts nested in those calls accounted for only part of their
+duration. The 270.9 ms call also emitted two failed Media Kit stream-cookie
+allocations, so media creation remains a candidate for some of that handler's
+non-layout time, but the log does not establish how much. The measured wheel
+pass still moved the feed, delivered all 300 events, kept the native queue
+below 0.4 ms, and reached 41.74 native-view frames/s with a 533.4 ms worst
+interval (`.vm/bench/scroll-20260923-102211-reddit-listener-layout/`).
+
+These runs move the primary Reddit stall from generic rendering or input
+delivery to synchronous work initiated by Reddit's document scroll listener.
+Skipping or delaying the standards event would change page behavior; the next
+useful split is inside its JavaScript and synchronous media work.

@@ -56,6 +56,9 @@ FIXED_INLINE_LAYOUT_LINE = re.compile(
     r'dirtyOutOfFlowMovement=(?P<dirtyOutOfFlowMovement>\d+) '
     r'block=(?P<blockLevel>\d+) replaced=(?P<replaced>\d+) relative=(?P<relativeDimensions>\d+) '
     r'nonFixed=(?P<nonFixedWidth>\d+) percentPadding=(?P<percentagePadding>\d+)')
+PAGE_UPDATE_LINE = re.compile(r'Summit page update: page=\S+ (?P<metrics>(?:[A-Za-z]+=[\d.]+ ?)+)')
+PAGE_UPDATE_METRIC = re.compile(r'(?P<name>[A-Za-z]+)=(?P<value>[\d.]+)')
+SCROLL_STEPS_LINE = re.compile(r'Summit scroll steps: document=\S+ (?P<metrics>(?:[A-Za-z]+=[\d.]+ ?)+)')
 
 
 def log(message):
@@ -100,6 +103,58 @@ def summarize_fixed_inline_layout(samples):
     total['periods'] = len(samples)
     total['eligiblePercent'] = round(total['eligible'] * 100 / total['renderers'], 2) if total['renderers'] else 0
     return total
+
+
+def parse_page_update_lines(text):
+    return [
+        {match.group('name'): float(match.group('value'))
+         for match in PAGE_UPDATE_METRIC.finditer(line.group('metrics'))}
+        for line in PAGE_UPDATE_LINE.finditer(text)
+    ]
+
+
+def summarize_page_updates(samples):
+    if not samples:
+        return {}
+    phase_names = [name for name in samples[0] if name != 'total']
+    phase_totals = {name: round(sum(sample.get(name, 0) for sample in samples), 1)
+                    for name in phase_names}
+    return {
+        'slowUpdates': len(samples),
+        'totalMs': round(sum(sample['total'] for sample in samples), 1),
+        'worstMs': max(sample['total'] for sample in samples),
+        'phaseTotalsMs': phase_totals,
+        'topPhases': [
+            {'phase': name, 'totalMs': total}
+            for name, total in sorted(phase_totals.items(), key=lambda item: item[1], reverse=True)[:5]
+        ],
+    }
+
+
+def parse_scroll_step_lines(text):
+    return [
+        {match.group('name'): float(match.group('value'))
+         for match in PAGE_UPDATE_METRIC.finditer(line.group('metrics'))}
+        for line in SCROLL_STEPS_LINE.finditer(text)
+    ]
+
+
+def summarize_scroll_steps(samples):
+    if not samples:
+        return {}
+    duration_names = [name for name in samples[0]
+                      if name not in ('total', 'targets', 'documentTargets', 'elementTargets',
+                                      'scrollTargets', 'scrollendTargets', 'maxEventDispatch')]
+    duration_totals = {name: round(sum(sample.get(name, 0) for sample in samples), 1)
+                       for name in duration_names}
+    return {
+        'slowRuns': len(samples),
+        'totalMs': round(sum(sample['total'] for sample in samples), 1),
+        'worstMs': max(sample['total'] for sample in samples),
+        'targets': int(sum(sample['targets'] for sample in samples)),
+        'maximumEventDispatchMs': max(sample['maxEventDispatch'] for sample in samples),
+        'phaseTotalsMs': duration_totals,
+    }
 
 
 def summarize_ui(samples):
@@ -232,6 +287,8 @@ def main():
         engine_before = parse_frame_lines(before)
         ui_before = parse_ui_frame_lines(before)
         fixed_inline_before = parse_fixed_inline_layout_lines(before)
+        page_update_before = parse_page_update_lines(before)
+        scroll_steps_before = parse_scroll_step_lines(before)
         run['idle'] = summarize(idle_engine[-5:]) if idle_engine else summarize_ui(idle_ui[-5:])
         log(f"idle: {run['idle'].get('fps', 0)} fps")
 
@@ -277,6 +334,8 @@ def main():
         engine_samples = parse_frame_lines(text)[len(engine_before):]
         ui_samples = parse_ui_frame_lines(text)[len(ui_before):]
         fixed_inline_samples = parse_fixed_inline_layout_lines(text)[len(fixed_inline_before):]
+        page_update_samples = parse_page_update_lines(text)[len(page_update_before):]
+        scroll_step_samples = parse_scroll_step_lines(text)[len(scroll_steps_before):]
         during = engine_samples or ui_samples
         run['frameStatsAvailable'] = bool(during)
         if during:
@@ -285,6 +344,12 @@ def main():
         if fixed_inline_samples:
             run['fixedInlineLayoutSamples'] = fixed_inline_samples
             run['fixedInlineLayout'] = summarize_fixed_inline_layout(fixed_inline_samples)
+        if page_update_samples:
+            run['pageUpdateSamples'] = page_update_samples
+            run['pageUpdates'] = summarize_page_updates(page_update_samples)
+        if scroll_step_samples:
+            run['scrollStepSamples'] = scroll_step_samples
+            run['scrollSteps'] = summarize_scroll_steps(scroll_step_samples)
         capture_visible(directory / 'final.png')
         run['stateAfterBurst'] = guest.state(ctl, team)
         run['outcome'] = ('completed' if run['completionVerified'] else 'captured-unverified-delivery') \
@@ -301,7 +366,9 @@ def main():
         save()
         print(json.dumps({'id': run_id, 'outcome': run['outcome'],
                           'idle': run.get('idle'), 'scroll': run.get('scroll'),
-                          'fixedInlineLayout': run.get('fixedInlineLayout')}, indent=1))
+                          'fixedInlineLayout': run.get('fixedInlineLayout'),
+                          'pageUpdates': run.get('pageUpdates'),
+                          'scrollSteps': run.get('scrollSteps')}, indent=1))
 
 
 if __name__ == '__main__':
