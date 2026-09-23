@@ -2710,7 +2710,7 @@ index cef20ab58216d6164b8111aecf3540683667aaad..ad64d8014c99a6037be2fcb10d19748b
      const unsigned char* inSalt, size_t inSaltSize,
      const unsigned char* inInfo, size_t inInfoSize)
 diff --git a/Source/WebCore/dom/Document.cpp b/Source/WebCore/dom/Document.cpp
-index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..2f69ac94ead941ee9d901d485b87e31c7cb7496f 100644
+index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..d7c57dfaa2cd80e80f165d4bf7e85384866030e7 100644
 --- a/Source/WebCore/dom/Document.cpp
 +++ b/Source/WebCore/dom/Document.cpp
 @@ -383,6 +383,7 @@
@@ -2849,6 +2849,61 @@ index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..2f69ac94ead941ee9d901d485b87e31c
  }
  
  void Document::flushDeferredScrollEvents()
+@@ -10529,21 +10608,54 @@ void Document::removeIntersectionObserver(IntersectionObserver& observer)
+ static void updateAndNotifyIntersectionObservers(const Vector<WeakPtr<IntersectionObserver>>& intersectionObservers, const Frame& hostFrame)
+ {
+     Vector<WeakPtr<IntersectionObserver>> intersectionObserversWithPendingNotifications;
++#if PLATFORM(HAIKU)
++    static bool traceIntersectionObservers = [] {
++        const char* value = std::getenv("SUMMIT_PAGE_UPDATE_TRACE");
++        return value && value[0] == '2' && !value[1];
++    }();
++    auto traceStart = traceIntersectionObservers ? MonotonicTime::now() : MonotonicTime { };
++    Seconds updateDuration;
++    Seconds slowestUpdate;
++    unsigned updatedObservers = 0;
++#endif
+ 
+     for (auto& weakObserver : intersectionObservers) {
+         RefPtr observer = weakObserver.get();
+         if (!observer)
+             continue;
+ 
++#if PLATFORM(HAIKU)
++        auto updateStart = traceIntersectionObservers ? MonotonicTime::now() : MonotonicTime { };
++#endif
+         auto needNotify = observer->updateObservations(hostFrame);
++#if PLATFORM(HAIKU)
++        if (traceIntersectionObservers) {
++            auto duration = MonotonicTime::now() - updateStart;
++            updateDuration += duration;
++            slowestUpdate = std::max(slowestUpdate, duration);
++            ++updatedObservers;
++        }
++#endif
+         if (needNotify == IntersectionObserver::NeedNotify::Yes)
+             intersectionObserversWithPendingNotifications.append(observer);
+     }
+ 
++#if PLATFORM(HAIKU)
++    auto notifyStart = traceIntersectionObservers ? MonotonicTime::now() : MonotonicTime { };
++#endif
+     for (auto& weakObserver : intersectionObserversWithPendingNotifications) {
+         if (RefPtr observer = weakObserver.get())
+             observer->notify();
+     }
++#if PLATFORM(HAIKU)
++    if (traceIntersectionObservers) {
++        auto total = MonotonicTime::now() - traceStart;
++        if (total >= 5_ms)
++            WTFLogAlways("Summit intersection observers: frame=%p total=%.1f update=%.1f notify=%.1f observers=%u notified=%zu slowestUpdate=%.1f\n",
++                &hostFrame, total.milliseconds(), updateDuration.milliseconds(), (MonotonicTime::now() - notifyStart).milliseconds(),
++                updatedObservers, intersectionObserversWithPendingNotifications.size(), slowestUpdate.milliseconds());
++    }
++#endif
+ }
+ 
+ void Document::updateRemoteIntersectionObservers()
 diff --git a/Source/WebCore/dom/EventTarget.cpp b/Source/WebCore/dom/EventTarget.cpp
 index 508b64bf39d2074357445b343e1056b1c3212411..f22828d4fdd11099e38c6161892e61b740e2b738 100644
 --- a/Source/WebCore/dom/EventTarget.cpp

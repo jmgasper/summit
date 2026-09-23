@@ -3153,3 +3153,18 @@ logs, without a suite identifier, and the trace omits shorter updates. They
 are useful leads but cannot establish which part of each measured async step
 is spent in a callback or waiting for the next frame
 (`.vm/bench/speedometer-20260924-085957-focused-page-update-trace/`).
+
+Suite-only traced repeats clarified that attribution. Preact and Svelte each
+had just one page update over 33 ms across 20 iterations; each also had 20
+roughly 72 ms layouts, longer than a whole scored iteration and therefore
+apparently in suite preparation outside its measured steps. CodeMirror had
+21 slow page updates across 20 iterations, totaling 844.1 ms, including
+519.7 ms in animation-frame callbacks and 302.6 ms in intersection-observer
+processing. No CodeMirror layout crossed the 10 ms trace threshold. This
+supports investigating CodeMirror's frame callback and observer work before
+altering global frame pacing. The current opt-in `SUMMIT_PAGE_UPDATE_TRACE=2`
+additionally splits intersection-observer update and notification time to
+identify which part is expensive
+(`.vm/bench/speedometer-20260924-090259-preact-page-update-trace/`,
+`.vm/bench/speedometer-20260924-090531-svelte-page-update-trace/`, and
+`.vm/bench/speedometer-20260924-090359-codemirror-page-update-trace/`).
