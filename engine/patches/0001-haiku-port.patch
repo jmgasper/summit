@@ -4292,6 +4292,36 @@ index 89f2b38d398b9fb7d5319d06bf0b918cfc569e1b..fbd1eea56e97654861c4b24b25c0da6e
  #include "MouseEventWithHitTestResults.h"
  #include "NotImplemented.h"
  #include "Page.h"
+diff --git a/Source/WebCore/page/scrolling/AsyncScrollingCoordinator.cpp b/Source/WebCore/page/scrolling/AsyncScrollingCoordinator.cpp
+index 95ffe1c222fda9854b4c21f7d32c7ed8d08b45b1..b94a8546a45de6aa19a1e1cb41c10c25b295ed7d 100644
+--- a/Source/WebCore/page/scrolling/AsyncScrollingCoordinator.cpp
++++ b/Source/WebCore/page/scrolling/AsyncScrollingCoordinator.cpp
+@@ -63,6 +63,10 @@
+ #include <wtf/ProcessID.h>
+ #include <wtf/SystemTracing.h>
+ #include <wtf/TZoneMallocInlines.h>
++#if PLATFORM(HAIKU)
++#include <cstdio>
++#include <cstdlib>
++#endif
+ #include <wtf/text/MakeString.h>
+ #include <wtf/text/TextStream.h>
+ 
+@@ -91,6 +95,14 @@ void AsyncScrollingCoordinator::scrollingStateTreePropertiesChanged()
+ 
+ void AsyncScrollingCoordinator::scrollingThreadAddedPendingUpdate()
+ {
++#if PLATFORM(HAIKU)
++    static bool traceLayerUpdates = [] {
++        const char* value = std::getenv("SUMMIT_LAYER_UPDATE_TRACE");
++        return value && value[0] == '1' && !value[1];
++    }();
++    if (traceLayerUpdates)
++        std::fprintf(stderr, "Summit layer update: scrolling-thread-pending\n");
++#endif
+     scheduleRenderingUpdate();
+ }
+ 
 diff --git a/Source/WebCore/page/scrolling/ScrollingTree.cpp b/Source/WebCore/page/scrolling/ScrollingTree.cpp
 index 351fcd027e1481abf32eeb6f82f5ffaa5aff5fd8..2afed204ed1b72119cbba8ffa53c3c5cfa4d75c1 100644
 --- a/Source/WebCore/page/scrolling/ScrollingTree.cpp
@@ -13772,6 +13802,42 @@ index 30343ff03299542f8673d98b486c7fdd78bddeb9..acc620650ea4ee0cb807a1b49194a949
  
          if (const char* envString = getenv("WEBKIT_SKIA_CPU_PAINTING_THREADS")) {
              auto newValue = parseInteger<unsigned>(StringView::fromLatin1(envString));
+diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreProxy.cpp b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreProxy.cpp
+index 30f54801b8aa9b9bc83af8a929f8bdc04a2ee4d1..b52aa423556a3b7d1ed6d274637ac826c687fdbd 100644
+--- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreProxy.cpp
++++ b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreProxy.cpp
+@@ -33,6 +33,10 @@
+ #include <wtf/SystemTracing.h>
+ #include <wtf/TZoneMallocInlines.h>
+ #include <wtf/text/StringToIntegerConversion.h>
++#if PLATFORM(HAIKU)
++#include <cstdio>
++#include <cstdlib>
++#endif
+ 
+ #if USE(SKIA)
+ #include "SkiaPaintingEngine.h"
+@@ -143,6 +147,20 @@ OptionSet<CoordinatedBackingStoreProxy::UpdateResult> CoordinatedBackingStorePro
+     if (m_pendingTileCreation)
+         result.add(UpdateResult::TilesPending);
+ 
++#if PLATFORM(HAIKU)
++    static bool traceTileCoverage = [] {
++        const char* value = std::getenv("SUMMIT_TILE_COVERAGE_TRACE");
++        return value && value[0] == '1' && !value[1];
++    }();
++    if (traceTileCoverage && unscaledSize.height() > 1000)
++        std::fprintf(stderr, "Summit tile coverage: layer=%p size=%.0fx%.0f visible=%d,%d,%d,%d cover=%d,%d,%d,%d tiles=%u create=%u remove=%u pending=%d refresh=%d\n",
++            &layer, unscaledSize.width(), unscaledSize.height(), unscaledVisibleRect.x(), unscaledVisibleRect.y(),
++            unscaledVisibleRect.width(), unscaledVisibleRect.height(), m_coverRect.x(), m_coverRect.y(),
++            m_coverRect.width(), m_coverRect.height(), static_cast<unsigned>(m_tiles.size()),
++            static_cast<unsigned>(tilesToCreate.size()), static_cast<unsigned>(tilesToRemove.size()),
++            m_pendingTileCreation, shouldCreateAndDestroyTiles);
++#endif
++
+     // Update the dirty tiles.
+     IntRect tileDirtyRectUnion;
+     unsigned dirtyTilesCount = 0;
 diff --git a/Source/WebCore/platform/graphics/transforms/AffineTransform.h b/Source/WebCore/platform/graphics/transforms/AffineTransform.h
 index 3ae8339850008d049df5f38d9d53a1c776827c67..d901f787833f48b776c9c77e78f914df8496f8fd 100644
 --- a/Source/WebCore/platform/graphics/transforms/AffineTransform.h
@@ -80897,10 +80963,54 @@ index d382293c217c69e8672fb8f587a78e03574df4ba..5192b4bf4f5b2b3b17854164f56c82d5
      void activityStateDidChange(OptionSet<WebCore::ActivityState>, ActivityStateChangeID, CompletionHandler<void()>&&) override;
      void attachViewOverlayGraphicsLayer(WebCore::FrameIdentifier, WebCore::GraphicsLayer*) override;
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
-index a12c4f6edd9998271fda260c7193a3226bf1957a..c8cbe05806a9334a320bd4869e22b65668234de8 100644
+index a12c4f6edd9998271fda260c7193a3226bf1957a..235568f9a96782191e04483b2861248fa4b10b3f 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
-@@ -182,12 +182,16 @@ void LayerTreeHost::updateRendering()
+@@ -58,6 +58,10 @@
+ #include <wtf/TZoneMallocInlines.h>
+ #include <wtf/glib/RunLoopSourcePriority.h>
+ #include <wtf/text/StringToIntegerConversion.h>
++#if PLATFORM(HAIKU)
++#include <cstdio>
++#include <cstdlib>
++#endif
+ 
+ namespace WebKit {
+ using namespace WebCore;
+@@ -148,6 +152,16 @@ void LayerTreeHost::scheduleRenderingUpdate()
+ {
+     WTFEmitSignpost(this, LayerTreeHostScheduleRenderingUpdate, "isWaitingForRenderer %s", m_isWaitingForRenderer ? "yes" : "no");
+ 
++#if PLATFORM(HAIKU)
++    static bool traceLayerUpdates = [] {
++        const char* value = std::getenv("SUMMIT_LAYER_UPDATE_TRACE");
++        return value && value[0] == '1' && !value[1];
++    }();
++    if (traceLayerUpdates)
++        std::fprintf(stderr, "Summit layer update: schedule waiting=%d queued=%d frozen=%d suspended=%d\n",
++            m_isWaitingForRenderer, m_scheduledWhileWaitingForRenderer, m_layerTreeStateIsFrozen, m_isSuspended);
++#endif
++
+     if (m_layerTreeStateIsFrozen || m_isSuspended || m_webPage->size().isEmpty())
+         return;
+ 
+@@ -174,6 +188,15 @@ bool LayerTreeHost::canUpdateRendering() const
+ 
+ void LayerTreeHost::updateRendering()
+ {
++#if PLATFORM(HAIKU)
++    static bool traceLayerUpdates = [] {
++        const char* value = std::getenv("SUMMIT_LAYER_UPDATE_TRACE");
++        return value && value[0] == '1' && !value[1];
++    }();
++    if (traceLayerUpdates)
++        std::fprintf(stderr, "Summit layer update: begin waiting=%d queued=%d\n",
++            m_isWaitingForRenderer, m_scheduledWhileWaitingForRenderer);
++#endif
+     invalidateRenderingUpdateRunLoopObserver();
+ 
+     RELEASE_ASSERT(!m_isUpdatingRendering);
+@@ -182,12 +205,16 @@ void LayerTreeHost::updateRendering()
  
      SetForScope<bool> reentrancyProtector(m_isUpdatingRendering, true);
  
@@ -80917,6 +81027,27 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..c8cbe05806a9334a320bd4869e22b656
  
      if (m_overlayCompositingLayer)
          m_overlayCompositingLayer->flushCompositingState(visibleContentsRect());
+@@ -447,8 +474,20 @@ void LayerTreeHost::didRenderFrame()
+ 
+ void LayerTreeHost::requestCompositionForRenderingUpdate()
+ {
++#if PLATFORM(HAIKU)
++    static bool traceLayerUpdates = [] {
++        const char* value = std::getenv("SUMMIT_LAYER_UPDATE_TRACE");
++        return value && value[0] == '1' && !value[1];
++    }();
++    if (traceLayerUpdates)
++        std::fprintf(stderr, "Summit layer update: request-composite\n");
++#endif
+     m_isWaitingForRenderer = true;
+     m_compositor->requestCompositionForRenderingUpdate([this] {
++#if PLATFORM(HAIKU)
++        if (traceLayerUpdates)
++            std::fprintf(stderr, "Summit layer update: did-composite queued=%d\n", m_scheduledWhileWaitingForRenderer);
++#endif
+         WTFBeginSignpost(this, DidComposite);
+ 
+         if (!m_pendingForceRepaint && m_forcedRepaintAsyncCallback)
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
 index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..da1bc05a09903d3d09056674aaad1540031e6c54 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp

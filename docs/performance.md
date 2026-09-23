@@ -2999,6 +2999,34 @@ but are not atomic. The next investigation should compare the committed layer
 state and tile damage with the scrolling tree's position
 (`.vm/bench/scroll-20260924-080715-reddit-refresh-dom-reverse/`).
 
+The follow-up ruled out two direct flush requests. An opt-in final rendering
+update after wheel activity ended still produced a blank reverse-scroll feed on
+repeat (`.vm/bench/scroll-20260924-081518-reddit-final-render-update-repeat/`).
+Scheduling a flush when `GraphicsLayerCoordinated::syncPosition()` dirtied tile
+coverage also failed on repeat and had no consistent frame-pacing gain
+(`.vm/bench/scroll-20260924-082030-reddit-coverage-flush-repeat/`). Both
+experiments were removed.
+
+Opt-in `SUMMIT_TILE_COVERAGE_TRACE=1` logs the visible and cover rectangles,
+tile count, and creation state for large coordinated backing stores.
+`SUMMIT_LAYER_UPDATE_TRACE=1` logs scroll-update notification delivery and
+the layer host's schedule, render, and composite handoff. A blank capture at
+scrolling-tree y=4,474 had the large content layer's most recent visible
+rectangle at y=14,074. During the reverse burst the compositor kept presenting
+asynchronous frames, but no main-thread rendering update or new tile coverage
+reached the log before the screenshot. The UI frame trace recorded a 648 ms
+queue delay. Three seconds later, the queued scroll notifications ran, the
+layer's visible rectangle changed to y=4,474, and a settled screenshot showed
+the post image. This identifies delayed main-thread scroll reconciliation and
+backing-store coverage as the immediate source of that blank interval. The
+next trial should reduce or coalesce redundant main-thread scroll-update
+notifications while preserving wheel-event test deferrals
+(`.vm/bench/scroll-20260924-083224-reddit-layer-handoff/`).
+With both new traces disabled and the refresh timer left off, the same bundle
+completed an 80-notch Reddit smoke at 56.02 native-view frames/s with a 9.5 ms
+pending gap and visible feed posts; it emitted no layer or tile trace lines
+(`.vm/bench/scroll-20260924-083607-reddit-layer-diagnostics-safe/`).
+
 ### TipTap intrinsic-width rebuilding
 
 An opt-in `SUMMIT_FLEX_WIDTH_TRACE=1` probe narrowed TipTap's flex sizing
