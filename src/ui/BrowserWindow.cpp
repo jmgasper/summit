@@ -53,6 +53,13 @@ public:
 
     void ResetFrameStats()
     {
+        fCaptureStart = system_time();
+        fCaptureLastFrame = 0;
+        fCaptureLongestGap = 0;
+        fCaptureFrames = 0;
+        fCaptureLongGaps = 0;
+        fCaptureLongestQueueDelay = 0;
+        fCaptureLongQueueDelays = 0;
         fWindowStart = 0;
         fLastFrame = 0;
         fLongestGap = 0;
@@ -62,10 +69,35 @@ public:
         fLongQueueDelays = 0;
     }
 
+    bool AppendFrameStats(BMessage& reply) const
+    {
+        if (!fCaptureStart)
+            return false;
+        const bigtime_t now = system_time();
+        const bigtime_t elapsed = std::max<bigtime_t>(0, now - fCaptureStart);
+        const bigtime_t pendingGap = std::max<bigtime_t>(0, now - (fCaptureLastFrame ? fCaptureLastFrame : fCaptureStart));
+        reply.AddInt64("elapsed_us", elapsed);
+        reply.AddInt32("frames", fCaptureFrames);
+        reply.AddInt64("longest_gap_us", fCaptureLongestGap);
+        reply.AddInt32("long_gaps", fCaptureLongGaps);
+        reply.AddInt64("pending_gap_us", pendingGap);
+        reply.AddInt64("queue_max_us", fCaptureLongestQueueDelay);
+        reply.AddInt32("queue_over_33", fCaptureLongQueueDelays);
+        return true;
+    }
+
     void MessageReceived(BMessage* message) override
     {
         if (message->what == 'wvfr') {
             const bigtime_t now = system_time();
+            if (fCaptureStart) {
+                const bigtime_t gap = now - (fCaptureLastFrame ? fCaptureLastFrame : fCaptureStart);
+                fCaptureLongestGap = std::max(fCaptureLongestGap, gap);
+                if (gap > 33000)
+                    ++fCaptureLongGaps;
+                fCaptureLastFrame = now;
+                ++fCaptureFrames;
+            }
             if (!fWindowStart)
                 fWindowStart = now;
             if (fLastFrame) {
@@ -82,6 +114,11 @@ public:
                 fLongestQueueDelay = std::max(fLongestQueueDelay, delay);
                 if (delay > 33000)
                     ++fLongQueueDelays;
+                if (fCaptureStart) {
+                    fCaptureLongestQueueDelay = std::max(fCaptureLongestQueueDelay, delay);
+                    if (delay > 33000)
+                        ++fCaptureLongQueueDelays;
+                }
             }
             const bigtime_t elapsed = now - fWindowStart;
             if (elapsed >= 1000000) {
@@ -100,6 +137,13 @@ public:
     }
 
 private:
+    bigtime_t fCaptureStart { 0 };
+    bigtime_t fCaptureLastFrame { 0 };
+    bigtime_t fCaptureLongestGap { 0 };
+    unsigned fCaptureFrames { 0 };
+    unsigned fCaptureLongGaps { 0 };
+    bigtime_t fCaptureLongestQueueDelay { 0 };
+    unsigned fCaptureLongQueueDelays { 0 };
     bigtime_t fWindowStart { 0 };
     bigtime_t fLastFrame { 0 };
     bigtime_t fLongestGap { 0 };
@@ -1681,6 +1725,17 @@ void BrowserWindow::MessageReceived(BMessage* message)
         case kSimulateScroll: {
             BMessage reply(B_REPLY);
             SimulateScroll(*message, reply);
+            message->SendReply(&reply);
+            break;
+        }
+        case kFrameStats: {
+            BMessage reply(B_REPLY);
+#if SUMMIT_MODERN_WEBKIT
+            if (tab) {
+                if (auto* statsView = dynamic_cast<FrameStatsWebKitView*>(tab->view))
+                    statsView->AppendFrameStats(reply);
+            }
+#endif
             message->SendReply(&reply);
             break;
         }

@@ -5,7 +5,9 @@ The page is given time to settle, then a paced burst of mouse wheel notches is
 delivered through the browser's input path (summitctl scroll, which needs
 SUMMIT_ENABLE_INPUT_SYNTHESIS=1). Before/after screenshots record visible
 movement. Frame statistics are reported only when the engine or an opt-in
-Summit view actually emits them.
+Summit view actually emits them. Current bundles also return a burst snapshot
+that includes a pending frame gap when the page stops presenting before its
+periodic log can flush.
 
 Everything for one run lands in .vm/bench/<run-id>/.
 
@@ -274,6 +276,21 @@ def summarize_ui(samples):
     return summary
 
 
+def summarize_ui_snapshot(snapshot):
+    seconds = snapshot['elapsedMicros'] / 1_000_000
+    frames = snapshot['frames']
+    pending = snapshot['pendingGapMicros']
+    return {
+        'source': 'native-view-snapshot', 'frames': frames,
+        'seconds': round(seconds, 2), 'fps': round(frames / seconds, 2) if seconds else 0,
+        'worstIntervalMs': round(max(snapshot['longestGapMicros'], pending) / 1000, 1),
+        'over33Ms': snapshot['longGaps'] + int(pending > 33000),
+        'pendingGapMs': round(pending / 1000, 1),
+        'worstQueueDelayMs': round(snapshot['queueMaxMicros'] / 1000, 1),
+        'queueOver33Ms': snapshot['queueOver33'],
+    }
+
+
 def summarize(samples):
     if not samples:
         return {}
@@ -428,8 +445,20 @@ def main():
                 raise RuntimeError('Wheel burst did not complete before the measurement deadline')
             time.sleep(0.2)
         run['burstSeconds'] = round(time.monotonic() - burst_started, 1)
+        frame_snapshot = None
+        if args.ui_frame_stats:
+            code, out, err = guest.ctl(ctl, team, 'framestats', timeout_ms=1000)
+            if code == 0:
+                frame_snapshot = json.loads(out)
+                run['frameSnapshot'] = frame_snapshot
+            else:
+                run['frameSnapshotError'] = err.strip() or out.strip()
         # Let the one-second frame counter flush its last partial window.
         time.sleep(1.1)
+        if frame_snapshot:
+            code, out, err = guest.ctl(ctl, team, 'framestats', timeout_ms=1000)
+            if code == 0:
+                run['postBurstFrameSnapshot'] = json.loads(out)
         # Cut the measured log before taking the final VNC screenshot. Capture
         # can hold app_server long enough to resemble a page-update stall.
         guest.fetch_file(remote_log, directory / 'browser.log')
@@ -443,11 +472,11 @@ def main():
         renderer_layout_samples = parse_renderer_layout_lines(text)[len(renderer_layouts_before):]
         grid_item_layout_samples = parse_grid_item_layout_lines(text)[len(grid_item_layouts_before):]
         media_lifecycle_samples = parse_media_lifecycle_lines(text)[len(media_lifecycle_before):]
-        during = engine_samples or ui_samples
+        during = engine_samples or ui_samples or frame_snapshot
         run['frameStatsAvailable'] = bool(during)
         if during:
-            run['frameSamples'] = during
-            run['scroll'] = summarize(engine_samples) if engine_samples else summarize_ui(ui_samples)
+            run['frameSamples'] = engine_samples or ui_samples
+            run['scroll'] = summarize_ui_snapshot(frame_snapshot) if frame_snapshot else (summarize(engine_samples) if engine_samples else summarize_ui(ui_samples))
         if fixed_inline_samples:
             run['fixedInlineLayoutSamples'] = fixed_inline_samples
             run['fixedInlineLayout'] = summarize_fixed_inline_layout(fixed_inline_samples)

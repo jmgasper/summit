@@ -49,4 +49,5 @@ constexpr uint32 kBrowserState = 'stat';
 // Benchmark input synthesis, refused unless SUMMIT_ENABLE_INPUT_SYNTHESIS=1.
 constexpr uint32 kSimulateScroll = 'sscr';
 constexpr uint32 kScrollBurstCompleted = 'ssco';
+constexpr uint32 kFrameStats = 'fsts';
 }

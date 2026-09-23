@@ -11,6 +11,7 @@
 //   summitctl --team ID selecttab TABID
 //   summitctl --team ID back|forward|reload|sidebar
 //   summitctl --team ID frame LEFT TOP RIGHT BOTTOM   standard BWindow "Frame" scripting property
+//   summitctl --team ID framestats            frame counts since the targeted scroll burst began
 //   summitctl --team ID quit                  B_QUIT_REQUESTED to that team only
 //   summitctl find NAME                       every team whose application image is called NAME
 //                                             (Summit is single-launch: a second instance forwards
@@ -189,7 +190,7 @@ int main(int argc, char** argv)
         index += 2;
     }
     if (team < 0 || index >= argc) {
-        std::fputs("usage: summitctl --team ID [--timeout-ms N] state|navigate URL|newtab URL|closetab [ID]|selecttab ID|back|forward|reload|scroll N MS DELTA|quit\n", stderr);
+        std::fputs("usage: summitctl --team ID [--timeout-ms N] state|navigate URL|newtab URL|closetab [ID]|selecttab ID|back|forward|reload|scroll N MS DELTA|framestats|quit\n", stderr);
         return 2;
     }
     const std::string command = argv[index++];
@@ -277,6 +278,20 @@ int main(int argc, char** argv)
         }
         std::printf("{\"count\":%ld,\"intervalMs\":%ld}\n",
             long(done.GetInt32("count", 0)), long(done.GetInt32("interval_ms", 0)));
+        return 0;
+    }
+    if (command == "framestats") {
+        BMessage ask(summit::kFrameStats), stats;
+        status = window.SendMessage(&ask, &stats, timeout, timeout);
+        if (status == B_TIMED_OUT || status == B_WOULD_BLOCK) { std::fputs("window did not reply\n", stderr); return 4; }
+        if (status != B_OK) { std::fprintf(stderr, "framestats: %s\n", std::strerror(status)); return 5; }
+        int64 elapsed = -1;
+        if (stats.FindInt64("elapsed_us", &elapsed) != B_OK) { std::fputs("frame stats unavailable\n", stderr); return 6; }
+        std::printf("{\"elapsedMicros\":%lld,\"frames\":%ld,\"longestGapMicros\":%lld,\"longGaps\":%ld,\"pendingGapMicros\":%lld,\"queueMaxMicros\":%lld,\"queueOver33\":%ld}\n",
+            static_cast<long long>(elapsed), long(stats.GetInt32("frames", 0)),
+            static_cast<long long>(stats.GetInt64("longest_gap_us", 0)), long(stats.GetInt32("long_gaps", 0)),
+            static_cast<long long>(stats.GetInt64("pending_gap_us", 0)),
+            static_cast<long long>(stats.GetInt64("queue_max_us", 0)), long(stats.GetInt32("queue_over_33", 0)));
         return 0;
     }
     uint32 what = 0;
