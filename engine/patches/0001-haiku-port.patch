@@ -9553,10 +9553,10 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..9a2797bf1a4e910b1cd4d9810a1f8fba3a4259c1
+index 0000000000000000000000000000000000000000..14cd17ba1bb8a0c264b07170876c6dc5728dec20
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,1053 @@
+@@ -0,0 +1,1103 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -9625,13 +9625,15 @@ index 0000000000000000000000000000000000000000..9a2797bf1a4e910b1cd4d9810a1f8fba
 +
 +namespace WebCore {
 +
-+static bool mediaLifecycleTraceEnabled()
++static int mediaLifecycleTraceLevel()
 +{
-+    static bool enabled = [] {
++    static int level = [] {
 +        const char* trace = std::getenv("SUMMIT_MEDIA_LIFECYCLE_TRACE");
-+        return trace && trace[0] == '1' && !trace[1];
++        if (trace && trace[0] == '2' && !trace[1])
++            return 2;
++        return trace && trace[0] == '1' && !trace[1] ? 1 : 0;
 +    }();
-+    return enabled;
++    return level;
 +}
 +
 +class MediaPlayerFactoryHaiku final : public MediaPlayerFactory {
@@ -9699,7 +9701,7 @@ index 0000000000000000000000000000000000000000..9a2797bf1a4e910b1cd4d9810a1f8fba
 +
 +void MediaPlayerPrivate::load(const String& url)
 +{
-+    bool traceLifecycle = mediaLifecycleTraceEnabled();
++    int traceLifecycle = mediaLifecycleTraceLevel();
 +    bigtime_t startedAt = traceLifecycle ? system_time() : 0;
 +    cancelLoad();
 +    bigtime_t cancelledAt = traceLifecycle ? system_time() : 0;
@@ -9716,7 +9718,7 @@ index 0000000000000000000000000000000000000000..9a2797bf1a4e910b1cd4d9810a1f8fba
 +
 +    if (traceLifecycle) {
 +        bigtime_t finishedAt = system_time();
-+        if (finishedAt - startedAt >= 10000) {
++        if (traceLifecycle > 1 || finishedAt - startedAt >= 10000) {
 +            std::fprintf(stderr,
 +                "Summit media lifecycle: player=%p operation=load total=%.1f cancel=%.1f startLoader=%.1f\n",
 +                this, (finishedAt - startedAt) / 1000.0, (cancelledAt - startedAt) / 1000.0,
@@ -9728,12 +9730,20 @@ index 0000000000000000000000000000000000000000..9a2797bf1a4e910b1cd4d9810a1f8fba
 +
 +void MediaPlayerPrivate::cancelLoad()
 +{
-+    bool traceLifecycle = mediaLifecycleTraceEnabled();
++    int traceLifecycle = mediaLifecycleTraceLevel();
 +    bigtime_t startedAt = traceLifecycle ? system_time() : 0;
 +    bool hadLoadingThread = m_loadingThread >= 0;
 +    bool hadVideoThread = false;
 +    bool hadSoundPlayer = false;
 +    m_abort = true;
++#if USE(CURL)
++    // curl_multi_wakeup() is thread-safe. Serialize the handle lifetime so a
++    // cancellation cannot race the loader's curl_multi_cleanup().
++    m_downloadLock.Lock();
++    if (m_activeDownload)
++        curl_multi_wakeup(static_cast<CURLM*>(m_activeDownload));
++    m_downloadLock.Unlock();
++#endif
 +
 +    // Neither the decoder thread nor the sound callback can finish while the
 +    // caller holds m_mediaLock. Join and stop them before taking it.
@@ -9791,7 +9801,7 @@ index 0000000000000000000000000000000000000000..9a2797bf1a4e910b1cd4d9810a1f8fba
 +
 +    if (traceLifecycle) {
 +        bigtime_t finishedAt = system_time();
-+        if (finishedAt - startedAt >= 10000) {
++        if (traceLifecycle > 1 || finishedAt - startedAt >= 10000) {
 +            std::fprintf(stderr,
 +                "Summit media lifecycle: player=%p operation=cancelLoad total=%.1f waitLoader=%.1f waitVideo=%.1f stopAudio=%.1f cleanup=%.1f hadLoader=%d hadVideo=%d hadAudio=%d\n",
 +                this, (finishedAt - startedAt) / 1000.0, (loadingJoinedAt - startedAt) / 1000.0,
@@ -10109,7 +10119,13 @@ index 0000000000000000000000000000000000000000..9a2797bf1a4e910b1cd4d9810a1f8fba
 +}
 +
 +#if USE(CURL)
-+static bool downloadMediaFile(const BUrl& url, std::atomic<bool>& abort, String& path)
++struct MediaDownloadCancellation {
++    std::atomic<bool>& abort;
++    BLocker& lock;
++    void*& activeDownload;
++};
++
++static bool downloadMediaFile(const BUrl& url, MediaDownloadCancellation& cancellation, String& path)
 +{
 +    char name[] = "/tmp/summit-media-XXXXXX";
 +    int descriptor = mkstemp(name);
@@ -10126,7 +10142,7 @@ index 0000000000000000000000000000000000000000..9a2797bf1a4e910b1cd4d9810a1f8fba
 +        FILE* output;
 +        std::atomic<bool>& abort;
 +        size_t bytes { 0 };
-+    } download { output, abort };
++    } download { output, cancellation.abort };
 +
 +    CURL* request = curl_easy_init();
 +    CURLcode result = CURLE_FAILED_INIT;
@@ -10156,12 +10172,45 @@ index 0000000000000000000000000000000000000000..9a2797bf1a4e910b1cd4d9810a1f8fba
 +            download.bytes += written;
 +            return written;
 +        });
-+        result = curl_easy_perform(request);
++        CURLM* multi = curl_multi_init();
++        if (multi && curl_multi_add_handle(multi, request) == CURLM_OK) {
++            cancellation.lock.Lock();
++            cancellation.activeDownload = multi;
++            cancellation.lock.Unlock();
++
++            int running = 0;
++            CURLMcode multiResult = curl_multi_perform(multi, &running);
++            while (multiResult == CURLM_OK && running && !cancellation.abort) {
++                int descriptorCount = 0;
++                multiResult = curl_multi_poll(multi, nullptr, 0, 1000, &descriptorCount);
++                if (multiResult == CURLM_OK)
++                    multiResult = curl_multi_perform(multi, &running);
++            }
++
++            if (cancellation.abort)
++                result = CURLE_ABORTED_BY_CALLBACK;
++            else if (multiResult == CURLM_OK) {
++                int messagesRemaining = 0;
++                while (CURLMsg* message = curl_multi_info_read(multi, &messagesRemaining)) {
++                    if (message->msg == CURLMSG_DONE && message->easy_handle == request) {
++                        result = message->data.result;
++                        break;
++                    }
++                }
++            }
++
++            cancellation.lock.Lock();
++            cancellation.activeDownload = nullptr;
++            cancellation.lock.Unlock();
++            curl_multi_remove_handle(multi, request);
++        }
++        if (multi)
++            curl_multi_cleanup(multi);
 +        curl_easy_getinfo(request, CURLINFO_RESPONSE_CODE, &response);
 +        curl_easy_cleanup(request);
 +    }
 +    bool closed = fclose(output) == 0;
-+    if (result != CURLE_OK || response < 200 || response >= 300 || !closed || !download.bytes || abort) {
++    if (result != CURLE_OK || response < 200 || response >= 300 || !closed || !download.bytes || cancellation.abort) {
 +        unlink(name);
 +        return false;
 +    }
@@ -10219,10 +10268,10 @@ index 0000000000000000000000000000000000000000..9a2797bf1a4e910b1cd4d9810a1f8fba
 +    return std::nullopt;
 +}
 +
-+static bool downloadPlaylist(const BUrl& url, std::atomic<bool>& abort, std::string& playlist)
++static bool downloadPlaylist(const BUrl& url, MediaDownloadCancellation& cancellation, std::string& playlist)
 +{
 +    String path;
-+    if (!downloadMediaFile(url, abort, path))
++    if (!downloadMediaFile(url, cancellation, path))
 +        return false;
 +
 +    auto pathCString = path.utf8();
@@ -10239,7 +10288,7 @@ index 0000000000000000000000000000000000000000..9a2797bf1a4e910b1cd4d9810a1f8fba
 +    if (input)
 +        fclose(input);
 +    unlink(pathCString.legacyCStringPointer());
-+    return succeeded && !abort;
++    return succeeded && !cancellation.abort;
 +}
 +
 +static std::optional<BUrl> resolvePlaylistReference(const BUrl& base, std::string_view reference)
@@ -10313,10 +10362,10 @@ index 0000000000000000000000000000000000000000..9a2797bf1a4e910b1cd4d9810a1f8fba
 +}
 +
 +static std::optional<BUrl> mediaURLForByteRangePlaylist(const BUrl& playlistURL,
-+    std::atomic<bool>& abort)
++    MediaDownloadCancellation& cancellation)
 +{
 +    std::string playlist;
-+    if (!downloadPlaylist(playlistURL, abort, playlist))
++    if (!downloadPlaylist(playlistURL, cancellation, playlist))
 +        return std::nullopt;
 +
 +    auto lines = playlistLines(playlist);
@@ -10365,11 +10414,11 @@ index 0000000000000000000000000000000000000000..9a2797bf1a4e910b1cd4d9810a1f8fba
 +    return mediaURL;
 +}
 +
-+static bool downloadHLSByteRangeMedia(const BUrl& masterURL, std::atomic<bool>& abort,
++static bool downloadHLSByteRangeMedia(const BUrl& masterURL, MediaDownloadCancellation& cancellation,
 +    String& videoPath, String& audioPath)
 +{
 +    std::string masterPlaylist;
-+    if (!downloadPlaylist(masterURL, abort, masterPlaylist))
++    if (!downloadPlaylist(masterURL, cancellation, masterPlaylist))
 +        return false;
 +    HLSVariant variant;
 +    std::optional<HLSAudioRendition> audioRendition;
@@ -10379,15 +10428,15 @@ index 0000000000000000000000000000000000000000..9a2797bf1a4e910b1cd4d9810a1f8fba
 +    auto videoPlaylistURL = resolvePlaylistReference(masterURL, variant.playlist);
 +    if (!videoPlaylistURL)
 +        return false;
-+    auto videoURL = mediaURLForByteRangePlaylist(*videoPlaylistURL, abort);
-+    if (!videoURL || !downloadMediaFile(*videoURL, abort, videoPath))
++    auto videoURL = mediaURLForByteRangePlaylist(*videoPlaylistURL, cancellation);
++    if (!videoURL || !downloadMediaFile(*videoURL, cancellation, videoPath))
 +        return false;
 +
 +    if (!audioRendition)
 +        return true;
 +    auto audioPlaylistURL = resolvePlaylistReference(masterURL, audioRendition->playlist);
-+    auto audioURL = audioPlaylistURL ? mediaURLForByteRangePlaylist(*audioPlaylistURL, abort) : std::nullopt;
-+    if (!audioURL || !downloadMediaFile(*audioURL, abort, audioPath)) {
++    auto audioURL = audioPlaylistURL ? mediaURLForByteRangePlaylist(*audioPlaylistURL, cancellation) : std::nullopt;
++    if (!audioURL || !downloadMediaFile(*audioURL, cancellation, audioPath)) {
 +        auto videoPathCString = videoPath.utf8();
 +        unlink(videoPathCString.legacyCStringPointer());
 +        videoPath = { };
@@ -10423,10 +10472,11 @@ index 0000000000000000000000000000000000000000..9a2797bf1a4e910b1cd4d9810a1f8fba
 +    }
 +#if USE(CURL)
 +    if (!hasLocalFile && (mediaURL.Protocol() == "http" || mediaURL.Protocol() == "https")) {
++        MediaDownloadCancellation cancellation { m_abort, m_downloadLock, m_activeDownload };
 +        if (isHLSPlaylistURL(mediaURL)) {
-+            if (!downloadHLSByteRangeMedia(mediaURL, m_abort, m_downloadPath, m_secondaryDownloadPath))
++            if (!downloadHLSByteRangeMedia(mediaURL, cancellation, m_downloadPath, m_secondaryDownloadPath))
 +                return;
-+        } else if (!downloadMediaFile(mediaURL, m_abort, m_downloadPath))
++        } else if (!downloadMediaFile(mediaURL, cancellation, m_downloadPath))
 +            return;
 +        m_downloadFile = new BFile(m_downloadPath.utf8().legacyCStringPointer(), B_READ_ONLY);
 +        if (m_downloadFile->InitCheck() != B_OK)
@@ -10612,10 +10662,10 @@ index 0000000000000000000000000000000000000000..9a2797bf1a4e910b1cd4d9810a1f8fba
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..a69ce89c6f0a7ca2f3b7dbcb9b4d0eb9b41a775d
+index 0000000000000000000000000000000000000000..05c54f7126431019324858ed3b7fdf660415276e
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
-@@ -0,0 +1,151 @@
+@@ -0,0 +1,155 @@
 +/*
 + * Copyright (C) 2014 Haiku, Inc.
 + *
@@ -10742,6 +10792,10 @@ index 0000000000000000000000000000000000000000..a69ce89c6f0a7ca2f3b7dbcb9b4d0eb9
 +        BSoundPlayer* m_soundPlayer;
 +        BBitmap* m_frameBuffer;
 +        BLocker m_mediaLock;
++#if USE(CURL)
++        BLocker m_downloadLock;
++        void* m_activeDownload { nullptr };
++#endif
 +
 +        MediaPlayer& m_player;
 +        MediaPlayer::NetworkState m_networkState;

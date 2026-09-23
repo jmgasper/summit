@@ -8,6 +8,7 @@
 const video = document.getElementById("video");
 const events = [];
 let done = false;
+let cancelScheduled = false;
 async function finish(result) {
     if (done) return;
     done = true;
@@ -18,17 +19,27 @@ async function finish(result) {
 }
 for (const event of ["loadedmetadata", "playing", "error"])
     video.addEventListener(event, () => events.push({event, at: performance.now()}));
-video.addEventListener("playing", () => setTimeout(() => {
+function cancel(played, cancelAfterMs) {
     const started = performance.now();
     video.removeAttribute("src");
     video.load();
-    finish({cancelMs: performance.now() - started, played: true});
-}, 1000), {once: true});
-const source = new URLSearchParams(location.search).get("src");
+    finish({cancelMs: performance.now() - started, cancelAfterMs, played});
+}
+const params = new URLSearchParams(location.search);
+const source = params.get("src");
+const cancelAfterMs = Number(params.get("cancelAfter"));
 if (source) {
     video.src = source;
     video.play().catch(error => finish({played: false, error: String(error)}));
+    if (Number.isFinite(cancelAfterMs) && cancelAfterMs > 0) {
+        cancelScheduled = true;
+        setTimeout(() => cancel(false, cancelAfterMs), cancelAfterMs);
+    }
 } else
     finish({played: false, error: "src query parameter required"});
+video.addEventListener("playing", () => {
+    if (!cancelScheduled)
+        setTimeout(() => cancel(true, 1000), 1000);
+}, {once: true});
 setTimeout(() => finish({played: false, timeout: true}), 15000);
 </script>

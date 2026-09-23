@@ -2064,6 +2064,7 @@ that block for at least 10 ms. Cancellation is divided into loader-thread join,
 video-thread join, audio stop, and cleanup; the disabled path caches the
 environment check and takes no clock readings. `run-scroll.py` stores the
 individual samples and per-operation totals in `run.json`.
+Set the value to `2` to record every call for a focused probe.
 
 A correlated live pass found one 342.2 ms Reddit scroll listener that destroyed
 a media player while its download was still active. The synchronous
@@ -2075,6 +2076,25 @@ NVDEC H.264 and AAC initialization still succeeded. The complete pass reached
 43.55 native-view frames/s, had a 633.2 ms worst interval, and kept native queue
 delay below 0.9 ms
 (`.vm/bench/scroll-20260923-125311-reddit-media-lifecycle/`).
+
+The completed-file downloader now uses libcurl's multi interface. While a
+download is active, `cancelLoad()` calls the thread-safe `curl_multi_wakeup()`
+before joining the loader, with a lock protecting the multi handle's lifetime.
+On the same direct Reddit CMAF file, clearing the source after 50 ms blocked
+JavaScript for 31 ms in the old bundle; the lifecycle trace attributed all
+30.9 ms to the loader join
+(`.vm/bench/probe-20260923-130753-summit-media-active-cancel50-control/`).
+The wakeable downloader returned in 2 ms, and the all-call lifecycle trace
+confirmed that its active loader join took only 0.6 ms
+(`.vm/bench/probe-20260923-131324-summit-media-active-cancel50-wakeup-all/`).
+
+A live `/r/popular/` pass with the new downloader had no media lifecycle call
+above the 10 ms threshold. It resolved Reddit HLS video and audio and selected
+NVDEC H.264 and AAC successfully
+(`.vm/bench/scroll-20260923-130308-reddit-wakeable-media-cancel/`). A separate
+direct HLS probe played the complete 12.7-second clip to `ended` at 720 by
+1280 with no media error, again using NVDEC H.264 and AAC
+(`.vm/bench/probe-20260923-130915-summit-reddit-hls-wakeup/`).
 
 ### libstdc++ assertion experiment
 
