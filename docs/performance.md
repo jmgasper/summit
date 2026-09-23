@@ -2704,3 +2704,30 @@ stream-2 decoder warning; decoder selection alone does not prove that every
 feed post completes playback
 (`.vm/bench/probe-20260923-200527-summit-reddit-current-direct-hls-media-check/`
 and `.vm/bench/scroll-20260923-200427-reddit-live-media-codec-lifecycle/`).
+
+### Advertise the finite Reddit HLS playback path
+
+The Haiku media backend could already play a direct finite Reddit HLS URL,
+but `video.canPlayType("application/vnd.apple.mpegurl")` and the alternate
+`application/x-mpegURL` both returned empty. A typed `<source>` fixture
+therefore skipped a working Reddit HLS playlist and selected an unusable MP4
+fallback. The baseline stayed at time zero with no video dimensions
+(`.vm/bench/probe-20260923-205355-summit-reddit-media-capabilities/` and
+`.vm/bench/probe-20260923-205459-summit-hls-source-selection-control/`).
+
+The Haiku engine now includes both HLS MIME types in its supported list and
+returns `maybe` for them. `Maybe` is deliberate because the implementation
+handles finite, unencrypted, same-resource byte-range CMAF playlists rather
+than every HLS form. The candidate selected the typed HLS source, loaded
+metadata in 480 ms, and reached `ended` at 12.7 seconds with no media error;
+the chosen decoders were NVDEC H.264 and AAC. `MediaSource` remains unavailable
+(`.vm/bench/probe-20260923-205751-summit-hls-capabilities-candidate/` and
+`.vm/bench/probe-20260923-205821-summit-hls-source-selection-candidate/`).
+
+A live `/r/popular/` 180-notch pass on the candidate selected NVDEC H.264
+and resolved separate HLS video and AAC audio twice, with no logged media
+lifecycle stall over 10 ms. It still delivered only 36.15 native-view
+frames/s during its 3.29-second burst and had a 1.15-second pending frame
+gap. This verifies live feed decoder selection, not completion of every feed
+post; the scrolling bottleneck remains
+(`.vm/bench/scroll-20260923-205917-reddit-hls-capability-live/`).

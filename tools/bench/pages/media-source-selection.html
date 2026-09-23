@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Summit HLS source-selection probe</title>
+<video id="video" muted playsinline controls>
+  <source src="https://v.redd.it/u5pu7ad5rcdh1/HLSPlaylist.m3u8" type="application/vnd.apple.mpegurl">
+  <source src="/__bench/pages/unsupported-media.mp4" type="video/mp4">
+</video>
+<script>
+const video = document.getElementById("video");
+const events = [];
+const start = performance.now();
+for (const name of ["loadstart", "loadedmetadata", "loadeddata", "canplay", "playing", "timeupdate", "waiting", "stalled", "error", "ended"])
+    video.addEventListener(name, () => events.push({name, atMs: Math.round(performance.now() - start), time: video.currentTime}));
+video.play().catch(error => events.push({name: "play-rejected", message: String(error)}));
+setTimeout(async () => {
+    const result = {
+        currentSrc: video.currentSrc,
+        hlsCanPlayType: video.canPlayType("application/vnd.apple.mpegurl"),
+        events, time: video.currentTime, duration: video.duration,
+        readyState: video.readyState, networkState: video.networkState,
+        width: video.videoWidth, height: video.videoHeight,
+        error: video.error && {code: video.error.code, message: video.error.message},
+    };
+    await fetch("/__bench/probe", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(result)});
+    document.title = `HLS source selection: ${video.currentTime.toFixed(2)}s`;
+}, 18000);
+</script>

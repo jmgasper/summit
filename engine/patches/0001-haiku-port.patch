@@ -10095,10 +10095,10 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..14cd17ba1bb8a0c264b07170876c6dc5728dec20
+index 0000000000000000000000000000000000000000..a24e24605e8d5bdb50aa114a2e4d0f242c9e7b3a
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,1103 @@
+@@ -0,0 +1,1114 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -11172,6 +11172,12 @@ index 0000000000000000000000000000000000000000..14cd17ba1bb8a0c264b07170876c6dc5
 +        cache.get().add(String::fromUTF8(mfi.mime_type));
 +    }
 +
++    // The finite byte-range HLS path is handled before Media Kit sees the
++    // completed MP4 files, so its playlist MIME types are not advertised by
++    // Media Kit's file-format add-ons.
++    cache.get().add("application/vnd.apple.mpegurl"_s);
++    cache.get().add("application/x-mpegurl"_s);
++
 +    typeListInitialized = true;
 +    return cache;
 +}
@@ -11186,8 +11192,13 @@ index 0000000000000000000000000000000000000000..14cd17ba1bb8a0c264b07170876c6dc5
 +    if (parameters.type.isEmpty())
 +        return MediaPlayer::SupportsType::IsNotSupported;
 +
++    auto containerType = parameters.type.containerType();
++    if (equalLettersIgnoringASCIICase(containerType, "application/vnd.apple.mpegurl"_s)
++        || equalLettersIgnoringASCIICase(containerType, "application/x-mpegurl"_s))
++        return MediaPlayer::SupportsType::MayBeSupported;
++
 +    // spec says we should not return "probably" if the codecs string is empty
-+    if (mimeTypeCache().contains(parameters.type.containerType())) {
++    if (mimeTypeCache().contains(containerType)) {
 +        return parameters.type.codecs().isEmpty() ? MediaPlayer::SupportsType::MayBeSupported : MediaPlayer::SupportsType::IsSupported;
 +    }
 +
