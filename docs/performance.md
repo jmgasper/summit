@@ -1972,6 +1972,25 @@ scored 5.862 ± 1.780 and left the warm TipTap passes at 279 ms or more
 tests rule out unlinked-code cache capacity, late tier-up, and full collection
 as the state transition. All diagnostic settings were reverted.
 
+Request logs later confirmed that both the isolated and full benchmarks fetch
+TipTap's HTML and JavaScript exactly once, excluding resource eviction or a
+second network load. JSC compile-time logging also found 467 of the 468
+isolated compile signatures in the full run. For that shared subset, Baseline
+compilation was effectively identical: 298 functions and 21.45 ms isolated,
+versus 299 functions and 21.17 ms in the full run. The full benchmark did,
+however, emit roughly 34 MB of Baseline, DFG, and FTL code over three
+iterations, compared with roughly 1.5 MB for isolated TipTap. Raising the DFG
+threshold to 10,000 scored 6.179 and left TipTap at 288.8 ms; forcing
+synchronous JIT compilation scored 4.321 and made TipTap slower at 381.7 ms.
+Increasing the JSC compiler worker pool had already scored 6.085 and left
+TipTap unchanged. The remaining evidence points to the accumulated hardware
+code and data working set, rather than repeat compilation or contention with a
+background compiler. There is no validated setting change to retain
+(`.vm/bench/speedometer-20260923-161248-tiptap-compile-times/`,
+`.vm/bench/speedometer-20260923-161336-full-compile-times/`,
+`.vm/bench/speedometer-20260923-161655-full-dfg-threshold-10000/`, and
+`.vm/bench/speedometer-20260923-161901-full-no-concurrent-jit-tiptap-diagnostic/`).
+
 Archived inclusive profiles remain useful for locating broad costs. A
 50-iteration TipTap-only profile shows
 `Document::updateLayout` on 26.8% of all one-millisecond samples, flex layout
@@ -2325,3 +2344,40 @@ Reddit pass retained the grid improvement at 54.64 native-view frames/s, a
 257.2 ms worst interval, two intervals over 33 ms, and 0.3 ms maximum native
 queue delay. Its media log selected NVDEC H.264 twice and AAC once with status
 0 (`.vm/bench/scroll-20260923-155049-reddit-canvas-damage-coalesced/`).
+
+### Fast full-circle Canvas fills
+
+Perf Dashboard's range-selection test remained about 55 ms slower than
+Firefox in its synchronous phase. Application-level timers isolated most of
+that phase to Canvas chart redraws. A warmed range selection submitted 6,530
+`fill()` calls and 252 `stroke()` calls; its time-series rendering consumed
+about 68 ms in Summit and 59 ms in Firefox. Each plotted point uses the common
+`beginPath(); arc(..., 0, 2 * Math.PI); fill()` sequence.
+
+WebCore already recognizes single arcs in the Skia backend, but sent a complete
+arc without an explicit `closePath()` through `SkCanvas::drawArc`. Canvas fill
+semantics implicitly close the subpath, so a complete filled arc is exactly an
+oval. The Skia path now uses `drawOval` for that case. Partial arcs and all
+unclosed strokes keep the existing path so cap, join, and chord behavior stay
+unchanged.
+
+The deterministic `canvas-paths.html` probe submits 5,000 circles per round.
+The old bundle took a 21 ms median for open full-circle fills, versus 18 ms for
+the already optimized explicitly closed form. The new bundle reduced the open
+form to 19–20 ms while leaving closed fills and open strokes essentially
+unchanged. A complete 64 by 64 pixel comparison between the two fill forms was
+exact. Firefox measured an 18 ms median for the open form on the same machine
+(`.vm/bench/probe-20260923-164634-summit-canvas-fill-oval-control/`,
+`.vm/bench/probe-20260923-164728-summit-canvas-fill-oval-final/`, and
+`.vm/bench/probe-20260923-165007-firefox-canvas-paths-baseline/`).
+
+In matched ten-iteration Perf Dashboard runs, the candidate reduced the suite
+from 315.5 to 308.0 ms. Render fell from 52.7 to 48.8 ms and point selection
+from 122.6 to 118.8 ms; range selection was unchanged at about 140 ms, leaving
+its non-Canvas event and drag work for later investigation
+(`.vm/bench/speedometer-20260923-164354-perf-dashboard-fill-oval-control/` and
+`.vm/bench/speedometer-20260923-164251-perf-dashboard-fill-oval/`). The full
+benchmark scored **6.419 ± 0.217**. Its aggregate suite time was neutral within
+normal run variance, while Perf Dashboard improved from the previous final
+bundle's 314.7 to 303.7 ms
+(`.vm/bench/speedometer-20260923-164803-canvas-fill-oval-full/`).

@@ -13286,6 +13286,23 @@ index 74cfeb60ac3daa537785693be3917358aa26a2b5..db188c89ec849735d75d032387288f9f
  }
  
  void FontCache::platformPurgeInactiveFontData()
+diff --git a/Source/WebCore/platform/graphics/skia/GraphicsContextSkia.cpp b/Source/WebCore/platform/graphics/skia/GraphicsContextSkia.cpp
+index 59d4ba8107c53467362b653542b1418471ff124d..e0ae60cb332cdbd2dd452f915d23e715de284dee 100644
+--- a/Source/WebCore/platform/graphics/skia/GraphicsContextSkia.cpp
++++ b/Source/WebCore/platform/graphics/skia/GraphicsContextSkia.cpp
+@@ -456,7 +456,11 @@ bool GraphicsContextSkia::drawPathAsSingleElement(const Path& path, SkPaint& pai
+             return false;
+ 
+         SkRect oval = { arc.center.x() - arc.radius, arc.center.y() - arc.radius, arc.center.x() + arc.radius, arc.center.y() + arc.radius };
+-        if (isClosedArc)
++        // Filling implicitly closes each subpath. A complete arc therefore has
++        // the same fill as an oval even when the script did not call closePath().
++        // Besides expressing that shape directly, drawOval avoids Skia's more
++        // general arc path handling for the common Canvas 2D circle idiom.
++        if (isClosedOval && (isClosedArc || paint.getStyle() == SkPaint::kFill_Style))
+             m_canvas.drawOval(oval, paint);
+         else
+             m_canvas.drawArc(oval, startDegrees, sweepDegrees, false, paint);
 diff --git a/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp b/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp
 index 30343ff03299542f8673d98b486c7fdd78bddeb9..acc620650ea4ee0cb807a1b49194a9495ef0e4f2 100644
 --- a/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp

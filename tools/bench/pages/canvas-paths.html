@@ -1,0 +1,117 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Summit Canvas path probe: running</title>
+<style>
+body { font: 14px/1.4 sans-serif; margin: 20px; background: #eee; }
+canvas { width: 800px; height: 500px; border: 2px solid #222; background: white; }
+pre { white-space: pre-wrap; }
+</style>
+<h1>Canvas path submissions</h1>
+<canvas id="canvas" width="800" height="500"></canvas>
+<pre id="out">running…</pre>
+<script>
+"use strict";
+const canvas = document.getElementById("canvas");
+const context = canvas.getContext("2d");
+const circlesPerRound = 5000;
+const measuredRounds = 12;
+let seed = 0x5eed1234;
+
+function random() {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed / 0x100000000;
+}
+
+const circles = Array.from({length: circlesPerRound}, () => ({
+    x: 3 + random() * 794,
+    y: 3 + random() * 494,
+    radius: 1 + random() * 2,
+}));
+
+function statistics(values) {
+    const sorted = [...values].sort((a, b) => a - b);
+    return {
+        values,
+        mean: values.reduce((sum, value) => sum + value, 0) / values.length,
+        median: (sorted[5] + sorted[6]) / 2,
+        min: sorted[0],
+        max: sorted.at(-1),
+    };
+}
+
+function drawOpenFullArcFill() {
+    for (const circle of circles) {
+        context.beginPath();
+        context.arc(circle.x, circle.y, circle.radius, 0, 2 * Math.PI);
+        context.fill();
+    }
+}
+
+function drawClosedFullArcFill() {
+    for (const circle of circles) {
+        context.beginPath();
+        context.arc(circle.x, circle.y, circle.radius, 0, 2 * Math.PI);
+        context.closePath();
+        context.fill();
+    }
+}
+
+function drawOpenFullArcStroke() {
+    for (const circle of circles) {
+        context.beginPath();
+        context.arc(circle.x, circle.y, circle.radius, 0, 2 * Math.PI);
+        context.stroke();
+    }
+}
+
+async function measure(draw) {
+    for (let index = 0; index < 3; ++index) {
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        draw();
+    }
+    const values = [];
+    for (let index = 0; index < measuredRounds; ++index) {
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        const start = performance.now();
+        draw();
+        values.push(performance.now() - start);
+        await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    return statistics(values);
+}
+
+(async () => {
+    context.fillStyle = "#285fbd";
+    context.strokeStyle = "#285fbd";
+    context.lineWidth = 1;
+    const result = {
+        circlesPerRound,
+        measuredRounds,
+        openFullArcFill: await measure(drawOpenFullArcFill),
+        closedFullArcFill: await measure(drawClosedFullArcFill),
+        openFullArcStroke: await measure(drawOpenFullArcStroke),
+    };
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.beginPath();
+    context.arc(32, 32, 20, 0, 2 * Math.PI);
+    context.fill();
+    const openCirclePixels = context.getImageData(0, 0, 64, 64).data;
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.beginPath();
+    context.arc(32, 32, 20, 0, 2 * Math.PI);
+    context.closePath();
+    context.fill();
+    const closedCirclePixels = context.getImageData(0, 0, 64, 64).data;
+    result.openAndClosedPixelsMatch = openCirclePixels.every((value, index) => value === closedCirclePixels[index]);
+    result.matches = result.openFullArcFill.mean > 0
+        && result.closedFullArcFill.mean > 0
+        && result.openFullArcStroke.mean > 0
+        && result.openAndClosedPixelsMatch;
+    document.getElementById("out").textContent = JSON.stringify(result, null, 2);
+    await fetch("/__bench/probe", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(result)});
+    document.title = result.matches ? "Summit Canvas path probe: done" : "Summit Canvas path probe: failed";
+})().catch(error => {
+    document.getElementById("out").textContent = String(error && error.stack || error);
+    document.title = "Summit Canvas path probe: error";
+});
+</script>
