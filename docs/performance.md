@@ -2651,6 +2651,19 @@ overhead estimate, but the long stall remains with tracing off
 (`.vm/bench/scroll-20260923-202313-reddit-page-phases-low-volume/` and
 `.vm/bench/scroll-20260923-202403-reddit-page-phases-off-control/`).
 
+The post-layout trace is now split into `postDidLayout`, `postTasks`, and
+`postOther`. Another low-volume pass caught a 1,521.3 ms document-scroll
+listener and 115 frames in 5.19 seconds (22.2 frames/s), with a 3.12-second
+pending presentation gap. Its three large outer post-layout slices were
+222.2, 154.9, and 105.2 ms. The corresponding task slices were 217.8,
+152.2, and 103.5 ms; each contained a synchronous follow-up render-tree
+layout of 217.7, 152.0, and 103.4 ms. `didLayout` itself took only 4.4,
+2.7, and 1.7 ms. The reported 490.3 ms total of slow post-layout slices is
+therefore mostly nested layout, not an independent layer-position walk.
+Avoiding that work requires understanding why the page repeatedly dirties
+the render tree during scroll, while preserving its synchronous geometry
+queries (`.vm/bench/scroll-20260923-202951-reddit-post-layout-split/`).
+
 Media remains verified for the finite Reddit CMAF case: the current bundle
 loaded its HLS metadata in 468 ms, played 720×1280 video to `ended` at 12.7
 seconds with no media error, and selected NVDEC H.264 plus AAC. A live feed

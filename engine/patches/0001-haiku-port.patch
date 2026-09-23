@@ -3478,7 +3478,7 @@ index 3dbc23ec4a0818ed58ab2e0b2648056ab360a2ff..8254fb1525db8f69c8c4d1191e04b9b9
  
  #if USE(QUICK_LOOK)
 diff --git a/Source/WebCore/page/LocalFrameViewLayoutContext.cpp b/Source/WebCore/page/LocalFrameViewLayoutContext.cpp
-index 61749fa2eecc674d3bc7d185a5b3944181454f73..72c469d7ff3d296384fa6e2fd49d0b48de000e41 100644
+index 61749fa2eecc674d3bc7d185a5b3944181454f73..7d870bf1ac7a27933257d53d17d8dede4af62c25 100644
 --- a/Source/WebCore/page/LocalFrameViewLayoutContext.cpp
 +++ b/Source/WebCore/page/LocalFrameViewLayoutContext.cpp
 @@ -61,6 +61,7 @@
@@ -3596,17 +3596,30 @@ index 61749fa2eecc674d3bc7d185a5b3944181454f73..72c469d7ff3d296384fa6e2fd49d0b48
      {
          SetForScope layoutPhase(m_layoutPhase, LayoutPhase::InViewSizeAdjust);
          ScriptDisallowedScope::InMainThread scriptDisallowedScope;
-@@ -324,6 +387,9 @@ void LocalFrameViewLayoutContext::performLayout(bool canDeferUpdateLayerPosition
+@@ -324,16 +387,39 @@ void LocalFrameViewLayoutContext::performLayout(bool canDeferUpdateLayerPosition
                  return;
          }
      }
 +#if PLATFORM(HAIKU)
 +    markTracePhase(viewSizeDuration);
++    MonotonicTime postDidLayoutEnd;
++    MonotonicTime postTasksEnd;
 +#endif
      {
          SetForScope layoutPhase(m_layoutPhase, LayoutPhase::InPostLayout);
          if (m_needsFullRepaint)
-@@ -334,6 +400,15 @@ void LocalFrameViewLayoutContext::performLayout(bool canDeferUpdateLayerPosition
+             renderView()->repaintRootContents();
+         ASSERT(!layoutRoot->needsLayout());
+         protect(view())->didLayout(layoutRoot, canDeferUpdateLayerPositions);
++#if PLATFORM(HAIKU)
++        if (summitPageUpdateTraceEnabled)
++            postDidLayoutEnd = MonotonicTime::now();
++#endif
+         runOrScheduleAsynchronousTasks(canDeferUpdateLayerPositions);
++#if PLATFORM(HAIKU)
++        if (summitPageUpdateTraceEnabled)
++            postTasksEnd = MonotonicTime::now();
++#endif
      }
      InspectorInstrumentation::didLayout(frame, *layoutRoot, layoutAreas);
      DebugPageOverlays::didLayout(frame);
@@ -3614,9 +3627,10 @@ index 61749fa2eecc674d3bc7d185a5b3944181454f73..72c469d7ff3d296384fa6e2fd49d0b48
 +    markTracePhase(postLayoutDuration);
 +    auto traceTotal = traceLast - traceStart;
 +    if (traceTotal >= 10_ms) {
-+        WTFLogAlways("Summit layout phases: context=%p total=%.1f pre=%.1f renderTree=%.1f viewSize=%.1f post=%.1f subtree=%u deferredLayerPositions=%u\n",
++        WTFLogAlways("Summit layout phases: context=%p total=%.1f pre=%.1f renderTree=%.1f viewSize=%.1f post=%.1f postDidLayout=%.1f postTasks=%.1f postOther=%.1f subtree=%u deferredLayerPositions=%u\n",
 +            this, traceTotal.milliseconds(), preLayoutDuration.milliseconds(), renderTreeDuration.milliseconds(),
-+            viewSizeDuration.milliseconds(), postLayoutDuration.milliseconds(), beganWithSubtreeLayout, canDeferUpdateLayerPositions);
++            viewSizeDuration.milliseconds(), postLayoutDuration.milliseconds(), (postDidLayoutEnd - (traceLast - postLayoutDuration)).milliseconds(),
++            (postTasksEnd - postDidLayoutEnd).milliseconds(), (traceLast - postTasksEnd).milliseconds(), beganWithSubtreeLayout, canDeferUpdateLayerPositions);
 +    }
 +#endif
  }
