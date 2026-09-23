@@ -3194,3 +3194,15 @@ which can synchronously call `view.measure()`. The slow third observer is
 consistent with that path, but the existing run did not label targets. The
 opt-in trace now records a few observed target tags and classes so a follow-up
 can establish that mapping before optimizing the measurement path.
+### Reddit HLS seek range regression
+
+On the current workstation bundle, `tools/bench/pages/media-seek.html` loaded a
+12.7-second Reddit HLS clip but exposed an empty `video.seekable` range at
+metadata, then `[0, currentTime]` while playing. Setting `currentTime = 8` at
+metadata briefly reported 8 seconds, but playback started from zero
+(`.vm/bench/probe-20260924-093312-summit-reddit-hls-seek-control/`).
+WebCore's seek task aborts when `seekable` is empty. The Haiku backend reported
+`maxTimeSeekable()` as `currentTime()` even though its finite HLS source has
+been downloaded and its duration is known. Report the duration as the end of
+the seekable range, as the other finite-file backends do. A workstation build
+and before/after seek probe are pending.
