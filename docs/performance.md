@@ -2256,3 +2256,26 @@ and AAC once, all with status 0
 (`.vm/bench/scroll-20260923-124028-reddit-no-stdlib-assertions/`). This confirms
 that the clean candidate retained accelerated Reddit playback, but provides no
 reason to adopt the slower assertion setting.
+
+### Canvas 2D acceleration control
+
+The remaining Speedometer gap is concentrated rather than uniform. Against the
+same-workstation Firefox baseline, Chart.js costs about 206 ms more per full
+iteration, TipTap about 167 ms more, and Perf Dashboard about 106 ms more;
+several news and jQuery suites already match or beat Firefox. Chart.js draws
+5,366 scatter points, making it a useful focused Canvas 2D workload.
+
+Haiku now accepts `SUMMIT_CANVAS_ACCELERATION=0` to disable the generated
+`CanvasUsesAcceleratedDrawing` preference, or any other value to enable it.
+Leaving the variable unset preserves WebKit's Skia default. This makes CPU/GPU
+comparisons repeatable without maintaining separate engine builds.
+
+Twenty-iteration Chart.js runs measured 369.0 and 384.1 ms with the default
+accelerated path around an intervening 376.2 ms CPU run. The per-test split
+moved in the expected direction in the first comparison (for example, scatter
+draw sync time was 140.3 ms accelerated and 142.1 ms CPU), but the default
+repeat drifted beyond that difference. Canvas acceleration is therefore not
+the cause of the roughly twofold Firefox gap, and remains enabled by default
+(`.vm/bench/speedometer-20260923-153400-chartjs-canvas-default/`,
+`.vm/bench/speedometer-20260923-153449-chartjs-canvas-cpu/`, and
+`.vm/bench/speedometer-20260923-153542-chartjs-canvas-default-repeat/`).
