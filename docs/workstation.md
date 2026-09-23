@@ -31,6 +31,13 @@ SUMMIT_ENGINE_BUILD_NAME=ModernGL SUMMIT_WEBKIT_JOBS=24 \
 bash tools/build-modern-browser-in-vm.sh --browser --bundle --modern-extensions
 ```
 
+For interactive checks on September 24, 2026, the desktop launcher
+`/boot/home/Desktop/Summit-current.sh` runs the tested
+`bundle-fik34vjn` with the private Mesa GPU libraries. The system-installed
+`/boot/system/apps/Summit` is an older September 20 build. The desktop
+launcher uses Summit's normal `SummitModern` profile; benchmark runs use
+separate profiles.
+
 `SUMMIT_REMOTE_TAG` only names the host-side lock and result files, so a VM
 build and a workstation build can run at the same time.
 
