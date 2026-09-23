@@ -3004,3 +3004,13 @@ the full runs also reflect interactions among suites
 `.vm/bench/speedometer-20260923-235421-text-width-full-control-matched/`,
 `.vm/bench/speedometer-20260923-235613-text-width-full-candidate-matched/`,
 and `.vm/bench/speedometer-20260923-235224-text-width-default-matched/`).
+
+On the packaged default bundle, a live `/r/popular/` 80-notch smoke delivered
+53.68 native-view frames/s over 1.34 seconds, with a 16.5 ms pending frame
+gap. Before and after screenshots show different, rendered posts. This short
+burst does not establish sustained Reddit scrolling performance. The typed
+Reddit HLS fixture loaded 720×1280 metadata, played to `ended` at 12.7 seconds
+without a media error, and selected NVDEC H.264 plus AAC with status 0. The
+decoder still logged its usual last-buffer warning at end of stream
+(`.vm/bench/scroll-20260923-235918-text-width-reddit-smoke/` and
+`.vm/bench/probe-20260924-000155-summit-text-width-hls-codec-smoke/`).
