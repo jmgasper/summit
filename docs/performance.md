@@ -2442,3 +2442,48 @@ coordinates, so the trial shortcut and all tracing were removed
 `.vm/bench/speedometer-20260923-180135-perf-dashboard-clean-replaced-geometry/`,
 and
 `.vm/bench/speedometer-20260923-182839-perf-dashboard-dirty-renderers/`).
+
+### Fixed-repeat grid coverage trial
+
+A fresh `/r/popular/` pass on the clean production bundle selected NVDEC H.264
+for direct video and for an HLS video with separate AAC audio. Its 180-notch
+burst delivered 51.14 native-view frames/s with a 256.0 ms worst interval and
+0.3 ms maximum UI queue delay. The current bundle also played a direct Reddit
+HLS playlist to its 12.7-second `ended` event at 720 by 1280, with no media
+error and NVDEC H.264 plus AAC selected
+(`.vm/bench/scroll-20260923-183852-reddit-media-current/` and
+`.vm/bench/probe-20260923-184005-summit-current-reddit-hls-nvdec/`).
+
+The remaining burst gap coincided with a 212.8 ms page update, including
+203.6 ms of final layout. The slow render-tree calls again involved a grid and
+its flex item. This grid's first modern-coverage rejection was a fixed
+`repeat(...)` column list. A guarded trial admitted fixed repeats whose tracks
+were supported breadth or `minmax()` values and whose line-name entries were
+empty. WebKit already expands those tracks into `GridTemplateList::sizes` for
+the modern formatter. The new `grid-space-between.html` cases confirmed exact
+legacy geometry for a three-column repeat; a repeat with named lines stayed on
+the legacy path.
+
+On Reddit, that change advanced the hot grid to rejection reason 25, an item
+margin, without improving scrolling: 50.75 frames/s and a 280.6 ms worst
+interval (`.vm/bench/scroll-20260923-185138-reddit-fixed-repeat-candidate/`).
+The modern formatter also has code for fixed margins, so a second guarded
+trial admitted fixed margins while leaving auto and other unresolved margins
+on the legacy path. The fixed-margin fixture matched legacy geometry and its
+auto-margin counterpart still fell back. Reddit's hot item continued to
+reject on a nonfixed margin, while its burst reached 35.69 frames/s with an
+894.2 ms worst interval. Live feed content varied, so this scroll comparison
+alone does not quantify the candidate's cost
+(`.vm/bench/scroll-20260923-185606-reddit-repeat-margin-candidate/`).
+
+The full ten-iteration Speedometer comparison settled the decision. Production
+scored **6.557 ± 0.243**, fixed-repeat-only scored **6.589 ± 0.226**, and the
+fixed-repeat plus fixed-margin build scored **6.236 ± 0.140**. Aggregate suite
+time was 3,513, 3,506, and 3,680 ms respectively. These were uncontended
+runs on the same workstation and Mesa runtime; several application suites
+slowed under the margin candidate. Both engine coverage changes were removed.
+The geometry fixture remains for a later implementation that can demonstrate
+a real improvement
+(`.vm/bench/speedometer-20260923-185904-fixed-repeat-margin-production-control/`,
+`.vm/bench/speedometer-20260923-190055-fixed-repeat-only-full/`, and
+`.vm/bench/speedometer-20260923-185710-fixed-repeat-margin-full/`).
