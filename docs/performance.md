@@ -4,20 +4,23 @@
 
 The workstation's current coordinated graphics build uses Skia CPU tile
 painting with two workers, mimalloc, asynchronous scrolling, and display-rate
-composition pacing. It completes all 580 steps of Speedometer 3.1. The current
-ten-iteration run is recorded in
-`.vm/bench/speedometer-20260923-033627-mimalloc-compositor-60/`.
+composition pacing. It completes all 580 steps of Speedometer 3.1. The latest
+ten-iteration runs are recorded in
+`.vm/bench/speedometer-20260923-210142-hls-capability-current/` and
+`.vm/bench/speedometer-20260923-210422-matched-firefox-viewport/`.
 
-| Browser | Speedometer 3.1, 10 iterations, 1913x935 |
-| --- | ---: |
-| Summit, Skia + coordinated graphics + mimalloc | **6.269 ± 0.301** |
-| Firefox 155 on the same workstation | **8.338 ± 0.374** |
+| Browser | Content viewport | Speedometer 3.1, 10 iterations |
+| --- | ---: | ---: |
+| Summit, Skia + coordinated graphics + mimalloc | 1913×945 | **6.591 ± 0.240** |
+| Summit, matched to Firefox | 1280×887 | **6.779 ± 0.258** |
+| Firefox 155 on the same workstation | 1280×887 | **8.338 ± 0.374** |
 
-The Summit run was uncontended. Its first cold iteration scored 5.09 and the
-remaining nine scored 6.29 to 6.51. Mimalloc accounts for about a 21% gain over
-the matched system-allocator runs described below. The remaining gap to
-Firefox is 1.33x by score. TipTap is 2.47x slower and Chart.js is 2.07x slower
-than Firefox; several TodoMVC suites are near parity or faster.
+Both new Summit runs were uncontended. The same-size gap to Firefox is 1.23x
+by score. TipTap is 2.27x slower, while Chart.js is 1.30x slower; the news and
+jQuery suites match or beat Firefox. Mimalloc accounts for about a 21% gain
+over the matched system-allocator runs described below. Older score
+comparisons in this log used different viewport sizes and should be treated
+as directional. `tools/bench/compare-runs.py` now flags that mismatch.
 `tools/bench/compare-runs.py` gives the per-suite synchronous and asynchronous
 split from the saved results.
 

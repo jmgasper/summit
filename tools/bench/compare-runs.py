@@ -33,6 +33,11 @@ def main():
     if len(sys.argv) != 3:
         sys.exit(__doc__)
     a, b = load(sys.argv[1]), load(sys.argv[2])
+    viewport_a = (a.get('environment', {}).get('innerWidth'), a.get('environment', {}).get('innerHeight'))
+    viewport_b = (b.get('environment', {}).get('innerWidth'), b.get('environment', {}).get('innerHeight'))
+    if viewport_a != viewport_b:
+        print(f'WARNING: content viewports differ: A {viewport_a[0]}x{viewport_a[1]}, '
+              f'B {viewport_b[0]}x{viewport_b[1]}; score and suite ratios may include viewport work')
     ma, mb = a['metrics'], b['metrics']
     suites = [k for k in ma if '/' not in k and not k.startswith('Iteration-') and k not in ('Geomean', 'Score')
               and k in mb]
