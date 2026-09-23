@@ -2678,6 +2678,24 @@ correctness check would risk visible position errors
 (`.vm/bench/scroll-20260923-203515-reddit-post-task-dirty/` and
 `.vm/bench/scroll-20260923-203856-reddit-viewport-dirty/`).
 
+An opt-in trial skipped layout invalidation when the layout viewport origin
+changed. The new `viewport-origin-fixed.html` probe recorded exactly the same
+fixed and sticky rectangles at five scroll positions in control and trial,
+and final screenshots differed only in a small bottom-right desktop region.
+On live Reddit, traced A/B/A 300-notch passes reduced the slow document-scroll
+dispatch from 1,223.7 ms in the control to 857.3 and 896.1 ms in the two
+trial runs; slow post-layout slices fell from 349.9 ms to 12.9 and 15.6 ms.
+However full-burst native-view rates were 26.4 frames/s in the control versus
+22.4 and 22.6 in the trial, and all three retained 2.7--3.0 second gaps.
+Live-feed variation limits that comparison. The trial did not demonstrate
+smoother scrolling, and the fixture covers only a small fixed/sticky case, so
+the production layout invalidation remains in place
+(`.vm/bench/probe-20260923-204405-summit-viewport-origin-control/`,
+`.vm/bench/probe-20260923-204718-summit-viewport-origin-candidate/`,
+`.vm/bench/scroll-20260923-204754-reddit-viewport-origin-candidate-trace/`,
+`.vm/bench/scroll-20260923-204841-reddit-viewport-origin-control-trace/`, and
+`.vm/bench/scroll-20260923-204926-reddit-viewport-origin-candidate-repeat/`).
+
 Media remains verified for the finite Reddit CMAF case: the current bundle
 loaded its HLS metadata in 468 ms, played 720×1280 video to `ended` at 12.7
 seconds with no media error, and selected NVDEC H.264 plus AAC. A live feed
