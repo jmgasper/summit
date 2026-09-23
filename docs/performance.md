@@ -2059,6 +2059,23 @@ delivery to synchronous work initiated by Reddit's document scroll listener.
 Skipping or delaying the standards event would change page behavior; the next
 useful split is inside its JavaScript and synchronous media work.
 
+`SUMMIT_MEDIA_LIFECYCLE_TRACE=1` now records media loads and cancellations
+that block for at least 10 ms. Cancellation is divided into loader-thread join,
+video-thread join, audio stop, and cleanup; the disabled path caches the
+environment check and takes no clock readings. `run-scroll.py` stores the
+individual samples and per-operation totals in `run.json`.
+
+A correlated live pass found one 342.2 ms Reddit scroll listener that destroyed
+a media player while its download was still active. The synchronous
+`cancelLoad()` spent 51.2 ms waiting for the loader thread, and a 94.7 ms layout
+also ran before the listener returned. The loader wait therefore explains a
+measurable part of the pause, while roughly 196 ms remains in other page work.
+The later unsupported stream-2 Media Kit diagnostic was outside this listener;
+NVDEC H.264 and AAC initialization still succeeded. The complete pass reached
+43.55 native-view frames/s, had a 633.2 ms worst interval, and kept native queue
+delay below 0.9 ms
+(`.vm/bench/scroll-20260923-125311-reddit-media-lifecycle/`).
+
 ### libstdc++ assertion experiment
 
 The normal Release configuration still enables libstdc++ container assertions.

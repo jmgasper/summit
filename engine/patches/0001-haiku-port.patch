@@ -9553,10 +9553,10 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..5850f18a841b4b53dc1d56e631bf0d7c52305aa6
+index 0000000000000000000000000000000000000000..9a2797bf1a4e910b1cd4d9810a1f8fba3a4259c1
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,1010 @@
+@@ -0,0 +1,1053 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -9625,6 +9625,15 @@ index 0000000000000000000000000000000000000000..5850f18a841b4b53dc1d56e631bf0d7c
 +
 +namespace WebCore {
 +
++static bool mediaLifecycleTraceEnabled()
++{
++    static bool enabled = [] {
++        const char* trace = std::getenv("SUMMIT_MEDIA_LIFECYCLE_TRACE");
++        return trace && trace[0] == '1' && !trace[1];
++    }();
++    return enabled;
++}
++
 +class MediaPlayerFactoryHaiku final : public MediaPlayerFactory {
 +private:
 +    MediaPlayerEnums::MediaEngineIdentifier identifier() const final { return MediaPlayerEnums::MediaEngineIdentifier::Haiku; };
@@ -9690,7 +9699,10 @@ index 0000000000000000000000000000000000000000..5850f18a841b4b53dc1d56e631bf0d7c
 +
 +void MediaPlayerPrivate::load(const String& url)
 +{
++    bool traceLifecycle = mediaLifecycleTraceEnabled();
++    bigtime_t startedAt = traceLifecycle ? system_time() : 0;
 +    cancelLoad();
++    bigtime_t cancelledAt = traceLifecycle ? system_time() : 0;
 +
 +    m_mediaLock.Lock();
 +    m_abort = false;
@@ -9701,11 +9713,26 @@ index 0000000000000000000000000000000000000000..5850f18a841b4b53dc1d56e631bf0d7c
 +        resume_thread(m_loadingThread);
 +
 +    m_mediaLock.Unlock();
++
++    if (traceLifecycle) {
++        bigtime_t finishedAt = system_time();
++        if (finishedAt - startedAt >= 10000) {
++            std::fprintf(stderr,
++                "Summit media lifecycle: player=%p operation=load total=%.1f cancel=%.1f startLoader=%.1f\n",
++                this, (finishedAt - startedAt) / 1000.0, (cancelledAt - startedAt) / 1000.0,
++                (finishedAt - cancelledAt) / 1000.0);
++        }
++    }
 +}
 +
 +
 +void MediaPlayerPrivate::cancelLoad()
 +{
++    bool traceLifecycle = mediaLifecycleTraceEnabled();
++    bigtime_t startedAt = traceLifecycle ? system_time() : 0;
++    bool hadLoadingThread = m_loadingThread >= 0;
++    bool hadVideoThread = false;
++    bool hadSoundPlayer = false;
 +    m_abort = true;
 +
 +    // Neither the decoder thread nor the sound callback can finish while the
@@ -9715,17 +9742,22 @@ index 0000000000000000000000000000000000000000..5850f18a841b4b53dc1d56e631bf0d7c
 +        wait_for_thread(m_loadingThread, &status);
 +        m_loadingThread = -1;
 +    }
++    bigtime_t loadingJoinedAt = traceLifecycle ? system_time() : 0;
 +
++    hadVideoThread = m_videoThread >= 0;
 +    if (m_videoThread >= 0) {
 +        status_t status;
 +        wait_for_thread(m_videoThread, &status);
 +        m_videoThread = -1;
 +    }
++    bigtime_t videoJoinedAt = traceLifecycle ? system_time() : 0;
 +
 +    // The blocking form sleeps for the output latency even after playback has
 +    // stopped. Destruction below releases the node after the threads have exited.
++    hadSoundPlayer = m_soundPlayer;
 +    if (m_soundPlayer)
 +        m_soundPlayer->Stop(false);
++    bigtime_t audioStoppedAt = traceLifecycle ? system_time() : 0;
 +
 +    m_mediaLock.Lock();
 +    delete m_soundPlayer;
@@ -9756,6 +9788,17 @@ index 0000000000000000000000000000000000000000..5850f18a841b4b53dc1d56e631bf0d7c
 +        m_secondaryDownloadPath = { };
 +    }
 +    m_mediaLock.Unlock();
++
++    if (traceLifecycle) {
++        bigtime_t finishedAt = system_time();
++        if (finishedAt - startedAt >= 10000) {
++            std::fprintf(stderr,
++                "Summit media lifecycle: player=%p operation=cancelLoad total=%.1f waitLoader=%.1f waitVideo=%.1f stopAudio=%.1f cleanup=%.1f hadLoader=%d hadVideo=%d hadAudio=%d\n",
++                this, (finishedAt - startedAt) / 1000.0, (loadingJoinedAt - startedAt) / 1000.0,
++                (videoJoinedAt - loadingJoinedAt) / 1000.0, (audioStoppedAt - videoJoinedAt) / 1000.0,
++                (finishedAt - audioStoppedAt) / 1000.0, hadLoadingThread, hadVideoThread, hadSoundPlayer);
++        }
++    }
 +}
 +
 +

@@ -59,6 +59,9 @@ FIXED_INLINE_LAYOUT_LINE = re.compile(
 PAGE_UPDATE_LINE = re.compile(r'Summit page update: page=\S+ (?P<metrics>(?:[A-Za-z]+=[\d.]+ ?)+)')
 PAGE_UPDATE_METRIC = re.compile(r'(?P<name>[A-Za-z]+)=(?P<value>[\d.]+)')
 SCROLL_STEPS_LINE = re.compile(r'Summit scroll steps: document=\S+ (?P<metrics>(?:[A-Za-z]+=[\d.]+ ?)+)')
+MEDIA_LIFECYCLE_LINE = re.compile(
+    r'Summit media lifecycle: player=\S+ operation=(?P<operation>[A-Za-z]+) '
+    r'(?P<metrics>(?:[A-Za-z]+=[\d.]+ ?)+)')
 
 
 def log(message):
@@ -155,6 +158,34 @@ def summarize_scroll_steps(samples):
         'maximumEventDispatchMs': max(sample['maxEventDispatch'] for sample in samples),
         'phaseTotalsMs': duration_totals,
     }
+
+
+def parse_media_lifecycle_lines(text):
+    return [
+        {'operation': line.group('operation'), **{
+            match.group('name'): float(match.group('value'))
+            for match in PAGE_UPDATE_METRIC.finditer(line.group('metrics'))
+        }}
+        for line in MEDIA_LIFECYCLE_LINE.finditer(text)
+    ]
+
+
+def summarize_media_lifecycle(samples):
+    result = {}
+    for operation in sorted({sample['operation'] for sample in samples}):
+        operation_samples = [sample for sample in samples if sample['operation'] == operation]
+        phase_names = sorted({name for sample in operation_samples for name in sample
+                              if name not in ('operation', 'total') and not name.startswith('had')})
+        result[operation] = {
+            'slowCalls': len(operation_samples),
+            'totalMs': round(sum(sample['total'] for sample in operation_samples), 1),
+            'worstMs': max(sample['total'] for sample in operation_samples),
+            'phaseTotalsMs': {
+                name: round(sum(sample.get(name, 0) for sample in operation_samples), 1)
+                for name in phase_names
+            },
+        }
+    return result
 
 
 def summarize_ui(samples):
@@ -289,6 +320,7 @@ def main():
         fixed_inline_before = parse_fixed_inline_layout_lines(before)
         page_update_before = parse_page_update_lines(before)
         scroll_steps_before = parse_scroll_step_lines(before)
+        media_lifecycle_before = parse_media_lifecycle_lines(before)
         run['idle'] = summarize(idle_engine[-5:]) if idle_engine else summarize_ui(idle_ui[-5:])
         log(f"idle: {run['idle'].get('fps', 0)} fps")
 
@@ -336,6 +368,7 @@ def main():
         fixed_inline_samples = parse_fixed_inline_layout_lines(text)[len(fixed_inline_before):]
         page_update_samples = parse_page_update_lines(text)[len(page_update_before):]
         scroll_step_samples = parse_scroll_step_lines(text)[len(scroll_steps_before):]
+        media_lifecycle_samples = parse_media_lifecycle_lines(text)[len(media_lifecycle_before):]
         during = engine_samples or ui_samples
         run['frameStatsAvailable'] = bool(during)
         if during:
@@ -350,6 +383,9 @@ def main():
         if scroll_step_samples:
             run['scrollStepSamples'] = scroll_step_samples
             run['scrollSteps'] = summarize_scroll_steps(scroll_step_samples)
+        if media_lifecycle_samples:
+            run['mediaLifecycleSamples'] = media_lifecycle_samples
+            run['mediaLifecycle'] = summarize_media_lifecycle(media_lifecycle_samples)
         capture_visible(directory / 'final.png')
         run['stateAfterBurst'] = guest.state(ctl, team)
         run['outcome'] = ('completed' if run['completionVerified'] else 'captured-unverified-delivery') \
@@ -368,7 +404,8 @@ def main():
                           'idle': run.get('idle'), 'scroll': run.get('scroll'),
                           'fixedInlineLayout': run.get('fixedInlineLayout'),
                           'pageUpdates': run.get('pageUpdates'),
-                          'scrollSteps': run.get('scrollSteps')}, indent=1))
+                          'scrollSteps': run.get('scrollSteps'),
+                          'mediaLifecycle': run.get('mediaLifecycle')}, indent=1))
 
 
 if __name__ == '__main__':
