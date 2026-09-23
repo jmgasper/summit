@@ -2885,11 +2885,21 @@ explicit async-scrolling composition requests from one to 136 in the traced
 300-notch pass. In an uninstrumented A/B/A sequence on the same bundle,
 native-view rates were 23.32, 48.50, and 21.45 frames/s, with pending gaps
 of 3.05, 0.94, and 2.85 seconds. However, both trial screenshots showed a
-blank Reddit feed where the controls showed posts: composited scrolling ran
-ahead of painted tiles and lazy content. The pulse was removed. A future
-refresh source needs to account for tile availability and content readiness
-before enabling it by default
+blank Reddit feed at its footer where the controls showed posts. The trial
+may have reached the end of currently loaded posts before Reddit supplied
+more; the captures do not distinguish lazy loading from missing paint. The
+pulse was removed. A future refresh source needs a content-visible result
+under sustained scrolling before enabling it by default
 (`.vm/bench/scroll-20260923-223705-reddit-wheel-refresh-candidate/`,
 `.vm/bench/scroll-20260923-223819-reddit-refresh-control/`,
 `.vm/bench/scroll-20260923-223905-reddit-refresh-candidate/`, and
 `.vm/bench/scroll-20260923-223955-reddit-refresh-control-repeat/`).
+
+A shorter 80-notch follow-up rendered feed posts with and without the pulse.
+The trial yielded 48.28 frames/s versus 54.85 for the safe build, both with
+no substantial pending presentation gap. This pass does not establish a
+benefit for ordinary-length bursts. An initial follow-up run was invalid:
+the private Mesa path was omitted and the WebProcess exited before scrolling.
+The two reported runs both used `SUMMIT_LIBRARY_PATH_PREFIX` to select the
+workstation's Mesa (`.vm/bench/scroll-20260923-224807-reddit-refresh-80-valid/`
+and `.vm/bench/scroll-20260923-224905-reddit-control-80/`).
