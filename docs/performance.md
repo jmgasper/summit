@@ -2664,6 +2664,20 @@ Avoiding that work requires understanding why the page repeatedly dirties
 the render tree during scroll, while preserving its synchronous geometry
 queries (`.vm/bench/scroll-20260923-202951-reddit-post-layout-split/`).
 
+The trace now reports the first post-layout callback that changes the layout
+state from clean to dirty. In two further 300-notch Reddit passes it found
+four such transitions during the viewport section, then four specifically in
+`updateLayoutViewport()`; `viewportContentsChanged()` did not dirty layout.
+The latter pass delivered 123 frames in 5.07 seconds (24.3 frames/s) but had
+a 2.90-second pending gap. `updateLayoutViewport()` can change the layout
+viewport origin, which calls `setViewportConstrainedObjectsNeedLayout()` for
+fixed or sticky content. This is the likely route to the observed follow-up
+layouts, although the trace does not yet separate that call from visual
+viewport notification. Skipping these layouts without a fixed-element
+correctness check would risk visible position errors
+(`.vm/bench/scroll-20260923-203515-reddit-post-task-dirty/` and
+`.vm/bench/scroll-20260923-203856-reddit-viewport-dirty/`).
+
 Media remains verified for the finite Reddit CMAF case: the current bundle
 loaded its HLS metadata in 468 ms, played 720×1280 video to `ended` at 12.7
 seconds with no media error, and selected NVDEC H.264 plus AAC. A live feed

@@ -3477,6 +3477,108 @@ index 3dbc23ec4a0818ed58ab2e0b2648056ab360a2ff..8254fb1525db8f69c8c4d1191e04b9b9
      virtual void receivedCancellation(const AuthenticationChallenge&);
  
  #if USE(QUICK_LOOK)
+diff --git a/Source/WebCore/page/LocalFrameView.cpp b/Source/WebCore/page/LocalFrameView.cpp
+index 52f8cd72fa2e3073163713fd16fc2f1677b96695..c8925b1b936f96c31c323609ea9f9d46725759b8 100644
+--- a/Source/WebCore/page/LocalFrameView.cpp
++++ b/Source/WebCore/page/LocalFrameView.cpp
+@@ -4863,10 +4863,30 @@ void LocalFrameView::flushAnyPendingPostLayoutTasks()
+ void LocalFrameView::performPostLayoutTasks()
+ {
+     ScriptDisallowedScope::InMainThread scriptDisallowedScope;
++#if PLATFORM(HAIKU)
++    static bool summitPostLayoutDirtyTrace = [] {
++        const char* value = std::getenv("SUMMIT_PAGE_UPDATE_TRACE");
++        return value && value[0] == '2' && !value[1];
++    }();
++    bool wasDirty = summitPostLayoutDirtyTrace && layoutContext().needsLayout(LayoutOptions::CanDeferUpdateLayerPositions);
++    if (wasDirty)
++        WTFLogAlways("Summit post-layout dirtied: view=%p step=entry\n", this);
++    auto traceDirty = [&](const char* step) {
++        if (!summitPostLayoutDirtyTrace)
++            return;
++        bool isDirty = layoutContext().needsLayout(LayoutOptions::CanDeferUpdateLayerPositions);
++        if (isDirty && !wasDirty)
++            WTFLogAlways("Summit post-layout dirtied: view=%p step=%s\n", this, step);
++        wasDirty = isDirty;
++    };
++#endif
+ 
+     // FIXME: We should not run any JavaScript code in this function.
+     LOG(Layout, "LocalFrameView %p performPostLayoutTasks", this);
+     updateHasReachedSignificantRenderedTextThreshold();
++#if PLATFORM(HAIKU)
++    traceDirty("significant-text");
++#endif
+ 
+ #if ENABLE(AX_CUSTOM_COLOR_MODE)
+     if (CheckedPtr renderView = this->renderView())
+@@ -4875,6 +4895,9 @@ void LocalFrameView::performPostLayoutTasks()
+ 
+     if (!layoutContext().isLayoutNested() && m_frame->document()->documentElement())
+         fireLayoutRelatedMilestonesIfNeeded();
++#if PLATFORM(HAIKU)
++    traceDirty("layout-milestones");
++#endif
+ 
+ #if PLATFORM(IOS_FAMILY)
+     // Only send layout-related delegate callbacks synchronously for the main frame to
+@@ -4889,32 +4912,56 @@ void LocalFrameView::performPostLayoutTasks()
+     // FIXME: We should consider adding DidLayout as a LayoutMilestone. That would let us merge this
+     // with didLayout(LayoutMilestones).
+     m_frame->loader().client().dispatchDidLayout();
++#if PLATFORM(HAIKU)
++    traceDirty("dispatch-did-layout");
++#endif
+ 
+     updateWidgetPositions();
++#if PLATFORM(HAIKU)
++    traceDirty("widget-positions");
++#endif
+ 
+     updateSnapOffsets();
++#if PLATFORM(HAIKU)
++    traceDirty("snap-offsets");
++#endif
+ 
+     m_updateEmbeddedObjectsTimer.startOneShot(0_s);
+ 
+     if (RefPtr scrollingCoordinator = this->scrollingCoordinator())
+         scrollingCoordinator->frameViewLayoutUpdated(*this);
++#if PLATFORM(HAIKU)
++    traceDirty("scrolling-coordinator");
++#endif
+ 
+     if (CheckedPtr renderView = this->renderView()) {
+         if (renderView->usesCompositing())
+             renderView->compositor().frameViewDidLayout();
+     }
++#if PLATFORM(HAIKU)
++    traceDirty("compositor");
++#endif
+ 
+     scheduleScrollToAnchorAndTextFragment();
+ 
+     scheduleResizeEventIfNeeded();
+ 
+     updateLayoutViewport();
++#if PLATFORM(HAIKU)
++    traceDirty("layout-viewport");
++#endif
+     viewportContentsChanged();
++#if PLATFORM(HAIKU)
++    traceDirty("viewport-contents");
++#endif
+ 
+     if (!layoutContext().isLayoutNested())
+         adjustScrollAnchoringPositionForScrollableAreas();
+ 
+     resnapAfterLayout();
++#if PLATFORM(HAIKU)
++    traceDirty("scroll-anchor-and-resnap");
++#endif
+ 
+     protect(m_frame->document())->scheduleDeferredAXObjectCacheUpdate();
+ 
 diff --git a/Source/WebCore/page/LocalFrameViewLayoutContext.cpp b/Source/WebCore/page/LocalFrameViewLayoutContext.cpp
 index 61749fa2eecc674d3bc7d185a5b3944181454f73..7d870bf1ac7a27933257d53d17d8dede4af62c25 100644
 --- a/Source/WebCore/page/LocalFrameViewLayoutContext.cpp
