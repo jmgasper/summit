@@ -2636,6 +2636,21 @@ comparisons. The uninstrumented snapshots independently prove a multi-second
 presentation stall above the native queue
 (`.vm/bench/scroll-20260923-201421-reddit-frame-snapshot-page-phases/`).
 
+`SUMMIT_PAGE_UPDATE_TRACE=2` keeps the page, scroll-dispatch, listener, and
+layout-phase records but leaves the renderer and grid-item records disabled.
+A 300-notch pass produced 82 browser log lines and caught one 1,582.0 ms
+JavaScript document-scroll listener. Its containing rendering update took
+1,867.3 ms, including 1,620.6 ms in scroll steps. The slow layout calls
+included 225.3, 157.1, and 108.1 ms in their post-layout slices; nested
+calls must not be summed as independent work. The native-view snapshot saw
+118 frames in 5.19 seconds (22.7 frames/s), with a 2.81-second pending gap
+and 0.1 ms maximum UI queue delay. On the same bundle with tracing off, a
+separate live-feed pass saw 131 frames in 5.07 seconds (25.8 frames/s), a
+2.77-second pending gap, and 0.1 ms queue delay. Feed variation prevents an
+overhead estimate, but the long stall remains with tracing off
+(`.vm/bench/scroll-20260923-202313-reddit-page-phases-low-volume/` and
+`.vm/bench/scroll-20260923-202403-reddit-page-phases-off-control/`).
+
 Media remains verified for the finite Reddit CMAF case: the current bundle
 loaded its HLS metadata in 468 ms, played 720×1280 video to `ended` at 12.7
 seconds with no media error, and selected NVDEC H.264 plus AAC. A live feed
