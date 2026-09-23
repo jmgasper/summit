@@ -10468,10 +10468,10 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..80be303779cb64ca4a16f75ad1c3c8f6ed6912ed
+index 0000000000000000000000000000000000000000..9bfcb1b09255ef1e962f23cac10fa78e99723ae5
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,1148 @@
+@@ -0,0 +1,1150 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -10842,6 +10842,7 @@ index 0000000000000000000000000000000000000000..80be303779cb64ca4a16f75ad1c3c8f6
 +        if (!player->m_mediaLock.Lock())
 +            continue;
 +
++        bool waitForFrame = false;
 +        if (player->m_videoTrack) {
 +            // Detect seek or external time update
 +            if (std::abs(player->m_currentTime - lastObservedTime) > 0.5f) {
@@ -10888,12 +10889,13 @@ index 0000000000000000000000000000000000000000..80be303779cb64ca4a16f75ad1c3c8f6
 +                        });
 +                    }
 +                }
-+            } else {
-+                snooze(5000);
-+            }
++            } else
++                waitForFrame = true;
 +        }
 +        player->m_mediaLock.Unlock();
-+        snooze(1000);
++        // The audio callback and seeks need this lock. Waiting for the next
++        // video frame while holding it can stall audio on every frame.
++        snooze(waitForFrame ? 5000 : 1000);
 +    }
 +
 +    return B_OK;
