@@ -2785,3 +2785,41 @@ rebuilt with the committed timer behavior
 `.vm/bench/probe-20260923-212957-summit-named-timer-latency/`,
 `.vm/bench/probe-20260923-213454-summit-timer-no-alignment-probe/`,
 `.vm/bench/speedometer-20260923-*-no-alignment-*/`).
+
+### Skia GL tile painting trial on the GTX 1070
+
+The current Haiku coordinated renderer composites through Mesa Zink/NVK, but
+`PlatformDisplay::skiaGLContext()` returns null on Haiku. That keeps Skia's
+page tiles on its two CPU painting threads. A temporary opt-in trial allowed
+Haiku to create Skia GL contexts; an engine diagnostic confirmed `GPU` tile
+painting in the WebProcess. The trial was built and tested, then removed.
+
+At the 1913×945 content viewport, the 400-card, 300-frame scroll probe ran at
+59.25 fps with GPU tile painting and 58.96 fps with CPU painting. Both had no
+frame over 33 ms, so this probe showed no useful gain
+(`.vm/bench/probe-20260923-215242-summit-skia-gl-trial/` and
+`.vm/bench/probe-20260923-215321-summit-skia-cpu-control/`).
+
+On the live `/r/popular/` 300-notch burst, GPU painting delivered 19.61
+native-view frames/s with a 3.35-second pending presentation gap, versus
+23.21 frames/s and a 3.01-second gap with CPU painting. Reddit load varied
+even before the bursts, so these two runs do not establish a precise
+regression, but they do not support enabling GPU tile painting. Mesa logged
+`ZINK: vkCreateImage failed (VK_ERROR_UNKNOWN)` in the GPU run, but not the
+CPU control. Both runs visibly scrolled
+(`.vm/bench/scroll-20260923-215402-reddit-skia-gl/` and
+`.vm/bench/scroll-20260923-215446-reddit-skia-cpu/`).
+
+At the matched 1280×887 Speedometer viewport, GPU tile painting scored
+6.888 ± 0.280 over ten uncontended iterations, compared with the existing
+CPU-painted 6.779 ± 0.258. The confidence ranges overlap; TipTap remained
+278.1 ms versus the CPU baseline's 282.8 ms. No Speedometer improvement is
+established. The explicit diagnostic run logged `GPU` from the
+`SkiaPaintingEngine` constructor, verifying the tested path
+(`.vm/bench/speedometer-20260923-215530-skia-gl-trial/` and
+`.vm/bench/probe-20260923-215908-summit-skia-gl-diagnostic/`).
+
+The workstation engine was rebuilt with the original CPU tile path after the
+trial. Vulkan through Zink is already exercised for compositing; a native
+Skia Vulkan backend would require separate buffer sharing and synchronization
+work rather than a backend switch alone.
