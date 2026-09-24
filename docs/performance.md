@@ -3365,3 +3365,16 @@ the root. The rule being inserted and whether these resolver rebuilds can be
 handled incrementally remain under investigation
 (`.vm/bench/scroll-20260924-131952-guardian-font-cache-entries/` and
 `.vm/bench/scroll-20260924-132556-guardian-resolver-reset/`).
+
+CSSOM tracing identified the repeated insertions as generated class rules
+setting the video progress-bar width. The stylesheet sits in the middle of
+the active author sheets. An opt-in trial rebuilt author rules in their
+original order while preserving the unchanged font registrations. In a
+same-bundle interactive comparison, decoded frames 101–300 produced 162/198
+paints in the baseline and 195/200 in the trial. Repaint handoffs above
+40 ms fell from 24 to zero, and their 95th percentile fell from 57.2 ms to
+16.3 ms. The trial was restricted to the Guardian progress-bar rules and is
+evidence for a general simple-rule insertion optimization; the runs are not
+automated performance benchmarks
+(`.vm/bench/scroll-20260924-135017-guardian-preserve-font-trial/` and
+`.vm/bench/scroll-20260924-135201-guardian-preserve-font-baseline/`).
