@@ -4339,3 +4339,13 @@ remained visible in the final capture. Four compositor layer paints over
 The desktop launcher now points to `bundle-wekouxn2`, with its predecessor
 saved as `Summit-current.pre-scroll-completion-20260925.sh`
 (`.vm/bench/scroll-cycles-20260925-074420-completion-snapshot-long/`).
+
+On the installed bundle, a live `/r/popular/` 14-second cat video was
+allowed to finish, then its native progress thumb was dragged backward
+with the workstation pointer from 0:14 to 0:05. The player showed the
+scrub preview at 0:05; pressing play advanced the displayed time to 0:10
+five seconds later. The media log recorded the intermediate drag seeks and
+a final 5.335 s request, with NVDEC H.264 selected at status 0. This
+validates a real Reddit progress-bar drag for this video, but it does not
+identify or reproduce the owner's Adobe ad, whose player may use a different
+control path (`.vm/bench/reddit-live-native-drag-20260925/`).
