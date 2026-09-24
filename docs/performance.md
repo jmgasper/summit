@@ -4464,3 +4464,20 @@ point score is lower. Combined with the earlier one-worker scroll result
 (56.91 fps and 27 intervals over 33 ms on the 400-card page), this gives no
 reason to change the two-worker default or add a dynamic one/two-worker
 policy (`.vm/bench/speedometer-20260925-084855-one-cpu-paint-worker-current/`).
+
+### Absent pseudo-style shortcut trial
+
+An opt-in Haiku trial skipped pseudo-element resolution calls when neither
+the new nor existing style had that pseudo-element. `::first-line` and
+`::first-letter` retained their ancestor-resolution path. The separate PGO
+bundle `bundle-b2dgls9w` ran twenty focused Preact/Svelte iterations in an
+off/on/off/on sequence at 1280×887. Scores were **17.917**, **18.369**,
+**18.545**, and **18.621**, each with roughly ±0.5 uncertainty. The first
+on run improved both suites by about 1 ms, but the following off run improved
+further. The shortcut has no repeatable gain above run-to-run drift. It was
+removed, returning the engine patch to its exact pre-trial digest; the
+workstation launcher remains on `bundle-glk_tobh`
+(`.vm/bench/speedometer-20260925-085527-absent-pseudo-off-a/`,
+`.vm/bench/speedometer-20260925-085615-absent-pseudo-on/`,
+`.vm/bench/speedometer-20260925-085703-absent-pseudo-off-b/`, and
+`.vm/bench/speedometer-20260925-085757-absent-pseudo-on-b/`).
