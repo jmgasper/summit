@@ -14399,7 +14399,7 @@ index 30343ff03299542f8673d98b486c7fdd78bddeb9..95d192b9fadc9f7fca017d53ad82885c
          if (const char* envString = getenv("WEBKIT_SKIA_CPU_PAINTING_THREADS")) {
              auto newValue = parseInteger<unsigned>(StringView::fromLatin1(envString));
 diff --git a/Source/WebCore/platform/graphics/texmap/TextureMapperLayer.cpp b/Source/WebCore/platform/graphics/texmap/TextureMapperLayer.cpp
-index 063040a9866c7221f2e581a4b9dac75fa29771d4..d7b6efff62bde2138a1a193379313c1d492ba9af 100644
+index 063040a9866c7221f2e581a4b9dac75fa29771d4..773c3614165f4af5c10a36b6d006ab75a8961c86 100644
 --- a/Source/WebCore/platform/graphics/texmap/TextureMapperLayer.cpp
 +++ b/Source/WebCore/platform/graphics/texmap/TextureMapperLayer.cpp
 @@ -32,12 +32,29 @@
@@ -14458,27 +14458,78 @@ index 063040a9866c7221f2e581a4b9dac75fa29771d4..d7b6efff62bde2138a1a193379313c1d
  }
  
  #if ENABLE(DAMAGE_TRACKING)
-@@ -578,6 +607,19 @@ void TextureMapperLayer::paintSelf(TextureMapperPaintOptions& options)
+@@ -578,12 +607,37 @@ void TextureMapperLayer::paintSelf(TextureMapperPaintOptions& options)
      auto targetRect = layerRect();
      if (targetRect.isEmpty())
          return;
 +#if PLATFORM(HAIKU)
 +    const bool tracePaint = traceLayerPaint();
 +    const bigtime_t startedAt = tracePaint ? system_time() : 0;
++    bigtime_t transformedAt = startedAt;
++    bigtime_t wrappedAt = startedAt;
++    bigtime_t backingPaintedAt = startedAt;
++    bigtime_t contentsPaintedAt = startedAt;
 +    auto reportPaint = makeScopeExit([&] {
 +        if (!tracePaint)
 +            return;
 +        const bigtime_t elapsed = system_time() - startedAt;
 +        if (elapsed >= 4000)
-+            std::fprintf(stderr, "Summit layer paint self: at=%lld total=%.1f id=%u backing=%d contents=%d flat=%d size=%.0fx%.0f\n",
-+                static_cast<long long>(startedAt), elapsed / 1000.0, m_id, !!m_backingStore,
-+                !!m_contentsLayer, isFlattened(), m_state.size.width(), m_state.size.height());
++            std::fprintf(stderr, "Summit layer paint self: at=%lld total=%.1f transform=%.1f wrap=%.1f backingPaint=%.1f contentsPaint=%.1f layer=%p id=%u backing=%d contents=%d background=%d solid=%d flat=%d size=%.0fx%.0f\n",
++                static_cast<long long>(startedAt), elapsed / 1000.0, (transformedAt - startedAt) / 1000.0,
++                (wrappedAt - transformedAt) / 1000.0, (backingPaintedAt - wrappedAt) / 1000.0,
++                (contentsPaintedAt - backingPaintedAt) / 1000.0, static_cast<void*>(this), m_id,
++                !!m_backingStore, !!m_contentsLayer, m_state.backgroundColor.isValid(),
++                m_state.solidColor.isValid() && m_state.solidColor.isVisible(), isFlattened(),
++                m_state.size.width(), m_state.size.height());
 +    });
 +#endif
  
      // We apply the following transform to compensate for painting into a surface, and then apply the offset so that the painting fits in the target rect.
      TransformationMatrix transform;
-@@ -1167,6 +1209,18 @@ void TextureMapperLayer::paintRecursive(TextureMapperPaintOptions& options)
+     transform.translate(options.offset.width(), options.offset.height());
+     transform.multiply(options.transform);
+     transform.multiply(m_layerTransforms.combined);
++#if PLATFORM(HAIKU)
++    if (tracePaint)
++        contentsPaintedAt = backingPaintedAt = wrappedAt = transformedAt = system_time();
++#endif
+ 
+     if (isFlattened() && !m_flattenedLayer->needsUpdate()) {
+         m_flattenedLayer->paintToTextureMapper(options.textureMapper, m_flattenedLayer->layerRect(), transform, options.opacity);
+@@ -599,6 +653,10 @@ void TextureMapperLayer::paintSelf(TextureMapperPaintOptions& options)
+ 
+     options.textureMapper.setWrapMode(TextureMapper::WrapMode::Stretch);
+     options.textureMapper.setPatternTransform(TransformationMatrix());
++#if PLATFORM(HAIKU)
++    if (tracePaint)
++        contentsPaintedAt = backingPaintedAt = wrappedAt = system_time();
++#endif
+ 
+     if (backingStore) {
+         backingStore->paintToTextureMapper(options.textureMapper, targetRect, transform, options.opacity);
+@@ -608,6 +666,10 @@ void TextureMapperLayer::paintSelf(TextureMapperPaintOptions& options)
+         if (m_state.showRepaintCounter)
+             backingStore->drawRepaintCounter(options.textureMapper, m_state.repaintCount, m_state.debugBorderColor, targetRect, transform);
+     }
++#if PLATFORM(HAIKU)
++    if (tracePaint)
++        contentsPaintedAt = backingPaintedAt = system_time();
++#endif
+ 
+     TextureMapperPlatformLayer* contentsLayer = m_contentsLayer;
+     if (m_state.solidColor.isValid() && m_state.solidColor.isVisible()) {
+@@ -638,6 +700,10 @@ void TextureMapperLayer::paintSelf(TextureMapperPaintOptions& options)
+ 
+     if (m_state.showDebugBorders)
+         contentsLayer->drawBorder(options.textureMapper, m_state.debugBorderColor, m_state.debugBorderWidth, m_state.contentsRect, transform);
++#if PLATFORM(HAIKU)
++    if (tracePaint)
++        contentsPaintedAt = system_time();
++#endif
+ }
+ 
+ void TextureMapperLayer::paintBackdrop(TextureMapperPaintOptions& options)
+@@ -1167,6 +1233,18 @@ void TextureMapperLayer::paintRecursive(TextureMapperPaintOptions& options)
  {
      if (!isVisible())
          return;
