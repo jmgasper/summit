@@ -3748,3 +3748,24 @@ own directory and does not change the installed launcher. Once packaged, it
 will be measured with the same 1280×887, ten-iteration Speedometer run and
 the 600-frame scroll probe before considering installation. The build log is
 `.vm/zen1-engine-build.log`.
+
+### Repeated video seeking under build load
+
+`media-seek-sweep.html` now makes five rapid forward/backward `currentTime`
+changes, like a custom video progress control. On the installed workstation
+bundle, both the reported Guardian clip and the Reddit HLS fixture loaded and
+reached the final seek target without a media error. The Guardian clip's
+three completed seeks decoded 74, 116, and 43 preroll frames, respectively;
+the Reddit fixture decoded 58, 14, and 27. Several intermediate requests
+were coalesced. JS property setters returned immediately, while seek events
+arrived roughly 100–440 ms later. These runs overlapped 23–24 active compiler
+teams and are explicitly marked contended, so their delays do not establish
+the idle browser's seek latency. Repeat them after the Zen 1 build finishes
+before changing Media Kit preroll or claiming the Adobe ad is fixed
+(`.vm/bench/probe-20260924-213829-summit-guardian-seek-sweep-build-load/`
+and `.vm/bench/probe-20260924-213907-summit-reddit-seek-sweep-build-load/`).
+
+The same two remote sources stalled before metadata in the VM. Those probe
+files contain no seek and cannot validate the seek path there
+(`.vm/bench/probe-20260924-213630-summit-reddit-seek-sweep-vm/` and
+`.vm/bench/probe-20260924-213707-summit-guardian-seek-sweep-vm/`).
