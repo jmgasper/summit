@@ -7,18 +7,17 @@ painting with two workers, mimalloc, asynchronous scrolling, display-rate
 composition pacing, guarded reuse of exact text widths, and preserved font
 registrations for simple CSS rule insertions. It completes all 580 steps of
 Speedometer 3.1. The latest matched-viewport ten-iteration run is
-`.vm/bench/speedometer-20260924-151112-general-css-insert-1280x887/`.
+`.vm/bench/speedometer-20260924-164011-batched-css-insert-mimalloc-1280x887/`.
 
 | Browser | Content viewport | Speedometer 3.1, 10 iterations |
 | --- | ---: | ---: |
-| Summit, current build | 1280×887 | **5.645 ± 0.285** |
-| Summit, installed-bundle control, same session | 1280×887 | **5.554 ± 0.254** |
+| Summit, current batched CSS and mimalloc build | 1280×887 | **6.896 ± 0.293** |
+| Summit, earlier mimalloc control, same session | 1280×887 | **6.938 ± 0.292** |
 | Summit, earlier matched run | 1280×887 | **6.923 ± 0.333** |
 | Firefox 155 on the same workstation | 1280×887 | **8.338 ± 0.374** |
 
 These Summit runs were uncontended. The current same-size gap to Firefox is
-1.48x by score. The older 6.923 result did not reproduce in either of the
-paired September 24 runs; workstation or session variation remains unresolved.
+1.21x by score. The batched build recovered the older mimalloc score range.
 In the older 6.923 run, TipTap took 148.2 ms versus Firefox's 124.8 ms, while
 Chart.js took 264.1 ms versus Firefox's 189.1 ms. Mimalloc accounts for about a 21% gain
 over the matched system-allocator runs described below. Older score
@@ -3405,13 +3404,40 @@ The existing Reddit HLS fixture sought to 8 seconds, emitted `seeking` and
 error. It tests programmatic seeking rather than dragging the Adobe ad's custom
 progress control (`.vm/bench/probe-20260924-150450-summit-reddit-hls-seek-general-css/`).
 
-Paired ten-iteration Speedometer runs on the workstation showed 5.652 ± 0.211
-for this bundle versus 5.469 ± 0.257 for the installed bundle at 1913×945.
-At the Firefox-matched 1280×887 size, they scored 5.645 ± 0.285 and
-5.554 ± 0.254 respectively. Both current-session scores are well below the
-earlier 6.760 and 6.923 Summit runs; the paired comparison supports no
-Speedometer regression from the CSS change, but does not explain the lower
-absolute scores (`.vm/bench/speedometer-20260924-150558-general-css-insert-matched/`,
+The first general implementation rebuilt the author rule set immediately on
+every simple insertion. Its bundle accidentally used the cached `SkiaCG`
+configuration with Haiku system malloc, which explained most of an apparent
+absolute Speedometer drop. Paired ten-iteration runs on that configuration
+scored 5.652 ± 0.211 for the candidate and 5.469 ± 0.257 for the installed
+bundle at 1913×945; at 1280×887, they scored 5.645 ± 0.285 and
+5.554 ± 0.254. The engine build wrapper now passes mimalloc defaults
+explicitly so a reused cache cannot retain system malloc, and bundle manifests
+record the actual allocator and graphics flags
+(`.vm/bench/speedometer-20260924-150558-general-css-insert-matched/`,
 `.vm/bench/speedometer-20260924-150830-css-insert-control-matched/`,
 `.vm/bench/speedometer-20260924-151112-general-css-insert-1280x887/`, and
 `.vm/bench/speedometer-20260924-151331-css-insert-control-1280x887/`).
+
+The mimalloc rebuild exposed a cost hidden by the allocator mismatch: the
+eager CSS path scored 6.334 ± 0.195 against 6.938 ± 0.292 for the older
+mimalloc bundle at 1280×887. Disabling just the simple insertion path on the
+new engine scored 6.813 ± 0.310. Consecutive simple insertions now schedule
+one pending author rule set rebuild at WebKit's ordinary style flush. A later
+active-sheet or non-simple content change upgrades that pending work to the
+existing full rebuild. Forty insertions in one script task produced the correct
+final width and preserved precedence from a later stylesheet. Adding a sheet
+and deleting a rule during a pending insertion also produced the expected
+computed widths. The batched
+build scored 6.896 ± 0.293 in ten uncontended iterations at 1280×887
+(`.vm/bench/speedometer-20260924-161217-guardian-css-mimalloc-1280x887/`,
+`.vm/bench/speedometer-20260924-161437-guardian-css-mimalloc-control-1280x887/`,
+`.vm/bench/speedometer-20260924-162121-simple-css-insert-disabled-1280x887/`,
+`.vm/bench/probe-20260924-164559-summit-css-insert-mixed-mutations/`, and
+`.vm/bench/speedometer-20260924-164011-batched-css-insert-mimalloc-1280x887/`).
+
+On the full Guardian article with the batched mimalloc build, frames 101–700
+painted 196/200, 196/200, and 194/200 across three windows, with one handoff
+over 40 ms in all 600 frames and no long layout phase. The Reddit HLS fixture
+still sought to 8 seconds, emitted `seeked`, and finished at 12.7 seconds
+without a media error (`.vm/bench/scroll-20260924-164212-guardian-batched-css-mimalloc/`
+and `.vm/bench/probe-20260924-164401-summit-reddit-hls-seek-batched-css/`).

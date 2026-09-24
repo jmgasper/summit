@@ -26292,35 +26292,80 @@ index cb33f6566d5bab2af0b77f56ced2a5c06b56b37e..89863f7a636c35e936ce5682cafbd67f
      ScopeRuleSets& ruleSets() LIFETIME_BOUND { return m_ruleSets; }
      const ScopeRuleSets& ruleSets() const LIFETIME_BOUND { return m_ruleSets; }
 diff --git a/Source/WebCore/style/StyleScope.cpp b/Source/WebCore/style/StyleScope.cpp
-index 5375c6f10320876a1fac9dfd503cb3c8b373879b..30154ee2dec1bd010a5c4adbb9b627a0a8e7159e 100644
+index 5375c6f10320876a1fac9dfd503cb3c8b373879b..755e28ae96448b68c8067ac7a39a47a72bdf8414 100644
 --- a/Source/WebCore/style/StyleScope.cpp
 +++ b/Source/WebCore/style/StyleScope.cpp
-@@ -757,6 +757,31 @@ void Scope::didChangeStyleSheetContents()
+@@ -69,6 +69,7 @@
+ #include "UserContentController.h"
+ #include "UserContentURLPattern.h"
+ #include "UserStyleSheet.h"
++#include <cstdlib>
+ #include <wtf/SetForScope.h>
+ #include <wtf/TZoneMallocInlines.h>
+ 
+@@ -585,6 +586,8 @@ void Scope::updateActiveStyleSheets(UpdateType updateType)
+     auto styleSheetChange = StyleSheetChange { ResolverUpdateType::Reconstruct };
+     if (updateType == UpdateType::ActiveSet)
+         styleSheetChange = analyzeStyleSheetChange(activeCSSStyleSheets);
++    else if (updateType == UpdateType::SimpleRuleInsertion && m_resolver)
++        styleSheetChange.resolverUpdateType = ResolverUpdateType::PreserveMutatingRules;
+ 
+     updateResolver(activeCSSStyleSheets, styleSheetChange.resolverUpdateType);
+ 
+@@ -613,7 +616,8 @@ void Scope::invalidateStyleAfterStyleSheetChange(const StyleSheetChange& styleSh
+     // If we are already parsing the body and so may have significant amount of elements, put some effort into trying to avoid style recalcs.
+     bool invalidateAll = !m_document->bodyOrFrameset() || m_document->hasNodesWithMissingStyle();
+ 
+-    if (styleSheetChange.resolverUpdateType == ResolverUpdateType::Reconstruct || invalidateAll) {
++    if (styleSheetChange.resolverUpdateType == ResolverUpdateType::Reconstruct
++        || styleSheetChange.resolverUpdateType == ResolverUpdateType::PreserveMutatingRules || invalidateAll) {
+         Invalidator::invalidateAllStyle(*this);
+         return;
+     }
+@@ -634,6 +638,15 @@ void Scope::updateResolver(std::span<const Ref<CSSStyleSheet>> activeStyleSheets
+ 
+     SetForScope isUpdatingStyleResolver { m_isUpdatingStyleResolver, true };
+ 
++    if (updateType == ResolverUpdateType::PreserveMutatingRules) {
++        // The pending insertions only added ordinary style rules. Rebuild their
++        // cascade order once without registering unchanged font rules again.
++        m_resolver->ruleSets().resetAuthorStyle();
++        protect(m_resolver)->appendAuthorStyleSheets(activeStyleSheets, true);
++        m_resolver->invalidateMatchedDeclarationsCache();
++        return;
++    }
++
+     if (updateType == ResolverUpdateType::Reset) {
+         customPropertyRegistry().clearRegisteredFromStylesheets();
+         counterStyleRegistry().clearAuthorCounterStyles();
+@@ -749,7 +762,7 @@ void Scope::scheduleUpdate(UpdateType update)
+ 
+ void Scope::didChangeActiveStyleSheetCandidates()
+ {
+-    scheduleUpdate(UpdateType::ActiveSet);
++    scheduleUpdate(m_pendingUpdate == UpdateType::SimpleRuleInsertion ? UpdateType::ContentsOrInterpretation : UpdateType::ActiveSet);
+ }
+ 
+ void Scope::didChangeStyleSheetContents()
+@@ -757,6 +770,24 @@ void Scope::didChangeStyleSheetContents()
      scheduleUpdate(UpdateType::ContentsOrInterpretation);
  }
  
 +bool Scope::tryUpdateForSimpleStyleRuleInsertion(CSSStyleSheet& sheet)
 +{
-+    if (m_shadowRoot || hasPendingUpdate() || m_document->inStyleRecalc() || m_document->inRenderTreeUpdate()
++    static const bool disabledForDiagnosis = std::getenv("SUMMIT_DISABLE_SIMPLE_CSS_INSERT");
++    if (disabledForDiagnosis)
++        return false;
++
++    if (m_shadowRoot || (m_pendingUpdate && *m_pendingUpdate != UpdateType::SimpleRuleInsertion)
++        || m_document->inStyleRecalc() || m_document->inRenderTreeUpdate()
 +        || !m_resolver || m_resolver->isSharedBetweenShadowTrees() || !activeStyleSheetsContains(sheet) || sheet.disabled())
 +        return false;
 +
 +    // The inserted rule cannot change @font-face, @property, keyframes, or other
-+    // resolver registrations. Rebuild author rule order without replaying them.
-+    {
-+        SetForScope isUpdatingStyleResolver { m_isUpdatingStyleResolver, true };
-+        m_resolver->ruleSets().resetAuthorStyle();
-+        protect(m_resolver)->appendAuthorStyleSheets(m_activeStyleSheets, true);
-+    }
-+    m_resolver->invalidateMatchedDeclarationsCache();
-+
-+    if (m_resolver->ruleSets().features().usesHasPseudoClass)
-+        m_usesHasPseudoClass = true;
-+    if (sheet.contents().usesStyleBasedEditability())
-+        m_usesStyleBasedEditability = true;
-+
-+    InspectorInstrumentation::activeStyleSheetsUpdated(m_document);
-+    Invalidator::invalidateAllStyle(*this);
++    // resolver registrations. Coalesce consecutive insertions before rebuilding
++    // the author rule set so CSS-in-JS callers do not repeatedly pay that cost.
++    scheduleUpdate(UpdateType::SimpleRuleInsertion);
 +    return true;
 +}
 +
@@ -26328,7 +26373,7 @@ index 5375c6f10320876a1fac9dfd503cb3c8b373879b..30154ee2dec1bd010a5c4adbb9b627a0
  {
      Ref<ContainerNode> rootNode = m_document;
 diff --git a/Source/WebCore/style/StyleScope.h b/Source/WebCore/style/StyleScope.h
-index c8cd5dc55cd08b4d67a35ac13c588056bc192b42..77c7d889aeb33fde33607f3760b2fe9394f99e6b 100644
+index c8cd5dc55cd08b4d67a35ac13c588056bc192b42..ed2e0c6d70d5d2877759ef0ef29abcf1c2da93c3 100644
 --- a/Source/WebCore/style/StyleScope.h
 +++ b/Source/WebCore/style/StyleScope.h
 @@ -116,6 +116,7 @@ public:
@@ -26339,6 +26384,25 @@ index c8cd5dc55cd08b4d67a35ac13c588056bc192b42..77c7d889aeb33fde33607f3760b2fe93
  
      void didChangeViewportSize();
  
+@@ -170,7 +171,7 @@ private:
+ 
+     void didRemovePendingStylesheet();
+ 
+-    enum class UpdateType : uint8_t { ActiveSet, FullForExtensionStyleSheets, ContentsOrInterpretation };
++    enum class UpdateType : uint8_t { ActiveSet, SimpleRuleInsertion, FullForExtensionStyleSheets, ContentsOrInterpretation };
+     void updateActiveStyleSheets(UpdateType);
+     void scheduleUpdate(UpdateType);
+ 
+@@ -187,7 +188,8 @@ private:
+     enum class ResolverUpdateType {
+         Reconstruct,
+         Reset,
+-        Additive
++        Additive,
++        PreserveMutatingRules
+     };
+     struct StyleSheetChange {
+         ResolverUpdateType resolverUpdateType;
 diff --git a/Source/WebCore/style/StyleScopeRuleSets.cpp b/Source/WebCore/style/StyleScopeRuleSets.cpp
 index b020e0be5753a6aae8b3061e29621ce430ac8ed6..ccf3856c730f86db62cf9cf700b1a91d32c4688c 100644
 --- a/Source/WebCore/style/StyleScopeRuleSets.cpp
