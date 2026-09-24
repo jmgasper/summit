@@ -10468,10 +10468,10 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..fbd7b8cf631170de6d0b31b389861e9d7a302e3b
+index 0000000000000000000000000000000000000000..51228f55b36c653f4bec7847c757f4c945f2249b
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,1175 @@
+@@ -0,0 +1,1203 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -10555,6 +10555,15 @@ index 0000000000000000000000000000000000000000..fbd7b8cf631170de6d0b31b389861e9d
 +{
 +    static bool enabled = [] {
 +        const char* trace = std::getenv("SUMMIT_MEDIA_PLAYBACK_TRACE");
++        return trace && trace[0] == '1' && !trace[1];
++    }();
++    return enabled;
++}
++
++static bool mediaFrameTraceEnabled()
++{
++    static bool enabled = [] {
++        const char* trace = std::getenv("SUMMIT_MEDIA_FRAME_TRACE");
 +        return trace && trace[0] == '1' && !trace[1];
 +    }();
 +    return enabled;
@@ -10861,8 +10870,16 @@ index 0000000000000000000000000000000000000000..fbd7b8cf631170de6d0b31b389861e9d
 +
 +            if (videoTime < playbackTime) {
 +                int64 count;
++                bigtime_t decodeStartedAt = mediaFrameTraceEnabled() ? system_time() : 0;
 +                status_t decodeStatus = player->m_videoTrack->ReadFrames(player->m_frameBuffer->Bits(), &count);
 +                if (decodeStatus == B_OK) {
++                    unsigned traceSequence = 0;
++                    bigtime_t decodedAt = 0;
++                    if (mediaFrameTraceEnabled()) {
++                        decodedAt = system_time();
++                        traceSequence = ++player->m_frameTraceSequence;
++                        player->m_lastFrameTraceDecodedAt = decodedAt;
++                    }
 +                    if (tracePlayback) {
 +                        ++decodedFrames;
 +                        int second = static_cast<int>(player->m_currentTime.load());
@@ -10872,9 +10889,14 @@ index 0000000000000000000000000000000000000000..fbd7b8cf631170de6d0b31b389861e9d
 +                                player, decodedFrames, player->m_currentTime.load(), player->m_duration.load());
 +                        }
 +                    }
-+                    callOnMainThread([player = WeakPtr(player)] {
-+                        if (player)
++                    callOnMainThread([player = WeakPtr(player), traceSequence, decodedAt, decodeStartedAt] {
++                        if (player) {
++                            if (traceSequence)
++                                std::fprintf(stderr, "Summit media frame: player=%p seq=%u decode=%.1f queue=%.1f media=%.3f\n",
++                                    player.get(), traceSequence, (decodedAt - decodeStartedAt) / 1000.0,
++                                    (system_time() - decodedAt) / 1000.0, player->m_currentTime.load());
 +                            player->m_player.repaint();
++                        }
 +                    });
 +                } else {
 +                    if (tracePlayback)
@@ -11060,6 +11082,12 @@ index 0000000000000000000000000000000000000000..fbd7b8cf631170de6d0b31b389861e9d
 +
 +    if (!m_frameBuffer)
 +        return;
++    if (mediaFrameTraceEnabled()) {
++        unsigned sequence = m_frameTraceSequence;
++        if (sequence && m_lastFrameTracePaintedSequence.exchange(sequence) != sequence)
++            std::fprintf(stderr, "Summit media paint: player=%p seq=%u age=%.1f media=%.3f\n",
++                this, sequence, (system_time() - m_lastFrameTraceDecodedAt.load()) / 1000.0, m_currentTime.load());
++    }
 +#if USE(HAIKU_GRAPHICS)
 +    BView* target = context.platformContext();
 +    target->SetDrawingMode(B_OP_COPY);
@@ -11649,10 +11677,10 @@ index 0000000000000000000000000000000000000000..fbd7b8cf631170de6d0b31b389861e9d
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..d58a70a400d2ee27bcc2c52892cd2165a0d7b1c0
+index 0000000000000000000000000000000000000000..92e73cd19ce51a24e84f0e94e17657eb32bc4da0
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
-@@ -0,0 +1,157 @@
+@@ -0,0 +1,160 @@
 +/*
 + * Copyright (C) 2014 Haiku, Inc.
 + *
@@ -11781,6 +11809,9 @@ index 0000000000000000000000000000000000000000..d58a70a400d2ee27bcc2c52892cd2165
 +        BSoundPlayer* m_soundPlayer;
 +        BBitmap* m_frameBuffer;
 +        BLocker m_mediaLock;
++        std::atomic<unsigned> m_frameTraceSequence { 0 };
++        std::atomic<unsigned> m_lastFrameTracePaintedSequence { 0 };
++        std::atomic<bigtime_t> m_lastFrameTraceDecodedAt { 0 };
 +#if USE(CURL)
 +        BLocker m_downloadLock;
 +        void* m_activeDownload { nullptr };
