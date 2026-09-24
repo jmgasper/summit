@@ -3604,3 +3604,34 @@ painted 191, 195, and 193 frames. NVDEC remained selected and the video was
 visible, but Mesa again logged two Zink image-creation errors. The GL switch
 did not improve this playback check, so it remains off in the workstation
 launcher (`.vm/bench/scroll-20260924-191457-guardian-gl-live/after-video.log`).
+
+### Matched-declarations cache check
+
+The opt-in GL Canvas build improves Chart.js and Perf Dashboard beyond the
+saved Firefox 155 times, but the remaining Speedometer gap spans TodoMVC
+frameworks, CodeMirror, and Observable Plot. Against Firefox at 1280×887,
+the GL Canvas full run was 39.4 ms slower in Observable Plot, 31.7 ms in
+CodeMirror, and about 29 ms in each of Preact and Svelte. A broad style or
+DOM improvement is needed to reach the Firefox score; another Canvas-only
+change cannot close these gaps
+(`.vm/bench/speedometer-20260924-185330-skia-gl-canvas-cpu-tiles-full/`
+and `.vm/bench/firefox-speedometer-20260921-102926-ws/`).
+
+A temporary matched-declarations cache trace counted 500 applications per
+report, including setup and measured work. Across five focused iterations,
+Preact and Svelte each reported 27,500 applications with usable cache entries
+on 93.5% and 93.1%, respectively. Observable Plot reported 23,500 with
+98.3% usable entries. CodeMirror reported only 2,000 applications with 62.1%
+usable entries; its previously measured gap lies mainly in synchronous
+editor measurement from an IntersectionObserver callback. A second temporary
+Preact trace spent 0.010, 0.013, and 0.012 ms per 100 applications in cache
+hashing, lookup, and cacheability checks. Timing hooks add overhead, but these
+costs are far below the roughly 10 ms tree-resolution phase. Raising cache
+hit rate or optimizing its lookup is therefore not the next Speedometer fix.
+Both temporary traces were removed and the engine patch returned to its
+committed digest
+(`.vm/bench/speedometer-20260924-192514-preact-style-cache/`,
+`.vm/bench/speedometer-20260924-192622-svelte-style-cache/`,
+`.vm/bench/speedometer-20260924-193005-codemirror-style-cache/`,
+`.vm/bench/speedometer-20260924-193110-observable-style-cache/`, and
+`.vm/bench/speedometer-20260924-193712-preact-style-cache-timing/`).
