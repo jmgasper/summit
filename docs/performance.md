@@ -3887,6 +3887,9 @@ leave the weak reference unresolved. The WebCore PGO archive also exposed a
 build-tool bottleneck: GNU `ar` consumed one core for over 13 minutes on 742
 objects, while `llvm-ar` assembled and listed the same objects in under one
 second. The isolated Ninja archive rules now use `llvm-ar` and `llvm-ranlib`.
+After CMake regenerates those rules, the tracked
+`tools/use-llvm-ar-in-webkit-build.py` helper reapplies the switch to the
+existing build directory before Ninja runs.
 The instrumented WebKit link and browser training are still in progress
 (`.vm/pgo-generate-atomic-engine-build.log`,
 `.vm/pgo-generate-llvm-hook-build.log`, and
