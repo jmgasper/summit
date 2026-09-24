@@ -3787,3 +3787,29 @@ thread while keeping the seek target and paused-frame behavior correct
 (`.vm/bench/probe-20260924-220617-summit-guardian-seek-sweep-zen1/`,
 `.vm/bench/probe-20260924-220651-summit-guardian-seek-sweep-control/`, and
 `.vm/bench/probe-20260924-220738-summit-reddit-seek-sweep-control/`).
+
+### Asynchronous Media Kit seek preroll
+
+The Haiku media backend now seeks tracks on the page thread, then decodes
+video keyframe preroll on its existing decoder thread. It takes and releases
+the media lock for each decoded frame, allowing a new drag position to cancel
+an old seek. The seek promise settles when the requested frame is ready;
+paused video also runs this preroll and repaints that frame. Load cancellation
+rejects a pending promise, and a seek generation prevents a stale completion
+from settling a newer request.
+
+On the idle workstation, the repeated-seek probe recorded **no heartbeat gap
+over 80 ms** with the candidate on either the Guardian or Reddit clip. The
+installed build recorded gaps of 210–265 ms on Guardian and up to 265 ms on
+Reddit. Both candidate runs used NVDEC H.264 with status 0, reached their
+last target, and reported no media error. A separate paused Guardian run
+remained paused at 13.692 seconds, emitted `seeked`, had no gap over 80 ms,
+and showed the sought frame in its screenshot. A 22-second Guardian playback
+probe completed a loop with 684 decoded frames, 682 painted frames, no media
+error, and no Zink error. These are controlled clips; the Adobe ad player
+itself remains unverified because its URL is unavailable. Candidate bundle:
+`bundle-w9ti9d76`
+(`.vm/bench/probe-20260924-221508-summit-guardian-seek-sweep-async/`,
+`.vm/bench/probe-20260924-221557-summit-reddit-seek-sweep-async/`,
+`.vm/bench/probe-20260924-221654-summit-guardian-paused-seek-async/`, and
+`.vm/bench/probe-20260924-221753-summit-guardian-loop-async/`).

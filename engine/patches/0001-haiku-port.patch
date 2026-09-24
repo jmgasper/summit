@@ -10798,10 +10798,10 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..51228f55b36c653f4bec7847c757f4c945f2249b
+index 0000000000000000000000000000000000000000..eb6f05f15aae13bc558ba13244df9ce0b9811455
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,1203 @@
+@@ -0,0 +1,1239 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -10860,6 +10860,7 @@ index 0000000000000000000000000000000000000000..51228f55b36c653f4bec7847c757f4c9
 +#include <optional>
 +#include <string>
 +#include <string_view>
++#include <utility>
 +#include <vector>
 +#include <unistd.h>
 +
@@ -11023,6 +11024,11 @@ index 0000000000000000000000000000000000000000..51228f55b36c653f4bec7847c757f4c9
 +        wait_for_thread(m_videoThread, &status);
 +        m_videoThread = -1;
 +    }
++    ++m_seekGeneration;
++    if (m_seekPromise) {
++        m_seekPromise->reject(PlatformMediaError::Cancelled);
++        m_seekPromise.reset();
++    }
 +    bigtime_t videoJoinedAt = traceLifecycle ? system_time() : 0;
 +
 +    // The blocking form sleeps for the output latency even after playback has
@@ -11048,6 +11054,8 @@ index 0000000000000000000000000000000000000000..51228f55b36c653f4bec7847c757f4c9
 +    m_videoTrack = nullptr;
 +    m_audioAtEnd = false;
 +    m_videoAtEnd = false;
++    m_prerollTarget = -1;
++    m_prerollFrames = 0;
 +    m_hasVideo = false;
 +    delete m_frameBuffer;
 +    m_frameBuffer = nullptr;
@@ -11173,7 +11181,7 @@ index 0000000000000000000000000000000000000000..51228f55b36c653f4bec7847c757f4c9
 +    const bool tracePlayback = mediaPlaybackTraceEnabled();
 +
 +    while (!player->m_abort) {
-+        if (player->m_paused) {
++        if (player->m_paused && player->m_prerollTarget < 0) {
 +            snooze(10000);
 +            startTime = system_time();
 +            startMediaTime = (bigtime_t)(player->m_currentTime * 1000000);
@@ -11183,6 +11191,39 @@ index 0000000000000000000000000000000000000000..51228f55b36c653f4bec7847c757f4c9
 +
 +        if (!player->m_mediaLock.Lock())
 +            continue;
++
++        // Decode keyframe preroll away from the page thread. Release the media
++        // lock after each frame so another drag position can supersede this
++        // seek and the audio callback can continue running.
++        bigtime_t prerollTarget = player->m_prerollTarget;
++        if (prerollTarget >= 0 && player->m_videoTrack && player->m_frameBuffer) {
++            int64 count = 1;
++            status_t status = player->m_videoTrack->ReadFrames(player->m_frameBuffer->Bits(), &count);
++            if (status == B_OK)
++                ++player->m_prerollFrames;
++            if (status != B_OK || player->m_videoTrack->CurrentTime() >= prerollTarget || player->m_prerollFrames >= 300) {
++                unsigned generation = player->m_seekGeneration;
++                if (tracePlayback)
++                    std::fprintf(stderr, "Summit media seek: player=%p requested=%.3f keyframe=%.3f decoded=%u position=%.3f\n",
++                        player, prerollTarget / 1000000.0, player->m_prerollKeyframeTime / 1000000.0,
++                        player->m_prerollFrames, player->m_videoTrack->CurrentTime() / 1000000.0);
++                player->m_prerollTarget = -1;
++                startTime = system_time();
++                startMediaTime = (bigtime_t)(player->m_currentTime * 1000000);
++                lastObservedTime = player->m_currentTime;
++                callOnMainThread([player = WeakPtr(player), generation] {
++                    if (!player || player->m_seekGeneration != generation || !player->m_seekPromise)
++                        return;
++                    player->m_player.repaint();
++                    auto promise = std::exchange(player->m_seekPromise, std::nullopt);
++                    promise->resolve(player->currentTime());
++                    player->m_player.timeChanged();
++                });
++            }
++            player->m_mediaLock.Unlock();
++            snooze(1000);
++            continue;
++        }
 +
 +        bool waitForFrame = false;
 +        if (player->m_videoTrack && !player->m_videoAtEnd) {
@@ -11315,7 +11356,14 @@ index 0000000000000000000000000000000000000000..51228f55b36c653f4bec7847c757f4c9
 +{
 +    if (!m_mediaLock.Lock())
 +        return MediaTimePromise::createAndReject(PlatformMediaError::InvalidState);
++    if (auto previousSeek = std::exchange(m_seekPromise, std::nullopt))
++        previousSeek->reject(PlatformMediaError::Cancelled);
++    ++m_seekGeneration;
 +    if (!m_videoTrack && !m_audioTrack) {
++        m_mediaLock.Unlock();
++        return MediaTimePromise::createAndReject(PlatformMediaError::NotReady);
++    }
++    if (m_videoTrack && (m_videoThread < 0 || !m_frameBuffer)) {
 +        m_mediaLock.Unlock();
 +        return MediaTimePromise::createAndReject(PlatformMediaError::NotReady);
 +    }
@@ -11333,37 +11381,25 @@ index 0000000000000000000000000000000000000000..51228f55b36c653f4bec7847c757f4c9
 +        return MediaTimePromise::createAndReject(PlatformMediaError::NotSupportedError);
 +    }
 +
-+    // Media Kit seeks video to an earlier keyframe. Decode up to the requested
-+    // position so neither the paused frame nor the playback clock jumps back.
-+    unsigned prerollFrames = 0;
-+    if (m_videoTrack && m_frameBuffer) {
-+        do {
-+            int64 count = 1;
-+            if (m_videoTrack->ReadFrames(m_frameBuffer->Bits(), &count) != B_OK)
-+                break;
-+            ++prerollFrames;
-+        } while (m_videoTrack->CurrentTime() < requestedTime && prerollFrames < 300);
-+        if (prerollFrames) {
-+            callOnMainThread([p = WeakPtr(this)] {
-+                if (p)
-+                    p->m_player.repaint();
-+            });
-+        }
-+    }
-+
 +    bool restartAudio = m_audioAtEnd && !m_paused && m_soundPlayer;
 +    m_audioAtEnd = false;
 +    m_videoAtEnd = false;
 +    m_currentTime = requestedTime / 1000000.f;
 +    m_ended = false;
-+    if (mediaPlaybackTraceEnabled())
-+        std::fprintf(stderr, "Summit media seek: player=%p requested=%.3f keyframe=%.3f decoded=%u position=%.3f\n",
-+            this, requestedTime / 1000000.0, videoTime / 1000000.0,
-+            prerollFrames, m_videoTrack ? m_videoTrack->CurrentTime() / 1000000.0 : 0.0);
++    bool prerollVideo = m_videoTrack;
++    if (prerollVideo) {
++        m_prerollKeyframeTime = videoTime;
++        m_prerollFrames = 0;
++        m_prerollTarget = requestedTime;
++    }
 +    auto position = currentTime();
 +    m_mediaLock.Unlock();
 +    if (restartAudio)
 +        m_soundPlayer->Start();
++    if (prerollVideo) {
++        m_seekPromise.emplace(PlatformMediaError::Cancelled);
++        return m_seekPromise->promise();
++    }
 +    m_player.timeChanged();
 +    return MediaTimePromise::createAndResolve(position);
 +}
@@ -12007,10 +12043,10 @@ index 0000000000000000000000000000000000000000..51228f55b36c653f4bec7847c757f4c9
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..92e73cd19ce51a24e84f0e94e17657eb32bc4da0
+index 0000000000000000000000000000000000000000..577cf3a1f6566cdc4d5f3178b216efd6f0347176
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
-@@ -0,0 +1,160 @@
+@@ -0,0 +1,169 @@
 +/*
 + * Copyright (C) 2014 Haiku, Inc.
 + *
@@ -12038,6 +12074,7 @@ index 0000000000000000000000000000000000000000..92e73cd19ce51a24e84f0e94e17657eb
 +
 +#include <wtf/WeakPtr.h>
 +#include <atomic>
++#include <optional>
 +
 +#include <Locker.h>
 +#include <ObjectList.h>
@@ -12139,6 +12176,14 @@ index 0000000000000000000000000000000000000000..92e73cd19ce51a24e84f0e94e17657eb
 +        BSoundPlayer* m_soundPlayer;
 +        BBitmap* m_frameBuffer;
 +        BLocker m_mediaLock;
++        // A seek's keyframe preroll runs on the decoder thread, one frame per
++        // lock acquisition, so a later seek can replace it without blocking
++        // the WebProcess main thread.
++        std::atomic<bigtime_t> m_prerollTarget { -1 };
++        bigtime_t m_prerollKeyframeTime { 0 };
++        unsigned m_prerollFrames { 0 };
++        std::atomic<unsigned> m_seekGeneration { 0 };
++        std::optional<MediaTimePromise::AutoRejectProducer> m_seekPromise;
 +        std::atomic<unsigned> m_frameTraceSequence { 0 };
 +        std::atomic<unsigned> m_lastFrameTracePaintedSequence { 0 };
 +        std::atomic<bigtime_t> m_lastFrameTraceDecodedAt { 0 };
