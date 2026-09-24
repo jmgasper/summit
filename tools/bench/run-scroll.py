@@ -313,9 +313,12 @@ def summarize_ui_snapshot(snapshot):
     seconds = snapshot['elapsedMicros'] / 1_000_000
     frames = snapshot['frames']
     pending = snapshot['pendingGapMicros']
+    time_to_last_frame = max(0, snapshot['elapsedMicros'] - pending) / 1_000_000
     return {
         'source': 'native-view-snapshot', 'frames': frames,
         'seconds': round(seconds, 2), 'fps': round(frames / seconds, 2) if seconds else 0,
+        'secondsToLastFrame': round(time_to_last_frame, 2),
+        'fpsToLastFrame': round(frames / time_to_last_frame, 2) if time_to_last_frame else 0,
         'worstIntervalMs': round(max(snapshot['longestGapMicros'], pending) / 1000, 1),
         'completedWorstIntervalMs': round(snapshot['longestGapMicros'] / 1000, 1),
         'over33Ms': snapshot['longGaps'] + int(pending > 33000),
