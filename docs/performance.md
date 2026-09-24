@@ -3876,3 +3876,18 @@ untrained functions normally instead of favoring size. This matters because
 two workloads cannot cover every browser path. The installed launcher stays
 unchanged until a matching full benchmark and scroll probe show a gain; the
 earlier Zen 1 target alone did not.
+
+Haiku's `exitProcess()` and `terminateProcess()` use `_exit()`, so GCC's
+ordinary exit handler cannot write browser-process profiles. A three-module
+Haiku probe called `__gcov_dump()` from an instrumented shared library just
+before `_exit()` and wrote `.gcda` files for both libraries and the executable.
+The port now has an opt-in `SUMMIT_GCOV_DUMP=1` hook on both exit paths. The
+training link includes the dump routine with `-u__gcov_dump`; normal builds
+leave the weak reference unresolved. The WebCore PGO archive also exposed a
+build-tool bottleneck: GNU `ar` consumed one core for over 13 minutes on 742
+objects, while `llvm-ar` assembled and listed the same objects in under one
+second. The isolated Ninja archive rules now use `llvm-ar` and `llvm-ranlib`.
+The instrumented WebKit link and browser training are still in progress
+(`.vm/pgo-generate-atomic-engine-build.log`,
+`.vm/pgo-generate-llvm-hook-build.log`, and
+`.vm/pgo-generate-llvm-resume.log`).
