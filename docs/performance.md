@@ -4211,3 +4211,15 @@ The workstation launcher remains on the prior `bundle-k7atp8la`
 (`.vm/bench/scroll-cycles-20260925-064832-paint-phases/`,
 `.vm/bench/scroll-cycles-20260925-065132-settle-feed/`, and
 `.vm/bench/scroll-cycles-20260925-065351-paint-phases-repeat/`).
+
+A follow-up on the reported full Guardian article used the installed smooth
+PGO bundle with opt-in media frame tracing. The article loaded and the cookie
+panel was dismissed, but navigation through the page encountered its photo
+lightbox and subscription overlay. A second visit reused the consented
+profile. Neither visit brought the inline video into view or emitted a media
+frame or codec trace, so these runs provide no new playback measurement.
+The media path still rests on the controlled Guardian clip and the earlier
+full-article PGO playback window above. Both browser instances were closed
+after their screenshots and logs were saved
+(`.vm/bench/guardian-live-smooth-pgo-20260925/` and
+`.vm/bench/guardian-live-smooth-pgo-retry-20260925/`).
