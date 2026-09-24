@@ -26,6 +26,12 @@ SUMMIT_ENGINE_TARGET=${1:-all}
 # stable one: SUMMIT_ENGINE_BUILD_NAME=ModernGL SUMMIT_ENGINE_CMAKE_EXTRA="-DUSE_MIMALLOC=ON ...".
 SUMMIT_ENGINE_BUILD_NAME=${SUMMIT_ENGINE_BUILD_NAME:-Modern}
 SUMMIT_ENGINE_CMAKE_EXTRA=${SUMMIT_ENGINE_CMAKE_EXTRA:-}
+# CMake preserves old cache entries across builds. The Haiku port defaults to
+# mimalloc, but an older system-malloc build directory can silently retain the
+# slower allocator unless the choice is explicit at configure time.
+if [[ $SUMMIT_ENGINE_MODE == extensions && $SUMMIT_ENGINE_CMAKE_EXTRA != *-DUSE_MIMALLOC=* && $SUMMIT_ENGINE_CMAKE_EXTRA != *-DUSE_SYSTEM_MALLOC=* ]]; then
+    SUMMIT_ENGINE_CMAKE_EXTRA="$SUMMIT_ENGINE_CMAKE_EXTRA -DUSE_MIMALLOC=ON -DUSE_SYSTEM_MALLOC=OFF"
+fi
 if [[ ! $SUMMIT_ENGINE_BUILD_NAME =~ ^[A-Za-z][A-Za-z0-9_-]{0,31}$ ]]; then
     echo 'SUMMIT_ENGINE_BUILD_NAME must be a short alphanumeric name.' >&2
     exit 2
