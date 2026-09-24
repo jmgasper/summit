@@ -3582,3 +3582,25 @@ zero in both modes, so that probe cannot establish presentation frame rate
 `.vm/bench/probe-20260924-185637-summit-skia-gl-canvas-cpu-tiles-scroll-control/`,
 `.vm/bench/probe-20260924-185938-summit-skia-gl-guardian-loop/`, and
 `.vm/bench/probe-20260924-190056-summit-skia-gl-guardian-loop-control/`).
+
+### Live Guardian playback on the installed build
+
+The installed `bundle-zk7kro3v` was revisited on the reported Guardian
+article. After dismissing consent and scrolling the inline video into view,
+native frame tracing found 191–196 paints in five consecutive 200-frame
+decoded windows. The latest window painted 196/200, with a 15.9 ms
+95th-percentile repaint handoff and no handoff above 40 ms. One earlier
+window had two handoffs above 40 ms, the worst 81.5 ms. A second article run
+selected `H.264 on the graphics card (NVDEC)` with status 0 and painted
+198/200 in its latest decoded window. The video was visible in the captured
+screenshots. This confirms the current build's hardware decoder selection
+and a much better paint ratio than the original roughly 77% trace; it does
+not prove that every frame is presented on time
+(`.vm/bench/scroll-20260924-190747-guardian-current-live/after-video.log`
+and `.vm/bench/scroll-20260924-191305-guardian-current-codec/after-video.log`).
+
+On the same live article with opt-in GL Canvas, three 200-frame windows
+painted 191, 195, and 193 frames. NVDEC remained selected and the video was
+visible, but Mesa again logged two Zink image-creation errors. The GL switch
+did not improve this playback check, so it remains off in the workstation
+launcher (`.vm/bench/scroll-20260924-191457-guardian-gl-live/after-video.log`).
