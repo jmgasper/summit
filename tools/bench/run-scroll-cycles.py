@@ -18,6 +18,8 @@ import pathlib
 import signal
 import time
 
+from PIL import Image
+
 import guest
 
 
@@ -31,6 +33,17 @@ def frame_summary(snapshot):
         'queueMaxMs': round(snapshot['queueMaxMicros'] / 1000, 1),
         'queueOver33': snapshot['queueOver33'],
     }
+
+
+def capture_visible(path):
+    for _ in range(2):
+        guest.wake_display()
+        time.sleep(0.5)
+        guest.screenshot(path)
+        with Image.open(path) as screenshot:
+            if any(high > 10 for _, high in screenshot.convert('RGB').getextrema()):
+                return
+    raise RuntimeError('Display stayed blank after waking it; capture is invalid')
 
 
 def main():
@@ -89,7 +102,7 @@ def main():
             raise RuntimeError(err or out)
         time.sleep(args.settle)
         run['stateBefore'] = guest.state(ctl, team)
-        guest.screenshot(directory / 'before.png')
+        capture_visible(directory / 'before.png')
         time.sleep(1)
         guest.fetch_file(remote_log, directory / 'before.log')
         log_offset = (directory / 'before.log').stat().st_size
@@ -142,7 +155,7 @@ def main():
             print(json.dumps(record), flush=True)
 
         run['stateAfter'] = guest.state(ctl, team)
-        guest.screenshot(directory / 'after.png')
+        capture_visible(directory / 'after.png')
         run['outcome'] = 'completed'
     except KeyboardInterrupt:
         run['outcome'] = 'interrupted'
