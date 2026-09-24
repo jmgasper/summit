@@ -10468,10 +10468,10 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..3a009356b123790eef2ba5ca9065238336089a48
+index 0000000000000000000000000000000000000000..fbd7b8cf631170de6d0b31b389861e9d7a302e3b
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,1165 @@
+@@ -0,0 +1,1175 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -10707,6 +10707,8 @@ index 0000000000000000000000000000000000000000..3a009356b123790eef2ba5ca90652383
 +    m_secondaryDownloadFile = nullptr;
 +    m_audioTrack = nullptr;
 +    m_videoTrack = nullptr;
++    m_audioAtEnd = false;
++    m_videoAtEnd = false;
 +    m_hasVideo = false;
 +    delete m_frameBuffer;
 +    m_frameBuffer = nullptr;
@@ -10749,7 +10751,7 @@ index 0000000000000000000000000000000000000000..3a009356b123790eef2ba5ca90652383
 +    if (!player->m_mediaLock.Lock())
 +        return;
 +
-+    if (player->m_audioTrack) {
++    if (player->m_audioTrack && !player->m_audioAtEnd) {
 +        // BMediaTrack::CurrentTime() counts decoded audio rather than the time
 +        // heard by the output device. It advances far too slowly on some MP4s;
 +        // the video thread supplies the presentation clock when there is video.
@@ -10763,12 +10765,13 @@ index 0000000000000000000000000000000000000000..3a009356b123790eef2ba5ca90652383
 +                player->m_currentTime = player->m_audioTrack->Duration() / 1000000.f;
 +            player->m_soundPlayer->Stop(false);
 +
-+            player->m_audioTrack = nullptr;
-+            if (!player->m_videoTrack && !player->m_ended.exchange(true)) {
++            player->m_audioAtEnd = true;
++            if ((!player->m_videoTrack || player->m_videoAtEnd) && !player->m_ended.exchange(true)) {
 +                player->m_currentTime = player->m_duration.load();
-+                player->m_paused = true;
 +                callOnMainThread([p = WeakPtr(player)] {
-+                    if (p) {
++                    if (p && p->m_ended) {
++                        if (!p->m_player.isLooping())
++                            p->m_paused = true;
 +                        p->m_player.timeChanged();
 +                        p->m_player.playbackStateChanged();
 +                    }
@@ -10843,7 +10846,7 @@ index 0000000000000000000000000000000000000000..3a009356b123790eef2ba5ca90652383
 +            continue;
 +
 +        bool waitForFrame = false;
-+        if (player->m_videoTrack) {
++        if (player->m_videoTrack && !player->m_videoAtEnd) {
 +            // Detect seek or external time update
 +            if (std::abs(player->m_currentTime - lastObservedTime) > 0.5f) {
 +                startTime = system_time();
@@ -10877,12 +10880,13 @@ index 0000000000000000000000000000000000000000..3a009356b123790eef2ba5ca90652383
 +                    if (tracePlayback)
 +                        std::fprintf(stderr, "Summit media playback: player=%p videoEnd status=%ld frames=%u time=%.2f duration=%.2f\n",
 +                            player, long(decodeStatus), decodedFrames, player->m_currentTime.load(), player->m_duration.load());
-+                    player->m_videoTrack = nullptr;
-+                    if (!player->m_audioTrack && !player->m_ended.exchange(true)) {
++                    player->m_videoAtEnd = true;
++                    if ((!player->m_audioTrack || player->m_audioAtEnd) && !player->m_ended.exchange(true)) {
 +                        player->m_currentTime = player->m_duration.load();
-+                        player->m_paused = true;
 +                        callOnMainThread([player = WeakPtr(player)] {
-+                            if (player) {
++                            if (player && player->m_ended) {
++                                if (!player->m_player.isLooping())
++                                    player->m_paused = true;
 +                                player->m_player.timeChanged();
 +                                player->m_player.playbackStateChanged();
 +                            }
@@ -10891,7 +10895,8 @@ index 0000000000000000000000000000000000000000..3a009356b123790eef2ba5ca90652383
 +                }
 +            } else
 +                waitForFrame = true;
-+        }
++        } else if (player->m_videoAtEnd)
++            waitForFrame = true;
 +        player->m_mediaLock.Unlock();
 +        // The audio callback and seeks need this lock. Waiting for the next
 +        // video frame while holding it can stall audio on every frame.
@@ -10994,6 +10999,9 @@ index 0000000000000000000000000000000000000000..3a009356b123790eef2ba5ca90652383
 +        }
 +    }
 +
++    bool restartAudio = m_audioAtEnd && !m_paused && m_soundPlayer;
++    m_audioAtEnd = false;
++    m_videoAtEnd = false;
 +    m_currentTime = requestedTime / 1000000.f;
 +    m_ended = false;
 +    if (mediaPlaybackTraceEnabled())
@@ -11002,6 +11010,8 @@ index 0000000000000000000000000000000000000000..3a009356b123790eef2ba5ca90652383
 +            prerollFrames, m_videoTrack ? m_videoTrack->CurrentTime() / 1000000.0 : 0.0);
 +    auto position = currentTime();
 +    m_mediaLock.Unlock();
++    if (restartAudio)
++        m_soundPlayer->Start();
 +    m_player.timeChanged();
 +    return MediaTimePromise::createAndResolve(position);
 +}
@@ -11639,10 +11649,10 @@ index 0000000000000000000000000000000000000000..3a009356b123790eef2ba5ca90652383
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..ca8e6387ed833a5eb79169354f6533426b09fa63
+index 0000000000000000000000000000000000000000..d58a70a400d2ee27bcc2c52892cd2165a0d7b1c0
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
-@@ -0,0 +1,155 @@
+@@ -0,0 +1,157 @@
 +/*
 + * Copyright (C) 2014 Haiku, Inc.
 + *
@@ -11766,6 +11776,8 @@ index 0000000000000000000000000000000000000000..ca8e6387ed833a5eb79169354f653342
 +        BFile* m_secondaryDownloadFile { nullptr };
 +        BMediaTrack* m_audioTrack;
 +        BMediaTrack* m_videoTrack;
++        bool m_audioAtEnd { false };
++        bool m_videoAtEnd { false };
 +        BSoundPlayer* m_soundPlayer;
 +        BBitmap* m_frameBuffer;
 +        BLocker m_mediaLock;
