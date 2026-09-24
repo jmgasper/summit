@@ -3481,3 +3481,11 @@ this measured Preact/Svelte gap
 `.vm/bench/firefox-speedometer-20260924-165857-raf-phases-firefox/`,
 `.vm/bench/speedometer-20260924-172854-document-layout-phases/`, and
 `.vm/bench/speedometer-20260924-173419-style-detail-phases/`).
+
+The X399 workstation reports 32 logical CPUs (`sysinfo -cpu`). WebKit's
+`WTF::numberOfProcessorCores()` already uses Haiku's online-processor count,
+and its parallel work queue creates one fewer worker than that count.
+`navigator.hardwareConcurrency` reports 8 because WebKit deliberately caps
+the web-visible value for fingerprinting. The traced style resolution happens
+on the page's main thread, so adding drawing workers alone does not divide
+this particular 10 ms step across the workstation's cores.
