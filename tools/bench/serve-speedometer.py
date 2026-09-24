@@ -139,12 +139,14 @@ INTERSECTION_TRACE = r'''<script id="summit-intersection-trace">
     const NativeObserver = window.IntersectionObserver;
     if (!NativeObserver)
         return;
+    const deferGap = /*DEFER_GAP*/false;
     const observers = [];
     const gapMeasure = window.__summitGapMeasure = {
         viewMeasure: 0, forceFlush: 0, scrollDOM: 0,
         lineBlock: 0, viewStateMeasure: 0, measureReads: 0, measureWrites: 0,
         updatePlugins: 0, inputStateUpdate: 0, updateAttrs: 0,
         docViewUpdate: 0, lineBlockAt: 0, updateSelection: 0,
+        loops: 0, updates: 0, redraws: 0, changes: {}, viewStateSamples: [], timeline: [],
     };
     window.__summitMeasureStep = (name, callback) => {
         if (!window.__summitInGapCallback)
@@ -155,23 +157,42 @@ INTERSECTION_TRACE = r'''<script id="summit-intersection-trace">
     };
     function TracedObserver(callback, options) {
         const record = { callbacks: 0, entries: 0, duration: 0, maxDuration: 0,
-            targets: [], origin: new Error().stack?.split("\n").slice(1, 4).join(" | ") || "" };
+            targets: [], positiveCallbacks: 0, samples: [],
+            origin: new Error().stack?.split("\n").slice(1, 4).join(" | ") || "" };
         const observerIndex = observers.length;
-        const observer = new NativeObserver((entries, instance) => {
+        const runCallback = (entries, instance) => {
             const start = performance.now();
-            if (observerIndex === 2)
+            if (observerIndex === 2) {
                 window.__summitInGapCallback = true;
+                if (gapMeasure.timeline.length < 10)
+                    gapMeasure.timeline.push({event: "gap", at: start,
+                        ratio: entries[entries.length - 1]?.intersectionRatio});
+            }
             try {
                 return callback(entries, instance);
             } finally {
                 if (observerIndex === 2)
                     window.__summitInGapCallback = false;
                 const duration = performance.now() - start;
+                const last = entries[entries.length - 1];
+                if (last?.intersectionRatio > 0)
+                    ++record.positiveCallbacks;
+                if (last && record.samples.length < 4)
+                    record.samples.push({ratio: last.intersectionRatio,
+                        isIntersecting: last.isIntersecting,
+                        target: [last.boundingClientRect?.top, last.boundingClientRect?.bottom],
+                        root: [last.rootBounds?.top, last.rootBounds?.bottom]});
                 ++record.callbacks;
                 record.entries += entries.length;
                 record.duration += duration;
                 record.maxDuration = Math.max(record.maxDuration, duration);
             }
+        };
+        const observer = new NativeObserver((entries, instance) => {
+            if (deferGap && observerIndex === 2)
+                requestAnimationFrame(() => runCallback(entries, instance));
+            else
+                runCallback(entries, instance);
         }, options);
         const nativeObserve = observer.observe.bind(observer);
         observer.observe = (target) => {
@@ -198,6 +219,20 @@ INTERSECTION_TRACE = r'''<script id="summit-intersection-trace">
 '''
 
 CODEMIRROR_MEASURE_TRACE = (
+    (b'    this.updateState = 0;\n    this.requestMeasure();\n    if (config2.parent)',
+     b'    this.updateState = 0;\n    if (window.__summitGapMeasure?.timeline.length < 10) window.__summitGapMeasure.timeline.push({event: "constructed", at: performance.now()});\n    this.requestMeasure();\n    if (config2.parent)'),
+    (b'  measure(flush = true) {\n    if (this.destroyed)',
+     b'  measure(flush = true) {\n    if (window.__summitGapMeasure?.timeline.length < 10) window.__summitGapMeasure.timeline.push({event: "measure", at: performance.now(), inGap: !!window.__summitInGapCallback, previousContentHeight: this.viewState.contentDOMHeight});\n    if (this.destroyed)'),
+    (b'  measure(view) {\n    let dom = view.contentDOM, style = window.getComputedStyle(dom);',
+     b'  measure(view) {\n    let __summitViewSample = window.__summitInGapCallback && window.__summitGapMeasure.viewStateSamples.length < 6 ? {previousContentHeight: this.contentDOMHeight, previousContentWidth: this.contentDOMWidth, previousEditorWidth: this.editorWidth, previousEditorHeight: this.editorHeight, previousPadding: [this.paddingTop, this.paddingBottom], previousViewport: [this.pixelViewport.top, this.pixelViewport.bottom]} : null;\n    let dom = view.contentDOM, style = window.getComputedStyle(dom);'),
+    (b'    let measureContent = refresh || this.mustMeasureContent || this.contentDOMHeight != domRect.height;',
+     b'    let measureContent = refresh || this.mustMeasureContent || this.contentDOMHeight != domRect.height;\n    if (__summitViewSample) Object.assign(__summitViewSample, {domHeight: domRect.height, domWidth: domRect.width, scrollWidth: view.scrollDOM.clientWidth, scrollHeight: view.scrollDOM.clientHeight, initialRefresh: refresh, initialMeasureContent: measureContent});'),
+    (b'    let dTop = pixelViewport.top - this.pixelViewport.top, dBottom = pixelViewport.bottom - this.pixelViewport.bottom;',
+     b'    let dTop = pixelViewport.top - this.pixelViewport.top, dBottom = pixelViewport.bottom - this.pixelViewport.bottom;\n    if (__summitViewSample) __summitViewSample.pixelViewport = [pixelViewport.top, pixelViewport.bottom];'),
+    (b'    if (!this.inView && !this.scrollTarget)\n      return 0;',
+     b'    if (!this.inView && !this.scrollTarget) {\n      if (__summitViewSample) { __summitViewSample.early = true; window.__summitGapMeasure.viewStateSamples.push(__summitViewSample); }\n      return 0;\n    }'),
+    (b'    if (this.mustEnforceCursorAssoc) {\n      this.mustEnforceCursorAssoc = false;\n      view.docView.enforceCursorAssoc();\n    }\n    return result;',
+     b'    if (this.mustEnforceCursorAssoc) {\n      this.mustEnforceCursorAssoc = false;\n      view.docView.enforceCursorAssoc();\n    }\n    if (__summitViewSample) { Object.assign(__summitViewSample, {result, finalRefresh: refresh, finalMeasureContent: measureContent, viewportChange, heightChanged: oracle.heightChanged}); window.__summitGapMeasure.viewStateSamples.push(__summitViewSample); }\n    return result;'),
     (b'if (this.intersecting)\n      this.view.measure();',
      b'if (this.intersecting)\n      window.__summitMeasureStep("viewMeasure", () => this.view.measure());'),
     (b'this.observer.forceFlush();',
@@ -206,12 +241,16 @@ CODEMIRROR_MEASURE_TRACE = (
      b'let { scrollHeight, scrollTop, clientHeight } = window.__summitMeasureStep("scrollDOM", () => ({scrollHeight: this.scrollDOM.scrollHeight, scrollTop: this.scrollDOM.scrollTop, clientHeight: this.scrollDOM.clientHeight}));'),
     (b'let refBlock = this.viewState.lineBlockAtHeight(refHeight);',
      b'let refBlock = window.__summitMeasureStep("lineBlock", () => this.viewState.lineBlockAtHeight(refHeight));'),
+    (b'      for (let i = 0; ; i++) {',
+     b'      for (let i = 0; ; i++) {\n        if (window.__summitInGapCallback) window.__summitGapMeasure.loops++;'),
     (b'let changed = this.viewState.measure(this);',
-     b'let changed = window.__summitMeasureStep("viewStateMeasure", () => this.viewState.measure(this));'),
+     b'let changed = window.__summitMeasureStep("viewStateMeasure", () => this.viewState.measure(this));\n        if (window.__summitInGapCallback) { let counts = window.__summitGapMeasure.changes; counts[changed] = (counts[changed] || 0) + 1; }'),
     (b'        let measured = measuring.map((m) => {',
      b'        let measured = window.__summitMeasureStep("measureReads", () => measuring.map((m) => {'),
     (b'        });\n        let update = ViewUpdate.create(this, this.state, []), redrawn = false, scrolled = false;',
      b'        }));\n        let update = ViewUpdate.create(this, this.state, []), redrawn = false, scrolled = false;'),
+    (b'        if (!update.empty) {',
+     b'        if (!update.empty) {\n          if (window.__summitInGapCallback) window.__summitGapMeasure.updates++;'),
     (b'          this.updatePlugins(update);',
      b'          window.__summitMeasureStep("updatePlugins", () => this.updatePlugins(update));'),
     (b'          this.inputState.update(update);',
@@ -219,7 +258,7 @@ CODEMIRROR_MEASURE_TRACE = (
     (b'          this.updateAttrs();',
      b'          window.__summitMeasureStep("updateAttrs", () => this.updateAttrs());'),
     (b'          redrawn = this.docView.update(update);',
-     b'          redrawn = window.__summitMeasureStep("docViewUpdate", () => this.docView.update(update));'),
+     b'          redrawn = window.__summitMeasureStep("docViewUpdate", () => this.docView.update(update));\n          if (redrawn && window.__summitInGapCallback) window.__summitGapMeasure.redraws++;'),
     (b'        for (let i2 = 0; i2 < measuring.length; i2++)',
      b'        let __summitWriteStarted = window.__summitInGapCallback ? performance.now() : 0;\n        for (let i2 = 0; i2 < measuring.length; i2++)'),
     (b'        if (this.viewState.editorHeight) {',
@@ -232,12 +271,13 @@ CODEMIRROR_MEASURE_TRACE = (
 
 
 class State:
-    def __init__(self, source, out_dir, cache_policy, progress, intersection_trace):
+    def __init__(self, source, out_dir, cache_policy, progress, intersection_trace, intersection_defer_gap):
         self.source = source
         self.out_dir = out_dir
         self.cache_policy = cache_policy
         self.progress = progress
         self.intersection_trace = intersection_trace
+        self.intersection_defer_gap = intersection_defer_gap
         self.lock = threading.Lock()
         self.started = time.time()
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -329,7 +369,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             marker = b'<script type="module" crossorigin src="./assets/codemirror-521de7ab.js"></script>'
             if data.count(marker) != 1:
                 return self.respond(500, b'Unexpected CodeMirror iframe layout\n', head=head)
-            data = data.replace(marker, INTERSECTION_TRACE.encode() + marker)
+            trace = INTERSECTION_TRACE.replace('/*DEFER_GAP*/false', 'true' if self.state.intersection_defer_gap else 'false')
+            data = data.replace(marker, trace.encode() + marker)
         elif self.state.intersection_trace and split.path == '/resources/editors/dist/assets/codemirror-521de7ab.js':
             for original, replacement in CODEMIRROR_MEASURE_TRACE:
                 if data.count(original) != 1:
@@ -404,12 +445,17 @@ def main():
                         help='also report each test start (adds network activity; result marked instrumented)')
     parser.add_argument('--intersection-trace', action='store_true',
                         help='time CodeMirror IntersectionObserver callbacks (diagnostic; result marked instrumented)')
+    parser.add_argument('--intersection-defer-gap', action='store_true',
+                        help='deliver CodeMirror gap observer callbacks in the next animation frame (diagnostic only)')
     args = parser.parse_args()
+    if args.intersection_defer_gap and not args.intersection_trace:
+        parser.error('--intersection-defer-gap requires --intersection-trace')
     source = args.source.resolve()
     if not (source / 'resources/benchmark-runner.mjs').is_file():
         sys.exit(f'{source} is not a Speedometer checkout; see docs/performance.md')
     out_dir = (args.out_dir or ROOT / '.vm/bench' / time.strftime('manual-%Y%m%d-%H%M%S')).resolve()
-    Handler.state = State(source, out_dir, args.cache_policy, args.progress_beacons, args.intersection_trace)
+    Handler.state = State(source, out_dir, args.cache_policy, args.progress_beacons,
+                          args.intersection_trace, args.intersection_defer_gap)
     server = Server((args.bind, args.port), Handler)
     print(f'[serve-speedometer] {source} on http://{args.bind}:{args.port}/'
           f' cache={args.cache_policy} out={out_dir}', flush=True)

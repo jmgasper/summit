@@ -139,6 +139,8 @@ def main():
                         help='per-test progress beacons (diagnosis of hangs; marks the result instrumented)')
     parser.add_argument('--intersection-trace', action='store_true',
                         help='time CodeMirror IntersectionObserver callbacks (diagnostic; marks the result instrumented)')
+    parser.add_argument('--intersection-defer-gap', action='store_true',
+                        help='deliver CodeMirror gap callbacks in the next animation frame (diagnostic only)')
     parser.add_argument('--haiku-profile', action='store_true',
                         help='run Summit under Haiku\'s inclusive sampling profiler and save profile.txt')
     parser.add_argument('--env', action='append', default=[], metavar='NAME=VALUE', help='extra browser environment')
@@ -157,6 +159,8 @@ def main():
         return annotate(args)
     if args.official and args.intersection_trace:
         parser.error('--intersection-trace requires the local Speedometer copy')
+    if args.intersection_defer_gap and not args.intersection_trace:
+        parser.error('--intersection-defer-gap requires --intersection-trace')
     if args.haiku_profile and guest.HOST == 'workstation':
         parser.error('--haiku-profile is disabled on the workstation because Haiku profile shutdown can hang the machine')
     if args.haiku_profile and args.keep_open:
@@ -178,6 +182,7 @@ def main():
            'iterations': args.iterations, 'suites': args.suites, 'directory': str(directory), 'machine': guest.HOST, 'vm': MACHINE_CONFIG[guest.HOST],
            'cachePolicy': None if args.official else args.cache_policy, 'progressBeacons': args.progress_beacons,
            'intersectionTrace': args.intersection_trace,
+           'intersectionDeferGap': args.intersection_defer_gap,
            'haikuProfile': args.haiku_profile,
            'startedAt': time.strftime('%Y-%m-%dT%H:%M:%S%z'), 'outcome': 'not-started', 'load': {}, 'events': []}
 
@@ -210,6 +215,8 @@ def main():
             command.append('--progress-beacons')
         if args.intersection_trace:
             command.append('--intersection-trace')
+        if args.intersection_defer_gap:
+            command.append('--intersection-defer-gap')
         server = subprocess.Popen(command, stdout=(directory / 'server.log').open('w'), stderr=subprocess.STDOUT)
         time.sleep(1.0)
         if server.poll() is not None:

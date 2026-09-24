@@ -3265,7 +3265,33 @@ stages summed to 28 ms in `viewState.measure`, 10 ms in measurement reads,
 also timed measurement writes found only 2 ms in those writes, with 198 ms
 total callback time. The remaining time is spread through the rest of the
 measurement loop, and timer resolution prevents exact subtraction. The gap
-observer's synchronous CodeMirror measurement path is the next candidate
-for native geometry/layout profiling; changing observer dispatch alone would
-leave the callback's work intact
+observer's synchronous CodeMirror measurement path is substantial
 (`.vm/bench/speedometer-20260924-103246-codemirror-write-phase/`).
+
+A later loop and timeline trace showed why the callbacks differ. Summit's
+first gap callback starts before CodeMirror's initial animation-frame measure,
+with `viewState.contentDOMHeight` still zero. It runs four measurement loops,
+two updates, and one redraw. Firefox's first animation-frame measure runs
+first; its subsequent gap callback finds a stable content height and runs one
+loop without an update. The observer's entry geometry was effectively the
+same in both browsers. See `.vm/bench/speedometer-20260924-104723-codemirror-schedule-order/`
+and `.vm/bench/firefox-speedometer-20260924-104808-codemirror-schedule-order/`.
+
+An opt-in diagnostic deferred only the CodeMirror gap callback to the next
+animation frame. This eliminated its duplicate measurement (one loop, no
+updates), but the ten-iteration suite mean rose to 186 ms. The initial layout
+moved into a later frame inside the measured portion of the test. This is a
+diagnostic score, not a standard Speedometer result, and does not support
+changing observer dispatch as a performance fix
+(`.vm/bench/speedometer-20260924-105328-codemirror-defer-gap/`).
+
+### Guardian frame presentation diagnosis
+
+The standalone Guardian playback probe now serializes
+`getVideoPlaybackQuality()` fields explicitly and attempts
+`requestVideoFrameCallback()`. On `bundle-7dosgek7`, the clip still reached
+19.56 seconds and looped, but the quality fields stayed zero and the frame
+callback API was unavailable. Neither browser API measures presentation on
+this build. An opt-in backend trace records decode time, the delay before
+the main-thread repaint request, and the age of the frame when `paint()` runs
+(`.vm/bench/probe-20260924-105512-summit-guardian-frame-quality/`).

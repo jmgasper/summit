@@ -8,11 +8,27 @@ const video = document.getElementById("video");
 const started = performance.now();
 const events = [];
 const samples = [];
+const frames = [];
+const hasVideoFrameCallback = typeof video.requestVideoFrameCallback === "function";
+if (hasVideoFrameCallback) {
+    const onFrame = (now, metadata) => {
+        frames.push({atMs: Math.round(now - started), mediaTime: metadata.mediaTime,
+            presentedFrames: metadata.presentedFrames,
+            expectedDisplayTime: Math.round(metadata.expectedDisplayTime - started),
+            processingDuration: metadata.processingDuration});
+        if (frames.length < 700)
+            video.requestVideoFrameCallback(onFrame);
+    };
+    video.requestVideoFrameCallback(onFrame);
+}
 function snapshot(name) {
+    const quality = video.getVideoPlaybackQuality?.();
     return {name, atMs: Math.round(performance.now() - started),
         time: video.currentTime, duration: video.duration,
         readyState: video.readyState, paused: video.paused,
-        quality: video.getVideoPlaybackQuality?.() || null};
+        quality: quality && {totalVideoFrames: quality.totalVideoFrames,
+            droppedVideoFrames: quality.droppedVideoFrames,
+            corruptedVideoFrames: quality.corruptedVideoFrames}};
 }
 for (const name of ["loadedmetadata", "playing", "waiting", "stalled", "error", "ended", "seeked"])
     video.addEventListener(name, () => events.push(snapshot(name)));
@@ -20,7 +36,8 @@ const interval = setInterval(() => samples.push(snapshot("sample")), 250);
 video.play().catch(error => events.push({name: "play-rejected", message: String(error)}));
 setTimeout(async () => {
     clearInterval(interval);
-    const result = {src: video.currentSrc, events, samples,
+    const result = {src: video.currentSrc, events, samples, frames,
+        hasVideoFrameCallback,
         error: video.error && {code: video.error.code, message: video.error.message}};
     await fetch("/__bench/probe", {method: "POST", headers: {"Content-Type": "application/json"},
         body: JSON.stringify(result)});
