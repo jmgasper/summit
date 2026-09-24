@@ -1,0 +1,50 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Summit media drag probe</title>
+<style>
+body { font: 16px system-ui, sans-serif; margin: 24px; }
+video { display: block; width: 640px; max-width: 100%; }
+input { display: block; width: 640px; max-width: 100%; margin: 24px 0; }
+pre { white-space: pre-wrap; }
+</style>
+<h1>Media drag probe</h1>
+<p>Drag the timeline below the video, then try its native controls.</p>
+<video id="video" muted playsinline controls
+    src="https://v.redd.it/u5pu7ad5rcdh1/HLSPlaylist.m3u8"></video>
+<input id="timeline" type="range" min="0" max="100" step="0.01" value="0"
+    aria-label="Seek time">
+<pre id="status"></pre>
+<script>
+const video = document.getElementById("video");
+const timeline = document.getElementById("timeline");
+const status = document.getElementById("status");
+const src = new URLSearchParams(location.search).get("src");
+if (src) video.src = src;
+const events = [];
+function record(name, extra = "") {
+    events.push(`${Math.round(performance.now())} ${name} ${extra}`);
+    events.splice(0, Math.max(0, events.length - 12));
+    status.textContent = `time=${video.currentTime.toFixed(2)} duration=${video.duration.toFixed(2)} `
+        + `seeking=${video.seeking} paused=${video.paused} error=${video.error?.code ?? "none"}\n`
+        + events.join("\n");
+    document.title = `drag: ${video.currentTime.toFixed(2)}s`;
+}
+for (const name of ["loadedmetadata", "playing", "seeking", "seeked", "timeupdate", "waiting", "error"])
+    video.addEventListener(name, () => {
+        if (name === "loadedmetadata" && Number.isFinite(video.duration))
+            timeline.max = video.duration;
+        if (name !== "timeupdate" || !timeline.matches(":active"))
+            timeline.value = video.currentTime;
+        if (name !== "timeupdate") record(name);
+    });
+for (const name of ["pointerdown", "pointermove", "pointerup", "change"])
+    timeline.addEventListener(name, event => {
+        if (name !== "pointermove" || event.buttons)
+            record(name, `button=${event.button} buttons=${event.buttons} value=${timeline.value}`);
+    });
+timeline.addEventListener("input", () => {
+    video.currentTime = Number(timeline.value);
+    record("input", `value=${timeline.value}`);
+});
+record("ready");
+</script>
