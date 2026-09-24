@@ -4556,3 +4556,28 @@ thread layout work. It remains enabled; reducing that layout cost without
 losing scroll pacing is the next useful grid target
 (`.vm/bench/scroll-20260925-093211-grid-legacy-light-active-120/` and
 `.vm/bench/scroll-20260925-093308-grid-modern-light-active-120-repeat/`).
+
+### Guardian playback recheck on the installed bundle
+
+The standalone Guardian clip still completed and looped on `bundle-glk_tobh`
+with NVDEC H.264 selected at status 0. Among 683 decoded frames, the median
+decode time was 2.3 ms, maximum repaint queue delay was 0.4 ms, and 681
+paint traces had a 16.8 ms maximum decoded-frame age. It reported no media
+error (`.vm/bench/probe-20260925-093639-summit-guardian-nvdec-current/`).
+
+The full article was then opened in the previously consented profile. A
+Guardian sign-in panel initially hid the later article text; closing its
+visible X restored the inline video. The reusable
+`tools/bench/vnc-input.py` helper delivered the pointer click and scrollbar
+drag without storing the VNC password in artifacts. Before and after
+screenshots show the video fully visible. In a 25-second window with **no
+screen captures during playback**, one NVDEC H.264 player decoded 627 frames
+and painted 624, including one loop. Decode time was 4.8 ms median and
+11.9 ms maximum. Repaint queue delay was 7.5 ms at the 95th percentile and
+24.2 ms maximum, with none above 33 ms. Painted-frame age was 8.9 ms median,
+18.1 ms at the 95th percentile, and 36.5 ms maximum; four ages exceeded
+33 ms and none exceeded 40 ms. The end-of-buffer messages coincided with
+the normal loop. These native traces support sustained decode-to-paint
+playback on the reported page, while leaving exact monitor presentation
+cadence and rarer intermittent stalls unmeasured
+(`.vm/bench/guardian-live-20260925-current/`).
