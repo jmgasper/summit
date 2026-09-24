@@ -142,7 +142,7 @@ INTERSECTION_TRACE = r'''<script id="summit-intersection-trace">
     const observers = [];
     const gapMeasure = window.__summitGapMeasure = {
         viewMeasure: 0, forceFlush: 0, scrollDOM: 0,
-        lineBlock: 0, viewStateMeasure: 0, measureReads: 0,
+        lineBlock: 0, viewStateMeasure: 0, measureReads: 0, measureWrites: 0,
         updatePlugins: 0, inputStateUpdate: 0, updateAttrs: 0,
         docViewUpdate: 0, lineBlockAt: 0, updateSelection: 0,
     };
@@ -219,6 +219,10 @@ CODEMIRROR_MEASURE_TRACE = (
      b'          window.__summitMeasureStep("updateAttrs", () => this.updateAttrs());'),
     (b'          redrawn = this.docView.update(update);',
      b'          redrawn = window.__summitMeasureStep("docViewUpdate", () => this.docView.update(update));'),
+    (b'        for (let i2 = 0; i2 < measuring.length; i2++)',
+     b'        let __summitWriteStarted = window.__summitInGapCallback ? performance.now() : 0;\n        for (let i2 = 0; i2 < measuring.length; i2++)'),
+    (b'        if (this.viewState.editorHeight) {',
+     b'        if (__summitWriteStarted) window.__summitGapMeasure.measureWrites += performance.now() - __summitWriteStarted;\n        if (this.viewState.editorHeight) {'),
     (b'let diff = this.viewState.lineBlockAt(refBlock.from).top - refBlock.top;',
      b'let diff = window.__summitMeasureStep("lineBlockAt", () => this.viewState.lineBlockAt(refBlock.from)).top - refBlock.top;'),
     (b'          this.docView.updateSelection(true);',
