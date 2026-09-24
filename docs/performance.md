@@ -4404,3 +4404,25 @@ a 39.3 ms maximum. The 1,764 paint traces had an 8.9 ms median decoded-frame
 age and 37.0 ms maximum. This checks visible motion and the decode-to-paint
 path, but the sampled screenshots do not measure the display's actual frame
 rate (`.vm/bench/guardian-visible-current-20260925/`).
+
+### CPU tile-size sweep on the installed build
+
+`WEBKIT_LAYERS_TILE_SIZE` permits a tile-size sweep without rebuilding. On
+`bundle-glk_tobh`, the 400-card page at a 1280×887 viewport completed 300
+scroll frames in each uncontended run:
+
+| CPU tile size | Scroll fps | 95th-percentile interval | Long frames (>33 ms) |
+| --- | ---: | ---: | ---: |
+| 256×256 (default), first / repeat | 59.80 / 59.76 | 17 / 17 ms | 0 / 0 |
+| 512×512, first / repeat | 57.64 / 57.74 | 26 / 25 ms | 0 / 0 |
+| 128×128 | 59.58 | 18 ms | 0 |
+
+The larger tiles repeatably cost about two frames per second on this
+controlled page, while smaller tiles show no useful gain. The default remains
+256×256. This page is a paint/scroll control and cannot replace a live Reddit
+check for any future tile-policy change
+(`.vm/bench/probe-20260925-082732-summit-tile-256-a/`,
+`.vm/bench/probe-20260925-082806-summit-tile-512/`,
+`.vm/bench/probe-20260925-082843-summit-tile-128/`,
+`.vm/bench/probe-20260925-082920-summit-tile-256-b/`, and
+`.vm/bench/probe-20260925-082953-summit-tile-512-b/`).
