@@ -14399,10 +14399,23 @@ index 30343ff03299542f8673d98b486c7fdd78bddeb9..95d192b9fadc9f7fca017d53ad82885c
          if (const char* envString = getenv("WEBKIT_SKIA_CPU_PAINTING_THREADS")) {
              auto newValue = parseInteger<unsigned>(StringView::fromLatin1(envString));
 diff --git a/Source/WebCore/platform/graphics/texmap/TextureMapper.cpp b/Source/WebCore/platform/graphics/texmap/TextureMapper.cpp
-index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..c569140e8ab3602690351f902bc1e31a0642b9a0 100644
+index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..a8549588ab7f24c75be1e6607c468e20c0932f5b 100644
 --- a/Source/WebCore/platform/graphics/texmap/TextureMapper.cpp
 +++ b/Source/WebCore/platform/graphics/texmap/TextureMapper.cpp
-@@ -75,6 +75,9 @@ public:
+@@ -44,6 +44,12 @@
+ #include <wtf/SetForScope.h>
+ #include <wtf/TZoneMallocInlines.h>
+ 
++#if PLATFORM(HAIKU)
++#include <OS.h>
++#include <cstdio>
++#include <cstdlib>
++#endif
++
+ #if USE(CAIRO)
+ #include "CairoUtilities.h"
+ #include "RefPtrCairo.h"
+@@ -75,6 +81,9 @@ public:
      bool didModifyStencil { false };
      GLint previousScissorState { 0 };
      GLint previousDepthState { 0 };
@@ -14412,7 +14425,25 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..c569140e8ab3602690351f902bc1e31a
      std::array<GLint, 4> viewport { };
      std::array<GLint, 4> previousScissor { };
      double zNear { 0 };
-@@ -234,6 +237,14 @@ ClipStack& TextureMapper::clipStack()
+@@ -174,7 +183,16 @@ Ref<TextureMapperShaderProgram> TextureMapperGLData::getShaderProgram(TextureMap
+ {
+     ASSERT(!options.isEmpty());
+     auto addResult = m_sharedGLData->m_programs.ensure(options.toRaw(), [options] {
+-        return TextureMapperShaderProgram::create(options);
++#if PLATFORM(HAIKU)
++        static const bool traceShaderCompile = std::getenv("SUMMIT_LAYER_PAINT_TRACE");
++        const bigtime_t startedAt = traceShaderCompile ? system_time() : 0;
++#endif
++        auto program = TextureMapperShaderProgram::create(options);
++#if PLATFORM(HAIKU)
++        if (traceShaderCompile)
++            std::fprintf(stderr, "Summit shader compile: at=%lld options=%u ms=%.1f\n", static_cast<long long>(startedAt), options.toRaw(), (system_time() - startedAt) / 1000.0);
++#endif
++        return program;
+     });
+     return *addResult.iterator->value;
+ }
+@@ -234,6 +252,14 @@ ClipStack& TextureMapper::clipStack()
  
  void TextureMapper::beginPainting(FlipY flipY, BitmapTexture* surface)
  {
@@ -14427,6 +14458,191 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..c569140e8ab3602690351f902bc1e31a
      glGetIntegerv(GL_CURRENT_PROGRAM, &data().previousProgram);
      data().previousScissorState = glIsEnabled(GL_SCISSOR_TEST);
      data().previousDepthState = glIsEnabled(GL_DEPTH_TEST);
+@@ -801,6 +827,10 @@ void TextureMapper::drawTexturePackedYUV(GLuint texture, const std::array<GLfloa
+ 
+ void TextureMapper::drawSolidColor(const FloatRect& rect, const TransformationMatrix& matrix, const Color& color, bool isBlendingAllowed)
+ {
++#if PLATFORM(HAIKU)
++    static const bool traceSolidPaint = std::getenv("SUMMIT_LAYER_PAINT_TRACE");
++    const bigtime_t startedAt = traceSolidPaint ? system_time() : 0;
++#endif
+     OptionSet<TextureMapperFlags> flags;
+     TextureMapperShaderProgram::Options options = TextureMapperShaderProgram::SolidColor;
+     if (!matrix.mapQuad(rect).isRectilinear()) {
+@@ -817,6 +847,9 @@ void TextureMapper::drawSolidColor(const FloatRect& rect, const TransformationMa
+     }
+ 
+     Ref<TextureMapperShaderProgram> program = data().getShaderProgram(options);
++#if PLATFORM(HAIKU)
++    const bigtime_t shaderAt = traceSolidPaint ? system_time() : 0;
++#endif
+     glUseProgram(program->programID());
+ 
+     if (clipStack().isRoundedRectClipEnabled())
+@@ -828,6 +861,13 @@ void TextureMapper::drawSolidColor(const FloatRect& rect, const TransformationMa
+         flags.add(TextureMapperFlags::ShouldBlend);
+ 
+     draw(rect, matrix, program.get(), GL_TRIANGLE_FAN, flags);
++#if PLATFORM(HAIKU)
++    if (traceSolidPaint) {
++        const bigtime_t elapsed = system_time() - startedAt;
++        if (elapsed >= 4000)
++            std::fprintf(stderr, "Summit solid paint: at=%lld total=%.1f shader=%.1f gl=%.1f options=%u rect=%.0fx%.0f\n", static_cast<long long>(startedAt), elapsed / 1000.0, (shaderAt - startedAt) / 1000.0, (elapsed - (shaderAt - startedAt)) / 1000.0, options.toRaw(), rect.width(), rect.height());
++    }
++#endif
+ }
+ 
+ void TextureMapper::clearColor(const Color& color)
+diff --git a/Source/WebCore/platform/graphics/texmap/TextureMapperLayer.cpp b/Source/WebCore/platform/graphics/texmap/TextureMapperLayer.cpp
+index 063040a9866c7221f2e581a4b9dac75fa29771d4..773c3614165f4af5c10a36b6d006ab75a8961c86 100644
+--- a/Source/WebCore/platform/graphics/texmap/TextureMapperLayer.cpp
++++ b/Source/WebCore/platform/graphics/texmap/TextureMapperLayer.cpp
+@@ -32,12 +32,29 @@
+ #include <wtf/SetForScope.h>
+ #include <wtf/TZoneMallocInlines.h>
+ 
++#if PLATFORM(HAIKU)
++#include <OS.h>
++#include <cstdio>
++#include <cstdlib>
++#endif
++
+ #if USE(COORDINATED_GRAPHICS)
+ #include "CoordinatedAnimatedBackingStoreClient.h"
+ #endif
+ 
+ namespace WebCore {
+ 
++#if PLATFORM(HAIKU)
++static bool traceLayerPaint()
++{
++    static bool enabled = [] {
++        const char* value = std::getenv("SUMMIT_LAYER_PAINT_TRACE");
++        return value && value[0] == '1' && !value[1];
++    }();
++    return enabled;
++}
++#endif
++
+ WTF_MAKE_TZONE_ALLOCATED_IMPL(TextureMapperLayer);
+ 
+ static constexpr auto s_opacityVisibilityThreshold = 0.01;
+@@ -363,6 +380,10 @@ void TextureMapperLayer::prepareForPainting(TextureMapper& textureMapper)
+ 
+ void TextureMapperLayer::paint(TextureMapper& textureMapper)
+ {
++#if PLATFORM(HAIKU)
++    const bool tracePaint = traceLayerPaint();
++    const bigtime_t startedAt = tracePaint ? system_time() : 0;
++#endif
+ #if !ENABLE(DAMAGE_TRACKING)
+     prepareForPainting(textureMapper);
+ #endif
+@@ -371,6 +392,14 @@ void TextureMapperLayer::paint(TextureMapper& textureMapper)
+     paintRecursive(options);
+ 
+     destroyFlattenedDescendantLayers();
++#if PLATFORM(HAIKU)
++    if (tracePaint) {
++        const bigtime_t elapsed = system_time() - startedAt;
++        if (elapsed >= 20000)
++            std::fprintf(stderr, "Summit layer paint tree: at=%lld total=%.1f id=%u children=%zu\n",
++                static_cast<long long>(startedAt), elapsed / 1000.0, m_id, m_children.size());
++    }
++#endif
+ }
+ 
+ #if ENABLE(DAMAGE_TRACKING)
+@@ -578,12 +607,37 @@ void TextureMapperLayer::paintSelf(TextureMapperPaintOptions& options)
+     auto targetRect = layerRect();
+     if (targetRect.isEmpty())
+         return;
++#if PLATFORM(HAIKU)
++    const bool tracePaint = traceLayerPaint();
++    const bigtime_t startedAt = tracePaint ? system_time() : 0;
++    bigtime_t transformedAt = startedAt;
++    bigtime_t wrappedAt = startedAt;
++    bigtime_t backingPaintedAt = startedAt;
++    bigtime_t contentsPaintedAt = startedAt;
++    auto reportPaint = makeScopeExit([&] {
++        if (!tracePaint)
++            return;
++        const bigtime_t elapsed = system_time() - startedAt;
++        if (elapsed >= 4000)
++            std::fprintf(stderr, "Summit layer paint self: at=%lld total=%.1f transform=%.1f wrap=%.1f backingPaint=%.1f contentsPaint=%.1f layer=%p id=%u backing=%d contents=%d background=%d solid=%d flat=%d size=%.0fx%.0f\n",
++                static_cast<long long>(startedAt), elapsed / 1000.0, (transformedAt - startedAt) / 1000.0,
++                (wrappedAt - transformedAt) / 1000.0, (backingPaintedAt - wrappedAt) / 1000.0,
++                (contentsPaintedAt - backingPaintedAt) / 1000.0, static_cast<void*>(this), m_id,
++                !!m_backingStore, !!m_contentsLayer, m_state.backgroundColor.isValid(),
++                m_state.solidColor.isValid() && m_state.solidColor.isVisible(), isFlattened(),
++                m_state.size.width(), m_state.size.height());
++    });
++#endif
+ 
+     // We apply the following transform to compensate for painting into a surface, and then apply the offset so that the painting fits in the target rect.
+     TransformationMatrix transform;
+     transform.translate(options.offset.width(), options.offset.height());
+     transform.multiply(options.transform);
+     transform.multiply(m_layerTransforms.combined);
++#if PLATFORM(HAIKU)
++    if (tracePaint)
++        contentsPaintedAt = backingPaintedAt = wrappedAt = transformedAt = system_time();
++#endif
+ 
+     if (isFlattened() && !m_flattenedLayer->needsUpdate()) {
+         m_flattenedLayer->paintToTextureMapper(options.textureMapper, m_flattenedLayer->layerRect(), transform, options.opacity);
+@@ -599,6 +653,10 @@ void TextureMapperLayer::paintSelf(TextureMapperPaintOptions& options)
+ 
+     options.textureMapper.setWrapMode(TextureMapper::WrapMode::Stretch);
+     options.textureMapper.setPatternTransform(TransformationMatrix());
++#if PLATFORM(HAIKU)
++    if (tracePaint)
++        contentsPaintedAt = backingPaintedAt = wrappedAt = system_time();
++#endif
+ 
+     if (backingStore) {
+         backingStore->paintToTextureMapper(options.textureMapper, targetRect, transform, options.opacity);
+@@ -608,6 +666,10 @@ void TextureMapperLayer::paintSelf(TextureMapperPaintOptions& options)
+         if (m_state.showRepaintCounter)
+             backingStore->drawRepaintCounter(options.textureMapper, m_state.repaintCount, m_state.debugBorderColor, targetRect, transform);
+     }
++#if PLATFORM(HAIKU)
++    if (tracePaint)
++        contentsPaintedAt = backingPaintedAt = system_time();
++#endif
+ 
+     TextureMapperPlatformLayer* contentsLayer = m_contentsLayer;
+     if (m_state.solidColor.isValid() && m_state.solidColor.isVisible()) {
+@@ -638,6 +700,10 @@ void TextureMapperLayer::paintSelf(TextureMapperPaintOptions& options)
+ 
+     if (m_state.showDebugBorders)
+         contentsLayer->drawBorder(options.textureMapper, m_state.debugBorderColor, m_state.debugBorderWidth, m_state.contentsRect, transform);
++#if PLATFORM(HAIKU)
++    if (tracePaint)
++        contentsPaintedAt = system_time();
++#endif
+ }
+ 
+ void TextureMapperLayer::paintBackdrop(TextureMapperPaintOptions& options)
+@@ -1167,6 +1233,18 @@ void TextureMapperLayer::paintRecursive(TextureMapperPaintOptions& options)
+ {
+     if (!isVisible())
+         return;
++#if PLATFORM(HAIKU)
++    const bool tracePaint = traceLayerPaint() && m_parent;
++    const bigtime_t startedAt = tracePaint ? system_time() : 0;
++    auto reportPaint = makeScopeExit([&] {
++        if (!tracePaint)
++            return;
++        const bigtime_t elapsed = system_time() - startedAt;
++        if (elapsed >= 10000)
++            std::fprintf(stderr, "Summit layer paint branch: at=%lld total=%.1f id=%u children=%zu flat=%d blend=%d\n",
++                static_cast<long long>(startedAt), elapsed / 1000.0, m_id, m_children.size(), isFlattened(), shouldBlend());
++    });
++#endif
+ 
+     SetForScope scopedOpacity(options.opacity, options.opacity * m_currentOpacity);
+ 
 diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreProxy.cpp b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreProxy.cpp
 index 30f54801b8aa9b9bc83af8a929f8bdc04a2ee4d1..f68564b5f1c8b97ee543257ede6c0f4050ae2dd0 100644
 --- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreProxy.cpp
