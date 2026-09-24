@@ -4077,3 +4077,34 @@ and mimalloc. The installed PGO bundle remains `bundle-m2di58k1` during the
 trial. The 400-card scroll fixture now accepts `?manual=1` to leave a fixed
 page ready for paced wheel input; it will be the first A/B comparison before
 testing live Reddit.
+
+The isolated engine and separate `bundle-5brd8erg` built successfully. On the
+fixed 400-card page, matched 80-notch/25 ms bursts moved to the same visible
+card. The installed PGO bundle presented 117 frames through its last moving
+frame (58.09 fps, 33.7 ms worst completed gap); the smooth trial presented
+129 (58.45 fps, 25.3 ms worst completed gap) and continued animating for
+about 0.2 seconds after the last notch. On live `/r/popular/`, the smooth
+trial presented 130 and 129 frames in two runs (57.35 and 58.77 fps through
+the last frame), versus 85 frames (42.66 fps) for a matched installed-bundle
+run. The Reddit runs landed on different feed content and showed media
+placeholders, so this is evidence of a useful short-burst improvement rather
+than a guarantee of consistently smooth 60 fps. All runs delivered all 80
+notches and screenshots showed movement
+(`.vm/bench/scroll-20260925-044227-manual-fixed-baseline/`,
+`.vm/bench/scroll-20260925-044319-manual-fixed-smooth/`,
+`.vm/bench/scroll-20260925-044405-reddit-80-smooth/`,
+`.vm/bench/scroll-20260925-044508-reddit-80-baseline-matched/`, and
+`.vm/bench/scroll-20260925-044610-reddit-80-smooth-repeat/`).
+
+The unprofiled smooth bundle scored **7.153 ± 0.340** on a full ten-iteration
+Speedometer 3.1 run, below the installed PGO bundle's **8.347 ± 0.506** and
+the fresh Firefox run's **8.238 ± 0.368**. It is therefore still a trial
+bundle; a PGO rebuild is needed before considering installation. Its Guardian
+clip looped with NVDEC H.264 and no media error. The Reddit HLS clip sought to
+8 seconds, emitted `seeked`, played to 12.7 seconds, and ended with NVDEC and
+no media error. These controlled clips do not resolve the reported Adobe ad's
+dragging behavior, so `media-drag.html` is available for a direct pointer and
+seek event check when that player can be reproduced
+(`.vm/bench/speedometer-20260925-044733-smooth-scroll-full/`,
+`.vm/bench/probe-20260925-045020-summit-smooth-guardian-loop/`, and
+`.vm/bench/probe-20260925-045123-summit-smooth-reddit-seek/`).
