@@ -140,13 +140,31 @@ INTERSECTION_TRACE = r'''<script id="summit-intersection-trace">
     if (!NativeObserver)
         return;
     const observers = [];
+    const gapMeasure = window.__summitGapMeasure = {
+        viewMeasure: 0, forceFlush: 0, scrollDOM: 0,
+        lineBlock: 0, viewStateMeasure: 0, measureReads: 0,
+        updatePlugins: 0, inputStateUpdate: 0, updateAttrs: 0,
+        docViewUpdate: 0, lineBlockAt: 0, updateSelection: 0,
+    };
+    window.__summitMeasureStep = (name, callback) => {
+        if (!window.__summitInGapCallback)
+            return callback();
+        const start = performance.now();
+        try { return callback(); }
+        finally { gapMeasure[name] += performance.now() - start; }
+    };
     function TracedObserver(callback, options) {
         const record = { callbacks: 0, entries: 0, duration: 0, maxDuration: 0, targets: [] };
+        const observerIndex = observers.length;
         const observer = new NativeObserver((entries, instance) => {
             const start = performance.now();
+            if (observerIndex === 2)
+                window.__summitInGapCallback = true;
             try {
                 return callback(entries, instance);
             } finally {
+                if (observerIndex === 2)
+                    window.__summitInGapCallback = false;
                 const duration = performance.now() - start;
                 ++record.callbacks;
                 record.entries += entries.length;
@@ -171,11 +189,41 @@ INTERSECTION_TRACE = r'''<script id="summit-intersection-trace">
     window.addEventListener("pagehide", () => {
         navigator.sendBeacon("/__bench/progress", JSON.stringify({
             phase: "intersection-callbacks", page: location.pathname, observers,
+            gapMeasure,
         }));
     });
 })();
 </script>
 '''
+
+CODEMIRROR_MEASURE_TRACE = (
+    (b'if (this.intersecting)\n      this.view.measure();',
+     b'if (this.intersecting)\n      window.__summitMeasureStep("viewMeasure", () => this.view.measure());'),
+    (b'this.observer.forceFlush();',
+     b'window.__summitMeasureStep("forceFlush", () => this.observer.forceFlush());'),
+    (b'let { scrollHeight, scrollTop, clientHeight } = this.scrollDOM;',
+     b'let { scrollHeight, scrollTop, clientHeight } = window.__summitMeasureStep("scrollDOM", () => ({scrollHeight: this.scrollDOM.scrollHeight, scrollTop: this.scrollDOM.scrollTop, clientHeight: this.scrollDOM.clientHeight}));'),
+    (b'let refBlock = this.viewState.lineBlockAtHeight(refHeight);',
+     b'let refBlock = window.__summitMeasureStep("lineBlock", () => this.viewState.lineBlockAtHeight(refHeight));'),
+    (b'let changed = this.viewState.measure(this);',
+     b'let changed = window.__summitMeasureStep("viewStateMeasure", () => this.viewState.measure(this));'),
+    (b'        let measured = measuring.map((m) => {',
+     b'        let measured = window.__summitMeasureStep("measureReads", () => measuring.map((m) => {'),
+    (b'        });\n        let update = ViewUpdate.create(this, this.state, []), redrawn = false, scrolled = false;',
+     b'        }));\n        let update = ViewUpdate.create(this, this.state, []), redrawn = false, scrolled = false;'),
+    (b'          this.updatePlugins(update);',
+     b'          window.__summitMeasureStep("updatePlugins", () => this.updatePlugins(update));'),
+    (b'          this.inputState.update(update);',
+     b'          window.__summitMeasureStep("inputStateUpdate", () => this.inputState.update(update));'),
+    (b'          this.updateAttrs();',
+     b'          window.__summitMeasureStep("updateAttrs", () => this.updateAttrs());'),
+    (b'          redrawn = this.docView.update(update);',
+     b'          redrawn = window.__summitMeasureStep("docViewUpdate", () => this.docView.update(update));'),
+    (b'let diff = this.viewState.lineBlockAt(refBlock.from).top - refBlock.top;',
+     b'let diff = window.__summitMeasureStep("lineBlockAt", () => this.viewState.lineBlockAt(refBlock.from)).top - refBlock.top;'),
+    (b'          this.docView.updateSelection(true);',
+     b'          window.__summitMeasureStep("updateSelection", () => this.docView.updateSelection(true));'),
+)
 
 
 class State:
@@ -277,6 +325,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if data.count(marker) != 1:
                 return self.respond(500, b'Unexpected CodeMirror iframe layout\n', head=head)
             data = data.replace(marker, INTERSECTION_TRACE.encode() + marker)
+        elif self.state.intersection_trace and split.path == '/resources/editors/dist/assets/codemirror-521de7ab.js':
+            for original, replacement in CODEMIRROR_MEASURE_TRACE:
+                if data.count(original) != 1:
+                    return self.respond(500, b'Unexpected CodeMirror asset layout\n', head=head)
+                data = data.replace(original, replacement)
         stat = target.stat()
         etag = '"' + hashlib.sha256(data).hexdigest()[:24] + '"'
         # Heuristic freshness is a fraction of (now - Last-Modified). A fresh clone has
