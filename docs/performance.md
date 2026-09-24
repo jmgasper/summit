@@ -4481,3 +4481,31 @@ workstation launcher remains on `bundle-glk_tobh`
 `.vm/bench/speedometer-20260925-085615-absent-pseudo-on/`,
 `.vm/bench/speedometer-20260925-085703-absent-pseudo-off-b/`, and
 `.vm/bench/speedometer-20260925-085757-absent-pseudo-on-b/`).
+
+### TextureMapper paint-trace cleanup trial
+
+The rounded-solid shader diagnosis left opt-in timing hooks in
+`TextureMapperLayer` and `TextureMapper`. A PGO rebuild removed these hooks
+while retaining the validated shader prewarm in `TextureMapper::beginPainting`.
+The separate `bundle-uq74d6ow` passed a 300-frame 400-card scroll probe at
+**59.61 fps**, versus **59.74 fps** on the installed `bundle-glk_tobh`; both
+had zero frames over 33 ms. In adjacent 120-notch live Reddit runs, both
+screenshots showed movement through the feed. The installed and trial bundles
+presented **58.64** and **58.58 fps**, respectively, with two frames over
+33 ms each. The worst intervals were 47.7 and 37.5 ms, too little evidence
+from one variable live feed to establish an improvement.
+
+The trial bundle's two uncontended ten-iteration Speedometer 3.1 runs scored
+**8.206 ± 0.399** and **8.266 ± 0.401**, versus **8.387 ± 0.399** for the
+installed bundle between them at the same 1280×887 viewport. The confidence
+intervals overlap, but both trial point scores were lower and neither scroll
+test showed a useful gain. The cleanup was reverted. The launcher stays on
+`bundle-glk_tobh`, and the engine patch digest is again
+`9d1c310a8c93e81b2baecfc9370f122badae68c86e3ff4c896ea9bd2db68c539`
+(`.vm/bench/probe-20260925-090556-summit-paint-trace-cleanup-control/`,
+`.vm/bench/probe-20260925-090630-summit-paint-trace-cleanup-candidate/`,
+`.vm/bench/speedometer-20260925-090705-paint-trace-cleanup-candidate/`,
+`.vm/bench/speedometer-20260925-090844-paint-trace-cleanup-control/`,
+`.vm/bench/speedometer-20260925-091020-paint-trace-cleanup-candidate-b/`,
+`.vm/bench/scroll-20260925-091157-paint-trace-cleanup-control/`, and
+`.vm/bench/scroll-20260925-091310-paint-trace-cleanup-candidate/`).
