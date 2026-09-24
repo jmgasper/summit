@@ -1,27 +1,31 @@
 # Summit performance: Speedometer 3.1 baseline, where the time goes, stress test
 
-## Current coordinated Skia result (September 24, 2026)
+## Current coordinated Skia result (September 25, 2026)
 
-The workstation launcher uses `bundle-w9ti9d76`: Skia CPU tile painting with
+The workstation launcher uses profile-guided `bundle-1a8lpbnq`: Skia CPU tile painting with
 two workers, GL Canvas, raster coordinated scrollbars, mimalloc, asynchronous
 scrolling, display-rate composition pacing, guarded reuse of exact text
 widths, and preserved font registrations for simple CSS rule insertions. It
 completes all 580 steps of Speedometer 3.1. The latest matched-viewport
-ten-iteration run is
-`.vm/bench/speedometer-20260924-221933-async-seek-full/`.
+ten-iteration runs are
+`.vm/bench/speedometer-20260925-020140-pgo-use-full/` and
+`.vm/bench/speedometer-20260925-021356-pgo-use-full-repeat/`.
 
 | Browser | Content viewport | Speedometer 3.1, 10 iterations |
 | --- | ---: | ---: |
-| Summit, current CPU tiles and GL Canvas | 1280×887 | **7.298 ± 0.333** |
+| Summit, profile-guided CPU tiles and GL Canvas | 1280×887 | **8.512 ± 0.400**, repeat **8.444 ± 0.456** |
+| Summit, prior installed CPU tiles and GL Canvas | 1280×887 | **7.185 ± 0.353** |
 | Summit, prior synchronous media seek build | 1280×887 | **7.288 ± 0.359** |
 | Summit, earlier CPU-tile build with GL Canvas off | 1280×887 | **6.730 ± 0.302** |
 | Summit, earlier batched CSS and mimalloc build | 1280×887 | **6.896 ± 0.293** |
 | Firefox 155 on the same workstation | 1280×887 | **8.338 ± 0.374** |
+| Firefox 155, fresh comparison | 1280×887 | **8.238 ± 0.368** |
 
-These Summit runs were uncontended. The current same-size gap to Firefox is
-1.14x by score. GL Canvas makes Chart.js and Perf Dashboard faster than
-Firefox in this run; the largest remaining gaps are Observable Plot, Preact,
-CodeMirror, TipTap, and other DOM-heavy suites. Older score comparisons in
+These Summit runs were uncontended. The current point scores exceed the fresh
+Firefox result, although their uncertainty intervals overlap. The
+profile-guided build is about 17% above the fresh prior-bundle result. Its
+largest remaining suite gaps against Firefox are Preact, CodeMirror, and
+Svelte complex DOM. Older score comparisons in
 this log used different viewport sizes and should be treated as directional.
 `tools/bench/compare-runs.py` flags that mismatch.
 `tools/bench/compare-runs.py` gives the per-suite synchronous and asynchronous
@@ -32,9 +36,9 @@ both Haiku's system information and `sysconf`. WebKit's JSC and garbage
 collector discover that count independently. Summit caps Skia CPU tile
 painting at two workers on Haiku because the controlled sweep below found no
 Speedometer gain from four and a large regression from eight. With GL Canvas
-on, the current 400-card scrolling probe ran at 58.88 fps over 600 frames,
-with p95 18 ms, p99 22 ms, a 24 ms maximum, and no frame above 33 ms
-(`.vm/bench/probe-20260924-222157-summit-async-seek-scroll/`). Earlier
+on, the current 400-card scrolling probe ran at 59.65 fps over 600 frames,
+with a 19 ms maximum and no frame above 33 ms
+(`.vm/bench/probe-20260925-020348-summit-pgo-use-scroll/`). Earlier
 live Reddit scrolls showed occasional 650–790 ms gaps attributed to page
 update, layout, or script work; subsequent live Reddit attempts sometimes
 received a JavaScript challenge instead of the feed.
@@ -3946,3 +3950,11 @@ principal live Reddit problem
 (`.vm/bench/scroll-20260925-020711-pgo-reddit-long-a/`,
 `.vm/bench/scroll-20260925-020827-pgo-reddit-long-control/`, and
 `.vm/bench/scroll-20260925-020933-pgo-reddit-long-b/`).
+
+A fresh same-workstation Firefox 155 run scored **8.238 ± 0.368**
+(`.vm/bench/firefox-speedometer-20260925-021551-pgo-fresh-comparison/`).
+The workstation desktop launcher was updated to `bundle-1a8lpbnq` after the
+repeated Summit scores, scroll probe, and two media fixtures passed. The old
+launcher was saved as `Summit-current.pre-pgo-20260925.sh`; launching through
+the desktop script started the optimized Summit executable. The live Reddit
+stalls and the untested Adobe ad remain open.
