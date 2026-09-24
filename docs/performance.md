@@ -3233,6 +3233,12 @@ On the full article, an idle five-second window with the inline video visible
 reported 59.6 native-view frames/s with no interval over 33 ms. A cookie
 consent layer covered the video in the screenshot, so this run cannot establish
 visual playback quality (`.vm/bench/scroll-20260924-100927-guardian-article-video/`).
-The standalone clip also stopped at 19.56 seconds despite its `loop` attribute;
-the Haiku backend currently discards its media tracks at end-of-stream, leaving
-no tracks for a loop seek. That remains a separate media correctness issue.
+The standalone clip also stopped at 19.56 seconds despite its `loop` attribute.
+The Haiku backend discarded its media tracks at end-of-stream, leaving no
+tracks for WebCore's loop seek. Keep the tracks and mark each ended instead.
+In `bundle-7dosgek7`, the clip reached 19.56 seconds, fired `seeked`, and
+continued playing from zero without pausing; NVDEC remained selected
+(`.vm/bench/probe-20260924-101812-summit-guardian-loop-candidate/`). The
+same bundle still sought a non-looping Reddit HLS clip to exactly 8 seconds
+and fired `ended` at 12.7 seconds
+(`.vm/bench/probe-20260924-101909-summit-reddit-seek-loop-candidate/`).
