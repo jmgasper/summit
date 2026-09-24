@@ -4001,3 +4001,35 @@ separately from Reddit's content loading
 (`.vm/bench/scroll-20260925-022913-pgo-reddit-refresh-300-a/`,
 `.vm/bench/scroll-20260925-023022-pgo-reddit-refresh-300-control/`, and
 `.vm/bench/scroll-20260925-023123-pgo-reddit-refresh-300-b/`).
+
+An 80-notch burst avoids that feed boundary. With the PGO build and timer
+off, two runs delivered only 2.50 and 2.47 native-view frames/s; the prior
+non-PGO bundle delivered 2.90 frames/s in the same test. All 80 wheel events
+were handled, none reached the scrolling tree's maximum, and screenshots
+confirmed movement to later posts. With the opt-in 16 ms timer, two PGO runs
+delivered 34.72 and 34.74 frames/s and still showed posts, although their
+worst gaps were 454 and 349 ms. Thus the missing refresh is a substantial
+part of the **active** Reddit scroll stall, even though the timer alone does
+not achieve smooth 60 fps (`.vm/bench/scroll-20260925-023310-pgo-reddit-active-80/`,
+`.vm/bench/scroll-20260925-023424-pgo-reddit-active-80-repeat/`,
+`.vm/bench/scroll-20260925-023520-pgo-reddit-active-80-old-control/`,
+`.vm/bench/scroll-20260925-023614-pgo-reddit-active-80-refresh/`, and
+`.vm/bench/scroll-20260925-023819-pgo-reddit-active-80-refresh-repeat/`).
+
+The Haiku refresh timer now starts only after a scrolling-tree wheel event was
+actually handled. This avoids restarting it for the many events at a finite
+feed's maximum, while preserving nested-scroller wheel handling. The isolated
+PGO rebuild archived the stale GCC profile for the one changed unified
+WebProcess object; all other trained objects retained their profiles. The
+candidate is `bundle-m2di58k1`. Its 80-notch opt-in run delivered 34.86
+frames/s with all events handled below the maximum and a visible post. Its
+300-notch run delivered 15.73 frames/s, reached the feed maximum at event
+112, and still had a 1.65-second pending gap; it does not resolve long-feed
+content production. A full Speedometer 3.1 run scored **8.347 ± 0.506**.
+The Guardian clip looped with NVDEC and no media error. The Reddit HLS clip
+sought to 8 seconds, emitted `seeked`, and ended at 12.7 seconds with NVDEC
+and no media error (`.vm/bench/scroll-20260925-024607-handled-refresh-reddit-80/`,
+`.vm/bench/scroll-20260925-024704-handled-refresh-reddit-300/`,
+`.vm/bench/speedometer-20260925-024821-handled-refresh-pgo-full/`,
+`.vm/bench/probe-20260925-025031-summit-handled-refresh-guardian-loop/`,
+and `.vm/bench/probe-20260925-025153-summit-handled-refresh-reddit-seek/`).
