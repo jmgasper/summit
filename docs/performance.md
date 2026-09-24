@@ -4581,3 +4581,23 @@ the normal loop. These native traces support sustained decode-to-paint
 playback on the reported page, while leaving exact monitor presentation
 cadence and rarer intermittent stalls unmeasured
 (`.vm/bench/guardian-live-20260925-current/`).
+
+### Four CPU tile painters on the current PGO bundle
+
+Forcing `WEBKIT_SKIA_CPU_PAINTING_THREADS=4` on the installed bundle
+completed the 300-frame, 400-card scroll probe at **59.82 fps**, with an
+18 ms maximum interval and no frame over 33 ms. An earlier
+two-worker control was **59.74 fps** with the same maximum and no long
+frames. At the matched 1280×887 viewport, four workers scored
+**8.579 ± 0.467** in ten uncontended Speedometer 3.1 iterations, effectively
+the same as the default two-worker **8.574 ± 0.468** result. A live
+120-notch Reddit burst with four workers showed movement to later posts at
+**58.88 fps**, with one interval over 33 ms and a 36.4 ms maximum; the
+recent two-worker bursts were about 58.6–58.9 fps. The page showed some
+loading placeholders after the burst, so this single live run cannot
+measure content readiness. Four workers give no repeatable rendering or
+benchmark gain here. The default remains two, scaling down with the
+detected processor count on smaller systems
+(`.vm/bench/probe-20260925-095613-summit-four-cpu-paint-workers-current/`,
+`.vm/bench/speedometer-20260925-095648-four-cpu-paint-workers-current/`, and
+`.vm/bench/scroll-20260925-095828-four-cpu-paint-workers-reddit-120/`).
