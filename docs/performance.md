@@ -4223,3 +4223,53 @@ full-article PGO playback window above. Both browser instances were closed
 after their screenshots and logs were saved
 (`.vm/bench/guardian-live-smooth-pgo-20260925/` and
 `.vm/bench/guardian-live-smooth-pgo-retry-20260925/`).
+
+### Guardian inline video startup repaint backlog (25 September 2026)
+
+The reported article's `#:~:text=A%20surprise%20three-hour%20meeting`
+fragment lands directly above its self-hosted inline video. This provided a
+repeatable live-page route that avoided accidental photo-lightbox navigation.
+The installed `bundle-k7atp8la` selected NVDEC H.264 with status 0 and decoded
+the 25 fps clip normally, but its first visit queued a repaint callback for
+every decoded frame while Guardian page work delayed the WebProcess main
+thread. In the first run, 157 of 2,229 callbacks waited over 33 ms, with a
+2,172.5 ms maximum; 2,051 decoded sequences reached paint. After startup,
+the next 1,800 frames had normal callback delay. A separate 30-second run
+reproduced the startup burst: 71 of 739 callbacks over 33 ms, maximum
+1,881.7 ms, and 649 sequences painted. These are callback-to-main-thread
+latencies and paint traces, not monitor presentation measurements. Both runs
+selected NVDEC and looped or reached the video end without a media error
+(`.vm/bench/guardian-fragment-playback-20260925/` and
+`.vm/bench/guardian-fragment-baseline-repeat-20260925/`).
+
+`MediaPlayerPrivateHaiku` now coalesces pending video repaint callbacks. The
+decoder continues following the media clock, but only one main-thread repaint
+request waits at a time. If a frame arrives during that repaint, it enqueues
+another request after the callback finishes. Older callbacks could not paint
+their original images because the shared bitmap already contained the newest
+decoded frame. An opt-in frame trace now reports the latest decoded sequence
+for each coalesced request. The PGO rebuild archived only the stale
+`MediaPlayerPrivateHaiku.cpp.gcda` profile and produced the separate
+`bundle-7rru9cb6`.
+
+On that bundle, the same full article had 2,232 decoded sequences, 2,134
+repaint callbacks, 2,111 painted sequences, and four callbacks over 33 ms;
+maximum callback delay was 38.7 ms. The shorter repeat had 744 decoded
+sequences, 682 callbacks, 662 painted sequences, and five callbacks over
+33 ms; maximum 39.6 ms. The callback count and queue percentiles are not
+directly comparable with the old one-callback-per-decode trace, but both
+candidate runs avoided the multi-second main-thread queue and the inline
+video kept playing through its loop. Site ads and scripts still vary between
+visits, so these results do not prove every Guardian playback stall is fixed
+(`.vm/bench/guardian-fragment-coalesced-20260925/` and
+`.vm/bench/guardian-fragment-coalesced-repeat-20260925/`).
+
+Repeated `currentTime` seeks on the Guardian MP4 and Reddit HLS fixtures
+completed with `seeked`, NVDEC status 0, no media error, and no delayed
+50 ms heartbeat in either candidate run. The Reddit fixture ended at 12.7 s.
+This checks the media seek path but does not reproduce the unidentified
+Adobe ad's native progress-bar drag. The X399 desktop launcher now points
+to `bundle-7rru9cb6`; its previous script is saved as
+`Summit-current.pre-media-coalesce-20260925.sh`
+(`.vm/bench/probe-20260925-072556-summit-coalesced-guardian-seek/` and
+`.vm/bench/probe-20260925-072632-summit-coalesced-reddit-seek/`).
