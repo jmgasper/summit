@@ -2709,6 +2709,91 @@ index cef20ab58216d6164b8111aecf3540683667aaad..ad64d8014c99a6037be2fcb10d19748b
      const unsigned char* inKey, size_t inKeySize,
      const unsigned char* inSalt, size_t inSaltSize,
      const unsigned char* inInfo, size_t inInfoSize)
+diff --git a/Source/WebCore/css/CSSStyleSheet.cpp b/Source/WebCore/css/CSSStyleSheet.cpp
+index 868e69f5e5e8960b07be47ac8dbc214628321945..cc41401bbaf51d5c425c35cb76237dedab4d0ff7 100644
+--- a/Source/WebCore/css/CSSStyleSheet.cpp
++++ b/Source/WebCore/css/CSSStyleSheet.cpp
+@@ -231,13 +231,18 @@ void CSSStyleSheet::didMutateRuleFromCSSStyleDeclaration()
+ }
+ 
+ // FIXME: counter-style: we might need something similar for counter-style (rdar://103018993).
+-void CSSStyleSheet::didMutateRules(RuleMutationType mutationType, ContentsClonedForMutation contentsClonedForMutation, StyleRuleKeyframes* insertedKeyframesRule, const String& modifiedKeyframesRuleName)
++void CSSStyleSheet::didMutateRules(RuleMutationType mutationType, ContentsClonedForMutation contentsClonedForMutation, StyleRuleKeyframes* insertedKeyframesRule, StyleRule* insertedStyleRule, const String& modifiedKeyframesRuleName)
+ {
+     ASSERT(m_contents->isMutable());
+     ASSERT(m_contents->hasOneClient());
+     m_contents->setHasResolvedNesting(false);
+ 
+     forEachStyleScope([&](Style::Scope& scope) {
++        if (mutationType == RuleInsertion && insertedStyleRule && contentsClonedForMutation == ContentsClonedForMutation::No
++            && scope.tryUpdateForSimpleStyleRuleInsertion(*this)) {
++            m_wasMutated = true;
++            return;
++        }
+         if ((mutationType == RuleInsertion || mutationType == RuleReplace) && contentsClonedForMutation == ContentsClonedForMutation::No && !scope.activeStyleSheetsContains(*this)) {
+             if (insertedKeyframesRule) {
+                 if (RefPtr resolver = scope.resolverIfExists())
+@@ -388,6 +393,9 @@ ExceptionOr<unsigned> CSSStyleSheet::insertRule(const String& ruleString, unsign
+     if (m_wasConstructedByJS && rule->isImportRule())
+         return Exception { ExceptionCode::SyntaxError, "Cannot inserted an @import rule in a constructed CSSStyleSheet object"_s };
+ 
++    auto* insertedStyleRule = dynamicDowncast<StyleRule>(*rule);
++    if (insertedStyleRule && is<StyleRuleWithNesting>(*insertedStyleRule))
++        insertedStyleRule = nullptr;
+     RuleMutationScope mutationScope(this, RuleInsertion, dynamicDowncast<StyleRuleKeyframes>(*rule));
+ 
+     bool isNamespace = rule->isNamespaceRule();
+@@ -398,6 +406,8 @@ ExceptionOr<unsigned> CSSStyleSheet::insertRule(const String& ruleString, unsign
+         return Exception { ExceptionCode::HierarchyRequestError };
+     }
+ 
++    mutationScope.setInsertedStyleRule(insertedStyleRule);
++
+     if (!m_childRuleCSSOMWrappers.isEmpty())
+         m_childRuleCSSOMWrappers.insert(index, RefPtr<CSSRule>());
+ 
+@@ -652,10 +662,15 @@ CSSStyleSheet::RuleMutationScope::RuleMutationScope(CSSRule* rule)
+         m_contentsClonedForMutation = styleSheet->willMutateRules();
+ }
+ 
++void CSSStyleSheet::RuleMutationScope::setInsertedStyleRule(StyleRule* rule)
++{
++    m_insertedStyleRule = rule;
++}
++
+ CSSStyleSheet::RuleMutationScope::~RuleMutationScope()
+ {
+     if (RefPtr styleSheet = m_styleSheet.get()) {
+-        styleSheet->didMutateRules(m_mutationType, m_contentsClonedForMutation, m_insertedKeyframesRule.get(), m_modifiedKeyframesRuleName);
++        styleSheet->didMutateRules(m_mutationType, m_contentsClonedForMutation, m_insertedKeyframesRule.get(), m_insertedStyleRule.get(), m_modifiedKeyframesRuleName);
+         styleSheet->contents().clearHasNestingRulesCache();
+     }
+ }
+diff --git a/Source/WebCore/css/CSSStyleSheet.h b/Source/WebCore/css/CSSStyleSheet.h
+index 09a183df0ec9fd9640290b123cf53214caaeaca9..23759bca52d31395a8e5b907ee821ab79ee2f2d8 100644
+--- a/Source/WebCore/css/CSSStyleSheet.h
++++ b/Source/WebCore/css/CSSStyleSheet.h
+@@ -134,17 +134,19 @@ public:
+         RuleMutationScope(CSSStyleSheet*, RuleMutationType = OtherMutation, StyleRuleKeyframes* insertedKeyframesRule = nullptr);
+         RuleMutationScope(CSSRule*);
+         ~RuleMutationScope();
++        void setInsertedStyleRule(StyleRule*);
+ 
+     private:
+         RefPtr<CSSStyleSheet> m_styleSheet;
+         RuleMutationType m_mutationType;
+         ContentsClonedForMutation m_contentsClonedForMutation;
+         RefPtr<StyleRuleKeyframes> m_insertedKeyframesRule;
++        RefPtr<StyleRule> m_insertedStyleRule;
+         String m_modifiedKeyframesRuleName;
+     };
+ 
+     ContentsClonedForMutation willMutateRules();
+-    void didMutateRules(RuleMutationType, ContentsClonedForMutation, StyleRuleKeyframes* insertedKeyframesRule, const String& modifiedKeyframesRuleName);
++    void didMutateRules(RuleMutationType, ContentsClonedForMutation, StyleRuleKeyframes* insertedKeyframesRule, StyleRule* insertedStyleRule, const String& modifiedKeyframesRuleName);
+     void didMutateRuleFromCSSStyleDeclaration();
+     void didMutate();
+     
 diff --git a/Source/WebCore/dom/Document.cpp b/Source/WebCore/dom/Document.cpp
 index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..d7c57dfaa2cd80e80f165d4bf7e85384866030e7 100644
 --- a/Source/WebCore/dom/Document.cpp
@@ -3887,10 +3972,10 @@ index 52f8cd72fa2e3073163713fd16fc2f1677b96695..c8925b1b936f96c31c323609ea9f9d46
      protect(m_frame->document())->scheduleDeferredAXObjectCacheUpdate();
  
 diff --git a/Source/WebCore/page/LocalFrameViewLayoutContext.cpp b/Source/WebCore/page/LocalFrameViewLayoutContext.cpp
-index 61749fa2eecc674d3bc7d185a5b3944181454f73..7d870bf1ac7a27933257d53d17d8dede4af62c25 100644
+index 61749fa2eecc674d3bc7d185a5b3944181454f73..85cf1053f38ab61af4db3b34f0f1016bba036f7c 100644
 --- a/Source/WebCore/page/LocalFrameViewLayoutContext.cpp
 +++ b/Source/WebCore/page/LocalFrameViewLayoutContext.cpp
-@@ -61,6 +61,7 @@
+@@ -61,9 +61,11 @@
  #include "Settings.h"
  #include "StyleComputedStyle+GettersInlines.h"
  #include "StyleDocumentScope.h"
@@ -3898,7 +3983,11 @@ index 61749fa2eecc674d3bc7d185a5b3944181454f73..7d870bf1ac7a27933257d53d17d8dede
  #include <wtf/SetForScope.h>
  #include <wtf/SystemTracing.h>
  #include <wtf/TZoneMallocInlines.h>
-@@ -173,10 +174,35 @@ void LocalFrameViewLayoutContext::layout(bool canDeferUpdateLayerPositions)
++#include <wtf/text/CString.h>
+ #include <wtf/text/TextStream.h>
+ 
+ namespace WebCore {
+@@ -173,10 +175,35 @@ void LocalFrameViewLayoutContext::layout(bool canDeferUpdateLayerPositions)
  
      Ref protectedView(view());
  
@@ -3935,7 +4024,7 @@ index 61749fa2eecc674d3bc7d185a5b3944181454f73..7d870bf1ac7a27933257d53d17d8dede
  
      Style::DocumentScope::LayoutDependencyUpdateContext layoutDependencyUpdateContext;
      while (document() && document()->styleScope().invalidateForLayoutDependencies(layoutDependencyUpdateContext)) {
-@@ -186,10 +212,20 @@ void LocalFrameViewLayoutContext::layout(bool canDeferUpdateLayerPositions)
+@@ -186,10 +213,20 @@ void LocalFrameViewLayoutContext::layout(bool canDeferUpdateLayerPositions)
              break;
  
          performLayout(canDeferUpdateLayerPositions);
@@ -3957,7 +4046,7 @@ index 61749fa2eecc674d3bc7d185a5b3944181454f73..7d870bf1ac7a27933257d53d17d8dede
  }
  
  void LocalFrameViewLayoutContext::interleavedLayout()
-@@ -219,6 +255,27 @@ void LocalFrameViewLayoutContext::performLayout(bool canDeferUpdateLayerPosition
+@@ -219,6 +256,27 @@ void LocalFrameViewLayoutContext::performLayout(bool canDeferUpdateLayerPosition
          return;
      }
  
@@ -3985,7 +4074,7 @@ index 61749fa2eecc674d3bc7d185a5b3944181454f73..7d870bf1ac7a27933257d53d17d8dede
      LayoutFrameScope layoutFrameScope(*this);
      TraceScope tracingScope(PerformLayoutStart, PerformLayoutEnd);
      ScriptDisallowedScope::InMainThread scriptDisallowedScope;
-@@ -262,6 +319,9 @@ void LocalFrameViewLayoutContext::performLayout(bool canDeferUpdateLayerPosition
+@@ -262,6 +320,9 @@ void LocalFrameViewLayoutContext::performLayout(bool canDeferUpdateLayerPosition
          protect(view())->willDoLayout(layoutRoot);
          m_firstLayout = false;
      }
@@ -3995,7 +4084,7 @@ index 61749fa2eecc674d3bc7d185a5b3944181454f73..7d870bf1ac7a27933257d53d17d8dede
  
      Vector<FloatQuad> layoutAreas;
      {
-@@ -311,6 +371,9 @@ void LocalFrameViewLayoutContext::performLayout(bool canDeferUpdateLayerPosition
+@@ -311,6 +372,9 @@ void LocalFrameViewLayoutContext::performLayout(bool canDeferUpdateLayerPosition
              showRenderTree(renderView());
  #endif
      }
@@ -4005,7 +4094,7 @@ index 61749fa2eecc674d3bc7d185a5b3944181454f73..7d870bf1ac7a27933257d53d17d8dede
      {
          SetForScope layoutPhase(m_layoutPhase, LayoutPhase::InViewSizeAdjust);
          ScriptDisallowedScope::InMainThread scriptDisallowedScope;
-@@ -324,16 +387,39 @@ void LocalFrameViewLayoutContext::performLayout(bool canDeferUpdateLayerPosition
+@@ -324,16 +388,41 @@ void LocalFrameViewLayoutContext::performLayout(bool canDeferUpdateLayerPosition
                  return;
          }
      }
@@ -4036,10 +4125,12 @@ index 61749fa2eecc674d3bc7d185a5b3944181454f73..7d870bf1ac7a27933257d53d17d8dede
 +    markTracePhase(postLayoutDuration);
 +    auto traceTotal = traceLast - traceStart;
 +    if (traceTotal >= 10_ms) {
-+        WTFLogAlways("Summit layout phases: context=%p total=%.1f pre=%.1f renderTree=%.1f viewSize=%.1f post=%.1f postDidLayout=%.1f postTasks=%.1f postOther=%.1f subtree=%u deferredLayerPositions=%u\n",
++        auto documentURL = document()->url().string().utf8();
++        WTFLogAlways("Summit layout phases: context=%p total=%.1f pre=%.1f renderTree=%.1f viewSize=%.1f post=%.1f postDidLayout=%.1f postTasks=%.1f postOther=%.1f subtree=%u deferredLayerPositions=%u document=%p url=%s\n",
 +            this, traceTotal.milliseconds(), preLayoutDuration.milliseconds(), renderTreeDuration.milliseconds(),
 +            viewSizeDuration.milliseconds(), postLayoutDuration.milliseconds(), (postDidLayoutEnd - (traceLast - postLayoutDuration)).milliseconds(),
-+            (postTasksEnd - postDidLayoutEnd).milliseconds(), (traceLast - postTasksEnd).milliseconds(), beganWithSubtreeLayout, canDeferUpdateLayerPositions);
++            (postTasksEnd - postDidLayoutEnd).milliseconds(), (traceLast - postTasksEnd).milliseconds(), beganWithSubtreeLayout, canDeferUpdateLayerPositions,
++            document(), reinterpret_cast<const char*>(documentURL.data()));
 +    }
 +#endif
  }
@@ -25526,7 +25617,7 @@ index bbc577b4dc47a315d4a9125d061367fdabc0fe8f..3276570b646bc237ae9e53811052111f
      } else if (canCreateIntrinsicLogicalHeightsCacheForRowSizingFirstPass)
          m_intrinsicLogicalHeightsForRowSizingFirstPass.emplace();
 diff --git a/Source/WebCore/rendering/RenderObject.cpp b/Source/WebCore/rendering/RenderObject.cpp
-index 081e0ed00cf062459897b311d3e44d98235b4ba5..71bc576608631cb022c950ef9f0151532d4f3b5d 100644
+index 081e0ed00cf062459897b311d3e44d98235b4ba5..cbba9a4c263a0d36cd881b7f950a3076bddfe907 100644
 --- a/Source/WebCore/rendering/RenderObject.cpp
 +++ b/Source/WebCore/rendering/RenderObject.cpp
 @@ -34,6 +34,7 @@
@@ -25537,16 +25628,32 @@ index 081e0ed00cf062459897b311d3e44d98235b4ba5..71bc576608631cb022c950ef9f015153
  #include "ElementAncestorIteratorInlines.h"
  #include "FloatQuad.h"
  #include "FrameSelection.h"
-@@ -98,6 +99,8 @@
+@@ -41,9 +42,11 @@
+ #include "GraphicsContext.h"
+ #include "GraphicsLayer.h"
+ #include "HTMLBRElement.h"
++#include "HTMLHtmlElement.h"
+ #include "HTMLNames.h"
+ #include "HitTestResult.h"
+ #include "InspectorInstrumentation.h"
++#include "JSExecState.h"
+ #include "LayoutBox.h"
+ #include "LayoutIntegrationCoverage.h"
+ #include "LegacyRenderSVGModelObject.h"
+@@ -97,7 +100,12 @@
+ #include "StyleTransformResolver.h"
  #include "TransformState.h"
  #include "ViewTransition.h"
++#include <JavaScriptCore/ScriptCallStack.h>
++#include <JavaScriptCore/ScriptCallStackFactory.h>
  #include <algorithm>
 +#include <cstdlib>
++#include <cstring>
 +#include <wtf/text/CString.h>
  #include <stdio.h>
  #include <wtf/HexNumber.h>
  #include <wtf/Seconds.h>
-@@ -582,8 +585,24 @@ void RenderObject::clearNeedsLayout(HadSkippedLayout hadSkippedLayout)
+@@ -582,8 +590,39 @@ void RenderObject::clearNeedsLayout(HadSkippedLayout hadSkippedLayout)
  
  void RenderObject::scheduleLayout(RenderElement* layoutRoot)
  {
@@ -25563,8 +25670,23 @@ index 081e0ed00cf062459897b311d3e44d98235b4ba5..71bc576608631cb022c950ef9f015153
 +            auto nodeName = sourceNode ? sourceNode->nodeName().utf8() : CString { };
 +            auto id = sourceElement ? sourceElement->getAttribute(HTMLNames::idAttr).string().utf8() : CString { };
 +            auto classes = sourceElement ? sourceElement->getAttribute(HTMLNames::classAttr).string().utf8() : CString { };
-+            WTFLogAlways("Summit layout invalidation: renderer=%p type=%s node=%s id=%s class=%s\n",
-+                this, renderName().characters(), nodeName.data(), id.data(), classes.data());
++            auto documentURL = document().url().string().utf8();
++            WTFLogAlways("Summit layout invalidation: renderer=%p document=%p type=%s node=%s id=%s class=%s url=%s\n",
++                this, &document(), renderName().characters(), nodeName.data(), id.data(), classes.data(), reinterpret_cast<const char*>(documentURL.data()));
++            if (sourceNode && is<HTMLHtmlElement>(*sourceNode)) {
++                auto stack = Inspector::createScriptCallStack(JSExecState::currentState(), 8);
++                if (auto* frame = stack->firstNonNativeCallFrame()) {
++                    auto url = frame->sourceURL().utf8();
++                    auto function = frame->functionName().utf8();
++                    WTFLogAlways("Summit layout script: function=%s url=%s line=%u column=%u\n",
++                        reinterpret_cast<const char*>(function.data()), reinterpret_cast<const char*>(url.data()), frame->lineNumber(), frame->columnNumber());
++                }
++                static const char* nativeTraceMatch = std::getenv("SUMMIT_LAYOUT_BACKTRACE_MATCH");
++                static unsigned matchingInvalidations = 0;
++                if (nativeTraceMatch && std::strstr(reinterpret_cast<const char*>(documentURL.data()), nativeTraceMatch)
++                    && ++matchingInvalidations % 25 == 0)
++                    WTFReportBacktraceWithPrefixAndStackDepth("Summit layout stack ", 14);
++            }
 +        }
 +#endif
          return protect(renderView->frameView().layoutContext())->scheduleLayout();
@@ -26092,6 +26214,160 @@ index 0000000000000000000000000000000000000000..cff799029b188a06ba83de7d16f2747e
 +} // namespace WebCore
 +
 +#endif // RenderThemeHaiku_h
+diff --git a/Source/WebCore/style/RuleSetBuilder.cpp b/Source/WebCore/style/RuleSetBuilder.cpp
+index 2d0799610d3a14233afd98ce20cad5c373491c56..b2e23915083131738e1b9bea9ce14474e509b680 100644
+--- a/Source/WebCore/style/RuleSetBuilder.cpp
++++ b/Source/WebCore/style/RuleSetBuilder.cpp
+@@ -54,11 +54,12 @@
+ namespace WebCore {
+ namespace Style {
+ 
+-RuleSetBuilder::RuleSetBuilder(RuleSet& ruleSet, const MQ::MediaQueryEvaluator& evaluator, Resolver* resolver, ShrinkToFit shrinkToFit)
++RuleSetBuilder::RuleSetBuilder(RuleSet& ruleSet, const MQ::MediaQueryEvaluator& evaluator, Resolver* resolver, ShrinkToFit shrinkToFit, bool preserveResolverMutatingRules)
+     : m_ruleSet(&ruleSet)
+     , m_mediaQueryCollector({ evaluator })
+     , m_resolver(resolver)
+     , m_shrinkToFit(shrinkToFit)
++    , m_preserveResolverMutatingRules(preserveResolverMutatingRules)
+ {
+     RELEASE_ASSERT(!m_ruleSet->m_isBuilding);
+     m_ruleSet->m_isBuilding = true;
+@@ -522,6 +523,8 @@ void RuleSetBuilder::addMutatingRulesToResolver()
+             m_ruleSet->m_resolverMutatingRulesInLayers.append(collectedRule);
+ 
+         auto& rule = collectedRule.rule;
++        if (m_preserveResolverMutatingRules)
++            continue;
+         if (RefPtr styleRuleFontFace = dynamicDowncast<StyleRuleFontFace>(rule.get())) {
+             protect(document->fontSelector())->addFontFaceRule(*styleRuleFontFace, false);
+             resolver->invalidateMatchedDeclarationsCache();
+diff --git a/Source/WebCore/style/RuleSetBuilder.h b/Source/WebCore/style/RuleSetBuilder.h
+index 1faa3e0b201f1a1ee52ea04773e6857d31b24391..4cc5bf3d86dabe4d375970c0f3b30e847331ffac 100644
+--- a/Source/WebCore/style/RuleSetBuilder.h
++++ b/Source/WebCore/style/RuleSetBuilder.h
+@@ -35,7 +35,7 @@ namespace Style {
+ class RuleSetBuilder {
+ public:
+     enum class ShrinkToFit : bool { Enable, Disable };
+-    RuleSetBuilder(RuleSet&, const MQ::MediaQueryEvaluator&, Resolver* = nullptr, ShrinkToFit = ShrinkToFit::Enable);
++    RuleSetBuilder(RuleSet&, const MQ::MediaQueryEvaluator&, Resolver* = nullptr, ShrinkToFit = ShrinkToFit::Enable, bool preserveResolverMutatingRules = false);
+     ~RuleSetBuilder();
+ 
+     void addRulesFromSheet(const StyleSheetContents&, const MQ::MediaQueryList& sheetQuery = { });
+@@ -86,6 +86,7 @@ private:
+     MediaQueryCollector m_mediaQueryCollector;
+     Resolver* m_resolver { nullptr };
+     const ShrinkToFit m_shrinkToFit { ShrinkToFit::Enable };
++    const bool m_preserveResolverMutatingRules { false }; // Used when only ordinary style rules changed.
+ 
+     CascadeLayerName m_resolvedCascadeLayerName;
+     HashMap<CascadeLayerName, RuleSet::CascadeLayerIdentifier> m_cascadeLayerIdentifierMap;
+diff --git a/Source/WebCore/style/StyleResolver.cpp b/Source/WebCore/style/StyleResolver.cpp
+index 0f09e88f82e9b587d8c08d8f5d1d83a5a00cfaf1..09f17413d66c5c621c375c6ce7d790ea1b7b3663 100644
+--- a/Source/WebCore/style/StyleResolver.cpp
++++ b/Source/WebCore/style/StyleResolver.cpp
+@@ -222,9 +222,9 @@ void Resolver::addCurrentSVGFontFaceRules()
+     }
+ }
+ 
+-void Resolver::appendAuthorStyleSheets(std::span<const Ref<CSSStyleSheet>> styleSheets)
++void Resolver::appendAuthorStyleSheets(std::span<const Ref<CSSStyleSheet>> styleSheets, bool preserveResolverMutatingRules)
+ {
+-    m_ruleSets.appendAuthorStyleSheets(styleSheets, &m_mediaQueryEvaluator, m_inspectorCSSOMWrappers);
++    m_ruleSets.appendAuthorStyleSheets(styleSheets, &m_mediaQueryEvaluator, m_inspectorCSSOMWrappers, preserveResolverMutatingRules);
+ 
+     if (auto renderView = document().renderView())
+         renderView->style().fontCascade().update(&protect(document())->fontSelector());
+diff --git a/Source/WebCore/style/StyleResolver.h b/Source/WebCore/style/StyleResolver.h
+index cb33f6566d5bab2af0b77f56ced2a5c06b56b37e..89863f7a636c35e936ce5682cafbd67fafc6e476 100644
+--- a/Source/WebCore/style/StyleResolver.h
++++ b/Source/WebCore/style/StyleResolver.h
+@@ -117,7 +117,7 @@ public:
+ 
+     ScopeType scopeType() const { return m_scopeType; }
+ 
+-    void appendAuthorStyleSheets(std::span<const Ref<CSSStyleSheet>>);
++    void appendAuthorStyleSheets(std::span<const Ref<CSSStyleSheet>>, bool preserveResolverMutatingRules = false);
+ 
+     ScopeRuleSets& ruleSets() LIFETIME_BOUND { return m_ruleSets; }
+     const ScopeRuleSets& ruleSets() const LIFETIME_BOUND { return m_ruleSets; }
+diff --git a/Source/WebCore/style/StyleScope.cpp b/Source/WebCore/style/StyleScope.cpp
+index 5375c6f10320876a1fac9dfd503cb3c8b373879b..30154ee2dec1bd010a5c4adbb9b627a0a8e7159e 100644
+--- a/Source/WebCore/style/StyleScope.cpp
++++ b/Source/WebCore/style/StyleScope.cpp
+@@ -757,6 +757,31 @@ void Scope::didChangeStyleSheetContents()
+     scheduleUpdate(UpdateType::ContentsOrInterpretation);
+ }
+ 
++bool Scope::tryUpdateForSimpleStyleRuleInsertion(CSSStyleSheet& sheet)
++{
++    if (m_shadowRoot || hasPendingUpdate() || m_document->inStyleRecalc() || m_document->inRenderTreeUpdate()
++        || !m_resolver || m_resolver->isSharedBetweenShadowTrees() || !activeStyleSheetsContains(sheet) || sheet.disabled())
++        return false;
++
++    // The inserted rule cannot change @font-face, @property, keyframes, or other
++    // resolver registrations. Rebuild author rule order without replaying them.
++    {
++        SetForScope isUpdatingStyleResolver { m_isUpdatingStyleResolver, true };
++        m_resolver->ruleSets().resetAuthorStyle();
++        protect(m_resolver)->appendAuthorStyleSheets(m_activeStyleSheets, true);
++    }
++    m_resolver->invalidateMatchedDeclarationsCache();
++
++    if (m_resolver->ruleSets().features().usesHasPseudoClass)
++        m_usesHasPseudoClass = true;
++    if (sheet.contents().usesStyleBasedEditability())
++        m_usesStyleBasedEditability = true;
++
++    InspectorInstrumentation::activeStyleSheetsUpdated(m_document);
++    Invalidator::invalidateAllStyle(*this);
++    return true;
++}
++
+ void Scope::didChangeViewportSize()
+ {
+     Ref<ContainerNode> rootNode = m_document;
+diff --git a/Source/WebCore/style/StyleScope.h b/Source/WebCore/style/StyleScope.h
+index c8cd5dc55cd08b4d67a35ac13c588056bc192b42..77c7d889aeb33fde33607f3760b2fe9394f99e6b 100644
+--- a/Source/WebCore/style/StyleScope.h
++++ b/Source/WebCore/style/StyleScope.h
+@@ -116,6 +116,7 @@ public:
+     void didChangeActiveStyleSheetCandidates();
+     // This is called when contents of a stylesheet is mutated.
+     void didChangeStyleSheetContents();
++    bool tryUpdateForSimpleStyleRuleInsertion(CSSStyleSheet&);
+ 
+     void didChangeViewportSize();
+ 
+diff --git a/Source/WebCore/style/StyleScopeRuleSets.cpp b/Source/WebCore/style/StyleScopeRuleSets.cpp
+index b020e0be5753a6aae8b3061e29621ce430ac8ed6..ccf3856c730f86db62cf9cf700b1a91d32c4688c 100644
+--- a/Source/WebCore/style/StyleScopeRuleSets.cpp
++++ b/Source/WebCore/style/StyleScopeRuleSets.cpp
+@@ -240,9 +240,9 @@ std::optional<DynamicMediaQueryEvaluationChanges> ScopeRuleSets::evaluateDynamic
+     return evaluationChanges;
+ }
+ 
+-void ScopeRuleSets::appendAuthorStyleSheets(std::span<const Ref<CSSStyleSheet>> styleSheets, MQ::MediaQueryEvaluator* mediaQueryEvaluator, InspectorCSSOMWrappers& inspectorCSSOMWrappers)
++void ScopeRuleSets::appendAuthorStyleSheets(std::span<const Ref<CSSStyleSheet>> styleSheets, MQ::MediaQueryEvaluator* mediaQueryEvaluator, InspectorCSSOMWrappers& inspectorCSSOMWrappers, bool preserveResolverMutatingRules)
+ {
+-    RuleSetBuilder builder(*m_authorStyle, *mediaQueryEvaluator, &m_styleResolver, RuleSetBuilder::ShrinkToFit::Enable);
++    RuleSetBuilder builder(*m_authorStyle, *mediaQueryEvaluator, &m_styleResolver, RuleSetBuilder::ShrinkToFit::Enable, preserveResolverMutatingRules);
+ 
+     RefPtr<CSSStyleSheet> previous;
+     for (auto& cssSheet : styleSheets) {
+diff --git a/Source/WebCore/style/StyleScopeRuleSets.h b/Source/WebCore/style/StyleScopeRuleSets.h
+index 8c5e827bd714f453f1f0404786f8b5ed848b3f04..7bf9d246f2e968b2715a513c1945c15a13d1b7c6 100644
+--- a/Source/WebCore/style/StyleScopeRuleSets.h
++++ b/Source/WebCore/style/StyleScopeRuleSets.h
+@@ -109,7 +109,7 @@ public:
+     void initializeUserStyle();
+ 
+     void resetAuthorStyle();
+-    void appendAuthorStyleSheets(std::span<const Ref<CSSStyleSheet>>, MQ::MediaQueryEvaluator*, Style::InspectorCSSOMWrappers&);
++    void appendAuthorStyleSheets(std::span<const Ref<CSSStyleSheet>>, MQ::MediaQueryEvaluator*, Style::InspectorCSSOMWrappers&, bool preserveResolverMutatingRules = false);
+ 
+     void resetUserAgentMediaQueryStyle();
+ 
 diff --git a/Source/WebCore/testing/Internals.idl b/Source/WebCore/testing/Internals.idl
 index efb0e18ef3681d9f33b6c784f0fb22f1ff0e80eb..19ec94335716b9ab75d52343c7adcad776ac151b 100644
 --- a/Source/WebCore/testing/Internals.idl

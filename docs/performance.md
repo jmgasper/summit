@@ -1,22 +1,25 @@
 # Summit performance: Speedometer 3.1 baseline, where the time goes, stress test
 
-## Current coordinated Skia result (September 23, 2026)
+## Current coordinated Skia result (September 24, 2026)
 
 The workstation's current coordinated graphics build uses Skia CPU tile
 painting with two workers, mimalloc, asynchronous scrolling, display-rate
-composition pacing, and guarded reuse of exact text widths. It completes all
-580 steps of Speedometer 3.1. The latest matched-viewport ten-iteration run is
-`.vm/bench/speedometer-20260923-235224-text-width-default-matched/`.
+composition pacing, guarded reuse of exact text widths, and preserved font
+registrations for simple CSS rule insertions. It completes all 580 steps of
+Speedometer 3.1. The latest matched-viewport ten-iteration run is
+`.vm/bench/speedometer-20260924-151112-general-css-insert-1280x887/`.
 
 | Browser | Content viewport | Speedometer 3.1, 10 iterations |
 | --- | ---: | ---: |
-| Summit, previous full-screen build | 1913×945 | **6.591 ± 0.240** |
-| Summit, matched to Firefox, current build | 1280×887 | **6.923 ± 0.333** |
-| Summit, previous matched build | 1280×887 | **6.779 ± 0.258** |
+| Summit, current build | 1280×887 | **5.645 ± 0.285** |
+| Summit, installed-bundle control, same session | 1280×887 | **5.554 ± 0.254** |
+| Summit, earlier matched run | 1280×887 | **6.923 ± 0.333** |
 | Firefox 155 on the same workstation | 1280×887 | **8.338 ± 0.374** |
 
 These Summit runs were uncontended. The current same-size gap to Firefox is
-1.20x by score. TipTap took 148.2 ms versus Firefox's 124.8 ms, while
+1.48x by score. The older 6.923 result did not reproduce in either of the
+paired September 24 runs; workstation or session variation remains unresolved.
+In the older 6.923 run, TipTap took 148.2 ms versus Firefox's 124.8 ms, while
 Chart.js took 264.1 ms versus Firefox's 189.1 ms. Mimalloc accounts for about a 21% gain
 over the matched system-allocator runs described below. Older score
 comparisons in this log used different viewport sizes and should be treated
@@ -3378,3 +3381,37 @@ evidence for a general simple-rule insertion optimization; the runs are not
 automated performance benchmarks
 (`.vm/bench/scroll-20260924-135017-guardian-preserve-font-trial/` and
 `.vm/bench/scroll-20260924-135201-guardian-preserve-font-baseline/`).
+
+### General CSS rule insertion and Guardian playback
+
+The production change handles a top-level ordinary `CSSStyleSheet::insertRule()`
+when the document has an active, unshared resolver and no pending style update.
+It rebuilds the author rule set in stylesheet order and invalidates style, while
+keeping unchanged font-face and other resolver registrations. Nested, mutating,
+and unsupported rule changes retain the existing resolver rebuild path. A CSSOM
+probe verified insertion at the end of an earlier stylesheet, insertion in the
+middle of a later stylesheet, ordinary width application, and deletion order
+(`.vm/bench/probe-20260924-150230-summit-css-insert-order-egl/`).
+
+On the reported Guardian article, three consecutive 200-frame decoded windows
+painted 194, 193, and 196 frames. None had a repaint handoff over 40 ms;
+their 95th percentile queue delays were 17.8, 15.4, and 11.8 ms. The earlier
+baseline painted 162 of 198 frames in its first window, with 24 handoffs over
+40 ms. These are interactive page traces, not an automated playback benchmark
+(`.vm/bench/scroll-20260924-150322-guardian-general-css-insert/`).
+
+The existing Reddit HLS fixture sought to 8 seconds, emitted `seeking` and
+`seeked`, resumed playback, and finished its 12.7-second clip with no media
+error. It tests programmatic seeking rather than dragging the Adobe ad's custom
+progress control (`.vm/bench/probe-20260924-150450-summit-reddit-hls-seek-general-css/`).
+
+Paired ten-iteration Speedometer runs on the workstation showed 5.652 ± 0.211
+for this bundle versus 5.469 ± 0.257 for the installed bundle at 1913×945.
+At the Firefox-matched 1280×887 size, they scored 5.645 ± 0.285 and
+5.554 ± 0.254 respectively. Both current-session scores are well below the
+earlier 6.760 and 6.923 Summit runs; the paired comparison supports no
+Speedometer regression from the CSS change, but does not explain the lower
+absolute scores (`.vm/bench/speedometer-20260924-150558-general-css-insert-matched/`,
+`.vm/bench/speedometer-20260924-150830-css-insert-control-matched/`,
+`.vm/bench/speedometer-20260924-151112-general-css-insert-1280x887/`, and
+`.vm/bench/speedometer-20260924-151331-css-insert-control-1280x887/`).

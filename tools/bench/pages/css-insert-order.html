@@ -1,0 +1,49 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Summit CSS insert order probe: running</title>
+<style id="first">
+.target { color: red; }
+.box { width: 20px; height: 20px; }
+</style>
+<style id="second">
+.target { color: blue; }
+</style>
+<div class="target">Cascade order</div>
+<div class="box"></div>
+<pre id="out">running…</pre>
+<script>
+"use strict";
+(async () => {
+    const first = document.getElementById("first").sheet;
+    const second = document.getElementById("second").sheet;
+    const target = document.querySelector(".target");
+    const box = document.querySelector(".box");
+    const color = () => getComputedStyle(target).color;
+    const width = () => box.getBoundingClientRect().width;
+    const result = {initial: color()};
+
+    first.insertRule(".target { color: green; }", first.cssRules.length);
+    result.afterFirstAppend = color();
+    first.insertRule(".box { width: 123px; }", first.cssRules.length);
+    result.afterBoxAppend = width();
+    second.insertRule(".target { color: purple; }", 0);
+    result.afterMiddleInsert = color();
+    second.insertRule(".target { color: orange; }", second.cssRules.length);
+    result.afterLastAppend = color();
+    second.deleteRule(second.cssRules.length - 1);
+    result.afterDelete = color();
+
+    result.pass = result.initial === "rgb(0, 0, 255)"
+        && result.afterFirstAppend === "rgb(0, 0, 255)"
+        && result.afterBoxAppend === 123
+        && result.afterMiddleInsert === "rgb(0, 0, 255)"
+        && result.afterLastAppend === "rgb(255, 165, 0)"
+        && result.afterDelete === "rgb(0, 0, 255)";
+    document.getElementById("out").textContent = JSON.stringify(result, null, 2);
+    await fetch("/__bench/probe", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(result)});
+    document.title = "Summit CSS insert order probe: done";
+})().catch(error => {
+    document.getElementById("out").textContent = String(error && error.stack || error);
+    document.title = "Summit CSS insert order probe: error";
+});
+</script>
