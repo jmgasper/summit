@@ -3352,3 +3352,16 @@ This still does not establish which computed property changed, so layout
 invalidation remains intact
 (`.vm/bench/scroll-20260924-114522-guardian-document-layout/` and
 `.vm/bench/scroll-20260924-115151-guardian-layout-native-stack/`).
+
+Further opt-in style probes on the same inline video found that every
+sampled root layout difference was in inherited font data. Line height,
+letter spacing, word spacing, and the font description remained unchanged;
+the cached font-set pointer changed. The document's font selector version
+advanced by 41 between most root updates. A stack sampled during those
+updates shows `CSSStyleSheet::insertRule()` repeatedly clearing and rebuilding
+the document style resolver. This replays approximately 40 font-face rules,
+advances the selector version, and creates a fresh font-set cache entry for
+the root. The rule being inserted and whether these resolver rebuilds can be
+handled incrementally remain under investigation
+(`.vm/bench/scroll-20260924-131952-guardian-font-cache-entries/` and
+`.vm/bench/scroll-20260924-132556-guardian-resolver-reset/`).
