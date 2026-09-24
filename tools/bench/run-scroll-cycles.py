@@ -60,12 +60,13 @@ def main():
     parser.add_argument('--delta', type=float, default=3)
     parser.add_argument('--cycles', type=int, default=2, help='down/up pairs')
     parser.add_argument('--tail', type=float, default=0.25, help='seconds to include smooth-scroll animation tail')
+    parser.add_argument('--after-settle', type=float, default=3, help='seconds to wait before a second final capture')
     parser.add_argument('--window', default='0,0,1279,1017')
     parser.add_argument('--env', action='append', default=[], metavar='NAME=VALUE')
     parser.add_argument('--label', default='')
     args = parser.parse_args()
-    if args.notches < 1 or args.interval_ms < 1 or args.cycles < 1 or args.tail < 0:
-        parser.error('notches, interval, and cycles must be positive; tail must be nonnegative')
+    if args.notches < 1 or args.interval_ms < 1 or args.cycles < 1 or args.tail < 0 or args.after_settle < 0:
+        parser.error('notches, interval, and cycles must be positive; tail and after-settle must be nonnegative')
 
     run_id = time.strftime('scroll-cycles-%Y%m%d-%H%M%S') + (f'-{args.label}' if args.label else '')
     directory = guest.ROOT / '.vm/bench' / run_id
@@ -160,6 +161,9 @@ def main():
 
         run['stateAfter'] = guest.state(ctl, team)
         capture_visible(directory / 'after.png')
+        time.sleep(args.after_settle)
+        if args.after_settle:
+            capture_visible(directory / 'settled.png')
         run['outcome'] = 'completed'
     except KeyboardInterrupt:
         run['outcome'] = 'interrupted'
