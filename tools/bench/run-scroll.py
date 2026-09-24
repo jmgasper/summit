@@ -492,8 +492,17 @@ def main():
                 run['frameSnapshot'] = frame_snapshot
             else:
                 run['frameSnapshotError'] = err.strip() or out.strip()
+        # Smooth wheel scrolling can keep presenting for up to 200 ms after
+        # the final notch. Capture that tail separately from trailing idle.
+        time.sleep(0.25)
+        if frame_snapshot:
+            code, out, err = guest.ctl(ctl, team, 'framestats', timeout_ms=1000)
+            if code == 0:
+                tail_snapshot = json.loads(out)
+                run['animationTailFrameSnapshot'] = tail_snapshot
+                run['animationTailScroll'] = summarize_ui_snapshot(tail_snapshot)
         # Let the one-second frame counter flush its last partial window.
-        time.sleep(1.1)
+        time.sleep(0.85)
         if frame_snapshot:
             code, out, err = guest.ctl(ctl, team, 'framestats', timeout_ms=1000)
             if code == 0:
