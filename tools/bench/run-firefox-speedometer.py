@@ -31,6 +31,9 @@ def log(message):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--iterations', type=int, default=10)
+    parser.add_argument('--suites', default='', help='comma-separated suite names (diagnostic)')
+    parser.add_argument('--intersection-trace', action='store_true',
+                        help='time CodeMirror IntersectionObserver callbacks (diagnostic)')
     parser.add_argument('--port', type=int, default=8932)
     parser.add_argument('--timeout', type=int, default=3600)
     parser.add_argument('--settle', type=float, default=25, help='seconds to let Firefox start before navigating')
@@ -43,18 +46,24 @@ def main():
     directory.mkdir(parents=True)
     guest_dir = f'{guest.GUEST_ROOT}/runs/{run_id}'
     query = 'startAutomatically=true' + ('' if args.iterations == 10 else f'&iterationCount={args.iterations}')
+    if args.suites:
+        query += f'&suites={args.suites}'
     url = f'http://{guest.HOST_ADDRESS}:{args.port}/?{query}'
     run = {'id': run_id, 'browser': 'firefox', 'machine': guest.HOST, 'url': url,
-           'iterations': args.iterations, 'directory': str(directory),
+           'iterations': args.iterations, 'suites': args.suites,
+           'intersectionTrace': args.intersection_trace, 'directory': str(directory),
            'startedAt': time.strftime('%Y-%m-%dT%H:%M:%S%z'), 'outcome': 'not-started'}
 
     def save():
         (directory / 'run.json').write_text(json.dumps(run, indent=1))
 
     signal.signal(signal.SIGTERM, lambda *a: (_ for _ in ()).throw(KeyboardInterrupt))
+    server_command = [sys.executable, str(guest.BENCH / 'serve-speedometer.py'), '--port', str(args.port),
+                      '--bind', guest.SERVER_BIND, '--out-dir', str(directory), '--cache-policy', 'official']
+    if args.intersection_trace:
+        server_command.append('--intersection-trace')
     server = subprocess.Popen(
-        [sys.executable, str(guest.BENCH / 'serve-speedometer.py'), '--port', str(args.port),
-         '--bind', guest.SERVER_BIND, '--out-dir', str(directory), '--cache-policy', 'official'],
+        server_command,
         stdout=(directory / 'server.log').open('w'), stderr=subprocess.STDOUT)
     time.sleep(1.0)
     if server.poll() is not None:
