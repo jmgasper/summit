@@ -492,8 +492,12 @@ def main():
         if args.ui_frame_stats:
             code, out, err = guest.ctl(ctl, team, 'framestats', timeout_ms=1000)
             if code == 0:
-                frame_snapshot = json.loads(out)
+                polled_snapshot = json.loads(out)
+                frame_snapshot = polled_snapshot.pop('atScrollCompletion', None) or polled_snapshot
+                run['frameSnapshotSource'] = 'scroll-completion' if frame_snapshot is not polled_snapshot else 'poll'
                 run['frameSnapshot'] = frame_snapshot
+                if frame_snapshot is not polled_snapshot:
+                    run['postDeliveryFrameSnapshot'] = polled_snapshot
             else:
                 run['frameSnapshotError'] = err.strip() or out.strip()
         # Smooth wheel scrolling can keep presenting for up to 200 ms after
@@ -503,6 +507,7 @@ def main():
             code, out, err = guest.ctl(ctl, team, 'framestats', timeout_ms=1000)
             if code == 0:
                 tail_snapshot = json.loads(out)
+                tail_snapshot.pop('atScrollCompletion', None)
                 run['animationTailFrameSnapshot'] = tail_snapshot
                 run['animationTailScroll'] = summarize_ui_snapshot(tail_snapshot)
         # Let the one-second frame counter flush its last partial window.
@@ -510,7 +515,9 @@ def main():
         if frame_snapshot:
             code, out, err = guest.ctl(ctl, team, 'framestats', timeout_ms=1000)
             if code == 0:
-                run['postBurstFrameSnapshot'] = json.loads(out)
+                post_burst_snapshot = json.loads(out)
+                post_burst_snapshot.pop('atScrollCompletion', None)
+                run['postBurstFrameSnapshot'] = post_burst_snapshot
         # Cut the measured log before taking the final VNC screenshot. Capture
         # can hold app_server long enough to resemble a page-update stall.
         guest.fetch_file(remote_log, directory / 'browser.log')
