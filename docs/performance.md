@@ -3295,3 +3295,24 @@ callback API was unavailable. Neither browser API measures presentation on
 this build. An opt-in backend trace records decode time, the delay before
 the main-thread repaint request, and the age of the frame when `paint()` runs
 (`.vm/bench/probe-20260924-105512-summit-guardian-frame-quality/`).
+
+On the standalone clip, the trace logged 683 decoded frames and 681 painted
+frames over the observed run. Median decode time was 2.3 ms, the repaint
+callback's 95th-percentile queue delay was 0.2 ms, and median frame age at
+paint was 15.4 ms. On the full article after dismissing the cookie overlay
+and scrolling the inline video into view, NVDEC remained selected, but the
+first 306 decoded frames produced only 235 paints. The repaint callback
+waited over 40 ms on the main thread 43 times, with a 152.9 ms maximum.
+Across a longer article window, the painted/decoded ratio stayed near 77%.
+These observations point to page/main-thread contention, not slow NVDEC
+decoding of the 480×384 clip. The article run was interactive and is not a
+repeatable benchmark (`.vm/bench/probe-20260924-110000-summit-guardian-frame-handoff/`
+and `.vm/bench/scroll-20260924-110339-guardian-interactive-frame-handoff/`).
+
+An opt-in trial coalesced video repaint requests while one was waiting on
+the main thread. The standalone clip still painted 681 of 683 frames and
+looped. On the full article, callbacks fell from one per decode to 846 per
+999 decoded frames, but only 764 frames painted and callback queue delays
+still exceeded 40 ms frequently. This did not improve the observed choppiness,
+so the trial was removed. Its diagnostic bundle was `bundle-eg5ddl7f`; the
+production launcher continues to use the tested `bundle-7dosgek7`.
