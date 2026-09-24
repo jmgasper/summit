@@ -3891,3 +3891,17 @@ The instrumented WebKit link and browser training are still in progress
 (`.vm/pgo-generate-atomic-engine-build.log`,
 `.vm/pgo-generate-llvm-hook-build.log`, and
 `.vm/pgo-generate-llvm-resume.log`).
+
+The instrumented engine linked successfully and was packaged as
+`bundle-vvu0w_wt`. A full ten-iteration Speedometer 3.1 run at the matched
+1280×887 viewport completed, followed by all 600 frames of the 400-card
+scroll fixture. Its observed score and frame rate include GCC's atomic
+counter overhead and are training data, not performance comparisons. Before
+training there were no `.gcda` files; afterwards there were 1,972, including
+643 under WebCore, 189 under JavaScriptCore, and 311 under WebKit. The scroll
+run updated the files again. A copy of the profiles was saved outside the
+build directory before reconfiguring the same object paths for profile use.
+The optimized build is in progress
+(`.vm/bench/speedometer-20260925-004337-pgo-train-full/`,
+`.vm/bench/probe-20260925-005022-summit-pgo-train-scroll/`, and
+`.vm/pgo-use-build.log`).
