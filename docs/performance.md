@@ -2,18 +2,20 @@
 
 ## Current coordinated Skia result (September 25, 2026)
 
-The workstation launcher uses profile-guided `bundle-wekouxn2`: Skia CPU tile
+The workstation launcher uses profile-guided `bundle-glk_tobh`: Skia CPU tile
 painting with two workers, GL Canvas, raster coordinated scrollbars, mimalloc,
 asynchronous scrolling, display-rate composition pacing, guarded reuse of exact text
 widths, preserved font registrations for simple CSS rule insertions, and
-coalesced video repaint callbacks. It
+coalesced video repaint callbacks. It precompiles the rounded solid-color
+shader before scrolling. It
 completes all 580 steps of Speedometer 3.1. The latest matched-viewport
 ten-iteration run is
-`.vm/bench/speedometer-20260925-073640-media-coalesce-matched/`.
+`.vm/bench/speedometer-20260925-081513-rounded-solid-prewarm-matched/`.
 
 | Browser | Content viewport | Speedometer 3.1, 10 iterations |
 | --- | ---: | ---: |
-| Summit, current smooth PGO and media coalescing | 1280×887 | **8.475 ± 0.414** |
+| Summit, current smooth PGO and rounded-solid prewarm | 1280×887 | **8.574 ± 0.468** |
+| Summit, prior smooth PGO and media coalescing | 1280×887 | **8.475 ± 0.414** |
 | Summit, prior smooth PGO | 1280×887 | **8.338 ± 0.398**, repeat **8.544 ± 0.434** |
 | Summit, prior PGO and handled scroll refresh | 1280×887 | **8.347 ± 0.506** |
 | Summit, prior PGO CPU tiles and GL Canvas | 1280×887 | **8.512 ± 0.400**, repeat **8.444 ± 0.456** |
@@ -4426,3 +4428,27 @@ check for any future tile-policy change
 `.vm/bench/probe-20260925-082843-summit-tile-128/`,
 `.vm/bench/probe-20260925-082920-summit-tile-256-b/`, and
 `.vm/bench/probe-20260925-082953-summit-tile-512-b/`).
+
+### Frame-timer alignment trial
+
+The matched current Preact trace spent a median 24 ms waiting for its first
+animation callback in add-items steps and 14 ms in complete-items steps,
+versus 11 and 2 ms in the saved Firefox trace. Haiku uses WebKit's one-shot
+rendering-update timer because it has no display refresh monitor. A separate
+PGO bundle, `bundle-x2jmvbd3`, tested an opt-in alignment of its 60 Hz timer
+to a shared monotonic cadence (`SUMMIT_ALIGNED_RENDER_TIMER=1`).
+
+The alignment reduced the median wait for Preact's first animation callback
+from 15 to 5 ms in complete-items steps, but Speedometer starts measuring
+after that callback. The measured step times and focused eight-iteration
+scores were effectively unchanged: 16.849 ± 1.412 off and 16.584 ± 1.302
+on. In ten full iterations on the same bundle, alignment scored
+8.547 ± 0.408 versus 8.625 ± 0.453 with it off. These intervals overlap and
+do not support a benchmark gain. The experiment was removed; the engine
+patch digest returned exactly to its pre-trial value, and the workstation
+launcher stayed on `bundle-glk_tobh`
+(`.vm/bench/speedometer-20260925-083157-preact-raf-current-pgo/`,
+`.vm/bench/speedometer-20260925-083743-aligned-timer-preact-off-a/`,
+`.vm/bench/speedometer-20260925-083832-aligned-timer-preact-on/`,
+`.vm/bench/speedometer-20260925-083950-aligned-render-full-on/`, and
+`.vm/bench/speedometer-20260925-084126-aligned-render-full-off/`).
