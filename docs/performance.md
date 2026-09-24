@@ -3339,3 +3339,16 @@ or prove which invalidation is necessary, so no layout behavior was changed
 (`.vm/bench/scroll-20260924-112843-guardian-invalidation-source/`).
 The current workstation launcher uses `bundle-3yuxtup5`, which adds only this
 disabled-by-default diagnostic to the same playback code.
+
+Document-aware tracing narrowed the recurring full layouts to the Guardian
+article's main document. After video playback began, 139 layouts over 10 ms
+totaled 4.85 s; each belonged to that document, and each coincided with
+invalidation of its `html` renderer, skip link, and screen-reader span.
+Earlier JavaScript stack traces showing PubMatic user-sync activity were from
+other documents and did not explain these main-document layouts. A sampled
+native stack instead shows WebCore applying a newly resolved style to the
+`html` renderer and classifying the difference as requiring full layout.
+This still does not establish which computed property changed, so layout
+invalidation remains intact
+(`.vm/bench/scroll-20260924-114522-guardian-document-layout/` and
+`.vm/bench/scroll-20260924-115151-guardian-layout-native-stack/`).
