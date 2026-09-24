@@ -96,7 +96,8 @@ def main():
         if (directory / 'result.json').exists():
             result = json.loads((directory / 'result.json').read_text())
             run['result'] = result
-            score = result.get('metrics', {}).get('Score', {})
+            payload = result.get('payload', result)
+            score = payload.get('score') or payload.get('metrics', {}).get('Score', {})
             run['score'] = score.get('mean')
             run['ci'] = (score.get('delta') or 0)
     except KeyboardInterrupt:
