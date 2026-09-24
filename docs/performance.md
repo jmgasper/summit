@@ -3859,3 +3859,13 @@ bottleneck is still synchronous page work and layout, not wheel delivery or
 the native view queue (`.vm/bench/scroll-20260924-224550-reddit-current-live/`,
 `.vm/bench/scroll-20260924-224651-reddit-current-long/`, and
 `.vm/bench/scroll-20260924-224809-reddit-current-long-trace/`).
+
+### Profile-guided build trial
+
+GCC 13.3 on the X399 workstation successfully compiled a small C++ program
+with `-fprofile-generate`, wrote its `.gcda` file on normal exit, and then
+accepted that profile with `-fprofile-use -fprofile-correction` at the same
+output path. An isolated WebKit `SkiaCGMiPGO` build will collect a profile
+from Speedometer 3.1, then rebuild from that profile without changing the
+installed launcher. A matching full benchmark and scroll probe will decide
+whether this compiler path helps; the earlier Zen 1 target alone did not.
