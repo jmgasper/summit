@@ -4696,6 +4696,53 @@ index 351fcd027e1481abf32eeb6f82f5ffaa5aff5fd8..2afed204ed1b72119cbba8ffa53c3c5c
      return result;
  }
  
+diff --git a/Source/WebCore/page/scrolling/coordinated/ScrollerCoordinated.cpp b/Source/WebCore/page/scrolling/coordinated/ScrollerCoordinated.cpp
+index 19eeadfad058f4bd29b19b2e63b00d169e5a1ed5..86fc392c042e6c2d1cb8a52ea2921045f88ae2f1 100644
+--- a/Source/WebCore/page/scrolling/coordinated/ScrollerCoordinated.cpp
++++ b/Source/WebCore/page/scrolling/coordinated/ScrollerCoordinated.cpp
+@@ -32,6 +32,10 @@
+ #include "BitmapTexturePool.h"
+ #include "CoordinatedPlatformLayer.h"
+ #include "CoordinatedPlatformLayerBufferRGB.h"
++#if PLATFORM(HAIKU)
++#include "CoordinatedPlatformLayerBufferNativeImage.h"
++#include "NativeImage.h"
++#endif
+ #include "CoordinatedPlatformLayerBufferSkiaDeferredImage.h"
+ #include "FontRenderOptions.h"
+ #include "GLContext.h"
+@@ -138,6 +142,23 @@ void ScrollerCoordinated::updateValues()
+         state.frameRect.width() * contentsScale, state.frameRect.height() * contentsScale));
+ 
+ #if USE(TEXTURE_MAPPER)
++#if PLATFORM(HAIKU)
++    auto surface = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(frameRect.width(), frameRect.height()));
++    if (!surface)
++        return;
++
++    surface->getCanvas()->clear(SK_ColorTRANSPARENT);
++    {
++        GraphicsContextSkia context(*surface->getCanvas(), RenderingMode::Unaccelerated, RenderingPurpose::DOM);
++        context.scale(contentsScale);
++        scrollerImp->paint(context, state.frameRect, state);
++    }
++
++    auto image = NativeImage::create(surface->makeImageSnapshot());
++    if (!image)
++        return;
++    auto buffer = CoordinatedPlatformLayerBufferNativeImage::create(image.releaseNonNull(), nullptr);
++#else
+     auto& display = PlatformDisplay::sharedDisplay();
+     auto* glContext = display.skiaGLContext();
+     if (!glContext)
+@@ -164,6 +185,7 @@ void ScrollerCoordinated::updateValues()
+ 
+     grContext->flushAndSubmit(surface.get(), GLFence::isSupported(display.glDisplay()) ? GrSyncCpu::kNo : GrSyncCpu::kYes);
+     auto buffer = CoordinatedPlatformLayerBufferRGB::create(WTF::move(texture), { TextureMapperFlags::ShouldBlend }, GLFence::create(display.glDisplay()));
++#endif
+ #else
+     const auto& threadSafeGrContext = hostLayer->threadSafeGrContext();
+     if (!threadSafeGrContext)
 diff --git a/Source/WebCore/platform/CookieChange.h b/Source/WebCore/platform/CookieChange.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..a20566ed620a8f242de49978ae98d3ae48b110e0
