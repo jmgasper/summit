@@ -14180,11 +14180,54 @@ index 59d4ba8107c53467362b653542b1418471ff124d..e0ae60cb332cdbd2dd452f915d23e715
              m_canvas.drawOval(oval, paint);
          else
              m_canvas.drawArc(oval, startDegrees, sweepDegrees, false, paint);
+diff --git a/Source/WebCore/platform/graphics/skia/PlatformDisplaySkia.cpp b/Source/WebCore/platform/graphics/skia/PlatformDisplaySkia.cpp
+index 6b3cac20c6de4a7b817689de34c807020235850e..f5e992b32ba9dc919975dcd08b86e74d672a3477 100644
+--- a/Source/WebCore/platform/graphics/skia/PlatformDisplaySkia.cpp
++++ b/Source/WebCore/platform/graphics/skia/PlatformDisplaySkia.cpp
+@@ -29,6 +29,7 @@
+ #if USE(SKIA)
+ #include "FontRenderOptions.h"
+ #include "GLContext.h"
++#include <cstdlib>
+ 
+ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
+ #include <skia/core/SkColorSpace.h>
+@@ -360,7 +361,15 @@ private:
+ 
+ GLContext* PlatformDisplay::skiaGLContext()
+ {
+-#if PLATFORM(GTK) || PLATFORM(WPE) || (PLATFORM(PLAYSTATION) && !USE(COORDINATED_GRAPHICS))
++#if PLATFORM(HAIKU)
++    static bool summitSkiaGLContextEnabled = [] {
++        const char* value = std::getenv("SUMMIT_SKIA_GL_CONTEXT");
++        return value && value[0] == '1' && !value[1];
++    }();
++    if (!summitSkiaGLContextEnabled)
++        return nullptr;
++#endif
++#if PLATFORM(GTK) || PLATFORM(WPE) || PLATFORM(HAIKU) || (PLATFORM(PLAYSTATION) && !USE(COORDINATED_GRAPHICS))
+     if (!s_skiaGLContext) {
+         s_skiaGLContext = SkiaGLContext::create(*this);
+         m_skiaGLContexts.add(*s_skiaGLContext);
 diff --git a/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp b/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp
-index 30343ff03299542f8673d98b486c7fdd78bddeb9..acc620650ea4ee0cb807a1b49194a9495ef0e4f2 100644
+index 30343ff03299542f8673d98b486c7fdd78bddeb9..95d192b9fadc9f7fca017d53ad82885cd03bdbfc 100644
 --- a/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp
 +++ b/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp
-@@ -310,7 +310,15 @@ unsigned SkiaPaintingEngine::numberOfCPUPaintingThreads()
+@@ -67,7 +67,13 @@ WTF_MAKE_TZONE_ALLOCATED_IMPL(SkiaPaintingEngine);
+ 
+ static bool canPerformAcceleratedRendering()
+ {
++#if PLATFORM(HAIKU)
++    // The Haiku GL context is currently used for Canvas only. GPU tile
++    // painting through Zink has been slower than the CPU painting path.
++    return false;
++#else
+     return ProcessCapabilities::canUseAcceleratedBuffers() && PlatformDisplay::sharedDisplay().skiaGLContext();
++#endif
+ }
+ 
+ SkiaPaintingEngine::SkiaPaintingEngine(sk_sp<GrContextThreadSafeProxy>&& threadSafeGrContext)
+@@ -310,7 +316,15 @@ unsigned SkiaPaintingEngine::numberOfCPUPaintingThreads()
      static unsigned numberOfThreads = 0;
  
      std::call_once(onceFlag, [] {
@@ -14201,7 +14244,7 @@ index 30343ff03299542f8673d98b486c7fdd78bddeb9..acc620650ea4ee0cb807a1b49194a949
          if (const char* envString = getenv("WEBKIT_SKIA_CPU_PAINTING_THREADS")) {
              auto newValue = parseInteger<unsigned>(StringView::fromLatin1(envString));
 diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreProxy.cpp b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreProxy.cpp
-index 30f54801b8aa9b9bc83af8a929f8bdc04a2ee4d1..b52aa423556a3b7d1ed6d274637ac826c687fdbd 100644
+index 30f54801b8aa9b9bc83af8a929f8bdc04a2ee4d1..f68564b5f1c8b97ee543257ede6c0f4050ae2dd0 100644
 --- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreProxy.cpp
 +++ b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreProxy.cpp
 @@ -33,6 +33,10 @@
@@ -14236,6 +14279,24 @@ index 30f54801b8aa9b9bc83af8a929f8bdc04a2ee4d1..b52aa423556a3b7d1ed6d274637ac826
      // Update the dirty tiles.
      IntRect tileDirtyRectUnion;
      unsigned dirtyTilesCount = 0;
+@@ -407,11 +425,14 @@ IntSize CoordinatedBackingStoreProxy::computeTileSize(const IntSize& viewportSiz
+         return overridenTileSize;
+ 
+     IntSize tileSize;
+-#if USE(SKIA)
+-    if (ProcessCapabilities::canUseAcceleratedBuffers() && PlatformDisplay::sharedDisplay().skiaGLContext()) {
++#if PLATFORM(HAIKU) && USE(SKIA)
++    const bool canUseAcceleratedTiles = false;
++#elif USE(SKIA)
++    const bool canUseAcceleratedTiles = ProcessCapabilities::canUseAcceleratedBuffers() && PlatformDisplay::sharedDisplay().skiaGLContext();
+ #else
+-    if (ProcessCapabilities::canUseAcceleratedBuffers()) {
++    const bool canUseAcceleratedTiles = ProcessCapabilities::canUseAcceleratedBuffers();
+ #endif
++    if (canUseAcceleratedTiles) {
+         static constexpr int minGPUTileHeight = 256;
+ 
+         auto gpuTileSize = [&](const IntSize& baseSize) -> IntSize {
 diff --git a/Source/WebCore/platform/graphics/transforms/AffineTransform.h b/Source/WebCore/platform/graphics/transforms/AffineTransform.h
 index 3ae8339850008d049df5f38d9d53a1c776827c67..d901f787833f48b776c9c77e78f914df8496f8fd 100644
 --- a/Source/WebCore/platform/graphics/transforms/AffineTransform.h

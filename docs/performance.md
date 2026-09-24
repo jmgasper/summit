@@ -3552,3 +3552,33 @@ collection. The result points at actual Skia oval rasterization and the
 JavaScript work around drawing, rather than further canvas-damage coalescing
 (`.vm/bench/speedometer-20260924-182602-chartjs-fill-native/` and
 `.vm/bench/speedometer-20260924-183308-chartjs-oval-native/`).
+
+### Opt-in Skia GL Canvas on Haiku
+
+`SUMMIT_SKIA_GL_CONTEXT=1` now permits a Skia GL context on Haiku for Canvas.
+The default remains CPU Canvas. Tile painting and tile sizing remain on the
+CPU path even when the switch is set: the earlier all-GL tile experiment
+produced Mesa Zink image-creation errors and did not improve scrolling.
+The same bundle (`bundle-zk7kro3v`) was tested at a 1280×887 viewport with
+ten standard Speedometer 3.1 iterations and no competing CPU load. With the
+switch off it scored 6.730 ± 0.302; with the switch on it scored 7.178 ±
+0.346. Chart.js fell from 277.9 to 150.3 ms per iteration and Perf Dashboard
+from 296.1 to 205.3 ms. A Canvas probe with the switch on rendered 5,000
+circles correctly and measured roughly 3 ms per fill batch, versus about
+27.6 ms in the prior instrumented CPU trace. The full score remains below
+the matched Firefox result of 8.338 ± 0.374
+(`.vm/bench/speedometer-20260924-185726-skia-gl-canvas-cpu-tiles-control/`,
+`.vm/bench/speedometer-20260924-185330-skia-gl-canvas-cpu-tiles-full/`, and
+`.vm/bench/probe-20260924-184600-summit-skia-gl-canvas-paths/`).
+
+On the 400-card scroll fixture at the same viewport, GL Canvas ran at
+57.85 fps versus 59.02 fps with the switch off; neither run had a frame over
+33 ms. The GL run still logged two `ZINK: vkCreateImage failed` messages.
+For that reason the switch stays opt-in and is not in the workstation launcher.
+The standalone Guardian clip visibly played with the switch on and off and
+completed a loop without a media error. Its Web video-quality counters were
+zero in both modes, so that probe cannot establish presentation frame rate
+(`.vm/bench/probe-20260924-185540-summit-skia-gl-canvas-cpu-tiles-scroll/`,
+`.vm/bench/probe-20260924-185637-summit-skia-gl-canvas-cpu-tiles-scroll-control/`,
+`.vm/bench/probe-20260924-185938-summit-skia-gl-guardian-loop/`, and
+`.vm/bench/probe-20260924-190056-summit-skia-gl-guardian-loop-control/`).
