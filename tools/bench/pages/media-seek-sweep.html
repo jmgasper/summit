@@ -1,0 +1,49 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Summit repeated media seek probe</title>
+<video id="video" muted playsinline controls style="width:640px"></video>
+<pre id="status">Loading media…</pre>
+<script>
+const sources = {
+    reddit: "https://v.redd.it/u5pu7ad5rcdh1/HLSPlaylist.m3u8",
+    guardian: "https://uploads.guim.co.uk/2026/09/23/US_delegation_walks_out_during_Iranian_president_s_UNGA_speech--2e6a54b2-a951-428a-81c9-44a74385f0f8-1.0_480w_q8.mp4",
+};
+const source = new URLSearchParams(location.search).get("source") || "reddit";
+const video = document.getElementById("video");
+const status = document.getElementById("status");
+const started = performance.now();
+const events = [];
+const record = (name, extra = {}) => {
+    events.push({name, atMs: Math.round(performance.now() - started),
+        time: video.currentTime, seeking: video.seeking, paused: video.paused, ...extra});
+    status.textContent = JSON.stringify(events.slice(-12), null, 2);
+};
+for (const name of ["loadedmetadata", "playing", "seeking", "seeked", "waiting", "stalled", "error"])
+    video.addEventListener(name, () => record(name));
+video.addEventListener("loadedmetadata", async () => {
+    try { await video.play(); }
+    catch (error) { record("play-rejected", {message: String(error)}); }
+    // A custom progress bar commonly sets currentTime repeatedly during a drag.
+    // Include backward motion and calls before the previous seek has settled.
+    const positions = [0.15, 0.55, 0.85, 0.35, 0.7];
+    positions.forEach((fraction, index) => setTimeout(() => {
+        const target = video.duration * fraction;
+        const before = performance.now();
+        try {
+            video.currentTime = target;
+            record("set-currentTime", {target, setterMs: performance.now() - before});
+        } catch (error) {
+            record("set-error", {target, message: String(error)});
+        }
+    }, 500 + index * 120));
+}, {once: true});
+setTimeout(async () => {
+    record("final");
+    await fetch("/__bench/probe", {method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({source, src: video.currentSrc, duration: video.duration, events,
+            error: video.error && {code: video.error.code, message: video.error.message}})});
+    document.title = "Summit repeated media seek probe: done";
+}, 7000);
+if (sources[source]) video.src = sources[source];
+else record("invalid-source", {source});
+</script>
