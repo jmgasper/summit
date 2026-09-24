@@ -3869,7 +3869,10 @@ output path. The compiler reports `single` as its default profile-counter
 update mode, so the browser build explicitly uses `-fprofile-update=atomic`
 for its multiple threads. The initial non-atomic build was stopped before
 profiling, and the isolated `SkiaCGMiPGO` build is being rebuilt with that
-flag. It will collect a profile
-from Speedometer 3.1, then rebuild from that profile without changing the
-installed launcher. A matching full benchmark and scroll probe will decide
-whether this compiler path helps; the earlier Zen 1 target alone did not.
+flag. Training will include Speedometer 3.1 and the 400-card scroll fixture.
+The optimized pass will use `-fprofile-partial-training`, which tells
+[GCC 13.3](https://gcc.gnu.org/onlinedocs/gcc-13.3.0/gcc.pdf) to optimize
+untrained functions normally instead of favoring size. This matters because
+two workloads cannot cover every browser path. The installed launcher stays
+unchanged until a matching full benchmark and scroll probe show a gain; the
+earlier Zen 1 target alone did not.
