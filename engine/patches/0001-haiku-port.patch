@@ -10837,10 +10837,10 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..eb6f05f15aae13bc558ba13244df9ce0b9811455
+index 0000000000000000000000000000000000000000..53f8db2e3f4691cbfabf33ed1d671fead27e35b8
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,1239 @@
+@@ -0,0 +1,1259 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -11283,12 +11283,11 @@ index 0000000000000000000000000000000000000000..eb6f05f15aae13bc558ba13244df9ce0
 +                bigtime_t decodeStartedAt = mediaFrameTraceEnabled() ? system_time() : 0;
 +                status_t decodeStatus = player->m_videoTrack->ReadFrames(player->m_frameBuffer->Bits(), &count);
 +                if (decodeStatus == B_OK) {
-+                    unsigned traceSequence = 0;
-+                    bigtime_t decodedAt = 0;
 +                    if (mediaFrameTraceEnabled()) {
-+                        decodedAt = system_time();
-+                        traceSequence = ++player->m_frameTraceSequence;
++                        bigtime_t decodedAt = system_time();
 +                        player->m_lastFrameTraceDecodedAt = decodedAt;
++                        player->m_lastFrameTraceDecodeDuration = decodedAt - decodeStartedAt;
++                        ++player->m_frameTraceSequence;
 +                    }
 +                    if (tracePlayback) {
 +                        ++decodedFrames;
@@ -11299,15 +11298,8 @@ index 0000000000000000000000000000000000000000..eb6f05f15aae13bc558ba13244df9ce0
 +                                player, decodedFrames, player->m_currentTime.load(), player->m_duration.load());
 +                        }
 +                    }
-+                    callOnMainThread([player = WeakPtr(player), traceSequence, decodedAt, decodeStartedAt] {
-+                        if (player) {
-+                            if (traceSequence)
-+                                std::fprintf(stderr, "Summit media frame: player=%p seq=%u decode=%.1f queue=%.1f media=%.3f\n",
-+                                    player.get(), traceSequence, (decodedAt - decodeStartedAt) / 1000.0,
-+                                    (system_time() - decodedAt) / 1000.0, player->m_currentTime.load());
-+                            player->m_player.repaint();
-+                        }
-+                    });
++                    ++player->m_videoFrameGeneration;
++                    player->queueVideoFrameRepaint();
 +                } else {
 +                    if (tracePlayback)
 +                        std::fprintf(stderr, "Summit media playback: player=%p videoEnd status=%ld frames=%u time=%.2f duration=%.2f\n",
@@ -11336,6 +11328,34 @@ index 0000000000000000000000000000000000000000..eb6f05f15aae13bc558ba13244df9ce0
 +    }
 +
 +    return B_OK;
++}
++
++void MediaPlayerPrivate::queueVideoFrameRepaint()
++{
++    // The decoder can keep advancing while page script blocks the main thread.
++    // Only the newest frame is in m_frameBuffer, so older queued repaint calls
++    // cannot display their original frames and just delay the current one.
++    if (m_videoRepaintQueued.exchange(true))
++        return;
++
++    callOnMainThread([player = WeakPtr(this)] {
++        if (!player)
++            return;
++        unsigned generation = player->m_videoFrameGeneration;
++        if (mediaFrameTraceEnabled()) {
++            unsigned sequence = player->m_frameTraceSequence;
++            bigtime_t decodedAt = player->m_lastFrameTraceDecodedAt;
++            std::fprintf(stderr, "Summit media frame: player=%p seq=%u decode=%.1f queue=%.1f media=%.3f\n",
++                player.get(), sequence, player->m_lastFrameTraceDecodeDuration.load() / 1000.0,
++                (system_time() - decodedAt) / 1000.0, player->m_currentTime.load());
++        }
++        player->m_player.repaint();
++        player->m_videoRepaintQueued = false;
++        // A decode that arrived during repaint needs its own invalidation.
++        // Decodes after this check see the cleared flag and enqueue it.
++        if (player->m_videoFrameGeneration != generation)
++            player->queueVideoFrameRepaint();
++    });
 +}
 +
 +
@@ -12082,10 +12102,10 @@ index 0000000000000000000000000000000000000000..eb6f05f15aae13bc558ba13244df9ce0
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..577cf3a1f6566cdc4d5f3178b216efd6f0347176
+index 0000000000000000000000000000000000000000..6a5574433213e5526b1a08e6f22b03f1387793d1
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
-@@ -0,0 +1,169 @@
+@@ -0,0 +1,173 @@
 +/*
 + * Copyright (C) 2014 Haiku, Inc.
 + *
@@ -12194,6 +12214,7 @@ index 0000000000000000000000000000000000000000..577cf3a1f6566cdc4d5f3178b216efd6
 +        void IdentifyTracks(const String& url);
 +        static status_t loadingThread(void* cookie);
 +        static status_t videoThread(void* cookie);
++        void queueVideoFrameRepaint();
 +
 +
 +        static void playCallback(void*, void*, size_t,
@@ -12226,6 +12247,9 @@ index 0000000000000000000000000000000000000000..577cf3a1f6566cdc4d5f3178b216efd6
 +        std::atomic<unsigned> m_frameTraceSequence { 0 };
 +        std::atomic<unsigned> m_lastFrameTracePaintedSequence { 0 };
 +        std::atomic<bigtime_t> m_lastFrameTraceDecodedAt { 0 };
++        std::atomic<bigtime_t> m_lastFrameTraceDecodeDuration { 0 };
++        std::atomic<unsigned> m_videoFrameGeneration { 0 };
++        std::atomic<bool> m_videoRepaintQueued { false };
 +#if USE(CURL)
 +        BLocker m_downloadLock;
 +        void* m_activeDownload { nullptr };
