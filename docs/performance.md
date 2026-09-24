@@ -3736,3 +3736,15 @@ trial was removed and the workstation engine restored to the committed
 CPU-tile path. The installed desktop launcher was unchanged
 (`.vm/bench/speedometer-20260924-203129-gpu-tiles-raster-full/` and
 `.vm/bench/speedometer-20260924-203438-gpu-tiles-one-worker-full/`).
+
+### Zen 1 compiler target trial
+
+The workstation's Threadripper 1950X has 16 Zen 1 cores and 32 hardware
+threads. The installed engine uses release `-O3` without a CPU-specific
+target. An isolated `SkiaCGMiZen1` engine build is in progress with
+`-march=znver1` and the same Skia, coordinated graphics, asynchronous
+scrolling, and mimalloc options as the installed engine. The build uses its
+own directory and does not change the installed launcher. Once packaged, it
+will be measured with the same 1280×887, ten-iteration Speedometer run and
+the 600-frame scroll probe before considering installation. The build log is
+`.vm/zen1-engine-build.log`.
