@@ -2,27 +2,27 @@
 
 ## Current coordinated Skia result (September 24, 2026)
 
-The workstation's current coordinated graphics build uses Skia CPU tile
-painting with two workers, mimalloc, asynchronous scrolling, display-rate
-composition pacing, guarded reuse of exact text widths, and preserved font
-registrations for simple CSS rule insertions. It completes all 580 steps of
-Speedometer 3.1. The latest matched-viewport ten-iteration run is
-`.vm/bench/speedometer-20260924-164011-batched-css-insert-mimalloc-1280x887/`.
+The workstation launcher uses `bundle-s8a06mrs`: Skia CPU tile painting with
+two workers, GL Canvas, raster coordinated scrollbars, mimalloc, asynchronous
+scrolling, display-rate composition pacing, guarded reuse of exact text
+widths, and preserved font registrations for simple CSS rule insertions. It
+completes all 580 steps of Speedometer 3.1. The latest matched-viewport
+ten-iteration run is
+`.vm/bench/speedometer-20260924-201118-cpu-scrollbar-gl-full/`.
 
 | Browser | Content viewport | Speedometer 3.1, 10 iterations |
 | --- | ---: | ---: |
-| Summit, current batched CSS and mimalloc build | 1280×887 | **6.896 ± 0.293** |
-| Summit, earlier mimalloc control, same session | 1280×887 | **6.938 ± 0.292** |
-| Summit, earlier matched run | 1280×887 | **6.923 ± 0.333** |
+| Summit, current CPU tiles and GL Canvas | 1280×887 | **7.288 ± 0.359** |
+| Summit, earlier CPU-tile build with GL Canvas off | 1280×887 | **6.730 ± 0.302** |
+| Summit, earlier batched CSS and mimalloc build | 1280×887 | **6.896 ± 0.293** |
 | Firefox 155 on the same workstation | 1280×887 | **8.338 ± 0.374** |
 
 These Summit runs were uncontended. The current same-size gap to Firefox is
-1.21x by score. The batched build recovered the older mimalloc score range.
-In the older 6.923 run, TipTap took 148.2 ms versus Firefox's 124.8 ms, while
-Chart.js took 264.1 ms versus Firefox's 189.1 ms. Mimalloc accounts for about a 21% gain
-over the matched system-allocator runs described below. Older score
-comparisons in this log used different viewport sizes and should be treated
-as directional. `tools/bench/compare-runs.py` now flags that mismatch.
+1.14x by score. GL Canvas makes Chart.js and Perf Dashboard faster than
+Firefox in this run; the largest remaining gaps are Observable Plot, Preact,
+CodeMirror, TipTap, and other DOM-heavy suites. Older score comparisons in
+this log used different viewport sizes and should be treated as directional.
+`tools/bench/compare-runs.py` flags that mismatch.
 `tools/bench/compare-runs.py` gives the per-suite synchronous and asynchronous
 split from the saved results.
 
@@ -30,12 +30,13 @@ The workstation reports 32 logical processors (16 physical cores) through
 both Haiku's system information and `sysconf`. WebKit's JSC and garbage
 collector discover that count independently. Summit caps Skia CPU tile
 painting at two workers on Haiku because the controlled sweep below found no
-Speedometer gain from four and a large regression from eight. The current
-400-card scrolling probe ran at 58.83 fps over 600 frames, with p95 18 ms,
-p99 23 ms, a 31 ms maximum, and no frame above 33 ms
-(`.vm/bench/probe-20260923-041115-summit-default-paced-scroll/`). Live Reddit
-scrolls still show occasional 650–790 ms gaps, now attributed to page update,
-layout, or script work rather than the native view queue or wheel routing.
+Speedometer gain from four and a large regression from eight. With GL Canvas
+on, the current 400-card scrolling probe ran at 58.94 fps over 600 frames,
+with p95 18 ms, p99 23 ms, a 24 ms maximum, and no frame above 33 ms
+(`.vm/bench/probe-20260924-201313-summit-cpu-scrollbar-gl-scroll/`). Earlier
+live Reddit scrolls showed occasional 650–790 ms gaps attributed to page
+update, layout, or script work; subsequent live Reddit attempts sometimes
+received a JavaScript challenge instead of the feed.
 
 ## Scrolling (September 21, 2026)
 
