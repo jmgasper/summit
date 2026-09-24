@@ -583,6 +583,9 @@ void BrowserWindow::SimulateScroll(const BMessage& message, BMessage& reply)
     fScrollBurstSent = 0;
     fScrollBurstDuration = 0;
     fScrollBurstStatus = B_OK;
+#if SUMMIT_MODERN_WEBKIT
+    fScrollBurstCompletionFrameStatsAvailable = false;
+#endif
     resume_thread(thread);
     reply.AddInt32("count", count);
     reply.AddInt32("interval_ms", interval);
@@ -1745,6 +1748,8 @@ void BrowserWindow::MessageReceived(BMessage* message)
                 if (auto* statsView = dynamic_cast<FrameStatsWebKitView*>(tab->view))
                     statsView->AppendFrameStats(reply);
             }
+            if (fScrollBurstCompletionFrameStatsAvailable)
+                reply.AddMessage("at_scroll_completion", &fScrollBurstCompletionFrameStats);
 #endif
             message->SendReply(&reply);
             break;
@@ -1753,6 +1758,14 @@ void BrowserWindow::MessageReceived(BMessage* message)
             fScrollBurstSent = message->GetInt32("sent", 0);
             fScrollBurstStatus = message->GetInt32("status", B_ERROR);
             fScrollBurstDuration = message->GetInt64("duration_us", 0);
+#if SUMMIT_MODERN_WEBKIT
+            if (tab) {
+                if (auto* statsView = dynamic_cast<FrameStatsWebKitView*>(tab->view)) {
+                    fScrollBurstCompletionFrameStats.MakeEmpty();
+                    fScrollBurstCompletionFrameStatsAvailable = statsView->AppendFrameStats(fScrollBurstCompletionFrameStats);
+                }
+            }
+#endif
             fScrollBurstActive = false;
             break;
         case kBrowserState: {

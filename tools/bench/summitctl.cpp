@@ -68,6 +68,20 @@ static const char* String(const BMessage& message, const char* name)
     return value;
 }
 
+static void PrintFrameStatsFields(const BMessage& stats)
+{
+    int64 firstFrameDelay = 0;
+    int64 longestInterframeGap = 0;
+    const bool splitGapAvailable = stats.FindInt64("first_frame_delay_us", &firstFrameDelay) == B_OK
+        && stats.FindInt64("longest_interframe_gap_us", &longestInterframeGap) == B_OK;
+    std::printf("\"elapsedMicros\":%lld,\"frames\":%ld,\"longestGapMicros\":%lld,\"splitGapAvailable\":%s,\"firstFrameDelayMicros\":%lld,\"longestInterframeGapMicros\":%lld,\"longGaps\":%ld,\"pendingGapMicros\":%lld,\"queueMaxMicros\":%lld,\"queueOver33\":%ld",
+        static_cast<long long>(stats.GetInt64("elapsed_us", 0)), long(stats.GetInt32("frames", 0)),
+        static_cast<long long>(stats.GetInt64("longest_gap_us", 0)), splitGapAvailable ? "true" : "false",
+        static_cast<long long>(firstFrameDelay), static_cast<long long>(longestInterframeGap),
+        long(stats.GetInt32("long_gaps", 0)), static_cast<long long>(stats.GetInt64("pending_gap_us", 0)),
+        static_cast<long long>(stats.GetInt64("queue_max_us", 0)), long(stats.GetInt32("queue_over_33", 0)));
+}
+
 static std::string AppImage(team_id team)
 {
     int32 cookie = 0; image_info image;
@@ -287,18 +301,15 @@ int main(int argc, char** argv)
         if (status != B_OK) { std::fprintf(stderr, "framestats: %s\n", std::strerror(status)); return 5; }
         int64 elapsed = -1;
         if (stats.FindInt64("elapsed_us", &elapsed) != B_OK) { std::fputs("frame stats unavailable\n", stderr); return 6; }
-        int64 firstFrameDelay = 0;
-        int64 longestInterframeGap = 0;
-        const bool splitGapAvailable = stats.FindInt64("first_frame_delay_us", &firstFrameDelay) == B_OK
-            && stats.FindInt64("longest_interframe_gap_us", &longestInterframeGap) == B_OK;
-        std::printf("{\"elapsedMicros\":%lld,\"frames\":%ld,\"longestGapMicros\":%lld,\"splitGapAvailable\":%s,\"firstFrameDelayMicros\":%lld,\"longestInterframeGapMicros\":%lld,\"longGaps\":%ld,\"pendingGapMicros\":%lld,\"queueMaxMicros\":%lld,\"queueOver33\":%ld}\n",
-            static_cast<long long>(elapsed), long(stats.GetInt32("frames", 0)),
-            static_cast<long long>(stats.GetInt64("longest_gap_us", 0)),
-            splitGapAvailable ? "true" : "false",
-            static_cast<long long>(firstFrameDelay), static_cast<long long>(longestInterframeGap),
-            long(stats.GetInt32("long_gaps", 0)),
-            static_cast<long long>(stats.GetInt64("pending_gap_us", 0)),
-            static_cast<long long>(stats.GetInt64("queue_max_us", 0)), long(stats.GetInt32("queue_over_33", 0)));
+        std::printf("{");
+        PrintFrameStatsFields(stats);
+        BMessage atCompletion;
+        if (stats.FindMessage("at_scroll_completion", &atCompletion) == B_OK) {
+            std::printf(",\"atScrollCompletion\":{");
+            PrintFrameStatsFields(atCompletion);
+            std::printf("}");
+        }
+        std::puts("}");
         return 0;
     }
     uint32 what = 0;

@@ -138,23 +138,31 @@ def main():
             code, out, err = guest.ctl(ctl, team, 'framestats', timeout_ms=1000)
             if code:
                 raise RuntimeError(err or out)
-            active_snapshot = json.loads(out)
+            polled_snapshot = json.loads(out)
+            # Newer Summit bundles save this snapshot in the UI thread when
+            # the last synthetic notch finishes. The later SSH poll can
+            # otherwise count a quiet animation-tail frame as an active gap.
+            active_snapshot = polled_snapshot.pop('atScrollCompletion', None) or polled_snapshot
             time.sleep(args.tail)
             code, out, err = guest.ctl(ctl, team, 'framestats', timeout_ms=1000)
             if code:
                 raise RuntimeError(err or out)
             tail_snapshot = json.loads(out)
+            tail_snapshot.pop('atScrollCompletion', None)
             guest.fetch_file(remote_log, directory / 'browser.log')
             log = (directory / 'browser.log').read_bytes()
             burst_log = log[log_offset:]
             (directory / f'burst-{index + 1}.log').write_bytes(burst_log)
             log_offset = len(log)
             record = {'index': index + 1, 'delta': delta, 'delivery': delivery,
+                      'activeSnapshotSource': 'scroll-completion' if active_snapshot is not polled_snapshot else 'poll',
                       'active': frame_summary(active_snapshot),
                       'animationTail': frame_summary(tail_snapshot),
                       'activeFrameSnapshot': active_snapshot,
                       'animationTailFrameSnapshot': tail_snapshot,
                       'logBytes': len(burst_log)}
+            if active_snapshot is not polled_snapshot:
+                record['pollAfterCompletionFrameSnapshot'] = polled_snapshot
             run['bursts'].append(record)
             save()
             print(json.dumps(record), flush=True)

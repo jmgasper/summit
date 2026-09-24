@@ -161,6 +161,10 @@ private:
     int32 fScrollBurstSent = 0;
     bigtime_t fScrollBurstDuration = 0;
     status_t fScrollBurstStatus = B_OK;
+#if SUMMIT_MODERN_WEBKIT
+    BMessage fScrollBurstCompletionFrameStats;
+    bool fScrollBurstCompletionFrameStatsAvailable = false;
+#endif
     static status_t RunScrollBurst(void* burst);
     void SelectTab(int64 id, bool forClose = false);
     void CloseTab(int64 id);
