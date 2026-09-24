@@ -58,7 +58,7 @@ FIXED_INLINE_LAYOUT_LINE = re.compile(
     r'dirtyOutOfFlowMovement=(?P<dirtyOutOfFlowMovement>\d+) '
     r'block=(?P<blockLevel>\d+) replaced=(?P<replaced>\d+) relative=(?P<relativeDimensions>\d+) '
     r'nonFixed=(?P<nonFixedWidth>\d+) percentPadding=(?P<percentagePadding>\d+)')
-PAGE_UPDATE_LINE = re.compile(r'Summit page update: page=\S+ (?P<metrics>(?:[A-Za-z]+=[\d.]+ ?)+)')
+PAGE_UPDATE_LINE = re.compile(r'Summit page update: (?:wall=[\d.]+ )?page=\S+ (?P<metrics>(?:[A-Za-z]+=[\d.]+ ?)+)')
 PAGE_UPDATE_METRIC = re.compile(r'(?P<name>[A-Za-z]+)=(?P<value>[\d.]+)')
 SCROLL_STEPS_LINE = re.compile(r'Summit scroll steps: document=\S+ (?P<metrics>(?:[A-Za-z]+=[\d.]+ ?)+)')
 LAYOUT_PHASE_LINE = re.compile(r'Summit layout phases: context=\S+ (?P<metrics>(?:[A-Za-z]+=[\d.]+ ?)+)')
