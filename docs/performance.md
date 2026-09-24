@@ -3441,3 +3441,13 @@ over 40 ms in all 600 frames and no long layout phase. The Reddit HLS fixture
 still sought to 8 seconds, emitted `seeked`, and finished at 12.7 seconds
 without a media error (`.vm/bench/scroll-20260924-164212-guardian-batched-css-mimalloc/`
 and `.vm/bench/probe-20260924-164401-summit-reddit-hls-seek-batched-css/`).
+
+On the 400-card scrolling fixture, the final bundle produced 58.88 fps with
+an 18 ms 95th percentile frame interval and no interval over 33 ms. An older
+mimalloc bundle in the same session produced 58.82 fps, also with no interval
+over 33 ms. A live `/r/popular/` 80-notch pass delivered all 80 scroll events,
+but Reddit returned a JavaScript challenge URL instead of the feed, so that
+pass cannot verify live Reddit smoothness
+(`.vm/bench/probe-20260924-164813-summit-scroll-batched-css-mimalloc/`,
+`.vm/bench/probe-20260924-164904-summit-scroll-mimalloc-control/`, and
+`.vm/bench/scroll-20260924-164723-reddit-batched-css-mimalloc/`).
