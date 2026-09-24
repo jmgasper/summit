@@ -10468,10 +10468,10 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..9bfcb1b09255ef1e962f23cac10fa78e99723ae5
+index 0000000000000000000000000000000000000000..3a009356b123790eef2ba5ca9065238336089a48
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,1150 @@
+@@ -0,0 +1,1165 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -10962,29 +10962,44 @@ index 0000000000000000000000000000000000000000..9bfcb1b09255ef1e962f23cac10fa78e
 +        m_mediaLock.Unlock();
 +        return MediaTimePromise::createAndReject(PlatformMediaError::NotReady);
 +    }
-+    bigtime_t newTime = (bigtime_t)(time.time.toDouble() * 1000000);
++    bigtime_t requestedTime = (bigtime_t)(time.time.toDouble() * 1000000);
++    bigtime_t videoTime = requestedTime;
 +    status_t status = B_OK;
 +    if (m_videoTrack)
-+        status = m_videoTrack->SeekToTime(&newTime);
-+    if (m_audioTrack && status == B_OK)
-+        status = m_audioTrack->SeekToTime(&newTime);
++        status = m_videoTrack->SeekToTime(&videoTime);
++    if (m_audioTrack && status == B_OK) {
++        bigtime_t audioTime = requestedTime;
++        status = m_audioTrack->SeekToTime(&audioTime);
++    }
 +    if (status != B_OK) {
 +        m_mediaLock.Unlock();
 +        return MediaTimePromise::createAndReject(PlatformMediaError::NotSupportedError);
 +    }
 +
-+    m_currentTime = newTime / 1000000.f;
-+    m_ended = false;
-+
-+    if (m_paused && m_videoTrack && m_frameBuffer) {
-+        int64 count = 1;
-+        if (m_videoTrack->ReadFrames(m_frameBuffer->Bits(), &count) == B_OK) {
++    // Media Kit seeks video to an earlier keyframe. Decode up to the requested
++    // position so neither the paused frame nor the playback clock jumps back.
++    unsigned prerollFrames = 0;
++    if (m_videoTrack && m_frameBuffer) {
++        do {
++            int64 count = 1;
++            if (m_videoTrack->ReadFrames(m_frameBuffer->Bits(), &count) != B_OK)
++                break;
++            ++prerollFrames;
++        } while (m_videoTrack->CurrentTime() < requestedTime && prerollFrames < 300);
++        if (prerollFrames) {
 +            callOnMainThread([p = WeakPtr(this)] {
 +                if (p)
 +                    p->m_player.repaint();
 +            });
 +        }
 +    }
++
++    m_currentTime = requestedTime / 1000000.f;
++    m_ended = false;
++    if (mediaPlaybackTraceEnabled())
++        std::fprintf(stderr, "Summit media seek: player=%p requested=%.3f keyframe=%.3f decoded=%u position=%.3f\n",
++            this, requestedTime / 1000000.0, videoTime / 1000000.0,
++            prerollFrames, m_videoTrack ? m_videoTrack->CurrentTime() / 1000000.0 : 0.0);
 +    auto position = currentTime();
 +    m_mediaLock.Unlock();
 +    m_player.timeChanged();
