@@ -3635,3 +3635,29 @@ committed digest
 `.vm/bench/speedometer-20260924-193005-codemirror-style-cache/`,
 `.vm/bench/speedometer-20260924-193110-observable-style-cache/`, and
 `.vm/bench/speedometer-20260924-193712-preact-style-cache-timing/`).
+
+### Accelerated Canvas cutoff and Guardian Zink errors
+
+A temporary setting varied the minimum accelerated 2D Canvas area while
+keeping the same GL-enabled bundle, viewport (1280×887), and ten focused
+Speedometer 3.1 iterations. Chart.js / Perf Dashboard mean times were
+148.3 / 203.3 ms at the WebKit default of 16,512 pixels, 152.1 / 195.6 ms
+at 65,536 pixels, and 155.7 / 289.0 ms at 262,144 pixels. The high cutoff
+removed most of the Dashboard GPU benefit; the middle cutoff retained it
+(`.vm/bench/speedometer-20260924-194857-canvas-area-default/`,
+`.vm/bench/speedometer-20260924-194950-canvas-area-65536/`, and
+`.vm/bench/speedometer-20260924-195047-canvas-area-262144/`).
+
+On the reported Guardian article, GL-enabled runs at 65,536, 262,144, and
+1,000,000,000 pixels each logged two
+`ZINK: vkCreateImage failed (VK_ERROR_UNKNOWN)` errors. A temporary stack
+trace at Skia GL-context creation, with the one-billion-pixel cutoff, located
+both first requests in `ScrollerCoordinated::updateValues()`, reached while
+WebKit finalized rendering. Thus reducing accelerated Canvas use does not
+address the observed Zink errors; coordinated scrollbar painting creates GL
+contexts even without an accelerated Canvas on that page. The cutoff and
+trace hooks were removed. GL Canvas remains opt-in pending a scrollbar/driver
+fix (`.vm/bench/scroll-20260924-195146-guardian-canvas-area-65536/`,
+`.vm/bench/scroll-20260924-195226-guardian-canvas-area-262144/`,
+`.vm/bench/scroll-20260924-195341-guardian-canvas-area-high/`, and
+`.vm/bench/scroll-20260924-195802-guardian-gl-callsite/browser.log`).
