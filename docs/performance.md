@@ -4108,3 +4108,45 @@ seek event check when that player can be reproduced
 (`.vm/bench/speedometer-20260925-044733-smooth-scroll-full/`,
 `.vm/bench/probe-20260925-045020-summit-smooth-guardian-loop/`, and
 `.vm/bench/probe-20260925-045123-summit-smooth-reddit-seek/`).
+
+The profile-use engine was rebuilt with `ENABLE_SMOOTH_SCROLLING=ON`. GCC
+rejected the stale profile for the unified platform object containing
+`ScrollingEffectsController::handleWheelEvent`, because enabling the animator
+changes its branches. That single `.gcda` file was archived as
+`/boot/home/summit/tmp/SkiaCGMiPGO-stale-smooth-platform-9.gcda`; the rebuild
+then completed, retaining the other trained objects. The resulting separate
+bundle is `bundle-k7atp8la`, and a `jsc` smoke test returned 42. Full
+ten-iteration Speedometer 3.1 runs scored **8.338 ± 0.398** and
+**8.544 ± 0.434** at 1280×887. The point scores match or exceed the installed
+PGO build's **8.347 ± 0.506** and Firefox's **8.238 ± 0.368**, though the
+intervals overlap. The unprofiled smooth bundle's 7.153 score is not the
+installed result
+(`.vm/smooth-pgo-build.log`, `.vm/smooth-pgo-resume.log`,
+`.vm/bench/speedometer-20260925-060409-smooth-pgo-full/`, and
+`.vm/bench/speedometer-20260925-061105-smooth-pgo-full-repeat/`).
+
+On the fixed 400-card wheel test, the optimized smooth bundle delivered 132
+frames at 59.48 fps through the last frame, with a 24.6 ms worst completed
+gap and the same final card as the control. Two live Reddit 80-notch bursts
+delivered 129 frames each at 58.82 and 58.38 fps through the last frame,
+versus 85 frames at 42.66 fps in the matched installed-bundle run. The live
+smooth runs still had completed gaps of 41.2 and 52.6 ms; they do not prove
+fully steady 60 fps or address the long feed-boundary stalls. The 600-frame
+programmatic scroll fixture ran at 59.72 fps with no interval over 33 ms
+(`.vm/bench/scroll-20260925-060609-manual-fixed-smooth-pgo/`,
+`.vm/bench/scroll-20260925-060657-reddit-80-smooth-pgo/`,
+`.vm/bench/scroll-20260925-061307-reddit-80-smooth-pgo-repeat/`,
+`.vm/bench/probe-20260925-060806-summit-smooth-pgo-scroll-fixture/`).
+
+The Guardian clip looped with NVDEC H.264 and no media error. The Reddit HLS
+clip sought to 8 seconds, emitted `seeked`, played to 12.7 seconds, and ended
+with NVDEC and no media error. These controlled checks still do not reproduce
+the reported Adobe ad drag or establish the presentation cadence of the live
+Guardian article. The workstation desktop launcher now points to
+`bundle-k7atp8la`, keeps GL Canvas and the 16 ms scrolling refresh timer on,
+and can override either through its existing environment variables. Its
+previous version is saved as `Summit-current.pre-smooth-pgo-20260925.sh`.
+The Haiku port now defaults `ENABLE_SMOOTH_SCROLLING` to ON so subsequent
+builds retain the feature
+(`.vm/bench/probe-20260925-060857-summit-smooth-pgo-guardian-loop/` and
+`.vm/bench/probe-20260925-061012-summit-smooth-pgo-reddit-seek/`).
