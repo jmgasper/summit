@@ -82257,7 +82257,7 @@ index e6fbb8c1896bf99dc0f7322868052566b8629598..d84e2ecbc70d219a63eb074c1fd4b1c9
      UpdateGeometry(WebCore::IntSize size) -> ()
  #endif
 diff --git a/Source/WebKit/WebProcess/WebPage/EventDispatcher.cpp b/Source/WebKit/WebProcess/WebPage/EventDispatcher.cpp
-index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..b0cb4f4f2dbdf9f797f16d6003970a05ac2ff7b6 100644
+index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..3fb48952bed098373a83c8236fda5120aeddd739 100644
 --- a/Source/WebKit/WebProcess/WebPage/EventDispatcher.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/EventDispatcher.cpp
 @@ -36,15 +36,26 @@
@@ -82287,7 +82287,7 @@ index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..b0cb4f4f2dbdf9f797f16d6003970a05
  
  #if ENABLE(ASYNC_SCROLLING)
  #include <WebCore/AsyncScrollingCoordinator.h>
-@@ -65,6 +76,18 @@
+@@ -65,6 +76,22 @@
  namespace WebKit {
  using namespace WebCore;
  
@@ -82301,12 +82301,16 @@ index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..b0cb4f4f2dbdf9f797f16d6003970a05
 +    return enabled;
 +}
 +
++#if ENABLE(ASYNC_SCROLLING) && ENABLE(SCROLLING_THREAD)
++static Seconds haikuScrollRefreshInterval();
++#endif
++
 +#endif
 +
  EventDispatcher::EventDispatcher(WebProcess& process)
      : m_process(process)
      , m_queue(WorkQueue::create("com.apple.WebKit.EventDispatcher"_s, WorkQueue::QOS::UserInteractive))
-@@ -145,6 +168,10 @@ void EventDispatcher::internalWheelEvent(PageIdentifier pageID, const WebWheelEv
+@@ -145,6 +172,10 @@ void EventDispatcher::internalWheelEvent(PageIdentifier pageID, const WebWheelEv
          Locker locker { m_scrollingTreesLock };
          RefPtr scrollingTree = m_scrollingTrees.get(pageID);
          if (!scrollingTree) {
@@ -82317,7 +82321,7 @@ index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..b0cb4f4f2dbdf9f797f16d6003970a05
              dispatchWheelEventViaMainThread(pageID, wheelEvent, processingSteps, WTF::move(completionHandler));
              break;
          }
-@@ -166,6 +193,14 @@ void EventDispatcher::internalWheelEvent(PageIdentifier pageID, const WebWheelEv
+@@ -166,6 +197,14 @@ void EventDispatcher::internalWheelEvent(PageIdentifier pageID, const WebWheelEv
              useMainThreadForScrolling = false;
  #endif
  
@@ -82332,10 +82336,21 @@ index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..b0cb4f4f2dbdf9f797f16d6003970a05
          scrollingTree->willProcessWheelEvent();
  
          ScrollingThread::dispatch([scrollingTree, wheelEvent = Ref<const WebWheelEvent> { wheelEvent }, platformWheelEvent, processingSteps, useMainThreadForScrolling, pageID, this, protectedThis = Ref { *this }, completionHandler = WTF::move(completionHandler)] mutable {
-@@ -178,6 +213,14 @@ void EventDispatcher::internalWheelEvent(PageIdentifier pageID, const WebWheelEv
+@@ -178,6 +217,25 @@ void EventDispatcher::internalWheelEvent(PageIdentifier pageID, const WebWheelEv
  
              auto result = scrollingTree->handleWheelEvent(platformWheelEvent, processingSteps);
  
++#if PLATFORM(HAIKU)
++            // Only a wheel event that actually moves a scrolling tree needs
++            // display-refresh pulses. In particular, wheel events at the end
++            // of a finite feed must not keep requesting compositions.
++            if (result.wasHandled && haikuScrollRefreshInterval()) {
++                m_queue->dispatch([this, protectedThis = Ref { *this }] {
++                    scheduleHaikuScrollRefresh();
++                });
++            }
++#endif
++
 +#if PLATFORM(HAIKU)
 +            if (traceWheelRoute())
 +                std::fprintf(stderr, "Summit wheel result: handled=%d needsMain=%d sync=%d blockingDOM=%d\n",
@@ -82347,15 +82362,10 @@ index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..b0cb4f4f2dbdf9f797f16d6003970a05
              if (result.needsMainThreadProcessing()) {
                  if (result.steps.contains(WheelEventProcessingSteps::SynchronousScrolling)) {
                      dispatchWheelEventViaMainThread(pageID, wheelEvent, result.steps, WTF::move(completionHandler));
-@@ -207,8 +250,109 @@ void EventDispatcher::wheelEvent(PageIdentifier pageID, Ref<WebWheelEvent>&& whe
-     }
- #endif
+@@ -209,6 +267,104 @@ void EventDispatcher::wheelEvent(PageIdentifier pageID, Ref<WebWheelEvent>&& whe
      internalWheelEvent(pageID, wheelEvent, rubberBandableEdges, WTF::move(completionHandler));
-+#if PLATFORM(HAIKU) && ENABLE(ASYNC_SCROLLING) && ENABLE(SCROLLING_THREAD)
-+    scheduleHaikuScrollRefresh();
-+#endif
-+}
-+
+ }
+ 
 +#if PLATFORM(HAIKU) && ENABLE(ASYNC_SCROLLING) && ENABLE(SCROLLING_THREAD)
 +static Seconds haikuScrollRefreshInterval()
 +{
@@ -82388,8 +82398,8 @@ index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..b0cb4f4f2dbdf9f797f16d6003970a05
 +    m_queue->dispatchAfter(interval, [this, protectedThis = Ref { *this }] {
 +        refreshHaikuScrollingTrees();
 +    });
- }
- 
++}
++
 +void EventDispatcher::refreshHaikuScrollingTrees()
 +{
 +    bool hasActiveTree = false;
