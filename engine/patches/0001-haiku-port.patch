@@ -14398,6 +14398,76 @@ index 30343ff03299542f8673d98b486c7fdd78bddeb9..95d192b9fadc9f7fca017d53ad82885c
  
          if (const char* envString = getenv("WEBKIT_SKIA_CPU_PAINTING_THREADS")) {
              auto newValue = parseInteger<unsigned>(StringView::fromLatin1(envString));
+diff --git a/Source/WebCore/platform/graphics/texmap/TextureMapper.cpp b/Source/WebCore/platform/graphics/texmap/TextureMapper.cpp
+index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..2b5953275845d32df887c0610324e28c60d87cf5 100644
+--- a/Source/WebCore/platform/graphics/texmap/TextureMapper.cpp
++++ b/Source/WebCore/platform/graphics/texmap/TextureMapper.cpp
+@@ -44,6 +44,12 @@
+ #include <wtf/SetForScope.h>
+ #include <wtf/TZoneMallocInlines.h>
+ 
++#if PLATFORM(HAIKU)
++#include <OS.h>
++#include <cstdio>
++#include <cstdlib>
++#endif
++
+ #if USE(CAIRO)
+ #include "CairoUtilities.h"
+ #include "RefPtrCairo.h"
+@@ -174,7 +180,16 @@ Ref<TextureMapperShaderProgram> TextureMapperGLData::getShaderProgram(TextureMap
+ {
+     ASSERT(!options.isEmpty());
+     auto addResult = m_sharedGLData->m_programs.ensure(options.toRaw(), [options] {
+-        return TextureMapperShaderProgram::create(options);
++#if PLATFORM(HAIKU)
++        static const bool traceShaderCompile = std::getenv("SUMMIT_LAYER_PAINT_TRACE");
++        const bigtime_t startedAt = traceShaderCompile ? system_time() : 0;
++#endif
++        auto program = TextureMapperShaderProgram::create(options);
++#if PLATFORM(HAIKU)
++        if (traceShaderCompile)
++            std::fprintf(stderr, "Summit shader compile: at=%lld options=%u ms=%.1f\n", static_cast<long long>(startedAt), options.toRaw(), (system_time() - startedAt) / 1000.0);
++#endif
++        return program;
+     });
+     return *addResult.iterator->value;
+ }
+@@ -801,6 +816,10 @@ void TextureMapper::drawTexturePackedYUV(GLuint texture, const std::array<GLfloa
+ 
+ void TextureMapper::drawSolidColor(const FloatRect& rect, const TransformationMatrix& matrix, const Color& color, bool isBlendingAllowed)
+ {
++#if PLATFORM(HAIKU)
++    static const bool traceSolidPaint = std::getenv("SUMMIT_LAYER_PAINT_TRACE");
++    const bigtime_t startedAt = traceSolidPaint ? system_time() : 0;
++#endif
+     OptionSet<TextureMapperFlags> flags;
+     TextureMapperShaderProgram::Options options = TextureMapperShaderProgram::SolidColor;
+     if (!matrix.mapQuad(rect).isRectilinear()) {
+@@ -817,6 +836,9 @@ void TextureMapper::drawSolidColor(const FloatRect& rect, const TransformationMa
+     }
+ 
+     Ref<TextureMapperShaderProgram> program = data().getShaderProgram(options);
++#if PLATFORM(HAIKU)
++    const bigtime_t shaderAt = traceSolidPaint ? system_time() : 0;
++#endif
+     glUseProgram(program->programID());
+ 
+     if (clipStack().isRoundedRectClipEnabled())
+@@ -828,6 +850,13 @@ void TextureMapper::drawSolidColor(const FloatRect& rect, const TransformationMa
+         flags.add(TextureMapperFlags::ShouldBlend);
+ 
+     draw(rect, matrix, program.get(), GL_TRIANGLE_FAN, flags);
++#if PLATFORM(HAIKU)
++    if (traceSolidPaint) {
++        const bigtime_t elapsed = system_time() - startedAt;
++        if (elapsed >= 4000)
++            std::fprintf(stderr, "Summit solid paint: at=%lld total=%.1f shader=%.1f gl=%.1f options=%u rect=%.0fx%.0f\n", static_cast<long long>(startedAt), elapsed / 1000.0, (shaderAt - startedAt) / 1000.0, (elapsed - (shaderAt - startedAt)) / 1000.0, options.toRaw(), rect.width(), rect.height());
++    }
++#endif
+ }
+ 
+ void TextureMapper::clearColor(const Color& color)
 diff --git a/Source/WebCore/platform/graphics/texmap/TextureMapperLayer.cpp b/Source/WebCore/platform/graphics/texmap/TextureMapperLayer.cpp
 index 063040a9866c7221f2e581a4b9dac75fa29771d4..773c3614165f4af5c10a36b6d006ab75a8961c86 100644
 --- a/Source/WebCore/platform/graphics/texmap/TextureMapperLayer.cpp
