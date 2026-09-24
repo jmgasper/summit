@@ -4160,3 +4160,54 @@ The video is given a fixed 640×360 viewport so the diagnostic timeline stays
 visible for portrait clips. This verifies the browser's generic pointer-to-
 media-seek path, but the specific Adobe ad timeline remains untested
 (`.vm/media-drag-sized.png` and `.vm/media-drag-after.png`).
+
+### Repeated Reddit scrolling within loaded content
+
+`run-scroll-cycles.py` alternates 80-notch, 25 ms down/up bursts on one loaded
+`/r/popular/` page. Each burst resets the native-view frame counter, verifies
+all wheel deliveries, and saves a separate log. This avoids treating wheel
+events after the current feed maximum as scrolling work. It captures the page
+before, immediately after, and after a three-second settle; VNC capture stays
+outside the measured bursts. The initial four-burst trial handled all 320
+events without reaching the feed maximum. Three bursts presented near 59 fps,
+but the fourth had a 203.6 ms completed-frame gap with only 0.2 ms of native
+view queue delay (`.vm/bench/scroll-cycles-20260925/run.json`).
+
+The first low-volume page-update trace reproduced a 251.8 ms reverse-burst
+gap, but compositor records placed it at the transition from asynchronous
+scroll frames to the next page rendering update. That update included a
+230 ms render-tree layout. A later active-frame snapshot caught a 324.6 ms
+gap in a reverse burst without page-update tracing. The benchmark now records
+the active snapshot before the smooth-scroll tail, so those two kinds of
+pause can be interpreted separately
+(`.vm/bench/scroll-cycles-20260925-063644-trace/` and
+`.vm/bench/scroll-cycles-20260925-063818-active-tail/`).
+
+In a 20-burst compositor trace on the installed build, all 1,600 wheel events
+were handled and the final feed was visibly populated. The median active
+burst rate was 58.8 fps, with a 263.5 ms worst completed gap. That gap
+matched one compositor frame whose **paint phase took 246.2 ms**; refresh
+requests kept arriving and the native view queue maximum was 0.1 ms in that
+burst. Two other reported gaps of 143.4 and 118.4 ms had no matching long
+compositor paint and could include the delay to the first frame after the
+counter reset. Native-view snapshots now expose first-frame delay and longest
+interframe gap separately, with an availability flag for older bundles
+(`.vm/bench/scroll-cycles-20260925-064032-compositor-repeats/`).
+
+An opt-in `SUMMIT_COMPOSITOR_TIMING_TRACE=1` extension reports setup, damage,
+clear, layer paint, and finish phases when a TextureMapper paint exceeds
+30 ms. It built in a separate PGO-derived bundle, `bundle-q_th1ydp`; GCC's
+stale profile data for only `ThreadedCompositor.cpp` was archived before the
+rebuild. In two 20-burst trials on that diagnostic bundle, all 3,200 wheel
+events were delivered and there was no interframe gap over 80 ms. The
+longest interframe gaps were 74.3 and 59.4 ms, respectively, so the 246 ms
+paint did not recur and its inner phase is still unknown. One 146.2 ms
+first-frame delay demonstrates why the split counter matters. The first
+trial's immediate final screenshot had a blank main feed even though it
+started with visible posts; two subsequent 20-burst captures showed the feed
+both immediately and after settling. This is an intermittent content
+handoff symptom, not evidence that the diagnostic build improved scrolling.
+The workstation launcher remains on the prior `bundle-k7atp8la`
+(`.vm/bench/scroll-cycles-20260925-064832-paint-phases/`,
+`.vm/bench/scroll-cycles-20260925-065132-settle-feed/`, and
+`.vm/bench/scroll-cycles-20260925-065351-paint-phases-repeat/`).
