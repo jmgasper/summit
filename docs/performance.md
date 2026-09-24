@@ -4043,3 +4043,19 @@ as `Summit-current.pre-handled-refresh-20260925.sh`. Active Reddit motion is
 substantially better in the measured short bursts, but the 349–454 ms gaps,
 grey media placeholders, and long feed-boundary stalls remain open
 (`.vm/bench/probe-20260925-025454-summit-handled-refresh-scroll-fixture/`).
+
+A low-volume trace of an 80-notch run on the installed build delivered all
+80 wheel events below the feed maximum and 86 native-view frames over the
+2.42-second snapshot. Nine slow layouts totaled 2.74 seconds of inclusive
+time, nearly all in render-tree layout; the slowest was 374 ms. Its completed
+frame gaps stayed below 35 ms, but the snapshot was taken about 0.4 seconds
+after the last wheel delivery and counted that trailing idle as a 429 ms
+pending gap. A separate compositor trace showed 80 async composition requests
+with a 56 ms maximum request interval and a 58 ms maximum completed native
+frame gap, despite a 439 ms pending gap after motion stopped. Other active
+passes still recorded completed gaps of 103 and 349 ms, so the timer does not
+eliminate every moving-content stall. The scroll harness now reports completed
+and pending gaps separately while retaining its previous combined maximum
+for historical comparisons
+(`.vm/bench/scroll-20260925-025649-handled-refresh-reddit-80-phases/` and
+`.vm/bench/scroll-20260925-025816-handled-refresh-reddit-80-compositor/`).
