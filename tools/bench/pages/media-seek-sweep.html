@@ -13,6 +13,14 @@ const video = document.getElementById("video");
 const status = document.getElementById("status");
 const started = performance.now();
 const events = [];
+const delayedBeats = [];
+let lastBeat = started;
+const heartbeat = setInterval(() => {
+    const now = performance.now();
+    const gap = now - lastBeat;
+    if (gap > 80) delayedBeats.push(Math.round(gap));
+    lastBeat = now;
+}, 50);
 const record = (name, extra = {}) => {
     events.push({name, atMs: Math.round(performance.now() - started),
         time: video.currentTime, seeking: video.seeking, paused: video.paused, ...extra});
@@ -38,9 +46,11 @@ video.addEventListener("loadedmetadata", async () => {
     }, 500 + index * 120));
 }, {once: true});
 setTimeout(async () => {
+    clearInterval(heartbeat);
     record("final");
     await fetch("/__bench/probe", {method: "POST", headers: {"Content-Type": "application/json"},
         body: JSON.stringify({source, src: video.currentSrc, duration: video.duration, events,
+            delayedBeats,
             error: video.error && {code: video.error.code, message: video.error.message}})});
     document.title = "Summit repeated media seek probe: done";
 }, 7000);
