@@ -4657,47 +4657,6 @@ index a26485a6771a1d63e0d0f5ff3800f30221a77304..723f476108c2e7516f1e24723248d1c9
  void Page::isolatedUpdateRendering()
  {
      LOG(EventLoop, "Page %p isolatedUpdateRendering()", this);
-diff --git a/Source/WebCore/page/RenderingUpdateScheduler.cpp b/Source/WebCore/page/RenderingUpdateScheduler.cpp
-index 06e9a596c37605ce8ce2d70ffbcb23e63de6e4e8..885dfcecc93c22bfd386566d4cf14c5c0be78040 100644
---- a/Source/WebCore/page/RenderingUpdateScheduler.cpp
-+++ b/Source/WebCore/page/RenderingUpdateScheduler.cpp
-@@ -36,6 +36,11 @@
- #include <wtf/TZoneMallocInlines.h>
- #include <wtf/text/TextStream.h>
- 
-+#if PLATFORM(HAIKU)
-+#include <OS.h>
-+#include <cstdlib>
-+#endif
-+
- namespace WebCore {
- 
- WTF_MAKE_TZONE_ALLOCATED_IMPL(RenderingUpdateScheduler);
-@@ -104,6 +109,24 @@ void RenderingUpdateScheduler::startTimer(Seconds delay)
-     LOG_WITH_STREAM(EventLoop, stream << "RenderingUpdateScheduler for page " << m_page.ptr() << " startTimer(" << delay << ")");
- 
-     ASSERT(!m_refreshTimer);
-+#if PLATFORM(HAIKU)
-+    // Haiku has no display refresh monitor. Align the 60 Hz fallback timer to
-+    // a shared monotonic cadence instead of waiting a full frame from each
-+    // request, which can miss the next frame for work scheduled mid-cycle.
-+    static const bool alignRenderTimer = [] {
-+        const char* setting = std::getenv("SUMMIT_ALIGNED_RENDER_TIMER");
-+        return setting && setting[0] == '1' && !setting[1];
-+    }();
-+    if (alignRenderTimer) {
-+        const auto intervalMicros = static_cast<bigtime_t>(delay.microseconds());
-+        if (intervalMicros >= 10000 && intervalMicros <= 25000) {
-+            auto remainingMicros = intervalMicros - system_time() % intervalMicros;
-+            if (remainingMicros < 1000)
-+                remainingMicros += intervalMicros;
-+            delay = Seconds::fromMicroseconds(remainingMicros);
-+        }
-+    }
-+#endif
-     m_refreshTimer = makeUnique<Timer>(*this, &RenderingUpdateScheduler::displayRefreshFired);
-     m_refreshTimer->startOneShot(delay);
- }
 diff --git a/Source/WebCore/page/haiku/EventHandlerHaiku.cpp b/Source/WebCore/page/haiku/EventHandlerHaiku.cpp
 index 89f2b38d398b9fb7d5319d06bf0b918cfc569e1b..fbd1eea56e97654861c4b24b25c0da6e9f750604 100644
 --- a/Source/WebCore/page/haiku/EventHandlerHaiku.cpp
