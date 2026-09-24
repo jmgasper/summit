@@ -3890,7 +3890,7 @@ second. The isolated Ninja archive rules now use `llvm-ar` and `llvm-ranlib`.
 After CMake regenerates those rules, the tracked
 `tools/use-llvm-ar-in-webkit-build.py` helper reapplies the switch to the
 existing build directory before Ninja runs.
-The instrumented WebKit link and browser training are still in progress
+The instrumented WebKit link and browser training completed
 (`.vm/pgo-generate-atomic-engine-build.log`,
 `.vm/pgo-generate-llvm-hook-build.log`, and
 `.vm/pgo-generate-llvm-resume.log`).
@@ -3904,7 +3904,40 @@ training there were no `.gcda` files; afterwards there were 1,972, including
 643 under WebCore, 189 under JavaScriptCore, and 311 under WebKit. The scroll
 run updated the files again. A copy of the profiles was saved outside the
 build directory before reconfiguring the same object paths for profile use.
-The optimized build is in progress
+The optimized build completed without profile mismatch errors. Missing-profile
+warnings remain for paths not exercised by the two training workloads.
 (`.vm/bench/speedometer-20260925-004337-pgo-train-full/`,
 `.vm/bench/probe-20260925-005022-summit-pgo-train-scroll/`, and
 `.vm/pgo-use-build.log`).
+
+The profile-use engine passed a `jsc` smoke test and was packaged as
+`bundle-1a8lpbnq`; the installed launcher still points to `bundle-w9ti9d76`.
+At the same 1280×887 viewport, its first full ten-iteration Speedometer 3.1
+run scored **8.512 ± 0.400**, compared with the saved installed-bundle run of
+**7.298 ± 0.333** and Firefox 155 run of **8.338 ± 0.374**. The point score
+exceeds the saved Firefox score, but the reported intervals overlap. A fresh
+installed-bundle comparison is underway. The 400-card fixture delivered all
+600 frames at **59.65 frames/s**, with no frame interval over 33 ms and a 19 ms
+maximum, versus 58.88 frames/s on the earlier installed-bundle run
+(`.vm/bench/speedometer-20260925-020140-pgo-use-full/` and
+`.vm/bench/probe-20260925-020348-summit-pgo-use-scroll/`).
+
+The Guardian loop fixture played past its 19.56-second duration and continued
+without a media error; H.264 selected NVDEC successfully. The Reddit HLS seek
+fixture reported a seekable interval of 0–12.7 seconds, completed a seek to
+8 seconds, and ended normally with NVDEC selected. These checks show no media
+regression in the profile-use build; they do not reproduce the unavailable
+Adobe ad or prove that the live Guardian article plays smoothly
+(`.vm/bench/probe-20260925-020510-summit-pgo-use-guardian-loop/` and
+`.vm/bench/probe-20260925-020613-summit-pgo-use-reddit-seek/`).
+
+Three matched live `/r/popular/` 300-notch wheel bursts, alternating the
+profile-use build, installed bundle, and profile-use build, measured 32.93,
+27.92, and 28.85 frames/s respectively. Their worst presentation gaps were
+3.31, 4.01, and 3.81 seconds. Native UI queue delays over 33 ms remained
+zero on the profile-use runs. Feed variation and the overlapping results make
+this inconclusive as a scrolling gain. Long main-thread stalls remain the
+principal live Reddit problem
+(`.vm/bench/scroll-20260925-020711-pgo-reddit-long-a/`,
+`.vm/bench/scroll-20260925-020827-pgo-reddit-long-control/`, and
+`.vm/bench/scroll-20260925-020933-pgo-reddit-long-b/`).
