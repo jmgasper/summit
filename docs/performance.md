@@ -4386,3 +4386,21 @@ intervals overlap. The X399 desktop launcher now points to
 `bundle-glk_tobh`, with the earlier `bundle-wekouxn2` launcher saved as
 `Summit-current.pre-rounded-solid-prewarm-20260925.sh`
 (`.vm/bench/speedometer-20260925-081513-rounded-solid-prewarm-matched/`).
+
+### Guardian visible playback on the installed prewarm build
+
+A fresh visit to the reported Guardian article on `bundle-glk_tobh` selected
+NVDEC H.264 and decoded three 19.56-second loops without a media error. A
+trace-only visit with the consent panel still covering the video had a
+996.3 ms repaint callback delay at a loop boundary; it cannot measure
+visible playback (`.vm/bench/scroll-20260925-081908-guardian-fragment-current-media/`).
+
+In a separate visit, the consent panel was dismissed and the inline video
+was fully visible. A 15.9-second sequence of 120 VNC samples of the video
+center changed at every sample, with at most 177 ms between captures. Across
+the visit, 1,784 decoded frames had a 4.4 ms median decode time and 13.6 ms
+95th-percentile repaint-queue delay; five queue delays exceeded 33 ms, with
+a 39.3 ms maximum. The 1,764 paint traces had an 8.9 ms median decoded-frame
+age and 37.0 ms maximum. This checks visible motion and the decode-to-paint
+path, but the sampled screenshots do not measure the display's actual frame
+rate (`.vm/bench/guardian-visible-current-20260925/`).
