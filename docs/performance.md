@@ -2,17 +2,20 @@
 
 ## Current coordinated Skia result (September 25, 2026)
 
-The workstation launcher uses profile-guided `bundle-m2di58k1`: Skia CPU tile
+The workstation launcher uses profile-guided `bundle-wekouxn2`: Skia CPU tile
 painting with two workers, GL Canvas, raster coordinated scrollbars, mimalloc,
 asynchronous scrolling, display-rate composition pacing, guarded reuse of exact text
-widths, and preserved font registrations for simple CSS rule insertions. It
+widths, preserved font registrations for simple CSS rule insertions, and
+coalesced video repaint callbacks. It
 completes all 580 steps of Speedometer 3.1. The latest matched-viewport
 ten-iteration run is
-`.vm/bench/speedometer-20260925-024821-handled-refresh-pgo-full/`.
+`.vm/bench/speedometer-20260925-073640-media-coalesce-matched/`.
 
 | Browser | Content viewport | Speedometer 3.1, 10 iterations |
 | --- | ---: | ---: |
-| Summit, current PGO and handled scroll refresh | 1280×887 | **8.347 ± 0.506** |
+| Summit, current smooth PGO and media coalescing | 1280×887 | **8.475 ± 0.414** |
+| Summit, prior smooth PGO | 1280×887 | **8.338 ± 0.398**, repeat **8.544 ± 0.434** |
+| Summit, prior PGO and handled scroll refresh | 1280×887 | **8.347 ± 0.506** |
 | Summit, prior PGO CPU tiles and GL Canvas | 1280×887 | **8.512 ± 0.400**, repeat **8.444 ± 0.456** |
 | Summit, prior installed CPU tiles and GL Canvas | 1280×887 | **7.185 ± 0.353** |
 | Summit, prior synchronous media seek build | 1280×887 | **7.288 ± 0.359** |
@@ -23,7 +26,7 @@ ten-iteration run is
 
 These Summit runs were uncontended. The current point score exceeds the fresh
 Firefox result, although their uncertainty intervals overlap. The
-profile-guided build is about 17% above the fresh prior-bundle result. Its
+profile-guided build is about 18% above the fresh prior-bundle result. Its
 largest remaining suite gaps against Firefox are Preact, CodeMirror, and
 Svelte complex DOM. Older score comparisons in this log used different
 viewport sizes and should be treated as directional.
@@ -4306,3 +4309,33 @@ run at **1913×945** scored 8.451 ± 0.432 but is excluded from the
 same-viewport comparison
 (`.vm/bench/speedometer-20260925-073426-media-coalesce-full/` and
 `.vm/bench/speedometer-20260925-073640-media-coalesce-matched/`).
+
+### Wheel-burst completion snapshots (25 September 2026)
+
+The earlier scroll-cycle harness read native-view frame counters after
+polling Summit over SSH for burst completion. That poll arrived roughly
+250–300 ms after the last notch and could include a quiet animation-tail
+frame in its "active" result. Summit now saves a frame snapshot in the UI
+thread when it receives the burst-completion message; `summitctl framestats`
+returns it as `atScrollCompletion`, and `run-scroll-cycles.py` uses it when
+available while keeping the later poll for comparison. In the four-burst
+smoke run, snapshot elapsed time matched each 2.003–2.006 s delivery window
+within 0.3 ms. The second burst had a 447.2 ms delay to its first frame,
+but its longest subsequent interframe gap was 31.1 ms. That isolated startup
+delay did not repeat in the longer run
+(`.vm/bench/scroll-cycles-20260925-074313-completion-snapshot-smoke/`).
+
+The diagnostic bundle `bundle-wekouxn2` uses exactly the same WebKit and
+WebProcess binaries as the installed media candidate; only the native
+browser and benchmark tool changed. In a 40-burst live Reddit run it
+delivered all 3,200 wheel events, with **59.14 median active fps**, a
+37.5 ms worst first-frame delay, a 42.4 ms worst active interframe gap,
+and at most 4.0 ms native-view queue delay. Tail interframe gaps reached
+536.6 ms after input ended. The earlier 134.3 ms "active" gap came from a
+later poll and cannot be used as evidence of an input-time stall. The feed
+remained visible in the final capture. Four compositor layer paints over
+30 ms occurred during initial loading, before the bursts; the earlier
+246 ms paint did not recur.
+The desktop launcher now points to `bundle-wekouxn2`, with its predecessor
+saved as `Summit-current.pre-scroll-completion-20260925.sh`
+(`.vm/bench/scroll-cycles-20260925-074420-completion-snapshot-long/`).
