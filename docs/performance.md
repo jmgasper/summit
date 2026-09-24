@@ -3958,3 +3958,16 @@ repeated Summit scores, scroll probe, and two media fixtures passed. The old
 launcher was saved as `Summit-current.pre-pgo-20260925.sh`; launching through
 the desktop script started the optimized Summit executable. The live Reddit
 stalls and the untested Adobe ad remain open.
+
+The reported full Guardian article was also loaded in the installed PGO build.
+After accepting consent and bringing the inline video into view, it selected
+NVDEC H.264 with status 0. Two capture-free windows each painted **198 of the
+latest 200 decoded frames**, with no decode or repaint queue delay over 40 ms;
+their maximum queue delays were 24.9 and 28.8 ms. The video looped, and the
+trace had no Zink error. A separate window that included a VNC screen capture
+painted only 178/200 and queued frames for up to 758.5 ms, so screen capture
+must be excluded from playback pacing measurements. These native traces count
+decode and paint, not exact monitor presentation timing
+(`.vm/bench/scroll-20260925-022247-pgo-guardian-frame-trace/`,
+`.vm/guardian-pgo-frame-idle-video.log`, and
+`.vm/guardian-pgo-frame-idle-video-2.log`).
