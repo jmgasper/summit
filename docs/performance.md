@@ -3661,3 +3661,29 @@ fix (`.vm/bench/scroll-20260924-195146-guardian-canvas-area-65536/`,
 `.vm/bench/scroll-20260924-195226-guardian-canvas-area-262144/`,
 `.vm/bench/scroll-20260924-195341-guardian-canvas-area-high/`, and
 `.vm/bench/scroll-20260924-195802-guardian-gl-callsite/browser.log`).
+
+### Raster coordinated scrollbars on Haiku
+
+Haiku's coordinated scrollbar painter now draws into a raster Skia surface and
+passes its immutable image through the existing native-image layer upload.
+The prior texture-mapper path requested a Skia GL context on every scrollbar
+update, even with GL Canvas disabled, then returned without painting when
+that context was unavailable. Raster painting removes that dependency and
+makes the scrollbar visible with the normal launcher configuration. On the
+reported Guardian article with GL Canvas enabled, the rebuilt candidate logged
+no Zink image-creation error, versus two in the previous build
+(`.vm/bench/scroll-20260924-200436-guardian-cpu-scrollbar/`).
+
+Matched, uncontended 600-frame 400-card scroll probes at 1913×945 ran at
+58.92 fps with raster scrollbars and 58.93 fps on the installed control, both
+with zero frames over 33 ms. With GL Canvas enabled, the raster-scrollbar
+candidate ran at 58.94 fps with zero frames over 33 ms and no Zink error
+(`.vm/bench/probe-20260924-200814-summit-cpu-scrollbar-candidate/`,
+`.vm/bench/probe-20260924-200859-summit-cpu-scrollbar-control/`, and
+`.vm/bench/probe-20260924-201313-summit-cpu-scrollbar-gl-scroll/`).
+
+At 1280×887, a full ten-iteration Speedometer 3.1 run with GL Canvas enabled
+scored 7.288 ± 0.359, close to the previous 7.178 ± 0.346. It remains below
+Firefox's 8.338 ± 0.374. The normal workstation launcher now uses
+`bundle-s8a06mrs` with GL Canvas off; the user can opt in for further
+GPU Canvas testing (`.vm/bench/speedometer-20260924-201118-cpu-scrollbar-gl-full/`).
