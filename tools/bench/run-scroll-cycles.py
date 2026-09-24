@@ -117,18 +117,25 @@ def main():
                         ('scrollRequested', 'scrollSent', 'scrollStatus', 'scrollDurationMicros')}
             if delivery['scrollSent'] != args.notches or delivery['scrollStatus'] != 0:
                 raise RuntimeError(f'Incomplete wheel burst: {delivery}')
+            code, out, err = guest.ctl(ctl, team, 'framestats', timeout_ms=1000)
+            if code:
+                raise RuntimeError(err or out)
+            active_snapshot = json.loads(out)
             time.sleep(args.tail)
             code, out, err = guest.ctl(ctl, team, 'framestats', timeout_ms=1000)
             if code:
                 raise RuntimeError(err or out)
-            snapshot = json.loads(out)
+            tail_snapshot = json.loads(out)
             guest.fetch_file(remote_log, directory / 'browser.log')
             log = (directory / 'browser.log').read_bytes()
             burst_log = log[log_offset:]
             (directory / f'burst-{index + 1}.log').write_bytes(burst_log)
             log_offset = len(log)
             record = {'index': index + 1, 'delta': delta, 'delivery': delivery,
-                      'frameSnapshot': snapshot, **frame_summary(snapshot),
+                      'active': frame_summary(active_snapshot),
+                      'animationTail': frame_summary(tail_snapshot),
+                      'activeFrameSnapshot': active_snapshot,
+                      'animationTailFrameSnapshot': tail_snapshot,
                       'logBytes': len(burst_log)}
             run['bursts'].append(record)
             save()
