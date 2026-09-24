@@ -25,7 +25,7 @@ import guest
 
 def frame_summary(snapshot):
     elapsed = snapshot['elapsedMicros'] - snapshot['pendingGapMicros']
-    return {
+    summary = {
         'frames': snapshot['frames'],
         'fpsToLastFrame': round(snapshot['frames'] * 1_000_000 / elapsed, 2) if elapsed > 0 else 0,
         'completedWorstGapMs': round(snapshot['longestGapMicros'] / 1000, 1),
@@ -33,6 +33,10 @@ def frame_summary(snapshot):
         'queueMaxMs': round(snapshot['queueMaxMicros'] / 1000, 1),
         'queueOver33': snapshot['queueOver33'],
     }
+    if 'firstFrameDelayMicros' in snapshot:
+        summary['firstFrameDelayMs'] = round(snapshot['firstFrameDelayMicros'] / 1000, 1)
+        summary['longestInterframeGapMs'] = round(snapshot['longestInterframeGapMicros'] / 1000, 1)
+    return summary
 
 
 def capture_visible(path):

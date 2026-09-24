@@ -314,7 +314,7 @@ def summarize_ui_snapshot(snapshot):
     frames = snapshot['frames']
     pending = snapshot['pendingGapMicros']
     time_to_last_frame = max(0, snapshot['elapsedMicros'] - pending) / 1_000_000
-    return {
+    summary = {
         'source': 'native-view-snapshot', 'frames': frames,
         'seconds': round(seconds, 2), 'fps': round(frames / seconds, 2) if seconds else 0,
         'secondsToLastFrame': round(time_to_last_frame, 2),
@@ -327,6 +327,10 @@ def summarize_ui_snapshot(snapshot):
         'worstQueueDelayMs': round(snapshot['queueMaxMicros'] / 1000, 1),
         'queueOver33Ms': snapshot['queueOver33'],
     }
+    if 'firstFrameDelayMicros' in snapshot:
+        summary['firstFrameDelayMs'] = round(snapshot['firstFrameDelayMicros'] / 1000, 1)
+        summary['longestInterframeGapMs'] = round(snapshot['longestInterframeGapMicros'] / 1000, 1)
+    return summary
 
 
 def summarize(samples):

@@ -56,6 +56,8 @@ public:
         fCaptureStart = system_time();
         fCaptureLastFrame = 0;
         fCaptureLongestGap = 0;
+        fCaptureFirstFrameDelay = 0;
+        fCaptureLongestInterframeGap = 0;
         fCaptureFrames = 0;
         fCaptureLongGaps = 0;
         fCaptureLongestQueueDelay = 0;
@@ -79,6 +81,8 @@ public:
         reply.AddInt64("elapsed_us", elapsed);
         reply.AddInt32("frames", fCaptureFrames);
         reply.AddInt64("longest_gap_us", fCaptureLongestGap);
+        reply.AddInt64("first_frame_delay_us", fCaptureFirstFrameDelay);
+        reply.AddInt64("longest_interframe_gap_us", fCaptureLongestInterframeGap);
         reply.AddInt32("long_gaps", fCaptureLongGaps);
         reply.AddInt64("pending_gap_us", pendingGap);
         reply.AddInt64("queue_max_us", fCaptureLongestQueueDelay);
@@ -93,6 +97,10 @@ public:
             if (fCaptureStart) {
                 const bigtime_t gap = now - (fCaptureLastFrame ? fCaptureLastFrame : fCaptureStart);
                 fCaptureLongestGap = std::max(fCaptureLongestGap, gap);
+                if (fCaptureLastFrame)
+                    fCaptureLongestInterframeGap = std::max(fCaptureLongestInterframeGap, gap);
+                else
+                    fCaptureFirstFrameDelay = gap;
                 if (gap > 33000)
                     ++fCaptureLongGaps;
                 fCaptureLastFrame = now;
@@ -140,6 +148,8 @@ private:
     bigtime_t fCaptureStart { 0 };
     bigtime_t fCaptureLastFrame { 0 };
     bigtime_t fCaptureLongestGap { 0 };
+    bigtime_t fCaptureFirstFrameDelay { 0 };
+    bigtime_t fCaptureLongestInterframeGap { 0 };
     unsigned fCaptureFrames { 0 };
     unsigned fCaptureLongGaps { 0 };
     bigtime_t fCaptureLongestQueueDelay { 0 };
