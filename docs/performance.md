@@ -3985,3 +3985,19 @@ native UI queue delay stayed below 1 ms. The document still carried Reddit's
 The repeated layout work remains the next area to investigate; this trace
 does not isolate a safe layout step to skip
 (`.vm/bench/scroll-20260925-022551-pgo-reddit-long-trace/`).
+
+The opt-in 16 ms scrolling refresh timer was retried on the PGO build in a
+300-notch A/B/A sequence. Timer-on, timer-off, and timer-on runs delivered
+27.72, 28.47, and 15.50 native-view frames/s, with worst gaps of 1.25, 1.62,
+and 2.62 seconds. The timer did not produce a repeatable improvement, so it
+remains disabled. The scrolling-position trace gives an important limit on
+these long-burst numbers: each run reached the current document maximum around
+wheel event 110, and about 190 of 300 events occurred at that maximum. The
+first timer-on screenshot showed a post and loading spinner; the second showed
+a post with a black, not-yet-playing video. A long gap after reaching the
+current feed end is not by itself evidence that moving content was presented
+slowly. Shorter bursts within loaded content are needed to measure motion
+separately from Reddit's content loading
+(`.vm/bench/scroll-20260925-022913-pgo-reddit-refresh-300-a/`,
+`.vm/bench/scroll-20260925-023022-pgo-reddit-refresh-300-control/`, and
+`.vm/bench/scroll-20260925-023123-pgo-reddit-refresh-300-b/`).
