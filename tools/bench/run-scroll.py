@@ -327,7 +327,7 @@ def summarize_ui_snapshot(snapshot):
         'worstQueueDelayMs': round(snapshot['queueMaxMicros'] / 1000, 1),
         'queueOver33Ms': snapshot['queueOver33'],
     }
-    if 'firstFrameDelayMicros' in snapshot:
+    if snapshot.get('splitGapAvailable'):
         summary['firstFrameDelayMs'] = round(snapshot['firstFrameDelayMicros'] / 1000, 1)
         summary['longestInterframeGapMs'] = round(snapshot['longestInterframeGapMicros'] / 1000, 1)
     return summary

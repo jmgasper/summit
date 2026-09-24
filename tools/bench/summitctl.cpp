@@ -287,11 +287,15 @@ int main(int argc, char** argv)
         if (status != B_OK) { std::fprintf(stderr, "framestats: %s\n", std::strerror(status)); return 5; }
         int64 elapsed = -1;
         if (stats.FindInt64("elapsed_us", &elapsed) != B_OK) { std::fputs("frame stats unavailable\n", stderr); return 6; }
-        std::printf("{\"elapsedMicros\":%lld,\"frames\":%ld,\"longestGapMicros\":%lld,\"firstFrameDelayMicros\":%lld,\"longestInterframeGapMicros\":%lld,\"longGaps\":%ld,\"pendingGapMicros\":%lld,\"queueMaxMicros\":%lld,\"queueOver33\":%ld}\n",
+        int64 firstFrameDelay = 0;
+        int64 longestInterframeGap = 0;
+        const bool splitGapAvailable = stats.FindInt64("first_frame_delay_us", &firstFrameDelay) == B_OK
+            && stats.FindInt64("longest_interframe_gap_us", &longestInterframeGap) == B_OK;
+        std::printf("{\"elapsedMicros\":%lld,\"frames\":%ld,\"longestGapMicros\":%lld,\"splitGapAvailable\":%s,\"firstFrameDelayMicros\":%lld,\"longestInterframeGapMicros\":%lld,\"longGaps\":%ld,\"pendingGapMicros\":%lld,\"queueMaxMicros\":%lld,\"queueOver33\":%ld}\n",
             static_cast<long long>(elapsed), long(stats.GetInt32("frames", 0)),
             static_cast<long long>(stats.GetInt64("longest_gap_us", 0)),
-            static_cast<long long>(stats.GetInt64("first_frame_delay_us", 0)),
-            static_cast<long long>(stats.GetInt64("longest_interframe_gap_us", 0)),
+            splitGapAvailable ? "true" : "false",
+            static_cast<long long>(firstFrameDelay), static_cast<long long>(longestInterframeGap),
             long(stats.GetInt32("long_gaps", 0)),
             static_cast<long long>(stats.GetInt64("pending_gap_us", 0)),
             static_cast<long long>(stats.GetInt64("queue_max_us", 0)), long(stats.GetInt32("queue_over_33", 0)));

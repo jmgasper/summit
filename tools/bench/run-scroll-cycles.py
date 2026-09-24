@@ -33,7 +33,7 @@ def frame_summary(snapshot):
         'queueMaxMs': round(snapshot['queueMaxMicros'] / 1000, 1),
         'queueOver33': snapshot['queueOver33'],
     }
-    if 'firstFrameDelayMicros' in snapshot:
+    if snapshot.get('splitGapAvailable'):
         summary['firstFrameDelayMs'] = round(snapshot['firstFrameDelayMicros'] / 1000, 1)
         summary['longestInterframeGapMs'] = round(snapshot['longestInterframeGapMicros'] / 1000, 1)
     return summary
