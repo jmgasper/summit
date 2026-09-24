@@ -4150,3 +4150,13 @@ The Haiku port now defaults `ENABLE_SMOOTH_SCROLLING` to ON so subsequent
 builds retain the feature
 (`.vm/bench/probe-20260925-060857-summit-smooth-pgo-guardian-loop/` and
 `.vm/bench/probe-20260925-061012-summit-smooth-pgo-reddit-seek/`).
+
+A manual seek-drag check used the installed bundle and
+`tools/bench/pages/media-drag.html` with the same Reddit HLS clip. Through
+VNC, dragging the page's range control from the start to 8.52 seconds
+delivered `pointermove` events with `buttons=1`, changed `currentTime`,
+emitted `seeking` and `seeked`, and repainted the sought frame while paused.
+The video is given a fixed 640×360 viewport so the diagnostic timeline stays
+visible for portrait clips. This verifies the browser's generic pointer-to-
+media-seek path, but the specific Adobe ad timeline remains untested
+(`.vm/media-drag-sized.png` and `.vm/media-drag-after.png`).
