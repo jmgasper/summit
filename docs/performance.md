@@ -3838,3 +3838,24 @@ patch (`.vm/bench/speedometer-20260924-223104-style-reasons/`,
 `.vm/bench/speedometer-20260924-223632-style-reasons-url/`,
 `.vm/bench/speedometer-20260924-224117-style-root/`, and
 `.vm/style-reason-restore-build.log`).
+
+### Current live Reddit scroll check
+
+The installed async-seek bundle loaded a visible `/r/popular/` feed. An
+80-notch, 25-ms wheel burst moved it at 57.22 native-view frames/s with a
+47.3 ms worst frame interval. A 300-notch burst delivered all 300 wheel
+events but recorded only 16.26 frames/s and a 5,719 ms presentation gap;
+the before/after screenshots still showed feed posts. A second 300-notch
+run with page-update and media-lifecycle traces reached 23.47 frames/s and
+had a 4,519 ms worst interval. In that trace, one bubbling JavaScript scroll
+listener occupied 2,140.6 ms. Across the run, 32 slow layouts totaled
+5,368.2 ms, including 4,579.8 ms in render-tree layout and 641.7 ms in
+post-layout tasks; these totals include layouts nested in the listener and
+must not be added to its time. Media cancellation accounted for only 12.6
+ms. Native frame queue delay stayed below 0.3 ms in both long runs. The tab
+URL carried Reddit's `js_challenge=1` query even while the feed was visible,
+so site challenge activity may have affected these measurements. The current
+bottleneck is still synchronous page work and layout, not wheel delivery or
+the native view queue (`.vm/bench/scroll-20260924-224550-reddit-current-live/`,
+`.vm/bench/scroll-20260924-224651-reddit-current-long/`, and
+`.vm/bench/scroll-20260924-224809-reddit-current-long-trace/`).
