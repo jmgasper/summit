@@ -3971,3 +3971,17 @@ decode and paint, not exact monitor presentation timing
 (`.vm/bench/scroll-20260925-022247-pgo-guardian-frame-trace/`,
 `.vm/guardian-pgo-frame-idle-video.log`, and
 `.vm/guardian-pgo-frame-idle-video-2.log`).
+
+A further live Reddit `/r/popular/` diagnostic on the PGO build traced the
+same 300-notch wheel burst. The feed was visible and moved, but verbose layout
+instrumentation emitted over 57,000 log lines and reduced the measured burst
+to 1.03 native-view frames/s; that rate is not comparable with the untraced
+runs above. The 32 slow layout passes totaled 7.78 seconds, of which 7.38
+seconds were render-tree layout. Their worst individual pass took 627 ms.
+Inclusive renderer timing was concentrated in nested flex and grid layout;
+these sums overlap and cannot be added. Media cancellation took 38 ms, and
+native UI queue delay stayed below 1 ms. The document still carried Reddit's
+`js_challenge=1` parameter, so challenge behavior may affect this trace.
+The repeated layout work remains the next area to investigate; this trace
+does not isolate a safe layout step to skip
+(`.vm/bench/scroll-20260925-022551-pgo-reddit-long-trace/`).
