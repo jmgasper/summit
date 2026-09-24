@@ -110,7 +110,11 @@ def engine_inputs(inputs):
             if digest(path) != lock['files'][source]:
                 raise RuntimeError('Private libzip differs from its locked input: ' + relative)
             paths.append(path)
-    return expected, paths
+    configuration = dict(expected)
+    for key in ('USE_MIMALLOC', 'USE_SYSTEM_MALLOC', 'USE_SKIA',
+                'USE_HAIKU_GL_COMPOSITING', 'ENABLE_ASYNC_SCROLLING', 'CMAKE_CXX_FLAGS'):
+        configuration[key] = cache.get(key)
+    return configuration, paths
 
 
 def library(name, directory):
