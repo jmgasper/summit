@@ -4059,3 +4059,21 @@ and pending gaps separately while retaining its previous combined maximum
 for historical comparisons
 (`.vm/bench/scroll-20260925-025649-handled-refresh-reddit-80-phases/` and
 `.vm/bench/scroll-20260925-025816-handled-refresh-reddit-80-compositor/`).
+
+### Smooth wheel scrolling trial
+
+The Haiku engine had WebKit's `ENABLE_SMOOTH_SCROLLING` compiled out, and the
+`ScrollAnimatorEnabled` preference defaulted to false. In the coordinated
+scrolling path, a non-precise wheel event can retarget `ScrollAnimationSmooth`
+when both are enabled; the scrolling tree then remains active while the
+animation has frames to present. This may fill some of the 25 ms spaces
+between discrete wheel events, but it requires an isolated comparison because
+the animation also changes perceived wheel latency and compositor work.
+
+The preference's Haiku default is now true in the port patch. An isolated
+Release engine is being built as `WebKitBuild/SkiaCGMiSmooth` with
+`ENABLE_SMOOTH_SCROLLING=ON`, asynchronous scrolling, Skia, GL compositing,
+and mimalloc. The installed PGO bundle remains `bundle-m2di58k1` during the
+trial. The 400-card scroll fixture now accepts `?manual=1` to leave a fixed
+page ready for paced wheel input; it will be the first A/B comparison before
+testing live Reddit.
