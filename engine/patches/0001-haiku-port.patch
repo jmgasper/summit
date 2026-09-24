@@ -81993,7 +81993,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..29b2218c26bef68dbc9061f1727d1f72
  
          if (!m_pendingForceRepaint && m_forcedRepaintAsyncCallback)
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
-index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..da1bc05a09903d3d09056674aaad1540031e6c54 100644
+index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..9482ff00d7a7a5394dd3f54baf752481223d1a2f 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
 @@ -53,6 +53,12 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
@@ -82064,7 +82064,66 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..da1bc05a09903d3d09056674aaad1540
      } else
          m_renderTimer.stop();
  }
-@@ -580,8 +616,16 @@ void ThreadedCompositor::renderLayerTree()
+@@ -364,6 +400,10 @@ TargetContents ThreadedCompositor::paintToCurrentGLContext(const TransformationM
+ #if USE(TEXTURE_MAPPER)
+ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix, const IntSize& size, const OptionSet<CompositionReason>& reasons)
+ {
++#if PLATFORM(HAIKU)
++    const bool tracePaint = traceCompositorTiming();
++    const bigtime_t paintStartedAt = tracePaint ? system_time() : 0;
++#endif
+     FloatRect clipRect(FloatPoint { }, size);
+     TextureMapperLayer& currentRootLayer = m_sceneState->rootLayer().ensureTarget();
+     if (currentRootLayer.transform() != matrix)
+@@ -373,6 +413,9 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
+ 
+     m_textureMapper->beginPainting(m_flipY ? TextureMapper::FlipY::Yes : TextureMapper::FlipY::No);
+     m_textureMapper->beginClip(TransformationMatrix(), FloatRoundedRect(clipRect));
++#if PLATFORM(HAIKU)
++    const bigtime_t clipStartedAt = tracePaint ? system_time() : 0;
++#endif
+ 
+ #if ENABLE(DAMAGE_TRACKING)
+     std::optional<FloatRoundedRect> rectContainingRegionThatActuallyChanged;
+@@ -404,11 +447,20 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
+         m_textureMapper->beginClip(TransformationMatrix(), *rectContainingRegionThatActuallyChanged);
+ #endif
+ 
++#if PLATFORM(HAIKU)
++    const bigtime_t clearedAt = tracePaint ? system_time() : 0;
++#endif
+     m_surface->clear(reasons);
++#if PLATFORM(HAIKU)
++    const bigtime_t layerPaintStartedAt = tracePaint ? system_time() : 0;
++#endif
+ 
+     WTFBeginSignpost(this, PaintTextureMapperLayerTree);
+     currentRootLayer.paint(*m_textureMapper);
+     WTFEndSignpost(this, PaintTextureMapperLayerTree);
++#if PLATFORM(HAIKU)
++    const bigtime_t layerPaintedAt = tracePaint ? system_time() : 0;
++#endif
+ 
+ #if ENABLE(DAMAGE_TRACKING)
+     if (rectContainingRegionThatActuallyChanged)
+@@ -426,6 +478,16 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
+ 
+     m_textureMapper->endClip();
+     m_textureMapper->endPainting();
++#if PLATFORM(HAIKU)
++    if (tracePaint) {
++        const bigtime_t finishedAt = system_time();
++        if (finishedAt - paintStartedAt >= 30000)
++            std::fprintf(stderr, "Summit compositor paint: total=%.1f setup=%.1f damage=%.1f clear=%.1f layers=%.1f finish=%.1f\n",
++                (finishedAt - paintStartedAt) / 1000.0, (clipStartedAt - paintStartedAt) / 1000.0,
++                (clearedAt - clipStartedAt) / 1000.0, (layerPaintStartedAt - clearedAt) / 1000.0,
++                (layerPaintedAt - layerPaintStartedAt) / 1000.0, (finishedAt - layerPaintedAt) / 1000.0);
++    }
++#endif
+ 
+     if (sceneHasRunningAnimations)
+         requestComposition(CompositionReason::Animation);
+@@ -580,8 +642,16 @@ void ThreadedCompositor::renderLayerTree()
  
          ASSERT(m_state.state == State::Scheduled);
          m_state.state = State::InProgress;
@@ -82081,7 +82140,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..da1bc05a09903d3d09056674aaad1540
  #if USE(TEXTURE_MAPPER)
      if (!m_context || !m_context->makeContextCurrent())
          return;
-@@ -599,10 +643,14 @@ void ThreadedCompositor::renderLayerTree()
+@@ -599,10 +669,14 @@ void ThreadedCompositor::renderLayerTree()
      if (viewportSize.isEmpty())
          return;
  
@@ -82096,7 +82155,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..da1bc05a09903d3d09056674aaad1540
  
      RunLoop::mainSingleton().dispatch([this, protectedThis = Ref { *this }] {
          if (m_layerTreeHost)
-@@ -612,10 +660,16 @@ void ThreadedCompositor::renderLayerTree()
+@@ -612,10 +686,16 @@ void ThreadedCompositor::renderLayerTree()
      WTFBeginSignpost(this, FlushCompositingState);
      flushCompositingState(reasons);
      WTFEndSignpost(this, FlushCompositingState);
@@ -82113,7 +82172,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..da1bc05a09903d3d09056674aaad1540
  
      updateFPSCounter();
  
-@@ -633,6 +687,14 @@ void ThreadedCompositor::renderLayerTree()
+@@ -633,6 +713,14 @@ void ThreadedCompositor::renderLayerTree()
  
      m_surface->didRenderFrame(targetContents);
      m_surface->sendFrame();
@@ -82128,7 +82187,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..da1bc05a09903d3d09056674aaad1540
  
      RunLoop::mainSingleton().dispatch([this, protectedThis = Ref { *this }] {
          if (m_layerTreeHost)
-@@ -656,6 +718,13 @@ void ThreadedCompositor::requestComposition(CompositionReason reason)
+@@ -656,6 +744,13 @@ void ThreadedCompositor::requestComposition(CompositionReason reason)
  {
      Locker locker { m_state.lock };
      m_state.reasons.add(reason);
