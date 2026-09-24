@@ -154,7 +154,8 @@ INTERSECTION_TRACE = r'''<script id="summit-intersection-trace">
         finally { gapMeasure[name] += performance.now() - start; }
     };
     function TracedObserver(callback, options) {
-        const record = { callbacks: 0, entries: 0, duration: 0, maxDuration: 0, targets: [] };
+        const record = { callbacks: 0, entries: 0, duration: 0, maxDuration: 0,
+            targets: [], origin: new Error().stack?.split("\n").slice(1, 4).join(" | ") || "" };
         const observerIndex = observers.length;
         const observer = new NativeObserver((entries, instance) => {
             const start = performance.now();

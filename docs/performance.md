@@ -3194,6 +3194,7 @@ which can synchronously call `view.measure()`. The slow third observer is
 consistent with that path, but the existing run did not label targets. The
 opt-in trace now records a few observed target tags and classes so a follow-up
 can establish that mapping before optimizing the measurement path.
+
 ### Reddit HLS seek range regression
 
 On the current workstation bundle, `tools/bench/pages/media-seek.html` loaded a
@@ -3214,8 +3215,7 @@ its keyframe to the requested time. The final workstation bundle
 `bundle-1soo54tz` reached 8.0 seconds after decoding 61 preroll frames from
 the 6-second keyframe, reached `ended` at 12.7 seconds, and selected NVDEC
 H.264 plus AAC (`.vm/bench/probe-20260924-*/` with label
-`reddit-hls-seek-preroll`). The X399 Desktop launcher now points to this
-bundle. The test sets `currentTime` through HTMLMediaElement; the user's
+`reddit-hls-seek-preroll`). The test sets `currentTime` through HTMLMediaElement; the user's
 original Adobe ad and its pointer interaction were not available to retest.
 
 ### Guardian article video check
@@ -3242,3 +3242,30 @@ continued playing from zero without pausing; NVDEC remained selected
 same bundle still sought a non-looping Reddit HLS clip to exactly 8 seconds
 and fired `ended` at 12.7 seconds
 (`.vm/bench/probe-20260924-101909-summit-reddit-seek-loop-candidate/`).
+The X399 Desktop launcher now points to the tested `bundle-7dosgek7`.
+
+### CodeMirror observer measurement comparison
+
+The opt-in CodeMirror callback trace identified the third constructed
+IntersectionObserver as the virtualized gap observer: its construction stack
+points to CodeMirror's `DOMObserver` at asset line 8919. The tooltip observer
+had no targets, the editor intersection observer had one fast callback per
+iteration, and the gap observer ran twice per iteration. At the matched
+1280×887 viewport, the gap callbacks accumulated 180 ms across ten Summit
+iterations. A Firefox 155 run of the same instrumented suite and viewport
+recorded 15 gap callbacks totaling 1 ms. These are diagnostic timings, not
+standard Speedometer scores (`.vm/bench/speedometer-20260924-103121-codemirror-measure-matched/`
+and `.vm/bench/firefox-speedometer-20260924-102344-codemirror-targets/`).
+The construction stacks are in
+`.vm/bench/speedometer-20260924-103457-codemirror-observer-origin/`.
+
+Within Summit's 180 ms, `view.measure()` accounted for 179 ms. Instrumented
+stages summed to 28 ms in `viewState.measure`, 10 ms in measurement reads,
+20 ms in plugin updates, and 20 ms in document-view updates. A repeat that
+also timed measurement writes found only 2 ms in those writes, with 198 ms
+total callback time. The remaining time is spread through the rest of the
+measurement loop, and timer resolution prevents exact subtraction. The gap
+observer's synchronous CodeMirror measurement path is the next candidate
+for native geometry/layout profiling; changing observer dispatch alone would
+leave the callback's work intact
+(`.vm/bench/speedometer-20260924-103246-codemirror-write-phase/`).
