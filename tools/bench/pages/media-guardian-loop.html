@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Guardian loop playback probe</title>
+<video id="video" muted autoplay loop playsinline
+    src="https://uploads.guim.co.uk/2026/09/23/US_delegation_walks_out_during_Iranian_president_s_UNGA_speech--2e6a54b2-a951-428a-81c9-44a74385f0f8-1.0_480w_q8.mp4"></video>
+<script>
+const video = document.getElementById("video");
+const started = performance.now();
+const events = [];
+const samples = [];
+function snapshot(name) {
+    return {name, atMs: Math.round(performance.now() - started),
+        time: video.currentTime, duration: video.duration,
+        readyState: video.readyState, paused: video.paused,
+        quality: video.getVideoPlaybackQuality?.() || null};
+}
+for (const name of ["loadedmetadata", "playing", "waiting", "stalled", "error", "ended", "seeked"])
+    video.addEventListener(name, () => events.push(snapshot(name)));
+const interval = setInterval(() => samples.push(snapshot("sample")), 250);
+video.play().catch(error => events.push({name: "play-rejected", message: String(error)}));
+setTimeout(async () => {
+    clearInterval(interval);
+    const result = {src: video.currentSrc, events, samples,
+        error: video.error && {code: video.error.code, message: video.error.message}};
+    await fetch("/__bench/probe", {method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(result)});
+    document.title = `Guardian probe: ${video.currentTime.toFixed(2)}s`;
+}, 22000);
+</script>
