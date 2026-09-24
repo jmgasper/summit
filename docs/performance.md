@@ -2,18 +2,18 @@
 
 ## Current coordinated Skia result (September 25, 2026)
 
-The workstation launcher uses profile-guided `bundle-1a8lpbnq`: Skia CPU tile painting with
-two workers, GL Canvas, raster coordinated scrollbars, mimalloc, asynchronous
-scrolling, display-rate composition pacing, guarded reuse of exact text
+The workstation launcher uses profile-guided `bundle-m2di58k1`: Skia CPU tile
+painting with two workers, GL Canvas, raster coordinated scrollbars, mimalloc,
+asynchronous scrolling, display-rate composition pacing, guarded reuse of exact text
 widths, and preserved font registrations for simple CSS rule insertions. It
 completes all 580 steps of Speedometer 3.1. The latest matched-viewport
-ten-iteration runs are
-`.vm/bench/speedometer-20260925-020140-pgo-use-full/` and
-`.vm/bench/speedometer-20260925-021356-pgo-use-full-repeat/`.
+ten-iteration run is
+`.vm/bench/speedometer-20260925-024821-handled-refresh-pgo-full/`.
 
 | Browser | Content viewport | Speedometer 3.1, 10 iterations |
 | --- | ---: | ---: |
-| Summit, profile-guided CPU tiles and GL Canvas | 1280×887 | **8.512 ± 0.400**, repeat **8.444 ± 0.456** |
+| Summit, current PGO and handled scroll refresh | 1280×887 | **8.347 ± 0.506** |
+| Summit, prior PGO CPU tiles and GL Canvas | 1280×887 | **8.512 ± 0.400**, repeat **8.444 ± 0.456** |
 | Summit, prior installed CPU tiles and GL Canvas | 1280×887 | **7.185 ± 0.353** |
 | Summit, prior synchronous media seek build | 1280×887 | **7.288 ± 0.359** |
 | Summit, earlier CPU-tile build with GL Canvas off | 1280×887 | **6.730 ± 0.302** |
@@ -21,12 +21,12 @@ ten-iteration runs are
 | Firefox 155 on the same workstation | 1280×887 | **8.338 ± 0.374** |
 | Firefox 155, fresh comparison | 1280×887 | **8.238 ± 0.368** |
 
-These Summit runs were uncontended. The current point scores exceed the fresh
+These Summit runs were uncontended. The current point score exceeds the fresh
 Firefox result, although their uncertainty intervals overlap. The
 profile-guided build is about 17% above the fresh prior-bundle result. Its
 largest remaining suite gaps against Firefox are Preact, CodeMirror, and
-Svelte complex DOM. Older score comparisons in
-this log used different viewport sizes and should be treated as directional.
+Svelte complex DOM. Older score comparisons in this log used different
+viewport sizes and should be treated as directional.
 `tools/bench/compare-runs.py` flags that mismatch.
 `tools/bench/compare-runs.py` gives the per-suite synchronous and asynchronous
 split from the saved results.
@@ -36,11 +36,11 @@ both Haiku's system information and `sysconf`. WebKit's JSC and garbage
 collector discover that count independently. Summit caps Skia CPU tile
 painting at two workers on Haiku because the controlled sweep below found no
 Speedometer gain from four and a large regression from eight. With GL Canvas
-on, the current 400-card scrolling probe ran at 59.65 fps over 600 frames,
-with a 19 ms maximum and no frame above 33 ms
-(`.vm/bench/probe-20260925-020348-summit-pgo-use-scroll/`). Earlier
-live Reddit scrolls showed occasional 650–790 ms gaps attributed to page
-update, layout, or script work; subsequent live Reddit attempts sometimes
+on, the current 400-card scrolling probe ran at 59.47 fps over 600 frames,
+with an 18 ms maximum and no frame above 33 ms
+(`.vm/bench/probe-20260925-025454-summit-handled-refresh-scroll-fixture/`).
+Earlier live Reddit scrolls showed occasional 650–790 ms gaps attributed to
+page update, layout, or script work; subsequent live Reddit attempts sometimes
 received a JavaScript challenge instead of the feed.
 
 ## Scrolling (September 21, 2026)
@@ -3989,8 +3989,8 @@ does not isolate a safe layout step to skip
 The opt-in 16 ms scrolling refresh timer was retried on the PGO build in a
 300-notch A/B/A sequence. Timer-on, timer-off, and timer-on runs delivered
 27.72, 28.47, and 15.50 native-view frames/s, with worst gaps of 1.25, 1.62,
-and 2.62 seconds. The timer did not produce a repeatable improvement, so it
-remains disabled. The scrolling-position trace gives an important limit on
+and 2.62 seconds. The timer did not produce a repeatable long-burst
+improvement on that bundle. The scrolling-position trace gives an important limit on
 these long-burst numbers: each run reached the current document maximum around
 wheel event 110, and about 190 of 300 events occurred at that maximum. The
 first timer-on screenshot showed a post and loading spinner; the second showed
@@ -4033,3 +4033,13 @@ and no media error (`.vm/bench/scroll-20260925-024607-handled-refresh-reddit-80/
 `.vm/bench/speedometer-20260925-024821-handled-refresh-pgo-full/`,
 `.vm/bench/probe-20260925-025031-summit-handled-refresh-guardian-loop/`,
 and `.vm/bench/probe-20260925-025153-summit-handled-refresh-reddit-seek/`).
+
+The candidate's 400-card fixture completed 600 frames at **59.47 frames/s**,
+with no frame interval over 33 ms. The workstation desktop launcher now points
+to `bundle-m2di58k1` and enables the 16 ms timer by default; setting
+`SUMMIT_SCROLL_REFRESH_TIMER=0` disables it for comparison. A desktop-script
+smoke launch started the packaged candidate. The previous launcher is saved
+as `Summit-current.pre-handled-refresh-20260925.sh`. Active Reddit motion is
+substantially better in the measured short bursts, but the 349–454 ms gaps,
+grey media placeholders, and long feed-boundary stalls remain open
+(`.vm/bench/probe-20260925-025454-summit-handled-refresh-scroll-fixture/`).
