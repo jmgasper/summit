@@ -3527,3 +3527,28 @@ substantially because it changed page layout. That experiment does not isolate
 selector matching or support a standard score comparison
 (`.vm/bench/speedometer-20260924-174336-no-large-css/` and
 `.vm/bench/firefox-speedometer-20260924-174422-no-large-css/`).
+
+### Chart.js callback and Skia oval cost
+
+Chart.js is the largest remaining single-suite gap in the latest standard
+full run: 258.0 ms per iteration in Summit versus 189.1 ms in Firefox. In
+matched eight-iteration focused traces, Summit's scatter draw callback took
+96 ms versus Firefox's 75.5 ms, its opaque draw took 70.5 versus 58 ms, and
+the tooltip's animation-frame work took 74 versus 56 ms. WebKit's page trace
+placed the tooltip delay in `requestAnimationFrame` JavaScript; second layout,
+intersection observers, and after-rendering work were effectively zero in
+that update. The timer after the callback took about 1 ms. These runs are
+instrumented and their focused scores are not standard Speedometer results
+(`.vm/bench/speedometer-20260924-181934-chartjs-frame-phases/` and
+`.vm/bench/firefox-speedometer-20260924-182102-chartjs-frame-phases/`).
+
+A temporary native trace measured a median 27.6 ms per 5,000 Canvas `fill()`
+calls in the same Chart.js suite. Damage notifications took about 0.5 ms and
+the Skia drawing call about 26.4 ms. A second trace measured a median 22.3 ms
+inside `SkCanvas::drawOval()` per 5,000 ovals. The oval batches also include
+other Canvas path calls, so these figures are not an exact additive partition.
+Per-call instrumentation increased the measured time and was removed after
+collection. The result points at actual Skia oval rasterization and the
+JavaScript work around drawing, rather than further canvas-damage coalescing
+(`.vm/bench/speedometer-20260924-182602-chartjs-fill-native/` and
+`.vm/bench/speedometer-20260924-183308-chartjs-oval-native/`).
