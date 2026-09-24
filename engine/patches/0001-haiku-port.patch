@@ -818,7 +818,7 @@ index 3ed98dc3dbaef25c50446b187d68975c7323e3cd..84f89195d99dfa3bec558d4145b5f96e
      WTF_EXPORT_PRIVATE URL(GUri*);
      WTF_EXPORT_PRIVATE GRefPtr<GUri> createGUri() const;
 diff --git a/Source/WTF/wtf/WTFProcess.cpp b/Source/WTF/wtf/WTFProcess.cpp
-index 7d01fe9cd0574de69acfa8356e11f20fe557afc0..8eafb23b04da7539e7dc7314685a058841469f07 100644
+index 7d01fe9cd0574de69acfa8356e11f20fe557afc0..9277976a52cf5829e35181db07c99c873897e0c8 100644
 --- a/Source/WTF/wtf/WTFProcess.cpp
 +++ b/Source/WTF/wtf/WTFProcess.cpp
 @@ -27,6 +27,7 @@
@@ -829,7 +829,27 @@ index 7d01fe9cd0574de69acfa8356e11f20fe557afc0..8eafb23b04da7539e7dc7314685a0588
  
  #if OS(UNIX)
  #include <unistd.h>
-@@ -57,6 +58,14 @@ void exitProcess(int status)
+@@ -36,6 +37,19 @@
+ #include <windows.h>
+ #endif
+ 
++#if OS(HAIKU)
++// Haiku exits with _exit(), so instrumented training runs need an explicit
++// flush. Keep ordinary builds independent of libgcov.
++extern "C" void __gcov_dump() __attribute__((weak));
++
++static void dumpProfileBeforeExit()
++{
++    const char* enabled = getenv("SUMMIT_GCOV_DUMP");
++    if (enabled && enabled[0] == '1' && !enabled[1] && __gcov_dump)
++        __gcov_dump();
++}
++#endif
++
+ namespace WTF {
+ 
+ void exitProcess(int status)
+@@ -57,6 +71,15 @@ void exitProcess(int status)
      // The code can reach here only when very buggy anti-virus software hooks are integrated into the system. To make it safe, in that case,
      // let the process crash explicitly.
      CRASH();
@@ -840,9 +860,20 @@ index 7d01fe9cd0574de69acfa8356e11f20fe557afc0..8eafb23b04da7539e7dc7314685a0588
 +    // table can double-free BHandlers. Flush output, then terminate all threads
 +    // together without invoking C++ static teardown.
 +    fflush(nullptr);
++    dumpProfileBeforeExit();
 +    _exit(status);
  #else
      exit(status);
+ #endif
+@@ -68,6 +91,9 @@ void terminateProcess(int status)
+     // On Windows, exitProcess and terminateProcess do the same thing due to its more complicated main thread handling.
+     // See comment in exitProcess.
+     exitProcess(status);
++#elif OS(HAIKU)
++    dumpProfileBeforeExit();
++    _exit(status);
+ #else
+     _exit(status);
  #endif
 diff --git a/Source/WTF/wtf/haiku/LanguageHaiku.cpp b/Source/WTF/wtf/haiku/LanguageHaiku.cpp
 index f7c1f5175e14e27e4c67598f5424782e2af77050..cde8501928cd6510cb4386b3afb6edd1e961b549 100644
