@@ -14399,7 +14399,7 @@ index 30343ff03299542f8673d98b486c7fdd78bddeb9..95d192b9fadc9f7fca017d53ad82885c
          if (const char* envString = getenv("WEBKIT_SKIA_CPU_PAINTING_THREADS")) {
              auto newValue = parseInteger<unsigned>(StringView::fromLatin1(envString));
 diff --git a/Source/WebCore/platform/graphics/texmap/TextureMapper.cpp b/Source/WebCore/platform/graphics/texmap/TextureMapper.cpp
-index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..2b5953275845d32df887c0610324e28c60d87cf5 100644
+index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..a8549588ab7f24c75be1e6607c468e20c0932f5b 100644
 --- a/Source/WebCore/platform/graphics/texmap/TextureMapper.cpp
 +++ b/Source/WebCore/platform/graphics/texmap/TextureMapper.cpp
 @@ -44,6 +44,12 @@
@@ -14415,7 +14415,17 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..2b5953275845d32df887c0610324e28c
  #if USE(CAIRO)
  #include "CairoUtilities.h"
  #include "RefPtrCairo.h"
-@@ -174,7 +180,16 @@ Ref<TextureMapperShaderProgram> TextureMapperGLData::getShaderProgram(TextureMap
+@@ -75,6 +81,9 @@ public:
+     bool didModifyStencil { false };
+     GLint previousScissorState { 0 };
+     GLint previousDepthState { 0 };
++#if PLATFORM(HAIKU)
++    bool warmedRoundedSolidColor { false };
++#endif
+     std::array<GLint, 4> viewport { };
+     std::array<GLint, 4> previousScissor { };
+     double zNear { 0 };
+@@ -174,7 +183,16 @@ Ref<TextureMapperShaderProgram> TextureMapperGLData::getShaderProgram(TextureMap
  {
      ASSERT(!options.isEmpty());
      auto addResult = m_sharedGLData->m_programs.ensure(options.toRaw(), [options] {
@@ -14433,7 +14443,22 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..2b5953275845d32df887c0610324e28c
      });
      return *addResult.iterator->value;
  }
-@@ -801,6 +816,10 @@ void TextureMapper::drawTexturePackedYUV(GLuint texture, const std::array<GLfloa
+@@ -234,6 +252,14 @@ ClipStack& TextureMapper::clipStack()
+ 
+ void TextureMapper::beginPainting(FlipY flipY, BitmapTexture* surface)
+ {
++#if PLATFORM(HAIKU)
++    // Reddit can first use this variant after scrolling begins. Compile it on
++    // the first compositor paint so shader creation does not interrupt a frame.
++    if (!data().warmedRoundedSolidColor) {
++        data().getShaderProgram({ TextureMapperShaderProgram::SolidColor, TextureMapperShaderProgram::RoundedRectClip });
++        data().warmedRoundedSolidColor = true;
++    }
++#endif
+     glGetIntegerv(GL_CURRENT_PROGRAM, &data().previousProgram);
+     data().previousScissorState = glIsEnabled(GL_SCISSOR_TEST);
+     data().previousDepthState = glIsEnabled(GL_DEPTH_TEST);
+@@ -801,6 +827,10 @@ void TextureMapper::drawTexturePackedYUV(GLuint texture, const std::array<GLfloa
  
  void TextureMapper::drawSolidColor(const FloatRect& rect, const TransformationMatrix& matrix, const Color& color, bool isBlendingAllowed)
  {
@@ -14444,7 +14469,7 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..2b5953275845d32df887c0610324e28c
      OptionSet<TextureMapperFlags> flags;
      TextureMapperShaderProgram::Options options = TextureMapperShaderProgram::SolidColor;
      if (!matrix.mapQuad(rect).isRectilinear()) {
-@@ -817,6 +836,9 @@ void TextureMapper::drawSolidColor(const FloatRect& rect, const TransformationMa
+@@ -817,6 +847,9 @@ void TextureMapper::drawSolidColor(const FloatRect& rect, const TransformationMa
      }
  
      Ref<TextureMapperShaderProgram> program = data().getShaderProgram(options);
@@ -14454,7 +14479,7 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..2b5953275845d32df887c0610324e28c
      glUseProgram(program->programID());
  
      if (clipStack().isRoundedRectClipEnabled())
-@@ -828,6 +850,13 @@ void TextureMapper::drawSolidColor(const FloatRect& rect, const TransformationMa
+@@ -828,6 +861,13 @@ void TextureMapper::drawSolidColor(const FloatRect& rect, const TransformationMa
          flags.add(TextureMapperFlags::ShouldBlend);
  
      draw(rect, matrix, program.get(), GL_TRIANGLE_FAN, flags);
