@@ -3204,5 +3204,35 @@ metadata briefly reported 8 seconds, but playback started from zero
 WebCore's seek task aborts when `seekable` is empty. The Haiku backend reported
 `maxTimeSeekable()` as `currentTime()` even though its finite HLS source has
 been downloaded and its duration is known. Report the duration as the end of
-the seekable range, as the other finite-file backends do. A workstation build
-and before/after seek probe are pending.
+the seekable range, as the other finite-file backends do. The first rebuilt
+bundle exposed `[0, 12.7]` and fired `seeked`, but Media Kit returned the
+preceding keyframe at 5.97 seconds for an 8-second seek
+(`.vm/bench/probe-20260924-*/` with label `reddit-hls-seek-fixed`).
+
+Keep the requested audio and video seek times separate, then decode video from
+its keyframe to the requested time. The final workstation bundle
+`bundle-1soo54tz` reached 8.0 seconds after decoding 61 preroll frames from
+the 6-second keyframe, reached `ended` at 12.7 seconds, and selected NVDEC
+H.264 plus AAC (`.vm/bench/probe-20260924-*/` with label
+`reddit-hls-seek-preroll`). The X399 Desktop launcher now points to this
+bundle. The test sets `currentTime` through HTMLMediaElement; the user's
+original Adobe ad and its pointer interaction were not available to retest.
+
+### Guardian article video check
+
+The inline self-hosted clip on the reported Guardian article is 480×384 H.264
+and AAC at 25 fps, 19.56 seconds long. The standalone page
+`tools/bench/pages/media-guardian-loop.html` completed on both the previous
+bundle and `bundle-1soo54tz`: each decoded 489 frames through NVDEC and had
+no playback-clock stalls before the end. The new bundle releases the media
+lock before the video thread waits for its next frame, so audio callbacks and
+seeks no longer queue behind that intentional wait. This check does not prove
+that every frame was presented smoothly.
+
+On the full article, an idle five-second window with the inline video visible
+reported 59.6 native-view frames/s with no interval over 33 ms. A cookie
+consent layer covered the video in the screenshot, so this run cannot establish
+visual playback quality (`.vm/bench/scroll-20260924-100927-guardian-article-video/`).
+The standalone clip also stopped at 19.56 seconds despite its `loop` attribute;
+the Haiku backend currently discards its media tracks at end-of-stream, leaving
+no tracks for a loop seek. That remains a separate media correctness issue.
