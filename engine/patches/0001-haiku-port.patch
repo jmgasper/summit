@@ -25525,6 +25525,53 @@ index bbc577b4dc47a315d4a9125d061367fdabc0fe8f..3276570b646bc237ae9e53811052111f
          }
      } else if (canCreateIntrinsicLogicalHeightsCacheForRowSizingFirstPass)
          m_intrinsicLogicalHeightsForRowSizingFirstPass.emplace();
+diff --git a/Source/WebCore/rendering/RenderObject.cpp b/Source/WebCore/rendering/RenderObject.cpp
+index 081e0ed00cf062459897b311d3e44d98235b4ba5..71bc576608631cb022c950ef9f0151532d4f3b5d 100644
+--- a/Source/WebCore/rendering/RenderObject.cpp
++++ b/Source/WebCore/rendering/RenderObject.cpp
+@@ -34,6 +34,7 @@
+ #include "DocumentView.h"
+ #include "EditingInlines.h"
+ #include "Editor.h"
++#include "Element.h"
+ #include "ElementAncestorIteratorInlines.h"
+ #include "FloatQuad.h"
+ #include "FrameSelection.h"
+@@ -98,6 +99,8 @@
+ #include "TransformState.h"
+ #include "ViewTransition.h"
+ #include <algorithm>
++#include <cstdlib>
++#include <wtf/text/CString.h>
+ #include <stdio.h>
+ #include <wtf/HexNumber.h>
+ #include <wtf/Seconds.h>
+@@ -582,8 +585,24 @@ void RenderObject::clearNeedsLayout(HadSkippedLayout hadSkippedLayout)
+ 
+ void RenderObject::scheduleLayout(RenderElement* layoutRoot)
+ {
+-    if (auto* renderView = dynamicDowncast<RenderView>(layoutRoot))
++    if (auto* renderView = dynamicDowncast<RenderView>(layoutRoot)) {
++#if PLATFORM(HAIKU)
++        static bool traceInvalidations = [] {
++            const char* value = std::getenv("SUMMIT_LAYOUT_INVALIDATION_TRACE");
++            return value && value[0] == '1' && !value[1];
++        }();
++        if (traceInvalidations) {
++            auto* sourceNode = node();
++            auto* sourceElement = dynamicDowncast<Element>(sourceNode);
++            auto nodeName = sourceNode ? sourceNode->nodeName().utf8() : CString { };
++            auto id = sourceElement ? sourceElement->getAttribute(HTMLNames::idAttr).string().utf8() : CString { };
++            auto classes = sourceElement ? sourceElement->getAttribute(HTMLNames::classAttr).string().utf8() : CString { };
++            WTFLogAlways("Summit layout invalidation: renderer=%p type=%s node=%s id=%s class=%s\n",
++                this, renderName().characters(), nodeName.data(), id.data(), classes.data());
++        }
++#endif
+         return protect(renderView->frameView().layoutContext())->scheduleLayout();
++    }
+ 
+     if (layoutRoot && layoutRoot->isRooted())
+         protect(layoutRoot->view().frameView().layoutContext())->scheduleSubtreeLayout(*layoutRoot);
 diff --git a/Source/WebCore/rendering/haiku/RenderThemeHaiku.cpp b/Source/WebCore/rendering/haiku/RenderThemeHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..92d20a3ff6fd83acdf255b10fa5b68cdfff528ae

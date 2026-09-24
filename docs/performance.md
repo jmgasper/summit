@@ -3242,7 +3242,7 @@ continued playing from zero without pausing; NVDEC remained selected
 same bundle still sought a non-looping Reddit HLS clip to exactly 8 seconds
 and fired `ended` at 12.7 seconds
 (`.vm/bench/probe-20260924-101909-summit-reddit-seek-loop-candidate/`).
-The X399 Desktop launcher now points to the tested `bundle-7dosgek7`.
+The X399 Desktop launcher was initially moved to the tested `bundle-7dosgek7`.
 
 ### CodeMirror observer measurement comparison
 
@@ -3315,4 +3315,27 @@ looped. On the full article, callbacks fell from one per decode to 846 per
 999 decoded frames, but only 764 frames painted and callback queue delays
 still exceeded 40 ms frequently. This did not improve the observed choppiness,
 so the trial was removed. Its diagnostic bundle was `bundle-eg5ddl7f`; the
-production launcher continues to use the tested `bundle-7dosgek7`.
+production launcher was then moved to the tested trace-only
+`bundle-2t4h8ozv`.
+
+Further tracing on the full article with `SUMMIT_PAGE_UPDATE_TRACE=2` found
+nine rendering updates over 33 ms during playback. Their initial-layout
+phases totaled 702 ms of 731 ms. With trace level 1, more frequent layouts
+were visible: 127 over 10 ms during an inline-video window, totaling 4.33 s;
+4.26 s was render-tree work. They were full-tree layouts, usually around
+34 ms, with no single renderer above 10 ms accounting for most of the cost.
+When the video scrolled out of view and stopped, repeated layouts and frame
+handoffs stopped as well
+(`.vm/bench/scroll-20260924-111641-guardian-page-update/` and
+`.vm/bench/scroll-20260924-111844-guardian-renderer-layout/`).
+
+An opt-in `SUMMIT_LAYOUT_INVALIDATION_TRACE=1` now records the renderer and
+element that requests each full layout. On the same article it showed a
+positioned `span` changing style repeatedly; roughly every quarter second,
+the root `html` renderer and a positioned link and span were invalidated
+together. Those bursts coincide with video repaint queue waits above 40 ms.
+The trace identifies renderers but does not identify the JavaScript call site
+or prove which invalidation is necessary, so no layout behavior was changed
+(`.vm/bench/scroll-20260924-112843-guardian-invalidation-source/`).
+The current workstation launcher uses `bundle-3yuxtup5`, which adds only this
+disabled-by-default diagnostic to the same playback code.
