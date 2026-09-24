@@ -4273,3 +4273,14 @@ to `bundle-7rru9cb6`; its previous script is saved as
 `Summit-current.pre-media-coalesce-20260925.sh`
 (`.vm/bench/probe-20260925-072556-summit-coalesced-guardian-seek/` and
 `.vm/bench/probe-20260925-072632-summit-coalesced-reddit-seek/`).
+
+A ten-burst live `/r/popular/` scroll check on the installed candidate
+delivered all 800 wheel events and had a median **58.7 active fps**. The
+worst active interframe gap was 63.9 ms, and the largest native view queue
+delay was 3.2 ms. The feed remained visible after settling. Several longer
+gaps appeared only in the quarter-second animation-tail snapshots, after
+the wheel burst's active interval; they do not establish a long active
+scroll stall. No `SUMMIT_COMPOSITOR_TIMING_TRACE=1` paint phase exceeded its
+30 ms reporting threshold in this run. The earlier intermittent 246 ms
+compositor paint on Reddit remains unresolved
+(`.vm/bench/scroll-cycles-20260925-072832-media-coalesce-reddit/`).
