@@ -4284,3 +4284,25 @@ scroll stall. No `SUMMIT_COMPOSITOR_TIMING_TRACE=1` paint phase exceeded its
 30 ms reporting threshold in this run. The earlier intermittent 246 ms
 compositor paint on Reddit remains unresolved
 (`.vm/bench/scroll-cycles-20260925-072832-media-coalesce-reddit/`).
+
+An extended 40-burst repeat delivered all 3,200 wheel events at a median
+**58.77 active fps** and ended with visible feed content. One burst recorded
+a 134.3 ms active-snapshot interframe gap, with only 0.1 ms native queue
+delay. Its compositor trace had a 119.4 ms gap between frame starts near the
+end of the burst, but no composition request during that interval and no
+paint phase over 30 ms. The gap overlaps the burst's animation tail, so the
+counters alone cannot assign the delay to active input or page work. It
+differs from the earlier 246 ms layer-paint
+stall and leaves the long-tail Reddit problem open
+(`.vm/bench/scroll-cycles-20260925-073040-media-coalesce-reddit-long/`).
+
+The installed media candidate completed a ten-iteration local Speedometer
+3.1 run at the comparison viewport of **1280×887**, scoring
+**8.475 ± 0.414** without measured foreign CPU contention. This is within
+the spread of the prior smooth-PGO runs, 8.338 ± 0.398 and 8.544 ± 0.434,
+and its point score remains above the fresh Firefox 155 run's
+8.238 ± 0.368; their uncertainty intervals overlap. An earlier candidate
+run at **1913×945** scored 8.451 ± 0.432 but is excluded from the
+same-viewport comparison
+(`.vm/bench/speedometer-20260925-073426-media-coalesce-full/` and
+`.vm/bench/speedometer-20260925-073640-media-coalesce-matched/`).
