@@ -3713,3 +3713,25 @@ The workstation desktop launcher now sets `SUMMIT_SKIA_GL_CONTEXT=1` by
 default to use the measured Canvas gain. `SUMMIT_SKIA_GL_CONTEXT=0` overrides
 it for comparison. The underlying bundle is still `bundle-s8a06mrs`; no
 engine rebuild was needed for this launcher change.
+
+### GPU tile painting revisited after raster scrollbars
+
+An opt-in Haiku trial enabled Skia GPU tile painting while retaining GL
+Canvas and the new raster scrollbar. This isolates the previous scrollbar
+GL-context failure from tile painting. On the 600-frame 400-card fixture,
+two GPU paint workers reached 59.59 fps and one reached 59.68 fps, versus
+58.94 fps for CPU tiles, with no frame over 33 ms in any run. Mesa still
+logged two Zink image-creation errors with two GPU workers and one with a
+single worker
+(`.vm/bench/probe-20260924-203040-summit-gpu-tiles-raster-scroll/` and
+`.vm/bench/probe-20260924-203339-summit-gpu-tiles-one-worker-scroll/`).
+
+At 1280×887, ten uncontended Speedometer 3.1 iterations scored
+7.172 ± 0.341 with two GPU paint workers and 7.096 ± 0.360 with one,
+against the matched CPU-tile 7.288 ± 0.359. The confidence ranges overlap,
+so this does not establish a precise slowdown, but it provides no benchmark
+gain and the GPU runs logged five and three Zink errors, respectively. The
+trial was removed and the workstation engine restored to the committed
+CPU-tile path. The installed desktop launcher was unchanged
+(`.vm/bench/speedometer-20260924-203129-gpu-tiles-raster-full/` and
+`.vm/bench/speedometer-20260924-203438-gpu-tiles-one-worker-full/`).
