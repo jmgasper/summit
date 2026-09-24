@@ -64,6 +64,7 @@ const environment = () => ({
     hardwareConcurrency: navigator.hardwareConcurrency,
     innerWidth, innerHeight, devicePixelRatio,
     visibilityState: document.visibilityState,
+    clockOffsetMs: Date.now() - performance.now(),
 });
 if (!client) {
     send("error", { message: "globalThis.benchmarkClient is missing", environment: environment() });
@@ -96,6 +97,7 @@ if (!client) {
             },
             score: plain.Score, geomean: plain.Geomean,
             metrics: plain, measuredValuesList: this._measuredValuesList,
+            rafPhaseTrace: globalThis.__summitRafPhaseTrace,
         });
     });
     wrap("handleError", (error) => send("error", {
@@ -105,6 +107,42 @@ if (!client) {
 }
 </script>
 '''
+
+# Diagnostic only. Record the rAF-to-timer phases of each scored step without
+# editing the pinned Speedometer checkout. The injected result is marked
+# instrumented and must not be used as a standard benchmark score.
+RAF_PHASE_TRACE_PATCHES = (
+    (
+        b'''requestAnimationFrame(() => {
+            setTimeout(() => {
+                this._asyncCallback();''',
+        b'''requestAnimationFrame(() => {
+            this._summitTrace.secondRafAt = performance.now();
+            setTimeout(() => {
+                this._asyncCallback();''',
+    ),
+    (
+        b'''const invoker = new invokerClass(runSync, measureAsync, report);
+
+        return invoker.start();''',
+        b'''const trace = { suite: suite.name, test: test.name };
+        const tracedRunSync = () => {
+            trace.firstRafAt = performance.now();
+            runSync();
+            trace.syncDoneAt = performance.now();
+        };
+        const tracedMeasureAsync = () => {
+            trace.timerAt = performance.now();
+            measureAsync();
+            trace.measureDoneAt = performance.now();
+            (globalThis.__summitRafPhaseTrace ||= []).push(trace);
+        };
+        const invoker = new invokerClass(tracedRunSync, tracedMeasureAsync, report);
+        invoker._summitTrace = trace;
+        trace.scheduledAt = performance.now();
+        return invoker.start();''',
+    ),
+)
 
 # Optional and off by default: one sendBeacon per test, issued from willRunTest
 # (outside the timed region, but it does add network activity to the run, so
@@ -271,13 +309,14 @@ CODEMIRROR_MEASURE_TRACE = (
 
 
 class State:
-    def __init__(self, source, out_dir, cache_policy, progress, intersection_trace, intersection_defer_gap):
+    def __init__(self, source, out_dir, cache_policy, progress, intersection_trace, intersection_defer_gap, raf_phase_trace):
         self.source = source
         self.out_dir = out_dir
         self.cache_policy = cache_policy
         self.progress = progress
         self.intersection_trace = intersection_trace
         self.intersection_defer_gap = intersection_defer_gap
+        self.raf_phase_trace = raf_phase_trace
         self.lock = threading.Lock()
         self.started = time.time()
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -359,12 +398,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         base_is_source = not split.path.startswith('/__bench/')
         data = target.read_bytes()
         if is_entry:
-            script = COLLECTOR.replace('/*PROGRESS*/false', 'true' if (self.state.progress or self.state.intersection_trace) else 'false')
+            script = COLLECTOR.replace('/*PROGRESS*/false', 'true' if (self.state.progress or self.state.intersection_trace or self.state.raf_phase_trace) else 'false')
             script = script.replace('/*PROGRESS_HOOK*/', PROGRESS_HOOK if self.state.progress else '')
             marker = b'</head>'
             if data.count(marker) != 1:
                 return self.respond(500, b'Unexpected Speedometer index.html layout\n', head=head)
             data = data.replace(marker, script.encode() + marker)
+        elif self.state.raf_phase_trace and split.path == '/resources/benchmark-runner.mjs':
+            for original, replacement in RAF_PHASE_TRACE_PATCHES:
+                if data.count(original) != 1:
+                    return self.respond(500, b'Unexpected Speedometer runner layout\n', head=head)
+                data = data.replace(original, replacement)
         elif self.state.intersection_trace and split.path == '/resources/editors/dist/codemirror.html':
             marker = b'<script type="module" crossorigin src="./assets/codemirror-521de7ab.js"></script>'
             if data.count(marker) != 1:
@@ -447,6 +491,8 @@ def main():
                         help='time CodeMirror IntersectionObserver callbacks (diagnostic; result marked instrumented)')
     parser.add_argument('--intersection-defer-gap', action='store_true',
                         help='deliver CodeMirror gap observer callbacks in the next animation frame (diagnostic only)')
+    parser.add_argument('--raf-phase-trace', action='store_true',
+                        help='record rAF, timer, and layout-read phases per test (diagnostic only)')
     args = parser.parse_args()
     if args.intersection_defer_gap and not args.intersection_trace:
         parser.error('--intersection-defer-gap requires --intersection-trace')
@@ -455,7 +501,7 @@ def main():
         sys.exit(f'{source} is not a Speedometer checkout; see docs/performance.md')
     out_dir = (args.out_dir or ROOT / '.vm/bench' / time.strftime('manual-%Y%m%d-%H%M%S')).resolve()
     Handler.state = State(source, out_dir, args.cache_policy, args.progress_beacons,
-                          args.intersection_trace, args.intersection_defer_gap)
+                          args.intersection_trace, args.intersection_defer_gap, args.raf_phase_trace)
     server = Server((args.bind, args.port), Handler)
     print(f'[serve-speedometer] {source} on http://{args.bind}:{args.port}/'
           f' cache={args.cache_policy} out={out_dir}', flush=True)

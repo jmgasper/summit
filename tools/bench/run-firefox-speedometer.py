@@ -34,6 +34,8 @@ def main():
     parser.add_argument('--suites', default='', help='comma-separated suite names (diagnostic)')
     parser.add_argument('--intersection-trace', action='store_true',
                         help='time CodeMirror IntersectionObserver callbacks (diagnostic)')
+    parser.add_argument('--raf-phase-trace', action='store_true',
+                        help='record rAF and timer phases per test (diagnostic only)')
     parser.add_argument('--port', type=int, default=8932)
     parser.add_argument('--timeout', type=int, default=3600)
     parser.add_argument('--settle', type=float, default=25, help='seconds to let Firefox start before navigating')
@@ -51,7 +53,8 @@ def main():
     url = f'http://{guest.HOST_ADDRESS}:{args.port}/?{query}'
     run = {'id': run_id, 'browser': 'firefox', 'machine': guest.HOST, 'url': url,
            'iterations': args.iterations, 'suites': args.suites,
-           'intersectionTrace': args.intersection_trace, 'directory': str(directory),
+           'intersectionTrace': args.intersection_trace, 'rafPhaseTrace': args.raf_phase_trace,
+           'directory': str(directory),
            'startedAt': time.strftime('%Y-%m-%dT%H:%M:%S%z'), 'outcome': 'not-started'}
 
     def save():
@@ -62,6 +65,8 @@ def main():
                       '--bind', guest.SERVER_BIND, '--out-dir', str(directory), '--cache-policy', 'official']
     if args.intersection_trace:
         server_command.append('--intersection-trace')
+    if args.raf_phase_trace:
+        server_command.append('--raf-phase-trace')
     server = subprocess.Popen(
         server_command,
         stdout=(directory / 'server.log').open('w'), stderr=subprocess.STDOUT)

@@ -2795,7 +2795,7 @@ index 09a183df0ec9fd9640290b123cf53214caaeaca9..23759bca52d31395a8e5b907ee821ab7
      void didMutate();
      
 diff --git a/Source/WebCore/dom/Document.cpp b/Source/WebCore/dom/Document.cpp
-index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..d7c57dfaa2cd80e80f165d4bf7e85384866030e7 100644
+index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..49341ab5570aa84b3c98f1fe2959c13d78a9039f 100644
 --- a/Source/WebCore/dom/Document.cpp
 +++ b/Source/WebCore/dom/Document.cpp
 @@ -383,6 +383,7 @@
@@ -2806,7 +2806,190 @@ index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..d7c57dfaa2cd80e80f165d4bf7e85384
  #include <ctime>
  #include <ranges>
  #include <wtf/ASCIICType.h>
-@@ -3494,6 +3495,9 @@ void Document::createRenderTree()
+@@ -2811,6 +2812,17 @@ void Document::updateRenderTree(std::unique_ptr<Style::Update> styleUpdate)
+ 
+ void Document::resolveStyle(ResolveStyleType type)
+ {
++#if PLATFORM(HAIKU)
++    static bool summitStyleTraceEnabled = [] {
++        const char* value = std::getenv("SUMMIT_PAGE_UPDATE_TRACE");
++        return value && value[0] == '3' && !value[1];
++    }();
++    auto styleTraceStart = summitStyleTraceEnabled ? MonotonicTime::now() : MonotonicTime { };
++    Seconds treeResolveDuration;
++    Seconds renderTreeDuration;
++    Seconds interleavedLayoutDuration;
++    Seconds styleCompositingDuration;
++#endif
+     ScriptDisallowedScope::InMainThread scriptDisallowedScope;
+ 
+     ASSERT(!view() || !view()->isPainting());
+@@ -2879,19 +2891,45 @@ void Document::resolveStyle(ResolveStyleType type)
+ 
+         {
+             Style::TreeResolver resolver(*this, WTF::move(m_pendingRenderTreeUpdate));
++#if PLATFORM(HAIKU)
++            auto treeResolveStart = summitStyleTraceEnabled ? MonotonicTime::now() : MonotonicTime { };
++#endif
+             auto styleUpdate = resolver.resolve();
++#if PLATFORM(HAIKU)
++            if (summitStyleTraceEnabled)
++                treeResolveDuration += MonotonicTime::now() - treeResolveStart;
++#endif
+ 
+             while (resolver.needsInterleavedLayout()) {
+                 if (styleUpdate) {
+                     SetForScope interleavedLayoutScope(m_isInStyleInterleavedLayout, true);
+ 
++#if PLATFORM(HAIKU)
++                    auto renderTreeStart = summitStyleTraceEnabled ? MonotonicTime::now() : MonotonicTime { };
++#endif
+                     updateRenderTree(WTF::move(styleUpdate));
++#if PLATFORM(HAIKU)
++                    if (summitStyleTraceEnabled)
++                        renderTreeDuration += MonotonicTime::now() - renderTreeStart;
++                    auto interleavedLayoutStart = summitStyleTraceEnabled ? MonotonicTime::now() : MonotonicTime { };
++#endif
+ 
+                     if (frameView->layoutContext().needsLayout())
+                         frameView->layoutContext().interleavedLayout();
++#if PLATFORM(HAIKU)
++                    if (summitStyleTraceEnabled)
++                        interleavedLayoutDuration += MonotonicTime::now() - interleavedLayoutStart;
++#endif
+                 }
+ 
++#if PLATFORM(HAIKU)
++                auto treeResolveStart = summitStyleTraceEnabled ? MonotonicTime::now() : MonotonicTime { };
++#endif
+                 styleUpdate = resolver.resolve();
++#if PLATFORM(HAIKU)
++                if (summitStyleTraceEnabled)
++                    treeResolveDuration += MonotonicTime::now() - treeResolveStart;
++#endif
+             }
+ 
+             m_lastStyleUpdateSizeForTesting = styleUpdate ? styleUpdate->size() : 0;
+@@ -2906,12 +2944,26 @@ void Document::resolveStyle(ResolveStyleType type)
+                 fontLoader->loadPendingFonts();
+ 
+             if (styleUpdate) {
++#if PLATFORM(HAIKU)
++                auto renderTreeStart = summitStyleTraceEnabled ? MonotonicTime::now() : MonotonicTime { };
++#endif
+                 updateRenderTree(WTF::move(styleUpdate));
+                 frameView->styleAndRenderTreeDidChange();
++#if PLATFORM(HAIKU)
++                if (summitStyleTraceEnabled)
++                    renderTreeDuration += MonotonicTime::now() - renderTreeStart;
++#endif
+             }
+         }
+ 
++#if PLATFORM(HAIKU)
++        auto styleCompositingStart = summitStyleTraceEnabled ? MonotonicTime::now() : MonotonicTime { };
++#endif
+         updatedCompositingLayers = frameView->layoutContext().updateCompositingLayersAfterStyleChange();
++#if PLATFORM(HAIKU)
++        if (summitStyleTraceEnabled)
++            styleCompositingDuration += MonotonicTime::now() - styleCompositingStart;
++#endif
+ 
+         if (m_renderView->needsLayout())
+             frameView->layoutContext().scheduleLayout();
+@@ -2938,6 +2990,14 @@ void Document::resolveStyle(ResolveStyleType type)
+     // Re-evaluate speculation rules after DOM changes that trigger style recalculation.
+     // That helps ensure CSS selector matching works correctly.
+     considerSpeculationRules();
++#if PLATFORM(HAIKU)
++    if (summitStyleTraceEnabled) {
++        auto total = MonotonicTime::now() - styleTraceStart;
++        if (total >= 5_ms)
++            WTFLogAlways("Summit style phases: wall=%.3f document=%p total=%.1f resolve=%.1f renderTree=%.1f interleavedLayout=%.1f compositing=%.1f url=%s\n",
++                WallTime::now().secondsSinceEpoch().milliseconds(), this, total.milliseconds(), treeResolveDuration.milliseconds(), renderTreeDuration.milliseconds(), interleavedLayoutDuration.milliseconds(), styleCompositingDuration.milliseconds(), reinterpret_cast<const char*>(url().string().utf8().data()));
++    }
++#endif
+ }
+ 
+ void Document::updateTextRenderer(Text& text, unsigned offsetOfReplacedText, unsigned lengthOfReplacedText)
+@@ -3081,6 +3141,16 @@ static RenderElement* rootForSkippedLayout(RenderElement& rootCandidate)
+ 
+ auto Document::updateLayout(OptionSet<LayoutOptions> layoutOptions, const Element* context) -> UpdateLayoutResult
+ {
++#if PLATFORM(HAIKU)
++    static bool summitLayoutTraceEnabled = [] {
++        const char* value = std::getenv("SUMMIT_PAGE_UPDATE_TRACE");
++        return value && value[0] == '3' && !value[1];
++    }();
++    auto traceStart = summitLayoutTraceEnabled ? MonotonicTime::now() : MonotonicTime { };
++    Seconds styleDuration;
++    Seconds layoutDuration;
++    Seconds compositingDuration;
++#endif
+     bool oldIgnore = m_ignorePendingStylesheets;
+ 
+     if (layoutOptions.contains(LayoutOptions::IgnorePendingStylesheets)) {
+@@ -3118,8 +3188,15 @@ auto Document::updateLayout(OptionSet<LayoutOptions> layoutOptions, const Elemen
+                 result = UpdateLayoutResult::ChangesDone;
+         }
+ 
++#if PLATFORM(HAIKU)
++        auto styleStart = summitLayoutTraceEnabled ? MonotonicTime::now() : MonotonicTime { };
++#endif
+         if (updateStyleIfNeeded())
+             result = UpdateLayoutResult::ChangesDone;
++#if PLATFORM(HAIKU)
++        if (summitLayoutTraceEnabled)
++            styleDuration += MonotonicTime::now() - styleStart;
++#endif
+ 
+         // LBSE: drain queued transform-attribute updates after style recalc so updateLayerTransform
+         // sees post-style geometry and re-enqueues from style callbacks land in this pass.
+@@ -3186,6 +3263,9 @@ auto Document::updateLayout(OptionSet<LayoutOptions> layoutOptions, const Elemen
+                 return true;
+             };
+ 
++#if PLATFORM(HAIKU)
++            auto layoutStart = summitLayoutTraceEnabled ? MonotonicTime::now() : MonotonicTime { };
++#endif
+             auto didRunLayout = runForcedLayoutOnSkippedContentIfNeeded();
+             if (!didRunLayout && layoutContext->needsLayout(layoutOptions)) {
+                 layoutContext->layout(layoutOptions.contains(LayoutOptions::CanDeferUpdateLayerPositions));
+@@ -3193,9 +3273,18 @@ auto Document::updateLayout(OptionSet<LayoutOptions> layoutOptions, const Elemen
+             }
+ 
+             result = didRunLayout ? UpdateLayoutResult::ChangesDone : result;
++#if PLATFORM(HAIKU)
++            if (summitLayoutTraceEnabled)
++                layoutDuration += MonotonicTime::now() - layoutStart;
++            auto compositingStart = summitLayoutTraceEnabled ? MonotonicTime::now() : MonotonicTime { };
++#endif
+ 
+             if (layoutOptions.contains(LayoutOptions::UpdateCompositingLayers) && layoutContext->updateCompositingLayersAfterLayoutIfNeeded())
+                 result = UpdateLayoutResult::ChangesDone;
++#if PLATFORM(HAIKU)
++            if (summitLayoutTraceEnabled)
++                compositingDuration += MonotonicTime::now() - compositingStart;
++#endif
+         }
+     }
+ 
+@@ -3203,6 +3292,14 @@ auto Document::updateLayout(OptionSet<LayoutOptions> layoutOptions, const Elemen
+         protect(view())->flushAnyPendingPostLayoutTasks();
+ 
+     m_ignorePendingStylesheets = oldIgnore;
++#if PLATFORM(HAIKU)
++    if (summitLayoutTraceEnabled) {
++        auto total = MonotonicTime::now() - traceStart;
++        if (total >= 5_ms)
++            WTFLogAlways("Summit document layout: wall=%.3f document=%p total=%.1f style=%.1f layout=%.1f compositing=%.1f url=%s\n",
++                WallTime::now().secondsSinceEpoch().milliseconds(), this, total.milliseconds(), styleDuration.milliseconds(), layoutDuration.milliseconds(), compositingDuration.milliseconds(), reinterpret_cast<const char*>(url().string().utf8().data()));
++    }
++#endif
+     return result;
+ }
+ 
+@@ -3494,6 +3591,9 @@ void Document::createRenderTree()
  
      renderView->setIsInWindow(true);
  
@@ -2816,7 +2999,7 @@ index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..d7c57dfaa2cd80e80f165d4bf7e85384
      resolveStyle(ResolveStyleType::Rebuild);
  
  #if PLATFORM(MAC)
-@@ -5999,6 +6003,37 @@ void Document::runScrollSteps()
+@@ -5999,6 +6099,37 @@ void Document::runScrollSteps()
      if (auto page = this->page(); page && page->shouldDeferScrollEvents())
          return;
  
@@ -2854,7 +3037,7 @@ index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..d7c57dfaa2cd80e80f165d4bf7e85384
      // Service user scroll animations before scroll event dispatch.
      if (RefPtr frameView = view()) {
          MonotonicTime now = MonotonicTime::now();
-@@ -6020,7 +6055,13 @@ void Document::runScrollSteps()
+@@ -6020,7 +6151,13 @@ void Document::runScrollSteps()
          if (scrollAnimationsInProgress)
              protect(page())->scheduleRenderingUpdate({ RenderingUpdateStep::Scroll });
  
@@ -2868,7 +3051,7 @@ index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..d7c57dfaa2cd80e80f165d4bf7e85384
      }
  
      // FIXME: The order of dispatching is not specified: https://github.com/WICG/visual-viewport/issues/66.
-@@ -6028,6 +6069,15 @@ void Document::runScrollSteps()
+@@ -6028,6 +6165,15 @@ void Document::runScrollSteps()
          LOG_WITH_STREAM(Events, stream << "Document " << this << " sending scroll events to pending scroll event targets");
          auto currentTargets = WTF::move(m_pendingScrollEventTargetList->targets);
          for (auto& [target, type] : currentTargets) {
@@ -2884,7 +3067,7 @@ index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..d7c57dfaa2cd80e80f165d4bf7e85384
              auto bubbles = target->isDocumentNode() ? Event::CanBubble::Yes : Event::CanBubble::No;
              auto eventName = [&] {
                  switch (type) {
-@@ -6049,13 +6099,31 @@ void Document::runScrollSteps()
+@@ -6049,13 +6195,31 @@ void Document::runScrollSteps()
                  return frameView->scrollableAreaForNode(target.get());
              }();
  
@@ -2916,7 +3099,7 @@ index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..d7c57dfaa2cd80e80f165d4bf7e85384
          }
      }
      if (m_needsVisualViewportScrollEvent) {
-@@ -6064,6 +6132,17 @@ void Document::runScrollSteps()
+@@ -6064,6 +6228,17 @@ void Document::runScrollSteps()
          if (RefPtr window = this->window())
              window->visualViewport().dispatchEvent(Event::create(eventNames().scrollEvent, Event::CanBubble::No, Event::IsCancelable::No));
      }
@@ -2934,7 +3117,7 @@ index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..d7c57dfaa2cd80e80f165d4bf7e85384
  }
  
  void Document::flushDeferredScrollEvents()
-@@ -10529,21 +10608,54 @@ void Document::removeIntersectionObserver(IntersectionObserver& observer)
+@@ -10529,21 +10704,54 @@ void Document::removeIntersectionObserver(IntersectionObserver& observer)
  static void updateAndNotifyIntersectionObservers(const Vector<WeakPtr<IntersectionObserver>>& intersectionObservers, const Frame& hostFrame)
  {
      Vector<WeakPtr<IntersectionObserver>> intersectionObserversWithPendingNotifications;
@@ -3972,7 +4155,7 @@ index 52f8cd72fa2e3073163713fd16fc2f1677b96695..c8925b1b936f96c31c323609ea9f9d46
      protect(m_frame->document())->scheduleDeferredAXObjectCacheUpdate();
  
 diff --git a/Source/WebCore/page/LocalFrameViewLayoutContext.cpp b/Source/WebCore/page/LocalFrameViewLayoutContext.cpp
-index 61749fa2eecc674d3bc7d185a5b3944181454f73..85cf1053f38ab61af4db3b34f0f1016bba036f7c 100644
+index 61749fa2eecc674d3bc7d185a5b3944181454f73..d309fbf30643be6ad2d8124ee4773985c13cdb65 100644
 --- a/Source/WebCore/page/LocalFrameViewLayoutContext.cpp
 +++ b/Source/WebCore/page/LocalFrameViewLayoutContext.cpp
 @@ -61,9 +61,11 @@
@@ -3994,7 +4177,7 @@ index 61749fa2eecc674d3bc7d185a5b3944181454f73..85cf1053f38ab61af4db3b34f0f1016b
 +#if PLATFORM(HAIKU)
 +    static bool summitPageUpdateTraceEnabled = [] {
 +        const char* value = std::getenv("SUMMIT_PAGE_UPDATE_TRACE");
-+        return value && (value[0] == '1' || value[0] == '2') && !value[1];
++        return value && (value[0] == '1' || value[0] == '2' || value[0] == '3') && !value[1];
 +    }();
 +    auto traceStart = summitPageUpdateTraceEnabled ? MonotonicTime::now() : MonotonicTime { };
 +    bool beganWithSubtreeLayout = summitPageUpdateTraceEnabled && !!subtreeLayoutRoot();
@@ -4053,7 +4236,7 @@ index 61749fa2eecc674d3bc7d185a5b3944181454f73..85cf1053f38ab61af4db3b34f0f1016b
 +#if PLATFORM(HAIKU)
 +    static bool summitPageUpdateTraceEnabled = [] {
 +        const char* value = std::getenv("SUMMIT_PAGE_UPDATE_TRACE");
-+        return value && (value[0] == '1' || value[0] == '2') && !value[1];
++        return value && (value[0] == '1' || value[0] == '2' || value[0] == '3') && !value[1];
 +    }();
 +    auto traceStart = summitPageUpdateTraceEnabled ? MonotonicTime::now() : MonotonicTime { };
 +    auto traceLast = traceStart;
@@ -4137,10 +4320,10 @@ index 61749fa2eecc674d3bc7d185a5b3944181454f73..85cf1053f38ab61af4db3b34f0f1016b
  
  void LocalFrameViewLayoutContext::runOrScheduleAsynchronousTasks(bool canDeferUpdateLayerPositions)
 diff --git a/Source/WebCore/page/Page.cpp b/Source/WebCore/page/Page.cpp
-index a26485a6771a1d63e0d0f5ff3800f30221a77304..45c3b8cc1e251af516c2ef824286453826f6c155 100644
+index a26485a6771a1d63e0d0f5ff3800f30221a77304..723f476108c2e7516f1e24723248d1c9e122835d 100644
 --- a/Source/WebCore/page/Page.cpp
 +++ b/Source/WebCore/page/Page.cpp
-@@ -223,6 +223,8 @@
+@@ -223,12 +223,15 @@
  #include "WorkerGlobalScope.h"
  #include "WorkerOrWorkletScriptController.h"
  #include <JavaScriptCore/VM.h>
@@ -4149,7 +4332,14 @@ index a26485a6771a1d63e0d0f5ff3800f30221a77304..45c3b8cc1e251af516c2ef8242864538
  #include <ranges>
  #include <wtf/Borrow.h>
  #include <wtf/FileSystem.h>
-@@ -2353,6 +2355,95 @@ void Page::syncLocalFrameInfoToRemote()
+ #include <wtf/StdLibExtras.h>
+ #include <wtf/SystemTracing.h>
+ #include <wtf/TZoneMallocInlines.h>
++#include <wtf/WallTime.h>
+ #include <wtf/text/Base64.h>
+ #include <wtf/text/MakeString.h>
+ #include <wtf/text/StringHash.h>
+@@ -2353,6 +2356,97 @@ void Page::syncLocalFrameInfoToRemote()
      });
  }
  
@@ -4190,13 +4380,14 @@ index a26485a6771a1d63e0d0f5ff3800f30221a77304..45c3b8cc1e251af516c2ef8242864538
 +
 +    SummitPageUpdateTrace()
 +    {
-+        static bool enabled = [] {
++        static char mode = [] {
 +            const char* value = std::getenv("SUMMIT_PAGE_UPDATE_TRACE");
-+            return value && (value[0] == '1' || value[0] == '2') && !value[1];
++            return value && (value[0] == '1' || value[0] == '2' || value[0] == '3') && !value[1] ? value[0] : '\0';
 +        }();
-+        if (!enabled)
++        if (!mode)
 +            return;
 +        m_enabled = true;
++        m_verbose = mode == '3';
 +        m_start = m_last = MonotonicTime::now();
 +    }
 +
@@ -4214,13 +4405,13 @@ index a26485a6771a1d63e0d0f5ff3800f30221a77304..45c3b8cc1e251af516c2ef8242864538
 +        if (!m_enabled)
 +            return;
 +        auto total = MonotonicTime::now() - m_start;
-+        if (total < 33_ms)
++        if (total < (m_verbose ? 2_ms : 33_ms))
 +            return;
 +        auto milliseconds = [&](Phase phase) {
 +            return m_durations[static_cast<size_t>(phase)].milliseconds();
 +        };
-+        WTFLogAlways("Summit page update: page=%p total=%.1f initialLayout=%.1f restore=%.1f prepare=%.1f reveal=%.1f autofocus=%.1f resize=%.1f scroll=%.1f mediaQuery=%.1f visibility=%.1f animations=%.1f fullscreen=%.1f immersive=%.1f video=%.1f animationFrame=%.1f caret=%.1f secondLayout=%.1f resizeObservations=%.1f scrollTimelines=%.1f focus=%.1f relevancy=%.1f viewTransitions=%.1f intersections=%.1f images=%.1f validation=%.1f snapshottedScroll=%.1f finish=%.1f finalLayout=%.1f afterRendering=%.1f\n",
-+            page, total.milliseconds(), milliseconds(Phase::InitialLayout), milliseconds(Phase::Restore), milliseconds(Phase::Prepare),
++        WTFLogAlways("Summit page update: wall=%.3f page=%p total=%.1f initialLayout=%.1f restore=%.1f prepare=%.1f reveal=%.1f autofocus=%.1f resize=%.1f scroll=%.1f mediaQuery=%.1f visibility=%.1f animations=%.1f fullscreen=%.1f immersive=%.1f video=%.1f animationFrame=%.1f caret=%.1f secondLayout=%.1f resizeObservations=%.1f scrollTimelines=%.1f focus=%.1f relevancy=%.1f viewTransitions=%.1f intersections=%.1f images=%.1f validation=%.1f snapshottedScroll=%.1f finish=%.1f finalLayout=%.1f afterRendering=%.1f\n",
++            WallTime::now().secondsSinceEpoch().milliseconds(), page, total.milliseconds(), milliseconds(Phase::InitialLayout), milliseconds(Phase::Restore), milliseconds(Phase::Prepare),
 +            milliseconds(Phase::Reveal), milliseconds(Phase::Autofocus), milliseconds(Phase::Resize), milliseconds(Phase::Scroll),
 +            milliseconds(Phase::MediaQuery), milliseconds(Phase::Visibility), milliseconds(Phase::Animations), milliseconds(Phase::Fullscreen),
 +            milliseconds(Phase::Immersive), milliseconds(Phase::Video), milliseconds(Phase::AnimationFrame), milliseconds(Phase::Caret),
@@ -4232,6 +4423,7 @@ index a26485a6771a1d63e0d0f5ff3800f30221a77304..45c3b8cc1e251af516c2ef8242864538
 +
 +private:
 +    bool m_enabled { false };
++    bool m_verbose { false };
 +    MonotonicTime m_start;
 +    MonotonicTime m_last;
 +    std::array<Seconds, static_cast<size_t>(Phase::Count)> m_durations { };
@@ -4245,7 +4437,7 @@ index a26485a6771a1d63e0d0f5ff3800f30221a77304..45c3b8cc1e251af516c2ef8242864538
  // https://html.spec.whatwg.org/multipage/webappapis.html#update-the-rendering
  void Page::updateRendering()
  {
-@@ -2371,6 +2462,9 @@ void Page::updateRendering()
+@@ -2371,6 +2465,9 @@ void Page::updateRendering()
          return;
      }
  
@@ -4255,7 +4447,7 @@ index a26485a6771a1d63e0d0f5ff3800f30221a77304..45c3b8cc1e251af516c2ef8242864538
      m_lastRenderingUpdateTimestamp = MonotonicTime::now();
      m_renderingUpdateIsScheduled = false;
  
-@@ -2379,6 +2473,7 @@ void Page::updateRendering()
+@@ -2379,6 +2476,7 @@ void Page::updateRendering()
          tracePoint(RenderingUpdateStart);
  
      layoutIfNeeded();
@@ -4263,7 +4455,7 @@ index a26485a6771a1d63e0d0f5ff3800f30221a77304..45c3b8cc1e251af516c2ef8242864538
  
      auto runProcessingStep = [&](RenderingUpdateStep step, NOESCAPE const Function<void(Document&)>& perDocumentFunction) {
          m_renderingUpdateRemainingSteps.last().remove(step);
-@@ -2389,6 +2484,7 @@ void Page::updateRendering()
+@@ -2389,6 +2487,7 @@ void Page::updateRendering()
          if (RefPtr frame = document.frame())
              frame->loader().restoreScrollPositionAndViewStateNowIfNeeded();
      });
@@ -4271,7 +4463,7 @@ index a26485a6771a1d63e0d0f5ff3800f30221a77304..45c3b8cc1e251af516c2ef8242864538
  
  #if ENABLE(ASYNC_SCROLLING)
      if (RefPtr scrollingCoordinator = this->scrollingCoordinator())
-@@ -2401,37 +2497,45 @@ void Page::updateRendering()
+@@ -2401,37 +2500,45 @@ void Page::updateRendering()
          protect(document.window())->freezeNowTimestamp();
          initialDocuments.append(document);
      });
@@ -4317,7 +4509,7 @@ index a26485a6771a1d63e0d0f5ff3800f30221a77304..45c3b8cc1e251af516c2ef8242864538
  
  #if ENABLE(FULLSCREEN_API)
      runProcessingStep(RenderingUpdateStep::Fullscreen, [] (Document& document) {
-@@ -2440,35 +2544,42 @@ void Page::updateRendering()
+@@ -2440,35 +2547,42 @@ void Page::updateRendering()
  #else
      m_renderingUpdateRemainingSteps.last().remove(RenderingUpdateStep::Fullscreen);
  #endif
@@ -4361,7 +4553,7 @@ index a26485a6771a1d63e0d0f5ff3800f30221a77304..45c3b8cc1e251af516c2ef8242864538
  
      runProcessingStep(RenderingUpdateStep::FocusFixup, [&] (Document& document) {
          if (RefPtr focusedElement = document.focusedElement()) {
-@@ -2478,18 +2589,22 @@ void Page::updateRendering()
+@@ -2478,18 +2592,22 @@ void Page::updateRendering()
              }
          }
      });
@@ -4384,7 +4576,7 @@ index a26485a6771a1d63e0d0f5ff3800f30221a77304..45c3b8cc1e251af516c2ef8242864538
  
      runProcessingStep(RenderingUpdateStep::Images, [] (Document& document) {
          for (auto& image : protect(document.cachedResourceLoader())->allCachedSVGImages()) {
-@@ -2497,15 +2612,18 @@ void Page::updateRendering()
+@@ -2497,15 +2615,18 @@ void Page::updateRendering()
                  page->isolatedUpdateRendering();
          }
      });
@@ -4403,7 +4595,7 @@ index a26485a6771a1d63e0d0f5ff3800f30221a77304..45c3b8cc1e251af516c2ef8242864538
  
      for (auto& document : initialDocuments) {
          if (document && document->window())
-@@ -2519,14 +2637,22 @@ void Page::updateRendering()
+@@ -2519,14 +2640,22 @@ void Page::updateRendering()
  
      if (m_isTrackingRenderingUpdates)
          ++m_renderingUpdateCount;
@@ -81465,11 +81657,17 @@ index d382293c217c69e8672fb8f587a78e03574df4ba..5192b4bf4f5b2b3b17854164f56c82d5
      void activityStateDidChange(OptionSet<WebCore::ActivityState>, ActivityStateChangeID, CompletionHandler<void()>&&) override;
      void attachViewOverlayGraphicsLayer(WebCore::FrameIdentifier, WebCore::GraphicsLayer*) override;
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
-index a12c4f6edd9998271fda260c7193a3226bf1957a..235568f9a96782191e04483b2861248fa4b10b3f 100644
+index a12c4f6edd9998271fda260c7193a3226bf1957a..29b2218c26bef68dbc9061f1727d1f72ac50fdba 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
-@@ -58,6 +58,10 @@
+@@ -54,10 +54,16 @@
+ #include <WebCore/ThreadedScrollingTree.h>
+ #include <WebCore/WindowEventLoop.h>
+ #include <wtf/SetForScope.h>
++#include <wtf/MonotonicTime.h>
+ #include <wtf/SystemTracing.h>
  #include <wtf/TZoneMallocInlines.h>
++#include <wtf/WallTime.h>
  #include <wtf/glib/RunLoopSourcePriority.h>
  #include <wtf/text/StringToIntegerConversion.h>
 +#if PLATFORM(HAIKU)
@@ -81479,7 +81677,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..235568f9a96782191e04483b2861248f
  
  namespace WebKit {
  using namespace WebCore;
-@@ -148,6 +152,16 @@ void LayerTreeHost::scheduleRenderingUpdate()
+@@ -148,6 +154,16 @@ void LayerTreeHost::scheduleRenderingUpdate()
  {
      WTFEmitSignpost(this, LayerTreeHostScheduleRenderingUpdate, "isWaitingForRenderer %s", m_isWaitingForRenderer ? "yes" : "no");
  
@@ -81496,11 +81694,19 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..235568f9a96782191e04483b2861248f
      if (m_layerTreeStateIsFrozen || m_isSuspended || m_webPage->size().isEmpty())
          return;
  
-@@ -174,6 +188,15 @@ bool LayerTreeHost::canUpdateRendering() const
+@@ -174,6 +190,23 @@ bool LayerTreeHost::canUpdateRendering() const
  
  void LayerTreeHost::updateRendering()
  {
 +#if PLATFORM(HAIKU)
++    static bool traceRenderPhases = [] {
++        const char* value = std::getenv("SUMMIT_RENDER_UPDATE_PHASE_TRACE");
++        return value && value[0] == '1' && !value[1];
++    }();
++    auto phaseStart = traceRenderPhases ? MonotonicTime::now() : MonotonicTime { };
++    auto afterPageUpdate = phaseStart;
++    auto afterFinalize = phaseStart;
++    auto afterSceneFlush = phaseStart;
 +    static bool traceLayerUpdates = [] {
 +        const char* value = std::getenv("SUMMIT_LAYER_UPDATE_TRACE");
 +        return value && value[0] == '1' && !value[1];
@@ -81512,7 +81718,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..235568f9a96782191e04483b2861248f
      invalidateRenderingUpdateRunLoopObserver();
  
      RELEASE_ASSERT(!m_isUpdatingRendering);
-@@ -182,12 +205,16 @@ void LayerTreeHost::updateRendering()
+@@ -182,12 +215,20 @@ void LayerTreeHost::updateRendering()
  
      SetForScope<bool> reentrancyProtector(m_isUpdatingRendering, true);
  
@@ -81521,6 +81727,10 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..235568f9a96782191e04483b2861248f
  
      Ref page = m_webPage;
      page->updateRendering();
++#if PLATFORM(HAIKU)
++    if (traceRenderPhases)
++        afterPageUpdate = MonotonicTime::now();
++#endif
      page->flushPendingEditorStateUpdate();
 +#if PLATFORM(MAC) || PLATFORM(WPE) || PLATFORM(GTK)
 +    // ThemeColorChanged is declared for those ports only.
@@ -81529,7 +81739,47 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..235568f9a96782191e04483b2861248f
  
      if (m_overlayCompositingLayer)
          m_overlayCompositingLayer->flushCompositingState(visibleContentsRect());
-@@ -447,8 +474,20 @@ void LayerTreeHost::didRenderFrame()
+@@ -200,6 +241,10 @@ void LayerTreeHost::updateRendering()
+     flags.add(FinalizeRenderingUpdateFlags::ApplyScrollingTreeLayerPositions);
+ #endif
+     page->finalizeRenderingUpdate(flags);
++#if PLATFORM(HAIKU)
++    if (traceRenderPhases)
++        afterFinalize = MonotonicTime::now();
++#endif
+ 
+     if (m_pendingResize) {
+         m_compositor->setSize(page->size(), page->deviceScaleFactor());
+@@ -219,6 +264,10 @@ void LayerTreeHost::updateRendering()
+         drawingArea->dispatchPendingCallbacksAfterEnsuringDrawing();
+ 
+     bool didChangeSceneState = m_sceneState->flush();
++#if PLATFORM(HAIKU)
++    if (traceRenderPhases)
++        afterSceneFlush = MonotonicTime::now();
++#endif
+     if (m_compositionRequired || m_pendingResize || m_forceFrameSync || didChangeSceneState)
+         requestCompositionForRenderingUpdate();
+ 
+@@ -237,6 +286,17 @@ void LayerTreeHost::updateRendering()
+         m_sceneState->waitUntilPaintingComplete();
+         m_waitUntilPaintingComplete = false;
+     }
++#if PLATFORM(HAIKU)
++    if (traceRenderPhases) {
++        auto finished = MonotonicTime::now();
++        if (finished - phaseStart >= 2_ms)
++            std::fprintf(stderr, "Summit render phases: wall=%.3f total=%.1f page=%.1f finalize=%.1f scene=%.1f finish=%.1f changed=%d\n",
++                WallTime::now().secondsSinceEpoch().milliseconds(),
++                (finished - phaseStart).milliseconds(), (afterPageUpdate - phaseStart).milliseconds(),
++                (afterFinalize - afterPageUpdate).milliseconds(), (afterSceneFlush - afterFinalize).milliseconds(),
++                (finished - afterSceneFlush).milliseconds(), didChangeSceneState);
++    }
++#endif
+ }
+ 
+ void LayerTreeHost::updateRootLayer()
+@@ -447,8 +507,20 @@ void LayerTreeHost::didRenderFrame()
  
  void LayerTreeHost::requestCompositionForRenderingUpdate()
  {

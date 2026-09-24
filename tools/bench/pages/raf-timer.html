@@ -1,0 +1,77 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Summit rAF and timer probe: running</title>
+<style>
+body { font: 14px sans-serif; }
+#items { width: 540px; }
+.item { display: inline-block; width: 48px; height: 12px; margin: 1px; background: #369; }
+</style>
+<div id="items"></div>
+<pre id="out">running…</pre>
+<script>
+"use strict";
+(async () => {
+    const items = document.getElementById("items");
+    const samples = {idle: [], mutate: []};
+    const round = value => Math.round(value * 100) / 100;
+    const summary = values => {
+        const sorted = [...values].sort((a, b) => a - b);
+        const at = fraction => round(sorted[Math.floor((sorted.length - 1) * fraction)]);
+        return {count: values.length, median: at(.5), p95: at(.95), max: at(1)};
+    };
+    const run = mutate => new Promise(resolve => {
+        const scheduledAt = performance.now();
+        let firstAt, syncEnd, secondAt;
+        requestAnimationFrame(() => {
+            firstAt = performance.now();
+            if (mutate) {
+                items.replaceChildren();
+                const fragment = document.createDocumentFragment();
+                for (let index = 0; index < 100; index++) {
+                    const item = document.createElement("span");
+                    item.className = "item";
+                    item.textContent = String(index);
+                    fragment.append(item);
+                }
+                items.append(fragment);
+            }
+            syncEnd = performance.now();
+        });
+        requestAnimationFrame(() => {
+            secondAt = performance.now();
+            setTimeout(() => {
+                const timerAt = performance.now();
+                const height = items.getBoundingClientRect().height;
+                const endAt = performance.now();
+                resolve({
+                    rafWait: round(firstAt - scheduledAt),
+                    sync: round(syncEnd - firstAt),
+                    secondRaf: round(secondAt - syncEnd),
+                    timerWait: round(timerAt - secondAt),
+                    layoutRead: round(endAt - timerAt),
+                    async: round(endAt - syncEnd),
+                    height,
+                });
+            }, 0);
+        });
+    });
+    for (let index = 0; index < 60; index++) {
+        const mode = index % 2 ? "mutate" : "idle";
+        const sample = await run(mode === "mutate");
+        if (index >= 10)
+            samples[mode].push(sample);
+    }
+    const result = {viewport: [innerWidth, innerHeight], modes: {}};
+    for (const [mode, rows] of Object.entries(samples)) {
+        result.modes[mode] = {};
+        for (const field of ["rafWait", "sync", "secondRaf", "timerWait", "layoutRead", "async"])
+            result.modes[mode][field] = summary(rows.map(row => row[field]));
+    }
+    document.getElementById("out").textContent = JSON.stringify(result, null, 2);
+    await fetch("/__bench/probe", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(result)});
+    document.title = "Summit rAF and timer probe: done";
+})().catch(error => {
+    document.getElementById("out").textContent = String(error && error.stack || error);
+    document.title = "Summit rAF and timer probe: error";
+});
+</script>

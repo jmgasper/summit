@@ -3451,3 +3451,33 @@ pass cannot verify live Reddit smoothness
 (`.vm/bench/probe-20260924-164813-summit-scroll-batched-css-mimalloc/`,
 `.vm/bench/probe-20260924-164904-summit-scroll-mimalloc-control/`, and
 `.vm/bench/scroll-20260924-164723-reddit-batched-css-mimalloc/`).
+
+### Speedometer asynchronous style-resolution trace
+
+The same ten-iteration 1280×887 Speedometer run scored 6.896 ± 0.293 for
+Summit and 8.338 ± 0.374 for Firefox. Preact and Svelte complex DOM suites
+are among the largest gaps. An optional `--raf-phase-trace` mode now times
+each benchmark step's animation-frame callbacks and zero-delay timer by
+patching only the served runner response. It marks these runs as instrumented;
+their scores are diagnostic and are not production benchmark results. The
+generic 100-node mutation probe found a Summit/Firefox timer wait of 4/3 ms,
+so the large suite-specific gap is not explained by timer dispatch alone
+(`.vm/bench/probe-20260924-165402-summit-raf-timer-summit/` and
+`.vm/bench/probe-20260924-165439-firefox-raf-timer-firefox/`).
+
+In five focused iterations, Preact and Svelte add/complete steps spent
+approximately 19–20 ms between the second animation callback and the timer
+in Summit, versus 8–10 ms in Firefox. The delete steps spent 4–5 ms versus
+3 ms. The native trace places the Summit timer wait inside WebKit's rendering
+update, with roughly 13–15 ms in `Page::layoutIfNeeded()` after animation
+callbacks for add/complete steps. Its `Document::updateLayout()` split shows
+7–14 ms of that in `updateStyleIfNeeded()` and 1–8 ms in layout, with no
+material compositing time. A deeper style trace of the steady 8–20 ms style
+updates shows median 10.4 ms in `Style::TreeResolver::resolve()` and 3.2 ms
+in render-tree commit. This points the next optimization work at style
+resolution and its invalidation scope; Skia/GPU paint changes will not close
+this measured Preact/Svelte gap
+(`.vm/bench/speedometer-20260924-165801-raf-phases-summit/`,
+`.vm/bench/firefox-speedometer-20260924-165857-raf-phases-firefox/`,
+`.vm/bench/speedometer-20260924-172854-document-layout-phases/`, and
+`.vm/bench/speedometer-20260924-173419-style-detail-phases/`).
