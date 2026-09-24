@@ -3817,3 +3817,24 @@ change these two performance results. Evidence:
 `.vm/bench/probe-20260924-221557-summit-reddit-seek-sweep-async/`,
 `.vm/bench/probe-20260924-221654-summit-guardian-paused-seek-async/`, and
 `.vm/bench/probe-20260924-221753-summit-guardian-loop-async/`).
+
+### Preact and Svelte style invalidation scope
+
+An opt-in diagnostic counted why elements entered style resolution in focused
+Preact and Svelte complex DOM runs. Each suite repeated three large passes per
+iteration. The largest resolved 3,672 elements and took about 34–36 ms after
+warmup; 3,666 elements were still individually marked valid, but six
+subtree-invalid roots caused full descendant resolution. The benchmark page's
+`html.spectrum` root was among those invalidated roots. The add-items pass
+resolved about 515 elements in 4–5 ms, nearly all newly subtree-invalid.
+The complete-items pass resolved 422 elements in 10–11 ms: 181 were directly
+invalid, 240 were individually valid but reached through parent changes, and
+80 of those used WebKit's fast inheritance path. The pattern was stable across
+both frameworks and repeated iterations. These counts explain why adding
+tile paint workers cannot divide this main-thread style cost; they do not
+prove that any particular descendant can be skipped. The diagnostic hooks
+were removed and the production engine source rebuilt from the committed
+patch (`.vm/bench/speedometer-20260924-223104-style-reasons/`,
+`.vm/bench/speedometer-20260924-223632-style-reasons-url/`,
+`.vm/bench/speedometer-20260924-224117-style-root/`, and
+`.vm/style-reason-restore-build.log`).
