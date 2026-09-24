@@ -4349,3 +4349,32 @@ a final 5.335 s request, with NVDEC H.264 selected at status 0. This
 validates a real Reddit progress-bar drag for this video, but it does not
 identify or reproduce the owner's Adobe ad, whose player may use a different
 control path (`.vm/bench/reddit-live-native-drag-20260925/`).
+
+### Reddit solid-color shader hitch (25 September 2026)
+
+The single-burst scroll harness now reads the native frame counters saved
+at wheel-delivery completion, as the cycle harness does. A 300-notch live
+`/r/popular/` burst reached the current feed maximum after about 136
+handled events; the later 164 events could not move the page. Its 400.2 ms
+worst frame interval and 50.57 fps average therefore include feed-boundary
+loading rather than continuous scrolling
+(`.vm/bench/scroll-20260925-075409-current-300-completion/`).
+
+Shorter 120-notch bursts stayed within the loaded feed and handled all 120
+events. An opt-in `SUMMIT_LAYER_PAINT_TRACE=1` compositor trace isolated a
+slow 219×5 solid-color layer. Its 19.3 ms `paintSelf` duration was entirely
+in the contents draw, not its transform or texture-mapper setup
+(`.vm/bench/scroll-20260925-080515-layer-paint-phases-reddit-120/`).
+Tracing `TextureMapper::drawSolidColor` then showed that the first
+`SolidColor | RoundedRectClip` shader creation took 11.6 ms during the
+burst, while the subsequent GL draw took 0.1 ms. The run delivered 120/120
+events at 58.92 fps, with a 35.4 ms worst native frame interval
+(`.vm/bench/scroll-20260925-080947-solid-paint-trace-reddit-120/`).
+
+The Haiku GL texture mapper now compiles this shader variant on the first
+compositor paint for each context. In the follow-up run, it compiled during
+initial page loading (20.9 and 25.3 ms in two contexts) and did not compile
+during scrolling. All 120 events were handled at 58.55 fps, with a 36.8 ms
+worst frame interval. This removes one identified scroll-time cause but
+does not establish an overall frame-rate gain from these two noisy live
+samples (`.vm/bench/scroll-20260925-081332-prewarm-rounded-solid-reddit-120/`).
