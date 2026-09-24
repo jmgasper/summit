@@ -36,6 +36,8 @@ def main():
                         help='time CodeMirror IntersectionObserver callbacks (diagnostic)')
     parser.add_argument('--raf-phase-trace', action='store_true',
                         help='record rAF and timer phases per test (diagnostic only)')
+    parser.add_argument('--source', type=pathlib.Path,
+                        help='alternate local benchmark checkout (diagnostic only)')
     parser.add_argument('--port', type=int, default=8932)
     parser.add_argument('--timeout', type=int, default=3600)
     parser.add_argument('--settle', type=float, default=25, help='seconds to let Firefox start before navigating')
@@ -54,6 +56,7 @@ def main():
     run = {'id': run_id, 'browser': 'firefox', 'machine': guest.HOST, 'url': url,
            'iterations': args.iterations, 'suites': args.suites,
            'intersectionTrace': args.intersection_trace, 'rafPhaseTrace': args.raf_phase_trace,
+           'source': str(args.source.resolve()) if args.source else None,
            'directory': str(directory),
            'startedAt': time.strftime('%Y-%m-%dT%H:%M:%S%z'), 'outcome': 'not-started'}
 
@@ -63,6 +66,8 @@ def main():
     signal.signal(signal.SIGTERM, lambda *a: (_ for _ in ()).throw(KeyboardInterrupt))
     server_command = [sys.executable, str(guest.BENCH / 'serve-speedometer.py'), '--port', str(args.port),
                       '--bind', guest.SERVER_BIND, '--out-dir', str(directory), '--cache-policy', 'official']
+    if args.source:
+        server_command.extend(['--source', str(args.source.resolve())])
     if args.intersection_trace:
         server_command.append('--intersection-trace')
     if args.raf_phase_trace:

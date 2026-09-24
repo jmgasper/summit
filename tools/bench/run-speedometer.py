@@ -135,6 +135,8 @@ def main():
     parser.add_argument('--wait-gui', type=float, default=0, metavar='MINUTES',
                         help='wait this long for other Summit instances to exit (Summit is single-launch)')
     parser.add_argument('--cache-policy', choices=['official', 'revalidate', 'no-store'], default='official')
+    parser.add_argument('--source', type=pathlib.Path,
+                        help='alternate local benchmark checkout (diagnostic only)')
     parser.add_argument('--progress-beacons', action='store_true',
                         help='per-test progress beacons (diagnosis of hangs; marks the result instrumented)')
     parser.add_argument('--intersection-trace', action='store_true',
@@ -165,6 +167,8 @@ def main():
         parser.error('--intersection-defer-gap requires --intersection-trace')
     if args.official and args.raf_phase_trace:
         parser.error('--raf-phase-trace requires the local Speedometer copy')
+    if args.official and args.source:
+        parser.error('--source requires the local Speedometer copy')
     if args.haiku_profile and guest.HOST == 'workstation':
         parser.error('--haiku-profile is disabled on the workstation because Haiku profile shutdown can hang the machine')
     if args.haiku_profile and args.keep_open:
@@ -188,6 +192,7 @@ def main():
            'intersectionTrace': args.intersection_trace,
            'intersectionDeferGap': args.intersection_defer_gap,
            'rafPhaseTrace': args.raf_phase_trace,
+           'source': str(args.source.resolve()) if args.source else None,
            'haikuProfile': args.haiku_profile,
            'startedAt': time.strftime('%Y-%m-%dT%H:%M:%S%z'), 'outcome': 'not-started', 'load': {}, 'events': []}
 
@@ -216,6 +221,8 @@ def main():
         command = [sys.executable, str(guest.BENCH / 'serve-speedometer.py'), '--port', str(args.port),
                    '--bind', guest.SERVER_BIND,
                    '--out-dir', str(directory), '--cache-policy', args.cache_policy]
+        if args.source:
+            command.extend(['--source', str(args.source.resolve())])
         if args.progress_beacons:
             command.append('--progress-beacons')
         if args.intersection_trace:

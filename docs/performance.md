@@ -3489,3 +3489,32 @@ and its parallel work queue creates one fewer worker than that count.
 the web-visible value for fingerprinting. The traced style resolution happens
 on the page's main thread, so adding drawing workers alone does not divide
 this particular 10 ms step across the workstation's cores.
+
+### Preact/Svelte style-work split
+
+A later opt-in diagnostic engine measured the native style tree on the same
+five-iteration, pinned Preact/Svelte runs. Each slow complete-items update
+restyled 422 elements. Preact visited 631 nodes and Svelte visited 1,038;
+roughly 9.5 ms of the 10 ms tree-resolution phase was inside per-element
+resolution, leaving about 0.5–0.7 ms in traversal. Across 100 changed
+elements, the measured batches spent about 1.1 ms in style construction,
+0.8–0.9 ms in animation/change handling, and 0.2 ms resolving pseudo-elements.
+The rule-matching and property-application subparts of style construction
+accounted for about 0.4–0.5 ms and 0.7–0.8 ms per 100 elements. Animation
+handling had about 0.4–0.5 ms in transition checks and 0.2 ms applying
+animations. These are diagnostic timings with instrumentation overhead, and
+they identify no single large operation that can safely be skipped
+(`.vm/bench/speedometer-20260924-174909-style-match-batch/`,
+`.vm/bench/speedometer-20260924-175359-tree-resolve-detail/`,
+`.vm/bench/speedometer-20260924-175852-element-resolve-detail/`, and
+`.vm/bench/speedometer-20260924-180547-animated-phase-detail/`). The per-element
+native hooks were removed after this measurement so they add no cost in
+production.
+
+The benchmark runners also accept `--source` for controlled diagnostic copies
+of Speedometer. Removing the large shared stylesheet from Preact and Svelte
+improved Summit's focused run, but increased Firefox's delete-step times
+substantially because it changed page layout. That experiment does not isolate
+selector matching or support a standard score comparison
+(`.vm/bench/speedometer-20260924-174336-no-large-css/` and
+`.vm/bench/firefox-speedometer-20260924-174422-no-large-css/`).
