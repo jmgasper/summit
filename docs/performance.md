@@ -3741,13 +3741,19 @@ CPU-tile path. The installed desktop launcher was unchanged
 
 The workstation's Threadripper 1950X has 16 Zen 1 cores and 32 hardware
 threads. The installed engine uses release `-O3` without a CPU-specific
-target. An isolated `SkiaCGMiZen1` engine build is in progress with
+target. An isolated `SkiaCGMiZen1` engine was built with
 `-march=znver1` and the same Skia, coordinated graphics, asynchronous
 scrolling, and mimalloc options as the installed engine. The build uses its
-own directory and does not change the installed launcher. Once packaged, it
-will be measured with the same 1280×887, ten-iteration Speedometer run and
-the 600-frame scroll probe before considering installation. The build log is
-`.vm/zen1-engine-build.log`.
+own directory and did not change the installed launcher. The build finished
+successfully with release `-O3`; its separate bundle is `bundle-o19kil6q`.
+At the matched 1280×887 viewport, its uncontended ten-iteration Speedometer
+3.1 run scored 7.178 ± 0.335 versus 7.288 ± 0.359 for the installed build.
+The 600-frame 400-card scroll probe ran at 58.79 fps with no frame over
+33 ms, versus 58.94 fps for the installed build. Both differences are small
+and provide no evidence of a CPU-target gain, so the workstation launcher
+stays on `bundle-s8a06mrs` (`.vm/zen1-engine-build.log`,
+`.vm/bench/speedometer-20260924-220312-zen1-full/`, and
+`.vm/bench/probe-20260924-220530-summit-zen1-scroll/`).
 
 ### Repeated video seeking under build load
 
@@ -3759,9 +3765,7 @@ three completed seeks decoded 74, 116, and 43 preroll frames, respectively;
 the Reddit fixture decoded 58, 14, and 27. Several intermediate requests
 were coalesced. JS property setters returned immediately, while seek events
 arrived roughly 100–440 ms later. These runs overlapped 23–24 active compiler
-teams and are explicitly marked contended, so their delays do not establish
-the idle browser's seek latency. Repeat them after the Zen 1 build finishes
-before changing Media Kit preroll or claiming the Adobe ad is fixed
+teams and are explicitly marked contended
 (`.vm/bench/probe-20260924-213829-summit-guardian-seek-sweep-build-load/`
 and `.vm/bench/probe-20260924-213907-summit-reddit-seek-sweep-build-load/`).
 
@@ -3769,3 +3773,17 @@ The same two remote sources stalled before metadata in the VM. Those probe
 files contain no seek and cannot validate the seek path there
 (`.vm/bench/probe-20260924-213630-summit-reddit-seek-sweep-vm/` and
 `.vm/bench/probe-20260924-213707-summit-guardian-seek-sweep-vm/`).
+
+After the build stopped, the same probe on both the Zen 1 and installed
+bundles used NVDEC H.264 with status 0 and reached the final Guardian seek
+target without a media error. It also recorded page-thread heartbeat gaps
+of 210–265 ms in each run, coinciding with synchronous preroll of up to
+119 frames. The installed bundle's Reddit HLS run likewise used NVDEC,
+reached its final target, and recorded a 265 ms gap while prerolling 58
+frames for the first seek. This provides an engine-level cause for sluggish
+progress-bar dragging, although it does not identify the Adobe ad player's
+own behavior. The next change should move preroll decoding off the page
+thread while keeping the seek target and paused-frame behavior correct
+(`.vm/bench/probe-20260924-220617-summit-guardian-seek-sweep-zen1/`,
+`.vm/bench/probe-20260924-220651-summit-guardian-seek-sweep-control/`, and
+`.vm/bench/probe-20260924-220738-summit-reddit-seek-sweep-control/`).
