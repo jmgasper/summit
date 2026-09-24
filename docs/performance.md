@@ -2,17 +2,18 @@
 
 ## Current coordinated Skia result (September 24, 2026)
 
-The workstation launcher uses `bundle-s8a06mrs`: Skia CPU tile painting with
+The workstation launcher uses `bundle-w9ti9d76`: Skia CPU tile painting with
 two workers, GL Canvas, raster coordinated scrollbars, mimalloc, asynchronous
 scrolling, display-rate composition pacing, guarded reuse of exact text
 widths, and preserved font registrations for simple CSS rule insertions. It
 completes all 580 steps of Speedometer 3.1. The latest matched-viewport
 ten-iteration run is
-`.vm/bench/speedometer-20260924-201118-cpu-scrollbar-gl-full/`.
+`.vm/bench/speedometer-20260924-221933-async-seek-full/`.
 
 | Browser | Content viewport | Speedometer 3.1, 10 iterations |
 | --- | ---: | ---: |
-| Summit, current CPU tiles and GL Canvas | 1280×887 | **7.288 ± 0.359** |
+| Summit, current CPU tiles and GL Canvas | 1280×887 | **7.298 ± 0.333** |
+| Summit, prior synchronous media seek build | 1280×887 | **7.288 ± 0.359** |
 | Summit, earlier CPU-tile build with GL Canvas off | 1280×887 | **6.730 ± 0.302** |
 | Summit, earlier batched CSS and mimalloc build | 1280×887 | **6.896 ± 0.293** |
 | Firefox 155 on the same workstation | 1280×887 | **8.338 ± 0.374** |
@@ -31,9 +32,9 @@ both Haiku's system information and `sysconf`. WebKit's JSC and garbage
 collector discover that count independently. Summit caps Skia CPU tile
 painting at two workers on Haiku because the controlled sweep below found no
 Speedometer gain from four and a large regression from eight. With GL Canvas
-on, the current 400-card scrolling probe ran at 58.94 fps over 600 frames,
-with p95 18 ms, p99 23 ms, a 24 ms maximum, and no frame above 33 ms
-(`.vm/bench/probe-20260924-201313-summit-cpu-scrollbar-gl-scroll/`). Earlier
+on, the current 400-card scrolling probe ran at 58.88 fps over 600 frames,
+with p95 18 ms, p99 22 ms, a 24 ms maximum, and no frame above 33 ms
+(`.vm/bench/probe-20260924-222157-summit-async-seek-scroll/`). Earlier
 live Reddit scrolls showed occasional 650–790 ms gaps attributed to page
 update, layout, or script work; subsequent live Reddit attempts sometimes
 received a JavaScript challenge instead of the feed.
@@ -3782,8 +3783,8 @@ of 210–265 ms in each run, coinciding with synchronous preroll of up to
 reached its final target, and recorded a 265 ms gap while prerolling 58
 frames for the first seek. This provides an engine-level cause for sluggish
 progress-bar dragging, although it does not identify the Adobe ad player's
-own behavior. The next change should move preroll decoding off the page
-thread while keeping the seek target and paused-frame behavior correct
+own behavior. This measurement led to moving preroll off the page thread
+while keeping the seek target and paused-frame behavior correct
 (`.vm/bench/probe-20260924-220617-summit-guardian-seek-sweep-zen1/`,
 `.vm/bench/probe-20260924-220651-summit-guardian-seek-sweep-control/`, and
 `.vm/bench/probe-20260924-220738-summit-reddit-seek-sweep-control/`).
@@ -3799,16 +3800,19 @@ rejects a pending promise, and a seek generation prevents a stale completion
 from settling a newer request.
 
 On the idle workstation, the repeated-seek probe recorded **no heartbeat gap
-over 80 ms** with the candidate on either the Guardian or Reddit clip. The
-installed build recorded gaps of 210–265 ms on Guardian and up to 265 ms on
-Reddit. Both candidate runs used NVDEC H.264 with status 0, reached their
+over 80 ms** with the new bundle on either the Guardian or Reddit clip. The
+prior build recorded gaps of 210–265 ms on Guardian and up to 265 ms on
+Reddit. Both new runs used NVDEC H.264 with status 0, reached their
 last target, and reported no media error. A separate paused Guardian run
 remained paused at 13.692 seconds, emitted `seeked`, had no gap over 80 ms,
 and showed the sought frame in its screenshot. A 22-second Guardian playback
 probe completed a loop with 684 decoded frames, 682 painted frames, no media
 error, and no Zink error. These are controlled clips; the Adobe ad player
-itself remains unverified because its URL is unavailable. Candidate bundle:
-`bundle-w9ti9d76`
+itself remains unverified because its URL is unavailable. The workstation
+launcher now points to the verified `bundle-w9ti9d76`; its uncontended
+Speedometer result is 7.298 ± 0.333, and the 600-frame scroll probe is
+58.88 fps with no frame over 33 ms. The media change did not measurably
+change these two performance results. Evidence:
 (`.vm/bench/probe-20260924-221508-summit-guardian-seek-sweep-async/`,
 `.vm/bench/probe-20260924-221557-summit-reddit-seek-sweep-async/`,
 `.vm/bench/probe-20260924-221654-summit-guardian-paused-seek-async/`, and
