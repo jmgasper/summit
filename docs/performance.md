@@ -4452,3 +4452,15 @@ launcher stayed on `bundle-glk_tobh`
 `.vm/bench/speedometer-20260925-083832-aligned-timer-preact-on/`,
 `.vm/bench/speedometer-20260925-083950-aligned-render-full-on/`, and
 `.vm/bench/speedometer-20260925-084126-aligned-render-full-off/`).
+
+### One CPU paint worker on the current PGO bundle
+
+The earlier worker-count sweep measured scrolling with one worker but had no
+one-worker Speedometer result. On the installed `bundle-glk_tobh`, forcing
+`WEBKIT_SKIA_CPU_PAINTING_THREADS=1` scored **8.508 ± 0.409** in ten
+uncontended iterations at the same 1280×887 viewport. The normal two-worker
+bundle scored **8.574 ± 0.468**. The intervals overlap and the one-worker
+point score is lower. Combined with the earlier one-worker scroll result
+(56.91 fps and 27 intervals over 33 ms on the 400-card page), this gives no
+reason to change the two-worker default or add a dynamic one/two-worker
+policy (`.vm/bench/speedometer-20260925-084855-one-cpu-paint-worker-current/`).
