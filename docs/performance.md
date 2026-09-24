@@ -3916,11 +3916,16 @@ At the same 1280×887 viewport, its first full ten-iteration Speedometer 3.1
 run scored **8.512 ± 0.400**, compared with the saved installed-bundle run of
 **7.298 ± 0.333** and Firefox 155 run of **8.338 ± 0.374**. The point score
 exceeds the saved Firefox score, but the reported intervals overlap. A fresh
-installed-bundle comparison is underway. The 400-card fixture delivered all
-600 frames at **59.65 frames/s**, with no frame interval over 33 ms and a 19 ms
+installed-bundle run scored **7.185 ± 0.353** under the same settings; a
+second profile-use run scored **8.444 ± 0.456**. Both profile-use scores are
+about 17% above the fresh installed-bundle score. The 400-card fixture
+delivered all 600 frames at **59.65 frames/s**, with no frame interval over
+33 ms and a 19 ms
 maximum, versus 58.88 frames/s on the earlier installed-bundle run
 (`.vm/bench/speedometer-20260925-020140-pgo-use-full/` and
-`.vm/bench/probe-20260925-020348-summit-pgo-use-scroll/`).
+`.vm/bench/probe-20260925-020348-summit-pgo-use-scroll/`,
+`.vm/bench/speedometer-20260925-021142-pgo-control-full/`, and
+`.vm/bench/speedometer-20260925-021356-pgo-use-full-repeat/`).
 
 The Guardian loop fixture played past its 19.56-second duration and continued
 without a media error; H.264 selected NVDEC successfully. The Reddit HLS seek
