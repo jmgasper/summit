@@ -4509,3 +4509,36 @@ test showed a useful gain. The cleanup was reverted. The launcher stays on
 `.vm/bench/speedometer-20260925-091020-paint-trace-cleanup-candidate-b/`,
 `.vm/bench/scroll-20260925-091157-paint-trace-cleanup-control/`, and
 `.vm/bench/scroll-20260925-091310-paint-trace-cleanup-candidate/`).
+
+### Longer matched Speedometer comparison and Reddit page work
+
+At a 1280×887 content viewport, the installed `bundle-glk_tobh` scored
+**8.561 ± 0.125** in 30 uncontended Speedometer 3.1 iterations. Firefox 155
+scored **8.405 ± 0.179** in the same local benchmark and viewport. Summit's
+point score is higher, but the reported uncertainty intervals overlap.
+Firefox's run included isolated Svelte and Lit steps of 892 and 2,506 ms;
+their suite means should not be read as stable per-step differences. The
+repeated gaps favoring Firefox are Preact (46.8 versus Summit's 63.4 ms),
+CodeMirror (50.8 versus 70.6 ms), and Web Components (58.6 versus 71.9 ms).
+Summit was faster in several other suites. These runs strengthen the baseline
+without establishing a statistically clear overall lead
+(`.vm/bench/speedometer-20260925-091757-current-thirty-iterations/` and
+`.vm/bench/firefox-speedometer-20260925-092147-current-thirty-iterations/`).
+
+In a 120-notch live Reddit burst with `SUMMIT_PAGE_UPDATE_TRACE=2`, all wheel
+input was delivered, screenshots showed movement to later posts, and the
+native view reached **58.90 frames/s**. An earlier level-1 run also reported
+58.91 frames/s, but its per-renderer logging left the feed blank near its
+end; that run is unsuitable as a content-readiness measurement. In the
+level-2 burst, 15 layouts over 10 ms totaled 3.20 s,
+mostly render-tree work. The corrected page-update parser found four updates
+over 33 ms totaling 1.81 s, including 688 ms of initial layout, 497 ms of
+intersection-observer processing, 403 ms of final layout, and 209 ms of
+second layout. These page-update phases overlap the separately reported
+layouts and must not be added to them. The native view queue stayed at or
+below 0.3 ms, so asynchronous composition kept moving the visible feed while the
+WebProcess did this work. Main-thread layout and observer work remain
+plausible constraints on content readiness and concurrent video presentation;
+the scrolling compositor itself is already close to display cadence
+(`.vm/bench/scroll-20260925-092700-page-update-trace-active-120/` and
+`.vm/bench/scroll-20260925-092825-page-update-light-active-120/`).
