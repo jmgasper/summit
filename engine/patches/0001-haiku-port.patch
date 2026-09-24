@@ -27085,42 +27085,6 @@ index 8c5e827bd714f453f1f0404786f8b5ed848b3f04..7bf9d246f2e968b2715a513c1945c15a
  
      void resetUserAgentMediaQueryStyle();
  
-diff --git a/Source/WebCore/style/StyleTreeResolver.cpp b/Source/WebCore/style/StyleTreeResolver.cpp
-index 0f4a062ea287c67412a3582831a43a9c04774cbf..388d7c997a78ae83aadbb9581efa531289a3170a 100644
---- a/Source/WebCore/style/StyleTreeResolver.cpp
-+++ b/Source/WebCore/style/StyleTreeResolver.cpp
-@@ -70,6 +70,9 @@
- #include "StyleFontSizeFunctions.h"
- #include "StyleOriginatedTimelinesController.h"
- #include "StylePositionTryFallbackTactic.h"
-+#if PLATFORM(HAIKU)
-+#include <cstdlib>
-+#endif
- #include "StyleResolver.h"
- #include "StyleTreeResolverInlines.h"
- #include "SVGElement.h"
-@@ -377,6 +380,21 @@ auto TreeResolver::resolveElement(Element& element, const Style::ComputedStyle*
-     }
- 
-     auto resolveAndAddPseudoElementStyle = [&](const PseudoElementIdentifier& pseudoElementIdentifier) {
-+#if PLATFORM(HAIKU)
-+        static const bool skipAbsentPseudoStyles = [] {
-+            const char* setting = std::getenv("SUMMIT_SKIP_ABSENT_PSEUDO_STYLES");
-+            return setting && setting[0] == '1' && !setting[1];
-+        }();
-+        // Only ::first-line and ::first-letter can be resolved from an ancestor
-+        // without a pseudo style on this element. Other absent pseudo styles
-+        // have no resolution work or removal to report.
-+        if (skipAbsentPseudoStyles
-+            && pseudoElementIdentifier.type != PseudoElementType::FirstLine
-+            && pseudoElementIdentifier.type != PseudoElementType::FirstLetter
-+            && !update.style->hasPseudoStyle(pseudoElementIdentifier.type)
-+            && (!existingStyle || !existingStyle->pseudoElementStyle(pseudoElementIdentifier)))
-+            return OptionSet<Change> { };
-+#endif
-         const Style::ComputedStyle* existingPseudoStyle = existingStyle ? existingStyle->pseudoElementStyle(pseudoElementIdentifier) : nullptr;
-         auto pseudoElementUpdate = resolvePseudoElement(element, pseudoElementIdentifier, update, parent().isInDisplayNoneTree, existingPseudoStyle);
- 
 diff --git a/Source/WebCore/testing/Internals.idl b/Source/WebCore/testing/Internals.idl
 index efb0e18ef3681d9f33b6c784f0fb22f1ff0e80eb..19ec94335716b9ab75d52343c7adcad776ac151b 100644
 --- a/Source/WebCore/testing/Internals.idl
