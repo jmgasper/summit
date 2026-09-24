@@ -4542,3 +4542,17 @@ plausible constraints on content readiness and concurrent video presentation;
 the scrolling compositor itself is already close to display cadence
 (`.vm/bench/scroll-20260925-092700-page-update-trace-active-120/` and
 `.vm/bench/scroll-20260925-092825-page-update-light-active-120/`).
+
+The corrected trace parser enabled a level-2 A/B/A check of the Haiku
+extended grid integration on the installed PGO bundle. Two default-path
+120-notch bursts reached **58.90** and **58.55 fps**, with two and one frame
+over 33 ms; slow layouts totaled **3.20** and **2.82 s**. Between them, the
+`SUMMIT_EXTENDED_GRID_INTEGRATION=0` legacy run reached **57.26 fps**, with
+four frames over 33 ms and **1.44 s** of slow layout. All three final
+screenshots showed later feed posts. The live feed and ad content varied, so
+these are directional rather than a controlled layout microbenchmark. The
+modern grid path still favors visible scroll pacing while doing more main
+thread layout work. It remains enabled; reducing that layout cost without
+losing scroll pacing is the next useful grid target
+(`.vm/bench/scroll-20260925-093211-grid-legacy-light-active-120/` and
+`.vm/bench/scroll-20260925-093308-grid-modern-light-active-120-repeat/`).
