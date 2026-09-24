@@ -3684,6 +3684,32 @@ candidate ran at 58.94 fps with zero frames over 33 ms and no Zink error
 
 At 1280×887, a full ten-iteration Speedometer 3.1 run with GL Canvas enabled
 scored 7.288 ± 0.359, close to the previous 7.178 ± 0.346. It remains below
-Firefox's 8.338 ± 0.374. The normal workstation launcher now uses
-`bundle-s8a06mrs` with GL Canvas off; the user can opt in for further
-GPU Canvas testing (`.vm/bench/speedometer-20260924-201118-cpu-scrollbar-gl-full/`).
+Firefox's 8.338 ± 0.374. At this stage the workstation launcher was moved to
+`bundle-s8a06mrs` with GL Canvas still off, pending the live media check
+(`.vm/bench/speedometer-20260924-201118-cpu-scrollbar-gl-full/`).
+
+### Guardian playback after raster scrollbar fix
+
+Matched standalone runs of the reported article's 480×384 H.264 clip used
+NVDEC with status 0 and completed a loop without a media error. With GL
+Canvas off and on, each decoded 683 frames and painted 681; both had a
+roughly 15.8 ms 95th-percentile frame age at paint. Neither run logged a
+Zink error (`.vm/bench/probe-20260924-201640-summit-guardian-cpu-scrollbar-gl-off/`
+and `.vm/bench/probe-20260924-201734-summit-guardian-cpu-scrollbar-gl-on/`).
+
+On the full reported Guardian article, after dismissing consent and bringing
+the inline video into view, GL Canvas on painted 195 of the latest 200
+decoded frames. GL Canvas off painted 196 of 200 in a separate article run.
+Both selected NVDEC with status 0 and had no repaint queue delay over 40 ms
+in those windows. The 95th-percentile queue delay was 17.4 ms with GL on and
+15.2 ms with GL off. The video was visible in both screenshots. These native
+traces count decode and paint, not exact presentation timing, and the live
+page can change between runs. They do not show a material playback regression
+from GL Canvas after the scrollbar fix
+(`.vm/guardian-gl-raster-live-after-video.log`,
+`.vm/guardian-cpu-raster-live-after-video.log`).
+
+The workstation desktop launcher now sets `SUMMIT_SKIA_GL_CONTEXT=1` by
+default to use the measured Canvas gain. `SUMMIT_SKIA_GL_CONTEXT=0` overrides
+it for comparison. The underlying bundle is still `bundle-s8a06mrs`; no
+engine rebuild was needed for this launcher change.

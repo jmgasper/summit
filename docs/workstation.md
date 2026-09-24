@@ -36,8 +36,9 @@ For interactive checks on September 24, 2026, the desktop launcher
 `bundle-s8a06mrs` with the private Mesa GPU libraries. The system-installed
 `/boot/system/apps/Summit` is an older September 20 build. The desktop
 launcher uses Summit's normal `SummitModern` profile; benchmark runs use
-separate profiles. Skia GL Canvas remains opt-in with
-`SUMMIT_SKIA_GL_CONTEXT=1`; the desktop launcher leaves it off.
+separate profiles. The launcher enables Skia GL Canvas by default after the
+raster-scrollbar and Guardian playback checks. Set
+`SUMMIT_SKIA_GL_CONTEXT=0` when launching it to compare CPU Canvas rendering.
 
 `SUMMIT_REMOTE_TAG` only names the host-side lock and result files, so a VM
 build and a workstation build can run at the same time.
