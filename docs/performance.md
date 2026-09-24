@@ -3404,6 +3404,15 @@ The existing Reddit HLS fixture sought to 8 seconds, emitted `seeking` and
 error. It tests programmatic seeking rather than dragging the Adobe ad's custom
 progress control (`.vm/bench/probe-20260924-150450-summit-reddit-hls-seek-general-css/`).
 
+A later interactive probe used an HTML range progress control with the same
+Reddit HLS clip on the installed `bundle-wzdplo3u`. A VNC pointer drag moved
+the range from 0 to 8.2 seconds, generated seven `input` events and the
+corresponding `seeking`/`seeked` events, and ended with `video.currentTime` at
+8.2 seconds and no media error. This verifies pointer delivery and repeated
+seeks through a generic custom control; it cannot verify Adobe's ad player
+without that ad's page URL
+(`.vm/bench/probe-20260924-181521-summit-reddit-hls-pointer-drag-verified/`).
+
 The first general implementation rebuilt the author rule set immediately on
 every simple insertion. Its bundle accidentally used the cached `SkiaCG`
 configuration with Haiku system malloc, which explained most of an apparent

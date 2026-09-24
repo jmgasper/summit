@@ -1,0 +1,57 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Summit drag seek probe: loading</title>
+<style>
+body { margin: 32px; font: 16px sans-serif; }
+video { display: block; width: 640px; height: 400px; background: #111; }
+label { display: block; margin-top: 28px; }
+input[type=range] { display: block; width: 640px; height: 40px; touch-action: none; }
+pre { white-space: pre-wrap; }
+</style>
+<video id="video" muted playsinline controls
+    src="https://v.redd.it/u5pu7ad5rcdh1/HLSPlaylist.m3u8"></video>
+<label for="progress">Drag this progress control to seek</label>
+<input id="progress" type="range" min="0" max="12.7" step="0.1" value="0">
+<pre id="status">Loading media…</pre>
+<script>
+const video = document.getElementById("video");
+const progress = document.getElementById("progress");
+const status = document.getElementById("status");
+const events = [];
+const started = performance.now();
+const snapshot = name => ({
+    name, atMs: Math.round(performance.now() - started),
+    time: video.currentTime, rangeValue: Number(progress.value),
+    seekable: Array.from({length: video.seekable.length}, (_, index) =>
+        [video.seekable.start(index), video.seekable.end(index)]),
+});
+const record = name => {
+    events.push(snapshot(name));
+    status.textContent = JSON.stringify(events.slice(-8), null, 2);
+};
+for (const name of ["loadedmetadata", "canplay", "playing", "seeking", "seeked", "error"])
+    video.addEventListener(name, () => record(name));
+for (const name of ["pointerdown", "pointermove", "pointerup", "input", "change"])
+    progress.addEventListener(name, () => {
+        if (name === "input")
+            video.currentTime = Number(progress.value);
+        record(name);
+    });
+video.addEventListener("loadedmetadata", async () => {
+    progress.max = String(video.duration);
+    document.title = "Summit drag seek probe: ready";
+    try { await video.play(); }
+    catch (error) { events.push({name: "play-rejected", message: String(error)}); }
+}, {once: true});
+progress.addEventListener("pointerup", () => {
+    setTimeout(async () => {
+        record("final");
+        const result = {
+            src: video.currentSrc, duration: video.duration,
+            events, error: video.error && {code: video.error.code, message: video.error.message},
+        };
+        await fetch("/__bench/probe", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(result)});
+        document.title = "Summit drag seek probe: done";
+    }, 1200);
+}, {once: true});
+</script>
