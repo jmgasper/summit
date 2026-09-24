@@ -4378,3 +4378,11 @@ during scrolling. All 120 events were handled at 58.55 fps, with a 36.8 ms
 worst frame interval. This removes one identified scroll-time cause but
 does not establish an overall frame-rate gain from these two noisy live
 samples (`.vm/bench/scroll-20260925-081332-prewarm-rounded-solid-reddit-120/`).
+
+At the same 1280×887 viewport, the prewarm bundle scored **8.574 ± 0.468**
+in a ten-iteration local Speedometer 3.1 run without measured foreign CPU
+contention. The previous installed bundle scored 8.475 ± 0.414; the
+intervals overlap. The X399 desktop launcher now points to
+`bundle-glk_tobh`, with the earlier `bundle-wekouxn2` launcher saved as
+`Summit-current.pre-rounded-solid-prewarm-20260925.sh`
+(`.vm/bench/speedometer-20260925-081513-rounded-solid-prewarm-matched/`).
