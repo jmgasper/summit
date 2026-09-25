@@ -11125,10 +11125,10 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..5e621ced18775b7ba2f39be0f2154790966bb530
+index 0000000000000000000000000000000000000000..2f08a859b88803a96dc6a3aa1cb71e955e17ebb8
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,1312 @@
+@@ -0,0 +1,1339 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -11663,9 +11663,18 @@ index 0000000000000000000000000000000000000000..5e621ced18775b7ba2f39be0f2154790
 +
 +void MediaPlayerPrivate::startAudioPlaybackIfNeeded()
 +{
-+    if (m_paused || !m_mediaTracksReady || !m_audioTrack)
++    if (m_paused || m_muted || !m_mediaTracksReady || !m_audioTrack)
 +        return;
 +    if (!m_soundPlayer) {
++        // A muted or paused clip does not advance its audio track. Match the
++        // video's clock when sound is enabled later in the playback.
++        if (m_mediaLock.Lock()) {
++            bigtime_t audioTime = m_audioTrack->CurrentTime();
++            bigtime_t playbackTime = (bigtime_t)(m_currentTime.load() * 1000000);
++            if (std::abs(audioTime - playbackTime) > 100000)
++                m_audioTrack->SeekToTime(&playbackTime);
++            m_mediaLock.Unlock();
++        }
 +        m_soundPlayer = new BSoundPlayer(&m_audioFormat, "HTML5 Audio", playCallback, NULL, this);
 +        status_t status = m_soundPlayer->InitCheck();
 +        if (mediaPlaybackTraceEnabled())
@@ -11680,15 +11689,8 @@ index 0000000000000000000000000000000000000000..5e621ced18775b7ba2f39be0f2154790
 +    m_soundPlayer->Start();
 +}
 +
-+void MediaPlayerPrivate::play()
++void MediaPlayerPrivate::releaseAudioOutput()
 +{
-+    m_paused = false;
-+    startAudioPlaybackIfNeeded();
-+}
-+
-+void MediaPlayerPrivate::pause()
-+{
-+    m_paused = true;
 +    if (m_soundPlayer) {
 +        auto* soundPlayer = m_soundPlayer;
 +        soundPlayer->Stop(false);
@@ -11699,6 +11701,18 @@ index 0000000000000000000000000000000000000000..5e621ced18775b7ba2f39be0f2154790
 +        if (mediaPlaybackTraceEnabled())
 +            std::fprintf(stderr, "Summit media playback: player=%p audioOutput=release\n", this);
 +    }
++}
++
++void MediaPlayerPrivate::play()
++{
++    m_paused = false;
++    startAudioPlaybackIfNeeded();
++}
++
++void MediaPlayerPrivate::pause()
++{
++    m_paused = true;
++    releaseAudioOutput();
 +}
 +
 +FloatSize MediaPlayerPrivate::naturalSize() const
@@ -11800,6 +11814,19 @@ index 0000000000000000000000000000000000000000..5e621ced18775b7ba2f39be0f2154790
 +    m_volume = volume;
 +    if (m_soundPlayer)
 +        m_soundPlayer->SetVolume(volume);
++}
++
++void MediaPlayerPrivate::setMuted(bool muted)
++{
++    if (m_muted == muted)
++        return;
++    m_muted = muted;
++    if (mediaPlaybackTraceEnabled())
++        std::fprintf(stderr, "Summit media playback: player=%p muted=%d\n", this, muted);
++    if (muted)
++        releaseAudioOutput();
++    else
++        startAudioPlaybackIfNeeded();
 +}
 +
 +MediaPlayer::NetworkState MediaPlayerPrivate::networkState() const
@@ -12443,10 +12470,10 @@ index 0000000000000000000000000000000000000000..5e621ced18775b7ba2f39be0f2154790
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..e36e3893f67cbb9704772ca8f2f8edfe3b7594ec
+index 0000000000000000000000000000000000000000..667f15088f9e2d8f18707878a106abff558ae141
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
-@@ -0,0 +1,177 @@
+@@ -0,0 +1,180 @@
 +/*
 + * Copyright (C) 2014 Haiku, Inc.
 + *
@@ -12537,6 +12564,7 @@ index 0000000000000000000000000000000000000000..e36e3893f67cbb9704772ca8f2f8edfe
 +        bool ended() const override { return m_ended; }
 +
 +        void setVolume(float) override;
++        void setMuted(bool) override;
 +
 +        MediaPlayer::NetworkState networkState() const override;
 +        MediaPlayer::ReadyState readyState() const override;
@@ -12554,6 +12582,7 @@ index 0000000000000000000000000000000000000000..e36e3893f67cbb9704772ca8f2f8edfe
 +    private:
 +        void IdentifyTracks(const String& url);
 +        void startAudioPlaybackIfNeeded();
++        void releaseAudioOutput();
 +        static status_t loadingThread(void* cookie);
 +        static status_t videoThread(void* cookie);
 +        void queueVideoFrameRepaint();
@@ -12605,6 +12634,7 @@ index 0000000000000000000000000000000000000000..e36e3893f67cbb9704772ca8f2f8edfe
 +        MediaPlayer::ReadyState m_readyState;
 +
 +        float m_volume;
++        bool m_muted { false };
 +        std::atomic<float> m_currentTime;
 +        std::atomic<float> m_duration { 0 };
 +        std::atomic<bool> m_hasVideo { false };
