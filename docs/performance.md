@@ -9,15 +9,15 @@ widths, preserved font registrations for simple CSS rule insertions, and
 coalesced video repaint callbacks. The Haiku media backend also reports fully
 downloaded videos as buffered. It precompiles the rounded solid-color shader
 before scrolling, and caches grid item block contributions within a sizing
-pass. It completes all 580 steps of Speedometer 3.1. The latest
-matched-viewport 30-iteration run is from its buffered-media predecessor,
-`bundle-_3yrr8z2`; the installed bundle has a matched ten-iteration run
-recorded below (`.vm/bench/speedometer-20260925-101601-buffered-media-pgo-thirty/`
-and `.vm/bench/speedometer-20260925-111051-grid-cache-candidate/`).
+pass. It completes all 580 steps of Speedometer 3.1. The installed bundle's
+latest 30-iteration run is matched to the Firefox comparison at 1280×887
+(`.vm/bench/speedometer-20260925-123222-installed-grid-thirty-matched/`
+and `.vm/bench/firefox-speedometer-20260925-092147-current-thirty-iterations/`).
 
 | Browser | Content viewport | Speedometer 3.1 |
 | --- | ---: | ---: |
-| Summit, installed grid-cache PGO, 10 iterations | 1280×887 | **8.303 ± 0.399** |
+| Summit, installed grid-cache PGO, 30 iterations | 1280×887 | **8.377 ± 0.121** |
+| Summit, installed grid-cache PGO, 10 iterations | 1280×887 | **8.457 ± 0.417** |
 | Summit, buffered-media PGO predecessor, 30 iterations | 1280×887 | **8.391 ± 0.117** |
 | Summit, prior PGO, same-session 30-iteration repeat | 1280×887 | **8.500 ± 0.123** |
 | Summit, prior PGO, earlier 30-iteration run | 1280×887 | **8.561 ± 0.125** |
@@ -34,11 +34,11 @@ and `.vm/bench/speedometer-20260925-111051-grid-cache-candidate/`).
 | Firefox 155 on the same workstation | 1280×887 | **8.338 ± 0.374** |
 | Firefox 155, fresh comparison | 1280×887 | **8.238 ± 0.368** |
 
-These Summit runs were uncontended. The predecessor's 30-iteration point score is
-within 0.014 of Firefox's, and their uncertainty intervals overlap. It is
-0.109 below the prior bundle's same-session 30-iteration repeat; those
-intervals overlap too. The installed grid-cache build has not established a
-Speedometer gain. The 30-iteration predecessor's
+These Summit runs were uncontended. The installed build's 30-iteration point
+score is 0.028 below Firefox's, and their uncertainty intervals overlap. The
+buffered-media predecessor scored 8.391 ± 0.117, also within the spread of
+this result. The installed grid-cache build has not established a Speedometer
+gain. Its
 largest remaining suite gaps against Firefox are Preact, CodeMirror, and
 Svelte complex DOM. Older score comparisons in this log used different
 viewport sizes and should be treated as directional.
@@ -4795,3 +4795,20 @@ Adobe ad's seek controls. The workstation launcher remains on the validated
 `bundle-ydvalf4q`; `bundle-kdx8jkqj` is diagnostic
 (`.vm/bench/scroll-20260925-121506-reddit-rejected-media-trace/` and
 `.vm/bench/scroll-20260925-122434-media-track-count/`).
+
+### Installed grid-cache Speedometer repeat
+
+The installed `bundle-ydvalf4q` completed 30 local Speedometer 3.1
+iterations without measured foreign CPU contention. At the matched
+1280×887 content viewport it scored **8.377 ± 0.121**, versus Firefox 155's
+**8.405 ± 0.179** at that viewport. The 0.028 point gap is smaller than
+either confidence interval, so this result does not establish a difference.
+The buffered-media predecessor scored **8.391 ± 0.117** in its matched
+30-iteration run. The grid contribution cache has not produced a measured
+whole-browser gain, though it reduced the grid fixture's row-sizing work.
+
+An initial repeat scored **8.364 ± 0.126**, but its recorded content viewport
+was 1280×854 because the window frame was 33 pixels too short. It is kept as
+a diagnostic and excluded from the matched comparison
+(`.vm/bench/speedometer-20260925-122812-installed-grid-thirty/` and
+`.vm/bench/speedometer-20260925-123222-installed-grid-thirty-matched/`).
