@@ -1,0 +1,60 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Media preload and audio output probe</title>
+<style>
+body { font: 16px sans-serif; }
+video { width: 220px; margin: 4px; }
+</style>
+<h1>Paused media preload</h1>
+<div id="players"></div>
+<script>
+const source = "https://uploads.guim.co.uk/2026/09/23/US_delegation_walks_out_during_Iranian_president_s_UNGA_speech--2e6a54b2-a951-428a-81c9-44a74385f0f8-1.0_480w_q8.mp4";
+const started = performance.now();
+const events = [];
+const players = Array.from({length: 8}, (_, index) => {
+    const video = document.createElement("video");
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "auto";
+    video.controls = true;
+    for (const name of ["loadedmetadata", "playing", "pause", "error"])
+        video.addEventListener(name, () => events.push({index, name,
+            atMs: Math.round(performance.now() - started), time: video.currentTime}));
+    document.getElementById("players").append(video);
+    video.src = source;
+    return video;
+});
+
+const settle = () => new Promise(resolve => {
+    const done = () => players.every(video => video.readyState >= HTMLMediaElement.HAVE_METADATA || video.error);
+    if (done()) { resolve(); return; }
+    const timer = setInterval(() => {
+        if (!done()) return;
+        clearInterval(timer);
+        clearTimeout(limit);
+        resolve();
+    }, 100);
+    const limit = setTimeout(() => { clearInterval(timer); resolve(); }, 25000);
+});
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+(async () => {
+    await settle();
+    const preloadedAtMs = Math.round(performance.now() - started);
+    for (const video of players.slice(0, 2)) {
+        try { await video.play(); }
+        catch (error) { events.push({index: players.indexOf(video), name: "play-rejected", message: String(error)}); }
+        await sleep(2500);
+        video.pause();
+    }
+    await sleep(500);
+    const result = {source, preloadedAtMs, events, players: players.map((video, index) => ({
+        index, readyState: video.readyState, networkState: video.networkState,
+        duration: video.duration, currentTime: video.currentTime, paused: video.paused,
+        error: video.error && {code: video.error.code, message: video.error.message},
+    }))};
+    await fetch("/__bench/probe", {method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(result)});
+    document.title = "Media preload probe: done";
+})();
+</script>
