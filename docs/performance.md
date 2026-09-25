@@ -5048,3 +5048,21 @@ delay alone therefore do not explain the reported choppiness; the next useful
 measurement is actual frame presentation during the first seconds of the full
 article while its page work is active
 (`.vm/bench/guardian-article-audio-recovered-20260925/browser.log`).
+
+### Final X399 test build
+
+A fresh PGO rebuild of WebProcess, NetworkProcess, and Summit produced
+`bundle-or5rko68` (engine patch SHA
+`dbf9402cbda75c901b27306aaabd1528782ffd520b69e0b330eef6964b7e96e2`).
+Its `libWebKit.so.1.10.0` hash matches the previously benchmarked
+`bundle-h4vkwpuo`. A Wikipedia smoke run loaded successfully, accepted all
+eight wheel events, scrolled 356 px, and reached 57.69 frames/s in its last
+sample (`.vm/bench/scroll-20260925-160359-release-smoke-wikipedia/`). A
+Guardian paused-seek probe resumed at 10.758 seconds, advanced to 13.004
+seconds, selected NVDEC H.264 and AAC, and reported no media error
+(`.vm/bench/probe-20260925-160434-summit-release-guardian-seek/`).
+
+The X399 desktop launcher points to `bundle-or5rko68`; its previous version
+is saved as `/boot/home/Desktop/Summit-current.pre-final-rebuild-20260925.sh`.
+Build logs are `.vm/final-release-webprocess.log`,
+`.vm/final-release-networkprocess.log`, and `.vm/final-release-browser.log`.
