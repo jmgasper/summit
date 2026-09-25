@@ -2,22 +2,24 @@
 
 ## Current coordinated Skia result (September 25, 2026)
 
-The workstation launcher uses profile-guided `bundle-ydvalf4q`: Skia CPU tile
+The workstation launcher uses profile-guided `bundle-swpotbhy`: Skia CPU tile
 painting with two workers, GL Canvas, raster coordinated scrollbars, mimalloc,
 asynchronous scrolling, display-rate composition pacing, guarded reuse of exact text
 widths, preserved font registrations for simple CSS rule insertions, and
 coalesced video repaint callbacks. The Haiku media backend also reports fully
 downloaded videos as buffered. It precompiles the rounded solid-color shader
 before scrolling, and caches grid item block contributions within a sizing
-pass. It completes all 580 steps of Speedometer 3.1. The installed bundle's
+pass. Muted videos do not allocate audio output, and audible output is
+created only while playing. It completes all 580 steps of Speedometer 3.1. The installed bundle's
 latest 30-iteration run is matched to the Firefox comparison at 1280×887
-(`.vm/bench/speedometer-20260925-123222-installed-grid-thirty-matched/`
+(`.vm/bench/speedometer-20260925-133616-mute-aware-pgo-restored-thirty/`
 and `.vm/bench/firefox-speedometer-20260925-092147-current-thirty-iterations/`).
 
 | Browser | Content viewport | Speedometer 3.1 |
 | --- | ---: | ---: |
-| Summit, installed grid-cache PGO, 30 iterations | 1280×887 | **8.377 ± 0.121** |
-| Summit, installed grid-cache PGO, 10 iterations | 1280×887 | **8.457 ± 0.417** |
+| Summit, installed mute-aware PGO, 30 iterations | 1280×887 | **8.520 ± 0.129** |
+| Summit, prior grid-cache PGO, 30 iterations | 1280×887 | **8.377 ± 0.121** |
+| Summit, prior grid-cache PGO, 10 iterations | 1280×887 | **8.457 ± 0.417** |
 | Summit, buffered-media PGO predecessor, 30 iterations | 1280×887 | **8.391 ± 0.117** |
 | Summit, prior PGO, same-session 30-iteration repeat | 1280×887 | **8.500 ± 0.123** |
 | Summit, prior PGO, earlier 30-iteration run | 1280×887 | **8.561 ± 0.125** |
@@ -35,10 +37,9 @@ and `.vm/bench/firefox-speedometer-20260925-092147-current-thirty-iterations/`).
 | Firefox 155, fresh comparison | 1280×887 | **8.238 ± 0.368** |
 
 These Summit runs were uncontended. The installed build's 30-iteration point
-score is 0.028 below Firefox's, and their uncertainty intervals overlap. The
-buffered-media predecessor scored 8.391 ± 0.117, also within the spread of
-this result. The installed grid-cache build has not established a Speedometer
-gain. Its
+score is 0.115 above Firefox's and 0.143 above the prior grid-cache bundle;
+their uncertainty intervals overlap, so these results do not establish a
+whole-browser Speedometer gain. Its
 largest remaining suite gaps against Firefox are Preact, CodeMirror, and
 Svelte complex DOM. Older score comparisons in this log used different
 viewport sizes and should be treated as directional.
@@ -4812,3 +4813,59 @@ was 1280×854 because the window frame was 33 pixels too short. It is kept as
 a diagnostic and excluded from the matched comparison
 (`.vm/bench/speedometer-20260925-122812-installed-grid-thirty/` and
 `.vm/bench/speedometer-20260925-123222-installed-grid-thirty-matched/`).
+
+### Media audio output lifetime and mute state
+
+A 40-burst alternating Reddit run on the prior installed bundle exposed
+repeated Media Kit buffer failures and NVDEC timeouts. One traced run logged
+6,334 `SoundPlayNode::FillNextBuffer` failures, 27 buffer-group allocation
+failures, and 144 `nvdec: the decoder did not answer` messages. A video-only
+player's `cancelLoad` took 62.8 seconds, mostly waiting for its decoder
+thread. The burst completion snapshots still showed a 59.57 median active
+fps, but one burst had a 495 ms first-frame delay. The long cancellation
+ended during that run; its log alone does not locate when the wait began
+(`.vm/bench/scroll-cycles-20260925-123914-installed-grid-long-reddit/` and
+`.vm/bench/scroll-cycles-20260925-124341-media-lifecycle-long-reddit/`).
+
+The Haiku backend previously constructed `BSoundPlayer` while identifying
+every audio track, including paused and muted videos. It also had no
+`setMuted(bool)` override. It now creates audio output when audible playback
+starts, releases it on pause or mute, and seeks the audio track to the video
+clock when sound is enabled later. The fixed eight-video preload probe loaded
+all eight clips in both builds. The prior bundle attempted eight audio
+buffer groups during preload. The first lazy-output candidate attempted
+only two when two clips played; the mute-aware bundle attempted **zero**
+while all clips stayed muted. Pausing and resuming the first clip advanced
+its current time from about 2.25 to 4.74 seconds. Unmuting it at 3 seconds
+created one sound player, and remuting released it at 4.5 seconds. The
+workstation's Media Kit still reported one buffer-group failure for that
+audible interval, also seen in a single-video prior-bundle control. Muted
+Guardian playback and Reddit HLS seeking made no audio allocation and
+reported no media or NVDEC error
+(`.vm/bench/probe-20260925-130717-summit-preload-eight-control/`,
+`.vm/bench/probe-20260925-133531-summit-mute-aware-pgo-restored-preload/`,
+`.vm/bench/probe-20260925-132223-summit-mute-aware-unmute/`,
+`.vm/bench/probe-20260925-132310-summit-mute-aware-reddit-seek/`, and
+`.vm/bench/probe-20260925-132355-summit-mute-aware-guardian-loop/`).
+
+A second 40-burst Reddit control and mute-aware candidate each loaded 142
+media players and delivered all 3,200 wheel events. The control logged 73
+buffer-group failures and 322 audio buffer failures; the candidate logged
+**zero of either**, with no NVDEC timeout in those two visits. Median active
+scroll rate was 58.61 versus 59.03 fps, and worst active interframe gap was
+810.0 versus 46.8 ms. Live feed content and Media Kit state varied across
+visits, so the frame-rate difference is directional; the fixed preload probe
+isolates the audio allocation reduction
+(`.vm/bench/scroll-cycles-20260925-130334-media-lifecycle-control-repeat/`
+and `.vm/bench/scroll-cycles-20260925-132458-mute-aware-long-reddit/`).
+
+After restoring the trained profile for the unified WebCore unit whose
+inline method locations had changed, the mute-aware bundle scored
+**8.520 ± 0.129** over 30 uncontended Speedometer iterations at 1280×887.
+Firefox 155 scored **8.405 ± 0.179** at that viewport; the intervals overlap.
+The first mute-aware build without that unit's profile scored 8.236 ± 0.150,
+so it was not installed. The workstation launcher now points to
+`bundle-swpotbhy`, and the previous launcher is saved as
+`Summit-current.pre-muted-audio-20260925.sh`
+(`.vm/bench/speedometer-20260925-132800-mute-aware-thirty/` and
+`.vm/bench/speedometer-20260925-133616-mute-aware-pgo-restored-thirty/`).
