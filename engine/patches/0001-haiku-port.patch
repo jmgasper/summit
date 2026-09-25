@@ -11125,10 +11125,10 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..c8d36d7dd8fb12ebf788a650703179ecc60e6f05
+index 0000000000000000000000000000000000000000..5e621ced18775b7ba2f39be0f2154790966bb530
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,1286 @@
+@@ -0,0 +1,1312 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -11327,6 +11327,7 @@ index 0000000000000000000000000000000000000000..c8d36d7dd8fb12ebf788a650703179ec
 +    bool hadVideoThread = false;
 +    bool hadSoundPlayer = false;
 +    m_abort = true;
++    m_mediaTracksReady = false;
 +#if USE(CURL)
 +    // curl_multi_wakeup() is thread-safe. Serialize the handle lifetime so a
 +    // cancellation cannot race the loader's curl_multi_cleanup().
@@ -11379,6 +11380,7 @@ index 0000000000000000000000000000000000000000..c8d36d7dd8fb12ebf788a650703179ec
 +    m_secondaryDownloadFile = nullptr;
 +    m_audioTrack = nullptr;
 +    m_videoTrack = nullptr;
++    m_audioFormat = { };
 +    m_audioAtEnd = false;
 +    m_videoAtEnd = false;
 +    m_prerollTarget = -1;
@@ -11438,7 +11440,8 @@ index 0000000000000000000000000000000000000000..c8d36d7dd8fb12ebf788a650703179ec
 +        {
 +            if (!player->m_hasVideo)
 +                player->m_currentTime = player->m_audioTrack->Duration() / 1000000.f;
-+            player->m_soundPlayer->Stop(false);
++            if (player->m_soundPlayer)
++                player->m_soundPlayer->Stop(false);
 +
 +            player->m_audioAtEnd = true;
 +            if ((!player->m_videoTrack || player->m_videoAtEnd) && !player->m_ended.exchange(true)) {
@@ -11446,7 +11449,7 @@ index 0000000000000000000000000000000000000000..c8d36d7dd8fb12ebf788a650703179ec
 +                callOnMainThread([p = WeakPtr(player)] {
 +                    if (p && p->m_ended) {
 +                        if (!p->m_player.isLooping())
-+                            p->m_paused = true;
++                            p->pause();
 +                        p->m_player.timeChanged();
 +                        p->m_player.playbackStateChanged();
 +                    }
@@ -11493,6 +11496,8 @@ index 0000000000000000000000000000000000000000..c8d36d7dd8fb12ebf788a650703179ec
 +
 +            player->m_readyState = MediaPlayer::ReadyState::HaveEnoughData;
 +            player->m_networkState = MediaPlayer::NetworkState::Loaded;
++            player->m_mediaTracksReady = true;
++            player->startAudioPlaybackIfNeeded();
 +        } else {
 +            player->m_readyState = MediaPlayer::ReadyState::HaveMetadata;
 +            player->m_networkState = MediaPlayer::NetworkState::FormatError;
@@ -11605,7 +11610,7 @@ index 0000000000000000000000000000000000000000..c8d36d7dd8fb12ebf788a650703179ec
 +                        callOnMainThread([player = WeakPtr(player)] {
 +                            if (player && player->m_ended) {
 +                                if (!player->m_player.isLooping())
-+                                    player->m_paused = true;
++                                    player->pause();
 +                                player->m_player.timeChanged();
 +                                player->m_player.playbackStateChanged();
 +                            }
@@ -11656,18 +11661,44 @@ index 0000000000000000000000000000000000000000..c8d36d7dd8fb12ebf788a650703179ec
 +
 +
 +
++void MediaPlayerPrivate::startAudioPlaybackIfNeeded()
++{
++    if (m_paused || !m_mediaTracksReady || !m_audioTrack)
++        return;
++    if (!m_soundPlayer) {
++        m_soundPlayer = new BSoundPlayer(&m_audioFormat, "HTML5 Audio", playCallback, NULL, this);
++        status_t status = m_soundPlayer->InitCheck();
++        if (mediaPlaybackTraceEnabled())
++            std::fprintf(stderr, "Summit media playback: player=%p audioOutput=create status=%ld\n", this, long(status));
++        if (status != B_OK) {
++            delete m_soundPlayer;
++            m_soundPlayer = nullptr;
++            return;
++        }
++        m_soundPlayer->SetVolume(m_volume);
++    }
++    m_soundPlayer->Start();
++}
++
 +void MediaPlayerPrivate::play()
 +{
-+    if (m_soundPlayer)
-+        m_soundPlayer->Start();
 +    m_paused = false;
++    startAudioPlaybackIfNeeded();
 +}
 +
 +void MediaPlayerPrivate::pause()
 +{
-+    if (m_soundPlayer)
-+        m_soundPlayer->Stop(false);
 +    m_paused = true;
++    if (m_soundPlayer) {
++        auto* soundPlayer = m_soundPlayer;
++        soundPlayer->Stop(false);
++        m_mediaLock.Lock();
++        m_soundPlayer = nullptr;
++        m_mediaLock.Unlock();
++        delete soundPlayer;
++        if (mediaPlaybackTraceEnabled())
++            std::fprintf(stderr, "Summit media playback: player=%p audioOutput=release\n", this);
++    }
 +}
 +
 +FloatSize MediaPlayerPrivate::naturalSize() const
@@ -11735,7 +11766,7 @@ index 0000000000000000000000000000000000000000..c8d36d7dd8fb12ebf788a650703179ec
 +        return MediaTimePromise::createAndReject(PlatformMediaError::NotSupportedError);
 +    }
 +
-+    bool restartAudio = m_audioAtEnd && !m_paused && m_soundPlayer;
++    bool restartAudio = m_audioAtEnd && !m_paused;
 +    m_audioAtEnd = false;
 +    m_videoAtEnd = false;
 +    m_currentTime = requestedTime / 1000000.f;
@@ -11749,7 +11780,7 @@ index 0000000000000000000000000000000000000000..c8d36d7dd8fb12ebf788a650703179ec
 +    auto position = currentTime();
 +    m_mediaLock.Unlock();
 +    if (restartAudio)
-+        m_soundPlayer->Start();
++        startAudioPlaybackIfNeeded();
 +    if (prerollVideo) {
 +        m_seekPromise.emplace(PlatformMediaError::Cancelled);
 +        return m_seekPromise->promise();
@@ -12308,12 +12339,7 @@ index 0000000000000000000000000000000000000000..c8d36d7dd8fb12ebf788a650703179ec
 +                        codecStatus == B_OK ? codec.short_name : "unknown", i, long(codecStatus));
 +                }
 +                m_audioTrack = track;
-+
-+                m_soundPlayer = new BSoundPlayer(&format.u.raw_audio,
-+                    "HTML5 Audio", playCallback, NULL, this);
-+                m_soundPlayer->SetVolume(m_volume);
-+                if (!m_paused)
-+                    m_soundPlayer->Start();
++                m_audioFormat = format.u.raw_audio;
 +
 +                if (m_videoTrack && m_audioTrack)
 +                    break;
@@ -12417,10 +12443,10 @@ index 0000000000000000000000000000000000000000..c8d36d7dd8fb12ebf788a650703179ec
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..6526e354afe5de60f1820a96fd603ce742c182ce
+index 0000000000000000000000000000000000000000..e36e3893f67cbb9704772ca8f2f8edfe3b7594ec
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
-@@ -0,0 +1,174 @@
+@@ -0,0 +1,177 @@
 +/*
 + * Copyright (C) 2014 Haiku, Inc.
 + *
@@ -12451,6 +12477,7 @@ index 0000000000000000000000000000000000000000..6526e354afe5de60f1820a96fd603ce7
 +#include <optional>
 +
 +#include <Locker.h>
++#include <MediaDefs.h>
 +#include <ObjectList.h>
 +#include <private/netservices/UrlProtocolAsynchronousListener.h>
 +
@@ -12460,7 +12487,6 @@ index 0000000000000000000000000000000000000000..6526e354afe5de60f1820a96fd603ce7
 +class BMediaFile;
 +class BMediaTrack;
 +class BSoundPlayer;
-+struct media_raw_audio_format;
 +
 +namespace WebCore {
 +
@@ -12527,6 +12553,7 @@ index 0000000000000000000000000000000000000000..6526e354afe5de60f1820a96fd603ce7
 +private:
 +    private:
 +        void IdentifyTracks(const String& url);
++        void startAudioPlaybackIfNeeded();
 +        static status_t loadingThread(void* cookie);
 +        static status_t videoThread(void* cookie);
 +        void queueVideoFrameRepaint();
@@ -12546,6 +12573,8 @@ index 0000000000000000000000000000000000000000..6526e354afe5de60f1820a96fd603ce7
 +        BFile* m_secondaryDownloadFile { nullptr };
 +        BMediaTrack* m_audioTrack;
 +        BMediaTrack* m_videoTrack;
++        media_raw_audio_format m_audioFormat { };
++        bool m_mediaTracksReady { false };
 +        bool m_audioAtEnd { false };
 +        bool m_videoAtEnd { false };
 +        BSoundPlayer* m_soundPlayer;
