@@ -1,0 +1,58 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Paused decoder seek probe</title>
+<video id="video" muted playsinline controls style="width:640px"></video>
+<pre id="status"></pre>
+<script>
+const sources = {
+    guardian: "https://uploads.guim.co.uk/2026/09/23/US_delegation_walks_out_during_Iranian_president_s_UNGA_speech--2e6a54b2-a951-428a-81c9-44a74385f0f8-1.0_480w_q8.mp4",
+    reddit: "https://v.redd.it/u5pu7ad5rcdh1/HLSPlaylist.m3u8",
+};
+const source = new URLSearchParams(location.search).get("source") || "guardian";
+const video = document.getElementById("video");
+const events = [];
+const started = performance.now();
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const record = (name, extra = {}) => {
+    events.push({name, atMs: Math.round(performance.now() - started),
+        time: video.currentTime, paused: video.paused, seeking: video.seeking, ...extra});
+    document.getElementById("status").textContent = JSON.stringify(events.slice(-12), null, 2);
+};
+for (const name of ["loadedmetadata", "playing", "pause", "seeking", "seeked", "error"])
+    video.addEventListener(name, () => record(name));
+
+const finished = async () => {
+    await fetch("/__bench/probe", {method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({source, src: video.currentSrc, duration: video.duration, events,
+            currentTime: video.currentTime,
+            error: video.error && {code: video.error.code, message: video.error.message}})});
+    document.title = "Paused decoder seek probe: done";
+};
+
+video.addEventListener("loadedmetadata", async () => {
+    try {
+        await video.play();
+        await sleep(2500);
+        video.pause();
+        const beforePause = video.currentTime;
+        // The backend parks an idle decoder two seconds after pause.
+        await sleep(3000);
+        const targets = [0.25, 0.70, 0.55].map(fraction => video.duration * fraction);
+        for (const target of targets) {
+            video.currentTime = target;
+            record("set-currentTime", {target});
+            await sleep(120);
+        }
+        await sleep(1500);
+        record("after-seek", {beforePause, finalTarget: targets.at(-1)});
+        await video.play();
+        await sleep(2500);
+        video.pause();
+    } catch (error) {
+        record("exception", {message: String(error)});
+    }
+    await finished();
+}, {once: true});
+if (sources[source]) video.src = sources[source];
+else { record("invalid-source", {source}); finished(); }
+</script>

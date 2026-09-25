@@ -11125,10 +11125,10 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..c4bd3945367d7a8f746d16e357293e6e32a33a97
+index 0000000000000000000000000000000000000000..50bf7e53a4942ffc4ea0df5d023a79b813359f63
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,1389 @@
+@@ -0,0 +1,1456 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -11521,15 +11521,37 @@ index 0000000000000000000000000000000000000000..c4bd3945367d7a8f746d16e357293e6e
 +    unsigned decodedFrames = 0;
 +    int lastTraceSecond = -1;
 +    const bool tracePlayback = mediaPlaybackTraceEnabled();
++    bigtime_t pausedSince = 0;
 +
 +    while (!player->m_abort) {
 +        if (player->m_paused && player->m_prerollTarget < 0) {
++            if (!pausedSince)
++                pausedSince = system_time();
++            // An offscreen autoplay video can remain paused for the rest of a
++            // feed visit. Release its decoder on this thread so the page does
++            // not wait for Media Kit, while keeping the last painted frame.
++            if (system_time() - pausedSince >= 2000000 && !player->m_videoSeekStarting
++                && player->m_mediaLock.Lock()) {
++                if (!player->m_abort && player->m_paused && player->m_prerollTarget < 0
++                    && !player->m_videoSeekStarting && player->m_videoTrack) {
++                    bigtime_t releaseStartedAt = tracePlayback ? system_time() : 0;
++                    player->m_videoTrackFile->ReleaseTrack(player->m_videoTrack);
++                    player->m_videoTrack = nullptr;
++                    if (tracePlayback)
++                        std::fprintf(stderr, "Summit media playback: player=%p videoDecoder=park-paused index=%d release=%.1f\n",
++                            player, player->m_videoTrackIndex, (system_time() - releaseStartedAt) / 1000.0);
++                    player->m_mediaLock.Unlock();
++                    return B_OK;
++                }
++                player->m_mediaLock.Unlock();
++            }
 +            snooze(10000);
 +            startTime = system_time();
 +            startMediaTime = (bigtime_t)(player->m_currentTime * 1000000);
 +            lastObservedTime = player->m_currentTime;
 +            continue;
 +        }
++        pausedSince = 0;
 +
 +        if (!player->m_mediaLock.Lock())
 +            continue;
@@ -11666,9 +11688,31 @@ index 0000000000000000000000000000000000000000..c4bd3945367d7a8f746d16e357293e6e
 +
 +void MediaPlayerPrivate::startVideoPlaybackIfNeeded(bool forSeek)
 +{
-+    if (!m_mediaTracksReady || !m_hasVideo || m_videoTrack || (m_paused && !forSeek)
++    if (!m_mediaTracksReady || !m_hasVideo || (m_paused && !forSeek)
 +        || !m_videoTrackFile || m_videoTrackIndex < 0)
 +        return;
++
++    if (!m_mediaLock.Lock())
++        return;
++    if (m_videoTrack) {
++        m_mediaLock.Unlock();
++        return;
++    }
++    thread_id parkedThread = m_videoThread;
++    m_mediaLock.Unlock();
++    if (parkedThread >= 0) {
++        // A paused decoder leaves its thread ID for the owner to reap. It
++        // clears m_videoTrack only immediately before returning.
++        status_t status;
++        wait_for_thread(parkedThread, &status);
++        m_videoThread = -1;
++    }
++    if (!m_mediaLock.Lock())
++        return;
++    if (m_videoTrack) {
++        m_mediaLock.Unlock();
++        return;
++    }
 +
 +    BMediaTrack* track = m_videoTrackFile->TrackAt(m_videoTrackIndex);
 +    media_format format = { };
@@ -11678,18 +11722,33 @@ index 0000000000000000000000000000000000000000..c4bd3945367d7a8f746d16e357293e6e
 +        if (track)
 +            m_videoTrackFile->ReleaseTrack(track);
 +        m_networkState = MediaPlayer::NetworkState::FormatError;
++        m_mediaLock.Unlock();
 +        m_player.networkStateChanged();
 +        return;
 +    }
 +
-+    delete m_frameBuffer;
-+    m_frameBuffer = new BBitmap(BRect(0, 0, format.Width() - 1, format.Height() - 1), B_RGB32);
++    if (!m_frameBuffer || static_cast<uint32>(m_frameBuffer->Bounds().IntegerWidth() + 1) != format.Width()
++        || static_cast<uint32>(m_frameBuffer->Bounds().IntegerHeight() + 1) != format.Height()) {
++        delete m_frameBuffer;
++        m_frameBuffer = new BBitmap(BRect(0, 0, format.Width() - 1, format.Height() - 1), B_RGB32);
++    }
++    if (parkedThread >= 0 && !forSeek && m_currentTime > 0) {
++        bigtime_t target = static_cast<bigtime_t>(m_currentTime.load() * 1000000);
++        bigtime_t keyframe = target;
++        if (track->SeekToTime(&keyframe) == B_OK) {
++            m_prerollKeyframeTime = keyframe;
++            m_prerollFrames = 0;
++            m_prerollTarget = target;
++        }
++    }
 +    m_videoTrack = track;
 +    m_videoThread = spawn_thread(videoThread, "video decoder", B_NORMAL_PRIORITY, this);
 +    if (m_videoThread < 0) {
 +        m_videoTrackFile->ReleaseTrack(m_videoTrack);
 +        m_videoTrack = nullptr;
++        m_prerollTarget = -1;
 +        m_networkState = MediaPlayer::NetworkState::FormatError;
++        m_mediaLock.Unlock();
 +        m_player.networkStateChanged();
 +        return;
 +    }
@@ -11697,6 +11756,7 @@ index 0000000000000000000000000000000000000000..c4bd3945367d7a8f746d16e357293e6e
 +        std::fprintf(stderr, "Summit media playback: player=%p videoDecoder=resume index=%d\n",
 +            this, m_videoTrackIndex);
 +    resume_thread(m_videoThread);
++    m_mediaLock.Unlock();
 +}
 +
 +void MediaPlayerPrivate::startAudioPlaybackIfNeeded()
@@ -11792,17 +11852,22 @@ index 0000000000000000000000000000000000000000..c4bd3945367d7a8f746d16e357293e6e
 +
 +Ref<MediaTimePromise> MediaPlayerPrivate::seekToTarget(const SeekTarget& time)
 +{
++    m_videoSeekStarting = true;
 +    startVideoPlaybackIfNeeded(true);
-+    if (!m_mediaLock.Lock())
++    if (!m_mediaLock.Lock()) {
++        m_videoSeekStarting = false;
 +        return MediaTimePromise::createAndReject(PlatformMediaError::InvalidState);
++    }
 +    if (auto previousSeek = std::exchange(m_seekPromise, std::nullopt))
 +        previousSeek->reject(PlatformMediaError::Cancelled);
 +    ++m_seekGeneration;
 +    if (!m_videoTrack && !m_audioTrack) {
++        m_videoSeekStarting = false;
 +        m_mediaLock.Unlock();
 +        return MediaTimePromise::createAndReject(PlatformMediaError::NotReady);
 +    }
 +    if (m_hasVideo && (!m_videoTrack || m_videoThread < 0 || !m_frameBuffer)) {
++        m_videoSeekStarting = false;
 +        m_mediaLock.Unlock();
 +        return MediaTimePromise::createAndReject(PlatformMediaError::NotReady);
 +    }
@@ -11816,6 +11881,7 @@ index 0000000000000000000000000000000000000000..c4bd3945367d7a8f746d16e357293e6e
 +        status = m_audioTrack->SeekToTime(&audioTime);
 +    }
 +    if (status != B_OK) {
++        m_videoSeekStarting = false;
 +        m_mediaLock.Unlock();
 +        return MediaTimePromise::createAndReject(PlatformMediaError::NotSupportedError);
 +    }
@@ -11832,6 +11898,7 @@ index 0000000000000000000000000000000000000000..c4bd3945367d7a8f746d16e357293e6e
 +        m_prerollTarget = requestedTime;
 +    }
 +    auto position = currentTime();
++    m_videoSeekStarting = false;
 +    m_mediaLock.Unlock();
 +    if (restartAudio)
 +        startAudioPlaybackIfNeeded();
@@ -12520,10 +12587,10 @@ index 0000000000000000000000000000000000000000..c4bd3945367d7a8f746d16e357293e6e
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..32c95ca01a6c6ceaf8e5dcecbbfe1284e2e8e908
+index 0000000000000000000000000000000000000000..d07bccdfba05f8c85d0d50029f007f94583f77c7
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
-@@ -0,0 +1,183 @@
+@@ -0,0 +1,184 @@
 +/*
 + * Copyright (C) 2014 Haiku, Inc.
 + *
@@ -12667,6 +12734,7 @@ index 0000000000000000000000000000000000000000..32c95ca01a6c6ceaf8e5dcecbbfe1284
 +        // lock acquisition, so a later seek can replace it without blocking
 +        // the WebProcess main thread.
 +        std::atomic<bigtime_t> m_prerollTarget { -1 };
++        std::atomic<bool> m_videoSeekStarting { false };
 +        bigtime_t m_prerollKeyframeTime { 0 };
 +        unsigned m_prerollFrames { 0 };
 +        std::atomic<unsigned> m_seekGeneration { 0 };
