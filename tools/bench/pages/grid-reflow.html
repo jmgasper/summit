@@ -1,0 +1,70 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Summit grid reflow probe: running</title>
+<style>
+body { margin: 16px; font: 14px/1.4 sans-serif; }
+.grid { display: grid; width: 600px; grid-template-columns: minmax(0, 100px) minmax(0, 100px);
+        gap: 20px; justify-content: space-between; margin-bottom: 8px; }
+.item { width: 50%; overflow-x: hidden; overflow-y: auto; border: 1px solid #4682b4; }
+.content { display: flex; flex-direction: column; width: 150px; min-height: 60px; }
+.dynamic { height: 50%; }
+</style>
+<main id="feed"></main>
+<script>
+"use strict";
+const params = new URLSearchParams(location.search);
+const count = Math.max(1, Math.min(200, Number(params.get("grids")) || 60));
+const repeats = Math.max(1, Math.min(200, Number(params.get("repeats")) || 50));
+const feed = document.getElementById("feed");
+const fragment = document.createDocumentFragment();
+for (let i = 0; i < count; i++) {
+    const grid = document.createElement("div");
+    grid.className = "grid";
+    grid.innerHTML = `<div class="item"><div class="content">Thumbnail ${i}</div></div>`
+        + `<div class="item"><div class="content"><span class="dynamic">Short text</span>`
+        + `<span>Nested flex content with a percentage-height descendant</span></div></div>`;
+    fragment.appendChild(grid);
+}
+feed.appendChild(fragment);
+const dynamic = [...document.querySelectorAll(".dynamic")];
+const grids = [...document.querySelectorAll(".grid")];
+const round = value => Math.round(value * 64) / 64;
+function geometry() {
+    return [0, Math.floor(grids.length / 2), grids.length - 1].map(index => {
+        const grid = grids[index];
+        const root = grid.getBoundingClientRect();
+        return [...grid.children].map(child => {
+            const rect = child.getBoundingClientRect();
+            return [round(rect.x - root.x), round(rect.y - root.y), round(rect.width),
+                round(rect.height), child.scrollWidth, child.scrollHeight];
+        });
+    });
+}
+function summarize(samples) {
+    const sorted = samples.slice().sort((a, b) => a - b);
+    const at = fraction => sorted[Math.min(sorted.length - 1, Math.floor(fraction * sorted.length))];
+    return {count: samples.length, meanMs: samples.reduce((sum, value) => sum + value, 0) / samples.length,
+        medianMs: at(0.5), p95Ms: at(0.95), maxMs: sorted.at(-1)};
+}
+async function run() {
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const initial = geometry();
+    const samples = [];
+    for (let iteration = 0; iteration < repeats + 5; iteration++) {
+        const text = iteration % 2 ? "Short text" : "A longer piece of text that wraps within the overflowing flex child";
+        for (const item of dynamic)
+            item.textContent = text;
+        const started = performance.now();
+        void feed.offsetHeight;
+        const elapsed = performance.now() - started;
+        if (iteration >= 5)
+            samples.push(elapsed);
+        await new Promise(resolve => requestAnimationFrame(resolve));
+    }
+    const result = {grids: count, repeats, initial, final: geometry(), layout: summarize(samples), samples};
+    await fetch("/__bench/probe", {method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(result)});
+    document.title = "Summit grid reflow probe: done";
+}
+run().catch(error => { document.title = `Summit grid reflow probe: ${error}`; });
+</script>
