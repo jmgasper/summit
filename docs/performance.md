@@ -106,6 +106,46 @@ Over the next 32 s of media time the renderer presented 1,918 frames (60.0
 per second) and dropped none. This is the non-PGO `SkiaCGMiMSE` build; set
 `SUMMIT_MSE_TRACE=1` for the decoder, clock and 5-second statistics lines.
 
+### Starting and seeking quickly
+
+The PGO build of the same engine (`SkiaCGMiPGO` with MSE on, reusing the
+earlier profiles with `-Wno-error=coverage-mismatch`) exposed a startup flaw.
+The clock started as soon as data was buffered, the first picture was
+decoded 0.86 s later, and every picture decoded in between arrived late:
+68 were dropped. The player now prerolls. It starts the clock once the
+renderer has shown the picture at the current position, waiting at most a
+second, and the first presented frame re-evaluates the state. On
+`bundle-1j8l2elb` the clock started 94 ms after `play`, with the first picture
+at 0.000 s, and 4 frames were dropped over 18 s of 60 fps playback.
+
+Starting from a link timestamp (`&t=120`) seeks before playing. Every picture
+from the keyframe up to the target is decoded, and the NVDEC add-on used to
+convert each to RGB although none is shown: the first picture arrived 1.13 s
+after the seek settled. With `tools/nvdec/skip-conversion.patch` the renderer
+tells the add-on the first time it will show, and conversion is skipped before
+it. Now 0.61 s, with 0 dropped frames afterwards (two runs, `bundle-zu4mf8mm`).
+
+Speedometer 3.1 on the MSE PGO bundle scored 8.19 ± 0.45 in ten uncontended
+iterations. The harness's default window gave a 1913×945 viewport, not the
+1280×887 used above, so this is only a check against a large regression
+(`.vm/bench/speedometer-20260925-232809-mse-pgo-ten/`).
+
+A two-minute run on a 25 fps video (`dQw4w9WgXcQ`) presented 3,131 frames
+with none dropped and no stalls; media time kept pace with wall time.
+
+### Scrolling a loading Reddit feed
+
+With the burst starting about 3 s after navigation (`run-scroll.py --settle
+0.5`, 150 notches at 25 ms, both at 120 px per notch), the previous installed
+bundle delivered 55.4 frames/s and the MSE PGO bundle 54.6. Each had 4 frames
+over 33 ms, with worst gaps of 137 and 223 ms. Both final captures show painted
+posts, not blank tiles. One live sample each cannot separate the builds; the
+point is that a loading feed already scrolls near the refresh rate
+(`.vm/bench/scroll-20260925-233442-loading-old/`,
+`.vm/bench/scroll-20260925-233504-loading-new/`). Reddit still plays most feed
+videos through the native HLS path; one ad player now uses MSE and decoded
+through NVDEC.
+
 ## Mouse wheel delivery with real input (September 25, 2026)
 
 The benchmark harness scrolls with `summitctl scroll`, whose synthesized
