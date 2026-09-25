@@ -2196,6 +2196,7 @@ void BrowserWindow::WebKitStateChanged(const BMessage& message)
         tab->processError.clear();
     }
     uint64 successSequence;
+    bool internalPageLoaded = false;
     if (message.FindUInt64("loadSuccessSequence", &successSequence) == B_OK
         && successSequence > tab->loadSuccessSequence) {
         tab->loadSuccessSequence = successSequence;
@@ -2203,7 +2204,9 @@ void BrowserWindow::WebKitStateChanged(const BMessage& message)
         const char* successTitle = nullptr;
         if (message.FindString("loadSuccessURL", &successURL) == B_OK && successURL && *successURL
             && message.FindString("loadSuccessTitle", &successTitle) == B_OK && successTitle) {
-            if (fProfile.Visit({StoredURL(successURL), successTitle})) PagesChanged();
+            const auto stored = StoredURL(successURL);
+            if (fProfile.Visit({stored, successTitle})) PagesChanged();
+            internalPageLoaded = stored == kHistoryPage || stored == kBookmarksPage;
         }
     }
     const char* successfulURL = nullptr;
@@ -2217,8 +2220,9 @@ void BrowserWindow::WebKitStateChanged(const BMessage& message)
         ShowTabStatus(*tab);
     }
     // Back or Forward to a built-in page shows the copy from when it was
-    // written (or the page cache's); bring it up to date once it is showing.
-    if (!tab->loading) RefreshInternalPage(*tab);
+    // written (or the page cache's); bring it up to date once it has loaded.
+    // Only then: any other state change may be the start of a navigation away.
+    if (internalPageLoaded && !tab->loading) RefreshInternalPage(*tab);
     RefreshChrome();
 }
 
