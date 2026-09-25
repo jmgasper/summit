@@ -18,7 +18,8 @@
 class BCardLayout;
 class BFilePanel;
 class BGroupView;
-class BListView;
+class BMenu;
+class BMenuItem;
 class BMessageRunner;
 class BStringView;
 class BTextControl;
@@ -31,6 +32,8 @@ class ToolButton;
 class ExtensionActionButton;
 class TabStrip;
 class ProgressLine;
+class BookmarksBar;
+class FaviconCache;
 #if SUMMIT_MODERN_WEBKIT
 using BrowserWindowBase = BWindow;
 using BrowserWebView = BWebKitView;
@@ -41,14 +44,15 @@ using BrowserWebView = BWebView;
 class BrowserWindow : public BrowserWindowBase {
 public:
 #if SUMMIT_MODERN_WEBKIT
-    BrowserWindow(std::filesystem::path profile, std::string homeURL, const std::vector<std::string>& urls,
+    BrowserWindow(std::filesystem::path profile, std::string startURL, const std::vector<std::string>& urls,
         std::shared_ptr<BWebKitContext> context, bool extensionsEnabled = false);
 #else
-    BrowserWindow(std::filesystem::path profile, std::string homeURL, const std::vector<std::string>& urls);
+    BrowserWindow(std::filesystem::path profile, std::string startURL, const std::vector<std::string>& urls);
 #endif
     ~BrowserWindow() override;
     void MessageReceived(BMessage* message) override;
     bool QuitRequested() override;
+    void MenusBeginning() override;
 #if SUMMIT_MODERN_WEBKIT
     // index < 0 appends. A nonzero command is an extension's browser command
     // that is answered once this tab exists or could not be created.
@@ -89,6 +93,8 @@ private:
         std::string url, title;
         bool loading = false, back = false, forward = false;
         float progress = 0;
+        // For summit:history and summit:bookmarks, the page revision shown.
+        uint64 pageRevision = 0;
 #if SUMMIT_MODERN_WEBKIT
         BMessenger messenger { };
         bool processExited = false;
@@ -219,26 +225,50 @@ private:
     status_t fExtensionActionResultError = B_OK;
     std::shared_ptr<std::atomic<bool>> fExtensionMenuCancelled;
 #endif
-    void RefreshSidebar(bool history);
+    // Built-in pages (summit:home, summit:history, summit:bookmarks) are
+    // files; this gives the address to load for any address.
+    std::string LoadableURL(const std::string& url);
+    std::filesystem::path InternalPagePath(const std::string& url) const;
+    bool WriteInternalPage(const std::string& url);
+    void ShowInternalPage(const std::string& url);
+    void RefreshInternalPage(Tab& tab, bool force = false);
+    void PagesChanged();
+    void BookmarksChanged();
+    void RefreshBookmarks();
+    void RebuildDynamicMenus();
+    void ShowBookmarkMenu();
+    void IconLoaded(const BMessage& message);
+    void ShowPreferences();
+    void SendPreferencesState();
+    void SetBookmarksBarVisible(bool visible);
+    std::string HomeAddress() const;
+    std::string DisplayURL(const std::string& url) const;
     void SaveSession();
     void ShowError(const std::string& error);
     std::string StoredURL(const BString& url) const;
     std::filesystem::path fProfilePath;
-    std::string fHomeURL;
+    std::string fStartURL;
     Profile fProfile;
     bool fProfileWritable = true;
     std::vector<Tab> fTabs;
     std::vector<PageRecord> fClosedTabs;
-    std::vector<PageRecord> fSidebarPages;
     int64 fNextID = 1;
     int64 fSelected = 0;
-    bool fSidebarHistory = false;
     TabStrip* fTabStrip;
+    BookmarksBar* fBookmarksBar;
     BCardLayout* fCards;
     BView* fPages;
-    BGroupView* fSidebar;
-    BListView* fSavedList;
-    BStringView* fSidebarTitle;
+    BMenu* fHistoryMenu;
+    BMenu* fBookmarksMenu;
+    int32 fHistoryMenuFixed = 0, fBookmarksMenuFixed = 0;
+    BMenuItem* fBookmarksBarItem;
+    BMenuItem* fRemoveBookmarkItem;
+    ToolButton* fBookmarkButton;
+    std::unique_ptr<FaviconCache> fFavicons;
+    // Bumped whenever history, bookmarks or icons change, so open built-in
+    // pages can be brought up to date when they are shown again.
+    uint64 fPagesRevision = 1;
+    BMessenger fPreferences;
     BStringView* fStatus;
     BTextControl* fAddress;
     BTextControl* fFindText;

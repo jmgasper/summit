@@ -1,0 +1,37 @@
+#pragma once
+#include <filesystem>
+#include <map>
+#include <memory>
+#include <string>
+
+class BBitmap;
+
+namespace summit {
+// Site icons, 16x16, keyed by host and kept as PNG files in the profile so
+// tabs, the bookmarks bar and the built-in pages can show them after a restart.
+// Used only from the browser window's thread.
+class FaviconCache {
+public:
+    explicit FaviconCache(std::filesystem::path directory);
+    ~FaviconCache();
+    // Decodes an icon file (ICO, PNG, GIF, JPEG, WebP…) delivered for a page.
+    // Returns true when that site's icon changed. Previously returned bitmaps
+    // for the site are then released.
+    bool Store(const std::string& pageURL, const void* data, size_t size);
+    // The site's icon, or null. Owned by the cache.
+    const BBitmap* Icon(const std::string& pageURL);
+    // The site's icon as a data: URL for the built-in pages, or empty.
+    std::string DataURL(const std::string& pageURL);
+
+private:
+    struct Entry {
+        std::unique_ptr<BBitmap> bitmap;
+        std::string png;
+    };
+    Entry* Find(const std::string& pageURL);
+    Entry* Load(const std::string& key);
+    std::filesystem::path fDirectory;
+    // A null entry records a site known to have no icon on disk.
+    std::map<std::string, std::unique_ptr<Entry>> fEntries;
+};
+}

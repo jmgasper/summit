@@ -2,9 +2,11 @@
 #include "Messages.h"
 #include <Window.h>
 #include <Message.h>
+#include <Bitmap.h>
+#include <MenuItem.h>
+#include <PopUpMenu.h>
 #if SUMMIT_MODERN_WEBKIT
 #include "ExtensionInstaller.h"
-#include <Bitmap.h>
 #include <cstring>
 #endif
 #include <algorithm>
@@ -43,15 +45,17 @@ void ToolButton::Draw(BRect)
         case Icon::Reload:
             StrokeArc(BRect(c.x - 6, c.y - 6, c.x + 6, c.y + 6), 40, 290);
             line(6, -7, 6, -1); line(6, -1, 1, -2); break;
-        case Icon::Sidebar:
-            StrokeRoundRect(BRect(c.x - 9, c.y - 6, c.x + 9, c.y + 6), 2, 2);
-            line(-3, -6, -3, 6); break;
-        case Icon::Bookmark: {
+        case Icon::Bookmark: case Icon::BookmarkFilled: {
             BPoint points[10];
             for (int i = 0; i < 10; ++i) {
                 const float angle = -1.5707963f + i * 0.6283185f;
                 const float radius = i % 2 ? 3.5f : 8.0f;
                 points[i] = c + BPoint(std::cos(angle) * radius, std::sin(angle) * radius);
+            }
+            if (fIcon == Icon::BookmarkFilled && IsEnabled()) {
+                // The current page is bookmarked.
+                SetHighColor(44, 125, 104);
+                FillPolygon(points, 10);
             }
             StrokePolygon(points, 10); break;
         }
@@ -166,6 +170,26 @@ void ExtensionActionButton::Draw(BRect)
 }
 #endif
 
+void DrawSiteIcon(BView* view, const BBitmap* icon, BPoint leftTop)
+{
+    if (icon) {
+        view->PushState();
+        view->SetDrawingMode(B_OP_ALPHA);
+        view->SetBlendingMode(B_PIXEL_ALPHA, B_ALPHA_OVERLAY);
+        view->DrawBitmap(icon, BRect(leftTop, leftTop + BPoint(15, 15)));
+        view->PopState();
+        return;
+    }
+    view->PushState();
+    view->SetHighColor(128, 142, 135);
+    view->SetPenSize(1.2f);
+    const BPoint centre = leftTop + BPoint(7.5f, 7.5f);
+    view->StrokeEllipse(centre, 6.5f, 6.5f);
+    view->StrokeEllipse(centre, 2.8f, 6.5f);
+    view->StrokeLine(centre + BPoint(-6.5f, 0), centre + BPoint(6.5f, 0));
+    view->PopState();
+}
+
 TabStrip::TabStrip() : BView("tabs", B_WILL_DRAW | B_FRAME_EVENTS)
 {
     SetViewColor(B_TRANSPARENT_COLOR);
@@ -205,9 +229,17 @@ void TabStrip::Draw(BRect)
         FillRoundRect(rect, 5, 5);
         SetHighColor(selected ? rgb_color{30, 82, 72, 255} : rgb_color{78, 86, 83, 255});
         BString text(fTabs[i].title.empty() ? "New Tab" : fTabs[i].title.c_str());
-        TruncateString(&text, B_TRUNCATE_END, rect.Width() - 51);
-        if (fTabs[i].loading) FillEllipse(BRect(rect.left + 9, 15, rect.left + 13, 19));
-        DrawString(text, BPoint(rect.left + 21, 22));
+        TruncateString(&text, B_TRUNCATE_END, rect.Width() - 61);
+        const BPoint icon(rect.left + 9, rect.top + std::floor((rect.Height() - 15) / 2));
+        if (fTabs[i].loading && !fTabs[i].icon) FillEllipse(icon + BPoint(7.5f, 7.5f), 2.5f, 2.5f);
+        else DrawSiteIcon(this, fTabs[i].icon, icon);
+        if (fTabs[i].loading && fTabs[i].icon) {
+            // A loading page keeps its icon, with a dot on its corner.
+            SetHighColor(44, 125, 104);
+            FillEllipse(icon + BPoint(15, 15), 2.5f, 2.5f);
+            SetHighColor(selected ? rgb_color{30, 82, 72, 255} : rgb_color{78, 86, 83, 255});
+        }
+        DrawString(text, BPoint(rect.left + 31, 22));
         StrokeLine(BPoint(rect.right - 16, 14), BPoint(rect.right - 10, 20));
         StrokeLine(BPoint(rect.right - 10, 14), BPoint(rect.right - 16, 20));
     }
@@ -232,6 +264,161 @@ void TabStrip::MouseDown(BPoint point)
     }
 }
 void TabStrip::FrameResized(float, float) { Invalidate(); }
+static constexpr int32 kOverflowItem = -2;
+BookmarksBar::BookmarksBar() : BView("bookmarks-bar", B_WILL_DRAW | B_FRAME_EVENTS)
+{
+    SetViewColor(B_TRANSPARENT_COLOR);
+    SetExplicitMinSize(BSize(200, 27));
+    SetExplicitMaxSize(BSize(B_SIZE_UNLIMITED, 27));
+}
+void BookmarksBar::SetBookmarks(std::vector<BookmarkButton> bookmarks)
+{
+    fBookmarks = std::move(bookmarks);
+    fHover = fPressed = -1;
+    LayoutItems();
+    Invalidate();
+}
+void BookmarksBar::LayoutItems()
+{
+    fRects.clear();
+    const float height = Bounds().Height();
+    float x = 6;
+    for (const auto& bookmark : fBookmarks) {
+        float width = 8 + 16 + 8;
+        if (!bookmark.title.empty()) width += 5 + std::min(150.0f, std::ceil(StringWidth(bookmark.title.c_str())));
+        fRects.push_back(BRect(x, 2, x + width - 1, height - 3));
+        x += width + 2;
+    }
+    fVisible = fRects.size();
+    fOverflow = BRect();
+    if (!fRects.empty() && fRects.back().right > Bounds().right - 6) {
+        // Keep room for a » button that lists the rest.
+        fOverflow = BRect(Bounds().right - 30, 2, Bounds().right - 6, height - 3);
+        fVisible = 0;
+        while (fVisible < fRects.size() && fRects[fVisible].right < fOverflow.left - 4) ++fVisible;
+    }
+}
+void BookmarksBar::FrameResized(float, float) { LayoutItems(); Invalidate(); }
+int32 BookmarksBar::ItemAt(BPoint where) const
+{
+    if (fOverflow.IsValid() && fOverflow.Contains(where)) return kOverflowItem;
+    for (size_t i = 0; i < fVisible; ++i) if (fRects[i].Contains(where)) return int32(i);
+    return -1;
+}
+void BookmarksBar::Draw(BRect)
+{
+    const BRect bounds = Bounds();
+    SetHighColor(ui_color(B_PANEL_BACKGROUND_COLOR));
+    FillRect(bounds);
+    SetHighColor(221, 227, 224);
+    StrokeLine(BPoint(bounds.left, bounds.bottom), BPoint(bounds.right, bounds.bottom));
+    font_height metrics;
+    GetFontHeight(&metrics);
+    const float baseline = std::floor((bounds.Height() + metrics.ascent - metrics.descent) / 2);
+    if (fBookmarks.empty()) {
+        SetHighColor(135, 147, 141);
+        DrawString("Add favourite pages here with Bookmarks › Add to Bookmarks Bar", BPoint(12, baseline));
+        return;
+    }
+    for (size_t i = 0; i < fVisible; ++i) {
+        const BRect rect = fRects[i];
+        if (int32(i) == fPressed || int32(i) == fHover) {
+            SetHighColor(int32(i) == fPressed ? rgb_color{212, 225, 222, 255} : rgb_color{225, 232, 230, 255});
+            FillRoundRect(rect, 5, 5);
+        }
+        DrawSiteIcon(this, fBookmarks[i].icon, BPoint(rect.left + 8, std::floor(rect.top + (rect.Height() - 15) / 2)));
+        if (fBookmarks[i].title.empty()) continue;
+        BString title(fBookmarks[i].title.c_str());
+        TruncateString(&title, B_TRUNCATE_END, 150);
+        SetHighColor(49, 69, 66);
+        DrawString(title.String(), BPoint(rect.left + 29, baseline));
+    }
+    if (fOverflow.IsValid()) {
+        if (fHover == kOverflowItem) {
+            SetHighColor(225, 232, 230);
+            FillRoundRect(fOverflow, 5, 5);
+        }
+        SetHighColor(49, 69, 66);
+        SetPenSize(1.4f);
+        const BPoint c(std::floor((fOverflow.left + fOverflow.right) / 2), std::floor((fOverflow.top + fOverflow.bottom) / 2));
+        for (float dx : {-3.0f, 2.0f}) {
+            StrokeLine(c + BPoint(dx - 2, -4), c + BPoint(dx + 2, 0));
+            StrokeLine(c + BPoint(dx + 2, 0), c + BPoint(dx - 2, 4));
+        }
+        SetPenSize(1);
+    }
+}
+void BookmarksBar::MouseDown(BPoint where)
+{
+    uint32 buttons = 0;
+    if (auto* message = Window()->CurrentMessage())
+        message->FindInt32("buttons", reinterpret_cast<int32*>(&buttons));
+    const int32 index = ItemAt(where);
+    if (index == kOverflowItem) { ShowOverflow(); return; }
+    if (index < 0) return;
+    if (buttons & B_SECONDARY_MOUSE_BUTTON) { ShowContextMenu(index, where); return; }
+    fPressed = index;
+    fPressedButtons = buttons;
+    SetMouseEventMask(B_POINTER_EVENTS, B_LOCK_WINDOW_FOCUS);
+    Invalidate();
+}
+void BookmarksBar::MouseUp(BPoint where)
+{
+    if (fPressed >= 0 && ItemAt(where) == fPressed)
+        Open(fPressed, (fPressedButtons & B_TERTIARY_MOUSE_BUTTON) || (modifiers() & B_COMMAND_KEY));
+    fPressed = -1;
+    Invalidate();
+}
+void BookmarksBar::MouseMoved(BPoint where, uint32 transit, const BMessage*)
+{
+    const int32 hover = transit == B_EXITED_VIEW || transit == B_OUTSIDE_VIEW ? -1 : ItemAt(where);
+    if (hover == fHover) return;
+    fHover = hover;
+    if (hover >= 0) SetToolTip(fBookmarks[hover].url.c_str());
+    else SetToolTip(hover == kOverflowItem ? "More bookmarks" : static_cast<const char*>(nullptr));
+    Invalidate();
+}
+void BookmarksBar::Open(int32 index, bool newTab)
+{
+    if (index < 0 || size_t(index) >= fBookmarks.size()) return;
+    BMessage open(kOpenBookmark);
+    open.AddString("url", fBookmarks[index].url.c_str());
+    open.AddBool("new_tab", newTab);
+    Window()->PostMessage(&open);
+}
+static BMessage* BookmarkMessage(uint32 what, const std::string& url, bool newTab = false)
+{
+    auto* message = new BMessage(what);
+    message->AddString("url", url.c_str());
+    if (newTab) message->AddBool("new_tab", true);
+    return message;
+}
+void BookmarksBar::ShowOverflow()
+{
+    auto* menu = new BPopUpMenu("more-bookmarks", false, false);
+    for (size_t i = fVisible; i < fBookmarks.size(); ++i) {
+        const auto& title = fBookmarks[i].title.empty() ? fBookmarks[i].url : fBookmarks[i].title;
+        menu->AddItem(new BMenuItem(title.c_str(), BookmarkMessage(kOpenBookmark, fBookmarks[i].url)));
+    }
+    menu->SetTargetForItems(Window());
+    menu->SetAsyncAutoDestruct(true);
+    menu->Go(ConvertToScreen(BPoint(fOverflow.left, fOverflow.bottom + 1)), true, false,
+        ConvertToScreen(fOverflow), true);
+}
+void BookmarksBar::ShowContextMenu(int32 index, BPoint where)
+{
+    const auto& url = fBookmarks[index].url;
+    auto* menu = new BPopUpMenu("bookmark", false, false);
+    menu->AddItem(new BMenuItem("Open", BookmarkMessage(kOpenBookmark, url)));
+    menu->AddItem(new BMenuItem("Open in New Tab", BookmarkMessage(kOpenBookmark, url, true)));
+    menu->AddSeparatorItem();
+    menu->AddItem(new BMenuItem("Remove from Bookmarks Bar", BookmarkMessage(kRemoveFromBookmarksBar, url)));
+    menu->AddItem(new BMenuItem("Delete Bookmark", BookmarkMessage(kRemoveBookmark, url)));
+    menu->SetTargetForItems(Window());
+    menu->SetAsyncAutoDestruct(true);
+    menu->Go(ConvertToScreen(where), true, false, true);
+}
+
 ProgressLine::ProgressLine() : BView("progress", B_WILL_DRAW)
 {
     SetViewColor(B_TRANSPARENT_COLOR);
