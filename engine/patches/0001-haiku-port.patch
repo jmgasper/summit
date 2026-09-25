@@ -11125,10 +11125,10 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..2c9c5364087ac414b79f99389e11e83542358c73
+index 0000000000000000000000000000000000000000..c8d36d7dd8fb12ebf788a650703179ecc60e6f05
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,1273 @@
+@@ -0,0 +1,1286 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -12224,11 +12224,24 @@ index 0000000000000000000000000000000000000000..2c9c5364087ac414b79f99389e11e835
 +    for (auto* mediaFile : mediaFiles) {
 +        if (!mediaFile || mediaFile->InitCheck() != B_OK)
 +            continue;
-+        for (int i = mediaFile->CountTracks() - 1; i >= 0; i--) {
++        int trackCount = mediaFile->CountTracks();
++        if (codecTrace)
++            std::fprintf(stderr, "Summit media tracks: host=%s file=%s count=%d\n",
++                mediaURL.Host().String(), mediaFile == m_mediaFile ? "primary" : "secondary", trackCount);
++        for (int i = trackCount - 1; i >= 0; i--) {
 +            BMediaTrack* track = mediaFile->TrackAt(i);
++            if (!track) {
++                if (codecTrace)
++                    std::fprintf(stderr, "Summit media unavailable track: host=%s index=%d\n",
++                        mediaURL.Host().String(), i);
++                continue;
++            }
 +
 +            media_format encodedFormat = { };
 +            if (track->EncodedFormat(&encodedFormat) != B_OK) {
++                if (codecTrace)
++                    std::fprintf(stderr, "Summit media unreadable track: host=%s index=%d\n",
++                        mediaURL.Host().String(), i);
 +                mediaFile->ReleaseTrack(track);
 +                continue;
 +            }
@@ -12260,9 +12273,9 @@ index 0000000000000000000000000000000000000000..2c9c5364087ac414b79f99389e11e835
 +                if (const char* trace = std::getenv("SUMMIT_MEDIA_CODEC_TRACE"); trace && trace[0] == '1' && !trace[1]) {
 +                    media_codec_info codec = { };
 +                    status_t codecStatus = track->GetCodecInfo(&codec);
-+                    std::fprintf(stderr, "Summit media video codec: %s (%s), status=%ld\n",
++                    std::fprintf(stderr, "Summit media video codec: %s (%s), index=%d status=%ld\n",
 +                        codecStatus == B_OK ? codec.pretty_name : "unknown",
-+                        codecStatus == B_OK ? codec.short_name : "unknown", long(codecStatus));
++                        codecStatus == B_OK ? codec.short_name : "unknown", i, long(codecStatus));
 +                }
 +                m_videoTrack = track;
 +                m_hasVideo = true;
@@ -12290,9 +12303,9 @@ index 0000000000000000000000000000000000000000..2c9c5364087ac414b79f99389e11e835
 +                if (const char* trace = std::getenv("SUMMIT_MEDIA_CODEC_TRACE"); trace && trace[0] == '1' && !trace[1]) {
 +                    media_codec_info codec = { };
 +                    status_t codecStatus = track->GetCodecInfo(&codec);
-+                    std::fprintf(stderr, "Summit media audio codec: %s (%s), status=%ld\n",
++                    std::fprintf(stderr, "Summit media audio codec: %s (%s), index=%d status=%ld\n",
 +                        codecStatus == B_OK ? codec.pretty_name : "unknown",
-+                        codecStatus == B_OK ? codec.short_name : "unknown", long(codecStatus));
++                        codecStatus == B_OK ? codec.short_name : "unknown", i, long(codecStatus));
 +                }
 +                m_audioTrack = track;
 +
