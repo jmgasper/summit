@@ -2,20 +2,23 @@
 
 ## Current coordinated Skia result (September 25, 2026)
 
-The workstation launcher uses profile-guided `bundle-_3yrr8z2`: Skia CPU tile
+The workstation launcher uses profile-guided `bundle-ydvalf4q`: Skia CPU tile
 painting with two workers, GL Canvas, raster coordinated scrollbars, mimalloc,
 asynchronous scrolling, display-rate composition pacing, guarded reuse of exact text
 widths, preserved font registrations for simple CSS rule insertions, and
 coalesced video repaint callbacks. The Haiku media backend also reports fully
 downloaded videos as buffered. It precompiles the rounded solid-color shader
-before scrolling. It
-completes all 580 steps of Speedometer 3.1. The latest matched-viewport
-30-iteration run is
-`.vm/bench/speedometer-20260925-101601-buffered-media-pgo-thirty/`.
+before scrolling, and caches grid item block contributions within a sizing
+pass. It completes all 580 steps of Speedometer 3.1. The latest
+matched-viewport 30-iteration run is from its buffered-media predecessor,
+`bundle-_3yrr8z2`; the installed bundle has a matched ten-iteration run
+recorded below (`.vm/bench/speedometer-20260925-101601-buffered-media-pgo-thirty/`
+and `.vm/bench/speedometer-20260925-111051-grid-cache-candidate/`).
 
 | Browser | Content viewport | Speedometer 3.1 |
 | --- | ---: | ---: |
-| Summit, current buffered-media PGO, 30 iterations | 1280×887 | **8.391 ± 0.117** |
+| Summit, installed grid-cache PGO, 10 iterations | 1280×887 | **8.303 ± 0.399** |
+| Summit, buffered-media PGO predecessor, 30 iterations | 1280×887 | **8.391 ± 0.117** |
 | Summit, prior PGO, same-session 30-iteration repeat | 1280×887 | **8.500 ± 0.123** |
 | Summit, prior PGO, earlier 30-iteration run | 1280×887 | **8.561 ± 0.125** |
 | Firefox 155, 30 iterations | 1280×887 | **8.405 ± 0.179** |
@@ -31,11 +34,11 @@ completes all 580 steps of Speedometer 3.1. The latest matched-viewport
 | Firefox 155 on the same workstation | 1280×887 | **8.338 ± 0.374** |
 | Firefox 155, fresh comparison | 1280×887 | **8.238 ± 0.368** |
 
-These Summit runs were uncontended. The current 30-iteration point score is
+These Summit runs were uncontended. The predecessor's 30-iteration point score is
 within 0.014 of Firefox's, and their uncertainty intervals overlap. It is
 0.109 below the prior bundle's same-session 30-iteration repeat; those
-intervals overlap too. The current media build has not established a
-Speedometer gain. Its
+intervals overlap too. The installed grid-cache build has not established a
+Speedometer gain. The 30-iteration predecessor's
 largest remaining suite gaps against Firefox are Preact, CodeMirror, and
 Svelte complex DOM. Older score comparisons in this log used different
 viewport sizes and should be treated as directional.
