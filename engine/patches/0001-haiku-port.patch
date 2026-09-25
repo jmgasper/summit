@@ -42002,10 +42002,10 @@ index 0000000000000000000000000000000000000000..1a9d16a3751ad0227322a6639ea09392
 +}
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitView.h b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..082b21978cbbb727cddbaf30b34fe1da8349befc
+index 0000000000000000000000000000000000000000..c5af87a4b9cba1f0f17c8a095ca03837febb7014
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
-@@ -0,0 +1,103 @@
+@@ -0,0 +1,107 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -42039,7 +42039,11 @@ index 0000000000000000000000000000000000000000..082b21978cbbb727cddbaf30b34fe1da
 +    // An extension page navigated its view to a web page, which only an ordinary
 +    // view can display. Fields: "view" (messenger), "url" (string). The navigation
 +    // was not started; the host is expected to show the URL in a web view instead.
-+    B_WEBKIT_EXTERNAL_NAVIGATION_REQUESTED = 'wexn'
++    B_WEBKIT_EXTERNAL_NAVIGATION_REQUESTED = 'wexn',
++    // The main frame's favicon was loaded. Fields: "view" (messenger), "url"
++    // (the page the icon belongs to), "iconURL", "mimeType" (may be empty) and
++    // "data" (B_RAW_TYPE, the undecoded icon file, at most 1 MiB).
++    B_WEBKIT_ICON_LOADED = 'wico'
 +};
 +
 +// Navigation and input are queued to the application thread. Notifications are
@@ -66797,10 +66801,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..32ddb0c49bd9f14c92bcef4a7e9221fc30867982
+index 0000000000000000000000000000000000000000..9904193b45c835f1a0f89a784cfbee4dd2b0469a
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,1247 @@
+@@ -0,0 +1,1313 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -66829,7 +66833,9 @@ index 0000000000000000000000000000000000000000..32ddb0c49bd9f14c92bcef4a7e9221fc
 +#include "config.h"
 +#include "WebViewPrivate.h"
 +
++#include "APIData.h"
 +#include "APIFrameInfo.h"
++#include "APIIconLoadingClient.h"
 +#include "BrowserTabRegistryHaiku.h"
 +#include "APIError.h"
 +#include "APINavigationAction.h"
@@ -66877,6 +66883,7 @@ index 0000000000000000000000000000000000000000..32ddb0c49bd9f14c92bcef4a7e9221fc
 +#include <wtf/text/CString.h>
 +#include <cmath>
 +#include <cstdlib>
++#include <limits>
 +#include <cstring>
 +#include <utility>
 +
@@ -67273,6 +67280,68 @@ index 0000000000000000000000000000000000000000..32ddb0c49bd9f14c92bcef4a7e9221fc
 +    const std::weak_ptr<WebViewStateHaiku> m_state;
 +};
 +
++// Loads one favicon per main-frame document and hands its bytes to the host,
++// which decodes, caches and draws it. WebCore offers every <link rel=icon>
++// (and /favicon.ico when a page names none); the host only needs the one
++// closest to tab size in a format the Translation Kit can read.
++class IconLoadingClientHaiku final : public API::IconLoadingClient {
++    WTF_MAKE_TZONE_ALLOCATED_INLINE(IconLoadingClientHaiku);
++public:
++    explicit IconLoadingClientHaiku(std::weak_ptr<WebViewStateHaiku> state) : m_state(std::move(state)) { }
++
++    void getLoadDecisionForIcons(const HashMap<WebKit::CallbackID, WebCore::LinkIcon>& icons, CompletionHandler<void(HashSet<WebKit::CallbackID>&&)>&& completionHandler) override
++    {
++        std::optional<WebKit::CallbackID> best;
++        int bestScore = std::numeric_limits<int>::max();
++        for (const auto& [identifier, icon] : icons) {
++            if (icon.type != WebCore::LinkIconType::Favicon)
++                continue;
++            // Haiku has no SVG translator.
++            if (icon.mimeType.containsIgnoringASCIICase("svg"_s) || icon.url.path().endsWithIgnoringASCIICase(".svg"_s))
++                continue;
++            // An .ico without sizes usually holds both 16 and 32 pixel images.
++            int score = icon.size ? std::abs(static_cast<int>(*icon.size) - 32) : 8;
++            if (icon.size && *icon.size < 16)
++                score += 64;
++            if (score < bestScore) {
++                bestScore = score;
++                best = identifier;
++            }
++        }
++        HashSet<WebKit::CallbackID> decisions;
++        if (best) {
++            decisions.add(*best);
++            m_pageURL = { };
++            if (auto state = m_state.lock()) {
++                if (RefPtr client = state->client; client && client->page())
++                    m_pageURL = client->page()->pageLoadState().activeURL();
++            }
++        }
++        completionHandler(WTF::move(decisions));
++    }
++
++    void iconLoaded(const WebKit::CallbackID&, const WebCore::LinkIcon& icon, API::Data* data) override
++    {
++        auto state = m_state.lock();
++        if (!state || state->closed || !data || data->span().empty() || data->span().size() > 1024 * 1024)
++            return;
++        BMessage message(B_WEBKIT_ICON_LOADED);
++        message.AddString("url", m_pageURL.string().utf8().legacyCStringPointer());
++        message.AddString("iconURL", icon.url.string().utf8().legacyCStringPointer());
++        message.AddString("mimeType", icon.mimeType.utf8().legacyCStringPointer());
++        message.AddData("data", B_RAW_TYPE, data->span().data(), data->span().size());
++        {
++            std::lock_guard guard(state->mutex);
++            message.AddMessenger("view", state->view);
++        }
++        state->target.SendMessage(&message, static_cast<BHandler*>(nullptr), 0);
++    }
++
++private:
++    const std::weak_ptr<WebViewStateHaiku> m_state;
++    URL m_pageURL;
++};
++
 +class JavaScriptUIClientHaiku final : public API::UIClient {
 +    WTF_MAKE_TZONE_ALLOCATED_INLINE(JavaScriptUIClientHaiku);
 +public:
@@ -67558,6 +67627,7 @@ index 0000000000000000000000000000000000000000..32ddb0c49bd9f14c92bcef4a7e9221fc
 +    m_page = pool.createWebPage(*this, configuration.releaseNonNull());
 +    m_page->setUIClient(makeUnique<JavaScriptUIClientHaiku>(m_state));
 +    m_page->setNavigationClient(makeUniqueRef<CloseNavigationClientHaiku>(m_state));
++    m_page->setIconLoadingClient(makeUnique<IconLoadingClientHaiku>(m_state));
 +    auto& pageConfiguration = m_page->configuration();
 +    m_page->initializeWebPage(pageConfiguration.openedSite(), pageConfiguration.initialSandboxFlags(), pageConfiguration.initialReferrerPolicy());
 +    m_page->setIntrinsicDeviceScaleFactor(1);
