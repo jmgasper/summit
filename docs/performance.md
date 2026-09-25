@@ -5092,3 +5092,39 @@ native queue delays near one second, so that visit is excluded from pacing
 assessment. These are media paint and native-view delivery measurements,
 not physical display scans (`.vm/bench/guardian-dismissed-clean-20260925/`
 and `.vm/bench/guardian-dismissed-trace-20260925/`).
+
+### Guardian repaint wait and process-isolation trial
+
+The earlier `SUMMIT_MEDIA_FRAME_TRACE` labeled the age of the **latest**
+decoded frame as `queue`. Coalescing can replace the frame many times while
+one repaint callback waits, hiding the callback's true age. The corrected
+trace records the time when that callback was first enqueued, its wait on the
+WebProcess main thread, the latest decoded-frame age, and the number of
+newer frames folded into it. In a capture-free full-article run on the
+separate `bundle-9kh4ra5r`, first-two-second callbacks waited up to 226.2 ms
+and one folded in five newer frames. Between 7 and 12 seconds the maximum
+wait was 32.4 ms and no callback folded in another frame. NVDEC H.264 stayed
+selected and the clip reached its end. Earlier `queue` values in this file
+measure only the newest decoded frame's age and cannot rule out a longer
+coalesced callback wait (`.vm/bench/guardian-truequeue-20260925/`).
+
+A temporary event-loop trace showed 194 and 222 ms timer callbacks during
+one startup and, after dismissing the sign-in panel, a 1,431 ms posted-message
+task aligned with a 1,405 ms video repaint wait. A later run attributed long
+tasks to both the Guardian document and frames whose initial URL had no host.
+This establishes that page-thread tasks can delay video presentation despite
+fast NVDEC decoding; the log does not identify their JavaScript call sites
+(`.vm/bench/guardian-eventloop-20260925/` and
+`.vm/bench/guardian-eventloop-host-20260925/`). The event-loop probe was
+removed after diagnosis to avoid adding work to every browser task.
+
+An opt-in WebKit site-isolation trial put Guardian's cross-origin frames in
+separate processes. A same-bundle off/on/off sequence launched 3/9/3
+WebProcesses, but first-two-second maximum repaint waits were
+227.7/262.2/188.5 ms and the corresponding coalesced-frame counts were
+17/20/11. All three runs selected NVDEC and reached video end. The extra
+processes did not improve startup in this small, variable live-page sample;
+the trial switch was removed. The X399 desktop launcher remains on
+`bundle-or5rko68` (`.vm/bench/guardian-siteiso-off-a-20260925/`,
+`.vm/bench/guardian-siteiso-on-20260925/`, and
+`.vm/bench/guardian-siteiso-off-b-20260925/`).
