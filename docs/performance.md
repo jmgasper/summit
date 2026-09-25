@@ -4770,3 +4770,25 @@ It does not support a global timer change, particularly given the earlier
 neutral timer-alignment trial
 (`.vm/bench/speedometer-20260925-120644-webcomponents-raf-summit/` and
 `.vm/bench/firefox-speedometer-20260925-120742-webcomponents-raf-firefox/`).
+
+### Reddit packaged-media track error
+
+An opt-in codec trace on a live 120-notch `/r/popular/` scroll associated
+`MediaExtractor::CreateDecoder can't create decoder for stream 2` with
+`packaged-media.redd.it`. The first run still selected AAC and NVDEC H.264
+and reached **58.83 active fps**. The trace now reports source host, file
+track count, and selected track index, and guards against a null `TrackAt`
+result. It excludes URL paths and query strings from the log.
+
+The repeat found a three-track packaged-media file. Media Kit logged the
+decoder error for stream **2**, while Summit selected AAC on stream **1**
+and NVDEC H.264 on stream **0**, both with success status. It reached
+**58.57 active fps**, with two intervals above 33 ms and a 45.4 ms worst
+interval. The trace did not report an unavailable, unreadable, or rejected
+track. Stream 2 is therefore outside the selected audio/video pair in this
+run; its precise content type remains unknown. This does not establish the
+cause of the owner's intermittent video issue or reproduce the unidentified
+Adobe ad's seek controls. The workstation launcher remains on the validated
+`bundle-ydvalf4q`; `bundle-kdx8jkqj` is diagnostic
+(`.vm/bench/scroll-20260925-121506-reddit-rejected-media-trace/` and
+`.vm/bench/scroll-20260925-122434-media-track-count/`).
