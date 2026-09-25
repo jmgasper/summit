@@ -1689,7 +1689,7 @@ index b29212ad5b98d332ff7c1db7814cb2575988ec5f..b6c50d32873f6c712e3409ca1c5e2ec5
      String m_accessGroup;
  };
 diff --git a/Source/WebCore/PlatformHaiku.cmake b/Source/WebCore/PlatformHaiku.cmake
-index 16a88804a1baa39ccdd9fc2870b6e2524d941298..2a92af25f3d63c3990949b6ee8b9520b30298027 100644
+index 16a88804a1baa39ccdd9fc2870b6e2524d941298..9333d477ff7a3aff833927d7966fcd0ec4fb8976 100644
 --- a/Source/WebCore/PlatformHaiku.cmake
 +++ b/Source/WebCore/PlatformHaiku.cmake
 @@ -1,8 +1,87 @@
@@ -1781,7 +1781,7 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..2a92af25f3d63c3990949b6ee8b9520b
  )
  
  list(APPEND WebCore_SOURCES
-@@ -11,42 +90,158 @@ list(APPEND WebCore_SOURCES
+@@ -11,42 +90,159 @@ list(APPEND WebCore_SOURCES
  
    editing/glib/EditorGLib.cpp
  
@@ -1837,6 +1837,7 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..2a92af25f3d63c3990949b6ee8b9520b
 +  platform/graphics/haiku/FragmentedMP4ParserHaiku.cpp
 +  platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 +  platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
++  platform/graphics/haiku/PlatformMediaEngineConfigurationFactoryHaiku.cpp
 +)
 +
 +if (USE_SKIA)
@@ -1945,7 +1946,7 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..2a92af25f3d63c3990949b6ee8b9520b
    textencoding
    translation
    ${WEBP_LIBRARIES}
-@@ -61,6 +256,198 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
+@@ -61,6 +257,198 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
    ${SQLITE_INCLUDE_DIR}
    ${WEBP_INCLUDE_DIRS}
    ${ZLIB_INCLUDE_DIRS}
@@ -13547,10 +13548,10 @@ index 0000000000000000000000000000000000000000..6aa4de5c2c58fe66ff1f063e6b4902e6
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..cc91e114e94c6e6b5b60fc540b709267b163b7cf
+index 0000000000000000000000000000000000000000..cde5ffee7c3b8c5dfd8301ba0dd525d29930f849
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
-@@ -0,0 +1,1647 @@
+@@ -0,0 +1,1665 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -13802,7 +13803,19 @@ index 0000000000000000000000000000000000000000..cc91e114e94c6e6b5b60fc540b709267
 +    BMediaFormats formats;
 +    if (formats.InitCheck() != B_OK)
 +        return false;
++    // Use the format the decoder add-ons registered. MakeFormatFor() with this
++    // one description registers a separate encoding that no decoder claims,
++    // and BMediaDecoder::SetTo() then fails with B_ENTRY_NOT_FOUND.
++    if (formats.GetFormatFor(description, &format) == B_OK)
++        return true;
 +    return formats.MakeFormatFor(&description, 1, &format) == B_OK;
++}
++
++bool sameDecoding(const SummitMP4::TrackInfo& a, const SummitMP4::TrackInfo& b)
++{
++    return a.kind == b.kind && a.codec == b.codec && a.timescale == b.timescale && a.width == b.width && a.height == b.height
++        && a.channels == b.channels && a.sampleRate == b.sampleRate && a.codecConfig == b.codecConfig
++        && a.objectTypeIndication == b.objectTypeIndication;
 +}
 +
 +bool isH264(const std::string& codec) { return codec == "avc1" || codec == "avc3"; }
@@ -14555,6 +14568,9 @@ index 0000000000000000000000000000000000000000..cc91e114e94c6e6b5b60fc540b709267
 +    if (parameters.platformType != PlatformMediaDecodingType::MediaSource)
 +        return MediaPlayer::SupportsType::IsNotSupported;
 +    auto container = parameters.type.containerType().convertToASCIILowercase();
++    // Loading a MediaSource asks with no type at all (the URL is a blob:).
++    if (container.isEmpty())
++        return MediaPlayer::SupportsType::MayBeSupported;
 +    if (!mseTypes().contains(container))
 +        return MediaPlayer::SupportsType::IsNotSupported;
 +    auto codecs = parameters.type.codecs();
@@ -15039,11 +15055,14 @@ index 0000000000000000000000000000000000000000..cc91e114e94c6e6b5b60fc540b709267
 +{
 +    InitializationSegment segment;
 +    segment.duration = init.duration && init.movieTimescale ? MediaTime(int64_t(init.duration), init.movieTimescale) : MediaTime::invalidTime();
-+    m_configurations.clear();
++    auto previous = std::exchange(m_configurations, { });
 +    for (auto& track : init.tracks) {
 +        if (!track.timescale)
 +            continue;
-+        auto configuration = HaikuTrackConfiguration::create(track);
++        // Players append the same initialization segment again after seeks
++        // and quality switches. Keeping its configuration keeps the decoder.
++        RefPtr existing = previous.get(track.id);
++        Ref configuration = existing && sameDecoding(existing->info, track) ? existing.releaseNonNull() : HaikuTrackConfiguration::create(track);
 +        m_configurations.set(track.id, configuration.copyRef());
 +        MSE_TRACE("init segment track=%u %s %ux%u %u Hz %u channels config=%zu\n", track.id, track.codec.c_str(),
 +            track.width, track.height, track.sampleRate, track.channels, track.codecConfig.size());
@@ -16704,6 +16723,125 @@ index 0000000000000000000000000000000000000000..91156c316dfe74d48aaa0ebbd28332a3
 +SPECIALIZE_TYPE_TRAITS_PLATFORM_DISPLAY(PlatformDisplayHaiku, Haiku)
 +
 +#endif // PLATFORM(HAIKU) && USE(TEXTURE_MAPPER)
+diff --git a/Source/WebCore/platform/graphics/haiku/PlatformMediaEngineConfigurationFactoryHaiku.cpp b/Source/WebCore/platform/graphics/haiku/PlatformMediaEngineConfigurationFactoryHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..a5c05562d817f48c15b0c1b97f81c3b447e5b7fe
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/haiku/PlatformMediaEngineConfigurationFactoryHaiku.cpp
+@@ -0,0 +1,71 @@
++/*
++ * Copyright (C) 2026 Summit contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHORS ``AS IS'' AND ANY EXPRESS OR
++ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
++ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
++ */
++
++#include "config.h"
++#include "PlatformMediaEngineConfigurationFactoryHaiku.h"
++
++#if PLATFORM(HAIKU)
++
++#include "ContentType.h"
++#include "MediaPlayer.h"
++#include "PlatformMediaCapabilitiesDecodingInfo.h"
++#include "PlatformMediaDecodingConfiguration.h"
++#include <wtf/Function.h>
++
++namespace WebCore {
++
++static bool engineSupports(PlatformMediaDecodingType type, const String& contentType)
++{
++    MediaEngineSupportParameters parameters;
++    parameters.platformType = type;
++    parameters.type = ContentType(contentType);
++    return MediaPlayer::supportsType(parameters) != MediaPlayer::SupportsType::IsNotSupported;
++}
++
++void createMediaPlayerDecodingConfigurationHaiku(PlatformMediaDecodingConfiguration&& configuration, Function<void(PlatformMediaCapabilitiesDecodingInfo&&)>&& callback)
++{
++    bool supported = true;
++    bool hardware = false;
++    if (auto& video = configuration.video) {
++        supported &= engineSupports(configuration.type, video->contentType);
++        // Frames are presented as 8-bit sRGB without alpha.
++        if (video->alphaChannel.value_or(false) || video->hdrMetadataType
++            || (video->transferFunction && *video->transferFunction != PlatformMediaCapabilitiesTransferFunction::SRGB))
++            supported = false;
++        // H.264 goes to the NVDEC add-on where one is installed.
++        for (auto& codec : ContentType(video->contentType).codecs()) {
++            if (codec.startsWith("avc1"_s) || codec.startsWith("avc3"_s))
++                hardware = true;
++        }
++    }
++    if (auto& audio = configuration.audio) {
++        supported &= engineSupports(configuration.type, audio->contentType);
++        if (audio->spatialRendering.value_or(false))
++            supported = false;
++    }
++
++    PlatformMediaCapabilitiesDecodingInfo info;
++    info.supported = supported;
++    info.smooth = supported;
++    info.powerEfficient = supported && hardware;
++    info.configuration = WTF::move(configuration);
++    callback(WTF::move(info));
++}
++
++}
++
++#endif
+diff --git a/Source/WebCore/platform/graphics/haiku/PlatformMediaEngineConfigurationFactoryHaiku.h b/Source/WebCore/platform/graphics/haiku/PlatformMediaEngineConfigurationFactoryHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..a317f0f647a3a354c753a9a99425eaa52f57d8c4
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/haiku/PlatformMediaEngineConfigurationFactoryHaiku.h
+@@ -0,0 +1,36 @@
++/*
++ * Copyright (C) 2026 Summit contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHORS ``AS IS'' AND ANY EXPRESS OR
++ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
++ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
++ */
++
++#pragma once
++
++#if PLATFORM(HAIKU)
++
++#include <wtf/Forward.h>
++
++namespace WebCore {
++
++struct PlatformMediaCapabilitiesDecodingInfo;
++struct PlatformMediaDecodingConfiguration;
++
++// navigator.mediaCapabilities.decodingInfo() for the Haiku media engines. Without
++// a factory WebCore answers "unsupported" for every configuration, and players
++// such as YouTube's then refuse formats the engines can play.
++void createMediaPlayerDecodingConfigurationHaiku(PlatformMediaDecodingConfiguration&&, Function<void(PlatformMediaCapabilitiesDecodingInfo&&)>&&);
++
++}
++
++#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/ShareableBitmapHaiku.cpp b/Source/WebCore/platform/graphics/haiku/ShareableBitmapHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..2fbbda17afe9f00be49289dc64b863dfce31ea1e
@@ -22653,6 +22791,31 @@ index 0000000000000000000000000000000000000000..8a01300d39155e62768de06a298a693c
 +
 +} // namespace WebCore
 +
+diff --git a/Source/WebCore/platform/mediacapabilities/PlatformMediaEngineConfigurationFactory.cpp b/Source/WebCore/platform/mediacapabilities/PlatformMediaEngineConfigurationFactory.cpp
+index 351b4f92dee11593273912a45deaee716386d699..209ac28509ff44c81686db96243dfba7887bed4d 100644
+--- a/Source/WebCore/platform/mediacapabilities/PlatformMediaEngineConfigurationFactory.cpp
++++ b/Source/WebCore/platform/mediacapabilities/PlatformMediaEngineConfigurationFactory.cpp
+@@ -46,6 +46,10 @@
+ #include "PlatformMediaEngineConfigurationFactoryGStreamer.h"
+ #endif
+ 
++#if PLATFORM(HAIKU)
++#include "PlatformMediaEngineConfigurationFactoryHaiku.h"
++#endif
++
+ namespace WebCore {
+ 
+ static bool& NODELETE mockEnabled()
+@@ -63,6 +67,9 @@ static MediaEngineFactoryVector defaultFactories()
+ #endif
+ #if USE(GSTREAMER)
+     factories.append({ &createMediaPlayerDecodingConfigurationGStreamer, &createMediaPlayerEncodingConfigurationGStreamer });
++#endif
++#if PLATFORM(HAIKU)
++    factories.append({ &createMediaPlayerDecodingConfigurationHaiku, nullptr });
+ #endif
+     return factories;
+ }
 diff --git a/Source/WebCore/platform/mediastream/haiku/DummyWebRTCProvider.h b/Source/WebCore/platform/mediastream/haiku/DummyWebRTCProvider.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..b59f56027057be21b0b3eeaeb5f9ec3b3274aa38
@@ -38872,10 +39035,10 @@ index 0000000000000000000000000000000000000000..e1531920fb9a5369a7bd708f8e888cf3
 +} // namespace WebKit
 diff --git a/Source/WebKit/Shared/haiku/NativeWebEventsHaiku.cpp b/Source/WebKit/Shared/haiku/NativeWebEventsHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..be6f65447fd5881e72214b940c4dbcb55675449b
+index 0000000000000000000000000000000000000000..8f2c1c6acdb7f6d0dbdc3474d2bbe68a414276b5
 --- /dev/null
 +++ b/Source/WebKit/Shared/haiku/NativeWebEventsHaiku.cpp
-@@ -0,0 +1,165 @@
+@@ -0,0 +1,183 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -38890,6 +39053,7 @@ index 0000000000000000000000000000000000000000..be6f65447fd5881e72214b940c4dbcb5
 +#include <WebCore/Scrollbar.h>
 +#include <algorithm>
 +#include <cmath>
++#include <cstdlib>
 +#include <wtf/TZoneMallocInlines.h>
 +
 +namespace WebKit {
@@ -39016,6 +39180,23 @@ index 0000000000000000000000000000000000000000..be6f65447fd5881e72214b940c4dbcb5
 +{
 +}
 +
++// One notch of a Haiku mouse wheel is one tick. WebKit's line step (40 px)
++// made each notch crawl, and a notch animated over 40 px easily reads as the
++// wheel not working. Haiku's own scroll views move three small steps a notch;
++// Chrome moves 100 px. SUMMIT_WHEEL_PIXELS_PER_NOTCH (10 to 400) overrides it.
++static float wheelPixelsPerNotch()
++{
++    static float pixels = [] {
++        if (const char* value = std::getenv("SUMMIT_WHEEL_PIXELS_PER_NOTCH")) {
++            float requested = std::strtof(value, nullptr);
++            if (requested >= 10 && requested <= 400)
++                return requested;
++        }
++        return 2.5f * Scrollbar::pixelsPerLineStep();
++    }();
++    return pixels;
++}
++
 +RefPtr<NativeWebWheelEvent> NativeWebWheelEvent::create(const BMessage& message, BPoint viewPosition, BPoint screenPosition)
 +{
 +    if (message.what != B_MOUSE_WHEEL_CHANGED || !validPosition(viewPosition) || !validPosition(screenPosition))
@@ -39029,7 +39210,7 @@ index 0000000000000000000000000000000000000000..be6f65447fd5881e72214b940c4dbcb5
 +    wheel.globalPosition = { static_cast<int>(std::round(screenPosition.x)), static_cast<int>(std::round(screenPosition.y)) };
 +    wheel.wheelTicks = { -deltaX, -deltaY };
 +    wheel.delta = wheel.wheelTicks;
-+    wheel.delta.scale(Scrollbar::pixelsPerLineStep());
++    wheel.delta.scale(wheelPixelsPerNotch());
 +    wheel.granularity = WebWheelEventGranularity::ScrollByPixelWheelEvent;
 +    return adoptRef(*new NativeWebWheelEvent({ makeEventDataHaiku(message, WebEventType::Wheel), WTF::move(wheel) }, message));
 +}
