@@ -3833,7 +3833,7 @@ index 762711231f70a6f41d0945a45118bfd1535b8d8a..9ac3284587a606b9eb13e3dfe95fa3eb
  
  static inline void populateRootRendererWithFloatsFromIFC(auto& rootBlockContainer, auto& placedFloats)
 diff --git a/Source/WebCore/layout/integration/LayoutIntegrationUtils.cpp b/Source/WebCore/layout/integration/LayoutIntegrationUtils.cpp
-index b71758ef19608d57fe0e2659ae773119a51e4584..00f32b978f03105a12f05fa050ed6e0036d241c7 100644
+index b71758ef19608d57fe0e2659ae773119a51e4584..378d2a1ce6ab5e20d03da729d76d322aba482d1b 100644
 --- a/Source/WebCore/layout/integration/LayoutIntegrationUtils.cpp
 +++ b/Source/WebCore/layout/integration/LayoutIntegrationUtils.cpp
 @@ -34,6 +34,11 @@
@@ -3848,7 +3848,7 @@ index b71758ef19608d57fe0e2659ae773119a51e4584..00f32b978f03105a12f05fa050ed6e00
  
  namespace WebCore {
  namespace Layout {
-@@ -129,6 +134,13 @@ static LayoutUnit blockSizeForGridItem(const LayoutState& layoutState, const Ele
+@@ -129,6 +134,19 @@ static LayoutUnit blockSizeForGridItem(const LayoutState& layoutState, const Ele
  {
      ASSERT(box.isGridItem());
      CheckedRef renderer = downcast<RenderBox>(*box.rendererForIntegration());
@@ -3858,11 +3858,17 @@ index b71758ef19608d57fe0e2659ae773119a51e4584..00f32b978f03105a12f05fa050ed6e00
 +        return value && value[0] == '1' && !value[1];
 +    }();
 +    bigtime_t startedAt = traceGridItemHeights ? system_time() : 0;
++    bool wasClean = traceGridItemHeights && !renderer->needsLayout();
++    bool widthMatches = false;
++    if (traceGridItemHeights) {
++        auto previousGridAreaWidth = renderer->gridAreaContentLogicalWidth();
++        widthMatches = previousGridAreaWidth && *previousGridAreaWidth && **previousGridAreaWidth == inlineAxisConstraint;
++    }
 +#endif
  
      switch (logicalHeightType) {
      case LayoutIntegration::LogicalHeightType::MinContent:
-@@ -142,7 +154,26 @@ static LayoutUnit blockSizeForGridItem(const LayoutState& layoutState, const Ele
+@@ -142,7 +160,32 @@ static LayoutUnit blockSizeForGridItem(const LayoutState& layoutState, const Ele
  
          renderer->clearGridAreaContentSize();
  
@@ -3873,15 +3879,21 @@ index b71758ef19608d57fe0e2659ae773119a51e4584..00f32b978f03105a12f05fa050ed6e00
 +            struct Totals {
 +                unsigned calls { 0 };
 +                unsigned kinds[4] { 0, 0, 0, 0 };
++                unsigned clean { 0 };
++                unsigned sameWidth { 0 };
++                unsigned reusable { 0 };
 +                bigtime_t elapsed { 0 };
 +            };
 +            static thread_local Totals totals;
 +            ++totals.calls;
 +            ++totals.kinds[static_cast<unsigned>(logicalHeightType)];
++            totals.clean += wasClean;
++            totals.sameWidth += widthMatches;
++            totals.reusable += wasClean && widthMatches;
 +            totals.elapsed += system_time() - startedAt;
 +            if (totals.calls == 200) {
-+                std::fprintf(stderr, "Summit grid item heights: calls=%u min=%u max=%u minContribution=%u maxContribution=%u elapsed=%.2f\n",
-+                    totals.calls, totals.kinds[0], totals.kinds[1], totals.kinds[2], totals.kinds[3], totals.elapsed / 1000.0);
++                std::fprintf(stderr, "Summit grid item heights: calls=%u min=%u max=%u minContribution=%u maxContribution=%u clean=%u sameWidth=%u reusable=%u elapsed=%.2f\n",
++                    totals.calls, totals.kinds[0], totals.kinds[1], totals.kinds[2], totals.kinds[3], totals.clean, totals.sameWidth, totals.reusable, totals.elapsed / 1000.0);
 +                totals = { };
 +            }
 +        }
@@ -3890,7 +3902,7 @@ index b71758ef19608d57fe0e2659ae773119a51e4584..00f32b978f03105a12f05fa050ed6e00
      }
      }
  
-@@ -242,4 +273,3 @@ std::pair<LayoutRect, LayoutRect> IntegrationUtils::toMarginAndBorderBoxVisualRe
+@@ -242,4 +285,3 @@ std::pair<LayoutRect, LayoutRect> IntegrationUtils::toMarginAndBorderBoxVisualRe
  
  }
  }

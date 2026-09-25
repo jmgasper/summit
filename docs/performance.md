@@ -4676,7 +4676,7 @@ height layouts per two-item grid to two. In an uncontended, untraced
 forced layout, and the candidate measured **20.92 ms**, about a **5%**
 reduction. Initial and final geometry matched exactly in all three runs.
 The broader `grid-space-between.html` output also matched the control
-exactly, including overflow, repeat tracks, margins, and dynamic fallback
+exactly, including overflow, repeat tracks, margins, and dynamic fallback.
 Both diagnostic comparison bundles had the same partial PGO coverage for
 edited unified layout units after their stale profile files were archived;
 a fresh profile training pass remains useful for a later release build.
