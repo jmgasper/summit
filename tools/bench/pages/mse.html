@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>MSE</title>
+<!--
+Media Source Extensions check. Appends fragmented MP4 video and audio (made by
+tools/bench/make-mse-fixtures.sh into mse-media/) to two SourceBuffers in
+chunks, plays, and optionally seeks. The document title carries a compact
+status so a harness can read it through summitctl's tab state:
+  "MSE t=<currentTime> rs=<readyState> buf=<ranges> q=<frames>/<dropped> ev=<events>"
+
+Query parameters:
+  chunk=<bytes>   append size (default 262144)
+  seek=<seconds>  seek there once playback passes 3 s
+  muted=1         start muted (autoplay without a gesture)
+  video=<file>    video fragments (default video-frag.mp4)
+  audio=<file>    audio fragments (default audio-frag.mp4; "none" for video only)
+-->
+<style>
+body { font: 16px monospace; margin: 12px; }
+video { width: 640px; height: 360px; background: #000; display: block; }
+#log { white-space: pre; font-size: 13px; }
+</style>
+</head>
+<body>
+<video id="video" controls playsinline></video>
+<div id="status"></div>
+<div id="log"></div>
+<script>
+const params = new URLSearchParams(location.search);
+const chunk = Number(params.get('chunk') || 262144);
+const seekTo = params.has('seek') ? Number(params.get('seek')) : null;
+const videoFile = params.get('video') || 'video-frag.mp4';
+const audioFile = params.get('audio') || 'audio-frag.mp4';
+const video = document.getElementById('video');
+video.muted = params.get('muted') === '1';
+const events = [];
+const started = performance.now();
+function log(text) {
+    const line = ((performance.now() - started) / 1000).toFixed(2) + ' ' + text;
+    events.push(text.split(' ')[0]);
+    document.getElementById('log').textContent += line + '\n';
+}
+function ranges(r) {
+    let out = [];
+    for (let i = 0; i < r.length; ++i)
+        out.push(r.start(i).toFixed(2) + '-' + r.end(i).toFixed(2));
+    return out.join(',') || 'none';
+}
+for (const name of ['loadedmetadata', 'loadeddata', 'canplay', 'canplaythrough', 'playing', 'waiting', 'seeking', 'seeked', 'ended', 'error', 'pause', 'play', 'stalled'])
+    video.addEventListener(name, () => log(name + ' t=' + video.currentTime.toFixed(3) + (name === 'error' && video.error ? ' code=' + video.error.code + ' ' + video.error.message : '')));
+
+const types = ['video/mp4; codecs="avc1.640028"', 'video/mp4; codecs="avc1.4d401f"', 'audio/mp4; codecs="mp4a.40.2"',
+    'video/webm; codecs="vp9"', 'audio/webm; codecs="opus"', 'video/mp4; codecs="av01.0.05M.08"'];
+log('isTypeSupported ' + types.map(t => t.replace(/ codecs=/, '') + '=' + (window.MediaSource ? MediaSource.isTypeSupported(t) : 'noMSE')).join(' '));
+
+let seeked = false;
+function update() {
+    const q = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null;
+    const status = `MSE t=${video.currentTime.toFixed(2)} rs=${video.readyState} buf=${ranges(video.buffered)} q=${q ? q.totalVideoFrames + '/' + q.droppedVideoFrames : '-'} ev=${events.filter(e => e !== 'isTypeSupported').join('>')}`;
+    document.title = status.slice(0, 200);
+    document.getElementById('status').textContent = status;
+    if (seekTo !== null && !seeked && video.currentTime > 3) {
+        seeked = true;
+        video.currentTime = seekTo;
+    }
+}
+setInterval(update, 250);
+
+async function feed(buffer, url) {
+    const response = await fetch('mse-media/' + url);
+    const data = new Uint8Array(await response.arrayBuffer());
+    for (let at = 0; at < data.length; at += chunk) {
+        buffer.appendBuffer(data.subarray(at, Math.min(data.length, at + chunk)));
+        await new Promise((resolve, reject) => {
+            buffer.addEventListener('updateend', resolve, { once: true });
+            buffer.addEventListener('error', () => reject(new Error('append error')), { once: true });
+        });
+    }
+    log('appended ' + url + ' ' + data.length);
+}
+
+if (!window.MediaSource)
+    log('error no MediaSource');
+else {
+    const source = new MediaSource();
+    video.src = URL.createObjectURL(source);
+    source.addEventListener('sourceopen', async () => {
+        log('sourceopen');
+        try {
+            const feeds = [feed(source.addSourceBuffer('video/mp4; codecs="avc1.640028"'), videoFile)];
+            if (audioFile !== 'none')
+                feeds.push(feed(source.addSourceBuffer('audio/mp4; codecs="mp4a.40.2"'), audioFile));
+            await Promise.all(feeds);
+            source.endOfStream();
+            log('endOfStream duration=' + source.duration.toFixed(3));
+        } catch (error) {
+            log('error ' + error);
+        }
+    });
+    video.play().then(() => log('playPromise resolved')).catch(error => log('playPromise ' + error.name));
+}
+</script>
+</body>
+</html>

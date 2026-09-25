@@ -63,6 +63,51 @@ Earlier live Reddit scrolls showed occasional 650–790 ms gaps attributed to
 page update, layout, or script work; subsequent live Reddit attempts sometimes
 received a JavaScript challenge instead of the feed.
 
+## Mouse wheel delivery with real input (September 25, 2026)
+
+The benchmark harness scrolls with `summitctl scroll`, whose synthesized
+`B_MOUSE_WHEEL_CHANGED` messages carry a `_view_token`. That token sends each
+notch straight to the page view, so those runs never exercised the routing a
+real wheel goes through. `tools/bench/vnc-input.py wheel` sends real wheel
+button events through the workstation's VNC server (InputEventInjector), and
+`pages/wheel-targets.html` shows the positions of a document, an
+`overflow: auto` box, an iframe and a box with a non-passive `wheel` listener.
+Two faults showed up that the harness could not see.
+
+**A window that opens under a still pointer drops every notch.** Haiku's
+`BWindow` sends a wheel message to the view the pointer last moved over and
+drops it when there is none. After Summit opened on haiku-os.org with the
+pointer left where it was, the first 10-notch burst never reached the web
+process (8 routed events from two bursts); moving the pointer by 3 px first
+delivered both (16). The same applies to a tab view that replaces another
+under the pointer. `BrowserWindow::AnnouncePointer()` now calls
+`set_mouse_position()` with the current position on activation and tab
+selection; input_server turns that into a genuine `B_MOUSE_MOVED`, and the
+stationary-pointer run delivers both bursts (16 events).
+
+**Scroll animations waited for an unrelated scroll.** Haiku has no display
+link, so `EventDispatcher` services scrolling-thread animations with its own
+refresh timer, and only a wheel event handled on the scrolling thread started
+it. A notch over a non-passive listener is dispatched to the main thread
+first; the listener box fired four `wheel` events but stayed at
+`scrollTop=0` until the document itself was wheel-scrolled, when it jumped to
+200. A page with such a listener on `window` or `document` would barely
+scroll. `ThreadedScrollingTree` now calls a Haiku hook when any scroll
+animation starts, `EventDispatcher` restarts its pulses from it, and the
+pulses default to 16 ms (`SUMMIT_SCROLL_REFRESH_TIMER=0` disables them;
+the launcher already set 16).
+
+The other scrollers behaved: the overflow box, the iframe and the document
+each moved 200 px for five notches, all on the scrolling thread. On a loading
+Reddit feed the first notches arrived while the document was only 941 px tall
+(16 px of scroll range), so that burst had nothing to move; later bursts
+scrolled normally.
+
+The NanoKVM on the workstation presents an absolute USB pointer that Haiku does
+not recognise (no `/dev/input/tablet` node), so neither its clicks nor its wheel
+reach applications. `tools/bench/nanokvm-input.py` is kept for when that is
+fixed.
+
 ## Scrolling (September 21, 2026)
 
 Scrolling a busy page was the owner's first complaint, so the drawing area now
