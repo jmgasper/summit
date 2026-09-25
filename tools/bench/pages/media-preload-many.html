@@ -9,6 +9,7 @@ video { width: 220px; margin: 4px; }
 <div id="players"></div>
 <script>
 const source = "https://uploads.guim.co.uk/2026/09/23/US_delegation_walks_out_during_Iranian_president_s_UNGA_speech--2e6a54b2-a951-428a-81c9-44a74385f0f8-1.0_480w_q8.mp4";
+const unmuteDuringResume = new URLSearchParams(location.search).has("unmute");
 const started = performance.now();
 const events = [];
 const players = Array.from({length: 8}, (_, index) => {
@@ -17,9 +18,9 @@ const players = Array.from({length: 8}, (_, index) => {
     video.playsInline = true;
     video.preload = "auto";
     video.controls = true;
-    for (const name of ["loadedmetadata", "playing", "pause", "error"])
+    for (const name of ["loadedmetadata", "playing", "pause", "volumechange", "error"])
         video.addEventListener(name, () => events.push({index, name,
-            atMs: Math.round(performance.now() - started), time: video.currentTime}));
+            atMs: Math.round(performance.now() - started), time: video.currentTime, muted: video.muted}));
     document.getElementById("players").append(video);
     video.src = source;
     return video;
@@ -41,10 +42,17 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 (async () => {
     await settle();
     const preloadedAtMs = Math.round(performance.now() - started);
-    for (const video of [players[0], players[1], players[0]]) {
+    for (const [cycle, video] of [players[0], players[1], players[0]].entries()) {
         try { await video.play(); }
         catch (error) { events.push({index: players.indexOf(video), name: "play-rejected", message: String(error)}); }
-        await sleep(2500);
+        if (cycle === 2 && unmuteDuringResume) {
+            await sleep(500);
+            video.muted = false;
+            await sleep(1500);
+            video.muted = true;
+            await sleep(500);
+        } else
+            await sleep(2500);
         video.pause();
     }
     await sleep(500);
