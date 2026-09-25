@@ -133,6 +133,23 @@ iterations. The harness's default window gave a 1913×945 viewport, not the
 A two-minute run on a 25 fps video (`dQw4w9WgXcQ`) presented 3,131 frames
 with none dropped and no stalls; media time kept pace with wall time.
 
+### Video frames straight to the compositor
+
+The MSE renderer used to repaint the video element every frame: a main-thread
+repaint, a rendering update and a tile repaint for each picture. When the page
+thread is busy, pictures wait. The player now reports accelerated rendering.
+`GraphicsLayerCoordinated::setContentsToMediaPlayer()` (until now
+GStreamer-only) gives it a `CoordinatedPlatformLayerBufferProxy`, and the
+decoder thread hands each SkImage to the compositor as a native-image layer
+buffer. `paint()` remains for `drawImage(video)` and similar.
+
+With `pages/mse.html?busy=400`, which blocks the page thread for 400 ms every
+second, the native view received 18–26 frames/s with 422–432 ms gaps on the
+previous bundle, and about 33 frames/s (the 30 fps clip plus page updates) with
+at most 40 ms gaps on `bundle-h3v4tvze`. On YouTube the main web process fell
+from about 1.7 to 1.35 cores. Total system load was unchanged at about 3.2
+cores, because the texture upload moved to the compositor.
+
 ### Scrolling a loading Reddit feed
 
 With the burst starting about 3 s after navigation (`run-scroll.py --settle

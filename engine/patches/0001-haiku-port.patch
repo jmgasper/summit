@@ -6842,15 +6842,18 @@ index 0c9fb7bc1ca7c93b76c7b55d411924edaabd303b..0f8f01a69000d79226130d19d7796a39
      Ref<JSON::Object> toJSONObject() const;
  
 diff --git a/Source/WebCore/platform/graphics/MediaPlayer.cpp b/Source/WebCore/platform/graphics/MediaPlayer.cpp
-index 765530726aa584e2f89a4c697c812875103e0e6f..9e000b021ed06be4f68267e6fca292445dd7119a 100644
+index 765530726aa584e2f89a4c697c812875103e0e6f..e0d1025e6baba968bf410ea574442fdb7dd85080 100644
 --- a/Source/WebCore/platform/graphics/MediaPlayer.cpp
 +++ b/Source/WebCore/platform/graphics/MediaPlayer.cpp
-@@ -112,6 +112,14 @@
+@@ -112,6 +112,17 @@
  
  #endif // PLATFORM(COCOA)
  
 +#if PLATFORM(HAIKU)
 +#include "MediaPlayerPrivateHaiku.h"
++#if USE(COORDINATED_GRAPHICS)
++#include "CoordinatedPlatformLayerBufferProxy.h"
++#endif
 +#if ENABLE(MEDIA_SOURCE)
 +#include "MediaPlayerPrivateHaikuMSE.h"
 +#endif
@@ -6860,7 +6863,7 @@ index 765530726aa584e2f89a4c697c812875103e0e6f..9e000b021ed06be4f68267e6fca29244
  #if USE(EXTERNAL_HOLEPUNCH)
  #include "MediaPlayerPrivateHolePunch.h"
  #endif
-@@ -351,6 +359,13 @@ static void buildMediaEnginesVector() WTF_REQUIRES_LOCK(mediaEngineVectorLock)
+@@ -351,6 +362,13 @@ static void buildMediaEnginesVector() WTF_REQUIRES_LOCK(mediaEngineVectorLock)
      }
  #endif
  
@@ -6874,10 +6877,38 @@ index 765530726aa584e2f89a4c697c812875103e0e6f..9e000b021ed06be4f68267e6fca29244
  #if USE(MEDIA_FOUNDATION)
      MediaPlayerPrivateMediaFoundation::registerMediaEngine(addMediaEngine);
  #endif
+@@ -1824,8 +1842,9 @@ bool MediaPlayer::isGStreamerHolePunchingEnabled()
+ {
+     return protect(client())->isGStreamerHolePunchingEnabled();
+ }
++#endif
+ 
+-#if USE(COORDINATED_GRAPHICS)
++#if (USE(GSTREAMER) || PLATFORM(HAIKU)) && USE(COORDINATED_GRAPHICS)
+ void MediaPlayer::setPlatformLayerBufferProxy(Ref<CoordinatedPlatformLayerBufferProxy>&& proxy)
+ {
+     if (m_private)
+@@ -1837,7 +1856,6 @@ RefPtr<CoordinatedPlatformLayerBufferProxy> MediaPlayer::platformLayerBufferProx
+     return m_private ? protect(m_private)->platformLayerBufferProxy() : nullptr;
+ }
+ #endif
+-#endif
+ 
+ String MediaPlayer::languageOfPrimaryAudioTrack() const
+ {
 diff --git a/Source/WebCore/platform/graphics/MediaPlayer.h b/Source/WebCore/platform/graphics/MediaPlayer.h
-index a4b53714bcd2f25db5dc92614513bb2ad278d566..0726fecdfd70e3e023330e5194f0e227364d99a4 100644
+index a4b53714bcd2f25db5dc92614513bb2ad278d566..b131714b0d757feb44fd0aa4d084acb1bd40ed36 100644
 --- a/Source/WebCore/platform/graphics/MediaPlayer.h
 +++ b/Source/WebCore/platform/graphics/MediaPlayer.h
+@@ -109,7 +109,7 @@ class TextTrackRepresentation;
+ class VideoFrame;
+ class VideoTrackPrivate;
+ 
+-#if USE(GSTREAMER) && USE(COORDINATED_GRAPHICS)
++#if (USE(GSTREAMER) || PLATFORM(HAIKU)) && USE(COORDINATED_GRAPHICS)
+ class CoordinatedPlatformLayerBufferProxy;
+ #endif
+ 
 @@ -166,6 +166,7 @@ enum class MediaPlatformType {
      Mock,
      AVFObjC,
@@ -6895,6 +6926,19 @@ index a4b53714bcd2f25db5dc92614513bb2ad278d566..0726fecdfd70e3e023330e5194f0e227
      HolePunch,
      WirelessPlayback,
      Remote
+@@ -688,10 +691,10 @@ public:
+ #if USE(GSTREAMER)
+     void simulateAudioInterruption();
+     bool isGStreamerHolePunchingEnabled();
+-#if USE(COORDINATED_GRAPHICS)
++#endif
++#if (USE(GSTREAMER) || PLATFORM(HAIKU)) && USE(COORDINATED_GRAPHICS)
+     void setPlatformLayerBufferProxy(Ref<CoordinatedPlatformLayerBufferProxy>&&);
+     RefPtr<CoordinatedPlatformLayerBufferProxy> platformLayerBufferProxy() const;
+-#endif
+ #endif
+ 
+     String languageOfPrimaryAudioTrack() const;
 diff --git a/Source/WebCore/platform/graphics/MediaPlayerEnums.h b/Source/WebCore/platform/graphics/MediaPlayerEnums.h
 index 581158cda1f9e8041c2f596273e5b937398f06d8..6fed473151893232c75251104473082e909d6961 100644
 --- a/Source/WebCore/platform/graphics/MediaPlayerEnums.h
@@ -6908,6 +6952,45 @@ index 581158cda1f9e8041c2f596273e5b937398f06d8..6fed473151893232c75251104473082e
      HolePunch,
      MediaFoundation,
      MockMSE,
+diff --git a/Source/WebCore/platform/graphics/MediaPlayerPrivate.cpp b/Source/WebCore/platform/graphics/MediaPlayerPrivate.cpp
+index 3548ef515712540ee3245c9aebdd3125d8b42a04..80687c8b68f09c8d26a930bd56eae80be151e7b8 100644
+--- a/Source/WebCore/platform/graphics/MediaPlayerPrivate.cpp
++++ b/Source/WebCore/platform/graphics/MediaPlayerPrivate.cpp
+@@ -35,7 +35,7 @@
+ #include "VideoFrameMetadata.h"
+ #include <wtf/NativePromise.h>
+ 
+-#if USE(GSTREAMER) && USE(COORDINATED_GRAPHICS)
++#if (USE(GSTREAMER) || PLATFORM(HAIKU)) && USE(COORDINATED_GRAPHICS)
+ #include "CoordinatedPlatformLayerBufferProxy.h"
+ #endif
+ 
+@@ -122,7 +122,7 @@ OptionSet<MediaPlaybackTargetType> MediaPlayerPrivateInterface::supportedPlaybac
+ }
+ #endif
+ 
+-#if USE(GSTREAMER) && USE(COORDINATED_GRAPHICS)
++#if (USE(GSTREAMER) || PLATFORM(HAIKU)) && USE(COORDINATED_GRAPHICS)
+ void MediaPlayerPrivateInterface::setPlatformLayerBufferProxy(Ref<CoordinatedPlatformLayerBufferProxy>&&)
+ {
+ }
+diff --git a/Source/WebCore/platform/graphics/MediaPlayerPrivate.h b/Source/WebCore/platform/graphics/MediaPlayerPrivate.h
+index 3b5cc1eb068df0fcd7a68a01c2a4fd7b3f528cf8..4f271c5db35d4ab32d5c3460111c5dcb7b191b0a 100644
+--- a/Source/WebCore/platform/graphics/MediaPlayerPrivate.h
++++ b/Source/WebCore/platform/graphics/MediaPlayerPrivate.h
+@@ -297,10 +297,10 @@ public:
+ 
+ #if USE(GSTREAMER)
+     virtual void simulateAudioInterruption() { }
+-#if USE(COORDINATED_GRAPHICS)
++#endif
++#if (USE(GSTREAMER) || PLATFORM(HAIKU)) && USE(COORDINATED_GRAPHICS)
+     virtual void setPlatformLayerBufferProxy(Ref<CoordinatedPlatformLayerBufferProxy>&&);
+     virtual RefPtr<CoordinatedPlatformLayerBufferProxy> platformLayerBufferProxy() const;
+-#endif
+ #endif
+ 
+     virtual String languageOfPrimaryAudioTrack() const { return emptyString(); }
 diff --git a/Source/WebCore/platform/graphics/Pattern.h b/Source/WebCore/platform/graphics/Pattern.h
 index b885cbbef48b2d18b96f6157f983bb288f3cf978..1a10ece7769e7c97967cf0c48c161daf9ef8b983 100644
 --- a/Source/WebCore/platform/graphics/Pattern.h
@@ -13548,10 +13631,10 @@ index 0000000000000000000000000000000000000000..6aa4de5c2c58fe66ff1f063e6b4902e6
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..55278174a7a91a52dbc402f0803c76eaf706468a
+index 0000000000000000000000000000000000000000..96740bc71053bbf57a14454275fbbfd3b5da0ef2
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
-@@ -0,0 +1,1703 @@
+@@ -0,0 +1,1752 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -13590,6 +13673,12 @@ index 0000000000000000000000000000000000000000..55278174a7a91a52dbc402f0803c76ea
 +#include <wtf/NeverDestroyed.h>
 +#include <wtf/Threading.h>
 +#include <wtf/text/StringView.h>
++
++#if USE(COORDINATED_GRAPHICS) && USE(TEXTURE_MAPPER) && USE(SKIA)
++#include "CoordinatedPlatformLayerBufferNativeImage.h"
++#include "CoordinatedPlatformLayerBufferProxy.h"
++#define HAIKU_MSE_COMPOSITED_VIDEO 1
++#endif
 +
 +#if USE(SKIA)
 +WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
@@ -14005,6 +14094,13 @@ index 0000000000000000000000000000000000000000..55278174a7a91a52dbc402f0803c76ea
 +        return m_frame;
 +    }
 +#endif
++#if defined(HAIKU_MSE_COMPOSITED_VIDEO)
++    void setLayerBufferProxy(RefPtr<CoordinatedPlatformLayerBufferProxy>&& proxy)
++    {
++        Locker locker { m_frameLock };
++        m_layerBufferProxy = WTF::move(proxy);
++    }
++#endif
 +    IntSize frameSize()
 +    {
 +        Locker locker { m_frameLock };
@@ -14183,11 +14279,25 @@ index 0000000000000000000000000000000000000000..55278174a7a91a52dbc402f0803c76ea
 +    {
 +        if (!image)
 +            return;
++#if defined(HAIKU_MSE_COMPOSITED_VIDEO)
++        RefPtr<CoordinatedPlatformLayerBufferProxy> proxy;
++#endif
 +        {
 +            Locker locker { m_frameLock };
-+            m_frame = WTF::move(image);
++            m_frame = image;
 +            m_frameSize = size;
++#if defined(HAIKU_MSE_COMPOSITED_VIDEO)
++            proxy = m_layerBufferProxy;
++#endif
 +        }
++#if defined(HAIKU_MSE_COMPOSITED_VIDEO)
++        // Hand the frame to the compositor directly, so a busy page thread
++        // does not hold it back and no tile has to be repainted for it.
++        if (proxy && proxy->isValid()) {
++            if (RefPtr nativeImage = NativeImage::create(WTF::move(image)))
++                proxy->setDisplayBuffer(CoordinatedPlatformLayerBufferNativeImage::create(nativeImage.releaseNonNull(), nullptr));
++        }
++#endif
 +        didPresent();
 +    }
 +#else
@@ -14233,6 +14343,11 @@ index 0000000000000000000000000000000000000000..55278174a7a91a52dbc402f0803c76ea
 +#if USE(SKIA)
 +    Vector<sk_sp<SkData>> m_buffers;
 +    sk_sp<SkImage> m_frame WTF_GUARDED_BY_LOCK(m_frameLock);
++#endif
++#if defined(HAIKU_MSE_COMPOSITED_VIDEO)
++    RefPtr<CoordinatedPlatformLayerBufferProxy> m_layerBufferProxy WTF_GUARDED_BY_LOCK(m_frameLock);
++#endif
++#if USE(SKIA)
 +#else
 +    Vector<uint8_t> m_scratch;
 +#endif
@@ -14928,8 +15043,25 @@ index 0000000000000000000000000000000000000000..55278174a7a91a52dbc402f0803c76ea
 +        MSE_TRACE("first video frame %dx%d at %.3f\n", size.width(), size.height(), currentTime().toDouble());
 +        player->firstVideoFrameAvailable();
 +    }
++#if defined(HAIKU_MSE_COMPOSITED_VIDEO)
++    if (m_layerBufferProxy && m_layerBufferProxy->isValid())
++        return;
++#endif
 +    player->repaint();
 +}
++
++#if defined(HAIKU_MSE_COMPOSITED_VIDEO)
++void MediaPlayerPrivateHaikuMSE::setPlatformLayerBufferProxy(Ref<CoordinatedPlatformLayerBufferProxy>&& proxy)
++{
++    m_layerBufferProxy = proxy.copyRef();
++    videoRenderer().setLayerBufferProxy(proxy.copyRef());
++    MSE_TRACE("video goes to the compositor\n");
++    if (auto image = videoRenderer().currentFrame()) {
++        if (RefPtr nativeImage = NativeImage::create(WTF::move(image)))
++            proxy->setInitialDisplayBuffer(CoordinatedPlatformLayerBufferNativeImage::create(nativeImage.releaseNonNull(), nullptr));
++    }
++}
++#endif
 +
 +void MediaPlayerPrivateHaikuMSE::paint(GraphicsContext& context, const FloatRect& rect)
 +{
@@ -15257,10 +15389,10 @@ index 0000000000000000000000000000000000000000..55278174a7a91a52dbc402f0803c76ea
 +#endif // ENABLE(MEDIA_SOURCE)
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.h b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..1fe73a536baf643c8135664d06c42cf25e27f8a1
+index 0000000000000000000000000000000000000000..224339dcb8b89ca9231d52a27d2a1f289793bbe0
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.h
-@@ -0,0 +1,310 @@
+@@ -0,0 +1,317 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -15461,6 +15593,13 @@ index 0000000000000000000000000000000000000000..1fe73a536baf643c8135664d06c42cf2
 +    const PlatformTimeRanges& buffered() const final;
 +    bool didLoadingProgress() const final { return false; }
 +    void paint(GraphicsContext&, const FloatRect&) final;
++#if USE(COORDINATED_GRAPHICS) && USE(TEXTURE_MAPPER) && USE(SKIA)
++    // Frames go straight from the decoder thread to the compositor.
++    bool supportsAcceleratedRendering() const final { return true; }
++    void setPlatformLayerBufferProxy(Ref<CoordinatedPlatformLayerBufferProxy>&&) final;
++    RefPtr<CoordinatedPlatformLayerBufferProxy> platformLayerBufferProxy() const final { return m_layerBufferProxy; }
++    RefPtr<CoordinatedPlatformLayerBufferProxy> m_layerBufferProxy;
++#endif
 +    ColorSpace colorSpace() final;
 +    std::optional<VideoPlaybackQualityMetrics> videoPlaybackQualityMetrics() final;
 +
@@ -18108,6 +18247,32 @@ index 30f54801b8aa9b9bc83af8a929f8bdc04a2ee4d1..f68564b5f1c8b97ee543257ede6c0f40
          static constexpr int minGPUTileHeight = 256;
  
          auto gpuTileSize = [&](const IntSize& baseSize) -> IntSize {
+diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/GraphicsLayerCoordinated.cpp b/Source/WebCore/platform/graphics/texmap/coordinated/GraphicsLayerCoordinated.cpp
+index cb8dc9067767652f427ad441e5da28a25aa05b82..9c92d100b6d61ddaf0a3a7d397d50bf66dbca574 100644
+--- a/Source/WebCore/platform/graphics/texmap/coordinated/GraphicsLayerCoordinated.cpp
++++ b/Source/WebCore/platform/graphics/texmap/coordinated/GraphicsLayerCoordinated.cpp
+@@ -403,7 +403,7 @@ void GraphicsLayerCoordinated::setContentsNeedsDisplayInRect(const FloatRect& re
+     noteLayerPropertyChanged(Change::ContentsBufferNeedsDisplay, ScheduleFlush::Yes);
+ }
+ 
+-#if ENABLE(VIDEO) && USE(GSTREAMER)
++#if ENABLE(VIDEO) && (USE(GSTREAMER) || PLATFORM(HAIKU))
+ void GraphicsLayerCoordinated::setContentsToMediaPlayer(MediaPlayer* player, ContentsLayerPurpose)
+ {
+     // Never try to get or set the proxy on a player that doesn't support accelerated rendering (null media player).
+diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/GraphicsLayerCoordinated.h b/Source/WebCore/platform/graphics/texmap/coordinated/GraphicsLayerCoordinated.h
+index a3c1107d04a703e195e4439bf26baf1e616d6f4d..a52e861395bf157dd82e724c3e5e34a267577a09 100644
+--- a/Source/WebCore/platform/graphics/texmap/coordinated/GraphicsLayerCoordinated.h
++++ b/Source/WebCore/platform/graphics/texmap/coordinated/GraphicsLayerCoordinated.h
+@@ -84,7 +84,7 @@ private:
+     void setContentsClipShapePath(const Path&) override;
+     void setContentsNeedsDisplay() override;
+     void setContentsNeedsDisplayInRect(const FloatRect&) override;
+-#if ENABLE(VIDEO) && USE(GSTREAMER)
++#if ENABLE(VIDEO) && (USE(GSTREAMER) || PLATFORM(HAIKU))
+     void setContentsToMediaPlayer(MediaPlayer*, ContentsLayerPurpose) override;
+ #endif
+     void setContentsDisplayDelegate(RefPtr<GraphicsLayerContentsDisplayDelegate>&&, ContentsLayerPurpose) override;
 diff --git a/Source/WebCore/platform/graphics/transforms/AffineTransform.h b/Source/WebCore/platform/graphics/transforms/AffineTransform.h
 index 3ae8339850008d049df5f38d9d53a1c776827c67..d901f787833f48b776c9c77e78f914df8496f8fd 100644
 --- a/Source/WebCore/platform/graphics/transforms/AffineTransform.h
