@@ -2,7 +2,7 @@
 
 ## Current coordinated Skia result (September 25, 2026)
 
-The workstation launcher uses profile-guided `bundle-swpotbhy`: Skia CPU tile
+The workstation launcher uses profile-guided `bundle-ggja7ufo`: Skia CPU tile
 painting with two workers, GL Canvas, raster coordinated scrollbars, mimalloc,
 asynchronous scrolling, display-rate composition pacing, guarded reuse of exact text
 widths, preserved font registrations for simple CSS rule insertions, and
@@ -10,14 +10,17 @@ coalesced video repaint callbacks. The Haiku media backend also reports fully
 downloaded videos as buffered. It precompiles the rounded solid-color shader
 before scrolling, and caches grid item block contributions within a sizing
 pass. Muted videos do not allocate audio output, and audible output is
-created only while playing. It completes all 580 steps of Speedometer 3.1. The installed bundle's
-latest 30-iteration run is matched to the Firefox comparison at 1280×887
-(`.vm/bench/speedometer-20260925-133616-mute-aware-pgo-restored-thirty/`
+created only while playing. Paused preload videos release their NVDEC
+decoders until playback or seeking needs them. It completes all 580 steps of
+Speedometer 3.1. The installed bundle's latest 30-iteration run is matched
+to the Firefox comparison at 1280×887
+(`.vm/bench/speedometer-20260925-140133-parked-video-repeat-thirty/`
 and `.vm/bench/firefox-speedometer-20260925-092147-current-thirty-iterations/`).
 
 | Browser | Content viewport | Speedometer 3.1 |
 | --- | ---: | ---: |
-| Summit, installed mute-aware PGO, 30 iterations | 1280×887 | **8.520 ± 0.129** |
+| Summit, installed parked-decoder PGO, 30 iterations | 1280×887 | **8.601 ± 0.132**; earlier repeat **8.362 ± 0.127** |
+| Summit, prior mute-aware PGO, 30 iterations | 1280×887 | **8.520 ± 0.129**; same-session control **8.342 ± 0.127** |
 | Summit, prior grid-cache PGO, 30 iterations | 1280×887 | **8.377 ± 0.121** |
 | Summit, prior grid-cache PGO, 10 iterations | 1280×887 | **8.457 ± 0.417** |
 | Summit, buffered-media PGO predecessor, 30 iterations | 1280×887 | **8.391 ± 0.117** |
@@ -37,8 +40,9 @@ and `.vm/bench/firefox-speedometer-20260925-092147-current-thirty-iterations/`).
 | Firefox 155, fresh comparison | 1280×887 | **8.238 ± 0.368** |
 
 These Summit runs were uncontended. The installed build's 30-iteration point
-score is 0.115 above Firefox's and 0.143 above the prior grid-cache bundle;
-their uncertainty intervals overlap, so these results do not establish a
+score is 0.196 above Firefox's, but its earlier repeat was 0.043 below.
+Their uncertainty intervals overlap. The same-session control scored 8.342
+between the two installed-bundle runs, so these results do not establish a
 whole-browser Speedometer gain. Its
 largest remaining suite gaps against Firefox are Preact, CodeMirror, and
 Svelte complex DOM. Older score comparisons in this log used different
@@ -4869,3 +4873,43 @@ so it was not installed. The workstation launcher now points to
 `Summit-current.pre-muted-audio-20260925.sh`
 (`.vm/bench/speedometer-20260925-132800-mute-aware-thirty/` and
 `.vm/bench/speedometer-20260925-133616-mute-aware-pgo-restored-thirty/`).
+
+### Park NVDEC decoders for paused preload videos
+
+Haiku's [`BMediaFile::TrackAt()`](https://github.com/haiku/haiku/blob/master/src/kits/media/MediaFile.cpp#L209-L248)
+constructs a track and its decoder, while `ReleaseTrack()` destroys the
+track. Summit kept that decoder even when a page preloaded a video and left
+it paused. The backend now retains the duration, video size, and track index
+but releases the decoder in that state. It reacquires the track when playback
+or a paused seek needs decoded frames. It keeps a decoder after a video has
+played, so this change specifically reduces paused preload residency.
+
+In the fixed eight-video probe, all eight clips still reached ready state.
+The trace counted **eight parked decoders** and **two reacquisitions** for the
+two clips played; pausing and resuming the first clip advanced from about
+2.25 to 4.74 seconds. The Reddit HLS probe sought to eight seconds while
+paused, emitted `seeked`, and reached 12.7 seconds with NVDEC and no error.
+The Guardian clip looped with NVDEC and no media error
+(`.vm/bench/probe-20260925-134806-summit-parked-video-preload/`,
+`.vm/bench/probe-20260925-134854-summit-parked-video-reddit-seek/`, and
+`.vm/bench/probe-20260925-134938-summit-parked-video-guardian-loop/`).
+
+A 40-burst live Reddit run delivered all 3,200 wheel events, loaded 156
+media players, parked 135 video decoders, and reacquired 100. It logged no
+NVDEC timeout or audio buffer failure. Median active scroll rate was
+**58.705 fps**, and the worst first-frame delay was **42.8 ms**. The prior
+mute-aware visit loaded 142 players at 59.03 median fps with a 162.1 ms
+worst first-frame delay. Feed content differed, so the frame difference is
+directional; the fixed probe proves the decoder lifetime change
+(`.vm/bench/scroll-cycles-20260925-135040-parked-video-long-reddit/`).
+
+Matched 1280×887, uncontended 30-iteration Speedometer runs in an A/B/A
+sequence scored **8.362 ± 0.127** for the parked-decoder bundle,
+**8.342 ± 0.127** for the installed mute-aware control, and
+**8.601 ± 0.132** for the parked-decoder repeat. The spread does not prove a
+whole-browser gain or regression. The workstation launcher now points to
+`bundle-ggja7ufo`; its predecessor is saved as
+`Summit-current.pre-parked-video-20260925.sh`
+(`.vm/bench/speedometer-20260925-135345-parked-video-thirty/`,
+`.vm/bench/speedometer-20260925-135744-parked-video-control-thirty/`, and
+`.vm/bench/speedometer-20260925-140133-parked-video-repeat-thirty/`).
