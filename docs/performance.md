@@ -4733,3 +4733,25 @@ and produced two distinct geometry states for future correctness checks
 `.vm/bench/probe-20260925-114114-summit-persistent-cache-candidate/`,
 `.vm/bench/probe-20260925-114149-summit-persistent-cache-control-b/`,
 and `.vm/bench/probe-20260925-114342-summit-grid-variation-fixture/`).
+
+### Inline storage trial for one-pass grid contributions
+
+A second trial kept the safe one-pass cache but placed up to four item
+contributions in inline vector storage, using a hash table only for larger
+grids. The trial removed a per-grid hash allocation without changing the
+number of intrinsic-height layouts. Its 120-grid A/B/A means were **20.64**
+and **20.32 ms** for the controls and **20.62 ms** for the trial, with matching
+geometry and no workstation contention. The whole-browser check was worse:
+at the matched 1280×887 viewport, ten Speedometer 3.1 iterations scored
+**7.762 ± 0.328** on the trial versus **8.457 ± 0.417** on the installed
+control. The earlier diagnostic bundle with the same missing layout-unit PGO
+profiles scored **8.427 ± 0.414**, so those missing profiles alone do not
+explain the trial's lower score. The inline-storage change was removed and
+the engine patch returned to its pre-trial hash; the workstation launcher
+remains on `bundle-ydvalf4q`
+(`.vm/bench/probe-20260925-115559-summit-inline-cache-control-a/`,
+`.vm/bench/probe-20260925-115631-summit-inline-cache-candidate/`,
+`.vm/bench/probe-20260925-115711-summit-inline-cache-control-b/`,
+`.vm/bench/speedometer-20260925-115852-inline-cache-candidate/`,
+`.vm/bench/speedometer-20260925-120052-inline-cache-control/`, and
+`.vm/bench/speedometer-20260925-120340-grid-trace-baseline-pgo-control/`).
