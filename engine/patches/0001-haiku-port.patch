@@ -11125,10 +11125,10 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..e65052baa10f691b399ef25c9047c8aa2245532b
+index 0000000000000000000000000000000000000000..2c9c5364087ac414b79f99389e11e83542358c73
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,1264 @@
+@@ -0,0 +1,1273 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -12215,6 +12215,11 @@ index 0000000000000000000000000000000000000000..e65052baa10f691b399ef25c9047c8aa
 +    if (m_secondaryDownloadFile)
 +        m_secondaryMediaFile = new BMediaFile(m_secondaryDownloadFile);
 +
++    bool codecTrace = false;
++    if (const char* trace = std::getenv("SUMMIT_MEDIA_CODEC_TRACE"); trace && trace[0] == '1' && !trace[1]) {
++        codecTrace = true;
++        std::fprintf(stderr, "Summit media source: protocol=%s host=%s\n", mediaURL.Protocol().String(), mediaURL.Host().String());
++    }
 +    BMediaFile* mediaFiles[] = { m_mediaFile, m_secondaryMediaFile };
 +    for (auto* mediaFile : mediaFiles) {
 +        if (!mediaFile || mediaFile->InitCheck() != B_OK)
@@ -12238,7 +12243,11 @@ index 0000000000000000000000000000000000000000..e65052baa10f691b399ef25c9047c8aa
 +                mediaFile->ReleaseTrack(track);
 +                continue;
 +            }
-+            if (track->DecodedFormat(&format) != B_OK) {
++            auto decodeStatus = track->DecodedFormat(&format);
++            if (decodeStatus != B_OK) {
++                if (codecTrace)
++                    std::fprintf(stderr, "Summit media rejected track: host=%s index=%d type=%u status=%ld\n",
++                        mediaURL.Host().String(), i, static_cast<unsigned>(encodedFormat.type), long(decodeStatus));
 +                mediaFile->ReleaseTrack(track);
 +                continue;
 +            }
