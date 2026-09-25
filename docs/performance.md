@@ -4953,3 +4953,43 @@ appeared; that field alone does not identify a video-end crash. These are
 decode-to-paint timings, not measured monitor presentation cadence
 (`.vm/bench/guardian-article-audio-recovered-20260925/` and
 `.vm/bench/guardian-article-audio-recovered-repeat-20260925/`).
+
+### Paused playback and scroll benchmark correction
+
+After a clip has started, pausing it for two seconds now parks its NVDEC
+decoder. The next play request reacquires the track, seeks to the saved time,
+and resumes decoding. In the fixed eight-video probe, all eight clips loaded,
+three decoders parked after playback, and three resumed; audio output was
+created and released once, with no NVDEC or buffer-group error. The Guardian
+clip and a Reddit HLS clip both accepted three rapid seeks while paused and
+resumed from the final seek position (`.vm/bench/probe-20260925-142546-summit-parked-after-pause-eight-unmute/`,
+`.vm/bench/probe-20260925-142725-summit-parked-after-pause-guardian-seek/`,
+and `.vm/bench/probe-20260925-142817-summit-parked-after-pause-reddit-seek/`).
+
+An initial direct-bundle Reddit scroll probe reported zero frames because the
+benchmark omitted `SUMMIT_SCROLL_REFRESH_TIMER=16`, which the installed
+desktop launcher already sets. The scrolling tree accepted wheel events but
+its smooth animation could not advance without refresh ticks. A Wikipedia
+control moved 730 px and presented 17 frames over 0.3 seconds when the timer
+was enabled. The scroll harnesses now default to the installed launch setting;
+`--env SUMMIT_SCROLL_REFRESH_TIMER=0` still selects the control case. The
+earlier zero-frame direct-bundle runs are invalid as scrolling comparisons
+(`.vm/bench/scroll-20260925-151249-first-nav-wheel-webprocess-wikipedia/` and
+`.vm/bench/scroll-20260925-151953-timer16-wikipedia/`).
+
+With the installed refresh setting, the paused-decoder candidate delivered
+all 320 wheel events across eight live Reddit down/up bursts. The scroll
+position ranged from 0 to 4,800 px and the screenshots changed. Active
+presentation was 57.49–60.34 fps, median 58.35 fps, with a 54.3 ms worst
+completed gap. Nine repeated MediaExtractor stream-2 decoder allocation
+errors occurred during the feed visit; the trace does not identify that
+stream's media type or establish whether a visible clip failed. This run
+does not reproduce the unidentified Adobe ad's seek drag failure
+(`.vm/bench/scroll-cycles-20260925-152109-paused-decoder-reddit-timer16/`).
+
+The `process-exited` tab outcome on an initial navigation was caused by
+`PageClient::processWillSwap()` calling `processDidExit()` by default.
+The Haiku view now preserves the pending load during a normal navigation
+process swap. A fresh Wikipedia navigation reported `loadOutcome=succeeded`
+with the override. The earlier Guardian `process-exited` field therefore
+cannot be taken as evidence of a WebProcess crash.

@@ -63603,10 +63603,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..431d305c2499def7c9e25d082b965f6a6e6482be
+index 0000000000000000000000000000000000000000..32ddb0c49bd9f14c92bcef4a7e9221fc30867982
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,1238 @@
+@@ -0,0 +1,1247 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -64844,6 +64844,15 @@ index 0000000000000000000000000000000000000000..431d305c2499def7c9e25d082b965f6a
 +    callback(DOMPasteAccessResponse::DeniedForGesture);
 +}
 +
++void WebView::processWillSwap()
++{
++    // PageClient's default treats a normal navigation swap as a process exit.
++    // Preserve the in-flight load and tab state while dropping the old
++    // process's outstanding presentation callback.
++    if (m_presentationCallback)
++        std::exchange(m_presentationCallback, { })();
++}
++
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp
 new file mode 100644
@@ -65148,10 +65157,10 @@ index 0000000000000000000000000000000000000000..a47b97e41dddeab317f84058af42bd8b
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewPrivate.h b/Source/WebKit/UIProcess/haiku/WebViewPrivate.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..c17a5d33f99334ad594ef4ab9104f7c81dd31152
+index 0000000000000000000000000000000000000000..06575588366b29c88b9dabb2cb02b160ee63e9f8
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewPrivate.h
-@@ -0,0 +1,151 @@
+@@ -0,0 +1,152 @@
 +/*
 +   Copyright (C) 2014 Haiku, inc.
 +
@@ -65289,6 +65298,7 @@ index 0000000000000000000000000000000000000000..c17a5d33f99334ad594ef4ab9104f7c8
 +    void didRestoreScrollPosition() override { }
 +    WebCore::UserInterfaceLayoutDirection userInterfaceLayoutDirection() override { return WebCore::UserInterfaceLayoutDirection::LTR; }
 +    void requestDOMPasteAccess(WebCore::DOMPasteAccessCategory, WebCore::DOMPasteRequiresInteraction, WebCore::FrameIdentifier, const WebCore::IntRect&, const String&, CompletionHandler<void(WebCore::DOMPasteAccessResponse)>&&) override;
++    void processWillSwap() override;
 +
 +    const std::shared_ptr<WebViewStateHaiku> m_state;
 +    RefPtr<WebPageProxy> m_page;
