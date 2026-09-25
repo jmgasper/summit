@@ -9,7 +9,10 @@
 //   summitctl --team ID newtab URL
 //   summitctl --team ID closetab [TABID]
 //   summitctl --team ID selecttab TABID
-//   summitctl --team ID back|forward|reload|sidebar
+//   summitctl --team ID back|forward|reload
+//   summitctl --team ID sidebar               hides the bookmarks bar, for a full-height viewport
+//                                             (the sidebar this once toggled is gone; the name is
+//                                             kept for the benchmark scripts)
 //   summitctl --team ID frame LEFT TOP RIGHT BOTTOM   standard BWindow "Frame" scripting property
 //   summitctl --team ID framestats            frame counts since the targeted scroll burst began
 //   summitctl --team ID quit                  B_QUIT_REQUESTED to that team only
@@ -323,9 +326,10 @@ int main(int argc, char** argv)
     else if (command == "back") what = summit::kBack;
     else if (command == "forward") what = summit::kForward;
     else if (command == "reload") what = summit::kReload;
-    else if (command == "sidebar") what = summit::kToggleSidebar;
+    else if (command == "sidebar" || command == "hide-bookmarks-bar") what = summit::kPreferencesChanged;
     else return 2;
     BMessage message(what);
+    if (what == summit::kPreferencesChanged) message.AddBool("show_bookmarks_bar", false);
     if (wantsURL) { if (!argument) return 2; message.AddString("url", argument); }
     if (wantsID) { if (!argument) return 2; message.AddInt64("id", std::strtoll(argument, nullptr, 10)); }
     status = window.SendMessage(&message, static_cast<BHandler*>(nullptr), timeout);

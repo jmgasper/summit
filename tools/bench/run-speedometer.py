@@ -151,7 +151,7 @@ def main():
     parser.add_argument('--window', default='4,1,1270,797' if guest.IS_VM else '4,1,1916,1076',
                         metavar='L,T,R,B',
                         help='browser window frame in screen coordinates (default fills the desktop)')
-    parser.add_argument('--keep-sidebar', action='store_true', help='leave the Summit sidebar open (narrower viewport)')
+    parser.add_argument('--keep-sidebar', action='store_true', help='leave the Summit bookmarks bar shown (shorter viewport)')
     parser.add_argument('--label', default='')
     parser.add_argument('--keep-open', action='store_true', help='leave the browser running afterwards')
     parser.add_argument('--annotate', metavar='RUN_DIR', help='record a score read from an --official screenshot')

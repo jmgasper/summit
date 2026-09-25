@@ -93,6 +93,8 @@ def main():
                        help='move the pointer this many pixels between notches, as a hand on a mouse does')
     keyboard = commands.add_parser('key')
     keyboard.add_argument('name', choices=('pagedown', 'pageup', 'down', 'up', 'space'))
+    typing = commands.add_parser('type')
+    typing.add_argument('text', help='printable ASCII text to type')
     args = parser.parse_args()
     password = os.environ.get('SUMMIT_VNC_PASSWORD', '')
     with socket.create_connection((args.host, args.port), timeout=10) as connection:
@@ -145,6 +147,14 @@ def main():
                 checked_pointer(x, y, 0)
                 if args.interval_ms:
                     time.sleep(args.interval_ms / 1000)
+        elif args.command == 'type':
+            for character in args.text:
+                if not ' ' <= character <= '~':
+                    parser.error('type only sends printable ASCII')
+                key(connection, ord(character), True)
+                time.sleep(0.03)
+                key(connection, ord(character), False)
+                time.sleep(0.03)
         else:
             keysym = {'pagedown': 0xff56, 'pageup': 0xff55,
                       'down': 0xff54, 'up': 0xff52, 'space': 0x20}[args.name]
