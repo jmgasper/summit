@@ -70,3 +70,22 @@ multiple video tracks
 that the actual Reddit page reaches the accelerated decoder path. Still-image
 captures do not establish that every feed video plays smoothly from start to
 finish; the direct file probe establishes completion for one URL.
+
+## Skipping conversion of pictures that will not be shown
+
+`skip-conversion.patch` (applied on the workstation on 2026-09-25) lets a
+caller pass a negative `media_decode_info::time_to_decode`: pictures whose time
+is earlier than its magnitude are decoded but not converted to RGB. Summit's
+MSE renderer uses it after a seek, when every picture from the keyframe up to
+the target has to be decoded but none is shown. Other callers pass 0 or
+`B_INFINITE_TIMEOUT` and are unaffected. It is built the same way as above into
+`nvdec.skip` and installed by rename over
+`/boot/home/config/non-packaged/add-ons/media/plugins/nvdec`.
+
+Keep backups **outside** that directory: Media Kit registers every add-on in it,
+and a second H.264 decoder there (the old `nvdec.before-summit` copy) could be
+picked instead of the installed one. Backups are now in
+`/boot/home/build/nvdec/installed-backups/`.
+
+On YouTube with `&t=120`, the first picture after the seek arrived 0.61 s after
+the seek settled, against 1.13 s before, with no dropped frames afterwards.

@@ -1,0 +1,62 @@
+--- NVDecPlugin.cpp.before-skip	2026-09-22 11:02:29.362020864 +0000
++++ NVDecPlugin.cpp	2026-09-25 13:46:36.521666560 +0000
+@@ -240,7 +240,7 @@
+ 
+ void
+ NVDecDecoder::_Deliver(const NvdecFrame& frame, void* buffer,
+-	media_header* mediaHeader)
++	media_header* mediaHeader, bool convert)
+ {
+ 	/* What the file said the picture is need not be what the stream says,
+ 	 * and the buffer was made from what the file said. */
+@@ -250,7 +250,9 @@
+ 	if (fitted.height > fHeight)
+ 		fitted.height = fHeight;
+ 	const NvdecFrame& frameRef = fitted;
+-	if (fColorSpace == B_YCbCr422)
++	if (!convert)
++		;
++	else if (fColorSpace == B_YCbCr422)
+ 		nvdecFrameToYCbCr422Threaded(&frameRef, (uint8*)buffer, fRowBytes);
+ 	else
+ 		nvdecFrameToRGB32Threaded(&frameRef, (uint8*)buffer, fRowBytes, fRange);
+@@ -283,10 +285,17 @@
+ 		fSentParameterSets = true;
+ 	}
+ 
++	/* A caller that will not show pictures earlier than some time (the ones
++	 * decoded after a seek, from the keyframe up to the target) says so with
++	 * a negative time_to_decode, and gets them without the pixel conversion. */
++	bigtime_t skipBefore = info != NULL && info->time_to_decode < 0
++		? -info->time_to_decode : 0;
++
+ 	NvdecFrame frame;
+ 	for (;;) {
+ 		if (nvdecH264NextFrame(fDecoder, &frame)) {
+-			_Deliver(frame, buffer, mediaHeader);
++			_Deliver(frame, buffer, mediaHeader,
++				skipBefore == 0 || frame.time >= skipBefore);
+ 			nvdecH264ReleaseFrame(fDecoder, &frame);
+ 			*frameCount = 1;
+ 			fFrameNumber++;
+@@ -301,7 +310,8 @@
+ 			/* The file has ended: let go of everything still held. */
+ 			nvdecH264DrainAll(fDecoder);
+ 			if (nvdecH264NextFrame(fDecoder, &frame)) {
+-				_Deliver(frame, buffer, mediaHeader);
++				_Deliver(frame, buffer, mediaHeader,
++					skipBefore == 0 || frame.time >= skipBefore);
+ 				nvdecH264ReleaseFrame(fDecoder, &frame);
+ 				*frameCount = 1;
+ 				fFrameNumber++;
+--- NVDecPlugin.h.before-skip	2026-09-22 11:02:29.359923712 +0000
++++ NVDecPlugin.h	2026-09-25 13:46:36.526647296 +0000
+@@ -35,7 +35,7 @@
+ 			status_t			_ReadParameterSets(const uint8* data, size_t size);
+ 			status_t			_AppendChunk(const uint8* data, size_t size);
+ 			void				_Deliver(const NvdecFrame& frame, void* buffer,
+-									media_header* mediaHeader);
++									media_header* mediaHeader, bool convert = true);
+ 
+ 			NvdecEngine*		fEngine;
+ 			NvdecH264*			fDecoder;
