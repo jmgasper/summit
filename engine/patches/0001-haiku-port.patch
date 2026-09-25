@@ -11125,10 +11125,10 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..2f08a859b88803a96dc6a3aa1cb71e955e17ebb8
+index 0000000000000000000000000000000000000000..c4bd3945367d7a8f746d16e357293e6e32a33a97
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,1339 @@
+@@ -0,0 +1,1389 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -11380,6 +11380,8 @@ index 0000000000000000000000000000000000000000..2f08a859b88803a96dc6a3aa1cb71e95
 +    m_secondaryDownloadFile = nullptr;
 +    m_audioTrack = nullptr;
 +    m_videoTrack = nullptr;
++    m_videoTrackFile = nullptr;
++    m_videoTrackIndex = -1;
 +    m_audioFormat = { };
 +    m_audioAtEnd = false;
 +    m_videoAtEnd = false;
@@ -11469,7 +11471,7 @@ index 0000000000000000000000000000000000000000..2f08a859b88803a96dc6a3aa1cb71e95
 +    if (mediaPlaybackTraceEnabled())
 +        std::fprintf(stderr, "Summit media playback: player=%p loaded file=%d video=%d audio=%d abort=%d duration=%.2f\n",
 +            player, player->m_mediaFile && player->m_mediaFile->InitCheck() == B_OK,
-+            !!player->m_videoTrack, !!player->m_audioTrack, bool(player->m_abort), player->m_duration.load());
++            bool(player->m_hasVideo), !!player->m_audioTrack, bool(player->m_abort), player->m_duration.load());
 +
 +    if (player->m_abort)
 +        return B_OK;
@@ -11482,7 +11484,7 @@ index 0000000000000000000000000000000000000000..2f08a859b88803a96dc6a3aa1cb71e95
 +        // Reporting that as loaded leaves HTMLMediaElement playing forever at
 +        // time zero and prevents a following <source> from being considered.
 +        if (player->m_mediaFile && player->m_mediaFile->InitCheck() == B_OK
-+            && (player->m_videoTrack || player->m_audioTrack)) {
++            && (player->m_hasVideo || player->m_audioTrack)) {
 +            // The network path finishes downloading the complete file (or
 +            // finite HLS rendition) before Media Kit opens it. Local files
 +            // are likewise available in full once their tracks are known.
@@ -11497,6 +11499,7 @@ index 0000000000000000000000000000000000000000..2f08a859b88803a96dc6a3aa1cb71e95
 +            player->m_readyState = MediaPlayer::ReadyState::HaveEnoughData;
 +            player->m_networkState = MediaPlayer::NetworkState::Loaded;
 +            player->m_mediaTracksReady = true;
++            player->startVideoPlaybackIfNeeded();
 +            player->startAudioPlaybackIfNeeded();
 +        } else {
 +            player->m_readyState = MediaPlayer::ReadyState::HaveMetadata;
@@ -11661,6 +11664,41 @@ index 0000000000000000000000000000000000000000..2f08a859b88803a96dc6a3aa1cb71e95
 +
 +
 +
++void MediaPlayerPrivate::startVideoPlaybackIfNeeded(bool forSeek)
++{
++    if (!m_mediaTracksReady || !m_hasVideo || m_videoTrack || (m_paused && !forSeek)
++        || !m_videoTrackFile || m_videoTrackIndex < 0)
++        return;
++
++    BMediaTrack* track = m_videoTrackFile->TrackAt(m_videoTrackIndex);
++    media_format format = { };
++    format.type = B_MEDIA_RAW_VIDEO;
++    format.u.raw_video.display.format = B_RGB32;
++    if (!track || track->DecodedFormat(&format) != B_OK) {
++        if (track)
++            m_videoTrackFile->ReleaseTrack(track);
++        m_networkState = MediaPlayer::NetworkState::FormatError;
++        m_player.networkStateChanged();
++        return;
++    }
++
++    delete m_frameBuffer;
++    m_frameBuffer = new BBitmap(BRect(0, 0, format.Width() - 1, format.Height() - 1), B_RGB32);
++    m_videoTrack = track;
++    m_videoThread = spawn_thread(videoThread, "video decoder", B_NORMAL_PRIORITY, this);
++    if (m_videoThread < 0) {
++        m_videoTrackFile->ReleaseTrack(m_videoTrack);
++        m_videoTrack = nullptr;
++        m_networkState = MediaPlayer::NetworkState::FormatError;
++        m_player.networkStateChanged();
++        return;
++    }
++    if (mediaPlaybackTraceEnabled())
++        std::fprintf(stderr, "Summit media playback: player=%p videoDecoder=resume index=%d\n",
++            this, m_videoTrackIndex);
++    resume_thread(m_videoThread);
++}
++
 +void MediaPlayerPrivate::startAudioPlaybackIfNeeded()
 +{
 +    if (m_paused || m_muted || !m_mediaTracksReady || !m_audioTrack)
@@ -11706,6 +11744,7 @@ index 0000000000000000000000000000000000000000..2f08a859b88803a96dc6a3aa1cb71e95
 +void MediaPlayerPrivate::play()
 +{
 +    m_paused = false;
++    startVideoPlaybackIfNeeded();
 +    startAudioPlaybackIfNeeded();
 +}
 +
@@ -11731,7 +11770,7 @@ index 0000000000000000000000000000000000000000..2f08a859b88803a96dc6a3aa1cb71e95
 +
 +bool MediaPlayerPrivate::hasVideo() const
 +{
-+    return m_videoTrack;
++    return m_hasVideo;
 +}
 +
 +void MediaPlayerPrivate::setPageIsVisible(bool)
@@ -11753,6 +11792,7 @@ index 0000000000000000000000000000000000000000..2f08a859b88803a96dc6a3aa1cb71e95
 +
 +Ref<MediaTimePromise> MediaPlayerPrivate::seekToTarget(const SeekTarget& time)
 +{
++    startVideoPlaybackIfNeeded(true);
 +    if (!m_mediaLock.Lock())
 +        return MediaTimePromise::createAndReject(PlatformMediaError::InvalidState);
 +    if (auto previousSeek = std::exchange(m_seekPromise, std::nullopt))
@@ -11762,7 +11802,7 @@ index 0000000000000000000000000000000000000000..2f08a859b88803a96dc6a3aa1cb71e95
 +        m_mediaLock.Unlock();
 +        return MediaTimePromise::createAndReject(PlatformMediaError::NotReady);
 +    }
-+    if (m_videoTrack && (m_videoThread < 0 || !m_frameBuffer)) {
++    if (m_hasVideo && (!m_videoTrack || m_videoThread < 0 || !m_frameBuffer)) {
 +        m_mediaLock.Unlock();
 +        return MediaTimePromise::createAndReject(PlatformMediaError::NotReady);
 +    }
@@ -12336,6 +12376,8 @@ index 0000000000000000000000000000000000000000..2f08a859b88803a96dc6a3aa1cb71e95
 +                        codecStatus == B_OK ? codec.short_name : "unknown", i, long(codecStatus));
 +                }
 +                m_videoTrack = track;
++                m_videoTrackFile = mediaFile;
++                m_videoTrackIndex = i;
 +                m_hasVideo = true;
 +
 +                m_frameBuffer = new BBitmap(
@@ -12389,9 +12431,17 @@ index 0000000000000000000000000000000000000000..2f08a859b88803a96dc6a3aa1cb71e95
 +        m_duration = duration / 1000000.f;
 +
 +        if (m_videoTrack) {
-+            m_videoThread = spawn_thread(videoThread, "video decoder", B_NORMAL_PRIORITY, this);
-+            if (m_videoThread >= 0)
-+                resume_thread(m_videoThread);
++            if (m_paused) {
++                m_videoTrackFile->ReleaseTrack(m_videoTrack);
++                m_videoTrack = nullptr;
++                if (mediaPlaybackTraceEnabled())
++                    std::fprintf(stderr, "Summit media playback: player=%p videoDecoder=park index=%d\n",
++                        this, m_videoTrackIndex);
++            } else {
++                m_videoThread = spawn_thread(videoThread, "video decoder", B_NORMAL_PRIORITY, this);
++                if (m_videoThread >= 0)
++                    resume_thread(m_videoThread);
++            }
 +        }
 +    }
 +
@@ -12470,10 +12520,10 @@ index 0000000000000000000000000000000000000000..2f08a859b88803a96dc6a3aa1cb71e95
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..e64e46ce87a3492acb456005302a284debc445d5
+index 0000000000000000000000000000000000000000..32c95ca01a6c6ceaf8e5dcecbbfe1284e2e8e908
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
-@@ -0,0 +1,180 @@
+@@ -0,0 +1,183 @@
 +/*
 + * Copyright (C) 2014 Haiku, Inc.
 + *
@@ -12581,6 +12631,7 @@ index 0000000000000000000000000000000000000000..e64e46ce87a3492acb456005302a284d
 +private:
 +    private:
 +        void IdentifyTracks(const String& url);
++        void startVideoPlaybackIfNeeded(bool forSeek = false);
 +        void startAudioPlaybackIfNeeded();
 +        void releaseAudioOutput();
 +        static status_t loadingThread(void* cookie);
@@ -12602,6 +12653,8 @@ index 0000000000000000000000000000000000000000..e64e46ce87a3492acb456005302a284d
 +        BFile* m_secondaryDownloadFile { nullptr };
 +        BMediaTrack* m_audioTrack;
 +        BMediaTrack* m_videoTrack;
++        BMediaFile* m_videoTrackFile { nullptr };
++        int m_videoTrackIndex { -1 };
 +        media_raw_audio_format m_audioFormat { };
 +        bool m_mediaTracksReady { false };
 +        bool m_audioAtEnd { false };
