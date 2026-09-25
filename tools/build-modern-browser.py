@@ -60,8 +60,12 @@ def relocate(path, search_path, required=False):
 def require_idle():
     # The host wrapper holds our two build locks. Native ps cannot expose a
     # process working directory, so refuse any direct make/ninja/cmake activity.
+    # A ninja run on another WebKitBuild directory does not touch this engine,
+    # so a finished build can be bundled while an experiment builds beside it.
     active = [line for line in run(['ps']).splitlines()
-              if re.search(r'(?:^|\s)(?:\S*/)?(?:ninja|cmake|make)(?:\s|$)', line)]
+              if re.search(r'(?:^|\s)(?:\S*/)?(?:ninja|cmake|make)(?:\s|$)', line)
+              and not (re.search(r'WebKitBuild/[A-Za-z0-9_-]+', line)
+                       and not re.search(r'WebKitBuild/' + re.escape(ENGINE.name) + r'(?:\s|$)', line))]
     if active:
         raise RuntimeError('An engine or ICU build is active in the VM: ' + active[0].strip())
 
@@ -296,7 +300,7 @@ def main():
     if not arguments.compile_only:
         commands.append(['c++', *map(str, objects), '-L' + str(ENGINE / 'lib'),
                          '-lWebKit', '-lbe', '-lnetwork', '-lcrypto',
-                         *(['-lbnetapi', '-ltranslation', '-ltracker'] if browser else []),
+                         *(['-lbnetapi', '-ltranslation', '-ltracker', '-lgame'] if browser else []),
                          '-Wl,-rpath,' + ':'.join(map(str, [ENGINE / 'lib', ICU / 'lib']
                              + ([LIBZIP / 'lib'] if 'libzip' in inputs else []))),
                          '-o', str(work / executable_name)])

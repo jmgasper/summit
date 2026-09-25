@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Wheel targets</title>
+<!--
+Which scroller does a wheel notch move? The page scrolls, an overflow:auto
+box scrolls, a same-origin iframe scrolls and a box with a non-passive wheel
+listener scrolls. The banner shows each position so a screenshot after real
+wheel input says which ones moved. Coordinates are fixed for scripted input:
+  inner box   left 20,  top 120, 560x420
+  iframe      left 620, top 120, 560x420
+  listener    left 1220,top 120, 560x420
+-->
+<style>
+body { margin: 0; font: 16px sans-serif; }
+#status { position: fixed; top: 0; left: 0; right: 0; height: 90px; background: #123; color: #fff;
+  font: bold 26px monospace; padding: 8px 20px; box-sizing: border-box; z-index: 10; }
+.box { position: absolute; top: 120px; width: 560px; height: 420px; overflow: auto; border: 3px solid #468; }
+#inner { left: 20px; }
+#frame { position: absolute; top: 120px; left: 620px; width: 560px; height: 420px; border: 3px solid #864; }
+#listener { left: 1220px; }
+.line { height: 40px; border-bottom: 1px solid #ccc; padding-left: 8px; }
+#page { position: absolute; top: 600px; left: 20px; right: 20px; }
+</style>
+</head>
+<body>
+<div id="status">doc=0 inner=0 frame=0 listener=0 events=0</div>
+<div class="box" id="inner"></div>
+<iframe id="frame" srcdoc="<style>body{margin:0;font:16px sans-serif}.line{height:40px;border-bottom:1px solid #ccc;padding-left:8px}</style><body></body>"></iframe>
+<div class="box" id="listener"></div>
+<div id="page"></div>
+<script>
+function fill(element, count, label) {
+    let html = '';
+    for (let i = 0; i < count; ++i)
+        html += `<div class="line">${label} line ${i}</div>`;
+    element.innerHTML = html;
+}
+fill(document.getElementById('inner'), 200, 'inner');
+fill(document.getElementById('listener'), 200, 'listener');
+fill(document.getElementById('page'), 300, 'page');
+let events = 0;
+const frame = document.getElementById('frame');
+frame.addEventListener('load', () => {
+    fill(frame.contentDocument.body, 200, 'frame');
+    frame.contentWindow.addEventListener('scroll', update);
+});
+document.getElementById('listener').addEventListener('wheel', () => { ++events; update(); }, { passive: false });
+function update() {
+    const f = frame.contentWindow ? Math.round(frame.contentWindow.scrollY) : -1;
+    document.getElementById('status').textContent =
+        `doc=${Math.round(scrollY)} inner=${document.getElementById('inner').scrollTop} frame=${f} ` +
+        `listener=${document.getElementById('listener').scrollTop} events=${events}`;
+}
+addEventListener('scroll', update);
+document.getElementById('inner').addEventListener('scroll', update);
+document.getElementById('listener').addEventListener('scroll', update);
+setInterval(update, 250);
+</script>
+</body>
+</html>

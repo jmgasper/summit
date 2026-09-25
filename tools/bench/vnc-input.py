@@ -69,6 +69,9 @@ def main():
     parser.add_argument('--host', required=True)
     parser.add_argument('--port', type=int, default=5900)
     commands = parser.add_subparsers(dest='command', required=True)
+    move = commands.add_parser('move')
+    move.add_argument('x', type=int)
+    move.add_argument('y', type=int)
     click = commands.add_parser('click')
     click.add_argument('x', type=int)
     click.add_argument('y', type=int)
@@ -83,6 +86,8 @@ def main():
     wheel.add_argument('--notches', type=int, default=1)
     wheel.add_argument('--direction', choices=('up', 'down'), default='down')
     wheel.add_argument('--interval-ms', type=int, default=25)
+    wheel.add_argument('--jitter', type=int, default=0,
+                       help='move the pointer this many pixels between notches, as a hand on a mouse does')
     keyboard = commands.add_parser('key')
     keyboard.add_argument('name', choices=('pagedown', 'pageup', 'down', 'up', 'space'))
     args = parser.parse_args()
@@ -105,7 +110,9 @@ def main():
                 raise ValueError(f'Pointer ({x}, {y}) is outside {width}x{height}')
             pointer(connection, x, y, buttons)
 
-        if args.command == 'click':
+        if args.command == 'move':
+            checked_pointer(args.x, args.y, 0)
+        elif args.command == 'click':
             checked_pointer(args.x, args.y, 0)
             checked_pointer(args.x, args.y, 1)
             time.sleep(0.1)
@@ -125,9 +132,13 @@ def main():
             if args.notches < 1 or args.interval_ms < 0:
                 parser.error('--notches must be positive and --interval-ms nonnegative')
             button = 8 if args.direction == 'up' else 16
-            for _ in range(args.notches):
-                checked_pointer(args.x, args.y, button)
-                checked_pointer(args.x, args.y, 0)
+            for notch in range(args.notches):
+                x = args.x + (args.jitter if notch % 2 else 0)
+                y = args.y + (args.jitter if notch % 4 >= 2 else 0)
+                if args.jitter:
+                    checked_pointer(x, y, 0)
+                checked_pointer(x, y, button)
+                checked_pointer(x, y, 0)
                 if args.interval_ms:
                     time.sleep(args.interval_ms / 1000)
         else:

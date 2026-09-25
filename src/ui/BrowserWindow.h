@@ -173,6 +173,7 @@ private:
 #endif
     void Navigate(const std::string& text);
     void RefreshChrome();
+    void AnnouncePointer();
 #if SUMMIT_MODERN_WEBKIT
     void SyncBrowserWindow();
     // Extension requests to change tabs and windows (B_WEBKIT_BROWSER_COMMAND).

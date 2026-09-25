@@ -40,7 +40,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Haiku")
         target_compile_features(Summit PRIVATE cxx_std_23)
         target_compile_definitions(Summit PRIVATE BUILDING_HAIKU__=1)
     endif()
-    target_link_libraries(Summit PRIVATE summit_core ${SUMMIT_WEBKIT_LIBRARY} be network bnetapi translation tracker)
+    target_link_libraries(Summit PRIVATE summit_core ${SUMMIT_WEBKIT_LIBRARY} be game network bnetapi translation tracker)
     set_property(TARGET Summit APPEND PROPERTY LINK_DEPENDS ${CMAKE_SOURCE_DIR}/resources/Summit.rdef)
     set_property(TARGET Summit APPEND PROPERTY LINK_DEPENDS ${CMAKE_SOURCE_DIR}/resources/Summit.hvif)
     add_custom_command(TARGET Summit POST_BUILD

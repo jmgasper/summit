@@ -24,6 +24,7 @@
 #include <StringView.h>
 #include <TextControl.h>
 #include <TextView.h>
+#include <WindowScreen.h>
 #if SUMMIT_MODERN_WEBKIT
 #include "ExtensionInstaller.h"
 #include <PopUpMenu.h>
@@ -760,8 +761,24 @@ void BrowserWindow::SelectTab(int64 id, bool forClose)
         SyncBrowserWindow();
 #endif
         RefreshChrome();
+        AnnouncePointer();
         return;
     }
+}
+
+// Haiku sends a wheel notch to the view the pointer last moved over. When a
+// window opens, or a tab's page view takes the place of another, under a
+// pointer that has not moved since, there is no such view (or it is the hidden
+// one), and every notch is dropped until the mouse happens to move. Putting
+// the pointer back where it already is makes input_server send a mouse-moved
+// event, which gives the notches a target without moving anything on screen.
+void BrowserWindow::AnnouncePointer()
+{
+    BPoint where;
+    uint32 buttons = 0;
+    if (get_mouse(&where, &buttons) != B_OK || buttons || !Frame().Contains(where))
+        return;
+    set_mouse_position(static_cast<int32>(where.x), static_cast<int32>(where.y));
 }
 void BrowserWindow::CloseTab(int64 id)
 {
@@ -1422,6 +1439,8 @@ void BrowserWindow::WindowActivated(bool active)
 {
     BrowserWindowBase::WindowActivated(active);
     SyncBrowserWindow();
+    if (active)
+        AnnouncePointer();
 }
 #endif
 
