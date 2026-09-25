@@ -8,6 +8,7 @@ body { margin: 16px; font: 14px/1.4 sans-serif; }
 .item { width: 50%; overflow-x: hidden; overflow-y: auto; border: 1px solid #4682b4; }
 .content { display: flex; flex-direction: column; width: 150px; min-height: 60px; }
 .dynamic { height: 50%; }
+.wide-columns .grid { grid-template-columns: minmax(0, 140px) minmax(0, 140px); }
 </style>
 <main id="feed"></main>
 <script>
@@ -16,6 +17,9 @@ const params = new URLSearchParams(location.search);
 const count = Math.max(1, Math.min(200, Number(params.get("grids")) || 60));
 const repeats = Math.max(1, Math.min(200, Number(params.get("repeats")) || 50));
 const fixedRows = params.get("fixedRows") === "1";
+const varyColumns = params.get("varyColumns") === "1";
+const varyStatic = params.get("varyStatic") === "1";
+const geometryEachPass = params.get("geometryEachPass") === "1";
 if (fixedRows) {
     const style = document.createElement("style");
     style.textContent = ".grid { grid-template-rows: 120px; }";
@@ -26,13 +30,14 @@ const fragment = document.createDocumentFragment();
 for (let i = 0; i < count; i++) {
     const grid = document.createElement("div");
     grid.className = "grid";
-    grid.innerHTML = `<div class="item"><div class="content">Thumbnail ${i}</div></div>`
+    grid.innerHTML = `<div class="item"><div class="content static">Thumbnail ${i}</div></div>`
         + `<div class="item"><div class="content"><span class="dynamic">Short text</span>`
         + `<span>Nested flex content with a percentage-height descendant</span></div></div>`;
     fragment.appendChild(grid);
 }
 feed.appendChild(fragment);
 const dynamic = [...document.querySelectorAll(".dynamic")];
+const staticContent = [...document.querySelectorAll(".static")];
 const grids = [...document.querySelectorAll(".grid")];
 const round = value => Math.round(value * 64) / 64;
 function geometry() {
@@ -56,18 +61,29 @@ async function run() {
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const initial = geometry();
     const samples = [];
+    const geometrySamples = [];
     for (let iteration = 0; iteration < repeats + 5; iteration++) {
+        if (varyColumns)
+            document.body.classList.toggle("wide-columns", iteration % 2 === 0);
+        if (varyStatic) {
+            for (const item of staticContent)
+                item.textContent = iteration % 3 ? "Thumbnail" : "A taller static-content replacement";
+        }
         const text = iteration % 2 ? "Short text" : "A longer piece of text that wraps within the overflowing flex child";
         for (const item of dynamic)
             item.textContent = text;
         const started = performance.now();
         void feed.offsetHeight;
         const elapsed = performance.now() - started;
-        if (iteration >= 5)
+        if (iteration >= 5) {
             samples.push(elapsed);
+            if (geometryEachPass)
+                geometrySamples.push(geometry());
+        }
         await new Promise(resolve => requestAnimationFrame(resolve));
     }
-    const result = {grids: count, repeats, fixedRows, initial, final: geometry(), layout: summarize(samples), samples};
+    const result = {grids: count, repeats, fixedRows, varyColumns, varyStatic,
+        initial, final: geometry(), layout: summarize(samples), samples, geometrySamples};
     await fetch("/__bench/probe", {method: "POST", headers: {"Content-Type": "application/json"},
         body: JSON.stringify(result)});
     document.title = "Summit grid reflow probe: done";

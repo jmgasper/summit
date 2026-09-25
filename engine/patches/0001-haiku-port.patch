@@ -3316,11 +3316,17 @@ index 775116301ea7823abf38e4931847db3f482d4582..68a45bc27c2078d4519d25bf8e6dde19
              gridItemRect.borderBoxRect.moveBy(LayoutPoint { columnPosition, rowPosition });
          }
 diff --git a/Source/WebCore/layout/formattingContexts/grid/GridItemSizingFunctions.cpp b/Source/WebCore/layout/formattingContexts/grid/GridItemSizingFunctions.cpp
-index bc64c6c3cb022decf66d96155fdd63c8fca87140..a129b076cf784763139136a17a0a093d11454605 100644
+index bc64c6c3cb022decf66d96155fdd63c8fca87140..8cd7b077a6a33a39134f41a41e3ef3c541931f4d 100644
 --- a/Source/WebCore/layout/formattingContexts/grid/GridItemSizingFunctions.cpp
 +++ b/Source/WebCore/layout/formattingContexts/grid/GridItemSizingFunctions.cpp
-@@ -32,6 +32,8 @@
+@@ -29,9 +29,14 @@
+ #include "AxisConstraint.h"
+ #include "GridLayoutUtils.h"
+ #include "GridSizeTypes.h"
++#include "LayoutBox.h"
  #include "PlacedGridItem.h"
++#include "RenderBox.h"
++#include "RenderGrid.h"
  #include "StylePrimitiveNumericTypes+Evaluation.h"
  #include "TrackSizingFunctions.h"
 +#include <memory>
@@ -3328,7 +3334,7 @@ index bc64c6c3cb022decf66d96155fdd63c8fca87140..a129b076cf784763139136a17a0a093d
  
  namespace WebCore {
  namespace Layout {
-@@ -110,13 +112,27 @@ GridItemSizingFunctions GridItemSizingFunctions::inlineAxis(const IntegrationUti
+@@ -110,13 +115,33 @@ GridItemSizingFunctions GridItemSizingFunctions::inlineAxis(const IntegrationUti
  
  GridItemSizingFunctions GridItemSizingFunctions::blockAxis(const GridFormattingContext& formattingContext)
  {
@@ -3346,7 +3352,13 @@ index bc64c6c3cb022decf66d96155fdd63c8fca87140..a129b076cf784763139136a17a0a093d
 +        auto iterator = contributions->find(&gridItem);
 +        if (iterator != contributions->end() && iterator->value.inlineAxisConstraint == inlineAxisConstraint)
 +            return iterator->value.value;
-+        auto value = GridLayoutUtils::blockAxisMinContentContribution(gridItem, inlineAxisConstraint, formattingContext);
++        auto& renderer = downcast<RenderBox>(*gridItem.layoutBox().rendererForIntegration());
++        auto* renderGrid = dynamicDowncast<RenderGrid>(renderer.parent());
++        auto cached = renderGrid && !renderer.needsLayout()
++            ? renderGrid->cachedBlockAxisContributionForGridItem(renderer, inlineAxisConstraint) : std::nullopt;
++        auto value = cached ? *cached : GridLayoutUtils::blockAxisMinContentContribution(gridItem, inlineAxisConstraint, formattingContext);
++        if (renderGrid && !cached)
++            renderGrid->setCachedBlockAxisContributionForGridItem(renderer, inlineAxisConstraint, value);
 +        contributions->set(&gridItem, CachedContribution { inlineAxisConstraint, value });
 +        return value;
 +    };
@@ -26505,7 +26517,7 @@ index b26360017f62da5e5b84a480a480dabf428f16b3..5e062dce9d5e192f619b582034d928cb
          Style::AnchorPositionEvaluator::captureScrollSnapshots(downcast<RenderBox>(*this));
  }
 diff --git a/Source/WebCore/rendering/RenderGrid.cpp b/Source/WebCore/rendering/RenderGrid.cpp
-index bbc577b4dc47a315d4a9125d061367fdabc0fe8f..3276570b646bc237ae9e53811052111fd31529d4 100644
+index bbc577b4dc47a315d4a9125d061367fdabc0fe8f..6ec7ff0fdfa8b59f62c26fcc02f3d80ca852ade9 100644
 --- a/Source/WebCore/rendering/RenderGrid.cpp
 +++ b/Source/WebCore/rendering/RenderGrid.cpp
 @@ -48,6 +48,10 @@
@@ -26519,7 +26531,29 @@ index bbc577b4dc47a315d4a9125d061367fdabc0fe8f..3276570b646bc237ae9e53811052111f
  #include <ranges>
  #include <wtf/Range.h>
  #include <wtf/Scope.h>
-@@ -1696,7 +1700,22 @@ void RenderGrid::layoutGridItems(RenderGridLayoutState& gridLayoutState, GridLan
+@@ -147,6 +151,7 @@ bool RenderGrid::selfAlignmentChangedFromStretch(LogicalBoxAxis containingAxis,
+ void RenderGrid::styleDidChange(Style::Difference diff, const Style::ComputedStyle* oldStyle)
+ {
+     RenderBlock::styleDidChange(diff, oldStyle);
++    m_blockAxisContributions.clear();
+     if (!oldStyle || diff != Style::DifferenceResult::Layout)
+         return;
+ 
+@@ -451,6 +456,13 @@ void RenderGrid::layoutGrid(RelayoutChildren relayoutChildren)
+ 
+         RenderGridLayoutState gridLayoutState;
+ 
++        // A child marked for layout can have a different intrinsic height even
++        // when its grid-area width has not changed. Invalidate before either
++        // the modern or legacy path sizes tracks.
++        for (auto& gridItem : childrenOfType<RenderBox>(*this)) {
++            if (gridItem.needsLayout())
++                m_blockAxisContributions.invalidateSizeForItem(gridItem);
++        }
+         updateIntrinsicLogicalHeightsForRowSizingFirstPassCacheAvailability();
+         clearGridItemOverridingSizesBeforeLayout(*this);
+         computeLayoutRequirementsForItemsBeforeLayout(gridLayoutState);
+@@ -1696,7 +1708,22 @@ void RenderGrid::layoutGridItems(RenderGridLayoutState& gridLayoutState, GridLan
          applyStretchAlignmentToGridItemIfNeeded(gridItem, gridLayoutState);
          applySubgridStretchAlignmentToGridItemIfNeeded(gridItem);
  
@@ -26542,7 +26576,7 @@ index bbc577b4dc47a315d4a9125d061367fdabc0fe8f..3276570b646bc237ae9e53811052111f
  
          // We need pending layouts to be done in order to compute auto-margins properly.
          GridLayoutFunctions::updateAutoMarginsIfNeeded(gridItem, writingMode());
-@@ -2704,8 +2723,19 @@ void RenderGrid::updateIntrinsicLogicalHeightsForRowSizingFirstPassCacheAvailabi
+@@ -2704,8 +2731,19 @@ void RenderGrid::updateIntrinsicLogicalHeightsForRowSizingFirstPassCacheAvailabi
  
      if (canCreateIntrinsicLogicalHeightsCacheForRowSizingFirstPass && m_intrinsicLogicalHeightsForRowSizingFirstPass) {
          for (auto& gridItem : childrenOfType<RenderBox>(*this)) {
@@ -26563,6 +26597,94 @@ index bbc577b4dc47a315d4a9125d061367fdabc0fe8f..3276570b646bc237ae9e53811052111f
          }
      } else if (canCreateIntrinsicLogicalHeightsCacheForRowSizingFirstPass)
          m_intrinsicLogicalHeightsForRowSizingFirstPass.emplace();
+@@ -2719,6 +2757,16 @@ std::optional<GridItemSizeCache>& RenderGrid::intrinsicLogicalHeightsForRowSizin
+     return m_intrinsicLogicalHeightsForRowSizingFirstPass;
+ }
+ 
++std::optional<LayoutUnit> RenderGrid::cachedBlockAxisContributionForGridItem(const RenderBox& gridItem, LayoutUnit inlineAxisConstraint) const
++{
++    return m_blockAxisContributions.sizeForItem(gridItem, inlineAxisConstraint);
++}
++
++void RenderGrid::setCachedBlockAxisContributionForGridItem(const RenderBox& gridItem, LayoutUnit inlineAxisConstraint, LayoutUnit contribution)
++{
++    m_blockAxisContributions.setSizeForGridItem(gridItem, inlineAxisConstraint, contribution);
++}
++
+ bool RenderGrid::canCreateIntrinsicLogicalHeightsForRowSizingFirstPassCache() const
+ {
+     if (isGridLanes())
+@@ -2760,4 +2808,27 @@ void GridItemSizeCache::invalidateSizeForItem(const RenderBox& gridItem)
+     m_sizes.remove(gridItem);
+ }
+ 
++void GridItemBlockContributionCache::setSizeForGridItem(const RenderBox& gridItem, LayoutUnit inlineAxisConstraint, LayoutUnit contribution)
++{
++    m_sizes.set(gridItem, Entry { inlineAxisConstraint, contribution });
++}
++
++std::optional<LayoutUnit> GridItemBlockContributionCache::sizeForItem(const RenderBox& gridItem, LayoutUnit inlineAxisConstraint) const
++{
++    auto cached = m_sizes.get(gridItem);
++    if (cached && cached->inlineAxisConstraint == inlineAxisConstraint)
++        return cached->contribution;
++    return { };
++}
++
++void GridItemBlockContributionCache::invalidateSizeForItem(const RenderBox& gridItem)
++{
++    m_sizes.remove(gridItem);
++}
++
++void GridItemBlockContributionCache::clear()
++{
++    m_sizes.clear();
++}
++
+ } // namespace WebCore
+diff --git a/Source/WebCore/rendering/RenderGrid.h b/Source/WebCore/rendering/RenderGrid.h
+index cdd11c3f2f24f990321aa251eb407a6da09e60f4..7b4e8c46a1c3bf26e295580d8ff3dc40e499ca85 100644
+--- a/Source/WebCore/rendering/RenderGrid.h
++++ b/Source/WebCore/rendering/RenderGrid.h
+@@ -75,6 +75,21 @@ private:
+     SingleThreadWeakHashMap<const RenderBox, std::optional<LayoutUnit>> m_sizes;
+ };
+ 
++class GridItemBlockContributionCache {
++public:
++    void setSizeForGridItem(const RenderBox&, LayoutUnit inlineAxisConstraint, LayoutUnit contribution);
++    std::optional<LayoutUnit> sizeForItem(const RenderBox&, LayoutUnit inlineAxisConstraint) const;
++    void invalidateSizeForItem(const RenderBox&);
++    void clear();
++
++private:
++    struct Entry {
++        LayoutUnit inlineAxisConstraint;
++        LayoutUnit contribution;
++    };
++    SingleThreadWeakHashMap<const RenderBox, std::optional<Entry>> m_sizes;
++};
++
+ class RenderGrid final : public RenderBlock {
+     WTF_MAKE_TZONE_ALLOCATED(RenderGrid);
+     WTF_OVERRIDE_DELETE_FOR_CHECKED_PTR(RenderGrid);
+@@ -164,6 +179,8 @@ public:
+ 
+     void updateIntrinsicLogicalHeightsForRowSizingFirstPassCacheAvailability();
+     std::optional<GridItemSizeCache>& NODELETE intrinsicLogicalHeightsForRowSizingFirstPass() const LIFETIME_BOUND;
++    std::optional<LayoutUnit> cachedBlockAxisContributionForGridItem(const RenderBox&, LayoutUnit inlineAxisConstraint) const;
++    void setCachedBlockAxisContributionForGridItem(const RenderBox&, LayoutUnit inlineAxisConstraint, LayoutUnit contribution);
+ 
+     bool shouldCheckExplicitIntrinsicInnerLogicalSize(Style::GridTrackSizingDirection) const;
+ 
+@@ -340,6 +357,7 @@ private:
+     } m_resolvedTrackList;
+ 
+     mutable std::optional<GridItemSizeCache> m_intrinsicLogicalHeightsForRowSizingFirstPass;
++    GridItemBlockContributionCache m_blockAxisContributions;
+ 
+     bool layoutUsingGridFormattingContext();
+ 
 diff --git a/Source/WebCore/rendering/RenderObject.cpp b/Source/WebCore/rendering/RenderObject.cpp
 index 081e0ed00cf062459897b311d3e44d98235b4ba5..cbba9a4c263a0d36cd881b7f950a3076bddfe907 100644
 --- a/Source/WebCore/rendering/RenderObject.cpp
