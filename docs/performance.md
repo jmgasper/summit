@@ -150,6 +150,14 @@ at most 40 ms gaps on `bundle-h3v4tvze`. On YouTube the main web process fell
 from about 1.7 to 1.35 cores. Total system load was unchanged at about 3.2
 cores, because the texture upload moved to the compositor.
 
+The file engine (`MediaPlayerPrivateHaiku`, used for Reddit, the Guardian and
+other plain video) now does the same. It copies each decoded `BBitmap` into
+an immutable SkImage and pushes that to the compositor. With
+`pages/media.html?src=mse-media/plain.mp4&busy=400`, the longest gap between
+delivered frames fell from 411–424 ms to 37–42 ms (`bundle-av2hgf30`). The
+Guardian startup stalls measured on 25 September came from exactly these
+page-thread waits.
+
 ### Scrolling a loading Reddit feed
 
 With the burst starting about 3 s after navigation (`run-scroll.py --settle

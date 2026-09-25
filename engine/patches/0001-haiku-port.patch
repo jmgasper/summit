@@ -11964,10 +11964,10 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..f609df4255ce101e04f696cbe21f89a848907d3b
+index 0000000000000000000000000000000000000000..25a7ada90d72af6de3d773c4bb44bcbc988a6ffc
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,1469 @@
+@@ -0,0 +1,1526 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -11992,11 +11992,16 @@ index 0000000000000000000000000000000000000000..f609df4255ce101e04f696cbe21f89a8
 +#include "NativeImage.h"
 +WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
 +#include <skia/core/SkColorSpace.h>
++#include <skia/core/SkImage.h>
 +#include <skia/core/SkPixmap.h>
 +WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
 +#endif
 +#include "ColorSpace.h"
 +#include "MediaPlayerPrivateHaiku.h"
++#if USE(COORDINATED_GRAPHICS) && USE(TEXTURE_MAPPER) && USE(SKIA)
++#include "CoordinatedPlatformLayerBufferNativeImage.h"
++#include "CoordinatedPlatformLayerBufferProxy.h"
++#endif
 +
 +#if ENABLE(VIDEO)
 +
@@ -12005,6 +12010,7 @@ index 0000000000000000000000000000000000000000..f609df4255ce101e04f696cbe21f89a8
 +#include "wtf/text/CString.h"
 +#include "wtf/NeverDestroyed.h"
 +
++#include <support/Autolock.h>
 +#include <support/Locker.h>
 +#include <Bitmap.h>
 +#include <DataIO.h>
@@ -12411,6 +12417,7 @@ index 0000000000000000000000000000000000000000..f609df4255ce101e04f696cbe21f89a8
 +                        player, prerollTarget / 1000000.0, player->m_prerollKeyframeTime / 1000000.0,
 +                        player->m_prerollFrames, player->m_videoTrack->CurrentTime() / 1000000.0);
 +                player->m_prerollTarget = -1;
++                player->pushFrameToCompositor();
 +                startTime = system_time();
 +                startMediaTime = (bigtime_t)(player->m_currentTime * 1000000);
 +                lastObservedTime = player->m_currentTime;
@@ -12463,7 +12470,8 @@ index 0000000000000000000000000000000000000000..f609df4255ce101e04f696cbe21f89a8
 +                        }
 +                    }
 +                    ++player->m_videoFrameGeneration;
-+                    player->queueVideoFrameRepaint();
++                    if (!player->pushFrameToCompositor())
++                        player->queueVideoFrameRepaint();
 +                } else {
 +                    if (tracePlayback)
 +                        std::fprintf(stderr, "Summit media playback: player=%p videoEnd status=%ld frames=%u time=%.2f duration=%.2f\n",
@@ -12493,6 +12501,55 @@ index 0000000000000000000000000000000000000000..f609df4255ce101e04f696cbe21f89a8
 +
 +    return B_OK;
 +}
++
++bool MediaPlayerPrivate::pushFrameToCompositor()
++{
++#if USE(COORDINATED_GRAPHICS) && USE(TEXTURE_MAPPER) && USE(SKIA)
++    RefPtr<CoordinatedPlatformLayerBufferProxy> proxy;
++    {
++        BAutolock locker(m_layerBufferProxyLock);
++        proxy = m_layerBufferProxy;
++    }
++    if (!proxy || !proxy->isValid() || !m_frameBuffer)
++        return false;
++    // The decoder writes the next picture into the same bitmap, so the
++    // compositor gets its own copy.
++    BRect bounds = m_frameBuffer->Bounds();
++    auto info = SkImageInfo::Make(bounds.IntegerWidth() + 1, bounds.IntegerHeight() + 1,
++        kBGRA_8888_SkColorType, kOpaque_SkAlphaType, SkColorSpace::MakeSRGB());
++    SkPixmap pixmap(info, m_frameBuffer->Bits(), m_frameBuffer->BytesPerRow());
++    auto image = SkImages::RasterFromPixmapCopy(pixmap);
++    if (!image)
++        return false;
++    RefPtr nativeImage = NativeImage::create(WTF::move(image));
++    if (!nativeImage)
++        return false;
++    proxy->setDisplayBuffer(CoordinatedPlatformLayerBufferNativeImage::create(nativeImage.releaseNonNull(), nullptr));
++    return true;
++#else
++    return false;
++#endif
++}
++
++#if USE(COORDINATED_GRAPHICS) && USE(TEXTURE_MAPPER) && USE(SKIA)
++void MediaPlayerPrivate::setPlatformLayerBufferProxy(Ref<CoordinatedPlatformLayerBufferProxy>&& proxy)
++{
++    {
++        BAutolock locker(m_layerBufferProxyLock);
++        m_layerBufferProxy = proxy.copyRef();
++    }
++    if (m_mediaLock.Lock()) {
++        pushFrameToCompositor();
++        m_mediaLock.Unlock();
++    }
++}
++
++RefPtr<CoordinatedPlatformLayerBufferProxy> MediaPlayerPrivate::platformLayerBufferProxy() const
++{
++    BAutolock locker(m_layerBufferProxyLock);
++    return m_layerBufferProxy;
++}
++#endif
 +
 +void MediaPlayerPrivate::queueVideoFrameRepaint()
 +{
@@ -13439,10 +13496,10 @@ index 0000000000000000000000000000000000000000..f609df4255ce101e04f696cbe21f89a8
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..6aa4de5c2c58fe66ff1f063e6b4902e6d73ad4f3
+index 0000000000000000000000000000000000000000..30fd5a0f4ccf4663e669bbbab9ce2a3e6481a925
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
-@@ -0,0 +1,186 @@
+@@ -0,0 +1,199 @@
 +/*
 + * Copyright (C) 2014 Haiku, Inc.
 + *
@@ -13543,6 +13600,13 @@ index 0000000000000000000000000000000000000000..6aa4de5c2c58fe66ff1f063e6b4902e6
 +        bool didLoadingProgress() const override;
 +
 +        void paint(GraphicsContext&, const FloatRect&) override;
++#if USE(COORDINATED_GRAPHICS) && USE(TEXTURE_MAPPER) && USE(SKIA)
++        // Decoded frames go straight to the compositor, so a busy page thread
++        // does not hold them back.
++        bool supportsAcceleratedRendering() const override { return true; }
++        void setPlatformLayerBufferProxy(Ref<CoordinatedPlatformLayerBufferProxy>&&) override;
++        RefPtr<CoordinatedPlatformLayerBufferProxy> platformLayerBufferProxy() const override;
++#endif
 +        ColorSpace colorSpace() override;
 +
 +    constexpr MediaPlayerType mediaPlayerType() const final { return MediaPlayerType::Haiku; }
@@ -13556,6 +13620,12 @@ index 0000000000000000000000000000000000000000..6aa4de5c2c58fe66ff1f063e6b4902e6
 +        static status_t loadingThread(void* cookie);
 +        static status_t videoThread(void* cookie);
 +        void queueVideoFrameRepaint();
++        // Called with m_mediaLock held. False when the frame has to be painted.
++        bool pushFrameToCompositor();
++#if USE(COORDINATED_GRAPHICS) && USE(TEXTURE_MAPPER) && USE(SKIA)
++        mutable BLocker m_layerBufferProxyLock;
++        RefPtr<CoordinatedPlatformLayerBufferProxy> m_layerBufferProxy;
++#endif
 +
 +
 +        static void playCallback(void*, void*, size_t,
