@@ -2,19 +2,24 @@
 
 ## Current coordinated Skia result (September 25, 2026)
 
-The workstation launcher uses profile-guided `bundle-glk_tobh`: Skia CPU tile
+The workstation launcher uses profile-guided `bundle-_3yrr8z2`: Skia CPU tile
 painting with two workers, GL Canvas, raster coordinated scrollbars, mimalloc,
 asynchronous scrolling, display-rate composition pacing, guarded reuse of exact text
 widths, preserved font registrations for simple CSS rule insertions, and
-coalesced video repaint callbacks. It precompiles the rounded solid-color
-shader before scrolling. It
+coalesced video repaint callbacks. The Haiku media backend also reports fully
+downloaded videos as buffered. It precompiles the rounded solid-color shader
+before scrolling. It
 completes all 580 steps of Speedometer 3.1. The latest matched-viewport
-ten-iteration run is
-`.vm/bench/speedometer-20260925-081513-rounded-solid-prewarm-matched/`.
+30-iteration run is
+`.vm/bench/speedometer-20260925-101601-buffered-media-pgo-thirty/`.
 
-| Browser | Content viewport | Speedometer 3.1, 10 iterations |
+| Browser | Content viewport | Speedometer 3.1 |
 | --- | ---: | ---: |
-| Summit, current smooth PGO and rounded-solid prewarm | 1280×887 | **8.574 ± 0.468** |
+| Summit, current buffered-media PGO, 30 iterations | 1280×887 | **8.391 ± 0.117** |
+| Summit, prior PGO, same-session 30-iteration repeat | 1280×887 | **8.500 ± 0.123** |
+| Summit, prior PGO, earlier 30-iteration run | 1280×887 | **8.561 ± 0.125** |
+| Firefox 155, 30 iterations | 1280×887 | **8.405 ± 0.179** |
+| Summit, prior smooth PGO and rounded-solid prewarm, 10 iterations | 1280×887 | **8.574 ± 0.468** |
 | Summit, prior smooth PGO and media coalescing | 1280×887 | **8.475 ± 0.414** |
 | Summit, prior smooth PGO | 1280×887 | **8.338 ± 0.398**, repeat **8.544 ± 0.434** |
 | Summit, prior PGO and handled scroll refresh | 1280×887 | **8.347 ± 0.506** |
@@ -26,9 +31,11 @@ ten-iteration run is
 | Firefox 155 on the same workstation | 1280×887 | **8.338 ± 0.374** |
 | Firefox 155, fresh comparison | 1280×887 | **8.238 ± 0.368** |
 
-These Summit runs were uncontended. The current point score exceeds the fresh
-Firefox result, although their uncertainty intervals overlap. The
-profile-guided build is about 18% above the fresh prior-bundle result. Its
+These Summit runs were uncontended. The current 30-iteration point score is
+within 0.014 of Firefox's, and their uncertainty intervals overlap. It is
+0.109 below the prior bundle's same-session 30-iteration repeat; those
+intervals overlap too. The current media build has not established a
+Speedometer gain. Its
 largest remaining suite gaps against Firefox are Preact, CodeMirror, and
 Svelte complex DOM. Older score comparisons in this log used different
 viewport sizes and should be treated as directional.
@@ -4601,3 +4608,37 @@ detected processor count on smaller systems
 (`.vm/bench/probe-20260925-095613-summit-four-cpu-paint-workers-current/`,
 `.vm/bench/speedometer-20260925-095648-four-cpu-paint-workers-current/`, and
 `.vm/bench/scroll-20260925-095828-four-cpu-paint-workers-reddit-120/`).
+
+### Fully downloaded video ranges and seek controls
+
+The Haiku media backend downloads each supported remote MP4, or the complete
+finite byte-range HLS rendition, before opening its Media Kit tracks. It had
+nevertheless returned an empty `video.buffered` range for every video. The
+backend now publishes `[0, duration]` after a successful load, on the page
+thread before media events, and clears it when a load is cancelled or
+replaced. The diagnostic media pages record the browser-visible buffered
+range as well as seekable time.
+
+On the new `bundle-_3yrr8z2`, Reddit's finite HLS clip reported buffered
+`[0, 12.70]` at `loadedmetadata`, sought to 8 seconds, emitted `seeked`,
+and played to the end without a media error. The Guardian MP4 reported
+buffered `[0, 19.56]`, selected NVDEC H.264 at status 0, and looped without
+a media error. Its 22-second trace contained 684 decoded frames and 683
+paints, with no paint age above 33 ms. These checks verify the media API and
+controlled playback; the original Adobe ad's custom timeline remains
+unverified because its URL was not available
+(`.vm/bench/probe-20260925-100811-summit-buffered-reddit-hls/` and
+`.vm/bench/probe-20260925-100900-summit-buffered-guardian-nvdec/`).
+
+At the matched 1280×887 viewport, the candidate scored **8.391 ± 0.117**
+over 30 uncontended Speedometer 3.1 iterations. The prior bundle scored
+**8.500 ± 0.123** in a same-session repeat, versus **8.561 ± 0.125**
+earlier; all three intervals overlap. Firefox scored **8.405 ± 0.179** in
+its saved 30-iteration run. The candidate's 300-frame 400-card scroll probe
+reached **59.50 fps**, with an 18 ms maximum interval and no frame over
+33 ms, close to the prior **59.74 fps** control. The X399 desktop launcher
+now points to `bundle-_3yrr8z2`, and its previous script is saved as
+`Summit-current.pre-buffered-media-20260925.sh`
+(`.vm/bench/speedometer-20260925-101601-buffered-media-pgo-thirty/`,
+`.vm/bench/speedometer-20260925-101948-prior-pgo-thirty-bracket/`, and
+`.vm/bench/probe-20260925-101452-summit-buffered-media-scroll-400/`).
