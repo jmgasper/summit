@@ -4706,3 +4706,30 @@ with the previous script saved as
 `.vm/bench/scroll-20260925-111616-grid-cache-reddit-120/`,
 `.vm/bench/probe-20260925-111816-summit-grid-cache-guardian/`, and
 `.vm/bench/probe-20260925-111942-summit-grid-cache-reddit-hls/`).
+
+### Persistent grid contribution cache trial
+
+With the one-pass contribution cache installed, a new trace found that 100
+of every 200 intrinsic-height requests in `grid-reflow.html` arrived with
+items that did not need layout. The renderer's grid-area width had been
+cleared by earlier column-sizing work, so that property alone could not
+validate reuse. A trial cache on `RenderGrid` therefore stored the measured
+inline constraint and contribution, invalidating entries for dirty items and
+on grid style changes. The trace showed roughly half as many forced height
+layouts, and the trial matched the control's initial and final fixture
+geometry (`.vm/bench/probe-20260925-112800-summit-grid-reuse-potential/`
+and `.vm/bench/probe-20260925-113943-summit-grid-persistent-cache-trace/`).
+
+The untraced 120-grid A/B/A comparison did not support shipping the larger
+cache: the controls averaged **20.40** and **20.54 ms** per forced layout,
+while the trial averaged **21.26 ms**. All runs were uncontended and the
+sampled geometry matched. Rebuilding the trial also required archiving three
+stale PGO files for edited rendering units, so the timing does not isolate
+cache lookup cost from changed profile coverage. The persistent cache was
+removed; the installed launcher remains on `bundle-ydvalf4q`. The fixture's
+new `varyColumns`, `varyStatic`, and `geometryEachPass` controls completed
+and produced two distinct geometry states for future correctness checks
+(`.vm/bench/probe-20260925-114040-summit-persistent-cache-control-a/`,
+`.vm/bench/probe-20260925-114114-summit-persistent-cache-candidate/`,
+`.vm/bench/probe-20260925-114149-summit-persistent-cache-control-b/`,
+and `.vm/bench/probe-20260925-114342-summit-grid-variation-fixture/`).
