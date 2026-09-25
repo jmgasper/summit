@@ -25,7 +25,8 @@ struct Profile {
     bool showBookmarksBar = true;
     static Profile Load(const std::filesystem::path& path, std::string& error);
     bool Save(const std::filesystem::path& path, std::string& error) const;
-    void Visit(const PageRecord& page, int64_t now = std::time(nullptr));
+    // Records a visit to an http(s) page; returns false for other pages.
+    bool Visit(const PageRecord& page, int64_t now = std::time(nullptr));
     PageRecord* FindBookmark(const std::string& url);
     // Adds the page, or moves an existing bookmark on to (or off) the bar.
     void AddBookmark(const PageRecord& page, bool bar);

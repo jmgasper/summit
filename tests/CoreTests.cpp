@@ -136,7 +136,7 @@ int main()
     profile.Visit({"https://example.com/", "First title"});
     profile.Visit({"https://webkit.org/", "WebKit"});
     profile.Visit({"https://example.com/", "Updated title"});
-    profile.Visit({"file:///boot/home/private", "Local file"});
+    CHECK(!profile.Visit({"file:///boot/home/private", "Local file"}));
     CHECK(profile.history.size() == 2);
     CHECK(profile.history.front().title == "Updated title");
     CHECK(profile.history.front().visited > 0);

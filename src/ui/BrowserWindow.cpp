@@ -2203,8 +2203,7 @@ void BrowserWindow::WebKitStateChanged(const BMessage& message)
         const char* successTitle = nullptr;
         if (message.FindString("loadSuccessURL", &successURL) == B_OK && successURL && *successURL
             && message.FindString("loadSuccessTitle", &successTitle) == B_OK && successTitle) {
-            fProfile.Visit({StoredURL(successURL), successTitle});
-            PagesChanged();
+            if (fProfile.Visit({StoredURL(successURL), successTitle})) PagesChanged();
         }
     }
     const char* successfulURL = nullptr;
@@ -2276,8 +2275,7 @@ void BrowserWindow::LoadFinished(const BString& url, BWebView* view)
         // BWebWindow calls this at DOM readiness, before images and other
         // resources finish. Completion arrives through LoadProgress(100).
         tab->url = StoredURL(url);
-        fProfile.Visit({tab->url, tab->title});
-        PagesChanged();
+        if (fProfile.Visit({tab->url, tab->title})) PagesChanged();
     }
     RefreshChrome();
 }

@@ -94,9 +94,9 @@ bool Profile::Save(const std::filesystem::path& path, std::string& error) const
         return false;
     }
 }
-void Profile::Visit(const PageRecord& page, int64_t now)
+bool Profile::Visit(const PageRecord& page, int64_t now)
 {
-    if (page.url.rfind("https://", 0) != 0 && page.url.rfind("http://", 0) != 0) return;
+    if (page.url.rfind("https://", 0) != 0 && page.url.rfind("http://", 0) != 0) return false;
     history.erase(std::remove_if(history.begin(), history.end(), [&](const auto& old) {
         return old.url == page.url;
     }), history.end());
@@ -104,6 +104,7 @@ void Profile::Visit(const PageRecord& page, int64_t now)
     history.front().visited = now;
     history.front().bar = false;
     if (history.size() > 2000) history.resize(2000);
+    return true;
 }
 PageRecord* Profile::FindBookmark(const std::string& url)
 {
