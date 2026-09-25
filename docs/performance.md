@@ -1,5 +1,36 @@
 # Summit performance: Speedometer 3.1 baseline, where the time goes, stress test
 
+## Handoff, 26 September 2026
+
+The X399 desktop launcher (`/boot/home/Desktop/Summit-current.sh`) points to
+`bundle-av2hgf30`: the PGO engine (`SkiaCGMiPGO`) now built with Media Source
+Extensions, the wheel fixes, MSE preroll, NVDEC skip-conversion seeks and
+video frames sent straight to the compositor (both media engines). Earlier
+launchers are kept beside it as `Summit-current.pre-*.sh`. The sections that
+follow, from "YouTube through Media Source Extensions" to "Mouse wheel
+delivery with real input", describe what changed and how it was measured.
+`WebKitBuild/SkiaCGMiMSE` is a non-PGO development build of the same sources.
+
+Rebuilding the PGO engine after source changes:
+`SUMMIT_REMOTE_SHELL=tools/ws.sh SUMMIT_REMOTE_TAG=ws SUMMIT_ENGINE_BUILD_NAME=SkiaCGMiPGO
+SUMMIT_ENGINE_CXX_FLAGS="-ftrack-macro-expansion=0 -fprofile-use -fprofile-correction
+-fprofile-partial-training -Wno-error=coverage-mismatch -Wno-coverage-mismatch"
+SUMMIT_ENGINE_CMAKE_EXTRA="-DENABLE_MEDIA_SOURCE=ON -DUSE_SKIA=ON
+-DUSE_HAIKU_GL_COMPOSITING=ON -DENABLE_ASYNC_SCROLLING=ON -DENABLE_SMOOTH_SCROLLING=ON"
+bash tools/build-webkit-in-vm.sh --modern-extensions all`, then
+`build-modern-browser-in-vm.sh --browser --bundle --modern-extensions` with
+the same build name. The profiles predate MSE; functions that changed build
+without profile data. A fresh training run would recover the rest.
+
+Summit is single-launch per bundle path. While someone uses the installed
+bundle, test from a copy (`cp -a bundle-X test-X`), or a test launch opens
+tabs in their window.
+
+Open items: a clean Speedometer run on an idle machine. Progressive start
+for the file engine, which still downloads a whole file before it plays.
+VP9/Opus MSE (YouTube currently gets H.264 up to its avc1 limit). A training
+pass for the new media paths.
+
 ## Current coordinated Skia result (September 25, 2026)
 
 The workstation launcher uses profile-guided `bundle-ggja7ufo`: Skia CPU tile
@@ -157,6 +188,12 @@ an immutable SkImage and pushes that to the compositor. With
 delivered frames fell from 411–424 ms to 37–42 ms (`bundle-av2hgf30`). The
 Guardian startup stalls measured on 25 September came from exactly these
 page-thread waits.
+
+A matched-viewport (1280×887) ten-iteration run of the final
+`bundle-av2hgf30` scored 7.684 ± 0.446, but the harness classified it
+contended: the owner's own Summit session was playing YouTube, about 2 cores
+of foreign load. It is not comparable to the uncontended scores above; repeat
+it on an idle machine (`.vm/bench/speedometer-*-final-av2-matched/`).
 
 ### Scrolling a loading Reddit feed
 
