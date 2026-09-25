@@ -63,6 +63,49 @@ Earlier live Reddit scrolls showed occasional 650–790 ms gaps attributed to
 page update, layout, or script work; subsequent live Reddit attempts sometimes
 received a JavaScript challenge instead of the feed.
 
+## YouTube through Media Source Extensions (September 25, 2026)
+
+YouTube showed "Your browser can't play this video": its player needs Media
+Source Extensions, and `ENABLE_MEDIA_SOURCE` was off. The only media it could
+fetch were its short sound-effect clips. The file engine could not have
+helped much anyway: it downloads a whole file before it plays.
+
+The Haiku port now has an MSE backend (`MediaPlayerPrivateHaikuMSE`,
+`FragmentedMP4ParserHaiku`). WebCore's generic `SourceBufferPrivate` still does
+buffering, eviction and seeking. The port parses the appended fragmented MP4
+and hands each track's samples to a renderer. Video is decoded with
+`BMediaDecoder`, so H.264 reaches the NVDEC add-on, and is presented against
+the player's clock as SkImages. AAC audio is decoded on its own thread into a
+PCM queue that a `BSoundPlayer` drains in step with the same clock. It
+advertises `video/mp4` with 8-bit `avc1`/`avc3` and `audio/mp4` with
+`mp4a.40.x`, for MSE only. VP9, AV1 and Opus are refused, so YouTube falls back
+to H.264. `navigator.mediaCapabilities.decodingInfo()` answered "unsupported"
+for every format on Haiku (there was no factory); it now answers from the same
+engine checks.
+
+Two Media Kit details cost time:
+
+- `BMediaFormats::MakeFormatFor()` with a single description registers a
+  new encoding (1660 for H.264 instead of 1000), which no decoder claims, so
+  `BMediaDecoder::SetTo()` fails with `B_ENTRY_NOT_FOUND`. `GetFormatFor()`
+  returns the format the add-ons registered.
+- Loading a MediaSource asks each engine about an empty type (the URL is a
+  `blob:`). Looking an empty container up in a `HashSet<String>` crashed the
+  web process.
+
+`pages/mse.html` appends a 12-second 720p30 H.264 High-profile clip with
+B-frames, plus AAC, in 256 KiB chunks. NVDEC decoded it, `loadeddata` fired at
+0.26 s, a seek to 8 s settled, and `ended` fired at 12.07 s. 213 frames were
+presented and 8 dropped around the seek.
+
+On `youtube.com/watch?v=aqz-KE-bpKQ` (Big Buck Bunny, 60 fps), YouTube added
+`avc1.4d4020` and `mp4a.40.2` source buffers and autoplayed. The first frame
+appeared 1.26 s after the player was created; about 1 s of that is YouTube's
+own script before it adds source buffers, and play to first frame took 0.11 s.
+Over the next 32 s of media time the renderer presented 1,918 frames (60.0
+per second) and dropped none. This is the non-PGO `SkiaCGMiMSE` build; set
+`SUMMIT_MSE_TRACE=1` for the decoder, clock and 5-second statistics lines.
+
 ## Mouse wheel delivery with real input (September 25, 2026)
 
 The benchmark harness scrolls with `summitctl scroll`, whose synthesized

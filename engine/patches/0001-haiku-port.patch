@@ -13548,10 +13548,10 @@ index 0000000000000000000000000000000000000000..6aa4de5c2c58fe66ff1f063e6b4902e6
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..cde5ffee7c3b8c5dfd8301ba0dd525d29930f849
+index 0000000000000000000000000000000000000000..d48cc3f667e4a34031689badb2081d79c794806f
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
-@@ -0,0 +1,1665 @@
+@@ -0,0 +1,1670 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -13627,7 +13627,7 @@ index 0000000000000000000000000000000000000000..cde5ffee7c3b8c5dfd8301ba0dd525d2
 +    return enabled;
 +}
 +
-+#define MSE_TRACE(...) do { if (mseTraceEnabled()) std::fprintf(stderr, "Summit MSE: " __VA_ARGS__); } while (0)
++#define MSE_TRACE(...) do { if (mseTraceEnabled()) { std::fprintf(stderr, "Summit MSE: [%.3f] ", system_time() / 1000000.0); std::fprintf(stderr, __VA_ARGS__); } } while (0)
 +
 +static int64_t toMicroseconds(const MediaTime& time)
 +{
@@ -14869,6 +14869,11 @@ index 0000000000000000000000000000000000000000..cde5ffee7c3b8c5dfd8301ba0dd525d2
 +void MediaPlayerPrivateHaikuMSE::playbackTimerFired()
 +{
 +    updatePlaybackState();
++    if (mseTraceEnabled() && m_videoRenderer && ++m_statsTicks >= 100) {
++        m_statsTicks = 0;
++        MSE_TRACE("stats time=%.2f presented=%u dropped=%u running=%d\n", currentTime().toDouble(),
++            m_videoRenderer->presentedFrames(), m_videoRenderer->droppedFrames(), m_clock.isRunning());
++    }
 +    if (m_audioRenderer)
 +        m_audioRenderer->updateOutput();
 +}
@@ -15219,10 +15224,10 @@ index 0000000000000000000000000000000000000000..cde5ffee7c3b8c5dfd8301ba0dd525d2
 +#endif // ENABLE(MEDIA_SOURCE)
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.h b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..1c35586af9e46feb44df2fb55d542a6778ae6594
+index 0000000000000000000000000000000000000000..5db0f5b99f1489d6de228aeca34f2e124f44cd8a
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.h
-@@ -0,0 +1,307 @@
+@@ -0,0 +1,308 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -15444,6 +15449,7 @@ index 0000000000000000000000000000000000000000..1c35586af9e46feb44df2fb55d542a67
 +    bool m_stalled { false };
 +    bool m_reachedEnd { false };
 +    bool m_announcedFirstFrame { false };
++    unsigned m_statsTicks { 0 };
 +    float m_volume { 1 };
 +    bool m_muted { false };
 +    FloatSize m_naturalSize;
