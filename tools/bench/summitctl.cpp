@@ -204,7 +204,7 @@ int main(int argc, char** argv)
         index += 2;
     }
     if (team < 0 || index >= argc) {
-        std::fputs("usage: summitctl --team ID [--timeout-ms N] state|navigate URL|newtab URL|closetab [ID]|selecttab ID|back|forward|reload|scroll N MS DELTA|framestats|quit\n", stderr);
+        std::fputs("usage: summitctl --team ID [--timeout-ms N] state|navigate URL|newtab URL|closetab [ID]|selecttab ID|back|forward|reload|scroll N MS DELTA [X Y]|framestats|quit\n", stderr);
         return 2;
     }
     const std::string command = argv[index++];
@@ -276,12 +276,14 @@ int main(int argc, char** argv)
         return status == B_OK ? 0 : 5;
     }
     if (command == "scroll") {
-        // scroll COUNT INTERVAL_MS DELTA - one wheel notch every INTERVAL_MS.
+        // scroll COUNT INTERVAL_MS DELTA [X Y] - one wheel notch every INTERVAL_MS.
         if (index + 2 >= argc) return 2;
         BMessage burst(summit::kSimulateScroll), done;
         burst.AddInt32("count", int32(std::strtol(argv[index], nullptr, 10)));
         burst.AddInt32("interval_ms", int32(std::strtol(argv[index + 1], nullptr, 10)));
         burst.AddFloat("delta", float(std::atof(argv[index + 2])));
+        if (index + 4 < argc)
+            burst.AddPoint("at", BPoint(std::atof(argv[index + 3]), std::atof(argv[index + 4])));
         status = window.SendMessage(&burst, &done, timeout, timeout);
         if (status == B_TIMED_OUT || status == B_WOULD_BLOCK) { std::fputs("window did not reply\n", stderr); return 4; }
         if (status != B_OK) { std::fprintf(stderr, "scroll: %s\n", std::strerror(status)); return 5; }

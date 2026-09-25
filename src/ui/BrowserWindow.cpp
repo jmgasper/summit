@@ -561,7 +561,13 @@ void BrowserWindow::SimulateScroll(const BMessage& message, BMessage& reply)
     // from whoever is using the machine.
     BRect bounds = tab->view->Bounds();
     BPoint centre(bounds.left + bounds.Width() / 2, bounds.top + bounds.Height() / 2);
-    burst->event.AddPoint("summit:view_where", centre);
+    BPoint at = centre;
+    if (message.FindPoint("at", &at) == B_OK
+        && (!std::isfinite(at.x) || !std::isfinite(at.y) || !bounds.Contains(at))) {
+        reply.AddString("error", "wheel point is outside the page view");
+        return;
+    }
+    burst->event.AddPoint("summit:view_where", at);
     // BWindow routes a wheel message to the view named by "_view_token", and
     // only falls back to whichever view the pointer last moved over. Without
     // the token a synthesized notch is delivered to that other view, or
@@ -590,7 +596,7 @@ void BrowserWindow::SimulateScroll(const BMessage& message, BMessage& reply)
     reply.AddInt32("count", count);
     reply.AddInt32("interval_ms", interval);
     reply.AddFloat("delta", delta);
-    reply.AddPoint("at", centre);
+    reply.AddPoint("at", at);
 }
 std::string BrowserWindow::StoredURL(const BString& url) const
 {

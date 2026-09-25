@@ -60,6 +60,10 @@ def pointer(connection, x, y, buttons):
     connection.sendall(struct.pack('>BBHH', 5, buttons, x, y))
 
 
+def key(connection, keysym, pressed):
+    connection.sendall(struct.pack('>BBHI', 4, int(pressed), 0, keysym))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--host', required=True)
@@ -73,6 +77,14 @@ def main():
         drag.add_argument(name, type=int)
     drag.add_argument('--steps', type=int, default=12)
     drag.add_argument('--interval-ms', type=int, default=30)
+    wheel = commands.add_parser('wheel')
+    wheel.add_argument('x', type=int)
+    wheel.add_argument('y', type=int)
+    wheel.add_argument('--notches', type=int, default=1)
+    wheel.add_argument('--direction', choices=('up', 'down'), default='down')
+    wheel.add_argument('--interval-ms', type=int, default=25)
+    keyboard = commands.add_parser('key')
+    keyboard.add_argument('name', choices=('pagedown', 'pageup', 'down', 'up', 'space'))
     args = parser.parse_args()
     password = os.environ.get('SUMMIT_VNC_PASSWORD', '')
     with socket.create_connection((args.host, args.port), timeout=10) as connection:
@@ -98,7 +110,7 @@ def main():
             checked_pointer(args.x, args.y, 1)
             time.sleep(0.1)
             checked_pointer(args.x, args.y, 0)
-        else:
+        elif args.command == 'drag':
             if args.steps < 1 or args.interval_ms < 0:
                 parser.error('--steps must be positive and --interval-ms nonnegative')
             checked_pointer(args.x1, args.y1, 0)
@@ -109,6 +121,21 @@ def main():
                 time.sleep(args.interval_ms / 1000)
                 checked_pointer(x, y, 1)
             checked_pointer(args.x2, args.y2, 0)
+        elif args.command == 'wheel':
+            if args.notches < 1 or args.interval_ms < 0:
+                parser.error('--notches must be positive and --interval-ms nonnegative')
+            button = 8 if args.direction == 'up' else 16
+            for _ in range(args.notches):
+                checked_pointer(args.x, args.y, button)
+                checked_pointer(args.x, args.y, 0)
+                if args.interval_ms:
+                    time.sleep(args.interval_ms / 1000)
+        else:
+            keysym = {'pagedown': 0xff56, 'pageup': 0xff55,
+                      'down': 0xff54, 'up': 0xff52, 'space': 0x20}[args.name]
+            key(connection, keysym, True)
+            time.sleep(0.08)
+            key(connection, keysym, False)
         print(f'VNC {args.command} delivered to {width}x{height} desktop')
 
 
