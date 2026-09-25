@@ -4755,3 +4755,18 @@ remains on `bundle-ydvalf4q`
 `.vm/bench/speedometer-20260925-115852-inline-cache-candidate/`,
 `.vm/bench/speedometer-20260925-120052-inline-cache-control/`, and
 `.vm/bench/speedometer-20260925-120340-grid-trace-baseline-pgo-control/`).
+
+### Web Components frame-phase comparison
+
+The current 30-iteration full benchmark puts Summit's Web Components suite
+at 73.9 ms versus Firefox's 58.6 ms. In a matched 1280×887, 20-iteration
+focused diagnostic, the gap narrowed to **70.5 versus 66.35 ms**. For its
+`Adding100Items` step, Summit waited a mean 16.45 ms for the first animation
+frame and spent 17.55 ms in the synchronous callback; Firefox spent 21.25
+and 22.8 ms. The timer after the second animation-frame callback took
+22.9 ms in Summit versus 12.05 ms in Firefox. These phases partly cancel in
+the focused suite, and this diagnostic does not reproduce the full-run gap.
+It does not support a global timer change, particularly given the earlier
+neutral timer-alignment trial
+(`.vm/bench/speedometer-20260925-120644-webcomponents-raf-summit/` and
+`.vm/bench/firefox-speedometer-20260925-120742-webcomponents-raf-firefox/`).
