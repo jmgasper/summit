@@ -13548,10 +13548,10 @@ index 0000000000000000000000000000000000000000..6aa4de5c2c58fe66ff1f063e6b4902e6
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..d48cc3f667e4a34031689badb2081d79c794806f
+index 0000000000000000000000000000000000000000..7830a971507d10a3fa3854c819f1472886f9f4e6
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
-@@ -0,0 +1,1670 @@
+@@ -0,0 +1,1697 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -13978,15 +13978,24 @@ index 0000000000000000000000000000000000000000..d48cc3f667e4a34031689badb2081d79
 +            m_thread->waitForCompletion();
 +    }
 +
-+    void enqueue(Ref<MediaSampleHaiku>&& sample) { m_queue.enqueue(WTF::move(sample)); }
++    void enqueue(Ref<MediaSampleHaiku>&& sample)
++    {
++        if (!m_enqueuedSinceFlush.exchange(true))
++            MSE_TRACE("video first sample enqueued pts=%.3f sync=%d\n", sample->presentationTime().toDouble(), sample->isSync());
++        m_queue.enqueue(WTF::move(sample));
++    }
 +    bool isReadyForMore() { return m_queue.isReadyForMore(); }
 +    void requestReadyNotification(ThreadSafeWeakPtr<SourceBufferPrivateHaiku>&& buffer, TrackID trackID) { m_queue.requestReadyNotification(WTF::move(buffer), trackID); }
 +    void setEndOfStream() { m_queue.setEndOfStream(); }
 +    void flush()
 +    {
++        m_hasFrameSinceFlush = false;
++        m_enqueuedSinceFlush = false;
 +        m_queue.flush();
 +        MSE_TRACE("video flush generation=%u\n", m_queue.generation());
 +    }
++    // The picture at the current position is on screen, so the clock can run.
++    bool hasFrameSinceFlush() const { return m_hasFrameSinceFlush; }
 +
 +#if USE(SKIA)
 +    sk_sp<SkImage> currentFrame()
@@ -14189,6 +14198,7 @@ index 0000000000000000000000000000000000000000..d48cc3f667e4a34031689badb2081d79
 +    void didPresent()
 +    {
 +        m_presentedSinceFlush = true;
++        m_hasFrameSinceFlush = true;
 +        ++m_presentedFrames;
 +        if (m_repaintQueued.exchange(true))
 +            return;
@@ -14209,6 +14219,8 @@ index 0000000000000000000000000000000000000000..d48cc3f667e4a34031689badb2081d79
 +    bool m_presentedSinceFlush { false };
 +    Vector<int64_t> m_nonDisplaying;
 +    std::atomic<bool> m_repaintQueued { false };
++    std::atomic<bool> m_hasFrameSinceFlush { false };
++    std::atomic<bool> m_enqueuedSinceFlush { false };
 +    std::atomic<unsigned> m_presentedFrames { 0 };
 +    std::atomic<unsigned> m_droppedFrames { 0 };
 +    Lock m_frameLock;
@@ -14835,9 +14847,22 @@ index 0000000000000000000000000000000000000000..d48cc3f667e4a34031689badb2081d79
 +            reachedEnd = true;
 +        } else if (m_clock.isRunning())
 +            run = mediaSource->hasFutureTime(now, MediaTime::zeroTime());
-+        else
++        else {
 +            run = mediaSource->hasFutureTime(now, MediaTime(1, 10));
++            // Preroll: start the clock once the picture at this position has
++            // been decoded, or every frame decoded meanwhile arrives late and
++            // is dropped. Give up waiting after a second in case no decoder
++            // can be made for the video.
++            if (run && hasVideo() && (!m_videoRenderer || !m_videoRenderer->hasFrameSinceFlush())) {
++                if (!m_prerollStartedAt)
++                    m_prerollStartedAt = MonotonicTime::now();
++                if (MonotonicTime::now() - m_prerollStartedAt < 1_s)
++                    run = false;
++            }
++        }
 +    }
++    if (run || m_paused)
++        m_prerollStartedAt = { };
 +    if (run != m_clock.isRunning()) {
 +        if (run)
 +            m_clock.start();
@@ -14890,6 +14915,8 @@ index 0000000000000000000000000000000000000000..d48cc3f667e4a34031689badb2081d79
 +        m_naturalSize = FloatSize(size);
 +        player->sizeChanged();
 +    }
++    if (!m_clock.isRunning() && !m_paused)
++        updatePlaybackState();
 +    if (!m_announcedFirstFrame) {
 +        m_announcedFirstFrame = true;
 +        MSE_TRACE("first video frame %dx%d at %.3f\n", size.width(), size.height(), currentTime().toDouble());
@@ -15224,10 +15251,10 @@ index 0000000000000000000000000000000000000000..d48cc3f667e4a34031689badb2081d79
 +#endif // ENABLE(MEDIA_SOURCE)
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.h b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..5db0f5b99f1489d6de228aeca34f2e124f44cd8a
+index 0000000000000000000000000000000000000000..1fe73a536baf643c8135664d06c42cf25e27f8a1
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.h
-@@ -0,0 +1,308 @@
+@@ -0,0 +1,310 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -15269,6 +15296,7 @@ index 0000000000000000000000000000000000000000..5db0f5b99f1489d6de228aeca34f2e12
 +#include <wtf/HashMap.h>
 +#include <wtf/Lock.h>
 +#include <wtf/MediaTime.h>
++#include <wtf/MonotonicTime.h>
 +#include <wtf/RefCounted.h>
 +#include <wtf/RunLoop.h>
 +#include <wtf/ThreadSafeRefCounted.h>
@@ -15450,6 +15478,7 @@ index 0000000000000000000000000000000000000000..5db0f5b99f1489d6de228aeca34f2e12
 +    bool m_reachedEnd { false };
 +    bool m_announcedFirstFrame { false };
 +    unsigned m_statsTicks { 0 };
++    MonotonicTime m_prerollStartedAt;
 +    float m_volume { 1 };
 +    bool m_muted { false };
 +    FloatSize m_naturalSize;
