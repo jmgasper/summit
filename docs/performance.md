@@ -4938,3 +4938,18 @@ or media errors. The workstation again has one `media_server` and one
 `media_addon_server` process. This recovery may be temporary; repeat the
 standalone test if audible playback regresses
 (`.vm/bench/probe-20260925-141144-summit-media-audio-after-server-restart/`).
+
+A fresh visit to the reported Guardian article with the saved consent profile
+landed on the inline video. It selected NVDEC H.264 and reached its 19.56-second
+end. The media trace recorded 465 timed decoded frames: 4.8 ms median decode,
+11.0 ms at the 95th percentile, and 15.4 ms maximum. Repaint queue delay was
+18.3 ms at the 95th percentile, 38.5 ms maximum, with three delays above
+33 ms. There were no NVDEC timeouts or Media Kit buffer errors. A second
+visit played only about two seconds of the clip during a 30-second window,
+so it does not replicate the full playback result. The UI's `loadOutcome`
+read `process-exited` from the first sample at ten seconds, but three
+WebProcess teams remained active through 30 seconds and no new crash report
+appeared; that field alone does not identify a video-end crash. These are
+decode-to-paint timings, not measured monitor presentation cadence
+(`.vm/bench/guardian-article-audio-recovered-20260925/` and
+`.vm/bench/guardian-article-audio-recovered-repeat-20260925/`).
