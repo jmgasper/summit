@@ -5015,3 +5015,36 @@ predecessor is saved as `Summit-current.pre-paused-decoder-20260925.sh`
 (`.vm/bench/speedometer-20260925-153614-final-parked-paused-pgo-thirty/`,
 `.vm/bench/speedometer-20260925-153946-installed-control-thirty/`, and
 `.vm/bench/firefox-speedometer-20260925-154325-current-firefox-thirty/`).
+
+### Live Reddit ad seek and media track diagnosis
+
+An opt-in codec trace on the installed `bundle-h4vkwpuo` visited a live
+`/r/popular/` feed. The repeated `MediaExtractor` failure was tied to
+`packaged-media.redd.it` files with three streams: Media Kit could not
+allocate stream 2, while Summit selected NVDEC H.264 video at index 0 and
+AAC audio at index 1 from those same files. Other `v.redd.it` files selected
+NVDEC video, sometimes with a separate AAC rendition. Four 40-notch bursts
+delivered all 160 wheel events and reached 58–59 active frames/s. The third
+stream remains unidentified, so the trace does not establish whether it is
+metadata, subtitles, or another media track; it does show that the error did
+not prevent the main video and audio decoders from being selected in this run
+(`.vm/bench/scroll-cycles-20260925-155111-reddit-media-track-trace/`).
+
+The same feed exposed a live Aldi video ad with Reddit's progress control.
+After dismissing the sign-in popover, replaying the 15-second ad, and dragging
+its progress thumb back toward the start through VNC, the video displayed a
+different frame and continued at 0:08 / 0:15. The saved screenshots show the
+control before and after the drag. This is a live ad pointer-path check,
+although it does not reproduce the reported Adobe ad or prove every ad player
+uses the same control (`.vm/reddit-ad-scrolled.png`,
+`.vm/reddit-ad-afterdrag.png`).
+
+Reanalysis of the saved direct Guardian article trace found 488 decoded video
+frames but 465 paint callbacks. The 23 coalesced frames were concentrated near
+startup: 10 before media time 1 second, 16 before 2 seconds, and none after
+10 seconds. After 10 seconds the largest interval between painted media times
+was 67 ms; before 2 seconds it reached 204 ms. Decode time and repaint-queue
+delay alone therefore do not explain the reported choppiness; the next useful
+measurement is actual frame presentation during the first seconds of the full
+article while its page work is active
+(`.vm/bench/guardian-article-audio-recovered-20260925/browser.log`).
