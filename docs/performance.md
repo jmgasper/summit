@@ -4993,3 +4993,25 @@ The Haiku view now preserves the pending load during a normal navigation
 process swap. A fresh Wikipedia navigation reported `loadOutcome=succeeded`
 with the override. The earlier Guardian `process-exited` field therefore
 cannot be taken as evidence of a WebProcess crash.
+
+The final PGO bundle is `bundle-h4vkwpuo`. A fresh Wikipedia navigation
+reported `loadOutcome=succeeded`; a 12-notch wheel burst moved the root
+722 px and presented 17 frames at 57.99 fps through the last frame. The
+Guardian and Reddit pause/rapid-seek/resume probes both completed at their
+final target times with no reported media error
+(`.vm/bench/scroll-20260925-153206-final-wikipedia/`,
+`.vm/bench/probe-20260925-153259-summit-final-guardian-seek/`, and
+`.vm/bench/probe-20260925-153345-summit-final-reddit-seek/`).
+
+The final bundle scored **8.017 ± 0.130** on 30 Speedometer 3.1 iterations
+at the same 1280×887 content viewport as the installed control, which scored
+**8.043 ± 0.127**. Their total suite time was 2,804 versus 2,801 ms per
+iteration, so this comparison does not show a meaningful regression. Both
+were below the earlier 8.601 run. Firefox 155 scored **7.811 ± 0.145** in a
+subsequent 30-iteration run on the same workstation. Summit's point score is
+higher, while the uncertainty ranges overlap. The desktop launcher now points
+to `bundle-h4vkwpuo` and retains `SUMMIT_SCROLL_REFRESH_TIMER=16`; its
+predecessor is saved as `Summit-current.pre-paused-decoder-20260925.sh`
+(`.vm/bench/speedometer-20260925-153614-final-parked-paused-pgo-thirty/`,
+`.vm/bench/speedometer-20260925-153946-installed-control-thirty/`, and
+`.vm/bench/firefox-speedometer-20260925-154325-current-firefox-thirty/`).
