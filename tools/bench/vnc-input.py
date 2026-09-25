@@ -75,6 +75,9 @@ def main():
     click = commands.add_parser('click')
     click.add_argument('x', type=int)
     click.add_argument('y', type=int)
+    click.add_argument('--button', type=int, choices=(1, 2, 4), default=1,
+                       help='1 primary, 2 middle, 4 secondary')
+    click.add_argument('--hold-ms', type=int, default=100)
     drag = commands.add_parser('drag')
     for name in ('x1', 'y1', 'x2', 'y2'):
         drag.add_argument(name, type=int)
@@ -114,8 +117,9 @@ def main():
             checked_pointer(args.x, args.y, 0)
         elif args.command == 'click':
             checked_pointer(args.x, args.y, 0)
-            checked_pointer(args.x, args.y, 1)
-            time.sleep(0.1)
+            time.sleep(0.05)
+            checked_pointer(args.x, args.y, args.button)
+            time.sleep(args.hold_ms / 1000)
             checked_pointer(args.x, args.y, 0)
         elif args.command == 'drag':
             if args.steps < 1 or args.interval_ms < 0:

@@ -2217,6 +2217,9 @@ void BrowserWindow::WebKitStateChanged(const BMessage& message)
         if (!fAddress->TextView()->IsFocus()) fAddress->SetText(DisplayURL(tab->url).c_str());
         ShowTabStatus(*tab);
     }
+    // Back or Forward to a built-in page shows the copy from when it was
+    // written (or the page cache's); bring it up to date once it is showing.
+    if (!tab->loading) RefreshInternalPage(*tab);
     RefreshChrome();
 }
 
