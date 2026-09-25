@@ -4913,3 +4913,28 @@ whole-browser gain or regression. The workstation launcher now points to
 (`.vm/bench/speedometer-20260925-135345-parked-video-thirty/`,
 `.vm/bench/speedometer-20260925-135744-parked-video-control-thirty/`, and
 `.vm/bench/speedometer-20260925-140133-parked-video-repeat-thirty/`).
+
+### Workstation audio service recovery
+
+An unmuted clip still produced `BBufferGroup` and `SoundPlayNode` failures
+after Summit began allocating audio output only while needed. The failure
+also reproduced with Haiku's own `media_client test`, outside Summit. A
+standalone `BSoundPlayer` using an explicit 3,840-byte, 48 kHz stereo buffer
+likewise failed to register its buffer group and flooded `RequestBuffer`
+errors even though `InitCheck()` returned success. The media roster reported
+an audio output and positive suggested buffer sizes. The zero-byte error from
+`media_client` therefore did not establish that Summit's decoded audio format
+was invalid; the explicit-size failure showed a separate Media Kit problem.
+Haiku's [`SoundPlayNode::AllocateBuffers()`](https://github.com/haiku/haiku/blob/master/src/kits/media/SoundPlayNode.cpp#L757-L780)
+creates this group and its [`FillNextBuffer()`](https://github.com/haiku/haiku/blob/master/src/kits/media/SoundPlayNode.cpp#L784-L797)
+prints the repeated request errors when it cannot get a buffer.
+
+With no browser or media player running, restarting the workstation's media
+services restored the standalone sound player. The installed Summit bundle
+then passed the eight-video preload and unmute probe: all eight clips loaded,
+the first resumed past five seconds, one audio output was created on unmute
+and released on remute, and there were **no** buffer-group, sound-node, NVDEC,
+or media errors. The workstation again has one `media_server` and one
+`media_addon_server` process. This recovery may be temporary; repeat the
+standalone test if audible playback regresses
+(`.vm/bench/probe-20260925-141144-summit-media-audio-after-server-restart/`).
