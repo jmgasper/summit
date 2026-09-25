@@ -5128,3 +5128,26 @@ the trial switch was removed. The X399 desktop launcher remains on
 `bundle-or5rko68` (`.vm/bench/guardian-siteiso-off-a-20260925/`,
 `.vm/bench/guardian-siteiso-on-20260925/`, and
 `.vm/bench/guardian-siteiso-off-b-20260925/`).
+
+### X399 final handoff build, 2026-09-25
+
+Rebuilt `WebProcess` and `NetworkProcess` with the `SkiaCGMiPGO` profile-use
+configuration, then packaged Summit as
+`/boot/home/summit/build-modern-browser/bundle-ueu9tgxp`. The bundle records
+engine patch SHA `debb4fa018a767757fbfdc0a79a4b65399911a976c41857883298a690b80bc78`.
+The build logs are `.vm/final-handoff-webprocess.log`,
+`.vm/final-handoff-networkprocess.log`, and `.vm/final-handoff-browser.log`.
+
+An isolated Wikipedia scroll smoke completed with 8 accepted wheel notches,
+55.85 native-view frames/s through the last frame, and no frame interval over
+33 ms during the burst
+(`.vm/bench/scroll-20260925-170235-final-handoff-wikipedia/`). The Guardian
+paused-seek probe reached 10.758 s, resumed to 12.999 s, selected NVDEC H.264
+and AAC, and reported no media error
+(`.vm/bench/probe-20260925-170309-summit-final-handoff-guardian-seek/`).
+These are smoke checks; the earlier full-article startup pacing observations
+remain the more representative evidence for Guardian choppiness.
+
+The X399 desktop launcher `/boot/home/Desktop/Summit-current.sh` now points to
+`bundle-ueu9tgxp`. Its previous version is preserved as
+`/boot/home/Desktop/Summit-current.pre-handoff-20260925.sh`.
