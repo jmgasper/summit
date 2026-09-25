@@ -83,6 +83,8 @@ def main():
     remote = f'{guest.GUEST_ROOT}/runs/{run_id}'
     remote_log = f'{remote}/browser.log'
     environment = dict(item.split('=', 1) for item in args.env)
+    # Match the installed desktop launcher for smooth wheel scrolling.
+    environment.setdefault('SUMMIT_SCROLL_REFRESH_TIMER', '16')
     environment.update(SUMMIT_UI_FRAME_STATS='1', SUMMIT_ENABLE_INPUT_SYNTHESIS='1')
     run = {
         'id': run_id, 'machine': guest.HOST, 'url': args.url, 'bundle': args.bundle,

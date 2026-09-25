@@ -400,6 +400,9 @@ def main():
     save()
 
     extra_env = dict(item.split('=', 1) for item in args.env)
+    # Match the installed desktop launcher. Without refresh ticks, WebKit's
+    # smooth wheel animation accepts events but never advances its position.
+    extra_env.setdefault('SUMMIT_SCROLL_REFRESH_TIMER', '16')
     if args.stats_period > 0:
         extra_env.setdefault('SUMMIT_FRAME_STATS', str(args.stats_period))
     if args.ui_frame_stats:
