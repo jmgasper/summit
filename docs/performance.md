@@ -5066,3 +5066,29 @@ The X399 desktop launcher points to `bundle-or5rko68`; its previous version
 is saved as `/boot/home/Desktop/Summit-current.pre-final-rebuild-20260925.sh`.
 Build logs are `.vm/final-release-webprocess.log`,
 `.vm/final-release-networkprocess.log`, and `.vm/final-release-browser.log`.
+
+### Guardian startup pacing on the installed build
+
+An isolated `bundle-or5rko68` visit to the reported article used the text
+fragment above its inline video. NVDEC H.264 was selected and decoding began,
+but the native view delivered only 4–9 frames/s during the first two seconds
+of media playback, with gaps of 262–555 ms across two runs. The Guardian
+sign-in panel then paused the clip. A page-update trace during this startup
+included 45–54 ms initial layouts and a 74.8 ms intersection-observer phase;
+compositor sends were mostly 8–21 ms. These observations implicate live page
+work in the startup stalls but do not assign all idle time to those measured
+phases (`.vm/bench/guardian-presentation-20260925/` and
+`.vm/bench/guardian-startup-trace-20260925/`).
+
+After dismissing the sign-in panel, a capture-free run resumed the visible
+video near 2.3 seconds, decoded through its 19.56-second end, and recorded
+454 painted frames from 472 traced decodes. Painted media-time intervals in
+the first two seconds had a 376 ms maximum and three gaps above 120 ms;
+between 7 and 12 seconds their median was 37 ms, 95th percentile 56 ms,
+and maximum 61 ms. During the sustained portion the native view reported
+roughly 48–52 frames/s, including other page updates, with queue delay
+below 3 ms. Capturing screenshots during an earlier visit created artificial
+native queue delays near one second, so that visit is excluded from pacing
+assessment. These are media paint and native-view delivery measurements,
+not physical display scans (`.vm/bench/guardian-dismissed-clean-20260925/`
+and `.vm/bench/guardian-dismissed-trace-20260925/`).
