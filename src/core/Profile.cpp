@@ -13,7 +13,12 @@ using nlohmann::json;
 static json Encode(const std::vector<PageRecord>& pages)
 {
     json result = json::array();
-    for (const auto& page : pages) result.push_back({{"url", page.url}, {"title", page.title}});
+    for (const auto& page : pages) {
+        json item = {{"url", page.url}, {"title", page.title}};
+        if (page.visited) item["visited"] = page.visited;
+        if (page.bar) item["bar"] = true;
+        result.push_back(std::move(item));
+    }
     return result;
 }
 static std::vector<PageRecord> Decode(const json& value, size_t limit)
@@ -25,7 +30,10 @@ static std::vector<PageRecord> Decode(const json& value, size_t limit)
         auto title = item.at("title").get<std::string>();
         if (url.size() > 65536 || title.size() > 65536 || url.find('\0') != std::string::npos)
             throw std::runtime_error("Invalid profile text");
-        pages.push_back({url, title});
+        PageRecord page{url, title};
+        if (auto visited = item.find("visited"); visited != item.end()) page.visited = visited->get<int64_t>();
+        if (auto bar = item.find("bar"); bar != item.end()) page.bar = bar->get<bool>();
+        pages.push_back(std::move(page));
     }
     return pages;
 }
@@ -43,6 +51,12 @@ Profile Profile::Load(const std::filesystem::path& path, std::string& error)
         profile.bookmarks = Decode(j.at("bookmarks"), 10000);
         profile.history = Decode(j.at("history"), 2000);
         profile.selected = j.at("selected").get<size_t>();
+        if (auto home = j.find("homeURL"); home != j.end()) {
+            profile.homeURL = home->get<std::string>();
+            if (profile.homeURL.size() > 65536 || profile.homeURL.find('\0') != std::string::npos)
+                throw std::runtime_error("Invalid home page");
+        }
+        if (auto bar = j.find("showBookmarksBar"); bar != j.end()) profile.showBookmarksBar = bar->get<bool>();
         if (profile.selected >= profile.tabs.size()) profile.selected = 0;
     } catch (const std::exception& e) { error = e.what(); return {}; }
     return profile;
@@ -55,7 +69,8 @@ bool Profile::Save(const std::filesystem::path& path, std::string& error) const
     try {
         std::filesystem::create_directories(path.parent_path());
         std::string data = json{{"version", 1}, {"tabs", Encode(tabs)}, {"selected", selected},
-            {"bookmarks", Encode(bookmarks)}, {"history", Encode(history)}}.dump(2);
+            {"bookmarks", Encode(bookmarks)}, {"history", Encode(history)},
+            {"homeURL", homeURL}, {"showBookmarksBar", showBookmarksBar}}.dump(2);
         if (data.size() > 16 * 1024 * 1024) throw std::runtime_error("Profile is too large");
         temporary = path.string() + ".XXXXXX";
         fd = mkstemp(temporary.data());
@@ -79,13 +94,37 @@ bool Profile::Save(const std::filesystem::path& path, std::string& error) const
         return false;
     }
 }
-void Profile::Visit(const PageRecord& page)
+void Profile::Visit(const PageRecord& page, int64_t now)
 {
     if (page.url.rfind("https://", 0) != 0 && page.url.rfind("http://", 0) != 0) return;
     history.erase(std::remove_if(history.begin(), history.end(), [&](const auto& old) {
         return old.url == page.url;
     }), history.end());
     history.insert(history.begin(), page);
+    history.front().visited = now;
+    history.front().bar = false;
     if (history.size() > 2000) history.resize(2000);
+}
+PageRecord* Profile::FindBookmark(const std::string& url)
+{
+    auto found = std::find_if(bookmarks.begin(), bookmarks.end(), [&](const auto& bookmark) { return bookmark.url == url; });
+    return found == bookmarks.end() ? nullptr : &*found;
+}
+void Profile::AddBookmark(const PageRecord& page, bool bar)
+{
+    if (auto* existing = FindBookmark(page.url)) {
+        existing->bar = bar;
+        return;
+    }
+    if (bookmarks.size() >= 10000) return;
+    bookmarks.push_back({page.url, page.title, 0, bar});
+}
+bool Profile::RemoveBookmark(const std::string& url)
+{
+    const auto size = bookmarks.size();
+    bookmarks.erase(std::remove_if(bookmarks.begin(), bookmarks.end(), [&](const auto& bookmark) {
+        return bookmark.url == url;
+    }), bookmarks.end());
+    return bookmarks.size() != size;
 }
 }

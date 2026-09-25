@@ -70,6 +70,12 @@ Address ResolveAddress(std::string_view input)
         if (scheme == "http" || scheme == "https" || scheme == "file" || scheme == "webkit-extension")
             return {scheme + text.substr(colon), {}, false};
         if (text == "about:blank") return {text, {}, false};
+        if (scheme == "summit") {
+            auto page = text;
+            std::transform(page.begin(), page.end(), page.begin(), [](unsigned char c) { return std::tolower(c); });
+            if (page == "summit:home" || page == "summit:history" || page == "summit:bookmarks") return {page, {}, false};
+            return {{}, "There is no Summit page called " + text.substr(colon + 1) + ".", false};
+        }
         return {{}, "This address type is not supported: " + scheme, false};
     }
     if (text.front() == '/') return {FileURL(text), {}, false};
