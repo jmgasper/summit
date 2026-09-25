@@ -4642,3 +4642,64 @@ now points to `bundle-_3yrr8z2`, and its previous script is saved as
 (`.vm/bench/speedometer-20260925-101601-buffered-media-pgo-thirty/`,
 `.vm/bench/speedometer-20260925-101948-prior-pgo-thirty-bracket/`, and
 `.vm/bench/probe-20260925-101452-summit-buffered-media-scroll-400/`).
+
+### NanoKVM capture and grid row sizing
+
+`tools/bench/nanokvm-capture.py` can authenticate to the workstation's
+NanoKVM without recording credentials, query capture status, and save a timed
+MJPEG frame sequence for future presentation-cadence checks. Its control
+connection succeeds, but direct, H.264, and MJPEG capture currently report
+`No image captured`. An HDMI reset succeeded without restoring a frame, so
+there is no independent monitor-cadence measurement yet. The benchmark
+numbers below use browser and native-view timing rather than NanoKVM video.
+
+The deterministic `grid-reflow.html` page changes text inside 60 two-item
+grids and forces layout 50 times. Modern-grid A/B/A runs measured **11.12**
+and **11.50 ms** per forced layout, versus **9.14 ms** with
+`SUMMIT_EXTENDED_GRID_INTEGRATION=0`; representative geometry matched.
+Fixed-height rows improved both paths to **9.54** and **7.68 ms**. Coverage
+traces confirmed that the default runs used the modern formatter for all
+fixture grids. `SUMMIT_GRID_PHASE_TRACE=1` showed that row sizing accounted
+for about **12.57 ms per 100 grid layouts**, out of **15.03 ms** for all
+modern-grid phases. The integration path laid out each item's intrinsic
+block height twice per sizing pass: once for min-content and once for
+max-content contribution, although both use the same block-size layout
+operation (`.vm/bench/probe-20260925-103517-summit-grid-reflow-modern-a/`,
+`.vm/bench/probe-20260925-103552-summit-grid-reflow-legacy/`,
+`.vm/bench/probe-20260925-103628-summit-grid-reflow-modern-b/`, and
+`.vm/bench/probe-20260925-105102-summit-grid-sizer-auto-trace/`).
+
+The block-axis contribution is now cached only for one track-sizing call,
+keyed by grid item and inline constraint. The trace dropped from four
+height layouts per two-item grid to two. In an uncontended, untraced
+120-grid A/B/A run, the controls measured **22.30** and **21.92 ms** per
+forced layout, and the candidate measured **20.92 ms**, about a **5%**
+reduction. Initial and final geometry matched exactly in all three runs.
+The broader `grid-space-between.html` output also matched the control
+exactly, including overflow, repeat tracks, margins, and dynamic fallback
+(`.vm/bench/probe-20260925-110734-summit-grid-cache-control-a/`,
+`.vm/bench/probe-20260925-110805-summit-grid-cache-candidate/`,
+`.vm/bench/probe-20260925-110835-summit-grid-cache-control-b/`,
+`.vm/bench/probe-20260925-110926-summit-grid-cache-geometry/`, and
+`.vm/bench/probe-20260925-111007-summit-grid-cache-geometry-control/`).
+
+At the same 1267×769 content viewport, the cache bundle scored
+**8.303 ± 0.399** over ten full Speedometer 3.1 iterations; the same-session
+control scored **8.451 ± 0.387**. Their confidence intervals overlap. The
+candidate's 300-frame, 400-card scroll ran at **60.05 fps** with a 17 ms
+maximum interval and no long frames, versus **59.77 fps** and an 18 ms
+maximum in the control. A live 120-notch `/r/popular/` burst reached
+**58.92 fps**, with one 33.3 ms interval and later feed content visible in
+the final screenshot. The Guardian fixture again selected NVDEC H.264,
+exposed its full buffered range, looped, and reported no error; the Reddit
+HLS fixture sought to eight seconds, emitted `seeked`, and ended without
+error. The workstation desktop launcher now points to `bundle-ydvalf4q`,
+with the previous script saved as
+`Summit-current.pre-grid-cache-20260925.sh`
+(`.vm/bench/speedometer-20260925-111051-grid-cache-candidate/`,
+`.vm/bench/speedometer-20260925-111239-grid-cache-control/`,
+`.vm/bench/probe-20260925-111421-summit-grid-cache-scroll-400/`,
+`.vm/bench/probe-20260925-111509-summit-grid-cache-scroll-control/`,
+`.vm/bench/scroll-20260925-111616-grid-cache-reddit-120/`,
+`.vm/bench/probe-20260925-111816-summit-grid-cache-guardian/`, and
+`.vm/bench/probe-20260925-111942-summit-grid-cache-reddit-hls/`).
