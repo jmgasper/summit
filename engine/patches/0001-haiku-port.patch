@@ -33772,18 +33772,20 @@ index 0000000000000000000000000000000000000000..e6506c4d667ca790af6832a314af9b12
 +} // namespace WebKit
 diff --git a/Source/WebKit/Platform/haiku/BitmapPresenterHaiku.h b/Source/WebKit/Platform/haiku/BitmapPresenterHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..62bb77a8d73a216525777d5067cbb00b0fb7d15a
+index 0000000000000000000000000000000000000000..eba572444054ecdcb02e9f0bf4366a2f5373f319
 --- /dev/null
 +++ b/Source/WebKit/Platform/haiku/BitmapPresenterHaiku.h
-@@ -0,0 +1,153 @@
+@@ -0,0 +1,188 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
 +
 +#include "BitmapFrameHaiku.h"
++#include "PresentStatsHaiku.h"
 +#include <Bitmap.h>
 +#include <WebCore/ShareableBitmap.h>
 +#include <cstdlib>
++#include <optional>
 +#include <cstring>
 +#include <memory>
 +#include <mutex>
@@ -33876,8 +33878,14 @@ index 0000000000000000000000000000000000000000..62bb77a8d73a216525777d5067cbb00b
 +
 +    bool publish(uint64_t identifier, const WebCore::ShareableBitmap& bitmap, const WebCore::IntSize& viewSize, float scale)
 +    {
-+        auto size = bitmapFrameSizeHaiku(viewSize, scale);
-+        if (!identifier || !size || bitmap.size() != *size || bitmap.bytesPerRow() != static_cast<size_t>(size->width()) * 4
++        auto expected = bitmapFrameSizeHaiku(viewSize, scale);
++        // At a fractional scale the compositor truncates where this rounds up,
++        // so a device size one pixel short of the expected one is still whole.
++        if (!identifier || !expected || std::abs(bitmap.size().width() - expected->width()) > 1
++            || std::abs(bitmap.size().height() - expected->height()) > 1)
++            return false;
++        auto size = std::optional { bitmap.size() };
++        if (bitmap.bytesPerRow() != static_cast<size_t>(size->width()) * 4
 +            || bitmap.span().size() != bitmap.bytesPerRow() * size->height())
 +            return false;
 +        {
@@ -33891,7 +33899,34 @@ index 0000000000000000000000000000000000000000..62bb77a8d73a216525777d5067cbb00b
 +        if (!image || image->BytesPerRow() != static_cast<int32>(bitmap.bytesPerRow())
 +            || static_cast<size_t>(image->BitsLength()) != bitmap.span().size())
 +            return false;
++        bigtime_t copyStart = PresentStageStatsHaiku::enabled() ? system_time() : 0;
 +        std::memcpy(image->Bits(), bitmap.span().data(), bitmap.span().size());
++        if (copyStart) {
++            static PresentStageStatsHaiku copy("copy (ui)");
++            copy.add(system_time() - copyStart, size->width() * double(size->height()) / 1e6);
++        }
++        auto frame = std::make_shared<const Frame>(Frame { identifier, viewSize, scale, std::move(image) });
++        std::shared_ptr<const Frame> previous;
++        {
++            std::lock_guard guard(m_mutex);
++            if (m_closed || identifier <= m_lastIdentifier)
++                return false;
++            m_lastIdentifier = identifier;
++            previous = std::exchange(m_frame, std::move(frame));
++        }
++        return true;
++    }
++
++    // A frame drawn in place from memory the caller shares; the image's
++    // deleter says when no view shows it any more.
++    bool publishShared(uint64_t identifier, std::shared_ptr<const BBitmap>&& image, const WebCore::IntSize& viewSize, float scale)
++    {
++        auto expected = bitmapFrameSizeHaiku(viewSize, scale);
++        if (!identifier || !expected || !image)
++            return false;
++        auto bounds = image->Bounds();
++        if (std::abs(bounds.IntegerWidth() + 1 - expected->width()) > 1 || std::abs(bounds.IntegerHeight() + 1 - expected->height()) > 1)
++            return false;
 +        auto frame = std::make_shared<const Frame>(Frame { identifier, viewSize, scale, std::move(image) });
 +        std::shared_ptr<const Frame> previous;
 +        {
@@ -34033,6 +34068,77 @@ index 0000000000000000000000000000000000000000..b74d082988e7091f1376fc40192116c1
 +        return nullptr;
 +    return pointer;
 +}
++
++} // namespace WebKit
+diff --git a/Source/WebKit/Platform/haiku/PresentStatsHaiku.h b/Source/WebKit/Platform/haiku/PresentStatsHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..9d80ad20274f13f8e315dba78444ea9890119281
+--- /dev/null
++++ b/Source/WebKit/Platform/haiku/PresentStatsHaiku.h
+@@ -0,0 +1,65 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#pragma once
++
++#include <OS.h>
++#include <algorithm>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <mutex>
++
++namespace WebKit {
++
++// SUMMIT_PRESENT_STATS=1 prints, every two seconds, how long each stage that
++// moves a finished frame towards the screen took: the web process reading it
++// back from the GPU, the UI process copying it, app_server drawing it. Each
++// stage is a full-frame copy, so this is where a high density screen costs.
++class PresentStageStatsHaiku {
++public:
++    explicit PresentStageStatsHaiku(const char* name)
++        : m_name(name)
++    {
++    }
++
++    static bool enabled()
++    {
++        static const bool on = [] {
++            const char* value = std::getenv("SUMMIT_PRESENT_STATS");
++            return value && !std::strcmp(value, "1");
++        }();
++        return on;
++    }
++
++    void add(bigtime_t elapsed, double megapixels)
++    {
++        std::lock_guard guard(m_mutex);
++        bigtime_t now = system_time();
++        if (!m_windowStart)
++            m_windowStart = now;
++        ++m_count;
++        m_total += elapsed;
++        m_max = std::max(m_max, elapsed);
++        m_megapixels += megapixels;
++        if (now - m_windowStart < 2000000)
++            return;
++        std::fprintf(stderr, "Summit present %s: %ld in %.1f s, mean %.2f ms, max %.2f ms, %.2f Mpx each\n",
++            m_name, long(m_count), (now - m_windowStart) / 1e6, m_total / 1e3 / m_count, m_max / 1e3, m_megapixels / m_count);
++        m_windowStart = now;
++        m_count = 0;
++        m_total = 0;
++        m_max = 0;
++        m_megapixels = 0;
++    }
++
++private:
++    const char* m_name;
++    std::mutex m_mutex;
++    bigtime_t m_windowStart { 0 };
++    long m_count { 0 };
++    bigtime_t m_total { 0 };
++    bigtime_t m_max { 0 };
++    double m_megapixels { 0 };
++};
 +
 +} // namespace WebKit
 diff --git a/Source/WebKit/Platform/haiku/ReadWriteLockHaiku.cpp b/Source/WebKit/Platform/haiku/ReadWriteLockHaiku.cpp
@@ -41168,10 +41274,10 @@ index 0000000000000000000000000000000000000000..bc34bc6c14e025d880080ba60e6ff212
 +}
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitContext.h b/Source/WebKit/UIProcess/API/haiku/WebKitContext.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..d0957e39095e3c37d2437c359494c57087b9e1e3
+index 0000000000000000000000000000000000000000..2b2e8171797ad73f43bca85eca8b665061e1f5d7
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitContext.h
-@@ -0,0 +1,247 @@
+@@ -0,0 +1,248 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -41388,7 +41494,8 @@ index 0000000000000000000000000000000000000000..d0957e39095e3c37d2437c359494c570
 +    // extension_identifier/name/title/badge strings, enabled/has_popup bools,
 +    // load_identifier and page_identifier uint64 values, and badge_background_rgba
 +    // and badge_text_rgba uint32 colors packed as 0xRRGGBBAA. Optional icon_bgra is
-+    // exactly 16*16*4 bytes of unpremultiplied BGRA pixels, top row first.
++    // exactly 16*16*4 bytes of unpremultiplied BGRA pixels, top row first, and
++    // optional icon_bgra_32 the same at 32*32 for a high density screen.
 +    status_t GetExtensionActions(const BMessenger& window, const BMessenger& reply, uint64 identifier);
 +    // Trusted native user input only. Both IDs must come from the displayed
 +    // snapshot. The window must still be focused on that page, the extension
@@ -41554,10 +41661,10 @@ index 0000000000000000000000000000000000000000..d28a6cad6339adf79b155cf974e85bfd
 +
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..a7d9e88bad08cb4abdcee13b31d882eb18ecab14
+index 0000000000000000000000000000000000000000..c18de56435ec8fee4a33abcac65ca5329330bf6a
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp
-@@ -0,0 +1,484 @@
+@@ -0,0 +1,556 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -41569,11 +41676,16 @@ index 0000000000000000000000000000000000000000..a7d9e88bad08cb4abdcee13b31d882eb
 +#include "NativeExtensionPopupHaiku.h"
 +#include "WebViewPrivate.h"
 +#include "WebViewStateHaiku.h"
++#include "PresentStatsHaiku.h"
 +#include <Application.h>
 +#include <Cursor.h>
 +#include <MessageRunner.h>
++#include <OS.h>
 +#include <Window.h>
++#include <algorithm>
 +#include <cmath>
++#include <cstdlib>
++#include <dlfcn.h>
 +#include <wtf/RunLoop.h>
 +#include <utility>
 +
@@ -41587,6 +41699,60 @@ index 0000000000000000000000000000000000000000..a7d9e88bad08cb4abdcee13b31d882eb
 +    return std::isfinite(pixels) && pixels > 0 && pixels <= 8192 ? static_cast<int>(pixels) : 0;
 +}
 +
++// app_server draws a scaled desktop at the density of its monitors and says so
++// in the display layout, which only a private libbe call returns. It is looked
++// up at run time so the engine still loads on a Haiku without it (scale 1).
++static float queryDisplayScaleFactorHaiku()
++{
++    using GetDisplayLayout = status_t (*)(BMessage&);
++    static const auto getDisplayLayout = reinterpret_cast<GetDisplayLayout>(
++        dlsym(RTLD_DEFAULT, "_ZN8BPrivate18get_display_layoutER8BMessage"));
++    if (!getDisplayLayout)
++        return 1;
++    BMessage layout;
++    if (getDisplayLayout(layout) != B_OK)
++        return 1;
++    // Every enabled monitor reports the same render scale: the frame buffer
++    // has one density, and monitors set larger are enlarged by the card.
++    int32 renderScale = 0;
++    BMessage display;
++    for (int32 index = 0; layout.FindMessage("display", index, &display) == B_OK; ++index) {
++        if (!display.GetBool("enabled", false))
++            continue;
++        int32 scale = display.GetInt32("render scale", 0);
++        if (!scale)
++            scale = display.GetInt32("scale", 100);
++        renderScale = std::max(renderScale, scale);
++    }
++    if (renderScale < 100 || renderScale > 400)
++        return 1;
++    return renderScale / 100.0f;
++}
++
++float WebKit::displayScaleFactorHaiku()
++{
++    // SUMMIT_DEVICE_SCALE_FACTOR=1 turns high density off for comparisons.
++    static const float forced = [] {
++        const char* value = std::getenv("SUMMIT_DEVICE_SCALE_FACTOR");
++        float parsed = value ? std::strtof(value, nullptr) : 0;
++        return std::isfinite(parsed) && parsed >= 1 && parsed <= 4 ? parsed : 0.0f;
++    }();
++    if (forced)
++        return forced;
++    // A geometry update runs on every Draw(); the layout is an app_server round
++    // trip, so it is asked again at most once a second.
++    static std::atomic<float> cached { 0 };
++    static std::atomic<bigtime_t> checkedAt { 0 };
++    bigtime_t now = system_time();
++    float scale = cached.load(std::memory_order_relaxed);
++    if (scale > 0 && now - checkedAt.load(std::memory_order_relaxed) < 1000000)
++        return scale;
++    scale = queryDisplayScaleFactorHaiku();
++    cached.store(scale, std::memory_order_relaxed);
++    checkedAt.store(now, std::memory_order_relaxed);
++    return scale;
++}
++
 +status_t BWebKitInitialize()
 +{
 +    if (!be_app || be_app->Thread() != find_thread(nullptr))
@@ -41596,6 +41762,11 @@ index 0000000000000000000000000000000000000000..a7d9e88bad08cb4abdcee13b31d882eb
 +        webKitInitializedHaiku = true;
 +    }
 +    return B_OK;
++}
++
++float BWebKitDisplayScale()
++{
++    return displayScaleFactorHaiku();
 +}
 +
 +bool BWebKitHasPendingNativeUI()
@@ -41836,6 +42007,7 @@ index 0000000000000000000000000000000000000000..a7d9e88bad08cb4abdcee13b31d882eb
 +    current.size = { viewDimensionHaiku(bounds.Width()), viewDimensionHaiku(bounds.Height()) };
 +    current.attached = Window();
 +    current.focused = IsFocus();
++    current.scale = displayScaleFactorHaiku();
 +    BMessenger messenger;
 +    if (auto* window = Window()) {
 +        BPoint origin = ConvertToScreen(BPoint());
@@ -41921,7 +42093,14 @@ index 0000000000000000000000000000000000000000..a7d9e88bad08cb4abdcee13b31d882eb
 +        }
 +    }
 +    PopState();
++    bigtime_t drawStart = PresentStageStatsHaiku::enabled() ? system_time() : 0;
 +    Sync();
++    if (drawStart && frame) {
++        static PresentStageStatsHaiku draw("draw (app_server)");
++        BRect drawn = update & destination;
++        float scale = frame->scale > 0 ? frame->scale : 1;
++        draw.add(system_time() - drawStart, drawn.IsValid() ? (drawn.Width() + 1) * (drawn.Height() + 1) * scale * scale / 1e6 : 0);
++    }
 +    if (frame && m_status == B_OK) {
 +        BMessage message(viewPresentedHaiku);
 +        message.AddUInt64("identifier", frame->identifier);
@@ -42044,10 +42223,10 @@ index 0000000000000000000000000000000000000000..a7d9e88bad08cb4abdcee13b31d882eb
 +}
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitView.h b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..4e08aafeef6cf4212938731879d035c252c1affe
+index 0000000000000000000000000000000000000000..f18ad95882d7ec20b2951c64cbedd8fc51f6d15f
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
-@@ -0,0 +1,144 @@
+@@ -0,0 +1,148 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -42069,6 +42248,10 @@ index 0000000000000000000000000000000000000000..4e08aafeef6cf4212938731879d035c2
 +// observing false, queue one final application turn to drain completions that
 +// native UI has already submitted.
 +WK_EXPORT bool BWebKitHasPendingNativeUI();
++// Frame buffer pixels per logical pixel of the screen (2 on 4K monitors at
++// 200%). Bitmaps this many times their logical size, drawn into a logical
++// rectangle, reach the screen pixel for pixel. Any thread; cached for a second.
++WK_EXPORT float BWebKitDisplayScale();
 +
 +enum : uint32 {
 +    B_WEBKIT_STATE_CHANGED = 'wsta',
@@ -63069,10 +63252,10 @@ index 8ace95c1b44f471e9072adcce4b7875472a98436..79fa9c1bfc4f6499439c6ab8bc4f4a17
  #if OS(ANDROID)
 diff --git a/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.cpp b/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..2c29d3e04770a863b4594c5decbd666379a44ada
+index 0000000000000000000000000000000000000000..754d8b8e255cf2f7307871eb31402d8679d2ffde
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.cpp
-@@ -0,0 +1,116 @@
+@@ -0,0 +1,187 @@
 +/*
 + * Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause
 + */
@@ -63087,12 +63270,38 @@ index 0000000000000000000000000000000000000000..2c29d3e04770a863b4594c5decbd6663
 +#include "PageClient.h"
 +#include "WebPageProxy.h"
 +#include "WebProcessProxy.h"
++#include "WebViewPrivate.h"
++#include <Bitmap.h>
++#include <OS.h>
++#include <cmath>
++#include <cstdlib>
++#include <cstring>
++#include <wtf/NeverDestroyed.h>
++#include <wtf/RunLoop.h>
 +#include <wtf/TZoneMallocInlines.h>
 +#include <wtf/unix/UnixFileDescriptor.h>
 +
 +namespace WebKit {
 +
 +WTF_MAKE_TZONE_ALLOCATED_IMPL(AcceleratedBackingStore);
++
++// Stores by surface, so a frame released on a window thread can find its way
++// back. Main thread only.
++static HashMap<uint64_t, AcceleratedBackingStore*>& storesBySurface()
++{
++    static NeverDestroyed<HashMap<uint64_t, AcceleratedBackingStore*>> stores;
++    return stores;
++}
++
++// SUMMIT_ZERO_COPY_PRESENT=0 copies every frame into a private BBitmap again.
++static bool zeroCopyPresentEnabled()
++{
++    static const bool enabled = [] {
++        const char* value = std::getenv("SUMMIT_ZERO_COPY_PRESENT");
++        return !value || std::strcmp(value, "0");
++    }();
++    return enabled;
++}
 +
 +Ref<AcceleratedBackingStore> AcceleratedBackingStore::create(WebPageProxy& webPage)
 +{
@@ -63117,7 +63326,9 @@ index 0000000000000000000000000000000000000000..2c29d3e04770a863b4594c5decbd6663
 +    if (m_surfaceID) {
 +        // The web process may be waiting on a frame this surface will never show.
 +        frameDone();
++        storesBySurface().remove(m_surfaceID);
 +        m_buffers.clear();
++        m_images.clear();
 +        if (RefPtr process = m_legacyMainFrameProcess)
 +            process->removeMessageReceiver(Messages::AcceleratedBackingStore::messageReceiverName(), m_surfaceID);
 +        m_legacyMainFrameProcess = nullptr;
@@ -63132,17 +63343,43 @@ index 0000000000000000000000000000000000000000..2c29d3e04770a863b4594c5decbd6663
 +        return;
 +    m_legacyMainFrameProcess = webPage->legacyMainFrameProcess();
 +    m_legacyMainFrameProcess->addMessageReceiver(Messages::AcceleratedBackingStore::messageReceiverName(), m_surfaceID, *this);
++    storesBySurface().set(m_surfaceID, this);
 +}
 +
 +void AcceleratedBackingStore::didCreateSHMBuffer(uint64_t id, WebCore::ShareableBitmapHandle&& handle)
 +{
-+    if (RefPtr bitmap = WebCore::ShareableBitmap::create(WTF::move(handle), WebCore::SharedMemory::Protection::ReadOnly))
-+        m_buffers.add(id, WTF::move(bitmap));
++    // The web process sends a writable handle: app_server clones a bitmap's
++    // area for writing, so only a writable mapping can be drawn in place.
++    RefPtr bitmap = WebCore::ShareableBitmap::create(WTF::move(handle), WebCore::SharedMemory::Protection::ReadWrite);
++    if (!bitmap)
++        return;
++    if (zeroCopyPresentEnabled() && bitmap->bytesPerRow() == static_cast<size_t>(bitmap->size().width()) * 4) {
++        auto* data = bitmap->mutableSpan().data();
++        area_id area = area_for(data);
++        area_info info;
++        if (area >= 0 && get_area_info(area, &info) == B_OK
++            && set_area_protection(area, B_READ_AREA | B_WRITE_AREA | B_CLONEABLE_AREA) == B_OK) {
++            auto size = bitmap->size();
++            auto image = std::make_shared<BBitmap>(area, static_cast<ptrdiff_t>(data - static_cast<uint8_t*>(info.address)),
++                BRect(0, 0, size.width() - 1, size.height() - 1), 0, B_RGBA32, static_cast<int32>(bitmap->bytesPerRow()));
++            if (image->InitCheck() == B_OK)
++                m_images.set(id, WTF::move(image));
++        }
++    }
++    m_buffers.add(id, WTF::move(bitmap));
 +}
 +
 +void AcceleratedBackingStore::didDestroyBuffer(uint64_t id)
 +{
 +    m_buffers.remove(id);
++    m_images.remove(id);
++}
++
++void AcceleratedBackingStore::releaseSharedBuffer(uint64_t surfaceID, uint64_t id)
++{
++    auto* store = storesBySurface().get(surfaceID);
++    if (store && store->m_surfaceID == surfaceID && store->m_buffers.contains(id))
++        store->releaseBuffer(id);
 +}
 +
 +void AcceleratedBackingStore::frame(uint64_t id, Rects&&, WTF::UnixFileDescriptor&&)
@@ -63159,8 +63396,25 @@ index 0000000000000000000000000000000000000000..2c29d3e04770a863b4594c5decbd6663
 +        return;
 +    }
 +
-+    auto size = bitmap->size();
++    // The buffer is in device pixels; the view wants its logical size back.
 +    float scale = webPage->deviceScaleFactor();
++    auto size = bitmap->size();
++    if (scale > 0 && scale != 1)
++        size = WebCore::IntSize { static_cast<int>(std::lround(size.width() / scale)), static_cast<int>(std::lround(size.height() / scale)) };
++
++    if (auto image = m_images.get(id)) {
++        // The view draws this buffer until a newer frame replaces it; only then
++        // may the web process paint into it again. The last reference can be
++        // dropped on a window thread, so the release is posted back here.
++        std::shared_ptr<const BBitmap> frame(image.get(), [image, bitmap, surfaceID = m_surfaceID, id](const BBitmap*) {
++            RunLoop::mainSingleton().dispatch([surfaceID, id] {
++                releaseSharedBuffer(surfaceID, id);
++            });
++        });
++        static_cast<WebView&>(*client).presentSharedFrameHaiku(WTF::move(frame), size, scale);
++        frameDone();
++        return;
++    }
 +    // presentBitmapHaiku's callback says when the view has drawn. The compositor
 +    // must not wait for that: it cannot paint another frame until FrameDone, and
 +    // a view that draws in response to a frame would then be waiting on itself.
@@ -63191,10 +63445,10 @@ index 0000000000000000000000000000000000000000..2c29d3e04770a863b4594c5decbd6663
 +#endif // USE(COORDINATED_GRAPHICS)
 diff --git a/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.h b/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..80d133c858175cebaf0542cda64a6ea285480046
+index 0000000000000000000000000000000000000000..ddb9dbd1eb9a61a3fc1b127fc8b5fb2ed3784ddd
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.h
-@@ -0,0 +1,68 @@
+@@ -0,0 +1,76 @@
 +/*
 + * Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause
 + */
@@ -63212,6 +63466,9 @@ index 0000000000000000000000000000000000000000..80d133c858175cebaf0542cda64a6ea2
 +#include <wtf/TZoneMalloc.h>
 +#include <wtf/Vector.h>
 +#include <wtf/WeakPtr.h>
++#include <memory>
++
++class BBitmap;
 +
 +namespace WebKit {
 +
@@ -63220,8 +63477,8 @@ index 0000000000000000000000000000000000000000..80d133c858175cebaf0542cda64a6ea2
 +
 +// The UI process end of AcceleratedSurface. The web process paints a frame into
 +// a ShareableBitmap, says which buffer it used, and waits for FrameDone before
-+// painting the next one. The frame is handed to the page client through
-+// presentBitmapHaiku, the same way the software drawing area delivers one.
++// painting the next one. The view draws the buffer in place (see m_images), or,
++// if app_server cannot map it, a copy made by presentBitmapHaiku.
 +//
 +// Only the shared memory buffer messages are answered. The DMA-BUF and Android
 +// ones belong to platforms that can pass GPU buffers between processes.
@@ -63253,11 +63510,16 @@ index 0000000000000000000000000000000000000000..80d133c858175cebaf0542cda64a6ea2
 +    void frame(uint64_t id, Rects&&, WTF::UnixFileDescriptor&&);
 +    void releaseBuffer(uint64_t id);
 +    void frameDone();
++    static void releaseSharedBuffer(uint64_t surfaceID, uint64_t id);
 +
 +    WeakPtr<WebPageProxy> m_webPage;
 +    RefPtr<WebProcessProxy> m_legacyMainFrameProcess;
 +    uint64_t m_surfaceID { 0 };
 +    HashMap<uint64_t, RefPtr<WebCore::ShareableBitmap>> m_buffers;
++    // Each buffer's memory as a BBitmap that app_server draws from directly,
++    // so a frame is never copied in this process. The view keeps the frame it
++    // shows; the buffer returns to the web process once a newer one replaces it.
++    HashMap<uint64_t, std::shared_ptr<BBitmap>> m_images;
 +};
 +
 +} // namespace WebKit
@@ -64464,10 +64726,10 @@ index 0000000000000000000000000000000000000000..0bee5b6e8a1234d768064bc9f9802ecd
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/ExtensionPackageRegistryHaiku.cpp b/Source/WebKit/UIProcess/haiku/ExtensionPackageRegistryHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..bd10692307468e0de9fe7ac82b0e9c8ee2155fbe
+index 0000000000000000000000000000000000000000..73d67edb067b9dade00420255b6701dd0d34e5b5
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/ExtensionPackageRegistryHaiku.cpp
-@@ -0,0 +1,557 @@
+@@ -0,0 +1,562 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#include "config.h"
 +#include "ExtensionPackageRegistryHaiku.h"
@@ -64973,15 +65235,20 @@ index 0000000000000000000000000000000000000000..bd10692307468e0de9fe7ac82b0e9c8e
 +            error = item.AddBool("enabled", action->isEnabled());
 +        if (error == B_OK)
 +            error = item.AddBool("has_popup", action->presentsPopup());
-+        if (RefPtr icon = action->icon({ 16, 16 })) {
-+            RefPtr buffer = WebCore::ImageBuffer::create({ 16, 16 }, WebCore::RenderingMode::Unaccelerated,
++        // icon_bgra is the 16 pixel icon; icon_bgra_32 the same icon for a
++        // screen drawn at twice the density, from the extension's larger art.
++        for (auto [dimension, key] : { std::pair { 16, "icon_bgra" }, std::pair { 32, "icon_bgra_32" } }) {
++            RefPtr icon = action->icon({ static_cast<float>(dimension), static_cast<float>(dimension) });
++            if (!icon)
++                continue;
++            RefPtr buffer = WebCore::ImageBuffer::create({ static_cast<float>(dimension), static_cast<float>(dimension) }, WebCore::RenderingMode::Unaccelerated,
 +                WebCore::RenderingPurpose::DOM, 1, WebCore::ColorSpace::SRGB(), WebCore::PixelFormat::BGRA8);
-+            if (buffer) {
-+                icon->paint(buffer->context(), { 0, 0, 16, 16 });
-+                auto pixels = buffer->getPixelBuffer({ WebCore::AlphaPremultiplication::Unpremultiplied, WebCore::PixelFormat::BGRA8, WebCore::ColorSpace::SRGB() }, { 0, 0, 16, 16 });
-+                if (error == B_OK && pixels && pixels->bytes().size() == 16 * 16 * 4)
-+                    error = item.AddData("icon_bgra", B_RAW_TYPE, pixels->bytes().data(), pixels->bytes().size());
-+            }
++            if (!buffer)
++                continue;
++            icon->paint(buffer->context(), { 0, 0, static_cast<float>(dimension), static_cast<float>(dimension) });
++            auto pixels = buffer->getPixelBuffer({ WebCore::AlphaPremultiplication::Unpremultiplied, WebCore::PixelFormat::BGRA8, WebCore::ColorSpace::SRGB() }, { 0, 0, dimension, dimension });
++            if (error == B_OK && pixels && pixels->bytes().size() == static_cast<size_t>(dimension * dimension * 4))
++                error = item.AddData(key, B_RAW_TYPE, pixels->bytes().data(), pixels->bytes().size());
 +        }
 +        if (error == B_OK)
 +            error = details.AddMessage("action", &item);
@@ -66880,10 +67147,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..aa72249688d78389076cfa5f9e8b6044bde4d1d7
+index 0000000000000000000000000000000000000000..60ad2e43f058a6191517137f8ee114e5cff49a99
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,1634 @@
+@@ -0,0 +1,1657 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -67794,7 +68061,7 @@ index 0000000000000000000000000000000000000000..aa72249688d78389076cfa5f9e8b6044
 +    view->m_page->setUIClient(makeUnique<JavaScriptUIClientHaiku>(view->m_state, false));
 +    auto& pageConfiguration = view->m_page->configuration();
 +    view->m_page->initializeWebPage(pageConfiguration.openedSite(), pageConfiguration.initialSandboxFlags(), pageConfiguration.initialReferrerPolicy());
-+    view->m_page->setIntrinsicDeviceScaleFactor(1);
++    view->m_page->setIntrinsicDeviceScaleFactor(displayScaleFactorHaiku());
 +    view->updateGeometry();
 +    return view;
 +}
@@ -67809,7 +68076,8 @@ index 0000000000000000000000000000000000000000..aa72249688d78389076cfa5f9e8b6044
 +    view->m_page = pool.createWebPage(view.get(), WTF::move(configuration));
 +    auto& pageConfiguration = view->m_page->configuration();
 +    view->m_page->initializeWebPage(pageConfiguration.openedSite(), pageConfiguration.initialSandboxFlags(), pageConfiguration.initialReferrerPolicy());
-+    view->m_page->setIntrinsicDeviceScaleFactor(1);
++    // Nothing is shown, but pages choose image sizes from devicePixelRatio.
++    view->m_page->setIntrinsicDeviceScaleFactor(displayScaleFactorHaiku());
 +    view->updateGeometry();
 +    return view;
 +}
@@ -67884,7 +68152,7 @@ index 0000000000000000000000000000000000000000..aa72249688d78389076cfa5f9e8b6044
 +    m_page->setIconLoadingClient(makeUnique<IconLoadingClientHaiku>(m_state));
 +    auto& pageConfiguration = m_page->configuration();
 +    m_page->initializeWebPage(pageConfiguration.openedSite(), pageConfiguration.initialSandboxFlags(), pageConfiguration.initialReferrerPolicy());
-+    m_page->setIntrinsicDeviceScaleFactor(1);
++    m_page->setIntrinsicDeviceScaleFactor(geometry().scale);
 +    WKPageStateClientV0 observer { };
 +    observer.base.clientInfo = this;
 +    auto changed = [](const void* context) { static_cast<const WebView*>(context)->notifyState(); };
@@ -68212,6 +68480,9 @@ index 0000000000000000000000000000000000000000..aa72249688d78389076cfa5f9e8b6044
 +        return;
 +    auto current = geometry();
 +    m_page->legacyMainFrameProcess().send(Messages::WebPage::SetWindowFrameHaiku(FloatRect(current.windowFrame)), m_page->webPageIDInMainFrameProcess());
++    // The screen's density changes when monitors are rearranged or rescaled.
++    if (current.scale > 0)
++        m_page->setIntrinsicDeviceScaleFactor(current.scale);
 +    if (auto* drawingArea = m_page->drawingArea())
 +        drawingArea->setSize(current.size);
 +    m_page->activityStateDidChange({ ActivityState::IsFocused, ActivityState::WindowIsActive,
@@ -68259,6 +68530,25 @@ index 0000000000000000000000000000000000000000..aa72249688d78389076cfa5f9e8b6044
 +        message.AddInt64("summit:queuedMicros", system_time());
 +    if (view.SendMessage(&message, static_cast<BHandler*>(nullptr), 0) != B_OK)
 +        std::exchange(m_presentationCallback, { })();
++}
++
++void WebView::presentSharedFrameHaiku(std::shared_ptr<const BBitmap>&& image, const IntSize& size, float scale)
++{
++    if (m_presentationCallback)
++        std::exchange(m_presentationCallback, { })();
++    auto current = geometry();
++    auto identifier = ++m_presentationIdentifier;
++    if (m_state->closed || !current.visible || !m_state->presenter.publishShared(identifier, WTF::move(image), size, scale))
++        return;
++    BMessenger view;
++    {
++        std::lock_guard guard(m_state->mutex);
++        view = m_state->view;
++    }
++    BMessage message(viewFrameHaiku);
++    if (std::getenv("SUMMIT_UI_FRAME_STATS"))
++        message.AddInt64("summit:queuedMicros", system_time());
++    view.SendMessage(&message, static_cast<BHandler*>(nullptr), 0);
 +}
 +
 +void WebView::didPresent(uint64_t identifier)
@@ -68821,10 +69111,10 @@ index 0000000000000000000000000000000000000000..a47b97e41dddeab317f84058af42bd8b
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewPrivate.h b/Source/WebKit/UIProcess/haiku/WebViewPrivate.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..74616eb89638d309c255bada481426298ebcef7e
+index 0000000000000000000000000000000000000000..2b0d4afb8ac84bdb76c256e7d8a47970a0ea1f9f
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewPrivate.h
-@@ -0,0 +1,155 @@
+@@ -0,0 +1,157 @@
 +/*
 +   Copyright (C) 2014 Haiku, inc.
 +
@@ -68886,6 +69176,8 @@ index 0000000000000000000000000000000000000000..74616eb89638d309c255bada48142629
 +        return m_state->view;
 +    }
 +    void notifyState(uint32_t = B_WEBKIT_STATE_CHANGED) const;
++    // A frame the view draws straight from the web process's shared memory.
++    void presentSharedFrameHaiku(std::shared_ptr<const BBitmap>&&, const WebCore::IntSize&, float);
 +
 +private:
 +    explicit WebView(std::shared_ptr<WebViewStateHaiku>);
@@ -68982,10 +69274,10 @@ index 0000000000000000000000000000000000000000..74616eb89638d309c255bada48142629
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..9e1775d7f4e06dca7ae4c2744922f06d871f6121
+index 0000000000000000000000000000000000000000..0b3bdd6d627987d84e9c372581c4502b60ae9837
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
-@@ -0,0 +1,114 @@
+@@ -0,0 +1,121 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -69024,6 +69316,8 @@ index 0000000000000000000000000000000000000000..9e1775d7f4e06dca7ae4c2744922f06d
 +    WebCore::IntSize size;
 +    WebCore::IntPoint screenOrigin;
 +    WebCore::IntRect windowFrame;
++    // Frame buffer pixels per logical pixel; see displayScaleFactorHaiku().
++    float scale { 1 };
 +    bool attached { false };
 +    bool visible { false };
 +    bool focused { false };
@@ -69087,6 +69381,11 @@ index 0000000000000000000000000000000000000000..9e1775d7f4e06dca7ae4c2744922f06d
 +    std::optional<WebCore::ScriptExecutionContextIdentifier> closeDocumentIdentifier;
 +    bool closeApprovalInvalidated { false };
 +};
++
++// The density app_server draws the screen at: 2 on 4K monitors at 200%.
++// Pages render at this device scale so that their frames reach the screen
++// pixel for pixel instead of being enlarged. Cached; safe on any thread.
++float displayScaleFactorHaiku();
 +
 +void commitViewCloseHaiku(std::vector<std::shared_ptr<WebViewStateHaiku>>, BMessenger, uint64_t);
 +
@@ -85909,11 +86208,31 @@ index 0000000000000000000000000000000000000000..abc82f6d26d2b1374740dc304282ae75
 +
 +}
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
-index cf4d54b7869d7a7cded74482922d8fdda53af21d..905e6578946878edbf0a1fd31496b918e2a5eeb5 100644
+index cf4d54b7869d7a7cded74482922d8fdda53af21d..de7e338d2a50ba3154e6830a1396472861a39b2f 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
-@@ -53,10 +53,12 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
+@@ -26,6 +26,13 @@
+ #include "config.h"
+ #include "AcceleratedSurface.h"
+ 
++#if PLATFORM(HAIKU)
++#include "PresentStatsHaiku.h"
++#include <cstdlib>
++#include <cstring>
++#include <wtf/NeverDestroyed.h>
++#endif
++
+ #if USE(COORDINATED_GRAPHICS)
+ #include "WebPage.h"
+ #include "WebProcess.h"
+@@ -51,12 +58,18 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
+ #include <skia/gpu/ganesh/GrBackendSurface.h>
+ #include <skia/gpu/ganesh/SkSurfaceGanesh.h>
  #include <skia/gpu/ganesh/gl/GrGLBackendSurface.h>
++#if PLATFORM(HAIKU)
++#include <skia/gpu/ganesh/GrDirectContext.h>
++#include <skia/gpu/ganesh/GrTypes.h>
++#endif
  WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
  
 -#if PLATFORM(GTK) || ENABLE(WPE_PLATFORM)
@@ -85926,7 +86245,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..905e6578946878edbf0a1fd31496b918
  #include <epoxy/egl.h>
  #endif
  
-@@ -122,7 +124,7 @@ AcceleratedSurface::AcceleratedSurface(WebPage& webPage, Function<void()>&& fram
+@@ -122,7 +135,7 @@ AcceleratedSurface::AcceleratedSurface(WebPage& webPage, Function<void()>&& fram
  #endif
      , m_id(generateID())
      , m_renderingPurpose(renderingPurpose)
@@ -85935,7 +86254,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..905e6578946878edbf0a1fd31496b918
      , m_hardwareAccelerationEnabled(webPage.corePage()->settings().hardwareAccelerationEnabled())
  #endif
      , m_backgroundColor(webPage.backgroundColor())
-@@ -176,7 +178,7 @@ void AcceleratedSurface::RenderTarget::createSkiaSurfaceForFramebuffer(unsigned
+@@ -176,7 +189,7 @@ void AcceleratedSurface::RenderTarget::createSkiaSurfaceForFramebuffer(unsigned
      m_skiaSurface = SkSurfaces::WrapBackendRenderTarget(display.skiaGrContext(), backendRenderTarget, origin, kRGBA_8888_SkColorType, SkColorSpace::MakeSRGB(), &properties);
  }
  
@@ -85944,7 +86263,115 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..905e6578946878edbf0a1fd31496b918
  WTF_MAKE_TZONE_ALLOCATED_IMPL(AcceleratedSurface::RenderTargetShareableBuffer);
  
  AcceleratedSurface::RenderTargetShareableBuffer::RenderTargetShareableBuffer(AcceleratedSurface& surface, const IntSize& size)
-@@ -460,6 +462,7 @@ void AcceleratedSurface::RenderTargetSHMImage::didRenderFrame()
+@@ -418,7 +431,14 @@ std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::RenderTarg
+         return nullptr;
+     }
+ 
++#if PLATFORM(HAIKU)
++    // app_server can only draw an area it may clone for writing, so the UI
++    // process needs a writable mapping to show this buffer without copying it.
++    // It could always overwrite frames it is shown anyway.
++    auto bufferHandle = buffer->createHandle(SharedMemory::Protection::ReadWrite);
++#else
+     auto bufferHandle = buffer->createReadOnlyHandle();
++#endif
+     if (!bufferHandle) {
+         WTFLogAlways("Failed to create handle for shared memory buffer");
+         return nullptr;
+@@ -439,13 +459,92 @@ AcceleratedSurface::RenderTargetSHMImage::RenderTargetSHMImage(AcceleratedSurfac
+     WebProcess::singleton().parentProcessConnection()->send(Messages::AcceleratedBackingStore::DidCreateSHMBuffer(m_id, WTF::move(bitmapHandle)), m_surface->surfaceID());
+ }
+ 
++#if PLATFORM(HAIKU)
++AcceleratedSurface::RenderTargetSHMImage::~RenderTargetSHMImage()
++{
++    if (m_pixelBuffer)
++        glDeleteBuffers(1, &m_pixelBuffer);
++}
++
++// Reading the frame straight into client memory made the driver copy it out of
++// uncached staging memory and, as Skia asked for BGRA from an RGBA target,
++// swizzle it on the CPU: 11.5 ms for a 4K frame. A pixel buffer object lets
++// the GPU do the conversion into memory the CPU reads at full speed.
++// SUMMIT_PBO_READBACK=0 returns to Skia's readPixels.
++bool AcceleratedSurface::RenderTargetSHMImage::readBackThroughPixelBuffer()
++{
++    static const bool enabled = [] {
++        const char* value = getenv("SUMMIT_PBO_READBACK");
++        return !value || strcmp(value, "0");
++    }();
++    if (!enabled || !m_skiaSurface)
++        return false;
++    auto& display = PlatformDisplay::sharedDisplay();
++    GLContext::ScopedGLContextCurrent scopedCurrent(*display.skiaGLContext());
++    auto* grContext = display.skiaGrContext();
++    if (!grContext)
++        return false;
++    static const bool readsBGRA = [] {
++        auto* extensions = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
++        return extensions && strstr(extensions, "GL_EXT_read_format_bgra");
++    }();
++    grContext->flushAndSubmit(m_skiaSurface.get(), GrSyncCpu::kNo);
++
++    size_t width = m_bitmap->size().width();
++    size_t height = m_bitmap->size().height();
++    size_t rowBytes = width * 4;
++    size_t length = rowBytes * height;
++    if (m_bitmap->bytesPerRow() != rowBytes || m_bitmap->mutableSpan().size() < length)
++        return false;
++    glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
++    if (!m_pixelBuffer) {
++        glGenBuffers(1, &m_pixelBuffer);
++        glBindBuffer(GL_PIXEL_PACK_BUFFER, m_pixelBuffer);
++        glBufferData(GL_PIXEL_PACK_BUFFER, length, nullptr, GL_STREAM_READ);
++    } else
++        glBindBuffer(GL_PIXEL_PACK_BUFFER, m_pixelBuffer);
++    glPixelStorei(GL_PACK_ALIGNMENT, 4);
++    glReadPixels(0, 0, width, height, readsBGRA ? GL_BGRA_EXT : GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
++    bool copied = false;
++    if (auto* pixels = static_cast<const uint8_t*>(glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, length, GL_MAP_READ_BIT))) {
++        auto* destination = m_bitmap->mutableSpan().data();
++        // Rows come bottom first when Skia draws the target mirrored.
++        bool flipped = m_surface->shouldPaintMirrored();
++        for (size_t row = 0; row < height; ++row) {
++            const uint8_t* source = pixels + (flipped ? height - 1 - row : row) * rowBytes;
++            uint8_t* target = destination + row * rowBytes;
++            if (readsBGRA) {
++                memcpy(target, source, rowBytes);
++                continue;
++            }
++            for (size_t x = 0; x < rowBytes; x += 4) {
++                target[x] = source[x + 2];
++                target[x + 1] = source[x + 1];
++                target[x + 2] = source[x];
++                target[x + 3] = source[x + 3];
++            }
++        }
++        glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
++        copied = true;
++    }
++    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
++    // Skia keeps its own record of the bound framebuffer and pack state.
++    grContext->resetContext(kRenderTarget_GrGLBackendState | kPixelStore_GrGLBackendState | kMisc_GrGLBackendState);
++    return copied;
++}
++#else
+ AcceleratedSurface::RenderTargetSHMImage::~RenderTargetSHMImage() = default;
++#endif
+ 
+ void AcceleratedSurface::RenderTargetSHMImage::didRenderFrame()
+ {
+     if (m_surface->useSkia()) {
+         if (!m_skiaSurface)
+             return;
++#if PLATFORM(HAIKU)
++        if (m_surface->usesGL() && readBackThroughPixelBuffer())
++            return;
++#endif
+ 
+         SkImageInfo info = SkImageInfo::Make(m_bitmap->size().width(), m_bitmap->size().height(), SkColorType::kBGRA_8888_SkColorType, SkAlphaType::kPremul_SkAlphaType);
+ 
+@@ -460,6 +559,7 @@ void AcceleratedSurface::RenderTargetSHMImage::didRenderFrame()
      glReadPixels(0, 0, m_bitmap->size().width(), m_bitmap->size().height(), GL_BGRA, GL_UNSIGNED_BYTE, m_bitmap->mutableSpan().data());
  }
  
@@ -85952,7 +86379,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..905e6578946878edbf0a1fd31496b918
  std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::RenderTargetTexture::create(AcceleratedSurface& surface, const IntSize& size)
  {
      auto texture = BitmapTexture::create(size);
-@@ -515,8 +518,9 @@ AcceleratedSurface::RenderTargetTexture::RenderTargetTexture(AcceleratedSurface&
+@@ -515,8 +615,9 @@ AcceleratedSurface::RenderTargetTexture::RenderTargetTexture(AcceleratedSurface&
  }
  
  AcceleratedSurface::RenderTargetTexture::~RenderTargetTexture() = default;
@@ -85963,7 +86390,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..905e6578946878edbf0a1fd31496b918
  
  #if USE(WPE_RENDERER)
  std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::RenderTargetWPEBackend::create(AcceleratedSurface& surface, const IntSize& initialSize, UnixFileDescriptor&& hostFD)
-@@ -594,7 +598,7 @@ void AcceleratedSurface::RenderTargetWPEBackend::didRenderFrame()
+@@ -594,7 +695,7 @@ void AcceleratedSurface::RenderTargetWPEBackend::didRenderFrame()
  AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
      : m_surface(surface)
  {
@@ -85972,7 +86399,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..905e6578946878edbf0a1fd31496b918
      if (!m_surface->hardwareAccelerationEnabled()) {
          m_type = Type::SharedMemory;
          return;
-@@ -632,7 +636,7 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
+@@ -632,7 +733,7 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
      case PlatformDisplay::Type::GBM:
  #endif
          break;
@@ -85981,7 +86408,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..905e6578946878edbf0a1fd31496b918
  #if USE(WPE_RENDERER)
      case PlatformDisplay::Type::WPE:
          m_type = Type::WPEBackend;
-@@ -646,11 +650,19 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
+@@ -646,11 +747,19 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
      case PlatformDisplay::Type::Default:
          break;
  #endif // PLATFORM(GTK)
@@ -86002,7 +86429,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..905e6578946878edbf0a1fd31496b918
  void AcceleratedSurface::SwapChain::setupBufferFormat()
  {
      if (m_type != Type::EGLImage)
-@@ -749,7 +761,7 @@ bool AcceleratedSurface::SwapChain::resize(const IntSize& size)
+@@ -749,7 +858,7 @@ bool AcceleratedSurface::SwapChain::resize(const IntSize& size)
  
  bool AcceleratedSurface::SwapChain::handleBufferFormatChangeIfNeeded()
  {
@@ -86011,7 +86438,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..905e6578946878edbf0a1fd31496b918
      if (m_type == Type::EGLImage) {
          Locker locker { m_bufferFormatLock };
          if (m_bufferFormatChanged) {
-@@ -765,7 +777,7 @@ bool AcceleratedSurface::SwapChain::handleBufferFormatChangeIfNeeded()
+@@ -765,7 +874,7 @@ bool AcceleratedSurface::SwapChain::handleBufferFormatChangeIfNeeded()
  std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::SwapChain::createTarget() const
  {
      switch (m_type) {
@@ -86020,7 +86447,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..905e6578946878edbf0a1fd31496b918
  #if USE(GBM) || OS(ANDROID)
      case Type::EGLImage: {
          Locker locker { m_bufferFormatLock };
-@@ -773,7 +785,11 @@ std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::SwapChain:
+@@ -773,7 +882,11 @@ std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::SwapChain:
      }
  #endif
      case Type::Texture:
@@ -86032,7 +86459,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..905e6578946878edbf0a1fd31496b918
      case Type::SharedMemory:
          return RenderTargetSHMImage::create(m_surface.get(), m_size);
  #endif
-@@ -929,7 +945,7 @@ bool AcceleratedSurface::shouldPaintMirrored() const
+@@ -929,7 +1042,7 @@ bool AcceleratedSurface::shouldPaintMirrored() const
      switch (m_swapChain.type()) {
      case SwapChain::Type::Invalid:
          return false;
@@ -86041,7 +86468,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..905e6578946878edbf0a1fd31496b918
      case SwapChain::Type::Texture:
  #if USE(GBM) || OS(ANDROID)
      case SwapChain::Type::EGLImage:
-@@ -1000,7 +1016,7 @@ void AcceleratedSurface::backgroundColorDidChange()
+@@ -1000,7 +1113,7 @@ void AcceleratedSurface::backgroundColorDidChange()
      if (isOpaque == wasOpaque)
          return;
  
@@ -86050,7 +86477,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..905e6578946878edbf0a1fd31496b918
      m_swapChain.setupBufferFormat();
  #endif
  }
-@@ -1022,7 +1038,7 @@ void AcceleratedSurface::didCreateCompositingRunLoop(RunLoop& runLoop)
+@@ -1022,7 +1135,7 @@ void AcceleratedSurface::didCreateCompositingRunLoop(RunLoop& runLoop)
  #if USE(GLIB_EVENT_LOOP)
      m_releaseUnusedBuffersTimer->setPriority(RunLoopSourcePriority::ReleaseUnusedResourcesTimer);
  #endif
@@ -86059,7 +86486,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..905e6578946878edbf0a1fd31496b918
      WebProcess::singleton().parentProcessConnection()->addMessageReceiver(runLoop, *this, Messages::AcceleratedSurface::messageReceiverName(), m_id);
  #endif
  }
-@@ -1043,7 +1059,7 @@ void AcceleratedSurface::willDestroyCompositingRunLoop()
+@@ -1043,7 +1156,7 @@ void AcceleratedSurface::willDestroyCompositingRunLoop()
              protectedThis->m_releaseUnusedBuffersTimer = nullptr;
          });
      }
@@ -86068,7 +86495,39 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..905e6578946878edbf0a1fd31496b918
      WebProcess::singleton().parentProcessConnection()->removeMessageReceiver(Messages::AcceleratedSurface::messageReceiverName(), m_id);
  #endif
  }
-@@ -1188,7 +1204,7 @@ const std::optional<Damage>& AcceleratedSurface::renderTargetDamage()
+@@ -1155,8 +1268,14 @@ void AcceleratedSurface::didRenderFrame(TargetContents targetContents)
+     if (!m_target)
+         return;
+ 
++#if PLATFORM(HAIKU)
++    bigtime_t renderStart = PresentStageStatsHaiku::enabled() ? system_time() : 0;
++#endif
+     if (usesGL())
+         m_target->sync(m_useExplicitSync);
++#if PLATFORM(HAIKU)
++    bigtime_t readbackStart = renderStart ? system_time() : 0;
++#endif
+ 
+     Vector<IntRect, 1> damageRects;
+ #if ENABLE(DAMAGE_TRACKING)
+@@ -1167,6 +1286,16 @@ void AcceleratedSurface::didRenderFrame(TargetContents targetContents)
+ #endif
+ 
+     m_target->didRenderFrame();
++#if PLATFORM(HAIKU)
++    if (renderStart) {
++        static NeverDestroyed<PresentStageStatsHaiku> gpuWait("gpu-wait (web)");
++        static NeverDestroyed<PresentStageStatsHaiku> readback("readback (web)");
++        double megapixels = m_swapChain.size().width() * double(m_swapChain.size().height()) / 1e6;
++        bigtime_t now = system_time();
++        gpuWait.get().add(readbackStart - renderStart, megapixels);
++        readback.get().add(now - readbackStart, megapixels);
++    }
++#endif
+     m_pendingFrameNotifyTargets.insert(0, { m_target, WTF::move(damageRects) });
+     m_target = nullptr;
+ }
+@@ -1188,7 +1317,7 @@ const std::optional<Damage>& AcceleratedSurface::renderTargetDamage()
  }
  #endif
  
@@ -86078,7 +86537,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..905e6578946878edbf0a1fd31496b918
  {
  #if USE(WPE_RENDERER)
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.h b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.h
-index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..178542aa7dd94d3deba144b3c414d609dd12c1c4 100644
+index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..6ce3d3f97912e5496d393df4b0a7d33372beb47a 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.h
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.h
 @@ -27,10 +27,15 @@
@@ -86156,7 +86615,15 @@ index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..178542aa7dd94d3deba144b3c414d609
      class RenderTargetShareableBuffer : public RenderTarget {
          WTF_MAKE_TZONE_ALLOCATED(RenderTargetShareableBuffer);
      public:
-@@ -323,6 +329,9 @@ private:
+@@ -319,10 +325,17 @@ private:
+     private:
+         bool supportsExplicitSync() const override { return false; }
+         void didRenderFrame() override;
++#if PLATFORM(HAIKU)
++        bool readBackThroughPixelBuffer();
++        unsigned m_pixelBuffer { 0 };
++#endif
+ 
          const Ref<WebCore::ShareableBitmap> m_bitmap;
      };
  
@@ -86166,7 +86633,7 @@ index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..178542aa7dd94d3deba144b3c414d609
      class RenderTargetTexture final : public RenderTargetShareableBuffer {
      public:
          static std::unique_ptr<RenderTarget> create(AcceleratedSurface&, const WebCore::IntSize&);
-@@ -334,7 +343,8 @@ private:
+@@ -334,7 +347,8 @@ private:
  
          Ref<WebCore::BitmapTexture> m_texture;
      };
@@ -86176,7 +86643,7 @@ index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..178542aa7dd94d3deba144b3c414d609
  
  #if USE(WPE_RENDERER)
      class RenderTargetWPEBackend final : public RenderTarget {
-@@ -361,7 +371,7 @@ private:
+@@ -361,7 +375,7 @@ private:
  
          enum class Type {
              Invalid,
@@ -86185,7 +86652,7 @@ index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..178542aa7dd94d3deba144b3c414d609
  #if USE(GBM) || OS(ANDROID)
              EGLImage,
  #endif
-@@ -392,7 +402,7 @@ private:
+@@ -392,7 +406,7 @@ private:
          }
  #endif
  
@@ -86194,7 +86661,7 @@ index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..178542aa7dd94d3deba144b3c414d609
          void setupBufferFormat();
  #endif
  
-@@ -413,7 +423,7 @@ private:
+@@ -413,7 +427,7 @@ private:
          Vector<std::unique_ptr<RenderTarget>, s_maximumBuffers> m_freeTargets;
          Vector<std::unique_ptr<RenderTarget>, s_maximumBuffers> m_lockedTargets;
          bool m_initialTargetsCreated { false };
@@ -86203,7 +86670,7 @@ index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..178542aa7dd94d3deba144b3c414d609
          mutable Lock m_bufferFormatLock;
          BufferFormat m_bufferFormat WTF_GUARDED_BY_LOCK(m_bufferFormatLock);
          bool m_bufferFormatChanged WTF_GUARDED_BY_LOCK(m_bufferFormatLock) { false };
-@@ -478,7 +488,7 @@ private:
+@@ -478,7 +492,7 @@ private:
      bool m_useSkia { false };
      uint64_t m_id { 0 };
      RenderingPurpose m_renderingPurpose { RenderingPurpose::Composited };

@@ -9,6 +9,7 @@
 #include <MessageRunner.h>
 #if SUMMIT_MODERN_WEBKIT
 #include "ExtensionInstaller.h"
+#include <WebKit/WebKitView.h>
 #include <cstring>
 #endif
 #include <algorithm>
@@ -149,12 +150,20 @@ void ExtensionActionButton::SetAction(const BMessage& action, uint64 snapshot)
     fBitmap.reset();
     const void* pixels = nullptr;
     ssize_t length = 0;
-    if (action.FindData("icon_bgra", B_RAW_TYPE, &pixels, &length) == B_OK && length == 16 * 16 * 4) {
-        auto bitmap = std::make_unique<BBitmap>(BRect(0, 0, 15, 15), B_RGBA32);
+    // On a screen drawn at twice the density the 32 pixel icon fills the
+    // same 16 point square pixel for pixel.
+    int32 size = 16;
+    if (BWebKitDisplayScale() > 1.25f && action.FindData("icon_bgra_32", B_RAW_TYPE, &pixels, &length) == B_OK
+        && length == 32 * 32 * 4)
+        size = 32;
+    else if (action.FindData("icon_bgra", B_RAW_TYPE, &pixels, &length) != B_OK || length != 16 * 16 * 4)
+        pixels = nullptr;
+    if (pixels) {
+        auto bitmap = std::make_unique<BBitmap>(BRect(0, 0, size - 1, size - 1), B_RGBA32);
         if (bitmap->InitCheck() == B_OK) {
-            for (int row = 0; row < 16; ++row)
+            for (int row = 0; row < size; ++row)
                 std::memcpy(static_cast<uint8*>(bitmap->Bits()) + row * bitmap->BytesPerRow(),
-                    static_cast<const uint8*>(pixels) + row * 64, 64);
+                    static_cast<const uint8*>(pixels) + row * size * 4, size * 4);
             fBitmap = std::move(bitmap);
         }
     }
@@ -178,7 +187,7 @@ void ExtensionActionButton::Draw(BRect update)
     if (fBitmap) {
         SetDrawingMode(B_OP_ALPHA);
         SetBlendingMode(B_PIXEL_ALPHA, B_ALPHA_OVERLAY);
-        DrawBitmap(fBitmap.get(), origin);
+        DrawBitmap(fBitmap.get(), fBitmap->Bounds(), BRect(origin, origin + BPoint(15, 15)), B_FILTER_BITMAP_BILINEAR);
         SetDrawingMode(B_OP_COPY);
     } else {
         SetHighColor(IsEnabled() ? rgb_color{49, 99, 84, 255} : rgb_color{163, 170, 168, 255});
@@ -258,7 +267,8 @@ void DrawSiteIcon(BView* view, const BBitmap* icon, BPoint leftTop)
         view->PushState();
         view->SetDrawingMode(B_OP_ALPHA);
         view->SetBlendingMode(B_PIXEL_ALPHA, B_ALPHA_OVERLAY);
-        view->DrawBitmap(icon, BRect(leftTop, leftTop + BPoint(15, 15)));
+        // Icons are kept at 32 pixels: exact on a 200% screen, filtered down otherwise.
+        view->DrawBitmap(icon, icon->Bounds(), BRect(leftTop, leftTop + BPoint(15, 15)), B_FILTER_BITMAP_BILINEAR);
         view->PopState();
         return;
     }

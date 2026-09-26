@@ -106,7 +106,8 @@ bool FaviconCache::Store(const std::string& pageURL, const void* data, size_t si
 {
     const auto key = FaviconKey(pageURL);
     if (key.empty() || !data || !size) return false;
-    auto scaled = ScaleImage(Decode(data, size), 16);
+    // Twice the 16 point size shown, for screens drawn at 200%.
+    auto scaled = ScaleImage(Decode(data, size), 32);
     auto png = EncodePNG(scaled);
     auto bitmap = ToBitmap(scaled);
     if (png.empty() || !bitmap) return false;
