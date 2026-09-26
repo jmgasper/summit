@@ -99,10 +99,23 @@ public:
         return true;
     }
 
+    // When the view was last shown (its tab selected) and when its first frame
+    // after that arrived: a tab switch's latency, for benchmarks.
+    void Show() override
+    {
+        BWebKitView::Show();
+        fShownAt = system_time();
+        fFirstFrameAfterShow = 0;
+    }
+    bigtime_t ShownAt() const { return fShownAt; }
+    bigtime_t FirstFrameAfterShow() const { return fFirstFrameAfterShow; }
+
     void MessageReceived(BMessage* message) override
     {
         if (message->what == 'wvfr') {
             const bigtime_t now = system_time();
+            if (fShownAt && !fFirstFrameAfterShow)
+                fFirstFrameAfterShow = now;
             if (fCaptureStart) {
                 const bigtime_t gap = now - (fCaptureLastFrame ? fCaptureLastFrame : fCaptureStart);
                 fCaptureLongestGap = std::max(fCaptureLongestGap, gap);
@@ -154,6 +167,8 @@ public:
     }
 
 private:
+    bigtime_t fShownAt { 0 };
+    bigtime_t fFirstFrameAfterShow { 0 };
     bigtime_t fCaptureStart { 0 };
     bigtime_t fCaptureLastFrame { 0 };
     bigtime_t fCaptureLongestGap { 0 };
@@ -538,7 +553,14 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
 #endif
         if (!options.urls.empty()) for (const auto& url : options.urls) CreateTab(url);
         else if (!options.session.tabs.empty()) {
+#if SUMMIT_MODERN_WEBKIT
+            fRestoringSession = true;
+            for (const auto& page : options.session.tabs) { fRestoringTitle = page.title; CreateTab(page.url, false); }
+            fRestoringSession = false;
+            fRestoringTitle.clear();
+#else
             for (const auto& page : options.session.tabs) CreateTab(page.url, false);
+#endif
             if (!fTabs.empty()) SelectTab(fTabs[std::min(options.session.selected, fTabs.size() - 1)].id);
         } else CreateTab(HomeAddress());
         // Invalid command-line or saved URLs (or home page) may all have been rejected.
@@ -794,6 +816,14 @@ void BrowserWindow::CreateTab(const std::string& input, bool select, BWebView* a
         : address.url == kBookmarksPage ? "Bookmarks" : "Loading…";
     created.pageRevision = fPagesRevision;
     created.messenger = BMessenger(webView);
+    // As in other browsers, a restored session's tabs wait to be selected
+    // before they load: a window of fifteen tabs would otherwise start fifteen
+    // page loads and web processes at once, with only one of them on screen.
+    const bool deferred = fRestoringSession && !newPage && !address.url.starts_with("summit:");
+    if (deferred) {
+        created.deferredURL = LoadableURL(address.url);
+        if (!fRestoringTitle.empty()) created.title = fRestoringTitle;
+    }
     const int64 createdID = created.id;
     fTabs.insert(fTabs.begin() + position, std::move(created));
     if (select || fSelected == 0) SelectTab(createdID);
@@ -808,7 +838,7 @@ void BrowserWindow::CreateTab(const std::string& input, bool select, BWebView* a
     if (select || fSelected == 0) SelectTab(fTabs.back().id);
 #endif
 #if SUMMIT_MODERN_WEBKIT
-    if (!newPage) webView->LoadURL(LoadableURL(address.url).c_str());
+    if (!newPage && !deferred) webView->LoadURL(LoadableURL(address.url).c_str());
 #else
     if (!adopted) webView->LoadURL(LoadableURL(address.url).c_str(), select);
 #endif
@@ -865,6 +895,8 @@ void BrowserWindow::SelectTab(int64 id, bool forClose)
         fTabs[i].view->WebPage()->ResendNotifications();
 #else
         ShowTabStatus(fTabs[i]);
+        if (!fRestoringSession && !fTabs[i].deferredURL.empty())
+            fTabs[i].view->LoadURL(std::exchange(fTabs[i].deferredURL, {}).c_str());
 #endif
         fTabs[i].view->MakeFocus();
         fAddress->SetText(DisplayURL(fTabs[i].url).c_str());
@@ -1315,9 +1347,9 @@ void BrowserWindow::OpenTabsForCommand(const BMessage& message, uint64 identifie
             fExtensionWindowTabs[command.extension].push_back(tab->id);
             if (select) { SelectTab(tab->id); select = false; }
         }
-        if (urls.empty() && command.views.empty()) urls.push_back(HomeAddress());
+        if (urls.empty() && command.views.empty()) urls.push_back(NewTabAddress());
         if (urls.empty()) { RespondToCommand(identifier, B_OK, command.views); return; }
-    } else if (urls.empty()) urls.push_back(HomeAddress());
+    } else if (urls.empty()) urls.push_back(NewTabAddress());
     const int32 index = window ? -1 : message.GetInt32("index", -1);
     command.pending = urls.size();
     fOpenCommands.push_back(std::move(command));
@@ -1720,6 +1752,11 @@ std::string BrowserWindow::HomeAddress() const
     const auto home = fShared->Read([](const Profile& profile) { return profile.homeURL; });
     return home.empty() ? "summit:home" : home;
 }
+std::string BrowserWindow::NewTabAddress() const
+{
+    auto page = fShared->NewTabOverride();
+    return page.empty() ? HomeAddress() : page;
+}
 std::filesystem::path BrowserWindow::InternalPagePath(const std::string& url) const
 {
     return fShared->Path().parent_path() / "Pages" / (url == kHistoryPage ? "history.html" : "bookmarks.html");
@@ -2001,7 +2038,7 @@ void BrowserWindow::MessageReceived(BMessage* message)
         case kNewTab: {
             const char* url = nullptr;
             // A new tab shows the home page; its address is selected, ready to type over.
-            CreateTab(message->FindString("url", &url) == B_OK ? url : HomeAddress());
+            CreateTab(message->FindString("url", &url) == B_OK ? url : NewTabAddress());
             fAddress->MakeFocus();
             fAddress->TextView()->SelectAll();
             break;
@@ -2017,6 +2054,10 @@ void BrowserWindow::MessageReceived(BMessage* message)
             if (message->what == kReloadTab) {
 #if SUMMIT_MODERN_WEBKIT
                 if (!PrepareTabNavigation(*target)) break;
+                if (!target->deferredURL.empty()) {
+                    target->view->LoadURL(std::exchange(target->deferredURL, {}).c_str());
+                    break;
+                }
 #endif
                 target->view->Reload();
             } else if (message->what == kDuplicateTab) {
@@ -2439,6 +2480,10 @@ void BrowserWindow::MessageReceived(BMessage* message)
                 item.AddUInt64("loadSuccessSequence", page.loadSuccessSequence);
                 item.AddInt64("loadStartedAt", page.loadStartedAt);
                 item.AddInt64("loadFinishedAt", page.loadFinishedAt);
+                if (auto* stats = dynamic_cast<FrameStatsWebKitView*>(page.view)) {
+                    item.AddInt64("shownAt", stats->ShownAt());
+                    item.AddInt64("firstFrameAfterShow", stats->FirstFrameAfterShow());
+                }
 #endif
                 reply.AddMessage("tab", &item);
             }

@@ -29,6 +29,7 @@ LIBRARIES = {'libWebKit', 'libJavaScriptCore', 'libicudata', 'libicui18n', 'libi
 HEADERS = {
     'WebKitView.h': 'UIProcess/API/haiku/WebKitView.h',
     'WebKitContext.h': 'UIProcess/API/haiku/WebKitContext.h',
+    'WebKitEmbedding.h': 'UIProcess/API/haiku/WebKitEmbedding.h',
     'WebKitExtensionPermission.h': 'UIProcess/API/haiku/WebKitExtensionPermission.h',
     'WebKitInfo.h': 'UIProcess/API/haiku/WebKitInfo.h',
     'WKBase.h': 'Shared/API/c/WKBase.h',

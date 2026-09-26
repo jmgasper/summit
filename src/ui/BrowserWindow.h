@@ -143,6 +143,8 @@ private:
         double pageZoom = 1, textZoom = 1;
         // system_time() of the last load's start and end, for benchmarks.
         bigtime_t loadStartedAt = 0, loadFinishedAt = 0;
+        // A restored background tab loads this when it is first selected.
+        std::string deferredURL;
 #endif
     };
 #if SUMMIT_MODERN_WEBKIT
@@ -166,6 +168,9 @@ private:
     void RestoreCloseFocus(const CloseFocusState&);
     std::shared_ptr<BWebKitContext> fWebKitContext;
     bool fClosingWindow = false;
+    // Set while a saved session's tabs are created; see CreateTab().
+    bool fRestoringSession = false;
+    std::string fRestoringTitle;
     bool fWindowCloseInvalidated = false;
     bool fWindowCloseQueued = false;
     bool fCloseCommitPending = false;
@@ -295,6 +300,8 @@ private:
     void IconLoaded(const BMessage& message);
     void SetBookmarksBarVisible(bool visible);
     std::string HomeAddress() const;
+    // An extension's chrome_url_overrides.newtab page, else the home page.
+    std::string NewTabAddress() const;
     std::string DisplayURL(const std::string& url) const;
     void SaveSession();
     void ShowError(const std::string& error);

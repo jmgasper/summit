@@ -19,6 +19,8 @@ public:
         std::string baseURL;
         std::string error;
         bool installed = true;
+        // chrome_url_overrides.newtab of the loaded extension, as an absolute URL.
+        std::string newTabURL;
     };
     ExtensionController(std::shared_ptr<BWebKitContext>, std::filesystem::path catalogRoot,
         std::function<void()> changed = { });
@@ -31,7 +33,8 @@ public:
     bool IsReady() const;
     bool SetEnabled(const std::string& identifier, bool enabled);
     bool Remove(const std::string& identifier);
-    void AddLoaded(InstalledExtension, std::string baseURL, std::string error = {}, bool installed = true);
+    void AddLoaded(InstalledExtension, std::string baseURL, std::string error = {}, bool installed = true,
+        std::string newTabURL = {});
 private:
     enum class Pending { None, Prepare, Load, Unload };
     enum class Operation { None, Enable, Disable, Remove };

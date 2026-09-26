@@ -50,6 +50,18 @@ public:
     // key order. A window closed while Summit keeps running is removed.
     void SetWindowSession(uint64 key, const WindowSession& session);
     void RemoveWindowSession(uint64 key);
+    // The page a new tab opens when an enabled extension overrides it
+    // (chrome_url_overrides.newtab); empty for the home page. Not saved.
+    void SetNewTabOverride(std::string url)
+    {
+        std::lock_guard lock(fMutex);
+        fNewTabOverride = std::move(url);
+    }
+    std::string NewTabOverride() const
+    {
+        std::lock_guard lock(fMutex);
+        return fNewTabOverride;
+    }
     // Writes the profile if anything changed since the last save.
     bool Save(std::string& error);
 
@@ -61,6 +73,7 @@ private:
     Profile fProfile;
     std::vector<WindowSession> fSavedWindows;
     std::string fLoadError;
+    std::string fNewTabOverride;
     bool fWritable = true;
     std::map<uint64, WindowSession> fSessions;
     std::vector<BMessenger> fListeners;

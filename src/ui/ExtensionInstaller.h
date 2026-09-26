@@ -14,7 +14,8 @@ namespace summit {
 std::string ExtensionDisplayText(std::string);
 class ExtensionInstaller final : public BHandler {
 public:
-    using Loaded = std::function<void(InstalledExtension, std::string, std::string, bool)>;
+    // entry, base URL, error, installed, new-tab override URL
+    using Loaded = std::function<void(InstalledExtension, std::string, std::string, bool, std::string)>;
     ExtensionInstaller(std::shared_ptr<BWebKitContext>, std::filesystem::path, Loaded, std::function<void()> changed);
     ~ExtensionInstaller() override;
     void Start();

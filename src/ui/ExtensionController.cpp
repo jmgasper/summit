@@ -37,7 +37,7 @@ void ExtensionController::Start()
         Changed();
         return;
     }
-    for (auto& entry : installed) fEntries.push_back({ std::move(entry), false, { }, { } });
+    for (auto& entry : installed) fEntries.push_back({ std::move(entry), false, { }, { }, true, { } });
     Changed();
     Next();
 }
@@ -73,10 +73,11 @@ bool ExtensionController::IsReady() const
 {
     return fStarted && !fStopping && fCatalogError.empty() && fIndex == fEntries.size() && !HasPendingWork();
 }
-void ExtensionController::AddLoaded(InstalledExtension entry, std::string baseURL, std::string error, bool installed)
+void ExtensionController::AddLoaded(InstalledExtension entry, std::string baseURL, std::string error, bool installed,
+    std::string newTabURL)
 {
     // The app serializes installer operations with this controller.
-    fEntries.push_back({ std::move(entry), true, std::move(baseURL), std::move(error), installed });
+    fEntries.push_back({ std::move(entry), true, std::move(baseURL), std::move(error), installed, std::move(newTabURL) });
     if (!fStopping) fIndex = fEntries.size();
     Changed();
     if (fStopping) Next();
@@ -173,6 +174,7 @@ void ExtensionController::MessageReceived(BMessage* message)
         if (pending == Pending::Load && error == B_OK) {
             entry.loaded = true;
             entry.baseURL = field(*message, "base_url");
+            entry.newTabURL = field(*message, "new_tab_url");
             fToken.clear();
         }
         DiscardToken();
@@ -219,6 +221,7 @@ void ExtensionController::MessageReceived(BMessage* message)
     }
     entry.loaded = pending == Pending::Load;
     entry.baseURL = entry.loaded ? field(*message, "base_url") : std::string();
+    entry.newTabURL = entry.loaded ? field(*message, "new_tab_url") : std::string();
     entry.error.clear();
     fToken.clear();
     if (pending == Pending::Unload && (fOperation == Operation::Disable || fOperation == Operation::Remove))

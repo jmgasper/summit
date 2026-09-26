@@ -66,6 +66,7 @@ if hashlib.sha256(patch.read_bytes()).hexdigest() != lock['patch']['sha256']:
 headers = {
     'WebKitView.h': 'UIProcess/API/haiku/WebKitView.h',
     'WebKitContext.h': 'UIProcess/API/haiku/WebKitContext.h',
+    'WebKitEmbedding.h': 'UIProcess/API/haiku/WebKitEmbedding.h',
     'WebKitExtensionPermission.h': 'UIProcess/API/haiku/WebKitExtensionPermission.h',
     'WebKitInfo.h': 'UIProcess/API/haiku/WebKitInfo.h',
     'WKBase.h': 'Shared/API/c/WKBase.h',

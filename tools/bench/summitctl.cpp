@@ -17,7 +17,8 @@
 //   summitctl --team ID framestats            frame counts since the targeted scroll burst began
 //   summitctl --team ID quit                  B_QUIT_REQUESTED to that team only
 //   summitctl --team ID windows               one JSON line per browser window: index, frame, tabs
-//   summitctl --team ID newwindow URL...      a new browser window with one tab per URL
+//   summitctl --team ID newwindow [frame=L,T,R,B] URL...
+//                                             a new browser window with one tab per URL
 //   --window N                                address the Nth browser window (default 0) instead
 //                                             of the first; windows are counted in the
 //                                             application's window list order
@@ -236,7 +237,13 @@ int main(int argc, char** argv)
     }
     if (command == "newwindow") {
         BMessage open(summit::kNewWindow);
-        for (int i = index; i < argc; ++i) open.AddString("url", argv[i]);
+        for (int i = index; i < argc; ++i) {
+            float left, top, right, bottom;
+            if (std::sscanf(argv[i], "frame=%f,%f,%f,%f", &left, &top, &right, &bottom) == 4)
+                open.AddRect("frame", BRect(left, top, right, bottom));
+            else
+                open.AddString("url", argv[i]);
+        }
         return app.SendMessage(&open, static_cast<BHandler*>(nullptr), timeout) == B_OK ? 0 : 5;
     }
     // The application's window list also holds windows that are not browser
@@ -298,11 +305,12 @@ int main(int argc, char** argv)
             int64 id = -1; bool loading = false, loadError = false;
             tab.FindInt64("id", &id); tab.FindBool("loading", &loading); tab.FindBool("loadError", &loadError);
             std::printf("%s{\"id\":%lld,\"url\":\"%s\",\"title\":\"%s\",\"loading\":%s,\"loadError\":%s,"
-                "\"loadErrorText\":\"%s\",\"loadOutcome\":\"%s\",\"loadStartedAt\":%lld,\"loadFinishedAt\":%lld}",
+                "\"loadErrorText\":\"%s\",\"loadOutcome\":\"%s\",\"loadStartedAt\":%lld,\"loadFinishedAt\":%lld,\"shownAt\":%lld,\"firstFrameAfterShow\":%lld}",
                 i ? "," : "", static_cast<long long>(id), Escape(String(tab, "url")).c_str(),
                 Escape(String(tab, "title")).c_str(), loading ? "true" : "false", loadError ? "true" : "false",
                 Escape(String(tab, "loadErrorText")).c_str(), Escape(String(tab, "loadOutcome")).c_str(),
-                static_cast<long long>(tab.GetInt64("loadStartedAt", 0)), static_cast<long long>(tab.GetInt64("loadFinishedAt", 0)));
+                static_cast<long long>(tab.GetInt64("loadStartedAt", 0)), static_cast<long long>(tab.GetInt64("loadFinishedAt", 0)),
+                static_cast<long long>(tab.GetInt64("shownAt", 0)), static_cast<long long>(tab.GetInt64("firstFrameAfterShow", 0)));
         }
         std::puts("]}");
         return 0;

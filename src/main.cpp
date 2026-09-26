@@ -169,8 +169,8 @@ public:
             AddHandler(fExtensions.get());
             fExtensions->Start();
             fInstaller = std::make_unique<summit::ExtensionInstaller>(fWebKitContext, fProfile / "Extensions",
-                [this](summit::InstalledExtension entry, std::string baseURL, std::string error, bool installed) {
-                    fExtensions->AddLoaded(std::move(entry), std::move(baseURL), std::move(error), installed);
+                [this](summit::InstalledExtension entry, std::string baseURL, std::string error, bool installed, std::string newTabURL) {
+                    fExtensions->AddLoaded(std::move(entry), std::move(baseURL), std::move(error), installed, std::move(newTabURL));
                 }, [this] { RefreshExtensions(); });
             AddHandler(fInstaller.get());
             fInstaller->Start();
@@ -623,6 +623,19 @@ private:
     }
     void RefreshExtensions()
     {
+        if (fExtensions && fShared) {
+            // Like Chrome, the most recently installed enabled extension that
+            // overrides the new tab page supplies it.
+            std::string newTab;
+            uint64 order = 0;
+            for (const auto& entry : fExtensions->Entries()) {
+                if (entry.loaded && !entry.newTabURL.empty() && entry.installation.installationOrder >= order) {
+                    newTab = entry.newTabURL;
+                    order = entry.installation.installationOrder;
+                }
+            }
+            fShared->SetNewTabOverride(std::move(newTab));
+        }
         if (!fExtensionWindow.IsValid() || !fExtensions || !fInstaller) return;
         BMessage state = fInstaller->Snapshot();
         state.what = summit::kExtensionsState;

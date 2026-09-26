@@ -60,7 +60,7 @@ struct ExtensionInstaller::ImportWork {
 struct ExtensionInstaller::Draft {
     std::unique_ptr<StagedExtensionPackage> package;
     InstalledExtension entry;
-    std::string token, body, baseURL, rollbackError;
+    std::string token, body, baseURL, newTabURL, rollbackError;
     std::vector<std::string> permissions, origins;
     bool ready = false, loaded = false;
 };
@@ -169,7 +169,14 @@ void ExtensionInstaller::Approve(uint64 generation, bool allowFiles, bool allowP
     options.expectedFingerprint = fDraft->entry.fingerprint;
     BWebKitExtensionInstallation installation { fDraft->entry.package, fDraft->entry.installationOrder };
     options.permissions = fDraft->permissions;
-    options.origins = fDraft->origins;
+    // Content scripts and host permissions commonly list file:///* next to web
+    // origins (Bitwarden, Vimium). Local-file access is a separate opt-in, as in
+    // Chrome: without it, install the extension and leave those origins
+    // ungranted. The engine rejects a load whose grants name file:// origins
+    // without allowFileURLs, which used to fail the whole installation with
+    // "Operation not allowed".
+    for (const auto& origin : fDraft->origins)
+        if (allowFiles || origin.compare(0, 5, "file:") != 0) options.origins.push_back(origin);
     options.allowFileURLs = allowFiles;
     options.allowPrivateBrowsing = allowPrivate;
     fPending = B_WEBKIT_EXTENSION_LOADED;
@@ -181,7 +188,7 @@ void ExtensionInstaller::Approve(uint64 generation, bool allowFiles, bool allowP
 void ExtensionInstaller::RetainUnsavedRuntime(std::string reason)
 {
     // An unload failure must remain visible and owned by normal app shutdown.
-    if (fLoaded) fLoaded(fDraft->entry, fDraft->baseURL, reason, false);
+    if (fLoaded) fLoaded(fDraft->entry, fDraft->baseURL, reason, false, fDraft->newTabURL);
     Finish(std::move(reason));
 }
 void ExtensionInstaller::Rollback(std::string reason)
@@ -213,6 +220,7 @@ void ExtensionInstaller::MessageReceived(BMessage* message)
         fDraft->loaded = true;
         fDraft->token.clear();
         fDraft->baseURL = field(*message, "base_url");
+        fDraft->newTabURL = field(*message, "new_tab_url");
         uint64 installationOrder = 0;
         if (field(*message, "extension_identifier") != fDraft->entry.identifier
             || field(*message, "fingerprint") != fDraft->entry.fingerprint
@@ -226,7 +234,7 @@ void ExtensionInstaller::MessageReceived(BMessage* message)
         if (fStopping || fCancelled) { Rollback("Installation cancelled."); return; }
         std::string error;
         if (!fCatalog.Install(*fDraft->package, fDraft->entry, error)) { Rollback("Could not save the installation: " + error); return; }
-        if (fLoaded) fLoaded(fDraft->entry, fDraft->baseURL, {}, true);
+        if (fLoaded) fLoaded(fDraft->entry, fDraft->baseURL, {}, true, fDraft->newTabURL);
         Finish("Extension installed.");
         return;
     }
@@ -277,6 +285,8 @@ void ExtensionInstaller::MessageReceived(BMessage* message)
         if (requested.empty()) draft.body += "  No additional permissions requested.\n";
         for (const auto& value : requested) draft.body += "  • " + ExtensionDisplayText(value) + "\n";
         if (!draft.origins.empty()) draft.body += "\nWebsite permissions allow access to data on the listed sites.\n";
+        if (std::any_of(draft.origins.begin(), draft.origins.end(), [](const auto& origin) { return origin.compare(0, 5, "file:") == 0; }))
+            draft.body += "Local files are only included when \"Allow access to local files\" is checked.\n";
         if (!optional.empty()) {
             draft.body += "\nOptional access (not granted by this installation):\n";
             for (const auto& value : optional) draft.body += "  • " + ExtensionDisplayText(value) + "\n";
