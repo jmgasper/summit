@@ -24,7 +24,10 @@ echo "--- catalog"; grep -c '"identifier"' $S/profile-$N/Extensions/catalog.json
 $E --team $T wframe Extensions $MANAGER_AWAY
 if test "$URL" != about:blank; then $C --team $T navigate "$URL"; sleep $WAIT; fi
 $C --team $T state | cut -c1-600
-screenshot -s -f png $S/shot-$N.png >/dev/null 2>&1
+# screenshot has hung in silent mode, and in the VM its hang was followed by
+# every write to the boot volume blocking; SURVEY_NO_SHOT=1 skips it (take
+# pictures from the host with tools/vm.py screenshot instead).
+if test -z "$SURVEY_NO_SHOT"; then timeout 20 screenshot -s -f png $S/shot-$N.png >/dev/null 2>&1; fi
 if test -z "$KEEP"; then
   $C --team $T quit; sleep 4
   if ps | grep -q " $T "; then kill $T; sleep 1; fi

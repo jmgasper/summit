@@ -32,6 +32,14 @@ and start. What the runs found and what changed:
 | Grammarly | "Manage storage timeout" | Not a failure: its 3 s timer logs that even after `storage.managed.get()` answered (an API probe confirms both forms answer). |
 | Tampermonkey | "tabs.onUpdated listener can only be registered during startup" | Its own guard, after `userScripts` is missing (not implemented). |
 
+Password managers (no accounts in the VM, so install and start only): 1Password
+8.12 (Firefox package) initializes, with only its expected desktop-app
+connection failures; Bitwarden (Chrome) installs without file access and its
+service worker starts quietly (it had spun on "Safari VaultTimeout"
+exceptions, 878,706 in two minutes, under the Safari user agent); Bitwarden
+(Firefox), Proton Pass and LastPass install and start without errors. Signing
+in and autofill still need a real account on X399.
+
 Still expected: Tree Style Tab (sidebar, `sessions`, `menus.onShown`),
 Multi-Account Containers (`contextualIdentities`), Tampermonkey
 (`userScripts`), Honey's WebGL in a worker. Earlier fixes from this run are
