@@ -509,7 +509,7 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
 #if SUMMIT_MODERN_WEBKIT
         .Add(fExtensionActions)
 #endif
-        .Add(new ToolButton("new-tab", "New tab", Icon::Plus, kNewTab));
+        ;
 #if SUMMIT_MODERN_WEBKIT
     fExtensionActions->Hide();
 #endif
@@ -540,8 +540,8 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
         else if (!options.session.tabs.empty()) {
             for (const auto& page : options.session.tabs) CreateTab(page.url, false);
             if (!fTabs.empty()) SelectTab(fTabs[std::min(options.session.selected, fTabs.size() - 1)].id);
-        } else CreateTab("summit:home");
-        // Invalid command-line or saved URLs may all have been rejected.
+        } else CreateTab(HomeAddress());
+        // Invalid command-line or saved URLs (or home page) may all have been rejected.
         if (fTabs.empty()) CreateTab("summit:home");
     }
     RefreshBookmarks();
@@ -1185,7 +1185,7 @@ void BrowserWindow::FinishCloseTab(int64 id)
             if (!fClosingWindow && CountOpenWindows() > 1) PostMessage(B_QUIT_REQUESTED);
             else if (!fClosingWindow)
 #endif
-                CreateTab("summit:home");
+                CreateTab(HomeAddress());
         }
         else if (selected) SelectTab(fTabs[std::min(i, fTabs.size() - 1)].id);
 #if SUMMIT_MODERN_WEBKIT
@@ -1315,9 +1315,9 @@ void BrowserWindow::OpenTabsForCommand(const BMessage& message, uint64 identifie
             fExtensionWindowTabs[command.extension].push_back(tab->id);
             if (select) { SelectTab(tab->id); select = false; }
         }
-        if (urls.empty() && command.views.empty()) urls.push_back("summit:home");
+        if (urls.empty() && command.views.empty()) urls.push_back(HomeAddress());
         if (urls.empty()) { RespondToCommand(identifier, B_OK, command.views); return; }
-    } else if (urls.empty()) urls.push_back("summit:home");
+    } else if (urls.empty()) urls.push_back(HomeAddress());
     const int32 index = window ? -1 : message.GetInt32("index", -1);
     command.pending = urls.size();
     fOpenCommands.push_back(std::move(command));
@@ -1699,7 +1699,6 @@ void BrowserWindow::ApplyInterfaceStyle()
     for (int32 i = 0; i < toolbar->CountItems(); ++i) {
         auto* view = toolbar->ItemAt(i)->View();
         if (view && !std::strcmp(view->Name(), "toolbar-glue")) show(view, !haiku);
-        if (view && !std::strcmp(view->Name(), "new-tab")) show(view, !haiku);
     }
     show(fGo, haiku);
     fAddress->SetExplicitMaxSize(BSize(haiku ? B_SIZE_UNLIMITED : 660, B_SIZE_UNSET));
@@ -2001,8 +2000,11 @@ void BrowserWindow::MessageReceived(BMessage* message)
         }
         case kNewTab: {
             const char* url = nullptr;
-            CreateTab(message->FindString("url", &url) == B_OK ? url : "summit:home");
-            fAddress->MakeFocus(); break;
+            // A new tab shows the home page; its address is selected, ready to type over.
+            CreateTab(message->FindString("url", &url) == B_OK ? url : HomeAddress());
+            fAddress->MakeFocus();
+            fAddress->TextView()->SelectAll();
+            break;
         }
         case kNewWindow: RequestNewWindow({ }); break;
         case kCloseWindow: PostMessage(B_QUIT_REQUESTED); break;

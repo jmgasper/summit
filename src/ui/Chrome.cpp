@@ -396,13 +396,10 @@ void TabStrip::DrawHaiku(BRect update)
         StrokeLine(c + BPoint(3, -3), c + BPoint(-3, 3));
         SetPenSize(1);
     }
-    // The new-tab button at the end of the tabs.
-    BRect plus = NewTabRect();
-    uint32 flags = fHoverNewTab ? BControlLook::B_HOVER : 0;
-    be_control_look->DrawButtonFrame(this, plus, update, ui_color(B_CONTROL_BACKGROUND_COLOR), base, flags);
-    be_control_look->DrawButtonBackground(this, plus, update, ui_color(B_CONTROL_BACKGROUND_COLOR), flags);
-    SetHighColor(ui_color(B_CONTROL_TEXT_COLOR));
-    SetPenSize(1.6f);
+    // The new-tab "+" at the end of the tabs: just the sign, darker under the pointer.
+    const BRect plus = NewTabRect();
+    SetHighColor(fHoverNewTab ? text : Mix(text, base, 0.35f));
+    SetPenSize(fHoverNewTab ? 2.0f : 1.6f);
     const BPoint c(std::floor((plus.left + plus.right) / 2) + 0.5f, std::floor((plus.top + plus.bottom) / 2) + 0.5f);
     StrokeLine(c + BPoint(-5, 0), c + BPoint(5, 0));
     StrokeLine(c + BPoint(0, -5), c + BPoint(0, 5));
