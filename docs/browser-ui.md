@@ -1,5 +1,8 @@
 # Browser chrome: Home, bookmarks bar, History and Bookmarks tabs, favicons
 
+(Multiple windows, context menus and the Haiku look came later; see
+[browser-windows.md](browser-windows.md).)
+
 Added 26 September 2026. The sidebar (Start Page / Bookmarks / History
 buttons and a list) is gone; each of its jobs moved somewhere else.
 

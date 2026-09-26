@@ -85,6 +85,8 @@ constexpr uint32 kSaveLinkAsChosen = 'slac';
 constexpr uint32 kSearchFor = 'srch';
 constexpr uint32 kBookmarkLink = 'bklk';
 constexpr uint32 kInterfaceStyle = 'istl';
+// An extension's item in a page context menu ("token").
+constexpr uint32 kExtensionMenuItem = 'exmi';
 // Benchmark input synthesis, refused unless SUMMIT_ENABLE_INPUT_SYNTHESIS=1.
 constexpr uint32 kSimulateScroll = 'sscr';
 constexpr uint32 kScrollBurstCompleted = 'ssco';

@@ -47,6 +47,7 @@
 #include <cstring>
 #include <ctime>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <utility>
@@ -2318,6 +2319,9 @@ void BrowserWindow::MessageReceived(BMessage* message)
             fSavePanelURL.clear();
             break;
         }
+        case kExtensionMenuItem:
+            BWebKitView::PerformContextMenuExtensionItem(message->GetUInt64("token", 0));
+            break;
         case kCopyText: {
             const char* text = nullptr;
             if (message->FindString("text", &text) != B_OK || !be_clipboard->Lock()) break;
@@ -2580,6 +2584,42 @@ void BrowserWindow::ShowPageContextMenu(const BMessage& message)
         copyAddress->SetEnabled(!DisplayURL(tab->url).empty());
         menu->AddItem(copyAddress);
         edit("Select All", B_SELECT_ALL);
+    }
+    // Items extensions add with the menus API, under the extension's name
+    // unless it has just one (as Safari shows them).
+    std::function<void(BMenu*, const BMessage&)> addExtensionItems = [&](BMenu* into, const BMessage& from) {
+        BMessage entry;
+        for (int32 i = 0; from.FindMessage("item", i, &entry) == B_OK; ++i) {
+            if (entry.GetBool("separator", false)) { into->AddSeparatorItem(); continue; }
+            const std::string title = ShortLabel(entry.GetString("title", ""), 60);
+            BMenuItem* item;
+            if (entry.HasMessage("item")) {
+                auto* submenu = new BMenu(title.c_str());
+                addExtensionItems(submenu, entry);
+                item = new BMenuItem(submenu);
+            } else {
+                auto* invocation = new BMessage(kExtensionMenuItem);
+                invocation->AddUInt64("token", entry.GetUInt64("token", 0));
+                item = new BMenuItem(title.c_str(), invocation);
+                item->SetTarget(this);
+                item->SetMarked(entry.GetBool("checkable", false) && entry.GetBool("checked", false));
+            }
+            item->SetEnabled(entry.GetBool("enabled", true));
+            into->AddItem(item);
+        }
+    };
+    BMessage extension;
+    for (int32 i = 0; message.FindMessage("extension", i, &extension) == B_OK; ++i) {
+        separate();
+        BMessage only;
+        const bool single = extension.FindMessage("item", 1, &only) != B_OK && extension.FindMessage("item", 0, &only) == B_OK
+            && !only.HasMessage("item");
+        if (single) addExtensionItems(menu, extension);
+        else {
+            auto* submenu = new BMenu(ShortLabel(extension.GetString("name", "Extension"), 40).c_str());
+            addExtensionItems(submenu, extension);
+            menu->AddItem(new BMenuItem(submenu));
+        }
     }
     menu->SetTargetForItems(this);
     menu->SetAsyncAutoDestruct(true);

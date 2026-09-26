@@ -41554,10 +41554,10 @@ index 0000000000000000000000000000000000000000..d28a6cad6339adf79b155cf974e85bfd
 +
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..4393f9eb06959a4ee5819b9429a887679424fd5f
+index 0000000000000000000000000000000000000000..a7d9e88bad08cb4abdcee13b31d882eb18ecab14
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp
-@@ -0,0 +1,475 @@
+@@ -0,0 +1,484 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -41656,6 +41656,15 @@ index 0000000000000000000000000000000000000000..4393f9eb06959a4ee5819b9429a88767
 +        return;
 +    WTF::RunLoop::mainSingleton().dispatch([newPageRequest] {
 +        declineNewPageHaiku(newPageRequest);
++    });
++}
++
++void BWebKitView::PerformContextMenuExtensionItem(uint64 token)
++{
++    if (!webKitInitializedHaiku)
++        return;
++    WTF::RunLoop::mainSingleton().dispatch([token] {
++        performExtensionMenuItemHaiku(token);
 +    });
 +}
 +
@@ -42035,10 +42044,10 @@ index 0000000000000000000000000000000000000000..4393f9eb06959a4ee5819b9429a88767
 +}
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitView.h b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..abcf5ae7d44c41343b353f207165f0365471e45e
+index 0000000000000000000000000000000000000000..4e08aafeef6cf4212938731879d035c252c1affe
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
-@@ -0,0 +1,136 @@
+@@ -0,0 +1,144 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -42082,7 +42091,12 @@ index 0000000000000000000000000000000000000000..abcf5ae7d44c41343b353f207165f036
 +    // "where" (BPoint, view coordinates), "main_frame" (bool), and when present
 +    // "frame_url", "selected_text", "link_url", "link_label", "link_title",
 +    // "link_filename", "image_url", "image_filename", "media_url" (strings),
-+    // "editable", "selected", "downloadable_media" (bool).
++    // "editable", "selected", "downloadable_media" (bool). Extensions' own
++    // items (menus API) that apply come as repeated "extension" messages:
++    // "name" and repeated "item" messages with "title", "enabled",
++    // "checkable", "checked", and either "token" (uint64, for
++    // PerformContextMenuExtensionItem), nested "item"s (a submenu) or
++    // "separator".
 +    B_WEBKIT_CONTEXT_MENU = 'wctx',
 +    // A page asked for a new page: window.open(), or a link or form with a
 +    // target. Fields: "view" (the opener), "identifier" (uint64), "url" (may be
@@ -42114,6 +42128,9 @@ index 0000000000000000000000000000000000000000..abcf5ae7d44c41343b353f207165f036
 +    // Refuses a B_WEBKIT_NEW_PAGE_REQUESTED notification; window.open() then
 +    // returns null. Callable from any thread.
 +    static void DeclineNewPage(uint64 newPageRequest);
++    // Runs an extension item chosen from the last B_WEBKIT_CONTEXT_MENU, as
++    // a user action. Tokens of older menus are ignored. Any thread.
++    static void PerformContextMenuExtensionItem(uint64 token);
 +    ~BWebKitView() override;
 +    status_t InitCheck() const;
 +    void LoadURL(const char*);
@@ -66863,10 +66880,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..8802244a2ed1aee6e7f2d50511fabd312ef530e4
+index 0000000000000000000000000000000000000000..aa72249688d78389076cfa5f9e8b6044bde4d1d7
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,1505 @@
+@@ -0,0 +1,1634 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -66936,6 +66953,14 @@ index 0000000000000000000000000000000000000000..8802244a2ed1aee6e7f2d50511fabd31
 +#include "WebProcessProxy.h"
 +#include "WebViewContextHaiku.h"
 +#include "WebHitTestResultData.h"
++#if ENABLE(WK_WEB_EXTENSIONS)
++#include "WebExtension.h"
++#include "WebExtensionContext.h"
++#include "WebExtensionController.h"
++#include "WebExtensionMenuItem.h"
++#include "WebExtensionMenuItemContextParameters.h"
++#include "WebExtensionPermission.h"
++#endif
 +#include <WebCore/Cursor.h>
 +#include <WebCore/WindowFeatures.h>
 +#include <WebCore/DOMPasteAccess.h>
@@ -68313,6 +68338,123 @@ index 0000000000000000000000000000000000000000..8802244a2ed1aee6e7f2d50511fabd31
 +RefPtr<WebDateTimePicker> WebView::createDateTimePicker(WebPageProxy&) { return nullptr; }
 +
 +#if ENABLE(CONTEXT_MENUS)
++#if ENABLE(WK_WEB_EXTENSIONS)
++// Extension items (menus/contextMenus) of the context menu on screen, named by
++// the tokens the host received. Main thread only; a new menu replaces them.
++struct ExtensionMenuChoiceHaiku {
++    RefPtr<WebExtensionContext> context;
++    Ref<WebExtensionMenuItem> item;
++    WebExtensionMenuItemContextParameters parameters;
++};
++
++static std::unordered_map<uint64_t, ExtensionMenuChoiceHaiku>& extensionMenuChoicesHaiku()
++{
++    static NeverDestroyed<std::unordered_map<uint64_t, ExtensionMenuChoiceHaiku>> choices;
++    return choices.get();
++}
++
++static void addExtensionMenuItemsHaiku(BMessage& into, WebExtensionContext& context, const WebExtensionMenuItem::MenuItemVector& items,
++    const WebExtensionMenuItemContextParameters& parameters)
++{
++    static uint64_t lastToken;
++    for (const auto& item : items) {
++        if (!item->isVisible() || !item->matches(parameters))
++            continue;
++        BMessage entry;
++        if (item->type() == WebExtensionMenuItemType::Separator) {
++            entry.AddBool("separator", true);
++            into.AddMessage("item", &entry);
++            continue;
++        }
++        // Chrome and Firefox show the selection in place of %s.
++        addTextHaiku(entry, "title", makeStringByReplacingAll(item->title(), "%s"_s, parameters.selectionString));
++        entry.AddBool("enabled", item->isEnabled());
++        entry.AddBool("checkable", isCheckedType(item->type()));
++        entry.AddBool("checked", item->isChecked());
++        if (!item->submenuItems().isEmpty())
++            addExtensionMenuItemsHaiku(entry, context, item->submenuItems(), parameters);
++        else {
++            const uint64_t token = ++lastToken;
++            extensionMenuChoicesHaiku().emplace(token, ExtensionMenuChoiceHaiku { &context, item, parameters });
++            entry.AddUInt64("token", token);
++        }
++        into.AddMessage("item", &entry);
++    }
++}
++
++// As WebExtensionContext::addItemsToContextMenu on macOS: the clicked
++// element's contexts, for every loaded extension allowed on this page.
++static void addExtensionMenusHaiku(BMessage& message, WebPageProxy& page, const ContextMenuContextData& contextData, const FrameInfoData& fallbackFrame)
++{
++    extensionMenuChoicesHaiku().clear();
++    RefPtr controller = page.webExtensionController();
++    if (!controller)
++        return;
++    const auto& hitTest = contextData.webHitTestResultData();
++    const FrameInfoData& frame = hitTest && hitTest->frameInfo ? *hitTest->frameInfo : fallbackFrame;
++    for (Ref context : controller->extensionContexts()) {
++        if (!context->isLoaded() || context->mainMenuItems().isEmpty()
++            || !(context->hasPermission(WebExtensionPermission::menus()) || context->hasPermission(WebExtensionPermission::contextMenus())))
++            continue;
++        WebExtensionMenuItemContextParameters parameters;
++        parameters.frameIdentifier = toWebExtensionFrameIdentifier(frame);
++        parameters.frameURL = frame.request.url();
++        RefPtr tab = context->getTab(page.identifier());
++        if (tab)
++            parameters.tabIdentifier = tab->identifier();
++        if (!context->hasPermission(frame.request.url(), tab.get()) && (!tab || !frame.isMainFrame || !context->hasPermission(WebExtensionPermission::activeTab())))
++            continue;
++        if (hitTest) {
++            if (!hitTest->absoluteImageURL.isEmpty()) {
++                parameters.types.add(WebExtensionMenuItemContextType::Image);
++                parameters.sourceURL = URL { hitTest->absoluteImageURL };
++            }
++            if (!hitTest->absoluteMediaURL.isEmpty() && hitTest->elementType != WebHitTestResultData::ElementType::None) {
++                parameters.sourceURL = URL { hitTest->absoluteMediaURL };
++                parameters.types.add(hitTest->elementType == WebHitTestResultData::ElementType::Audio
++                    ? WebExtensionMenuItemContextType::Audio : WebExtensionMenuItemContextType::Video);
++            }
++            if (hitTest->isContentEditable) {
++                parameters.types.add(WebExtensionMenuItemContextType::Editable);
++                parameters.editable = true;
++            }
++            if (hitTest->isSelected && !contextData.selectedText().isEmpty()) {
++                parameters.types.add(WebExtensionMenuItemContextType::Selection);
++                parameters.selectionString = contextData.selectedText();
++            }
++            if (!hitTest->absoluteLinkURL.isEmpty()) {
++                parameters.types.remove(WebExtensionMenuItemContextType::Selection);
++                parameters.types.add(WebExtensionMenuItemContextType::Link);
++                parameters.linkURL = URL { hitTest->absoluteLinkURL };
++                parameters.linkText = hitTest->linkLabel;
++            }
++        }
++        if (parameters.types.isEmpty())
++            parameters.types.add(frame.isMainFrame ? WebExtensionMenuItemContextType::Page : WebExtensionMenuItemContextType::Frame);
++        BMessage extension;
++        addExtensionMenuItemsHaiku(extension, context, context->mainMenuItems(), parameters);
++        if (extension.HasMessage("item")) {
++            addTextHaiku(extension, "name", protect(context->extension())->displayShortName());
++            message.AddMessage("extension", &extension);
++        }
++    }
++}
++
++void performExtensionMenuItemHaiku(uint64_t token)
++{
++    ASSERT(RunLoop::isMain());
++    auto found = extensionMenuChoicesHaiku().find(token);
++    if (found == extensionMenuChoicesHaiku().end())
++        return;
++    auto choice = std::move(found->second);
++    extensionMenuChoicesHaiku().clear();
++    if (RefPtr context = choice.context; context && context->isLoaded())
++        context->performMenuItem(choice.item, choice.parameters, WebExtensionContext::UserTriggered::Yes);
++}
++#else
++void performExtensionMenuItemHaiku(uint64_t) { }
++#endif
++
 +// The host builds its own native menu from what was clicked; WebKit's
 +// proposed items (and their actions) are not used.
 +class PendingContextMenuHaiku final : public WebContextMenuProxy {
@@ -68342,6 +68484,10 @@ index 0000000000000000000000000000000000000000..8802244a2ed1aee6e7f2d50511fabd31
 +                message.AddBool("selected", hit->isSelected);
 +                message.AddBool("downloadable_media", hit->isDownloadableMedia);
 +            }
++#if ENABLE(WK_WEB_EXTENSIONS)
++            if (RefPtr page = this->page())
++                addExtensionMenusHaiku(message, *page, m_context, m_frameInfo);
++#endif
 +            sendToHostHaiku(state, message);
 +        }
 +        if (RefPtr page = this->page())
@@ -68836,10 +68982,10 @@ index 0000000000000000000000000000000000000000..74616eb89638d309c255bada48142629
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..f67a76ec99be59c6bf850cbaf24dcac3b0d2e26d
+index 0000000000000000000000000000000000000000..9e1775d7f4e06dca7ae4c2744922f06d871f6121
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
-@@ -0,0 +1,112 @@
+@@ -0,0 +1,114 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -68950,6 +69096,8 @@ index 0000000000000000000000000000000000000000..f67a76ec99be59c6bf850cbaf24dcac3
 +// view's state, or decline it.
 +void openNewPageHaiku(std::shared_ptr<WebViewStateHaiku>, uint64_t identifier);
 +void declineNewPageHaiku(uint64_t identifier);
++// Main thread only. Runs an extension item of the last B_WEBKIT_CONTEXT_MENU.
++void performExtensionMenuItemHaiku(uint64_t token);
 +
 +} // namespace WebKit
 diff --git a/Source/WebKit/WebKit.xcodeproj/project.pbxproj b/Source/WebKit/WebKit.xcodeproj/project.pbxproj
