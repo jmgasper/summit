@@ -161,7 +161,8 @@ def launch(bundle, profile, url, log, extra_env=None, wrapper=()):
         # before the bundle and the system libraries, not replace them.
         'prefix = env.pop("SUMMIT_LIBRARY_PATH_PREFIX", "")\n'
         'if prefix: env["LIBRARY_PATH"] = prefix + ":" + env["LIBRARY_PATH"]\n'
-        'command = json.loads(wrapper) + [bundle + "/Summit", "--profile", profile, url]\n'
+        # An empty URL restores the profile's saved session instead.
+        'command = json.loads(wrapper) + [bundle + "/Summit", "--profile", profile] + ([url] if url else [])\n'
         'child = subprocess.Popen(command, env=env, stdin=subprocess.DEVNULL,\n'
         '    stdout=open(log, "wb"), stderr=subprocess.STDOUT, start_new_session=True, cwd=os.path.dirname(log))\n'
         'print(child.pid)\n'
