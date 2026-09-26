@@ -137,3 +137,12 @@ command now takes any character and `--mod alt/ctrl/shift`):
 - Pop-up windows keep the normal minimum window size (760×450).
 - No Copy Image (only its address), no Inspect Element.
 - The legacy (WebKitLegacy) build was not updated or compiled.
+
+## Installed
+
+The workstation desktop launcher `/boot/home/Desktop/Summit-current.sh` points
+to `bundle-s_6szlm3` (the `SkiaCGMiPGO` engine rebuilt with these engine
+changes). The previous launcher is `Summit-current.pre-windows-20260926.sh`.
+A Summit already running from another bundle keeps the old interface until it
+is restarted. Test launches used `/boot/home/summit/claude-mw-launch.sh BUNDLE`
+with the profile `/boot/home/summit/claude-mw-profile`.
