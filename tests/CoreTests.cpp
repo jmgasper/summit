@@ -128,10 +128,12 @@ int main()
     if (!created) return 2;
     const auto path = std::filesystem::path(created) / "profile/profile.json";
     std::string error;
-    CHECK(Profile::Load(path, error).tabs.empty() && error.empty());
+    CHECK(Profile::Load(path, error).windows.empty() && error.empty());
+    CHECK(Profile::Load(path, error).interfaceStyle == "haiku");
     Profile profile;
-    profile.tabs = {{"https://example.com/", "Example"}, {"summit:home", "Start Page"}};
-    profile.selected = 1;
+    profile.windows = {{{{"https://example.com/", "Example"}, {"summit:home", "Start Page"}}, 1, {10, 20, 810, 620}},
+        {{{"https://second.example/", "Second"}}, 0}};
+    profile.interfaceStyle = "safari";
     profile.bookmarks = {{"https://webkit.org", "WebKit — 浏览器"}};
     profile.Visit({"https://example.com/", "First title"});
     profile.Visit({"https://webkit.org/", "WebKit"});
@@ -147,7 +149,9 @@ int main()
     profile.showBookmarksBar = false;
     CHECK(profile.Save(path, error) && error.empty());
     auto loaded = Profile::Load(path, error);
-    CHECK(error.empty() && loaded.tabs.size() == 2 && loaded.selected == 1);
+    CHECK(error.empty() && loaded.windows.size() == 2 && loaded.windows[0].tabs.size() == 2 && loaded.windows[0].selected == 1);
+    CHECK(loaded.windows[0].HasFrame() && loaded.windows[0].frame[2] == 810 && !loaded.windows[1].HasFrame());
+    CHECK(loaded.windows[1].tabs.at(0).url == "https://second.example/" && loaded.interfaceStyle == "safari");
     CHECK(loaded.bookmarks.at(0).title == "WebKit — 浏览器");
     CHECK(loaded.history.size() == 2 && loaded.history.front().title == "Updated title");
     CHECK(loaded.history.front().visited == profile.history.front().visited);
@@ -157,14 +161,19 @@ int main()
     CHECK(!loaded.FindBookmark("https://bar.example/") && loaded.FindBookmark("https://webkit.org"));
     struct stat mode{};
     CHECK(stat(path.c_str(), &mode) == 0 && (mode.st_mode & 0777) == 0600);
-    profile.tabs = {{"https://different.example/", "Replacement"}};
-    profile.selected = 999;
+    profile.windows = {{{{"https://different.example/", "Replacement"}}, 999}};
     CHECK(profile.Save(path, error));
     loaded = Profile::Load(path, error);
-    CHECK(loaded.tabs.size() == 1 && loaded.tabs[0].title == "Replacement" && loaded.selected == 0);
+    CHECK(loaded.windows.size() == 1 && loaded.windows[0].tabs[0].title == "Replacement" && loaded.windows[0].selected == 0);
+    // A profile written by a build without windows restores as one window.
+    { std::ofstream out(path); out << R"({"version":1,"tabs":[{"url":"https://old.example/","title":"Old"}],"selected":0,)"
+        R"("bookmarks":[],"history":[],"interfaceStyle":"nonsense"})"; }
+    loaded = Profile::Load(path, error);
+    CHECK(error.empty() && loaded.windows.size() == 1 && loaded.windows[0].tabs[0].url == "https://old.example/");
+    CHECK(loaded.interfaceStyle == "haiku");
     { std::ofstream out(path); out << "{broken"; }
     loaded = Profile::Load(path, error);
-    CHECK(!error.empty() && loaded.tabs.empty());
+    CHECK(!error.empty() && loaded.windows.empty());
     CHECK(std::filesystem::file_size(path) == 7);
     CHECK(!profile.Save(path / "impossible.json", error) && !error.empty());
     CHECK(std::filesystem::file_size(path) == 7);

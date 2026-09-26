@@ -47,17 +47,38 @@ Profile Profile::Load(const std::filesystem::path& path, std::string& error)
         std::ifstream stream(path);
         auto j = json::parse(stream);
         if (j.at("version") != 1) throw std::runtime_error("Unknown profile version");
-        profile.tabs = Decode(j.at("tabs"), 512);
+        if (auto windows = j.find("windows"); windows != j.end()) {
+            if (!windows->is_array() || windows->size() > 64) throw std::runtime_error("Invalid window list");
+            for (const auto& item : *windows) {
+                WindowSession window;
+                window.tabs = Decode(item.at("tabs"), 512);
+                window.selected = item.at("selected").get<size_t>();
+                if (window.selected >= window.tabs.size()) window.selected = 0;
+                if (auto frame = item.find("frame"); frame != item.end()) {
+                    if (!frame->is_array() || frame->size() != 4) throw std::runtime_error("Invalid window frame");
+                    for (size_t i = 0; i < 4; ++i) window.frame[i] = (*frame)[i].get<float>();
+                }
+                if (!window.tabs.empty()) profile.windows.push_back(std::move(window));
+            }
+        } else {
+            WindowSession window;
+            window.tabs = Decode(j.at("tabs"), 512);
+            window.selected = j.at("selected").get<size_t>();
+            if (window.selected >= window.tabs.size()) window.selected = 0;
+            if (!window.tabs.empty()) profile.windows.push_back(std::move(window));
+        }
         profile.bookmarks = Decode(j.at("bookmarks"), 10000);
         profile.history = Decode(j.at("history"), 2000);
-        profile.selected = j.at("selected").get<size_t>();
         if (auto home = j.find("homeURL"); home != j.end()) {
             profile.homeURL = home->get<std::string>();
             if (profile.homeURL.size() > 65536 || profile.homeURL.find('\0') != std::string::npos)
                 throw std::runtime_error("Invalid home page");
         }
         if (auto bar = j.find("showBookmarksBar"); bar != j.end()) profile.showBookmarksBar = bar->get<bool>();
-        if (profile.selected >= profile.tabs.size()) profile.selected = 0;
+        if (auto style = j.find("interfaceStyle"); style != j.end()) {
+            profile.interfaceStyle = style->get<std::string>();
+            if (profile.interfaceStyle != "haiku" && profile.interfaceStyle != "safari") profile.interfaceStyle = "haiku";
+        }
     } catch (const std::exception& e) { error = e.what(); return {}; }
     return profile;
 }
@@ -68,9 +89,18 @@ bool Profile::Save(const std::filesystem::path& path, std::string& error) const
     std::string temporary;
     try {
         std::filesystem::create_directories(path.parent_path());
-        std::string data = json{{"version", 1}, {"tabs", Encode(tabs)}, {"selected", selected},
+        json sessions = json::array();
+        for (const auto& window : windows) {
+            json item = {{"tabs", Encode(window.tabs)}, {"selected", window.selected}};
+            if (window.HasFrame()) item["frame"] = {window.frame[0], window.frame[1], window.frame[2], window.frame[3]};
+            sessions.push_back(std::move(item));
+        }
+        const WindowSession first = windows.empty() ? WindowSession() : windows.front();
+        std::string data = json{{"version", 1}, {"tabs", Encode(first.tabs)}, {"selected", first.selected},
+            {"windows", std::move(sessions)},
             {"bookmarks", Encode(bookmarks)}, {"history", Encode(history)},
-            {"homeURL", homeURL}, {"showBookmarksBar", showBookmarksBar}}.dump(2);
+            {"homeURL", homeURL}, {"showBookmarksBar", showBookmarksBar},
+            {"interfaceStyle", interfaceStyle}}.dump(2);
         if (data.size() > 16 * 1024 * 1024) throw std::runtime_error("Profile is too large");
         temporary = path.string() + ".XXXXXX";
         fd = mkstemp(temporary.data());
