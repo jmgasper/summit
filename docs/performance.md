@@ -1,5 +1,47 @@
 # Summit performance: Speedometer 3.1 baseline, where the time goes, stress test
 
+## 26 September 2026 (evening): 200% screens, many tabs, loading
+
+The X399 now drives two 4K monitors at 200% (docs/hidpi.md). Summit renders
+pages at the screen's density, which makes each frame four times larger, so
+the frame path was measured stage by stage (`SUMMIT_PRESENT_STATS=1`) while
+scrolling Wikipedia in a 1920x1056 window:
+
+| Stage | 1x | 2x before | 2x after |
+| --- | --- | --- | --- |
+| GPU composite + readback (web process) | 5.3 ms | 11.5 ms | 11.5 ms |
+| Copy into a BBitmap (UI process) | 1.1 ms | 4.3 ms | gone (zero-copy) |
+| Frames/s during the wheel burst (per-second samples) | 59-60 | 41-52 | 53-59 |
+
+`tools/mesa-vm/readback-probe.cpp` shows a 4K readback through a pixel buffer
+object at 5.3 ms (0.9 ms GPU copy + 4.4 ms memcpy) against 8.9 ms direct; in
+the browser the stage stays near 11.5 ms because mapping waits for the GPU to
+finish compositing. `run-scroll.py`'s overall fps includes a two-second gap
+when the page reaches its end; use the per-second `frameSamples`.
+
+Built on X399 only as far as zero-copy (`bundle-6lhzlu2f`). X399 then went
+down (another session's Wi-Fi driver hung it before POST), and the following
+changes wait for a build there; a full build in the VM (`SkiaCGMi`, non-PGO)
+checks that they compile:
+
+- **Damage tracking** (`ENABLE_DAMAGE_TRACKING`, GTK's defaults): the
+  compositor redraws, the web process reads back and app_server redraws only
+  what changed. Check with `tools/bench/pages/spinner.html` and the
+  `pixels read (web)` stat. `SUMMIT_DAMAGE_TRACKING=0` reverts.
+- **256 connections in total** instead of curl's 17 (six per host stays).
+- **A prewarmed web process** after each page load (`SUMMIT_PREWARM_PROCESS=0`).
+- **Lazy session restore**: background tabs load when first selected.
+- **Streaming media**: the file engine reads over range requests instead of
+  downloading whole files first (`SUMMIT_MEDIA_STREAMING=0`);
+  `tools/streaming-media-test/run.sh` tests it on the host.
+
+To measure them: `tools/bench/run-multitab.py` (three windows of twelve real
+sites: load times, busy cores, idle cost, tab switch latency, scrolling while
+the other windows reload, memory, `--restore` for a relaunch), with
+`--env SUMMIT_LIBRARY_PATH_PREFIX=/boot/home/summit-mesa/prefix/lib`.
+Skia's CPU tile painters are limited to two on Haiku (chosen at 1x); at 200%
+compare `WEBKIT_SKIA_CPU_PAINTING_THREADS=2/4/6`.
+
 ## Handoff, 26 September 2026
 
 The X399 desktop launcher (`/boot/home/Desktop/Summit-current.sh`) points to
