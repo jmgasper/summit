@@ -81294,10 +81294,10 @@ index ef0880ef23f911b8be87a268bb844b8a3aa4f9e9..641099c3a542b56479e6eecdb50d493c
  } // namespace WebKit
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPITabs.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPITabs.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..64dca6ebac08482b7c38707bda63a12343cd53de
+index 0000000000000000000000000000000000000000..1e45c56df8ab69013762f1ba38c9b81a20546c5b
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPITabs.cpp
-@@ -0,0 +1,731 @@
+@@ -0,0 +1,733 @@
 +/*
 + * Copyright (C) 2023 Apple Inc. All rights reserved.
 + *
@@ -81585,11 +81585,13 @@ index 0000000000000000000000000000000000000000..64dca6ebac08482b7c38707bda63a123
 +        }, extensionContext().identifier());
 +}
 +
-+void WebExtensionAPITabs::move(RefPtr<JSON::Value> tabIDs, RefPtr<JSON::Value> properties, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
++void WebExtensionAPITabs::move(JSContextRef context, JSValueRef tabIDs, RefPtr<JSON::Value> properties, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
 +{
 +    // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/tabs/move
 +
-+    auto identifiers = parseWebExtensionTabIdentifiers(tabIDs.get());
++    // One tab identifier (a number) or an array of them, as tabs.remove().
++    RefPtr values = fromJSValue(context, tabIDs);
++    auto identifiers = parseWebExtensionTabIdentifiers(values.get());
 +    if (!identifiers) {
 +        exception = identifiers.error();
 +        return;
@@ -81612,7 +81614,7 @@ index 0000000000000000000000000000000000000000..64dca6ebac08482b7c38707bda63a123
 +            return;
 +        }
 +    }
-+    bool single = tabIDs && tabIDs->type() != JSON::Value::Type::Array;
++    bool single = values && values->type() != JSON::Value::Type::Array;
 +    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::TabsMove(WTF::move(*identifiers), window, *index),
 +        [protectedThis = Ref { *this }, callback = WTF::move(callback), single](std::expected<Vector<WebExtensionTabParameters>, WebExtensionError>&& result) {
 +            if (!result) {
@@ -82030,7 +82032,7 @@ index 0000000000000000000000000000000000000000..64dca6ebac08482b7c38707bda63a123
 +}
 +#endif
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPITabs.h b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPITabs.h
-index d0158582421dee1de4d03bd9344567bc7f0e4acd..f20e998824849642ece529540c8b18900bf4e305 100644
+index d0158582421dee1de4d03bd9344567bc7f0e4acd..943261d4d04dab54c319c08ad6246c18700198ab 100644
 --- a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPITabs.h
 +++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPITabs.h
 @@ -49,15 +49,50 @@ class WebExtensionAPITabs : public WebExtensionAPIObject, public JSWebExtensionW
@@ -82067,7 +82069,7 @@ index d0158582421dee1de4d03bd9344567bc7f0e4acd..f20e998824849642ece529540c8b1890
 +    void insertCSS(WebPageProxyIdentifier page, double tabID, RefPtr<JSON::Value> options, Ref<WebExtensionCallbackHandler>&& callback, String& exception);
 +    void removeCSS(WebPageProxyIdentifier page, double tabID, RefPtr<JSON::Value> options, Ref<WebExtensionCallbackHandler>&& callback, String& exception);
 +    void captureVisibleTab(WebPageProxyIdentifier page, double windowID, RefPtr<JSON::Value> options, Ref<WebExtensionCallbackHandler>&& callback, String& exception);
-+    void move(RefPtr<JSON::Value> tabIDs, RefPtr<JSON::Value> properties, Ref<WebExtensionCallbackHandler>&& callback, String& exception);
++    void move(JSContextRef, JSValueRef tabIDs, RefPtr<JSON::Value> properties, Ref<WebExtensionCallbackHandler>&& callback, String& exception);
 +#if PLATFORM(COCOA)
 +    void getSelected(WebPageProxyIdentifier page, double windowID, Ref<WebExtensionCallbackHandler>&& callback, String& exception);
 +    void duplicate(double tabID, RefPtr<JSON::Value> properties, Ref<WebExtensionCallbackHandler>&& callback, String& exception);
@@ -87129,7 +87131,7 @@ index 866d70a2cdbbe9cfbd525c7be21d6c21db2dfa1a..090b11c6a852e779e830487dcaed3958
      readonly attribute WebExtensionAPIEvent onChanged;
  
 diff --git a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPITabs.idl b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPITabs.idl
-index a744e37f5fd4c546a27627a69573d8eeb454312b..e375018fb0757f09cb23614f4e913bcb6ad5c854 100644
+index a744e37f5fd4c546a27627a69573d8eeb454312b..f18ae9012320a7e6f6cab3d978692515562a2b23 100644
 --- a/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPITabs.idl
 +++ b/Source/WebKit/WebProcess/Extensions/Interfaces/WebExtensionAPITabs.idl
 @@ -69,42 +69,43 @@ dictionary WebExtensionTabCreateProperties {
@@ -87159,7 +87161,7 @@ index a744e37f5fd4c546a27627a69573d8eeb454312b..e375018fb0757f09cb23614f4e913bcb
 -    [RaisesException] void remove([NSObject] any tabIDs, [Optional, CallbackHandler] function callback);
 +    [Platform=COCOA, RaisesStringException] void duplicate(double tabID, [Optional, JSONValue] any properties, [Optional, CallbackHandler] function callback);
 +    [RaisesStringException, NeedsPageIdentifier] void update([Optional] double tabID, [JSONValue] any properties, [Optional, CallbackHandler] function callback);
-+    [RaisesStringException] void move([JSONValue] any tabIDs, [JSONValue] any properties, [Optional, CallbackHandler] function callback);
++    [RaisesStringException, NeedsScriptContext] void move([ValuesAllowed] any tabIDs, [JSONValue] any properties, [Optional, CallbackHandler] function callback);
 +    [RaisesStringException, NeedsScriptContext] void remove([ValuesAllowed] any tabIDs, [Optional, CallbackHandler] function callback);
  
 -    [RaisesException, NeedsPageIdentifier] void reload([Optional] double tabID, [Optional, NSDictionary] any properties, [Optional, CallbackHandler] function callback);
