@@ -35,6 +35,12 @@ checks that they compile:
   connections would exhaust the network process. The engine's process
   launcher raises the limit before the first child starts.
 - **A prewarmed web process** after each page load (`SUMMIT_PREWARM_PROCESS=0`).
+- **Background tabs throttled** as in Safari and GTK: hidden-page timer
+  throttling (auto-increasing) and CSS animation suspension were off on
+  Haiku. A page with a 10 ms timer, hidden for 20 s, ran it 1743 times
+  before and 97 times after (VM); `SUMMIT_HIDDEN_PAGE_THROTTLING=0` reverts.
+  Hidden tabs already reported `visibilityState` hidden and stopped
+  requestAnimationFrame. Switching back shows the tab's kept frame at once.
 - **Lazy session restore**: background tabs load when first selected.
 - **Streaming media**: the file engine reads over range requests instead of
   downloading whole files first (`SUMMIT_MEDIA_STREAMING=0`);

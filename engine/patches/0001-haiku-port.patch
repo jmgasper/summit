@@ -69768,10 +69768,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..ace389d7a96843871221ce0a5a58cbe287f5132e
+index 0000000000000000000000000000000000000000..17254522910acf388464015a751b43bb3a9a0e27
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,1731 @@
+@@ -0,0 +1,1743 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -70812,6 +70812,18 @@ index 0000000000000000000000000000000000000000..ace389d7a96843871221ce0a5a58cbe2
 +    // web apps and extensions (OneTab) call it unguarded.
 +    configuration->preferences().setStorageAPIEnabled(true);
 +    configuration->preferences().setStorageAPIEstimateEnabled(true);
++    // Background tabs: slow their timers down (more the longer they stay
++    // hidden) and pause their CSS animations, as Safari does; GTK enables the
++    // same. Hidden tabs ran every 10 ms timer at full rate, which with dozens
++    // of tabs of ad and analytics scripts is a steady cost. Pages playing
++    // audio are exempt in WebCore. Extension background pages have their own
++    // preferences and are not throttled. SUMMIT_HIDDEN_PAGE_THROTTLING=0 turns
++    // it off.
++    if (const char* throttling = std::getenv("SUMMIT_HIDDEN_PAGE_THROTTLING"); !throttling || std::strcmp(throttling, "0")) {
++        configuration->preferences().setHiddenPageDOMTimerThrottlingEnabled(true);
++        configuration->preferences().setHiddenPageDOMTimerThrottlingAutoIncreases(true);
++        configuration->preferences().setHiddenPageCSSAnimationSuspensionEnabled(true);
++    }
 +#if ENABLE(OFFSCREEN_CANVAS)
 +    // SUMMIT_OFFSCREEN_CANVAS=0 hides OffscreenCanvas again.
 +    if (const char* offscreen = std::getenv("SUMMIT_OFFSCREEN_CANVAS"); !offscreen || std::strcmp(offscreen, "0")) {
