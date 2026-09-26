@@ -273,7 +273,9 @@ def main():
     log(f"idle: {report['idle']}")
 
     # Switch through the first window's tabs: time from the tab's view being
-    # shown to its first frame arriving.
+    # shown to its first frame arriving. A tab whose page has not changed
+    # needs no new frame: its view shows the last frame it kept, at once
+    # (checked with screenshots in the VM), so those are counted apart.
     sampler.phase = 'switch'
     switches = []
     state = window_states(ctl, team, 1)[0]
@@ -296,7 +298,7 @@ def main():
     }
     save()
     log(f"tab switch: median {report['tabSwitch']['medianMs']} ms, max {report['tabSwitch']['maxMs']} ms, "
-        f"{report['tabSwitch']['noFrame']} without a frame")
+        f"{report['tabSwitch']['noFrame']} shown from the kept frame (nothing to repaint)")
 
     # Scroll the first window while every tab of the others reloads.
     if not args.skip_scroll and args.windows > 1:
