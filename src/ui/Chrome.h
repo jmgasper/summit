@@ -1,11 +1,14 @@
 #pragma once
 #include <Button.h>
+#include <PopUpMenu.h>
 #include <View.h>
+#include <atomic>
 #include <string>
 #include <vector>
 #include <memory>
 
 class BBitmap;
+class BMessageRunner;
 
 namespace summit {
 enum class Icon { Back, Forward, Reload, Stop, Plus, Bookmark, BookmarkFilled, Downloads, Home, More, Go };
@@ -46,6 +49,20 @@ private:
     rgb_color fBadgeTextColor { 255, 255, 255, 255 };
 };
 #endif
+// A pop-up menu its window can dismiss. An open menu holds its window's close
+// lock, so a window that closes (or quits with Summit) must end its menus
+// first: set the flag and the menu closes within 50 ms.
+class CancellableMenu final : public BPopUpMenu {
+public:
+    CancellableMenu(const char* name, std::shared_ptr<std::atomic<bool>> cancelled);
+    ~CancellableMenu() override;
+    void AttachedToWindow() override;
+    void DetachedFromWindow() override;
+    void MessageReceived(BMessage* message) override;
+private:
+    std::shared_ptr<std::atomic<bool>> fCancelled;
+    std::unique_ptr<BMessageRunner> fTimer;
+};
 struct TabLabel { int64 id; std::string title; bool loading; const BBitmap* icon = nullptr; };
 // Draws a site icon, or a neutral globe when there is none.
 void DrawSiteIcon(BView* view, const BBitmap* icon, BPoint leftTop);
@@ -82,6 +99,8 @@ class BookmarksBar : public BView {
 public:
     BookmarksBar();
     void SetBookmarks(std::vector<BookmarkButton> bookmarks);
+    // The window's current menu-cancel flag (it is replaced when a close is cancelled).
+    void SetMenusCancelled(const std::shared_ptr<std::atomic<bool>>* flag) { fMenusCancelled = flag; }
     void Draw(BRect update) override;
     void MouseDown(BPoint where) override;
     void MouseUp(BPoint where) override;
@@ -99,6 +118,8 @@ private:
     BRect fOverflow;
     int32 fHover = -1, fPressed = -1;
     uint32 fPressedButtons = 0;
+    const std::shared_ptr<std::atomic<bool>>* fMenusCancelled = nullptr;
+    BPopUpMenu* NewMenu(const char* name);
 };
 class ProgressLine : public BView {
 public:

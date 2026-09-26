@@ -68,6 +68,15 @@ public:
     BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string startURL, const BrowserWindowOptions& options);
 #endif
     uint64 Key() const { return fKey; }
+    // Closing, or quitting with Summit: no new menus.
+    bool IsClosing() const
+    {
+#if SUMMIT_MODERN_WEBKIT
+        return fClosingWindow;
+#else
+        return false;
+#endif
+    }
     // Browser windows that are open and not closing, across the application.
     static int32 CountOpenWindows();
     ~BrowserWindow() override;
@@ -297,6 +306,8 @@ private:
     BGroupView* fToolbar = nullptr;
     ToolButton* fGo = nullptr;
     BStatusBar* fStatusProgress = nullptr;
+    // Set when the window starts closing; its open pop-up menus then close.
+    std::shared_ptr<std::atomic<bool>> fMenusCancelled = std::make_shared<std::atomic<bool>>(false);
     BMenu* fWindowMenu = nullptr;
     int32 fWindowMenuFixed = 0;
     std::vector<Tab> fTabs;

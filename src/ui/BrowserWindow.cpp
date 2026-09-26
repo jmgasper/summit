@@ -461,6 +461,7 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
     fTabStrip = new TabStrip();
     fProgress = new ProgressLine();
     fBookmarksBar = new BookmarksBar();
+    fBookmarksBar->SetMenusCancelled(&fMenusCancelled);
     fPages = new BView("pages", 0);
     fCards = new BCardLayout();
     fPages->SetLayout(fCards);
@@ -974,6 +975,7 @@ void BrowserWindow::WebKitClosePrompt(const BMessage& message)
 void BrowserWindow::BeginWindowClose()
 {
     if (fExtensionMenuCancelled) *fExtensionMenuCancelled = true;
+    *fMenusCancelled = true;
     if (fClosingWindow) return;
     if (fCloseCommitPending) { fWindowCloseQueued = true; return; }
     fWindowCloseQueued = false;
@@ -1112,6 +1114,7 @@ void BrowserWindow::CancelWindowClose()
     fClosingWindow = false;
     fWindowCloseInvalidated = false;
     fWindowCloseQueued = false;
+    fMenusCancelled = std::make_shared<std::atomic<bool>>(false);
     if (fWindowCloseFocus && fClosePromptTab == fSelected && fWindowCloseFocus->generation == fSelectionGeneration)
         RestoreCloseFocus(*fWindowCloseFocus);
     fWindowCloseFocus.reset();
@@ -1654,7 +1657,8 @@ void BrowserWindow::ShowTabMenu(const BMessage& message)
         invocation->AddInt64("id", id);
         return new BMenuItem(label, invocation);
     };
-    auto* menu = new BPopUpMenu("tab", false, false);
+    if (IsClosing()) return;
+    auto* menu = new CancellableMenu("tab", fMenusCancelled);
     menu->AddItem(new BMenuItem("New Tab", new BMessage(kNewTab)));
     menu->AddSeparatorItem();
     menu->AddItem(item("Reload Tab", kReloadTab));
@@ -1869,7 +1873,8 @@ void BrowserWindow::ShowBookmarkMenu()
         for (const auto& page : profile.bookmarks) if (page.url == tab->url) return page;
         return std::nullopt;
     });
-    auto* menu = new BPopUpMenu("bookmark-page", false, false);
+    if (IsClosing()) return;
+    auto* menu = new CancellableMenu("bookmark-page", fMenusCancelled);
     if (!bookmark) {
         menu->AddItem(new BMenuItem("Add to Bookmarks Bar", new BMessage(kAddToBookmarksBar)));
         menu->AddItem(new BMenuItem("Add to Bookmarks", new BMessage(kBookmark)));
@@ -2487,7 +2492,8 @@ void BrowserWindow::ShowPageContextMenu(const BMessage& message)
         invocation->AddString("text", text.c_str());
         return invocation;
     };
-    auto* menu = new BPopUpMenu("page", false, false);
+    if (IsClosing()) return;
+    auto* menu = new CancellableMenu("page", fMenusCancelled);
     auto separate = [menu] { if (menu->CountItems() && !dynamic_cast<BSeparatorItem*>(menu->ItemAt(menu->CountItems() - 1))) menu->AddSeparatorItem(); };
     const bool web = [](const std::string& url) {
         return url.rfind("http://", 0) == 0 || url.rfind("https://", 0) == 0 || url.rfind("file:", 0) == 0

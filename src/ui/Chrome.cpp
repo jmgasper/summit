@@ -6,6 +6,7 @@
 #include <MenuItem.h>
 #include <PopUpMenu.h>
 #include <ControlLook.h>
+#include <MessageRunner.h>
 #if SUMMIT_MODERN_WEBKIT
 #include "ExtensionInstaller.h"
 #include <cstring>
@@ -219,6 +220,37 @@ void ExtensionActionButton::Draw(BRect update)
     }
 }
 #endif
+
+CancellableMenu::CancellableMenu(const char* name, std::shared_ptr<std::atomic<bool>> cancelled)
+    : BPopUpMenu(name, false, false), fCancelled(std::move(cancelled))
+{
+    SetAsyncAutoDestruct(true);
+    SetTrackingHook([](BMenu*, void* state) {
+        return static_cast<std::atomic<bool>*>(state)->load();
+    }, fCancelled.get());
+}
+CancellableMenu::~CancellableMenu() = default;
+void CancellableMenu::AttachedToWindow()
+{
+    BPopUpMenu::AttachedToWindow();
+    BMessage tick('cmnt');
+    fTimer = std::make_unique<BMessageRunner>(BMessenger(this), &tick, 50000);
+}
+void CancellableMenu::DetachedFromWindow()
+{
+    fTimer.reset();
+    BPopUpMenu::DetachedFromWindow();
+}
+void CancellableMenu::MessageReceived(BMessage* message)
+{
+    if (message->what == 'cmnt') {
+        // The tracking hook is not consulted while the menu waits for the
+        // mouse; Escape wakes it (as the extension actions menu does).
+        if (fCancelled->load()) { const char escape = B_ESCAPE; KeyDown(&escape, 1); }
+        return;
+    }
+    BPopUpMenu::MessageReceived(message);
+}
 
 void DrawSiteIcon(BView* view, const BBitmap* icon, BPoint leftTop)
 {
@@ -591,9 +623,16 @@ static BMessage* BookmarkMessage(uint32 what, const std::string& url, bool newTa
     if (newTab) message->AddBool("new_tab", true);
     return message;
 }
+BPopUpMenu* BookmarksBar::NewMenu(const char* name)
+{
+    if (fMenusCancelled && *fMenusCancelled) return new CancellableMenu(name, *fMenusCancelled);
+    auto* menu = new BPopUpMenu(name, false, false);
+    menu->SetAsyncAutoDestruct(true);
+    return menu;
+}
 void BookmarksBar::ShowOverflow()
 {
-    auto* menu = new BPopUpMenu("more-bookmarks", false, false);
+    auto* menu = NewMenu("more-bookmarks");
     for (size_t i = fVisible; i < fBookmarks.size(); ++i) {
         const auto& title = fBookmarks[i].title.empty() ? fBookmarks[i].url : fBookmarks[i].title;
         menu->AddItem(new BMenuItem(title.c_str(), BookmarkMessage(kOpenBookmark, fBookmarks[i].url)));
@@ -606,7 +645,7 @@ void BookmarksBar::ShowOverflow()
 void BookmarksBar::ShowContextMenu(int32 index, BPoint where)
 {
     const auto& url = fBookmarks[index].url;
-    auto* menu = new BPopUpMenu("bookmark", false, false);
+    auto* menu = NewMenu("bookmark");
     menu->AddItem(new BMenuItem("Open", BookmarkMessage(kOpenBookmark, url)));
     menu->AddItem(new BMenuItem("Open in New Tab", BookmarkMessage(kOpenBookmark, url, true)));
     menu->AddSeparatorItem();
