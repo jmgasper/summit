@@ -37687,6 +37687,26 @@ index 0000000000000000000000000000000000000000..a722963c4900d124123b25b53b2299cd
 +} // namespace WebKit
 +
 +#endif // ENABLE(WK_WEB_EXTENSIONS)
+diff --git a/Source/WebKit/Shared/Extensions/WebExtensionSQLiteDatabase.cpp b/Source/WebKit/Shared/Extensions/WebExtensionSQLiteDatabase.cpp
+index 1ebdaba79db6bddddcb132f50c3503fe0f8ecc86..3ee9cef0302fdac74a9fff9426a926c40676c14d 100644
+--- a/Source/WebKit/Shared/Extensions/WebExtensionSQLiteDatabase.cpp
++++ b/Source/WebKit/Shared/Extensions/WebExtensionSQLiteDatabase.cpp
+@@ -154,9 +154,13 @@ bool WebExtensionSQLiteDatabase::openWithAccessType(AccessType accessType, RefPt
+     ASSERT(!m_db);
+ 
+     String databasePath;
+-    if (m_url == inMemoryDatabaseURL())
++    if (m_url == inMemoryDatabaseURL()) {
+         databasePath = WebExtensionSQLiteInMemoryDatabaseName;
+-    else if (m_url == privateOnDiskDatabaseURL())
++        // "file::memory:" is a URI. A SQLite built without SQLITE_USE_URI (as
++        // on Haiku) opened it as a file of that name in the working directory,
++        // shared by every extension's storage.session and kept across launches.
++        flags |= SQLITE_OPEN_URI;
++    } else if (m_url == privateOnDiskDatabaseURL())
+         databasePath = ""_s;
+     else {
+         ASSERT(!m_url.isEmpty());
 diff --git a/Source/WebKit/Shared/Extensions/WebExtensionTab.serialization.in b/Source/WebKit/Shared/Extensions/WebExtensionTab.serialization.in
 index 1b2c6a3f188d1c0063753c2c46e1ba2d5446f244..2febefa22dad34aaa2099ac1e101f3c14eacdc81 100644
 --- a/Source/WebKit/Shared/Extensions/WebExtensionTab.serialization.in
@@ -40114,10 +40134,10 @@ index 0000000000000000000000000000000000000000..8f2c1c6acdb7f6d0dbdc3474d2bbe68a
 +} // namespace WebKit
 diff --git a/Source/WebKit/Shared/haiku/ProcessExecutablePathHaiku.cpp b/Source/WebKit/Shared/haiku/ProcessExecutablePathHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..e60ee2addd00b59c42ab70b2c3cf126980316243
+index 0000000000000000000000000000000000000000..7b3fb7cba806ac1a7415813534d8d12f5c3f5ffb
 --- /dev/null
 +++ b/Source/WebKit/Shared/haiku/ProcessExecutablePathHaiku.cpp
-@@ -0,0 +1,93 @@
+@@ -0,0 +1,110 @@
 +/*
 + * Copyright (C) 2012 Samsung Electronics
 + * Copyright (C) 2014 Haiku, inc.
@@ -40184,6 +40204,23 @@ index 0000000000000000000000000000000000000000..e60ee2addd00b59c42ab70b2c3cf1269
 +        auto path = FileSystem::pathByAppendingComponent(directory, name);
 +        if (isExecutable(path))
 +            return path;
++        break;
++    }
++
++    // An engine installed on its own (the summit_webkit package) keeps its
++    // processes in the directory above lib/, where this library lives.
++    cookie = 0;
++    auto self = reinterpret_cast<addr_t>(&findProcessPath);
++    while (get_next_image_info(B_CURRENT_TEAM, &cookie, &image) == B_OK) {
++        auto text = reinterpret_cast<addr_t>(image.text);
++        if (self < text || self - text >= static_cast<addr_t>(image.text_size))
++            continue;
++        auto directory = FileSystem::parentPath(String::fromUTF8(image.name));
++        for (auto candidate : { FileSystem::parentPath(directory), directory }) {
++            auto path = FileSystem::pathByAppendingComponent(candidate, name);
++            if (isExecutable(path))
++                return path;
++        }
 +        break;
 +    }
 +    auto path = FileSystem::pathByAppendingComponent(String::fromUTF8(LIBEXECDIR), name);
@@ -64361,10 +64398,10 @@ index 58f00aff737c58a39b1f8556c134f6b39ba2c43c..39a2b870eb9cc704e34a5bc348d85a7e
      ReadWrite,
 diff --git a/Source/WebKit/UIProcess/Launcher/haiku/HaikuProcess.h b/Source/WebKit/UIProcess/Launcher/haiku/HaikuProcess.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..d109dbf8f9215d26a645303c4ae239a89128d2aa
+index 0000000000000000000000000000000000000000..8e2bd15a207a7788ff5e6d62c9ba6e8ab0d0dad4
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Launcher/haiku/HaikuProcess.h
-@@ -0,0 +1,134 @@
+@@ -0,0 +1,150 @@
 +/*
 + * Copyright (c) 2026 KunanyiOS contributors
 + * SPDX-License-Identifier: MIT
@@ -64374,6 +64411,7 @@ index 0000000000000000000000000000000000000000..d109dbf8f9215d26a645303c4ae239a8
 +
 +#include <cerrno>
 +#include <cstdint>
++#include <cstring>
 +#include <fcntl.h>
 +#include <signal.h>
 +#include <sys/wait.h>
@@ -64394,7 +64432,7 @@ index 0000000000000000000000000000000000000000..d109dbf8f9215d26a645303c4ae239a8
 +// File descriptors owned by the caller must have FD_CLOEXEC unless deliberately
 +// inherited; the IPC endpoint alone is made inheritable in the child here.
 +inline HaikuProcessResult spawnHaikuProcess(const char* executable, uint64_t processIdentifier,
-+    int connection, const std::vector<std::string>& extraArguments = { })
++    int connection, const std::vector<std::string>& extraArguments = { }, const std::vector<std::string>& environmentOverrides = { })
 +{
 +    if (!executable || executable[0] != '/' || !processIdentifier)
 +        return { 0, EINVAL };
@@ -64427,6 +64465,21 @@ index 0000000000000000000000000000000000000000..d109dbf8f9215d26a645303c4ae239a8
 +    for (auto& argument : arguments)
 +        argv.push_back(argument.data());
 +    argv.push_back(nullptr);
++    // The child's environment: this one, with NAME=VALUE overrides replacing
++    // variables of the same name.
++    std::vector<char*> envp;
++    for (char** variable = environ; variable && *variable; ++variable) {
++        const char* equals = strchr(*variable, '=');
++        size_t length = equals ? equals - *variable + 1 : strlen(*variable);
++        bool overridden = false;
++        for (auto& entry : environmentOverrides)
++            overridden |= entry.size() >= length && !entry.compare(0, length, *variable, length);
++        if (!overridden)
++            envp.push_back(*variable);
++    }
++    for (auto& entry : environmentOverrides)
++        envp.push_back(const_cast<char*>(entry.c_str()));
++    envp.push_back(nullptr);
 +    sigset_t signals;
 +    sigemptyset(&signals);
 +    struct sigaction defaultAction { };
@@ -64449,7 +64502,7 @@ index 0000000000000000000000000000000000000000..d109dbf8f9215d26a645303c4ae239a8
 +            error = errno;
 +        close(duplicate);
 +        if (!error) {
-+            execve(executable, argv.data(), environ);
++            execve(executable, argv.data(), envp.data());
 +            error = errno;
 +        }
 +        const char* bytes = reinterpret_cast<const char*>(&error);
@@ -64501,10 +64554,10 @@ index 0000000000000000000000000000000000000000..d109dbf8f9215d26a645303c4ae239a8
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/Launcher/haiku/ProcessLauncherHaiku.cpp b/Source/WebKit/UIProcess/Launcher/haiku/ProcessLauncherHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..f4598db2ccab535b9c438fe90a248671fa894456
+index 0000000000000000000000000000000000000000..1dc84cbd13b89947c17943901aff03de332eb190
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Launcher/haiku/ProcessLauncherHaiku.cpp
-@@ -0,0 +1,120 @@
+@@ -0,0 +1,171 @@
 +/*
 + *  Copyright (C) 2019 Haiku, Inc.
 + *
@@ -64538,9 +64591,12 @@ index 0000000000000000000000000000000000000000..f4598db2ccab535b9c438fe90a248671
 +#include <algorithm>
 +#include <mutex>
 +#include <signal.h>
++#include <image.h>
 +#include <sys/resource.h>
++#include <sys/stat.h>
 +#include <sys/socket.h>
 +#include <sys/wait.h>
++#include <wtf/NeverDestroyed.h>
 +#include <wtf/RunLoop.h>
 +#include <wtf/text/CString.h>
 +
@@ -64569,6 +64625,54 @@ index 0000000000000000000000000000000000000000..f4598db2ccab535b9c438fe90a248671
 +    });
 +}
 +
++// The directory above the lib/ this library was loaded from: the bundle or
++// the summit_webkit package.
++static std::string engineDirectory()
++{
++    int32 cookie = 0;
++    image_info image;
++    auto self = reinterpret_cast<addr_t>(&engineDirectory);
++    while (get_next_image_info(B_CURRENT_TEAM, &cookie, &image) == B_OK) {
++        auto text = reinterpret_cast<addr_t>(image.text);
++        if (self < text || self - text >= static_cast<addr_t>(image.text_size))
++            continue;
++        std::string path = image.name;
++        auto slash = path.rfind('/');
++        if (slash == std::string::npos || slash == 0)
++            return { };
++        path.resize(slash);
++        slash = path.rfind('/');
++        return slash == std::string::npos || slash == 0 ? std::string { } : path.substr(0, slash);
++    }
++    return { };
++}
++
++// Stock Haiku's Mesa has no EGL, so the summit_webkit package carries its own
++// (engine/mesa/lib and engine/mesa/egl_vendor.d). Point the web and network
++// processes at it unless the embedder chose a glvnd vendor itself, as Summit's
++// launcher does for the GPU driver. A bundle without mesa/ changes nothing.
++static const std::vector<std::string>& childEnvironmentOverrides()
++{
++    static NeverDestroyed<std::vector<std::string>> overrides = [] {
++        std::vector<std::string> result;
++        if (getenv("__EGL_VENDOR_LIBRARY_FILENAMES") || getenv("__EGL_VENDOR_LIBRARY_DIRS"))
++            return result;
++        auto engine = engineDirectory();
++        if (engine.empty())
++            return result;
++        auto vendor = engine + "/mesa/egl_vendor.d/50_mesa.json";
++        struct stat info;
++        if (stat(vendor.c_str(), &info) || !S_ISREG(info.st_mode))
++            return result;
++        const char* path = getenv("LIBRARY_PATH");
++        result.push_back("__EGL_VENDOR_LIBRARY_FILENAMES=" + vendor);
++        result.push_back("LIBRARY_PATH=" + engine + "/mesa/lib:" + (path && *path ? path
++            : "%A/lib:/boot/home/config/non-packaged/lib:/boot/home/config/lib:/boot/system/non-packaged/lib:/boot/system/lib"));
++        return result;
++    }();
++    return overrides.get();
++}
++
 +void ProcessLauncher::launchProcess()
 +{
 +    raiseFileDescriptorLimit();
@@ -64594,7 +64698,7 @@ index 0000000000000000000000000000000000000000..f4598db2ccab535b9c438fe90a248671
 +        arguments.emplace_back("--configure-jsc-for-testing");
 +    auto result = m_launchOptions.shouldMakeProcessLaunchFailForTesting
 +        ? HaikuProcessResult { 0, ENOENT }
-+        : spawnHaikuProcess(executable.utf8().legacyCStringPointer(), m_launchOptions.processIdentifier.toUInt64(), sockets.client.value(), arguments);
++        : spawnHaikuProcess(executable.utf8().legacyCStringPointer(), m_launchOptions.processIdentifier.toUInt64(), sockets.client.value(), arguments, childEnvironmentOverrides());
 +    if (result.error) {
 +        RunLoop::mainSingleton().dispatch([protectedThis = Ref { *this }] {
 +            protectedThis->didFinishLaunchingProcess(0, { });
