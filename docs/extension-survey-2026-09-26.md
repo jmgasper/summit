@@ -11,6 +11,34 @@ Summit patches pass `c++ -fsyntax-only` on the Haiku VM; none was built.
 
 Result codes: W works, W- small gaps, P partly works, B broken.
 
+## Runtime in the VM (27 September)
+
+With X399 down, the whole corpus ran in the build VM (llvmpipe, 1280x800)
+with the engine built from these sources (`tools/ext-survey/batch.sh` with
+`SURVEY_ROOT=/SummitExtensions/summit/ext-survey`, `SURVEY_BUNDLE`,
+`SURVEY_MESA`; lists `list1.txt` to `list4.txt`). All 32 packages now install
+and start. What the runs found and what changed:
+
+| Extension | Found | Now |
+|---|---|---|
+| uBlock Origin Lite | No redirect rule ever applied: WebCore applies redirects only where a page's policies list the extension's host access, and only Cocoa set them. Each redirect was also followed by "ignore following rules", so a refused redirect let the request through with no rule at all: AdSense and Google Analytics loaded. | Policies carry each extension's host patterns; redirects no longer stop later rules. A test page (scripts that report whether they ran) shows AdSense, Analytics, Tag Manager and GPT replaced by uBOL's surrogates and the Facebook pixel blocked. |
+| uBlock Origin Lite | `storage.session` failed ("SQL logic error"): Haiku's SQLite has no URI support, so `file::memory:` was a file in the working directory shared by every extension and browser started there. | Opened as a URI (private, in memory). |
+| Privacy Badger | Would not install (390 content-script hosts over a 256-entry limit); then its startup aborted on a `ws://*/*` webRequest pattern. | Covered patterns are left out, limits are 4096, WebSocket patterns are skipped. Initialization completes. |
+| ClearURLs | `menus.create()` failed: it adds `Object.prototype.getOrDefault` and the parser rejected unknown properties. | Unknown menu properties are ignored (Safari); icon sizes come from own properties (Chrome). Cleans a Google redirect URL. |
+| Multi-Account Containers | Ten commands whose descriptions name messages its locales lack were dropped; `commands.update()` failed. | Kept with their identifier as the description (Firefox). contextualIdentities remains unsupported. |
+| Obsidian Web Clipper (Safari) | `_locales` without `default_locale`: every message was empty and `menus.create()` failed. | The best-matching supported locale is used. |
+| uBlock Origin Lite on d3ward's tester | The web process crashed in the font cache (zero-size last-resort font equal to the cache's empty key). | Fixed; that page is now only an archive notice. |
+| 15 of 32 runs | "Failed to create handle for shared memory buffer": Haiku's 256-descriptor limit, a frame buffer lost. | The process launcher raises it to 4096; gone from the reruns. |
+| Grammarly | "Manage storage timeout" | Not a failure: its 3 s timer logs that even after `storage.managed.get()` answered (an API probe confirms both forms answer). |
+| Tampermonkey | "tabs.onUpdated listener can only be registered during startup" | Its own guard, after `userScripts` is missing (not implemented). |
+
+Still expected: Tree Style Tab (sidebar, `sessions`, `menus.onShown`),
+Multi-Account Containers (`contextualIdentities`), Tampermonkey
+(`userScripts`), Honey's WebGL in a worker. Earlier fixes from this run are
+in the commit "Read back TextureMapper frames through the pixel buffer, and
+fixes from a VM extension run" (Ghostery rule update race, Stylus host-access
+DNR, Violentmonkey `setIcon`, OneTab `navigator.storage`, OffscreenCanvas).
+
 | Extension | Package | MV, background | Result | Causes |
 |---|---|---|---|---|
 | Dark Reader 4.9.133 | CWS | MV3 SW | W (runtime): SW boots, page themed, popup, welcome tab via tabs.create | - |
