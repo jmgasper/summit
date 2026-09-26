@@ -136,4 +136,12 @@ std::string FaviconCache::DataURL(const std::string& pageURL)
     auto* entry = Find(pageURL);
     return entry ? "data:image/png;base64," + Base64(entry->png) : std::string();
 }
+
+void FaviconCache::Forget(const std::string& pageURL)
+{
+    const auto key = FaviconKey(pageURL);
+    if (key.empty()) return;
+    fEntries.erase(key);
+    fEntries.erase(key.rfind("www.", 0) == 0 ? key.substr(4) : "www." + key);
+}
 }

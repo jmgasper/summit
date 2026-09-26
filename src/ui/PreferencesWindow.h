@@ -4,15 +4,16 @@
 #include <string>
 
 class BCheckBox;
+class BRadioButton;
 class BStringView;
 class BTextControl;
 
 namespace summit {
-// Edit › Preferences…. Changes apply as they are made; the browser window
-// owns the settings and saves them in the profile.
+// Edit › Preferences…. One window for the application; changes apply to every
+// browser window as they are made and are saved in the profile.
 class PreferencesWindow final : public BWindow {
 public:
-    PreferencesWindow(BMessenger owner, const std::string& homeURL, bool showBookmarksBar);
+    PreferencesWindow(BMessenger owner, const std::string& homeURL, bool showBookmarksBar, const std::string& interfaceStyle);
     void MessageReceived(BMessage*) override;
     bool QuitRequested() override;
 private:
@@ -21,5 +22,7 @@ private:
     BTextControl* fHome;
     BStringView* fHint;
     BCheckBox* fBookmarksBar;
+    BRadioButton* fHaikuStyle;
+    BRadioButton* fSafariStyle;
 };
 }

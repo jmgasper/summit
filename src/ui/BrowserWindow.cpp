@@ -2,10 +2,13 @@
 #include "Chrome.h"
 #include "FaviconCache.h"
 #include "Messages.h"
-#include "PreferencesWindow.h"
+#include "SharedProfile.h"
 #include "core/Address.h"
 #include "core/InternalPages.h"
 #include <Alert.h>
+#include <Clipboard.h>
+#include <ControlLook.h>
+#include <Screen.h>
 #include <Application.h>
 #include <CardLayout.h>
 #include <Entry.h>
@@ -22,6 +25,7 @@
 #include <Path.h>
 #include <PopUpMenu.h>
 #include <Roster.h>
+#include <StatusBar.h>
 #include <StringView.h>
 #include <TextControl.h>
 #include <TextView.h>
@@ -44,6 +48,7 @@
 #include <ctime>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <utility>
 
 namespace summit {
@@ -316,35 +321,70 @@ static void AddItem(BMenu* menu, const char* label, uint32 what, char key = 0, u
 {
     menu->AddItem(new BMenuItem(label, new BMessage(what), key, mods));
 }
-BrowserWindow::BrowserWindow(std::filesystem::path profile, std::string startURL,
-    const std::vector<std::string>& urls
+// Every browser window, for the Window menu. Each window keeps its own entry
+// up to date; any window thread may read the list.
+namespace {
+struct WindowEntry { BMessenger window; uint64 key; std::string title; };
+std::mutex sWindowListLock;
+std::vector<WindowEntry> sWindowList;
+std::atomic<int32> sOpenWindows { 0 };
+}
+int32 BrowserWindow::CountOpenWindows() { return sOpenWindows.load(); }
+
+static BRect DefaultWindowFrame(const BrowserWindowOptions& options)
+{
+    BRect frame = options.frame.IsValid() ? options.frame
+        : options.session.HasFrame() ? BRect(options.session.frame[0], options.session.frame[1], options.session.frame[2], options.session.frame[3])
+        : BRect(75, 65, 1195, 745);
+    // Keep the title tab reachable on the current screen.
+    const BRect screen = BScreen().Frame();
+    if (frame.Width() > screen.Width() - 10) frame.right = frame.left + screen.Width() - 10;
+    if (frame.Height() > screen.Height() - 30) frame.bottom = frame.top + screen.Height() - 30;
+    if (frame.left < 0 || frame.left > screen.right - 100) frame.OffsetTo(5, frame.top);
+    if (frame.top < 25 || frame.top > screen.bottom - 100) frame.OffsetTo(frame.left, 25);
+    return frame;
+}
+
+BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string startURL,
+    const BrowserWindowOptions& options
 #if SUMMIT_MODERN_WEBKIT
     , std::shared_ptr<BWebKitContext> context, bool extensionsEnabled
 #endif
     )
-    : BrowserWindowBase(BRect(75, 65, 1195, 745), "Summit", B_TITLED_WINDOW_LOOK, B_NORMAL_WINDOW_FEEL,
+    : BrowserWindowBase(DefaultWindowFrame(options), "Summit", B_TITLED_WINDOW_LOOK, B_NORMAL_WINDOW_FEEL,
           B_ASYNCHRONOUS_CONTROLS | B_AUTO_UPDATE_SIZE_LIMITS),
 #if SUMMIT_MODERN_WEBKIT
       fWebKitContext(std::move(context)),
 #endif
-      fProfilePath(std::move(profile)), fStartURL(std::move(startURL))
+      fShared(std::move(profile)), fKey(options.key), fStartURL(std::move(startURL))
 {
 #if SUMMIT_MODERN_WEBKIT
     fExtensionsEnabled = extensionsEnabled;
 #endif
-    std::string error;
-    fProfile = Profile::Load(fProfilePath, error);
-    fProfileWritable = error.empty();
-    fFavicons = std::make_unique<FaviconCache>(fProfilePath.parent_path() / "Favicons");
+    ++sOpenWindows;
+    {
+        std::lock_guard lock(sWindowListLock);
+        sWindowList.push_back({BMessenger(this), fKey, "Summit"});
+    }
+    fShared->AddListener(BMessenger(this));
+    std::tie(fBookmarksBarVisible, fInterfaceStyle) = fShared->Read([](const Profile& profile) {
+        return std::make_pair(profile.showBookmarksBar, profile.interfaceStyle);
+    });
+    fFavicons = std::make_unique<FaviconCache>(fShared->Path().parent_path() / "Favicons");
     auto* menu = new BMenuBar("menu");
     auto* file = new BMenu("File");
+    AddItem(file, "New Window", kNewWindow, 'N');
     AddItem(file, "New Tab", kNewTab, 'T');
     AddItem(file, "Open File…", kOpenFile, 'O');
+    file->AddSeparatorItem();
+    AddItem(file, "Close Window", kCloseWindow, 'W', B_SHIFT_KEY);
     AddItem(file, "Close Tab", kCloseTab, 'W');
     AddItem(file, "Reopen Closed Tab", kReopenTab, 'T', B_SHIFT_KEY);
     file->AddSeparatorItem();
     AddItem(file, "About Summit", B_ABOUT_REQUESTED);
     AddItem(file, "Quit", B_QUIT_REQUESTED, 'Q');
+    // Quit ends the application, with every window.
+    file->FindItem(B_QUIT_REQUESTED)->SetTarget(be_app);
     menu->AddItem(file);
     auto* edit = new BMenu("Edit");
     AddItem(edit, "Undo", B_UNDO, 'Z');
@@ -390,40 +430,33 @@ BrowserWindow::BrowserWindow(std::filesystem::path profile, std::string startURL
     AddItem(fBookmarksMenu, "Show All Bookmarks", kShowBookmarks, 'B');
     fBookmarksMenuFixed = fBookmarksMenu->CountItems();
     menu->AddItem(fBookmarksMenu);
-    auto* window = new BMenu("Window");
-    AddItem(window, "Next Tab", kNextTab);
-    AddItem(window, "Previous Tab", kPreviousTab);
-    AddItem(window, "Downloads", kShowDownloads, 'J');
+    fWindowMenu = new BMenu("Window");
+    AddItem(fWindowMenu, "Next Tab", kNextTab);
+    AddItem(fWindowMenu, "Previous Tab", kPreviousTab);
+    AddItem(fWindowMenu, "Move Tab to New Window", kMoveTabToNewWindow);
+    fWindowMenu->AddSeparatorItem();
+    AddItem(fWindowMenu, "Downloads", kShowDownloads, 'J');
 #if SUMMIT_MODERN_WEBKIT
     auto* extensions = new BMenuItem("Extensions…", new BMessage(kShowExtensions));
     extensions->SetEnabled(extensionsEnabled);
-    window->AddItem(extensions);
+    fWindowMenu->AddItem(extensions);
 #endif
-    menu->AddItem(window);
+    fWindowMenuFixed = fWindowMenu->CountItems();
+    menu->AddItem(fWindowMenu);
 
-    auto* toolbar = new BGroupView(B_HORIZONTAL, 4);
+    fToolbar = new BGroupView(B_HORIZONTAL, 4);
     auto* homeButton = new ToolButton("home", "Home", Icon::Home, kHome);
     fBack = new ToolButton("back", "Back", Icon::Back, kBack);
     fForward = new ToolButton("forward", "Forward", Icon::Forward, kForward);
     fReload = new ToolButton("reload", "Reload / stop", Icon::Reload, kReload);
+    fGo = new ToolButton("go", "Go to this address", Icon::Go, kNavigate);
     fAddress = new AddressControl;
     fAddress->SetExplicitMinSize(BSize(240, 30));
-    fAddress->SetExplicitMaxSize(BSize(660, B_SIZE_UNSET));
-    fAddress->TextView()->SetAlignment(B_ALIGN_CENTER);
     fAddress->SetToolTip("Search or enter a website address");
     auto* downloadsButton = new ToolButton("downloads", "Open Downloads", Icon::Downloads, kShowDownloads);
-    BLayoutBuilder::Group<>(toolbar)
-        .SetInsets(8, 7, 8, 7)
-        .Add(fBack).Add(fForward).Add(homeButton)
-        .AddGlue().Add(fAddress, 3).Add(fReload).AddGlue()
-        .Add(fBookmarkButton = new ToolButton("bookmark", "Bookmark this page", Icon::Bookmark, kBookmarkButton))
-        .Add(downloadsButton)
+    fBookmarkButton = new ToolButton("bookmark", "Bookmark this page", Icon::Bookmark, kBookmarkButton);
 #if SUMMIT_MODERN_WEBKIT
-        .Add(fExtensionActions = new BGroupView("extension-actions", B_HORIZONTAL, 2))
-#endif
-        .Add(new ToolButton("new-tab", "New tab", Icon::Plus, kNewTab));
-#if SUMMIT_MODERN_WEBKIT
-    fExtensionActions->Hide();
+    fExtensionActions = new BGroupView("extension-actions", B_HORIZONTAL, 2);
 #endif
     fTabStrip = new TabStrip();
     fProgress = new ProgressLine();
@@ -442,11 +475,44 @@ BrowserWindow::BrowserWindow(std::filesystem::path profile, std::string startURL
     fStatus = new BStringView("status", "Ready");
     fStatus->SetExplicitMinSize(BSize(150, 21));
     fStatus->SetExplicitMaxSize(BSize(B_SIZE_UNLIMITED, 21));
+    fStatus->SetTruncation(B_TRUNCATE_MIDDLE);
+    fStatusProgress = new BStatusBar("page-progress");
+    fStatusProgress->SetExplicitMinSize(BSize(120, B_SIZE_UNSET));
+    fStatusProgress->SetExplicitMaxSize(BSize(160, 21));
+    fStatusProgress->SetBarHeight(10);
+    fStatusProgress->SetMaxValue(1.0f);
+    auto* statusLine = new BGroupView(B_HORIZONTAL, 8);
+    BLayoutBuilder::Group<>(statusLine).SetInsets(4, 0, 4, 0).Add(fStatus, 1).Add(fStatusProgress);
+    fStatusProgress->Hide();
     BLayoutBuilder::Group<>(this, B_VERTICAL, 0)
-        .Add(menu).Add(toolbar).Add(fBookmarksBar).Add(fTabStrip).Add(fProgress)
+        .Add(menu).Add(fToolbar).Add(fBookmarksBar).Add(fTabStrip).Add(fProgress)
         .Add(fPages, 1)
-        .Add(fFindBar).Add(fStatus);
-    if (!fProfile.showBookmarksBar) {
+        .Add(fFindBar).Add(statusLine);
+    fLayout = static_cast<BGroupLayout*>(GetLayout());
+    // Glue that only the Safari-like look shows (ApplyInterfaceStyle), to
+    // centre the address field.
+    auto glue = [] {
+        auto* view = new BView("toolbar-glue", 0);
+        view->SetViewUIColor(B_PANEL_BACKGROUND_COLOR);
+        view->SetExplicitMinSize(BSize(0, 0));
+        view->SetExplicitMaxSize(BSize(B_SIZE_UNLIMITED, B_SIZE_UNLIMITED));
+        return view;
+    };
+    BLayoutBuilder::Group<>(fToolbar)
+        .SetInsets(8, 7, 8, 7)
+        .Add(fBack).Add(fForward).Add(homeButton)
+        .Add(glue()).Add(fAddress, 3).Add(fGo).Add(fReload).Add(glue())
+        .Add(fBookmarkButton)
+        .Add(downloadsButton)
+#if SUMMIT_MODERN_WEBKIT
+        .Add(fExtensionActions)
+#endif
+        .Add(new ToolButton("new-tab", "New tab", Icon::Plus, kNewTab));
+#if SUMMIT_MODERN_WEBKIT
+    fExtensionActions->Hide();
+#endif
+    ApplyInterfaceStyle();
+    if (!fBookmarksBarVisible) {
         fBookmarksBar->Hide();
         fBookmarksBarItem->SetLabel("Show Bookmarks Bar");
     }
@@ -463,23 +529,31 @@ BrowserWindow::BrowserWindow(std::filesystem::path profile, std::string startURL
     BWebPage::SetDownloadListener(BMessenger(this));
 #endif
 
-    const auto restored = fProfile.tabs;
-    const auto selected = fProfile.selected;
-    if (!urls.empty()) for (const auto& url : urls) CreateTab(url);
-    else if (!restored.empty()) {
-        for (const auto& page : restored) CreateTab(page.url, false);
-        if (!fTabs.empty()) SelectTab(fTabs[std::min(selected, fTabs.size() - 1)].id);
-    } else CreateTab("summit:home");
-    // Invalid command-line or saved URLs may all have been rejected.
-    if (fTabs.empty()) CreateTab("summit:home");
+    if (!options.empty) {
+#if SUMMIT_MODERN_WEBKIT
+        if (options.newPage) CreateTab(options.newPageURL, true, nullptr, -1, 0, 0, options.newPage);
+        else
+#endif
+        if (!options.urls.empty()) for (const auto& url : options.urls) CreateTab(url);
+        else if (!options.session.tabs.empty()) {
+            for (const auto& page : options.session.tabs) CreateTab(page.url, false);
+            if (!fTabs.empty()) SelectTab(fTabs[std::min(options.session.selected, fTabs.size() - 1)].id);
+        } else CreateTab("summit:home");
+        // Invalid command-line or saved URLs may all have been rejected.
+        if (fTabs.empty()) CreateTab("summit:home");
+    }
     RefreshBookmarks();
     BMessage save(kSaveSession);
     fSaveTimer = std::make_unique<BMessageRunner>(BMessenger(this), &save, 5000000);
-    if (!error.empty()) ShowError("The saved profile could not be read. It has been preserved. " + error);
+    SaveSession();
 }
 BrowserWindow::~BrowserWindow()
 {
-    if (fPreferences.IsValid()) fPreferences.SendMessage(B_QUIT_REQUESTED);
+    fShared->RemoveListener(BMessenger(this));
+    {
+        std::lock_guard lock(sWindowListLock);
+        std::erase_if(sWindowList, [this](const WindowEntry& entry) { return entry.key == fKey; });
+    }
 #if SUMMIT_MODERN_WEBKIT
     if (fExtensionMenuCancelled) *fExtensionMenuCancelled = true;
     fWebKitContext->SetBrowserWindowTabs(BMessenger(this), { }, nullptr, false);
@@ -627,7 +701,7 @@ std::string BrowserWindow::StoredURL(const BString& url) const
     return value;
 }
 #if SUMMIT_MODERN_WEBKIT
-void BrowserWindow::CreateTab(const std::string& input, bool select, const char* extensionIdentifier, int32 index, uint64 command, int64 replaces)
+void BrowserWindow::CreateTab(const std::string& input, bool select, const char* extensionIdentifier, int32 index, uint64 command, int64 replaces, uint64 newPage)
 #else
 void BrowserWindow::CreateTab(const std::string& input, bool select, BWebView* adopted)
 #endif
@@ -636,10 +710,11 @@ void BrowserWindow::CreateTab(const std::string& input, bool select, BWebView* a
     // An extension learns about a failure through its own promise; only the
     // user's own requests interrupt with an alert.
     auto fail = [&](const std::string& error) {
+        if (newPage) BWebKitView::DeclineNewPage(newPage);
         if (command) TabOpenedForCommand(command, nullptr, error);
-        else ShowError(error);
+        else if (!newPage) ShowError(error);
     };
-    if (fClosingWindow) { if (command) TabOpenedForCommand(command, nullptr, "The window is closing."); return; }
+    if (fClosingWindow) { fail("The window is closing."); return; }
 #else
     auto fail = [&](const std::string& error) { ShowError(error); };
 #endif
@@ -656,10 +731,15 @@ void BrowserWindow::CreateTab(const std::string& input, bool select, BWebView* a
     }
 #endif
     if (fTabs.size() >= 512) { fail("The session has reached its 512-tab limit."); return; }
+#if SUMMIT_MODERN_WEBKIT
+    // The engine loads a page another page opened; its address is only shown.
+    const auto address = newPage ? Address { input, "", false } : ResolveAddress(input);
+#else
     const auto address = ResolveAddress(input);
+#endif
     if (!address.error.empty()) { fail(address.error); return; }
 #if SUMMIT_MODERN_WEBKIT
-    const bool extensionPage = address.url.starts_with("webkit-extension:");
+    const bool extensionPage = !newPage && address.url.starts_with("webkit-extension:");
     if (extensionPage && !extensionIdentifier) {
         // The application owns the live extension catalog. Resolve its current
         // origin and create the privileged view on WebKit's application thread.
@@ -681,7 +761,9 @@ void BrowserWindow::CreateTab(const std::string& input, bool select, BWebView* a
         if (!webView) { fail("Could not open the extension page: " + std::string(std::strerror(status))); return; }
     } else {
         const char* frameStats = std::getenv("SUMMIT_UI_FRAME_STATS");
-        if (frameStats && std::strcmp(frameStats, "1") == 0)
+        if (newPage)
+            webView = new BWebKitView(BRect(0, 0, 319, 199), "web-page", BMessenger(this), newPage, B_FOLLOW_ALL, fWebKitContext);
+        else if (frameStats && std::strcmp(frameStats, "1") == 0)
             webView = new FrameStatsWebKitView(BRect(0, 0, 319, 199), "web-page", BMessenger(this), B_FOLLOW_ALL, fWebKitContext);
         else
             webView = new BWebKitView(BRect(0, 0, 319, 199), "web-page", BMessenger(this), B_FOLLOW_ALL, fWebKitContext);
@@ -689,6 +771,7 @@ void BrowserWindow::CreateTab(const std::string& input, bool select, BWebView* a
     if (webView->InitCheck() != B_OK) {
         const status_t status = webView->InitCheck();
         delete webView;
+        newPage = 0; // The view declined it.
         fail("Could not create the web page: " + std::string(std::strerror(status)));
         return;
     }
@@ -723,7 +806,7 @@ void BrowserWindow::CreateTab(const std::string& input, bool select, BWebView* a
     if (select || fSelected == 0) SelectTab(fTabs.back().id);
 #endif
 #if SUMMIT_MODERN_WEBKIT
-    webView->LoadURL(LoadableURL(address.url).c_str());
+    if (!newPage) webView->LoadURL(LoadableURL(address.url).c_str());
 #else
     if (!adopted) webView->LoadURL(LoadableURL(address.url).c_str(), select);
 #endif
@@ -767,6 +850,12 @@ void BrowserWindow::SelectTab(int64 id, bool forClose)
 #if SUMMIT_MODERN_WEBKIT
         if (!forClose) ++fSelectionGeneration;
 #endif
+        if (fSelected != id) {
+            fBackgroundInsert = -1;
+#if SUMMIT_MODERN_WEBKIT
+            fHoveredLink.clear();
+#endif
+        }
         fSelected = id;
         fCards->SetVisibleItem(static_cast<int32>(i));
 #if !SUMMIT_MODERN_WEBKIT
@@ -889,7 +978,6 @@ void BrowserWindow::BeginWindowClose()
     if (fCloseCommitPending) { fWindowCloseQueued = true; return; }
     fWindowCloseQueued = false;
     fWindowCloseInvalidated = false;
-    fDownloadQuitApproved = false;
     // Approval is provisional until every tab agrees. Keep live documents,
     // undo state and the full saved session intact when any tab chooses Stay.
     SaveSession();
@@ -924,18 +1012,7 @@ void BrowserWindow::ContinueWindowClose()
         StartCloseRequest(tab);
         return;
     }
-    if (fDownloadPromptPending) return;
-    if (!fDownloads.empty() && !fDownloadQuitApproved) {
-        auto* reply = new BMessage(kDownloadQuitReply);
-        reply->AddUInt64("generation", ++fDownloadPromptGeneration);
-        auto* prompt = new BAlert("Downloads", "Downloads are still in progress. Quit and cancel them?",
-            "Keep Browsing", "Quit");
-        fDownloadPrompt = BMessenger(prompt);
-        fDownloadPromptPending = true;
-        fClosePromptTab = fSelected;
-        if (prompt->Go(new BInvoker(reply, BMessenger(this))) != B_OK) CancelWindowClose();
-        return;
-    }
+    // The application asks about unfinished downloads before Summit quits.
     std::vector<int64> identifiers;
     for (const auto& tab : fTabs) identifiers.push_back(tab.id);
     CommitTabCloses(identifiers, true);
@@ -996,6 +1073,8 @@ void BrowserWindow::WebKitCloseCommitted(const BMessage& message)
         }
         fTabs.clear();
         fSelected = 0;
+        --sOpenWindows;
+        if (fCloseWindowCommand) RespondToCommand(std::exchange(fCloseWindowCommand, 0), B_OK);
         BMessage ready(kWindowReadyToClose);
         ready.AddMessenger("window", BMessenger(this));
         be_app->PostMessage(&ready);
@@ -1023,11 +1102,6 @@ void BrowserWindow::WebKitCloseCommitted(const BMessage& message)
 
 void BrowserWindow::CancelWindowClose()
 {
-    ++fDownloadPromptGeneration;
-    fDownloadPromptPending = false;
-    fDownloadQuitApproved = false;
-    if (fDownloadPrompt.IsValid()) fDownloadPrompt.SendMessage(B_QUIT_REQUESTED);
-    fDownloadPrompt = BMessenger();
     for (auto& tab : fTabs) {
         tab.closeQueued = tab.closeRequested = tab.closeApproved = false;
         tab.closeFocus.reset();
@@ -1043,6 +1117,10 @@ void BrowserWindow::CancelWindowClose()
     fWindowCloseFocus.reset();
     fClosePromptTab = 0;
     SaveSession();
+    if (fCloseWindowCommand) RespondToCommand(std::exchange(fCloseWindowCommand, 0), B_CANCELED, { }, "The window was kept open.");
+    BMessage cancelled(kWindowCloseCancelled);
+    cancelled.AddMessenger("window", BMessenger(this));
+    be_app->PostMessage(&cancelled);
 }
 
 void BrowserWindow::WebKitCloseResult(const BMessage& message)
@@ -1099,7 +1177,9 @@ void BrowserWindow::FinishCloseTab(int64 id)
         if (fTabs.empty()) {
             fSelected = 0;
 #if SUMMIT_MODERN_WEBKIT
-            if (!fClosingWindow)
+            // Closing the last tab closes the window when others remain open.
+            if (!fClosingWindow && CountOpenWindows() > 1) PostMessage(B_QUIT_REQUESTED);
+            else if (!fClosingWindow)
 #endif
                 CreateTab("summit:home");
         }
@@ -1268,10 +1348,17 @@ void BrowserWindow::BrowserCommand(const BMessage& message)
             return;
         }
         case B_WEBKIT_BROWSER_CLOSE_WINDOW: {
-            // Never let an extension close the only browser window. It may
+            if (CountOpenWindows() > 1) {
+                // Answered once the window has closed, or kept open by a page.
+                if (fClosingWindow || fCloseWindowCommand) { RespondToCommand(identifier, B_BUSY, { }, "The window is closing."); return; }
+                fCloseWindowCommand = identifier;
+                PostMessage(B_QUIT_REQUESTED);
+                return;
+            }
+            // Never let an extension close the last browser window. It may
             // close the tabs this window opened for its windows.create() calls.
             const auto tabs = fExtensionWindowTabs[message.GetString("extension_identifier", "")];
-            if (tabs.empty()) RespondToCommand(identifier, B_NOT_ALLOWED, { }, "Summit has a single window, which extensions cannot close.");
+            if (tabs.empty()) RespondToCommand(identifier, B_NOT_ALLOWED, { }, "Extensions cannot close the last browser window.");
             else CloseTabsForCommand(identifier, tabs);
             return;
         }
@@ -1406,8 +1493,8 @@ void BrowserWindow::ExtensionActionsReceived(const BMessage& message)
     for (size_t i = 0; i < visible; ++i) fExtensionActionButtons[i]->SetAction(fExtensionActionState[i], fExtensionActionSnapshot);
     if (fExtensionActionsOverflow) fExtensionActionsOverflow->SetEnabled(true);
     if (fExtensionActionState.empty()) {
-        if (!fExtensionActions->IsHidden()) fExtensionActions->Hide();
-    } else if (fExtensionActions->IsHidden()) fExtensionActions->Show();
+        if (!fExtensionActions->IsHidden(fExtensionActions)) fExtensionActions->Hide();
+    } else if (fExtensionActions->IsHidden(fExtensionActions)) fExtensionActions->Show();
 }
 
 void BrowserWindow::ActivateExtensionAction(const BMessage& message)
@@ -1462,8 +1549,13 @@ void BrowserWindow::WindowActivated(bool active)
 {
     BrowserWindowBase::WindowActivated(active);
     SyncBrowserWindow();
-    if (active)
+    if (active) {
         AnnouncePointer();
+        // The application sends new tabs and extension requests to the front window.
+        BMessage activated(kWindowActivated);
+        activated.AddMessenger("window", BMessenger(this));
+        be_app->PostMessage(&activated);
+    }
 }
 #endif
 
@@ -1474,12 +1566,146 @@ void BrowserWindow::RefreshChrome()
     fTabStrip->SetTabs(std::move(labels), fSelected);
     if (auto* tab = ActiveTab()) {
         fBookmarkButton->SetEnabled(Bookmarkable(tab->url));
-        fBookmarkButton->SetIcon(fProfile.FindBookmark(tab->url) ? Icon::BookmarkFilled : Icon::Bookmark);
-        SetTitle((tab->title + " — Summit").c_str());
+        const bool bookmarked = fShared->Read([&](const Profile& profile) {
+            return std::any_of(profile.bookmarks.begin(), profile.bookmarks.end(),
+                [&](const PageRecord& bookmark) { return bookmark.url == tab->url; });
+        });
+        fBookmarkButton->SetIcon(bookmarked ? Icon::BookmarkFilled : Icon::Bookmark);
+        const std::string title = tab->title + " — Summit";
+        if (title != Title()) {
+            SetTitle(title.c_str());
+            std::lock_guard lock(sWindowListLock);
+            for (auto& entry : sWindowList) if (entry.key == fKey) entry.title = tab->title;
+        }
         fBack->SetEnabled(tab->back); fForward->SetEnabled(tab->forward);
         fReload->SetIcon(tab->loading ? Icon::Stop : Icon::Reload);
         fProgress->SetProgress(tab->loading ? std::max(0.03f, tab->progress) : 0);
+        // The Haiku look shows progress in the status bar, like WebPositive.
+        const bool showProgress = fInterfaceStyle == "haiku" && tab->loading;
+        if (showProgress) {
+            fStatusProgress->SetTo(std::max(0.03f, tab->progress));
+            if (fStatusProgress->IsHidden(fStatusProgress)) fStatusProgress->Show();
+        } else if (!fStatusProgress->IsHidden(fStatusProgress)) fStatusProgress->Hide();
     }
+}
+
+BrowserWindow::Tab* BrowserWindow::FindTabByID(int64 id)
+{
+    for (auto& tab : fTabs) if (tab.id == id) return &tab;
+    return nullptr;
+}
+
+void BrowserWindow::ProfileChanged(const BMessage& message)
+{
+    const uint32 changes = message.GetUInt32("changes", 0);
+    BMessenger sender;
+    message.FindMessenger("sender", &sender);
+    if (changes & SharedProfile::kIconChanged) {
+        // Another window stored a new icon; this window's copy is out of date.
+        const char* url = nullptr;
+        if (sender != BMessenger(this) && message.FindString("icon_url", &url) == B_OK) fFavicons->Forget(url);
+        PagesChanged();
+        RefreshChrome();
+        RefreshBookmarks();
+    }
+    if (changes & SharedProfile::kHistoryChanged) PagesChanged();
+    if (changes & SharedProfile::kHistoryCleared)
+        if (auto* tab = ActiveTab(); tab && tab->url == kHistoryPage) RefreshInternalPage(*tab);
+    if (changes & SharedProfile::kBookmarksChanged) {
+        PagesChanged();
+        RefreshBookmarks();
+        RefreshChrome();
+        if (auto* tab = ActiveTab(); tab && tab->url == kBookmarksPage) RefreshInternalPage(*tab);
+    }
+    if (changes & SharedProfile::kSettingsChanged) {
+        const auto [bar, style] = fShared->Read([](const Profile& profile) {
+            return std::make_pair(profile.showBookmarksBar, profile.interfaceStyle);
+        });
+        if (bar != fBookmarksBarVisible) {
+            fBookmarksBarVisible = bar;
+            if (bar && fBookmarksBar->IsHidden(fBookmarksBar)) fBookmarksBar->Show();
+            else if (!bar && !fBookmarksBar->IsHidden(fBookmarksBar)) fBookmarksBar->Hide();
+            fBookmarksBarItem->SetLabel(bar ? "Hide Bookmarks Bar" : "Show Bookmarks Bar");
+        }
+        if (style != fInterfaceStyle) {
+            fInterfaceStyle = style;
+            ApplyInterfaceStyle();
+            RefreshChrome();
+        }
+    }
+}
+
+void BrowserWindow::RequestNewWindow(const std::vector<std::string>& urls)
+{
+    BMessage request(kNewWindow);
+    for (const auto& url : urls) request.AddString("url", url.c_str());
+    // Cascade from this window.
+    request.AddRect("frame", Frame().OffsetByCopy(24, 24));
+    be_app->PostMessage(&request);
+}
+
+void BrowserWindow::ShowTabMenu(const BMessage& message)
+{
+    int64 id = 0;
+    BPoint where;
+    if (message.FindInt64("id", &id) != B_OK || message.FindPoint("where", &where) != B_OK || !FindTabByID(id)) return;
+    auto item = [id](const char* label, uint32 what) {
+        auto* invocation = new BMessage(what);
+        invocation->AddInt64("id", id);
+        return new BMenuItem(label, invocation);
+    };
+    auto* menu = new BPopUpMenu("tab", false, false);
+    menu->AddItem(new BMenuItem("New Tab", new BMessage(kNewTab)));
+    menu->AddSeparatorItem();
+    menu->AddItem(item("Reload Tab", kReloadTab));
+    menu->AddItem(item("Duplicate Tab", kDuplicateTab));
+    auto* move = item("Move Tab to New Window", kMoveTabToNewWindow);
+    move->SetEnabled(fTabs.size() > 1);
+    menu->AddItem(move);
+    menu->AddSeparatorItem();
+    menu->AddItem(item("Close Tab", kCloseTab));
+    auto* others = item("Close Other Tabs", kCloseOtherTabs);
+    others->SetEnabled(fTabs.size() > 1);
+    menu->AddItem(others);
+    menu->SetTargetForItems(this);
+    menu->SetAsyncAutoDestruct(true);
+    menu->Go(where, true, false, true);
+}
+
+void BrowserWindow::ApplyInterfaceStyle()
+{
+    const bool haiku = fInterfaceStyle == "haiku";
+    SetInterfaceStyle(haiku);
+    // Haiku: tabs on top, as in WebPositive, then a toolbar of real buttons with
+    // a left-aligned address field and a Go button; progress in the status bar.
+    // Safari: toolbar, bookmarks bar, then tabs; a centered address field.
+    fTabStrip->RemoveSelf();
+    fLayout->AddView(haiku ? 1 : 3, fTabStrip);
+    auto* toolbar = fToolbar->GroupLayout();
+    // IsHidden(view): the window itself is still hidden while it is built.
+    auto show = [](BView* view, bool visible) {
+        if (visible && view->IsHidden(view)) view->Show();
+        else if (!visible && !view->IsHidden(view)) view->Hide();
+    };
+    // Order: Back, Forward, Reload (Haiku), Home, glue, Address, Go, Reload (Safari), glue, …
+    BView* reload = fReload;
+    reload->RemoveSelf();
+    toolbar->AddView(haiku ? 2 : 5, reload);
+    for (int32 i = 0; i < toolbar->CountItems(); ++i) {
+        auto* view = toolbar->ItemAt(i)->View();
+        if (view && !std::strcmp(view->Name(), "toolbar-glue")) show(view, !haiku);
+        if (view && !std::strcmp(view->Name(), "new-tab")) show(view, !haiku);
+    }
+    show(fGo, haiku);
+    fAddress->SetExplicitMaxSize(BSize(haiku ? B_SIZE_UNLIMITED : 660, B_SIZE_UNSET));
+    fAddress->TextView()->SetAlignment(haiku ? B_ALIGN_LEFT : B_ALIGN_CENTER);
+    toolbar->SetInsets(haiku ? 5 : 8, haiku ? 4 : 7, haiku ? 5 : 8, haiku ? 4 : 7);
+    toolbar->SetSpacing(haiku ? 3 : 4);
+    show(fProgress, !haiku);
+    for (BView* view : std::initializer_list<BView*>{fToolbar, fTabStrip, fBookmarksBar, fProgress})
+        view->Invalidate();
+    for (int32 i = 0; i < fToolbar->CountChildren(); ++i) fToolbar->ChildAt(i)->Invalidate();
+    fTabStrip->InvalidateLayout();
 }
 std::string BrowserWindow::DisplayURL(const std::string& url) const
 {
@@ -1487,17 +1713,21 @@ std::string BrowserWindow::DisplayURL(const std::string& url) const
 }
 std::string BrowserWindow::HomeAddress() const
 {
-    return fProfile.homeURL.empty() ? "summit:home" : fProfile.homeURL;
+    const auto home = fShared->Read([](const Profile& profile) { return profile.homeURL; });
+    return home.empty() ? "summit:home" : home;
 }
 std::filesystem::path BrowserWindow::InternalPagePath(const std::string& url) const
 {
-    return fProfilePath.parent_path() / "Pages" / (url == kHistoryPage ? "history.html" : "bookmarks.html");
+    return fShared->Path().parent_path() / "Pages" / (url == kHistoryPage ? "history.html" : "bookmarks.html");
 }
 bool BrowserWindow::WriteInternalPage(const std::string& url)
 {
     const auto icons = [this](const std::string& page) { return fFavicons->DataURL(page); };
-    const auto html = url == kHistoryPage ? RenderHistoryPage(fProfile.history, std::time(nullptr), icons)
-        : RenderBookmarksPage(fProfile.bookmarks, icons);
+    const auto pages = fShared->Read([&](const Profile& profile) {
+        return url == kHistoryPage ? profile.history : profile.bookmarks;
+    });
+    const auto html = url == kHistoryPage ? RenderHistoryPage(pages, std::time(nullptr), icons)
+        : RenderBookmarksPage(pages, icons);
     const auto path = InternalPagePath(url);
     std::error_code error;
     std::filesystem::create_directories(path.parent_path(), error);
@@ -1560,18 +1790,19 @@ void BrowserWindow::BookmarksChanged()
 void BrowserWindow::RefreshBookmarks()
 {
     std::vector<BookmarkButton> buttons;
-    for (const auto& bookmark : fProfile.bookmarks)
+    const auto bookmarks = fShared->Read([](const Profile& profile) { return profile.bookmarks; });
+    for (const auto& bookmark : bookmarks)
         if (bookmark.bar) buttons.push_back({bookmark.url, bookmark.title, fFavicons->Icon(bookmark.url)});
     fBookmarksBar->SetBookmarks(std::move(buttons));
 }
 void BrowserWindow::SetBookmarksBarVisible(bool visible)
 {
-    fProfile.showBookmarksBar = visible;
-    if (visible && fBookmarksBar->IsHidden()) fBookmarksBar->Show();
-    else if (!visible && !fBookmarksBar->IsHidden()) fBookmarksBar->Hide();
-    fBookmarksBarItem->SetLabel(visible ? "Hide Bookmarks Bar" : "Show Bookmarks Bar");
-    SaveSession();
-    SendPreferencesState();
+    // Shown or hidden in every window; ProfileChanged applies it.
+    fShared->Change([visible](Profile& profile) -> uint32 {
+        if (profile.showBookmarksBar == visible) return 0;
+        profile.showBookmarksBar = visible;
+        return SharedProfile::kSettingsChanged;
+    }, BMessenger(this));
 }
 void BrowserWindow::MenusBeginning()
 {
@@ -1582,9 +1813,18 @@ void BrowserWindow::RebuildDynamicMenus()
 {
     auto* tab = ActiveTab();
     const bool bookmarkable = tab && Bookmarkable(tab->url);
+    std::vector<PageRecord> history, bookmarks;
+    bool bookmarked = false;
+    fShared->Read([&](const Profile& profile) {
+        history.assign(profile.history.begin(), profile.history.begin() + std::min<size_t>(profile.history.size(), 15));
+        bookmarks.assign(profile.bookmarks.begin(), profile.bookmarks.begin() + std::min<size_t>(profile.bookmarks.size(), 40));
+        bookmarked = tab && std::any_of(profile.bookmarks.begin(), profile.bookmarks.end(),
+            [&](const PageRecord& bookmark) { return bookmark.url == tab->url; });
+        return 0;
+    });
     if (auto* item = fBookmarksMenu->FindItem(kBookmark)) item->SetEnabled(bookmarkable);
     if (auto* item = fBookmarksMenu->FindItem(kAddToBookmarksBar)) item->SetEnabled(bookmarkable);
-    fRemoveBookmarkItem->SetEnabled(bookmarkable && fProfile.FindBookmark(tab->url));
+    fRemoveBookmarkItem->SetEnabled(bookmarkable && bookmarked);
     auto clear = [](BMenu* menu, int32 fixed) {
         while (menu->CountItems() > fixed) delete menu->RemoveItem(fixed);
     };
@@ -1597,18 +1837,38 @@ void BrowserWindow::RebuildDynamicMenus()
     };
     // Recently visited pages, then every bookmark, as in Safari's menus.
     clear(fHistoryMenu, fHistoryMenuFixed);
-    if (!fProfile.history.empty()) fHistoryMenu->AddSeparatorItem();
-    for (size_t i = 0; i < std::min<size_t>(fProfile.history.size(), 15); ++i) add(fHistoryMenu, fProfile.history[i]);
-    if (auto* item = fHistoryMenu->FindItem(kClearHistory)) item->SetEnabled(!fProfile.history.empty());
+    if (!history.empty()) fHistoryMenu->AddSeparatorItem();
+    for (const auto& page : history) add(fHistoryMenu, page);
+    if (auto* item = fHistoryMenu->FindItem(kClearHistory)) item->SetEnabled(!history.empty());
     clear(fBookmarksMenu, fBookmarksMenuFixed);
-    if (!fProfile.bookmarks.empty()) fBookmarksMenu->AddSeparatorItem();
-    for (size_t i = 0; i < std::min<size_t>(fProfile.bookmarks.size(), 40); ++i) add(fBookmarksMenu, fProfile.bookmarks[i]);
+    if (!bookmarks.empty()) fBookmarksMenu->AddSeparatorItem();
+    for (const auto& page : bookmarks) add(fBookmarksMenu, page);
+    if (auto* item = fWindowMenu->FindItem(kMoveTabToNewWindow)) item->SetEnabled(fTabs.size() > 1);
+    // Every browser window, the current one marked, as in other Haiku applications.
+    clear(fWindowMenu, fWindowMenuFixed);
+    std::vector<WindowEntry> windows;
+    {
+        std::lock_guard lock(sWindowListLock);
+        windows = sWindowList;
+    }
+    std::sort(windows.begin(), windows.end(), [](const WindowEntry& a, const WindowEntry& b) { return a.key < b.key; });
+    fWindowMenu->AddSeparatorItem();
+    for (const auto& window : windows) {
+        auto* activate = new BMessage(kActivateWindow);
+        auto* item = new BMenuItem(MenuLabel({"", window.title}).c_str(), activate);
+        item->SetTarget(window.window);
+        item->SetMarked(window.key == fKey);
+        fWindowMenu->AddItem(item);
+    }
 }
 void BrowserWindow::ShowBookmarkMenu()
 {
     auto* tab = ActiveTab();
     if (!tab || !Bookmarkable(tab->url)) return;
-    const auto* bookmark = fProfile.FindBookmark(tab->url);
+    const auto bookmark = fShared->Read([&](const Profile& profile) -> std::optional<PageRecord> {
+        for (const auto& page : profile.bookmarks) if (page.url == tab->url) return page;
+        return std::nullopt;
+    });
     auto* menu = new BPopUpMenu("bookmark-page", false, false);
     if (!bookmark) {
         menu->AddItem(new BMenuItem("Add to Bookmarks Bar", new BMessage(kAddToBookmarksBar)));
@@ -1639,42 +1899,25 @@ void BrowserWindow::IconLoaded(const BMessage& message)
         if (auto* tab = FindTab(sender)) page = tab->url;
 #endif
     if (!fFavicons->Store(page, data, static_cast<size_t>(size))) return;
-    PagesChanged();
-    RefreshChrome();
-    RefreshBookmarks();
-}
-void BrowserWindow::ShowPreferences()
-{
-    if (fPreferences.IsValid()) {
-        fPreferences.SendMessage(kShowPreferences);
-        return;
-    }
-    auto* window = new PreferencesWindow(BMessenger(this), fProfile.homeURL, fProfile.showBookmarksBar);
-    window->CenterIn(Frame());
-    fPreferences = BMessenger(window);
-    window->Show();
-}
-void BrowserWindow::SendPreferencesState()
-{
-    if (!fPreferences.IsValid()) return;
-    BMessage state(kPreferencesState);
-    state.AddString("home_url", fProfile.homeURL.c_str());
-    state.AddBool("show_bookmarks_bar", fProfile.showBookmarksBar);
-    fPreferences.SendMessage(&state);
+    // Every window redraws; the others read the new icon from disk.
+    fShared->IconChanged(page, BMessenger(this));
 }
 void BrowserWindow::SaveSession()
 {
 #if SUMMIT_MODERN_WEBKIT
     if (fClosingWindow) return;
 #endif
-    if (!fProfileWritable) return;
-    fProfile.tabs.clear();
+    WindowSession session;
     for (size_t i = 0; i < fTabs.size(); ++i) {
-        fProfile.tabs.push_back({fTabs[i].url, fTabs[i].title});
-        if (fTabs[i].id == fSelected) fProfile.selected = i;
+        session.tabs.push_back({fTabs[i].url, fTabs[i].title});
+        if (fTabs[i].id == fSelected) session.selected = i;
     }
+    const BRect frame = Frame();
+    session.frame[0] = frame.left; session.frame[1] = frame.top;
+    session.frame[2] = frame.right; session.frame[3] = frame.bottom;
+    fShared->SetWindowSession(fKey, session);
     std::string error;
-    if (!fProfile.Save(fProfilePath, error)) fStatus->SetText(("Could not save session: " + error).c_str());
+    if (!fShared->Save(error)) fStatus->SetText(("Could not save session: " + error).c_str());
 }
 void BrowserWindow::ShowError(const std::string& error)
 {
@@ -1683,9 +1926,11 @@ void BrowserWindow::ShowError(const std::string& error)
 bool BrowserWindow::QuitRequested()
 {
 #if SUMMIT_MODERN_WEBKIT
-    // The application closes this window and drains queued WebKit destruction
-    // before it stops the application looper.
-    be_app->PostMessage(B_QUIT_REQUESTED);
+    // The application decides: closing the last window quits Summit. It then
+    // closes this window and drains queued WebKit destruction.
+    BMessage request(kCloseWindowRequest);
+    request.AddMessenger("window", BMessenger(this));
+    be_app->PostMessage(&request);
     return false;
 #else
     if (!fDownloads.empty()) {
@@ -1722,22 +1967,14 @@ void BrowserWindow::MessageReceived(BMessage* message)
                 }
             }
             break;
-        case kDownloadQuitReply: {
-            uint64 generation = 0;
-            int32 which = 0;
-            if (!fClosingWindow || !fDownloadPromptPending
-                || message->FindUInt64("generation", &generation) != B_OK
-                || generation != fDownloadPromptGeneration) break;
-            message->FindInt32("which", &which);
-            fDownloadPromptPending = false;
-            fDownloadPrompt = BMessenger();
-            if (which == 1) {
-                fDownloadQuitApproved = true;
-                ContinueWindowClose();
-            } else CancelWindowClose();
+        case kRequestWindowClose:
+            fQuittingApp = message->GetBool("quitting", false);
+            BeginWindowClose();
             break;
-        }
-        case kRequestWindowClose: BeginWindowClose(); break;
+        case kActivateWindow:
+            if (IsMinimized()) Minimize(false);
+            Activate(true);
+            break;
         case B_WEBKIT_CLOSE_PROMPT: WebKitClosePrompt(*message); break;
         case B_WEBKIT_CLOSE_COMMITTED: WebKitCloseCommitted(*message); break;
         case B_WEBKIT_CLOSE_REQUESTED: case B_WEBKIT_CLOSE_CANCELLED:
@@ -1760,6 +1997,40 @@ void BrowserWindow::MessageReceived(BMessage* message)
             const char* url = nullptr;
             CreateTab(message->FindString("url", &url) == B_OK ? url : "summit:home");
             fAddress->MakeFocus(); break;
+        }
+        case kNewWindow: RequestNewWindow({ }); break;
+        case kCloseWindow: PostMessage(B_QUIT_REQUESTED); break;
+        case kTabMenu: ShowTabMenu(*message); break;
+        case kReloadTab: case kDuplicateTab: case kMoveTabToNewWindow: case kCloseOtherTabs: {
+            int64 id;
+            if (message->FindInt64("id", &id) != B_OK) id = fSelected;
+            auto* target = FindTabByID(id);
+            if (!target) break;
+            if (message->what == kReloadTab) {
+#if SUMMIT_MODERN_WEBKIT
+                if (!PrepareTabNavigation(*target)) break;
+#endif
+                target->view->Reload();
+            } else if (message->what == kDuplicateTab) {
+                int32 index = 0;
+                for (size_t i = 0; i < fTabs.size(); ++i) if (fTabs[i].id == id) index = int32(i) + 1;
+#if SUMMIT_MODERN_WEBKIT
+                CreateTab(target->url, true, nullptr, index);
+#else
+                CreateTab(target->url, true);
+#endif
+            } else if (message->what == kMoveTabToNewWindow) {
+                // The page opens afresh in the new window; its back list stays behind.
+                if (fTabs.size() < 2) break;
+                RequestNewWindow({ target->url });
+                CloseTab(id);
+            } else {
+                std::vector<int64> others;
+                for (const auto& page : fTabs) if (page.id != id) others.push_back(page.id);
+                SelectTab(id);
+                for (auto other : others) CloseTab(other);
+            }
+            break;
         }
         case kSelectTab: case kCloseTab: {
             int64 id;
@@ -1808,24 +2079,44 @@ void BrowserWindow::MessageReceived(BMessage* message)
             const char* url = nullptr;
             const std::string target = message->FindString("url", &url) == B_OK && url ? url : tab ? tab->url : "";
             if (!Bookmarkable(target)) break;
-            auto* bookmark = fProfile.FindBookmark(target);
-            if (message->what == kRemoveBookmark) {
-                if (!fProfile.RemoveBookmark(target)) break;
-                fStatus->SetText("Bookmark removed");
-            } else if (message->what == kRemoveFromBookmarksBar) {
-                if (!bookmark) break;
-                bookmark->bar = false;
-            } else {
-                const bool bar = message->what == kAddToBookmarksBar || (bookmark && bookmark->bar);
-                const std::string title = tab && tab->url == target ? tab->title : "";
-                fProfile.AddBookmark({target, title}, bar);
-                if (!fProfile.FindBookmark(target)) { fStatus->SetText("You have reached the bookmark limit."); break; }
-                fStatus->SetText(bar ? "Added to the bookmarks bar" : bookmark ? "This page is already bookmarked" : "Bookmark saved");
-            }
-            BookmarksChanged();
+            const std::string title = tab && tab->url == target ? tab->title : "";
+            const uint32 what = message->what;
+            const char* status = nullptr;
+            // Every window hears of the change (ProfileChanged) and redraws its bar and star.
+            fShared->Change([&](Profile& profile) -> uint32 {
+                auto* bookmark = profile.FindBookmark(target);
+                if (what == kRemoveBookmark) {
+                    if (!profile.RemoveBookmark(target)) return 0;
+                    status = "Bookmark removed";
+                } else if (what == kRemoveFromBookmarksBar) {
+                    if (!bookmark || !bookmark->bar) return 0;
+                    bookmark->bar = false;
+                } else {
+                    const bool bar = what == kAddToBookmarksBar || (bookmark && bookmark->bar);
+                    const bool existed = bookmark;
+                    profile.AddBookmark({target, title}, bar);
+                    if (!profile.FindBookmark(target)) { status = "You have reached the bookmark limit."; return 0; }
+                    status = bar ? "Added to the bookmarks bar" : existed ? "This page is already bookmarked" : "Bookmark saved";
+                }
+                return SharedProfile::kBookmarksChanged;
+            }, BMessenger(this));
+            if (status) fStatus->SetText(status);
             break;
         }
-        case kToggleBookmarksBar: SetBookmarksBarVisible(!fProfile.showBookmarksBar); break;
+        case kBookmarkLink: {
+            const char* url = nullptr;
+            const char* title = "";
+            if (message->FindString("url", &url) != B_OK || !Bookmarkable(url)) break;
+            message->FindString("title", &title);
+            fShared->Change([&](Profile& profile) -> uint32 {
+                if (profile.FindBookmark(url)) return 0;
+                profile.AddBookmark({url, title}, false);
+                return profile.FindBookmark(url) ? SharedProfile::kBookmarksChanged : 0;
+            }, BMessenger(this));
+            fStatus->SetText("Bookmark saved");
+            break;
+        }
+        case kToggleBookmarksBar: SetBookmarksBarVisible(!fBookmarksBarVisible); break;
         case kClearHistory: {
             auto* alert = new BAlert("Clear History", "Remove every page from your history?\n\nBookmarks and open tabs are kept.",
                 "Cancel", "Clear History", nullptr, B_WIDTH_AS_USUAL, B_WARNING_ALERT);
@@ -1835,38 +2126,28 @@ void BrowserWindow::MessageReceived(BMessage* message)
         }
         case kClearHistoryReply:
             if (message->GetInt32("which", 0) != 1) break;
-            fProfile.history.clear();
-            PagesChanged();
-            SaveSession();
+            fShared->Change([](Profile& profile) -> uint32 {
+                profile.history.clear();
+                return SharedProfile::kHistoryChanged | SharedProfile::kHistoryCleared;
+            }, BMessenger(this));
             fStatus->SetText("History cleared");
-            for (auto& page : fTabs) if (page.id == fSelected) RefreshInternalPage(page);
             break;
-        case kShowPreferences: ShowPreferences(); break;
-        case kPreferencesChanged: {
-            const char* home = nullptr;
-            if (message->FindString("home_url", &home) == B_OK && home) {
-                fProfile.homeURL = Trim(home);
-                SaveSession();
-            }
-            bool bar = false;
-            if (message->FindBool("show_bookmarks_bar", &bar) == B_OK) SetBookmarksBarVisible(bar);
-            break;
-        }
+        case kShowPreferences: be_app->PostMessage(kShowPreferences); break;
         case kPreferencesUseCurrentPage:
+            // From the application's Preferences window, for the front window's page.
             if (tab && Bookmarkable(tab->url)) {
-                fProfile.homeURL = tab->url;
-                SaveSession();
-                SendPreferencesState();
+                const std::string url = tab->url;
+                fShared->Change([&](Profile& profile) -> uint32 {
+                    if (profile.homeURL == url) return 0;
+                    profile.homeURL = url;
+                    return SharedProfile::kSettingsChanged;
+                }, BMessenger(this));
             } else fStatus->SetText("This page cannot be used as the home page.");
             break;
-        case kPreferencesClosed: {
-            BMessenger window;
-            if (message->FindMessenger("window", &window) == B_OK && window == fPreferences) fPreferences = BMessenger();
-            break;
-        }
-        case kFind: if (fFindBar->IsHidden()) fFindBar->Show(); fFindText->MakeFocus(); fFindText->TextView()->SelectAll(); break;
+        case kProfileChanged: ProfileChanged(*message); break;
+        case kFind: if (fFindBar->IsHidden(fFindBar)) fFindBar->Show(); fFindText->MakeFocus(); fFindText->TextView()->SelectAll(); break;
         case kCloseFind:
-            if (!fFindBar->IsHidden()) fFindBar->Hide();
+            if (!fFindBar->IsHidden(fFindBar)) fFindBar->Hide();
             if (tab) {
 #if SUMMIT_MODERN_WEBKIT
                 tab->view->HideFindUI();
@@ -1957,6 +2238,11 @@ void BrowserWindow::MessageReceived(BMessage* message)
             uint64 identifier = 0;
             if (message->FindUInt64("identifier", &identifier) != B_OK || !identifier) break;
             fDownloads.insert(identifier);
+            if (const char* url = nullptr; message->FindString("url", &url) == B_OK)
+                if (auto target = fSaveAsTargets.find(url); target != fSaveAsTargets.end()) {
+                    fSaveAsDownloads[identifier] = target->second;
+                    fSaveAsTargets.erase(target);
+                }
             fStatus->SetText("Downloading to your Downloads folder…");
             break;
         }
@@ -1973,7 +2259,8 @@ void BrowserWindow::MessageReceived(BMessage* message)
             if (message->FindUInt64("identifier", &identifier) != B_OK || !identifier) break;
             fDownloads.erase(identifier);
             message->FindUInt32("result", &result);
-            if (result == B_WEBKIT_DOWNLOAD_SUCCEEDED)
+            if (fSaveAsDownloads.contains(identifier)) DownloadFinishedForSave(*message);
+            else if (result == B_WEBKIT_DOWNLOAD_SUCCEEDED)
                 fStatus->SetText("Download complete — open Downloads to view the file");
             else if (result == B_WEBKIT_DOWNLOAD_CANCELLED)
                 fStatus->SetText("Download cancelled");
@@ -1995,6 +2282,47 @@ void BrowserWindow::MessageReceived(BMessage* message)
         case B_WEBKIT_ICON_LOADED:
             IconLoaded(*message);
             break;
+        case B_WEBKIT_CONTEXT_MENU: ShowPageContextMenu(*message); break;
+        case B_WEBKIT_NEW_PAGE_REQUESTED: NewPageRequested(*message); break;
+        case B_WEBKIT_LINK_OPEN_REQUESTED: LinkOpenRequested(*message); break;
+        case B_WEBKIT_LINK_HOVERED: LinkHovered(*message); break;
+        case kOpenLink: case kOpenLinkInNewTab: case kOpenLinkInNewWindow: case kDownloadLink: case kSaveLinkAs: case kSearchFor: {
+            const char* url = nullptr;
+            if (message->FindString("url", &url) != B_OK || !*url) break;
+            if (message->what == kOpenLink) Navigate(url);
+            else if (message->what == kOpenLinkInNewTab) CreateTab(url, false, nullptr, BackgroundTabIndex());
+            else if (message->what == kOpenLinkInNewWindow) RequestNewWindow({ url });
+            else if (message->what == kSearchFor) CreateTab(url, true, nullptr, BackgroundTabIndex());
+            else if (message->what == kDownloadLink) {
+                if (tab) tab->view->DownloadURL(url);
+                fStatus->SetText("Downloading to your Downloads folder…");
+            } else SaveLinkAs(url, message->GetString("filename", ""));
+            break;
+        }
+        case kSaveLinkAsChosen: {
+            // The save panel's answer: a folder and a name for fSavePanelURL.
+            entry_ref directory;
+            const char* name = nullptr;
+            if (message->FindRef("directory", &directory) != B_OK || message->FindString("name", &name) != B_OK
+                || fSavePanelURL.empty() || !tab) break;
+            BPath path(&directory);
+            if (path.InitCheck() != B_OK || path.Append(name) != B_OK) break;
+            fSaveAsTargets[fSavePanelURL] = path.Path();
+            tab->view->DownloadURL(fSavePanelURL.c_str());
+            fStatus->SetText(("Saving " + std::string(name) + "…").c_str());
+            fSavePanelURL.clear();
+            break;
+        }
+        case kCopyText: {
+            const char* text = nullptr;
+            if (message->FindString("text", &text) != B_OK || !be_clipboard->Lock()) break;
+            be_clipboard->Clear();
+            if (BMessage* clip = be_clipboard->Data())
+                clip->AddData("text/plain", B_MIME_TYPE, text, std::strlen(text));
+            be_clipboard->Commit();
+            be_clipboard->Unlock();
+            break;
+        }
 #endif
         case B_ABOUT_REQUESTED: {
 #if SUMMIT_MODERN_WEBKIT
@@ -2009,7 +2337,7 @@ void BrowserWindow::MessageReceived(BMessage* message)
         }
         case B_CUT: case B_COPY: case B_PASTE: case B_SELECT_ALL: case B_UNDO: case B_REDO:
 #if SUMMIT_MODERN_WEBKIT
-            if (tab && CurrentFocus() == tab->view) {
+            if (tab && (CurrentFocus() == tab->view || message->GetBool("page", false))) {
                 tab->view->ExecuteEditCommand(message->what);
                 break;
             }
@@ -2105,6 +2433,263 @@ void BrowserWindow::MessageReceived(BMessage* message)
     }
 }
 #if SUMMIT_MODERN_WEBKIT
+int32 BrowserWindow::BackgroundTabIndex()
+{
+    int32 active = -1;
+    for (size_t i = 0; i < fTabs.size(); ++i) if (fTabs[i].id == fSelected) active = int32(i);
+    fBackgroundInsert = std::min<int32>(std::max(fBackgroundInsert, active) + 1, int32(fTabs.size()));
+    return fBackgroundInsert;
+}
+
+static std::string ShortLabel(const std::string& text, size_t limit = 32)
+{
+    std::string label;
+    for (char character : text) {
+        if (static_cast<unsigned char>(character) < 0x20) character = ' ';
+        if (character == ' ' && (label.empty() || label.back() == ' ')) continue;
+        label += character;
+    }
+    while (!label.empty() && label.back() == ' ') label.pop_back();
+    if (label.size() <= limit) return label;
+    size_t cut = limit;
+    while (cut && (static_cast<unsigned char>(label[cut]) & 0xC0) == 0x80) --cut;
+    return label.substr(0, cut) + "…";
+}
+
+static std::string FileNameFor(const std::string& url, const std::string& suggested)
+{
+    if (!suggested.empty()) return suggested;
+    std::string path = url.substr(0, url.find_first_of("?#"));
+    if (auto slash = path.find_last_of('/'); slash != std::string::npos) path = path.substr(slash + 1);
+    return path.empty() ? "download" : path;
+}
+
+void BrowserWindow::ShowPageContextMenu(const BMessage& message)
+{
+    BMessenger sender;
+    BPoint where;
+    if (message.FindMessenger("view", &sender) != B_OK || message.FindPoint("where", &where) != B_OK) return;
+    auto* tab = FindTab(sender);
+    if (!tab || tab->id != fSelected) return;
+    const std::string link = message.GetString("link_url", "");
+    const std::string image = message.GetString("image_url", "");
+    const std::string media = message.GetString("media_url", "");
+    const std::string selection = message.GetString("selected_text", "");
+    const bool editable = message.GetBool("editable", false);
+    auto withURL = [](uint32 what, const std::string& url, const char* filename = nullptr) {
+        auto* invocation = new BMessage(what);
+        invocation->AddString("url", url.c_str());
+        if (filename) invocation->AddString("filename", filename);
+        return invocation;
+    };
+    auto copy = [](const std::string& text) {
+        auto* invocation = new BMessage(kCopyText);
+        invocation->AddString("text", text.c_str());
+        return invocation;
+    };
+    auto* menu = new BPopUpMenu("page", false, false);
+    auto separate = [menu] { if (menu->CountItems() && !dynamic_cast<BSeparatorItem*>(menu->ItemAt(menu->CountItems() - 1))) menu->AddSeparatorItem(); };
+    const bool web = [](const std::string& url) {
+        return url.rfind("http://", 0) == 0 || url.rfind("https://", 0) == 0 || url.rfind("file:", 0) == 0
+            || url.rfind("data:", 0) == 0 || url.rfind("blob:", 0) == 0;
+    }(link);
+    if (!link.empty()) {
+        const bool script = link.rfind("javascript:", 0) == 0;
+        auto* open = new BMenuItem("Open Link", withURL(kOpenLink, link));
+        open->SetEnabled(!script);
+        menu->AddItem(open);
+        auto* tabItem = new BMenuItem("Open Link in New Tab", withURL(kOpenLinkInNewTab, link));
+        tabItem->SetEnabled(!script);
+        menu->AddItem(tabItem);
+        auto* windowItem = new BMenuItem("Open Link in New Window", withURL(kOpenLinkInNewWindow, link));
+        windowItem->SetEnabled(!script);
+        menu->AddItem(windowItem);
+        menu->AddSeparatorItem();
+        const std::string filename = FileNameFor(link, message.GetString("link_filename", ""));
+        auto* download = new BMenuItem("Download Linked File", withURL(kDownloadLink, link));
+        download->SetEnabled(web);
+        menu->AddItem(download);
+        auto* saveAs = new BMenuItem("Save Linked File As…", withURL(kSaveLinkAs, link, filename.c_str()));
+        saveAs->SetEnabled(web);
+        menu->AddItem(saveAs);
+        menu->AddItem(new BMenuItem("Copy Link", copy(link)));
+        if (Bookmarkable(link)) {
+            auto* bookmark = withURL(kBookmarkLink, link);
+            bookmark->AddString("title", ShortLabel(message.GetString("link_label", ""), 200).c_str());
+            menu->AddItem(new BMenuItem("Bookmark Link", bookmark));
+        }
+    }
+    if (!image.empty()) {
+        separate();
+        menu->AddItem(new BMenuItem("Open Image in New Tab", withURL(kOpenLinkInNewTab, image)));
+        const std::string filename = FileNameFor(image, message.GetString("image_filename", ""));
+        menu->AddItem(new BMenuItem("Save Image As…", withURL(kSaveLinkAs, image, filename.c_str())));
+        menu->AddItem(new BMenuItem("Download Image", withURL(kDownloadLink, image)));
+        menu->AddItem(new BMenuItem("Copy Image Address", copy(image)));
+    }
+    if (!media.empty() && media.rfind("blob:", 0) != 0) {
+        // Streamed (Media Source) video has a blob: address nothing else can open.
+        separate();
+        menu->AddItem(new BMenuItem("Open Media in New Tab", withURL(kOpenLinkInNewTab, media)));
+        menu->AddItem(new BMenuItem("Save Media As…", withURL(kSaveLinkAs, media, FileNameFor(media, "").c_str())));
+        menu->AddItem(new BMenuItem("Copy Media Address", copy(media)));
+    }
+    // Editing commands go to the page even when another view has the focus.
+    auto edit = [menu](const char* label, uint32 what) {
+        auto* invocation = new BMessage(what);
+        invocation->AddBool("page", true);
+        menu->AddItem(new BMenuItem(label, invocation));
+    };
+    if (editable) {
+        separate();
+        edit("Undo", B_UNDO);
+        edit("Redo", B_REDO);
+        menu->AddSeparatorItem();
+        edit("Cut", B_CUT);
+        edit("Copy", B_COPY);
+        edit("Paste", B_PASTE);
+        edit("Select All", B_SELECT_ALL);
+    } else if (!selection.empty()) {
+        separate();
+        menu->AddItem(new BMenuItem("Copy", copy(selection)));
+    }
+    if (!selection.empty()) {
+        const std::string label = "Search for “" + ShortLabel(selection) + "”";
+        menu->AddItem(new BMenuItem(label.c_str(), withURL(kSearchFor, ShortLabel(selection, 400))));
+    }
+    if (link.empty() && image.empty() && media.empty() && selection.empty() && !editable) {
+        // The page itself.
+        auto* back = new BMenuItem("Back", new BMessage(kBack));
+        back->SetEnabled(tab->back);
+        menu->AddItem(back);
+        auto* forward = new BMenuItem("Forward", new BMessage(kForward));
+        forward->SetEnabled(tab->forward);
+        menu->AddItem(forward);
+        menu->AddItem(new BMenuItem(tab->loading ? "Stop" : "Reload", new BMessage(kReload)));
+        menu->AddSeparatorItem();
+        auto* bookmark = new BMenuItem("Bookmark This Page", new BMessage(kBookmark));
+        bookmark->SetEnabled(Bookmarkable(tab->url));
+        menu->AddItem(bookmark);
+        auto* copyAddress = new BMenuItem("Copy Page Address", copy(tab->url));
+        copyAddress->SetEnabled(!DisplayURL(tab->url).empty());
+        menu->AddItem(copyAddress);
+        edit("Select All", B_SELECT_ALL);
+    }
+    menu->SetTargetForItems(this);
+    menu->SetAsyncAutoDestruct(true);
+    menu->Go(tab->view->ConvertToScreen(where), true, false, true);
+}
+
+void BrowserWindow::SaveLinkAs(const std::string& url, const std::string& filename)
+{
+    if (!fSavePanel) {
+        BMessenger target(this);
+        fSavePanel = std::make_unique<BFilePanel>(B_SAVE_PANEL, &target, nullptr, 0, false, new BMessage(kSaveLinkAsChosen));
+        BPath downloads;
+        std::string error;
+        if (FindDownloads(downloads, error)) fSavePanel->SetPanelDirectory(downloads.Path());
+    }
+    fSavePanelURL = url;
+    fSavePanel->SetSaveText(filename.c_str());
+    fSavePanel->Window()->SetTitle("Summit: Save As");
+    fSavePanel->Show();
+}
+
+void BrowserWindow::DownloadFinishedForSave(const BMessage& message)
+{
+    const uint64 identifier = message.GetUInt64("identifier", 0);
+    const auto target = fSaveAsDownloads[identifier];
+    fSaveAsDownloads.erase(identifier);
+    if (message.GetUInt32("result", B_WEBKIT_DOWNLOAD_FAILED) != B_WEBKIT_DOWNLOAD_SUCCEEDED) {
+        fStatus->SetText("The file could not be saved.");
+        return;
+    }
+    // Downloads land in the Downloads folder; move the file where it was asked for.
+    const std::filesystem::path source = message.GetString("path", "");
+    std::error_code error;
+    if (source.empty()) error = std::make_error_code(std::errc::no_such_file_or_directory);
+    else if (std::filesystem::equivalent(source, target, error) && !error) {
+        fStatus->SetText(("Saved " + std::filesystem::path(target).filename().string()).c_str());
+        return;
+    }
+    if (!source.empty()) {
+        error.clear();
+        std::filesystem::rename(source, target, error);
+        if (error) {
+            // Another volume: copy, then remove the download.
+            error.clear();
+            std::filesystem::copy_file(source, target, std::filesystem::copy_options::overwrite_existing, error);
+            if (!error) std::filesystem::remove(source, error);
+        }
+    }
+    if (error) fStatus->SetText(("Could not save the file: " + error.message()).c_str());
+    else fStatus->SetText(("Saved " + std::filesystem::path(target).filename().string()).c_str());
+}
+
+void BrowserWindow::NewPageRequested(const BMessage& message)
+{
+    const uint64 identifier = message.GetUInt64("identifier", 0);
+    if (!identifier) return;
+    BMessenger sender;
+    message.FindMessenger("view", &sender);
+    auto* opener = FindTab(sender);
+    const std::string url = message.GetString("url", "about:blank");
+    const int32 modifiers = message.GetInt32("modifiers", 0);
+    const int32 button = message.GetInt32("button", 0);
+    if (!opener || fClosingWindow) { BWebKitView::DeclineNewPage(identifier); return; }
+    if (message.GetBool("popup", false) || (modifiers & B_SHIFT_KEY && !(modifiers & B_COMMAND_KEY))) {
+        // A sized pop-up (sign-in and payment windows) or Shift-click: its own window.
+        BMessage request(kNewWindow);
+        request.AddUInt64("new_page", identifier);
+        request.AddString("new_page_url", url.c_str());
+        BRect frame = Frame().OffsetByCopy(24, 24);
+        float width, height;
+        if (message.FindFloat("width", &width) == B_OK && message.FindFloat("height", &height) == B_OK) {
+            // Room for the page plus the window's own bars.
+            const float chrome = Bounds().Height() - fPages->Bounds().Height();
+            frame.right = frame.left + std::clamp(width, 400.0f, 4000.0f);
+            frame.bottom = frame.top + std::clamp(height, 200.0f, 4000.0f) + chrome;
+            float x, y;
+            if (message.FindFloat("x", &x) == B_OK && message.FindFloat("y", &y) == B_OK) frame.OffsetTo(x, y);
+        }
+        request.AddRect("frame", frame);
+        if (be_app->PostMessage(&request) != B_OK) BWebKitView::DeclineNewPage(identifier);
+        return;
+    }
+    // target=_blank and window.open(): a tab after the opener, in front unless
+    // opened with the middle button or Command.
+    const bool background = button == B_TERTIARY_MOUSE_BUTTON || (modifiers & B_COMMAND_KEY);
+    int32 index = -1;
+    for (size_t i = 0; i < fTabs.size(); ++i) if (fTabs[i].id == opener->id) index = int32(i) + 1;
+    if (background && opener->id == fSelected) index = BackgroundTabIndex();
+    CreateTab(url, !background, nullptr, index, 0, 0, identifier);
+}
+
+void BrowserWindow::LinkOpenRequested(const BMessage& message)
+{
+    const char* url = nullptr;
+    if (message.FindString("url", &url) != B_OK || !*url) return;
+    const int32 modifiers = message.GetInt32("modifiers", 0);
+    // Shift brings the new tab to the front, as in other browsers.
+    if (modifiers & B_SHIFT_KEY) {
+        int32 index = -1;
+        for (size_t i = 0; i < fTabs.size(); ++i) if (fTabs[i].id == fSelected) index = int32(i) + 1;
+        CreateTab(url, true, nullptr, index);
+    } else CreateTab(url, false, nullptr, BackgroundTabIndex());
+}
+
+void BrowserWindow::LinkHovered(const BMessage& message)
+{
+    BMessenger sender;
+    if (message.FindMessenger("view", &sender) != B_OK) return;
+    auto* tab = FindTab(sender);
+    if (!tab || tab->id != fSelected) return;
+    fHoveredLink = message.GetString("url", "");
+    // The status bar shows where a link goes, as in WebPositive.
+    if (fHoveredLink.empty()) ShowTabStatus(*tab);
+    else fStatus->SetText(fHoveredLink.c_str());
+}
+
 void BrowserWindow::WebKitFindResult(const BMessage& message)
 {
     BMessenger sender;
@@ -2205,7 +2790,10 @@ void BrowserWindow::WebKitStateChanged(const BMessage& message)
         if (message.FindString("loadSuccessURL", &successURL) == B_OK && successURL && *successURL
             && message.FindString("loadSuccessTitle", &successTitle) == B_OK && successTitle) {
             const auto stored = StoredURL(successURL);
-            if (fProfile.Visit({stored, successTitle})) PagesChanged();
+            const PageRecord visit { stored, successTitle };
+            fShared->Change([&](Profile& profile) -> uint32 {
+                return profile.Visit(visit) ? SharedProfile::kHistoryChanged : 0;
+            }, BMessenger(this), false);
             internalPageLoaded = stored == kHistoryPage || stored == kBookmarksPage;
         }
     }
@@ -2213,7 +2801,13 @@ void BrowserWindow::WebKitStateChanged(const BMessage& message)
     if (tab->loadOutcome == "succeeded"
         && message.FindString("loadSuccessURL", &successfulURL) == B_OK && successfulURL
         && StoredURL(successfulURL) == tab->url) {
-        for (auto& page : fProfile.history) if (page.url == tab->url) page.title = tab->title;
+        const std::string url = tab->url, title = tab->title;
+        fShared->Change([&](Profile& profile) -> uint32 {
+            uint32 changes = 0;
+            for (auto& page : profile.history)
+                if (page.url == url && page.title != title) { page.title = title; changes = SharedProfile::kHistoryChanged; }
+            return changes;
+        }, BMessenger(this), false);
     }
     if (tab->id == fSelected) {
         if (!fAddress->TextView()->IsFocus()) fAddress->SetText(DisplayURL(tab->url).c_str());
@@ -2228,7 +2822,8 @@ void BrowserWindow::WebKitStateChanged(const BMessage& message)
 
 void BrowserWindow::ShowTabStatus(const Tab& tab)
 {
-    const char* text = tab.processExited ? tab.processError.c_str()
+    const char* text = !fHoveredLink.empty() && tab.id == fSelected ? fHoveredLink.c_str()
+        : tab.processExited ? tab.processError.c_str()
         : !tab.loadError.empty() ? tab.loadError.c_str()
         : tab.loading ? "Loading…" : "Ready";
     fStatus->SetText(text);
@@ -2279,7 +2874,10 @@ void BrowserWindow::LoadFinished(const BString& url, BWebView* view)
         // BWebWindow calls this at DOM readiness, before images and other
         // resources finish. Completion arrives through LoadProgress(100).
         tab->url = StoredURL(url);
-        if (fProfile.Visit({tab->url, tab->title})) PagesChanged();
+        const PageRecord visit { tab->url, tab->title };
+        fShared->Change([&](Profile& profile) -> uint32 {
+            return profile.Visit(visit) ? SharedProfile::kHistoryChanged : 0;
+        }, BMessenger(this), false);
     }
     RefreshChrome();
 }
@@ -2291,8 +2889,11 @@ void BrowserWindow::TitleChanged(const BString& title, BWebView* view)
 {
     if (auto* tab = FindTab(view)) {
         tab->title = title.String();
-        for (auto& page : fProfile.history)
-            if (page.url == tab->url) page.title = tab->title;
+        const std::string url = tab->url, title = tab->title;
+        fShared->Change([&](Profile& profile) -> uint32 {
+            for (auto& page : profile.history) if (page.url == url) page.title = title;
+            return 0;
+        }, BMessenger(this), false);
     }
     RefreshChrome();
 }

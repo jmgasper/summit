@@ -57,6 +57,34 @@ constexpr uint32 kCloseExtensionManager = 'excl';
 constexpr uint32 kActivateExtensionAction = 'exac';
 constexpr uint32 kShowExtensionActions = 'exam';
 constexpr uint32 kBrowserState = 'stat';
+// Windows. kNewWindow goes to the application ("url": repeated, optional;
+// "new_page"/"new_page_url": a page opened by another page; "popup": bool;
+// "frame": BRect). A window's close box asks the application with
+// kCloseWindowRequest ("window"); the application answers with
+// kRequestWindowClose ("quitting": bool) and the window reports
+// kWindowReadyToClose or kWindowCloseCancelled.
+constexpr uint32 kNewWindow = 'nwin';
+constexpr uint32 kCloseWindow = 'cwin';
+constexpr uint32 kCloseWindowRequest = 'cwrq';
+constexpr uint32 kWindowCloseCancelled = 'wccn';
+constexpr uint32 kWindowActivated = 'wact';
+constexpr uint32 kActivateWindow = 'awin';
+constexpr uint32 kMoveTabToNewWindow = 'mtnw';
+constexpr uint32 kDuplicateTab = 'dtab';
+constexpr uint32 kCloseOtherTabs = 'cotb';
+constexpr uint32 kReloadTab = 'rtbx';
+constexpr uint32 kProfileChanged = 'prfc';
+// Page context menu commands ("url" names the link, image or media).
+constexpr uint32 kOpenLink = 'olnk';
+constexpr uint32 kOpenLinkInNewTab = 'olnt';
+constexpr uint32 kOpenLinkInNewWindow = 'olnw';
+constexpr uint32 kCopyText = 'cptx';
+constexpr uint32 kDownloadLink = 'dlnk';
+constexpr uint32 kSaveLinkAs = 'slas';
+constexpr uint32 kSaveLinkAsChosen = 'slac';
+constexpr uint32 kSearchFor = 'srch';
+constexpr uint32 kBookmarkLink = 'bklk';
+constexpr uint32 kInterfaceStyle = 'istl';
 // Benchmark input synthesis, refused unless SUMMIT_ENABLE_INPUT_SYNTHESIS=1.
 constexpr uint32 kSimulateScroll = 'sscr';
 constexpr uint32 kScrollBurstCompleted = 'ssco';

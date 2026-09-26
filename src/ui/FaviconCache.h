@@ -9,7 +9,7 @@ class BBitmap;
 namespace summit {
 // Site icons, 16x16, keyed by host and kept as PNG files in the profile so
 // tabs, the bookmarks bar and the built-in pages can show them after a restart.
-// Used only from the browser window's thread.
+// Each browser window has its own cache, used only from its thread.
 class FaviconCache {
 public:
     explicit FaviconCache(std::filesystem::path directory);
@@ -22,6 +22,9 @@ public:
     const BBitmap* Icon(const std::string& pageURL);
     // The site's icon as a data: URL for the built-in pages, or empty.
     std::string DataURL(const std::string& pageURL);
+    // Drops the site's cached icon so it is read from disk again (another
+    // window stored a new one). Previously returned bitmaps are released.
+    void Forget(const std::string& pageURL);
 
 private:
     struct Entry {

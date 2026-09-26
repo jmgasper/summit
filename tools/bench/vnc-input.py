@@ -92,7 +92,9 @@ def main():
     wheel.add_argument('--jitter', type=int, default=0,
                        help='move the pointer this many pixels between notches, as a hand on a mouse does')
     keyboard = commands.add_parser('key')
-    keyboard.add_argument('name', choices=('pagedown', 'pageup', 'down', 'up', 'space'))
+    keyboard.add_argument('name', help='pagedown, pageup, down, up, space, enter, escape or one printable character')
+    keyboard.add_argument('--mod', action='append', default=[], choices=('alt', 'ctrl', 'shift'),
+                          help='hold a modifier (Alt is the Haiku Command key); repeatable')
     typing = commands.add_parser('type')
     typing.add_argument('text', help='printable ASCII text to type')
     args = parser.parse_args()
@@ -156,11 +158,25 @@ def main():
                 key(connection, ord(character), False)
                 time.sleep(0.03)
         else:
-            keysym = {'pagedown': 0xff56, 'pageup': 0xff55,
-                      'down': 0xff54, 'up': 0xff52, 'space': 0x20}[args.name]
+            names = {'pagedown': 0xff56, 'pageup': 0xff55,
+                     'down': 0xff54, 'up': 0xff52, 'space': 0x20,
+                     'enter': 0xff0d, 'escape': 0xff1b}
+            if args.name in names:
+                keysym = names[args.name]
+            elif len(args.name) == 1 and ' ' <= args.name <= '~':
+                keysym = ord(args.name)
+            else:
+                parser.error('unknown key name')
+            modifiers = [{'alt': 0xffe9, 'ctrl': 0xffe3, 'shift': 0xffe1}[name] for name in args.mod]
+            for modifier in modifiers:
+                key(connection, modifier, True)
+                time.sleep(0.03)
             key(connection, keysym, True)
             time.sleep(0.08)
             key(connection, keysym, False)
+            for modifier in reversed(modifiers):
+                time.sleep(0.03)
+                key(connection, modifier, False)
         print(f'VNC {args.command} delivered to {width}x{height} desktop')
 
 

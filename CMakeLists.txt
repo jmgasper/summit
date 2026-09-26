@@ -34,7 +34,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Haiku")
     find_program(HAIKU_RC rc REQUIRED)
     find_program(HAIKU_XRES xres REQUIRED)
     add_executable(Summit src/main.cpp src/ui/BrowserWindow.cpp src/ui/Chrome.cpp src/ui/ExtensionPermissionPrompt.cpp src/ui/ExtensionController.cpp src/ui/ExtensionInstaller.cpp src/ui/ExtensionManager.cpp
-        src/ui/FaviconCache.cpp src/ui/PreferencesWindow.cpp)
+        src/ui/FaviconCache.cpp src/ui/PreferencesWindow.cpp src/ui/SharedProfile.cpp)
     target_include_directories(Summit PRIVATE ${SUMMIT_WEBKIT_INCLUDE_DIR} /boot/system/develop/headers/private/netservices)
     target_compile_options(Summit PRIVATE -Wno-multichar)
     target_compile_definitions(Summit PRIVATE SUMMIT_MODERN_WEBKIT=$<BOOL:${SUMMIT_MODERN_WEBKIT}>)

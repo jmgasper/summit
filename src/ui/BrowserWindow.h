@@ -17,6 +17,8 @@
 
 class BCardLayout;
 class BFilePanel;
+class BGroupLayout;
+class BStatusBar;
 class BGroupView;
 class BMenu;
 class BMenuItem;
@@ -34,6 +36,22 @@ class TabStrip;
 class ProgressLine;
 class BookmarksBar;
 class FaviconCache;
+class SharedProfile;
+// How a new window starts.
+struct BrowserWindowOptions {
+    // The window's place in the saved session (windows are saved in key order).
+    uint64 key = 0;
+    // Pages to open; when empty, the saved tabs of session are restored.
+    std::vector<std::string> urls;
+    WindowSession session;
+    // A page another page opened (B_WEBKIT_NEW_PAGE_REQUESTED), shown as the only tab.
+    uint64 newPage = 0;
+    std::string newPageURL;
+    // Invalid: placed by the window itself.
+    BRect frame;
+    // Start without tabs; an extension's windows.create() fills the window.
+    bool empty = false;
+};
 #if SUMMIT_MODERN_WEBKIT
 using BrowserWindowBase = BWindow;
 using BrowserWebView = BWebKitView;
@@ -44,11 +62,14 @@ using BrowserWebView = BWebView;
 class BrowserWindow : public BrowserWindowBase {
 public:
 #if SUMMIT_MODERN_WEBKIT
-    BrowserWindow(std::filesystem::path profile, std::string startURL, const std::vector<std::string>& urls,
+    BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string startURL, const BrowserWindowOptions& options,
         std::shared_ptr<BWebKitContext> context, bool extensionsEnabled = false);
 #else
-    BrowserWindow(std::filesystem::path profile, std::string startURL, const std::vector<std::string>& urls);
+    BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string startURL, const BrowserWindowOptions& options);
 #endif
+    uint64 Key() const { return fKey; }
+    // Browser windows that are open and not closing, across the application.
+    static int32 CountOpenWindows();
     ~BrowserWindow() override;
     void MessageReceived(BMessage* message) override;
     bool QuitRequested() override;
@@ -58,8 +79,10 @@ public:
     // that is answered once this tab exists or could not be created.
     // A nonzero replaces closes that tab once the new one exists: extension pages and web
     // pages need different kinds of view, so moving a tab between them swaps its view.
+    // A nonzero newPage shows the page of a B_WEBKIT_NEW_PAGE_REQUESTED
+    // notification (url is then only what the tab shows until it loads).
     void CreateTab(const std::string& url, bool select = true, const char* extensionIdentifier = nullptr,
-        int32 index = -1, uint64 command = 0, int64 replaces = 0);
+        int32 index = -1, uint64 command = 0, int64 replaces = 0, uint64 newPage = 0);
     void WindowActivated(bool active) override;
 #else
     void NavigationRequested(const BString& url, BWebView* view) override;
@@ -142,14 +165,35 @@ private:
     int64 fClosePromptTab = 0;
     std::optional<CloseFocusState> fWindowCloseFocus;
     std::set<uint64> fDownloads;
-    BMessenger fDownloadPrompt;
-    uint64 fDownloadPromptGeneration = 0;
-    bool fDownloadQuitApproved = false;
-    bool fDownloadPromptPending = false;
 #else
     Tab* FindTab(BWebView* view);
 #endif
     Tab* ActiveTab();
+    Tab* FindTabByID(int64 id);
+    void ProfileChanged(const BMessage&);
+    void ApplyInterfaceStyle();
+    void RequestNewWindow(const std::vector<std::string>& urls);
+    void ShowTabMenu(const BMessage&);
+    void UpdateWindowList();
+#if SUMMIT_MODERN_WEBKIT
+    void ShowPageContextMenu(const BMessage&);
+    void NewPageRequested(const BMessage&);
+    void LinkOpenRequested(const BMessage&);
+    void LinkHovered(const BMessage&);
+    void SaveLinkAs(const std::string& url, const std::string& filename);
+    void DownloadFinishedForSave(const BMessage&);
+    // Save panels waiting for a chosen place, and downloads to move there.
+    std::map<std::string, std::string> fSaveAsTargets;
+    std::map<uint64, std::string> fSaveAsDownloads;
+    std::unique_ptr<BFilePanel> fSavePanel;
+    std::string fSavePanelURL;
+    std::string fHoveredLink;
+    // Background tabs opened from the current tab go after it, in order.
+    int32 fBackgroundInsert = -1;
+    int32 BackgroundTabIndex();
+    bool fQuittingApp = false;
+    uint64 fCloseWindowCommand = 0;
+#endif
     // Benchmark input synthesis: posts a paced burst of mouse wheel or key
     // events to the active page, so scrolling can be measured the way a person
     // produces it. Refused unless SUMMIT_ENABLE_INPUT_SYNTHESIS=1 (see
@@ -238,18 +282,23 @@ private:
     void RebuildDynamicMenus();
     void ShowBookmarkMenu();
     void IconLoaded(const BMessage& message);
-    void ShowPreferences();
-    void SendPreferencesState();
     void SetBookmarksBarVisible(bool visible);
     std::string HomeAddress() const;
     std::string DisplayURL(const std::string& url) const;
     void SaveSession();
     void ShowError(const std::string& error);
     std::string StoredURL(const BString& url) const;
-    std::filesystem::path fProfilePath;
+    std::shared_ptr<SharedProfile> fShared;
+    uint64 fKey = 0;
     std::string fStartURL;
-    Profile fProfile;
-    bool fProfileWritable = true;
+    bool fBookmarksBarVisible = true;
+    std::string fInterfaceStyle;
+    BGroupLayout* fLayout = nullptr;
+    BGroupView* fToolbar = nullptr;
+    ToolButton* fGo = nullptr;
+    BStatusBar* fStatusProgress = nullptr;
+    BMenu* fWindowMenu = nullptr;
+    int32 fWindowMenuFixed = 0;
     std::vector<Tab> fTabs;
     std::vector<PageRecord> fClosedTabs;
     int64 fNextID = 1;
@@ -268,7 +317,6 @@ private:
     // Bumped whenever history, bookmarks or icons change, so open built-in
     // pages can be brought up to date when they are shown again.
     uint64 fPagesRevision = 1;
-    BMessenger fPreferences;
     BStringView* fStatus;
     BTextControl* fAddress;
     BTextControl* fFindText;

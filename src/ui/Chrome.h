@@ -8,14 +8,26 @@
 class BBitmap;
 
 namespace summit {
-enum class Icon { Back, Forward, Reload, Stop, Plus, Bookmark, BookmarkFilled, Downloads, Home, More };
+enum class Icon { Back, Forward, Reload, Stop, Plus, Bookmark, BookmarkFilled, Downloads, Home, More, Go };
+// The look of the browser's own controls, for every window: true draws them
+// like other Haiku applications (BControlLook buttons and tabs), false keeps
+// the flat, Safari-like look.
+void SetInterfaceStyle(bool haiku);
+bool HaikuInterfaceStyle();
+// Sent to the window by a secondary click on a tab: "id" (int64), "where" (screen point).
+constexpr uint32 kTabMenu = 'tbmn';
 class ToolButton : public BButton {
 public:
     ToolButton(const char* name, const char* tooltip, Icon icon, uint32 message);
     void Draw(BRect update) override;
-    void SetIcon(Icon icon) { fIcon = icon; Invalidate(); }
+    void MouseMoved(BPoint where, uint32 transit, const BMessage* drag) override;
+    BSize MinSize() override;
+    BSize MaxSize() override;
+    BSize PreferredSize() override;
+    void SetIcon(Icon icon) { if (fIcon != icon) { fIcon = icon; Invalidate(); } }
 private:
     Icon fIcon;
+    bool fHover = false;
 };
 #if SUMMIT_MODERN_WEBKIT
 class ExtensionActionButton : public BButton {
@@ -24,6 +36,9 @@ public:
     ~ExtensionActionButton() override;
     void SetAction(const BMessage&, uint64 snapshot);
     void Draw(BRect update) override;
+    BSize MinSize() override;
+    BSize MaxSize() override;
+    BSize PreferredSize() override;
 private:
     std::unique_ptr<BBitmap> fBitmap;
     std::string fBadge;
@@ -40,13 +55,24 @@ public:
     void SetTabs(std::vector<TabLabel> tabs, int64 selected);
     void Draw(BRect update) override;
     void MouseDown(BPoint where) override;
+    void MouseMoved(BPoint where, uint32 transit, const BMessage* drag) override;
     void FrameResized(float width, float height) override;
+    BSize MinSize() override;
+    BSize MaxSize() override;
+    BSize PreferredSize() override;
 private:
+    void DrawHaiku(BRect update);
+    void DrawSafari(BRect update);
     BRect TabRect(size_t index) const;
+    BRect CloseRect(size_t index) const;
+    BRect NewTabRect() const;
+    float Height() const;
     size_t FirstVisible() const;
     size_t VisibleCount() const;
     std::vector<TabLabel> fTabs;
     int64 fSelected = 0;
+    int64 fHoverClose = 0;
+    bool fHoverNewTab = false;
 };
 struct BookmarkButton { std::string url, title; const BBitmap* icon = nullptr; };
 // Safari-style favourites under the toolbar. Clicking opens a bookmark in the

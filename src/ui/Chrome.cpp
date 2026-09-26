@@ -5,32 +5,75 @@
 #include <Bitmap.h>
 #include <MenuItem.h>
 #include <PopUpMenu.h>
+#include <ControlLook.h>
 #if SUMMIT_MODERN_WEBKIT
 #include "ExtensionInstaller.h"
 #include <cstring>
 #endif
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 
 namespace summit {
+static std::atomic<bool> sHaikuStyle { true };
+void SetInterfaceStyle(bool haiku) { sHaikuStyle = haiku; }
+bool HaikuInterfaceStyle() { return sHaikuStyle; }
+
+static rgb_color Mix(rgb_color a, rgb_color b, float amount)
+{
+    auto channel = [amount](uint8 x, uint8 y) { return uint8(std::lround(x + (y - x) * amount)); };
+    return { channel(a.red, b.red), channel(a.green, b.green), channel(a.blue, b.blue), 255 };
+}
+
+// A real Haiku push button: frame and background from BControlLook.
+static void DrawHaikuButton(BControl* control, BRect update, bool hover)
+{
+    BRect rect = control->Bounds();
+    const rgb_color background = ui_color(B_PANEL_BACKGROUND_COLOR);
+    const rgb_color base = ui_color(B_CONTROL_BACKGROUND_COLOR);
+    uint32 flags = be_control_look->Flags(control);
+    if (hover && control->IsEnabled()) flags |= BControlLook::B_HOVER;
+    be_control_look->DrawButtonFrame(control, rect, update, base, background, flags);
+    be_control_look->DrawButtonBackground(control, rect, update, base, flags);
+}
+
+static BSize ToolButtonSize() { return HaikuInterfaceStyle() ? BSize(30, 28) : BSize(34, 32); }
+
 ToolButton::ToolButton(const char* name, const char* tooltip, Icon icon, uint32 message)
     : BButton(name, "", new BMessage(message)), fIcon(icon)
 {
-    SetExplicitMinSize(BSize(34, 32));
-    SetExplicitMaxSize(BSize(34, 32));
     SetToolTip(tooltip);
 }
-void ToolButton::Draw(BRect)
+BSize ToolButton::MinSize() { return ToolButtonSize(); }
+BSize ToolButton::MaxSize() { return ToolButtonSize(); }
+BSize ToolButton::PreferredSize() { return ToolButtonSize(); }
+void ToolButton::MouseMoved(BPoint where, uint32 transit, const BMessage* drag)
 {
-    SetHighColor(ui_color(B_PANEL_BACKGROUND_COLOR));
-    FillRect(Bounds());
-    if (Value() || IsFocus()) {
-        SetHighColor(Value() ? rgb_color{212, 225, 222, 255} : rgb_color{225, 232, 230, 255});
-        FillRoundRect(Bounds().InsetByCopy(2, 2), 5, 5);
+    const bool hover = transit == B_ENTERED_VIEW || transit == B_INSIDE_VIEW;
+    if (hover != fHover) { fHover = hover; Invalidate(); }
+    BButton::MouseMoved(where, transit, drag);
+}
+void ToolButton::Draw(BRect update)
+{
+    rgb_color ink;
+    if (HaikuInterfaceStyle()) {
+        DrawHaikuButton(this, update, fHover);
+        const rgb_color text = ui_color(B_CONTROL_TEXT_COLOR);
+        ink = IsEnabled() ? text : Mix(text, ui_color(B_CONTROL_BACKGROUND_COLOR), 0.6f);
+    } else {
+        SetHighColor(ui_color(B_PANEL_BACKGROUND_COLOR));
+        FillRect(Bounds());
+        if (Value() || IsFocus()) {
+            SetHighColor(Value() ? rgb_color{212, 225, 222, 255} : rgb_color{225, 232, 230, 255});
+            FillRoundRect(Bounds().InsetByCopy(2, 2), 5, 5);
+        }
+        ink = IsEnabled() ? rgb_color{49, 69, 66, 255} : rgb_color{163, 170, 168, 255};
     }
-    SetHighColor(IsEnabled() ? rgb_color{49, 69, 66, 255} : rgb_color{163, 170, 168, 255});
+    SetHighColor(ink);
+    SetDrawingMode(B_OP_ALPHA);
     SetPenSize(1.6f);
-    BPoint c(Bounds().Width() / 2, Bounds().Height() / 2);
+    BPoint c(std::floor(Bounds().Width() / 2) + 0.5f, std::floor(Bounds().Height() / 2) + 0.5f);
+    if (HaikuInterfaceStyle() && Value()) c += BPoint(1, 1);
     auto line = [&](float x1, float y1, float x2, float y2) {
         StrokeLine(c + BPoint(x1, y1), c + BPoint(x2, y2));
     };
@@ -41,6 +84,7 @@ void ToolButton::Draw(BRect)
         case Icon::Back: line(3, -6, -3, 0); line(-3, 0, 3, 6); break;
         case Icon::Forward: line(-3, -6, 3, 0); line(3, 0, -3, 6); break;
         case Icon::Plus: line(-6, 0, 6, 0); line(0, -6, 0, 6); break;
+        case Icon::Go: line(-6, 0, 5, 0); line(1, -5, 6, 0); line(6, 0, 1, 5); break;
         case Icon::Stop: line(-5, -5, 5, 5); line(5, -5, -5, 5); break;
         case Icon::Reload:
             StrokeArc(BRect(c.x - 6, c.y - 6, c.x + 6, c.y + 6), 40, 290);
@@ -53,9 +97,10 @@ void ToolButton::Draw(BRect)
                 points[i] = c + BPoint(std::cos(angle) * radius, std::sin(angle) * radius);
             }
             if (fIcon == Icon::BookmarkFilled && IsEnabled()) {
-                // The current page is bookmarked.
-                SetHighColor(44, 125, 104);
+                // The current page is bookmarked: green here, gold in the Haiku look.
+                SetHighColor(HaikuInterfaceStyle() ? rgb_color{255, 203, 0, 255} : rgb_color{44, 125, 104, 255});
                 FillPolygon(points, 10);
+                SetHighColor(ink);
             }
             StrokePolygon(points, 10); break;
         }
@@ -67,15 +112,17 @@ void ToolButton::Draw(BRect)
             line(-5, -1, -5, 7); line(-5, 7, 5, 7); line(5, 7, 5, -1); break;
     }
     SetPenSize(1);
+    SetDrawingMode(B_OP_COPY);
 }
 
 #if SUMMIT_MODERN_WEBKIT
 ExtensionActionButton::ExtensionActionButton(const char* identifier)
     : BButton((std::string("extension-action-") + identifier).c_str(), "", nullptr)
 {
-    SetExplicitMinSize(BSize(34, 32));
-    SetExplicitMaxSize(BSize(34, 32));
 }
+BSize ExtensionActionButton::MinSize() { return ToolButtonSize(); }
+BSize ExtensionActionButton::MaxSize() { return ToolButtonSize(); }
+BSize ExtensionActionButton::PreferredSize() { return ToolButtonSize(); }
 ExtensionActionButton::~ExtensionActionButton() = default;
 
 void ExtensionActionButton::SetAction(const BMessage& action, uint64 snapshot)
@@ -114,14 +161,17 @@ void ExtensionActionButton::SetAction(const BMessage& action, uint64 snapshot)
     Invalidate();
 }
 
-void ExtensionActionButton::Draw(BRect)
+void ExtensionActionButton::Draw(BRect update)
 {
     SetDrawingMode(B_OP_COPY);
-    SetHighColor(ui_color(B_PANEL_BACKGROUND_COLOR));
-    FillRect(Bounds());
-    if (Value() || IsFocus()) {
-        SetHighColor(Value() ? rgb_color{212, 225, 222, 255} : rgb_color{225, 232, 230, 255});
-        FillRoundRect(Bounds().InsetByCopy(2, 2), 5, 5);
+    if (HaikuInterfaceStyle()) DrawHaikuButton(this, update, false);
+    else {
+        SetHighColor(ui_color(B_PANEL_BACKGROUND_COLOR));
+        FillRect(Bounds());
+        if (Value() || IsFocus()) {
+            SetHighColor(Value() ? rgb_color{212, 225, 222, 255} : rgb_color{225, 232, 230, 255});
+            FillRoundRect(Bounds().InsetByCopy(2, 2), 5, 5);
+        }
     }
     const BPoint origin((Bounds().Width() - 15) / 2, (Bounds().Height() - 15) / 2);
     if (fBitmap) {
@@ -140,7 +190,7 @@ void ExtensionActionButton::Draw(BRect)
     if (!IsEnabled() && fBitmap) {
         SetDrawingMode(B_OP_ALPHA);
         SetBlendingMode(B_CONSTANT_ALPHA, B_ALPHA_OVERLAY);
-        auto color = ui_color(B_PANEL_BACKGROUND_COLOR); color.alpha = 160;
+        auto color = ui_color(HaikuInterfaceStyle() ? B_CONTROL_BACKGROUND_COLOR : B_PANEL_BACKGROUND_COLOR); color.alpha = 160;
         SetHighColor(color);
         FillRect(BRect(origin, origin + BPoint(15, 15)));
         SetDrawingMode(B_OP_COPY);
@@ -193,16 +243,25 @@ void DrawSiteIcon(BView* view, const BBitmap* icon, BPoint leftTop)
 TabStrip::TabStrip() : BView("tabs", B_WILL_DRAW | B_FRAME_EVENTS)
 {
     SetViewColor(B_TRANSPARENT_COLOR);
-    SetExplicitMinSize(BSize(200, 36));
-    SetExplicitMaxSize(BSize(B_SIZE_UNLIMITED, 36));
 }
+float TabStrip::Height() const
+{
+    if (!HaikuInterfaceStyle()) return 36;
+    font_height metrics;
+    be_plain_font->GetHeight(&metrics);
+    return std::max(26.0f, std::ceil(metrics.ascent + metrics.descent) + 14);
+}
+BSize TabStrip::MinSize() { return BSize(200, Height()); }
+BSize TabStrip::MaxSize() { return BSize(B_SIZE_UNLIMITED, Height()); }
+BSize TabStrip::PreferredSize() { return BSize(400, Height()); }
 void TabStrip::SetTabs(std::vector<TabLabel> tabs, int64 selected)
 {
     fTabs = std::move(tabs); fSelected = selected; Invalidate();
 }
 size_t TabStrip::VisibleCount() const
 {
-    return std::min(fTabs.size(), std::max(size_t(1), size_t(std::max(100.0f, Bounds().Width() - 60) / 120)));
+    const float reserved = HaikuInterfaceStyle() ? 36 : 60;
+    return std::min(fTabs.size(), std::max(size_t(1), size_t(std::max(100.0f, Bounds().Width() - reserved) / 120)));
 }
 size_t TabStrip::FirstVisible() const
 {
@@ -214,11 +273,110 @@ size_t TabStrip::FirstVisible() const
 BRect TabStrip::TabRect(size_t index) const
 {
     const size_t count = VisibleCount();
+    if (HaikuInterfaceStyle()) {
+        // Adjacent tabs, as in BTabView and WebPositive.
+        const float width = std::floor(std::min(250.0f, (Bounds().Width() - 36) / std::max(size_t(1), count)));
+        const float left = (index - FirstVisible()) * width;
+        return BRect(left, 0, left + width - 1, Bounds().bottom);
+    }
     float width = std::min(250.0f, (Bounds().Width() - 60) / std::max(size_t(1), count));
     const float left = 8 + (index - FirstVisible()) * width;
     return BRect(left, 3, left + width - 3, Bounds().bottom - 3);
 }
-void TabStrip::Draw(BRect)
+BRect TabStrip::CloseRect(size_t index) const
+{
+    const BRect tab = TabRect(index);
+    if (!HaikuInterfaceStyle()) return BRect(tab.right - 24, tab.top, tab.right, tab.bottom);
+    const bool selected = fTabs[index].id == fSelected;
+    const float middle = std::floor((tab.top + (selected ? 2 : 4) + tab.bottom) / 2);
+    return BRect(tab.right - 21, middle - 7, tab.right - 7, middle + 7);
+}
+BRect TabStrip::NewTabRect() const
+{
+    const BRect bounds = Bounds();
+    if (!HaikuInterfaceStyle()) return BRect(bounds.right - 44, bounds.top, bounds.right, bounds.bottom);
+    return BRect(bounds.right - 29, bounds.top + 3, bounds.right - 5, bounds.bottom - 3);
+}
+void TabStrip::Draw(BRect update)
+{
+    if (HaikuInterfaceStyle()) DrawHaiku(update);
+    else DrawSafari(update);
+}
+void TabStrip::DrawHaiku(BRect update)
+{
+    const rgb_color base = ui_color(B_PANEL_BACKGROUND_COLOR);
+    const rgb_color text = ui_color(B_PANEL_TEXT_COLOR);
+    const uint32 borders = BControlLook::B_TOP_BORDER | BControlLook::B_BOTTOM_BORDER;
+    BRect frame = Bounds();
+    be_control_look->DrawTabFrame(this, frame, update, base, 0, borders, B_NO_BORDER);
+    const size_t first = FirstVisible(), last = first + VisibleCount();
+    int32 selectedIndex = -1;
+    for (size_t i = first; i < last; ++i) if (fTabs[i].id == fSelected) selectedIndex = int32(i);
+    font_height metrics;
+    GetFontHeight(&metrics);
+    for (size_t i = first; i < last; ++i) {
+        const BRect rect = TabRect(i);
+        const bool selected = int32(i) == selectedIndex;
+        BRect tab = rect;
+        tab.right++;
+        tab.bottom++;
+        if (i + 1 == last) tab.right -= 2;
+        if (selected)
+            be_control_look->DrawActiveTab(this, tab, update, base, 0, borders, BControlLook::B_TOP_BORDER,
+                int32(i), selectedIndex, int32(first), int32(last - 1));
+        else
+            be_control_look->DrawInactiveTab(this, tab, update, base, 0, borders, BControlLook::B_TOP_BORDER,
+                int32(i), selectedIndex, int32(first), int32(last - 1));
+        // Contents sit lower on tabs behind the selected one, as BTabView draws them.
+        BRect content = rect;
+        content.top += selected ? 2 : 4;
+        content.left += 8;
+        content.right = CloseRect(i).left - 4;
+        const float middle = std::floor((content.top + content.bottom) / 2);
+        const BPoint icon(content.left, middle - 8);
+        if (fTabs[i].loading && !fTabs[i].icon) {
+            SetHighColor(Mix(text, base, 0.35f));
+            FillEllipse(icon + BPoint(7.5f, 7.5f), 2.5f, 2.5f);
+        } else DrawSiteIcon(this, fTabs[i].icon, icon);
+        if (fTabs[i].loading && fTabs[i].icon) {
+            SetHighColor(ui_color(B_CONTROL_HIGHLIGHT_COLOR));
+            FillEllipse(icon + BPoint(15, 15), 2.5f, 2.5f);
+        }
+        BString title(fTabs[i].title.empty() ? "New Tab" : fTabs[i].title.c_str());
+        const float textLeft = content.left + 22;
+        TruncateString(&title, B_TRUNCATE_END, std::max(0.0f, content.right - textLeft));
+        SetHighColor(selected ? text : Mix(text, base, 0.25f));
+        SetLowColor(base);
+        SetDrawingMode(B_OP_OVER);
+        DrawString(title.String(), BPoint(textLeft, std::floor(middle + (metrics.ascent - metrics.descent) / 2)));
+        SetDrawingMode(B_OP_COPY);
+        // A small close cross, darker under the pointer (WebPositive's tab close box).
+        const BRect close = CloseRect(i);
+        const bool hover = fHoverClose == fTabs[i].id;
+        if (hover) {
+            SetHighColor(tint_color(base, B_DARKEN_2_TINT));
+            FillRoundRect(close, 3, 3);
+        }
+        SetHighColor(hover ? text : Mix(text, base, 0.45f));
+        SetPenSize(1.4f);
+        const BPoint c((close.left + close.right) / 2, (close.top + close.bottom) / 2);
+        StrokeLine(c + BPoint(-3, -3), c + BPoint(3, 3));
+        StrokeLine(c + BPoint(3, -3), c + BPoint(-3, 3));
+        SetPenSize(1);
+    }
+    // The new-tab button at the end of the tabs.
+    BRect plus = NewTabRect();
+    uint32 flags = fHoverNewTab ? BControlLook::B_HOVER : 0;
+    be_control_look->DrawButtonFrame(this, plus, update, ui_color(B_CONTROL_BACKGROUND_COLOR), base, flags);
+    be_control_look->DrawButtonBackground(this, plus, update, ui_color(B_CONTROL_BACKGROUND_COLOR), flags);
+    SetHighColor(ui_color(B_CONTROL_TEXT_COLOR));
+    SetPenSize(1.6f);
+    const BPoint c(std::floor((plus.left + plus.right) / 2) + 0.5f, std::floor((plus.top + plus.bottom) / 2) + 0.5f);
+    StrokeLine(c + BPoint(-5, 0), c + BPoint(5, 0));
+    StrokeLine(c + BPoint(0, -5), c + BPoint(0, 5));
+    SetPenSize(1);
+}
+void TabStrip::DrawSafari(BRect)
 {
     SetHighColor(230, 233, 232); FillRect(Bounds());
     const size_t first = FirstVisible(), last = first + VisibleCount();
@@ -250,18 +408,45 @@ void TabStrip::Draw(BRect)
 }
 void TabStrip::MouseDown(BPoint point)
 {
-    if (point.x > Bounds().right - 44) { Window()->PostMessage(kNewTab); return; }
     uint32 buttons = 0;
-    Window()->CurrentMessage()->FindInt32("buttons", reinterpret_cast<int32*>(&buttons));
+    int32 clicks = 1;
+    if (auto* message = Window()->CurrentMessage()) {
+        message->FindInt32("buttons", reinterpret_cast<int32*>(&buttons));
+        message->FindInt32("clicks", &clicks);
+    }
+    if (NewTabRect().Contains(point)) { Window()->PostMessage(kNewTab); return; }
     for (size_t i = FirstVisible(); i < FirstVisible() + VisibleCount(); ++i) {
         const auto rect = TabRect(i);
         if (!rect.Contains(point)) continue;
-        const bool close = point.x > rect.right - 24 || buttons & B_TERTIARY_MOUSE_BUTTON;
+        if (buttons & B_SECONDARY_MOUSE_BUTTON) {
+            BMessage menu(kTabMenu);
+            menu.AddInt64("id", fTabs[i].id);
+            menu.AddPoint("where", ConvertToScreen(point));
+            Window()->PostMessage(&menu);
+            return;
+        }
+        const bool close = CloseRect(i).Contains(point) || buttons & B_TERTIARY_MOUSE_BUTTON;
         BMessage message(close ? kCloseTab : kSelectTab);
         message.AddInt64("id", fTabs[i].id);
         Window()->PostMessage(&message);
         return;
     }
+    // A double click on the empty part of the strip opens a tab.
+    if (clicks == 2 && (buttons & B_PRIMARY_MOUSE_BUTTON)) Window()->PostMessage(kNewTab);
+}
+void TabStrip::MouseMoved(BPoint where, uint32 transit, const BMessage*)
+{
+    int64 hoverClose = 0;
+    bool hoverNewTab = false;
+    if (HaikuInterfaceStyle() && transit != B_EXITED_VIEW && transit != B_OUTSIDE_VIEW) {
+        hoverNewTab = NewTabRect().Contains(where);
+        for (size_t i = FirstVisible(); i < FirstVisible() + VisibleCount(); ++i)
+            if (CloseRect(i).Contains(where)) hoverClose = fTabs[i].id;
+    }
+    if (hoverClose == fHoverClose && hoverNewTab == fHoverNewTab) return;
+    fHoverClose = hoverClose;
+    fHoverNewTab = hoverNewTab;
+    Invalidate();
 }
 void TabStrip::FrameResized(float, float) { Invalidate(); }
 static constexpr int32 kOverflowItem = -2;
@@ -305,40 +490,53 @@ int32 BookmarksBar::ItemAt(BPoint where) const
     for (size_t i = 0; i < fVisible; ++i) if (fRects[i].Contains(where)) return int32(i);
     return -1;
 }
-void BookmarksBar::Draw(BRect)
+void BookmarksBar::Draw(BRect update)
 {
     const BRect bounds = Bounds();
-    SetHighColor(ui_color(B_PANEL_BACKGROUND_COLOR));
+    const bool haiku = HaikuInterfaceStyle();
+    const rgb_color panel = ui_color(B_PANEL_BACKGROUND_COLOR);
+    const rgb_color ink = haiku ? ui_color(B_PANEL_TEXT_COLOR) : rgb_color{49, 69, 66, 255};
+    SetHighColor(panel);
     FillRect(bounds);
-    SetHighColor(221, 227, 224);
+    SetHighColor(haiku ? tint_color(panel, B_DARKEN_2_TINT) : rgb_color{221, 227, 224, 255});
     StrokeLine(BPoint(bounds.left, bounds.bottom), BPoint(bounds.right, bounds.bottom));
     font_height metrics;
     GetFontHeight(&metrics);
     const float baseline = std::floor((bounds.Height() + metrics.ascent - metrics.descent) / 2);
     if (fBookmarks.empty()) {
-        SetHighColor(135, 147, 141);
+        SetHighColor(haiku ? Mix(ink, panel, 0.5f) : rgb_color{135, 147, 141, 255});
         DrawString("Add favourite pages here with Bookmarks › Add to Bookmarks Bar", BPoint(12, baseline));
         return;
     }
     for (size_t i = 0; i < fVisible; ++i) {
         const BRect rect = fRects[i];
         if (int32(i) == fPressed || int32(i) == fHover) {
-            SetHighColor(int32(i) == fPressed ? rgb_color{212, 225, 222, 255} : rgb_color{225, 232, 230, 255});
-            FillRoundRect(rect, 5, 5);
+            if (haiku) {
+                // Flat buttons that rise under the pointer, like a Haiku toolbar.
+                BRect button = rect;
+                const uint32 flags = int32(i) == fPressed ? BControlLook::B_ACTIVATED : BControlLook::B_HOVER;
+                be_control_look->DrawButtonFrame(this, button, update, ui_color(B_CONTROL_BACKGROUND_COLOR), panel, flags);
+                be_control_look->DrawButtonBackground(this, button, update, ui_color(B_CONTROL_BACKGROUND_COLOR), flags);
+            } else {
+                SetHighColor(int32(i) == fPressed ? rgb_color{212, 225, 222, 255} : rgb_color{225, 232, 230, 255});
+                FillRoundRect(rect, 5, 5);
+            }
         }
         DrawSiteIcon(this, fBookmarks[i].icon, BPoint(rect.left + 8, std::floor(rect.top + (rect.Height() - 15) / 2)));
         if (fBookmarks[i].title.empty()) continue;
         BString title(fBookmarks[i].title.c_str());
         TruncateString(&title, B_TRUNCATE_END, 150);
-        SetHighColor(49, 69, 66);
+        SetHighColor(ink);
+        SetDrawingMode(B_OP_OVER);
         DrawString(title.String(), BPoint(rect.left + 29, baseline));
+        SetDrawingMode(B_OP_COPY);
     }
     if (fOverflow.IsValid()) {
         if (fHover == kOverflowItem) {
-            SetHighColor(225, 232, 230);
+            SetHighColor(haiku ? tint_color(panel, B_DARKEN_1_TINT) : rgb_color{225, 232, 230, 255});
             FillRoundRect(fOverflow, 5, 5);
         }
-        SetHighColor(49, 69, 66);
+        SetHighColor(ink);
         SetPenSize(1.4f);
         const BPoint c(std::floor((fOverflow.left + fOverflow.right) / 2), std::floor((fOverflow.top + fOverflow.bottom) / 2));
         for (float dx : {-3.0f, 2.0f}) {

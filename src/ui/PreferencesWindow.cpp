@@ -4,14 +4,16 @@
 #include <Button.h>
 #include <CheckBox.h>
 #include <LayoutBuilder.h>
+#include <RadioButton.h>
 #include <StringView.h>
 #include <TextControl.h>
 
 namespace summit {
 namespace {
-constexpr uint32 homeEdited = 'phed', useStartPage = 'phsp', bookmarksBarToggled = 'pbar';
+constexpr uint32 homeEdited = 'phed', useStartPage = 'phsp', bookmarksBarToggled = 'pbar', styleChosen = 'psty';
 }
-PreferencesWindow::PreferencesWindow(BMessenger owner, const std::string& homeURL, bool showBookmarksBar)
+PreferencesWindow::PreferencesWindow(BMessenger owner, const std::string& homeURL, bool showBookmarksBar,
+    const std::string& interfaceStyle)
     : BWindow(BRect(180, 150, 700, 400), "Preferences — Summit", B_TITLED_WINDOW,
         B_NOT_ZOOMABLE | B_NOT_RESIZABLE | B_ASYNCHRONOUS_CONTROLS | B_AUTO_UPDATE_SIZE_LIMITS | B_CLOSE_ON_ESCAPE)
     , fOwner(owner)
@@ -28,6 +30,16 @@ PreferencesWindow::PreferencesWindow(BMessenger owner, const std::string& homeUR
     fBookmarksBar = new BCheckBox("show-bookmarks-bar", "Show the bookmarks bar under the toolbar",
         new BMessage(bookmarksBarToggled));
     fBookmarksBar->SetValue(showBookmarksBar ? B_CONTROL_ON : B_CONTROL_OFF);
+    auto* appearance = new BStringView("appearance-title", "Appearance");
+    appearance->SetFont(be_bold_font);
+    auto styleMessage = [](const char* style) {
+        auto* message = new BMessage(styleChosen);
+        message->AddString("interface_style", style);
+        return message;
+    };
+    fHaikuStyle = new BRadioButton("style-haiku", "Haiku: buttons and tabs like other Haiku applications", styleMessage("haiku"));
+    fSafariStyle = new BRadioButton("style-safari", "Safari-like: a flat toolbar with the tabs underneath", styleMessage("safari"));
+    (interfaceStyle == "safari" ? fSafariStyle : fHaikuStyle)->SetValue(B_CONTROL_ON);
     BLayoutBuilder::Group<>(this, B_VERTICAL, 10)
         .SetInsets(18)
         .Add(general)
@@ -44,6 +56,12 @@ PreferencesWindow::PreferencesWindow(BMessenger owner, const std::string& homeUR
         .Add(bookmarks)
         .AddGroup(B_VERTICAL, 6).SetInsets(12, 0, 0, 0)
             .Add(fBookmarksBar)
+        .End()
+        .AddStrut(6)
+        .Add(appearance)
+        .AddGroup(B_VERTICAL, 4).SetInsets(12, 0, 0, 0)
+            .Add(fHaikuStyle)
+            .Add(fSafariStyle)
         .End();
     ShowHomeHint();
 }
@@ -83,6 +101,12 @@ void PreferencesWindow::MessageReceived(BMessage* message)
             fOwner.SendMessage(&changed);
             break;
         }
+        case styleChosen: {
+            BMessage changed(kPreferencesChanged);
+            changed.AddString("interface_style", message->GetString("interface_style", "haiku"));
+            fOwner.SendMessage(&changed);
+            break;
+        }
         case kPreferencesUseCurrentPage:
             fOwner.SendMessage(kPreferencesUseCurrentPage);
             break;
@@ -96,6 +120,9 @@ void PreferencesWindow::MessageReceived(BMessage* message)
             bool bar = false;
             if (message->FindBool("show_bookmarks_bar", &bar) == B_OK)
                 fBookmarksBar->SetValue(bar ? B_CONTROL_ON : B_CONTROL_OFF);
+            const char* style = nullptr;
+            if (message->FindString("interface_style", &style) == B_OK && style)
+                (std::string(style) == "safari" ? fSafariStyle : fHaikuStyle)->SetValue(B_CONTROL_ON);
             break;
         }
         case kShowPreferences: Activate(); break;

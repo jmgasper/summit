@@ -1,4 +1,6 @@
 #include "ui/BrowserWindow.h"
+#include "ui/PreferencesWindow.h"
+#include "ui/SharedProfile.h"
 #include "ui/Messages.h"
 #include "ui/ExtensionPermissionPrompt.h"
 #include "ui/ExtensionController.h"
@@ -8,6 +10,7 @@
 #include <Alert.h>
 #include <Application.h>
 #include <Entry.h>
+#include <Invoker.h>
 #include <FindDirectory.h>
 #include <Path.h>
 #include <Roster.h>
@@ -16,7 +19,10 @@
 #include <WebSettings.h>
 #endif
 #include <filesystem>
+#include <algorithm>
 #include <atomic>
+#include <map>
+#include <tuple>
 #include <string>
 #include <vector>
 #include <cstdio>
@@ -32,15 +38,15 @@ public:
         for (int32 i = 1; i < argc; ++i) {
             std::string argument = argv[i];
             if (argument == "--profile" && i + 1 < argc) { fProfile = argv[++i]; continue; }
-            if (fWindow.IsValid()) {
+            if (!fWindows.empty()) {
                 BMessage message(summit::kNewTab); message.AddString("url", argument.c_str());
-                fWindow.SendMessage(&message);
+                FrontWindow().SendMessage(&message);
             } else fURLs.push_back(argument);
         }
     }
     void RefsReceived(BMessage* message) override
     {
-        if (fWindow.IsValid()) fWindow.SendMessage(message);
+        if (!fWindows.empty()) FrontWindow().SendMessage(message);
         else {
             entry_ref ref;
             for (int32 i = 0; message->FindRef("refs", i, &ref) == B_OK; ++i) {
@@ -137,13 +143,25 @@ public:
         if (!std::filesystem::exists(home, error)) {
             std::fprintf(stderr, "Summit: missing start page at %s\n", home.c_str());
         }
-        auto* window = new summit::BrowserWindow(fProfile / "profile.json", summit::FileURL(home.string()), fURLs
-#if SUMMIT_MODERN_WEBKIT
-            , fWebKitContext, bool(fPermissionPrompts)
-#endif
-        );
-        fWindow = BMessenger(window);
-        window->Show();
+        fStartURL = summit::FileURL(home.string());
+        fShared = std::make_shared<summit::SharedProfile>(fProfile / "profile.json");
+        fShared->AddListener(BMessenger(this));
+        // Reopen every window of the last session, unless pages were named.
+        const auto saved = fShared->SavedWindows();
+        if (!fURLs.empty() || saved.empty()) {
+            summit::BrowserWindowOptions options;
+            options.urls = fURLs;
+            OpenWindow(options);
+        } else {
+            for (const auto& session : saved) {
+                summit::BrowserWindowOptions options;
+                options.session = session;
+                OpenWindow(options);
+            }
+        }
+        if (!fShared->LoadError().empty())
+            (new BAlert("Summit", ("The saved profile could not be read. It has been preserved. " + fShared->LoadError()).c_str(),
+                "OK", nullptr, nullptr, B_WIDTH_AS_USUAL, B_WARNING_ALERT))->Go(nullptr);
 #if SUMMIT_MODERN_WEBKIT
         if (fPermissionPrompts) {
             fExtensions = std::make_unique<summit::ExtensionController>(fWebKitContext, fProfile / "Extensions",
@@ -163,21 +181,15 @@ public:
     {
 #if SUMMIT_MODERN_WEBKIT
         if (message->what == B_WEBKIT_EXTENSION_ACTIONS_CHANGED) {
-            if (fWindow.IsValid()) fWindow.SendMessage(message);
+            for (const auto& window : fWindows) window.messenger.SendMessage(message);
             return;
         }
         if (message->what == B_WEBKIT_BROWSER_COMMAND || message->what == B_WEBKIT_BROWSER_COMMAND_CANCELLED) {
-            // The single browser window performs every command, including
-            // windows.create(), and answers through the shared context.
-            if (fWindow.IsValid() && fWindow.SendMessage(message) == B_OK) return;
-            uint64 identifier = 0;
-            if (message->what == B_WEBKIT_BROWSER_COMMAND && fWebKitContext
-                && message->FindUInt64("identifier", &identifier) == B_OK)
-                fWebKitContext->RespondToBrowserCommand(identifier, B_ERROR, { }, "The browser window is not available.");
+            BrowserCommand(message);
             return;
         }
         if (message->what == summit::kShowExtensions) {
-            if (!fWindow.IsValid() || !fExtensions || !fInstaller) return;
+            if (fWindows.empty() || !fExtensions || !fInstaller) return;
             if (!fExtensionWindow.IsValid()) {
                 auto* manager = new summit::ExtensionManager(BMessenger(this), fExtensionWindows);
                 fExtensionWindow = BMessenger(manager);
@@ -201,7 +213,7 @@ public:
                 fInstaller->Cancel(fInstaller->Generation());
                 return;
             }
-            if (!fWindow.IsValid()) return;
+            if (fWindows.empty()) return;
             if (message->what == summit::kExtensionSelected && fExtensions->IsReady() && !fInstaller->IsBusy()) {
                 entry_ref ref;
                 if (message->FindRef("refs", &ref) == B_OK) {
@@ -228,24 +240,132 @@ public:
         if (message->what == B_WEBKIT_DOWNLOAD_STARTED || message->what == B_WEBKIT_DOWNLOAD_PROGRESS
             || message->what == B_WEBKIT_DOWNLOAD_FINISHED) {
             // The application remains the listener while closing windows and
-            // draining cancellation replies on the WebKit main loop.
-            if (fWindow.IsValid()) fWindow.SendMessage(message);
+            // draining cancellation replies on the WebKit main loop. Each
+            // download is reported to the window whose page started it.
+            const uint64 identifier = message->GetUInt64("identifier", 0);
+            BMessenger target;
+            if (auto found = fDownloads.find(identifier); found != fDownloads.end()) target = found->second;
+            if (!target.IsValid()) {
+                BMessenger view;
+                if (message->FindMessenger("view", &view) == B_OK) target = WindowOf(view);
+            }
+            if (!target.IsValid() && !fWindows.empty()) target = FrontWindow();
+            if (message->what == B_WEBKIT_DOWNLOAD_FINISHED) fDownloads.erase(identifier);
+            else if (identifier) fDownloads[identifier] = target;
+            if (target.IsValid()) target.SendMessage(message);
+            return;
+        }
+        if (message->what == summit::kDownloadQuitReply) {
+            fDownloadPromptPending = false;
+            if (message->GetInt32("which", 0) == 1) {
+                fDownloadQuitApproved = true;
+                PostMessage(B_QUIT_REQUESTED);
+            }
             return;
         }
         if (message->what == summit::kWindowReadyToClose) {
             BMessenger sender;
-            if (message->FindMessenger("window", &sender) != B_OK || sender != fWindow)
-                return;
-            if (!fWindow.LockTarget()) return;
-            BLooper* looper = nullptr;
-            auto* window = dynamic_cast<summit::BrowserWindow*>(fWindow.Target(&looper));
-            fWindow = BMessenger();
-            if (window) window->Quit();
-            else if (looper) looper->Unlock();
-            PostMessage(B_QUIT_REQUESTED);
+            if (message->FindMessenger("window", &sender) != B_OK) return;
+            auto record = std::find_if(fWindows.begin(), fWindows.end(), [&](const WindowRecord& window) { return window.messenger == sender; });
+            if (record == fWindows.end()) return;
+            const uint64 key = record->key;
+            fWindows.erase(record);
+            if (sender.LockTarget()) {
+                BLooper* looper = nullptr;
+                auto* window = dynamic_cast<summit::BrowserWindow*>(sender.Target(&looper));
+                if (window) window->Quit();
+                else if (looper) looper->Unlock();
+            }
+            if (fQuitting) {
+                // Quitting keeps every window's tabs for the next start.
+                fClosedWhileQuitting.push_back(key);
+                if (fWindows.empty()) PostMessage(B_QUIT_REQUESTED);
+                else CloseNextWindow();
+            } else if (!fWindows.empty()) {
+                // A window closed on its own: its tabs are not reopened.
+                fShared->RemoveWindowSession(key);
+                std::string error;
+                fShared->Save(error);
+            } else PostMessage(B_QUIT_REQUESTED);
+            return;
+        }
+        if (message->what == summit::kWindowCloseCancelled) {
+            if (!fQuitting) return;
+            // A page kept its window open: Summit keeps running, without the
+            // windows that already closed.
+            fQuitting = false;
+            fDownloadQuitApproved = false;
+            for (auto key : fClosedWhileQuitting) fShared->RemoveWindowSession(key);
+            fClosedWhileQuitting.clear();
+            std::string error;
+            fShared->Save(error);
+            return;
+        }
+        if (message->what == summit::kCloseWindowRequest) {
+            BMessenger sender;
+            if (fQuitting || message->FindMessenger("window", &sender) != B_OK) return;
+            // Closing the last window quits, which keeps its tabs for next time.
+            if (fWindows.size() <= 1) { PostMessage(B_QUIT_REQUESTED); return; }
+            BMessage request(summit::kRequestWindowClose);
+            request.AddBool("quitting", false);
+            sender.SendMessage(&request);
             return;
         }
 #endif
+        if (message->what == summit::kWindowActivated) {
+            BMessenger sender;
+            if (message->FindMessenger("window", &sender) != B_OK) return;
+            auto record = std::find_if(fWindows.begin(), fWindows.end(), [&](const WindowRecord& window) { return window.messenger == sender; });
+            if (record != fWindows.end()) std::rotate(fWindows.begin(), record, record + 1);
+            return;
+        }
+        if (message->what == summit::kNewWindow) {
+            summit::BrowserWindowOptions options;
+            const char* url = nullptr;
+            for (int32 i = 0; message->FindString("url", i, &url) == B_OK; ++i) options.urls.push_back(url);
+            message->FindRect("frame", &options.frame);
+#if SUMMIT_MODERN_WEBKIT
+            options.newPage = message->GetUInt64("new_page", 0);
+            options.newPageURL = message->GetString("new_page_url", "about:blank");
+            if (fQuitting) {
+                if (options.newPage) BWebKitView::DeclineNewPage(options.newPage);
+                return;
+            }
+#endif
+            if (!options.frame.IsValid() && !fWindows.empty()) options.frame = CascadedFrame();
+            OpenWindow(options);
+            return;
+        }
+        if (message->what == summit::kShowPreferences) { ShowPreferences(); return; }
+        if (message->what == summit::kPreferencesChanged) {
+            const char* home = nullptr;
+            const char* style = nullptr;
+            bool bar = false;
+            const bool hasHome = message->FindString("home_url", &home) == B_OK && home;
+            const bool hasBar = message->FindBool("show_bookmarks_bar", &bar) == B_OK;
+            const bool hasStyle = message->FindString("interface_style", &style) == B_OK && style;
+            fShared->Change([&](summit::Profile& profile) -> uint32 {
+                bool changed = false;
+                if (hasHome && profile.homeURL != summit::Trim(home)) { profile.homeURL = summit::Trim(home); changed = true; }
+                if (hasBar && profile.showBookmarksBar != bar) { profile.showBookmarksBar = bar; changed = true; }
+                if (hasStyle && profile.interfaceStyle != style) { profile.interfaceStyle = style; changed = true; }
+                return changed ? summit::SharedProfile::kSettingsChanged : 0;
+            });
+            return;
+        }
+        if (message->what == summit::kPreferencesUseCurrentPage) {
+            if (!fWindows.empty()) FrontWindow().SendMessage(message);
+            return;
+        }
+        if (message->what == summit::kPreferencesClosed) {
+            BMessenger window;
+            if (message->FindMessenger("window", &window) == B_OK && window == fPreferences) fPreferences = BMessenger();
+            return;
+        }
+        if (message->what == summit::kProfileChanged) {
+            if (message->GetUInt32("changes", 0) & summit::SharedProfile::kSettingsChanged) SendPreferencesState();
+            return;
+        }
         if (message->what == summit::kCreateTabOnApp) {
             BMessenger target;
             const char* url = nullptr;
@@ -293,11 +413,11 @@ public:
             if (looper) looper->Unlock();
             return;
         }
-        if (fWindow.IsValid() && (message->what == summit::kNewTab || message->what == summit::kNavigate
-            || message->what == summit::kBrowserState)) fWindow.SendMessage(message);
+        if (!fWindows.empty() && (message->what == summit::kNewTab || message->what == summit::kNavigate
+            || message->what == summit::kBrowserState)) FrontWindow().SendMessage(message);
         else BApplication::MessageReceived(message);
     }
-    void AboutRequested() override { if (fWindow.IsValid()) fWindow.SendMessage(B_ABOUT_REQUESTED); }
+    void AboutRequested() override { if (!fWindows.empty()) FrontWindow().SendMessage(B_ABOUT_REQUESTED); }
 #if SUMMIT_MODERN_WEBKIT
     void Pulse() override
     {
@@ -305,9 +425,21 @@ public:
     }
     bool QuitRequested() override
     {
-        if (fWindow.IsValid()) {
-            BMessage request(summit::kRequestWindowClose);
-            fWindow.SendMessage(&request);
+        if (!fWindows.empty()) {
+            if (fQuitting || fDownloadPromptPending) return false;
+            if (!fDownloads.empty() && !fDownloadQuitApproved) {
+                // Downloads belong to the application, not to one window.
+                fDownloadPromptPending = true;
+                auto* prompt = new BAlert("Downloads", "Downloads are still in progress. Quit and cancel them?",
+                    "Keep Browsing", "Quit");
+                prompt->SetShortcut(0, B_ESCAPE);
+                prompt->Go(new BInvoker(new BMessage(summit::kDownloadQuitReply), this));
+                return false;
+            }
+            // Windows close one at a time, so pages can ask about unsaved work.
+            fQuitting = true;
+            fClosedWhileQuitting.clear();
+            CloseNextWindow();
             return false;
         }
         if (fWebKitContext) {
@@ -373,7 +505,122 @@ public:
     bool WebKitInitialized() const { return fWebKitInitialized; }
     int ExitStatus() const { return fExitStatus; }
 private:
+    struct WindowRecord {
+        BMessenger messenger;
+        summit::BrowserWindow* window;
+        uint64 key;
+    };
+    // Most recently active first.
+    std::vector<WindowRecord> fWindows;
+    uint64 fNextWindowKey = 1;
+    std::shared_ptr<summit::SharedProfile> fShared;
+    std::string fStartURL;
+    BMessenger fPreferences;
+    bool fQuitting = false;
+    std::vector<uint64> fClosedWhileQuitting;
+    std::map<uint64, BMessenger> fDownloads;
+    bool fDownloadQuitApproved = false;
+    bool fDownloadPromptPending = false;
+
+    BMessenger FrontWindow() const { return fWindows.empty() ? BMessenger() : fWindows.front().messenger; }
+    // The browser window that owns a page view.
+    BMessenger WindowOf(const BMessenger& view) const
+    {
+        BLooper* looper = nullptr;
+        if (!view.IsValid() || !view.Target(&looper) || !looper) return BMessenger();
+        for (const auto& window : fWindows)
+            if (static_cast<BLooper*>(window.window) == looper) return window.messenger;
+        return BMessenger();
+    }
+    BRect CascadedFrame() const
+    {
+        BRect frame;
+        if (!fWindows.empty() && fWindows.front().messenger.LockTarget()) {
+            frame = fWindows.front().window->Frame().OffsetByCopy(24, 24);
+            fWindows.front().window->Unlock();
+        }
+        return frame;
+    }
+    summit::BrowserWindow* OpenWindow(summit::BrowserWindowOptions options)
+    {
+        options.key = fNextWindowKey++;
+        auto* window = new summit::BrowserWindow(fShared, fStartURL, options
 #if SUMMIT_MODERN_WEBKIT
+            , fWebKitContext, bool(fPermissionPrompts)
+#endif
+        );
+        fWindows.insert(fWindows.begin(), {BMessenger(window), window, options.key});
+        window->Show();
+        return window;
+    }
+    void CloseNextWindow()
+    {
+        if (fWindows.empty()) return;
+        BMessage request(summit::kRequestWindowClose);
+        request.AddBool("quitting", true);
+        fWindows.front().messenger.SendMessage(&request);
+    }
+    void ShowPreferences()
+    {
+        if (fPreferences.IsValid()) {
+            fPreferences.SendMessage(summit::kShowPreferences);
+            return;
+        }
+        const auto [home, bar, style] = fShared->Read([](const summit::Profile& profile) {
+            return std::make_tuple(profile.homeURL, profile.showBookmarksBar, profile.interfaceStyle);
+        });
+        auto* window = new summit::PreferencesWindow(BMessenger(this), home, bar, style);
+        if (!fWindows.empty() && fWindows.front().messenger.LockTarget()) {
+            window->CenterIn(fWindows.front().window->Frame());
+            fWindows.front().window->Unlock();
+        }
+        fPreferences = BMessenger(window);
+        window->Show();
+    }
+    void SendPreferencesState()
+    {
+        if (!fPreferences.IsValid()) return;
+        BMessage state(summit::kPreferencesState);
+        fShared->Read([&](const summit::Profile& profile) {
+            state.AddString("home_url", profile.homeURL.c_str());
+            state.AddBool("show_bookmarks_bar", profile.showBookmarksBar);
+            state.AddString("interface_style", profile.interfaceStyle.c_str());
+            return 0;
+        });
+        fPreferences.SendMessage(&state);
+    }
+#if SUMMIT_MODERN_WEBKIT
+    // Extension requests go to the window that holds the named tab or window,
+    // otherwise to the front window; windows.create() opens a real window.
+    void BrowserCommand(BMessage* message)
+    {
+        uint64 identifier = 0;
+        message->FindUInt64("identifier", &identifier);
+        if (message->what == B_WEBKIT_BROWSER_COMMAND_CANCELLED) {
+            for (const auto& window : fWindows) window.messenger.SendMessage(message);
+            return;
+        }
+        auto fail = [&](const char* error) {
+            if (fWebKitContext && identifier) fWebKitContext->RespondToBrowserCommand(identifier, B_ERROR, { }, error);
+        };
+        if (fQuitting) { fail("The browser is quitting."); return; }
+        const uint32 command = message->GetUInt32("command", 0);
+        if (command == B_WEBKIT_BROWSER_OPEN_WINDOW) {
+            summit::BrowserWindowOptions options;
+            options.empty = true;
+            if (!fWindows.empty()) options.frame = CascadedFrame();
+            auto* window = OpenWindow(options);
+            if (BMessenger(window).SendMessage(message) != B_OK) fail("The browser window is not available.");
+            return;
+        }
+        BMessenger target;
+        BMessenger named;
+        if (message->FindMessenger("view", &named) == B_OK) target = WindowOf(named);
+        if (!target.IsValid() && message->FindMessenger("window", &named) == B_OK)
+            for (const auto& window : fWindows) if (window.messenger == named) target = named;
+        if (!target.IsValid()) target = FrontWindow();
+        if (!target.IsValid() || target.SendMessage(message) != B_OK) fail("The browser window is not available.");
+    }
     void RefreshExtensions()
     {
         if (!fExtensionWindow.IsValid() || !fExtensions || !fInstaller) return;
@@ -403,7 +650,6 @@ private:
             B_WIDTH_AS_USUAL, B_STOP_ALERT))->Go();
         PostMessage(B_QUIT_REQUESTED);
     }
-    BMessenger fWindow;
 #if SUMMIT_MODERN_WEBKIT
     std::shared_ptr<BWebKitContext> fWebKitContext;
     std::unique_ptr<summit::ExtensionPermissionPrompt> fPermissionPrompts;
