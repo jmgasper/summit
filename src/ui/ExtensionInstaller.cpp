@@ -15,6 +15,10 @@
 namespace summit {
 namespace {
 constexpr uint32 pollImport = 'exwk';
+// The engine's limit on permissions plus origins for one installation.
+constexpr size_t maximumRequirements = 4096;
+// Longer lists end with a count, so the review stays readable.
+constexpr size_t listedRequirements = 40;
 std::string field(const BMessage& message, const char* name)
 {
     const char* value = nullptr;
@@ -25,7 +29,7 @@ std::vector<std::string> values(const BMessage& message, const char* name)
     std::vector<std::string> result;
     const char* value = nullptr;
     for (int32 i = 0; message.FindString(name, i, &value) == B_OK; ++i) {
-        if (i >= 256 || !value || !*value || std::strlen(value) > 4096)
+        if (i >= static_cast<int32>(maximumRequirements) || !value || !*value || std::strlen(value) > 4096)
             throw std::runtime_error("The package has too many or invalid permission requirements.");
         result.emplace_back(value);
     }
@@ -267,7 +271,7 @@ void ExtensionInstaller::MessageReceived(BMessage* message)
             if (!manifest[name].is_array()) throw std::runtime_error("Invalid extension permission list.");
             for (const auto& value : manifest[name]) {
                 auto text = value.get<std::string>();
-                if (text.empty() || text.size() > 4096 || target.size() >= 256) throw std::runtime_error("Too many or invalid extension requirements.");
+                if (text.empty() || text.size() > 4096 || target.size() >= maximumRequirements) throw std::runtime_error("Too many or invalid extension requirements.");
                 target.insert(std::move(text));
             }
         };
@@ -283,13 +287,27 @@ void ExtensionInstaller::MessageReceived(BMessage* message)
             : "\n\nPackage signature verified. Chrome Web Store provenance has not been verified.";
         draft.body += "\nCompatibility with this extension has not been verified.\n\nRequested access:\n";
         if (requested.empty()) draft.body += "  No additional permissions requested.\n";
-        for (const auto& value : requested) draft.body += "  • " + ExtensionDisplayText(value) + "\n";
+        size_t listed = 0;
+        for (const auto& value : requested) {
+            if (listed++ == listedRequirements) {
+                draft.body += "  … and " + std::to_string(requested.size() - listedRequirements) + " more\n";
+                break;
+            }
+            draft.body += "  • " + ExtensionDisplayText(value) + "\n";
+        }
         if (!draft.origins.empty()) draft.body += "\nWebsite permissions allow access to data on the listed sites.\n";
         if (std::any_of(draft.origins.begin(), draft.origins.end(), [](const auto& origin) { return origin.compare(0, 5, "file:") == 0; }))
             draft.body += "Local files are only included when \"Allow access to local files\" is checked.\n";
         if (!optional.empty()) {
             draft.body += "\nOptional access (not granted by this installation):\n";
-            for (const auto& value : optional) draft.body += "  • " + ExtensionDisplayText(value) + "\n";
+            listed = 0;
+            for (const auto& value : optional) {
+                if (listed++ == listedRequirements) {
+                    draft.body += "  … and " + std::to_string(optional.size() - listedRequirements) + " more\n";
+                    break;
+                }
+                draft.body += "  • " + ExtensionDisplayText(value) + "\n";
+            }
         }
         draft.body += "\nSome requested APIs may not be available in this Summit build.";
         if (draft.body.size() > 65536) throw std::runtime_error("The permission summary is too large to display.");

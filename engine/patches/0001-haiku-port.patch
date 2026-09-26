@@ -24050,7 +24050,7 @@ index 1373e6e9b7b3e517f8570d11022f02a40ce42c27..97f95743448a1c0b9baa0c092916ac81
  }
  
 diff --git a/Source/WebCore/platform/network/curl/CookieJarDB.cpp b/Source/WebCore/platform/network/curl/CookieJarDB.cpp
-index f638a07d7e0c3d2c8ff1e75512bee86ca39c4ce9..f468d470900ca699f6b2cf8982409508798db1af 100644
+index f638a07d7e0c3d2c8ff1e75512bee86ca39c4ce9..09b76d0dc61c7df149330fa9d65d3220353fae07 100644
 --- a/Source/WebCore/platform/network/curl/CookieJarDB.cpp
 +++ b/Source/WebCore/platform/network/curl/CookieJarDB.cpp
 @@ -31,10 +31,12 @@
@@ -24555,7 +24555,7 @@ index f638a07d7e0c3d2c8ff1e75512bee86ca39c4ce9..f468d470900ca699f6b2cf8982409508
  }
  
  bool CookieJarDB::deleteCookies(const String&)
-@@ -624,24 +859,34 @@ bool CookieJarDB::deleteCookies(const String&)
+@@ -624,24 +859,49 @@ bool CookieJarDB::deleteCookies(const String&)
  
  bool CookieJarDB::deleteCookiesForHostname(const String& hostname, IncludeHttpOnlyCookies includeHttpOnlyCookies)
  {
@@ -24578,15 +24578,30 @@ index f638a07d7e0c3d2c8ff1e75512bee86ca39c4ce9..f468d470900ca699f6b2cf8982409508
 +}
  
 -    return executeSQLStatement(m_database.prepareStatement(DELETE_ALL_COOKIE_SQL));
++bool CookieJarDB::deleteCookiesModifiedSince(WallTime since)
++{
++    // Clearing "all time" arrives as the epoch.
++    if (since <= WallTime::fromRawSeconds(0))
++        return deleteAllCookies();
++    // created holds milliseconds; lastupdated is SQLite's CURRENT_TIMESTAMP text in UTC.
++    auto milliseconds = since.secondsSinceEpoch().milliseconds();
++    auto seconds = static_cast<int64_t>(since.secondsSinceEpoch().seconds());
++    return deleteCookiesMatching(SELECT_COOKIE_COLUMNS_SQL "WHERE created >= ?1 OR lastupdated >= datetime(?2, 'unixepoch') ORDER BY rowid"_s,
++        "DELETE FROM Cookie WHERE created >= ?1 OR lastupdated >= datetime(?2, 'unixepoch')"_s,
++        [milliseconds, seconds](SQLiteStatement& statement) {
++            return statement.bindDouble(1, milliseconds) == SQLITE_OK && statement.bindInt64(2, seconds) == SQLITE_OK;
++        }, CookieChangeCause::Explicit);
+ }
+ 
+-void CookieJarDB::createPrepareStatement(ASCIILiteral sql)
 +bool CookieJarDB::deleteExpiredCookies()
 +{
 +    auto now = static_cast<int64_t>(WallTime::now().secondsSinceEpoch().milliseconds());
 +    return deleteCookiesMatching(SELECT_COOKIE_COLUMNS_SQL "WHERE session = 0 AND expires <= ? ORDER BY rowid"_s,
 +        "DELETE FROM Cookie WHERE session = 0 AND expires <= ?"_s,
 +        [now](SQLiteStatement& statement) { return statement.bindInt64(1, now) == SQLITE_OK; }, CookieChangeCause::Expired);
- }
- 
--void CookieJarDB::createPrepareStatement(ASCIILiteral sql)
++}
++
 +bool CookieJarDB::createPrepareStatement(ASCIILiteral sql)
  {
      auto statement = m_database.prepareStatement(sql);
@@ -24598,7 +24613,7 @@ index f638a07d7e0c3d2c8ff1e75512bee86ca39c4ce9..f468d470900ca699f6b2cf8982409508
  }
  
  SQLiteStatement& CookieJarDB::preparedStatement(const String& sql)
-@@ -654,7 +899,8 @@ SQLiteStatement& CookieJarDB::preparedStatement(const String& sql)
+@@ -654,7 +914,8 @@ SQLiteStatement& CookieJarDB::preparedStatement(const String& sql)
  
  bool CookieJarDB::executeSQLStatement(std::unique_ptr<SQLiteStatement>&& statement)
  {
@@ -24609,10 +24624,10 @@ index f638a07d7e0c3d2c8ff1e75512bee86ca39c4ce9..f468d470900ca699f6b2cf8982409508
          return false;
      }
 diff --git a/Source/WebCore/platform/network/curl/CookieJarDB.h b/Source/WebCore/platform/network/curl/CookieJarDB.h
-index 81dd17092439fa65a2bbcefb55cc98f77eccf2f0..61d795fd41c597a94a654ff2759e5127d97162c5 100644
+index 81dd17092439fa65a2bbcefb55cc98f77eccf2f0..68f28266c9106d5014ce36ef2fb73cf50ab9a97b 100644
 --- a/Source/WebCore/platform/network/curl/CookieJarDB.h
 +++ b/Source/WebCore/platform/network/curl/CookieJarDB.h
-@@ -24,12 +24,15 @@
+@@ -24,13 +24,17 @@
  
  #pragma once
  
@@ -24627,9 +24642,11 @@ index 81dd17092439fa65a2bbcefb55cc98f77eccf2f0..61d795fd41c597a94a654ff2759e5127
 +#include <wtf/RunLoop.h>
 +#include <wtf/SharedTask.h>
  #include <wtf/TZoneMalloc.h>
++#include <wtf/WallTime.h>
  #include <wtf/text/StringHash.h>
  
-@@ -55,7 +58,7 @@ public:
+ namespace WebCore {
+@@ -55,7 +59,7 @@ public:
      WEBCORE_EXPORT void open();
      bool isEnabled() const;
  
@@ -24638,7 +24655,7 @@ index 81dd17092439fa65a2bbcefb55cc98f77eccf2f0..61d795fd41c597a94a654ff2759e5127
      CookieAcceptPolicy acceptPolicy() const { return m_acceptPolicy; }
  
      WEBCORE_EXPORT HashSet<String> allDomains();
-@@ -63,11 +66,20 @@ public:
+@@ -63,11 +67,21 @@ public:
      WEBCORE_EXPORT Vector<Cookie> getAllCookies();
      WEBCORE_EXPORT bool setCookie(const URL& firstParty, const URL&, const String& cookie, Source, std::optional<Seconds> cappedLifetime = std::nullopt);
      WEBCORE_EXPORT bool setCookie(const Cookie&);
@@ -24651,6 +24668,7 @@ index 81dd17092439fa65a2bbcefb55cc98f77eccf2f0..61d795fd41c597a94a654ff2759e5127
      bool deleteCookies(const String& url);
      WEBCORE_EXPORT bool deleteCookiesForHostname(const String& hostname, IncludeHttpOnlyCookies);
      WEBCORE_EXPORT bool deleteAllCookies();
++    WEBCORE_EXPORT bool deleteCookiesModifiedSince(WallTime);
 +    WEBCORE_EXPORT bool deleteExpiredCookies();
 +
 +    using ChangeHandler = SharedTask<void(Vector<CookieChange>&&)>;
@@ -24659,7 +24677,7 @@ index 81dd17092439fa65a2bbcefb55cc98f77eccf2f0..61d795fd41c597a94a654ff2759e5127
  
      WEBCORE_EXPORT CookieJarDB(const String& databasePath);
      WEBCORE_EXPORT ~CookieJarDB();
-@@ -91,14 +103,22 @@ private:
+@@ -91,14 +105,22 @@ private:
      bool checkDatabaseValidity();
      void deleteAllDatabaseFiles();
  
@@ -32467,7 +32485,7 @@ index 7c9075474552a6beaffbeffe6838dd4e5b24b0d0..63ecf65d7718f6b8e24e27b37f2ea6ea
  
  } // namespace WebKit
 diff --git a/Source/WebKit/NetworkProcess/curl/NetworkStorageSessionCurl.cpp b/Source/WebKit/NetworkProcess/curl/NetworkStorageSessionCurl.cpp
-index 20aff066ab01aa0fa12c7bf47741b0109d927eea..57ea260d4b799fa629783ba698ea1a5d967532c3 100644
+index 20aff066ab01aa0fa12c7bf47741b0109d927eea..32eaf5d087896cd002a80c4dd2544af17513fa5a 100644
 --- a/Source/WebKit/NetworkProcess/curl/NetworkStorageSessionCurl.cpp
 +++ b/Source/WebKit/NetworkProcess/curl/NetworkStorageSessionCurl.cpp
 @@ -105,7 +105,16 @@ NetworkStorageSession::~NetworkStorageSession()
@@ -32494,6 +32512,18 @@ index 20aff066ab01aa0fa12c7bf47741b0109d927eea..57ea260d4b799fa629783ba698ea1a5d
 -    String url = makeString(cookie.secure ? "https"_s : "http"_s, "://"_s, cookie.domain, cookie.path);
 -    cookieDatabase().deleteCookie(url, cookie.name);
 +    cookieDatabase().deleteCookie(cookie);
+     completionHandler();
+ }
+ 
+@@ -199,9 +207,9 @@ void NetworkStorageSession::deleteAllCookies(CompletionHandler<void()>&& complet
+     completionHandler();
+ }
+ 
+-void NetworkStorageSession::deleteAllCookiesModifiedSince(WallTime, CompletionHandler<void()>&& completionHandler)
++void NetworkStorageSession::deleteAllCookiesModifiedSince(WallTime since, CompletionHandler<void()>&& completionHandler)
+ {
+-    // FIXME: Not yet implemented
++    cookieDatabase().deleteCookiesModifiedSince(since);
      completionHandler();
  }
  
@@ -43003,10 +43033,10 @@ index 0000000000000000000000000000000000000000..8db9e49ede1163cd2d1c07be7e76a642
 +};
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitViewEmbedding.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitViewEmbedding.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..48a5d618ebd81eab3274fe73bf64f0c6820d3513
+index 0000000000000000000000000000000000000000..50cdaccd1d2552bae6f4d5555599b34e95e1a0ab
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitViewEmbedding.cpp
-@@ -0,0 +1,702 @@
+@@ -0,0 +1,704 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +// BWebKitView's embedding interfaces (WebKitEmbedding.h): user scripts,
@@ -43437,7 +43467,9 @@ index 0000000000000000000000000000000000000000..48a5d618ebd81eab3274fe73bf64f0c6
 +            JSC::SourceTaintedOrigin::Untainted,
 +            URL { },
 +            asAsyncFunction ? RunAsAsyncFunction::Yes : RunAsAsyncFunction::No,
-+            std::nullopt,
++            // An async function needs an (empty) argument list: ScriptController
++            // iterates it unconditionally, as callAsyncJavaScript passes one.
++            asAsyncFunction ? std::optional { Vector<std::pair<String, JavaScriptEvaluationResult>> { } } : std::nullopt,
 +            ForceUserGesture::Yes,
 +            RemoveTransientActivation::Yes
 +        };
@@ -46969,7 +47001,7 @@ index 713a395f6fda1c50c694eef6181a23349c9b5fb2..d6419587d5402f01e573eb5f7335695a
  } // namespace WebExtensionDynamicScripts
  
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtension.cpp b/Source/WebKit/UIProcess/Extensions/WebExtension.cpp
-index fac1522cfb35558dda22d0d441b493abf1669ee8..b7ebd62191f478ef85a611e6bc78b9e01de2004f 100644
+index fac1522cfb35558dda22d0d441b493abf1669ee8..ee5ea4e7f44ec0aab46901ce60df325e9c723bd6 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtension.cpp
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtension.cpp
 @@ -48,6 +48,10 @@
@@ -47085,7 +47117,21 @@ index fac1522cfb35558dda22d0d441b493abf1669ee8..b7ebd62191f478ef85a611e6bc78b9e0
  }
  
  void WebExtension::populateCommandsIfNeeded()
-@@ -2368,7 +2402,25 @@ void WebExtension::populateCommandsIfNeeded()
+@@ -2355,6 +2389,13 @@ void WebExtension::populateCommandsIfNeeded()
+ 
+             // Descriptions are required for standard commands, but are optional for action commands.
+             auto description = commandObject->getString(commandsDescriptionKeyManifestKey);
++#if PLATFORM(HAIKU)
++            // Firefox keeps a command without a description (Multi-Account
++            // Containers names messages its locales lack); dropping it breaks
++            // the extension's commands.update() calls.
++            if (description.isEmpty() && !isActionCommand)
++                description = commandIdentifier;
++#endif
+             if (description.isEmpty() && !isActionCommand) {
+                 error = WEB_UI_STRING("Empty or invalid `description` in the `commands` manifest entry.", "WKWebExtensionErrorInvalidManifestEntry description for invalid command description");
+                 continue;
+@@ -2368,7 +2409,25 @@ void WebExtension::populateCommandsIfNeeded()
  
              commandData.description = description;
  
@@ -64402,10 +64448,10 @@ index 0000000000000000000000000000000000000000..d109dbf8f9215d26a645303c4ae239a8
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/Launcher/haiku/ProcessLauncherHaiku.cpp b/Source/WebKit/UIProcess/Launcher/haiku/ProcessLauncherHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..f0d827e69a42a3717accff5f30c55629453be0cf
+index 0000000000000000000000000000000000000000..f4598db2ccab535b9c438fe90a248671fa894456
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Launcher/haiku/ProcessLauncherHaiku.cpp
-@@ -0,0 +1,95 @@
+@@ -0,0 +1,120 @@
 +/*
 + *  Copyright (C) 2019 Haiku, Inc.
 + *
@@ -64436,7 +64482,10 @@ index 0000000000000000000000000000000000000000..f0d827e69a42a3717accff5f30c55629
 +#include "HaikuProcess.h"
 +#include "IPCUtilities.h"
 +#include "ProcessExecutablePath.h"
++#include <algorithm>
++#include <mutex>
 +#include <signal.h>
++#include <sys/resource.h>
 +#include <sys/socket.h>
 +#include <sys/wait.h>
 +#include <wtf/RunLoop.h>
@@ -64446,8 +64495,30 @@ index 0000000000000000000000000000000000000000..f0d827e69a42a3717accff5f30c55629
 +
 +namespace WebKit {
 +
++// Haiku starts programs with 256 descriptors. A web process holds two per
++// frame buffer besides its IPC sockets and font files, and the network
++// process allows 256 connections, so both run out in a long session. Raise
++// the limit before the first child starts: they inherit it, and so does the
++// UI process, which maps every tab's frame buffers.
++static void raiseFileDescriptorLimit()
++{
++    static std::once_flag once;
++    std::call_once(once, [] {
++        struct rlimit limits { };
++        if (getrlimit(RLIMIT_NOFILE, &limits))
++            return;
++        constexpr rlim_t wanted = 4096;
++        rlim_t target = limits.rlim_max == RLIM_INFINITY ? wanted : std::min(limits.rlim_max, wanted);
++        if (limits.rlim_cur != RLIM_INFINITY && limits.rlim_cur < target) {
++            limits.rlim_cur = target;
++            setrlimit(RLIMIT_NOFILE, &limits);
++        }
++    });
++}
++
 +void ProcessLauncher::launchProcess()
 +{
++    raiseFileDescriptorLimit();
 +    String executable;
 +    switch (m_launchOptions.processType) {
 +    case ProcessType::Web:
@@ -66876,10 +66947,10 @@ index 0000000000000000000000000000000000000000..f61939d10995397e88877a36905238be
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/ExtensionPackageRegistryHaiku.cpp b/Source/WebKit/UIProcess/haiku/ExtensionPackageRegistryHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..69e4f86813a90f6f836fbf9170358eff63a84e6e
+index 0000000000000000000000000000000000000000..0f8c27b4e419a684d7bb8a5326a291e0ea6840f4
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/ExtensionPackageRegistryHaiku.cpp
-@@ -0,0 +1,565 @@
+@@ -0,0 +1,577 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#include "config.h"
 +#include "ExtensionPackageRegistryHaiku.h"
@@ -66907,6 +66978,9 @@ index 0000000000000000000000000000000000000000..69e4f86813a90f6f836fbf9170358eff
 +#include <wtf/UUID.h>
 +
 +namespace WebKit {
++
++// Permissions plus origins one installation may grant.
++static constexpr size_t maximumExtensionGrants = 4096;
 +
 +std::shared_ptr<ExtensionPackageRegistryHaiku> ExtensionPackageRegistryHaiku::create(Ref<WebExtensionController>&& controller, bool privateBrowsing)
 +{
@@ -67013,8 +67087,17 @@ index 0000000000000000000000000000000000000000..69e4f86813a90f6f836fbf9170358eff
 +    Vector<String> permissions, origins;
 +    for (auto& permission : extension->requestedPermissions())
 +        permissions.append(permission);
-+    for (auto& pattern : extension->allRequestedMatchPatterns())
-+        origins.append(pattern->string());
++    // Leave out patterns a broader requested pattern already covers: Privacy
++    // Badger's content scripts name 390 Google and Facebook hosts next to
++    // <all_urls>, which would otherwise be listed (and granted) one by one.
++    auto patterns = copyToVector(extension->allRequestedMatchPatterns());
++    for (auto& pattern : patterns) {
++        bool covered = std::ranges::any_of(patterns, [&](auto& other) {
++            return other.ptr() != pattern.ptr() && other->matchesPattern(pattern) && !pattern->matchesPattern(other);
++        });
++        if (!covered)
++            origins.append(pattern->string());
++    }
 +    std::sort(permissions.begin(), permissions.end(), WTF::codePointCompareLessThan);
 +    std::sort(origins.begin(), origins.end(), WTF::codePointCompareLessThan);
 +    for (auto& permission : permissions)
@@ -67110,7 +67193,7 @@ index 0000000000000000000000000000000000000000..69e4f86813a90f6f836fbf9170358eff
 +        }
 +    }
 +    if (!validExtensionIdentity(options.uniqueIdentifier) || token.isEmpty()
-+        || options.expectedFingerprint.size() != 64 || options.permissions.size() + options.origins.size() > 256) {
++        || options.expectedFingerprint.size() != 64 || options.permissions.size() + options.origins.size() > maximumExtensionGrants) {
 +        respond(B_BAD_VALUE);
 +        return;
 +    }
@@ -75405,10 +75488,10 @@ index 77c4db0966a28ff00141af56b68d0fd16a6a826b..4d8372f4f47e8b05e804aa2bb49fbcf9
      if (m_listeners.isEmpty())
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIAction.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIAction.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..e9e099a082a2dd8b34b265885baf85e9b1b9be23
+index 0000000000000000000000000000000000000000..dc6b66a9111083e77e28b03cef513c58539ac1c9
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIAction.cpp
-@@ -0,0 +1,487 @@
+@@ -0,0 +1,490 @@
 +/*
 + * Copyright (C) 2023 Apple Inc. All rights reserved.
 + *
@@ -75506,7 +75589,10 @@ index 0000000000000000000000000000000000000000..e9e099a082a2dd8b34b265885baf85e9
 +    auto& vm = global->vm();
 +    auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
 +    JSC::PropertyNameArrayBuilder names(vm, JSC::PropertyNameMode::Strings, JSC::PrivateSymbolMode::Exclude);
-+    toJS(object)->getPropertyNames(global, names, JSC::DontEnumPropertiesMode::Exclude);
++    // Own properties only, as in Chrome: some extensions add enumerable methods
++    // to Object.prototype, and those are not icon sizes.
++    auto* nativeObject = toJS(object);
++    nativeObject->methodTable()->getOwnPropertyNames(nativeObject, global, names, JSC::DontEnumPropertiesMode::Exclude);
 +    if (scope.exception()) {
 +        TRY_CLEAR_EXCEPTION(scope, std::unexpected("icon dimensions could not be read"_s));
 +        return std::unexpected("icon dimensions could not be read"_s);
@@ -84197,10 +84283,10 @@ index 0000000000000000000000000000000000000000..928b5089cc6ae1383f4cde7956e180da
 +#endif
 diff --git a/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionMenuItemParameters.cpp b/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionMenuItemParameters.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..1883d4363bc0bef87d989b1a1e760e21d29bb31e
+index 0000000000000000000000000000000000000000..19cbc21fe695df2d3451303b7b0eb34cfd876fd1
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionMenuItemParameters.cpp
-@@ -0,0 +1,272 @@
+@@ -0,0 +1,287 @@
 +/*
 + * Copyright (C) 2023-2024 Apple Inc. All rights reserved.
 + *
@@ -84238,6 +84324,8 @@ index 0000000000000000000000000000000000000000..1883d4363bc0bef87d989b1a1e760e21
 +#include <JavaScriptCore/JSObjectInlines.h>
 +#include <JavaScriptCore/PropertyNameArray.h>
 +#include <JavaScriptCore/TopExceptionScope.h>
++#include <algorithm>
++#include <array>
 +#include <cmath>
 +#include <limits>
 +namespace WebKit {
@@ -84273,6 +84361,15 @@ index 0000000000000000000000000000000000000000..1883d4363bc0bef87d989b1a1e760e21
 +    for (auto& name : names)
 +        result.append(name.string());
 +    return result;
++}
++
++static bool isMenuProperty(const String& key)
++{
++    static constexpr std::array keys {
++        "checked"_s, "command"_s, "contexts"_s, "documentUrlPatterns"_s, "enabled"_s, "icons"_s,
++        "id"_s, "parentId"_s, "targetUrlPatterns"_s, "title"_s, "type"_s, "visible"_s,
++    };
++    return std::ranges::find(keys, key) != keys.end();
 +}
 +
 +static RefPtr<JSON::Value> menuPropertyValue(JSContextRef context, const String& key, JSValueRef value)
@@ -84374,6 +84471,10 @@ index 0000000000000000000000000000000000000000..1883d4363bc0bef87d989b1a1e760e21
 +            result.clickHandler = Protected<JSObjectRef>(JSContextGetGlobalContext(context), JSValueToObject(context, field, nullptr));
 +            continue;
 +        }
++        // Like Safari, ignore properties menus do not have, such as Firefox's
++        // viewTypes or a method a page added to Object.prototype (ClearURLs).
++        if (!isMenuProperty(key))
++            continue;
 +        RefPtr converted = menuPropertyValue(context, key, field);
 +        if (!converted)
 +            return std::unexpected("unsupported menu property or invalid JavaScript value"_s);
