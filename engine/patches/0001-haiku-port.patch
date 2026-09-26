@@ -41554,10 +41554,10 @@ index 0000000000000000000000000000000000000000..d28a6cad6339adf79b155cf974e85bfd
 +
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..1a9d16a3751ad0227322a6639ea09392d73b37ad
+index 0000000000000000000000000000000000000000..4393f9eb06959a4ee5819b9429a887679424fd5f
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp
-@@ -0,0 +1,442 @@
+@@ -0,0 +1,475 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -41623,6 +41623,39 @@ index 0000000000000000000000000000000000000000..1a9d16a3751ad0227322a6639ea09392
 +    WTF::RunLoop::mainSingleton().dispatch([state = m_state] {
 +        if (!state->closed)
 +            state->client = WebView::create(state);
++    });
++}
++
++BWebKitView::BWebKitView(BRect frame, const char* name, BMessenger target, uint64 newPageRequest, uint32 resizingMode, std::shared_ptr<BWebKitContext> context)
++    : BView(frame, name, resizingMode, B_WILL_DRAW | B_FRAME_EVENTS | B_NAVIGABLE | B_FULL_UPDATE_ON_RESIZE)
++    , m_state(std::make_shared<WebViewStateHaiku>(target))
++{
++    SetViewColor(B_TRANSPARENT_COLOR);
++    if (!webKitInitializedHaiku)
++        return;
++    if (context) {
++        m_status = context->InitCheck();
++        m_state->status = m_status;
++        if (m_status != B_OK) {
++            DeclineNewPage(newPageRequest);
++            return;
++        }
++        m_state->context = context->m_context;
++    }
++    m_status = B_OK;
++    m_state->status = B_OK;
++    UpdateGeometry();
++    WTF::RunLoop::mainSingleton().dispatch([state = m_state, newPageRequest] {
++        openNewPageHaiku(state, newPageRequest);
++    });
++}
++
++void BWebKitView::DeclineNewPage(uint64 newPageRequest)
++{
++    if (!webKitInitializedHaiku)
++        return;
++    WTF::RunLoop::mainSingleton().dispatch([newPageRequest] {
++        declineNewPageHaiku(newPageRequest);
 +    });
 +}
 +
@@ -42002,10 +42035,10 @@ index 0000000000000000000000000000000000000000..1a9d16a3751ad0227322a6639ea09392
 +}
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitView.h b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..c5af87a4b9cba1f0f17c8a095ca03837febb7014
+index 0000000000000000000000000000000000000000..abcf5ae7d44c41343b353f207165f0365471e45e
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
-@@ -0,0 +1,107 @@
+@@ -0,0 +1,136 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -42043,7 +42076,29 @@ index 0000000000000000000000000000000000000000..c5af87a4b9cba1f0f17c8a095ca03837
 +    // The main frame's favicon was loaded. Fields: "view" (messenger), "url"
 +    // (the page the icon belongs to), "iconURL", "mimeType" (may be empty) and
 +    // "data" (B_RAW_TYPE, the undecoded icon file, at most 1 MiB).
-+    B_WEBKIT_ICON_LOADED = 'wico'
++    B_WEBKIT_ICON_LOADED = 'wico',
++    // The user asked for a context menu on the page (secondary button) and the
++    // page did not cancel it. The host shows its own menu. Fields: "view",
++    // "where" (BPoint, view coordinates), "main_frame" (bool), and when present
++    // "frame_url", "selected_text", "link_url", "link_label", "link_title",
++    // "link_filename", "image_url", "image_filename", "media_url" (strings),
++    // "editable", "selected", "downloadable_media" (bool).
++    B_WEBKIT_CONTEXT_MENU = 'wctx',
++    // A page asked for a new page: window.open(), or a link or form with a
++    // target. Fields: "view" (the opener), "identifier" (uint64), "url" (may be
++    // about:blank), "popup" (bool: the page asked for a sized pop-up window),
++    // "user_gesture" (bool), "modifiers" and "button" (native bits of the click,
++    // if any), optional "width"/"height" and "x"/"y" (floats, screen units).
++    // Answer exactly once: create a view with the identifier (the engine then
++    // loads the page itself; do not call LoadURL) or call DeclineNewPage().
++    // The opener's script waits until then.
++    B_WEBKIT_NEW_PAGE_REQUESTED = 'wnpg',
++    // A middle click or Command-click on a link. The page did not navigate.
++    // Fields: "view", "url", "modifiers", "button" (native bits).
++    B_WEBKIT_LINK_OPEN_REQUESTED = 'wlop',
++    // The pointer moved on to or off a link. Fields: "view", "url" (empty when
++    // it left the link), optional "title".
++    B_WEBKIT_LINK_HOVERED = 'wlhv'
 +};
 +
 +// Navigation and input are queued to the application thread. Notifications are
@@ -42052,6 +42107,13 @@ index 0000000000000000000000000000000000000000..c5af87a4b9cba1f0f17c8a095ca03837
 +public:
 +    BWebKitView(BRect, const char* name, BMessenger notificationTarget,
 +        uint32 resizingMode = B_FOLLOW_ALL, std::shared_ptr<BWebKitContext> = nullptr);
++    // Shows the page of a B_WEBKIT_NEW_PAGE_REQUESTED notification. If the
++    // request is no longer pending, the view starts empty.
++    BWebKitView(BRect, const char* name, BMessenger notificationTarget, uint64 newPageRequest,
++        uint32 resizingMode = B_FOLLOW_ALL, std::shared_ptr<BWebKitContext> = nullptr);
++    // Refuses a B_WEBKIT_NEW_PAGE_REQUESTED notification; window.open() then
++    // returns null. Callable from any thread.
++    static void DeclineNewPage(uint64 newPageRequest);
 +    ~BWebKitView() override;
 +    status_t InitCheck() const;
 +    void LoadURL(const char*);
@@ -66801,10 +66863,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..9904193b45c835f1a0f89a784cfbee4dd2b0469a
+index 0000000000000000000000000000000000000000..8802244a2ed1aee6e7f2d50511fabd312ef530e4
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,1313 @@
+@@ -0,0 +1,1505 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -66873,11 +66935,14 @@ index 0000000000000000000000000000000000000000..9904193b45c835f1a0f89a784cfbee4d
 +#include "WebProcessPool.h"
 +#include "WebProcessProxy.h"
 +#include "WebViewContextHaiku.h"
++#include "WebHitTestResultData.h"
 +#include <WebCore/Cursor.h>
++#include <WebCore/WindowFeatures.h>
 +#include <WebCore/DOMPasteAccess.h>
 +#include <WebCore/ResourceError.h>
 +#include <WebCore/ResourceRequest.h>
 +#include <OS.h>
++#include <wtf/NeverDestroyed.h>
 +#include <wtf/RunLoop.h>
 +#include <wtf/TZoneMallocInlines.h>
 +#include <wtf/text/CString.h>
@@ -66885,6 +66950,7 @@ index 0000000000000000000000000000000000000000..9904193b45c835f1a0f89a784cfbee4d
 +#include <cstdlib>
 +#include <limits>
 +#include <cstring>
++#include <unordered_map>
 +#include <utility>
 +
 +namespace WebKit {
@@ -67110,6 +67176,48 @@ index 0000000000000000000000000000000000000000..9904193b45c835f1a0f89a784cfbee4d
 +    notifyLoadStateHaiku(state);
 +}
 +
++// Sends a notification about this view to its host, naming the view.
++static status_t sendToHostHaiku(const std::shared_ptr<WebViewStateHaiku>& state, BMessage& message)
++{
++    {
++        std::lock_guard guard(state->mutex);
++        message.AddMessenger("view", state->view);
++    }
++    return state->target.SendMessage(&message, static_cast<BHandler*>(nullptr), 0);
++}
++
++static void addTextHaiku(BMessage& message, const char* name, const String& text)
++{
++    if (!text.isEmpty())
++        message.AddString(name, text.utf8().legacyCStringPointer());
++}
++
++// Pages see the Command key as Control (see NativeWebEventsHaiku.cpp); hosts
++// get the native modifier bits back.
++static int32 nativeModifiersHaiku(OptionSet<WebEventModifier> modifiers)
++{
++    int32 result = 0;
++    if (modifiers.contains(WebEventModifier::ShiftKey))
++        result |= B_SHIFT_KEY;
++    if (modifiers.contains(WebEventModifier::ControlKey))
++        result |= B_COMMAND_KEY;
++    if (modifiers.contains(WebEventModifier::AltKey))
++        result |= B_CONTROL_KEY;
++    if (modifiers.contains(WebEventModifier::MetaKey))
++        result |= B_OPTION_KEY;
++    return result;
++}
++
++static int32 nativeButtonHaiku(WebMouseEventButton button)
++{
++    switch (button) {
++    case WebMouseEventButton::Left: return B_PRIMARY_MOUSE_BUTTON;
++    case WebMouseEventButton::Right: return B_SECONDARY_MOUSE_BUTTON;
++    case WebMouseEventButton::Middle: return B_TERTIARY_MOUSE_BUTTON;
++    default: return 0;
++    }
++}
++
 +class CloseNavigationClientHaiku final : public API::NavigationClient {
 +    WTF_MAKE_TZONE_ALLOCATED_INLINE(CloseNavigationClientHaiku);
 +public:
@@ -67117,6 +67225,21 @@ index 0000000000000000000000000000000000000000..9904193b45c835f1a0f89a784cfbee4d
 +
 +    void decidePolicyForNavigationAction(WebPageProxy& page, Ref<API::NavigationAction>&& action, Ref<WebFramePolicyListenerProxy>&& listener) override
 +    {
++        if (action->navigationType() == NavigationType::LinkClicked
++            && (action->mouseButton() == WebMouseEventButton::Middle || action->modifiers().contains(WebEventModifier::ControlKey))) {
++            // A middle click or Command-click on a link opens it in a new tab
++            // (the host decides); the page itself stays where it is.
++            if (auto state = m_state.lock(); state && !state->closed && action->request().url().isValid()) {
++                BMessage message(B_WEBKIT_LINK_OPEN_REQUESTED);
++                message.AddString("url", action->request().url().string().utf8().legacyCStringPointer());
++                message.AddInt32("modifiers", nativeModifiersHaiku(action->modifiers()));
++                message.AddInt32("button", nativeButtonHaiku(action->mouseButton()));
++                if (sendToHostHaiku(state, message) == B_OK) {
++                    listener->ignore();
++                    return;
++                }
++            }
++        }
 +        if (auto state = m_state.lock(); state && action->targetFrame() && action->targetFrame()->isMainFrame()) {
 +            // LoadURL/back/forward/reload already advanced the generation when
 +            // issued. Their delayed policy callback must not cancel a close
@@ -67280,6 +67403,56 @@ index 0000000000000000000000000000000000000000..9904193b45c835f1a0f89a784cfbee4d
 +    const std::weak_ptr<WebViewStateHaiku> m_state;
 +};
 +
++// Pages opened by window.open() or a link with a target wait here, on the
++// main thread, until the host makes a view for them (or declines).
++struct PendingNewPageHaiku {
++    Ref<API::PageConfiguration> configuration;
++    CompletionHandler<void(RefPtr<WebPageProxy>&&)> completion;
++};
++
++static std::unordered_map<uint64_t, std::unique_ptr<PendingNewPageHaiku>>& pendingNewPagesHaiku()
++{
++    static NeverDestroyed<std::unordered_map<uint64_t, std::unique_ptr<PendingNewPageHaiku>>> pages;
++    return pages.get();
++}
++
++static std::unique_ptr<PendingNewPageHaiku> takeNewPageHaiku(uint64_t identifier)
++{
++    ASSERT(RunLoop::isMain());
++    auto found = pendingNewPagesHaiku().find(identifier);
++    if (found == pendingNewPagesHaiku().end())
++        return nullptr;
++    auto pending = std::move(found->second);
++    pendingNewPagesHaiku().erase(found);
++    return pending;
++}
++
++void declineNewPageHaiku(uint64_t identifier)
++{
++    if (auto pending = takeNewPageHaiku(identifier))
++        pending->completion(nullptr);
++}
++
++void openNewPageHaiku(std::shared_ptr<WebViewStateHaiku> state, uint64_t identifier)
++{
++    ASSERT(RunLoop::isMain());
++    auto pending = takeNewPageHaiku(identifier);
++    if (state->closed) {
++        if (pending)
++            pending->completion(nullptr);
++        return;
++    }
++    if (!pending) {
++        // The opener went away first: an ordinary empty page.
++        state->client = WebView::create(state);
++        return;
++    }
++    Ref view = WebView::createWithConfiguration(state, WTF::move(pending->configuration));
++    state->client = view.ptr();
++    RefPtr page = view->page();
++    pending->completion(WTF::move(page));
++}
++
 +// Loads one favicon per main-frame document and hands its bytes to the host,
 +// which decodes, caches and draws it. WebCore offers every <link rel=icon>
 +// (and /favicon.ico when a page names none); the host only needs the one
@@ -67345,7 +67518,52 @@ index 0000000000000000000000000000000000000000..9904193b45c835f1a0f89a784cfbee4d
 +class JavaScriptUIClientHaiku final : public API::UIClient {
 +    WTF_MAKE_TZONE_ALLOCATED_INLINE(JavaScriptUIClientHaiku);
 +public:
-+    explicit JavaScriptUIClientHaiku(std::weak_ptr<WebViewStateHaiku> state) : m_state(std::move(state)) { }
++    // Only browser tabs have a host that can open pages; an extension popup
++    // declines window.open() as before.
++    JavaScriptUIClientHaiku(std::weak_ptr<WebViewStateHaiku> state, bool hostsNewPages)
++        : m_state(std::move(state)), m_hostsNewPages(hostsNewPages) { }
++
++    void createNewPage(WebPageProxy&, Ref<API::PageConfiguration>&& configuration, Ref<API::NavigationAction>&& action, CompletionHandler<void(RefPtr<WebPageProxy>&&)>&& completion) override
++    {
++        auto state = m_state.lock();
++        if (!m_hostsNewPages || !state || state->closed) {
++            completion(nullptr);
++            return;
++        }
++        static uint64_t lastIdentifier;
++        const uint64_t identifier = ++lastIdentifier;
++        BMessage message(B_WEBKIT_NEW_PAGE_REQUESTED);
++        message.AddUInt64("identifier", identifier);
++        message.AddString("url", action->request().url().string().utf8().legacyCStringPointer());
++        const auto& features = configuration->windowFeatures();
++        message.AddBool("popup", features && features->wantsPopup());
++        message.AddBool("user_gesture", action->isProcessingUserGesture());
++        message.AddInt32("modifiers", nativeModifiersHaiku(action->modifiers()));
++        message.AddInt32("button", nativeButtonHaiku(action->mouseButton()));
++        if (features && features->width && features->height) {
++            message.AddFloat("width", *features->width);
++            message.AddFloat("height", *features->height);
++            if (features->x && features->y) {
++                message.AddFloat("x", *features->x);
++                message.AddFloat("y", *features->y);
++            }
++        }
++        pendingNewPagesHaiku().emplace(identifier, std::make_unique<PendingNewPageHaiku>(PendingNewPageHaiku { WTF::move(configuration), WTF::move(completion) }));
++        if (sendToHostHaiku(state, message) != B_OK)
++            declineNewPageHaiku(identifier);
++    }
++
++    void mouseDidMoveOverElement(WebPageProxy&, const WebHitTestResultData& data, OptionSet<WebEventModifier>) override
++    {
++        auto state = m_state.lock();
++        if (!state || state->closed || data.absoluteLinkURL == m_hoveredLink)
++            return;
++        m_hoveredLink = data.absoluteLinkURL;
++        BMessage message(B_WEBKIT_LINK_HOVERED);
++        message.AddString("url", m_hoveredLink.utf8().legacyCStringPointer());
++        addTextHaiku(message, "title", data.linkTitle);
++        sendToHostHaiku(state, message);
++    }
 +
 +    void runJavaScriptAlert(WebPageProxy&, const String& message, WebFrameProxy*, FrameInfoData&& frame, Function<void()>&& completion) override
 +    {
@@ -67456,6 +67674,8 @@ index 0000000000000000000000000000000000000000..9904193b45c835f1a0f89a784cfbee4d
 +    }
 +
 +    const std::weak_ptr<WebViewStateHaiku> m_state;
++    const bool m_hostsNewPages;
++    String m_hoveredLink;
 +};
 +
 +static void sendCloseCommitResultHaiku(BMessenger target, BMessage message)
@@ -67525,6 +67745,13 @@ index 0000000000000000000000000000000000000000..9904193b45c835f1a0f89a784cfbee4d
 +    return view;
 +}
 +
++Ref<WebView> WebView::createWithConfiguration(std::shared_ptr<WebViewStateHaiku> state, Ref<API::PageConfiguration>&& configuration)
++{
++    Ref view = adoptRef(*new WebView(std::move(state)));
++    view->initialize(WTF::move(configuration));
++    return view;
++}
++
 +#if ENABLE(WK_WEB_EXTENSIONS)
 +Ref<WebView> WebView::createForExtensionPage(std::shared_ptr<WebViewStateHaiku> state, Ref<API::PageConfiguration>&& configuration)
 +{
@@ -67539,7 +67766,7 @@ index 0000000000000000000000000000000000000000..9904193b45c835f1a0f89a784cfbee4d
 +    Ref view = adoptRef(*new WebView(std::move(state)));
 +    auto& pool = configuration->processPool();
 +    view->m_page = pool.createWebPage(view.get(), WTF::move(configuration));
-+    view->m_page->setUIClient(makeUnique<JavaScriptUIClientHaiku>(view->m_state));
++    view->m_page->setUIClient(makeUnique<JavaScriptUIClientHaiku>(view->m_state, false));
 +    auto& pageConfiguration = view->m_page->configuration();
 +    view->m_page->initializeWebPage(pageConfiguration.openedSite(), pageConfiguration.initialSandboxFlags(), pageConfiguration.initialReferrerPolicy());
 +    view->m_page->setIntrinsicDeviceScaleFactor(1);
@@ -67614,6 +67841,8 @@ index 0000000000000000000000000000000000000000..9904193b45c835f1a0f89a784cfbee4d
 +    // Chrome and Firefox ship requestIdleCallback, and sites and extensions built for
 +    // them call it unconditionally. WebKit's implementation is complete but off by default.
 +    configuration->preferences().setRequestIdleCallbackEnabled(true);
++    // Block pop-ups: window.open() needs a click or key press, as in other browsers.
++    configuration->preferences().setJavaScriptCanOpenWindowsAutomatically(false);
 +#if ENABLE(WEB_AUTHN)
 +    // Passkeys reach this port through a password manager, which can only extend
 +    // Web Authentication when the page exposes it. Summit has no authenticator of
@@ -67625,7 +67854,7 @@ index 0000000000000000000000000000000000000000..9904193b45c835f1a0f89a784cfbee4d
 +        configuration->preferences().setLogsPageMessagesToSystemConsoleEnabled(true);
 +    auto& pool = configuration->processPool();
 +    m_page = pool.createWebPage(*this, configuration.releaseNonNull());
-+    m_page->setUIClient(makeUnique<JavaScriptUIClientHaiku>(m_state));
++    m_page->setUIClient(makeUnique<JavaScriptUIClientHaiku>(m_state, true));
 +    m_page->setNavigationClient(makeUniqueRef<CloseNavigationClientHaiku>(m_state));
 +    m_page->setIconLoadingClient(makeUnique<IconLoadingClientHaiku>(m_state));
 +    auto& pageConfiguration = m_page->configuration();
@@ -68084,22 +68313,47 @@ index 0000000000000000000000000000000000000000..9904193b45c835f1a0f89a784cfbee4d
 +RefPtr<WebDateTimePicker> WebView::createDateTimePicker(WebPageProxy&) { return nullptr; }
 +
 +#if ENABLE(CONTEXT_MENUS)
++// The host builds its own native menu from what was clicked; WebKit's
++// proposed items (and their actions) are not used.
 +class PendingContextMenuHaiku final : public WebContextMenuProxy {
 +    WTF_MAKE_TZONE_ALLOCATED_INLINE(PendingContextMenuHaiku);
 +public:
-+    PendingContextMenuHaiku(WebPageProxy& page, FrameInfoData&& frame, ContextMenuContextData&& context, const UserData& data)
-+        : WebContextMenuProxy(page, WTF::move(frame), WTF::move(context), data) { }
++    PendingContextMenuHaiku(std::weak_ptr<WebViewStateHaiku> state, WebPageProxy& page, FrameInfoData&& frame, ContextMenuContextData&& context, const UserData& data)
++        : WebContextMenuProxy(page, WTF::move(frame), WTF::move(context), data), m_state(std::move(state)) { }
 +private:
 +    void showContextMenuWithItems(Vector<Ref<WebContextMenuItem>>&&) override
 +    {
++        if (auto state = m_state.lock(); state && !state->closed) {
++            BMessage message(B_WEBKIT_CONTEXT_MENU);
++            const auto location = m_context.menuLocation();
++            message.AddPoint("where", BPoint(location.x(), location.y()));
++            addTextHaiku(message, "selected_text", m_context.selectedText());
++            addTextHaiku(message, "frame_url", m_frameInfo.request.url().string());
++            message.AddBool("main_frame", m_frameInfo.isMainFrame);
++            if (const auto& hit = m_context.webHitTestResultData()) {
++                addTextHaiku(message, "link_url", hit->absoluteLinkURL);
++                addTextHaiku(message, "link_label", hit->linkLabel);
++                addTextHaiku(message, "link_title", hit->linkTitle);
++                addTextHaiku(message, "link_filename", hit->linkSuggestedFilename);
++                addTextHaiku(message, "image_url", hit->absoluteImageURL);
++                addTextHaiku(message, "image_filename", hit->imageSuggestedFilename);
++                addTextHaiku(message, "media_url", hit->absoluteMediaURL);
++                message.AddBool("editable", hit->isContentEditable);
++                message.AddBool("selected", hit->isSelected);
++                message.AddBool("downloadable_media", hit->isDownloadableMedia);
++            }
++            sendToHostHaiku(state, message);
++        }
 +        if (RefPtr page = this->page())
 +            page->didDismissContextMenu();
 +    }
++
++    const std::weak_ptr<WebViewStateHaiku> m_state;
 +};
 +
 +Ref<WebContextMenuProxy> WebView::createContextMenuProxy(WebPageProxy& page, FrameInfoData&& frame, ContextMenuContextData&& context, const UserData& data)
 +{
-+    return adoptRef(*new PendingContextMenuHaiku(page, WTF::move(frame), WTF::move(context), data));
++    return adoptRef(*new PendingContextMenuHaiku(m_state, page, WTF::move(frame), WTF::move(context), data));
 +}
 +#endif
 +
@@ -68421,10 +68675,10 @@ index 0000000000000000000000000000000000000000..a47b97e41dddeab317f84058af42bd8b
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewPrivate.h b/Source/WebKit/UIProcess/haiku/WebViewPrivate.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..06575588366b29c88b9dabb2cb02b160ee63e9f8
+index 0000000000000000000000000000000000000000..74616eb89638d309c255bada481426298ebcef7e
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewPrivate.h
-@@ -0,0 +1,152 @@
+@@ -0,0 +1,155 @@
 +/*
 +   Copyright (C) 2014 Haiku, inc.
 +
@@ -68465,6 +68719,9 @@ index 0000000000000000000000000000000000000000..06575588366b29c88b9dabb2cb02b160
 +    WTF_MAKE_TZONE_ALLOCATED(WebView);
 +public:
 +    static Ref<WebView> create(std::shared_ptr<WebViewStateHaiku>);
++    // A page the engine asked for (window.open, a link with a target), made
++    // with the opener's configuration.
++    static Ref<WebView> createWithConfiguration(std::shared_ptr<WebViewStateHaiku>, Ref<API::PageConfiguration>&&);
 +#if ENABLE(WK_WEB_EXTENSIONS)
 +    static Ref<WebView> createForExtensionBackground(Ref<API::PageConfiguration>&&);
 +    static Ref<WebView> createForExtensionPopup(std::shared_ptr<WebViewStateHaiku>, Ref<API::PageConfiguration>&&);
@@ -68579,10 +68836,10 @@ index 0000000000000000000000000000000000000000..06575588366b29c88b9dabb2cb02b160
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..bde70e52e3e8bc46c0a659d7fad0d47f7df35859
+index 0000000000000000000000000000000000000000..f67a76ec99be59c6bf850cbaf24dcac3b0d2e26d
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
-@@ -0,0 +1,107 @@
+@@ -0,0 +1,112 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -68688,6 +68945,11 @@ index 0000000000000000000000000000000000000000..bde70e52e3e8bc46c0a659d7fad0d47f
 +void commitViewCloseHaiku(std::vector<std::shared_ptr<WebViewStateHaiku>>, BMessenger, uint64_t);
 +
 +void dispatchViewMessageHaiku(std::shared_ptr<WebViewStateHaiku>, BMessage&&);
++
++// Main thread only. Answer a B_WEBKIT_NEW_PAGE_REQUESTED identifier with this
++// view's state, or decline it.
++void openNewPageHaiku(std::shared_ptr<WebViewStateHaiku>, uint64_t identifier);
++void declineNewPageHaiku(uint64_t identifier);
 +
 +} // namespace WebKit
 diff --git a/Source/WebKit/WebKit.xcodeproj/project.pbxproj b/Source/WebKit/WebKit.xcodeproj/project.pbxproj
