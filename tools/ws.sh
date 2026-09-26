@@ -3,7 +3,7 @@
 # Mirrors tools/haiku.sh, which does the same for the QEMU VM.
 set -euo pipefail
 SUMMIT_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-SUMMIT_WS_HOST=${SUMMIT_WS_HOST:-192.168.1.237}
+SUMMIT_WS_HOST=${SUMMIT_WS_HOST:-192.168.1.244}
 SUMMIT_WS_USER=${SUMMIT_WS_USER:-user}
 # Keep native compiler temporaries on the selected build volume when requested.
 if [[ -n "${SUMMIT_NATIVE_TMPDIR:-}" && $# -gt 0 ]]; then
