@@ -830,7 +830,7 @@ void BrowserWindow::CreateTab(const std::string& input, bool select, BWebView* a
     else if (auto* active = ActiveTab()) {
         // Inserting before the visible card shifts its index.
         for (size_t i = 0; i < fTabs.size(); ++i)
-            if (fTabs[i].id == active->id) fCards->SetVisibleItem(static_cast<int32>(i));
+            if (fTabs[i].id == active->id) fCards->SetVisibleItem(fCards->IndexOfView(fTabs[i].view));
     }
 #else
     fCards->AddView(webView);
@@ -889,7 +889,9 @@ void BrowserWindow::SelectTab(int64 id, bool forClose)
 #endif
         }
         fSelected = id;
-        fCards->SetVisibleItem(static_cast<int32>(i));
+        // Tabs can be reordered (tabs.move) without moving their views, so
+        // find the tab's own card rather than assuming the same position.
+        fCards->SetVisibleItem(fCards->IndexOfView(fTabs[i].view));
 #if !SUMMIT_MODERN_WEBKIT
         SetCurrentWebView(fTabs[i].view);
         fTabs[i].view->WebPage()->ResendNotifications();
@@ -1420,6 +1422,21 @@ void BrowserWindow::BrowserCommand(const BMessage& message)
             SelectTab(tab->id);
             RespondToCommand(identifier, B_OK);
             return;
+        case B_WEBKIT_BROWSER_MOVE_TAB: {
+            if (fClosingWindow) { RespondToCommand(identifier, B_BUSY, { }, "The window is closing."); return; }
+            // Only the tab list changes order; each page view stays in its card.
+            const int32 index = message.GetInt32("index", -1);
+            auto moving = std::find_if(fTabs.begin(), fTabs.end(), [&](const Tab& candidate) { return candidate.id == tab->id; });
+            Tab moved = std::move(*moving);
+            fTabs.erase(moving);
+            const size_t position = index < 0 ? fTabs.size() : std::min(static_cast<size_t>(index), fTabs.size());
+            fTabs.insert(fTabs.begin() + position, std::move(moved));
+            SyncBrowserWindow();
+            RefreshChrome();
+            SaveSession();
+            RespondToCommand(identifier, B_OK);
+            return;
+        }
         case B_WEBKIT_BROWSER_NAVIGATE_TAB: {
             const auto address = ResolveAddress(message.GetString("url", ""));
             if (!address.error.empty()) { RespondToCommand(identifier, B_BAD_VALUE, { }, address.error.c_str()); return; }
