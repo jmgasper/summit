@@ -14,12 +14,13 @@ if [[ ! $bundle =~ ^bundle-[A-Za-z0-9_]+$ ]]; then
     exit 2
 fi
 version=${SUMMIT_WEBKIT_VERSION:-1.10.0}
+revision=${SUMMIT_WEBKIT_REVISION:-1}
 guest_out=/SummitExtensions/summit/tmp/summit-webkit-package
 shell="$SUMMIT_ROOT/tools/haiku.sh"
 bash "$shell" "mkdir -p $guest_out && cat > $guest_out/make-package.sh" < "$SUMMIT_ROOT/tools/summit-webkit-package/make-package.sh"
 bash "$shell" "sh $guest_out/make-package.sh /SummitExtensions/summit/build-modern-browser/$bundle \
-    /SummitExtensions/mesa/prefix /boot/home/summit-webkit-extensions $guest_out $version"
+    /SummitExtensions/mesa/prefix /boot/home/summit-webkit-extensions $guest_out $version $revision"
 mkdir -p "$SUMMIT_ROOT/artifacts"
-name=summit_webkit-$version-1-x86_64.hpkg
+name=summit_webkit-$version-$revision-x86_64.hpkg
 bash "$shell" "cat $guest_out/$name" > "$SUMMIT_ROOT/artifacts/$name"
 ls -la "$SUMMIT_ROOT/artifacts/$name"

@@ -13,7 +13,7 @@
 #                                  a glvnd vendor itself
 # and the public headers under develop/headers/summit-webkit/WebKit.
 set -eu
-B=$1; M=$2; SRC=$3; OUT=$4; VERSION=$5
+B=$1; M=$2; SRC=$3; OUT=$4; VERSION=$5; REVISION=${6:-1}
 case $OUT in /SummitExtensions/?*|/boot/home/?*) ;; *) echo "OUTPUT_DIR must be under /SummitExtensions or /boot/home" >&2; exit 2;; esac
 test -x "$B/WebProcess" && test -x "$B/NetworkProcess" && test -f "$B/lib/libWebKit.so.1"
 test -f "$M/lib/libEGL_mesa.so.0"
@@ -64,7 +64,7 @@ for n in $needed; do
 done
 cat > "$S/.PackageInfo" <<EOF
 name			summit_webkit
-version			$VERSION-1
+version			$VERSION-$REVISION
 architecture	x86_64
 summary			"The WebKit engine of the Summit browser, for other programs"
 description		"The Summit browser's WebKit build (libWebKit with its web and network processes, JavaScriptCore and ICU) and a Mesa with EGL, installed in /boot/system/lib/summit-webkit. Programs link lib/libWebKit.so.1 from there and include develop/headers/summit-webkit."
@@ -97,7 +97,7 @@ echo "$requires" | sed 's/^\t//; s/ .*//' | while read -r r; do
     test -z "$r" || echo "$provided" | grep -qx "$r" || echo "not installed here: $r"
 done
 mkdir -p "$OUT"
-rm -f "$OUT/summit_webkit-$VERSION-1-x86_64.hpkg"
-package create -C "$S" "$OUT/summit_webkit-$VERSION-1-x86_64.hpkg"
+rm -f "$OUT/summit_webkit-$VERSION-$REVISION-x86_64.hpkg"
+package create -C "$S" "$OUT/summit_webkit-$VERSION-$REVISION-x86_64.hpkg"
 rm -rf "$S"
-ls -la "$OUT/summit_webkit-$VERSION-1-x86_64.hpkg"
+ls -la "$OUT/summit_webkit-$VERSION-$REVISION-x86_64.hpkg"
