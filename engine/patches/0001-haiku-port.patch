@@ -18291,10 +18291,18 @@ index 6cc3e9febb8c00ec5829ca476fc21b1b693c81a3..fc5107b6ced726a345ccd053cbc48fca
  } // namespace WebCore
  
 diff --git a/Source/WebCore/platform/graphics/skia/FontCacheSkia.cpp b/Source/WebCore/platform/graphics/skia/FontCacheSkia.cpp
-index 74cfeb60ac3daa537785693be3917358aa26a2b5..db188c89ec849735d75d032387288f9f2d17b841 100644
+index 74cfeb60ac3daa537785693be3917358aa26a2b5..7e6a15b9528db5b57a57352b5e8dab624183d49a 100644
 --- a/Source/WebCore/platform/graphics/skia/FontCacheSkia.cpp
 +++ b/Source/WebCore/platform/graphics/skia/FontCacheSkia.cpp
-@@ -111,6 +111,13 @@ static SkFontStyle skiaFontStyle(const FontDescription& fontDescription)
+@@ -30,6 +30,7 @@
+ #include "FontCustomPlatformData.h"
+ #include "FontDescription.h"
+ #include "StyleFontSizeFunctions.h"
++#include <limits>
+ #include <wtf/Assertions.h>
+ #include <wtf/text/CString.h>
+ #include <wtf/text/CharacterProperties.h>
+@@ -111,6 +112,13 @@ static SkFontStyle skiaFontStyle(const FontDescription& fontDescription)
      return SkFontStyle(skWeight, skWidth, skSlant);
  }
  
@@ -18308,7 +18316,38 @@ index 74cfeb60ac3daa537785693be3917358aa26a2b5..db188c89ec849735d75d032387288f9f
  static std::pair<bool, bool> computeSynthesisProperties(const SkTypeface& typeface, const FontDescription& fontDescription, OptionSet<FontLookupOptions> synthesisOptions)
  {
      if (FontPlatformData::skiaTypefaceHasAnySupportedColorTable(typeface))
-@@ -417,7 +424,10 @@ std::unique_ptr<FontPlatformData> FontCache::createFontPlatformData(const FontDe
+@@ -189,13 +197,29 @@ Ref<Font> FontCache::lastResortFallbackFont(const FontDescription& fontDescripti
+ 
+     // Passing nullptr as family name makes Skia use a weak match.
+     auto typeface = fontManager().matchFamilyStyle(nullptr, skiaFontStyle(fontDescription));
++#if PLATFORM(HAIKU)
++    // A style no installed face offers makes both lookups above fail; any
++    // real face beats the empty one.
++    for (auto* family : { "sans-serif", "monospace" }) {
++        if (!typeface)
++            typeface = fontManager().matchFamilyStyle(family, SkFontStyle());
++    }
++#endif
+     if (!typeface) {
+         // LastResort is guaranteed to be non-null, so fallback to empty font with not glyphs.
+         typeface = SkTypeface::MakeEmpty();
+     }
+ 
++    auto size = fontDescription.usedSize();
++#if PLATFORM(HAIKU)
++    // The empty face at size zero is the font cache's empty hash key: using it
++    // for a zero-size element (common in ad and icon CSS) crashed the web
++    // process in FontCache::fontForPlatformData. It draws nothing at any size.
++    if (!size && !typeface->countGlyphs())
++        size = std::numeric_limits<float>::min();
++#endif
+     auto [syntheticBold, syntheticOblique] = computeSynthesisProperties(*typeface, fontDescription, { });
+-    FontPlatformData platformData(WTF::move(typeface), fontDescription.usedSize(), syntheticBold, syntheticOblique,
++    FontPlatformData platformData(WTF::move(typeface), size, syntheticBold, syntheticOblique,
+         fontDescription.orientation(), fontDescription.widthVariant(), fontDescription.textRenderingMode(), computeFeatures(fontDescription, { }));
+     return fontForPlatformData(platformData);
+ }
+@@ -417,7 +441,10 @@ std::unique_ptr<FontPlatformData> FontCache::createFontPlatformData(const FontDe
          return nullptr;
      auto familyName = getFamilyNameStringFromFamily(family);
      auto skFontStyle = skiaFontStyle(fontDescription);
@@ -18320,7 +18359,7 @@ index 74cfeb60ac3daa537785693be3917358aa26a2b5..db188c89ec849735d75d032387288f9f
      if (!typeface)
          return nullptr;
  
-@@ -449,6 +459,7 @@ void FontCache::platformReleaseNoncriticalMemory()
+@@ -449,6 +476,7 @@ void FontCache::platformReleaseNoncriticalMemory()
  
  void FontCache::platformInvalidate()
  {
@@ -43842,7 +43881,7 @@ index 558bc4dbcebf1af98a2fc3b744d3b390b68a56f1..24ce837888d94fcea6d0e960a4af01db
      UpdateAcceleratedCompositingMode(uint64_t backingStoreStateID, WebKit::LayerTreeContext context)
      DidFirstLayerFlush(uint64_t backingStoreStateID, WebKit::LayerTreeContext context)
 diff --git a/Source/WebKit/UIProcess/Extensions/API/WebExtensionContextAPIDeclarativeNetRequest.cpp b/Source/WebKit/UIProcess/Extensions/API/WebExtensionContextAPIDeclarativeNetRequest.cpp
-index 3c07d36552434c56bfa713274bed4cee92489d3a..ab0473639bf3b0b441869132328012324a84b13f 100644
+index 3c07d36552434c56bfa713274bed4cee92489d3a..42001a54018ee3ca8bcd0147b325b57957cab28e 100644
 --- a/Source/WebKit/UIProcess/Extensions/API/WebExtensionContextAPIDeclarativeNetRequest.cpp
 +++ b/Source/WebKit/UIProcess/Extensions/API/WebExtensionContextAPIDeclarativeNetRequest.cpp
 @@ -30,12 +30,43 @@
@@ -43902,10 +43941,35 @@ index 3c07d36552434c56bfa713274bed4cee92489d3a..ab0473639bf3b0b44186913232801232
                              });
                          });
  
-@@ -184,6 +220,15 @@ void WebExtensionContext::declarativeNetRequestUpdateDynamicRules(String&& rules
+@@ -165,11 +201,18 @@ void WebExtensionContext::declarativeNetRequestUpdateDynamicRules(String&& rules
+ {
+     static constexpr auto apiName = "declarativeNetRequest.updateDynamicRules()"_s;
+ 
+-    auto ruleIDsToDelete = compactMap(ruleIDsToDeleteVector, [&](auto& ruleID) -> std::optional<double> {
+-        if (!m_dynamicRulesIDs.contains(ruleID))
+-            return std::nullopt;
+-        return ruleID;
+-    });
++    // Only IDs known to exist count against the limit, but every requested ID
++    // goes to the store. m_dynamicRulesIDs learns of an addition only once the
++    // store has written it, so a second update that removes and re-adds the
++    // same rule (Ghostery does this for its GPC rule) would otherwise skip the
++    // removal and fail the addition as a duplicate. The store applies updates
++    // in order, removals first, and ignores IDs it does not have.
++    size_t existingRulesToDelete = 0;
++    for (auto& ruleID : ruleIDsToDeleteVector) {
++        if (m_dynamicRulesIDs.contains(ruleID))
++            ++existingRulesToDelete;
++    }
++    auto ruleIDsToDelete = WTF::move(ruleIDsToDeleteVector);
+ 
+     Ref rulesToAdd = JSON::Array::create();
+     if (!rulesToAddJSON.isEmpty()) {
+@@ -184,7 +227,16 @@ void WebExtensionContext::declarativeNetRequestUpdateDynamicRules(String&& rules
          return;
      }
  
+-    auto updatedDynamicRulesCount = m_dynamicRulesIDs.size() + rulesToAdd->length() - ruleIDsToDelete.size();
 +#if PLATFORM(HAIKU)
 +    // Reject a rule the native content-rule translator cannot enforce before
 +    // storing it, with the translator's reason for that rule.
@@ -43915,10 +43979,11 @@ index 3c07d36552434c56bfa713274bed4cee92489d3a..ab0473639bf3b0b44186913232801232
 +    }
 +#endif
 +
-     auto updatedDynamicRulesCount = m_dynamicRulesIDs.size() + rulesToAdd->length() - ruleIDsToDelete.size();
++    auto updatedDynamicRulesCount = m_dynamicRulesIDs.size() + rulesToAdd->length() - existingRulesToDelete;
      if (updatedDynamicRulesCount + m_dynamicRulesIDs.size() > webExtensionDeclarativeNetRequestMaximumNumberOfDynamicAndSessionRules) {
          completionHandler(toWebExtensionError(apiName, nullString(), "Failed to add dynamic rules. Maximum number of dynamic and session rules exceeded."_s));
-@@ -235,6 +280,15 @@ void WebExtensionContext::declarativeNetRequestUpdateSessionRules(String&& rules
+         return;
+@@ -235,6 +287,15 @@ void WebExtensionContext::declarativeNetRequestUpdateSessionRules(String&& rules
          return;
      }
  
@@ -47977,7 +48042,7 @@ index a156078a37b33ea2704f6a9ba747a0c881bb0009..a9fe988984d11615e87e97b81d04d56d
  
  #endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
-index 05a8676082d56f2c47c9af6120f5120b09f982be..9323f8cbeb00d5cf0e5c1c3ffc6b9aa0c0ec21db 100644
+index 05a8676082d56f2c47c9af6120f5120b09f982be..b5a1be1a209b06b9c040bb6a1e811ff1d919b802 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.h
 @@ -40,6 +40,9 @@
@@ -48338,12 +48403,16 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..9323f8cbeb00d5cf0e5c1c3ffc6b9aa0
  
      // DeclarativeNetRequest APIs
      bool isDeclarativeNetRequestMessageAllowed(IPC::Decoder&);
-@@ -950,6 +1104,23 @@ private:
+@@ -950,6 +1104,27 @@ private:
      void declarativeNetRequestUpdateDynamicRules(String&& rulesToAddJSON, Vector<double>&& ruleIDsToDelete, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
      void declarativeNetRequestGetSessionRules(Vector<double>&& filter, CompletionHandler<void(std::expected<String, WebExtensionError>&&)>&&);
      void declarativeNetRequestUpdateSessionRules(String&& rulesToAddJSON, Vector<double>&& ruleIDsToDelete, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
 +#if PLATFORM(HAIKU)
 +    void declarativeNetRequestGetAvailableStaticRuleCount(CompletionHandler<void(double)>&&);
++    // Native content rules enforce DNR for the whole browser. An extension with only
++    // declarativeNetRequestWithHostAccess gets them when it may access every URL,
++    // where host-limited enforcement would change nothing.
++    bool nativeDeclarativeNetRequestAllowed();
 +    std::expected<void, WebExtensionError> validateNativeDeclarativeNetRequestUpdate(const String& apiName, const JSON::Array& rulesToAdd, const Vector<double>& ruleIDsToDelete, bool session);
 +    void saveDeclarativeNetRequestRulesetStateToStorage(const HashMap<String, bool>&);
 +
@@ -48362,7 +48431,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..9323f8cbeb00d5cf0e5c1c3ffc6b9aa0
  
  #if ENABLE(INSPECTOR_EXTENSIONS)
      // DevTools APIs
-@@ -965,12 +1136,20 @@ private:
+@@ -965,12 +1140,20 @@ private:
  
      // Extension APIs
      void extensionIsAllowedIncognitoAccess(CompletionHandler<void(bool)>&&);
@@ -48383,7 +48452,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..9323f8cbeb00d5cf0e5c1c3ffc6b9aa0
      void menusCreate(const WebExtensionMenuItemParameters&, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
      void menusUpdate(const String& identifier, const WebExtensionMenuItemParameters&, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
      void menusRemove(const String& identifier, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
-@@ -988,9 +1167,18 @@ private:
+@@ -988,9 +1171,18 @@ private:
  
      // Permissions APIs
      void permissionsGetAll(CompletionHandler<void(Vector<String>&& permissions, Vector<String>&& origins)>&&);
@@ -48402,7 +48471,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..9323f8cbeb00d5cf0e5c1c3ffc6b9aa0
      void firePermissionsEventListenerIfNecessary(WebExtensionEventListenerType, const PermissionsSet&, const MatchPatternSet&);
  
      // Port APIs
-@@ -1000,7 +1188,7 @@ private:
+@@ -1000,7 +1192,7 @@ private:
      void disconnectPortsForPage(WebPageProxy&);
      void addPorts(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier, HashCountedSet<WebPageProxyIdentifier>&&);
      void removePort(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier, WebPageProxyIdentifier);
@@ -48411,7 +48480,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..9323f8cbeb00d5cf0e5c1c3ffc6b9aa0
      void removeNativePort(WebExtensionMessagePort&);
      unsigned openPortCount(WebExtensionContentWorldType, WebExtensionPortChannelIdentifier);
      bool isPortConnected(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier);
-@@ -1009,7 +1197,7 @@ private:
+@@ -1009,7 +1201,7 @@ private:
      void firePortMessageEventsIfNeeded(WebExtensionContentWorldType, std::optional<WebPageProxyIdentifier>, WebExtensionPortChannelIdentifier, const String& messageJSON, bool userGesture);
      void fireQueuedPortMessageEventsIfNeeded(WebExtensionContentWorldType, WebExtensionPortChannelIdentifier);
      void sendQueuedNativePortMessagesIfNeeded(WebExtensionPortChannelIdentifier);
@@ -48420,7 +48489,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..9323f8cbeb00d5cf0e5c1c3ffc6b9aa0
  
      // Runtime APIs
      void runtimeGetBackgroundPage(CompletionHandler<void(std::expected<std::optional<WebCore::PageIdentifier>, WebExtensionError>&&)>&&);
-@@ -1034,6 +1222,15 @@ private:
+@@ -1034,6 +1226,15 @@ private:
      void scriptingGetRegisteredScripts(const Vector<String>&, CompletionHandler<void(std::expected<Vector<WebExtensionRegisteredScriptParameters>, WebExtensionError>&&)>&&);
      void scriptingUnregisterContentScripts(const Vector<String>&, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
      bool createInjectedContentForScripts(const Vector<WebExtensionRegisteredScriptParameters>&, WebExtensionDynamicScripts::WebExtensionRegisteredScript::FirstTimeRegistration, DynamicInjectedContentsMap&, NSString *callingAPIName, NSString **errorMessage);
@@ -48436,7 +48505,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..9323f8cbeb00d5cf0e5c1c3ffc6b9aa0
  
      // Sidebar APIs
  #if ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
-@@ -1082,6 +1279,9 @@ private:
+@@ -1082,6 +1283,9 @@ private:
      void tabsSetZoom(WebPageProxyIdentifier, std::optional<WebExtensionTabIdentifier>, double, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
      void tabsMove(Vector<WebExtensionTabIdentifier>, std::optional<WebExtensionWindowIdentifier>, double, CompletionHandler<void(std::expected<Vector<WebExtensionTabParameters>, WebExtensionError>&&)>&&);
      void tabsRemove(Vector<WebExtensionTabIdentifier>, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
@@ -48446,7 +48515,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..9323f8cbeb00d5cf0e5c1c3ffc6b9aa0
      void tabsExecuteScript(WebPageProxyIdentifier, std::optional<WebExtensionTabIdentifier>, const WebExtensionScriptInjectionParameters&, bool userGesture, CompletionHandler<void(std::expected<Vector<WebExtensionScriptInjectionResultParameters>, WebExtensionError>&&)>&&);
      void tabsInsertCSS(WebPageProxyIdentifier, std::optional<WebExtensionTabIdentifier>, const WebExtensionScriptInjectionParameters&, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
      void tabsRemoveCSS(WebPageProxyIdentifier, std::optional<WebExtensionTabIdentifier>, const WebExtensionScriptInjectionParameters&, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
-@@ -1113,6 +1313,19 @@ private:
+@@ -1113,6 +1317,19 @@ private:
  
      // webRequest support.
      bool hasPermissionToSendWebRequestEvent(WebExtensionTab*, const URL& resourceURL, const ResourceLoadInfo&);
@@ -48466,7 +48535,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..9323f8cbeb00d5cf0e5c1c3ffc6b9aa0
  
      // IPC::MessageReceiver.
      void didReceiveMessage(IPC::Connection&, IPC::Decoder&) override;
-@@ -1129,6 +1342,13 @@ private:
+@@ -1129,6 +1346,13 @@ private:
      RetainPtr<NSMutableDictionary> m_state;
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<GKeyFile> m_state;
@@ -48480,7 +48549,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..9323f8cbeb00d5cf0e5c1c3ffc6b9aa0
  #endif
      Vector<Ref<API::Error>> m_errors;
  
-@@ -1147,6 +1367,15 @@ private:
+@@ -1147,6 +1371,15 @@ private:
  
      RefPtr<API::ContentWorld> m_contentScriptWorld;
  
@@ -48496,7 +48565,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..9323f8cbeb00d5cf0e5c1c3ffc6b9aa0
      PermissionsMap m_grantedPermissions;
      PermissionsMap m_deniedPermissions;
  
-@@ -1172,6 +1401,14 @@ private:
+@@ -1172,6 +1405,14 @@ private:
      EventListenerTypeCountedSet m_backgroundContentEventListeners;
      EventListenerTypeFrameMap m_eventListenerFrames;
  
@@ -48511,7 +48580,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..9323f8cbeb00d5cf0e5c1c3ffc6b9aa0
      bool m_shouldFireStartupEvent { false };
      InstallReason m_installReason { InstallReason::None };
      String m_previousVersion;
-@@ -1194,6 +1431,16 @@ private:
+@@ -1194,6 +1435,16 @@ private:
  #elif ENABLE(2022_GLIB_API)
      GRefPtr<WebKitWebView> m_backgroundWebView;
      GWeakPtr<WebKitWebExtensionContext> m_delegate;
@@ -48528,7 +48597,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..9323f8cbeb00d5cf0e5c1c3ffc6b9aa0
  #endif
      Variant<std::monostate, Ref<ProcessThrottlerActivity>, Ref<ProcessActivityGroup>> m_backgroundWebViewActivity;
      RefPtr<API::Error> m_backgroundContentLoadError;
-@@ -1215,6 +1462,7 @@ private:
+@@ -1215,6 +1466,7 @@ private:
      HashMap<Ref<WebExtensionMatchPattern>, UserScriptVector> m_injectedScriptsPerPatternMap;
      HashMap<Ref<WebExtensionMatchPattern>, UserStyleSheetVector> m_injectedStyleSheetsPerPatternMap;
  
@@ -48536,7 +48605,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..9323f8cbeb00d5cf0e5c1c3ffc6b9aa0
      HashMap<String, Ref<WebExtensionDynamicScripts::WebExtensionRegisteredScript>> m_registeredScriptsMap;
      RefPtr<WebExtensionRegisteredScriptsSQLiteStore> m_registeredContentScriptsStorage;
  
-@@ -1234,11 +1482,17 @@ private:
+@@ -1234,11 +1486,17 @@ private:
  #endif // ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
  
      PortCountedSet m_ports;
@@ -48555,7 +48624,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..9323f8cbeb00d5cf0e5c1c3ffc6b9aa0
      mutable WindowIdentifierVector m_windowOrderVector;
      mutable std::optional<WebExtensionWindowIdentifier> m_focusedWindowIdentifier;
  
-@@ -1254,6 +1508,12 @@ private:
+@@ -1254,6 +1512,12 @@ private:
      bool m_populatedCommands { false };
  
      String m_declarativeNetRequestContentRuleListFilePath;
@@ -48568,7 +48637,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..9323f8cbeb00d5cf0e5c1c3ffc6b9aa0
      DeclarativeNetRequestMatchedRuleVector m_matchedRules;
      RefPtr<WebExtensionDeclarativeNetRequestSQLiteStore> m_declarativeNetRequestDynamicRulesStore;
      RefPtr<WebExtensionDeclarativeNetRequestSQLiteStore> m_declarativeNetRequestSessionRulesStore;
-@@ -1261,6 +1521,9 @@ private:
+@@ -1261,6 +1525,9 @@ private:
      HashSet<double> m_sessionRulesIDs;
      HashSet<double> m_dynamicRulesIDs;
  
@@ -48578,7 +48647,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..9323f8cbeb00d5cf0e5c1c3ffc6b9aa0
      MenuItemMap m_menuItems;
      MenuItemVector m_mainMenuItems;
  
-@@ -1274,12 +1537,16 @@ private:
+@@ -1274,12 +1541,16 @@ private:
          String message;
  #if PLATFORM(COCOA)
          RetainPtr<id> argument;
@@ -48595,7 +48664,7 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..9323f8cbeb00d5cf0e5c1c3ffc6b9aa0
  
      Deque<TestMessage> m_testMessageQueue;
      Deque<TestMessage> m_testStartedQueue;
-@@ -1289,6 +1556,8 @@ private:
+@@ -1289,6 +1560,8 @@ private:
      void sendQueuedTestMessagesIfNeeded(WebExtensionEventListenerType);
  #if PLATFORM(COCOA)
      void addTestMessageToQueue(const String& message, id argument, WebExtensionEventListenerType);
@@ -52948,7 +53017,7 @@ index 0000000000000000000000000000000000000000..a66084db987eeaa2e5d20feac0587b73
 +#endif
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPIDeclarativeNetRequestHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPIDeclarativeNetRequestHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..c06dd27f4a6bed60c404da04e2319764e9c25490
+index 0000000000000000000000000000000000000000..730115dae41130579faaec07972c4c97e19600b1
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPIDeclarativeNetRequestHaiku.cpp
 @@ -0,0 +1,146 @@
@@ -53020,7 +53089,7 @@ index 0000000000000000000000000000000000000000..c06dd27f4a6bed60c404da04e2319764
 +        return;
 +    }
 +
-+    if (!hasPermission(WebExtensionPermission::declarativeNetRequest())) {
++    if (!nativeDeclarativeNetRequestAllowed()) {
 +        completionHandler(toWebExtensionError(apiName, nullString(), "Rules of an extension with only the 'declarativeNetRequestWithHostAccess' permission are not enforced on this platform"_s));
 +        return;
 +    }
@@ -53056,7 +53125,7 @@ index 0000000000000000000000000000000000000000..c06dd27f4a6bed60c404da04e2319764
 +{
 +    // Host-access-only DNR needs action-level permission checks in the request
 +    // path, which the native loader does not have; it installs no rules then.
-+    if (!hasPermission(WebExtensionPermission::declarativeNetRequest()))
++    if (!nativeDeclarativeNetRequestAllowed())
 +        return toWebExtensionError(apiName, nullString(), "Rules of an extension with only the 'declarativeNetRequestWithHostAccess' permission are not enforced on this platform"_s);
 +
 +    auto remaining = session ? m_sessionRulesIDs : m_dynamicRulesIDs;
@@ -56556,10 +56625,10 @@ index 0000000000000000000000000000000000000000..cdba2fb439048f5b8dda6962e4b1c916
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextBackgroundHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextBackgroundHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..795e1ba75420ab146dc03935b6108dc3de3e28ca
+index 0000000000000000000000000000000000000000..3bef3710074e390bfc51b9a743f5e94dc68f957a
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextBackgroundHaiku.cpp
-@@ -0,0 +1,447 @@
+@@ -0,0 +1,457 @@
 +/*
 + * Copyright (C) 2022-2025 Apple Inc. All rights reserved.
 + * Copyright (C) 2026 KunanyiOS contributors.
@@ -56787,6 +56856,16 @@ index 0000000000000000000000000000000000000000..795e1ba75420ab146dc03935b6108dc3
 +    preferences->setAcceleratedCompositingEnabled(false);
 +    // Extensions written for Chrome and Firefox call requestIdleCallback unconditionally.
 +    preferences->setRequestIdleCallbackEnabled(true);
++    // As for web pages (WebView.cpp): navigator.storage and OffscreenCanvas,
++    // which extensions use in their background pages and service workers.
++    preferences->setStorageAPIEnabled(true);
++    preferences->setStorageAPIEstimateEnabled(true);
++#if ENABLE(OFFSCREEN_CANVAS)
++    if (const char* offscreen = std::getenv("SUMMIT_OFFSCREEN_CANVAS"); !offscreen || std::strcmp(offscreen, "0")) {
++        preferences->setOffscreenCanvasEnabled(true);
++        preferences->setOffscreenCanvasInWorkersEnabled(true);
++    }
++#endif
 +    preferences->setForceCompositingMode(false);
 +    preferences->setThreadedScrollingEnabled(false);
 +    preferences->setJavaScriptCanAccessClipboard(hasPermission(WebExtensionPermission::clipboardWrite()));
@@ -57519,10 +57598,10 @@ index 0000000000000000000000000000000000000000..01e68ea0a058aa7ed1c1941635c0a107
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextDeclarativeNetRequestHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextDeclarativeNetRequestHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..bdaf1a6d4d0c60db9dba220b63dc9d730ba8bafe
+index 0000000000000000000000000000000000000000..32202d239937e9839bc2d6b18463317aec38ab13
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextDeclarativeNetRequestHaiku.cpp
-@@ -0,0 +1,211 @@
+@@ -0,0 +1,217 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#include "config.h"
 +#include "WebExtensionContext.h"
@@ -57608,6 +57687,12 @@ index 0000000000000000000000000000000000000000..bdaf1a6d4d0c60db9dba220b63dc9d73
 +    discardRuleFile(std::exchange(m_nativeDNRRuleFile, { }));
 +}
 +
++bool WebExtensionContext::nativeDeclarativeNetRequestAllowed()
++{
++    return hasPermission(WebExtensionPermission::declarativeNetRequest())
++        || (hasPermission(WebExtensionPermission::declarativeNetRequestWithHostAccess()) && hasAccessToAllURLs());
++}
++
 +void WebExtensionContext::loadDeclarativeNetRequestRules(CompletionHandler<void(bool)>&& completion)
 +{
 +    ASSERT(RunLoop::isMain());
@@ -57617,7 +57702,7 @@ index 0000000000000000000000000000000000000000..bdaf1a6d4d0c60db9dba220b63dc9d73
 +    }
 +    // Host-access-only DNR needs action-level permission evaluation in the
 +    // request path. Do not install an unrestricted blocker in its place.
-+    if (!hasPermission(WebExtensionPermission::declarativeNetRequest())) {
++    if (!nativeDeclarativeNetRequestAllowed()) {
 +        clearNativeDeclarativeNetRequestRules();
 +        if (hasPermission(WebExtensionPermission::declarativeNetRequestWithHostAccess()))
 +            recordErrorIfNeeded(createError(Error::Unknown, "Host-access-only DNR requires native request permission integration."_s));
@@ -57629,7 +57714,7 @@ index 0000000000000000000000000000000000000000..bdaf1a6d4d0c60db9dba220b63dc9d73
 +    auto loadIdentifier = privilegedIdentifier();
 +    auto current = [this, generation, loadIdentifier] {
 +        return isLoaded() && privilegedIdentifier() == loadIdentifier && generation == m_nativeDNRLoadGeneration
-+            && hasPermission(WebExtensionPermission::declarativeNetRequest());
++            && nativeDeclarativeNetRequestAllowed();
 +    };
 +    auto fail = [this](const String& message) {
 +        recordErrorIfNeeded(createError(Error::Unknown, message));
@@ -58030,7 +58115,7 @@ index 0000000000000000000000000000000000000000..0214660847f4b08c65e7a7b6475a7b99
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextPermissionsHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextPermissionsHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..cd2d53f02707206b6f6dfbc3277e698635402528
+index 0000000000000000000000000000000000000000..0692e4aa970c2039b267a91bba983b05e62e0d59
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextPermissionsHaiku.cpp
 @@ -0,0 +1,237 @@
@@ -58107,7 +58192,7 @@ index 0000000000000000000000000000000000000000..cd2d53f02707206b6f6dfbc3277e6986
 +{
 +    ASSERT(isMainThread());
 +    if (isLoaded() && (permissions.contains(WebExtensionPermission::declarativeNetRequest()) || permissions.contains(WebExtensionPermission::declarativeNetRequestWithHostAccess()))) {
-+        if (hasPermission(WebExtensionPermission::declarativeNetRequest()))
++        if (nativeDeclarativeNetRequestAllowed())
 +            loadDeclarativeNetRequestRules([](bool) { });
 +        else
 +            clearNativeDeclarativeNetRequestRules();
@@ -69410,10 +69495,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..a0cad3804f6e7285b46d788d054ee080149829c8
+index 0000000000000000000000000000000000000000..3b1113a8d67b15c4fbe19555e4207a3a462802dd
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,1709 @@
+@@ -0,0 +1,1720 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -70439,6 +70524,17 @@ index 0000000000000000000000000000000000000000..a0cad3804f6e7285b46d788d054ee080
 +    configuration->preferences().setRequestIdleCallbackEnabled(true);
 +    // Block pop-ups: window.open() needs a click or key press, as in other browsers.
 +    configuration->preferences().setJavaScriptCanOpenWindowsAutomatically(false);
++    // navigator.storage (estimate, persist), on by default for GTK and WPE;
++    // web apps and extensions (OneTab) call it unguarded.
++    configuration->preferences().setStorageAPIEnabled(true);
++    configuration->preferences().setStorageAPIEstimateEnabled(true);
++#if ENABLE(OFFSCREEN_CANVAS)
++    // SUMMIT_OFFSCREEN_CANVAS=0 hides OffscreenCanvas again.
++    if (const char* offscreen = std::getenv("SUMMIT_OFFSCREEN_CANVAS"); !offscreen || std::strcmp(offscreen, "0")) {
++        configuration->preferences().setOffscreenCanvasEnabled(true);
++        configuration->preferences().setOffscreenCanvasInWorkersEnabled(true);
++    }
++#endif
 +#if ENABLE(WEB_AUTHN)
 +    // Passkeys reach this port through a password manager, which can only extend
 +    // Web Authentication when the page exposes it. Summit has no authenticator of
@@ -75309,7 +75405,7 @@ index 77c4db0966a28ff00141af56b68d0fd16a6a826b..4d8372f4f47e8b05e804aa2bb49fbcf9
      if (m_listeners.isEmpty())
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIAction.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIAction.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..2bdc7296b1bc827dfa5af67dab09119cabd5987c
+index 0000000000000000000000000000000000000000..e9e099a082a2dd8b34b265885baf85e9b1b9be23
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIAction.cpp
 @@ -0,0 +1,487 @@
@@ -75548,10 +75644,10 @@ index 0000000000000000000000000000000000000000..2bdc7296b1bc827dfa5af67dab09119c
 +        }
 +        if (!(*parsed)->size())
 +            continue;
-+        if (icons) {
-+            exception = "icon details cannot specify both path and imageData"_s;
-+            return;
-+        }
++        // Given both, Chrome draws imageData and ignores path; Violentmonkey
++        // passes both.
++        if (icons && key != "imageData"_s)
++            continue;
 +        icons = WTF::move(*parsed);
 +    }
 +    auto target = parseWebExtensionActionDetails(scopes.ptr(), WebExtensionActionDetailsKind::Get);
@@ -76192,10 +76288,10 @@ index 24ddaf37b94ee3e18eadfffb6455c2dfccb79c66..a9812ee585ef238c75d32d8017e4e632
  } // namespace WebKit
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIDeclarativeNetRequest.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIDeclarativeNetRequest.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..4c8994e6e2cb608b12748e7ee15e92bd5587f1bc
+index 0000000000000000000000000000000000000000..ce336350a329b2ca540ab09b150bd4e3e2afe21e
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIDeclarativeNetRequest.cpp
-@@ -0,0 +1,287 @@
+@@ -0,0 +1,290 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#include "config.h"
 +#include "WebExtensionAPIDeclarativeNetRequest.h"
@@ -76469,8 +76565,11 @@ index 0000000000000000000000000000000000000000..4c8994e6e2cb608b12748e7ee15e92bd
 +        outExceptionString = toErrorString(nullString(), "extensionActionOptions"_s, "it must be an object"_s);
 +        return;
 +    }
-+    // Blocked-load counts are not reported by the native content-rule path.
-+    callback->reportError("declarativeNetRequest.setExtensionActionOptions() is not supported on this platform."_s);
++    // Blocked-load counts are not reported by the native content-rule path, so
++    // there is no badge count to show. Accept the options as Safari does for
++    // what it cannot display: uBlock Origin Lite calls this at startup and a
++    // rejection there surfaced as an unhandled error.
++    callback->call();
 +}
 +
 +void WebExtensionAPIDeclarativeNetRequest::getAvailableStaticRuleCount(Ref<WebExtensionCallbackHandler>&& callback)
@@ -89077,10 +89176,10 @@ index 0000000000000000000000000000000000000000..abc82f6d26d2b1374740dc304282ae75
 +
 +}
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
-index cf4d54b7869d7a7cded74482922d8fdda53af21d..cdb72ca0b6147b2cea710925f55c32792376bfbf 100644
+index cf4d54b7869d7a7cded74482922d8fdda53af21d..015732ea03ab60249130f0bb3a1289005b62f293 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
-@@ -26,6 +26,13 @@
+@@ -26,6 +26,15 @@
  #include "config.h"
  #include "AcceleratedSurface.h"
  
@@ -89088,13 +89187,15 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..cdb72ca0b6147b2cea710925f55c3279
 +#include "PresentStatsHaiku.h"
 +#include <cstdlib>
 +#include <cstring>
++#include <mutex>
++#include <optional>
 +#include <wtf/NeverDestroyed.h>
 +#endif
 +
  #if USE(COORDINATED_GRAPHICS)
  #include "WebPage.h"
  #include "WebProcess.h"
-@@ -51,12 +58,18 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
+@@ -51,12 +60,18 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
  #include <skia/gpu/ganesh/GrBackendSurface.h>
  #include <skia/gpu/ganesh/SkSurfaceGanesh.h>
  #include <skia/gpu/ganesh/gl/GrGLBackendSurface.h>
@@ -89114,7 +89215,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..cdb72ca0b6147b2cea710925f55c3279
  #include <epoxy/egl.h>
  #endif
  
-@@ -122,7 +135,7 @@ AcceleratedSurface::AcceleratedSurface(WebPage& webPage, Function<void()>&& fram
+@@ -122,7 +137,7 @@ AcceleratedSurface::AcceleratedSurface(WebPage& webPage, Function<void()>&& fram
  #endif
      , m_id(generateID())
      , m_renderingPurpose(renderingPurpose)
@@ -89123,7 +89224,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..cdb72ca0b6147b2cea710925f55c3279
      , m_hardwareAccelerationEnabled(webPage.corePage()->settings().hardwareAccelerationEnabled())
  #endif
      , m_backgroundColor(webPage.backgroundColor())
-@@ -176,7 +189,7 @@ void AcceleratedSurface::RenderTarget::createSkiaSurfaceForFramebuffer(unsigned
+@@ -176,7 +191,7 @@ void AcceleratedSurface::RenderTarget::createSkiaSurfaceForFramebuffer(unsigned
      m_skiaSurface = SkSurfaces::WrapBackendRenderTarget(display.skiaGrContext(), backendRenderTarget, origin, kRGBA_8888_SkColorType, SkColorSpace::MakeSRGB(), &properties);
  }
  
@@ -89132,7 +89233,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..cdb72ca0b6147b2cea710925f55c3279
  WTF_MAKE_TZONE_ALLOCATED_IMPL(AcceleratedSurface::RenderTargetShareableBuffer);
  
  AcceleratedSurface::RenderTargetShareableBuffer::RenderTargetShareableBuffer(AcceleratedSurface& surface, const IntSize& size)
-@@ -418,7 +431,14 @@ std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::RenderTarg
+@@ -418,7 +433,14 @@ std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::RenderTarg
          return nullptr;
      }
  
@@ -89147,7 +89248,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..cdb72ca0b6147b2cea710925f55c3279
      if (!bufferHandle) {
          WTFLogAlways("Failed to create handle for shared memory buffer");
          return nullptr;
-@@ -439,13 +459,140 @@ AcceleratedSurface::RenderTargetSHMImage::RenderTargetSHMImage(AcceleratedSurfac
+@@ -439,13 +461,168 @@ AcceleratedSurface::RenderTargetSHMImage::RenderTargetSHMImage(AcceleratedSurfac
      WebProcess::singleton().parentProcessConnection()->send(Messages::AcceleratedBackingStore::DidCreateSHMBuffer(m_id, WTF::move(bitmapHandle)), m_surface->surfaceID());
  }
  
@@ -89169,25 +89270,45 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..cdb72ca0b6147b2cea710925f55c3279
 +        const char* value = getenv("SUMMIT_PBO_READBACK");
 +        return !value || strcmp(value, "0");
 +    }();
-+    if (!enabled || !m_skiaSurface)
++    // Say once why a frame could not take this path; it is the fast one.
++    auto decline = [](const char* reason) {
++        static std::once_flag once;
++        std::call_once(once, [reason] { std::fprintf(stderr, "Summit readback: pixel buffer path not used: %s\n", reason); });
 +        return false;
++    };
++    if (!enabled)
++        return false;
++    // Skia compositing draws with its own context and must hand its work to
++    // GL first; TextureMapper compositing leaves this target's framebuffer
++    // bound in the current context.
 +    auto& display = PlatformDisplay::sharedDisplay();
-+    GLContext::ScopedGLContextCurrent scopedCurrent(*display.skiaGLContext());
-+    auto* grContext = display.skiaGrContext();
-+    if (!grContext)
-+        return false;
++    std::optional<GLContext::ScopedGLContextCurrent> skiaCurrent;
++    GrDirectContext* grContext = nullptr;
++    if (m_surface->useSkia()) {
++        if (!m_skiaSurface)
++            return decline("no Skia surface");
++        auto* skiaContext = display.skiaGLContext();
++        if (!skiaContext)
++            return decline("no Skia GL context");
++        skiaCurrent.emplace(*skiaContext);
++        grContext = display.skiaGrContext();
++        if (!grContext)
++            return decline("no Skia GrDirectContext");
++        grContext->flushAndSubmit(m_skiaSurface.get(), GrSyncCpu::kNo);
++    }
 +    static const bool readsBGRA = [] {
 +        auto* extensions = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
 +        return extensions && strstr(extensions, "GL_EXT_read_format_bgra");
 +    }();
-+    grContext->flushAndSubmit(m_skiaSurface.get(), GrSyncCpu::kNo);
 +
 +    int width = m_bitmap->size().width();
 +    int height = m_bitmap->size().height();
++    // The pixel buffer is packed; the shared bitmap may pad its rows.
 +    size_t rowBytes = size_t(width) * 4;
 +    size_t length = rowBytes * height;
-+    if (m_bitmap->bytesPerRow() != rowBytes || m_bitmap->mutableSpan().size() < length)
-+        return false;
++    size_t destinationStride = m_bitmap->bytesPerRow();
++    if (destinationStride < rowBytes || m_bitmap->mutableSpan().size() < destinationStride * height)
++        return decline("the shared bitmap is smaller than the frame");
 +
 +    // Only what changed since this buffer was last shown has to come back:
 +    // the rest of its memory still holds that frame. At 200% a whole frame is
@@ -89244,7 +89365,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..cdb72ca0b6147b2cea710925f55c3279
 +            for (int row = rect.y(); row < rect.maxY(); ++row) {
 +                // Rows come bottom first when Skia draws the target mirrored.
 +                const uint8_t* source = pixels + size_t(flipped ? height - 1 - row : row) * rowBytes + offset;
-+                uint8_t* target = destination + size_t(row) * rowBytes + offset;
++                uint8_t* target = destination + size_t(row) * destinationStride + offset;
 +                if (readsBGRA) {
 +                    memcpy(target, source, span);
 +                    continue;
@@ -89259,7 +89380,8 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..cdb72ca0b6147b2cea710925f55c3279
 +        }
 +        glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
 +        copied = true;
-+    }
++    } else
++        decline("glMapBufferRange failed");
 +    if (readStart) {
 +        static NeverDestroyed<PresentStageStatsHaiku> read("pixels read (web)");
 +        double pixels = 0;
@@ -89269,7 +89391,8 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..cdb72ca0b6147b2cea710925f55c3279
 +    }
 +    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
 +    // Skia keeps its own record of the bound framebuffer and pack state.
-+    grContext->resetContext(kRenderTarget_GrGLBackendState | kPixelStore_GrGLBackendState | kMisc_GrGLBackendState);
++    if (grContext)
++        grContext->resetContext(kRenderTarget_GrGLBackendState | kPixelStore_GrGLBackendState | kMisc_GrGLBackendState);
 +    return copied;
 +}
 +#else
@@ -89278,6 +89401,12 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..cdb72ca0b6147b2cea710925f55c3279
  
  void AcceleratedSurface::RenderTargetSHMImage::didRenderFrame()
  {
++#if PLATFORM(HAIKU)
++    if (PresentStageStatsHaiku::enabled()) {
++        static std::once_flag once;
++        std::call_once(once, [this] { std::fprintf(stderr, "Summit readback: %s compositing\n", m_surface->useSkia() ? (m_surface->usesGL() ? "Skia GL" : "Skia CPU") : "TextureMapper GL"); });
++    }
++#endif
      if (m_surface->useSkia()) {
          if (!m_skiaSurface)
              return;
@@ -89288,7 +89417,14 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..cdb72ca0b6147b2cea710925f55c3279
  
          SkImageInfo info = SkImageInfo::Make(m_bitmap->size().width(), m_bitmap->size().height(), SkColorType::kBGRA_8888_SkColorType, SkAlphaType::kPremul_SkAlphaType);
  
-@@ -460,6 +607,7 @@ void AcceleratedSurface::RenderTargetSHMImage::didRenderFrame()
+@@ -457,9 +634,14 @@ void AcceleratedSurface::RenderTargetSHMImage::didRenderFrame()
+         return;
+     }
+ 
++#if PLATFORM(HAIKU)
++    if (readBackThroughPixelBuffer())
++        return;
++#endif
      glReadPixels(0, 0, m_bitmap->size().width(), m_bitmap->size().height(), GL_BGRA, GL_UNSIGNED_BYTE, m_bitmap->mutableSpan().data());
  }
  
@@ -89296,7 +89432,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..cdb72ca0b6147b2cea710925f55c3279
  std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::RenderTargetTexture::create(AcceleratedSurface& surface, const IntSize& size)
  {
      auto texture = BitmapTexture::create(size);
-@@ -515,8 +663,9 @@ AcceleratedSurface::RenderTargetTexture::RenderTargetTexture(AcceleratedSurface&
+@@ -515,8 +697,9 @@ AcceleratedSurface::RenderTargetTexture::RenderTargetTexture(AcceleratedSurface&
  }
  
  AcceleratedSurface::RenderTargetTexture::~RenderTargetTexture() = default;
@@ -89307,7 +89443,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..cdb72ca0b6147b2cea710925f55c3279
  
  #if USE(WPE_RENDERER)
  std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::RenderTargetWPEBackend::create(AcceleratedSurface& surface, const IntSize& initialSize, UnixFileDescriptor&& hostFD)
-@@ -594,7 +743,7 @@ void AcceleratedSurface::RenderTargetWPEBackend::didRenderFrame()
+@@ -594,7 +777,7 @@ void AcceleratedSurface::RenderTargetWPEBackend::didRenderFrame()
  AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
      : m_surface(surface)
  {
@@ -89316,7 +89452,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..cdb72ca0b6147b2cea710925f55c3279
      if (!m_surface->hardwareAccelerationEnabled()) {
          m_type = Type::SharedMemory;
          return;
-@@ -632,7 +781,7 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
+@@ -632,7 +815,7 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
      case PlatformDisplay::Type::GBM:
  #endif
          break;
@@ -89325,7 +89461,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..cdb72ca0b6147b2cea710925f55c3279
  #if USE(WPE_RENDERER)
      case PlatformDisplay::Type::WPE:
          m_type = Type::WPEBackend;
-@@ -646,11 +795,19 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
+@@ -646,11 +829,19 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
      case PlatformDisplay::Type::Default:
          break;
  #endif // PLATFORM(GTK)
@@ -89346,7 +89482,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..cdb72ca0b6147b2cea710925f55c3279
  void AcceleratedSurface::SwapChain::setupBufferFormat()
  {
      if (m_type != Type::EGLImage)
-@@ -749,7 +906,7 @@ bool AcceleratedSurface::SwapChain::resize(const IntSize& size)
+@@ -749,7 +940,7 @@ bool AcceleratedSurface::SwapChain::resize(const IntSize& size)
  
  bool AcceleratedSurface::SwapChain::handleBufferFormatChangeIfNeeded()
  {
@@ -89355,7 +89491,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..cdb72ca0b6147b2cea710925f55c3279
      if (m_type == Type::EGLImage) {
          Locker locker { m_bufferFormatLock };
          if (m_bufferFormatChanged) {
-@@ -765,7 +922,7 @@ bool AcceleratedSurface::SwapChain::handleBufferFormatChangeIfNeeded()
+@@ -765,7 +956,7 @@ bool AcceleratedSurface::SwapChain::handleBufferFormatChangeIfNeeded()
  std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::SwapChain::createTarget() const
  {
      switch (m_type) {
@@ -89364,7 +89500,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..cdb72ca0b6147b2cea710925f55c3279
  #if USE(GBM) || OS(ANDROID)
      case Type::EGLImage: {
          Locker locker { m_bufferFormatLock };
-@@ -773,7 +930,11 @@ std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::SwapChain:
+@@ -773,7 +964,11 @@ std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::SwapChain:
      }
  #endif
      case Type::Texture:
@@ -89376,7 +89512,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..cdb72ca0b6147b2cea710925f55c3279
      case Type::SharedMemory:
          return RenderTargetSHMImage::create(m_surface.get(), m_size);
  #endif
-@@ -929,7 +1090,7 @@ bool AcceleratedSurface::shouldPaintMirrored() const
+@@ -929,7 +1124,7 @@ bool AcceleratedSurface::shouldPaintMirrored() const
      switch (m_swapChain.type()) {
      case SwapChain::Type::Invalid:
          return false;
@@ -89385,7 +89521,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..cdb72ca0b6147b2cea710925f55c3279
      case SwapChain::Type::Texture:
  #if USE(GBM) || OS(ANDROID)
      case SwapChain::Type::EGLImage:
-@@ -1000,7 +1161,7 @@ void AcceleratedSurface::backgroundColorDidChange()
+@@ -1000,7 +1195,7 @@ void AcceleratedSurface::backgroundColorDidChange()
      if (isOpaque == wasOpaque)
          return;
  
@@ -89394,7 +89530,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..cdb72ca0b6147b2cea710925f55c3279
      m_swapChain.setupBufferFormat();
  #endif
  }
-@@ -1022,7 +1183,7 @@ void AcceleratedSurface::didCreateCompositingRunLoop(RunLoop& runLoop)
+@@ -1022,7 +1217,7 @@ void AcceleratedSurface::didCreateCompositingRunLoop(RunLoop& runLoop)
  #if USE(GLIB_EVENT_LOOP)
      m_releaseUnusedBuffersTimer->setPriority(RunLoopSourcePriority::ReleaseUnusedResourcesTimer);
  #endif
@@ -89403,7 +89539,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..cdb72ca0b6147b2cea710925f55c3279
      WebProcess::singleton().parentProcessConnection()->addMessageReceiver(runLoop, *this, Messages::AcceleratedSurface::messageReceiverName(), m_id);
  #endif
  }
-@@ -1043,7 +1204,7 @@ void AcceleratedSurface::willDestroyCompositingRunLoop()
+@@ -1043,7 +1238,7 @@ void AcceleratedSurface::willDestroyCompositingRunLoop()
              protectedThis->m_releaseUnusedBuffersTimer = nullptr;
          });
      }
@@ -89412,7 +89548,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..cdb72ca0b6147b2cea710925f55c3279
      WebProcess::singleton().parentProcessConnection()->removeMessageReceiver(Messages::AcceleratedSurface::messageReceiverName(), m_id);
  #endif
  }
-@@ -1155,18 +1316,43 @@ void AcceleratedSurface::didRenderFrame(TargetContents targetContents)
+@@ -1155,18 +1350,43 @@ void AcceleratedSurface::didRenderFrame(TargetContents targetContents)
      if (!m_target)
          return;
  
@@ -89456,7 +89592,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..cdb72ca0b6147b2cea710925f55c3279
      m_pendingFrameNotifyTargets.insert(0, { m_target, WTF::move(damageRects) });
      m_target = nullptr;
  }
-@@ -1188,7 +1374,7 @@ const std::optional<Damage>& AcceleratedSurface::renderTargetDamage()
+@@ -1188,7 +1408,7 @@ const std::optional<Damage>& AcceleratedSurface::renderTargetDamage()
  }
  #endif
  
@@ -108137,10 +108273,10 @@ index 121e64b01bce34e387deacf3bbbca93adf0f59da..7926cd9c3edf141bc52f7db0253c37c0
  endif ()
 diff --git a/Source/cmake/OptionsHaiku.cmake b/Source/cmake/OptionsHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..ac1c85d223f97fb9c27d3021283fbfcde1486508
+index 0000000000000000000000000000000000000000..56f79e70ee58062ebdcc8f1a7c93e9c97db0fe7c
 --- /dev/null
 +++ b/Source/cmake/OptionsHaiku.cmake
-@@ -0,0 +1,343 @@
+@@ -0,0 +1,347 @@
 +include(GNUInstallDirs)
 +include(VersioningUtils)
 +
@@ -108214,6 +108350,10 @@ index 0000000000000000000000000000000000000000..ac1c85d223f97fb9c27d3021283fbfcd
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_MEDIA_STREAM PUBLIC OFF)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_MEMORY_SAMPLER PUBLIC ON)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_MHTML PRIVATE ON)
++# OffscreenCanvas, as on GTK and WPE: pages use it for off-thread drawing and
++# extensions draw their toolbar icons with it in service workers (Stylus).
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_OFFSCREEN_CANVAS PRIVATE ON)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_OFFSCREEN_CANVAS_IN_WORKERS PRIVATE ON)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_MOUSE_CURSOR_SCALE PUBLIC ON)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_NOTIFICATIONS PUBLIC ON)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_SAMPLING_PROFILER PUBLIC OFF)
