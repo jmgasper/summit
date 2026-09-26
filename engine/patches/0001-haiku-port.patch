@@ -11971,10 +11971,10 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..dabb26db148e0c67675186165733c0c05a5daa21
+index 0000000000000000000000000000000000000000..bd52a39e2219ee89d41360bbfee091f7140a21e7
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,1545 @@
+@@ -0,0 +1,1578 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -12369,6 +12369,29 @@ index 0000000000000000000000000000000000000000..dabb26db148e0c67675186165733c0c0
 +    return B_OK;
 +}
 +
++
++// Haiku's ffmpeg decoder reports a video frame's start_time in the stream's
++// time base instead of microseconds (512 per frame for a 1/15360 MP4 at 30
++// fps), and BMediaTrack::CurrentTime() adopts it from the first decoded frame
++// on: every frame looked late and a 10 s clip played in half a second, and
++// seek preroll could not reach its target. The frame counter is exact (a seek
++// sets it from the extractor, each decoded frame adds one), so derive the
++// time from it where the decoder's time disagrees with it. A decoder that
++// reports real times (NVDEC, variable frame rates) keeps its own.
++static bigtime_t videoTrackTime(BMediaTrack& track)
++{
++    bigtime_t reported = track.CurrentTime();
++    media_format format;
++    if (track.EncodedFormat(&format) != B_OK)
++        return reported;
++    double rate = format.u.encoded_video.output.field_rate;
++    if (!(rate > 0) || !std::isfinite(rate))
++        return reported;
++    auto counted = static_cast<bigtime_t>(track.CurrentFrame() * 1000000.0 / rate);
++    auto tolerance = std::max(static_cast<bigtime_t>(2000000.0 / rate), counted / 10);
++    return std::abs(reported - counted) > tolerance ? counted : reported;
++}
++
 +status_t MediaPlayerPrivate::videoThread(void* cookie)
 +{
 +    MediaPlayerPrivate* player = (MediaPlayerPrivate*)cookie;
@@ -12422,12 +12445,12 @@ index 0000000000000000000000000000000000000000..dabb26db148e0c67675186165733c0c0
 +            status_t status = player->m_videoTrack->ReadFrames(player->m_frameBuffer->Bits(), &count);
 +            if (status == B_OK)
 +                ++player->m_prerollFrames;
-+            if (status != B_OK || player->m_videoTrack->CurrentTime() >= prerollTarget || player->m_prerollFrames >= 300) {
++            if (status != B_OK || videoTrackTime(*player->m_videoTrack) >= prerollTarget || player->m_prerollFrames >= 300) {
 +                unsigned generation = player->m_seekGeneration;
 +                if (tracePlayback)
 +                    std::fprintf(stderr, "Summit media seek: player=%p requested=%.3f keyframe=%.3f decoded=%u position=%.3f\n",
 +                        player, prerollTarget / 1000000.0, player->m_prerollKeyframeTime / 1000000.0,
-+                        player->m_prerollFrames, player->m_videoTrack->CurrentTime() / 1000000.0);
++                        player->m_prerollFrames, videoTrackTime(*player->m_videoTrack) / 1000000.0);
 +                player->m_prerollTarget = -1;
 +                player->pushFrameToCompositor();
 +                startTime = system_time();
@@ -12455,7 +12478,7 @@ index 0000000000000000000000000000000000000000..dabb26db148e0c67675186165733c0c0
 +                startMediaTime = (bigtime_t)(player->m_currentTime * 1000000);
 +            }
 +
-+            bigtime_t videoTime = player->m_videoTrack->CurrentTime();
++            bigtime_t videoTime = videoTrackTime(*player->m_videoTrack);
 +            bigtime_t playbackTime = startMediaTime + (system_time() - startTime);
 +
 +            player->m_currentTime = playbackTime / 1000000.f;
@@ -12464,7 +12487,12 @@ index 0000000000000000000000000000000000000000..dabb26db148e0c67675186165733c0c0
 +            if (videoTime < playbackTime) {
 +                int64 count;
 +                bigtime_t decodeStartedAt = mediaFrameTraceEnabled() ? system_time() : 0;
-+                status_t decodeStatus = player->m_videoTrack->ReadFrames(player->m_frameBuffer->Bits(), &count);
++                media_header header = { };
++                status_t decodeStatus = player->m_videoTrack->ReadFrames(player->m_frameBuffer->Bits(), &count, &header);
++                if (tracePlayback && decodeStatus == B_OK && decodedFrames < 8)
++                    std::fprintf(stderr, "Summit media frame: player=%p frame=%u count=%lld start=%lld current=%lld playback=%lld\n",
++                        player, decodedFrames, static_cast<long long>(count), static_cast<long long>(header.start_time),
++                        static_cast<long long>(videoTrackTime(*player->m_videoTrack)), static_cast<long long>(playbackTime));
 +                if (decodeStatus == B_OK) {
 +                    if (mediaFrameTraceEnabled()) {
 +                        bigtime_t decodedAt = system_time();
@@ -12649,8 +12677,13 @@ index 0000000000000000000000000000000000000000..dabb26db148e0c67675186165733c0c0
 +        delete m_frameBuffer;
 +        m_frameBuffer = new BBitmap(BRect(0, 0, format.Width() - 1, format.Height() - 1), B_RGB32);
 +    }
-+    if (parkedThread >= 0 && !forSeek && m_currentTime > 0) {
-+        bigtime_t target = static_cast<bigtime_t>(m_currentTime.load() * 1000000);
++    // A track taken again from the same file continues from where the
++    // released one left its stream, not from the start: at first play (time
++    // zero, parked since loading) the decoder began mid-stream, missed its
++    // reference frames and reported the end after a fraction of a second.
++    // Always position a resumed track at the current time.
++    if (!forSeek) {
++        bigtime_t target = static_cast<bigtime_t>(std::max(0.f, m_currentTime.load()) * 1000000);
 +        bigtime_t keyframe = target;
 +        if (track->SeekToTime(&keyframe) == B_OK) {
 +            m_prerollKeyframeTime = keyframe;

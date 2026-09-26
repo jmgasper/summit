@@ -38,7 +38,20 @@ checks that they compile:
 - **Lazy session restore**: background tabs load when first selected.
 - **Streaming media**: the file engine reads over range requests instead of
   downloading whole files first (`SUMMIT_MEDIA_STREAMING=0`);
-  `tools/streaming-media-test/run.sh` tests it on the host.
+  `tools/streaming-media-test/run.sh` tests it on the host. Measured in the
+  VM (`run-probe.py --page "media.html?src=…"`, a 30 MB 10 s 1080p MP4 from
+  test-videos.co.uk): playing after 2.02 s streaming against 3.13-3.20 s
+  downloading first; the gap grows with file size and a slower network.
+- **Software-decoded video played at the wrong speed or stopped**, found
+  while measuring that. A decoder parked while a paused page loads was
+  resumed without a seek and started mid-stream, missing its reference
+  frames: playback ended after 50 frames. And Haiku's ffmpeg decoder
+  reports frame times in the stream's time base (512 per frame at 1/15360;
+  Haiku 45bd581b70), so every frame looked late and a 10 s clip ran in half
+  a second. A resumed track is now always sought to the current time, and
+  video is paced from the frame counter when the decoder's time disagrees
+  with it; both clips now play all 299 frames in 10 s. NVDEC (X399) reports
+  real times and keeps them.
 
 To measure them: `tools/bench/run-multitab.py` (three windows of twelve real
 sites: load times, busy cores, idle cost, tab switch latency, scrolling while
