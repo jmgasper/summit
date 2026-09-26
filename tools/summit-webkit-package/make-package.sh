@@ -55,7 +55,11 @@ for n in $needed; do
     libroot.so|libbe.so|libnetwork.so|libbnetapi.so|libtranslation.so|libmedia.so|libgame.so|libdevice.so|libtracker.so|libtextencoding.so|libpackage.so|libbsd.so|libgnu.so|libshared.so)
         continue;;
     esac
-    requires="$requires	lib:$(echo "$n" | sed 's/\.so.*//; s/-/_/g')
+    # HaikuPorts names libraries in lower case with underscores (lib:libllvm,
+    # lib:libharfbuzz_icu). LLVM's soname carries its major version.
+    name=$(echo "$n" | sed 's/\.so.*//; s/-/_/g' | tr 'A-Z' 'a-z')
+    case $n in libLLVM.so.*) name="$name >= $(echo "$n" | sed 's/^libLLVM\.so\.\([0-9]*\).*/\1/')";; esac
+    requires="$requires	lib:$name
 "
 done
 cat > "$S/.PackageInfo" <<EOF
@@ -89,8 +93,8 @@ cat "$S/.PackageInfo"
 # Say which requirements nothing installed here provides (they may still be
 # in the repositories).
 provided=$(for p in /boot/system/packages/*.hpkg; do package list -i "$p" 2>/dev/null; done | sed -n 's/^\s*provides:\s*\([^ ]*\).*/\1/p' | sort -u)
-for r in $(echo "$requires" | tr -d '\t'); do
-    echo "$provided" | grep -qx "$r" || echo "not installed here: $r"
+echo "$requires" | sed 's/^\t//; s/ .*//' | while read -r r; do
+    test -z "$r" || echo "$provided" | grep -qx "$r" || echo "not installed here: $r"
 done
 mkdir -p "$OUT"
 rm -f "$OUT/summit_webkit-$VERSION-1-x86_64.hpkg"
