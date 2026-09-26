@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
-# Install a built Summit bundle on the X399 workstation:
-#   - the desktop launcher /boot/home/Desktop/Summit-current.sh points at it
-#     (the previous launcher is kept as Summit-current.pre-<date>.sh);
-#   - the shared engine directory /boot/home/config/non-packaged/lib/summit-webkit
-#     gets its libWebKit, JavaScriptCore, ICU, WebProcess and NetworkProcess, for
-#     other programs that embed the engine (Aurora). The previous contents are
-#     kept as summit-webkit.pre-<date>.
+# Install a built Summit bundle on the X399 workstation: the desktop launcher
+# /boot/home/Desktop/Summit-current.sh points at it (the previous launcher is
+# kept as Summit-current.pre-<date>.sh). Programs that embed the engine
+# (Aurora and its apps) use the summit_webkit package instead
+# (tools/package-summit-webkit.sh).
 #
 #   bash tools/install-on-workstation.sh bundle-XXXXXXXX
 set -euo pipefail
@@ -32,12 +30,5 @@ export LIBRARY_PATH=\"/boot/home/summit-mesa/prefix/lib:\\\$SUMMIT_BUNDLE/lib:/b
 exec \"\\\$SUMMIT_BUNDLE/Summit\" \"\\\$@\"
 EOF
 chmod +x \$L
-E=/boot/home/config/non-packaged/lib/summit-webkit
-if test -d \$E; then mv \$E \$E.pre-$stamp; fi
-mkdir -p \$E
-cp -a \$B/lib/. \$E/
-cp -a \$B/WebProcess \$B/NetworkProcess \$E/
-cp -a \$B/build-manifest.json \$E/ 2>/dev/null || true
 echo \"launcher -> \$B\"
-echo \"engine   -> \$E\"
 cat \$L"
