@@ -29,6 +29,11 @@ checks that they compile:
   what changed. Check with `tools/bench/pages/spinner.html` and the
   `pixels read (web)` stat. `SUMMIT_DAMAGE_TRACKING=0` reverts.
 - **256 connections in total** instead of curl's 17 (six per host stays).
+- **4096 file descriptors per process** instead of Haiku's 256: web
+  processes ran out and lost frame buffers ("Failed to create handle for
+  shared memory buffer" in 15 of 32 extension runs in the VM), and 256
+  connections would exhaust the network process. The engine's process
+  launcher raises the limit before the first child starts.
 - **A prewarmed web process** after each page load (`SUMMIT_PREWARM_PROCESS=0`).
 - **Lazy session restore**: background tabs load when first selected.
 - **Streaming media**: the file engine reads over range requests instead of

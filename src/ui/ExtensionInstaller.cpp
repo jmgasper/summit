@@ -17,7 +17,7 @@ namespace {
 constexpr uint32 pollImport = 'exwk';
 // The engine's limit on permissions plus origins for one installation.
 constexpr size_t maximumRequirements = 4096;
-// Longer lists end with a count, so the review stays readable.
+// Longer lists of sites end with a count, so the review stays readable.
 constexpr size_t listedRequirements = 40;
 std::string field(const BMessage& message, const char* name)
 {
@@ -287,27 +287,27 @@ void ExtensionInstaller::MessageReceived(BMessage* message)
             : "\n\nPackage signature verified. Chrome Web Store provenance has not been verified.";
         draft.body += "\nCompatibility with this extension has not been verified.\n\nRequested access:\n";
         if (requested.empty()) draft.body += "  No additional permissions requested.\n";
-        size_t listed = 0;
-        for (const auto& value : requested) {
-            if (listed++ == listedRequirements) {
-                draft.body += "  … and " + std::to_string(requested.size() - listedRequirements) + " more\n";
-                break;
+        // Every API permission is listed; long lists of sites end with a count.
+        auto isSite = [](const std::string& value) { return value == "<all_urls>" || value.find("://") != std::string::npos; };
+        auto list = [&](const std::set<std::string>& values) {
+            size_t sites = 0, hidden = 0;
+            for (const auto& value : values) {
+                if (!isSite(value)) draft.body += "  • " + ExtensionDisplayText(value) + "\n";
             }
-            draft.body += "  • " + ExtensionDisplayText(value) + "\n";
-        }
+            for (const auto& value : values) {
+                if (!isSite(value)) continue;
+                if (sites++ < listedRequirements) draft.body += "  • " + ExtensionDisplayText(value) + "\n";
+                else ++hidden;
+            }
+            if (hidden) draft.body += "  … and " + std::to_string(hidden) + " more sites\n";
+        };
+        list(requested);
         if (!draft.origins.empty()) draft.body += "\nWebsite permissions allow access to data on the listed sites.\n";
         if (std::any_of(draft.origins.begin(), draft.origins.end(), [](const auto& origin) { return origin.compare(0, 5, "file:") == 0; }))
             draft.body += "Local files are only included when \"Allow access to local files\" is checked.\n";
         if (!optional.empty()) {
             draft.body += "\nOptional access (not granted by this installation):\n";
-            listed = 0;
-            for (const auto& value : optional) {
-                if (listed++ == listedRequirements) {
-                    draft.body += "  … and " + std::to_string(optional.size() - listedRequirements) + " more\n";
-                    break;
-                }
-                draft.body += "  • " + ExtensionDisplayText(value) + "\n";
-            }
+            list(optional);
         }
         draft.body += "\nSome requested APIs may not be available in this Summit build.";
         if (draft.body.size() > 65536) throw std::runtime_error("The permission summary is too large to display.");
