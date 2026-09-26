@@ -11971,7 +11971,7 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..43cdd39a84f90af872982a4d2bc53af686ea1500
+index 0000000000000000000000000000000000000000..dabb26db148e0c67675186165733c0c05a5daa21
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 @@ -0,0 +1,1545 @@
@@ -12154,8 +12154,8 @@ index 0000000000000000000000000000000000000000..43cdd39a84f90af872982a4d2bc53af6
 +    m_mediaLock.Lock();
 +    m_abort = false;
 +    m_url = url;
-+    m_userAgent = m_player.userAgent().utf8().data();
-+    m_referrer = m_player.referrer().utf8().data();
++    m_userAgent = m_player.userAgent().utf8().legacyCStringPointer();
++    m_referrer = m_player.referrer().utf8().legacyCStringPointer();
 +
 +    m_loadingThread = spawn_thread(loadingThread, "media loader", B_NORMAL_PRIORITY, this);
 +    if (m_loadingThread >= 0)
@@ -42964,10 +42964,10 @@ index 0000000000000000000000000000000000000000..8db9e49ede1163cd2d1c07be7e76a642
 +};
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitViewEmbedding.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitViewEmbedding.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..c45170a94f22f7424bd4358fb8a9492295d7af82
+index 0000000000000000000000000000000000000000..48a5d618ebd81eab3274fe73bf64f0c6820d3513
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitViewEmbedding.cpp
-@@ -0,0 +1,699 @@
+@@ -0,0 +1,702 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +// BWebKitView's embedding interfaces (WebKitEmbedding.h): user scripts,
@@ -43008,6 +43008,7 @@ index 0000000000000000000000000000000000000000..c45170a94f22f7424bd4358fb8a94922
 +#include <WebCore/MIMETypeRegistry.h>
 +#include <WebCore/ResourceError.h>
 +#include <WebCore/ResourceResponse.h>
++#include <WebCore/RunJavaScriptParameters.h>
 +#include <WebCore/SharedBuffer.h>
 +#include <WebCore/UserScript.h>
 +#include <cmath>
@@ -43067,7 +43068,9 @@ index 0000000000000000000000000000000000000000..c45170a94f22f7424bd4358fb8a94922
 +void addStringHaiku(BMessage& message, const char* name, const String& text)
 +{
 +    auto utf8 = text.utf8();
-+    message.AddString(name, utf8.data() ? utf8.data() : "");
++    // CString::data() is char8_t in this WebKit; BMessage takes char.
++    const char* characters = utf8.legacyCStringPointer();
++    message.AddString(name, characters ? characters : "");
 +}
 +
 +// Converted values may be cyclic; anything deeper than this becomes null.
@@ -43215,7 +43218,7 @@ index 0000000000000000000000000000000000000000..c45170a94f22f7424bd4358fb8a94922
 +        if (RefPtr body = request.httpBody()) {
 +            auto data = body->flatten();
 +            if (!data.isEmpty())
-+                message.AddData("body", B_RAW_TYPE, data.data(), data.size());
++                message.AddData("body", B_RAW_TYPE, data.span().data(), data.size());
 +        }
 +        message.AddBool("main_frame", task.frameInfo().isMainFrame());
 +        pendingSchemeTasksHaiku().add(identifier, Ref { task });
@@ -43390,7 +43393,7 @@ index 0000000000000000000000000000000000000000..c45170a94f22f7424bd4358fb8a94922
 +            reply.SendMessage(&message, static_cast<BHandler*>(nullptr), 0);
 +            return;
 +        }
-+        RunJavaScriptParameters parameters {
++        WebKit::RunJavaScriptParameters parameters {
 +            WTF::move(*string),
 +            JSC::SourceTaintedOrigin::Untainted,
 +            URL { },
@@ -43480,9 +43483,9 @@ index 0000000000000000000000000000000000000000..c45170a94f22f7424bd4358fb8a94922
 +        String type = extractMIMETypeFromMediaType(mediaType);
 +        if (type.isEmpty())
 +            type = MIMETypeRegistry::mimeTypeForPath(url.path());
-+        ResourceResponse response(URL { url }, type, static_cast<long long>(body.size()), extractCharsetFromMediaType(mediaType).toString());
++        ResourceResponse response(URL { url }, String { type }, static_cast<long long>(body.size()), extractCharsetFromMediaType(mediaType).toString());
 +        response.setHTTPStatusCode(status);
-+        response.setHTTPStatusText(status >= 200 && status < 300 ? "OK"_s : emptyString());
++        response.setHTTPStatusText(status >= 200 && status < 300 ? String { "OK"_s } : String { });
 +        bool hasContentType = false;
 +        for (auto& [name, value] : headerList) {
 +            String headerName = stringHaiku(name);
@@ -48602,10 +48605,10 @@ index 05a8676082d56f2c47c9af6120f5120b09f982be..9323f8cbeb00d5cf0e5c1c3ffc6b9aa0
  };
  
 diff --git a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in
-index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..9d4159565962ea252410052cd1d6a6b545651c78 100644
+index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..c06adebedb1796f4904cf359037fdd6f2c598b4f 100644
 --- a/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in
 +++ b/Source/WebKit/UIProcess/Extensions/WebExtensionContext.messages.in
-@@ -31,10 +31,120 @@
+@@ -31,10 +31,127 @@
      DispatchedTo=UI
  ]
  messages -> WebExtensionContext {
@@ -48622,6 +48625,13 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..9d4159565962ea252410052cd1d6a6b5
 +    [Validator=isLoadedAndPrivilegedMessage] TabsGet(WebKit::WebExtensionTabIdentifier tabIdentifier) -> (std::expected<std::optional<WebKit::WebExtensionTabParameters>, WebKit::WebExtensionError> result)
 +    [Validator=isLoadedAndPrivilegedMessage] TabsGetCurrent(WebKit::WebPageProxyIdentifier webPageProxyIdentifier) -> (std::expected<std::optional<WebKit::WebExtensionTabParameters>, WebKit::WebExtensionError> result)
 +    [Validator=isLoadedAndPrivilegedMessage] TabsQuery(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, WebKit::WebExtensionTabQueryParameters queryParameters) -> (std::expected<Vector<WebKit::WebExtensionTabParameters>, WebKit::WebExtensionError> result)
++#endif
++
++#if PLATFORM(HAIKU) && ENABLE(WK_WEB_EXTENSIONS_OFFSCREEN)
++    // Offscreen APIs (the Cocoa declarations sit in its own block below)
++    [Validator=isOffscreenMessageAllowed] OffscreenCreateDocument(struct WebKit::WebExtensionOffscreenDocumentParameters parameters) -> (std::expected<void, WebKit::WebExtensionError> result)
++    [Validator=isOffscreenMessageAllowed] OffscreenCloseDocument() -> (std::expected<void, WebKit::WebExtensionError> result)
++    [Validator=isOffscreenMessageAllowed] OffscreenHasDocument() -> (std::expected<bool, WebKit::WebExtensionError> result)
 +#endif
 +#if PLATFORM(HAIKU)
 +    [Validator=isLoadedAndPrivilegedMessage] WindowsGet(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, WebKit::WebExtensionWindowIdentifier windowIdentifier, OptionSet<WebKit::WebExtensionWindowTypeFilter> filter, WebKit::WebExtensionWindow::PopulateTabs populate) -> (std::expected<WebKit::WebExtensionWindowParameters, WebKit::WebExtensionError> result)
@@ -48698,7 +48708,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..9d4159565962ea252410052cd1d6a6b5
 +    [Validator=isLoaded] RuntimeConnect(String extensionID, WebKit::WebExtensionPortChannelIdentifier channelIdentifier, String name, struct WebKit::WebExtensionMessageSenderParameters senderParameters, bool userGesture) -> (std::expected<void, WebKit::WebExtensionError> result)
 +    [Validator=isLoaded] RuntimeWebPageSendMessage(String extensionID, String messageJSON, struct WebKit::WebExtensionMessageSenderParameters senderParameters) -> (std::expected<String, WebKit::WebExtensionError> result)
 +    [Validator=isLoaded] RuntimeWebPageConnect(String extensionID, WebKit::WebExtensionPortChannelIdentifier channelIdentifier, String name, struct WebKit::WebExtensionMessageSenderParameters senderParameters) -> (std::expected<void, WebKit::WebExtensionError> result)
-+
+ 
 +    // Port APIs
 +    [Validator=isLoaded] PortPostMessage(WebKit::WebExtensionContentWorldType sourceContentWorldType, WebKit::WebExtensionContentWorldType targetContentWorldType, std::optional<WebKit::WebPageProxyIdentifier> sendingPageProxyIdentifier, WebKit::WebExtensionPortChannelIdentifier channelIdentifier, String messageJSON, bool userGesture)
 +    [Validator=isLoaded] PortRemoved(WebKit::WebExtensionContentWorldType sourceContentWorldType, WebKit::WebExtensionContentWorldType targetContentWorldType, WebKit::WebPageProxyIdentifier pageProxyIdentifier, WebKit::WebExtensionPortChannelIdentifier channelIdentifier)
@@ -48718,7 +48728,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..9d4159565962ea252410052cd1d6a6b5
 +    [Validator=isCommandsMessageAllowed] CommandsUpdate(String name, std::optional<String> description, std::optional<String> shortcut) -> (std::expected<void, WebKit::WebExtensionError> result)
 +    [Validator=isCommandsMessageAllowed] CommandsReset(String name) -> (std::expected<void, WebKit::WebExtensionError> result)
 +#endif
- 
++
 +    // Web navigation APIs
 +    [Validator=isWebNavigationMessageAllowed] WebNavigationGetAllFrames(WebKit::WebExtensionTabIdentifier tabIdentifier) -> (std::expected<Vector<WebKit::WebExtensionFrameParameters>, WebKit::WebExtensionError> result)
 +    [Validator=isWebNavigationMessageAllowed] WebNavigationGetFrame(WebKit::WebExtensionTabIdentifier tabIdentifier, WebKit::WebExtensionFrameIdentifier frameIdentifier) -> (std::expected<std::optional<WebKit::WebExtensionFrameParameters>, WebKit::WebExtensionError> result)
@@ -48727,7 +48737,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..9d4159565962ea252410052cd1d6a6b5
      // Action APIs
      [Validator=isActionMessageAllowed] ActionGetTitle(std::optional<WebKit::WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier) -> (std::expected<String, WebKit::WebExtensionError> result)
      [Validator=isActionMessageAllowed] ActionSetTitle(std::optional<WebKit::WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, String title) -> (std::expected<void, WebKit::WebExtensionError> result)
-@@ -48,6 +158,33 @@ messages -> WebExtensionContext {
+@@ -48,6 +165,33 @@ messages -> WebExtensionContext {
      [Validator=isActionMessageAllowed] ActionSetEnabled(std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, bool enabled) -> (std::expected<void, WebKit::WebExtensionError> result)
  #endif
  
@@ -48761,7 +48771,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..9d4159565962ea252410052cd1d6a6b5
      // Alarms APIs
      [Validator=isAlarmsMessageAllowed] AlarmsCreate(String name, Seconds initialInterval, Seconds repeatInterval) -> ()
      [Validator=isAlarmsMessageAllowed] AlarmsGet(String name) -> (struct std::optional<WebKit::WebExtensionAlarmParameters> alarmInfo)
-@@ -71,9 +208,6 @@ messages -> WebExtensionContext {
+@@ -71,9 +215,6 @@ messages -> WebExtensionContext {
      [Validator=isBookmarksMessageAllowed] BookmarksRemoveTree(String bookmarkId) -> (std::expected<void, WebKit::WebExtensionError> result)
  #endif // ENABLE(WK_WEB_EXTENSIONS_BOOKMARKS)
  
@@ -48771,7 +48781,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..9d4159565962ea252410052cd1d6a6b5
      // Cookies APIs
      [Validator=isCookiesMessageAllowed] CookiesGet(std::optional<PAL::SessionID> sessionID, String name, URL url) -> (std::expected<std::optional<WebKit::WebExtensionCookieParameters>, WebKit::WebExtensionError> result)
      [Validator=isCookiesMessageAllowed] CookiesGetAll(std::optional<PAL::SessionID> sessionID, URL url, struct WebKit::WebExtensionCookieFilterParameters filterParameters) -> (std::expected<Vector<WebKit::WebExtensionCookieParameters>, WebKit::WebExtensionError> result)
-@@ -100,8 +234,6 @@ messages -> WebExtensionContext {
+@@ -100,8 +241,6 @@ messages -> WebExtensionContext {
  #endif
  
      // Event APIs
@@ -48780,7 +48790,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..9d4159565962ea252410052cd1d6a6b5
  
      // Extensions APIs
      [Validator=isLoaded] ExtensionIsAllowedIncognitoAccess() -> (bool result)
-@@ -125,20 +257,10 @@ messages -> WebExtensionContext {
+@@ -125,20 +264,10 @@ messages -> WebExtensionContext {
      [Validator=isLoaded] PermissionsRequest(HashSet<String> permissions, HashSet<String> origins) -> (bool success)
      [Validator=isLoaded] PermissionsRemove(HashSet<String> permissions, HashSet<String> origins) -> (bool success)
  
@@ -48801,7 +48811,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..9d4159565962ea252410052cd1d6a6b5
  
      // Scripting APIs
      [Validator=isScriptingMessageAllowed] ScriptingExecuteScript(WebKit::WebExtensionScriptInjectionParameters parameters, bool userGesture) -> (std::expected<Vector<WebKit::WebExtensionScriptInjectionResultParameters>, WebKit::WebExtensionError> result)
-@@ -165,15 +287,6 @@ messages -> WebExtensionContext {
+@@ -165,15 +294,6 @@ messages -> WebExtensionContext {
      [Validator=isSidebarMessageAllowed] SidebarGetActionClickBehavior() -> (std::expected<WebKit::WebExtensionActionClickBehavior, WebKit::WebExtensionError> result)
  #endif // ENABLE(WK_WEB_EXTENSIONS_SIDEBAR)
  
@@ -48817,7 +48827,7 @@ index 21cbf978cc476fae9742812fddba2ba5f7f8f0aa..9d4159565962ea252410052cd1d6a6b5
      // Tabs APIs
      [Validator=isLoadedAndPrivilegedMessage] TabsCreate(std::optional<WebKit::WebPageProxyIdentifier> webPageProxyIdentifier, WebKit::WebExtensionTabParameters creationParameters) -> (std::expected<std::optional<WebKit::WebExtensionTabParameters>, WebKit::WebExtensionError> result)
      [Validator=isLoadedAndPrivilegedMessage] TabsUpdate(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, WebKit::WebExtensionTabParameters updateParameters) -> (std::expected<std::optional<WebKit::WebExtensionTabParameters>, WebKit::WebExtensionError> result)
-@@ -198,8 +311,6 @@ messages -> WebExtensionContext {
+@@ -198,8 +318,6 @@ messages -> WebExtensionContext {
      [Validator=isLoadedAndPrivilegedMessage] TabsRemoveCSS(WebKit::WebPageProxyIdentifier webPageProxyIdentifier, std::optional<WebKit::WebExtensionTabIdentifier> tabIdentifier, WebKit::WebExtensionScriptInjectionParameters parameters) -> (std::expected<void, WebKit::WebExtensionError> result)
  
      // WebNavigation APIs
@@ -53816,7 +53826,7 @@ index 0000000000000000000000000000000000000000..6ec6d01c147f0dc7baba80d5fdc666ef
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPIOffscreenHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPIOffscreenHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..4fd36751424a3318b401717fa9bebd2d282fc33e
+index 0000000000000000000000000000000000000000..81ec0f40f8811e5cf7b4bc646d54bfe375b4efc4
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPIOffscreenHaiku.cpp
 @@ -0,0 +1,193 @@
@@ -53953,7 +53963,7 @@ index 0000000000000000000000000000000000000000..4fd36751424a3318b401717fa9bebd2d
 +    m_offscreenWebViewActivity = protect(page->activityGroupContext())->foregroundProcessActivityGroup(activityName);
 +
 +    m_offscreenDocumentLoadCompletionHandlers.append(WTF::move(completionHandler));
-+    page->loadRequest(WebCore::ResourceRequest { documentURL });
++    page->loadRequest(WebCore::ResourceRequest { URL { documentURL } });
 +}
 +
 +void WebExtensionContext::offscreenCloseDocument(CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&& completionHandler)
