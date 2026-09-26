@@ -141,6 +141,8 @@ private:
         bool closeApproved = false;
         std::optional<CloseFocusState> closeFocus { };
         double pageZoom = 1, textZoom = 1;
+        // system_time() of the last load's start and end, for benchmarks.
+        bigtime_t loadStartedAt = 0, loadFinishedAt = 0;
 #endif
     };
 #if SUMMIT_MODERN_WEBKIT

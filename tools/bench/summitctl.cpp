@@ -16,6 +16,11 @@
 //   summitctl --team ID frame LEFT TOP RIGHT BOTTOM   standard BWindow "Frame" scripting property
 //   summitctl --team ID framestats            frame counts since the targeted scroll burst began
 //   summitctl --team ID quit                  B_QUIT_REQUESTED to that team only
+//   summitctl --team ID windows               one JSON line per browser window: index, frame, tabs
+//   summitctl --team ID newwindow URL...      a new browser window with one tab per URL
+//   --window N                                address the Nth browser window (default 0) instead
+//                                             of the first; windows are counted in the
+//                                             application's window list order
 //   summitctl find NAME                       every team whose application image is called NAME
 //                                             (Summit is single-launch: a second instance forwards
 //                                             its URL to the first, whatever --profile says)
@@ -43,6 +48,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 static std::string Escape(const char* text)
@@ -195,14 +201,17 @@ int main(int argc, char** argv)
     if (argc > 1 && !std::strcmp(argv[1], "find")) return Find(argc, argv);
     team_id team = -1;
     bigtime_t timeout = 5000000;
+    long windowIndex = 0;
     int index = 1;
     while (index + 1 < argc && argv[index][0] == '-') {
         char* end = nullptr;
         errno = 0;
         long parsed = std::strtol(argv[index + 1], &end, 10);
-        if (errno || *end || parsed <= 0 || parsed > INT_MAX) return 2;
+        const bool zeroAllowed = !std::strcmp(argv[index], "--window");
+        if (errno || *end || parsed < (zeroAllowed ? 0 : 1) || parsed > INT_MAX) return 2;
         if (!std::strcmp(argv[index], "--team")) team = static_cast<team_id>(parsed);
         else if (!std::strcmp(argv[index], "--timeout-ms")) timeout = bigtime_t(parsed) * 1000;
+        else if (!std::strcmp(argv[index], "--window")) windowIndex = parsed;
         else return 2;
         index += 2;
     }
@@ -225,15 +234,44 @@ int main(int argc, char** argv)
         BMessage quit(B_QUIT_REQUESTED);
         return app.SendMessage(&quit, static_cast<BHandler*>(nullptr), timeout) == B_OK ? 0 : 5;
     }
-    BMessage request(B_GET_PROPERTY), reply;
-    request.AddSpecifier("Window", int32(0));
-    BMessenger window;
-    status = app.SendMessage(&request, &reply, timeout, timeout);
-    if (status == B_TIMED_OUT || status == B_WOULD_BLOCK) { std::fputs("application did not reply\n", stderr); return 4; }
-    if (status != B_OK || reply.FindMessenger("result", &window) != B_OK || !window.IsValid()) {
-        std::fprintf(stderr, "no browser window: %s\n", std::strerror(status));
+    if (command == "newwindow") {
+        BMessage open(summit::kNewWindow);
+        for (int i = index; i < argc; ++i) open.AddString("url", argv[i]);
+        return app.SendMessage(&open, static_cast<BHandler*>(nullptr), timeout) == B_OK ? 0 : 5;
+    }
+    // The application's window list also holds windows that are not browser
+    // windows (preferences, extension popups...); a browser window is one that
+    // answers the state request.
+    std::vector<std::pair<BMessenger, BMessage>> browsers;
+    for (int32 i = 0; i < 64; ++i) {
+        BMessage request(B_GET_PROPERTY), reply;
+        request.AddSpecifier("Window", i);
+        BMessenger candidate;
+        status = app.SendMessage(&request, &reply, timeout, timeout);
+        if (status == B_TIMED_OUT || status == B_WOULD_BLOCK) { std::fputs("application did not reply\n", stderr); return 4; }
+        if (status != B_OK || reply.FindMessenger("result", &candidate) != B_OK || !candidate.IsValid()) break;
+        BMessage ask(summit::kBrowserState), state;
+        if (candidate.SendMessage(&ask, &state, timeout, timeout) == B_OK && state.HasInt32("count"))
+            browsers.emplace_back(candidate, state);
+        if (command != "windows" && long(browsers.size()) > windowIndex) break;
+    }
+    if (command == "windows") {
+        std::printf("[");
+        for (size_t i = 0; i < browsers.size(); ++i) {
+            const BMessage& state = browsers[i].second;
+            BRect frame = state.FindRect("frame");
+            std::printf("%s{\"window\":%zu,\"tabs\":%ld,\"selected\":%lld,\"frame\":[%.0f,%.0f,%.0f,%.0f]}",
+                i ? "," : "", i, long(state.GetInt32("count", 0)), static_cast<long long>(state.GetInt64("selected", -1)),
+                frame.left, frame.top, frame.right, frame.bottom);
+        }
+        std::puts("]");
+        return 0;
+    }
+    if (windowIndex < 0 || long(browsers.size()) <= windowIndex) {
+        std::fprintf(stderr, "no browser window %ld (%zu found)\n", windowIndex, browsers.size());
         return 5;
     }
+    BMessenger window = browsers[windowIndex].first;
     if (command == "state") {
         BMessage ask(summit::kBrowserState), state;
         const bigtime_t before = system_time();
@@ -244,11 +282,11 @@ int main(int argc, char** argv)
         int32 count = -1; int64 selected = -1; bool closing = false, scrollActive = false;
         state.FindInt32("count", &count); state.FindInt64("selected", &selected); state.FindBool("closing", &closing);
         state.FindBool("scroll_active", &scrollActive);
-        std::printf("{\"team\":%ld,\"replyMicros\":%lld,\"count\":%ld,\"selected\":%lld,\"closing\":%s,"
+        std::printf("{\"team\":%ld,\"now\":%lld,\"replyMicros\":%lld,\"count\":%ld,\"selected\":%lld,\"closing\":%s,"
             "\"scrollActive\":%s,\"scrollRequested\":%ld,\"scrollSent\":%ld,\"scrollStatus\":%ld,\"scrollDurationMicros\":%lld,"
             "\"address\":\"%s\",\"status\":\"%s\",\"backend\":\"%s\",\"webkit\":\"%s\",\"haikuWebkit\":\"%s\","
             "\"webkitRevision\":\"%s\",\"tabs\":[",
-            long(team), static_cast<long long>(elapsed), long(count), static_cast<long long>(selected),
+            long(team), static_cast<long long>(state.GetInt64("now", 0)), static_cast<long long>(elapsed), long(count), static_cast<long long>(selected),
             closing ? "true" : "false", scrollActive ? "true" : "false",
             long(state.GetInt32("scroll_requested", 0)), long(state.GetInt32("scroll_sent", 0)),
             long(state.GetInt32("scroll_status", 0)), static_cast<long long>(state.GetInt64("scroll_duration_us", 0)),
@@ -260,10 +298,11 @@ int main(int argc, char** argv)
             int64 id = -1; bool loading = false, loadError = false;
             tab.FindInt64("id", &id); tab.FindBool("loading", &loading); tab.FindBool("loadError", &loadError);
             std::printf("%s{\"id\":%lld,\"url\":\"%s\",\"title\":\"%s\",\"loading\":%s,\"loadError\":%s,"
-                "\"loadErrorText\":\"%s\",\"loadOutcome\":\"%s\"}",
+                "\"loadErrorText\":\"%s\",\"loadOutcome\":\"%s\",\"loadStartedAt\":%lld,\"loadFinishedAt\":%lld}",
                 i ? "," : "", static_cast<long long>(id), Escape(String(tab, "url")).c_str(),
                 Escape(String(tab, "title")).c_str(), loading ? "true" : "false", loadError ? "true" : "false",
-                Escape(String(tab, "loadErrorText")).c_str(), Escape(String(tab, "loadOutcome")).c_str());
+                Escape(String(tab, "loadErrorText")).c_str(), Escape(String(tab, "loadOutcome")).c_str(),
+                static_cast<long long>(tab.GetInt64("loadStartedAt", 0)), static_cast<long long>(tab.GetInt64("loadFinishedAt", 0)));
         }
         std::puts("]}");
         return 0;

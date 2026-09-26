@@ -2398,6 +2398,8 @@ void BrowserWindow::MessageReceived(BMessage* message)
             reply.AddInt64("scroll_duration_us", fScrollBurstDuration);
             reply.AddString("address", fAddress->Text());
             reply.AddString("status", fStatus->Text());
+            reply.AddInt64("now", system_time());
+            reply.AddRect("frame", Frame());
 #if SUMMIT_MODERN_WEBKIT
             reply.AddString("backend", "modern");
             reply.AddInt32("download_count", fDownloads.size());
@@ -2435,6 +2437,8 @@ void BrowserWindow::MessageReceived(BMessage* message)
                 item.AddUInt64("loadGeneration", page.loadGeneration);
                 item.AddString("loadOutcome", page.loadOutcome.c_str());
                 item.AddUInt64("loadSuccessSequence", page.loadSuccessSequence);
+                item.AddInt64("loadStartedAt", page.loadStartedAt);
+                item.AddInt64("loadFinishedAt", page.loadFinishedAt);
 #endif
                 reply.AddMessage("tab", &item);
             }
@@ -2815,7 +2819,10 @@ void BrowserWindow::WebKitStateChanged(const BMessage& message)
     if (message.FindString("url", &value) == B_OK && value && *value) tab->url = StoredURL(value);
     if (message.FindString("title", &value) == B_OK && value)
         tab->title = *value ? value : tab->url == "summit:home" ? "Start Page" : tab->url;
+    const bool wasLoading = tab->loading;
     message.FindBool("loading", &tab->loading);
+    if (tab->loading && !wasLoading) { tab->loadStartedAt = system_time(); tab->loadFinishedAt = 0; }
+    else if (!tab->loading && wasLoading) tab->loadFinishedAt = system_time();
     message.FindBool("canGoBack", &tab->back);
     message.FindBool("canGoForward", &tab->forward);
     double progress;
