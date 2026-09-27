@@ -3252,6 +3252,176 @@ index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..49341ab5570aa84b3c98f1fe2959c13d
  }
  
  void Document::updateRemoteIntersectionObservers()
+diff --git a/Source/WebCore/dom/Element.cpp b/Source/WebCore/dom/Element.cpp
+index d5ec6a4281f5a800e81292838910ca150c0f319e..10b37f6eb0233aea2b08e4e681e4e3d3ca3f8fda 100644
+--- a/Source/WebCore/dom/Element.cpp
++++ b/Source/WebCore/dom/Element.cpp
+@@ -102,6 +102,11 @@
+ #include "LargestContentfulPaintData.h"
+ #include "LocalDOMWindow.h"
+ #include "LocalFrame.h"
++#if PLATFORM(HAIKU)
++#include "ScriptController.h"
++#include <JavaScriptCore/ScriptCallStack.h>
++#include <JavaScriptCore/ScriptCallStackFactory.h>
++#endif
+ #include "LocalFrameView.h"
+ #include "Logging.h"
+ #include "MutationObserverInterestGroup.h"
+@@ -5877,6 +5882,38 @@ bool Element::establishesSpatialPortal() const
+ 
+ void Element::willModifyAttribute(const QualifiedName& name, const AtomString& oldValue, const AtomString& newValue)
+ {
++#if PLATFORM(HAIKU)
++    // SUMMIT_IDLE_TRACE=1: which attributes pages change on images, ten a second at most.
++    static const bool traceImageAttributes = [] {
++        const char* value = getenv("SUMMIT_IDLE_TRACE");
++        return value && value[0] == '1' && !value[1];
++    }();
++    if (traceImageAttributes && hasTagName(HTMLNames::imgTag)) {
++        static MonotonicTime windowStart;
++        static unsigned printed;
++        auto now = MonotonicTime::now();
++        if (now - windowStart >= 1_s) {
++            windowStart = now;
++            printed = 0;
++        }
++        if (printed++ < 10) {
++            WTFLogAlways("Summit image attribute: %s '%s' -> '%s'", name.localName().string().utf8().data(),
++                oldValue.string().left(160).utf8().data(), newValue.string().left(160).utf8().data());
++            // And the script that did it, once a second.
++            RefPtr frame = document().frame();
++            if (printed == 1 && frame) {
++                if (auto* globalObject = frame->script().globalObject(mainThreadNormalWorldSingleton())) {
++                    auto stack = Inspector::createScriptCallStack(globalObject, 8);
++                    for (size_t i = 0; i < stack->size(); ++i) {
++                        auto& callFrame = stack->at(i);
++                        WTFLogAlways("    at %s (%s:%u:%u)", callFrame.functionName().utf8().data(), callFrame.sourceURL().utf8().data(),
++                            callFrame.lineNumber(), callFrame.columnNumber());
++                    }
++                }
++            }
++        }
++    }
++#endif
+     if (name == HTMLNames::idAttr)
+         updateId(oldValue, newValue, NotifyObservers::No); // Will notify observers after the attribute is actually changed.
+     else if (name == HTMLNames::nameAttr)
+diff --git a/Source/WebCore/dom/EventLoop.cpp b/Source/WebCore/dom/EventLoop.cpp
+index 3abc026892eaecbcb2cedb800d863fa75a7eeaa8..202f3218dcf1312d73daf5f1f5b14572874c7e2c 100644
+--- a/Source/WebCore/dom/EventLoop.cpp
++++ b/Source/WebCore/dom/EventLoop.cpp
+@@ -38,8 +38,54 @@
+ #include <wtf/SystemTracing.h>
+ #endif
+ 
++#if PLATFORM(HAIKU)
++#include <array>
++#include <cstdio>
++#include <cstdlib>
++#endif
++
+ namespace WebCore {
+ 
++#if PLATFORM(HAIKU)
++// SUMMIT_IDLE_TRACE=1 also counts, once a second, the tasks each event loop
++// turn ran by source, the ones it held back for a suspended document, the
++// microtasks queued and the turns themselves.
++struct EventLoopTraceHaiku {
++    static bool enabled()
++    {
++        static const bool on = [] {
++            const char* value = std::getenv("SUMMIT_IDLE_TRACE");
++            return value && value[0] == '1' && !value[1];
++        }();
++        return on;
++    }
++    std::array<unsigned, static_cast<size_t>(TaskSource::InternalAsyncTask) + 1> bySource { };
++    unsigned turns { 0 };
++    unsigned heldBack { 0 };
++    unsigned microtasksQueued { 0 };
++    MonotonicTime lastReport;
++    void report()
++    {
++        auto now = MonotonicTime::now();
++        if (now - lastReport < 1_s)
++            return;
++        std::fprintf(stderr, "Summit event loop: turns=%u heldBack=%u microtasksQueued=%u tasks:", turns, heldBack, microtasksQueued);
++        for (size_t i = 0; i < bySource.size(); ++i) {
++            if (bySource[i])
++                std::fprintf(stderr, " %zu=%u", i, bySource[i]);
++        }
++        std::fprintf(stderr, "\n");
++        *this = { };
++        lastReport = now;
++    }
++};
++static EventLoopTraceHaiku& eventLoopTraceHaiku()
++{
++    static EventLoopTraceHaiku trace;
++    return trace;
++}
++#endif
++
+ WTF_MAKE_TZONE_ALLOCATED_IMPL(EventLoopTask);
+ WTF_MAKE_TZONE_ALLOCATED_IMPL(EventLoopTimerHandle);
+ WTF_MAKE_TZONE_ALLOCATED_IMPL(EventLoopTaskGroup);
+@@ -258,6 +304,20 @@ void EventLoop::removeRepeatingTimer(EventLoopTimer& timer)
+ 
+ void EventLoop::queueMicrotask(JSC::QueuedTask&& microtask)
+ {
++#if PLATFORM(HAIKU)
++    if (EventLoopTraceHaiku::enabled()) {
++        auto& trace = eventLoopTraceHaiku();
++        ++trace.microtasksQueued;
++        // Where they come from, once a second.
++        static MonotonicTime lastBacktrace;
++        auto now = MonotonicTime::now();
++        if (now - lastBacktrace >= 1_s) {
++            lastBacktrace = now;
++            std::fprintf(stderr, "Summit event loop: microtask queued from:\n");
++            WTFReportBacktrace();
++        }
++    }
++#endif
+     SUPPRESS_UNCOUNTED_LOCAL auto& microtaskQueue = this->microtaskQueue();
+     microtaskQueue.enqueue(WTF::move(microtask));
+     scheduleToRunIfNeeded(); // FIXME: Remove this once everything is integrated with the event loop.
+@@ -326,6 +386,13 @@ void EventLoop::run(JSC::VM& vm, std::optional<ApproximateTime> deadline)
+ 
+     microtaskQueue().setIsScheduledToRun(false);
+     bool didPerformMicrotaskCheckpoint = false;
++#if PLATFORM(HAIKU)
++    bool traceTurn = EventLoopTraceHaiku::enabled();
++    if (traceTurn) {
++        ++eventLoopTraceHaiku().turns;
++        eventLoopTraceHaiku().report();
++    }
++#endif
+ 
+     if (!m_tasks.isEmpty()) {
+         auto tasks = std::exchange(m_tasks, { });
+@@ -340,12 +407,20 @@ void EventLoop::run(JSC::VM& vm, std::optional<ApproximateTime> deadline)
+ 
+                 hasReachedDeadline = hasReachedDeadline || (deadline && ApproximateTime::now() > *deadline);
+                 if (group->isSuspended() || hasReachedDeadline) {
++#if PLATFORM(HAIKU)
++                    if (traceTurn)
++                        ++eventLoopTraceHaiku().heldBack;
++#endif
+                     m_groupsWithSuspendedTasks.add(*group);
+                     remainingTasks.append(WTF::move(task));
+                     continue;
+                 }
+             }
+ 
++#if PLATFORM(HAIKU)
++            if (traceTurn)
++                ++eventLoopTraceHaiku().bySource[static_cast<size_t>(task->taskSource())];
++#endif
+             task->execute();
+             didPerformMicrotaskCheckpoint = true;
+             performMicrotaskCheckpoint(vm);
 diff --git a/Source/WebCore/dom/EventTarget.cpp b/Source/WebCore/dom/EventTarget.cpp
 index 508b64bf39d2074357445b343e1056b1c3212411..f22828d4fdd11099e38c6161892e61b740e2b738 100644
 --- a/Source/WebCore/dom/EventTarget.cpp
@@ -3299,6 +3469,123 @@ index 508b64bf39d2074357445b343e1056b1c3212411..f22828d4fdd11099e38c6161892e61b7
          InspectorInstrumentation::didHandleEvent(context, event, registeredListener);
  
          if (registeredListener->isPassive())
+diff --git a/Source/WebCore/dom/WindowEventLoop.cpp b/Source/WebCore/dom/WindowEventLoop.cpp
+index 26272070993ba3f12c2cfe8a9f59b010c34dddcb..11e4acb64280f33df6e7e5ce15ff76a5fad96727 100644
+--- a/Source/WebCore/dom/WindowEventLoop.cpp
++++ b/Source/WebCore/dom/WindowEventLoop.cpp
+@@ -45,8 +45,52 @@
+ #include <wtf/TZoneMallocInlines.h>
+ #include <wtf/text/MakeString.h>
+ 
++#if PLATFORM(HAIKU)
++#include <cstdio>
++#include <cstdlib>
++#endif
++
+ namespace WebCore {
+ 
++#if PLATFORM(HAIKU)
++// SUMMIT_IDLE_TRACE=1: once a second, how often idle callbacks were attempted,
++// deferred (and why) and run, to find a page thread that never goes idle.
++struct IdleTraceHaiku {
++    static bool enabled()
++    {
++        static const bool on = [] {
++            const char* value = std::getenv("SUMMIT_IDLE_TRACE");
++            return value && value[0] == '1' && !value[1];
++        }();
++        return on;
++    }
++    unsigned attempts { 0 };
++    unsigned endedByTask { 0 };
++    unsigned deferredForWork { 0 };
++    unsigned deferredForDeadline { 0 };
++    unsigned ran { 0 };
++    double lastWorkDeltaMs { 0 };
++    double lastExpectedMs { 0 };
++    bool lastWorkIsRendering { false };
++    MonotonicTime lastReport;
++    void report()
++    {
++        auto now = MonotonicTime::now();
++        if (now - lastReport < 1_s)
++            return;
++        std::fprintf(stderr, "Summit idle: attempts=%u endedByTask=%u deferredForWork=%u deferredForDeadline=%u ran=%u workDelta=%.2fms(rendering=%d) expected=%.2fms\n",
++            attempts, endedByTask, deferredForWork, deferredForDeadline, ran, lastWorkDeltaMs, lastWorkIsRendering, lastExpectedMs);
++        *this = { };
++        lastReport = now;
++    }
++};
++static IdleTraceHaiku& idleTraceHaiku()
++{
++    static IdleTraceHaiku trace;
++    return trace;
++}
++#endif
++
+ WTF_MAKE_TZONE_ALLOCATED_IMPL(WindowEventLoop);
+ 
+ static MemoryCompactRobinHoodHashMap<String, CheckedPtr<WindowEventLoop>>& NODELETE windowEventLoopMap()
+@@ -133,8 +177,20 @@ void WindowEventLoop::scheduleIdlePeriod()
+ 
+ void WindowEventLoop::opportunisticallyRunIdleCallbacks(std::optional<MonotonicTime> deadline)
+ {
+-    if (shouldEndIdlePeriod())
++#if PLATFORM(HAIKU)
++    bool traceIdle = IdleTraceHaiku::enabled();
++    if (traceIdle) {
++        ++idleTraceHaiku().attempts;
++        idleTraceHaiku().report();
++    }
++#endif
++    if (shouldEndIdlePeriod()) {
++#if PLATFORM(HAIKU)
++        if (traceIdle)
++            ++idleTraceHaiku().endedByTask;
++#endif
+         return; // No need to schedule m_idleTimer since there is a task. didReachTimeToRun() will call this function.
++    }
+ 
+     auto hasPendingIdleCallbacks = findMatchingAssociatedContext([&](ScriptExecutionContext& context) {
+         if (auto* document = dynamicDowncast<Document>(context))
+@@ -152,6 +208,16 @@ void WindowEventLoop::opportunisticallyRunIdleCallbacks(std::optional<MonotonicT
+             auto timeToScheduledWork = *scheduledWork - now;
+             if (timeToScheduledWork < 0_s) // Timer may have been scheduled to fire in the past.
+                 timeToScheduledWork = 0_s;
++#if PLATFORM(HAIKU)
++            if (traceIdle) {
++                auto& trace = idleTraceHaiku();
++                ++trace.deferredForWork;
++                trace.lastWorkDeltaMs = (*scheduledWork - now).milliseconds();
++                trace.lastExpectedMs = m_expectedIdleCallbackDuration.milliseconds();
++                auto rendering = nextRenderingTime();
++                trace.lastWorkIsRendering = rendering && *rendering == *scheduledWork;
++            }
++#endif
+             decayIdleCallbackDuration();
+             m_idleTimer.startOneShot(timeToScheduledWork + 1_ms);
+             return;
+@@ -160,12 +226,20 @@ void WindowEventLoop::opportunisticallyRunIdleCallbacks(std::optional<MonotonicT
+ 
+     if (deadline && *deadline < now + m_expectedIdleCallbackDuration) {
+         // No pending tasks. Schedule m_idleTimer immediately.
++#if PLATFORM(HAIKU)
++        if (traceIdle)
++            ++idleTraceHaiku().deferredForDeadline;
++#endif
+         decayIdleCallbackDuration();
+         m_idleTimer.startOneShot(0_s);
+         return;
+     }
+ 
+     m_lastIdlePeriodStartTime = now;
++#if PLATFORM(HAIKU)
++    if (traceIdle)
++        ++idleTraceHaiku().ran;
++#endif
+ 
+     forEachAssociatedContext([&](ScriptExecutionContext& context) {
+         RefPtr document = dynamicDowncast<Document>(context);
 diff --git a/Source/WebCore/dom/make_names.pl b/Source/WebCore/dom/make_names.pl
 index 7f18cb986d1972948b04893b511de16598d7f103..68525703b1263997f5100c89a1c31dd939c8245f 100755
 --- a/Source/WebCore/dom/make_names.pl
@@ -3312,6 +3599,43 @@ index 7f18cb986d1972948b04893b511de16598d7f103..68525703b1263997f5100c89a1c31dd9
  } elsif ($Config::Config{"osname"} eq "darwin" && $ENV{SDKROOT}) {
      chomp($ccLocation = `xcrun -find cc -sdk '$ENV{SDKROOT}'`);
  } else {
+diff --git a/Source/WebCore/html/HTMLImageLoader.cpp b/Source/WebCore/html/HTMLImageLoader.cpp
+index 232f3417d3bf500d3579fed11e04b0a61ddf22f1..53159ef943bebb80f1463e767a41a23e2b7222a3 100644
+--- a/Source/WebCore/html/HTMLImageLoader.cpp
++++ b/Source/WebCore/html/HTMLImageLoader.cpp
+@@ -71,6 +71,32 @@ void HTMLImageLoader::dispatchLoadEvent()
+ #endif
+ 
+     RefPtr image = this->image();
++#if PLATFORM(HAIKU)
++    // SUMMIT_IDLE_TRACE=1: a page that reacts to load events by changing its
++    // images can load them forever; say which, at most ten times a second.
++    static const bool traceLoads = [] {
++        const char* value = getenv("SUMMIT_IDLE_TRACE");
++        return value && value[0] == '1' && !value[1];
++    }();
++    if (traceLoads) {
++        static MonotonicTime windowStart;
++        static unsigned printed;
++        auto now = MonotonicTime::now();
++        if (now - windowStart >= 1_s) {
++            windowStart = now;
++            printed = 0;
++        }
++        if (printed++ < 10) {
++            Ref element = this->element();
++            auto size = image->imageSizeForRenderer(nullptr, 1);
++            WTFLogAlways("Summit image load: src=%s srcset=%s sizes=%s url=%s natural=%dx%d",
++                element->attributeWithoutSynchronization(HTMLNames::srcAttr).string().left(120).utf8().data(),
++                element->attributeWithoutSynchronization(HTMLNames::srcsetAttr).string().left(200).utf8().data(),
++                element->attributeWithoutSynchronization(HTMLNames::sizesAttr).string().utf8().data(),
++                image->url().string().left(160).utf8().data(), int(size.width()), int(size.height()));
++        }
++    }
++#endif
+     bool errorOccurred = image->errorOccurred();
+     if (!errorOccurred && image->response().httpStatusCode() >= httpStatus400BadRequest)
+         errorOccurred = is<HTMLObjectElement>(element()); // An <object> considers a 404 to be an error and should fire onerror.
 diff --git a/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.cpp b/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.cpp
 index 50c7fe12885a08e9650329a04bc561a391823a1c..f52e7fbc0333efd816cd4c8cbd0f43c4ab0459de 100644
 --- a/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.cpp
@@ -4269,6 +4593,97 @@ index 0797f2dc9bbb79a30b0ffac5f8b1f1fa898117cb..8aef59f339555bc7f5338c37dca2413f
      virtual void updateSandboxFlags(SandboxFlags) = 0;
      virtual void updateOpener(std::optional<FrameIdentifier>) = 0;
      virtual void setPrinting(bool printing, FloatSize pageSize, FloatSize originalPageSize, float maximumShrinkRatio, AdjustViewSize) = 0;
+diff --git a/Source/WebCore/loader/ImageLoader.cpp b/Source/WebCore/loader/ImageLoader.cpp
+index 1760833596fce619b150fdf1b396de4e8180e0f7..f16f8fad4df2e9e4a7c14fb6d849c99a29925903 100644
+--- a/Source/WebCore/loader/ImageLoader.cpp
++++ b/Source/WebCore/loader/ImageLoader.cpp
+@@ -60,6 +60,7 @@
+ #include "RenderSVGImage.h"
+ #include "Settings.h"
+ #include <JavaScriptCore/HeapCellInlines.h>
++#include <wtf/HashMap.h>
+ #include <wtf/NeverDestroyed.h>
+ #include <wtf/Scope.h>
+ #include <wtf/text/MakeString.h>
+@@ -122,6 +123,28 @@ static ImageEventSender& loadEventSender()
+     return sender;
+ }
+ 
++#if PLATFORM(HAIKU)
++// A page that answers an image's error by setting the same URL again loads it
++// forever. When every attempt fails at once (Cloudflare answering Summit's
++// requests for Stack Overflow's sign-up logo with its challenge page, say),
++// that is a whole core, 47,000 error events a second. After three errors for
++// one URL within two seconds, each further one waits: 10 ms, doubling to 1 s.
++// The page still gets every event.
++struct RepeatedImageErrorHaiku {
++    URL url;
++    unsigned count { 0 };
++    MonotonicTime lastError;
++    bool dispatchNow { false };
++    std::unique_ptr<Timer> timer;
++};
++
++static HashMap<const ImageLoader*, RepeatedImageErrorHaiku>& repeatedImageErrorsHaiku()
++{
++    static NeverDestroyed<HashMap<const ImageLoader*, RepeatedImageErrorHaiku>> errors;
++    return errors;
++}
++#endif
++
+ static inline bool NODELETE pageIsBeingDismissed(Document& document)
+ {
+     auto* frame = document.frame();
+@@ -158,6 +181,9 @@ ImageLoader::ImageLoader(Element& element)
+ 
+ ImageLoader::~ImageLoader()
+ {
++#if PLATFORM(HAIKU)
++    repeatedImageErrorsHaiku().remove(this);
++#endif
+     if (RefPtr image = m_image)
+         image->removeClient(*this);
+ 
+@@ -700,6 +726,39 @@ void ImageLoader::dispatchPendingLoadEvent()
+         return;
+     if (!m_image)
+         return;
++#if PLATFORM(HAIKU)
++    // The load event reports a failed load as an error; see RepeatedImageErrorHaiku.
++    if (m_image->errorOccurred()) {
++        auto& errors = repeatedImageErrorsHaiku();
++        auto& state = errors.add(this, RepeatedImageErrorHaiku { }).iterator->value;
++        auto now = MonotonicTime::now();
++        if (std::exchange(state.dispatchNow, false))
++            state.lastError = now;
++        else {
++            if (state.timer && state.timer->isActive())
++                return;
++            if (state.url != m_image->url() || now - state.lastError > 2_s) {
++                state.url = m_image->url();
++                state.count = 0;
++            }
++            state.lastError = now;
++            if (++state.count > 3) {
++                if (!state.timer) {
++                    state.timer = makeUnique<Timer>([this] {
++                        auto it = repeatedImageErrorsHaiku().find(this);
++                        if (it == repeatedImageErrorsHaiku().end())
++                            return;
++                        it->value.dispatchNow = true;
++                        dispatchPendingLoadEvent();
++                    });
++                }
++                state.timer->startOneShot(std::min(10_ms * (1u << std::min(state.count - 4, 7u)), 1_s));
++                return;
++            }
++        }
++    } else
++        repeatedImageErrorsHaiku().remove(this);
++#endif
+     m_hasPendingLoadEvent = false;
+     Ref protectedElement = element();
+     Ref document = protectedElement->document();
 diff --git a/Source/WebCore/loader/LinkLoader.cpp b/Source/WebCore/loader/LinkLoader.cpp
 index f55175ed13b2e6a618d50857d2c4c5d144af6c1f..37fec93ccd1cb2b9e73753071580192383e7c088 100644
 --- a/Source/WebCore/loader/LinkLoader.cpp
@@ -70314,10 +70729,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..17254522910acf388464015a751b43bb3a9a0e27
+index 0000000000000000000000000000000000000000..1ae200ad2cef4b21d933dcb7016f81f5a6c76db6
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,1743 @@
+@@ -0,0 +1,1745 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -71351,7 +71766,9 @@ index 0000000000000000000000000000000000000000..17254522910acf388464015a751b43bb
 +    configuration->preferences().setScreenWakeLockAPIEnabled(false);
 +    // Chrome and Firefox ship requestIdleCallback, and sites and extensions built for
 +    // them call it unconditionally. WebKit's implementation is complete but off by default.
-+    configuration->preferences().setRequestIdleCallbackEnabled(true);
++    // SUMMIT_REQUEST_IDLE_CALLBACK=0 turns it off, to tell its cost apart.
++    const char* idleCallbacks = std::getenv("SUMMIT_REQUEST_IDLE_CALLBACK");
++    configuration->preferences().setRequestIdleCallbackEnabled(!idleCallbacks || std::strcmp(idleCallbacks, "0"));
 +    // Block pop-ups: window.open() needs a click or key press, as in other browsers.
 +    configuration->preferences().setJavaScriptCanOpenWindowsAutomatically(false);
 +    // navigator.storage (estimate, persist), on by default for GTK and WPE;
