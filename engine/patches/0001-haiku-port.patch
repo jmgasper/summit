@@ -11971,10 +11971,10 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..bd52a39e2219ee89d41360bbfee091f7140a21e7
+index 0000000000000000000000000000000000000000..678d258ccf4426251abd0c34dcf4534a03ecdd45
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,1578 @@
+@@ -0,0 +1,1580 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -12374,10 +12374,12 @@ index 0000000000000000000000000000000000000000..bd52a39e2219ee89d41360bbfee091f7
 +// time base instead of microseconds (512 per frame for a 1/15360 MP4 at 30
 +// fps), and BMediaTrack::CurrentTime() adopts it from the first decoded frame
 +// on: every frame looked late and a 10 s clip played in half a second, and
-+// seek preroll could not reach its target. The frame counter is exact (a seek
-+// sets it from the extractor, each decoded frame adds one), so derive the
-+// time from it where the decoder's time disagrees with it. A decoder that
-+// reports real times (NVDEC, variable frame rates) keeps its own.
++// seek preroll could not reach its target. The frame counter (a seek sets it
++// from the extractor, each decoded frame adds one) gives the time then. Only
++// a decoder time far behind the counter is that bug: one ahead of it is a
++// decoder that skips frames it does not deliver (NVDEC on the X399 delivers
++// about a quarter of them, with real times), and there the counter would
++// end a 10 s clip after 2.5 s.
 +static bigtime_t videoTrackTime(BMediaTrack& track)
 +{
 +    bigtime_t reported = track.CurrentTime();
@@ -12389,7 +12391,7 @@ index 0000000000000000000000000000000000000000..bd52a39e2219ee89d41360bbfee091f7
 +        return reported;
 +    auto counted = static_cast<bigtime_t>(track.CurrentFrame() * 1000000.0 / rate);
 +    auto tolerance = std::max(static_cast<bigtime_t>(2000000.0 / rate), counted / 10);
-+    return std::abs(reported - counted) > tolerance ? counted : reported;
++    return reported + tolerance < counted ? counted : reported;
 +}
 +
 +status_t MediaPlayerPrivate::videoThread(void* cookie)
@@ -12489,7 +12491,7 @@ index 0000000000000000000000000000000000000000..bd52a39e2219ee89d41360bbfee091f7
 +                bigtime_t decodeStartedAt = mediaFrameTraceEnabled() ? system_time() : 0;
 +                media_header header = { };
 +                status_t decodeStatus = player->m_videoTrack->ReadFrames(player->m_frameBuffer->Bits(), &count, &header);
-+                if (tracePlayback && decodeStatus == B_OK && decodedFrames < 8)
++                if (tracePlayback && decodeStatus == B_OK && (decodedFrames < 8 || !(decodedFrames % 10)))
 +                    std::fprintf(stderr, "Summit media frame: player=%p frame=%u count=%lld start=%lld current=%lld playback=%lld\n",
 +                        player, decodedFrames, static_cast<long long>(count), static_cast<long long>(header.start_time),
 +                        static_cast<long long>(videoTrackTime(*player->m_videoTrack)), static_cast<long long>(playbackTime));
