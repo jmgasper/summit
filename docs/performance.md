@@ -132,6 +132,26 @@ themselves in the compositor, readback and image loader until the profiles
 are retrained. The traces (`SUMMIT_IDLE_TRACE`, `SUMMIT_IPC_SLOW_TRACE`)
 are in commit `cbac2fd`'s engine patch for the next time they are needed.
 
+### What a readback costs, and why the pixel buffer path stays off
+
+One playing 1080p video (NVDEC) costs its web process 1.15 cores; most of
+every animated frame is the readback. A standalone probe on the X399
+(`tools/mesa-vm/readback-verify.cpp`) clears to a new colour each round and checks what
+comes back:
+
+| 3840x1826 (7 Mpx) | time | right |
+| --- | --- | --- |
+| `glReadPixels` into memory, BGRA or RGBA | 8.3 ms (4.3 of it the 28 MB copy) | all |
+| same, 2560x1440 part | 5.6 ms | all |
+| into a pixel buffer, reused / orphaned / fresh / ring / with a fence | 4.6-5.7 ms | **none after the first** |
+
+A mapped pixel buffer holds some earlier frame the first time and zeros
+after that, even after `glFinish`, a fence and half a second: zink's copy
+into the buffer never lands where the map reads on NVK (a Mesa/NVK bug,
+not reuse or caching). Until that is fixed the readback stays direct, and
+its copy runs at one core's memory bandwidth. Video start is quick: the
+local 1080p clip reports `playing` 160 ms after `loadstart`.
+
 ### Videos nobody can see
 
 CNN's front page kept 2.35 cores busy while idle: five muted autoplay videos
