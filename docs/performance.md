@@ -132,6 +132,16 @@ themselves in the compositor, readback and image loader until the profiles
 are retrained. The traces (`SUMMIT_IDLE_TRACE`, `SUMMIT_IPC_SLOW_TRACE`)
 are in commit `cbac2fd`'s engine patch for the next time they are needed.
 
+### Videos nobody can see
+
+CNN's front page kept 2.35 cores busy while idle: five muted autoplay videos
+decoding at once, most of them below the fold. WebKit can pause a muted
+video that started itself while none of it is on screen and resume it when
+it comes back (`InvisibleAutoplayNotPermitted`, on by default only on iOS);
+it is now on (`SUMMIT_PAUSE_INVISIBLE_AUTOPLAY=0` turns it off). One video
+plays and the page takes 1.42 cores. The rest is that video and a full-width
+band at the top that repaints every frame (2.4 Mpx read back per frame).
+
 ### NVDEC and 16 reference frames
 
 A probe on the X399 (1080p x264 clips, level 5.1, 3 B-frames,
@@ -163,10 +173,13 @@ when it can hold 16 references switches the fallback off.
   when the UI process goes away; they crashed because the GPU had run out of
   memory. No run after the buffer fixes (dozens of launches and quits)
   produced one of these again.
-- One crash remains, four times in the 36-tab runs: the NVDEC add-on's
-  slice copy (`nvdecH264Decode`, `nvdec_h264.c:883`, a `memcpy` past a
-  buffer) on some site's video, which ends that tab's web process. Reported
-  to the OS session, whose add-on it is.
+- One more crashed four times in the 36-tab runs: the NVDEC add-on's slice
+  copy (`nvdecH264Decode`, `nvdec_h264.c:883`). The add-on kept its NAL table
+  in a function-level `static`, so two videos in one web process rewrote
+  each other's table. The OS session fixed it (Haiku 1323d41adc, installed on
+  the X399 21:50) and committed Summit's own add-on changes with it
+  (8b671d6b06 `fReason`, a33277609e skipping conversion before a seek
+  target), so `tools/build-nvdec-plugin.sh` in the OS tree is safe again.
 
 ## 27 September 2026: installed on the X399, and what it measured
 
