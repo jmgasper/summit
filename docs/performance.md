@@ -1,5 +1,46 @@
 # Summit performance: Speedometer 3.1 baseline, where the time goes, stress test
 
+## 27 September 2026: installed on the X399, and what it measured
+
+The desktop launcher (`/boot/home/Desktop/Summit-current.sh`) points to
+`bundle-r6ti1k5v`: the profile-guided engine (`SkiaCGMiPGO`) with everything
+in the list below; the previous launcher is `Summit-current.pre-20260927-1011.sh`
+(`bundle-q2h888fj`). Measured on the X399 at 200% against `bundle-6lhzlu2f`
+(the last X399 build, zero-copy only):
+
+| | before (`6lhzlu2f`) | now (`d4ull89i`/`r6ti1k5v`) |
+| --- | --- | --- |
+| Wikipedia scroll burst, per-second frame rates | 50-60, 10 long frames | 52-61, 7 long frames |
+| Readback per frame while scrolling (web process) | 11.4 ms, 7.0 Mpx | 10.7 ms, 5.5 Mpx |
+| Readback per frame, small changes (banner, caret) | 11.3 ms, 7.0 Mpx | 1.25 ms, 0.08 Mpx |
+| 3 windows x 12 tabs: pages that loaded | 14 of 36 | 35 of 36 |
+| Video (1080p MP4): time to playing | 0.78 s | 0.32-0.92 s |
+
+- **22 of 36 tabs never loaded before.** Web processes could not reach the
+  network process ("internallyFailedLoadTimerFired" 62 times): Haiku's 256
+  descriptors per process. With 4096 they all connect. Loading real pages
+  costs what it costs: 13.7 GB resident for 38 web processes; loads took a
+  median 8.7 s, 26 s at the 90th percentile and 75 s for the slowest
+  (weather.com), all 36 at once.
+- **Every page was black** on the first X399 build of these changes: the
+  pixel-buffer readback (fine on llvmpipe) returns zeros or an old frame on
+  zink/NVK; `tools/mesa-vm`-style probe in the commit. Changed rectangles are
+  now read straight into the shared frame (`SUMMIT_PBO_READBACK=1` restores
+  the pixel buffer).
+- **Video on the X399**: the clip is decoded by NVDEC, which reports real
+  times; a pacing guard for Haiku's ffmpeg time-base bug had ended it after
+  2.5 s and now only applies when the decoder's time lags. NVDEC itself shows
+  only 74 of the clip's 300 frames: the stream is level 5.1 with 16 reference
+  frames and the add-on's 17 hardware picture slots (the engine's luma
+  offsets 0-16) run out, so it skips to the next IDR at 8.33 s. More slots
+  corrupt the picture; the fix belongs in the add-on (show waiting pictures
+  from a copy), reported to the OS session. Streaming makes no difference to
+  start on the X399's LAN (the whole 30 MB arrives in 0.6 s); it helps on
+  slower links (VM: 2.0 s against 3.1-3.6 s).
+- Quitting a browser with many tabs by force can leave web processes crashing
+  in zink's teardown (`vk_create_graphics_pipeline`, `zink_destroy_screen`),
+  which only shows as crash reports.
+
 ## 26 September 2026 (evening): 200% screens, many tabs, loading
 
 The X399 now drives two 4K monitors at 200% (docs/hidpi.md). Summit renders
