@@ -1,5 +1,107 @@
 # Summit performance: Speedometer 3.1 baseline, where the time goes, stress test
 
+## 27 September 2026 (evening): memory per tab, idle cores, NVDEC, crashes
+
+Measured on the X399 at 200% with `tools/bench/run-multitab.py` (one window
+of twelve real sites unless noted), `listarea` per web process, and the
+engine's new traces. Everything below is in the PGO engine (`SkiaCGMiPGO`).
+
+| 12 tabs, one window | before | after |
+| --- | --- | --- |
+| Resident after loading | 7.5 GB | 3.8 GB |
+| After 20 s idle | 15.7 GB, growing | 3.8 GB, flat |
+| After switching through every tab | 18.9 GB | 6.7 GB |
+| Frame buffers held by a hidden tab | up to 223 (6 GB) | 1 (27 MB) |
+| Tab switch, median / worst | 321 / 1642 ms | 240 / 582 ms |
+
+### Frame buffers that never came back
+
+Most of a tab's memory was **27 MB frame buffers** (one frame at 200%),
+hundreds per web process, mapped twice (web and UI process) and each with
+frame-sized GPU buffers beside it, until the GTX's memory ran out too.
+Three faults, found with `SUMMIT_SWAPCHAIN_TRACE=1` (every buffer lent,
+returned and trimmed, in both processes):
+
+- **Surface identifiers collide.** Every web process numbers its surfaces
+  from 1, and the UI process kept its backing stores in a map keyed by that
+  number. A buffer handed back after a tab was shown again went to another
+  tab's store and was dropped, so that tab's swap chain never saw it again.
+  Stores are now keyed by an identifier unique in the UI process.
+- **Release after FrameDone.** With zero-copy presentation the UI returns a
+  buffer when a newer frame replaces it, but it posted that release behind
+  every other task on its main thread while FrameDone went out at once; with
+  many tabs loading the web process repeatedly found no free buffer. The
+  release now goes first when the replacement happens on the main thread.
+- **No limit.** The swap chain only `ASSERT`s its four-buffer limit, so
+  release builds allocated one more buffer per frame. The compositor now
+  waits for a buffer when all four are out, and paints into a fifth only if
+  none has come back for two seconds (logged).
+
+Hidden tabs now keep one frame (the kept frame shown on switching back) and
+trim the rest ten seconds after hiding, as upstream intends.
+
+### Freed memory that never left
+
+Haiku accepts `madvise(MADV_DONTNEED)` and ignores it (the kernel leaves it
+a TODO); only `MADV_FREE` discards pages. mimalloc's purge and WTF's
+`OSAllocator::decommit` both used `MADV_DONTNEED`, so a web process's heap
+could only grow. Both use `MADV_FREE` on Haiku now: 12 tabs went from 5.96
+to 5.32 GB of web-process memory. What remains per tab is mostly the page's
+own heap: 40-150 MB for light pages, 400-650 MB for heavy news and video
+pages, plus about 25 MB of GPU driver memory and one frame when hidden.
+
+36 tabs in three windows (the previous benchmark): 10.5 GB after loading
+and 9.9 GB idle, against 13.7 GB for 38 processes before; all 36 loaded
+(median 10.1 s, all within 49.8 s, previously 75 s for the slowest).
+
+### An idle page that took a core
+
+Stack Overflow kept one web process at 100% of a core while idle.
+`SUMMIT_IDLE_TRACE=1` (new) showed 47,000 event-loop turns a second, each
+running one microtask queued by a mutation record from an image load event;
+the image trace then named the script: the sign-up modal
+(`signup-modal.en.js`) sets an image's `src` again when it fails, and
+Cloudflare answers Summit's requests for that logo with its "Verify you are
+human" page (a direct request from Summit gets the interactive challenge;
+curl with Summit's user agent and headers gets the PNG, so it is the
+connection's fingerprint, not the headers). Firefox gets the image and never
+loops. After three errors for one URL on one element within two seconds,
+further error events now wait 10 ms, doubling to one second; the page still
+gets each one. Stack Overflow idles at 0.04 cores. Cloudflare challenging
+Summit's subresources is a compatibility problem of its own and still open.
+
+### NVDEC and 16 reference frames
+
+A probe on the X399 (1080p x264 clips, level 5.1, 3 B-frames,
+`tools/bench/make-refs-fixtures.sh`) showed the NVDEC add-on decoding all 300
+pictures with up to 15 reference frames and 22 with 16. Haiku gives a format
+to one decoder add-on with no fallback, so Summit now picks libavcodec itself
+(`BMediaDecoder::SetTo()` with the ffmpeg add-on's encoder identifier) when
+the chosen decoder is `nvdec h264` and the stream's SPS asks for more than
+15 references (`SUMMIT_NVDEC_MAX_REFERENCES` overrides). Both media engines
+use it; the file engine reads the track's chunks raw. The 16-reference clip
+now plays all 300 pictures and seeks (`media.html?src=refs-media/refs16.mp4&seek=6.5`);
+15 references stay on NVDEC. The OS session knows: renaming the add-on
+when it can hold 16 references switches the fallback off.
+
+### Crashes
+
+- 15 of the 65 crash reports on the X399 were NVK crashing in
+  `vk_graphics_pipeline_state_merge`: zink linked graphics pipeline libraries
+  without checking that they had been built, and one that failed (under the
+  memory pressure above) was a null handle. The private Mesa now builds a
+  whole pipeline instead (`tools/mesa-vm/mesa-25.3.6-summit-03-zink-missing-library.patch`;
+  the previous prefix is kept as `/boot/home/summit-mesa/prefix.pre-20260927`).
+- Most of the rest were zink's error path: when creating a screen failed
+  (the GPU out of memory, again from the leak), `zink_destroy_screen` tore
+  down a buffer cache whose mutex was never initialized and asserted in
+  `mtx_lock` inside `eglInitialize`
+  (`mesa-25.3.6-summit-04-zink-failed-screen.patch`).
+- Force-quitting did not cause them by itself: web processes already `_exit`
+  when the UI process goes away; they crashed because the GPU had run out of
+  memory. None of the runs after the buffer fixes (dozens of launches and
+  quits, 36 tabs at once) produced a crash report.
+
 ## 27 September 2026: installed on the X399, and what it measured
 
 The desktop launcher (`/boot/home/Desktop/Summit-current.sh`) points to
