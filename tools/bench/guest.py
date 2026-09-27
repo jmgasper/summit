@@ -277,8 +277,16 @@ def terminate(binary, team, grace=20, group=None):
         if alive(team):
             ssh(f'kill -9 {int(team)}', check=False)
             report['method'] = 'SIGKILL'
-    time.sleep(2)
-    leftovers = [pid for pid in group if pid != team and alive(pid)]
+    # Helpers exit on their own once the UI process has gone; a profile-training
+    # build writes its counters first, which takes a while
+    # (SUMMIT_BENCH_LEFTOVER_GRACE=60 during training).
+    leftover_grace = float(os.environ.get('SUMMIT_BENCH_LEFTOVER_GRACE', '2'))
+    deadline = time.time() + leftover_grace
+    while True:
+        leftovers = [pid for pid in group if pid != team and alive(pid)]
+        if not leftovers or time.time() >= deadline:
+            break
+        time.sleep(1)
     if leftovers:  # helpers of *our* instance that outlived their UI process
         ssh('kill ' + ' '.join(str(pid) for pid in leftovers), check=False)
         time.sleep(2)
