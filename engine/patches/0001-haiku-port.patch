@@ -1372,10 +1372,19 @@ index ae947fe28021c584967c900b16bf0a364affd9be..e357e409e33dd1f96bbbbefe35c75b08
  
  std::optional<uint64_t> FileHandle::read(std::span<uint8_t> data)
 diff --git a/Source/WTF/wtf/posix/OSAllocatorPOSIX.cpp b/Source/WTF/wtf/posix/OSAllocatorPOSIX.cpp
-index ca44751e7d8ca4c7b6263808f088a2041b5fbd91..993e7c86f4deeb814f922b92eae9993ef5a78132 100644
+index ca44751e7d8ca4c7b6263808f088a2041b5fbd91..87e2f0f312f7fef0706145986bd008403bbc9097 100644
 --- a/Source/WTF/wtf/posix/OSAllocatorPOSIX.cpp
 +++ b/Source/WTF/wtf/posix/OSAllocatorPOSIX.cpp
-@@ -260,7 +260,12 @@ void OSAllocator::commit(void* address, size_t bytes, bool writable, bool execut
+@@ -27,6 +27,8 @@
+ #include <wtf/OSAllocator.h>
+ 
+ #include <errno.h>
++#include <stdlib.h>
++#include <string.h>
+ #include <mutex>
+ #include <sys/mman.h>
+ #include <wtf/Assertions.h>
+@@ -260,7 +262,17 @@ void OSAllocator::commit(void* address, size_t bytes, bool writable, bool execut
  
  void OSAllocator::decommit(void* address, size_t bytes)
  {
@@ -1384,23 +1393,67 @@ index ca44751e7d8ca4c7b6263808f088a2041b5fbd91..993e7c86f4deeb814f922b92eae9993e
 +    // Haiku accepts MADV_DONTNEED and does nothing with it (the kernel leaves
 +    // it a TODO), so decommitted memory never left the process. MADV_FREE
 +    // discards the pages at once, as MADV_DONTNEED does on Linux.
-+    while (madvise(address, bytes, MADV_FREE) == -1 && errno == EAGAIN) { }
++    // SUMMIT_DECOMMIT=0 keeps the pages, as before.
++    static const int advice = [] {
++        const char* value = getenv("SUMMIT_DECOMMIT");
++        return value && !strcmp(value, "0") ? MADV_DONTNEED : MADV_FREE;
++    }();
++    while (madvise(address, bytes, advice) == -1 && errno == EAGAIN) { }
 +#elif OS(LINUX)
      while (madvise(address, bytes, MADV_DONTNEED) == -1 && errno == EAGAIN) { }
  #elif HAVE(MADV_FREE_REUSE)
      while (madvise(address, bytes, MADV_FREE_REUSABLE) == -1 && errno == EAGAIN) { }
-@@ -276,7 +281,10 @@ void OSAllocator::decommit(void* address, size_t bytes)
+@@ -276,7 +288,14 @@ void OSAllocator::decommit(void* address, size_t bytes)
  
  void OSAllocator::hintMemoryNotNeededSoon(void* address, size_t bytes)
  {
 -#if HAVE(MADV_DONTNEED)
 +#if OS(HAIKU)
 +    // See decommit(): only MADV_FREE releases anything on Haiku.
-+    while (madvise(address, bytes, MADV_FREE) == -1 && errno == EAGAIN) { }
++    static const int advice = [] {
++        const char* value = getenv("SUMMIT_DECOMMIT");
++        return value && !strcmp(value, "0") ? MADV_DONTNEED : MADV_FREE;
++    }();
++    while (madvise(address, bytes, advice) == -1 && errno == EAGAIN) { }
 +#elif HAVE(MADV_DONTNEED)
      while (madvise(address, bytes, MADV_DONTNEED) == -1 && errno == EAGAIN) { }
  #else
      UNUSED_PARAM(address);
+diff --git a/Source/WTF/wtf/posix/ThreadingPOSIX.cpp b/Source/WTF/wtf/posix/ThreadingPOSIX.cpp
+index 67d97926784c557e37a2f23a570fe6ea593fca56..eb318d7260cfe9744dfefe674282fab1a53a2826 100644
+--- a/Source/WTF/wtf/posix/ThreadingPOSIX.cpp
++++ b/Source/WTF/wtf/posix/ThreadingPOSIX.cpp
+@@ -445,6 +445,30 @@ void Thread::updateSchedulingAttributes(SchedulingState state) const
+         || setpriority(PRIO_PROCESS, m_id, attributes.niceLevel))
+         logSchedulingAttributesFailure(m_id);
+ #endif // HAVE(SCHED_SETATTR)
++#elif OS(HAIKU)
++    // Quality of service as Haiku priorities, so that under load the threads
++    // that keep a page responsive (scrolling, event dispatch, compositing)
++    // run ahead of page scripts and loading, and background upkeep behind them.
++    int32 priority = B_NORMAL_PRIORITY;
++    switch (state == SchedulingState::Demoted ? QOS::Default : m_qos) {
++    case QOS::UserInteractive:
++        priority = B_DISPLAY_PRIORITY;
++        break;
++    case QOS::UserInitiated:
++        priority = B_NORMAL_PRIORITY + 2;
++        break;
++    case QOS::Default:
++        break;
++    case QOS::Utility:
++        priority = B_NORMAL_PRIORITY - 3;
++        break;
++    case QOS::Background:
++        priority = B_LOW_PRIORITY;
++        break;
++    }
++    thread_id thread = get_pthread_thread_id(m_handle);
++    if (thread >= 0)
++        set_thread_priority(thread, priority);
+ #else
+     UNUSED_PARAM(state);
+ #endif // OS(LINUX)
 diff --git a/Source/WTF/wtf/text/WTFString.h b/Source/WTF/wtf/text/WTFString.h
 index ec87143310f33fc59c92186fb81b6393ad1da5ca..b74ff9ab4644a3b8b98feb5e0945fc6deb3f3fb9 100644
 --- a/Source/WTF/wtf/text/WTFString.h
@@ -3252,176 +3305,6 @@ index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..49341ab5570aa84b3c98f1fe2959c13d
  }
  
  void Document::updateRemoteIntersectionObservers()
-diff --git a/Source/WebCore/dom/Element.cpp b/Source/WebCore/dom/Element.cpp
-index d5ec6a4281f5a800e81292838910ca150c0f319e..10b37f6eb0233aea2b08e4e681e4e3d3ca3f8fda 100644
---- a/Source/WebCore/dom/Element.cpp
-+++ b/Source/WebCore/dom/Element.cpp
-@@ -102,6 +102,11 @@
- #include "LargestContentfulPaintData.h"
- #include "LocalDOMWindow.h"
- #include "LocalFrame.h"
-+#if PLATFORM(HAIKU)
-+#include "ScriptController.h"
-+#include <JavaScriptCore/ScriptCallStack.h>
-+#include <JavaScriptCore/ScriptCallStackFactory.h>
-+#endif
- #include "LocalFrameView.h"
- #include "Logging.h"
- #include "MutationObserverInterestGroup.h"
-@@ -5877,6 +5882,38 @@ bool Element::establishesSpatialPortal() const
- 
- void Element::willModifyAttribute(const QualifiedName& name, const AtomString& oldValue, const AtomString& newValue)
- {
-+#if PLATFORM(HAIKU)
-+    // SUMMIT_IDLE_TRACE=1: which attributes pages change on images, ten a second at most.
-+    static const bool traceImageAttributes = [] {
-+        const char* value = getenv("SUMMIT_IDLE_TRACE");
-+        return value && value[0] == '1' && !value[1];
-+    }();
-+    if (traceImageAttributes && hasTagName(HTMLNames::imgTag)) {
-+        static MonotonicTime windowStart;
-+        static unsigned printed;
-+        auto now = MonotonicTime::now();
-+        if (now - windowStart >= 1_s) {
-+            windowStart = now;
-+            printed = 0;
-+        }
-+        if (printed++ < 10) {
-+            WTFLogAlways("Summit image attribute: %s '%s' -> '%s'", name.localName().string().utf8().data(),
-+                oldValue.string().left(160).utf8().data(), newValue.string().left(160).utf8().data());
-+            // And the script that did it, once a second.
-+            RefPtr frame = document().frame();
-+            if (printed == 1 && frame) {
-+                if (auto* globalObject = frame->script().globalObject(mainThreadNormalWorldSingleton())) {
-+                    auto stack = Inspector::createScriptCallStack(globalObject, 8);
-+                    for (size_t i = 0; i < stack->size(); ++i) {
-+                        auto& callFrame = stack->at(i);
-+                        WTFLogAlways("    at %s (%s:%u:%u)", callFrame.functionName().utf8().data(), callFrame.sourceURL().utf8().data(),
-+                            callFrame.lineNumber(), callFrame.columnNumber());
-+                    }
-+                }
-+            }
-+        }
-+    }
-+#endif
-     if (name == HTMLNames::idAttr)
-         updateId(oldValue, newValue, NotifyObservers::No); // Will notify observers after the attribute is actually changed.
-     else if (name == HTMLNames::nameAttr)
-diff --git a/Source/WebCore/dom/EventLoop.cpp b/Source/WebCore/dom/EventLoop.cpp
-index 3abc026892eaecbcb2cedb800d863fa75a7eeaa8..202f3218dcf1312d73daf5f1f5b14572874c7e2c 100644
---- a/Source/WebCore/dom/EventLoop.cpp
-+++ b/Source/WebCore/dom/EventLoop.cpp
-@@ -38,8 +38,54 @@
- #include <wtf/SystemTracing.h>
- #endif
- 
-+#if PLATFORM(HAIKU)
-+#include <array>
-+#include <cstdio>
-+#include <cstdlib>
-+#endif
-+
- namespace WebCore {
- 
-+#if PLATFORM(HAIKU)
-+// SUMMIT_IDLE_TRACE=1 also counts, once a second, the tasks each event loop
-+// turn ran by source, the ones it held back for a suspended document, the
-+// microtasks queued and the turns themselves.
-+struct EventLoopTraceHaiku {
-+    static bool enabled()
-+    {
-+        static const bool on = [] {
-+            const char* value = std::getenv("SUMMIT_IDLE_TRACE");
-+            return value && value[0] == '1' && !value[1];
-+        }();
-+        return on;
-+    }
-+    std::array<unsigned, static_cast<size_t>(TaskSource::InternalAsyncTask) + 1> bySource { };
-+    unsigned turns { 0 };
-+    unsigned heldBack { 0 };
-+    unsigned microtasksQueued { 0 };
-+    MonotonicTime lastReport;
-+    void report()
-+    {
-+        auto now = MonotonicTime::now();
-+        if (now - lastReport < 1_s)
-+            return;
-+        std::fprintf(stderr, "Summit event loop: turns=%u heldBack=%u microtasksQueued=%u tasks:", turns, heldBack, microtasksQueued);
-+        for (size_t i = 0; i < bySource.size(); ++i) {
-+            if (bySource[i])
-+                std::fprintf(stderr, " %zu=%u", i, bySource[i]);
-+        }
-+        std::fprintf(stderr, "\n");
-+        *this = { };
-+        lastReport = now;
-+    }
-+};
-+static EventLoopTraceHaiku& eventLoopTraceHaiku()
-+{
-+    static EventLoopTraceHaiku trace;
-+    return trace;
-+}
-+#endif
-+
- WTF_MAKE_TZONE_ALLOCATED_IMPL(EventLoopTask);
- WTF_MAKE_TZONE_ALLOCATED_IMPL(EventLoopTimerHandle);
- WTF_MAKE_TZONE_ALLOCATED_IMPL(EventLoopTaskGroup);
-@@ -258,6 +304,20 @@ void EventLoop::removeRepeatingTimer(EventLoopTimer& timer)
- 
- void EventLoop::queueMicrotask(JSC::QueuedTask&& microtask)
- {
-+#if PLATFORM(HAIKU)
-+    if (EventLoopTraceHaiku::enabled()) {
-+        auto& trace = eventLoopTraceHaiku();
-+        ++trace.microtasksQueued;
-+        // Where they come from, once a second.
-+        static MonotonicTime lastBacktrace;
-+        auto now = MonotonicTime::now();
-+        if (now - lastBacktrace >= 1_s) {
-+            lastBacktrace = now;
-+            std::fprintf(stderr, "Summit event loop: microtask queued from:\n");
-+            WTFReportBacktrace();
-+        }
-+    }
-+#endif
-     SUPPRESS_UNCOUNTED_LOCAL auto& microtaskQueue = this->microtaskQueue();
-     microtaskQueue.enqueue(WTF::move(microtask));
-     scheduleToRunIfNeeded(); // FIXME: Remove this once everything is integrated with the event loop.
-@@ -326,6 +386,13 @@ void EventLoop::run(JSC::VM& vm, std::optional<ApproximateTime> deadline)
- 
-     microtaskQueue().setIsScheduledToRun(false);
-     bool didPerformMicrotaskCheckpoint = false;
-+#if PLATFORM(HAIKU)
-+    bool traceTurn = EventLoopTraceHaiku::enabled();
-+    if (traceTurn) {
-+        ++eventLoopTraceHaiku().turns;
-+        eventLoopTraceHaiku().report();
-+    }
-+#endif
- 
-     if (!m_tasks.isEmpty()) {
-         auto tasks = std::exchange(m_tasks, { });
-@@ -340,12 +407,20 @@ void EventLoop::run(JSC::VM& vm, std::optional<ApproximateTime> deadline)
- 
-                 hasReachedDeadline = hasReachedDeadline || (deadline && ApproximateTime::now() > *deadline);
-                 if (group->isSuspended() || hasReachedDeadline) {
-+#if PLATFORM(HAIKU)
-+                    if (traceTurn)
-+                        ++eventLoopTraceHaiku().heldBack;
-+#endif
-                     m_groupsWithSuspendedTasks.add(*group);
-                     remainingTasks.append(WTF::move(task));
-                     continue;
-                 }
-             }
- 
-+#if PLATFORM(HAIKU)
-+            if (traceTurn)
-+                ++eventLoopTraceHaiku().bySource[static_cast<size_t>(task->taskSource())];
-+#endif
-             task->execute();
-             didPerformMicrotaskCheckpoint = true;
-             performMicrotaskCheckpoint(vm);
 diff --git a/Source/WebCore/dom/EventTarget.cpp b/Source/WebCore/dom/EventTarget.cpp
 index 508b64bf39d2074357445b343e1056b1c3212411..f22828d4fdd11099e38c6161892e61b740e2b738 100644
 --- a/Source/WebCore/dom/EventTarget.cpp
@@ -3469,123 +3352,6 @@ index 508b64bf39d2074357445b343e1056b1c3212411..f22828d4fdd11099e38c6161892e61b7
          InspectorInstrumentation::didHandleEvent(context, event, registeredListener);
  
          if (registeredListener->isPassive())
-diff --git a/Source/WebCore/dom/WindowEventLoop.cpp b/Source/WebCore/dom/WindowEventLoop.cpp
-index 26272070993ba3f12c2cfe8a9f59b010c34dddcb..11e4acb64280f33df6e7e5ce15ff76a5fad96727 100644
---- a/Source/WebCore/dom/WindowEventLoop.cpp
-+++ b/Source/WebCore/dom/WindowEventLoop.cpp
-@@ -45,8 +45,52 @@
- #include <wtf/TZoneMallocInlines.h>
- #include <wtf/text/MakeString.h>
- 
-+#if PLATFORM(HAIKU)
-+#include <cstdio>
-+#include <cstdlib>
-+#endif
-+
- namespace WebCore {
- 
-+#if PLATFORM(HAIKU)
-+// SUMMIT_IDLE_TRACE=1: once a second, how often idle callbacks were attempted,
-+// deferred (and why) and run, to find a page thread that never goes idle.
-+struct IdleTraceHaiku {
-+    static bool enabled()
-+    {
-+        static const bool on = [] {
-+            const char* value = std::getenv("SUMMIT_IDLE_TRACE");
-+            return value && value[0] == '1' && !value[1];
-+        }();
-+        return on;
-+    }
-+    unsigned attempts { 0 };
-+    unsigned endedByTask { 0 };
-+    unsigned deferredForWork { 0 };
-+    unsigned deferredForDeadline { 0 };
-+    unsigned ran { 0 };
-+    double lastWorkDeltaMs { 0 };
-+    double lastExpectedMs { 0 };
-+    bool lastWorkIsRendering { false };
-+    MonotonicTime lastReport;
-+    void report()
-+    {
-+        auto now = MonotonicTime::now();
-+        if (now - lastReport < 1_s)
-+            return;
-+        std::fprintf(stderr, "Summit idle: attempts=%u endedByTask=%u deferredForWork=%u deferredForDeadline=%u ran=%u workDelta=%.2fms(rendering=%d) expected=%.2fms\n",
-+            attempts, endedByTask, deferredForWork, deferredForDeadline, ran, lastWorkDeltaMs, lastWorkIsRendering, lastExpectedMs);
-+        *this = { };
-+        lastReport = now;
-+    }
-+};
-+static IdleTraceHaiku& idleTraceHaiku()
-+{
-+    static IdleTraceHaiku trace;
-+    return trace;
-+}
-+#endif
-+
- WTF_MAKE_TZONE_ALLOCATED_IMPL(WindowEventLoop);
- 
- static MemoryCompactRobinHoodHashMap<String, CheckedPtr<WindowEventLoop>>& NODELETE windowEventLoopMap()
-@@ -133,8 +177,20 @@ void WindowEventLoop::scheduleIdlePeriod()
- 
- void WindowEventLoop::opportunisticallyRunIdleCallbacks(std::optional<MonotonicTime> deadline)
- {
--    if (shouldEndIdlePeriod())
-+#if PLATFORM(HAIKU)
-+    bool traceIdle = IdleTraceHaiku::enabled();
-+    if (traceIdle) {
-+        ++idleTraceHaiku().attempts;
-+        idleTraceHaiku().report();
-+    }
-+#endif
-+    if (shouldEndIdlePeriod()) {
-+#if PLATFORM(HAIKU)
-+        if (traceIdle)
-+            ++idleTraceHaiku().endedByTask;
-+#endif
-         return; // No need to schedule m_idleTimer since there is a task. didReachTimeToRun() will call this function.
-+    }
- 
-     auto hasPendingIdleCallbacks = findMatchingAssociatedContext([&](ScriptExecutionContext& context) {
-         if (auto* document = dynamicDowncast<Document>(context))
-@@ -152,6 +208,16 @@ void WindowEventLoop::opportunisticallyRunIdleCallbacks(std::optional<MonotonicT
-             auto timeToScheduledWork = *scheduledWork - now;
-             if (timeToScheduledWork < 0_s) // Timer may have been scheduled to fire in the past.
-                 timeToScheduledWork = 0_s;
-+#if PLATFORM(HAIKU)
-+            if (traceIdle) {
-+                auto& trace = idleTraceHaiku();
-+                ++trace.deferredForWork;
-+                trace.lastWorkDeltaMs = (*scheduledWork - now).milliseconds();
-+                trace.lastExpectedMs = m_expectedIdleCallbackDuration.milliseconds();
-+                auto rendering = nextRenderingTime();
-+                trace.lastWorkIsRendering = rendering && *rendering == *scheduledWork;
-+            }
-+#endif
-             decayIdleCallbackDuration();
-             m_idleTimer.startOneShot(timeToScheduledWork + 1_ms);
-             return;
-@@ -160,12 +226,20 @@ void WindowEventLoop::opportunisticallyRunIdleCallbacks(std::optional<MonotonicT
- 
-     if (deadline && *deadline < now + m_expectedIdleCallbackDuration) {
-         // No pending tasks. Schedule m_idleTimer immediately.
-+#if PLATFORM(HAIKU)
-+        if (traceIdle)
-+            ++idleTraceHaiku().deferredForDeadline;
-+#endif
-         decayIdleCallbackDuration();
-         m_idleTimer.startOneShot(0_s);
-         return;
-     }
- 
-     m_lastIdlePeriodStartTime = now;
-+#if PLATFORM(HAIKU)
-+    if (traceIdle)
-+        ++idleTraceHaiku().ran;
-+#endif
- 
-     forEachAssociatedContext([&](ScriptExecutionContext& context) {
-         RefPtr document = dynamicDowncast<Document>(context);
 diff --git a/Source/WebCore/dom/make_names.pl b/Source/WebCore/dom/make_names.pl
 index 7f18cb986d1972948b04893b511de16598d7f103..68525703b1263997f5100c89a1c31dd939c8245f 100755
 --- a/Source/WebCore/dom/make_names.pl
@@ -3599,43 +3365,6 @@ index 7f18cb986d1972948b04893b511de16598d7f103..68525703b1263997f5100c89a1c31dd9
  } elsif ($Config::Config{"osname"} eq "darwin" && $ENV{SDKROOT}) {
      chomp($ccLocation = `xcrun -find cc -sdk '$ENV{SDKROOT}'`);
  } else {
-diff --git a/Source/WebCore/html/HTMLImageLoader.cpp b/Source/WebCore/html/HTMLImageLoader.cpp
-index 232f3417d3bf500d3579fed11e04b0a61ddf22f1..53159ef943bebb80f1463e767a41a23e2b7222a3 100644
---- a/Source/WebCore/html/HTMLImageLoader.cpp
-+++ b/Source/WebCore/html/HTMLImageLoader.cpp
-@@ -71,6 +71,32 @@ void HTMLImageLoader::dispatchLoadEvent()
- #endif
- 
-     RefPtr image = this->image();
-+#if PLATFORM(HAIKU)
-+    // SUMMIT_IDLE_TRACE=1: a page that reacts to load events by changing its
-+    // images can load them forever; say which, at most ten times a second.
-+    static const bool traceLoads = [] {
-+        const char* value = getenv("SUMMIT_IDLE_TRACE");
-+        return value && value[0] == '1' && !value[1];
-+    }();
-+    if (traceLoads) {
-+        static MonotonicTime windowStart;
-+        static unsigned printed;
-+        auto now = MonotonicTime::now();
-+        if (now - windowStart >= 1_s) {
-+            windowStart = now;
-+            printed = 0;
-+        }
-+        if (printed++ < 10) {
-+            Ref element = this->element();
-+            auto size = image->imageSizeForRenderer(nullptr, 1);
-+            WTFLogAlways("Summit image load: src=%s srcset=%s sizes=%s url=%s natural=%dx%d",
-+                element->attributeWithoutSynchronization(HTMLNames::srcAttr).string().left(120).utf8().data(),
-+                element->attributeWithoutSynchronization(HTMLNames::srcsetAttr).string().left(200).utf8().data(),
-+                element->attributeWithoutSynchronization(HTMLNames::sizesAttr).string().utf8().data(),
-+                image->url().string().left(160).utf8().data(), int(size.width()), int(size.height()));
-+        }
-+    }
-+#endif
-     bool errorOccurred = image->errorOccurred();
-     if (!errorOccurred && image->response().httpStatusCode() >= httpStatus400BadRequest)
-         errorOccurred = is<HTMLObjectElement>(element()); // An <object> considers a 404 to be an error and should fire onerror.
 diff --git a/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.cpp b/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.cpp
 index 50c7fe12885a08e9650329a04bc561a391823a1c..f52e7fbc0333efd816cd4c8cbd0f43c4ab0459de 100644
 --- a/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.cpp
@@ -90557,7 +90286,7 @@ index 0000000000000000000000000000000000000000..abc82f6d26d2b1374740dc304282ae75
 +
 +}
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
-index cf4d54b7869d7a7cded74482922d8fdda53af21d..200478cba7336c383db6843740f3eef2503361b0 100644
+index cf4d54b7869d7a7cded74482922d8fdda53af21d..dd91fe7af6bf29b689046e2d28baf91e3b10374b 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
 @@ -26,6 +26,19 @@
@@ -90629,14 +90358,18 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..200478cba7336c383db6843740f3eef2
      , m_hardwareAccelerationEnabled(webPage.corePage()->settings().hardwareAccelerationEnabled())
  #endif
      , m_backgroundColor(webPage.backgroundColor())
-@@ -130,8 +162,14 @@ AcceleratedSurface::AcceleratedSurface(WebPage& webPage, Function<void()>&& fram
+@@ -130,8 +162,18 @@ AcceleratedSurface::AcceleratedSurface(WebPage& webPage, Function<void()>&& fram
      , m_isVisible(webPage.activityState().contains(ActivityState::IsVisible))
      , m_useExplicitSync(usesGL() && useExplicitSync())
  #if ENABLE(DAMAGE_TRACKING)
 +#if PLATFORM(HAIKU)
 +    // The readback walks the rectangles (see readBackThroughPixelBuffer); a
 +    // bounding box made a scrollbar and an ad at opposite sides the whole frame.
-+    , m_damageTracker(m_swapChain, true)
++    , m_damageTracker(m_swapChain, [] {
++        // SUMMIT_FINE_DAMAGE=0 keeps one bounding box per target, as before.
++        const char* value = getenv("SUMMIT_FINE_DAMAGE");
++        return !value || strcmp(value, "0");
++    }())
 +#else
      , m_damageTracker(m_swapChain, !usesGL())
  #endif
@@ -90644,7 +90377,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..200478cba7336c383db6843740f3eef2
  {
  }
  
-@@ -176,7 +214,7 @@ void AcceleratedSurface::RenderTarget::createSkiaSurfaceForFramebuffer(unsigned
+@@ -176,7 +218,7 @@ void AcceleratedSurface::RenderTarget::createSkiaSurfaceForFramebuffer(unsigned
      m_skiaSurface = SkSurfaces::WrapBackendRenderTarget(display.skiaGrContext(), backendRenderTarget, origin, kRGBA_8888_SkColorType, SkColorSpace::MakeSRGB(), &properties);
  }
  
@@ -90653,7 +90386,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..200478cba7336c383db6843740f3eef2
  WTF_MAKE_TZONE_ALLOCATED_IMPL(AcceleratedSurface::RenderTargetShareableBuffer);
  
  AcceleratedSurface::RenderTargetShareableBuffer::RenderTargetShareableBuffer(AcceleratedSurface& surface, const IntSize& size)
-@@ -228,6 +266,10 @@ void AcceleratedSurface::RenderTargetShareableBuffer::initializeColorBuffer(EGLI
+@@ -228,6 +270,10 @@ void AcceleratedSurface::RenderTargetShareableBuffer::initializeColorBuffer(EGLI
  
  void AcceleratedSurface::RenderTargetShareableBuffer::sendFrame(Vector<WebCore::IntRect, 1>&& damageRects)
  {
@@ -90664,7 +90397,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..200478cba7336c383db6843740f3eef2
      WebProcess::singleton().parentProcessConnection()->send(Messages::AcceleratedBackingStore::Frame(m_id, WTF::move(damageRects), WTF::move(m_renderingFenceFD)), m_surface->surfaceID());
  }
  
-@@ -418,7 +460,14 @@ std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::RenderTarg
+@@ -418,7 +464,14 @@ std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::RenderTarg
          return nullptr;
      }
  
@@ -90679,7 +90412,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..200478cba7336c383db6843740f3eef2
      if (!bufferHandle) {
          WTFLogAlways("Failed to create handle for shared memory buffer");
          return nullptr;
-@@ -439,13 +488,275 @@ AcceleratedSurface::RenderTargetSHMImage::RenderTargetSHMImage(AcceleratedSurfac
+@@ -439,13 +492,284 @@ AcceleratedSurface::RenderTargetSHMImage::RenderTargetSHMImage(AcceleratedSurfac
      WebProcess::singleton().parentProcessConnection()->send(Messages::AcceleratedBackingStore::DidCreateSHMBuffer(m_id, WTF::move(bitmapHandle)), m_surface->surfaceID());
  }
  
@@ -90725,6 +90458,15 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..200478cba7336c383db6843740f3eef2
 +    };
 +    mergeTouching(rects, true);
 +    mergeTouching(rects, false);
++    // Pairwise merging is cubic; with this many pieces most of the frame
++    // changed anyway (a scroll, a busy page), so read their bounds.
++    static constexpr size_t maximumToMergeInPairs = 32;
++    if (rects.size() > maximumToMergeInPairs) {
++        IntRect bounds;
++        for (auto& rect : rects)
++            bounds.unite(rect);
++        return { bounds };
++    }
 +    auto area = [](const IntRect& rect) { return int64_t(rect.width()) * int64_t(rect.height()); };
 +    while (rects.size() > 1) {
 +        size_t bestA = 0;
@@ -90955,7 +90697,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..200478cba7336c383db6843740f3eef2
  
          SkImageInfo info = SkImageInfo::Make(m_bitmap->size().width(), m_bitmap->size().height(), SkColorType::kBGRA_8888_SkColorType, SkAlphaType::kPremul_SkAlphaType);
  
-@@ -457,9 +768,14 @@ void AcceleratedSurface::RenderTargetSHMImage::didRenderFrame()
+@@ -457,9 +781,14 @@ void AcceleratedSurface::RenderTargetSHMImage::didRenderFrame()
          return;
      }
  
@@ -90970,7 +90712,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..200478cba7336c383db6843740f3eef2
  std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::RenderTargetTexture::create(AcceleratedSurface& surface, const IntSize& size)
  {
      auto texture = BitmapTexture::create(size);
-@@ -515,8 +831,9 @@ AcceleratedSurface::RenderTargetTexture::RenderTargetTexture(AcceleratedSurface&
+@@ -515,8 +844,9 @@ AcceleratedSurface::RenderTargetTexture::RenderTargetTexture(AcceleratedSurface&
  }
  
  AcceleratedSurface::RenderTargetTexture::~RenderTargetTexture() = default;
@@ -90981,7 +90723,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..200478cba7336c383db6843740f3eef2
  
  #if USE(WPE_RENDERER)
  std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::RenderTargetWPEBackend::create(AcceleratedSurface& surface, const IntSize& initialSize, UnixFileDescriptor&& hostFD)
-@@ -594,7 +911,7 @@ void AcceleratedSurface::RenderTargetWPEBackend::didRenderFrame()
+@@ -594,7 +924,7 @@ void AcceleratedSurface::RenderTargetWPEBackend::didRenderFrame()
  AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
      : m_surface(surface)
  {
@@ -90990,7 +90732,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..200478cba7336c383db6843740f3eef2
      if (!m_surface->hardwareAccelerationEnabled()) {
          m_type = Type::SharedMemory;
          return;
-@@ -632,7 +949,7 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
+@@ -632,7 +962,7 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
      case PlatformDisplay::Type::GBM:
  #endif
          break;
@@ -90999,7 +90741,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..200478cba7336c383db6843740f3eef2
  #if USE(WPE_RENDERER)
      case PlatformDisplay::Type::WPE:
          m_type = Type::WPEBackend;
-@@ -646,11 +963,19 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
+@@ -646,11 +976,19 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
      case PlatformDisplay::Type::Default:
          break;
  #endif // PLATFORM(GTK)
@@ -91020,7 +90762,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..200478cba7336c383db6843740f3eef2
  void AcceleratedSurface::SwapChain::setupBufferFormat()
  {
      if (m_type != Type::EGLImage)
-@@ -749,7 +1074,7 @@ bool AcceleratedSurface::SwapChain::resize(const IntSize& size)
+@@ -749,7 +1087,7 @@ bool AcceleratedSurface::SwapChain::resize(const IntSize& size)
  
  bool AcceleratedSurface::SwapChain::handleBufferFormatChangeIfNeeded()
  {
@@ -91029,7 +90771,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..200478cba7336c383db6843740f3eef2
      if (m_type == Type::EGLImage) {
          Locker locker { m_bufferFormatLock };
          if (m_bufferFormatChanged) {
-@@ -765,7 +1090,7 @@ bool AcceleratedSurface::SwapChain::handleBufferFormatChangeIfNeeded()
+@@ -765,7 +1103,7 @@ bool AcceleratedSurface::SwapChain::handleBufferFormatChangeIfNeeded()
  std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::SwapChain::createTarget() const
  {
      switch (m_type) {
@@ -91038,7 +90780,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..200478cba7336c383db6843740f3eef2
  #if USE(GBM) || OS(ANDROID)
      case Type::EGLImage: {
          Locker locker { m_bufferFormatLock };
-@@ -773,7 +1098,11 @@ std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::SwapChain:
+@@ -773,7 +1111,11 @@ std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::SwapChain:
      }
  #endif
      case Type::Texture:
@@ -91050,7 +90792,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..200478cba7336c383db6843740f3eef2
      case Type::SharedMemory:
          return RenderTargetSHMImage::create(m_surface.get(), m_size);
  #endif
-@@ -812,6 +1141,11 @@ AcceleratedSurface::RenderTarget* AcceleratedSurface::SwapChain::nextTarget()
+@@ -812,6 +1154,11 @@ AcceleratedSurface::RenderTarget* AcceleratedSurface::SwapChain::nextTarget()
              if (auto target = createTarget())
                  m_freeTargets.append(WTF::move(target));
          }
@@ -91062,7 +90804,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..200478cba7336c383db6843740f3eef2
  
  #if ENABLE(WPE_PLATFORM)
          if (m_freeTargets.size() != targetsToCreate)
-@@ -841,6 +1175,12 @@ void AcceleratedSurface::SwapChain::releaseTarget(uint64_t targetID, UnixFileDes
+@@ -841,6 +1188,12 @@ void AcceleratedSurface::SwapChain::releaseTarget(uint64_t targetID, UnixFileDes
          m_freeTargets.insert(0, WTF::move(m_lockedTargets[index]));
          m_lockedTargets.removeAt(index);
      }
@@ -91075,7 +90817,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..200478cba7336c383db6843740f3eef2
  }
  
  void AcceleratedSurface::SwapChain::reset()
-@@ -859,6 +1199,11 @@ void AcceleratedSurface::SwapChain::releaseUnusedBuffers()
+@@ -859,6 +1212,11 @@ void AcceleratedSurface::SwapChain::releaseUnusedBuffers()
  #if USE(WPE_RENDERER)
      ASSERT(m_type != Type::WPEBackend);
  #endif
@@ -91087,7 +90829,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..200478cba7336c383db6843740f3eef2
  
  #if ENABLE(WPE_PLATFORM)
      WebProcess::singleton().parentProcessConnection()->send(Messages::AcceleratedBackingStore::DidChangeBufferConfiguration(m_lockedTargets.size()), m_surface->surfaceID());
-@@ -929,7 +1274,7 @@ bool AcceleratedSurface::shouldPaintMirrored() const
+@@ -929,7 +1287,7 @@ bool AcceleratedSurface::shouldPaintMirrored() const
      switch (m_swapChain.type()) {
      case SwapChain::Type::Invalid:
          return false;
@@ -91096,7 +90838,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..200478cba7336c383db6843740f3eef2
      case SwapChain::Type::Texture:
  #if USE(GBM) || OS(ANDROID)
      case SwapChain::Type::EGLImage:
-@@ -960,6 +1305,10 @@ void AcceleratedSurface::preferredBufferFormatsDidChange()
+@@ -960,6 +1318,10 @@ void AcceleratedSurface::preferredBufferFormatsDidChange()
  
  void AcceleratedSurface::visibilityDidChange(bool isVisible)
  {
@@ -91107,7 +90849,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..200478cba7336c383db6843740f3eef2
      if (m_isVisible == isVisible)
          return;
  
-@@ -1000,7 +1349,7 @@ void AcceleratedSurface::backgroundColorDidChange()
+@@ -1000,7 +1362,7 @@ void AcceleratedSurface::backgroundColorDidChange()
      if (isOpaque == wasOpaque)
          return;
  
@@ -91116,7 +90858,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..200478cba7336c383db6843740f3eef2
      m_swapChain.setupBufferFormat();
  #endif
  }
-@@ -1022,7 +1371,7 @@ void AcceleratedSurface::didCreateCompositingRunLoop(RunLoop& runLoop)
+@@ -1022,7 +1384,7 @@ void AcceleratedSurface::didCreateCompositingRunLoop(RunLoop& runLoop)
  #if USE(GLIB_EVENT_LOOP)
      m_releaseUnusedBuffersTimer->setPriority(RunLoopSourcePriority::ReleaseUnusedResourcesTimer);
  #endif
@@ -91125,7 +90867,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..200478cba7336c383db6843740f3eef2
      WebProcess::singleton().parentProcessConnection()->addMessageReceiver(runLoop, *this, Messages::AcceleratedSurface::messageReceiverName(), m_id);
  #endif
  }
-@@ -1030,6 +1379,9 @@ void AcceleratedSurface::didCreateCompositingRunLoop(RunLoop& runLoop)
+@@ -1030,6 +1392,9 @@ void AcceleratedSurface::didCreateCompositingRunLoop(RunLoop& runLoop)
  void AcceleratedSurface::willDestroyCompositingRunLoop()
  {
      m_frameCompleteHandler = nullptr;
@@ -91135,7 +90877,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..200478cba7336c383db6843740f3eef2
  
  #if USE(WPE_RENDERER)
      if (m_swapChain.type() == SwapChain::Type::WPEBackend)
-@@ -1043,7 +1395,7 @@ void AcceleratedSurface::willDestroyCompositingRunLoop()
+@@ -1043,7 +1408,7 @@ void AcceleratedSurface::willDestroyCompositingRunLoop()
              protectedThis->m_releaseUnusedBuffersTimer = nullptr;
          });
      }
@@ -91144,7 +90886,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..200478cba7336c383db6843740f3eef2
      WebProcess::singleton().parentProcessConnection()->removeMessageReceiver(Messages::AcceleratedSurface::messageReceiverName(), m_id);
  #endif
  }
-@@ -1155,18 +1507,47 @@ void AcceleratedSurface::didRenderFrame(TargetContents targetContents)
+@@ -1155,18 +1520,47 @@ void AcceleratedSurface::didRenderFrame(TargetContents targetContents)
      if (!m_target)
          return;
  
@@ -91192,7 +90934,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..200478cba7336c383db6843740f3eef2
      m_pendingFrameNotifyTargets.insert(0, { m_target, WTF::move(damageRects) });
      m_target = nullptr;
  }
-@@ -1188,13 +1569,17 @@ const std::optional<Damage>& AcceleratedSurface::renderTargetDamage()
+@@ -1188,13 +1582,17 @@ const std::optional<Damage>& AcceleratedSurface::renderTargetDamage()
  }
  #endif
  
@@ -91629,10 +91371,10 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..29b2218c26bef68dbc9061f1727d1f72
  
          if (!m_pendingForceRepaint && m_forcedRepaintAsyncCallback)
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
-index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..f249442ab63f08b32625144530fa42e8be27aaa8 100644
+index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..75294e08e1ed87dcc41e131a7ed96abfccba6e78 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
-@@ -53,6 +53,13 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
+@@ -53,6 +53,14 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
  #include <wtf/TZoneMallocInlines.h>
  #include <wtf/text/StringToIntegerConversion.h>
  
@@ -91641,12 +91383,13 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..f249442ab63f08b32625144530fa42e8
 +#include <cstdio>
 +#include <unistd.h>
 +#include <cstdlib>
++#include <cstring>
 +#endif
 +
  #if USE(GLIB_EVENT_LOOP)
  #include <wtf/glib/RunLoopSourcePriority.h>
  #endif
-@@ -73,6 +80,17 @@ using namespace WebCore;
+@@ -73,13 +81,29 @@ using namespace WebCore;
  
  WTF_MAKE_TZONE_ALLOCATED_IMPL(ThreadedCompositor);
  
@@ -91664,7 +91407,19 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..f249442ab63f08b32625144530fa42e8
  Ref<ThreadedCompositor> ThreadedCompositor::create(WebPage& webPage, LayerTreeHost& layerTreeHost, CoordinatedSceneState& sceneState)
  {
      return adoptRef(*new ThreadedCompositor(webPage, layerTreeHost, sceneState));
-@@ -90,6 +108,17 @@ ThreadedCompositor::ThreadedCompositor(WebPage& webPage, LayerTreeHost& layerTre
+ }
+ 
+ ThreadedCompositor::ThreadedCompositor(WebPage& webPage, LayerTreeHost& layerTreeHost, CoordinatedSceneState& sceneState)
++#if PLATFORM(HAIKU)
++    // Ahead of page scripts and loading, like the scrolling thread it serves.
++    : m_workQueue(WorkQueue::create("org.webkit.ThreadedCompositor"_s, WorkQueue::QOS::UserInteractive))
++#else
+     : m_workQueue(WorkQueue::create("org.webkit.ThreadedCompositor"_s))
++#endif
+     , m_layerTreeHost(&layerTreeHost)
+     , m_surface(AcceleratedSurface::create(webPage, [this] { frameComplete(); }, AcceleratedSurface::RenderingPurpose::Composited))
+     , m_sceneState(&sceneState)
+@@ -90,6 +114,17 @@ ThreadedCompositor::ThreadedCompositor(WebPage& webPage, LayerTreeHost& layerTre
  {
      ASSERT(RunLoop::isMain());
  
@@ -91682,7 +91437,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..f249442ab63f08b32625144530fa42e8
      m_didCompositeRunLoopObserver = makeUnique<RunLoopObserver>(RunLoopObserver::WellKnownOrder::GraphicsCommit, [this] {
          this->didCompositeRunLoopObserverFired();
      });
-@@ -216,8 +245,17 @@ void ThreadedCompositor::updateRenderTimer()
+@@ -216,8 +251,17 @@ void ThreadedCompositor::updateRenderTimer()
      }
  
      if (m_state.isRenderTimerActive) {
@@ -91702,7 +91457,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..f249442ab63f08b32625144530fa42e8
      } else
          m_renderTimer.stop();
  }
-@@ -364,6 +402,10 @@ TargetContents ThreadedCompositor::paintToCurrentGLContext(const TransformationM
+@@ -364,6 +408,10 @@ TargetContents ThreadedCompositor::paintToCurrentGLContext(const TransformationM
  #if USE(TEXTURE_MAPPER)
  void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix, const IntSize& size, const OptionSet<CompositionReason>& reasons)
  {
@@ -91713,7 +91468,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..f249442ab63f08b32625144530fa42e8
      FloatRect clipRect(FloatPoint { }, size);
      TextureMapperLayer& currentRootLayer = m_sceneState->rootLayer().ensureTarget();
      if (currentRootLayer.transform() != matrix)
-@@ -373,6 +415,9 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
+@@ -373,6 +421,9 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
  
      m_textureMapper->beginPainting(m_flipY ? TextureMapper::FlipY::Yes : TextureMapper::FlipY::No);
      m_textureMapper->beginClip(TransformationMatrix(), FloatRoundedRect(clipRect));
@@ -91723,7 +91478,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..f249442ab63f08b32625144530fa42e8
  
  #if ENABLE(DAMAGE_TRACKING)
      std::optional<FloatRoundedRect> rectContainingRegionThatActuallyChanged;
-@@ -404,11 +449,20 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
+@@ -404,11 +455,20 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
          m_textureMapper->beginClip(TransformationMatrix(), *rectContainingRegionThatActuallyChanged);
  #endif
  
@@ -91744,7 +91499,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..f249442ab63f08b32625144530fa42e8
  
  #if ENABLE(DAMAGE_TRACKING)
      if (rectContainingRegionThatActuallyChanged)
-@@ -426,6 +480,16 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
+@@ -426,6 +486,16 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
  
      m_textureMapper->endClip();
      m_textureMapper->endPainting();
@@ -91761,7 +91516,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..f249442ab63f08b32625144530fa42e8
  
      if (sceneHasRunningAnimations)
          requestComposition(CompositionReason::Animation);
-@@ -556,6 +620,39 @@ void ThreadedCompositor::renderLayerTree()
+@@ -556,6 +626,44 @@ void ThreadedCompositor::renderLayerTree()
      if (m_suspendedCount > 0)
          return;
  
@@ -91773,7 +91528,12 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..f249442ab63f08b32625144530fa42e8
 +    // request and wait; renderTargetReleased() runs it as soon as one returns.
 +    // A buffer that never comes back must not freeze the page, so after a
 +    // while it paints anyway and the chain grows by one.
-+    {
++    // SUMMIT_SWAPCHAIN_WAIT=0 paints into a new buffer at once instead.
++    static const bool waitForRenderTarget = [] {
++        const char* value = getenv("SUMMIT_SWAPCHAIN_WAIT");
++        return !value || strcmp(value, "0");
++    }();
++    if (waitForRenderTarget) {
 +        static constexpr Seconds waitLimit = 2_s;
 +        IntSize size;
 +        {
@@ -91801,7 +91561,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..f249442ab63f08b32625144530fa42e8
      OptionSet<CompositionReason> reasons;
      bool shouldNotifiyDidComposite = false;
      {
-@@ -580,8 +677,16 @@ void ThreadedCompositor::renderLayerTree()
+@@ -580,8 +688,16 @@ void ThreadedCompositor::renderLayerTree()
  
          ASSERT(m_state.state == State::Scheduled);
          m_state.state = State::InProgress;
@@ -91818,7 +91578,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..f249442ab63f08b32625144530fa42e8
  #if USE(TEXTURE_MAPPER)
      if (!m_context || !m_context->makeContextCurrent())
          return;
-@@ -599,10 +704,14 @@ void ThreadedCompositor::renderLayerTree()
+@@ -599,10 +715,14 @@ void ThreadedCompositor::renderLayerTree()
      if (viewportSize.isEmpty())
          return;
  
@@ -91833,7 +91593,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..f249442ab63f08b32625144530fa42e8
  
      RunLoop::mainSingleton().dispatch([this, protectedThis = Ref { *this }] {
          if (m_layerTreeHost)
-@@ -612,10 +721,16 @@ void ThreadedCompositor::renderLayerTree()
+@@ -612,10 +732,16 @@ void ThreadedCompositor::renderLayerTree()
      WTFBeginSignpost(this, FlushCompositingState);
      flushCompositingState(reasons);
      WTFEndSignpost(this, FlushCompositingState);
@@ -91850,7 +91610,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..f249442ab63f08b32625144530fa42e8
  
      updateFPSCounter();
  
-@@ -633,6 +748,14 @@ void ThreadedCompositor::renderLayerTree()
+@@ -633,6 +759,14 @@ void ThreadedCompositor::renderLayerTree()
  
      m_surface->didRenderFrame(targetContents);
      m_surface->sendFrame();
@@ -91865,7 +91625,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..f249442ab63f08b32625144530fa42e8
  
      RunLoop::mainSingleton().dispatch([this, protectedThis = Ref { *this }] {
          if (m_layerTreeHost)
-@@ -656,6 +779,13 @@ void ThreadedCompositor::requestComposition(CompositionReason reason)
+@@ -656,6 +790,13 @@ void ThreadedCompositor::requestComposition(CompositionReason reason)
  {
      Locker locker { m_state.lock };
      m_state.reasons.add(reason);
@@ -91879,7 +91639,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..f249442ab63f08b32625144530fa42e8
      scheduleUpdateLocked();
  }
  
-@@ -726,6 +856,20 @@ void ThreadedCompositor::frameComplete()
+@@ -726,6 +867,20 @@ void ThreadedCompositor::frameComplete()
      }
  }
  

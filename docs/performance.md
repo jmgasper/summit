@@ -57,7 +57,7 @@ and 9.9 GB idle, against 13.7 GB for 38 processes before; all 36 loaded
 ### An idle page that took a core
 
 Stack Overflow kept one web process at 100% of a core while idle.
-`SUMMIT_IDLE_TRACE=1` (new) showed 47,000 event-loop turns a second, each
+A trace (`SUMMIT_IDLE_TRACE=1`, since removed, see below) showed 47,000 event-loop turns a second, each
 running one microtask queued by a mutation record from an image load event;
 the image trace then named the script: the sign-up modal
 (`signup-modal.en.js`) sets an image's `src` again when it fails, and
@@ -69,6 +69,68 @@ loops. After three errors for one URL on one element within two seconds,
 further error events now wait 10 ms, doubling to one second; the page still
 gets each one. Stack Overflow idles at 0.04 cores. Cloudflare challenging
 Summit's subresources is a compatibility problem of its own and still open.
+
+### Reading back only what changed
+
+smh.com.au kept its process at 1.2-1.4 cores while idle: an animated element
+and the page's scrollbar changed every frame, and every frame read all
+7 Mpx back from the GPU (11.3 ms at 200%, `SUMMIT_PRESENT_STATS=1`). The
+damage was right but widened on the way: each render target kept its damage
+as one bounding box (GL surfaces were not marked as walking damage
+rectangles, though the Haiku readback does), pages united each frame's
+damage into one box (`UnifyDamagedRegions`, now off; `SUMMIT_UNIFY_DAMAGE=1`
+restores it), and past 16 rectangles the readback read their bounds. Now
+touching grid cells join into exact strips and bands, and pairs merge only
+while that costs fewer pixels than another read (up to 32 pieces; beyond
+that most of the frame changed anyway). The coordinated scrollbar also stopped
+repainting when it would draw the same pixels. smh.com.au reads 0.08 Mpx a
+frame; the read still takes 5.8 ms because zink's `glReadPixels` waits for
+the GPU, which TextureMapper has made redraw the whole bounding box (a 2x2
+speck at the top-left and the scrollbar at the right). Its process went from
+1.3 to 0.97 cores. Final frames of a Wikipedia scroll match the old build.
+
+### Scrolling while 24 other tabs reload
+
+`run-multitab.py` scrolls the first window while every tab of the other two
+reloads: about 20 frames/s during the burst and gaps up to 0.5-0.7 s, in
+every build tried today. Traced (`SUMMIT_COMPOSITOR_TIMING_TRACE=1` now tags
+lines with `pid=`; `SUMMIT_INPUT_DELAY_TRACE=1`; `SUMMIT_IPC_SLOW_TRACE=1`):
+
+- It is not the UI process: it used 0.13 cores, wheel events never waited
+  over 20 ms for its main thread, and its slowest IPC handler
+  (`DidFinishLoadForFrame`) took 58 ms.
+- In the scrolled page's process each frame costs about 20 ms (a full 7 Mpx
+  readback, since scrolling changes everything), new tiles pile up (up to
+  244 pending, one flush spent 80 ms uploading them), and for stretches of
+  up to 150 ms the scrolling thread asked for nothing.
+- Two, four or six Skia painting threads made no difference beyond noise.
+
+On Haiku WebKit's thread quality of service was ignored: the scrolling
+thread (`UserInteractive`) ran at the same priority as 24 pages loading. It
+now maps to Haiku priorities as Linux maps it to scheduling classes
+(user-interactive 15, user-initiated 12, utility 7, background 5), and the
+compositor's queue is user-interactive. That did not change the numbers
+above measurably; lowering the page thread of processes whose pages are all
+hidden seemed to slow loading and was taken out again. The remaining costs
+are structural: a full-frame readback per scrolled frame at 200% on a GPU
+whose clocks NVK cannot raise, and painting and uploading the newly exposed
+tiles.
+
+### Speedometer, and what the traces cost
+
+Interleaved 10-iteration runs (default window, 1913x933) put today's build
+2-4% behind the installed `r6ti1k5v` (7.91/8.02 against 8.11/8.27; earlier
+pairs 7.64-7.86 against 8.14-8.22). Switching off the buffer wait
+(`SUMMIT_SWAPCHAIN_WAIT=0`), MADV_FREE (`SUMMIT_DECOMMIT=0`,
+`MIMALLOC_PURGE_DELAY=-1`) or fine damage (`SUMMIT_FINE_DAMAGE=0`,
+`SUMMIT_UNIFY_DAMAGE=1`) did not recover it. The engine is profile-guided
+with profiles from the previous code, and a function whose code changes
+loses its profile: the diagnostic traces had gone into the event loop,
+microtask queueing, attribute changes, IPC dispatch and run-loop turns.
+Taking them out of those paths halved the gap; the rest is the fixes
+themselves in the compositor, readback and image loader until the profiles
+are retrained. The traces (`SUMMIT_IDLE_TRACE`, `SUMMIT_IPC_SLOW_TRACE`)
+are in commit `cbac2fd`'s engine patch for the next time they are needed.
 
 ### NVDEC and 16 reference frames
 
@@ -99,8 +161,12 @@ when it can hold 16 references switches the fallback off.
   (`mesa-25.3.6-summit-04-zink-failed-screen.patch`).
 - Force-quitting did not cause them by itself: web processes already `_exit`
   when the UI process goes away; they crashed because the GPU had run out of
-  memory. None of the runs after the buffer fixes (dozens of launches and
-  quits, 36 tabs at once) produced a crash report.
+  memory. No run after the buffer fixes (dozens of launches and quits)
+  produced one of these again.
+- One crash remains, four times in the 36-tab runs: the NVDEC add-on's
+  slice copy (`nvdecH264Decode`, `nvdec_h264.c:883`, a `memcpy` past a
+  buffer) on some site's video, which ends that tab's web process. Reported
+  to the OS session, whose add-on it is.
 
 ## 27 September 2026: installed on the X399, and what it measured
 
