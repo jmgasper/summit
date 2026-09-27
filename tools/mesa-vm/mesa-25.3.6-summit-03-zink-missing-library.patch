@@ -1,0 +1,45 @@
+diff -ru '--color=never' a/src/gallium/drivers/zink/zink_pipeline.c b/src/gallium/drivers/zink/zink_pipeline.c
+--- a/src/gallium/drivers/zink/zink_pipeline.c
++++ b/src/gallium/drivers/zink/zink_pipeline.c
+@@ -904,6 +904,13 @@
+    VkPipeline libraries[4];
+    VkPipelineLibraryCreateInfoKHR libstate = {0};
+    libstate.sType = VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR;
++   /* Never link a library that failed to build: drivers dereference it. */
++   for (unsigned i = 0; i < libcount; i++) {
++      if (library[i] == VK_NULL_HANDLE) {
++         mesa_loge("ZINK: a pipeline library is missing; not linking");
++         return VK_NULL_HANDLE;
++      }
++   }
+    if (input)
+       libraries[libstate.libraryCount++] = input;
+    for (unsigned i = 0; i < libcount; i++)
+diff -ru '--color=never' a/src/gallium/drivers/zink/zink_program_state.hpp b/src/gallium/drivers/zink/zink_program_state.hpp
+--- a/src/gallium/drivers/zink/zink_program_state.hpp
++++ b/src/gallium/drivers/zink/zink_program_state.hpp
+@@ -254,6 +254,16 @@
+          struct zink_gfx_output_key *okey = DYNAMIC_STATE >= ZINK_DYNAMIC_STATE3 && screen->have_full_ds3 ?
+                                              zink_find_or_create_output_ds3(ctx) :
+                                              zink_find_or_create_output(ctx);
++         /* A part that failed to build (out of memory, say) is VK_NULL_HANDLE:
++          * linking it makes the driver read through a null pipeline (Summit
++          * saw NVK crash in vk_graphics_pipeline_state_merge). Build the
++          * whole pipeline instead. */
++         if (!gkey || !gkey->pipeline || (ikey && !ikey->pipeline) || !okey || !okey->pipeline) {
++            if (DYNAMIC_STATE != ZINK_DYNAMIC_VERTEX_INPUT2 && DYNAMIC_STATE != ZINK_DYNAMIC_VERTEX_INPUT && !IS_MESH)
++               pc_entry->pipeline = zink_create_gfx_pipeline(screen, prog, prog->objs, state, state->element_state->binding_map, vkmode, false);
++            else
++               pc_entry->pipeline = zink_create_gfx_pipeline(screen, prog, prog->objs, state, NULL, vkmode, false);
++         } else {
+          /* partial pipelines are stored to the cache entry for async optimized pipeline compiles */
+          pc_entry->gpl.ikey = ikey;
+          pc_entry->gpl.gkey = gkey;
+@@ -268,6 +278,7 @@
+                /* trigger async optimized pipeline compile if this was the fast-linked unoptimized pipeline */
+                zink_gfx_program_compile_queue(ctx, pc_entry);
+          }
++         }
+       } else {
+          /* optimize by default only when expecting precompiles in order to reduce stuttering */
+          if (DYNAMIC_STATE != ZINK_DYNAMIC_VERTEX_INPUT2 && DYNAMIC_STATE != ZINK_DYNAMIC_VERTEX_INPUT && !IS_MESH)

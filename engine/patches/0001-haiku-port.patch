@@ -1726,7 +1726,7 @@ index b29212ad5b98d332ff7c1db7814cb2575988ec5f..b6c50d32873f6c712e3409ca1c5e2ec5
      String m_accessGroup;
  };
 diff --git a/Source/WebCore/PlatformHaiku.cmake b/Source/WebCore/PlatformHaiku.cmake
-index 16a88804a1baa39ccdd9fc2870b6e2524d941298..9333d477ff7a3aff833927d7966fcd0ec4fb8976 100644
+index 16a88804a1baa39ccdd9fc2870b6e2524d941298..0eb0d6e4b0a46bdc7927b88e59c6e2d7a4508fef 100644
 --- a/Source/WebCore/PlatformHaiku.cmake
 +++ b/Source/WebCore/PlatformHaiku.cmake
 @@ -1,8 +1,87 @@
@@ -1818,7 +1818,7 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..9333d477ff7a3aff833927d7966fcd0e
  )
  
  list(APPEND WebCore_SOURCES
-@@ -11,42 +90,159 @@ list(APPEND WebCore_SOURCES
+@@ -11,42 +90,160 @@ list(APPEND WebCore_SOURCES
  
    editing/glib/EditorGLib.cpp
  
@@ -1872,6 +1872,7 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..9333d477ff7a3aff833927d7966fcd0e
 +  platform/graphics/haiku/IntSizeHaiku.cpp
 +  platform/graphics/haiku/IconHaiku.cpp
 +  platform/graphics/haiku/FragmentedMP4ParserHaiku.cpp
++  platform/graphics/haiku/MediaDecoderSelectionHaiku.cpp
 +  platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 +  platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
 +  platform/graphics/haiku/PlatformMediaEngineConfigurationFactoryHaiku.cpp
@@ -1983,7 +1984,7 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..9333d477ff7a3aff833927d7966fcd0e
    textencoding
    translation
    ${WEBP_LIBRARIES}
-@@ -61,6 +257,198 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
+@@ -61,6 +258,198 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
    ${SQLITE_INCLUDE_DIR}
    ${WEBP_INCLUDE_DIRS}
    ${ZLIB_INCLUDE_DIRS}
@@ -11999,12 +12000,443 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 +} // namespace WebCore
 +
+diff --git a/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..4aca1af69053ffaa9886a28a98375877665cd66c
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.cpp
+@@ -0,0 +1,331 @@
++/*
++ * Copyright (C) 2026 Haiku, Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "MediaDecoderSelectionHaiku.h"
++
++#include <MediaFormats.h>
++#include <algorithm>
++#include <cmath>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <mutex>
++#include <set>
++#include <vector>
++
++namespace WebCore {
++
++namespace {
++
++// Reads the bits of a NAL unit's payload, with its emulation prevention bytes
++// (00 00 03) already removed.
++class BitReader {
++public:
++    explicit BitReader(std::vector<uint8_t>&& bytes)
++        : m_bytes(std::move(bytes))
++    {
++    }
++
++    bool failed() const { return m_failed; }
++
++    unsigned bit()
++    {
++        if (m_position >= m_bytes.size() * 8) {
++            m_failed = true;
++            return 0;
++        }
++        unsigned value = (m_bytes[m_position / 8] >> (7 - m_position % 8)) & 1;
++        ++m_position;
++        return value;
++    }
++
++    unsigned bits(unsigned count)
++    {
++        unsigned value = 0;
++        while (count--)
++            value = (value << 1) | bit();
++        return value;
++    }
++
++    // Exp-Golomb, ue(v).
++    unsigned unsignedGolomb()
++    {
++        unsigned zeros = 0;
++        while (!bit()) {
++            if (m_failed || ++zeros > 31) {
++                m_failed = true;
++                return 0;
++            }
++        }
++        return (1u << zeros) - 1 + bits(zeros);
++    }
++
++    int signedGolomb()
++    {
++        unsigned value = unsignedGolomb();
++        return value & 1 ? static_cast<int>((value + 1) / 2) : -static_cast<int>(value / 2);
++    }
++
++private:
++    std::vector<uint8_t> m_bytes;
++    size_t m_position { 0 };
++    bool m_failed { false };
++};
++
++void skipScalingList(BitReader& reader, unsigned size)
++{
++    int lastScale = 8;
++    int nextScale = 8;
++    for (unsigned i = 0; i < size && !reader.failed(); ++i) {
++        if (nextScale)
++            nextScale = (lastScale + reader.signedGolomb() + 256) % 256;
++        lastScale = nextScale ? nextScale : lastScale;
++    }
++}
++
++// Section 7.3.2.1.1 of ITU-T H.264, as far as max_num_ref_frames.
++std::optional<unsigned> maxReferenceFramesFromSPS(std::span<const uint8_t> nal)
++{
++    if (nal.size() < 4 || (nal[0] & 0x1f) != 7)
++        return std::nullopt;
++    std::vector<uint8_t> payload;
++    payload.reserve(nal.size());
++    unsigned zeros = 0;
++    for (size_t i = 1; i < nal.size(); ++i) {
++        if (zeros >= 2 && nal[i] == 3) {
++            zeros = 0;
++            continue;
++        }
++        zeros = nal[i] ? 0 : zeros + 1;
++        payload.push_back(nal[i]);
++    }
++    BitReader reader(std::move(payload));
++    unsigned profile = reader.bits(8);
++    reader.bits(16); // constraint flags, level
++    reader.unsignedGolomb(); // seq_parameter_set_id
++    static constexpr unsigned highProfiles[] = { 100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135 };
++    if (std::find(std::begin(highProfiles), std::end(highProfiles), profile) != std::end(highProfiles)) {
++        unsigned chromaFormat = reader.unsignedGolomb();
++        if (chromaFormat == 3)
++            reader.bit(); // separate_colour_plane_flag
++        reader.unsignedGolomb(); // bit_depth_luma_minus8
++        reader.unsignedGolomb(); // bit_depth_chroma_minus8
++        reader.bit(); // qpprime_y_zero_transform_bypass_flag
++        if (reader.bit()) { // seq_scaling_matrix_present_flag
++            for (unsigned i = 0; i < (chromaFormat == 3 ? 12u : 8u); ++i) {
++                if (reader.bit())
++                    skipScalingList(reader, i < 6 ? 16 : 64);
++            }
++        }
++    }
++    reader.unsignedGolomb(); // log2_max_frame_num_minus4
++    unsigned pictureOrderCountType = reader.unsignedGolomb();
++    if (!pictureOrderCountType)
++        reader.unsignedGolomb(); // log2_max_pic_order_cnt_lsb_minus4
++    else if (pictureOrderCountType == 1) {
++        reader.bit(); // delta_pic_order_always_zero_flag
++        reader.signedGolomb(); // offset_for_non_ref_pic
++        reader.signedGolomb(); // offset_for_top_to_bottom_field
++        unsigned cycle = reader.unsignedGolomb();
++        if (cycle > 255)
++            return std::nullopt;
++        for (unsigned i = 0; i < cycle; ++i)
++            reader.signedGolomb();
++    }
++    unsigned references = reader.unsignedGolomb();
++    if (reader.failed())
++        return std::nullopt;
++    return references;
++}
++
++unsigned hardwareDecoderReferenceLimit()
++{
++    // 17 pictures: the references, the one being decoded and one waiting to
++    // be shown. Measured on the X399: 15 reference frames play all 300
++    // pictures of a clip, 16 play 22.
++    static const unsigned limit = [] {
++        if (const char* value = std::getenv("SUMMIT_NVDEC_MAX_REFERENCES")) {
++            char* end = nullptr;
++            unsigned long parsed = std::strtoul(value, &end, 10);
++            if (end != value && !*end && parsed <= 32)
++                return static_cast<unsigned>(parsed);
++        }
++        return 15u;
++    }();
++    return limit;
++}
++
++std::mutex s_softwareDecoderLock;
++std::optional<media_codec_info> s_softwareDecoder;
++
++} // namespace
++
++std::optional<unsigned> h264MaxReferenceFrames(std::span<const uint8_t> avcC)
++{
++    if (avcC.size() < 8 || avcC[0] != 1)
++        return std::nullopt;
++    unsigned sequenceParameterSets = avcC[5] & 0x1f;
++    if (!sequenceParameterSets)
++        return std::nullopt;
++    size_t length = (size_t(avcC[6]) << 8) | avcC[7];
++    if (8 + length > avcC.size())
++        return std::nullopt;
++    return maxReferenceFramesFromSPS(avcC.subspan(8, length));
++}
++
++bool hardwareDecoderCannotDecodeHaiku(const media_codec_info& decoder, std::span<const uint8_t> avcC)
++{
++    if (std::strcmp(decoder.short_name, "nvdec h264"))
++        return false;
++    auto references = h264MaxReferenceFrames(avcC);
++    return references && *references > hardwareDecoderReferenceLimit();
++}
++
++status_t setSoftwareDecoderHaiku(BMediaDecoder& decoder, const media_format& format, const void* info, size_t infoSize, media_codec_info* chosen)
++{
++    auto accepts = [&](const media_codec_info& candidate) {
++        media_format input = format;
++        if (decoder.SetTo(&candidate) != B_OK || decoder.SetInputFormat(&input, info, infoSize) != B_OK)
++            return false;
++        media_codec_info name = { };
++        if (decoder.GetDecoderInfo(&name) != B_OK || !std::strncmp(name.short_name, "nvdec", 5))
++            return false;
++        if (chosen)
++            *chosen = name;
++        return true;
++    };
++
++    {
++        std::lock_guard guard(s_softwareDecoderLock);
++        if (s_softwareDecoder && accepts(*s_softwareDecoder))
++            return B_OK;
++    }
++    // BMediaDecoder::SetTo(const media_codec_info*) finds the add-on by the
++    // identifier Haiku gives it in its list of encoders, and libavcodec's
++    // add-on is the one that both encodes and decodes.
++    int32 cookie = 0;
++    media_codec_info candidate;
++    std::set<int32> tried;
++    while (get_next_encoder(&cookie, &candidate) == B_OK) {
++        if (!tried.insert(candidate.id).second)
++            continue;
++        if (accepts(candidate)) {
++            std::lock_guard guard(s_softwareDecoderLock);
++            s_softwareDecoder = candidate;
++            return B_OK;
++        }
++    }
++    return B_ENTRY_NOT_FOUND;
++}
++
++std::unique_ptr<SoftwareVideoDecoderHaiku> SoftwareVideoDecoderHaiku::createIfNeeded(BMediaTrack& track, const media_format& decodedFormat)
++{
++    media_format encoded;
++    media_codec_info native = { };
++    if (track.EncodedFormat(&encoded) != B_OK || track.GetCodecInfo(&native) != B_OK)
++        return nullptr;
++    auto* meta = static_cast<const uint8_t*>(encoded.MetaData());
++    if (!meta || !hardwareDecoderCannotDecodeHaiku(native, { meta, static_cast<size_t>(encoded.MetaDataSize()) }))
++        return nullptr;
++    // libavcodec learns the picture format by decoding the first chunk it is
++    // given, and a track taken again from its file carries on from wherever
++    // the last one stopped: start it from the beginning. Callers seek it to
++    // the time they want afterwards.
++    bigtime_t start = 0;
++    track.SeekToTime(&start);
++    std::unique_ptr<SoftwareVideoDecoderHaiku> decoder(new SoftwareVideoDecoderHaiku(track, encoded));
++    if (decoder->setUp(decodedFormat) != B_OK) {
++        std::fprintf(stderr, "Summit media: %s cannot decode this H.264 stream and no other decoder took it\n", native.pretty_name);
++        return nullptr;
++    }
++    media_codec_info chosen = { };
++    decoder->GetDecoderInfo(&chosen);
++    std::fprintf(stderr, "Summit media: H.264 with %u reference frames decoded by %s instead of %s\n",
++        h264MaxReferenceFrames({ meta, static_cast<size_t>(encoded.MetaDataSize()) }).value_or(0), chosen.pretty_name, native.pretty_name);
++    return decoder;
++}
++
++SoftwareVideoDecoderHaiku::SoftwareVideoDecoderHaiku(BMediaTrack& track, const media_format& encodedFormat)
++    : m_track(track)
++    , m_encodedFormat(encodedFormat)
++{
++    double rate = encodedFormat.u.encoded_video.output.field_rate;
++    if (rate > 0 && std::isfinite(rate))
++        m_frameRate = rate;
++    m_firstFrame = track.CurrentFrame();
++}
++
++status_t SoftwareVideoDecoderHaiku::setUp(const media_format& requested)
++{
++    status_t status = setSoftwareDecoderHaiku(*this, m_encodedFormat, m_encodedFormat.MetaData(), m_encodedFormat.MetaDataSize());
++    if (status != B_OK)
++        return status;
++    media_format output = requested;
++    status = SetOutputFormat(&output);
++    if (status == B_OK)
++        m_decodedFormat = output;
++    return status;
++}
++
++status_t SoftwareVideoDecoderHaiku::GetNextChunk(const void** chunk, size_t* size, media_header* header)
++{
++    char* buffer = nullptr;
++    int32 length = 0;
++    status_t status = m_track.ReadChunk(&buffer, &length, header);
++    *chunk = buffer;
++    *size = status == B_OK ? static_cast<size_t>(length) : 0;
++    return status;
++}
++
++status_t SoftwareVideoDecoderHaiku::readFrame(void* buffer, int64* count, media_header* header)
++{
++    media_header ignored;
++    media_decode_info info;
++    status_t status = Decode(buffer, count, header ? header : &ignored, &info);
++    if (status == B_OK)
++        m_framesDecoded += std::max<int64>(*count, 1);
++    return status;
++}
++
++status_t SoftwareVideoDecoderHaiku::seekToTime(bigtime_t* time)
++{
++    status_t status = m_track.SeekToTime(time);
++    if (status != B_OK)
++        return status;
++    m_firstFrame = m_track.CurrentFrame();
++    m_framesDecoded = 0;
++    // A fresh decoder: nothing from before the seek may come out of it.
++    return setUp(m_decodedFormat);
++}
++
++bigtime_t SoftwareVideoDecoderHaiku::currentTime() const
++{
++    if (!(m_frameRate > 0))
++        return m_track.CurrentTime();
++    return static_cast<bigtime_t>((m_firstFrame + m_framesDecoded) * 1000000.0 / m_frameRate);
++}
++
++} // namespace WebCore
+diff --git a/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.h b/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..df2a7d05bcacb641010b07fe2942ce2db57cfb46
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.h
+@@ -0,0 +1,88 @@
++/*
++ * Copyright (C) 2026 Haiku, Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#pragma once
++
++#include <MediaDecoder.h>
++#include <MediaDefs.h>
++#include <MediaTrack.h>
++#include <cstdint>
++#include <memory>
++#include <optional>
++#include <span>
++
++// Haiku gives each encoded format to one decoder add-on, chosen by add-on
++// directory, and a stream that add-on cannot decode does not fall back. The
++// NVDEC add-on (the X399's GeForce, "nvdec h264") keeps 17 pictures on the
++// card: an H.264 stream with 16 reference frames (level 5.1, common in
++// high-quality 1080p files) runs out of them, and it skips to the next
++// keyframe - 22 of 300 pictures, with freezes of seconds. Such streams go to
++// libavcodec instead, picked by hand through the one public way to name a
++// decoder add-on (BMediaDecoder::SetTo(const media_codec_info*)).
++
++namespace WebCore {
++
++// max_num_ref_frames of the first sequence parameter set in an avcC record
++// (ISO/IEC 14496-15), or nullopt if the record cannot be read.
++std::optional<unsigned> h264MaxReferenceFrames(std::span<const uint8_t> avcC);
++
++// Whether `decoder`, the add-on the media kit chose, cannot decode an H.264
++// stream with this avcC. Only the NVDEC add-on under the name it has now
++// ("nvdec h264") is suspected; a fixed add-on under another name is trusted.
++// SUMMIT_NVDEC_MAX_REFERENCES overrides the 15 reference frames it handles.
++bool hardwareDecoderCannotDecodeHaiku(const media_codec_info& decoder, std::span<const uint8_t> avcC);
++
++// Sets `decoder` to an add-on other than NVDEC that accepts `format`
++// (libavcodec in practice) and says which in `chosen`.
++status_t setSoftwareDecoderHaiku(BMediaDecoder&, const media_format&, const void* info, size_t infoSize, media_codec_info* chosen = nullptr);
++
++// A BMediaTrack's pictures decoded by libavcodec instead of the track's own
++// decoder: its encoded chunks are read raw. The frame counter gives the time,
++// as libavcodec's frame times are in the stream's time base on Haiku.
++class SoftwareVideoDecoderHaiku final : public BMediaDecoder {
++public:
++    // Null unless the track's own decoder cannot decode it (see above).
++    static std::unique_ptr<SoftwareVideoDecoderHaiku> createIfNeeded(BMediaTrack&, const media_format& decodedFormat);
++
++    // Returns the decoded format, which asks for what `decodedFormat` asked for.
++    const media_format& decodedFormat() const { return m_decodedFormat; }
++    status_t readFrame(void* buffer, int64* count, media_header*);
++    status_t seekToTime(bigtime_t*);
++    bigtime_t currentTime() const;
++
++private:
++    SoftwareVideoDecoderHaiku(BMediaTrack&, const media_format& encodedFormat);
++    status_t setUp(const media_format& requested);
++    status_t GetNextChunk(const void** chunk, size_t* size, media_header*) final;
++
++    BMediaTrack& m_track;
++    media_format m_encodedFormat;
++    media_format m_decodedFormat;
++    double m_frameRate { 0 };
++    int64 m_firstFrame { 0 };
++    int64 m_framesDecoded { 0 };
++};
++
++} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..678d258ccf4426251abd0c34dcf4534a03ecdd45
+index 0000000000000000000000000000000000000000..b2223740650d0f574f27ad2c1ec74b62339e7bc0
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,1580 @@
+@@ -0,0 +1,1601 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -12035,6 +12467,8 @@ index 0000000000000000000000000000000000000000..678d258ccf4426251abd0c34dcf4534a
 +#endif
 +#include "ColorSpace.h"
 +#include "MediaPlayerPrivateHaiku.h"
++
++#include "MediaDecoderSelectionHaiku.h"
 +#if USE(COORDINATED_GRAPHICS) && USE(TEXTURE_MAPPER) && USE(SKIA)
 +#include "CoordinatedPlatformLayerBufferNativeImage.h"
 +#include "CoordinatedPlatformLayerBufferProxy.h"
@@ -12256,6 +12690,7 @@ index 0000000000000000000000000000000000000000..678d258ccf4426251abd0c34dcf4534a
 +    delete m_soundPlayer;
 +    m_soundPlayer = nullptr;
 +
++    m_softwareVideo = nullptr;
 +    delete m_mediaFile;
 +    m_mediaFile = nullptr;
 +    delete m_secondaryMediaFile;
@@ -12434,6 +12869,15 @@ index 0000000000000000000000000000000000000000..678d258ccf4426251abd0c34dcf4534a
 +    int lastTraceSecond = -1;
 +    const bool tracePlayback = mediaPlaybackTraceEnabled();
 +    bigtime_t pausedSince = 0;
++    // The track's own decoder, or libavcodec for a stream it cannot decode.
++    auto readVideoFrame = [player](void* buffer, int64* count, media_header* header) {
++        if (player->m_softwareVideo)
++            return player->m_softwareVideo->readFrame(buffer, count, header);
++        return player->m_videoTrack->ReadFrames(buffer, count, header);
++    };
++    auto decodedVideoTime = [player] {
++        return player->m_softwareVideo ? player->m_softwareVideo->currentTime() : videoTrackTime(*player->m_videoTrack);
++    };
 +
 +    while (!player->m_abort) {
 +        if (player->m_paused && player->m_prerollTarget < 0) {
@@ -12447,6 +12891,7 @@ index 0000000000000000000000000000000000000000..678d258ccf4426251abd0c34dcf4534a
 +                if (!player->m_abort && player->m_paused && player->m_prerollTarget < 0
 +                    && !player->m_videoSeekStarting && player->m_videoTrack) {
 +                    bigtime_t releaseStartedAt = tracePlayback ? system_time() : 0;
++                    player->m_softwareVideo = nullptr;
 +                    player->m_videoTrackFile->ReleaseTrack(player->m_videoTrack);
 +                    player->m_videoTrack = nullptr;
 +                    if (tracePlayback)
@@ -12474,15 +12919,15 @@ index 0000000000000000000000000000000000000000..678d258ccf4426251abd0c34dcf4534a
 +        bigtime_t prerollTarget = player->m_prerollTarget;
 +        if (prerollTarget >= 0 && player->m_videoTrack && player->m_frameBuffer) {
 +            int64 count = 1;
-+            status_t status = player->m_videoTrack->ReadFrames(player->m_frameBuffer->Bits(), &count);
++            status_t status = readVideoFrame(player->m_frameBuffer->Bits(), &count, nullptr);
 +            if (status == B_OK)
 +                ++player->m_prerollFrames;
-+            if (status != B_OK || videoTrackTime(*player->m_videoTrack) >= prerollTarget || player->m_prerollFrames >= 300) {
++            if (status != B_OK || decodedVideoTime() >= prerollTarget || player->m_prerollFrames >= 300) {
 +                unsigned generation = player->m_seekGeneration;
 +                if (tracePlayback)
 +                    std::fprintf(stderr, "Summit media seek: player=%p requested=%.3f keyframe=%.3f decoded=%u position=%.3f\n",
 +                        player, prerollTarget / 1000000.0, player->m_prerollKeyframeTime / 1000000.0,
-+                        player->m_prerollFrames, videoTrackTime(*player->m_videoTrack) / 1000000.0);
++                        player->m_prerollFrames, decodedVideoTime() / 1000000.0);
 +                player->m_prerollTarget = -1;
 +                player->pushFrameToCompositor();
 +                startTime = system_time();
@@ -12510,7 +12955,7 @@ index 0000000000000000000000000000000000000000..678d258ccf4426251abd0c34dcf4534a
 +                startMediaTime = (bigtime_t)(player->m_currentTime * 1000000);
 +            }
 +
-+            bigtime_t videoTime = videoTrackTime(*player->m_videoTrack);
++            bigtime_t videoTime = decodedVideoTime();
 +            bigtime_t playbackTime = startMediaTime + (system_time() - startTime);
 +
 +            player->m_currentTime = playbackTime / 1000000.f;
@@ -12520,11 +12965,11 @@ index 0000000000000000000000000000000000000000..678d258ccf4426251abd0c34dcf4534a
 +                int64 count;
 +                bigtime_t decodeStartedAt = mediaFrameTraceEnabled() ? system_time() : 0;
 +                media_header header = { };
-+                status_t decodeStatus = player->m_videoTrack->ReadFrames(player->m_frameBuffer->Bits(), &count, &header);
++                status_t decodeStatus = readVideoFrame(player->m_frameBuffer->Bits(), &count, &header);
 +                if (tracePlayback && decodeStatus == B_OK && (decodedFrames < 8 || !(decodedFrames % 10)))
 +                    std::fprintf(stderr, "Summit media frame: player=%p frame=%u count=%lld start=%lld current=%lld playback=%lld\n",
 +                        player, decodedFrames, static_cast<long long>(count), static_cast<long long>(header.start_time),
-+                        static_cast<long long>(videoTrackTime(*player->m_videoTrack)), static_cast<long long>(playbackTime));
++                        static_cast<long long>(decodedVideoTime()), static_cast<long long>(playbackTime));
 +                if (decodeStatus == B_OK) {
 +                    if (mediaFrameTraceEnabled()) {
 +                        bigtime_t decodedAt = system_time();
@@ -12704,6 +13149,9 @@ index 0000000000000000000000000000000000000000..678d258ccf4426251abd0c34dcf4534a
 +        return;
 +    }
 +
++    m_softwareVideo = SoftwareVideoDecoderHaiku::createIfNeeded(*track, format);
++    if (m_softwareVideo)
++        format = m_softwareVideo->decodedFormat();
 +    if (!m_frameBuffer || static_cast<uint32>(m_frameBuffer->Bounds().IntegerWidth() + 1) != format.Width()
 +        || static_cast<uint32>(m_frameBuffer->Bounds().IntegerHeight() + 1) != format.Height()) {
 +        delete m_frameBuffer;
@@ -12717,7 +13165,7 @@ index 0000000000000000000000000000000000000000..678d258ccf4426251abd0c34dcf4534a
 +    if (!forSeek) {
 +        bigtime_t target = static_cast<bigtime_t>(std::max(0.f, m_currentTime.load()) * 1000000);
 +        bigtime_t keyframe = target;
-+        if (track->SeekToTime(&keyframe) == B_OK) {
++        if ((m_softwareVideo ? m_softwareVideo->seekToTime(&keyframe) : track->SeekToTime(&keyframe)) == B_OK) {
 +            m_prerollKeyframeTime = keyframe;
 +            m_prerollFrames = 0;
 +            m_prerollTarget = target;
@@ -12726,6 +13174,7 @@ index 0000000000000000000000000000000000000000..678d258ccf4426251abd0c34dcf4534a
 +    m_videoTrack = track;
 +    m_videoThread = spawn_thread(videoThread, "video decoder", B_NORMAL_PRIORITY, this);
 +    if (m_videoThread < 0) {
++        m_softwareVideo = nullptr;
 +        m_videoTrackFile->ReleaseTrack(m_videoTrack);
 +        m_videoTrack = nullptr;
 +        m_prerollTarget = -1;
@@ -12857,7 +13306,7 @@ index 0000000000000000000000000000000000000000..678d258ccf4426251abd0c34dcf4534a
 +    bigtime_t videoTime = requestedTime;
 +    status_t status = B_OK;
 +    if (m_videoTrack)
-+        status = m_videoTrack->SeekToTime(&videoTime);
++        status = m_softwareVideo ? m_softwareVideo->seekToTime(&videoTime) : m_videoTrack->SeekToTime(&videoTime);
 +    if (m_audioTrack && status == B_OK) {
 +        bigtime_t audioTime = requestedTime;
 +        status = m_audioTrack->SeekToTime(&audioTime);
@@ -13438,6 +13887,9 @@ index 0000000000000000000000000000000000000000..678d258ccf4426251abd0c34dcf4534a
 +                        codecStatus == B_OK ? codec.pretty_name : "unknown",
 +                        codecStatus == B_OK ? codec.short_name : "unknown", i, long(codecStatus));
 +                }
++                m_softwareVideo = SoftwareVideoDecoderHaiku::createIfNeeded(*track, format);
++                if (m_softwareVideo)
++                    format = m_softwareVideo->decodedFormat();
 +                m_videoTrack = track;
 +                m_videoTrackFile = mediaFile;
 +                m_videoTrackIndex = i;
@@ -13495,6 +13947,7 @@ index 0000000000000000000000000000000000000000..678d258ccf4426251abd0c34dcf4534a
 +
 +        if (m_videoTrack) {
 +            if (m_paused) {
++                m_softwareVideo = nullptr;
 +                m_videoTrackFile->ReleaseTrack(m_videoTrack);
 +                m_videoTrack = nullptr;
 +                if (mediaPlaybackTraceEnabled())
@@ -13587,10 +14040,10 @@ index 0000000000000000000000000000000000000000..678d258ccf4426251abd0c34dcf4534a
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..d935cb261674a9942ad2ccc0d2d51822757b1fe3
+index 0000000000000000000000000000000000000000..2eddfa4e283a88a8d751d1535bc9cce2ef765905
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
-@@ -0,0 +1,204 @@
+@@ -0,0 +1,209 @@
 +/*
 + * Copyright (C) 2014 Haiku, Inc.
 + *
@@ -13618,6 +14071,7 @@ index 0000000000000000000000000000000000000000..d935cb261674a9942ad2ccc0d2d51822
 +
 +#include <wtf/WeakPtr.h>
 +#include <atomic>
++#include <memory>
 +#include <optional>
 +
 +#include <Locker.h>
@@ -13635,6 +14089,8 @@ index 0000000000000000000000000000000000000000..d935cb261674a9942ad2ccc0d2d51822
 +namespace WebCore {
 +
 +class MediaPlayerFactoryHaiku;
++
++class SoftwareVideoDecoderHaiku;
 +
 +class MediaPlayerPrivate
 +    : public MediaPlayerPrivateInterface
@@ -13734,6 +14190,8 @@ index 0000000000000000000000000000000000000000..d935cb261674a9942ad2ccc0d2d51822
 +        BFile* m_secondaryDownloadFile { nullptr };
 +        BMediaTrack* m_audioTrack;
 +        BMediaTrack* m_videoTrack;
++        // Decodes m_videoTrack when its own decoder cannot (NVDEC and 16 reference frames).
++        std::unique_ptr<SoftwareVideoDecoderHaiku> m_softwareVideo;
 +        BMediaFile* m_videoTrackFile { nullptr };
 +        int m_videoTrackIndex { -1 };
 +        media_raw_audio_format m_audioFormat { };
@@ -13797,10 +14255,10 @@ index 0000000000000000000000000000000000000000..d935cb261674a9942ad2ccc0d2d51822
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..96740bc71053bbf57a14454275fbbfd3b5da0ef2
+index 0000000000000000000000000000000000000000..dfd4a87d2472656135a0cb8da3a7139757ec2aa5
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
-@@ -0,0 +1,1752 @@
+@@ -0,0 +1,1764 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -13820,6 +14278,8 @@ index 0000000000000000000000000000000000000000..96740bc71053bbf57a14454275fbbfd3
 +
 +#include "config.h"
 +#include "MediaPlayerPrivateHaikuMSE.h"
++
++#include "MediaDecoderSelectionHaiku.h"
 +
 +#if ENABLE(MEDIA_SOURCE)
 +
@@ -14330,6 +14790,16 @@ index 0000000000000000000000000000000000000000..96740bc71053bbf57a14454275fbbfd3
 +        });
 +        bigtime_t setupStarted = system_time();
 +        status_t status = decoder.SetTo(&format, info.codecConfig.data(), info.codecConfig.size());
++        if (status == B_OK && isH264(info.codec)) {
++            // NVDEC runs out of pictures on 16 reference frames; see MediaDecoderSelectionHaiku.h.
++            media_codec_info chosen = { };
++            decoder.GetDecoderInfo(&chosen);
++            if (hardwareDecoderCannotDecodeHaiku(chosen, { info.codecConfig.data(), info.codecConfig.size() })) {
++                status = setSoftwareDecoderHaiku(decoder, format, info.codecConfig.data(), info.codecConfig.size());
++                std::fprintf(stderr, "Summit media: MSE H.264 with %u reference frames goes to libavcodec instead of %s (status %ld)\n",
++                    h264MaxReferenceFrames({ info.codecConfig.data(), info.codecConfig.size() }).value_or(0), chosen.pretty_name, long(status));
++            }
++        }
 +        media_format output;
 +        output.type = B_MEDIA_RAW_VIDEO;
 +        output.u.raw_video = media_raw_video_format::wildcard;
