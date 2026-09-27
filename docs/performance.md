@@ -62,13 +62,14 @@ running one microtask queued by a mutation record from an image load event;
 the image trace then named the script: the sign-up modal
 (`signup-modal.en.js`) sets an image's `src` again when it fails, and
 Cloudflare answers Summit's requests for that logo with its "Verify you are
-human" page (a direct request from Summit gets the interactive challenge;
-curl with Summit's user agent and headers gets the PNG, so it is the
-connection's fingerprint, not the headers). Firefox gets the image and never
-loops. After three errors for one URL on one element within two seconds,
+human" page. Firefox got the image and never looped. The challenge was
+Cloudflare's reaction to this machine at the time, not to Summit as such:
+three hours later a fresh Summit profile and curl with Summit's exact
+headers both got the PNG. (The X399 had loaded hundreds of pages in rapid
+automated runs that afternoon.) After three errors for one URL on one element within two seconds,
 further error events now wait 10 ms, doubling to one second; the page still
-gets each one. Stack Overflow idles at 0.04 cores. Cloudflare challenging
-Summit's subresources is a compatibility problem of its own and still open.
+gets each one. Stack Overflow idles at 0.04 cores, and any page that retries a failing
+image the same way stays cheap.
 
 ### Reading back only what changed
 
