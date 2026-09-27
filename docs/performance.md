@@ -90,6 +90,33 @@ the GPU, which TextureMapper has made redraw the whole bounding box (a 2x2
 speck at the top-left and the scrollbar at the right). Its process went from
 1.3 to 0.97 cores. Final frames of a Wikipedia scroll match the old build.
 
+### Contents layers damaged every frame
+
+`TextureMapperLayer::collectDamageSelf()` treats every layer with a contents
+layer as wholly damaged on every composition ("fully damaged for now.
+FIXME: Remove that special case."). Page scrollbars, canvases and directly
+composited images therefore joined the damage, the GPU redraw and the
+readback of every frame, whatever changed: on smh.com.au a 2x2 speck and the
+scrollbar made the bounding box the whole frame. `CoordinatedPlatformLayer`
+already damages a layer when a new contents buffer or image arrives (the
+region it is given, or all of it), so on Haiku the special case is gone;
+`SUMMIT_CONTENTS_LAYER_DAMAGE=full` restores it.
+
+### Retrained profiles
+
+The engine's profile-guided build used profiles from 25 September, before
+MSE, damage tracking and today's work. `tools/bench/train-pgo.sh` now runs
+the training against an instrumented bundle: Speedometer 3.1, the scroll
+fixture, a Wikipedia wheel burst, two windows of real sites with a scroll
+under load, and video through NVDEC, libavcodec and MSE. Build directory
+`SkiaCGMiPGO2` (llvm-ar), instrumented with
+`-fprofile-generate -fprofile-update=atomic` and linked with `-u__gcov_dump`,
+trained with `SUMMIT_GCOV_DUMP=1` (1,982 profile files; a copy is in
+`/boot/home/summit/pgo2-profiles-20260928.tar`), then rebuilt in place with
+`-fprofile-use -fprofile-correction -fprofile-partial-training` and empty
+linker flags. The harness now waits `SUMMIT_BENCH_LEFTOVER_GRACE` seconds
+for helper processes to write their counters.
+
 ### Scrolling while 24 other tabs reload
 
 `run-multitab.py` scrolls the first window while every tab of the other two
