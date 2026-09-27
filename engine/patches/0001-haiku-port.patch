@@ -1371,6 +1371,36 @@ index ae947fe28021c584967c900b16bf0a364affd9be..e357e409e33dd1f96bbbbefe35c75b08
  namespace WTF::FileSystemImpl {
  
  std::optional<uint64_t> FileHandle::read(std::span<uint8_t> data)
+diff --git a/Source/WTF/wtf/posix/OSAllocatorPOSIX.cpp b/Source/WTF/wtf/posix/OSAllocatorPOSIX.cpp
+index ca44751e7d8ca4c7b6263808f088a2041b5fbd91..993e7c86f4deeb814f922b92eae9993ef5a78132 100644
+--- a/Source/WTF/wtf/posix/OSAllocatorPOSIX.cpp
++++ b/Source/WTF/wtf/posix/OSAllocatorPOSIX.cpp
+@@ -260,7 +260,12 @@ void OSAllocator::commit(void* address, size_t bytes, bool writable, bool execut
+ 
+ void OSAllocator::decommit(void* address, size_t bytes)
+ {
+-#if OS(LINUX) || OS(HAIKU)
++#if OS(HAIKU)
++    // Haiku accepts MADV_DONTNEED and does nothing with it (the kernel leaves
++    // it a TODO), so decommitted memory never left the process. MADV_FREE
++    // discards the pages at once, as MADV_DONTNEED does on Linux.
++    while (madvise(address, bytes, MADV_FREE) == -1 && errno == EAGAIN) { }
++#elif OS(LINUX)
+     while (madvise(address, bytes, MADV_DONTNEED) == -1 && errno == EAGAIN) { }
+ #elif HAVE(MADV_FREE_REUSE)
+     while (madvise(address, bytes, MADV_FREE_REUSABLE) == -1 && errno == EAGAIN) { }
+@@ -276,7 +281,10 @@ void OSAllocator::decommit(void* address, size_t bytes)
+ 
+ void OSAllocator::hintMemoryNotNeededSoon(void* address, size_t bytes)
+ {
+-#if HAVE(MADV_DONTNEED)
++#if OS(HAIKU)
++    // See decommit(): only MADV_FREE releases anything on Haiku.
++    while (madvise(address, bytes, MADV_FREE) == -1 && errno == EAGAIN) { }
++#elif HAVE(MADV_DONTNEED)
+     while (madvise(address, bytes, MADV_DONTNEED) == -1 && errno == EAGAIN) { }
+ #else
+     UNUSED_PARAM(address);
 diff --git a/Source/WTF/wtf/text/WTFString.h b/Source/WTF/wtf/text/WTFString.h
 index ec87143310f33fc59c92186fb81b6393ad1da5ca..b74ff9ab4644a3b8b98feb5e0945fc6deb3f3fb9 100644
 --- a/Source/WTF/wtf/text/WTFString.h
@@ -65642,10 +65672,10 @@ index 8ace95c1b44f471e9072adcce4b7875472a98436..79fa9c1bfc4f6499439c6ab8bc4f4a17
  #if OS(ANDROID)
 diff --git a/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.cpp b/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..2fdaf7eaaa7bb28a572a0ec2ba3c89f77dc0933b
+index 0000000000000000000000000000000000000000..a4936403e9f2be51aaf3ea49f27f192632530cd4
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.cpp
-@@ -0,0 +1,189 @@
+@@ -0,0 +1,231 @@
 +/*
 + * Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause
 + */
@@ -65664,6 +65694,7 @@ index 0000000000000000000000000000000000000000..2fdaf7eaaa7bb28a572a0ec2ba3c89f7
 +#include <Bitmap.h>
 +#include <OS.h>
 +#include <cmath>
++#include <cstdio>
 +#include <cstdlib>
 +#include <cstring>
 +#include <wtf/NeverDestroyed.h>
@@ -65675,12 +65706,21 @@ index 0000000000000000000000000000000000000000..2fdaf7eaaa7bb28a572a0ec2ba3c89f7
 +
 +WTF_MAKE_TZONE_ALLOCATED_IMPL(AcceleratedBackingStore);
 +
-+// Stores by surface, so a frame released on a window thread can find its way
-+// back. Main thread only.
-+static HashMap<uint64_t, AcceleratedBackingStore*>& storesBySurface()
++// Stores by an identifier of this process's own, so a frame released on a
++// window thread can find its way back. Surface identifiers only count within
++// one web process: keyed by those, every tab's first surface was "1", and a
++// buffer given back went to another tab's store (and was lost), until the web
++// process had made hundreds. Main thread only.
++static HashMap<uint64_t, AcceleratedBackingStore*>& storesByIdentifier()
 +{
 +    static NeverDestroyed<HashMap<uint64_t, AcceleratedBackingStore*>> stores;
 +    return stores;
++}
++
++static uint64_t nextStoreIdentifier()
++{
++    static uint64_t identifier;
++    return ++identifier;
 +}
 +
 +// SUMMIT_ZERO_COPY_PRESENT=0 copies every frame into a private BBitmap again.
@@ -65689,6 +65729,16 @@ index 0000000000000000000000000000000000000000..2fdaf7eaaa7bb28a572a0ec2ba3c89f7
 +    static const bool enabled = [] {
 +        const char* value = std::getenv("SUMMIT_ZERO_COPY_PRESENT");
 +        return !value || std::strcmp(value, "0");
++    }();
++    return enabled;
++}
++
++// SUMMIT_SWAPCHAIN_TRACE=1: which frames arrive and when each buffer goes back.
++static bool swapChainTraceEnabled()
++{
++    static const bool enabled = [] {
++        const char* value = std::getenv("SUMMIT_SWAPCHAIN_TRACE");
++        return value && !std::strcmp(value, "1");
 +    }();
 +    return enabled;
 +}
@@ -65716,7 +65766,7 @@ index 0000000000000000000000000000000000000000..2fdaf7eaaa7bb28a572a0ec2ba3c89f7
 +    if (m_surfaceID) {
 +        // The web process may be waiting on a frame this surface will never show.
 +        frameDone();
-+        storesBySurface().remove(m_surfaceID);
++        storesByIdentifier().remove(std::exchange(m_storeIdentifier, 0));
 +        m_buffers.clear();
 +        m_images.clear();
 +        if (RefPtr process = m_legacyMainFrameProcess)
@@ -65733,7 +65783,8 @@ index 0000000000000000000000000000000000000000..2fdaf7eaaa7bb28a572a0ec2ba3c89f7
 +        return;
 +    m_legacyMainFrameProcess = webPage->legacyMainFrameProcess();
 +    m_legacyMainFrameProcess->addMessageReceiver(Messages::AcceleratedBackingStore::messageReceiverName(), m_surfaceID, *this);
-+    storesBySurface().set(m_surfaceID, this);
++    m_storeIdentifier = nextStoreIdentifier();
++    storesByIdentifier().set(m_storeIdentifier, this);
 +}
 +
 +void AcceleratedBackingStore::didCreateSHMBuffer(uint64_t id, WebCore::ShareableBitmapHandle&& handle)
@@ -65765,15 +65816,23 @@ index 0000000000000000000000000000000000000000..2fdaf7eaaa7bb28a572a0ec2ba3c89f7
 +    m_images.remove(id);
 +}
 +
-+void AcceleratedBackingStore::releaseSharedBuffer(uint64_t surfaceID, uint64_t id)
++void AcceleratedBackingStore::releaseSharedBuffer(uint64_t storeIdentifier, uint64_t surfaceID, uint64_t id)
 +{
-+    auto* store = storesBySurface().get(surfaceID);
-+    if (store && store->m_surfaceID == surfaceID && store->m_buffers.contains(id))
++    auto* store = storesByIdentifier().get(storeIdentifier);
++    // A store that has moved to another surface since does not own the buffer.
++    bool owned = store && store->m_surfaceID == surfaceID && store->m_buffers.contains(id);
++    if (swapChainTraceEnabled() && !owned)
++        std::fprintf(stderr, "Summit backing store: surface=%llu release=%llu dropped (store %p)\n",
++            static_cast<unsigned long long>(surfaceID), static_cast<unsigned long long>(id), store);
++    if (owned)
 +        store->releaseBuffer(id);
 +}
 +
 +void AcceleratedBackingStore::frame(uint64_t id, Rects&& damage, WTF::UnixFileDescriptor&&)
 +{
++    if (swapChainTraceEnabled())
++        std::fprintf(stderr, "Summit backing store: surface=%llu frame=%llu mapped=%d image=%d\n",
++            static_cast<unsigned long long>(m_surfaceID), static_cast<unsigned long long>(id), m_buffers.contains(id), m_images.contains(id));
 +    // The sync file descriptor orders GPU work between processes. Nothing is
 +    // shared here but memory the web process has finished writing.
 +    RefPtr bitmap = m_buffers.get(id);
@@ -65795,15 +65854,25 @@ index 0000000000000000000000000000000000000000..2fdaf7eaaa7bb28a572a0ec2ba3c89f7
 +    if (auto image = m_images.get(id)) {
 +        // The view draws this buffer until a newer frame replaces it; only then
 +        // may the web process paint into it again. The last reference can be
-+        // dropped on a window thread, so the release is posted back here.
-+        std::shared_ptr<const BBitmap> frame(image.get(), [image, bitmap, surfaceID = m_surfaceID, id](const BBitmap*) {
-+            RunLoop::mainSingleton().dispatch([surfaceID, id] {
-+                releaseSharedBuffer(surfaceID, id);
++        // dropped on a window thread, so that release is posted back here.
++        std::shared_ptr<const BBitmap> frame(image.get(), [image, bitmap, storeIdentifier = m_storeIdentifier, surfaceID = m_surfaceID, id](const BBitmap*) {
++            // Usually a newer frame replaces this one right here, just before
++            // FrameDone goes out: give the buffer back first. Posted, the
++            // release waited behind every other task of a busy main thread,
++            // and the web process, told to paint with no buffer free, made
++            // another.
++            if (RunLoop::isMain()) {
++                releaseSharedBuffer(storeIdentifier, surfaceID, id);
++                return;
++            }
++            RunLoop::mainSingleton().dispatch([storeIdentifier, surfaceID, id] {
++                releaseSharedBuffer(storeIdentifier, surfaceID, id);
 +            });
 +        });
 +        // The damage is what differs from the previous frame, in device pixels;
-+        // none means the whole frame.
-+        static_cast<WebView&>(*client).presentSharedFrameHaiku(WTF::move(frame), size, scale, damage);
++        // none means the whole frame. A frame the view does not take (a hidden
++        // tab) is released when this statement ends, also before FrameDone.
++        static_cast<WebView&>(*client).presentSharedFrameHaiku(std::exchange(frame, nullptr), size, scale, damage);
 +        frameDone();
 +        return;
 +    }
@@ -65822,6 +65891,9 @@ index 0000000000000000000000000000000000000000..2fdaf7eaaa7bb28a572a0ec2ba3c89f7
 +// the web process runs out of file descriptors and dies.
 +void AcceleratedBackingStore::releaseBuffer(uint64_t id)
 +{
++    if (swapChainTraceEnabled())
++        std::fprintf(stderr, "Summit backing store: surface=%llu release=%llu main=%d\n",
++            static_cast<unsigned long long>(m_surfaceID), static_cast<unsigned long long>(id), RunLoop::isMain());
 +    if (RefPtr process = m_legacyMainFrameProcess)
 +        process->send(Messages::AcceleratedSurface::ReleaseBuffer(id, WTF::UnixFileDescriptor { }), m_surfaceID);
 +}
@@ -65837,10 +65909,10 @@ index 0000000000000000000000000000000000000000..2fdaf7eaaa7bb28a572a0ec2ba3c89f7
 +#endif // USE(COORDINATED_GRAPHICS)
 diff --git a/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.h b/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..ddb9dbd1eb9a61a3fc1b127fc8b5fb2ed3784ddd
+index 0000000000000000000000000000000000000000..338cec7a0f17e8845c4a80b03b95526746565e4f
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.h
-@@ -0,0 +1,76 @@
+@@ -0,0 +1,78 @@
 +/*
 + * Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause
 + */
@@ -65902,11 +65974,13 @@ index 0000000000000000000000000000000000000000..ddb9dbd1eb9a61a3fc1b127fc8b5fb2e
 +    void frame(uint64_t id, Rects&&, WTF::UnixFileDescriptor&&);
 +    void releaseBuffer(uint64_t id);
 +    void frameDone();
-+    static void releaseSharedBuffer(uint64_t surfaceID, uint64_t id);
++    static void releaseSharedBuffer(uint64_t storeIdentifier, uint64_t surfaceID, uint64_t id);
 +
 +    WeakPtr<WebPageProxy> m_webPage;
 +    RefPtr<WebProcessProxy> m_legacyMainFrameProcess;
 +    uint64_t m_surfaceID { 0 };
++    // Unique in this process, unlike m_surfaceID; zero while detached.
++    uint64_t m_storeIdentifier { 0 };
 +    HashMap<uint64_t, RefPtr<WebCore::ShareableBitmap>> m_buffers;
 +    // Each buffer's memory as a BBitmap that app_server draws from directly,
 +    // so a frame is never copied in this process. The view keeps the frame it
@@ -89500,15 +89574,16 @@ index 0000000000000000000000000000000000000000..abc82f6d26d2b1374740dc304282ae75
 +
 +}
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
-index cf4d54b7869d7a7cded74482922d8fdda53af21d..2d127917e3d71c5f0277db5f7d48d00a46937946 100644
+index cf4d54b7869d7a7cded74482922d8fdda53af21d..a7b8429e95071e8a718cc2b0fc18d8cbd6bd3e79 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
-@@ -26,6 +26,15 @@
+@@ -26,6 +26,16 @@
  #include "config.h"
  #include "AcceleratedSurface.h"
  
 +#if PLATFORM(HAIKU)
 +#include "PresentStatsHaiku.h"
++#include <cstdio>
 +#include <cstdlib>
 +#include <cstring>
 +#include <mutex>
@@ -89519,7 +89594,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..2d127917e3d71c5f0277db5f7d48d00a
  #if USE(COORDINATED_GRAPHICS)
  #include "WebPage.h"
  #include "WebProcess.h"
-@@ -51,12 +60,18 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
+@@ -51,12 +61,18 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
  #include <skia/gpu/ganesh/GrBackendSurface.h>
  #include <skia/gpu/ganesh/SkSurfaceGanesh.h>
  #include <skia/gpu/ganesh/gl/GrGLBackendSurface.h>
@@ -89539,7 +89614,27 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..2d127917e3d71c5f0277db5f7d48d00a
  #include <epoxy/egl.h>
  #endif
  
-@@ -122,7 +137,7 @@ AcceleratedSurface::AcceleratedSurface(WebPage& webPage, Function<void()>&& fram
+@@ -94,6 +110,19 @@ using namespace WebCore;
+ 
+ WTF_MAKE_TZONE_ALLOCATED_IMPL(AcceleratedSurface);
+ 
++#if PLATFORM(HAIKU)
++// SUMMIT_SWAPCHAIN_TRACE=1 logs every buffer the swap chains make, lend,
++// get back and free, to find buffers that are never returned.
++static bool swapChainTraceEnabled()
++{
++    static const bool enabled = [] {
++        const char* value = getenv("SUMMIT_SWAPCHAIN_TRACE");
++        return value && !strcmp(value, "1");
++    }();
++    return enabled;
++}
++#endif
++
+ Ref<AcceleratedSurface> AcceleratedSurface::create(WebPage& webPage, Function<void()>&& frameCompleteHandler, RenderingPurpose renderingPurpose)
+ {
+     return adoptRef(*new AcceleratedSurface(webPage, WTF::move(frameCompleteHandler), renderingPurpose));
+@@ -122,7 +151,7 @@ AcceleratedSurface::AcceleratedSurface(WebPage& webPage, Function<void()>&& fram
  #endif
      , m_id(generateID())
      , m_renderingPurpose(renderingPurpose)
@@ -89548,7 +89643,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..2d127917e3d71c5f0277db5f7d48d00a
      , m_hardwareAccelerationEnabled(webPage.corePage()->settings().hardwareAccelerationEnabled())
  #endif
      , m_backgroundColor(webPage.backgroundColor())
-@@ -176,7 +191,7 @@ void AcceleratedSurface::RenderTarget::createSkiaSurfaceForFramebuffer(unsigned
+@@ -176,7 +205,7 @@ void AcceleratedSurface::RenderTarget::createSkiaSurfaceForFramebuffer(unsigned
      m_skiaSurface = SkSurfaces::WrapBackendRenderTarget(display.skiaGrContext(), backendRenderTarget, origin, kRGBA_8888_SkColorType, SkColorSpace::MakeSRGB(), &properties);
  }
  
@@ -89557,7 +89652,18 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..2d127917e3d71c5f0277db5f7d48d00a
  WTF_MAKE_TZONE_ALLOCATED_IMPL(AcceleratedSurface::RenderTargetShareableBuffer);
  
  AcceleratedSurface::RenderTargetShareableBuffer::RenderTargetShareableBuffer(AcceleratedSurface& surface, const IntSize& size)
-@@ -418,7 +433,14 @@ std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::RenderTarg
+@@ -228,6 +257,10 @@ void AcceleratedSurface::RenderTargetShareableBuffer::initializeColorBuffer(EGLI
+ 
+ void AcceleratedSurface::RenderTargetShareableBuffer::sendFrame(Vector<WebCore::IntRect, 1>&& damageRects)
+ {
++#if PLATFORM(HAIKU)
++    if (swapChainTraceEnabled())
++        std::fprintf(stderr, "Summit swapchain: surface=%llu send=%llu\n", static_cast<unsigned long long>(m_surface->surfaceID()), static_cast<unsigned long long>(m_id));
++#endif
+     WebProcess::singleton().parentProcessConnection()->send(Messages::AcceleratedBackingStore::Frame(m_id, WTF::move(damageRects), WTF::move(m_renderingFenceFD)), m_surface->surfaceID());
+ }
+ 
+@@ -418,7 +451,14 @@ std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::RenderTarg
          return nullptr;
      }
  
@@ -89572,7 +89678,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..2d127917e3d71c5f0277db5f7d48d00a
      if (!bufferHandle) {
          WTFLogAlways("Failed to create handle for shared memory buffer");
          return nullptr;
-@@ -439,13 +461,197 @@ AcceleratedSurface::RenderTargetSHMImage::RenderTargetSHMImage(AcceleratedSurfac
+@@ -439,13 +479,197 @@ AcceleratedSurface::RenderTargetSHMImage::RenderTargetSHMImage(AcceleratedSurfac
      WebProcess::singleton().parentProcessConnection()->send(Messages::AcceleratedBackingStore::DidCreateSHMBuffer(m_id, WTF::move(bitmapHandle)), m_surface->surfaceID());
  }
  
@@ -89770,7 +89876,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..2d127917e3d71c5f0277db5f7d48d00a
  
          SkImageInfo info = SkImageInfo::Make(m_bitmap->size().width(), m_bitmap->size().height(), SkColorType::kBGRA_8888_SkColorType, SkAlphaType::kPremul_SkAlphaType);
  
-@@ -457,9 +663,14 @@ void AcceleratedSurface::RenderTargetSHMImage::didRenderFrame()
+@@ -457,9 +681,14 @@ void AcceleratedSurface::RenderTargetSHMImage::didRenderFrame()
          return;
      }
  
@@ -89785,7 +89891,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..2d127917e3d71c5f0277db5f7d48d00a
  std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::RenderTargetTexture::create(AcceleratedSurface& surface, const IntSize& size)
  {
      auto texture = BitmapTexture::create(size);
-@@ -515,8 +726,9 @@ AcceleratedSurface::RenderTargetTexture::RenderTargetTexture(AcceleratedSurface&
+@@ -515,8 +744,9 @@ AcceleratedSurface::RenderTargetTexture::RenderTargetTexture(AcceleratedSurface&
  }
  
  AcceleratedSurface::RenderTargetTexture::~RenderTargetTexture() = default;
@@ -89796,7 +89902,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..2d127917e3d71c5f0277db5f7d48d00a
  
  #if USE(WPE_RENDERER)
  std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::RenderTargetWPEBackend::create(AcceleratedSurface& surface, const IntSize& initialSize, UnixFileDescriptor&& hostFD)
-@@ -594,7 +806,7 @@ void AcceleratedSurface::RenderTargetWPEBackend::didRenderFrame()
+@@ -594,7 +824,7 @@ void AcceleratedSurface::RenderTargetWPEBackend::didRenderFrame()
  AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
      : m_surface(surface)
  {
@@ -89805,7 +89911,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..2d127917e3d71c5f0277db5f7d48d00a
      if (!m_surface->hardwareAccelerationEnabled()) {
          m_type = Type::SharedMemory;
          return;
-@@ -632,7 +844,7 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
+@@ -632,7 +862,7 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
      case PlatformDisplay::Type::GBM:
  #endif
          break;
@@ -89814,7 +89920,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..2d127917e3d71c5f0277db5f7d48d00a
  #if USE(WPE_RENDERER)
      case PlatformDisplay::Type::WPE:
          m_type = Type::WPEBackend;
-@@ -646,11 +858,19 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
+@@ -646,11 +876,19 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
      case PlatformDisplay::Type::Default:
          break;
  #endif // PLATFORM(GTK)
@@ -89835,7 +89941,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..2d127917e3d71c5f0277db5f7d48d00a
  void AcceleratedSurface::SwapChain::setupBufferFormat()
  {
      if (m_type != Type::EGLImage)
-@@ -749,7 +969,7 @@ bool AcceleratedSurface::SwapChain::resize(const IntSize& size)
+@@ -749,7 +987,7 @@ bool AcceleratedSurface::SwapChain::resize(const IntSize& size)
  
  bool AcceleratedSurface::SwapChain::handleBufferFormatChangeIfNeeded()
  {
@@ -89844,7 +89950,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..2d127917e3d71c5f0277db5f7d48d00a
      if (m_type == Type::EGLImage) {
          Locker locker { m_bufferFormatLock };
          if (m_bufferFormatChanged) {
-@@ -765,7 +985,7 @@ bool AcceleratedSurface::SwapChain::handleBufferFormatChangeIfNeeded()
+@@ -765,7 +1003,7 @@ bool AcceleratedSurface::SwapChain::handleBufferFormatChangeIfNeeded()
  std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::SwapChain::createTarget() const
  {
      switch (m_type) {
@@ -89853,7 +89959,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..2d127917e3d71c5f0277db5f7d48d00a
  #if USE(GBM) || OS(ANDROID)
      case Type::EGLImage: {
          Locker locker { m_bufferFormatLock };
-@@ -773,7 +993,11 @@ std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::SwapChain:
+@@ -773,7 +1011,11 @@ std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::SwapChain:
      }
  #endif
      case Type::Texture:
@@ -89865,7 +89971,44 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..2d127917e3d71c5f0277db5f7d48d00a
      case Type::SharedMemory:
          return RenderTargetSHMImage::create(m_surface.get(), m_size);
  #endif
-@@ -929,7 +1153,7 @@ bool AcceleratedSurface::shouldPaintMirrored() const
+@@ -812,6 +1054,11 @@ AcceleratedSurface::RenderTarget* AcceleratedSurface::SwapChain::nextTarget()
+             if (auto target = createTarget())
+                 m_freeTargets.append(WTF::move(target));
+         }
++#if PLATFORM(HAIKU)
++        if (swapChainTraceEnabled())
++            std::fprintf(stderr, "Summit swapchain: surface=%llu create=%u locked=%zu free=%zu size=%dx%d\n",
++                static_cast<unsigned long long>(m_surface->surfaceID()), targetsToCreate, m_lockedTargets.size(), m_freeTargets.size(), m_size.width(), m_size.height());
++#endif
+ 
+ #if ENABLE(WPE_PLATFORM)
+         if (m_freeTargets.size() != targetsToCreate)
+@@ -841,6 +1088,12 @@ void AcceleratedSurface::SwapChain::releaseTarget(uint64_t targetID, UnixFileDes
+         m_freeTargets.insert(0, WTF::move(m_lockedTargets[index]));
+         m_lockedTargets.removeAt(index);
+     }
++#if PLATFORM(HAIKU)
++    if (swapChainTraceEnabled())
++        std::fprintf(stderr, "Summit swapchain: surface=%llu release=%llu %s locked=%zu free=%zu\n",
++            static_cast<unsigned long long>(m_surface->surfaceID()), static_cast<unsigned long long>(targetID),
++            index != notFound ? "found" : "unknown", m_lockedTargets.size(), m_freeTargets.size());
++#endif
+ }
+ 
+ void AcceleratedSurface::SwapChain::reset()
+@@ -859,6 +1112,11 @@ void AcceleratedSurface::SwapChain::releaseUnusedBuffers()
+ #if USE(WPE_RENDERER)
+     ASSERT(m_type != Type::WPEBackend);
+ #endif
++#if PLATFORM(HAIKU)
++    if (swapChainTraceEnabled())
++        std::fprintf(stderr, "Summit swapchain: surface=%llu trim locked=%zu free=%zu\n",
++            static_cast<unsigned long long>(m_surface->surfaceID()), m_lockedTargets.size(), m_freeTargets.size());
++#endif
+ 
+ #if ENABLE(WPE_PLATFORM)
+     WebProcess::singleton().parentProcessConnection()->send(Messages::AcceleratedBackingStore::DidChangeBufferConfiguration(m_lockedTargets.size()), m_surface->surfaceID());
+@@ -929,7 +1187,7 @@ bool AcceleratedSurface::shouldPaintMirrored() const
      switch (m_swapChain.type()) {
      case SwapChain::Type::Invalid:
          return false;
@@ -89874,7 +90017,18 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..2d127917e3d71c5f0277db5f7d48d00a
      case SwapChain::Type::Texture:
  #if USE(GBM) || OS(ANDROID)
      case SwapChain::Type::EGLImage:
-@@ -1000,7 +1224,7 @@ void AcceleratedSurface::backgroundColorDidChange()
+@@ -960,6 +1218,10 @@ void AcceleratedSurface::preferredBufferFormatsDidChange()
+ 
+ void AcceleratedSurface::visibilityDidChange(bool isVisible)
+ {
++#if PLATFORM(HAIKU)
++    if (swapChainTraceEnabled())
++        std::fprintf(stderr, "Summit swapchain: surface=%llu visible=%d was=%d\n", static_cast<unsigned long long>(m_id), isVisible, m_isVisible);
++#endif
+     if (m_isVisible == isVisible)
+         return;
+ 
+@@ -1000,7 +1262,7 @@ void AcceleratedSurface::backgroundColorDidChange()
      if (isOpaque == wasOpaque)
          return;
  
@@ -89883,7 +90037,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..2d127917e3d71c5f0277db5f7d48d00a
      m_swapChain.setupBufferFormat();
  #endif
  }
-@@ -1022,7 +1246,7 @@ void AcceleratedSurface::didCreateCompositingRunLoop(RunLoop& runLoop)
+@@ -1022,7 +1284,7 @@ void AcceleratedSurface::didCreateCompositingRunLoop(RunLoop& runLoop)
  #if USE(GLIB_EVENT_LOOP)
      m_releaseUnusedBuffersTimer->setPriority(RunLoopSourcePriority::ReleaseUnusedResourcesTimer);
  #endif
@@ -89892,7 +90046,17 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..2d127917e3d71c5f0277db5f7d48d00a
      WebProcess::singleton().parentProcessConnection()->addMessageReceiver(runLoop, *this, Messages::AcceleratedSurface::messageReceiverName(), m_id);
  #endif
  }
-@@ -1043,7 +1267,7 @@ void AcceleratedSurface::willDestroyCompositingRunLoop()
+@@ -1030,6 +1292,9 @@ void AcceleratedSurface::didCreateCompositingRunLoop(RunLoop& runLoop)
+ void AcceleratedSurface::willDestroyCompositingRunLoop()
+ {
+     m_frameCompleteHandler = nullptr;
++#if PLATFORM(HAIKU)
++    m_renderTargetReleasedHandler = nullptr;
++#endif
+ 
+ #if USE(WPE_RENDERER)
+     if (m_swapChain.type() == SwapChain::Type::WPEBackend)
+@@ -1043,7 +1308,7 @@ void AcceleratedSurface::willDestroyCompositingRunLoop()
              protectedThis->m_releaseUnusedBuffersTimer = nullptr;
          });
      }
@@ -89901,7 +90065,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..2d127917e3d71c5f0277db5f7d48d00a
      WebProcess::singleton().parentProcessConnection()->removeMessageReceiver(Messages::AcceleratedSurface::messageReceiverName(), m_id);
  #endif
  }
-@@ -1155,18 +1379,47 @@ void AcceleratedSurface::didRenderFrame(TargetContents targetContents)
+@@ -1155,18 +1420,47 @@ void AcceleratedSurface::didRenderFrame(TargetContents targetContents)
      if (!m_target)
          return;
  
@@ -89949,7 +90113,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..2d127917e3d71c5f0277db5f7d48d00a
      m_pendingFrameNotifyTargets.insert(0, { m_target, WTF::move(damageRects) });
      m_target = nullptr;
  }
-@@ -1188,7 +1441,7 @@ const std::optional<Damage>& AcceleratedSurface::renderTargetDamage()
+@@ -1188,13 +1482,17 @@ const std::optional<Damage>& AcceleratedSurface::renderTargetDamage()
  }
  #endif
  
@@ -89958,8 +90122,18 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..2d127917e3d71c5f0277db5f7d48d00a
  void AcceleratedSurface::releaseBuffer(uint64_t targetID, UnixFileDescriptor&& releaseFence)
  {
  #if USE(WPE_RENDERER)
+     ASSERT(m_swapChain.type() != SwapChain::Type::WPEBackend);
+ #endif
+     m_swapChain.releaseTarget(targetID, WTF::move(releaseFence));
++#if PLATFORM(HAIKU)
++    if (m_renderTargetReleasedHandler)
++        m_renderTargetReleasedHandler();
++#endif
+ }
+ #endif
+ 
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.h b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.h
-index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..641bf72b3eeffc64e27e0773489d3a3cd1393184 100644
+index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..b874d91d7ef6b517a3e155d15331261523e09afc 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.h
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.h
 @@ -27,10 +27,15 @@
@@ -90011,7 +90185,19 @@ index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..641bf72b3eeffc64e27e0773489d3a3c
      SkCanvas* canvas();
  
      void willDestroyGLContext();
-@@ -159,14 +165,14 @@ private:
+@@ -155,18 +161,26 @@ public:
+     void visibilityDidChange(bool);
+     void backgroundColorDidChange();
+ 
++#if PLATFORM(HAIKU)
++    // Whether a frame of this size can be painted without the swap chain
++    // growing past its limit. Compositing thread.
++    bool hasRenderTargetFor(const WebCore::IntSize& size) const { return m_swapChain.canProvideTarget(size); }
++    // Runs on the compositing thread whenever the UI process gives a buffer back.
++    void setRenderTargetReleasedHandler(Function<void()>&& handler) { m_renderTargetReleasedHandler = WTF::move(handler); }
++#endif
++
+ private:
      AcceleratedSurface(WebPage&, Function<void()>&& frameCompleteHandler, RenderingPurpose);
  
      RenderingPurpose renderingPurpose() const { return m_renderingPurpose; }
@@ -90028,7 +90214,7 @@ index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..641bf72b3eeffc64e27e0773489d3a3c
      // IPC::MessageReceiver.
      void didReceiveMessage(IPC::Connection&, IPC::Decoder&) override;
  
-@@ -192,6 +198,11 @@ private:
+@@ -192,6 +206,11 @@ private:
  
          virtual void sync(bool) { }
          virtual void setReleaseFenceFD(UnixFileDescriptor&&) { }
@@ -90040,7 +90226,7 @@ index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..641bf72b3eeffc64e27e0773489d3a3c
  
          SkSurface* skiaSurface() const { return m_skiaSurface.get(); }
  
-@@ -223,7 +234,7 @@ private:
+@@ -223,7 +242,7 @@ private:
          sk_sp<SkSurface> m_skiaSurface;
      };
  
@@ -90049,7 +90235,7 @@ index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..641bf72b3eeffc64e27e0773489d3a3c
      class RenderTargetShareableBuffer : public RenderTarget {
          WTF_MAKE_TZONE_ALLOCATED(RenderTargetShareableBuffer);
      public:
-@@ -319,10 +330,21 @@ private:
+@@ -319,10 +338,21 @@ private:
      private:
          bool supportsExplicitSync() const override { return false; }
          void didRenderFrame() override;
@@ -90071,7 +90257,7 @@ index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..641bf72b3eeffc64e27e0773489d3a3c
      class RenderTargetTexture final : public RenderTargetShareableBuffer {
      public:
          static std::unique_ptr<RenderTarget> create(AcceleratedSurface&, const WebCore::IntSize&);
-@@ -334,7 +356,8 @@ private:
+@@ -334,7 +364,8 @@ private:
  
          Ref<WebCore::BitmapTexture> m_texture;
      };
@@ -90081,7 +90267,7 @@ index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..641bf72b3eeffc64e27e0773489d3a3c
  
  #if USE(WPE_RENDERER)
      class RenderTargetWPEBackend final : public RenderTarget {
-@@ -361,7 +384,7 @@ private:
+@@ -361,7 +392,7 @@ private:
  
          enum class Type {
              Invalid,
@@ -90090,7 +90276,18 @@ index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..641bf72b3eeffc64e27e0773489d3a3c
  #if USE(GBM) || OS(ANDROID)
              EGLImage,
  #endif
-@@ -392,7 +415,7 @@ private:
+@@ -379,6 +410,10 @@ private:
+         const WebCore::IntSize& size() const LIFETIME_BOUND { return m_size; }
+         RenderTarget* nextTarget();
+         void releaseTarget(uint64_t, UnixFileDescriptor&& releaseFence);
++#if PLATFORM(HAIKU)
++        // A new size resets the chain; otherwise a target is free or may still be made.
++        bool canProvideTarget(const WebCore::IntSize& size) const { return size != m_size || !m_freeTargets.isEmpty() || m_lockedTargets.size() < s_maximumBuffers; }
++#endif
+         void reset();
+         void releaseUnusedBuffers();
+ 
+@@ -392,7 +427,7 @@ private:
          }
  #endif
  
@@ -90099,7 +90296,7 @@ index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..641bf72b3eeffc64e27e0773489d3a3c
          void setupBufferFormat();
  #endif
  
-@@ -413,7 +436,7 @@ private:
+@@ -413,7 +448,7 @@ private:
          Vector<std::unique_ptr<RenderTarget>, s_maximumBuffers> m_freeTargets;
          Vector<std::unique_ptr<RenderTarget>, s_maximumBuffers> m_lockedTargets;
          bool m_initialTargetsCreated { false };
@@ -90108,7 +90305,13 @@ index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..641bf72b3eeffc64e27e0773489d3a3c
          mutable Lock m_bufferFormatLock;
          BufferFormat m_bufferFormat WTF_GUARDED_BY_LOCK(m_bufferFormatLock);
          bool m_bufferFormatChanged WTF_GUARDED_BY_LOCK(m_bufferFormatLock) { false };
-@@ -478,7 +501,7 @@ private:
+@@ -475,10 +510,13 @@ private:
+ 
+     const WeakRef<WebPage> m_webPage;
+     Function<void()> m_frameCompleteHandler;
++#if PLATFORM(HAIKU)
++    Function<void()> m_renderTargetReleasedHandler;
++#endif
      bool m_useSkia { false };
      uint64_t m_id { 0 };
      RenderingPurpose m_renderingPurpose { RenderingPurpose::Composited };
@@ -90347,7 +90550,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..29b2218c26bef68dbc9061f1727d1f72
  
          if (!m_pendingForceRepaint && m_forcedRepaintAsyncCallback)
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
-index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..9482ff00d7a7a5394dd3f54baf752481223d1a2f 100644
+index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..70263f0c9553b405faaab2447c57f0eefe139649 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
 @@ -53,6 +53,12 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
@@ -90381,7 +90584,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..9482ff00d7a7a5394dd3f54baf752481
  Ref<ThreadedCompositor> ThreadedCompositor::create(WebPage& webPage, LayerTreeHost& layerTreeHost, CoordinatedSceneState& sceneState)
  {
      return adoptRef(*new ThreadedCompositor(webPage, layerTreeHost, sceneState));
-@@ -90,6 +107,16 @@ ThreadedCompositor::ThreadedCompositor(WebPage& webPage, LayerTreeHost& layerTre
+@@ -90,6 +107,17 @@ ThreadedCompositor::ThreadedCompositor(WebPage& webPage, LayerTreeHost& layerTre
  {
      ASSERT(RunLoop::isMain());
  
@@ -90393,12 +90596,13 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..9482ff00d7a7a5394dd3f54baf752481
 +    }
 +    if (framesPerSecond)
 +        m_minimumFrameInterval = 1_s / framesPerSecond;
++    m_surface->setRenderTargetReleasedHandler([this] { renderTargetReleased(); });
 +#endif
 +
      m_didCompositeRunLoopObserver = makeUnique<RunLoopObserver>(RunLoopObserver::WellKnownOrder::GraphicsCommit, [this] {
          this->didCompositeRunLoopObserverFired();
      });
-@@ -216,8 +243,17 @@ void ThreadedCompositor::updateRenderTimer()
+@@ -216,8 +244,17 @@ void ThreadedCompositor::updateRenderTimer()
      }
  
      if (m_state.isRenderTimerActive) {
@@ -90418,7 +90622,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..9482ff00d7a7a5394dd3f54baf752481
      } else
          m_renderTimer.stop();
  }
-@@ -364,6 +400,10 @@ TargetContents ThreadedCompositor::paintToCurrentGLContext(const TransformationM
+@@ -364,6 +401,10 @@ TargetContents ThreadedCompositor::paintToCurrentGLContext(const TransformationM
  #if USE(TEXTURE_MAPPER)
  void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix, const IntSize& size, const OptionSet<CompositionReason>& reasons)
  {
@@ -90429,7 +90633,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..9482ff00d7a7a5394dd3f54baf752481
      FloatRect clipRect(FloatPoint { }, size);
      TextureMapperLayer& currentRootLayer = m_sceneState->rootLayer().ensureTarget();
      if (currentRootLayer.transform() != matrix)
-@@ -373,6 +413,9 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
+@@ -373,6 +414,9 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
  
      m_textureMapper->beginPainting(m_flipY ? TextureMapper::FlipY::Yes : TextureMapper::FlipY::No);
      m_textureMapper->beginClip(TransformationMatrix(), FloatRoundedRect(clipRect));
@@ -90439,7 +90643,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..9482ff00d7a7a5394dd3f54baf752481
  
  #if ENABLE(DAMAGE_TRACKING)
      std::optional<FloatRoundedRect> rectContainingRegionThatActuallyChanged;
-@@ -404,11 +447,20 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
+@@ -404,11 +448,20 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
          m_textureMapper->beginClip(TransformationMatrix(), *rectContainingRegionThatActuallyChanged);
  #endif
  
@@ -90460,7 +90664,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..9482ff00d7a7a5394dd3f54baf752481
  
  #if ENABLE(DAMAGE_TRACKING)
      if (rectContainingRegionThatActuallyChanged)
-@@ -426,6 +478,16 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
+@@ -426,6 +479,16 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
  
      m_textureMapper->endClip();
      m_textureMapper->endPainting();
@@ -90477,7 +90681,47 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..9482ff00d7a7a5394dd3f54baf752481
  
      if (sceneHasRunningAnimations)
          requestComposition(CompositionReason::Animation);
-@@ -580,8 +642,16 @@ void ThreadedCompositor::renderLayerTree()
+@@ -556,6 +619,39 @@ void ThreadedCompositor::renderLayerTree()
+     if (m_suspendedCount > 0)
+         return;
+ 
++#if PLATFORM(HAIKU)
++    // Every buffer of the swap chain is still with the UI process: the view
++    // shows one and the rest are on their way back. Painting now would make the
++    // chain allocate another full-size buffer (27 MB at 200%), and keep it,
++    // since spare buffers are freed only once the page is hidden. Keep the
++    // request and wait; renderTargetReleased() runs it as soon as one returns.
++    // A buffer that never comes back must not freeze the page, so after a
++    // while it paints anyway and the chain grows by one.
++    {
++        static constexpr Seconds waitLimit = 2_s;
++        IntSize size;
++        {
++            Locker locker { m_attributes.lock };
++            size = m_attributes.viewportSize;
++        }
++        Locker locker { m_state.lock };
++        if (!size.isEmpty() && !m_surface->hasRenderTargetFor(size)) {
++            auto now = MonotonicTime::now();
++            if (!m_isWaitingForRenderTarget) {
++                m_isWaitingForRenderTarget = true;
++                m_renderTargetWaitStartedAt = now;
++            }
++            Seconds waited = now - m_renderTargetWaitStartedAt;
++            if (waited < waitLimit) {
++                m_renderTimer.startOneShot(waitLimit - waited);
++                return;
++            }
++            WTFLogAlways("Summit compositor: no buffer came back for %.1f s; painting into a new one", waited.seconds());
++        }
++        m_isWaitingForRenderTarget = false;
++    }
++#endif
++
+     OptionSet<CompositionReason> reasons;
+     bool shouldNotifiyDidComposite = false;
+     {
+@@ -580,8 +676,16 @@ void ThreadedCompositor::renderLayerTree()
  
          ASSERT(m_state.state == State::Scheduled);
          m_state.state = State::InProgress;
@@ -90494,7 +90738,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..9482ff00d7a7a5394dd3f54baf752481
  #if USE(TEXTURE_MAPPER)
      if (!m_context || !m_context->makeContextCurrent())
          return;
-@@ -599,10 +669,14 @@ void ThreadedCompositor::renderLayerTree()
+@@ -599,10 +703,14 @@ void ThreadedCompositor::renderLayerTree()
      if (viewportSize.isEmpty())
          return;
  
@@ -90509,7 +90753,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..9482ff00d7a7a5394dd3f54baf752481
  
      RunLoop::mainSingleton().dispatch([this, protectedThis = Ref { *this }] {
          if (m_layerTreeHost)
-@@ -612,10 +686,16 @@ void ThreadedCompositor::renderLayerTree()
+@@ -612,10 +720,16 @@ void ThreadedCompositor::renderLayerTree()
      WTFBeginSignpost(this, FlushCompositingState);
      flushCompositingState(reasons);
      WTFEndSignpost(this, FlushCompositingState);
@@ -90526,7 +90770,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..9482ff00d7a7a5394dd3f54baf752481
  
      updateFPSCounter();
  
-@@ -633,6 +713,14 @@ void ThreadedCompositor::renderLayerTree()
+@@ -633,6 +747,14 @@ void ThreadedCompositor::renderLayerTree()
  
      m_surface->didRenderFrame(targetContents);
      m_surface->sendFrame();
@@ -90541,7 +90785,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..9482ff00d7a7a5394dd3f54baf752481
  
      RunLoop::mainSingleton().dispatch([this, protectedThis = Ref { *this }] {
          if (m_layerTreeHost)
-@@ -656,6 +744,13 @@ void ThreadedCompositor::requestComposition(CompositionReason reason)
+@@ -656,6 +778,13 @@ void ThreadedCompositor::requestComposition(CompositionReason reason)
  {
      Locker locker { m_state.lock };
      m_state.reasons.add(reason);
@@ -90555,22 +90799,55 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..9482ff00d7a7a5394dd3f54baf752481
      scheduleUpdateLocked();
  }
  
+@@ -726,6 +855,20 @@ void ThreadedCompositor::frameComplete()
+     }
+ }
+ 
++#if PLATFORM(HAIKU)
++void ThreadedCompositor::renderTargetReleased()
++{
++    ASSERT(m_workQueue->runLoop().isCurrent());
++
++    Locker locker { m_state.lock };
++    if (!std::exchange(m_isWaitingForRenderTarget, false))
++        return;
++    // The render timer stayed active while waiting; run it now.
++    if (m_state.isRenderTimerActive && !m_suspendedCount.load())
++        m_renderTimer.startOneShot(0_s);
++}
++#endif
++
+ RunLoop* ThreadedCompositor::runLoop()
+ {
+     return m_surface ? &m_workQueue->runLoop() : nullptr;
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.h b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.h
-index 6665a0cc3570425e2ad5d26dc6c443e3b8280665..c8edb3d0577aaf779dfa9fc24e2adb2fb4eabc6a 100644
+index 6665a0cc3570425e2ad5d26dc6c443e3b8280665..7d645cbb5336108b8a33e6ce93b76ba6a87fc75f 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.h
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.h
-@@ -194,6 +194,10 @@ private:
+@@ -137,6 +137,9 @@ private:
+     TargetContents paintToSkiaCanvas(const WebCore::TransformationMatrix&, const WebCore::IntSize&, const OptionSet<WebCore::CompositionReason>&);
+ #endif
+     void frameComplete();
++#if PLATFORM(HAIKU)
++    void renderTargetReleased();
++#endif
+ 
+     void didCompositeRunLoopObserverFired();
+ 
+@@ -194,6 +197,12 @@ private:
      } m_attributes;
  
      RunLoop::Timer m_renderTimer;
 +#if PLATFORM(HAIKU)
 +    Seconds m_minimumFrameInterval;
 +    MonotonicTime m_lastRenderTimestamp;
++    bool m_isWaitingForRenderTarget WTF_GUARDED_BY_LOCK(m_state.lock) { false };
++    MonotonicTime m_renderTargetWaitStartedAt WTF_GUARDED_BY_LOCK(m_state.lock);
 +#endif
  #if USE(TEXTURE_MAPPER)
      std::unique_ptr<WebCore::TextureMapper> m_textureMapper;
  #endif
-@@ -234,4 +238,3 @@ private:
+@@ -234,4 +243,3 @@ private:
  } // namespace WebKit
  
  #endif // USE(COORDINATED_GRAPHICS)
@@ -108609,6 +108886,21 @@ index 9626340809303ad97ee5f0066aabc70a49108f14..95ba93d756a2139b98581c104fc78dcc
  
  static inline uint64_t pas_atomic_fetch_add_uint64_relaxed(uint64_t* ptr, uint64_t addend)
  {
+diff --git a/Source/bmalloc/mimalloc/mimalloc/src/prim/unix/prim.c b/Source/bmalloc/mimalloc/mimalloc/src/prim/unix/prim.c
+index ba8dfb1f87d7e2a7b90fe9061793f703c6ccd5b3..163707e713185ebbac1801e7c1e58780d0fee231 100644
+--- a/Source/bmalloc/mimalloc/mimalloc/src/prim/unix/prim.c
++++ b/Source/bmalloc/mimalloc/mimalloc/src/prim/unix/prim.c
+@@ -496,6 +496,10 @@ int _mi_prim_decommit(void* start, size_t size, bool* needs_recommit) {
+     // decommit on macOS: use MADV_FREE_REUSABLE as it does immediate rss accounting (issue #1097)
+     err = unix_madvise(start, size, MADV_FREE_REUSABLE);
+     if (err) { err = unix_madvise(start, size, MADV_DONTNEED); }
++  #elif defined(__HAIKU__)
++    // decommit on Haiku: MADV_DONTNEED is accepted but ignored, so purged memory
++    // never left the process; MADV_FREE discards the pages immediately.
++    err = unix_madvise(start, size, MADV_FREE);
+   #else
+     // decommit: use MADV_DONTNEED as it decreases rss immediately (unlike MADV_FREE)
+     err = unix_madvise(start, size, MADV_DONTNEED);
 diff --git a/Source/cmake/OptionsCommon.cmake b/Source/cmake/OptionsCommon.cmake
 index 121e64b01bce34e387deacf3bbbca93adf0f59da..7926cd9c3edf141bc52f7db0253c37c0c711b638 100644
 --- a/Source/cmake/OptionsCommon.cmake
