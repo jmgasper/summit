@@ -117,6 +117,28 @@ trained with `SUMMIT_GCOV_DUMP=1` (1,982 profile files; a copy is in
 linker flags. The harness now waits `SUMMIT_BENCH_LEFTOVER_GRACE` seconds
 for helper processes to write their counters.
 
+Two kinds of profile file do not survive the rebuild, and both need handling
+before a profile-use build can finish:
+
+- **Corrupted counters.** 33 of the 1,982 files fail with "profile data for
+  function ... is corrupted" / "checksum is (x,0) instead of (x,y)" (21 in
+  WebCore, 12 in WebKit; one also crashed the compiler). Several processes
+  load the same code and all write their counters at exit; most likely some
+  of those merges end half-written (not confirmed). Those files are moved to
+  `/boot/home/summit/pgo2-bad`, so their objects compile without a profile.
+- **Compiles that never finish.** Six units (WebCore html-9, html-11,
+  platform-47, svg-15, workers-8; WebKit NetworkProcess-11) keep `cc1plus`
+  busy for hours under `-fprofile-use`, with more kernel time than user
+  time. They were still going after 4½ hours, and the X399 hung outright once
+  while they ran. Their profiles are in `/boot/home/summit/pgo2-stall`.
+  Without a profile each compiles in minutes. If ninja sits on a handful of
+  jobs with a load of exactly that many, this is why.
+
+A hard power cut on Haiku loses recently written file data even when the
+directory entries survive: after the first hang 25 objects were zero bytes
+and ninja's log was 90 steps behind. `find WebKitBuild/... -name '*.o' -size 0`
+after any reset, and `sync` after anything that must survive.
+
 ### Scrolling while 24 other tabs reload
 
 `run-multitab.py` scrolls the first window while every tab of the other two
