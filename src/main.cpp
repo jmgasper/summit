@@ -15,6 +15,7 @@
 #include <FindDirectory.h>
 #include <Path.h>
 #include <Roster.h>
+#include <OS.h>
 #if !SUMMIT_MODERN_WEBKIT
 #include <WebPage.h>
 #include <WebSettings.h>
@@ -869,6 +870,12 @@ static int RunApplication()
 
 int main()
 {
+    // The application thread runs WebKit's main loop: every frame, input
+    // reply and IPC message of every tab passes through it. Under the load of
+    // many tabs it competes with dozens of web processes, so it runs at the
+    // priority of window threads. SUMMIT_UI_PRIORITY=normal leaves it alone.
+    if (const char* priority = std::getenv("SUMMIT_UI_PRIORITY"); !priority || std::strcmp(priority, "normal"))
+        set_thread_priority(find_thread(nullptr), B_DISPLAY_PRIORITY);
     const int status = RunApplication();
 #if SUMMIT_MODERN_WEBKIT
     // RunApplication destroys the native application after its asynchronous

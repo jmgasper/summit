@@ -1,5 +1,163 @@
 # Summit performance: Speedometer 3.1 baseline, where the time goes, stress test
 
+## 28 September 2026 (evening): extension start-up, the 1Password popup, background tabs, the network process
+
+Goal: multiple tabs, load times, scrolling under load, and extension
+loading, with the 1Password toolbar button opening its popup near
+instantly. Milestones on both sides are printed by `SUMMIT_EXTENSION_TIMING=1`
+("Summit browser timing" from Summit, "Summit extension timing" from the
+engine, both on `system_time()`), which is how the numbers below were read.
+Test setup on the X399: a private copy of the installed bundle and of the
+owner's profile (1Password signed in), launched by `tlaunch.py` which
+stamps every stderr line with seconds since launch.
+
+### Unpacking 1Password on every launch: 6 s, now 0.13 s
+
+Every launch prepared each installed extension by extracting its archive
+into `ExtensionStaging/<pid>/` and then copying the tree again into a
+snapshot directory, one `fsync` per file. 1Password's package is 1,001
+files (47 MB) and BFS takes about 3 ms to create a file, so the staging
+directory appeared 0.4 s after launch, the last snapshot file 6.4 s after
+launch, and the background page's first console line at 7.4 s. Hashing the
+same tree in place costs 0.18 s.
+
+Archives are now unpacked once into
+`<profile>/WebKit/ExtensionPackageCache/<sha256 of the archive>/package`,
+beside a `record` with the archive's path, size and modification time, the
+resource fingerprint and the verified CRX signer. The unpacked tree is
+hashed once (no second copy) to get the fingerprint. A later launch hashes
+the archive to find the entry, hashes the cached tree and compares it with
+the record; on a match the extension loads from the cache, and
+`WebExtension` no longer deletes the directory when unloaded. Entries whose
+archive was replaced or removed, and unpacking directories older than an
+hour, are pruned after each preparation.
+
+| Launch of the owner's profile | before | first launch (cache miss) | later launches |
+| --- | --- | --- | --- |
+| package prepared | 6.4 s | 3.6 s (unpack 3.0, hash 0.08) | 0.60 s (verify 0.13) |
+| extension loaded | 6.8 s | 3.6 s | 0.63 s |
+| background page loaded | | 4.5 s | 1.85 s |
+| "Finished initializing 1Password" | 8.4 s | 6.0 s | 2.9 s |
+
+What remains is the background page itself: 1.2 s from creation to
+`load` (a 2.9 MB `background.js`) and about 1 s of the extension's own
+initialization (WebAssembly core, IndexedDB, feature flags).
+
+### The popup: created on the click, now pre-loaded on hover
+
+A toolbar click created the popup page, loaded `popup/index.html`, waited
+for its `load` event, then showed the window. From the click:
+
+| | page created | content 600x450 | document loaded, shown | first frame drawn |
+| --- | --- | --- | --- | --- |
+| first open | 7 ms | 214 ms | 352 ms | 428 ms |
+| second open | 1 ms | 293 ms | ~300 ms | 321 ms |
+
+Firefox starts loading a browser action's popup when the pointer reaches
+its button, so the click only has to show it. Summit now does the same:
+`ExtensionActionButton` posts a pre-load message when the pointer enters
+it (and on mouse down), `BWebKitContext::PreloadExtensionAction` reaches
+`ExtensionActionPopupHaiku::preload`, which creates the page and the
+native window as before but does not show them when the document loads.
+The click then calls `present()`: shown at once if the document is ready,
+otherwise as soon as it is. A pre-loaded popup nobody clicks closes after
+30 s; `action.openPopup()` closes one before opening its own; a click while
+another extension's popup is open still supersedes it. No user gesture or
+`activeTab` grant comes from the pre-load.
+
+| click to first frame | |
+| --- | --- |
+| hovered 1.5 s before the click | 89-93 ms |
+| hovered 0.15 s before the click | 42-79 ms |
+| pointer arrives and clicks within 0.2 s (document still loading) | 126-141 ms |
+
+The remaining 40-90 ms is `Show()` and the first draw through app_server.
+One first pre-load after launch took 3.9 s between the pre-load and the
+page creation in one run and 5 ms in the next; the finer timing lines in
+`start()` are there for the next time it shows.
+
+### Background tabs' processes yield the CPUs
+
+WTF already maps quality of service onto Haiku priorities (scrolling,
+compositing and event dispatch at `B_DISPLAY_PRIORITY`), but every web
+process ran that way whether its page was on screen or not. As Linux does
+with `HighPriorityThreads`, the web process now reacts to page visibility:
+when none of its pages is visible, audible, capturing media or an
+extension page (the process hosting an extension's background page also
+serves its popup and its content scripts' messages), every thread of the
+team below real time is set to `B_LOW_PRIORITY` and remembered; threads
+created meanwhile are lowered as they start (`ThreadingPOSIX.cpp`), and
+the recorded priorities come back when a page becomes visible
+(`setProcessBackgroundedHaiku`, `WebProcess::pageActivityStateDidChange`,
+re-evaluated on commit because an extension page's URL is only known
+then). `SUMMIT_BACKGROUND_PROCESS_PRIORITY=0` turns it off. Summit's own
+application thread, which runs WebKit's main loop for every tab, now runs
+at `B_DISPLAY_PRIORITY` like window threads (`SUMMIT_UI_PRIORITY=normal`
+reverts).
+
+Three windows of twelve real sites (`run-multitab.py`), alternated with
+the installed build:
+
+| 3x12, X399 | installed (`bundle-ztn5nkzi`) | with priorities |
+| --- | --- | --- |
+| scroll under load (24 tabs reloading) | 33.3 / 30.5 fps, 11 / 14 long gaps | 35.0 fps, 15 long gaps |
+| tab switch, median | 292 / 273 ms | 247 ms |
+| load, median / p90 / all done | 19.3 / 49.6 / 82 s, 18.1 / 49.8 / 69 s | 24.3 / 52.6 / 75 s |
+
+A modest gain in the scroll and the switch, within the run-to-run spread;
+loading was not CPU-bound in the first place (see below), so the
+priorities do not change it. The first run with the change lost 17 tabs at
+once when the network process died; that turned out to be the next item.
+
+### The network process dying in libnetwork's parser
+
+The crash report (`NetworkProcess-137701`, the same shape as the two
+older ones): a libcurl resolver thread printed `input in flex scanner
+failed` and called `exit()` from `getaddrinfo` -> `nsdispatch` ->
+`_nsconfigure` -> `_nsyyparse`, libnetwork's flex scanner for
+`/etc/nsswitch.conf`; the main thread then segfaulted in
+`BMessage::_SendMessage` after libbe's statics had been destroyed. The
+parse runs once per process, on the first name lookup, in whichever thread
+makes it; when 36 tabs start at once that is one of a dozen resolver
+threads while sockets and cache files open and close all around it, and a
+read of the file failed (a descriptor closed underneath it fits best).
+`NetworkProcess::platformInitializeNetworkProcess` now resolves
+`localhost` (answered from `/etc/hosts`) before any other thread exists,
+so the parse happens in a quiet process. The exiting parser is still an OS
+bug to report.
+
+### Where 24 tabs' requests spend their time
+
+`SUMMIT_NET_TRACE=1` now also prints the disk cache lookup time. Loading
+24 sites at once in a fresh profile (3,172 requests in 45 s, 78 MB/s
+available downstream):
+
+| per request, ms | median | p90 | p99 |
+| --- | --- | --- | --- |
+| disk cache lookup | 0 | 0 | 6 |
+| queue (main thread `add` to the curl thread's `setupTransfer`) | 103 | 498 | 990 |
+| DNS | 0 | 219 | 979 |
+| connect | 0 | 778 | 1,822 |
+| TLS handshake (673 of them) | 337 | 807 | 1,228 |
+| time to first byte | 489 | 2,011 | 6,178 |
+| total | 2,011 | 4,847 | 11,514 |
+
+The machine was not busy: 3-4 of 32 cores over the load, the network
+process's main thread 0.13 cores. The one `curlThread`, which drives every
+transfer of every tab through a single multi handle, used 0.59 cores, 78%
+of it in the kernel: each iteration polls every socket and then
+`curl_multi_perform` walks every handle, so the cost of one arriving chunk
+grows with the number of open transfers, and a new request waits a median
+103 ms (p90 half a second) just to be started. The cache's write queue
+(`Cache.Storage.background`) used another 0.46 cores, 88% kernel, creating
+files on BFS; lookups are not queued behind it.
+
+The scheduler now runs several worker threads, each with its own multi
+handle, and a request goes to the worker chosen by its host, so a host's
+connections and HTTP/2 streams stay together and are reused (cookies, DNS
+and TLS sessions are shared through the share handle as before).
+`SUMMIT_CURL_THREADS` sets the count (default 4). Measured below.
+
 ## 28 September 2026: installed build, and a profile retrain that lost
 
 Installed on the X399 at 13:03: `bundle-u3r1x1qd`, built in `SkiaCGMiPGO`

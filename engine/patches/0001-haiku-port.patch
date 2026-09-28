@@ -640,7 +640,7 @@ index 452247cc6d61f0f94b1718c2d00cf759b2be4d59..007bdb71eec46dadf94b6fc2021f0ced
  #define ENABLE_SCROLLING_THREAD 0
  #endif
 diff --git a/Source/WTF/wtf/PlatformHaiku.cmake b/Source/WTF/wtf/PlatformHaiku.cmake
-index c466c25cf60489517be9b9bcffe952ae0622261e..8fc8cc6e391a03c3c03c45aca6d807f773e4fa04 100644
+index c466c25cf60489517be9b9bcffe952ae0622261e..b07a030781cd55593cc4323aa34faad86dd6c5e7 100644
 --- a/Source/WTF/wtf/PlatformHaiku.cmake
 +++ b/Source/WTF/wtf/PlatformHaiku.cmake
 @@ -6,6 +6,7 @@ list(APPEND WTF_SOURCES
@@ -651,7 +651,16 @@ index c466c25cf60489517be9b9bcffe952ae0622261e..8fc8cc6e391a03c3c03c45aca6d807f7
  
      posix/CPUTimePOSIX.cpp
      posix/FileHandlePOSIX.cpp
-@@ -38,4 +39,3 @@ list(APPEND WTF_INCLUDE_DIRECTORIES
+@@ -24,6 +25,8 @@ list(APPEND WTF_SOURCES
+ )
+ 
+ list(APPEND WTF_PUBLIC_HEADERS
++    haiku/ProcessPriorityHaiku.h
++
+     unix/UnixFileDescriptor.h
+ )
+ 
+@@ -38,4 +41,3 @@ list(APPEND WTF_INCLUDE_DIRECTORIES
  )
  
  add_definitions(-D_DEFAULT_SOURCE)
@@ -963,6 +972,54 @@ index 1c2a8e5c77949803e7e4dd4b96dee006c80abef2..418bf359627ba6f201cc6d8e78239d16
  }
  
  }
+diff --git a/Source/WTF/wtf/haiku/ProcessPriorityHaiku.h b/Source/WTF/wtf/haiku/ProcessPriorityHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..8c108d90e1cc50a099c7a4633fc1baa9adb49882
+--- /dev/null
++++ b/Source/WTF/wtf/haiku/ProcessPriorityHaiku.h
+@@ -0,0 +1,42 @@
++/*
++ * Copyright (C) 2026 KunanyiOS contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are met:
++ * 1. Redistributions of source code must retain the above copyright notice,
++ *    this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright notice,
++ *    this list of conditions and the following disclaimer in the documentation
++ *    and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#pragma once
++
++#include <wtf/ExportMacros.h>
++
++namespace WTF {
++
++// A web process none of whose pages can be seen or heard runs every thread at
++// B_LOW_PRIORITY, so that the page in front keeps the CPUs while other tabs
++// load. The Haiku mapping in ThreadingPOSIX.cpp applies the same to threads
++// created afterwards; the main thread is set directly. Main thread only.
++// SUMMIT_BACKGROUND_PROCESS_PRIORITY=0 leaves every process at its normal priorities.
++WTF_EXPORT_PRIVATE void setProcessBackgroundedHaiku(bool);
++WTF_EXPORT_PRIVATE bool isProcessBackgroundedHaiku();
++
++} // namespace WTF
++
++using WTF::isProcessBackgroundedHaiku;
++using WTF::setProcessBackgroundedHaiku;
 diff --git a/Source/WTF/wtf/haiku/RunLoopHaiku.cpp b/Source/WTF/wtf/haiku/RunLoopHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..37da313b93ce0cd7429b46c962faa63d9e8569fd
@@ -1480,10 +1537,81 @@ index ca44751e7d8ca4c7b6263808f088a2041b5fbd91..87e2f0f312f7fef0706145986bd00840
  #else
      UNUSED_PARAM(address);
 diff --git a/Source/WTF/wtf/posix/ThreadingPOSIX.cpp b/Source/WTF/wtf/posix/ThreadingPOSIX.cpp
-index 67d97926784c557e37a2f23a570fe6ea593fca56..eb318d7260cfe9744dfefe674282fab1a53a2826 100644
+index 67d97926784c557e37a2f23a570fe6ea593fca56..7a6935d7a3bc657c4ba7111b83fefb3d964fcedd 100644
 --- a/Source/WTF/wtf/posix/ThreadingPOSIX.cpp
 +++ b/Source/WTF/wtf/posix/ThreadingPOSIX.cpp
-@@ -445,6 +445,30 @@ void Thread::updateSchedulingAttributes(SchedulingState state) const
+@@ -31,6 +31,7 @@
+  */
+ 
+ #include "config.h"
++#include <atomic>
+ #include <wtf/Threading.h>
+ 
+ #if USE(PTHREADS)
+@@ -47,6 +48,9 @@
+ 
+ #if OS(HAIKU)
+ #include <OS.h>
++#include <wtf/haiku/ProcessPriorityHaiku.h>
++#include <wtf/Lock.h>
++#include <wtf/HashMap.h>
+ #endif
+ 
+ #if OS(LINUX)
+@@ -97,6 +101,52 @@
+ 
+ namespace WTF {
+ 
++#if OS(HAIKU)
++static std::atomic<bool> s_processBackgroundedHaiku { false };
++static Lock s_backgroundedThreadsLock;
++static HashMap<thread_id, int32>& backgroundedThreadPriorities() WTF_REQUIRES_LOCK(s_backgroundedThreadsLock)
++{
++    static NeverDestroyed<HashMap<thread_id, int32>> priorities;
++    return priorities.get();
++}
++
++bool isProcessBackgroundedHaiku()
++{
++    return s_processBackgroundedHaiku.load(std::memory_order_relaxed);
++}
++
++void setProcessBackgroundedHaiku(bool backgrounded)
++{
++    static const bool enabled = [] {
++        const char* value = getenv("SUMMIT_BACKGROUND_PROCESS_PRIORITY");
++        return !value || strcmp(value, "0");
++    }();
++    if (!enabled)
++        return;
++    Locker locker { s_backgroundedThreadsLock };
++    if (s_processBackgroundedHaiku.exchange(backgrounded) == backgrounded)
++        return;
++    auto& priorities = backgroundedThreadPriorities();
++    if (backgrounded) {
++        // Every thread of the team below real time, the main thread included;
++        // threads created from now on are lowered as they start.
++        int32 cookie = 0;
++        thread_info info;
++        while (get_next_thread_info(B_CURRENT_TEAM, &cookie, &info) == B_OK) {
++            if (info.priority <= B_LOW_PRIORITY || info.priority >= B_REAL_TIME_DISPLAY_PRIORITY)
++                continue;
++            priorities.set(info.thread, info.priority);
++            set_thread_priority(info.thread, B_LOW_PRIORITY);
++        }
++        return;
++    }
++    for (auto& entry : priorities)
++        set_thread_priority(entry.key, entry.value); // A thread that has exited is simply gone.
++    priorities.clear();
++}
++#endif
++
++
+ Thread::~Thread() = default;
+ 
+ #if !OS(DARWIN)
+@@ -445,6 +495,38 @@ void Thread::updateSchedulingAttributes(SchedulingState state) const
          || setpriority(PRIO_PROCESS, m_id, attributes.niceLevel))
          logSchedulingAttributesFailure(m_id);
  #endif // HAVE(SCHED_SETATTR)
@@ -1509,11 +1637,28 @@ index 67d97926784c557e37a2f23a570fe6ea593fca56..eb318d7260cfe9744dfefe674282fab1
 +        break;
 +    }
 +    thread_id thread = get_pthread_thread_id(m_handle);
++    // A process whose pages are all hidden yields to the one in front; the
++    // priority the thread should get back is remembered.
++    if (isProcessBackgroundedHaiku() && priority > B_LOW_PRIORITY) {
++        Locker locker { s_backgroundedThreadsLock };
++        if (thread >= 0 && s_processBackgroundedHaiku.load())
++            backgroundedThreadPriorities().set(thread, priority);
++        priority = B_LOW_PRIORITY;
++    }
 +    if (thread >= 0)
 +        set_thread_priority(thread, priority);
  #else
      UNUSED_PARAM(state);
  #endif // OS(LINUX)
+@@ -875,6 +957,8 @@ void Thread::yield()
+ #endif
+ }
+ 
++
++
+ } // namespace WTF
+ 
+ #endif // USE(PTHREADS)
 diff --git a/Source/WTF/wtf/text/WTFString.h b/Source/WTF/wtf/text/WTFString.h
 index ec87143310f33fc59c92186fb81b6393ad1da5ca..b74ff9ab4644a3b8b98feb5e0945fc6deb3f3fb9 100644
 --- a/Source/WTF/wtf/text/WTFString.h
@@ -26898,7 +27043,7 @@ index 0000000000000000000000000000000000000000..da71c185bfa5f93bf68ba7a513f48393
 +
 +#endif
 diff --git a/Source/WebCore/platform/network/curl/CurlRequest.cpp b/Source/WebCore/platform/network/curl/CurlRequest.cpp
-index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..48eded1c4c0f04582b408b7fbb1b0df4dbfd2c09 100644
+index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..6fb3cb9ff4a2c9c1ce02c1bd9e72b4ca1dd75d13 100644
 --- a/Source/WebCore/platform/network/curl/CurlRequest.cpp
 +++ b/Source/WebCore/platform/network/curl/CurlRequest.cpp
 @@ -36,19 +36,51 @@
@@ -26982,7 +27127,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..48eded1c4c0f04582b408b7fbb1b0df4
  
      if (m_request.url().protocolIsFile())
          invokeDidReceiveResponseForFile(m_request.url());
-@@ -122,6 +160,12 @@ void CurlRequest::resume()
+@@ -122,8 +160,14 @@ void CurlRequest::resume()
  void CurlRequest::startWithJobManager()
  {
      ASSERT(isMainThread());
@@ -26993,8 +27138,11 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..48eded1c4c0f04582b408b7fbb1b0df4
 +    }
 +#endif
  
-     CurlContext::singleton().scheduler().add(this);
+-    CurlContext::singleton().scheduler().add(this);
++    CurlContext::singleton().scheduler().add(this, m_request.url().host().toString());
  }
+ 
+ void CurlRequest::cancel()
 @@ -137,6 +181,10 @@ void CurlRequest::cancel()
  
          m_cancelled = true;
@@ -27057,7 +27205,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..48eded1c4c0f04582b408b7fbb1b0df4
  /* `this` is protected inside this method. */
  void CurlRequest::callClient(Function<void(CurlRequest&, CurlRequestClient&)>&& task)
  {
-@@ -173,7 +256,7 @@ void CurlRequest::callClient(Function<void(CurlRequest&, CurlRequestClient&)>&&
+@@ -173,13 +256,13 @@ void CurlRequest::callClient(Function<void(CurlRequest&, CurlRequestClient&)>&&
  
  void CurlRequest::runOnMainThread(Function<void()>&& task)
  {
@@ -27066,6 +27214,13 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..48eded1c4c0f04582b408b7fbb1b0df4
  }
  
  void CurlRequest::runOnWorkerThreadIfRequired(Function<void()>&& task)
+ {
+     if (isMainThread())
+-        CurlContext::singleton().scheduler().callOnWorkerThread(WTF::move(task));
++        CurlContext::singleton().scheduler().callOnWorkerThread(this, WTF::move(task));
+     else
+         task();
+ }
 @@ -209,8 +292,9 @@ CURL* CurlRequest::setupTransfer()
          setupPUT();
      }
@@ -27396,6 +27551,461 @@ index 3b060605bbff32f845804a848610eca23dea834c..8944602bc958120d95c2e0e9b9654938
 +#if PLATFORM(HAIKU)
 +    MonotonicTime m_netTraceQueuedAtHaiku;
 +#endif
+ };
+ 
+ } // namespace WebCore
+diff --git a/Source/WebCore/platform/network/curl/CurlRequestScheduler.cpp b/Source/WebCore/platform/network/curl/CurlRequestScheduler.cpp
+index 393535b29c7ea90e6c7cb83d261a93963e09b5d7..1a61d572727579ea03ab5bf6e93dd74e52e2eb0b 100644
+--- a/Source/WebCore/platform/network/curl/CurlRequestScheduler.cpp
++++ b/Source/WebCore/platform/network/curl/CurlRequestScheduler.cpp
+@@ -27,8 +27,13 @@
+ 
+ #include "config.h"
+ #include "CurlRequestScheduler.h"
++
++#include <cstdlib>
++#include <cstring>
+ #include <wtf/TZoneMallocInlines.h>
+ #include <wtf/Threading.h>
++#include <wtf/MonotonicTime.h>
++#include <cstdio>
+ 
+ #if USE(CURL)
+ 
+@@ -38,28 +43,60 @@ namespace WebCore {
+ 
+ WTF_MAKE_TZONE_ALLOCATED_IMPL(CurlRequestScheduler);
+ 
++static size_t workerCount()
++{
++    size_t count = 4;
++    if (const char* value = std::getenv("SUMMIT_CURL_THREADS")) {
++        auto parsed = std::strtol(value, nullptr, 10);
++        if (parsed >= 1 && parsed <= 16)
++            count = parsed;
++    }
++    return count;
++}
++
+ CurlRequestScheduler::CurlRequestScheduler(long maxConnects, long maxTotalConnections, long maxHostConnections)
+-    : m_maxConnects(maxConnects)
+-    , m_maxTotalConnections(maxTotalConnections)
+-    , m_maxHostConnections(maxHostConnections)
+ {
++    auto count = workerCount();
++    m_workers.reserveInitialCapacity(count);
++    for (size_t index = 0; index < count; ++index)
++        m_workers.append(makeUnique<Worker>(*this, maxConnects, maxTotalConnections, maxHostConnections));
+ }
+ 
+ CurlRequestScheduler::~CurlRequestScheduler()
+ {
+-    stopThread();
++    m_workers.clear();
++}
++
++CurlRequestScheduler::Worker& CurlRequestScheduler::workerForHost(const String& host)
++{
++    return *m_workers[host.hash() % m_workers.size()];
++}
++
++CurlRequestScheduler::Worker* CurlRequestScheduler::workerForClient(CurlRequestSchedulerClient* client)
++{
++    Locker locker { m_assignmentLock };
++    return m_assignments.get(client);
++}
++
++void CurlRequestScheduler::unassign(CurlRequestSchedulerClient* client)
++{
++    Locker locker { m_assignmentLock };
++    m_assignments.remove(client);
+ }
+ 
+-bool CurlRequestScheduler::add(CurlRequestSchedulerClient* client)
++bool CurlRequestScheduler::add(CurlRequestSchedulerClient* client, const String& host)
+ {
+     ASSERT(isMainThread());
+ 
+     if (!client)
+         return false;
+ 
+-    startTransfer(client);
+-    startOrWakeUpThread();
+-
++    Worker& worker = workerForHost(host);
++    {
++        Locker locker { m_assignmentLock };
++        m_assignments.set(client, &worker);
++    }
++    worker.add(client);
+     return true;
+ }
+ 
+@@ -70,10 +107,47 @@ void CurlRequestScheduler::cancel(CurlRequestSchedulerClient* client)
+     if (!client)
+         return;
+ 
++    if (auto* worker = workerForClient(client))
++        worker->cancel(client);
++}
++
++void CurlRequestScheduler::callOnWorkerThread(CurlRequestSchedulerClient* client, Function<void()>&& task)
++{
++    auto* worker = client ? workerForClient(client) : nullptr;
++    (worker ? *worker : *m_workers[0]).callOnWorkerThread(WTF::move(task));
++}
++
++// Worker: one multi handle and the thread that drives it -----------------
++
++CurlRequestScheduler::Worker::Worker(CurlRequestScheduler& scheduler, long maxConnects, long maxTotalConnections, long maxHostConnections)
++    : m_scheduler(scheduler)
++    , m_maxConnects(maxConnects)
++    , m_maxTotalConnections(maxTotalConnections)
++    , m_maxHostConnections(maxHostConnections)
++{
++}
++
++CurlRequestScheduler::Worker::~Worker()
++{
++    stopThread();
++}
++
++void CurlRequestScheduler::Worker::add(CurlRequestSchedulerClient* client)
++{
++    ASSERT(isMainThread());
++
++    startTransfer(client);
++    startOrWakeUpThread();
++}
++
++void CurlRequestScheduler::Worker::cancel(CurlRequestSchedulerClient* client)
++{
++    ASSERT(isMainThread());
++
+     cancelTransfer(client);
+ }
+ 
+-void CurlRequestScheduler::callOnWorkerThread(Function<void()>&& task)
++void CurlRequestScheduler::Worker::callOnWorkerThread(Function<void()>&& task)
+ {
+     {
+         Locker locker { m_mutex };
+@@ -83,7 +157,7 @@ void CurlRequestScheduler::callOnWorkerThread(Function<void()>&& task)
+     startOrWakeUpThread();
+ }
+ 
+-void CurlRequestScheduler::startOrWakeUpThread()
++void CurlRequestScheduler::Worker::startOrWakeUpThread()
+ {
+     ASSERT(isMainThread());
+ 
+@@ -108,7 +182,7 @@ void CurlRequestScheduler::startOrWakeUpThread()
+     }, ThreadType::Network);
+ }
+ 
+-void CurlRequestScheduler::wakeUpThreadIfPossible()
++void CurlRequestScheduler::Worker::wakeUpThreadIfPossible()
+ {
+     Locker locker { m_multiHandleMutex };
+     if (!m_curlMultiHandle)
+@@ -117,7 +191,7 @@ void CurlRequestScheduler::wakeUpThreadIfPossible()
+     m_curlMultiHandle->wakeUp();
+ }
+ 
+-void CurlRequestScheduler::stopThreadIfNoMoreJobRunning()
++void CurlRequestScheduler::Worker::stopThreadIfNoMoreJobRunning()
+ {
+     ASSERT(!isMainThread());
+ 
+@@ -128,7 +202,7 @@ void CurlRequestScheduler::stopThreadIfNoMoreJobRunning()
+     m_runThread = false;
+ }
+ 
+-void CurlRequestScheduler::stopThread()
++void CurlRequestScheduler::Worker::stopThread()
+ {
+     {
+         Locker locker { m_mutex };
+@@ -142,7 +216,7 @@ void CurlRequestScheduler::stopThread()
+     }
+ }
+ 
+-void CurlRequestScheduler::executeTasks()
++void CurlRequestScheduler::Worker::executeTasks()
+ {
+     ASSERT(!isMainThread());
+ 
+@@ -157,7 +231,7 @@ void CurlRequestScheduler::executeTasks()
+         task();
+ }
+ 
+-void CurlRequestScheduler::workerThread()
++void CurlRequestScheduler::Worker::workerThread()
+ {
+     ASSERT(!isMainThread());
+ 
+@@ -169,6 +243,13 @@ void CurlRequestScheduler::workerThread()
+         m_curlMultiHandle->setMaxHostConnections(m_maxHostConnections);
+     }
+ 
++    // SUMMIT_NET_TRACE=1 reports loop iterations that kept queued requests
++    // waiting: how long the tasks, the poll, perform and the completions took.
++    static const bool traceIterations = [] {
++        const char* value = getenv("SUMMIT_NET_TRACE");
++        return value && value[0] == '1' && !value[1];
++    }();
++
+     while (true) {
+         {
+             Locker locker { m_mutex };
+@@ -176,16 +257,26 @@ void CurlRequestScheduler::workerThread()
+                 break;
+         }
+ 
++        auto iterationStart = MonotonicTime::now();
++        size_t taskCount = 0;
++        {
++            Locker locker { m_mutex };
++            taskCount = m_taskQueue.size();
++        }
+         executeTasks();
++        auto tasksDone = MonotonicTime::now();
+ 
+         const int selectTimeoutMS = INT_MAX;
+         m_curlMultiHandle->poll({ }, selectTimeoutMS);
++        auto pollDone = MonotonicTime::now();
+ 
+         int activeCount = 0;
+         while (m_curlMultiHandle->perform(activeCount) == CURLM_CALL_MULTI_PERFORM) { }
++        auto performDone = MonotonicTime::now();
+ 
+         // check the curl messages indicating completed transfers
+         // and free their resources
++        unsigned completions = 0;
+         while (true) {
+             int messagesInQueue = 0;
+             CURLMsg* msg = m_curlMultiHandle->readInfo(messagesInQueue);
+@@ -193,10 +284,21 @@ void CurlRequestScheduler::workerThread()
+                 break;
+ 
+             ASSERT(msg->msg == CURLMSG_DONE);
++            ++completions;
+             if (auto client = m_clientMaps.inlineGet(msg->easy_handle))
+                 completeTransfer(client, msg->data.result);
+         }
+ 
++        if (traceIterations) {
++            auto end = MonotonicTime::now();
++            auto busy = (end - iterationStart) - (pollDone - tasksDone);
++            if (busy > 50_ms) {
++                fprintf(stderr, "Summit net: worker %p slow iteration: tasks %zu in %.0f ms, poll %.0f ms, perform %.0f ms (%d active), %u completions in %.0f ms\n",
++                    this, taskCount, (tasksDone - iterationStart).milliseconds(), (pollDone - tasksDone).milliseconds(),
++                    (performDone - pollDone).milliseconds(), activeCount, completions, (end - performDone).milliseconds());
++            }
++        }
++
+ //        stopThreadIfNoMoreJobRunning();
+     }
+ 
+@@ -206,7 +308,7 @@ void CurlRequestScheduler::workerThread()
+     }
+ }
+ 
+-void CurlRequestScheduler::startTransfer(CurlRequestSchedulerClient* client)
++void CurlRequestScheduler::Worker::startTransfer(CurlRequestSchedulerClient* client)
+ {
+     client->retain();
+ 
+@@ -228,44 +330,48 @@ void CurlRequestScheduler::startTransfer(CurlRequestSchedulerClient* client)
+     m_taskQueue.append(WTF::move(task));
+ }
+ 
+-void CurlRequestScheduler::completeTransfer(CurlRequestSchedulerClient* client, CURLcode result)
++void CurlRequestScheduler::Worker::completeTransfer(CurlRequestSchedulerClient* client, CURLcode result)
+ {
+     finalizeTransfer(client, [client, result]() {
+         client->didCompleteTransfer(result);
+     });
+ }
+ 
+-void CurlRequestScheduler::cancelTransfer(CurlRequestSchedulerClient* client)
++void CurlRequestScheduler::Worker::cancelTransfer(CurlRequestSchedulerClient* client)
+ {
+     finalizeTransfer(client, [client]() {
+         client->didCancelTransfer();
+     });
+ }
+ 
+-void CurlRequestScheduler::finalizeTransfer(CurlRequestSchedulerClient* client, Function<void()> completionHandler)
++void CurlRequestScheduler::Worker::finalizeTransfer(CurlRequestSchedulerClient* client, Function<void()> completionHandler)
+ {
+-    Locker locker { m_mutex };
++    {
++        Locker locker { m_mutex };
+ 
+-    if (!m_activeJobs.contains(client))
+-        return;
++        if (!m_activeJobs.contains(client))
++            return;
+ 
+-    m_activeJobs.remove(client);
++        m_activeJobs.remove(client);
+ 
+-    auto task = [this, client, completionHandler = WTF::move(completionHandler)]() {
+-        if (client->handle()) {
+-            ASSERT(m_clientMaps.contains(client->handle()));
+-            m_clientMaps.remove(client->handle());
+-            m_curlMultiHandle->removeHandle(client->handle());
+-        }
++        auto task = [this, client, completionHandler = WTF::move(completionHandler)]() {
++            if (client->handle()) {
++                ASSERT(m_clientMaps.contains(client->handle()));
++                m_clientMaps.remove(client->handle());
++                m_curlMultiHandle->removeHandle(client->handle());
++            }
+ 
+-        completionHandler();
++            completionHandler();
+ 
+-        callOnMainThread([client]() {
+-            client->release();
+-        });
+-    };
++            callOnMainThread([client]() {
++                client->release();
++            });
++        };
+ 
+-    m_taskQueue.append(WTF::move(task));
++        m_taskQueue.append(WTF::move(task));
++    }
++    // Outside m_mutex: the scheduler's lock is never taken under a worker's.
++    m_scheduler.unassign(client);
+ }
+ 
+ }
+diff --git a/Source/WebCore/platform/network/curl/CurlRequestScheduler.h b/Source/WebCore/platform/network/curl/CurlRequestScheduler.h
+index 8f554b37e49dee04ddd702866d9efd764ed5d2a6..128adba652d48efbac88a68ca1d7efeda8b30455 100644
+--- a/Source/WebCore/platform/network/curl/CurlRequestScheduler.h
++++ b/Source/WebCore/platform/network/curl/CurlRequestScheduler.h
+@@ -29,10 +29,13 @@
+ 
+ #include "CurlContext.h"
+ #include <wtf/HashMap.h>
++#include <wtf/HashSet.h>
+ #include <wtf/Lock.h>
+ #include <wtf/Noncopyable.h>
+ #include <wtf/RefPtr.h>
+ #include <wtf/TZoneMalloc.h>
++#include <wtf/Vector.h>
++#include <wtf/text/WTFString.h>
+ 
+ namespace WTF {
+ class Thread;
+@@ -42,6 +45,12 @@ namespace WebCore {
+ 
+ class CurlRequestSchedulerClient;
+ 
++// Transfers are spread over several worker threads, each with its own multi
++// handle, chosen by the request's host so that a host's connections (and its
++// HTTP/2 streams) stay together and are reused. One thread polling every
++// socket of every tab spent most of its time in the kernel and queued new
++// requests for hundreds of milliseconds while dozens of pages loaded.
++// SUMMIT_CURL_THREADS sets the count (default 4).
+ class CurlRequestScheduler {
+     WTF_MAKE_TZONE_ALLOCATED(CurlRequestScheduler);
+     WTF_MAKE_NONCOPYABLE(CurlRequestScheduler);
+@@ -50,40 +59,63 @@ public:
+     CurlRequestScheduler(long maxConnects, long maxTotalConnections, long maxHostConnections);
+     ~CurlRequestScheduler();
+ 
+-    bool add(CurlRequestSchedulerClient*);
++    bool add(CurlRequestSchedulerClient*, const String& host = { });
+     void cancel(CurlRequestSchedulerClient*);
+ 
+-    void callOnWorkerThread(Function<void()>&&);
++    // Runs on the thread that owns the client's transfer.
++    void callOnWorkerThread(CurlRequestSchedulerClient*, Function<void()>&&);
+ 
+ private:
+-    void startOrWakeUpThread();
+-    void wakeUpThreadIfPossible();
+-    void stopThreadIfNoMoreJobRunning();
+-    void stopThread();
+-
+-    void executeTasks();
+-
+-    void workerThread();
+-
+-    void startTransfer(CurlRequestSchedulerClient*);
+-    void completeTransfer(CurlRequestSchedulerClient*, CURLcode);
+-    void cancelTransfer(CurlRequestSchedulerClient*);
+-    void finalizeTransfer(CurlRequestSchedulerClient*, Function<void()>);
+-
+-    Lock m_mutex;
+-    RefPtr<WTF::Thread> m_thread;
+-    bool m_runThread { false };
+-
+-    Vector<Function<void()>> m_taskQueue;
+-    HashSet<CurlRequestSchedulerClient*> m_activeJobs;
+-    HashMap<CURL*, CurlRequestSchedulerClient*> m_clientMaps;
+-
+-    Lock m_multiHandleMutex;
+-    std::optional<CurlMultiHandle> m_curlMultiHandle;
+-
+-    long m_maxConnects;
+-    long m_maxTotalConnections;
+-    long m_maxHostConnections;
++    class Worker {
++        WTF_MAKE_TZONE_ALLOCATED_INLINE(Worker);
++        WTF_MAKE_NONCOPYABLE(Worker);
++    public:
++        Worker(CurlRequestScheduler&, long maxConnects, long maxTotalConnections, long maxHostConnections);
++        ~Worker();
++
++        void add(CurlRequestSchedulerClient*);
++        void cancel(CurlRequestSchedulerClient*);
++        void callOnWorkerThread(Function<void()>&&);
++
++    private:
++        void startOrWakeUpThread();
++        void wakeUpThreadIfPossible();
++        void stopThreadIfNoMoreJobRunning();
++        void stopThread();
++
++        void executeTasks();
++
++        void workerThread();
++
++        void startTransfer(CurlRequestSchedulerClient*);
++        void completeTransfer(CurlRequestSchedulerClient*, CURLcode);
++        void cancelTransfer(CurlRequestSchedulerClient*);
++        void finalizeTransfer(CurlRequestSchedulerClient*, Function<void()>);
++
++        CurlRequestScheduler& m_scheduler;
++        Lock m_mutex;
++        RefPtr<WTF::Thread> m_thread;
++        bool m_runThread { false };
++
++        Vector<Function<void()>> m_taskQueue;
++        HashSet<CurlRequestSchedulerClient*> m_activeJobs;
++        HashMap<CURL*, CurlRequestSchedulerClient*> m_clientMaps;
++
++        Lock m_multiHandleMutex;
++        std::optional<CurlMultiHandle> m_curlMultiHandle;
++
++        long m_maxConnects;
++        long m_maxTotalConnections;
++        long m_maxHostConnections;
++    };
++
++    Worker& workerForHost(const String& host);
++    Worker* workerForClient(CurlRequestSchedulerClient*);
++    void unassign(CurlRequestSchedulerClient*);
++
++    Vector<std::unique_ptr<Worker>> m_workers;
++    Lock m_assignmentLock;
++    HashMap<CurlRequestSchedulerClient*, Worker*> m_assignments WTF_GUARDED_BY_LOCK(m_assignmentLock);
  };
  
  } // namespace WebCore
@@ -32674,7 +33284,7 @@ index 2afa30a728be0cfee042ff40e4c591c0647c7531..b562096a3ec665a30771357ee0e1dd40
 +#endif
  }
 diff --git a/Source/WebKit/NetworkProcess/NetworkResourceLoader.cpp b/Source/WebKit/NetworkProcess/NetworkResourceLoader.cpp
-index 4bed05b3670522d93770c3331d578642cc934eee..d16a32a9f647e8472da37c66dc63a90a6ecf3996 100644
+index 4bed05b3670522d93770c3331d578642cc934eee..995fa81d3264ff90641e9b4b017a3aada23f8f40 100644
 --- a/Source/WebKit/NetworkProcess/NetworkResourceLoader.cpp
 +++ b/Source/WebKit/NetworkProcess/NetworkResourceLoader.cpp
 @@ -110,6 +110,14 @@
@@ -32714,7 +33324,21 @@ index 4bed05b3670522d93770c3331d578642cc934eee..d16a32a9f647e8472da37c66dc63a90a
      if (canUseCache(newRequest)) {
          retrieveCacheEntry(originalRequest());
          return;
-@@ -517,6 +533,147 @@ void NetworkResourceLoader::startNetworkLoad(ResourceRequest&& request, FirstLoa
+@@ -371,6 +387,13 @@ void NetworkResourceLoader::retrieveCacheEntry(const ResourceRequest& request)
+ 
+         LOADER_RELEASE_LOG_WITH_THIS(protectedThis, "retrieveCacheEntry: Done checking the HTTP disk cache (foundCachedEntry=%d)", !!entry);
+         protectedThis->logSlowCacheRetrieveIfNeeded(info);
++#if OS(HAIKU)
++        // SUMMIT_NET_TRACE=1: how long the disk cache took to answer, which on
++        // BFS competes with the cache's own writes during a large load.
++        static const bool netTrace = [] { const char* value = getenv("SUMMIT_NET_TRACE"); return value && !strcmp(value, "1"); }();
++        if (netTrace)
++            fprintf(stderr, "Summit net: cache %s in %.0f ms %s\n", entry ? "hit" : "miss", (info.completionTime - info.startTime).milliseconds(), request.url().string().left(160).utf8().legacyCStringPointer());
++#endif
+ 
+         if (!entry) {
+             protectedThis->startNetworkLoad(WTF::move(request), FirstLoad::Yes);
+@@ -517,6 +540,147 @@ void NetworkResourceLoader::startNetworkLoad(ResourceRequest&& request, FirstLoa
          LOADER_RELEASE_LOG("startNetworkLoad: Going to the network (description=%" PUBLIC_LOG_STRING ")", networkLoad->description().utf8().legacyCStringPointer());
  }
  
@@ -32862,7 +33486,7 @@ index 4bed05b3670522d93770c3331d578642cc934eee..d16a32a9f647e8472da37c66dc63a90a
  ResourceLoadInfo NetworkResourceLoader::resourceLoadInfo()
  {
      auto loadedFromCache = [] (const ResourceResponse& response) {
-@@ -1081,6 +1238,46 @@ void NetworkResourceLoader::startPreconnectTask(const URL& baseURL, const LinkHe
+@@ -1081,6 +1245,46 @@ void NetworkResourceLoader::startPreconnectTask(const URL& baseURL, const LinkHe
  
  void NetworkResourceLoader::didReceiveResponse(ResourceResponse&& receivedResponse, PrivateRelayed privateRelayed, ResponseCompletionHandler&& completionHandler)
  {
@@ -32909,7 +33533,7 @@ index 4bed05b3670522d93770c3331d578642cc934eee..d16a32a9f647e8472da37c66dc63a90a
  #if HAVE(BROKEN_MULTIPART_RESPONSE_FLOW_CONTROL)
      if (m_isProcessingResponse) {
          m_deferredMessages.append(DeferredResponse { WTF::move(receivedResponse), privateRelayed, WTF::move(completionHandler) });
-@@ -1521,6 +1718,32 @@ void NetworkResourceLoader::didReceiveChallenge(const AuthenticationChallenge& c
+@@ -1521,6 +1725,32 @@ void NetworkResourceLoader::didReceiveChallenge(const AuthenticationChallenge& c
          protect(connectionToWebProcess().networkProcess())->parentProcessConnection()->send(Messages::NetworkProcessProxy::ResourceLoadDidReceiveChallenge(webPageProxyID(), resourceLoadInfo(), challenge), 0);
  }
  
@@ -32942,7 +33566,7 @@ index 4bed05b3670522d93770c3331d578642cc934eee..d16a32a9f647e8472da37c66dc63a90a
  std::optional<Seconds> NetworkResourceLoader::validateCacheEntryForMaxAgeCapValidation(const ResourceRequest& request, const ResourceRequest& redirectRequest, const ResourceResponse& redirectResponse)
  {
      bool existingCacheEntryMatchesNewResponse = false;
-@@ -1778,6 +2001,15 @@ void NetworkResourceLoader::restartNetworkLoad(WebCore::ResourceRequest&& newReq
+@@ -1778,6 +2008,15 @@ void NetworkResourceLoader::restartNetworkLoad(WebCore::ResourceRequest&& newReq
  
      completionHandler({ });
  
@@ -32958,7 +33582,7 @@ index 4bed05b3670522d93770c3331d578642cc934eee..d16a32a9f647e8472da37c66dc63a90a
      if (!newRequest.isEmpty())
          startNetworkLoad(WTF::move(newRequest), FirstLoad::No);
  }
-@@ -1866,6 +2098,18 @@ void NetworkResourceLoader::continueWillSendRequest(ResourceRequest&& newRequest
+@@ -1866,6 +2105,18 @@ void NetworkResourceLoader::continueWillSendRequest(ResourceRequest&& newRequest
          LOG(NetworkCache, "(NetworkProcess) Retrieving cached redirect");
          LOADER_RELEASE_LOG("continueWillSendRequest: m_isWaitingContinueWillSendRequestForCachedRedirect was set");
  
@@ -32977,7 +33601,7 @@ index 4bed05b3670522d93770c3331d578642cc934eee..d16a32a9f647e8472da37c66dc63a90a
          if (canUseCachedRedirect(newRequest))
              retrieveCacheEntry(newRequest);
          else
-@@ -1876,6 +2120,27 @@ void NetworkResourceLoader::continueWillSendRequest(ResourceRequest&& newRequest
+@@ -1876,6 +2127,27 @@ void NetworkResourceLoader::continueWillSendRequest(ResourceRequest&& newRequest
      if (m_networkLoad) {
          LOADER_RELEASE_LOG("continueWillSendRequest: Telling NetworkLoad to proceed with the redirect");
  
@@ -33532,10 +34156,10 @@ index 20aff066ab01aa0fa12c7bf47741b0109d927eea..32eaf5d087896cd002a80c4dd2544af1
  void NetworkStorageSession::hasCookies(const RegistrableDomain&, CompletionHandler<void(bool)>&& completionHandler) const
 diff --git a/Source/WebKit/NetworkProcess/haiku/NetworkProcessHaiku.cpp b/Source/WebKit/NetworkProcess/haiku/NetworkProcessHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..3501f834cd938d6300470bb89a245e322368e057
+index 0000000000000000000000000000000000000000..4c21c1bdf92f8107cf0f7452833e81b170b26c85
 --- /dev/null
 +++ b/Source/WebKit/NetworkProcess/haiku/NetworkProcessHaiku.cpp
-@@ -0,0 +1,68 @@
+@@ -0,0 +1,82 @@
 +/*
 + * Copyright (C) 2019 Haiku, Inc.
 + *
@@ -33567,6 +34191,8 @@ index 0000000000000000000000000000000000000000..3501f834cd938d6300470bb89a245e32
 +#include "NetworkProcessCreationParameters.h"
 +#include <WebCore/NetworkStorageSession.h>
 +#include <WebCore/NotImplemented.h>
++#include <netdb.h>
++#include <sys/socket.h>
 +
 +namespace WebCore
 +{
@@ -33579,7 +34205,19 @@ index 0000000000000000000000000000000000000000..3501f834cd938d6300470bb89a245e32
 +
 +void NetworkProcess::platformInitializeNetworkProcess(const NetworkProcessCreationParameters& parameters)
 +{
-+    notImplemented();
++    UNUSED_PARAM(parameters);
++    // libnetwork parses /etc/nsswitch.conf on the first name lookup, in
++    // whichever thread makes it, with a flex scanner that calls exit() when a
++    // read of the file fails. With a session of tabs starting at once that
++    // first lookup came from one of a dozen libcurl resolver threads while
++    // sockets and cache files were being opened and closed all around it, and
++    // the read did fail (crash report: "input in flex scanner failed", then a
++    // segfault in the main thread's IPC after libbe's statics had gone). The
++    // parse is done here instead, on the main thread, before any other
++    // thread exists: "localhost" is answered from /etc/hosts, no network needed.
++    struct addrinfo* result = nullptr;
++    if (!getaddrinfo("localhost", nullptr, nullptr, &result) && result)
++        freeaddrinfo(result);
 +}
 +
 +void NetworkProcess::allowSpecificHTTPSCertificateForHost(const CertificateInfo& certificateInfo, const String& host)
@@ -51774,10 +52412,10 @@ index f09e0085d0228b905e0a7cfe7592260e9d4977a9..3ada5a0beca92b82ae14dc44131be6f1
  #endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/ExtensionActionPopupHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/ExtensionActionPopupHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..364a4dafcce06dbc94f6ae7ee5d527ba65cd1c34
+index 0000000000000000000000000000000000000000..bb15477c4926a4f4d21958bbc823cdd48762945b
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/ExtensionActionPopupHaiku.cpp
-@@ -0,0 +1,538 @@
+@@ -0,0 +1,542 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#include "config.h"
 +#include "ExtensionActionPopupHaiku.h"
@@ -51944,6 +52582,7 @@ index 0000000000000000000000000000000000000000..364a4dafcce06dbc94f6ae7ee5d527ba
 +    RefPtr ownerPage = m_tab->nativePage();
 +    RefPtr pageClient = ownerPage ? ownerPage->pageClient() : nullptr;
 +    RefPtr configuration = context->webViewConfiguration(WebExtensionContext::WebViewPurpose::Popup);
++    SUMMIT_EXTENSION_TIMING("popup start: configuration ready");
 +    if (!nativeWindow || !nativeWindow->messenger.IsValid() || !pageClient || !configuration) {
 +        fail("The extension popup has no native browser window."_s);
 +        return false;
@@ -51951,8 +52590,10 @@ index 0000000000000000000000000000000000000000..364a4dafcce06dbc94f6ae7ee5d527ba
 +    // Anchor at the browser content's top-right corner, below the toolbar.
 +    auto size = pageClient->viewSize();
 +    auto anchor = pageClient->rootViewToScreen(WebCore::IntPoint { std::max(0, size.width() - 1), 0 });
++    SUMMIT_EXTENSION_TIMING("popup start: anchor ready");
 +    m_state->client = WebView::createForExtensionPopup(m_state, configuration.releaseNonNull());
 +    m_page = m_state->client->page();
++    SUMMIT_EXTENSION_TIMING("popup start: page created");
 +    if (!m_page) {
 +        fail("The extension popup web page could not be created."_s);
 +        return false;
@@ -51990,6 +52631,7 @@ index 0000000000000000000000000000000000000000..364a4dafcce06dbc94f6ae7ee5d527ba
 +            });
 +        }, [dialogs = m_state->dialogs] { return dialogs->hasPending(); });
 +    auto status = m_native->start();
++    SUMMIT_EXTENSION_TIMING("popup start: native window started");
 +    if (status != B_OK) {
 +        fail("The native extension popup window could not be started."_s);
 +        return false;
@@ -93106,7 +93748,7 @@ index e55e9b49ddc60a60653f73a9c4f813d157c8b354..76def840e3d88dd49c382d2bf67724e4
      std::unique_ptr<WebCore::WheelEventDeltaFilter> m_recentWheelEventDeltaFilter;
  #if ENABLE(IOS_TOUCH_EVENTS)
 diff --git a/Source/WebKit/WebProcess/WebPage/WebPage.cpp b/Source/WebKit/WebProcess/WebPage/WebPage.cpp
-index 48f9e1c5cff34a053ed104c3d2cfd3ac6e0a2bdc..a114a32c297c57a4d53db213a0540af18d4aeac0 100644
+index 48f9e1c5cff34a053ed104c3d2cfd3ac6e0a2bdc..430221aa0d9a54f9ad95c9b5dd94932419d5445b 100644
 --- a/Source/WebKit/WebProcess/WebPage/WebPage.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/WebPage.cpp
 @@ -500,7 +500,7 @@
@@ -93136,6 +93778,20 @@ index 48f9e1c5cff34a053ed104c3d2cfd3ac6e0a2bdc..a114a32c297c57a4d53db213a0540af1
      if (!settings.acceleratedCompositingEnabled()) {
          WEBPAGE_RELEASE_LOG(Layers, "updatePreferences: acceleratedCompositingEnabled setting was false. WebKit cannot function in this mode; changing setting to true");
          settings.setAcceleratedCompositingEnabled(true);
+@@ -8336,6 +8336,13 @@ void WebPage::didCommitLoad(WebFrame* frame)
+ 
+     resetFocusedElementForFrame(frame);
+ 
++#if OS(HAIKU)
++    // The process priority depends on whether this is an extension page,
++    // which is only known once its main frame has a URL.
++    if (frame->isMainFrame())
++        WebProcess::singleton().pageActivityStateDidChange(m_identifier, WebCore::ActivityState::IsVisible);
++#endif
++
+     if (frame->isMainFrame())
+         m_textManipulationIncludesSubframes = false;
+     else if (m_textManipulationIncludesSubframes)
 diff --git a/Source/WebKit/WebProcess/WebPage/WebPage.h b/Source/WebKit/WebProcess/WebPage/WebPage.h
 index 36777a70a757d8f40fea959e16bd1659baeebc96..6795be381f0ba99bd125f359474a4fe317114f2c 100644
 --- a/Source/WebKit/WebProcess/WebPage/WebPage.h
@@ -94797,6 +95453,67 @@ index 0000000000000000000000000000000000000000..ddd457397b3aa6ab142c4d59d33f47cb
 +}
 +
 +} // namespace WebKit
+diff --git a/Source/WebKit/WebProcess/WebProcess.cpp b/Source/WebKit/WebProcess/WebProcess.cpp
+index 4811f370c5f17ae854978f8df3c0a8bc96e9fa0d..44a7c3e45c7bd15042c110241bc6d5ab296ad931 100644
+--- a/Source/WebKit/WebProcess/WebProcess.cpp
++++ b/Source/WebKit/WebProcess/WebProcess.cpp
+@@ -290,6 +290,29 @@ static const Seconds nonVisibleProcessEarlyMemoryCleanupDelay { 10_s };
+ static const Seconds nonVisibleProcessMemoryCleanupDelay { 120_s };
+ #endif
+ 
++
++#if OS(HAIKU)
++#include <wtf/haiku/ProcessPriorityHaiku.h>
++
++// The process yields the CPUs while the user can neither see nor hear any of
++// its pages. Extension pages (background, popup) are never shown as tabs but
++// answer content scripts and toolbar popups, so a process hosting one stays
++// at normal priority; so does a hidden page playing audio or capturing media,
++// and a process without pages yet.
++template<typename PageMap> static void updateProcessPriorityHaiku(const PageMap& pages)
++{
++    bool background = !pages.isEmpty();
++    for (auto& page : pages.values()) {
++        if (page->isVisible() || page->activityState().containsAny({ WebCore::ActivityState::IsAudible, WebCore::ActivityState::IsCapturingMedia })
++            || page->mainWebFrame().url().protocolIs("webkit-extension"_s)) {
++            background = false;
++            break;
++        }
++    }
++    setProcessBackgroundedHaiku(background);
++}
++#endif
++
+ namespace WebKit {
+ using namespace WebCore;
+ 
+@@ -1087,6 +1110,8 @@ void WebProcess::createWebPage(PageIdentifier pageID, WebPageCreationParameters&
+ 
+ #if OS(LINUX)
+         HighPriorityThreads::singleton().setEnabled(hasVisibleWebPage());
++#elif OS(HAIKU)
++        updateProcessPriorityHaiku(m_pageMap);
+ #endif
+     } else
+         page->reinitializeWebPage(WTF::move(parameters));
+@@ -1120,6 +1145,8 @@ void WebProcess::removeWebPage(PageIdentifier pageID)
+ 
+ #if OS(LINUX)
+     HighPriorityThreads::singleton().setEnabled(hasVisibleWebPage());
++#elif OS(HAIKU)
++    updateProcessPriorityHaiku(m_pageMap);
+ #endif
+ }
+ 
+@@ -1806,6 +1833,8 @@ void WebProcess::pageActivityStateDidChange(PageIdentifier, OptionSet<WebCore::A
+         updateCPUMonitorState(CPUMonitorUpdateReason::VisibilityHasChanged);
+ #if OS(LINUX)
+         HighPriorityThreads::singleton().setEnabled(hasVisibleWebPage());
++#elif OS(HAIKU)
++        updateProcessPriorityHaiku(m_pageMap);
+ #endif
+     }
+ }
 diff --git a/Source/WebKit/WebProcess/haiku/WebProcess.rdef b/Source/WebKit/WebProcess/haiku/WebProcess.rdef
 new file mode 100644
 index 0000000000000000000000000000000000000000..6549d7f5c9eac54d993817a051d3965dba9302ef
