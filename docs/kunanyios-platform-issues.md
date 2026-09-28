@@ -140,4 +140,12 @@ the path once (`pthread_once`), or take `_nsconflock` before computing it; the
 scanner should also fail the lookup rather than exit the process.
 
 Summit resolves `localhost` at network process start-up so the first
-`nsdispatch` happens on the main thread, which does not close this race.
+`nsdispatch` happens on the main thread, which does not close this race
+(it still killed the network process in most 36-tab starts once four curl
+workers resolved names concurrently). What does close it, until libnetwork
+is fixed: a real `/boot/system/settings/network/nsswitch.conf` (`hosts:
+files dns`, the same sources as without a file) whose mtime is newer than
+`/boot/system/settings`. The first lookup parses it and records its mtime;
+a later racy `stat()` of the half-built path finds the directory, which is
+older, and returns without parsing. `tools/install-on-workstation.sh` now
+creates that file when it is missing.

@@ -30,5 +30,13 @@ export LIBRARY_PATH=\"/boot/home/summit-mesa/prefix/lib:\\\$SUMMIT_BUNDLE/lib:/b
 exec \"\\\$SUMMIT_BUNDLE/Summit\" \"\\\$@\"
 EOF
 chmod +x \$L
+# libnetwork's nsswitch_conf_file_path() is not thread-safe; a real config file
+# newer than the settings directory keeps a racy re-parse from opening the
+# directory and exiting the network process (docs/kunanyios-platform-issues.md).
+N=/boot/system/settings/network/nsswitch.conf
+if ! test -f \$N; then
+    printf '# Created by Summit (tools/install-on-workstation.sh): the same sources libnetwork\n# uses without a file. A file newer than /boot/system/settings stops a racy\n# re-parse in nsswitch_conf_file_path() from opening the directory instead;\n# see Summit docs/kunanyios-platform-issues.md.\nhosts: files dns\n' > \$N
+    echo \"created \$N\"
+fi
 echo \"launcher -> \$B\"
 cat \$L"
