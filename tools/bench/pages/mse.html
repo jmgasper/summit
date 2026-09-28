@@ -9,6 +9,8 @@ tools/bench/make-mse-fixtures.sh into mse-media/) to two SourceBuffers in
 chunks, plays, and optionally seeks. The document title carries a compact
 status so a harness can read it through summitctl's tab state:
   "MSE t=<currentTime> rs=<readyState> buf=<ranges> q=<frames>/<dropped> ev=<events>"
+Once playback ends or fails (or after 25 s) the result is also posted to
+/__bench/probe, so tools/bench/run-probe.py --page mse.html completes.
 
 Query parameters:
   chunk=<bytes>   append size (default 262144)
@@ -38,10 +40,12 @@ const audioFile = params.get('audio') || 'audio-frag.mp4';
 const video = document.getElementById('video');
 video.muted = params.get('muted') === '1';
 const events = [];
+const timeline = [];
 const started = performance.now();
 function log(text) {
     const line = ((performance.now() - started) / 1000).toFixed(2) + ' ' + text;
     events.push(text.split(' ')[0]);
+    timeline.push({atMs: Math.round(performance.now() - started), event: text});
     document.getElementById('log').textContent += line + '\n';
 }
 function ranges(r) {
@@ -69,6 +73,29 @@ function update() {
     }
 }
 setInterval(update, 250);
+
+let reported = false;
+async function report(why) {
+    if (reported)
+        return;
+    reported = true;
+    update();
+    const q = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null;
+    const result = {
+        src: 'mse:' + videoFile, why, status: document.title, events: timeline,
+        time: video.currentTime, duration: video.duration, readyState: video.readyState,
+        buffered: ranges(video.buffered), frames: q && q.totalVideoFrames, dropped: q && q.droppedVideoFrames,
+        width: video.videoWidth, height: video.videoHeight,
+        error: video.error && {code: video.error.code, message: video.error.message},
+    };
+    try {
+        await fetch('/__bench/probe', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(result)});
+    } catch (error) {
+    }
+}
+video.addEventListener('ended', () => setTimeout(() => report('ended'), 300));
+video.addEventListener('error', () => report('error'));
+setTimeout(() => report('timeout'), 25000);
 if (params.has('busy')) {
     const busy = Number(params.get('busy'));
     setInterval(() => { const end = performance.now() + busy; while (performance.now() < end) { } }, 1000);
