@@ -90,7 +90,9 @@ created meanwhile are lowered as they start (`ThreadingPOSIX.cpp`), and
 the recorded priorities come back when a page becomes visible
 (`setProcessBackgroundedHaiku`, `WebProcess::pageActivityStateDidChange`,
 re-evaluated on commit because an extension page's URL is only known
-then). `SUMMIT_BACKGROUND_PROCESS_PRIORITY=0` turns it off. Summit's own
+then, and when a page becomes audible: a hidden tab that starts playing
+sound gets its priority back, verified with a clip that has an audio track
+while a muted copy in another hidden tab stayed low). `SUMMIT_BACKGROUND_PROCESS_PRIORITY=0` turns it off. Summit's own
 application thread, which runs WebKit's main loop for every tab, now runs
 at `B_DISPLAY_PRIORITY` like window threads (`SUMMIT_UI_PRIORITY=normal`
 reverts).
@@ -200,7 +202,7 @@ With alt-svc off, the 24 sites again (3,266 requests):
 
 and three windows of twelve sites against the installed build, one pair:
 
-| 3x12, X399 | installed | final (`bundle-7f9r2uwv`) |
+| 3x12, X399 | installed | final (`bundle-gizz1wg8`) |
 | --- | --- | --- |
 | load, median / p90 / all done | 24.4 / 66.0 / 86.5 s | 7.8 / 20.3 / 60.7 s |
 | the three selected tabs | 32.1 / 18.8 / 49.5 s | 6.6 / 8.2 / 16.8 s |
@@ -232,6 +234,10 @@ Settled tabs switch in 17-60 ms, or instantly when the page has not
 changed since it was hidden (the kept frame is shown); the 250-350 ms
 medians in the 3x12 runs are switches to tabs still loading, waiting for
 their own first frame.
+
+Video start (`media.html`, the 1080p NVDEC clip from the bench server):
+`playing` fires 153-170 ms after the page starts and the first advancing
+`timeupdate` arrives at about 400 ms, the same with both builds.
 
 Speedometer 3.1 (local copy, 5 iterations, two alternated pairs) is
 unchanged by the priorities and the network changes: 7.67 / 7.66 installed,

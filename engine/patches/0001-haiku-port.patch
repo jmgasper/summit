@@ -95490,7 +95490,7 @@ index 0000000000000000000000000000000000000000..ddd457397b3aa6ab142c4d59d33f47cb
 +
 +} // namespace WebKit
 diff --git a/Source/WebKit/WebProcess/WebProcess.cpp b/Source/WebKit/WebProcess/WebProcess.cpp
-index 4811f370c5f17ae854978f8df3c0a8bc96e9fa0d..44a7c3e45c7bd15042c110241bc6d5ab296ad931 100644
+index 4811f370c5f17ae854978f8df3c0a8bc96e9fa0d..07e24c775af03b7768b48782b125a98a93bb7dc0 100644
 --- a/Source/WebKit/WebProcess/WebProcess.cpp
 +++ b/Source/WebKit/WebProcess/WebProcess.cpp
 @@ -290,6 +290,29 @@ static const Seconds nonVisibleProcessEarlyMemoryCleanupDelay { 10_s };
@@ -95541,15 +95541,18 @@ index 4811f370c5f17ae854978f8df3c0a8bc96e9fa0d..44a7c3e45c7bd15042c110241bc6d5ab
  #endif
  }
  
-@@ -1806,6 +1833,8 @@ void WebProcess::pageActivityStateDidChange(PageIdentifier, OptionSet<WebCore::A
-         updateCPUMonitorState(CPUMonitorUpdateReason::VisibilityHasChanged);
- #if OS(LINUX)
+@@ -1808,6 +1835,11 @@ void WebProcess::pageActivityStateDidChange(PageIdentifier, OptionSet<WebCore::A
          HighPriorityThreads::singleton().setEnabled(hasVisibleWebPage());
-+#elif OS(HAIKU)
-+        updateProcessPriorityHaiku(m_pageMap);
  #endif
      }
++#if OS(HAIKU)
++    // A hidden tab that starts playing sound gets its priority back too.
++    if (changed.containsAny({ WebCore::ActivityState::IsVisible, WebCore::ActivityState::IsAudible, WebCore::ActivityState::IsCapturingMedia }))
++        updateProcessPriorityHaiku(m_pageMap);
++#endif
  }
+ 
+ void WebProcess::releaseMemory(CompletionHandler<void()>&& completionHandler)
 diff --git a/Source/WebKit/WebProcess/haiku/WebProcess.rdef b/Source/WebKit/WebProcess/haiku/WebProcess.rdef
 new file mode 100644
 index 0000000000000000000000000000000000000000..6549d7f5c9eac54d993817a051d3965dba9302ef
