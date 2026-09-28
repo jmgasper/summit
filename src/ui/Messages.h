@@ -61,6 +61,8 @@ constexpr uint32 kExtensionRemove = 'exrm';
 constexpr uint32 kExtensionManagerClosed = 'exmc';
 constexpr uint32 kCloseExtensionManager = 'excl';
 constexpr uint32 kActivateExtensionAction = 'exac';
+// The pointer reached an action button: load its popup before the click.
+constexpr uint32 kPreloadExtensionAction = 'expl';
 constexpr uint32 kShowExtensionActions = 'exam';
 constexpr uint32 kBrowserState = 'stat';
 // Windows. kNewWindow goes to the application ("url": repeated, optional;

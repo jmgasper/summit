@@ -1,4 +1,5 @@
 #include "ExtensionController.h"
+#include "ExtensionTiming.h"
 #if SUMMIT_MODERN_WEBKIT
 #include <WebKit/WebKitContext.h>
 #include <Message.h>
@@ -144,6 +145,7 @@ void ExtensionController::Next()
         if (!entry.installation.enabled) { ++fIndex; continue; }
         fPending = Pending::Prepare;
         auto path = fCatalog.PackagePath(entry.installation);
+        SUMMIT_EXTENSION_TIMING("preparing %s", entry.installation.identifier.c_str());
         auto status = fContext->PrepareExtension(path.c_str(), BMessenger(this), ++fRequest);
         if (status != B_OK) Fail(std::strerror(status));
         return;
@@ -215,11 +217,13 @@ void ExtensionController::MessageReceived(BMessage* message)
         options.allowFileURLs = entry.installation.allowFileURLs;
         options.allowPrivateBrowsing = entry.installation.allowPrivateBrowsing;
         fPending = Pending::Load;
+        SUMMIT_EXTENSION_TIMING("prepared %s, loading", entry.installation.identifier.c_str());
         auto status = fContext->LoadPreparedExtension(fToken.c_str(), options, installation, BMessenger(this), ++fRequest);
         if (status != B_OK) Fail(std::strerror(status));
         return;
     }
     entry.loaded = pending == Pending::Load;
+    SUMMIT_EXTENSION_TIMING("%s %s", pending == Pending::Load ? "loaded" : "unloaded", entry.installation.identifier.c_str());
     entry.baseURL = entry.loaded ? field(*message, "base_url") : std::string();
     entry.newTabURL = entry.loaded ? field(*message, "new_tab_url") : std::string();
     entry.error.clear();

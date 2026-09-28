@@ -270,6 +270,8 @@ void ExtensionActionButton::SetAction(const BMessage& action, uint64 snapshot)
     message->what = kActivateExtensionAction;
     message->AddUInt64("snapshot", snapshot);
     SetMessage(message);
+    fPreload = *message;
+    fPreload.what = kPreloadExtensionAction;
     fBitmap.reset();
     const void* pixels = nullptr;
     ssize_t length = 0;
@@ -292,6 +294,26 @@ void ExtensionActionButton::SetAction(const BMessage& action, uint64 snapshot)
     }
     SetEnabled(action.GetBool("enabled", false));
     Invalidate();
+}
+
+// Loading a popup page takes longer than showing it, so the page starts
+// loading as soon as the pointer reaches the button, as Firefox does; the
+// click that follows only has to show the window.
+void ExtensionActionButton::Preload()
+{
+    if (IsEnabled() && Window() && fPreload.what == kPreloadExtensionAction) Window()->PostMessage(&fPreload);
+}
+
+void ExtensionActionButton::MouseMoved(BPoint where, uint32 transit, const BMessage* drag)
+{
+    BButton::MouseMoved(where, transit, drag);
+    if (transit == B_ENTERED_VIEW && !drag) Preload();
+}
+
+void ExtensionActionButton::MouseDown(BPoint where)
+{
+    Preload();
+    BButton::MouseDown(where);
 }
 
 void ExtensionActionButton::Draw(BRect update)

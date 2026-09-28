@@ -4,6 +4,7 @@
 #include "ui/Messages.h"
 #include "ui/ExtensionPermissionPrompt.h"
 #include "ui/ExtensionController.h"
+#include "ui/ExtensionTiming.h"
 #include "ui/ExtensionInstaller.h"
 #include "ui/ExtensionManager.h"
 #include "core/Address.h"
@@ -66,6 +67,7 @@ public:
     }
     void ReadyToRun() override
     {
+        SUMMIT_EXTENSION_TIMING("browser ready to run");
         if (fProfile.empty()) {
             BPath path;
             status_t status = find_directory(B_USER_SETTINGS_DIRECTORY, &path);
@@ -689,6 +691,7 @@ private:
         );
         fWindows.insert(fWindows.begin(), {BMessenger(window), window, options.key, options.privateBrowsing});
         window->Show();
+        SUMMIT_EXTENSION_TIMING("browser window shown");
         return window;
     }
     void CloseNextWindow()

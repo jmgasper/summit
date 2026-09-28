@@ -284,6 +284,7 @@ private:
     void RefreshExtensionActions();
     void ExtensionActionsReceived(const BMessage&);
     void ActivateExtensionAction(const BMessage&);
+    void PreloadExtensionAction(const BMessage&);
     void ShowExtensionActions();
     bool fExtensionsEnabled = false;
     BGroupView* fExtensionActions = nullptr;

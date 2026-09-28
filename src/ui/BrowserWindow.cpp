@@ -1,4 +1,5 @@
 #include "BrowserWindow.h"
+#include "ExtensionTiming.h"
 #include "Chrome.h"
 #include "FaviconCache.h"
 #include "Messages.h"
@@ -1630,12 +1631,24 @@ void BrowserWindow::ActivateExtensionAction(const BMessage& message)
     if (message.FindString("extension_identifier", &identity) != B_OK) return;
     const auto load = message.GetUInt64("load_identifier", 0);
     const auto page = message.GetUInt64("page_identifier", 0);
+    SUMMIT_EXTENSION_TIMING("action button of %s clicked", identity);
     const auto status = fWebKitContext->ActivateExtensionAction(identity, BMessenger(this), load, page,
         BMessenger(this), ++fExtensionActionInvocation);
     if (status != B_OK) {
         fStatus->SetText(("Could not activate extension: " + std::string(std::strerror(status))).c_str());
         RefreshExtensionActions();
     }
+}
+
+void BrowserWindow::PreloadExtensionAction(const BMessage& message)
+{
+    if (!fExtensionsEnabled || !fExtensionActionSnapshot || message.GetUInt64("snapshot", 0) != fExtensionActionSnapshot
+        || fClosingWindow || fCloseCommitPending || !IsActive()) return;
+    const char* identity = nullptr;
+    if (message.FindString("extension_identifier", &identity) != B_OK || !message.GetBool("has_popup", false)) return;
+    SUMMIT_EXTENSION_TIMING("action button of %s hovered", identity);
+    fWebKitContext->PreloadExtensionAction(identity, BMessenger(this), message.GetUInt64("load_identifier", 0),
+        message.GetUInt64("page_identifier", 0));
 }
 
 void BrowserWindow::ShowExtensionActions()
@@ -2174,6 +2187,7 @@ void BrowserWindow::MessageReceived(BMessage* message)
         case B_WEBKIT_BROWSER_COMMAND: case B_WEBKIT_BROWSER_COMMAND_CANCELLED: BrowserCommand(*message); break;
         case B_WEBKIT_EXTENSION_ACTIONS: ExtensionActionsReceived(*message); break;
         case kActivateExtensionAction: ActivateExtensionAction(*message); break;
+        case kPreloadExtensionAction: PreloadExtensionAction(*message); break;
         case kShowExtensionActions: ShowExtensionActions(); break;
         case B_WEBKIT_EXTENSION_ACTION_ACTIVATED:
             if (message->GetUInt64("identifier", 0) == fExtensionActionInvocation) {

@@ -73,10 +73,14 @@ public:
     ~ExtensionActionButton() override;
     void SetAction(const BMessage&, uint64 snapshot);
     void Draw(BRect update) override;
+    void MouseMoved(BPoint where, uint32 transit, const BMessage* drag) override;
+    void MouseDown(BPoint where) override;
     BSize MinSize() override;
     BSize MaxSize() override;
     BSize PreferredSize() override;
 private:
+    void Preload();
+    BMessage fPreload;
     std::unique_ptr<BBitmap> fBitmap;
     std::string fBadge;
     rgb_color fBadgeBackground { 217, 0, 0, 255 };
