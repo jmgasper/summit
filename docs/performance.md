@@ -75,13 +75,24 @@ in flight the default cache is already large.
 ### Scrolling real pages at 200%
 
 `run-scroll.py --ui-frame-stats` (120 wheel notches at 16 ms, window
-1920x1056 at 200%), 2 s after navigating (still loading) and after 20 s:
+1920x1056 at 200%), 2 s after navigating (still loading) and after 20 s.
+Frames the view received during the 1.9 s burst (`frameSnapshot`):
 
 | Page | while loading | settled |
 | --- | --- | --- |
-| CNN | 54 fps, worst 125 ms | 54 fps, worst 61 ms |
-| The Guardian | 30 fps, worst 535 ms | 31 fps, worst 421 ms |
-| Wikipedia (Haiku article) | 33 fps, worst 1044 ms | 39 fps, worst 553 ms |
+| CNN | 52 fps, longest gap 125 ms | 54 fps, longest gap 61 ms |
+| The Guardian | 38 fps, longest gap 49 ms | 39 fps, longest gap 94 ms |
+| Wikipedia (Haiku article) | 48 fps, longest gap 72 ms | 50 fps, longest gap 88 ms |
+
+Read the burst numbers, not `animationTailScroll`: its window runs past the
+last notch, so a frame that arrives a second later (a scrollbar fading out)
+shows up as a 0.5-1.4 s "worst interval" and drags its fps down; none of those
+gaps happened while the page was scrolling. Across 26 Wikipedia bursts today
+the longest gap inside a burst was 74-151 ms and the rate 30-50 fps, with
+every wheel event handled on the scrolling thread (`SUMMIT_WHEEL_ROUTE_TRACE=1`:
+118/118 `route=scrolling handled=1 needsMain=0`). Painting on the CPU instead
+(`SUMMIT_DISABLE_GL_COMPOSITING=1`) was not faster (31.9 against 38.1 fps
+over three alternated pairs).
 
 With `SUMMIT_COMPOSITOR_TIMING_TRACE=1 SUMMIT_PRESENT_STATS=1` the 110
 scroll frames of the Wikipedia burst cost 20.2 ms each on average: readback
@@ -106,10 +117,10 @@ and queues one `viewFrameHaiku` message per frame for the window: 212-274 of
 them, drained at about 3.6 ms each once drawing resumes. Sending at most one
 message while one is pending (damage merged in the view state) cut the
 backlog to 15. But across eight Wikipedia bursts alternated with the build
-before it, the UI counted 27.7 frames/s against 34.3, with larger worst gaps
-(1.0-1.4 s against 0.5-1.0 s), and a variant that kept one message per frame
-and only merged damage measured the same. Unexplained, and a multi-second
-app_server stall is rare, so both were reverted.
+before it, the view received 39.2 frames/s during the burst against 46.6,
+and a variant that kept one message per frame and only merged damage
+measured the same. Unexplained, and a multi-second app_server stall is rare,
+so both were reverted.
 
 ### The retrain: lost merges, so the old profiles stay
 
