@@ -202,7 +202,7 @@ With alt-svc off, the 24 sites again (3,266 requests):
 
 and three windows of twelve sites against the installed build, one pair:
 
-| 3x12, X399 | installed | final (`bundle-gizz1wg8`) |
+| 3x12, X399 | installed | final (`bundle-n_0eipp3`) |
 | --- | --- | --- |
 | load, median / p90 / all done | 24.4 / 66.0 / 86.5 s | 7.8 / 20.3 / 60.7 s |
 | the three selected tabs | 32.1 / 18.8 / 49.5 s | 6.6 / 8.2 / 16.8 s |
@@ -210,7 +210,17 @@ and three windows of twelve sites against the installed build, one pair:
 | scroll under load | 37.6 fps, 16 long gaps | 36.1 fps, 14 long gaps |
 
 Scrolling while 24 tabs reload is unchanged: it is bounded by the 7 Mpx
-readback per frame at 200% (above), not by the CPU. One page at a time, in a fresh profile, first visit and a second visit
+readback per frame at 200% (above), not by the CPU. Two traces of that
+phase: the compositor's frames in the burst spend a median 14 ms in the
+readback and present ("send"), and the gaps over 33 ms come with a tile
+flush of up to 119 ms or a readback of up to 59 ms; a new
+`SUMMIT_UI_STALL_TRACE=1` (dispatches over 50 ms on Summit's application
+and window threads, and profile saves) shows nothing longer than 90 ms on
+the UI side during the burst. The "longest gap" of 1.75-1.8 s that every
+3x12 run reports is not a stall: 240 notches reach the end of the
+Wikipedia article before the burst ends, and the next frame is the
+scrollbar fading out, the same artifact `animationTailScroll` has. Read
+the count of gaps over 33 ms (11-16 of ~250 frames) instead. One page at a time, in a fresh profile, first visit and a second visit
 after closing the tab (`loadFinishedAt - loadStartedAt`):
 
 | page | installed, cold / warm | final, cold / warm |

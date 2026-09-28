@@ -1,4 +1,5 @@
 #include "SharedProfile.h"
+#include "StallTrace.h"
 #include "Messages.h"
 #include "core/Favicon.h"
 #include "core/Zoom.h"
@@ -160,6 +161,7 @@ void SharedProfile::RemoveWindowSession(uint64 key)
 
 bool SharedProfile::Save(std::string& error)
 {
+    summit::StallScope scope("profile save", 'save');
     error.clear();
     std::lock_guard saving(fSaveMutex);
     Profile snapshot;

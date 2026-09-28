@@ -1,5 +1,6 @@
 #include "BrowserWindow.h"
 #include "ExtensionTiming.h"
+#include "StallTrace.h"
 #include "Chrome.h"
 #include "FaviconCache.h"
 #include "Messages.h"
@@ -1638,6 +1639,12 @@ void BrowserWindow::ActivateExtensionAction(const BMessage& message)
         fStatus->SetText(("Could not activate extension: " + std::string(std::strerror(status))).c_str());
         RefreshExtensionActions();
     }
+}
+
+void BrowserWindow::DispatchMessage(BMessage* message, BHandler* handler)
+{
+    summit::StallScope scope("window", message ? message->what : 0);
+    BrowserWindowBase::DispatchMessage(message, handler);
 }
 
 void BrowserWindow::PreloadExtensionAction(const BMessage& message)

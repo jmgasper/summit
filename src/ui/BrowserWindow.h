@@ -285,6 +285,9 @@ private:
     void ExtensionActionsReceived(const BMessage&);
     void ActivateExtensionAction(const BMessage&);
     void PreloadExtensionAction(const BMessage&);
+public:
+    void DispatchMessage(BMessage*, BHandler*) override;
+private:
     void ShowExtensionActions();
     bool fExtensionsEnabled = false;
     BGroupView* fExtensionActions = nullptr;

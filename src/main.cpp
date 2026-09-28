@@ -5,6 +5,7 @@
 #include "ui/ExtensionPermissionPrompt.h"
 #include "ui/ExtensionController.h"
 #include "ui/ExtensionTiming.h"
+#include "ui/StallTrace.h"
 #include "ui/ExtensionInstaller.h"
 #include "ui/ExtensionManager.h"
 #include "core/Address.h"
@@ -38,6 +39,11 @@
 class SummitApp : public BApplication {
 public:
     explicit SummitApp(status_t& status) : BApplication("application/x-vnd.Kunanyi-Summit", &status) {}
+    void DispatchMessage(BMessage* message, BHandler* handler) override
+    {
+        summit::StallScope scope("app", message ? message->what : 0);
+        BApplication::DispatchMessage(message, handler);
+    }
     void ArgvReceived(int32 argc, char** argv) override
     {
         for (int32 i = 1; i < argc; ++i) {
