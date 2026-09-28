@@ -26680,6 +26680,42 @@ index 0000000000000000000000000000000000000000..6b5fc0f78f205ca35494521f2ebefe65
 +};
 +
 +} // namespace WebCore
+diff --git a/Source/WebCore/platform/network/curl/CurlContext.cpp b/Source/WebCore/platform/network/curl/CurlContext.cpp
+index 898c482ce6a9f1ebf3e8d7ae0c7db28a05eb2d3b..63c7be19063b3092e38daf28970c5001cb98ee3b 100644
+--- a/Source/WebCore/platform/network/curl/CurlContext.cpp
++++ b/Source/WebCore/platform/network/curl/CurlContext.cpp
+@@ -27,6 +27,9 @@
+ #include "config.h"
+ #include "CurlContext.h"
+ 
++#include <cstdlib>
++#include <cstring>
++
+ #if USE(CURL)
+ #include "CertificateInfo.h"
+ #include "CurlRequestScheduler.h"
+@@ -563,6 +566,21 @@ void CurlHandle::enableAltSvc()
+     if (CurlContext::singleton().alternativeServicesStorageFile().isEmpty())
+         return;
+ 
++#if OS(HAIKU)
++    // CURLOPT_ALTSVC makes libcurl read the cache file when the option is set
++    // and write it back when the handle is cleaned up: two file operations on
++    // BFS for every request, on the transfer thread, which is what kept new
++    // requests waiting behind a queue of set-up tasks (10-15 ms each). The
++    // cache only pays off for HTTP/3 discovery (h2 comes from ALPN), and this
++    // libcurl has no HTTP/3, so it is left off unless SUMMIT_CURL_ALTSVC=1.
++    static const bool wanted = [] {
++        const char* value = getenv("SUMMIT_CURL_ALTSVC");
++        return value && !strcmp(value, "1");
++    }();
++    if (!CurlContext::singleton().isHttp3Enabled() && !wanted)
++        return;
++#endif
++
+     long altSvcCtrl = CURLALTSVC_H1;
+     altSvcCtrl |= CurlContext::singleton().isHttp2Enabled() ? CURLALTSVC_H2 : 0;
+     altSvcCtrl |= CurlContext::singleton().isHttp3Enabled() ? CURLALTSVC_H3 : 0;
 diff --git a/Source/WebCore/platform/network/curl/CurlContext.h b/Source/WebCore/platform/network/curl/CurlContext.h
 index 8f5be49b731627a769f2a1bb6da25953dd9f63d1..129c0fad524484a45e9048daecfd5aa5cb56d9c5 100644
 --- a/Source/WebCore/platform/network/curl/CurlContext.h

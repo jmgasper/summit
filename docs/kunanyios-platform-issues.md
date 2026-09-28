@@ -119,3 +119,25 @@ wildcards; otherwise the media plays without sound (`MediaPlayerPrivateHaiku.cpp
 ```cpp
 if (fAutoStop && fCore->CountInputs() == 1 && fCore->Output() != NULL) {
 ```
+
+## libnetwork: `nsswitch_conf_file_path()` is not thread-safe, and the parser exits the process
+
+`src/system/libnetwork/netresolv/net/nsdispatch.c`: `nsswitch_conf_file_path()`
+builds the settings path in a `static char path[256]` on every call
+(`find_directory()` then `strlcat()`), and `_nsconfigure()` reads it before
+taking `_nsconflock`. When several threads resolve names at once (libcurl's
+threaded resolver starts one thread per lookup; a session of 36 tabs starts a
+dozen), one thread can `stat()` the buffer while another has just written the
+settings directory into it: the directory exists, its mtime is newer than the
+last parse, `fopen()` of a directory succeeds on Haiku, and the flex scanner
+`_nsyylex` fails its first read with "input in flex scanner failed" and calls
+`exit()` -- from a resolver thread, so the whole process dies; Summit's
+network process then segfaults in `BMessage::_SendMessage` because libbe's
+statics are already gone (reports `NetworkProcess-137701-debug-28-09-2026-11-04-31`
+and the two older NetworkProcess reports). `/boot/system/settings/network/nsswitch.conf`
+does not exist on the X399, so no parse should ever happen there. Fix: compute
+the path once (`pthread_once`), or take `_nsconflock` before computing it; the
+scanner should also fail the lookup rather than exit the process.
+
+Summit resolves `localhost` at network process start-up so the first
+`nsdispatch` happens on the main thread, which does not close this race.

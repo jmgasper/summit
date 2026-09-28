@@ -156,7 +156,37 @@ The scheduler now runs several worker threads, each with its own multi
 handle, and a request goes to the worker chosen by its host, so a host's
 connections and HTTP/2 streams stay together and are reused (cookies, DNS
 and TLS sessions are shared through the share handle as before).
-`SUMMIT_CURL_THREADS` sets the count (default 4). Measured below.
+`SUMMIT_CURL_THREADS` sets the count (default 4).
+
+The same 24 sites with four workers: median request 2,011 -> 1,042 ms,
+time to first byte 489 -> 218 ms, TLS handshake 337 -> 181 ms, but the
+queue's tail grew (p99 990 -> 2,867 ms): a worker was still stalling for
+seconds at a time. A per-iteration trace (`SUMMIT_NET_TRACE=1` prints
+"slow iteration" lines) showed the poll and `curl_multi_perform` taking
+0-7 ms and the queued *tasks* taking 10-15 ms each ("tasks 26 in 359
+ms"). A task is a transfer's set-up or its clean-up, and the cost was
+`CURLOPT_ALTSVC`: every easy handle is given the alt-svc cache *file*,
+which libcurl reads when the option is set and writes back when the
+handle is cleaned up -- two file operations on BFS per request, on the
+transfer thread. The cache only matters for HTTP/3 discovery (HTTP/2 is
+negotiated by ALPN) and this libcurl has no HTTP/3, so on Haiku it stays
+off unless `SUMMIT_CURL_ALTSVC=1`.
+
+Three windows of twelve sites, alternated with the installed build, with
+the priorities, the worker threads and the resolver warm-up (before the
+alt-svc change):
+
+| 3x12, X399 | installed, run 1 / 2 | new, run 1 / 2 |
+| --- | --- | --- |
+| load, median | 22.0 / 25.8 s | 10.3 / 25.7 s |
+| load, all done | 85 / 88 s | 56 / 76 s |
+| tab switch, median | 299 / 274 ms | 272 / 346 ms |
+| scroll under load | 37.6 / 37.1 fps | 39.6 / 32.9 fps |
+
+Loading 36 real sites at once varies by more between two runs of the
+same build than between the builds (Cloudflare challenges, ad auctions
+and the sites' own variance); the request-level numbers above are the
+reliable measure.
 
 ## 28 September 2026: installed build, and a profile retrain that lost
 
