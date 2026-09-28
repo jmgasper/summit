@@ -833,7 +833,7 @@ index 3ed98dc3dbaef25c50446b187d68975c7323e3cd..84f89195d99dfa3bec558d4145b5f96e
      WTF_EXPORT_PRIVATE URL(GUri*);
      WTF_EXPORT_PRIVATE GRefPtr<GUri> createGUri() const;
 diff --git a/Source/WTF/wtf/WTFProcess.cpp b/Source/WTF/wtf/WTFProcess.cpp
-index 7d01fe9cd0574de69acfa8356e11f20fe557afc0..9277976a52cf5829e35181db07c99c873897e0c8 100644
+index 7d01fe9cd0574de69acfa8356e11f20fe557afc0..86b33475503b05002094be1cb52b9cf5933d5083 100644
 --- a/Source/WTF/wtf/WTFProcess.cpp
 +++ b/Source/WTF/wtf/WTFProcess.cpp
 @@ -27,6 +27,7 @@
@@ -844,11 +844,14 @@ index 7d01fe9cd0574de69acfa8356e11f20fe557afc0..9277976a52cf5829e35181db07c99c87
  
  #if OS(UNIX)
  #include <unistd.h>
-@@ -36,6 +37,19 @@
+@@ -36,6 +37,45 @@
  #include <windows.h>
  #endif
  
 +#if OS(HAIKU)
++#include <errno.h>
++#include <fcntl.h>
++
 +// Haiku exits with _exit(), so instrumented training runs need an explicit
 +// flush. Keep ordinary builds independent of libgcov.
 +extern "C" void __gcov_dump() __attribute__((weak));
@@ -856,15 +859,38 @@ index 7d01fe9cd0574de69acfa8356e11f20fe557afc0..9277976a52cf5829e35181db07c99c87
 +static void dumpProfileBeforeExit()
 +{
 +    const char* enabled = getenv("SUMMIT_GCOV_DUMP");
++    if (!enabled || enabled[0] != '1' || enabled[1] || !__gcov_dump)
++        return;
++    // Haiku's libgcov merges into the .gcda files without locking them, so
++    // processes that exit together overwrite each other's counters (and
++    // sometimes leave a file half-written). Take turns.
++    const char* lockPath = getenv("SUMMIT_GCOV_LOCK");
++    int lockFile = open(lockPath && *lockPath ? lockPath : "/tmp/summit-gcov.lock", O_RDWR | O_CREAT, 0644);
++    struct flock lock { };
++    lock.l_type = F_WRLCK;
++    lock.l_whence = SEEK_SET;
++    if (lockFile >= 0) {
++        while (fcntl(lockFile, F_SETLKW, &lock) == -1 && errno == EINTR) { }
++    }
++    __gcov_dump();
++    if (lockFile >= 0)
++        close(lockFile);
++}
++
++// Processes that leave through exit() (the UI process) would otherwise dump
++// from libgcov's own unlocked destructor; once dumped, libgcov skips that one.
++__attribute__((constructor)) static void dumpProfileAtExit()
++{
++    const char* enabled = getenv("SUMMIT_GCOV_DUMP");
 +    if (enabled && enabled[0] == '1' && !enabled[1] && __gcov_dump)
-+        __gcov_dump();
++        atexit(dumpProfileBeforeExit);
 +}
 +#endif
 +
  namespace WTF {
  
  void exitProcess(int status)
-@@ -57,6 +71,15 @@ void exitProcess(int status)
+@@ -57,6 +97,15 @@ void exitProcess(int status)
      // The code can reach here only when very buggy anti-virus software hooks are integrated into the system. To make it safe, in that case,
      // let the process crash explicitly.
      CRASH();
@@ -880,7 +906,7 @@ index 7d01fe9cd0574de69acfa8356e11f20fe557afc0..9277976a52cf5829e35181db07c99c87
  #else
      exit(status);
  #endif
-@@ -68,6 +91,9 @@ void terminateProcess(int status)
+@@ -68,6 +117,9 @@ void terminateProcess(int status)
      // On Windows, exitProcess and terminateProcess do the same thing due to its more complicated main thread handling.
      // See comment in exitProcess.
      exitProcess(status);
