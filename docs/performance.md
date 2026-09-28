@@ -1,5 +1,100 @@
 # Summit performance: Speedometer 3.1 baseline, where the time goes, stress test
 
+## 28 September 2026: installed build, and a profile retrain that lost
+
+Installed on the X399: `bundle-c1ue7ry9` (engine commit 115b935 built in
+`SkiaCGMiPGO` with the 25 September profiles; the launcher it replaced is
+`Summit-current.pre-20260928-1029.sh`, pointing at `bundle-05tk1w24`). Over
+yesterday's install it adds contents-layer damage, the compositor's live
+check before waiting for a buffer, and pausing invisible muted autoplay.
+
+| X399, 200% | `bundle-05tk1w24` | `bundle-c1ue7ry9` |
+| --- | --- | --- |
+| Speedometer 3.1, three interleaved pairs | 7.93 / 7.76 / 7.60 | 8.14 / 7.99 / 7.86 (+3%) |
+| 12 tabs, resident after 20 s idle | 3.8 GB (27 Sept run) | 3.8 GB |
+| 12 tabs, idle cores | 0.09 (27 Sept run) | 0.08 |
+| Tab switch, median / worst | 240 / 582 ms (27 Sept run) | 220 / 716 ms |
+| Scroll fixture | | 58 fps, worst frame 29 ms |
+| 4-ref H.264 (NVDEC), seek to 6.5 s | | plays, seeks, ends |
+| 16-ref H.264 (libavcodec fallback), seek | | plays, seeks, ends |
+| MSE fixture | | 360 frames, 0 dropped |
+
+The MSE fixture page does not post its result to `run-probe.py`, so the probe
+waits for its timeout; read the page title or a screenshot instead.
+
+**Crash reports.** None since yesterday evening. The last ones on the X399
+Desktop (27 September, 20:27-20:37 local) are the NVDEC `memcpy` at
+`nvdec_h264.c:883`, fixed and installed by the OS session later that night.
+Two older NetworkProcess reports died while the process was already exiting:
+one in OpenSSL (`CRYPTO_THREAD_read_lock` from a libcurl thread after exit
+had started), one in `WebSWServerToContextConnection::terminateWorker`.
+
+### The retrain: lost merges, so the old profiles stay
+
+The engine's profile-guided build uses profiles from 25 September, before
+MSE, damage tracking and today's work. `tools/bench/train-pgo.sh` runs a
+training against an instrumented bundle: Speedometer 3.1, the scroll fixture,
+a Wikipedia wheel burst, two windows of real sites with a scroll under load,
+and video through NVDEC, libavcodec and MSE. Build directory `SkiaCGMiPGO2`
+(llvm-ar), instrumented with `-fprofile-generate -fprofile-update=atomic` and
+linked with `-u__gcov_dump`, trained with `SUMMIT_GCOV_DUMP=1` (1,982 profile
+files; a copy is in `/boot/home/summit/pgo2-profiles-20260928.tar`), then
+rebuilt in place with `-fprofile-use -fprofile-correction
+-fprofile-partial-training` and empty linker flags.
+
+The result, `bundle-ooanr2gr`, lost: 7.20 / 7.33 / 7.37 on Speedometer
+against 7.83 / 7.87 / 7.76 for the installed build, interleaved (-6.7%).
+The same engine commit built with the *old* profiles (`bundle-c1ue7ry9`,
+only TextureMapperLayer.cpp and ThreadedCompositor.cpp recompiled) scored
+8.14 / 7.99 / 7.86 against 7.93 / 7.76 / 7.60 (+3%), so the code is fine and
+the new profiles are not.
+
+`gcov-dump -l` shows why. Every old profile file carries the same summary
+(`runs=6, sum_max=1051265313`); the new ones do not agree with each other:
+
+| Unit | old profile | new profile |
+| --- | --- | --- |
+| dom-1 | runs=6 | runs=2, sum_max 31 M |
+| JSBindings-1 | runs=6 | runs=3, sum_max 31 M |
+| page-1 | runs=6 | runs=1, sum_max 0.4 M |
+| style-1 | runs=6 | runs=39, sum_max 350 M |
+| html-1 | runs=7 | runs=40, sum_max 597 M |
+
+DOM and bindings code runs in every web process, so it should have as many
+runs as style. **Haiku's `libgcov.a` never locks a `.gcda` file** (it calls
+`fopen` and imports no `fcntl`; GCC only locks where the target defines
+`TARGET_POSIX_IO`, which Haiku's apparently does not). When a window of tabs closes, a dozen processes read,
+merge and rewrite the same files at once and the last writer wins; the
+Speedometer web process's counts for the hottest code were among those
+lost, so GCC treated that code as cold. The same race left 33 files
+half-written: "profile data for function ... is corrupted" / "checksum is
+(x,0) instead of (x,y)" (21 in WebCore, 12 in WebKit; one crashed the
+compiler).
+
+Fix, for the next training: instrumented processes now take an `fcntl` lock
+on `SUMMIT_GCOV_LOCK` (default `/tmp/summit-gcov.lock`) around
+`__gcov_dump()` (WTFProcess.cpp; the UI process through `atexit`), the
+harness gives helpers `SUMMIT_BENCH_LEFTOVER_GRACE=180` seconds to take
+their turns, and `train-pgo.sh` ends by printing the run count of sample
+units. They should all be close; if DOM or bindings units show a handful of
+runs while style shows dozens, merges were lost again.
+
+Other things the attempt ran into:
+
+- **Compiles that never finish.** Six units (WebCore html-9, html-11,
+  platform-47, svg-15, workers-8; WebKit NetworkProcess-11) kept `cc1plus`
+  busy for hours under the new profiles, with more kernel time than user
+  time. They were still going after 4½ hours, and the X399 hung outright once
+  while they ran. Without a profile each compiles in minutes (profiles moved
+  to `/boot/home/summit/pgo2-stall`; the corrupted ones to `pgo2-bad`). Maybe
+  a side effect of the damaged merges; if a clean training does it again,
+  ninja sitting on a handful of jobs with a load of exactly that many is the
+  sign.
+- A hard power cut on Haiku loses recently written file data even when the
+  directory entries survive: after the first hang 25 objects were zero bytes
+  and ninja's log was 90 steps behind. `find WebKitBuild/... -name '*.o'
+  -size 0` after any reset, and `sync` after anything that must survive.
+
 ## 27 September 2026 (evening): memory per tab, idle cores, NVDEC, crashes
 
 Measured on the X399 at 200% with `tools/bench/run-multitab.py` (one window
@@ -101,43 +196,6 @@ scrollbar made the bounding box the whole frame. `CoordinatedPlatformLayer`
 already damages a layer when a new contents buffer or image arrives (the
 region it is given, or all of it), so on Haiku the special case is gone;
 `SUMMIT_CONTENTS_LAYER_DAMAGE=full` restores it.
-
-### Retrained profiles
-
-The engine's profile-guided build used profiles from 25 September, before
-MSE, damage tracking and today's work. `tools/bench/train-pgo.sh` now runs
-the training against an instrumented bundle: Speedometer 3.1, the scroll
-fixture, a Wikipedia wheel burst, two windows of real sites with a scroll
-under load, and video through NVDEC, libavcodec and MSE. Build directory
-`SkiaCGMiPGO2` (llvm-ar), instrumented with
-`-fprofile-generate -fprofile-update=atomic` and linked with `-u__gcov_dump`,
-trained with `SUMMIT_GCOV_DUMP=1` (1,982 profile files; a copy is in
-`/boot/home/summit/pgo2-profiles-20260928.tar`), then rebuilt in place with
-`-fprofile-use -fprofile-correction -fprofile-partial-training` and empty
-linker flags. The harness now waits `SUMMIT_BENCH_LEFTOVER_GRACE` seconds
-for helper processes to write their counters.
-
-Two kinds of profile file do not survive the rebuild, and both need handling
-before a profile-use build can finish:
-
-- **Corrupted counters.** 33 of the 1,982 files fail with "profile data for
-  function ... is corrupted" / "checksum is (x,0) instead of (x,y)" (21 in
-  WebCore, 12 in WebKit; one also crashed the compiler). Several processes
-  load the same code and all write their counters at exit; most likely some
-  of those merges end half-written (not confirmed). Those files are moved to
-  `/boot/home/summit/pgo2-bad`, so their objects compile without a profile.
-- **Compiles that never finish.** Six units (WebCore html-9, html-11,
-  platform-47, svg-15, workers-8; WebKit NetworkProcess-11) keep `cc1plus`
-  busy for hours under `-fprofile-use`, with more kernel time than user
-  time. They were still going after 4½ hours, and the X399 hung outright once
-  while they ran. Their profiles are in `/boot/home/summit/pgo2-stall`.
-  Without a profile each compiles in minutes. If ninja sits on a handful of
-  jobs with a load of exactly that many, this is why.
-
-A hard power cut on Haiku loses recently written file data even when the
-directory entries survive: after the first hang 25 objects were zero bytes
-and ninja's log was 90 steps behind. `find WebKitBuild/... -name '*.o' -size 0`
-after any reset, and `sync` after anything that must survive.
 
 ### Scrolling while 24 other tabs reload
 
