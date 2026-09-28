@@ -185,8 +185,36 @@ alt-svc change):
 
 Loading 36 real sites at once varies by more between two runs of the
 same build than between the builds (Cloudflare challenges, ad auctions
-and the sites' own variance); the request-level numbers above are the
+and the sites' own variance); the request-level numbers are the more
 reliable measure.
+
+With alt-svc off, the 24 sites again (3,266 requests):
+
+| per request, ms | one thread, alt-svc on | four threads | four threads, alt-svc off |
+| --- | --- | --- | --- |
+| queue, median / p90 / p99 | 103 / 498 / 990 | 51 / 617 / 2,867 | 1 / 10 / 72 |
+| TLS handshake, median | 337 | 181 | 44 |
+| time to first byte, median / p90 | 489 / 2,011 | 218 / 1,306 | 71 / 318 |
+| total, median / p90 / p99 | 2,011 / 4,847 / 11,514 | 1,042 / 5,936 / 14,627 | 190 / 766 / 2,430 |
+| requests completed in the busiest 5 s | 435 | 536 | 1,102 |
+
+and three windows of twelve sites against the installed build, one pair:
+
+| 3x12, X399 | installed | final (`bundle-7f9r2uwv`) |
+| --- | --- | --- |
+| load, median / p90 / all done | 24.4 / 66.0 / 86.5 s | 7.8 / 20.3 / 60.7 s |
+| the three selected tabs | 32.1 / 18.8 / 49.5 s | 6.6 / 8.2 / 16.8 s |
+| tab switch, median | 268 ms | 324 ms |
+| scroll under load | 37.6 fps, 16 long gaps | 36.1 fps, 14 long gaps |
+
+Scrolling while 24 tabs reload is unchanged: it is bounded by the 7 Mpx
+readback per frame at 200% (above), not by the CPU. Speedometer 3.1 (local copy, 5 iterations, two alternated pairs) is
+unchanged by the priorities and the network changes: 7.67 / 7.66 installed,
+7.68 / 7.84 final. Installed as the desktop launcher (`Summit-current.sh`)
+at 22:17; the same build carries the extension package cache, the popup
+pre-load and the resolver warm-up. `SUMMIT_BACKGROUND_PROCESS_PRIORITY=0`,
+`SUMMIT_UI_PRIORITY=normal`, `SUMMIT_CURL_THREADS=1` and
+`SUMMIT_CURL_ALTSVC=1` each restore one previous behaviour for comparison.
 
 ## 28 September 2026: installed build, and a profile retrain that lost
 
