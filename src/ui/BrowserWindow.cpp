@@ -308,12 +308,25 @@ public:
 // in other browsers. Each notch is one zoom step.
 class ZoomWheelFilter final : public BMessageFilter {
 public:
-    ZoomWheelFilter() : BMessageFilter(B_MOUSE_WHEEL_CHANGED) { }
+    ZoomWheelFilter() : BMessageFilter(B_ANY_DELIVERY, B_ANY_SOURCE) { }
 
     filter_result Filter(BMessage* message, BHandler** target) override
     {
-        if (!(modifiers() & B_COMMAND_KEY) || !target || !dynamic_cast<BrowserWebView*>(*target))
-            return B_DISPATCH_MESSAGE;
+        switch (message->what) {
+            case B_KEY_DOWN: case B_KEY_UP: case B_UNMAPPED_KEY_DOWN: case B_UNMAPPED_KEY_UP:
+            case B_MODIFIERS_CHANGED: case B_MOUSE_DOWN: case B_MOUSE_UP: case B_MOUSE_MOVED:
+                // Input messages carry the modifier keys; wheel messages do not.
+                fModifiers = message->GetInt32("modifiers", fModifiers);
+                return B_DISPATCH_MESSAGE;
+            case B_MOUSE_WHEEL_CHANGED: break;
+            default: return B_DISPATCH_MESSAGE;
+        }
+        if (!target || !dynamic_cast<BrowserWebView*>(*target)) return B_DISPATCH_MESSAGE;
+        // An active window hears of every modifier change. Asking input_server
+        // instead costs a round trip on every notch of a scroll.
+        auto* window = dynamic_cast<BWindow*>(Looper());
+        const uint32 keys = window && window->IsActive() ? fModifiers : modifiers();
+        if (!(keys & B_COMMAND_KEY)) return B_DISPATCH_MESSAGE;
         float delta = 0;
         if (message->FindFloat("be:wheel_delta_y", &delta) != B_OK || delta == 0)
             message->FindFloat("be:wheel_delta_x", &delta);
@@ -329,6 +342,7 @@ public:
 
 private:
     float fPending = 0;
+    int32 fModifiers = 0;
 };
 
 static bool Bookmarkable(const std::string& url)
@@ -823,7 +837,9 @@ void BrowserWindow::CreateTab(const std::string& input, bool select, BWebView* a
         create.AddString("url", address.url.c_str());
         create.AddBool("select", select);
         create.AddMessenger("window", BMessenger(this));
-        create.AddInt32("index", index);
+        // A restored tab keeps its place: the tabs after it are added while
+        // its extension may still be loading.
+        create.AddInt32("index", index < 0 && fRestoringSession ? static_cast<int32>(fTabs.size()) : index);
         create.AddUInt64("command", command);
         create.AddInt64("replaces", replaces);
         if (be_app->PostMessage(&create) != B_OK) fail("Could not open the extension page.");
@@ -1684,7 +1700,7 @@ void BrowserWindow::RefreshChrome()
         if (title != Title()) {
             SetTitle(title.c_str());
             std::lock_guard lock(sWindowListLock);
-            for (auto& entry : sWindowList) if (entry.key == fKey) entry.title = tab->title;
+            for (auto& entry : sWindowList) if (entry.key == fKey) entry.title = fPrivate ? tab->title + " (Private)" : tab->title;
         }
         fBack->SetEnabled(tab->back); fForward->SetEnabled(tab->forward);
         fReload->SetIcon(tab->loading ? Icon::Stop : Icon::Reload);

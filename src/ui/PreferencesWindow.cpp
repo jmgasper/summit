@@ -80,6 +80,12 @@ PreferencesWindow::PreferencesWindow(BMessenger owner, const PreferencesState& s
     fDataStatus = new BStringView("data-status", "");
     fDataStatus->SetHighUIColor(B_PANEL_TEXT_COLOR, B_DARKEN_2_TINT);
     ShowHistoryCount(state.historyCount);
+    // The three buttons share one width, so they line up in their column.
+    auto clearButton = [](const char* name, const char* label, uint32 what) {
+        auto* button = new BButton(name, label, new BMessage(what));
+        button->SetExplicitMaxSize(BSize(B_SIZE_UNLIMITED, B_SIZE_UNSET));
+        return button;
+    };
     BLayoutBuilder::Group<>(this, B_VERTICAL, 10)
         .SetInsets(18)
         .Add(SectionTitle("general-title", "General"))
@@ -113,11 +119,11 @@ PreferencesWindow::PreferencesWindow(BMessenger owner, const PreferencesState& s
         .Add(SectionTitle("data-title", "History and Data"))
         .AddGrid(10, 6).SetInsets(12, 0, 0, 0)
             .Add(fHistoryInfo, 0, 0)
-            .Add(new BButton("clear-history", "Clear History…", new BMessage(clearHistory)), 1, 0)
+            .Add(clearButton("clear-history", "Clear History…", clearHistory), 1, 0)
             .Add(fCacheInfo, 0, 1)
-            .Add(new BButton("clear-cache", "Clear Cache", new BMessage(clearCache)), 1, 1)
+            .Add(clearButton("clear-cache", "Clear Cache", clearCache), 1, 1)
             .Add(dataInfo, 0, 2)
-            .Add(new BButton("clear-site-data", "Clear Cookies and Site Data…", new BMessage(clearSiteData)), 1, 2)
+            .Add(clearButton("clear-site-data", "Clear Cookies and Site Data…", clearSiteData), 1, 2)
             .Add(dataHint, 0, 3, 2, 1)
             .Add(fDataStatus, 0, 4, 2, 1)
         .End();

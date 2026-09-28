@@ -19,6 +19,14 @@
 //   summitctl --team ID windows               one JSON line per browser window: index, frame, tabs
 //   summitctl --team ID newwindow [frame=L,T,R,B] URL...
 //                                             a new browser window with one tab per URL
+//   summitctl --team ID newprivatewindow [frame=L,T,R,B] URL...   the same, private
+//   summitctl --team ID zoomin|zoomout|zoomreset   the window's current page (View menu)
+//   summitctl --team ID closewindow           closes the window (--window N) like its close box
+//   summitctl --team ID search ENGINE          Preferences' search engine (duckduckgo, google, bing)
+//   summitctl --team ID style haiku|safari     Preferences' appearance
+//   summitctl --team ID clearhistory|clearcache|clearsitedata|preferences
+//                                             Preferences' History and Data buttons (without
+//                                             asking), or open the Preferences window
 //   --window N                                address the Nth browser window (default 0) instead
 //                                             of the first; windows are counted in the
 //                                             application's window list order
@@ -235,8 +243,23 @@ int main(int argc, char** argv)
         BMessage quit(B_QUIT_REQUESTED);
         return app.SendMessage(&quit, static_cast<BHandler*>(nullptr), timeout) == B_OK ? 0 : 5;
     }
-    if (command == "newwindow") {
+    if (command == "style") {
+        if (!argument) return 2;
+        BMessage message(summit::kPreferencesChanged);
+        message.AddString("interface_style", argument);
+        return app.SendMessage(&message, static_cast<BHandler*>(nullptr), timeout) == B_OK ? 0 : 5;
+    }
+    if (command == "search" || command == "clearhistory" || command == "clearcache" || command == "clearsitedata"
+        || command == "preferences") {
+        BMessage message(command == "search" ? summit::kPreferencesChanged : command == "clearhistory" ? summit::kClearHistoryRequest
+            : command == "clearcache" ? summit::kClearCacheRequest : command == "clearsitedata" ? summit::kClearSiteDataRequest
+            : summit::kShowPreferences);
+        if (command == "search") { if (!argument) return 2; message.AddString("search_engine", argument); }
+        return app.SendMessage(&message, static_cast<BHandler*>(nullptr), timeout) == B_OK ? 0 : 5;
+    }
+    if (command == "newwindow" || command == "newprivatewindow") {
         BMessage open(summit::kNewWindow);
+        open.AddBool("private", command == "newprivatewindow");
         for (int i = index; i < argc; ++i) {
             float left, top, right, bottom;
             if (std::sscanf(argv[i], "frame=%f,%f,%f,%f", &left, &top, &right, &bottom) == 4)
@@ -267,9 +290,9 @@ int main(int argc, char** argv)
         for (size_t i = 0; i < browsers.size(); ++i) {
             const BMessage& state = browsers[i].second;
             BRect frame = state.FindRect("frame");
-            std::printf("%s{\"window\":%zu,\"tabs\":%ld,\"selected\":%lld,\"frame\":[%.0f,%.0f,%.0f,%.0f]}",
+            std::printf("%s{\"window\":%zu,\"tabs\":%ld,\"selected\":%lld,\"private\":%s,\"frame\":[%.0f,%.0f,%.0f,%.0f]}",
                 i ? "," : "", i, long(state.GetInt32("count", 0)), static_cast<long long>(state.GetInt64("selected", -1)),
-                frame.left, frame.top, frame.right, frame.bottom);
+                state.GetBool("private", false) ? "true" : "false", frame.left, frame.top, frame.right, frame.bottom);
         }
         std::puts("]");
         return 0;
@@ -292,25 +315,28 @@ int main(int argc, char** argv)
         std::printf("{\"team\":%ld,\"now\":%lld,\"replyMicros\":%lld,\"count\":%ld,\"selected\":%lld,\"closing\":%s,"
             "\"scrollActive\":%s,\"scrollRequested\":%ld,\"scrollSent\":%ld,\"scrollStatus\":%ld,\"scrollDurationMicros\":%lld,"
             "\"address\":\"%s\",\"status\":\"%s\",\"backend\":\"%s\",\"webkit\":\"%s\",\"haikuWebkit\":\"%s\","
-            "\"webkitRevision\":\"%s\",\"tabs\":[",
+            "\"webkitRevision\":\"%s\",\"private\":%s,\"tabs\":[",
             long(team), static_cast<long long>(state.GetInt64("now", 0)), static_cast<long long>(elapsed), long(count), static_cast<long long>(selected),
             closing ? "true" : "false", scrollActive ? "true" : "false",
             long(state.GetInt32("scroll_requested", 0)), long(state.GetInt32("scroll_sent", 0)),
             long(state.GetInt32("scroll_status", 0)), static_cast<long long>(state.GetInt64("scroll_duration_us", 0)),
             Escape(String(state, "address")).c_str(), Escape(String(state, "status")).c_str(),
             Escape(String(state, "backend")).c_str(), Escape(String(state, "webkit")).c_str(),
-            Escape(String(state, "haiku_webkit")).c_str(), Escape(String(state, "webkit_revision")).c_str());
+            Escape(String(state, "haiku_webkit")).c_str(), Escape(String(state, "webkit_revision")).c_str(),
+            state.GetBool("private", false) ? "true" : "false");
         BMessage tab;
         for (int32 i = 0; state.FindMessage("tab", i, &tab) == B_OK; ++i) {
             int64 id = -1; bool loading = false, loadError = false;
             tab.FindInt64("id", &id); tab.FindBool("loading", &loading); tab.FindBool("loadError", &loadError);
             std::printf("%s{\"id\":%lld,\"url\":\"%s\",\"title\":\"%s\",\"loading\":%s,\"loadError\":%s,"
-                "\"loadErrorText\":\"%s\",\"loadOutcome\":\"%s\",\"loadStartedAt\":%lld,\"loadFinishedAt\":%lld,\"shownAt\":%lld,\"firstFrameAfterShow\":%lld}",
+                "\"loadErrorText\":\"%s\",\"loadOutcome\":\"%s\",\"loadStartedAt\":%lld,\"loadFinishedAt\":%lld,\"shownAt\":%lld,\"firstFrameAfterShow\":%lld,"
+                "\"zoom\":%.2f,\"zoomKey\":\"%s\"}",
                 i ? "," : "", static_cast<long long>(id), Escape(String(tab, "url")).c_str(),
                 Escape(String(tab, "title")).c_str(), loading ? "true" : "false", loadError ? "true" : "false",
                 Escape(String(tab, "loadErrorText")).c_str(), Escape(String(tab, "loadOutcome")).c_str(),
                 static_cast<long long>(tab.GetInt64("loadStartedAt", 0)), static_cast<long long>(tab.GetInt64("loadFinishedAt", 0)),
-                static_cast<long long>(tab.GetInt64("shownAt", 0)), static_cast<long long>(tab.GetInt64("firstFrameAfterShow", 0)));
+                static_cast<long long>(tab.GetInt64("shownAt", 0)), static_cast<long long>(tab.GetInt64("firstFrameAfterShow", 0)),
+                tab.GetDouble("pageZoom", 1), Escape(String(tab, "zoomKey")).c_str());
         }
         std::puts("]}");
         return 0;
@@ -374,6 +400,10 @@ int main(int argc, char** argv)
     else if (command == "forward") what = summit::kForward;
     else if (command == "reload") what = summit::kReload;
     else if (command == "sidebar" || command == "hide-bookmarks-bar") what = summit::kPreferencesChanged;
+    else if (command == "closewindow") what = summit::kCloseWindow;
+    else if (command == "zoomin") what = summit::kZoomIn;
+    else if (command == "zoomout") what = summit::kZoomOut;
+    else if (command == "zoomreset") what = summit::kZoomReset;
     else return 2;
     BMessage message(what);
     if (what == summit::kPreferencesChanged) message.AddBool("show_bookmarks_bar", false);

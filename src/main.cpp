@@ -23,8 +23,11 @@
 #include <atomic>
 #include <map>
 #include <tuple>
+#include <utility>
+#include <string_view>
 #include <string>
 #include <vector>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -417,6 +420,16 @@ public:
             return;
         }
         if (message->what == summit::kCreateTabOnApp) {
+#if SUMMIT_MODERN_WEBKIT
+            // A restored session asks for its extension pages before their
+            // extensions have loaded; they are created once loading ends.
+            if (fExtensions && !fExtensions->IsReady() && fExtensions->CatalogError().empty()
+                && std::string_view(message->GetString("url", "")).starts_with("webkit-extension:")
+                && fPendingExtensionTabs.size() < 64) {
+                fPendingExtensionTabs.push_back(*message);
+                return;
+            }
+#endif
             BMessenger target;
             const char* url = nullptr;
             bool select = true;
@@ -698,8 +711,17 @@ private:
         state.webKitDirectory = fProfile / "WebKit";
         auto* window = new summit::PreferencesWindow(BMessenger(this), state);
         if (!fWindows.empty() && fWindows.front().messenger.LockTarget()) {
-            window->CenterIn(fWindows.front().window->Frame());
+            const BRect front = fWindows.front().window->Frame();
             fWindows.front().window->Unlock();
+            // Centred over the front window by hand: CenterIn() moves a window
+            // that is still hidden to the monitor under the pointer, which on
+            // a two-monitor desktop need not be the browser's.
+            window->Lock();
+            window->UpdateSizeLimits();
+            const BRect frame = window->Frame();
+            window->MoveTo(std::round(front.left + (front.Width() - frame.Width()) / 2),
+                std::round(front.top + std::max(0.0f, (front.Height() - frame.Height()) / 2)));
+            window->Unlock();
         }
         fPreferences = BMessenger(window);
         window->Show();
@@ -759,6 +781,8 @@ private:
     }
     void RefreshExtensions()
     {
+        if (fExtensions && fExtensions->IsReady())
+            for (auto& pending : std::exchange(fPendingExtensionTabs, {})) PostMessage(&pending);
         if (fExtensions && fShared) {
             // Like Chrome, the most recently installed enabled extension that
             // overrides the new tab page supplies it.
@@ -804,6 +828,7 @@ private:
     std::shared_ptr<BWebKitContext> fPrivateContext;
     // Closed private sessions whose downloads are still being cancelled.
     std::vector<std::shared_ptr<BWebKitContext>> fRetiredPrivateContexts;
+    std::vector<BMessage> fPendingExtensionTabs;
     std::map<uint64, uint32> fDataRequests;
     uint64 fNextDataRequest = 0;
     std::unique_ptr<summit::ExtensionPermissionPrompt> fPermissionPrompts;
