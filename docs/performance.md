@@ -49,7 +49,7 @@ after loading, for the page's web process:
 
 | Page | total | mimalloc + JS heap | GPU host memory (NVRM sysmem) | libroot heap | frame buffers |
 | --- | --- | --- | --- | --- | --- |
-| about:blank | 193 MiB | 30 MiB | 81 MiB | 28 MiB | 27 MiB |
+| about:blank (a new tab) | 171 MiB | 32 MiB | 62 MiB | 28 MiB | 27 MiB |
 | Wikipedia | 231 MiB | 87 MiB | 32 MiB | 35 MiB | 54 MiB |
 | GitHub | 345 MiB | 185 MiB | 38 MiB | 45 MiB | 54 MiB |
 | YouTube | 735 MiB | 467 MiB | 136 MiB | 53 MiB | 54 MiB |
@@ -64,8 +64,9 @@ in both. A prewarmed process with no page yet holds 31 MiB.)
   against 855 visible. One frame buffer goes back, but the page's GL
   contexts, tiles and zink's caches stay (`suspendPainting()` only pauses
   rendering).
-- **Every tab pays ~80 MiB of GPU host memory before loading anything**:
-  21 zink buffer slabs of 2 MiB, a 26.75 MiB staging copy of the frame for
+- **Every tab pays 60-80 MiB of GPU host memory before loading anything**
+  (a blank tab in its own browser: 193 MiB, 81 of it GPU host memory): 21
+  zink buffer slabs of 2 MiB, a 26.75 MiB staging copy of the frame for
   readback, and a 9.2 MiB buffer. `ZINK_DESCRIPTORS=lazy` and one GPU
   painting thread instead of two changed nothing. Mesa's readpixels cache
   (`ST_DEBUG=noreadpixcache`) is not the staging buffer's owner and made
