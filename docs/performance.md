@@ -2,11 +2,15 @@
 
 ## 28 September 2026: installed build, and a profile retrain that lost
 
-Installed on the X399: `bundle-c1ue7ry9` (engine commit 115b935 built in
-`SkiaCGMiPGO` with the 25 September profiles; the launcher it replaced is
-`Summit-current.pre-20260928-1029.sh`, pointing at `bundle-05tk1w24`). Over
-yesterday's install it adds contents-layer damage, the compositor's live
-check before waiting for a buffer, and pausing invisible muted autoplay.
+Installed on the X399 at 11:38: `bundle-0qf3st48`, built in `SkiaCGMiPGO`
+with the 25 September profiles (Speedometer 8.03 against 7.94 for
+`bundle-c1ue7ry9` in the same session). Over yesterday's install
+(`bundle-05tk1w24`) it adds contents-layer damage, the compositor's live
+check before waiting for a buffer, pausing invisible muted autoplay, the
+larger HTTP connection pool and `SUMMIT_NET_TRACE` (below). Earlier today
+`bundle-c1ue7ry9` was installed; the launchers they replaced are kept as
+`Summit-current.pre-20260928-1029.sh` and `-1138.sh`. The table compares
+`bundle-c1ue7ry9` with yesterday's install.
 
 | X399, 200% | `bundle-05tk1w24` | `bundle-c1ue7ry9` |
 | --- | --- | --- |
@@ -94,6 +98,18 @@ drawing while it runs, so `run-scroll.py`'s before and after screenshots
 show up in the UI frame statistics as 3.6-4.3 s stalls with frames queued
 (`queueMax=` in `browser.log`). They are not Summit stalls; compare the burst
 numbers, which the screenshots do not overlap.
+
+### Tried and taken out: coalescing frame messages to the view
+
+While `screenshot` holds app_server (4.6 s), the UI keeps accepting frames
+and queues one `viewFrameHaiku` message per frame for the window: 212-274 of
+them, drained at about 3.6 ms each once drawing resumes. Sending at most one
+message while one is pending (damage merged in the view state) cut the
+backlog to 15. But across eight Wikipedia bursts alternated with the build
+before it, the UI counted 27.7 frames/s against 34.3, with larger worst gaps
+(1.0-1.4 s against 0.5-1.0 s), and a variant that kept one message per frame
+and only merged damage measured the same. Unexplained, and a multi-second
+app_server stall is rare, so both were reverted.
 
 ### The retrain: lost merges, so the old profiles stay
 
