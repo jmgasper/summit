@@ -125,8 +125,19 @@ threads while sockets and cache files open and close all around it, and a
 read of the file failed (a descriptor closed underneath it fits best).
 `NetworkProcess::platformInitializeNetworkProcess` now resolves
 `localhost` (answered from `/etc/hosts`) before any other thread exists,
-so the parse happens in a quiet process. The exiting parser is still an OS
-bug to report.
+so the parse happens in a quiet process. That was not enough: with four
+curl workers resolving names at once the process still died in three of
+four 36-tab starts, and the real mechanism is in
+`docs/kunanyios-platform-issues.md`: `nsswitch_conf_file_path()` builds
+its path in a static buffer on every call, a concurrent thread can `stat()`
+the half-built path, find the settings *directory*, open it and die in the
+lexer. No `nsswitch.conf` existed on the X399 at all. The workaround, now
+made by `tools/install-on-workstation.sh`: a real
+`/boot/system/settings/network/nsswitch.conf` (`hosts: files dns`, the
+sources used without a file) newer than its directory, so the racy check
+sees an older directory and returns without parsing. Two 36-tab starts
+after it: 36/36 loaded, no resolver failure, load medians 8.1 and 7.0 s.
+The fix belongs in libnetwork.
 
 ### Where 24 tabs' requests spend their time
 
