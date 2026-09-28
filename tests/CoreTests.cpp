@@ -2,6 +2,7 @@
 #include "core/Profile.h"
 #include "core/Favicon.h"
 #include "core/InternalPages.h"
+#include "core/Zoom.h"
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
@@ -47,6 +48,35 @@ int main()
     CHECK(ResolveAddress("summit:history").url == "summit:history");
     CHECK(ResolveAddress("Summit:Bookmarks").url == "summit:bookmarks");
     CHECK(!ResolveAddress("summit:nothing").error.empty());
+
+    // Search engines.
+    CHECK(CurrentSearchEngine().id == std::string("duckduckgo") && SearchEngines().size() == 3);
+    SetSearchEngine("google");
+    CHECK(ResolveAddress("hello & goodbye").url == "https://www.google.com/search?q=hello%20%26%20goodbye");
+    CHECK(ResolveAddress("example.com").url == "https://example.com");
+    SetSearchEngine("bing");
+    CHECK(SearchURL("  café  ") == "https://www.bing.com/search?q=caf%C3%A9" && CurrentSearchEngine().name == std::string("Bing"));
+    SetSearchEngine("altavista");
+    CHECK(CurrentSearchEngine().id == std::string("duckduckgo"));
+    CHECK(SearchURL("example.com") == "https://duckduckgo.com/?q=example.com");
+    {
+        const auto page = RenderPrivateStartPage("Google", "https://www.google.com/search?q=");
+        CHECK(page.find("action=\"https://www.google.com/search\"") != std::string::npos);
+        CHECK(page.find("Search with Google") != std::string::npos && page.find("name=\"q\"") != std::string::npos);
+        CHECK(RenderPrivateStartPage("<x>", "https://a.example/?q=").find("Search with &lt;x&gt;") != std::string::npos);
+    }
+
+    // Zoom.
+    CHECK(NextZoomLevel(1, 1) == 1.1 && NextZoomLevel(1, -1) == 0.9);
+    CHECK(NextZoomLevel(1.05, 1) == 1.1 && NextZoomLevel(1.05, -1) == 1.0);
+    CHECK(NextZoomLevel(5, 1) == 5 && NextZoomLevel(0.3, -1) == 0.3 && NextZoomLevel(9, -1) == 5);
+    CHECK(NextZoomLevel(1.2, 1) == 1.33 && NextZoomLevel(1.33, 1) == 1.5);
+    CHECK(IsDefaultZoom(1.0001) && !IsDefaultZoom(1.1));
+    CHECK(ZoomLabel(1.1) == "110%" && ZoomLabel(0.67) == "67%" && ZoomLabel(1.33) == "133%");
+    CHECK(ZoomKey("https://WWW.Example.com:8443/a?b") == "example.com:8443");
+    CHECK(ZoomKey("http://user@news.example.org/") == "news.example.org");
+    CHECK(ZoomKey("file:///boot/home/a.html") == "file" && ZoomKey("summit:history") == "summit:history");
+    CHECK(ZoomKey("about:blank").empty() && ZoomKey("webkit-extension://abc/page.html").empty());
 
     // Favicons.
     CHECK(FaviconKey("https://WWW.Example.com:8443/a?b") == "www.example.com");
@@ -134,6 +164,8 @@ int main()
     profile.windows = {{{{"https://example.com/", "Example"}, {"summit:home", "Start Page"}}, 1, {10, 20, 810, 620}},
         {{{"https://second.example/", "Second"}}, 0}};
     profile.interfaceStyle = "safari";
+    profile.searchEngine = "bing";
+    profile.siteZoom = {{"example.com", 1.5}, {"file", 0.8}};
     profile.bookmarks = {{"https://webkit.org", "WebKit — 浏览器"}};
     profile.Visit({"https://example.com/", "First title"});
     profile.Visit({"https://webkit.org/", "WebKit"});
@@ -157,6 +189,7 @@ int main()
     CHECK(loaded.history.front().visited == profile.history.front().visited);
     CHECK(loaded.bookmarks.size() == 2 && loaded.bookmarks[1].bar && loaded.bookmarks[1].url == "https://bar.example/");
     CHECK(loaded.homeURL == "https://home.example/" && !loaded.showBookmarksBar);
+    CHECK(loaded.searchEngine == "bing" && loaded.siteZoom.size() == 2 && loaded.siteZoom["example.com"] == 1.5);
     CHECK(loaded.RemoveBookmark("https://bar.example/") && !loaded.RemoveBookmark("https://bar.example/"));
     CHECK(!loaded.FindBookmark("https://bar.example/") && loaded.FindBookmark("https://webkit.org"));
     struct stat mode{};
@@ -170,7 +203,12 @@ int main()
         R"("bookmarks":[],"history":[],"interfaceStyle":"nonsense"})"; }
     loaded = Profile::Load(path, error);
     CHECK(error.empty() && loaded.windows.size() == 1 && loaded.windows[0].tabs[0].url == "https://old.example/");
-    CHECK(loaded.interfaceStyle == "haiku");
+    CHECK(loaded.interfaceStyle == "haiku" && loaded.searchEngine == "duckduckgo" && loaded.siteZoom.empty());
+    // Unknown engines and unusable zoom entries fall back instead of failing the profile.
+    { std::ofstream out(path); out << R"({"version":1,"tabs":[],"selected":0,"bookmarks":[],"history":[],)"
+        R"("searchEngine":"altavista","siteZoom":{"a.example":7,"b.example":1.2,"":1.1}})"; }
+    loaded = Profile::Load(path, error);
+    CHECK(error.empty() && loaded.searchEngine == "duckduckgo" && loaded.siteZoom.size() == 1 && loaded.siteZoom["b.example"] == 1.2);
     { std::ofstream out(path); out << "{broken"; }
     loaded = Profile::Load(path, error);
     CHECK(!error.empty() && loaded.windows.empty());

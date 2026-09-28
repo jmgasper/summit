@@ -1,5 +1,8 @@
 #include "SharedProfile.h"
 #include "Messages.h"
+#include "core/Favicon.h"
+#include "core/Zoom.h"
+#include <set>
 #include <Message.h>
 #include <algorithm>
 
@@ -59,7 +62,72 @@ void SharedProfile::IconChanged(const std::string& pageURL, const BMessenger& se
     Announce(kIconChanged, sender, pageURL);
 }
 
-void SharedProfile::Announce(uint32 changes, const BMessenger& sender, const std::string& iconURL)
+double SharedProfile::SiteZoom(const std::string& key, bool privateBrowsing) const
+{
+    if (key.empty()) return 1;
+    std::lock_guard lock(fMutex);
+    if (privateBrowsing)
+        if (auto found = fPrivateZoom.find(key); found != fPrivateZoom.end()) return found->second;
+    auto found = fProfile.siteZoom.find(key);
+    return found == fProfile.siteZoom.end() ? 1 : found->second;
+}
+
+void SharedProfile::SetSiteZoom(const std::string& key, double zoom, bool privateBrowsing, const BMessenger& sender)
+{
+    if (key.empty()) return;
+    {
+        std::lock_guard lock(fMutex);
+        if (privateBrowsing) fPrivateZoom[key] = zoom;
+        else {
+            auto& zooms = fProfile.siteZoom;
+            if (IsDefaultZoom(zoom)) zooms.erase(key);
+            else if (zooms.size() < 5000 || zooms.contains(key)) zooms[key] = zoom;
+            // Saved with the next session save: a wheel turns through many steps.
+            ++fRevision;
+        }
+    }
+    BMessage details;
+    details.AddString("zoom_key", key.c_str());
+    details.AddBool("private", privateBrowsing);
+    Announce(kZoomChanged, sender, std::string(), &details);
+}
+
+void SharedProfile::ClearPrivateSession()
+{
+    std::lock_guard lock(fMutex);
+    fPrivateZoom.clear();
+}
+
+void SharedProfile::ClearHistory(const BMessenger& sender)
+{
+    std::set<std::string> keep;
+    {
+        std::lock_guard lock(fMutex);
+        fProfile.history.clear();
+        for (const auto& bookmark : fProfile.bookmarks) {
+            const auto key = FaviconKey(bookmark.url);
+            keep.insert(key);
+            keep.insert(key.rfind("www.", 0) == 0 ? key.substr(4) : "www." + key);
+        }
+        ++fRevision;
+    }
+    std::string error;
+    Save(error);
+    const auto directory = fPath.parent_path();
+    std::error_code ignored;
+    // The History page is rewritten whenever it is opened; until then it
+    // would still list what was just cleared.
+    std::filesystem::remove(directory / "Pages" / "history.html", ignored);
+    for (auto entry = std::filesystem::directory_iterator(directory / "Favicons", ignored);
+        !ignored && entry != std::filesystem::directory_iterator(); entry.increment(ignored)) {
+        const auto name = entry->path().filename().string();
+        if (name.size() > 4 && name.ends_with(".png") && !keep.contains(name.substr(0, name.size() - 4)))
+            std::filesystem::remove(entry->path(), ignored);
+    }
+    Announce(kHistoryChanged | kHistoryCleared | kIconsCleared, sender);
+}
+
+void SharedProfile::Announce(uint32 changes, const BMessenger& sender, const std::string& iconURL, const BMessage* details)
 {
     std::vector<BMessenger> listeners;
     {
@@ -67,7 +135,8 @@ void SharedProfile::Announce(uint32 changes, const BMessenger& sender, const std
         std::erase_if(fListeners, [](const BMessenger& listener) { return !listener.IsValid(); });
         listeners = fListeners;
     }
-    BMessage message(kProfileChanged);
+    BMessage message(details ? *details : BMessage());
+    message.what = kProfileChanged;
     message.AddUInt32("changes", changes);
     message.AddMessenger("sender", sender);
     if (!iconURL.empty()) message.AddString("icon_url", iconURL.c_str());

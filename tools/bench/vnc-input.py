@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Send a pointer click or drag to the workstation's VNC server.
+"""Send a pointer click or drag to the workstation's VNC server, or grab its screen.
 
 The password is read from SUMMIT_VNC_PASSWORD and is never stored in a run
 artifact. This is intended for interactive browser controls that summitctl's
@@ -91,6 +91,11 @@ def main():
     wheel.add_argument('--interval-ms', type=int, default=25)
     wheel.add_argument('--jitter', type=int, default=0,
                        help='move the pointer this many pixels between notches, as a hand on a mouse does')
+    wheel.add_argument('--mod', action='append', default=[], choices=('alt', 'ctrl', 'shift'),
+                       help='hold a modifier while turning the wheel; repeatable')
+    shot = commands.add_parser('shot', help='save the screen as the VNC server sends it (logical size)')
+    shot.add_argument('output')
+    shot.add_argument('--crop', type=int, nargs=4, metavar=('X', 'Y', 'W', 'H'))
     keyboard = commands.add_parser('key')
     keyboard.add_argument('name', help='pagedown, pageup, down, up, space, enter, escape or one printable character')
     keyboard.add_argument('--mod', action='append', default=[], choices=('alt', 'ctrl', 'shift'),
@@ -140,6 +145,10 @@ def main():
             if args.notches < 1 or args.interval_ms < 0:
                 parser.error('--notches must be positive and --interval-ms nonnegative')
             button = 8 if args.direction == 'up' else 16
+            modifiers = [{'alt': 0xffe9, 'ctrl': 0xffe3, 'shift': 0xffe1}[name] for name in args.mod]
+            for modifier in modifiers:
+                key(connection, modifier, True)
+                time.sleep(0.05)
             for notch in range(args.notches):
                 x = args.x + (args.jitter if notch % 2 else 0)
                 y = args.y + (args.jitter if notch % 4 >= 2 else 0)
@@ -149,6 +158,43 @@ def main():
                 checked_pointer(x, y, 0)
                 if args.interval_ms:
                     time.sleep(args.interval_ms / 1000)
+            for modifier in reversed(modifiers):
+                time.sleep(0.05)
+                key(connection, modifier, False)
+        elif args.command == 'shot':
+            from PIL import Image
+
+            x, y, w, h = args.crop or (0, 0, width, height)
+            # 32-bit little-endian true colour, raw encoding only.
+            connection.sendall(struct.pack('>BxxxBBBBHHHBBBxxx', 0, 32, 24, 0, 1, 255, 255, 255, 16, 8, 0))
+            connection.sendall(struct.pack('>BxHi', 2, 1, 0))
+            connection.sendall(struct.pack('>BBHHHH', 3, 0, x, y, w, h))
+            image = Image.new('RGB', (w, h))
+            covered = 0
+            connection.settimeout(30)
+            while covered < w * h:
+                kind = read_exact(connection, 1)[0]
+                if kind != 0:
+                    # Bell (2) or cut text (3) can arrive first.
+                    if kind == 3:
+                        read_exact(connection, 3)
+                        read_exact(connection, struct.unpack('>I', read_exact(connection, 4))[0])
+                    elif kind == 1:
+                        read_exact(connection, 3)
+                        count = struct.unpack('>H', read_exact(connection, 2))[0]
+                        read_exact(connection, count * 6)
+                    continue
+                read_exact(connection, 1)
+                rectangles = struct.unpack('>H', read_exact(connection, 2))[0]
+                for _ in range(rectangles):
+                    rx, ry, rw, rh, encoding = struct.unpack('>HHHHi', read_exact(connection, 12))
+                    if encoding != 0:
+                        raise RuntimeError(f'Unexpected VNC encoding {encoding}')
+                    pixels = read_exact(connection, rw * rh * 4)
+                    tile = Image.frombuffer('RGBX', (rw, rh), pixels, 'raw', 'BGRX', 0, 1).convert('RGB')
+                    image.paste(tile, (rx - x, ry - y))
+                    covered += rw * rh
+            image.save(args.output)
         elif args.command == 'type':
             for character in args.text:
                 if not ' ' <= character <= '~':

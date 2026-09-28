@@ -76,7 +76,8 @@ static Image Decode(const void* data, size_t size)
     return Translate(data, size);
 }
 
-FaviconCache::FaviconCache(std::filesystem::path directory) : fDirectory(std::move(directory)) { }
+FaviconCache::FaviconCache(std::filesystem::path directory, bool persistent)
+    : fDirectory(std::move(directory)), fPersistent(persistent) { }
 FaviconCache::~FaviconCache() = default;
 
 FaviconCache::Entry* FaviconCache::Load(const std::string& key)
@@ -112,6 +113,10 @@ bool FaviconCache::Store(const std::string& pageURL, const void* data, size_t si
     auto bitmap = ToBitmap(scaled);
     if (png.empty() || !bitmap) return false;
     if (auto* existing = Load(key); existing && existing->png == png) return false;
+    if (!fPersistent) {
+        fEntries[key] = std::make_unique<Entry>(Entry{std::move(bitmap), std::move(png)});
+        return true;
+    }
     std::error_code error;
     std::filesystem::create_directories(fDirectory, error);
     const auto path = fDirectory / (key + ".png");

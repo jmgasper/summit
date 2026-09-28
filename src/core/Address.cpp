@@ -1,5 +1,6 @@
 #include "Address.h"
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 
 namespace summit {
@@ -49,6 +50,37 @@ std::string EscapeHTML(std::string_view text)
     return out;
 }
 
+const std::vector<SearchEngine>& SearchEngines()
+{
+    static const std::vector<SearchEngine> engines {
+        {"duckduckgo", "DuckDuckGo", "https://duckduckgo.com/?q="},
+        {"google", "Google", "https://www.google.com/search?q="},
+        {"bing", "Bing", "https://www.bing.com/search?q="},
+    };
+    return engines;
+}
+
+static std::atomic<size_t> sSearchEngine { 0 };
+
+void SetSearchEngine(std::string_view id)
+{
+    const auto& engines = SearchEngines();
+    size_t chosen = 0;
+    for (size_t i = 0; i < engines.size(); ++i)
+        if (id == engines[i].id) chosen = i;
+    sSearchEngine = chosen;
+}
+
+const SearchEngine& CurrentSearchEngine()
+{
+    return SearchEngines()[sSearchEngine.load()];
+}
+
+std::string SearchURL(std::string_view text)
+{
+    return CurrentSearchEngine().prefix + PercentEncode(Trim(text));
+}
+
 Address ResolveAddress(std::string_view input)
 {
     const auto text = Trim(input);
@@ -83,6 +115,6 @@ Address ResolveAddress(std::string_view input)
     const bool domain = host.find('.') != std::string::npos && host.front() != '.'
         && host.back() != '.' && host.find('@') == std::string::npos;
     if (!whitespace && (local || domain)) return {(local ? "http://" : "https://") + text, {}, false};
-    return {"https://duckduckgo.com/?q=" + PercentEncode(text), {}, true};
+    return {SearchURL(text), {}, true};
 }
 }

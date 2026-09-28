@@ -34,6 +34,7 @@ class ToolButton;
 class ExtensionActionButton;
 class TabStrip;
 class ProgressLine;
+class ZoomButton;
 class BookmarksBar;
 class FaviconCache;
 class SharedProfile;
@@ -51,6 +52,9 @@ struct BrowserWindowOptions {
     BRect frame;
     // Start without tabs; an extension's windows.create() fills the window.
     bool empty = false;
+    // A private window: its context is the application's private one, and it
+    // records no history, session or icons.
+    bool privateBrowsing = false;
 };
 #if SUMMIT_MODERN_WEBKIT
 using BrowserWindowBase = BWindow;
@@ -68,6 +72,7 @@ public:
     BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string startURL, const BrowserWindowOptions& options);
 #endif
     uint64 Key() const { return fKey; }
+    bool IsPrivate() const { return fPrivate; }
     // Closing, or quitting with Summit: no new menus.
     bool IsClosing() const
     {
@@ -127,6 +132,8 @@ private:
         float progress = 0;
         // For summit:history and summit:bookmarks, the page revision shown.
         uint64 pageRevision = 0;
+        // The site whose remembered zoom the page has (ZoomKey()).
+        std::string zoomKey;
 #if SUMMIT_MODERN_WEBKIT
         BMessenger messenger { };
         bool processExited = false;
@@ -188,7 +195,13 @@ private:
     Tab* FindTabByID(int64 id);
     void ProfileChanged(const BMessage&);
     void ApplyInterfaceStyle();
-    void RequestNewWindow(const std::vector<std::string>& urls);
+    void RequestNewWindow(const std::vector<std::string>& urls, bool privateWindow);
+    // Gives the tab its site's remembered zoom when its site changed.
+    void ApplySiteZoom(Tab&);
+    // Zooms the current page one step in (> 0) or out (< 0), or back to 100% (0).
+    void ChangeZoom(int direction);
+    void ShowZoom();
+    void ShowSearchEngine();
     void ShowTabMenu(const BMessage&);
     void UpdateWindowList();
 #if SUMMIT_MODERN_WEBKIT
@@ -308,6 +321,8 @@ private:
     std::string StoredURL(const BString& url) const;
     std::shared_ptr<SharedProfile> fShared;
     uint64 fKey = 0;
+    bool fPrivate = false;
+    ZoomButton* fZoomButton = nullptr;
     std::string fStartURL;
     bool fBookmarksBarVisible = true;
     std::string fInterfaceStyle;

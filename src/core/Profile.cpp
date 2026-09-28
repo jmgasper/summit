@@ -1,4 +1,6 @@
 #include "Profile.h"
+#include "Address.h"
+#include "Zoom.h"
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <cerrno>
@@ -79,6 +81,20 @@ Profile Profile::Load(const std::filesystem::path& path, std::string& error)
             profile.interfaceStyle = style->get<std::string>();
             if (profile.interfaceStyle != "haiku" && profile.interfaceStyle != "safari") profile.interfaceStyle = "haiku";
         }
+        if (auto engine = j.find("searchEngine"); engine != j.end()) {
+            const auto id = engine->get<std::string>();
+            for (const auto& known : SearchEngines())
+                if (id == known.id) profile.searchEngine = id;
+        }
+        if (auto zoom = j.find("siteZoom"); zoom != j.end()) {
+            if (!zoom->is_object() || zoom->size() > 5000) throw std::runtime_error("Invalid site zoom list");
+            for (const auto& [site, value] : zoom->items()) {
+                const double factor = value.get<double>();
+                // Unusable entries are dropped rather than failing the profile.
+                if (site.empty() || site.size() > 255 || !(factor >= kMinimumZoom && factor <= kMaximumZoom)) continue;
+                profile.siteZoom[site] = factor;
+            }
+        }
     } catch (const std::exception& e) { error = e.what(); return {}; }
     return profile;
 }
@@ -100,7 +116,8 @@ bool Profile::Save(const std::filesystem::path& path, std::string& error) const
             {"windows", std::move(sessions)},
             {"bookmarks", Encode(bookmarks)}, {"history", Encode(history)},
             {"homeURL", homeURL}, {"showBookmarksBar", showBookmarksBar},
-            {"interfaceStyle", interfaceStyle}}.dump(2);
+            {"interfaceStyle", interfaceStyle}, {"searchEngine", searchEngine},
+            {"siteZoom", siteZoom}}.dump(2);
         if (data.size() > 16 * 1024 * 1024) throw std::runtime_error("Profile is too large");
         temporary = path.string() + ".XXXXXX";
         fd = mkstemp(temporary.data());

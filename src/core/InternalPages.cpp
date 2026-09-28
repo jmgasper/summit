@@ -198,4 +198,52 @@ std::string RenderBookmarksPage(const std::vector<PageRecord>& bookmarks, const 
     return writer.Finish("Bookmarks", "Search Bookmarks", bookmarks.empty(),
         "No bookmarks yet. Use Bookmarks › Bookmark This Page, or the star in the toolbar.");
 }
+
+std::string RenderPrivateStartPage(const std::string& searchEngineName, const std::string& searchPrefix)
+{
+    // Every engine takes the query as "q"; the form goes to the address before it.
+    const auto action = searchPrefix.substr(0, searchPrefix.find('?'));
+    std::string page = R"(<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>New Private Tab</title>
+<style>
+*{box-sizing:border-box}html{background:#2a1a45}body{margin:0;color:#f1ebfb;font:16px/1.55 system-ui,sans-serif;
+background:linear-gradient(160deg,#3b2566 0%,#2a1a45 55%,#20133a 100%);min-height:100vh}
+main{max-width:720px;margin:auto;padding:64px 40px 40px}
+.mask{width:72px;height:36px;border-radius:18px;background:#fff;position:relative;margin-bottom:26px}
+.mask:before,.mask:after{content:"";position:absolute;top:11px;width:18px;height:13px;border-radius:50%;background:#3b2566}
+.mask:before{left:13px}.mask:after{right:13px}
+h1{font-size:38px;line-height:1.15;margin:0 0 14px;letter-spacing:-.5px}
+p{margin:0 0 12px;color:#d6caec}
+form{display:flex;margin:30px 0 34px;background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 6px 24px rgba(0,0,0,.28)}
+input{flex:1;border:0;padding:14px 16px;font:inherit;color:#1e1530;outline:none;min-width:0}
+button{border:0;background:#8460c4;color:#fff;font:inherit;font-weight:600;padding:0 20px;cursor:pointer}
+button:hover{background:#9670d6}
+.cards{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.card{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:16px 18px}
+.card h2{font-size:14px;margin:0 0 6px;color:#fff;letter-spacing:.3px}.card p{font-size:14px;margin:0}
+.note{margin-top:26px;font-size:13px;color:#b7a8d4}
+@media(max-width:620px){main{padding:40px 22px}.cards{grid-template-columns:1fr}h1{font-size:30px}}
+</style>
+<main>
+<div class="mask" aria-hidden="true"></div>
+<h1>Private Browsing</h1>
+<p>Pages you open in private windows are not added to your history. Their cookies, site data and cache
+are kept apart from your other windows and forgotten when you close the last private window.</p>
+<form action=")" + EscapeHTML(action) + R"(" method="get">
+<input name="q" type="search" placeholder="Search with )" + EscapeHTML(searchEngineName) + R"(" aria-label="Search" autofocus>
+<button type="submit">Search</button>
+</form>
+<div class="cards">
+<div class="card"><h2>SUMMIT FORGETS</h2><p>The pages you visit, what you search for, cookies, site data, cached files and zoom levels you set here.</p></div>
+<div class="card"><h2>SUMMIT KEEPS</h2><p>Files you download and bookmarks you create. Extensions do not run in private windows.</p></div>
+</div>
+<p class="note">Private browsing does not hide you from the websites you visit, your employer or school, or your internet provider.</p>
+</main>
+</html>
+)";
+    return page;
+}
 }

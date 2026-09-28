@@ -5,6 +5,7 @@
 #include "SharedProfile.h"
 #include "core/Address.h"
 #include "core/InternalPages.h"
+#include "core/Zoom.h"
 #include <Alert.h>
 #include <Clipboard.h>
 #include <ControlLook.h>
@@ -303,6 +304,33 @@ public:
     }
 };
 
+// Alt (Command) and the wheel over a page zoom it, as Ctrl and the wheel do
+// in other browsers. Each notch is one zoom step.
+class ZoomWheelFilter final : public BMessageFilter {
+public:
+    ZoomWheelFilter() : BMessageFilter(B_MOUSE_WHEEL_CHANGED) { }
+
+    filter_result Filter(BMessage* message, BHandler** target) override
+    {
+        if (!(modifiers() & B_COMMAND_KEY) || !target || !dynamic_cast<BrowserWebView*>(*target))
+            return B_DISPATCH_MESSAGE;
+        float delta = 0;
+        if (message->FindFloat("be:wheel_delta_y", &delta) != B_OK || delta == 0)
+            message->FindFloat("be:wheel_delta_x", &delta);
+        // Smooth wheels send fractions of a notch.
+        fPending += delta;
+        while (std::fabs(fPending) >= 1) {
+            const bool in = fPending < 0;
+            fPending += in ? 1 : -1;
+            Looper()->PostMessage(in ? kZoomIn : kZoomOut);
+        }
+        return B_SKIP_MESSAGE;
+    }
+
+private:
+    float fPending = 0;
+};
+
 static bool Bookmarkable(const std::string& url)
 {
     return url.rfind("https://", 0) == 0 || url.rfind("http://", 0) == 0 || url.rfind("file://", 0) == 0;
@@ -372,11 +400,12 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
 #if SUMMIT_MODERN_WEBKIT
       fWebKitContext(std::move(context)),
 #endif
-      fShared(std::move(profile)), fKey(options.key), fStartURL(std::move(startURL))
+      fShared(std::move(profile)), fKey(options.key), fPrivate(options.privateBrowsing), fStartURL(std::move(startURL))
 {
 #if SUMMIT_MODERN_WEBKIT
-    fExtensionsEnabled = extensionsEnabled;
+    fExtensionsEnabled = extensionsEnabled && !fPrivate;
 #endif
+    SetPrivateWindow(this, fPrivate);
     ++sOpenWindows;
     {
         std::lock_guard lock(sWindowListLock);
@@ -386,10 +415,12 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
     std::tie(fBookmarksBarVisible, fInterfaceStyle) = fShared->Read([](const Profile& profile) {
         return std::make_pair(profile.showBookmarksBar, profile.interfaceStyle);
     });
-    fFavicons = std::make_unique<FaviconCache>(fShared->Path().parent_path() / "Favicons");
+    // A private window shows icons it already knows but writes none.
+    fFavicons = std::make_unique<FaviconCache>(fShared->Path().parent_path() / "Favicons", !fPrivate);
     auto* menu = new BMenuBar("menu");
     auto* file = new BMenu("File");
     AddItem(file, "New Window", kNewWindow, 'N');
+    AddItem(file, "New Private Window", kNewPrivateWindow, 'N', B_SHIFT_KEY);
     AddItem(file, "New Tab", kNewTab, 'T');
     AddItem(file, "Open File…", kOpenFile, 'O');
     file->AddSeparatorItem();
@@ -427,6 +458,9 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
     AddItem(view, "Zoom In", kZoomIn, '+');
     AddItem(view, "Zoom Out", kZoomOut, '-');
     AddItem(view, "Actual Size", kZoomReset, '0');
+    // '+' is Shift-= on most keyboards, and shortcuts match their modifiers exactly.
+    AddShortcut('+', B_SHIFT_KEY, new BMessage(kZoomIn));
+    AddShortcut('=', 0, new BMessage(kZoomIn));
     menu->AddItem(view);
     fHistoryMenu = new BMenu("History");
     AddItem(fHistoryMenu, "Back", kBack, '[');
@@ -468,7 +502,7 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
     fGo = new ToolButton("go", "Go to this address", Icon::Go, kNavigate);
     fAddress = new AddressControl;
     fAddress->SetExplicitMinSize(BSize(240, 30));
-    fAddress->SetToolTip("Search or enter a website address");
+    fZoomButton = new ZoomButton;
     auto* downloadsButton = new ToolButton("downloads", "Open Downloads", Icon::Downloads, kShowDownloads);
     fBookmarkButton = new ToolButton("bookmark", "Bookmark this page", Icon::Bookmark, kBookmarkButton);
 #if SUMMIT_MODERN_WEBKIT
@@ -518,7 +552,7 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
     BLayoutBuilder::Group<>(fToolbar)
         .SetInsets(8, 7, 8, 7)
         .Add(fBack).Add(fForward).Add(homeButton)
-        .Add(glue()).Add(fAddress, 3).Add(fGo).Add(fReload).Add(glue())
+        .Add(glue()).Add(fAddress, 3).Add(fZoomButton).Add(fGo).Add(fReload).Add(glue())
         .Add(fBookmarkButton)
         .Add(downloadsButton)
 #if SUMMIT_MODERN_WEBKIT
@@ -528,6 +562,22 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
 #if SUMMIT_MODERN_WEBKIT
     fExtensionActions->Hide();
 #endif
+    fZoomButton->Hide();
+    if (fPrivate) {
+        BLayoutBuilder::Group<>(fToolbar).Add(new PrivateBadge);
+        // Views that Summit does not draw itself take the private colours too.
+        const auto colors = ChromeColorsFor(true);
+        const rgb_color panel = colors.panel;
+        for (BView* view : std::initializer_list<BView*>{fToolbar, fAddress, statusLine, fStatus, fStatusProgress}) {
+            view->SetViewColor(panel);
+            view->SetLowColor(panel);
+        }
+        for (int32 i = 0; i < fToolbar->CountChildren(); ++i)
+            if (auto* child = fToolbar->ChildAt(i); !std::strcmp(child->Name(), "toolbar-glue")) child->SetViewColor(panel);
+        fStatus->SetHighColor(colors.text);
+    }
+    ShowSearchEngine();
+    AddCommonFilter(new ZoomWheelFilter);
     ApplyInterfaceStyle();
     if (!fBookmarksBarVisible) {
         fBookmarksBar->Hide();
@@ -562,7 +612,7 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
             for (const auto& page : options.session.tabs) CreateTab(page.url, false);
 #endif
             if (!fTabs.empty()) SelectTab(fTabs[std::min(options.session.selected, fTabs.size() - 1)].id);
-        } else CreateTab(HomeAddress());
+        } else CreateTab(fPrivate ? NewTabAddress() : HomeAddress());
         // Invalid command-line or saved URLs (or home page) may all have been rejected.
         if (fTabs.empty()) CreateTab("summit:home");
     }
@@ -573,6 +623,7 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
 }
 BrowserWindow::~BrowserWindow()
 {
+    SetPrivateWindow(this, false);
     fShared->RemoveListener(BMessenger(this));
     {
         std::lock_guard lock(sWindowListLock);
@@ -720,6 +771,7 @@ std::string BrowserWindow::StoredURL(const BString& url) const
         return value == file || (file.rfind("file:///", 0) == 0 && value == "file:" + file.substr(7));
     };
     if (matches(fStartURL)) return "summit:home";
+    if (fPrivate && matches(FileURL((fShared->Path().parent_path() / "Pages" / "private.html").string()))) return "summit:home";
     for (const char* page : {kHistoryPage, kBookmarksPage})
         if (matches(FileURL(InternalPagePath(page).string()))) return page;
     return value;
@@ -824,6 +876,10 @@ void BrowserWindow::CreateTab(const std::string& input, bool select, BWebView* a
         created.deferredURL = LoadableURL(address.url);
         if (!fRestoringTitle.empty()) created.title = fRestoringTitle;
     }
+    // The site's remembered zoom is set before its page loads.
+    created.zoomKey = ZoomKey(address.url);
+    created.pageZoom = fShared->SiteZoom(created.zoomKey, fPrivate);
+    if (!IsDefaultZoom(created.pageZoom)) webView->SetZoomFactor(created.pageZoom);
     const int64 createdID = created.id;
     fTabs.insert(fTabs.begin() + position, std::move(created));
     if (select || fSelected == 0) SelectTab(createdID);
@@ -1219,7 +1275,7 @@ void BrowserWindow::FinishCloseTab(int64 id)
             if (!fClosingWindow && CountOpenWindows() > 1) PostMessage(B_QUIT_REQUESTED);
             else if (!fClosingWindow)
 #endif
-                CreateTab(HomeAddress());
+                CreateTab(fPrivate ? NewTabAddress() : HomeAddress());
         }
         else if (selected) SelectTab(fTabs[std::min(i, fTabs.size() - 1)].id);
 #if SUMMIT_MODERN_WEBKIT
@@ -1624,7 +1680,7 @@ void BrowserWindow::RefreshChrome()
                 [&](const PageRecord& bookmark) { return bookmark.url == tab->url; });
         });
         fBookmarkButton->SetIcon(bookmarked ? Icon::BookmarkFilled : Icon::Bookmark);
-        const std::string title = tab->title + " — Summit";
+        const std::string title = tab->title + (fPrivate ? " — Summit Private Browsing" : " — Summit");
         if (title != Title()) {
             SetTitle(title.c_str());
             std::lock_guard lock(sWindowListLock);
@@ -1640,6 +1696,7 @@ void BrowserWindow::RefreshChrome()
             if (fStatusProgress->IsHidden(fStatusProgress)) fStatusProgress->Show();
         } else if (!fStatusProgress->IsHidden(fStatusProgress)) fStatusProgress->Hide();
     }
+    ShowZoom();
 }
 
 BrowserWindow::Tab* BrowserWindow::FindTabByID(int64 id)
@@ -1661,9 +1718,29 @@ void BrowserWindow::ProfileChanged(const BMessage& message)
         RefreshChrome();
         RefreshBookmarks();
     }
+    if (changes & SharedProfile::kIconsCleared) {
+        fFavicons = std::make_unique<FaviconCache>(fShared->Path().parent_path() / "Favicons", !fPrivate);
+        PagesChanged();
+        RefreshChrome();
+        RefreshBookmarks();
+    }
     if (changes & SharedProfile::kHistoryChanged) PagesChanged();
-    if (changes & SharedProfile::kHistoryCleared)
+    if (changes & SharedProfile::kHistoryCleared) {
+        // Recently closed tabs are history too.
+        fClosedTabs.clear();
         if (auto* tab = ActiveTab(); tab && tab->url == kHistoryPage) RefreshInternalPage(*tab);
+    }
+    if (changes & SharedProfile::kZoomChanged && message.GetBool("private", false) == fPrivate) {
+        // The same site in other tabs and windows follows, as in Firefox.
+        const std::string key = message.GetString("zoom_key", "");
+        const double zoom = fShared->SiteZoom(key, fPrivate);
+        for (auto& tab : fTabs) {
+            if (key.empty() || tab.zoomKey != key || std::fabs(tab.pageZoom - zoom) < 0.001) continue;
+            tab.view->SetZoomFactor(zoom);
+            tab.pageZoom = zoom;
+        }
+        ShowZoom();
+    }
     if (changes & SharedProfile::kBookmarksChanged) {
         PagesChanged();
         RefreshBookmarks();
@@ -1671,6 +1748,7 @@ void BrowserWindow::ProfileChanged(const BMessage& message)
         if (auto* tab = ActiveTab(); tab && tab->url == kBookmarksPage) RefreshInternalPage(*tab);
     }
     if (changes & SharedProfile::kSettingsChanged) {
+        ShowSearchEngine();
         const auto [bar, style] = fShared->Read([](const Profile& profile) {
             return std::make_pair(profile.showBookmarksBar, profile.interfaceStyle);
         });
@@ -1688,10 +1766,11 @@ void BrowserWindow::ProfileChanged(const BMessage& message)
     }
 }
 
-void BrowserWindow::RequestNewWindow(const std::vector<std::string>& urls)
+void BrowserWindow::RequestNewWindow(const std::vector<std::string>& urls, bool privateWindow)
 {
     BMessage request(kNewWindow);
     for (const auto& url : urls) request.AddString("url", url.c_str());
+    request.AddBool("private", privateWindow);
     // Cascade from this window.
     request.AddRect("frame", Frame().OffsetByCopy(24, 24));
     be_app->PostMessage(&request);
@@ -1771,8 +1850,49 @@ std::string BrowserWindow::HomeAddress() const
 }
 std::string BrowserWindow::NewTabAddress() const
 {
+    // Private windows open the private browsing page; extensions do not run there.
+    if (fPrivate) return "summit:home";
     auto page = fShared->NewTabOverride();
     return page.empty() ? HomeAddress() : page;
+}
+void BrowserWindow::ShowSearchEngine()
+{
+    fAddress->SetToolTip((std::string("Search with ") + CurrentSearchEngine().name + " or enter a website address").c_str());
+}
+void BrowserWindow::ApplySiteZoom(Tab& tab)
+{
+    const auto key = ZoomKey(tab.url);
+    // Pages without a site (about:blank) keep the zoom they have.
+    if (key.empty() || key == tab.zoomKey) return;
+    tab.zoomKey = key;
+    const double zoom = fShared->SiteZoom(key, fPrivate);
+    if (std::fabs(zoom - tab.pageZoom) >= 0.001) {
+        tab.view->SetZoomFactor(zoom);
+        tab.pageZoom = zoom;
+    }
+    if (tab.id == fSelected) ShowZoom();
+}
+void BrowserWindow::ChangeZoom(int direction)
+{
+    auto* tab = ActiveTab();
+    if (!tab) return;
+    const double zoom = direction ? NextZoomLevel(tab->pageZoom, direction) : 1.0;
+    if (std::fabs(zoom - tab->pageZoom) >= 0.001) {
+        tab->view->SetZoomFactor(zoom);
+        tab->pageZoom = zoom;
+    }
+    // Remembered for the site; its other tabs follow (ProfileChanged).
+    tab->zoomKey = ZoomKey(tab->url);
+    fShared->SetSiteZoom(tab->zoomKey, zoom, fPrivate, BMessenger(this));
+    ShowZoom();
+}
+void BrowserWindow::ShowZoom()
+{
+    auto* tab = ActiveTab();
+    const bool show = tab && !IsDefaultZoom(tab->pageZoom);
+    if (show) fZoomButton->SetZoom(tab->pageZoom);
+    if (show && fZoomButton->IsHidden(fZoomButton)) fZoomButton->Show();
+    else if (!show && !fZoomButton->IsHidden(fZoomButton)) fZoomButton->Hide();
 }
 std::filesystem::path BrowserWindow::InternalPagePath(const std::string& url) const
 {
@@ -1804,6 +1924,21 @@ bool BrowserWindow::WriteInternalPage(const std::string& url)
 }
 std::string BrowserWindow::LoadableURL(const std::string& url)
 {
+    if (url == "summit:home" && fPrivate) {
+        // Written each time, for the search engine chosen now.
+        const auto path = fShared->Path().parent_path() / "Pages" / "private.html";
+        const auto& engine = CurrentSearchEngine();
+        std::error_code error;
+        std::filesystem::create_directories(path.parent_path(), error);
+        const auto temporary = path.string() + ".tmp";
+        {
+            std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
+            file << RenderPrivateStartPage(engine.name, engine.prefix);
+            if (!file.flush()) error = std::make_error_code(std::errc::io_error);
+        }
+        if (!error && std::rename(temporary.c_str(), path.c_str()) == 0) return FileURL(path.string());
+        std::remove(temporary.c_str());
+    }
     if (url == "summit:home") return fStartURL;
     if (url == kHistoryPage || url == kBookmarksPage) {
         WriteInternalPage(url);
@@ -1958,6 +2093,12 @@ void BrowserWindow::IconLoaded(const BMessage& message)
         if (auto* tab = FindTab(sender)) page = tab->url;
 #endif
     if (!fFavicons->Store(page, data, static_cast<size_t>(size))) return;
+    if (fPrivate) {
+        // Kept in this window only.
+        RefreshChrome();
+        RefreshBookmarks();
+        return;
+    }
     // Every window redraws; the others read the new icon from disk.
     fShared->IconChanged(page, BMessenger(this));
 }
@@ -1966,6 +2107,8 @@ void BrowserWindow::SaveSession()
 #if SUMMIT_MODERN_WEBKIT
     if (fClosingWindow) return;
 #endif
+    // Private windows are not reopened.
+    if (fPrivate) return;
     WindowSession session;
     for (size_t i = 0; i < fTabs.size(); ++i) {
         session.tabs.push_back({fTabs[i].url, fTabs[i].title});
@@ -2050,7 +2193,13 @@ void BrowserWindow::MessageReceived(BMessage* message)
 #endif
         case kNavigate: {
             const char* url = nullptr;
-            Navigate(message->FindString("url", &url) == B_OK ? url : fAddress->Text()); break;
+            const bool typed = message->FindString("url", &url) != B_OK;
+            Navigate(typed ? fAddress->Text() : url);
+            // As in other browsers, the page takes the focus once an address
+            // is entered, so the field follows the page again.
+            if (typed && fAddress->TextView()->IsFocus())
+                if (auto* tab = ActiveTab()) tab->view->MakeFocus();
+            break;
         }
         case kNewTab: {
             const char* url = nullptr;
@@ -2060,7 +2209,8 @@ void BrowserWindow::MessageReceived(BMessage* message)
             fAddress->TextView()->SelectAll();
             break;
         }
-        case kNewWindow: RequestNewWindow({ }); break;
+        case kNewWindow: RequestNewWindow({ }, false); break;
+        case kNewPrivateWindow: RequestNewWindow({ }, true); break;
         case kCloseWindow: PostMessage(B_QUIT_REQUESTED); break;
         case kTabMenu: ShowTabMenu(*message); break;
         case kReloadTab: case kDuplicateTab: case kMoveTabToNewWindow: case kCloseOtherTabs: {
@@ -2088,7 +2238,7 @@ void BrowserWindow::MessageReceived(BMessage* message)
             } else if (message->what == kMoveTabToNewWindow) {
                 // The page opens afresh in the new window; its back list stays behind.
                 if (fTabs.size() < 2) break;
-                RequestNewWindow({ target->url });
+                RequestNewWindow({ target->url }, fPrivate);
                 CloseTab(id);
             } else {
                 std::vector<int64> others;
@@ -2192,10 +2342,7 @@ void BrowserWindow::MessageReceived(BMessage* message)
         }
         case kClearHistoryReply:
             if (message->GetInt32("which", 0) != 1) break;
-            fShared->Change([](Profile& profile) -> uint32 {
-                profile.history.clear();
-                return SharedProfile::kHistoryChanged | SharedProfile::kHistoryCleared;
-            }, BMessenger(this));
+            fShared->ClearHistory(BMessenger(this));
             fStatus->SetText("History cleared");
             break;
         case kShowPreferences: be_app->PostMessage(kShowPreferences); break;
@@ -2230,9 +2377,9 @@ void BrowserWindow::MessageReceived(BMessage* message)
 #endif
             }
             break;
-        case kZoomIn: if (tab) tab->view->IncreaseZoomFactor(false); break;
-        case kZoomOut: if (tab) tab->view->DecreaseZoomFactor(false); break;
-        case kZoomReset: if (tab) tab->view->ResetZoomFactor(); break;
+        case kZoomIn: ChangeZoom(1); break;
+        case kZoomOut: ChangeZoom(-1); break;
+        case kZoomReset: ChangeZoom(0); break;
         case kSaveSession: SaveSession(); break;
         case kNextTab: case kPreviousTab:
             for (size_t i = 0; i < fTabs.size(); ++i) if (fTabs[i].id == fSelected) {
@@ -2352,13 +2499,16 @@ void BrowserWindow::MessageReceived(BMessage* message)
         case B_WEBKIT_NEW_PAGE_REQUESTED: NewPageRequested(*message); break;
         case B_WEBKIT_LINK_OPEN_REQUESTED: LinkOpenRequested(*message); break;
         case B_WEBKIT_LINK_HOVERED: LinkHovered(*message); break;
-        case kOpenLink: case kOpenLinkInNewTab: case kOpenLinkInNewWindow: case kDownloadLink: case kSaveLinkAs: case kSearchFor: {
+        case kOpenLink: case kOpenLinkInNewTab: case kOpenLinkInNewWindow: case kOpenLinkInNewPrivateWindow:
+        case kDownloadLink: case kSaveLinkAs: case kSearchFor: {
             const char* url = nullptr;
             if (message->FindString("url", &url) != B_OK || !*url) break;
             if (message->what == kOpenLink) Navigate(url);
             else if (message->what == kOpenLinkInNewTab) CreateTab(url, false, nullptr, BackgroundTabIndex());
-            else if (message->what == kOpenLinkInNewWindow) RequestNewWindow({ url });
-            else if (message->what == kSearchFor) CreateTab(url, true, nullptr, BackgroundTabIndex());
+            else if (message->what == kOpenLinkInNewWindow) RequestNewWindow({ url }, fPrivate);
+            else if (message->what == kOpenLinkInNewPrivateWindow) RequestNewWindow({ url }, true);
+            // Selected text is searched for even when it looks like an address.
+            else if (message->what == kSearchFor) CreateTab(SearchURL(url), true, nullptr, BackgroundTabIndex());
             else if (message->what == kDownloadLink) {
                 if (tab) tab->view->DownloadURL(url);
                 fStatus->SetText("Downloading to your Downloads folder…");
@@ -2460,6 +2610,7 @@ void BrowserWindow::MessageReceived(BMessage* message)
             reply.AddRect("frame", Frame());
 #if SUMMIT_MODERN_WEBKIT
             reply.AddString("backend", "modern");
+            reply.AddBool("private", fPrivate);
             reply.AddInt32("download_count", fDownloads.size());
             reply.AddUInt64("extension_action_snapshot", fExtensionActionSnapshot);
             reply.AddUInt64("extension_action_result_identifier", fExtensionActionResultIdentifier);
@@ -2484,6 +2635,7 @@ void BrowserWindow::MessageReceived(BMessage* message)
                 item.AddString("title", page.title.c_str()); item.AddBool("loading", page.loading);
 #if SUMMIT_MODERN_WEBKIT
                 item.AddDouble("pageZoom", page.pageZoom);
+                item.AddString("zoomKey", page.zoomKey.c_str());
                 item.AddDouble("textZoom", page.textZoom);
                 item.AddBool("loadError", !page.loadError.empty());
                 item.AddString("loadErrorText", page.loadError.c_str());
@@ -2579,9 +2731,16 @@ void BrowserWindow::ShowPageContextMenu(const BMessage& message)
         auto* tabItem = new BMenuItem("Open Link in New Tab", withURL(kOpenLinkInNewTab, link));
         tabItem->SetEnabled(!script);
         menu->AddItem(tabItem);
-        auto* windowItem = new BMenuItem("Open Link in New Window", withURL(kOpenLinkInNewWindow, link));
+        // A private window's links open in private windows.
+        auto* windowItem = new BMenuItem(fPrivate ? "Open Link in New Private Window" : "Open Link in New Window",
+            withURL(kOpenLinkInNewWindow, link));
         windowItem->SetEnabled(!script);
         menu->AddItem(windowItem);
+        if (!fPrivate) {
+            auto* privateItem = new BMenuItem("Open Link in New Private Window", withURL(kOpenLinkInNewPrivateWindow, link));
+            privateItem->SetEnabled(!script);
+            menu->AddItem(privateItem);
+        }
         menu->AddSeparatorItem();
         const std::string filename = FileNameFor(link, message.GetString("link_filename", ""));
         auto* download = new BMenuItem("Download Linked File", withURL(kDownloadLink, link));
@@ -2632,7 +2791,7 @@ void BrowserWindow::ShowPageContextMenu(const BMessage& message)
         menu->AddItem(new BMenuItem("Copy", copy(selection)));
     }
     if (!selection.empty()) {
-        const std::string label = "Search for “" + ShortLabel(selection) + "”";
+        const std::string label = std::string("Search ") + CurrentSearchEngine().name + " for “" + ShortLabel(selection) + "”";
         menu->AddItem(new BMenuItem(label.c_str(), withURL(kSearchFor, ShortLabel(selection, 400))));
     }
     if (link.empty() && image.empty() && media.empty() && selection.empty() && !editable) {
@@ -2756,6 +2915,8 @@ void BrowserWindow::NewPageRequested(const BMessage& message)
         BMessage request(kNewWindow);
         request.AddUInt64("new_page", identifier);
         request.AddString("new_page_url", url.c_str());
+        // The page belongs to the opener's context, so it opens in a window of the same kind.
+        request.AddBool("private", fPrivate);
         BRect frame = Frame().OffsetByCopy(24, 24);
         float width, height;
         if (message.FindFloat("width", &width) == B_OK && message.FindFloat("height", &height) == B_OK) {
@@ -2878,7 +3039,10 @@ void BrowserWindow::WebKitStateChanged(const BMessage& message)
             }
         }
     }
-    if (message.FindString("url", &value) == B_OK && value && *value) tab->url = StoredURL(value);
+    if (message.FindString("url", &value) == B_OK && value && *value) {
+        tab->url = StoredURL(value);
+        ApplySiteZoom(*tab);
+    }
     if (message.FindString("title", &value) == B_OK && value)
         tab->title = *value ? value : tab->url == "summit:home" ? "Start Page" : tab->url;
     const bool wasLoading = tab->loading;
@@ -2890,8 +3054,9 @@ void BrowserWindow::WebKitStateChanged(const BMessage& message)
     double progress;
     if (message.FindDouble("progress", &progress) == B_OK && std::isfinite(progress))
         tab->progress = static_cast<float>(std::clamp(progress, 0.0, 1.0));
+    // pageZoom is the window's own: it sets every change, and the engine's
+    // report can predate the latest one.
     double zoom;
-    if (message.FindDouble("pageZoom", &zoom) == B_OK && std::isfinite(zoom)) tab->pageZoom = zoom;
     if (message.FindDouble("textZoom", &zoom) == B_OK && std::isfinite(zoom)) tab->textZoom = zoom;
     if (tab->loading) {
         tab->processExited = false;
@@ -2908,14 +3073,17 @@ void BrowserWindow::WebKitStateChanged(const BMessage& message)
             && message.FindString("loadSuccessTitle", &successTitle) == B_OK && successTitle) {
             const auto stored = StoredURL(successURL);
             const PageRecord visit { stored, successTitle };
-            fShared->Change([&](Profile& profile) -> uint32 {
-                return profile.Visit(visit) ? SharedProfile::kHistoryChanged : 0;
-            }, BMessenger(this), false);
+            // Private windows leave no history.
+            if (!fPrivate) {
+                fShared->Change([&](Profile& profile) -> uint32 {
+                    return profile.Visit(visit) ? SharedProfile::kHistoryChanged : 0;
+                }, BMessenger(this), false);
+            }
             internalPageLoaded = stored == kHistoryPage || stored == kBookmarksPage;
         }
     }
     const char* successfulURL = nullptr;
-    if (tab->loadOutcome == "succeeded"
+    if (!fPrivate && tab->loadOutcome == "succeeded"
         && message.FindString("loadSuccessURL", &successfulURL) == B_OK && successfulURL
         && StoredURL(successfulURL) == tab->url) {
         const std::string url = tab->url, title = tab->title;

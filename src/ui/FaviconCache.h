@@ -12,7 +12,9 @@ namespace summit {
 // Each browser window has its own cache, used only from its thread.
 class FaviconCache {
 public:
-    explicit FaviconCache(std::filesystem::path directory);
+    // A cache that does not persist (a private window's) reads icons from the
+    // directory but keeps the ones it is given in memory only.
+    explicit FaviconCache(std::filesystem::path directory, bool persistent = true);
     ~FaviconCache();
     // Decodes an icon file (ICO, PNG, GIF, JPEG, WebP…) delivered for a page.
     // Returns true when that site's icon changed. Previously returned bitmaps
@@ -34,6 +36,7 @@ private:
     Entry* Find(const std::string& pageURL);
     Entry* Load(const std::string& key);
     std::filesystem::path fDirectory;
+    bool fPersistent = true;
     // A null entry records a site known to have no icon on disk.
     std::map<std::string, std::unique_ptr<Entry>> fEntries;
 };

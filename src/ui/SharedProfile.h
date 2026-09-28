@@ -22,6 +22,11 @@ public:
         kBookmarksChanged = 1 << 2,
         kSettingsChanged = 1 << 3,
         kIconChanged = 1 << 4,
+        // A site's zoom changed: "zoom_key" names it, "private" says whether
+        // for private windows (which keep their own, unsaved, zoom levels).
+        kZoomChanged = 1 << 5,
+        // Site icons were deleted; windows drop the ones they hold.
+        kIconsCleared = 1 << 6,
     };
     explicit SharedProfile(std::filesystem::path path);
     const std::filesystem::path& Path() const { return fPath; }
@@ -46,6 +51,16 @@ public:
         bool saveNow = true);
     void IconChanged(const std::string& pageURL, const BMessenger& sender);
 
+    // The zoom remembered for a site (ZoomKey()), 1 when there is none.
+    // Private windows see their own changes over the saved ones; theirs are
+    // forgotten when the last private window closes (ClearPrivateSession).
+    double SiteZoom(const std::string& key, bool privateBrowsing) const;
+    void SetSiteZoom(const std::string& key, double zoom, bool privateBrowsing, const BMessenger& sender);
+    void ClearPrivateSession();
+    // Forgets every visited page: the history list, the History page written
+    // from it and the icons of sites that are not bookmarked.
+    void ClearHistory(const BMessenger& sender);
+
     // Each window publishes its tabs under its own key; windows are saved in
     // key order. A window closed while Summit keeps running is removed.
     void SetWindowSession(uint64 key, const WindowSession& session);
@@ -66,7 +81,8 @@ public:
     bool Save(std::string& error);
 
 private:
-    void Announce(uint32 changes, const BMessenger& sender, const std::string& iconURL = std::string());
+    void Announce(uint32 changes, const BMessenger& sender, const std::string& iconURL = std::string(),
+        const BMessage* details = nullptr);
     mutable std::mutex fMutex;
     std::mutex fSaveMutex;
     const std::filesystem::path fPath;
@@ -74,6 +90,7 @@ private:
     std::vector<WindowSession> fSavedWindows;
     std::string fLoadError;
     std::string fNewTabOverride;
+    std::map<std::string, double> fPrivateZoom;
     bool fWritable = true;
     std::map<uint64, WindowSession> fSessions;
     std::vector<BMessenger> fListeners;

@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(SUMMIT_MODERN_WEBKIT "Build Summit with the native multiprocess WebKit API" OFF)
 find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 add_library(summit_core src/core/Address.cpp src/core/Profile.cpp src/core/ExtensionCatalog.cpp src/core/ExtensionIdentity.cpp
-    src/core/Favicon.cpp src/core/InternalPages.cpp)
+    src/core/Favicon.cpp src/core/InternalPages.cpp src/core/Zoom.cpp)
 target_link_libraries(summit_core PUBLIC OpenSSL::Crypto)
 target_include_directories(summit_core PUBLIC src vendor)
 target_compile_options(summit_core PRIVATE -Wall -Wextra -Wpedantic)

@@ -23,4 +23,7 @@ std::vector<HistoryDay> GroupHistoryByDay(const std::vector<PageRecord>& history
 using IconSource = std::function<std::string(const std::string& pageURL)>;
 std::string RenderHistoryPage(const std::vector<PageRecord>& history, int64_t now, const IconSource& icons);
 std::string RenderBookmarksPage(const std::vector<PageRecord>& bookmarks, const IconSource& icons);
+// What a private window's new tabs show: what private browsing keeps and
+// forgets, and a search field for the chosen engine (SearchEngines()).
+std::string RenderPrivateStartPage(const std::string& searchEngineName, const std::string& searchPrefix);
 }

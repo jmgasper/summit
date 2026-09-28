@@ -42402,10 +42402,10 @@ index 0000000000000000000000000000000000000000..574ed16658f0c14b1aa2e63208e990b8
 +#define WEBKIT_ENGINE_VERSION_HAIKU "@WebKit_HAIKU_MAJOR_VERSION@.@WebKit_HAIKU_MINOR_VERSION@.@WebKit_HAIKU_TINY_VERSION@"
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitContext.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitContext.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..bc34bc6c14e025d880080ba60e6ff212ad342f01
+index 0000000000000000000000000000000000000000..7522b150079c47fabbdcb8be2deabf07b0845262
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitContext.cpp
-@@ -0,0 +1,438 @@
+@@ -0,0 +1,511 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -42424,6 +42424,10 @@ index 0000000000000000000000000000000000000000..bc34bc6c14e025d880080ba60e6ff212
 +#include "WebViewStateHaiku.h"
 +#include <MessageRunner.h>
 +#include "WebKitView.h"
++#include "WebKitEmbedding.h"
++#include "WebsiteDataRecord.h"
++#include "WebsiteDataStore.h"
++#include "WebsiteDataType.h"
 +#include <Application.h>
 +#include <wtf/RunLoop.h>
 +#include "WebViewContextHaiku.h"
@@ -42844,12 +42848,81 @@ index 0000000000000000000000000000000000000000..bc34bc6c14e025d880080ba60e6ff212
 +        respond(result ? B_OK : result.error(), result ? *result : 0, static_cast<int32>(pages.size()), activeIndex);
 +    });
 +}
++
++void BWebKitContext::RemoveWebsiteData(uint32 types, const BMessenger& reply, uint64 identifier, bool includeExtensions)
++{
++    auto respond = [reply, identifier](const char* error) {
++        BMessage message(B_WEBKIT_WEBSITE_DATA_REMOVED);
++        message.AddUInt64("identifier", identifier);
++        if (error)
++            message.AddString("error", error);
++        reply.SendMessage(&message, static_cast<BHandler*>(nullptr), 0);
++    };
++    if (m_status != B_OK) {
++        respond("The website data could not be opened");
++        return;
++    }
++    auto operation = [context = m_context, types, includeExtensions, respond] {
++        using WebKit::WebsiteDataType;
++        // Cookies and caches are removed whole; storage is removed per origin
++        // so that extensions' own origins can be kept.
++        OptionSet<WebsiteDataType> whole;
++        OptionSet<WebsiteDataType> byOrigin;
++        if (types & B_WEBKIT_DATA_COOKIES)
++            whole.add(WebsiteDataType::Cookies);
++        if (types & B_WEBKIT_DATA_CACHE)
++            whole.add({ WebsiteDataType::DiskCache, WebsiteDataType::MemoryCache });
++        if (types & B_WEBKIT_DATA_LOCAL_STORAGE)
++            byOrigin.add({ WebsiteDataType::LocalStorage, WebsiteDataType::SessionStorage });
++        if (types & B_WEBKIT_DATA_INDEXED_DB)
++            byOrigin.add(WebsiteDataType::IndexedDBDatabases);
++        if (types & B_WEBKIT_DATA_SERVICE_WORKERS)
++            byOrigin.add({ WebsiteDataType::ServiceWorkerRegistrations, WebsiteDataType::DOMCache });
++        if (includeExtensions) {
++            whole.add(byOrigin);
++            byOrigin = { };
++        }
++        Ref store = context->dataStore();
++        auto pending = std::make_shared<unsigned>(2);
++        auto finished = [pending, respond] {
++            if (!--*pending)
++                respond(nullptr);
++        };
++        if (whole)
++            store->removeData(whole, WallTime::fromRawSeconds(0), [finished] { finished(); });
++        else
++            finished();
++        if (!byOrigin) {
++            finished();
++            return;
++        }
++        store->fetchData(byOrigin, { }, [store, byOrigin, finished](Vector<WebKit::WebsiteDataRecord> records) mutable {
++            Vector<WebKit::WebsiteDataRecord> removable;
++            for (auto& record : records) {
++                record.origins.removeIf([](const WebCore::SecurityOriginData& origin) {
++                    return origin.protocol() == "webkit-extension"_s;
++                });
++                if (!record.origins.isEmpty())
++                    removable.append(WTF::move(record));
++            }
++            if (removable.isEmpty()) {
++                finished();
++                return;
++            }
++            store->removeData(byOrigin, removable, WTF::move(finished));
++        });
++    };
++    if (RunLoop::isMain())
++        operation();
++    else
++        RunLoop::mainSingleton().dispatch(WTF::move(operation));
++}
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitContext.h b/Source/WebKit/UIProcess/API/haiku/WebKitContext.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..455cce5de07dfb4dc398cf0a489092f845f695d7
+index 0000000000000000000000000000000000000000..d80c3288d2dc4015080629e48d78d3aa099be9d1
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitContext.h
-@@ -0,0 +1,252 @@
+@@ -0,0 +1,260 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -43095,6 +43168,14 @@ index 0000000000000000000000000000000000000000..455cce5de07dfb4dc398cf0a489092f8
 +    // Query on the application thread after queued view commands have drained.
 +    // Keep its RunLoop and this context alive until cancellation replies finish.
 +    bool HasPendingDownloads() const;
++
++    // Removes B_WEBKIT_DATA_* (WebKitEmbedding.h) of every page of this
++    // context, of all time, and answers B_WEBKIT_WEBSITE_DATA_REMOVED
++    // ("identifier", "error" on failure) to reply. Storage that extensions keep
++    // under their own webkit-extension: origins (local storage, IndexedDB,
++    // service workers) survives unless includeExtensions is true, as clearing a
++    // browser's site data does not reset its extensions. Any looper.
++    void RemoveWebsiteData(uint32 types, const BMessenger& reply, uint64 identifier, bool includeExtensions = false);
 +
 +private:
 +    friend class BWebKitView;
@@ -72822,10 +72903,10 @@ index 0000000000000000000000000000000000000000..4d5cb1680ea1cb21c069c8f791a1da49
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..97b6f5ff6af5b5263448d4249e4212af5a3024be
+index 0000000000000000000000000000000000000000..1c9a9d958f3fa45a121b2437d654807822bf3083
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp
-@@ -0,0 +1,233 @@
+@@ -0,0 +1,238 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -72905,6 +72986,11 @@ index 0000000000000000000000000000000000000000..97b6f5ff6af5b5263448d4249e4212af
 +        prompts->shutdown();
 +    if (auto commands = browserCommands())
 +        commands->shutdown();
++}
++
++WebsiteDataStore& WebViewContextHaiku::dataStore() const
++{
++    return m_dataStore.get();
 +}
 +
 +std::shared_ptr<BrowserCommandBrokerHaiku> WebViewContextHaiku::browserCommands() const
@@ -73061,10 +73147,10 @@ index 0000000000000000000000000000000000000000..97b6f5ff6af5b5263448d4249e4212af
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..a47b97e41dddeab317f84058af42bd8b1df2210c
+index 0000000000000000000000000000000000000000..3fd57d32c096f2f8e68c23d422e13b8d1648d296
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,57 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -73100,6 +73186,7 @@ index 0000000000000000000000000000000000000000..a47b97e41dddeab317f84058af42bd8b
 +    void configure(API::PageConfiguration&) const;
 +    const std::shared_ptr<DownloadRegistryHaiku>& downloads() const { return m_downloads; }
 +    const std::shared_ptr<BrowserTabRegistryHaiku>& browserTabs() const { return m_browserTabs; }
++    WebsiteDataStore& dataStore() const;
 +    std::shared_ptr<ExtensionPermissionPromptHaiku> permissionPrompts() const;
 +    // Null when this build has no extension support.
 +    std::shared_ptr<BrowserCommandBrokerHaiku> browserCommands() const;

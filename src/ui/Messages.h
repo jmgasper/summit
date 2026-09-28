@@ -29,6 +29,12 @@ constexpr uint32 kPreferencesChanged = 'prch';
 constexpr uint32 kPreferencesUseCurrentPage = 'prcp';
 constexpr uint32 kPreferencesState = 'prst';
 constexpr uint32 kPreferencesClosed = 'prcl';
+// Preferences › History and Data, sent to the application; it answers the
+// window with kDataCleared ("kind": the request, "error" on failure).
+constexpr uint32 kClearHistoryRequest = 'pclh';
+constexpr uint32 kClearCacheRequest = 'pclc';
+constexpr uint32 kClearSiteDataRequest = 'pcld';
+constexpr uint32 kDataCleared = 'pdcl';
 constexpr uint32 kFind = 'find';
 constexpr uint32 kFindNext = 'fnxt';
 constexpr uint32 kFindPrevious = 'fprv';
@@ -64,6 +70,9 @@ constexpr uint32 kBrowserState = 'stat';
 // kRequestWindowClose ("quitting": bool) and the window reports
 // kWindowReadyToClose or kWindowCloseCancelled.
 constexpr uint32 kNewWindow = 'nwin';
+// A private window (kNewWindow with "private" true). Its pages use a separate,
+// in-memory website data store and leave no history.
+constexpr uint32 kNewPrivateWindow = 'npwn';
 constexpr uint32 kCloseWindow = 'cwin';
 constexpr uint32 kCloseWindowRequest = 'cwrq';
 constexpr uint32 kWindowCloseCancelled = 'wccn';
@@ -78,6 +87,7 @@ constexpr uint32 kProfileChanged = 'prfc';
 constexpr uint32 kOpenLink = 'olnk';
 constexpr uint32 kOpenLinkInNewTab = 'olnt';
 constexpr uint32 kOpenLinkInNewWindow = 'olnw';
+constexpr uint32 kOpenLinkInNewPrivateWindow = 'olnp';
 constexpr uint32 kCopyText = 'cptx';
 constexpr uint32 kDownloadLink = 'dlnk';
 constexpr uint32 kSaveLinkAs = 'slas';

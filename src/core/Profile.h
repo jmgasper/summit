@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <ctime>
 #include <filesystem>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -36,6 +37,10 @@ struct Profile {
     // "haiku" draws the window like other Haiku applications (real buttons and
     // tabs); "safari" is the flat, Safari-like look.
     std::string interfaceStyle = "haiku";
+    // The engine that searches text typed in the address field (SearchEngines()).
+    std::string searchEngine = "duckduckgo";
+    // Page zoom remembered per site (ZoomKey()); sites at 100% are not listed.
+    std::map<std::string, double> siteZoom;
     static Profile Load(const std::filesystem::path& path, std::string& error);
     bool Save(const std::filesystem::path& path, std::string& error) const;
     // Records a visit to an http(s) page; returns false for other pages.

@@ -19,6 +19,17 @@ void SetInterfaceStyle(bool haiku);
 bool HaikuInterfaceStyle();
 // Sent to the window by a secondary click on a tab: "id" (int64), "where" (screen point).
 constexpr uint32 kTabMenu = 'tbmn';
+// Private windows draw their bars in purple, so they cannot be mistaken for
+// ordinary ones. The window registers itself; its views look it up.
+void SetPrivateWindow(const BWindow* window, bool privateBrowsing);
+bool IsPrivateWindow(const BWindow* window);
+// The colours the browser's own bars and buttons use in a view's window.
+struct ChromeColors {
+    rgb_color panel, text, control, controlText;
+    bool privateBrowsing;
+};
+ChromeColors ChromeColorsFor(const BView* view);
+ChromeColors ChromeColorsFor(bool privateBrowsing);
 class ToolButton : public BButton {
 public:
     ToolButton(const char* name, const char* tooltip, Icon icon, uint32 message);
@@ -31,6 +42,29 @@ public:
 private:
     Icon fIcon;
     bool fHover = false;
+};
+// The page's zoom, shown in the toolbar while it is not 100%; clicking it
+// resets the zoom, as in Firefox.
+class ZoomButton : public BButton {
+public:
+    ZoomButton();
+    void SetZoom(double zoom);
+    void Draw(BRect update) override;
+    void MouseMoved(BPoint where, uint32 transit, const BMessage* drag) override;
+    BSize MinSize() override;
+    BSize MaxSize() override;
+    BSize PreferredSize() override;
+private:
+    bool fHover = false;
+};
+// "Private" with a mask, at the end of a private window's toolbar.
+class PrivateBadge : public BView {
+public:
+    PrivateBadge();
+    void Draw(BRect update) override;
+    BSize MinSize() override;
+    BSize MaxSize() override;
+    BSize PreferredSize() override;
 };
 #if SUMMIT_MODERN_WEBKIT
 class ExtensionActionButton : public BButton {

@@ -15,6 +15,8 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <mutex>
+#include <set>
 
 namespace summit {
 static std::atomic<bool> sHaikuStyle { true };
@@ -27,12 +29,40 @@ static rgb_color Mix(rgb_color a, rgb_color b, float amount)
     return { channel(a.red, b.red), channel(a.green, b.green), channel(a.blue, b.blue), 255 };
 }
 
+namespace {
+std::mutex sPrivateWindowsLock;
+std::set<const BWindow*> sPrivateWindows;
+}
+void SetPrivateWindow(const BWindow* window, bool privateBrowsing)
+{
+    std::lock_guard lock(sPrivateWindowsLock);
+    if (privateBrowsing) sPrivateWindows.insert(window);
+    else sPrivateWindows.erase(window);
+}
+bool IsPrivateWindow(const BWindow* window)
+{
+    std::lock_guard lock(sPrivateWindowsLock);
+    return window && sPrivateWindows.contains(window);
+}
+ChromeColors ChromeColorsFor(bool privateBrowsing)
+{
+    if (privateBrowsing)
+        return { {64, 42, 104, 255}, {243, 238, 252, 255}, {104, 76, 156, 255}, {250, 247, 255, 255}, true };
+    return { ui_color(B_PANEL_BACKGROUND_COLOR), ui_color(B_PANEL_TEXT_COLOR),
+        ui_color(B_CONTROL_BACKGROUND_COLOR), ui_color(B_CONTROL_TEXT_COLOR), false };
+}
+ChromeColors ChromeColorsFor(const BView* view)
+{
+    return ChromeColorsFor(view && IsPrivateWindow(view->Window()));
+}
+
 // A real Haiku push button: frame and background from BControlLook.
 static void DrawHaikuButton(BControl* control, BRect update, bool hover)
 {
     BRect rect = control->Bounds();
-    const rgb_color background = ui_color(B_PANEL_BACKGROUND_COLOR);
-    const rgb_color base = ui_color(B_CONTROL_BACKGROUND_COLOR);
+    const auto colors = ChromeColorsFor(control);
+    const rgb_color background = colors.panel;
+    const rgb_color base = colors.control;
     uint32 flags = be_control_look->Flags(control);
     if (hover && control->IsEnabled()) flags |= BControlLook::B_HOVER;
     be_control_look->DrawButtonFrame(control, rect, update, base, background, flags);
@@ -55,21 +85,29 @@ void ToolButton::MouseMoved(BPoint where, uint32 transit, const BMessage* drag)
     if (hover != fHover) { fHover = hover; Invalidate(); }
     BButton::MouseMoved(where, transit, drag);
 }
+// The Safari-like look's flat button: a rounded highlight when pressed or focused.
+static void DrawFlatButton(BView* view, bool pressed, bool focused, const ChromeColors& colors)
+{
+    view->SetHighColor(colors.panel);
+    view->FillRect(view->Bounds());
+    if (pressed || focused) {
+        view->SetHighColor(colors.privateBrowsing ? Mix(colors.panel, colors.control, pressed ? 1.0f : 0.6f)
+            : pressed ? rgb_color{212, 225, 222, 255} : rgb_color{225, 232, 230, 255});
+        view->FillRoundRect(view->Bounds().InsetByCopy(2, 2), 5, 5);
+    }
+}
+
 void ToolButton::Draw(BRect update)
 {
     rgb_color ink;
+    const auto colors = ChromeColorsFor(this);
     if (HaikuInterfaceStyle()) {
         DrawHaikuButton(this, update, fHover);
-        const rgb_color text = ui_color(B_CONTROL_TEXT_COLOR);
-        ink = IsEnabled() ? text : Mix(text, ui_color(B_CONTROL_BACKGROUND_COLOR), 0.6f);
+        ink = IsEnabled() ? colors.controlText : Mix(colors.controlText, colors.control, 0.6f);
     } else {
-        SetHighColor(ui_color(B_PANEL_BACKGROUND_COLOR));
-        FillRect(Bounds());
-        if (Value() || IsFocus()) {
-            SetHighColor(Value() ? rgb_color{212, 225, 222, 255} : rgb_color{225, 232, 230, 255});
-            FillRoundRect(Bounds().InsetByCopy(2, 2), 5, 5);
-        }
-        ink = IsEnabled() ? rgb_color{49, 69, 66, 255} : rgb_color{163, 170, 168, 255};
+        DrawFlatButton(this, Value(), IsFocus(), colors);
+        if (colors.privateBrowsing) ink = IsEnabled() ? colors.text : Mix(colors.text, colors.panel, 0.55f);
+        else ink = IsEnabled() ? rgb_color{49, 69, 66, 255} : rgb_color{163, 170, 168, 255};
     }
     SetHighColor(ink);
     SetDrawingMode(B_OP_ALPHA);
@@ -114,6 +152,91 @@ void ToolButton::Draw(BRect update)
             line(-5, -1, -5, 7); line(-5, 7, 5, 7); line(5, 7, 5, -1); break;
     }
     SetPenSize(1);
+    SetDrawingMode(B_OP_COPY);
+}
+
+ZoomButton::ZoomButton() : BButton("zoom", "100%", new BMessage(kZoomReset))
+{
+    SetToolTip("Reset the zoom to 100%");
+}
+void ZoomButton::SetZoom(double zoom)
+{
+    const std::string label = std::to_string(std::lround(zoom * 100)) + "%";
+    if (label != Label()) { SetLabel(label.c_str()); Invalidate(); }
+}
+BSize ZoomButton::MinSize() { return BSize(std::ceil(StringWidth("888%")) + 18, ToolButtonSize().Height()); }
+BSize ZoomButton::MaxSize() { return MinSize(); }
+BSize ZoomButton::PreferredSize() { return MinSize(); }
+void ZoomButton::MouseMoved(BPoint where, uint32 transit, const BMessage* drag)
+{
+    const bool hover = transit == B_ENTERED_VIEW || transit == B_INSIDE_VIEW;
+    if (hover != fHover) { fHover = hover; Invalidate(); }
+    BButton::MouseMoved(where, transit, drag);
+}
+void ZoomButton::Draw(BRect update)
+{
+    const auto colors = ChromeColorsFor(this);
+    rgb_color ink;
+    if (HaikuInterfaceStyle()) {
+        DrawHaikuButton(this, update, fHover);
+        ink = colors.controlText;
+    } else {
+        // A pill, like Firefox's zoom indicator in the address bar.
+        SetHighColor(colors.panel);
+        FillRect(Bounds());
+        SetHighColor(colors.privateBrowsing ? Mix(colors.panel, colors.control, Value() ? 1.0f : 0.7f)
+            : Value() ? rgb_color{200, 216, 212, 255} : fHover ? rgb_color{212, 225, 222, 255} : rgb_color{225, 232, 230, 255});
+        FillRoundRect(Bounds().InsetByCopy(2, 4), 8, 8);
+        ink = colors.privateBrowsing ? colors.text : rgb_color{49, 69, 66, 255};
+    }
+    font_height metrics;
+    GetFontHeight(&metrics);
+    const float width = StringWidth(Label());
+    BPoint origin(std::floor((Bounds().Width() - width) / 2) + 0.5f,
+        std::floor((Bounds().Height() + metrics.ascent - metrics.descent) / 2));
+    if (HaikuInterfaceStyle() && Value()) origin += BPoint(1, 1);
+    SetHighColor(ink);
+    SetDrawingMode(B_OP_OVER);
+    DrawString(Label(), origin);
+    SetDrawingMode(B_OP_COPY);
+}
+
+PrivateBadge::PrivateBadge() : BView("private-badge", B_WILL_DRAW)
+{
+    SetViewColor(B_TRANSPARENT_COLOR);
+    SetToolTip("Private window: Summit forgets its pages, cookies and site data when the last private window closes.");
+}
+BSize PrivateBadge::MinSize()
+{
+    BFont font(be_bold_font);
+    return BSize(std::ceil(font.StringWidth("Private")) + 44, ToolButtonSize().Height());
+}
+BSize PrivateBadge::MaxSize() { return MinSize(); }
+BSize PrivateBadge::PreferredSize() { return MinSize(); }
+void PrivateBadge::Draw(BRect)
+{
+    const auto colors = ChromeColorsFor(this);
+    SetHighColor(colors.panel);
+    FillRect(Bounds());
+    const BRect pill = Bounds().InsetByCopy(1, 3);
+    const rgb_color fill = colors.privateBrowsing ? rgb_color{132, 96, 196, 255} : rgb_color{110, 80, 170, 255};
+    SetHighColor(fill);
+    FillRoundRect(pill, pill.Height() / 2, pill.Height() / 2);
+    // A domino mask.
+    SetHighColor(255, 255, 255);
+    const float cy = std::floor((pill.top + pill.bottom) / 2) + 0.5f;
+    const float x = pill.left + 9;
+    FillRoundRect(BRect(x, cy - 4.5f, x + 18, cy + 4.5f), 4.5f, 4.5f);
+    SetHighColor(fill);
+    FillEllipse(BPoint(x + 5, cy), 2.8f, 2.1f);
+    FillEllipse(BPoint(x + 13, cy), 2.8f, 2.1f);
+    BFont font(be_bold_font);
+    SetFont(&font);
+    font_height metrics;
+    font.GetHeight(&metrics);
+    SetHighColor(255, 255, 255);
+    SetDrawingMode(B_OP_OVER);
+    DrawString("Private", BPoint(x + 24, std::floor(cy + (metrics.ascent - metrics.descent) / 2)));
     SetDrawingMode(B_OP_COPY);
 }
 
@@ -346,8 +469,9 @@ void TabStrip::Draw(BRect update)
 }
 void TabStrip::DrawHaiku(BRect update)
 {
-    const rgb_color base = ui_color(B_PANEL_BACKGROUND_COLOR);
-    const rgb_color text = ui_color(B_PANEL_TEXT_COLOR);
+    const auto colors = ChromeColorsFor(this);
+    const rgb_color base = colors.panel;
+    const rgb_color text = colors.text;
     const uint32 borders = BControlLook::B_TOP_BORDER | BControlLook::B_BOTTOM_BORDER;
     BRect frame = Bounds();
     be_control_look->DrawTabFrame(this, frame, update, base, 0, borders, B_NO_BORDER);
@@ -396,7 +520,7 @@ void TabStrip::DrawHaiku(BRect update)
         const BRect close = CloseRect(i);
         const bool hover = fHoverClose == fTabs[i].id;
         if (hover) {
-            SetHighColor(tint_color(base, B_DARKEN_2_TINT));
+            SetHighColor(tint_color(base, colors.privateBrowsing ? B_LIGHTEN_1_TINT : B_DARKEN_2_TINT));
             FillRoundRect(close, 3, 3);
         }
         SetHighColor(hover ? text : Mix(text, base, 0.45f));
@@ -417,14 +541,20 @@ void TabStrip::DrawHaiku(BRect update)
 }
 void TabStrip::DrawSafari(BRect)
 {
-    SetHighColor(230, 233, 232); FillRect(Bounds());
+    const auto colors = ChromeColorsFor(this);
+    const bool dark = colors.privateBrowsing;
+    const rgb_color strip = dark ? tint_color(colors.panel, B_DARKEN_1_TINT) : rgb_color{230, 233, 232, 255};
+    const rgb_color selectedTab = dark ? colors.control : rgb_color{252, 253, 252, 255};
+    const rgb_color selectedText = dark ? colors.controlText : rgb_color{30, 82, 72, 255};
+    const rgb_color otherText = dark ? Mix(colors.text, strip, 0.2f) : rgb_color{78, 86, 83, 255};
+    SetHighColor(strip); FillRect(Bounds());
     const size_t first = FirstVisible(), last = first + VisibleCount();
     for (size_t i = first; i < last; ++i) {
         BRect rect = TabRect(i);
         const bool selected = fTabs[i].id == fSelected;
-        SetHighColor(selected ? rgb_color{252, 253, 252, 255} : rgb_color{230, 233, 232, 255});
+        SetHighColor(selected ? selectedTab : strip);
         FillRoundRect(rect, 5, 5);
-        SetHighColor(selected ? rgb_color{30, 82, 72, 255} : rgb_color{78, 86, 83, 255});
+        SetHighColor(selected ? selectedText : otherText);
         BString text(fTabs[i].title.empty() ? "New Tab" : fTabs[i].title.c_str());
         TruncateString(&text, B_TRUNCATE_END, rect.Width() - 61);
         const BPoint icon(rect.left + 9, rect.top + std::floor((rect.Height() - 15) / 2));
@@ -434,13 +564,13 @@ void TabStrip::DrawSafari(BRect)
             // A loading page keeps its icon, with a dot on its corner.
             SetHighColor(44, 125, 104);
             FillEllipse(icon + BPoint(15, 15), 2.5f, 2.5f);
-            SetHighColor(selected ? rgb_color{30, 82, 72, 255} : rgb_color{78, 86, 83, 255});
+            SetHighColor(selected ? selectedText : otherText);
         }
         DrawString(text, BPoint(rect.left + 31, 22));
         StrokeLine(BPoint(rect.right - 16, 14), BPoint(rect.right - 10, 20));
         StrokeLine(BPoint(rect.right - 10, 14), BPoint(rect.right - 16, 20));
     }
-    SetHighColor(63, 83, 76);
+    SetHighColor(dark ? colors.text : rgb_color{63, 83, 76, 255});
     const float x = Bounds().right - 24;
     StrokeLine(BPoint(x - 5, 18), BPoint(x + 5, 18));
     StrokeLine(BPoint(x, 13), BPoint(x, 23));
@@ -533,17 +663,19 @@ void BookmarksBar::Draw(BRect update)
 {
     const BRect bounds = Bounds();
     const bool haiku = HaikuInterfaceStyle();
-    const rgb_color panel = ui_color(B_PANEL_BACKGROUND_COLOR);
-    const rgb_color ink = haiku ? ui_color(B_PANEL_TEXT_COLOR) : rgb_color{49, 69, 66, 255};
+    const auto colors = ChromeColorsFor(this);
+    const bool dark = colors.privateBrowsing;
+    const rgb_color panel = colors.panel;
+    const rgb_color ink = haiku || dark ? colors.text : rgb_color{49, 69, 66, 255};
     SetHighColor(panel);
     FillRect(bounds);
-    SetHighColor(haiku ? tint_color(panel, B_DARKEN_2_TINT) : rgb_color{221, 227, 224, 255});
+    SetHighColor(dark ? tint_color(panel, B_DARKEN_1_TINT) : haiku ? tint_color(panel, B_DARKEN_2_TINT) : rgb_color{221, 227, 224, 255});
     StrokeLine(BPoint(bounds.left, bounds.bottom), BPoint(bounds.right, bounds.bottom));
     font_height metrics;
     GetFontHeight(&metrics);
     const float baseline = std::floor((bounds.Height() + metrics.ascent - metrics.descent) / 2);
     if (fBookmarks.empty()) {
-        SetHighColor(haiku ? Mix(ink, panel, 0.5f) : rgb_color{135, 147, 141, 255});
+        SetHighColor(haiku || dark ? Mix(ink, panel, 0.5f) : rgb_color{135, 147, 141, 255});
         DrawString("Add favourite pages here with Bookmarks › Add to Bookmarks Bar", BPoint(12, baseline));
         return;
     }
@@ -554,10 +686,11 @@ void BookmarksBar::Draw(BRect update)
                 // Flat buttons that rise under the pointer, like a Haiku toolbar.
                 BRect button = rect;
                 const uint32 flags = int32(i) == fPressed ? BControlLook::B_ACTIVATED : BControlLook::B_HOVER;
-                be_control_look->DrawButtonFrame(this, button, update, ui_color(B_CONTROL_BACKGROUND_COLOR), panel, flags);
-                be_control_look->DrawButtonBackground(this, button, update, ui_color(B_CONTROL_BACKGROUND_COLOR), flags);
+                be_control_look->DrawButtonFrame(this, button, update, colors.control, panel, flags);
+                be_control_look->DrawButtonBackground(this, button, update, colors.control, flags);
             } else {
-                SetHighColor(int32(i) == fPressed ? rgb_color{212, 225, 222, 255} : rgb_color{225, 232, 230, 255});
+                SetHighColor(dark ? Mix(panel, colors.control, int32(i) == fPressed ? 1.0f : 0.6f)
+                    : int32(i) == fPressed ? rgb_color{212, 225, 222, 255} : rgb_color{225, 232, 230, 255});
                 FillRoundRect(rect, 5, 5);
             }
         }
@@ -572,7 +705,7 @@ void BookmarksBar::Draw(BRect update)
     }
     if (fOverflow.IsValid()) {
         if (fHover == kOverflowItem) {
-            SetHighColor(haiku ? tint_color(panel, B_DARKEN_1_TINT) : rgb_color{225, 232, 230, 255});
+            SetHighColor(dark ? Mix(panel, colors.control, 0.6f) : haiku ? tint_color(panel, B_DARKEN_1_TINT) : rgb_color{225, 232, 230, 255});
             FillRoundRect(fOverflow, 5, 5);
         }
         SetHighColor(ink);
@@ -672,7 +805,9 @@ ProgressLine::ProgressLine() : BView("progress", B_WILL_DRAW)
 void ProgressLine::SetProgress(float value) { fProgress = std::clamp(value, 0.0f, 1.0f); Invalidate(); }
 void ProgressLine::Draw(BRect)
 {
-    SetHighColor(214, 221, 217); FillRect(Bounds());
+    const auto colors = ChromeColorsFor(this);
+    SetHighColor(colors.privateBrowsing ? tint_color(colors.panel, B_DARKEN_1_TINT) : rgb_color{214, 221, 217, 255});
+    FillRect(Bounds());
     if (fProgress > 0 && fProgress < 1) {
         SetHighColor(44, 125, 104);
         BRect progress = Bounds(); progress.right *= fProgress; FillRect(progress);
