@@ -35791,10 +35791,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..f68f266ba6dd09a76b37a12b93791bd8cfd696c8
+index 0000000000000000000000000000000000000000..6897e6cc1492f5efc0bed8054e955bfd3d138ca9
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,409 @@
+@@ -0,0 +1,410 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -35918,6 +35918,7 @@ index 0000000000000000000000000000000000000000..f68f266ba6dd09a76b37a12b93791bd8
 +    UIProcess/haiku/ExtensionPermissionPromptHaiku.cpp
 +    UIProcess/haiku/ExtensionPackageRegistryHaiku.cpp
 +    UIProcess/haiku/DrawingAreaProxyHaiku.cpp
++    UIProcess/haiku/MemoryPressureMonitorHaiku.cpp
 +    UIProcess/haiku/TextCheckerHaiku.cpp
 +    UIProcess/haiku/WebPageProxyHaiku.cpp
 +    UIProcess/haiku/WebPopupMenuProxyHaiku.cpp
@@ -36404,7 +36405,7 @@ index 0000000000000000000000000000000000000000..9c07f8e0c8c862d8144fa5b9b3a0b9b3
 +
 +#endif /* WKBaseEfl_h */
 diff --git a/Source/WebKit/Shared/AuxiliaryProcess.cpp b/Source/WebKit/Shared/AuxiliaryProcess.cpp
-index 04efad5b4aa62b9809431c2ea3d5fe10a6b87287..83da500511cea0d10cb18988b596c40e356ded25 100644
+index 04efad5b4aa62b9809431c2ea3d5fe10a6b87287..8e4e7ecf3d212136d010a55e55ce0b88b7842d2b 100644
 --- a/Source/WebKit/Shared/AuxiliaryProcess.cpp
 +++ b/Source/WebKit/Shared/AuxiliaryProcess.cpp
 @@ -40,6 +40,10 @@
@@ -36418,7 +36419,16 @@ index 04efad5b4aa62b9809431c2ea3d5fe10a6b87287..83da500511cea0d10cb18988b596c40e
  #if !OS(WINDOWS)
  #include <unistd.h>
  #endif
-@@ -233,6 +237,10 @@ void AuxiliaryProcess::stopRunLoop()
+@@ -49,6 +53,8 @@
+ #if USE(GLIB)
+ #include <wtf/glib/Sandbox.h>
+ #endif
++#elif OS(HAIKU)
++#include <wtf/MemoryPressureHandler.h>
+ #endif
+ 
+ #if PLATFORM(COCOA)
+@@ -233,6 +239,10 @@ void AuxiliaryProcess::stopRunLoop()
  #if !PLATFORM(COCOA)
  void AuxiliaryProcess::platformStopRunLoop()
  {
@@ -36429,6 +36439,41 @@ index 04efad5b4aa62b9809431c2ea3d5fe10a6b87287..83da500511cea0d10cb18988b596c40e
      RunLoop::mainSingleton().stop();
  }
  #endif
+@@ -296,7 +306,7 @@ void AuxiliaryProcess::didReceiveInvalidMessage(IPC::Connection&, IPC::MessageNa
+     CRASH();
+ }
+ 
+-#if OS(LINUX) && !OS(ANDROID)
++#if (OS(LINUX) && !OS(ANDROID)) || OS(HAIKU)
+ void AuxiliaryProcess::didReceiveMemoryPressureEvent(bool isCritical)
+ {
+     MemoryPressureHandler::singleton().triggerMemoryPressureEvent(isCritical);
+diff --git a/Source/WebKit/Shared/AuxiliaryProcess.h b/Source/WebKit/Shared/AuxiliaryProcess.h
+index 84bdb6e78597be64eb9c526b5d17dd32ddbbb467..ac2f33165817372a7f78c1ca4fd90c3ad630c8e6 100644
+--- a/Source/WebKit/Shared/AuxiliaryProcess.h
++++ b/Source/WebKit/Shared/AuxiliaryProcess.h
+@@ -165,7 +165,7 @@ protected:
+     bool dispatchMessage(IPC::Connection&, IPC::Decoder&);
+     bool dispatchSyncMessage(IPC::Connection&, IPC::Decoder&, UniqueRef<IPC::Encoder>&);
+ 
+-#if OS(LINUX) && !OS(ANDROID)
++#if (OS(LINUX) && !OS(ANDROID)) || OS(HAIKU)
+     void didReceiveMemoryPressureEvent(bool isCritical);
+ #endif
+ 
+diff --git a/Source/WebKit/Shared/AuxiliaryProcess.messages.in b/Source/WebKit/Shared/AuxiliaryProcess.messages.in
+index e66188b44007dd73fa67d485dc8d8a4c27a5232b..22fc06be81bd95c9310868d3daf6841d3f6aa208 100644
+--- a/Source/WebKit/Shared/AuxiliaryProcess.messages.in
++++ b/Source/WebKit/Shared/AuxiliaryProcess.messages.in
+@@ -35,7 +35,7 @@ messages -> AuxiliaryProcess WantsDispatchMessage {
+     [DeferSendingIfSuspendedWithCoalescingKeys=(domain, key)] PreferenceDidUpdate(String domain, String key, std::optional<String> encodedValue)
+ #endif
+ 
+-#if OS(LINUX) && !OS(ANDROID)
++#if (OS(LINUX) && !OS(ANDROID)) || OS(HAIKU)
+     void DidReceiveMemoryPressureEvent(bool isCritical)
+ #endif
+ }
 diff --git a/Source/WebKit/Shared/AuxiliaryProcessMain.h b/Source/WebKit/Shared/AuxiliaryProcessMain.h
 index 4aa44664bcb8fd583fd38914ebc053fe737f8ce9..2411f2e16b0942622b701ef51dd712b3079ec506 100644
 --- a/Source/WebKit/Shared/AuxiliaryProcessMain.h
@@ -66314,6 +66359,50 @@ index bc3b24188d37a1517e0cbb152e7634211b111243..226044918059bdd29b0892f573e24c7e
      WebCore::Color underPageBackgroundColorOverride;
      WebCore::Color underlayColor;
      RunLoop::Timer updateReportedMediaCaptureStateTimer;
+diff --git a/Source/WebKit/UIProcess/WebProcessPool.cpp b/Source/WebKit/UIProcess/WebProcessPool.cpp
+index f9ca5b316a06238b335758fd4e3f11ba8bf269b8..33a75efec4927ee96a8f9872bb9970b622c3e8aa 100644
+--- a/Source/WebKit/UIProcess/WebProcessPool.cpp
++++ b/Source/WebKit/UIProcess/WebProcessPool.cpp
+@@ -144,6 +144,8 @@
+ 
+ #if OS(LINUX)
+ #include "MemoryPressureMonitor.h"
++#elif OS(HAIKU)
++#include "MemoryPressureMonitorHaiku.h"
+ #endif
+ 
+ #if PLATFORM(COCOA)
+@@ -316,7 +318,7 @@ WebProcessPool::WebProcessPool(API::ProcessPoolConfiguration& configuration)
+ 
+     platformInitialize(needsGlobalStaticInitialization);
+ 
+-#if OS(LINUX) && !OS(ANDROID)
++#if (OS(LINUX) && !OS(ANDROID)) || OS(HAIKU)
+     if (!MemoryPressureMonitor::disabled())
+         MemoryPressureMonitor::singleton().start();
+ #endif
+@@ -471,7 +473,7 @@ void WebProcessPool::fullKeyboardAccessModeChanged(bool fullKeyboardAccessEnable
+     sendToAllProcesses(Messages::WebProcess::FullKeyboardAccessModeChanged(fullKeyboardAccessEnabled));
+ }
+ 
+-#if OS(LINUX) && !OS(ANDROID)
++#if (OS(LINUX) && !OS(ANDROID)) || OS(HAIKU)
+ void WebProcessPool::sendMemoryPressureEvent(bool isCritical)
+ {
+     sendToAllProcesses(Messages::AuxiliaryProcess::DidReceiveMemoryPressureEvent(isCritical));
+diff --git a/Source/WebKit/UIProcess/WebProcessPool.h b/Source/WebKit/UIProcess/WebProcessPool.h
+index 38c1d1a7d72f273d5df9c101ec0a1e4ea7ad2d3d..ebebbe84443df9afc12cb9f29731947316dbce5b 100644
+--- a/Source/WebKit/UIProcess/WebProcessPool.h
++++ b/Source/WebKit/UIProcess/WebProcessPool.h
+@@ -374,7 +374,7 @@ public:
+ #endif
+ 
+     void fullKeyboardAccessModeChanged(bool fullKeyboardAccessEnabled);
+-#if OS(LINUX) && !OS(ANDROID)
++#if (OS(LINUX) && !OS(ANDROID)) || OS(HAIKU)
+     void sendMemoryPressureEvent(bool isCritical);
+ #endif
+     void textCheckerStateChanged();
 diff --git a/Source/WebKit/UIProcess/WebProcessProxy.cpp b/Source/WebKit/UIProcess/WebProcessProxy.cpp
 index a274fd21d125926677d5c88fd0070aa37b7ede3b..d29976291e77700b0aac58f49a98a83b29fae602 100644
 --- a/Source/WebKit/UIProcess/WebProcessProxy.cpp
@@ -69378,6 +69467,201 @@ index 0000000000000000000000000000000000000000..fb3e33f0bce8a0e7a7f240e8f7308550
 +};
 +
 +} // namespace WebKit
+diff --git a/Source/WebKit/UIProcess/haiku/MemoryPressureMonitorHaiku.cpp b/Source/WebKit/UIProcess/haiku/MemoryPressureMonitorHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..4193e8a36e219e1eb0ff2c6efe87738afb758703
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/MemoryPressureMonitorHaiku.cpp
+@@ -0,0 +1,129 @@
++/*
++ * Copyright (C) 2026 Haiku, Inc.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "MemoryPressureMonitorHaiku.h"
++
++#include "WebProcessPool.h"
++#include <OS.h>
++#include <algorithm>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <wtf/RunLoop.h>
++#include <wtf/Threading.h>
++
++namespace WebKit {
++
++// The Linux monitor's policy: poll every 5 s while less than half the memory
++// is in use, down to every second at 85%; memory pressure from 90%, critical
++// from 95%. SUMMIT_MEMORY_PRESSURE_PERCENT=<n> moves the first threshold (and
++// the critical one with it) to test the response on a machine with plenty.
++static const Seconds s_minPollingInterval { 1_s };
++static const Seconds s_maxPollingInterval { 5_s };
++static const double s_minUsedMemoryPercentageForPolling = 50;
++static const double s_maxUsedMemoryPercentageForPolling = 85;
++
++static int pressureThreshold()
++{
++    static int threshold = [] {
++        const char* value = getenv("SUMMIT_MEMORY_PRESSURE_PERCENT");
++        int parsed = value ? atoi(value) : 0;
++        return parsed > 0 && parsed <= 100 ? parsed : 90;
++    }();
++    return threshold;
++}
++
++// Pages the file cache holds count as available: the kernel drops them when
++// something needs the memory.
++static int systemMemoryUsedAsPercentage()
++{
++    system_info info;
++    if (get_system_info(&info) != B_OK || !info.max_pages)
++        return -1;
++    return static_cast<int>(100.0 * info.used_pages / info.max_pages);
++}
++
++static Seconds pollIntervalForUsedMemoryPercentage(int usedPercentage)
++{
++    if (usedPercentage < s_minUsedMemoryPercentageForPolling)
++        return s_maxPollingInterval;
++    if (usedPercentage >= s_maxUsedMemoryPercentageForPolling)
++        return s_minPollingInterval;
++    return s_minPollingInterval + (s_maxPollingInterval - s_minPollingInterval)
++        * ((s_maxUsedMemoryPercentageForPolling - usedPercentage) / (s_maxUsedMemoryPercentageForPolling - s_minUsedMemoryPercentageForPolling));
++}
++
++MemoryPressureMonitor& MemoryPressureMonitor::singleton()
++{
++    static NeverDestroyed<MemoryPressureMonitor> memoryMonitor;
++    return memoryMonitor;
++}
++
++void MemoryPressureMonitor::start()
++{
++    if (m_started)
++        return;
++    m_started = true;
++
++    Thread::create("MemoryPressureMonitor"_s, [] {
++        Seconds pollInterval = s_maxPollingInterval;
++        int reportedLevel = 0;
++        while (true) {
++            sleep(pollInterval);
++            int usedPercentage = systemMemoryUsedAsPercentage();
++            if (usedPercentage < 0) {
++                pollInterval = s_maxPollingInterval;
++                continue;
++            }
++            int threshold = pressureThreshold();
++            int level = usedPercentage >= std::min(threshold + 5, 100) ? 2 : usedPercentage >= threshold ? 1 : 0;
++            if (level != reportedLevel) {
++                std::fprintf(stderr, "Summit memory pressure: %d%% of memory in use, %s\n", usedPercentage,
++                    level == 2 ? "critical" : level == 1 ? "releasing memory" : "normal");
++                reportedLevel = level;
++            }
++            if (level) {
++                bool isCritical = level == 2;
++                RunLoop::mainSingleton().dispatch([isCritical] {
++                    for (auto& processPool : WebProcessPool::allProcessPools())
++                        processPool->sendMemoryPressureEvent(isCritical);
++                });
++            }
++            pollInterval = pollIntervalForUsedMemoryPercentage(usedPercentage);
++        }
++    })->detach();
++}
++
++bool MemoryPressureMonitor::disabled()
++{
++    static bool disabled = [] {
++        const char* value = getenv("WEBKIT_DISABLE_MEMORY_PRESSURE_MONITOR");
++        return value && !strcmp(value, "1");
++    }();
++    return disabled;
++}
++
++} // namespace WebKit
+diff --git a/Source/WebKit/UIProcess/haiku/MemoryPressureMonitorHaiku.h b/Source/WebKit/UIProcess/haiku/MemoryPressureMonitorHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..e74064b7ebc8e652df29d285e62b91ef45dd988f
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/MemoryPressureMonitorHaiku.h
+@@ -0,0 +1,54 @@
++/*
++ * Copyright (C) 2026 Haiku, Inc.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#pragma once
++
++#if OS(HAIKU)
++
++#include <wtf/NeverDestroyed.h>
++#include <wtf/Noncopyable.h>
++
++namespace WebKit {
++
++// Haiku sends applications no low-memory notifications, so, like the Linux
++// monitor, this polls the system's memory use and tells every auxiliary
++// process when it runs short. They then drop caches, collect garbage and
++// return free heap to the system.
++class MemoryPressureMonitor {
++    WTF_MAKE_NONCOPYABLE(MemoryPressureMonitor);
++    friend NeverDestroyed<MemoryPressureMonitor>;
++public:
++    static MemoryPressureMonitor& singleton();
++    void start();
++    static bool disabled();
++
++private:
++    MemoryPressureMonitor() = default;
++    bool m_started { false };
++};
++
++} // namespace WebKit
++
++#endif // OS(HAIKU)
 diff --git a/Source/WebKit/UIProcess/haiku/NativeExtensionPopupHaiku.h b/Source/WebKit/UIProcess/haiku/NativeExtensionPopupHaiku.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..9fa4b7ac5416aa7f51b2aa0b770fde7890a4afe0

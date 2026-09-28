@@ -2,15 +2,15 @@
 
 ## 28 September 2026: installed build, and a profile retrain that lost
 
-Installed on the X399 at 11:38: `bundle-0qf3st48`, built in `SkiaCGMiPGO`
-with the 25 September profiles (Speedometer 8.03 against 7.94 for
-`bundle-c1ue7ry9` in the same session). Over yesterday's install
+Installed on the X399 at 12:49: `bundle-egaransh`, built in `SkiaCGMiPGO`
+with the 25 September profiles (Speedometer 7.86 / 7.88 against 7.97 / 7.56
+for the 11:38 install, `bundle-0qf3st48`). Over yesterday's install
 (`bundle-05tk1w24`) it adds contents-layer damage, the compositor's live
 check before waiting for a buffer, pausing invisible muted autoplay, the
-larger HTTP connection pool and `SUMMIT_NET_TRACE` (below). Earlier today
-`bundle-c1ue7ry9` was installed; the launchers they replaced are kept as
-`Summit-current.pre-20260928-1029.sh` and `-1138.sh`. The table compares
-`bundle-c1ue7ry9` with yesterday's install.
+larger HTTP connection pool, `SUMMIT_NET_TRACE`, and a memory pressure
+monitor (all below). The launchers it replaced today are kept as
+`Summit-current.pre-20260928-1029.sh`, `-1138.sh` and `-1249.sh`. The table
+compares `bundle-c1ue7ry9`, the first of today's installs, with yesterday's.
 
 | X399, 200% | `bundle-05tk1w24` | `bundle-c1ue7ry9` |
 | --- | --- | --- |
@@ -41,6 +41,55 @@ already-destroyed token space. The parse is locked (`_REENTRANT` is defined),
 so this is not two threads parsing at once; flex exits on a failed read,
 which fits a descriptor closed underneath it. One report in a week; left as
 a lead (a libnetwork parser should not `exit()` its host process).
+
+### Memory: what a tab is made of, and a pressure monitor
+
+Resident memory by area (`listarea`), one site per browser at 200%, 30 s
+after loading, for the page's web process:
+
+| Page | total | mimalloc + JS heap | GPU host memory (NVRM sysmem) | libroot heap | frame buffers |
+| --- | --- | --- | --- | --- | --- |
+| about:blank | 193 MiB | 30 MiB | 81 MiB | 28 MiB | 27 MiB |
+| Wikipedia | 231 MiB | 87 MiB | 32 MiB | 35 MiB | 54 MiB |
+| GitHub | 345 MiB | 185 MiB | 38 MiB | 45 MiB | 54 MiB |
+| YouTube | 735 MiB | 467 MiB | 136 MiB | 53 MiB | 54 MiB |
+| CNN | 851 MiB | 599 MiB | 76 MiB | 81 MiB | 54 MiB |
+
+(Anonymous areas are named after the library that mapped them; mimalloc and
+the JavaScript heap live in JavaScriptCore's. The frame buffers, two
+3840x1826 buffers while visible, are shared with the UI process and counted
+in both. A prewarmed process with no page yet holds 31 MiB.)
+
+- **Hiding a tab frees almost nothing**: CNN hidden for 30 s held 898 MiB
+  against 855 visible. One frame buffer goes back, but the page's GL
+  contexts, tiles and zink's caches stay (`suspendPainting()` only pauses
+  rendering).
+- **Every tab pays ~80 MiB of GPU host memory before loading anything**:
+  21 zink buffer slabs of 2 MiB, a 26.75 MiB staging copy of the frame for
+  readback, and a 9.2 MiB buffer. `ZINK_DESCRIPTORS=lazy` and one GPU
+  painting thread instead of two changed nothing. Mesa's readpixels cache
+  (`ST_DEBUG=noreadpixcache`) is not the staging buffer's owner and made
+  readback no faster (a 0.08 Mpx read costs ~4 ms either way: that is the
+  wait for the GPU to finish the frame).
+- **`WTF::memoryFootprint()` on Haiku is wrong**: it sums the loaded images'
+  data segments (and passes a null cookie to `get_next_image_info`). Nothing
+  uses it on Haiku today because the periodic memory monitor is off, but it
+  must be fixed before that monitor is switched on.
+
+**Memory pressure now reaches the web processes.** WebKit only releases
+memory when told the system is short, and on Haiku nobody told it: the
+Linux UI process polls `/proc/meminfo` and sends
+`DidReceiveMemoryPressureEvent`, which was compiled for Linux only.
+`UIProcess/haiku/MemoryPressureMonitorHaiku.cpp` polls `get_system_info()`
+(file cache counts as available) with the Linux policy: every 5 s below 50%
+in use, down to every second at 85%, pressure from 90%, critical from 95%.
+The web and network processes then collect garbage, drop compiled code and
+caches, and give free heap back through mimalloc. `WEBKIT_DISABLE_MEMORY_PRESSURE_MONITOR=1`
+turns it off; `SUMMIT_MEMORY_PRESSURE_PERCENT=<n>` moves the thresholds to
+<n> and <n>+5 for testing. Held permanently at critical, twelve tabs idled
+at 3460 / 3429 MiB against 3728 / 3725 MiB without it: about 280 MiB (7.5%)
+is reclaimable, the rest is live. That is what a machine with less memory
+gets back before it runs out; on the X399 (64 GB) the monitor never fires.
 
 ### Page loads: what the network trace shows
 
