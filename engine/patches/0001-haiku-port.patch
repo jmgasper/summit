@@ -26478,13 +26478,21 @@ index 0000000000000000000000000000000000000000..6b5fc0f78f205ca35494521f2ebefe65
 +
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/network/curl/CurlContext.h b/Source/WebCore/platform/network/curl/CurlContext.h
-index 8f5be49b731627a769f2a1bb6da25953dd9f63d1..3e7549cc768ce28a607ea3f9f279aeaed41c3483 100644
+index 8f5be49b731627a769f2a1bb6da25953dd9f63d1..129c0fad524484a45e9048daecfd5aa5cb56d9c5 100644
 --- a/Source/WebCore/platform/network/curl/CurlContext.h
 +++ b/Source/WebCore/platform/network/curl/CurlContext.h
-@@ -50,7 +50,14 @@ namespace WebCore {
+@@ -49,8 +49,22 @@ namespace WebCore {
+ 
  // Values taken from http://www.browserscope.org/ following
  // the rule "Do What Every Other Modern Browser Is Doing".
++#if PLATFORM(HAIKU)
++// libcurl's default sizes its connection cache at four per transfer in progress, so a
++// page that pauses between bursts loses its HTTP/2 connections and pays for new
++// TLS handshakes (The Verge: 203 handshakes for 141 hosts, 129 with this).
++const long CurlDefaultMaxConnects { 128 };
++#else
  const long CurlDefaultMaxConnects { -1 }; // -1 : Does not set CURLMOPT_MAXCONNECTS
++#endif
 +#if PLATFORM(HAIKU)
 +// Seventeen connections for the whole browser made a restored session of many
 +// tabs, or a page with assets on twenty hosts, wait for sockets. Browsers on
@@ -26832,10 +26840,10 @@ index 0000000000000000000000000000000000000000..da71c185bfa5f93bf68ba7a513f48393
 +
 +#endif
 diff --git a/Source/WebCore/platform/network/curl/CurlRequest.cpp b/Source/WebCore/platform/network/curl/CurlRequest.cpp
-index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..7e893b30a287d8cc28e3c410283801ec924448c7 100644
+index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..48eded1c4c0f04582b408b7fbb1b0df4dbfd2c09 100644
 --- a/Source/WebCore/platform/network/curl/CurlRequest.cpp
 +++ b/Source/WebCore/platform/network/curl/CurlRequest.cpp
-@@ -36,7 +36,9 @@
+@@ -36,19 +36,51 @@
  #include "NetworkLoadMetrics.h"
  #include "ResourceError.h"
  #include "SharedBuffer.h"
@@ -26845,7 +26853,41 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..7e893b30a287d8cc28e3c410283801ec
  #include <wtf/Language.h>
  #include <wtf/MainThread.h>
  #include <wtf/TZoneMallocInlines.h>
-@@ -49,6 +51,7 @@ WTF_MAKE_TZONE_ALLOCATED_IMPL(CurlRequest);
+ #include <wtf/text/MakeString.h>
+ 
++#if PLATFORM(HAIKU)
++#include <cstdio>
++#include <wtf/text/CString.h>
++#endif
++
+ namespace WebCore {
+ 
++#if PLATFORM(HAIKU)
++// SUMMIT_NET_TRACE=1 logs every request when it is queued and when it
++// completes, fails or is cancelled, to find what holds a page's load event.
++static bool netTraceHaiku()
++{
++    static const bool enabled = [] {
++        const char* value = getenv("SUMMIT_NET_TRACE");
++        return value && value[0] == '1' && !value[1];
++    }();
++    return enabled;
++}
++
++static double netTraceMsHaiku(MonotonicTime from, MonotonicTime to)
++{
++    return from && to ? (to - from).milliseconds() : -1;
++}
++
++static CString netTraceURLHaiku(const URL& url)
++{
++    auto string = url.string();
++    return (string.length() > 160 ? string.left(160) : string).utf8();
++}
++#endif
++
+ WTF_MAKE_TZONE_ALLOCATED_IMPL(CurlRequest);
+ 
  CurlRequest::CurlRequest(const ResourceRequest&request, CurlRequestClient* client, CaptureNetworkLoadMetrics captureExtraMetrics)
      : m_client(client)
      , m_request(request.isolatedCopy())
@@ -26853,7 +26895,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..7e893b30a287d8cc28e3c410283801ec
      , m_formDataStream(m_request.httpBody())
      , m_captureExtraMetrics(captureExtraMetrics == CaptureNetworkLoadMetrics::Extended)
  {
-@@ -95,7 +98,7 @@ void CurlRequest::setUserPass(const String& user, const String& password)
+@@ -95,7 +127,7 @@ void CurlRequest::setUserPass(const String& user, const String& password)
      m_password = password.isolatedCopy();
  }
  
@@ -26862,7 +26904,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..7e893b30a287d8cc28e3c410283801ec
  {
      // The pausing of transfer does not work with protocols, like file://.
      // Therefore, PAUSE can not be done in didReceiveData().
-@@ -108,10 +111,16 @@ void CurlRequest::resume()
+@@ -108,10 +140,16 @@ void CurlRequest::resume()
  
      ASSERT(isMainThread());
  
@@ -26882,7 +26924,31 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..7e893b30a287d8cc28e3c410283801ec
  
      if (m_request.url().protocolIsFile())
          invokeDidReceiveResponseForFile(m_request.url());
-@@ -144,7 +153,7 @@ void CurlRequest::cancel()
+@@ -122,6 +160,12 @@ void CurlRequest::resume()
+ void CurlRequest::startWithJobManager()
+ {
+     ASSERT(isMainThread());
++#if PLATFORM(HAIKU)
++    if (netTraceHaiku()) {
++        m_netTraceQueuedAtHaiku = MonotonicTime::now();
++        fprintf(stderr, "Summit net: start id=%p %s %s\n", this, m_request.httpMethod().utf8().data(), netTraceURLHaiku(m_request.url()).data());
++    }
++#endif
+ 
+     CurlContext::singleton().scheduler().add(this);
+ }
+@@ -137,6 +181,10 @@ void CurlRequest::cancel()
+ 
+         m_cancelled = true;
+     }
++#if PLATFORM(HAIKU)
++    if (netTraceHaiku() && m_netTraceQueuedAtHaiku)
++        fprintf(stderr, "Summit net: cancel id=%p after=%.0f %s\n", this, netTraceMsHaiku(m_netTraceQueuedAtHaiku, MonotonicTime::now()), netTraceURLHaiku(m_request.url()).data());
++#endif
+ 
+     auto& scheduler = CurlContext::singleton().scheduler();
+ 
+@@ -144,7 +192,7 @@ void CurlRequest::cancel()
          runOnWorkerThreadIfRequired([this, protectedThis = Ref { *this }]() {
              didCancelTransfer();
          });
@@ -26891,7 +26957,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..7e893b30a287d8cc28e3c410283801ec
          scheduler.cancel(this);
  
      invalidateClient();
-@@ -162,6 +171,41 @@ bool CurlRequest::isCompletedOrCancelled()
+@@ -162,6 +210,41 @@ bool CurlRequest::isCompletedOrCancelled()
      return m_completed || m_cancelled;
  }
  
@@ -26933,7 +26999,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..7e893b30a287d8cc28e3c410283801ec
  /* `this` is protected inside this method. */
  void CurlRequest::callClient(Function<void(CurlRequest&, CurlRequestClient&)>&& task)
  {
-@@ -173,7 +217,7 @@ void CurlRequest::callClient(Function<void(CurlRequest&, CurlRequestClient&)>&&
+@@ -173,7 +256,7 @@ void CurlRequest::callClient(Function<void(CurlRequest&, CurlRequestClient&)>&&
  
  void CurlRequest::runOnMainThread(Function<void()>&& task)
  {
@@ -26942,7 +27008,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..7e893b30a287d8cc28e3c410283801ec
  }
  
  void CurlRequest::runOnWorkerThreadIfRequired(Function<void()>&& task)
-@@ -209,8 +253,9 @@ CURL* CurlRequest::setupTransfer()
+@@ -209,8 +292,9 @@ CURL* CurlRequest::setupTransfer()
          setupPUT();
      }
  
@@ -26953,7 +27019,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..7e893b30a287d8cc28e3c410283801ec
  
      if (m_shouldDisableServerTrustEvaluation)
          m_curlHandle->disableServerTrustEvaluation();
-@@ -377,6 +422,8 @@ size_t CurlRequest::didReceiveData(std::span<const uint8_t> receivedData)
+@@ -377,6 +461,8 @@ size_t CurlRequest::didReceiveData(std::span<const uint8_t> receivedData)
  
      m_totalReceivedSize += receivedData.size();
  
@@ -26962,7 +27028,37 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..7e893b30a287d8cc28e3c410283801ec
      if (receivedData.size()) {
          if (m_multipartHandle) {
              m_multipartHandle->didReceiveMessage(receivedData);
-@@ -506,10 +553,12 @@ void CurlRequest::didCompleteTransfer(CURLcode result)
+@@ -475,6 +561,17 @@ void CurlRequest::didCompleteTransfer(CURLcode result)
+         }
+ 
+         auto metrics = networkLoadMetrics();
++#if PLATFORM(HAIKU)
++        if (netTraceHaiku() && m_netTraceQueuedAtHaiku) {
++            auto now = MonotonicTime::now();
++            fprintf(stderr, "Summit net: done id=%p status=%d queue=%.0f dns=%.0f connect=%.0f tls=%.0f ttfb=%.0f total=%.0f bytes=%zu proto=%s %s\n",
++                this, m_response.statusCode, netTraceMsHaiku(m_netTraceQueuedAtHaiku, m_performStartTime),
++                netTraceMsHaiku(metrics.domainLookupStart, metrics.domainLookupEnd), netTraceMsHaiku(metrics.connectStart, metrics.connectEnd),
++                netTraceMsHaiku(metrics.secureConnectionStart, metrics.connectEnd), netTraceMsHaiku(metrics.requestStart, metrics.responseStart),
++                netTraceMsHaiku(m_netTraceQueuedAtHaiku, now), m_totalReceivedSize, metrics.protocol.utf8().data(),
++                netTraceURLHaiku(m_request.url()).data());
++        }
++#endif
+ 
+         finalizeTransfer();
+         callClient([networkLoadMetrics = WTF::move(metrics)](CurlRequest& request, CurlRequestClient& client) mutable {
+@@ -486,6 +583,11 @@ void CurlRequest::didCompleteTransfer(CURLcode result)
+     } else {
+         auto type = (result == CURLE_OPERATION_TIMEDOUT && timeoutInterval()) ? ResourceError::Type::Timeout : ResourceError::Type::General;
+         auto resourceError = ResourceError(result, m_request.url(), type);
++#if PLATFORM(HAIKU)
++        if (netTraceHaiku() && m_netTraceQueuedAtHaiku)
++            fprintf(stderr, "Summit net: fail id=%p result=%d (%s) total=%.0f %s\n", this, static_cast<int>(result), curl_easy_strerror(result),
++                netTraceMsHaiku(m_netTraceQueuedAtHaiku, MonotonicTime::now()), netTraceURLHaiku(m_request.url()).data());
++#endif
+ 
+         CertificateInfo certificateInfo;
+         if (auto info = m_curlHandle->certificateInfo())
+@@ -506,10 +608,12 @@ void CurlRequest::didCompleteTransfer(CURLcode result)
  void CurlRequest::didCancelTransfer()
  {
      finalizeTransfer();
@@ -26975,7 +27071,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..7e893b30a287d8cc28e3c410283801ec
      m_formDataStream.clean();
      m_multipartHandle = nullptr;
      m_curlHandle = nullptr;
-@@ -632,6 +681,88 @@ void CurlRequest::completeDidReceiveResponse()
+@@ -632,6 +736,88 @@ void CurlRequest::completeDidReceiveResponse()
          responseCompletionHandler();
  }
  
@@ -27064,7 +27160,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..7e893b30a287d8cc28e3c410283801ec
  NetworkLoadMetrics CurlRequest::networkLoadMetrics()
  {
      ASSERT(m_curlHandle);
-@@ -653,6 +784,57 @@ NetworkLoadMetrics CurlRequest::networkLoadMetrics()
+@@ -653,6 +839,57 @@ NetworkLoadMetrics CurlRequest::networkLoadMetrics()
      return WTF::move(*networkLoadMetrics);
  }
  
@@ -27123,7 +27219,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..7e893b30a287d8cc28e3c410283801ec
  {
      for (const auto& header : m_response.headers) {
 diff --git a/Source/WebCore/platform/network/curl/CurlRequest.h b/Source/WebCore/platform/network/curl/CurlRequest.h
-index 3b060605bbff32f845804a848610eca23dea834c..07dc4549bf0d39bf3a77d6e7d24fa88e83f38bd8 100644
+index 3b060605bbff32f845804a848610eca23dea834c..8944602bc958120d95c2e0e9b9654938e96047c9 100644
 --- a/Source/WebCore/platform/network/curl/CurlRequest.h
 +++ b/Source/WebCore/platform/network/curl/CurlRequest.h
 @@ -32,6 +32,8 @@
@@ -27197,7 +27293,7 @@ index 3b060605bbff32f845804a848610eca23dea834c..07dc4549bf0d39bf3a77d6e7d24fa88e
      // Callback functions for curl
      static size_t willSendDataCallback(char*, size_t, size_t, void*);
      static size_t didReceiveHeaderCallback(char*, size_t, size_t, void*);
-@@ -149,18 +169,38 @@ private:
+@@ -149,23 +169,46 @@ private:
      bool m_shouldDisableServerTrustEvaluation { false };
      CurlHandle::LocalhostAlias m_localhostAlias { CurlHandle::LocalhostAlias::Disable };
  
@@ -27237,6 +27333,14 @@ index 3b060605bbff32f845804a848610eca23dea834c..07dc4549bf0d39bf3a77d6e7d24fa88e
      bool m_captureExtraMetrics;
      size_t m_requestHeaderSize { 0 };
      HTTPHeaderMap m_requestHeaders;
+     MonotonicTime m_performStartTime;
+     size_t m_totalReceivedSize { 0 };
++#if PLATFORM(HAIKU)
++    MonotonicTime m_netTraceQueuedAtHaiku;
++#endif
+ };
+ 
+ } // namespace WebCore
 diff --git a/Source/WebCore/platform/network/curl/CurlResourceHandleDelegate.cpp b/Source/WebCore/platform/network/curl/CurlResourceHandleDelegate.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..f6b008769c163c091d6c6524b46c296e9b075194

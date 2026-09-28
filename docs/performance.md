@@ -27,7 +27,73 @@ Desktop (27 September, 20:27-20:37 local) are the NVDEC `memcpy` at
 `nvdec_h264.c:883`, fixed and installed by the OS session later that night.
 Two older NetworkProcess reports died while the process was already exiting:
 one in OpenSSL (`CRYPTO_THREAD_read_lock` from a libcurl thread after exit
-had started), one in `WebSWServerToContextConnection::terminateWorker`.
+had started), one in `WebSWServerToContextConnection::terminateWorker`. The
+second was not a shutdown at all: a libcurl resolver thread was in
+`_kern_exit_team`, called from `getaddrinfo` -> `nsdispatch` ->
+`_nsconfigure` -> `_nsyyparse`/`_nsyylex`, i.e. libnetwork's flex scanner
+for `/etc/nsswitch.conf` called `exit()`. Its teardown ended the main run
+loop, and `platformFinalize` then crashed posting IPC through libbe's
+already-destroyed token space. The parse is locked (`_REENTRANT` is defined),
+so this is not two threads parsing at once; flex exits on a failed read,
+which fits a descriptor closed underneath it. One report in a week; left as
+a lead (a libnetwork parser should not `exit()` its host process).
+
+### Page loads: what the network trace shows
+
+`SUMMIT_NET_TRACE=1` (new) makes the network process log each request when
+it is queued and when it completes (status, time queued, DNS, connect, TLS,
+time to first byte, total, bytes, protocol), fails or is cancelled.
+
+**The Verge's 41 s.** Its load event waits on three ad user-sync requests
+(`ads.yieldmo.com`, `cm-supply-web.gammaplatform.com`, `ads.stickyadstv.com`)
+that end with curl's 30 s connect timeout. Their addresses are real, but no
+connection to them ever completes from the X399 or from the Linux host: this
+network drops them. Any browser here waits on them (Firefox's connect timeout
+is 90 s), so this is not a Summit problem; `WEBKIT_CURL_CONNECT_TIMEOUT=<s>`
+shortens it if wanted. Everything else on the page: 570 requests, time
+queued at most 9 ms, median time to first byte 136 ms; the slowest responses
+are ad auctions (up to 2.1 s).
+
+**Connections closed between bursts.** Those 570 requests to 141 hosts made
+203 TLS handshakes, four to www.theverge.com alone. libcurl sizes its
+connection cache at four per transfer in progress unless `CURLMOPT_MAXCONNECTS`
+is set, and WebKit did not set it, so when a page pauses between bursts its
+HTTP/2 connections are closed and the next burst pays for new handshakes
+(`CURLOPT_PIPEWAIT` and TLS session sharing were already on). With a cache
+of 128 (the Haiku default now; `WEBKIT_CURL_MAXCONNECTS` overrides it) the
+same page made 129 handshakes for 132 hosts, two to www.theverge.com. Reading
+a Wikipedia article, idling 15 s and following a link: the second load made
+2 / 2 new handshakes before and 0 / 1 after (0.80 / 1.23 s against
+2.23 / 1.23 s). Twelve sites loading at once were within noise (median 2.55 /
+3.29 s against 3.7 / 2.9 s, p90 5.3 against 6.2 s); with that many transfers
+in flight the default cache is already large.
+
+### Scrolling real pages at 200%
+
+`run-scroll.py --ui-frame-stats` (120 wheel notches at 16 ms, window
+1920x1056 at 200%), 2 s after navigating (still loading) and after 20 s:
+
+| Page | while loading | settled |
+| --- | --- | --- |
+| CNN | 54 fps, worst 125 ms | 54 fps, worst 61 ms |
+| The Guardian | 30 fps, worst 535 ms | 31 fps, worst 421 ms |
+| Wikipedia (Haiku article) | 33 fps, worst 1044 ms | 39 fps, worst 553 ms |
+
+With `SUMMIT_COMPOSITOR_TIMING_TRACE=1 SUMMIT_PRESENT_STATS=1` the 110
+scroll frames of the Wikipedia burst cost 20.2 ms each on average: readback
+and present 14.2 ms (p90 19.4, max 41.8; the full 7 Mpx, since scrolling
+moves everything), flushing new tiles 3.7 ms (p90 12.4, max 48.5), and
+compositing 2.1 ms. The standalone probe reads the same 7 Mpx in 8.3 ms;
+inside a scrolling page the GPU is also compositing and taking tile
+uploads, at the boot clocks NVK leaves a GTX 1070 on. That puts 200% scrolling
+at 40-55 fps on this machine until frames can reach app_server without a
+readback (or NVK can raise the clocks), both on the OS side.
+
+A harness trap: `screenshot` takes 4.6-5.0 s on the X399 and holds up
+drawing while it runs, so `run-scroll.py`'s before and after screenshots
+show up in the UI frame statistics as 3.6-4.3 s stalls with frames queued
+(`queueMax=` in `browser.log`). They are not Summit stalls; compare the burst
+numbers, which the screenshots do not overlap.
 
 ### The retrain: lost merges, so the old profiles stay
 
