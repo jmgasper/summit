@@ -929,6 +929,40 @@ index f7c1f5175e14e27e4c67598f5424782e2af77050..cde8501928cd6510cb4386b3afb6edd1
  
  namespace WTF {
  
+diff --git a/Source/WTF/wtf/haiku/MemoryFootprintHaiku.cpp b/Source/WTF/wtf/haiku/MemoryFootprintHaiku.cpp
+index 1c2a8e5c77949803e7e4dd4b96dee006c80abef2..418bf359627ba6f201cc6d8e78239d16530afd51 100644
+--- a/Source/WTF/wtf/haiku/MemoryFootprintHaiku.cpp
++++ b/Source/WTF/wtf/haiku/MemoryFootprintHaiku.cpp
+@@ -26,22 +26,18 @@
+ #include "config.h"
+ #include <wtf/MemoryFootprint.h>
+ 
+-#include <image.h>
+-
++#include <wtf/haiku/CurrentProcessMemoryStatus.h>
+ 
+ namespace WTF {
+ 
++// Resident memory, as Linux reports it. This used to add up the loaded
++// images' data segments, a few MiB whatever the page held (and it passed
++// get_next_image_info() a null cookie).
+ size_t memoryFootprint()
+ {
+-    image_info info;
+-    int32* cookie = nullptr;
+-
+-    size_t heapSize = 0;
+-
+-    while (get_next_image_info(B_CURRENT_TEAM, cookie, &info) == B_OK)
+-        heapSize += info.data_size;
+-
+-    return heapSize;
++    ProcessMemoryStatus memoryStatus;
++    currentProcessMemoryStatus(memoryStatus);
++    return memoryStatus.resident;
+ }
+ 
+ }
 diff --git a/Source/WTF/wtf/haiku/RunLoopHaiku.cpp b/Source/WTF/wtf/haiku/RunLoopHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..37da313b93ce0cd7429b46c962faa63d9e8569fd
@@ -12679,10 +12713,10 @@ index 0000000000000000000000000000000000000000..df2a7d05bcacb641010b07fe2942ce2d
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..b2223740650d0f574f27ad2c1ec74b62339e7bc0
+index 0000000000000000000000000000000000000000..1be70bcb5f2d6147ff07d6585461510e0d96112a
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,1601 @@
+@@ -0,0 +1,1619 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -13276,12 +13310,30 @@ index 0000000000000000000000000000000000000000..b2223740650d0f574f27ad2c1ec74b62
 +    if (!proxy || !proxy->isValid() || !m_frameBuffer)
 +        return false;
 +    // The decoder writes the next picture into the same bitmap, so the
-+    // compositor gets its own copy.
++    // compositor gets its own copy. Allocating that copy for every frame
++    // (8 MB at 1080p) had the kernel fault in and zero fresh pages each time;
++    // the buffers are reused once the compositor has let go of them, as the
++    // MSE player does.
 +    BRect bounds = m_frameBuffer->Bounds();
 +    auto info = SkImageInfo::Make(bounds.IntegerWidth() + 1, bounds.IntegerHeight() + 1,
 +        kBGRA_8888_SkColorType, kOpaque_SkAlphaType, SkColorSpace::MakeSRGB());
-+    SkPixmap pixmap(info, m_frameBuffer->Bits(), m_frameBuffer->BytesPerRow());
-+    auto image = SkImages::RasterFromPixmapCopy(pixmap);
++    size_t rowBytes = m_frameBuffer->BytesPerRow();
++    size_t size = rowBytes * info.height();
++    sk_sp<SkData> pixels;
++    for (auto& buffer : m_compositorBuffers) {
++        if (buffer->unique() && buffer->size() == size) {
++            pixels = buffer;
++            break;
++        }
++    }
++    if (!pixels) {
++        m_compositorBuffers.removeAllMatching([](auto& buffer) { return buffer->unique(); });
++        pixels = SkData::MakeUninitialized(size);
++        if (m_compositorBuffers.size() < 6)
++            m_compositorBuffers.append(pixels);
++    }
++    std::memcpy(pixels->writable_data(), m_frameBuffer->Bits(), size);
++    auto image = SkImages::RasterFromData(info, WTF::move(pixels), rowBytes);
 +    if (!image)
 +        return false;
 +    RefPtr nativeImage = NativeImage::create(WTF::move(image));
@@ -14286,10 +14338,10 @@ index 0000000000000000000000000000000000000000..b2223740650d0f574f27ad2c1ec74b62
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..2eddfa4e283a88a8d751d1535bc9cce2ef765905
+index 0000000000000000000000000000000000000000..84f921897b08bf57ddd0dad28dae0bc9a4aebee4
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
-@@ -0,0 +1,209 @@
+@@ -0,0 +1,215 @@
 +/*
 + * Copyright (C) 2014 Haiku, Inc.
 + *
@@ -14321,6 +14373,9 @@ index 0000000000000000000000000000000000000000..2eddfa4e283a88a8d751d1535bc9cce2
 +#include <optional>
 +
 +#include <Locker.h>
++#if USE(COORDINATED_GRAPHICS) && USE(TEXTURE_MAPPER) && USE(SKIA)
++#include <skia/core/SkData.h>
++#endif
 +#include <MediaDefs.h>
 +#include <ObjectList.h>
 +#include <private/netservices/UrlProtocolAsynchronousListener.h>
@@ -14418,6 +14473,9 @@ index 0000000000000000000000000000000000000000..2eddfa4e283a88a8d751d1535bc9cce2
 +#if USE(COORDINATED_GRAPHICS) && USE(TEXTURE_MAPPER) && USE(SKIA)
 +        mutable BLocker m_layerBufferProxyLock;
 +        RefPtr<CoordinatedPlatformLayerBufferProxy> m_layerBufferProxy;
++        // Pixels of the frames handed to the compositor, reused once no image
++        // refers to them (m_mediaLock).
++        Vector<sk_sp<SkData>> m_compositorBuffers;
 +#endif
 +
 +

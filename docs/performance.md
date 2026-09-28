@@ -2,15 +2,16 @@
 
 ## 28 September 2026: installed build, and a profile retrain that lost
 
-Installed on the X399 at 12:49: `bundle-egaransh`, built in `SkiaCGMiPGO`
-with the 25 September profiles (Speedometer 7.86 / 7.88 against 7.97 / 7.56
-for the 11:38 install, `bundle-0qf3st48`). Over yesterday's install
-(`bundle-05tk1w24`) it adds contents-layer damage, the compositor's live
-check before waiting for a buffer, pausing invisible muted autoplay, the
-larger HTTP connection pool, `SUMMIT_NET_TRACE`, and a memory pressure
-monitor (all below). The launchers it replaced today are kept as
-`Summit-current.pre-20260928-1029.sh`, `-1138.sh` and `-1249.sh`. The table
-compares `bundle-c1ue7ry9`, the first of today's installs, with yesterday's.
+Installed on the X399 at 13:03: `bundle-u3r1x1qd`, built in `SkiaCGMiPGO`
+with the 25 September profiles (Speedometer 8.01; the 12:49 install scored
+7.86 / 7.88). Over yesterday's install (`bundle-05tk1w24`) it adds
+contents-layer damage, the compositor's live check before waiting for a
+buffer, pausing invisible muted autoplay, the larger HTTP connection pool,
+`SUMMIT_NET_TRACE`, a memory pressure monitor and reused video frame buffers
+(all below). The launchers it replaced today are kept as
+`Summit-current.pre-20260928-1029.sh`, `-1138.sh`, `-1249.sh` and
+`-1303.sh`. The table compares `bundle-c1ue7ry9`, the first of today's
+installs, with yesterday's.
 
 | X399, 200% | `bundle-05tk1w24` | `bundle-c1ue7ry9` |
 | --- | --- | --- |
@@ -42,6 +43,31 @@ so this is not two threads parsing at once; flex exits on a failed read,
 which fits a descriptor closed underneath it. One report in a week; left as
 a lead (a libnetwork parser should not `exit()` its host process).
 
+### Video: a fifth less CPU per stream
+
+A looping 1080p NVDEC clip (`media.html?src=refs-media/refs4.mp4&loop=1`,
+new `loop=1`), per-thread CPU over 5 s from `ps -a`: the web process used
+0.87-0.88 cores, of which the compositor thread 0.36-0.39 (upload, composite,
+readback), the video decoder thread 0.23-0.24, Skia's painters 0.09 (the
+controls) and the main thread 0.07; app_server another 0.25-0.33 for the
+window.
+
+The file engine hands each decoded `BBitmap` to the compositor as a copy,
+and allocated that copy for every frame: 8 MB at 1080p, fresh pages the
+kernel had to fault in and zero each time (freed memory goes back with
+`MADV_FREE`). The copies now go into buffers reused once the compositor has
+released them, as the MSE player already did. The decoder thread fell to
+0.10 cores and the web process to 0.67-0.68 (two alternated pairs; the clips
+still play, seek and end, the MSE fixture shows 360 frames with none
+dropped).
+
+Next for video: the NVDEC add-on converts every picture to RGB32 on the CPU
+and the compositor uploads 8 MB per 1080p frame. TextureMapper can draw NV12
+(`drawTextureSemiPlanarYUV`, `CoordinatedPlatformLayerBufferYUV`), which is
+what NVDEC produces, at 3 MB a frame and no conversion; that needs an NV12
+output mode in the add-on (it offers RGB32 and YCbCr422 today, and the
+packed-YUV shader only takes AYUV) and a buffer that uploads the two planes.
+
 ### Memory: what a tab is made of, and a pressure monitor
 
 Resident memory by area (`listarea`), one site per browser at 200%, 30 s
@@ -72,10 +98,10 @@ in both. A prewarmed process with no page yet holds 31 MiB.)
   (`ST_DEBUG=noreadpixcache`) is not the staging buffer's owner and made
   readback no faster (a 0.08 Mpx read costs ~4 ms either way: that is the
   wait for the GPU to finish the frame).
-- **`WTF::memoryFootprint()` on Haiku is wrong**: it sums the loaded images'
-  data segments (and passes a null cookie to `get_next_image_info`). Nothing
-  uses it on Haiku today because the periodic memory monitor is off, but it
-  must be fixed before that monitor is switched on.
+- **`WTF::memoryFootprint()` on Haiku was wrong**: it summed the loaded
+  images' data segments (and passed a null cookie to `get_next_image_info`).
+  Nothing uses it on Haiku today (the periodic memory monitor is off); it now
+  returns resident memory, as on Linux.
 
 **Memory pressure now reaches the web processes.** WebKit only releases
 memory when told the system is short, and on Haiku nobody told it: the
