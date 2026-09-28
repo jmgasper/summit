@@ -1644,6 +1644,41 @@ void BrowserWindow::ActivateExtensionAction(const BMessage& message)
 void BrowserWindow::DispatchMessage(BMessage* message, BHandler* handler)
 {
     summit::StallScope scope("window", message ? message->what : 0);
+    // SUMMIT_INPUT_LAG_TRACE=1: once a second, how late pointer events reach
+    // this window after input_server stamped them, which is the time they
+    // spent in input_server and app_server (whose event thread also moves
+    // the cursor). Summit cannot make them earlier; it can only report them.
+    static const bool traceLag = [] {
+        const char* value = std::getenv("SUMMIT_INPUT_LAG_TRACE");
+        return value && !std::strcmp(value, "1");
+    }();
+    if (traceLag && message && message->what == B_MOUSE_MOVED) {
+        // Also the gaps between consecutive moves as input_server stamped
+        // them: a moving mouse reports every 8-16 ms, so a gap of 40-400 ms
+        // in the middle of a motion is the device or its link stalling,
+        // before the browser ever sees the event.
+        static bigtime_t bucketStart = 0, sum = 0, worst = 0, lastWhen = 0, worstGap = 0;
+        static int count = 0, over30 = 0, over100 = 0, stalls = 0;
+        const bigtime_t now = system_time();
+        bigtime_t when = 0;
+        if (message->FindInt64("when", &when) == B_OK && when > 0 && when <= now) {
+            const bigtime_t lag = now - when;
+            if (!bucketStart) bucketStart = now;
+            ++count; sum += lag; worst = std::max(worst, lag);
+            if (lag > 30000) ++over30;
+            if (lag > 100000) ++over100;
+            if (lastWhen) {
+                const bigtime_t gap = when - lastWhen;
+                if (gap > 40000 && gap <= 400000) { ++stalls; worstGap = std::max(worstGap, gap); }
+            }
+            lastWhen = when;
+            if (now - bucketStart >= 1000000) {
+                std::fprintf(stderr, "Summit input lag: %d moves, mean %.1f ms, max %.1f ms, over 30 ms %d, over 100 ms %d; source gaps 40-400 ms: %d, worst %.0f ms\n",
+                    count, sum / 1000.0 / count, worst / 1000.0, over30, over100, stalls, worstGap / 1000.0);
+                bucketStart = now; sum = worst = worstGap = 0; count = over30 = over100 = stalls = 0;
+            }
+        }
+    }
     BrowserWindowBase::DispatchMessage(message, handler);
 }
 

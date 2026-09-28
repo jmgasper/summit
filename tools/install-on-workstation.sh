@@ -27,7 +27,10 @@ export WEBKIT_EXEC_PATH=\"\\\$SUMMIT_BUNDLE\"
 export SUMMIT_SKIA_GL_CONTEXT=\\\${SUMMIT_SKIA_GL_CONTEXT:-1}
 export SUMMIT_SCROLL_REFRESH_TIMER=\\\${SUMMIT_SCROLL_REFRESH_TIMER:-16}
 export LIBRARY_PATH=\"/boot/home/summit-mesa/prefix/lib:\\\$SUMMIT_BUNDLE/lib:/boot/system/lib\"
-exec \"\\\$SUMMIT_BUNDLE/Summit\" \"\\\$@\"
+# One line a second while the pointer moves: how late pointer events arrive
+# and gaps in the mouse's own reports (docs/performance.md, 29 September).
+export SUMMIT_INPUT_LAG_TRACE=\\\${SUMMIT_INPUT_LAG_TRACE:-1}
+exec \"\\\$SUMMIT_BUNDLE/Summit\" \"\\\$@\" 2>>/boot/home/summit/summit-stderr.log
 EOF
 chmod +x \$L
 # libnetwork's nsswitch_conf_file_path() is not thread-safe; a real config file

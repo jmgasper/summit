@@ -1,5 +1,46 @@
 # Summit performance: Speedometer 3.1 baseline, where the time goes, stress test
 
+## 29 September 2026: pointer stutter while loading The Guardian
+
+The owner saw the mouse pointer stutter while The Guardian loaded and
+asked whether the browser or the Bluetooth LE mouse was to blame. The
+X399 has no USB mouse: the pointer is a bonded BLE device (peer
+`CB:8C:04:89:64:E7`, interval 7.5-11 ms) on the MediaTek MT7922 combo
+radio, read by the OS's new `bluetooth_le_mouse` input_server add-on
+(2026-09-28 in the OS log, "not yet seen with the mouse in hand").
+
+What could make the browser responsible: app_server moves the hardware
+cursor from its event thread, and `AccelerantHWInterface::MoveCursorTo`
+takes the frame buffer's *exclusive* lock to do it, so a cursor move waits
+for every drawing operation in flight, including Summit's frame draws.
+Measured instead of assumed: `SUMMIT_INPUT_LAG_TRACE=1` (new) prints once a
+second how late `B_MOUSE_MOVED` reaches the browser window after
+input_server stamped it, which is the time spent in input_server and in
+app_server's event thread (cursor move included), plus the gaps between
+consecutive moves as stamped, which is the device's own cadence. With the
+pointer driven over VNC at 125 Hz in a circle over the page while The
+Guardian loaded (frames of 1.8-2.4 Mpx drawn at up to 40 a second):
+
+| per second, 60 s | moves | mean lag | max lag | over 30 ms |
+| --- | --- | --- | --- | --- |
+| idle page | 125-126 | 0.6-0.9 ms | 3-4 ms | 0 |
+| during the load (10-25 s) | 125-126 | 0.7-1.1 ms | 5.5-10.4 ms | 0 |
+
+So input_server, app_server's event thread and the window keep up during
+the load, and Summit's own input handling never waited over 20 ms
+(`SUMMIT_INPUT_DELAY_TRACE`). What the VNC path does not exercise is the
+radio and the add-on: the stutter must come from before input_server,
+where this session cannot move the mouse. Two leads for the OS session:
+the MT7922 shares its radio between Wi-Fi and Bluetooth, and the Wi-Fi
+interface is up on the same LAN as the Ethernet (it received 2,000
+packets during the load, the browser's traffic goes over Ethernet); and
+the add-on reads the mouse battery over GATT every ten minutes, which
+once dropped the link while the mouse moved. The installed launcher now
+runs with `SUMMIT_INPUT_LAG_TRACE=1` and keeps stderr in
+`/boot/home/summit/summit-stderr.log`, so the owner's own sessions record
+the source gaps (40-400 ms between reports in the middle of a motion) for
+whoever looks next.
+
 ## 28 September 2026 (evening): extension start-up, the 1Password popup, background tabs, the network process
 
 Goal: multiple tabs, load times, scrolling under load, and extension
