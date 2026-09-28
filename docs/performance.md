@@ -208,7 +208,32 @@ and three windows of twelve sites against the installed build, one pair:
 | scroll under load | 37.6 fps, 16 long gaps | 36.1 fps, 14 long gaps |
 
 Scrolling while 24 tabs reload is unchanged: it is bounded by the 7 Mpx
-readback per frame at 200% (above), not by the CPU. Speedometer 3.1 (local copy, 5 iterations, two alternated pairs) is
+readback per frame at 200% (above), not by the CPU. One page at a time, in a fresh profile, first visit and a second visit
+after closing the tab (`loadFinishedAt - loadStartedAt`):
+
+| page | installed, cold / warm | final, cold / warm |
+| --- | --- | --- |
+| Wikipedia (Haiku article) | 2.63 / 2.12 s | 2.63 / 0.90 s |
+| The Guardian | 11.7 / 1.35 s | 11.2 / 1.35 s |
+| CNN | 38.4 / 11.3 s | 37.4 / 10.2 s |
+| GitHub (WebKit) | 1.56 / 0.34 s | 1.06 / 0.35 s |
+| haiku-os.org | 0.98 / 0.96 s | 1.03 / 0.43 s |
+| Ars Technica | 4.43 / 3.91 s | 4.32 / 3.28 s |
+| BBC News | 1.56 / 1.48 s | 1.56 / 1.25 s |
+| apple.com | 3.57 / 3.44 s | 3.45 / 3.33 s |
+
+A single page's first visit is bound by the network (CNN's and The
+Guardian's load events wait tens of seconds on hosts this network drops,
+as The Verge's did); the second visit, mostly cache revalidations, gains
+from the request set-up no longer costing two file operations each. The
+change is largest with many tabs, where those set-ups queued.
+
+Settled tabs switch in 17-60 ms, or instantly when the page has not
+changed since it was hidden (the kept frame is shown); the 250-350 ms
+medians in the 3x12 runs are switches to tabs still loading, waiting for
+their own first frame.
+
+Speedometer 3.1 (local copy, 5 iterations, two alternated pairs) is
 unchanged by the priorities and the network changes: 7.67 / 7.66 installed,
 7.68 / 7.84 final. Installed as the desktop launcher (`Summit-current.sh`)
 at 22:17; the same build carries the extension package cache, the popup
