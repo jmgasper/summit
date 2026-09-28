@@ -6,8 +6,10 @@ A native browser for KunanyiOS and Haiku, with a Safari-inspired layout.
 
 **Development preview — the complete browser is still under construction.**
 The native app builds and runs in Haiku R1/beta6 x86_64. It has real WebKit
-pages, tabs, back/forward navigation, address/search input, page find and zoom,
-bookmarks, history, downloads and saved sessions. The WebKit snapshot pinned on
+pages, tabs, back/forward navigation, address/search input, page find,
+bookmarks, history, downloads and saved sessions, plus
+[private windows, per-site zoom, a choice of search engine and clearing of
+history, cache and site data](docs/browser-privacy.md). The WebKit snapshot pinned on
 September 13 builds and runs in Summit. The modern extension-enabled browser
 now restores approved installed extensions, permissions and storage across
 process restarts. Its native SDK runs extension background pages and dedicated
