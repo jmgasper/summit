@@ -8,7 +8,7 @@
 #   bash tools/package-launcher-on-workstation.sh
 set -euo pipefail
 SUMMIT_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-version=0.1.0~dev2-1
+version=0.1.0~dev2-2
 bash "$SUMMIT_ROOT/tools/ws.sh" 'mkdir -p /boot/home/summit/tmp/launcher-package && cat > /boot/home/summit/tmp/launcher-package/Summit.hvif' < "$SUMMIT_ROOT/resources/Summit.hvif"
 bash "$SUMMIT_ROOT/tools/ws.sh" "set -e
 cd /boot/home/summit/tmp/launcher-package
@@ -16,7 +16,11 @@ rm -rf stage; mkdir -p stage/apps stage/data/deskbar/menu/Applications
 cat > stage/apps/Summit <<'SH'
 #!/bin/sh
 # Summit from the applications menu: the build the desktop launcher points at.
-exec /boot/home/Desktop/Summit-current.sh \"\$@\"
+# The browser is started as its own team, not by exec in this one: launched
+# from the Deskbar, the roster pre-registers this script's team as the
+# application, the browser's own registration then found itself already
+# running and its message loop spun on a dead port (29 September 2026).
+/boot/home/Desktop/Summit-current.sh \"\$@\" </dev/null >/dev/null 2>&1 &
 SH
 chmod +x stage/apps/Summit
 addattr -f Summit.hvif -t icon BEOS:ICON stage/apps/Summit

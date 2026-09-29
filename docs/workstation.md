@@ -278,3 +278,13 @@ Summit icon that runs the Desktop launcher, so the menu follows whatever
 `install-on-workstation.sh` installed last. Run it again only if the
 package is removed; installing a new bundle needs only the install script.
 
+The first version of that script `exec`ed the launcher. Launched from the
+Deskbar (which hands the item to Tracker), the roster pre-registers the
+script's team as the application; the browser then found "itself" already
+running and its message loop spun at 100% CPU on a dead port (`strace`:
+`port_buffer_size_etc` returning Bad port ID forever), a window never
+appeared, and nothing was logged. Launched with `open` from a shell the
+same script worked, which is why it was not caught. The script now starts
+the launcher as its own team and exits (package 0.1.0~dev2-2), verified by
+clicking through Deskbar > Applications > Summit over VNC.
+
