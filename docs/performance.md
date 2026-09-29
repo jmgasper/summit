@@ -1,5 +1,148 @@
 # Summit performance: Speedometer 3.1 baseline, where the time goes, stress test
 
+## 30 September 2026 (night): what stops a wheel scroll while a page loads
+
+Continues the evening below, on the same machine and window. Installed at
+the end: `bundle-gqejpqgz` with the private Mesa in
+`/boot/home/summit-mesa/prefix-20260930`; before it, since the evening,
+`bundle-etksauzr` with `prefix-20260929`.
+
+### The scrolling thread waited for the main thread, twice
+
+After the evening's work a wheel scroll of The Guardian while it loads still
+had gaps of 60 to 285 ms in which the compositor was asked for nothing. Two
+traces name what holds the scrolling thread (`SUMMIT_SCROLL_LOCK_TRACE=1`,
+anything over 20 ms) and what each refresh finds
+(`SUMMIT_SCROLL_SYNC_TRACE=1`).
+
+**Every notch hit-tested the layers, twice.** A wheel on Haiku has no
+gesture phases, so WebKit's latching never applied: each notch asked what
+listens under the pointer (on the event dispatcher's thread) and what
+scrolls there (on the scrolling thread, with the tree's lock held). Both
+walk the layers under `m_layerHitTestMutex`, and the main thread holds that
+mutex for the whole of `RenderLayerCompositor::flushPendingLayerChanges()`:
+30 to 200 ms at a time while The Guardian loads. Notches took 35 to 176 ms
+to handle, the ones behind them arrived late, and the scroll animation
+stopped for as long.
+
+A burst of notches (each within 300 ms of the last, within 24 pixels of the
+first, in the same direction) now scrolls what its first notch scrolled. It
+asks again what listens under the pointer only when the main thread does not
+hold the layers, and takes the answer of the notch before it otherwise. A
+burst that began scrolling freely goes on doing so: a box with its own
+scrolling, or with a wheel listener that cancels, that comes to pass under
+the pointer hears of the notches and does not take the scroll over. Firefox
+and Chrome scroll the same way. `SUMMIT_WHEEL_LATCH=0` is the old behaviour.
+
+**A scroll was not shown until the main thread had scheduled an update.**
+The scrolling thread applies layer positions itself only when a rendering
+update is scheduled and late, and it is the main thread that schedules it
+when it hears of the scroll. A main thread that is busy for a tenth of a
+second schedules nothing; the tree stays `Idle` and each refresh does
+nothing. A scroll that has not been applied now counts as a scheduled
+update: one millisecond for the main thread, then the scrolling thread
+shows it. `SUMMIT_SCROLL_WITHOUT_MAIN=0` waits as before.
+
+The Guardian, 40 notches in 2 s from 1.5 s after navigation, consent
+dismissed, compositions in the web process from the first notch that
+scrolled, four runs alternated:
+
+| | compositions a second | gaps over 40 ms | notches that took over 20 ms |
+| --- | --- | --- | --- |
+| both switches off | 48.4, 57.2, 51.2, 58.2 | 63 51 45 55 44 64 40 58 61; 49; 168 50; 48 40 43 | 51 50 58 52; 42 25 31; 158 25; 38 124 |
+| new | 57.3, 59.6, 58.6, 58.7 | none; none; none; 50 | none |
+
+Frames the window received, against the build installed in the evening,
+two runs each, notches at the middle of the page in both:
+
+| page, scroll | evening: frames/s / gaps over 33 ms / longest | new |
+| --- | --- | --- |
+| The Guardian, wheel while loading | 45.9, 52.0 / 6, 2 / 216, 205 ms | 54.9, 54.9 / 3, 2 / 87, 87 ms |
+| The Guardian, fling | 46.2, 46.2 / 4, 5 / 109, 96 ms | 52.4, 50.4 / 2, 2 / 63, 54 ms |
+| CNN, wheel | 58.4, 54.9 / 2, 5 / 36, 61 ms | 58.0, 55.9 / 1, 4 / 46, 42 ms |
+| CNN, fling | 53.5, 54.0 / 4, 6 / 43, 39 ms | 56.1, 54.5 / 3, 2 / 47, 35 ms |
+| Wikipedia (Australia), wheel | 57.4, 58.4 / 2, 1 / 57, 36 ms | 59.3, 57.9 / 0, 2 / 30, 37 ms |
+| Wikipedia (Australia), fling | 57.1, 57.1 / 2, 3 / 47, 39 ms | 58.2, 58.1 / 1, 2 / 36, 38 ms |
+
+The 87 ms that remain on The Guardian are before the first frame. The
+middle of that page has a wheel listener that may cancel, so the first
+notch of a burst goes to the main thread, and the scroll starts when the
+second notch arrives 50 ms later (below).
+
+After the same scroll the evening's build and the new one show the same
+picture on Wikipedia and GitHub (0 of 20,736 cells differ) and on The
+Guardian (127, an advertisement). Test pages:
+`tools/bench/pages/wheel-nested-scroller.html` (a box that scrolls, under
+the pointer from the start: it scrolls to its end, then the page does, with
+the latch and without), `wheel-scroller-passes.html` (the box passes under
+the pointer: the page reaches 12,000 px with the latch; without, the box
+takes two notches and the page reaches 11,400), `wheel-listener-passes.html`
+(a box whose listener cancels every notch passes: it hears 11 notches and
+the page reaches 12,000).
+
+### Other changes of the night
+
+- **A burst waits 50 ms for the page, once.** A page with a wheel listener
+  that may cancel gets the first notch of a burst on its main thread. When
+  the answer takes over 50 ms, the following notches scroll without it and
+  the browser is answered then, so that it sends the next notch. On a test
+  page whose main thread is busy 400 of every 450 ms
+  (`wheel-busy-main-thread.html`) the first frame comes within 80 ms and
+  the scroll runs at 56 frames/s, against 29 to 31. A page that has
+  cancelled a notch is waited for as before: without that rule a page that
+  cancels every notch scrolled. On The Guardian five alternated pairs gave
+  54.0 against 54.7 frames/s: the wait bounds the start of a scroll and
+  changes nothing after it.
+- **18 shader programs are compiled when the compositor is created**, not
+  8: the antialiased and filter variants were compiled in the frame that
+  first used them. Compiling them in stages after start-up collided with
+  the first scroll and was taken out.
+- **The private Mesa is built with its shader cache**
+  (`-Dshader-cache=enabled`, cache in `/boot/home/.cache/mesa_shader_cache`).
+  A program that has been compiled once on the machine takes 0.3 to 3 ms
+  in a new process, against 8 to 24 ms.
+
+### What did not pay
+
+- **Uploading no more than a few visible tiles per composition**: no
+  difference in five pairs, reverted. The experiment counted only
+  compositions for scrolling; slow frames are as often rendering updates,
+  so it says little.
+- **Keeping zink's staging buffers between frames**: no difference,
+  reverted.
+
+### Traps in the measurements
+
+- **`summitctl scroll` without a point put the notches at the page's top
+  left corner**, not at its middle as the code meant:
+  `BMessage::FindPoint()` clears the point it does not find. Every scroll
+  measured before 30 September was taken there. On The Guardian the corner
+  has no wheel listener and the middle has one. Fixed; `run-scroll.py
+  --wheel-point X,Y` names the point for builds that still have the fault.
+- **A VNC screenshot stops the window's frames for 4 s.** During YouTube
+  playback each of three screenshots left a gap of 4.0 to 4.4 s in the
+  frames the window drew, and 300 frames the second after. Without
+  screenshots the longest gap in 30 s was 259 ms, in the first seconds.
+  No screenshot belongs in a timed run, and none should be taken while the
+  owner uses the machine: it stops their picture too. This session took
+  them during the evening without knowing.
+- **Reddit and BBC News are 700 to 830 px longer than the view two seconds
+  after navigation.** 40 notches reach that end after three, and 22 to 29
+  of the 40 go unhandled until the feed arrives
+  (`SUMMIT_SCROLL_POSITION_TRACE=1`). Their "gaps" of 300 to 800 ms are
+  that, in the old build and the new.
+- Page loads are bimodal in both builds: CNN asks hosts that do not answer,
+  and a load that meets one waits 30 s for the connection.
+
+### YouTube
+
+Big Buck Bunny at 1080p60, 30 s without screenshots: the first video frame
+1.2 s after the page creates its player; 52 to 56 frames/s on screen for
+the first eight seconds, with gaps of 84 to 350 ms in the first three; 59
+frames/s and no gap over 33 ms from the fourteenth second on. A composition
+takes 14.5 ms (95th percentile 19.0), 11.8 of them the read and the hand
+over to the window. The evening's build and the new one do not differ.
+
 ## 29 September 2026 (evening): video that stood still, web processes that died, scrolling at 200%
 
 Goal: the stutter the owner saw on The Guardian, YouTube that is choppy and

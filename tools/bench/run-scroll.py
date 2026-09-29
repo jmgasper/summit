@@ -367,6 +367,9 @@ def main():
     parser.add_argument('--bundle', default=guest.DEFAULT_BUNDLE)
     parser.add_argument('--settle', type=float, default=25, help='seconds to let the page finish loading')
     parser.add_argument('--notches', type=int, default=600, help='wheel notches in the burst')
+    parser.add_argument('--wheel-point', default='',
+        help='X,Y in the page view where the notches apply; the middle of the view when absent '
+             '(builds before 30 September 2026 used its top left corner)')
     parser.add_argument('--interval-ms', type=int, default=16, help='milliseconds between notches')
     parser.add_argument('--delta', type=float, default=3.0, help='wheel delta per notch')
     parser.add_argument('--stats-period', type=float, default=0, help='seconds per frame statistics line on an instrumented engine (default: off)')
@@ -482,8 +485,9 @@ def main():
             time.sleep(1.0)
         log(f'scrolling: {args.notches} notches over about {seconds:.0f} s')
         burst_started = time.monotonic()
+        point = [float(v) for v in args.wheel_point.split(',')] if args.wheel_point else []
         code, out, err = guest.ctl(ctl, team, 'scroll', args.notches, args.interval_ms, args.delta,
-                                   timeout_ms=15000)
+                                   *point, timeout_ms=15000)
         if code:
             run['outcome'] = 'scroll-refused'
             run['scrollError'] = err.strip() or out.strip()

@@ -135,15 +135,21 @@ file, which names the library by its full path, so `LIBRARY_PATH` alone
 still loads the old one. A program then needs both:
 
 ```sh
-M=/boot/home/summit-mesa/prefix-20260929
+M=/boot/home/summit-mesa/prefix-20260930
 LIBRARY_PATH=$M/lib:/boot/system/lib \
 __EGL_VENDOR_LIBRARY_FILENAMES=$M/data/glvnd/egl_vendor.d/50_mesa.json <program>
 ```
 
-`SUMMIT_MESA_PREFIX=prefix-20260929 bash tools/install-on-workstation.sh
-bundle-NAME` writes a launcher that does. `prefix-20260929` is Mesa with
-`mesa-25.3.6-summit-05-frame-copies.patch` (29 September 2026);
-`prefix` is the build of 27 September.
+`SUMMIT_MESA_PREFIX=prefix-20260930 bash tools/install-on-workstation.sh
+bundle-NAME` writes a launcher that does. `prefix-20260930` is Mesa with
+`mesa-25.3.6-summit-05-frame-copies.patch` and its shader cache
+(`-Dshader-cache=enabled`, 30 September 2026; the cache is
+`/boot/home/.cache/mesa_shader_cache`); `prefix-20260929` is the same
+without the cache; `prefix` is the build of 27 September.
+
+**A VNC screenshot stops every window's drawing for about 4 s** on this
+machine (docs/performance.md, 30 September 2026). Take none while the owner
+is at it, and none during a timed run.
 
 Verified by `tools/mesa-vm/`'s probes:
 
