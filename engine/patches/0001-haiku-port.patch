@@ -4872,7 +4872,7 @@ index 52f8cd72fa2e3073163713fd16fc2f1677b96695..c8925b1b936f96c31c323609ea9f9d46
      protect(m_frame->document())->scheduleDeferredAXObjectCacheUpdate();
  
 diff --git a/Source/WebCore/page/LocalFrameViewLayoutContext.cpp b/Source/WebCore/page/LocalFrameViewLayoutContext.cpp
-index 61749fa2eecc674d3bc7d185a5b3944181454f73..d309fbf30643be6ad2d8124ee4773985c13cdb65 100644
+index 61749fa2eecc674d3bc7d185a5b3944181454f73..1315ffe7394c4af457ee1461aba3d3ad0b852ee9 100644
 --- a/Source/WebCore/page/LocalFrameViewLayoutContext.cpp
 +++ b/Source/WebCore/page/LocalFrameViewLayoutContext.cpp
 @@ -61,9 +61,11 @@
@@ -4994,7 +4994,7 @@ index 61749fa2eecc674d3bc7d185a5b3944181454f73..d309fbf30643be6ad2d8124ee4773985
      {
          SetForScope layoutPhase(m_layoutPhase, LayoutPhase::InViewSizeAdjust);
          ScriptDisallowedScope::InMainThread scriptDisallowedScope;
-@@ -324,16 +388,41 @@ void LocalFrameViewLayoutContext::performLayout(bool canDeferUpdateLayerPosition
+@@ -324,16 +388,45 @@ void LocalFrameViewLayoutContext::performLayout(bool canDeferUpdateLayerPosition
                  return;
          }
      }
@@ -5005,6 +5005,10 @@ index 61749fa2eecc674d3bc7d185a5b3944181454f73..d309fbf30643be6ad2d8124ee4773985
 +#endif
      {
          SetForScope layoutPhase(m_layoutPhase, LayoutPhase::InPostLayout);
++#if PLATFORM(HAIKU)
++        if (m_needsFullRepaint && getenv("SUMMIT_FULL_REPAINT_TRACE"))
++            fprintf(stderr, "Summit full repaint: the layout asked for one\n");
++#endif
          if (m_needsFullRepaint)
              renderView()->repaintRootContents();
          ASSERT(!layoutRoot->needsLayout());
@@ -8281,10 +8285,61 @@ index 583c2f2b023cd8f3698252f251df5bc6cabcb5c5..38d61a0a11c01f5f2b09271c9d037946
      // Take ownership of the memory for process memory accounting purposes.
      WEBCORE_EXPORT void takeOwnershipOfMemory(MemoryLedger) const;
 diff --git a/Source/WebCore/platform/graphics/egl/BitmapTexture.cpp b/Source/WebCore/platform/graphics/egl/BitmapTexture.cpp
-index da8b5baeb5040357ab6f783dc31d72c3926cbc56..ace472c4e9d3740c1ced8df89e80549f19fa492e 100644
+index da8b5baeb5040357ab6f783dc31d72c3926cbc56..408a905028a1e6181981c7b17dde987ccf2ac342 100644
 --- a/Source/WebCore/platform/graphics/egl/BitmapTexture.cpp
 +++ b/Source/WebCore/platform/graphics/egl/BitmapTexture.cpp
-@@ -394,6 +394,57 @@ void BitmapTexture::updateContents(NativeImage* frameImage, const IntRect& targe
+@@ -159,6 +159,36 @@ BitmapTexture::BitmapTexture(const IntSize& size, OptionSet<Flags> flags)
+     glBindTexture(m_renderTarget, boundTexture);
+ }
+ 
++#if PLATFORM(HAIKU)
++// SUMMIT_TEXTURE_TRACE=1 names the allocation that the driver refuses.
++static bool traceTextureErrors()
++{
++    static const bool enabled = [] {
++        const char* value = getenv("SUMMIT_TEXTURE_TRACE");
++        return value && value[0] == '1' && !value[1];
++    }();
++    return enabled;
++}
++
++static void forgetGLErrors()
++{
++    if (!traceTextureErrors())
++        return;
++    for (int i = 0; i < 8 && glGetError() != GL_NO_ERROR; ++i) { }
++}
++
++static void reportGLError(const char* what, const IntSize& size, unsigned detail)
++{
++    if (!traceTextureErrors())
++        return;
++    auto error = glGetError();
++    if (error != GL_NO_ERROR)
++        fprintf(stderr, "Summit texture: %s %dx%d (0x%x) failed with 0x%x\n", what, size.width(), size.height(), detail, error);
++    else if (size.width() > 4096 || size.height() > 4096)
++        fprintf(stderr, "Summit texture: %s %dx%d (0x%x)\n", what, size.width(), size.height(), detail);
++}
++#endif
++
+ void BitmapTexture::createTexture()
+ {
+     ASSERT(!m_id);
+@@ -177,7 +207,13 @@ void BitmapTexture::allocateTexture()
+     createTexture();
+     // EXT_texture_format_BGRA8888 mandates internalFormat == format.
+     // https://registry.khronos.org/OpenGL/extensions/EXT/EXT_texture_format_BGRA8888.txt
++#if PLATFORM(HAIKU)
++    forgetGLErrors();
++#endif
+     glTexImage2D(m_renderTarget, 0, textureFormat(), m_size.width(), m_size.height(), 0, textureFormat(), s_pixelDataType, nullptr);
++#if PLATFORM(HAIKU)
++    reportGLError("texture", m_size, textureFormat());
++#endif
+ }
+ 
+ size_t BitmapTexture::sizeInBytes() const
+@@ -394,6 +430,57 @@ void BitmapTexture::updateContents(NativeImage* frameImage, const IntRect& targe
      SkPixmap pixmap;
      if (surface->peekPixels(&pixmap))
          updateContents(pixmap.addr(), targetRect, offset, pixmap.rowBytes(), PixelFormat::BGRA8);
@@ -8342,6 +8397,28 @@ index da8b5baeb5040357ab6f783dc31d72c3926cbc56..ace472c4e9d3740c1ced8df89e80549f
  #else
      UNUSED_PARAM(targetRect);
      UNUSED_PARAM(offset);
+@@ -503,11 +590,21 @@ void BitmapTexture::initializeStencil()
+ 
+     glGenRenderbuffers(1, &m_stencilBufferObject);
+     glBindRenderbuffer(GL_RENDERBUFFER, m_stencilBufferObject);
++#if PLATFORM(HAIKU)
++    forgetGLErrors();
++#endif
+     glRenderbufferStorage(GL_RENDERBUFFER, GL_STENCIL_INDEX8, m_size.width(), m_size.height());
++#if PLATFORM(HAIKU)
++    reportGLError("stencil buffer", m_size, GL_STENCIL_INDEX8);
++#endif
+     glBindRenderbuffer(GL_RENDERBUFFER, 0);
+     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, m_stencilBufferObject);
+     glClearStencil(0);
+     glClear(GL_STENCIL_BUFFER_BIT);
++#if PLATFORM(HAIKU)
++    if (traceTextureErrors())
++        fprintf(stderr, "Summit texture: stencil buffer %dx%d attached, framebuffer status 0x%x\n", m_size.width(), m_size.height(), glCheckFramebufferStatus(GL_FRAMEBUFFER));
++#endif
+ }
+ 
+ void BitmapTexture::clearIfNeeded()
 diff --git a/Source/WebCore/platform/graphics/egl/BitmapTexturePool.cpp b/Source/WebCore/platform/graphics/egl/BitmapTexturePool.cpp
 index 36206e6f966e88e056cf20705257fddb8b14d601..325e3a2adcd1a0faa0063ce7b8a48fa4d4255300 100644
 --- a/Source/WebCore/platform/graphics/egl/BitmapTexturePool.cpp
@@ -19805,7 +19882,7 @@ index 6b3cac20c6de4a7b817689de34c807020235850e..f5e992b32ba9dc919975dcd08b86e74d
          s_skiaGLContext = SkiaGLContext::create(*this);
          m_skiaGLContexts.add(*s_skiaGLContext);
 diff --git a/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp b/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp
-index 30343ff03299542f8673d98b486c7fdd78bddeb9..137c6648ce38ec34bb9e015605e9fe47c5d1b00b 100644
+index 30343ff03299542f8673d98b486c7fdd78bddeb9..feb0f0a13bc21ff0af06b01ea45fa895bb254a85 100644
 --- a/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp
 +++ b/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp
 @@ -67,7 +67,13 @@ WTF_MAKE_TZONE_ALLOCATED_IMPL(SkiaPaintingEngine);
@@ -19836,7 +19913,18 @@ index 30343ff03299542f8673d98b486c7fdd78bddeb9..137c6648ce38ec34bb9e015605e9fe47
      buffer->beginPainting();
  
      m_paintingWorkerPool->postTask([platformLayer = WTF::move(platformLayer), buffer = Ref { buffer }, tileRect, dirtyRect, recording = WTF::move(recording), threadSafeGrContext = m_threadSafeGrContext]() mutable {
-@@ -310,7 +322,15 @@ unsigned SkiaPaintingEngine::numberOfCPUPaintingThreads()
+@@ -297,6 +309,10 @@ Ref<CoordinatedTileBuffer> SkiaPaintingEngine::replay(const GraphicsLayerCoordin
+             WTFEndSignpost(canvas, PaintTile);
+         }
+ 
++#if PLATFORM(HAIKU)
++        if (!buffer->isBackedByOpenGL())
++            static_cast<CoordinatedUnacceleratedTileBuffer&>(buffer.get()).noteIfTransparent();
++#endif
+         buffer->completePainting();
+         platformLayer->didPaintTile();
+     });
+@@ -310,7 +326,15 @@ unsigned SkiaPaintingEngine::numberOfCPUPaintingThreads()
      static unsigned numberOfThreads = 0;
  
      std::call_once(onceFlag, [] {
@@ -20635,10 +20723,18 @@ index 30f54801b8aa9b9bc83af8a929f8bdc04a2ee4d1..f68564b5f1c8b97ee543257ede6c0f40
  
          auto gpuTileSize = [&](const IntSize& baseSize) -> IntSize {
 diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreTile.cpp b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreTile.cpp
-index 3f7acfab36c398a8e7af4c55768bdef27cdac477..78fd9f061356ab54a02c1bf0f331b0d4082cf192 100644
+index 3f7acfab36c398a8e7af4c55768bdef27cdac477..3c8c8e0bc1dff262f949e978e756fb219ec443b4 100644
 --- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreTile.cpp
 +++ b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreTile.cpp
-@@ -32,8 +32,36 @@
+@@ -25,6 +25,7 @@
+ #include "BitmapTexturePool.h"
+ #include "CoordinatedTileBuffer.h"
+ #include "GraphicsLayer.h"
++#include <wtf/MallocSpan.h>
+ #include <wtf/SystemTracing.h>
+ 
+ #if USE(SKIA)
+@@ -32,8 +33,36 @@
  #include "SkiaPaintingEngine.h"
  #endif
  
@@ -20675,7 +20771,7 @@ index 3f7acfab36c398a8e7af4c55768bdef27cdac477..78fd9f061356ab54a02c1bf0f331b0d4
  CoordinatedBackingStoreTile::CoordinatedBackingStoreTile(float scale)
      : m_scale(scale)
  {
-@@ -83,7 +111,13 @@ void CoordinatedBackingStoreTile::processPendingUpdates()
+@@ -83,7 +112,13 @@ void CoordinatedBackingStoreTile::processPendingUpdates()
  
          WTFBeginSignpost(this, CoordinatedSwapBuffer, "%u/%zu, rect %ix%i+%i+%i", updateIndex + 1, updatesCount, update.tileRect.x(), update.tileRect.y(), update.tileRect.width(), update.tileRect.height());
  
@@ -20689,9 +20785,13 @@ index 3f7acfab36c398a8e7af4c55768bdef27cdac477..78fd9f061356ab54a02c1bf0f331b0d4
  
          FloatRect unscaledTileRect(update.tileRect);
          unscaledTileRect.scale(1. / m_scale);
-@@ -92,6 +126,9 @@ void CoordinatedBackingStoreTile::processPendingUpdates()
+@@ -91,7 +126,13 @@ void CoordinatedBackingStoreTile::processPendingUpdates()
+         if (unscaledTileRect != m_rect) {
              m_rect = unscaledTileRect;
              m_texture = nullptr;
++#if PLATFORM(HAIKU)
++            m_isTransparent = false;
++#endif
          }
 +#if PLATFORM(HAIKU)
 +        const bool hadTexture = !!m_texture;
@@ -20699,9 +20799,30 @@ index 3f7acfab36c398a8e7af4c55768bdef27cdac477..78fd9f061356ab54a02c1bf0f331b0d4
  
  #if USE(SKIA)
          if (update.buffer->isBackedByOpenGL()) {
-@@ -119,11 +156,25 @@ void CoordinatedBackingStoreTile::processPendingUpdates()
+@@ -118,12 +159,46 @@ void CoordinatedBackingStoreTile::processPendingUpdates()
+         }
  #endif
          auto& buffer = static_cast<CoordinatedUnacceleratedTileBuffer&>(update.buffer.get());
++#if PLATFORM(HAIKU)
++        const bool coversTile = update.sourceRect.location().isZero() && update.sourceRect.size() == update.tileRect.size();
++        if (buffer.isTransparent() && (coversTile || m_isTransparent)) {
++            // Nothing to show: no texture, and nothing drawn for the tile.
++            m_texture = nullptr;
++            m_isTransparent = true;
++            if (s_countsUpdates)
++                ++s_updateStats.transparentTiles;
++            WTFEndSignpost(this, CoordinatedSwapBuffer);
++            continue;
++        }
++        if (m_isTransparent && !coversTile) {
++            // Part of a tile that had nothing is painted: the rest of its
++            // new texture, which may have been another tile's, is cleared.
++            ensureTexture(update.tileRect.size(), buffer);
++            auto nothing = MallocSpan<unsigned char>::zeroedMalloc(static_cast<size_t>(update.tileRect.width()) * update.tileRect.height() * 4);
++            m_texture->updateContents(nothing.span().data(), IntRect({ }, update.tileRect.size()), { }, update.tileRect.width() * 4, update.buffer->pixelFormat());
++        }
++        m_isTransparent = false;
++#endif
          ensureTexture(update.tileRect.size(), buffer);
 +#if PLATFORM(HAIKU)
 +        const bigtime_t texturedAt = s_countsUpdates ? system_time() : 0;
@@ -20726,10 +20847,10 @@ index 3f7acfab36c398a8e7af4c55768bdef27cdac477..78fd9f061356ab54a02c1bf0f331b0d4
          WTFEndSignpost(this, CoordinatedSwapBuffer);
      }
 diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreTile.h b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreTile.h
-index 74df231207380fa09298f846f66adefed719fd2a..025c6cb86df95f52810b95e4427037ffc34252aa 100644
+index 74df231207380fa09298f846f66adefed719fd2a..0c3952170a61f5bca868a1eb3e54b0515416a959 100644
 --- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreTile.h
 +++ b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreTile.h
-@@ -50,6 +50,26 @@ public:
+@@ -50,10 +50,35 @@ public:
  
      bool canBePainted() const { return !!m_texture; }
  
@@ -20748,6 +20869,7 @@ index 74df231207380fa09298f846f66adefed719fd2a..025c6cb86df95f52810b95e4427037ff
 +        double paintWaitMs { 0 };
 +        double textureMs { 0 };
 +        double uploadMs { 0 };
++        unsigned transparentTiles { 0 };
 +    };
 +    static void setCountsUpdatesHaiku(bool);
 +    static UpdateStatsHaiku takeUpdateStatsHaiku();
@@ -20756,11 +20878,42 @@ index 74df231207380fa09298f846f66adefed719fd2a..025c6cb86df95f52810b95e4427037ff
  private:
      void ensureTexture(const IntSize&, CoordinatedTileBuffer&);
  
+     RefPtr<BitmapTexture> m_texture;
++#if PLATFORM(HAIKU)
++    // No texture because every pixel of the tile is transparent.
++    bool m_isTransparent { false };
++#endif
+     Vector<Update> m_updates;
+     float m_scale { 1. };
+     FloatRect m_rect;
 diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedPlatformLayer.cpp b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedPlatformLayer.cpp
-index 7ef5b491fd88e52bb59639bd5851a4cb6e56d0ab..6cc50b238c9c1de1b3eaadc12d9ec62154feebc8 100644
+index 7ef5b491fd88e52bb59639bd5851a4cb6e56d0ab..1f16b9654452e3acfaf9e69e005695d3457c2f29 100644
 --- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedPlatformLayer.cpp
 +++ b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedPlatformLayer.cpp
-@@ -1286,6 +1286,14 @@ void CoordinatedPlatformLayer::flushCompositingStateOnTarget(const OptionSet<Com
+@@ -906,6 +906,22 @@ void CoordinatedPlatformLayer::updateBackingStore()
+         backingStoreProxy = m_backingStoreProxy;
+     }
+ 
++#if PLATFORM(HAIKU)
++    // SUMMIT_TILE_UPDATE_TRACE=1: which layer is repainted, and how much of it.
++    static const bool traceTileUpdates = [] {
++        const char* value = getenv("SUMMIT_TILE_UPDATE_TRACE");
++        return value && value[0] == '1' && !value[1];
++    }();
++    if (traceTileUpdates) {
++        IntRect dirty;
++        for (auto& rect : m_dirtyRegion)
++            dirty.unite(rect);
++        auto name = m_owner ? m_owner->name().utf8() : CString();
++        fprintf(stderr, "Summit tile update: layer=%p \"%s\" size=%.0fx%.0f scale=%.2f dirty=%zu rects, bounds %d,%d %dx%d tilesUpdate=%d pendingCreation=%d opaque=%d\n",
++            static_cast<void*>(this), name.data() ? reinterpret_cast<const char*>(name.data()) : "", size.width(), size.height(), contentsScale, m_dirtyRegion.size(),
++            dirty.x(), dirty.y(), dirty.width(), dirty.height(), m_needsTilesUpdate, m_pendingTilesCreation, contentsOpaque);
++    }
++#endif
+     Damage damage(size, Damage::Mode::Rectangles);
+     auto updateResult = backingStoreProxy->updateIfNeeded(m_transformedVisibleRect, size, m_visibleRect, contentsScale, contentsOpaque, m_pendingTilesCreation || m_needsTilesUpdate, m_dirtyRegion, damage, *this);
+     m_dirtyRegion.clear();
+@@ -1286,6 +1302,14 @@ void CoordinatedPlatformLayer::flushCompositingStateOnTarget(const OptionSet<Com
              m_contentsBuffer.committed = WTF::move(m_contentsBuffer.pending);
              m_contentsBuffer.hasCommitted = !!m_contentsBuffer.committed;
              m_pendingChanges.remove(Change::ContentsBuffer);
@@ -20776,10 +20929,10 @@ index 7ef5b491fd88e52bb59639bd5851a4cb6e56d0ab..6cc50b238c9c1de1b3eaadc12d9ec621
  
          if (m_contentsBuffer.committed)
 diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedTileBuffer.cpp b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedTileBuffer.cpp
-index 97343135c0044a99532b9f29b2928c98b0e0cd7c..674a5d0af9d5e62b847680f1d0d5cda2f7046482 100644
+index 97343135c0044a99532b9f29b2928c98b0e0cd7c..0adfd221a96c3c7d6fb8315ea6057dbb8ecd833c 100644
 --- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedTileBuffer.cpp
 +++ b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedTileBuffer.cpp
-@@ -107,12 +107,51 @@ Ref<CoordinatedTileBuffer> CoordinatedUnacceleratedTileBuffer::create(const IntS
+@@ -107,12 +107,81 @@ Ref<CoordinatedTileBuffer> CoordinatedUnacceleratedTileBuffer::create(const IntS
      return adoptRef(*new CoordinatedUnacceleratedTileBuffer(size, flags));
  }
  
@@ -20804,6 +20957,36 @@ index 97343135c0044a99532b9f29b2928c98b0e0cd7c..674a5d0af9d5e62b847680f1d0d5cda2
 +    Locker locker { s_layersMemoryUsageLock };
 +    s_currentLayersMemoryUsage += checkedArea;
 +    s_maxLayersMemoryUsage = std::max(s_maxLayersMemoryUsage, s_currentLayersMemoryUsage);
++}
++
++void CoordinatedUnacceleratedTileBuffer::noteIfTransparent()
++{
++    static const bool enabled = [] {
++        const char* value = getenv("SUMMIT_SKIP_EMPTY_TILES");
++        return !value || value[0] != '0' || value[1];
++    }();
++    m_isTransparent = false;
++    if (!enabled || !supportsAlpha() || !m_hasData)
++        return;
++    auto bytes = m_data.span();
++    if (!bytes.data())
++        return;
++    // Painted content is found within the first rows as a rule; a tile
++    // without any is 260 KB to look through.
++    size_t size = bytes.size();
++    const unsigned char* data = bytes.data();
++    size_t index = 0;
++    for (; index + sizeof(uint64_t) <= size; index += sizeof(uint64_t)) {
++        uint64_t word;
++        memcpy(&word, data + index, sizeof(word));
++        if (word)
++            return;
++    }
++    for (; index < size; ++index) {
++        if (data[index])
++            return;
++    }
++    m_isTransparent = true;
 +}
 +
 +void CoordinatedUnacceleratedTileBuffer::ensureData(Zeroed zeroed) const
@@ -20831,7 +21014,7 @@ index 97343135c0044a99532b9f29b2928c98b0e0cd7c..674a5d0af9d5e62b847680f1d0d5cda2
  
      {
          Locker locker { s_layersMemoryUsageLock };
-@@ -134,6 +173,10 @@ CoordinatedUnacceleratedTileBuffer::~CoordinatedUnacceleratedTileBuffer()
+@@ -134,6 +203,10 @@ CoordinatedUnacceleratedTileBuffer::~CoordinatedUnacceleratedTileBuffer()
  SkCanvas* CoordinatedUnacceleratedTileBuffer::canvas()
  {
      if (!m_surface) {
@@ -20843,10 +21026,10 @@ index 97343135c0044a99532b9f29b2928c98b0e0cd7c..674a5d0af9d5e62b847680f1d0d5cda2
          auto imageInfo = SkImageInfo::Make(m_size.width(), m_size.height(), kBGRA_8888_SkColorType, alphaType, SkColorSpace::MakeSRGB());
          // FIXME: ref buffer and unref on release proc?
 diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedTileBuffer.h b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedTileBuffer.h
-index d66256f0fd3205d448ed4eef2839dafe51c055d6..dc656543f75b7666236ee5427db5a6ab7d83dd2d 100644
+index d66256f0fd3205d448ed4eef2839dafe51c055d6..2f24e4e8428ef2f72eef052599febc9cc4670437 100644
 --- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedTileBuffer.h
 +++ b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedTileBuffer.h
-@@ -109,12 +109,24 @@ private:
+@@ -109,12 +109,32 @@ private:
  class CoordinatedUnacceleratedTileBuffer final : public CoordinatedTileBuffer {
  public:
      WEBCORE_EXPORT static Ref<CoordinatedTileBuffer> create(const IntSize&, Flags);
@@ -20864,6 +21047,14 @@ index d66256f0fd3205d448ed4eef2839dafe51c055d6..dc656543f75b7666236ee5427db5a6ab
 +#if PLATFORM(HAIKU)
 +    const unsigned char* data() const { ensureData(Zeroed::Yes); return m_data.span().data(); }
 +    unsigned char* data() { ensureData(Zeroed::Yes); return m_data.mutableSpan().data(); }
++
++    // A layer over a page, a header that stays or a player's controls, is
++    // mostly nothing: tiles whose every pixel is transparent. They were
++    // uploaded, kept as textures and blended into every frame. The painter
++    // says when a buffer is one, and the compositor keeps no texture for it.
++    // SUMMIT_SKIP_EMPTY_TILES=0 treats them like any other.
++    void noteIfTransparent();
++    bool isTransparent() const { return m_isTransparent; }
 +#else
      const unsigned char* data() const { return m_data.span().data(); }
      unsigned char* data() { return m_data.mutableSpan().data(); }
@@ -20871,7 +21062,7 @@ index d66256f0fd3205d448ed4eef2839dafe51c055d6..dc656543f75b7666236ee5427db5a6ab
  
  private:
      CoordinatedUnacceleratedTileBuffer(const IntSize&, Flags);
-@@ -127,7 +139,18 @@ private:
+@@ -127,7 +147,19 @@ private:
      SkCanvas* canvas() final;
  #endif
  
@@ -20884,6 +21075,7 @@ index d66256f0fd3205d448ed4eef2839dafe51c055d6..dc656543f75b7666236ee5427db5a6ab
 +    mutable Lock m_dataLock;
 +    mutable MallocSpan<unsigned char> m_data;
 +    mutable std::atomic<bool> m_hasData { false };
++    bool m_isTransparent { false };
 +#else
      MallocSpan<unsigned char> m_data;
 +#endif
@@ -33064,6 +33256,21 @@ index ea03bcbb4b167323afa11643cc204dd4c40e5b55..60a10f363d44e68a7a778645c6ed3237
      return { hasSimpleOutOfFlowContentOnly, hasDirtyInFlowBlockLevelElement, hasInFlowBlockLevelElement ? contentNeedsNormalChildLayoutOnly : std::nullopt };
  }
  
+diff --git a/Source/WebCore/rendering/RenderBox.cpp b/Source/WebCore/rendering/RenderBox.cpp
+index 055a809ee5730e1b12c6d48ed697c7335135dfca..0fc5c850285d8e4f73240c0bdbb96bb4904659a1 100644
+--- a/Source/WebCore/rendering/RenderBox.cpp
++++ b/Source/WebCore/rendering/RenderBox.cpp
+@@ -296,6 +296,10 @@ void RenderBox::styleWillChange(Style::Difference diff, const Style::ComputedSty
+         // The background of the root element or the body element could propagate up to
+         // the canvas. Issue full repaint, when our style changes substantially.
+         if (diff >= Style::DifferenceResult::Repaint && (isDocumentElementRenderer() || isBody())) {
++#if PLATFORM(HAIKU)
++            if (getenv("SUMMIT_FULL_REPAINT_TRACE"))
++                fprintf(stderr, "Summit full repaint: style of %s changed\n", isBody() ? "body" : "html");
++#endif
+             view().repaintRootContents();
+             if (Style::hasEntirelyFixedBackground(oldStyle->backgroundLayers()) != Style::hasEntirelyFixedBackground(newStyle.backgroundLayers()))
+                 view().compositor().rootLayerConfigurationChanged();
 diff --git a/Source/WebCore/rendering/RenderElement.cpp b/Source/WebCore/rendering/RenderElement.cpp
 index b26360017f62da5e5b84a480a480dabf428f16b3..5e062dce9d5e192f619b582034d928cb5ce8af00 100644
 --- a/Source/WebCore/rendering/RenderElement.cpp
@@ -33159,6 +33366,36 @@ index bbc577b4dc47a315d4a9125d061367fdabc0fe8f..3276570b646bc237ae9e53811052111f
          }
      } else if (canCreateIntrinsicLogicalHeightsCacheForRowSizingFirstPass)
          m_intrinsicLogicalHeightsForRowSizingFirstPass.emplace();
+diff --git a/Source/WebCore/rendering/RenderLayerBacking.cpp b/Source/WebCore/rendering/RenderLayerBacking.cpp
+index 071b5d048426d39db36c4a83b95f58513273fd02..46e379b959606737f5d6a32bf9bc60ffe457919e 100644
+--- a/Source/WebCore/rendering/RenderLayerBacking.cpp
++++ b/Source/WebCore/rendering/RenderLayerBacking.cpp
+@@ -1182,6 +1182,10 @@ void RenderLayerBacking::updateAfterLayout(bool needsClippingUpdate, bool needsF
+         m_owningLayer.setNeedsCompositingGeometryUpdate();
+     }
+     
++#if PLATFORM(HAIKU)
++    if (needsFullRepaint && canIssueSetNeedsDisplay() && getenv("SUMMIT_FULL_REPAINT_TRACE"))
++        fprintf(stderr, "Summit full repaint: RenderLayerBacking::updateAfterLayout of %s\n", m_owningLayer.name().utf8().data() ? reinterpret_cast<const char*>(m_owningLayer.name().utf8().data()) : "");
++#endif
+     if (needsFullRepaint && canIssueSetNeedsDisplay())
+         setContentsNeedDisplay();
+ }
+@@ -1890,8 +1894,13 @@ void RenderLayerBacking::updateGeometry(const RenderLayer* compositedAncestor)
+ 
+     positionOverflowControlsLayers();
+ 
+-    if (subpixelOffsetFromRendererChanged(oldSubpixelOffsetFromRenderer, m_subpixelOffsetFromRenderer, deviceScaleFactor) && canIssueSetNeedsDisplay())
++    if (subpixelOffsetFromRendererChanged(oldSubpixelOffsetFromRenderer, m_subpixelOffsetFromRenderer, deviceScaleFactor) && canIssueSetNeedsDisplay()) {
++#if PLATFORM(HAIKU)
++        if (getenv("SUMMIT_FULL_REPAINT_TRACE"))
++            fprintf(stderr, "Summit full repaint: subpixel offset of a layer changed\n");
++#endif
+         setContentsNeedDisplay();
++    }
+ 
+ #if ENABLE(MODEL_ELEMENT)
+     if (is<RenderModel>(renderer()))
 diff --git a/Source/WebCore/rendering/RenderObject.cpp b/Source/WebCore/rendering/RenderObject.cpp
 index 081e0ed00cf062459897b311d3e44d98235b4ba5..cbba9a4c263a0d36cd881b7f950a3076bddfe907 100644
 --- a/Source/WebCore/rendering/RenderObject.cpp
@@ -33237,6 +33474,35 @@ index 081e0ed00cf062459897b311d3e44d98235b4ba5..cbba9a4c263a0d36cd881b7f950a3076
  
      if (layoutRoot && layoutRoot->isRooted())
          protect(layoutRoot->view().frameView().layoutContext())->scheduleSubtreeLayout(*layoutRoot);
+diff --git a/Source/WebCore/rendering/RenderView.cpp b/Source/WebCore/rendering/RenderView.cpp
+index d252c78262c83f3924be263723139091273c14c7..0832529f6b932312e98ef268e46068ad4dc1fb7e 100644
+--- a/Source/WebCore/rendering/RenderView.cpp
++++ b/Source/WebCore/rendering/RenderView.cpp
+@@ -487,8 +487,24 @@ bool RenderView::shouldRepaint(const LayoutRect& rect) const
+     return !printing() && !rect.isEmpty();
+ }
+ 
++#if PLATFORM(HAIKU)
++// SUMMIT_FULL_REPAINT_TRACE=1 names what asks for a whole layer or view to be painted again.
++static void traceFullRepaintHaiku(const char* what)
++{
++    static const bool enabled = [] {
++        const char* value = getenv("SUMMIT_FULL_REPAINT_TRACE");
++        return value && value[0] == '1' && !value[1];
++    }();
++    if (enabled)
++        fprintf(stderr, "Summit full repaint: %s\n", what);
++}
++#endif
++
+ void RenderView::repaintRootContents()
+ {
++#if PLATFORM(HAIKU)
++    traceFullRepaintHaiku("RenderView::repaintRootContents");
++#endif
+     // The contents background could come from the root (document element) renderer.
+     // If the root is not composited, repainting this RenderView should repaint it and
+     // its background. But if it's composited, then the background doesn't get repainted
 diff --git a/Source/WebCore/rendering/haiku/RenderThemeHaiku.cpp b/Source/WebCore/rendering/haiku/RenderThemeHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..92d20a3ff6fd83acdf255b10fa5b68cdfff528ae
@@ -94339,7 +94605,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..29b2218c26bef68dbc9061f1727d1f72
  
          if (!m_pendingForceRepaint && m_forcedRepaintAsyncCallback)
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
-index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..64c9baf01c22d8c157d655d46bd939978875fe1f 100644
+index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..ba2dd9dc02c81b541c65b3f4d78763818fcc2c9a 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
 @@ -33,6 +33,8 @@
@@ -94656,14 +94922,14 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..64c9baf01c22d8c157d655d46bd93997
      m_surface->sendFrame();
 +#if PLATFORM(HAIKU)
 +    if (traceTiming)
-+        std::fprintf(stderr, "Summit compositor timing: pid=%d at=%lld async=%d update=%d surface=%.1f flush=%.1f paint=%.1f send=%.1f total=%.1f tiles=%u newTextures=%u tileMpx=%.2f paintWait=%.1f texture=%.1f upload=%.1f swap=%.1f read=%.1f ipc=%.1f deferred=%d draws=%u blended=%u intoSurfaces=%u surfaces=%u blurs=%u drawMpx=%.1f blendedMpx=%.1f\n",
++        std::fprintf(stderr, "Summit compositor timing: pid=%d at=%lld async=%d update=%d surface=%.1f flush=%.1f paint=%.1f send=%.1f total=%.1f tiles=%u newTextures=%u tileMpx=%.2f paintWait=%.1f texture=%.1f upload=%.1f swap=%.1f read=%.1f ipc=%.1f deferred=%d draws=%u blended=%u intoSurfaces=%u surfaces=%u blurs=%u drawMpx=%.1f blendedMpx=%.1f transparentTiles=%u\n",
 +            static_cast<int>(getpid()), static_cast<long long>(startedAt), reasons.contains(CompositionReason::AsyncScrolling),
 +            reasons.contains(CompositionReason::RenderingUpdate), (surfaceAt - startedAt) / 1000.0,
 +            (flushedAt - surfaceAt) / 1000.0, (paintedAt - flushedAt) / 1000.0,
 +            (system_time() - paintedAt) / 1000.0, (system_time() - startedAt) / 1000.0,
 +            tileUpdates.tiles, tileUpdates.newTextures, tileUpdates.megapixels, tileUpdates.paintWaitMs, tileUpdates.textureMs, tileUpdates.uploadMs,
 +            (swappedAt - paintedAt) / 1000.0, (readAt - swappedAt) / 1000.0, (system_time() - readAt) / 1000.0, deferredUploads,
-+            drawStats.draws, drawStats.blendedDraws, drawStats.drawsIntoSurfaces, drawStats.surfaceBinds, drawStats.blurPasses, drawStats.megapixels, drawStats.blendedMegapixels);
++            drawStats.draws, drawStats.blendedDraws, drawStats.drawsIntoSurfaces, drawStats.surfaceBinds, drawStats.blurPasses, drawStats.megapixels, drawStats.blendedMegapixels, tileUpdates.transparentTiles);
 +    // The tiles that were left over are uploaded by the compositions that
 +    // follow, which this asks for in case nothing else does.
 +    if (deferredUploads)
