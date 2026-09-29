@@ -128,6 +128,14 @@ public:
                     fCaptureFirstFrameDelay = gap;
                 if (gap > 33000)
                     ++fCaptureLongGaps;
+                // SUMMIT_UI_FRAME_STATS=2 says when each late frame of a
+                // burst arrived, on the clock of the compositor's trace.
+                static const bool traceGaps = [] {
+                    const char* value = std::getenv("SUMMIT_UI_FRAME_STATS");
+                    return value && !std::strcmp(value, "2");
+                }();
+                if (traceGaps && gap > 25000 && fCaptureLastFrame)
+                    std::fprintf(stderr, "Summit UI frame gap: at=%lld gap=%.1f ms frame=%u\n", static_cast<long long>(now), gap / 1000.0, fCaptureFrames);
                 fCaptureLastFrame = now;
                 ++fCaptureFrames;
             }
@@ -741,11 +749,15 @@ void BrowserWindow::SimulateScroll(const BMessage& message, BMessage& reply)
     // from whoever is using the machine.
     BRect bounds = tab->view->Bounds();
     BPoint centre(bounds.left + bounds.Width() / 2, bounds.top + bounds.Height() / 2);
-    BPoint at = centre;
-    if (message.FindPoint("at", &at) == B_OK
-        && (!std::isfinite(at.x) || !std::isfinite(at.y) || !bounds.Contains(at))) {
-        reply.AddString("error", "wheel point is outside the page view");
-        return;
+    // FindPoint() clears the point it does not find, which sent every burst
+    // without a named point to the page's top left corner.
+    BPoint at = centre, named;
+    if (message.FindPoint("at", &named) == B_OK) {
+        if (!std::isfinite(named.x) || !std::isfinite(named.y) || !bounds.Contains(named)) {
+            reply.AddString("error", "wheel point is outside the page view");
+            return;
+        }
+        at = named;
     }
     burst->event.AddPoint("summit:view_where", at);
     // BWindow routes a wheel message to the view named by "_view_token", and
@@ -857,7 +869,7 @@ void BrowserWindow::CreateTab(const std::string& input, bool select, BWebView* a
         const char* frameStats = std::getenv("SUMMIT_UI_FRAME_STATS");
         if (newPage)
             webView = new BWebKitView(BRect(0, 0, 319, 199), "web-page", BMessenger(this), newPage, B_FOLLOW_ALL, fWebKitContext);
-        else if (frameStats && std::strcmp(frameStats, "1") == 0)
+        else if (frameStats && (std::strcmp(frameStats, "1") == 0 || std::strcmp(frameStats, "2") == 0))
             webView = new FrameStatsWebKitView(BRect(0, 0, 319, 199), "web-page", BMessenger(this), B_FOLLOW_ALL, fWebKitContext);
         else
             webView = new BWebKitView(BRect(0, 0, 319, 199), "web-page", BMessenger(this), B_FOLLOW_ALL, fWebKitContext);

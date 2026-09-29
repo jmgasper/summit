@@ -5378,7 +5378,7 @@ index 95ffe1c222fda9854b4c21f7d32c7ed8d08b45b1..b94a8546a45de6aa19a1e1cb41c10c25
  }
  
 diff --git a/Source/WebCore/page/scrolling/ScrollingTree.cpp b/Source/WebCore/page/scrolling/ScrollingTree.cpp
-index 351fcd027e1481abf32eeb6f82f5ffaa5aff5fd8..2afed204ed1b72119cbba8ffa53c3c5cfa4d75c1 100644
+index 351fcd027e1481abf32eeb6f82f5ffaa5aff5fd8..2167f71a05601daa5dbda2d98eaf107295169a70 100644
 --- a/Source/WebCore/page/scrolling/ScrollingTree.cpp
 +++ b/Source/WebCore/page/scrolling/ScrollingTree.cpp
 @@ -47,6 +47,11 @@
@@ -5393,7 +5393,134 @@ index 351fcd027e1481abf32eeb6f82f5ffaa5aff5fd8..2afed204ed1b72119cbba8ffa53c3c5c
  namespace WebCore {
  
  WTF_MAKE_TZONE_ALLOCATED_IMPL(ScrollingTree);
-@@ -214,6 +219,19 @@ WheelEventHandlingResult ScrollingTree::handleWheelEvent(const PlatformWheelEven
+@@ -136,6 +141,32 @@ OptionSet<WheelEventProcessingSteps> ScrollingTree::computeWheelProcessingSteps(
+     return { WheelEventProcessingSteps::AsyncScrolling };
+ }
+ 
++#if PLATFORM(HAIKU)
++bool ScrollingTree::wheelLatchEnabledHaiku()
++{
++    // SUMMIT_WHEEL_LATCH=0 hit-tests every notch again.
++    static const bool enabled = [] {
++        const char* value = getenv("SUMMIT_WHEEL_LATCH");
++        return !value || value[0] != '0' || value[1];
++    }();
++    return enabled;
++}
++
++bool ScrollingTree::WheelLatchHaiku::matches(const PlatformWheelEvent& wheelEvent, MonotonicTime now) const
++{
++    static constexpr Seconds longestPauseInBurst = 300_ms;
++    static constexpr int farthestPointerMove = 24;
++    if (!lastEventTime || now - lastEventTime > longestPauseInBurst)
++        return false;
++    auto moved = wheelEvent.position() - position;
++    if (std::abs(moved.width()) + std::abs(moved.height()) > farthestPointerMove)
++        return false;
++    // A notch the other way is a new scroll: what was under the pointer when
++    // the burst began may have left the view by now.
++    return wheelEvent.deltaX() * delta.width() >= 0 && wheelEvent.deltaY() * delta.height() >= 0;
++}
++#endif
++
+ OptionSet<WheelEventProcessingSteps> ScrollingTree::determineWheelEventProcessing(const PlatformWheelEvent& wheelEvent)
+ {
+     // This method is invoked by the event handling thread
+@@ -146,10 +177,28 @@ OptionSet<WheelEventProcessingSteps> ScrollingTree::determineWheelEventProcessin
+         LOG_WITH_STREAM(ScrollLatching, stream << "\nScrollingTree::determineWheelEventProcessing " << wheelEvent << " have latched node " << latchedNodeAndSteps->scrollingNodeID << " steps " << latchedNodeAndSteps->processingSteps << " gesture state " << m_treeState.gestureState);
+         return latchedNodeAndSteps->processingSteps;
+     }
++#if PLATFORM(HAIKU)
++    if (wheelLatchEnabledHaiku() && m_wheelLatchForStepsHaiku.matches(wheelEvent, MonotonicTime::now())) {
++        m_wheelLatchForStepsHaiku.lastEventTime = MonotonicTime::now();
++        return m_wheelLatchForStepsHaiku.steps;
++    }
++#endif
+     if (wheelEvent.isGestureStart() || wheelEvent.isNonGestureEvent())
+         m_treeState.gestureState = std::nullopt;
+ 
+     auto processingSteps = computeWheelProcessingSteps(wheelEvent);
++#if PLATFORM(HAIKU)
++    // Only a notch that scrolls without waiting for the page is latched. What
++    // passes under the pointer later in the burst may listen for wheel events,
++    // so the rest of the burst is always shown to the page as well.
++    if (processingSteps.containsAny({ WheelEventProcessingSteps::SynchronousScrolling, WheelEventProcessingSteps::BlockingDOMEventDispatch }))
++        m_wheelLatchForStepsHaiku = { };
++    else {
++        auto latchedSteps = processingSteps;
++        latchedSteps.add(WheelEventProcessingSteps::NonBlockingDOMEventDispatch);
++        m_wheelLatchForStepsHaiku = { MonotonicTime::now(), wheelEvent.position(), { }, latchedSteps, wheelEvent.delta() };
++    }
++#endif
+ 
+     m_latchingController.receivedWheelEvent(wheelEvent, processingSteps, m_allowLatching);
+ 
+@@ -158,11 +207,36 @@ OptionSet<WheelEventProcessingSteps> ScrollingTree::determineWheelEventProcessin
+     return processingSteps;
+ }
+ 
++#if PLATFORM(HAIKU)
++bool ScrollingTraceScopeHaiku::enabled()
++{
++    static const bool enabled = [] {
++        const char* value = getenv("SUMMIT_SCROLL_LOCK_TRACE");
++        return value && value[0] == '1' && !value[1];
++    }();
++    return enabled;
++}
++
++void ScrollingTraceScopeHaiku::report(const char* name, Seconds duration)
++{
++    if (duration > 20_ms)
++        fprintf(stderr, "Summit scroll lock: %s %.1f ms\n", name, duration.milliseconds());
++}
++#endif
++
+ WheelEventHandlingResult ScrollingTree::handleWheelEvent(const PlatformWheelEvent& wheelEvent, OptionSet<WheelEventProcessingSteps> processingSteps)
+ {
+     LOG_WITH_STREAM(Scrolling, stream << "ScrollingTree " << this << " handleWheelEvent " << wheelEvent);
+ 
++#if PLATFORM(HAIKU)
++    std::optional<ScrollingTraceScopeHaiku> waitsForLock;
++    waitsForLock.emplace("a wheel event waited for the lock");
++#endif
+     Locker locker { m_treeLock };
++#if PLATFORM(HAIKU)
++    waitsForLock.reset();
++    ScrollingTraceScopeHaiku traceScope("handling a wheel event");
++#endif
+ 
+     if (isMonitoringWheelEvents())
+         receivedWheelEventWithPhases(wheelEvent.phase(), wheelEvent.momentumPhase());
+@@ -200,12 +274,27 @@ WheelEventHandlingResult ScrollingTree::handleWheelEvent(const PlatformWheelEven
+             }
+         }
+ 
++#if PLATFORM(HAIKU)
++        assertIsHeld(m_treeLock);
++        if (wheelLatchEnabledHaiku() && m_wheelLatchForNodeHaiku.nodeID && m_wheelLatchForNodeHaiku.matches(wheelEvent, MonotonicTime::now())) {
++            if (RefPtr node = nodeForID(*m_wheelLatchForNodeHaiku.nodeID)) {
++                m_wheelLatchForNodeHaiku.lastEventTime = MonotonicTime::now();
++                return handleWheelEventWithNode(wheelEvent, processingSteps, node.get());
++            }
++        }
++#endif
++
+         FloatPoint position = wheelEvent.position();
+         {
+             Locker locker { m_treeStateLock };
+             position.move(rootNode->viewToContentsOffset(m_treeState.mainFrameScrollPosition));
+         }
+         auto node = scrollingNodeForPoint(position);
++#if PLATFORM(HAIKU)
++        m_wheelLatchForNodeHaiku = { MonotonicTime::now(), wheelEvent.position(), { }, { }, wheelEvent.delta() };
++        if (node)
++            m_wheelLatchForNodeHaiku.nodeID = node->scrollingNodeID();
++#endif
+ 
+         LOG_WITH_STREAM(Scrolling, stream << "ScrollingTree::handleWheelEvent found node " << (node ? node->scrollingNodeID() : std::optional<ScrollingNodeID> { }) << " for point " << position);
+ 
+@@ -214,6 +303,19 @@ WheelEventHandlingResult ScrollingTree::handleWheelEvent(const PlatformWheelEven
  
      static constexpr OptionSet<WheelEventProcessingSteps> mainThreadSteps = { WheelEventProcessingSteps::NonBlockingDOMEventDispatch, WheelEventProcessingSteps::BlockingDOMEventDispatch };
      result.steps.add(processingSteps & mainThreadSteps);
@@ -5413,8 +5540,94 @@ index 351fcd027e1481abf32eeb6f82f5ffaa5aff5fd8..2afed204ed1b72119cbba8ffa53c3c5c
      return result;
  }
  
+@@ -493,7 +595,15 @@ bool ScrollingTree::commitTreeStateInternal(std::unique_ptr<ScrollingStateTree>&
+ bool ScrollingTree::commitTreeState(std::unique_ptr<ScrollingStateTree>&& scrollingStateTree, std::optional<LayerHostingContextIdentifier> hostingContextIdentifier)
+ {
+     SetForScope inCommitTreeState(m_inCommitTreeState, true);
++#if PLATFORM(HAIKU)
++    std::optional<ScrollingTraceScopeHaiku> waitsForLock;
++    waitsForLock.emplace("a commit waited for the lock");
++#endif
+     Locker locker { m_treeLock };
++#if PLATFORM(HAIKU)
++    waitsForLock.reset();
++    ScrollingTraceScopeHaiku traceScope("committing the tree");
++#endif
+     return commitTreeStateInternal(WTF::move(scrollingStateTree), hostingContextIdentifier);
+ }
+ 
+@@ -619,6 +729,9 @@ void ScrollingTree::removeAllNodes()
+ void ScrollingTree::applyLayerPositions()
+ {
+     Locker locker { m_treeLock };
++#if PLATFORM(HAIKU)
++    ScrollingTraceScopeHaiku traceScope("applying layer positions");
++#endif
+ 
+     if (!m_needsApplyLayerPositions.exchange(false))
+         return;
+diff --git a/Source/WebCore/page/scrolling/ScrollingTree.h b/Source/WebCore/page/scrolling/ScrollingTree.h
+index 54e8ac0d60903f27d2803bdb5eff7ef8c480ca49..9c1b832375191e28059bf235544bcba8a5c3ffab 100644
+--- a/Source/WebCore/page/scrolling/ScrollingTree.h
++++ b/Source/WebCore/page/scrolling/ScrollingTree.h
+@@ -52,6 +52,29 @@
+ 
+ namespace WebCore {
+ 
++#if PLATFORM(HAIKU)
++// SUMMIT_SCROLL_LOCK_TRACE=1 names whatever keeps the scrolling tree's lock, or
++// the scrolling thread, for over 20 ms.
++class ScrollingTraceScopeHaiku {
++public:
++    WEBCORE_EXPORT static bool enabled();
++    explicit ScrollingTraceScopeHaiku(const char* name)
++        : m_name(name)
++        , m_start(enabled() ? MonotonicTime::now() : MonotonicTime())
++    {
++    }
++    ~ScrollingTraceScopeHaiku()
++    {
++        if (m_start)
++            report(m_name, MonotonicTime::now() - m_start);
++    }
++    WEBCORE_EXPORT static void report(const char* name, Seconds);
++private:
++    const char* m_name;
++    MonotonicTime m_start;
++};
++#endif
++
+ class IntPoint;
+ class ScrollingStateTree;
+ class ScrollingStateNode;
+@@ -371,6 +394,25 @@ private:
+     ScrollingTreeLatchingController m_latchingController;
+     ScrollingTreeGestureState m_gestureState;
+ 
++#if PLATFORM(HAIKU)
++    // A wheel has no gesture phases to latch by, so every notch hit-tested
++    // the layers, twice, and a hit test waits for the main thread to finish
++    // flushing them: tens of milliseconds while a page loads. Within a burst
++    // of notches at one place the first notch's answers stand for the rest.
++    struct WheelLatchHaiku {
++        MonotonicTime lastEventTime;
++        IntPoint position;
++        Markable<ScrollingNodeID> nodeID;
++        OptionSet<WheelEventProcessingSteps> steps;
++        FloatSize delta;
++
++        bool matches(const PlatformWheelEvent&, MonotonicTime) const;
++    };
++    static bool wheelLatchEnabledHaiku();
++    WheelLatchHaiku m_wheelLatchForStepsHaiku WTF_GUARDED_BY_LOCK(m_treeStateLock);
++    WheelLatchHaiku m_wheelLatchForNodeHaiku WTF_GUARDED_BY_LOCK(m_treeLock);
++#endif
++
+     RelatedNodesMap m_overflowRelatedNodesMap;
+ 
+     HashSet<Ref<ScrollingTreeOverflowScrollProxyNode>> m_activeOverflowScrollProxyNodes;
 diff --git a/Source/WebCore/page/scrolling/ThreadedScrollingTree.cpp b/Source/WebCore/page/scrolling/ThreadedScrollingTree.cpp
-index 77e274b5febc1b0c30c2f90092b4dd1ba1e49eea..fedc8581cc7089ce343debdd2466fd5b60f05964 100644
+index 77e274b5febc1b0c30c2f90092b4dd1ba1e49eea..bedb184d60d0e872facb3dd59d4f000dfec97be6 100644
 --- a/Source/WebCore/page/scrolling/ThreadedScrollingTree.cpp
 +++ b/Source/WebCore/page/scrolling/ThreadedScrollingTree.cpp
 @@ -37,6 +37,7 @@
@@ -5425,7 +5638,59 @@ index 77e274b5febc1b0c30c2f90092b4dd1ba1e49eea..fedc8581cc7089ce343debdd2466fd5b
  #include <wtf/RunLoop.h>
  #include <wtf/SetForScope.h>
  #include <wtf/SystemTracing.h>
-@@ -457,8 +458,30 @@ void ThreadedScrollingTree::willStartRenderingUpdate()
+@@ -114,6 +115,9 @@ void ThreadedScrollingTree::willSendEventToMainThread(const PlatformWheelEvent&)
+ void ThreadedScrollingTree::waitForEventToBeProcessedByMainThread(const PlatformWheelEvent& wheelEvent)
+ {
+     ASSERT(ScrollingThread::isCurrentThread());
++#if PLATFORM(HAIKU)
++    ScrollingTraceScopeHaiku traceScope("waiting for the main thread to take a wheel event");
++#endif
+ 
+     if (!wheelEvent.isGestureStart())
+         return;
+@@ -271,6 +275,9 @@ void ThreadedScrollingTree::scrollingTreeNodeDidScroll(ScrollingTreeScrollingNod
+     }
+ 
+     LOG_WITH_STREAM(Scrolling, stream << "ThreadedScrollingTree::scrollingTreeNodeDidScroll " << node.scrollingNodeID() << " to " << scrollPosition << " triggering main thread rendering update");
++#if PLATFORM(HAIKU)
++    m_scrolledSincePositionsAppliedHaiku = true;
++#endif
+     addPendingScrollUpdateWithDeferReason(WTF::move(scrollUpdate), WheelEventTestMonitor::DeferReason::ScrollingThreadSyncNeeded);
+ }
+ 
+@@ -421,11 +428,21 @@ void ThreadedScrollingTree::setActiveScrollSnapIndices(ScrollingNodeID nodeID, s
+ void ThreadedScrollingTree::lockLayersForHitTesting()
+ {
+     m_layerHitTestMutex.lock();
++#if PLATFORM(HAIKU)
++    m_layersLockedForHitTestingAtHaiku = ScrollingTraceScopeHaiku::enabled() ? MonotonicTime::now() : MonotonicTime();
++#endif
+ }
+ 
+ void ThreadedScrollingTree::unlockLayersForHitTesting()
+ {
++#if PLATFORM(HAIKU)
++    auto lockedAt = m_layersLockedForHitTestingAtHaiku;
++#endif
+     m_layerHitTestMutex.unlock();
++#if PLATFORM(HAIKU)
++    if (lockedAt)
++        ScrollingTraceScopeHaiku::report("the main thread kept the layers from hit tests", MonotonicTime::now() - lockedAt);
++#endif
+ }
+ 
+ void ThreadedScrollingTree::didScheduleRenderingUpdate()
+@@ -443,6 +460,9 @@ void ThreadedScrollingTree::willStartRenderingUpdate()
+         return;
+ 
+     tracePoint(ScrollingThreadRenderUpdateSyncStart);
++#if PLATFORM(HAIKU)
++    ScrollingTraceScopeHaiku traceScope("the main thread waited for the scrolling thread");
++#endif
+ 
+     // Wait for the scrolling thread to acquire m_treeLock. This ensures that any pending wheel events are processed.
+     BinarySemaphore semaphore;
+@@ -457,8 +477,30 @@ void ThreadedScrollingTree::willStartRenderingUpdate()
      m_state = SynchronizationState::InRenderingUpdate;
  }
  
@@ -5456,8 +5721,97 @@ index 77e274b5febc1b0c30c2f90092b4dd1ba1e49eea..fedc8581cc7089ce343debdd2466fd5b
      auto scrollingCoordinator = m_scrollingCoordinator;
      if (!scrollingCoordinator)
          return;
+@@ -476,6 +518,9 @@ void ThreadedScrollingTree::hasNodeWithAnimatedScrollChanged(bool hasNodeWithAni
+ // commit layer positions.
+ void ThreadedScrollingTree::waitForRenderingUpdateCompletionOrTimeout()
+ {
++#if PLATFORM(HAIKU)
++    ScrollingTraceScopeHaiku traceScope("waiting for the rendering update");
++#endif
+     ASSERT(ScrollingThread::isCurrentThread());
+     ASSERT(m_treeLock.isLocked());
+ 
+@@ -523,6 +568,9 @@ void ThreadedScrollingTree::renderingUpdateComplete()
+         m_stateCondition.notifyOne();
+ 
+     m_state = SynchronizationState::Idle;
++#if PLATFORM(HAIKU)
++    m_scrolledSincePositionsAppliedHaiku = false;
++#endif
+ }
+ 
+ void ThreadedScrollingTree::scheduleDelayedRenderingUpdateDetectionTimer(Seconds delay)
+@@ -543,6 +591,9 @@ void ThreadedScrollingTree::delayedRenderingUpdateDetectionTimerFired()
+     Locker locker { m_treeLock };
+     if (canUpdateLayersOnScrollingThread())
+         applyLayerPositionsInternal();
++#if PLATFORM(HAIKU)
++    m_scrolledSincePositionsAppliedHaiku = false;
++#endif
+     m_state = SynchronizationState::Desynchronized;
+ }
+ 
+@@ -550,19 +601,56 @@ void ThreadedScrollingTree::displayDidRefreshOnScrollingThread()
+ {
+     TraceScope tracingScope(ScrollingThreadDisplayDidRefreshStart, ScrollingThreadDisplayDidRefreshEnd, displayID());
+     ASSERT(ScrollingThread::isCurrentThread());
++#if PLATFORM(HAIKU)
++    std::optional<ScrollingTraceScopeHaiku> waitsForLock;
++    waitsForLock.emplace("a display refresh waited for the lock");
++#endif
+ 
+     Locker locker { m_treeLock };
+     
+     auto now = MonotonicTime::now();
+     m_lastDisplayDidRefreshTime = now;
++#if PLATFORM(HAIKU)
++    waitsForLock.reset();
++    ScrollingTraceScopeHaiku traceScope("a display refresh");
++#endif
+     serviceScrollAnimations(now);
+ 
+-    if (m_state != SynchronizationState::Idle && canUpdateLayersOnScrollingThread())
++#if PLATFORM(HAIKU)
++    // SUMMIT_SCROLL_SYNC_TRACE=1 prints what each refresh found.
++    static const bool traceSync = [] {
++        const char* value = getenv("SUMMIT_SCROLL_SYNC_TRACE");
++        return value && value[0] == '1' && !value[1];
++    }();
++    if (traceSync) {
++        fprintf(stderr, "Summit scroll sync: state=%d scheduled=%d scrolled=%d canUpdate=%d\n", static_cast<int>(m_state),
++            m_renderingUpdateWasScheduled.load(), m_scrolledSincePositionsAppliedHaiku.load(), canUpdateLayersOnScrollingThread());
++    }
++    // The main thread schedules the rendering update a scroll asks for. While
++    // it is busy, which it is for a tenth of a second at a time in a page that
++    // is loading, nothing is scheduled, the tree stays idle, and the scroll
++    // would not show before the main thread is free. Such a scroll is given
++    // the same millisecond as a scheduled update and then shown from here.
++    // SUMMIT_SCROLL_WITHOUT_MAIN=0 waits for the main thread as before.
++    static const bool scrollsWithoutMain = [] {
++        const char* value = getenv("SUMMIT_SCROLL_WITHOUT_MAIN");
++        return !value || value[0] != '0' || value[1];
++    }();
++    bool scrollAwaitsMainThread = scrollsWithoutMain && m_scrolledSincePositionsAppliedHaiku && canUpdateLayersOnScrollingThread();
++#else
++    bool scrollAwaitsMainThread = false;
++#endif
++
++    if (m_state != SynchronizationState::Idle && canUpdateLayersOnScrollingThread()) {
+         applyLayerPositionsInternal();
++#if PLATFORM(HAIKU)
++        m_scrolledSincePositionsAppliedHaiku = false;
++#endif
++    }
+ 
+     switch (m_state) {
+     case SynchronizationState::Idle: {
+-        if (m_renderingUpdateWasScheduled) {
++        if (m_renderingUpdateWasScheduled || scrollAwaitsMainThread) {
+             m_state = SynchronizationState::WaitingForRenderingUpdate;
+             constexpr auto maxStartRenderingUpdateDelay = 1_ms;
+             scheduleDelayedRenderingUpdateDetectionTimer(maxStartRenderingUpdateDelay);
 diff --git a/Source/WebCore/page/scrolling/ThreadedScrollingTree.h b/Source/WebCore/page/scrolling/ThreadedScrollingTree.h
-index fbe73cf3679059de2b1a1e695f53bb4aa9bfce8a..b3755bf86f1b143ab1f418d5122a134f0ca0f45b 100644
+index fbe73cf3679059de2b1a1e695f53bb4aa9bfce8a..b406c93f60cfe2725369028cf6a36a4881e2bd38 100644
 --- a/Source/WebCore/page/scrolling/ThreadedScrollingTree.h
 +++ b/Source/WebCore/page/scrolling/ThreadedScrollingTree.h
 @@ -61,6 +61,14 @@ public:
@@ -5475,6 +5829,19 @@ index fbe73cf3679059de2b1a1e695f53bb4aa9bfce8a..b3755bf86f1b143ab1f418d5122a134f
      void NODELETE didScheduleRenderingUpdate();
      void willStartRenderingUpdate();
      virtual void didCompleteRenderingUpdate();
+@@ -106,6 +114,12 @@ protected:
+ 
+     RefPtr<AsyncScrollingCoordinator> m_scrollingCoordinator;
+     mutable Lock m_layerHitTestMutex;
++#if PLATFORM(HAIKU)
++    MonotonicTime m_layersLockedForHitTestingAtHaiku;
++    // Set by a scroll on the scrolling thread, cleared when layer positions
++    // are applied or a rendering update completes.
++    std::atomic<bool> m_scrolledSincePositionsAppliedHaiku { false };
++#endif
+ 
+ private:
+     bool isThreadedScrollingTree() const override { return true; }
 diff --git a/Source/WebCore/page/scrolling/coordinated/ScrollerCoordinated.cpp b/Source/WebCore/page/scrolling/coordinated/ScrollerCoordinated.cpp
 index 19eeadfad058f4bd29b19b2e63b00d169e5a1ed5..d12a87568f05a57aadfbfe0ee8ae628fcb94ac87 100644
 --- a/Source/WebCore/page/scrolling/coordinated/ScrollerCoordinated.cpp
@@ -19432,7 +19799,7 @@ index 30343ff03299542f8673d98b486c7fdd78bddeb9..95d192b9fadc9f7fca017d53ad82885c
          if (const char* envString = getenv("WEBKIT_SKIA_CPU_PAINTING_THREADS")) {
              auto newValue = parseInteger<unsigned>(StringView::fromLatin1(envString));
 diff --git a/Source/WebCore/platform/graphics/texmap/TextureMapper.cpp b/Source/WebCore/platform/graphics/texmap/TextureMapper.cpp
-index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..0f367c28cc1dc3e84942d3ea9916d9adb27dc558 100644
+index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..b3742988119c281ac73ee2f7a446bc7a3a44171d 100644
 --- a/Source/WebCore/platform/graphics/texmap/TextureMapper.cpp
 +++ b/Source/WebCore/platform/graphics/texmap/TextureMapper.cpp
 @@ -44,6 +44,12 @@
@@ -19476,19 +19843,21 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..0f367c28cc1dc3e84942d3ea9916d9ad
      });
      return *addResult.iterator->value;
  }
-@@ -232,8 +250,42 @@ ClipStack& TextureMapper::clipStack()
+@@ -232,8 +250,54 @@ ClipStack& TextureMapper::clipStack()
      return data().currentSurface ? data().currentSurface->clipStack() : m_clipStack;
  }
  
 +#if PLATFORM(HAIKU)
 +void TextureMapper::warmShaderProgramsHaiku()
 +{
-+    // A shader program is compiled when a layer first needs it, 8 to 24 ms
-+    // in a frame that has 16: the first scroll of a page (a scrollbar fades
-+    // in), the first rounded video, the first filter. These are the programs
-+    // the Guardian, YouTube, CNN and Reddit had compiled by the end of a
-+    // scroll; the compositor thread compiles them when it is created, while
-+    // the page is still being fetched.
++    // A shader program is compiled when a layer first needs it, in a frame
++    // that has 16 ms: the first scroll of a page (a scrollbar fades in), the
++    // first rounded video, the first filter. These are the programs that
++    // twenty sites had compiled by the end of a scroll, and the filters of
++    // the same kind they did not use; the compositor thread makes them when
++    // it is created, while the page is still being fetched. With Mesa's
++    // shader cache a program costs 0.3 to 3 ms, 8 to 24 the first time this
++    // machine compiles it.
 +    using Program = TextureMapperShaderProgram;
 +    static const Program::Options programs[] = {
 +        { Program::SolidColor, Program::RoundedRectClip },
@@ -19499,6 +19868,16 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..0f367c28cc1dc3e84942d3ea9916d9ad
 +        { Program::TextureRGB, Program::Opacity, Program::RoundedRectClip },
 +        { Program::TextureCopy },
 +        { Program::BlurFilter },
++        { Program::TextureRGB, Program::Antialiasing },
++        { Program::TextureRGB, Program::Opacity, Program::Antialiasing },
++        { Program::SolidColor, Program::Antialiasing },
++        { Program::TextureRGB, Program::BrightnessFilter },
++        { Program::TextureRGB, Program::SaturateFilter },
++        { Program::TextureRGB, Program::OpacityFilter },
++        { Program::TextureRGB, Program::GrayscaleFilter },
++        { Program::TextureRGB, Program::ContrastFilter },
++        { Program::TextureRGB, Program::InvertFilter },
++        { Program::AlphaBlur },
 +    };
 +    for (auto& options : programs)
 +        data().getShaderProgram(options);
@@ -19519,7 +19898,7 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..0f367c28cc1dc3e84942d3ea9916d9ad
      glGetIntegerv(GL_CURRENT_PROGRAM, &data().previousProgram);
      data().previousScissorState = glIsEnabled(GL_SCISSOR_TEST);
      data().previousDepthState = glIsEnabled(GL_DEPTH_TEST);
-@@ -801,6 +853,10 @@ void TextureMapper::drawTexturePackedYUV(GLuint texture, const std::array<GLfloa
+@@ -801,6 +865,10 @@ void TextureMapper::drawTexturePackedYUV(GLuint texture, const std::array<GLfloa
  
  void TextureMapper::drawSolidColor(const FloatRect& rect, const TransformationMatrix& matrix, const Color& color, bool isBlendingAllowed)
  {
@@ -19530,7 +19909,7 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..0f367c28cc1dc3e84942d3ea9916d9ad
      OptionSet<TextureMapperFlags> flags;
      TextureMapperShaderProgram::Options options = TextureMapperShaderProgram::SolidColor;
      if (!matrix.mapQuad(rect).isRectilinear()) {
-@@ -817,6 +873,9 @@ void TextureMapper::drawSolidColor(const FloatRect& rect, const TransformationMa
+@@ -817,6 +885,9 @@ void TextureMapper::drawSolidColor(const FloatRect& rect, const TransformationMa
      }
  
      Ref<TextureMapperShaderProgram> program = data().getShaderProgram(options);
@@ -19540,7 +19919,7 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..0f367c28cc1dc3e84942d3ea9916d9ad
      glUseProgram(program->programID());
  
      if (clipStack().isRoundedRectClipEnabled())
-@@ -828,6 +887,13 @@ void TextureMapper::drawSolidColor(const FloatRect& rect, const TransformationMa
+@@ -828,6 +899,13 @@ void TextureMapper::drawSolidColor(const FloatRect& rect, const TransformationMa
          flags.add(TextureMapperFlags::ShouldBlend);
  
      draw(rect, matrix, program.get(), GL_TRIANGLE_FAN, flags);
@@ -19554,7 +19933,7 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..0f367c28cc1dc3e84942d3ea9916d9ad
  }
  
  void TextureMapper::clearColor(const Color& color)
-@@ -877,8 +943,38 @@ void TextureMapper::drawUnitRect(TextureMapperShaderProgram& program, GLenum dra
+@@ -877,8 +955,38 @@ void TextureMapper::drawUnitRect(TextureMapperShaderProgram& program, GLenum dra
      glBindBuffer(GL_ARRAY_BUFFER, 0);
  }
  
@@ -19593,7 +19972,7 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..0f367c28cc1dc3e84942d3ea9916d9ad
      TransformationMatrix matrix(modelViewMatrix);
      matrix.multiply(TransformationMatrix::rectToRect(FloatRect(0, 0, 1, 1), rect));
  
-@@ -987,6 +1083,10 @@ void TextureMapper::drawTextureCopy(const BitmapTexture& sourceTexture, const Fl
+@@ -987,6 +1095,10 @@ void TextureMapper::drawTextureCopy(const BitmapTexture& sourceTexture, const Fl
  
  void TextureMapper::drawBlurred(const BitmapTexture& sourceTexture, const FloatRect& rect, float radius, Direction direction, bool alphaBlur)
  {
@@ -19604,7 +19983,7 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..0f367c28cc1dc3e84942d3ea9916d9ad
      Ref<TextureMapperShaderProgram> program = data().getShaderProgram({
          alphaBlur ? TextureMapperShaderProgram::AlphaBlur : TextureMapperShaderProgram::BlurFilter,
      });
-@@ -1278,6 +1378,28 @@ RefPtr<BitmapTexture> TextureMapper::applyFilters(RefPtr<BitmapTexture>& sourceT
+@@ -1278,6 +1390,28 @@ RefPtr<BitmapTexture> TextureMapper::applyFilters(RefPtr<BitmapTexture>& sourceT
  
  RefPtr<BitmapTexture> TextureMapper::applyFilter(RefPtr<BitmapTexture>& sourceTexture, const Ref<const FilterOperation>& filter, bool defersLastPass)
  {
@@ -19633,7 +20012,7 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..0f367c28cc1dc3e84942d3ea9916d9ad
      switch (filter->type()) {
      case FilterOperation::Type::Grayscale:
      case FilterOperation::Type::Sepia:
-@@ -1330,6 +1452,10 @@ void TextureMapper::bindDefaultSurface()
+@@ -1330,6 +1464,10 @@ void TextureMapper::bindDefaultSurface()
  
  void TextureMapper::bindSurface(BitmapTexture *surface)
  {
@@ -94294,10 +94673,10 @@ index e6fbb8c1896bf99dc0f7322868052566b8629598..d84e2ecbc70d219a63eb074c1fd4b1c9
      UpdateGeometry(WebCore::IntSize size) -> ()
  #endif
 diff --git a/Source/WebKit/WebProcess/WebPage/EventDispatcher.cpp b/Source/WebKit/WebProcess/WebPage/EventDispatcher.cpp
-index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..657125da152dc297cd523b7f347b5233b2bedbc2 100644
+index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..a75c6a30ccc1f4ff5cea6af93274b92a855933e5 100644
 --- a/Source/WebKit/WebProcess/WebPage/EventDispatcher.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/EventDispatcher.cpp
-@@ -36,15 +36,27 @@
+@@ -36,15 +36,28 @@
  #include "WebTouchEvent.h"
  #include "WebWheelEvent.h"
  #include <WebCore/DisplayUpdate.h>
@@ -94314,6 +94693,7 @@ index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..657125da152dc297cd523b7f347b5233
  #include <WebCore/WheelEventTestMonitor.h>
  #include <wtf/MainThread.h>
 +#include <wtf/NeverDestroyed.h>
++#include <wtf/ThreadSafeRefCounted.h>
  #include <wtf/RunLoop.h>
  #include <wtf/SystemTracing.h>
 +#include <wtf/text/StringBuilder.h>
@@ -94325,7 +94705,7 @@ index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..657125da152dc297cd523b7f347b5233
  
  #if ENABLE(ASYNC_SCROLLING)
  #include <WebCore/AsyncScrollingCoordinator.h>
-@@ -65,6 +77,53 @@
+@@ -65,6 +78,61 @@
  namespace WebKit {
  using namespace WebCore;
  
@@ -94348,11 +94728,19 @@ index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..657125da152dc297cd523b7f347b5233
 +// as in Chrome: notches that follow one another within 300 ms with the same
 +// modifiers. The first of a burst is answered by the page; if the page let
 +// it scroll, the rest scroll on the scrolling thread and reach the page's
-+// listeners as events they cannot cancel. SUMMIT_WHEEL_BURSTS=0 turns it off.
++// listeners as events they cannot cancel. A page that has not answered the
++// first within 50 ms is not waited for, as WebKit does not wait longer for
++// the first event of a trackpad's gesture - unless the page has cancelled a
++// wheel event before: a map that zooms with the wheel, or a page that
++// scrolls by itself, is always waited for, however busy it is.
++// SUMMIT_WHEEL_BURSTS=0 turns all of this off.
 +struct WheelBurstHaiku {
 +    MonotonicTime lastEventTime;
++    MonotonicTime awaitingAnswerSince;
 +    OptionSet<WebEventModifier> modifiers;
++    bool awaitingAnswer { false };
 +    bool scrollsFreely { false };
++    bool pageCancels { false };
 +};
 +static Lock s_wheelBurstsLock;
 +static HashMap<PageIdentifier, WheelBurstHaiku>& wheelBurstsHaiku() WTF_REQUIRES_LOCK(s_wheelBurstsLock)
@@ -94379,7 +94767,7 @@ index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..657125da152dc297cd523b7f347b5233
  EventDispatcher::EventDispatcher(WebProcess& process)
      : m_process(process)
      , m_queue(WorkQueue::create("com.apple.WebKit.EventDispatcher"_s, WorkQueue::QOS::UserInteractive))
-@@ -74,6 +133,16 @@ EventDispatcher::EventDispatcher(WebProcess& process)
+@@ -74,6 +142,16 @@ EventDispatcher::EventDispatcher(WebProcess& process)
      , m_observerID(DisplayLinkObserverID::generate())
  #endif
  {
@@ -94396,7 +94784,7 @@ index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..657125da152dc297cd523b7f347b5233
  }
  
  EventDispatcher::~EventDispatcher()
-@@ -110,6 +179,10 @@ void EventDispatcher::removeScrollingTreeForPage(WebPage& webPage)
+@@ -110,6 +188,10 @@ void EventDispatcher::removeScrollingTreeForPage(WebPage& webPage)
      ASSERT(m_scrollingTrees.contains(webPage.identifier()));
  
      m_scrollingTrees.remove(webPage.identifier());
@@ -94407,7 +94795,7 @@ index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..657125da152dc297cd523b7f347b5233
  }
  #endif
  
-@@ -145,6 +218,10 @@ void EventDispatcher::internalWheelEvent(PageIdentifier pageID, const WebWheelEv
+@@ -145,6 +227,10 @@ void EventDispatcher::internalWheelEvent(PageIdentifier pageID, const WebWheelEv
          Locker locker { m_scrollingTreesLock };
          RefPtr scrollingTree = m_scrollingTrees.get(pageID);
          if (!scrollingTree) {
@@ -94418,12 +94806,13 @@ index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..657125da152dc297cd523b7f347b5233
              dispatchWheelEventViaMainThread(pageID, wheelEvent, processingSteps, WTF::move(completionHandler));
              break;
          }
-@@ -166,6 +243,32 @@ void EventDispatcher::internalWheelEvent(PageIdentifier pageID, const WebWheelEv
+@@ -166,9 +252,91 @@ void EventDispatcher::internalWheelEvent(PageIdentifier pageID, const WebWheelEv
              useMainThreadForScrolling = false;
  #endif
  
 +#if PLATFORM(HAIKU)
 +        bool continuesBurst = false;
++        bool answersEarly = false;
 +        if (wheelBurstsEnabledHaiku()) {
 +            static constexpr Seconds longestPauseInBurst = 300_ms;
 +            auto now = MonotonicTime::now();
@@ -94431,14 +94820,25 @@ index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..657125da152dc297cd523b7f347b5233
 +            auto& burst = wheelBurstsHaiku().ensure(pageID, [] {
 +                return WheelBurstHaiku { };
 +            }).iterator->value;
-+            if (now - burst.lastEventTime > longestPauseInBurst || burst.modifiers != wheelEvent.modifiers())
++            static constexpr Seconds longestWaitForAnswer = 50_ms;
++            if (now - burst.lastEventTime > longestPauseInBurst || burst.modifiers != wheelEvent.modifiers()) {
 +                burst.scrollsFreely = false;
++                burst.awaitingAnswer = false;
++            }
 +            burst.lastEventTime = now;
 +            burst.modifiers = wheelEvent.modifiers();
-+            if (useMainThreadForScrolling && burst.scrollsFreely && processingSteps.contains(WheelEventProcessingSteps::BlockingDOMEventDispatch)) {
-+                continuesBurst = true;
-+                useMainThreadForScrolling = false;
-+                processingSteps = { WheelEventProcessingSteps::AsyncScrolling, WheelEventProcessingSteps::NonBlockingDOMEventDispatch };
++            if (useMainThreadForScrolling && processingSteps.contains(WheelEventProcessingSteps::BlockingDOMEventDispatch)) {
++                if (!burst.scrollsFreely && !burst.pageCancels && burst.awaitingAnswer && now - burst.awaitingAnswerSince > longestWaitForAnswer)
++                    burst.scrollsFreely = true;
++                answersEarly = !burst.pageCancels;
++                if (burst.scrollsFreely) {
++                    continuesBurst = true;
++                    useMainThreadForScrolling = false;
++                    processingSteps = { WheelEventProcessingSteps::AsyncScrolling, WheelEventProcessingSteps::NonBlockingDOMEventDispatch };
++                } else if (!burst.awaitingAnswer) {
++                    burst.awaitingAnswer = true;
++                    burst.awaitingAnswerSince = now;
++                }
 +            }
 +        }
 +        if (traceWheelRoute())
@@ -94450,8 +94850,56 @@ index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..657125da152dc297cd523b7f347b5233
 +
          scrollingTree->willProcessWheelEvent();
  
-         ScrollingThread::dispatch([scrollingTree, wheelEvent = Ref<const WebWheelEvent> { wheelEvent }, platformWheelEvent, processingSteps, useMainThreadForScrolling, pageID, this, protectedThis = Ref { *this }, completionHandler = WTF::move(completionHandler)] mutable {
-@@ -178,6 +281,25 @@ void EventDispatcher::internalWheelEvent(PageIdentifier pageID, const WebWheelEv
+-        ScrollingThread::dispatch([scrollingTree, wheelEvent = Ref<const WebWheelEvent> { wheelEvent }, platformWheelEvent, processingSteps, useMainThreadForScrolling, pageID, this, protectedThis = Ref { *this }, completionHandler = WTF::move(completionHandler)] mutable {
++#if PLATFORM(HAIKU)
++        // The UI process sends the next wheel event when this one has been
++        // answered. While the first notch of a burst waits for a main thread
++        // that is busy, the notches that could scroll without it would wait
++        // in the UI process: it is told after 50 ms that this one is taken
++        // care of, which it is.
++        if (answersEarly && useMainThreadForScrolling && processingSteps.contains(WheelEventProcessingSteps::BlockingDOMEventDispatch)) {
++            struct Answer : ThreadSafeRefCounted<Answer> {
++                Lock lock;
++                CompletionHandler<void(bool)> handler WTF_GUARDED_BY_LOCK(lock);
++            };
++            Ref answer = adoptRef(*new Answer);
++            {
++                Locker answerLocker { answer->lock };
++                answer->handler = WTF::move(completionHandler);
++            }
++            auto answerOnce = [answer](bool handled) {
++                CompletionHandler<void(bool)> handler;
++                {
++                    Locker answerLocker { answer->lock };
++                    handler = std::exchange(answer->handler, nullptr);
++                }
++                if (handler)
++                    handler(handled);
++            };
++            m_queue->dispatchAfter(50_ms, [answerOnce] {
++                answerOnce(true);
++            });
++            completionHandler = CompletionHandler<void(bool)>([answerOnce](bool handled) {
++                answerOnce(handled);
++            }, CompletionHandlerCallThread::AnyThread);
++        }
++#endif
++
++#if PLATFORM(HAIKU)
++        auto dispatchedAt = MonotonicTime::now();
++#endif
++        ScrollingThread::dispatch([scrollingTree, wheelEvent = Ref<const WebWheelEvent> { wheelEvent }, platformWheelEvent, processingSteps, useMainThreadForScrolling, pageID, this, protectedThis = Ref { *this }, completionHandler = WTF::move(completionHandler)
++#if PLATFORM(HAIKU)
++            , dispatchedAt
++#endif
++            ] mutable {
++#if PLATFORM(HAIKU)
++            auto startedAt = MonotonicTime::now();
++#endif
+             if (useMainThreadForScrolling) {
+                 scrollingTree->willSendEventToMainThread(platformWheelEvent);
+                 dispatchWheelEventViaMainThread(pageID, wheelEvent, processingSteps, WTF::move(completionHandler));
+@@ -178,6 +346,26 @@ void EventDispatcher::internalWheelEvent(PageIdentifier pageID, const WebWheelEv
  
              auto result = scrollingTree->handleWheelEvent(platformWheelEvent, processingSteps);
  
@@ -94468,16 +94916,17 @@ index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..657125da152dc297cd523b7f347b5233
 +
 +#if PLATFORM(HAIKU)
 +            if (traceWheelRoute())
-+                std::fprintf(stderr, "Summit wheel result: handled=%d needsMain=%d sync=%d blockingDOM=%d\n",
++                std::fprintf(stderr, "Summit wheel result: handled=%d needsMain=%d sync=%d blockingDOM=%d queued=%.1f took=%.1f\n",
 +                    result.wasHandled, result.needsMainThreadProcessing(),
 +                    result.steps.contains(WheelEventProcessingSteps::SynchronousScrolling),
-+                    result.steps.contains(WheelEventProcessingSteps::BlockingDOMEventDispatch));
++                    result.steps.contains(WheelEventProcessingSteps::BlockingDOMEventDispatch),
++                    (startedAt - dispatchedAt).milliseconds(), (MonotonicTime::now() - startedAt).milliseconds());
 +#endif
 +
              if (result.needsMainThreadProcessing()) {
                  if (result.steps.contains(WheelEventProcessingSteps::SynchronousScrolling)) {
                      dispatchWheelEventViaMainThread(pageID, wheelEvent, result.steps, WTF::move(completionHandler));
-@@ -209,6 +331,108 @@ void EventDispatcher::wheelEvent(PageIdentifier pageID, Ref<WebWheelEvent>&& whe
+@@ -209,6 +397,108 @@ void EventDispatcher::wheelEvent(PageIdentifier pageID, Ref<WebWheelEvent>&& whe
      internalWheelEvent(pageID, wheelEvent, rubberBandableEdges, WTF::move(completionHandler));
  }
  
@@ -94586,7 +95035,7 @@ index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..657125da152dc297cd523b7f347b5233
  #if ENABLE(MAC_GESTURE_EVENTS)
  void EventDispatcher::gestureEvent(FrameIdentifier frameID, PageIdentifier pageID, Ref<WebGestureEvent>&& gestureEvent, CompletionHandler<void(std::optional<WebEventType>, bool, std::optional<RemoteUserInputEventData>)>&& completionHandler)
  {
-@@ -359,8 +583,21 @@ void EventDispatcher::dispatchWheelEvent(PageIdentifier pageID, const WebWheelEv
+@@ -359,8 +649,26 @@ void EventDispatcher::dispatchWheelEvent(PageIdentifier pageID, const WebWheelEv
  
      bool handled = false;
      if (webPage && webPage->mainFrame()) {
@@ -94598,8 +95047,13 @@ index 4a8f2e6ff336c03f1d9b203fc3d217aef3fc17ed..657125da152dc297cd523b7f347b5233
 +        if (wheelBurstsEnabledHaiku() && processingSteps.contains(WheelEventProcessingSteps::BlockingDOMEventDispatch)) {
 +            Locker burstLocker { s_wheelBurstsLock };
 +            auto it = wheelBurstsHaiku().find(pageID);
-+            if (it != wheelBurstsHaiku().end())
-+                it->value.scrollsFreely = !handling.contains(EventHandling::DefaultPrevented);
++            if (it != wheelBurstsHaiku().end()) {
++                bool cancelled = handling.contains(EventHandling::DefaultPrevented);
++                it->value.scrollsFreely = !cancelled;
++                it->value.awaitingAnswer = false;
++                if (cancelled)
++                    it->value.pageCancels = true;
++            }
 +        }
 +#else
          auto [result, _] = webPage->wheelEvent(webPage->mainFrame()->frameID(), wheelEvent, processingSteps);

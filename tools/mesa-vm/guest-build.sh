@@ -186,7 +186,7 @@ stage_mesa_configure() {
         -Dgallium-drivers="$DRIVERS" -Dvulkan-drivers= \
         -Dgallium-va=disabled -Dgallium-rusticl=false \
         -Dllvm=$LLVM \
-        -Dshader-cache=disabled -Dxmlconfig=disabled -Dexpat=disabled \
+        -Dshader-cache=enabled -Dxmlconfig=disabled -Dexpat=disabled \
         -Dzstd=disabled -Dzlib=enabled \
         -Dvalgrind=disabled -Dlibunwind=disabled -Dlmsensors=disabled \
         -Dspirv-tools=disabled -Dbuild-tests=false -Dtools=

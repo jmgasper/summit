@@ -22,6 +22,7 @@ Examples:
 """
 import argparse
 import json
+import os
 import pathlib
 import re
 import shlex
@@ -416,7 +417,7 @@ def main():
     if args.stats_period > 0:
         extra_env.setdefault('SUMMIT_FRAME_STATS', str(args.stats_period))
     if args.ui_frame_stats:
-        extra_env['SUMMIT_UI_FRAME_STATS'] = '1'
+        extra_env['SUMMIT_UI_FRAME_STATS'] = os.environ.get('SUMMIT_UI_FRAME_STATS_LEVEL', '1')
     extra_env['SUMMIT_ENABLE_INPUT_SYNTHESIS'] = '1'
     run['extraEnv'] = extra_env
     remote_log = f'{guest_dir}/browser.log'
