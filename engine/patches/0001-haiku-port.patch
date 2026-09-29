@@ -95687,10 +95687,10 @@ index 0000000000000000000000000000000000000000..2a53a27a3c2d0efec8bbd12a600ae692
 +} // namespace WebKit
 diff --git a/Source/WebKit/WebProcess/haiku/WebProcessMainHaiku.cpp b/Source/WebKit/WebProcess/haiku/WebProcessMainHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..91790e81f538e5dd02a989cd6bbce3c8fcb72148
+index 0000000000000000000000000000000000000000..50d1a5288e2dbc36c745b9640e344180ff7fdea1
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/haiku/WebProcessMainHaiku.cpp
-@@ -0,0 +1,76 @@
+@@ -0,0 +1,87 @@
 +/*
 + * Copyright 2014,2019 Haiku, Inc.
 + *
@@ -95726,6 +95726,7 @@ index 0000000000000000000000000000000000000000..91790e81f538e5dd02a989cd6bbce3c8
 +#include <Application.h>
 +#include <cstdio>
 +#include <cstring>
++#include <netdb.h>
 +namespace WebKit {
 +using namespace WebCore;
 +
@@ -95733,6 +95734,16 @@ index 0000000000000000000000000000000000000000..91790e81f538e5dd02a989cd6bbce3c8
 +public:
 +    bool platformInitialize() override
 +    {
++        // The media loaders of this process fetch with libcurl, whose
++        // resolver threads call getaddrinfo() several at a time. libnetwork
++        // parses nsswitch.conf on the first lookup and its scanner calls
++        // exit() when another thread rewrites the path under it (see
++        // NetworkProcessHaiku.cpp): pages with media took the web process
++        // down. The first lookup is made here, before those threads exist.
++        struct addrinfo* result = nullptr;
++        if (!getaddrinfo("localhost", nullptr, nullptr, &result) && result)
++            freeaddrinfo(result);
++
 +        // The one-argument constructor exits with status zero on failure,
 +        // preventing the auxiliary process entry point from reporting it.
 +        status_t status;

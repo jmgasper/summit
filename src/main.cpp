@@ -35,6 +35,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <sys/stat.h>
+#include <sys/time.h>
+#include <netdb.h>
 
 class SummitApp : public BApplication {
 public:
@@ -874,8 +876,40 @@ static int RunApplication()
     return app.ExitStatus();
 }
 
+// libnetwork's resolver re-reads nsswitch.conf whenever the path it looks at
+// is newer than its last parse, builds that path in a static buffer without a
+// lock, and its scanner calls exit() when it is handed the settings directory
+// instead of the file (docs/kunanyios-platform-issues.md): a name lookup on
+// another thread could end the network process or a web process. Until
+// libnetwork is fixed, every Summit process makes its first lookup before it
+// has other threads, and the file is kept newer than the directories a torn
+// path can name, so that a later look at either finds nothing new to parse.
+static void PrepareResolver()
+{
+    static const char* const file = "/boot/system/settings/network/nsswitch.conf";
+    struct stat conf {};
+    if (stat(file, &conf) != 0) {
+        if (FILE* out = std::fopen(file, "wx")) {
+            std::fputs("# Created by Summit: the sources libnetwork uses without this file.\n"
+                "# See Summit docs/kunanyios-platform-issues.md before removing it.\nhosts: files dns\n", out);
+            std::fclose(out);
+        }
+    } else {
+        for (const char* directory : { "/boot/system/settings", "/boot/system/settings/network" }) {
+            struct stat above {};
+            if (!stat(directory, &above) && above.st_mtime > conf.st_mtime) {
+                utimes(file, nullptr);
+                break;
+            }
+        }
+    }
+    if (struct addrinfo* result = nullptr; !getaddrinfo("localhost", nullptr, nullptr, &result) && result)
+        freeaddrinfo(result);
+}
+
 int main()
 {
+    PrepareResolver();
     // The application thread runs WebKit's main loop: every frame, input
     // reply and IPC message of every tab passes through it. Under the load of
     // many tabs it competes with dozens of web processes, so it runs at the

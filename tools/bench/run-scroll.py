@@ -370,6 +370,13 @@ def main():
     parser.add_argument('--stats-period', type=float, default=0, help='seconds per frame statistics line on an instrumented engine (default: off)')
     parser.add_argument('--ui-frame-stats', action='store_true', help='count coordinated frame messages delivered to the Summit view')
     parser.add_argument('--window', default='', metavar='L,T,R,B', help='browser window frame (default: full screen)')
+    parser.add_argument('--system-profile', type=float, default=0, metavar='SECONDS',
+        help="sample every team with Haiku's profile (kernel frames too) for this long, starting just before the burst; "
+             'the report lands in profile.txt. Sampling slows the machine: do not compare its frame rates with unprofiled runs')
+    parser.add_argument('--system-profile-callers', action='store_true',
+        help='with --system-profile: count a sample for every function on the stack (inclusive times)')
+    parser.add_argument('--no-screenshots', action='store_true',
+        help='skip the before and after screenshots, so the burst starts --settle seconds after navigation')
     parser.add_argument('--keep-sidebar', action='store_true')
     parser.add_argument('--env', action='append', default=[], metavar='NAME=VALUE')
     parser.add_argument('--label', default='')
@@ -438,7 +445,8 @@ def main():
         idle_text = (directory / 'before.log').read_text('utf-8', 'replace')
         idle_engine = parse_frame_lines(idle_text)
         idle_ui = parse_ui_frame_lines(idle_text)
-        capture_visible(directory / 'before.png')
+        if not args.no_screenshots:
+            capture_visible(directory / 'before.png')
         # Let the screenshot's frame-stat window close, then use the resulting
         # log length as the scroll baseline so capture work is not attributed
         # to the wheel burst.
@@ -459,6 +467,13 @@ def main():
         log(f"idle: {run['idle'].get('fps', 0)} fps")
 
         seconds = args.notches * args.interval_ms / 1000
+        profiler = None
+        if args.system_profile > 0:
+            # profile reads every image's symbols before it starts sampling.
+            profiler = subprocess.Popen(['bash', guest.REMOTE_SHELL,
+                f"profile -a -k {'-f ' if args.system_profile_callers else ''}-i 1000 -o {guest_dir}/profile.txt sleep {args.system_profile:g}"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(1.0)
         log(f'scrolling: {args.notches} notches over about {seconds:.0f} s')
         burst_started = time.monotonic()
         code, out, err = guest.ctl(ctl, team, 'scroll', args.notches, args.interval_ms, args.delta,
@@ -563,7 +578,11 @@ def main():
             run['mediaLifecycle'] = summarize_media_lifecycle(media_lifecycle_samples)
         if wheel_position_samples:
             run['wheelPositions'] = summarize_wheel_positions(wheel_position_samples)
-        capture_visible(directory / 'final.png')
+        if profiler:
+            profiler.wait(timeout=args.system_profile + 120)
+            guest.fetch_file(f'{guest_dir}/profile.txt', directory / 'profile.txt')
+        if not args.no_screenshots:
+            capture_visible(directory / 'final.png')
         run['stateAfterBurst'] = guest.state(ctl, team)
         run['outcome'] = ('completed' if run['completionVerified'] else 'captured-unverified-delivery') \
             if during else 'captured-uninstrumented'
