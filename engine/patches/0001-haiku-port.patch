@@ -38101,10 +38101,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..6897e6cc1492f5efc0bed8054e955bfd3d138ca9
+index 0000000000000000000000000000000000000000..acc05c00510a876ceecad83741913fe90a660e8a
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,410 @@
+@@ -0,0 +1,412 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -38150,6 +38150,7 @@ index 0000000000000000000000000000000000000000..6897e6cc1492f5efc0bed8054e955bfd
 +    UIProcess/DefaultUndoController.cpp
 +    UIProcess/API/haiku/WebKitContext.cpp
 +    UIProcess/API/haiku/WebKitInfo.cpp
++    UIProcess/API/haiku/WebKitInspector.cpp
 +    UIProcess/API/haiku/APIContentRuleListStoreHaiku.cpp
 +    UIProcess/API/haiku/WebKitView.cpp
 +    UIProcess/API/haiku/WebKitViewEmbedding.cpp
@@ -38493,6 +38494,7 @@ index 0000000000000000000000000000000000000000..6897e6cc1492f5efc0bed8054e955bfd
 +    UIProcess/API/haiku/WebKitEmbedding.h
 +    UIProcess/API/haiku/WebKitExtensionPermission.h
 +    UIProcess/API/haiku/WebKitInfo.h
++    UIProcess/API/haiku/WebKitInspector.h
 +    UIProcess/API/haiku/WebKitView.h
 +)
 +
@@ -45624,6 +45626,253 @@ index 0000000000000000000000000000000000000000..22ab42571717f32300ebb36a55b10011
 +WK_EXPORT const char* BWebKitVersion();
 +WK_EXPORT const char* BWebKitPortVersion();
 +WK_EXPORT const char* BWebKitSourceRevision();
+diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitInspector.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitInspector.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..4d27ba88a08c28828d59340c20a3b05bf741ba66
+--- /dev/null
++++ b/Source/WebKit/UIProcess/API/haiku/WebKitInspector.cpp
+@@ -0,0 +1,179 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++// BWebKitInspectorSession (WebKitInspector.h): a Web Inspector protocol
++// frontend for a host's own developer tools.
++
++#include "config.h"
++#include "WebKitInspector.h"
++
++#include "WebKitView.h"
++#include "WebPageInspectorController.h"
++#include "WebPageProxy.h"
++#include "WebPreferences.h"
++#include "WebViewPrivate.h"
++#include "WebViewStateHaiku.h"
++#include "WebsiteDataStore.h"
++#include <JavaScriptCore/InspectorFrontendChannel.h>
++#include <Message.h>
++#include <mutex>
++#include <wtf/RunLoop.h>
++#include <wtf/TZoneMallocInlines.h>
++#include <wtf/WeakPtr.h>
++#include <wtf/text/CString.h>
++#include <wtf/text/WTFString.h>
++
++using namespace WebKit;
++
++namespace {
++
++// What may wait for Take(). A host that stops taking loses messages rather
++// than the browser its memory.
++constexpr size_t maximumWaitingBytesHaiku = 256 * 1024 * 1024;
++
++// The page's messages, from the WebKit main thread to the host's thread.
++struct InspectorQueueHaiku {
++    InspectorQueueHaiku(BMessenger target, uint64 identifier)
++        : target(target)
++        , identifier(identifier)
++    {
++    }
++
++    void append(const String& message)
++    {
++        auto utf8 = message.utf8();
++        bool announce = false;
++        {
++            std::lock_guard guard(mutex);
++            if (bytes + utf8.length() > maximumWaitingBytesHaiku) {
++                overflowed = true;
++                return;
++            }
++            bytes += utf8.length();
++            messages.emplace_back(utf8.legacyCStringPointer() ? utf8.legacyCStringPointer() : "", utf8.length());
++            announce = !std::exchange(announced, true);
++        }
++        if (!announce)
++            return;
++        BMessage notification(B_WEBKIT_INSPECTOR_MESSAGES);
++        notification.AddUInt64("identifier", identifier);
++        // A full port must not stop the WebKit main thread. The next message
++        // announces again.
++        if (target.SendMessage(&notification, static_cast<BHandler*>(nullptr), 0) != B_OK) {
++            std::lock_guard guard(mutex);
++            announced = false;
++        }
++    }
++
++    std::mutex mutex;
++    std::vector<std::string> messages;
++    size_t bytes { 0 };
++    bool announced { false };
++    bool overflowed { false };
++    const BMessenger target;
++    const uint64 identifier;
++};
++
++class InspectorChannelHaiku final : public Inspector::FrontendChannel {
++    WTF_MAKE_TZONE_ALLOCATED_INLINE(InspectorChannelHaiku);
++public:
++    explicit InspectorChannelHaiku(std::shared_ptr<InspectorQueueHaiku> queue)
++        : m_queue(std::move(queue))
++    {
++    }
++
++private:
++    // The host's tools are not WebKit's own inspector page, which is what
++    // a local connection means to the engine.
++    ConnectionType connectionType() const final { return ConnectionType::Remote; }
++    void sendMessageToFrontend(const String& message) final { m_queue->append(message); }
++
++    const std::shared_ptr<InspectorQueueHaiku> m_queue;
++};
++
++} // namespace
++
++struct BWebKitInspectorSession::State {
++    std::shared_ptr<WebViewStateHaiku> view;
++    std::shared_ptr<InspectorQueueHaiku> queue;
++    // The rest is read and written on the WebKit main thread only.
++    std::unique_ptr<InspectorChannelHaiku> channel;
++    WeakPtr<WebPageProxy> page;
++};
++
++std::shared_ptr<BWebKitInspectorSession> BWebKitInspectorSession::Create(BWebKitView& view, BMessenger target, uint64 identifier)
++{
++    auto state = std::make_shared<State>();
++    state->view = view.m_state;
++    state->queue = std::make_shared<InspectorQueueHaiku>(target, identifier);
++    std::shared_ptr<BWebKitInspectorSession> session(new BWebKitInspectorSession(state));
++    if (view.InitCheck() != B_OK)
++        return session;
++    WTF::RunLoop::mainSingleton().dispatch([state] {
++        if (state->view->closed || !state->view->client)
++            return;
++        RefPtr page = state->view->client->page();
++        if (!page || page->isClosed())
++            return;
++        // Without them the page's console messages stay in the web process.
++        page->preferences().setDeveloperExtrasEnabled(true);
++        state->channel = makeUnique<InspectorChannelHaiku>(state->queue);
++        state->page = *page;
++        page->inspectorController().connectFrontend(*state->channel);
++    });
++    return session;
++}
++
++BWebKitInspectorSession::BWebKitInspectorSession(std::shared_ptr<State> state)
++    : m_state(std::move(state))
++{
++}
++
++BWebKitInspectorSession::~BWebKitInspectorSession()
++{
++    WTF::RunLoop::mainSingleton().dispatch([state = std::move(m_state)] {
++        if (!state->channel)
++            return;
++        // A closed page has disconnected its frontends itself.
++        if (RefPtr page = state->page.get(); page && !page->isClosed())
++            page->inspectorController().disconnectFrontend(*state->channel);
++        state->channel = nullptr;
++    });
++}
++
++void BWebKitInspectorSession::Send(const char* message)
++{
++    if (!message || !*message)
++        return;
++    WTF::RunLoop::mainSingleton().dispatch([state = m_state, message = std::string(message)] {
++        if (!state->channel)
++            return;
++        RefPtr page = state->page.get();
++        if (!page || page->isClosed())
++            return;
++        page->inspectorController().dispatchMessageFromFrontend(String::fromUTF8WithLatin1Fallback(std::span<const char> { message.data(), message.size() }));
++    });
++}
++
++bool BWebKitInspectorSession::Take(std::vector<std::string>& messages)
++{
++    auto& queue = *m_state->queue;
++    std::lock_guard guard(queue.mutex);
++    queue.announced = false;
++    if (queue.messages.empty())
++        return false;
++    if (messages.empty())
++        messages.swap(queue.messages);
++    else {
++        messages.insert(messages.end(), std::make_move_iterator(queue.messages.begin()), std::make_move_iterator(queue.messages.end()));
++        queue.messages.clear();
++    }
++    queue.bytes = 0;
++    return true;
++}
++
++bool BWebKitInspectorSession::Overflowed() const
++{
++    auto& queue = *m_state->queue;
++    std::lock_guard guard(queue.mutex);
++    return queue.overflowed;
++}
+diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitInspector.h b/Source/WebKit/UIProcess/API/haiku/WebKitInspector.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..87d0399b71fc1d0c4d8f8b026746bcd7a925cf91
+--- /dev/null
++++ b/Source/WebKit/UIProcess/API/haiku/WebKitInspector.h
+@@ -0,0 +1,56 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#pragma once
++
++#include "WKBase.h"
++#include <Messenger.h>
++#include <memory>
++#include <string>
++#include <vector>
++
++class BWebKitView;
++
++enum : uint32 {
++    // Messages of an inspector session wait to be taken. Sent when a message
++    // is queued and the last announcement has been answered with Take(), so
++    // a busy page costs the target one message, not thousands. Fields:
++    // "identifier" (uint64, as given to Create()).
++    B_WEBKIT_INSPECTOR_MESSAGES = 'winm'
++};
++
++// A frontend of the Web Inspector protocol, connected to the page of a view:
++// what a host builds its developer tools on. Messages are the protocol's JSON
++// text (Source/JavaScriptCore/inspector/protocol), in UTF-8.
++//
++// The session speaks to the page's target router, as a remote Web Inspector
++// does: the page and its agents (Network, Console, Page, Runtime...) are a
++// target that "Target.targetCreated" announces, reached with
++// "Target.sendMessageToTarget" and heard through
++// "Target.dispatchMessageFromTarget". A navigation that changes process
++// replaces the target ("Target.didCommitProvisionalTarget"); the session
++// stays connected.
++//
++// Connecting turns on the page's developer extras, which console messages
++// need to reach an inspector. The session ends when it is destroyed or when
++// the page closes; messages sent after that are dropped.
++class WK_EXPORT BWebKitInspectorSession {
++public:
++    // Any thread. The view must be alive during the call only.
++    static std::shared_ptr<BWebKitInspectorSession> Create(BWebKitView&, BMessenger target, uint64 identifier = 0);
++    ~BWebKitInspectorSession();
++    // Queues a protocol message for the page. Any thread.
++    void Send(const char* message);
++    // Appends the messages that arrived since the last call, in order, and
++    // returns whether there were any. Any thread.
++    bool Take(std::vector<std::string>& messages);
++    // Messages were dropped because more than 256 MiB waited to be taken.
++    bool Overflowed() const;
++
++    struct State;
++
++private:
++    explicit BWebKitInspectorSession(std::shared_ptr<State>);
++    BWebKitInspectorSession(const BWebKitInspectorSession&) = delete;
++    BWebKitInspectorSession& operator=(const BWebKitInspectorSession&) = delete;
++    std::shared_ptr<State> m_state;
++};
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitVersion.h.in b/Source/WebKit/UIProcess/API/haiku/WebKitVersion.h.in
 new file mode 100644
 index 0000000000000000000000000000000000000000..d28a6cad6339adf79b155cf974e85bfd0780c24c
@@ -46271,10 +46520,10 @@ index 0000000000000000000000000000000000000000..9a793fc86de5ac71496151d39aff6b63
 +}
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitView.h b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..8db9e49ede1163cd2d1c07be7e76a642ea1f482e
+index 0000000000000000000000000000000000000000..28147cfe26d042f0b620ed529cb31d27c85650d3
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
-@@ -0,0 +1,193 @@
+@@ -0,0 +1,195 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -46289,6 +46538,7 @@ index 0000000000000000000000000000000000000000..8db9e49ede1163cd2d1c07be7e76a642
 +
 +namespace WebKit { struct WebViewStateHaiku; class JavaScriptDialogHostHaiku; class ExtensionActionPopupHaiku; }
 +class BCursor;
++class BWebKitInspectorSession;
 +
 +// Call on the BApplication thread before creating any modern web views.
 +WK_EXPORT status_t BWebKitInitialize();
@@ -46456,6 +46706,7 @@ index 0000000000000000000000000000000000000000..8db9e49ede1163cd2d1c07be7e76a642
 +
 +private:
 +    friend class BWebKitContext;
++    friend class BWebKitInspectorSession;
 +    friend class WebKit::ExtensionActionPopupHaiku;
 +    BWebKitView(BRect, const char*, std::shared_ptr<WebKit::WebViewStateHaiku>);
 +    void UpdateGeometry();
