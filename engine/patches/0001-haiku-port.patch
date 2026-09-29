@@ -45628,10 +45628,10 @@ index 0000000000000000000000000000000000000000..22ab42571717f32300ebb36a55b10011
 +WK_EXPORT const char* BWebKitSourceRevision();
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitInspector.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitInspector.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..4d27ba88a08c28828d59340c20a3b05bf741ba66
+index 0000000000000000000000000000000000000000..c4bb3a33bd4f0939699c9f8b1fad19e672cecbc4
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitInspector.cpp
-@@ -0,0 +1,179 @@
+@@ -0,0 +1,198 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +// BWebKitInspectorSession (WebKitInspector.h): a Web Inspector protocol
@@ -45650,6 +45650,8 @@ index 0000000000000000000000000000000000000000..4d27ba88a08c28828d59340c20a3b05b
 +#include <JavaScriptCore/InspectorFrontendChannel.h>
 +#include <Message.h>
 +#include <mutex>
++#include <wtf/HashMap.h>
++#include <wtf/NeverDestroyed.h>
 +#include <wtf/RunLoop.h>
 +#include <wtf/TZoneMallocInlines.h>
 +#include <wtf/WeakPtr.h>
@@ -45724,6 +45726,14 @@ index 0000000000000000000000000000000000000000..4d27ba88a08c28828d59340c20a3b05b
 +    const std::shared_ptr<InspectorQueueHaiku> m_queue;
 +};
 +
++// Sessions connected to pages of the same preferences; the WebKit main
++// thread's. Developer extras are for as long as somebody is looking.
++HashMap<WebPreferences*, unsigned>& sessionsOfPreferencesHaiku()
++{
++    static NeverDestroyed<HashMap<WebPreferences*, unsigned>> sessions;
++    return sessions;
++}
++
 +} // namespace
 +
 +struct BWebKitInspectorSession::State {
@@ -45732,6 +45742,7 @@ index 0000000000000000000000000000000000000000..4d27ba88a08c28828d59340c20a3b05b
 +    // The rest is read and written on the WebKit main thread only.
 +    std::unique_ptr<InspectorChannelHaiku> channel;
 +    WeakPtr<WebPageProxy> page;
++    RefPtr<WebPreferences> preferences;
 +};
 +
 +std::shared_ptr<BWebKitInspectorSession> BWebKitInspectorSession::Create(BWebKitView& view, BMessenger target, uint64 identifier)
@@ -45749,7 +45760,9 @@ index 0000000000000000000000000000000000000000..4d27ba88a08c28828d59340c20a3b05b
 +        if (!page || page->isClosed())
 +            return;
 +        // Without them the page's console messages stay in the web process.
-+        page->preferences().setDeveloperExtrasEnabled(true);
++        state->preferences = page->preferences();
++        if (sessionsOfPreferencesHaiku().add(state->preferences.get(), 0).iterator->value++ == 0)
++            state->preferences->setDeveloperExtrasEnabled(true);
 +        state->channel = makeUnique<InspectorChannelHaiku>(state->queue);
 +        state->page = *page;
 +        page->inspectorController().connectFrontend(*state->channel);
@@ -45771,6 +45784,12 @@ index 0000000000000000000000000000000000000000..4d27ba88a08c28828d59340c20a3b05b
 +        if (RefPtr page = state->page.get(); page && !page->isClosed())
 +            page->inspectorController().disconnectFrontend(*state->channel);
 +        state->channel = nullptr;
++        auto& sessions = sessionsOfPreferencesHaiku();
++        if (auto found = sessions.find(state->preferences.get()); found != sessions.end() && !--found->value) {
++            sessions.remove(found);
++            state->preferences->setDeveloperExtrasEnabled(false);
++        }
++        state->preferences = nullptr;
 +    });
 +}
 +
@@ -45813,10 +45832,10 @@ index 0000000000000000000000000000000000000000..4d27ba88a08c28828d59340c20a3b05b
 +}
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitInspector.h b/Source/WebKit/UIProcess/API/haiku/WebKitInspector.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..87d0399b71fc1d0c4d8f8b026746bcd7a925cf91
+index 0000000000000000000000000000000000000000..cd17cca289e4efa0c8a8169961869d6a469666eb
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitInspector.h
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,57 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -45849,9 +45868,10 @@ index 0000000000000000000000000000000000000000..87d0399b71fc1d0c4d8f8b026746bcd7
 +// replaces the target ("Target.didCommitProvisionalTarget"); the session
 +// stays connected.
 +//
-+// Connecting turns on the page's developer extras, which console messages
-+// need to reach an inspector. The session ends when it is destroyed or when
-+// the page closes; messages sent after that are dropped.
++// Connecting turns on the developer extras of the page's preferences, which
++// console messages need to reach an inspector; they are turned off when the
++// last session of those preferences ends. The session ends when it is
++// destroyed or when the page closes; messages sent after that are dropped.
 +class WK_EXPORT BWebKitInspectorSession {
 +public:
 +    // Any thread. The view must be alive during the call only.

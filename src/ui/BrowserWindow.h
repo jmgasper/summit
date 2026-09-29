@@ -211,7 +211,9 @@ private:
     // Opens the current tab's Developer Tools, or brings them forward;
     // panel ("network", "console") chooses what they show.
     void ShowDeveloperTools(const char* panel = nullptr);
-    void CloseDeveloperTools(Tab&);
+    // wait: until the window is gone, which a window that is being destroyed
+    // owes the engine (the tools' connection ends on the WebKit thread).
+    void CloseDeveloperTools(Tab&, bool wait = false);
     void NewPageRequested(const BMessage&);
     void LinkOpenRequested(const BMessage&);
     void LinkHovered(const BMessage&);

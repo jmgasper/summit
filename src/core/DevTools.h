@@ -149,7 +149,7 @@ public:
     static constexpr uint64_t kEagerBody = 2 * 1024 * 1024;
     // Bodies held at once; beyond it the oldest are given up and asked for
     // again when they are wanted.
-    static constexpr uint64_t kBodyBudget = 256ull * 1024 * 1024;
+    static constexpr uint64_t kBodyBudget = 128ull * 1024 * 1024;
 
     // Protocol messages for the engine are queued by Start() and by whatever
     // below needs the page to do something; TakeOutgoing() hands them over.

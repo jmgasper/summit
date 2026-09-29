@@ -667,7 +667,7 @@ BrowserWindow::~BrowserWindow()
     SaveSession();
     fSaveTimer.reset();
     for (auto& tab : fTabs) {
-        CloseDeveloperTools(tab);
+        CloseDeveloperTools(tab, true);
         tab.view->RemoveSelf();
         delete tab.view;
     }
@@ -3010,9 +3010,12 @@ void BrowserWindow::ShowDeveloperTools(const char* panel)
     window->Show();
 }
 
-void BrowserWindow::CloseDeveloperTools(Tab& tab)
+void BrowserWindow::CloseDeveloperTools(Tab& tab, bool wait)
 {
-    if (tab.devTools.IsValid()) tab.devTools.SendMessage(B_QUIT_REQUESTED);
+    if (tab.devTools.IsValid()) {
+        tab.devTools.SendMessage(B_QUIT_REQUESTED);
+        for (int i = 0; wait && i < 200 && tab.devTools.IsValid(); ++i) snooze(10000);
+    }
     tab.devTools = BMessenger();
 }
 

@@ -592,6 +592,16 @@ static void TestHeaders()
     session.Receive(Event("p", "Network.loadingFailed", {{"requestId", "2"}, {"timestamp", 7}, {"errorText", "Could not resolve host"}}));
     CHECK(DescribeHeaders(session.Requests()[1]).text.find("  Status: Failed: Could not resolve host\n") != std::string::npos);
     CHECK(session.Requests()[1].IsError() && session.Requests()[1].StatusLabel() == "(failed)" && session.Requests()[1].type == "Other");
+    // A response without content has an empty body, whatever the page says.
+    Ask(session, "p", "3", "https://example.com/beacon", "L", "Fetch", 8);
+    Respond(session, "p", "3", "L", "Fetch", 204, "", 8.1);
+    session.Receive(Event("p", "Network.loadingFinished", {{"requestId", "3"}, {"timestamp", 8.2}}));
+    Sent(session);
+    session.RequestBody(session.Requests()[2].serial);
+    const auto commands = Sent(session);
+    CHECK(commands.size() == 1 && commands[0].method == "Network.getResponseBody");
+    session.Receive(FromTarget("p", {{"id", commands[0].id}, {"error", {{"message", "Missing content of resource for given requestId"}}}}));
+    CHECK(session.Requests()[2].bodyState == BodyState::Loaded && session.Requests()[2].body.empty());
     summit::devtools::Request data;
     data.url = "data:image/png;base64," + std::string(200, 'A');
     CHECK(data.Name().size() < 60 && data.Host().empty());

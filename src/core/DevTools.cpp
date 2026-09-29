@@ -378,7 +378,7 @@ struct ProtocolReader {
         if (const auto decoded = Count(Member(metrics, "responseBodyDecodedSize"))) request->size = decoded;
         session.Changed(*request);
         if ((request->type == "XHR" || request->type == "Fetch" || request->type == "Document")
-            && request->size <= Session::kEagerBody && !request->redirected)
+            && request->size && request->size <= Session::kEagerBody && !request->redirected)
             session.RequestBody(request->serial);
     }
 
@@ -464,7 +464,11 @@ struct ProtocolReader {
             auto* request = session.Find(pending.serial);
             if (!request || request->bodyState != BodyState::Waiting) return;
             const auto& body = Member(result, "body");
-            if (!body.is_string()) {
+            if (!body.is_string() && !request->size) {
+                // The page keeps nothing for a response without content.
+                request->body.clear();
+                request->bodyState = BodyState::Loaded;
+            } else if (!body.is_string()) {
                 request->bodyState = BodyState::Failed;
                 request->bodyError = error.empty() ? "The page gave no content for this request." : error;
             } else if (Flag(Member(result, "base64Encoded"))) {
