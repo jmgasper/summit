@@ -19805,7 +19805,7 @@ index 6b3cac20c6de4a7b817689de34c807020235850e..f5e992b32ba9dc919975dcd08b86e74d
          s_skiaGLContext = SkiaGLContext::create(*this);
          m_skiaGLContexts.add(*s_skiaGLContext);
 diff --git a/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp b/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp
-index 30343ff03299542f8673d98b486c7fdd78bddeb9..95d192b9fadc9f7fca017d53ad82885cd03bdbfc 100644
+index 30343ff03299542f8673d98b486c7fdd78bddeb9..137c6648ce38ec34bb9e015605e9fe47c5d1b00b 100644
 --- a/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp
 +++ b/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp
 @@ -67,7 +67,13 @@ WTF_MAKE_TZONE_ALLOCATED_IMPL(SkiaPaintingEngine);
@@ -19822,7 +19822,21 @@ index 30343ff03299542f8673d98b486c7fdd78bddeb9..95d192b9fadc9f7fca017d53ad82885c
  }
  
  SkiaPaintingEngine::SkiaPaintingEngine(sk_sp<GrContextThreadSafeProxy>&& threadSafeGrContext)
-@@ -310,7 +316,15 @@ unsigned SkiaPaintingEngine::numberOfCPUPaintingThreads()
+@@ -259,7 +265,13 @@ Ref<CoordinatedTileBuffer> SkiaPaintingEngine::replay(const GraphicsLayerCoordin
+ #else
+     auto bufferSize = renderingMode == RenderingMode::Accelerated ? tileRect.size() : dirtyRect.size();
+ #endif
++#if PLATFORM(HAIKU)
++    // The task below clears the canvas before it replays the recording.
++    auto buffer = renderingMode == RenderingMode::Accelerated ? createBuffer(renderingMode, bufferSize, recording->contentsOpaque())
++        : CoordinatedUnacceleratedTileBuffer::createForThreadedPainting(bufferSize, recording->contentsOpaque() ? CoordinatedTileBuffer::NoFlags : CoordinatedTileBuffer::SupportsAlpha);
++#else
+     auto buffer = createBuffer(renderingMode, bufferSize, recording->contentsOpaque());
++#endif
+     buffer->beginPainting();
+ 
+     m_paintingWorkerPool->postTask([platformLayer = WTF::move(platformLayer), buffer = Ref { buffer }, tileRect, dirtyRect, recording = WTF::move(recording), threadSafeGrContext = m_threadSafeGrContext]() mutable {
+@@ -310,7 +322,15 @@ unsigned SkiaPaintingEngine::numberOfCPUPaintingThreads()
      static unsigned numberOfThreads = 0;
  
      std::call_once(onceFlag, [] {
@@ -20761,6 +20775,121 @@ index 7ef5b491fd88e52bb59639bd5851a4cb6e56d0ab..6cc50b238c9c1de1b3eaadc12d9ec621
          }
  
          if (m_contentsBuffer.committed)
+diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedTileBuffer.cpp b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedTileBuffer.cpp
+index 97343135c0044a99532b9f29b2928c98b0e0cd7c..674a5d0af9d5e62b847680f1d0d5cda2f7046482 100644
+--- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedTileBuffer.cpp
++++ b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedTileBuffer.cpp
+@@ -107,12 +107,51 @@ Ref<CoordinatedTileBuffer> CoordinatedUnacceleratedTileBuffer::create(const IntS
+     return adoptRef(*new CoordinatedUnacceleratedTileBuffer(size, flags));
+ }
+ 
++#if PLATFORM(HAIKU)
++Ref<CoordinatedTileBuffer> CoordinatedUnacceleratedTileBuffer::createForThreadedPainting(const IntSize& size, Flags flags)
++{
++    static const bool allocatesLate = [] {
++        // SUMMIT_TILE_BUFFERS_LATE=0 allocates and zeroes where the buffer is created.
++        const char* value = getenv("SUMMIT_TILE_BUFFERS_LATE");
++        return !value || value[0] != '0' || value[1];
++    }();
++    if (!allocatesLate)
++        return create(size, flags);
++    return adoptRef(*new CoordinatedUnacceleratedTileBuffer(size, flags, Allocation::WhenAskedFor));
++}
++
++CoordinatedUnacceleratedTileBuffer::CoordinatedUnacceleratedTileBuffer(const IntSize& size, Flags flags, Allocation)
++    : CoordinatedTileBuffer(flags)
++    , m_size(size)
++{
++    const auto checkedArea = size.area() * 4;
++    Locker locker { s_layersMemoryUsageLock };
++    s_currentLayersMemoryUsage += checkedArea;
++    s_maxLayersMemoryUsage = std::max(s_maxLayersMemoryUsage, s_currentLayersMemoryUsage);
++}
++
++void CoordinatedUnacceleratedTileBuffer::ensureData(Zeroed zeroed) const
++{
++    if (m_hasData)
++        return;
++    Locker locker { m_dataLock };
++    if (m_hasData)
++        return;
++    const auto checkedArea = m_size.area() * 4;
++    m_data = zeroed == Zeroed::Yes ? MallocSpan<unsigned char>::tryZeroedMalloc(checkedArea) : MallocSpan<unsigned char>::tryMalloc(checkedArea);
++    m_hasData = true;
++}
++#endif
++
+ CoordinatedUnacceleratedTileBuffer::CoordinatedUnacceleratedTileBuffer(const IntSize& size, Flags flags)
+     : CoordinatedTileBuffer(flags)
+     , m_size(size)
+ {
+     const auto checkedArea = size.area() * 4;
+     m_data = MallocSpan<unsigned char>::tryZeroedMalloc(checkedArea);
++#if PLATFORM(HAIKU)
++    m_hasData = true;
++#endif
+ 
+     {
+         Locker locker { s_layersMemoryUsageLock };
+@@ -134,6 +173,10 @@ CoordinatedUnacceleratedTileBuffer::~CoordinatedUnacceleratedTileBuffer()
+ SkCanvas* CoordinatedUnacceleratedTileBuffer::canvas()
+ {
+     if (!m_surface) {
++#if PLATFORM(HAIKU)
++        // Only a buffer made for a painter that clears it is without pixels here.
++        ensureData(Zeroed::No);
++#endif
+         auto alphaType = supportsAlpha() ? kPremul_SkAlphaType : kOpaque_SkAlphaType;
+         auto imageInfo = SkImageInfo::Make(m_size.width(), m_size.height(), kBGRA_8888_SkColorType, alphaType, SkColorSpace::MakeSRGB());
+         // FIXME: ref buffer and unref on release proc?
+diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedTileBuffer.h b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedTileBuffer.h
+index d66256f0fd3205d448ed4eef2839dafe51c055d6..dc656543f75b7666236ee5427db5a6ab7d83dd2d 100644
+--- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedTileBuffer.h
++++ b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedTileBuffer.h
+@@ -109,12 +109,24 @@ private:
+ class CoordinatedUnacceleratedTileBuffer final : public CoordinatedTileBuffer {
+ public:
+     WEBCORE_EXPORT static Ref<CoordinatedTileBuffer> create(const IntSize&, Flags);
++#if PLATFORM(HAIKU)
++    // For a painter that clears the buffer before it paints, on another
++    // thread: the pixels are allocated by whoever asks for them first, and
++    // not zeroed for the canvas. Zeroing 200 tiles of a megabyte each took
++    // the main thread a quarter of a second in four while a page loaded.
++    static Ref<CoordinatedTileBuffer> createForThreadedPainting(const IntSize&, Flags);
++#endif
+     WEBCORE_EXPORT virtual ~CoordinatedUnacceleratedTileBuffer();
+ 
+     int stride() const { return m_size.width() * 4; }
+ 
++#if PLATFORM(HAIKU)
++    const unsigned char* data() const { ensureData(Zeroed::Yes); return m_data.span().data(); }
++    unsigned char* data() { ensureData(Zeroed::Yes); return m_data.mutableSpan().data(); }
++#else
+     const unsigned char* data() const { return m_data.span().data(); }
+     unsigned char* data() { return m_data.mutableSpan().data(); }
++#endif
+ 
+ private:
+     CoordinatedUnacceleratedTileBuffer(const IntSize&, Flags);
+@@ -127,7 +139,18 @@ private:
+     SkCanvas* canvas() final;
+ #endif
+ 
++#if PLATFORM(HAIKU)
++    enum class Zeroed : bool { No, Yes };
++    enum class Allocation : bool { Now, WhenAskedFor };
++    CoordinatedUnacceleratedTileBuffer(const IntSize&, Flags, Allocation);
++    void ensureData(Zeroed) const;
++
++    mutable Lock m_dataLock;
++    mutable MallocSpan<unsigned char> m_data;
++    mutable std::atomic<bool> m_hasData { false };
++#else
+     MallocSpan<unsigned char> m_data;
++#endif
+     IntSize m_size;
+ 
+     enum class PaintingState {
 diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/GraphicsLayerCoordinated.cpp b/Source/WebCore/platform/graphics/texmap/coordinated/GraphicsLayerCoordinated.cpp
 index cb8dc9067767652f427ad441e5da28a25aa05b82..9c92d100b6d61ddaf0a3a7d397d50bf66dbca574 100644
 --- a/Source/WebCore/platform/graphics/texmap/coordinated/GraphicsLayerCoordinated.cpp
