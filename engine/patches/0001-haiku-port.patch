@@ -5378,7 +5378,7 @@ index 95ffe1c222fda9854b4c21f7d32c7ed8d08b45b1..b94a8546a45de6aa19a1e1cb41c10c25
  }
  
 diff --git a/Source/WebCore/page/scrolling/ScrollingTree.cpp b/Source/WebCore/page/scrolling/ScrollingTree.cpp
-index 351fcd027e1481abf32eeb6f82f5ffaa5aff5fd8..2167f71a05601daa5dbda2d98eaf107295169a70 100644
+index 351fcd027e1481abf32eeb6f82f5ffaa5aff5fd8..de0021ff025accf63b8149a44b3be4677e99b76e 100644
 --- a/Source/WebCore/page/scrolling/ScrollingTree.cpp
 +++ b/Source/WebCore/page/scrolling/ScrollingTree.cpp
 @@ -47,6 +47,11 @@
@@ -5426,12 +5426,15 @@ index 351fcd027e1481abf32eeb6f82f5ffaa5aff5fd8..2167f71a05601daa5dbda2d98eaf1072
  OptionSet<WheelEventProcessingSteps> ScrollingTree::determineWheelEventProcessing(const PlatformWheelEvent& wheelEvent)
  {
      // This method is invoked by the event handling thread
-@@ -146,10 +177,28 @@ OptionSet<WheelEventProcessingSteps> ScrollingTree::determineWheelEventProcessin
+@@ -146,10 +177,36 @@ OptionSet<WheelEventProcessingSteps> ScrollingTree::determineWheelEventProcessin
          LOG_WITH_STREAM(ScrollLatching, stream << "\nScrollingTree::determineWheelEventProcessing " << wheelEvent << " have latched node " << latchedNodeAndSteps->scrollingNodeID << " steps " << latchedNodeAndSteps->processingSteps << " gesture state " << m_treeState.gestureState);
          return latchedNodeAndSteps->processingSteps;
      }
 +#if PLATFORM(HAIKU)
-+    if (wheelLatchEnabledHaiku() && m_wheelLatchForStepsHaiku.matches(wheelEvent, MonotonicTime::now())) {
++    // While the main thread keeps the layers, a notch of a burst takes the
++    // answer of the notch before it instead of waiting.
++    bool continuesBurst = wheelLatchEnabledHaiku() && m_wheelLatchForStepsHaiku.matches(wheelEvent, MonotonicTime::now());
++    if (continuesBurst && !canHitTestWithoutWaitingHaiku()) {
 +        m_wheelLatchForStepsHaiku.lastEventTime = MonotonicTime::now();
 +        return m_wheelLatchForStepsHaiku.steps;
 +    }
@@ -5441,21 +5444,26 @@ index 351fcd027e1481abf32eeb6f82f5ffaa5aff5fd8..2167f71a05601daa5dbda2d98eaf1072
  
      auto processingSteps = computeWheelProcessingSteps(wheelEvent);
 +#if PLATFORM(HAIKU)
-+    // Only a notch that scrolls without waiting for the page is latched. What
-+    // passes under the pointer later in the burst may listen for wheel events,
-+    // so the rest of the burst is always shown to the page as well.
-+    if (processingSteps.containsAny({ WheelEventProcessingSteps::SynchronousScrolling, WheelEventProcessingSteps::BlockingDOMEventDispatch }))
++    // A burst is one that began with a notch that scrolled without waiting for
++    // the page. It goes on scrolling what it began to scroll, as wheel
++    // scrolling does in other browsers: something that comes to pass under
++    // the pointer and listens for the wheel hears of the notches and cannot
++    // cancel them.
++    bool waitsForPage = processingSteps.containsAny({ WheelEventProcessingSteps::SynchronousScrolling, WheelEventProcessingSteps::BlockingDOMEventDispatch });
++    if (continuesBurst) {
++        if (waitsForPage)
++            processingSteps = { WheelEventProcessingSteps::AsyncScrolling, WheelEventProcessingSteps::NonBlockingDOMEventDispatch };
++        m_wheelLatchForStepsHaiku.lastEventTime = MonotonicTime::now();
++        m_wheelLatchForStepsHaiku.steps = processingSteps;
++    } else if (waitsForPage || !wheelLatchEnabledHaiku())
 +        m_wheelLatchForStepsHaiku = { };
-+    else {
-+        auto latchedSteps = processingSteps;
-+        latchedSteps.add(WheelEventProcessingSteps::NonBlockingDOMEventDispatch);
-+        m_wheelLatchForStepsHaiku = { MonotonicTime::now(), wheelEvent.position(), { }, latchedSteps, wheelEvent.delta() };
-+    }
++    else
++        m_wheelLatchForStepsHaiku = { MonotonicTime::now(), wheelEvent.position(), { }, processingSteps, wheelEvent.delta() };
 +#endif
  
      m_latchingController.receivedWheelEvent(wheelEvent, processingSteps, m_allowLatching);
  
-@@ -158,11 +207,36 @@ OptionSet<WheelEventProcessingSteps> ScrollingTree::determineWheelEventProcessin
+@@ -158,11 +215,36 @@ OptionSet<WheelEventProcessingSteps> ScrollingTree::determineWheelEventProcessin
      return processingSteps;
  }
  
@@ -5492,7 +5500,7 @@ index 351fcd027e1481abf32eeb6f82f5ffaa5aff5fd8..2167f71a05601daa5dbda2d98eaf1072
  
      if (isMonitoringWheelEvents())
          receivedWheelEventWithPhases(wheelEvent.phase(), wheelEvent.momentumPhase());
-@@ -200,12 +274,27 @@ WheelEventHandlingResult ScrollingTree::handleWheelEvent(const PlatformWheelEven
+@@ -200,12 +282,27 @@ WheelEventHandlingResult ScrollingTree::handleWheelEvent(const PlatformWheelEven
              }
          }
  
@@ -5520,7 +5528,7 @@ index 351fcd027e1481abf32eeb6f82f5ffaa5aff5fd8..2167f71a05601daa5dbda2d98eaf1072
  
          LOG_WITH_STREAM(Scrolling, stream << "ScrollingTree::handleWheelEvent found node " << (node ? node->scrollingNodeID() : std::optional<ScrollingNodeID> { }) << " for point " << position);
  
-@@ -214,6 +303,19 @@ WheelEventHandlingResult ScrollingTree::handleWheelEvent(const PlatformWheelEven
+@@ -214,6 +311,19 @@ WheelEventHandlingResult ScrollingTree::handleWheelEvent(const PlatformWheelEven
  
      static constexpr OptionSet<WheelEventProcessingSteps> mainThreadSteps = { WheelEventProcessingSteps::NonBlockingDOMEventDispatch, WheelEventProcessingSteps::BlockingDOMEventDispatch };
      result.steps.add(processingSteps & mainThreadSteps);
@@ -5540,7 +5548,7 @@ index 351fcd027e1481abf32eeb6f82f5ffaa5aff5fd8..2167f71a05601daa5dbda2d98eaf1072
      return result;
  }
  
-@@ -493,7 +595,15 @@ bool ScrollingTree::commitTreeStateInternal(std::unique_ptr<ScrollingStateTree>&
+@@ -493,7 +603,15 @@ bool ScrollingTree::commitTreeStateInternal(std::unique_ptr<ScrollingStateTree>&
  bool ScrollingTree::commitTreeState(std::unique_ptr<ScrollingStateTree>&& scrollingStateTree, std::optional<LayerHostingContextIdentifier> hostingContextIdentifier)
  {
      SetForScope inCommitTreeState(m_inCommitTreeState, true);
@@ -5556,7 +5564,7 @@ index 351fcd027e1481abf32eeb6f82f5ffaa5aff5fd8..2167f71a05601daa5dbda2d98eaf1072
      return commitTreeStateInternal(WTF::move(scrollingStateTree), hostingContextIdentifier);
  }
  
-@@ -619,6 +729,9 @@ void ScrollingTree::removeAllNodes()
+@@ -619,6 +737,9 @@ void ScrollingTree::removeAllNodes()
  void ScrollingTree::applyLayerPositions()
  {
      Locker locker { m_treeLock };
@@ -5567,7 +5575,7 @@ index 351fcd027e1481abf32eeb6f82f5ffaa5aff5fd8..2167f71a05601daa5dbda2d98eaf1072
      if (!m_needsApplyLayerPositions.exchange(false))
          return;
 diff --git a/Source/WebCore/page/scrolling/ScrollingTree.h b/Source/WebCore/page/scrolling/ScrollingTree.h
-index 54e8ac0d60903f27d2803bdb5eff7ef8c480ca49..9c1b832375191e28059bf235544bcba8a5c3ffab 100644
+index 54e8ac0d60903f27d2803bdb5eff7ef8c480ca49..31a3b872252bb42c040d703f6297b30d2632dff5 100644
 --- a/Source/WebCore/page/scrolling/ScrollingTree.h
 +++ b/Source/WebCore/page/scrolling/ScrollingTree.h
 @@ -52,6 +52,29 @@
@@ -5600,15 +5608,26 @@ index 54e8ac0d60903f27d2803bdb5eff7ef8c480ca49..9c1b832375191e28059bf235544bcba8
  class IntPoint;
  class ScrollingStateTree;
  class ScrollingStateNode;
-@@ -371,6 +394,25 @@ private:
+@@ -235,6 +258,9 @@ public:
+ 
+     virtual void lockLayersForHitTesting() { }
+     virtual void unlockLayersForHitTesting() { }
++#if PLATFORM(HAIKU)
++    virtual bool canHitTestWithoutWaitingHaiku() { return true; }
++#endif
+ 
+     class HitTestLocker {
+     public:
+@@ -371,6 +397,26 @@ private:
      ScrollingTreeLatchingController m_latchingController;
      ScrollingTreeGestureState m_gestureState;
  
 +#if PLATFORM(HAIKU)
 +    // A wheel has no gesture phases to latch by, so every notch hit-tested
 +    // the layers, twice, and a hit test waits for the main thread to finish
-+    // flushing them: tens of milliseconds while a page loads. Within a burst
-+    // of notches at one place the first notch's answers stand for the rest.
++    // flushing them: tens of milliseconds while a page loads. A burst of
++    // notches at one place scrolls what its first notch scrolled, and asks
++    // again what listens under the pointer only when that needs no waiting.
 +    struct WheelLatchHaiku {
 +        MonotonicTime lastEventTime;
 +        IntPoint position;
@@ -5627,7 +5646,7 @@ index 54e8ac0d60903f27d2803bdb5eff7ef8c480ca49..9c1b832375191e28059bf235544bcba8
  
      HashSet<Ref<ScrollingTreeOverflowScrollProxyNode>> m_activeOverflowScrollProxyNodes;
 diff --git a/Source/WebCore/page/scrolling/ThreadedScrollingTree.cpp b/Source/WebCore/page/scrolling/ThreadedScrollingTree.cpp
-index 77e274b5febc1b0c30c2f90092b4dd1ba1e49eea..bedb184d60d0e872facb3dd59d4f000dfec97be6 100644
+index 77e274b5febc1b0c30c2f90092b4dd1ba1e49eea..44731794a4feb0ffa9ce5302e7970cf73555d5f0 100644
 --- a/Source/WebCore/page/scrolling/ThreadedScrollingTree.cpp
 +++ b/Source/WebCore/page/scrolling/ThreadedScrollingTree.cpp
 @@ -37,6 +37,7 @@
@@ -5658,7 +5677,7 @@ index 77e274b5febc1b0c30c2f90092b4dd1ba1e49eea..bedb184d60d0e872facb3dd59d4f000d
      addPendingScrollUpdateWithDeferReason(WTF::move(scrollUpdate), WheelEventTestMonitor::DeferReason::ScrollingThreadSyncNeeded);
  }
  
-@@ -421,11 +428,21 @@ void ThreadedScrollingTree::setActiveScrollSnapIndices(ScrollingNodeID nodeID, s
+@@ -421,12 +428,32 @@ void ThreadedScrollingTree::setActiveScrollSnapIndices(ScrollingNodeID nodeID, s
  void ThreadedScrollingTree::lockLayersForHitTesting()
  {
      m_layerHitTestMutex.lock();
@@ -5672,15 +5691,26 @@ index 77e274b5febc1b0c30c2f90092b4dd1ba1e49eea..bedb184d60d0e872facb3dd59d4f000d
 +#if PLATFORM(HAIKU)
 +    auto lockedAt = m_layersLockedForHitTestingAtHaiku;
 +#endif
-     m_layerHitTestMutex.unlock();
++    m_layerHitTestMutex.unlock();
 +#if PLATFORM(HAIKU)
 +    if (lockedAt)
 +        ScrollingTraceScopeHaiku::report("the main thread kept the layers from hit tests", MonotonicTime::now() - lockedAt);
 +#endif
++}
++
++#if PLATFORM(HAIKU)
++bool ThreadedScrollingTree::canHitTestWithoutWaitingHaiku()
++{
++    if (!m_layerHitTestMutex.tryLock())
++        return false;
+     m_layerHitTestMutex.unlock();
++    return true;
  }
++#endif
  
  void ThreadedScrollingTree::didScheduleRenderingUpdate()
-@@ -443,6 +460,9 @@ void ThreadedScrollingTree::willStartRenderingUpdate()
+ {
+@@ -443,6 +470,9 @@ void ThreadedScrollingTree::willStartRenderingUpdate()
          return;
  
      tracePoint(ScrollingThreadRenderUpdateSyncStart);
@@ -5690,7 +5720,7 @@ index 77e274b5febc1b0c30c2f90092b4dd1ba1e49eea..bedb184d60d0e872facb3dd59d4f000d
  
      // Wait for the scrolling thread to acquire m_treeLock. This ensures that any pending wheel events are processed.
      BinarySemaphore semaphore;
-@@ -457,8 +477,30 @@ void ThreadedScrollingTree::willStartRenderingUpdate()
+@@ -457,8 +487,30 @@ void ThreadedScrollingTree::willStartRenderingUpdate()
      m_state = SynchronizationState::InRenderingUpdate;
  }
  
@@ -5721,7 +5751,7 @@ index 77e274b5febc1b0c30c2f90092b4dd1ba1e49eea..bedb184d60d0e872facb3dd59d4f000d
      auto scrollingCoordinator = m_scrollingCoordinator;
      if (!scrollingCoordinator)
          return;
-@@ -476,6 +518,9 @@ void ThreadedScrollingTree::hasNodeWithAnimatedScrollChanged(bool hasNodeWithAni
+@@ -476,6 +528,9 @@ void ThreadedScrollingTree::hasNodeWithAnimatedScrollChanged(bool hasNodeWithAni
  // commit layer positions.
  void ThreadedScrollingTree::waitForRenderingUpdateCompletionOrTimeout()
  {
@@ -5731,7 +5761,7 @@ index 77e274b5febc1b0c30c2f90092b4dd1ba1e49eea..bedb184d60d0e872facb3dd59d4f000d
      ASSERT(ScrollingThread::isCurrentThread());
      ASSERT(m_treeLock.isLocked());
  
-@@ -523,6 +568,9 @@ void ThreadedScrollingTree::renderingUpdateComplete()
+@@ -523,6 +578,9 @@ void ThreadedScrollingTree::renderingUpdateComplete()
          m_stateCondition.notifyOne();
  
      m_state = SynchronizationState::Idle;
@@ -5741,7 +5771,7 @@ index 77e274b5febc1b0c30c2f90092b4dd1ba1e49eea..bedb184d60d0e872facb3dd59d4f000d
  }
  
  void ThreadedScrollingTree::scheduleDelayedRenderingUpdateDetectionTimer(Seconds delay)
-@@ -543,6 +591,9 @@ void ThreadedScrollingTree::delayedRenderingUpdateDetectionTimerFired()
+@@ -543,6 +601,9 @@ void ThreadedScrollingTree::delayedRenderingUpdateDetectionTimerFired()
      Locker locker { m_treeLock };
      if (canUpdateLayersOnScrollingThread())
          applyLayerPositionsInternal();
@@ -5751,7 +5781,7 @@ index 77e274b5febc1b0c30c2f90092b4dd1ba1e49eea..bedb184d60d0e872facb3dd59d4f000d
      m_state = SynchronizationState::Desynchronized;
  }
  
-@@ -550,19 +601,56 @@ void ThreadedScrollingTree::displayDidRefreshOnScrollingThread()
+@@ -550,19 +611,56 @@ void ThreadedScrollingTree::displayDidRefreshOnScrollingThread()
  {
      TraceScope tracingScope(ScrollingThreadDisplayDidRefreshStart, ScrollingThreadDisplayDidRefreshEnd, displayID());
      ASSERT(ScrollingThread::isCurrentThread());
@@ -5811,7 +5841,7 @@ index 77e274b5febc1b0c30c2f90092b4dd1ba1e49eea..bedb184d60d0e872facb3dd59d4f000d
              constexpr auto maxStartRenderingUpdateDelay = 1_ms;
              scheduleDelayedRenderingUpdateDetectionTimer(maxStartRenderingUpdateDelay);
 diff --git a/Source/WebCore/page/scrolling/ThreadedScrollingTree.h b/Source/WebCore/page/scrolling/ThreadedScrollingTree.h
-index fbe73cf3679059de2b1a1e695f53bb4aa9bfce8a..b406c93f60cfe2725369028cf6a36a4881e2bd38 100644
+index fbe73cf3679059de2b1a1e695f53bb4aa9bfce8a..843d91a97cc9ca8c3850cf9df89868c38d37d1a2 100644
 --- a/Source/WebCore/page/scrolling/ThreadedScrollingTree.h
 +++ b/Source/WebCore/page/scrolling/ThreadedScrollingTree.h
 @@ -61,6 +61,14 @@ public:
@@ -5842,6 +5872,16 @@ index fbe73cf3679059de2b1a1e695f53bb4aa9bfce8a..b406c93f60cfe2725369028cf6a36a48
  
  private:
      bool isThreadedScrollingTree() const override { return true; }
+@@ -132,6 +146,9 @@ private:
+ 
+     void lockLayersForHitTesting() final WTF_ACQUIRES_LOCK(m_layerHitTestMutex);
+     void unlockLayersForHitTesting() final WTF_RELEASES_LOCK(m_layerHitTestMutex);
++#if PLATFORM(HAIKU)
++    bool canHitTestWithoutWaitingHaiku() final;
++#endif
+ 
+     void scrollingTreeNodeScrollUpdated(ScrollingTreeScrollingNode&, ScrollUpdateType);
+ 
 diff --git a/Source/WebCore/page/scrolling/coordinated/ScrollerCoordinated.cpp b/Source/WebCore/page/scrolling/coordinated/ScrollerCoordinated.cpp
 index 19eeadfad058f4bd29b19b2e63b00d169e5a1ed5..d12a87568f05a57aadfbfe0ee8ae628fcb94ac87 100644
 --- a/Source/WebCore/page/scrolling/coordinated/ScrollerCoordinated.cpp
