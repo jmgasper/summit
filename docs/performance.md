@@ -20,6 +20,36 @@ should have hidden them; `bundle-mbzrp7ac` at 03:10, without that fault;
 | `SUMMIT_TILE_SCALING` | 1 | tiles of 512 pixels at a scale of 1.5 and more |
 | `SUMMIT_REPAINT_ON_RESIZE` | 0 | a layer that changes its size is painted again whole |
 
+### The last build against the evening's
+
+Measured from 04:33 to 04:44, alternated, two runs each. Frames the window
+received during a scroll (notches at the middle of the page):
+
+| page, scroll | evening: frames/s, gaps over 33 ms, longest | last build |
+| --- | --- | --- |
+| The Guardian, wheel while loading | 41.5, 29.5 / 7, 8 / 268, 525 ms | 54.4, 56.0 / 5, 3 / 83, 59 ms |
+| The Guardian, fling | 41.6, 40.0 / 8, 8 / 143, 107 ms | 48.3, 50.3 / 4, 4 / 61, 74 ms |
+| CNN, wheel | 45.0, 49.9 / 11, 6 / 47, 56 ms | 48.4, 47.0 / 8, 9 / 61, 63 ms |
+| CNN, fling | 46.8, 50.4 / 8, 5 / 54, 55 ms | 52.0, 49.9 / 1, 4 / 35, 53 ms |
+| Wikipedia (Australia), wheel | 47.0, 57.4 / 2, 3 / 384, 51 ms | 56.4, 57.4 / 3, 2 / 46, 35 ms |
+| Wikipedia (Australia), fling | 55.9, 51.9 / 2, 4 / 36, 86 ms | 54.5, 56.6 / 2, 1 / 55, 41 ms |
+
+YouTube, Big Buck Bunny at 1080p60, compositions of the page by the
+compositor's clock:
+
+| seconds of playback | | compositions/s | ms each | draw calls | over 16.7 ms |
+| --- | --- | --- | --- | --- | --- |
+| 0 to 5 | evening | 48.9, 52.3 | 10.5, 12.6 | 147, 173 | 18 of 244, 23 of 261 |
+| | last build | 52.1, 51.2 | 9.6, 10.0 | 51, 46 | 13 of 259, 18 of 255 |
+| 5 to 12 | evening | 54.7, 55.5 | 16.0, 15.6 | 201, 202 | 102 of 382, 89 of 387 |
+| | last build | 59.5, 59.3 | 11.4, 12.3 | 78, 80 | 5 of 416, 12 of 414 |
+| from 12 | evening | 59.1, 59.3 | 14.2, 14.2 | 194, 194 | 44 of 664, 31 of 658 |
+| | last build | 59.4, 59.6 | 11.5, 11.5 | 77, 77 | 4 of 656, 3 of 656 |
+
+Tiles uploaded in the 26 s: 7425 and 7520 in the evening's build, 594 and
+741 in the last. The freeze of a third of a second in the first seconds is
+in both (394 and 159 ms; 363 and 339 ms).
+
 ### The scrolling thread waited for the main thread, twice
 
 After the evening's work a wheel scroll of The Guardian while it loads still
