@@ -19715,6 +19715,169 @@ index 063040a9866c7221f2e581a4b9dac75fa29771d4..6056d36d17770d0a2bcfadc0c7243e1b
  
      SetForScope scopedOpacity(options.opacity, options.opacity * m_currentOpacity);
  
+diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStore.cpp b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStore.cpp
+index 0badc4492a49e10ae2faa80d59da84a9cea259d6..65af7a29a89838863b17d66f22ee7b6b36fe9b0c 100644
+--- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStore.cpp
++++ b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStore.cpp
+@@ -28,6 +28,10 @@
+ #include "TextureMapperFlags.h"
+ #include <wtf/SystemTracing.h>
+ 
++#if PLATFORM(HAIKU)
++#include <OS.h>
++#endif
++
+ namespace WebCore {
+ 
+ void CoordinatedBackingStore::createTile(uint32_t id)
+@@ -49,11 +53,73 @@ void CoordinatedBackingStore::updateTile(uint32_t id, const IntRect& sourceRect,
+     m_hasPendingTileUpdates = true;
+ }
+ 
++#if PLATFORM(HAIKU)
++static thread_local int64_t s_uploadDeadline;
++static thread_local bool s_hasDeferredUploads;
++static thread_local bool s_showsLateUpload;
++
++void CoordinatedBackingStore::setUploadDeadlineHaiku(int64_t systemTime)
++{
++    s_uploadDeadline = systemTime;
++}
++
++bool CoordinatedBackingStore::takeHasDeferredUploadsHaiku()
++{
++    return std::exchange(s_hasDeferredUploads, false);
++}
++
++bool CoordinatedBackingStore::takeShowsLateUploadHaiku()
++{
++    return std::exchange(s_showsLateUpload, false);
++}
++#endif
++
+ void CoordinatedBackingStore::processPendingUpdates()
+ {
+     if (!m_hasPendingTileUpdates)
+         return;
+ 
++#if PLATFORM(HAIKU)
++    // Uploading a tile costs about 50 us, and one rendering update of a page
++    // that is being scrolled brings 60 to 600 of them: 3 to 90 ms in a
++    // composition that has 16. Most of those tiles are outside the viewport,
++    // painted ahead of the scroll or repainted because the page keeps them.
++    // What the last composition showed of this layer, and a margin for the
++    // distance a scroll covers until the next, is uploaded now.
++    if (s_uploadDeadline && m_hasLastPaint) {
++        static constexpr int margin = 768;
++        FloatRect shown = m_lastPaintClip;
++        shown.inflate(margin);
++        bool deferred = false;
++        Vector<CoordinatedBackingStoreTile*, 64> others;
++        for (auto& tile : m_tiles.values()) {
++            if (!tile.hasPendingUpdates())
++                continue;
++            if (m_lastPaintTransform.mapRect(tile.rectAfterPendingUpdates()).intersects(shown)) {
++                tile.processPendingUpdates();
++                if (m_hasDeferredTiles)
++                    s_showsLateUpload = true;
++            } else
++                others.append(&tile);
++        }
++        for (auto* tile : others) {
++            if (system_time() >= s_uploadDeadline) {
++                deferred = true;
++                break;
++            }
++            tile->processPendingUpdates();
++        }
++        m_hasPendingTileUpdates = deferred;
++        m_hasDeferredTiles = deferred;
++        if (deferred)
++            s_hasDeferredUploads = true;
++        return;
++    }
++    if (m_hasDeferredTiles)
++        s_showsLateUpload = true;
++    m_hasDeferredTiles = false;
++#endif
++
+     for (auto& tile : m_tiles.values())
+         tile.processPendingUpdates();
+ 
+@@ -74,6 +140,11 @@ void CoordinatedBackingStore::paintToTextureMapper(TextureMapper& textureMapper,
+     ASSERT(!m_size.isZero());
+     FloatRect layerRect = { { }, m_size };
+     TransformationMatrix adjustedTransform = transform * TransformationMatrix::rectToRect(layerRect, targetRect);
++#if PLATFORM(HAIKU)
++    m_lastPaintTransform = adjustedTransform;
++    m_lastPaintClip = textureMapper.clipBounds();
++    m_hasLastPaint = true;
++#endif
+ 
+ #if ENABLE(DAMAGE_TRACKING)
+     const auto& frameDamage = textureMapper.damage();
+@@ -88,6 +159,11 @@ void CoordinatedBackingStore::paintToTextureMapper(TextureMapper& textureMapper,
+ 
+     for (const auto& tile : m_tiles.values()) {
+         ASSERT(tile.scale() == m_scale);
++#if PLATFORM(HAIKU)
++        // A tile whose first upload was left for a later composition.
++        if (!tile.canBePainted())
++            continue;
++#endif
+         const auto allEdgesExposed = allTileEdgesExposed(layerRect, tile.rect()) ? TextureMapper::AllEdgesExposed::Yes : TextureMapper::AllEdgesExposed::No;
+ 
+ #if ENABLE(DAMAGE_TRACKING)
+diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStore.h b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStore.h
+index 8723b9e2f90788a74d1ddc536a399463921231ec..ab810081ad03545b62f47f4e8fe1b6a67d84efa8 100644
+--- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStore.h
++++ b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStore.h
+@@ -22,6 +22,8 @@
+ #if USE(COORDINATED_GRAPHICS) && USE(TEXTURE_MAPPER)
+ #include "CoordinatedBackingStoreTile.h"
+ #include "TextureMapperBackingStore.h"
++#include "IntRect.h"
++#include "TransformationMatrix.h"
+ #include <wtf/HashMap.h>
+ #include <wtf/RefCounted.h>
+ 
+@@ -47,6 +49,22 @@ public:
+     bool hasPendingUpdates() const { return m_hasPendingTileUpdates; }
+     void processPendingUpdates();
+ 
++#if PLATFORM(HAIKU)
++    // A composition uploads the tiles it is about to show, and of the others
++    // (a scroll paints tiles ahead of the viewport, a repaint covers the
++    // tiles kept around it) as many as fit before this time; the rest wait
++    // for the next composition. Zero uploads everything at once. Set and
++    // read on the compositor thread.
++    static void setUploadDeadlineHaiku(int64_t systemTime);
++    // Whether a backing store has left tiles for the next composition since
++    // this was last asked.
++    static bool takeHasDeferredUploadsHaiku();
++    // Whether a tile that had waited is uploaded into view by this
++    // composition: the damage of its update went with the composition that
++    // received it, so this one has to present the whole frame.
++    static bool takeShowsLateUploadHaiku();
++#endif
++
+     void paintToTextureMapper(TextureMapper&, const FloatRect&, const TransformationMatrix&, float) override;
+     void drawBorder(TextureMapper&, const Color&, float borderWidth, const FloatRect&, const TransformationMatrix&) override;
+     void drawRepaintCounter(TextureMapper&, int repaintCount, const Color&, const FloatRect&, const TransformationMatrix&) override;
+@@ -58,6 +76,13 @@ private:
+     FloatSize m_size;
+     float m_scale { 1. };
+     bool m_hasPendingTileUpdates { false };
++#if PLATFORM(HAIKU)
++    // Where the last composition drew this layer, to tell which tiles show.
++    TransformationMatrix m_lastPaintTransform;
++    IntRect m_lastPaintClip;
++    bool m_hasLastPaint { false };
++    bool m_hasDeferredTiles { false };
++#endif
+ };
+ 
+ } // namespace WebKit
 diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreProxy.cpp b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreProxy.cpp
 index 30f54801b8aa9b9bc83af8a929f8bdc04a2ee4d1..f68564b5f1c8b97ee543257ede6c0f4050ae2dd0 100644
 --- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreProxy.cpp
@@ -19769,6 +19932,128 @@ index 30f54801b8aa9b9bc83af8a929f8bdc04a2ee4d1..f68564b5f1c8b97ee543257ede6c0f40
          static constexpr int minGPUTileHeight = 256;
  
          auto gpuTileSize = [&](const IntSize& baseSize) -> IntSize {
+diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreTile.cpp b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreTile.cpp
+index 3f7acfab36c398a8e7af4c55768bdef27cdac477..78fd9f061356ab54a02c1bf0f331b0d4082cf192 100644
+--- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreTile.cpp
++++ b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreTile.cpp
+@@ -32,8 +32,36 @@
+ #include "SkiaPaintingEngine.h"
+ #endif
+ 
++#if PLATFORM(HAIKU)
++#include <OS.h>
++#endif
++
+ namespace WebCore {
+ 
++#if PLATFORM(HAIKU)
++static thread_local bool s_countsUpdates;
++static thread_local CoordinatedBackingStoreTile::UpdateStatsHaiku s_updateStats;
++
++void CoordinatedBackingStoreTile::setCountsUpdatesHaiku(bool counts)
++{
++    s_countsUpdates = counts;
++}
++
++auto CoordinatedBackingStoreTile::takeUpdateStatsHaiku() -> UpdateStatsHaiku
++{
++    return std::exchange(s_updateStats, { });
++}
++
++FloatRect CoordinatedBackingStoreTile::rectAfterPendingUpdates() const
++{
++    if (m_updates.isEmpty())
++        return m_rect;
++    FloatRect rect(m_updates.last().tileRect);
++    rect.scale(1. / m_scale);
++    return rect;
++}
++#endif
++
+ CoordinatedBackingStoreTile::CoordinatedBackingStoreTile(float scale)
+     : m_scale(scale)
+ {
+@@ -83,7 +111,13 @@ void CoordinatedBackingStoreTile::processPendingUpdates()
+ 
+         WTFBeginSignpost(this, CoordinatedSwapBuffer, "%u/%zu, rect %ix%i+%i+%i", updateIndex + 1, updatesCount, update.tileRect.x(), update.tileRect.y(), update.tileRect.width(), update.tileRect.height());
+ 
++#if PLATFORM(HAIKU)
++        const bigtime_t waitStartedAt = s_countsUpdates ? system_time() : 0;
++#endif
+         update.buffer->waitUntilPaintingComplete();
++#if PLATFORM(HAIKU)
++        const bigtime_t paintedAt = s_countsUpdates ? system_time() : 0;
++#endif
+ 
+         FloatRect unscaledTileRect(update.tileRect);
+         unscaledTileRect.scale(1. / m_scale);
+@@ -92,6 +126,9 @@ void CoordinatedBackingStoreTile::processPendingUpdates()
+             m_rect = unscaledTileRect;
+             m_texture = nullptr;
+         }
++#if PLATFORM(HAIKU)
++        const bool hadTexture = !!m_texture;
++#endif
+ 
+ #if USE(SKIA)
+         if (update.buffer->isBackedByOpenGL()) {
+@@ -119,11 +156,25 @@ void CoordinatedBackingStoreTile::processPendingUpdates()
+ #endif
+         auto& buffer = static_cast<CoordinatedUnacceleratedTileBuffer&>(update.buffer.get());
+         ensureTexture(update.tileRect.size(), buffer);
++#if PLATFORM(HAIKU)
++        const bigtime_t texturedAt = s_countsUpdates ? system_time() : 0;
++#endif
+ 
+         WTFBeginSignpost(this, CopyTextureCPUToGPU);
+         ASSERT(!update.buffer->isBackedByOpenGL());
+         m_texture->updateContents(buffer.data(), update.sourceRect, update.bufferOffset, buffer.stride(), update.buffer->pixelFormat());
+         WTFEndSignpost(this, CopyTextureCPUToGPU);
++#if PLATFORM(HAIKU)
++        if (s_countsUpdates) {
++            ++s_updateStats.tiles;
++            if (!hadTexture)
++                ++s_updateStats.newTextures;
++            s_updateStats.megapixels += update.sourceRect.width() * double(update.sourceRect.height()) / 1e6;
++            s_updateStats.paintWaitMs += (paintedAt - waitStartedAt) / 1000.0;
++            s_updateStats.textureMs += (texturedAt - paintedAt) / 1000.0;
++            s_updateStats.uploadMs += (system_time() - texturedAt) / 1000.0;
++        }
++#endif
+ 
+         WTFEndSignpost(this, CoordinatedSwapBuffer);
+     }
+diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreTile.h b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreTile.h
+index 74df231207380fa09298f846f66adefed719fd2a..025c6cb86df95f52810b95e4427037ffc34252aa 100644
+--- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreTile.h
++++ b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreTile.h
+@@ -50,6 +50,26 @@ public:
+ 
+     bool canBePainted() const { return !!m_texture; }
+ 
++#if PLATFORM(HAIKU)
++    bool hasPendingUpdates() const { return !m_updates.isEmpty(); }
++    // Where the tile is once its pending updates are applied, in the
++    // coordinates rect() uses.
++    FloatRect rectAfterPendingUpdates() const;
++
++    // What the tile updates of one composition cost, counted on the
++    // compositor thread while SUMMIT_COMPOSITOR_TIMING_TRACE asks for it.
++    struct UpdateStatsHaiku {
++        unsigned tiles { 0 };
++        unsigned newTextures { 0 };
++        double megapixels { 0 };
++        double paintWaitMs { 0 };
++        double textureMs { 0 };
++        double uploadMs { 0 };
++    };
++    static void setCountsUpdatesHaiku(bool);
++    static UpdateStatsHaiku takeUpdateStatsHaiku();
++#endif
++
+ private:
+     void ensureTexture(const IntSize&, CoordinatedTileBuffer&);
+ 
 diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/GraphicsLayerCoordinated.cpp b/Source/WebCore/platform/graphics/texmap/coordinated/GraphicsLayerCoordinated.cpp
 index cb8dc9067767652f427ad441e5da28a25aa05b82..9c92d100b6d61ddaf0a3a7d397d50bf66dbca574 100644
 --- a/Source/WebCore/platform/graphics/texmap/coordinated/GraphicsLayerCoordinated.cpp
@@ -92015,7 +92300,7 @@ index 0000000000000000000000000000000000000000..abc82f6d26d2b1374740dc304282ae75
 +
 +}
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
-index cf4d54b7869d7a7cded74482922d8fdda53af21d..dd91fe7af6bf29b689046e2d28baf91e3b10374b 100644
+index cf4d54b7869d7a7cded74482922d8fdda53af21d..774a0c3c097f96cd15a0d976d48b386041dbbe81 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
 @@ -26,6 +26,19 @@
@@ -92115,7 +92400,45 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..dd91fe7af6bf29b689046e2d28baf91e
  WTF_MAKE_TZONE_ALLOCATED_IMPL(AcceleratedSurface::RenderTargetShareableBuffer);
  
  AcceleratedSurface::RenderTargetShareableBuffer::RenderTargetShareableBuffer(AcceleratedSurface& surface, const IntSize& size)
-@@ -228,6 +270,10 @@ void AcceleratedSurface::RenderTargetShareableBuffer::initializeColorBuffer(EGLI
+@@ -218,9 +260,36 @@ void AcceleratedSurface::RenderTargetShareableBuffer::initializeColorBuffer(EGLI
+     glBindRenderbuffer(GL_RENDERBUFFER, m_colorBuffer);
+     if (image)
+         glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER, image);
+-    else
++    else {
++#if PLATFORM(HAIKU)
++        // The frame is read back as BGRA, the order a BBitmap holds. From an
++        // RGBA target the driver first converts a copy of the frame on the
++        // GPU (1.2 ms of a 5 ms read of 3840x1756 on zink); a BGRA target
++        // is copied as it is. SUMMIT_BGRA_TARGET=0 keeps RGBA.
++        static const bool bgraTarget = [] {
++            const char* value = getenv("SUMMIT_BGRA_TARGET");
++            if (value && !strcmp(value, "0"))
++                return false;
++            auto* extensions = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
++            return extensions && strstr(extensions, "GL_EXT_texture_format_BGRA8888") && strstr(extensions, "GL_EXT_read_format_bgra");
++        }();
++        bool stored = false;
++        if (bgraTarget && !m_surface->useSkia()) {
++            while (glGetError() != GL_NO_ERROR) { }
++            glRenderbufferStorage(GL_RENDERBUFFER, 0x93A1 /* GL_BGRA8_EXT */, m_size.width(), m_size.height());
++            stored = glGetError() == GL_NO_ERROR;
++        }
++        if (!stored)
++#endif
+         glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, m_size.width(), m_size.height());
++    }
+     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, m_colorBuffer);
++#if PLATFORM(HAIKU)
++    if (!image && glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
++        glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, m_size.width(), m_size.height());
++        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, m_colorBuffer);
++    }
++#endif
+ 
+     if (m_surface->useSkia())
+         createSkiaSurfaceForFramebuffer(m_fbo);
+@@ -228,6 +297,10 @@ void AcceleratedSurface::RenderTargetShareableBuffer::initializeColorBuffer(EGLI
  
  void AcceleratedSurface::RenderTargetShareableBuffer::sendFrame(Vector<WebCore::IntRect, 1>&& damageRects)
  {
@@ -92126,7 +92449,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..dd91fe7af6bf29b689046e2d28baf91e
      WebProcess::singleton().parentProcessConnection()->send(Messages::AcceleratedBackingStore::Frame(m_id, WTF::move(damageRects), WTF::move(m_renderingFenceFD)), m_surface->surfaceID());
  }
  
-@@ -418,7 +464,14 @@ std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::RenderTarg
+@@ -418,7 +491,14 @@ std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::RenderTarg
          return nullptr;
      }
  
@@ -92141,7 +92464,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..dd91fe7af6bf29b689046e2d28baf91e
      if (!bufferHandle) {
          WTFLogAlways("Failed to create handle for shared memory buffer");
          return nullptr;
-@@ -439,13 +492,284 @@ AcceleratedSurface::RenderTargetSHMImage::RenderTargetSHMImage(AcceleratedSurfac
+@@ -439,13 +519,299 @@ AcceleratedSurface::RenderTargetSHMImage::RenderTargetSHMImage(AcceleratedSurfac
      WebProcess::singleton().parentProcessConnection()->send(Messages::AcceleratedBackingStore::DidCreateSHMBuffer(m_id, WTF::move(bitmapHandle)), m_surface->surfaceID());
  }
  
@@ -92339,6 +92662,21 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..dd91fe7af6bf29b689046e2d28baf91e
 +        if (flipped || !readsBGRA || destinationStride % 4)
 +            return decline("the frame is mirrored, BGRA reads are missing or rows are unaligned");
 +        glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
++        // SUMMIT_READBACK_SPLIT=1 (with SUMMIT_PRESENT_STATS=1) waits for the
++        // GPU to finish compositing before it reads, which tells the time
++        // the GPU spends drawing the frame from the time the read takes. The
++        // megapixel column of that line is the number of reads.
++        static const bool splitFinish = [] {
++            const char* value = getenv("SUMMIT_READBACK_SPLIT");
++            return value && !strcmp(value, "1");
++        }();
++        if (splitFinish && readStart) {
++            glFinish();
++            static NeverDestroyed<PresentStageStatsHaiku> finish("gpu finish, reads (web)");
++            bigtime_t finished = system_time();
++            finish.get().add(finished - readStart, rects.size());
++            readStart = finished;
++        }
 +        glPixelStorei(GL_PACK_ALIGNMENT, 4);
 +        glPixelStorei(GL_PACK_ROW_LENGTH, destinationStride / 4);
 +        for (auto& rect : rects) {
@@ -92426,7 +92764,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..dd91fe7af6bf29b689046e2d28baf91e
  
          SkImageInfo info = SkImageInfo::Make(m_bitmap->size().width(), m_bitmap->size().height(), SkColorType::kBGRA_8888_SkColorType, SkAlphaType::kPremul_SkAlphaType);
  
-@@ -457,9 +781,14 @@ void AcceleratedSurface::RenderTargetSHMImage::didRenderFrame()
+@@ -457,9 +823,14 @@ void AcceleratedSurface::RenderTargetSHMImage::didRenderFrame()
          return;
      }
  
@@ -92441,7 +92779,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..dd91fe7af6bf29b689046e2d28baf91e
  std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::RenderTargetTexture::create(AcceleratedSurface& surface, const IntSize& size)
  {
      auto texture = BitmapTexture::create(size);
-@@ -515,8 +844,9 @@ AcceleratedSurface::RenderTargetTexture::RenderTargetTexture(AcceleratedSurface&
+@@ -515,8 +886,9 @@ AcceleratedSurface::RenderTargetTexture::RenderTargetTexture(AcceleratedSurface&
  }
  
  AcceleratedSurface::RenderTargetTexture::~RenderTargetTexture() = default;
@@ -92452,7 +92790,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..dd91fe7af6bf29b689046e2d28baf91e
  
  #if USE(WPE_RENDERER)
  std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::RenderTargetWPEBackend::create(AcceleratedSurface& surface, const IntSize& initialSize, UnixFileDescriptor&& hostFD)
-@@ -594,7 +924,7 @@ void AcceleratedSurface::RenderTargetWPEBackend::didRenderFrame()
+@@ -594,7 +966,7 @@ void AcceleratedSurface::RenderTargetWPEBackend::didRenderFrame()
  AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
      : m_surface(surface)
  {
@@ -92461,7 +92799,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..dd91fe7af6bf29b689046e2d28baf91e
      if (!m_surface->hardwareAccelerationEnabled()) {
          m_type = Type::SharedMemory;
          return;
-@@ -632,7 +962,7 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
+@@ -632,7 +1004,7 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
      case PlatformDisplay::Type::GBM:
  #endif
          break;
@@ -92470,7 +92808,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..dd91fe7af6bf29b689046e2d28baf91e
  #if USE(WPE_RENDERER)
      case PlatformDisplay::Type::WPE:
          m_type = Type::WPEBackend;
-@@ -646,11 +976,19 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
+@@ -646,11 +1018,19 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
      case PlatformDisplay::Type::Default:
          break;
  #endif // PLATFORM(GTK)
@@ -92491,7 +92829,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..dd91fe7af6bf29b689046e2d28baf91e
  void AcceleratedSurface::SwapChain::setupBufferFormat()
  {
      if (m_type != Type::EGLImage)
-@@ -749,7 +1087,7 @@ bool AcceleratedSurface::SwapChain::resize(const IntSize& size)
+@@ -749,7 +1129,7 @@ bool AcceleratedSurface::SwapChain::resize(const IntSize& size)
  
  bool AcceleratedSurface::SwapChain::handleBufferFormatChangeIfNeeded()
  {
@@ -92500,7 +92838,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..dd91fe7af6bf29b689046e2d28baf91e
      if (m_type == Type::EGLImage) {
          Locker locker { m_bufferFormatLock };
          if (m_bufferFormatChanged) {
-@@ -765,7 +1103,7 @@ bool AcceleratedSurface::SwapChain::handleBufferFormatChangeIfNeeded()
+@@ -765,7 +1145,7 @@ bool AcceleratedSurface::SwapChain::handleBufferFormatChangeIfNeeded()
  std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::SwapChain::createTarget() const
  {
      switch (m_type) {
@@ -92509,7 +92847,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..dd91fe7af6bf29b689046e2d28baf91e
  #if USE(GBM) || OS(ANDROID)
      case Type::EGLImage: {
          Locker locker { m_bufferFormatLock };
-@@ -773,7 +1111,11 @@ std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::SwapChain:
+@@ -773,7 +1153,11 @@ std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::SwapChain:
      }
  #endif
      case Type::Texture:
@@ -92521,7 +92859,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..dd91fe7af6bf29b689046e2d28baf91e
      case Type::SharedMemory:
          return RenderTargetSHMImage::create(m_surface.get(), m_size);
  #endif
-@@ -812,6 +1154,11 @@ AcceleratedSurface::RenderTarget* AcceleratedSurface::SwapChain::nextTarget()
+@@ -812,6 +1196,11 @@ AcceleratedSurface::RenderTarget* AcceleratedSurface::SwapChain::nextTarget()
              if (auto target = createTarget())
                  m_freeTargets.append(WTF::move(target));
          }
@@ -92533,7 +92871,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..dd91fe7af6bf29b689046e2d28baf91e
  
  #if ENABLE(WPE_PLATFORM)
          if (m_freeTargets.size() != targetsToCreate)
-@@ -841,6 +1188,12 @@ void AcceleratedSurface::SwapChain::releaseTarget(uint64_t targetID, UnixFileDes
+@@ -841,6 +1230,12 @@ void AcceleratedSurface::SwapChain::releaseTarget(uint64_t targetID, UnixFileDes
          m_freeTargets.insert(0, WTF::move(m_lockedTargets[index]));
          m_lockedTargets.removeAt(index);
      }
@@ -92546,7 +92884,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..dd91fe7af6bf29b689046e2d28baf91e
  }
  
  void AcceleratedSurface::SwapChain::reset()
-@@ -859,6 +1212,11 @@ void AcceleratedSurface::SwapChain::releaseUnusedBuffers()
+@@ -859,6 +1254,11 @@ void AcceleratedSurface::SwapChain::releaseUnusedBuffers()
  #if USE(WPE_RENDERER)
      ASSERT(m_type != Type::WPEBackend);
  #endif
@@ -92558,7 +92896,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..dd91fe7af6bf29b689046e2d28baf91e
  
  #if ENABLE(WPE_PLATFORM)
      WebProcess::singleton().parentProcessConnection()->send(Messages::AcceleratedBackingStore::DidChangeBufferConfiguration(m_lockedTargets.size()), m_surface->surfaceID());
-@@ -929,7 +1287,7 @@ bool AcceleratedSurface::shouldPaintMirrored() const
+@@ -929,7 +1329,7 @@ bool AcceleratedSurface::shouldPaintMirrored() const
      switch (m_swapChain.type()) {
      case SwapChain::Type::Invalid:
          return false;
@@ -92567,7 +92905,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..dd91fe7af6bf29b689046e2d28baf91e
      case SwapChain::Type::Texture:
  #if USE(GBM) || OS(ANDROID)
      case SwapChain::Type::EGLImage:
-@@ -960,6 +1318,10 @@ void AcceleratedSurface::preferredBufferFormatsDidChange()
+@@ -960,6 +1360,10 @@ void AcceleratedSurface::preferredBufferFormatsDidChange()
  
  void AcceleratedSurface::visibilityDidChange(bool isVisible)
  {
@@ -92578,7 +92916,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..dd91fe7af6bf29b689046e2d28baf91e
      if (m_isVisible == isVisible)
          return;
  
-@@ -1000,7 +1362,7 @@ void AcceleratedSurface::backgroundColorDidChange()
+@@ -1000,7 +1404,7 @@ void AcceleratedSurface::backgroundColorDidChange()
      if (isOpaque == wasOpaque)
          return;
  
@@ -92587,7 +92925,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..dd91fe7af6bf29b689046e2d28baf91e
      m_swapChain.setupBufferFormat();
  #endif
  }
-@@ -1022,7 +1384,7 @@ void AcceleratedSurface::didCreateCompositingRunLoop(RunLoop& runLoop)
+@@ -1022,7 +1426,7 @@ void AcceleratedSurface::didCreateCompositingRunLoop(RunLoop& runLoop)
  #if USE(GLIB_EVENT_LOOP)
      m_releaseUnusedBuffersTimer->setPriority(RunLoopSourcePriority::ReleaseUnusedResourcesTimer);
  #endif
@@ -92596,7 +92934,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..dd91fe7af6bf29b689046e2d28baf91e
      WebProcess::singleton().parentProcessConnection()->addMessageReceiver(runLoop, *this, Messages::AcceleratedSurface::messageReceiverName(), m_id);
  #endif
  }
-@@ -1030,6 +1392,9 @@ void AcceleratedSurface::didCreateCompositingRunLoop(RunLoop& runLoop)
+@@ -1030,6 +1434,9 @@ void AcceleratedSurface::didCreateCompositingRunLoop(RunLoop& runLoop)
  void AcceleratedSurface::willDestroyCompositingRunLoop()
  {
      m_frameCompleteHandler = nullptr;
@@ -92606,7 +92944,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..dd91fe7af6bf29b689046e2d28baf91e
  
  #if USE(WPE_RENDERER)
      if (m_swapChain.type() == SwapChain::Type::WPEBackend)
-@@ -1043,7 +1408,7 @@ void AcceleratedSurface::willDestroyCompositingRunLoop()
+@@ -1043,7 +1450,7 @@ void AcceleratedSurface::willDestroyCompositingRunLoop()
              protectedThis->m_releaseUnusedBuffersTimer = nullptr;
          });
      }
@@ -92615,7 +92953,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..dd91fe7af6bf29b689046e2d28baf91e
      WebProcess::singleton().parentProcessConnection()->removeMessageReceiver(Messages::AcceleratedSurface::messageReceiverName(), m_id);
  #endif
  }
-@@ -1155,18 +1520,47 @@ void AcceleratedSurface::didRenderFrame(TargetContents targetContents)
+@@ -1155,18 +1562,47 @@ void AcceleratedSurface::didRenderFrame(TargetContents targetContents)
      if (!m_target)
          return;
  
@@ -92663,7 +93001,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..dd91fe7af6bf29b689046e2d28baf91e
      m_pendingFrameNotifyTargets.insert(0, { m_target, WTF::move(damageRects) });
      m_target = nullptr;
  }
-@@ -1188,13 +1582,17 @@ const std::optional<Damage>& AcceleratedSurface::renderTargetDamage()
+@@ -1188,13 +1624,17 @@ const std::optional<Damage>& AcceleratedSurface::renderTargetDamage()
  }
  #endif
  
@@ -93100,10 +93438,19 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..29b2218c26bef68dbc9061f1727d1f72
  
          if (!m_pendingForceRepaint && m_forcedRepaintAsyncCallback)
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
-index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..83a7fe806cfbb58cd1a92256964863b7c651a932 100644
+index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..dc36cb377394dbe23c233df1094cf885c4721c11 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
-@@ -53,6 +53,14 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
+@@ -33,6 +33,8 @@
+ #include "RenderProcessInfo.h"
+ #include "WebPage.h"
+ #include "WebProcess.h"
++#include <WebCore/CoordinatedBackingStore.h>
++#include <WebCore/CoordinatedBackingStoreTile.h>
+ #include <WebCore/CoordinatedPlatformLayer.h>
+ #include <WebCore/Damage.h>
+ #include <WebCore/FontCache.h>
+@@ -53,6 +55,14 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
  #include <wtf/TZoneMallocInlines.h>
  #include <wtf/text/StringToIntegerConversion.h>
  
@@ -93118,7 +93465,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..83a7fe806cfbb58cd1a92256964863b7
  #if USE(GLIB_EVENT_LOOP)
  #include <wtf/glib/RunLoopSourcePriority.h>
  #endif
-@@ -73,13 +81,29 @@ using namespace WebCore;
+@@ -73,13 +83,29 @@ using namespace WebCore;
  
  WTF_MAKE_TZONE_ALLOCATED_IMPL(ThreadedCompositor);
  
@@ -93148,7 +93495,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..83a7fe806cfbb58cd1a92256964863b7
      , m_layerTreeHost(&layerTreeHost)
      , m_surface(AcceleratedSurface::create(webPage, [this] { frameComplete(); }, AcceleratedSurface::RenderingPurpose::Composited))
      , m_sceneState(&sceneState)
-@@ -90,6 +114,17 @@ ThreadedCompositor::ThreadedCompositor(WebPage& webPage, LayerTreeHost& layerTre
+@@ -90,6 +116,17 @@ ThreadedCompositor::ThreadedCompositor(WebPage& webPage, LayerTreeHost& layerTre
  {
      ASSERT(RunLoop::isMain());
  
@@ -93166,7 +93513,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..83a7fe806cfbb58cd1a92256964863b7
      m_didCompositeRunLoopObserver = makeUnique<RunLoopObserver>(RunLoopObserver::WellKnownOrder::GraphicsCommit, [this] {
          this->didCompositeRunLoopObserverFired();
      });
-@@ -216,8 +251,17 @@ void ThreadedCompositor::updateRenderTimer()
+@@ -216,8 +253,17 @@ void ThreadedCompositor::updateRenderTimer()
      }
  
      if (m_state.isRenderTimerActive) {
@@ -93186,7 +93533,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..83a7fe806cfbb58cd1a92256964863b7
      } else
          m_renderTimer.stop();
  }
-@@ -364,6 +408,10 @@ TargetContents ThreadedCompositor::paintToCurrentGLContext(const TransformationM
+@@ -364,6 +410,10 @@ TargetContents ThreadedCompositor::paintToCurrentGLContext(const TransformationM
  #if USE(TEXTURE_MAPPER)
  void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix, const IntSize& size, const OptionSet<CompositionReason>& reasons)
  {
@@ -93197,7 +93544,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..83a7fe806cfbb58cd1a92256964863b7
      FloatRect clipRect(FloatPoint { }, size);
      TextureMapperLayer& currentRootLayer = m_sceneState->rootLayer().ensureTarget();
      if (currentRootLayer.transform() != matrix)
-@@ -373,6 +421,9 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
+@@ -373,6 +423,9 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
  
      m_textureMapper->beginPainting(m_flipY ? TextureMapper::FlipY::Yes : TextureMapper::FlipY::No);
      m_textureMapper->beginClip(TransformationMatrix(), FloatRoundedRect(clipRect));
@@ -93207,7 +93554,18 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..83a7fe806cfbb58cd1a92256964863b7
  
  #if ENABLE(DAMAGE_TRACKING)
      std::optional<FloatRoundedRect> rectContainingRegionThatActuallyChanged;
-@@ -404,11 +455,20 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
+@@ -383,6 +436,10 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
+         WTFBeginSignpost(this, CollectDamage);
+         currentRootLayer.collectDamage(*m_textureMapper, frameDamage);
+         WTFEndSignpost(this, CollectDamage);
++#if PLATFORM(HAIKU)
++        if (CoordinatedBackingStore::takeShowsLateUploadHaiku())
++            frameDamage = Damage(size, Damage::Mode::Full);
++#endif
+ 
+         recordFrameDamage(WTF::move(frameDamage));
+ 
+@@ -404,11 +461,20 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
          m_textureMapper->beginClip(TransformationMatrix(), *rectContainingRegionThatActuallyChanged);
  #endif
  
@@ -93228,7 +93586,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..83a7fe806cfbb58cd1a92256964863b7
  
  #if ENABLE(DAMAGE_TRACKING)
      if (rectContainingRegionThatActuallyChanged)
-@@ -426,6 +486,16 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
+@@ -426,6 +492,16 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
  
      m_textureMapper->endClip();
      m_textureMapper->endPainting();
@@ -93245,7 +93603,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..83a7fe806cfbb58cd1a92256964863b7
  
      if (sceneHasRunningAnimations)
          requestComposition(CompositionReason::Animation);
-@@ -556,6 +626,46 @@ void ThreadedCompositor::renderLayerTree()
+@@ -556,6 +632,46 @@ void ThreadedCompositor::renderLayerTree()
      if (m_suspendedCount > 0)
          return;
  
@@ -93292,7 +93650,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..83a7fe806cfbb58cd1a92256964863b7
      OptionSet<CompositionReason> reasons;
      bool shouldNotifiyDidComposite = false;
      {
-@@ -580,8 +690,16 @@ void ThreadedCompositor::renderLayerTree()
+@@ -580,8 +696,16 @@ void ThreadedCompositor::renderLayerTree()
  
          ASSERT(m_state.state == State::Scheduled);
          m_state.state = State::InProgress;
@@ -93309,7 +93667,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..83a7fe806cfbb58cd1a92256964863b7
  #if USE(TEXTURE_MAPPER)
      if (!m_context || !m_context->makeContextCurrent())
          return;
-@@ -599,10 +717,14 @@ void ThreadedCompositor::renderLayerTree()
+@@ -599,23 +723,47 @@ void ThreadedCompositor::renderLayerTree()
      if (viewportSize.isEmpty())
          return;
  
@@ -93324,12 +93682,28 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..83a7fe806cfbb58cd1a92256964863b7
  
      RunLoop::mainSingleton().dispatch([this, protectedThis = Ref { *this }] {
          if (m_layerTreeHost)
-@@ -612,10 +734,16 @@ void ThreadedCompositor::renderLayerTree()
+             m_layerTreeHost->willRenderFrame();
+     });
+ 
++#if PLATFORM(HAIKU)
++    if (traceTiming)
++        CoordinatedBackingStoreTile::setCountsUpdatesHaiku(true);
++    // SUMMIT_TILE_UPLOAD_BUDGET_MS: how long a composition uploads tiles it
++    // does not show (CoordinatedBackingStore::processPendingUpdates); 0
++    // uploads every tile in the composition that receives it, as before.
++    static const bigtime_t uploadBudget = [] {
++        const char* value = std::getenv("SUMMIT_TILE_UPLOAD_BUDGET_MS");
++        return static_cast<bigtime_t>((value && *value ? std::max(0.0, std::atof(value)) : 3.0) * 1000);
++    }();
++    CoordinatedBackingStore::setUploadDeadlineHaiku(uploadBudget ? system_time() + uploadBudget : 0);
++#endif
      WTFBeginSignpost(this, FlushCompositingState);
      flushCompositingState(reasons);
      WTFEndSignpost(this, FlushCompositingState);
 +#if PLATFORM(HAIKU)
 +    const bigtime_t flushedAt = traceTiming ? system_time() : 0;
++    const auto tileUpdates = CoordinatedBackingStoreTile::takeUpdateStatsHaiku();
++    const bool deferredUploads = CoordinatedBackingStore::takeHasDeferredUploadsHaiku();
 +#endif
  
      WTFBeginSignpost(this, PaintToGLContext);
@@ -93341,22 +93715,36 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..83a7fe806cfbb58cd1a92256964863b7
  
      updateFPSCounter();
  
-@@ -633,6 +761,14 @@ void ThreadedCompositor::renderLayerTree()
+@@ -631,8 +779,28 @@ void ThreadedCompositor::renderLayerTree()
+     PlatformDisplay::sharedDisplay().skiaGLContext()->swapBuffers();
+ #endif
  
++#if PLATFORM(HAIKU)
++    const bigtime_t swappedAt = traceTiming ? system_time() : 0;
++#endif
      m_surface->didRenderFrame(targetContents);
++#if PLATFORM(HAIKU)
++    const bigtime_t readAt = traceTiming ? system_time() : 0;
++#endif
      m_surface->sendFrame();
 +#if PLATFORM(HAIKU)
 +    if (traceTiming)
-+        std::fprintf(stderr, "Summit compositor timing: pid=%d at=%lld async=%d update=%d surface=%.1f flush=%.1f paint=%.1f send=%.1f total=%.1f\n",
++        std::fprintf(stderr, "Summit compositor timing: pid=%d at=%lld async=%d update=%d surface=%.1f flush=%.1f paint=%.1f send=%.1f total=%.1f tiles=%u newTextures=%u tileMpx=%.2f paintWait=%.1f texture=%.1f upload=%.1f swap=%.1f read=%.1f ipc=%.1f deferred=%d\n",
 +            static_cast<int>(getpid()), static_cast<long long>(startedAt), reasons.contains(CompositionReason::AsyncScrolling),
 +            reasons.contains(CompositionReason::RenderingUpdate), (surfaceAt - startedAt) / 1000.0,
 +            (flushedAt - surfaceAt) / 1000.0, (paintedAt - flushedAt) / 1000.0,
-+            (system_time() - paintedAt) / 1000.0, (system_time() - startedAt) / 1000.0);
++            (system_time() - paintedAt) / 1000.0, (system_time() - startedAt) / 1000.0,
++            tileUpdates.tiles, tileUpdates.newTextures, tileUpdates.megapixels, tileUpdates.paintWaitMs, tileUpdates.textureMs, tileUpdates.uploadMs,
++            (swappedAt - paintedAt) / 1000.0, (readAt - swappedAt) / 1000.0, (system_time() - readAt) / 1000.0, deferredUploads);
++    // The tiles that were left over are uploaded by the compositions that
++    // follow, which this asks for in case nothing else does.
++    if (deferredUploads)
++        requestComposition(CompositionReason::Animation);
 +#endif
  
      RunLoop::mainSingleton().dispatch([this, protectedThis = Ref { *this }] {
          if (m_layerTreeHost)
-@@ -656,6 +792,13 @@ void ThreadedCompositor::requestComposition(CompositionReason reason)
+@@ -656,6 +824,13 @@ void ThreadedCompositor::requestComposition(CompositionReason reason)
  {
      Locker locker { m_state.lock };
      m_state.reasons.add(reason);
@@ -93370,7 +93758,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..83a7fe806cfbb58cd1a92256964863b7
      scheduleUpdateLocked();
  }
  
-@@ -726,6 +869,20 @@ void ThreadedCompositor::frameComplete()
+@@ -726,6 +901,20 @@ void ThreadedCompositor::frameComplete()
      }
  }
  

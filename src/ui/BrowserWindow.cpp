@@ -1654,28 +1654,58 @@ void BrowserWindow::DispatchMessage(BMessage* message, BHandler* handler)
     }();
     if (traceLag && message && message->what == B_MOUSE_MOVED) {
         // Also the gaps between consecutive moves as input_server stamped
-        // them: a moving mouse reports every 8-16 ms, so a gap of 40-400 ms
-        // in the middle of a motion is the device or its link stalling,
-        // before the browser ever sees the event.
-        static bigtime_t bucketStart = 0, sum = 0, worst = 0, lastWhen = 0, worstGap = 0;
-        static int count = 0, over30 = 0, over100 = 0, stalls = 0;
+        // them. A moving mouse reports every 8-16 ms; a gap of 40-400 ms is
+        // either the hand pausing or the device's link stalling. They are
+        // told apart by the motion around the gap: a hand that pauses slows
+        // down first and starts again slowly, a stalled link loses the
+        // reports of a pointer in full motion, so the pointer was moving
+        // fast before the gap and jumps across it ("in motion"), and reports
+        // the link held back arrive together right after it ("bunched").
+        static bigtime_t bucketStart = 0, sum = 0, worst = 0, lastWhen = 0, worstGap = 0, worstMotionGap = 0;
+        static int count = 0, over30 = 0, over100 = 0, stalls = 0, motionStalls = 0, bunched = 0;
+        static float lastX = 0, lastY = 0, lastStep = 0, stepBefore = 0, worstJump = 0;
+        static bool afterGap = false;
         const bigtime_t now = system_time();
         bigtime_t when = 0;
-        if (message->FindInt64("when", &when) == B_OK && when > 0 && when <= now) {
+        BPoint where;
+        if (message->FindInt64("when", &when) == B_OK && when > 0 && when <= now
+            && message->FindPoint("screen_where", &where) == B_OK) {
             const bigtime_t lag = now - when;
             if (!bucketStart) bucketStart = now;
             ++count; sum += lag; worst = std::max(worst, lag);
             if (lag > 30000) ++over30;
             if (lag > 100000) ++over100;
+            const float step = lastWhen ? std::hypot(where.x - lastX, where.y - lastY) : 0;
             if (lastWhen) {
                 const bigtime_t gap = when - lastWhen;
-                if (gap > 40000 && gap <= 400000) { ++stalls; worstGap = std::max(worstGap, gap); }
+                if (gap > 40000 && gap <= 400000) {
+                    ++stalls; worstGap = std::max(worstGap, gap);
+                    // Two reports of at least 4 px each before the gap and
+                    // at least 12 px across it: the pointer did not stop.
+                    if (lastStep >= 4 && stepBefore >= 4 && step >= 12) {
+                        ++motionStalls;
+                        worstMotionGap = std::max(worstMotionGap, gap);
+                        worstJump = std::max(worstJump, step);
+                    }
+                    afterGap = true;
+                } else if (afterGap && gap < 3000)
+                    ++bunched;
+                else
+                    afterGap = false;
             }
+            stepBefore = lastStep; lastStep = step;
+            lastX = where.x; lastY = where.y;
             lastWhen = when;
             if (now - bucketStart >= 1000000) {
-                std::fprintf(stderr, "Summit input lag: %d moves, mean %.1f ms, max %.1f ms, over 30 ms %d, over 100 ms %d; source gaps 40-400 ms: %d, worst %.0f ms\n",
-                    count, sum / 1000.0 / count, worst / 1000.0, over30, over100, stalls, worstGap / 1000.0);
-                bucketStart = now; sum = worst = worstGap = 0; count = over30 = over100 = stalls = 0;
+                char clock[16] = "";
+                const time_t wall = time(nullptr);
+                struct tm local {};
+                if (localtime_r(&wall, &local)) std::strftime(clock, sizeof(clock), "%H:%M:%S", &local);
+                std::fprintf(stderr, "Summit input lag: %s %d moves, mean %.1f ms, max %.1f ms, over 30 ms %d, over 100 ms %d; source gaps 40-400 ms: %d, worst %.0f ms; in motion %d, worst %.0f ms, jump %.0f px, bunched after %d\n",
+                    clock, count, sum / 1000.0 / count, worst / 1000.0, over30, over100, stalls, worstGap / 1000.0,
+                    motionStalls, worstMotionGap / 1000.0, worstJump, bunched);
+                bucketStart = now; sum = worst = worstGap = worstMotionGap = 0; worstJump = 0;
+                count = over30 = over100 = stalls = motionStalls = bunched = 0;
             }
         }
     }

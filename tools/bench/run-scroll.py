@@ -24,6 +24,7 @@ import argparse
 import json
 import pathlib
 import re
+import shlex
 import signal
 import statistics
 import subprocess
@@ -375,6 +376,8 @@ def main():
              'the report lands in profile.txt. Sampling slows the machine: do not compare its frame rates with unprofiled runs')
     parser.add_argument('--system-profile-callers', action='store_true',
         help='with --system-profile: count a sample for every function on the stack (inclusive times)')
+    parser.add_argument('--profile-template', default='', metavar='GUEST_DIR',
+        help='start from a copy of this profile directory on the guest (a dismissed consent banner, a signed-in site) instead of an empty one')
     parser.add_argument('--no-screenshots', action='store_true',
         help='skip the before and after screenshots, so the burst starts --settle seconds after navigation')
     parser.add_argument('--keep-sidebar', action='store_true')
@@ -419,6 +422,8 @@ def main():
     remote_log = f'{guest_dir}/browser.log'
     team = group = None
     try:
+        if args.profile_template:
+            guest.ssh(f'mkdir -p {guest_dir} && cp -a {shlex.quote(args.profile_template)} {guest_dir}/profile')
         group = guest.launch(args.bundle, f'{guest_dir}/profile', 'summit:home', remote_log, extra_env)
         run['group'] = group
         save()
