@@ -21121,10 +21121,72 @@ index d66256f0fd3205d448ed4eef2839dafe51c055d6..2f24e4e8428ef2f72eef052599febc9c
  
      enum class PaintingState {
 diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/GraphicsLayerCoordinated.cpp b/Source/WebCore/platform/graphics/texmap/coordinated/GraphicsLayerCoordinated.cpp
-index cb8dc9067767652f427ad441e5da28a25aa05b82..9c92d100b6d61ddaf0a3a7d397d50bf66dbca574 100644
+index cb8dc9067767652f427ad441e5da28a25aa05b82..55eb528f99d9e79220dfd5a44e3b0d0b7b429d17 100644
 --- a/Source/WebCore/platform/graphics/texmap/coordinated/GraphicsLayerCoordinated.cpp
 +++ b/Source/WebCore/platform/graphics/texmap/coordinated/GraphicsLayerCoordinated.cpp
-@@ -403,7 +403,7 @@ void GraphicsLayerCoordinated::setContentsNeedsDisplayInRect(const FloatRect& re
+@@ -102,10 +102,50 @@ std::optional<PlatformLayerIdentifier> GraphicsLayerCoordinated::primaryLayerID(
+     return m_platformLayer->id();
+ }
+ 
++#if PLATFORM(HAIKU)
++// SUMMIT_FULL_REPAINT_TRACE=2: who asks for a layer of two megapixels and more to be painted again whole.
++static void traceWholeLayerRepaintHaiku(const GraphicsLayerCoordinated& layer, const FloatSize& size, const char* how)
++{
++    static const bool enabled = [] {
++        const char* value = getenv("SUMMIT_FULL_REPAINT_TRACE");
++        return value && value[0] == '2' && !value[1];
++    }();
++    if (!enabled || size.width() * size.height() < 2e6f)
++        return;
++    auto name = layer.name().utf8();
++    fprintf(stderr, "Summit full repaint: %s of layer %s %.0fx%.0f, asked by:\n", how, name.data() ? reinterpret_cast<const char*>(name.data()) : "", size.width(), size.height());
++    WTFReportBacktraceWithPrefix("    ");
++}
++#endif
++
++#if PLATFORM(HAIKU)
++bool GraphicsLayerCoordinated::shouldRepaintOnSizeChange() const
++{
++    // A layer that changes its size was painted again whole. A page that
++    // grows while it loads, by an entry of a list at a time, had its root
++    // layer painted again with each: 124 tiles, three times a second, under
++    // a video. The layer's content is in tiles that stay where they are.
++    // The backing store paints the tiles at the edge whose extent changes
++    // and the ones that are new, and renderers ask for what they changed,
++    // as they do for the tiled layers of the Core Animation port, which do
++    // not repaint on a change of size either.
++    // SUMMIT_REPAINT_ON_RESIZE=1 paints the whole layer again.
++    static const bool repaints = [] {
++        const char* value = getenv("SUMMIT_REPAINT_ON_RESIZE");
++        return value && value[0] == '1' && !value[1];
++    }();
++    return repaints && GraphicsLayer::shouldRepaintOnSizeChange();
++}
++#endif
++
+ void GraphicsLayerCoordinated::setNeedsDisplay()
+ {
+     if (!m_drawsContent || !m_contentsVisible || m_size.isEmpty())
+         return;
++#if PLATFORM(HAIKU)
++    if (!m_dirtyRegion || m_dirtyRegion->mode() != Damage::Mode::Full)
++        traceWholeLayerRepaintHaiku(*this, m_size, "setNeedsDisplay()");
++#endif
+ 
+     if (m_dirtyRegion) {
+         if (m_dirtyRegion->mode() == Damage::Mode::Full)
+@@ -133,6 +173,10 @@ void GraphicsLayerCoordinated::setNeedsDisplayInRect(const FloatRect& initialRec
+ 
+     if (rect.isEmpty())
+         return;
++#if PLATFORM(HAIKU)
++    if (rect.width() * rect.height() >= 0.8f * m_size.width() * m_size.height())
++        traceWholeLayerRepaintHaiku(*this, m_size, "setNeedsDisplayInRect() with most");
++#endif
+ 
+     addRepaintRect(rect);
+ 
+@@ -403,7 +447,7 @@ void GraphicsLayerCoordinated::setContentsNeedsDisplayInRect(const FloatRect& re
      noteLayerPropertyChanged(Change::ContentsBufferNeedsDisplay, ScheduleFlush::Yes);
  }
  
@@ -21134,7 +21196,7 @@ index cb8dc9067767652f427ad441e5da28a25aa05b82..9c92d100b6d61ddaf0a3a7d397d50bf6
  {
      // Never try to get or set the proxy on a player that doesn't support accelerated rendering (null media player).
 diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/GraphicsLayerCoordinated.h b/Source/WebCore/platform/graphics/texmap/coordinated/GraphicsLayerCoordinated.h
-index a3c1107d04a703e195e4439bf26baf1e616d6f4d..a52e861395bf157dd82e724c3e5e34a267577a09 100644
+index a3c1107d04a703e195e4439bf26baf1e616d6f4d..6c8c438282004c6b0b24873dd8c0e7db76a6da43 100644
 --- a/Source/WebCore/platform/graphics/texmap/coordinated/GraphicsLayerCoordinated.h
 +++ b/Source/WebCore/platform/graphics/texmap/coordinated/GraphicsLayerCoordinated.h
 @@ -84,7 +84,7 @@ private:
@@ -21146,6 +21208,16 @@ index a3c1107d04a703e195e4439bf26baf1e616d6f4d..a52e861395bf157dd82e724c3e5e34a2
      void setContentsToMediaPlayer(MediaPlayer*, ContentsLayerPurpose) override;
  #endif
      void setContentsDisplayDelegate(RefPtr<GraphicsLayerContentsDisplayDelegate>&&, ContentsLayerPurpose) override;
+@@ -129,6 +129,9 @@ private:
+     Vector<GraphicsLayer::AcceleratedAnimationForTesting> acceleratedAnimationsForTesting() const override;
+ 
+     void setNeedsDisplay() override;
++#if PLATFORM(HAIKU)
++    bool shouldRepaintOnSizeChange() const override;
++#endif
+     void setNeedsDisplayInRect(const FloatRect&, ShouldClipToLayer = ShouldClipToLayer::Clip) override;
+ 
+     FloatSize pixelAlignmentOffset() const override { return m_pixelAlignmentOffset; }
 diff --git a/Source/WebCore/platform/graphics/transforms/AffineTransform.h b/Source/WebCore/platform/graphics/transforms/AffineTransform.h
 index 3ae8339850008d049df5f38d9d53a1c776827c67..d901f787833f48b776c9c77e78f914df8496f8fd 100644
 --- a/Source/WebCore/platform/graphics/transforms/AffineTransform.h
@@ -33310,10 +33382,20 @@ index 055a809ee5730e1b12c6d48ed697c7335135dfca..0fc5c850285d8e4f73240c0bdbb96bb4
              if (Style::hasEntirelyFixedBackground(oldStyle->backgroundLayers()) != Style::hasEntirelyFixedBackground(newStyle.backgroundLayers()))
                  view().compositor().rootLayerConfigurationChanged();
 diff --git a/Source/WebCore/rendering/RenderElement.cpp b/Source/WebCore/rendering/RenderElement.cpp
-index b26360017f62da5e5b84a480a480dabf428f16b3..5e062dce9d5e192f619b582034d928cb5ce8af00 100644
+index b26360017f62da5e5b84a480a480dabf428f16b3..3db0279b08cdef613dcd16b9d1e828bc2067ea00 100644
 --- a/Source/WebCore/rendering/RenderElement.cpp
 +++ b/Source/WebCore/rendering/RenderElement.cpp
-@@ -114,7 +114,9 @@
+@@ -43,6 +43,9 @@
+ #include "HTMLHtmlElement.h"
+ #include "HTMLImageElement.h"
+ #include "HTMLNames.h"
++#if PLATFORM(HAIKU)
++#include <wtf/text/MakeString.h>
++#endif
+ #include "HTMLTableCellElement.h"
+ #include "HTMLTableElement.h"
+ #include "InlineIteratorLineBox.h"
+@@ -114,7 +117,9 @@
  #include "TextAutoSizing.h"
  #include "TextManipulationController.h"
  #include "ViewTransition.h"
@@ -33323,7 +33405,73 @@ index b26360017f62da5e5b84a480a480dabf428f16b3..5e062dce9d5e192f619b582034d928cb
  #include <wtf/StackStats.h>
  #include <wtf/TZoneMallocInlines.h>
  #include <wtf/text/TextStream.h>
-@@ -2897,7 +2899,21 @@ void RenderElement::layoutIfNeeded()
+@@ -1561,30 +1566,60 @@ bool RenderElement::repaintAfterLayoutIfNeeded(SingleThreadWeakPtr<const RenderL
+         return false;
+     };
+ 
++#if PLATFORM(HAIKU)
++    const char* fullRepaintReason = "";
++#define SUMMIT_REPAINT_REASON(reason) fullRepaintReason = reason
++#else
++#define SUMMIT_REPAINT_REASON(reason)
++#endif
+     auto fullRepaint = [&]() {
+-        if (requiresFullRepaint == RequiresFullRepaint::Yes)
++        if (requiresFullRepaint == RequiresFullRepaint::Yes) {
++            SUMMIT_REPAINT_REASON("its layout asked for it");
+             return true;
++        }
+ 
+-        if (oldClippedOverflowRect.isEmpty() || newClippedOverflowRect.isEmpty())
++        if (oldClippedOverflowRect.isEmpty() || newClippedOverflowRect.isEmpty()) {
++            SUMMIT_REPAINT_REASON("it was or is empty");
+             return true;
++        }
+ 
+-        if (!oldClippedOverflowRect.intersects(newClippedOverflowRect))
++        if (!oldClippedOverflowRect.intersects(newClippedOverflowRect)) {
++            SUMMIT_REPAINT_REASON("it is elsewhere");
+             return true;
++        }
+ 
+         if (!haveOutlinesBoundsRects)
+             return false;
+ 
+         // If our outline bounds rect moved, we have to repaint everything.
+-        if (oldRects.outlineBoundsRect->location() != newRects.outlineBoundsRect->location())
++        if (oldRects.outlineBoundsRect->location() != newRects.outlineBoundsRect->location()) {
++            SUMMIT_REPAINT_REASON("it moved");
+             return true;
++        }
+ 
+         // If our outline bounds rect resized (as a proxy for a border box resize),
+         // we have to repaint if we paint content that scales with the size.
+-        if (oldRects.outlineBoundsRect->size() != newRects.outlineBoundsRect->size() && mustFullRepaintOnSizeChange(*oldRects.outlineBoundsRect, *newRects.outlineBoundsRect))
++        if (oldRects.outlineBoundsRect->size() != newRects.outlineBoundsRect->size() && mustFullRepaintOnSizeChange(*oldRects.outlineBoundsRect, *newRects.outlineBoundsRect)) {
++            SUMMIT_REPAINT_REASON("its size changed and its decorations depend on the size");
+             return true;
++        }
+ 
+         return false;
+     }();
++#undef SUMMIT_REPAINT_REASON
++#if PLATFORM(HAIKU)
++    // SUMMIT_FULL_REPAINT_TRACE=1: a renderer of a megapixel and more that is painted again whole.
++    if (fullRepaint && getenv("SUMMIT_FULL_REPAINT_TRACE")) {
++        auto larger = unionRect(oldClippedOverflowRect, newClippedOverflowRect);
++        if (larger.width().toFloat() * larger.height().toFloat() >= 1e6f) {
++            auto name = renderName();
++            auto element = this->element();
++            auto described = element ? makeString(element->tagName(), " id='"_s, element->getIdAttribute(), "' class='"_s, element->getAttribute(HTMLNames::classAttr), '\'').utf8() : CString();
++            fprintf(stderr, "Summit full repaint: %s %s %.0fx%.0f -> %.0fx%.0f because %s\n", name.characters(), described.data() ? reinterpret_cast<const char*>(described.data()) : "",
++                oldClippedOverflowRect.width().toFloat(), oldClippedOverflowRect.height().toFloat(), newClippedOverflowRect.width().toFloat(), newClippedOverflowRect.height().toFloat(), fullRepaintReason);
++        }
++    }
++#endif
+ 
+     if (!repaintContainer)
+         repaintContainer = &view();
+@@ -2897,7 +2932,21 @@ void RenderElement::layoutIfNeeded()
          clearNeedsLayoutForSkippedContent();
          return;
      }
@@ -33405,7 +33553,7 @@ index bbc577b4dc47a315d4a9125d061367fdabc0fe8f..3276570b646bc237ae9e53811052111f
      } else if (canCreateIntrinsicLogicalHeightsCacheForRowSizingFirstPass)
          m_intrinsicLogicalHeightsForRowSizingFirstPass.emplace();
 diff --git a/Source/WebCore/rendering/RenderLayerBacking.cpp b/Source/WebCore/rendering/RenderLayerBacking.cpp
-index 071b5d048426d39db36c4a83b95f58513273fd02..46e379b959606737f5d6a32bf9bc60ffe457919e 100644
+index 071b5d048426d39db36c4a83b95f58513273fd02..2e20713889ea04040d134aa2686d8ddb561dc692 100644
 --- a/Source/WebCore/rendering/RenderLayerBacking.cpp
 +++ b/Source/WebCore/rendering/RenderLayerBacking.cpp
 @@ -1182,6 +1182,10 @@ void RenderLayerBacking::updateAfterLayout(bool needsClippingUpdate, bool needsF
@@ -33419,15 +33567,20 @@ index 071b5d048426d39db36c4a83b95f58513273fd02..46e379b959606737f5d6a32bf9bc60ff
      if (needsFullRepaint && canIssueSetNeedsDisplay())
          setContentsNeedDisplay();
  }
-@@ -1890,8 +1894,13 @@ void RenderLayerBacking::updateGeometry(const RenderLayer* compositedAncestor)
+@@ -1890,8 +1894,18 @@ void RenderLayerBacking::updateGeometry(const RenderLayer* compositedAncestor)
  
      positionOverflowControlsLayers();
  
 -    if (subpixelOffsetFromRendererChanged(oldSubpixelOffsetFromRenderer, m_subpixelOffsetFromRenderer, deviceScaleFactor) && canIssueSetNeedsDisplay())
 +    if (subpixelOffsetFromRendererChanged(oldSubpixelOffsetFromRenderer, m_subpixelOffsetFromRenderer, deviceScaleFactor) && canIssueSetNeedsDisplay()) {
 +#if PLATFORM(HAIKU)
-+        if (getenv("SUMMIT_FULL_REPAINT_TRACE"))
-+            fprintf(stderr, "Summit full repaint: subpixel offset of a layer changed\n");
++        if (getenv("SUMMIT_FULL_REPAINT_TRACE")) {
++            auto name = m_owningLayer.name().utf8();
++            fprintf(stderr, "Summit full repaint: subpixel offset of %s changed from %.4f,%.4f to %.4f,%.4f (layer %.0fx%.0f)\n", name.data() ? reinterpret_cast<const char*>(name.data()) : "",
++                oldSubpixelOffsetFromRenderer.width().toFloat(), oldSubpixelOffsetFromRenderer.height().toFloat(),
++                m_subpixelOffsetFromRenderer.width().toFloat(), m_subpixelOffsetFromRenderer.height().toFloat(),
++                m_graphicsLayer->size().width(), m_graphicsLayer->size().height());
++        }
 +#endif
          setContentsNeedDisplay();
 +    }
