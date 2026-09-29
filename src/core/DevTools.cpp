@@ -1,0 +1,943 @@
+#include "DevTools.h"
+#include <nlohmann/json.hpp>
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <ctime>
+
+namespace summit::devtools {
+using nlohmann::json;
+namespace {
+// Frames of a stack that are shown, and characters of one console value.
+constexpr size_t kStackFrames = 50, kValueLength = 10000;
+
+// The protocol is read without trusting its shape: a member that is missing
+// or of another type reads as nothing.
+const json& Member(const json& object, const char* key)
+{
+    static const json nothing;
+    if (!object.is_object()) return nothing;
+    const auto found = object.find(key);
+    return found == object.end() ? nothing : *found;
+}
+std::string Text(const json& value) { return value.is_string() ? value.get<std::string>() : std::string(); }
+double Number(const json& value, double otherwise = 0) { return value.is_number() ? value.get<double>() : otherwise; }
+bool Flag(const json& value) { return value.is_boolean() && value.get<bool>(); }
+uint64_t Count(const json& value)
+{
+    const double number = Number(value);
+    return number > 0 && number < 1e18 ? static_cast<uint64_t>(number) : 0;
+}
+std::string Dump(const json& value) { return value.dump(-1, ' ', false, json::error_handler_t::replace); }
+
+char Lower(char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c + 32) : c; }
+bool LessNoCase(const std::string& a, const std::string& b)
+{
+    return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end(),
+        [](char x, char y) { return Lower(x) < Lower(y); });
+}
+
+std::vector<Header> Headers(const json& object)
+{
+    std::vector<Header> result;
+    if (!object.is_object()) return result;
+    for (auto item = object.begin(); item != object.end(); ++item)
+        result.push_back({item.key(), item.value().is_string() ? item.value().get<std::string>() : Dump(item.value())});
+    std::stable_sort(result.begin(), result.end(), [](const Header& a, const Header& b) { return LessNoCase(a.name, b.name); });
+    return result;
+}
+
+// The file of an address: its last path segment, else its host.
+std::string ShortURL(const std::string& url)
+{
+    auto text = std::string_view(url);
+    text = text.substr(0, text.find_first_of("?#"));
+    while (text.size() > 1 && text.back() == '/') text.remove_suffix(1);
+    const auto slash = text.rfind('/');
+    if (slash == std::string_view::npos || slash + 1 >= text.size()) return std::string(text);
+    return std::string(text.substr(slash + 1));
+}
+
+std::string Location(const std::string& url, int line, int column)
+{
+    if (url.empty()) return { };
+    auto result = ShortURL(url);
+    if (line > 0) {
+        result += ':' + std::to_string(line);
+        if (column > 0) result += ':' + std::to_string(column);
+    }
+    return result;
+}
+
+std::string Quoted(const std::string& text) { return Dump(json(text)); }
+
+std::string Shortened(std::string text, size_t limit)
+{
+    if (text.size() <= limit) return text;
+    // Not in the middle of a character.
+    while (limit > 0 && (static_cast<unsigned char>(text[limit]) & 0xC0) == 0x80) --limit;
+    text.resize(limit);
+    return text + "…";
+}
+
+std::string FirstLine(const std::string& text)
+{
+    const auto end = text.find('\n');
+    return end == std::string::npos ? text : text.substr(0, end) + "…";
+}
+
+std::string RenderPreview(const json& preview, int depth);
+
+// A property of a preview, whose value the protocol gives as text.
+std::string RenderProperty(const json& property, int depth)
+{
+    if (const auto& nested = Member(property, "valuePreview"); nested.is_object() && depth < 3)
+        return RenderPreview(nested, depth + 1);
+    const auto type = Text(Member(property, "type"));
+    const auto value = Text(Member(property, "value"));
+    if (type == "string") return Quoted(value);
+    if (type == "function") return "function";
+    if (type == "accessor") return "(…)";
+    if (type == "undefined") return "undefined";
+    if (type == "object" && Text(Member(property, "subtype")) == "null") return "null";
+    return value.empty() ? type : value;
+}
+
+std::string RenderPreview(const json& preview, int depth)
+{
+    const auto type = Text(Member(preview, "type"));
+    const auto subtype = Text(Member(preview, "subtype"));
+    const auto description = Text(Member(preview, "description"));
+    if (type != "object" || subtype == "null" || subtype == "node" || subtype == "regexp" || subtype == "date"
+        || subtype == "error")
+        return type == "string" ? Quoted(description) : description.empty() ? (subtype == "null" ? "null" : type) : description;
+    const bool array = subtype == "array";
+    const bool overflow = Flag(Member(preview, "overflow"));
+    std::string result;
+    if (array) {
+        if (overflow && Member(preview, "size").is_number()) result = "(" + std::to_string(Count(Member(preview, "size"))) + ") ";
+    } else if (!description.empty() && description != "Object") result = description + " ";
+    result += array ? "[" : "{";
+    bool first = true;
+    const auto separate = [&] {
+        if (!first) result += ", ";
+        first = false;
+    };
+    if (const auto& entries = Member(preview, "entries"); entries.is_array()) {
+        for (const auto& entry : entries) {
+            separate();
+            if (const auto& key = Member(entry, "key"); key.is_object()) result += RenderPreview(key, depth + 1) + " => ";
+            result += RenderPreview(Member(entry, "value"), depth + 1);
+        }
+    }
+    if (const auto& properties = Member(preview, "properties"); properties.is_array()) {
+        for (const auto& property : properties) {
+            separate();
+            if (!array) result += Text(Member(property, "name")) + ": ";
+            result += RenderProperty(property, depth);
+        }
+    }
+    if (overflow) {
+        separate();
+        result += "…";
+    }
+    result += array ? "]" : "}";
+    return result;
+}
+
+// A value as the console shows it. A string that is an argument of its own
+// is shown bare; within anything else it is quoted.
+std::string Render(const json& object, bool bare)
+{
+    const auto type = Text(Member(object, "type"));
+    const auto subtype = Text(Member(object, "subtype"));
+    const auto& value = Member(object, "value");
+    auto description = Text(Member(object, "description"));
+    if (type == "string") {
+        const auto text = value.is_string() ? value.get<std::string>() : description;
+        return bare ? text : Quoted(text);
+    }
+    if (type == "undefined") return "undefined";
+    if (type == "object" && subtype == "null") return "null";
+    if (type == "function") return Shortened(FirstLine(description.empty() ? "function" : description), 200);
+    if (type == "object" && subtype != "error" && subtype != "node" && subtype != "regexp" && subtype != "date") {
+        if (const auto& preview = Member(object, "preview"); preview.is_object()) return RenderPreview(preview, 0);
+    }
+    if (description.empty() && !value.is_null()) description = Dump(value);
+    if (description.empty()) description = Text(Member(object, "className"));
+    return description.empty() ? type : description;
+}
+
+// console.log("%s is %d", name, age): the first argument's substitutions,
+// then the arguments it did not use.
+std::string RenderArguments(const json& parameters)
+{
+    std::string result;
+    size_t next = 0;
+    const size_t count = parameters.size();
+    if (count && Text(Member(parameters[0], "type")) == "string") {
+        const auto format = Render(parameters[0], true);
+        next = 1;
+        for (size_t i = 0; i < format.size(); ++i) {
+            const char c = format[i];
+            if (c != '%' || i + 1 >= format.size()) { result += c; continue; }
+            const char kind = format[i + 1];
+            if (kind == '%') { result += '%'; ++i; continue; }
+            if (std::string_view("sdifoOc").find(kind) == std::string_view::npos || next >= count) { result += c; continue; }
+            const auto& argument = parameters[next++];
+            ++i;
+            if (kind == 'c') continue;
+            if (kind == 'd' || kind == 'i') {
+                const auto& value = Member(argument, "value");
+                if (value.is_number()) {
+                    const double number = std::trunc(value.get<double>());
+                    char buffer[32];
+                    std::snprintf(buffer, sizeof buffer, "%.0f", number);
+                    result += std::isfinite(number) ? buffer : "NaN";
+                } else result += "NaN";
+                continue;
+            }
+            result += Render(argument, kind == 's');
+        }
+    }
+    for (; next < count; ++next) {
+        if (!result.empty() || next) result += ' ';
+        result += Render(parameters[next], true);
+    }
+    return result;
+}
+
+std::string MessageText(const json& message)
+{
+    const auto type = Text(Member(message, "type"));
+    const auto& parameters = Member(message, "parameters");
+    auto text = parameters.is_array() && !parameters.empty() && type != "image"
+        ? RenderArguments(parameters) : Text(Member(message, "text"));
+    if (type == "assert") text = text.empty() ? "Assertion failed" : "Assertion failed: " + text;
+    if (type == "trace" && text.empty()) text = "console.trace()";
+    return Shortened(std::move(text), kValueLength);
+}
+
+std::string StackText(const json& stack)
+{
+    std::string result;
+    size_t frames = 0;
+    for (const json* trace = &stack; trace->is_object() && frames < kStackFrames; trace = &Member(*trace, "parentStackTrace")) {
+        const auto& callFrames = Member(*trace, "callFrames");
+        if (!callFrames.is_array()) break;
+        if (trace != &stack && !callFrames.empty()) result += "(asynchronous)\n";
+        for (const auto& frame : callFrames) {
+            if (++frames > kStackFrames) break;
+            auto name = Text(Member(frame, "functionName"));
+            if (name.empty()) name = "(anonymous)";
+            const auto url = Text(Member(frame, "url"));
+            const auto where = url.empty() ? std::string("native code")
+                : Location(url, static_cast<int>(Number(Member(frame, "lineNumber"))), static_cast<int>(Number(Member(frame, "columnNumber"))));
+            result += name + " (" + where + ")\n";
+        }
+    }
+    if (!result.empty()) result.pop_back();
+    return result;
+}
+
+Level LevelOf(const std::string& level)
+{
+    if (level == "error") return Level::Error;
+    if (level == "warning") return Level::Warning;
+    if (level == "info") return Level::Info;
+    if (level == "debug") return Level::Debug;
+    return Level::Log;
+}
+
+std::string ClockTime(double secondsSinceEpoch)
+{
+    if (secondsSinceEpoch <= 0) return { };
+    const auto whole = static_cast<std::time_t>(secondsSinceEpoch);
+    std::tm local { };
+    localtime_r(&whole, &local);
+    char buffer[32];
+    std::snprintf(buffer, sizeof buffer, "%02d:%02d:%02d.%03d", local.tm_hour, local.tm_min, local.tm_sec,
+        static_cast<int>((secondsSinceEpoch - static_cast<double>(whole)) * 1000) % 1000);
+    return buffer;
+}
+
+void ReadResponse(Request& request, const json& response)
+{
+    request.hasResponse = true;
+    request.status = static_cast<int>(Number(Member(response, "status")));
+    request.statusText = Text(Member(response, "statusText"));
+    request.mimeType = Text(Member(response, "mimeType"));
+    request.source = Text(Member(response, "source"));
+    request.responseHeaders = Headers(Member(response, "headers"));
+    // What went over the network, which has more than the page asked for.
+    if (const auto& sent = Member(response, "requestHeaders"); sent.is_object() && !sent.empty())
+        request.requestHeaders = Headers(sent);
+}
+}
+
+// Reads the protocol into the session. It is a friend so that the header
+// needs no JSON types.
+struct ProtocolReader {
+    static void RequestWillBeSent(Session& session, const std::string& target, const json& parameters)
+    {
+        const auto id = Text(Member(parameters, "requestId"));
+        if (id.empty()) return;
+        const double timestamp = Number(Member(parameters, "timestamp"));
+        std::string type = Text(Member(parameters, "type"));
+        if (const auto& redirect = Member(parameters, "redirectResponse"); redirect.is_object()) {
+            if (auto* previous = session.Find(target, id)) {
+                ReadResponse(*previous, redirect);
+                previous->finished = previous->redirected = true;
+                previous->responded = previous->ended = timestamp;
+                if (type.empty()) type = previous->type;
+                session.Changed(*previous);
+            }
+        }
+        auto& request = session.Add(target, id);
+        const auto& sent = Member(parameters, "request");
+        request.loader = Text(Member(parameters, "loaderId"));
+        request.frame = Text(Member(parameters, "frameId"));
+        request.documentURL = Text(Member(parameters, "documentURL"));
+        request.url = Text(Member(sent, "url"));
+        request.method = Text(Member(sent, "method"));
+        request.requestHeaders = Headers(Member(sent, "headers"));
+        if (const auto& body = Member(sent, "postData"); body.is_string()) {
+            request.hasRequestBody = true;
+            request.requestBody = body.get<std::string>();
+        }
+        request.type = type.empty() ? "Other" : type;
+        request.started = timestamp;
+        request.wallTime = Number(Member(parameters, "walltime"));
+        request.initiator = Initiator(Member(parameters, "initiator"));
+    }
+
+    static std::string Initiator(const json& initiator)
+    {
+        const auto type = Text(Member(initiator, "type"));
+        if (const auto& frames = Member(Member(initiator, "stackTrace"), "callFrames"); frames.is_array()) {
+            for (const auto& frame : frames) {
+                const auto url = Text(Member(frame, "url"));
+                if (!url.empty()) return Location(url, static_cast<int>(Number(Member(frame, "lineNumber"))), 0);
+            }
+        }
+        if (const auto url = Text(Member(initiator, "url")); !url.empty())
+            return Location(url, static_cast<int>(Number(Member(initiator, "lineNumber"))), 0);
+        return type == "parser" ? "document" : type;
+    }
+
+    // A request that began before the tools were opened is known from here on.
+    static Request& Known(Session& session, const std::string& target, const json& parameters)
+    {
+        const auto id = Text(Member(parameters, "requestId"));
+        if (auto* request = session.Find(target, id)) return *request;
+        auto& request = session.Add(target, id);
+        request.loader = Text(Member(parameters, "loaderId"));
+        request.frame = Text(Member(parameters, "frameId"));
+        request.url = Text(Member(Member(parameters, "response"), "url"));
+        request.started = Number(Member(parameters, "timestamp"));
+        request.type = "Other";
+        return request;
+    }
+
+    static void ResponseReceived(Session& session, const std::string& target, const json& parameters)
+    {
+        if (Text(Member(parameters, "requestId")).empty()) return;
+        auto& request = Known(session, target, parameters);
+        ReadResponse(request, Member(parameters, "response"));
+        if (const auto type = Text(Member(parameters, "type")); !type.empty()) request.type = type;
+        request.responded = Number(Member(parameters, "timestamp"));
+        session.Changed(request);
+    }
+
+    static void DataReceived(Session& session, const std::string& target, const json& parameters)
+    {
+        auto* request = session.Find(target, Text(Member(parameters, "requestId")));
+        if (!request) return;
+        request->size += Count(Member(parameters, "dataLength"));
+        request->transferred += Count(Member(parameters, "encodedDataLength"));
+        session.Changed(*request);
+    }
+
+    static void LoadingFinished(Session& session, const std::string& target, const json& parameters)
+    {
+        auto* request = session.Find(target, Text(Member(parameters, "requestId")));
+        if (!request) return;
+        request->finished = true;
+        request->ended = Number(Member(parameters, "timestamp"));
+        const auto& metrics = Member(parameters, "metrics");
+        if (const auto& sent = Member(metrics, "requestHeaders"); sent.is_object() && !sent.empty())
+            request->requestHeaders = Headers(sent);
+        if (const auto protocol = Text(Member(metrics, "protocol")); !protocol.empty()) request->protocol = protocol;
+        if (const auto address = Text(Member(metrics, "remoteAddress")); !address.empty()) request->remoteAddress = address;
+        if (Member(metrics, "responseBodyBytesReceived").is_number())
+            request->transferred = Count(Member(metrics, "responseBodyBytesReceived")) + Count(Member(metrics, "responseHeaderBytesReceived"));
+        if (const auto decoded = Count(Member(metrics, "responseBodyDecodedSize"))) request->size = decoded;
+        session.Changed(*request);
+        if ((request->type == "XHR" || request->type == "Fetch" || request->type == "Document")
+            && request->size <= Session::kEagerBody && !request->redirected)
+            session.RequestBody(request->serial);
+    }
+
+    static void LoadingFailed(Session& session, const std::string& target, const json& parameters)
+    {
+        auto* request = session.Find(target, Text(Member(parameters, "requestId")));
+        if (!request) return;
+        request->failed = true;
+        request->canceled = Flag(Member(parameters, "canceled"));
+        request->error = Text(Member(parameters, "errorText"));
+        request->ended = Number(Member(parameters, "timestamp"));
+        session.Changed(*request);
+    }
+
+    static void ServedFromMemoryCache(Session& session, const std::string& target, const json& parameters)
+    {
+        if (Text(Member(parameters, "requestId")).empty()) return;
+        auto& request = session.Add(target, Text(Member(parameters, "requestId")));
+        const auto& resource = Member(parameters, "resource");
+        request.loader = Text(Member(parameters, "loaderId"));
+        request.frame = Text(Member(parameters, "frameId"));
+        request.documentURL = Text(Member(parameters, "documentURL"));
+        request.url = Text(Member(resource, "url"));
+        request.method = "GET";
+        request.type = Text(Member(resource, "type"));
+        if (request.type.empty()) request.type = "Other";
+        request.initiator = Initiator(Member(parameters, "initiator"));
+        request.started = request.responded = request.ended = Number(Member(parameters, "timestamp"));
+        if (const auto& response = Member(resource, "response"); response.is_object()) ReadResponse(request, response);
+        request.source = "memory-cache";
+        request.size = Count(Member(resource, "bodySize"));
+        request.finished = true;
+    }
+
+    static void MessageAdded(Session& session, const json& message)
+    {
+        const auto type = Text(Member(message, "type"));
+        if (type == "endGroup") {
+            session.fGroupDepth = std::max(0, session.fGroupDepth - 1);
+            return;
+        }
+        auto text = MessageText(message);
+        if (session.fGroupDepth > 0) {
+            // Members of a console.group() stand in from its title.
+            const std::string indent(static_cast<size_t>(std::min(session.fGroupDepth, 8)) * 2, ' ');
+            std::string indented = indent;
+            for (const char c : text) {
+                indented += c;
+                if (c == '\n') indented += indent;
+            }
+            text = std::move(indented);
+        }
+        const auto level = LevelOf(Text(Member(message, "level")));
+        auto& entry = session.AddEntry(EntryKind::Message, level, std::move(text));
+        entry.source = Text(Member(message, "source"));
+        entry.url = Text(Member(message, "url"));
+        entry.line = static_cast<int>(Number(Member(message, "line")));
+        entry.column = static_cast<int>(Number(Member(message, "column")));
+        entry.repeat = std::max(1, static_cast<int>(Number(Member(message, "repeatCount"), 1)));
+        entry.time = Number(Member(message, "timestamp"));
+        if (level == Level::Error || level == Level::Warning || type == "trace" || type == "assert")
+            entry.stack = StackText(Member(message, "stackTrace"));
+        if (entry.url.empty()) {
+            // A message of a script has its place in the first frame.
+            if (const auto& frames = Member(Member(message, "stackTrace"), "callFrames"); frames.is_array() && !frames.empty()) {
+                entry.url = Text(Member(frames[0], "url"));
+                entry.line = static_cast<int>(Number(Member(frames[0], "lineNumber")));
+                entry.column = static_cast<int>(Number(Member(frames[0], "columnNumber")));
+            }
+        }
+        if (type == "startGroup" || type == "startGroupCollapsed") ++session.fGroupDepth;
+    }
+
+    static void Answered(Session& session, const Session::Pending& pending, const json& message)
+    {
+        const auto& result = Member(message, "result");
+        const auto error = Text(Member(Member(message, "error"), "message"));
+        if (pending.kind == Session::Pending::Body) {
+            auto* request = session.Find(pending.serial);
+            if (!request || request->bodyState != BodyState::Waiting) return;
+            const auto& body = Member(result, "body");
+            if (!body.is_string()) {
+                request->bodyState = BodyState::Failed;
+                request->bodyError = error.empty() ? "The page gave no content for this request." : error;
+            } else if (Flag(Member(result, "base64Encoded"))) {
+                if (DecodeBase64(body.get_ref<const std::string&>(), request->body)) request->bodyState = BodyState::Loaded;
+                else {
+                    request->bodyState = BodyState::Failed;
+                    request->bodyError = "The content could not be decoded.";
+                }
+            } else {
+                request->body = body.get<std::string>();
+                request->bodyState = BodyState::Loaded;
+            }
+            if (request->bodyState == BodyState::Loaded) {
+                session.fBodyBytes += request->body.size();
+                session.ReleaseBodies();
+            }
+            session.BodyChanged(*request);
+        } else if (pending.kind == Session::Pending::Evaluation) {
+            if (!error.empty()) {
+                session.AddEntry(EntryKind::Result, Level::Error, error);
+                return;
+            }
+            const bool thrown = Flag(Member(result, "wasThrown"));
+            session.AddEntry(EntryKind::Result, thrown ? Level::Error : Level::Log,
+                Shortened(Render(Member(result, "result"), false), kValueLength));
+        }
+    }
+};
+
+std::string Request::Name() const
+{
+    if (url.compare(0, 5, "data:") == 0) return Shortened(url, 48);
+    auto text = std::string_view(url);
+    text = text.substr(0, text.find('#'));
+    const auto query = text.find('?');
+    auto path = text.substr(0, query);
+    const auto scheme = path.find("://");
+    const auto hostStart = scheme == std::string_view::npos ? 0 : scheme + 3;
+    while (path.size() > hostStart && path.back() == '/') path.remove_suffix(1);
+    const auto slash = path.rfind('/');
+    std::string name(slash == std::string_view::npos || slash < hostStart ? path.substr(hostStart) : path.substr(slash + 1));
+    if (query != std::string_view::npos) name += text.substr(query);
+    return name.empty() ? url : name;
+}
+
+std::string Request::Host() const
+{
+    const auto scheme = url.find("://");
+    if (scheme == std::string::npos) return { };
+    const auto start = scheme + 3;
+    auto end = url.find_first_of("/?#", start);
+    if (end == std::string::npos) end = url.size();
+    auto host = url.substr(start, end - start);
+    if (const auto user = host.rfind('@'); user != std::string::npos) host.erase(0, user + 1);
+    return host;
+}
+
+std::string Request::StatusLabel() const
+{
+    if (failed) return canceled ? "(canceled)" : "(failed)";
+    if (hasResponse && status > 0) return std::to_string(status);
+    if (finished) return source == "memory-cache" ? "(cached)" : "(done)";
+    return "(pending)";
+}
+
+std::string ConsoleEntry::Location() const { return devtools::Location(url, line, column); }
+
+bool LevelFilter::Shows(const ConsoleEntry& entry) const
+{
+    if (entry.kind != EntryKind::Message) return true;
+    switch (entry.level) {
+        case Level::Error: return errors;
+        case Level::Warning: return warnings;
+        case Level::Debug: return debug;
+        default: return info;
+    }
+}
+
+void StyledText::Add(std::string_view part, TextStyle style)
+{
+    if (part.empty()) return;
+    if (style != TextStyle::Plain) runs.push_back({text.size(), part.size(), style});
+    text += part;
+}
+
+void Session::Start()
+{
+    // A page that moves to another process starts loading in it at once;
+    // paused, it waits until its requests are being recorded.
+    Send("Target.setPauseOnStart", "{\"pauseOnStart\":true}");
+}
+
+void Session::Send(const std::string& method, const std::string& parametersJSON)
+{
+    fOutgoing.push_back("{\"id\":" + std::to_string(fNextCommand++) + ",\"method\":" + Quoted(method)
+        + ",\"params\":" + parametersJSON + "}");
+}
+
+uint64_t Session::SendToTarget(const std::string& target, const std::string& method, const std::string& parametersJSON,
+    Pending::Kind kind, uint64_t serial)
+{
+    const auto id = fNextCommand++;
+    const auto inner = "{\"id\":" + std::to_string(id) + ",\"method\":" + Quoted(method) + ",\"params\":" + parametersJSON + "}";
+    if (kind != Pending::Other) fPending[id] = {kind, serial};
+    Send("Target.sendMessageToTarget", "{\"targetId\":" + Quoted(target) + ",\"message\":" + Quoted(inner) + "}");
+    return id;
+}
+
+void Session::Receive(std::string_view text)
+{
+    const auto message = json::parse(text, nullptr, false);
+    if (!message.is_object()) return;
+    const auto method = Text(Member(message, "method"));
+    const auto& parameters = Member(message, "params");
+    if (method == "Target.dispatchMessageFromTarget")
+        FromTarget(Text(Member(parameters, "targetId")), Text(Member(parameters, "message")));
+    else if (method == "Target.targetCreated") {
+        const auto& info = Member(parameters, "targetInfo");
+        const auto target = Text(Member(info, "targetId"));
+        if (target.empty()) return;
+        if (Text(Member(info, "type")) == "page")
+            TargetCreated(target, Flag(Member(info, "isProvisional")), Flag(Member(info, "isPaused")));
+        else if (Flag(Member(info, "isPaused")))
+            Send("Target.resume", "{\"targetId\":" + Quoted(target) + "}");
+    } else if (method == "Target.targetDestroyed")
+        TargetDestroyed(Text(Member(parameters, "targetId")));
+    else if (method == "Target.didCommitProvisionalTarget")
+        TargetCommitted(Text(Member(parameters, "oldTargetId")), Text(Member(parameters, "newTargetId")));
+}
+
+void Session::TargetCreated(const std::string& target, bool provisional, bool paused)
+{
+    fTargets[target] = provisional;
+    if (!provisional) fPageTarget = target;
+    SendToTarget(target, "Page.enable", "{}");
+    SendToTarget(target, "Network.enable", "{}");
+    SendToTarget(target, "Console.enable", "{}");
+    if (fPreserveRequests) SendToTarget(target, "Network.setClearResourceDataOnNavigate", "{\"clearResourceDataOnNavigate\":false}");
+    if (paused) Send("Target.resume", "{\"targetId\":" + Quoted(target) + "}");
+}
+
+void Session::TargetDestroyed(const std::string& target)
+{
+    fTargets.erase(target);
+    if (fPageTarget == target) fPageTarget.clear();
+    for (auto& request : fRequests) {
+        if (request.target != target) continue;
+        // What the page had not finished, it never will.
+        if (request.Pending()) {
+            request.failed = request.canceled = true;
+            Changed(request);
+        }
+        if (request.bodyState == BodyState::Waiting) {
+            request.bodyState = BodyState::Failed;
+            request.bodyError = "The page that made this request is gone.";
+            BodyChanged(request);
+        }
+    }
+    for (auto item = fPending.begin(); item != fPending.end();) {
+        const auto* request = item->second.kind == Pending::Body ? FindRequest(item->second.serial) : nullptr;
+        item = request && request->bodyState != BodyState::Waiting ? fPending.erase(item) : std::next(item);
+    }
+}
+
+void Session::TargetCommitted(const std::string& previous, const std::string& target)
+{
+    fTargets[target] = false;
+    fPageTarget = target;
+    if (previous == target) return;
+    // The page is now another process's: a navigation, seen from here.
+    if (!fPreserveRequests) {
+        const auto before = fRequests.size();
+        Remove([&](const Request& request) { return request.target != target; });
+        if (fRequests.size() != before) fChanges.requestsReset = true;
+    }
+    if (!fPreserveConsole && !fEntries.empty()) {
+        fEntries.clear();
+        fChanges.consoleReset = true;
+        fChanges.consoleAdded = 0;
+    }
+    fGroupDepth = 0;
+}
+
+void Session::FromTarget(const std::string& target, std::string_view text)
+{
+    const auto message = json::parse(text, nullptr, false);
+    if (!message.is_object()) return;
+    if (const auto& id = Member(message, "id"); id.is_number()) {
+        const auto found = fPending.find(Count(id));
+        if (found == fPending.end()) return;
+        const auto pending = found->second;
+        fPending.erase(found);
+        ProtocolReader::Answered(*this, pending, message);
+        return;
+    }
+    const auto method = Text(Member(message, "method"));
+    const auto& parameters = Member(message, "params");
+    if (method == "Network.dataReceived") ProtocolReader::DataReceived(*this, target, parameters);
+    else if (method == "Network.requestWillBeSent") ProtocolReader::RequestWillBeSent(*this, target, parameters);
+    else if (method == "Network.responseReceived") ProtocolReader::ResponseReceived(*this, target, parameters);
+    else if (method == "Network.loadingFinished") ProtocolReader::LoadingFinished(*this, target, parameters);
+    else if (method == "Network.loadingFailed") ProtocolReader::LoadingFailed(*this, target, parameters);
+    else if (method == "Network.requestServedFromMemoryCache") ProtocolReader::ServedFromMemoryCache(*this, target, parameters);
+    else if (method == "Console.messageAdded") ProtocolReader::MessageAdded(*this, Member(parameters, "message"));
+    else if (method == "Console.messageRepeatCountUpdated") {
+        for (auto entry = fEntries.rbegin(); entry != fEntries.rend(); ++entry) {
+            if (entry->kind != EntryKind::Message) continue;
+            entry->repeat = std::max(1, static_cast<int>(Number(Member(parameters, "count"), 1)));
+            // Only the last entry can be redrawn by itself.
+            if (entry == fEntries.rbegin() && !fChanges.consoleAdded) fChanges.consoleLastChanged = true;
+            else if (entry != fEntries.rbegin() || fChanges.consoleAdded > 1) fChanges.consoleReset = true;
+            break;
+        }
+    } else if (method == "Console.messagesCleared") {
+        const auto reason = Text(Member(parameters, "reason"));
+        if (reason == "frontend") return;
+        if (fPreserveConsole) {
+            if (reason == "console-api")
+                AddEntry(EntryKind::Message, Level::Info, "console.clear() was not followed: the log is being kept.");
+            return;
+        }
+        ClearConsole();
+    } else if (method == "Page.frameNavigated") {
+        const auto& frame = Member(parameters, "frame");
+        if (Member(frame, "parentId").is_string() && !Text(Member(frame, "parentId")).empty()) return;
+        Navigated(target, Text(Member(frame, "loaderId")), Text(Member(frame, "url")));
+    }
+}
+
+void Session::Navigated(const std::string& target, const std::string& loader, const std::string& url)
+{
+    fPageURL = url;
+    fGroupDepth = 0;
+    if (fPreserveConsole) {
+        if (!fEntries.empty()) AddEntry(EntryKind::Navigation, Level::Info, "Navigated to " + url);
+    }
+    if (fPreserveRequests || loader.empty()) return;
+    // The new document's own request was made before it was the document.
+    const auto before = fRequests.size();
+    Remove([&](const Request& request) {
+        if (request.target == target) return request.loader != loader;
+        // Another process's requests are the new page's, on its way in.
+        return !fTargets.count(request.target);
+    });
+    if (fRequests.size() != before) fChanges.requestsReset = true;
+}
+
+void Session::Remove(const std::function<bool(const Request&)>& gone)
+{
+    fRequests.erase(std::remove_if(fRequests.begin(), fRequests.end(), [&](const Request& request) {
+        if (!gone(request)) return false;
+        if (const auto found = fByID.find({request.target, request.id}); found != fByID.end() && found->second == request.serial)
+            fByID.erase(found);
+        if (request.bodyState == BodyState::Loaded) fBodyBytes -= std::min<uint64_t>(fBodyBytes, request.body.size());
+        return true;
+    }), fRequests.end());
+}
+
+const Request* Session::FindRequest(uint64_t serial) const
+{
+    const auto found = std::lower_bound(fRequests.begin(), fRequests.end(), serial,
+        [](const Request& request, uint64_t wanted) { return request.serial < wanted; });
+    return found != fRequests.end() && found->serial == serial ? &*found : nullptr;
+}
+
+Request* Session::Find(uint64_t serial) { return const_cast<Request*>(FindRequest(serial)); }
+
+Request* Session::Find(const std::string& target, const std::string& id)
+{
+    const auto found = fByID.find({target, id});
+    return found == fByID.end() ? nullptr : Find(found->second);
+}
+
+Request& Session::Add(const std::string& target, const std::string& id)
+{
+    if (fRequests.size() >= kMaximumRequests) {
+        const auto& oldest = fRequests.front();
+        if (const auto found = fByID.find({oldest.target, oldest.id}); found != fByID.end() && found->second == oldest.serial)
+            fByID.erase(found);
+        if (oldest.bodyState == BodyState::Loaded) fBodyBytes -= std::min<uint64_t>(fBodyBytes, oldest.body.size());
+        fRequests.pop_front();
+        fChanges.requestsReset = true;
+    }
+    auto& request = fRequests.emplace_back();
+    request.serial = fNextSerial++;
+    request.target = target;
+    request.id = id;
+    fByID[{target, id}] = request.serial;
+    Changed(request);
+    return request;
+}
+
+void Session::Changed(Request& request)
+{
+    if (fChanges.requestsReset) return;
+    // Most changes are to the request that changed last.
+    auto& changed = fChanges.requests;
+    if (!changed.empty() && changed.back() == request.serial) return;
+    if (std::find(changed.begin(), changed.end(), request.serial) == changed.end()) changed.push_back(request.serial);
+}
+
+void Session::BodyChanged(Request& request)
+{
+    auto& bodies = fChanges.bodies;
+    if (std::find(bodies.begin(), bodies.end(), request.serial) == bodies.end()) bodies.push_back(request.serial);
+}
+
+ConsoleEntry& Session::AddEntry(EntryKind kind, Level level, std::string text)
+{
+    if (fEntries.size() >= kMaximumEntries) {
+        fEntries.pop_front();
+        fChanges.consoleReset = true;
+    }
+    auto& entry = fEntries.emplace_back();
+    entry.serial = fNextSerial++;
+    entry.kind = kind;
+    entry.level = level;
+    entry.text = std::move(text);
+    if (kind != EntryKind::Message) entry.time = static_cast<double>(std::time(nullptr));
+    if (!fChanges.consoleReset) ++fChanges.consoleAdded;
+    return entry;
+}
+
+void Session::SetPreserveRequests(bool preserve)
+{
+    if (fPreserveRequests == preserve) return;
+    fPreserveRequests = preserve;
+    // A page that keeps what it loaded can still show it after it has moved on.
+    for (const auto& [target, provisional] : fTargets)
+        SendToTarget(target, "Network.setClearResourceDataOnNavigate",
+            std::string("{\"clearResourceDataOnNavigate\":") + (preserve ? "false" : "true") + "}");
+}
+
+void Session::ClearRequests()
+{
+    fRequests.clear();
+    fByID.clear();
+    fBodyBytes = 0;
+    for (auto item = fPending.begin(); item != fPending.end();)
+        item = item->second.kind == Pending::Body ? fPending.erase(item) : std::next(item);
+    fChanges.requests.clear();
+    fChanges.bodies.clear();
+    fChanges.requestsReset = true;
+}
+
+void Session::ClearConsole()
+{
+    fEntries.clear();
+    fGroupDepth = 0;
+    fChanges.consoleReset = true;
+    fChanges.consoleAdded = 0;
+    fChanges.consoleLastChanged = false;
+}
+
+void Session::RequestBody(uint64_t serial)
+{
+    auto* request = Find(serial);
+    if (!request || request->bodyState == BodyState::Waiting || request->bodyState == BodyState::Loaded) return;
+    if (request->redirected) {
+        request->bodyState = BodyState::Failed;
+        request->bodyError = "A redirect has no content.";
+    } else if (!fTargets.count(request->target)) {
+        request->bodyState = BodyState::Failed;
+        request->bodyError = "The page that made this request is gone.";
+    } else {
+        request->bodyState = BodyState::Waiting;
+        request->bodyError.clear();
+        SendToTarget(request->target, "Network.getResponseBody", "{\"requestId\":" + Quoted(request->id) + "}",
+            Pending::Body, serial);
+        return;
+    }
+    BodyChanged(*request);
+}
+
+void Session::ReleaseBodies()
+{
+    for (auto& request : fRequests) {
+        if (fBodyBytes <= kBodyBudget) return;
+        if (request.bodyState != BodyState::Loaded) continue;
+        fBodyBytes -= std::min<uint64_t>(fBodyBytes, request.body.size());
+        request.body = { };
+        request.bodyState = BodyState::None;
+    }
+}
+
+void Session::Evaluate(const std::string& expression)
+{
+    AddEntry(EntryKind::Input, Level::Log, expression);
+    if (fPageTarget.empty()) {
+        AddEntry(EntryKind::Result, Level::Error, "The page is not there to run this.");
+        return;
+    }
+    SendToTarget(fPageTarget, "Runtime.evaluate", "{\"expression\":" + Quoted(expression)
+        + ",\"objectGroup\":\"console\",\"includeCommandLineAPI\":true,\"generatePreview\":true,\"emulateUserGesture\":true}",
+        Pending::Evaluation);
+}
+
+StyledText DescribeHeaders(const Request& request)
+{
+    StyledText out;
+    const auto title = [&](const std::string& text) {
+        if (!out.text.empty()) out.Add("\n");
+        out.Add(text, TextStyle::Title);
+        out.Add("\n");
+    };
+    const auto row = [&](std::string_view name, const std::string& value, TextStyle style = TextStyle::Plain) {
+        out.Add("  ");
+        out.Add(name, TextStyle::Name);
+        out.Add(": ", TextStyle::Name);
+        // A header of several lines stays under its name.
+        std::string text;
+        for (const char c : value) {
+            if (c == '\r') continue;
+            text += c;
+            if (c == '\n') text += "    ";
+        }
+        out.Add(text, style);
+        out.Add("\n");
+    };
+    title("General");
+    row("URL", request.url);
+    if (!request.method.empty()) row("Method", request.method);
+    if (request.failed)
+        row("Status", request.canceled ? "Canceled" : "Failed" + (request.error.empty() ? std::string() : ": " + request.error),
+            request.canceled ? TextStyle::Warning : TextStyle::Error);
+    else if (request.hasResponse) {
+        auto status = std::to_string(request.status);
+        if (!request.statusText.empty()) status += " " + request.statusText;
+        if (request.redirected) status += " (redirected)";
+        row("Status", status, request.status >= 400 ? TextStyle::Error : request.status >= 300 ? TextStyle::Warning : TextStyle::Good);
+    } else row("Status", "Pending", TextStyle::Muted);
+    if (request.failed && request.canceled && !request.error.empty()) row("Reason", request.error);
+    auto type = request.type;
+    if (!request.mimeType.empty()) type += " (" + request.mimeType + ")";
+    row("Type", type);
+    if (!request.source.empty() && request.source != "network" && request.source != "unknown") row("Served from", request.source);
+    if (!request.remoteAddress.empty()) row("Remote address", request.remoteAddress);
+    if (!request.protocol.empty()) row("Protocol", request.protocol);
+    if (!request.initiator.empty()) row("Initiator", request.initiator);
+    if (request.hasResponse || request.size) {
+        auto size = FormatBytes(request.size);
+        if (request.transferred) size += " (" + FormatBytes(request.transferred) + " transferred)";
+        row("Size", size);
+    }
+    if (const auto started = ClockTime(request.wallTime); !started.empty()) row("Started", started);
+    if (request.Duration() >= 0) {
+        auto time = FormatDuration(request.Duration());
+        if (request.responded >= request.started && request.ended > request.responded)
+            time += " (" + FormatDuration(request.responded - request.started) + " to the first byte)";
+        row("Time", time);
+    }
+    const auto headers = [&](const char* name, const std::vector<Header>& list) {
+        if (list.empty()) return;
+        title(std::string(name) + " (" + std::to_string(list.size()) + ")");
+        for (const auto& header : list) row(header.name, header.value);
+    };
+    headers("Response Headers", request.responseHeaders);
+    headers("Request Headers", request.requestHeaders);
+    while (!out.text.empty() && out.text.back() == '\n') out.text.pop_back();
+    return out;
+}
+
+std::string SummarizeRequests(const std::deque<Request>& requests, size_t shown)
+{
+    if (requests.empty()) return "No requests yet. Reload the page to record its requests.";
+    uint64_t transferred = 0, size = 0;
+    size_t failed = 0;
+    for (const auto& request : requests) {
+        transferred += request.transferred;
+        size += request.size;
+        if (request.IsError()) ++failed;
+    }
+    auto text = shown == requests.size() ? std::to_string(shown) : std::to_string(shown) + " of " + std::to_string(requests.size());
+    text += requests.size() == 1 ? " request" : " requests";
+    text += " · " + FormatBytes(transferred) + " transferred · " + FormatBytes(size) + " of resources";
+    if (failed) text += " · " + std::to_string(failed) + " failed";
+    return text;
+}
+
+std::string ConsoleMessageText(std::string_view messageJSON)
+{
+    return MessageText(json::parse(messageJSON, nullptr, false));
+}
+}
