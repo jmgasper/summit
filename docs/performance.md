@@ -3,11 +3,12 @@
 ## 30 September 2026 (night): what stops a wheel scroll while a page loads
 
 Continues the evening below, on the same machine and window. Installed at
-the end, at 03:10: `bundle-mbzrp7ac` with the private Mesa in
+the end, at 03:57: `bundle-iukouw8h` with the private Mesa in
 `/boot/home/summit-mesa/prefix-20260930`. Before it: `bundle-gqejpqgz` at
 01:20, with the first section's changes; `bundle-t4ybypkf` at 02:57, which
 showed masked layers where their masks should have hidden them (below);
-and since the evening `bundle-etksauzr` with `prefix-20260929`.
+`bundle-mbzrp7ac` at 03:10, without that fault; and since the evening
+`bundle-etksauzr` with `prefix-20260929`.
 
 ### The scrolling thread waited for the main thread, twice
 
@@ -155,6 +156,47 @@ mask mode does), and the build that replaced it was installed at 03:10.
 Tiles of mask layers are kept as before. `layers-with-effects.html`
 (backdrop filter, `mix-blend-mode`, drop shadow, blur, opacity with a
 rotation) is the same pixel for pixel with the switch on and off.
+
+### Tiles of 512 pixels
+
+What the graphics card takes to draw a frame was measured apart from the
+browser (`tools/mesa-vm/tiles-probe.cpp`, the time `glFinish()` waits after
+the draw calls, 3840x1756):
+
+| one layer over the window as | draw calls | ms |
+| --- | --- | --- |
+| tiles of 256 | 105 | 2.40 |
+| tiles of 512 | 32 | 1.86 |
+| one quad | 1 | 1.41 |
+| two layers, tiles of 256 | 210 | 4.90 |
+| two layers, tiles of 512 | 64 | 3.28 |
+| two layers, two quads | 2 | 2.36 |
+| tiles of 256, 30 of them uploaded before | 105 | 3.18 |
+| tiles of 256, 120 of them uploaded before | 105 | 5.27 |
+
+A layer over the window costs 0.95 ms to fill, each tile drawn 9 us more
+whatever its size, each tile uploaded 26 us (and 16 of the processor's). A
+fling of The Guardian draws 190 tiles and 16 Mpx a frame and uploads 24;
+with `SUMMIT_READBACK_SPLIT=1` the card takes 7.1 ms for that and the read
+of the frame 7.6.
+
+A tile of 256 pixels is 128 of the page's at 200%. At a scale of 1.5 and
+more a tile is now 512 pixels, the part of the page a tile covers at 100%
+(`SUMMIT_TILE_SCALING=0` keeps 256). Frames the window received in a fling
+of the settled Guardian, nine alternated pairs:
+
+| tiles | frames/s | gaps over 33 ms |
+| --- | --- | --- |
+| 512 | 50.4 49.3 53.0 47.3 52.5 50.9 50.3 47.2 49.6 | 5 4 4 5 4 5 4 7 4 |
+| 256 | 40.5 50.4 45.6 48.2 45.1 44.0 44.6 49.4 42.1 | 17 3 12 7 12 8 11 5 12 |
+
+YouTube from the twelfth second: 75 to 77 draw calls and 11.4 to 11.5 ms a
+composition against 130 and 11.8 to 12.2. CNN's fling (47.2 and 50.2
+against 47.7 and 47.7), Wikipedia's (56.5, 56.1, 50.4 against 55.6, 55.6,
+55.5) and The Guardian's wheel while it loads (55.9, 57.4, 54.5 against
+52.9, 57.4, 53.5) do not tell the two apart. In September's first test of
+512 the scroll was held up by what the first section of this entry
+removed.
 
 ### What is left of YouTube's start
 
