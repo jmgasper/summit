@@ -125,6 +125,26 @@ LIBRARY_PATH=/boot/home/summit-mesa/prefix/lib:/boot/system/lib <program>
 The Vulkan loader finds NVK by itself here; no `VK_ICD_FILENAMES` is needed.
 `tools/bench/*` pass this through `SUMMIT_LIBRARY_PATH_PREFIX`.
 
+**A changed Mesa goes into a directory of its own**, because a browser that
+is running has the installed one mapped. After a patch in
+`work/mesa-25.3.6`, `guest-build.sh mesa-build` relinks
+`build/mesa-zink/src/egl/libEGL_mesa.so.0.0.0` in seconds. Copy `prefix` to
+`prefix-<date>`, put the library in its `lib`, and change the path in its
+`data/glvnd/egl_vendor.d/50_mesa.json`: libglvnd finds Mesa through that
+file, which names the library by its full path, so `LIBRARY_PATH` alone
+still loads the old one. A program then needs both:
+
+```sh
+M=/boot/home/summit-mesa/prefix-20260929
+LIBRARY_PATH=$M/lib:/boot/system/lib \
+__EGL_VENDOR_LIBRARY_FILENAMES=$M/data/glvnd/egl_vendor.d/50_mesa.json <program>
+```
+
+`SUMMIT_MESA_PREFIX=prefix-20260929 bash tools/install-on-workstation.sh
+bundle-NAME` writes a launcher that does. `prefix-20260929` is Mesa with
+`mesa-25.3.6-summit-05-frame-copies.patch` (29 September 2026);
+`prefix` is the build of 27 September.
+
 Verified by `tools/mesa-vm/`'s probes:
 
 ```

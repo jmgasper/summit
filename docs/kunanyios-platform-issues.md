@@ -149,3 +149,59 @@ files dns`, the same sources as without a file) whose mtime is newer than
 a later racy `stat()` of the half-built path finds the directory, which is
 older, and returns without parsing. `tools/install-on-workstation.sh` now
 creates that file when it is missing.
+
+**29 September 2026.** The same exit takes web processes: their media
+loaders fetch with libcurl (crash report of 29 September, thread
+`libcurl.so.4 pthread`: `_kern_exit_team` from `_nsyylex`, `_nsyyparse`,
+`nsdispatch`, `getaddrinfo`). 3 of 57 runs of the build installed that
+morning ended with it. Summit now makes the first lookup on the main thread
+of the browser and of every web process, and the browser creates the file
+and keeps it newer than `/boot/system/settings` and its `network`
+directory at every start. Anything that changes those directories while a
+browser runs reopens the race, so the fix in libnetwork is still wanted;
+the OS session has one built (path assembled once, non-regular files
+refused, the scanner's fatal error returned instead of `exit()`), not yet
+installed.
+
+## app_server copies a presented frame twice, with a slow `memcpy`
+
+A browser window that presents 3840x1756 frames costs its app_server
+window thread 8 ms a frame in `memcpy` (`profile -a -k`, 29 September):
+`Painter::BitmapPainter` copies the bitmap into the back buffer row by row
+and `HWInterface::_CopyToFront` copies that to the screen. libroot's
+x86_64 `memcpy` is `rep movsb` above 2 KiB, and the 1950X has no ERMS. The
+same 27 MB take 4.1 ms with that `memcpy`, 2.3 ms with SSE2 non-temporal
+stores on one thread and 1.3 ms on four
+(`tools/mesa-vm/mesa-25.3.6-summit-05-frame-copies.patch`,
+`summit_parallel_copy.c`). Direct windows are stopped at render scales
+other than 100%, so there is no way around these copies at 200%.
+
+## NVK: a copy narrower than the image is slower per pixel
+
+`glReadPixels` through zink, which becomes `vkCmdCopyImageToBuffer`, of a
+3840x1756 BGRA8 target on the GTX 1070 (`tools/mesa-vm/video-probe.cpp`):
+
+| rectangle | megapixels | time |
+| --- | --- | --- |
+| 0,0 3840x1756 | 6.74 | 4.0 ms |
+| 0,136 3840x1498 | 5.75 | 3.2 ms |
+| 32,136 2664x1498 | 3.99 | 5.9 ms |
+| 0,0 2664x1498 | 3.99 | 5.9 ms |
+| 0,0 3776x1756 | 6.63 | 6.1 ms |
+| 0,0 1920x878 | 1.69 | 2.6 ms |
+| 0,0 3840x878 | 3.37 | 2.2 ms |
+
+Rows that span the image cost 0.56 ms a megapixel, narrower ones 1.5,
+whatever the offset. The CPU's share is the same in both (the copy out of
+the staging buffer). Summit reads full-width bands.
+
+## The GPU's performance state
+
+`NV2080_CTRL_CMD_PERF_GET_CURRENT_PSTATE` returns P0 idle, under a browser
+and under a GL probe (170 samples at 10 a second), and
+`NV2080_CTRL_CMD_PERF_BOOST` with `BOOST_TO_MAX` returns success and
+changes no timing (`tools/mesa-vm/rmperf.c`). Earlier notes that the card
+stays at its boot clocks were inferred from frame rates. The headers on
+disk have no control that returns clock frequencies, so the clocks
+themselves are unread.
+

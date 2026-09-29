@@ -1,5 +1,157 @@
 # Summit performance: Speedometer 3.1 baseline, where the time goes, stress test
 
+## 29 September 2026 (evening): video that stood still, web processes that died, scrolling at 200%
+
+Goal: the stutter the owner saw on The Guardian, YouTube that is choppy and
+slow to start, scrolling that is choppy while pages load. Measured on the
+X399 (window 1920x1020 at 200%, a 3840x1756 frame), against the build that
+was installed in the morning (`bundle-kqj5c78l`). Installed at the end:
+`bundle-etksauzr` with the private Mesa in
+`/boot/home/summit-mesa/prefix-20260929`.
+
+### Two faults behind "choppy"
+
+**The video did not move.** Two screenshots 2.5 s apart during YouTube
+playback were identical in the installed build, while the player counted 60
+presented frames a second. A video frame reaches the compositor on its own
+(`CompositionReason::VideoFrame`), and `CoordinatedPlatformLayer` hands a
+layer's damage to the compositor only in rendering updates and scrolls.
+Until 28 September TextureMapper damaged every layer with contents on every
+composition, which hid that; commit 115b935 took the special case out, and
+from then on the compositor drew each video frame and read none of it
+back. The picture changed when something else damaged its place: the
+pointer over the player, a scroll. A new contents buffer now damages its
+layer when it is committed. Checked the same way: the video's rectangle
+differs between the screenshots.
+
+**Web processes exited.** Two of the first four test loads (YouTube, The
+Guardian) ended with `input in flex scanner failed` and a crash report: the
+libnetwork resolver race that killed the network process on 28 September
+(docs/kunanyios-platform-issues.md), this time in the web process, whose
+media loaders fetch with libcurl. The page reloads when that happens. The
+network process made its first lookup on its main thread; web processes and
+the browser now do too, and the browser keeps `nsswitch.conf` newer than the
+directories above it. Over the evening 3 of 57 runs of the installed build
+ended this way and none of 161 runs with the change.
+
+### Where a scrolled frame's time went
+
+Haiku's `profile -a -k` samples every thread, kernel included
+(`run-scroll.py --system-profile 4`). During a Guardian scroll the
+compositor thread was busy, not waiting: 38% of it one `memcpy` a frame,
+the 27 MB that `glReadPixels` copies out of the driver's staging buffer. The
+window's thread in app_server spent 8 ms a frame in `memcpy` as well.
+
+| what | before | after |
+| --- | --- | --- |
+| copy of a read-back frame (27 MB) | 4.1 ms, one `memcpy` | 1.3 ms, four threads, non-temporal stores |
+| `glReadPixels` of 3840x1756, standalone | 8.0 ms | 3.8 ms |
+| of that, the RGBA target converted to BGRA on the GPU | 1.2 ms | none, the target is BGRA |
+| read of a video's 2664x1498 inside the frame | 5.9 ms | 3.2 ms, read as a band 3840 wide |
+| upload of a 256x256 tile | 42 us | 31 us |
+| draw calls for tiles outside the clip | 25 us each | none |
+| tiles uploaded in the composition that receives them | all, 3-90 ms | those it shows, and 3 ms of the others |
+| shader programs | compiled in the frame that first uses one, 8-24 ms | compiled when the compositor is created |
+
+The copy is in the private Mesa
+(`tools/mesa-vm/mesa-25.3.6-summit-05-frame-copies.patch`,
+`summit_copy_rows()`, `SUMMIT_COPY_THREADS`); the rest is in the engine, each
+with a switch: `SUMMIT_BGRA_TARGET=0`, `SUMMIT_READBACK_BANDS=0`,
+`SUMMIT_TILE_UPLOAD_BUDGET_MS=0`, `SUMMIT_WARM_SHADERS=0`.
+
+Frames the view received during the burst, two runs each, consent banner
+dismissed (below). "Wheel" is 40 notches in 2 s starting 2 s after
+navigation, "fling" 120 notches in 1.9 s on the settled page:
+
+| page, scroll | installed: frames/s, gaps over 33 ms, longest | new |
+| --- | --- | --- |
+| The Guardian, wheel | 42.4, 52.0 / 5, 6 / 419, 105 ms | 59.0, 57.5 / 0, 2 / 31, 43 ms |
+| The Guardian, fling | 41.6, 45.7 / 8, 6 / 144, 83 ms | 53.5, 51.9 / 3, 3 / 37, 56 ms |
+| CNN, wheel | 53.0, 49.9 / 9, 8 / 72, 84 ms | 56.4, 57.9 / 4, 3 / 52, 44 ms |
+| CNN, fling | 52.5, 51.9 / 7, 8 / 68, 68 ms | 56.6, 56.1 / 2, 1 / 37, 33 ms |
+| Wikipedia (Australia), wheel | 54.0, 54.4 / 6, 6 / 64, 53 ms | 57.9, 58.9 / 2, 0 / 43, 30 ms |
+| Wikipedia (Australia), fling | 45.2, 45.2 / 17, 17 / 77, 104 ms | 57.6, 56.1 / 1, 2 / 45, 96 ms |
+
+With a copy of the owner's profile (signed in, extensions running) The
+Guardian's wheel scroll is 58.4 frames/s with 0 and 1 gaps, against 51.0 and
+51.5 with 5 and 7. After the same scroll the two builds show the same
+picture on The Guardian, Wikipedia and GitHub; on CNN only the
+advertisements differ.
+
+YouTube (Big Buck Bunny, 1080p60) plays at 56-58 frames/s on screen, with
+about one gap over 33 ms every three seconds; a composition takes 13-15 ms,
+7 to 8 of them the GPU drawing the frame and 4 the read. From navigation to the
+first picture is 2.9 s in a new profile, 1.9 s of it until the page creates
+its player.
+
+### What did not pay, and what was wrong
+
+- **The GPU is not held at its boot clocks**, as this file said on 28
+  September. NVIDIA's resource manager reports P-state P0 in every sample:
+  idle, under a browser scroll, under a GL probe (170 samples), and a
+  `PERF_BOOST` to the maximum is accepted and changes no timing
+  (`tools/mesa-vm/rmperf.c`). No clock frequency was read, so this shows
+  that the explanation had no measurement behind it, not what the clocks
+  are.
+- **A fill rate of 2.7 Gpx/s**, which this session first gave the OS
+  session as the GPU's, was a division of a browser's frame time. A
+  standalone probe draws eight more layers of 4 Mpx in 1.1 ms
+  (`video-probe.cpp`). What a page costs follows its draw calls as well as
+  its pixels: the same 27 Mpx in 420 draws of 256x256 take 7.7 ms, in 4
+  draws 3.8 ms (`tiles-probe.cpp`). Tiles of 512 made no difference to The
+  Guardian's scroll.
+- **Wheel events that wait for the main thread** were taken for the cause
+  of the long gaps on BBC News. The cause was the test: 40 notches reach
+  the end of that page, and a page that has stopped scrolling presents
+  nothing. Notches in a burst now scroll without the main thread once the
+  page has let the first one through (`SUMMIT_WHEEL_BURSTS`), which is 54
+  frames/s against 29 on a test page whose main thread is busy 400 of every
+  450 ms, and no different on BBC, ABC, Ars Technica and GitHub: the
+  animation of a notch outlasts their stalls.
+- **Layers with a filter** are damaged in every composition. Damaging them
+  only when something changed takes 40 surface switches and 10 blur passes
+  out of each YouTube frame and leaves the frame rate where it was, so it
+  is off (`SUMMIT_FILTER_LAYER_DAMAGE=changed`).
+
+### Traps in the measurements
+
+- A new profile shows The Guardian's consent banner, which dims the whole
+  page: 5 ms of the GPU's time in every frame that the owner, who has
+  dismissed it, does not pay. `run-scroll.py --profile-template` starts
+  from a prepared profile (`/boot/home/summit/claude-guardian-cold`).
+- 120 notches at 16 ms scroll 21,000 pixels in two seconds. It is a fling,
+  and on most pages it ends at the bottom. Trace the wheel
+  (`SUMMIT_WHEEL_ROUTE_TRACE=1`) and discard runs with `handled=0`.
+- The player's count of presented frames says what reached the compositor,
+  not the screen.
+
+### Left to the OS
+
+app_server copies each frame twice (into its back buffer, then to the
+screen), with libroot's `memcpy`, which is `rep movsb` on a processor
+without ERMS: the 8 ms a frame above. A partial-width
+`vkCmdCopyImageToBuffer` costs 1.5 ms a megapixel against 0.56 for rows
+that span the image. Both are with the OS session, as is its fix for the
+resolver.
+
+### The pointer
+
+The launcher has recorded the owner's own sessions since the morning. In
+408 seconds with pointer motion, events reached the browser's window 1.8 ms
+after input_server stamped them on average; 24 of those seconds had one
+over 30 ms, three had one of 1.4 to 1.7 s. Opening, closing and switching
+tabs and windows through `summitctl` stalled the window's thread for at
+most 72 ms, so those three are not explained; the launcher now records
+every dispatch over 50 ms (`Summit stall:` lines).
+
+189 of the 211 seconds with 30 or more moves had a gap of 40-400 ms in the
+mouse's reports. The morning's entry below read those as the link stalling.
+They may as well be the hand: a pointer that slows, stops and starts again
+leaves the same gap. The trace now counts a gap as "in motion" only when
+the two reports before it and the one after it moved the pointer by 4, 4
+and 12 pixels or more, and counts reports that arrive within 3 ms of each
+other after a gap; nothing has been recorded with it yet.
+
 ## 29 September 2026: pointer stutter while loading The Guardian
 
 The owner saw the mouse pointer stutter while The Guardian loaded and
@@ -485,7 +637,8 @@ and present 14.2 ms (p90 19.4, max 41.8; the full 7 Mpx, since scrolling
 moves everything), flushing new tiles 3.7 ms (p90 12.4, max 48.5), and
 compositing 2.1 ms. The standalone probe reads the same 7 Mpx in 8.3 ms;
 inside a scrolling page the GPU is also compositing and taking tile
-uploads, at the boot clocks NVK leaves a GTX 1070 on. That puts 200% scrolling
+uploads, at the boot clocks NVK leaves a GTX 1070 on (an assumption; the
+GPU reported its fastest state when it was read on 29 September). That puts 200% scrolling
 at 40-55 fps on this machine until frames can reach app_server without a
 readback (or NVK can raise the clocks), both on the OS side.
 
