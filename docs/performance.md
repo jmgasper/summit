@@ -3,10 +3,11 @@
 ## 30 September 2026 (night): what stops a wheel scroll while a page loads
 
 Continues the evening below, on the same machine and window. Installed at
-the end: `bundle-t4ybypkf` with the private Mesa in
-`/boot/home/summit-mesa/prefix-20260930` (at 01:20 `bundle-gqejpqgz`, with
-the first section's changes); before them, since the evening,
-`bundle-etksauzr` with `prefix-20260929`.
+the end, at 03:10: `bundle-mbzrp7ac` with the private Mesa in
+`/boot/home/summit-mesa/prefix-20260930`. Before it: `bundle-gqejpqgz` at
+01:20, with the first section's changes; `bundle-t4ybypkf` at 02:57, which
+showed masked layers where their masks should have hidden them (below);
+and since the evening `bundle-etksauzr` with `prefix-20260929`.
 
 ### The scrolling thread waited for the main thread, twice
 
@@ -141,6 +142,19 @@ clock:
 tile, moves it to another, removes it, and paints a translucent area over
 several; the four pictures are the same pixel for pixel with the switch on
 and off. So are Wikipedia's and GitHub's after a scroll.
+
+**A mask is the exception, and the first build did not make it.** A mask
+hides what lies under its transparent pixels, so its empty tiles have to be
+drawn. Without them a layer with `mask-image` or `clip-path` showed from
+the first tile boundary on where it should have been hidden
+(`tools/bench/pages/masked-layers.html`). The pages compared before the
+change went in have no such layer in view; the fault was found 13 minutes
+after the build was installed, by going through what else draws with a
+blend function in which a transparent source changes the picture (only the
+mask mode does), and the build that replaced it was installed at 03:10.
+Tiles of mask layers are kept as before. `layers-with-effects.html`
+(backdrop filter, `mix-blend-mode`, drop shadow, blur, opacity with a
+rotation) is the same pixel for pixel with the switch on and off.
 
 ### What is left of YouTube's start
 
