@@ -20681,7 +20681,7 @@ index 8723b9e2f90788a74d1ddc536a399463921231ec..ab810081ad03545b62f47f4e8fe1b6a6
  
  } // namespace WebKit
 diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreProxy.cpp b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreProxy.cpp
-index 30f54801b8aa9b9bc83af8a929f8bdc04a2ee4d1..f68564b5f1c8b97ee543257ede6c0f4050ae2dd0 100644
+index 30f54801b8aa9b9bc83af8a929f8bdc04a2ee4d1..faf55e6b71b6ae882f5f238b26eb7627e1153d01 100644
 --- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreProxy.cpp
 +++ b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreProxy.cpp
 @@ -33,6 +33,10 @@
@@ -20734,6 +20734,32 @@ index 30f54801b8aa9b9bc83af8a929f8bdc04a2ee4d1..f68564b5f1c8b97ee543257ede6c0f40
          static constexpr int minGPUTileHeight = 256;
  
          auto gpuTileSize = [&](const IntSize& baseSize) -> IntSize {
+@@ -434,9 +455,25 @@ IntSize CoordinatedBackingStoreProxy::computeTileSize(const IntSize& viewportSiz
+             tileSize = gpuTileSize(baseSize);
+         }
+     } else {
++#if PLATFORM(HAIKU)
++        // 256 pixels are 128 of the page's at 200%: 105 tiles to a window of
++        // 3840x1756, and the graphics card takes 9 us for each tile it
++        // draws whatever its size (2.4 ms for a layer of 105 tiles, 1.9 for
++        // one of 32, 1.4 for one quad). A tile covers the same part of the
++        // page at 200% as at 100%. SUMMIT_TILE_SCALING=0 keeps 256.
++        static const bool scalesTiles = [] {
++            const char* value = getenv("SUMMIT_TILE_SCALING");
++            return !value || value[0] != '0' || value[1];
++        }();
++        const int tileScale = scalesTiles && m_contentsScale >= 1.5 ? 2 : 1;
++        tileSize = { s_defaultCPUTileSize * tileScale, s_defaultCPUTileSize * tileScale };
++
++        const int maxUntiledContentSize = 512 * tileScale;
++#else
+         tileSize = { s_defaultCPUTileSize, s_defaultCPUTileSize };
+ 
+         static constexpr int maxUntiledContentSize = 512;
++#endif
+         // If the contents width is small, increase tile size vertically.
+         if (m_contentsRect.width() < tileSize.width())
+             tileSize.setHeight(maxUntiledContentSize);
 diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreTile.cpp b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreTile.cpp
 index 3f7acfab36c398a8e7af4c55768bdef27cdac477..3c8c8e0bc1dff262f949e978e756fb219ec443b4 100644
 --- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreTile.cpp
