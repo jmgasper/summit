@@ -99,6 +99,18 @@ constexpr uint32 kBookmarkLink = 'bklk';
 constexpr uint32 kInterfaceStyle = 'istl';
 // An extension's item in a page context menu ("token").
 constexpr uint32 kExtensionMenuItem = 'exmi';
+// View › Developer Tools, for the window's current tab. Sent to an open
+// Developer Tools window it brings that window forward ("panel": "network"
+// or "console", optional). The tools tell the browser window when they close
+// (kDeveloperToolsClosed: "tab", "window") and are told the page's title
+// (kDeveloperToolsPage: "title").
+constexpr uint32 kShowDeveloperTools = 'dvtl';
+constexpr uint32 kDeveloperToolsClosed = 'dvtc';
+constexpr uint32 kDeveloperToolsPage = 'dvtp';
+// Drives a Developer Tools window as its controls do and reports what it
+// shows, for tests ("action", "argument"; the reply has "json" or "error").
+// Refused unless SUMMIT_ENABLE_INPUT_SYNTHESIS=1; see docs/developer-tools.md.
+constexpr uint32 kDeveloperToolsCommand = 'dvcm';
 // Benchmark input synthesis, refused unless SUMMIT_ENABLE_INPUT_SYNTHESIS=1.
 constexpr uint32 kSimulateScroll = 'sscr';
 constexpr uint32 kScrollBurstCompleted = 'ssco';

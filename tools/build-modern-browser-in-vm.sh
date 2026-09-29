@@ -69,6 +69,7 @@ headers = {
     'WebKitEmbedding.h': 'UIProcess/API/haiku/WebKitEmbedding.h',
     'WebKitExtensionPermission.h': 'UIProcess/API/haiku/WebKitExtensionPermission.h',
     'WebKitInfo.h': 'UIProcess/API/haiku/WebKitInfo.h',
+    'WebKitInspector.h': 'UIProcess/API/haiku/WebKitInspector.h',
     'WKBase.h': 'Shared/API/c/WKBase.h',
     'WKDeclarationSpecifiers.h': 'Shared/API/c/WKDeclarationSpecifiers.h',
     'WKBaseHaiku.h': 'Shared/API/c/haiku/WKBaseHaiku.h',

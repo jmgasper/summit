@@ -21,6 +21,15 @@
 //                                             a new browser window with one tab per URL
 //   summitctl --team ID newprivatewindow [frame=L,T,R,B] URL...   the same, private
 //   summitctl --team ID zoomin|zoomout|zoomreset   the window's current page (View menu)
+//   summitctl --team ID devtools [network|console]  View > Developer Tools for the current tab
+//   summitctl --team ID devtools-do ACTION [ARGUMENT]
+//                                             drives the current tab's open Developer Tools and
+//                                             prints what they show as JSON (docs/developer-tools.md;
+//                                             needs SUMMIT_ENABLE_INPUT_SYNTHESIS=1): state,
+//                                             panel, select, detail, format, wrap, copy,
+//                                             clear-network, preserve-network, filter-network,
+//                                             types, clear-console, preserve-console, levels,
+//                                             filter-console, evaluate
 //   summitctl --team ID closewindow           closes the window (--window N) like its close box
 //   summitctl --team ID search ENGINE          Preferences' search engine (duckduckgo, google, bing)
 //   summitctl --team ID style haiku|safari     Preferences' appearance
@@ -340,6 +349,29 @@ int main(int argc, char** argv)
         }
         std::puts("]}");
         return 0;
+    }
+    if (command == "devtools") {
+        BMessage show(summit::kShowDeveloperTools);
+        if (argument) show.AddString("panel", argument);
+        return window.SendMessage(&show, static_cast<BHandler*>(nullptr), timeout) == B_OK ? 0 : 5;
+    }
+    if (command == "devtools-do") {
+        if (!argument) return 2;
+        BMessage ask(summit::kBrowserState), state, tab;
+        if (window.SendMessage(&ask, &state, timeout, timeout) != B_OK) return 4;
+        BMessenger tools;
+        for (int32 i = 0; state.FindMessage("tab", i, &tab) == B_OK; ++i)
+            if (tab.GetInt64("id", -1) == state.GetInt64("selected", -2)) tab.FindMessenger("devtools", &tools);
+        if (!tools.IsValid()) { std::fputs("the current tab's Developer Tools are not open\n", stderr); return 5; }
+        BMessage request(summit::kDeveloperToolsCommand), reply;
+        request.AddString("action", argument);
+        if (index + 1 < argc) request.AddString("argument", argv[index + 1]);
+        status = tools.SendMessage(&request, &reply, timeout, 4 * timeout);
+        if (status == B_TIMED_OUT || status == B_WOULD_BLOCK) { std::fputs("the Developer Tools did not reply\n", stderr); return 4; }
+        if (status != B_OK) return 5;
+        if (const char* error = reply.GetString("error", nullptr)) std::fprintf(stderr, "%s\n", error);
+        std::puts(reply.GetString("json", "{}"));
+        return reply.HasString("error") ? 5 : 0;
     }
     if (command == "frame") {
         if (index + 3 >= argc) return 2;

@@ -14,8 +14,11 @@ CXXFLAGS ?= -O2 -g
 ifeq ($(SUMMIT_MODERN_WEBKIT),1)
 WEBKIT_INCLUDE_DIR ?= $(WEBKIT_PREFIX)/develop/headers
 CPPFLAGS += -I$(WEBKIT_INCLUDE_DIR) -DBUILDING_HAIKU__=1
+# The developer tools: Scintilla and Lexilla show their text, as in Kiri.
+CPPFLAGS += -I/boot/system/develop/headers/private -I/boot/system/develop/headers/scintilla -I/boot/system/develop/headers/lexilla
 CXXFLAGS += -std=c++23 -Wall -Wextra -Wno-multichar
 WEBKIT_LINK_LIBRARY = WebKit
+DEVTOOLS_LIBS = -lscintilla -llexilla -lcolumnlistview
 else
 CPPFLAGS += -I$(WEBKIT_PREFIX)/develop/headers/webkit -I$(WEBKIT_PREFIX)/develop/headers/webkit/haiku
 CXXFLAGS += -std=c++17 -Wall -Wextra -Wno-multichar
@@ -25,7 +28,7 @@ CORE = $(wildcard src/core/*.cpp) $(wildcard src/extensions/*.cpp)
 UI = $(wildcard src/ui/*.cpp) src/main.cpp
 CORE_OBJ = $(CORE:%.cpp=$(BUILD)/%.o)
 UI_OBJ = $(UI:%.cpp=$(BUILD)/%.o)
-LIBS = -L$(WEBKIT_LIBRARY_DIR) -l$(WEBKIT_LINK_LIBRARY) -lbe -lnetwork -lbnetapi -ltranslation -ltracker -lcrypto
+LIBS = -L$(WEBKIT_LIBRARY_DIR) -l$(WEBKIT_LINK_LIBRARY) -lbe -lnetwork -lbnetapi -ltranslation -ltracker -lcrypto $(DEVTOOLS_LIBS)
 .PHONY: all check clean package browser-smoke
 all: $(BUILD)/Summit $(BUILD)/resources/start.html
 $(BUILD)/Summit: $(CORE_OBJ) $(UI_OBJ) resources/Summit.rdef resources/Summit.hvif
@@ -41,8 +44,11 @@ $(BUILD)/%.o: %.cpp
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -MMD -MP -c $< -o $@
 $(BUILD)/summit_tests: $(CORE_OBJ) $(BUILD)/tests/CoreTests.o
 	$(CXX) -o $@ $^ -lcrypto
-check: $(BUILD)/summit_tests
+$(BUILD)/summit_devtools_tests: $(CORE_OBJ) $(BUILD)/tests/DevToolsTests.o
+	$(CXX) -o $@ $^ -lcrypto
+check: $(BUILD)/summit_tests $(BUILD)/summit_devtools_tests
 	$(BUILD)/summit_tests
+	$(BUILD)/summit_devtools_tests
 $(BUILD)/summit_browser_smoke: $(BUILD)/tests/BrowserSmoke.o
 	$(CXX) -o $@ $^ -lbe
 $(BUILD)/summit_browser_probe: $(BUILD)/tests/BrowserProbe.o

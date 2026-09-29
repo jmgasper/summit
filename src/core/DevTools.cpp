@@ -69,6 +69,9 @@ std::string Location(const std::string& url, int line, int column)
     return result;
 }
 
+// A frame of the engine's own code has no address, or this one.
+bool IsNative(const std::string& url) { return url.empty() || url == "[native code]"; }
+
 std::string Quoted(const std::string& text) { return Dump(json(text)); }
 
 std::string Shortened(std::string text, size_t limit)
@@ -231,7 +234,7 @@ std::string StackText(const json& stack)
             auto name = Text(Member(frame, "functionName"));
             if (name.empty()) name = "(anonymous)";
             const auto url = Text(Member(frame, "url"));
-            const auto where = url.empty() ? std::string("native code")
+            const auto where = IsNative(url) ? std::string("native code")
                 : Location(url, static_cast<int>(Number(Member(frame, "lineNumber"))), static_cast<int>(Number(Member(frame, "columnNumber"))));
             result += name + " (" + where + ")\n";
         }
@@ -316,8 +319,9 @@ struct ProtocolReader {
         const auto type = Text(Member(initiator, "type"));
         if (const auto& frames = Member(Member(initiator, "stackTrace"), "callFrames"); frames.is_array()) {
             for (const auto& frame : frames) {
+                // The first frame of a script: fetch() itself is the engine's.
                 const auto url = Text(Member(frame, "url"));
-                if (!url.empty()) return Location(url, static_cast<int>(Number(Member(frame, "lineNumber"))), 0);
+                if (!IsNative(url)) return Location(url, static_cast<int>(Number(Member(frame, "lineNumber"))), 0);
             }
         }
         if (const auto url = Text(Member(initiator, "url")); !url.empty())
@@ -439,10 +443,14 @@ struct ProtocolReader {
             entry.stack = StackText(Member(message, "stackTrace"));
         if (entry.url.empty()) {
             // A message of a script has its place in the first frame.
-            if (const auto& frames = Member(Member(message, "stackTrace"), "callFrames"); frames.is_array() && !frames.empty()) {
-                entry.url = Text(Member(frames[0], "url"));
-                entry.line = static_cast<int>(Number(Member(frames[0], "lineNumber")));
-                entry.column = static_cast<int>(Number(Member(frames[0], "columnNumber")));
+            if (const auto& frames = Member(Member(message, "stackTrace"), "callFrames"); frames.is_array()) {
+                for (const auto& frame : frames) {
+                    if (IsNative(Text(Member(frame, "url")))) continue;
+                    entry.url = Text(Member(frame, "url"));
+                    entry.line = static_cast<int>(Number(Member(frame, "lineNumber")));
+                    entry.column = static_cast<int>(Number(Member(frame, "columnNumber")));
+                    break;
+                }
             }
         }
         if (type == "startGroup" || type == "startGroupCollapsed") ++session.fGroupDepth;
@@ -665,9 +673,11 @@ void Session::FromTarget(const std::string& target, std::string_view text)
         for (auto entry = fEntries.rbegin(); entry != fEntries.rend(); ++entry) {
             if (entry->kind != EntryKind::Message) continue;
             entry->repeat = std::max(1, static_cast<int>(Number(Member(parameters, "count"), 1)));
-            // Only the last entry can be redrawn by itself.
-            if (entry == fEntries.rbegin() && !fChanges.consoleAdded) fChanges.consoleLastChanged = true;
-            else if (entry != fEntries.rbegin() || fChanges.consoleAdded > 1) fChanges.consoleReset = true;
+            // Only the last entry can be redrawn by itself; one that has
+            // not been shown yet needs no redrawing.
+            const bool last = entry == fEntries.rbegin();
+            if (last && !fChanges.consoleAdded) fChanges.consoleLastChanged = true;
+            else if (!last) fChanges.consoleReset = true;
             break;
         }
     } else if (method == "Console.messagesCleared") {

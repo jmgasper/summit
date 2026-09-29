@@ -5,6 +5,10 @@
 #include "FaviconCache.h"
 #include "Messages.h"
 #include "SharedProfile.h"
+#if SUMMIT_MODERN_WEBKIT
+#include "DevToolsWindow.h"
+#include <WebKit/WebKitInspector.h>
+#endif
 #include "core/Address.h"
 #include "core/InternalPages.h"
 #include "core/Zoom.h"
@@ -485,6 +489,10 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
     // '+' is Shift-= on most keyboards, and shortcuts match their modifiers exactly.
     AddShortcut('+', B_SHIFT_KEY, new BMessage(kZoomIn));
     AddShortcut('=', 0, new BMessage(kZoomIn));
+#if SUMMIT_MODERN_WEBKIT
+    view->AddSeparatorItem();
+    AddItem(view, "Developer Tools", kShowDeveloperTools, 'I', B_SHIFT_KEY);
+#endif
     menu->AddItem(view);
     fHistoryMenu = new BMenu("History");
     AddItem(fHistoryMenu, "Back", kBack, '[');
@@ -659,6 +667,7 @@ BrowserWindow::~BrowserWindow()
     SaveSession();
     fSaveTimer.reset();
     for (auto& tab : fTabs) {
+        CloseDeveloperTools(tab);
         tab.view->RemoveSelf();
         delete tab.view;
     }
@@ -1293,6 +1302,7 @@ void BrowserWindow::FinishCloseTab(int64 id)
 #endif
         webView->RemoveSelf();
 #if SUMMIT_MODERN_WEBKIT
+        CloseDeveloperTools(fTabs[i]);
         delete webView;
 #else
         webView->Shutdown();
@@ -2646,6 +2656,13 @@ void BrowserWindow::MessageReceived(BMessage* message)
         case kExtensionMenuItem:
             BWebKitView::PerformContextMenuExtensionItem(message->GetUInt64("token", 0));
             break;
+        case kShowDeveloperTools: ShowDeveloperTools(message->GetString("panel", nullptr)); break;
+        case kDeveloperToolsClosed: {
+            BMessenger window;
+            if (message->FindMessenger("window", &window) != B_OK) break;
+            for (auto& open : fTabs) if (open.devTools == window) open.devTools = BMessenger();
+            break;
+        }
         case kCopyText: {
             const char* text = nullptr;
             if (message->FindString("text", &text) != B_OK || !be_clipboard->Lock()) break;
@@ -2750,6 +2767,7 @@ void BrowserWindow::MessageReceived(BMessage* message)
 #if SUMMIT_MODERN_WEBKIT
                 item.AddDouble("pageZoom", page.pageZoom);
                 item.AddString("zoomKey", page.zoomKey.c_str());
+                if (page.devTools.IsValid()) item.AddMessenger("devtools", page.devTools);
                 item.AddDouble("textZoom", page.textZoom);
                 item.AddBool("loadError", !page.loadError.empty());
                 item.AddString("loadErrorText", page.loadError.c_str());
@@ -2925,6 +2943,8 @@ void BrowserWindow::ShowPageContextMenu(const BMessage& message)
         copyAddress->SetEnabled(!DisplayURL(tab->url).empty());
         menu->AddItem(copyAddress);
         edit("Select All", B_SELECT_ALL);
+        menu->AddSeparatorItem();
+        menu->AddItem(new BMenuItem("Developer Tools", new BMessage(kShowDeveloperTools)));
     }
     // Items extensions add with the menus API, under the extension's name
     // unless it has just one (as Safari shows them).
@@ -2965,6 +2985,35 @@ void BrowserWindow::ShowPageContextMenu(const BMessage& message)
     menu->SetTargetForItems(this);
     menu->SetAsyncAutoDestruct(true);
     menu->Go(tab->view->ConvertToScreen(where), true, false, true);
+}
+
+void BrowserWindow::ShowDeveloperTools(const char* panel)
+{
+    auto* tab = ActiveTab();
+    if (!tab || !tab->view || fClosingWindow || tab->closeQueued) return;
+    if (tab->devTools.IsValid()) {
+        BMessage show(kShowDeveloperTools);
+        if (panel) show.AddString("panel", panel);
+        tab->devTools.SendMessage(&show);
+        return;
+    }
+    auto* window = new DevToolsWindow(BMessenger(this), tab->id, tab->title, Frame());
+    // The window hears of the page's messages, so it is made first; it reads
+    // them only once it runs.
+    window->SetInspector(BWebKitInspectorSession::Create(*tab->view, BMessenger(window), static_cast<uint64>(tab->id)));
+    tab->devTools = BMessenger(window);
+    if (panel) {
+        BMessage show(kShowDeveloperTools);
+        show.AddString("panel", panel);
+        window->PostMessage(&show);
+    }
+    window->Show();
+}
+
+void BrowserWindow::CloseDeveloperTools(Tab& tab)
+{
+    if (tab.devTools.IsValid()) tab.devTools.SendMessage(B_QUIT_REQUESTED);
+    tab.devTools = BMessenger();
 }
 
 void BrowserWindow::SaveLinkAs(const std::string& url, const std::string& filename)
@@ -3157,8 +3206,15 @@ void BrowserWindow::WebKitStateChanged(const BMessage& message)
         tab->url = StoredURL(value);
         ApplySiteZoom(*tab);
     }
-    if (message.FindString("title", &value) == B_OK && value)
+    if (message.FindString("title", &value) == B_OK && value) {
+        const auto before = tab->title;
         tab->title = *value ? value : tab->url == "summit:home" ? "Start Page" : tab->url;
+        if (tab->title != before && tab->devTools.IsValid()) {
+            BMessage page(kDeveloperToolsPage);
+            page.AddString("title", tab->title.c_str());
+            tab->devTools.SendMessage(&page);
+        }
+    }
     const bool wasLoading = tab->loading;
     message.FindBool("loading", &tab->loading);
     if (tab->loading && !wasLoading) { tab->loadStartedAt = system_time(); tab->loadFinishedAt = 0; }

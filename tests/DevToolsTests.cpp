@@ -231,8 +231,9 @@ static void TestSession()
     Ask(session, "page-1", "0.3", "https://api.example.com/v1/items/", "L1", "Fetch", 10.4,
         {{"request", {{"url", "https://api.example.com/v1/items/"}, {"method", "POST"}, {"headers", {{"Content-Type", "application/json"}}},
             {"postData", "{\"q\":1}"}}},
-         {"initiator", {{"type", "script"}, {"stackTrace", {{"callFrames", {{{"functionName", "load"}, {"url", "https://example.com/js/app.js"},
-            {"lineNumber", 40}, {"columnNumber", 9}, {"scriptId", "1"}}}}}}}}});
+         {"initiator", {{"type", "script"}, {"stackTrace", {{"callFrames", {
+            {{"functionName", "fetch"}, {"url", "[native code]"}, {"lineNumber", 0}, {"columnNumber", 0}, {"scriptId", "0"}},
+            {{"functionName", "load"}, {"url", "https://example.com/js/app.js"}, {"lineNumber", 40}, {"columnNumber", 9}, {"scriptId", "1"}}}}}}}}});
     auto changes = session.TakeChanges();
     CHECK(!changes.requestsReset && changes.requests.size() == 3);
     CHECK(session.Requests().size() == 3);
@@ -453,7 +454,7 @@ static void TestConsole()
     const json stack = {{"callFrames", {
         {{"functionName", "inner"}, {"url", "https://example.com/js/app.js"}, {"scriptId", "1"}, {"lineNumber", 12}, {"columnNumber", 5}},
         {{"functionName", ""}, {"url", "https://example.com/js/app.js"}, {"scriptId", "1"}, {"lineNumber", 30}, {"columnNumber", 1}},
-        {{"functionName", "forEach"}, {"url", ""}, {"scriptId", "0"}, {"lineNumber", 0}, {"columnNumber", 0}}}}};
+        {{"functionName", "forEach"}, {"url", "[native code]"}, {"scriptId", "0"}, {"lineNumber", 0}, {"columnNumber", 0}}}}};
     session.Receive(Event("page-1", "Console.messageAdded", {{"message", Message("debug", "fine detail")}}));
     session.Receive(Event("page-1", "Console.messageAdded", {{"message", Message("log", "hello", {{"url", "https://example.com/js/app.js"}, {"line", 3}, {"column", 9}})}}));
     session.Receive(Event("page-1", "Console.messageAdded", {{"message", Message("info", "note")}}));

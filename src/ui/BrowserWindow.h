@@ -152,6 +152,8 @@ private:
         bigtime_t loadStartedAt = 0, loadFinishedAt = 0;
         // A restored background tab loads this when it is first selected.
         std::string deferredURL;
+        // The tab's Developer Tools window, while it is open.
+        BMessenger devTools { };
 #endif
     };
 #if SUMMIT_MODERN_WEBKIT
@@ -206,6 +208,10 @@ private:
     void UpdateWindowList();
 #if SUMMIT_MODERN_WEBKIT
     void ShowPageContextMenu(const BMessage&);
+    // Opens the current tab's Developer Tools, or brings them forward;
+    // panel ("network", "console") chooses what they show.
+    void ShowDeveloperTools(const char* panel = nullptr);
+    void CloseDeveloperTools(Tab&);
     void NewPageRequested(const BMessage&);
     void LinkOpenRequested(const BMessage&);
     void LinkHovered(const BMessage&);

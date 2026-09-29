@@ -20,6 +20,12 @@ SOURCE = pathlib.Path('/boot/home/summit-webkit')
 ENGINE = SOURCE / 'WebKitBuild/Modern'
 ICU = pathlib.Path('/boot/home/summit-deps/icu78')
 LIBZIP = pathlib.Path('/boot/home/summit-deps/libzip-1.11.4')
+# The browser's developer tools show text with the system's Scintilla and
+# Lexilla. They are copied into the bundle, so that it runs where those
+# packages are not installed.
+SYSTEM_LIBRARIES = pathlib.Path('/boot/system/lib')
+TEXT_LIBRARIES = ['libscintilla.so', 'liblexilla.so']
+TEXT_LICENSE = pathlib.Path('/boot/system/data/licenses/Scintilla')
 
 
 def digest(path):
@@ -152,6 +158,8 @@ def freeze(work, inputs, commands, before, configuration, build, executable_name
         files = {executable_name: work / executable_name, 'WebProcess': ENGINE / 'bin/WebProcess',
                  'NetworkProcess': ENGINE / 'bin/NetworkProcess'}
         files.update({'lib/' + source.name: source for _, _, source in libraries})
+        if browser:
+            files.update({'lib/' + name: (SYSTEM_LIBRARIES / name).resolve(strict=True) for name in TEXT_LIBRARIES})
         before = {**before, str(work / executable_name): digest(work / executable_name)}
         for relative, source in files.items():
             destination = bundle / relative
@@ -177,6 +185,9 @@ def freeze(work, inputs, commands, before, configuration, build, executable_name
         shutil.copy2(ROOT / 'LICENSE-Summit', bundle / 'LICENSE-Summit')
         assets = []
         if browser:
+            (bundle / 'licenses/Scintilla').mkdir(parents=True)
+            shutil.copy2(TEXT_LICENSE, bundle / 'licenses/Scintilla/License.txt')
+            assets.append('licenses/Scintilla/License.txt')
             (bundle / 'resources').mkdir()
             shutil.copy2(ROOT / 'resources/start.html', bundle / 'resources/start.html')
             assets.append('resources/start.html')
@@ -213,6 +224,8 @@ def freeze(work, inputs, commands, before, configuration, build, executable_name
              'Run ./run-preview.sh [URL], or --smoke with tools/serve-fixtures.py on the host.\n') +
             'WebProcess and NetworkProcess are resolved beside the app executable.\n'
             'Private WebKit, JavaScriptCore and ICU libraries are in lib with relative runtime paths.\n'
+            + ('Scintilla and Lexilla, which the developer tools show text with, are copies of the\n'
+               'system\'s libraries; their license is in licenses/Scintilla.\n' if browser else '')
             + ('The extension-enabled engine includes pinned libzip; its license notice is in licenses/libzip/zip.h.\n'
                if 'libzip' in inputs else '') +
             'The app source and build inputs are preserved in source.\n')
@@ -280,6 +293,8 @@ def main():
     if not arguments.compile_only:
         require_idle()
     configuration, original_paths = ({}, []) if arguments.compile_only else engine_inputs(inputs)
+    if browser and not arguments.compile_only:
+        original_paths += [(SYSTEM_LIBRARIES / name).resolve(strict=True) for name in TEXT_LIBRARIES]
     build.mkdir(parents=True, exist_ok=True)
     work = pathlib.Path(tempfile.mkdtemp(prefix='compile-', dir=build))
     flags = ['c++', '-std=c++23', '-O2', '-Wall', '-Wextra', '-Wno-multichar',
@@ -290,9 +305,13 @@ def main():
                   '-I' + str(ROOT / 'vendor'), '-I/boot/system/develop/headers/private/netservices',
                   # app/AppMisc.h, for the view token a synthesized mouse wheel
                   # message needs to reach the page (see BrowserWindow::SimulateScroll).
-                  '-I/boot/system/develop/headers/private']
+                  '-I/boot/system/develop/headers/private',
+                  # The developer tools show text with Scintilla and Lexilla, as Kiri does.
+                  '-I/boot/system/develop/headers/scintilla', '-I/boot/system/develop/headers/lexilla']
         sources = ['src/main.cpp', 'src/core/Address.cpp', 'src/core/Profile.cpp', 'src/core/ExtensionCatalog.cpp', 'src/core/ExtensionIdentity.cpp',
-                   'src/core/Favicon.cpp', 'src/core/InternalPages.cpp', 'src/core/Zoom.cpp', 'src/ui/FaviconCache.cpp', 'src/ui/PreferencesWindow.cpp', 'src/ui/SharedProfile.cpp',
+                   'src/core/Favicon.cpp', 'src/core/InternalPages.cpp', 'src/core/Zoom.cpp',
+                   'src/core/DevTools.cpp', 'src/core/DevToolsFormat.cpp', 'src/ui/SourceView.cpp',
+                   'src/ui/DevToolsWindow.cpp', 'src/ui/DevToolsNetwork.cpp', 'src/ui/DevToolsConsole.cpp', 'src/ui/FaviconCache.cpp', 'src/ui/PreferencesWindow.cpp', 'src/ui/SharedProfile.cpp',
                    'src/ui/BrowserWindow.cpp', 'src/ui/Chrome.cpp', 'src/ui/ExtensionPermissionPrompt.cpp',
                    'src/ui/ExtensionController.cpp', 'src/ui/ExtensionInstaller.cpp', 'src/ui/ExtensionManager.cpp']
     objects = [work / pathlib.Path(source).with_suffix('.o') for source in sources]
@@ -301,7 +320,9 @@ def main():
     if not arguments.compile_only:
         commands.append(['c++', *map(str, objects), '-L' + str(ENGINE / 'lib'),
                          '-lWebKit', '-lbe', '-lnetwork', '-lcrypto',
-                         *(['-lbnetapi', '-ltranslation', '-ltracker', '-lgame'] if browser else []),
+                         *(['-lbnetapi', '-ltranslation', '-ltracker', '-lgame', '-lscintilla', '-llexilla',
+                            # BColumnListView, a static library of the system's.
+                            '-lcolumnlistview'] if browser else []),
                          '-Wl,-rpath,' + ':'.join(map(str, [ENGINE / 'lib', ICU / 'lib']
                              + ([LIBZIP / 'lib'] if 'libzip' in inputs else []))),
                          '-o', str(work / executable_name)])

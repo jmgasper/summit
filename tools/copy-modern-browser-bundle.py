@@ -26,12 +26,15 @@ SOURCE_ROOTS = ('CMakeLists.txt', 'Configurations', 'Source', 'Tools')
 HASH = re.compile(r'[0-9a-f]{64}\Z')
 LIBRARY = re.compile(r'lib/(libWebKit|libJavaScriptCore|libicudata|libicui18n|libicuuc|libzip)\.so(?:\.[0-9]+)*\Z')
 LIBRARIES = {'libWebKit', 'libJavaScriptCore', 'libicudata', 'libicui18n', 'libicuuc'}
+# Copies of the system's libraries that the browser's developer tools show text with.
+TEXT_LIBRARIES = {'lib/libscintilla.so', 'lib/liblexilla.so'}
 HEADERS = {
     'WebKitView.h': 'UIProcess/API/haiku/WebKitView.h',
     'WebKitContext.h': 'UIProcess/API/haiku/WebKitContext.h',
     'WebKitEmbedding.h': 'UIProcess/API/haiku/WebKitEmbedding.h',
     'WebKitExtensionPermission.h': 'UIProcess/API/haiku/WebKitExtensionPermission.h',
     'WebKitInfo.h': 'UIProcess/API/haiku/WebKitInfo.h',
+    'WebKitInspector.h': 'UIProcess/API/haiku/WebKitInspector.h',
     'WKBase.h': 'Shared/API/c/WKBase.h',
     'WKDeclarationSpecifiers.h': 'Shared/API/c/WKDeclarationSpecifiers.h',
     'WKBaseHaiku.h': 'Shared/API/c/haiku/WKBaseHaiku.h',
@@ -163,12 +166,20 @@ def validate_report(report, target):
         for command in commands), 'Missing native compile commands')
     hashes(report['original_sha256'], 'original native', absolute=True,
            extra_roots=('/SummitExtensions/summit/build-modern-' + target + '/',
-                        *(('/SummitExtensions/WebKit/',) if extensions else ())))
+                        *(('/SummitExtensions/WebKit/',) if extensions else ()),
+                        *(('/boot/system/' + name for name in TEXT_LIBRARIES) if target == 'browser' else ())))
     bundled = hashes(report['bundled_sha256'], 'bundled')
     executable, launcher = ('Summit', 'run-browser.sh') if target == 'browser' else ('SummitModernPreview', 'run-preview.sh')
     regular = {executable, launcher, 'WebProcess', 'NetworkProcess'}
+    text_libraries = set()
     if target == 'browser':
         regular.add('resources/start.html')
+        # Bundles older than the developer tools have neither.
+        if TEXT_LIBRARIES & bundled.keys():
+            text_libraries = TEXT_LIBRARIES
+            regular |= text_libraries | {'licenses/Scintilla/License.txt'}
+            require(all(report['original_sha256'].get('/boot/system/' + name) == bundled.get(name) for name in text_libraries),
+                    'A bundled text library differs from the system library it was copied from')
     libraries = LIBRARIES | ({'libzip'} if extensions else set())
     if extensions:
         regular.add('licenses/libzip/zip.h')
@@ -198,7 +209,7 @@ def validate_report(report, target):
                 'Library link must name its declared regular library in the same directory: ' + name)
     require(all('lib/' + name + '.so' in library_files | symlinks.keys() for name in libraries),
             'Missing unversioned private library names')
-    elf_files = library_files | {executable, 'WebProcess', 'NetworkProcess'}
+    elf_files = library_files | text_libraries | {executable, 'WebProcess', 'NetworkProcess'}
     require(isinstance(report['needed'], dict) and isinstance(report['runtime_search_paths'], dict)
             and set(report['needed']) == elf_files and set(report['runtime_search_paths']) == elf_files,
             'Incomplete native dependency provenance')
@@ -212,7 +223,8 @@ def validate_report(report, target):
                         'Unbundled private dependency: ' + dependency)
         paths = report['runtime_search_paths'][name]
         expected = ['$ORIGIN'] if name.startswith('lib/') else ['$ORIGIN/lib']
-        require(paths == expected or (name.startswith(('lib/libicu', 'lib/libzip')) and paths == []),
+        require(paths == expected or (name.startswith(('lib/libicu', 'lib/libzip')) and paths == [])
+                or (name in text_libraries and paths == []),
                 'Unexpected runtime library search path: ' + name)
     return executable, launcher
 
