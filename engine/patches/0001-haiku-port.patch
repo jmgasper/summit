@@ -19882,7 +19882,7 @@ index 6b3cac20c6de4a7b817689de34c807020235850e..f5e992b32ba9dc919975dcd08b86e74d
          s_skiaGLContext = SkiaGLContext::create(*this);
          m_skiaGLContexts.add(*s_skiaGLContext);
 diff --git a/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp b/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp
-index 30343ff03299542f8673d98b486c7fdd78bddeb9..feb0f0a13bc21ff0af06b01ea45fa895bb254a85 100644
+index 30343ff03299542f8673d98b486c7fdd78bddeb9..802ab40256fb666447044521614f51998e285477 100644
 --- a/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp
 +++ b/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp
 @@ -67,7 +67,13 @@ WTF_MAKE_TZONE_ALLOCATED_IMPL(SkiaPaintingEngine);
@@ -19899,7 +19899,7 @@ index 30343ff03299542f8673d98b486c7fdd78bddeb9..feb0f0a13bc21ff0af06b01ea45fa895
  }
  
  SkiaPaintingEngine::SkiaPaintingEngine(sk_sp<GrContextThreadSafeProxy>&& threadSafeGrContext)
-@@ -259,7 +265,13 @@ Ref<CoordinatedTileBuffer> SkiaPaintingEngine::replay(const GraphicsLayerCoordin
+@@ -259,10 +265,24 @@ Ref<CoordinatedTileBuffer> SkiaPaintingEngine::replay(const GraphicsLayerCoordin
  #else
      auto bufferSize = renderingMode == RenderingMode::Accelerated ? tileRect.size() : dirtyRect.size();
  #endif
@@ -19911,20 +19911,32 @@ index 30343ff03299542f8673d98b486c7fdd78bddeb9..feb0f0a13bc21ff0af06b01ea45fa895
      auto buffer = createBuffer(renderingMode, bufferSize, recording->contentsOpaque());
 +#endif
      buffer->beginPainting();
++#if PLATFORM(HAIKU)
++    // A mask hides where it is transparent: its empty tiles have to be drawn.
++    const bool mayHaveNoTexture = !layer.isMaskLayer();
++#endif
  
-     m_paintingWorkerPool->postTask([platformLayer = WTF::move(platformLayer), buffer = Ref { buffer }, tileRect, dirtyRect, recording = WTF::move(recording), threadSafeGrContext = m_threadSafeGrContext]() mutable {
-@@ -297,6 +309,10 @@ Ref<CoordinatedTileBuffer> SkiaPaintingEngine::replay(const GraphicsLayerCoordin
+-    m_paintingWorkerPool->postTask([platformLayer = WTF::move(platformLayer), buffer = Ref { buffer }, tileRect, dirtyRect, recording = WTF::move(recording), threadSafeGrContext = m_threadSafeGrContext]() mutable {
++    m_paintingWorkerPool->postTask([platformLayer = WTF::move(platformLayer), buffer = Ref { buffer }, tileRect, dirtyRect, recording = WTF::move(recording), threadSafeGrContext = m_threadSafeGrContext
++#if PLATFORM(HAIKU)
++        , mayHaveNoTexture
++#endif
++        ]() mutable {
+         if (auto* canvas = buffer->canvas()) {
+             auto replayPicture = [](const sk_sp<SkPicture>& picture, SkCanvas* canvas, const IntRect& recordRect, const IntRect& tileRect, const IntRect& dirtyRect, bool isDDLBuffer) {
+                 canvas->save();
+@@ -297,6 +317,10 @@ Ref<CoordinatedTileBuffer> SkiaPaintingEngine::replay(const GraphicsLayerCoordin
              WTFEndSignpost(canvas, PaintTile);
          }
  
 +#if PLATFORM(HAIKU)
-+        if (!buffer->isBackedByOpenGL())
++        if (mayHaveNoTexture && !buffer->isBackedByOpenGL())
 +            static_cast<CoordinatedUnacceleratedTileBuffer&>(buffer.get()).noteIfTransparent();
 +#endif
          buffer->completePainting();
          platformLayer->didPaintTile();
      });
-@@ -310,7 +326,15 @@ unsigned SkiaPaintingEngine::numberOfCPUPaintingThreads()
+@@ -310,7 +334,15 @@ unsigned SkiaPaintingEngine::numberOfCPUPaintingThreads()
      static unsigned numberOfThreads = 0;
  
      std::call_once(onceFlag, [] {
