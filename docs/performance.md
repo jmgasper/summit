@@ -3,7 +3,7 @@
 ## 30 September 2026 (night): what stops a wheel scroll while a page loads
 
 Continues the evening below, on the same machine and window. Installed at
-the end, at 03:57: `bundle-iukouw8h` with the private Mesa in
+the end, at 03:54: `bundle-iukouw8h` with the private Mesa in
 `/boot/home/summit-mesa/prefix-20260930`. Before it: `bundle-gqejpqgz` at
 01:20, with the first section's changes; `bundle-t4ybypkf` at 02:57, which
 showed masked layers where their masks should have hidden them (below);
@@ -194,8 +194,9 @@ YouTube from the twelfth second: 75 to 77 draw calls and 11.4 to 11.5 ms a
 composition against 130 and 11.8 to 12.2. CNN's fling (47.2 and 50.2
 against 47.7 and 47.7), Wikipedia's (56.5, 56.1, 50.4 against 55.6, 55.6,
 55.5) and The Guardian's wheel while it loads (55.9, 57.4, 54.5 against
-52.9, 57.4, 53.5) do not tell the two apart. In September's first test of
-512 the scroll was held up by what the first section of this entry
+52.9, 57.4, 53.5) do not tell the two apart. The evening found no
+difference with tiles of 512 on The Guardian; it measured the wheel while
+the page loads, which was held up by what the first section of this entry
 removed.
 
 ### What is left of YouTube's start
