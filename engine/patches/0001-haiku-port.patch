@@ -19432,7 +19432,7 @@ index 30343ff03299542f8673d98b486c7fdd78bddeb9..95d192b9fadc9f7fca017d53ad82885c
          if (const char* envString = getenv("WEBKIT_SKIA_CPU_PAINTING_THREADS")) {
              auto newValue = parseInteger<unsigned>(StringView::fromLatin1(envString));
 diff --git a/Source/WebCore/platform/graphics/texmap/TextureMapper.cpp b/Source/WebCore/platform/graphics/texmap/TextureMapper.cpp
-index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..a8549588ab7f24c75be1e6607c468e20c0932f5b 100644
+index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..47461f6a708c4ccd5d3683250b13188ab0cc04a3 100644
 --- a/Source/WebCore/platform/graphics/texmap/TextureMapper.cpp
 +++ b/Source/WebCore/platform/graphics/texmap/TextureMapper.cpp
 @@ -44,6 +44,12 @@
@@ -19476,8 +19476,36 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..a8549588ab7f24c75be1e6607c468e20
      });
      return *addResult.iterator->value;
  }
-@@ -234,6 +252,14 @@ ClipStack& TextureMapper::clipStack()
+@@ -232,8 +250,42 @@ ClipStack& TextureMapper::clipStack()
+     return data().currentSurface ? data().currentSurface->clipStack() : m_clipStack;
+ }
  
++#if PLATFORM(HAIKU)
++void TextureMapper::warmShaderProgramsHaiku()
++{
++    // A shader program is compiled when a layer first needs it, 8 to 24 ms
++    // in a frame that has 16: the first scroll of a page (a scrollbar fades
++    // in), the first rounded video, the first filter. These are the programs
++    // the Guardian, YouTube, CNN and Reddit had compiled by the end of a
++    // scroll; the compositor thread compiles them when it is created, while
++    // the page is still being fetched.
++    using Program = TextureMapperShaderProgram;
++    static const Program::Options programs[] = {
++        { Program::SolidColor, Program::RoundedRectClip },
++        { Program::TextureRGB },
++        { Program::SolidColor },
++        { Program::TextureRGB, Program::Opacity },
++        { Program::TextureRGB, Program::RoundedRectClip },
++        { Program::TextureRGB, Program::Opacity, Program::RoundedRectClip },
++        { Program::TextureCopy },
++        { Program::BlurFilter },
++    };
++    for (auto& options : programs)
++        data().getShaderProgram(options);
++    data().warmedRoundedSolidColor = true;
++}
++#endif
++
  void TextureMapper::beginPainting(FlipY flipY, BitmapTexture* surface)
  {
 +#if PLATFORM(HAIKU)
@@ -19491,7 +19519,7 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..a8549588ab7f24c75be1e6607c468e20
      glGetIntegerv(GL_CURRENT_PROGRAM, &data().previousProgram);
      data().previousScissorState = glIsEnabled(GL_SCISSOR_TEST);
      data().previousDepthState = glIsEnabled(GL_DEPTH_TEST);
-@@ -801,6 +827,10 @@ void TextureMapper::drawTexturePackedYUV(GLuint texture, const std::array<GLfloa
+@@ -801,6 +853,10 @@ void TextureMapper::drawTexturePackedYUV(GLuint texture, const std::array<GLfloa
  
  void TextureMapper::drawSolidColor(const FloatRect& rect, const TransformationMatrix& matrix, const Color& color, bool isBlendingAllowed)
  {
@@ -19502,7 +19530,7 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..a8549588ab7f24c75be1e6607c468e20
      OptionSet<TextureMapperFlags> flags;
      TextureMapperShaderProgram::Options options = TextureMapperShaderProgram::SolidColor;
      if (!matrix.mapQuad(rect).isRectilinear()) {
-@@ -817,6 +847,9 @@ void TextureMapper::drawSolidColor(const FloatRect& rect, const TransformationMa
+@@ -817,6 +873,9 @@ void TextureMapper::drawSolidColor(const FloatRect& rect, const TransformationMa
      }
  
      Ref<TextureMapperShaderProgram> program = data().getShaderProgram(options);
@@ -19512,7 +19540,7 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..a8549588ab7f24c75be1e6607c468e20
      glUseProgram(program->programID());
  
      if (clipStack().isRoundedRectClipEnabled())
-@@ -828,6 +861,13 @@ void TextureMapper::drawSolidColor(const FloatRect& rect, const TransformationMa
+@@ -828,6 +887,13 @@ void TextureMapper::drawSolidColor(const FloatRect& rect, const TransformationMa
          flags.add(TextureMapperFlags::ShouldBlend);
  
      draw(rect, matrix, program.get(), GL_TRIANGLE_FAN, flags);
@@ -19526,6 +19554,20 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..a8549588ab7f24c75be1e6607c468e20
  }
  
  void TextureMapper::clearColor(const Color& color)
+diff --git a/Source/WebCore/platform/graphics/texmap/TextureMapper.h b/Source/WebCore/platform/graphics/texmap/TextureMapper.h
+index fbe7a8f854a5951881368122c9958ca62cf8617b..354b17b13d4905114a497117d41b5998992c6ea9 100644
+--- a/Source/WebCore/platform/graphics/texmap/TextureMapper.h
++++ b/Source/WebCore/platform/graphics/texmap/TextureMapper.h
+@@ -100,6 +100,9 @@ public:
+     void endClip();
+     void endClipWithoutApplying();
+     IntRect clipBounds();
++#if PLATFORM(HAIKU)
++    WEBCORE_EXPORT void warmShaderProgramsHaiku();
++#endif
+     IntSize maxTextureSize() const;
+     void setDepthRange(double zNear, double zFar);
+     std::pair<double, double> depthRange() const;
 diff --git a/Source/WebCore/platform/graphics/texmap/TextureMapperLayer.cpp b/Source/WebCore/platform/graphics/texmap/TextureMapperLayer.cpp
 index 063040a9866c7221f2e581a4b9dac75fa29771d4..6056d36d17770d0a2bcfadc0c7243e1b4e99e139 100644
 --- a/Source/WebCore/platform/graphics/texmap/TextureMapperLayer.cpp
@@ -19716,7 +19758,7 @@ index 063040a9866c7221f2e581a4b9dac75fa29771d4..6056d36d17770d0a2bcfadc0c7243e1b
      SetForScope scopedOpacity(options.opacity, options.opacity * m_currentOpacity);
  
 diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStore.cpp b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStore.cpp
-index 0badc4492a49e10ae2faa80d59da84a9cea259d6..65af7a29a89838863b17d66f22ee7b6b36fe9b0c 100644
+index 0badc4492a49e10ae2faa80d59da84a9cea259d6..8d4d939045e841109d2bd0bfc7e13a1b23d6d072 100644
 --- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStore.cpp
 +++ b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStore.cpp
 @@ -28,6 +28,10 @@
@@ -19768,7 +19810,7 @@ index 0badc4492a49e10ae2faa80d59da84a9cea259d6..65af7a29a89838863b17d66f22ee7b6b
 +    // What the last composition showed of this layer, and a margin for the
 +    // distance a scroll covers until the next, is uploaded now.
 +    if (s_uploadDeadline && m_hasLastPaint) {
-+        static constexpr int margin = 768;
++        static constexpr int margin = 256;
 +        FloatRect shown = m_lastPaintClip;
 +        shown.inflate(margin);
 +        bool deferred = false;
@@ -19776,7 +19818,7 @@ index 0badc4492a49e10ae2faa80d59da84a9cea259d6..65af7a29a89838863b17d66f22ee7b6b
 +        for (auto& tile : m_tiles.values()) {
 +            if (!tile.hasPendingUpdates())
 +                continue;
-+            if (m_lastPaintTransform.mapRect(tile.rectAfterPendingUpdates()).intersects(shown)) {
++            if (!m_lastPaintTransform.isAffine() || m_lastPaintTransform.mapRect(tile.rectAfterPendingUpdates()).intersects(shown)) {
 +                tile.processPendingUpdates();
 +                if (m_hasDeferredTiles)
 +                    s_showsLateUpload = true;
@@ -19804,25 +19846,37 @@ index 0badc4492a49e10ae2faa80d59da84a9cea259d6..65af7a29a89838863b17d66f22ee7b6b
      for (auto& tile : m_tiles.values())
          tile.processPendingUpdates();
  
-@@ -74,6 +140,11 @@ void CoordinatedBackingStore::paintToTextureMapper(TextureMapper& textureMapper,
+@@ -74,6 +140,17 @@ void CoordinatedBackingStore::paintToTextureMapper(TextureMapper& textureMapper,
      ASSERT(!m_size.isZero());
      FloatRect layerRect = { { }, m_size };
      TransformationMatrix adjustedTransform = transform * TransformationMatrix::rectToRect(layerRect, targetRect);
 +#if PLATFORM(HAIKU)
++    const FloatRect clip = textureMapper.clipBounds();
++    // A composition that draws only what changed clips to that; what the
++    // layer shows is the widest clip it has been drawn with at this place.
++    if (!m_hasLastPaint || m_lastPaintTransform != adjustedTransform || !m_lastPaintClip.contains(enclosingIntRect(clip)))
++        m_lastPaintClip = enclosingIntRect(clip);
 +    m_lastPaintTransform = adjustedTransform;
-+    m_lastPaintClip = textureMapper.clipBounds();
 +    m_hasLastPaint = true;
++    // Where a perspective transform puts a rectangle is not a rectangle.
++    const bool cullsTiles = adjustedTransform.isAffine();
 +#endif
  
  #if ENABLE(DAMAGE_TRACKING)
      const auto& frameDamage = textureMapper.damage();
-@@ -88,6 +159,11 @@ void CoordinatedBackingStore::paintToTextureMapper(TextureMapper& textureMapper,
+@@ -88,6 +165,17 @@ void CoordinatedBackingStore::paintToTextureMapper(TextureMapper& textureMapper,
  
      for (const auto& tile : m_tiles.values()) {
          ASSERT(tile.scale() == m_scale);
 +#if PLATFORM(HAIKU)
 +        // A tile whose first upload was left for a later composition.
 +        if (!tile.canBePainted())
++            continue;
++        // A layer keeps tiles for twice the viewport and more; each costs
++        // a draw call (25 us in the driver) whether it shows or not. The
++        // clip is what this composition draws: the viewport, or the part of
++        // it that changed.
++        if (cullsTiles && !adjustedTransform.mapRect(tile.rect()).intersects(clip))
 +            continue;
 +#endif
          const auto allEdgesExposed = allTileEdgesExposed(layerRect, tile.rect()) ? TextureMapper::AllEdgesExposed::Yes : TextureMapper::AllEdgesExposed::No;
@@ -20054,6 +20108,25 @@ index 74df231207380fa09298f846f66adefed719fd2a..025c6cb86df95f52810b95e4427037ff
  private:
      void ensureTexture(const IntSize&, CoordinatedTileBuffer&);
  
+diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedPlatformLayer.cpp b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedPlatformLayer.cpp
+index 7ef5b491fd88e52bb59639bd5851a4cb6e56d0ab..6cc50b238c9c1de1b3eaadc12d9ec62154feebc8 100644
+--- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedPlatformLayer.cpp
++++ b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedPlatformLayer.cpp
+@@ -1286,6 +1286,14 @@ void CoordinatedPlatformLayer::flushCompositingStateOnTarget(const OptionSet<Com
+             m_contentsBuffer.committed = WTF::move(m_contentsBuffer.pending);
+             m_contentsBuffer.hasCommitted = !!m_contentsBuffer.committed;
+             m_pendingChanges.remove(Change::ContentsBuffer);
++#if PLATFORM(HAIKU) && ENABLE(DAMAGE_TRACKING)
++            // The damage recorded with a new buffer is handed to the layer
++            // above, by rendering updates and scrolls only. A video frame
++            // comes on its own: without damage of its own the compositor
++            // drew it and nothing read it back, and the picture on screen
++            // stood still until the page around it changed.
++            layer.setDamage(Damage { m_size, Damage::Mode::Full });
++#endif
+         }
+ 
+         if (m_contentsBuffer.committed)
 diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/GraphicsLayerCoordinated.cpp b/Source/WebCore/platform/graphics/texmap/coordinated/GraphicsLayerCoordinated.cpp
 index cb8dc9067767652f427ad441e5da28a25aa05b82..9c92d100b6d61ddaf0a3a7d397d50bf66dbca574 100644
 --- a/Source/WebCore/platform/graphics/texmap/coordinated/GraphicsLayerCoordinated.cpp
@@ -92300,7 +92373,7 @@ index 0000000000000000000000000000000000000000..abc82f6d26d2b1374740dc304282ae75
 +
 +}
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
-index cf4d54b7869d7a7cded74482922d8fdda53af21d..774a0c3c097f96cd15a0d976d48b386041dbbe81 100644
+index cf4d54b7869d7a7cded74482922d8fdda53af21d..73a5b9d4f5ec4988ac17f6d0e400f5b8b1844689 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
 @@ -26,6 +26,19 @@
@@ -92464,7 +92537,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..774a0c3c097f96cd15a0d976d48b3860
      if (!bufferHandle) {
          WTFLogAlways("Failed to create handle for shared memory buffer");
          return nullptr;
-@@ -439,13 +519,299 @@ AcceleratedSurface::RenderTargetSHMImage::RenderTargetSHMImage(AcceleratedSurfac
+@@ -439,13 +519,364 @@ AcceleratedSurface::RenderTargetSHMImage::RenderTargetSHMImage(AcceleratedSurfac
      WebProcess::singleton().parentProcessConnection()->send(Messages::AcceleratedBackingStore::DidCreateSHMBuffer(m_id, WTF::move(bitmapHandle)), m_surface->surfaceID());
  }
  
@@ -92542,6 +92615,65 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..774a0c3c097f96cd15a0d976d48b3860
 +        rects.removeAt(bestB);
 +    }
 +    return WTF::move(rects);
++}
++
++// The driver copies rows that span the frame at 0.56 ms a megapixel and
++// narrower ones at 1.5 (zink on NVK, GTX 1070: 3840x1498 in 3.2 ms, the
++// 2664x1498 of a video inside it in 5.9). A rectangle wider than that ratio
++// of the frame is read as the band it lies in, and bands that touch or
++// nearly touch are read as one. Only the read is widened: the damage the UI
++// process draws stays what it was.
++static Vector<IntRect, 1> widenedReadbackRectsHaiku(Vector<IntRect, 1>&& rects, const IntSize& frameSize)
++{
++    static constexpr double fullWidthCost = 0.56;
++    static constexpr double partialWidthCost = 1.5;
++    // A read costs a quarter of a millisecond before its first pixel.
++    const int rowsWorthOneRead = static_cast<int>(0.25 / fullWidthCost * 1e6 / std::max(1, frameSize.width()));
++    bool widened = false;
++    for (auto& rect : rects) {
++        if (rect.width() < frameSize.width() && rect.width() * partialWidthCost > frameSize.width() * fullWidthCost) {
++            rect.setX(0);
++            rect.setWidth(frameSize.width());
++            widened = true;
++        }
++    }
++    if (!widened || rects.size() < 2)
++        return WTF::move(rects);
++    Vector<IntRect, 1> bands;
++    Vector<IntRect, 1> others;
++    for (auto& rect : rects) {
++        if (rect.width() == frameSize.width())
++            bands.append(rect);
++        else
++            others.append(rect);
++    }
++    std::sort(bands.begin(), bands.end(), [](const IntRect& a, const IntRect& b) {
++        return a.y() < b.y();
++    });
++    Vector<IntRect, 1> result;
++    for (auto& band : bands) {
++        if (!result.isEmpty() && band.y() <= result.last().maxY() + rowsWorthOneRead) {
++            result.last().unite(band);
++            continue;
++        }
++        result.append(band);
++    }
++    // What a band covers needs no read of its own; what lies within a few
++    // rows of one joins it.
++    for (auto& rect : others) {
++        bool covered = false;
++        for (auto& band : result) {
++            if (rect.y() >= band.y() - rowsWorthOneRead && rect.maxY() <= band.maxY() + rowsWorthOneRead) {
++                band.shiftYEdgeTo(std::min(band.y(), rect.y()));
++                band.shiftMaxYEdgeTo(std::max(band.maxY(), rect.maxY()));
++                covered = true;
++                break;
++            }
++        }
++        if (!covered)
++            result.append(rect);
++    }
++    return result;
 +}
 +
 +// Reading the frame straight into client memory made the driver copy it out of
@@ -92641,6 +92773,12 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..774a0c3c097f96cd15a0d976d48b3860
 +        // box turned a scrollbar strip and an ad in the opposite corner into
 +        // the whole frame.
 +        rects = mergedReadbackRectsHaiku(WTF::move(rects));
++        static const bool widen = [] {
++            const char* value = getenv("SUMMIT_READBACK_BANDS");
++            return !value || strcmp(value, "0");
++        }();
++        if (widen)
++            rects = widenedReadbackRectsHaiku(WTF::move(rects), m_bitmap->size());
 +    } else
 +#endif
 +        rects.append(whole);
@@ -92764,7 +92902,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..774a0c3c097f96cd15a0d976d48b3860
  
          SkImageInfo info = SkImageInfo::Make(m_bitmap->size().width(), m_bitmap->size().height(), SkColorType::kBGRA_8888_SkColorType, SkAlphaType::kPremul_SkAlphaType);
  
-@@ -457,9 +823,14 @@ void AcceleratedSurface::RenderTargetSHMImage::didRenderFrame()
+@@ -457,9 +888,14 @@ void AcceleratedSurface::RenderTargetSHMImage::didRenderFrame()
          return;
      }
  
@@ -92779,7 +92917,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..774a0c3c097f96cd15a0d976d48b3860
  std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::RenderTargetTexture::create(AcceleratedSurface& surface, const IntSize& size)
  {
      auto texture = BitmapTexture::create(size);
-@@ -515,8 +886,9 @@ AcceleratedSurface::RenderTargetTexture::RenderTargetTexture(AcceleratedSurface&
+@@ -515,8 +951,9 @@ AcceleratedSurface::RenderTargetTexture::RenderTargetTexture(AcceleratedSurface&
  }
  
  AcceleratedSurface::RenderTargetTexture::~RenderTargetTexture() = default;
@@ -92790,7 +92928,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..774a0c3c097f96cd15a0d976d48b3860
  
  #if USE(WPE_RENDERER)
  std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::RenderTargetWPEBackend::create(AcceleratedSurface& surface, const IntSize& initialSize, UnixFileDescriptor&& hostFD)
-@@ -594,7 +966,7 @@ void AcceleratedSurface::RenderTargetWPEBackend::didRenderFrame()
+@@ -594,7 +1031,7 @@ void AcceleratedSurface::RenderTargetWPEBackend::didRenderFrame()
  AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
      : m_surface(surface)
  {
@@ -92799,7 +92937,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..774a0c3c097f96cd15a0d976d48b3860
      if (!m_surface->hardwareAccelerationEnabled()) {
          m_type = Type::SharedMemory;
          return;
-@@ -632,7 +1004,7 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
+@@ -632,7 +1069,7 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
      case PlatformDisplay::Type::GBM:
  #endif
          break;
@@ -92808,7 +92946,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..774a0c3c097f96cd15a0d976d48b3860
  #if USE(WPE_RENDERER)
      case PlatformDisplay::Type::WPE:
          m_type = Type::WPEBackend;
-@@ -646,11 +1018,19 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
+@@ -646,11 +1083,19 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
      case PlatformDisplay::Type::Default:
          break;
  #endif // PLATFORM(GTK)
@@ -92829,7 +92967,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..774a0c3c097f96cd15a0d976d48b3860
  void AcceleratedSurface::SwapChain::setupBufferFormat()
  {
      if (m_type != Type::EGLImage)
-@@ -749,7 +1129,7 @@ bool AcceleratedSurface::SwapChain::resize(const IntSize& size)
+@@ -749,7 +1194,7 @@ bool AcceleratedSurface::SwapChain::resize(const IntSize& size)
  
  bool AcceleratedSurface::SwapChain::handleBufferFormatChangeIfNeeded()
  {
@@ -92838,7 +92976,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..774a0c3c097f96cd15a0d976d48b3860
      if (m_type == Type::EGLImage) {
          Locker locker { m_bufferFormatLock };
          if (m_bufferFormatChanged) {
-@@ -765,7 +1145,7 @@ bool AcceleratedSurface::SwapChain::handleBufferFormatChangeIfNeeded()
+@@ -765,7 +1210,7 @@ bool AcceleratedSurface::SwapChain::handleBufferFormatChangeIfNeeded()
  std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::SwapChain::createTarget() const
  {
      switch (m_type) {
@@ -92847,7 +92985,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..774a0c3c097f96cd15a0d976d48b3860
  #if USE(GBM) || OS(ANDROID)
      case Type::EGLImage: {
          Locker locker { m_bufferFormatLock };
-@@ -773,7 +1153,11 @@ std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::SwapChain:
+@@ -773,7 +1218,11 @@ std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::SwapChain:
      }
  #endif
      case Type::Texture:
@@ -92859,7 +92997,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..774a0c3c097f96cd15a0d976d48b3860
      case Type::SharedMemory:
          return RenderTargetSHMImage::create(m_surface.get(), m_size);
  #endif
-@@ -812,6 +1196,11 @@ AcceleratedSurface::RenderTarget* AcceleratedSurface::SwapChain::nextTarget()
+@@ -812,6 +1261,11 @@ AcceleratedSurface::RenderTarget* AcceleratedSurface::SwapChain::nextTarget()
              if (auto target = createTarget())
                  m_freeTargets.append(WTF::move(target));
          }
@@ -92871,7 +93009,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..774a0c3c097f96cd15a0d976d48b3860
  
  #if ENABLE(WPE_PLATFORM)
          if (m_freeTargets.size() != targetsToCreate)
-@@ -841,6 +1230,12 @@ void AcceleratedSurface::SwapChain::releaseTarget(uint64_t targetID, UnixFileDes
+@@ -841,6 +1295,12 @@ void AcceleratedSurface::SwapChain::releaseTarget(uint64_t targetID, UnixFileDes
          m_freeTargets.insert(0, WTF::move(m_lockedTargets[index]));
          m_lockedTargets.removeAt(index);
      }
@@ -92884,7 +93022,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..774a0c3c097f96cd15a0d976d48b3860
  }
  
  void AcceleratedSurface::SwapChain::reset()
-@@ -859,6 +1254,11 @@ void AcceleratedSurface::SwapChain::releaseUnusedBuffers()
+@@ -859,6 +1319,11 @@ void AcceleratedSurface::SwapChain::releaseUnusedBuffers()
  #if USE(WPE_RENDERER)
      ASSERT(m_type != Type::WPEBackend);
  #endif
@@ -92896,7 +93034,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..774a0c3c097f96cd15a0d976d48b3860
  
  #if ENABLE(WPE_PLATFORM)
      WebProcess::singleton().parentProcessConnection()->send(Messages::AcceleratedBackingStore::DidChangeBufferConfiguration(m_lockedTargets.size()), m_surface->surfaceID());
-@@ -929,7 +1329,7 @@ bool AcceleratedSurface::shouldPaintMirrored() const
+@@ -929,7 +1394,7 @@ bool AcceleratedSurface::shouldPaintMirrored() const
      switch (m_swapChain.type()) {
      case SwapChain::Type::Invalid:
          return false;
@@ -92905,7 +93043,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..774a0c3c097f96cd15a0d976d48b3860
      case SwapChain::Type::Texture:
  #if USE(GBM) || OS(ANDROID)
      case SwapChain::Type::EGLImage:
-@@ -960,6 +1360,10 @@ void AcceleratedSurface::preferredBufferFormatsDidChange()
+@@ -960,6 +1425,10 @@ void AcceleratedSurface::preferredBufferFormatsDidChange()
  
  void AcceleratedSurface::visibilityDidChange(bool isVisible)
  {
@@ -92916,7 +93054,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..774a0c3c097f96cd15a0d976d48b3860
      if (m_isVisible == isVisible)
          return;
  
-@@ -1000,7 +1404,7 @@ void AcceleratedSurface::backgroundColorDidChange()
+@@ -1000,7 +1469,7 @@ void AcceleratedSurface::backgroundColorDidChange()
      if (isOpaque == wasOpaque)
          return;
  
@@ -92925,7 +93063,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..774a0c3c097f96cd15a0d976d48b3860
      m_swapChain.setupBufferFormat();
  #endif
  }
-@@ -1022,7 +1426,7 @@ void AcceleratedSurface::didCreateCompositingRunLoop(RunLoop& runLoop)
+@@ -1022,7 +1491,7 @@ void AcceleratedSurface::didCreateCompositingRunLoop(RunLoop& runLoop)
  #if USE(GLIB_EVENT_LOOP)
      m_releaseUnusedBuffersTimer->setPriority(RunLoopSourcePriority::ReleaseUnusedResourcesTimer);
  #endif
@@ -92934,7 +93072,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..774a0c3c097f96cd15a0d976d48b3860
      WebProcess::singleton().parentProcessConnection()->addMessageReceiver(runLoop, *this, Messages::AcceleratedSurface::messageReceiverName(), m_id);
  #endif
  }
-@@ -1030,6 +1434,9 @@ void AcceleratedSurface::didCreateCompositingRunLoop(RunLoop& runLoop)
+@@ -1030,6 +1499,9 @@ void AcceleratedSurface::didCreateCompositingRunLoop(RunLoop& runLoop)
  void AcceleratedSurface::willDestroyCompositingRunLoop()
  {
      m_frameCompleteHandler = nullptr;
@@ -92944,7 +93082,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..774a0c3c097f96cd15a0d976d48b3860
  
  #if USE(WPE_RENDERER)
      if (m_swapChain.type() == SwapChain::Type::WPEBackend)
-@@ -1043,7 +1450,7 @@ void AcceleratedSurface::willDestroyCompositingRunLoop()
+@@ -1043,7 +1515,7 @@ void AcceleratedSurface::willDestroyCompositingRunLoop()
              protectedThis->m_releaseUnusedBuffersTimer = nullptr;
          });
      }
@@ -92953,7 +93091,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..774a0c3c097f96cd15a0d976d48b3860
      WebProcess::singleton().parentProcessConnection()->removeMessageReceiver(Messages::AcceleratedSurface::messageReceiverName(), m_id);
  #endif
  }
-@@ -1155,18 +1562,47 @@ void AcceleratedSurface::didRenderFrame(TargetContents targetContents)
+@@ -1155,18 +1627,47 @@ void AcceleratedSurface::didRenderFrame(TargetContents targetContents)
      if (!m_target)
          return;
  
@@ -93001,7 +93139,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..774a0c3c097f96cd15a0d976d48b3860
      m_pendingFrameNotifyTargets.insert(0, { m_target, WTF::move(damageRects) });
      m_target = nullptr;
  }
-@@ -1188,13 +1624,17 @@ const std::optional<Damage>& AcceleratedSurface::renderTargetDamage()
+@@ -1188,13 +1689,17 @@ const std::optional<Damage>& AcceleratedSurface::renderTargetDamage()
  }
  #endif
  
@@ -93438,7 +93576,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..29b2218c26bef68dbc9061f1727d1f72
  
          if (!m_pendingForceRepaint && m_forcedRepaintAsyncCallback)
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
-index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..dc36cb377394dbe23c233df1094cf885c4721c11 100644
+index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..865d0e345549d1dea53b1585d87b4f4e8c87bedd 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
 @@ -33,6 +33,8 @@
@@ -93513,7 +93651,28 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..dc36cb377394dbe23c233df1094cf885
      m_didCompositeRunLoopObserver = makeUnique<RunLoopObserver>(RunLoopObserver::WellKnownOrder::GraphicsCommit, [this] {
          this->didCompositeRunLoopObserverFired();
      });
-@@ -216,8 +253,17 @@ void ThreadedCompositor::updateRenderTimer()
+@@ -136,6 +173,20 @@ ThreadedCompositor::ThreadedCompositor(WebPage& webPage, LayerTreeHost& layerTre
+         m_threadSafeGrContext = PlatformDisplay::sharedDisplay().skiaGrContext()->threadSafeProxy();
+ #endif
+     });
++
++#if PLATFORM(HAIKU) && USE(TEXTURE_MAPPER)
++    // SUMMIT_WARM_SHADERS=0 compiles each program when it is first drawn with.
++    static const bool warmsShaders = [] {
++        const char* value = getenv("SUMMIT_WARM_SHADERS");
++        return !value || strcmp(value, "0");
++    }();
++    if (warmsShaders) {
++        m_workQueue->dispatch([this, protectedThis = Ref { *this }] {
++            if (m_context && m_textureMapper && m_context->makeContextCurrent())
++                m_textureMapper->warmShaderProgramsHaiku();
++        });
++    }
++#endif
+ }
+ 
+ ThreadedCompositor::~ThreadedCompositor() = default;
+@@ -216,8 +267,17 @@ void ThreadedCompositor::updateRenderTimer()
      }
  
      if (m_state.isRenderTimerActive) {
@@ -93533,7 +93692,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..dc36cb377394dbe23c233df1094cf885
      } else
          m_renderTimer.stop();
  }
-@@ -364,6 +410,10 @@ TargetContents ThreadedCompositor::paintToCurrentGLContext(const TransformationM
+@@ -364,6 +424,10 @@ TargetContents ThreadedCompositor::paintToCurrentGLContext(const TransformationM
  #if USE(TEXTURE_MAPPER)
  void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix, const IntSize& size, const OptionSet<CompositionReason>& reasons)
  {
@@ -93544,7 +93703,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..dc36cb377394dbe23c233df1094cf885
      FloatRect clipRect(FloatPoint { }, size);
      TextureMapperLayer& currentRootLayer = m_sceneState->rootLayer().ensureTarget();
      if (currentRootLayer.transform() != matrix)
-@@ -373,6 +423,9 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
+@@ -373,6 +437,9 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
  
      m_textureMapper->beginPainting(m_flipY ? TextureMapper::FlipY::Yes : TextureMapper::FlipY::No);
      m_textureMapper->beginClip(TransformationMatrix(), FloatRoundedRect(clipRect));
@@ -93554,7 +93713,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..dc36cb377394dbe23c233df1094cf885
  
  #if ENABLE(DAMAGE_TRACKING)
      std::optional<FloatRoundedRect> rectContainingRegionThatActuallyChanged;
-@@ -383,6 +436,10 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
+@@ -383,6 +450,10 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
          WTFBeginSignpost(this, CollectDamage);
          currentRootLayer.collectDamage(*m_textureMapper, frameDamage);
          WTFEndSignpost(this, CollectDamage);
@@ -93565,7 +93724,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..dc36cb377394dbe23c233df1094cf885
  
          recordFrameDamage(WTF::move(frameDamage));
  
-@@ -404,11 +461,20 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
+@@ -404,11 +475,20 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
          m_textureMapper->beginClip(TransformationMatrix(), *rectContainingRegionThatActuallyChanged);
  #endif
  
@@ -93586,7 +93745,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..dc36cb377394dbe23c233df1094cf885
  
  #if ENABLE(DAMAGE_TRACKING)
      if (rectContainingRegionThatActuallyChanged)
-@@ -426,6 +492,16 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
+@@ -426,6 +506,16 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
  
      m_textureMapper->endClip();
      m_textureMapper->endPainting();
@@ -93603,7 +93762,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..dc36cb377394dbe23c233df1094cf885
  
      if (sceneHasRunningAnimations)
          requestComposition(CompositionReason::Animation);
-@@ -556,6 +632,46 @@ void ThreadedCompositor::renderLayerTree()
+@@ -556,6 +646,46 @@ void ThreadedCompositor::renderLayerTree()
      if (m_suspendedCount > 0)
          return;
  
@@ -93650,7 +93809,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..dc36cb377394dbe23c233df1094cf885
      OptionSet<CompositionReason> reasons;
      bool shouldNotifiyDidComposite = false;
      {
-@@ -580,8 +696,16 @@ void ThreadedCompositor::renderLayerTree()
+@@ -580,8 +710,16 @@ void ThreadedCompositor::renderLayerTree()
  
          ASSERT(m_state.state == State::Scheduled);
          m_state.state = State::InProgress;
@@ -93667,7 +93826,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..dc36cb377394dbe23c233df1094cf885
  #if USE(TEXTURE_MAPPER)
      if (!m_context || !m_context->makeContextCurrent())
          return;
-@@ -599,23 +723,47 @@ void ThreadedCompositor::renderLayerTree()
+@@ -599,23 +737,47 @@ void ThreadedCompositor::renderLayerTree()
      if (viewportSize.isEmpty())
          return;
  
@@ -93715,7 +93874,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..dc36cb377394dbe23c233df1094cf885
  
      updateFPSCounter();
  
-@@ -631,8 +779,28 @@ void ThreadedCompositor::renderLayerTree()
+@@ -631,8 +793,28 @@ void ThreadedCompositor::renderLayerTree()
      PlatformDisplay::sharedDisplay().skiaGLContext()->swapBuffers();
  #endif
  
@@ -93744,7 +93903,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..dc36cb377394dbe23c233df1094cf885
  
      RunLoop::mainSingleton().dispatch([this, protectedThis = Ref { *this }] {
          if (m_layerTreeHost)
-@@ -656,6 +824,13 @@ void ThreadedCompositor::requestComposition(CompositionReason reason)
+@@ -656,6 +838,13 @@ void ThreadedCompositor::requestComposition(CompositionReason reason)
  {
      Locker locker { m_state.lock };
      m_state.reasons.add(reason);
@@ -93758,7 +93917,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..dc36cb377394dbe23c233df1094cf885
      scheduleUpdateLocked();
  }
  
-@@ -726,6 +901,20 @@ void ThreadedCompositor::frameComplete()
+@@ -726,6 +915,20 @@ void ThreadedCompositor::frameComplete()
      }
  }
  
