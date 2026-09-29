@@ -3,12 +3,22 @@
 ## 30 September 2026 (night): what stops a wheel scroll while a page loads
 
 Continues the evening below, on the same machine and window. Installed at
-the end, at 03:54: `bundle-iukouw8h` with the private Mesa in
-`/boot/home/summit-mesa/prefix-20260930`. Before it: `bundle-gqejpqgz` at
-01:20, with the first section's changes; `bundle-t4ybypkf` at 02:57, which
-showed masked layers where their masks should have hidden them (below);
-`bundle-mbzrp7ac` at 03:10, without that fault; and since the evening
-`bundle-etksauzr` with `prefix-20260929`.
+the end, at 04:32: `bundle-z4_2wfc6` with the private Mesa in
+`/boot/home/summit-mesa/prefix-20260930`. Before it, each with what the
+sections below had reached by then: `bundle-gqejpqgz` at 01:20;
+`bundle-t4ybypkf` at 02:57, which showed masked layers where their masks
+should have hidden them; `bundle-mbzrp7ac` at 03:10, without that fault;
+`bundle-iukouw8h` at 03:54; and since the evening `bundle-etksauzr` with
+`prefix-20260929`.
+
+| switch | default | what it does |
+| --- | --- | --- |
+| `SUMMIT_WHEEL_LATCH` | 1 | a burst of notches scrolls what its first notch scrolled |
+| `SUMMIT_SCROLL_WITHOUT_MAIN` | 1 | a scroll is shown though the main thread has scheduled nothing |
+| `SUMMIT_TILE_BUFFERS_LATE` | 1 | a tile's pixels are allocated by the thread that paints it |
+| `SUMMIT_SKIP_EMPTY_TILES` | 1 | no texture and no draw for a tile without a pixel |
+| `SUMMIT_TILE_SCALING` | 1 | tiles of 512 pixels at a scale of 1.5 and more |
+| `SUMMIT_REPAINT_ON_RESIZE` | 0 | a layer that changes its size is painted again whole |
 
 ### The scrolling thread waited for the main thread, twice
 
@@ -199,6 +209,36 @@ difference with tiles of 512 on The Guardian; it measured the wheel while
 the page loads, which was held up by what the first section of this entry
 removed.
 
+### A layer that grew was painted again whole
+
+From the fifth to the twelfth second of YouTube's playback the page's root
+layer was painted again 3.4 times a second, 124 tiles and 7.85 Mpx each
+time, and each of those compositions took 25 ms and cost the video a frame.
+The layer grew by 192 px each time: an entry more in the list beside the
+player. `SUMMIT_FULL_REPAINT_TRACE=2` prints who asks for a layer of two
+megapixels to be painted whole: `GraphicsLayer::setSize()`, which does so
+for every layer that draws content unless `shouldRepaintOnSizeChange()`
+says no, and only the tiled layers of the Core Animation port said no. The
+Guardian's root layer is painted whole about ten times while it loads.
+
+A coordinated layer keeps its content in tiles that stay where they are
+when the layer grows. `CoordinatedBackingStoreProxy` paints the tiles at
+the edge whose extent changes and the new ones, and renderers ask for what
+they changed, so the layer no longer asks for everything
+(`SUMMIT_REPAINT_ON_RESIZE=1` does). YouTube, seconds 5 to 12, seven
+alternated pairs:
+
+| | compositions a second | over 16.7 ms, of about 410 | tiles uploaded in 26 s |
+| --- | --- | --- | --- |
+| whole layer | 57.7 57.4 57.6 57.7 54.2 54.8 57.8 | 51 61 56 65 103 100 57 | 2230 to 2300 |
+| new | 57.9 58.5 59.4 59.0 59.2 59.4 59.3 | 46 30 9 16 7 12 11 | 730 to 770 |
+
+In two of the seven runs of either kind the compositions after the twelfth
+second took 13 to 15 ms instead of 11 to 12, with the same draw calls and
+the same 6.22 Mpx read; what differs between such runs was not found.
+`tools/bench/pages/layers-that-resize.html` is the same pixel for pixel
+both ways, as are The Guardian, Wikipedia and GitHub after a scroll.
+
 ### What is left of YouTube's start
 
 - **A freeze of 330 to 400 ms about 1.6 s after the first frame**, in every
@@ -209,17 +249,10 @@ removed.
   addressed.
 - **The decoder is flushed and set up two to four times** in the first half
   second, each time from the first sample.
-- **Seconds 5 to 12: the page's root layer is painted again 3.4 times a
-  second**, 124 tiles and 7.85 Mpx each time, as the list beside the player
-  grows by one entry (the layer grows by 192 px, and its whole old extent
-  is dirty). Each of those compositions takes 25 ms, 17 of them the read
-  of a whole frame, and costs a frame of the video. Nothing of what
-  `SUMMIT_FULL_REPAINT_TRACE` watches asks for it, so it is a renderer that
-  spans the page and repaints itself whole when its size changes. The
-  Guardian's root layer is painted whole about ten times while it loads,
-  there by changes of the style of `html` and `body` (11 each) and by
-  layouts that ask for a full repaint (28). Not addressed: the rules are
-  WebCore's.
+- **The Guardian changes the style of `html` and of `body` 11 times each
+  while it loads**, and 28 layouts ask for a full repaint; each paints the
+  root layer again. Those are WebCore's rules for the background of the
+  page, and were left alone.
 - **One `vkCreateImage` fails in every load** (`nvRes: 0x1f`, then "ZINK:
   vkCreateImage failed"). It comes from Skia's GL context
   (`SUMMIT_SKIA_GL_CONTEXT=0` has none), not from the compositor's
