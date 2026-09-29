@@ -3,8 +3,9 @@
 ## 30 September 2026 (night): what stops a wheel scroll while a page loads
 
 Continues the evening below, on the same machine and window. Installed at
-the end: `bundle-gqejpqgz` with the private Mesa in
-`/boot/home/summit-mesa/prefix-20260930`; before it, since the evening,
+the end: `bundle-t4ybypkf` with the private Mesa in
+`/boot/home/summit-mesa/prefix-20260930` (at 01:20 `bundle-gqejpqgz`, with
+the first section's changes); before them, since the evening,
 `bundle-etksauzr` with `prefix-20260929`.
 
 ### The scrolling thread waited for the main thread, twice
@@ -45,12 +46,12 @@ shows it. `SUMMIT_SCROLL_WITHOUT_MAIN=0` waits as before.
 
 The Guardian, 40 notches in 2 s from 1.5 s after navigation, consent
 dismissed, compositions in the web process from the first notch that
-scrolled, four runs alternated:
+scrolled, by the compositor's own clock, four runs alternated:
 
 | | compositions a second | gaps over 40 ms | notches that took over 20 ms |
 | --- | --- | --- | --- |
-| both switches off | 48.4, 57.2, 51.2, 58.2 | 63 51 45 55 44 64 40 58 61; 49; 168 50; 48 40 43 | 51 50 58 52; 42 25 31; 158 25; 38 124 |
-| new | 57.3, 59.6, 58.6, 58.7 | none; none; none; 50 | none |
+| both switches off | 50.6, 57.5, 54.0, 57.6 | 62 42 41 52 43 53 58 54; 49; 160 43; none | 51 50 58 52; 42 25 31; 158 25; 38 124 |
+| new | 59.5, 59.5, 58.6, 58.7 | none; none; none; 44 | none |
 
 Frames the window received, against the build installed in the evening,
 two runs each, notches at the middle of the page in both:
@@ -63,6 +64,18 @@ two runs each, notches at the middle of the page in both:
 | CNN, fling | 53.5, 54.0 / 4, 6 / 43, 39 ms | 56.1, 54.5 / 3, 2 / 47, 35 ms |
 | Wikipedia (Australia), wheel | 57.4, 58.4 / 2, 1 / 57, 36 ms | 59.3, 57.9 / 0, 2 / 30, 37 ms |
 | Wikipedia (Australia), fling | 57.1, 57.1 / 2, 3 / 47, 39 ms | 58.2, 58.1 / 1, 2 / 36, 38 ms |
+
+That table is the build of 01:20. The last build was measured the same
+way at 02:45, when the pages were heavier for both (The Guardian's fling is
+43 frames/s in the evening's build, 46 an hour before): The Guardian's
+wheel 53.0 and 56.4 frames/s against 57.9 and 49.9, its fling 45.2 and
+44.2 against 43.1 and 43.1, CNN's wheel 51.4 and 45.9 against 46.5 and
+49.9, its fling 49.9 and 51.9 against 52.5 and 52.4, Wikipedia's wheel 56.9
+and 57.8 against 56.0 and 57.9, its fling 55.0 and 56.0 against 54.0 and
+54.6. Two runs of a live page do not tell builds apart that are this
+close; the tables of alternated runs in this section do. Three iterations
+of Speedometer 3.1, as a check that nothing broke: 8.0 ± 2.8 against 7.5
+± 2.2.
 
 The 87 ms that remain on The Guardian are before the first frame. The
 middle of that page has a wheel listener that may cancel, so the first
@@ -79,6 +92,81 @@ the pointer: the page reaches 12,000 px with the latch; without, the box
 takes two notches and the page reaches 11,400), `wheel-listener-passes.html`
 (a box whose listener cancels every notch passes: it hears 11 notches and
 the page reaches 12,000).
+
+### The main thread zeroed every tile before it was painted
+
+`profile -a -k` with callers, four seconds of The Guardian loading and
+being scrolled: the web process's main thread is busy 3535 of 4000 ms.
+Scripts are 31% of that (12% parsing them), style 15%, layout 15%, and the
+layer flush, which is what keeps the layers from hit tests, 9%: 329 ms, of
+which 233 in `SkiaPaintingEngine::createBuffer()`. It allocated each tile's
+pixels zeroed, 200 tiles of about a megabyte for one repaint at 200%,
+before handing the tile to a painting thread, whose first act is to clear
+the canvas. The pixels are now allocated by the painting thread when it
+asks for the canvas, and not zeroed (`SUMMIT_TILE_BUFFERS_LATE=0`). Over
+four alternated runs the main thread kept the layers for more than 20 ms
+3 to 5 times a run and 134 to 243 ms in all, against 7 to 9 times and 305
+to 584 ms. The scroll itself does not change (58.3 to 59.6 compositions a
+second either way): it no longer waits for the main thread.
+
+The same profile has the network process's cache thread at 1533 to 1707 ms
+of the 4000, three quarters of it in bfs `BlockAllocator::AllocateBlocks()`.
+A new file costs 6.2 ms on the workstation's volume whatever its size
+(docs/kunanyios-platform-issues.md), and the cache writes one for every
+resource. That is a processor's time, not the page's; it is with the OS
+session.
+
+### Tiles with nothing in them
+
+YouTube's page has layers that are mostly nothing: the container of its
+header (1904x1056, a bar at the top), the overlay of the player (1308x718).
+Every tile of such a layer was uploaded, kept as a texture and blended into
+every frame. The painting thread now looks whether a tile has any pixel
+that is not transparent, and the compositor keeps no texture for a tile
+without and draws nothing for it (`SUMMIT_SKIP_EMPTY_TILES=0`).
+
+Big Buck Bunny at 1080p60, 26 s, two runs each way, by the compositor's
+clock:
+
+| seconds of playback | | compositions/s | ms each | draw calls | Mpx blended | over 16.7 ms |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0 to 5 | before | 47.8, 48.1 | 11.7, 11.0 | 158, 153 | 4.5, 4.6 | 35 of 238, 24 of 240 |
+| | new | 50.6, 50.7 | 12.3, 10.8 | 115, 119 | 5.1, 2.8 | 19 of 252, 18 of 252 |
+| 5 to 12 | before | 55.8, 54.7 | 15.4, 16.2 | 205, 204 | 8.1, 8.1 | 76 of 390, 101 of 382 |
+| | new | 57.1, 56.8 | 13.9, 13.8 | 136, 144 | 4.4, 4.5 | 65 of 399, 69 of 397 |
+| from 12 | before | 59.5, 59.2 | 13.7, 14.3 | 194, 194 | 7.8, 7.8 | 23 of 669, 31 of 669 |
+| | new | 59.5, 59.5 | 11.9, 12.0 | 130, 130 | 4.1, 4.1 | 4 of 642, 3 of 667 |
+
+`tools/bench/pages/transparent-tiles.html` paints a small box into an empty
+tile, moves it to another, removes it, and paints a translucent area over
+several; the four pictures are the same pixel for pixel with the switch on
+and off. So are Wikipedia's and GitHub's after a scroll.
+
+### What is left of YouTube's start
+
+- **A freeze of 330 to 400 ms about 1.6 s after the first frame**, in every
+  run. The page takes the video's layer away and gives it a new one
+  ("video goes to the compositor" three times in each load); between the
+  rendering update that removes the old one and the one that brings the
+  new one the main thread is busy, and nothing is composited. Not
+  addressed.
+- **The decoder is flushed and set up two to four times** in the first half
+  second, each time from the first sample.
+- **Seconds 5 to 12: the page's root layer is painted again 3.4 times a
+  second**, 124 tiles and 7.85 Mpx each time, as the list beside the player
+  grows by one entry (the layer grows by 192 px, and its whole old extent
+  is dirty). Each of those compositions takes 25 ms, 17 of them the read
+  of a whole frame, and costs a frame of the video. Nothing of what
+  `SUMMIT_FULL_REPAINT_TRACE` watches asks for it, so it is a renderer that
+  spans the page and repaints itself whole when its size changes. The
+  Guardian's root layer is painted whole about ten times while it loads,
+  there by changes of the style of `html` and `body` (11 each) and by
+  layouts that ask for a full repaint (28). Not addressed: the rules are
+  WebCore's.
+- **One `vkCreateImage` fails in every load** (`nvRes: 0x1f`, then "ZINK:
+  vkCreateImage failed"). It comes from Skia's GL context
+  (`SUMMIT_SKIA_GL_CONTEXT=0` has none), not from the compositor's
+  textures, and nothing is missing on screen. Not explained.
 
 ### Other changes of the night
 
@@ -133,15 +221,28 @@ the page reaches 12,000).
   that, in the old build and the new.
 - Page loads are bimodal in both builds: CNN asks hosts that do not answer,
   and a load that meets one waits 30 s for the connection.
+- **The log's arrival times are not the compositor's.** The test launcher
+  stamps each line when it reads it from the pipe, and lines bunch: four
+  compositions "at the same millisecond", then none for 40. Intervals
+  between compositions are taken from the `at=` of the timing lines.
+  The first table above was first made from arrival times (48.4 to 58.2
+  against 57.3 to 59.6 compositions a second); the conclusion is the same.
+- **An empty name in a copy command copied every bundle on the
+  workstation** into the test directory, 40 GB, until the volume was 97%
+  full (02:05 to 02:10 on 30 September). The command took the name of the
+  bundle from the output of a build that had failed. The copy was stopped
+  and the directory removed; nothing else was touched, and the test
+  scripts now check the name.
 
-### YouTube
+### YouTube, before the two sections above
 
-Big Buck Bunny at 1080p60, 30 s without screenshots: the first video frame
-1.2 s after the page creates its player; 52 to 56 frames/s on screen for
-the first eight seconds, with gaps of 84 to 350 ms in the first three; 59
-frames/s and no gap over 33 ms from the fourteenth second on. A composition
-takes 14.5 ms (95th percentile 19.0), 11.8 of them the read and the hand
-over to the window. The evening's build and the new one do not differ.
+Big Buck Bunny at 1080p60, 30 s without screenshots, in the build of
+01:20: the first video frame 1.2 s after the page creates its player; 52
+to 56 frames/s on screen for the first eight seconds, with gaps of 84 to
+350 ms in the first three; 59 frames/s and no gap over 33 ms from the
+fourteenth second on. A composition takes 14.5 ms (95th percentile 19.0),
+11.8 of them the read and the hand over to the window. The evening's build
+and that one do not differ.
 
 ## 29 September 2026 (evening): video that stood still, web processes that died, scrolling at 200%
 

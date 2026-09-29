@@ -195,6 +195,34 @@ Rows that span the image cost 0.56 ms a megapixel, narrower ones 1.5,
 whatever the offset. The CPU's share is the same in both (the copy out of
 the staging buffer). Summit reads full-width bands.
 
+## BFS: a new file costs 6 ms
+
+**Measured** on the workstation's `/boot` (bfs, 238 GiB, 80% used), 30
+September 2026, nothing else running, Python `open`, one `write`, `close`:
+
+| | in all | each |
+| --- | --- | --- |
+| 300 new files of 2 KB | 1832 ms | 6.11 ms |
+| 300 new files of 24 KB | 1859 ms | 6.20 ms |
+| 100 new files of 200 KB | 624 ms | 6.24 ms |
+| removing 300 files | 12 ms | |
+
+**Where it shows.** WebKit's network cache writes one file for each
+resource, a few hundred for a page. While The Guardian loads, the network
+process's cache thread is on a processor 1533 to 1707 ms of 4000, three
+quarters of it in `BlockAllocator::AllocateBlocks()` (through
+`Inode::SetFileSize()`, `Inode::_GrowStream()`, `BlockAllocator::Allocate()`).
+
+**Not measured**: why. The OS session reads the allocator's source as a
+search, one bit at a time, for a free run of 64 KB (what every file is
+given when it gets its first data), through allocation groups that have
+none; it proposes the same test on a fresh volume to tell this volume's
+state from a fixed cost. Whether the writes hold up other processes was not
+measured either.
+
+**In Summit**: nothing. The thread has the lowest priority and the machine
+has processors to spare.
+
 ## The GPU's performance state
 
 `NV2080_CTRL_CMD_PERF_GET_CURRENT_PSTATE` returns P0 idle, under a browser
