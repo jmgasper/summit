@@ -265,3 +265,16 @@ done
 
 Afterwards `fc-match serif`, `sans-serif` and `monospace` answer Noto Serif,
 Noto Sans and Noto Sans Mono; before, all three answered Noto Sans.
+
+## The applications menu (2026-09-29)
+
+Deskbar's Applications > Summit is `/boot/system/apps/Summit` from the
+`summit` package. Until today that was the 21 September preview package,
+whose binary was the legacy-engine browser, so the menu launched an old
+Summit while `Summit-current.sh` on the Desktop launched the current one.
+`tools/package-launcher-on-workstation.sh` now builds and installs a
+`summit` package (0.1.0~dev2) whose `apps/Summit` is a script with the
+Summit icon that runs the Desktop launcher, so the menu follows whatever
+`install-on-workstation.sh` installed last. Run it again only if the
+package is removed; installing a new bundle needs only the install script.
+
