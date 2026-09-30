@@ -1,0 +1,74 @@
+# BWebView on Summit's engine
+
+Added 30 September 2026. Haiku's own web views — WebPositive, and any
+program written against HaikuWebKit's `BWebView` — run on Summit's WebKit
+instead of HaikuWebKit.
+
+## What it is
+
+`legacy/` is a `libWebKitLegacy.so.1` with HaikuWebKit 1.10.0's public
+classes, implemented on Summit's engine API (`BWebKitView`,
+`BWebKitContext`, from the `summit_webkit` package):
+
+| HaikuWebKit | On Summit's engine |
+| --- | --- |
+| `BWebView` | A container holding the engine's `BWebKitView` as its child (in the slot `fOffscreenView` of the unchanged class layout). The engine view draws the page and takes the mouse and keyboard; `MakeFocus()` gives it the focus. |
+| `BWebPage` | As before, a handler of the application looper. The engine's notifications for its view arrive there and go to the page's listener as the old messages: `LOAD_NEGOTIATING`/`LOAD_STARTED` when a load starts, `LOAD_COMMITTED` when the address changes, `LOAD_PROGRESS` (0-100), `LOAD_DOC_COMPLETED` and `LOAD_FINISHED`, or `LOAD_FAILED` and `MAIN_DOCUMENT_ERROR`, `TITLE_CHANGED`, `UPDATE_NAVIGATION_INTERFACE`, `UPDATE_HISTORY` for each successful load, `SET_STATUS_TEXT` for the link under the pointer, `ICON_RECEIVED`, `CLOSE_WINDOW_REQUESTED`. |
+| New windows | `window.open()` and links with a target: the page makes a new `BWebView` showing the page the engine opened and sends `NEW_PAGE_CREATED` with it (and a frame when the page asked for a sized pop-up), as before. A middle click on a link sends `NEW_WINDOW_REQUESTED`. |
+| Context menu | The engine leaves the menu to its host; the old engine drew its own. `BWebView` shows one: open link or image in a new tab, copy its address, download it, cut/copy/paste, back/forward/reload. |
+| `BWebDownload` | The engine reports downloads to a handler of the application looper, which makes `BWebDownload` objects and sends `B_DOWNLOAD_ADDED` to the download listener. The engine starts saving at once (to the Desktop); `Start(folder)` moves the file into the application's folder when it is complete. `B_DOWNLOAD_STARTED`, `B_DOWNLOAD_PROGRESS` and a synchronous `B_DOWNLOAD_REMOVED` follow as before; the file gets its `META:url` and MIME type. |
+| `BWebSettings` | `SetPersistentStoragePath()` chooses where the engine keeps the application's website data: `<path>/WebKit` (WebPositive: `~/config/settings/WebPositive/WebKit`). `SendIconForURL()` answers from the site icons the engine reported. Fonts, script and proxy settings are kept but not applied: the engine has no per-application settings for them. |
+| `BWebFrame` | The main frame: address, title, editing commands, zoom, find. What needs the document itself (its text, its source, editing it) is not available, because the page runs in another process. |
+| `SendPageSource()` | The source as the server sent it (from the cache), or the page's markup. |
+| `GetContentsAsMHTML()` | A MIME archive of the document's markup as it stands, with a `<base>` so that its links and pictures still lead to the site. Waits for the engine; it cannot be called on the application thread. |
+| `WebKitInfo` | "Summit" and the engine's versions. |
+| `BWebWindow` | HaikuWebKit's own code, unchanged apart from a completion handler Summit's engine does not use. |
+
+Programs built for HaikuWebKit run without being rebuilt: the headers
+(`legacy/headers`) are HaikuWebKit's, with the same class layouts and virtual
+functions, and every function WebPositive imports is there (checked against
+the installed WebPositive's undefined symbols). One source difference:
+`WebFrame.h` no longer includes JavaScriptCore's and WebCore's headers, so
+`BWebFrame::FindString()` takes option bits of its own (`B_FIND_BACKWARDS`,
+`B_FIND_CASE_SENSITIVE`, `B_FIND_WRAP_AROUND`) and `GlobalContext()` returns
+`NULL`.
+
+## Packages
+
+- `summit_webkit` (the engine: `libWebKit`, its processes, ICU, a Mesa with
+  EGL, in `/boot/system/lib/summit-webkit`), made by
+  `tools/package-summit-webkit.sh`; with `SUMMIT_REMOTE_SHELL=tools/ws.sh`
+  it is made on the X399 from one of its bundles, with its zink Mesa.
+- `summit_webkitlegacy` (`lib/libWebKitLegacy.so.1`, whose run-time path
+  leads to the engine, and HaikuWebKit's header and development-library
+  paths), made by `tools/package-summit-webkitlegacy.sh` on the X399 against
+  the installed engine (or with the Haiku cross tools: `legacy/Makefile`
+  works with any compiler given `ENGINE_HEADERS` and `ENGINE_LIB`). It
+  provides `haikuwebkit` and `haikuwebkit_devel` (WebPositive's package
+  requires `haikuwebkit`) and replaces and conflicts with both.
+
+## In the Haiku fork
+
+Commit 3c6c1ce347 on the fork's `x399-workstation` branch: when
+`HAIKU_SUMMIT_PACKAGES_DIR` (UserBuildConfig, or `jam -s`) names a directory
+with the two packages, the `webkit` build feature takes its headers and
+library from `summit_webkitlegacy` instead of HaikuWebKit, and WebPositive's
+link finds the engine's libraries through `-rpath-link`. Unset, the build is
+as before. `jam -q WebPositive` was built both ways on the x86_64 build; the
+Summit-built binary needs `libWebKitLegacy.so.1` like the other.
+
+Putting the packages into the fork's images (a local package repository for
+the image's dependency resolution) is not done; on a running system they are
+installed with `pkgman install` (below).
+
+## Not done
+
+- A per-application user agent, fonts and JavaScript switch (no engine API).
+- `BWebFrame`'s document access (`InnerText()`, `AsMarkup()`,
+  `FrameSource()`) and the frame tree.
+- Web Inspector for BWebView programs (`SetInspectorView()` is kept, unused).
+- HTTP authentication and certificate questions: `AUTHENTICATION_CHALLENGE`
+  and `SSL_CERT_ERROR` are never sent, because the engine's API does not ask
+  its host (Summit itself has no such dialogs yet).
+- WebPositive's cookie window still reads its own (now unused) cookie jar;
+  the pages' cookies are the engine's.

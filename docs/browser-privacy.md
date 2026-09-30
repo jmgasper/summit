@@ -30,9 +30,11 @@ Added 28 September 2026, on top of [browser-ui.md](browser-ui.md) and
 - Links: the page context menu offers **Open Link in New Private Window**; in
   a private window, "new window" links, pop-ups and Move Tab to New Window stay
   private. File › New Window always opens a normal window.
-- Extensions do not run in private windows. Their tab and window requests, and
-  pages opened from outside Summit (command line, Tracker), go to the front
-  normal window, or open one.
+- Extensions do not run in private windows unless allowed there, one by one,
+  in the Extensions window (**Allow in private windows**, added 30 September;
+  see [browser-extensions-default.md](browser-extensions-default.md)). New
+  tabs they open, and pages opened from outside Summit (command line,
+  Tracker), go to the front normal window, or open one.
 - Downloads and bookmarks made in a private window are kept.
 
 ### Zoom
@@ -153,4 +155,4 @@ keystrokes.
 - The cookie/site-data size is not shown (it includes extensions' data, which
   is kept).
 - Text-only zoom is not offered.
-- Private windows cannot allow chosen extensions yet.
+- ~~Private windows cannot allow chosen extensions yet.~~ Done 30 September.

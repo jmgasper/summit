@@ -1,8 +1,9 @@
-# Developer tools: the Network tab and the Console
+# Developer tools: Network, Console and Storage
 
-Added 30 September 2026. This is the first pass: what a page asks of the
-network, and what it writes to its console. Elements, sources, a debugger and
-storage are not part of it (see [Not done](#not-done)).
+Added 30 September 2026. The first pass (morning): what a page asks of the
+network, and what it writes to its console. The Storage tab (afternoon): the
+page's local and session storage and its cookies. Elements, sources and a
+debugger are not part of it (see [Not done](#not-done)).
 
 ![The Network tab: requests, and a JSON response laid out](screenshots/developer-tools-network.png)
 
@@ -71,6 +72,35 @@ levels are ticked.
 
 ![The Console: messages coloured by severity](screenshots/developer-tools-console.png)
 
+### Storage
+
+The left of the tab lists **Local Storage** and **Session Storage**, each with
+the origins of the page's frames (the page's own first, then those of frames
+from other sites), and **Cookies**. Choosing one shows it on the right:
+
+- **Storage**: a row for each key, with its value on one line. The selected
+  item's value is shown whole below the list, in the same viewer as a
+  response body: JSON laid out and coloured (*Format*), *Wrap lines*,
+  **Copy**. The *Key* and *Value* fields under it are filled from the
+  selected item; **Save Item** sets the key to the value in the page's
+  storage, adding it if it is new.
+- **Cookies**: every cookie the page's addresses are sent, HttpOnly ones
+  included: name, value, domain, path, when it expires (*Session* for those
+  that end with the session), size, HttpOnly, Secure and SameSite. The
+  selected cookie's value is shown below.
+
+**Refresh** reads the storage again, **Delete** removes the selected item or
+cookie, **Clear All** removes every item of the storage shown, or every
+cookie listed. The filter shows the rows whose key or value (a cookie's name,
+value or domain) contains the text. The line under the list counts the items
+and their bytes.
+
+The list follows the page: an item the page sets, changes or removes changes
+in the list at once, a frame from another site adds its origin, and after the
+page (re)loads what is shown is read again. A page that changes its site
+starts a new list. A storage is only read from the page while the Storage tab
+is shown.
+
 ### Preserve log
 
 Without it, a navigation of the page empties the list of requests and the
@@ -127,8 +157,18 @@ page (WebProcess)          UIProcess                          browser
   elements, end tags that may be omitted, inline elements, and leaves `pre`
   and `textarea` alone and the text of `script` and `style` as it is, moved
   to the element's indentation.
+- **Storage.** The model also enables `DOMStorage` in each target and asks
+  `Page.getResourceTree` for the origins of the page's frames (then follows
+  `Page.frameNavigated`). A storage is read with
+  `DOMStorage.getDOMStorageItems` and changed with `setDOMStorageItem`,
+  `removeDOMStorageItem` and `clearDOMStorageItems`; the page's own changes
+  arrive as `DOMStorage.domStorageItem{Added,Updated,Removed,sCleared}`
+  events. Cookies are `Page.getCookies` (the cookies of all the page's
+  resources, through the network process, so HttpOnly ones too) and
+  `Page.deleteCookie` with the cookie's name and an address it is sent to.
+  No engine change was needed.
 - **Windows.** `src/ui/DevToolsWindow.*`, `DevToolsNetwork.cpp`,
-  `DevToolsConsole.cpp` and `SourceView.*`. The window has its own thread, on
+  `DevToolsConsole.cpp`, `DevToolsStorage.cpp` and `SourceView.*`. The window has its own thread, on
   which the model is fed and shown; the browser window only opens and closes
   it.
 
@@ -158,15 +198,24 @@ are not installed. `BColumnListView` is the system's static
 
 ## Tests
 
-- `build-host/summit_devtools_tests` (225 checks; also `make check` on
+- `build-host/summit_devtools_tests` (259 checks; also `make check` on
   Haiku): the formatters, body detection, base64 and hexadecimal output, and
   the model fed with protocol messages: requests, redirects, failures,
   bodies, the memory cache, navigation in the same process and to another,
   kept logs, console levels, previews, format substitutions, stacks, groups,
-  repeats, expressions, the limits, and input that is not the protocol.
+  repeats, expressions, the limits, and input that is not the protocol; for
+  Storage, the frames' origins (opaque and empty ones left out, file pages
+  kept), reading an area, the page's own changes, setting, removing and
+  clearing, errors, cookies (their addresses, expiry, sizes, deleting and
+  clearing), reading again after a load and forgetting areas after a
+  navigation.
 - `tools/bench/devtools/server.py` serves a page that asks for every kind of
   thing the Network tab shows and writes every kind of message the Console
-  shows, and a second page to navigate to.
+  shows, and a second page to navigate to. `storage.html` writes local and
+  session storage (JSON, a 5000-character value, a key with a line break),
+  cookies from script and from the server (HttpOnly, SameSite=Strict, a path
+  of its own), changes `ticks` every two seconds, and has a frame from the
+  next port (the server answers on both), another origin.
 - `summitctl --team ID devtools [network|console]` opens the tools of the
   current tab. `summitctl --team ID devtools-do ACTION [ARGUMENT]` drives an
   open window as its controls do and prints what it shows as JSON (the
@@ -177,7 +226,11 @@ are not installed. `BColumnListView` is the system's static
   headers|request|response`, `format on|off`, `wrap on|off`, `copy`,
   `clear-network`, `preserve-network on|off`, `filter-network TEXT`, `types
   N`, `clear-console`, `preserve-console on|off`, `levels errors,warnings`,
-  `filter-console TEXT`, `evaluate EXPRESSION`.
+  `filter-console TEXT`, `evaluate EXPRESSION`; for Storage `panel storage`,
+  `storage-select local|session ORIGIN` or `storage-select cookies`,
+  `storage-item KEY`, `storage-set KEY=VALUE`, `storage-delete`,
+  `storage-clear`, `storage-refresh`, `filter-storage TEXT`.
+  `SUMMIT_DEVTOOLS_TRACE=2` also logs every protocol message received.
 - `SUMMIT_DEVTOOLS_TRACE=1` also writes every finished request, body and
   console message to standard error.
 
@@ -202,6 +255,20 @@ and two real sites, on 30 September 2026:
 | Windows | a tools window for each of two tabs; closing a tab closes its window; quitting with tools open leaves no process and no crash report |
 | Load | 30000 `console.log()` calls from one expression are read in under 3 s and the newest 10000 kept |
 
+### Storage
+
+With `bundle-wkujmujj` (then `bundle-uc_nops9`) from a private copy and
+profile, against `storage.html`, on 30 September 2026:
+
+| | |
+| --- | --- |
+| Origins | the page's (`:8790`) first, then the frame's (`:8791`) as soon as the frame loaded, under both storages; the order and the selection kept when the list is rebuilt |
+| Local storage | the page's six items, the 5000-character value shown on one line and whole below; the cart's JSON laid out |
+| Live | `ticks` read 2, then 4, four seconds apart, while the page counted, without Refresh |
+| Edit | `added=hello world` saved and listed; `theme` deleted; the frame's session storage (`frame-session`) shown |
+| Cookies | `prefs` (Lax, expiring the next day), `visited` (session) and `server-session` (HttpOnly, Strict, from the server); deleting the HttpOnly one removed it (the list read 2 cookies after) |
+| Look | on a screen grab: the areas on the left, the table, the value viewer and the key/value row |
+
 ## Installed
 
 The workstation's desktop launcher `/boot/home/Desktop/Summit-current.sh`
@@ -217,7 +284,8 @@ is started again.
   console messages for an inspector only while developer extras are on, and
   they are on only while tools are open, so that pages nobody inspects pay
   nothing.
-- Elements, sources and the debugger, storage, timelines. The session
+- Elements, sources and the debugger, timelines. In Storage: IndexedDB,
+  the cache API, editing a cookie (only deleting), and a cookie's partition. The session
   carries the whole protocol, so they need panels, not engine work.
 - Web sockets' frames, request timing broken down (DNS, connect, TLS),
   throttling, blocking and replaying requests, copy as cURL, HAR export.

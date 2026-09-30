@@ -18,7 +18,7 @@ CXX ?= g++
 CXXFLAGS ?= -O2 -g
 CXXFLAGS += -std=c++20 -fPIC -fvisibility=hidden -Wall -Wextra -Wno-multichar -Wno-unused-parameter
 CPPFLAGS += -Iheaders -I$(ENGINE_HEADERS) -I/boot/system/develop/headers/private/netservices
-LDFLAGS += -shared -Wl,-soname,libWebKitLegacy.so.1 -Wl,-rpath,$(ENGINE_RUNPATH) -L$(ENGINE_LIB)
+LDFLAGS += -shared -Wl,-soname,libWebKitLegacy.so.1 -Wl,--disable-new-dtags -Wl,-rpath,$(ENGINE_RUNPATH) -L$(ENGINE_LIB)
 LIBS = -lWebKit -lbe -ltranslation -lnetwork
 
 SOURCES = $(wildcard src/*.cpp)
