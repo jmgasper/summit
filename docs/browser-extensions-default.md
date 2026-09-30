@@ -125,4 +125,15 @@ fresh profile:
 | Withdrawn | after reloading, the private page had no content script and the button was gone; the normal window unaffected |
 | Pinning | the button's menu (Unpin from Toolbar, Manage extensions…), unpinned: the button replaced by the extensions menu holding it, `unpinnedExtensions` saved; the Extensions window showed *Show on the toolbar* off and *Allow in private windows* on; ticking it put the button back |
 | Default browser, VM | the launch path as built now, in the build VM with a stand-in program (Summit's signature and launch flags, `DefaultBrowser.cpp`, logging what it is given): Make Default set the four types and the hint to the link; `open URL` and `open FILE.html` reached it while it ran (argv, refs) and when the system had to start it through the link, which then read `launch.env`. An unset `LIBRARY_PATH` lost the default search path when prepended to; fixed. The VM's settings were put back. |
-| Default browser | before: WebPositive for all four types. After Make Default: Summit for all four and the hint set; `open http://…` opened a tab in the running test Summit. An HTML file from `open FILE` reached a launcher script without its path, which is why the hint now names the executable (see above); that version is built but was not yet tried on the X399 when this was written. The owner's settings were to be put back after the test. |
+| Default browser, X399, final | `bundle-9x6fji8g` from a private copy, after the machine's restart: Make Default through summitctl; `open URL` and `open FILE.html` opened tabs in the running copy; with it quit, `open URL` started it through the link, which read `launch.env` and drew the page with the GPU (and, as a default browser does, used the normal profile). New SSH logins and the registrar's threads stayed normal throughout. The owner's settings were put back to WebPositive afterwards. |
+| Default browser | before: WebPositive for all four types. After Make Default: Summit for all four and the hint set; `open http://…` opened a tab in the running test Summit. An HTML file from `open FILE` reached a launcher script without its path, which is why the hint now names the executable (see above); the final version is the row above. |
+
+## Installed
+
+The X399's desktop launcher points at `bundle-9x6fji8g` since 13:54 on 30
+September 2026 (Mesa `prefix-20260930`; previous launcher in
+`/boot/home/summit/launcher-backups/Summit-current.pre-20260930-1354.sh`).
+The install also wrote the bundle's `launch.env` and the link
+`/boot/home/summit/Summit-installed`, which Preferences' default-browser
+button points the system at. The system's browser was left as it was
+(WebPositive); the button is the owner's to press.

@@ -93,6 +93,23 @@ work). `SUMMIT_LEGACY_OPENED_PAGES=1` goes back to the engine's pages, to
 look at that again. `SUMMIT_LEGACY_TRACE=1` logs what the pages send to
 their listeners.
 
+## Installed on the X399
+
+At 13:51 on 30 September 2026, after the machine's restart:
+`summit_webkit-1.10.0-4` (from `bundle-9x6fji8g`, with the X399's zink
+Mesa `prefix-20260930`; it replaced -3, which Aurora also uses) and
+`summit_webkitlegacy-1.10.0-1` (built there against it), which replaced
+`haikuwebkit` and `haikuwebkit_devel`. The old packages are kept in
+`/boot/home/summit/package-backups`; pkgman's previous activation state is
+`state_2026-09-30_13:50:58`. The installed WebPositive then ran on Summit's
+engine: its restored session (with site icons), the test page, a
+`target=_blank` tab and a sized pop-up window drawn, tabs closed and the
+program quit with no process left and no crash report.
+
+To go back: `pkgman install` the three packages from
+`/boot/home/summit/package-backups` (haikuwebkit, haikuwebkit_devel,
+summit_webkit-1.10.0-3) and uninstall summit_webkitlegacy.
+
 ## Not done
 
 - A per-application user agent, fonts and JavaScript switch (no engine API).
@@ -105,6 +122,4 @@ their listeners.
 - WebPositive's cookie window still reads its own (now unused) cookie jar;
   the pages' cookies are the engine's.
 - `window.opener` for pages opened by `window.open()` (above).
-- On the X399: the library, packaged (`summit_webkitlegacy`), was not yet
-  installed there when this was written (see the install notes at the end
-  of the day's documents).
+
