@@ -23,6 +23,31 @@ the toolbar popup, fill from the inline menu.
 | Inline field icon on login pages | **Works.** The icon appears in the username field and offers to unlock ([screenshot](screenshots/1password-inline-icon.png)). All eight manifest content scripts are registered and matched, including the `world: MAIN` entry |
 | Unlock popup, inline menu suggestions, autofill, save login | Not yet verified. Needs the owner's master password |
 
+## The popup that kept spinning (1 October 2026)
+
+With `bundle-5wfht_91` the toolbar popup showed only a spinner on Proton
+Mail's sign-in page, while on other pages it offered to unlock. The popup asks
+the background for the page's details, and the background asks the page's
+content scripts, which never answered: the Proton tab's main thread was
+deadlocked. Proton's crypto worker compiles WebAssembly; the compiler thread
+that finishes it arms the worker's JavaScriptCore timer under JavaScriptCore's
+one timer lock, and in the Haiku port arming a timer waited for the looper of
+the timer's thread. The worker held its looper while firing a timer of its own
+and waited for that lock, and the main thread waited on the same lock the next
+time it scheduled a garbage collection (for a new frame). The page still looked
+normal, but nothing ran in it any more, not even Developer Tools.
+
+The worker run-loop fix for issue #4 made this possible: before it, worker
+threads never cycled their looper. Timers in `RunLoopHaiku.cpp` now keep their
+state under a lock of their own, so no thread waits for another thread's looper
+to arm or stop a timer. `tools/bench/pages/worker-timers.html` reproduces the
+pattern (four workers compiling WebAssembly while the page creates frames).
+
+The frozen tab also explains a browser that could not be closed: the port
+cancelled a close when a page did not approve it within 30 seconds, so a
+deadlocked tab kept its window and the application open. See
+[STATUS.md](STATUS.md) for how hung pages close now.
+
 ## How the gaps were found
 
 `tools/make-traced-extension.py` unpacks a package into a *diagnostic copy* and

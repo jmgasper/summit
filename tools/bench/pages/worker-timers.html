@@ -1,0 +1,76 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Worker timer probe</title>
+<h1>JavaScriptCore timers across threads</h1>
+<p>Workers compile WebAssembly asynchronously over and over while the page
+keeps creating frames. An asynchronous compilation finishes on a compiler
+thread, which arms the worker's timer; the worker fires timers of its own; the
+page's main thread arms its garbage-collection timer for every new frame. All
+of them go through one JavaScriptCore lock. On Haiku, arming a timer used to
+wait for the looper of the timer's thread, which that thread holds while a
+timer fires, so the threads could deadlock and take the main thread with them:
+Proton Mail's sign-in page froze that way, and 1Password's popup waited on it
+forever. The result is posted after <code>seconds</code> (20); a deadlocked
+page posts nothing, which <code>run-probe.py</code> reports as a timeout.</p>
+<pre id="out">running…</pre>
+<script>
+"use strict";
+const parameters = new URLSearchParams(location.search);
+const seconds = Number(parameters.get("seconds") || 20);
+const count = Number(parameters.get("workers") || 4);
+// (module (memory 1) (func (export "f") (param i32) (result i32) local.get 0 i32.load))
+const bytes = [0,97,115,109,1,0,0,0,1,6,1,96,1,127,1,127,3,2,1,0,5,3,1,0,1,7,5,1,1,102,0,0,10,9,1,7,0,32,0,40,2,0,11];
+const source = `
+const bytes = new Uint8Array(${JSON.stringify(bytes)});
+onmessage = async event => {
+    const end = performance.now() + event.data * 1000;
+    let rounds = 0, garbage = [], reported = performance.now();
+    while (performance.now() < end) {
+        await WebAssembly.instantiate(bytes);
+        // Garbage keeps the worker's collection timers busy as well.
+        garbage.push(new Array(1000).fill(rounds));
+        if (garbage.length > 200)
+            garbage = [];
+        ++rounds;
+        if (performance.now() - reported > 250) {
+            postMessage({ rounds });
+            reported = performance.now();
+        }
+    }
+    postMessage({ rounds, done: true });
+};`;
+const result = { page: "worker-timers", seconds, workers: count };
+const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+const workers = Array.from({ length: count }, () => ({ rounds: 0, done: false }));
+workers.forEach((state, index) => {
+    const worker = new Worker(url);
+    worker.onmessage = event => Object.assign(state, event.data);
+    worker.onerror = event => { state.error = event.message; };
+    worker.postMessage(seconds);
+});
+let frames = 0, worstGap = 0, lastTick = performance.now();
+const churn = setInterval(() => {
+    const now = performance.now();
+    worstGap = Math.max(worstGap, now - lastTick);
+    lastTick = now;
+    const frame = document.createElement("iframe");
+    frame.srcdoc = "<p>frame " + frames + "</p>";
+    frame.width = frame.height = 40;
+    document.body.append(frame);
+    setTimeout(() => frame.remove(), 200);
+    ++frames;
+}, 50);
+const finish = async () => {
+    clearInterval(churn);
+    result.frames = frames;
+    result.worstMainThreadGapMs = Math.round(worstGap);
+    result.workerRounds = workers.map(state => state.rounds);
+    result.workerErrors = workers.map(state => state.error).filter(Boolean);
+    result.settled = workers.every(state => state.done) && !result.workerErrors.length;
+    document.getElementById("out").textContent = JSON.stringify(result, null, 2);
+    document.title = result.settled ? "Worker timers: settled" : "Worker timers: workers stalled";
+    try { await fetch("/__bench/probe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(result) }); } catch (error) { }
+};
+// Workers that are merely slow get three more seconds to report their end.
+setTimeout(finish, (seconds + 3) * 1000);
+</script>

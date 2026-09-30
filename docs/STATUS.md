@@ -1,5 +1,52 @@
 # Development verification
 
+## 1 October 2026, later: a frozen tab, 1Password's popup and a browser that would not close
+
+Reported by the owner with `bundle-5wfht_91`: 1Password's toolbar popup only
+spun, and Summit hung so that the machine was restarted. Fixed and installed
+as `bundle-xgce7ywe` (same `SkiaCGMiPGO` engine, incremental), started from
+the Deskbar with the owner's profile: the restored Proton tab answers and
+1Password's popup offers to unlock there.
+
+- **A deadlock between JavaScriptCore timers.** On Proton Mail's sign-in page
+  the tab's main thread stopped for good, waiting for JavaScriptCore's one
+  timer lock (`JSRunLoopTimer::Manager`). Proton's crypto worker compiles
+  WebAssembly; the compiler thread that finishes it takes that lock and arms
+  the worker's RunLoop timer, and in the Haiku port arming a timer took the
+  looper lock of the timer's thread. The worker held its looper while firing a
+  timer and waited for the timer lock; the main thread followed on the same
+  lock. The page looked normal but ran nothing any more, so 1Password's
+  content scripts never answered its popup (details in
+  [webextensions-1password.md](webextensions-1password.md)). The worker
+  run-loop fix of #4 below made it possible: worker threads never cycled their
+  looper before. `RunLoopHaiku.cpp` now keeps timer state under a lock of its
+  own, and no thread waits for another thread's looper to arm, stop or query a
+  timer. `tools/bench/pages/worker-timers.html` (four workers compiling
+  WebAssembly while the page creates frames) never posted its result on
+  `bundle-5wfht_91` and completes now; the Proton tab answers Developer Tools
+  and the popup offers to unlock there, as the build before #1-#4 did.
+- **A hung tab could not be closed.** The port cancelled a close when a page
+  did not approve it within 30 seconds, so the frozen tab kept its window and
+  the application open (a copy of the owner's profile would not quit), which
+  is the likely reason for the restart. A page that has not approved closing
+  within 10 seconds is now checked with a ping; if its process does not answer
+  that either (3 seconds), the page closes and the process is ended once its
+  last page is gone. A process that answers keeps the close cancelled as
+  before. `tools/bench/pages/hang.html` (a script that never ends) closes after
+  14 seconds and its spinning process ends; quitting the browser with it open
+  takes 15 seconds. Before, neither ever finished: the owner's instance on
+  `bundle-5wfht_91` still had not quit 45 seconds after being asked.
+- **The restart itself.** The previous boot's system log has no kernel panic
+  and no crash report, and Summit's log ends at 06:55 with ordinary input
+  traces while the popup was being clicked. WebGL Aquarium had been open 7
+  seconds before Proton; that session logged no GPU or WebGL errors.
+- **Found on the way, not fixed:** asynchronous `WebAssembly.instantiate()`
+  is slow in workers and stalls the page. `worker-timers.html` with one worker
+  managed 156 instantiations in 20 seconds (four workers: about 40 each), and
+  the main thread paused for up to 0.45 s (2.5 s with four workers); Firefox
+  155 managed about 11,000 per worker with pauses under 0.7 s. Without
+  workers the page's main thread never paused longer than 52 ms.
+
 ## 1 October 2026: GitHub issues #1-#4
 
 Engine patch and browser built on the X399 in the `SkiaCGMiPGO` directory
@@ -34,7 +81,8 @@ Engine patch and browser built on the X399 in the `SkiaCGMiPGO` directory
   `WebAssembly.instantiate()`, which never settled in a worker on Haiku:
   worker threads never cycled their RunLoop, so JavaScriptCore's deferred
   work timer never fired there. Fixed in `WorkerRunLoop` (and
-  `RunLoop::cycle()` on a standalone looper);
+  `RunLoop::cycle()` on a standalone looper; it exposed a timer deadlock,
+  fixed later the same day, see above);
   `tools/bench/pages/worker-wasm.html` settles now and hung before. The
   sign-in itself could not be tried without an account; the steps before
   the second factor work (an unknown user is reported). WebCrypto Ed25519
@@ -1007,7 +1055,9 @@ UI object compilations across both backends; evidence:
 Close approvals also track navigation and document identity. A final batch
 validates every approval on WebKit's main thread before closing any engine
 page. Haiku cancels a close after a 30-second process-response timeout and
-rejects late replies; a visible prompt suspends that timer. The revised bridge
+rejects late replies; a visible prompt suspends that timer. (Since 1 October
+2026 the wait is 10 seconds, and a page whose process does not answer a ping
+either is closed; see the top of this file.) The revised bridge
 and both UI backends compile; the 95 dialog checks still pass. Evidence:
 `.vm/close-navigation-final-report.json`.
 `tests/ModernCloseTests.cpp` compiles as an external native harness. Its pending

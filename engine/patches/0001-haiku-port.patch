@@ -1075,10 +1075,10 @@ index 0000000000000000000000000000000000000000..8c108d90e1cc50a099c7a4633fc1baa9
 +using WTF::setProcessBackgroundedHaiku;
 diff --git a/Source/WTF/wtf/haiku/RunLoopHaiku.cpp b/Source/WTF/wtf/haiku/RunLoopHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..1c10aacbe2fdd115ec766d5f63227da9a09a5db5
+index 0000000000000000000000000000000000000000..e43d203e913d4dc7089dfce48b001b05041380b8
 --- /dev/null
 +++ b/Source/WTF/wtf/haiku/RunLoopHaiku.cpp
-@@ -0,0 +1,449 @@
+@@ -0,0 +1,457 @@
 +/*
 + * Copyright (C) 2014, 2024 Haiku, Inc
 + *
@@ -1298,6 +1298,7 @@ index 0000000000000000000000000000000000000000..1c10aacbe2fdd115ec766d5f63227da9
 +
 +    ~LoopHandler() override
 +    {
++        Locker locker { timersLock };
 +        for (auto& [timer, state] : timers)
 +            TimerScheduler::singleton().cancel(timer);
 +        TimerScheduler::singleton().cancelWakeUp(this);
@@ -1337,14 +1338,28 @@ index 0000000000000000000000000000000000000000..1c10aacbe2fdd115ec766d5f63227da9
 +            if (message->FindPointer("timer", reinterpret_cast<void**>(&timer)) != B_OK
 +                || message->FindInt64("identifier", &identifier) != B_OK)
 +                return;
-+            auto found = timers.find(timer);
-+            // A queued native notification may outlive a stopped or destroyed
-+            // timer, or belong to an earlier start at the same memory address.
-+            if (found != timers.end() && found->second.identifier == identifier)
-+                timer->timerFired();
++            fireTimer(timer, identifier);
 +            return;
 +        }
 +        BHandler::MessageReceived(message);
++    }
++
++    // A queued native notification may outlive a stopped or destroyed timer,
++    // or belong to an earlier start at the same memory address.
++    void fireTimer(RunLoop::TimerBase* timer, int64 identifier)
++    {
++        {
++            Locker locker { timersLock };
++            auto found = timers.find(timer);
++            if (found == timers.end() || found->second.identifier != identifier)
++                return;
++            if (found->second.repeating) {
++                found->second.fireTime = MonotonicTime::now() + found->second.interval;
++                TimerScheduler::singleton().schedule(BMessenger(this), timer, identifier, found->second.fireTime);
++            } else
++                timers.erase(found);
++        }
++        timer->fired();
 +    }
 +
 +    struct TimerState {
@@ -1353,6 +1368,16 @@ index 0000000000000000000000000000000000000000..1c10aacbe2fdd115ec766d5f63227da9
 +        Seconds interval;
 +        bool repeating;
 +    };
++    // The timers have a lock of their own, not the looper's. The looper stays
++    // locked while its thread handles a message, and other threads start and
++    // stop its timers: JavaScriptCore does that for every VM's run loop under
++    // one global lock, which its timers also take when they fire. A thread
++    // arming a worker's timer then waited for the worker's looper while the
++    // worker, firing a timer, waited for that lock; the page's main thread
++    // followed on the same lock and the tab stopped (Proton's sign-in page,
++    // whose crypto worker compiles WebAssembly). While it is held nothing is
++    // called but the deadline thread's scheduling, which never waits on it.
++    Lock timersLock;
 +    std::unordered_map<RunLoop::TimerBase*, TimerState> timers;
 +    int64 nextIdentifier { 0 };
 +    std::atomic<bool> running { false };
@@ -1437,39 +1462,26 @@ index 0000000000000000000000000000000000000000..1c10aacbe2fdd115ec766d5f63227da9
 +    stop();
 +}
 +
-+void RunLoop::TimerBase::timerFired()
-+{
-+    auto& handler = *static_cast<LoopHandler*>(m_runLoop->m_handler);
-+    auto found = handler.timers.find(this);
-+    if (found == handler.timers.end())
-+        return;
-+    if (found->second.repeating) {
-+        found->second.fireTime = MonotonicTime::now() + found->second.interval;
-+        TimerScheduler::singleton().schedule(BMessenger(&handler), this, found->second.identifier, found->second.fireTime);
-+    } else
-+        stop();
-+    fired();
-+}
-+
 +void RunLoop::TimerBase::start(Seconds interval, bool repeat)
 +{
 +    auto* handler = static_cast<LoopHandler*>(m_runLoop->m_handler);
 +    if (!handler)
 +        return;
-+    BAutolock locker(handler->Looper());
-+    if (!locker.IsLocked())
-+        return;
-+    stop();
-+
-+    auto identifier = ++handler->nextIdentifier;
 +    auto fireTime = MonotonicTime::now() + interval;
-+    handler->timers.insert_or_assign(this, LoopHandler::TimerState { identifier, fireTime, interval, repeat });
++    int64 identifier;
++    {
++        // A new identifier makes notifications of an earlier start stale.
++        Locker locker { handler->timersLock };
++        identifier = ++handler->nextIdentifier;
++        handler->timers.insert_or_assign(this, LoopHandler::TimerState { identifier, fireTime, interval, repeat });
++    }
 +    // WebKit uses zero for work that should run on the next turn, including Promise
 +    // completion. Queue that directly behind the messages already waiting.
 +    // A zero interval means "next turn", which is a message queued behind the
 +    // ones already waiting. If the port cannot take it, fall back to the
 +    // scheduler rather than drop the timer.
 +    if (interval <= 0_s) {
++        TimerScheduler::singleton().cancel(this);
 +        if (TimerScheduler::post(BMessenger(handler), this, identifier) != B_OK)
 +            TimerScheduler::singleton().schedule(BMessenger(handler), this, identifier, fireTime);
 +    } else
@@ -1481,17 +1493,15 @@ index 0000000000000000000000000000000000000000..1c10aacbe2fdd115ec766d5f63227da9
 +    auto* handler = static_cast<LoopHandler*>(m_runLoop->m_handler);
 +    if (!handler)
 +        return false;
-+    BAutolock locker(handler->Looper());
-+    return locker.IsLocked() && handler->timers.contains(const_cast<TimerBase*>(this));
++    Locker locker { handler->timersLock };
++    return handler->timers.contains(const_cast<TimerBase*>(this));
 +}
 +
 +void RunLoop::TimerBase::stop()
 +{
-+    auto* handler = static_cast<LoopHandler*>(m_runLoop->m_handler);
-+    if (handler) {
-+        BAutolock locker(handler->Looper());
-+        if (locker.IsLocked())
-+            handler->timers.erase(this);
++    if (auto* handler = static_cast<LoopHandler*>(m_runLoop->m_handler)) {
++        Locker locker { handler->timersLock };
++        handler->timers.erase(this);
 +    }
 +    TimerScheduler::singleton().cancel(this);
 +}
@@ -1520,9 +1530,7 @@ index 0000000000000000000000000000000000000000..1c10aacbe2fdd115ec766d5f63227da9
 +    auto* handler = static_cast<LoopHandler*>(m_runLoop->m_handler);
 +    if (!handler)
 +        return 0_s;
-+    BAutolock locker(handler->Looper());
-+    if (!locker.IsLocked())
-+        return 0_s;
++    Locker locker { handler->timersLock };
 +    auto found = handler->timers.find(const_cast<TimerBase*>(this));
 +    return found == handler->timers.end() ? 0_s : std::max(0_s, found->second.fireTime - MonotonicTime::now());
 +}
@@ -70015,7 +70023,7 @@ index 0000000000000000000000000000000000000000..75b860c792f1ea4ae0756a0eb424fec3
 +
 +#endif // ENABLE(WEB_AUTHN) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/WebPageProxy.cpp b/Source/WebKit/UIProcess/WebPageProxy.cpp
-index dcb789361fd321de76e3f647c18328ad2f4af9fc..53ec3550b4111f6726b0dacc030f6a3f6a1757eb 100644
+index dcb789361fd321de76e3f647c18328ad2f4af9fc..3f26d9cc149cde35f7f475e0308a7430a7b9a777 100644
 --- a/Source/WebKit/UIProcess/WebPageProxy.cpp
 +++ b/Source/WebKit/UIProcess/WebPageProxy.cpp
 @@ -65,7 +65,9 @@
@@ -70054,7 +70062,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..53ec3550b4111f6726b0dacc030f6a3f
  static constexpr Seconds resetRecentCrashCountDelay = 30_s;
  static constexpr unsigned maximumWebProcessRelaunchAttempts = 1;
 +#if PLATFORM(HAIKU)
-+static constexpr Seconds tryCloseTimeoutDelay = 30_s;
++static constexpr Seconds tryCloseTimeoutDelay = 10_s;
 +#else
  static constexpr Seconds tryCloseTimeoutDelay = 50_ms;
 +#endif
@@ -70131,7 +70139,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..53ec3550b4111f6726b0dacc030f6a3f
          // If we timed out, don't ask the client to close again.
          if (!protectedThis->internals().tryCloseTimeoutTimer.isActive())
              return;
-@@ -2103,14 +2130,22 @@ bool WebPageProxy::tryClose()
+@@ -2103,14 +2130,38 @@ bool WebPageProxy::tryClose()
          protectedThis->internals().tryCloseTimeoutTimer.stop();
          if (shouldClose)
              protectedThis->closePage();
@@ -70144,9 +70152,25 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..53ec3550b4111f6726b0dacc030f6a3f
  void WebPageProxy::tryCloseTimedOut()
  {
 +#if PLATFORM(HAIKU)
-+    WEBPAGEPROXY_RELEASE_LOG_ERROR(Process, "tryCloseTimedOut: Cancelling close without a process approval");
-+    ++internals().tryCloseRequestGeneration;
-+    m_uiClient->didCancelClose(this);
++    // A process that does not answer a ping either is hung (a deadlocked or
++    // endlessly busy main thread) and will run no before-unload handler.
++    // Cancelling would keep its tab, its window and the application from ever
++    // closing, so close the page; WebProcessProxy::maybeShutDown() ends the
++    // process once its last page is gone. A process that answers keeps the
++    // close cancelled.
++    auto requestGeneration = ++internals().tryCloseRequestGeneration;
++    protect(legacyMainFrameProcess())->isResponsive([weakThis = WeakPtr { *this }, requestGeneration](bool isResponsive) {
++        RefPtr protectedThis = weakThis.get();
++        if (!protectedThis || protectedThis->internals().tryCloseRequestGeneration != requestGeneration)
++            return;
++        if (!isResponsive) {
++            WEBPAGEPROXY_RELEASE_LOG_WITH_THIS(Process, protectedThis, "tryCloseTimedOut: The process is unresponsive, closing the page");
++            protectedThis->closePage();
++            return;
++        }
++        WEBPAGEPROXY_RELEASE_LOG_WITH_THIS(Process, protectedThis, "tryCloseTimedOut: Cancelling close without a process approval");
++        protectedThis->m_uiClient->didCancelClose(protectedThis.get());
++    });
 +#else
      WEBPAGEPROXY_RELEASE_LOG_ERROR(Process, "tryCloseTimedOut: Timed out waiting for the process to respond to the WebPage::TryClose IPC, closing the page now");
      closePage();
@@ -70154,7 +70178,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..53ec3550b4111f6726b0dacc030f6a3f
  }
  
  static std::optional<URL> storageClassBaseURL(const URL& url)
-@@ -5236,9 +5271,42 @@ bool WebPageProxy::handleKeyboardEvent(Ref<NativeWebKeyboardEvent>&& event)
+@@ -5236,9 +5287,42 @@ bool WebPageProxy::handleKeyboardEvent(Ref<NativeWebKeyboardEvent>&& event)
  
  const WebPreferencesStore& WebPageProxy::preferencesStore() const
  {
@@ -70197,7 +70221,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..53ec3550b4111f6726b0dacc030f6a3f
  #if ENABLE(TOUCH_EVENTS)
  
  static TrackingType mergeTrackingTypes(TrackingType a, TrackingType b)
-@@ -7963,6 +8031,13 @@ void WebPageProxy::updateRenderingWithForcedRepaint(CompletionHandler<void()>&&
+@@ -7963,6 +8047,13 @@ void WebPageProxy::updateRenderingWithForcedRepaint(CompletionHandler<void()>&&
  
  void WebPageProxy::preferencesDidChange()
  {
@@ -70211,7 +70235,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..53ec3550b4111f6726b0dacc030f6a3f
      if (!hasRunningProcess())
          return;
  
-@@ -8002,7 +8077,7 @@ void WebPageProxy::didCreateSubframe(FrameIdentifier parentID, FrameIdentifier n
+@@ -8002,7 +8093,7 @@ void WebPageProxy::didCreateSubframe(FrameIdentifier parentID, FrameIdentifier n
  
  void WebPageProxy::didDestroyFrame(IPC::Connection& connection, FrameIdentifier frameID)
  {
@@ -70220,7 +70244,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..53ec3550b4111f6726b0dacc030f6a3f
      protect(protect(websiteDataStore())->authenticatorManager())->cancelRequest(webPageIDInMainFrameProcess(), frameID);
  #endif
      if (RefPtr automationSession = m_configuration->processPool().automationSession())
-@@ -8454,7 +8529,7 @@ void WebPageProxy::didStartProvisionalLoadForFrameShared(Ref<WebProcessProxy>&&
+@@ -8454,7 +8545,7 @@ void WebPageProxy::didStartProvisionalLoadForFrameShared(Ref<WebProcessProxy>&&
          m_navigationClient->didStartProvisionalLoadForFrame(*this, WTF::move(request), WTF::move(frameInfo));
      }
  
@@ -70229,7 +70253,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..53ec3550b4111f6726b0dacc030f6a3f
      protect(protect(websiteDataStore())->authenticatorManager())->cancelRequest(m_webPageID, frameID);
  #endif
  }
-@@ -8485,6 +8560,10 @@ void WebPageProxy::didExplicitOpenForFrame(IPC::Connection& connection, FrameIde
+@@ -8485,6 +8576,10 @@ void WebPageProxy::didExplicitOpenForFrame(IPC::Connection& connection, FrameIde
          process->didCommitMeaningfulProvisionalLoad();
  
      pageLoadState->commitChanges();
@@ -70240,7 +70264,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..53ec3550b4111f6726b0dacc030f6a3f
  }
  
  void WebPageProxy::didReceiveServerRedirectForProvisionalLoadForFrame(IPC::Connection& connection, FrameIdentifier frameID, std::optional<WebCore::NavigationIdentifier> navigationID, ResourceRequest&& request, const UserData& userData)
-@@ -10872,7 +10951,7 @@ void WebPageProxy::contentRuleListMatchedRule(WebCore::ContentRuleListMatchedRul
+@@ -10872,7 +10967,7 @@ void WebPageProxy::contentRuleListMatchedRule(WebCore::ContentRuleListMatchedRul
  #if ENABLE(WK_WEB_EXTENSIONS) && ENABLE(CONTENT_EXTENSIONS)
  void WebPageProxy::contentRuleListDidBlockLoad(WebExtensionContentRuleListBlockedLoadInfo&& info)
  {
@@ -70249,7 +70273,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..53ec3550b4111f6726b0dacc030f6a3f
      if (RefPtr webExtensionController = this->webExtensionController())
          webExtensionController->resourceLoadWasBlockedByContentRuleList(identifier(), WTF::move(info));
  #endif
-@@ -11314,8 +11393,12 @@ void WebPageProxy::closePage()
+@@ -11314,8 +11409,12 @@ void WebPageProxy::closePage()
          return;
  
      WEBPAGEPROXY_RELEASE_LOG(Process, "closePage:");
@@ -70262,7 +70286,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..53ec3550b4111f6726b0dacc030f6a3f
      m_uiClient->close(this);
  }
  
-@@ -12303,6 +12386,9 @@ void WebPageProxy::didChangeIntrinsicContentSize(const IntSize& intrinsicContent
+@@ -12303,6 +12402,9 @@ void WebPageProxy::didChangeIntrinsicContentSize(const IntSize& intrinsicContent
  #if USE(APPKIT)
      if (RefPtr pageClient = this->pageClient())
          pageClient->intrinsicContentSizeDidChange(intrinsicContentSize);
@@ -70272,7 +70296,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..53ec3550b4111f6726b0dacc030f6a3f
  #endif
  }
  
-@@ -12500,7 +12586,7 @@ WebInspectorUIProxy* WebPageProxy::inspector() const
+@@ -12500,7 +12602,7 @@ WebInspectorUIProxy* WebPageProxy::inspector() const
  
  void WebPageProxy::resourceLoadDidSendRequest(ResourceLoadInfo&& loadInfo, WebCore::ResourceRequest&& request)
  {
@@ -70281,7 +70305,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..53ec3550b4111f6726b0dacc030f6a3f
      if (RefPtr webExtensionController = this->webExtensionController())
          webExtensionController->resourceLoadDidSendRequest(identifier(), loadInfo, request);
  #endif
-@@ -12511,7 +12597,7 @@ void WebPageProxy::resourceLoadDidSendRequest(ResourceLoadInfo&& loadInfo, WebCo
+@@ -12511,7 +12613,7 @@ void WebPageProxy::resourceLoadDidSendRequest(ResourceLoadInfo&& loadInfo, WebCo
  
  void WebPageProxy::resourceLoadDidPerformHTTPRedirection(ResourceLoadInfo&& loadInfo, WebCore::ResourceResponse&& response, WebCore::ResourceRequest&& request)
  {
@@ -70290,7 +70314,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..53ec3550b4111f6726b0dacc030f6a3f
      if (RefPtr webExtensionController = this->webExtensionController())
          webExtensionController->resourceLoadDidPerformHTTPRedirection(identifier(), loadInfo, response, request);
  #endif
-@@ -12522,7 +12608,7 @@ void WebPageProxy::resourceLoadDidPerformHTTPRedirection(ResourceLoadInfo&& load
+@@ -12522,7 +12624,7 @@ void WebPageProxy::resourceLoadDidPerformHTTPRedirection(ResourceLoadInfo&& load
  
  void WebPageProxy::resourceLoadDidReceiveChallenge(ResourceLoadInfo&& loadInfo, WebCore::AuthenticationChallenge&& challenge)
  {
@@ -70299,7 +70323,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..53ec3550b4111f6726b0dacc030f6a3f
      if (RefPtr webExtensionController = this->webExtensionController())
          webExtensionController->resourceLoadDidReceiveChallenge(identifier(), loadInfo, challenge);
  #endif
-@@ -12533,7 +12619,7 @@ void WebPageProxy::resourceLoadDidReceiveChallenge(ResourceLoadInfo&& loadInfo,
+@@ -12533,7 +12635,7 @@ void WebPageProxy::resourceLoadDidReceiveChallenge(ResourceLoadInfo&& loadInfo,
  
  void WebPageProxy::resourceLoadDidReceiveResponse(ResourceLoadInfo&& loadInfo, WebCore::ResourceResponse&& response)
  {
@@ -70308,7 +70332,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..53ec3550b4111f6726b0dacc030f6a3f
      if (RefPtr webExtensionController = this->webExtensionController())
          webExtensionController->resourceLoadDidReceiveResponse(identifier(), loadInfo, response);
  #endif
-@@ -12544,7 +12630,7 @@ void WebPageProxy::resourceLoadDidReceiveResponse(ResourceLoadInfo&& loadInfo, W
+@@ -12544,7 +12646,7 @@ void WebPageProxy::resourceLoadDidReceiveResponse(ResourceLoadInfo&& loadInfo, W
  
  void WebPageProxy::resourceLoadDidCompleteWithError(ResourceLoadInfo&& loadInfo, WebCore::ResourceResponse&& response, WebCore::ResourceError&& error)
  {
@@ -70317,7 +70341,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..53ec3550b4111f6726b0dacc030f6a3f
      if (RefPtr webExtensionController = this->webExtensionController())
          webExtensionController->resourceLoadDidCompleteWithError(identifier(), loadInfo, response, error);
  #endif
-@@ -14367,7 +14453,7 @@ void WebPageProxy::resetState(ResetStateReason resetStateReason)
+@@ -14367,7 +14469,7 @@ void WebPageProxy::resetState(ResetStateReason resetStateReason)
      resetSpeechSynthesizer();
  #endif
  
@@ -70326,7 +70350,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..53ec3550b4111f6726b0dacc030f6a3f
      protect(protect(websiteDataStore())->authenticatorManager())->cancelRequest(m_webPageID, std::nullopt);
  #endif
  
-@@ -14815,7 +14901,7 @@ WebPageCreationParameters WebPageProxy::creationParameters(WebProcessProxy& proc
+@@ -14815,7 +14917,7 @@ WebPageCreationParameters WebPageProxy::creationParameters(WebProcessProxy& proc
      parameters.hasResourceLoadClient = !!m_resourceLoadClient;
      parameters.portsForUpgradingInsecureSchemeForTesting = m_configuration->portsForUpgradingInsecureSchemeForTesting();
  
@@ -70335,7 +70359,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..53ec3550b4111f6726b0dacc030f6a3f
      if (RefPtr webExtensionController = m_webExtensionController)
          parameters.webExtensionControllerParameters = webExtensionController->parameters(m_configuration, process);
  
-@@ -18574,7 +18660,13 @@ void WebPageProxy::decidePolicyForSOAuthorizationLoad(const String& extension, C
+@@ -18574,7 +18676,13 @@ void WebPageProxy::decidePolicyForSOAuthorizationLoad(const String& extension, C
  #if ENABLE(WEB_AUTHN)
  void WebPageProxy::setMockWebAuthenticationConfiguration(MockWebAuthenticationConfiguration&& configuration)
  {
@@ -70436,7 +70460,7 @@ index 38c1d1a7d72f273d5df9c101ec0a1e4ea7ad2d3d..ebebbe84443df9afc12cb9f297319473
  #endif
      void textCheckerStateChanged();
 diff --git a/Source/WebKit/UIProcess/WebProcessProxy.cpp b/Source/WebKit/UIProcess/WebProcessProxy.cpp
-index a274fd21d125926677d5c88fd0070aa37b7ede3b..d29976291e77700b0aac58f49a98a83b29fae602 100644
+index a274fd21d125926677d5c88fd0070aa37b7ede3b..00bbb1e72407dcb7375fb5ae432e55fc82212126 100644
 --- a/Source/WebKit/UIProcess/WebProcessProxy.cpp
 +++ b/Source/WebKit/UIProcess/WebProcessProxy.cpp
 @@ -30,7 +30,10 @@
@@ -70450,6 +70474,55 @@ index a274fd21d125926677d5c88fd0070aa37b7ede3b..d29976291e77700b0aac58f49a98a83b
  #include "DownloadProxyMap.h"
  #include "DrawingAreaProxy.h"
  #include "GPUProcessConnectionParameters.h"
+@@ -947,6 +950,14 @@ void WebProcessProxy::shutDown()
+         destroyWasmDebuggerTarget();
+ #endif
+ 
++#if PLATFORM(HAIKU)
++    // A process handles the end of its connection on its main thread; a hung
++    // one never does and would stay behind (WebPageProxy::tryCloseTimedOut()
++    // closes pages of such processes).
++    if (m_isResponsive == NoOrMaybe::No)
++        terminate();
++#endif
++
+     shutDownProcess();
+ 
+ #if ENABLE(LOGD_BLOCKING_IN_WEBCONTENT)
+@@ -2020,6 +2031,12 @@ bool WebProcessProxy::canBeAddedToWebProcessCache() const
+     if (WebKit::isInspectorProcessPool(processPool()))
+         return false;
+ 
++#if PLATFORM(HAIKU)
++    // A hung process has to end (see maybeShutDown()), not wait to be reused.
++    if (m_isResponsive == NoOrMaybe::No)
++        return false;
++#endif
++
+     return true;
+ }
+ 
+@@ -2042,6 +2059,20 @@ void WebProcessProxy::maybeShutDown()
+         return;
+     }
+ 
++#if PLATFORM(HAIKU)
++    // A hung process never sends the replies it owes (the close request's, for
++    // one), and each keeps a shutdown-preventing scope open, so it would stay
++    // behind for good once its last page closed (WebPageProxy::tryCloseTimedOut()
++    // closes pages of such processes).
++    if (m_isResponsive == NoOrMaybe::No && state() == State::Running && !m_isShuttingDown
++        && m_pageMap.isEmpty() && m_remotePages.isEmptyIgnoringNullReferences()
++        && m_suspendedPages.isEmptyIgnoringNullReferences()
++        && m_provisionalPages.isEmptyIgnoringNullReferences() && !m_frameProcessCount) {
++        requestTermination(ProcessTerminationReason::Unresponsive);
++        return;
++    }
++#endif
++
+     // shutDownProcess() can re-entrantly trigger maybeShutDown() when
+     // cancelAsyncReplyHandlers() releases shutdown-preventing scope tokens.
+     if (state() == State::Terminated || m_isShuttingDown || !canTerminateAuxiliaryProcess())
 diff --git a/Source/WebKit/UIProcess/WebsiteData/WebsiteDataStore.cpp b/Source/WebKit/UIProcess/WebsiteData/WebsiteDataStore.cpp
 index 2d72030b58aed216674703f4eda8ae5e77ca7d34..54130ba033982a97b8371aa53eb40c0bf292843b 100644
 --- a/Source/WebKit/UIProcess/WebsiteData/WebsiteDataStore.cpp
