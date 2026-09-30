@@ -105,50 +105,85 @@ index 2ac8b24f00e624acb564a0e11fd2437b5f02a99c..fd988cc36ef755a0e2d5939eb54141af
  #if CPU(X86_64)
 diff --git a/Source/ThirdParty/ANGLE/PlatformHaiku.cmake b/Source/ThirdParty/ANGLE/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..3d2397156e8dfe7e379d563d856667597c734e1a
+index 0000000000000000000000000000000000000000..8047502ad11d1d3147beda2ccfe718428e4e6b7b
 --- /dev/null
 +++ b/Source/ThirdParty/ANGLE/PlatformHaiku.cmake
-@@ -0,0 +1,15 @@
-+# Allow building ANGLE on platforms that don't provide X11 headers.
-+list(APPEND ANGLE_DEFINITIONS USE_SYSTEM_EGL)
+@@ -0,0 +1,32 @@
++# Haiku: ANGLE's OpenGL back-end on top of the system EGL (Mesa's Haiku EGL
++# platform, which Summit points at its private zink build), as the GTK and WPE
++# ports use it. CMake counts Haiku as UNIX, so ANGLE's CMakeLists.txt treats it
++# as Linux: the common Linux sources (system_utils_linux.cpp, which handles
++# Haiku where it differs) and the EGL back-end of GL.cmake are already in the
++# lists; what the Linux ports add on top is added here. No X11, Wayland or GBM.
++list(APPEND ANGLE_DEFINITIONS USE_SYSTEM_EGL EGL_NO_PLATFORM_SPECIFIC_TYPES)
++include(linux.cmake)
 +
-+list(APPEND ANGLE_SOURCES
-+    ${angle_system_utils_sources_posix}
-+    src/common/system_utils_haiku.cpp
-+)
++if (USE_ANGLE_EGL OR ENABLE_WEBGL)
++    list(APPEND ANGLE_SOURCES
++        ${gl_backend_sources}
 +
-+list(APPEND ANGLE_DEFINITIONS
-+    ANGLE_ENABLE_OPENGL
-+)
++        ${angle_dma_buf_sources}
++
++        ${libangle_gpu_info_util_sources}
++        ${libangle_gpu_info_util_linux_sources}
++    )
++
++    list(APPEND ANGLE_DEFINITIONS
++        ANGLE_ENABLE_OPENGL
++    )
++
++    list(APPEND ANGLEGLESv2_LIBRARIES
++        ${CMAKE_DL_LIBS}
++        Threads::Threads
++    )
++endif ()
 +
 +list(APPEND ANGLEGLESv2_LIBRARIES
 +    z
 +)
-diff --git a/Source/ThirdParty/ANGLE/src/common/system_utils_haiku.cpp b/Source/ThirdParty/ANGLE/src/common/system_utils_haiku.cpp
-new file mode 100644
-index 0000000000000000000000000000000000000000..fa5bc6c8bb40e9a5324815903bd37bec24eedd77
---- /dev/null
-+++ b/Source/ThirdParty/ANGLE/src/common/system_utils_haiku.cpp
-@@ -0,0 +1,17 @@
-+//
-+// Copyright (c) 2019 The ANGLE Project Authors. All rights reserved.
-+// Use of this source code is governed by a BSD-style license that can be
-+// found in the LICENSE file.
-+//
+diff --git a/Source/ThirdParty/ANGLE/src/common/system_utils_linux.cpp b/Source/ThirdParty/ANGLE/src/common/system_utils_linux.cpp
+index 8ff5755710a10a5e2ce178e883348ba5919f8c0b..aa38513a4b2274379776027096ee56ce3824e82d 100644
+--- a/Source/ThirdParty/ANGLE/src/common/system_utils_linux.cpp
++++ b/Source/ThirdParty/ANGLE/src/common/system_utils_linux.cpp
+@@ -18,10 +18,28 @@
+ 
+ #include <array>
+ 
++#if defined(__HAIKU__)
++#    include <OS.h>
++#    include <image.h>
++// Haiku has no CLOCK_MONOTONIC_RAW; its CLOCK_MONOTONIC is not slewed either.
++#    define CLOCK_MONOTONIC_RAW CLOCK_MONOTONIC
++#endif
 +
-+// system_utils_haiku.cpp: Implementation of OS-specific functions for Haiku
-+
-+#include "system_utils.h"
-+
-+namespace angle
-+{
-+const char *GetSharedLibraryExtension()
-+{
-+    return "so";
-+}
-+}  // namespace angle
+ namespace angle
+ {
+ std::string GetExecutablePath()
+ {
++#if defined(__HAIKU__)
++    // No /proc on Haiku: the team's application image carries the path.
++    image_info info;
++    int32 cookie = 0;
++    while (get_next_image_info(B_CURRENT_TEAM, &cookie, &info) == B_OK)
++    {
++        if (info.type == B_APP_IMAGE)
++            return info.name;
++    }
++    return "";
++#else
+     // We cannot use lstat to get the size of /proc/self/exe as it always returns 0
+     // so we just use a big buffer and hope the path fits in it.
+     char path[4096];
+@@ -34,6 +52,7 @@ std::string GetExecutablePath()
+ 
+     ANGLE_UNSAFE_TODO(path[result]) = '\0';
+     return path;
++#endif
+ }
+ 
+ std::string GetExecutableDirectory()
 diff --git a/Source/ThirdParty/ANGLE/src/libANGLE/Display.cpp b/Source/ThirdParty/ANGLE/src/libANGLE/Display.cpp
-index ae46ee10d0941e1f361244e595a7495c325902dc..b211d8e99a5f49194267a01d9e81804c570b4986 100644
+index ae46ee10d0941e1f361244e595a7495c325902dc..6a80abd0ff4bc526910361adcae4840276fdb64f 100644
 --- a/Source/ThirdParty/ANGLE/src/libANGLE/Display.cpp
 +++ b/Source/ThirdParty/ANGLE/src/libANGLE/Display.cpp
 @@ -67,9 +67,11 @@
@@ -173,6 +208,24 @@ index ae46ee10d0941e1f361244e595a7495c325902dc..b211d8e99a5f49194267a01d9e81804c
  #        if defined(ANGLE_USE_GBM) || defined(ANGLE_USE_WAYLAND)
              if (platformType == 0)
              {
+@@ -609,7 +611,7 @@ rx::DisplayImpl *CreateDisplayFromAttribs(EGLAttrib displayType,
+ #if defined(ANGLE_ENABLE_OPENGL)
+ #    if defined(ANGLE_PLATFORM_WINDOWS)
+             impl = new rx::DisplayWGL(state);
+-#    elif defined(ANGLE_PLATFORM_LINUX)
++#    elif defined(ANGLE_PLATFORM_LINUX) || defined(__HAIKU__)
+ #        if defined(ANGLE_USE_GBM) || defined(ANGLE_USE_WAYLAND)
+             if (platformType == 0)
+             {
+@@ -2259,7 +2261,7 @@ static ClientExtensions GenerateClientExtensions()
+     extensions.x11Visual = true;
+ #endif
+ 
+-#if defined(ANGLE_PLATFORM_LINUX)
++#if defined(ANGLE_PLATFORM_LINUX) || defined(__HAIKU__)
+     extensions.platformANGLEDeviceTypeEGLANGLE = true;
+ #endif
+ 
 diff --git a/Source/ThirdParty/skia/CMakeLists.txt b/Source/ThirdParty/skia/CMakeLists.txt
 index f050775a54adb5438e30a3a42ee281ce817e1b2f..4c29c781414a15f6a8db05fa67da40f96c1353aa 100644
 --- a/Source/ThirdParty/skia/CMakeLists.txt
@@ -1022,10 +1075,10 @@ index 0000000000000000000000000000000000000000..8c108d90e1cc50a099c7a4633fc1baa9
 +using WTF::setProcessBackgroundedHaiku;
 diff --git a/Source/WTF/wtf/haiku/RunLoopHaiku.cpp b/Source/WTF/wtf/haiku/RunLoopHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..37da313b93ce0cd7429b46c962faa63d9e8569fd
+index 0000000000000000000000000000000000000000..1c10aacbe2fdd115ec766d5f63227da9a09a5db5
 --- /dev/null
 +++ b/Source/WTF/wtf/haiku/RunLoopHaiku.cpp
-@@ -0,0 +1,445 @@
+@@ -0,0 +1,449 @@
 +/*
 + * Copyright (C) 2014, 2024 Haiku, Inc
 + *
@@ -1455,7 +1508,11 @@ index 0000000000000000000000000000000000000000..37da313b93ce0cd7429b46c962faa63d
 +    else
 +        runLoop.performWork();
 +    handler.running = wasRunning;
-+    return handler.Looper()->IsMessageWaiting() ? CycleResult::Continue : CycleResult::Stop;
++    // IsMessageWaiting() requires the looper's lock. The application's looper
++    // is locked by the thread running it; a standalone one (a worker thread's)
++    // is only locked while it handles a message.
++    BAutolock locker(handler.Looper());
++    return locker.IsLocked() && handler.Looper()->IsMessageWaiting() ? CycleResult::Continue : CycleResult::Stop;
 +}
 +
 +Seconds RunLoop::TimerBase::secondsUntilFire() const
@@ -1984,7 +2041,7 @@ index b29212ad5b98d332ff7c1db7814cb2575988ec5f..b6c50d32873f6c712e3409ca1c5e2ec5
      String m_accessGroup;
  };
 diff --git a/Source/WebCore/PlatformHaiku.cmake b/Source/WebCore/PlatformHaiku.cmake
-index 16a88804a1baa39ccdd9fc2870b6e2524d941298..0eb0d6e4b0a46bdc7927b88e59c6e2d7a4508fef 100644
+index 16a88804a1baa39ccdd9fc2870b6e2524d941298..86a5f4654659f446d6fcf1bf1205afd4d48d63ef 100644
 --- a/Source/WebCore/PlatformHaiku.cmake
 +++ b/Source/WebCore/PlatformHaiku.cmake
 @@ -1,8 +1,87 @@
@@ -2242,7 +2299,7 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..0eb0d6e4b0a46bdc7927b88e59c6e2d7
    textencoding
    translation
    ${WEBP_LIBRARIES}
-@@ -61,6 +258,198 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
+@@ -61,6 +258,205 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
    ${SQLITE_INCLUDE_DIR}
    ${WEBP_INCLUDE_DIRS}
    ${ZLIB_INCLUDE_DIRS}
@@ -2389,6 +2446,13 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..0eb0d6e4b0a46bdc7927b88e59c6e2d7
 +
 +        platform/graphics/haiku/PlatformDisplayHaiku.cpp
 +    )
++
++    # WebGL: the ANGLE display on top of PlatformDisplayHaiku's EGL display.
++    if (ENABLE_WEBGL)
++        list(APPEND WebCore_SOURCES
++            platform/graphics/angle/PlatformDisplayANGLE.cpp
++        )
++    endif ()
 +
 +    # SkiaGPUAtlas uploads through BitmapTexture and synchronises with GLFence,
 +    # so both are needed even without TextureMapper compositing. BitmapTexture
@@ -3034,6 +3098,116 @@ index 19bcf443fcb0f6c51227361c38ba4255bc255806..9b60ff67bd4ab3a6f3574dfe712ea29f
          if (matchesEverything) {
              fail(URLFilterParser::MatchesEverything);
              return;
+diff --git a/Source/WebCore/crypto/algorithms/CryptoAlgorithmEd25519.cpp b/Source/WebCore/crypto/algorithms/CryptoAlgorithmEd25519.cpp
+index a053b3297c582bef8aad2e9641acaf3165e03872..2005cce9cc0ab100416d6314be171c9d5f5ee106 100644
+--- a/Source/WebCore/crypto/algorithms/CryptoAlgorithmEd25519.cpp
++++ b/Source/WebCore/crypto/algorithms/CryptoAlgorithmEd25519.cpp
+@@ -35,7 +35,7 @@
+ 
+ namespace WebCore {
+ 
+-#if !PLATFORM(COCOA) && !USE(GCRYPT)
++#if !PLATFORM(COCOA) && !USE(GCRYPT) && !USE(OPENSSL)
+ ExceptionOr<Vector<uint8_t>> CryptoAlgorithmEd25519::platformSign(const CryptoKeyOKP&, const Vector<uint8_t>&)
+ {
+     ASSERT_NOT_REACHED();
+diff --git a/Source/WebCore/crypto/algorithms/CryptoAlgorithmX25519.cpp b/Source/WebCore/crypto/algorithms/CryptoAlgorithmX25519.cpp
+index 84091c1b3996d539ac389bb750a24e88a88b8045..777c6a94c37b850e9e4205cc3e1a32f543d0c0db 100644
+--- a/Source/WebCore/crypto/algorithms/CryptoAlgorithmX25519.cpp
++++ b/Source/WebCore/crypto/algorithms/CryptoAlgorithmX25519.cpp
+@@ -58,7 +58,7 @@ void CryptoAlgorithmX25519::generateKey(const CryptoAlgorithmParameters&, bool e
+     callback(WTF::move(pair));
+ }
+ 
+-#if !PLATFORM(COCOA) && !USE(GCRYPT)
++#if !PLATFORM(COCOA) && !USE(GCRYPT) && !USE(OPENSSL)
+ std::optional<Vector<uint8_t>> CryptoAlgorithmX25519::platformDeriveBits(const CryptoKeyOKP&, const CryptoKeyOKP&)
+ {
+     return std::nullopt;
+diff --git a/Source/WebCore/crypto/keys/CryptoKeyOKP.cpp b/Source/WebCore/crypto/keys/CryptoKeyOKP.cpp
+index 3bc098d85c2ced569a5ad2333f58eef95afb5aff..1aadc3624da0945d69be9b07ebda02cf60db0a74 100644
+--- a/Source/WebCore/crypto/keys/CryptoKeyOKP.cpp
++++ b/Source/WebCore/crypto/keys/CryptoKeyOKP.cpp
+@@ -232,7 +232,7 @@ CryptoKey::Data CryptoKeyOKP::data() const
+     };
+ }
+ 
+-#if !PLATFORM(COCOA) && !USE(GCRYPT)
++#if !PLATFORM(COCOA) && !USE(GCRYPT) && !USE(OPENSSL)
+ 
+ bool CryptoKeyOKP::supportsNamedCurve()
+ {
+diff --git a/Source/WebCore/crypto/openssl/CryptoAlgorithmEd25519OpenSSL.cpp b/Source/WebCore/crypto/openssl/CryptoAlgorithmEd25519OpenSSL.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..92da00b28120aede819ff891eb708a3d00138ba7
+--- /dev/null
++++ b/Source/WebCore/crypto/openssl/CryptoAlgorithmEd25519OpenSSL.cpp
+@@ -0,0 +1,65 @@
++/*
++ * Copyright (C) 2026 KunanyiOS contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "CryptoAlgorithmEd25519.h"
++
++#include "CryptoKeyOKP.h"
++#include "CryptoKeyOKPOpenSSL.h"
++#include "ExceptionOr.h"
++#include <openssl/evp.h>
++
++namespace WebCore {
++
++// Ed25519 signs the message itself (no separate digest), so the one-shot
++// EVP_DigestSign/Verify with no digest algorithm are used.
++ExceptionOr<Vector<uint8_t>> CryptoAlgorithmEd25519::platformSign(const CryptoKeyOKP& key, const Vector<uint8_t>& data)
++{
++    auto privateKey = OpenSSLOKP::privateKey(key.namedCurve(), key.platformKey().span());
++    auto context = EvpDigestCtxPtr(EVP_MD_CTX_new());
++    if (!privateKey || !context || EVP_DigestSignInit(context.get(), nullptr, nullptr, nullptr, privateKey.get()) != 1)
++        return Exception { ExceptionCode::OperationError };
++    size_t length = 0;
++    if (EVP_DigestSign(context.get(), nullptr, &length, data.span().data(), data.size()) != 1)
++        return Exception { ExceptionCode::OperationError };
++    Vector<uint8_t> signature(length);
++    if (EVP_DigestSign(context.get(), signature.mutableSpan().data(), &length, data.span().data(), data.size()) != 1)
++        return Exception { ExceptionCode::OperationError };
++    signature.shrink(length);
++    return WTF::move(signature);
++}
++
++ExceptionOr<bool> CryptoAlgorithmEd25519::platformVerify(const CryptoKeyOKP& key, const Vector<uint8_t>& signature, const Vector<uint8_t>& data)
++{
++    if (signature.size() != 64)
++        return false;
++    auto publicKey = OpenSSLOKP::publicKey(key.namedCurve(), key.platformKey().span());
++    auto context = EvpDigestCtxPtr(EVP_MD_CTX_new());
++    if (!publicKey || !context || EVP_DigestVerifyInit(context.get(), nullptr, nullptr, nullptr, publicKey.get()) != 1)
++        return Exception { ExceptionCode::OperationError };
++    return EVP_DigestVerify(context.get(), signature.span().data(), signature.size(), data.span().data(), data.size()) == 1;
++}
++
++} // namespace WebCore
 diff --git a/Source/WebCore/crypto/openssl/CryptoAlgorithmHKDFOpenSSL.cpp b/Source/WebCore/crypto/openssl/CryptoAlgorithmHKDFOpenSSL.cpp
 index cef20ab58216d6164b8111aecf3540683667aaad..ad64d8014c99a6037be2fcb10d19748bafd6475e 100644
 --- a/Source/WebCore/crypto/openssl/CryptoAlgorithmHKDFOpenSSL.cpp
@@ -3047,6 +3221,361 @@ index cef20ab58216d6164b8111aecf3540683667aaad..ad64d8014c99a6037be2fcb10d19748b
      const unsigned char* inKey, size_t inKeySize,
      const unsigned char* inSalt, size_t inSaltSize,
      const unsigned char* inInfo, size_t inInfoSize)
+diff --git a/Source/WebCore/crypto/openssl/CryptoAlgorithmRegistryOpenSSL.cpp b/Source/WebCore/crypto/openssl/CryptoAlgorithmRegistryOpenSSL.cpp
+index 7d44959c76c0ca4e9be23e7e5e1421ce54010701..4a4e52753302ff2725dff6f45b6f4b9bd19b4f6b 100644
+--- a/Source/WebCore/crypto/openssl/CryptoAlgorithmRegistryOpenSSL.cpp
++++ b/Source/WebCore/crypto/openssl/CryptoAlgorithmRegistryOpenSSL.cpp
+@@ -33,6 +33,7 @@
+ #include "CryptoAlgorithmAESKW.h"
+ #include "CryptoAlgorithmECDH.h"
+ #include "CryptoAlgorithmECDSA.h"
++#include "CryptoAlgorithmEd25519.h"
+ #include "CryptoAlgorithmHKDF.h"
+ #include "CryptoAlgorithmHMAC.h"
+ #include "CryptoAlgorithmPBKDF2.h"
+@@ -43,6 +44,7 @@
+ #include "CryptoAlgorithmSHA256.h"
+ #include "CryptoAlgorithmSHA384.h"
+ #include "CryptoAlgorithmSHA512.h"
++#include "CryptoAlgorithmX25519.h"
+ 
+ namespace WebCore {
+ 
+@@ -55,6 +57,7 @@ void CryptoAlgorithmRegistry::platformRegisterAlgorithms()
+     registerAlgorithm<CryptoAlgorithmAESKW>();
+     registerAlgorithm<CryptoAlgorithmECDH>();
+     registerAlgorithm<CryptoAlgorithmECDSA>();
++    registerAlgorithm<CryptoAlgorithmEd25519>();
+     registerAlgorithm<CryptoAlgorithmHKDF>();
+     registerAlgorithm<CryptoAlgorithmHMAC>();
+     registerAlgorithm<CryptoAlgorithmPBKDF2>();
+@@ -65,6 +68,7 @@ void CryptoAlgorithmRegistry::platformRegisterAlgorithms()
+     registerAlgorithm<CryptoAlgorithmSHA256>();
+     registerAlgorithm<CryptoAlgorithmSHA384>();
+     registerAlgorithm<CryptoAlgorithmSHA512>();
++    registerAlgorithm<CryptoAlgorithmX25519>();
+ }
+ 
+ } // namespace WebCore
+diff --git a/Source/WebCore/crypto/openssl/CryptoAlgorithmX25519OpenSSL.cpp b/Source/WebCore/crypto/openssl/CryptoAlgorithmX25519OpenSSL.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..253e359b750fd6085761cb4d4ee0eb55a8541149
+--- /dev/null
++++ b/Source/WebCore/crypto/openssl/CryptoAlgorithmX25519OpenSSL.cpp
+@@ -0,0 +1,56 @@
++/*
++ * Copyright (C) 2026 KunanyiOS contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "CryptoAlgorithmX25519.h"
++
++#include "CryptoKeyOKP.h"
++#include "CryptoKeyOKPOpenSSL.h"
++#include <openssl/evp.h>
++
++namespace WebCore {
++
++// X25519 (RFC 7748). OpenSSL refuses an all-zero shared secret (a small-order
++// peer key), which WebCrypto also requires to be an error.
++std::optional<Vector<uint8_t>> CryptoAlgorithmX25519::platformDeriveBits(const CryptoKeyOKP& baseKey, const CryptoKeyOKP& publicKey)
++{
++    auto privateKey = OpenSSLOKP::privateKey(baseKey.namedCurve(), baseKey.platformKey().span());
++    auto peerKey = OpenSSLOKP::publicKey(publicKey.namedCurve(), publicKey.platformKey().span());
++    if (!privateKey || !peerKey)
++        return std::nullopt;
++    auto context = EvpPKeyCtxPtr(EVP_PKEY_CTX_new(privateKey.get(), nullptr));
++    if (!context || EVP_PKEY_derive_init(context.get()) != 1 || EVP_PKEY_derive_set_peer(context.get(), peerKey.get()) != 1)
++        return std::nullopt;
++    size_t length = 0;
++    if (EVP_PKEY_derive(context.get(), nullptr, &length) != 1)
++        return std::nullopt;
++    Vector<uint8_t> secret(length);
++    if (EVP_PKEY_derive(context.get(), secret.mutableSpan().data(), &length) != 1)
++        return std::nullopt;
++    secret.shrink(length);
++    return secret;
++}
++
++} // namespace WebCore
+diff --git a/Source/WebCore/crypto/openssl/CryptoKeyOKPOpenSSL.cpp b/Source/WebCore/crypto/openssl/CryptoKeyOKPOpenSSL.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..a815f531f506391cb62709bf12ae26f983dd2ee9
+--- /dev/null
++++ b/Source/WebCore/crypto/openssl/CryptoKeyOKPOpenSSL.cpp
+@@ -0,0 +1,200 @@
++/*
++ * Copyright (C) 2026 KunanyiOS contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "CryptoKeyOKP.h"
++
++#include "CryptoKeyOKPOpenSSL.h"
++#include "CryptoKeyPair.h"
++#include "ExceptionOr.h"
++#include "JsonWebKey.h"
++#include "OpenSSLCryptoUniquePtr.h"
++#include <openssl/evp.h>
++#include <openssl/x509.h>
++#include <wtf/text/Base64.h>
++
++namespace WebCore {
++
++// Ed25519 and X25519 keys (RFC 8032, RFC 7748) with OpenSSL 3. The key object
++// keeps the raw 32-byte key, as the other ports do; OpenSSL makes EVP keys of
++// it when one is needed and parses and writes the SPKI and PKCS #8 forms.
++
++int OpenSSLOKP::keyType(CryptoKeyOKP::NamedCurve curve)
++{
++    return curve == CryptoKeyOKP::NamedCurve::Ed25519 ? EVP_PKEY_ED25519 : EVP_PKEY_X25519;
++}
++
++EvpPKeyPtr OpenSSLOKP::privateKey(CryptoKeyOKP::NamedCurve curve, std::span<const uint8_t> key)
++{
++    return EvpPKeyPtr(EVP_PKEY_new_raw_private_key(keyType(curve), nullptr, key.data(), key.size()));
++}
++
++EvpPKeyPtr OpenSSLOKP::publicKey(CryptoKeyOKP::NamedCurve curve, std::span<const uint8_t> key)
++{
++    return EvpPKeyPtr(EVP_PKEY_new_raw_public_key(keyType(curve), nullptr, key.data(), key.size()));
++}
++
++std::optional<Vector<uint8_t>> OpenSSLOKP::rawPublicKey(EVP_PKEY* key)
++{
++    size_t length = 0;
++    if (!key || EVP_PKEY_get_raw_public_key(key, nullptr, &length) != 1)
++        return std::nullopt;
++    Vector<uint8_t> result(length);
++    if (EVP_PKEY_get_raw_public_key(key, result.mutableSpan().data(), &length) != 1)
++        return std::nullopt;
++    result.shrink(length);
++    return WTF::move(result);
++}
++
++std::optional<Vector<uint8_t>> OpenSSLOKP::rawPrivateKey(EVP_PKEY* key)
++{
++    size_t length = 0;
++    if (!key || EVP_PKEY_get_raw_private_key(key, nullptr, &length) != 1)
++        return std::nullopt;
++    Vector<uint8_t> result(length);
++    if (EVP_PKEY_get_raw_private_key(key, result.mutableSpan().data(), &length) != 1)
++        return std::nullopt;
++    result.shrink(length);
++    return WTF::move(result);
++}
++
++bool CryptoKeyOKP::supportsNamedCurve()
++{
++    return true;
++}
++
++std::optional<CryptoKeyPair> CryptoKeyOKP::platformGeneratePair(CryptoAlgorithmIdentifier identifier, NamedCurve namedCurve, bool extractable, CryptoKeyUsageBitmap usages)
++{
++    auto context = EvpPKeyCtxPtr(EVP_PKEY_CTX_new_id(OpenSSLOKP::keyType(namedCurve), nullptr));
++    if (!context || EVP_PKEY_keygen_init(context.get()) <= 0)
++        return std::nullopt;
++    EVP_PKEY* generated = nullptr;
++    if (EVP_PKEY_keygen(context.get(), &generated) <= 0)
++        return std::nullopt;
++    auto key = EvpPKeyPtr(generated);
++    auto privateData = OpenSSLOKP::rawPrivateKey(key.get());
++    auto publicData = OpenSSLOKP::rawPublicKey(key.get());
++    if (!privateData || !publicData)
++        return std::nullopt;
++
++    bool isPublicKeyExtractable = true;
++    auto publicKey = CryptoKeyOKP::create(identifier, namedCurve, CryptoKeyType::Public, WTF::move(*publicData), isPublicKeyExtractable, usages);
++    auto privateKey = CryptoKeyOKP::create(identifier, namedCurve, CryptoKeyType::Private, WTF::move(*privateData), extractable, usages);
++    if (!publicKey || !privateKey)
++        return std::nullopt;
++    return CryptoKeyPair { WTF::move(publicKey), WTF::move(privateKey) };
++}
++
++bool CryptoKeyOKP::platformCheckPairedKeys(CryptoAlgorithmIdentifier, NamedCurve namedCurve, const Vector<uint8_t>& privateKey, const Vector<uint8_t>& publicKey)
++{
++    auto key = OpenSSLOKP::privateKey(namedCurve, privateKey.span());
++    auto derived = OpenSSLOKP::rawPublicKey(key.get());
++    return derived && *derived == publicKey;
++}
++
++RefPtr<CryptoKeyOKP> CryptoKeyOKP::importSpki(CryptoAlgorithmIdentifier identifier, NamedCurve namedCurve, Vector<uint8_t>&& keyData, bool extractable, CryptoKeyUsageBitmap usages)
++{
++    const uint8_t* data = keyData.span().data();
++    auto key = EvpPKeyPtr(d2i_PUBKEY(nullptr, &data, keyData.size()));
++    // All of the input must be the one key, and of this curve (RFC 8410).
++    if (!key || data != keyData.span().data() + keyData.size() || EVP_PKEY_get_id(key.get()) != OpenSSLOKP::keyType(namedCurve))
++        return nullptr;
++    auto raw = OpenSSLOKP::rawPublicKey(key.get());
++    if (!raw)
++        return nullptr;
++    return create(identifier, namedCurve, CryptoKeyType::Public, WTF::move(*raw), extractable, usages);
++}
++
++ExceptionOr<Vector<uint8_t>> CryptoKeyOKP::exportSpki() const
++{
++    if (type() != CryptoKeyType::Public)
++        return Exception { ExceptionCode::InvalidAccessError };
++    auto key = OpenSSLOKP::publicKey(namedCurve(), platformKey().span());
++    int length = key ? i2d_PUBKEY(key.get(), nullptr) : -1;
++    if (length <= 0)
++        return Exception { ExceptionCode::OperationError };
++    Vector<uint8_t> result(length);
++    uint8_t* output = result.mutableSpan().data();
++    if (i2d_PUBKEY(key.get(), &output) != length)
++        return Exception { ExceptionCode::OperationError };
++    return WTF::move(result);
++}
++
++RefPtr<CryptoKeyOKP> CryptoKeyOKP::importPkcs8(CryptoAlgorithmIdentifier identifier, NamedCurve namedCurve, Vector<uint8_t>&& keyData, bool extractable, CryptoKeyUsageBitmap usages)
++{
++    const uint8_t* data = keyData.span().data();
++    auto info = PKCS8PrivKeyInfoPtr(d2i_PKCS8_PRIV_KEY_INFO(nullptr, &data, keyData.size()));
++    if (!info || data != keyData.span().data() + keyData.size())
++        return nullptr;
++    auto key = EvpPKeyPtr(EVP_PKCS82PKEY(info.get()));
++    if (!key || EVP_PKEY_get_id(key.get()) != OpenSSLOKP::keyType(namedCurve))
++        return nullptr;
++    auto raw = OpenSSLOKP::rawPrivateKey(key.get());
++    if (!raw)
++        return nullptr;
++    return create(identifier, namedCurve, CryptoKeyType::Private, WTF::move(*raw), extractable, usages);
++}
++
++ExceptionOr<Vector<uint8_t>> CryptoKeyOKP::exportPkcs8() const
++{
++    if (type() != CryptoKeyType::Private)
++        return Exception { ExceptionCode::InvalidAccessError };
++    auto key = OpenSSLOKP::privateKey(namedCurve(), platformKey().span());
++    auto info = PKCS8PrivKeyInfoPtr(key ? EVP_PKEY2PKCS8(key.get()) : nullptr);
++    int length = info ? i2d_PKCS8_PRIV_KEY_INFO(info.get(), nullptr) : -1;
++    if (length <= 0)
++        return Exception { ExceptionCode::OperationError };
++    Vector<uint8_t> result(length);
++    uint8_t* output = result.mutableSpan().data();
++    if (i2d_PKCS8_PRIV_KEY_INFO(info.get(), &output) != length)
++        return Exception { ExceptionCode::OperationError };
++    return WTF::move(result);
++}
++
++String CryptoKeyOKP::generateJwkD() const
++{
++    ASSERT(type() == CryptoKeyType::Private);
++    return base64URLEncodeToString(m_data);
++}
++
++String CryptoKeyOKP::generateJwkX() const
++{
++    if (type() == CryptoKeyType::Public)
++        return base64URLEncodeToString(m_data);
++
++    ASSERT(type() == CryptoKeyType::Private);
++    auto key = OpenSSLOKP::privateKey(namedCurve(), platformKey().span());
++    auto publicData = OpenSSLOKP::rawPublicKey(key.get());
++    if (!publicData)
++        return { };
++    return base64URLEncodeToString(publicData->span());
++}
++
++Vector<uint8_t> CryptoKeyOKP::platformExportRaw() const
++{
++    return m_data;
++}
++
++} // namespace WebCore
+diff --git a/Source/WebCore/crypto/openssl/CryptoKeyOKPOpenSSL.h b/Source/WebCore/crypto/openssl/CryptoKeyOKPOpenSSL.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..b6065c4fc8c51c594bde92ba41dd7146ef5cf554
+--- /dev/null
++++ b/Source/WebCore/crypto/openssl/CryptoKeyOKPOpenSSL.h
+@@ -0,0 +1,45 @@
++/*
++ * Copyright (C) 2026 KunanyiOS contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#pragma once
++
++#include "CryptoKeyOKP.h"
++#include "OpenSSLCryptoUniquePtr.h"
++#include <optional>
++#include <span>
++#include <wtf/Vector.h>
++
++namespace WebCore {
++
++// EVP keys of the raw Ed25519 and X25519 keys CryptoKeyOKP holds.
++namespace OpenSSLOKP {
++int keyType(CryptoKeyOKP::NamedCurve);
++EvpPKeyPtr privateKey(CryptoKeyOKP::NamedCurve, std::span<const uint8_t>);
++EvpPKeyPtr publicKey(CryptoKeyOKP::NamedCurve, std::span<const uint8_t>);
++std::optional<Vector<uint8_t>> rawPublicKey(EVP_PKEY*);
++std::optional<Vector<uint8_t>> rawPrivateKey(EVP_PKEY*);
++}
++
++} // namespace WebCore
 diff --git a/Source/WebCore/css/CSSStyleSheet.cpp b/Source/WebCore/css/CSSStyleSheet.cpp
 index 868e69f5e5e8960b07be47ac8dbc214628321945..cc41401bbaf51d5c425c35cb76237dedab4d0ff7 100644
 --- a/Source/WebCore/css/CSSStyleSheet.cpp
@@ -6292,6 +6821,28 @@ index 9b54ff20266447120b80f850ebd0a0f69423bdcb..361b7de4fda4c599ac52d9d4c489c762
      auto position = path.reverseFind('.');
      if (position != notFound) {
          auto result = mimeTypeForExtension(path.substring(position + 1));
+diff --git a/Source/WebCore/platform/OpenSSL.cmake b/Source/WebCore/platform/OpenSSL.cmake
+index d65ff90dc36887139a180ecc8d16be88fde5b1a9..1a4a65584f5f7d6a37d58eece820b6285aa084e8 100644
+--- a/Source/WebCore/platform/OpenSSL.cmake
++++ b/Source/WebCore/platform/OpenSSL.cmake
+@@ -6,6 +6,7 @@ list(APPEND WebCore_SOURCES
+     crypto/openssl/CryptoAlgorithmAESKWOpenSSL.cpp
+     crypto/openssl/CryptoAlgorithmECDHOpenSSL.cpp
+     crypto/openssl/CryptoAlgorithmECDSAOpenSSL.cpp
++    crypto/openssl/CryptoAlgorithmEd25519OpenSSL.cpp
+     crypto/openssl/CryptoAlgorithmHKDFOpenSSL.cpp
+     crypto/openssl/CryptoAlgorithmHMACOpenSSL.cpp
+     crypto/openssl/CryptoAlgorithmPBKDF2OpenSSL.cpp
+@@ -13,7 +14,9 @@ list(APPEND WebCore_SOURCES
+     crypto/openssl/CryptoAlgorithmRSA_OAEPOpenSSL.cpp
+     crypto/openssl/CryptoAlgorithmRSA_PSSOpenSSL.cpp
+     crypto/openssl/CryptoAlgorithmRegistryOpenSSL.cpp
++    crypto/openssl/CryptoAlgorithmX25519OpenSSL.cpp
+     crypto/openssl/CryptoKeyECOpenSSL.cpp
++    crypto/openssl/CryptoKeyOKPOpenSSL.cpp
+     crypto/openssl/CryptoKeyRSAOpenSSL.cpp
+     crypto/openssl/OpenSSLUtilities.cpp
+     crypto/openssl/SerializedCryptoKeyWrapOpenSSL.cpp
 diff --git a/Source/WebCore/platform/Pasteboard.h b/Source/WebCore/platform/Pasteboard.h
 index 844687bbf3636c9cd64621e41a092d35ed61cd29..773967f99273777fa4c3efb0def347bd78b5b1c4 100644
 --- a/Source/WebCore/platform/Pasteboard.h
@@ -8284,6 +8835,33 @@ index 583c2f2b023cd8f3698252f251df5bc6cabcb5c5..38d61a0a11c01f5f2b09271c9d037946
  
      // Take ownership of the memory for process memory accounting purposes.
      WEBCORE_EXPORT void takeOwnershipOfMemory(MemoryLedger) const;
+diff --git a/Source/WebCore/platform/graphics/angle/PlatformDisplayANGLE.cpp b/Source/WebCore/platform/graphics/angle/PlatformDisplayANGLE.cpp
+index 100e61c99fcc079ca9b363aab12482437ef928c7..b4cffb99d5cf579d95cc54bbc2c6a17c2d3152ec 100644
+--- a/Source/WebCore/platform/graphics/angle/PlatformDisplayANGLE.cpp
++++ b/Source/WebCore/platform/graphics/angle/PlatformDisplayANGLE.cpp
+@@ -52,12 +52,21 @@ EGLDisplay PlatformDisplay::angleEGLDisplay() const
+     };
+ 
+     auto angleDisplay = EGL_GetPlatformDisplayEXT(EGL_PLATFORM_ANGLE_ANGLE, m_angleNativeDisplay ? m_angleNativeDisplay : EGL_DEFAULT_DISPLAY, displayAttributes.span().data());
+-    if (angleDisplay == EGL_NO_DISPLAY)
++    if (angleDisplay == EGL_NO_DISPLAY) {
++#if PLATFORM(HAIKU)
++        // Release builds have no WebGL log channel; without a display there
++        // is no WebGL, so say why once.
++        WTFLogAlways("WebGL: ANGLE made no EGL display (EGL error 0x%x)", EGL_GetError());
++#endif
+         return EGL_NO_DISPLAY;
++    }
+ 
+     EGLint majorVersion, minorVersion;
+     if (EGL_Initialize(angleDisplay, &majorVersion, &minorVersion) == EGL_FALSE) {
+         LOG(WebGL, "EGLDisplay Initialization failed.");
++#if PLATFORM(HAIKU)
++        WTFLogAlways("WebGL: ANGLE could not initialize its EGL display (EGL error 0x%x)", EGL_GetError());
++#endif
+         return EGL_NO_DISPLAY;
+     }
+     LOG(WebGL, "ANGLE initialised Major: %d Minor: %d", majorVersion, minorVersion);
 diff --git a/Source/WebCore/platform/graphics/egl/BitmapTexture.cpp b/Source/WebCore/platform/graphics/egl/BitmapTexture.cpp
 index da8b5baeb5040357ab6f783dc31d72c3926cbc56..408a905028a1e6181981c7b17dde987ccf2ac342 100644
 --- a/Source/WebCore/platform/graphics/egl/BitmapTexture.cpp
@@ -8485,10 +9063,20 @@ index 04c7f35b45eb11fc3e87bd16b5aa657e46501001..09ba02743c2a405b4aa1895da07a9542
      bool m_onLimitExceededMode WTF_GUARDED_BY_LOCK(m_lock) { false };
      Seconds m_releaseUnusedSecondsTolerance WTF_GUARDED_BY_LOCK(m_lock);
 diff --git a/Source/WebCore/platform/graphics/egl/GLContext.cpp b/Source/WebCore/platform/graphics/egl/GLContext.cpp
-index 4abac552bbc855e4e36bc8be37834ef6d8993e22..39a35ff548bb00e8e1d896044623e08aa24327ac 100644
+index 4abac552bbc855e4e36bc8be37834ef6d8993e22..bba55fc2477fc223685c17abacd04b5de34b76ab 100644
 --- a/Source/WebCore/platform/graphics/egl/GLContext.cpp
 +++ b/Source/WebCore/platform/graphics/egl/GLContext.cpp
-@@ -232,6 +232,14 @@ std::unique_ptr<GLContext> GLContext::createPbufferContext(GLDisplay& display, E
+@@ -45,6 +45,9 @@ WTF_MAKE_TZONE_ALLOCATED_IMPL(GLContext);
+ const char* GLContext::errorString(int statusCode)
+ {
+     static_assert(sizeof(int) >= sizeof(EGLint), "EGLint must not be wider than int");
++#if PLATFORM(HAIKU)
++    static_assert(std::is_same_v<GLNativeWindowType, unsigned long>, "GLContext.h declares GLNativeWindowType as unsigned long for ANGLE's translation units");
++#endif
+     switch (statusCode) {
+ #define CASE_RETURN_STRING(name) case name: return #name
+         // https://www.khronos.org/registry/EGL/sdk/docs/man/html/eglGetError.xhtml
+@@ -232,6 +235,14 @@ std::unique_ptr<GLContext> GLContext::createPbufferContext(GLDisplay& display, E
  
  std::unique_ptr<GLContext> GLContext::createOffscreenContext(GLDisplay& display, Target target, EGLContext sharingContext)
  {
@@ -8504,13 +9092,20 @@ index 4abac552bbc855e4e36bc8be37834ef6d8993e22..39a35ff548bb00e8e1d896044623e08a
          return context;
  
 diff --git a/Source/WebCore/platform/graphics/egl/GLContext.h b/Source/WebCore/platform/graphics/egl/GLContext.h
-index 28829bd1aac3177356f62c6aa30919288ca3f36d..a0b72445fbe85956bab8ea9b0324800114611080 100644
+index 28829bd1aac3177356f62c6aa30919288ca3f36d..137925cf79133c96182b0df77fdc59fec34fd14b 100644
 --- a/Source/WebCore/platform/graphics/egl/GLContext.h
 +++ b/Source/WebCore/platform/graphics/egl/GLContext.h
-@@ -26,7 +26,14 @@
+@@ -25,8 +25,20 @@
+ #include <wtf/TZoneMalloc.h>
  #include <wtf/ThreadSafeWeakPtr.h>
  
- #if !PLATFORM(GTK) && !PLATFORM(WPE)
+-#if !PLATFORM(GTK) && !PLATFORM(WPE)
++#if PLATFORM(HAIKU) && defined(__egl_h_) && !defined(EPOXY_EGL_H)
++// ANGLE's EGL headers came first (WebGL's translation units, as on GTK and
++// WPE), and epoxy's cannot follow them. Mesa's Haiku EGL platform declares
++// EGLNativeWindowType as khronos_uintptr_t, which is this type.
++typedef unsigned long GLNativeWindowType;
++#elif !PLATFORM(GTK) && !PLATFORM(WPE)
 +// Haiku's libepoxy declares the Khronos types itself rather than including
 +// KHR/khrplatform.h, so whichever of the two is seen first wins and the other
 +// conflicts. Everywhere else in WebCore epoxy is preferred when it is in use.
@@ -18342,10 +18937,10 @@ index 0000000000000000000000000000000000000000..945b797d384ad17994ca7d20f19bac45
 +SPECIALIZE_TYPE_TRAITS_END()
 diff --git a/Source/WebCore/platform/graphics/haiku/PlatformDisplayHaiku.cpp b/Source/WebCore/platform/graphics/haiku/PlatformDisplayHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..3cea132842e0a67f9c8c976692f9aa31e9d77db7
+index 0000000000000000000000000000000000000000..dbd3d2728470c003c2befbdd481afc0577fe34aa
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/PlatformDisplayHaiku.cpp
-@@ -0,0 +1,61 @@
+@@ -0,0 +1,68 @@
 +/*
 + * Copyright (C) 2026 KunanyiOS contributors.
 + *
@@ -18400,6 +18995,13 @@ index 0000000000000000000000000000000000000000..3cea132842e0a67f9c8c976692f9aa31
 +PlatformDisplayHaiku::PlatformDisplayHaiku(Ref<GLDisplay>&& glDisplay)
 +    : PlatformDisplay(WTF::move(glDisplay))
 +{
++#if ENABLE(WEBGL)
++    // ANGLE's EGL back-end opens the same native display: platform 0 makes it
++    // call eglGetDisplay(EGL_DEFAULT_DISPLAY) rather than eglGetPlatformDisplay,
++    // which with a surfaceless platform hangs in zink (docs/workstation.md).
++    m_anglePlatform = 0;
++    m_angleNativeDisplay = EGL_DEFAULT_DISPLAY;
++#endif
 +}
 +
 +PlatformDisplayHaiku::~PlatformDisplayHaiku() = default;
@@ -19836,10 +20438,28 @@ index 74cfeb60ac3daa537785693be3917358aa26a2b5..7e6a15b9528db5b57a57352b5e8dab62
  
  void FontCache::platformPurgeInactiveFontData()
 diff --git a/Source/WebCore/platform/graphics/skia/GraphicsContextSkia.cpp b/Source/WebCore/platform/graphics/skia/GraphicsContextSkia.cpp
-index 59d4ba8107c53467362b653542b1418471ff124d..e0ae60cb332cdbd2dd452f915d23e715de284dee 100644
+index 59d4ba8107c53467362b653542b1418471ff124d..0d8c20d0ea13a4881521452c218ad3125d6b16f5 100644
 --- a/Source/WebCore/platform/graphics/skia/GraphicsContextSkia.cpp
 +++ b/Source/WebCore/platform/graphics/skia/GraphicsContextSkia.cpp
-@@ -456,7 +456,11 @@ bool GraphicsContextSkia::drawPathAsSingleElement(const Path& path, SkPaint& pai
+@@ -50,6 +50,8 @@
+ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
+ #include <skia/core/SkColorFilter.h>
+ #include <skia/core/SkImage.h>
++#include <skia/core/SkBlurTypes.h>
++#include <skia/core/SkMaskFilter.h>
+ #include <skia/core/SkPathBuilder.h>
+ #include <skia/core/SkPathEffect.h>
+ #include <skia/core/SkPathTypes.h>
+@@ -421,7 +423,7 @@ void GraphicsContextSkia::drawSkiaPath(const SkPath& path, SkPaint& paint)
+     if (hasDropShadow()) {
+         inExtraTransparencyLayer = drawOutsetShadow(paint, [&](const SkPaint& paint) {
+             m_canvas.drawPath(path, paint);
+-        });
++        }, ShadowSource::SolidShape);
+     }
+     m_canvas.drawPath(path, paint);
+     if (inExtraTransparencyLayer)
+@@ -456,7 +458,11 @@ bool GraphicsContextSkia::drawPathAsSingleElement(const Path& path, SkPaint& pai
              return false;
  
          SkRect oval = { arc.center.x() - arc.radius, arc.center.y() - arc.radius, arc.center.x() + arc.radius, arc.center.y() + arc.radius };
@@ -19852,6 +20472,122 @@ index 59d4ba8107c53467362b653542b1418471ff124d..e0ae60cb332cdbd2dd452f915d23e715
              m_canvas.drawOval(oval, paint);
          else
              m_canvas.drawArc(oval, startDegrees, sweepDegrees, false, paint);
+@@ -575,15 +581,63 @@ sk_sp<SkImageFilter> GraphicsContextSkia::createDropShadowFilterIfNeeded(ShadowS
+     return nullptr;
+ }
+ 
+-bool GraphicsContextSkia::drawOutsetShadow(SkPaint& paint, Function<void(const SkPaint&)>&& drawFunction)
++std::optional<bool> GraphicsContextSkia::drawOutsetShadowWithMaskFilter(const SkPaint& paint, const Function<void(const SkPaint&)>& drawFunction)
+ {
+-    auto shadow = createDropShadowFilterIfNeeded(ShadowStyle::Outset);
++    // The colour must be the paint's own: a shader or filter would make the
++    // shadow's opacity vary across the shape.
++    if (paint.getShader() || paint.getColorFilter() || paint.getMaskFilter() || paint.getImageFilter())
++        return std::nullopt;
++
++    const auto& shadow = dropShadow();
+     if (!shadow)
+         return false;
++    auto offset = shadow->offset;
++    const auto& shadowColor = shadow->color;
++    if (!shadowColor.isVisible() || (!offset.width() && !offset.height() && !shadow->radius))
++        return false;
++
++    // As with DropShadowOnly: the shape's coverage times its opacity, in the
++    // shadow's colour, blurred with sigma radius / 2, offset, and composited
++    // with the paint's blend mode.
++    auto [skShadowColor, skShadowColorSpace] = skColor4fAndColorSpaceForColor(shadowColor);
++    skShadowColor.fA *= paint.getAlphaf();
++    SkPaint shadowPaint(paint);
++    shadowPaint.setColor(skShadowColor, skShadowColorSpace.get());
++    const bool ignoreTransforms = state().shadowsIgnoreTransforms();
++    const float sigma = shadow->radius / 2.0;
++    if (sigma > 0)
++        shadowPaint.setMaskFilter(SkMaskFilter::MakeBlur(kNormal_SkBlurStyle, sigma, !ignoreTransforms));
++
++    m_canvas.save();
++    if (ignoreTransforms) {
++        // Offset and blur are in device space whatever the transform (canvas
++        // shadows): move the device, not the user space.
++        SkMatrix matrix = m_canvas.getTotalMatrix();
++        matrix.postTranslate(offset.width(), offset.height());
++        m_canvas.setMatrix(matrix);
++    } else
++        m_canvas.translate(offset.width(), offset.height());
++    drawFunction(shadowPaint);
++    m_canvas.restore();
++    return true;
++}
++
++bool GraphicsContextSkia::drawOutsetShadow(SkPaint& paint, Function<void(const SkPaint&)>&& drawFunction, ShadowSource source)
++{
++    std::optional<bool> drewWithMaskFilter;
++    if (source == ShadowSource::SolidShape)
++        drewWithMaskFilter = drawOutsetShadowWithMaskFilter(paint, drawFunction);
++    if (drewWithMaskFilter && !*drewWithMaskFilter)
++        return false;
++    if (!drewWithMaskFilter) {
++        auto shadow = createDropShadowFilterIfNeeded(ShadowStyle::Outset);
++        if (!shadow)
++            return false;
+ 
+-    paint.setImageFilter(shadow);
+-    drawFunction(paint);
+-    paint.setImageFilter(nullptr);
++        paint.setImageFilter(shadow);
++        drawFunction(paint);
++        paint.setImageFilter(nullptr);
++    }
+ 
+     auto reversed = m_skiaStateStack | std::views::reverse;
+     auto it = std::ranges::find(reversed, true, &SkiaState::isLayer);
+@@ -650,7 +704,7 @@ void GraphicsContextSkia::drawSkiaRect(const SkRect& boundaries, SkPaint& paint)
+     if (hasDropShadow()) {
+         inExtraTransparencyLayer = drawOutsetShadow(paint, [&](const SkPaint& paint) {
+             m_canvas.drawRect(boundaries, paint);
+-        });
++        }, ShadowSource::SolidShape);
+     }
+     m_canvas.drawRect(boundaries, paint);
+     if (inExtraTransparencyLayer)
+@@ -1092,7 +1146,7 @@ void GraphicsContextSkia::fillRoundedRectImpl(const FloatRoundedRect& rect, cons
+     if (hasDropShadow()) {
+         inExtraTransparencyLayer = drawOutsetShadow(paint, [&](const SkPaint& paint) {
+             m_canvas.drawRRect(rect, paint);
+-        });
++        }, ShadowSource::SolidShape);
+     }
+     m_canvas.drawRRect(rect, paint);
+     if (inExtraTransparencyLayer)
+@@ -1359,7 +1413,7 @@ void GraphicsContextSkia::drawSkiaText(const sk_sp<SkTextBlob>& blob, SkScalar x
+         if (hasDropShadow()) {
+             inExtraTransparencyLayer = drawOutsetShadow(paint, [&](const SkPaint& paint) {
+                 m_canvas.drawTextBlob(blob, x, y, paint);
+-            });
++            }, ShadowSource::SolidShape);
+         }
+         m_canvas.drawTextBlob(blob, x, y, paint);
+         if (inExtraTransparencyLayer)
+diff --git a/Source/WebCore/platform/graphics/skia/GraphicsContextSkia.h b/Source/WebCore/platform/graphics/skia/GraphicsContextSkia.h
+index 4129e4540fe8d40738ef54c068514633533b58d2..1f4a7606b663e1cae38277fd19d8f37f3fc32166 100644
+--- a/Source/WebCore/platform/graphics/skia/GraphicsContextSkia.h
++++ b/Source/WebCore/platform/graphics/skia/GraphicsContextSkia.h
+@@ -146,7 +146,14 @@ private:
+ 
+     enum class ShadowStyle : uint8_t { Outset, Inset };
+     sk_sp<SkImageFilter> createDropShadowFilterIfNeeded(ShadowStyle) const;
+-    bool drawOutsetShadow(SkPaint&, Function<void(const SkPaint&)>&&);
++    // What a shadow is cast by. A shape filled or stroked with one colour
++    // (rectangles, paths, rounded rectangles, text) casts its coverage, which a
++    // blur mask filter draws directly: Skia has analytic blurs for rectangles
++    // and rounded rectangles and needs no offscreen layer for any shape. Other
++    // content (images, gradients, patterns) goes through a drop shadow filter.
++    enum class ShadowSource : uint8_t { Content, SolidShape };
++    bool drawOutsetShadow(SkPaint&, Function<void(const SkPaint&)>&&, ShadowSource = ShadowSource::Content);
++    std::optional<bool> drawOutsetShadowWithMaskFilter(const SkPaint&, const Function<void(const SkPaint&)>&);
+ 
+     void pushSkiaState();
+     void popSkiaState();
 diff --git a/Source/WebCore/platform/graphics/skia/PlatformDisplaySkia.cpp b/Source/WebCore/platform/graphics/skia/PlatformDisplaySkia.cpp
 index 6b3cac20c6de4a7b817689de34c807020235850e..f5e992b32ba9dc919975dcd08b86e74d672a3477 100644
 --- a/Source/WebCore/platform/graphics/skia/PlatformDisplaySkia.cpp
@@ -19952,6 +20688,56 @@ index 30343ff03299542f8673d98b486c7fdd78bddeb9..802ab40256fb666447044521614f5199
  
          if (const char* envString = getenv("WEBKIT_SKIA_CPU_PAINTING_THREADS")) {
              auto newValue = parseInteger<unsigned>(StringView::fromLatin1(envString));
+diff --git a/Source/WebCore/platform/graphics/texmap/GraphicsContextGLTextureMapperANGLE.cpp b/Source/WebCore/platform/graphics/texmap/GraphicsContextGLTextureMapperANGLE.cpp
+index 4c15dfa81a1f6da9de3fead1584946253080c76c..18e6a7678f451073d729488cb80083d049fef466 100644
+--- a/Source/WebCore/platform/graphics/texmap/GraphicsContextGLTextureMapperANGLE.cpp
++++ b/Source/WebCore/platform/graphics/texmap/GraphicsContextGLTextureMapperANGLE.cpp
+@@ -63,7 +63,7 @@
+ #include "GraphicsContextGLTextureMapperGBM.h"
+ #endif
+ 
+-#if PLATFORM(GTK) || PLATFORM(WPE)
++#if PLATFORM(GTK) || PLATFORM(WPE) || PLATFORM(HAIKU)
+ #include "GLFence.h"
+ #endif
+ 
+@@ -264,6 +264,9 @@ bool GraphicsContextGLTextureMapperANGLE::platformInitializeContext()
+     EGL_ChooseConfig(m_displayObj, configAttributes, &m_configObj, 1, &numberConfigsReturned);
+     if (numberConfigsReturned != 1) {
+         LOG(WebGL, "EGLConfig Initialization failed.");
++#if PLATFORM(HAIKU)
++        WTFLogAlways("WebGL: no EGL config (EGL error 0x%x)", EGL_GetError());
++#endif
+         return false;
+     }
+     LOG(WebGL, "Got EGLConfig");
+@@ -324,6 +327,9 @@ bool GraphicsContextGLTextureMapperANGLE::platformInitializeContext()
+     m_angleSharingContextObj = sharedDisplay.angleSharingGLContext();
+     if (m_angleSharingContextObj == EGL_NO_CONTEXT) {
+         LOG(WebGL, "ANGLE sharing EGLContext Initialization failed.");
++#if PLATFORM(HAIKU)
++        WTFLogAlways("WebGL: no ANGLE context sharing the compositor's (EGL error 0x%x)", EGL_GetError());
++#endif
+         return false;
+     }
+ 
+@@ -331,10 +337,16 @@ bool GraphicsContextGLTextureMapperANGLE::platformInitializeContext()
+ #endif
+     if (m_contextObj == EGL_NO_CONTEXT) {
+         LOG(WebGL, "EGLContext Initialization failed.");
++#if PLATFORM(HAIKU)
++        WTFLogAlways("WebGL: ANGLE made no context (EGL error 0x%x)", EGL_GetError());
++#endif
+         return false;
+     }
+     if (!makeContextCurrent()) {
+         LOG(WebGL, "ANGLE makeContextCurrent failed.");
++#if PLATFORM(HAIKU)
++        WTFLogAlways("WebGL: the ANGLE context could not be made current (EGL error 0x%x)", EGL_GetError());
++#endif
+         return false;
+     }
+     LOG(WebGL, "Got EGLContext");
 diff --git a/Source/WebCore/platform/graphics/texmap/TextureMapper.cpp b/Source/WebCore/platform/graphics/texmap/TextureMapper.cpp
 index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..b3742988119c281ac73ee2f7a446bc7a3a44171d 100644
 --- a/Source/WebCore/platform/graphics/texmap/TextureMapper.cpp
@@ -29742,6 +30528,53 @@ index 0000000000000000000000000000000000000000..59f374ad848098e03b661974c7932c2c
 +};
 +
 +} // namespace WebCore
+diff --git a/Source/WebCore/platform/network/curl/OpenSSLHelper.cpp b/Source/WebCore/platform/network/curl/OpenSSLHelper.cpp
+index 4cfe46eed7ca84223c22c0d5f467692fad5c7d09..3f61e5290e0411d4c8806233db3ff58c8b32cd99 100644
+--- a/Source/WebCore/platform/network/curl/OpenSSLHelper.cpp
++++ b/Source/WebCore/platform/network/curl/OpenSSLHelper.cpp
+@@ -184,19 +184,20 @@ WebCore::CertificateInfo::CertificateChain createCertificateChain(X509_STORE_CTX
+     return pemDataFromCtx(StackOfX509(ctx));
+ }
+ 
+-#if OS(WINDOWS)
+-static String toString(const ASN1_STRING* name)
++// Named apart from WTF's variadic toString(), which is the better match for
++// a non-const ASN1_STRING* and turned every name into "true" (the pointer
++// became a bool). It was also only compiled on Windows.
++static String asn1StringToString(const ASN1_STRING* name)
+ {
+     unsigned char* data { nullptr };
+     auto length = ASN1_STRING_to_UTF8(&data, name);
+     if (length <= 0)
+         return String();
+ 
+-    String result({ byteCast<Latin1Character>(data), static_cast<size_t>(length) });
++    auto result = String::fromUTF8(std::span { byteCast<char8_t>(data), static_cast<size_t>(length) });
+     OPENSSL_free(data);
+     return result;
+ }
+-#endif
+ 
+ static String getSubjectEntry(const X509* x509, int nid)
+ {
+@@ -216,7 +217,7 @@ static String getSubjectEntry(const X509* x509, int nid)
+     if (!entryData)
+         return String();
+ 
+-    return toString(entryData);
++    return asn1StringToString(entryData);
+ }
+ 
+ static String getCommonName(const X509* x509)
+@@ -306,7 +307,7 @@ static void getSubjectAltName(const X509* x509, Vector<String>& dnsNames, Vector
+             continue;
+ 
+         if (value->type == GEN_DNS) {
+-            auto dnsName = toString(value->d.dNSName);
++            auto dnsName = asn1StringToString(value->d.dNSName);
+             if (!dnsName.isNull())
+                 dnsNames.append(WTF::move(dnsName));
+         } else if (value->type == GEN_IPADD) {
 diff --git a/Source/WebCore/platform/network/curl/ResourceHandleCurl.cpp b/Source/WebCore/platform/network/curl/ResourceHandleCurl.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..74bc458868ddc63ed1bb24573f201ddd84a712c9
@@ -34458,6 +35291,33 @@ index efb0e18ef3681d9f33b6c784f0fb22f1ff0e80eb..19ec94335716b9ab75d52343c7adcad7
      Promise<ImageBufferResourceLimits> getImageBufferResourceLimits();
  
      undefined setTopDocumentURLForQuirks(DOMString urlString);
+diff --git a/Source/WebCore/workers/WorkerRunLoop.cpp b/Source/WebCore/workers/WorkerRunLoop.cpp
+index 2a7942bb578df8fcab1c81d389e534ec6ad01440..bae91bac7486cdf58b6aa9ce89ae09571843d21d 100644
+--- a/Source/WebCore/workers/WorkerRunLoop.cpp
++++ b/Source/WebCore/workers/WorkerRunLoop.cpp
+@@ -298,6 +298,22 @@ WorkerDedicatedRunLoop::RunInModeResult WorkerDedicatedRunLoop::runInMode(Worker
+         JSC::VM& vm = script->vm();
+         timeoutDelay = vm.deferredWorkTimer->timeUntilFire().value_or(Seconds::infinity());
+     }
++#elif OS(HAIKU)
++    // A worker thread's RunLoop is a looper nobody else runs: its timers are
++    // messages that wait at the looper's port until the thread cycles it, and
++    // the thread otherwise only waits on the message queue below. Without this
++    // JSC's timers never fired in workers: DeferredWorkTimer, which delivers
++    // asynchronous WebAssembly compilation (WebAssembly.instantiate() never
++    // settled, so Proton's crypto worker hung deriving an Argon2 key), and the
++    // garbage collection timers. One cycle handles one message.
++    for (unsigned i = 0; i < 64 && RunLoop::cycle() == RunLoop::CycleResult::Continue; ++i) { }
++
++    if (script) {
++        JSC::VM& vm = script->vm();
++        timeoutDelay = vm.deferredWorkTimer->timeUntilFire().value_or(Seconds::infinity());
++    }
++    // The other JSC timers (collection, sweeping) are only seen here once due.
++    timeoutDelay = std::min(timeoutDelay, 1_s);
+ #endif
+ 
+     if (predicate.isDefaultMode() && m_sharedTimer->isActive())
 diff --git a/Source/WebKit/CMakeLists.txt b/Source/WebKit/CMakeLists.txt
 index e516087e3331311877a49df982704f642f6dffe9..2200ad768726289d2a7e13f2d8d5cc77a3e397f9 100644
 --- a/Source/WebKit/CMakeLists.txt
@@ -38101,10 +38961,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..acc05c00510a876ceecad83741913fe90a660e8a
+index 0000000000000000000000000000000000000000..14c4229baca53a6ec73a3dddd08f7cc624642eba
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,412 @@
+@@ -0,0 +1,416 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -38379,6 +39239,10 @@ index 0000000000000000000000000000000000000000..acc05c00510a876ceecad83741913fe9
 +        OpenGL::GLES
 +    )
 +endif ()
++
++# Server certificates are identified by their SHA-256 and described from their
++# DER data when the user is asked whether to trust one (WebView.cpp).
++list(APPEND WebKit_LIBRARIES OpenSSL::Crypto)
 +
 +if (ENABLE_WK_WEB_EXTENSIONS)
 +    find_package(PkgConfig REQUIRED)
@@ -44656,10 +45520,10 @@ index 0000000000000000000000000000000000000000..574ed16658f0c14b1aa2e63208e990b8
 +#define WEBKIT_ENGINE_VERSION_HAIKU "@WebKit_HAIKU_MAJOR_VERSION@.@WebKit_HAIKU_MINOR_VERSION@.@WebKit_HAIKU_TINY_VERSION@"
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitContext.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitContext.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..b18b0dc54b5ad7c7a36be4979cd853644f4a2d1d
+index 0000000000000000000000000000000000000000..59c7fe4de7804246aaabea490677b8b01c61532c
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitContext.cpp
-@@ -0,0 +1,575 @@
+@@ -0,0 +1,602 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -45167,6 +46031,33 @@ index 0000000000000000000000000000000000000000..b18b0dc54b5ad7c7a36be4979cd85364
 +    });
 +}
 +
++void BWebKitContext::AllowServerCertificate(const char* host, const char* sha256)
++{
++    if (m_status != B_OK || !host || !*host || !sha256 || !*sha256)
++        return;
++    auto operation = [context = m_context, host = String::fromUTF8(host).isolatedCopy(),
++        sha256 = String::fromUTF8(sha256).isolatedCopy()] {
++        context->allowServerCertificate(host, sha256);
++    };
++    if (RunLoop::isMain())
++        operation();
++    else
++        RunLoop::mainSingleton().dispatch(WTF::move(operation));
++}
++
++void BWebKitContext::ForgetServerCertificates(const char* host)
++{
++    if (m_status != B_OK)
++        return;
++    auto operation = [context = m_context, host = String::fromUTF8(host ? host : "").isolatedCopy()] {
++        context->forgetServerCertificates(host);
++    };
++    if (RunLoop::isMain())
++        operation();
++    else
++        RunLoop::mainSingleton().dispatch(WTF::move(operation));
++}
++
 +void BWebKitContext::RemoveWebsiteData(uint32 types, const BMessenger& reply, uint64 identifier, bool includeExtensions)
 +{
 +    auto respond = [reply, identifier](const char* error) {
@@ -45237,10 +46128,10 @@ index 0000000000000000000000000000000000000000..b18b0dc54b5ad7c7a36be4979cd85364
 +}
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitContext.h b/Source/WebKit/UIProcess/API/haiku/WebKitContext.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..a024bf6805ab8da16a37669cace0ecf989429360
+index 0000000000000000000000000000000000000000..76c3ecde4e59b67871dcdef5e66a9d91f2d6317c
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitContext.h
-@@ -0,0 +1,283 @@
+@@ -0,0 +1,296 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -45517,6 +46408,19 @@ index 0000000000000000000000000000000000000000..a024bf6805ab8da16a37669cace0ecf9
 +    // service workers) survives unless includeExtensions is true, as clearing a
 +    // browser's site data does not reset its extensions. Any looper.
 +    void RemoveWebsiteData(uint32 types, const BMessenger& reply, uint64 identifier, bool includeExtensions = false);
++
++    // Trusts a server certificate that failed verification (self-signed,
++    // expired, issued for another name or by an unknown authority) for host,
++    // as the user decided after a load failed with "loadErrorCertificate"
++    // (WebKitView.h). sha256 is that notification's
++    // "loadErrorCertificateSHA256". Requests of this context's pages to host
++    // then accept that certificate, and only that one; a changed certificate
++    // fails again. Not stored: the host keeps its users' decisions and gives
++    // them again after a restart. Any thread.
++    void AllowServerCertificate(const char* host, const char* sha256);
++    // Withdraws AllowServerCertificate() for host, or for every host when host
++    // is null or empty. Any thread.
++    void ForgetServerCertificates(const char* host = nullptr);
 +
 +private:
 +    friend class BWebKitView;
@@ -46021,10 +46925,10 @@ index 0000000000000000000000000000000000000000..d28a6cad6339adf79b155cf974e85bfd
 +
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..9a793fc86de5ac71496151d39aff6b638a15d0e9
+index 0000000000000000000000000000000000000000..ee3384009f7d3b92e9dcd59ff35ed815e29f7ad8
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp
-@@ -0,0 +1,570 @@
+@@ -0,0 +1,588 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -46046,7 +46950,9 @@ index 0000000000000000000000000000000000000000..9a793fc86de5ac71496151d39aff6b63
 +#include <algorithm>
 +#include <cinttypes>
 +#include <cmath>
++#include <cstdio>
 +#include <cstdlib>
++#include <cstring>
 +#include <dlfcn.h>
 +#include <wtf/RunLoop.h>
 +#include <utility>
@@ -46425,10 +47331,23 @@ index 0000000000000000000000000000000000000000..9a793fc86de5ac71496151d39aff6b63
 +void BWebKitView::Show() { BView::Show(); UpdateGeometry(); }
 +void BWebKitView::Hide() { BView::Hide(); UpdateGeometry(); }
 +
++static bool presentTraceHaiku()
++{
++    static const bool enabled = [] {
++        const char* value = std::getenv("SUMMIT_SWAPCHAIN_TRACE");
++        return value && *value && std::strcmp(value, "0");
++    }();
++    return enabled;
++}
++
 +void BWebKitView::Draw(BRect update)
 +{
 +    UpdateGeometry();
 +    auto frame = m_state->presenter.snapshot();
++    if (presentTraceHaiku())
++        std::fprintf(stderr, "Summit view %p draw [%.0f,%.0f %.0fx%.0f] frame=%llu view=%dx%d hidden=%d\n", this, update.left, update.top,
++            update.Width() + 1, update.Height() + 1, frame ? static_cast<unsigned long long>(frame->identifier) : 0ULL,
++            frame ? frame->viewSize.width() : 0, frame ? frame->viewSize.height() : 0, IsHidden() ? 1 : 0);
 +    PushState();
 +    SetDrawingMode(B_OP_COPY);
 +    BRect destination;
@@ -46551,6 +47470,9 @@ index 0000000000000000000000000000000000000000..9a793fc86de5ac71496151d39aff6b63
 +        ExecuteEditCommand(message->what);
 +        return;
 +    case viewFrameHaiku: {
++        if (presentTraceHaiku())
++            std::fprintf(stderr, "Summit view %p frame message damage=%d window=%p hidden=%d\n", this,
++                static_cast<int>(message->CountNames(B_RECT_TYPE)), Window(), IsHidden() ? 1 : 0);
 +        // A frame names what changed; without that it replaces everything.
 +        BRect damage;
 +        if (message->FindRect("damage", &damage) != B_OK) {
@@ -74202,10 +75124,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..4d5cb1680ea1cb21c069c8f791a1da4958287de9
+index 0000000000000000000000000000000000000000..7a74684286ba9ca5d3606a4e6baf4718c79f0ac8
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,1769 @@
+@@ -0,0 +1,1939 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -74291,6 +75213,20 @@ index 0000000000000000000000000000000000000000..4d5cb1680ea1cb21c069c8f791a1da49
 +#include <WebCore/DOMPasteAccess.h>
 +#include <WebCore/ResourceError.h>
 +#include <WebCore/ResourceRequest.h>
++#include "AuthenticationChallengeDisposition.h"
++#include "AuthenticationChallengeProxy.h"
++#include "AuthenticationDecisionListener.h"
++#include <WebCore/AuthenticationChallenge.h>
++#include <WebCore/CertificateInfo.h>
++#include <WebCore/CertificateSummary.h>
++#include <WebCore/Credential.h>
++#include <openssl/bio.h>
++#include <openssl/evp.h>
++#include <openssl/pem.h>
++#include <openssl/x509.h>
++#include <openssl/x509v3.h>
++#include <wtf/HexNumber.h>
++#include <wtf/text/StringBuilder.h>
 +#include <OS.h>
 +#include <cstdio>
 +#include <wtf/NeverDestroyed.h>
@@ -74425,6 +75361,89 @@ index 0000000000000000000000000000000000000000..4d5cb1680ea1cb21c069c8f791a1da49
 +    load.errorURL = { };
 +    load.errorCode = 0;
 +    load.errorProvisional = false;
++    load.errorCertificate = std::nullopt;
++}
++
++// What a user needs to see of a server certificate that failed verification:
++// its identity (the SHA-256 fingerprint of the leaf, the key
++// AllowServerCertificate() takes), subject, issuer, validity and why OpenSSL
++// rejected it. The curl port keeps the chain's certificates as PEM text.
++static String certificateNameHaiku(X509_NAME* name)
++{
++    if (!name)
++        return { };
++    BIO* bio = BIO_new(BIO_s_mem());
++    if (!bio)
++        return { };
++    // "CN = UniFi, O = Ubiquiti Inc." with UTF-8 left as it is.
++    X509_NAME_print_ex(bio, name, 0, XN_FLAG_ONELINE & ~ASN1_STRFLGS_ESC_MSB);
++    char* data = nullptr;
++    long length = BIO_get_mem_data(bio, &data);
++    String result = length > 0 ? String::fromUTF8(std::string(data, static_cast<size_t>(length)).c_str()) : String();
++    BIO_free(bio);
++    return result;
++}
++
++static std::optional<WebViewStateHaiku::LoadState::Certificate> describeCertificateHaiku(
++    const String& host, const CertificateInfo& certificateInfo)
++{
++    const auto& chain = certificateInfo.certificateChain();
++    if (chain.isEmpty() || chain[0].isEmpty())
++        return std::nullopt;
++    const auto& encoded = chain[0];
++    X509* x509 = nullptr;
++    if (BIO* bio = BIO_new_mem_buf(encoded.span().data(), encoded.size())) {
++        x509 = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
++        BIO_free(bio);
++    }
++    if (!x509) {
++        const unsigned char* data = encoded.span().data();
++        x509 = d2i_X509(nullptr, &data, encoded.size());
++    }
++    if (!x509)
++        return std::nullopt;
++    WebViewStateHaiku::LoadState::Certificate certificate;
++    certificate.host = host;
++    unsigned char digest[EVP_MAX_MD_SIZE];
++    unsigned digestLength = 0;
++    bool digested = X509_digest(x509, EVP_sha256(), digest, &digestLength) == 1;
++    certificate.subject = certificateNameHaiku(X509_get_subject_name(x509));
++    certificate.issuer = certificateNameHaiku(X509_get_issuer_name(x509));
++    // The verify result curl reports is often "unspecified" (a router's
++    // certificate failed that way), so say what is wrong with it.
++    Vector<ASCIILiteral> problems;
++    if (X509_check_issued(x509, x509) == X509_V_OK)
++        problems.append("it is self-signed"_s);
++    if (X509_cmp_current_time(X509_get0_notAfter(x509)) < 0)
++        problems.append("it has expired"_s);
++    else if (X509_cmp_current_time(X509_get0_notBefore(x509)) > 0)
++        problems.append("it is not valid yet"_s);
++    auto bareHost = host.startsWith('[') && host.endsWith(']') ? host.substring(1, host.length() - 2) : host;
++    auto hostUTF8 = bareHost.utf8();
++    bool isAddress = URL::hostIsIPAddress(bareHost);
++    if (isAddress ? X509_check_ip_asc(x509, hostUTF8.legacyCStringPointer(), 0) != 1 : X509_check_host(x509, hostUTF8.legacyCStringPointer(), hostUTF8.length(), 0, nullptr) != 1)
++        problems.append("it is not issued for this address"_s);
++    X509_free(x509);
++    StringBuilder problemText;
++    for (auto problem : problems)
++        problemText.append(problemText.isEmpty() ? ""_s : ", "_s, problem);
++    certificate.problem = problemText.toString();
++    if (!digested)
++        return std::nullopt;
++    certificate.sha256 = toHexString(std::span<const uint8_t> { digest, digestLength }).convertToASCIILowercase();
++    if (auto summary = certificateInfo.summary()) {
++        certificate.validFrom = summary->validFrom.seconds();
++        certificate.validUntil = summary->validUntil.seconds();
++        StringBuilder names;
++        for (const auto& name : summary->dnsNames)
++            names.append(names.isEmpty() ? ""_s : ", "_s, name);
++        for (const auto& address : summary->ipAddresses)
++            names.append(names.isEmpty() ? ""_s : ", "_s, address);
++        certificate.names = names.toString();
++    }
++    if (certificate.problem.isEmpty())
++        certificate.problem = certificateInfo.verificationErrorDescription();
++    return certificate;
 +}
 +
 +static void beginUnidentifiedLoadHaiku(const std::shared_ptr<WebViewStateHaiku>& state)
@@ -74505,6 +75524,15 @@ index 0000000000000000000000000000000000000000..4d5cb1680ea1cb21c069c8f791a1da49
 +        load.errorCode = error.errorCode();
 +        load.errorURL = (error.failingURL().isEmpty() ? requestURL : error.failingURL()).string();
 +        load.errorProvisional = provisional;
++        if (error.isCertificationVerificationError()) {
++            // The challenge that rejected the certificate described it; the
++            // error only says that verification failed.
++            auto host = URL { load.errorURL }.host().toString();
++            for (auto& rejected : state->rejectedCertificates) {
++                if (equalIgnoringASCIICase(rejected.host, host))
++                    load.errorCertificate = rejected;
++            }
++        }
 +    }
 +    notifyLoadStateHaiku(state);
 +}
@@ -74592,6 +75620,40 @@ index 0000000000000000000000000000000000000000..4d5cb1680ea1cb21c069c8f791a1da49
 +public:
 +    explicit CloseNavigationClientHaiku(std::weak_ptr<WebViewStateHaiku> state) : m_state(std::move(state)) { }
 +
++    // A server certificate failed verification (the curl network task asks
++    // before it gives up). Certificates the user trusted for the host through
++    // BWebKitContext::AllowServerCertificate() proceed; the others are refused
++    // and remembered, so that the failed load can tell the host which
++    // certificate it was. Every other challenge keeps the default handling.
++    void didReceiveAuthenticationChallenge(WebPageProxy&, AuthenticationChallengeProxy& challenge) override
++    {
++        const auto& protectionSpace = challenge.core().protectionSpace();
++        if (protectionSpace.authenticationScheme() != ProtectionSpace::AuthenticationScheme::ServerTrustEvaluationRequested) {
++            challenge.listener().completeChallenge(AuthenticationChallengeDisposition::PerformDefaultHandling);
++            return;
++        }
++        auto state = m_state.lock();
++        auto certificate = describeCertificateHaiku(protectionSpace.host(), protectionSpace.certificateInfo());
++        if (state && certificate && state->context
++            && state->context->allowsServerCertificate(certificate->host, certificate->sha256)) {
++            // The curl task restarts the request without verification when
++            // given any non-empty credential for a server trust challenge.
++            challenge.listener().completeChallenge(AuthenticationChallengeDisposition::UseCredential,
++                Credential("accept server trust"_s, emptyString(), CredentialPersistence::None));
++            return;
++        }
++        if (state && certificate) {
++            auto& rejected = state->rejectedCertificates;
++            rejected.erase(std::remove_if(rejected.begin(), rejected.end(), [&](const auto& item) {
++                return equalIgnoringASCIICase(item.host, certificate->host);
++            }), rejected.end());
++            if (rejected.size() >= 8)
++                rejected.erase(rejected.begin());
++            rejected.push_back(WTF::move(*certificate));
++        }
++        challenge.listener().completeChallenge(AuthenticationChallengeDisposition::PerformDefaultHandling);
++    }
++
 +    void decidePolicyForNavigationAction(WebPageProxy& page, Ref<API::NavigationAction>&& action, Ref<WebFramePolicyListenerProxy>&& listener) override
 +    {
 +        if (action->navigationType() == NavigationType::LinkClicked
@@ -74658,10 +75720,18 @@ index 0000000000000000000000000000000000000000..4d5cb1680ea1cb21c069c8f791a1da49
 +    void decidePolicyForNavigationResponse(WebPageProxy&, Ref<API::NavigationResponse>&& navigation, Ref<WebFramePolicyListenerProxy>&& listener) override
 +    {
 +        const auto& response = navigation->response();
++        // A frame inside the page only downloads what the server marks as an
++        // attachment, and not an empty one. Its other content that cannot be
++        // shown is dropped, as other browsers do: advertising pages load
++        // hidden frames from user-sync addresses that answer with an empty
++        // body of no known type, and every one of them became an empty file
++        // in Downloads (for example on xbitlabs.com).
++        const bool mainFrame = navigation->frame().isMainFrame();
++        const bool attachment = response.isAttachment() && (mainFrame || response.expectedContentLength());
 +        if (response.httpStatusCode() == 204 || response.httpStatusCode() == 205)
 +            listener->use();
 +        else if (navigation->request().url().protocolIsInHTTPFamily()
-+            && (response.isAttachment() || !navigation->canShowMIMEType()))
++            && (attachment || (mainFrame && !navigation->canShowMIMEType())))
 +            listener->download();
 +        else if (navigation->canShowMIMEType())
 +            listener->use();
@@ -75388,6 +76458,17 @@ index 0000000000000000000000000000000000000000..4d5cb1680ea1cb21c069c8f791a1da49
 +    message.AddString("loadErrorURL", load.errorURL.utf8().legacyCStringPointer());
 +    message.AddInt32("loadErrorCode", load.errorCode);
 +    message.AddBool("loadErrorProvisional", load.errorProvisional);
++    message.AddBool("loadErrorCertificate", !!load.errorCertificate);
++    if (const auto& certificate = load.errorCertificate) {
++        message.AddString("loadErrorCertificateHost", certificate->host.utf8().legacyCStringPointer());
++        message.AddString("loadErrorCertificateSHA256", certificate->sha256.utf8().legacyCStringPointer());
++        message.AddString("loadErrorCertificateSubject", certificate->subject.utf8().legacyCStringPointer());
++        message.AddString("loadErrorCertificateIssuer", certificate->issuer.utf8().legacyCStringPointer());
++        message.AddString("loadErrorCertificateProblem", certificate->problem.utf8().legacyCStringPointer());
++        message.AddString("loadErrorCertificateNames", certificate->names.utf8().legacyCStringPointer());
++        message.AddDouble("loadErrorCertificateValidFrom", certificate->validFrom);
++        message.AddDouble("loadErrorCertificateValidUntil", certificate->validUntil);
++    }
 +    message.AddUInt64("loadSuccessSequence", load.successSequence);
 +    message.AddString("loadSuccessURL", load.successURL.utf8().legacyCStringPointer());
 +    message.AddString("loadSuccessTitle", load.successTitle.utf8().legacyCStringPointer());
@@ -75705,6 +76786,17 @@ index 0000000000000000000000000000000000000000..4d5cb1680ea1cb21c069c8f791a1da49
 +    BMessage message(viewFrameHaiku);
 +    // Redraw only what changed, in the view's logical coordinates, rounded
 +    // outwards so a fractional scale never leaves a sliver behind.
++    static const bool traceDamage = [] {
++        const char* value = std::getenv("SUMMIT_SWAPCHAIN_TRACE");
++        return value && *value && std::strcmp(value, "0");
++    }();
++    if (traceDamage) {
++        std::fprintf(stderr, "Summit present: id=%llu size=%dx%d scale=%.2f full=%d damage=%zu", static_cast<unsigned long long>(identifier),
++            size.width(), size.height(), scale, m_presentationNeedsFullRedraw ? 1 : 0, static_cast<size_t>(damage.size()));
++        for (auto& rect : damage)
++            std::fprintf(stderr, " [%d,%d %dx%d]", rect.x(), rect.y(), rect.width(), rect.height());
++        std::fprintf(stderr, "\n");
++    }
 +    if (!std::exchange(m_presentationNeedsFullRedraw, false) && scale > 0) {
 +        for (auto& rect : damage) {
 +            BRect logical(std::floor(rect.x() / scale), std::floor(rect.y() / scale),
@@ -75977,10 +77069,10 @@ index 0000000000000000000000000000000000000000..4d5cb1680ea1cb21c069c8f791a1da49
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..d5dc32de7e36698e8db7ee331a20fcbe1260e5d1
+index 0000000000000000000000000000000000000000..9f02bfaf996ed27b7984526181375dff864ba211
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp
-@@ -0,0 +1,272 @@
+@@ -0,0 +1,299 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -76081,6 +77173,33 @@ index 0000000000000000000000000000000000000000..d5dc32de7e36698e8db7ee331a20fcbe
 +        prompts->shutdown();
 +    if (auto commands = browserCommands())
 +        commands->shutdown();
++}
++
++void WebViewContextHaiku::allowServerCertificate(const String& host, const String& sha256)
++{
++    ASSERT(RunLoop::isMain());
++    if (host.isEmpty() || sha256.isEmpty())
++        return;
++    m_allowedServerCertificates.ensure(host.convertToASCIILowercase(), [] {
++        return HashSet<String> { };
++    }).iterator->value.add(sha256.convertToASCIILowercase());
++}
++
++void WebViewContextHaiku::forgetServerCertificates(const String& host)
++{
++    ASSERT(RunLoop::isMain());
++    if (host.isEmpty())
++        m_allowedServerCertificates.clear();
++    else
++        m_allowedServerCertificates.remove(host.convertToASCIILowercase());
++}
++
++bool WebViewContextHaiku::allowsServerCertificate(const String& host, const String& sha256) const
++{
++    ASSERT(RunLoop::isMain());
++    auto iterator = m_allowedServerCertificates.find(host.convertToASCIILowercase());
++    return iterator != m_allowedServerCertificates.end()
++        && iterator->value.contains(sha256.convertToASCIILowercase());
 +}
 +
 +WebsiteDataStore& WebViewContextHaiku::dataStore() const
@@ -76255,10 +77374,10 @@ index 0000000000000000000000000000000000000000..d5dc32de7e36698e8db7ee331a20fcbe
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..d75df82b5187c6696bcc78d55aee3a2293b416ff
+index 0000000000000000000000000000000000000000..b4b9c66c54b39ed130d6cb0050176991a32b92cb
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h
-@@ -0,0 +1,66 @@
+@@ -0,0 +1,76 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -76266,7 +77385,10 @@ index 0000000000000000000000000000000000000000..d75df82b5187c6696bcc78d55aee3a22
 +#include <Messenger.h>
 +#include <SupportDefs.h>
 +#include <memory>
++#include <wtf/HashMap.h>
++#include <wtf/HashSet.h>
 +#include <wtf/Ref.h>
++#include <wtf/text/StringHash.h>
 +#include <wtf/text/WTFString.h>
 +
 +namespace API { class PageConfiguration; }
@@ -76305,6 +77427,12 @@ index 0000000000000000000000000000000000000000..d75df82b5187c6696bcc78d55aee3a22
 +    std::shared_ptr<BrowserCommandBrokerHaiku> browserCommands() const;
 +    std::shared_ptr<ExtensionPackageRegistryHaiku> extensionPackages() const;
 +    void download(WebPageProxy&, const WebCore::ResourceRequest&, const BMessenger&);
++    // Server certificates the user trusts for a host although they failed
++    // verification, by SHA-256 of the DER leaf certificate (lower-case hex).
++    // Application thread only.
++    void allowServerCertificate(const String& host, const String& sha256);
++    void forgetServerCertificates(const String& host);
++    bool allowsServerCertificate(const String& host, const String& sha256) const;
 +
 +private:
 +    explicit WebViewContextHaiku(Ref<WebsiteDataStore>&&, String extensionStorageDirectory);
@@ -76322,6 +77450,7 @@ index 0000000000000000000000000000000000000000..d75df82b5187c6696bcc78d55aee3a22
 +    const std::shared_ptr<BrowserTabRegistryHaiku> m_browserTabs;
 +    // Set when the extensions above are another context's.
 +    const std::shared_ptr<WebViewContextHaiku> m_extensionOwner;
++    HashMap<String, HashSet<String>> m_allowedServerCertificates;
 +};
 +
 +} // namespace WebKit
@@ -76495,10 +77624,10 @@ index 0000000000000000000000000000000000000000..c377297a0337714d2ae82a30dc2a8d3b
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..0b3bdd6d627987d84e9c372581c4502b60ae9837
+index 0000000000000000000000000000000000000000..405c904fb37849e36ee166d332784246ad0928e5
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
-@@ -0,0 +1,121 @@
+@@ -0,0 +1,137 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -76582,12 +77711,28 @@ index 0000000000000000000000000000000000000000..0b3bdd6d627987d84e9c372581c4502b
 +        String errorURL;
 +        int errorCode { 0 };
 +        bool errorProvisional { false };
++        // The server certificate that failed verification, when that is why
++        // the load failed: what the user needs to decide whether to trust it.
++        struct Certificate {
++            String host;
++            String sha256; // hex, of the DER leaf certificate
++            String subject;
++            String issuer;
++            String problem;
++            String names; // DNS names and addresses it is valid for, comma-separated
++            double validFrom { 0 }; // seconds since the epoch
++            double validUntil { 0 };
++        };
++        std::optional<Certificate> errorCertificate;
 +        // Keep the last successful load in every snapshot so a dropped
 +        // progress notification cannot turn a failed load into a visit.
 +        uint64_t successSequence { 0 };
 +        String successURL;
 +        String successTitle;
 +    } load;
++    // Certificates this view's requests rejected lately (main thread): the
++    // challenge carries the certificate, the failed load only an error code.
++    std::vector<LoadState::Certificate> rejectedCertificates;
 +    // These close-handshake flags are also confined to the WebKit main thread.
 +    bool closeRequestPending { false };
 +    bool closeRequestApproved { false };
@@ -93686,10 +94831,20 @@ index 8677b9d9f5c1e61cbe8b0a184b669022d8db3eed..3ef5c5295f89885202331129b3eb86ac
  #include "MessageSenderInlines.h"
  #include "WebAuthenticatorCoordinatorProxyMessages.h"
 diff --git a/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.cpp b/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.cpp
-index 335b456329f885a77d3880fc2a98b2b58cb4bee8..c95197b680dae30c884afaf3ce7ff1898d8b1e34 100644
+index 335b456329f885a77d3880fc2a98b2b58cb4bee8..99e17141482039aa045c9c879103465df11e0539 100644
 --- a/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.cpp
 +++ b/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.cpp
-@@ -268,6 +268,8 @@ FloatRect WebChromeClient::windowRect() const
+@@ -120,6 +120,9 @@
+ #include <WebCore/LocalFrameView.h>
+ #include <WebCore/NotImplemented.h>
+ #include <WebCore/PointerLockController.h>
++#if PLATFORM(HAIKU) && ENABLE(WEBGL)
++#include <WebCore/PlatformDisplay.h>
++#endif
+ #include <WebCore/PopupMenuClient.h>
+ #include <WebCore/RegistrableDomain.h>
+ #include <WebCore/RemoteFrame.h>
+@@ -268,6 +271,8 @@ FloatRect WebChromeClient::windowRect() const
  #if PLATFORM(MAC)
      if (page->hasCachedWindowFrame())
          return page->windowFrameInUnflippedScreenCoordinates();
@@ -93698,7 +94853,20 @@ index 335b456329f885a77d3880fc2a98b2b58cb4bee8..c95197b680dae30c884afaf3ce7ff189
  #endif
  
      auto sendResult = protect(WebProcess::singleton().parentProcessConnection())->sendSync(Messages::WebPageProxy::GetWindowFrame(), page->identifier());
-@@ -2282,7 +2284,7 @@ void WebChromeClient::setMockWebAuthenticationConfiguration(const MockWebAuthent
+@@ -1216,6 +1221,12 @@ RefPtr<GraphicsContextGL> WebChromeClient::createGraphicsContextGL(const Graphic
+     WebProcess::singleton().initializePlatformDisplayIfNeeded();
+     WebProcess::singleton().initializeVulkanIfNeeded();
+ #endif
++#if PLATFORM(HAIKU)
++    // Without an EGL display (no GL driver) there is no WebGL: getContext()
++    // returns null rather than the shared display asserting.
++    if (!WebCore::PlatformDisplay::sharedDisplayIfExists())
++        return nullptr;
++#endif
+ #if ENABLE(GPU_PROCESS)
+     if (WebProcess::singleton().shouldUseRemoteRenderingForWebGL()) {
+         RefPtr page = m_page.get();
+@@ -2282,7 +2293,7 @@ void WebChromeClient::setMockWebAuthenticationConfiguration(const MockWebAuthent
  }
  #endif
  
@@ -113927,10 +115095,10 @@ index 121e64b01bce34e387deacf3bbbca93adf0f59da..7926cd9c3edf141bc52f7db0253c37c0
  endif ()
 diff --git a/Source/cmake/OptionsHaiku.cmake b/Source/cmake/OptionsHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..56f79e70ee58062ebdcc8f1a7c93e9c97db0fe7c
+index 0000000000000000000000000000000000000000..188173af18ef298ef02a89319e267105512a5534
 --- /dev/null
 +++ b/Source/cmake/OptionsHaiku.cmake
-@@ -0,0 +1,347 @@
+@@ -0,0 +1,340 @@
 +include(GNUInstallDirs)
 +include(VersioningUtils)
 +
@@ -114026,7 +115194,14 @@ index 0000000000000000000000000000000000000000..56f79e70ee58062ebdcc8f1a7c93e9c9
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_LEGACY_CUSTOM_PROTOCOL_MANAGER PRIVATE OFF)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_REMOTE_INSPECTOR PRIVATE ON)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_SMOOTH_SCROLLING PRIVATE ON)
-+WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_WEBGL PRIVATE OFF)
++# WebGL renders through ANGLE on the system EGL, and its canvases are composited
++# as GL textures, so it needs GL compositing (with Skia, for the coordinated
++# layer tree). On with it by default; see the checks after the option block.
++if (USE_HAIKU_GL_COMPOSITING)
++    WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_WEBGL PRIVATE ON)
++else ()
++    WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_WEBGL PRIVATE OFF)
++endif ()
 +
 +# Skia replaces the app_server drawing path: it rasterises in the web process,
 +# so there is no IPC per drawing call, and it is what SkiaPaintingEngine needs
@@ -114104,26 +115279,19 @@ index 0000000000000000000000000000000000000000..56f79e70ee58062ebdcc8f1a7c93e9c9
 +    endif ()
 +endif ()
 +
++# WebGL as on GTK and WPE: ANGLE (Source/ThirdParty/ANGLE/PlatformHaiku.cmake)
++# translates WebGL to the system GLES through EGL, in the web process (there is
++# no GPU process), and GraphicsContextGLTextureMapperANGLE hands each frame to
++# the coordinated compositor as a texture of a context shared with it. Without
++# GBM there is no buffer sharing, so that texture path is the one used.
 +if (ENABLE_WEBGL)
-+    find_package(OpenGL REQUIRED)
-+    find_package(EGL REQUIRED)
-+
-+    if (EGL_FOUND)
-+        SET_AND_EXPOSE_TO_BUILD(USE_EGL TRUE)
-+        option(ENABLE_GLES2 ON)
-+
-+        if (ENABLE_GLES2)
-+            find_package(GLES REQUIRED)
-+        endif ()
-+
-+        if (OPENGLES2_FOUND)
-+            set(USE_OPENGL_ES_2 1)
-+            add_definitions(-DUSE_OPENGL_ES_2=1)
-+        endif ()
-+
-+        set(USE_GRAPHICS_SURFACE 1)
++    if (NOT USE_HAIKU_GL_COMPOSITING OR NOT USE_SKIA)
++        message(FATAL_ERROR "ENABLE_WEBGL needs USE_HAIKU_GL_COMPOSITING and USE_SKIA (the coordinated compositor).")
 +    endif ()
++    find_package(EGL REQUIRED)
++    SET_AND_EXPOSE_TO_BUILD(USE_EGL TRUE)
 +endif ()
++SET_AND_EXPOSE_TO_BUILD(USE_ANGLE ${ENABLE_WEBGL})
 +
 +# GLContext.cpp compiles to nothing without USE(EGL), and Skia's graphics
 +# context refers to it whether or not anything is accelerated yet.
@@ -114218,13 +115386,6 @@ index 0000000000000000000000000000000000000000..56f79e70ee58062ebdcc8f1a7c93e9c9
 +set(DERIVED_SOURCES_HAIKU_API_DIR ${DERIVED_SOURCES_WEBKIT_DIR}/haiku)
 +
 +set(FORWARDING_HEADERS_DIR ${DERIVED_SOURCES_DIR}/ForwardingHeaders)
-+
-+if (ENABLE_WEBGL)
-+    set(ENABLE_WEBGL 1)
-+    if (USE_GRAPHICS_SURFACE)
-+        add_definitions(-DUSE_GRAPHICS_SURFACE=1)
-+    endif ()
-+endif ()
 +
 +SET_AND_EXPOSE_TO_BUILD(ENABLE_GRAPHICS_CONTEXT_3D FALSE)
 +
