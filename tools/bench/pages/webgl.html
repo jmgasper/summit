@@ -1,0 +1,169 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WebGL probe</title>
+<style>
+  body { font: 14px sans-serif; margin: 16px; background: #fff; }
+  canvas { border: 1px solid #888; margin: 4px; }
+  pre { white-space: pre-wrap; }
+</style>
+<h1>WebGL probe</h1>
+<p>Checks that WebGL 1 and 2 contexts can be made, what renders them, that a
+drawn triangle reads back with the right colours, and how fast an animated
+scene runs. The result is posted to the bench server
+(<code>tools/bench/run-probe.py --page webgl.html</code>) and shown below.</p>
+<canvas id="gl1" width="256" height="256"></canvas>
+<canvas id="gl2" width="256" height="256"></canvas>
+<canvas id="anim" width="1024" height="600"></canvas>
+<pre id="out">running…</pre>
+<script>
+"use strict";
+const result = { page: "webgl", userAgent: navigator.userAgent, devicePixelRatio };
+
+function compile(gl, type, source) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS))
+        throw new Error("shader: " + gl.getShaderInfoLog(shader));
+    return shader;
+}
+
+function program(gl, vertex, fragment) {
+    const p = gl.createProgram();
+    gl.attachShader(p, compile(gl, gl.VERTEX_SHADER, vertex));
+    gl.attachShader(p, compile(gl, gl.FRAGMENT_SHADER, fragment));
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS))
+        throw new Error("link: " + gl.getProgramInfoLog(p));
+    return p;
+}
+
+// A red triangle over the lower-left half on a blue background: pixel (32, 32)
+// must be red, (224, 224) blue.
+function triangle(id, kind) {
+    const entry = { kind };
+    const canvas = document.getElementById(id);
+    const gl = canvas.getContext(kind, { preserveDrawingBuffer: true, antialias: false });
+    if (!gl) {
+        entry.created = false;
+        return entry;
+    }
+    entry.created = true;
+    entry.version = gl.getParameter(gl.VERSION);
+    entry.shadingLanguage = gl.getParameter(gl.SHADING_LANGUAGE_VERSION);
+    entry.vendor = gl.getParameter(gl.VENDOR);
+    entry.renderer = gl.getParameter(gl.RENDERER);
+    const debug = gl.getExtension("WEBGL_debug_renderer_info");
+    if (debug) {
+        entry.unmaskedVendor = gl.getParameter(debug.UNMASKED_VENDOR_WEBGL);
+        entry.unmaskedRenderer = gl.getParameter(debug.UNMASKED_RENDERER_WEBGL);
+    }
+    entry.maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+    entry.extensions = (gl.getSupportedExtensions() || []).length;
+    try {
+        const p = program(gl, "attribute vec2 p; void main() { gl_Position = vec4(p, 0.0, 1.0); }",
+            "precision mediump float; void main() { gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0); }");
+        const buffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1]), gl.STATIC_DRAW);
+        gl.clearColor(0, 0, 1, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.useProgram(p);
+        const location = gl.getAttribLocation(p, "p");
+        gl.enableVertexAttribArray(location);
+        gl.vertexAttribPointer(location, 2, gl.FLOAT, false, 0, 0);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        const pixel = new Uint8Array(4);
+        gl.readPixels(32, 32, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+        entry.inside = Array.from(pixel);
+        gl.readPixels(224, 224, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+        entry.outside = Array.from(pixel);
+        entry.pixelsCorrect = entry.inside.join() === "255,0,0,255" && entry.outside.join() === "0,0,255,255";
+        entry.error = gl.getError();
+    } catch (error) {
+        entry.exception = String(error);
+    }
+    return entry;
+}
+
+// 400 lit, spinning cubes drawn one call each, for five seconds.
+function animate(seconds) {
+    return new Promise(resolve => {
+        const canvas = document.getElementById("anim");
+        const gl = canvas.getContext("webgl");
+        if (!gl)
+            return resolve({ created: false });
+        const p = program(gl,
+            "attribute vec3 p; attribute vec3 n; uniform mat4 m; uniform float a; varying float l;" +
+            "void main() { float c = cos(a), s = sin(a); mat3 r = mat3(c, 0.0, -s, 0.0, 1.0, 0.0, s, 0.0, c);" +
+            " l = 0.3 + 0.7 * max(dot(r * n, normalize(vec3(0.4, 0.8, 0.6))), 0.0);" +
+            " gl_Position = m * vec4(r * p, 1.0); }",
+            "precision mediump float; varying float l; uniform vec3 color; void main() { gl_FragColor = vec4(color * l, 1.0); }");
+        const faces = [[0, 0, 1], [0, 0, -1], [0, 1, 0], [0, -1, 0], [1, 0, 0], [-1, 0, 0]];
+        const data = [];
+        for (const [x, y, z] of faces) {
+            const u = [y, z, x], v = [z, x, y];
+            const corner = (a, b) => [x + a * u[0] + b * v[0], y + a * u[1] + b * v[1], z + a * u[2] + b * v[2]];
+            for (const [a, b] of [[-1, -1], [1, -1], [1, 1], [-1, -1], [1, 1], [-1, 1]])
+                data.push(...corner(a, b), x, y, z);
+        }
+        const buffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.STATIC_DRAW);
+        gl.useProgram(p);
+        const pl = gl.getAttribLocation(p, "p"), nl = gl.getAttribLocation(p, "n");
+        gl.enableVertexAttribArray(pl);
+        gl.enableVertexAttribArray(nl);
+        gl.vertexAttribPointer(pl, 3, gl.FLOAT, false, 24, 0);
+        gl.vertexAttribPointer(nl, 3, gl.FLOAT, false, 24, 12);
+        const m = gl.getUniformLocation(p, "m"), a = gl.getUniformLocation(p, "a"), color = gl.getUniformLocation(p, "color");
+        gl.enable(gl.DEPTH_TEST);
+        const frames = [];
+        let start = 0;
+        function frame(now) {
+            if (!start)
+                start = now;
+            frames.push(now);
+            gl.viewport(0, 0, canvas.width, canvas.height);
+            gl.clearColor(0.1, 0.1, 0.15, 1);
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+            for (let i = 0; i < 400; ++i) {
+                const x = (i % 25) / 12.5 - 0.96, y = Math.floor(i / 25) / 8 - 0.94, s = 0.03;
+                gl.uniformMatrix4fv(m, false, [s * 0.6, 0, 0, 0, 0, s, 0, 0, 0, 0, s, 0, x, y, 0.5, 1]);
+                gl.uniform1f(a, now / 500 + i);
+                gl.uniform3f(color, (i % 7) / 7, (i % 5) / 5, (i % 3) / 3 + 0.3);
+                gl.drawArrays(gl.TRIANGLES, 0, 36);
+            }
+            if (now - start < seconds * 1000)
+                requestAnimationFrame(frame);
+            else {
+                const intervals = frames.slice(1).map((t, i) => t - frames[i]).sort((x, y) => x - y);
+                resolve({
+                    created: true,
+                    frames: frames.length,
+                    framesPerSecond: (frames.length - 1) / ((frames[frames.length - 1] - frames[0]) / 1000),
+                    medianFrameMs: intervals[Math.floor(intervals.length / 2)],
+                    worstFrameMs: intervals[intervals.length - 1],
+                    error: gl.getError(),
+                });
+            }
+        }
+        requestAnimationFrame(frame);
+    });
+}
+
+(async () => {
+    try {
+        result.webgl1 = triangle("gl1", "webgl");
+        result.webgl2 = triangle("gl2", "webgl2");
+        result.animation = await animate(5);
+    } catch (error) {
+        result.exception = String(error);
+    }
+    document.getElementById("out").textContent = JSON.stringify(result, null, 2);
+    document.title = "WebGL probe done";
+    try {
+        await fetch("/__bench/probe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(result) });
+    } catch (error) { }
+})();
+</script>

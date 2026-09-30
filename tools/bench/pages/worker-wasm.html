@@ -1,0 +1,43 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Worker WebAssembly probe</title>
+<h1>Asynchronous WebAssembly in a worker</h1>
+<p>WebAssembly.compile() and instantiate() in a dedicated worker must settle.
+They deliver their result through JavaScriptCore's deferred work timer, which
+on Haiku only fires when the worker thread cycles its RunLoop (Proton Mail's
+crypto worker waited on this forever after the second login factor). The page
+also times out after ten seconds, so a hang is reported rather than waited on.</p>
+<pre id="out">running…</pre>
+<script>
+"use strict";
+// (module (memory 1) (func (export "f") (param i32) (result i32) local.get 0 i32.load))
+const bytes = [0,97,115,109,1,0,0,0,1,6,1,96,1,127,1,127,3,2,1,0,5,3,1,0,1,7,5,1,1,102,0,0,10,9,1,7,0,32,0,40,2,0,11];
+const source = `
+const bytes = new Uint8Array(${JSON.stringify(bytes)});
+onmessage = async () => {
+    const steps = {};
+    const time = async (name, promise) => {
+        const start = performance.now();
+        try { await promise; steps[name] = Math.round((performance.now() - start) * 10) / 10; }
+        catch (error) { steps[name] = "error: " + error; }
+    };
+    await time("compile", WebAssembly.compile(bytes));
+    await time("instantiate", WebAssembly.instantiate(bytes));
+    const module = new WebAssembly.Module(bytes);
+    await time("instantiateModule", WebAssembly.instantiate(module));
+    postMessage(steps);
+};`;
+const result = { page: "worker-wasm" };
+const worker = new Worker(URL.createObjectURL(new Blob([source], { type: "text/javascript" })));
+const finish = async steps => {
+    result.steps = steps;
+    result.settled = !!steps && ["compile", "instantiate", "instantiateModule"].every(name => typeof steps[name] === "number");
+    document.getElementById("out").textContent = JSON.stringify(result, null, 2);
+    document.title = result.settled ? "Worker WebAssembly: settled" : "Worker WebAssembly: HUNG";
+    try { await fetch("/__bench/probe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(result) }); } catch (error) { }
+};
+const timeout = setTimeout(() => finish(null), 10000);
+worker.onmessage = event => { clearTimeout(timeout); finish(event.data); };
+worker.onerror = event => { clearTimeout(timeout); result.error = event.message; finish(null); };
+worker.postMessage("go");
+</script>

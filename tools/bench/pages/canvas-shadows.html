@@ -1,0 +1,70 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Canvas shadow probe</title>
+<h1>Canvas 2D shadows</h1>
+<p>Time to draw 50 rotated squares with <code>shadowBlur</code> (as
+xbitlabs.com's FPS test does), without shadows, and as paths, rounded
+rectangles and text, on an accelerated and on a CPU
+(<code>willReadFrequently</code>) canvas. Milliseconds per frame of 50 shapes;
+lower is better.</p>
+<canvas id="c" width="880" height="380"></canvas>
+<pre id="out">running…</pre>
+<script>
+"use strict";
+const colors = ["#f472b6", "#c084fc", "#818cf8", "#60a5fa", "#34d399", "#facc15"];
+function bench(options, blur, shape) {
+    const canvas = document.createElement("canvas");
+    canvas.width = 880;
+    canvas.height = 380;
+    document.body.appendChild(canvas);
+    const context = canvas.getContext("2d", options);
+    const items = Array.from({ length: 50 }, (_, i) => ({ x: Math.random() * 880, y: Math.random() * 380, size: 15 * Math.random() + 5, color: colors[i % colors.length], rotation: Math.random() * 6 }));
+    const draw = () => {
+        context.clearRect(0, 0, 880, 380);
+        for (const item of items) {
+            context.save();
+            context.translate(item.x, item.y);
+            context.rotate(item.rotation += 0.1);
+            context.globalCompositeOperation = "lighter";
+            context.shadowColor = item.color;
+            context.shadowBlur = blur;
+            context.fillStyle = item.color;
+            if (shape === "rect")
+                context.fillRect(-item.size / 2, -item.size / 2, item.size, item.size);
+            else if (shape === "path") {
+                context.beginPath();
+                context.moveTo(25, 0); context.lineTo(-15, -8); context.lineTo(-10, 0); context.lineTo(-15, 8);
+                context.closePath();
+                context.fill();
+            } else if (shape === "roundRect") {
+                context.beginPath();
+                context.roundRect(-item.size / 2, -item.size / 2, item.size, item.size, 4);
+                context.fill();
+            } else {
+                context.font = "16px sans-serif";
+                context.fillText("Summit", 0, 0);
+            }
+            context.restore();
+        }
+    };
+    draw();
+    context.getImageData(0, 0, 1, 1);
+    const start = performance.now();
+    for (let i = 0; i < 20; ++i)
+        draw();
+    context.getImageData(0, 0, 1, 1);
+    const milliseconds = (performance.now() - start) / 20;
+    canvas.remove();
+    return Math.round(milliseconds * 100) / 100;
+}
+const result = { page: "canvas-shadows" };
+for (const [name, options] of [["gpu", {}], ["cpu", { willReadFrequently: true }]]) {
+    result[name] = {};
+    for (const shape of ["rect", "path", "roundRect", "text"])
+        for (const blur of [0, 15])
+            result[name][shape + "Blur" + blur] = bench(options, blur, shape);
+}
+document.getElementById("out").textContent = JSON.stringify(result, null, 2);
+document.title = "Canvas shadows done";
+fetch("/__bench/probe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(result) }).catch(() => { });
+</script>
