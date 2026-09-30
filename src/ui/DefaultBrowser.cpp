@@ -138,7 +138,11 @@ void ApplyLaunchEnvironment()
                 if (!current) setenv(name.c_str(), value.c_str(), 0);
                 continue;
             }
-            const std::string list = current ? current : "";
+            // An unset LIBRARY_PATH means the system's default search path,
+            // which the engine's processes still need after the addition.
+            const std::string list = current ? current
+                : name == "LIBRARY_PATH" ? "%A/lib:/boot/home/config/non-packaged/lib:/boot/home/config/lib:"
+                    "/boot/system/non-packaged/lib:/boot/system/lib" : "";
             if ((":" + list + ":").find(":" + value + ":") != std::string::npos) continue;
             setenv(name.c_str(), list.empty() ? value.c_str() : (value + ":" + list).c_str(), 1);
         }
