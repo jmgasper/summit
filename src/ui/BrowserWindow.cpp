@@ -48,6 +48,7 @@
 #endif
 #include <app/AppMisc.h>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -996,6 +997,8 @@ void BrowserWindow::SelectTab(int64 id, bool forClose)
         ShowTabStatus(fTabs[i]);
         if (!fRestoringSession && !fTabs[i].deferredURL.empty())
             fTabs[i].view->LoadURL(std::exchange(fTabs[i].deferredURL, {}).c_str());
+        if (!forClose && !fRestoringSession && fTabs[i].certificate && !fTabs[i].certificate->asked)
+            AskAboutCertificate(fTabs[i]);
 #endif
         fTabs[i].view->MakeFocus();
         fAddress->SetText(DisplayURL(fTabs[i].url).c_str());
@@ -2498,6 +2501,9 @@ void BrowserWindow::MessageReceived(BMessage* message)
             alert->Go(new BInvoker(new BMessage(kClearHistoryReply), this));
             break;
         }
+#if SUMMIT_MODERN_WEBKIT
+        case kCertificateDecision: CertificateDecision(*message); break;
+#endif
         case kClearHistoryReply:
             if (message->GetInt32("which", 0) != 1) break;
             fShared->ClearHistory(BMessenger(this));
@@ -3215,6 +3221,7 @@ void BrowserWindow::WebKitStateChanged(const BMessage& message)
         if (message.FindString("loadOutcome", &value) == B_OK && value) tab->loadOutcome = value;
         bool failed = false;
         if (message.FindBool("loadError", &failed) == B_OK) {
+            if (!failed) tab->certificate.reset();
             tab->loadError.clear();
             tab->loadErrorDescription.clear();
             tab->loadErrorDomain.clear();
@@ -3229,8 +3236,34 @@ void BrowserWindow::WebKitStateChanged(const BMessage& message)
                 message.FindBool("loadErrorProvisional", &tab->loadErrorProvisional);
                 tab->loadError = tab->loadErrorProvisional ? "Could not load " : "Loading was interrupted for ";
                 tab->loadError += tab->loadErrorURL.empty() ? "this page" : tab->loadErrorURL;
-                tab->loadError += ": " + (tab->loadErrorDescription.empty()
-                    ? std::string("The request failed.") : tab->loadErrorDescription);
+                bool certificateFailed = false;
+                if (message.FindBool("loadErrorCertificate", &certificateFailed) == B_OK && certificateFailed) {
+                    Tab::CertificateProblem problem;
+                    problem.url = tab->loadErrorURL;
+                    problem.host = message.GetString("loadErrorCertificateHost", "");
+                    problem.sha256 = message.GetString("loadErrorCertificateSHA256", "");
+                    problem.subject = message.GetString("loadErrorCertificateSubject", "");
+                    problem.issuer = message.GetString("loadErrorCertificateIssuer", "");
+                    problem.problem = message.GetString("loadErrorCertificateProblem", "");
+                    problem.names = message.GetString("loadErrorCertificateNames", "");
+                    problem.validFrom = message.GetDouble("loadErrorCertificateValidFrom", 0);
+                    problem.validUntil = message.GetDouble("loadErrorCertificateValidUntil", 0);
+                    problem.generation = generation;
+                    // Only a page the user asked for is worth a question; a
+                    // failed request after the page committed stays in the status.
+                    problem.asked = !tab->loadErrorProvisional || problem.host.empty() || problem.sha256.empty();
+                    // Every later snapshot of the same load repeats its error;
+                    // it was already asked about (or answered).
+                    if (tab->certificate && tab->certificate->generation == generation
+                        && tab->certificate->sha256 == problem.sha256)
+                        problem.asked = tab->certificate->asked;
+                    tab->certificate = std::move(problem);
+                    tab->loadError += ": the server's certificate is not trusted"
+                        + (tab->certificate->problem.empty() ? std::string() : " (" + tab->certificate->problem + ")") + ".";
+                } else {
+                    tab->loadError += ": " + (tab->loadErrorDescription.empty()
+                        ? std::string("The request failed.") : tab->loadErrorDescription);
+                }
                 tab->loadError += " Enter the address again to retry.";
                 // Keep native status text on one line; retain the original
                 // diagnostic strings separately in the state probe.
@@ -3304,12 +3337,80 @@ void BrowserWindow::WebKitStateChanged(const BMessage& message)
     if (tab->id == fSelected) {
         if (!fAddress->TextView()->IsFocus()) fAddress->SetText(DisplayURL(tab->url).c_str());
         ShowTabStatus(*tab);
+        if (tab->certificate && !tab->certificate->asked) AskAboutCertificate(*tab);
     }
     // Back or Forward to a built-in page shows the copy from when it was
     // written (or the page cache's); bring it up to date once it has loaded.
     // Only then: any other state change may be the start of a navigation away.
     if (internalPageLoaded && !tab->loading) RefreshInternalPage(*tab);
     RefreshChrome();
+}
+
+void BrowserWindow::AskAboutCertificate(Tab& tab)
+{
+    if (!tab.certificate || tab.certificate->asked) return;
+    auto& problem = *tab.certificate;
+    problem.asked = true;
+    auto date = [](double seconds) {
+        if (!(seconds > 0)) return std::string("?");
+        const time_t time = static_cast<time_t>(seconds);
+        struct tm local {};
+        char text[64];
+        if (!localtime_r(&time, &local) || !std::strftime(text, sizeof text, "%e %B %Y", &local)) return std::string("?");
+        std::string result = text;
+        return result.erase(0, result.find_first_not_of(' '));
+    };
+    std::string fingerprint;
+    for (size_t i = 0; i + 1 < problem.sha256.size(); i += 2) {
+        if (!fingerprint.empty()) fingerprint += i % 32 ? ":" : "\n    ";
+        for (char digit : problem.sha256.substr(i, 2)) fingerprint += static_cast<char>(std::toupper(static_cast<unsigned char>(digit)));
+    }
+    std::string text = "This connection to " + problem.host + " is not private.\n\n"
+        "Summit could not verify the server's certificate";
+    text += problem.problem.empty() ? "." : ": " + problem.problem + ".";
+    text += " Someone could be impersonating " + problem.host + " to read what you send it.\n\n"
+        "Continue only if you know this device or site, such as your own router, and trust the network you "
+        "are on. Summit will then remember this certificate for " + problem.host + " and not ask again "
+        "unless the certificate changes.\n\n";
+    if (!problem.subject.empty()) text += "Issued to: " + problem.subject + "\n";
+    if (!problem.issuer.empty()) text += "Issued by: " + problem.issuer + "\n";
+    if (!problem.names.empty()) text += "Valid for: " + problem.names + "\n";
+    text += "Valid from " + date(problem.validFrom) + " to " + date(problem.validUntil) + "\n";
+    if (!fingerprint.empty()) text += "SHA-256: " + fingerprint + "\n";
+    auto* alert = new BAlert("Certificate Not Trusted", text.c_str(), "Go Back",
+        ("Continue to " + problem.host).c_str(), nullptr, B_WIDTH_FROM_LABEL, B_STOP_ALERT);
+    alert->SetShortcut(0, B_ESCAPE);
+    alert->SetDefaultButton(alert->ButtonAt(0));
+    auto* reply = new BMessage(kCertificateDecision);
+    reply->AddInt64("tab", tab.id);
+    reply->AddUInt64("generation", problem.generation);
+    alert->Go(new BInvoker(reply, this));
+}
+
+void BrowserWindow::CertificateDecision(const BMessage& message)
+{
+    const int64 id = message.GetInt64("tab", -1);
+    auto found = std::find_if(fTabs.begin(), fTabs.end(), [id](const Tab& tab) { return tab.id == id; });
+    if (found == fTabs.end() || !found->certificate
+        || found->certificate->generation != message.GetUInt64("generation", 0)) return;
+    const auto problem = *found->certificate;
+    if (message.GetInt32("which", 0) != 1) {
+        if (found->id == fSelected) fStatus->SetText(("Did not continue to " + problem.host + ".").c_str());
+        return;
+    }
+    // Trust it in this window's context before the page is asked for again
+    // (both go to the engine's thread in this order), then everywhere else.
+    fWebKitContext->AllowServerCertificate(problem.host.c_str(), problem.sha256.c_str());
+    BMessage trust(kTrustCertificate);
+    trust.AddString("host", problem.host.c_str());
+    trust.AddString("sha256", problem.sha256.c_str());
+    trust.AddString("subject", problem.subject.c_str());
+    trust.AddBool("private", fPrivate);
+    be_app->PostMessage(&trust);
+    found->certificate.reset();
+    found->loadError.clear();
+    found->view->LoadURL(problem.url.c_str());
+    if (found->id == fSelected) ShowTabStatus(*found);
 }
 
 void BrowserWindow::ShowTabStatus(const Tab& tab)

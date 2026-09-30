@@ -40,6 +40,16 @@ constexpr uint32 kClearHistoryRequest = 'pclh';
 constexpr uint32 kClearCacheRequest = 'pclc';
 constexpr uint32 kClearSiteDataRequest = 'pcld';
 constexpr uint32 kDataCleared = 'pdcl';
+// Preferences › History and Data › Forget Trusted Certificates, to the
+// application; answered with kDataCleared like the requests above.
+constexpr uint32 kForgetCertificatesRequest = 'pclt';
+// The user chose to continue to a site whose certificate failed verification
+// (a window to the application): "host", "sha256", "subject", "private". The
+// application trusts it in every context and, unless private, saves it.
+constexpr uint32 kTrustCertificate = 'trce';
+// The answer of a window's certificate warning (its BAlert): "which", "tab",
+// "generation".
+constexpr uint32 kCertificateDecision = 'cedc';
 constexpr uint32 kFind = 'find';
 constexpr uint32 kFindNext = 'fnxt';
 constexpr uint32 kFindPrevious = 'fprv';

@@ -26,6 +26,7 @@ title, loading, progress and close-handshake fields:
 | `loadErrorDescription`, `loadErrorDomain`, `loadErrorCode` | Original engine diagnostic, with a fallback description if empty. |
 | `loadErrorURL`, `loadErrorProvisional` | Failed request and whether it failed before document commit. |
 | `loadSuccessSequence`, `loadSuccessURL`, `loadSuccessTitle` | Last successful visit retained in subsequent snapshots. |
+| `loadErrorCertificate` | The load failed because the server certificate failed verification; then also `loadErrorCertificateHost`, `…SHA256` (hex of the DER leaf), `…Subject`, `…Issuer`, `…Problem` (OpenSSL's reason), `…Names` (comma-separated) and `…ValidFrom`/`…ValidUntil` (seconds since the epoch). See [certificate-warnings.md](certificate-warnings.md). |
 
 The engine associates terminal callbacks with a NavigationIdentifier. An
 anchor navigation can report the existing DocumentLoader's ID; the adapter
@@ -59,5 +60,7 @@ preservation. The runners reject fresh native debugger events during runtime.
 Run them serially because that final log check covers the whole test VM.
 
 See [the verification record](STATUS.md) for exact results and failed runs.
-Dedicated certificate/authentication UI, an error page with recovery controls,
-and wider network-failure coverage remain separate work.
+Certificates that fail verification now ask whether to continue
+([certificate-warnings.md](certificate-warnings.md)). HTTP authentication UI,
+an error page with recovery controls, and wider network-failure coverage
+remain separate work.

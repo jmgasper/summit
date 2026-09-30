@@ -168,6 +168,12 @@ int main()
     profile.searchEngine = "bing";
     profile.siteZoom = {{"example.com", 1.5}, {"file", 0.8}};
     profile.unpinnedExtensions = {"ext-1", "ext-2"};
+    const std::string routerCertificate(64, 'a');
+    CHECK(profile.TrustCertificate({"Router.LAN", std::string(64, 'A'), "/CN=UniFi", 100}));
+    CHECK(!profile.TrustCertificate({"router.lan", routerCertificate, "", 200}));
+    CHECK(profile.TrustCertificate({"router.lan", std::string(64, 'b'), "", 300}));
+    CHECK(profile.trustedCertificates.size() == 2 && profile.trustedCertificates[0].host == "router.lan"
+        && profile.trustedCertificates[0].sha256 == routerCertificate);
     profile.bookmarks = {{"https://webkit.org", "WebKit — 浏览器"}};
     profile.Visit({"https://example.com/", "First title"});
     profile.Visit({"https://webkit.org/", "WebKit"});
@@ -193,6 +199,8 @@ int main()
     CHECK(loaded.homeURL == "https://home.example/" && !loaded.showBookmarksBar);
     CHECK(loaded.searchEngine == "bing" && loaded.siteZoom.size() == 2 && loaded.siteZoom["example.com"] == 1.5);
     CHECK(loaded.unpinnedExtensions == std::set<std::string>({"ext-1", "ext-2"}));
+    CHECK(loaded.trustedCertificates.size() == 2 && loaded.trustedCertificates[0].subject == "/CN=UniFi"
+        && loaded.trustedCertificates[0].added == 100 && loaded.trustedCertificates[1].sha256 == std::string(64, 'b'));
     CHECK(loaded.RemoveBookmark("https://bar.example/") && !loaded.RemoveBookmark("https://bar.example/"));
     CHECK(!loaded.FindBookmark("https://bar.example/") && loaded.FindBookmark("https://webkit.org"));
     struct stat mode{};
@@ -210,9 +218,13 @@ int main()
         && loaded.unpinnedExtensions.empty());
     // Unknown engines and unusable zoom entries fall back instead of failing the profile.
     { std::ofstream out(path); out << R"({"version":1,"tabs":[],"selected":0,"bookmarks":[],"history":[],)"
-        R"("searchEngine":"altavista","siteZoom":{"a.example":7,"b.example":1.2,"":1.1}})"; }
+        R"("searchEngine":"altavista","siteZoom":{"a.example":7,"b.example":1.2,"":1.1},)"
+        R"("trustedCertificates":[{"host":"","sha256":"00"},{"host":"nas.lan","sha256":"not hex"},)"
+        R"({"host":"nas.lan","sha256":")" << std::string(64, 'c') << R"("}]})"; }
     loaded = Profile::Load(path, error);
     CHECK(error.empty() && loaded.searchEngine == "duckduckgo" && loaded.siteZoom.size() == 1 && loaded.siteZoom["b.example"] == 1.2);
+    CHECK(loaded.trustedCertificates.size() == 1 && loaded.trustedCertificates[0].host == "nas.lan"
+        && loaded.trustedCertificates[0].subject.empty());
     { std::ofstream out(path); out << "{broken"; }
     loaded = Profile::Load(path, error);
     CHECK(!error.empty() && loaded.windows.empty());

@@ -3,6 +3,7 @@
 #include "Zoom.h"
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <cstring>
 #include <fstream>
@@ -102,8 +103,39 @@ Profile Profile::Load(const std::filesystem::path& path, std::string& error)
                 if (!text.empty() && text.size() <= 255) profile.unpinnedExtensions.insert(text);
             }
         }
+        if (auto trusted = j.find("trustedCertificates"); trusted != j.end()) {
+            if (!trusted->is_array() || trusted->size() > 1000) throw std::runtime_error("Invalid trusted certificate list");
+            for (const auto& item : *trusted) {
+                TrustedCertificate certificate;
+                certificate.host = item.at("host").get<std::string>();
+                certificate.sha256 = item.at("sha256").get<std::string>();
+                if (auto subject = item.find("subject"); subject != item.end()) certificate.subject = subject->get<std::string>();
+                if (auto added = item.find("added"); added != item.end()) certificate.added = added->get<int64_t>();
+                // Unusable entries are dropped rather than failing the profile.
+                const bool hex = certificate.sha256.size() == 64
+                    && certificate.sha256.find_first_not_of("0123456789abcdef") == std::string::npos;
+                if (certificate.host.empty() || certificate.host.size() > 255 || !hex || certificate.subject.size() > 1024)
+                    continue;
+                profile.TrustCertificate(certificate);
+            }
+        }
     } catch (const std::exception& e) { error = e.what(); return {}; }
     return profile;
+}
+
+bool Profile::TrustCertificate(const TrustedCertificate& certificate)
+{
+    auto lower = [](std::string text) {
+        for (auto& character : text) character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+        return text;
+    };
+    TrustedCertificate stored = certificate;
+    stored.host = lower(stored.host);
+    stored.sha256 = lower(stored.sha256);
+    for (const auto& existing : trustedCertificates)
+        if (existing.host == stored.host && existing.sha256 == stored.sha256) return false;
+    trustedCertificates.push_back(std::move(stored));
+    return true;
 }
 bool Profile::Save(const std::filesystem::path& path, std::string& error) const
 {
@@ -118,13 +150,18 @@ bool Profile::Save(const std::filesystem::path& path, std::string& error) const
             if (window.HasFrame()) item["frame"] = {window.frame[0], window.frame[1], window.frame[2], window.frame[3]};
             sessions.push_back(std::move(item));
         }
+        json trusted = json::array();
+        for (const auto& certificate : trustedCertificates)
+            trusted.push_back({{"host", certificate.host}, {"sha256", certificate.sha256},
+                {"subject", certificate.subject}, {"added", certificate.added}});
         const WindowSession first = windows.empty() ? WindowSession() : windows.front();
         std::string data = json{{"version", 1}, {"tabs", Encode(first.tabs)}, {"selected", first.selected},
             {"windows", std::move(sessions)},
             {"bookmarks", Encode(bookmarks)}, {"history", Encode(history)},
             {"homeURL", homeURL}, {"showBookmarksBar", showBookmarksBar},
             {"interfaceStyle", interfaceStyle}, {"searchEngine", searchEngine},
-            {"siteZoom", siteZoom}, {"unpinnedExtensions", unpinnedExtensions}}.dump(2);
+            {"siteZoom", siteZoom}, {"unpinnedExtensions", unpinnedExtensions},
+            {"trustedCertificates", trusted}}.dump(2);
         if (data.size() > 16 * 1024 * 1024) throw std::runtime_error("Profile is too large");
         temporary = path.string() + ".XXXXXX";
         fd = mkstemp(temporary.data());

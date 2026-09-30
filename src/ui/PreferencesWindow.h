@@ -21,6 +21,8 @@ struct PreferencesState {
     size_t historyCount = 0;
     // The profile's WebKit folder, whose Cache folder's size is shown.
     std::filesystem::path webKitDirectory;
+    // Certificates the user chose to trust although they failed verification.
+    size_t trustedCertificates = 0;
 };
 // Edit › Preferences…. One window for the application; changes apply to every
 // browser window as they are made and are saved in the profile.
@@ -32,6 +34,7 @@ public:
 private:
     void ShowHomeHint();
     void ShowHistoryCount(size_t count);
+    void ShowTrustedCertificates(size_t count);
     // Measures the cache on another thread; kCacheMeasured brings the result.
     void MeasureCache();
     BMessenger fOwner;
@@ -44,6 +47,8 @@ private:
     BRadioButton* fHaikuStyle;
     BRadioButton* fSafariStyle;
     BStringView* fHistoryInfo;
+    BStringView* fCertificatesInfo;
+    BButton* fForgetCertificates;
     BStringView* fCacheInfo;
     BStringView* fDataStatus;
     std::filesystem::path fWebKitDirectory;

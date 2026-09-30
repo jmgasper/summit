@@ -154,12 +154,24 @@ private:
         std::string deferredURL;
         // The tab's Developer Tools window, while it is open.
         BMessenger devTools { };
+        // The last load failed because the server's certificate failed
+        // verification: what the warning shows and what Continue trusts.
+        struct CertificateProblem {
+            std::string url, host, sha256, subject, issuer, problem, names;
+            double validFrom = 0, validUntil = 0;
+            uint64 generation = 0;
+            bool asked = false;
+        };
+        std::optional<CertificateProblem> certificate { };
 #endif
     };
 #if SUMMIT_MODERN_WEBKIT
     Tab* FindTab(const BMessenger& view);
     void WebKitStateChanged(const BMessage& message);
     void ShowTabStatus(const Tab&);
+    // Asks whether to continue to a site whose certificate is not trusted.
+    void AskAboutCertificate(Tab&);
+    void CertificateDecision(const BMessage&);
     void WebKitFindResult(const BMessage& message);
     void WebKitCloseResult(const BMessage& message);
     void WebKitClosePrompt(const BMessage& message);

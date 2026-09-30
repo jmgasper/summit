@@ -19,7 +19,8 @@ namespace summit {
 namespace {
 constexpr uint32 homeEdited = 'phed', useStartPage = 'phsp', bookmarksBarToggled = 'pbar', styleChosen = 'psty',
     searchChosen = 'psrc', clearHistory = 'pchi', clearHistoryConfirmed = 'pchc', clearCache = 'pcca',
-    clearSiteData = 'pcsd', clearSiteDataConfirmed = 'pcsc', cacheMeasured = 'pcms';
+    clearSiteData = 'pcsd', clearSiteDataConfirmed = 'pcsc', cacheMeasured = 'pcms',
+    forgetCertificates = 'pfce', forgetCertificatesConfirmed = 'pfcc';
 
 std::string SizeLabel(uintmax_t bytes)
 {
@@ -83,6 +84,7 @@ PreferencesWindow::PreferencesWindow(BMessenger owner, const PreferencesState& s
     fDataStatus = new BStringView("data-status", "");
     fDataStatus->SetHighUIColor(B_PANEL_TEXT_COLOR, B_DARKEN_2_TINT);
     ShowHistoryCount(state.historyCount);
+    fCertificatesInfo = new BStringView("certificates-info", "");
     // The three buttons share one width, so they line up in their column.
     auto clearButton = [](const char* name, const char* label, uint32 what) {
         auto* button = new BButton(name, label, new BMessage(what));
@@ -134,8 +136,12 @@ PreferencesWindow::PreferencesWindow(BMessenger owner, const PreferencesState& s
             .Add(dataInfo, 0, 2)
             .Add(clearButton("clear-site-data", "Clear Cookies and Site Data…", clearSiteData), 1, 2)
             .Add(dataHint, 0, 3, 2, 1)
-            .Add(fDataStatus, 0, 4, 2, 1)
+            .Add(fCertificatesInfo, 0, 4)
+            .Add(fForgetCertificates = clearButton("forget-certificates", "Forget Trusted Certificates…",
+                forgetCertificates), 1, 4)
+            .Add(fDataStatus, 0, 5, 2, 1)
         .End();
+    ShowTrustedCertificates(state.trustedCertificates);
     ShowHomeHint();
     MeasureCache();
 }
@@ -151,6 +157,16 @@ void PreferencesWindow::ShowHomeHint()
     if (!address.error.empty()) fHint->SetText(address.error.c_str());
     else if (address.search) fHint->SetText("This is not an address, so Home will search for it.");
     else fHint->SetText(("The Home button opens " + address.url).c_str());
+}
+
+void PreferencesWindow::ShowTrustedCertificates(size_t count)
+{
+    // Sites whose certificate failed verification but which the user chose to
+    // visit anyway (a router's self-signed certificate, for example).
+    fCertificatesInfo->SetText(count == 0 ? "No untrusted certificates accepted"
+        : count == 1 ? "1 untrusted certificate accepted"
+        : (std::to_string(count) + " untrusted certificates accepted").c_str());
+    fForgetCertificates->SetEnabled(count > 0);
 }
 
 void PreferencesWindow::ShowHistoryCount(size_t count)
@@ -244,13 +260,26 @@ void PreferencesWindow::MessageReceived(BMessage* message)
             fDataStatus->SetText("Clearing cookies and site data…");
             fOwner.SendMessage(kClearSiteDataRequest);
             break;
+        case forgetCertificates: {
+            auto* alert = new BAlert("Forget Trusted Certificates", "Forget the certificates you chose to trust?\n\n"
+                "Sites whose certificate Summit cannot verify, such as a router's own, will show the warning again.",
+                "Cancel", "Forget", nullptr, B_WIDTH_AS_USUAL, B_WARNING_ALERT);
+            alert->SetShortcut(0, B_ESCAPE);
+            alert->Go(new BInvoker(new BMessage(forgetCertificatesConfirmed), this));
+            break;
+        }
+        case forgetCertificatesConfirmed:
+            if (message->GetInt32("which", 0) != 1) break;
+            fOwner.SendMessage(kForgetCertificatesRequest);
+            break;
         case kDataCleared: {
             const char* error = nullptr;
             const uint32 kind = message->GetInt32("kind", 0);
             if (message->FindString("error", &error) == B_OK && error)
                 fDataStatus->SetText((std::string("Could not clear: ") + error).c_str());
             else fDataStatus->SetText(kind == kClearHistoryRequest ? "History cleared."
-                : kind == kClearCacheRequest ? "Cache cleared." : "Cookies and site data cleared.");
+                : kind == kClearCacheRequest ? "Cache cleared."
+                : kind == kForgetCertificatesRequest ? "Trusted certificates forgotten." : "Cookies and site data cleared.");
             if (kind == kClearCacheRequest) MeasureCache();
             break;
         }
@@ -279,6 +308,7 @@ void PreferencesWindow::MessageReceived(BMessage* message)
                     item->SetMarked(item->Message() && std::string(item->Message()->GetString("search_engine", "")) == engine);
             int32 count = 0;
             if (message->FindInt32("history_count", &count) == B_OK) ShowHistoryCount(count);
+            if (message->FindInt32("trusted_certificates", &count) == B_OK) ShowTrustedCertificates(count);
             break;
         }
         case kMakeDefaultBrowser:

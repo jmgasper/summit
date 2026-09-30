@@ -26,6 +26,14 @@ struct WindowSession {
     float frame[4] = {0, 0, 0, 0};
     bool HasFrame() const { return frame[2] > frame[0] && frame[3] > frame[1]; }
 };
+// A server certificate the user chose to trust for a host although it failed
+// verification: typically a router or NAS with a self-signed certificate.
+struct TrustedCertificate {
+    std::string host;
+    std::string sha256; // lower-case hex SHA-256 of the DER leaf certificate
+    std::string subject;
+    int64_t added = 0;  // seconds since the epoch
+};
 struct Profile {
     // Open windows, front to back as they were created. Older builds only
     // read "tabs" and "selected", which hold the first window.
@@ -45,6 +53,8 @@ struct Profile {
     // Extensions whose action button is not on the toolbar (their actions
     // are in the toolbar's extensions menu), by installation identifier.
     std::set<std::string> unpinnedExtensions;
+    // Certificates trusted despite failing verification, by host.
+    std::vector<TrustedCertificate> trustedCertificates;
     static Profile Load(const std::filesystem::path& path, std::string& error);
     bool Save(const std::filesystem::path& path, std::string& error) const;
     // Records a visit to an http(s) page; returns false for other pages.
@@ -53,5 +63,8 @@ struct Profile {
     // Adds the page, or moves an existing bookmark on to (or off) the bar.
     void AddBookmark(const PageRecord& page, bool bar);
     bool RemoveBookmark(const std::string& url);
+    // Remembers a trusted certificate (host names compare without case); false
+    // when that host already had it.
+    bool TrustCertificate(const TrustedCertificate&);
 };
 }

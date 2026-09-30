@@ -36,6 +36,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <netdb.h>
@@ -171,6 +172,9 @@ public:
         fStartURL = summit::FileURL(home.string());
         fShared = std::make_shared<summit::SharedProfile>(fProfile / "profile.json");
         fShared->AddListener(BMessenger(this));
+#if SUMMIT_MODERN_WEBKIT
+        TrustSavedCertificates(*fWebKitContext);
+#endif
         summit::SetSearchEngine(fShared->Read([](const summit::Profile& profile) { return profile.searchEngine; }));
         // Reopen every window of the last session, unless pages were named.
         const auto saved = fShared->SavedWindows();
@@ -451,6 +455,34 @@ public:
             fWebKitContext->RemoveWebsiteData(types, BMessenger(this), fNextDataRequest);
             return;
         }
+        if (message->what == summit::kTrustCertificate) {
+            const std::string host = message->GetString("host", ""), sha256 = message->GetString("sha256", "");
+            if (host.empty() || sha256.empty()) return;
+            for (const auto& context : {fWebKitContext, fPrivateContext})
+                if (context) context->AllowServerCertificate(host.c_str(), sha256.c_str());
+            // A choice made in a private window is forgotten with its session.
+            if (!message->GetBool("private", false)) {
+                summit::TrustedCertificate certificate { host, sha256, message->GetString("subject", ""),
+                    static_cast<int64_t>(std::time(nullptr)) };
+                fShared->Change([&](summit::Profile& profile) -> uint32 {
+                    return profile.TrustCertificate(certificate) ? summit::SharedProfile::kSettingsChanged : 0;
+                });
+            }
+            return;
+        }
+        if (message->what == summit::kForgetCertificatesRequest) {
+            for (const auto& context : {fWebKitContext, fPrivateContext})
+                if (context) context->ForgetServerCertificates();
+            fShared->Change([](summit::Profile& profile) -> uint32 {
+                if (profile.trustedCertificates.empty()) return 0;
+                profile.trustedCertificates.clear();
+                return summit::SharedProfile::kSettingsChanged;
+            });
+            BMessage cleared(summit::kDataCleared);
+            cleared.AddInt32("kind", summit::kForgetCertificatesRequest);
+            fPreferences.SendMessage(&cleared);
+            return;
+        }
         if (message->what == B_WEBKIT_WEBSITE_DATA_REMOVED) {
             auto request = fDataRequests.find(message->GetUInt64("identifier", 0));
             if (request == fDataRequests.end()) return;
@@ -683,8 +715,20 @@ private:
         // allowed in private windows work there with their own saved data.
         auto context = std::make_shared<BWebKitContext>(fWebKitContext);
         if (context->InitCheck() != B_OK || context->SetDownloadListener(BMessenger(this)) != B_OK) return nullptr;
+        TrustSavedCertificates(*context);
         fPrivateContext = std::move(context);
         return fPrivateContext;
+    }
+    // Certificates the user trusted despite failed verification (saved in
+    // the profile) are given to each context when it is created.
+    void TrustSavedCertificates(BWebKitContext& context)
+    {
+        if (!fShared) return;
+        fShared->Read([&](const summit::Profile& profile) {
+            for (const auto& certificate : profile.trustedCertificates)
+                context.AllowServerCertificate(certificate.host.c_str(), certificate.sha256.c_str());
+            return 0;
+        });
     }
 #endif
     void EndPrivateSession()
@@ -766,7 +810,7 @@ private:
         }
         summit::PreferencesState state = fShared->Read([](const summit::Profile& profile) {
             return summit::PreferencesState { profile.homeURL, profile.showBookmarksBar, profile.interfaceStyle,
-                profile.searchEngine, profile.history.size(), { } };
+                profile.searchEngine, profile.history.size(), { }, profile.trustedCertificates.size() };
         });
         state.webKitDirectory = fProfile / "WebKit";
         auto* window = new summit::PreferencesWindow(BMessenger(this), state);
@@ -806,6 +850,7 @@ private:
             state.AddString("interface_style", profile.interfaceStyle.c_str());
             state.AddString("search_engine", profile.searchEngine.c_str());
             state.AddInt32("history_count", static_cast<int32>(profile.history.size()));
+            state.AddInt32("trusted_certificates", static_cast<int32>(profile.trustedCertificates.size()));
             return 0;
         });
         fPreferences.SendMessage(&state);
