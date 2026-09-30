@@ -15,6 +15,8 @@
 #include <Window.h>
 
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <utility>
 
@@ -96,18 +98,44 @@ BWebPage::Init()
 		be_app->AddHandler(this);
 		be_app->Unlock();
 	}
-	const uint64 request = std::exchange(SummitLegacy::gNewPageRequest, 0);
+	fPagePrivate->pendingNewPage = std::exchange(SummitLegacy::gNewPageRequest, 0);
+	if (fPagePrivate->pendingNewPage == 0)
+		WebCore::ChromeClientHaiku::CreateEngineView(this);
+}
+
+
+/*static*/ void
+WebCore::ChromeClientHaiku::LoadPendingURL(BWebPage* page)
+{
+	BString url = page->fPagePrivate->pendingURL;
+	page->fPagePrivate->pendingURL = "";
+	if (url.Length() > 0)
+		page->LoadURL(url.String());
+}
+
+
+/*static*/ void
+WebCore::ChromeClientHaiku::CreateEngineView(BWebPage* page)
+{
+	BPrivate::WebPagePrivate& data = *page->fPagePrivate;
+	if (data.view != nullptr || page->fWebView == nullptr)
+		return;
+	const uint64 request = std::exchange(data.pendingNewPage, 0);
 	std::shared_ptr<BWebKitContext> context = SummitLegacy::Context();
-	BRect frame = fWebView->Bounds();
+	BRect frame = page->fWebView->Bounds();
 	if (!frame.IsValid())
 		frame.Set(0, 0, 99, 99);
 	BWebKitView* view = request != 0
-		? new BWebKitView(frame, "engine view", BMessenger(this), request, B_FOLLOW_ALL, context)
-		: new BWebKitView(frame, "engine view", BMessenger(this), B_FOLLOW_ALL, context);
-	fWebView->AddChild(view);
-	fWebView->fOffscreenView = view;
-	fPagePrivate->view = view;
-	fMainFrame->fData->view = view;
+		? new BWebKitView(frame, "engine view", BMessenger(page), request, B_FOLLOW_ALL, context)
+		: new BWebKitView(frame, "engine view", BMessenger(page), B_FOLLOW_ALL, context);
+	page->fWebView->AddChild(view);
+	if (getenv("SUMMIT_LEGACY_TRACE") != nullptr)
+		fprintf(stderr, "Summit legacy page %p: engine view %s, frame %.0fx%.0f, in window %d, hidden %d\n", page,
+			request != 0 ? "for an opened page" : "", frame.Width() + 1, frame.Height() + 1,
+			page->fWebView->Window() != nullptr, page->fWebView->Window() != nullptr && view->IsHidden());
+	page->fWebView->fOffscreenView = view;
+	data.view = view;
+	page->fMainFrame->fData->view = view;
 }
 
 
@@ -418,6 +446,14 @@ BWebPage::setDisplayedStatusMessage(const BString& statusMessage, bool force)
 status_t
 BWebPage::dispatchMessage(BMessage& message, BMessage* reply) const
 {
+	static const bool trace = getenv("SUMMIT_LEGACY_TRACE") != nullptr;
+	if (trace) {
+		char what[5] = "";
+		if (message.what > 1000)
+			memcpy(what, &message.what, 4);
+		fprintf(stderr, "Summit legacy page %p: %" B_PRIu32 " %s %s%s\n", this, message.what, what,
+			message.GetString("url", message.GetString("title", "")), fListener.IsValid() ? "" : " (no listener)");
+	}
 	message.AddPointer("view", fWebView);
 	if (reply != nullptr)
 		return fListener.SendMessage(&message, reply);
@@ -558,9 +594,28 @@ BWebPage::MessageReceived(BMessage* message)
 				BWebKitView::DeclineNewPage(identifier);
 				break;
 			}
-			SummitLegacy::gNewPageRequest = identifier;
-			BWebView* view = new BWebView("web view", fContext);
-			SummitLegacy::gNewPageRequest = 0;
+			// A view the engine opens the page into stays blank under
+			// programs of this API (docs/legacy-webview.md), so the address is
+			// opened in a view of its own and the engine's page declined:
+			// window.open() then returns null and the page has no opener.
+			// SUMMIT_LEGACY_OPENED_PAGES=1 lets the engine open it instead.
+			static const bool enginePages = getenv("SUMMIT_LEGACY_OPENED_PAGES") != nullptr;
+			BString url = StringField(*message, "url");
+			BWebView* view;
+			if (enginePages) {
+				SummitLegacy::gNewPageRequest = identifier;
+				view = new BWebView("web view", fContext);
+				SummitLegacy::gNewPageRequest = 0;
+			} else {
+				BWebKitView::DeclineNewPage(identifier);
+				if (url.Length() == 0 || url == "about:blank")
+					break;
+				view = new BWebView("web view", fContext);
+				// Loaded once the application has put it in a window: a
+				// view that begins its page before a window of its own
+				// shows it stays blank.
+				view->WebPage()->fPagePrivate->pendingURL = url;
+			}
 			BRect frame;
 			float width, height, x = 50, y = 50;
 			if (message->GetBool("popup", false) && message->FindFloat("width", &width) == B_OK
@@ -592,6 +647,9 @@ BWebPage::MessageReceived(BMessage* message)
 		case B_WEBKIT_JAVASCRIPT_RESULT:
 		{
 			uint64 identifier = message->GetUInt64("identifier", 0);
+			if (getenv("SUMMIT_LEGACY_TRACE") != nullptr)
+				fprintf(stderr, "Summit legacy page %p: script %" B_PRIu64 " answered: %s %.80s\n", this, identifier,
+					message->GetString("result_type", ""), message->GetString("error", message->GetString("result", "")));
 			uint32 purpose = 0;
 			{
 				std::lock_guard lock(fPagePrivate->lock);
@@ -624,6 +682,9 @@ BWebPage::MessageReceived(BMessage* message)
 			}
 			fPagePrivate->view = nullptr;
 			fMainFrame->fData->view = nullptr;
+			// A page opened for a view that never reached a window.
+			if (fPagePrivate->pendingNewPage != 0)
+				BWebKitView::DeclineNewPage(std::exchange(fPagePrivate->pendingNewPage, 0));
 			if (Looper() != nullptr)
 				Looper()->RemoveHandler(this);
 			delete this;

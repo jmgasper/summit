@@ -15,6 +15,9 @@
 #include <PopUpMenu.h>
 #include <Window.h>
 
+#include <cstdio>
+#include <cstdlib>
+
 namespace {
 enum {
 	kOpenLinkInNewTab = 'solt',
@@ -73,10 +76,19 @@ void
 BWebView::AttachedToWindow()
 {
 	BView::AttachedToWindow();
+	// As before: the window hears of its view's page (WebPositive never sets
+	// a listener itself).
+	if (fWebPage != nullptr)
+		fWebPage->SetListener(BMessenger(Window()));
+	// A page the engine opened is shown now that the view has a window.
+	if (fOffscreenView == nullptr && fWebPage != nullptr)
+		WebCore::ChromeClientHaiku::CreateEngineView(fWebPage);
 	if (fOffscreenView != nullptr) {
 		fOffscreenView->MoveTo(0, 0);
 		fOffscreenView->ResizeTo(Bounds().Width(), Bounds().Height());
 	}
+	if (fWebPage != nullptr)
+		WebCore::ChromeClientHaiku::LoadPendingURL(fWebPage);
 }
 
 
@@ -91,6 +103,12 @@ void
 BWebView::Show()
 {
 	BView::Show();
+	// The engine view learns that it can be seen again only from its own
+	// hooks; showing its parent (a tab becoming the current one) calls none.
+	if (fOffscreenView != nullptr && Window() != nullptr) {
+		fOffscreenView->ResizeBy(0, -1);
+		fOffscreenView->ResizeBy(0, 1);
+	}
 }
 
 
@@ -111,6 +129,9 @@ BWebView::Draw(BRect)
 void
 BWebView::FrameResized(float width, float height)
 {
+	if (getenv("SUMMIT_LEGACY_TRACE") != nullptr)
+		fprintf(stderr, "Summit legacy view %p: resized to %.0fx%.0f, engine view %p\n", this, width + 1, height + 1,
+			fOffscreenView);
 	if (fOffscreenView != nullptr) {
 		fOffscreenView->MoveTo(0, 0);
 		fOffscreenView->ResizeTo(width, height);

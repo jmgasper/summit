@@ -79,6 +79,12 @@ public:
 	uint64 successSequence = 0;
 	std::string outcome;
 	bool shutDown = false;
+	// A page the engine opened for this view (window.open), shown once the
+	// view is in a window.
+	uint64 pendingNewPage = 0;
+	// An address to load once the view is in a window (a page opened in a
+	// view of its own).
+	BString pendingURL;
 	uint64 nextScript = 1;
 	// Scripts whose answers the page waits for, by identifier: what they are for.
 	std::map<uint64, uint32> scripts;
@@ -114,6 +120,21 @@ public:
 	BString localStoragePath;
 };
 
+}
+
+// The old headers name WebCore::ChromeClientHaiku a friend of BWebView and
+// BWebPage; this library uses the name for what the two classes do to each
+// other's private parts.
+namespace WebCore {
+class ChromeClientHaiku {
+public:
+	// Makes the page's engine view, as the view's child: at once, or for a
+	// page the engine opened, when the view is in a window (the engine then
+	// shows the page in a view that has its size and window).
+	static void CreateEngineView(BWebPage* page);
+	// Loads the address kept for when the view is in a window.
+	static void LoadPendingURL(BWebPage* page);
+};
 }
 
 // The main frame of a page (the only one this API exposes).
