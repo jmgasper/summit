@@ -1,5 +1,66 @@
 # Summit performance: Speedometer 3.1 baseline, where the time goes, stress test
 
+## 1 October 2026: page loads against Firefox (issue #2)
+
+`tools/bench/run-pageload.py` loads complex sites in Summit and in Firefox
+155 on the X399, alternately, three rounds, each load in a fresh browser on
+a profile kept for the run (round one meets an empty cache). The same
+script reads the page's own timings in both browsers after the load event
+and five seconds more: Summit through summitctl and its Developer Tools
+console (opened after the load), Firefox through Marionette
+(`tools/bench/marionette_client.py`). Window 1912x1052 logical, 200%;
+bundle `bundle-5wfht_91`
+(`.vm/bench/pageload-20261001-001217-compare/`). Medians, ms:
+
+| page | browser | FCP cold / warm | LCP cold / warm | load cold / warm |
+| --- | --- | --- | --- | --- |
+| Reddit | Summit | 934 / 954 | 1604 / 1964 | 19606 / 19950 |
+| Reddit | Firefox | 878 / 1103 | 1315 / 1296 | 4265 / 4142 |
+| YouTube | Summit | 1537 / 1226 | 3253 / 2099 | 3700 / 1524 |
+| YouTube | Firefox | 927 / 1050 | 2588 / 2888 | 2312 / 2490 |
+| Wikipedia (Haiku) | Summit | 2071 / 972 | 2180 / 1146 | 4670 / 1302 |
+| Wikipedia (Haiku) | Firefox | 1356 / 1142 | 1584 / 1270 | 2039 / 1346 |
+| BBC News | Summit | – / 403 | – / 1200 | – / 3931 |
+| BBC News | Firefox | 303 / 359 | 1046 / 564 | 1361 / 3027 |
+| GitHub (WebKit) | Summit | 1116 / 1236 | 1116 / 1236 | 1895 / 2028 |
+| GitHub (WebKit) | Firefox | 1246 / 1250 | 2134 / 1732 | 1827 / 1489 |
+
+The Guardian produced one Summit reading of three (the console did not
+answer while the page was busy) and Firefox's load events of 6-96 s, so it
+is left out; BBC's cold Summit run failed the same way.
+
+What it shows. With a warm cache Summit paints first as soon as Firefox or
+sooner on every page but YouTube's cold load, and its largest paint is
+earlier on YouTube and GitHub. Three gaps remain:
+
+- **Reddit's load event, about 20 s against 4 s.** The page itself is on
+  screen as early as in Firefox; the load waits for two Google iframes
+  (reCAPTCHA, the sign-in button) whose documents arrived after 0.2 s but
+  were not taken until 13 s later, because the web process's main thread
+  was blocked. A watchdog in the page recorded one block of 16.9 s from
+  6.2 s into the load, and a snapshot of the thread in it
+  (`Debugger --save-report --thread <team>`) showed forced layout: a script
+  in a microtask calls `getBoundingClientRect()`, and each call lays out
+  six nested flex containers and three grids again
+  (`FlexFormattingContext` sizing items for grid track sizing, 158 frames
+  deep). It depends on the viewport: in a 1121x538 window the load event
+  came at 5.7 s. This is upstream WebKit layout cost and the next thing
+  to work on for complex pages.
+- **Time to first byte on GitHub, about 500 ms more** (540-740 against
+  157-203). `curl` on the same machine has the page's first byte after
+  about 0.2 s, and `SUMMIT_NET_TRACE` shows each request's own DNS, connect
+  and TLS times normal, so the extra time is before the request reaches
+  libcurl; not yet traced.
+- **Cold loads** of YouTube and Wikipedia paint 0.6-0.7 s later than
+  Firefox's.
+
+Improvements made with this work: canvas shadows through a blur mask
+filter instead of an offscreen layer per shape (50 blurred shapes 19.4 ->
+0.7 ms a frame on an accelerated canvas; xbitlabs.com's FPS test 11 ->
+51 frames/s, "PERFECT"), WebGL on the GPU ([webgl.md](webgl.md); Firefox
+has none here), and JavaScriptCore timers that now fire in workers
+(asynchronous WebAssembly compilation there, and the collector's timers).
+
 ## 30 September 2026 (night): what stops a wheel scroll while a page loads
 
 Continues the evening below, on the same machine and window. Installed at

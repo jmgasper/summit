@@ -1,5 +1,55 @@
 # Development verification
 
+## 1 October 2026: GitHub issues #1-#4
+
+Engine patch and browser built on the X399 in the `SkiaCGMiPGO` directory
+(profile-guided, now with WebGL; a full rebuild), installed as
+`bundle-5wfht_91`.
+
+- **#1, a router's self-signed certificate.** A warning with the reason,
+  subject, issuer, names, dates and fingerprint; Continue trusts that
+  certificate for that host and is remembered in the profile
+  ([certificate-warnings.md](certificate-warnings.md)). Verified with a
+  self-signed test server (trusted after Continue and after a restart;
+  another certificate on the same host asks again) and with the owner's
+  UniFi router at 192.168.1.1: the warning said "it is self-signed, it is
+  not issued for this address", names and fingerprint matched `openssl`,
+  and Continue opened the UniFi OS login. Found on the way: WebCore's
+  certificate names all read "true" on every port but Windows.
+- **#1, not fixed: a blank page on the router's root.** `https://192.168.1.1/`
+  (the application moves itself to `/login`) often stays white until the
+  window is resized or uncovered, although the page is laid out, painted
+  (first contentful paint 0.9 s) and presented with the right damage; the
+  installed build does the same through a plain HTTP proxy to the router
+  (`http://…:8950/`), and `/login` loaded directly is fine. Not caused by
+  certificates, damage tracking, zero-copy presentation, the read-back or
+  the tile budget (each switched off in turn); `SUMMIT_SWAPCHAIN_TRACE=1`
+  now also logs each presented frame's damage and the view's draws for the
+  next attempt.
+- **#3, WebGL.** WebGL 1 and 2 on the GPU through ANGLE and the private
+  zink Mesa ([webgl.md](webgl.md)); WebGL Aquarium at 52 frames/s with 500
+  fish. Firefox 155 has no WebGL on this machine.
+- **#4, Proton Mail's sign-in stopping after the second factor.** Proton's
+  crypto worker derives keys with Argon2 in WebAssembly and waits on
+  `WebAssembly.instantiate()`, which never settled in a worker on Haiku:
+  worker threads never cycled their RunLoop, so JavaScriptCore's deferred
+  work timer never fired there. Fixed in `WorkerRunLoop` (and
+  `RunLoop::cycle()` on a standalone looper);
+  `tools/bench/pages/worker-wasm.html` settles now and hung before. The
+  sign-in itself could not be tried without an account; the steps before
+  the second factor work (an unknown user is reported). WebCrypto Ed25519
+  and X25519, which Proton's OpenPGP.js uses when present, now exist on the
+  OpenSSL backend.
+- **#4, xbitlabs.com's FPS test.** 11 frames/s ("CRITICAL") before, 51
+  ("PERFECT") now: canvas shadows no longer take an offscreen layer per
+  shape. Its advertising frames also left empty files in Downloads; frames
+  inside a page now only download attachments.
+- **#2, Firefox comparison.** `tools/bench/run-pageload.py` and the
+  results in [performance.md](performance.md): Summit paints as soon as
+  Firefox on most pages; Reddit's load event (20 s against 4 s, forced
+  nested flex/grid layout in the web process) and GitHub's first byte
+  (+0.5 s) are the gaps found.
+
 ## September 21, 2026: rendering performance on real hardware
 
 Work moved to the owner's Haiku workstation (Threadripper 1950X, GeForce GTX

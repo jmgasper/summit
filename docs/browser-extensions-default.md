@@ -137,3 +137,7 @@ The install also wrote the bundle's `launch.env` and the link
 `/boot/home/summit/Summit-installed`, which Preferences' default-browser
 button points the system at. The system's browser was left as it was
 (WebPositive); the button is the owner's to press.
+
+On 1 October 2026 at 00:49 the launcher moved on to `bundle-5wfht_91`
+(WebGL, certificate warnings; see [STATUS.md](STATUS.md)), and Deskbar ›
+Applications › Summit started that build.

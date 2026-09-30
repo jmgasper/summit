@@ -11,7 +11,9 @@ bookmarks, history, downloads and saved sessions, plus
 [private windows, per-site zoom, a choice of search engine and clearing of
 history, cache and site data](docs/browser-privacy.md), and
 [developer tools](docs/developer-tools.md) that show a page's network
-requests and its console. The WebKit snapshot pinned on
+requests and its console, [WebGL](docs/webgl.md) on the GPU, and a
+[warning for sites whose certificate cannot be verified](docs/certificate-warnings.md)
+(a router's self-signed one) that lets you continue and remembers the choice. The WebKit snapshot pinned on
 September 13 builds and runs in Summit. The modern extension-enabled browser
 now restores approved installed extensions, permissions and storage across
 process restarts. Its native SDK runs extension background pages and dedicated
