@@ -25,9 +25,9 @@ DefaultBrowserState QueryDefaultBrowser();
 // (or another browser's own setting) changes them back.
 status_t MakeDefaultBrowser(std::string& error);
 
-// When Summit is the default browser, points the system at the installed
-// build, or at this executable if the executable it knows is gone. Cheap when
-// nothing changed; call at startup.
+// In the installed build (SUMMIT_SYSTEM_LAUNCHER set), when Summit is the
+// default browser: points the system at the link to the installed build if
+// it names something else. Cheap when nothing changed; call at startup.
 void RefreshDefaultBrowserHint();
 
 // Before anything else in main(): a Summit the system started directly (for a

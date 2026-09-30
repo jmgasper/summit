@@ -75,8 +75,14 @@ DefaultBrowserState QueryDefaultBrowser()
     state.isDefault = IsSummit(http.c_str()) && IsSummit(https.c_str());
     const auto& current = !http.empty() ? http : https;
     if (current.empty()) return state;
+    // The name of the program the system knows for the signature. Not
+    // BRoster::FindApp(), which has the registrar create MIME entries as it
+    // resolves; this only reads.
+    BMimeType app(current.c_str());
     entry_ref ref;
-    if (be_roster->FindApp(current.c_str(), &ref) == B_OK && ref.name) state.current = ref.name;
+    char description[B_MIME_TYPE_LENGTH] = "";
+    if (app.GetAppHint(&ref) == B_OK && ref.name) state.current = ref.name;
+    else if (app.GetShortDescription(description) == B_OK && description[0]) state.current = description;
     else state.current = current;
     return state;
 }
@@ -143,15 +149,13 @@ void ApplyLaunchEnvironment()
 
 void RefreshDefaultBrowserHint()
 {
-    if (!QueryDefaultBrowser().isDefault) return;
+    // Only the installed build (whose launcher names the link to it) keeps
+    // the system pointed at itself; test copies leave it alone.
+    const char* installed = std::getenv("SUMMIT_SYSTEM_LAUNCHER");
+    if (!installed || !*installed || !QueryDefaultBrowser().isDefault) return;
     BMimeType app(kSummitSignature);
     entry_ref target, hint;
     if (LaunchTarget(target) != B_OK || (app.GetAppHint(&hint) == B_OK && hint == target)) return;
-    // The installed build's link always wins; any other build only replaces
-    // a hint that no longer leads to Summit.
-    const char* launcher = std::getenv("SUMMIT_SYSTEM_LAUNCHER");
-    entry_ref ignored;
-    if ((launcher && *launcher) || app.GetAppHint(&hint) != B_OK || !CarriesSignature(BPath(&hint).Path(), ignored))
-        app.SetAppHint(&target);
+    app.SetAppHint(&target);
 }
 }

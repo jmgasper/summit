@@ -68,8 +68,13 @@ window.
   `/boot/home/summit/Summit-installed` to its executable; the desktop
   launcher exports `SUMMIT_SYSTEM_LAUNCHER` with that link, which is what the
   hint names, so it follows each install. A Summit started otherwise names its
-  own executable. At startup, a default Summit re-points a hint that no longer
-  leads to Summit (`RefreshDefaultBrowserHint()`, on a thread of its own).
+  own executable. At startup, the installed build, when it is the default,
+  re-points a hint that names something else to its link
+  (`RefreshDefaultBrowserHint()`, on a thread of its own). The name shown in
+  Preferences comes from the preferred application's hint; Summit does not
+  call `BRoster::FindApp()`, which has the registrar create MIME entries as
+  it resolves (the X399's SSH stopped answering right after a test Summit
+  made that call at startup; the cause was not established).
 - **Private windows and extensions.** Each `BWebKitContext` had its own
   extension controller, so the private context's pages were controlled by an
   empty one. A private context is now made from the normal one
