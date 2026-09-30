@@ -60991,10 +60991,10 @@ index 0000000000000000000000000000000000000000..fec6124e532d5bdcb0d992a01d76905e
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextBrowserCommandsHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextBrowserCommandsHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..206669936822a02b9b17215697d83656949b2522
+index 0000000000000000000000000000000000000000..25e6ec646ab6f693e5c8ca75d17087d041188a23
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextBrowserCommandsHaiku.cpp
-@@ -0,0 +1,277 @@
+@@ -0,0 +1,282 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -61154,6 +61154,11 @@ index 0000000000000000000000000000000000000000..206669936822a02b9b17215697d83656
 +        RefPtr window = getOrCreateNativeWindow(state.window);
 +        if (!tab || !window)
 +            continue;
++        if (!tab->extensionHasAccess()) {
++            // A private tab of an extension not allowed there: it never hears of it.
++            m_nativeTabEventIdentifiers.remove(state.page);
++            continue;
++        }
 +        auto cached = m_nativeTabEventIdentifiers.find(state.page);
 +        bool unseen = cached == m_nativeTabEventIdentifiers.end();
 +        auto previousWindow = unseen ? window->identifier() : cached->value.second;
@@ -63024,10 +63029,10 @@ index 0000000000000000000000000000000000000000..ea2e51999574b959fe5fbfe0eb8e0703
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextWindowsHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextWindowsHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..39b5b3f544744bc30da68b4202db2ae8c118ae8e
+index 0000000000000000000000000000000000000000..6cfaf6f51510e71f8309f7cd52cab03b385a292d
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextWindowsHaiku.cpp
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,93 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#include "config.h"
 +#include "WebExtensionContext.h"
@@ -63063,22 +63068,36 @@ index 0000000000000000000000000000000000000000..39b5b3f544744bc30da68b4202db2ae8
 +    }
 +    Vector<WebExtensionWindowParameters> created;
 +    std::optional<WebExtensionWindowParameters> focused;
++    // A private window the extension may not see is not reported (it is
++    // neither created nor removed for it), and while it has the focus the
++    // extension's last focused window stays the one it saw last, as in Chrome.
++    auto previousFocusedWindow = m_focusedWindowIdentifier;
++    bool focusHidden = false;
 +    m_windowOrderVector.clear();
 +    m_focusedWindowIdentifier = std::nullopt;
 +    for (Ref window : openWindows(IgnoreExtensionAccess::Yes)) {
 +        auto identifier = window->nativeWindowIdentifier();
++        bool visible = window->extensionHasAccess();
 +        m_windowOrderVector.append(window->identifier());
-+        m_nativeWindowEventIdentifiers.set(identifier, window->identifier());
++        if (visible)
++            m_nativeWindowEventIdentifiers.set(identifier, window->identifier());
++        else
++            m_nativeWindowEventIdentifiers.remove(identifier);
 +        if (identifier == newFocus) {
-+            focused = window->minimalParameters();
-+            m_focusedWindowIdentifier = window->identifier();
++            if (visible) {
++                focused = window->minimalParameters();
++                m_focusedWindowIdentifier = window->identifier();
++            } else
++                focusHidden = true;
 +        }
 +        if (!before.contains(identifier) && after.contains(identifier)) {
 +            window->tabs();
-+            if (allowed)
++            if (allowed && visible)
 +                created.append(window->parameters());
 +        }
 +    }
++    if (focusHidden)
++        m_focusedWindowIdentifier = previousFocusedWindow;
 +    if (!allowed)
 +        return;
 +    for (auto& window : removed)

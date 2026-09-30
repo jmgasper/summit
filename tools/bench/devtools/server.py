@@ -8,8 +8,11 @@ style sheet, a script, an image, JSON, XML and HTML from an API, JSON that
 calls itself text, a POST with a body, a redirect, a page that is not there,
 a host that does not answer, a slow answer and a large one) and writes every
 kind of message the Console tab shows. next.html is somewhere to navigate
-to, for the logs that are kept and the logs that are not.
+to, for the logs that are kept and the logs that are not. storage.html writes
+local and session storage and cookies for the Storage tab; its frame comes
+from the next port (the server answers on both), another origin.
 """
+import threading
 import argparse
 import base64
 import http.server
@@ -76,6 +79,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.answer(200, 'application/json', '{"slow":true}')
         elif path == '/api/bytes':
             self.answer(200, 'application/octet-stream', bytes(range(256)))
+        elif path == '/api/cookie':
+            self.answer(200, 'application/json', '{"cookie":"set"}',
+                        [('Set-Cookie', 'server-session=s3cr3t; Path=/; HttpOnly; SameSite=Strict'),
+                         ('Set-Cookie', 'remember=1; Path=/api; Max-Age=3600')])
         elif path == '/redirect':
             self.answer(302, 'text/plain', 'moved', [('Location', '/api/items.json?redirected=1')])
         elif path == '/pixel.png':
@@ -98,6 +105,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--port', type=int, default=8790)
     port = parser.parse_args().port
+    other = http.server.ThreadingHTTPServer(('0.0.0.0', port + 1), Handler)
+    threading.Thread(target=other.serve_forever, daemon=True).start()
     with http.server.ThreadingHTTPServer(('0.0.0.0', port), Handler) as server:
-        print('http://0.0.0.0:%d/' % port, flush=True)
+        print('http://0.0.0.0:%d/ and :%d' % (port, port + 1), flush=True)
         server.serve_forever()

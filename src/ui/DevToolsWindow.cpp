@@ -54,7 +54,8 @@ DevToolsWindow::DevToolsWindow(BMessenger owner, int64 tab, const std::string& p
     , fTab(tab)
 {
     const char* trace = std::getenv("SUMMIT_DEVTOOLS_TRACE");
-    fTrace = trace && !std::strcmp(trace, "1");
+    fTrace = trace && (!std::strcmp(trace, "1") || !std::strcmp(trace, "2"));
+    fTraceProtocol = trace && !std::strcmp(trace, "2");
     fNetwork = new NetworkPanel(fSession, *this);
     fConsole = new ConsolePanel(fSession, *this);
     fStorage = new StoragePanel(fSession, *this);
@@ -201,7 +202,10 @@ void DevToolsWindow::Drain()
     if (!fInspector) return;
     std::vector<std::string> messages;
     if (fInspector->Take(messages)) {
-        for (const auto& message : messages) fSession.Receive(message);
+        for (const auto& message : messages) {
+            if (fTraceProtocol) std::fprintf(stderr, "Summit devtools protocol: %.400s\n", message.c_str());
+            fSession.Receive(message);
+        }
         Sync();
     }
     if (!fOverflowShown && fInspector->Overflowed()) {
@@ -236,6 +240,11 @@ void DevToolsWindow::Sync()
 
 void DevToolsWindow::Trace(const Changes& changes)
 {
+    if (changes.origins) {
+        std::string origins;
+        for (const auto& origin : fSession.StorageOrigins()) origins += " " + origin;
+        std::fprintf(stderr, "Summit devtools: origins%s\n", origins.c_str());
+    }
     if (changes.requestsReset) std::fprintf(stderr, "Summit devtools: requests reset, %zu kept\n", fSession.Requests().size());
     for (const auto serial : changes.requests) {
         const auto* request = fSession.FindRequest(serial);

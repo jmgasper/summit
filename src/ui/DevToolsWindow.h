@@ -54,6 +54,8 @@ private:
     bool fOverflowShown = false;
     // SUMMIT_DEVTOOLS_TRACE=1: requests and messages also go to standard error.
     bool fTrace = false;
+    // SUMMIT_DEVTOOLS_TRACE=2: every protocol message received as well.
+    bool fTraceProtocol = false;
     size_t fTracedEntries = 0;
 };
 }

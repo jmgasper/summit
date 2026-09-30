@@ -38,6 +38,7 @@
 //                                             asking), or open the Preferences window
 //   summitctl --team ID defaultbrowser        prints {"is_default", "current"}: the system's browser
 //   summitctl --team ID makedefault           Preferences' Make Summit the Default Browser; prints the same
+//   summitctl --team ID installext PACKAGE    adds an extension through the Extensions window
 //   summitctl --team ID pin EXTENSION on|off  whether the extension's action has a toolbar button
 //   summitctl --team ID privateext EXTENSION on|off
 //                                             whether the extension works in private windows (needs
@@ -56,6 +57,7 @@
 // Exit codes: 0 ok, 2 usage, 3 team is not a running Summit, 4 no reply in time
 // (hang indicator), 5 send failed.
 #include "ui/Messages.h"
+#include <Entry.h>
 #include <Application.h>
 #include <Message.h>
 #include <Messenger.h>
@@ -266,6 +268,43 @@ int main(int argc, char** argv)
         reply.FindString("error", &error);
         std::printf("{\"is_default\": %s, \"current\": \"%s\", \"error\": \"%s\"}\n",
             reply.GetBool("is_default", false) ? "true" : "false", reply.GetString("current", ""), error ? error : "");
+        return 0;
+    }
+    if (command == "installext") {
+        // Adds an extension package through the Extensions window, as its
+        // Add extension… button and Install do (approving what it asks).
+        if (!argument) return 2;
+        BEntry entry(argument, true);
+        entry_ref ref;
+        if (entry.GetRef(&ref) != B_OK || !entry.Exists()) { std::fprintf(stderr, "no such package: %s\n", argument); return 2; }
+        BMessage show(summit::kShowExtensions);
+        app.SendMessage(&show, static_cast<BHandler*>(nullptr), timeout);
+        BMessenger manager;
+        for (int attempt = 0; attempt < 50 && !manager.IsValid(); ++attempt) {
+            snooze(100000);
+            for (int32 i = 0; i < 64; ++i) {
+                BMessage request(B_GET_PROPERTY), reply;
+                request.AddSpecifier("Window", i);
+                BMessenger candidate;
+                if (app.SendMessage(&request, &reply, timeout, timeout) != B_OK || reply.FindMessenger("result", &candidate) != B_OK) break;
+                BMessage title(B_GET_PROPERTY), answer;
+                title.AddSpecifier("Title");
+                const char* text = nullptr;
+                if (candidate.SendMessage(&title, &answer, timeout, timeout) == B_OK && answer.FindString("result", &text) == B_OK
+                    && text && !std::strncmp(text, "Extensions", 10)) { manager = candidate; break; }
+            }
+        }
+        if (!manager.IsValid()) { std::fputs("no Extensions window\n", stderr); return 5; }
+        snooze(1000000);
+        BMessage selected(summit::kExtensionSelected);
+        selected.AddRef("refs", &ref);
+        if (manager.SendMessage(&selected, static_cast<BHandler*>(nullptr), timeout) != B_OK) return 5;
+        // Preparation takes a moment; approving before it is ready is ignored.
+        for (int attempt = 0; attempt < 4; ++attempt) {
+            snooze(2500000);
+            BMessage approve(summit::kExtensionApprove);
+            manager.SendMessage(&approve, static_cast<BHandler*>(nullptr), timeout);
+        }
         return 0;
     }
     if (command == "pin" || command == "privateext") {

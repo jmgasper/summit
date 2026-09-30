@@ -228,27 +228,28 @@ void StoragePanel::RebuildAreas()
     for (int32 i = 0; i < fAreas->FullListCountItems(); ++i) old.push_back(fAreas->FullListItemAt(i));
     fAreas->MakeEmpty();
     for (auto* item : old) delete item;
-    int32 selected = -1;
+    AreaItem* selected = nullptr;
     for (const auto kind : {StorageKind::Local, StorageKind::Session}) {
         auto* title = new AreaItem(kind == StorageKind::Local ? "Local Storage" : "Session Storage", kind, { }, false);
+        title->SetExpanded(true);
         fAreas->AddItem(title);
+        // Appended at the next level they are the title's, in the page's order.
         for (const auto& origin : origins) {
             auto* item = new AreaItem(origin.c_str(), kind, origin, true, 1);
-            fAreas->AddUnder(item, title);
-            if (fHasArea && fKind == kind && fOrigin == origin) selected = fAreas->IndexOf(item);
+            fAreas->AddItem(item);
+            if (fHasArea && fKind == kind && fOrigin == origin) selected = item;
         }
-        title->SetExpanded(true);
     }
     auto* cookies = new AreaItem("Cookies", StorageKind::Cookies, { }, true);
     fAreas->AddItem(cookies);
-    if (fHasArea && fKind == StorageKind::Cookies) selected = fAreas->IndexOf(cookies);
-    if (fHasArea && selected < 0) {
+    if (fHasArea && fKind == StorageKind::Cookies) selected = cookies;
+    if (fHasArea && !selected) {
         // The page no longer has the origin that was shown.
         fHasArea = false;
         fSelected.clear();
         Fill();
     }
-    if (selected >= 0) fAreas->Select(selected);
+    if (selected) fAreas->Select(fAreas->IndexOf(selected));
 }
 
 void StoragePanel::SelectArea(StorageKind kind, const std::string& origin)
