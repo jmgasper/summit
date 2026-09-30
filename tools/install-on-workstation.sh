@@ -46,9 +46,23 @@ export __EGL_VENDOR_LIBRARY_FILENAMES=\$M/data/glvnd/egl_vendor.d/50_mesa.json
 export SUMMIT_INPUT_LAG_TRACE=\\\${SUMMIT_INPUT_LAG_TRACE:-1}
 # Message dispatches of the window and application threads over 50 ms.
 export SUMMIT_UI_STALL_TRACE=\\\${SUMMIT_UI_STALL_TRACE:-1}
+# The executable the system starts for web links when Summit is the default
+# browser (Preferences): a link that follows each install.
+export SUMMIT_SYSTEM_LAUNCHER=/boot/home/summit/Summit-installed
 exec \"\\\$SUMMIT_BUNDLE/Summit\" \"\\\$@\" 2>>/boot/home/summit/summit-stderr.log
 EOF
 chmod +x \$L
+# Started by the system rather than the launcher (a web link while Summit is
+# the default browser), Summit reads the launcher's environment from here.
+cat > \$B/launch.env <<ENV
+# Written by tools/install-on-workstation.sh; see ApplyLaunchEnvironment().
+WEBKIT_EXEC_PATH=\$B
+LIBRARY_PATH^=\$M/lib
+__EGL_VENDOR_LIBRARY_FILENAMES=\$M/data/glvnd/egl_vendor.d/50_mesa.json
+SUMMIT_SKIA_GL_CONTEXT=1
+SUMMIT_SCROLL_REFRESH_TIMER=16
+ENV
+ln -sfn \$B/Summit /boot/home/summit/Summit-installed
 # libnetwork's nsswitch_conf_file_path() is not thread-safe; a real config file
 # newer than the settings directory keeps a racy re-parse from opening the
 # directory and exiting the network process (docs/kunanyios-platform-issues.md).

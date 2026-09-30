@@ -18,14 +18,23 @@ struct DefaultBrowserState {
 DefaultBrowserState QueryDefaultBrowser();
 
 // Makes Summit the preferred application of those types and tells the
-// system how to start it: through the installed launcher
-// (/boot/system/apps/Summit) when there is one, which sets up the engine's
-// environment, otherwise this executable. The previous choices are not kept;
-// FileTypes (or another browser's own setting) changes them back.
+// system which executable to start: the installed build's (through the link
+// SUMMIT_SYSTEM_LAUNCHER names, which follows each install) or this one.
+// Started that way, Summit takes its launcher's environment from launch.env
+// (ApplyLaunchEnvironment()). The previous choices are not kept; FileTypes
+// (or another browser's own setting) changes them back.
 status_t MakeDefaultBrowser(std::string& error);
 
-// When Summit is the default browser, points the system at the executable
-// MakeDefaultBrowser() would choose now, in case it moved. Cheap when nothing
-// changed; call at startup.
+// When Summit is the default browser, points the system at the installed
+// build, or at this executable if the executable it knows is gone. Cheap when
+// nothing changed; call at startup.
 void RefreshDefaultBrowserHint();
+
+// Before anything else in main(): a Summit the system started directly (for a
+// web link or an HTML file) rather than its launcher script reads the
+// launcher's environment from launch.env beside the executable: NAME=VALUE
+// sets a variable that is not set, NAME^=VALUE puts VALUE in front of a
+// colon-separated list (LIBRARY_PATH) that does not hold it yet. The engine's
+// processes inherit it.
+void ApplyLaunchEnvironment();
 }

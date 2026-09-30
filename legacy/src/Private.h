@@ -1,0 +1,125 @@
+/*
+ * Copyright 2026 Summit contributors. Distributed under the terms of the MIT License.
+ *
+ * The legacy BWebView API (libWebKitLegacy) on Summit's engine: what the
+ * classes share. docs/legacy-webview.md describes the whole library.
+ */
+#pragma once
+
+#include "WebDownload.h"
+#include "WebFrame.h"
+#include "WebPage.h"
+#include "WebSettings.h"
+#include "WebView.h"
+
+#include <WebKit/WebKitContext.h>
+#include <WebKit/WebKitEmbedding.h>
+#include <WebKit/WebKitView.h>
+
+#include <Path.h>
+#include <String.h>
+
+#include <atomic>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <string>
+
+class BBitmap;
+
+namespace SummitLegacy {
+
+// The engine context every BWebView shares: one website data store (cookies,
+// cache, storage) in <persistent storage path>/WebKit. Made on the
+// application thread; until then, and on other threads before it exists,
+// views use the engine's default context.
+std::shared_ptr<BWebKitContext> Context();
+// BWebSettings::SetPersistentStoragePath(). Application thread.
+void SetStoragePath(const BString& path);
+// BWebPage::InitializeOnce()/ShutdownOnce(). Application thread.
+status_t Initialize();
+void Shutdown();
+
+// Site icons the engine reported, decoded, by page address.
+void StoreIcon(const BString& pageURL, const void* data, size_t size);
+// Archives the icon of the page into archive as "icon"; false if none.
+bool ArchiveIcon(const BString& pageURL, BMessage& archive);
+void ClearIcons();
+
+// A page asked for a new one (window.open, a target): the next BWebView made
+// on this thread shows it (BWebPage creates it on the application thread).
+extern thread_local uint64 gNewPageRequest;
+
+// An address as the old engine took it: with a scheme, a file path, or a
+// host name that gets http://.
+BString NormalizedURL(const BString& url);
+
+// Writes text to the clipboard as text/plain.
+void CopyToClipboard(const BString& text);
+
+// Runs source in the view's main frame as an async function body and waits
+// for its string result, up to timeout. Not on the application thread,
+// which runs the engine.
+status_t EvaluateAndWait(BWebKitView* view, const char* source, BString& result, bigtime_t timeout);
+
+}
+
+namespace BPrivate {
+
+// What a BWebPage knows of its page, from the engine's notifications
+// (B_WEBKIT_STATE_CHANGED). Written on the application thread, read by the
+// window threads that ask BWebView for its title and address.
+class WebPagePrivate {
+public:
+	BWebKitView* view = nullptr;
+	mutable std::mutex lock;
+	BString url, requestedURL, title;
+	bool loading = false, canGoBack = false, canGoForward = false;
+	float progress = 0;
+	uint64 successSequence = 0;
+	std::string outcome;
+	bool shutDown = false;
+	uint64 nextScript = 1;
+	// Scripts whose answers the page waits for, by identifier: what they are for.
+	std::map<uint64, uint32> scripts;
+};
+
+// A download the engine reported, until it is finished and handed over.
+class WebDownloadPrivate {
+public:
+	uint64 identifier = 0;
+	BString url, filename;
+	BPath path;
+	off_t currentSize = 0, expectedSize = -1;
+	BMessenger progressListener;
+	// Where BWebDownload::Start() asked for the file; empty until then.
+	BPath directory;
+	bool started = false, finished = false, succeeded = false, handedOver = false;
+	BWebDownload* download = nullptr;
+
+	// BWebDownload's and BWebPage's private parts, which this class may use.
+	static BWebDownload* Create(WebDownloadPrivate* data) { return new BWebDownload(data); }
+	static void Destroy(BWebDownload* download) { delete download; }
+	static BMessenger DownloadListener() { return BWebPage::sDownloadListener; }
+};
+
+// Settings a legacy application sets. The engine has no per-page font or
+// script settings to give them to; they are kept for the application.
+class WebSettingsPrivate {
+public:
+	std::mutex lock;
+	BString standardFont, serifFont, sansSerifFont, fixedFont;
+	float standardFontSize = 16, fixedFontSize = 13;
+	bool javascriptEnabled = true;
+	BString localStoragePath;
+};
+
+}
+
+// The main frame of a page (the only one this API exposes).
+class WebFramePrivate {
+public:
+	BWebPage* page = nullptr;
+	// The page's engine view; null once the page is shut down.
+	BWebKitView* view = nullptr;
+};

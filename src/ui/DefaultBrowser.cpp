@@ -8,6 +8,8 @@
 #include <Path.h>
 #include <Roster.h>
 #include <strings.h>
+#include <OS.h>
+#include <cstdio>
 #include <cstdlib>
 
 namespace summit {
@@ -33,15 +35,30 @@ std::string PreferredApp(const char* type)
     return signature;
 }
 
-// The program the system should start for Summit. The launcher sets up the
-// engine's environment (its GPU libraries and switches); a bare bundle's
-// executable starts without them.
+// Whether the system accepts path as Summit: the roster forgets an app hint
+// whose file does not carry the application's signature.
+bool CarriesSignature(const char* path, entry_ref& ref)
+{
+    BEntry entry(path, true);
+    BFile file(&entry, B_READ_ONLY);
+    BAppFileInfo info(&file);
+    char signature[B_MIME_TYPE_LENGTH] = "";
+    return entry.IsFile() && info.InitCheck() == B_OK && info.GetSignature(signature) == B_OK && IsSummit(signature)
+        && entry.GetRef(&ref) == B_OK;
+}
+
+// The program the system should start for Summit: its executable, which
+// takes pages and files as messages (a launcher script cannot) and sets up
+// the engine's environment from launch.env beside it. The installed build's
+// launcher names a path that follows each install (SUMMIT_SYSTEM_LAUNCHER,
+// a link to the current build); otherwise this executable.
 status_t LaunchTarget(entry_ref& ref)
 {
-    if (const char* launcher = std::getenv("SUMMIT_SYSTEM_LAUNCHER"); launcher && *launcher) {
-        if (BEntry entry(launcher, true); entry.IsFile()) return entry.GetRef(&ref);
+    if (const char* launcher = std::getenv("SUMMIT_SYSTEM_LAUNCHER"); launcher && *launcher && CarriesSignature(launcher, ref)) {
+        // The link itself, not the build it points to now.
+        BEntry entry(launcher, false);
+        return entry.GetRef(&ref);
     }
-    if (BEntry entry("/boot/system/apps/Summit", true); entry.IsFile()) return entry.GetRef(&ref);
     app_info info;
     if (!be_app) return B_NO_INIT;
     const status_t status = be_app->GetAppInfo(&info);
@@ -90,13 +107,51 @@ status_t MakeDefaultBrowser(std::string& error)
     return QueryDefaultBrowser().isDefault ? B_OK : B_ERROR;
 }
 
+void ApplyLaunchEnvironment()
+{
+    image_info image;
+    int32 cookie = 0;
+    while (get_next_image_info(B_CURRENT_TEAM, &cookie, &image) == B_OK) {
+        if (image.type != B_APP_IMAGE) continue;
+        BPath path(image.name);
+        if (path.GetParent(&path) != B_OK || path.Append("launch.env") != B_OK) return;
+        FILE* file = std::fopen(path.Path(), "r");
+        if (!file) return;
+        char line[4096];
+        while (std::fgets(line, sizeof(line), file)) {
+            std::string text(line);
+            while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) text.pop_back();
+            if (text.empty() || text[0] == '#') continue;
+            const auto equals = text.find('=');
+            if (equals == std::string::npos || !equals) continue;
+            const bool prepend = text[equals - 1] == '^';
+            const std::string name = text.substr(0, prepend ? equals - 1 : equals), value = text.substr(equals + 1);
+            if (name.empty()) continue;
+            const char* current = std::getenv(name.c_str());
+            if (!prepend) {
+                if (!current) setenv(name.c_str(), value.c_str(), 0);
+                continue;
+            }
+            const std::string list = current ? current : "";
+            if ((":" + list + ":").find(":" + value + ":") != std::string::npos) continue;
+            setenv(name.c_str(), list.empty() ? value.c_str() : (value + ":" + list).c_str(), 1);
+        }
+        std::fclose(file);
+        return;
+    }
+}
+
 void RefreshDefaultBrowserHint()
 {
     if (!QueryDefaultBrowser().isDefault) return;
     BMimeType app(kSummitSignature);
     entry_ref target, hint;
-    if (LaunchTarget(target) != B_OK) return;
-    if (app.GetAppHint(&hint) == B_OK && hint == target) return;
-    app.SetAppHint(&target);
+    if (LaunchTarget(target) != B_OK || (app.GetAppHint(&hint) == B_OK && hint == target)) return;
+    // The installed build's link always wins; any other build only replaces
+    // a hint that no longer leads to Summit.
+    const char* launcher = std::getenv("SUMMIT_SYSTEM_LAUNCHER");
+    entry_ref ignored;
+    if ((launcher && *launcher) || app.GetAppHint(&hint) != B_OK || !CarriesSignature(BPath(&hint).Path(), ignored))
+        app.SetAppHint(&target);
 }
 }

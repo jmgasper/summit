@@ -972,6 +972,9 @@ static void PrepareResolver()
 
 int main()
 {
+    // Started by the system for a web link or a page (Summit is the default
+    // browser), not by its launcher: take the launcher's environment.
+    summit::ApplyLaunchEnvironment();
     PrepareResolver();
     // The application thread runs WebKit's main loop: every frame, input
     // reply and IPC message of every tab passes through it. Under the load of
