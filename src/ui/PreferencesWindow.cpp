@@ -45,6 +45,9 @@ PreferencesWindow::PreferencesWindow(BMessenger owner, const PreferencesState& s
     , fOwner(owner)
     , fWebKitDirectory(state.webKitDirectory)
 {
+    fDefaultInfo = new BStringView("default-browser-info", "Default browser: checking…");
+    fMakeDefault = new BButton("make-default-browser", "Make Summit the Default Browser", new BMessage(kMakeDefaultBrowser));
+    fMakeDefault->SetEnabled(false);
     fHome = new BTextControl("home-url", "Home page:", state.homeURL.c_str(), nullptr);
     fHome->SetModificationMessage(new BMessage(homeEdited));
     fHome->SetExplicitMinSize(BSize(380, B_SIZE_UNSET));
@@ -90,6 +93,12 @@ PreferencesWindow::PreferencesWindow(BMessenger owner, const PreferencesState& s
         .SetInsets(18)
         .Add(SectionTitle("general-title", "General"))
         .AddGroup(B_VERTICAL, 6).SetInsets(12, 0, 0, 0)
+            .AddGroup(B_HORIZONTAL, 8)
+                .Add(fDefaultInfo)
+                .AddGlue()
+                .Add(fMakeDefault)
+            .End()
+            .AddStrut(4)
             .Add(fHome)
             .AddGroup(B_HORIZONTAL, 8)
                 .AddGlue()
@@ -270,6 +279,24 @@ void PreferencesWindow::MessageReceived(BMessage* message)
                     item->SetMarked(item->Message() && std::string(item->Message()->GetString("search_engine", "")) == engine);
             int32 count = 0;
             if (message->FindInt32("history_count", &count) == B_OK) ShowHistoryCount(count);
+            break;
+        }
+        case kMakeDefaultBrowser:
+            fMakeDefault->SetEnabled(false);
+            fDefaultInfo->SetText("Making Summit the default browser…");
+            fOwner.SendMessage(kMakeDefaultBrowser);
+            break;
+        case kDefaultBrowserState: {
+            const bool isDefault = message->GetBool("is_default", false);
+            const std::string current = message->GetString("current", "");
+            const char* error = nullptr;
+            if (message->FindString("error", &error) == B_OK && error && *error) fDefaultInfo->SetText(error);
+            else if (isDefault) fDefaultInfo->SetText("Summit is your default browser.");
+            else if (current.empty()) fDefaultInfo->SetText("No default browser is set.");
+            else fDefaultInfo->SetText(("Your default browser is " + current + ".").c_str());
+            fDefaultInfo->SetToolTip("Web links and pages you open from other applications, Tracker and the "
+                "command line open in the default browser.");
+            fMakeDefault->SetEnabled(!isDefault);
             break;
         }
         case kShowPreferences: Activate(); break;

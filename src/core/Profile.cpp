@@ -95,6 +95,13 @@ Profile Profile::Load(const std::filesystem::path& path, std::string& error)
                 profile.siteZoom[site] = factor;
             }
         }
+        if (auto unpinned = j.find("unpinnedExtensions"); unpinned != j.end()) {
+            if (!unpinned->is_array() || unpinned->size() > 1000) throw std::runtime_error("Invalid unpinned extension list");
+            for (const auto& identifier : *unpinned) {
+                const auto text = identifier.get<std::string>();
+                if (!text.empty() && text.size() <= 255) profile.unpinnedExtensions.insert(text);
+            }
+        }
     } catch (const std::exception& e) { error = e.what(); return {}; }
     return profile;
 }
@@ -117,7 +124,7 @@ bool Profile::Save(const std::filesystem::path& path, std::string& error) const
             {"bookmarks", Encode(bookmarks)}, {"history", Encode(history)},
             {"homeURL", homeURL}, {"showBookmarksBar", showBookmarksBar},
             {"interfaceStyle", interfaceStyle}, {"searchEngine", searchEngine},
-            {"siteZoom", siteZoom}}.dump(2);
+            {"siteZoom", siteZoom}, {"unpinnedExtensions", unpinnedExtensions}}.dump(2);
         if (data.size() > 16 * 1024 * 1024) throw std::runtime_error("Profile is too large");
         temporary = path.string() + ".XXXXXX";
         fd = mkstemp(temporary.data());

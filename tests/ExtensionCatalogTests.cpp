@@ -75,6 +75,11 @@ int main()
     CHECK(catalog.Load(entries, error) && !entries[0].enabled);
     auto saved = read(storage / "catalog.json");
     CHECK(!catalog.SetEnabled("missing", true, error) && read(storage / "catalog.json") == saved);
+    CHECK(!entries[0].allowPrivateBrowsing && catalog.SetAllowPrivateBrowsing(entry.identifier, true, error));
+    CHECK(catalog.Load(entries, error) && entries[0].allowPrivateBrowsing && !entries[0].enabled);
+    CHECK(catalog.SetAllowPrivateBrowsing(entry.identifier, false, error) && catalog.Load(entries, error) && !entries[0].allowPrivateBrowsing);
+    saved = read(storage / "catalog.json");
+    CHECK(!catalog.SetAllowPrivateBrowsing("missing", true, error) && read(storage / "catalog.json") == saved);
     put(source, "second archive");
     {
         auto duplicate = catalog.Stage(source, error);

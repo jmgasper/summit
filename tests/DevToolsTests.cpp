@@ -355,6 +355,9 @@ static void TestSession()
     CHECK(session.Requests().size() == 3);
     // The old page's unfinished request will never finish, and its bodies are gone.
     CHECK(session.Requests()[1].failed && session.Requests()[1].canceled);
+    // The new page's frames are asked for, for the Storage panel.
+    commands = Sent(session);
+    CHECK(Find(commands, "Page.getResourceTree") && Find(commands, "Page.getResourceTree")->target == "page-2");
     session.RequestBody(session.Requests()[0].serial);
     CHECK(session.Requests()[0].bodyState == BodyState::Failed && Sent(session).empty());
     session.SetPreserveRequests(false);
@@ -611,9 +614,150 @@ static void TestHeaders()
     CHECK(data.Name() == "about:blank");
 }
 
+static std::string Reply(const std::string& target, uint64_t id, const json& result)
+{
+    return FromTarget(target, json{{"id", id}, {"result", result}});
+}
+
+static void TestStorage()
+{
+    Session session;
+    session.Start();
+    Sent(session);
+    session.Receive(TargetCreated("page-1"));
+    auto commands = Sent(session);
+    CHECK(Find(commands, "DOMStorage.enable") && Find(commands, "DOMStorage.enable")->target == "page-1");
+    const auto* tree = Find(commands, "Page.getResourceTree");
+    CHECK(tree && tree->target == "page-1");
+    // The page and its frames; an opaque frame keeps nothing and is left out.
+    session.Receive(Reply("page-1", tree->id, {{"frameTree", {{"frame", {{"id", "f1"}, {"securityOrigin", "https://example.com"}}},
+        {"childFrames", json::array({{{"frame", {{"id", "f2"}, {"securityOrigin", "https://ads.example"}}}},
+            {{"frame", {{"id", "f3"}, {"securityOrigin", "null"}}}},
+            {{"frame", {{"id", "f4"}, {"securityOrigin", "https://example.com"}}}}})}}}}));
+    auto changes = session.TakeChanges();
+    CHECK(changes.origins && session.StorageOrigins() == std::vector<std::string>({"https://example.com", "https://ads.example"}));
+
+    // Local storage, read.
+    CHECK(!session.FindArea(StorageKind::Local, "https://example.com"));
+    session.LoadStorage(StorageKind::Local, "https://example.com");
+    session.LoadStorage(StorageKind::Local, "https://example.com");
+    commands = Sent(session);
+    CHECK(commands.size() == 1 && commands[0].method == "DOMStorage.getDOMStorageItems"
+        && commands[0].parameters["storageId"]["securityOrigin"] == "https://example.com"
+        && commands[0].parameters["storageId"]["isLocalStorage"] == true);
+    const auto* area = session.FindArea(StorageKind::Local, "https://example.com");
+    CHECK(area && area->waiting && !area->loaded);
+    session.Receive(Reply("page-1", commands[0].id, {{"entries", json::array({json::array({"theme", "dark"}),
+        json::array({"cart", "{\"items\":[1,2]}"})})}}));
+    area = session.FindArea(StorageKind::Local, "https://example.com");
+    CHECK(area && area->loaded && !area->waiting && area->items.size() == 2 && area->items[1].key == "cart"
+        && area->items[1].value == "{\"items\":[1,2]}" && area->Bytes() == 5 + 4 + 4 + 15);
+    CHECK(session.TakeChanges().storage);
+
+    // The page changes it: the model follows without asking again.
+    const json local = {{"securityOrigin", "https://example.com"}, {"isLocalStorage", true}};
+    session.Receive(Event("page-1", "DOMStorage.domStorageItemAdded", {{"storageId", local}, {"key", "lang"}, {"newValue", "en"}}));
+    session.Receive(Event("page-1", "DOMStorage.domStorageItemUpdated", {{"storageId", local}, {"key", "theme"}, {"oldValue", "dark"}, {"newValue", "light"}}));
+    session.Receive(Event("page-1", "DOMStorage.domStorageItemRemoved", {{"storageId", local}, {"key", "cart"}}));
+    area = session.FindArea(StorageKind::Local, "https://example.com");
+    CHECK(area->items.size() == 2 && area->items[0].value == "light" && area->items[1].key == "lang" && Sent(session).empty());
+    // Session storage of the same origin is another area, not yet read.
+    session.Receive(Event("page-1", "DOMStorage.domStorageItemAdded", {{"storageId", {{"securityOrigin", "https://example.com"},
+        {"isLocalStorage", false}}}, {"key", "x"}, {"newValue", "1"}}));
+    CHECK(!session.FindArea(StorageKind::Session, "https://example.com"));
+    session.Receive(Event("page-1", "DOMStorage.domStorageItemsCleared", {{"storageId", local}}));
+    CHECK(session.FindArea(StorageKind::Local, "https://example.com")->items.empty());
+    session.TakeChanges();
+
+    // Changing an area asks the page, then reads it again.
+    session.SetStorageItem(StorageKind::Session, "https://ads.example", "k", "v");
+    commands = Sent(session);
+    CHECK(commands.size() == 1 && commands[0].method == "DOMStorage.setDOMStorageItem" && commands[0].parameters["key"] == "k"
+        && commands[0].parameters["value"] == "v" && commands[0].parameters["storageId"]["isLocalStorage"] == false);
+    session.Receive(Reply("page-1", commands[0].id, json::object()));
+    commands = Sent(session);
+    CHECK(commands.size() == 1 && commands[0].method == "DOMStorage.getDOMStorageItems"
+        && commands[0].parameters["storageId"]["securityOrigin"] == "https://ads.example");
+    session.Receive(Reply("page-1", commands[0].id, {{"entries", json::array({json::array({"k", "v"})})}}));
+    CHECK(session.FindArea(StorageKind::Session, "https://ads.example")->items.size() == 1);
+    session.RemoveStorageItem(StorageKind::Session, "https://ads.example", "k");
+    commands = Sent(session);
+    CHECK(commands.size() == 1 && commands[0].method == "DOMStorage.removeDOMStorageItem" && commands[0].parameters["key"] == "k");
+    session.ClearStorage(StorageKind::Local, "https://example.com");
+    commands = Sent(session);
+    CHECK(commands.size() == 1 && commands[0].method == "DOMStorage.clearDOMStorageItems");
+    // A failure is shown with the area.
+    session.Receive(FromTarget("page-1", json{{"id", commands[0].id}, {"error", {{"message", "No storage"}}}}));
+    CHECK(session.FindArea(StorageKind::Local, "https://example.com")->error == "No storage");
+    Sent(session);
+
+    // Cookies: one area, of all the page's addresses, HttpOnly ones included.
+    session.LoadStorage(StorageKind::Cookies, "ignored");
+    commands = Sent(session);
+    CHECK(commands.size() == 1 && commands[0].method == "Page.getCookies");
+    session.Receive(Reply("page-1", commands[0].id, {{"cookies", json::array({
+        {{"name", "sid"}, {"value", "abc"}, {"domain", ".example.com"}, {"path", "/"}, {"expires", 1790000000000.0},
+            {"session", false}, {"httpOnly", true}, {"secure", true}, {"sameSite", "Lax"}},
+        {{"name", "pref"}, {"value", "1"}, {"domain", "example.com"}, {"path", "/app"}, {"expires", 0},
+            {"session", true}, {"httpOnly", false}, {"secure", false}, {"sameSite", "None"}}})}}));
+    const auto* cookies = session.FindArea(StorageKind::Cookies, "");
+    CHECK(cookies && cookies->loaded && cookies->cookies.size() == 2 && cookies->cookies[0].httpOnly && cookies->cookies[0].secure);
+    CHECK(cookies->cookies[0].URL() == "https://example.com/" && cookies->cookies[1].URL() == "http://example.com/app");
+    CHECK(cookies->cookies[1].ExpiresLabel() == "Session" && cookies->cookies[0].ExpiresLabel().rfind("2026-", 0) == 0);
+    CHECK(cookies->cookies[0].Size() == 6 && cookies->Bytes() == 6 + 5);
+    session.DeleteCookie(cookies->cookies[0]);
+    commands = Sent(session);
+    CHECK(commands.size() == 1 && commands[0].method == "Page.deleteCookie" && commands[0].parameters["cookieName"] == "sid"
+        && commands[0].parameters["url"] == "https://example.com/");
+    session.Receive(Reply("page-1", commands[0].id, json::object()));
+    commands = Sent(session);
+    CHECK(commands.size() == 1 && commands[0].method == "Page.getCookies");
+    session.Receive(Reply("page-1", commands[0].id, {{"cookies", json::array()}}));
+    CHECK(session.FindArea(StorageKind::Cookies, "")->cookies.empty());
+    // Clearing deletes each cookie shown.
+    session.LoadStorage(StorageKind::Cookies, "");
+    commands = Sent(session);
+    session.Receive(Reply("page-1", commands[0].id, {{"cookies", json::array({{{"name", "a"}, {"domain", "x.test"}, {"path", "/"}},
+        {{"name", "b"}, {"domain", "x.test"}, {"path", "/"}}})}}));
+    session.ClearStorage(StorageKind::Cookies, "");
+    commands = Sent(session);
+    CHECK(commands.size() == 2 && commands[0].method == "Page.deleteCookie" && commands[1].parameters["cookieName"] == "b");
+    session.TakeChanges();
+
+    // The page's load reads again what was read.
+    session.Receive(Event("page-1", "Page.loadEventFired", {{"timestamp", 3}}));
+    commands = Sent(session);
+    CHECK(Find(commands, "DOMStorage.getDOMStorageItems") && Find(commands, "Page.getCookies"));
+
+    // A subframe adds its origin; the page going elsewhere replaces them and
+    // forgets the areas of origins it no longer has, and the cookies.
+    session.Receive(Event("page-1", "Page.frameNavigated", {{"frame", {{"id", "f5"}, {"parentId", "f1"}, {"loaderId", "L9"},
+        {"url", "https://widgets.example/w"}, {"securityOrigin", "https://widgets.example"}}}}));
+    CHECK(session.StorageOrigins().size() == 3 && session.TakeChanges().origins);
+    session.Receive(Event("page-1", "Page.frameNavigated", {{"frame", {{"id", "f1"}, {"loaderId", "L10"},
+        {"url", "https://example.com/other"}, {"securityOrigin", "https://example.com"}}}}));
+    changes = session.TakeChanges();
+    CHECK(changes.origins && session.StorageOrigins() == std::vector<std::string>({"https://example.com"}));
+    CHECK(session.FindArea(StorageKind::Local, "https://example.com") && !session.FindArea(StorageKind::Session, "https://ads.example")
+        && !session.FindArea(StorageKind::Cookies, ""));
+    // A file page keeps storage too; about:blank does not.
+    session.Receive(Event("page-1", "Page.frameNavigated", {{"frame", {{"id", "f1"}, {"loaderId", "L11"},
+        {"url", "file:///boot/home/a.html"}, {"securityOrigin", "file://"}}}}));
+    CHECK(session.StorageOrigins() == std::vector<std::string>({"file://"}));
+    session.Receive(Event("page-1", "Page.frameNavigated", {{"frame", {{"id", "f1"}, {"loaderId", "L12"},
+        {"url", "about:blank"}, {"securityOrigin", "://"}}}}));
+    CHECK(session.StorageOrigins().empty());
+
+    // Without a page there is nothing to ask.
+    Session empty;
+    empty.LoadStorage(StorageKind::Local, "https://example.com");
+    CHECK(Sent(empty).empty() && !empty.FindArea(StorageKind::Local, "https://example.com")->error.empty());
+}
+
 int main()
 {
     TestSession();
+    TestStorage();
     TestConsole();
     TestHeaders();
     TestKinds();

@@ -29,6 +29,11 @@ constexpr uint32 kPreferencesChanged = 'prch';
 constexpr uint32 kPreferencesUseCurrentPage = 'prcp';
 constexpr uint32 kPreferencesState = 'prst';
 constexpr uint32 kPreferencesClosed = 'prcl';
+// Preferences › General › Default browser: make Summit the system's browser
+// (to the application), and what the system uses now (to the Preferences
+// window: "is_default", "current" the name of the browser in use, "error").
+constexpr uint32 kMakeDefaultBrowser = 'dfbr';
+constexpr uint32 kDefaultBrowserState = 'dfbs';
 // Preferences › History and Data, sent to the application; it answers the
 // window with kDataCleared ("kind": the request, "error" on failure).
 constexpr uint32 kClearHistoryRequest = 'pclh';
@@ -64,6 +69,14 @@ constexpr uint32 kActivateExtensionAction = 'exac';
 // The pointer reached an action button: load its popup before the click.
 constexpr uint32 kPreloadExtensionAction = 'expl';
 constexpr uint32 kShowExtensionActions = 'exam';
+// To the application ("extension_identifier" and "pinned" or "allowed"; from
+// the Extensions window also "window"): whether the extension's action has a
+// button on the toolbar, and whether the extension works in private windows.
+constexpr uint32 kExtensionSetPinned = 'expn';
+constexpr uint32 kExtensionSetPrivate = 'expv';
+// A secondary click on an extension's toolbar button ("extension_identifier",
+// "where": the screen point).
+constexpr uint32 kExtensionActionMenu = 'exmn';
 constexpr uint32 kBrowserState = 'stat';
 // Windows. kNewWindow goes to the application ("url": repeated, optional;
 // "new_page"/"new_page_url": a page opened by another page; "popup": bool;

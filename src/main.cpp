@@ -1,5 +1,7 @@
 #include "ui/BrowserWindow.h"
 #include "ui/PreferencesWindow.h"
+#include "ui/DefaultBrowser.h"
+#include <thread>
 #include "ui/SharedProfile.h"
 #include "ui/Messages.h"
 #include "ui/ExtensionPermissionPrompt.h"
@@ -76,6 +78,9 @@ public:
     }
     void ReadyToRun() override
     {
+        // If Summit is the system's browser, keep the system pointed at the
+        // installed Summit (registrar round trips: off the startup path).
+        std::thread(summit::RefreshDefaultBrowserHint).detach();
         SUMMIT_EXTENSION_TIMING("browser ready to run");
         if (fProfile.empty()) {
             BPath path;
@@ -216,6 +221,37 @@ public:
                 fExtensionWindow = BMessenger(manager);
                 manager->Show();
             } else fExtensionWindow.SendMessage(summit::kShowExtensions);
+            RefreshExtensions();
+            return;
+        }
+        if (message->what == summit::kExtensionSetPinned) {
+            // From a toolbar button's menu or the Extensions window.
+            const char* identifier = nullptr;
+            bool pinned = true;
+            if (!fShared || message->FindString("extension_identifier", &identifier) != B_OK || !*identifier
+                || message->FindBool("pinned", &pinned) != B_OK) return;
+            const std::string id = identifier;
+            fShared->Change([&](summit::Profile& profile) -> uint32 {
+                const bool changed = pinned ? profile.unpinnedExtensions.erase(id) > 0 : profile.unpinnedExtensions.insert(id).second;
+                return changed ? summit::SharedProfile::kExtensionsPinnedChanged : 0;
+            });
+            RefreshExtensions();
+            return;
+        }
+        if (message->what == summit::kExtensionSetPrivate) {
+            BMessenger sender;
+            const char* identifier = nullptr;
+            bool allowed = false;
+            // Only the Extensions window, or a test driver where one is allowed.
+            static const bool synthesis = [] {
+                const char* value = std::getenv("SUMMIT_ENABLE_INPUT_SYNTHESIS");
+                return value && !std::strcmp(value, "1");
+            }();
+            const bool fromManager = message->FindMessenger("window", &sender) == B_OK && sender == fExtensionWindow;
+            if (!fExtensions || !(fromManager || synthesis)
+                || message->FindString("extension_identifier", &identifier) != B_OK
+                || message->FindBool("allowed", &allowed) != B_OK) return;
+            fExtensions->SetAllowPrivateBrowsing(identifier, allowed);
             RefreshExtensions();
             return;
         }
@@ -365,6 +401,16 @@ public:
             return;
         }
         if (message->what == summit::kShowPreferences) { ShowPreferences(); return; }
+        if (message->what == summit::kMakeDefaultBrowser || message->what == summit::kDefaultBrowserState) {
+            // From Preferences (or summitctl); kDefaultBrowserState only asks.
+            std::string error;
+            if (message->what == summit::kMakeDefaultBrowser) summit::MakeDefaultBrowser(error);
+            BMessage state = DefaultBrowserState();
+            if (!error.empty()) state.AddString("error", error.c_str());
+            if (fPreferences.IsValid()) fPreferences.SendMessage(&state);
+            if (message->IsSourceWaiting()) message->SendReply(&state);
+            return;
+        }
         if (message->what == summit::kPreferencesChanged) {
             const char* home = nullptr;
             const char* style = nullptr;
@@ -633,7 +679,9 @@ private:
     std::shared_ptr<BWebKitContext> PrivateContext()
     {
         if (fPrivateContext) return fPrivateContext;
-        auto context = std::make_shared<BWebKitContext>(nullptr, true);
+        // Its pages are served by the normal profile's extensions: those
+        // allowed in private windows work there with their own saved data.
+        auto context = std::make_shared<BWebKitContext>(fWebKitContext);
         if (context->InitCheck() != B_OK || context->SetDownloadListener(BMessenger(this)) != B_OK) return nullptr;
         fPrivateContext = std::move(context);
         return fPrivateContext;
@@ -695,7 +743,7 @@ private:
         options.key = fNextWindowKey++;
         auto* window = new summit::BrowserWindow(fShared, fStartURL, options
 #if SUMMIT_MODERN_WEBKIT
-            , context, bool(fPermissionPrompts) && !options.privateBrowsing
+            , context, bool(fPermissionPrompts)
 #endif
         );
         fWindows.insert(fWindows.begin(), {BMessenger(window), window, options.key, options.privateBrowsing});
@@ -737,6 +785,16 @@ private:
         }
         fPreferences = BMessenger(window);
         window->Show();
+        BMessage browser = DefaultBrowserState();
+        fPreferences.SendMessage(&browser);
+    }
+    static BMessage DefaultBrowserState()
+    {
+        const auto browser = summit::QueryDefaultBrowser();
+        BMessage state(summit::kDefaultBrowserState);
+        state.AddBool("is_default", browser.isDefault);
+        state.AddString("current", browser.current.c_str());
+        return state;
     }
     void SendPreferencesState()
     {
@@ -781,7 +839,8 @@ private:
         if (message->FindMessenger("view", &named) == B_OK) target = WindowOf(named);
         if (!target.IsValid() && message->FindMessenger("window", &named) == B_OK)
             for (const auto& window : fWindows) if (window.messenger == named) target = named;
-        // Extensions do not run in private windows, so their tabs go to a normal one.
+        // New tabs go to a normal window: only a tab or window named by an
+        // extension allowed in private windows is a private one.
         if (!target.IsValid()) target = FrontNormalWindow();
         if (!target.IsValid() && command == B_WEBKIT_BROWSER_OPEN_TAB) {
             summit::BrowserWindowOptions options;
@@ -822,6 +881,10 @@ private:
             item.AddBool("enabled", entry.installation.enabled);
             item.AddBool("loaded", entry.loaded);
             item.AddBool("installed", entry.installed);
+            item.AddBool("private", entry.installation.allowPrivateBrowsing);
+            item.AddBool("pinned", !fShared || fShared->Read([&](const summit::Profile& profile) {
+                return !profile.unpinnedExtensions.contains(entry.installation.identifier);
+            }));
             state.AddMessage("entry", &item);
         }
         fExtensionWindow.SendMessage(&state, static_cast<BHandler*>(nullptr), 0);

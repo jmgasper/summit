@@ -16,7 +16,7 @@
 
 namespace summit {
 namespace {
-constexpr uint32 choosePackage = 'exfp', selectEntry = 'exse';
+constexpr uint32 choosePackage = 'exfp', selectEntry = 'exse', pinnedToggled = 'expt', privateToggled = 'exvt';
 std::string field(const BMessage& message, const char* name)
 {
     const char* value = nullptr;
@@ -31,9 +31,11 @@ public:
         entry.FindBool("enabled", &enabled);
         entry.FindBool("loaded", &loaded);
         entry.FindBool("installed", &installed);
+        entry.FindBool("pinned", &pinned);
+        entry.FindBool("private", &privateBrowsing);
     }
     std::string identifier, name, version, error;
-    bool enabled = false, loaded = false, installed = true;
+    bool enabled = false, loaded = false, installed = true, pinned = true, privateBrowsing = false;
 };
 }
 ExtensionManager::ExtensionManager(BMessenger owner, std::shared_ptr<std::atomic<unsigned>> windows)
@@ -65,6 +67,11 @@ ExtensionManager::ExtensionManager(BMessenger owner, std::shared_ptr<std::atomic
     details->SetExplicitMinSize(BSize(420, 260));
     fToggle = new BButton("extension-toggle", "Enable", new BMessage(kExtensionEnable));
     fRemove = new BButton("extension-remove", "Remove", new BMessage(kExtensionRemove));
+    fPinned = new BCheckBox("extension-pinned", "Show on the toolbar", new BMessage(pinnedToggled));
+    fPinned->SetToolTip("Without a toolbar button, the extension is in the menu of the toolbar's extensions button.");
+    fPrivate = new BCheckBox("extension-private", "Allow in private windows", new BMessage(privateToggled));
+    fPrivate->SetToolTip("The extension can then see and change the pages of private windows, "
+        "and knows what you do there. Its own data is the same as in other windows.");
     fStatus = new BStringView("extension-status", "");
     fStatus->SetTruncation(B_TRUNCATE_END);
     fFiles = new BCheckBox("extension-files", "Allow access to local files", new BMessage());
@@ -82,6 +89,8 @@ ExtensionManager::ExtensionManager(BMessenger owner, std::shared_ptr<std::atomic
             .AddGroup(B_VERTICAL, 8)
                 .Add(fHeading).Add(details)
                 .AddGroup(B_HORIZONTAL, 8).Add(fToggle).Add(fRemove).AddGlue().End()
+                .Add(fPinned)
+                .Add(fPrivate)
                 .Add(fApproval)
             .End()
         .End()
@@ -142,6 +151,10 @@ void ExtensionManager::Render()
     fToggle->SetEnabled(fReady && !fBusy && item && item->installed);
     fRemove->SetEnabled(fReady && !fBusy && item);
     fToggle->SetLabel(item && (item->loaded || item->enabled) ? "Disable" : "Enable");
+    fPinned->SetEnabled(fReady && !fBusy && item);
+    fPinned->SetValue(item && item->pinned ? B_CONTROL_ON : B_CONTROL_OFF);
+    fPrivate->SetEnabled(fReady && !fBusy && item && item->installed);
+    fPrivate->SetValue(item && item->privateBrowsing ? B_CONTROL_ON : B_CONTROL_OFF);
     fInstall->SetEnabled(fApprovalReady);
     fFiles->SetEnabled(fApprovalReady);
     fCancel->SetEnabled(fBusy);
@@ -154,6 +167,7 @@ void ExtensionManager::Render()
         fHeading->SetText(ExtensionDisplayText(item->name).c_str());
         std::string body = "Version " + ExtensionDisplayText(item->version) + "\n"
             + (item->loaded ? "Running" : item->enabled ? "Enabled, but not running" : "Disabled")
+            + (item->privateBrowsing ? ", also in private windows" : "")
             + "\nIdentifier: " + ExtensionDisplayText(item->identifier);
         if (!item->installed) body += "\nThis temporary runtime could not be saved as an installation.";
         if (!item->error.empty()) body += "\n\n" + ExtensionDisplayText(item->error);
@@ -196,6 +210,16 @@ void ExtensionManager::MessageReceived(BMessage* message)
         BMessage request(message->what);
         request.AddUInt64("generation", fGeneration);
         request.AddBool("allow_files", fFiles->Value() == B_CONTROL_ON);
+        Send(request);
+        return;
+    }
+    if (message->what == pinnedToggled || message->what == privateToggled) {
+        auto* item = dynamic_cast<Item*>(fList->ItemAt(fList->CurrentSelection()));
+        if (!item || !fReady || fBusy) { Render(); return; }
+        const bool pinned = message->what == pinnedToggled;
+        BMessage request(pinned ? kExtensionSetPinned : kExtensionSetPrivate);
+        request.AddString("extension_identifier", item->identifier.c_str());
+        request.AddBool(pinned ? "pinned" : "allowed", (pinned ? fPinned : fPrivate)->Value() == B_CONTROL_ON);
         Send(request);
         return;
     }

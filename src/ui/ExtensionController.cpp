@@ -100,6 +100,22 @@ bool ExtensionController::SetEnabled(const std::string& identifier, bool enabled
     Next();
     return true;
 }
+bool ExtensionController::SetAllowPrivateBrowsing(const std::string& identifier, bool allowed)
+{
+    if (!IsReady()) return false;
+    auto found = std::find_if(fEntries.begin(), fEntries.end(), [&](const auto& entry) { return entry.installation.identifier == identifier; });
+    if (found == fEntries.end() || !found->installed) return false;
+    if (found->installation.allowPrivateBrowsing == allowed) return true;
+    if (!fCatalog.SetAllowPrivateBrowsing(identifier, allowed, found->error)) {
+        Changed();
+        return false;
+    }
+    found->installation.allowPrivateBrowsing = allowed;
+    // A running extension changes at once; one that is not loads with it.
+    if (found->loaded) fContext->SetExtensionPrivateAccess(identifier.c_str(), allowed);
+    Changed();
+    return true;
+}
 bool ExtensionController::Remove(const std::string& identifier)
 {
     if (!IsReady()) return false;

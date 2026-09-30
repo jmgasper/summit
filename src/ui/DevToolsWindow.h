@@ -33,6 +33,9 @@ public:
 
 private:
     void Sync() override;
+    void DispatchMessage(BMessage* message, BHandler* handler) override;
+    // Tells the panels which one is shown, when that changed.
+    void PanelShown();
     void Drain();
     void Trace(const devtools::Changes& changes);
     void Command(const BMessage& message, BMessage& reply);
@@ -45,6 +48,8 @@ private:
     BTabView* fTabs;
     NetworkPanel* fNetwork;
     ConsolePanel* fConsole;
+    StoragePanel* fStorage;
+    int32 fShownPanel = -1;
     bool fSyncing = false;
     bool fOverflowShown = false;
     // SUMMIT_DEVTOOLS_TRACE=1: requests and messages also go to standard error.

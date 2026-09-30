@@ -33,6 +33,9 @@ private:
     BStringView* fStatus;
     BButton *fAdd, *fToggle, *fRemove, *fInstall, *fCancel;
     BCheckBox* fFiles;
+    // Of the selected extension: its toolbar button, and private windows.
+    BCheckBox* fPinned;
+    BCheckBox* fPrivate;
     BGroupView* fApproval;
     std::string fDraftName, fDraftBody, fStatusText;
     uint64 fGeneration = 0;

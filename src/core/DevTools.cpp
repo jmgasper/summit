@@ -456,6 +456,27 @@ struct ProtocolReader {
         if (type == "startGroup" || type == "startGroupCollapsed") ++session.fGroupDepth;
     }
 
+    // DOMStorage.domStorageItem*: a change to an area already read.
+    static void StorageChanged(Session& session, const std::string& method, const json& parameters)
+    {
+        const auto& id = Member(parameters, "storageId");
+        auto* area = session.Area(Flag(Member(id, "isLocalStorage")) ? StorageKind::Local : StorageKind::Session,
+            Text(Member(id, "securityOrigin")));
+        if (!area || !area->loaded) return;
+        auto& items = area->items;
+        const auto key = Text(Member(parameters, "key"));
+        const auto found = std::find_if(items.begin(), items.end(), [&](const StorageItem& item) { return item.key == key; });
+        if (method == "DOMStorage.domStorageItemsCleared") items.clear();
+        else if (method == "DOMStorage.domStorageItemRemoved") {
+            if (found != items.end()) items.erase(found);
+        } else if (method == "DOMStorage.domStorageItemAdded" || method == "DOMStorage.domStorageItemUpdated") {
+            const auto value = Text(Member(parameters, "newValue"));
+            if (found != items.end()) found->value = value;
+            else items.push_back({key, value});
+        } else return;
+        session.fChanges.storage = true;
+    }
+
     static void Answered(Session& session, const Session::Pending& pending, const json& message)
     {
         const auto& result = Member(message, "result");
@@ -486,6 +507,55 @@ struct ProtocolReader {
                 session.ReleaseBodies();
             }
             session.BodyChanged(*request);
+        } else if (pending.kind == Session::Pending::Storage) {
+            auto* area = session.Area(pending.storage, pending.origin);
+            if (!area) return;
+            area->waiting = false;
+            area->loaded = true;
+            area->error = error;
+            area->items.clear();
+            area->cookies.clear();
+            if (pending.storage == StorageKind::Cookies) {
+                if (const auto& cookies = Member(result, "cookies"); cookies.is_array()) {
+                    for (const auto& item : cookies) {
+                        Cookie cookie;
+                        cookie.name = Text(Member(item, "name"));
+                        cookie.value = Text(Member(item, "value"));
+                        cookie.domain = Text(Member(item, "domain"));
+                        cookie.path = Text(Member(item, "path"));
+                        cookie.sameSite = Text(Member(item, "sameSite"));
+                        cookie.session = Flag(Member(item, "session"));
+                        cookie.expires = cookie.session ? 0 : Number(Member(item, "expires"));
+                        cookie.httpOnly = Flag(Member(item, "httpOnly"));
+                        cookie.secure = Flag(Member(item, "secure"));
+                        area->cookies.push_back(std::move(cookie));
+                    }
+                }
+            } else if (const auto& entries = Member(result, "entries"); entries.is_array()) {
+                for (const auto& entry : entries) {
+                    if (!entry.is_array() || entry.size() < 2) continue;
+                    area->items.push_back({Text(entry[0]), Text(entry[1])});
+                }
+            }
+            session.fChanges.storage = true;
+        } else if (pending.kind == Session::Pending::StorageEdit) {
+            // Read the area again: the page may have changed more than was asked.
+            if (!error.empty()) {
+                if (auto* area = session.Area(pending.storage, pending.origin)) area->error = error;
+                session.fChanges.storage = true;
+            }
+            session.LoadStorage(pending.storage, pending.origin);
+        } else if (pending.kind == Session::Pending::Frames) {
+            if (pending.origin != session.fPageTarget) return;
+            std::vector<std::string> origins;
+            std::function<void(const json&)> walk = [&](const json& tree) {
+                const auto origin = Text(Member(Member(tree, "frame"), "securityOrigin"));
+                if (std::find(origins.begin(), origins.end(), origin) == origins.end()) origins.push_back(origin);
+                if (const auto& children = Member(tree, "childFrames"); children.is_array())
+                    for (const auto& child : children) walk(child);
+            };
+            walk(Member(result, "frameTree"));
+            session.SetOrigins(std::move(origins));
         } else if (pending.kind == Session::Pending::Evaluation) {
             if (!error.empty()) {
                 session.AddEntry(EntryKind::Result, Level::Error, error);
@@ -606,6 +676,10 @@ void Session::TargetCreated(const std::string& target, bool provisional, bool pa
     SendToTarget(target, "Page.enable", "{}");
     SendToTarget(target, "Network.enable", "{}");
     SendToTarget(target, "Console.enable", "{}");
+    SendToTarget(target, "DOMStorage.enable", "{}");
+    // The origins of its frames, for the Storage panel.
+    SendToTarget(target, "Page.getResourceTree", "{}", Pending::Frames);
+    fPending.rbegin()->second.origin = target;
     if (fPreserveRequests) SendToTarget(target, "Network.setClearResourceDataOnNavigate", "{\"clearResourceDataOnNavigate\":false}");
     if (paused) Send("Target.resume", "{\"targetId\":" + Quoted(target) + "}");
 }
@@ -638,6 +712,8 @@ void Session::TargetCommitted(const std::string& previous, const std::string& ta
     fTargets[target] = false;
     fPageTarget = target;
     if (previous == target) return;
+    SendToTarget(target, "Page.getResourceTree", "{}", Pending::Frames);
+    fPending.rbegin()->second.origin = target;
     // The page is now another process's: a navigation, seen from here.
     if (!fPreserveRequests) {
         const auto before = fRequests.size();
@@ -695,8 +771,18 @@ void Session::FromTarget(const std::string& target, std::string_view text)
         ClearConsole();
     } else if (method == "Page.frameNavigated") {
         const auto& frame = Member(parameters, "frame");
-        if (Member(frame, "parentId").is_string() && !Text(Member(frame, "parentId")).empty()) return;
+        if (Member(frame, "parentId").is_string() && !Text(Member(frame, "parentId")).empty()) {
+            if (target == fPageTarget) AddOrigin(Text(Member(frame, "securityOrigin")));
+            return;
+        }
         Navigated(target, Text(Member(frame, "loaderId")), Text(Member(frame, "url")));
+        if (target == fPageTarget || fPageTarget.empty()) SetOrigins({Text(Member(frame, "securityOrigin"))});
+    } else if (method.rfind("DOMStorage.", 0) == 0)
+        ProtocolReader::StorageChanged(*this, method, parameters);
+    else if (method == "Page.loadEventFired" && target == fPageTarget) {
+        // The page has run its scripts: read again what is being looked at.
+        for (auto& [key, area] : fAreas)
+            if (area.loaded && !area.waiting) LoadStorage(key.first, key.second);
     }
 }
 
@@ -866,6 +952,145 @@ void Session::Evaluate(const std::string& expression)
     SendToTarget(fPageTarget, "Runtime.evaluate", "{\"expression\":" + Quoted(expression)
         + ",\"objectGroup\":\"console\",\"includeCommandLineAPI\":true,\"generatePreview\":true,\"emulateUserGesture\":true}",
         Pending::Evaluation);
+}
+
+std::string Cookie::URL() const
+{
+    auto host = domain;
+    if (!host.empty() && host.front() == '.') host.erase(0, 1);
+    return (secure ? "https://" : "http://") + host + (path.empty() || path.front() != '/' ? "/" + path : path);
+}
+
+std::string Cookie::ExpiresLabel() const
+{
+    if (session || expires <= 0) return "Session";
+    const time_t when = static_cast<time_t>(expires / 1000);
+    struct tm local {};
+    char text[64] = "";
+    if (!localtime_r(&when, &local) || !std::strftime(text, sizeof(text), "%Y-%m-%d %H:%M:%S", &local)) return "?";
+    return text;
+}
+
+uint64_t StorageArea::Bytes() const
+{
+    uint64_t bytes = 0;
+    for (const auto& item : items) bytes += item.key.size() + item.value.size();
+    for (const auto& cookie : cookies) bytes += cookie.Size();
+    return bytes;
+}
+
+StorageArea* Session::Area(StorageKind kind, const std::string& origin, bool create)
+{
+    const auto key = std::make_pair(kind, kind == StorageKind::Cookies ? std::string() : origin);
+    if (const auto found = fAreas.find(key); found != fAreas.end()) return &found->second;
+    if (!create) return nullptr;
+    auto& area = fAreas[key];
+    area.kind = kind;
+    area.origin = key.second;
+    return &area;
+}
+
+const StorageArea* Session::FindArea(StorageKind kind, const std::string& origin) const
+{
+    return const_cast<Session*>(this)->Area(kind, origin);
+}
+
+std::string Session::StorageID(StorageKind kind, const std::string& origin) const
+{
+    return "{\"securityOrigin\":" + Quoted(origin) + ",\"isLocalStorage\":" + (kind == StorageKind::Local ? "true" : "false") + "}";
+}
+
+void Session::LoadStorage(StorageKind kind, const std::string& origin)
+{
+    auto* area = Area(kind, origin, true);
+    if (area->waiting) return;
+    if (fPageTarget.empty()) {
+        area->error = "The page is not there to ask.";
+        fChanges.storage = true;
+        return;
+    }
+    area->waiting = true;
+    if (kind == StorageKind::Cookies)
+        SendToTarget(fPageTarget, "Page.getCookies", "{}", Pending::Storage);
+    else
+        SendToTarget(fPageTarget, "DOMStorage.getDOMStorageItems", "{\"storageId\":" + StorageID(kind, origin) + "}", Pending::Storage);
+    auto& pending = fPending.rbegin()->second;
+    pending.storage = kind;
+    pending.origin = area->origin;
+}
+
+void Session::StorageEdit(StorageKind kind, const std::string& origin, const std::string& method, const std::string& parametersJSON)
+{
+    if (fPageTarget.empty()) return;
+    SendToTarget(fPageTarget, method, parametersJSON, Pending::StorageEdit);
+    auto& pending = fPending.rbegin()->second;
+    pending.storage = kind;
+    pending.origin = kind == StorageKind::Cookies ? std::string() : origin;
+}
+
+void Session::SetStorageItem(StorageKind kind, const std::string& origin, const std::string& key, const std::string& value)
+{
+    if (kind == StorageKind::Cookies) return;
+    StorageEdit(kind, origin, "DOMStorage.setDOMStorageItem",
+        "{\"storageId\":" + StorageID(kind, origin) + ",\"key\":" + Quoted(key) + ",\"value\":" + Quoted(value) + "}");
+}
+
+void Session::RemoveStorageItem(StorageKind kind, const std::string& origin, const std::string& key)
+{
+    if (kind == StorageKind::Cookies) return;
+    StorageEdit(kind, origin, "DOMStorage.removeDOMStorageItem",
+        "{\"storageId\":" + StorageID(kind, origin) + ",\"key\":" + Quoted(key) + "}");
+}
+
+void Session::ClearStorage(StorageKind kind, const std::string& origin)
+{
+    if (kind != StorageKind::Cookies) {
+        StorageEdit(kind, origin, "DOMStorage.clearDOMStorageItems", "{\"storageId\":" + StorageID(kind, origin) + "}");
+        return;
+    }
+    if (const auto* area = FindArea(kind, origin))
+        for (const auto cookie : area->cookies) DeleteCookie(cookie);
+}
+
+void Session::DeleteCookie(const Cookie& cookie)
+{
+    StorageEdit(StorageKind::Cookies, { }, "Page.deleteCookie",
+        "{\"cookieName\":" + Quoted(cookie.name) + ",\"url\":" + Quoted(cookie.URL()) + "}");
+}
+
+namespace {
+// An origin that can keep storage: not opaque ("null") or empty ("://").
+bool KeepsStorage(const std::string& origin)
+{
+    const auto scheme = origin.find("://");
+    return scheme != std::string::npos && scheme > 0 && (origin.size() > scheme + 3 || origin.compare(0, scheme, "file") == 0);
+}
+}
+
+void Session::SetOrigins(std::vector<std::string> origins)
+{
+    origins.erase(std::remove_if(origins.begin(), origins.end(), [](const std::string& origin) { return !KeepsStorage(origin); }),
+        origins.end());
+    if (origins == fOrigins) return;
+    fOrigins = std::move(origins);
+    // Areas of origins the page no longer has are forgotten; the cookies
+    // belong to the new page's addresses.
+    for (auto area = fAreas.begin(); area != fAreas.end();) {
+        const bool gone = area->first.first == StorageKind::Cookies
+            || std::find(fOrigins.begin(), fOrigins.end(), area->first.second) == fOrigins.end();
+        area = gone ? fAreas.erase(area) : std::next(area);
+    }
+    for (auto item = fPending.begin(); item != fPending.end();)
+        item = item->second.kind == Pending::Storage && !FindArea(item->second.storage, item->second.origin)
+            ? fPending.erase(item) : std::next(item);
+    fChanges.origins = fChanges.storage = true;
+}
+
+void Session::AddOrigin(const std::string& origin)
+{
+    if (!KeepsStorage(origin) || std::find(fOrigins.begin(), fOrigins.end(), origin) != fOrigins.end()) return;
+    fOrigins.push_back(origin);
+    fChanges.origins = true;
 }
 
 StyledText DescribeHeaders(const Request& request)

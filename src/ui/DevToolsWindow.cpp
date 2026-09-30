@@ -36,6 +36,11 @@ BRect FrameBeside(BRect browser)
     return frame;
 }
 
+int32 PanelIndex(const char* name)
+{
+    return !std::strcmp(name, "console") ? 1 : !std::strcmp(name, "storage") ? 2 : 0;
+}
+
 std::string TitleFor(const std::string& page)
 {
     return page.empty() ? std::string("Developer Tools") : "Developer Tools — " + page;
@@ -52,6 +57,7 @@ DevToolsWindow::DevToolsWindow(BMessenger owner, int64 tab, const std::string& p
     fTrace = trace && !std::strcmp(trace, "1");
     fNetwork = new NetworkPanel(fSession, *this);
     fConsole = new ConsolePanel(fSession, *this);
+    fStorage = new StoragePanel(fSession, *this);
     fTabs = new BTabView("panels", B_WIDTH_FROM_LABEL);
     fTabs->SetBorder(B_NO_BORDER);
     const auto add = [this](BView* panel, const char* label) {
@@ -61,6 +67,7 @@ DevToolsWindow::DevToolsWindow(BMessenger owner, int64 tab, const std::string& p
     };
     add(fNetwork, "Network");
     add(fConsole, "Console");
+    add(fStorage, "Storage");
     BLayoutBuilder::Group<>(this, B_VERTICAL, 0)
         .SetInsets(0, 4, 0, 0)
         .Add(fTabs);
@@ -97,6 +104,7 @@ void DevToolsWindow::MessageReceived(BMessage* message)
     switch (message->what) {
         case B_WEBKIT_INSPECTOR_MESSAGES:
         case kPulse:
+            PanelShown();
             Drain();
             break;
         case kDeveloperToolsPage: {
@@ -107,7 +115,7 @@ void DevToolsWindow::MessageReceived(BMessage* message)
         case kShowDeveloperTools: {
             // "panel": which one to show ("network" or "console"), if any.
             const char* panel = nullptr;
-            if (message->FindString("panel", &panel) == B_OK) fTabs->Select(!std::strcmp(panel, "console") ? 1 : 0);
+            if (message->FindString("panel", &panel) == B_OK) fTabs->Select(PanelIndex(panel));
             if (IsMinimized()) Minimize(false);
             Activate(true);
             break;
@@ -133,9 +141,13 @@ void DevToolsWindow::Command(const BMessage& message, BMessage& reply)
     const std::string action = message.GetString("action", ""), argument = message.GetString("argument", "");
     std::string error;
     Drain();
-    if (action == "panel") fTabs->Select(argument == "console" ? 1 : 0);
-    else if (action != "state" && !fNetwork->Command(action, argument, error) && !fConsole->Command(action, argument, error))
+    if (action == "panel") {
+        fTabs->Select(PanelIndex(argument.c_str()));
+        PanelShown();
+    } else if (action != "state" && !fNetwork->Command(action, argument, error) && !fConsole->Command(action, argument, error)
+        && !fStorage->Command(action, argument, error))
         error = "Unknown action";
+    Drain();
     if (!error.empty()) reply.AddString("error", error.c_str());
     reply.AddString("json", StateJSON().c_str());
 }
@@ -161,10 +173,27 @@ std::string DevToolsWindow::StateJSON()
             {"text", entry.text}, {"place", entry.Location()}, {"repeat", entry.repeat}, {"stack", entry.stack},
             {"source", entry.source}});
     }
-    json state = {{"title", Title()}, {"panel", fTabs->Selection() == 1 ? "console" : "network"}, {"page", fSession.PageURL()},
+    static const char* const panels[] = {"network", "console", "storage"};
+    json state = {{"title", Title()}, {"panel", panels[std::clamp<int32>(fTabs->Selection(), 0, 2)]}, {"page", fSession.PageURL()},
         {"requests", requests}, {"entries", entries}, {"network", json::parse(fNetwork->StateJSON())},
-        {"console", json::parse(fConsole->StateJSON())}};
+        {"console", json::parse(fConsole->StateJSON())}, {"storage", json::parse(fStorage->StateJSON())}};
     return state.dump(-1, ' ', false, json::error_handler_t::replace);
+}
+
+void DevToolsWindow::PanelShown()
+{
+    // The Storage panel reads the page only while it is looked at.
+    const int32 panel = fTabs->Selection();
+    if (panel == fShownPanel) return;
+    fShownPanel = panel;
+    fStorage->SetShown(panel == 2);
+}
+
+void DevToolsWindow::DispatchMessage(BMessage* message, BHandler* handler)
+{
+    BWindow::DispatchMessage(message, handler);
+    // A click on a tab changes the selection without telling the window.
+    if (message->what == B_MOUSE_UP || message->what == B_KEY_DOWN) PanelShown();
 }
 
 void DevToolsWindow::Drain()
@@ -200,6 +229,7 @@ void DevToolsWindow::Sync()
         if (fTrace) Trace(changes);
         fNetwork->Apply(changes);
         fConsole->Apply(changes);
+        fStorage->Apply(changes);
     }
     fSyncing = false;
 }

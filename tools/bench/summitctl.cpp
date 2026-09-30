@@ -36,6 +36,12 @@
 //   summitctl --team ID clearhistory|clearcache|clearsitedata|preferences
 //                                             Preferences' History and Data buttons (without
 //                                             asking), or open the Preferences window
+//   summitctl --team ID defaultbrowser        prints {"is_default", "current"}: the system's browser
+//   summitctl --team ID makedefault           Preferences' Make Summit the Default Browser; prints the same
+//   summitctl --team ID pin EXTENSION on|off  whether the extension's action has a toolbar button
+//   summitctl --team ID privateext EXTENSION on|off
+//                                             whether the extension works in private windows (needs
+//                                             SUMMIT_ENABLE_INPUT_SYNTHESIS=1 in the browser)
 //   --window N                                address the Nth browser window (default 0) instead
 //                                             of the first; windows are counted in the
 //                                             application's window list order
@@ -251,6 +257,24 @@ int main(int argc, char** argv)
     if (command == "quit") {
         BMessage quit(B_QUIT_REQUESTED);
         return app.SendMessage(&quit, static_cast<BHandler*>(nullptr), timeout) == B_OK ? 0 : 5;
+    }
+    if (command == "defaultbrowser" || command == "makedefault") {
+        BMessage message(command == "makedefault" ? summit::kMakeDefaultBrowser : summit::kDefaultBrowserState);
+        BMessage reply;
+        if (app.SendMessage(&message, &reply, timeout, timeout) != B_OK) return 5;
+        const char* error = nullptr;
+        reply.FindString("error", &error);
+        std::printf("{\"is_default\": %s, \"current\": \"%s\", \"error\": \"%s\"}\n",
+            reply.GetBool("is_default", false) ? "true" : "false", reply.GetString("current", ""), error ? error : "");
+        return 0;
+    }
+    if (command == "pin" || command == "privateext") {
+        if (index + 1 >= argc) return 2;
+        const bool on = !std::strcmp(argv[index + 1], "on");
+        BMessage message(command == "pin" ? summit::kExtensionSetPinned : summit::kExtensionSetPrivate);
+        message.AddString("extension_identifier", argument);
+        message.AddBool(command == "pin" ? "pinned" : "allowed", on);
+        return app.SendMessage(&message, static_cast<BHandler*>(nullptr), timeout) == B_OK ? 0 : 5;
     }
     if (command == "style") {
         if (!argument) return 2;

@@ -312,6 +312,16 @@ void ExtensionActionButton::MouseMoved(BPoint where, uint32 transit, const BMess
 
 void ExtensionActionButton::MouseDown(BPoint where)
 {
+    int32 buttons = 0;
+    if (Window() && Window()->CurrentMessage()) Window()->CurrentMessage()->FindInt32("buttons", &buttons);
+    if (buttons & B_SECONDARY_MOUSE_BUTTON) {
+        // The button's own menu (Unpin from Toolbar), not the action.
+        BMessage menu(kExtensionActionMenu);
+        menu.AddString("extension_identifier", Name() + std::strlen("extension-action-"));
+        menu.AddPoint("where", ConvertToScreen(where));
+        Window()->PostMessage(&menu);
+        return;
+    }
     Preload();
     BButton::MouseDown(where);
 }

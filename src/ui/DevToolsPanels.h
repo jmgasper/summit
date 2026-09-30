@@ -12,6 +12,7 @@ class BCardLayout;
 class BCheckBox;
 class BColumnListView;
 class BMenuField;
+class BOutlineListView;
 class BRow;
 class BStringView;
 class BTabView;
@@ -105,6 +106,55 @@ private:
     SourceView* fHeaders;
     BodyView* fRequestBody;
     BodyView* fResponseBody;
+};
+
+// Local and session storage of the page's origins, and its cookies: read
+// from the page when shown, followed as the page changes them, edited and
+// deleted through it.
+class StoragePanel : public BView {
+public:
+    StoragePanel(devtools::Session& session, DevToolsHost& host);
+    void AttachedToWindow() override;
+    void MessageReceived(BMessage* message) override;
+    void Apply(const devtools::Changes& changes);
+    // Whether the panel is the one shown: only then are areas read.
+    void SetShown(bool shown);
+    bool Command(const std::string& action, const std::string& argument, std::string& error);
+    std::string StateJSON();
+
+private:
+    class AreaItem;
+    class Row;
+    void RebuildAreas();
+    void SelectArea(devtools::StorageKind kind, const std::string& origin);
+    void Load(bool again);
+    void Fill();
+    void ShowItem();
+    void Delete();
+    const devtools::StorageArea* Area() const;
+    devtools::Session& fSession;
+    DevToolsHost& fHost;
+    bool fShown = false;
+    bool fHasArea = false;
+    devtools::StorageKind fKind = devtools::StorageKind::Local;
+    std::string fOrigin;
+    // The key (or cookie name, domain and path) of the selected row.
+    std::string fSelected;
+    std::string fFilterText;
+    BButton* fRefresh;
+    BButton* fDelete;
+    BButton* fClear;
+    BTextControl* fFilter;
+    BOutlineListView* fAreas;
+    BCardLayout* fTables;
+    BColumnListView* fItems;
+    BColumnListView* fCookies;
+    BStringView* fSummary;
+    BodyView* fValue;
+    BView* fEditor;
+    BTextControl* fKey;
+    BTextControl* fNewValue;
+    BButton* fSave;
 };
 
 class ConsolePanel : public BView {

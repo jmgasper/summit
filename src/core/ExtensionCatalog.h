@@ -45,6 +45,8 @@ public:
     std::unique_ptr<StagedExtensionPackage> Stage(const std::filesystem::path& source, std::string& error) const;
     bool Install(StagedExtensionPackage&, InstalledExtension, std::string& error) const;
     bool SetEnabled(const std::string& identifier, bool enabled, std::string& error) const;
+    // Whether the extension also works in private windows.
+    bool SetAllowPrivateBrowsing(const std::string& identifier, bool allowed, std::string& error) const;
     // Forget only the installation record. Unload first; package/data removal
     // is a separate operation so a failed metadata write cannot lose resources.
     bool Forget(const std::string& identifier, std::string& error) const;

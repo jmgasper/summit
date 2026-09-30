@@ -431,7 +431,9 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
       fShared(std::move(profile)), fKey(options.key), fPrivate(options.privateBrowsing), fStartURL(std::move(startURL))
 {
 #if SUMMIT_MODERN_WEBKIT
-    fExtensionsEnabled = extensionsEnabled && !fPrivate;
+    // In a private window only extensions allowed there show (the engine
+    // leaves the others out).
+    fExtensionsEnabled = extensionsEnabled;
 #endif
     SetPrivateWindow(this, fPrivate);
     ++sOpenWindows;
@@ -1605,7 +1607,13 @@ void BrowserWindow::ExtensionActionsReceived(const BMessage& message)
             actions.push_back(action);
         }
     }
-    const auto visible = std::min(size_t(4), actions.size());
+    // Pinned actions come first and get buttons; unpinned ones and those
+    // beyond four are in the menu of the toolbar's extensions button.
+    const auto unpinned = fShared->Read([](const Profile& profile) { return profile.unpinnedExtensions; });
+    const auto firstUnpinned = std::stable_partition(actions.begin(), actions.end(), [&](const BMessage& action) {
+        return !unpinned.contains(action.GetString("extension_identifier", ""));
+    });
+    const auto visible = std::min(size_t(4), size_t(firstUnpinned - actions.begin()));
     bool sameState = actions.size() == fExtensionActionState.size();
     for (size_t i = 0; sameState && i < actions.size(); ++i)
         sameState = actions[i].HasSameData(fExtensionActionState[i]);
@@ -1745,6 +1753,28 @@ void BrowserWindow::PreloadExtensionAction(const BMessage& message)
         message.GetUInt64("page_identifier", 0));
 }
 
+void BrowserWindow::ShowExtensionActionMenu(const BMessage& message)
+{
+    const char* identity = nullptr;
+    BPoint where;
+    if (message.FindString("extension_identifier", &identity) != B_OK || !*identity
+        || message.FindPoint("where", &where) != B_OK) return;
+    if (fExtensionMenuCancelled) *fExtensionMenuCancelled = true;
+    fExtensionMenuCancelled = std::make_shared<std::atomic<bool>>(false);
+    auto* menu = new ExtensionActionsMenu(fExtensionMenuCancelled);
+    auto* unpin = new BMessage(kExtensionSetPinned);
+    unpin->AddString("extension_identifier", identity);
+    unpin->AddBool("pinned", false);
+    auto* item = new ExtensionActionMenuItem("Unpin from Toolbar", unpin);
+    item->SetTarget(be_app_messenger);
+    menu->AddItem(item);
+    menu->AddSeparatorItem();
+    auto* manage = new ExtensionActionMenuItem("Manage extensions…", new BMessage(kShowExtensions));
+    manage->SetTarget(BMessenger(this));
+    menu->AddItem(manage);
+    menu->Go(where, true, true, true);
+}
+
 void BrowserWindow::ShowExtensionActions()
 {
     if (!fExtensionActionSnapshot || !fExtensionActionsOverflow) return;
@@ -1864,6 +1894,9 @@ void BrowserWindow::ProfileChanged(const BMessage& message)
         }
         ShowZoom();
     }
+#if SUMMIT_MODERN_WEBKIT
+    if (changes & SharedProfile::kExtensionsPinnedChanged) RefreshExtensionActions();
+#endif
     if (changes & SharedProfile::kBookmarksChanged) {
         PagesChanged();
         RefreshBookmarks();
@@ -2283,6 +2316,7 @@ void BrowserWindow::MessageReceived(BMessage* message)
         case kActivateExtensionAction: ActivateExtensionAction(*message); break;
         case kPreloadExtensionAction: PreloadExtensionAction(*message); break;
         case kShowExtensionActions: ShowExtensionActions(); break;
+        case kExtensionActionMenu: ShowExtensionActionMenu(*message); break;
         case B_WEBKIT_EXTENSION_ACTION_ACTIVATED:
             if (message->GetUInt64("identifier", 0) == fExtensionActionInvocation) {
                 fExtensionActionResultIdentifier = fExtensionActionInvocation;

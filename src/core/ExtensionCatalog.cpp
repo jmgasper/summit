@@ -322,6 +322,15 @@ bool ExtensionCatalog::SetEnabled(const std::string& identifier, bool enabled, s
     found->enabled = enabled;
     return Save(entries, error);
 }
+bool ExtensionCatalog::SetAllowPrivateBrowsing(const std::string& identifier, bool allowed, std::string& error) const
+{
+    std::vector<InstalledExtension> entries;
+    if (!Load(entries, error)) return false;
+    auto found = std::find_if(entries.begin(), entries.end(), [&](const auto& entry) { return entry.identifier == identifier; });
+    if (found == entries.end()) { error = "Extension is not installed"; return false; }
+    found->allowPrivateBrowsing = allowed;
+    return Save(entries, error);
+}
 bool ExtensionCatalog::Forget(const std::string& identifier, std::string& error) const
 {
     std::vector<InstalledExtension> entries;

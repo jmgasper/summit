@@ -108,6 +108,37 @@ struct LevelFilter {
     bool Shows(const ConsoleEntry& entry) const;
 };
 
+// The Storage panel: the local and session storage of the origins of the
+// page's frames, and the cookies the page's addresses are sent.
+enum class StorageKind { Local, Session, Cookies };
+struct StorageItem {
+    std::string key, value;
+};
+struct Cookie {
+    std::string name, value, domain, path;
+    // "None", "Lax" or "Strict".
+    std::string sameSite;
+    // Milliseconds since 1970; 0 for a cookie that ends with the session.
+    double expires = 0;
+    bool session = false, httpOnly = false, secure = false;
+    uint64_t Size() const { return name.size() + value.size(); }
+    // An address the cookie is sent to, which names it for deleting.
+    std::string URL() const;
+    // "Session", or the date and time it expires.
+    std::string ExpiresLabel() const;
+};
+struct StorageArea {
+    StorageKind kind = StorageKind::Local;
+    std::string origin;
+    // In the order the page gave them.
+    std::vector<StorageItem> items;
+    std::vector<Cookie> cookies;
+    // Asked for and answered; asked for and not yet answered.
+    bool loaded = false, waiting = false;
+    std::string error;
+    uint64_t Bytes() const;
+};
+
 // What changed in the model since the changes were last taken.
 struct Changes {
     // The list of requests must be read again from the start.
@@ -123,8 +154,13 @@ struct Changes {
     bool consoleLastChanged = false;
     bool Any() const
     {
-        return requestsReset || consoleReset || consoleAdded || consoleLastChanged || !requests.empty() || !bodies.empty();
+        return requestsReset || consoleReset || consoleAdded || consoleLastChanged || !requests.empty() || !bodies.empty()
+            || origins || storage;
     }
+    // The page's origins (StorageOrigins()) changed; a storage area or the
+    // cookies changed or were answered.
+    bool origins = false;
+    bool storage = false;
 };
 
 // Text with the parts of it that are drawn differently.
@@ -177,12 +213,29 @@ public:
     // Runs an expression in the page, as typed into the console.
     void Evaluate(const std::string& expression);
 
+    // Origins of the page's frames that can keep storage, the page's first.
+    const std::vector<std::string>& StorageOrigins() const { return fOrigins; }
+    // An area once it has been asked for, else null. Cookies have one area
+    // (its origin is empty).
+    const StorageArea* FindArea(StorageKind kind, const std::string& origin) const;
+    // Asks the page for an area's items (again, if it has them).
+    void LoadStorage(StorageKind kind, const std::string& origin);
+    // Changes an area, then reads it again. A cookie is named by its name
+    // and URL(); clearing the cookies deletes each one of them shown.
+    void SetStorageItem(StorageKind kind, const std::string& origin, const std::string& key, const std::string& value);
+    void RemoveStorageItem(StorageKind kind, const std::string& origin, const std::string& key);
+    void ClearStorage(StorageKind kind, const std::string& origin);
+    void DeleteCookie(const Cookie& cookie);
+
 private:
     friend struct ProtocolReader;
     struct Pending {
-        enum Kind { Body, Evaluation, Other };
+        enum Kind { Body, Evaluation, Storage, StorageEdit, Frames, Other };
         Kind kind;
         uint64_t serial;
+        // Storage and StorageEdit: the area; Frames: the target asked.
+        StorageKind storage = StorageKind::Local;
+        std::string origin;
     };
     Request* Find(uint64_t serial);
     Request* Find(const std::string& target, const std::string& id);
@@ -200,6 +253,11 @@ private:
     void FromTarget(const std::string& target, std::string_view message);
     void Navigated(const std::string& target, const std::string& loader, const std::string& url);
     void ReleaseBodies();
+    StorageArea* Area(StorageKind kind, const std::string& origin, bool create = false);
+    void StorageEdit(StorageKind kind, const std::string& origin, const std::string& method, const std::string& parametersJSON);
+    void SetOrigins(std::vector<std::string> origins);
+    void AddOrigin(const std::string& origin);
+    std::string StorageID(StorageKind kind, const std::string& origin) const;
 
     std::deque<Request> fRequests;
     std::deque<ConsoleEntry> fEntries;
@@ -208,6 +266,8 @@ private:
     // Targets and whether they are provisional.
     std::map<std::string, bool> fTargets;
     std::string fPageTarget, fPageURL;
+    std::vector<std::string> fOrigins;
+    std::map<std::pair<StorageKind, std::string>, StorageArea> fAreas;
     std::vector<std::string> fOutgoing;
     Changes fChanges;
     uint64_t fNextSerial = 1, fNextCommand = 1, fBodyBytes = 0;

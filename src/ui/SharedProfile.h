@@ -27,6 +27,8 @@ public:
         kZoomChanged = 1 << 5,
         // Site icons were deleted; windows drop the ones they hold.
         kIconsCleared = 1 << 6,
+        // An extension's action was put on or taken off the toolbar.
+        kExtensionsPinnedChanged = 1 << 7,
     };
     explicit SharedProfile(std::filesystem::path path);
     const std::filesystem::path& Path() const { return fPath; }

@@ -3,6 +3,7 @@
 #include "core/Favicon.h"
 #include "core/InternalPages.h"
 #include "core/Zoom.h"
+#include <set>
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
@@ -166,6 +167,7 @@ int main()
     profile.interfaceStyle = "safari";
     profile.searchEngine = "bing";
     profile.siteZoom = {{"example.com", 1.5}, {"file", 0.8}};
+    profile.unpinnedExtensions = {"ext-1", "ext-2"};
     profile.bookmarks = {{"https://webkit.org", "WebKit — 浏览器"}};
     profile.Visit({"https://example.com/", "First title"});
     profile.Visit({"https://webkit.org/", "WebKit"});
@@ -190,6 +192,7 @@ int main()
     CHECK(loaded.bookmarks.size() == 2 && loaded.bookmarks[1].bar && loaded.bookmarks[1].url == "https://bar.example/");
     CHECK(loaded.homeURL == "https://home.example/" && !loaded.showBookmarksBar);
     CHECK(loaded.searchEngine == "bing" && loaded.siteZoom.size() == 2 && loaded.siteZoom["example.com"] == 1.5);
+    CHECK(loaded.unpinnedExtensions == std::set<std::string>({"ext-1", "ext-2"}));
     CHECK(loaded.RemoveBookmark("https://bar.example/") && !loaded.RemoveBookmark("https://bar.example/"));
     CHECK(!loaded.FindBookmark("https://bar.example/") && loaded.FindBookmark("https://webkit.org"));
     struct stat mode{};
@@ -203,7 +206,8 @@ int main()
         R"("bookmarks":[],"history":[],"interfaceStyle":"nonsense"})"; }
     loaded = Profile::Load(path, error);
     CHECK(error.empty() && loaded.windows.size() == 1 && loaded.windows[0].tabs[0].url == "https://old.example/");
-    CHECK(loaded.interfaceStyle == "haiku" && loaded.searchEngine == "duckduckgo" && loaded.siteZoom.empty());
+    CHECK(loaded.interfaceStyle == "haiku" && loaded.searchEngine == "duckduckgo" && loaded.siteZoom.empty()
+        && loaded.unpinnedExtensions.empty());
     // Unknown engines and unusable zoom entries fall back instead of failing the profile.
     { std::ofstream out(path); out << R"({"version":1,"tabs":[],"selected":0,"bookmarks":[],"history":[],)"
         R"("searchEngine":"altavista","siteZoom":{"a.example":7,"b.example":1.2,"":1.1}})"; }

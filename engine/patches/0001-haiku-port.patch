@@ -44656,10 +44656,10 @@ index 0000000000000000000000000000000000000000..574ed16658f0c14b1aa2e63208e990b8
 +#define WEBKIT_ENGINE_VERSION_HAIKU "@WebKit_HAIKU_MAJOR_VERSION@.@WebKit_HAIKU_MINOR_VERSION@.@WebKit_HAIKU_TINY_VERSION@"
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitContext.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitContext.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..ef5278527b6935b0dfb9e013a289620940264b22
+index 0000000000000000000000000000000000000000..b18b0dc54b5ad7c7a36be4979cd853644f4a2d1d
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitContext.cpp
-@@ -0,0 +1,535 @@
+@@ -0,0 +1,575 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -44692,6 +44692,22 @@ index 0000000000000000000000000000000000000000..ef5278527b6935b0dfb9e013a2896209
 +    m_status = BWebKitInitialize();
 +    if (m_status == B_OK)
 +        m_context = WebKit::WebViewContextHaiku::create(profilePath, privateBrowsing, m_status);
++}
++
++BWebKitContext::BWebKitContext(const std::shared_ptr<BWebKitContext>& extensionHost)
++    : m_private(true)
++{
++    m_status = BWebKitInitialize();
++    if (m_status != B_OK)
++        return;
++    if (!extensionHost || extensionHost->InitCheck() != B_OK || extensionHost->IsPrivate()) {
++        m_status = B_BAD_VALUE;
++        return;
++    }
++    // Like the other constructor, on the application thread (WebKit's main).
++    m_context = WebKit::WebViewContextHaiku::createPrivate(extensionHost->m_context);
++    if (!m_context)
++        m_status = B_ERROR;
 +}
 +
 +BWebKitContext::~BWebKitContext() = default;
@@ -44798,6 +44814,30 @@ index 0000000000000000000000000000000000000000..ef5278527b6935b0dfb9e013a2896209
 +#else
 +    UNUSED_PARAM(options);
 +    UNUSED_PARAM(installation);
++    return B_NOT_SUPPORTED;
++#endif
++}
++
++status_t BWebKitContext::SetExtensionPrivateAccess(const char* extensionIdentifier, bool allowed)
++{
++    if (m_status != B_OK)
++        return m_status;
++    if (!extensionIdentifier || !*extensionIdentifier)
++        return B_BAD_VALUE;
++#if ENABLE(WK_WEB_EXTENSIONS)
++    auto name = String::fromUTF8(extensionIdentifier).isolatedCopy();
++    if (name.isEmpty())
++        return B_BAD_VALUE;
++    auto operation = [context = m_context, name = WTF::move(name), allowed] {
++        context->extensionPackages()->setPrivateAccess(name, allowed);
++    };
++    if (RunLoop::isMain())
++        operation();
++    else
++        RunLoop::mainSingleton().dispatch(WTF::move(operation));
++    return B_OK;
++#else
++    UNUSED_PARAM(allowed);
 +    return B_NOT_SUPPORTED;
 +#endif
 +}
@@ -45197,10 +45237,10 @@ index 0000000000000000000000000000000000000000..ef5278527b6935b0dfb9e013a2896209
 +}
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitContext.h b/Source/WebKit/UIProcess/API/haiku/WebKitContext.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..b275693ecccac6d45368f0d8a31bfbac9365f757
+index 0000000000000000000000000000000000000000..a024bf6805ab8da16a37669cace0ecf989429360
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitContext.h
-@@ -0,0 +1,266 @@
+@@ -0,0 +1,283 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -45321,6 +45361,16 @@ index 0000000000000000000000000000000000000000..b275693ecccac6d45368f0d8a31bfbac
 +class WK_EXPORT BWebKitContext final {
 +public:
 +    explicit BWebKitContext(const char* profilePath, bool privateBrowsing = false);
++    // A private context whose pages the extensions of extensionHost serve:
++    // one runtime of each extension (its background page, storage and
++    // state) spans normal and private windows, as in other browsers. Only
++    // extensions allowed in private browsing (allowPrivateBrowsing when
++    // loaded, or SetExtensionPrivateAccess) see its pages, get them as tabs,
++    // inject content into them or show actions for them. Extensions are
++    // loaded into extensionHost, never into this context; submit its
++    // windows with SetBrowserWindowTabs as usual. extensionHost must not be
++    // private; this context keeps it alive.
++    explicit BWebKitContext(const std::shared_ptr<BWebKitContext>& extensionHost);
 +    ~BWebKitContext();
 +    BWebKitContext(const BWebKitContext&) = delete;
 +    BWebKitContext& operator=(const BWebKitContext&) = delete;
@@ -45411,6 +45461,13 @@ index 0000000000000000000000000000000000000000..b275693ecccac6d45368f0d8a31bfbac
 +    // UNLOADED carries identifier/error/extension_identifier. This disables the
 +    // runtime; it does not remove the installed package or its stored data.
 +    status_t UnloadExtension(const char* extensionIdentifier, const BMessenger& reply, uint64 identifier);
++    // Lets a loaded extension see and act on private pages (those of the
++    // contexts created from this one), or stops it, at once: its content
++    // scripts and rules are added to or taken from open private pages and
++    // CHANGED is sent to the action listener. The host keeps the choice and
++    // passes it as allowPrivateBrowsing at the next load. Any looper; an
++    // extension that is not loaded is ignored.
++    status_t SetExtensionPrivateAccess(const char* extensionIdentifier, bool allowed);
 +
 +    // Configure on the application thread. A local listener receives CHANGED
 +    // invalidations after load/unload or live action-property changes. An
@@ -68250,10 +68307,10 @@ index 0000000000000000000000000000000000000000..769a2d9242a9a3966bbf75bfc378522e
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionWindowHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionWindowHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..8eb790cac00307c5a277b765e1a3bb1c75207d0c
+index 0000000000000000000000000000000000000000..d3fe26ed95a984bb5e0373bbbec7c96d3406617f
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionWindowHaiku.cpp
-@@ -0,0 +1,123 @@
+@@ -0,0 +1,134 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -68266,6 +68323,7 @@ index 0000000000000000000000000000000000000000..8eb790cac00307c5a277b765e1a3bb1c
 +#include "WebExtensionController.h"
 +#include "WebExtensionTab.h"
 +#include "WebExtensionWindowParameters.h"
++#include "WebPageProxy.h"
 +#include "WebsiteDataStore.h"
 +#include <wtf/TZoneMallocInlines.h>
 +
@@ -68299,7 +68357,17 @@ index 0000000000000000000000000000000000000000..8eb790cac00307c5a277b765e1a3bb1c
 +{
 +    RefPtr context = m_extensionContext.get();
 +    RefPtr controller = context ? context->extensionController() : nullptr;
-+    return controller && !controller->configuration().defaultWebsiteDataStore().isPersistent();
++    if (!controller)
++        return false;
++    if (!controller->configuration().defaultWebsiteDataStore().isPersistent())
++        return true;
++    // The extensions of a normal profile also serve its private windows
++    // (WebViewContextHaiku::createPrivate): a window is as private as its pages.
++    auto window = controller->nativeBrowserTabs()->window(m_nativeWindowIdentifier);
++    if (!window || window->pages.isEmpty())
++        return false;
++    RefPtr page = context->nativePage(window->pages.first());
++    return page && page->websiteDataStore().sessionID().isEphemeral();
 +}
 +
 +WebExtensionWindow::TabVector WebExtensionWindow::tabs(SkipValidation) const
@@ -71186,10 +71254,10 @@ index 0000000000000000000000000000000000000000..f61939d10995397e88877a36905238be
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/ExtensionPackageRegistryHaiku.cpp b/Source/WebKit/UIProcess/haiku/ExtensionPackageRegistryHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..c562823df90e94898057b11556915cec9762360a
+index 0000000000000000000000000000000000000000..c2c90ae7e94ac7579a2fe4d333e9edb220c8eebe
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/ExtensionPackageRegistryHaiku.cpp
-@@ -0,0 +1,603 @@
+@@ -0,0 +1,614 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#include "config.h"
 +#include "ExtensionPackageRegistryHaiku.h"
@@ -71773,6 +71841,17 @@ index 0000000000000000000000000000000000000000..c562823df90e94898057b11556915cec
 +    respond(B_OK);
 +}
 +
++void ExtensionPackageRegistryHaiku::setPrivateAccess(const String& identity, bool allowed)
++{
++    ASSERT(RunLoop::isMain());
++    RefPtr context = m_loaded.get(identity);
++    if (m_shutdown || !context || !context->isLoaded() || context->hasAccessToPrivateData() == allowed)
++        return;
++    context->setHasAccessToPrivateData(allowed);
++    // Private windows show or drop the extension's action.
++    actionsDidChange();
++}
++
 +void ExtensionPackageRegistryHaiku::preloadAction(const String& identity, const BMessenger& owner, uint64_t loadIdentifier, uint64_t pageIdentifier)
 +{
 +    ASSERT(RunLoop::isMain());
@@ -71795,10 +71874,10 @@ index 0000000000000000000000000000000000000000..c562823df90e94898057b11556915cec
 +#endif
 diff --git a/Source/WebKit/UIProcess/haiku/ExtensionPackageRegistryHaiku.h b/Source/WebKit/UIProcess/haiku/ExtensionPackageRegistryHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..b18d0a8f1ad6571507c85f53aca692ebd2e462ca
+index 0000000000000000000000000000000000000000..dec01320c4cdeaf87c7d5a782b90296dcc116113
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/ExtensionPackageRegistryHaiku.h
-@@ -0,0 +1,59 @@
+@@ -0,0 +1,61 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#pragma once
 +
@@ -71835,6 +71914,8 @@ index 0000000000000000000000000000000000000000..b18d0a8f1ad6571507c85f53aca692eb
 +        uint64_t pageIdentifier, const BMessenger& reply, uint64_t identifier);
 +    // Load the action's popup hidden ahead of a click; no reply, no user gesture.
 +    void preloadAction(const String& extensionIdentifier, const BMessenger& window, uint64_t loadIdentifier, uint64_t pageIdentifier);
++    // Private pages of contexts that share this registry's extensions.
++    void setPrivateAccess(const String& extensionIdentifier, bool allowed);
 +    void shutdown();
 +    bool hasPendingPreparations() const { return m_inFlight; }
 +
@@ -75877,10 +75958,10 @@ index 0000000000000000000000000000000000000000..4d5cb1680ea1cb21c069c8f791a1da49
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..1c9a9d958f3fa45a121b2437d654807822bf3083
+index 0000000000000000000000000000000000000000..d5dc32de7e36698e8db7ee331a20fcbe1260e5d1
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp
-@@ -0,0 +1,238 @@
+@@ -0,0 +1,272 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -75946,9 +76027,30 @@ index 0000000000000000000000000000000000000000..1c9a9d958f3fa45a121b2437d6548078
 +#endif
 +}
 +
++WebViewContextHaiku::WebViewContextHaiku(Ref<WebsiteDataStore>&& dataStore, std::shared_ptr<WebViewContextHaiku> extensionOwner)
++    : m_dataStore(WTF::move(dataStore))
++    , m_processPool(WebProcessPool::create(API::ProcessPoolConfiguration::create()))
++    , m_downloads(DownloadRegistryHaiku::create())
++#if ENABLE(WK_WEB_EXTENSIONS)
++    , m_extensionController(extensionOwner->m_extensionController.copyRef())
++    , m_extensionPackages(extensionOwner->m_extensionPackages)
++#endif
++    , m_browserTabs(extensionOwner->m_browserTabs)
++    , m_extensionOwner(WTF::move(extensionOwner))
++{
++    ASSERT(RunLoop::isMain());
++    // Downloads of private pages stay out of extensions' downloads API.
++    m_processPool->setLegacyDownloadClient(m_downloads->createClient());
++}
++
 +WebViewContextHaiku::~WebViewContextHaiku()
 +{
 +    ASSERT(RunLoop::isMain());
++    if (m_extensionOwner) {
++        // The extensions, their prompts and commands are the owner's.
++        m_downloads->shutdown();
++        return;
++    }
 +#if ENABLE(WK_WEB_EXTENSIONS)
 +    m_extensionController->nativeDownloads().shutdown();
 +#endif
@@ -75997,14 +76099,27 @@ index 0000000000000000000000000000000000000000..1c9a9d958f3fa45a121b2437d6548078
 +#endif
 +}
 +
-+std::shared_ptr<WebViewContextHaiku> WebViewContextHaiku::adopt(Ref<WebsiteDataStore>&& dataStore, String extensionStorageDirectory)
++std::shared_ptr<WebViewContextHaiku> WebViewContextHaiku::adopt(WebViewContextHaiku* created)
 +{
-+    return { new WebViewContextHaiku(WTF::move(dataStore), WTF::move(extensionStorageDirectory)), [](WebViewContextHaiku* context) {
++    return { created, [](WebViewContextHaiku* context) {
 +        if (RunLoop::isMain())
 +            delete context;
 +        else
 +            RunLoop::mainSingleton().dispatch([context] { delete context; });
 +    } };
++}
++
++std::shared_ptr<WebViewContextHaiku> WebViewContextHaiku::adopt(Ref<WebsiteDataStore>&& dataStore, String extensionStorageDirectory)
++{
++    return adopt(new WebViewContextHaiku(WTF::move(dataStore), WTF::move(extensionStorageDirectory)));
++}
++
++std::shared_ptr<WebViewContextHaiku> WebViewContextHaiku::createPrivate(std::shared_ptr<WebViewContextHaiku> extensionOwner)
++{
++    ASSERT(RunLoop::isMain());
++    if (!extensionOwner || !extensionOwner->m_dataStore->isPersistent())
++        return nullptr;
++    return adopt(new WebViewContextHaiku(WebsiteDataStore::createNonPersistent(), WTF::move(extensionOwner)));
 +}
 +
 +std::shared_ptr<WebViewContextHaiku> WebViewContextHaiku::create(const char* profilePath, bool privateBrowsing, status_t& status)
@@ -76121,10 +76236,10 @@ index 0000000000000000000000000000000000000000..1c9a9d958f3fa45a121b2437d6548078
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..3fd57d32c096f2f8e68c23d422e13b8d1648d296
+index 0000000000000000000000000000000000000000..d75df82b5187c6696bcc78d55aee3a2293b416ff
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h
-@@ -0,0 +1,57 @@
+@@ -0,0 +1,66 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -76156,6 +76271,11 @@ index 0000000000000000000000000000000000000000..3fd57d32c096f2f8e68c23d422e13b8d
 +public:
 +    static std::shared_ptr<WebViewContextHaiku> create(const char*, bool, status_t&);
 +    static std::shared_ptr<WebViewContextHaiku> defaultContext(status_t&);
++    // A private context whose pages are controlled by the extensions of
++    // extensionOwner, as one extension runtime spans normal and private
++    // windows in other browsers. Only extensions allowed in private browsing
++    // see or act on its pages. It keeps extensionOwner alive.
++    static std::shared_ptr<WebViewContextHaiku> createPrivate(std::shared_ptr<WebViewContextHaiku> extensionOwner);
 +    ~WebViewContextHaiku();
 +    void configure(API::PageConfiguration&) const;
 +    const std::shared_ptr<DownloadRegistryHaiku>& downloads() const { return m_downloads; }
@@ -76169,6 +76289,8 @@ index 0000000000000000000000000000000000000000..3fd57d32c096f2f8e68c23d422e13b8d
 +
 +private:
 +    explicit WebViewContextHaiku(Ref<WebsiteDataStore>&&, String extensionStorageDirectory);
++    WebViewContextHaiku(Ref<WebsiteDataStore>&&, std::shared_ptr<WebViewContextHaiku> extensionOwner);
++    static std::shared_ptr<WebViewContextHaiku> adopt(WebViewContextHaiku*);
 +    static std::shared_ptr<WebViewContextHaiku> adopt(Ref<WebsiteDataStore>&&, String extensionStorageDirectory = { });
 +
 +    const Ref<WebsiteDataStore> m_dataStore;
@@ -76179,6 +76301,8 @@ index 0000000000000000000000000000000000000000..3fd57d32c096f2f8e68c23d422e13b8d
 +    const std::shared_ptr<ExtensionPackageRegistryHaiku> m_extensionPackages;
 +#endif
 +    const std::shared_ptr<BrowserTabRegistryHaiku> m_browserTabs;
++    // Set when the extensions above are another context's.
++    const std::shared_ptr<WebViewContextHaiku> m_extensionOwner;
 +};
 +
 +} // namespace WebKit

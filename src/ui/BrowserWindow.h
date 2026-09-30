@@ -297,6 +297,8 @@ public:
     void DispatchMessage(BMessage*, BHandler*) override;
 private:
     void ShowExtensionActions();
+    // Unpin from Toolbar, for a secondary click on an action button.
+    void ShowExtensionActionMenu(const BMessage& message);
     bool fExtensionsEnabled = false;
     BGroupView* fExtensionActions = nullptr;
     ToolButton* fExtensionActionsOverflow = nullptr;

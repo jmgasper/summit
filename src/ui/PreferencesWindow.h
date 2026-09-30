@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <string>
 
+class BButton;
 class BCheckBox;
 class BMenuField;
 class BRadioButton;
@@ -34,6 +35,8 @@ private:
     // Measures the cache on another thread; kCacheMeasured brings the result.
     void MeasureCache();
     BMessenger fOwner;
+    BStringView* fDefaultInfo;
+    BButton* fMakeDefault;
     BTextControl* fHome;
     BStringView* fHint;
     BMenuField* fSearchEngine;

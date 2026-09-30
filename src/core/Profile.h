@@ -3,6 +3,7 @@
 #include <ctime>
 #include <filesystem>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -41,6 +42,9 @@ struct Profile {
     std::string searchEngine = "duckduckgo";
     // Page zoom remembered per site (ZoomKey()); sites at 100% are not listed.
     std::map<std::string, double> siteZoom;
+    // Extensions whose action button is not on the toolbar (their actions
+    // are in the toolbar's extensions menu), by installation identifier.
+    std::set<std::string> unpinnedExtensions;
     static Profile Load(const std::filesystem::path& path, std::string& error);
     bool Save(const std::filesystem::path& path, std::string& error) const;
     // Records a visit to an http(s) page; returns false for other pages.

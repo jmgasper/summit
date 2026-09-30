@@ -33,6 +33,9 @@ public:
     bool IsReady() const;
     bool SetEnabled(const std::string& identifier, bool enabled);
     bool Remove(const std::string& identifier);
+    // Lets the extension work in private windows (or stops it) at once, and
+    // remembers the choice for the next start.
+    bool SetAllowPrivateBrowsing(const std::string& identifier, bool allowed);
     void AddLoaded(InstalledExtension, std::string baseURL, std::string error = {}, bool installed = true,
         std::string newTabURL = {});
 private:
