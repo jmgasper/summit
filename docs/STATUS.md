@@ -2,38 +2,48 @@
 
 ## 1 October 2026, afternoon: tabs that stopped drawing
 
-Reported by the owner with `bundle-xgce7ywe`: in two GitHub issue tabs, typed
-text did not appear until another tab was selected and then this one again.
+Reported by the owner with `bundle-xgce7ywe`, and again after a restart on
+`bundle-hwd4u30l`: in a GitHub issue tab, typed text did not appear until
+another tab was selected and then this one again. Installed now as
+`bundle-swhextn6`.
 
 - **What was stuck.** In the owner's frozen tab the page still ran (keys
   reached it, `setTimeout` and promise callbacks ran, the textarea held the
   text) but no rendering update happened: a `requestAnimationFrame` callback
   waited 35 minutes, and neither the compositor thread nor Skia's painting
   threads used any CPU when keys were pressed. The page was waiting for a
-  composition that never came. A tab switch suspends and resumes the
-  compositor, which restarts its render timer, so the stuck part was most
-  likely a render timer that was meant to run but was not armed. The exact
-  trigger was not found: a copy of the owner's profile with the same tabs
-  and extensions typed into GitHub's issue form for 30 minutes (51 rounds,
-  with tab switches) without a stall, and no lost timer could be shown in
-  `RunLoopHaiku.cpp`.
-- **Recovery, and a record of why.** A page that asks to be drawn after
-  waiting 2 seconds for a composition now has the compositor report its state
-  to standard error (`Summit compositor stall: … state=… render timer …`) and
-  restart from wherever it is stuck, as a tab switch would: an unarmed render
-  timer is started, tiles that never reported back stop holding the update,
-  and a frame the UI process never confirmed counts as shown. If the page is
-  still waiting 2 seconds later it is updated without the compositor
-  (`Summit layer tree stall`), and an update observer that has not fired for
-  a second is armed again (`Summit rendering update stall`). The next
-  occurrence therefore costs a pause of about 2 seconds instead of a frozen
-  tab, and its line in `summit-stderr.log` names the stuck step.
-- **Checked.** `SUMMIT_TEST_COMPOSITOR_STALL=timer` (or `=frame`) loses one
-  render timer (or one frame confirmation) after 100 compositions, the two
-  ways a page can be left waiting. With either, the GitHub issue form froze,
-  and the next keystroke logged the stall (`state=Scheduled … render timer
-  active and not armed`; `state=ScheduledWhileInProgress … frame in progress
-  for 8.9 s`) and brought the text back.
+  composition that never came. The second occurrence logged it exactly:
+  `state=Scheduled … render timer active and armed`, the page having waited
+  61 seconds. The compositor's render timer was registered as armed but had
+  not fired for a minute. A tab switch suspends and resumes the compositor,
+  which stops and restarts that timer; that is why the text then appeared.
+  Why the timer did not fire is not known yet: a copy of the owner's profile
+  typed into GitHub's issue form for 30 minutes without a stall.
+- **Recovery, independent of that timer.** The first request for an update
+  that finds the page still waiting after 2 seconds starts a watchdog, which
+  checks every second until a composition arrives (later requests do not come
+  back to the page while one is pending, so the first version, which only
+  checked on a request, acted once). The compositor reports its state to
+  standard error and then renders the due composition at once instead of
+  waiting for the timer; a frame the UI process never confirmed counts as
+  shown, and tiles that never reported back stop holding the update. Two
+  seconds later a page still waiting is updated without the compositor
+  (`Summit layer tree stall`); an update observer that has not fired for a
+  second is armed again (`Summit rendering update stall`).
+- **The cause, next time.** Each `Summit compositor stall` line now ends with
+  the render timer as the run loop and the process's timer thread ("WebKit
+  timers") see it: armed or not and when due, and whether the thread holds a
+  deadline for it, how many it holds, when the next is due and when the
+  thread last woke (`describeTimerHaiku()` in `RunLoopHaiku.cpp`). That tells
+  a lost deadline from a wrong one or from a stuck thread.
+- **Checked** with `tools/bench/pages/render-liveness.html`, which counts
+  animation frames per second for 30 seconds and needs no input.
+  `SUMMIT_TEST_COMPOSITOR_STALL=late` (the render timer armed an hour late,
+  as in the owner's tab), `=timer` (not armed) and `=frame` (a frame
+  confirmation lost) each made one stall after 100 compositions; every one
+  cost a single second without frames (2.0 s longest gap) and the page went
+  back to 60 frames per second. Without a stall the longest gap was 193 ms
+  and nothing was reported.
 
 ## 1 October 2026, later: a frozen tab, 1Password's popup and a browser that would not close
 

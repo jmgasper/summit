@@ -1,0 +1,44 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Rendering liveness probe</title>
+<h1>Does the page keep drawing?</h1>
+<p>A counter changes on every animation frame for <code>seconds</code> (30), and
+the page counts its frames each second. A page whose compositor has stalled
+gets no frames at all; Summit's stall recovery (<code>docs/STATUS.md</code>,
+1 October 2026) should bring them back within a few seconds. With
+<code>SUMMIT_TEST_COMPOSITOR_STALL=late</code>, <code>timer</code> or
+<code>frame</code> one stall is made on purpose. The result is posted to the
+bench server; it needs no input, so it can run beside someone at work.</p>
+<p id="counter" style="font: 48px monospace">0</p>
+<pre id="out">running…</pre>
+<script>
+"use strict";
+const seconds = Number(new URLSearchParams(location.search).get("seconds") || 30);
+const counter = document.getElementById("counter");
+const perSecond = [];
+let frames = 0, total = 0, last = performance.now(), longestGap = 0;
+const start = last;
+function frame(now) {
+    longestGap = Math.max(longestGap, now - last);
+    last = now;
+    ++frames;
+    ++total;
+    counter.textContent = total;
+    requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+const tick = setInterval(async () => {
+    perSecond.push(frames);
+    frames = 0;
+    if (perSecond.length < seconds)
+        return;
+    clearInterval(tick);
+    const result = {
+        page: "render-liveness", seconds, framesPerSecond: perSecond, totalFrames: total,
+        secondsWithoutFrames: perSecond.filter(count => !count).length,
+        longestGapMs: Math.round(Math.max(longestGap, performance.now() - last)),
+    };
+    document.getElementById("out").textContent = JSON.stringify(result, null, 2);
+    try { await fetch("/__bench/probe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(result) }); } catch (error) { }
+}, 1000);
+</script>

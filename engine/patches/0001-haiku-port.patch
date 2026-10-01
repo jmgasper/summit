@@ -693,7 +693,7 @@ index 452247cc6d61f0f94b1718c2d00cf759b2be4d59..007bdb71eec46dadf94b6fc2021f0ced
  #define ENABLE_SCROLLING_THREAD 0
  #endif
 diff --git a/Source/WTF/wtf/PlatformHaiku.cmake b/Source/WTF/wtf/PlatformHaiku.cmake
-index c466c25cf60489517be9b9bcffe952ae0622261e..b07a030781cd55593cc4323aa34faad86dd6c5e7 100644
+index c466c25cf60489517be9b9bcffe952ae0622261e..4e0a2731024cbf61b72dcfa0a05767a14d1cfda9 100644
 --- a/Source/WTF/wtf/PlatformHaiku.cmake
 +++ b/Source/WTF/wtf/PlatformHaiku.cmake
 @@ -6,6 +6,7 @@ list(APPEND WTF_SOURCES
@@ -704,16 +704,17 @@ index c466c25cf60489517be9b9bcffe952ae0622261e..b07a030781cd55593cc4323aa34faad8
  
      posix/CPUTimePOSIX.cpp
      posix/FileHandlePOSIX.cpp
-@@ -24,6 +25,8 @@ list(APPEND WTF_SOURCES
+@@ -24,6 +25,9 @@ list(APPEND WTF_SOURCES
  )
  
  list(APPEND WTF_PUBLIC_HEADERS
 +    haiku/ProcessPriorityHaiku.h
++    haiku/RunLoopHaiku.h
 +
      unix/UnixFileDescriptor.h
  )
  
-@@ -38,4 +41,3 @@ list(APPEND WTF_INCLUDE_DIRECTORIES
+@@ -38,4 +42,3 @@ list(APPEND WTF_INCLUDE_DIRECTORIES
  )
  
  add_definitions(-D_DEFAULT_SOURCE)
@@ -1075,10 +1076,10 @@ index 0000000000000000000000000000000000000000..8c108d90e1cc50a099c7a4633fc1baa9
 +using WTF::setProcessBackgroundedHaiku;
 diff --git a/Source/WTF/wtf/haiku/RunLoopHaiku.cpp b/Source/WTF/wtf/haiku/RunLoopHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..e43d203e913d4dc7089dfce48b001b05041380b8
+index 0000000000000000000000000000000000000000..c7fb184fdd0f9704388dbf97538ae4fdaaae966c
 --- /dev/null
 +++ b/Source/WTF/wtf/haiku/RunLoopHaiku.cpp
-@@ -0,0 +1,457 @@
+@@ -0,0 +1,511 @@
 +/*
 + * Copyright (C) 2014, 2024 Haiku, Inc
 + *
@@ -1106,6 +1107,8 @@ index 0000000000000000000000000000000000000000..e43d203e913d4dc7089dfce48b001b05
 +
 +#include "config.h"
 +#include <wtf/RunLoop.h>
++#include <wtf/haiku/RunLoopHaiku.h>
++#include <wtf/text/MakeString.h>
 +
 +#include <Application.h>
 +#include <Autolock.h>
@@ -1116,6 +1119,7 @@ index 0000000000000000000000000000000000000000..e43d203e913d4dc7089dfce48b001b05
 +#include <atomic>
 +#include <chrono>
 +#include <condition_variable>
++#include <cstdio>
 +#include <map>
 +#include <memory>
 +#include <mutex>
@@ -1179,6 +1183,26 @@ index 0000000000000000000000000000000000000000..e43d203e913d4dc7089dfce48b001b05
 +        removeWithLock(handler);
 +    }
 +
++    // describeTimerHaiku(): what this thread holds for a timer, and how it is.
++    String describe(void* key)
++    {
++        std::lock_guard locker(m_lock);
++        auto now = MonotonicTime::now();
++        char entry[96] = "no deadline";
++        if (auto found = m_keys.find(key); found != m_keys.end()) {
++            auto deadline = m_deadlines.find(found->second);
++            if (deadline == m_deadlines.end())
++                std::snprintf(entry, sizeof(entry), "a key without its deadline");
++            else
++                std::snprintf(entry, sizeof(entry), "deadline %lld due in %.3f s", static_cast<long long>(deadline->second.identifier), (found->second.first - now).seconds());
++        }
++        char state[256];
++        std::snprintf(state, sizeof(state), "%s; %zu deadlines, the next due in %.3f s; last awake %.3f s ago, %s; %llu failed posts",
++            entry, m_deadlines.size(), m_deadlines.empty() ? 0.0 : (m_deadlines.begin()->first.first - now).seconds(),
++            (now - m_lastAwake).seconds(), m_isWaiting ? "waiting" : "running", static_cast<unsigned long long>(m_failedPosts));
++        return String::fromLatin1(state);
++    }
++
 +    // The receiver rejects notifications for stopped, restarted or destroyed timers.
 +    // Answers whether the notification was delivered: a full port must not be
 +    // taken for a fired timer, because nothing would ever arm it again.
@@ -1226,14 +1250,19 @@ index 0000000000000000000000000000000000000000..e43d203e913d4dc7089dfce48b001b05
 +        rename_thread(find_thread(nullptr), "WebKit timers");
 +        std::unique_lock locker(m_lock);
 +        while (true) {
++            m_lastAwake = MonotonicTime::now();
 +            if (m_deadlines.empty()) {
++                m_isWaiting = true;
 +                m_condition.wait(locker);
++                m_isWaiting = false;
 +                continue;
 +            }
 +            auto next = m_deadlines.begin();
 +            auto remaining = next->first.first - MonotonicTime::now();
 +            if (remaining > 0_s) {
++                m_isWaiting = true;
 +                m_condition.wait_for(locker, std::chrono::microseconds(static_cast<int64_t>(std::min(remaining.microseconds(), 3600e6))));
++                m_isWaiting = false;
 +                continue;
 +            }
 +            Entry entry = next->second;
@@ -1243,6 +1272,7 @@ index 0000000000000000000000000000000000000000..e43d203e913d4dc7089dfce48b001b05
 +            status_t posted = post(entry);
 +            locker.lock();
 +            if (posted != B_OK) {
++                ++m_failedPosts;
 +                // The owner's port was full. Losing the notification would stop
 +                // this timer for good -- and the timer that stops is as likely
 +                // to be the one driving rendering updates as any other -- so
@@ -1262,6 +1292,9 @@ index 0000000000000000000000000000000000000000..e43d203e913d4dc7089dfce48b001b05
 +    std::map<Key, Entry> m_deadlines;
 +    std::unordered_map<void*, Key> m_keys;
 +    uint64_t m_sequence { 0 };
++    MonotonicTime m_lastAwake;
++    bool m_isWaiting { false };
++    uint64_t m_failedPosts { 0 };
 +};
 +
 +// BLooper::Loop() cannot be stopped without exiting its thread. A standalone
@@ -1360,6 +1393,23 @@ index 0000000000000000000000000000000000000000..e43d203e913d4dc7089dfce48b001b05
 +                timers.erase(found);
 +        }
 +        timer->fired();
++    }
++
++    static String describe(const RunLoop::TimerBase& timer)
++    {
++        auto* handler = static_cast<LoopHandler*>(timer.m_runLoop->m_handler);
++        char state[128] = "its run loop has stopped";
++        if (handler) {
++            Locker locker { handler->timersLock };
++            auto found = handler->timers.find(const_cast<RunLoop::TimerBase*>(&timer));
++            if (found == handler->timers.end())
++                std::snprintf(state, sizeof(state), "not armed");
++            else
++                std::snprintf(state, sizeof(state), "armed as %lld, due in %.3f s (%s %.3f s)", static_cast<long long>(found->second.identifier),
++                    (found->second.fireTime - MonotonicTime::now()).seconds(), found->second.repeating ? "every" : "once after", found->second.interval.seconds());
++        }
++        return makeString(String::fromLatin1(state), "; timer thread: "_s,
++            TimerScheduler::singleton().describe(const_cast<RunLoop::TimerBase*>(&timer)));
 +    }
 +
 +    struct TimerState {
@@ -1535,7 +1585,55 @@ index 0000000000000000000000000000000000000000..e43d203e913d4dc7089dfce48b001b05
 +    return found == handler->timers.end() ? 0_s : std::max(0_s, found->second.fireTime - MonotonicTime::now());
 +}
 +
++String describeTimerHaiku(const RunLoop::TimerBase& timer)
++{
++    return LoopHandler::describe(timer);
++}
++
 +} // namespace WTF
+diff --git a/Source/WTF/wtf/haiku/RunLoopHaiku.h b/Source/WTF/wtf/haiku/RunLoopHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..bbc1cc09e2eb2b7673659eaa602a598c1a611927
+--- /dev/null
++++ b/Source/WTF/wtf/haiku/RunLoopHaiku.h
+@@ -0,0 +1,37 @@
++/*
++ * Copyright (C) 2026 KunanyiOS contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are met:
++ * 1. Redistributions of source code must retain the above copyright notice,
++ *    this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright notice,
++ *    this list of conditions and the following disclaimer in the documentation
++ *    and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#pragma once
++
++#include <wtf/RunLoop.h>
++
++namespace WTF {
++
++// For stall reports: whether a timer is armed and when it is due, and what
++// the process's deadline thread ("WebKit timers") holds for it.
++WTF_EXPORT_PRIVATE String describeTimerHaiku(const RunLoop::TimerBase&);
++
++} // namespace WTF
++
++using WTF::describeTimerHaiku;
 diff --git a/Source/WTF/wtf/posix/FileHandlePOSIX.cpp b/Source/WTF/wtf/posix/FileHandlePOSIX.cpp
 index ae947fe28021c584967c900b16bf0a364affd9be..e357e409e33dd1f96bbbbefe35c75b08eb7ed632 100644
 --- a/Source/WTF/wtf/posix/FileHandlePOSIX.cpp
@@ -96377,7 +96475,7 @@ index 3138e165d48ea9e09a428f991118adc37efe87b2..ad1912e9f0018c4894fe609ea2a9bd53
  };
  
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
-index a12c4f6edd9998271fda260c7193a3226bf1957a..45ff6cc9b5089db76beb03dfe1101e44fd374567 100644
+index a12c4f6edd9998271fda260c7193a3226bf1957a..e19714cba8d8fd28f2b87720812b94b4288ad474 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
 @@ -54,10 +54,17 @@
@@ -96398,7 +96496,17 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..45ff6cc9b5089db76beb03dfe1101e44
  
  namespace WebKit {
  using namespace WebCore;
-@@ -148,17 +155,56 @@ void LayerTreeHost::scheduleRenderingUpdate()
+@@ -91,6 +98,9 @@ std::unique_ptr<LayerTreeHost> LayerTreeHost::create(WebPage& webPage)
+ LayerTreeHost::LayerTreeHost(WebPage& webPage)
+     : m_webPage(webPage)
+     , m_sceneState(CoordinatedSceneState::create())
++#if PLATFORM(HAIKU)
++    , m_stallWatchdogHaiku(RunLoop::mainSingleton(), "LayerTreeHost::StallWatchdog"_s, this, &LayerTreeHost::checkRenderingStallHaiku)
++#endif
+ {
+     {
+         auto& rootLayer = m_sceneState->rootLayer();
+@@ -148,17 +158,67 @@ void LayerTreeHost::scheduleRenderingUpdate()
  {
      WTFEmitSignpost(this, LayerTreeHostScheduleRenderingUpdate, "isWaitingForRenderer %s", m_isWaitingForRenderer ? "yes" : "no");
  
@@ -96428,19 +96536,30 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..45ff6cc9b5089db76beb03dfe1101e44
  
 +#if PLATFORM(HAIKU)
 +// A page that still runs but has waited seconds for the composition it asked
-+// for has stopped drawing (typing showed only after a tab switch). The
-+// compositor first says why and restarts itself; if that does not bring the
-+// composition back, the page stops waiting for it.
++// for has stopped drawing (typing showed only after a tab switch). Asking for
++// another update while one is pending does not come back here, so the first
++// request that finds the page waiting starts a watchdog that checks every
++// second until a composition arrives. The compositor first says why it is
++// stuck and restarts itself; if the page is still waiting two seconds later,
++// it stops waiting.
 +void LayerTreeHost::checkRenderingStallHaiku()
 +{
++    if (!m_isWaitingForRenderer || m_isSuspended || m_layerTreeStateIsFrozen) {
++        m_stallRecoveryStartedAtHaiku = std::nullopt;
++        return;
++    }
 +    auto now = MonotonicTime::now();
 +    Seconds waited = now - m_waitingForRendererSinceHaiku;
-+    if (waited < 2_s)
++    if (waited < 2_s) {
++        if (!m_stallWatchdogHaiku.isActive())
++            m_stallWatchdogHaiku.startOneShot(2_s - waited);
 +        return;
++    }
 +    if (!m_stallRecoveryStartedAtHaiku)
 +        m_stallRecoveryStartedAtHaiku = now;
 +    if (now - *m_stallRecoveryStartedAtHaiku < 2_s) {
 +        m_compositor->recoverFromStallHaiku(waited);
++        m_stallWatchdogHaiku.startOneShot(1_s);
 +        return;
 +    }
 +    std::fprintf(stderr, "Summit layer tree stall: pid=%d no composition for %.1f s; updating the page without it\n",
@@ -96455,7 +96574,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..45ff6cc9b5089db76beb03dfe1101e44
  void LayerTreeHost::scheduleRenderingUpdateRunLoopObserver()
  {
      FrameRenderer::scheduleRenderingUpdateRunLoopObserver();
-@@ -174,6 +220,23 @@ bool LayerTreeHost::canUpdateRendering() const
+@@ -174,6 +234,23 @@ bool LayerTreeHost::canUpdateRendering() const
  
  void LayerTreeHost::updateRendering()
  {
@@ -96479,7 +96598,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..45ff6cc9b5089db76beb03dfe1101e44
      invalidateRenderingUpdateRunLoopObserver();
  
      RELEASE_ASSERT(!m_isUpdatingRendering);
-@@ -182,12 +245,20 @@ void LayerTreeHost::updateRendering()
+@@ -182,12 +259,20 @@ void LayerTreeHost::updateRendering()
  
      SetForScope<bool> reentrancyProtector(m_isUpdatingRendering, true);
  
@@ -96500,7 +96619,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..45ff6cc9b5089db76beb03dfe1101e44
  
      if (m_overlayCompositingLayer)
          m_overlayCompositingLayer->flushCompositingState(visibleContentsRect());
-@@ -200,6 +271,10 @@ void LayerTreeHost::updateRendering()
+@@ -200,6 +285,10 @@ void LayerTreeHost::updateRendering()
      flags.add(FinalizeRenderingUpdateFlags::ApplyScrollingTreeLayerPositions);
  #endif
      page->finalizeRenderingUpdate(flags);
@@ -96511,7 +96630,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..45ff6cc9b5089db76beb03dfe1101e44
  
      if (m_pendingResize) {
          m_compositor->setSize(page->size(), page->deviceScaleFactor());
-@@ -219,6 +294,10 @@ void LayerTreeHost::updateRendering()
+@@ -219,6 +308,10 @@ void LayerTreeHost::updateRendering()
          drawingArea->dispatchPendingCallbacksAfterEnsuringDrawing();
  
      bool didChangeSceneState = m_sceneState->flush();
@@ -96522,7 +96641,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..45ff6cc9b5089db76beb03dfe1101e44
      if (m_compositionRequired || m_pendingResize || m_forceFrameSync || didChangeSceneState)
          requestCompositionForRenderingUpdate();
  
-@@ -237,6 +316,17 @@ void LayerTreeHost::updateRendering()
+@@ -237,6 +330,17 @@ void LayerTreeHost::updateRendering()
          m_sceneState->waitUntilPaintingComplete();
          m_waitUntilPaintingComplete = false;
      }
@@ -96540,7 +96659,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..45ff6cc9b5089db76beb03dfe1101e44
  }
  
  void LayerTreeHost::updateRootLayer()
-@@ -447,8 +537,24 @@ void LayerTreeHost::didRenderFrame()
+@@ -447,8 +551,24 @@ void LayerTreeHost::didRenderFrame()
  
  void LayerTreeHost::requestCompositionForRenderingUpdate()
  {
@@ -96566,10 +96685,10 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..45ff6cc9b5089db76beb03dfe1101e44
  
          if (!m_pendingForceRepaint && m_forcedRepaintAsyncCallback)
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.h b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.h
-index 4096303fde47800b8ea64ecef4fe536c97b62d52..0ab26d1a3d14850aa16b275d333685571a2e7e28 100644
+index 4096303fde47800b8ea64ecef4fe536c97b62d52..76c0c4ccf60d684a3edbf20802266a54c1771922 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.h
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.h
-@@ -145,6 +145,11 @@ private:
+@@ -145,6 +145,12 @@ private:
      bool m_waitUntilPaintingComplete { false };
      bool m_isWaitingForRenderer { false };
      bool m_scheduledWhileWaitingForRenderer { false };
@@ -96577,12 +96696,13 @@ index 4096303fde47800b8ea64ecef4fe536c97b62d52..0ab26d1a3d14850aa16b275d33368557
 +    void checkRenderingStallHaiku();
 +    MonotonicTime m_waitingForRendererSinceHaiku;
 +    std::optional<MonotonicTime> m_stallRecoveryStartedAtHaiku;
++    RunLoop::Timer m_stallWatchdogHaiku;
 +#endif
      bool m_forceFrameSync { false };
      bool m_compositionRequired { false };
  #if ENABLE(SCROLLING_THREAD)
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
-index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..8296b06fba3214fe0ee98329b42251e24a4c2d04 100644
+index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..ada640462b0b7b368be14fe9bb059e045133c4ef 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
 @@ -33,6 +33,8 @@
@@ -96594,11 +96714,12 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..8296b06fba3214fe0ee98329b42251e2
  #include <WebCore/CoordinatedPlatformLayer.h>
  #include <WebCore/Damage.h>
  #include <WebCore/FontCache.h>
-@@ -53,6 +55,14 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
+@@ -53,6 +55,15 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
  #include <wtf/TZoneMallocInlines.h>
  #include <wtf/text/StringToIntegerConversion.h>
  
 +#if PLATFORM(HAIKU)
++#include <wtf/haiku/RunLoopHaiku.h>
 +#include <OS.h>
 +#include <cstdio>
 +#include <unistd.h>
@@ -96609,7 +96730,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..8296b06fba3214fe0ee98329b42251e2
  #if USE(GLIB_EVENT_LOOP)
  #include <wtf/glib/RunLoopSourcePriority.h>
  #endif
-@@ -73,13 +83,29 @@ using namespace WebCore;
+@@ -73,13 +84,29 @@ using namespace WebCore;
  
  WTF_MAKE_TZONE_ALLOCATED_IMPL(ThreadedCompositor);
  
@@ -96639,7 +96760,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..8296b06fba3214fe0ee98329b42251e2
      , m_layerTreeHost(&layerTreeHost)
      , m_surface(AcceleratedSurface::create(webPage, [this] { frameComplete(); }, AcceleratedSurface::RenderingPurpose::Composited))
      , m_sceneState(&sceneState)
-@@ -90,6 +116,17 @@ ThreadedCompositor::ThreadedCompositor(WebPage& webPage, LayerTreeHost& layerTre
+@@ -90,6 +117,17 @@ ThreadedCompositor::ThreadedCompositor(WebPage& webPage, LayerTreeHost& layerTre
  {
      ASSERT(RunLoop::isMain());
  
@@ -96657,7 +96778,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..8296b06fba3214fe0ee98329b42251e2
      m_didCompositeRunLoopObserver = makeUnique<RunLoopObserver>(RunLoopObserver::WellKnownOrder::GraphicsCommit, [this] {
          this->didCompositeRunLoopObserverFired();
      });
-@@ -136,6 +173,20 @@ ThreadedCompositor::ThreadedCompositor(WebPage& webPage, LayerTreeHost& layerTre
+@@ -136,6 +174,20 @@ ThreadedCompositor::ThreadedCompositor(WebPage& webPage, LayerTreeHost& layerTre
          m_threadSafeGrContext = PlatformDisplay::sharedDisplay().skiaGrContext()->threadSafeProxy();
  #endif
      });
@@ -96678,7 +96799,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..8296b06fba3214fe0ee98329b42251e2
  }
  
  ThreadedCompositor::~ThreadedCompositor() = default;
-@@ -216,8 +267,19 @@ void ThreadedCompositor::updateRenderTimer()
+@@ -216,8 +268,23 @@ void ThreadedCompositor::updateRenderTimer()
      }
  
      if (m_state.isRenderTimerActive) {
@@ -96689,6 +96810,10 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..8296b06fba3214fe0ee98329b42251e2
 +#if PLATFORM(HAIKU)
 +            if (testStallHaiku(TestStallHaiku::Timer))
 +                return;
++            if (testStallHaiku(TestStallHaiku::Late)) {
++                m_renderTimer.startOneShot(1_h);
++                return;
++            }
 +            if (m_minimumFrameInterval && m_lastRenderTimestamp) {
 +                Seconds elapsed = MonotonicTime::now() - m_lastRenderTimestamp;
 +                if (elapsed < m_minimumFrameInterval)
@@ -96700,7 +96825,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..8296b06fba3214fe0ee98329b42251e2
      } else
          m_renderTimer.stop();
  }
-@@ -364,6 +426,10 @@ TargetContents ThreadedCompositor::paintToCurrentGLContext(const TransformationM
+@@ -364,6 +431,10 @@ TargetContents ThreadedCompositor::paintToCurrentGLContext(const TransformationM
  #if USE(TEXTURE_MAPPER)
  void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix, const IntSize& size, const OptionSet<CompositionReason>& reasons)
  {
@@ -96711,7 +96836,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..8296b06fba3214fe0ee98329b42251e2
      FloatRect clipRect(FloatPoint { }, size);
      TextureMapperLayer& currentRootLayer = m_sceneState->rootLayer().ensureTarget();
      if (currentRootLayer.transform() != matrix)
-@@ -373,6 +439,9 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
+@@ -373,6 +444,9 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
  
      m_textureMapper->beginPainting(m_flipY ? TextureMapper::FlipY::Yes : TextureMapper::FlipY::No);
      m_textureMapper->beginClip(TransformationMatrix(), FloatRoundedRect(clipRect));
@@ -96721,7 +96846,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..8296b06fba3214fe0ee98329b42251e2
  
  #if ENABLE(DAMAGE_TRACKING)
      std::optional<FloatRoundedRect> rectContainingRegionThatActuallyChanged;
-@@ -383,6 +452,10 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
+@@ -383,6 +457,10 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
          WTFBeginSignpost(this, CollectDamage);
          currentRootLayer.collectDamage(*m_textureMapper, frameDamage);
          WTFEndSignpost(this, CollectDamage);
@@ -96732,7 +96857,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..8296b06fba3214fe0ee98329b42251e2
  
          recordFrameDamage(WTF::move(frameDamage));
  
-@@ -404,11 +477,20 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
+@@ -404,11 +482,20 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
          m_textureMapper->beginClip(TransformationMatrix(), *rectContainingRegionThatActuallyChanged);
  #endif
  
@@ -96753,7 +96878,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..8296b06fba3214fe0ee98329b42251e2
  
  #if ENABLE(DAMAGE_TRACKING)
      if (rectContainingRegionThatActuallyChanged)
-@@ -426,6 +508,16 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
+@@ -426,6 +513,16 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
  
      m_textureMapper->endClip();
      m_textureMapper->endPainting();
@@ -96770,7 +96895,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..8296b06fba3214fe0ee98329b42251e2
  
      if (sceneHasRunningAnimations)
          requestComposition(CompositionReason::Animation);
-@@ -556,6 +648,46 @@ void ThreadedCompositor::renderLayerTree()
+@@ -556,6 +653,46 @@ void ThreadedCompositor::renderLayerTree()
      if (m_suspendedCount > 0)
          return;
  
@@ -96817,7 +96942,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..8296b06fba3214fe0ee98329b42251e2
      OptionSet<CompositionReason> reasons;
      bool shouldNotifiyDidComposite = false;
      {
-@@ -580,8 +712,18 @@ void ThreadedCompositor::renderLayerTree()
+@@ -580,8 +717,18 @@ void ThreadedCompositor::renderLayerTree()
  
          ASSERT(m_state.state == State::Scheduled);
          m_state.state = State::InProgress;
@@ -96836,7 +96961,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..8296b06fba3214fe0ee98329b42251e2
  #if USE(TEXTURE_MAPPER)
      if (!m_context || !m_context->makeContextCurrent())
          return;
-@@ -599,23 +741,52 @@ void ThreadedCompositor::renderLayerTree()
+@@ -599,23 +746,52 @@ void ThreadedCompositor::renderLayerTree()
      if (viewportSize.isEmpty())
          return;
  
@@ -96889,7 +97014,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..8296b06fba3214fe0ee98329b42251e2
  
      updateFPSCounter();
  
-@@ -631,8 +802,29 @@ void ThreadedCompositor::renderLayerTree()
+@@ -631,8 +807,29 @@ void ThreadedCompositor::renderLayerTree()
      PlatformDisplay::sharedDisplay().skiaGLContext()->swapBuffers();
  #endif
  
@@ -96919,7 +97044,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..8296b06fba3214fe0ee98329b42251e2
  
      RunLoop::mainSingleton().dispatch([this, protectedThis = Ref { *this }] {
          if (m_layerTreeHost)
-@@ -656,6 +848,13 @@ void ThreadedCompositor::requestComposition(CompositionReason reason)
+@@ -656,6 +853,13 @@ void ThreadedCompositor::requestComposition(CompositionReason reason)
  {
      Locker locker { m_state.lock };
      m_state.reasons.add(reason);
@@ -96933,7 +97058,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..8296b06fba3214fe0ee98329b42251e2
      scheduleUpdateLocked();
  }
  
-@@ -703,6 +902,10 @@ void ThreadedCompositor::scheduleUpdateLocked()
+@@ -703,6 +907,10 @@ void ThreadedCompositor::scheduleUpdateLocked()
  void ThreadedCompositor::frameComplete()
  {
      ASSERT(m_workQueue->runLoop().isCurrent());
@@ -96944,7 +97069,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..8296b06fba3214fe0ee98329b42251e2
  
      Locker locker { m_state.lock };
      WTFEmitSignpost(this, FrameComplete, "reasons: %s, state: %s, waiting for tiles: %s", reasonsToString(m_state.reasons).ascii().data(), stateToString(m_state.state).characters(), m_state.isWaitingForTiles ? "yes" : "no");
-@@ -726,6 +929,99 @@ void ThreadedCompositor::frameComplete()
+@@ -726,6 +934,112 @@ void ThreadedCompositor::frameComplete()
      }
  }
  
@@ -96965,10 +97090,11 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..8296b06fba3214fe0ee98329b42251e2
 +// takes a frame or two. Pages on the X399 have stopped drawing for good while
 +// they kept running (keys typed into GitHub's issue form showed only after a
 +// tab switch, whose suspend() and resume() restart this pipeline). Say where
-+// the composition is stuck, then restart it from there as a tab switch would:
-+// a render timer that is meant to run but will not fire is started, tiles
-+// that never report back stop holding the update, and a frame the UI process
-+// never confirmed counts as shown.
++// the composition is stuck, then restart it from there: a composition that is
++// due is rendered at once instead of waiting for its timer (the first report,
++// on 1 October, found the timer armed and a minute overdue), tiles that never
++// report back stop holding it, and a frame the UI process never confirmed
++// counts as shown.
 +void ThreadedCompositor::recoverFromStallHaiku(Seconds waited)
 +{
 +    ASSERT(RunLoop::isMain());
@@ -96985,25 +97111,30 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..8296b06fba3214fe0ee98329b42251e2
 +    m_workQueue->dispatch([this, protectedThis = Ref { *this }, waited] {
 +        m_stallCheckPendingHaiku = false;
 +        bool completeFrame = false;
++        bool renderNow = false;
 +        {
 +            Locker locker { m_state.lock };
 +            auto now = MonotonicTime::now();
 +            bool inProgress = m_state.state == State::InProgress || m_state.state == State::ScheduledWhileInProgress;
-+            bool timerArmed = m_renderTimer.isActive();
-+            std::fprintf(stderr, "Summit compositor stall: pid=%d page waited %.1f s; state=%s reasons=0x%x render timer %s and %s, suspended=%u, waiting for tiles=%d (%u pending), waiting for a buffer=%d, did-composite pending=%d, frame in progress for %.1f s\n",
++            std::fprintf(stderr, "Summit compositor stall: pid=%d page waited %.1f s; state=%s reasons=0x%x render timer %s, suspended=%u, waiting for tiles=%d (%u pending), waiting for a buffer=%d, did-composite pending=%d, frame in progress for %.1f s; render timer %s\n",
 +                static_cast<int>(getpid()), waited.seconds(), stateToString(m_state.state).characters(), static_cast<unsigned>(m_state.reasons.toRaw()),
-+                m_state.isRenderTimerActive ? "active" : "inactive", timerArmed ? "armed" : "not armed", m_suspendedCount.load(),
++                m_state.isRenderTimerActive ? "active" : "inactive", m_suspendedCount.load(),
 +                m_state.isWaitingForTiles, m_sceneState->pendingTiles(), m_isWaitingForRenderTarget,
-+                !!m_state.didCompositeRenderingUpdateFunction, inProgress ? (now - m_inProgressSinceHaiku).seconds() : 0.0);
++                !!m_state.didCompositeRenderingUpdateFunction, inProgress ? (now - m_inProgressSinceHaiku).seconds() : 0.0,
++                describeTimerHaiku(m_renderTimer).utf8().data());
++            // An update the page asked for that nothing scheduled.
++            if (m_state.state == State::Idle && m_state.didCompositeRenderingUpdateFunction) {
++                m_state.reasons.add(CompositionReason::RenderingUpdate);
++                scheduleUpdateLocked();
++            }
 +            switch (m_state.state) {
 +            case State::Scheduled:
++                // Composite now: the render timer is what did not fire.
 +                if (m_suspendedCount.load())
 +                    break;
 +                m_state.isWaitingForTiles = false;
-+                if (!m_state.isRenderTimerActive)
-+                    startRenderTimer();
-+                else if (!timerArmed)
-+                    m_renderTimer.startOneShot(0_s);
++                m_state.isRenderTimerActive = true;
++                renderNow = true;
 +                break;
 +            case State::InProgress:
 +            case State::ScheduledWhileInProgress:
@@ -97016,11 +97147,16 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..8296b06fba3214fe0ee98329b42251e2
 +        }
 +        if (completeFrame)
 +            frameComplete();
++        if (renderNow) {
++            m_renderTimer.stop();
++            renderLayerTree();
++        }
 +    });
 +}
 +
-+// SUMMIT_TEST_COMPOSITOR_STALL=timer or =frame loses one render timer or one
-+// frame confirmation, once, after the first 100 compositions: the stalls that
++// SUMMIT_TEST_COMPOSITOR_STALL=timer, =late or =frame, once after the first 100
++// compositions, leaves the render timer unarmed, arms it an hour late (what
++// the owner's stalled tab showed), or loses a frame confirmation: the stalls
 +// recoverFromStallHaiku() has to undo, made on purpose to check that it does.
 +bool ThreadedCompositor::testStallHaiku(TestStallHaiku kind)
 +{
@@ -97028,6 +97164,8 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..8296b06fba3214fe0ee98329b42251e2
 +        const char* value = std::getenv("SUMMIT_TEST_COMPOSITOR_STALL");
 +        if (value && !std::strcmp(value, "timer"))
 +            return TestStallHaiku::Timer;
++        if (value && !std::strcmp(value, "late"))
++            return TestStallHaiku::Late;
 +        if (value && !std::strcmp(value, "frame"))
 +            return TestStallHaiku::Frame;
 +        return std::nullopt;
@@ -97036,7 +97174,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..8296b06fba3214fe0ee98329b42251e2
 +    if (requested != kind || m_renderCountHaiku < 100 || done.exchange(true))
 +        return false;
 +    std::fprintf(stderr, "Summit compositor test: pid=%d losing the %s after composition %u\n", static_cast<int>(getpid()),
-+        kind == TestStallHaiku::Timer ? "render timer" : "frame confirmation", m_renderCountHaiku);
++        kind == TestStallHaiku::Timer ? "render timer" : kind == TestStallHaiku::Late ? "render timer (armed an hour late)" : "frame confirmation", m_renderCountHaiku);
 +    return true;
 +}
 +#endif
@@ -97045,7 +97183,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..8296b06fba3214fe0ee98329b42251e2
  {
      return m_surface ? &m_workQueue->runLoop() : nullptr;
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.h b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.h
-index 6665a0cc3570425e2ad5d26dc6c443e3b8280665..e767a66aafb7d6d167de4285c64b5bc19d17170b 100644
+index 6665a0cc3570425e2ad5d26dc6c443e3b8280665..1086829379cb10b74165a90456e7fc40829dd0bf 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.h
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.h
 @@ -97,6 +97,9 @@ public:
@@ -97083,7 +97221,7 @@ index 6665a0cc3570425e2ad5d26dc6c443e3b8280665..e767a66aafb7d6d167de4285c64b5bc1
 +    MonotonicTime m_lastStallCheckHaiku;
 +    MonotonicTime m_stallCheckPostedAtHaiku;
 +    std::atomic<bool> m_stallCheckPendingHaiku { false };
-+    enum class TestStallHaiku : uint8_t { Timer, Frame };
++    enum class TestStallHaiku : uint8_t { Timer, Late, Frame };
 +    bool testStallHaiku(TestStallHaiku);
 +    unsigned m_renderCountHaiku { 0 };
 +#endif
