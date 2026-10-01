@@ -1076,10 +1076,10 @@ index 0000000000000000000000000000000000000000..8c108d90e1cc50a099c7a4633fc1baa9
 +using WTF::setProcessBackgroundedHaiku;
 diff --git a/Source/WTF/wtf/haiku/RunLoopHaiku.cpp b/Source/WTF/wtf/haiku/RunLoopHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..c7fb184fdd0f9704388dbf97538ae4fdaaae966c
+index 0000000000000000000000000000000000000000..675c2f36ecb7a23c4a614e912e62592927e1335e
 --- /dev/null
 +++ b/Source/WTF/wtf/haiku/RunLoopHaiku.cpp
-@@ -0,0 +1,511 @@
+@@ -0,0 +1,551 @@
 +/*
 + * Copyright (C) 2014, 2024 Haiku, Inc
 + *
@@ -1383,9 +1383,18 @@ index 0000000000000000000000000000000000000000..c7fb184fdd0f9704388dbf97538ae4fd
 +    {
 +        {
 +            Locker locker { timersLock };
++            ++received;
 +            auto found = timers.find(timer);
-+            if (found == timers.end() || found->second.identifier != identifier)
++            if (found == timers.end()) {
++                ++rejectedUnknown;
 +                return;
++            }
++            found->second.lastReceivedIdentifier = identifier;
++            if (found->second.identifier != identifier) {
++                ++rejectedStale;
++                return;
++            }
++            ++firedCount;
 +            if (found->second.repeating) {
 +                found->second.fireTime = MonotonicTime::now() + found->second.interval;
 +                TimerScheduler::singleton().schedule(BMessenger(this), timer, identifier, found->second.fireTime);
@@ -1398,26 +1407,48 @@ index 0000000000000000000000000000000000000000..c7fb184fdd0f9704388dbf97538ae4fd
 +    static String describe(const RunLoop::TimerBase& timer)
 +    {
 +        auto* handler = static_cast<LoopHandler*>(timer.m_runLoop->m_handler);
-+        char state[128] = "its run loop has stopped";
++        char state[256] = "its run loop has stopped";
 +        if (handler) {
 +            Locker locker { handler->timersLock };
 +            auto found = handler->timers.find(const_cast<RunLoop::TimerBase*>(&timer));
++            char posted[48] = "left to the timer thread";
++            if (found != handler->timers.end() && found->second.postStatus != TimerState::notPosted)
++                std::snprintf(posted, sizeof(posted), "posted with status 0x%x", static_cast<unsigned>(found->second.postStatus));
 +            if (found == handler->timers.end())
 +                std::snprintf(state, sizeof(state), "not armed");
 +            else
-+                std::snprintf(state, sizeof(state), "armed as %lld, due in %.3f s (%s %.3f s)", static_cast<long long>(found->second.identifier),
-+                    (found->second.fireTime - MonotonicTime::now()).seconds(), found->second.repeating ? "every" : "once after", found->second.interval.seconds());
++                std::snprintf(state, sizeof(state), "armed as %lld, due in %.3f s (%s %.3f s), %s, last notification for it %lld",
++                    static_cast<long long>(found->second.identifier), (found->second.fireTime - MonotonicTime::now()).seconds(),
++                    found->second.repeating ? "every" : "once after", found->second.interval.seconds(), posted,
++                    static_cast<long long>(found->second.lastReceivedIdentifier));
++            char loop[160];
++            auto* looper = handler->Looper();
++            std::snprintf(loop, sizeof(loop), "; its loop received %llu notifications: %llu fired, %llu stale, %llu for no armed timer; %d messages waiting",
++                static_cast<unsigned long long>(handler->received), static_cast<unsigned long long>(handler->firedCount),
++                static_cast<unsigned long long>(handler->rejectedStale), static_cast<unsigned long long>(handler->rejectedUnknown),
++                looper ? static_cast<int>(looper->MessageQueue()->CountMessages()) : -1);
++            return makeString(String::fromLatin1(state), String::fromLatin1(loop), "; timer thread: "_s,
++                TimerScheduler::singleton().describe(const_cast<RunLoop::TimerBase*>(&timer)));
 +        }
 +        return makeString(String::fromLatin1(state), "; timer thread: "_s,
 +            TimerScheduler::singleton().describe(const_cast<RunLoop::TimerBase*>(&timer)));
 +    }
 +
 +    struct TimerState {
++        static constexpr status_t notPosted = 1;
 +        int64 identifier;
 +        MonotonicTime fireTime;
 +        Seconds interval;
 +        bool repeating;
++        // For describe(): how a zero-delay start was posted, and the last
++        // notification this loop received for the timer.
++        status_t postStatus { notPosted };
++        int64 lastReceivedIdentifier { 0 };
 +    };
++    uint64_t received { 0 };
++    uint64_t firedCount { 0 };
++    uint64_t rejectedStale { 0 };
++    uint64_t rejectedUnknown { 0 };
 +    // The timers have a lock of their own, not the looper's. The looper stays
 +    // locked while its thread handles a message, and other threads start and
 +    // stop its timers: JavaScriptCore does that for every VM's run loop under
@@ -1523,7 +1554,10 @@ index 0000000000000000000000000000000000000000..c7fb184fdd0f9704388dbf97538ae4fd
 +        // A new identifier makes notifications of an earlier start stale.
 +        Locker locker { handler->timersLock };
 +        identifier = ++handler->nextIdentifier;
-+        handler->timers.insert_or_assign(this, LoopHandler::TimerState { identifier, fireTime, interval, repeat });
++        LoopHandler::TimerState state { identifier, fireTime, interval, repeat };
++        if (auto found = handler->timers.find(this); found != handler->timers.end())
++            state.lastReceivedIdentifier = found->second.lastReceivedIdentifier;
++        handler->timers.insert_or_assign(this, state);
 +    }
 +    // WebKit uses zero for work that should run on the next turn, including Promise
 +    // completion. Queue that directly behind the messages already waiting.
@@ -1532,7 +1566,13 @@ index 0000000000000000000000000000000000000000..c7fb184fdd0f9704388dbf97538ae4fd
 +    // scheduler rather than drop the timer.
 +    if (interval <= 0_s) {
 +        TimerScheduler::singleton().cancel(this);
-+        if (TimerScheduler::post(BMessenger(handler), this, identifier) != B_OK)
++        status_t posted = TimerScheduler::post(BMessenger(handler), this, identifier);
++        {
++            Locker locker { handler->timersLock };
++            if (auto found = handler->timers.find(this); found != handler->timers.end() && found->second.identifier == identifier)
++                found->second.postStatus = posted;
++        }
++        if (posted != B_OK)
 +            TimerScheduler::singleton().schedule(BMessenger(handler), this, identifier, fireTime);
 +    } else
 +        TimerScheduler::singleton().schedule(BMessenger(handler), this, identifier, fireTime);
@@ -2147,10 +2187,10 @@ index b29212ad5b98d332ff7c1db7814cb2575988ec5f..b6c50d32873f6c712e3409ca1c5e2ec5
      String m_accessGroup;
  };
 diff --git a/Source/WebCore/PlatformHaiku.cmake b/Source/WebCore/PlatformHaiku.cmake
-index 16a88804a1baa39ccdd9fc2870b6e2524d941298..86a5f4654659f446d6fcf1bf1205afd4d48d63ef 100644
+index 16a88804a1baa39ccdd9fc2870b6e2524d941298..327f7c3fb4e35acc6ee68d5b7021cdf919e97780 100644
 --- a/Source/WebCore/PlatformHaiku.cmake
 +++ b/Source/WebCore/PlatformHaiku.cmake
-@@ -1,8 +1,87 @@
+@@ -1,8 +1,91 @@
 +include(platform/Haiku.cmake)
  include(platform/ImageDecoders.cmake)
  include(platform/OpenSSL.cmake)
@@ -2202,6 +2242,10 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..86a5f4654659f446d6fcf1bf1205afd4
 +
 +endif()
 +
++list(APPEND WebCore_PRIVATE_FRAMEWORK_HEADERS
++    platform/haiku/RenderingStallHaiku.h
++)
++
 +list(APPEND WebCore_PRIVATE_INCLUDE_DIRECTORIES
 +    ${WEBCORE_DIR}/platform/video-codecs
 +    /system/develop/headers/private/netservices
@@ -2239,7 +2283,7 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..86a5f4654659f446d6fcf1bf1205afd4
  )
  
  list(APPEND WebCore_SOURCES
-@@ -11,42 +90,160 @@ list(APPEND WebCore_SOURCES
+@@ -11,42 +94,162 @@ list(APPEND WebCore_SOURCES
  
    editing/glib/EditorGLib.cpp
  
@@ -2339,6 +2383,8 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..86a5f4654659f446d6fcf1bf1205afd4
 +endif ()
 +
 +list(APPEND WebCore_SOURCES
++  platform/haiku/RenderingStallHaiku.cpp
++
 +  platform/network/haiku/NetworkStateNotifierHaiku.cpp
 +
    platform/mock/GeolocationClientMock.cpp
@@ -2405,7 +2451,7 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..86a5f4654659f446d6fcf1bf1205afd4
    textencoding
    translation
    ${WEBP_LIBRARIES}
-@@ -61,6 +258,205 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
+@@ -61,6 +264,205 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
    ${SQLITE_INCLUDE_DIR}
    ${WEBP_INCLUDE_DIRS}
    ${ZLIB_INCLUDE_DIRS}
@@ -5974,6 +6020,66 @@ index a26485a6771a1d63e0d0f5ff3800f30221a77304..723f476108c2e7516f1e24723248d1c9
  void Page::isolatedUpdateRendering()
  {
      LOG(EventLoop, "Page %p isolatedUpdateRendering()", this);
+diff --git a/Source/WebCore/page/RenderingUpdateScheduler.cpp b/Source/WebCore/page/RenderingUpdateScheduler.cpp
+index 06e9a596c37605ce8ce2d70ffbcb23e63de6e4e8..3fb2c0aeee54571404be9c1cc0c64914a526d371 100644
+--- a/Source/WebCore/page/RenderingUpdateScheduler.cpp
++++ b/Source/WebCore/page/RenderingUpdateScheduler.cpp
+@@ -33,6 +33,9 @@
+ #include "Page.h"
+ #include "Timer.h"
+ #include <wtf/SystemTracing.h>
++#if PLATFORM(HAIKU)
++#include <wtf/text/MakeString.h>
++#endif
+ #include <wtf/TZoneMallocInlines.h>
+ #include <wtf/text/TextStream.h>
+ 
+@@ -113,6 +116,25 @@ void RenderingUpdateScheduler::clearScheduled()
+     m_refreshTimer = nullptr;
+ }
+ 
++#if PLATFORM(HAIKU)
++String RenderingUpdateScheduler::describeHaiku() const
++{
++    if (!isScheduled())
++        return "idle"_s;
++    if (!m_refreshTimer)
++        return "pending through a display refresh monitor"_s;
++    if (!m_refreshTimer->isActive())
++        return "pending on a refresh timer that is not running"_s;
++    return makeString("refresh timer due in "_s, m_refreshTimer->nextFireInterval().milliseconds(), " ms"_s);
++}
++
++void RenderingUpdateScheduler::restartHaiku()
++{
++    clearScheduled();
++    triggerRenderingUpdate();
++}
++#endif
++
+ DisplayRefreshMonitorFactory* RenderingUpdateScheduler::displayRefreshMonitorFactory() const
+ {
+     return m_page->chrome().client().displayRefreshMonitorFactory();
+diff --git a/Source/WebCore/page/RenderingUpdateScheduler.h b/Source/WebCore/page/RenderingUpdateScheduler.h
+index 27245cb297f582e0b872150b321a234fb12014ae..9d28a54aa0745773b5817c0093214d20f0bc3209 100644
+--- a/Source/WebCore/page/RenderingUpdateScheduler.h
++++ b/Source/WebCore/page/RenderingUpdateScheduler.h
+@@ -53,6 +53,15 @@ public:
+ 
+     void windowScreenDidChange(PlatformDisplayID);
+ 
++#if PLATFORM(HAIKU)
++    // For WebKit's stall reports (LayerTreeHost::checkLivenessHaiku()): whether
++    // a refresh is pending and when its timer is due, and a way to drop it
++    // and ask for the update at once.
++    bool isScheduledHaiku() const { return isScheduled(); }
++    WEBCORE_EXPORT String describeHaiku() const;
++    WEBCORE_EXPORT void restartHaiku();
++#endif
++
+ private:
+     bool scheduleAnimation();
+ 
 diff --git a/Source/WebCore/page/haiku/EventHandlerHaiku.cpp b/Source/WebCore/page/haiku/EventHandlerHaiku.cpp
 index 89f2b38d398b9fb7d5319d06bf0b918cfc569e1b..fbd1eea56e97654861c4b24b25c0da6e9f750604 100644
 --- a/Source/WebCore/page/haiku/EventHandlerHaiku.cpp
@@ -25269,6 +25375,108 @@ index 0000000000000000000000000000000000000000..d05909d4219179056f7facc95fd1e3ff
 +}
 +
 +#endif // PopupMenuHaiku_h
+diff --git a/Source/WebCore/platform/haiku/RenderingStallHaiku.cpp b/Source/WebCore/platform/haiku/RenderingStallHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..3d3b5675bb74ccf2a965b6dda10caf7e0188a89d
+--- /dev/null
++++ b/Source/WebCore/platform/haiku/RenderingStallHaiku.cpp
+@@ -0,0 +1,49 @@
++/*
++ * Copyright (C) 2026 KunanyiOS contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are met:
++ * 1. Redistributions of source code must retain the above copyright notice,
++ *    this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright notice,
++ *    this list of conditions and the following disclaimer in the documentation
++ *    and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "RenderingStallHaiku.h"
++
++#include "Page.h"
++#include "RenderingUpdateScheduler.h"
++#include <wtf/text/WTFString.h>
++
++namespace WebCore {
++
++bool isRenderingUpdateSchedulerPendingHaiku(Page& page)
++{
++    return page.renderingUpdateScheduler().isScheduledHaiku();
++}
++
++String describeRenderingUpdateSchedulerHaiku(Page& page)
++{
++    return page.renderingUpdateScheduler().describeHaiku();
++}
++
++void restartRenderingUpdateSchedulerHaiku(Page& page)
++{
++    page.renderingUpdateScheduler().restartHaiku();
++}
++
++} // namespace WebCore
+diff --git a/Source/WebCore/platform/haiku/RenderingStallHaiku.h b/Source/WebCore/platform/haiku/RenderingStallHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..310e88b24e6c2c3d232fa17f0f121e44839f34c7
+--- /dev/null
++++ b/Source/WebCore/platform/haiku/RenderingStallHaiku.h
+@@ -0,0 +1,41 @@
++/*
++ * Copyright (C) 2026 KunanyiOS contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are met:
++ * 1. Redistributions of source code must retain the above copyright notice,
++ *    this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright notice,
++ *    this list of conditions and the following disclaimer in the documentation
++ *    and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#pragma once
++
++#include "PlatformExportMacros.h"
++#include <wtf/Forward.h>
++
++namespace WebCore {
++
++class Page;
++
++// For WebKit's stall reports (LayerTreeHost::checkLivenessHaiku()): whether the
++// page's rendering update scheduler has a refresh pending and when its timer
++// is due, and dropping that refresh to ask for the update at once.
++WEBCORE_EXPORT bool isRenderingUpdateSchedulerPendingHaiku(Page&);
++WEBCORE_EXPORT String describeRenderingUpdateSchedulerHaiku(Page&);
++WEBCORE_EXPORT void restartRenderingUpdateSchedulerHaiku(Page&);
++
++} // namespace WebCore
 diff --git a/Source/WebCore/platform/haiku/ScrollbarThemeHaiku.cpp b/Source/WebCore/platform/haiku/ScrollbarThemeHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..c583b0540f03b79986e0bc25401a7161c14593fc
@@ -96475,10 +96683,10 @@ index 3138e165d48ea9e09a428f991118adc37efe87b2..ad1912e9f0018c4894fe609ea2a9bd53
  };
  
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
-index a12c4f6edd9998271fda260c7193a3226bf1957a..e19714cba8d8fd28f2b87720812b94b4288ad474 100644
+index a12c4f6edd9998271fda260c7193a3226bf1957a..d242ec7bac8111b45e9f2f1300d8dfc2545884d8 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
-@@ -54,10 +54,17 @@
+@@ -54,10 +54,18 @@
  #include <WebCore/ThreadedScrollingTree.h>
  #include <WebCore/WindowEventLoop.h>
  #include <wtf/SetForScope.h>
@@ -96492,25 +96700,33 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..e19714cba8d8fd28f2b87720812b94b4
 +#include <cstdio>
 +#include <cstdlib>
 +#include <unistd.h>
++#include <WebCore/RenderingStallHaiku.h>
 +#endif
  
  namespace WebKit {
  using namespace WebCore;
-@@ -91,6 +98,9 @@ std::unique_ptr<LayerTreeHost> LayerTreeHost::create(WebPage& webPage)
+@@ -91,7 +99,15 @@ std::unique_ptr<LayerTreeHost> LayerTreeHost::create(WebPage& webPage)
  LayerTreeHost::LayerTreeHost(WebPage& webPage)
      : m_webPage(webPage)
      , m_sceneState(CoordinatedSceneState::create())
 +#if PLATFORM(HAIKU)
 +    , m_stallWatchdogHaiku(RunLoop::mainSingleton(), "LayerTreeHost::StallWatchdog"_s, this, &LayerTreeHost::checkRenderingStallHaiku)
++    , m_livenessTimerHaiku(RunLoop::mainSingleton(), "LayerTreeHost::Liveness"_s, this, &LayerTreeHost::checkLivenessHaiku)
++    , m_lastRenderingUpdateHaiku(MonotonicTime::now())
 +#endif
  {
++#if PLATFORM(HAIKU)
++    m_livenessTimerHaiku.startRepeating(1_s);
++#endif
      {
          auto& rootLayer = m_sceneState->rootLayer();
-@@ -148,17 +158,67 @@ void LayerTreeHost::scheduleRenderingUpdate()
+ #if ENABLE(DAMAGE_TRACKING)
+@@ -148,17 +164,123 @@ void LayerTreeHost::scheduleRenderingUpdate()
  {
      WTFEmitSignpost(this, LayerTreeHostScheduleRenderingUpdate, "isWaitingForRenderer %s", m_isWaitingForRenderer ? "yes" : "no");
  
 +#if PLATFORM(HAIKU)
++    m_lastScheduleRequestHaiku = MonotonicTime::now();
 +    static bool traceLayerUpdates = [] {
 +        const char* value = std::getenv("SUMMIT_LAYER_UPDATE_TRACE");
 +        return value && value[0] == '1' && !value[1];
@@ -96569,12 +96785,67 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..e19714cba8d8fd28f2b87720812b94b4
 +    m_scheduledWhileWaitingForRenderer = false;
 +    scheduleRenderingUpdateRunLoopObserver();
 +}
++
++// Once a second: a page in view that something asked to draw but that has had
++// no rendering update for two seconds has stalled somewhere between WebCore's
++// refresh timer, this host's update observer and the compositor (typed text
++// on GitHub showed only after a tab switch, and the stall report above never
++// came: nothing reached it). Say what is pending at each step, once per
++// stall, then restart each of them.
++void LayerTreeHost::checkLivenessHaiku()
++{
++    Ref webPage = m_webPage;
++    RefPtr corePage = webPage->corePage();
++    if (!corePage || m_isUpdatingRendering || !webPage->isVisible()) {
++        m_blockedInViewSinceHaiku = std::nullopt;
++        return;
++    }
++    auto now = MonotonicTime::now();
++    if (m_isSuspended || m_layerTreeStateIsFrozen) {
++        // A page in view whose rendering stays suspended (or frozen longer
++        // than a slow load would keep it) draws nothing. Only reported: the
++        // drawing area keeps its own record of the suspension.
++        if (!m_blockedInViewSinceHaiku)
++            m_blockedInViewSinceHaiku = now;
++        Seconds blocked = now - *m_blockedInViewSinceHaiku;
++        if (blocked >= (m_isSuspended ? 2_s : 10_s) && !std::exchange(m_reportedLivenessStallHaiku, true)) {
++            std::fprintf(stderr, "Summit page stall: pid=%d in view but rendering %s for %.1f s; WebCore scheduler: %s\n",
++                static_cast<int>(getpid()), m_isSuspended ? "suspended" : "frozen", blocked.seconds(),
++                describeRenderingUpdateSchedulerHaiku(*corePage).utf8().data());
++        }
++        return;
++    }
++    m_blockedInViewSinceHaiku = std::nullopt;
++    Seconds sinceUpdate = now - m_lastRenderingUpdateHaiku;
++    if (sinceUpdate < 2_s)
++        return;
++    bool refreshPending = isRenderingUpdateSchedulerPendingHaiku(*corePage);
++    bool requested = m_lastScheduleRequestHaiku > m_lastRenderingUpdateHaiku;
++    bool observerScheduled = m_renderingUpdateRunLoopObserver->isScheduled();
++    if (!refreshPending && !requested && !observerScheduled && !m_isWaitingForRenderer)
++        return;
++    if (!std::exchange(m_reportedLivenessStallHaiku, true)) {
++        std::fprintf(stderr, "Summit page stall: pid=%d no rendering update for %.1f s; WebCore scheduler: %s; drawing asked for %s; update observer %s; waiting for the compositor %s\n",
++            static_cast<int>(getpid()), sinceUpdate.seconds(), describeRenderingUpdateSchedulerHaiku(*corePage).utf8().data(),
++            requested ? "since the last update" : "not since the last update", observerScheduled ? "pending" : "not pending",
++            m_isWaitingForRenderer ? "yes" : "no");
++    }
++    if (m_isWaitingForRenderer) {
++        checkRenderingStallHaiku();
++        return;
++    }
++    if (refreshPending)
++        restartRenderingUpdateSchedulerHaiku(*corePage);
++    if (m_renderingUpdateRunLoopObserver->isScheduled())
++        m_renderingUpdateRunLoopObserver->invalidate();
++    scheduleRenderingUpdateRunLoopObserver();
++}
 +#endif
 +
  void LayerTreeHost::scheduleRenderingUpdateRunLoopObserver()
  {
      FrameRenderer::scheduleRenderingUpdateRunLoopObserver();
-@@ -174,6 +234,23 @@ bool LayerTreeHost::canUpdateRendering() const
+@@ -174,20 +296,49 @@ bool LayerTreeHost::canUpdateRendering() const
  
  void LayerTreeHost::updateRendering()
  {
@@ -96598,7 +96869,12 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..e19714cba8d8fd28f2b87720812b94b4
      invalidateRenderingUpdateRunLoopObserver();
  
      RELEASE_ASSERT(!m_isUpdatingRendering);
-@@ -182,12 +259,20 @@ void LayerTreeHost::updateRendering()
+     if (m_layerTreeStateIsFrozen)
+         return;
++#if PLATFORM(HAIKU)
++    m_lastRenderingUpdateHaiku = MonotonicTime::now();
++    m_reportedLivenessStallHaiku = false;
++#endif
  
      SetForScope<bool> reentrancyProtector(m_isUpdatingRendering, true);
  
@@ -96619,7 +96895,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..e19714cba8d8fd28f2b87720812b94b4
  
      if (m_overlayCompositingLayer)
          m_overlayCompositingLayer->flushCompositingState(visibleContentsRect());
-@@ -200,6 +285,10 @@ void LayerTreeHost::updateRendering()
+@@ -200,6 +351,10 @@ void LayerTreeHost::updateRendering()
      flags.add(FinalizeRenderingUpdateFlags::ApplyScrollingTreeLayerPositions);
  #endif
      page->finalizeRenderingUpdate(flags);
@@ -96630,7 +96906,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..e19714cba8d8fd28f2b87720812b94b4
  
      if (m_pendingResize) {
          m_compositor->setSize(page->size(), page->deviceScaleFactor());
-@@ -219,6 +308,10 @@ void LayerTreeHost::updateRendering()
+@@ -219,6 +374,10 @@ void LayerTreeHost::updateRendering()
          drawingArea->dispatchPendingCallbacksAfterEnsuringDrawing();
  
      bool didChangeSceneState = m_sceneState->flush();
@@ -96641,7 +96917,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..e19714cba8d8fd28f2b87720812b94b4
      if (m_compositionRequired || m_pendingResize || m_forceFrameSync || didChangeSceneState)
          requestCompositionForRenderingUpdate();
  
-@@ -237,6 +330,17 @@ void LayerTreeHost::updateRendering()
+@@ -237,6 +396,17 @@ void LayerTreeHost::updateRendering()
          m_sceneState->waitUntilPaintingComplete();
          m_waitUntilPaintingComplete = false;
      }
@@ -96659,7 +96935,20 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..e19714cba8d8fd28f2b87720812b94b4
  }
  
  void LayerTreeHost::updateRootLayer()
-@@ -447,8 +551,24 @@ void LayerTreeHost::didRenderFrame()
+@@ -322,6 +492,12 @@ void LayerTreeHost::suspend()
+ 
+ void LayerTreeHost::resume()
+ {
++#if PLATFORM(HAIKU)
++    // Time spent hidden is not time spent waiting.
++    m_waitingForRendererSinceHaiku = MonotonicTime::now();
++    m_lastRenderingUpdateHaiku = m_waitingForRendererSinceHaiku;
++    m_stallRecoveryStartedAtHaiku = std::nullopt;
++#endif
+     m_compositor->resume();
+     FrameRenderer::resume();
+ }
+@@ -447,8 +623,24 @@ void LayerTreeHost::didRenderFrame()
  
  void LayerTreeHost::requestCompositionForRenderingUpdate()
  {
@@ -96685,18 +96974,24 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..e19714cba8d8fd28f2b87720812b94b4
  
          if (!m_pendingForceRepaint && m_forcedRepaintAsyncCallback)
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.h b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.h
-index 4096303fde47800b8ea64ecef4fe536c97b62d52..76c0c4ccf60d684a3edbf20802266a54c1771922 100644
+index 4096303fde47800b8ea64ecef4fe536c97b62d52..2ba8509a68888720ef1a9a0a13ed1493a86e8da1 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.h
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.h
-@@ -145,6 +145,12 @@ private:
+@@ -145,6 +145,18 @@ private:
      bool m_waitUntilPaintingComplete { false };
      bool m_isWaitingForRenderer { false };
      bool m_scheduledWhileWaitingForRenderer { false };
 +#if PLATFORM(HAIKU)
 +    void checkRenderingStallHaiku();
++    void checkLivenessHaiku();
 +    MonotonicTime m_waitingForRendererSinceHaiku;
 +    std::optional<MonotonicTime> m_stallRecoveryStartedAtHaiku;
 +    RunLoop::Timer m_stallWatchdogHaiku;
++    RunLoop::Timer m_livenessTimerHaiku;
++    MonotonicTime m_lastRenderingUpdateHaiku;
++    MonotonicTime m_lastScheduleRequestHaiku;
++    bool m_reportedLivenessStallHaiku { false };
++    std::optional<MonotonicTime> m_blockedInViewSinceHaiku;
 +#endif
      bool m_forceFrameSync { false };
      bool m_compositionRequired { false };

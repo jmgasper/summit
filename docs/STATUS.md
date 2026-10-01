@@ -2,48 +2,51 @@
 
 ## 1 October 2026, afternoon: tabs that stopped drawing
 
-Reported by the owner with `bundle-xgce7ywe`, and again after a restart on
-`bundle-hwd4u30l`: in a GitHub issue tab, typed text did not appear until
-another tab was selected and then this one again. Installed now as
-`bundle-swhextn6`.
+Reported by the owner with `bundle-xgce7ywe`, again after restarts on
+`bundle-hwd4u30l` and `bundle-swhextn6`, the last time after opening WebGL
+Aquarium in a new tab: in a GitHub issue tab, typed text did not appear
+until another tab was selected and then this one again. Not fixed yet:
+installed now as `bundle-aesogsiz`, which reports where the next one is
+stuck and restarts it.
 
-- **What was stuck.** In the owner's frozen tab the page still ran (keys
-  reached it, `setTimeout` and promise callbacks ran, the textarea held the
-  text) but no rendering update happened: a `requestAnimationFrame` callback
-  waited 35 minutes, and neither the compositor thread nor Skia's painting
-  threads used any CPU when keys were pressed. The page was waiting for a
-  composition that never came. The second occurrence logged it exactly:
-  `state=Scheduled … render timer active and armed`, the page having waited
-  61 seconds. The compositor's render timer was registered as armed but had
-  not fired for a minute. A tab switch suspends and resumes the compositor,
-  which stops and restarts that timer; that is why the text then appeared.
-  Why the timer did not fire is not known yet: a copy of the owner's profile
-  typed into GitHub's issue form for 30 minutes without a stall.
-- **Recovery, independent of that timer.** The first request for an update
-  that finds the page still waiting after 2 seconds starts a watchdog, which
-  checks every second until a composition arrives (later requests do not come
-  back to the page while one is pending, so the first version, which only
-  checked on a request, acted once). The compositor reports its state to
-  standard error and then renders the due composition at once instead of
-  waiting for the timer; a frame the UI process never confirmed counts as
-  shown, and tiles that never reported back stop holding the update. Two
-  seconds later a page still waiting is updated without the compositor
-  (`Summit layer tree stall`); an update observer that has not fired for a
-  second is armed again (`Summit rendering update stall`).
-- **The cause, next time.** Each `Summit compositor stall` line now ends with
-  the render timer as the run loop and the process's timer thread ("WebKit
-  timers") see it: armed or not and when due, and whether the thread holds a
-  deadline for it, how many it holds, when the next is due and when the
-  thread last woke (`describeTimerHaiku()` in `RunLoopHaiku.cpp`). That tells
-  a lost deadline from a wrong one or from a stuck thread.
-- **Checked** with `tools/bench/pages/render-liveness.html`, which counts
-  animation frames per second for 30 seconds and needs no input.
-  `SUMMIT_TEST_COMPOSITOR_STALL=late` (the render timer armed an hour late,
-  as in the owner's tab), `=timer` (not armed) and `=frame` (a frame
-  confirmation lost) each made one stall after 100 compositions; every one
-  cost a single second without frames (2.0 s longest gap) and the page went
-  back to 60 frames per second. Without a stall the longest gap was 193 ms
-  and nothing was reported.
+- **What the stalled tab showed.** The page still ran (keys reached it,
+  `setTimeout` and promise callbacks ran, the textarea held the text) but no
+  rendering update happened: a `requestAnimationFrame` callback waited 35
+  minutes, and neither the compositor thread nor Skia's painting threads used
+  any CPU when keys were pressed. A tab switch suspends and resumes the page's
+  rendering, after which it drew again.
+- **Not reproduced.** A copy of the owner's profile typed into GitHub's issue
+  form for 30 minutes (51 rounds, with tab switches); the Aquarium was opened
+  in a new tab from a link and with Summit's new-tab command, left in front
+  for 15 seconds, and run in a second window, with the issue form or
+  `tools/bench/pages/render-liveness.html` (frames per second, no input) in
+  the first tab. Every time the first page went back to drawing at once.
+- **A false lead.** The first stall report (`render timer active and armed`,
+  61 seconds) came from a tab returning from behind another: the time it
+  had spent hidden counted as waiting. Hidden time no longer counts. Also
+  seen: Summit's window thread blocking for about 4 seconds at a time; that
+  is a full-screen capture (VNC or a screenshot tool) holding app_server, not
+  the Aquarium (`BPrivate::get_display_layout()`, which the window thread
+  asks for the scale, took 4 to 6 ms with the Aquarium running).
+- **What reports the next one.** Once a second, a page in view that has had
+  no rendering update for two seconds while something asked for one prints a
+  `Summit page stall` line to standard error: whether WebCore's rendering
+  update scheduler has a refresh pending and whether its timer is running,
+  whether this page's renderer was asked to draw, whether its update observer
+  is pending and whether it is waiting for the compositor; a page in view
+  whose rendering stays suspended or frozen is reported too. It then
+  restarts each pending step. A page waiting for the compositor gets the
+  compositor's own `Summit compositor stall` report, which ends with the
+  render timer as the run loop and the process's timer thread see it
+  (`describeTimerHaiku()`: armed or not, when due, how it was posted, which
+  notifications the loop received and rejected, what the timer thread
+  holds), and the compositor renders the due composition at once.
+- **Checked.** `SUMMIT_TEST_COMPOSITOR_STALL=late` (the render timer armed
+  an hour late), `=timer` (not armed) and `=frame` (a frame confirmation
+  lost) each made one stall after 100 compositions; every one cost a single
+  second without frames before the liveness page went back to 60 frames per
+  second. Without a stall, and across the Aquarium tab switches, nothing was
+  reported.
 
 ## 1 October 2026, later: a frozen tab, 1Password's popup and a browser that would not close
 
