@@ -96306,11 +96306,81 @@ index d382293c217c69e8672fb8f587a78e03574df4ba..5192b4bf4f5b2b3b17854164f56c82d5
  
      void activityStateDidChange(OptionSet<WebCore::ActivityState>, ActivityStateChangeID, CompletionHandler<void()>&&) override;
      void attachViewOverlayGraphicsLayer(WebCore::FrameIdentifier, WebCore::GraphicsLayer*) override;
+diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/FrameRenderer.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/FrameRenderer.cpp
+index 5c5605478910c2717b1875a385d1c5611b25fb4c..e23ef66c9df66d6eeb565f85670cf799ea4191bd 100644
+--- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/FrameRenderer.cpp
++++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/FrameRenderer.cpp
+@@ -30,6 +30,10 @@
+ #include <WebCore/RunLoopObserver.h>
+ #include <WebCore/WindowEventLoop.h>
+ #include <wtf/SystemTracing.h>
++#if PLATFORM(HAIKU)
++#include <cstdio>
++#include <unistd.h>
++#endif
+ 
+ namespace WebKit {
+ using namespace WebCore;
+@@ -51,13 +55,29 @@ FrameRenderer::~FrameRenderer()
+ 
+ void FrameRenderer::scheduleRenderingUpdateRunLoopObserver()
+ {
+-    if (m_renderingUpdateRunLoopObserver->isScheduled())
++    if (m_renderingUpdateRunLoopObserver->isScheduled()) {
++#if PLATFORM(HAIKU)
++        // The observer fires on the next turn of the main loop. One that has
++        // not fired for a second never will (see
++        // LayerTreeHost::checkRenderingStallHaiku()); arm it again.
++        Seconds waited = MonotonicTime::now() - m_renderingUpdateScheduledAtHaiku;
++        if (waited < 1_s)
++            return;
++        std::fprintf(stderr, "Summit rendering update stall: pid=%d the update has not run for %.1f s; scheduling it again\n",
++            static_cast<int>(getpid()), waited.seconds());
++        m_renderingUpdateRunLoopObserver->invalidate();
++#else
+         return;
++#endif
++    }
+ 
+     if (m_isUpdatingRendering)
+         return;
+ 
+     tracePoint(RenderingUpdateRunLoopObserverStart);
++#if PLATFORM(HAIKU)
++    m_renderingUpdateScheduledAtHaiku = MonotonicTime::now();
++#endif
+     m_renderingUpdateRunLoopObserver->schedule();
+ }
+ 
+diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/FrameRenderer.h b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/FrameRenderer.h
+index 3138e165d48ea9e09a428f991118adc37efe87b2..ad1912e9f0018c4894fe609ea2a9bd536e0691a7 100644
+--- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/FrameRenderer.h
++++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/FrameRenderer.h
+@@ -27,6 +27,9 @@
+ 
+ #if USE(COORDINATED_GRAPHICS)
+ #include <wtf/CompletionHandler.h>
++#if PLATFORM(HAIKU)
++#include <wtf/MonotonicTime.h>
++#endif
+ 
+ namespace WebCore {
+ class FloatPoint;
+@@ -97,6 +100,9 @@ protected:
+     bool m_layerTreeStateIsFrozen { false };
+     bool m_isSuspended { false };
+     bool m_isUpdatingRendering { false };
++#if PLATFORM(HAIKU)
++    MonotonicTime m_renderingUpdateScheduledAtHaiku;
++#endif
+     CompletionHandler<void()> m_forcedRepaintAsyncCallback;
+ };
+ 
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
-index a12c4f6edd9998271fda260c7193a3226bf1957a..29b2218c26bef68dbc9061f1727d1f72ac50fdba 100644
+index a12c4f6edd9998271fda260c7193a3226bf1957a..45ff6cc9b5089db76beb03dfe1101e44fd374567 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
-@@ -54,10 +54,16 @@
+@@ -54,10 +54,17 @@
  #include <WebCore/ThreadedScrollingTree.h>
  #include <WebCore/WindowEventLoop.h>
  #include <wtf/SetForScope.h>
@@ -96323,11 +96393,12 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..29b2218c26bef68dbc9061f1727d1f72
 +#if PLATFORM(HAIKU)
 +#include <cstdio>
 +#include <cstdlib>
++#include <unistd.h>
 +#endif
  
  namespace WebKit {
  using namespace WebCore;
-@@ -148,6 +154,16 @@ void LayerTreeHost::scheduleRenderingUpdate()
+@@ -148,17 +155,56 @@ void LayerTreeHost::scheduleRenderingUpdate()
  {
      WTFEmitSignpost(this, LayerTreeHostScheduleRenderingUpdate, "isWaitingForRenderer %s", m_isWaitingForRenderer ? "yes" : "no");
  
@@ -96344,7 +96415,47 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..29b2218c26bef68dbc9061f1727d1f72
      if (m_layerTreeStateIsFrozen || m_isSuspended || m_webPage->size().isEmpty())
          return;
  
-@@ -174,6 +190,23 @@ bool LayerTreeHost::canUpdateRendering() const
+     if (m_isWaitingForRenderer) {
+         m_scheduledWhileWaitingForRenderer = true;
++#if PLATFORM(HAIKU)
++        checkRenderingStallHaiku();
++#endif
+         return;
+     }
+ 
+     scheduleRenderingUpdateRunLoopObserver();
+ }
+ 
++#if PLATFORM(HAIKU)
++// A page that still runs but has waited seconds for the composition it asked
++// for has stopped drawing (typing showed only after a tab switch). The
++// compositor first says why and restarts itself; if that does not bring the
++// composition back, the page stops waiting for it.
++void LayerTreeHost::checkRenderingStallHaiku()
++{
++    auto now = MonotonicTime::now();
++    Seconds waited = now - m_waitingForRendererSinceHaiku;
++    if (waited < 2_s)
++        return;
++    if (!m_stallRecoveryStartedAtHaiku)
++        m_stallRecoveryStartedAtHaiku = now;
++    if (now - *m_stallRecoveryStartedAtHaiku < 2_s) {
++        m_compositor->recoverFromStallHaiku(waited);
++        return;
++    }
++    std::fprintf(stderr, "Summit layer tree stall: pid=%d no composition for %.1f s; updating the page without it\n",
++        static_cast<int>(getpid()), waited.seconds());
++    m_stallRecoveryStartedAtHaiku = std::nullopt;
++    m_isWaitingForRenderer = false;
++    m_scheduledWhileWaitingForRenderer = false;
++    scheduleRenderingUpdateRunLoopObserver();
++}
++#endif
++
+ void LayerTreeHost::scheduleRenderingUpdateRunLoopObserver()
+ {
+     FrameRenderer::scheduleRenderingUpdateRunLoopObserver();
+@@ -174,6 +220,23 @@ bool LayerTreeHost::canUpdateRendering() const
  
  void LayerTreeHost::updateRendering()
  {
@@ -96368,7 +96479,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..29b2218c26bef68dbc9061f1727d1f72
      invalidateRenderingUpdateRunLoopObserver();
  
      RELEASE_ASSERT(!m_isUpdatingRendering);
-@@ -182,12 +215,20 @@ void LayerTreeHost::updateRendering()
+@@ -182,12 +245,20 @@ void LayerTreeHost::updateRendering()
  
      SetForScope<bool> reentrancyProtector(m_isUpdatingRendering, true);
  
@@ -96389,7 +96500,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..29b2218c26bef68dbc9061f1727d1f72
  
      if (m_overlayCompositingLayer)
          m_overlayCompositingLayer->flushCompositingState(visibleContentsRect());
-@@ -200,6 +241,10 @@ void LayerTreeHost::updateRendering()
+@@ -200,6 +271,10 @@ void LayerTreeHost::updateRendering()
      flags.add(FinalizeRenderingUpdateFlags::ApplyScrollingTreeLayerPositions);
  #endif
      page->finalizeRenderingUpdate(flags);
@@ -96400,7 +96511,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..29b2218c26bef68dbc9061f1727d1f72
  
      if (m_pendingResize) {
          m_compositor->setSize(page->size(), page->deviceScaleFactor());
-@@ -219,6 +264,10 @@ void LayerTreeHost::updateRendering()
+@@ -219,6 +294,10 @@ void LayerTreeHost::updateRendering()
          drawingArea->dispatchPendingCallbacksAfterEnsuringDrawing();
  
      bool didChangeSceneState = m_sceneState->flush();
@@ -96411,7 +96522,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..29b2218c26bef68dbc9061f1727d1f72
      if (m_compositionRequired || m_pendingResize || m_forceFrameSync || didChangeSceneState)
          requestCompositionForRenderingUpdate();
  
-@@ -237,6 +286,17 @@ void LayerTreeHost::updateRendering()
+@@ -237,6 +316,17 @@ void LayerTreeHost::updateRendering()
          m_sceneState->waitUntilPaintingComplete();
          m_waitUntilPaintingComplete = false;
      }
@@ -96429,7 +96540,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..29b2218c26bef68dbc9061f1727d1f72
  }
  
  void LayerTreeHost::updateRootLayer()
-@@ -447,8 +507,20 @@ void LayerTreeHost::didRenderFrame()
+@@ -447,8 +537,24 @@ void LayerTreeHost::didRenderFrame()
  
  void LayerTreeHost::requestCompositionForRenderingUpdate()
  {
@@ -96442,6 +96553,10 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..29b2218c26bef68dbc9061f1727d1f72
 +        std::fprintf(stderr, "Summit layer update: request-composite\n");
 +#endif
      m_isWaitingForRenderer = true;
++#if PLATFORM(HAIKU)
++    m_waitingForRendererSinceHaiku = MonotonicTime::now();
++    m_stallRecoveryStartedAtHaiku = std::nullopt;
++#endif
      m_compositor->requestCompositionForRenderingUpdate([this] {
 +#if PLATFORM(HAIKU)
 +        if (traceLayerUpdates)
@@ -96450,8 +96565,24 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..29b2218c26bef68dbc9061f1727d1f72
          WTFBeginSignpost(this, DidComposite);
  
          if (!m_pendingForceRepaint && m_forcedRepaintAsyncCallback)
+diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.h b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.h
+index 4096303fde47800b8ea64ecef4fe536c97b62d52..0ab26d1a3d14850aa16b275d333685571a2e7e28 100644
+--- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.h
++++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.h
+@@ -145,6 +145,11 @@ private:
+     bool m_waitUntilPaintingComplete { false };
+     bool m_isWaitingForRenderer { false };
+     bool m_scheduledWhileWaitingForRenderer { false };
++#if PLATFORM(HAIKU)
++    void checkRenderingStallHaiku();
++    MonotonicTime m_waitingForRendererSinceHaiku;
++    std::optional<MonotonicTime> m_stallRecoveryStartedAtHaiku;
++#endif
+     bool m_forceFrameSync { false };
+     bool m_compositionRequired { false };
+ #if ENABLE(SCROLLING_THREAD)
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
-index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..ba2dd9dc02c81b541c65b3f4d78763818fcc2c9a 100644
+index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..8296b06fba3214fe0ee98329b42251e24a4c2d04 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
 @@ -33,6 +33,8 @@
@@ -96547,7 +96678,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..ba2dd9dc02c81b541c65b3f4d7876381
  }
  
  ThreadedCompositor::~ThreadedCompositor() = default;
-@@ -216,8 +267,17 @@ void ThreadedCompositor::updateRenderTimer()
+@@ -216,8 +267,19 @@ void ThreadedCompositor::updateRenderTimer()
      }
  
      if (m_state.isRenderTimerActive) {
@@ -96556,6 +96687,8 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..ba2dd9dc02c81b541c65b3f4d7876381
 +        if (!m_renderTimer.isActive()) {
 +            Seconds delay;
 +#if PLATFORM(HAIKU)
++            if (testStallHaiku(TestStallHaiku::Timer))
++                return;
 +            if (m_minimumFrameInterval && m_lastRenderTimestamp) {
 +                Seconds elapsed = MonotonicTime::now() - m_lastRenderTimestamp;
 +                if (elapsed < m_minimumFrameInterval)
@@ -96567,7 +96700,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..ba2dd9dc02c81b541c65b3f4d7876381
      } else
          m_renderTimer.stop();
  }
-@@ -364,6 +424,10 @@ TargetContents ThreadedCompositor::paintToCurrentGLContext(const TransformationM
+@@ -364,6 +426,10 @@ TargetContents ThreadedCompositor::paintToCurrentGLContext(const TransformationM
  #if USE(TEXTURE_MAPPER)
  void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix, const IntSize& size, const OptionSet<CompositionReason>& reasons)
  {
@@ -96578,7 +96711,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..ba2dd9dc02c81b541c65b3f4d7876381
      FloatRect clipRect(FloatPoint { }, size);
      TextureMapperLayer& currentRootLayer = m_sceneState->rootLayer().ensureTarget();
      if (currentRootLayer.transform() != matrix)
-@@ -373,6 +437,9 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
+@@ -373,6 +439,9 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
  
      m_textureMapper->beginPainting(m_flipY ? TextureMapper::FlipY::Yes : TextureMapper::FlipY::No);
      m_textureMapper->beginClip(TransformationMatrix(), FloatRoundedRect(clipRect));
@@ -96588,7 +96721,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..ba2dd9dc02c81b541c65b3f4d7876381
  
  #if ENABLE(DAMAGE_TRACKING)
      std::optional<FloatRoundedRect> rectContainingRegionThatActuallyChanged;
-@@ -383,6 +450,10 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
+@@ -383,6 +452,10 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
          WTFBeginSignpost(this, CollectDamage);
          currentRootLayer.collectDamage(*m_textureMapper, frameDamage);
          WTFEndSignpost(this, CollectDamage);
@@ -96599,7 +96732,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..ba2dd9dc02c81b541c65b3f4d7876381
  
          recordFrameDamage(WTF::move(frameDamage));
  
-@@ -404,11 +475,20 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
+@@ -404,11 +477,20 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
          m_textureMapper->beginClip(TransformationMatrix(), *rectContainingRegionThatActuallyChanged);
  #endif
  
@@ -96620,7 +96753,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..ba2dd9dc02c81b541c65b3f4d7876381
  
  #if ENABLE(DAMAGE_TRACKING)
      if (rectContainingRegionThatActuallyChanged)
-@@ -426,6 +506,16 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
+@@ -426,6 +508,16 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
  
      m_textureMapper->endClip();
      m_textureMapper->endPainting();
@@ -96637,7 +96770,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..ba2dd9dc02c81b541c65b3f4d7876381
  
      if (sceneHasRunningAnimations)
          requestComposition(CompositionReason::Animation);
-@@ -556,6 +646,46 @@ void ThreadedCompositor::renderLayerTree()
+@@ -556,6 +648,46 @@ void ThreadedCompositor::renderLayerTree()
      if (m_suspendedCount > 0)
          return;
  
@@ -96684,12 +96817,14 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..ba2dd9dc02c81b541c65b3f4d7876381
      OptionSet<CompositionReason> reasons;
      bool shouldNotifiyDidComposite = false;
      {
-@@ -580,8 +710,16 @@ void ThreadedCompositor::renderLayerTree()
+@@ -580,8 +712,18 @@ void ThreadedCompositor::renderLayerTree()
  
          ASSERT(m_state.state == State::Scheduled);
          m_state.state = State::InProgress;
 +#if PLATFORM(HAIKU)
 +        m_lastRenderTimestamp = MonotonicTime::now();
++        m_inProgressSinceHaiku = m_lastRenderTimestamp;
++        ++m_renderCountHaiku;
 +#endif
      }
  
@@ -96701,7 +96836,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..ba2dd9dc02c81b541c65b3f4d7876381
  #if USE(TEXTURE_MAPPER)
      if (!m_context || !m_context->makeContextCurrent())
          return;
-@@ -599,23 +737,52 @@ void ThreadedCompositor::renderLayerTree()
+@@ -599,23 +741,52 @@ void ThreadedCompositor::renderLayerTree()
      if (viewportSize.isEmpty())
          return;
  
@@ -96754,7 +96889,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..ba2dd9dc02c81b541c65b3f4d7876381
  
      updateFPSCounter();
  
-@@ -631,8 +798,29 @@ void ThreadedCompositor::renderLayerTree()
+@@ -631,8 +802,29 @@ void ThreadedCompositor::renderLayerTree()
      PlatformDisplay::sharedDisplay().skiaGLContext()->swapBuffers();
  #endif
  
@@ -96784,7 +96919,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..ba2dd9dc02c81b541c65b3f4d7876381
  
      RunLoop::mainSingleton().dispatch([this, protectedThis = Ref { *this }] {
          if (m_layerTreeHost)
-@@ -656,6 +844,13 @@ void ThreadedCompositor::requestComposition(CompositionReason reason)
+@@ -656,6 +848,13 @@ void ThreadedCompositor::requestComposition(CompositionReason reason)
  {
      Locker locker { m_state.lock };
      m_state.reasons.add(reason);
@@ -96798,7 +96933,18 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..ba2dd9dc02c81b541c65b3f4d7876381
      scheduleUpdateLocked();
  }
  
-@@ -726,6 +921,20 @@ void ThreadedCompositor::frameComplete()
+@@ -703,6 +902,10 @@ void ThreadedCompositor::scheduleUpdateLocked()
+ void ThreadedCompositor::frameComplete()
+ {
+     ASSERT(m_workQueue->runLoop().isCurrent());
++#if PLATFORM(HAIKU)
++    if (testStallHaiku(TestStallHaiku::Frame))
++        return;
++#endif
+ 
+     Locker locker { m_state.lock };
+     WTFEmitSignpost(this, FrameComplete, "reasons: %s, state: %s, waiting for tiles: %s", reasonsToString(m_state.reasons).ascii().data(), stateToString(m_state.state).characters(), m_state.isWaitingForTiles ? "yes" : "no");
+@@ -726,6 +929,99 @@ void ThreadedCompositor::frameComplete()
      }
  }
  
@@ -96814,16 +96960,105 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..ba2dd9dc02c81b541c65b3f4d7876381
 +    if (m_state.isRenderTimerActive && !m_suspendedCount.load())
 +        m_renderTimer.startOneShot(0_s);
 +}
++
++// The page has asked for a composition and waited |waited| for it, which
++// takes a frame or two. Pages on the X399 have stopped drawing for good while
++// they kept running (keys typed into GitHub's issue form showed only after a
++// tab switch, whose suspend() and resume() restart this pipeline). Say where
++// the composition is stuck, then restart it from there as a tab switch would:
++// a render timer that is meant to run but will not fire is started, tiles
++// that never report back stop holding the update, and a frame the UI process
++// never confirmed counts as shown.
++void ThreadedCompositor::recoverFromStallHaiku(Seconds waited)
++{
++    ASSERT(RunLoop::isMain());
++    auto now = MonotonicTime::now();
++    if (now - m_lastStallCheckHaiku < 1_s)
++        return;
++    m_lastStallCheckHaiku = now;
++    if (m_stallCheckPendingHaiku.exchange(true)) {
++        std::fprintf(stderr, "Summit compositor stall: pid=%d the compositor thread has run no task for %.1f s\n",
++            static_cast<int>(getpid()), (now - m_stallCheckPostedAtHaiku).seconds());
++        return;
++    }
++    m_stallCheckPostedAtHaiku = now;
++    m_workQueue->dispatch([this, protectedThis = Ref { *this }, waited] {
++        m_stallCheckPendingHaiku = false;
++        bool completeFrame = false;
++        {
++            Locker locker { m_state.lock };
++            auto now = MonotonicTime::now();
++            bool inProgress = m_state.state == State::InProgress || m_state.state == State::ScheduledWhileInProgress;
++            bool timerArmed = m_renderTimer.isActive();
++            std::fprintf(stderr, "Summit compositor stall: pid=%d page waited %.1f s; state=%s reasons=0x%x render timer %s and %s, suspended=%u, waiting for tiles=%d (%u pending), waiting for a buffer=%d, did-composite pending=%d, frame in progress for %.1f s\n",
++                static_cast<int>(getpid()), waited.seconds(), stateToString(m_state.state).characters(), static_cast<unsigned>(m_state.reasons.toRaw()),
++                m_state.isRenderTimerActive ? "active" : "inactive", timerArmed ? "armed" : "not armed", m_suspendedCount.load(),
++                m_state.isWaitingForTiles, m_sceneState->pendingTiles(), m_isWaitingForRenderTarget,
++                !!m_state.didCompositeRenderingUpdateFunction, inProgress ? (now - m_inProgressSinceHaiku).seconds() : 0.0);
++            switch (m_state.state) {
++            case State::Scheduled:
++                if (m_suspendedCount.load())
++                    break;
++                m_state.isWaitingForTiles = false;
++                if (!m_state.isRenderTimerActive)
++                    startRenderTimer();
++                else if (!timerArmed)
++                    m_renderTimer.startOneShot(0_s);
++                break;
++            case State::InProgress:
++            case State::ScheduledWhileInProgress:
++                completeFrame = now - m_inProgressSinceHaiku >= 1_s;
++                break;
++            case State::Idle:
++            case State::Invalidated:
++                break;
++            }
++        }
++        if (completeFrame)
++            frameComplete();
++    });
++}
++
++// SUMMIT_TEST_COMPOSITOR_STALL=timer or =frame loses one render timer or one
++// frame confirmation, once, after the first 100 compositions: the stalls that
++// recoverFromStallHaiku() has to undo, made on purpose to check that it does.
++bool ThreadedCompositor::testStallHaiku(TestStallHaiku kind)
++{
++    static const std::optional<TestStallHaiku> requested = []() -> std::optional<TestStallHaiku> {
++        const char* value = std::getenv("SUMMIT_TEST_COMPOSITOR_STALL");
++        if (value && !std::strcmp(value, "timer"))
++            return TestStallHaiku::Timer;
++        if (value && !std::strcmp(value, "frame"))
++            return TestStallHaiku::Frame;
++        return std::nullopt;
++    }();
++    static std::atomic<bool> done { false };
++    if (requested != kind || m_renderCountHaiku < 100 || done.exchange(true))
++        return false;
++    std::fprintf(stderr, "Summit compositor test: pid=%d losing the %s after composition %u\n", static_cast<int>(getpid()),
++        kind == TestStallHaiku::Timer ? "render timer" : "frame confirmation", m_renderCountHaiku);
++    return true;
++}
 +#endif
 +
  RunLoop* ThreadedCompositor::runLoop()
  {
      return m_surface ? &m_workQueue->runLoop() : nullptr;
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.h b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.h
-index 6665a0cc3570425e2ad5d26dc6c443e3b8280665..7d645cbb5336108b8a33e6ce93b76ba6a87fc75f 100644
+index 6665a0cc3570425e2ad5d26dc6c443e3b8280665..e767a66aafb7d6d167de4285c64b5bc19d17170b 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.h
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.h
-@@ -137,6 +137,9 @@ private:
+@@ -97,6 +97,9 @@ public:
+     void invalidate();
+     void suspend();
+     void resume();
++#if PLATFORM(HAIKU)
++    void recoverFromStallHaiku(Seconds waited);
++#endif
+ 
+     bool isActive() const;
+ 
+@@ -137,6 +140,9 @@ private:
      TargetContents paintToSkiaCanvas(const WebCore::TransformationMatrix&, const WebCore::IntSize&, const OptionSet<WebCore::CompositionReason>&);
  #endif
      void frameComplete();
@@ -96833,7 +97068,7 @@ index 6665a0cc3570425e2ad5d26dc6c443e3b8280665..7d645cbb5336108b8a33e6ce93b76ba6
  
      void didCompositeRunLoopObserverFired();
  
-@@ -194,6 +197,12 @@ private:
+@@ -194,6 +200,21 @@ private:
      } m_attributes;
  
      RunLoop::Timer m_renderTimer;
@@ -96842,11 +97077,20 @@ index 6665a0cc3570425e2ad5d26dc6c443e3b8280665..7d645cbb5336108b8a33e6ce93b76ba6
 +    MonotonicTime m_lastRenderTimestamp;
 +    bool m_isWaitingForRenderTarget WTF_GUARDED_BY_LOCK(m_state.lock) { false };
 +    MonotonicTime m_renderTargetWaitStartedAt WTF_GUARDED_BY_LOCK(m_state.lock);
++    // recoverFromStallHaiku(): when the frame now in progress started, and
++    // the main thread's record of its last check.
++    MonotonicTime m_inProgressSinceHaiku WTF_GUARDED_BY_LOCK(m_state.lock);
++    MonotonicTime m_lastStallCheckHaiku;
++    MonotonicTime m_stallCheckPostedAtHaiku;
++    std::atomic<bool> m_stallCheckPendingHaiku { false };
++    enum class TestStallHaiku : uint8_t { Timer, Frame };
++    bool testStallHaiku(TestStallHaiku);
++    unsigned m_renderCountHaiku { 0 };
 +#endif
  #if USE(TEXTURE_MAPPER)
      std::unique_ptr<WebCore::TextureMapper> m_textureMapper;
  #endif
-@@ -234,4 +243,3 @@ private:
+@@ -234,4 +255,3 @@ private:
  } // namespace WebKit
  
  #endif // USE(COORDINATED_GRAPHICS)
