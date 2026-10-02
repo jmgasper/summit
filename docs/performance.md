@@ -173,6 +173,43 @@ paint 1321 / 1392); Google's cold DOMContentLoaded came at 695 instead of
 Cloudflare blog and Reddit moved within their spread; warm loads come from
 the cache, which keeps bodies decoded.
 
+### Pictures decoded on the main thread
+
+A system profile of the web process while The Guardian's front page loads
+(`profile -a`, 4 s, browser started first so its images are known) had the
+main thread busy for 2.5 s, 92-95 ms of it in dav1d, the AV1 decoder
+behind AVIF. Two causes:
+
+- **AVIF decoded to learn its size.** `AVIFImageReader::parseHeader`, which
+  WebKit calls on the main thread as an image's data arrives to find its
+  size, ran `avifDecoderNextImage()`: a full decode of the first image.
+  `decodeFrame()` then decoded it again for drawing. `avifDecoderParse()`
+  already gives width and height; the header no longer decodes. dav1d no
+  longer appears on the main thread at all (the same code is in the GTK
+  and WPE ports).
+- **Small pictures decoded in the paint.** WebKit decodes an image on its
+  decoder thread only if it is large (500 KB decoded) and only when the
+  layer is painted for the first time (`RenderLayerBacking`); Cocoa's tiles
+  ask for it on each tile's first paint. Tiles are now painted with
+  `DefaultAsynchronousImageDecode` and anything over 32 KB decoded counts:
+  an element's first image is decoded off the main thread and painted when
+  ready. Elements already showing an image still decode in place, so
+  nothing flickers.
+
+Against the build before both changes (two alternating pairs, medians,
+ms): The Guardian's DOMContentLoaded came at 1302 instead of 1502 cold and
+316 instead of 394 warm, its largest paint a little sooner (1842 / 1890,
+978 / 1056); BBC News and YouTube moved within their spread (their load
+events follow ad chains).
+
+The same profile shows two smaller costs that were left alone: every
+`thread_local` in a library goes through `__tls_get_addr` into
+runtime_loader's `get_tls_address` (Haiku has no static TLS), about 2% of
+the main thread, mostly mimalloc's default heap; and libWebKit and
+libJavaScriptCore each link their own copy of mimalloc (WTF and bmalloc
+are static in both), which rules out the easy fix of giving mimalloc fixed
+native TLS slots (`%fs` on Haiku).
+
 ### Largest contentful paint was reported late, not painted late
 
 With the order alternated, Summit's first byte, first paint and
