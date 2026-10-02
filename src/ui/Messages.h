@@ -19,6 +19,11 @@ constexpr uint32 kAddressModified = 'admo';
 constexpr uint32 kSuggestionChosen = 'sgch';
 // After a click: closes the suggestion list if the field lost the focus.
 constexpr uint32 kAddressFocusCheck = 'adfc';
+// Test input for the address field (needs SUMMIT_ENABLE_INPUT_SYNTHESIS=1):
+// "text" is typed into the field as key presses, or "key" ("down", "up",
+// "enter", "escape", "backspace") is pressed; "select_all" first selects the
+// field's text. The reply describes the field and its suggestion list.
+constexpr uint32 kTypeInAddress = 'tyad';
 constexpr uint32 kBookmark = 'bkmk';
 constexpr uint32 kShowBookmarks = 'sbkm';
 constexpr uint32 kShowHistory = 'shis';

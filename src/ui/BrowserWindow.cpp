@@ -2578,6 +2578,45 @@ void BrowserWindow::MessageReceived(BMessage* message)
             break;
         }
         case kAddressModified: AddressModified(); break;
+        case kTypeInAddress: {
+            BMessage reply(B_REPLY);
+            const char* enabled = std::getenv("SUMMIT_ENABLE_INPUT_SYNTHESIS");
+            if (!enabled || std::strcmp(enabled, "1") != 0) {
+                reply.AddString("error", "input synthesis is disabled");
+            } else {
+                auto* textView = fAddress->TextView();
+                if (!textView->IsFocus()) fAddress->MakeFocus();
+                if (message->GetBool("select_all", false)) textView->SelectAll();
+                // Real key-down messages to the field, as the keyboard sends
+                // them: the field's filters and BTextView handle them.
+                auto press = [&](const std::string& bytes) {
+                    BMessage key(B_KEY_DOWN);
+                    key.AddInt64("when", system_time());
+                    key.AddInt32("modifiers", 0);
+                    key.AddString("bytes", bytes.c_str());
+                    key.AddInt8("byte", bytes[0]);
+                    key.AddInt32("raw_char", static_cast<uint8>(bytes[0]));
+                    PostMessage(&key, textView);
+                };
+                const std::string text = message->GetString("text", "");
+                for (size_t i = 0; i < text.size();) {
+                    size_t length = 1;
+                    const auto lead = static_cast<unsigned char>(text[i]);
+                    if (lead >= 0xf0) length = 4; else if (lead >= 0xe0) length = 3; else if (lead >= 0xc0) length = 2;
+                    press(text.substr(i, length));
+                    i += length;
+                }
+                const std::string key = message->GetString("key", "");
+                if (key == "down") press(std::string(1, B_DOWN_ARROW));
+                else if (key == "up") press(std::string(1, B_UP_ARROW));
+                else if (key == "enter") press(std::string(1, B_ENTER));
+                else if (key == "escape") press(std::string(1, B_ESCAPE));
+                else if (key == "backspace") press(std::string(1, B_BACKSPACE));
+                reply.AddBool("queued", true);
+            }
+            message->SendReply(&reply);
+            break;
+        }
         case kAddressFocusCheck:
             if (!fAddress->TextView()->IsFocus()) HideSuggestions();
             break;
@@ -2796,6 +2835,14 @@ void BrowserWindow::MessageReceived(BMessage* message)
                 fOpenPanel = std::make_unique<BFilePanel>(B_OPEN_PANEL, &target);
             }
             fOpenPanel->Show(); break;
+        case B_SIMPLE_DATA:
+            // Files dropped on the tab strip or the toolbar (a page takes its
+            // own drops) open in new tabs, as in other browsers.
+            if (!message->WasDropped() || !message->HasRef("refs")) {
+                BrowserWindowBase::MessageReceived(message);
+                break;
+            }
+            [[fallthrough]];
         case B_REFS_RECEIVED: {
             entry_ref ref;
             for (int32 i = 0; message->FindRef("refs", i, &ref) == B_OK; ++i) {
@@ -3015,6 +3062,21 @@ void BrowserWindow::MessageReceived(BMessage* message)
             reply.AddInt32("scroll_status", fScrollBurstStatus);
             reply.AddInt64("scroll_duration_us", fScrollBurstDuration);
             reply.AddString("address", fAddress->Text());
+            {
+                int32 start = 0, end = 0;
+                fAddress->TextView()->GetSelection(&start, &end);
+                reply.AddInt32("address_selection_start", start);
+                reply.AddInt32("address_selection_end", end);
+                reply.AddBool("address_focused", fAddress->TextView()->IsFocus());
+                reply.AddString("address_typed", fAddressTyped.c_str());
+                reply.AddString("autofill_url", fAutofill.url.c_str());
+                reply.AddBool("suggestions_showing", fSuggestions->IsShowing());
+                reply.AddInt32("suggestion_selected", fSuggestions->Selected());
+                for (const auto& row : fSuggestions->Rows()) {
+                    reply.AddString("suggestion_title", row.title.c_str());
+                    reply.AddString("suggestion_url", row.url.c_str());
+                }
+            }
             reply.AddString("status", fStatus->Text());
             reply.AddInt64("now", system_time());
             reply.AddRect("frame", Frame());

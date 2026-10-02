@@ -374,6 +374,35 @@ int main(int argc, char** argv)
         return 5;
     }
     BMessenger window = browsers[windowIndex].first;
+    if (command == "typeaddress" || command == "keyaddress") {
+        // typeaddress TEXT [select]: types into the address field (select: over
+        // its text); keyaddress down|up|enter|escape|backspace. Prints the
+        // field and its suggestions after a short pause.
+        if (!argument) return 2;
+        BMessage type(summit::kTypeInAddress), reply;
+        if (command == "typeaddress") {
+            type.AddString("text", argument);
+            if (index + 1 < argc && !std::strcmp(argv[index + 1], "select")) type.AddBool("select_all", true);
+        } else type.AddString("key", argument);
+        status = window.SendMessage(&type, &reply, timeout, timeout);
+        if (status != B_OK) { std::fprintf(stderr, "typeaddress: %s\n", std::strerror(status)); return 5; }
+        if (const char* error = nullptr; reply.FindString("error", &error) == B_OK) { std::fprintf(stderr, "%s\n", error); return 6; }
+        snooze(400000);
+        BMessage ask(summit::kBrowserState), state;
+        if (window.SendMessage(&ask, &state, timeout, timeout) != B_OK) return 5;
+        std::printf("{\"address\":\"%s\",\"selection\":[%ld,%ld],\"focused\":%s,\"typed\":\"%s\",\"autofill\":\"%s\","
+            "\"showing\":%s,\"selected\":%ld,\"suggestions\":[",
+            Escape(String(state, "address")).c_str(), long(state.GetInt32("address_selection_start", 0)),
+            long(state.GetInt32("address_selection_end", 0)), state.GetBool("address_focused", false) ? "true" : "false",
+            Escape(String(state, "address_typed")).c_str(), Escape(String(state, "autofill_url")).c_str(),
+            state.GetBool("suggestions_showing", false) ? "true" : "false", long(state.GetInt32("suggestion_selected", -1)));
+        const char* title = nullptr;
+        const char* url = nullptr;
+        for (int32 i = 0; state.FindString("suggestion_title", i, &title) == B_OK && state.FindString("suggestion_url", i, &url) == B_OK; ++i)
+            std::printf("%s{\"title\":\"%s\",\"url\":\"%s\"}", i ? "," : "", Escape(title).c_str(), Escape(url).c_str());
+        std::puts("]}");
+        return 0;
+    }
     if (command == "state") {
         BMessage ask(summit::kBrowserState), state;
         const bigtime_t before = system_time();
