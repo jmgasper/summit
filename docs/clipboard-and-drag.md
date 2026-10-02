@@ -91,6 +91,8 @@ Checked on the X399 on 2 October 2026 with a 320×200 PNG:
   types and sizes, the image decodes and the text reads back.
 - The same drop on the page's heading (no drop handler) opens the PNG in the
   tab, and Back returns to the page.
+- Dropped on `<input type="file" multiple>`, both files are selected (its
+  `change` event lists them) and the page stays.
 
 `DataTransfer.items` was missing (undefined) until the engine turned on
 `DataTransferItemsEnabled`, which defaults to on only for the Cocoa, GTK, WPE

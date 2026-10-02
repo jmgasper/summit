@@ -1,5 +1,50 @@
 # Development verification
 
+## 2 October 2026: GitHub issues #6-#15
+
+All on the X399, built incrementally in `SkiaCGMiPGO` and installed as
+`BUNDLE_NAME` (see the end of this section).
+
+- **#6, WebAssembly start-up.** Creating a module's memory cost about 125 ms
+  (Haiku's `mprotect()` walks the whole 4 GiB reservation, twice); now 1.9 ms.
+  [performance.md](performance.md).
+- **#7, 1Password after the password.** Not reproducible without the owner's
+  account. Key derivation is as fast as in Firefox (WebCrypto much faster);
+  #6 and the frame pacing of #9 remove costs 1Password hit. Left for the
+  owner to time again.
+- **#8, address field type-ahead.** Inline completion of visited and
+  bookmarked sites and path segments, a suggestion list (history, bookmarks,
+  search), ranking by visits and recency ([browser-ui.md](browser-ui.md)).
+- **#9, WebGL Aquarium and xbitlabs' FPS test.** Frames were paced from the
+  page's request rather than the refresh (no display link on Haiku): Aquarium
+  52 -> 60 frames/s (5,000 fish 28 -> 40). Canvases were redrawn only every
+  couple of seconds after a full-canvas `clearRect()` (a Haiku canvas damage
+  optimisation never reset its rectangle for composited canvases): xbitlabs
+  "High" 35 -> 42 frames/s with its 1% low 1 -> 14. `requestAnimationFrame`
+  no longer runs twice within half a frame. [performance.md](performance.md).
+- **#10, notifications.** Permission prompt, Haiku notifications with the
+  site's icon, clicks focus the tab and reach the page, decisions in
+  Preferences › Site Permissions ([site-permissions.md](site-permissions.md)).
+- **#11, location.** `navigator.geolocation` through BeaconDB (Wi-Fi networks
+  or the network address), asked per site; what Haiku lacks is listed in
+  [site-permissions.md](site-permissions.md) and on the issue.
+- **#12, YouTube.** Seeks decode only the pictures needed to reach the target
+  (783 -> 301 ms from data to playing); a large blurred element (the
+  thumbnail behind the player) is composited and blurred on the GPU instead
+  of on the main thread for every tile while a new video loads.
+- **#13, topcoder.com and the router dashboard.** A page background set after
+  the first paint hid the page (TextureMapper drew the colour alone); fixed
+  for topcoder, the router dashboard needs the owner's login to confirm. The
+  colour is now drawn under the page's tiles, so a tile not painted yet shows
+  the page background instead of black.
+- **Found on the way: stale tiles.** GitHub's issue list kept showing parts of
+  an earlier layout: the tile upload budget took tiles in view for tiles
+  outside it. Tiles in the viewport are now always uploaded at once.
+- **#14, #15, dropping and pasting files.** Files dropped from Tracker reach
+  drop zones and file inputs (`files` and `items`), or open in the tab;
+  pasted BBitmaps arrive as `image.png`; rich paste into editable content
+  ([clipboard-and-drag.md](clipboard-and-drag.md)).
+
 ## 1 October 2026, afternoon: tabs that stopped drawing
 
 Reported by the owner with `bundle-xgce7ywe`, again after restarts on

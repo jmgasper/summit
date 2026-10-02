@@ -6813,3 +6813,174 @@ remain the more representative evidence for Guardian choppiness.
 The X399 desktop launcher `/boot/home/Desktop/Summit-current.sh` now points to
 `bundle-ueu9tgxp`. Its previous version is preserved as
 `/boot/home/Desktop/Summit-current.pre-handoff-20260925.sh`.
+
+## GitHub issues #6, #7, #9 and #12 (2 October 2026)
+
+Measured on the X399 (Threadripper 1950X, GTX 1070 through zink/NVK, two 4K
+monitors at 200%) with private copies of the test bundles, the window at
+1660x940 logical pixels.
+
+### #6: WebAssembly memories were slow to create
+
+Haiku's `mprotect()` visits every page of its range, and JavaScriptCore
+changed the protection of a WebAssembly memory's whole 4 GiB reservation twice
+(the inaccessible tail when created, everything writable again before
+freeing), about 60 ms each, while holding the address space lock that the
+process's other threads also need. The reservation is now mapped
+inaccessible from the start (`MAP_NORESERVE`), only the pages the memory uses
+are opened, and freeing it unmaps it (`BufferMemoryHandle.cpp`,
+`WasmMemory.cpp`, `ArrayBuffer.cpp`; `SUMMIT_WASM_RESERVE_INACCESSIBLE=0`
+restores the old way). `tools/bench/pages/wasm-start.html`: instantiating a
+module with a 64 KiB memory took 125 ms, now 1.9 ms, in a worker or on the
+page; a module without a memory was already 0.8 ms.
+
+### #7: 1Password after the password
+
+`tools/bench/pages/crypto-speed.html` runs PBKDF2-HMAC-SHA256 with 650,000
+iterations, as 1Password's unlock does: through WebAssembly 700 ms in Summit
+against 510-690 ms in Firefox 155 on the same machine, through WebCrypto
+140 ms against 900 ms. Neither explains a long wait. The #6 fix removes about
+130 ms from every WebAssembly instantiation with a memory, where 1Password's
+background page was seen spending its start-up, and the frame pacing below
+speeds up every animated page. The unlock itself needs the owner's account to
+measure.
+
+### #9: frames were paced from the request, not the refresh
+
+The Haiku port has no display refresh monitor (`HAVE_DISPLAY_LINK` is defined
+for Mac, GTK and WPE only), so `RenderingUpdateScheduler` falls back to a
+one-shot timer of one frame interval, started when the page asks for the next
+frame. A page that calls `requestAnimationFrame()` 2 ms into its callback got
+a frame every 18.7-19 ms: WebGL Aquarium at 52 frames/s with its own work at
+4 ms a frame, the compositor at 10.8 ms and the rest of the frame idle. The
+interval is now counted from the start of the previous update, as a display's
+refresh would be, and an overdue update runs at once
+(`SUMMIT_REFRESH_FROM_REQUEST=1` restores the old timing).
+
+| Page | Before | After |
+| --- | --- | --- |
+| WebGL Aquarium, 500 fish | 52-53 frames/s | 60 (frames presented: 120 per 2 s) |
+| WebGL Aquarium, 5,000 fish | 28 | 40 (its own JavaScript and WebGL calls take 21 ms a frame) |
+| xbitlabs.com FPS test, Low | 52.9 average, 18.5 ms frames | 55-58, 16.3-17.1 ms (its ads vary) |
+
+At 500 fish each composited frame reads 5.3 Mpx back from the GPU (6.6 ms
+waiting for the GPU, 3.8 ms copying, `SUMMIT_PRESENT_STATS=1
+SUMMIT_READBACK_SPLIT=1`), which leaves room for 60 frames/s now that the page
+and the compositor overlap. At 5,000 fish the page's own thread is the limit:
+JavaScript, WebKit's WebGL bindings, ANGLE's validation and Mesa's GL front
+end, without one dominant cost.
+
+Rendering updates also come from layer flushes, style changes and frames'
+loads, and each ran the page's `requestAnimationFrame` callbacks, so pages saw
+63-66 a second, some 2 ms apart; xbitlabs' test takes the rate it measures for
+the refresh rate. Callbacks that ran less than half a frame ago now wait for
+the next refresh (`SUMMIT_RAF_MIN_INTERVAL_MS`, 0 to run them in every update).
+Half a frame rather than a whole one: an update that waited for the compositor
+can be followed by one that did not, closer than a frame, and skipping that
+one would drop a frame. With a 13.7 ms gap the page saw 60.6 callbacks a
+second, with half a frame 66 but none closer than 14 ms.
+
+### #9: canvases that froze for seconds
+
+At its "High" load, xbitlabs.com's test (500 rotated squares with a 15 px
+shadow blur each frame) stopped for 450-820 ms every couple of seconds.
+`tools/bench/pages/canvas-shadow-stress.html` draws the same: 47.7 frames/s
+with a 99th percentile frame of 460 ms. `SUMMIT_CANVAS_TRACE=1` showed why:
+the canvas was flushed and prepared for display about once in two seconds,
+not every frame, so its recorded drawing grew to 518,000-889,000 operations
+(75-127 frames) and was then replayed at once, while the canvas on screen did
+not change. A Haiku change of 23 September ("canvas damage coalescing") skips
+the damage notification when the accumulated dirty rectangle already holds the
+new one, and only `HTMLCanvasElement::paint()` cleared that rectangle; a
+composited canvas is not painted that way, so after one full-canvas
+`clearRect()` every later draw was "contained" and the canvas was never queued
+again until something else repainted it. The rectangle now starts again once
+the canvas has been prepared for display (the frame boundary), so the
+Chart.js gain stays. The probe now runs at 53.8 frames/s with a 99th
+percentile of 20 ms and a worst frame of 79 ms; 1,000 squares run at a steady
+30 frames/s. On the site, "High" went from 35 frames/s with a 1% low of 1 to
+42 with a 1% low of 14.
+
+### #12: YouTube
+
+Big Buck Bunny (`aqz-KE-bpKQ`, 720p60 H.264 through NVDEC) during playback:
+60 frames/s with none dropped; a zero-delay timer chain on the page ran 632
+times in 5 s with a worst gap of 37 ms.
+
+Seeking was slow because a seek decodes every picture from the keyframe before
+the target, up to 5.6 s of pictures (335) on YouTube, which took 745 ms after
+YouTube's data had arrived (55 ms). Pictures before the target that no other
+picture refers to (`nal_ref_idc` 0 in every slice) are now left out, as
+FFmpeg's `AVDISCARD_NONREF` does (`SUMMIT_MSE_SKIP_DISPOSABLE=0` decodes them
+again); on this video that is 55-60% of them.
+
+| Seek target | Pictures before it | Data to playing, before | After |
+| --- | --- | --- | --- |
+| 89.9 s | 331 | 783 ms | 301 ms (199 left out) |
+| 149.9 s | 117 | 285 ms | 145 ms |
+| 209.9 s | 339 | 762 ms | 290 ms |
+
+From `currentTime` being set to the video playing past the target: 1,158 ms
+before, 598 ms after (the 89.9 s seek).
+
+Switching to another video from the page (a recommended video's link,
+YouTube's own navigation) took about 1.3 s to the first picture: 0.8 s of
+YouTube's script and requests before it creates the new player, 0.3 s until
+the first data is appended, 0.2 s to decode the first 1080p picture. What made
+it feel slow is the page's main thread afterwards: a zero-delay timer chain
+was blocked for 5.5 of the 6 seconds after the click. The profile
+(`profile -a -f`) put the largest single cost in CSS filters:
+`ytd-thumbnail.player-container-background-image`, YouTube's blurred
+thumbnail of the next video behind the player, has `filter: blur(15px)` over
+1202x676 CSS pixels, and since the element is not composited, the blur was done
+in software (`Raster8888BlurAlgorithm`) on the main thread whenever its tiles
+were recorded, for every tile it touches and every repaint. WebKit2 never makes
+filters a compositing trigger; ports that paint tiles on the GPU do this blur
+cheaply, Haiku paints tiles on the CPU. Elements with a blur of at least 5 CSS
+pixels (outsets of 15) over at least 200x200 are now composited on Haiku, so
+their tiles are painted without the filter and the compositor blurs the layer
+on the GPU, where TextureMapper scales a wide blur down first
+(`SUMMIT_COMPOSITE_WIDE_BLURS=0` turns this off). Small filtered elements,
+such as YouTube's icons with a drop shadow, are left alone.
+
+| Switching videos (same target), main thread | Before | After |
+| --- | --- | --- |
+| Time in `RenderLayer::applyFilters` | 1,387-1,411 ms | 580-649 ms |
+| Tile recording | 868-874 ms | 192-281 ms |
+| Timer chain blocked in the 6 s after the click | 5.5-5.6 s | 4.0-4.1 s |
+| Timer chain turns in those 6 s | 44-45 | 141-167 |
+
+The rest is YouTube's own script (about 1 s of main-thread time), its View
+Transition snapshot of the old page (0.4-0.5 s, painted in software) and style
+resolution (0.3-0.4 s).
+
+Comparing the composited blur with the software one (`pages/wide-blur.html`)
+showed that TextureMapper applied filter values in CSS pixels to surfaces in
+device pixels: at 200% every composited blur, including every
+`backdrop-filter`, was half as strong as specified. Blur and drop-shadow values
+are now scaled by the layer's scale before TextureMapper applies them. One
+difference remains: TextureMapper samples the layer's edge pixels beyond its
+edge, so a composited blur keeps hard outer edges where the software blur
+fades them into transparency.
+
+### Stale and black tiles (found while checking the above)
+
+GitHub's issue list showed parts of an earlier layout (titles doubled at a
+tile boundary, a toolbar with its buttons twice) and black rectangles, for as
+long as the page stayed still; the build installed before this work did the
+same. Two causes:
+
+- **Tiles in view were deferred.** The upload budget of 29 September
+  (`SUMMIT_TILE_UPLOAD_BUDGET_MS`, 3 ms) uploads at once only the tiles that
+  the last composition showed and leaves the rest for later compositions. It
+  took "showed" from that composition's clip, which with damage tracking is
+  often only what changed, and is reset when the layer moves; tiles in view
+  were then taken for tiles outside it, and a composition that had used its
+  budget before it reached the layer left them again, every time. The tiles
+  in the viewport (plus 256 pixels) are now uploaded at once. With the budget
+  switched off the page was right, which pointed at it.
+- **Black where no tile was painted yet.** The fix for #13 drew a layer's
+  tiles without its background colour, so the page's root layer showed black
+  wherever a tile was missing (a window that was made wider). The colour is
+  now drawn under the tiles: what is not painted yet shows the page's
+  background.

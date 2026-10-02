@@ -4472,6 +4472,47 @@ index 508b64bf39d2074357445b343e1056b1c3212411..f22828d4fdd11099e38c6161892e61b7
          InspectorInstrumentation::didHandleEvent(context, event, registeredListener);
  
          if (registeredListener->isPassive())
+diff --git a/Source/WebCore/dom/ScriptedAnimationController.cpp b/Source/WebCore/dom/ScriptedAnimationController.cpp
+index fe92fc6370b31f2f826b8762171186c54700be76..4976d5a2754255636b2c71b899d6482dcacbf8b3 100644
+--- a/Source/WebCore/dom/ScriptedAnimationController.cpp
++++ b/Source/WebCore/dom/ScriptedAnimationController.cpp
+@@ -42,6 +42,11 @@
+ #include "UserGestureIndicator.h"
+ #include <wtf/SystemTracing.h>
+ 
++#if PLATFORM(HAIKU)
++#include <cstdlib>
++#include <cstring>
++#endif
++
+ namespace WebCore {
+ 
+ ScriptedAnimationController::ScriptedAnimationController(Document& document)
+@@ -106,6 +111,24 @@ bool ScriptedAnimationController::shouldRescheduleRequestAnimationFrame(ReducedR
+     LOG_WITH_STREAM(RequestAnimationFrame, stream << "ScriptedAnimationController::shouldRescheduleRequestAnimationFrame - throttled relative to page " << isThrottledRelativeToPage()
+         << ", last delta " << (timestamp - m_lastAnimationFrameTimestamp).milliseconds() << "ms, preferred interval " << preferredScriptedAnimationInterval().milliseconds() << ")");
+ 
++#if PLATFORM(HAIKU)
++    // Haiku has no display link: rendering updates also come from layer
++    // flushes, style changes and frames' loads, and each ran the callbacks,
++    // so pages saw 63-66 frames a second (xbitlabs.com's FPS test measured
++    // that as the refresh rate and the 60 frames a second after it as drops).
++    // Callbacks that ran less than half a frame ago wait for the next
++    // refresh. Half, not a whole frame: a refresh whose update had to wait
++    // for the compositor can be followed by one that did not, closer than a
++    // frame, and skipping that one would drop a frame.
++    // SUMMIT_RAF_MIN_INTERVAL_MS sets the gap (0 runs them in every update).
++    static const Seconds minimumInterval = [] {
++        const char* value = getenv("SUMMIT_RAF_MIN_INTERVAL_MS");
++        return value && *value ? Seconds::fromMilliseconds(std::max(0.0, atof(value))) : Seconds(-1);
++    }();
++    Seconds gap = minimumInterval >= 0_s ? minimumInterval : preferredScriptedAnimationInterval() / 2;
++    if (gap > 0_s && m_lastAnimationFrameTimestamp && timestamp - m_lastAnimationFrameTimestamp < gap)
++        return true;
++#endif
+     return timestamp <= m_lastAnimationFrameTimestamp || (isThrottledRelativeToPage() && (timestamp - m_lastAnimationFrameTimestamp < preferredScriptedAnimationInterval()));
+ }
+ 
 diff --git a/Source/WebCore/dom/make_names.pl b/Source/WebCore/dom/make_names.pl
 index 7f18cb986d1972948b04893b511de16598d7f103..68525703b1263997f5100c89a1c31dd939c8245f 100755
 --- a/Source/WebCore/dom/make_names.pl
@@ -4507,10 +4548,10 @@ index 9417e52ee3925b7b2654b1e9156a99d52a55b6bf..ff861a0b6c68608c27866dac44236f00
  
  } // namespace WebCore
 diff --git a/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.cpp b/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.cpp
-index 50c7fe12885a08e9650329a04bc561a391823a1c..f52e7fbc0333efd816cd4c8cbd0f43c4ab0459de 100644
+index 50c7fe12885a08e9650329a04bc561a391823a1c..a3e11b8dd7fa6d21024bc7f47c0efa89fd6893a9 100644
 --- a/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.cpp
 +++ b/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.cpp
-@@ -2465,10 +2465,21 @@ void CanvasRenderingContext2DBase::willUpdateContents(std::optional<FloatRect> r
+@@ -2465,10 +2465,30 @@ void CanvasRenderingContext2DBase::willUpdateContents(std::optional<FloatRect> r
          if (context->shouldAntialias())
              dirtyRect.inflate(1);
  #if USE(COORDINATED_GRAPHICS)
@@ -4520,7 +4561,16 @@ index 50c7fe12885a08e9650329a04bc561a391823a1c..f52e7fbc0333efd816cd4c8cbd0f43c4
 +            return !value || std::strcmp(value, "0");
 +        }();
 +        if (coalesceCanvasDamage && is<HTMLCanvasElement>(canvasBase())) {
-+            if (m_dirtyRect.contains(dirtyRect))
++            // A frame ends when the canvas is prepared for display, which also
++            // clears this flag; only HTMLCanvasElement::paint() cleared the
++            // rectangle, and a composited canvas is not painted that way. After
++            // one full-canvas clearRect() every later draw was "contained", so
++            // the canvas was not queued for display again for seconds while its
++            // recording grew (xbitlabs.com's FPS test: frozen, then a 700 ms
++            // replay of 120 frames).
++            if (!isInPreparationForDisplayOrFlush())
++                m_dirtyRect = { };
++            else if (m_dirtyRect.contains(dirtyRect))
 +                return;
 +            m_dirtyRect.unite(dirtyRect);
 +        } else
@@ -6276,10 +6326,10 @@ index a26485a6771a1d63e0d0f5ff3800f30221a77304..723f476108c2e7516f1e24723248d1c9
  {
      LOG(EventLoop, "Page %p isolatedUpdateRendering()", this);
 diff --git a/Source/WebCore/page/RenderingUpdateScheduler.cpp b/Source/WebCore/page/RenderingUpdateScheduler.cpp
-index 06e9a596c37605ce8ce2d70ffbcb23e63de6e4e8..3fb2c0aeee54571404be9c1cc0c64914a526d371 100644
+index 06e9a596c37605ce8ce2d70ffbcb23e63de6e4e8..ec33be50927aaec5069d7bf43e90c0e16e3480f1 100644
 --- a/Source/WebCore/page/RenderingUpdateScheduler.cpp
 +++ b/Source/WebCore/page/RenderingUpdateScheduler.cpp
-@@ -33,6 +33,9 @@
+@@ -33,9 +33,17 @@
  #include "Page.h"
  #include "Timer.h"
  #include <wtf/SystemTracing.h>
@@ -6289,7 +6339,40 @@ index 06e9a596c37605ce8ce2d70ffbcb23e63de6e4e8..3fb2c0aeee54571404be9c1cc0c64914
  #include <wtf/TZoneMallocInlines.h>
  #include <wtf/text/TextStream.h>
  
-@@ -113,6 +116,25 @@ void RenderingUpdateScheduler::clearScheduled()
++#if PLATFORM(HAIKU)
++#include <cstdlib>
++#include <cstring>
++#endif
++
+ namespace WebCore {
+ 
+ WTF_MAKE_TZONE_ALLOCATED_IMPL(RenderingUpdateScheduler);
+@@ -88,7 +96,23 @@ void RenderingUpdateScheduler::scheduleRenderingUpdate()
+ 
+     if (!scheduleAnimation()) {
+         LOG_WITH_STREAM(DisplayLink, stream << "RenderingUpdateScheduler::scheduleRenderingUpdate for interval " << protect(m_page)->preferredRenderingUpdateInterval() << " falling back to timer");
+-        startTimer(protect(m_page)->preferredRenderingUpdateInterval());
++        Seconds delay = protect(m_page)->preferredRenderingUpdateInterval();
++#if PLATFORM(HAIKU)
++        // Haiku has no display link, so every update comes from this timer.
++        // Counted from the request, the interval came on top of the time the
++        // page took to ask (requestAnimationFrame from inside its callback):
++        // a page asking 2 ms into its frame got a frame every 19 ms, 52 a
++        // second (WebGL Aquarium). Count it from the last update's start, as a
++        // display's refresh would; an update that is overdue runs at once.
++        // SUMMIT_REFRESH_FROM_REQUEST=1 returns to the old timing.
++        static const bool fromRequest = [] {
++            const char* value = getenv("SUMMIT_REFRESH_FROM_REQUEST");
++            return value && !strcmp(value, "1");
++        }();
++        if (!fromRequest && m_lastRefreshHaiku)
++            delay = std::clamp(delay - (MonotonicTime::now() - m_lastRefreshHaiku), 0_s, delay);
++#endif
++        startTimer(delay);
+     }
+     
+     protect(m_page)->didScheduleRenderingUpdate();
+@@ -113,6 +137,25 @@ void RenderingUpdateScheduler::clearScheduled()
      m_refreshTimer = nullptr;
  }
  
@@ -6315,11 +6398,29 @@ index 06e9a596c37605ce8ce2d70ffbcb23e63de6e4e8..3fb2c0aeee54571404be9c1cc0c64914
  DisplayRefreshMonitorFactory* RenderingUpdateScheduler::displayRefreshMonitorFactory() const
  {
      return m_page->chrome().client().displayRefreshMonitorFactory();
+@@ -130,6 +173,9 @@ void RenderingUpdateScheduler::displayRefreshFired()
+ 
+     tracePoint(TriggerRenderingUpdate);
+ 
++#if PLATFORM(HAIKU)
++    m_lastRefreshHaiku = MonotonicTime::now();
++#endif
+     clearScheduled();
+     
+     if (m_page->chrome().client().shouldTriggerRenderingUpdate(m_rescheduledRenderingUpdateCount)) {
 diff --git a/Source/WebCore/page/RenderingUpdateScheduler.h b/Source/WebCore/page/RenderingUpdateScheduler.h
-index 27245cb297f582e0b872150b321a234fb12014ae..9d28a54aa0745773b5817c0093214d20f0bc3209 100644
+index 27245cb297f582e0b872150b321a234fb12014ae..56be1e3d0151bc67dc6aa7a76d5c2beada73d21d 100644
 --- a/Source/WebCore/page/RenderingUpdateScheduler.h
 +++ b/Source/WebCore/page/RenderingUpdateScheduler.h
-@@ -53,6 +53,15 @@ public:
+@@ -27,6 +27,7 @@
+ 
+ #include "AnimationFrameRate.h"
+ #include "DisplayRefreshMonitorClient.h"
++#include <wtf/MonotonicTime.h>
+ #include <wtf/Seconds.h>
+ #include <wtf/TZoneMalloc.h>
+ #include <wtf/WeakRef.h>
+@@ -53,6 +54,15 @@ public:
  
      void windowScreenDidChange(PlatformDisplayID);
  
@@ -6335,6 +6436,16 @@ index 27245cb297f582e0b872150b321a234fb12014ae..9d28a54aa0745773b5817c0093214d20
  private:
      bool scheduleAnimation();
  
+@@ -69,6 +79,9 @@ private:
+     std::unique_ptr<Timer> m_refreshTimer;
+     unsigned m_rescheduledRenderingUpdateCount { 0 };
+     bool m_useTimer { false };
++#if PLATFORM(HAIKU)
++    MonotonicTime m_lastRefreshHaiku;
++#endif
+ };
+ 
+ } // namespace WebCore
 diff --git a/Source/WebCore/page/haiku/EventHandlerHaiku.cpp b/Source/WebCore/page/haiku/EventHandlerHaiku.cpp
 index 89f2b38d398b9fb7d5319d06bf0b918cfc569e1b..fbd1eea56e97654861c4b24b25c0da6e9f750604 100644
 --- a/Source/WebCore/page/haiku/EventHandlerHaiku.cpp
@@ -16304,10 +16415,10 @@ index 0000000000000000000000000000000000000000..84f921897b08bf57ddd0dad28dae0bc9
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..dfd4a87d2472656135a0cb8da3a7139757ec2aa5
+index 0000000000000000000000000000000000000000..7b36504714bbace3220115a1ba89f3d0a4d8b2cc
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
-@@ -0,0 +1,1764 @@
+@@ -0,0 +1,1827 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -16343,6 +16454,7 @@ index 0000000000000000000000000000000000000000..dfd4a87d2472656135a0cb8da3a71397
 +#include "PlatformTimeRanges.h"
 +#include "SharedBuffer.h"
 +#include "VideoTrackPrivate.h"
++#include <span>
 +#include <wtf/Condition.h>
 +#include <wtf/MainThread.h>
 +#include <wtf/NeverDestroyed.h>
@@ -16584,6 +16696,47 @@ index 0000000000000000000000000000000000000000..dfd4a87d2472656135a0cb8da3a71397
 +}
 +
 +bool isH264(const std::string& codec) { return codec == "avc1" || codec == "avc3"; }
++
++// Whether no other picture refers to this H.264 sample: each of its slices has
++// nal_ref_idc 0 (an IDR slice never has). Such a picture before a seek target
++// need not be decoded at all, as FFmpeg's AVDISCARD_NONREF does. |lengthSize|
++// is the NAL length field's size from the avcC record.
++bool isDisposableH264(std::span<const uint8_t> sample, unsigned lengthSize)
++{
++    if (lengthSize < 1 || lengthSize > 4)
++        return false;
++    bool sawSlice = false;
++    size_t offset = 0;
++    while (offset + lengthSize < sample.size()) {
++        size_t length = 0;
++        for (unsigned i = 0; i < lengthSize; ++i)
++            length = (length << 8) | sample[offset + i];
++        offset += lengthSize;
++        if (!length || length > sample.size() - offset)
++            return false;
++        uint8_t header = sample[offset];
++        unsigned type = header & 0x1f;
++        if (type == 5)
++            return false;
++        if (type == 1) {
++            if (header & 0x60)
++                return false;
++            sawSlice = true;
++        }
++        offset += length;
++    }
++    return sawSlice;
++}
++
++// SUMMIT_MSE_SKIP_DISPOSABLE=0 decodes every picture before a seek target.
++bool skipDisposableBeforeTarget()
++{
++    static const bool enabled = [] {
++        const char* value = std::getenv("SUMMIT_MSE_SKIP_DISPOSABLE");
++        return !value || std::strcmp(value, "0");
++    }();
++    return enabled;
++}
 +bool isAAC(const SummitMP4::TrackInfo& info) { return info.codec == "mp4a" && (info.objectTypeIndication == 0x40 || info.objectTypeIndication == 0x67); }
 +
 +} // namespace
@@ -16796,6 +16949,8 @@ index 0000000000000000000000000000000000000000..dfd4a87d2472656135a0cb8da3a71397
 +                m_lastGeneration = generation;
 +                m_presentedSinceFlush = false;
 +                m_nonDisplaying.clear();
++                m_decodedBeforeTarget = 0;
++                m_skippedBeforeTarget = 0;
 +            }
 +            if (!decodeWith(*configuration, generation))
 +                m_queue.dropSamplesFor(configuration.get());
@@ -16820,15 +16975,30 @@ index 0000000000000000000000000000000000000000..dfd4a87d2472656135a0cb8da3a71397
 +        format.u.encoded_video.output.pixel_width_aspect = 1;
 +        format.u.encoded_video.output.pixel_height_aspect = 1;
 +
++        // The avcC record's byte 4 gives the NAL length field's size.
++        const unsigned nalLengthSize = info.codecConfig.size() > 4 ? (info.codecConfig[4] & 3) + 1 : 0;
 +        RefPtr<MediaSampleHaiku> current;
 +        HaikuChunkDecoder decoder([&](const void** data, size_t* size, media_header* header) -> status_t {
 +            RefPtr<MediaSampleHaiku> next;
-+            if (m_queue.take(&configuration, generation, next) == HaikuMSESampleQueue::TakeResult::Stop)
-+                return B_LAST_BUFFER_ERROR;
++            while (true) {
++                if (m_queue.take(&configuration, generation, next) == HaikuMSESampleQueue::TakeResult::Stop)
++                    return B_LAST_BUFFER_ERROR;
++                // A seek decodes from the keyframe before the target (5 s of
++                // pictures on YouTube, 0.75 s of decoding at 60 frames/s);
++                // the pictures nothing refers to can be left out.
++                if (next->isNonDisplaying() && skipDisposableBeforeTarget()
++                    && isDisposableH264({ next->bytes(), next->size() }, nalLengthSize)) {
++                    ++m_skippedBeforeTarget;
++                    continue;
++                }
++                break;
++            }
 +            current = WTF::move(next);
 +            int64_t pts = toMicroseconds(current->presentationTime());
-+            if (current->isNonDisplaying())
++            if (current->isNonDisplaying()) {
 +                m_nonDisplaying.append(pts);
++                ++m_decodedBeforeTarget;
++            }
 +            std::memset(header, 0, sizeof(*header));
 +            header->type = B_MEDIA_ENCODED_VIDEO;
 +            header->start_time = pts;
@@ -16900,6 +17070,8 @@ index 0000000000000000000000000000000000000000..dfd4a87d2472656135a0cb8da3a71397
 +                continue;
 +            if (!waitUntilDue(pts, generation))
 +                break;
++            if (!m_presentedSinceFlush && (m_decodedBeforeTarget || m_skippedBeforeTarget))
++                MSE_TRACE("seek target reached: %u pictures decoded before it, %u left out\n", m_decodedBeforeTarget, m_skippedBeforeTarget);
 +            int64_t lateness = m_clock.isRunning() ? m_clock.now() - pts : 0;
 +            if (m_presentedSinceFlush && lateness > 80000) {
 +                ++m_droppedFrames;
@@ -17019,6 +17191,8 @@ index 0000000000000000000000000000000000000000..dfd4a87d2472656135a0cb8da3a71397
 +    unsigned m_lastGeneration { UINT_MAX };
 +    bool m_presentedSinceFlush { false };
 +    Vector<int64_t> m_nonDisplaying;
++    unsigned m_decodedBeforeTarget { 0 };
++    unsigned m_skippedBeforeTarget { 0 };
 +    std::atomic<bool> m_repaintQueued { false };
 +    std::atomic<bool> m_hasFrameSinceFlush { false };
 +    std::atomic<bool> m_enqueuedSinceFlush { false };
@@ -21110,10 +21284,24 @@ index 4129e4540fe8d40738ef54c068514633533b58d2..1f4a7606b663e1cae38277fd19d8f37f
      void pushSkiaState();
      void popSkiaState();
 diff --git a/Source/WebCore/platform/graphics/skia/ImageBufferSkiaAcceleratedBackend.cpp b/Source/WebCore/platform/graphics/skia/ImageBufferSkiaAcceleratedBackend.cpp
-index df7f059b01553362418e4c3302011d4bf47f6384..98bdc29c8ada5c42cb4766396f011f3c69b75f42 100644
+index df7f059b01553362418e4c3302011d4bf47f6384..ce17aac5a99e987d99d9dfd66d4374c80e05dbae 100644
 --- a/Source/WebCore/platform/graphics/skia/ImageBufferSkiaAcceleratedBackend.cpp
 +++ b/Source/WebCore/platform/graphics/skia/ImageBufferSkiaAcceleratedBackend.cpp
-@@ -131,6 +131,12 @@ std::unique_ptr<ImageBufferSkiaAcceleratedBackend> ImageBufferSkiaAcceleratedBac
+@@ -47,6 +47,13 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
+ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
+ #include <wtf/TZoneMallocInlines.h>
+ 
++#if PLATFORM(HAIKU)
++#include <algorithm>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#endif
++
+ #if USE(COORDINATED_GRAPHICS)
+ #include "BitmapTexture.h"
+ #include "CoordinatedPlatformLayerBufferNativeImage.h"
+@@ -131,6 +138,12 @@ std::unique_ptr<ImageBufferSkiaAcceleratedBackend> ImageBufferSkiaAcceleratedBac
      auto surface = SkSurfaces::RenderTarget(grContext, skgpu::Budgeted::kYes, imageInfo, msaaSampleCount, kTopLeft_GrSurfaceOrigin, &properties);
      if (!surface || !surface->getCanvas())
          return nullptr;
@@ -21126,6 +21314,137 @@ index df7f059b01553362418e4c3302011d4bf47f6384..98bdc29c8ada5c42cb4766396f011f3c
  
      return create(parameters, creationContext, WTF::move(surface));
  }
+@@ -193,17 +206,57 @@ void ImageBufferSkiaAcceleratedBackend::ensureCanvasRecordingContext()
+     m_hasActiveRecording = true;
+ }
+ 
++#if PLATFORM(HAIKU)
++// SUMMIT_CANVAS_TRACE=1: canvas flushes and waits for the GPU that take over 20 ms.
++static bool canvasTraceHaiku()
++{
++    static const bool enabled = [] {
++        const char* value = getenv("SUMMIT_CANVAS_TRACE");
++        return value && !strcmp(value, "1");
++    }();
++    return enabled;
++}
++
++// Once a second with SUMMIT_CANVAS_TRACE=1: what the canvases' flushes did.
++enum class CanvasEventHaiku { Flush, Replay, NoRecording, NoGrContext, NotCurrent, Prepare, PrepareNoDelegate, PrepareNoImage, Count };
++static void countCanvasEventHaiku(CanvasEventHaiku event)
++{
++    if (!canvasTraceHaiku())
++        return;
++    static unsigned counts[static_cast<unsigned>(CanvasEventHaiku::Count)];
++    static MonotonicTime since = MonotonicTime::now();
++    ++counts[static_cast<unsigned>(event)];
++    auto now = MonotonicTime::now();
++    if (now - since < 1_s)
++        return;
++    fprintf(stderr, "Summit canvas: per second: flush %u, replay %u (none recorded %u, no GrContext %u, not current %u), prepare %u (no delegate %u, no image %u)\n",
++        counts[0], counts[1], counts[2], counts[3], counts[4], counts[5], counts[6], counts[7]);
++    std::fill(std::begin(counts), std::end(counts), 0);
++    since = now;
++}
++#define COUNT_CANVAS_EVENT_HAIKU(event) countCanvasEventHaiku(CanvasEventHaiku::event)
++#else
++#define COUNT_CANVAS_EVENT_HAIKU(event)
++#endif
++
+ void ImageBufferSkiaAcceleratedBackend::replayCanvasRecordingContextIfNeeded()
+ {
+-    if (!m_canvasRecordingContext || !m_hasActiveRecording)
++    if (!m_canvasRecordingContext || !m_hasActiveRecording) {
++        COUNT_CANVAS_EVENT_HAIKU(NoRecording);
+         return;
++    }
+ 
+     auto* grContext = this->grContext();
+-    if (!grContext)
++    if (!grContext) {
++        COUNT_CANVAS_EVENT_HAIKU(NoGrContext);
+         return;
++    }
+ 
+-    if (!PlatformDisplay::sharedDisplay().skiaGLContext()->makeContextCurrent())
++    if (!PlatformDisplay::sharedDisplay().skiaGLContext()->makeContextCurrent()) {
++        COUNT_CANVAS_EVENT_HAIKU(NotCurrent);
+         return;
++    }
++    COUNT_CANVAS_EVENT_HAIKU(Replay);
+ 
+     ASSERT(grContext == PlatformDisplay::sharedDisplay().skiaGrContext());
+ 
+@@ -220,8 +273,20 @@ void ImageBufferSkiaAcceleratedBackend::replayCanvasRecordingContextIfNeeded()
+ 
+ #if USE(TEXTURE_MAPPER)
+     ASSERT(!recording->hasFences());
++#endif
++#if PLATFORM(HAIKU)
++    const auto playbackStartedAt = canvasTraceHaiku() ? MonotonicTime::now() : MonotonicTime();
+ #endif
+     recording->picture()->playback(surfaceCanvas);
++#if PLATFORM(HAIKU)
++    if (playbackStartedAt) {
++        static unsigned replays;
++        auto took = MonotonicTime::now() - playbackStartedAt;
++        if (took > 20_ms || !(++replays % 120))
++            fprintf(stderr, "Summit canvas: replay %.1f ms, %d operations, %dx%d\n", took.milliseconds(),
++                recording->picture()->approximateOpCount(true), size().width(), size().height());
++    }
++#endif
+ 
+     // Undo unbalanced saves from the picture playback on the surface canvas.
+     surfaceCanvas->restoreToCount(surfaceSaveCount);
+@@ -236,7 +301,14 @@ void ImageBufferSkiaAcceleratedBackend::replayCanvasRecordingContextIfNeeded()
+ 
+ void ImageBufferSkiaAcceleratedBackend::flushContext()
+ {
++    COUNT_CANVAS_EVENT_HAIKU(Flush);
++#if PLATFORM(HAIKU)
++    const auto startedAt = canvasTraceHaiku() ? MonotonicTime::now() : MonotonicTime();
++#endif
+     replayCanvasRecordingContextIfNeeded();
++#if PLATFORM(HAIKU)
++    const auto replayedAt = startedAt ? MonotonicTime::now() : MonotonicTime();
++#endif
+ 
+     auto* grContext = this->grContext();
+     if (!grContext)
+@@ -247,17 +319,31 @@ void ImageBufferSkiaAcceleratedBackend::flushContext()
+ 
+     ASSERT(grContext == PlatformDisplay::sharedDisplay().skiaGrContext());
+     grContext->flushAndSubmit(m_surface.get(), GrSyncCpu::kNo);
++#if PLATFORM(HAIKU)
++    if (startedAt) {
++        auto now = MonotonicTime::now();
++        if ((now - startedAt) > 20_ms)
++            fprintf(stderr, "Summit canvas: flush %.1f ms (replay %.1f, submit %.1f)\n", (now - startedAt).milliseconds(),
++                (replayedAt - startedAt).milliseconds(), (now - replayedAt).milliseconds());
++    }
++#endif
+ }
+ 
++
+ void ImageBufferSkiaAcceleratedBackend::prepareForDisplay()
+ {
++    COUNT_CANVAS_EVENT_HAIKU(Prepare);
+ #if USE(COORDINATED_GRAPHICS)
+-    if (!m_layerContentsDisplayDelegate)
++    if (!m_layerContentsDisplayDelegate) {
++        COUNT_CANVAS_EVENT_HAIKU(PrepareNoDelegate);
+         return;
++    }
+ 
+     auto image = createNativeImageReference();
+-    if (!image)
++    if (!image) {
++        COUNT_CANVAS_EVENT_HAIKU(PrepareNoImage);
+         return;
++    }
+ 
+     auto* grContext = this->grContext();
+     if (!grContext)
 diff --git a/Source/WebCore/platform/graphics/skia/PlatformDisplaySkia.cpp b/Source/WebCore/platform/graphics/skia/PlatformDisplaySkia.cpp
 index 6b3cac20c6de4a7b817689de34c807020235850e..f5e992b32ba9dc919975dcd08b86e74d672a3477 100644
 --- a/Source/WebCore/platform/graphics/skia/PlatformDisplaySkia.cpp
@@ -21529,13 +21848,18 @@ index fbe7a8f854a5951881368122c9958ca62cf8617b..c3b8f3f2a57b5d33f4afdd63fe300e8f
      void setDepthRange(double zNear, double zFar);
      std::pair<double, double> depthRange() const;
 diff --git a/Source/WebCore/platform/graphics/texmap/TextureMapperLayer.cpp b/Source/WebCore/platform/graphics/texmap/TextureMapperLayer.cpp
-index 063040a9866c7221f2e581a4b9dac75fa29771d4..4c06487cc28573b4f1fbc82eaf5b66c8265bbc9b 100644
+index 063040a9866c7221f2e581a4b9dac75fa29771d4..9224998e5194940c841a6afa72c01523304af3a2 100644
 --- a/Source/WebCore/platform/graphics/texmap/TextureMapperLayer.cpp
 +++ b/Source/WebCore/platform/graphics/texmap/TextureMapperLayer.cpp
-@@ -21,6 +21,11 @@
+@@ -21,6 +21,16 @@
  #include "config.h"
  #include "TextureMapperLayer.h"
  
++#if PLATFORM(HAIKU)
++#include "FilterOperation.h"
++#include <cmath>
++#endif
++
 +#if PLATFORM(HAIKU)
 +#include <cstdlib>
 +#include <cstring>
@@ -21544,7 +21868,7 @@ index 063040a9866c7221f2e581a4b9dac75fa29771d4..4c06487cc28573b4f1fbc82eaf5b66c8
  #include "BitmapTexturePool.h"
  #include "ClipPath.h"
  #include "FloatQuad.h"
-@@ -32,12 +37,29 @@
+@@ -32,12 +42,29 @@
  #include <wtf/SetForScope.h>
  #include <wtf/TZoneMallocInlines.h>
  
@@ -21574,7 +21898,7 @@ index 063040a9866c7221f2e581a4b9dac75fa29771d4..4c06487cc28573b4f1fbc82eaf5b66c8
  WTF_MAKE_TZONE_ALLOCATED_IMPL(TextureMapperLayer);
  
  static constexpr auto s_opacityVisibilityThreshold = 0.01;
-@@ -363,6 +385,10 @@ void TextureMapperLayer::prepareForPainting(TextureMapper& textureMapper)
+@@ -363,6 +390,10 @@ void TextureMapperLayer::prepareForPainting(TextureMapper& textureMapper)
  
  void TextureMapperLayer::paint(TextureMapper& textureMapper)
  {
@@ -21585,7 +21909,7 @@ index 063040a9866c7221f2e581a4b9dac75fa29771d4..4c06487cc28573b4f1fbc82eaf5b66c8
  #if !ENABLE(DAMAGE_TRACKING)
      prepareForPainting(textureMapper);
  #endif
-@@ -371,6 +397,14 @@ void TextureMapperLayer::paint(TextureMapper& textureMapper)
+@@ -371,6 +402,14 @@ void TextureMapperLayer::paint(TextureMapper& textureMapper)
      paintRecursive(options);
  
      destroyFlattenedDescendantLayers();
@@ -21600,7 +21924,7 @@ index 063040a9866c7221f2e581a4b9dac75fa29771d4..4c06487cc28573b4f1fbc82eaf5b66c8
  }
  
  #if ENABLE(DAMAGE_TRACKING)
-@@ -390,11 +424,32 @@ void TextureMapperLayer::setDamage(Damage&& damage)
+@@ -390,11 +429,32 @@ void TextureMapperLayer::setDamage(Damage&& damage)
          m_damageInLayerCoordinateSpace = WTF::move(damage);
  }
  
@@ -21633,7 +21957,7 @@ index 063040a9866c7221f2e581a4b9dac75fa29771d4..4c06487cc28573b4f1fbc82eaf5b66c8
      collectDamageRecursive(options, damage);
  
      // Use the damage information we inferred while performing
-@@ -404,6 +459,27 @@ void TextureMapperLayer::collectDamage(TextureMapper& textureMapper, Damage& dam
+@@ -404,6 +464,27 @@ void TextureMapperLayer::collectDamage(TextureMapper& textureMapper, Damage& dam
      for (const auto& rect : *m_damageInGlobalCoordinateSpace)
          damage.add(intersection(rect, clipBounds));
      *m_damageInGlobalCoordinateSpace = Damage(m_state.size);
@@ -21661,7 +21985,7 @@ index 063040a9866c7221f2e581a4b9dac75fa29771d4..4c06487cc28573b4f1fbc82eaf5b66c8
  }
  
  void TextureMapperLayer::collectDamageRecursive(TextureMapperPaintOptions& options, Damage& damage)
-@@ -490,11 +566,26 @@ void TextureMapperLayer::collectDamageSelf(TextureMapperPaintOptions& options, D
+@@ -490,11 +571,26 @@ void TextureMapperLayer::collectDamageSelf(TextureMapperPaintOptions& options, D
          return;
      }
  
@@ -21688,7 +22012,7 @@ index 063040a9866c7221f2e581a4b9dac75fa29771d4..4c06487cc28573b4f1fbc82eaf5b66c8
  
      TransformationMatrix transform;
      transform.translate(options.offset.width(), options.offset.height());
-@@ -533,6 +624,24 @@ void TextureMapperLayer::collectDamageSelfChildrenReplicaFilterAndMask(TextureMa
+@@ -533,6 +629,24 @@ void TextureMapperLayer::collectDamageSelfChildrenReplicaFilterAndMask(TextureMa
  
  void TextureMapperLayer::collectDamageSelfChildrenFilterAndMask(TextureMapperPaintOptions& options, Damage& damage)
  {
@@ -21713,7 +22037,7 @@ index 063040a9866c7221f2e581a4b9dac75fa29771d4..4c06487cc28573b4f1fbc82eaf5b66c8
      const IntSize maxTextureSize = options.textureMapper.maxTextureSize();
      for (auto& rect : computeConsolidatedOverlapRegionRects(options)) {
          for (int x = rect.x(); x < rect.maxX(); x += maxTextureSize.width()) {
-@@ -545,6 +654,13 @@ void TextureMapperLayer::collectDamageSelfChildrenFilterAndMask(TextureMapperPai
+@@ -545,6 +659,13 @@ void TextureMapperLayer::collectDamageSelfChildrenFilterAndMask(TextureMapperPai
          }
      }
  
@@ -21727,7 +22051,7 @@ index 063040a9866c7221f2e581a4b9dac75fa29771d4..4c06487cc28573b4f1fbc82eaf5b66c8
      if (!m_accumulatedOverlapRegionDamage.isEmpty())
          damage.add(m_accumulatedOverlapRegionDamage);
  }
-@@ -578,12 +694,37 @@ void TextureMapperLayer::paintSelf(TextureMapperPaintOptions& options)
+@@ -578,12 +699,37 @@ void TextureMapperLayer::paintSelf(TextureMapperPaintOptions& options)
      auto targetRect = layerRect();
      if (targetRect.isEmpty())
          return;
@@ -21765,7 +22089,28 @@ index 063040a9866c7221f2e581a4b9dac75fa29771d4..4c06487cc28573b4f1fbc82eaf5b66c8
  
      if (isFlattened() && !m_flattenedLayer->needsUpdate()) {
          m_flattenedLayer->paintToTextureMapper(options.textureMapper, m_flattenedLayer->layerRect(), transform, options.opacity);
-@@ -599,6 +740,10 @@ void TextureMapperLayer::paintSelf(TextureMapperPaintOptions& options)
+@@ -592,6 +738,20 @@ void TextureMapperLayer::paintSelf(TextureMapperPaintOptions& options)
+ 
+     TextureMapperSolidColorLayer solidColorLayer;
+     TextureMapperBackingStore* backingStore = m_backingStore;
++#if PLATFORM(HAIKU)
++    // A layer with a background color and tiles (the page's root layer has the
++    // document's background color) draws the color under its tiles. Upstream
++    // draws the color alone, which hid pages that set their background after
++    // the first paint (topcoder.com, GitHub issue #13); tiles alone showed black
++    // wherever a tile was not painted yet (GitHub's issue list, a window that
++    // was made wider).
++    if (m_state.backgroundColor.isValid() && m_backingStore) {
++        solidColorLayer.setColor(m_state.backgroundColor);
++        options.textureMapper.setWrapMode(TextureMapper::WrapMode::Stretch);
++        options.textureMapper.setPatternTransform(TransformationMatrix());
++        solidColorLayer.paintToTextureMapper(options.textureMapper, targetRect, transform, options.opacity);
++    } else
++#endif
+     if (m_state.backgroundColor.isValid()) {
+         solidColorLayer.setColor(m_state.backgroundColor);
+         backingStore = &solidColorLayer;
+@@ -599,6 +759,10 @@ void TextureMapperLayer::paintSelf(TextureMapperPaintOptions& options)
  
      options.textureMapper.setWrapMode(TextureMapper::WrapMode::Stretch);
      options.textureMapper.setPatternTransform(TransformationMatrix());
@@ -21776,7 +22121,7 @@ index 063040a9866c7221f2e581a4b9dac75fa29771d4..4c06487cc28573b4f1fbc82eaf5b66c8
  
      if (backingStore) {
          backingStore->paintToTextureMapper(options.textureMapper, targetRect, transform, options.opacity);
-@@ -608,6 +753,10 @@ void TextureMapperLayer::paintSelf(TextureMapperPaintOptions& options)
+@@ -608,6 +772,10 @@ void TextureMapperLayer::paintSelf(TextureMapperPaintOptions& options)
          if (m_state.showRepaintCounter)
              backingStore->drawRepaintCounter(options.textureMapper, m_state.repaintCount, m_state.debugBorderColor, targetRect, transform);
      }
@@ -21787,7 +22132,7 @@ index 063040a9866c7221f2e581a4b9dac75fa29771d4..4c06487cc28573b4f1fbc82eaf5b66c8
  
      TextureMapperPlatformLayer* contentsLayer = m_contentsLayer;
      if (m_state.solidColor.isValid() && m_state.solidColor.isVisible()) {
-@@ -638,6 +787,10 @@ void TextureMapperLayer::paintSelf(TextureMapperPaintOptions& options)
+@@ -638,6 +806,10 @@ void TextureMapperLayer::paintSelf(TextureMapperPaintOptions& options)
  
      if (m_state.showDebugBorders)
          contentsLayer->drawBorder(options.textureMapper, m_state.debugBorderColor, m_state.debugBorderWidth, m_state.contentsRect, transform);
@@ -21798,7 +22143,53 @@ index 063040a9866c7221f2e581a4b9dac75fa29771d4..4c06487cc28573b4f1fbc82eaf5b66c8
  }
  
  void TextureMapperLayer::paintBackdrop(TextureMapperPaintOptions& options)
-@@ -1167,6 +1320,18 @@ void TextureMapperLayer::paintRecursive(TextureMapperPaintOptions& options)
+@@ -1079,6 +1251,33 @@ void TextureMapperLayer::applyMask(TextureMapperPaintOptions& options)
+     options.textureMapper.setMaskMode(false);
+ }
+ 
++#if PLATFORM(HAIKU)
++// Filter values are in the layer's CSS pixels, but intermediate surfaces are
++// painted in the root's device pixels, so at 200% a composited blur(15px) came
++// out like blur(7.5px) (YouTube's blurred thumbnail behind the player, and
++// every backdrop-filter). Scale the blurs and shadows by the layer's scale.
++static FilterOperations filtersInSurfacePixelsHaiku(const FilterOperations& filters, const TransformationMatrix& toSurface)
++{
++    double scale = std::sqrt(std::hypot(toSurface.m11(), toSurface.m12()) * std::hypot(toSurface.m21(), toSurface.m22()));
++    if (!std::isfinite(scale) || scale <= 0 || std::abs(scale - 1) < 0.01)
++        return filters;
++    bool changed = false;
++    Vector<Ref<FilterOperation>> scaled;
++    for (auto& operation : filters) {
++        if (auto* blur = dynamicDowncast<BlurFilterOperation>(operation.get())) {
++            scaled.append(BlurFilterOperation::create(blur->stdDeviation() * scale));
++            changed = true;
++        } else if (auto* shadow = dynamicDowncast<DropShadowFilterOperation>(operation.get())) {
++            scaled.append(DropShadowFilterOperation::create(shadow->color(), IntPoint(std::lround(shadow->x() * scale), std::lround(shadow->y() * scale)),
++                static_cast<int>(std::lround(shadow->stdDeviation() * scale))));
++            changed = true;
++        } else
++            scaled.append(operation.copyRef());
++    }
++    return changed ? FilterOperations { WTF::move(scaled) } : filters;
++}
++#endif
++
+ void TextureMapperLayer::paintIntoSurface(TextureMapperPaintOptions& options)
+ {
+     options.textureMapper.bindSurface(options.surface.get());
+@@ -1093,7 +1292,11 @@ void TextureMapperLayer::paintIntoSurface(TextureMapperPaintOptions& options)
+     bool hasMask = !!m_state.maskLayer;
+     bool hasReplicaMask = options.replicaLayer == this && m_state.replicaLayer->m_state.maskLayer;
+     bool defersLastFilterPass = !hasMask && !hasReplicaMask;
++#if PLATFORM(HAIKU)
++    options.surface = options.textureMapper.applyFilters(options.surface, filtersInSurfacePixelsHaiku(m_currentFilters, m_layerTransforms.combined), defersLastFilterPass);
++#else
+     options.surface = options.textureMapper.applyFilters(options.surface, m_currentFilters, defersLastFilterPass);
++#endif
+     options.textureMapper.bindSurface(options.surface.get());
+     if (hasMask)
+         m_state.maskLayer->applyMask(options);
+@@ -1167,6 +1370,18 @@ void TextureMapperLayer::paintRecursive(TextureMapperPaintOptions& options)
  {
      if (!isVisible())
          return;
@@ -21817,7 +22208,7 @@ index 063040a9866c7221f2e581a4b9dac75fa29771d4..4c06487cc28573b4f1fbc82eaf5b66c8
  
      SetForScope scopedOpacity(options.opacity, options.opacity * m_currentOpacity);
  
-@@ -1495,6 +1660,11 @@ void TextureMapperLayer::setBackgroundColor(const Color& color)
+@@ -1495,6 +1710,11 @@ void TextureMapperLayer::setBackgroundColor(const Color& color)
  void TextureMapperLayer::setFilters(const FilterOperations& filters)
  {
      m_state.filters = filters;
@@ -21830,7 +22221,7 @@ index 063040a9866c7221f2e581a4b9dac75fa29771d4..4c06487cc28573b4f1fbc82eaf5b66c8
  
  void TextureMapperLayer::setContentsLayer(TextureMapperPlatformLayer* platformLayer)
 diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStore.cpp b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStore.cpp
-index 0badc4492a49e10ae2faa80d59da84a9cea259d6..8d4d939045e841109d2bd0bfc7e13a1b23d6d072 100644
+index 0badc4492a49e10ae2faa80d59da84a9cea259d6..54ff02f13cf0896cbe23d9f54c8ba4b22917148d 100644
 --- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStore.cpp
 +++ b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStore.cpp
 @@ -28,6 +28,10 @@
@@ -21844,7 +22235,7 @@ index 0badc4492a49e10ae2faa80d59da84a9cea259d6..8d4d939045e841109d2bd0bfc7e13a1b
  namespace WebCore {
  
  void CoordinatedBackingStore::createTile(uint32_t id)
-@@ -49,11 +53,73 @@ void CoordinatedBackingStore::updateTile(uint32_t id, const IntRect& sourceRect,
+@@ -49,11 +53,84 @@ void CoordinatedBackingStore::updateTile(uint32_t id, const IntRect& sourceRect,
      m_hasPendingTileUpdates = true;
  }
  
@@ -21852,10 +22243,16 @@ index 0badc4492a49e10ae2faa80d59da84a9cea259d6..8d4d939045e841109d2bd0bfc7e13a1b
 +static thread_local int64_t s_uploadDeadline;
 +static thread_local bool s_hasDeferredUploads;
 +static thread_local bool s_showsLateUpload;
++static thread_local IntRect s_viewport;
 +
 +void CoordinatedBackingStore::setUploadDeadlineHaiku(int64_t systemTime)
 +{
 +    s_uploadDeadline = systemTime;
++}
++
++void CoordinatedBackingStore::setViewportHaiku(const IntRect& viewport)
++{
++    s_viewport = viewport;
 +}
 +
 +bool CoordinatedBackingStore::takeHasDeferredUploadsHaiku()
@@ -21883,7 +22280,12 @@ index 0badc4492a49e10ae2faa80d59da84a9cea259d6..8d4d939045e841109d2bd0bfc7e13a1b
 +    // distance a scroll covers until the next, is uploaded now.
 +    if (s_uploadDeadline && m_hasLastPaint) {
 +        static constexpr int margin = 256;
-+        FloatRect shown = m_lastPaintClip;
++        // The viewport, not the last composition's clip: with damage
++        // tracking that clip is often only what changed, and tiles in view
++        // were taken for tiles outside it. A composition that had used its
++        // budget before it reached such a layer left them again, so parts of
++        // GitHub's issue list kept showing an earlier layout.
++        FloatRect shown = s_viewport.isEmpty() ? FloatRect(m_lastPaintClip) : FloatRect(s_viewport);
 +        shown.inflate(margin);
 +        bool deferred = false;
 +        Vector<CoordinatedBackingStoreTile*, 64> others;
@@ -21918,7 +22320,7 @@ index 0badc4492a49e10ae2faa80d59da84a9cea259d6..8d4d939045e841109d2bd0bfc7e13a1b
      for (auto& tile : m_tiles.values())
          tile.processPendingUpdates();
  
-@@ -74,6 +140,17 @@ void CoordinatedBackingStore::paintToTextureMapper(TextureMapper& textureMapper,
+@@ -74,6 +151,17 @@ void CoordinatedBackingStore::paintToTextureMapper(TextureMapper& textureMapper,
      ASSERT(!m_size.isZero());
      FloatRect layerRect = { { }, m_size };
      TransformationMatrix adjustedTransform = transform * TransformationMatrix::rectToRect(layerRect, targetRect);
@@ -21936,7 +22338,7 @@ index 0badc4492a49e10ae2faa80d59da84a9cea259d6..8d4d939045e841109d2bd0bfc7e13a1b
  
  #if ENABLE(DAMAGE_TRACKING)
      const auto& frameDamage = textureMapper.damage();
-@@ -88,6 +165,17 @@ void CoordinatedBackingStore::paintToTextureMapper(TextureMapper& textureMapper,
+@@ -88,6 +176,17 @@ void CoordinatedBackingStore::paintToTextureMapper(TextureMapper& textureMapper,
  
      for (const auto& tile : m_tiles.values()) {
          ASSERT(tile.scale() == m_scale);
@@ -21955,7 +22357,7 @@ index 0badc4492a49e10ae2faa80d59da84a9cea259d6..8d4d939045e841109d2bd0bfc7e13a1b
  
  #if ENABLE(DAMAGE_TRACKING)
 diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStore.h b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStore.h
-index 8723b9e2f90788a74d1ddc536a399463921231ec..ab810081ad03545b62f47f4e8fe1b6a67d84efa8 100644
+index 8723b9e2f90788a74d1ddc536a399463921231ec..6433d3ae69bf7a705a5374010c3a182a6de8c50d 100644
 --- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStore.h
 +++ b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStore.h
 @@ -22,6 +22,8 @@
@@ -21967,7 +22369,7 @@ index 8723b9e2f90788a74d1ddc536a399463921231ec..ab810081ad03545b62f47f4e8fe1b6a6
  #include <wtf/HashMap.h>
  #include <wtf/RefCounted.h>
  
-@@ -47,6 +49,22 @@ public:
+@@ -47,6 +49,25 @@ public:
      bool hasPendingUpdates() const { return m_hasPendingTileUpdates; }
      void processPendingUpdates();
  
@@ -21978,6 +22380,9 @@ index 8723b9e2f90788a74d1ddc536a399463921231ec..ab810081ad03545b62f47f4e8fe1b6a6
 +    // for the next composition. Zero uploads everything at once. Set and
 +    // read on the compositor thread.
 +    static void setUploadDeadlineHaiku(int64_t systemTime);
++    // The area the composition shows, in the coordinates layers are painted
++    // in; tiles that fall in it are uploaded whatever the deadline.
++    static void setViewportHaiku(const IntRect&);
 +    // Whether a backing store has left tiles for the next composition since
 +    // this was last asked.
 +    static bool takeHasDeferredUploadsHaiku();
@@ -21990,7 +22395,7 @@ index 8723b9e2f90788a74d1ddc536a399463921231ec..ab810081ad03545b62f47f4e8fe1b6a6
      void paintToTextureMapper(TextureMapper&, const FloatRect&, const TransformationMatrix&, float) override;
      void drawBorder(TextureMapper&, const Color&, float borderWidth, const FloatRect&, const TransformationMatrix&) override;
      void drawRepaintCounter(TextureMapper&, int repaintCount, const Color&, const FloatRect&, const TransformationMatrix&) override;
-@@ -58,6 +76,13 @@ private:
+@@ -58,6 +79,13 @@ private:
      FloatSize m_size;
      float m_scale { 1. };
      bool m_hasPendingTileUpdates { false };
@@ -22249,7 +22654,7 @@ index 74df231207380fa09298f846f66adefed719fd2a..0c3952170a61f5bca868a1eb3e54b051
      float m_scale { 1. };
      FloatRect m_rect;
 diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedPlatformLayer.cpp b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedPlatformLayer.cpp
-index 7ef5b491fd88e52bb59639bd5851a4cb6e56d0ab..9a65e7f821143e4b84674c47e8cf7e0e0a4ac195 100644
+index 7ef5b491fd88e52bb59639bd5851a4cb6e56d0ab..a469449b4d88a6240455ccd219eb22ecd435cc12 100644
 --- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedPlatformLayer.cpp
 +++ b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedPlatformLayer.cpp
 @@ -906,6 +906,22 @@ void CoordinatedPlatformLayer::updateBackingStore()
@@ -22275,26 +22680,26 @@ index 7ef5b491fd88e52bb59639bd5851a4cb6e56d0ab..9a65e7f821143e4b84674c47e8cf7e0e
      Damage damage(size, Damage::Mode::Rectangles);
      auto updateResult = backingStoreProxy->updateIfNeeded(m_transformedVisibleRect, size, m_visibleRect, contentsScale, contentsOpaque, m_pendingTilesCreation || m_needsTilesUpdate, m_dirtyRegion, damage, *this);
      m_dirtyRegion.clear();
-@@ -1149,7 +1165,18 @@ void CoordinatedPlatformLayer::flushCompositingStateOnTarget(const OptionSet<Com
+@@ -1149,6 +1165,8 @@ void CoordinatedPlatformLayer::flushCompositingStateOnTarget(const OptionSet<Com
          }
  
          if (m_pendingChanges.contains(Change::BackgroundColor)) {
-+#if PLATFORM(HAIKU)
-+            // TextureMapperLayer draws a layer with a background color as that
-+            // color alone. Attaching tiles clears it (below), but a later change
-+            // of the color used to set it again, and the layer's painted contents
-+            // disappeared behind it: the main frame's layer takes the document's
-+            // background color, so pages that set theirs after the first paint
-+            // (topcoder.com, a UniFi router's dashboard) showed only that color
-+            // and their composited layers (GitHub issue #13).
-+            layer.setBackgroundColor(m_backingStore ? Color() : m_backgroundColor);
-+#else
++            // On Haiku a layer keeps its background color with tiles, and
++            // TextureMapperLayer::paintSelf() draws it under them.
              layer.setBackgroundColor(m_backgroundColor);
-+#endif
              m_pendingChanges.remove(Change::BackgroundColor);
          }
+@@ -1163,7 +1181,9 @@ void CoordinatedPlatformLayer::flushCompositingStateOnTarget(const OptionSet<Com
+                 if (!m_backingStore)
+                     m_backingStore = CoordinatedBackingStore::create();
+                 layer.setBackingStore(m_backingStore.get());
++#if !PLATFORM(HAIKU)
+                 layer.setBackgroundColor({ });
++#endif
  
-@@ -1171,6 +1198,10 @@ void CoordinatedPlatformLayer::flushCompositingStateOnTarget(const OptionSet<Com
+                 if (auto* animatedBackingStoreClient = m_backingStoreProxy->animatedBackingStoreClient())
+                     layer.setAnimatedBackingStoreClient(animatedBackingStoreClient);
+@@ -1171,6 +1191,10 @@ void CoordinatedPlatformLayer::flushCompositingStateOnTarget(const OptionSet<Com
                  layer.setBackingStore(nullptr);
                  layer.setAnimatedBackingStoreClient(nullptr);
                  m_backingStore = nullptr;
@@ -22305,7 +22710,7 @@ index 7ef5b491fd88e52bb59639bd5851a4cb6e56d0ab..9a65e7f821143e4b84674c47e8cf7e0e
              }
              m_pendingChanges.remove(Change::BackingStore);
          }
-@@ -1286,6 +1317,14 @@ void CoordinatedPlatformLayer::flushCompositingStateOnTarget(const OptionSet<Com
+@@ -1286,6 +1310,14 @@ void CoordinatedPlatformLayer::flushCompositingStateOnTarget(const OptionSet<Com
              m_contentsBuffer.committed = WTF::move(m_contentsBuffer.pending);
              m_contentsBuffer.hasCommitted = !!m_contentsBuffer.committed;
              m_pendingChanges.remove(Change::ContentsBuffer);
@@ -35281,6 +35686,80 @@ index 071b5d048426d39db36c4a83b95f58513273fd02..2e20713889ea04040d134aa2686d8ddb
  
  #if ENABLE(MODEL_ELEMENT)
      if (is<RenderModel>(renderer()))
+diff --git a/Source/WebCore/rendering/RenderLayerCompositor.cpp b/Source/WebCore/rendering/RenderLayerCompositor.cpp
+index 350a33ca62925f96b9922a5c1a57d6398f434d4a..566b9fa00db28fd69f0f5eda0af3fa88c90ab027 100644
+--- a/Source/WebCore/rendering/RenderLayerCompositor.cpp
++++ b/Source/WebCore/rendering/RenderLayerCompositor.cpp
+@@ -77,6 +77,12 @@
+ #include "Settings.h"
+ #include "StyleComputedStyle+GettersInlines.h"
+ #include "StyleOffsetRotate.h"
++#if PLATFORM(HAIKU)
++#include "StyleBlurFunction.h"
++#include "StyleFilter.h"
++#include <cstdlib>
++#include <cstring>
++#endif
+ #include "TiledBacking.h"
+ #include "TransformState.h"
+ #include "TranslateTransformOperation.h"
+@@ -3997,11 +4003,56 @@ bool RenderLayerCompositor::requiresCompositingForCanvas(RenderLayerModelObject&
+     return false;
+ }
+ 
++#if PLATFORM(HAIKU)
++// Haiku paints page tiles on the CPU, where a wide blur on a large element is
++// redone in software on the main thread for every tile it touches and every
++// repaint: YouTube's blurred thumbnail behind the player (blur(15px) over
++// 1202x676) held the main thread for about a second each time the video
++// changed. Composited, the element's tiles are painted without the filter and
++// the compositor blurs the layer on the GPU (TextureMapper scales a wide blur
++// down first). Small filtered elements, such as icons with a drop shadow, stay
++// as they were. SUMMIT_COMPOSITE_WIDE_BLURS=0 composites none of them.
++static bool hasWideBlurOnLargeBoxHaiku(const RenderLayerModelObject& renderer)
++{
++    static const bool enabled = [] {
++        const char* value = getenv("SUMMIT_COMPOSITE_WIDE_BLURS");
++        return !value || strcmp(value, "0");
++    }();
++    if (!enabled || !renderer.hasFilter())
++        return false;
++    auto& filter = renderer.style().filter();
++    if (filter.hasReferenceFilter())
++        return false;
++    auto zoom = renderer.style().usedZoomForLength();
++    IntOutsets outsets;
++    for (auto& value : filter) {
++        WTF::switchOn(value,
++            [&](const Style::BlurFunction& blurFunction) {
++                outsets += blurFunction->calculateOutsets(zoom);
++            },
++            [](const auto&) { });
++    }
++    // A blur's outsets are three times its standard deviation.
++    if (outsets.top() < 15)
++        return false;
++    auto* box = dynamicDowncast<RenderBox>(renderer);
++    if (!box)
++        return false;
++    auto size = box->borderBoxRect().size();
++    return size.width().toFloat() * size.height().toFloat() >= 200 * 200;
++}
++#endif
++
+ bool RenderLayerCompositor::requiresCompositingForFilters(RenderLayerModelObject& renderer) const
+ {
+     if (renderer.hasBackdropFilter())
+         return true;
+ 
++#if PLATFORM(HAIKU)
++    if (hasWideBlurOnLargeBoxHaiku(renderer))
++        return true;
++#endif
++
+ #if HAVE(CORE_MATERIAL)
+     if (renderer.hasAppleVisualEffect())
+         return true;
 diff --git a/Source/WebCore/rendering/RenderObject.cpp b/Source/WebCore/rendering/RenderObject.cpp
 index 081e0ed00cf062459897b311d3e44d98235b4ba5..cbba9a4c263a0d36cd881b7f950a3076bddfe907 100644
 --- a/Source/WebCore/rendering/RenderObject.cpp
@@ -98366,7 +98845,7 @@ index 4096303fde47800b8ea64ecef4fe536c97b62d52..2ba8509a68888720ef1a9a0a13ed1493
      bool m_compositionRequired { false };
  #if ENABLE(SCROLLING_THREAD)
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
-index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..ada640462b0b7b368be14fe9bb059e045133c4ef 100644
+index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..c27aab0a1e156276fadf7d4ddbb5f8dd3d2519a5 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
 @@ -33,6 +33,8 @@
@@ -98625,7 +99104,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..ada640462b0b7b368be14fe9bb059e04
  #if USE(TEXTURE_MAPPER)
      if (!m_context || !m_context->makeContextCurrent())
          return;
-@@ -599,23 +746,52 @@ void ThreadedCompositor::renderLayerTree()
+@@ -599,23 +746,53 @@ void ThreadedCompositor::renderLayerTree()
      if (viewportSize.isEmpty())
          return;
  
@@ -98656,6 +99135,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..ada640462b0b7b368be14fe9bb059e04
 +        return static_cast<bigtime_t>((value && *value ? std::max(0.0, std::atof(value)) : 3.0) * 1000);
 +    }();
 +    CoordinatedBackingStore::setUploadDeadlineHaiku(uploadBudget ? system_time() + uploadBudget : 0);
++    CoordinatedBackingStore::setViewportHaiku(IntRect({ }, viewportSize));
 +#endif
      WTFBeginSignpost(this, FlushCompositingState);
      flushCompositingState(reasons);
@@ -98678,7 +99158,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..ada640462b0b7b368be14fe9bb059e04
  
      updateFPSCounter();
  
-@@ -631,8 +807,29 @@ void ThreadedCompositor::renderLayerTree()
+@@ -631,8 +808,29 @@ void ThreadedCompositor::renderLayerTree()
      PlatformDisplay::sharedDisplay().skiaGLContext()->swapBuffers();
  #endif
  
@@ -98708,7 +99188,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..ada640462b0b7b368be14fe9bb059e04
  
      RunLoop::mainSingleton().dispatch([this, protectedThis = Ref { *this }] {
          if (m_layerTreeHost)
-@@ -656,6 +853,13 @@ void ThreadedCompositor::requestComposition(CompositionReason reason)
+@@ -656,6 +854,13 @@ void ThreadedCompositor::requestComposition(CompositionReason reason)
  {
      Locker locker { m_state.lock };
      m_state.reasons.add(reason);
@@ -98722,7 +99202,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..ada640462b0b7b368be14fe9bb059e04
      scheduleUpdateLocked();
  }
  
-@@ -703,6 +907,10 @@ void ThreadedCompositor::scheduleUpdateLocked()
+@@ -703,6 +908,10 @@ void ThreadedCompositor::scheduleUpdateLocked()
  void ThreadedCompositor::frameComplete()
  {
      ASSERT(m_workQueue->runLoop().isCurrent());
@@ -98733,7 +99213,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..ada640462b0b7b368be14fe9bb059e04
  
      Locker locker { m_state.lock };
      WTFEmitSignpost(this, FrameComplete, "reasons: %s, state: %s, waiting for tiles: %s", reasonsToString(m_state.reasons).ascii().data(), stateToString(m_state.state).characters(), m_state.isWaitingForTiles ? "yes" : "no");
-@@ -726,6 +934,112 @@ void ThreadedCompositor::frameComplete()
+@@ -726,6 +935,112 @@ void ThreadedCompositor::frameComplete()
      }
  }
  

@@ -1,0 +1,74 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Canvas shadow stress</title>
+<style>
+body { font: 14px sans-serif; margin: 16px; background: #0b1020; color: #ddd; }
+#box { width: 868px; height: 380px; border: 1px solid #334; }
+canvas { display: block; }
+pre { white-space: pre-wrap; }
+</style>
+<p>GitHub issue #9: the stress test of xbitlabs.com/fps-test, drawn the same
+way (rotated squares with a 15 px shadow blur, "lighter" compositing, two fills
+each) and timed. <code>?n=500</code> is its "High" load (50 Low, 100 Light,
+200 Medium, 1000 Extreme); <code>?seconds=10</code>; <code>?shadow=0</code>
+draws without the shadows. Results go to the console, the title and the bench
+server.</p>
+<div id="box"><canvas id="c"></canvas></div>
+<pre id="out">Running...</pre>
+<script>
+"use strict";
+const params = new URLSearchParams(location.search);
+const count = +(params.get("n") || 500), seconds = +(params.get("seconds") || 10), shadow = params.get("shadow") !== "0";
+const canvas = document.getElementById("c");
+const box = canvas.parentElement.getBoundingClientRect();
+canvas.width = box.width; canvas.height = box.height;
+const context = canvas.getContext("2d");
+const colors = ["#f472b6", "#c084fc", "#818cf8", "#60a5fa", "#34d399", "#facc15"];
+let seed = 7;
+const random = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+const particles = Array.from({ length: count }, () => ({
+    x: random() * canvas.width, y: random() * canvas.height, vx: (random() - 0.5) * 8, vy: (random() - 0.5) * 8,
+    size: 15 * random() + 5, color: colors[Math.floor(random() * colors.length)], rotation: random() * Math.PI * 2, rotationSpeed: (random() - 0.5) * 0.2,
+}));
+const gaps = [], drawTimes = [];
+let last = 0, start = 0, warmup = 60;
+const frame = now => {
+    if (last) gaps.push(now - last);
+    last = now;
+    if (warmup && !--warmup) { gaps.length = 0; drawTimes.length = 0; start = now; }
+    const t0 = performance.now();
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    for (const p of particles) {
+        context.save();
+        context.translate(p.x, p.y);
+        context.rotate(p.rotation);
+        context.globalCompositeOperation = "lighter";
+        if (shadow) { context.shadowColor = p.color; context.shadowBlur = 15; }
+        context.fillStyle = p.color;
+        context.fillRect(-p.size / 2, -p.size / 2, p.size, p.size);
+        context.fillStyle = "rgba(255,255,255,0.8)";
+        context.fillRect(-2, -2, 4, 4);
+        context.restore();
+        p.x += p.vx; p.y += p.vy; p.rotation += p.rotationSpeed;
+        if (p.x < 0 || p.x > canvas.width) p.vx *= -1;
+        if (p.y < 0 || p.y > canvas.height) p.vy *= -1;
+        p.x = Math.max(0, Math.min(canvas.width, p.x)); p.y = Math.max(0, Math.min(canvas.height, p.y));
+    }
+    drawTimes.push(performance.now() - t0);
+    if (start && now - start >= seconds * 1000) return finish(now);
+    requestAnimationFrame(frame);
+};
+const quantile = (values, q) => { const sorted = [...values].sort((a, b) => a - b); return +sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))].toFixed(1); };
+const finish = async now => {
+    const result = {
+        page: "canvas-shadow-stress", count, shadow, frames: gaps.length, fps: +(gaps.length / ((now - start) / 1000)).toFixed(1),
+        gapMedian: quantile(gaps, 0.5), gapP99: quantile(gaps, 0.99), gapMax: quantile(gaps, 1), over50: gaps.filter(g => g > 50).length,
+        drawMedian: quantile(drawTimes, 0.5), drawMax: quantile(drawTimes, 1),
+    };
+    document.getElementById("out").textContent = JSON.stringify(result, null, 2);
+    document.title = `${result.fps} fps, worst ${result.gapMax} ms`;
+    console.log("CANVASSTRESS " + JSON.stringify(result));
+    try { await fetch("/__bench/probe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(result) }); } catch (error) { }
+};
+requestAnimationFrame(frame);
+</script>
