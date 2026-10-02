@@ -47,6 +47,22 @@ launch to the first composited frame (three runs each):
 | GNU hash tables (3 October, morning) | 0.84-0.92 s |
 | ... and functions bound inside their library | 0.65-0.69 s |
 
+It also made the engine itself faster. A call from one function of
+libWebKit to another exported one went through the PLT and a GOT entry,
+since another image could have replaced it; bound at link time, the linker
+turns most of them into direct calls. Speedometer 3.1 (local copy, 5
+iterations, `run-speedometer.py --port 8961` with the Mesa environment),
+alternated:
+
+| build | Speedometer 3.1 |
+| --- | --- |
+| just before the relink (`bundle-4nbt7v3e`) | 7.66 ± 0.68, 8.13 ± 0.79 |
+| just after it (`bundle-hx2ws_mn`) | 10.9 ± 1.5, 11.3 ± 1.4 |
+| installed on the X399 before today (`bundle-ywvpzj7_`) | 8.21 ± 0.90, 7.86 ± 0.78 |
+| this morning's last build (`bundle-scnjbd30`) | 11.2 ± 1.4, 11.3 ± 1.4 |
+
+About 40 % more: Firefox 155 scored 8.34 ± 0.37 here in September.
+
 **First bytes are the network's.** Time to first byte was 400-700 ms in
 Summit where Firefox had 160-200 ms on 1 October:
 
@@ -80,6 +96,32 @@ window closed. One such save in the owner's log took 97 ms. Saves now go
 to a thread of the profile's own, which waits 250 ms to take whatever
 else changes with them; quitting writes what is left before the process
 exits. Clearing history still writes at once.
+
+### Against Firefox at the end of the morning
+
+`run-pageload.py --rounds 3 --browser both` on the final build
+(`bundle-scnjbd30`; browsers alternating first, medians, ms; cold / warm):
+
+| page | browser | first paint | largest paint | DOMContentLoaded |
+| --- | --- | --- | --- | --- |
+| Reddit | Summit | 870 / 922 | 1860 / 1752 | 1041 / 1066 |
+| Reddit | Firefox | 1059 / 1266 | 1415 / 1352 | 1078 / 1318 |
+| The Guardian | Summit | 293 / 902 | 1088 / 1880 | 707 / 1204 |
+| The Guardian | Firefox | 1179 / 1213 | 1413 / 1385 | 1427 / 1491 |
+| YouTube | Summit | 1376 / 1771 | 2991 / 1771 | 2290 / 1275 |
+| YouTube | Firefox | 977 / 1106 | 2752 / 2845 | 2320 / 2437 |
+| Wikipedia | Summit | 1286 / 958 | 1380 / 1103 | 1146 / 1069 |
+| Wikipedia | Firefox | 1387 / 1146 | 1645 / 1228 | 1411 / 1150 |
+| BBC News | Summit | 171 / 304 | 1028 / 972 | 443 / 612 |
+| BBC News | Firefox | 402 / 430 | 919 / 762 | 1324 / 762 |
+| GitHub | Summit | 1074 / 835 | 1074 / 835 | 1429 / 1168 |
+| GitHub | Firefox | 1292 / 1246 | 2044 / 1832 | 1679 / 1556 |
+
+Summit paints first sooner than Firefox on five of the six pages and is
+ready (DOMContentLoaded) sooner on all six. Still behind: YouTube's first
+paint, Reddit's largest paint, and The Guardian's largest paint when warm.
+(The Guardian's cold first byte, 107 against 759 ms, is its server's
+per-User-Agent cache, not Summit.)
 
 ### Connections opened before they are needed
 
