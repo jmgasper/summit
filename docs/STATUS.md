@@ -2,8 +2,11 @@
 
 ## 2 October 2026: GitHub issues #6-#15
 
-All on the X399, built incrementally in `SkiaCGMiPGO` and installed as
-`BUNDLE_NAME` (see the end of this section).
+All on the X399, built incrementally in `SkiaCGMiPGO` (profile-guided, engine
+patch `26a0ad8f`) and installed as `bundle-7txch8aq`: the desktop launcher and
+`/boot/home/summit/Summit-installed` point at it, the previous launcher is in
+`/boot/home/summit/launcher-backups/Summit-current.pre-20261002-1541.sh`. The
+Summit that was running keeps its build until it is restarted.
 
 - **#6, WebAssembly start-up.** Creating a module's memory cost about 125 ms
   (Haiku's `mprotect()` walks the whole 4 GiB reservation, twice); now 1.9 ms.
