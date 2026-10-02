@@ -279,6 +279,14 @@ thread, symbol lookups and relocations in the profile. Each web process
 now reads them on a thread of its own as it starts (a prewarmed one well
 before its page); `canPlayType()` answers as before.
 
+Still open: on Reddit the main thread spends 100-115 ms in libwebp, under
+`RenderLayerBacking::updateImageContents`: an image the compositor shows
+directly (a layer of its own) is handed to it decoded, and
+`GraphicsLayerCoordinated::setContentsToImage` decodes it there and then.
+Asking the decoder's thread first and setting the layer's contents when it
+was done did not take the time off the main thread (probably animated
+images, which it left alone), and was taken out again.
+
 The same profile shows two smaller costs that were left alone: every
 `thread_local` in a library goes through `__tls_get_addr` into
 runtime_loader's `get_tls_address` (Haiku has no static TLS), about 2% of
