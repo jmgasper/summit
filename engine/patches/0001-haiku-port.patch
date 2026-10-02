@@ -46237,6 +46237,47 @@ index 0000000000000000000000000000000000000000..964df248231137e87da9c37afbb37b84
 +
 +}
 +#endif
+diff --git a/Source/WebKit/Shared/unix/AuxiliaryProcessMain.cpp b/Source/WebKit/Shared/unix/AuxiliaryProcessMain.cpp
+index 26938acebe9ea161c72a8fa9c59c1ea58e23927c..ff7b463f0c98e1120c2fe32462a8a61229c7364e 100644
+--- a/Source/WebKit/Shared/unix/AuxiliaryProcessMain.cpp
++++ b/Source/WebKit/Shared/unix/AuxiliaryProcessMain.cpp
+@@ -24,6 +24,11 @@
+  */
+ 
+ #include "config.h"
++#if PLATFORM(HAIKU)
++#include <fcntl.h>
++#include <sys/resource.h>
++#include <unistd.h>
++#endif
+ #include "AuxiliaryProcessMain.h"
+ 
+ #include <JavaScriptCore/Options.h>
+@@ -83,6 +88,24 @@ bool AuxiliaryProcessMainCommon::parseCommandLine(int argc, char** argv)
+     if (!m_parameters.processIdentifier->toUInt64() || m_parameters.connectionIdentifier.handle.value() <= 0)
+         return false;
+ 
++#if PLATFORM(HAIKU)
++    // Processes are started with load_image() (HaikuProcess.h), which hands
++    // the new team every descriptor without FD_CLOEXEC, and several are
++    // started at once: another process's IPC endpoint may have come along.
++    // Keeping it open would keep that process's connection alive after it
++    // ends, so everything but standard I/O and our own endpoint goes.
++    {
++        int connection = m_parameters.connectionIdentifier.handle.value();
++        struct rlimit limit;
++        int last = !getrlimit(RLIMIT_NOFILE, &limit) && limit.rlim_cur != RLIM_INFINITY ? static_cast<int>(limit.rlim_cur) : 4096;
++        for (int descriptor = 3; descriptor < last; ++descriptor) {
++            if (descriptor != connection)
++                close(descriptor);
++        }
++        fcntl(connection, F_SETFD, FD_CLOEXEC);
++    }
++#endif
++
+ #if ENABLE(DEVELOPER_MODE)
+     // Check last remaining options for JSC testing
+     for (auto& arg : argvSpan.subspan(argIndex)) {
 diff --git a/Source/WebKit/Sources.txt b/Source/WebKit/Sources.txt
 index e229fa1ae53c6c89e7534316dd06a7c5bfec5330..3681a68c232a98df013a11d5f236caa36dcf754d 100644
 --- a/Source/WebKit/Sources.txt
@@ -71234,7 +71275,7 @@ index 58f00aff737c58a39b1f8556c134f6b39ba2c43c..39a2b870eb9cc704e34a5bc348d85a7e
      ReadWrite,
 diff --git a/Source/WebKit/UIProcess/Launcher/haiku/HaikuProcess.h b/Source/WebKit/UIProcess/Launcher/haiku/HaikuProcess.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..6641508ee2a2a84f6c547497000c8bfa7aee3b28
+index 0000000000000000000000000000000000000000..8a418c283373b3ad30d46aea00e6d191c08b3d82
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Launcher/haiku/HaikuProcess.h
 @@ -0,0 +1,91 @@
@@ -71251,7 +71292,6 @@ index 0000000000000000000000000000000000000000..6641508ee2a2a84f6c547497000c8bfa
 +#include <OS.h>
 +#include <fcntl.h>
 +#include <image.h>
-+#include <mutex>
 +#include <signal.h>
 +#include <sys/wait.h>
 +#include <string>
@@ -71285,10 +71325,11 @@ index 0000000000000000000000000000000000000000..6641508ee2a2a84f6c547497000c8bfa
 +        return { 0, EINVAL };
 +
 +    // A team started by load_image() inherits every descriptor without
-+    // FD_CLOEXEC. The endpoint's duplicate is the only such one created here,
-+    // and launches take turns so that no child inherits another's endpoint.
-+    static std::mutex launching;
-+    std::lock_guard guard(launching);
++    // FD_CLOEXEC; the endpoint's duplicate is the only such one created here.
++    // Launches run at once (load_image() returns only when the child's
++    // libraries are loaded, a third of a second for a web process), so a
++    // child may inherit another's endpoint too: each closes all it inherited
++    // but its own first thing (AuxiliaryProcessMainCommon::parseCommandLine).
 +    int duplicate = fcntl(connection, F_DUPFD, 4);
 +    if (duplicate < 0)
 +        return { 0, errno };
@@ -71331,10 +71372,10 @@ index 0000000000000000000000000000000000000000..6641508ee2a2a84f6c547497000c8bfa
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/Launcher/haiku/ProcessLauncherHaiku.cpp b/Source/WebKit/UIProcess/Launcher/haiku/ProcessLauncherHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..1dc84cbd13b89947c17943901aff03de332eb190
+index 0000000000000000000000000000000000000000..78d02501f0ef4901e5449d9b52ed749a3e4eabe7
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Launcher/haiku/ProcessLauncherHaiku.cpp
-@@ -0,0 +1,171 @@
+@@ -0,0 +1,178 @@
 +/*
 + *  Copyright (C) 2019 Haiku, Inc.
 + *
@@ -71473,25 +71514,32 @@ index 0000000000000000000000000000000000000000..1dc84cbd13b89947c17943901aff03de
 +    std::vector<std::string> arguments;
 +    if (m_client && m_client->shouldConfigureJSCForTesting())
 +        arguments.emplace_back("--configure-jsc-for-testing");
-+    auto result = m_launchOptions.shouldMakeProcessLaunchFailForTesting
-+        ? HaikuProcessResult { 0, ENOENT }
-+        : spawnHaikuProcess(executable.utf8().legacyCStringPointer(), m_launchOptions.processIdentifier.toUInt64(), sockets.client.value(), arguments, childEnvironmentOverrides());
-+    if (result.error) {
-+        RunLoop::mainSingleton().dispatch([protectedThis = Ref { *this }] {
-+            protectedThis->didFinishLaunchingProcess(0, { });
++    // load_image() returns once the new team has loaded its libraries, a
++    // third of a second for a web process: not on the main thread, and not
++    // one launch after another.
++    Thread::create("WebKit process launcher"_s, [protectedThis = Ref { *this }, executable = executable.utf8(), processIdentifier = m_launchOptions.processIdentifier.toUInt64(),
++        failForTesting = m_launchOptions.shouldMakeProcessLaunchFailForTesting, client = WTF::move(sockets.client), server = WTF::move(sockets.server),
++        arguments = WTF::move(arguments)] mutable {
++        auto result = failForTesting
++            ? HaikuProcessResult { 0, ENOENT }
++            : spawnHaikuProcess(executable.legacyCStringPointer(), processIdentifier, client.value(), arguments, childEnvironmentOverrides());
++        client = { };
++        if (result.error) {
++            RunLoop::mainSingleton().dispatch([protectedThis = WTF::move(protectedThis)] {
++                protectedThis->didFinishLaunchingProcess(0, { });
++            });
++            return;
++        }
++        Thread::create("WebKit process reaper"_s, [process = result.process] {
++            int status;
++            while (waitpid(process, &status, 0) < 0 && errno == EINTR) { }
++        })->detach();
++        RunLoop::mainSingleton().dispatch([protectedThis = WTF::move(protectedThis), process = result.process, server = WTF::move(server)] mutable {
++            if (!protectedThis->m_client)
++                kill(process, SIGKILL);
++            protectedThis->didFinishLaunchingProcess(process, IPC::Connection::Identifier { WTF::move(server) });
 +        });
-+        return;
-+    }
-+
-+    Thread::create("WebKit process reaper"_s, [process = result.process] {
-+        int status;
-+        while (waitpid(process, &status, 0) < 0 && errno == EINTR) { }
 +    })->detach();
-+    RunLoop::mainSingleton().dispatch([protectedThis = Ref { *this }, process = result.process, server = WTF::move(sockets.server)] mutable {
-+        if (!protectedThis->m_client)
-+            kill(process, SIGKILL);
-+        protectedThis->didFinishLaunchingProcess(process, IPC::Connection::Identifier { WTF::move(server) });
-+    });
 +}
 +
 +void ProcessLauncher::terminateProcess(const String&)
@@ -118705,10 +118753,10 @@ index 121e64b01bce34e387deacf3bbbca93adf0f59da..7926cd9c3edf141bc52f7db0253c37c0
  endif ()
 diff --git a/Source/cmake/OptionsHaiku.cmake b/Source/cmake/OptionsHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..efad3047d311108422296be79038bf2df185333d
+index 0000000000000000000000000000000000000000..bb1ba1687c893d2bdbc6212a43d369d9108ab382
 --- /dev/null
 +++ b/Source/cmake/OptionsHaiku.cmake
-@@ -0,0 +1,342 @@
+@@ -0,0 +1,350 @@
 +include(GNUInstallDirs)
 +include(VersioningUtils)
 +
@@ -118935,6 +118983,14 @@ index 0000000000000000000000000000000000000000..efad3047d311108422296be79038bf2d
 +	string(APPEND CMAKE_CXX_FLAGS " -ffunction-sections -fdata-sections")
 +	string(APPEND CMAKE_SHARED_LINKER_FLAGS " -Wl,--gc-sections")
 +endif ()
++
++# Haiku's runtime_loader binds every symbol at load time (no lazy binding),
++# and libWebKit alone has a quarter of a million symbol relocations. With a
++# GNU hash table the lookups that miss an image are mostly settled by its
++# bloom filter: a web process or the browser reaches its first frame about
++# 230 ms sooner on the X399. The SysV table stays for older loaders.
++string(APPEND CMAKE_SHARED_LINKER_FLAGS " -Wl,--hash-style=both")
++string(APPEND CMAKE_EXE_LINKER_FLAGS " -Wl,--hash-style=both")
 +
 +# Haiku actually make use of rtti in several places, so we can't really disable
 +# it, unlike on other platforms...

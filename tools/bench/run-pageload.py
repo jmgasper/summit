@@ -18,6 +18,7 @@ must be quiet: other builds or benchmarks change the numbers more than most
 engine changes do.
 """
 import argparse
+import os
 import json
 import pathlib
 import shlex
@@ -36,7 +37,7 @@ DEFAULT_URLS = [
     'https://www.bbc.com/news',
     'https://github.com/WebKit/WebKit',
 ]
-MESA = '/boot/home/summit-mesa/prefix-20260930'
+MESA = os.environ.get('SUMMIT_BENCH_MESA', '/boot/home/summit-mesa/prefix-20261002')
 SETUP = ('(window.__pageload = {lcp: null}, (() => { try { new PerformanceObserver(list => { const e = list.getEntries(); '
          'if (e.length) window.__pageload.lcp = e[e.length - 1].startTime; })'
          '.observe({type: "largest-contentful-paint", buffered: true}); } catch (error) '
@@ -46,6 +47,9 @@ COLLECT = ('(() => { const n = performance.getEntriesByType("navigation")[0]; co
            'const r = performance.getEntriesByType("resource"); '
            'return {url: location.href, ttfb: n ? n.responseStart : null, dcl: n ? n.domContentLoadedEventEnd : null, '
            'load: n ? n.loadEventEnd : null, fcp: paint["first-contentful-paint"] ?? null, '
+           'phases: n ? {fetch: n.fetchStart, redirectEnd: n.redirectEnd, dns: n.domainLookupStart, dnsEnd: n.domainLookupEnd, '
+           'connect: n.connectStart, tls: n.secureConnectionStart, connectEnd: n.connectEnd, request: n.requestStart, '
+           'response: n.responseStart, responseEnd: n.responseEnd} : null, '
            'lcp: window.__pageload ? window.__pageload.lcp : null, resources: r.length, '
            'transfer: r.reduce((a, x) => a + (x.transferSize || 0), 0), elements: document.getElementsByTagName("*").length}; })()')
 METRICS = ('ttfb', 'fcp', 'lcp', 'dcl', 'load')
@@ -82,6 +86,10 @@ def summit_load(ctl, bundle, profile, url, settle, window, log_path):
            '__EGL_VENDOR_LIBRARY_FILENAMES': MESA + '/data/glvnd/egl_vendor.d/50_mesa.json',
            'SUMMIT_SKIA_GL_CONTEXT': '1', 'SUMMIT_SCROLL_REFRESH_TIMER': '16',
            'SUMMIT_ENABLE_INPUT_SYNTHESIS': '1'}
+    # SUMMIT_BENCH_EXTRA_ENV="NAME=VALUE NAME=VALUE": traces for one run.
+    for item in os.environ.get('SUMMIT_BENCH_EXTRA_ENV', '').split():
+        name, _, value = item.partition('=')
+        env[name] = value
     group = guest.launch(bundle, profile, 'about:blank', log_path, env)
     entry = {'url': url}
     team = None

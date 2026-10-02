@@ -1,5 +1,50 @@
 # Summit performance: Speedometer 3.1 baseline, where the time goes, stress test
 
+## 3 October 2026: start-up, process launches and first bytes
+
+Measured on the X399 with the browser started on about:blank, from the
+launch to the first composited frame (three runs each):
+
+| | browser up | web and network processes up | first frame |
+| --- | --- | --- | --- |
+| installed build (fork + exec, SysV hash) | 0.07 s | 0.51 s | 1.06-1.15 s |
+| load_image() on the main thread, one launch at a time | 0.07 s | network 0.51, web 0.84 s | 1.34-1.44 s |
+| load_image() on a launcher thread, launches at once | 0.07 s | 0.50 s | 1.17-1.21 s |
+| ... and GNU hash tables | 0.07 s | 0.37 s | 0.84-0.88 s |
+
+- **Launching with load_image().** WebKit's launcher forked the browser and
+  exec'd the child. A fork copies the parent's address space, and with the
+  window a direct window (issue #16) that included the frame buffer mapping,
+  which hung the machine. `load_image()` starts a new team instead, but it
+  returns only when the child has loaded its libraries (a third of a second
+  for a web process): it now runs on a launcher thread, so the UI is not
+  blocked, and launches run at once. A child may then inherit another
+  launch's IPC endpoint, so each one closes every inherited descriptor but
+  its own first (`AuxiliaryProcessMainCommon::parseCommandLine`).
+- **GNU hash tables** (`-Wl,--hash-style=both`, engine `OptionsHaiku.cmake`
+  and `build-modern-browser.py`). Haiku's runtime_loader binds every symbol
+  when it loads an image (no lazy binding), and libWebKit has 257,328
+  symbol relocations. It already supports DT_GNU_HASH, whose bloom filter
+  settles most lookups that miss an image; the toolchain's default was SysV
+  only. 100 ms off the browser's own start and 230 ms off the first frame,
+  and every web process for a new tab starts that much sooner. Only a
+  relink: no object changes.
+
+**First bytes are the network's.** Time to first byte was 400-700 ms in
+Summit where Firefox had 160-200 ms on 1 October:
+
+- *Wikipedia* is 191 ms away from the X399 (ping): connect, TLS 1.3 and
+  the request are a round trip each, and curl on the machine takes 640 ms,
+  as Summit does (654). Firefox would save a round trip with HTTP/3, which
+  Summit's libcurl does not have.
+- *GitHub* answers the first request after a pause in 700 ms whoever asks
+  (curl: 745 ms, then 105 ms for the next ones, 25 s apart): its edge
+  caches the page. The comparison loaded Firefox right after Summit, so
+  Firefox met the cache Summit had warmed. With Summit's exact request
+  headers curl gets the page in 110 ms.
+- The page-load script now records the navigation's phases (DNS, connect,
+  TLS, request, response) and takes `SUMMIT_BENCH_EXTRA_ENV` for traces.
+
 ## 1 October 2026: page loads against Firefox (issue #2)
 
 `tools/bench/run-pageload.py` loads complex sites in Summit and in Firefox

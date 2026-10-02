@@ -326,6 +326,9 @@ def main():
                          *(['-lbnetapi', '-ltranslation', '-ltracker', '-lgame', '-lscintilla', '-llexilla', '-lcurl',
                             # BColumnListView, a static library of the system's.
                             '-lcolumnlistview'] if browser else []),
+                         # A GNU hash table: the loader settles most misses by
+                         # its bloom filter (see the engine's OptionsHaiku.cmake).
+                         '-Wl,--hash-style=both',
                          '-Wl,-rpath,' + ':'.join(map(str, [ENGINE / 'lib', ICU / 'lib']
                              + ([LIBZIP / 'lib'] if 'libzip' in inputs else []))),
                          '-o', str(work / executable_name)])
