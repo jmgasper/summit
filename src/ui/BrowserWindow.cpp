@@ -4,6 +4,7 @@
 #include "Chrome.h"
 #include "FaviconCache.h"
 #include "AddressSuggestions.h"
+#include "DirectWindowRescue.h"
 #include "Messages.h"
 #include "SharedProfile.h"
 #if SUMMIT_MODERN_WEBKIT
@@ -715,6 +716,11 @@ BrowserWindow::~BrowserWindow()
 {
 #if SUMMIT_MODERN_WEBKIT
     BWebKitView::WindowDirectConnected(this, nullptr);
+    // Without its daemon thread ~BDirectWindow would wait for ever.
+    if (DirectDaemonLost()) {
+        std::fprintf(stderr, "Summit: the window's direct daemon is gone; closing without it\n");
+        summit::ReleaseDeadDirectConnection(*this);
+    }
 #endif
     SetPrivateWindow(this, false);
     fShared->RemoveListener(BMessenger(this));
@@ -2080,8 +2086,16 @@ void BrowserWindow::DirectConnected(direct_buffer_info* info)
         const char* value = std::getenv("SUMMIT_DIRECT_PRESENT");
         return !value || std::strcmp(value, "flag");
     }();
+    fDirectDaemon = find_thread(nullptr);
     if (forward)
         BWebKitView::WindowDirectConnected(this, info);
+}
+
+bool BrowserWindow::DirectDaemonLost() const
+{
+    thread_id daemon = fDirectDaemon;
+    thread_info info;
+    return daemon >= 0 && get_thread_info(daemon, &info) != B_OK;
 }
 #endif
 
@@ -2886,7 +2900,18 @@ void BrowserWindow::MessageReceived(BMessage* message)
         case kZoomIn: ChangeZoom(1); break;
         case kZoomOut: ChangeZoom(-1); break;
         case kZoomReset: ChangeZoom(0); break;
-        case kSaveSession: SaveSession(); break;
+        case kSaveSession:
+            SaveSession();
+#if SUMMIT_MODERN_WEBKIT
+            // Checked with each session save (every five seconds): pages of a
+            // window whose daemon is gone draw through app_server again.
+            if (!fDirectDaemonLostHandled && DirectDaemonLost()) {
+                fDirectDaemonLostHandled = true;
+                std::fprintf(stderr, "Summit: the window's direct daemon is gone; pages draw through app_server\n");
+                BWebKitView::WindowDirectConnected(this, nullptr);
+            }
+#endif
+            break;
         case kNextTab: case kPreviousTab:
             for (size_t i = 0; i < fTabs.size(); ++i) if (fTabs[i].id == fSelected) {
                 SelectTab(fTabs[(i + (message->what == kNextTab ? 1 : fTabs.size() - 1)) % fTabs.size()].id); break;

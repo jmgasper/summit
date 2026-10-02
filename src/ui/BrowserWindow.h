@@ -107,6 +107,10 @@ public:
     void WindowActivated(bool active) override;
 #if SUMMIT_MODERN_WEBKIT
     void DirectConnected(direct_buffer_info* info) override;
+    // Whether app_server killed the window's direct daemon thread, which it
+    // does to a DirectConnected() over half a second: the pages then get no
+    // word of the window moving or closing (BrowserWindow.cpp).
+    bool DirectDaemonLost() const;
 #endif
 #else
     void NavigationRequested(const BString& url, BWebView* view) override;
@@ -301,6 +305,10 @@ private:
     Autofill fAutofill;
     // Servers connected to ahead of time, by origin, and when.
     std::map<std::string, bigtime_t> fPreconnected;
+#if SUMMIT_MODERN_WEBKIT
+    std::atomic<thread_id> fDirectDaemon { -1 };
+    bool fDirectDaemonLostHandled = false;
+#endif
     void RefreshChrome();
     void AnnouncePointer();
 #if SUMMIT_MODERN_WEBKIT

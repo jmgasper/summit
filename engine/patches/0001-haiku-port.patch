@@ -49328,10 +49328,10 @@ index 0000000000000000000000000000000000000000..d28a6cad6339adf79b155cf974e85bfd
 +
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..2d359e59018fa02eabd375b3e2660ec73fb66831
+index 0000000000000000000000000000000000000000..29e4343bd44efd49d84aba998c2457e945033ead
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp
-@@ -0,0 +1,845 @@
+@@ -0,0 +1,895 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -49355,6 +49355,8 @@ index 0000000000000000000000000000000000000000..2d359e59018fa02eabd375b3e2660ec7
 +#include <Region.h>
 +#include <Window.h>
 +#include <algorithm>
++#include <chrono>
++#include <mutex>
 +#include <cinttypes>
 +#include <cmath>
 +#include <cstdio>
@@ -49463,12 +49465,14 @@ index 0000000000000000000000000000000000000000..2d359e59018fa02eabd375b3e2660ec7
 +    area_id backArea { -1 };
 +    uint32 backBytesPerRow { 0 };
 +    uint32 backHeight { 0 };
++    // The window's direct daemon, the thread DirectConnected() comes on.
++    thread_id daemon { -1 };
 +};
 +}
 +
-+static std::mutex& directLockHaiku()
++static std::timed_mutex& directLockHaiku()
 +{
-+    static NeverDestroyed<std::mutex> lock;
++    static NeverDestroyed<std::timed_mutex> lock;
 +    return lock.get();
 +}
 +
@@ -49496,7 +49500,7 @@ index 0000000000000000000000000000000000000000..2d359e59018fa02eabd375b3e2660ec7
 +// Where the view's page goes on the screen now, under directLockHaiku().
 +// Makes the view's target on first use, and asks for the page in full when
 +// the target changed: the screen holds nothing of it in a newly visible part.
-+static void updateDirectTargetHaiku(const std::shared_ptr<WebKit::WebViewStateHaiku>& state)
++static void updateDirectTargetHaiku(const std::shared_ptr<WebKit::WebViewStateHaiku>& state, bigtime_t deadline)
 +{
 +    using WebKit::DirectPresentTargetHaiku;
 +    DirectPresentTargetHaiku::Target target;
@@ -49559,7 +49563,7 @@ index 0000000000000000000000000000000000000000..2d359e59018fa02eabd375b3e2660ec7
 +        return;
 +    if (created)
 +        WebKit::dispatchViewMessageHaiku(state, BMessage(WebKit::viewDirectTargetHaiku));
-+    if (directTarget->update(target) && target.enabled)
++    if (directTarget->update(target, deadline) && target.enabled)
 +        WebKit::dispatchViewMessageHaiku(state, BMessage(WebKit::viewDirectRedisplayHaiku));
 +}
 +
@@ -49567,7 +49571,14 @@ index 0000000000000000000000000000000000000000..2d359e59018fa02eabd375b3e2660ec7
 +{
 +    if (!window || !directPresentEnabledHaiku())
 +        return;
-+    std::lock_guard guard(directLockHaiku());
++    // app_server waits half a second for this and then kills the application.
++    // Everything here, waiting for the lock included, takes 300 ms at most.
++    std::unique_lock guard(directLockHaiku(), std::defer_lock);
++    if (!guard.try_lock_for(std::chrono::milliseconds(150))) {
++        std::fprintf(stderr, "Summit direct present: the window's views were busy; not updated for this connection\n");
++        return;
++    }
++    bigtime_t deadline = system_time() + 150000;
 +    auto& windows = directWindowsHaiku();
 +    // device_scale, drawing_bits_area and drawing_bytes_per_row follow
 +    // bits_area; in headers from before them they are the start of _reserved1.
@@ -49577,6 +49588,7 @@ index 0000000000000000000000000000000000000000..2d359e59018fa02eabd375b3e2660ec7
 +        windows.erase(window);
 +    else {
 +        DirectWindowHaiku connected;
++        connected.daemon = find_thread(nullptr);
 +        connected.scale = scale;
 +        connected.bounds = info->window_bounds;
 +        connected.clips.assign(info->clip_list, info->clip_list + info->clip_list_count);
@@ -49594,7 +49606,43 @@ index 0000000000000000000000000000000000000000..2d359e59018fa02eabd375b3e2660ec7
 +    for (auto& [pointer, weak] : directViewsHaiku()) {
 +        auto state = weak.lock();
 +        if (state && state->directView.window == window)
-+            updateDirectTargetHaiku(state);
++            updateDirectTargetHaiku(state, deadline);
++    }
++}
++
++// Window thread, with each frame the web process put into the screen. When
++// app_server waits too long for a DirectConnected() it gives the window up and
++// its daemon thread ends: the window hears nothing more of being moved,
++// covered or of the frame buffer moving (a monitor going to sleep or waking
++// does that, and the daemon can wait half a second there on the
++// application's app_server link while another thread holds it). Its pages
++// then draw through app_server again, at once rather than at the next
++// session save (Summit's BrowserWindow checks too).
++static void dropWindowsWithoutDaemonHaiku()
++{
++    static bigtime_t lastCheck = 0;
++    bigtime_t now = system_time();
++    if (now - lastCheck < 100000)
++        return;
++    lastCheck = now;
++    std::unique_lock guard(directLockHaiku(), std::try_to_lock);
++    if (!guard.owns_lock())
++        return;
++    auto& windows = directWindowsHaiku();
++    for (auto it = windows.begin(); it != windows.end();) {
++        thread_info info;
++        if (it->second.daemon < 0 || get_thread_info(it->second.daemon, &info) == B_OK) {
++            ++it;
++            continue;
++        }
++        BWindow* window = it->first;
++        it = windows.erase(it);
++        std::fprintf(stderr, "Summit direct present: window %p lost its direct daemon; its pages draw through app_server\n", window);
++        for (auto& [pointer, weak] : directViewsHaiku()) {
++            auto state = weak.lock();
++            if (state && state->directView.window == window)
++                updateDirectTargetHaiku(state, system_time() + 50000);
++        }
 +    }
 +}
 +
@@ -49623,7 +49671,7 @@ index 0000000000000000000000000000000000000000..2d359e59018fa02eabd375b3e2660ec7
 +    current.window = window;
 +    current.frame = frame;
 +    current.visible = visible;
-+    updateDirectTargetHaiku(state);
++    updateDirectTargetHaiku(state, system_time() + 90000);
 +    if (!window)
 +        views.erase(state.get());
 +}
@@ -50131,8 +50179,10 @@ index 0000000000000000000000000000000000000000..2d359e59018fa02eabd375b3e2660ec7
 +            std::fprintf(stderr, "Summit view %p frame message damage=%d window=%p hidden=%d\n", this,
 +                static_cast<int>(message->CountNames(B_RECT_TYPE)), Window(), IsHidden() ? 1 : 0);
 +        // The web process put this frame into the screen itself.
-+        if (message->GetBool("direct", false))
++        if (message->GetBool("direct", false)) {
++            dropWindowsWithoutDaemonHaiku();
 +            return;
++        }
 +        // A frame names what changed; without that it replaces everything.
 +        BRect damage;
 +        if (message->FindRect("damage", &damage) != B_OK) {
@@ -74263,10 +74313,10 @@ index 0000000000000000000000000000000000000000..c9ce1c3634ecf86e8225245d70df7d88
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/DirectPresentTargetHaiku.h b/Source/WebKit/UIProcess/haiku/DirectPresentTargetHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..5df26d1676e2d4189267dee775e47fa52e03552e
+index 0000000000000000000000000000000000000000..afb435524fc55067a4ce7c27c4b144ba48867c93
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/DirectPresentTargetHaiku.h
-@@ -0,0 +1,135 @@
+@@ -0,0 +1,139 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#pragma once
 +
@@ -74334,17 +74384,21 @@ index 0000000000000000000000000000000000000000..5df26d1676e2d4189267dee775e47fa5
 +    area_id area() const { return m_area; }
 +    bool enabled() const { return m_enabled.load(std::memory_order_relaxed); }
 +
-+    // Any thread. Returns whether anything changed; a changed target needs the
-+    // page presented again in full. Returns once the GPU has finished every
-+    // copy made for the previous target, which a window that is being covered
-+    // or moved needs before app_server goes on - but after a few tens of
-+    // milliseconds at most: app_server gives DirectConnected() half a second.
-+    bool update(const Target& target)
++    // Any thread; the callers take turns (WebKitView.cpp's direct lock).
++    // Returns whether anything changed; a changed target needs the page
++    // presented again in full. Returns once the GPU has finished every copy
++    // made for the previous target, which a window that is being covered or
++    // moved needs before app_server goes on, or at the deadline, whichever
++    // comes first: app_server gives DirectConnected() half a second and then
++    // kills the application, with its pages' copies still under way (that
++    // hung the X399). Past the deadline an old copy can at worst land on what
++    // now covers the window.
++    bool update(const Target& target, bigtime_t deadline)
 +    {
-+        std::lock_guard guard(m_mutex);
 +        if (target == m_current)
 +            return false;
-+        bool locked = acquire_sem_etc(m_state->lock, 1, B_RELATIVE_TIMEOUT, 30000) == B_OK;
++        bigtime_t lockWait = std::clamp<bigtime_t>(deadline - system_time(), 0, 30000);
++        bool locked = acquire_sem_etc(m_state->lock, 1, B_RELATIVE_TIMEOUT, lockWait) == B_OK;
 +        m_state->enabled = target.enabled;
 +        m_state->originX = target.originX;
 +        m_state->originY = target.originY;
@@ -74363,7 +74417,7 @@ index 0000000000000000000000000000000000000000..5df26d1676e2d4189267dee775e47fa5
 +        m_state->rectCount = count;
 +        m_state->generation++;
 +        // Holding the lock keeps new copies from starting while the old ones finish.
-+        bigtime_t deadline = system_time() + 60000;
++        deadline = std::min(deadline, system_time() + 60000);
 +        while (m_state->inFlight.load() > 0 && system_time() < deadline)
 +            snooze(100);
 +        if (locked)

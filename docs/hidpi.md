@@ -160,3 +160,40 @@ to the OS work; no ping on either interface, nothing in the syslog):
   its own, which also no longer copies the browser's whole address space
   for each launch.
 - *A process ending with GPU-imported host memory*, above.
+
+**DirectConnected() has half a second (3 October).** app_server waits that
+long for a direct window's `DirectConnected()` and then kills the window's
+direct daemon thread ("killed for a problem in DirectConnected(): Operation
+timed out" in the syslog). The window then hears nothing more of being
+moved, covered or closed, its pages go on writing where it used to be, and
+`~BDirectWindow` waits for ever for a flag only that thread clears. A test
+browser with six tabs hit it three times in a row, and the X399 hung
+minutes later. Summit's `DirectConnected()` updated each view's target in
+turn, each waiting up to 30 ms for the target's lock and 60 ms for its
+copies in flight, behind a lock the window thread also takes. Now it waits
+150 ms at most for that lock and gives all the window's views one deadline
+150 ms away, so it returns within about 300 ms whatever the number of tabs;
+past the deadline an old copy can at worst land on what now covers the
+window. And should the daemon die anyway, the window notices within five
+seconds (it checks with its session save) and its pages draw through
+app_server again; on closing it clears the daemon's connection flag itself
+(`src/ui/DirectWindowRescue.cpp`, the same fix the airTime player uses).
+
+The daemon can also be late for reasons not yet found. During the
+morning's benchmark runs app_server logged four such timeouts per run of
+six page loads, with the browser quitting normally, and four more right
+after a monitor went to sleep and woke (the X399's screen went from
+7680x2160 to 3840x2160 and back, its scanout memory reallocated) while a
+benchmark was running; a browser driven by hand through the same steps
+(launch, window frame, navigation, Developer Tools, quit) logged none. One
+possible cause: when the frame buffer moves, `BDirectWindow::_DirectDaemon`
+clones the new frame buffer area under `BPrivate::AppServerLink`, the
+application's lock on its app_server connection, which any other thread
+waiting on an app_server reply holds, while app_server waits up to half a
+second for the daemon, one window at a time. Summit's side is to notice.
+The engine notes each window's daemon thread, and with every frame a page
+presents directly (at most every 100 ms) it checks the thread is still
+there; a window whose daemon has gone has its pages draw through
+app_server from the next frame. No hang followed any of these timeouts;
+the one hang came after a test script killed a browser whose pages were
+still being presented.
