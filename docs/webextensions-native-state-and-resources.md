@@ -88,3 +88,36 @@ attachment still need implementation and integration tests. The extracted
 lifecycle calls those real upstream hooks; missing implementations have not
 been replaced with successful no-ops. A matching feature-enabled WebKit/WebCore/
 generated-IPC dependency closure is required before any context runtime test.
+
+## Damaged state after a power cut (issue #17, 2 October 2026)
+
+uBlock Origin on the X399 showed "Enabled, but not running" with only
+"Operation not allowed". Its `State.json` held 702 bytes of another file's
+old data (a list of two-factor help pages): it had been written on 1 October
+at 15:16:41 through the temporary file, `fsync` and rename above, and the
+machine was later cut off. BFS kept the new size and block run but not the
+data, so the file system lost data that had been synced; that is reported to
+the OS work. Its 20 MB `LocalStorage.db` passed SQLite's integrity check.
+
+A browser-startup restore refused any state that did not name the package's
+fingerprint, so the extension could never start again. Now
+(`ExtensionPackageRegistryHaiku::load`):
+
+- A state that names a *different* package version is still refused, with a
+  reason the Extensions window shows.
+- A state that is missing or unreadable is moved aside to
+  `State.damaged.json`. If `State.backup.json` belongs to the package it is
+  put back ("restored from the copy taken when it last started": grants,
+  base URL and privacy settings survive). Otherwise the extension starts
+  with the access its installation granted (the requested permissions and
+  hosts, `file:` hosts only with local-file access), as the catalog approved
+  exactly this package.
+- After each start the state is copied to `State.backup.json` on the
+  registry's work queue, only when it differs, so the copy is usually long on
+  the disk when a cut comes.
+
+Every refusal now carries a description, and a recovery is shown in the
+Extensions window and logged as `Summit extension <id>: ...`. Verified on the
+X399 with a copy of the owner's damaged profile: uBlock started, blocked
+`adsbygoogle.js` (which the X399 itself fetches with curl), a clean restart
+logged nothing, and a deliberately damaged state came back from the backup.

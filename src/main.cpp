@@ -1001,6 +1001,7 @@ private:
             item.AddString("name", entry.installation.name.c_str());
             item.AddString("version", entry.installation.version.c_str());
             item.AddString("error", entry.error.c_str());
+            item.AddString("notice", entry.notice.c_str());
             item.AddBool("enabled", entry.installation.enabled);
             item.AddBool("loaded", entry.loaded);
             item.AddBool("installed", entry.installed);

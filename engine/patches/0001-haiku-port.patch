@@ -73849,10 +73849,10 @@ index 0000000000000000000000000000000000000000..f61939d10995397e88877a36905238be
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/ExtensionPackageRegistryHaiku.cpp b/Source/WebKit/UIProcess/haiku/ExtensionPackageRegistryHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..c2c90ae7e94ac7579a2fe4d333e9edb220c8eebe
+index 0000000000000000000000000000000000000000..74bebd063c30408612a8fce4a546fc86226de2ad
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/ExtensionPackageRegistryHaiku.cpp
-@@ -0,0 +1,614 @@
+@@ -0,0 +1,687 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#include "config.h"
 +#include "ExtensionPackageRegistryHaiku.h"
@@ -73874,6 +73874,7 @@ index 0000000000000000000000000000000000000000..c2c90ae7e94ac7579a2fe4d333e9edb2
 +#include <WebCore/ImageBuffer.h>
 +#include <WebCore/PixelBuffer.h>
 +#include <algorithm>
++#include <cstdio>
 +#include <limits>
 +#include <utility>
 +#include <wtf/RunLoop.h>
@@ -74085,6 +74086,10 @@ index 0000000000000000000000000000000000000000..c2c90ae7e94ac7579a2fe4d333e9edb2
 +            details.AddString("description", reason->localizedDescription().utf8().legacyCStringPointer());
 +        return reply(target, B_WEBKIT_EXTENSION_LOADED, identifier, error, &details);
 +    };
++    auto refuse = [&](const char* description) {
++        details.AddString("description", description);
++        return reply(target, B_WEBKIT_EXTENSION_LOADED, identifier, B_NOT_ALLOWED, &details);
++    };
 +    if (installation.identifier.empty() != !installation.order
 +        || (!installation.identifier.empty() && !validExtensionIdentity(installation.identifier))) {
 +        respond(B_BAD_VALUE);
@@ -74119,11 +74124,11 @@ index 0000000000000000000000000000000000000000..c2c90ae7e94ac7579a2fe4d333e9edb2
 +    }
 +    Ref extension = found->value.copyRef();
 +    if (String::fromUTF8(options.expectedFingerprint) != extension->nativeResourceFingerprint()) {
-+        respond(B_NOT_ALLOWED);
++        refuse("The installed package is not the one that was approved.");
 +        return;
 +    }
 +    if (!extension->nativeVerifiedCRXIdentifier().isEmpty() && extension->nativeVerifiedCRXIdentifier() != uniqueIdentifier) {
-+        respond(B_NOT_ALLOWED);
++        refuse("The package is signed for a different extension identifier.");
 +        return;
 +    }
 +    if (m_loaded.contains(uniqueIdentifier)
@@ -74150,8 +74155,20 @@ index 0000000000000000000000000000000000000000..c2c90ae7e94ac7579a2fe4d333e9edb2
 +        return;
 +    }
 +    if (m_privateBrowsing && (!options.allowPrivateBrowsing || restore)) {
-+        respond(B_NOT_ALLOWED);
++        refuse("This extension is not allowed in private windows.");
 +        return;
++    }
++    // Origins granted on this load besides the caller's: the package's own
++    // requested hosts when a restored installation lost its saved grants.
++    std::vector<std::string> recoveredOrigins;
++    const char* recovery = nullptr;
++    // Grants installed on the context instead of the saved ones.
++    bool replacesGrants = !restore;
++    String statePath, backupPath;
++    if (m_controller->configuration().storageIsPersistent()) {
++        auto directory = FileSystem::pathByAppendingComponent(m_controller->configuration().storageDirectory(), uniqueIdentifier);
++        statePath = FileSystem::pathByAppendingComponent(directory, WebExtensionContext::stateFileName());
++        backupPath = FileSystem::pathByAppendingComponent(directory, "State.backup.json"_s);
 +    }
 +    if (restore) {
 +        // A restored installation may name required manifest permissions that its original
@@ -74162,24 +74179,56 @@ index 0000000000000000000000000000000000000000..c2c90ae7e94ac7579a2fe4d333e9edb2
 +        }
 +        for (auto& input : options.permissions) {
 +            if (!extension->requestedPermissions().contains(String::fromUTF8(input))) {
-+                respond(B_NOT_ALLOWED);
++                refuse("The installation names a permission its package does not request.");
 +                return;
 +            }
 +        }
-+        auto directory = FileSystem::pathByAppendingComponent(m_controller->configuration().storageDirectory(), uniqueIdentifier);
-+        auto state = readWebExtensionStateHaiku(FileSystem::pathByAppendingComponent(directory, WebExtensionContext::stateFileName()));
-+        if (!state || (*state)->getDouble("ResourceFingerprintFormat"_s) != 1
-+            || (*state)->getString("LastSeenResourceFingerprint"_s) != extension->nativeResourceFingerprint()) {
-+            respond(B_NOT_ALLOWED);
-+            return;
++        auto fingerprint = extension->nativeResourceFingerprint();
++        auto belongsToPackage = [&](const JSON::Object& state) {
++            return state.getDouble("ResourceFingerprintFormat"_s) == 1 && state.getString("LastSeenResourceFingerprint"_s) == fingerprint;
++        };
++        auto state = readWebExtensionStateHaiku(statePath);
++        if (!state || !belongsToPackage(state->get())) {
++            // Saved grants for another version of the package do not carry over to this one.
++            if (state && !(*state)->getString("LastSeenResourceFingerprint"_s).isEmpty()) {
++                refuse("Its saved permissions belong to a different version of the package.");
++                return;
++            }
++            // The saved state is missing or unreadable. A machine reset before the file reached
++            // the disk can leave it holding other files' old blocks (a uBlock Origin state on the
++            // X399 held 702 bytes of 1Password data). The host's catalog approved exactly this
++            // package (the fingerprint checks above), so start it again: from the copy taken at
++            // its last good start if there is one, else with the access its installation granted.
++            // The damaged file is kept next to it for inspection.
++            if (FileSystem::fileExists(statePath))
++                FileSystem::moveFile(statePath, FileSystem::pathByAppendingComponent(FileSystem::parentPath(statePath), "State.damaged.json"_s));
++            auto backup = readWebExtensionStateHaiku(backupPath);
++            if (backup && belongsToPackage(backup->get()) && writeWebExtensionStateHaiku(statePath, backup->get()))
++                recovery = "Its saved settings were damaged and have been restored from the copy taken when it last started.";
++            else {
++                recovery = "Its saved settings were damaged. It was started again with the access approved when it was installed; access granted later has to be granted again.";
++                replacesGrants = true;
++                // The same origins the installation consent listed and granted (see prepare()).
++                auto patterns = copyToVector(extension->allRequestedMatchPatterns());
++                for (auto& pattern : patterns) {
++                    if (pattern->scheme() == "file"_s && !options.allowFileURLs)
++                        continue;
++                    bool covered = std::ranges::any_of(patterns, [&](auto& other) {
++                        return other.ptr() != pattern.ptr() && other->matchesPattern(pattern) && !pattern->matchesPattern(other);
++                    });
++                    if (!covered)
++                        recoveredOrigins.emplace_back(pattern->string().utf8().legacyCStringPointer());
++                }
++            }
 +        }
 +    }
++
 +    WebExtensionContext::PermissionsMap permissions;
 +    WebExtensionContext::PermissionMatchPatternsMap origins;
 +    auto allowedPermissions = extension->requestedPermissions().unionWith(extension->optionalPermissions());
 +    auto allowedOrigins = extension->allRequestedMatchPatterns().unionWith(extension->optionalPermissionMatchPatterns());
 +    size_t length = 0;
-+    for (auto* values : { &options.permissions, &options.origins }) {
++    for (auto* values : { &options.permissions, &options.origins, &std::as_const(recoveredOrigins) }) {
 +        for (auto& input : *values) {
 +            if (input.size() > 16384 - length) {
 +                respond(B_BAD_VALUE);
@@ -74191,12 +74240,18 @@ index 0000000000000000000000000000000000000000..c2c90ae7e94ac7579a2fe4d333e9edb2
 +    for (auto& input : options.permissions) {
 +        auto name = String::fromUTF8(input);
 +        if (name.isEmpty() || name.contains('\0') || !allowedPermissions.contains(name)) {
-+            respond(B_NOT_ALLOWED);
++            refuse("The installation names a permission its package does not request.");
 +            return;
 +        }
 +        permissions.set(WTF::move(name), WallTime::infinity());
 +    }
-+    for (auto& input : options.origins) {
++    auto grantedOrigins = options.origins;
++    grantedOrigins.insert(grantedOrigins.end(), recoveredOrigins.begin(), recoveredOrigins.end());
++    if (options.permissions.size() + grantedOrigins.size() > maximumExtensionGrants) {
++        respond(B_BAD_VALUE);
++        return;
++    }
++    for (auto& input : grantedOrigins) {
 +        auto text = String::fromUTF8(input);
 +        RefPtr pattern = text.contains('\0') ? nullptr : WebExtensionMatchPattern::getOrCreate(text);
 +        if (!pattern || !pattern->isSupported() || (pattern->scheme() == "file"_s && !options.allowFileURLs)
@@ -74223,7 +74278,7 @@ index 0000000000000000000000000000000000000000..c2c90ae7e94ac7579a2fe4d333e9edb2
 +    }
 +    context->setHasAccessToFileURLs(options.allowFileURLs);
 +    context->setHasAccessToPrivateData(options.allowPrivateBrowsing);
-+    if (!restore) {
++    if (replacesGrants) {
 +        // Replace both sets even when empty, preventing saved grants from being
 +        // merged into a fresh host approval by restoreNativePermissionState().
 +        context->setGrantedPermissions(WTF::move(permissions));
@@ -74260,10 +74315,28 @@ index 0000000000000000000000000000000000000000..c2c90ae7e94ac7579a2fe4d333e9edb2
 +    // chrome_url_overrides.newtab (Momentum, Tabliss, ...): the host opens this page for new tabs.
 +    if (auto newTab = context->overrideNewTabPageURL(); error == B_OK && newTab.isValid())
 +        error = details.AddString("new_tab_url", newTab.string().utf8().legacyCStringPointer());
++    if (recovery && error == B_OK)
++        error = details.AddString("recovered", recovery);
 +    auto delivered = error == B_OK ? respond(B_OK) : error;
 +    if (delivered == B_OK) {
 +        m_prepared.remove(token);
 +        actionsDidChange();
++        if (!statePath.isEmpty()) {
++            // Keep a copy of the state this start used, for recovery above. The copy changes
++            // only when the state does, so it is usually long on the disk when a reset comes.
++            m_queue->dispatch([statePath = statePath.isolatedCopy(), backupPath = backupPath.isolatedCopy(),
++                fingerprint = extension->nativeResourceFingerprint().isolatedCopy()] {
++                auto state = readWebExtensionStateHaiku(statePath);
++                if (!state || (*state)->getDouble("ResourceFingerprintFormat"_s) != 1
++                    || (*state)->getString("LastSeenResourceFingerprint"_s) != fingerprint)
++                    return;
++                auto json = (*state)->toJSONString();
++                if (auto backup = readWebExtensionStateHaiku(backupPath); backup && (*backup)->toJSONString() == json)
++                    return;
++                if (auto written = writeWebExtensionStateHaiku(backupPath, state->get()); !written)
++                    std::fprintf(stderr, "Summit extension state: cannot keep a copy (%u)\n", static_cast<unsigned>(written.error()));
++            });
++        }
 +        return;
 +    }
 +    // If the host cannot receive the activation receipt, restore the prepared

@@ -21,6 +21,8 @@ public:
         bool installed = true;
         // chrome_url_overrides.newtab of the loaded extension, as an absolute URL.
         std::string newTabURL;
+        // How the engine started it again when its saved state was damaged.
+        std::string notice;
     };
     ExtensionController(std::shared_ptr<BWebKitContext>, std::filesystem::path catalogRoot,
         std::function<void()> changed = { });

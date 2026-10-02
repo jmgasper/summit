@@ -68,8 +68,11 @@ def require_idle():
     # process working directory, so refuse any direct make/ninja/cmake activity.
     # A ninja run on another WebKitBuild directory does not touch this engine,
     # so a finished build can be bundled while an experiment builds beside it.
+    # Other projects on a shared machine build under /boot/home/build (the
+    # airTime player runs make there); those never touch Summit's trees.
     active = [line for line in run(['ps']).splitlines()
               if re.search(r'(?:^|\s)(?:\S*/)?(?:ninja|cmake|make)(?:\s|$)', line)
+              and '/boot/home/build/' not in line
               and not (re.search(r'WebKitBuild/[A-Za-z0-9_-]+', line)
                        and not re.search(r'WebKitBuild/' + re.escape(ENGINE.name) + r'(?:\s|$)', line))]
     if active:

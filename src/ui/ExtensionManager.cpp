@@ -27,6 +27,7 @@ public:
     explicit Item(const BMessage& entry)
         : BStringItem(ExtensionDisplayText(field(entry, "name")).c_str()), identifier(field(entry, "identifier"))
         , name(field(entry, "name")), version(field(entry, "version")), error(field(entry, "error"))
+        , notice(field(entry, "notice"))
     {
         entry.FindBool("enabled", &enabled);
         entry.FindBool("loaded", &loaded);
@@ -34,7 +35,7 @@ public:
         entry.FindBool("pinned", &pinned);
         entry.FindBool("private", &privateBrowsing);
     }
-    std::string identifier, name, version, error;
+    std::string identifier, name, version, error, notice;
     bool enabled = false, loaded = false, installed = true, pinned = true, privateBrowsing = false;
 };
 }
@@ -171,6 +172,7 @@ void ExtensionManager::Render()
             + "\nIdentifier: " + ExtensionDisplayText(item->identifier);
         if (!item->installed) body += "\nThis temporary runtime could not be saved as an installation.";
         if (!item->error.empty()) body += "\n\n" + ExtensionDisplayText(item->error);
+        if (!item->notice.empty()) body += "\n\n" + ExtensionDisplayText(item->notice);
         body += "\n\nRemoving stops this extension and removes it from startup. Its package and saved data stay in this profile.";
         fDetails->SetText(body.c_str());
     } else {

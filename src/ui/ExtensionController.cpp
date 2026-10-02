@@ -38,7 +38,7 @@ void ExtensionController::Start()
         Changed();
         return;
     }
-    for (auto& entry : installed) fEntries.push_back({ std::move(entry), false, { }, { }, true, { } });
+    for (auto& entry : installed) fEntries.push_back({ std::move(entry), false, { }, { }, true, { }, { } });
     Changed();
     Next();
 }
@@ -78,7 +78,7 @@ void ExtensionController::AddLoaded(InstalledExtension entry, std::string baseUR
     std::string newTabURL)
 {
     // The app serializes installer operations with this controller.
-    fEntries.push_back({ std::move(entry), true, std::move(baseURL), std::move(error), installed, std::move(newTabURL) });
+    fEntries.push_back({ std::move(entry), true, std::move(baseURL), std::move(error), installed, std::move(newTabURL), { } });
     if (!fStopping) fIndex = fEntries.size();
     Changed();
     if (fStopping) Next();
@@ -243,6 +243,11 @@ void ExtensionController::MessageReceived(BMessage* message)
     entry.baseURL = entry.loaded ? field(*message, "base_url") : std::string();
     entry.newTabURL = entry.loaded ? field(*message, "new_tab_url") : std::string();
     entry.error.clear();
+    if (entry.loaded) {
+        entry.notice = field(*message, "recovered");
+        if (!entry.notice.empty())
+            std::fprintf(stderr, "Summit extension %s: %s\n", entry.installation.identifier.c_str(), entry.notice.c_str());
+    }
     fToken.clear();
     if (pending == Pending::Unload && (fOperation == Operation::Disable || fOperation == Operation::Remove))
         FinishRemovalOrDisable();
