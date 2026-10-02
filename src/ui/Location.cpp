@@ -4,11 +4,12 @@
 #include <NetworkDevice.h>
 #include <NetworkInterface.h>
 #include <NetworkRoster.h>
-#include <SecureSocket.h>
+#include <curl/curl.h>
 #include <nlohmann/json.hpp>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -65,46 +66,44 @@ std::vector<AccessPoint> NearbyNetworks()
     return found;
 }
 
-// One HTTPS request; the certificate must be valid for the host.
+size_t Collect(char* data, size_t size, size_t count, void* user)
+{
+    auto* response = static_cast<std::string*>(user);
+    if (response->size() + size * count > 65536) return 0;
+    response->append(data, size * count);
+    return size * count;
+}
+
+// One HTTPS request through libcurl, which checks the certificate against the
+// system's authorities (BSecureSocket is a stub on builds without OpenSSL in
+// the network kit).
 bool Post(const std::string& body, std::string& response, std::string& error)
 {
-    BNetworkAddress address(kHost, 443);
-    if (address.InitCheck() != B_OK) {
-        error = "BeaconDB could not be found";
-        return false;
-    }
-    BSecureSocket socket;
-    if (socket.Connect(address, 10000000) != B_OK) {
+    static std::once_flag initialized;
+    std::call_once(initialized, [] { curl_global_init(CURL_GLOBAL_DEFAULT); });
+    CURL* curl = curl_easy_init();
+    if (!curl) {
         error = "BeaconDB could not be reached";
         return false;
     }
-    // HTTP/1.0: the answer ends when the connection does.
-    const std::string request = std::string("POST /v1/geolocate HTTP/1.0\r\nHost: ") + kHost
-        + "\r\nUser-Agent: Summit (Haiku web browser)\r\nContent-Type: application/json\r\nContent-Length: "
-        + std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n" + body;
-    if (socket.Write(request.data(), request.size()) != static_cast<ssize_t>(request.size())) {
-        error = "BeaconDB could not be reached";
+    struct curl_slist* headers = curl_slist_append(nullptr, "Content-Type: application/json");
+    curl_easy_setopt(curl, CURLOPT_URL, (std::string("https://") + kHost + "/v1/geolocate").c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "Summit (Haiku web browser)");
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, Collect);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    const CURLcode result = curl_easy_perform(curl);
+    long status = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    if (result != CURLE_OK) {
+        error = std::string("BeaconDB could not be reached: ") + curl_easy_strerror(result);
         return false;
     }
-    char buffer[4096];
-    while (response.size() < 65536) {
-        if (socket.WaitForReadable(10000000) != B_OK) break;
-        const ssize_t count = socket.Read(buffer, sizeof(buffer));
-        if (count <= 0) break;
-        response.append(buffer, count);
-    }
-    if (response.rfind("HTTP/1.", 0) != 0) {
-        error = "BeaconDB did not answer";
-        return false;
-    }
-    const size_t space = response.find(' ');
-    const int status = space == std::string::npos ? 0 : std::atoi(response.c_str() + space + 1);
-    const size_t start = response.find("\r\n\r\n");
-    if (start == std::string::npos) {
-        error = "BeaconDB did not answer";
-        return false;
-    }
-    response.erase(0, start + 4);
     if (status == 404) {
         error = "BeaconDB does not know where this network is";
         return false;

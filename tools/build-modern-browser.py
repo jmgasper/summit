@@ -320,7 +320,7 @@ def main():
     if not arguments.compile_only:
         commands.append(['c++', *map(str, objects), '-L' + str(ENGINE / 'lib'),
                          '-lWebKit', '-lbe', '-lnetwork', '-lcrypto',
-                         *(['-lbnetapi', '-ltranslation', '-ltracker', '-lgame', '-lscintilla', '-llexilla',
+                         *(['-lbnetapi', '-ltranslation', '-ltracker', '-lgame', '-lscintilla', '-llexilla', '-lcurl',
                             # BColumnListView, a static library of the system's.
                             '-lcolumnlistview'] if browser else []),
                          '-Wl,-rpath,' + ':'.join(map(str, [ENGINE / 'lib', ICU / 'lib']

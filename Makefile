@@ -28,7 +28,7 @@ CORE = $(wildcard src/core/*.cpp) $(wildcard src/extensions/*.cpp)
 UI = $(wildcard src/ui/*.cpp) src/main.cpp
 CORE_OBJ = $(CORE:%.cpp=$(BUILD)/%.o)
 UI_OBJ = $(UI:%.cpp=$(BUILD)/%.o)
-LIBS = -L$(WEBKIT_LIBRARY_DIR) -l$(WEBKIT_LINK_LIBRARY) -lbe -lnetwork -lbnetapi -ltranslation -ltracker -lcrypto $(DEVTOOLS_LIBS)
+LIBS = -L$(WEBKIT_LIBRARY_DIR) -l$(WEBKIT_LINK_LIBRARY) -lbe -lnetwork -lbnetapi -ltranslation -ltracker -lcrypto -lcurl $(DEVTOOLS_LIBS)
 .PHONY: all check clean package browser-smoke
 all: $(BUILD)/Summit $(BUILD)/resources/start.html
 $(BUILD)/Summit: $(CORE_OBJ) $(UI_OBJ) resources/Summit.rdef resources/Summit.hvif
