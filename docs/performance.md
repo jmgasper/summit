@@ -141,6 +141,38 @@ YouTube and Google pages would gain more from brotli (YouTube's front
 page is 98 KB as brotli against 255 KB as gzip, 25-60 ms to download
 here) and HTTP/3; the system libcurl has neither.
 
+### Brotli and zstd
+
+The system libcurl (8.22) is built with zlib only, and Summit let it
+decode responses, so it asked for `gzip, deflate` where every other
+browser asks for brotli too (Chrome and Firefox zstd as well). Sites
+answer what is asked: YouTube's front page is 98 KB as brotli and 255 KB
+as gzip; Google, MDN and Cloudflare send brotli, Facebook and Instagram
+zstd. And a CDN that keeps a pre-compressed copy of a large script for
+the common encodings may compress the gzip one on the fly: YouTube's
+2.5 MB main script came at 3.5 MB/s in Summit's cold loads, Firefox's
+brotli copy of it at 24 MB/s.
+
+`CurlRequest` now switches libcurl's content decoding off
+(`CURLOPT_HTTP_CONTENT_DECODING`), asks for `gzip, deflate, br, zstd`
+itself, and undoes the codings named by `Content-Encoding` as the body
+arrives: zlib for gzip (several members too) and deflate (with or without
+the zlib header), libbrotlidec and libzstd loaded from the system on first
+use (when they are missing those two are not asked for). A request for a
+range asks for `identity`, since a coding applies to the whole resource.
+`SUMMIT_CONTENT_ENCODINGS=curl` goes back to libcurl's decoding. A test
+server sending one 3 MB text in every coding (gzip, two gzip members,
+zlib, raw deflate, br, zstd, `gzip, br`) got it back intact in each, and
+YouTube, Facebook, Google, MDN, the Cloudflare blog and Instagram load.
+
+Three alternating pairs against `SUMMIT_CONTENT_ENCODINGS=curl` (medians,
+ms): YouTube's cold load transfers 3.3 MB instead of 3.9 and reaches its
+largest paint at 2852 instead of 3101 (DOMContentLoaded 2168 / 2383, first
+paint 1321 / 1392); Google's cold DOMContentLoaded came at 695 instead of
+1366 and its largest paint at 800 instead of 918. Facebook, MDN, the
+Cloudflare blog and Reddit moved within their spread; warm loads come from
+the cache, which keeps bodies decoded.
+
 ### Largest contentful paint was reported late, not painted late
 
 With the order alternated, Summit's first byte, first paint and
