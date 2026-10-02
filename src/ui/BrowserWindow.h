@@ -3,6 +3,7 @@
 #include "core/Suggest.h"
 #if SUMMIT_MODERN_WEBKIT
 #include <WebKit/WebKitView.h>
+#include <DirectWindow.h>
 #include <Window.h>
 #else
 #include <WebWindow.h>
@@ -59,7 +60,9 @@ struct BrowserWindowOptions {
     bool privateBrowsing = false;
 };
 #if SUMMIT_MODERN_WEBKIT
-using BrowserWindowBase = BWindow;
+// A direct window, so that on a GPU the engine can put pages straight into
+// the screen (BWebKitView::WindowDirectConnected).
+using BrowserWindowBase = BDirectWindow;
 using BrowserWebView = BWebKitView;
 #else
 using BrowserWindowBase = BWebWindow;
@@ -102,6 +105,9 @@ public:
     void CreateTab(const std::string& url, bool select = true, const char* extensionIdentifier = nullptr,
         int32 index = -1, uint64 command = 0, int64 replaces = 0, uint64 newPage = 0);
     void WindowActivated(bool active) override;
+#if SUMMIT_MODERN_WEBKIT
+    void DirectConnected(direct_buffer_info* info) override;
+#endif
 #else
     void NavigationRequested(const BString& url, BWebView* view) override;
     void NewWindowRequested(const BString& url, bool primary) override;

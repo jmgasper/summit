@@ -1,5 +1,5 @@
 diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_haiku.cpp
-index aedd804..b1cc681 100644
+index aedd804..a23511a 100644
 --- a/src/egl/drivers/haiku/egl_haiku.cpp
 +++ b/src/egl/drivers/haiku/egl_haiku.cpp
 @@ -26,6 +26,7 @@
@@ -21,7 +21,17 @@ index aedd804..b1cc681 100644
  
  #include <Bitmap.h>
  
-@@ -776,3 +781,45 @@ extern "C" const _EGLDriver _eglDriver = {
+@@ -432,6 +437,9 @@ haiku_display_destroy(_EGLDisplay *disp)
+ 
+    _eglCleanupDisplay(disp);
+    struct pipe_screen *screen = hgl_dpy->disp->fscreen->screen;
++#ifdef GALLIUM_ZINK
++   zink_haiku_present_release(screen);
++#endif
+    hgl_destroy_display(hgl_dpy->disp);
+    hgl_dpy->disp = NULL;
+    screen->destroy(screen); // destroy will deallocate object
+@@ -776,3 +784,51 @@ extern "C" const _EGLDriver _eglDriver = {
     .QuerySurface = haiku_query_surface,
     .SwapBuffers = haiku_swap_buffers,
  };
@@ -66,17 +76,24 @@ index aedd804..b1cc681 100644
 +{
 +   zink_haiku_present_wait_idle();
 +}
++
++extern "C" __attribute__((visibility("default"))) void
++summit_haiku_present_release(void)
++{
++   zink_haiku_present_release(NULL);
++}
 +#endif
 diff --git a/src/egl/egl-glvnd.sym b/src/egl/egl-glvnd.sym
-index dea13b7..2642a0b 100644
+index dea13b7..3410999 100644
 --- a/src/egl/egl-glvnd.sym
 +++ b/src/egl/egl-glvnd.sym
-@@ -4,6 +4,8 @@
+@@ -4,6 +4,9 @@
  		MesaGLInteropEGLQueryDeviceInfo;
  		MesaGLInteropEGLExportObject;
  		MesaGLInteropEGLFlushObjects;
 +		summit_haiku_present_framebuffer;
 +		summit_haiku_present_wait_idle;
++		summit_haiku_present_release;
  	local:
  		*;
  };
@@ -146,10 +163,10 @@ index 0000000..f0ecd3f
 +#endif /* VK_HAIKU_SCANOUT_H */
 diff --git a/src/gallium/drivers/zink/zink_haiku_present.c b/src/gallium/drivers/zink/zink_haiku_present.c
 new file mode 100644
-index 0000000..7d780aa
+index 0000000..bb33bc3
 --- /dev/null
 +++ b/src/gallium/drivers/zink/zink_haiku_present.c
-@@ -0,0 +1,432 @@
+@@ -0,0 +1,499 @@
 +/*
 + * Presenting a finished frame straight into the screen on Haiku; see
 + * zink_haiku_present.h.
@@ -188,8 +205,13 @@ index 0000000..7d780aa
 +#define MAX_RECTS 256
 +#define MAX_QUEUED 16
 +
++/* A present the helper thread waits for: by the number of its batch on the
++ * screen's timeline semaphore. The helper never touches Zink's fences or
++ * batch states: those are recycled by the context's own thread, and a wait
++ * through them from another thread marks a reused batch idle, after which
++ * Zink hands out memory the GPU is still using. */
 +struct completion {
-+   struct pipe_fence_handle *fence;
++   uint64_t batch_id;
 +   void (*completed)(void *cookie);
 +   void *cookie;
 +};
@@ -236,10 +258,15 @@ index 0000000..7d780aa
 +      struct zink_screen *screen = state.screen;
 +      pthread_mutex_unlock(&state.lock);
 +
-+      if (entry.fence != NULL) {
-+         screen->base.fence_finish(&screen->base, NULL, entry.fence,
-+                                   OS_TIMEOUT_INFINITE);
-+         screen->base.fence_reference(&screen->base, &entry.fence, NULL);
++      if (entry.batch_id != 0 && screen->sem != VK_NULL_HANDLE
++          && !screen->device_lost) {
++         VkSemaphoreWaitInfo wait = {
++            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
++            .semaphoreCount = 1,
++            .pSemaphores = &screen->sem,
++            .pValues = &entry.batch_id,
++         };
++         VKSCR(WaitSemaphores)(screen->dev, &wait, UINT64_MAX);
 +      }
 +      if (entry.completed != NULL)
 +         entry.completed(entry.cookie);
@@ -254,9 +281,22 @@ index 0000000..7d780aa
 +}
 +
 +
++/* With the lock held: waits until the GPU has finished every present, so
++ * that memory one of them still writes is never let go of. Freeing an import
++ * of host memory unlocks its pages, and a write after that lands in memory
++ * that may already belong to someone else. */
++static void
++wait_idle_locked(void)
++{
++   while (state.submitted != state.finished)
++      pthread_cond_wait(&state.changed, &state.lock);
++}
++
++
 +static void
 +drop_scanout(struct zink_screen *screen)
 +{
++   wait_idle_locked();
 +   if (state.scanout_buffer != VK_NULL_HANDLE)
 +      VKSCR(DestroyBuffer)(screen->dev, state.scanout_buffer, NULL);
 +   if (state.scanout_memory != VK_NULL_HANDLE)
@@ -340,6 +380,7 @@ index 0000000..7d780aa
 +static void
 +drop_back(struct zink_screen *screen)
 +{
++   wait_idle_locked();
 +   if (state.back_buffer != VK_NULL_HANDLE)
 +      VKSCR(DestroyBuffer)(screen->dev, state.back_buffer, NULL);
 +   if (state.back_memory != VK_NULL_HANDLE)
@@ -352,7 +393,9 @@ index 0000000..7d780aa
 +
 +
 +/* The window system's copy of the screen, as memory the GPU may write: the
-+ * driver locks its pages for as long as the import lives. */
++ * driver locks its pages for as long as the import lives, so the caller must
++ * keep that memory mapped for as long as it presents with it (Summit's web
++ * process keeps one mapping for its whole life). */
 +static bool
 +acquire_back(struct zink_screen *screen, void *bits, uint64_t size)
 +{
@@ -408,6 +451,9 @@ index 0000000..7d780aa
 +   state.back_buffer = buffer;
 +   return true;
 +}
++
++
++static void release_at_exit(void);
 +
 +
 +/* Turns the rectangles into copy regions for a linear surface of
@@ -476,6 +522,8 @@ index 0000000..7d780aa
 +   }
 +   state.screen = screen;
 +   if (!state.thread_started) {
++      /* Normally the display is destroyed, or the program lets go, first. */
++      atexit(release_at_exit);
 +      if (pthread_create(&state.thread, NULL, completion_thread, NULL) != 0) {
 +         pthread_mutex_unlock(&state.lock);
 +         return -1;
@@ -559,10 +607,22 @@ index 0000000..7d780aa
 +
 +   struct pipe_fence_handle *fence = NULL;
 +   ctx->base.flush(&ctx->base, &fence, 0);
++   /* The batch's number on the timeline, once it has been submitted (on the
++    * flush thread when submission is threaded); then the fence goes, here,
++    * on the context's own thread. */
++   uint64_t batch_id = 0;
++   struct zink_tc_fence *mfence = zink_tc_fence(fence);
++   if (mfence != NULL && mfence->fence != NULL) {
++      struct zink_batch_state *bs = zink_batch_state(mfence->fence);
++      if (screen->threaded_submit)
++         util_queue_fence_wait(&bs->flush_completed);
++      batch_id = mfence->fence->batch_id;
++   }
++   screen->base.fence_reference(&screen->base, &fence, NULL);
 +
 +   unsigned tail = (state.queue_head + state.queue_count) % MAX_QUEUED;
 +   state.queue[tail] = (struct completion) {
-+      .fence = fence,
++      .batch_id = batch_id,
 +      .completed = p->completed,
 +      .cookie = p->cookie,
 +   };
@@ -571,6 +631,30 @@ index 0000000..7d780aa
 +   pthread_cond_broadcast(&state.changed);
 +   pthread_mutex_unlock(&state.lock);
 +   return 0;
++}
++
++
++void
++zink_haiku_present_release(struct pipe_screen *pscreen)
++{
++   pthread_mutex_lock(&state.lock);
++   struct zink_screen *screen = state.screen;
++   if (screen != NULL && (pscreen == NULL || &screen->base == pscreen)) {
++      /* Waits for the GPU first: a copy still writing the window system's
++       * memory when the driver lets go of its pages has hung the machine. */
++      drop_back(screen);
++      drop_scanout(screen);
++      if (pscreen != NULL)
++         state.screen = NULL;
++   }
++   pthread_mutex_unlock(&state.lock);
++}
++
++
++static void
++release_at_exit(void)
++{
++   zink_haiku_present_release(NULL);
 +}
 +
 +
@@ -584,10 +668,10 @@ index 0000000..7d780aa
 +}
 diff --git a/src/gallium/drivers/zink/zink_haiku_present.h b/src/gallium/drivers/zink/zink_haiku_present.h
 new file mode 100644
-index 0000000..78c6df5
+index 0000000..c30f297
 --- /dev/null
 +++ b/src/gallium/drivers/zink/zink_haiku_present.h
-@@ -0,0 +1,68 @@
+@@ -0,0 +1,78 @@
 +/*
 + * Presenting a finished frame straight into the screen on Haiku, for a
 + * program that composites with OpenGL ES through EGL (Summit's web process).
@@ -627,7 +711,9 @@ index 0000000..78c6df5
 +   /* The frame buffer's row length, to recognise it; 0 skips it. */
 +   uint32_t front_bytes_per_row;
 +   /* The window system's copy of the screen as mapped in this team (page
-+    * aligned), or NULL. */
++    * aligned), or NULL. Its pages stay locked for the GPU from the first
++    * present that names them until one names another copy: the mapping must
++    * not go away in between, or the system can hang. */
 +   void *back_bits;
 +   uint32_t back_bytes_per_row;
 +   uint32_t back_width, back_height;
@@ -650,6 +736,14 @@ index 0000000..78c6df5
 +
 +/* Waits until every present submitted so far has finished on the GPU. */
 +void zink_haiku_present_wait_idle(void);
++
++/* Waits for the GPU, then lets go of the frame buffer and of the window
++ * system's copy (unlocking its pages), for the given screen or any (NULL).
++ * Call before the memory or the program goes away: a copy still writing
++ * host memory while the driver tears the import down has hung the X399.
++ * Presenting again imports them again. */
++struct pipe_screen;
++void zink_haiku_present_release(struct pipe_screen *screen);
 +
 +#ifdef __cplusplus
 +}

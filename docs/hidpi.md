@@ -74,3 +74,89 @@ Screenshots and the VNC server read the screen through `BScreen`, which
 averages a scaled desktop down to its logical size, so neither shows whether
 text is sharp. `tools/bench/fbgrab.py` dumps the real frame buffer with
 `nvscanout --dump` and crops it.
+
+## Frames straight into the screen (issue #16, 2 October 2026)
+
+Even with every copy above trimmed, a frame at 200% still went from the GPU
+to the screen the long way: the web process waited for the GPU to finish
+compositing and read the changed rectangles back over the bus into shared
+memory, then app_server copied them into its own copy of the screen and from
+there into the frame buffer in video memory. Now the GPU copies the
+composited frame into the screen itself. WebGL Aquarium at 200% (6.9 Mpx a
+frame, 60 frames/s either way), CPU time in 10 s, two runs each:
+
+| | presented directly | read back (`SUMMIT_DIRECT_PRESENT=0`) |
+| --- | --- | --- |
+| web process | 3.0-3.2 s | 6.5-6.7 s |
+| app_server | 0.37 s | 4.9-6.0 s |
+| Summit (UI) | 0.1 s | 0.2 s |
+| total | 0.36 cores | 1.2 cores |
+
+Wheel scrolling of a Wikipedia article runs at 55 frames/s either way (110
+frames in a 2 s burst, no gap over 50 ms): scrolling is no longer limited by
+the copies.
+
+Three pieces, one in each layer:
+
+- **app_server** (Haiku fork, `x399-workstation` 7a2a4f225f). A
+  `BDirectWindow` is told where it is on the screen and which parts of it
+  are visible, and may draw into the frame buffer itself; at 200% such
+  windows used to be disconnected, because the frame buffer is not in the
+  coordinates they draw in. With the new window flag
+  `B_DIRECT_DEVICE_PIXELS` a window stays connected and gets its bounds and
+  clipping in frame buffer pixels, the density (`device_scale`, in percent)
+  and app_server's own copy of the screen (`drawing_bits_area`).
+  `docs/x399-workstation/tests/directscale.cpp` in the fork shows the use;
+  airTime draws films through it too.
+- **Mesa** (Summit's private build, patch 06,
+  `tools/mesa-vm/mesa-25.3.6-summit-06-present-into-screen.patch`,
+  `/boot/home/summit-mesa/prefix-20261002` on the X399).
+  `summit_haiku_present_framebuffer()`, exported from `libEGL_mesa` and
+  found with `get_image_symbol()` (EGL's dispatch never sees it), has Zink
+  copy the bound framebuffer object into the visible rectangles of the frame
+  buffer through NVK's `VkImportScanoutMemoryHAIKU`, video memory to video
+  memory, at most two presents in flight. A helper thread reports each one
+  finished by waiting on the screen's timeline semaphore; it must never wait
+  through Zink's fences, which belong to the context's thread (a first
+  version did, and marked recycled batches idle).
+  `tools/mesa-vm/scanout-present-probe.cpp` presents 3800 frames/s of
+  800x500, 480/s of 3824x2096, and random small damage rectangles.
+- **The engine and Summit.** `BrowserWindow` is a `BDirectWindow` with the
+  flag and hands each `DirectConnected()` to
+  `BWebKitView::WindowDirectConnected()`. Each web view works out where its
+  page is in frame buffer pixels and which parts of it show, and puts that in
+  a page of memory it shares with its web process (`DirectPresentHaiku.h`).
+  The web process presents each frame through Mesa instead of waiting for
+  the GPU and reading it back, sends `DirectFrame` instead of `Frame`, and
+  the view draws nothing. A change of place or clipping is written under a
+  lock the web process presents under; the UI process waits there until the
+  GPU has finished the copies made for the old place, and the page is then
+  presented again in full (`RedisplayDirect`). When the window is not
+  connected (the screen blanker blanks, a workspace is switched) or Mesa
+  cannot present, frames are read back as before, the first one in full.
+  `SUMMIT_DIRECT_PRESENT=0` turns it all off; `SUMMIT_DIRECT_PRESENT_TRACE=1`
+  logs each place worked out and each target a web process gets.
+
+**app_server's copy of the screen.** It is what screenshots and the VNC
+server read and what app_server copies back when a window moves away, so it
+must hold the page too. Mesa can copy into it as well (imported host
+memory), but that is off unless `SUMMIT_DIRECT_PRESENT_BACK=1`: a web
+process that ends while the driver holds those pages for the GPU hangs the
+X399 (Haiku deletes the address space before it closes the driver), and a
+crash ends a process that way. Instead a page that changes goes through
+app_server, read back as before, four times a second; the UI holds that
+frame's `FrameDone` until the view has drawn it (100 ms at most), so the
+older pixels never cover a newer direct frame.
+
+**Two ways to hang the X399 found on the way** (both kernel faults, reported
+to the OS work; no ping on either interface, nothing in the syslog):
+
+- *fork() with the frame buffer mapped.* A connected direct window maps the
+  frame buffer (video memory) into the application. WebKit's launcher used
+  `fork()` and `exec`, and the fork copies that mapping copy-on-write: the
+  first web process launched after the window was connected hung the
+  machine, every time. Web and network processes now start with
+  `load_image()` (`HaikuProcess.h`), a new team with an address space of
+  its own, which also no longer copies the browser's whole address space
+  for each launch.
+- *A process ending with GPU-imported host memory*, above.

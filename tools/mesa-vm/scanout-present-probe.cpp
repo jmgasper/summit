@@ -8,7 +8,7 @@
 // into app_server's copy of the screen. Prints presents per second and what
 // each present costs the calling thread; moves the window half way through.
 //
-//   scanout-present-probe [seconds] [--no-back]
+//   scanout-present-probe [seconds] [--no-back] [--frame left top right bottom] [--damage n]
 //
 // Build on the workstation:
 //   P=/boot/home/summit-mesa/prefix-20261002
@@ -28,6 +28,7 @@
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
 
+#include <algorithm>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -64,6 +65,9 @@ typedef void (*wait_idle_function)();
 static present_function sPresent;
 static wait_idle_function sWaitIdle;
 static bool sUseBack = true;
+// Random small rectangles per present, as a page's damage is, instead of
+// the whole window (0).
+static int sDamage = 0;
 
 
 static bool
@@ -186,9 +190,17 @@ int
 main(int argc, char** argv)
 {
 	int seconds = argc > 1 ? atoi(argv[1]) : 6;
+	BRect frame(200, 200, 599, 449);
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "--no-back"))
 			sUseBack = false;
+		else if (!strcmp(argv[i], "--damage") && i + 1 < argc)
+			sDamage = atoi(argv[++i]);
+		else if (!strcmp(argv[i], "--frame") && i + 4 < argc) {
+			frame = BRect(atof(argv[i + 1]), atof(argv[i + 2]), atof(argv[i + 3]),
+				atof(argv[i + 4]));
+			i += 4;
+		}
 	}
 	BApplication app("application/x-vnd.summit-scanout-present-probe");
 
@@ -223,7 +235,7 @@ main(int argc, char** argv)
 		return 1;
 	}
 
-	ProbeWindow* window = new ProbeWindow(BRect(200, 200, 599, 449));
+	ProbeWindow* window = new ProbeWindow(frame);
 	window->Show();
 
 	GLuint fbo = 0, color = 0;
@@ -286,6 +298,21 @@ main(int argc, char** argv)
 		glClearColor(0, 0, 0, 1);
 		glClear(GL_COLOR_BUFFER_BIT);
 
+		if (sDamage > 0 && !rects.empty()) {
+			// Odd sizes at odd places inside the first visible rectangle.
+			int32_t l = rects[0], t = rects[1], r = rects[2], b = rects[3];
+			std::vector<int32_t> damage;
+			for (int i = 0; i < sDamage; i++) {
+				int32_t x = l + rand() % std::max(1, (int)(r - l + 1));
+				int32_t y = t + rand() % std::max(1, (int)(b - t + 1));
+				int32_t w = 1 + rand() % 200, h = 1 + rand() % 120;
+				damage.push_back(x);
+				damage.push_back(y);
+				damage.push_back(std::min(r, x + w - 1));
+				damage.push_back(std::min(b, y + h - 1));
+			}
+			rects = damage;
+		}
 		present.rect_count = rects.size() / 4;
 		present.rects = rects.data();
 		bigtime_t before = system_time();

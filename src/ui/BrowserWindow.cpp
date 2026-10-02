@@ -454,6 +454,22 @@ static BRect DefaultWindowFrame(const BrowserWindowOptions& options)
     return frame;
 }
 
+#if SUMMIT_MODERN_WEBKIT
+#ifndef B_DIRECT_DEVICE_PIXELS
+#define B_DIRECT_DEVICE_PIXELS 0x00000400
+#endif
+// Pages go straight into the screen where app_server lets a direct window
+// draw in frame buffer pixels (the X399 fork; others ignore the flag).
+// SUMMIT_DIRECT_PRESENT=0 keeps every frame going through app_server.
+static uint32 DirectPresentFlags()
+{
+    const char* value = std::getenv("SUMMIT_DIRECT_PRESENT");
+    return value && !std::strcmp(value, "0") ? 0 : B_DIRECT_DEVICE_PIXELS;
+}
+#else
+static uint32 DirectPresentFlags() { return 0; }
+#endif
+
 BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string startURL,
     const BrowserWindowOptions& options
 #if SUMMIT_MODERN_WEBKIT
@@ -461,7 +477,7 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
 #endif
     )
     : BrowserWindowBase(DefaultWindowFrame(options), "Summit", B_TITLED_WINDOW_LOOK, B_NORMAL_WINDOW_FEEL,
-          B_ASYNCHRONOUS_CONTROLS | B_AUTO_UPDATE_SIZE_LIMITS),
+          B_ASYNCHRONOUS_CONTROLS | B_AUTO_UPDATE_SIZE_LIMITS | DirectPresentFlags()),
 #if SUMMIT_MODERN_WEBKIT
       fWebKitContext(std::move(context)),
 #endif
@@ -697,6 +713,9 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
 }
 BrowserWindow::~BrowserWindow()
 {
+#if SUMMIT_MODERN_WEBKIT
+    BWebKitView::WindowDirectConnected(this, nullptr);
+#endif
     SetPrivateWindow(this, false);
     fShared->RemoveListener(BMessenger(this));
     {
@@ -2022,6 +2041,22 @@ void BrowserWindow::ShowExtensionActions()
     menu->AddItem(manage);
     menu->Go(fExtensionActionsOverflow->ConvertToScreen(fExtensionActionsOverflow->Bounds().LeftBottom()), true, true, true);
 }
+
+#if SUMMIT_MODERN_WEBKIT
+// The direct daemon thread, without the window lock: app_server waits here
+// (half a second at most) while it moves or covers the window.
+void BrowserWindow::DirectConnected(direct_buffer_info* info)
+{
+    // SUMMIT_DIRECT_PRESENT=flag connects the window but leaves the pages
+    // presenting through app_server (for finding faults).
+    static const bool forward = [] {
+        const char* value = std::getenv("SUMMIT_DIRECT_PRESENT");
+        return !value || std::strcmp(value, "flag");
+    }();
+    if (forward)
+        BWebKitView::WindowDirectConnected(this, info);
+}
+#endif
 
 void BrowserWindow::WindowActivated(bool active)
 {
