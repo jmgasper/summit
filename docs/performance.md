@@ -2,6 +2,24 @@
 
 ## 3 October 2026: start-up, process launches and first bytes
 
+In short (details below):
+
+- Start-up: first frame 1.06-1.15 s (installed build of 2 October) ->
+  0.65-0.69 s (launcher thread, GNU hash tables, functions bound inside
+  their libraries).
+- Speedometer 3.1: 7.9-8.2 -> 11.2-11.3, from binding the libraries' own
+  function calls at link time (`-Bsymbolic-functions`).
+- Page loads: connections opened ahead of need (preconnect, DNS prefetch,
+  the address bar), brotli and zstd, no AVIF decode on the main thread to
+  learn a size, first images decoded off the main thread, the Media Kit's
+  formats read on a thread. Summit paints first sooner than Firefox on
+  five of six test pages and reaches DOMContentLoaded sooner on all six.
+- Responsiveness: the profile is saved off the window threads; the
+  largest-contentful-paint entry is no longer lost; the first frame after
+  a pause goes straight to the screen.
+- Benchmarks: run-pageload.py alternates which browser loads first (some
+  servers answer the second request from a cache the first one warmed).
+
 Measured on the X399 with the browser started on about:blank, from the
 launch to the first composited frame (three runs each):
 
@@ -62,6 +80,16 @@ alternated:
 | this morning's last build (`bundle-scnjbd30`) | 11.2 ± 1.4, 11.3 ± 1.4 |
 
 About 40 % more: Firefox 155 scored 8.34 ± 0.37 here in September.
+
+The compiler side of the same idea did not build. The Haiku build exports
+nearly every function (no `-fvisibility=hidden`: 173,570 in libWebKit), and
+with `-fPIC` GCC assumes each could be replaced, so it neither inlines nor
+binds them; `-fno-semantic-interposition` lifts that. With the profile
+(`-fprofile-use`) GCC 13 crashed on it, deterministically, in Skia and a
+dozen WebCore unified sources (internal compiler error, segmentation
+violation at the end of a function); `-fno-ipa-pure-const` avoided the
+crash in Skia but not in WebCore. Left out; a newer GCC, or hidden
+visibility with explicit exports, would be the way back to it.
 
 **First bytes are the network's.** Time to first byte was 400-700 ms in
 Summit where Firefox had 160-200 ms on 1 October:
