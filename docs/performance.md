@@ -202,6 +202,13 @@ ms): The Guardian's DOMContentLoaded came at 1302 instead of 1502 cold and
 978 / 1056); BBC News and YouTube moved within their spread (their load
 events follow ad chains).
 
+**The Media Kit's formats, read on a thread.** The first time a page asks
+what it can play, the Haiku media engine lists the Media Kit's file
+formats, which loads its add-ons into the web process: 27 ms, on the main
+thread, symbol lookups and relocations in the profile. Each web process
+now reads them on a thread of its own as it starts (a prewarmed one well
+before its page); `canPlayType()` answers as before.
+
 The same profile shows two smaller costs that were left alone: every
 `thread_local` in a library goes through `__tls_get_addr` into
 runtime_loader's `get_tls_address` (Haiku has no static TLS), about 2% of

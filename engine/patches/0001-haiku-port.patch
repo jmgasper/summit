@@ -14569,10 +14569,10 @@ index 0000000000000000000000000000000000000000..df2a7d05bcacb641010b07fe2942ce2d
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..1be70bcb5f2d6147ff07d6585461510e0d96112a
+index 0000000000000000000000000000000000000000..30f88e60d9f7599ec6b65807e589566c70c37a4a
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,1619 @@
+@@ -0,0 +1,1630 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -14603,6 +14603,9 @@ index 0000000000000000000000000000000000000000..1be70bcb5f2d6147ff07d6585461510e
 +#endif
 +#include "ColorSpace.h"
 +#include "MediaPlayerPrivateHaiku.h"
++
++#include <mutex>
++#include <thread>
 +
 +#include "MediaDecoderSelectionHaiku.h"
 +#if USE(COORDINATED_GRAPHICS) && USE(TEXTURE_MAPPER) && USE(SKIA)
@@ -16131,30 +16134,38 @@ index 0000000000000000000000000000000000000000..1be70bcb5f2d6147ff07d6585461510e
 +
 +// #pragma mark - static methods
 +
-+static HashSet<String> mimeTypeCache()
++// Asking the Media Kit for its file formats loads its add-ons into this
++// process: 27 ms on the X399, on the main thread when a page first asks what
++// it can play. prepareMediaEngineTypesHaiku() starts it on a thread of its
++// own when the process starts; a page that asks sooner waits for that.
++static std::once_flag mimeTypeCacheOnce;
++
++static const HashSet<String>& mimeTypeCache()
 +{
 +    static NeverDestroyed<HashSet<String>> cache;
-+    static bool typeListInitialized = false;
++    std::call_once(mimeTypeCacheOnce, [] {
++        int32 cookie = 0;
++        media_file_format mfi;
 +
-+    if (typeListInitialized)
-+        return cache;
++        // Add the types the Haiku Media Kit add-ons advertise support for
++        while (get_next_file_format(&cookie, &mfi) == B_OK)
++            cache.get().add(String::fromUTF8(mfi.mime_type));
 +
-+    int32 cookie = 0;
-+    media_file_format mfi;
-+
-+    // Add the types the Haiku Media Kit add-ons advertise support for
-+    while(get_next_file_format(&cookie, &mfi) == B_OK) {
-+        cache.get().add(String::fromUTF8(mfi.mime_type));
-+    }
-+
-+    // The finite byte-range HLS path is handled before Media Kit sees the
-+    // completed MP4 files, so its playlist MIME types are not advertised by
-+    // Media Kit's file-format add-ons.
-+    cache.get().add("application/vnd.apple.mpegurl"_s);
-+    cache.get().add("application/x-mpegurl"_s);
-+
-+    typeListInitialized = true;
++        // The finite byte-range HLS path is handled before Media Kit sees the
++        // completed MP4 files, so its playlist MIME types are not advertised by
++        // Media Kit's file-format add-ons.
++        cache.get().add("application/vnd.apple.mpegurl"_s);
++        cache.get().add("application/x-mpegurl"_s);
++    });
 +    return cache;
++}
++
++void prepareMediaEngineTypesHaiku()
++{
++    std::thread([] {
++        rename_thread(find_thread(nullptr), "media types");
++        mimeTypeCache();
++    }).detach();
 +}
 +
 +void MediaPlayerPrivate::getSupportedTypes(HashSet<String>& types)
@@ -16194,10 +16205,10 @@ index 0000000000000000000000000000000000000000..1be70bcb5f2d6147ff07d6585461510e
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..84f921897b08bf57ddd0dad28dae0bc9a4aebee4
+index 0000000000000000000000000000000000000000..2e33cfa9a2a6d785c7bc88dee09e2c62fdf5801a
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
-@@ -0,0 +1,215 @@
+@@ -0,0 +1,218 @@
 +/*
 + * Copyright (C) 2014 Haiku, Inc.
 + *
@@ -16244,6 +16255,9 @@ index 0000000000000000000000000000000000000000..84f921897b08bf57ddd0dad28dae0bc9
 +class BSoundPlayer;
 +
 +namespace WebCore {
++
++// Reads the Media Kit's file formats on a thread of its own (process start).
++void prepareMediaEngineTypesHaiku();
 +
 +class MediaPlayerFactoryHaiku;
 +
@@ -103575,10 +103589,10 @@ index 0000000000000000000000000000000000000000..6549d7f5c9eac54d993817a051d3965d
 +resource app_flags B_MULTIPLE_LAUNCH | B_BACKGROUND_APP;
 diff --git a/Source/WebKit/WebProcess/haiku/WebProcessHaiku.cpp b/Source/WebKit/WebProcess/haiku/WebProcessHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..2a53a27a3c2d0efec8bbd12a600ae6920f2d7ec7
+index 0000000000000000000000000000000000000000..4ad5a78c4f85dd502610f204d4b393d89a30dbde
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/haiku/WebProcessHaiku.cpp
-@@ -0,0 +1,118 @@
+@@ -0,0 +1,130 @@
 +/*
 + * Copyright (C) 2014,2019 Haiku, Inc.
 + *
@@ -103615,6 +103629,13 @@ index 0000000000000000000000000000000000000000..2a53a27a3c2d0efec8bbd12a600ae692
 +#endif
 +#include <wtf/Assertions.h>
 +
++#if ENABLE(VIDEO)
++namespace WebCore {
++// Defined in MediaPlayerPrivateHaiku.cpp; WebCore is linked into this library.
++void prepareMediaEngineTypesHaiku();
++}
++#endif
++
 +namespace WebKit {
 +
 +// The native app_server connection supplies fonts and drawing services.
@@ -103637,6 +103658,11 @@ index 0000000000000000000000000000000000000000..2a53a27a3c2d0efec8bbd12a600ae692
 +void WebProcess::platformInitializeWebProcess(WebProcessCreationParameters& parameters)
 +{
 +    applyProcessCreationParameters(WTF::move(parameters.auxiliaryProcessParameters));
++#if ENABLE(VIDEO)
++    // The Media Kit's list of file formats, read on a thread of its own
++    // before a page asks for it (MediaPlayerPrivateHaiku.cpp).
++    WebCore::prepareMediaEngineTypesHaiku();
++#endif
 +#if USE(COORDINATED_GRAPHICS)
 +    // The coordinated drawing area asks for the shared display as soon as a page
 +    // is created, and sharedDisplay() asserts rather than making one. The GLib
