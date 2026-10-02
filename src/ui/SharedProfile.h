@@ -1,11 +1,13 @@
 #pragma once
 #include "core/Profile.h"
 #include <Messenger.h>
+#include <condition_variable>
 #include <filesystem>
 #include <functional>
 #include <map>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace summit {
@@ -31,6 +33,8 @@ public:
         kExtensionsPinnedChanged = 1 << 7,
     };
     explicit SharedProfile(std::filesystem::path path);
+    // Writes what has not been saved yet.
+    ~SharedProfile();
     const std::filesystem::path& Path() const { return fPath; }
     // Why the saved profile could not be read (it is then left untouched).
     const std::string& LoadError() const { return fLoadError; }
@@ -80,9 +84,21 @@ public:
         return fNewTabOverride;
     }
     // Writes the profile if anything changed since the last save.
+    // Saves now, on the caller's thread.
     bool Save(std::string& error);
+    // Saves on the profile's own thread a moment from now, with whatever else
+    // changes meanwhile: writing the profile (history, bookmarks, sessions)
+    // and waiting for the disk took up to 100 ms on the window thread.
+    void SaveSoon();
+    // Why the last save on the profile's thread failed, or nothing.
+    std::string SaveError() const
+    {
+        std::lock_guard lock(fMutex);
+        return fSaveError;
+    }
 
 private:
+    void SaveLoop();
     void Announce(uint32 changes, const BMessenger& sender, const std::string& iconURL = std::string(),
         const BMessage* details = nullptr);
     mutable std::mutex fMutex;
@@ -97,5 +113,9 @@ private:
     std::map<uint64, WindowSession> fSessions;
     std::vector<BMessenger> fListeners;
     uint64 fRevision = 1, fSavedRevision = 0;
+    std::thread fSaver;
+    std::condition_variable fSaveWanted;
+    bool fSaveRequested = false, fStopping = false;
+    std::string fSaveError;
 };
 }

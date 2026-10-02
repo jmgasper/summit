@@ -1508,6 +1508,9 @@ void BrowserWindow::ShowSuggestions(const std::string& typed)
     }
     // A search stays one key away when the text reads as an address.
     if (!address.search && search.url != first && !Trim(typed).empty()) rows.push_back(search);
+    // Enter goes where the first row does: a page completed from history or
+    // a search. Have the connection ready by then.
+    if (!rows.empty() && (!fAutofill.Empty() || address.search)) PreconnectTo(rows.front().url);
     // Only a guess at what Enter does, and nothing else: not worth a list.
     if (rows.size() == 1 && rows.front().kind == SuggestionRow::Kind::Visit && fAutofill.Empty()) {
         HideSuggestions();
@@ -1519,6 +1522,27 @@ void BrowserWindow::ShowSuggestions(const std::string& typed)
 void BrowserWindow::HideSuggestions()
 {
     if (fSuggestions) fSuggestions->Hide();
+}
+
+void BrowserWindow::PreconnectTo(const std::string& url)
+{
+#if SUMMIT_MODERN_WEBKIT
+    // Private windows tell no server what is being typed.
+    if (fPrivate || url.rfind("https://", 0) != 0) return;
+    auto* tab = ActiveTab();
+    if (!tab || !tab->view) return;
+    const std::string origin = url.substr(0, url.find_first_of("/?#", 8));
+    // An idle connection stays open for about two minutes; asking again
+    // while typing on costs a message for nothing.
+    const bigtime_t now = system_time();
+    if (fPreconnected.size() > 64) fPreconnected.clear();
+    bigtime_t& last = fPreconnected[origin];
+    if (last && now - last < 10000000) return;
+    last = now;
+    tab->view->Preconnect((origin + "/").c_str());
+#else
+    (void)url;
+#endif
 }
 
 std::string BrowserWindow::AddressTarget() const
@@ -1554,7 +1578,10 @@ bool BrowserWindow::AddressKey(char key)
         position = key == B_DOWN_ARROW ? (position + 1) % (count + 1) : (position + count) % (count + 1);
         fSuggestions->Select(position - 1);
         if (position == 0) show(fAddressShown, fAddressTyped.size());
-        else show(fSuggestions->Rows()[position - 1].fill, INT32_MAX);
+        else {
+            show(fSuggestions->Rows()[position - 1].fill, INT32_MAX);
+            PreconnectTo(fSuggestions->Rows()[position - 1].url);
+        }
         return true;
     }
     case B_ESCAPE:
@@ -2526,8 +2553,9 @@ void BrowserWindow::SaveSession()
     session.frame[0] = frame.left; session.frame[1] = frame.top;
     session.frame[2] = frame.right; session.frame[3] = frame.bottom;
     fShared->SetWindowSession(fKey, session);
-    std::string error;
-    if (!fShared->Save(error)) fStatus->SetText(("Could not save session: " + error).c_str());
+    fShared->SaveSoon();
+    if (const auto error = fShared->SaveError(); !error.empty())
+        fStatus->SetText(("Could not save session: " + error).c_str());
 }
 void BrowserWindow::ShowError(const std::string& error)
 {

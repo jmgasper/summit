@@ -375,8 +375,7 @@ public:
             } else if (!fWindows.empty()) {
                 // A window closed on its own: its tabs are not reopened.
                 fShared->RemoveWindowSession(key);
-                std::string error;
-                fShared->Save(error);
+                fShared->SaveSoon();
             } else PostMessage(B_QUIT_REQUESTED);
             return;
         }
@@ -388,8 +387,7 @@ public:
             fDownloadQuitApproved = false;
             for (auto key : fClosedWhileQuitting) fShared->RemoveWindowSession(key);
             fClosedWhileQuitting.clear();
-            std::string error;
-            fShared->Save(error);
+            fShared->SaveSoon();
             return;
         }
         if (message->what == summit::kCloseWindowRequest) {
@@ -694,6 +692,12 @@ public:
             fNativeUIExitReady = true;
             PostMessage(B_QUIT_REQUESTED);
             return false;
+        }
+        // Windows save their sessions on the profile's thread; what is still
+        // waiting there is written now, before the process exits.
+        if (fShared) {
+            std::string error;
+            if (!fShared->Save(error)) std::fprintf(stderr, "Summit: could not save the profile: %s\n", error.c_str());
         }
         return true;
     }

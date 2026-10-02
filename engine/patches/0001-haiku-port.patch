@@ -30554,10 +30554,10 @@ index 0000000000000000000000000000000000000000..da71c185bfa5f93bf68ba7a513f48393
 +
 +#endif
 diff --git a/Source/WebCore/platform/network/curl/CurlRequest.cpp b/Source/WebCore/platform/network/curl/CurlRequest.cpp
-index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..fd968901e0c6b9ca9a25b17ab24167f34eef77b5 100644
+index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..b1f55b5b0fb5c69ce6c9a1ace4a378fc75b294f9 100644
 --- a/Source/WebCore/platform/network/curl/CurlRequest.cpp
 +++ b/Source/WebCore/platform/network/curl/CurlRequest.cpp
-@@ -36,19 +36,51 @@
+@@ -36,19 +36,108 @@
  #include "NetworkLoadMetrics.h"
  #include "ResourceError.h"
  #include "SharedBuffer.h"
@@ -30571,6 +30571,8 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..fd968901e0c6b9ca9a25b17ab24167f3
  
 +#if PLATFORM(HAIKU)
 +#include <cstdio>
++#include <openssl/ssl.h>
++#include <wtf/HashSet.h>
 +#include <wtf/text/CString.h>
 +#endif
 +
@@ -30598,6 +30600,61 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..fd968901e0c6b9ca9a25b17ab24167f3
 +    auto string = url.string();
 +    return (string.length() > 160 ? string.left(160) : string).utf8();
 +}
++
++// https servers whose connections were seen to be HTTP/1.1, by scheme, host
++// and port: connecting to them ahead of a load is wasted.
++static Lock http1ServersLockHaiku;
++
++static HashSet<String>& http1ServersHaiku() WTF_REQUIRES_LOCK(http1ServersLockHaiku)
++{
++    static NeverDestroyed<HashSet<String>> servers;
++    return servers;
++}
++
++static void noteServerProtocolHaiku(const URL& url, bool http1)
++{
++    if (!url.protocolIs("https"_s))
++        return;
++    auto server = url.protocolHostAndPort();
++    Locker locker { http1ServersLockHaiku };
++    auto& servers = http1ServersHaiku();
++    if (!http1)
++        servers.remove(server);
++    else if (servers.size() < 10000)
++        servers.add(WTF::move(server));
++}
++
++bool CurlRequest::canPreconnectHaiku(const URL& url)
++{
++    static const bool enabled = [] {
++        const char* value = getenv("SUMMIT_PRECONNECT");
++        return !value || strcmp(value, "0");
++    }();
++    if (!enabled || !url.protocolIs("https"_s))
++        return false;
++    Locker locker { http1ServersLockHaiku };
++    return !http1ServersHaiku().contains(url.protocolHostAndPort());
++}
++
++// libcurl calls this once the connection is up (resolved, connected, TLS
++// and ALPN done) or found in its pool, just before sending the request.
++int CurlRequest::willSendRequestCallbackHaiku(void* userData, char*, char*, int, int)
++{
++    auto& request = *static_cast<CurlRequest*>(userData);
++    request.m_preconnectedHaiku = true;
++    curl_tlssessioninfo* session = nullptr;
++    if (curl_easy_getinfo(request.m_curlHandle->handle(), CURLINFO_TLS_SSL_PTR, &session) == CURLE_OK && session
++        && session->backend == CURLSSLBACKEND_OPENSSL && session->internals) {
++        const unsigned char* protocol = nullptr;
++        unsigned length = 0;
++        SSL_get0_alpn_selected(static_cast<SSL*>(session->internals), &protocol, &length);
++        request.m_preconnectedMultiplexedHaiku = length == 2 && protocol[0] == 'h' && protocol[1] == '2';
++    }
++    // Stopped before anything is sent, an HTTP/2 connection stays in the
++    // pool (a transfer that ends early only closes connections it cannot
++    // share).
++    return CURL_PREREQFUNC_ABORT;
++}
 +#endif
 +
  WTF_MAKE_TZONE_ALLOCATED_IMPL(CurlRequest);
@@ -30609,7 +30666,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..fd968901e0c6b9ca9a25b17ab24167f3
      , m_formDataStream(m_request.httpBody())
      , m_captureExtraMetrics(captureExtraMetrics == CaptureNetworkLoadMetrics::Extended)
  {
-@@ -95,7 +127,7 @@ void CurlRequest::setUserPass(const String& user, const String& password)
+@@ -95,7 +184,7 @@ void CurlRequest::setUserPass(const String& user, const String& password)
      m_password = password.isolatedCopy();
  }
  
@@ -30618,7 +30675,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..fd968901e0c6b9ca9a25b17ab24167f3
  {
      // The pausing of transfer does not work with protocols, like file://.
      // Therefore, PAUSE can not be done in didReceiveData().
-@@ -108,10 +140,16 @@ void CurlRequest::resume()
+@@ -108,10 +197,16 @@ void CurlRequest::resume()
  
      ASSERT(isMainThread());
  
@@ -30638,7 +30695,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..fd968901e0c6b9ca9a25b17ab24167f3
  
      if (m_request.url().protocolIsFile())
          invokeDidReceiveResponseForFile(m_request.url());
-@@ -122,8 +160,14 @@ void CurlRequest::resume()
+@@ -122,8 +217,14 @@ void CurlRequest::resume()
  void CurlRequest::startWithJobManager()
  {
      ASSERT(isMainThread());
@@ -30654,7 +30711,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..fd968901e0c6b9ca9a25b17ab24167f3
  }
  
  void CurlRequest::cancel()
-@@ -137,6 +181,10 @@ void CurlRequest::cancel()
+@@ -137,6 +238,10 @@ void CurlRequest::cancel()
  
          m_cancelled = true;
      }
@@ -30665,7 +30722,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..fd968901e0c6b9ca9a25b17ab24167f3
  
      auto& scheduler = CurlContext::singleton().scheduler();
  
-@@ -144,7 +192,7 @@ void CurlRequest::cancel()
+@@ -144,7 +249,7 @@ void CurlRequest::cancel()
          runOnWorkerThreadIfRequired([this, protectedThis = Ref { *this }]() {
              didCancelTransfer();
          });
@@ -30674,7 +30731,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..fd968901e0c6b9ca9a25b17ab24167f3
          scheduler.cancel(this);
  
      invalidateClient();
-@@ -162,6 +210,41 @@ bool CurlRequest::isCompletedOrCancelled()
+@@ -162,6 +267,41 @@ bool CurlRequest::isCompletedOrCancelled()
      return m_completed || m_cancelled;
  }
  
@@ -30716,7 +30773,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..fd968901e0c6b9ca9a25b17ab24167f3
  /* `this` is protected inside this method. */
  void CurlRequest::callClient(Function<void(CurlRequest&, CurlRequestClient&)>&& task)
  {
-@@ -173,13 +256,13 @@ void CurlRequest::callClient(Function<void(CurlRequest&, CurlRequestClient&)>&&
+@@ -173,13 +313,13 @@ void CurlRequest::callClient(Function<void(CurlRequest&, CurlRequestClient&)>&&
  
  void CurlRequest::runOnMainThread(Function<void()>&& task)
  {
@@ -30732,7 +30789,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..fd968901e0c6b9ca9a25b17ab24167f3
      else
          task();
  }
-@@ -209,8 +292,9 @@ CURL* CurlRequest::setupTransfer()
+@@ -209,8 +349,9 @@ CURL* CurlRequest::setupTransfer()
          setupPUT();
      }
  
@@ -30743,7 +30800,20 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..fd968901e0c6b9ca9a25b17ab24167f3
  
      if (m_shouldDisableServerTrustEvaluation)
          m_curlHandle->disableServerTrustEvaluation();
-@@ -270,6 +354,27 @@ size_t CurlRequest::willSendData(char* buffer, size_t blockSize, size_t numberOf
+@@ -218,6 +359,12 @@ CURL* CurlRequest::setupTransfer()
+     m_curlHandle->setHeaderCallbackFunction(didReceiveHeaderCallback, this);
+     m_curlHandle->setWriteCallbackFunction(didReceiveDataCallback, this);
+     m_curlHandle->setDebugCallbackFunction(didReceiveDebugInfoCallback, this);
++#if PLATFORM(HAIKU)
++    if (m_preconnectOnlyHaiku) {
++        curl_easy_setopt(m_curlHandle->handle(), CURLOPT_PREREQFUNCTION, willSendRequestCallbackHaiku);
++        curl_easy_setopt(m_curlHandle->handle(), CURLOPT_PREREQDATA, this);
++    }
++#endif
+ 
+     m_curlHandle->setTimeout(timeoutInterval());
+ 
+@@ -270,6 +417,27 @@ size_t CurlRequest::willSendData(char* buffer, size_t blockSize, size_t numberOf
      return *sendBytes;
  }
  
@@ -30771,7 +30841,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..fd968901e0c6b9ca9a25b17ab24167f3
  // This is being called for each HTTP header in the response. This includes '\r\n'
  // for the last line of the header.
  
-@@ -343,6 +448,9 @@ size_t CurlRequest::didReceiveHeader(String&& header)
+@@ -343,6 +511,9 @@ size_t CurlRequest::didReceiveHeader(String&& header)
  
      m_multipartHandle = CurlMultipartHandle::createIfNeeded(*this, m_response);
  
@@ -30781,7 +30851,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..fd968901e0c6b9ca9a25b17ab24167f3
      // Response will send at didReceiveData() or didCompleteTransfer()
      // to receive continueDidRceiveResponse() for asynchronously.
  
-@@ -377,6 +485,8 @@ size_t CurlRequest::didReceiveData(std::span<const uint8_t> receivedData)
+@@ -377,6 +548,8 @@ size_t CurlRequest::didReceiveData(std::span<const uint8_t> receivedData)
  
      m_totalReceivedSize += receivedData.size();
  
@@ -30790,11 +30860,43 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..fd968901e0c6b9ca9a25b17ab24167f3
      if (receivedData.size()) {
          if (m_multipartHandle) {
              m_multipartHandle->didReceiveMessage(receivedData);
-@@ -475,6 +585,17 @@ void CurlRequest::didCompleteTransfer(CURLcode result)
+@@ -446,6 +619,29 @@ void CurlRequest::didCompleteTransfer(CURLcode result)
+         return;
+     }
+ 
++#if PLATFORM(HAIKU)
++    if (m_preconnectOnlyHaiku && result == CURLE_ABORTED_BY_CALLBACK && m_preconnectedHaiku) {
++        // Connected, and stopped there on purpose.
++        auto metrics = networkLoadMetrics();
++        noteServerProtocolHaiku(m_request.url(), !m_preconnectedMultiplexedHaiku);
++        if (netTraceHaiku() && m_netTraceQueuedAtHaiku) {
++            fprintf(stderr, "Summit net: preconnected id=%p queue=%.0f dns=%.0f connect=%.0f tls=%.0f total=%.0f proto=%s %s\n",
++                this, netTraceMsHaiku(m_netTraceQueuedAtHaiku, m_performStartTime),
++                netTraceMsHaiku(metrics.domainLookupStart, metrics.domainLookupEnd), netTraceMsHaiku(metrics.connectStart, metrics.connectEnd),
++                netTraceMsHaiku(metrics.secureConnectionStart, metrics.connectEnd), netTraceMsHaiku(m_netTraceQueuedAtHaiku, MonotonicTime::now()),
++                m_preconnectedMultiplexedHaiku ? "h2" : "http/1.1 (closed)", netTraceURLHaiku(m_request.url()).data());
++        }
++        finalizeTransfer();
++        callClient([networkLoadMetrics = WTF::move(metrics)](CurlRequest& request, CurlRequestClient& client) mutable {
++            networkLoadMetrics.markComplete();
++            client.curlDidComplete(request, WTF::move(networkLoadMetrics));
++        });
++        Locker locker { m_statusMutex };
++        m_completed = true;
++        return;
++    }
++#endif
++
+     // Newer versions of curl/OpenSSL report CURLE_RECV_ERROR or CURLE_PARTIAL_FILE
+     // when a server closes the connection to signal end-of-body on responses with
+     // no Content-Length and no chunked encoding. This is valid HTTP/1.1 behavior,
+@@ -475,6 +671,19 @@ void CurlRequest::didCompleteTransfer(CURLcode result)
          }
  
          auto metrics = networkLoadMetrics();
 +#if PLATFORM(HAIKU)
++        if (!metrics.protocol.isEmpty())
++            noteServerProtocolHaiku(m_request.url(), metrics.protocol == "http/1.1"_s || metrics.protocol == "http/1.0"_s);
 +        if (netTraceHaiku() && m_netTraceQueuedAtHaiku) {
 +            auto now = MonotonicTime::now();
 +            fprintf(stderr, "Summit net: done id=%p status=%d queue=%.0f dns=%.0f connect=%.0f tls=%.0f ttfb=%.0f total=%.0f bytes=%zu proto=%s %s\n",
@@ -30808,7 +30910,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..fd968901e0c6b9ca9a25b17ab24167f3
  
          finalizeTransfer();
          callClient([networkLoadMetrics = WTF::move(metrics)](CurlRequest& request, CurlRequestClient& client) mutable {
-@@ -486,6 +607,11 @@ void CurlRequest::didCompleteTransfer(CURLcode result)
+@@ -486,6 +695,11 @@ void CurlRequest::didCompleteTransfer(CURLcode result)
      } else {
          auto type = (result == CURLE_OPERATION_TIMEDOUT && timeoutInterval()) ? ResourceError::Type::Timeout : ResourceError::Type::General;
          auto resourceError = ResourceError(result, m_request.url(), type);
@@ -30820,7 +30922,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..fd968901e0c6b9ca9a25b17ab24167f3
  
          CertificateInfo certificateInfo;
          if (auto info = m_curlHandle->certificateInfo())
-@@ -506,10 +632,12 @@ void CurlRequest::didCompleteTransfer(CURLcode result)
+@@ -506,10 +720,12 @@ void CurlRequest::didCompleteTransfer(CURLcode result)
  void CurlRequest::didCancelTransfer()
  {
      finalizeTransfer();
@@ -30833,7 +30935,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..fd968901e0c6b9ca9a25b17ab24167f3
      m_formDataStream.clean();
      m_multipartHandle = nullptr;
      m_curlHandle = nullptr;
-@@ -632,6 +760,88 @@ void CurlRequest::completeDidReceiveResponse()
+@@ -632,6 +848,88 @@ void CurlRequest::completeDidReceiveResponse()
          responseCompletionHandler();
  }
  
@@ -30922,7 +31024,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..fd968901e0c6b9ca9a25b17ab24167f3
  NetworkLoadMetrics CurlRequest::networkLoadMetrics()
  {
      ASSERT(m_curlHandle);
-@@ -653,6 +863,57 @@ NetworkLoadMetrics CurlRequest::networkLoadMetrics()
+@@ -653,6 +951,57 @@ NetworkLoadMetrics CurlRequest::networkLoadMetrics()
      return WTF::move(*networkLoadMetrics);
  }
  
@@ -30981,7 +31083,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..fd968901e0c6b9ca9a25b17ab24167f3
  {
      for (const auto& header : m_response.headers) {
 diff --git a/Source/WebCore/platform/network/curl/CurlRequest.h b/Source/WebCore/platform/network/curl/CurlRequest.h
-index 3b060605bbff32f845804a848610eca23dea834c..8944602bc958120d95c2e0e9b9654938e96047c9 100644
+index 3b060605bbff32f845804a848610eca23dea834c..d4bfdb9bc825626a84e2edfe68317b0683f53faa 100644
 --- a/Source/WebCore/platform/network/curl/CurlRequest.h
 +++ b/Source/WebCore/platform/network/curl/CurlRequest.h
 @@ -32,6 +32,8 @@
@@ -31013,10 +31115,22 @@ index 3b060605bbff32f845804a848610eca23dea834c..8944602bc958120d95c2e0e9b9654938
  
      const ResourceRequest& resourceRequest() const LIFETIME_BOUND { return m_request; }
      bool isCancelled();
-@@ -81,6 +84,11 @@ public:
+@@ -81,6 +84,23 @@ public:
      // Processing for DidReceiveResponse
      WEBCORE_EXPORT void completeDidReceiveResponse();
  
++#if PLATFORM(HAIKU)
++    // Connects (DNS, TCP, TLS) and stops before sending the request: libcurl
++    // keeps an HTTP/2 connection stopped that way in its pool for the loads
++    // that follow. Completes without a response.
++    void setPreconnectOnly() { m_preconnectOnlyHaiku = true; }
++    // Whether connecting ahead of a load to this URL's server can help: it
++    // uses https, and its connections have not been seen to be HTTP/1.1 (a
++    // transfer that stops before its request leaves libcurl no choice but to
++    // close those).
++    WEBCORE_EXPORT static bool canPreconnectHaiku(const URL&);
++#endif
++
 +    // Download
 +    void enableDownloadToFile();
 +    const String& getDownloadedFilePath();
@@ -31025,7 +31139,7 @@ index 3b060605bbff32f845804a848610eca23dea834c..8944602bc958120d95c2e0e9b9654938
  private:
      WEBCORE_EXPORT CurlRequest(const ResourceRequest&, CurlRequestClient*, CaptureNetworkLoadMetrics);
  
-@@ -113,6 +121,7 @@ private:
+@@ -113,6 +133,7 @@ private:
      void didCompleteTransfer(CURLcode) override;
      void didCancelTransfer() override;
      void finalizeTransfer();
@@ -31033,7 +31147,7 @@ index 3b060605bbff32f845804a848610eca23dea834c..8944602bc958120d95c2e0e9b9654938
  
      int didReceiveDebugInfo(curl_infotype, std::span<const char>);
  
-@@ -126,10 +135,21 @@ private:
+@@ -126,15 +147,29 @@ private:
      bool needToInvokeDidCancelTransfer() const { return m_didNotifyResponse && !m_didReturnFromNotify && m_mustInvokeCancelTransfer; }
      void invokeDidReceiveResponseForFile(const URL&);
      void invokeDidReceiveResponse(const CurlResponse&, Function<void()>&& completionHandler = { });
@@ -31055,7 +31169,15 @@ index 3b060605bbff32f845804a848610eca23dea834c..8944602bc958120d95c2e0e9b9654938
      // Callback functions for curl
      static size_t willSendDataCallback(char*, size_t, size_t, void*);
      static size_t didReceiveHeaderCallback(char*, size_t, size_t, void*);
-@@ -149,23 +169,46 @@ private:
+     static size_t didReceiveDataCallback(char*, size_t, size_t, void*);
+     static int didReceiveDebugInfoCallback(CURL*, curl_infotype, char*, size_t, void*);
++#if PLATFORM(HAIKU)
++    static int willSendRequestCallbackHaiku(void*, char*, char*, int, int);
++#endif
+ 
+ 
+     CurlRequestClient* m_client { };
+@@ -149,23 +184,50 @@ private:
      bool m_shouldDisableServerTrustEvaluation { false };
      CurlHandle::LocalhostAlias m_localhostAlias { CurlHandle::LocalhostAlias::Disable };
  
@@ -31099,6 +31221,10 @@ index 3b060605bbff32f845804a848610eca23dea834c..8944602bc958120d95c2e0e9b9654938
      size_t m_totalReceivedSize { 0 };
 +#if PLATFORM(HAIKU)
 +    MonotonicTime m_netTraceQueuedAtHaiku;
++    bool m_preconnectOnlyHaiku { false };
++    // Set on the worker thread when the connection is up (preconnects).
++    bool m_preconnectedHaiku { false };
++    bool m_preconnectedMultiplexedHaiku { false };
 +#endif
  };
  
@@ -31832,6 +31958,80 @@ index 0000000000000000000000000000000000000000..59f374ad848098e03b661974c7932c2c
 +};
 +
 +} // namespace WebCore
+diff --git a/Source/WebCore/platform/network/curl/DNSResolveQueueCurl.cpp b/Source/WebCore/platform/network/curl/DNSResolveQueueCurl.cpp
+index 0a21c097975d267a561b77b3f750872b987bd98f..aefac57fa5ef7dbe444cebb76dca6708e6145071 100644
+--- a/Source/WebCore/platform/network/curl/DNSResolveQueueCurl.cpp
++++ b/Source/WebCore/platform/network/curl/DNSResolveQueueCurl.cpp
+@@ -31,10 +31,61 @@
+ #include "NotImplemented.h"
+ #include <wtf/TZoneMallocInlines.h>
+ 
++#if PLATFORM(HAIKU)
++#include "CurlContext.h"
++#include <cstdlib>
++#include <wtf/MainThread.h>
++#include <wtf/Threading.h>
++#include <wtf/text/CString.h>
++#include <wtf/text/MakeString.h>
++#endif
++
+ namespace WebCore {
+ 
+ WTF_MAKE_TZONE_ALLOCATED_IMPL(DNSResolveQueueCurl);
+ 
++#if PLATFORM(HAIKU)
++void DNSResolveQueueCurl::updateIsUsingProxy()
++{
++    // Through a proxy, the names a page uses are the proxy's to resolve.
++    auto mode = CurlContext::singleton().proxySettings().mode();
++    bool fromEnvironment = mode == CurlProxySettings::Mode::Default
++        && (getenv("all_proxy") || getenv("ALL_PROXY") || getenv("https_proxy") || getenv("HTTPS_PROXY") || getenv("http_proxy"));
++    m_isUsingProxy = mode == CurlProxySettings::Mode::Custom || fromEnvironment;
++}
++
++static curl_socket_t refuseSocketHaiku(void*, curlsocktype, struct curl_sockaddr*)
++{
++    return CURL_SOCKET_BAD;
++}
++
++// <link rel=dns-prefetch> and the like: the name is resolved into libcurl's
++// DNS cache, which every transfer of the network process shares, so the
++// first request to the server does not wait for DNS (30-50 ms here, a round
++// trip to the resolver; Haiku keeps no cache of its own). Nothing connects:
++// the socket libcurl asks for is refused once the address is known.
++void DNSResolveQueueCurl::platformResolve(const String& hostname)
++{
++    auto& context = CurlContext::singleton();
++    auto url = makeString("https://"_s, hostname, '/').utf8();
++    Thread::create("DNS prefetch"_s, [url = WTF::move(url), share = context.shareHandle().handle(), timeout = context.dnsCacheTimeout()] {
++        if (CURL* handle = curl_easy_init()) {
++            curl_easy_setopt(handle, CURLOPT_URL, url.data());
++            curl_easy_setopt(handle, CURLOPT_SHARE, share);
++            curl_easy_setopt(handle, CURLOPT_DNS_CACHE_TIMEOUT, static_cast<long>(timeout.seconds()));
++            curl_easy_setopt(handle, CURLOPT_NOSIGNAL, 1L);
++            curl_easy_setopt(handle, CURLOPT_CONNECT_ONLY, 1L);
++            curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT, 10L);
++            curl_easy_setopt(handle, CURLOPT_OPENSOCKETFUNCTION, refuseSocketHaiku);
++            curl_easy_perform(handle);
++            curl_easy_cleanup(handle);
++        }
++        callOnMainThread([] {
++            DNSResolveQueue::singleton().decrementRequestCount();
++        });
++    }, ThreadType::Network)->detach();
++}
++#else
+ void DNSResolveQueueCurl::updateIsUsingProxy()
+ {
+     notImplemented();
+@@ -44,6 +95,7 @@ void DNSResolveQueueCurl::platformResolve(const String& /* hostname */)
+ {
+     notImplemented();
+ }
++#endif
+ 
+ void DNSResolveQueueCurl::resolve(const String& /* hostname */, uint64_t /* identifier */, DNSCompletionHandler&& /* completionHandler */)
+ {
 diff --git a/Source/WebCore/platform/network/curl/OpenSSLHelper.cpp b/Source/WebCore/platform/network/curl/OpenSSLHelper.cpp
 index 4cfe46eed7ca84223c22c0d5f467692fad5c7d09..3f61e5290e0411d4c8806233db3ff58c8b32cd99 100644
 --- a/Source/WebCore/platform/network/curl/OpenSSLHelper.cpp
@@ -36996,6 +37196,19 @@ index b02792fe46e6dcf5849043e487a9596fc30d3d01..01cd68d2ffffbdfd17625d991a5337f3
 +#endif
 +
  } // namespace WebKit
+diff --git a/Source/WebKit/NetworkProcess/NetworkConnectionToWebProcess.cpp b/Source/WebKit/NetworkProcess/NetworkConnectionToWebProcess.cpp
+index 5a251aaac5fdc6cd3d9b45f792d84dbea1cef798..c4165e6d88b42487dbfc8cd9633b7efae61df6f0 100644
+--- a/Source/WebKit/NetworkProcess/NetworkConnectionToWebProcess.cpp
++++ b/Source/WebKit/NetworkProcess/NetworkConnectionToWebProcess.cpp
+@@ -754,7 +754,7 @@ void NetworkConnectionToWebProcess::preconnectTo(PreconnectRequest&& preconnectR
+     }
+ #endif
+ 
+-#if ENABLE(SERVER_PRECONNECT)
++#if ENABLE(SERVER_PRECONNECT) || PLATFORM(HAIKU)
+     CheckedPtr session = networkSession();
+     if (session && session->allowsServerPreconnect()) {
+         NetworkLoadParameters parameters;
 diff --git a/Source/WebKit/NetworkProcess/NetworkLoad.cpp b/Source/WebKit/NetworkProcess/NetworkLoad.cpp
 index 90aa4198b4343bb87082a13c94762e486dddf722..2ee2dd31cc02723aed7bb9ab1a1f56a1ce21e532 100644
 --- a/Source/WebKit/NetworkProcess/NetworkLoad.cpp
@@ -37093,6 +37306,19 @@ index 2860a7b91df4fe4b4dce1343124b325599fb9f9f..2bb8dd71b5b44ae240e04c1be1f6bd17
      virtual bool shouldCaptureExtraNetworkLoadMetrics() const { return false; }
  };
  
+diff --git a/Source/WebKit/NetworkProcess/NetworkProcess.cpp b/Source/WebKit/NetworkProcess/NetworkProcess.cpp
+index d264c3f3e10e2b63eea3424620be77bca1b07f7e..391ad45d3252e89fdb535d7e7db3f92dd071bdd0 100644
+--- a/Source/WebKit/NetworkProcess/NetworkProcess.cpp
++++ b/Source/WebKit/NetworkProcess/NetworkProcess.cpp
+@@ -1759,7 +1759,7 @@ void NetworkProcess::preconnectTo(PAL::SessionID sessionID, WebPageProxyIdentifi
+ 
+     LOG_WITH_STREAM(Network, stream << "(NetworkProcess) Preconnecting to URL "_s << url.string() << " (storedCredentialsPolicy "_s << (int)storedCredentialsPolicy << ")"_s);
+ 
+-#if ENABLE(SERVER_PRECONNECT)
++#if ENABLE(SERVER_PRECONNECT) || PLATFORM(HAIKU)
+ #if ENABLE(LEGACY_CUSTOM_PROTOCOL_MANAGER)
+     if (RefPtr { supplement<LegacyCustomProtocolManager>() }->supportsScheme(url.protocol().toString()))
+         return;
 diff --git a/Source/WebKit/NetworkProcess/NetworkProcess.h b/Source/WebKit/NetworkProcess/NetworkProcess.h
 index 71e82718ab34a74fbb66eb10d544fb5a8ebc6352..f8f541472b2d4294828da1904e821ed36093bd02 100644
 --- a/Source/WebKit/NetworkProcess/NetworkProcess.h
@@ -37136,7 +37362,7 @@ index 2afa30a728be0cfee042ff40e4c591c0647c7531..b562096a3ec665a30771357ee0e1dd40
 +#endif
  }
 diff --git a/Source/WebKit/NetworkProcess/NetworkResourceLoader.cpp b/Source/WebKit/NetworkProcess/NetworkResourceLoader.cpp
-index 4bed05b3670522d93770c3331d578642cc934eee..995fa81d3264ff90641e9b4b017a3aada23f8f40 100644
+index 4bed05b3670522d93770c3331d578642cc934eee..d0d3f9379d33e725c7732cab942f501e0a726c4b 100644
 --- a/Source/WebKit/NetworkProcess/NetworkResourceLoader.cpp
 +++ b/Source/WebKit/NetworkProcess/NetworkResourceLoader.cpp
 @@ -110,6 +110,14 @@
@@ -37338,6 +37564,15 @@ index 4bed05b3670522d93770c3331d578642cc934eee..995fa81d3264ff90641e9b4b017a3aad
  ResourceLoadInfo NetworkResourceLoader::resourceLoadInfo()
  {
      auto loadedFromCache = [] (const ResourceResponse& response) {
+@@ -1042,7 +1206,7 @@ ResourceRequest NetworkResourceLoader::constructPreconnectRequest(const Resource
+ 
+ void NetworkResourceLoader::startPreconnectTask(const URL& baseURL, const LinkHeader& header, const ContentSecurityPolicy& contentSecurityPolicy)
+ {
+-#if ENABLE(SERVER_PRECONNECT)
++#if ENABLE(SERVER_PRECONNECT) || PLATFORM(HAIKU)
+     if (!parameters().linkPreconnectEarlyHintsEnabled)
+         return;
+ 
 @@ -1081,6 +1245,46 @@ void NetworkResourceLoader::startPreconnectTask(const URL& baseURL, const LinkHe
  
  void NetworkResourceLoader::didReceiveResponse(ResourceResponse&& receivedResponse, PrivateRelayed privateRelayed, ResponseCompletionHandler&& completionHandler)
@@ -37537,6 +37772,46 @@ index 670ef4c017909a617d4138f5effbf0fdbe7d9106..ce120d6c14af7eee36c21d6b7ab40aa1
      std::unique_ptr<NetworkCache::Entry> m_cacheEntryWaitingForContinueDidReceiveResponse;
      RefPtr<NetworkLoadChecker> m_networkLoadChecker;
      bool m_shouldRestartLoad { false };
+diff --git a/Source/WebKit/NetworkProcess/PreconnectTask.cpp b/Source/WebKit/NetworkProcess/PreconnectTask.cpp
+index 45e75e041741a54252b2a6e15717a8b70d201432..ad03dff3194a0395dc462d4b6adbda4842a40206 100644
+--- a/Source/WebKit/NetworkProcess/PreconnectTask.cpp
++++ b/Source/WebKit/NetworkProcess/PreconnectTask.cpp
+@@ -26,7 +26,7 @@
+ #include "config.h"
+ #include "PreconnectTask.h"
+ 
+-#if ENABLE(SERVER_PRECONNECT)
++#if ENABLE(SERVER_PRECONNECT) || PLATFORM(HAIKU)
+ 
+ #include "Logging.h"
+ #include "NetworkLoad.h"
+@@ -130,4 +130,4 @@ void PreconnectTask::didSendData(uint64_t bytesSent, uint64_t totalBytesToBeSent
+ 
+ } // namespace WebKit
+ 
+-#endif // ENABLE(SERVER_PRECONNECT)
++#endif // ENABLE(SERVER_PRECONNECT) || PLATFORM(HAIKU)
+diff --git a/Source/WebKit/NetworkProcess/PreconnectTask.h b/Source/WebKit/NetworkProcess/PreconnectTask.h
+index 0426267e7a94f6d07e8b224823361c161da2a28d..32bd0f7eaa0b187d81727dc3a592065813515224 100644
+--- a/Source/WebKit/NetworkProcess/PreconnectTask.h
++++ b/Source/WebKit/NetworkProcess/PreconnectTask.h
+@@ -25,7 +25,9 @@
+ 
+ #pragma once
+ 
+-#if ENABLE(SERVER_PRECONNECT)
++// Haiku has it without the build-wide switch: its curl backend opens the
++// connection and stops before the request (CurlRequest::setPreconnectOnly).
++#if ENABLE(SERVER_PRECONNECT) || PLATFORM(HAIKU)
+ 
+ #include "NetworkLoadClient.h"
+ #include <WebCore/Timer.h>
+@@ -75,4 +77,4 @@ private:
+ 
+ } // namespace WebKit
+ 
+-#endif // ENABLE(SERVER_PRECONNECT)
++#endif // ENABLE(SERVER_PRECONNECT) || PLATFORM(HAIKU)
 diff --git a/Source/WebKit/NetworkProcess/cache/NetworkCacheBlobStorage.cpp b/Source/WebKit/NetworkProcess/cache/NetworkCacheBlobStorage.cpp
 index 763233f7da4b7df3eabe775b2ae71ea665e47d5f..3e5bbea378c93fa301ef5f2421dc96a228440761 100644
 --- a/Source/WebKit/NetworkProcess/cache/NetworkCacheBlobStorage.cpp
@@ -37846,10 +38121,23 @@ index 3109e2d29868d3523e26cebae0976a09fbd273c7..1384b1b9687cb397f5bfc7157d7b5650
          deleteEmptyRecordsDirectories(recordsPathIsolatedCopy());
  
 diff --git a/Source/WebKit/NetworkProcess/curl/NetworkDataTaskCurl.cpp b/Source/WebKit/NetworkProcess/curl/NetworkDataTaskCurl.cpp
-index 8cb1be45a09b8bc4566940e0fabca10cb03bbd7f..39c3051cf0658f27a748d88633732831b2be4716 100644
+index 8cb1be45a09b8bc4566940e0fabca10cb03bbd7f..30969b24d0d7bd62862983933dee533a4c79690a 100644
 --- a/Source/WebKit/NetworkProcess/curl/NetworkDataTaskCurl.cpp
 +++ b/Source/WebKit/NetworkProcess/curl/NetworkDataTaskCurl.cpp
-@@ -84,6 +84,7 @@ NetworkDataTaskCurl::NetworkDataTaskCurl(NetworkSession& session, NetworkDataTas
+@@ -79,11 +79,20 @@ NetworkDataTaskCurl::NetworkDataTaskCurl(NetworkSession& session, NetworkDataTas
+         blockCookies();
+     restrictRequestReferrerToOriginIfNeeded(request);
+ 
++#if PLATFORM(HAIKU)
++    m_preconnectOnlyHaiku = parameters.shouldPreconnectOnly == PreconnectOnly::Yes;
++    // Nothing to gain (plain http, or a server seen to use HTTP/1.1): the
++    // preconnect completes as soon as it is resumed.
++    if (m_preconnectOnlyHaiku && !CurlRequest::canPreconnectHaiku(request.url()))
++        return;
++#endif
++
+     m_curlRequest = createCurlRequest(WTF::move(request));
+     if (!m_initialCredential.isEmpty()) {
          m_curlRequest->setUserPass(m_initialCredential.user(), m_initialCredential.password());
          m_curlRequest->setAuthenticationScheme(ProtectionSpace::AuthenticationScheme::HTTPBasic);
      }
@@ -37857,7 +38145,48 @@ index 8cb1be45a09b8bc4566940e0fabca10cb03bbd7f..39c3051cf0658f27a748d88633732831
  }
  
  NetworkDataTaskCurl::~NetworkDataTaskCurl()
-@@ -168,7 +169,7 @@ void NetworkDataTaskCurl::curlDidReceiveResponse(CurlRequest& request, CurlRespo
+@@ -101,6 +110,15 @@ void NetworkDataTaskCurl::resume()
+ 
+     if (m_curlRequest)
+         m_curlRequest->resume();
++#if PLATFORM(HAIKU)
++    else if (m_preconnectOnlyHaiku) {
++        RunLoop::mainSingleton().dispatch([this, protectedThis = Ref { *this }] {
++            if (state() == State::Canceling || state() == State::Completed || !m_client)
++                return;
++            m_client->didCompleteWithError({ }, { });
++        });
++    }
++#endif
+ }
+ 
+ void NetworkDataTaskCurl::cancel()
+@@ -132,7 +150,12 @@ NetworkDataTask::State NetworkDataTaskCurl::state() const
+ 
+ Ref<CurlRequest> NetworkDataTaskCurl::createCurlRequest(ResourceRequest&& request, RequestStatus status)
+ {
+-    if (status == RequestStatus::NewRequest && !m_blockingCookies)
++    bool preconnectOnly = false;
++#if PLATFORM(HAIKU)
++    preconnectOnly = m_preconnectOnlyHaiku;
++#endif
++    // A preconnect sends no request: it needs no cookies.
++    if (status == RequestStatus::NewRequest && !m_blockingCookies && !preconnectOnly)
+         appendCookieHeader(request);
+ 
+     // Creates a CurlRequest in suspended state.
+@@ -142,6 +165,10 @@ Ref<CurlRequest> NetworkDataTaskCurl::createCurlRequest(ResourceRequest&& reques
+ 
+     if (m_session->networkProcess().localhostAliasesForTesting().contains<StringViewHashTranslator>(curlRequest->resourceRequest().url().host()))
+         curlRequest->enableLocalhostAlias();
++#if PLATFORM(HAIKU)
++    if (preconnectOnly)
++        curlRequest->setPreconnectOnly();
++#endif
+ 
+     return curlRequest;
+ }
+@@ -168,7 +195,7 @@ void NetworkDataTaskCurl::curlDidReceiveResponse(CurlRequest& request, CurlRespo
  
      handleCookieHeaders(request.resourceRequest(), receivedResponse);
  
@@ -37866,7 +38195,21 @@ index 8cb1be45a09b8bc4566940e0fabca10cb03bbd7f..39c3051cf0658f27a748d88633732831
          willPerformHTTPRedirection();
          return;
      }
-@@ -256,22 +257,6 @@ void NetworkDataTaskCurl::curlDidFailWithError(CurlRequest& request, ResourceErr
+@@ -236,7 +263,12 @@ void NetworkDataTaskCurl::curlDidFailWithError(CurlRequest& request, ResourceErr
+     if (state() == State::Canceling || state() == State::Completed || (!m_client && !isDownload()))
+         return;
+ 
+-    if (resourceError.isCertificationVerificationError()) {
++    bool preconnectOnly = false;
++#if PLATFORM(HAIKU)
++    preconnectOnly = m_preconnectOnlyHaiku;
++#endif
++    // A preconnect asks nobody about a certificate: the load that follows will.
++    if (resourceError.isCertificationVerificationError() && !preconnectOnly) {
+         tryServerTrustEvaluation(AuthenticationChallenge(request.resourceRequest().url(), certificateInfo, resourceError));
+         return;
+     }
+@@ -256,22 +288,6 @@ void NetworkDataTaskCurl::curlDidFailWithError(CurlRequest& request, ResourceErr
      m_client->didCompleteWithError(resourceError);
  }
  
@@ -37889,7 +38232,7 @@ index 8cb1be45a09b8bc4566940e0fabca10cb03bbd7f..39c3051cf0658f27a748d88633732831
  bool NetworkDataTaskCurl::shouldRedirectAsGET(const ResourceRequest& request, bool crossOrigin)
  {
      if (request.httpMethod() == "GET"_s || request.httpMethod() == "HEAD"_s)
-@@ -409,6 +394,7 @@ void NetworkDataTaskCurl::willPerformHTTPRedirection()
+@@ -409,6 +425,7 @@ void NetworkDataTaskCurl::willPerformHTTPRedirection()
              m_curlRequest->setUserPass(m_initialCredential.user(), m_initialCredential.password());
              m_curlRequest->setAuthenticationScheme(ProtectionSpace::AuthenticationScheme::HTTPBasic);
          }
@@ -37897,7 +38240,7 @@ index 8cb1be45a09b8bc4566940e0fabca10cb03bbd7f..39c3051cf0658f27a748d88633732831
  
          if (m_state != State::Suspended) {
              m_state = State::Suspended;
-@@ -531,6 +517,7 @@ void NetworkDataTaskCurl::restartWithCredential(const ProtectionSpace& protectio
+@@ -531,6 +548,7 @@ void NetworkDataTaskCurl::restartWithCredential(const ProtectionSpace& protectio
      m_curlRequest->setUserPass(credential.user(), credential.password());
      if (shouldDisableServerTrustEvaluation)
          m_curlRequest->disableServerTrustEvaluation();
@@ -37906,7 +38249,7 @@ index 8cb1be45a09b8bc4566940e0fabca10cb03bbd7f..39c3051cf0658f27a748d88633732831
      if (m_state != State::Suspended) {
          m_state = State::Suspended;
 diff --git a/Source/WebKit/NetworkProcess/curl/NetworkDataTaskCurl.h b/Source/WebKit/NetworkProcess/curl/NetworkDataTaskCurl.h
-index c40c6c91c819cafb627a4fda54277b773aecf853..8d53f448c1b0cba94d849e8663d0a1a59bd3d848 100644
+index c40c6c91c819cafb627a4fda54277b773aecf853..cd54221c1d119c704cfe66980b863bb51bb4d152 100644
 --- a/Source/WebKit/NetworkProcess/curl/NetworkDataTaskCurl.h
 +++ b/Source/WebKit/NetworkProcess/curl/NetworkDataTaskCurl.h
 @@ -77,7 +77,6 @@ private:
@@ -37917,6 +38260,17 @@ index c40c6c91c819cafb627a4fda54277b773aecf853..8d53f448c1b0cba94d849e8663d0a1a5
      bool shouldRedirectAsGET(const WebCore::ResourceRequest&, bool crossOrigin);
      void willPerformHTTPRedirection();
  
+@@ -115,6 +114,10 @@ private:
+     FileSystem::FileHandle m_downloadDestinationFile;
+ 
+     bool m_blockingCookies { false };
++#if PLATFORM(HAIKU)
++    // A preconnect (PreconnectTask): connect and stop before the request.
++    bool m_preconnectOnlyHaiku { false };
++#endif
+ 
+     MonotonicTime m_startTime;
+     bool m_failsTAOCheck { false };
 diff --git a/Source/WebKit/NetworkProcess/curl/NetworkProcessMainCurl.cpp b/Source/WebKit/NetworkProcess/curl/NetworkProcessMainCurl.cpp
 index 7c9075474552a6beaffbeffe6838dd4e5b24b0d0..63ecf65d7718f6b8e24e27b37f2ea6ea38acc2eb 100644
 --- a/Source/WebKit/NetworkProcess/curl/NetworkProcessMainCurl.cpp
@@ -48546,10 +48900,10 @@ index 0000000000000000000000000000000000000000..d28a6cad6339adf79b155cf974e85bfd
 +
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..3554078ea99f3b7c9995944befed667858b03df8
+index 0000000000000000000000000000000000000000..2d359e59018fa02eabd375b3e2660ec73fb66831
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp
-@@ -0,0 +1,831 @@
+@@ -0,0 +1,845 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -48570,6 +48924,7 @@ index 0000000000000000000000000000000000000000..3554078ea99f3b7c9995944befed6678
 +#include <Cursor.h>
 +#include <MessageRunner.h>
 +#include <OS.h>
++#include <Region.h>
 +#include <Window.h>
 +#include <algorithm>
 +#include <cinttypes>
@@ -48954,6 +49309,7 @@ index 0000000000000000000000000000000000000000..3554078ea99f3b7c9995944befed6678
 +
 +void BWebKitView::LoadURL(const char* url) { SendCommand(viewLoadHaiku, url); }
 +void BWebKitView::DownloadURL(const char* url) { SendCommand(viewDownloadHaiku, url); }
++void BWebKitView::Preconnect(const char* url) { SendCommand(viewPreconnectHaiku, url); }
 +void BWebKitView::GoBack() { SendCommand(viewBackHaiku); }
 +void BWebKitView::GoForward() { SendCommand(viewForwardHaiku); }
 +void BWebKitView::Reload() { SendCommand(viewReloadHaiku); }
@@ -49158,7 +49514,19 @@ index 0000000000000000000000000000000000000000..3554078ea99f3b7c9995944befed6678
 +        if (target && target->enabled()) {
 +            // The GPU puts the page on the screen itself; the bitmap is older.
 +            // app_server asked for this part again, so it may hold something
-+            // else now: have the page presented again.
++            // else now: have the page presented again. Only what no frame
++            // covers (a window being enlarged) gets the base colour meanwhile;
++            // the last frame through app_server says how far frames reach.
++            if (auto last = m_state->presenter.snapshot()) {
++                BRegion uncovered(update);
++                uncovered.Exclude(BRect(0, 0, last->viewSize.width() - 1, last->viewSize.height() - 1));
++                if (uncovered.CountRects()) {
++                    PushState();
++                    SetHighColor(255, 255, 255, 255);
++                    FillRegion(&uncovered);
++                    PopState();
++                }
++            }
 +            dispatchViewMessageHaiku(m_state, BMessage(WebKit::viewDirectRedisplayHaiku));
 +            return;
 +        }
@@ -49383,10 +49751,10 @@ index 0000000000000000000000000000000000000000..3554078ea99f3b7c9995944befed6678
 +}
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitView.h b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..217729ea1b6af6d6e0c6e184e011a88e311d6f3d
+index 0000000000000000000000000000000000000000..75ed8b2c5a2548896c44634fdd7eacd9a202403f
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
-@@ -0,0 +1,205 @@
+@@ -0,0 +1,209 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -49483,6 +49851,10 @@ index 0000000000000000000000000000000000000000..217729ea1b6af6d6e0c6e184e011a88e
 +    // Queue an explicit download of a valid URL without changing this page.
 +    // Uses this view's context, configured download directory and listener.
 +    void DownloadURL(const char*);
++    // Opens a connection to the server of an https URL the user is likely to
++    // load soon (DNS, TCP and TLS), so that load's first request goes out at
++    // once. Nothing is sent to the server. Any thread.
++    void Preconnect(const char*);
 +    void GoBack();
 +    void GoForward();
 +    void Reload();
@@ -77805,10 +78177,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..59a47b00c802a5235bd5fe2efabe3b50966259a3
+index 0000000000000000000000000000000000000000..b061c97a5f706d92f2b4208d4c94c083bfb2a1fb
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,2080 @@
+@@ -0,0 +1,2096 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -79061,6 +79433,16 @@ index 0000000000000000000000000000000000000000..59a47b00c802a5235bd5fe2efabe3b50
 +    configuration->preferences().setInvisibleAutoplayNotPermitted(!pauseInvisible || std::strcmp(pauseInvisible, "0"));
 +    // Block pop-ups: window.open() needs a click or key press, as in other browsers.
 +    configuration->preferences().setJavaScriptCanOpenWindowsAutomatically(false);
++    // Connections opened before they are needed: for <link rel=preconnect>
++    // and Link: headers naming the hosts a page will load from (the network
++    // process also opens one to the page being navigated to while its web
++    // process starts). The curl backend has them on Haiku; off by default
++    // only because the build-wide switch is. SUMMIT_PRECONNECT=0 turns all
++    // of them off.
++    const char* preconnect = std::getenv("SUMMIT_PRECONNECT");
++    const bool preconnectEnabled = !preconnect || std::strcmp(preconnect, "0");
++    configuration->preferences().setLinkPreconnect(preconnectEnabled);
++    configuration->preferences().setLinkPreconnectEarlyHintsEnabled(preconnectEnabled);
 +    // navigator.storage (estimate, persist), on by default for GTK and WPE;
 +    // web apps and extensions (OneTab) call it unguarded.
 +    configuration->preferences().setStorageAPIEnabled(true);
@@ -79257,6 +79639,12 @@ index 0000000000000000000000000000000000000000..59a47b00c802a5235bd5fe2efabe3b50
 +    if (!m_page)
 +        return;
 +    switch (message.what) {
++    case viewPreconnectHaiku: {
++        URL url { String::fromUTF8(message.FindString("url")) };
++        if (url.isValid() && url.protocolIs("https"_s))
++            m_page->preconnectTo(ResourceRequest(WTF::move(url)));
++        break;
++    }
 +    case viewLoadHaiku: {
 +        URL url { String::fromUTF8(message.FindString("url")) };
 +        if (url.isValid()) {
@@ -80461,10 +80849,10 @@ index 0000000000000000000000000000000000000000..888251fc63a6b06030f82115037d8ec3
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..82eaacd2a6ef07111138473935c695a06f9a3475
+index 0000000000000000000000000000000000000000..7b8ce621fa2ac99e9011236420e25c2cb11ab071
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
-@@ -0,0 +1,163 @@
+@@ -0,0 +1,164 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -80506,7 +80894,8 @@ index 0000000000000000000000000000000000000000..82eaacd2a6ef07111138473935c695a0
 +    viewDragHaiku = 'wvdg',
 +    // Presenting straight into the screen (DirectPresentHaiku.h): the view
 +    // has a target for its page, or the page needs presenting again in full.
-+    viewDirectTargetHaiku = 'wvdt', viewDirectRedisplayHaiku = 'wvdr'
++    viewDirectTargetHaiku = 'wvdt', viewDirectRedisplayHaiku = 'wvdr',
++    viewPreconnectHaiku = 'wvpc'
 +};
 +
 +struct WebViewGeometryHaiku {

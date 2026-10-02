@@ -44,6 +44,25 @@ Summit where Firefox had 160-200 ms on 1 October:
   headers curl gets the page in 110 ms.
 - The page-load script now records the navigation's phases (DNS, connect,
   TLS, request, response) and takes `SUMMIT_BENCH_EXTRA_ENV` for traces.
+- *The Guardian* varies its pages on the User-Agent (`Vary:
+  Accept-Encoding,User-Agent`, `max-age=60`) and renders each one for
+  0.7-1.3 s (`x-timer`): a request with a User-Agent nobody sent in the
+  last minute waits for that, the next one gets the page in 70 ms. A
+  mainstream Safari or Firefox User-Agent was no faster from here. Since
+  the same holds for GitHub, the comparison now alternates which browser
+  loads a page first, round by round, and records the four resources that
+  finished last and the element of the largest paint.
+
+**Saving the profile on its own thread.** `SharedProfile::Save` wrote the
+whole profile (up to 2,000 history entries, bookmarks, every window's
+tabs) as JSON and waited for the disk (`fsync`) on the thread that asked:
+a window thread every five seconds after any visit, on closing or moving
+a tab, and once in every window's constructor, before the first window
+was shown; the application thread (which runs WebKit's main loop) when a
+window closed. One such save in the owner's log took 97 ms. Saves now go
+to a thread of the profile's own, which waits 250 ms to take whatever
+else changes with them; quitting writes what is left before the process
+exits. Clearing history still writes at once.
 
 ## 1 October 2026: page loads against Firefox (issue #2)
 

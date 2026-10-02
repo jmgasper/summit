@@ -6,6 +6,7 @@
 #include <set>
 #include <Message.h>
 #include <algorithm>
+#include <cstdio>
 
 namespace summit {
 static bool SameSession(const WindowSession& a, const WindowSession& b)
@@ -24,6 +25,49 @@ SharedProfile::SharedProfile(std::filesystem::path path) : fPath(std::move(path)
     fWritable = fLoadError.empty();
     fSavedWindows = std::move(fProfile.windows);
     fProfile.windows.clear();
+}
+
+SharedProfile::~SharedProfile()
+{
+    {
+        std::lock_guard lock(fMutex);
+        fStopping = true;
+    }
+    fSaveWanted.notify_all();
+    if (fSaver.joinable()) fSaver.join();
+    std::string error;
+    if (!Save(error)) std::fprintf(stderr, "Summit: could not save the profile: %s\n", error.c_str());
+}
+
+void SharedProfile::SaveSoon()
+{
+    {
+        std::lock_guard lock(fMutex);
+        if (fStopping || !fWritable || fRevision == fSavedRevision) return;
+        fSaveRequested = true;
+        if (!fSaver.joinable()) fSaver = std::thread([this] { SaveLoop(); });
+    }
+    fSaveWanted.notify_all();
+}
+
+void SharedProfile::SaveLoop()
+{
+    rename_thread(find_thread(nullptr), "profile saver");
+    std::unique_lock lock(fMutex);
+    while (true) {
+        fSaveWanted.wait(lock, [this] { return fSaveRequested || fStopping; });
+        if (fStopping) return;
+        // A page load changes history twice or more within a moment, and a
+        // window's session with it: one write takes them all.
+        fSaveWanted.wait_for(lock, std::chrono::milliseconds(250), [this] { return fStopping; });
+        if (fStopping) return;
+        fSaveRequested = false;
+        lock.unlock();
+        std::string error;
+        Save(error);
+        lock.lock();
+        fSaveError = error;
+    }
 }
 
 std::vector<WindowSession> SharedProfile::SavedWindows() const
@@ -53,8 +97,7 @@ void SharedProfile::Change(const std::function<uint32(Profile&)>& function, cons
         if (changes) ++fRevision;
     }
     if (!changes) return;
-    std::string error;
-    if (saveNow) Save(error);
+    if (saveNow) SaveSoon();
     Announce(changes, sender);
 }
 

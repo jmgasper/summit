@@ -39,7 +39,8 @@ DEFAULT_URLS = [
 ]
 MESA = os.environ.get('SUMMIT_BENCH_MESA', '/boot/home/summit-mesa/prefix-20261002')
 SETUP = ('(window.__pageload = {lcp: null}, (() => { try { new PerformanceObserver(list => { const e = list.getEntries(); '
-         'if (e.length) window.__pageload.lcp = e[e.length - 1].startTime; })'
+         'if (e.length) { const last = e[e.length - 1]; window.__pageload.lcp = last.startTime; '
+         'window.__pageload.lcpWhat = (last.element ? last.element.tagName : "") + " " + (last.url || "").slice(0, 80); } })'
          '.observe({type: "largest-contentful-paint", buffered: true}); } catch (error) '
          '{ window.__pageload.lcpError = String(error); } })(), true)')
 COLLECT = ('(() => { const n = performance.getEntriesByType("navigation")[0]; const paint = {}; '
@@ -50,8 +51,11 @@ COLLECT = ('(() => { const n = performance.getEntriesByType("navigation")[0]; co
            'phases: n ? {fetch: n.fetchStart, redirectEnd: n.redirectEnd, dns: n.domainLookupStart, dnsEnd: n.domainLookupEnd, '
            'connect: n.connectStart, tls: n.secureConnectionStart, connectEnd: n.connectEnd, request: n.requestStart, '
            'response: n.responseStart, responseEnd: n.responseEnd} : null, '
-           'lcp: window.__pageload ? window.__pageload.lcp : null, resources: r.length, '
-           'transfer: r.reduce((a, x) => a + (x.transferSize || 0), 0), elements: document.getElementsByTagName("*").length}; })()')
+           'lcp: window.__pageload ? window.__pageload.lcp : null, lcpWhat: window.__pageload ? window.__pageload.lcpWhat : null, '
+           'resources: r.length, '
+           'transfer: r.reduce((a, x) => a + (x.transferSize || 0), 0), elements: document.getElementsByTagName("*").length, '
+           'last: [...r].sort((a, b) => b.responseEnd - a.responseEnd).slice(0, 4).map(x => '
+           '[x.initiatorType, Math.round(x.startTime), Math.round(x.responseEnd), x.name.slice(0, 90)])}; })()')
 METRICS = ('ttfb', 'fcp', 'lcp', 'dcl', 'load')
 
 
@@ -195,21 +199,35 @@ def main():
     results = []
     facts = {'bundle': args.bundle, 'rounds': args.rounds, 'settle': args.settle, 'urls': urls,
              'load': guest.load_report(ctl, (), 3000)}
+    def load_summit(round_index, url):
+        log(f'round {round_index + 1}: Summit {url}')
+        entry = summit_load(ctl, args.bundle, f'{guest_dir}/summit-profile', url, args.settle, window,
+                            f'{guest_dir}/summit-{round_index}.log')
+        entry.update(browser='summit', round=round_index)
+        results.append(entry)
+        log('  ' + json.dumps(entry.get('metrics') or entry.get('error')))
+
+    def load_firefox(round_index, url):
+        log(f'round {round_index + 1}: Firefox {url}')
+        for entry in firefox_loads([url], f'{guest_dir}/firefox-profile', args.settle, window, directory):
+            entry.update(browser='firefox', round=round_index)
+            results.append(entry)
+            log('  ' + json.dumps(entry.get('metrics') or entry.get('error')))
+
     for round_index in range(args.rounds):
         for url in urls:
+            # Who goes first alternates: some sites' servers (GitHub, The
+            # Guardian) answer a page they rendered moments ago in a tenth of
+            # the time, so the second browser's first byte comes sooner.
+            loaders = []
             if args.browser in ('both', 'summit'):
-                log(f'round {round_index + 1}: Summit {url}')
-                entry = summit_load(ctl, args.bundle, f'{guest_dir}/summit-profile', url, args.settle, window,
-                                    f'{guest_dir}/summit-{round_index}.log')
-                entry.update(browser='summit', round=round_index)
-                results.append(entry)
-                log('  ' + json.dumps(entry.get('metrics') or entry.get('error')))
+                loaders.append(load_summit)
             if args.browser in ('both', 'firefox'):
-                log(f'round {round_index + 1}: Firefox {url}')
-                for entry in firefox_loads([url], f'{guest_dir}/firefox-profile', args.settle, window, directory):
-                    entry.update(browser='firefox', round=round_index)
-                    results.append(entry)
-                    log('  ' + json.dumps(entry.get('metrics') or entry.get('error')))
+                loaders.append(load_firefox)
+            if round_index % 2:
+                loaders.reverse()
+            for loader in loaders:
+                loader(round_index, url)
             (directory / 'results.json').write_text(json.dumps({'facts': facts, 'results': results}, indent=1))
             guest.wake_display()
     summary = summarize(results)

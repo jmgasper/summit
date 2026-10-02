@@ -288,6 +288,9 @@ private:
     bool AddressKey(char key);
     void ShowSuggestions(const std::string& typed);
     void HideSuggestions();
+    // Has the network connect to the server of an address the user is likely
+    // to go to next (DNS, TCP, TLS), so its first request leaves at once.
+    void PreconnectTo(const std::string& url);
     // Where Enter in the field goes: the selected suggestion, the completed
     // site, or the text as typed.
     std::string AddressTarget() const;
@@ -296,6 +299,8 @@ private:
     // typed text and its completion).
     std::string fAddressTyped, fAddressShown;
     Autofill fAutofill;
+    // Servers connected to ahead of time, by origin, and when.
+    std::map<std::string, bigtime_t> fPreconnected;
     void RefreshChrome();
     void AnnouncePointer();
 #if SUMMIT_MODERN_WEBKIT
