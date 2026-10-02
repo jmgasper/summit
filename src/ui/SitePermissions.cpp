@@ -13,6 +13,7 @@
 #include <Roster.h>
 #include <Window.h>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace summit {
@@ -23,6 +24,16 @@ constexpr uint32 kLocationRefresh = 'splr';
 // How long a position is reused, and how often watching pages get a new one.
 constexpr bigtime_t kPositionLifetime = 60 * 1000000LL;
 constexpr bigtime_t kRefreshInterval = 5 * 60 * 1000000LL;
+
+// SUMMIT_PERMISSION_TRACE=1: requests, answers, notifications and clicks on stderr.
+bool Tracing()
+{
+    static const bool enabled = [] {
+        const char* value = std::getenv("SUMMIT_PERMISSION_TRACE");
+        return value && !std::strcmp(value, "1");
+    }();
+    return enabled;
+}
 
 std::string HostOf(const std::string& origin)
 {
@@ -85,6 +96,9 @@ void SitePermissionService::Ask(const BMessage& request)
         context->RespondToPermissionRequest(identifier, false);
         return;
     }
+    if (Tracing())
+        std::fprintf(stderr, "Summit permissions: %s asks for %s (request %llu)\n", origin.c_str(), permission.c_str(),
+            static_cast<unsigned long long>(identifier));
     auto& waiting = fPrompts[{permission, origin}];
     waiting.push_back(identifier);
     if (waiting.size() > 1) return;
@@ -124,6 +138,9 @@ void SitePermissionService::Answered(const BMessage& message)
     const auto identifiers = std::move(found->second);
     fPrompts.erase(found);
     const bool allowed = which == 2;
+    if (Tracing())
+        std::fprintf(stderr, "Summit permissions: %s %s for %s\n", which == 2 ? "allowed" : which == 0 ? "blocked" : "not now",
+            permission.c_str(), origin.c_str());
     // "Not Now" answers this request only; Block and Allow are remembered.
     if (which != 1) fSave(permission, origin, allowed);
     if (auto context = fContext.lock()) {
@@ -161,6 +178,9 @@ void SitePermissionService::ShowNotification(const BMessage& message)
     BMessenger view;
     message.FindMessenger("view", &view);
     fNotifications[identifier] = {view};
+    if (Tracing())
+        std::fprintf(stderr, "Summit permissions: notification %llu shown for %s (%s)\n",
+            static_cast<unsigned long long>(identifier), origin.c_str(), fPrivate ? "private" : "normal");
     if (fNotifications.size() > 200) fNotifications.erase(fNotifications.begin());
     notification.Send();
 }
@@ -168,6 +188,9 @@ void SitePermissionService::ShowNotification(const BMessage& message)
 void SitePermissionService::NotificationClicked(uint64 identifier)
 {
     auto found = fNotifications.find(identifier);
+    if (Tracing())
+        std::fprintf(stderr, "Summit permissions: notification %llu clicked (%s)\n",
+            static_cast<unsigned long long>(identifier), found == fNotifications.end() ? "unknown" : "known");
     if (found == fNotifications.end()) return;
     // The page's tab comes forward, then the page hears the click (its
     // handler usually focuses itself or navigates).

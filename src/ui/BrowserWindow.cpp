@@ -1415,10 +1415,11 @@ void BrowserWindow::AddressModified()
     if (const int32 selected = fSuggestions->Selected(); selected >= 0 && text == fSuggestions->Rows()[selected].fill) return;
     int32 start = 0, end = 0;
     textView->GetSelection(&start, &end);
-    // Only typing forward at the end completes; deleting the completion
-    // (Backspace) leaves what was typed, as in Firefox.
-    const bool forward = start == end && end == static_cast<int32>(text.size()) && text.size() > fAddressTyped.size()
-        && text.compare(0, fAddressTyped.size(), fAddressTyped) == 0;
+    // Only typing forward at the end completes; deleting (Backspace, which
+    // leaves a prefix of what was there) keeps what was typed, as in Firefox.
+    // Typing over a selected address is typing forward too.
+    const bool deleted = text.size() <= fAddressTyped.size() && fAddressTyped.compare(0, text.size(), text) == 0;
+    const bool forward = start == end && end == static_cast<int32>(text.size()) && !deleted;
     fAddressTyped = text;
     fAddressShown = text;
     fAutofill = { };

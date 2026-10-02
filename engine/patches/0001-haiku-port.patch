@@ -22249,7 +22249,7 @@ index 74df231207380fa09298f846f66adefed719fd2a..0c3952170a61f5bca868a1eb3e54b051
      float m_scale { 1. };
      FloatRect m_rect;
 diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedPlatformLayer.cpp b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedPlatformLayer.cpp
-index 7ef5b491fd88e52bb59639bd5851a4cb6e56d0ab..1f16b9654452e3acfaf9e69e005695d3457c2f29 100644
+index 7ef5b491fd88e52bb59639bd5851a4cb6e56d0ab..9a65e7f821143e4b84674c47e8cf7e0e0a4ac195 100644
 --- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedPlatformLayer.cpp
 +++ b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedPlatformLayer.cpp
 @@ -906,6 +906,22 @@ void CoordinatedPlatformLayer::updateBackingStore()
@@ -22275,7 +22275,37 @@ index 7ef5b491fd88e52bb59639bd5851a4cb6e56d0ab..1f16b9654452e3acfaf9e69e005695d3
      Damage damage(size, Damage::Mode::Rectangles);
      auto updateResult = backingStoreProxy->updateIfNeeded(m_transformedVisibleRect, size, m_visibleRect, contentsScale, contentsOpaque, m_pendingTilesCreation || m_needsTilesUpdate, m_dirtyRegion, damage, *this);
      m_dirtyRegion.clear();
-@@ -1286,6 +1302,14 @@ void CoordinatedPlatformLayer::flushCompositingStateOnTarget(const OptionSet<Com
+@@ -1149,7 +1165,18 @@ void CoordinatedPlatformLayer::flushCompositingStateOnTarget(const OptionSet<Com
+         }
+ 
+         if (m_pendingChanges.contains(Change::BackgroundColor)) {
++#if PLATFORM(HAIKU)
++            // TextureMapperLayer draws a layer with a background color as that
++            // color alone. Attaching tiles clears it (below), but a later change
++            // of the color used to set it again, and the layer's painted contents
++            // disappeared behind it: the main frame's layer takes the document's
++            // background color, so pages that set theirs after the first paint
++            // (topcoder.com, a UniFi router's dashboard) showed only that color
++            // and their composited layers (GitHub issue #13).
++            layer.setBackgroundColor(m_backingStore ? Color() : m_backgroundColor);
++#else
+             layer.setBackgroundColor(m_backgroundColor);
++#endif
+             m_pendingChanges.remove(Change::BackgroundColor);
+         }
+ 
+@@ -1171,6 +1198,10 @@ void CoordinatedPlatformLayer::flushCompositingStateOnTarget(const OptionSet<Com
+                 layer.setBackingStore(nullptr);
+                 layer.setAnimatedBackingStoreClient(nullptr);
+                 m_backingStore = nullptr;
++#if PLATFORM(HAIKU)
++                // Without tiles, the background color is what the layer shows.
++                layer.setBackgroundColor(m_backgroundColor);
++#endif
+             }
+             m_pendingChanges.remove(Change::BackingStore);
+         }
+@@ -1286,6 +1317,14 @@ void CoordinatedPlatformLayer::flushCompositingStateOnTarget(const OptionSet<Com
              m_contentsBuffer.committed = WTF::move(m_contentsBuffer.pending);
              m_contentsBuffer.hasCommitted = !!m_contentsBuffer.committed;
              m_pendingChanges.remove(Change::ContentsBuffer);

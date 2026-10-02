@@ -56,6 +56,11 @@ public:
     {
 #if SUMMIT_MODERN_WEBKIT
         // A click on one of Summit's notifications (SitePermissionService).
+        if (argc >= 2 && !std::strcmp(argv[1], summit::kNotificationClickArgument)) {
+            if (const char* trace = std::getenv("SUMMIT_PERMISSION_TRACE"); trace && !std::strcmp(trace, "1"))
+                std::fprintf(stderr, "Summit permissions: click arguments argc=%d %s %s\n", static_cast<int>(argc),
+                    argc > 2 ? argv[2] : "", argc > 3 ? argv[3] : "");
+        }
         if (argc == 4 && !std::strcmp(argv[1], summit::kNotificationClickArgument)) {
             const bool privateContext = !std::strcmp(argv[2], "private");
             auto& service = privateContext ? fPrivateSitePermissions : fSitePermissions;
