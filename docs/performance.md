@@ -29,6 +29,23 @@ launch to the first composited frame (three runs each):
   only. 100 ms off the browser's own start and 230 ms off the first frame,
   and every web process for a new tab starts that much sooner. Only a
   relink: no object changes.
+- **Functions bound inside their library** (`-Wl,-Bsymbolic-functions`
+  for the engine's shared libraries, `OptionsHaiku.cmake`). A library's
+  calls to its own exported functions went through the global symbol
+  lookup at every load; bound at link time, libWebKit's symbol
+  relocations fall from 355,762 to 111,373 and libJavaScriptCore's from
+  52,362 to 8,541. A web process loads its libraries in 162 ms instead of
+  263 (`WebProcess` run without arguments), and the browser, its network
+  process and its web process all load libWebKit: the first frame after
+  launch came at 0.65-0.69 s instead of 0.88-0.92. Again only a relink
+  (12 s for libWebKit). Data symbols are still looked up, and nothing
+  outside the libraries replaces their functions; a browsing session,
+  uBlock Origin and the page-load run behaved as before.
+
+| | first frame after launch |
+| --- | --- |
+| GNU hash tables (3 October, morning) | 0.84-0.92 s |
+| ... and functions bound inside their library | 0.65-0.69 s |
 
 **First bytes are the network's.** Time to first byte was 400-700 ms in
 Summit where Firefox had 160-200 ms on 1 October:
