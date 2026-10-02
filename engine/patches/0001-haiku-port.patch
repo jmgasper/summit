@@ -71062,7 +71062,7 @@ index 0000000000000000000000000000000000000000..75b860c792f1ea4ae0756a0eb424fec3
 +
 +#endif // ENABLE(WEB_AUTHN) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/WebPageProxy.cpp b/Source/WebKit/UIProcess/WebPageProxy.cpp
-index dcb789361fd321de76e3f647c18328ad2f4af9fc..3f26d9cc149cde35f7f475e0308a7430a7b9a777 100644
+index dcb789361fd321de76e3f647c18328ad2f4af9fc..da3588b161b8627efaff74324744f17daada48eb 100644
 --- a/Source/WebKit/UIProcess/WebPageProxy.cpp
 +++ b/Source/WebKit/UIProcess/WebPageProxy.cpp
 @@ -65,7 +65,9 @@
@@ -71217,7 +71217,32 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..3f26d9cc149cde35f7f475e0308a7430
  }
  
  static std::optional<URL> storageClassBaseURL(const URL& url)
-@@ -5236,9 +5287,42 @@ bool WebPageProxy::handleKeyboardEvent(Ref<NativeWebKeyboardEvent>&& event)
+@@ -4443,6 +4494,24 @@ void WebPageProxy::performDragOperation(DragData& dragData, const String& dragSt
+     if (!m_mainFrame)
+         return;
+ 
++#if PLATFORM(HAIKU)
++    // A file dropped where the page takes nothing opens in the tab. The web
++    // process may only navigate to a file it was given read access to, as GTK
++    // grants here; wait for the grant so the navigation does not race it.
++    URL url { dragData.asURL() };
++    if (url.protocolIsFile()) {
++        protect(legacyMainFrameProcess())->assumeReadAccessToBaseURL(*this, url.string(), [weakThis = WeakPtr { *this }, dragData = WTF::move(dragData), sandboxExtensionHandle = WTF::move(sandboxExtensionHandle), sandboxExtensionsForUpload = WTF::move(sandboxExtensionsForUpload)] () mutable {
++            RefPtr protectedThis = weakThis.get();
++            if (!protectedThis || !protectedThis->m_mainFrame)
++                return;
++            protectedThis->sendWithAsyncReplyToProcessContainingFrame(protectedThis->m_mainFrame->frameID(), Messages::WebPage::PerformDragOperation(protectedThis->m_mainFrame->frameID(), WTF::move(dragData), WTF::move(sandboxExtensionHandle), WTF::move(sandboxExtensionsForUpload)), [protectedThis] (DragOperationResult dragOperationResult) mutable {
++                protect(protectedThis->pageClient())->didPerformDragOperation(std::holds_alternative<bool>(dragOperationResult) ? std::get<bool>(dragOperationResult) : false);
++            });
++        });
++        return;
++    }
++#endif
++
+     sendWithAsyncReplyToProcessContainingFrame(m_mainFrame->frameID(), Messages::WebPage::PerformDragOperation(m_mainFrame->frameID(), WTF::move(dragData), WTF::move(sandboxExtensionHandle), WTF::move(sandboxExtensionsForUpload)), [protectedThis = Ref { *this }, frameID = m_mainFrame->frameID()] (DragOperationResult dragOperationResult) mutable {
+         protect(protectedThis->pageClient())->didPerformDragOperation(std::holds_alternative<bool>(dragOperationResult) ? std::get<bool>(dragOperationResult) : false);
+     });
+@@ -5236,9 +5305,42 @@ bool WebPageProxy::handleKeyboardEvent(Ref<NativeWebKeyboardEvent>&& event)
  
  const WebPreferencesStore& WebPageProxy::preferencesStore() const
  {
@@ -71260,7 +71285,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..3f26d9cc149cde35f7f475e0308a7430
  #if ENABLE(TOUCH_EVENTS)
  
  static TrackingType mergeTrackingTypes(TrackingType a, TrackingType b)
-@@ -7963,6 +8047,13 @@ void WebPageProxy::updateRenderingWithForcedRepaint(CompletionHandler<void()>&&
+@@ -7963,6 +8065,13 @@ void WebPageProxy::updateRenderingWithForcedRepaint(CompletionHandler<void()>&&
  
  void WebPageProxy::preferencesDidChange()
  {
@@ -71274,7 +71299,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..3f26d9cc149cde35f7f475e0308a7430
      if (!hasRunningProcess())
          return;
  
-@@ -8002,7 +8093,7 @@ void WebPageProxy::didCreateSubframe(FrameIdentifier parentID, FrameIdentifier n
+@@ -8002,7 +8111,7 @@ void WebPageProxy::didCreateSubframe(FrameIdentifier parentID, FrameIdentifier n
  
  void WebPageProxy::didDestroyFrame(IPC::Connection& connection, FrameIdentifier frameID)
  {
@@ -71283,7 +71308,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..3f26d9cc149cde35f7f475e0308a7430
      protect(protect(websiteDataStore())->authenticatorManager())->cancelRequest(webPageIDInMainFrameProcess(), frameID);
  #endif
      if (RefPtr automationSession = m_configuration->processPool().automationSession())
-@@ -8454,7 +8545,7 @@ void WebPageProxy::didStartProvisionalLoadForFrameShared(Ref<WebProcessProxy>&&
+@@ -8454,7 +8563,7 @@ void WebPageProxy::didStartProvisionalLoadForFrameShared(Ref<WebProcessProxy>&&
          m_navigationClient->didStartProvisionalLoadForFrame(*this, WTF::move(request), WTF::move(frameInfo));
      }
  
@@ -71292,7 +71317,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..3f26d9cc149cde35f7f475e0308a7430
      protect(protect(websiteDataStore())->authenticatorManager())->cancelRequest(m_webPageID, frameID);
  #endif
  }
-@@ -8485,6 +8576,10 @@ void WebPageProxy::didExplicitOpenForFrame(IPC::Connection& connection, FrameIde
+@@ -8485,6 +8594,10 @@ void WebPageProxy::didExplicitOpenForFrame(IPC::Connection& connection, FrameIde
          process->didCommitMeaningfulProvisionalLoad();
  
      pageLoadState->commitChanges();
@@ -71303,7 +71328,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..3f26d9cc149cde35f7f475e0308a7430
  }
  
  void WebPageProxy::didReceiveServerRedirectForProvisionalLoadForFrame(IPC::Connection& connection, FrameIdentifier frameID, std::optional<WebCore::NavigationIdentifier> navigationID, ResourceRequest&& request, const UserData& userData)
-@@ -10872,7 +10967,7 @@ void WebPageProxy::contentRuleListMatchedRule(WebCore::ContentRuleListMatchedRul
+@@ -10872,7 +10985,7 @@ void WebPageProxy::contentRuleListMatchedRule(WebCore::ContentRuleListMatchedRul
  #if ENABLE(WK_WEB_EXTENSIONS) && ENABLE(CONTENT_EXTENSIONS)
  void WebPageProxy::contentRuleListDidBlockLoad(WebExtensionContentRuleListBlockedLoadInfo&& info)
  {
@@ -71312,7 +71337,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..3f26d9cc149cde35f7f475e0308a7430
      if (RefPtr webExtensionController = this->webExtensionController())
          webExtensionController->resourceLoadWasBlockedByContentRuleList(identifier(), WTF::move(info));
  #endif
-@@ -11314,8 +11409,12 @@ void WebPageProxy::closePage()
+@@ -11314,8 +11427,12 @@ void WebPageProxy::closePage()
          return;
  
      WEBPAGEPROXY_RELEASE_LOG(Process, "closePage:");
@@ -71325,7 +71350,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..3f26d9cc149cde35f7f475e0308a7430
      m_uiClient->close(this);
  }
  
-@@ -12303,6 +12402,9 @@ void WebPageProxy::didChangeIntrinsicContentSize(const IntSize& intrinsicContent
+@@ -12303,6 +12420,9 @@ void WebPageProxy::didChangeIntrinsicContentSize(const IntSize& intrinsicContent
  #if USE(APPKIT)
      if (RefPtr pageClient = this->pageClient())
          pageClient->intrinsicContentSizeDidChange(intrinsicContentSize);
@@ -71335,7 +71360,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..3f26d9cc149cde35f7f475e0308a7430
  #endif
  }
  
-@@ -12500,7 +12602,7 @@ WebInspectorUIProxy* WebPageProxy::inspector() const
+@@ -12500,7 +12620,7 @@ WebInspectorUIProxy* WebPageProxy::inspector() const
  
  void WebPageProxy::resourceLoadDidSendRequest(ResourceLoadInfo&& loadInfo, WebCore::ResourceRequest&& request)
  {
@@ -71344,7 +71369,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..3f26d9cc149cde35f7f475e0308a7430
      if (RefPtr webExtensionController = this->webExtensionController())
          webExtensionController->resourceLoadDidSendRequest(identifier(), loadInfo, request);
  #endif
-@@ -12511,7 +12613,7 @@ void WebPageProxy::resourceLoadDidSendRequest(ResourceLoadInfo&& loadInfo, WebCo
+@@ -12511,7 +12631,7 @@ void WebPageProxy::resourceLoadDidSendRequest(ResourceLoadInfo&& loadInfo, WebCo
  
  void WebPageProxy::resourceLoadDidPerformHTTPRedirection(ResourceLoadInfo&& loadInfo, WebCore::ResourceResponse&& response, WebCore::ResourceRequest&& request)
  {
@@ -71353,7 +71378,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..3f26d9cc149cde35f7f475e0308a7430
      if (RefPtr webExtensionController = this->webExtensionController())
          webExtensionController->resourceLoadDidPerformHTTPRedirection(identifier(), loadInfo, response, request);
  #endif
-@@ -12522,7 +12624,7 @@ void WebPageProxy::resourceLoadDidPerformHTTPRedirection(ResourceLoadInfo&& load
+@@ -12522,7 +12642,7 @@ void WebPageProxy::resourceLoadDidPerformHTTPRedirection(ResourceLoadInfo&& load
  
  void WebPageProxy::resourceLoadDidReceiveChallenge(ResourceLoadInfo&& loadInfo, WebCore::AuthenticationChallenge&& challenge)
  {
@@ -71362,7 +71387,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..3f26d9cc149cde35f7f475e0308a7430
      if (RefPtr webExtensionController = this->webExtensionController())
          webExtensionController->resourceLoadDidReceiveChallenge(identifier(), loadInfo, challenge);
  #endif
-@@ -12533,7 +12635,7 @@ void WebPageProxy::resourceLoadDidReceiveChallenge(ResourceLoadInfo&& loadInfo,
+@@ -12533,7 +12653,7 @@ void WebPageProxy::resourceLoadDidReceiveChallenge(ResourceLoadInfo&& loadInfo,
  
  void WebPageProxy::resourceLoadDidReceiveResponse(ResourceLoadInfo&& loadInfo, WebCore::ResourceResponse&& response)
  {
@@ -71371,7 +71396,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..3f26d9cc149cde35f7f475e0308a7430
      if (RefPtr webExtensionController = this->webExtensionController())
          webExtensionController->resourceLoadDidReceiveResponse(identifier(), loadInfo, response);
  #endif
-@@ -12544,7 +12646,7 @@ void WebPageProxy::resourceLoadDidReceiveResponse(ResourceLoadInfo&& loadInfo, W
+@@ -12544,7 +12664,7 @@ void WebPageProxy::resourceLoadDidReceiveResponse(ResourceLoadInfo&& loadInfo, W
  
  void WebPageProxy::resourceLoadDidCompleteWithError(ResourceLoadInfo&& loadInfo, WebCore::ResourceResponse&& response, WebCore::ResourceError&& error)
  {
@@ -71380,7 +71405,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..3f26d9cc149cde35f7f475e0308a7430
      if (RefPtr webExtensionController = this->webExtensionController())
          webExtensionController->resourceLoadDidCompleteWithError(identifier(), loadInfo, response, error);
  #endif
-@@ -14367,7 +14469,7 @@ void WebPageProxy::resetState(ResetStateReason resetStateReason)
+@@ -14367,7 +14487,7 @@ void WebPageProxy::resetState(ResetStateReason resetStateReason)
      resetSpeechSynthesizer();
  #endif
  
@@ -71389,7 +71414,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..3f26d9cc149cde35f7f475e0308a7430
      protect(protect(websiteDataStore())->authenticatorManager())->cancelRequest(m_webPageID, std::nullopt);
  #endif
  
-@@ -14815,7 +14917,7 @@ WebPageCreationParameters WebPageProxy::creationParameters(WebProcessProxy& proc
+@@ -14815,7 +14935,7 @@ WebPageCreationParameters WebPageProxy::creationParameters(WebProcessProxy& proc
      parameters.hasResourceLoadClient = !!m_resourceLoadClient;
      parameters.portsForUpgradingInsecureSchemeForTesting = m_configuration->portsForUpgradingInsecureSchemeForTesting();
  
@@ -71398,7 +71423,7 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..3f26d9cc149cde35f7f475e0308a7430
      if (RefPtr webExtensionController = m_webExtensionController)
          parameters.webExtensionControllerParameters = webExtensionController->parameters(m_configuration, process);
  
-@@ -18574,7 +18676,13 @@ void WebPageProxy::decidePolicyForSOAuthorizationLoad(const String& extension, C
+@@ -18574,7 +18694,13 @@ void WebPageProxy::decidePolicyForSOAuthorizationLoad(const String& extension, C
  #if ENABLE(WEB_AUTHN)
  void WebPageProxy::setMockWebAuthenticationConfiguration(MockWebAuthenticationConfiguration&& configuration)
  {

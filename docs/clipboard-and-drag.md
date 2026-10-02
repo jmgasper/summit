@@ -53,7 +53,12 @@ All in the engine; the browser needed nothing.
   answers from them, and a drag-and-drop `Pasteboard` holds the drag's files
   instead of reading the clipboard (before, a drop read the clipboard and a
   drag that started in a page wrote it). WebKit's generic path already grants
-  the network process access to dropped files, which uploads need.
+  the network process access to dropped files, which uploads need. For a
+  drop the page does not take, WebCore loads the first file in the tab; the
+  UI process only lets a web process navigate to a file it was given read
+  access to, so `WebPageProxy::performDragOperation` now grants it (as GTK
+  does) and sends the drop once the grant is in place. Before, the
+  navigation was refused ("outside the sandbox") and nothing happened.
 
 ## Not done
 
@@ -68,6 +73,26 @@ All in the engine; the browser needed nothing.
 `tools/bench/pages/clipboard-drop.html` reports every paste and drop: the
 types, items and files the page received, image sizes, and previews.
 `summitctl paste` performs Edit › Paste on the current page (no keyboard
-needed on the shared desktop), and `screenshot -c` puts a test image on the
-clipboard. (Results on the X399 are recorded below once the build is
-installed.)
+needed on the shared desktop). `tools/bench/clipimage.cpp` puts an image file
+on the clipboard as a BBitmap, as Screenshot does (`screenshot -c` works too),
+and `tools/bench/dragsource.cpp` opens a small window that, when pressed,
+drags the given files as Tracker does; `vnc-input.py drag` from it to the page
+performs a drop with pointer events only.
+
+Checked on the X399 on 2 October 2026 with a 320×200 PNG:
+
+- Paste into the text area: `types` `["Files"]`, `items`
+  `["file:image/png"]`, one file `image.png`, `image/png`, which decodes to
+  320×200 (what GitHub's editor uploads).
+- Paste into editable content: the same event, and the image is inserted as an
+  `<img>` with a blob URL.
+- Drop of a PNG and a text file from another application onto the drop zone:
+  `items` `["file:image/png", "file:text/plain"]`, both files with their names,
+  types and sizes, the image decodes and the text reads back.
+- The same drop on the page's heading (no drop handler) opens the PNG in the
+  tab, and Back returns to the page.
+
+`DataTransfer.items` was missing (undefined) until the engine turned on
+`DataTransferItemsEnabled`, which defaults to on only for the Cocoa, GTK, WPE
+and Windows ports; scripts that look at `items` before `files` (GitHub's
+among them) threw.
