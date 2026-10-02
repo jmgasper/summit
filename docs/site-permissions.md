@@ -72,8 +72,10 @@ Browser:
   receives them in `ArgvReceived`) and looks positions up.
 - `src/ui/Location.{h,cpp}`: the Wi-Fi scan (`BNetworkDevice::GetNetworks`,
   networks named `*_nomap` and locally administered addresses left out) and an
-  HTTPS POST to `api.beacondb.net/v1/geolocate` over `BSecureSocket`, which
-  checks the certificate.
+  HTTPS POST to `api.beacondb.net/v1/geolocate` through libcurl, which checks
+  the certificate against the system's authorities. (`BSecureSocket` would have
+  been the native choice, but on Haiku builds whose network kit lacks OpenSSL
+  it is a stub that fails every connection with "Operation not supported".)
 - `Profile::sitePermissions` (`profile.json`: permission → origin → allowed),
   `Profile::SetSitePermission()` (host-tested).
 
@@ -89,4 +91,25 @@ application share one position, one permission setting and better sources
 
 ## Checking it
 
-(Verification on the X399 is recorded below once the build is installed.)
+`tools/bench/pages/permissions.html` (serve it from `localhost`: notifications
+and location need a secure context) has buttons to ask for each permission,
+show and replace a notification, ask for the position once or watch it, and
+read the permission states; every event is logged in the page.
+`SUMMIT_PERMISSION_TRACE=1` logs requests, answers, notifications and clicks on
+stderr.
+
+Checked on the X399 on 2 October 2026:
+
+- Before asking, `Notification.permission` is `default` and
+  `navigator.permissions.query()` answers `prompt` for both permissions.
+- *Ask to notify* brings up the question over the page's window; *Allow* is
+  remembered (a reload, and a restart of Summit, show `granted` without
+  asking) and listed in Preferences › Site Permissions. *Block* there turns
+  the page's state to `denied` at once.
+- A notification appears in Haiku's notification area with the site's icon;
+  clicking it brings Summit's window and the page's tab forward and the page's
+  `onclick` runs (`notification N clicked (known)` in the trace).
+- *Where am I?* after *Allow* returned a position within about 8 seconds.
+  Summit sent the 18 Wi-Fi networks in the X399's scan list; BeaconDB did not
+  know them and answered from the network address (`fallback: ipf`, accuracy
+  25 km).
