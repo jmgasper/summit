@@ -30554,10 +30554,10 @@ index 0000000000000000000000000000000000000000..da71c185bfa5f93bf68ba7a513f48393
 +
 +#endif
 diff --git a/Source/WebCore/platform/network/curl/CurlRequest.cpp b/Source/WebCore/platform/network/curl/CurlRequest.cpp
-index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..b1f55b5b0fb5c69ce6c9a1ace4a378fc75b294f9 100644
+index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..0e868fa146addf3eb4c0960d7ca11c0299ed553a 100644
 --- a/Source/WebCore/platform/network/curl/CurlRequest.cpp
 +++ b/Source/WebCore/platform/network/curl/CurlRequest.cpp
-@@ -36,19 +36,108 @@
+@@ -36,19 +36,377 @@
  #include "NetworkLoadMetrics.h"
  #include "ResourceError.h"
  #include "SharedBuffer.h"
@@ -30571,7 +30571,9 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..b1f55b5b0fb5c69ce6c9a1ace4a378fc
  
 +#if PLATFORM(HAIKU)
 +#include <cstdio>
++#include <dlfcn.h>
 +#include <openssl/ssl.h>
++#include <zlib.h>
 +#include <wtf/HashSet.h>
 +#include <wtf/text/CString.h>
 +#endif
@@ -30636,6 +30638,271 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..b1f55b5b0fb5c69ce6c9a1ace4a378fc
 +    return !http1ServersHaiku().contains(url.protocolHostAndPort());
 +}
 +
++// Content-Encoding. libcurl would decode gzip and deflate itself, but the
++// system's libcurl is built without brotli and zstd, which the large sites
++// serve to every other browser: YouTube's front page is 98 KB as brotli and
++// 255 KB as gzip. Their decoders are system libraries, loaded when first
++// needed; without them only gzip and deflate are asked for, as before.
++struct BrotliDecoderApiHaiku {
++    void* (*create)(void*, void*, void*) { nullptr };
++    int (*decompressStream)(void*, size_t*, const uint8_t**, size_t*, uint8_t**, size_t*) { nullptr };
++    void (*destroy)(void*) { nullptr };
++};
++
++struct ZstdInBufferHaiku {
++    const void* src;
++    size_t size;
++    size_t pos;
++};
++
++struct ZstdOutBufferHaiku {
++    void* dst;
++    size_t size;
++    size_t pos;
++};
++
++struct ZstdApiHaiku {
++    void* (*create)() { nullptr };
++    size_t (*free)(void*) { nullptr };
++    size_t (*decompressStream)(void*, ZstdOutBufferHaiku*, ZstdInBufferHaiku*) { nullptr };
++    unsigned (*isError)(size_t) { nullptr };
++};
++
++static const BrotliDecoderApiHaiku* brotliApiHaiku()
++{
++    static const BrotliDecoderApiHaiku* api = [] () -> BrotliDecoderApiHaiku* {
++        void* library = dlopen("libbrotlidec.so.1", RTLD_NOW | RTLD_LOCAL);
++        if (!library)
++            return nullptr;
++        auto* api = new BrotliDecoderApiHaiku;
++        api->create = reinterpret_cast<decltype(api->create)>(dlsym(library, "BrotliDecoderCreateInstance"));
++        api->decompressStream = reinterpret_cast<decltype(api->decompressStream)>(dlsym(library, "BrotliDecoderDecompressStream"));
++        api->destroy = reinterpret_cast<decltype(api->destroy)>(dlsym(library, "BrotliDecoderDestroyInstance"));
++        if (api->create && api->decompressStream && api->destroy)
++            return api;
++        delete api;
++        return nullptr;
++    }();
++    return api;
++}
++
++static const ZstdApiHaiku* zstdApiHaiku()
++{
++    static const ZstdApiHaiku* api = [] () -> ZstdApiHaiku* {
++        void* library = dlopen("libzstd.so.1", RTLD_NOW | RTLD_LOCAL);
++        if (!library)
++            return nullptr;
++        auto* api = new ZstdApiHaiku;
++        api->create = reinterpret_cast<decltype(api->create)>(dlsym(library, "ZSTD_createDStream"));
++        api->free = reinterpret_cast<decltype(api->free)>(dlsym(library, "ZSTD_freeDStream"));
++        api->decompressStream = reinterpret_cast<decltype(api->decompressStream)>(dlsym(library, "ZSTD_decompressStream"));
++        api->isError = reinterpret_cast<decltype(api->isError)>(dlsym(library, "ZSTD_isError"));
++        if (api->create && api->free && api->decompressStream && api->isError)
++            return api;
++        delete api;
++        return nullptr;
++    }();
++    return api;
++}
++
++// SUMMIT_CONTENT_ENCODINGS=curl leaves decoding to libcurl (gzip, deflate).
++static bool decodesContentHaiku()
++{
++    static const bool decodes = [] {
++        const char* value = getenv("SUMMIT_CONTENT_ENCODINGS");
++        return !(value && !strcmp(value, "curl"));
++    }();
++    return decodes;
++}
++
++static const String& acceptedEncodingsHaiku()
++{
++    static NeverDestroyed<String> encodings = [] {
++        StringBuilder builder;
++        builder.append("gzip, deflate"_s);
++        if (brotliApiHaiku())
++            builder.append(", br"_s);
++        if (zstdApiHaiku())
++            builder.append(", zstd"_s);
++        return builder.toString();
++    }();
++    return encodings;
++}
++
++class ContentDecoderHaiku {
++public:
++    enum class Kind : uint8_t { Deflate, Gzip, Brotli, Zstd };
++
++    // One decoder per coding, in the order they are undone (the header lists
++    // them in the order they were applied). Null for identity, or a coding
++    // that cannot be undone here, which leaves the body as it came, as libcurl
++    // would have failed it.
++    static std::unique_ptr<ContentDecoderHaiku> create(const String& header)
++    {
++        Vector<Kind> kinds;
++        for (auto token : StringView(header).split(',')) {
++            auto coding = token.trim(isASCIIWhitespace<char16_t>);
++            if (coding.isEmpty() || equalLettersIgnoringASCIICase(coding, "identity"_s))
++                continue;
++            if (equalLettersIgnoringASCIICase(coding, "gzip"_s) || equalLettersIgnoringASCIICase(coding, "x-gzip"_s))
++                kinds.insert(0, Kind::Gzip);
++            else if (equalLettersIgnoringASCIICase(coding, "deflate"_s))
++                kinds.insert(0, Kind::Deflate);
++            else if (equalLettersIgnoringASCIICase(coding, "br"_s) && brotliApiHaiku())
++                kinds.insert(0, Kind::Brotli);
++            else if (equalLettersIgnoringASCIICase(coding, "zstd"_s) && zstdApiHaiku())
++                kinds.insert(0, Kind::Zstd);
++            else
++                return nullptr;
++        }
++        if (kinds.isEmpty())
++            return nullptr;
++        return std::unique_ptr<ContentDecoderHaiku>(new ContentDecoderHaiku(WTF::move(kinds)));
++    }
++
++    ~ContentDecoderHaiku()
++    {
++        for (auto& stage : m_stages)
++            stage.close();
++    }
++
++    // Appends what the input decodes to; false when it is not valid.
++    bool decode(std::span<const uint8_t> input, Vector<uint8_t>& output)
++    {
++        Vector<uint8_t> current;
++        current.append(input);
++        for (auto& stage : m_stages) {
++            Vector<uint8_t> next;
++            if (!stage.decode(current.span(), next))
++                return false;
++            current = WTF::move(next);
++        }
++        output.appendVector(current);
++        return true;
++    }
++
++private:
++    struct Stage {
++        Kind kind;
++        bool started { false };
++        bool finished { false };
++        z_stream zlib { };
++        void* state { nullptr };
++
++        void close()
++        {
++            if ((kind == Kind::Gzip || kind == Kind::Deflate) && started)
++                inflateEnd(&zlib);
++            else if (kind == Kind::Brotli && state)
++                brotliApiHaiku()->destroy(state);
++            else if (kind == Kind::Zstd && state)
++                zstdApiHaiku()->free(state);
++        }
++
++        bool decode(std::span<const uint8_t> input, Vector<uint8_t>& output)
++        {
++            uint8_t buffer[64 * 1024];
++            switch (kind) {
++            case Kind::Gzip:
++            case Kind::Deflate: {
++                if (!started) {
++                    if (input.empty())
++                        return true;
++                    // Some servers send "deflate" without the zlib header
++                    // (raw deflate); libcurl takes both, and so does this.
++                    int bits = 15 + 32;
++                    if (kind == Kind::Deflate && ((input[0] & 0x0f) != 8 || (input.size() > 1 && ((input[0] << 8) | input[1]) % 31)))
++                        bits = -15;
++                    if (inflateInit2(&zlib, bits) != Z_OK)
++                        return false;
++                    started = true;
++                }
++                if (finished)
++                    return true;
++                zlib.next_in = const_cast<Bytef*>(input.data());
++                zlib.avail_in = input.size();
++                // Until the input is used up and the output no longer fills
++                // the buffer (zlib may hold more than one buffer's worth).
++                do {
++                    zlib.next_out = buffer;
++                    zlib.avail_out = sizeof(buffer);
++                    int result = inflate(&zlib, Z_NO_FLUSH);
++                    output.append(std::span<const uint8_t> { buffer, sizeof(buffer) - zlib.avail_out });
++                    if (result == Z_STREAM_END) {
++                        // Another gzip member may follow; anything else is ignored.
++                        if (kind == Kind::Gzip && zlib.avail_in && inflateReset(&zlib) == Z_OK)
++                            continue;
++                        finished = true;
++                    } else if (result == Z_BUF_ERROR)
++                        break;
++                    else if (result != Z_OK)
++                        return false;
++                } while (!finished && (zlib.avail_in || !zlib.avail_out));
++                return true;
++            }
++            case Kind::Brotli: {
++                if (!state && !(state = brotliApiHaiku()->create(nullptr, nullptr, nullptr)))
++                    return false;
++                size_t availableIn = input.size();
++                const uint8_t* nextIn = input.data();
++                while (!finished) {
++                    size_t availableOut = sizeof(buffer);
++                    uint8_t* nextOut = buffer;
++                    int result = brotliApiHaiku()->decompressStream(state, &availableIn, &nextIn, &availableOut, &nextOut, nullptr);
++                    output.append(std::span<const uint8_t> { buffer, sizeof(buffer) - availableOut });
++                    if (result == 1) // BROTLI_DECODER_RESULT_SUCCESS
++                        finished = true;
++                    else if (result == 2) // NEEDS_MORE_INPUT
++                        break;
++                    else if (result != 3) // NEEDS_MORE_OUTPUT continues; ERROR fails
++                        return false;
++                }
++                return true;
++            }
++            case Kind::Zstd: {
++                if (!state && !(state = zstdApiHaiku()->create()))
++                    return false;
++                ZstdInBufferHaiku in { input.data(), input.size(), 0 };
++                while (in.pos < in.size) {
++                    ZstdOutBufferHaiku out { buffer, sizeof(buffer), 0 };
++                    size_t before = in.pos;
++                    size_t result = zstdApiHaiku()->decompressStream(state, &out, &in);
++                    if (zstdApiHaiku()->isError(result))
++                        return false;
++                    output.append(std::span<const uint8_t> { buffer, out.pos });
++                    if (!out.pos && in.pos == before)
++                        break;
++                }
++                // Flush what the decoder still holds for this input.
++                for (;;) {
++                    ZstdOutBufferHaiku out { buffer, sizeof(buffer), 0 };
++                    ZstdInBufferHaiku empty { nullptr, 0, 0 };
++                    size_t result = zstdApiHaiku()->decompressStream(state, &out, &empty);
++                    if (zstdApiHaiku()->isError(result))
++                        return false;
++                    output.append(std::span<const uint8_t> { buffer, out.pos });
++                    if (out.pos < out.size)
++                        break;
++                }
++                return true;
++            }
++            }
++            return false;
++        }
++    };
++
++    explicit ContentDecoderHaiku(Vector<Kind>&& kinds)
++    {
++        for (auto kind : kinds)
++            m_stages.append(Stage { kind });
++    }
++
++    Vector<Stage> m_stages;
++};
++
++#endif
++
++#if PLATFORM(HAIKU)
 +// libcurl calls this once the connection is up (resolved, connected, TLS
 +// and ALPN done) or found in its pool, just before sending the request.
 +int CurlRequest::willSendRequestCallbackHaiku(void* userData, char*, char*, int, int)
@@ -30659,6 +30926,8 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..b1f55b5b0fb5c69ce6c9a1ace4a378fc
 +
  WTF_MAKE_TZONE_ALLOCATED_IMPL(CurlRequest);
  
++CurlRequest::~CurlRequest() = default;
++
  CurlRequest::CurlRequest(const ResourceRequest&request, CurlRequestClient* client, CaptureNetworkLoadMetrics captureExtraMetrics)
      : m_client(client)
      , m_request(request.isolatedCopy())
@@ -30666,7 +30935,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..b1f55b5b0fb5c69ce6c9a1ace4a378fc
      , m_formDataStream(m_request.httpBody())
      , m_captureExtraMetrics(captureExtraMetrics == CaptureNetworkLoadMetrics::Extended)
  {
-@@ -95,7 +184,7 @@ void CurlRequest::setUserPass(const String& user, const String& password)
+@@ -95,7 +453,7 @@ void CurlRequest::setUserPass(const String& user, const String& password)
      m_password = password.isolatedCopy();
  }
  
@@ -30675,7 +30944,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..b1f55b5b0fb5c69ce6c9a1ace4a378fc
  {
      // The pausing of transfer does not work with protocols, like file://.
      // Therefore, PAUSE can not be done in didReceiveData().
-@@ -108,10 +197,16 @@ void CurlRequest::resume()
+@@ -108,10 +466,16 @@ void CurlRequest::resume()
  
      ASSERT(isMainThread());
  
@@ -30695,7 +30964,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..b1f55b5b0fb5c69ce6c9a1ace4a378fc
  
      if (m_request.url().protocolIsFile())
          invokeDidReceiveResponseForFile(m_request.url());
-@@ -122,8 +217,14 @@ void CurlRequest::resume()
+@@ -122,8 +486,14 @@ void CurlRequest::resume()
  void CurlRequest::startWithJobManager()
  {
      ASSERT(isMainThread());
@@ -30711,7 +30980,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..b1f55b5b0fb5c69ce6c9a1ace4a378fc
  }
  
  void CurlRequest::cancel()
-@@ -137,6 +238,10 @@ void CurlRequest::cancel()
+@@ -137,6 +507,10 @@ void CurlRequest::cancel()
  
          m_cancelled = true;
      }
@@ -30722,7 +30991,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..b1f55b5b0fb5c69ce6c9a1ace4a378fc
  
      auto& scheduler = CurlContext::singleton().scheduler();
  
-@@ -144,7 +249,7 @@ void CurlRequest::cancel()
+@@ -144,7 +518,7 @@ void CurlRequest::cancel()
          runOnWorkerThreadIfRequired([this, protectedThis = Ref { *this }]() {
              didCancelTransfer();
          });
@@ -30731,7 +31000,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..b1f55b5b0fb5c69ce6c9a1ace4a378fc
          scheduler.cancel(this);
  
      invalidateClient();
-@@ -162,6 +267,41 @@ bool CurlRequest::isCompletedOrCancelled()
+@@ -162,6 +536,41 @@ bool CurlRequest::isCompletedOrCancelled()
      return m_completed || m_cancelled;
  }
  
@@ -30773,7 +31042,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..b1f55b5b0fb5c69ce6c9a1ace4a378fc
  /* `this` is protected inside this method. */
  void CurlRequest::callClient(Function<void(CurlRequest&, CurlRequestClient&)>&& task)
  {
-@@ -173,13 +313,13 @@ void CurlRequest::callClient(Function<void(CurlRequest&, CurlRequestClient&)>&&
+@@ -173,13 +582,13 @@ void CurlRequest::callClient(Function<void(CurlRequest&, CurlRequestClient&)>&&
  
  void CurlRequest::runOnMainThread(Function<void()>&& task)
  {
@@ -30789,7 +31058,25 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..b1f55b5b0fb5c69ce6c9a1ace4a378fc
      else
          task();
  }
-@@ -209,8 +349,9 @@ CURL* CurlRequest::setupTransfer()
+@@ -190,6 +599,17 @@ CURL* CurlRequest::setupTransfer()
+     appendAcceptLanguageHeaderIfNeeded(httpHeaderFields);
+ 
+     m_curlHandle = makeUnique<CurlHandle>();
++#if PLATFORM(HAIKU)
++    m_decodesContentHaiku = decodesContentHaiku() && m_request.url().protocolIsInHTTPFamily();
++    if (m_decodesContentHaiku) {
++        curl_easy_setopt(m_curlHandle->handle(), CURLOPT_ACCEPT_ENCODING, static_cast<const char*>(nullptr));
++        curl_easy_setopt(m_curlHandle->handle(), CURLOPT_HTTP_CONTENT_DECODING, 0L);
++        // A part of a resource is asked for as it is stored: a coding
++        // applies to the whole, and a part of it could not be decoded.
++        if (!httpHeaderFields.contains(HTTPHeaderName::AcceptEncoding))
++            httpHeaderFields.set(HTTPHeaderName::AcceptEncoding, httpHeaderFields.contains(HTTPHeaderName::Range) ? "identity"_s : acceptedEncodingsHaiku());
++    }
++#endif
+ 
+     m_curlHandle->setURL(m_request.url(), m_localhostAlias);
+ 
+@@ -209,8 +629,9 @@ CURL* CurlRequest::setupTransfer()
          setupPUT();
      }
  
@@ -30800,7 +31087,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..b1f55b5b0fb5c69ce6c9a1ace4a378fc
  
      if (m_shouldDisableServerTrustEvaluation)
          m_curlHandle->disableServerTrustEvaluation();
-@@ -218,6 +359,12 @@ CURL* CurlRequest::setupTransfer()
+@@ -218,6 +639,12 @@ CURL* CurlRequest::setupTransfer()
      m_curlHandle->setHeaderCallbackFunction(didReceiveHeaderCallback, this);
      m_curlHandle->setWriteCallbackFunction(didReceiveDataCallback, this);
      m_curlHandle->setDebugCallbackFunction(didReceiveDebugInfoCallback, this);
@@ -30813,7 +31100,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..b1f55b5b0fb5c69ce6c9a1ace4a378fc
  
      m_curlHandle->setTimeout(timeoutInterval());
  
-@@ -270,6 +417,27 @@ size_t CurlRequest::willSendData(char* buffer, size_t blockSize, size_t numberOf
+@@ -270,6 +697,27 @@ size_t CurlRequest::willSendData(char* buffer, size_t blockSize, size_t numberOf
      return *sendBytes;
  }
  
@@ -30841,18 +31128,55 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..b1f55b5b0fb5c69ce6c9a1ace4a378fc
  // This is being called for each HTTP header in the response. This includes '\r\n'
  // for the last line of the header.
  
-@@ -343,6 +511,9 @@ size_t CurlRequest::didReceiveHeader(String&& header)
+@@ -294,6 +742,9 @@ size_t CurlRequest::didReceiveHeader(String&& header)
+         m_didReceiveResponse = false;
+         m_response = CurlResponse { };
+         m_multipartHandle = nullptr;
++#if PLATFORM(HAIKU)
++        m_contentDecoderHaiku = nullptr;
++#endif
+     }
+ 
+     auto receiveBytes = static_cast<size_t>(header.length());
+@@ -343,6 +794,20 @@ size_t CurlRequest::didReceiveHeader(String&& header)
  
      m_multipartHandle = CurlMultipartHandle::createIfNeeded(*this, m_response);
  
++#if PLATFORM(HAIKU)
++    if (m_decodesContentHaiku) {
++        for (auto& line : m_response.headers) {
++            auto colon = line.find(':');
++            if (colon == notFound || !equalLettersIgnoringASCIICase(StringView(line).left(colon).trim(isASCIIWhitespace<char16_t>), "content-encoding"_s))
++                continue;
++            m_contentDecoderHaiku = ContentDecoderHaiku::create(StringView(line).substring(colon + 1).trim(isASCIIWhitespace<char16_t>).toString());
++        }
++    }
++#endif
++
 +    if (isStreamingResponse(m_response))
 +        m_curlHandle->setTimeout(0_s);
 +
      // Response will send at didReceiveData() or didCompleteTransfer()
      // to receive continueDidRceiveResponse() for asynchronously.
  
-@@ -377,6 +548,8 @@ size_t CurlRequest::didReceiveData(std::span<const uint8_t> receivedData)
+@@ -375,8 +840,24 @@ size_t CurlRequest::didReceiveData(std::span<const uint8_t> receivedData)
+         return CURL_WRITEFUNC_PAUSE;
+     }
  
++    // What libcurl gave is taken whole, whatever it decodes to.
++    size_t consumed = receivedData.size();
++#if PLATFORM(HAIKU)
++    Vector<uint8_t> decoded;
++    if (m_contentDecoderHaiku) {
++        if (!m_contentDecoderHaiku->decode(receivedData, decoded)) {
++            if (netTraceHaiku())
++                fprintf(stderr, "Summit net: content decoding failed id=%p %s\n", this, netTraceURLHaiku(m_request.url()).data());
++            return CURL_WRITEFUNC_ERROR;
++        }
++        receivedData = decoded.span();
++    }
++#endif
++
      m_totalReceivedSize += receivedData.size();
  
 +    writeDataToDownloadFileIfEnabled(receivedData);
@@ -30860,7 +31184,16 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..b1f55b5b0fb5c69ce6c9a1ace4a378fc
      if (receivedData.size()) {
          if (m_multipartHandle) {
              m_multipartHandle->didReceiveMessage(receivedData);
-@@ -446,6 +619,29 @@ void CurlRequest::didCompleteTransfer(CURLcode result)
+@@ -393,7 +874,7 @@ size_t CurlRequest::didReceiveData(std::span<const uint8_t> receivedData)
+         }
+     }
+ 
+-    return receivedData.size();
++    return consumed;
+ }
+ 
+ void CurlRequest::didReceiveHeaderFromMultipart(Vector<String>&& headers)
+@@ -446,6 +927,29 @@ void CurlRequest::didCompleteTransfer(CURLcode result)
          return;
      }
  
@@ -30890,7 +31223,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..b1f55b5b0fb5c69ce6c9a1ace4a378fc
      // Newer versions of curl/OpenSSL report CURLE_RECV_ERROR or CURLE_PARTIAL_FILE
      // when a server closes the connection to signal end-of-body on responses with
      // no Content-Length and no chunked encoding. This is valid HTTP/1.1 behavior,
-@@ -475,6 +671,19 @@ void CurlRequest::didCompleteTransfer(CURLcode result)
+@@ -475,6 +979,19 @@ void CurlRequest::didCompleteTransfer(CURLcode result)
          }
  
          auto metrics = networkLoadMetrics();
@@ -30910,7 +31243,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..b1f55b5b0fb5c69ce6c9a1ace4a378fc
  
          finalizeTransfer();
          callClient([networkLoadMetrics = WTF::move(metrics)](CurlRequest& request, CurlRequestClient& client) mutable {
-@@ -486,6 +695,11 @@ void CurlRequest::didCompleteTransfer(CURLcode result)
+@@ -486,6 +1003,11 @@ void CurlRequest::didCompleteTransfer(CURLcode result)
      } else {
          auto type = (result == CURLE_OPERATION_TIMEDOUT && timeoutInterval()) ? ResourceError::Type::Timeout : ResourceError::Type::General;
          auto resourceError = ResourceError(result, m_request.url(), type);
@@ -30922,7 +31255,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..b1f55b5b0fb5c69ce6c9a1ace4a378fc
  
          CertificateInfo certificateInfo;
          if (auto info = m_curlHandle->certificateInfo())
-@@ -506,10 +720,12 @@ void CurlRequest::didCompleteTransfer(CURLcode result)
+@@ -506,10 +1028,12 @@ void CurlRequest::didCompleteTransfer(CURLcode result)
  void CurlRequest::didCancelTransfer()
  {
      finalizeTransfer();
@@ -30935,7 +31268,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..b1f55b5b0fb5c69ce6c9a1ace4a378fc
      m_formDataStream.clean();
      m_multipartHandle = nullptr;
      m_curlHandle = nullptr;
-@@ -632,6 +848,88 @@ void CurlRequest::completeDidReceiveResponse()
+@@ -632,6 +1156,88 @@ void CurlRequest::completeDidReceiveResponse()
          responseCompletionHandler();
  }
  
@@ -31024,7 +31357,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..b1f55b5b0fb5c69ce6c9a1ace4a378fc
  NetworkLoadMetrics CurlRequest::networkLoadMetrics()
  {
      ASSERT(m_curlHandle);
-@@ -653,6 +951,57 @@ NetworkLoadMetrics CurlRequest::networkLoadMetrics()
+@@ -653,6 +1259,57 @@ NetworkLoadMetrics CurlRequest::networkLoadMetrics()
      return WTF::move(*networkLoadMetrics);
  }
  
@@ -31083,10 +31416,10 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..b1f55b5b0fb5c69ce6c9a1ace4a378fc
  {
      for (const auto& header : m_response.headers) {
 diff --git a/Source/WebCore/platform/network/curl/CurlRequest.h b/Source/WebCore/platform/network/curl/CurlRequest.h
-index 3b060605bbff32f845804a848610eca23dea834c..d4bfdb9bc825626a84e2edfe68317b0683f53faa 100644
+index 3b060605bbff32f845804a848610eca23dea834c..e27c50cbf085c611238bd5686662ac6ce9692214 100644
 --- a/Source/WebCore/platform/network/curl/CurlRequest.h
 +++ b/Source/WebCore/platform/network/curl/CurlRequest.h
-@@ -32,6 +32,8 @@
+@@ -32,16 +32,21 @@
  #include "CurlResponse.h"
  #include "ProtectionSpace.h"
  #include "ResourceRequest.h"
@@ -31095,7 +31428,13 @@ index 3b060605bbff32f845804a848610eca23dea834c..d4bfdb9bc825626a84e2edfe68317b06
  #include <wtf/MonotonicTime.h>
  #include <wtf/Noncopyable.h>
  #include <wtf/TZoneMalloc.h>
-@@ -41,7 +43,6 @@ namespace WebCore {
+ 
+ namespace WebCore {
+ 
++#if PLATFORM(HAIKU)
++class ContentDecoderHaiku;
++#endif
++
  class CurlRequestClient;
  class NetworkLoadMetrics;
  class ResourceError;
@@ -31103,7 +31442,16 @@ index 3b060605bbff32f845804a848610eca23dea834c..d4bfdb9bc825626a84e2edfe68317b06
  
  class CurlRequest final : public ThreadSafeRefCounted<CurlRequest>, public CurlRequestSchedulerClient, public CurlMultipartHandleClient, public CanMakeThreadSafeCheckedPtr<CurlRequest> {
      WTF_MAKE_TZONE_ALLOCATED(CurlRequest);
-@@ -67,8 +68,10 @@ public:
+@@ -58,7 +63,7 @@ public:
+         return adoptRef(*new CurlRequest(request, &client, captureMetrics));
+     }
+ 
+-    ~CurlRequest() = default;
++    WEBCORE_EXPORT ~CurlRequest();
+ 
+     WEBCORE_EXPORT void invalidateClient();
+     WEBCORE_EXPORT void setAuthenticationScheme(ProtectionSpace::AuthenticationScheme);
+@@ -67,8 +72,10 @@ public:
      void disableServerTrustEvaluation() { m_shouldDisableServerTrustEvaluation = true; }
      void enableLocalhostAlias() { m_localhostAlias = CurlHandle::LocalhostAlias::Enable; }
  
@@ -31115,7 +31463,7 @@ index 3b060605bbff32f845804a848610eca23dea834c..d4bfdb9bc825626a84e2edfe68317b06
  
      const ResourceRequest& resourceRequest() const LIFETIME_BOUND { return m_request; }
      bool isCancelled();
-@@ -81,6 +84,23 @@ public:
+@@ -81,6 +88,23 @@ public:
      // Processing for DidReceiveResponse
      WEBCORE_EXPORT void completeDidReceiveResponse();
  
@@ -31139,7 +31487,7 @@ index 3b060605bbff32f845804a848610eca23dea834c..d4bfdb9bc825626a84e2edfe68317b06
  private:
      WEBCORE_EXPORT CurlRequest(const ResourceRequest&, CurlRequestClient*, CaptureNetworkLoadMetrics);
  
-@@ -113,6 +133,7 @@ private:
+@@ -113,6 +137,7 @@ private:
      void didCompleteTransfer(CURLcode) override;
      void didCancelTransfer() override;
      void finalizeTransfer();
@@ -31147,7 +31495,7 @@ index 3b060605bbff32f845804a848610eca23dea834c..d4bfdb9bc825626a84e2edfe68317b06
  
      int didReceiveDebugInfo(curl_infotype, std::span<const char>);
  
-@@ -126,15 +147,29 @@ private:
+@@ -126,15 +151,29 @@ private:
      bool needToInvokeDidCancelTransfer() const { return m_didNotifyResponse && !m_didReturnFromNotify && m_mustInvokeCancelTransfer; }
      void invokeDidReceiveResponseForFile(const URL&);
      void invokeDidReceiveResponse(const CurlResponse&, Function<void()>&& completionHandler = { });
@@ -31177,7 +31525,7 @@ index 3b060605bbff32f845804a848610eca23dea834c..d4bfdb9bc825626a84e2edfe68317b06
  
  
      CurlRequestClient* m_client { };
-@@ -149,23 +184,50 @@ private:
+@@ -149,23 +188,54 @@ private:
      bool m_shouldDisableServerTrustEvaluation { false };
      CurlHandle::LocalhostAlias m_localhostAlias { CurlHandle::LocalhostAlias::Disable };
  
@@ -31222,6 +31570,10 @@ index 3b060605bbff32f845804a848610eca23dea834c..d4bfdb9bc825626a84e2edfe68317b06
 +#if PLATFORM(HAIKU)
 +    MonotonicTime m_netTraceQueuedAtHaiku;
 +    bool m_preconnectOnlyHaiku { false };
++    // The response's Content-Encoding, undone here: libcurl decodes only
++    // gzip and deflate, and the system's libcurl has no brotli or zstd.
++    bool m_decodesContentHaiku { false };
++    std::unique_ptr<ContentDecoderHaiku> m_contentDecoderHaiku;
 +    // Set on the worker thread when the connection is up (preconnects).
 +    bool m_preconnectedHaiku { false };
 +    bool m_preconnectedMultiplexedHaiku { false };
