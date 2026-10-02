@@ -124,6 +124,46 @@ YouTube and Google pages would gain more from brotli (YouTube's front
 page is 98 KB as brotli against 255 KB as gzip, 25-60 ms to download
 here) and HTTP/3; the system libcurl has neither.
 
+### Largest contentful paint was reported late, not painted late
+
+With the order alternated, Summit's first byte, first paint and
+DOMContentLoaded were level with Firefox's or ahead on all six pages;
+the largest contentful paint (LCP) was not: 2036 ms against 1299 on The
+Guardian. The page's resource timings said its lead image (an 88 KB AVIF)
+had arrived after 243 ms, and a test page showed the decoders are quick
+(1240x992: AVIF 48 ms, JPEG 25, WebP 22).
+
+WebKit makes an LCP entry in the rendering update after the one that
+painted the element: painting (`LargestContentfulPaintData::didPaintImage`,
+`didPaintText`) asks for another update. Painting runs inside the update,
+and `FrameRenderer::scheduleRenderingUpdateRunLoopObserver()` dropped any
+request made while an update ran, so the entry waited for whatever updated
+the page next, or for ever on a page that went still. The request is now
+remembered and made again when the update ends (`LayerTreeHost`). A test
+page's image is reported 112-116 ms after the navigation began instead of
+232-236. The other ports built on `FrameRenderer` (GTK, WPE) drop it the
+same way.
+
+On The Guardian itself the fix moved little (LCP 2056 / 1468 ms cold /
+warm afterwards): there the candidates (headlines, then the image) are
+reported between 0.7 and 2.0 s for a reason not yet found. Part of it is
+the layer tree staying frozen until the first visually non-empty layout,
+which on a cold load waits for fonts the page's CSS asks for late (the
+Text Sans faces, about 1 s in), as in Safari; Firefox shows text in a
+fallback font meanwhile. The image decoder's queue runs at normal
+priority, so it is not starved by the page.
+
+**The first frame after a pause went through app_server.** Direct
+presentation still sends a changed page through app_server a few times a
+second, read back from the GPU, so that app_server's copy of the screen
+(screenshots, the VNC server, windows moved away) stays current. The rule
+picked the first changed frame after a quarter second of stillness, which
+is the frame a reader waits for (a page's first paint, the answer to a
+click): on The Guardian that frame took 134 ms to composite, 84 of them
+reading it back. Now a frame goes through app_server only once changes
+have waited 250 ms for it; a page that stops changing gets its last frame
+there 300 ms later as before. Screenshots of settled pages are unchanged.
+
 ## 1 October 2026: page loads against Firefox (issue #2)
 
 `tools/bench/run-pageload.py` loads complex sites in Summit and in Firefox

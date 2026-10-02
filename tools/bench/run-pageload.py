@@ -40,7 +40,8 @@ DEFAULT_URLS = [
 MESA = os.environ.get('SUMMIT_BENCH_MESA', '/boot/home/summit-mesa/prefix-20261002')
 SETUP = ('(window.__pageload = {lcp: null}, (() => { try { new PerformanceObserver(list => { const e = list.getEntries(); '
          'if (e.length) { const last = e[e.length - 1]; window.__pageload.lcp = last.startTime; '
-         'window.__pageload.lcpWhat = (last.element ? last.element.tagName : "") + " " + (last.url || "").slice(0, 80); } })'
+         'window.__pageload.lcpWhat = (last.element ? last.element.tagName : "") + " " + (last.url || "").slice(0, 80); '
+         'window.__pageload.lcpAll = e.map(x => [Math.round(x.startTime), x.size, x.element ? x.element.tagName : "", (x.url || "").slice(-30)]); } })'
          '.observe({type: "largest-contentful-paint", buffered: true}); } catch (error) '
          '{ window.__pageload.lcpError = String(error); } })(), true)')
 COLLECT = ('(() => { const n = performance.getEntriesByType("navigation")[0]; const paint = {}; '
@@ -52,11 +53,17 @@ COLLECT = ('(() => { const n = performance.getEntriesByType("navigation")[0]; co
            'connect: n.connectStart, tls: n.secureConnectionStart, connectEnd: n.connectEnd, request: n.requestStart, '
            'response: n.responseStart, responseEnd: n.responseEnd} : null, '
            'lcp: window.__pageload ? window.__pageload.lcp : null, lcpWhat: window.__pageload ? window.__pageload.lcpWhat : null, '
+           'lcpAll: window.__pageload ? window.__pageload.lcpAll : null, '
            'resources: r.length, '
            'transfer: r.reduce((a, x) => a + (x.transferSize || 0), 0), elements: document.getElementsByTagName("*").length, '
            'last: [...r].filter(x => !n || !n.loadEventStart || x.responseEnd <= n.loadEventStart)'
            '.sort((a, b) => b.responseEnd - a.responseEnd).slice(0, 4).map(x => '
            '[x.initiatorType, Math.round(x.startTime), Math.round(x.responseEnd), x.name.slice(0, 90)])}; })()')
+# SUMMIT_BENCH_RESOURCES=1 adds every resource's timing (the first 100 by start).
+if os.environ.get('SUMMIT_BENCH_RESOURCES') == '1':
+    COLLECT = COLLECT[:-len('}; })()')] + (', all: [...r].sort((a, b) => a.startTime - b.startTime).slice(0, 45).map(x => '
+                                         '[x.initiatorType, Math.round(x.startTime), Math.round(x.responseStart), '
+                                         'Math.round(x.responseEnd), x.transferSize || 0, x.name.slice(0, 64)])}; })()')
 METRICS = ('ttfb', 'fcp', 'lcp', 'dcl', 'load')
 
 

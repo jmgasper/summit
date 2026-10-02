@@ -98427,7 +98427,7 @@ index 0000000000000000000000000000000000000000..abc82f6d26d2b1374740dc304282ae75
 +
 +}
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
-index cf4d54b7869d7a7cded74482922d8fdda53af21d..6e26b595b21e022c65103327f7e7fb4c94a797c3 100644
+index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac807cc26c6c 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
 @@ -26,6 +26,23 @@
@@ -99455,7 +99455,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..6e26b595b21e022c65103327f7e7fb4c
      WebProcess::singleton().parentProcessConnection()->removeMessageReceiver(Messages::AcceleratedSurface::messageReceiverName(), m_id);
  #endif
  }
-@@ -1155,18 +1934,79 @@ void AcceleratedSurface::didRenderFrame(TargetContents targetContents)
+@@ -1155,18 +1934,84 @@ void AcceleratedSurface::didRenderFrame(TargetContents targetContents)
      if (!m_target)
          return;
  
@@ -99475,16 +99475,21 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..6e26b595b21e022c65103327f7e7fb4c
 +    // own copy of the screen (screenshots, the VNC server, windows moved away)
 +    // is not written that way, so a changed page still goes through app_server
 +    // a few times a second, the frame read back as before: the same pixels
-+    // the screen has, drawn once more.
++    // the screen has, drawn once more. Never the first frame that changes
++    // after a pause, though: that is the frame someone waits for (a page's
++    // first paint, the answer to a click), and reading it back (84 ms for a
++    // full 3824x2104 frame) delayed it. app_server's copy catches up within a
++    // quarter of a second.
 +    bool changed = !targetDamage || !targetDamage->isEmpty();
 +    auto now = MonotonicTime::now();
-+    bool throughAppServer = m_directPresenter && (m_directPagesPendingHaiku || changed)
-+        && now - m_lastFrameThroughAppServerHaiku >= 250_ms;
++    bool throughAppServer = m_directPresenter && m_directPagesPendingHaiku
++        && now - m_directPagesPendingSinceHaiku >= 250_ms && now - m_lastFrameThroughAppServerHaiku >= 250_ms;
 +    // Without a presenter the target notes that this frame is read back.
 +    bool presentedDirectly = m_target->presentDirectlyHaiku(throughAppServer ? nullptr : m_directPresenter.get(), targetDamage);
 +    if (presentedDirectly) {
 +        if (changed && !m_directPagesPendingHaiku) {
 +            m_directPagesPendingHaiku = true;
++            m_directPagesPendingSinceHaiku = now;
 +            // A page that stops changing still gets its last frame there.
 +            if (m_compositingRunLoop) {
 +                m_compositingRunLoop->dispatchAfter(300_ms, [weakThis = ThreadSafeWeakPtr { *this }] {
@@ -99535,7 +99540,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..6e26b595b21e022c65103327f7e7fb4c
      m_pendingFrameNotifyTargets.insert(0, { m_target, WTF::move(damageRects) });
      m_target = nullptr;
  }
-@@ -1188,13 +2028,17 @@ const std::optional<Damage>& AcceleratedSurface::renderTargetDamage()
+@@ -1188,13 +2033,17 @@ const std::optional<Damage>& AcceleratedSurface::renderTargetDamage()
  }
  #endif
  
@@ -99555,7 +99560,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..6e26b595b21e022c65103327f7e7fb4c
  #endif
  
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.h b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.h
-index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..80587fe5bc4175382f007ca428435f81bf413602 100644
+index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..329d6a930f5c4802e85982c3035e8b9f630f7a7e 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.h
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.h
 @@ -27,10 +27,15 @@
@@ -99759,7 +99764,7 @@ index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..80587fe5bc4175382f007ca428435f81
          mutable Lock m_bufferFormatLock;
          BufferFormat m_bufferFormat WTF_GUARDED_BY_LOCK(m_bufferFormatLock);
          bool m_bufferFormatChanged WTF_GUARDED_BY_LOCK(m_bufferFormatLock) { false };
-@@ -475,10 +531,19 @@ private:
+@@ -475,10 +531,21 @@ private:
  
      const WeakRef<WebPage> m_webPage;
      Function<void()> m_frameCompleteHandler;
@@ -99770,6 +99775,8 @@ index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..80587fe5bc4175382f007ca428435f81
 +    // Frames presented directly since one last went through app_server, and
 +    // when that was (didRenderFrame()).
 +    bool m_directPagesPendingHaiku { false };
++    // When the screen first got a frame app_server's copy does not have.
++    MonotonicTime m_directPagesPendingSinceHaiku;
 +    MonotonicTime m_lastFrameThroughAppServerHaiku;
 +#endif
      bool m_useSkia { false };
@@ -99879,7 +99886,7 @@ index d382293c217c69e8672fb8f587a78e03574df4ba..5192b4bf4f5b2b3b17854164f56c82d5
      void activityStateDidChange(OptionSet<WebCore::ActivityState>, ActivityStateChangeID, CompletionHandler<void()>&&) override;
      void attachViewOverlayGraphicsLayer(WebCore::FrameIdentifier, WebCore::GraphicsLayer*) override;
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/FrameRenderer.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/FrameRenderer.cpp
-index 5c5605478910c2717b1875a385d1c5611b25fb4c..e23ef66c9df66d6eeb565f85670cf799ea4191bd 100644
+index 5c5605478910c2717b1875a385d1c5611b25fb4c..451ab01b3067aa9cbe750aa74cd824719824320a 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/FrameRenderer.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/FrameRenderer.cpp
 @@ -30,6 +30,10 @@
@@ -99893,7 +99900,7 @@ index 5c5605478910c2717b1875a385d1c5611b25fb4c..e23ef66c9df66d6eeb565f85670cf799
  
  namespace WebKit {
  using namespace WebCore;
-@@ -51,13 +55,29 @@ FrameRenderer::~FrameRenderer()
+@@ -51,13 +55,40 @@ FrameRenderer::~FrameRenderer()
  
  void FrameRenderer::scheduleRenderingUpdateRunLoopObserver()
  {
@@ -99911,11 +99918,24 @@ index 5c5605478910c2717b1875a385d1c5611b25fb4c..e23ef66c9df66d6eeb565f85670cf799
 +        m_renderingUpdateRunLoopObserver->invalidate();
 +#else
          return;
+-
+-    if (m_isUpdatingRendering)
 +#endif
 +    }
- 
-     if (m_isUpdatingRendering)
++
++    if (m_isUpdatingRendering) {
++#if PLATFORM(HAIKU)
++        // Painting runs inside the update and may want another: the largest
++        // contentful paint is reported by the update after the one that
++        // painted it (LargestContentfulPaintData::didPaintImage). Dropped,
++        // the request waited for whatever updated the page next, or forever
++        // on a page that went still: The Guardian's lead image, painted
++        // 250 ms into the load, was reported at 1.4 s. LayerTreeHost asks
++        // again when the update is over.
++        m_renderingUpdateRequestedWhileUpdatingHaiku = true;
++#endif
          return;
++    }
  
      tracePoint(RenderingUpdateRunLoopObserverStart);
 +#if PLATFORM(HAIKU)
@@ -99925,7 +99945,7 @@ index 5c5605478910c2717b1875a385d1c5611b25fb4c..e23ef66c9df66d6eeb565f85670cf799
  }
  
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/FrameRenderer.h b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/FrameRenderer.h
-index 3138e165d48ea9e09a428f991118adc37efe87b2..ad1912e9f0018c4894fe609ea2a9bd536e0691a7 100644
+index 3138e165d48ea9e09a428f991118adc37efe87b2..4e1e09499376f4fdee951e6f03b3ee76c353ebb3 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/FrameRenderer.h
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/FrameRenderer.h
 @@ -27,6 +27,9 @@
@@ -99938,18 +99958,20 @@ index 3138e165d48ea9e09a428f991118adc37efe87b2..ad1912e9f0018c4894fe609ea2a9bd53
  
  namespace WebCore {
  class FloatPoint;
-@@ -97,6 +100,9 @@ protected:
+@@ -97,6 +100,11 @@ protected:
      bool m_layerTreeStateIsFrozen { false };
      bool m_isSuspended { false };
      bool m_isUpdatingRendering { false };
 +#if PLATFORM(HAIKU)
 +    MonotonicTime m_renderingUpdateScheduledAtHaiku;
++    // Asked for while an update ran (see scheduleRenderingUpdateRunLoopObserver).
++    bool m_renderingUpdateRequestedWhileUpdatingHaiku { false };
 +#endif
      CompletionHandler<void()> m_forcedRepaintAsyncCallback;
  };
  
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
-index a12c4f6edd9998271fda260c7193a3226bf1957a..988efa80982a21d7e7f935ba2bc40e922d6a6e8a 100644
+index a12c4f6edd9998271fda260c7193a3226bf1957a..d8e0dec1ea31ca3c61bd11b9c3cfd2572efd66ee 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
 @@ -28,6 +28,7 @@
@@ -99960,9 +99982,11 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..988efa80982a21d7e7f935ba2bc40e92
  
  #if USE(COORDINATED_GRAPHICS)
  #include "CoordinatedSceneState.h"
-@@ -54,10 +55,18 @@
+@@ -53,11 +54,20 @@
+ #include <WebCore/SkiaPaintingEngine.h>
  #include <WebCore/ThreadedScrollingTree.h>
  #include <WebCore/WindowEventLoop.h>
++#include <wtf/Scope.h>
  #include <wtf/SetForScope.h>
 +#include <wtf/MonotonicTime.h>
  #include <wtf/SystemTracing.h>
@@ -99979,7 +100003,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..988efa80982a21d7e7f935ba2bc40e92
  
  namespace WebKit {
  using namespace WebCore;
-@@ -91,7 +100,15 @@ std::unique_ptr<LayerTreeHost> LayerTreeHost::create(WebPage& webPage)
+@@ -91,7 +101,15 @@ std::unique_ptr<LayerTreeHost> LayerTreeHost::create(WebPage& webPage)
  LayerTreeHost::LayerTreeHost(WebPage& webPage)
      : m_webPage(webPage)
      , m_sceneState(CoordinatedSceneState::create())
@@ -99995,7 +100019,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..988efa80982a21d7e7f935ba2bc40e92
      {
          auto& rootLayer = m_sceneState->rootLayer();
  #if ENABLE(DAMAGE_TRACKING)
-@@ -148,16 +165,122 @@ void LayerTreeHost::scheduleRenderingUpdate()
+@@ -148,16 +166,122 @@ void LayerTreeHost::scheduleRenderingUpdate()
  {
      WTFEmitSignpost(this, LayerTreeHostScheduleRenderingUpdate, "isWaitingForRenderer %s", m_isWaitingForRenderer ? "yes" : "no");
  
@@ -100036,15 +100060,15 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..988efa80982a21d7e7f935ba2bc40e92
 +{
 +    if (!m_isWaitingForRenderer || m_isSuspended || m_layerTreeStateIsFrozen) {
 +        m_stallRecoveryStartedAtHaiku = std::nullopt;
-+        return;
-+    }
+         return;
+     }
 +    auto now = MonotonicTime::now();
 +    Seconds waited = now - m_waitingForRendererSinceHaiku;
 +    if (waited < 2_s) {
 +        if (!m_stallWatchdogHaiku.isActive())
 +            m_stallWatchdogHaiku.startOneShot(2_s - waited);
-         return;
-     }
++        return;
++    }
 +    if (!m_stallRecoveryStartedAtHaiku)
 +        m_stallRecoveryStartedAtHaiku = now;
 +    if (now - *m_stallRecoveryStartedAtHaiku < 2_s) {
@@ -100118,7 +100142,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..988efa80982a21d7e7f935ba2bc40e92
  
  void LayerTreeHost::scheduleRenderingUpdateRunLoopObserver()
  {
-@@ -174,20 +297,49 @@ bool LayerTreeHost::canUpdateRendering() const
+@@ -174,20 +298,63 @@ bool LayerTreeHost::canUpdateRendering() const
  
  void LayerTreeHost::updateRendering()
  {
@@ -100149,6 +100173,20 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..988efa80982a21d7e7f935ba2bc40e92
 +    m_reportedLivenessStallHaiku = false;
 +#endif
  
++#if PLATFORM(HAIKU)
++    // Runs after reentrancyProtector has been destroyed (declared before it).
++    auto scheduleRequestedWhileUpdating = makeScopeExit([this] {
++        if (!std::exchange(m_renderingUpdateRequestedWhileUpdatingHaiku, false))
++            return;
++        static bool traceLayerUpdates = [] {
++            const char* value = std::getenv("SUMMIT_LAYER_UPDATE_TRACE");
++            return value && value[0] == '1' && !value[1];
++        }();
++        if (traceLayerUpdates)
++            std::fprintf(stderr, "Summit layer update: requested while updating\n");
++        scheduleRenderingUpdate();
++    });
++#endif
      SetForScope<bool> reentrancyProtector(m_isUpdatingRendering, true);
  
 +
@@ -100168,7 +100206,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..988efa80982a21d7e7f935ba2bc40e92
  
      if (m_overlayCompositingLayer)
          m_overlayCompositingLayer->flushCompositingState(visibleContentsRect());
-@@ -200,6 +352,32 @@ void LayerTreeHost::updateRendering()
+@@ -200,6 +367,32 @@ void LayerTreeHost::updateRendering()
      flags.add(FinalizeRenderingUpdateFlags::ApplyScrollingTreeLayerPositions);
  #endif
      page->finalizeRenderingUpdate(flags);
@@ -100201,7 +100239,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..988efa80982a21d7e7f935ba2bc40e92
  
      if (m_pendingResize) {
          m_compositor->setSize(page->size(), page->deviceScaleFactor());
-@@ -219,6 +397,10 @@ void LayerTreeHost::updateRendering()
+@@ -219,6 +412,10 @@ void LayerTreeHost::updateRendering()
          drawingArea->dispatchPendingCallbacksAfterEnsuringDrawing();
  
      bool didChangeSceneState = m_sceneState->flush();
@@ -100212,7 +100250,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..988efa80982a21d7e7f935ba2bc40e92
      if (m_compositionRequired || m_pendingResize || m_forceFrameSync || didChangeSceneState)
          requestCompositionForRenderingUpdate();
  
-@@ -237,6 +419,17 @@ void LayerTreeHost::updateRendering()
+@@ -237,6 +434,17 @@ void LayerTreeHost::updateRendering()
          m_sceneState->waitUntilPaintingComplete();
          m_waitUntilPaintingComplete = false;
      }
@@ -100230,7 +100268,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..988efa80982a21d7e7f935ba2bc40e92
  }
  
  void LayerTreeHost::updateRootLayer()
-@@ -322,6 +515,12 @@ void LayerTreeHost::suspend()
+@@ -322,6 +530,12 @@ void LayerTreeHost::suspend()
  
  void LayerTreeHost::resume()
  {
@@ -100243,7 +100281,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..988efa80982a21d7e7f935ba2bc40e92
      m_compositor->resume();
      FrameRenderer::resume();
  }
-@@ -447,8 +646,24 @@ void LayerTreeHost::didRenderFrame()
+@@ -447,8 +661,24 @@ void LayerTreeHost::didRenderFrame()
  
  void LayerTreeHost::requestCompositionForRenderingUpdate()
  {
