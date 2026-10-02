@@ -1,5 +1,6 @@
 #pragma once
 #include "core/Profile.h"
+#include "core/Suggest.h"
 #if SUMMIT_MODERN_WEBKIT
 #include <WebKit/WebKitView.h>
 #include <Window.h>
@@ -36,6 +37,7 @@ class TabStrip;
 class ProgressLine;
 class ZoomButton;
 class BookmarksBar;
+class AddressSuggestions;
 class FaviconCache;
 class SharedProfile;
 // How a new window starts.
@@ -88,6 +90,8 @@ public:
     void MessageReceived(BMessage* message) override;
     bool QuitRequested() override;
     void MenusBeginning() override;
+    void FrameMoved(BPoint where) override;
+    void FrameResized(float width, float height) override;
 #if SUMMIT_MODERN_WEBKIT
     // index < 0 appends. A nonzero command is an extension's browser command
     // that is answered once this tab exists or could not be created.
@@ -271,6 +275,21 @@ private:
     void ReplaceTabView(const Tab& tab, const std::string& url);
 #endif
     void Navigate(const std::string& text);
+    // Address field type-ahead: the typed site is completed in the field and
+    // matching pages are listed under it (core/Suggest.h, AddressSuggestions.h).
+    void AddressModified();
+    // The arrow keys, Escape and Tab in the field; true when used.
+    bool AddressKey(char key);
+    void ShowSuggestions(const std::string& typed);
+    void HideSuggestions();
+    // Where Enter in the field goes: the selected suggestion, the completed
+    // site, or the text as typed.
+    std::string AddressTarget() const;
+    std::unique_ptr<AddressSuggestions> fSuggestions;
+    // What was typed in the field, and what the field shows for it (the
+    // typed text and its completion).
+    std::string fAddressTyped, fAddressShown;
+    Autofill fAutofill;
     void RefreshChrome();
     void AnnouncePointer();
 #if SUMMIT_MODERN_WEBKIT

@@ -10,6 +10,9 @@
 #include "ui/StallTrace.h"
 #include "ui/ExtensionInstaller.h"
 #include "ui/ExtensionManager.h"
+#if SUMMIT_MODERN_WEBKIT
+#include "ui/SitePermissions.h"
+#endif
 #include "core/Address.h"
 #include <Alert.h>
 #include <Application.h>
@@ -51,6 +54,15 @@ public:
     }
     void ArgvReceived(int32 argc, char** argv) override
     {
+#if SUMMIT_MODERN_WEBKIT
+        // A click on one of Summit's notifications (SitePermissionService).
+        if (argc == 4 && !std::strcmp(argv[1], summit::kNotificationClickArgument)) {
+            const bool privateContext = !std::strcmp(argv[2], "private");
+            auto& service = privateContext ? fPrivateSitePermissions : fSitePermissions;
+            if (service) service->NotificationClicked(std::strtoull(argv[3], nullptr, 10));
+            return;
+        }
+#endif
         for (int32 i = 1; i < argc; ++i) {
             std::string argument = argv[i];
             if (argument == "--profile" && i + 1 < argc) { fProfile = argv[++i]; continue; }
@@ -129,6 +141,12 @@ public:
             StartupError("Could not initialize downloads: " + std::string(std::strerror(initialization)));
             return;
         }
+        fSitePermissions = std::make_unique<summit::SitePermissionService>(fWebKitContext, false, fProfile / "Favicons",
+            [this](const std::string& permission, const std::string& origin, std::optional<bool> allowed) {
+                SaveSitePermission(permission, origin, allowed);
+            });
+        AddHandler(fSitePermissions.get());
+        fWebKitContext->SetPermissionListener(BMessenger(fSitePermissions.get()));
         fPermissionPrompts = std::make_unique<summit::ExtensionPermissionPrompt>(
             [context = std::weak_ptr<BWebKitContext>(fWebKitContext)](const std::string& identifier, bool allowed) {
                 if (auto liveContext = context.lock())
@@ -174,6 +192,7 @@ public:
         fShared->AddListener(BMessenger(this));
 #if SUMMIT_MODERN_WEBKIT
         TrustSavedCertificates(*fWebKitContext);
+        GiveSitePermissions(*fWebKitContext);
 #endif
         summit::SetSearchEngine(fShared->Read([](const summit::Profile& profile) { return profile.searchEngine; }));
         // Reopen every window of the last session, unless pages were named.
@@ -439,6 +458,16 @@ public:
             });
             return;
         }
+#if SUMMIT_MODERN_WEBKIT
+        if (message->what == summit::kSitePermissionChange) {
+            // From Preferences › Site Permissions: "state" 1 allows, 0 blocks, -1 forgets.
+            const std::string permission = message->GetString("permission", ""), origin = message->GetString("origin", "");
+            const int32 state = message->GetInt32("state", -1);
+            SaveSitePermission(permission, origin, state < 0 ? std::nullopt : std::optional<bool>(state > 0));
+            SendPreferencesState();
+            return;
+        }
+#endif
         if (message->what == summit::kClearHistoryRequest) {
             fShared->ClearHistory(BMessenger());
             BMessage cleared(summit::kDataCleared);
@@ -716,8 +745,39 @@ private:
         auto context = std::make_shared<BWebKitContext>(fWebKitContext);
         if (context->InitCheck() != B_OK || context->SetDownloadListener(BMessenger(this)) != B_OK) return nullptr;
         TrustSavedCertificates(*context);
+        // Saved site permissions apply in private windows too; what is
+        // answered there is forgotten with the session.
+        GiveSitePermissions(*context);
+        if (fPrivateSitePermissions) {
+            RemoveHandler(fPrivateSitePermissions.get());
+            fPrivateSitePermissions.reset();
+        }
+        fPrivateSitePermissions = std::make_unique<summit::SitePermissionService>(context, true, fProfile / "Favicons",
+            [](const std::string&, const std::string&, std::optional<bool>) { });
+        AddHandler(fPrivateSitePermissions.get());
+        context->SetPermissionListener(BMessenger(fPrivateSitePermissions.get()));
         fPrivateContext = std::move(context);
         return fPrivateContext;
+    }
+    void GiveSitePermissions(BWebKitContext& context)
+    {
+        if (!fShared) return;
+        fShared->Read([&](const summit::Profile& profile) {
+            for (const auto& [permission, origins] : profile.sitePermissions)
+                for (const auto& [origin, allowed] : origins)
+                    context.SetSitePermission(permission.c_str(), origin.c_str(), allowed ? 1 : 0);
+            return 0;
+        });
+    }
+    // A decision from a prompt or from Preferences: saved, and given to the
+    // normal and private contexts (a private window's own answers are not).
+    void SaveSitePermission(const std::string& permission, const std::string& origin, std::optional<bool> allowed)
+    {
+        fShared->Change([&](summit::Profile& profile) -> uint32 {
+            return profile.SetSitePermission(permission, origin, allowed) ? summit::SharedProfile::kSettingsChanged : 0;
+        });
+        for (const auto& context : {fWebKitContext, fPrivateContext})
+            if (context) context->SetSitePermission(permission.c_str(), origin.c_str(), allowed ? (*allowed ? 1 : 0) : -1);
     }
     // Certificates the user trusted despite failed verification (saved in
     // the profile) are given to each context when it is created.
@@ -831,6 +891,7 @@ private:
         window->Show();
         BMessage browser = DefaultBrowserState();
         fPreferences.SendMessage(&browser);
+        SendPreferencesState();
     }
     static BMessage DefaultBrowserState()
     {
@@ -839,6 +900,17 @@ private:
         state.AddBool("is_default", browser.isDefault);
         state.AddString("current", browser.current.c_str());
         return state;
+    }
+    // Repeated "site_permission", "site_origin" and "site_allowed" fields.
+    static void AddSitePermissions(BMessage& state, const summit::Profile& profile)
+    {
+        state.AddBool("has_site_permissions", true);
+        for (const auto& [permission, origins] : profile.sitePermissions)
+            for (const auto& [origin, allowed] : origins) {
+                state.AddString("site_permission", permission.c_str());
+                state.AddString("site_origin", origin.c_str());
+                state.AddBool("site_allowed", allowed);
+            }
     }
     void SendPreferencesState()
     {
@@ -851,6 +923,7 @@ private:
             state.AddString("search_engine", profile.searchEngine.c_str());
             state.AddInt32("history_count", static_cast<int32>(profile.history.size()));
             state.AddInt32("trusted_certificates", static_cast<int32>(profile.trustedCertificates.size()));
+            AddSitePermissions(state, profile);
             return 0;
         });
         fPreferences.SendMessage(&state);
@@ -952,6 +1025,8 @@ private:
     std::map<uint64, uint32> fDataRequests;
     uint64 fNextDataRequest = 0;
     std::unique_ptr<summit::ExtensionPermissionPrompt> fPermissionPrompts;
+    std::unique_ptr<summit::SitePermissionService> fSitePermissions;
+    std::unique_ptr<summit::SitePermissionService> fPrivateSitePermissions;
     std::unique_ptr<summit::ExtensionController> fExtensions;
     std::unique_ptr<summit::ExtensionInstaller> fInstaller;
     BMessenger fExtensionWindow;

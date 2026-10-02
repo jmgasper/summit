@@ -19,6 +19,7 @@ static json Encode(const std::vector<PageRecord>& pages)
     for (const auto& page : pages) {
         json item = {{"url", page.url}, {"title", page.title}};
         if (page.visited) item["visited"] = page.visited;
+        if (page.visits > 1) item["visits"] = page.visits;
         if (page.bar) item["bar"] = true;
         result.push_back(std::move(item));
     }
@@ -36,6 +37,7 @@ static std::vector<PageRecord> Decode(const json& value, size_t limit)
         PageRecord page{url, title};
         if (auto visited = item.find("visited"); visited != item.end()) page.visited = visited->get<int64_t>();
         if (auto bar = item.find("bar"); bar != item.end()) page.bar = bar->get<bool>();
+        if (auto visits = item.find("visits"); visits != item.end()) page.visits = std::clamp(visits->get<int>(), 0, 1000000);
         pages.push_back(std::move(page));
     }
     return pages;
@@ -103,6 +105,15 @@ Profile Profile::Load(const std::filesystem::path& path, std::string& error)
                 if (!text.empty() && text.size() <= 255) profile.unpinnedExtensions.insert(text);
             }
         }
+        if (auto permissions = j.find("sitePermissions"); permissions != j.end()) {
+            if (!permissions->is_object()) throw std::runtime_error("Invalid site permissions");
+            for (const auto& [permission, origins] : permissions->items()) {
+                if (!origins.is_object() || origins.size() > 10000) throw std::runtime_error("Invalid site permissions");
+                // Unusable entries are dropped rather than failing the profile.
+                for (const auto& [origin, allowed] : origins.items())
+                    if (allowed.is_boolean()) profile.SetSitePermission(permission, origin, allowed.get<bool>());
+            }
+        }
         if (auto trusted = j.find("trustedCertificates"); trusted != j.end()) {
             if (!trusted->is_array() || trusted->size() > 1000) throw std::runtime_error("Invalid trusted certificate list");
             for (const auto& item : *trusted) {
@@ -121,6 +132,33 @@ Profile Profile::Load(const std::filesystem::path& path, std::string& error)
         }
     } catch (const std::exception& e) { error = e.what(); return {}; }
     return profile;
+}
+
+const std::vector<std::string>& SitePermissionNames()
+{
+    static const std::vector<std::string> names = {"notifications", "geolocation"};
+    return names;
+}
+
+bool Profile::SetSitePermission(const std::string& permission, const std::string& origin, std::optional<bool> allowed)
+{
+    const auto& names = SitePermissionNames();
+    if (std::find(names.begin(), names.end(), permission) == names.end()) return false;
+    // Only web origins: scheme://host[:port], nothing after.
+    const bool web = origin.rfind("https://", 0) == 0 || origin.rfind("http://", 0) == 0;
+    const size_t host = origin.find("://") + 3;
+    if (!web || origin.size() <= host || origin.size() > 300 || origin.find_first_of(std::string_view("/?#\\ \0", 6), host) != std::string::npos)
+        return false;
+    auto& origins = sitePermissions[permission];
+    if (!allowed) {
+        const bool erased = origins.erase(origin) > 0;
+        if (origins.empty()) sitePermissions.erase(permission);
+        return erased;
+    }
+    auto [entry, inserted] = origins.try_emplace(origin, *allowed);
+    if (!inserted && entry->second == *allowed) return false;
+    entry->second = *allowed;
+    return true;
 }
 
 bool Profile::TrustCertificate(const TrustedCertificate& certificate)
@@ -161,7 +199,7 @@ bool Profile::Save(const std::filesystem::path& path, std::string& error) const
             {"homeURL", homeURL}, {"showBookmarksBar", showBookmarksBar},
             {"interfaceStyle", interfaceStyle}, {"searchEngine", searchEngine},
             {"siteZoom", siteZoom}, {"unpinnedExtensions", unpinnedExtensions},
-            {"trustedCertificates", trusted}}.dump(2);
+            {"trustedCertificates", trusted}, {"sitePermissions", sitePermissions}}.dump(2);
         if (data.size() > 16 * 1024 * 1024) throw std::runtime_error("Profile is too large");
         temporary = path.string() + ".XXXXXX";
         fd = mkstemp(temporary.data());
@@ -188,11 +226,15 @@ bool Profile::Save(const std::filesystem::path& path, std::string& error) const
 bool Profile::Visit(const PageRecord& page, int64_t now)
 {
     if (page.url.rfind("https://", 0) != 0 && page.url.rfind("http://", 0) != 0) return false;
+    int visits = 0;
     history.erase(std::remove_if(history.begin(), history.end(), [&](const auto& old) {
-        return old.url == page.url;
+        if (old.url != page.url) return false;
+        visits = std::max(visits, std::max(1, old.visits));
+        return true;
     }), history.end());
     history.insert(history.begin(), page);
     history.front().visited = now;
+    history.front().visits = std::min(visits + 1, 1000000);
     history.front().bar = false;
     if (history.size() > 2000) history.resize(2000);
     return true;
@@ -209,7 +251,9 @@ void Profile::AddBookmark(const PageRecord& page, bool bar)
         return;
     }
     if (bookmarks.size() >= 10000) return;
-    bookmarks.push_back({page.url, page.title, 0, bar});
+    PageRecord bookmark{page.url, page.title};
+    bookmark.bar = bar;
+    bookmarks.push_back(std::move(bookmark));
 }
 bool Profile::RemoveBookmark(const std::string& url)
 {

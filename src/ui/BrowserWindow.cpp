@@ -3,6 +3,7 @@
 #include "StallTrace.h"
 #include "Chrome.h"
 #include "FaviconCache.h"
+#include "AddressSuggestions.h"
 #include "Messages.h"
 #include "SharedProfile.h"
 #if SUMMIT_MODERN_WEBKIT
@@ -11,8 +12,10 @@
 #endif
 #include "core/Address.h"
 #include "core/InternalPages.h"
+#include "core/Suggest.h"
 #include "core/Zoom.h"
 #include <Alert.h>
+#include <Bitmap.h>
 #include <Clipboard.h>
 #include <ControlLook.h>
 #include <Screen.h>
@@ -53,6 +56,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <climits>
 #include <ctime>
 #include <fstream>
 #include <functional>
@@ -285,11 +289,23 @@ public:
     explicit AddressEnterFilter(BTextControl& control)
         : BMessageFilter(B_KEY_DOWN), fControl(control) { }
 
+    // Keys the suggestion list under the field takes first (the arrow keys,
+    // Escape, Tab); it returns true for the keys it used.
+    std::function<bool(char)> fKeyHandler;
+
     filter_result Filter(BMessage* message, BHandler**) override
     {
         const char* bytes = nullptr;
-        if (message->FindString("bytes", &bytes) != B_OK || !bytes
-            || bytes[0] != B_ENTER || bytes[1] != '\0') return B_DISPATCH_MESSAGE;
+        if (message->FindString("bytes", &bytes) != B_OK || !bytes || bytes[1] != '\0') return B_DISPATCH_MESSAGE;
+        if (bytes[0] != B_ENTER) {
+            const bool listKey = bytes[0] == B_UP_ARROW || bytes[0] == B_DOWN_ARROW || bytes[0] == B_ESCAPE
+                || bytes[0] == B_TAB;
+            const int32 modifiers = message->GetInt32("modifiers", 0);
+            if (listKey && fKeyHandler && fControl.TextView()->IsFocus() && (modifiers & (B_COMMAND_KEY | B_CONTROL_KEY)) == 0
+                && fKeyHandler(bytes[0]))
+                return B_SKIP_MESSAGE;
+            return B_DISPATCH_MESSAGE;
+        }
         if (fControl.IsEnabled() && fControl.TextView()->IsFocus()) {
             // BTextControl normally suppresses Enter when the text matches its
             // saved value. An address must remain submit-able for retry/reload.
@@ -307,8 +323,12 @@ class AddressControl final : public BTextControl {
 public:
     AddressControl() : BTextControl("address", nullptr, "", new BMessage(kNavigate))
     {
-        TextView()->AddFilter(new AddressEnterFilter(*this));
+        fFilter = new AddressEnterFilter(*this);
+        TextView()->AddFilter(fFilter);
+        SetModificationMessage(new BMessage(kAddressModified));
     }
+
+    void SetKeyHandler(std::function<bool(char)> handler) { fFilter->fKeyHandler = std::move(handler); }
 
     status_t Invoke(BMessage* message = nullptr) override
     {
@@ -316,6 +336,22 @@ public:
         // A tab switch or beforeunload prompt must not submit an address draft.
         if (!TextView()->IsFocus()) return B_OK;
         return BTextControl::Invoke(message);
+    }
+
+private:
+    AddressEnterFilter* fFilter;
+};
+
+// A click anywhere in the window may take the focus from the address field,
+// whose suggestion list then closes.
+class AddressFocusFilter final : public BMessageFilter {
+public:
+    AddressFocusFilter() : BMessageFilter(B_ANY_DELIVERY, B_ANY_SOURCE, B_MOUSE_DOWN) { }
+
+    filter_result Filter(BMessage*, BHandler** target) override
+    {
+        if (target && *target && (*target)->Looper()) (*target)->Looper()->PostMessage(kAddressFocusCheck);
+        return B_DISPATCH_MESSAGE;
     }
 };
 
@@ -537,6 +573,8 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
     fGo = new ToolButton("go", "Go to this address", Icon::Go, kNavigate);
     fAddress = new AddressControl;
     fAddress->SetExplicitMinSize(BSize(240, 30));
+    static_cast<AddressControl*>(fAddress)->SetKeyHandler([this](char key) { return AddressKey(key); });
+    fSuggestions = std::make_unique<AddressSuggestions>(this);
     fZoomButton = new ZoomButton;
     auto* downloadsButton = new ToolButton("downloads", "Open Downloads", Icon::Downloads, kShowDownloads);
     fBookmarkButton = new ToolButton("bookmark", "Bookmark this page", Icon::Bookmark, kBookmarkButton);
@@ -613,6 +651,7 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
     }
     ShowSearchEngine();
     AddCommonFilter(new ZoomWheelFilter);
+    AddCommonFilter(new AddressFocusFilter);
     ApplyInterfaceStyle();
     if (!fBookmarksBarVisible) {
         fBookmarksBar->Hide();
@@ -1346,6 +1385,179 @@ void BrowserWindow::Navigate(const std::string& text)
         tab->pageRevision = fPagesRevision;
     }
 }
+void BrowserWindow::FrameMoved(BPoint where)
+{
+    BrowserWindowBase::FrameMoved(where);
+    HideSuggestions();
+}
+
+void BrowserWindow::FrameResized(float width, float height)
+{
+    BrowserWindowBase::FrameResized(width, height);
+    HideSuggestions();
+}
+
+void BrowserWindow::AddressModified()
+{
+    auto* textView = fAddress->TextView();
+    if (!textView->IsFocus()) {
+        // The page or a tab set the field.
+        HideSuggestions();
+        fAddressTyped.clear();
+        fAddressShown.clear();
+        fAutofill = { };
+        return;
+    }
+    const std::string text = fAddress->Text();
+    // Changes made here (a completion, a suggestion chosen with the arrow
+    // keys) come back as modifications too.
+    if (text == fAddressShown) return;
+    if (const int32 selected = fSuggestions->Selected(); selected >= 0 && text == fSuggestions->Rows()[selected].fill) return;
+    int32 start = 0, end = 0;
+    textView->GetSelection(&start, &end);
+    // Only typing forward at the end completes; deleting the completion
+    // (Backspace) leaves what was typed, as in Firefox.
+    const bool forward = start == end && end == static_cast<int32>(text.size()) && text.size() > fAddressTyped.size()
+        && text.compare(0, fAddressTyped.size(), fAddressTyped) == 0;
+    fAddressTyped = text;
+    fAddressShown = text;
+    fAutofill = { };
+    if (forward) {
+        const int64 now = std::time(nullptr);
+        fAutofill = fShared->Read([&](const Profile& profile) {
+            return AutofillAddress(profile.history, profile.bookmarks, text, now);
+        });
+        if (!fAutofill.Empty()) {
+            fAddressShown = fAutofill.text;
+            textView->Insert(text.size(), fAutofill.text.c_str() + text.size(), fAutofill.text.size() - text.size());
+            textView->Select(text.size(), fAutofill.text.size());
+        }
+    }
+    ShowSuggestions(text);
+}
+
+void BrowserWindow::ShowSuggestions(const std::string& typed)
+{
+    if (Trim(typed).empty() || !fAddress->TextView()->IsFocus()) {
+        HideSuggestions();
+        return;
+    }
+    const int64 now = std::time(nullptr);
+    const auto pages = fShared->Read([&](const Profile& profile) {
+        return SuggestPages(profile.history, profile.bookmarks, typed, now, 8);
+    });
+    std::vector<SuggestionRow> rows;
+    // The first row is what Enter does with the text as it stands.
+    const auto address = ResolveAddress(typed);
+    SuggestionRow search;
+    search.kind = SuggestionRow::Kind::Search;
+    search.title = Trim(typed);
+    search.detail = std::string("Search with ") + CurrentSearchEngine().name;
+    search.url = SearchURL(typed);
+    search.fill = typed;
+    if (!fAutofill.Empty()) {
+        SuggestionRow visit;
+        visit.kind = SuggestionRow::Kind::Visit;
+        visit.title = ShortAddress(fAutofill.url);
+        visit.detail = "Visit";
+        visit.url = fAutofill.url;
+        visit.fill = fAutofill.text;
+        rows.push_back(std::move(visit));
+    } else if (address.error.empty() && !address.search) {
+        SuggestionRow visit;
+        visit.kind = SuggestionRow::Kind::Visit;
+        visit.title = ShortAddress(address.url);
+        visit.detail = "Visit";
+        visit.url = address.url;
+        visit.fill = typed;
+        rows.push_back(std::move(visit));
+    } else if (address.search) {
+        rows.push_back(search);
+    }
+    const std::string first = rows.empty() ? std::string() : rows.front().url;
+    for (const auto& page : pages) {
+        if (page.url == first || rows.size() >= 8) continue;
+        SuggestionRow row;
+        row.kind = page.kind == Suggestion::Kind::Bookmark ? SuggestionRow::Kind::Bookmark : SuggestionRow::Kind::History;
+        row.title = page.title.empty() ? ShortAddress(page.url) : page.title;
+        row.detail = ShortAddress(page.url);
+        row.url = page.url;
+        row.fill = DisplayURL(page.url);
+        if (const BBitmap* icon = fFavicons->Icon(page.url)) row.icon = std::make_shared<BBitmap>(icon);
+        rows.push_back(std::move(row));
+    }
+    // A search stays one key away when the text reads as an address.
+    if (!address.search && search.url != first && !Trim(typed).empty()) rows.push_back(search);
+    // Only a guess at what Enter does, and nothing else: not worth a list.
+    if (rows.size() == 1 && rows.front().kind == SuggestionRow::Kind::Visit && fAutofill.Empty()) {
+        HideSuggestions();
+        return;
+    }
+    fSuggestions->Show(fAddress->ConvertToScreen(fAddress->Bounds()), std::move(rows));
+}
+
+void BrowserWindow::HideSuggestions()
+{
+    if (fSuggestions) fSuggestions->Hide();
+}
+
+std::string BrowserWindow::AddressTarget() const
+{
+    const std::string text = fAddress->Text();
+    if (const int32 selected = fSuggestions->Selected(); fSuggestions->IsShowing() && selected >= 0
+        && text == fSuggestions->Rows()[selected].fill)
+        return fSuggestions->Rows()[selected].url;
+    if (!fAutofill.Empty() && text == fAutofill.text) return fAutofill.url;
+    return text;
+}
+
+bool BrowserWindow::AddressKey(char key)
+{
+    auto* textView = fAddress->TextView();
+    // Shows text in the field without it counting as typed.
+    auto show = [&](const std::string& text, int32 selectFrom) {
+        textView->SetText(text.c_str());
+        textView->Select(std::min<int32>(selectFrom, text.size()), text.size());
+        textView->ScrollToSelection();
+    };
+    switch (key) {
+    case B_DOWN_ARROW:
+    case B_UP_ARROW: {
+        if (!fSuggestions->IsShowing()) {
+            if (key != B_DOWN_ARROW || fAddressTyped.empty()) return false;
+            ShowSuggestions(fAddressTyped);
+            return fSuggestions->IsShowing();
+        }
+        // The typed text and the rows form a cycle.
+        const int32 count = fSuggestions->Rows().size();
+        int32 position = fSuggestions->Selected() + 1;
+        position = key == B_DOWN_ARROW ? (position + 1) % (count + 1) : (position + count) % (count + 1);
+        fSuggestions->Select(position - 1);
+        if (position == 0) show(fAddressShown, fAddressTyped.size());
+        else show(fSuggestions->Rows()[position - 1].fill, INT32_MAX);
+        return true;
+    }
+    case B_ESCAPE:
+        if (fSuggestions->IsShowing()) {
+            const bool rowSelected = fSuggestions->Selected() >= 0;
+            HideSuggestions();
+            if (rowSelected) show(fAddressShown, fAddressTyped.size());
+            return true;
+        }
+        // A second Escape puts the page's address back.
+        if (auto* tab = ActiveTab()) {
+            fAutofill = { };
+            fAddressTyped = fAddressShown = DisplayURL(tab->url);
+            show(fAddressShown, 0);
+            return true;
+        }
+        return false;
+    case B_TAB:
+        HideSuggestions();
+        return false;
+    }
+    return false;
+}
 #if SUMMIT_MODERN_WEBKIT
 void BrowserWindow::SyncBrowserWindow()
 {
@@ -1814,6 +2026,7 @@ void BrowserWindow::WindowActivated(bool active)
 {
     BrowserWindowBase::WindowActivated(active);
     SyncBrowserWindow();
+    if (!active) HideSuggestions();
     if (active) {
         AnnouncePointer();
         // The application sends new tabs and extension requests to the front window.
@@ -2355,11 +2568,26 @@ void BrowserWindow::MessageReceived(BMessage* message)
         case kNavigate: {
             const char* url = nullptr;
             const bool typed = message->FindString("url", &url) != B_OK;
-            Navigate(typed ? fAddress->Text() : url);
+            const std::string target = typed ? AddressTarget() : std::string(url);
+            HideSuggestions();
+            Navigate(target);
             // As in other browsers, the page takes the focus once an address
             // is entered, so the field follows the page again.
             if (typed && fAddress->TextView()->IsFocus())
                 if (auto* tab = ActiveTab()) tab->view->MakeFocus();
+            break;
+        }
+        case kAddressModified: AddressModified(); break;
+        case kAddressFocusCheck:
+            if (!fAddress->TextView()->IsFocus()) HideSuggestions();
+            break;
+        case kSuggestionChosen: {
+            const char* url = nullptr;
+            if (message->FindString("url", &url) != B_OK || !fSuggestions->IsShowing()) break;
+            const std::string target = url;
+            HideSuggestions();
+            Navigate(target);
+            if (auto* tab = ActiveTab()) tab->view->MakeFocus();
             break;
         }
         case kNewTab: {
@@ -2440,6 +2668,17 @@ void BrowserWindow::MessageReceived(BMessage* message)
         } break;
         case kHome: Navigate(HomeAddress()); break;
         case kFocusAddress: fAddress->MakeFocus(); fAddress->TextView()->SelectAll(); break;
+#if SUMMIT_MODERN_WEBKIT
+        case kShowTabOfView: {
+            BMessenger view;
+            if (message->FindMessenger("view", &view) != B_OK) break;
+            if (auto* tab = FindTab(view)) {
+                SelectTab(tab->id);
+                Activate();
+            }
+            break;
+        }
+#endif
         case kShowBookmarks: ShowInternalPage(kBookmarksPage); break;
         case kShowHistory: ShowInternalPage(kHistoryPage); break;
         case kShowExtensions: be_app->PostMessage(kShowExtensions); break;

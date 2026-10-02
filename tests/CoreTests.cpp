@@ -3,6 +3,7 @@
 #include "core/Favicon.h"
 #include "core/InternalPages.h"
 #include "core/Zoom.h"
+#include "core/Suggest.h"
 #include <set>
 #include <cstdlib>
 #include <ctime>
@@ -154,6 +155,66 @@ int main()
     CHECK(bookmarksHTML.find("Bookmarks Bar") != std::string::npos && bookmarksHTML.find("Other Bookmarks") != std::string::npos);
     CHECK(bookmarksHTML.find("href=\"javascript") == std::string::npos && bookmarksHTML.find("evil") == std::string::npos);
 
+    // Address field type-ahead.
+    {
+        std::vector<PageRecord> history = {
+            {"https://www.pulsetasmania.com/events/", "Pulse Tasmania", now - 3600, false, 6},
+            {"https://pulsetasmania.com/about", "About", now - 7200, false, 1},
+            {"https://publicholidays.com.au/", "Public holidays", now - 30 * 86400, false, 2},
+            {"https://github.com/jmgasper/summit/issues", "Issues · jmgasper/summit", now - 60, false, 9},
+            {"https://github.com/jmgasper/haiku", "Haiku fork", now - 600, false, 2},
+            {"https://github.com/WebKit/WebKit", "WebKit", now - 86400, false, 1},
+            {"http://192.168.1.1/login", "UniFi OS", now - 86400, false, 3},
+            {"http://localhost:8790/index.html", "Test", now - 100, false, 1},
+            {"https://user@secret.example/", "Credentials", now, false, 50}};
+        std::vector<PageRecord> bookmarks = {{"https://pubs.example.org/menu", "Pub menu"}};
+        auto fill = AutofillAddress(history, bookmarks, "pul", now);
+        CHECK(fill.text == "pulsetasmania.com/" && fill.url == "https://www.pulsetasmania.com/");
+        CHECK(AutofillAddress(history, bookmarks, "PuL", now).text == "PuLsetasmania.com/");
+        CHECK(AutofillAddress(history, bookmarks, "pu", now).text == "pulsetasmania.com/");
+        CHECK(AutofillAddress(history, bookmarks, "pubs", now).url == "https://pubs.example.org/");
+        CHECK(AutofillAddress(history, bookmarks, "www.pul", now).text == "www.pulsetasmania.com/");
+        CHECK(AutofillAddress(history, bookmarks, "https://pul", now).text == "https://pulsetasmania.com/");
+        CHECK(AutofillAddress(history, bookmarks, "http://pul", now).Empty());
+        CHECK(AutofillAddress(history, bookmarks, "pulsetasmania.com", now).text == "pulsetasmania.com/");
+        CHECK(AutofillAddress(history, bookmarks, "pulsetasmania.com/", now).Empty() == false);
+        CHECK(AutofillAddress(history, bookmarks, "pulsetasmania.com/", now).text == "pulsetasmania.com/events/");
+        fill = AutofillAddress(history, bookmarks, "github.com/jm", now);
+        CHECK(fill.text == "github.com/jmgasper/" && fill.url == "https://github.com/jmgasper/");
+        fill = AutofillAddress(history, bookmarks, "github.com/jmgasper/s", now);
+        CHECK(fill.text == "github.com/jmgasper/summit/" && fill.url == "https://github.com/jmgasper/summit/");
+        CHECK(AutofillAddress(history, bookmarks, "github.com/jmgasper/summit/i", now).text == "github.com/jmgasper/summit/issues");
+        CHECK(AutofillAddress(history, bookmarks, "github.com/webk", now).url == "https://github.com/WebKit/");
+        CHECK(AutofillAddress(history, bookmarks, "192.168", now).url == "http://192.168.1.1/");
+        CHECK(AutofillAddress(history, bookmarks, "localhost:87", now).text == "localhost:8790/");
+        CHECK(AutofillAddress(history, bookmarks, "pul tas", now).Empty());
+        CHECK(AutofillAddress(history, bookmarks, "secret", now).Empty());
+        CHECK(AutofillAddress(history, bookmarks, "zzz", now).Empty());
+        CHECK(AutofillAddress(history, bookmarks, "", now).Empty());
+        CHECK(AutofillAddress(history, bookmarks, "/boot", now).Empty());
+
+        auto pages = SuggestPages(history, bookmarks, "pu", now, 10);
+        CHECK(pages.size() == 4 && pages[0].url == "https://www.pulsetasmania.com/events/");
+        CHECK(pages.back().url == "https://pubs.example.org/menu" || pages.back().url == "https://publicholidays.com.au/");
+        pages = SuggestPages(history, bookmarks, "jmgasper issues", now, 10);
+        CHECK(pages.size() == 1 && pages[0].title == "Issues · jmgasper/summit");
+        pages = SuggestPages(history, bookmarks, "WEBKIT", now, 10);
+        CHECK(pages.size() == 1 && pages[0].url == "https://github.com/WebKit/WebKit");
+        CHECK(SuggestPages(history, bookmarks, "unifi", now, 10).size() == 1);
+        CHECK(SuggestPages(history, bookmarks, "   ", now, 10).empty());
+        CHECK(SuggestPages(history, bookmarks, "github", now, 2).size() == 2);
+        std::vector<PageRecord> marked = {{"https://pubs.example.org/menu", "Pub menu"}};
+        pages = SuggestPages(history, marked, "menu", now, 10);
+        CHECK(pages.size() == 1 && pages[0].kind == Suggestion::Kind::Bookmark);
+        history.push_back({"https://pubs.example.org/menu", "Pub menu", now, false, 3});
+        pages = SuggestPages(history, marked, "menu", now, 10);
+        CHECK(pages.size() == 1 && pages[0].kind == Suggestion::Kind::Bookmark);
+        CHECK(ShortAddress("https://www.pulsetasmania.com/") == "pulsetasmania.com");
+        CHECK(ShortAddress("https://GitHub.com/jmgasper/Summit") == "github.com/jmgasper/Summit");
+        CHECK(ShortAddress("summit:history") == "summit:history");
+        CHECK(Frecency({"https://a/", "", now, false, 3}, now) > Frecency({"https://a/", "", now - 100 * 86400, false, 10}, now));
+    }
+
     char directory[] = "/tmp/summit-core-XXXXXX";
     auto* created = mkdtemp(directory);
     if (!created) return 2;
@@ -182,9 +243,20 @@ int main()
     CHECK(profile.history.size() == 2);
     CHECK(profile.history.front().title == "Updated title");
     CHECK(profile.history.front().visited > 0);
+    CHECK(profile.history.front().visits == 2 && profile.history.back().visits == 1);
     profile.AddBookmark({"https://bar.example/", "Bar"}, true);
     profile.AddBookmark({"https://webkit.org", "ignored"}, true);
     CHECK(profile.bookmarks.size() == 2 && profile.bookmarks[0].bar && profile.bookmarks[0].title == "WebKit — 浏览器");
+    CHECK(profile.SetSitePermission("notifications", "https://github.com", true));
+    CHECK(!profile.SetSitePermission("notifications", "https://github.com", true));
+    CHECK(profile.SetSitePermission("geolocation", "https://maps.example:8443", false));
+    CHECK(!profile.SetSitePermission("camera", "https://github.com", true));
+    CHECK(!profile.SetSitePermission("notifications", "https://github.com/path", true));
+    CHECK(!profile.SetSitePermission("notifications", "javascript:alert(1)", true));
+    CHECK(!profile.SetSitePermission("notifications", "https://", true));
+    CHECK(profile.SetSitePermission("notifications", "http://old.example", true));
+    CHECK(profile.SetSitePermission("notifications", "http://old.example", std::nullopt));
+    CHECK(!profile.SetSitePermission("notifications", "http://old.example", std::nullopt));
     profile.homeURL = "https://home.example/";
     profile.showBookmarksBar = false;
     CHECK(profile.Save(path, error) && error.empty());
@@ -195,8 +267,12 @@ int main()
     CHECK(loaded.bookmarks.at(0).title == "WebKit — 浏览器");
     CHECK(loaded.history.size() == 2 && loaded.history.front().title == "Updated title");
     CHECK(loaded.history.front().visited == profile.history.front().visited);
+    CHECK(loaded.history.front().visits == 2 && loaded.history.back().visits == 0);
     CHECK(loaded.bookmarks.size() == 2 && loaded.bookmarks[1].bar && loaded.bookmarks[1].url == "https://bar.example/");
     CHECK(loaded.homeURL == "https://home.example/" && !loaded.showBookmarksBar);
+    CHECK(loaded.sitePermissions.size() == 2 && loaded.sitePermissions["notifications"].size() == 1
+        && loaded.sitePermissions["notifications"]["https://github.com"]
+        && !loaded.sitePermissions["geolocation"]["https://maps.example:8443"]);
     CHECK(loaded.searchEngine == "bing" && loaded.siteZoom.size() == 2 && loaded.siteZoom["example.com"] == 1.5);
     CHECK(loaded.unpinnedExtensions == std::set<std::string>({"ext-1", "ext-2"}));
     CHECK(loaded.trustedCertificates.size() == 2 && loaded.trustedCertificates[0].subject == "/CN=UniFi"

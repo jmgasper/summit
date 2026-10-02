@@ -3,6 +3,7 @@
 #include <ctime>
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -16,6 +17,9 @@ struct PageRecord {
     int64_t visited = 0;
     // Bookmarks: shown on the bookmarks bar under the toolbar.
     bool bar = false;
+    // History: how many times the page was visited (0 for older entries,
+    // which count as one). Address field type-ahead ranks pages by it.
+    int visits = 0;
 };
 // One browser window of a saved session.
 struct WindowSession {
@@ -55,6 +59,10 @@ struct Profile {
     std::set<std::string> unpinnedExtensions;
     // Certificates trusted despite failing verification, by host.
     std::vector<TrustedCertificate> trustedCertificates;
+    // What sites may do, as the user answered when they asked: permission
+    // ("notifications", "geolocation") -> origin ("https://host[:port]") ->
+    // allowed. Sites not listed ask again.
+    std::map<std::string, std::map<std::string, bool>> sitePermissions;
     static Profile Load(const std::filesystem::path& path, std::string& error);
     bool Save(const std::filesystem::path& path, std::string& error) const;
     // Records a visit to an http(s) page; returns false for other pages.
@@ -66,5 +74,10 @@ struct Profile {
     // Remembers a trusted certificate (host names compare without case); false
     // when that host already had it.
     bool TrustCertificate(const TrustedCertificate&);
+    // Records (allowed or denied) or forgets (nullopt) a site's permission;
+    // false when nothing changed or the names are not usable.
+    bool SetSitePermission(const std::string& permission, const std::string& origin, std::optional<bool> allowed);
 };
+// The permissions sites can ask for, in the order the Preferences list them.
+const std::vector<std::string>& SitePermissionNames();
 }

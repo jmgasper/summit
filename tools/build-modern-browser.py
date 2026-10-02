@@ -309,10 +309,10 @@ def main():
                   # The developer tools show text with Scintilla and Lexilla, as Kiri does.
                   '-I/boot/system/develop/headers/scintilla', '-I/boot/system/develop/headers/lexilla']
         sources = ['src/main.cpp', 'src/core/Address.cpp', 'src/core/Profile.cpp', 'src/core/ExtensionCatalog.cpp', 'src/core/ExtensionIdentity.cpp',
-                   'src/core/Favicon.cpp', 'src/core/InternalPages.cpp', 'src/core/Zoom.cpp',
+                   'src/core/Favicon.cpp', 'src/core/InternalPages.cpp', 'src/core/Zoom.cpp', 'src/core/Suggest.cpp',
                    'src/core/DevTools.cpp', 'src/core/DevToolsFormat.cpp', 'src/ui/SourceView.cpp',
                    'src/ui/DevToolsWindow.cpp', 'src/ui/DevToolsNetwork.cpp', 'src/ui/DevToolsConsole.cpp', 'src/ui/DevToolsStorage.cpp', 'src/ui/FaviconCache.cpp', 'src/ui/PreferencesWindow.cpp', 'src/ui/DefaultBrowser.cpp', 'src/ui/SharedProfile.cpp',
-                   'src/ui/BrowserWindow.cpp', 'src/ui/Chrome.cpp', 'src/ui/ExtensionPermissionPrompt.cpp',
+                   'src/ui/BrowserWindow.cpp', 'src/ui/AddressSuggestions.cpp', 'src/ui/SitePermissions.cpp', 'src/ui/Location.cpp', 'src/ui/Chrome.cpp', 'src/ui/ExtensionPermissionPrompt.cpp',
                    'src/ui/ExtensionController.cpp', 'src/ui/ExtensionInstaller.cpp', 'src/ui/ExtensionManager.cpp']
     objects = [work / pathlib.Path(source).with_suffix('.o') for source in sources]
     commands = [flags + ['-c', str(ROOT / source), '-o', str(output)]

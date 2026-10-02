@@ -13,6 +13,12 @@ constexpr uint32 kForward = 'frwd';
 constexpr uint32 kReload = 'reld';
 constexpr uint32 kHome = 'home';
 constexpr uint32 kFocusAddress = 'fadr';
+// The address field's text changed (BTextControl modification message).
+constexpr uint32 kAddressModified = 'admo';
+// A row of the address field's suggestion list was clicked ("index", "url").
+constexpr uint32 kSuggestionChosen = 'sgch';
+// After a click: closes the suggestion list if the field lost the focus.
+constexpr uint32 kAddressFocusCheck = 'adfc';
 constexpr uint32 kBookmark = 'bkmk';
 constexpr uint32 kShowBookmarks = 'sbkm';
 constexpr uint32 kShowHistory = 'shis';
@@ -43,6 +49,12 @@ constexpr uint32 kDataCleared = 'pdcl';
 // Preferences › History and Data › Forget Trusted Certificates, to the
 // application; answered with kDataCleared like the requests above.
 constexpr uint32 kForgetCertificatesRequest = 'pclt';
+// Preferences › Site Permissions, to the application: "permission", "origin",
+// "state" (1 allow, 0 block, -1 forget).
+constexpr uint32 kSitePermissionChange = 'pspc';
+// To a browser window: select the tab showing "view" (a BWebKitView messenger)
+// and come to the front (a click on that page's notification).
+constexpr uint32 kShowTabOfView = 'shtv';
 // The user chose to continue to a site whose certificate failed verification
 // (a window to the application): "host", "sha256", "subject", "private". The
 // application trusts it in every context and, unless private, saves it.

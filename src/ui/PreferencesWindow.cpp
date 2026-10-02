@@ -2,6 +2,10 @@
 #include "Messages.h"
 #include "core/Address.h"
 #include <Alert.h>
+#include <interface/ColumnListView.h>
+#include <interface/ColumnTypes.h>
+#include <GroupView.h>
+#include <TabView.h>
 #include <Button.h>
 #include <CheckBox.h>
 #include <Invoker.h>
@@ -12,7 +16,10 @@
 #include <RadioButton.h>
 #include <StringView.h>
 #include <TextControl.h>
+#include <algorithm>
 #include <cstdio>
+#include <cstring>
+#include <tuple>
 #include <thread>
 
 namespace summit {
@@ -20,7 +27,9 @@ namespace {
 constexpr uint32 homeEdited = 'phed', useStartPage = 'phsp', bookmarksBarToggled = 'pbar', styleChosen = 'psty',
     searchChosen = 'psrc', clearHistory = 'pchi', clearHistoryConfirmed = 'pchc', clearCache = 'pcca',
     clearSiteData = 'pcsd', clearSiteDataConfirmed = 'pcsc', cacheMeasured = 'pcms',
-    forgetCertificates = 'pfce', forgetCertificatesConfirmed = 'pfcc';
+    forgetCertificates = 'pfce', forgetCertificatesConfirmed = 'pfcc', siteSelected = 'psse', siteAllow = 'pssa',
+    siteBlock = 'pssb', siteRemove = 'pssr';
+enum SiteColumn { kSiteColumn, kPermissionColumn, kSettingColumn };
 
 std::string SizeLabel(uintmax_t bytes)
 {
@@ -91,7 +100,29 @@ PreferencesWindow::PreferencesWindow(BMessenger owner, const PreferencesState& s
         button->SetExplicitMaxSize(BSize(B_SIZE_UNLIMITED, B_SIZE_UNSET));
         return button;
     };
-    BLayoutBuilder::Group<>(this, B_VERTICAL, 10)
+    // Site Permissions: what sites asked for and were answered.
+    fSites = new BColumnListView("site-permissions", B_NAVIGABLE, B_FANCY_BORDER, true);
+    fSites->AddColumn(new BStringColumn("Site", 240, 80, 600, B_TRUNCATE_MIDDLE), kSiteColumn);
+    fSites->AddColumn(new BStringColumn("Permission", 120, 60, 300, B_TRUNCATE_END), kPermissionColumn);
+    fSites->AddColumn(new BStringColumn("Setting", 90, 50, 200, B_TRUNCATE_END), kSettingColumn);
+    fSites->SetSelectionMessage(new BMessage(siteSelected));
+    fSites->SetSelectionMode(B_SINGLE_SELECTION_LIST);
+    // Rows stay in fSiteEntries' order, which the buttons rely on.
+    fSites->SetSortingEnabled(false);
+    fSites->SetExplicitMinSize(BSize(470, 170));
+    fSiteAllow = new BButton("site-allow", "Allow", new BMessage(siteAllow));
+    fSiteBlock = new BButton("site-block", "Block", new BMessage(siteBlock));
+    fSiteRemove = new BButton("site-remove", "Remove", new BMessage(siteRemove));
+    auto* sitesIntro = new BStringView("sites-intro", "Sites you have allowed or blocked. Other sites ask first.");
+    auto* sitesRemoveHint = new BStringView("sites-remove-hint", "A removed site asks again the next time it wants to.");
+    sitesRemoveHint->SetHighUIColor(B_PANEL_TEXT_COLOR, B_DARKEN_2_TINT);
+    auto* locationHint = new BStringView("location-hint", "Your location comes from BeaconDB (beacondb.net), from the "
+        "Wi-Fi networks nearby and your network address.");
+    locationHint->SetHighUIColor(B_PANEL_TEXT_COLOR, B_DARKEN_2_TINT);
+    ShowSitePermissions({ });
+
+    auto* general = new BGroupView("General", B_VERTICAL, 10);
+    BLayoutBuilder::Group<>(general)
         .SetInsets(18)
         .Add(SectionTitle("general-title", "General"))
         .AddGroup(B_VERTICAL, 6).SetInsets(12, 0, 0, 0)
@@ -126,7 +157,10 @@ PreferencesWindow::PreferencesWindow(BMessenger owner, const PreferencesState& s
             .Add(fHaikuStyle)
             .Add(fSafariStyle)
         .End()
-        .AddStrut(6)
+        .AddGlue();
+    auto* data = new BGroupView("History and Data", B_VERTICAL, 10);
+    BLayoutBuilder::Group<>(data)
+        .SetInsets(18)
         .Add(SectionTitle("data-title", "History and Data"))
         .AddGrid(10, 6).SetInsets(12, 0, 0, 0)
             .Add(fHistoryInfo, 0, 0)
@@ -140,7 +174,30 @@ PreferencesWindow::PreferencesWindow(BMessenger owner, const PreferencesState& s
             .Add(fForgetCertificates = clearButton("forget-certificates", "Forget Trusted Certificates…",
                 forgetCertificates), 1, 4)
             .Add(fDataStatus, 0, 5, 2, 1)
-        .End();
+        .End()
+        .AddGlue();
+    auto* sites = new BGroupView("Site Permissions", B_VERTICAL, 8);
+    BLayoutBuilder::Group<>(sites)
+        .SetInsets(18)
+        .Add(SectionTitle("sites-title", "Site Permissions"))
+        .Add(sitesIntro)
+        .Add(fSites)
+        .AddGroup(B_HORIZONTAL, 8)
+            .Add(sitesRemoveHint)
+            .AddGlue()
+            .Add(fSiteAllow)
+            .Add(fSiteBlock)
+            .Add(fSiteRemove)
+        .End()
+        .Add(locationHint);
+    fTabs = new BTabView("preferences-tabs", B_WIDTH_FROM_LABEL);
+    fTabs->AddTab(general);
+    fTabs->AddTab(data);
+    fTabs->AddTab(sites);
+    fTabs->SetBorder(B_NO_BORDER);
+    BLayoutBuilder::Group<>(this, B_VERTICAL, 0)
+        .SetInsets(0, B_USE_SMALL_SPACING, 0, 0)
+        .Add(fTabs);
     ShowTrustedCertificates(state.trustedCertificates);
     ShowHomeHint();
     MeasureCache();
@@ -167,6 +224,41 @@ void PreferencesWindow::ShowTrustedCertificates(size_t count)
         : count == 1 ? "1 untrusted certificate accepted"
         : (std::to_string(count) + " untrusted certificates accepted").c_str());
     fForgetCertificates->SetEnabled(count > 0);
+}
+
+void PreferencesWindow::ShowSitePermissions(const std::vector<SiteEntry>& entries)
+{
+    // Keep the selection on the same site and permission across updates.
+    std::string selectedOrigin, selectedPermission;
+    if (auto* row = fSites->CurrentSelection(); row) {
+        const auto index = fSites->IndexOf(row);
+        if (index >= 0 && static_cast<size_t>(index) < fSiteEntries.size()) {
+            selectedOrigin = fSiteEntries[index].origin;
+            selectedPermission = fSiteEntries[index].permission;
+        }
+    }
+    fSites->Clear();
+    fSiteEntries = entries;
+    std::sort(fSiteEntries.begin(), fSiteEntries.end(), [](const SiteEntry& a, const SiteEntry& b) {
+        return std::tie(a.origin, a.permission) < std::tie(b.origin, b.permission);
+    });
+    BRow* selected = nullptr;
+    for (const auto& entry : fSiteEntries) {
+        auto* row = new BRow();
+        // https is the rule and goes without saying; http is shown.
+        const std::string site = entry.origin.rfind("https://", 0) == 0 ? entry.origin.substr(8) : entry.origin;
+        row->SetField(new BStringField(site.c_str()), kSiteColumn);
+        row->SetField(new BStringField(entry.permission == "notifications" ? "Notifications"
+            : entry.permission == "geolocation" ? "Location" : entry.permission.c_str()), kPermissionColumn);
+        row->SetField(new BStringField(entry.allowed ? "Allowed" : "Blocked"), kSettingColumn);
+        fSites->AddRow(row);
+        if (entry.origin == selectedOrigin && entry.permission == selectedPermission) selected = row;
+    }
+    if (selected) fSites->SetFocusRow(selected, true);
+    const bool hasSelection = fSites->CurrentSelection() != nullptr;
+    fSiteAllow->SetEnabled(hasSelection);
+    fSiteBlock->SetEnabled(hasSelection);
+    fSiteRemove->SetEnabled(hasSelection);
 }
 
 void PreferencesWindow::ShowHistoryCount(size_t count)
@@ -309,6 +401,17 @@ void PreferencesWindow::MessageReceived(BMessage* message)
             int32 count = 0;
             if (message->FindInt32("history_count", &count) == B_OK) ShowHistoryCount(count);
             if (message->FindInt32("trusted_certificates", &count) == B_OK) ShowTrustedCertificates(count);
+            if (message->GetBool("has_site_permissions", false)) {
+                std::vector<SiteEntry> entries;
+                const char* permission = nullptr;
+                const char* origin = nullptr;
+                bool allowed = false;
+                for (int32 i = 0; message->FindString("site_permission", i, &permission) == B_OK
+                    && message->FindString("site_origin", i, &origin) == B_OK
+                    && message->FindBool("site_allowed", i, &allowed) == B_OK; ++i)
+                    entries.push_back({permission, origin, allowed});
+                ShowSitePermissions(entries);
+            }
             break;
         }
         case kMakeDefaultBrowser:
@@ -329,7 +432,33 @@ void PreferencesWindow::MessageReceived(BMessage* message)
             fMakeDefault->SetEnabled(!isDefault);
             break;
         }
-        case kShowPreferences: Activate(); break;
+        case kShowPreferences:
+            if (const char* tab = nullptr; message->FindString("tab", &tab) == B_OK && tab && !std::strcmp(tab, "sites"))
+                fTabs->Select(2);
+            Activate();
+            break;
+        case siteSelected: {
+            auto* row = fSites->CurrentSelection();
+            fSiteAllow->SetEnabled(row != nullptr);
+            fSiteBlock->SetEnabled(row != nullptr);
+            fSiteRemove->SetEnabled(row != nullptr);
+            break;
+        }
+        case siteAllow:
+        case siteBlock:
+        case siteRemove: {
+            auto* row = fSites->CurrentSelection();
+            if (!row) break;
+            const auto index = fSites->IndexOf(row);
+            if (index < 0 || static_cast<size_t>(index) >= fSiteEntries.size()) break;
+            const auto& entry = fSiteEntries[index];
+            BMessage change(kSitePermissionChange);
+            change.AddString("permission", entry.permission.c_str());
+            change.AddString("origin", entry.origin.c_str());
+            change.AddInt32("state", message->what == siteAllow ? 1 : message->what == siteBlock ? 0 : -1);
+            fOwner.SendMessage(&change);
+            break;
+        }
         default: BWindow::MessageReceived(message); break;
     }
 }

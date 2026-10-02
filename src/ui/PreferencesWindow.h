@@ -3,8 +3,11 @@
 #include <Window.h>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 class BButton;
+class BColumnListView;
+class BTabView;
 class BCheckBox;
 class BMenuField;
 class BRadioButton;
@@ -37,6 +40,18 @@ private:
     void ShowTrustedCertificates(size_t count);
     // Measures the cache on another thread; kCacheMeasured brings the result.
     void MeasureCache();
+    struct SiteEntry {
+        std::string permission, origin;
+        bool allowed = false;
+    };
+    void ShowSitePermissions(const std::vector<SiteEntry>&);
+    BTabView* fTabs;
+    BColumnListView* fSites;
+    BButton* fSiteAllow;
+    BButton* fSiteBlock;
+    BButton* fSiteRemove;
+    // The rows of fSites, in order.
+    std::vector<SiteEntry> fSiteEntries;
     BMessenger fOwner;
     BStringView* fDefaultInfo;
     BButton* fMakeDefault;
