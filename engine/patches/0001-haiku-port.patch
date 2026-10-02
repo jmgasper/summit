@@ -30554,7 +30554,7 @@ index 0000000000000000000000000000000000000000..da71c185bfa5f93bf68ba7a513f48393
 +
 +#endif
 diff --git a/Source/WebCore/platform/network/curl/CurlRequest.cpp b/Source/WebCore/platform/network/curl/CurlRequest.cpp
-index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..6fb3cb9ff4a2c9c1ce02c1bd9e72b4ca1dd75d13 100644
+index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..fd968901e0c6b9ca9a25b17ab24167f34eef77b5 100644
 --- a/Source/WebCore/platform/network/curl/CurlRequest.cpp
 +++ b/Source/WebCore/platform/network/curl/CurlRequest.cpp
 @@ -36,19 +36,51 @@
@@ -30743,7 +30743,45 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..6fb3cb9ff4a2c9c1ce02c1bd9e72b4ca
  
      if (m_shouldDisableServerTrustEvaluation)
          m_curlHandle->disableServerTrustEvaluation();
-@@ -377,6 +461,8 @@ size_t CurlRequest::didReceiveData(std::span<const uint8_t> receivedData)
+@@ -270,6 +354,27 @@ size_t CurlRequest::willSendData(char* buffer, size_t blockSize, size_t numberOf
+     return *sendBytes;
+ }
+ 
++// The request timeout is an idle timeout (CurlHandle::setTimeout), so it also
++// ended responses that stream for as long as the page shows them and may go
++// quiet in between: an MJPEG feed from a camera, or from a KVM whose machine
++// shows no picture, and an event stream between events. Other browsers keep
++// those open; once one has started, only the server or the page ends it.
++static bool isStreamingResponse(const CurlResponse& response)
++{
++    static constexpr auto contentTypeLength = std::char_traits<char>::length("content-type:");
++
++    for (auto& header : response.headers) {
++        if (!header.startsWithIgnoringASCIICase("content-type:"_s))
++            continue;
++
++        auto mimeType = extractMIMETypeFromMediaType(header.substring(contentTypeLength).trim(deprecatedIsSpaceOrNewline));
++        return equalLettersIgnoringASCIICase(mimeType, "multipart/x-mixed-replace"_s)
++            || equalLettersIgnoringASCIICase(mimeType, "text/event-stream"_s);
++    }
++
++    return false;
++}
++
+ // This is being called for each HTTP header in the response. This includes '\r\n'
+ // for the last line of the header.
+ 
+@@ -343,6 +448,9 @@ size_t CurlRequest::didReceiveHeader(String&& header)
+ 
+     m_multipartHandle = CurlMultipartHandle::createIfNeeded(*this, m_response);
+ 
++    if (isStreamingResponse(m_response))
++        m_curlHandle->setTimeout(0_s);
++
+     // Response will send at didReceiveData() or didCompleteTransfer()
+     // to receive continueDidRceiveResponse() for asynchronously.
+ 
+@@ -377,6 +485,8 @@ size_t CurlRequest::didReceiveData(std::span<const uint8_t> receivedData)
  
      m_totalReceivedSize += receivedData.size();
  
@@ -30752,7 +30790,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..6fb3cb9ff4a2c9c1ce02c1bd9e72b4ca
      if (receivedData.size()) {
          if (m_multipartHandle) {
              m_multipartHandle->didReceiveMessage(receivedData);
-@@ -475,6 +561,17 @@ void CurlRequest::didCompleteTransfer(CURLcode result)
+@@ -475,6 +585,17 @@ void CurlRequest::didCompleteTransfer(CURLcode result)
          }
  
          auto metrics = networkLoadMetrics();
@@ -30770,7 +30808,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..6fb3cb9ff4a2c9c1ce02c1bd9e72b4ca
  
          finalizeTransfer();
          callClient([networkLoadMetrics = WTF::move(metrics)](CurlRequest& request, CurlRequestClient& client) mutable {
-@@ -486,6 +583,11 @@ void CurlRequest::didCompleteTransfer(CURLcode result)
+@@ -486,6 +607,11 @@ void CurlRequest::didCompleteTransfer(CURLcode result)
      } else {
          auto type = (result == CURLE_OPERATION_TIMEDOUT && timeoutInterval()) ? ResourceError::Type::Timeout : ResourceError::Type::General;
          auto resourceError = ResourceError(result, m_request.url(), type);
@@ -30782,7 +30820,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..6fb3cb9ff4a2c9c1ce02c1bd9e72b4ca
  
          CertificateInfo certificateInfo;
          if (auto info = m_curlHandle->certificateInfo())
-@@ -506,10 +608,12 @@ void CurlRequest::didCompleteTransfer(CURLcode result)
+@@ -506,10 +632,12 @@ void CurlRequest::didCompleteTransfer(CURLcode result)
  void CurlRequest::didCancelTransfer()
  {
      finalizeTransfer();
@@ -30795,7 +30833,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..6fb3cb9ff4a2c9c1ce02c1bd9e72b4ca
      m_formDataStream.clean();
      m_multipartHandle = nullptr;
      m_curlHandle = nullptr;
-@@ -632,6 +736,88 @@ void CurlRequest::completeDidReceiveResponse()
+@@ -632,6 +760,88 @@ void CurlRequest::completeDidReceiveResponse()
          responseCompletionHandler();
  }
  
@@ -30884,7 +30922,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..6fb3cb9ff4a2c9c1ce02c1bd9e72b4ca
  NetworkLoadMetrics CurlRequest::networkLoadMetrics()
  {
      ASSERT(m_curlHandle);
-@@ -653,6 +839,57 @@ NetworkLoadMetrics CurlRequest::networkLoadMetrics()
+@@ -653,6 +863,57 @@ NetworkLoadMetrics CurlRequest::networkLoadMetrics()
      return WTF::move(*networkLoadMetrics);
  }
  

@@ -1,5 +1,32 @@
 # Development verification
 
+## 2 October 2026, evening: NanoKVM screen stayed black
+
+Reported by the owner: the NanoKVM at 192.168.1.8 (attached to the Rock 5)
+showed its controls in Summit on the X399 but not the remote screen, while
+Firefox showed it. Fixed in `bundle-ywvpzj7_` (`SkiaCGMiPGO`, engine patch
+`7655417f`), installed as the launcher; the previous one is
+`launcher-backups/Summit-current.pre-20261002-1758.sh`.
+
+- **How NanoKVM sends the screen.** Without `RTCPeerConnection` (WebRTC is
+  compiled out) its page uses MJPEG: an `<img>` on
+  `/api/stream/mjpeg`, a `multipart/x-mixed-replace` response that never
+  ends. While the machine shows no picture (booting, blanked, changing mode)
+  the server sends nothing at all, and the connection stays open.
+- **Cause.** libcurl's request timeout in WebKit is an idle timeout
+  (`CURLOPT_LOW_SPEED_TIME`, 60 s by default), and it covered the body too.
+  After about 66 s without a frame the stream failed ("Timeout was
+  reached"), the image went broken and frames sent afterwards never
+  arrived. NanoKVM's page also hides the screen for good after an image
+  error, so only a reload brought it back.
+- **Fix.** Once a `multipart/x-mixed-replace` or `text/event-stream`
+  response has started, the idle timeout no longer applies to it
+  (`CurlRequest::didReceiveHeader`). Other responses keep it.
+- **Verified** with `tools/bench/mjpeg-stall-server.py` (frames, 70 s of
+  silence, frames): `bundle-7txch8aq` failed at 69 s and stayed on the first
+  picture; the new build and Firefox 156 both showed the later frames from
+  73 s. The real NanoKVM streams the Rock 5's desktop in the new build.
+
 ## 2 October 2026: GitHub issues #6-#15
 
 All on the X399, built incrementally in `SkiaCGMiPGO` (profile-guided, engine
