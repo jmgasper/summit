@@ -64,6 +64,66 @@ to a thread of the profile's own, which waits 250 ms to take whatever
 else changes with them; quitting writes what is left before the process
 exits. Clearing history still writes at once.
 
+### Connections opened before they are needed
+
+Summit never connected ahead of a request. WebKit's preconnects (`<link
+rel=preconnect>`, `Link: <...>; rel=preconnect` headers, and the connection
+the network process opens to a page being navigated to while the web
+process gets ready) are compiled only where `ENABLE(SERVER_PRECONNECT)` is
+on, the GLib and Cocoa ports; `<link rel=dns-prefetch>` reached an empty
+`DNSResolveQueueCurl::platformResolve`. Every page paid DNS, TCP and TLS
+(two or three round trips) for each server at the moment it first needed
+it.
+
+libcurl has no preconnect, and a `CURLOPT_CONNECT_ONLY` connection is never
+reused for another transfer (`url_match_connect_config`). A preconnect is
+now an ordinary transfer that stops in `CURLOPT_PREREQFUNCTION`, which
+libcurl calls once the connection is up (DNS, TCP, TLS, ALPN) and before
+anything is sent. A transfer that ends early leaves libcurl unsure of the
+connection's state, so it keeps it only if it is multiplexed: HTTP/2
+connections stay in the pool; HTTP/1.1 ones are closed, and their servers
+are remembered (from preconnects and from every response) and not
+preconnected again. The `NetworkProcess` code is enabled with
+`ENABLE(SERVER_PRECONNECT) || PLATFORM(HAIKU)` in the five places that
+need it, rather than the feature flag that would rebuild all of WebKit,
+and the two link preferences are set in `WebView.cpp`. DNS prefetch
+resolves into libcurl's shared DNS cache with a connect-only transfer
+whose socket callback refuses the socket. The address bar has the
+network connect to where Enter would go (a page completed from history,
+the search engine, a suggestion chosen with the arrow keys; not in
+private windows), through a new `BWebKitView::Preconnect()`.
+`SUMMIT_PRECONNECT=0` turns all of it off.
+
+On The Guardian (`SUMMIT_NET_TRACE=1`) the page's own connection was up
+80 ms after the navigation began; its ten `Link:` and `<link>` preconnects
+were all HTTP/2 and up within 40-180 ms of the response headers; every
+later request to those servers went out on them (`dns=0 connect=0`).
+Typing a search into the address bar connected to DuckDuckGo, and a
+completion from history to its site, before Enter.
+
+Three alternating pairs of `run-pageload.py --browser summit --rounds 2`,
+with and without `SUMMIT_PRECONNECT=0` (medians of three, ms; cold = empty
+cache):
+
+| page | | first byte | FCP | LCP | DOMContentLoaded | load |
+| --- | --- | --- | --- | --- | --- | --- |
+| Wikipedia, cold | on / off | 650 / 842 | 1320 / 1509 | 1439 / 1605 | 1147 / 1339 | 2766 / 3239 |
+| The Guardian, warm | on / off | 464 / 720 | 905 / 907 | 1864 / 2128 | 1259 / 1505 | 6866 / 5918 |
+| BBC News, cold | on / off | 96 / 112 | 323 / 335 | 1236 / 1204 | 746 / 600 | 1588 / 14048 |
+| BBC News, warm | on / off | 234 / 287 | 458 / 776 | 1272 / 1292 | 687 / 706 | 1487 / 5787 |
+
+The other pages (Reddit, YouTube, GitHub, and the rounds not shown)
+moved by less than their own spread. The page's own connection gains
+little in a running browser: the network process starts the
+main-resource preconnect only 2-43 ms before the web process asks for
+the page (`SUMMIT_NET_TRACE`); Wikipedia's cold gain is mostly a slow
+first DNS answer (213 ms against 25) that the preconnect took off the
+navigation's timeline. The gains come from the hints: the connections a
+page names are open by the time its parser reaches the resources.
+YouTube and Google pages would gain more from brotli (YouTube's front
+page is 98 KB as brotli against 255 KB as gzip, 25-60 ms to download
+here) and HTTP/3; the system libcurl has neither.
+
 ## 1 October 2026: page loads against Firefox (issue #2)
 
 `tools/bench/run-pageload.py` loads complex sites in Summit and in Firefox

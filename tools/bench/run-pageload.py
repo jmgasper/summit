@@ -54,7 +54,8 @@ COLLECT = ('(() => { const n = performance.getEntriesByType("navigation")[0]; co
            'lcp: window.__pageload ? window.__pageload.lcp : null, lcpWhat: window.__pageload ? window.__pageload.lcpWhat : null, '
            'resources: r.length, '
            'transfer: r.reduce((a, x) => a + (x.transferSize || 0), 0), elements: document.getElementsByTagName("*").length, '
-           'last: [...r].sort((a, b) => b.responseEnd - a.responseEnd).slice(0, 4).map(x => '
+           'last: [...r].filter(x => !n || !n.loadEventStart || x.responseEnd <= n.loadEventStart)'
+           '.sort((a, b) => b.responseEnd - a.responseEnd).slice(0, 4).map(x => '
            '[x.initiatorType, Math.round(x.startTime), Math.round(x.responseEnd), x.name.slice(0, 90)])}; })()')
 METRICS = ('ttfb', 'fcp', 'lcp', 'dcl', 'load')
 
