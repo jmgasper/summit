@@ -71,6 +71,178 @@ index 630f6c989889b00e6c8817a819df1d9eed083d95..90dfd0dbc79faf617f61332f5248966a
          push(@args, qw(-E -P -x c++ -C -ffreestanding));
      }
  }
+diff --git a/Source/JavaScriptCore/runtime/ArrayBuffer.cpp b/Source/JavaScriptCore/runtime/ArrayBuffer.cpp
+index 25e14419707ec277496523d826ac82e1b0183333..05c14e3340517b9b990d3e4df5b89a4ec2e72eb7 100644
+--- a/Source/JavaScriptCore/runtime/ArrayBuffer.cpp
++++ b/Source/JavaScriptCore/runtime/ArrayBuffer.cpp
+@@ -139,9 +139,18 @@ static RefPtr<BufferMemoryHandle> tryAllocateResizableMemory(VM* vm, size_t size
+         return nullptr;
+     }
+ 
+-    constexpr bool readable = false;
+-    constexpr bool writable = false;
+-    OSAllocator::protect(slowMemory + initialBytes, maximumBytes - initialBytes, readable, writable);
++#if OS(HAIKU)
++    // The reservation starts inaccessible on Haiku (BufferMemoryHandle.cpp).
++    if (BufferMemoryHandle::signalingMemoryStartsInaccessible()) {
++        if (initialBytes)
++            OSAllocator::protect(slowMemory, initialBytes, true, true);
++    } else
++#endif
++    {
++        constexpr bool readable = false;
++        constexpr bool writable = false;
++        OSAllocator::protect(slowMemory + initialBytes, maximumBytes - initialBytes, readable, writable);
++    }
+     return adoptRef(*new BufferMemoryHandle(slowMemory, initialBytes, maximumBytes, PageCount::fromBytes(initialBytes), PageCount::fromBytes(maximumBytes), MemorySharingMode::Shared, MemoryMode::BoundsChecking));
+ }
+ 
+diff --git a/Source/JavaScriptCore/runtime/BufferMemoryHandle.cpp b/Source/JavaScriptCore/runtime/BufferMemoryHandle.cpp
+index 92c60c097563ec8bd83879c32b1a1afd8a454b67..df5610330781ceac2aab2795dc7ef4d0c9a27bb7 100644
+--- a/Source/JavaScriptCore/runtime/BufferMemoryHandle.cpp
++++ b/Source/JavaScriptCore/runtime/BufferMemoryHandle.cpp
+@@ -38,6 +38,12 @@
+ #include <wtf/OSAllocator.h>
+ #include <wtf/Platform.h>
+ #include <wtf/PrintStream.h>
++
++#if OS(HAIKU)
++#include <stdlib.h>
++#include <string.h>
++#include <sys/mman.h>
++#endif
+ #include <wtf/TZoneMallocInlines.h>
+ #include <wtf/Vector.h>
+ 
+@@ -79,6 +85,24 @@ void BufferMemoryResult::dump(PrintStream& out) const
+     out.print("{basePtr = ", RawPointer(basePtr), ", kind = ", kind, "}");
+ }
+ 
++#if OS(HAIKU)
++// Haiku's mprotect() visits every page of its range, so changing the protection
++// of a signaling memory's 4 GiB reservation takes about 60 ms. A memory used to
++// be protected twice (its tail made inaccessible when created, all of it made
++// writable again before the allocator took it back), which made every
++// WebAssembly memory cost ~130 ms to create and free (GitHub issue #6). Here
++// the reservation is mapped inaccessible, the memory opens only the pages it
++// uses (signalingMemoryStartsInaccessible), and freeing unmaps it.
++bool BufferMemoryHandle::signalingMemoryStartsInaccessible()
++{
++    static const bool enabled = [] {
++        const char* value = getenv("SUMMIT_WASM_RESERVE_INACCESSIBLE");
++        return !value || strcmp(value, "0");
++    }();
++    return enabled;
++}
++#endif
++
+ BufferMemoryResult BufferMemoryManager::tryAllocateFastMemory()
+ {
+     BufferMemoryResult result = [&] {
+@@ -86,7 +110,15 @@ BufferMemoryResult BufferMemoryManager::tryAllocateFastMemory()
+         if (m_fastMemories.size() >= m_maxFastMemoryCount)
+             return BufferMemoryResult(nullptr, BufferMemoryResult::Kind::SyncTryToReclaimMemory);
+ 
+-        void* result = Gigacage::tryAllocateZeroedVirtualPages(Gigacage::Primitive, BufferMemoryHandle::fastMappedBytes());
++        void* result;
++#if OS(HAIKU)
++        if (BufferMemoryHandle::signalingMemoryStartsInaccessible()) {
++            result = mmap(nullptr, BufferMemoryHandle::fastMappedBytes(), PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
++            if (result == MAP_FAILED)
++                result = nullptr;
++        } else
++#endif
++            result = Gigacage::tryAllocateZeroedVirtualPages(Gigacage::Primitive, BufferMemoryHandle::fastMappedBytes());
+         if (!result)
+             return BufferMemoryResult(nullptr, BufferMemoryResult::Kind::SyncTryToReclaimMemory);
+ 
+@@ -106,7 +138,12 @@ void BufferMemoryManager::freeFastMemory(void* basePtr)
+ {
+     {
+         Locker locker { m_lock };
+-        Gigacage::freeVirtualPages(Gigacage::Primitive, basePtr, BufferMemoryHandle::fastMappedBytes());
++#if OS(HAIKU)
++        if (BufferMemoryHandle::signalingMemoryStartsInaccessible())
++            munmap(basePtr, BufferMemoryHandle::fastMappedBytes());
++        else
++#endif
++            Gigacage::freeVirtualPages(Gigacage::Primitive, basePtr, BufferMemoryHandle::fastMappedBytes());
+         m_fastMemories.removeFirst(basePtr);
+     }
+ 
+@@ -117,7 +154,16 @@ BufferMemoryResult BufferMemoryManager::tryAllocateGrowableBoundsCheckingMemory(
+ {
+     BufferMemoryResult result = [&] {
+         Locker locker { m_lock };
+-        void* result = Gigacage::tryAllocateZeroedVirtualPages(Gigacage::Primitive, mappedCapacity);
++        void* result;
++#if OS(HAIKU)
++        // As with signaling memories: reserved inaccessible, opened as used.
++        if (BufferMemoryHandle::signalingMemoryStartsInaccessible()) {
++            result = mmap(nullptr, mappedCapacity, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
++            if (result == MAP_FAILED)
++                result = nullptr;
++        } else
++#endif
++            result = Gigacage::tryAllocateZeroedVirtualPages(Gigacage::Primitive, mappedCapacity);
+         if (!result)
+             return BufferMemoryResult(nullptr, BufferMemoryResult::Kind::SyncTryToReclaimMemory);
+ 
+@@ -135,7 +181,12 @@ void BufferMemoryManager::freeGrowableBoundsCheckingMemory(void* basePtr, size_t
+ {
+     {
+         Locker locker { m_lock };
+-        Gigacage::freeVirtualPages(Gigacage::Primitive, basePtr, mappedCapacity);
++#if OS(HAIKU)
++        if (BufferMemoryHandle::signalingMemoryStartsInaccessible())
++            munmap(basePtr, mappedCapacity);
++        else
++#endif
++            Gigacage::freeVirtualPages(Gigacage::Primitive, basePtr, mappedCapacity);
+         m_growableBoundsCheckingMemories.erase(std::make_pair(std::bit_cast<uintptr_t>(basePtr), mappedCapacity));
+     }
+ 
+@@ -256,7 +307,11 @@ BufferMemoryHandle::~BufferMemoryHandle()
+             // nullBasePointer's zero-sized memory is not used for MemoryMode::Signaling.
+             constexpr bool readable = true;
+             constexpr bool writable = true;
+-            OSAllocator::protect(memory, BufferMemoryHandle::fastMappedBytes(), readable, writable);
++#if OS(HAIKU)
++            // The reservation is unmapped, not reused: no need to open it first.
++            if (!signalingMemoryStartsInaccessible())
++#endif
++                OSAllocator::protect(memory, BufferMemoryHandle::fastMappedBytes(), readable, writable);
+             BufferMemoryManager::singleton().freeFastMemory(memory);
+             break;
+         }
+@@ -275,7 +330,10 @@ BufferMemoryHandle::~BufferMemoryHandle()
+                 }
+                 constexpr bool readable = true;
+                 constexpr bool writable = true;
+-                OSAllocator::protect(memory, m_mappedCapacity, readable, writable);
++#if OS(HAIKU)
++                if (!signalingMemoryStartsInaccessible())
++#endif
++                    OSAllocator::protect(memory, m_mappedCapacity, readable, writable);
+                 BufferMemoryManager::singleton().freeGrowableBoundsCheckingMemory(memory, m_mappedCapacity);
+                 break;
+             }
+diff --git a/Source/JavaScriptCore/runtime/BufferMemoryHandle.h b/Source/JavaScriptCore/runtime/BufferMemoryHandle.h
+index ad646d690356b4dd663520a5114b9ec374998025..72e69814f7921dd17711b0fdb8a506325832a17a 100644
+--- a/Source/JavaScriptCore/runtime/BufferMemoryHandle.h
++++ b/Source/JavaScriptCore/runtime/BufferMemoryHandle.h
+@@ -167,6 +167,11 @@ public:
+ 
+     static size_t NODELETE fastMappedRedzoneBytes();
+     static size_t NODELETE fastMappedBytes();
++#if OS(HAIKU)
++    // A signaling memory's reservation is mapped inaccessible and opened as
++    // the memory grows (SUMMIT_WASM_RESERVE_INACCESSIBLE=0: the old way).
++    static bool signalingMemoryStartsInaccessible();
++#endif
+ 
+     static void* nullBasePointer();
+ 
 diff --git a/Source/JavaScriptCore/runtime/JSCBytecodeCacheVersion.cpp b/Source/JavaScriptCore/runtime/JSCBytecodeCacheVersion.cpp
 index 26e825ace464f1e32e50b5c6a0a4d57d573779b9..fa4b4d7426a4fc3121651814b34db1041cc199b0 100644
 --- a/Source/JavaScriptCore/runtime/JSCBytecodeCacheVersion.cpp
@@ -103,6 +275,53 @@ index 2ac8b24f00e624acb564a0e11fd2437b5f02a99c..fd988cc36ef755a0e2d5939eb54141af
  #elif OS(FREEBSD)
  
  #if CPU(X86_64)
+diff --git a/Source/JavaScriptCore/wasm/WasmMemory.cpp b/Source/JavaScriptCore/wasm/WasmMemory.cpp
+index 769678502c06430b29cf59cddec450b1ca7f78d4..6233d267ce38a3ba0391a9ddab357e26103cd349 100644
+--- a/Source/JavaScriptCore/wasm/WasmMemory.cpp
++++ b/Source/JavaScriptCore/wasm/WasmMemory.cpp
+@@ -198,9 +198,18 @@ RefPtr<Memory> Memory::tryCreate(VM& vm, PageCount initial, PageCount maximum, M
+     }
+     
+     if (fastMemory) {
+-        constexpr bool readable = false;
+-        constexpr bool writable = false;
+-        OSAllocator::protect(fastMemory + initialBytes, BufferMemoryHandle::fastMappedBytes() - initialBytes, readable, writable);
++#if OS(HAIKU)
++        if (BufferMemoryHandle::signalingMemoryStartsInaccessible()) {
++            // The reservation starts inaccessible; open the initial pages.
++            if (initialBytes)
++                OSAllocator::protect(fastMemory, initialBytes, true, true);
++        } else
++#endif
++        {
++            constexpr bool readable = false;
++            constexpr bool writable = false;
++            OSAllocator::protect(fastMemory + initialBytes, BufferMemoryHandle::fastMappedBytes() - initialBytes, readable, writable);
++        }
+         switch (sharingMode) {
+         case MemorySharingMode::Default: {
+             return Memory::create(adoptRef(*new BufferMemoryHandle(fastMemory, initialBytes, BufferMemoryHandle::fastMappedBytes(), initial, maximum, MemorySharingMode::Default, MemoryMode::Signaling)), addressType, WTF::move(growSuccessCallback));
+@@ -249,9 +258,17 @@ RefPtr<Memory> Memory::tryCreate(VM& vm, PageCount initial, PageCount maximum, M
+             return nullptr;
+         }
+ 
+-        constexpr bool readable = false;
+-        constexpr bool writable = false;
+-        OSAllocator::protect(slowMemory + initialBytes, reservedMaximumBytes - initialBytes, readable, writable);
++#if OS(HAIKU)
++        if (BufferMemoryHandle::signalingMemoryStartsInaccessible()) {
++            if (initialBytes)
++                OSAllocator::protect(slowMemory, initialBytes, true, true);
++        } else
++#endif
++        {
++            constexpr bool readable = false;
++            constexpr bool writable = false;
++            OSAllocator::protect(slowMemory + initialBytes, reservedMaximumBytes - initialBytes, readable, writable);
++        }
+ 
+         Ref handle = adoptRef(*new BufferMemoryHandle(slowMemory, initialBytes, reservedMaximumBytes, initial, maximum, MemorySharingMode::Shared, MemoryMode::BoundsChecking));
+         auto span = handle->mutableSpan();
 diff --git a/Source/ThirdParty/ANGLE/PlatformHaiku.cmake b/Source/ThirdParty/ANGLE/PlatformHaiku.cmake
 new file mode 100644
 index 0000000000000000000000000000000000000000..8047502ad11d1d3147beda2ccfe718428e4e6b7b
@@ -3813,6 +4032,21 @@ index 09a183df0ec9fd9640290b123cf53214caaeaca9..23759bca52d31395a8e5b907ee821ab7
      void didMutateRuleFromCSSStyleDeclaration();
      void didMutate();
      
+diff --git a/Source/WebCore/dom/DataTransfer.h b/Source/WebCore/dom/DataTransfer.h
+index 64a53ff58bf7bcd9e56ccc8b74cea8c9c75bf89e..8810339d0e397c61f7f3462d0655fcfcdb17bc54 100644
+--- a/Source/WebCore/dom/DataTransfer.h
++++ b/Source/WebCore/dom/DataTransfer.h
+@@ -123,7 +123,9 @@ private:
+ 
+     bool allowsFileAccess() const
+     {
+-#if PLATFORM(COCOA)
++#if PLATFORM(COCOA) || PLATFORM(HAIKU)
++        // Haiku: pasted images and dropped files become File objects; a drag
++        // that carries no files exposes none (webkit.org/b/271957).
+         return !forDrag() || forFileDrag();
+ #else
+         // Check https://webkit.org/b/271957 before allowing file access for your port.
 diff --git a/Source/WebCore/dom/Document.cpp b/Source/WebCore/dom/Document.cpp
 index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..49341ab5570aa84b3c98f1fe2959c13d78a9039f 100644
 --- a/Source/WebCore/dom/Document.cpp
@@ -4251,6 +4485,27 @@ index 7f18cb986d1972948b04893b511de16598d7f103..68525703b1263997f5100c89a1c31dd9
  } elsif ($Config::Config{"osname"} eq "darwin" && $ENV{SDKROOT}) {
      chomp($ccLocation = `xcrun -find cc -sdk '$ENV{SDKROOT}'`);
  } else {
+diff --git a/Source/WebCore/editing/glib/EditorGLib.cpp b/Source/WebCore/editing/glib/EditorGLib.cpp
+index 9417e52ee3925b7b2654b1e9156a99d52a55b6bf..ff861a0b6c68608c27866dac44236f003702a1e5 100644
+--- a/Source/WebCore/editing/glib/EditorGLib.cpp
++++ b/Source/WebCore/editing/glib/EditorGLib.cpp
+@@ -126,10 +126,16 @@ void Editor::writeSelectionToPasteboard(Pasteboard& pasteboard)
+ 
+ RefPtr<DocumentFragment> Editor::webContentFromPasteboard(Pasteboard& pasteboard, const SimpleRange& context, bool allowPlainText, bool& chosePlainText)
+ {
++#if PLATFORM(HAIKU)
++    // The Haiku pasteboard has no web content reader; it builds the fragment
++    // itself from the clipboard's HTML, image or plain text.
++    return pasteboard.documentFragment(*document().frame(), context, allowPlainText, chosePlainText);
++#else
+     WebContentReader reader(*document().frame(), context, allowPlainText);
+     pasteboard.read(reader);
+     chosePlainText = reader.madeFragmentFromPlainText();
+     return reader.takeFragment();
++#endif
+ }
+ 
+ } // namespace WebCore
 diff --git a/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.cpp b/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.cpp
 index 50c7fe12885a08e9650329a04bc561a391823a1c..f52e7fbc0333efd816cd4c8cbd0f43c4ab0459de 100644
 --- a/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.cpp
@@ -6868,8 +7123,33 @@ index f959bc4de8e956e2b96870ed1ae1b69519f1f3a5..ef147662aa3721f1a3bbb2930d17c5d1
  #else
  using PlatformCursor = void*;
  #endif
+diff --git a/Source/WebCore/platform/DragData.cpp b/Source/WebCore/platform/DragData.cpp
+index dd5c7bf82939a3d9161262012befaadd1081ee4d..cffab1fc1720e49db810bc768b64baa9f66c3152 100644
+--- a/Source/WebCore/platform/DragData.cpp
++++ b/Source/WebCore/platform/DragData.cpp
+@@ -56,6 +56,20 @@ DragData::DragData(const IntPoint& clientPosition, const IntPoint& globalPositio
+ }
+ #endif
+ 
++#if PLATFORM(HAIKU)
++DragData::DragData(const IntPoint& clientPosition, const IntPoint& globalPosition, const Vector<String>& fileNames, OptionSet<DragOperation> sourceOperationMask, OptionSet<DragApplicationFlags> flags, OptionSet<DragDestinationAction> destinationActionMask, std::optional<PageIdentifier> pageID)
++    : m_clientPosition(clientPosition)
++    , m_globalPosition(globalPosition)
++    , m_platformDragData(nullptr)
++    , m_draggingSourceOperationMask(sourceOperationMask)
++    , m_applicationFlags(flags)
++    , m_fileNames(fileNames)
++    , m_dragDestinationActionMask(destinationActionMask)
++    , m_pageID(pageID)
++{
++}
++#endif
++
+ std::unique_ptr<PasteboardContext> DragData::createPasteboardContext() const
+ {
+     return PagePasteboardContext::create(std::optional<PageIdentifier> { m_pageID });
 diff --git a/Source/WebCore/platform/DragData.h b/Source/WebCore/platform/DragData.h
-index 9e2964b6e5f27f3a9c9f39e95b37de574cd52b1b..de7de2f4b4180fbee65319450b1b385bb8d8ea29 100644
+index 9e2964b6e5f27f3a9c9f39e95b37de574cd52b1b..7c1ad82624c435727063f4c4f814150171641aa4 100644
 --- a/Source/WebCore/platform/DragData.h
 +++ b/Source/WebCore/platform/DragData.h
 @@ -53,6 +53,9 @@ namespace WebCore {
@@ -6882,6 +7162,17 @@ index 9e2964b6e5f27f3a9c9f39e95b37de574cd52b1b..de7de2f4b4180fbee65319450b1b385b
  #else
  typedef void* DragDataRef;
  #endif
+@@ -88,6 +91,10 @@ public:
+ 
+ #if PLATFORM(COCOA)
+     WEBCORE_EXPORT DragData(const String& dragStorageName, const IntPoint& clientPosition, const IntPoint& globalPosition, const Vector<String>&, Vector<String>&& /* promisedFileMIMETypes */, OptionSet<DragOperation>, OptionSet<DragApplicationFlags> = { }, OptionSet<DragDestinationAction> = anyDragDestinationAction(), std::optional<PageIdentifier> pageID = std::nullopt);
++#endif
++#if PLATFORM(HAIKU)
++    // An external drag (files from Tracker) carries its files' paths, also over IPC.
++    WEBCORE_EXPORT DragData(const IntPoint& clientPosition, const IntPoint& globalPosition, const Vector<String>& fileNames, OptionSet<DragOperation>, OptionSet<DragApplicationFlags> = { }, OptionSet<DragDestinationAction> = anyDragDestinationAction(), std::optional<PageIdentifier> pageID = std::nullopt);
+ #endif
+     // This constructor should used only by WebKit2 IPC because DragData
+     // is initialized by the decoder and not in the constructor.
 diff --git a/Source/WebCore/platform/DragImage.h b/Source/WebCore/platform/DragImage.h
 index 104157e6a0ad5e8b5b9d88b9cef4b5a19b9aa4f8..c91778df7bc81e283073f0bb479358059c8fc984 100644
 --- a/Source/WebCore/platform/DragImage.h
@@ -7056,18 +7347,36 @@ index d65ff90dc36887139a180ecc8d16be88fde5b1a9..1a4a65584f5f7d6a37d58eece820b628
      crypto/openssl/OpenSSLUtilities.cpp
      crypto/openssl/SerializedCryptoKeyWrapOpenSSL.cpp
 diff --git a/Source/WebCore/platform/Pasteboard.h b/Source/WebCore/platform/Pasteboard.h
-index 844687bbf3636c9cd64621e41a092d35ed61cd29..773967f99273777fa4c3efb0def347bd78b5b1c4 100644
+index 844687bbf3636c9cd64621e41a092d35ed61cd29..cc4479f8b0be7cf6189efd387b24ff7d9dd74a07 100644
 --- a/Source/WebCore/platform/Pasteboard.h
 +++ b/Source/WebCore/platform/Pasteboard.h
-@@ -264,7 +264,7 @@ public:
+@@ -264,7 +264,13 @@ public:
      WEBCORE_EXPORT virtual void setDragImage(DragImage, const IntPoint& hotSpot);
  #endif
  
 -#if PLATFORM(WIN)
++#if PLATFORM(HAIKU)
++    // A drag-and-drop pasteboard holds what an external drag carries (the
++    // files dropped on the page); only copy and paste uses the clipboard.
++    Pasteboard(std::unique_ptr<PasteboardContext>&&, Vector<String>&& dragFileNames);
++#endif
++
 +#if PLATFORM(WIN) || PLATFORM(HAIKU)
      RefPtr<DocumentFragment> documentFragment(LocalFrame&, const SimpleRange&, bool allowPlainText, bool& chosePlainText); // FIXME: Layering violation.
      void writeImage(Element&, const URL&, const String& title); // FIXME: Layering violation.
      void writeSelection(const std::optional<SimpleRange>&, bool canSmartCopyOrDelete, LocalFrame&, ShouldSerializeSelectedTextForDataTransfer = DefaultSelectedTextType); // FIXME: Layering violation.
+@@ -389,6 +395,11 @@ private:
+ #endif
+     Vector<String> m_promisedFileMIMETypes;
+ 
++#if PLATFORM(HAIKU)
++    bool m_forDragAndDrop { false };
++    Vector<String> m_dragFileNames;
++#endif
++
+ #if PLATFORM(WIN)
+     HWND m_owner;
+     COMPtr<IDataObject> m_dataObject;
 diff --git a/Source/WebCore/platform/PlatformKeyboardEvent.h b/Source/WebCore/platform/PlatformKeyboardEvent.h
 index 071f9fa0e6cfaa84d9b077e39a64bec9361ead9a..53b3545ab62d968c28ee53b7a93b68ecb22deaaf 100644
 --- a/Source/WebCore/platform/PlatformKeyboardEvent.h
@@ -22402,10 +22711,10 @@ index 0000000000000000000000000000000000000000..9a4f164ae35746049273719ea57e35a5
 +
 diff --git a/Source/WebCore/platform/haiku/DragDataHaiku.cpp b/Source/WebCore/platform/haiku/DragDataHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..f3b71e0500fbee19341002da681d9eb621867b8b
+index 0000000000000000000000000000000000000000..7ad802557fbd6a0f81d4d98cbc90880676ae2819
 --- /dev/null
 +++ b/Source/WebCore/platform/haiku/DragDataHaiku.cpp
-@@ -0,0 +1,108 @@
+@@ -0,0 +1,111 @@
 +/*
 + * Copyright (C) 2007 Apple Inc.  All rights reserved.
 + * Copyright (C) 2007 Ryan Leavengood <leavengood@gmail.com>
@@ -22438,72 +22747,76 @@ index 0000000000000000000000000000000000000000..f3b71e0500fbee19341002da681d9eb6
 +#include "Document.h"
 +#include "DocumentFragment.h"
 +#include "NotImplemented.h"
++#include <wtf/URL.h>
 +
 +
 +namespace WebCore {
 +
++// Only drags from other applications reach a page (a drag that starts in a
++// page is not handed to the system), and of those only files are understood:
++// Tracker's drags carry refs, which the view turns into paths.
++
 +bool DragData::canSmartReplace() const
 +{
-+    notImplemented();
 +    return false;
 +}
 +
 +bool DragData::containsColor() const
 +{
-+    notImplemented();
 +    return false;
 +}
 +
 +bool DragData::containsFiles() const
 +{
-+    notImplemented();
-+    return false;
++    return !m_fileNames.isEmpty();
 +}
 +
 +unsigned DragData::numberOfFiles() const
 +{
-+    return 0;
++    return m_fileNames.size();
 +}
 +
 +Vector<String> DragData::asFilenames() const
 +{
-+    notImplemented();
-+	return {};
++    return m_fileNames;
 +}
 +
 +bool DragData::containsPlainText() const
 +{
-+    notImplemented();
 +    return false;
 +}
 +
 +String DragData::asPlainText() const
 +{
-+    notImplemented();
 +    return String();
 +}
 +
 +Color DragData::asColor() const
 +{
-+    notImplemented();
 +    return Color();
 +}
 +
-+bool DragData::containsCompatibleContent(WebCore::DragData::DraggingPurpose) const
++bool DragData::containsCompatibleContent(WebCore::DragData::DraggingPurpose purpose) const
 +{
-+    return containsColor() || containsURL() || containsPlainText();
++    if (purpose == DraggingPurpose::ForFileUpload)
++        return containsFiles();
++    return containsColor() || containsURL() || containsPlainText() || containsFiles();
 +}
 +
-+bool DragData::containsURL(FilenameConversionPolicy) const
++// A file dropped where the page takes nothing opens in the tab, as in other
++// browsers: its file: URL is the drag's URL.
++bool DragData::containsURL(FilenameConversionPolicy policy) const
 +{
-+    notImplemented();
-+    return false;
++    return policy == ConvertFilenames && containsFiles();
 +}
 +
-+String DragData::asURL(FilenameConversionPolicy, String*) const
++String DragData::asURL(FilenameConversionPolicy policy, String* title) const
 +{
-+    notImplemented();
-+    return String();
++    if (policy != ConvertFilenames || !containsFiles())
++        return String();
++    if (title)
++        *title = m_fileNames[0].substring(m_fileNames[0].reverseFind('/') + 1);
++    return URL::fileURLWithFileSystemPath(m_fileNames[0]).string();
 +}
 +
 +bool DragData::shouldMatchStyleOnDrop() const
@@ -22513,7 +22826,6 @@ index 0000000000000000000000000000000000000000..f3b71e0500fbee19341002da681d9eb6
 +
 +
 +} // namespace WebCore
-+
 diff --git a/Source/WebCore/platform/haiku/DragImageHaiku.cpp b/Source/WebCore/platform/haiku/DragImageHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..bb734b2fb2b6967b7510fd392b4df83e03855303
@@ -23673,10 +23985,10 @@ index 0000000000000000000000000000000000000000..32ba8e2f08efde1fa6ffccd7f3b73935
 +
 diff --git a/Source/WebCore/platform/haiku/PasteboardHaiku.cpp b/Source/WebCore/platform/haiku/PasteboardHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..4ae9f35336dc319d5d3fe7a2cf87057690bae939
+index 0000000000000000000000000000000000000000..5bbb1237794cefb5519db06eee7c9556496a7a81
 --- /dev/null
 +++ b/Source/WebCore/platform/haiku/PasteboardHaiku.cpp
-@@ -0,0 +1,440 @@
+@@ -0,0 +1,628 @@
 +/*
 + * Copyright (C) 2006 Zack Rusin <zack@kde.org>
 + * Copyright (C) 2007 Ryan Leavengood <leavengood@gmail.com>
@@ -23707,8 +24019,15 @@ index 0000000000000000000000000000000000000000..4ae9f35336dc319d5d3fe7a2cf870576
 +#include "config.h"
 +#include "Pasteboard.h"
 +
++#include "Blob.h"
++#include "DOMURL.h"
++#include "Document.h"
 +#include "DocumentFragment.h"
 +#include "DragData.h"
++#include "Image.h"
++#include "ImageUtilities.h"
++#include "NativeImage.h"
++#include "SharedBuffer.h"
 +#include "Editor.h"
 +#include "Frame.h"
 +#include "LocalFrameInlines.h"
@@ -23720,8 +24039,14 @@ index 0000000000000000000000000000000000000000..4ae9f35336dc319d5d3fe7a2cf870576
 +
 +#include <support/Locker.h>
 +#include <app/Clipboard.h>
++#include <Bitmap.h>
++#include <BitmapStream.h>
++#include <DataIO.h>
 +#include <Message.h>
 +#include <String.h>
++#include <TranslationUtils.h>
++#include <TranslatorFormats.h>
++#include <TranslatorRoster.h>
 +#include <wtf/text/CString.h>
 +
 +
@@ -23733,18 +24058,28 @@ index 0000000000000000000000000000000000000000..4ae9f35336dc319d5d3fe7a2cf870576
 +}
 +
 +#if ENABLE(DRAG_SUPPORT)
++// A drag has a pasteboard of its own: a drag that starts in a page used to
++// write the system clipboard, and a drop read it.
 +std::unique_ptr<Pasteboard> Pasteboard::createForDragAndDrop(std::unique_ptr<PasteboardContext>&& context)
 +{
-+    return createForCopyAndPaste(std::move(context));
++    return std::make_unique<Pasteboard>(std::move(context), Vector<String> { });
 +}
 +
 +std::unique_ptr<Pasteboard> Pasteboard::create(const DragData& dragData)
 +{
-+    return createForCopyAndPaste(dragData.createPasteboardContext());
++    return std::make_unique<Pasteboard>(dragData.createPasteboardContext(), dragData.asFilenames());
 +}
 +#endif
 +
-+Pasteboard::Pasteboard(std::unique_ptr<WebCore::PasteboardContext, std::default_delete<WebCore::PasteboardContext> >&&)
++Pasteboard::Pasteboard(std::unique_ptr<WebCore::PasteboardContext, std::default_delete<WebCore::PasteboardContext> >&& context)
++    : m_context(std::move(context))
++{
++}
++
++Pasteboard::Pasteboard(std::unique_ptr<PasteboardContext>&& context, Vector<String>&& dragFileNames)
++    : m_context(std::move(context))
++    , m_forDragAndDrop(true)
++    , m_dragFileNames(std::move(dragFileNames))
 +{
 +}
 +
@@ -23774,6 +24109,85 @@ index 0000000000000000000000000000000000000000..4ae9f35336dc319d5d3fe7a2cf870576
 +    bool m_isLocked;
 +};
 +
++// Images on the clipboard: PNG or other image data under its MIME type, or a
++// BBitmap archive under "image/bitmap" (Screenshot, ShowImage) or
++// "image/x-be-bitmap". Call with the clipboard locked.
++static bool clipboardHasImage(BMessage* data)
++{
++    if (!data)
++        return false;
++    if (data->HasMessage("image/bitmap") || data->HasMessage("image/x-be-bitmap"))
++        return true;
++    char* name;
++    uint32 type;
++    int32 count;
++    for (int32 i = 0; data->GetInfo(B_MIME_TYPE, i, &name, &type, &count) == B_OK; i++) {
++        if (!strncmp(name, "image/", 6))
++            return true;
++    }
++    return false;
++}
++
++static RefPtr<SharedBuffer> encodePNG(BBitmap* bitmap)
++{
++    // BBitmapStream owns the bitmap until it is detached again.
++    BBitmapStream stream(bitmap);
++    BMallocIO output;
++    status_t status = BTranslatorRoster::Default()->Translate(&stream, nullptr, nullptr, &output, B_PNG_FORMAT);
++    BBitmap* detached = nullptr;
++    stream.DetachBitmap(&detached);
++    if (status != B_OK || !output.BufferLength())
++        return nullptr;
++    return SharedBuffer::create(std::span(static_cast<const uint8_t*>(output.Buffer()), output.BufferLength()));
++}
++
++struct ClipboardImage {
++    String type;
++    RefPtr<SharedBuffer> data;
++};
++
++// The clipboard's image as a file a page can take: PNG for bitmaps. Call with
++// the clipboard locked.
++static ClipboardImage readClipboardImage(BMessage* data)
++{
++    if (!data)
++        return { };
++    const void* bytes = nullptr;
++    ssize_t length = 0;
++    if (data->FindData("image/png", B_MIME_TYPE, &bytes, &length) == B_OK && length > 0)
++        return { "image/png"_s, SharedBuffer::create(std::span(static_cast<const uint8_t*>(bytes), length)) };
++    BMessage archive;
++    if (data->FindMessage("image/bitmap", &archive) == B_OK || data->FindMessage("image/x-be-bitmap", &archive) == B_OK) {
++        auto bitmap = std::make_unique<BBitmap>(&archive);
++        if (bitmap->InitCheck() == B_OK && bitmap->IsValid()) {
++            if (auto png = encodePNG(bitmap.get()))
++                return { "image/png"_s, WTF::move(png) };
++        }
++    }
++    char* name;
++    uint32 type;
++    int32 count;
++    for (int32 i = 0; data->GetInfo(B_MIME_TYPE, i, &name, &type, &count) == B_OK; i++) {
++        if (strncmp(name, "image/", 6) || data->FindData(name, B_MIME_TYPE, &bytes, &length) != B_OK || length <= 0)
++            continue;
++        return { String::fromLatin1(name), SharedBuffer::create(std::span(static_cast<const uint8_t*>(bytes), length)) };
++    }
++    return { };
++}
++
++static String fileNameForImageType(const String& type)
++{
++    if (type == "image/png"_s)
++        return "image.png"_s;
++    if (type == "image/jpeg"_s)
++        return "image.jpg"_s;
++    if (type == "image/gif"_s)
++        return "image.gif"_s;
++    if (type == "image/webp"_s)
++        return "image.webp"_s;
++    return "image"_s;
++}
++
 +void Pasteboard::writeTrustworthyWebURLsPboardType(const PasteboardURL&)
 +{
 +    notImplemented();
@@ -23781,6 +24195,8 @@ index 0000000000000000000000000000000000000000..4ae9f35336dc319d5d3fe7a2cf870576
 +
 +void Pasteboard::writeString(const String& type, const String& data)
 +{
++    if (m_forDragAndDrop)
++        return;
 +    if (be_clipboard->Lock()) {
 +        bool result = false;
 +        BMessage* bdata = be_clipboard->Data();
@@ -23805,6 +24221,8 @@ index 0000000000000000000000000000000000000000..4ae9f35336dc319d5d3fe7a2cf870576
 +
 +void Pasteboard::writeSelection(const std::optional<SimpleRange>& selectedRange, bool canSmartCopyOrDelete, LocalFrame& frame, ShouldSerializeSelectedTextForDataTransfer)
 +{
++    if (m_forDragAndDrop)
++        return;
 +    AutoClipboardLocker locker(be_clipboard);
 +    if (!locker.isLocked())
 +        return;
@@ -23830,6 +24248,8 @@ index 0000000000000000000000000000000000000000..4ae9f35336dc319d5d3fe7a2cf870576
 +
 +void Pasteboard::writePlainText(const String& text, SmartReplaceOption smartReplaceOption)
 +{
++    if (m_forDragAndDrop)
++        return;
 +    AutoClipboardLocker locker(be_clipboard);
 +    if (!locker.isLocked())
 +        return;
@@ -23845,9 +24265,38 @@ index 0000000000000000000000000000000000000000..4ae9f35336dc319d5d3fe7a2cf870576
 +}
 +
 +
-+void WebCore::Pasteboard::write(WebCore::PasteboardImage const&)
++// Copy Image: PNG data for pages and other browsers, and a BBitmap archive
++// as Haiku applications (ShowImage, WonderBrush) paste it.
++void WebCore::Pasteboard::write(WebCore::PasteboardImage const& pasteboardImage)
 +{
-+    notImplemented();
++    if (m_forDragAndDrop || !pasteboardImage.image)
++        return;
++    RefPtr nativeImage = pasteboardImage.image->nativeImage();
++    if (!nativeImage)
++        return;
++    auto png = encodeData(*nativeImage, "image/png"_s);
++    if (png.isEmpty())
++        return;
++
++    AutoClipboardLocker locker(be_clipboard);
++    if (!locker.isLocked())
++        return;
++    be_clipboard->Clear();
++    BMessage* data = be_clipboard->Data();
++    if (!data)
++        return;
++    data->AddData("image/png", B_MIME_TYPE, png.span().data(), png.size());
++    BMemoryIO input(png.span().data(), png.size());
++    if (std::unique_ptr<BBitmap> bitmap { BTranslationUtils::GetBitmap(&input) }) {
++        BMessage archive;
++        if (bitmap->Archive(&archive) == B_OK)
++            data->AddMessage("image/bitmap", &archive);
++    }
++    if (!pasteboardImage.url.url.isEmpty()) {
++        CString url = pasteboardImage.url.url.string().utf8();
++        data->AddData("text/uri-list", B_MIME_TYPE, url.data(), url.length());
++    }
++    be_clipboard->Commit();
 +}
 +
 +void Pasteboard::write(const PasteboardBuffer&)
@@ -23856,6 +24305,8 @@ index 0000000000000000000000000000000000000000..4ae9f35336dc319d5d3fe7a2cf870576
 +
 +void WebCore::Pasteboard::write(WebCore::PasteboardWebContent const& content)
 +{
++    if (m_forDragAndDrop)
++        return;
 +    AutoClipboardLocker locker(be_clipboard);
 +    if (!locker.isLocked())
 +        return;
@@ -23874,6 +24325,8 @@ index 0000000000000000000000000000000000000000..4ae9f35336dc319d5d3fe7a2cf870576
 +
 +void WebCore::Pasteboard::writeMarkup(WTF::String const& text)
 +{
++    if (m_forDragAndDrop)
++        return;
 +    AutoClipboardLocker locker(be_clipboard);
 +    if (!locker.isLocked())
 +        return;
@@ -23892,6 +24345,8 @@ index 0000000000000000000000000000000000000000..4ae9f35336dc319d5d3fe7a2cf870576
 +
 +void Pasteboard::write(const PasteboardURL& url)
 +{
++    if (m_forDragAndDrop)
++        return;
 +    ASSERT(!url.url.isEmpty());
 +
 +    AutoClipboardLocker locker(be_clipboard);
@@ -23915,8 +24370,12 @@ index 0000000000000000000000000000000000000000..4ae9f35336dc319d5d3fe7a2cf870576
 +
 +Pasteboard::FileContentState Pasteboard::fileContentState()
 +{
-+    notImplemented();
-+    return FileContentState::NoFileOrImageData;
++    if (m_forDragAndDrop)
++        return m_dragFileNames.isEmpty() ? FileContentState::NoFileOrImageData : FileContentState::MayContainFilePaths;
++    AutoClipboardLocker locker(be_clipboard);
++    if (!locker.isLocked())
++        return FileContentState::NoFileOrImageData;
++    return clipboardHasImage(be_clipboard->Data()) ? FileContentState::InMemoryImage : FileContentState::NoFileOrImageData;
 +}
 +
 +bool Pasteboard::canSmartReplace()
@@ -23934,6 +24393,8 @@ index 0000000000000000000000000000000000000000..4ae9f35336dc319d5d3fe7a2cf870576
 +
 +void Pasteboard::read(PasteboardPlainText& text, WebCore::PlainTextURLReadingPolicy, std::optional<long unsigned int>)
 +{
++    if (m_forDragAndDrop)
++        return;
 +    AutoClipboardLocker locker(be_clipboard);
 +    if (!locker.isLocked())
 +        return;
@@ -23953,6 +24414,8 @@ index 0000000000000000000000000000000000000000..4ae9f35336dc319d5d3fe7a2cf870576
 +													  bool allowPlainText, bool& chosePlainText)
 +{
 +    chosePlainText = false;
++    if (m_forDragAndDrop)
++        return nullptr;
 +
 +    AutoClipboardLocker locker(be_clipboard);
 +    if (!locker.isLocked())
@@ -23977,6 +24440,12 @@ index 0000000000000000000000000000000000000000..4ae9f35336dc319d5d3fe7a2cf870576
 +        }
 +    }
 +
++    if (auto image = readClipboardImage(data); image.data && frame.document()) {
++        Ref document = *frame.document();
++        auto url = DOMURL::createObjectURL(document, Blob::create(document.ptr(), image.data->extractData(), image.type));
++        return createFragmentForImageAndURL(document, url, { });
++    }
++
 +    if (!allowPlainText)
 +        return nullptr;
 +
@@ -23994,6 +24463,8 @@ index 0000000000000000000000000000000000000000..4ae9f35336dc319d5d3fe7a2cf870576
 +
 +bool Pasteboard::hasData()
 +{
++    if (m_forDragAndDrop)
++        return !m_dragFileNames.isEmpty();
 +    bool result = false;
 +
 +    if (be_clipboard->Lock()) {
@@ -24010,6 +24481,8 @@ index 0000000000000000000000000000000000000000..4ae9f35336dc319d5d3fe7a2cf870576
 +
 +void Pasteboard::clear(const String& type)
 +{
++    if (m_forDragAndDrop)
++        return;
 +    if (be_clipboard->Lock()) {
 +        BMessage* data = be_clipboard->Data();
 +
@@ -24030,23 +24503,23 @@ index 0000000000000000000000000000000000000000..4ae9f35336dc319d5d3fe7a2cf870576
 +
 +String Pasteboard::readString(const String& type)
 +{
-+    BString result;
++    if (m_forDragAndDrop)
++        return { };
++    String result;
 +
 +    if (be_clipboard->Lock()) {
 +        BMessage* data = be_clipboard->Data();
 +
-+        const char* buffer;
-+        ssize_t bufferLength;
-+        if (data) {
-+            data->FindData(type.utf8().legacyCStringPointer(), B_MIME_TYPE, 
-+                reinterpret_cast<const void**>(&buffer), &bufferLength);
-+        }
-+        result.SetTo(buffer, bufferLength);
++        const char* buffer = nullptr;
++        ssize_t bufferLength = 0;
++        if (data && data->FindData(type.utf8().legacyCStringPointer(), B_MIME_TYPE,
++                reinterpret_cast<const void**>(&buffer), &bufferLength) == B_OK && buffer && bufferLength > 0)
++            result = String::fromUTF8(std::span<const char>(buffer, bufferLength));
 +
 +        be_clipboard->Unlock();
 +    }
 +
-+    return String::fromUTF8(result.String());
++    return result;
 +}
 +
 +String Pasteboard::readStringInCustomData(const String& type)
@@ -24056,6 +24529,8 @@ index 0000000000000000000000000000000000000000..4ae9f35336dc319d5d3fe7a2cf870576
 +
 +void Pasteboard::clear()
 +{
++    if (m_forDragAndDrop)
++        return;
 +    AutoClipboardLocker locker(be_clipboard);
 +    if (!locker.isLocked())
 +        return;
@@ -24072,9 +24547,13 @@ index 0000000000000000000000000000000000000000..4ae9f35336dc319d5d3fe7a2cf870576
 +#endif
 +
 +
++// Only the web's own string types: the clipboard also holds BBitmap archives
++// and application-private fields, and images reach pages as files.
 +Vector<String> Pasteboard::typesForLegacyUnsafeBindings()
 +{
 +    Vector<String> result;
++    if (m_forDragAndDrop)
++        return result;
 +
 +    if (be_clipboard->Lock()) {
 +        BMessage* data = be_clipboard->Data();
@@ -24084,8 +24563,10 @@ index 0000000000000000000000000000000000000000..4ae9f35336dc319d5d3fe7a2cf870576
 +            uint32 type;
 +            int32 count;
 +
-+            for (int32 i = 0; data->GetInfo(B_ANY_TYPE, i, &name, &type, &count) == B_OK; i++)
-+                result.append(String::fromUTF8(name));
++            for (int32 i = 0; data->GetInfo(B_MIME_TYPE, i, &name, &type, &count) == B_OK; i++) {
++                if (!strncmp(name, "text/", 5) || !strncmp(name, "application/", 12))
++                    result.append(String::fromUTF8(name));
++            }
 +        }
 +
 +        be_clipboard->Unlock();
@@ -24109,9 +24590,28 @@ index 0000000000000000000000000000000000000000..4ae9f35336dc319d5d3fe7a2cf870576
 +	}
 +}
 +
-+void Pasteboard::read(WebCore::PasteboardFileReader&, std::optional<unsigned long>)
++// Files for DataTransfer.files: the files of a drop, or the clipboard's
++// image (a pasted screenshot becomes image.png).
++void Pasteboard::read(WebCore::PasteboardFileReader& reader, std::optional<unsigned long> index)
 +{
-+	notImplemented();
++    if (m_forDragAndDrop) {
++        for (size_t i = 0; i < m_dragFileNames.size(); ++i) {
++            if (!index || *index == i)
++                reader.readFilename(m_dragFileNames[i]);
++        }
++        return;
++    }
++    if (index && *index)
++        return;
++    ClipboardImage image;
++    {
++        AutoClipboardLocker locker(be_clipboard);
++        if (!locker.isLocked())
++            return;
++        image = readClipboardImage(be_clipboard->Data());
++    }
++    if (image.data && reader.shouldReadBuffer(image.type))
++        reader.readBuffer(fileNameForImageType(image.type), image.type, image.data.releaseNonNull());
 +}
 +
 +
@@ -39275,10 +39775,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..14c4229baca53a6ec73a3dddd08f7cc624642eba
+index 0000000000000000000000000000000000000000..3899aaf905a33adfd645020a450f8fbd76331e94
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,416 @@
+@@ -0,0 +1,417 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -39413,6 +39913,7 @@ index 0000000000000000000000000000000000000000..14c4229baca53a6ec73a3dddd08f7cc6
 +    UIProcess/haiku/BrowserTabRegistryHaiku.cpp
 +    UIProcess/haiku/BrowserCommandBrokerHaiku.cpp
 +    UIProcess/haiku/WebViewContextHaiku.cpp
++    UIProcess/haiku/SitePermissionsHaiku.cpp
 +
 +    WebProcess/Extensions/Bindings/JSWebExtensionWrapper.cpp
 +    WebProcess/InjectedBundle/haiku/InjectedBundleHaiku.cpp
@@ -44132,7 +44633,7 @@ index 23ebd4a75995ae9f57a82f860a97794ca3ee454f..dc9c8105e8da7e5bcb761413f637115a
  
  #if HAVE(COOKIE_CHANGE_LISTENER_API)
 diff --git a/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in b/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in
-index 575a1f68f3bd19cbe2259aae39f94dcadb552392..9dd11463d284dc1230cd31524a70ee4cd613cdaa 100644
+index 575a1f68f3bd19cbe2259aae39f94dcadb552392..3e13f2a65ce05ee76712cd7009aa637a6c0941c8 100644
 --- a/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in
 +++ b/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in
 @@ -1689,7 +1689,7 @@ header: <wtf/MachSendRight.h>
@@ -44144,7 +44645,19 @@ index 575a1f68f3bd19cbe2259aae39f94dcadb552392..9dd11463d284dc1230cd31524a70ee4c
      [Validator='!!m_handle && *m_handle'] UnixFileDescriptor m_handle;
  #endif
  #if OS(DARWIN)
-@@ -3130,6 +3130,8 @@ enum class WebCore::MediaPlayerMediaEngineIdentifier : uint8_t {
+@@ -1819,8 +1819,10 @@ class WebCore::DragData {
+ #endif
+     WebCore::IntPoint clientPosition();
+     WebCore::IntPoint globalPosition();
+-#if PLATFORM(COCOA)
++#if PLATFORM(COCOA) || PLATFORM(HAIKU)
+     Vector<String> fileNames();
++#endif
++#if PLATFORM(COCOA)
+     Vector<String> promisedFileMIMETypes();
+ #endif
+     OptionSet<WebCore::DragOperation> draggingSourceOperationMask();
+@@ -3130,6 +3132,8 @@ enum class WebCore::MediaPlayerMediaEngineIdentifier : uint8_t {
      AVFoundationCF,
      GStreamer,
      GStreamerMSE,
@@ -44153,7 +44666,7 @@ index 575a1f68f3bd19cbe2259aae39f94dcadb552392..9dd11463d284dc1230cd31524a70ee4c
      HolePunch,
      MediaFoundation,
      MockMSE,
-@@ -6688,7 +6690,11 @@ using WebCore::GlyphBufferGlyph = CGGlyph
+@@ -6688,7 +6692,11 @@ using WebCore::GlyphBufferGlyph = CGGlyph
  #else
  using WebCore::GlyphBufferGlyph = WebCore::Glyph
  #endif
@@ -45834,10 +46347,10 @@ index 0000000000000000000000000000000000000000..574ed16658f0c14b1aa2e63208e990b8
 +#define WEBKIT_ENGINE_VERSION_HAIKU "@WebKit_HAIKU_MAJOR_VERSION@.@WebKit_HAIKU_MINOR_VERSION@.@WebKit_HAIKU_TINY_VERSION@"
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitContext.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitContext.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..59c7fe4de7804246aaabea490677b8b01c61532c
+index 0000000000000000000000000000000000000000..d631e44355fd9b50cb16caa4729786a0894d1835
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitContext.cpp
-@@ -0,0 +1,602 @@
+@@ -0,0 +1,687 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -45863,6 +46376,7 @@ index 0000000000000000000000000000000000000000..59c7fe4de7804246aaabea490677b8b0
 +#include <Application.h>
 +#include <wtf/RunLoop.h>
 +#include "WebViewContextHaiku.h"
++#include "SitePermissionsHaiku.h"
 +
 +BWebKitContext::BWebKitContext(const char* profilePath, bool privateBrowsing)
 +    : m_private(privateBrowsing)
@@ -46372,6 +46886,90 @@ index 0000000000000000000000000000000000000000..59c7fe4de7804246aaabea490677b8b0
 +        RunLoop::mainSingleton().dispatch(WTF::move(operation));
 +}
 +
++// Runs operation on the WebKit main thread with the context's site permissions.
++template<typename Operation>
++static void withSitePermissionsHaiku(const std::shared_ptr<WebKit::WebViewContextHaiku>& context, Operation&& operation)
++{
++    auto run = [context, operation = std::forward<Operation>(operation)]() mutable {
++        if (auto permissions = context->sitePermissions())
++            operation(*permissions);
++    };
++    if (RunLoop::isMain())
++        run();
++    else
++        RunLoop::mainSingleton().dispatch(WTF::move(run));
++}
++
++status_t BWebKitContext::SetPermissionListener(const BMessenger& listener)
++{
++    if (m_status != B_OK)
++        return m_status;
++    withSitePermissionsHaiku(m_context, [listener](WebKit::SitePermissionsHaiku& permissions) {
++        permissions.setListener(listener);
++    });
++    return B_OK;
++}
++
++void BWebKitContext::RespondToPermissionRequest(uint64 identifier, bool allowed)
++{
++    if (m_status != B_OK)
++        return;
++    withSitePermissionsHaiku(m_context, [identifier, allowed](WebKit::SitePermissionsHaiku& permissions) {
++        permissions.respond(identifier, allowed);
++    });
++}
++
++void BWebKitContext::SetSitePermission(const char* permission, const char* origin, int32 state)
++{
++    if (m_status != B_OK || !permission || !origin || !*origin)
++        return;
++    auto kind = WebKit::SitePermissionsHaiku::kindForName(String::fromUTF8(permission));
++    if (!kind)
++        return;
++    std::optional<bool> allowed;
++    if (state >= 0)
++        allowed = state > 0;
++    withSitePermissionsHaiku(m_context, [kind = *kind, origin = String::fromUTF8(origin).isolatedCopy(), allowed](WebKit::SitePermissionsHaiku& permissions) {
++        permissions.setDecision(kind, origin, allowed);
++    });
++}
++
++void BWebKitContext::NotificationClicked(uint64 identifier)
++{
++    if (m_status != B_OK)
++        return;
++    withSitePermissionsHaiku(m_context, [identifier](WebKit::SitePermissionsHaiku& permissions) {
++        permissions.notificationClicked(identifier);
++    });
++}
++
++void BWebKitContext::NotificationClosed(uint64 identifier)
++{
++    if (m_status != B_OK)
++        return;
++    withSitePermissionsHaiku(m_context, [identifier](WebKit::SitePermissionsHaiku& permissions) {
++        permissions.notificationClosed(identifier);
++    });
++}
++
++void BWebKitContext::SetGeolocationPosition(double latitude, double longitude, double accuracy, double timestamp)
++{
++    if (m_status != B_OK)
++        return;
++    withSitePermissionsHaiku(m_context, [=](WebKit::SitePermissionsHaiku& permissions) {
++        permissions.setPosition(latitude, longitude, accuracy, timestamp);
++    });
++}
++
++void BWebKitContext::GeolocationUnavailable(const char* message)
++{
++    if (m_status != B_OK)
++        return;
++    withSitePermissionsHaiku(m_context, [message = String::fromUTF8(message ? message : "").isolatedCopy()](WebKit::SitePermissionsHaiku& permissions) {
++        permissions.positionUnavailable(message);
++    });
++}
++
 +void BWebKitContext::RemoveWebsiteData(uint32 types, const BMessenger& reply, uint64 identifier, bool includeExtensions)
 +{
 +    auto respond = [reply, identifier](const char* error) {
@@ -46442,10 +47040,10 @@ index 0000000000000000000000000000000000000000..59c7fe4de7804246aaabea490677b8b0
 +}
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitContext.h b/Source/WebKit/UIProcess/API/haiku/WebKitContext.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..76c3ecde4e59b67871dcdef5e66a9d91f2d6317c
+index 0000000000000000000000000000000000000000..df7d3eed8aaeed3a3eb9a3f3cbdefd365dee6e7c
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitContext.h
-@@ -0,0 +1,296 @@
+@@ -0,0 +1,339 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -46537,6 +47135,32 @@ index 0000000000000000000000000000000000000000..76c3ecde4e59b67871dcdef5e66a9d91
 +    B_WEBKIT_BROWSER_FOCUS_WINDOW,
 +    B_WEBKIT_BROWSER_SET_WINDOW_STATE,
 +    B_WEBKIT_BROWSER_MOVE_TAB
++};
++
++// Site permissions: what pages may ask the user for, and the services that
++// depend on the answer. All go to the listener set with SetPermissionListener.
++//   PERMISSION_REQUESTED  identifier (uint64), permission ("notifications" or
++//                  "geolocation"), origin ("scheme://host[:port]"), private
++//                  (bool), view (the asking BWebKitView) when known. Answer
++//                  once with RespondToPermissionRequest; origins with a saved
++//                  decision (SetSitePermission) are answered without asking.
++//   NOTIFICATION_SHOW  identifier (uint64), title, body, tag, icon_url, lang,
++//                  origin strings, rtl and silent bools, view when its page is
++//                  known. Show it (BNotification); report a click with
++//                  NotificationClicked and a dismissal with NotificationClosed.
++//                  A notification with the tag of a shown one replaces it.
++//   NOTIFICATION_CLOSE  identifier: the page closed it.
++//   GEOLOCATION_START  high_accuracy (bool): pages are watching the position.
++//                  Answer with SetGeolocationPosition (again whenever it
++//                  changes) or GeolocationUnavailable. Sent again when the
++//                  accuracy wanted changes.
++//   GEOLOCATION_STOP   no page is watching any more.
++enum : uint32 {
++    B_WEBKIT_PERMISSION_REQUESTED = 'wprq',
++    B_WEBKIT_NOTIFICATION_SHOW = 'wnsh',
++    B_WEBKIT_NOTIFICATION_CLOSE = 'wncl',
++    B_WEBKIT_GEOLOCATION_START = 'wgst',
++    B_WEBKIT_GEOLOCATION_STOP = 'wgsp'
 +};
 +
 +struct BWebKitExtensionLoadOptions {
@@ -46735,6 +47359,23 @@ index 0000000000000000000000000000000000000000..76c3ecde4e59b67871dcdef5e66a9d91
 +    // Withdraws AllowServerCertificate() for host, or for every host when host
 +    // is null or empty. Any thread.
 +    void ForgetServerCertificates(const char* host = nullptr);
++
++    // Site permissions (B_WEBKIT_PERMISSION_REQUESTED and the messages after
++    // it). Any thread; an invalid messenger denies every request. Requests
++    // waiting for an answer are denied when the listener changes.
++    status_t SetPermissionListener(const BMessenger&);
++    void RespondToPermissionRequest(uint64 identifier, bool allowed);
++    // The host's decision for an origin: state 1 allows, 0 denies, -1 forgets
++    // it (the page asks again). Pages see it at once (Notification.permission,
++    // navigator.permissions.query()). The engine stores nothing: give the
++    // saved decisions again after every start. Any thread.
++    void SetSitePermission(const char* permission, const char* origin, int32 state);
++    void NotificationClicked(uint64 identifier);
++    void NotificationClosed(uint64 identifier);
++    // A position in degrees, its accuracy in metres and when it was taken
++    // (seconds since the epoch). Any thread.
++    void SetGeolocationPosition(double latitude, double longitude, double accuracy, double timestamp);
++    void GeolocationUnavailable(const char* message);
 +
 +private:
 +    friend class BWebKitView;
@@ -47239,14 +47880,16 @@ index 0000000000000000000000000000000000000000..d28a6cad6339adf79b155cf974e85bfd
 +
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..ee3384009f7d3b92e9dcd59ff35ed815e29f7ad8
+index 0000000000000000000000000000000000000000..5650e87a8990f40ce2755f9d644836f778ac66f1
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp
-@@ -0,0 +1,588 @@
+@@ -0,0 +1,631 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
 +#include "WebKitView.h"
++#include <Path.h>
++#include <Entry.h>
 +
 +#include "WebKit2Initialize.h"
 +#include "JavaScriptDialogHaiku.h"
@@ -47753,14 +48396,55 @@ index 0000000000000000000000000000000000000000..ee3384009f7d3b92e9dcd59ff35ed815
 +        SendInput(*Window()->CurrentMessage(), point);
 +}
 +
-+void BWebKitView::MouseMoved(BPoint point, uint32, const BMessage*)
++// Files dragged from Tracker (any drag carrying refs) are offered to the page
++// as an HTML drag; the page sees no mouse moves meanwhile, as in other ports.
++void BWebKitView::MouseMoved(BPoint point, uint32 transit, const BMessage* dragMessage)
 +{
++    if (dragMessage && dragMessage->HasRef("refs")) {
++        if (transit == B_EXITED_VIEW || transit == B_OUTSIDE_VIEW) {
++            if (m_state->dragActive)
++                SendDrag(*dragMessage, point, "exited");
++        } else
++            SendDrag(*dragMessage, point, m_state->dragActive ? "updated" : "entered");
++        return;
++    }
++    if (m_state->dragActive) {
++        // The drag ended somewhere else, or was cancelled.
++        SendDrag(BMessage(), point, "exited");
++    }
 +    if (Window() && Window()->CurrentMessage())
 +        SendInput(*Window()->CurrentMessage(), point);
 +}
 +
++void BWebKitView::SendDrag(const BMessage& drag, BPoint point, const char* phase)
++{
++    if (m_status != B_OK || !Window())
++        return;
++    const bool entering = !strcmp(phase, "entered") || !strcmp(phase, "drop");
++    m_state->dragActive = !strcmp(phase, "entered") || !strcmp(phase, "updated");
++    UpdateGeometry();
++    BMessage message(viewDragHaiku);
++    message.AddString("phase", phase);
++    message.AddPoint("local", point);
++    message.AddPoint("screen", ConvertToScreen(point));
++    if (entering) {
++        entry_ref ref;
++        for (int32 index = 0; drag.FindRef("refs", index, &ref) == B_OK; ++index) {
++            BEntry entry(&ref, true);
++            BPath path;
++            if (entry.GetPath(&path) == B_OK)
++                message.AddString("path", path.Path());
++        }
++    }
++    dispatchViewMessageHaiku(m_state, std::move(message));
++}
++
 +void BWebKitView::MessageReceived(BMessage* message)
 +{
++    if (message->WasDropped() && message->HasRef("refs")) {
++        SendDrag(*message, ConvertFromScreen(message->DropPoint()), "drop");
++        return;
++    }
 +    switch (message->what) {
 +    case viewRetryCloseHaiku:
 +        RequestClose();
@@ -47833,10 +48517,10 @@ index 0000000000000000000000000000000000000000..ee3384009f7d3b92e9dcd59ff35ed815
 +}
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitView.h b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..28147cfe26d042f0b620ed529cb31d27c85650d3
+index 0000000000000000000000000000000000000000..d54fbdf829484d94d29b9af90c6a58eb349e788e
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
-@@ -0,0 +1,195 @@
+@@ -0,0 +1,197 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -48024,6 +48708,8 @@ index 0000000000000000000000000000000000000000..28147cfe26d042f0b620ed529cb31d27
 +    BWebKitView(BRect, const char*, std::shared_ptr<WebKit::WebViewStateHaiku>);
 +    void UpdateGeometry();
 +    void SendInput(const BMessage&, BPoint = BPoint());
++    // Offers files dragged from another application to the page.
++    void SendDrag(const BMessage& drag, BPoint, const char* phase);
 +    void SendCommand(uint32, const char* = nullptr);
 +    void ChangeZoomFactor(int32 direction, bool textOnly);
 +    std::shared_ptr<WebKit::WebViewStateHaiku> m_state;
@@ -74887,6 +75573,476 @@ index 0000000000000000000000000000000000000000..a1df802a24259059253fe0d7e648aee7
 +namespace WebKit {
 +
 +};
+diff --git a/Source/WebKit/UIProcess/haiku/SitePermissionsHaiku.cpp b/Source/WebKit/UIProcess/haiku/SitePermissionsHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..0f44ce12f8bcf73b07371349270b96a5665e4c26
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/SitePermissionsHaiku.cpp
+@@ -0,0 +1,367 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#include "config.h"
++#include "SitePermissionsHaiku.h"
++
++#include "APIArray.h"
++#include "APIGeolocationProvider.h"
++#include "APINotificationProvider.h"
++#include "APINumber.h"
++#include "APISecurityOrigin.h"
++#include "WebGeolocationManagerProxy.h"
++#include "WebGeolocationPosition.h"
++#include "WebKitContext.h"
++#include "WebNotification.h"
++#include "WebNotificationManagerProxy.h"
++#include "WebPageProxy.h"
++#include "WebProcessPool.h"
++#include "WebViewPrivate.h"
++#include <Message.h>
++#include <WebCore/GeolocationPositionData.h>
++#include <WebCore/NotificationDirection.h>
++#include <WebCore/SecurityOrigin.h>
++#include <wtf/RunLoop.h>
++
++namespace WebKit {
++
++namespace {
++
++class NotificationProviderHaiku final : public API::NotificationProvider {
++    WTF_MAKE_TZONE_ALLOCATED_INLINE(NotificationProviderHaiku);
++public:
++    explicit NotificationProviderHaiku(std::weak_ptr<SitePermissionsHaiku> permissions)
++        : m_permissions(std::move(permissions)) { }
++
++    bool show(WebPageProxy* page, WebNotification& notification, RefPtr<WebCore::NotificationResources>&&) override
++    {
++        auto permissions = m_permissions.lock();
++        return permissions && permissions->showNotification(page, notification);
++    }
++    void cancel(WebNotification& notification) override
++    {
++        if (auto permissions = m_permissions.lock())
++            permissions->cancelNotification(notification);
++    }
++    void didDestroyNotification(WebNotification& notification) override
++    {
++        if (auto permissions = m_permissions.lock())
++            permissions->forgetNotification(notification);
++    }
++    HashMap<String, bool> notificationPermissions() override
++    {
++        auto permissions = m_permissions.lock();
++        return permissions ? permissions->decisions(SitePermissionsHaiku::Kind::Notifications) : HashMap<String, bool> { };
++    }
++
++private:
++    const std::weak_ptr<SitePermissionsHaiku> m_permissions;
++};
++
++#if ENABLE(GEOLOCATION)
++class GeolocationProviderHaiku final : public API::GeolocationProvider {
++    WTF_MAKE_TZONE_ALLOCATED_INLINE(GeolocationProviderHaiku);
++public:
++    explicit GeolocationProviderHaiku(std::weak_ptr<SitePermissionsHaiku> permissions)
++        : m_permissions(std::move(permissions)) { }
++
++    void startUpdating(WebGeolocationManagerProxy& manager) override
++    {
++        if (auto permissions = m_permissions.lock())
++            permissions->geolocationStart(manager);
++        else
++            manager.providerDidFailToDeterminePosition("Location is not available"_s);
++    }
++    void stopUpdating(WebGeolocationManagerProxy&) override
++    {
++        if (auto permissions = m_permissions.lock())
++            permissions->geolocationStop();
++    }
++    void setEnableHighAccuracy(WebGeolocationManagerProxy&, bool enabled) override
++    {
++        if (auto permissions = m_permissions.lock())
++            permissions->geolocationAccuracy(enabled);
++    }
++
++private:
++    const std::weak_ptr<SitePermissionsHaiku> m_permissions;
++};
++#endif
++
++} // namespace
++
++std::shared_ptr<SitePermissionsHaiku> SitePermissionsHaiku::create(WebProcessPool& processPool, bool privateBrowsing)
++{
++    std::shared_ptr<SitePermissionsHaiku> permissions(new SitePermissionsHaiku(processPool, privateBrowsing));
++    permissions->install();
++    return permissions;
++}
++
++SitePermissionsHaiku::SitePermissionsHaiku(WebProcessPool& processPool, bool privateBrowsing)
++    : m_processPool(processPool)
++    , m_private(privateBrowsing)
++{
++}
++
++SitePermissionsHaiku::~SitePermissionsHaiku() = default;
++
++void SitePermissionsHaiku::install()
++{
++    ASSERT(RunLoop::isMain());
++    if (RefPtr manager = m_processPool.supplement<WebNotificationManagerProxy>())
++        manager->setProvider(makeUnique<NotificationProviderHaiku>(weak_from_this()));
++#if ENABLE(GEOLOCATION)
++    if (RefPtr manager = m_processPool.supplement<WebGeolocationManagerProxy>())
++        manager->setProvider(makeUnique<GeolocationProviderHaiku>(weak_from_this()));
++#endif
++}
++
++void SitePermissionsHaiku::shutdown()
++{
++    ASSERT(RunLoop::isMain());
++    m_shutdown = true;
++    m_listener = BMessenger();
++    auto pending = std::exchange(m_pending, { });
++    for (auto& request : pending.values())
++        request.completion(false);
++    if (m_geolocation)
++        m_geolocation->providerDidFailToDeterminePosition("Location is not available"_s);
++    m_geolocation = nullptr;
++}
++
++std::optional<SitePermissionsHaiku::Kind> SitePermissionsHaiku::kindForName(const String& name)
++{
++    if (name == "notifications"_s)
++        return Kind::Notifications;
++    if (name == "geolocation"_s)
++        return Kind::Geolocation;
++    return std::nullopt;
++}
++
++ASCIILiteral SitePermissionsHaiku::nameForKind(Kind kind)
++{
++    return kind == Kind::Notifications ? "notifications"_s : "geolocation"_s;
++}
++
++void SitePermissionsHaiku::setListener(const BMessenger& listener)
++{
++    ASSERT(RunLoop::isMain());
++    m_listener = listener;
++    if (!listener.IsValid()) {
++        auto pending = std::exchange(m_pending, { });
++        for (auto& request : pending.values())
++            request.completion(false);
++    }
++}
++
++bool SitePermissionsHaiku::post(BMessage& message) const
++{
++    return !m_shutdown && m_listener.IsValid() && m_listener.SendMessage(&message, static_cast<BHandler*>(nullptr), 0) == B_OK;
++}
++
++void SitePermissionsHaiku::setDecision(Kind kind, const String& origin, std::optional<bool> allowed)
++{
++    ASSERT(RunLoop::isMain());
++    if (origin.isEmpty())
++        return;
++    auto& decisions = m_decisions[static_cast<size_t>(kind)];
++    if (allowed)
++        decisions.set(origin, *allowed);
++    else if (!decisions.remove(origin))
++        return;
++    updateWebProcesses(kind, origin, allowed);
++}
++
++std::optional<bool> SitePermissionsHaiku::decision(Kind kind, const String& origin) const
++{
++    auto& decisions = m_decisions[static_cast<size_t>(kind)];
++    auto found = decisions.find(origin);
++    if (found == decisions.end())
++        return std::nullopt;
++    return found->value;
++}
++
++HashMap<String, bool> SitePermissionsHaiku::decisions(Kind kind) const
++{
++    return m_decisions[static_cast<size_t>(kind)];
++}
++
++// Web processes cache the notification decisions they were given at launch
++// and the answers they received; tell them all about a change.
++void SitePermissionsHaiku::updateWebProcesses(Kind kind, const String& origin, std::optional<bool> allowed)
++{
++    if (kind != Kind::Notifications)
++        return;
++    RefPtr manager = m_processPool.supplement<WebNotificationManagerProxy>();
++    if (!manager)
++        return;
++    Ref apiOrigin = API::SecurityOrigin::createFromString(origin);
++    if (allowed)
++        manager->providerDidUpdateNotificationPolicy(apiOrigin.ptr(), *allowed);
++    else {
++        Ref origins = API::Array::create({ RefPtr<API::Object> { WTF::move(apiOrigin) } });
++        manager->providerDidRemoveNotificationPolicies(origins.ptr());
++    }
++}
++
++void SitePermissionsHaiku::request(Kind kind, const String& origin, const BMessenger& view, CompletionHandler<void(bool)>&& completion)
++{
++    ASSERT(RunLoop::isMain());
++    if (auto saved = decision(kind, origin)) {
++        completion(*saved);
++        return;
++    }
++    if (m_shutdown || !m_listener.IsValid() || origin.isEmpty() || origin == "null"_s) {
++        completion(false);
++        return;
++    }
++    const uint64_t identifier = ++m_lastRequest;
++    BMessage message(B_WEBKIT_PERMISSION_REQUESTED);
++    message.AddUInt64("identifier", identifier);
++    message.AddString("permission", nameForKind(kind).characters());
++    message.AddString("origin", origin.utf8().legacyCStringPointer());
++    message.AddBool("private", m_private);
++    if (view.IsValid())
++        message.AddMessenger("view", view);
++    m_pending.add(identifier, Pending { kind, origin, WTF::move(completion) });
++    if (!post(message)) {
++        if (auto request = m_pending.take(identifier); request.completion)
++            request.completion(false);
++    }
++}
++
++void SitePermissionsHaiku::respond(uint64_t identifier, bool allowed)
++{
++    ASSERT(RunLoop::isMain());
++    auto request = m_pending.take(identifier);
++    if (!request.completion)
++        return;
++    request.completion(allowed);
++}
++
++std::optional<WebCore::PermissionState> SitePermissionsHaiku::query(Kind kind, const String& origin) const
++{
++    if (auto saved = decision(kind, origin))
++        return *saved ? WebCore::PermissionState::Granted : WebCore::PermissionState::Denied;
++    return WebCore::PermissionState::Prompt;
++}
++
++bool SitePermissionsHaiku::showNotification(WebPageProxy* page, WebNotification& notification)
++{
++    ASSERT(RunLoop::isMain());
++    if (m_shutdown || !m_listener.IsValid())
++        return false;
++    const uint64_t identifier = notification.identifier().toUInt64();
++    BMessage message(B_WEBKIT_NOTIFICATION_SHOW);
++    message.AddUInt64("identifier", identifier);
++    message.AddString("title", notification.title().utf8().legacyCStringPointer());
++    message.AddString("body", notification.body().utf8().legacyCStringPointer());
++    message.AddString("tag", notification.tag().utf8().legacyCStringPointer());
++    message.AddString("icon_url", notification.iconURL().utf8().legacyCStringPointer());
++    message.AddString("lang", notification.lang().utf8().legacyCStringPointer());
++    message.AddString("origin", notification.origin().securityOrigin().toString().utf8().legacyCStringPointer());
++    message.AddBool("rtl", notification.dir() == WebCore::NotificationDirection::Rtl);
++    message.AddBool("silent", notification.data().silent.value_or(false));
++    if (page) {
++        if (auto* view = static_cast<WebView*>(page->pageClient())) {
++            if (auto native = view->nativeView(); native.IsValid())
++                message.AddMessenger("view", native);
++        }
++    }
++    if (!post(message))
++        return false;
++    m_notifications.set(identifier, notification.identifier());
++    if (RefPtr manager = m_processPool.supplement<WebNotificationManagerProxy>())
++        manager->providerDidShowNotification(notification.identifier());
++    return true;
++}
++
++void SitePermissionsHaiku::cancelNotification(WebNotification& notification)
++{
++    const uint64_t identifier = notification.identifier().toUInt64();
++    if (!m_notifications.remove(identifier))
++        return;
++    BMessage message(B_WEBKIT_NOTIFICATION_CLOSE);
++    message.AddUInt64("identifier", identifier);
++    post(message);
++}
++
++void SitePermissionsHaiku::forgetNotification(WebNotification& notification)
++{
++    m_notifications.remove(notification.identifier().toUInt64());
++}
++
++void SitePermissionsHaiku::notificationClicked(uint64_t identifier)
++{
++    ASSERT(RunLoop::isMain());
++    auto found = m_notifications.find(identifier);
++    if (found == m_notifications.end())
++        return;
++    if (RefPtr manager = m_processPool.supplement<WebNotificationManagerProxy>())
++        manager->providerDidClickNotification(found->value);
++}
++
++void SitePermissionsHaiku::notificationClosed(uint64_t identifier)
++{
++    ASSERT(RunLoop::isMain());
++    auto found = m_notifications.find(identifier);
++    if (found == m_notifications.end())
++        return;
++    const uint64_t raw = found->value.toUInt64();
++    m_notifications.remove(found);
++    if (RefPtr manager = m_processPool.supplement<WebNotificationManagerProxy>()) {
++        Ref identifiers = API::Array::create({ RefPtr<API::Object> { API::UInt64::create(raw) } });
++        manager->providerDidCloseNotifications(identifiers.ptr());
++    }
++}
++
++void SitePermissionsHaiku::geolocationStart(WebGeolocationManagerProxy& manager)
++{
++    ASSERT(RunLoop::isMain());
++    m_geolocation = &manager;
++    BMessage message(B_WEBKIT_GEOLOCATION_START);
++    message.AddBool("high_accuracy", m_highAccuracy);
++    if (!post(message)) {
++        m_geolocation = nullptr;
++        manager.providerDidFailToDeterminePosition("Location is not available"_s);
++    }
++}
++
++void SitePermissionsHaiku::geolocationStop()
++{
++    ASSERT(RunLoop::isMain());
++    if (!m_geolocation)
++        return;
++    m_geolocation = nullptr;
++    BMessage message(B_WEBKIT_GEOLOCATION_STOP);
++    post(message);
++}
++
++void SitePermissionsHaiku::geolocationAccuracy(bool high)
++{
++    m_highAccuracy = high;
++    if (!m_geolocation)
++        return;
++    BMessage message(B_WEBKIT_GEOLOCATION_START);
++    message.AddBool("high_accuracy", high);
++    post(message);
++}
++
++void SitePermissionsHaiku::setPosition([[maybe_unused]] double latitude, [[maybe_unused]] double longitude, [[maybe_unused]] double accuracy, [[maybe_unused]] double timestamp)
++{
++    ASSERT(RunLoop::isMain());
++#if ENABLE(GEOLOCATION)
++    if (!m_geolocation)
++        return;
++    Ref position = WebGeolocationPosition::create(WebCore::GeolocationPositionData(timestamp, latitude, longitude, accuracy));
++    m_geolocation->providerDidChangePosition(position.ptr());
++#endif
++}
++
++void SitePermissionsHaiku::positionUnavailable(const String& message)
++{
++    ASSERT(RunLoop::isMain());
++    if (m_geolocation)
++        m_geolocation->providerDidFailToDeterminePosition(message);
++}
++
++} // namespace WebKit
+diff --git a/Source/WebKit/UIProcess/haiku/SitePermissionsHaiku.h b/Source/WebKit/UIProcess/haiku/SitePermissionsHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..7501cbd740e3e7e3f0ddb325e4e40b1e34bb4cf6
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/SitePermissionsHaiku.h
+@@ -0,0 +1,91 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++
++#pragma once
++
++#include <Messenger.h>
++#include <SupportDefs.h>
++#include "WebNotificationIdentifier.h"
++#include <WebCore/PermissionState.h>
++#include <memory>
++#include <optional>
++#include <wtf/CompletionHandler.h>
++#include <wtf/HashMap.h>
++#include <wtf/text/StringHash.h>
++#include <wtf/text/WTFString.h>
++
++namespace WebKit {
++
++class WebGeolocationManagerProxy;
++class WebNotification;
++class WebPageProxy;
++class WebProcessPool;
++
++// What a page may ask the user for (notifications and location), the host's
++// answers, and the two services that depend on them: web notifications, which
++// the host shows (BNotification), and positions, which the host finds. One per
++// WebViewContextHaiku, installed on its process pool. Main thread only; the
++// BWebKitContext entry points dispatch there.
++class SitePermissionsHaiku final : public std::enable_shared_from_this<SitePermissionsHaiku> {
++public:
++    enum class Kind : uint8_t { Notifications, Geolocation };
++    static std::shared_ptr<SitePermissionsHaiku> create(WebProcessPool&, bool privateBrowsing);
++    ~SitePermissionsHaiku();
++
++    static std::optional<Kind> kindForName(const String&);
++    static ASCIILiteral nameForKind(Kind);
++
++    void setListener(const BMessenger&);
++    // The host's saved decision for origin ("scheme://host[:port]"): allowed,
++    // denied, or none (the page asks again).
++    void setDecision(Kind, const String& origin, std::optional<bool> allowed);
++    std::optional<bool> decision(Kind, const String& origin) const;
++    HashMap<String, bool> decisions(Kind) const;
++
++    // A page asks: answered from a saved decision, or by the host, or denied
++    // when there is no host. view is the asking page's BWebKitView.
++    void request(Kind, const String& origin, const BMessenger& view, CompletionHandler<void(bool)>&&);
++    void respond(uint64_t identifier, bool allowed);
++    // navigator.permissions.query(): granted, denied or prompt.
++    std::optional<WebCore::PermissionState> query(Kind, const String& origin) const;
++
++    // Notifications (NotificationProviderHaiku).
++    bool showNotification(WebPageProxy*, WebNotification&);
++    void cancelNotification(WebNotification&);
++    void forgetNotification(WebNotification&);
++    void notificationClicked(uint64_t identifier);
++    void notificationClosed(uint64_t identifier);
++
++    // Geolocation (GeolocationProviderHaiku).
++    void geolocationStart(WebGeolocationManagerProxy&);
++    void geolocationStop();
++    void geolocationAccuracy(bool high);
++    void setPosition(double latitude, double longitude, double accuracy, double timestamp);
++    void positionUnavailable(const String& message);
++
++    void shutdown();
++
++private:
++    SitePermissionsHaiku(WebProcessPool&, bool privateBrowsing);
++    void install();
++    bool post(BMessage&) const;
++    void updateWebProcesses(Kind, const String& origin, std::optional<bool> allowed);
++
++    WebProcessPool& m_processPool;
++    const bool m_private;
++    BMessenger m_listener;
++    HashMap<String, bool> m_decisions[2];
++    struct Pending {
++        Kind kind;
++        String origin;
++        CompletionHandler<void(bool)> completion;
++    };
++    HashMap<uint64_t, Pending> m_pending;
++    uint64_t m_lastRequest { 0 };
++    // Shown notifications by the identifier given to the host.
++    HashMap<uint64_t, WebNotificationIdentifier> m_notifications;
++    WebGeolocationManagerProxy* m_geolocation { nullptr };
++    bool m_highAccuracy { false };
++    bool m_shutdown { false };
++};
++
++} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/TextCheckerHaiku.cpp b/Source/WebKit/UIProcess/haiku/TextCheckerHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..82037ad3e803b1f34c0c83a5b0b816467403f207
@@ -75503,10 +76659,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..7a74684286ba9ca5d3606a4e6baf4718c79f0ac8
+index 0000000000000000000000000000000000000000..f80f80a3746da238684d2b950070f13887be6914
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,1939 @@
+@@ -0,0 +1,2033 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -75578,6 +76734,10 @@ index 0000000000000000000000000000000000000000..7a74684286ba9ca5d3606a4e6baf4718
 +#include "WebProcessPool.h"
 +#include "WebProcessProxy.h"
 +#include "WebViewContextHaiku.h"
++#include "SitePermissionsHaiku.h"
++#include "APISecurityOrigin.h"
++#include <WebCore/PermissionState.h>
++#include <WebCore/DragData.h>
 +#include "WebHitTestResultData.h"
 +#if ENABLE(WK_WEB_EXTENSIONS)
 +#include "WebExtension.h"
@@ -76511,6 +77671,56 @@ index 0000000000000000000000000000000000000000..7a74684286ba9ca5d3606a4e6baf4718
 +            state->dialogs->complete(identifier, false);
 +    }
 +
++    // Notifications and location: answered by the host's saved decision or by
++    // asking it (SitePermissionsHaiku). Extension popups have no host to ask.
++    void decidePolicyForNotificationPermissionRequest(WebPageProxy&, API::SecurityOrigin& origin, CompletionHandler<void(bool)>&& completion) override
++    {
++        auto state = m_state.lock();
++        if (!m_hostsNewPages || !state || state->closed || !state->context || !state->context->sitePermissions()) {
++            completion(false);
++            return;
++        }
++        BMessenger view;
++        {
++            std::lock_guard guard(state->mutex);
++            view = state->view;
++        }
++        state->context->sitePermissions()->request(SitePermissionsHaiku::Kind::Notifications, origin.securityOrigin().toString(), view, WTF::move(completion));
++    }
++
++#if ENABLE(GEOLOCATION)
++    void decidePolicyForGeolocationPermissionRequest(WebPageProxy&, WebFrameProxy&, const FrameInfoData& frame, Function<void(bool)>& handler) override
++    {
++        auto state = m_state.lock();
++        auto completion = std::exchange(handler, nullptr);
++        if (!m_hostsNewPages || !state || state->closed || !state->context || !state->context->sitePermissions()) {
++            completion(false);
++            return;
++        }
++        BMessenger view;
++        {
++            std::lock_guard guard(state->mutex);
++            view = state->view;
++        }
++        // Decided for the site in the address bar, as other browsers do.
++        auto origin = frame.topOrigin.isNull() ? frame.securityOrigin : frame.topOrigin;
++        state->context->sitePermissions()->request(SitePermissionsHaiku::Kind::Geolocation, origin.toString(), view,
++            [completion = WTF::move(completion)](bool allowed) mutable { completion(allowed); });
++    }
++#endif
++
++    void queryPermission(const String& name, API::SecurityOrigin& origin, CompletionHandler<void(std::optional<WebCore::PermissionState>)>&& completion) override
++    {
++        auto state = m_state.lock();
++        auto kind = SitePermissionsHaiku::kindForName(name);
++        if (!kind || !state || !state->context || !state->context->sitePermissions()) {
++            // Camera, microphone and the rest: nothing granted, nothing refused.
++            completion(WebCore::PermissionState::Prompt);
++            return;
++        }
++        completion(state->context->sitePermissions()->query(*kind, origin.securityOrigin().toString()));
++    }
++
 +    const std::weak_ptr<WebViewStateHaiku> m_state;
 +    const bool m_hostsNewPages;
 +    String m_hoveredLink;
@@ -76737,6 +77947,14 @@ index 0000000000000000000000000000000000000000..7a74684286ba9ca5d3606a4e6baf4718
 +    // Opt-in diagnostics: page and content-script console messages go to stderr.
 +    if (const char* trace = std::getenv("SUMMIT_TRACE_PAGE_CONSOLE"); trace && !std::strcmp(trace, "1"))
 +        configuration->preferences().setLogsPageMessagesToSystemConsoleEnabled(true);
++    // navigator.permissions: answered from the host's decisions (queryPermission).
++    configuration->preferences().setPermissionsAPIEnabled(true);
++    // SUMMIT_COMPOSITING_BORDERS=1: WebKit's compositing debug borders and
++    // repaint counters, as WEBKIT_SHOW_COMPOSITING_DEBUG_VISUALS does on GTK.
++    if (const char* borders = std::getenv("SUMMIT_COMPOSITING_BORDERS"); borders && !std::strcmp(borders, "1")) {
++        configuration->preferences().setCompositingBordersVisible(true);
++        configuration->preferences().setCompositingRepaintCountersVisible(true);
++    }
 +    auto& pool = configuration->processPool();
 +    m_page = pool.createWebPage(*this, configuration.releaseNonNull());
 +    m_page->setUIClient(makeUnique<JavaScriptUIClientHaiku>(m_state, true));
@@ -77049,6 +78267,38 @@ index 0000000000000000000000000000000000000000..7a74684286ba9ca5d3606a4e6baf4718
 +            didPresent(identifier);
 +        break;
 +    }
++#if ENABLE(DRAG_SUPPORT)
++    case viewDragHaiku: {
++        const char* phase = nullptr;
++        if (message.FindString("phase", &phase) != B_OK || !phase)
++            break;
++        BPoint local = message.FindPoint("local"), screen = message.FindPoint("screen");
++        Vector<String> paths;
++        const char* path = nullptr;
++        for (int32 index = 0; message.FindString("path", index, &path) == B_OK; ++index)
++            paths.append(String::fromUTF8(path));
++        if (!paths.isEmpty())
++            m_dragFiles = WTF::move(paths);
++        WebCore::DragData dragData(WebCore::IntPoint(local.x, local.y), WebCore::IntPoint(screen.x, screen.y), m_dragFiles,
++            { WebCore::DragOperation::Copy, WebCore::DragOperation::Generic, WebCore::DragOperation::Link }, { },
++            WebCore::anyDragDestinationAction(), m_page->webPageIDInMainFrameProcess());
++        if (!strcmp(phase, "entered")) {
++            m_page->resetCurrentDragInformation();
++            m_page->dragEntered(dragData);
++        } else if (!strcmp(phase, "updated"))
++            m_page->dragUpdated(dragData);
++        else if (!strcmp(phase, "exited")) {
++            m_page->dragExited(dragData);
++            m_page->resetCurrentDragInformation();
++            m_dragFiles.clear();
++        } else if (!strcmp(phase, "drop")) {
++            m_page->performDragOperation(dragData, { }, { }, { });
++            m_page->resetCurrentDragInformation();
++            m_dragFiles.clear();
++        }
++        break;
++    }
++#endif
 +    case viewInputHaiku: {
 +        BMessage native;
 +        if (message.FindMessage("event", &native) != B_OK)
@@ -77448,10 +78698,10 @@ index 0000000000000000000000000000000000000000..7a74684286ba9ca5d3606a4e6baf4718
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..9f02bfaf996ed27b7984526181375dff864ba211
+index 0000000000000000000000000000000000000000..ada056ff41f7f608cd5aa15261bae39abdc3b7f7
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp
-@@ -0,0 +1,299 @@
+@@ -0,0 +1,303 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -77465,6 +78715,7 @@ index 0000000000000000000000000000000000000000..9f02bfaf996ed27b7984526181375dff
 +#include "DownloadRegistryHaiku.h"
 +#include "ExtensionPermissionPromptHaiku.h"
 +#include "ExtensionPackageRegistryHaiku.h"
++#include "SitePermissionsHaiku.h"
 +#include "APIProcessPoolConfiguration.h"
 +#include "StoragePathsHaiku.h"
 +#include "WebsiteDataStore.h"
@@ -77507,6 +78758,7 @@ index 0000000000000000000000000000000000000000..9f02bfaf996ed27b7984526181375dff
 +#else
 +    , m_browserTabs(std::make_shared<BrowserTabRegistryHaiku>())
 +#endif
++    , m_sitePermissions(SitePermissionsHaiku::create(m_processPool.get(), !m_dataStore->isPersistent()))
 +{
 +    ASSERT(RunLoop::isMain());
 +    m_processPool->setLegacyDownloadClient(m_downloads->createClient());
@@ -77527,6 +78779,7 @@ index 0000000000000000000000000000000000000000..9f02bfaf996ed27b7984526181375dff
 +#endif
 +    , m_browserTabs(extensionOwner->m_browserTabs)
 +    , m_extensionOwner(WTF::move(extensionOwner))
++    , m_sitePermissions(SitePermissionsHaiku::create(m_processPool.get(), true))
 +{
 +    ASSERT(RunLoop::isMain());
 +    // Downloads of private pages stay out of extensions' downloads API.
@@ -77536,6 +78789,7 @@ index 0000000000000000000000000000000000000000..9f02bfaf996ed27b7984526181375dff
 +WebViewContextHaiku::~WebViewContextHaiku()
 +{
 +    ASSERT(RunLoop::isMain());
++    m_sitePermissions->shutdown();
 +    if (m_extensionOwner) {
 +        // The extensions, their prompts and commands are the owner's.
 +        m_downloads->shutdown();
@@ -77753,10 +79007,10 @@ index 0000000000000000000000000000000000000000..9f02bfaf996ed27b7984526181375dff
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..b4b9c66c54b39ed130d6cb0050176991a32b92cb
+index 0000000000000000000000000000000000000000..38315cb60560494a2ac07e47637a99356eb2da61
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h
-@@ -0,0 +1,76 @@
+@@ -0,0 +1,80 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -77780,6 +79034,7 @@ index 0000000000000000000000000000000000000000..b4b9c66c54b39ed130d6cb0050176991
 +class DownloadRegistryHaiku;
 +class ExtensionPermissionPromptHaiku;
 +class ExtensionPackageRegistryHaiku;
++class SitePermissionsHaiku;
 +class WebExtensionController;
 +class WebPageProxy;
 +class WebProcessPool;
@@ -77806,6 +79061,8 @@ index 0000000000000000000000000000000000000000..b4b9c66c54b39ed130d6cb0050176991
 +    std::shared_ptr<BrowserCommandBrokerHaiku> browserCommands() const;
 +    std::shared_ptr<ExtensionPackageRegistryHaiku> extensionPackages() const;
 +    void download(WebPageProxy&, const WebCore::ResourceRequest&, const BMessenger&);
++    // Notifications and location: requests, the host's decisions, providers.
++    const std::shared_ptr<SitePermissionsHaiku>& sitePermissions() const { return m_sitePermissions; }
 +    // Server certificates the user trusts for a host although they failed
 +    // verification, by SHA-256 of the DER leaf certificate (lower-case hex).
 +    // Application thread only.
@@ -77830,15 +79087,16 @@ index 0000000000000000000000000000000000000000..b4b9c66c54b39ed130d6cb0050176991
 +    // Set when the extensions above are another context's.
 +    const std::shared_ptr<WebViewContextHaiku> m_extensionOwner;
 +    HashMap<String, HashSet<String>> m_allowedServerCertificates;
++    const std::shared_ptr<SitePermissionsHaiku> m_sitePermissions;
 +};
 +
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewPrivate.h b/Source/WebKit/UIProcess/haiku/WebViewPrivate.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..c377297a0337714d2ae82a30dc2a8d3b62b85089
+index 0000000000000000000000000000000000000000..d07227b4805b476ab11782454a70d98860b94650
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewPrivate.h
-@@ -0,0 +1,162 @@
+@@ -0,0 +1,164 @@
 +/*
 +   Copyright (C) 2014 Haiku, inc.
 +
@@ -77994,6 +79252,8 @@ index 0000000000000000000000000000000000000000..c377297a0337714d2ae82a30dc2a8d3b
 +    // frame to the next, so the next one it shows is redrawn whole.
 +    bool m_presentationNeedsFullRedraw { true };
 +    uint32_t m_buttons { 0 };
++    // The files of the drag over the view (viewDragHaiku).
++    Vector<String> m_dragFiles;
 +
 +#if USE(COORDINATED_GRAPHICS)
 +    RefPtr<AcceleratedBackingStore> m_acceleratedBackingStore;
@@ -78003,10 +79263,10 @@ index 0000000000000000000000000000000000000000..c377297a0337714d2ae82a30dc2a8d3b
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..405c904fb37849e36ee166d332784246ad0928e5
+index 0000000000000000000000000000000000000000..13edee6db2b39b41cbb9ab575f2213ffe5e30c07
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
-@@ -0,0 +1,137 @@
+@@ -0,0 +1,142 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -78038,7 +79298,10 @@ index 0000000000000000000000000000000000000000..405c904fb37849e36ee166d332784246
 +    viewCursorHaiku = 'wvcu', viewTooltipHaiku = 'wvtt',
 +    viewFindHaiku = 'wvfi', viewHideFindHaiku = 'wvhf',
 +    viewZoomHaiku = 'wvzo', viewEditHaiku = 'wved', viewRequestCloseHaiku = 'wvcl',
-+    viewResetCloseHaiku = 'wvcr', viewRetryCloseHaiku = 'wvrc'
++    viewResetCloseHaiku = 'wvcr', viewRetryCloseHaiku = 'wvrc',
++    // Files dragged over the view: phase ("entered", "updated", "exited",
++    // "drop"), local, screen, repeated path (with entered and drop).
++    viewDragHaiku = 'wvdg'
 +};
 +
 +struct WebViewGeometryHaiku {
@@ -78064,6 +79327,8 @@ index 0000000000000000000000000000000000000000..405c904fb37849e36ee166d332784246
 +    const BMessenger target;
 +    BitmapPresenterHaiku presenter;
 +    std::atomic<bool> closed { false };
++    // A file drag from another application is over the view (window thread).
++    bool dragActive { false };
 +    std::atomic<status_t> status { B_NO_INIT };
 +    std::atomic<uint64_t> findRequestIdentifier { 0 };
 +    const std::shared_ptr<JavaScriptDialogRequestsHaiku> dialogs { std::make_shared<JavaScriptDialogRequestsHaiku>() };
@@ -96683,10 +97948,18 @@ index 3138e165d48ea9e09a428f991118adc37efe87b2..ad1912e9f0018c4894fe609ea2a9bd53
  };
  
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
-index a12c4f6edd9998271fda260c7193a3226bf1957a..d242ec7bac8111b45e9f2f1300d8dfc2545884d8 100644
+index a12c4f6edd9998271fda260c7193a3226bf1957a..988efa80982a21d7e7f935ba2bc40e922d6a6e8a 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
-@@ -54,10 +54,18 @@
+@@ -28,6 +28,7 @@
+ 
+ #include "config.h"
+ #include "LayerTreeHost.h"
++#include <WebCore/LayerTreeAsTextOptions.h>
+ 
+ #if USE(COORDINATED_GRAPHICS)
+ #include "CoordinatedSceneState.h"
+@@ -54,10 +55,18 @@
  #include <WebCore/ThreadedScrollingTree.h>
  #include <WebCore/WindowEventLoop.h>
  #include <wtf/SetForScope.h>
@@ -96705,7 +97978,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..d242ec7bac8111b45e9f2f1300d8dfc2
  
  namespace WebKit {
  using namespace WebCore;
-@@ -91,7 +99,15 @@ std::unique_ptr<LayerTreeHost> LayerTreeHost::create(WebPage& webPage)
+@@ -91,7 +100,15 @@ std::unique_ptr<LayerTreeHost> LayerTreeHost::create(WebPage& webPage)
  LayerTreeHost::LayerTreeHost(WebPage& webPage)
      : m_webPage(webPage)
      , m_sceneState(CoordinatedSceneState::create())
@@ -96721,7 +97994,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..d242ec7bac8111b45e9f2f1300d8dfc2
      {
          auto& rootLayer = m_sceneState->rootLayer();
  #if ENABLE(DAMAGE_TRACKING)
-@@ -148,17 +164,123 @@ void LayerTreeHost::scheduleRenderingUpdate()
+@@ -148,16 +165,122 @@ void LayerTreeHost::scheduleRenderingUpdate()
  {
      WTFEmitSignpost(this, LayerTreeHostScheduleRenderingUpdate, "isWaitingForRenderer %s", m_isWaitingForRenderer ? "yes" : "no");
  
@@ -96744,12 +98017,12 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..d242ec7bac8111b45e9f2f1300d8dfc2
 +#if PLATFORM(HAIKU)
 +        checkRenderingStallHaiku();
 +#endif
-         return;
-     }
- 
-     scheduleRenderingUpdateRunLoopObserver();
- }
- 
++        return;
++    }
++
++    scheduleRenderingUpdateRunLoopObserver();
++}
++
 +#if PLATFORM(HAIKU)
 +// A page that still runs but has waited seconds for the composition it asked
 +// for has stopped drawing (typing showed only after a tab switch). Asking for
@@ -96769,8 +98042,8 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..d242ec7bac8111b45e9f2f1300d8dfc2
 +    if (waited < 2_s) {
 +        if (!m_stallWatchdogHaiku.isActive())
 +            m_stallWatchdogHaiku.startOneShot(2_s - waited);
-+        return;
-+    }
+         return;
+     }
 +    if (!m_stallRecoveryStartedAtHaiku)
 +        m_stallRecoveryStartedAtHaiku = now;
 +    if (now - *m_stallRecoveryStartedAtHaiku < 2_s) {
@@ -96785,7 +98058,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..d242ec7bac8111b45e9f2f1300d8dfc2
 +    m_scheduledWhileWaitingForRenderer = false;
 +    scheduleRenderingUpdateRunLoopObserver();
 +}
-+
+ 
 +// Once a second: a page in view that something asked to draw but that has had
 +// no rendering update for two seconds has stalled somewhere between WebCore's
 +// refresh timer, this host's update observer and the compositor (typed text
@@ -96838,14 +98111,13 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..d242ec7bac8111b45e9f2f1300d8dfc2
 +        restartRenderingUpdateSchedulerHaiku(*corePage);
 +    if (m_renderingUpdateRunLoopObserver->isScheduled())
 +        m_renderingUpdateRunLoopObserver->invalidate();
-+    scheduleRenderingUpdateRunLoopObserver();
-+}
+     scheduleRenderingUpdateRunLoopObserver();
+ }
 +#endif
-+
+ 
  void LayerTreeHost::scheduleRenderingUpdateRunLoopObserver()
  {
-     FrameRenderer::scheduleRenderingUpdateRunLoopObserver();
-@@ -174,20 +296,49 @@ bool LayerTreeHost::canUpdateRendering() const
+@@ -174,20 +297,49 @@ bool LayerTreeHost::canUpdateRendering() const
  
  void LayerTreeHost::updateRendering()
  {
@@ -96895,18 +98167,40 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..d242ec7bac8111b45e9f2f1300d8dfc2
  
      if (m_overlayCompositingLayer)
          m_overlayCompositingLayer->flushCompositingState(visibleContentsRect());
-@@ -200,6 +351,10 @@ void LayerTreeHost::updateRendering()
+@@ -200,6 +352,32 @@ void LayerTreeHost::updateRendering()
      flags.add(FinalizeRenderingUpdateFlags::ApplyScrollingTreeLayerPositions);
  #endif
      page->finalizeRenderingUpdate(flags);
 +#if PLATFORM(HAIKU)
 +    if (traceRenderPhases)
 +        afterFinalize = MonotonicTime::now();
++    // SUMMIT_LAYER_TREE_DUMP=1: the page's layer tree as text (positions,
++    // sizes, what each layer draws, opacity, painting phases), whenever it
++    // changed, at most once a second. Finds what the compositor is told to
++    // draw when a page shows less than it should.
++    static const bool dumpLayerTree = [] {
++        const char* value = getenv("SUMMIT_LAYER_TREE_DUMP");
++        return value && value[0] == '1' && !value[1];
++    }();
++    if (dumpLayerTree && m_rootCompositingLayer) {
++        static MonotonicTime lastDump;
++        static String lastTree;
++        if (MonotonicTime::now() - lastDump > 1_s) {
++            lastDump = MonotonicTime::now();
++            auto tree = m_rootCompositingLayer->layerTreeAsText({ WebCore::LayerTreeAsTextOptions::Debug, WebCore::LayerTreeAsTextOptions::IncludeVisibleRects,
++                WebCore::LayerTreeAsTextOptions::IncludePaintingPhases, WebCore::LayerTreeAsTextOptions::IncludeContentLayers,
++                WebCore::LayerTreeAsTextOptions::IncludeClipping, WebCore::LayerTreeAsTextOptions::IncludeRootLayerProperties });
++            if (tree != lastTree) {
++                lastTree = tree;
++                fprintf(stderr, "Summit layer tree (pid %d):\n%s\n", getpid(), tree.utf8().legacyCStringPointer());
++            }
++        }
++    }
 +#endif
  
      if (m_pendingResize) {
          m_compositor->setSize(page->size(), page->deviceScaleFactor());
-@@ -219,6 +374,10 @@ void LayerTreeHost::updateRendering()
+@@ -219,6 +397,10 @@ void LayerTreeHost::updateRendering()
          drawingArea->dispatchPendingCallbacksAfterEnsuringDrawing();
  
      bool didChangeSceneState = m_sceneState->flush();
@@ -96917,7 +98211,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..d242ec7bac8111b45e9f2f1300d8dfc2
      if (m_compositionRequired || m_pendingResize || m_forceFrameSync || didChangeSceneState)
          requestCompositionForRenderingUpdate();
  
-@@ -237,6 +396,17 @@ void LayerTreeHost::updateRendering()
+@@ -237,6 +419,17 @@ void LayerTreeHost::updateRendering()
          m_sceneState->waitUntilPaintingComplete();
          m_waitUntilPaintingComplete = false;
      }
@@ -96935,7 +98229,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..d242ec7bac8111b45e9f2f1300d8dfc2
  }
  
  void LayerTreeHost::updateRootLayer()
-@@ -322,6 +492,12 @@ void LayerTreeHost::suspend()
+@@ -322,6 +515,12 @@ void LayerTreeHost::suspend()
  
  void LayerTreeHost::resume()
  {
@@ -96948,7 +98242,7 @@ index a12c4f6edd9998271fda260c7193a3226bf1957a..d242ec7bac8111b45e9f2f1300d8dfc2
      m_compositor->resume();
      FrameRenderer::resume();
  }
-@@ -447,8 +623,24 @@ void LayerTreeHost::didRenderFrame()
+@@ -447,8 +646,24 @@ void LayerTreeHost::didRenderFrame()
  
  void LayerTreeHost::requestCompositionForRenderingUpdate()
  {
@@ -115845,10 +117139,10 @@ index 121e64b01bce34e387deacf3bbbca93adf0f59da..7926cd9c3edf141bc52f7db0253c37c0
  endif ()
 diff --git a/Source/cmake/OptionsHaiku.cmake b/Source/cmake/OptionsHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..188173af18ef298ef02a89319e267105512a5534
+index 0000000000000000000000000000000000000000..efad3047d311108422296be79038bf2df185333d
 --- /dev/null
 +++ b/Source/cmake/OptionsHaiku.cmake
-@@ -0,0 +1,340 @@
+@@ -0,0 +1,342 @@
 +include(GNUInstallDirs)
 +include(VersioningUtils)
 +
@@ -115916,7 +117210,9 @@ index 0000000000000000000000000000000000000000..188173af18ef298ef02a89319e267105
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_ENCRYPTED_MEDIA PUBLIC OFF)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_FULLSCREEN_API PUBLIC OFF)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_GAMEPAD PUBLIC OFF)
-+WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_GEOLOCATION PUBLIC OFF)
++# The host finds the position (Summit: Wi-Fi networks and BeaconDB); see
++# UIProcess/haiku/SitePermissionsHaiku.cpp.
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_GEOLOCATION PUBLIC ON)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_MEDIA_CAPTURE PUBLIC ON)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_MEDIA_SOURCE PUBLIC ON)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_MEDIA_STREAM PUBLIC OFF)
