@@ -41,6 +41,39 @@ opened, reloaded, selected after something changed, or returned to with Back
 or Forward. It does not reload itself while you are looking at it (that would
 lose the scroll position and search text); Reload brings it up to date.
 
+## Address field type-ahead
+
+Added 2 October 2026 for [issue #8](https://github.com/jmgasper/summit/issues/8),
+working like Firefox's address bar:
+
+- **Completion in the field.** Typing the start of a site you have visited or
+  bookmarked completes it in the field: "pul" becomes "pul**setasmania.com/**",
+  the completed part selected, so the next key replaces it if it differs and
+  keeps it if it matches; Enter goes to the site. "www." is left out unless you
+  type it, and a scheme you type limits completion to that scheme. Once the
+  text reaches into a path, the next path segment is completed
+  ("github.com/jm" → "github.com/jm**gasper/**"). Backspace removes the
+  completion and keeps what you typed; completion only happens while typing
+  forward at the end, never with spaces (that is a search).
+- **The list under the field** shows what Enter will do (visit the completed
+  site or the address typed, or search with the chosen engine), then matching
+  pages from history and bookmarks — every typed word must appear in the page's
+  address or title — with title, short address and site icon, and a search row.
+  Up and Down move through it (the field shows the row's address; moving past
+  the ends returns to what you typed), Enter or a click opens the row, Escape
+  closes the list and a second Escape puts the page's address back. The list
+  closes when the field loses the focus, the window moves or is deactivated.
+- **Ranking.** Sites and pages are weighted by how often they were visited
+  (history now counts visits, `visits` in `profile.json`) and how recently:
+  ×100 within 4 days, ×70 within 2 weeks, ×50 within a month, ×30 within three
+  months, ×10 after that. Bookmarks count as one recent visit. Sites whose name
+  starts with the typed text rank above pages that only contain it.
+- The logic is in `src/core/Suggest.{h,cpp}` (host-tested in
+  `tests/CoreTests.cpp`); the list is `src/ui/AddressSuggestions.{h,cpp}`, a
+  borderless window floating over the browser window that never takes the
+  focus; `BrowserWindow::AddressModified()` drives both from the field's
+  modification messages.
+
 ## How it works
 
 - `src/core/Profile.*` — history entries carry `visited` (seconds since the

@@ -1,0 +1,57 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Permissions probe</title>
+<style>
+body { font: 15px sans-serif; margin: 20px; }
+button { font-size: 15px; margin: 4px; }
+pre { background: #f4f4f4; padding: 8px; white-space: pre-wrap; }
+</style>
+<h1>Notifications and location</h1>
+<p>GitHub issues #10 and #11. The buttons ask for each permission, show a
+notification (a click on it is logged) and ask for the position. State is in
+the log below, in the title, and posted to the bench server when the page comes
+from it. Notifications need a secure context: open this page from
+<code>localhost</code> or https.</p>
+<button id="ask-notify">Ask to notify</button>
+<button id="notify">Show a notification</button>
+<button id="notify-tag">Replace it (same tag)</button>
+<button id="ask-location">Where am I?</button>
+<button id="watch">Watch position</button>
+<button id="states">Permission states</button>
+<pre id="log"></pre>
+<script>
+"use strict";
+const log = document.getElementById("log");
+const note = async (entry) => {
+    entry.at = Math.round(performance.now());
+    log.textContent += JSON.stringify(entry) + "\n";
+    document.title = entry.event + (entry.state ? " " + entry.state : "");
+    try { await fetch("/__bench/progress", { method: "POST", body: JSON.stringify({ page: "permissions", ...entry }) }); } catch (error) { }
+};
+const states = async () => {
+    const result = { event: "states", notification: typeof Notification === "undefined" ? "missing" : Notification.permission };
+    for (const name of ["notifications", "geolocation"]) {
+        try { result[name] = (await navigator.permissions.query({ name })).state; } catch (error) { result[name] = "error: " + error.name; }
+    }
+    note(result);
+};
+document.getElementById("ask-notify").onclick = async () => note({ event: "requestPermission", state: await Notification.requestPermission() });
+let count = 0;
+const show = (tag) => {
+    const notification = new Notification("Summit test " + (++count), { body: "A notification from the permissions probe.", tag });
+    notification.onshow = () => note({ event: "shown", count });
+    notification.onclick = () => { note({ event: "clicked", count }); window.focus(); };
+    notification.onclose = () => note({ event: "closed", count });
+    notification.onerror = () => note({ event: "error", count });
+};
+document.getElementById("notify").onclick = () => show(undefined);
+document.getElementById("notify-tag").onclick = () => show("probe");
+document.getElementById("ask-location").onclick = () => navigator.geolocation.getCurrentPosition(
+    position => note({ event: "position", latitude: position.coords.latitude, longitude: position.coords.longitude, accuracy: position.coords.accuracy }),
+    error => note({ event: "position-error", code: error.code, message: error.message }), { timeout: 30000 });
+document.getElementById("watch").onclick = () => navigator.geolocation.watchPosition(
+    position => note({ event: "watch", latitude: position.coords.latitude, longitude: position.coords.longitude, accuracy: position.coords.accuracy }),
+    error => note({ event: "watch-error", code: error.code, message: error.message }));
+document.getElementById("states").onclick = states;
+states();
+</script>

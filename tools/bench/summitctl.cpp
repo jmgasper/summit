@@ -499,8 +499,13 @@ int main(int argc, char** argv)
     else if (command == "zoomin") what = summit::kZoomIn;
     else if (command == "zoomout") what = summit::kZoomOut;
     else if (command == "zoomreset") what = summit::kZoomReset;
+    // Edit › Copy and Paste on the current page, as the menu does (tests of
+    // clipboard images need no keyboard).
+    else if (command == "copy") what = B_COPY;
+    else if (command == "paste") what = B_PASTE;
     else return 2;
     BMessage message(what);
+    if (what == B_COPY || what == B_PASTE) message.AddBool("page", true);
     if (what == summit::kPreferencesChanged) message.AddBool("show_bookmarks_bar", false);
     if (wantsURL) { if (!argument) return 2; message.AddString("url", argument); }
     if (wantsID) { if (!argument) return 2; message.AddInt64("id", std::strtoll(argument, nullptr, 10)); }

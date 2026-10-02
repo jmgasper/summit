@@ -21109,6 +21109,23 @@ index 4129e4540fe8d40738ef54c068514633533b58d2..1f4a7606b663e1cae38277fd19d8f37f
  
      void pushSkiaState();
      void popSkiaState();
+diff --git a/Source/WebCore/platform/graphics/skia/ImageBufferSkiaAcceleratedBackend.cpp b/Source/WebCore/platform/graphics/skia/ImageBufferSkiaAcceleratedBackend.cpp
+index df7f059b01553362418e4c3302011d4bf47f6384..98bdc29c8ada5c42cb4766396f011f3c69b75f42 100644
+--- a/Source/WebCore/platform/graphics/skia/ImageBufferSkiaAcceleratedBackend.cpp
++++ b/Source/WebCore/platform/graphics/skia/ImageBufferSkiaAcceleratedBackend.cpp
+@@ -131,6 +131,12 @@ std::unique_ptr<ImageBufferSkiaAcceleratedBackend> ImageBufferSkiaAcceleratedBac
+     auto surface = SkSurfaces::RenderTarget(grContext, skgpu::Budgeted::kYes, imageInfo, msaaSampleCount, kTopLeft_GrSurfaceOrigin, &properties);
+     if (!surface || !surface->getCanvas())
+         return nullptr;
++#if PLATFORM(HAIKU)
++    // New GPU memory is not zeroed on NVK: a canvas that has not been drawn
++    // yet showed what the memory held before (xbitlabs.com's FPS test showed
++    // rows of an advertisement in its empty canvas). Start transparent.
++    surface->getCanvas()->clear(SkColors::kTransparent);
++#endif
+ 
+     return create(parameters, creationContext, WTF::move(surface));
+ }
 diff --git a/Source/WebCore/platform/graphics/skia/PlatformDisplaySkia.cpp b/Source/WebCore/platform/graphics/skia/PlatformDisplaySkia.cpp
 index 6b3cac20c6de4a7b817689de34c807020235850e..f5e992b32ba9dc919975dcd08b86e74d672a3477 100644
 --- a/Source/WebCore/platform/graphics/skia/PlatformDisplaySkia.cpp

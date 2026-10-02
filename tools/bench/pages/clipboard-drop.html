@@ -1,0 +1,71 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Clipboard and drop probe</title>
+<style>
+body { font: 15px sans-serif; margin: 20px; }
+.zone { border: 3px dashed #889; border-radius: 10px; padding: 18px; margin: 12px 0; min-height: 70px; }
+.zone.over { border-color: #2a7; background: #eaf7ef; }
+textarea { width: 100%; height: 80px; font: 14px monospace; }
+[contenteditable] { border: 1px solid #aaa; min-height: 60px; padding: 8px; }
+img { max-width: 240px; max-height: 160px; border: 1px solid #ccc; margin: 4px; }
+pre { background: #f4f4f4; padding: 8px; white-space: pre-wrap; }
+</style>
+<h1>Paste and drop</h1>
+<p>GitHub issues #14 and #15. Paste a screenshot into the text area (as GitHub's
+issue editor takes it, from <code>clipboardData.files</code>), paste rich text
+or an image into the editable box, or drop files from Tracker on the zone. Each
+event is described below and in the page title, and posted to the bench server
+when the page comes from it.</p>
+<h2>1. Paste into a text area</h2>
+<textarea id="area" placeholder="Paste here"></textarea>
+<h2>2. Paste into editable content</h2>
+<div id="editable" contenteditable="true">Paste rich text or an image here.</div>
+<h2>3. Drop files</h2>
+<div id="zone" class="zone">Drop files here</div>
+<div id="previews"></div>
+<pre id="out">Nothing yet.</pre>
+<script>
+"use strict";
+const out = document.getElementById("out");
+const previews = document.getElementById("previews");
+const report = async (kind, transfer, extra = {}) => {
+    const files = [];
+    for (const file of transfer.files) {
+        const entry = { name: file.name, type: file.type, size: file.size };
+        if (file.type.startsWith("image/")) {
+            const image = new Image();
+            image.src = URL.createObjectURL(file);
+            await image.decode().then(() => { entry.width = image.naturalWidth; entry.height = image.naturalHeight; }, () => { entry.decodeError = true; });
+            previews.append(image);
+        } else if (file.size < 4096)
+            entry.text = (await file.text()).slice(0, 200);
+        files.push(entry);
+    }
+    const result = {
+        page: "clipboard-drop", kind,
+        types: [...transfer.types],
+        items: [...transfer.items].map(item => item.kind + ":" + item.type),
+        files, ...extra,
+    };
+    out.textContent = JSON.stringify(result, null, 2);
+    document.title = `${kind}: ${files.length} files, types ${result.types.join(" ")}`;
+    try { await fetch("/__bench/probe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(result) }); } catch (error) { }
+};
+document.getElementById("area").addEventListener("paste", event => {
+    const hasFiles = event.clipboardData.files.length > 0;
+    report("paste-textarea", event.clipboardData, { text: event.clipboardData.getData("text/plain").slice(0, 200) });
+    if (hasFiles) event.preventDefault();
+});
+document.getElementById("editable").addEventListener("paste", event => {
+    report("paste-editable", event.clipboardData, { html: event.clipboardData.getData("text/html").slice(0, 200) });
+});
+const zone = document.getElementById("zone");
+zone.addEventListener("dragenter", event => { event.preventDefault(); zone.classList.add("over"); });
+zone.addEventListener("dragover", event => { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; });
+zone.addEventListener("dragleave", () => zone.classList.remove("over"));
+zone.addEventListener("drop", event => {
+    event.preventDefault();
+    zone.classList.remove("over");
+    report("drop", event.dataTransfer);
+});
+</script>
