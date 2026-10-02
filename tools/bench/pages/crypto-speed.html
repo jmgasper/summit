@@ -1,0 +1,57 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Crypto speed probe</title>
+<h1>Key derivation as a password manager does it</h1>
+<p>GitHub issue #7: 1Password spins after the password is entered. Its unlock
+derives keys with PBKDF2-HMAC-SHA256 (650,000 iterations) and decrypts in
+WebAssembly. This times the same derivation three ways: compiled to
+WebAssembly (from tools/bench/pages/crypto-speed.c, built with
+<code>clang --target=wasm32 -O2 -nostdlib -c</code>) on the page and in a worker,
+and with WebCrypto's <code>deriveBits</code>.</p>
+<pre id="out">running…</pre>
+<script>
+"use strict";
+const parameters = new URLSearchParams(location.search);
+const iterations = Number(parameters.get("iterations") || 650000);
+const wasm = Uint8Array.from(atob("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"), c => c.charCodeAt(0));
+const runner = `
+async function wasmRuns(bytes, iterations, runs) {
+    const module = await WebAssembly.compile(bytes);
+    const memory = new WebAssembly.Memory({ initial: 2 });
+    const imports = { env: { __linear_memory: memory, __stack_pointer: new WebAssembly.Global({ value: "i32", mutable: true }, 131072),
+        __indirect_function_table: new WebAssembly.Table({ initial: 0, element: "anyfunc" }) } };
+    const instance = await WebAssembly.instantiate(module, imports);
+    const times = [];
+    let check = 0;
+    for (let i = 0; i < runs; i++) {
+        const start = performance.now();
+        check = instance.exports.pbkdf2(iterations) >>> 0;
+        times.push(Math.round(performance.now() - start));
+    }
+    return { times, check };
+}`;
+(0, eval)(runner);
+const progress = (step) => navigator.sendBeacon("/__bench/progress", JSON.stringify({ page: "crypto-speed", step }));
+async function webCrypto(runs) {
+    const key = await crypto.subtle.importKey("raw", new TextEncoder().encode("correct horse battery staple"), "PBKDF2", false, ["deriveBits"]);
+    const times = [];
+    for (let i = 0; i < runs; i++) {
+        const start = performance.now();
+        await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: new Uint8Array(16), iterations }, key, 256);
+        times.push(Math.round(performance.now() - start));
+    }
+    return times;
+}
+(async () => {
+    const result = { page: "crypto-speed", iterations, userAgent: navigator.userAgent };
+    result.wasmMain = await wasmRuns(wasm, iterations, 3);
+    progress(result);
+    const worker = new Worker(URL.createObjectURL(new Blob([runner + "\nonmessage = async e => postMessage(await wasmRuns(e.data.bytes, e.data.iterations, 3));"], { type: "text/javascript" })));
+    result.wasmWorker = await new Promise(resolve => { worker.onmessage = e => resolve(e.data); worker.postMessage({ bytes: wasm, iterations }); });
+    progress(result);
+    result.webCrypto = await webCrypto(3);
+    document.getElementById("out").textContent = JSON.stringify(result, null, 2);
+    document.title = "Crypto speed: done";
+    try { await fetch("/__bench/probe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(result) }); } catch (error) { }
+})();
+</script>

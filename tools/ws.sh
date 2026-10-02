@@ -14,6 +14,12 @@ fi
 SUMMIT_SSH=(ssh -o IdentitiesOnly=yes
     -o UserKnownHostsFile="$SUMMIT_ROOT/.vm/ws_known_hosts" -o StrictHostKeyChecking=accept-new
     -o LogLevel=ERROR -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=8)
+# One shared connection: Haiku's sshd resets connections that arrive in bursts
+# (the benchmark harness opens one per command). SUMMIT_WS_MULTIPLEX=0 opts out.
+if [[ ${SUMMIT_WS_MULTIPLEX:-1} != 0 ]]; then
+    mkdir -p "/tmp/ssh-$(id -u)" && chmod 700 "/tmp/ssh-$(id -u)"
+    SUMMIT_SSH+=(-o ControlMaster=auto -o "ControlPath=/tmp/ssh-$(id -u)/ws-%C" -o ControlPersist=600)
+fi
 if [[ -f $SUMMIT_ROOT/.vm/ws_id_ed25519 ]]; then
     SUMMIT_SSH+=(-i "$SUMMIT_ROOT/.vm/ws_id_ed25519" -o BatchMode=yes)
     exec "${SUMMIT_SSH[@]}" "$SUMMIT_WS_USER@$SUMMIT_WS_HOST" "$@"
