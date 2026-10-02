@@ -21475,7 +21475,7 @@ index 6b3cac20c6de4a7b817689de34c807020235850e..f5e992b32ba9dc919975dcd08b86e74d
          s_skiaGLContext = SkiaGLContext::create(*this);
          m_skiaGLContexts.add(*s_skiaGLContext);
 diff --git a/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp b/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp
-index 30343ff03299542f8673d98b486c7fdd78bddeb9..802ab40256fb666447044521614f51998e285477 100644
+index 30343ff03299542f8673d98b486c7fdd78bddeb9..71a5183d271a91463084b874fab070c9b99a3171 100644
 --- a/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp
 +++ b/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp
 @@ -67,7 +67,13 @@ WTF_MAKE_TZONE_ALLOCATED_IMPL(SkiaPaintingEngine);
@@ -21492,7 +21492,26 @@ index 30343ff03299542f8673d98b486c7fdd78bddeb9..802ab40256fb666447044521614f5199
  }
  
  SkiaPaintingEngine::SkiaPaintingEngine(sk_sp<GrContextThreadSafeProxy>&& threadSafeGrContext)
-@@ -259,10 +265,24 @@ Ref<CoordinatedTileBuffer> SkiaPaintingEngine::replay(const GraphicsLayerCoordin
+@@ -109,7 +115,18 @@ void SkiaPaintingEngine::paintIntoGraphicsContext(const GraphicsLayer& layer, Gr
+ 
+     context.translate(-dirtyRect.x(), -dirtyRect.y());
+     context.scale(contentsScale);
++#if PLATFORM(HAIKU)
++    // A large image an element shows for the first time is decoded on the
++    // image decoder's thread and painted when ready, as Cocoa's tiles do on
++    // their first paint; RenderLayerBacking only offers that on a layer's
++    // very first paint, and the root layer is painted many times while a
++    // page loads, so its pictures were decoded on the main thread while it
++    // painted (AVIF: 92 ms of a Guardian load in dav1d). An element that
++    // already shows its image still decodes in place, so nothing flickers.
++    layer.paintGraphicsLayerContents(context, clipRect, { GraphicsLayerPaintBehavior::DefaultAsynchronousImageDecode });
++#else
+     layer.paintGraphicsLayerContents(context, clipRect);
++#endif
+ }
+ 
+ Ref<CoordinatedTileBuffer> SkiaPaintingEngine::createBuffer(RenderingMode renderingMode, const IntSize& size, bool contentsOpaque) const
+@@ -259,10 +276,24 @@ Ref<CoordinatedTileBuffer> SkiaPaintingEngine::replay(const GraphicsLayerCoordin
  #else
      auto bufferSize = renderingMode == RenderingMode::Accelerated ? tileRect.size() : dirtyRect.size();
  #endif
@@ -21518,7 +21537,7 @@ index 30343ff03299542f8673d98b486c7fdd78bddeb9..802ab40256fb666447044521614f5199
          if (auto* canvas = buffer->canvas()) {
              auto replayPicture = [](const sk_sp<SkPicture>& picture, SkCanvas* canvas, const IntRect& recordRect, const IntRect& tileRect, const IntRect& dirtyRect, bool isDDLBuffer) {
                  canvas->save();
-@@ -297,6 +317,10 @@ Ref<CoordinatedTileBuffer> SkiaPaintingEngine::replay(const GraphicsLayerCoordin
+@@ -297,6 +328,10 @@ Ref<CoordinatedTileBuffer> SkiaPaintingEngine::replay(const GraphicsLayerCoordin
              WTFEndSignpost(canvas, PaintTile);
          }
  
@@ -21529,7 +21548,7 @@ index 30343ff03299542f8673d98b486c7fdd78bddeb9..802ab40256fb666447044521614f5199
          buffer->completePainting();
          platformLayer->didPaintTile();
      });
-@@ -310,7 +334,15 @@ unsigned SkiaPaintingEngine::numberOfCPUPaintingThreads()
+@@ -310,7 +345,15 @@ unsigned SkiaPaintingEngine::numberOfCPUPaintingThreads()
      static unsigned numberOfThreads = 0;
  
      std::call_once(onceFlag, [] {
@@ -27914,6 +27933,25 @@ index 0000000000000000000000000000000000000000..b93cdeb2c5928847691a7781bc6fcd08
 +	<body>
 +	</body>
 +</html>
+diff --git a/Source/WebCore/platform/image-decoders/avif/AVIFImageReader.cpp b/Source/WebCore/platform/image-decoders/avif/AVIFImageReader.cpp
+index 5f12f723d31e283fe9f21679466ae96fb096a072..f40b44e35373ed2b857da6cc56ff45f871b37a28 100644
+--- a/Source/WebCore/platform/image-decoders/avif/AVIFImageReader.cpp
++++ b/Source/WebCore/platform/image-decoders/avif/AVIFImageReader.cpp
+@@ -55,8 +55,12 @@ bool AVIFImageReader::parseHeader(const SharedBuffer& data, bool allDataReceived
+     if (avifDecoderSetIOMemory(m_avifDecoder.get(), dataSpan.data(), dataSpan.size()) != AVIF_RESULT_OK)
+         return allDataReceived ? m_decoder->setFailed() : false;
+ 
+-    if (avifDecoderParse(m_avifDecoder.get()) != AVIF_RESULT_OK
+-        || avifDecoderNextImage(m_avifDecoder.get()) != AVIF_RESULT_OK)
++    // avifDecoderParse() fills in the image's size (and depth, format and
++    // alpha) without decoding it. Decoding the first image here as well (with
++    // avifDecoderNextImage()) cost a full AV1 decode on the main thread for
++    // every AVIF image, once more than decodeFrame() needs: about 90 ms of the
++    // main thread while The Guardian's front page loads.
++    if (avifDecoderParse(m_avifDecoder.get()) != AVIF_RESULT_OK || !m_avifDecoder->image->width || !m_avifDecoder->image->height)
+         return allDataReceived ? m_decoder->setFailed() : false;
+ 
+     if (!m_dataParsed && allDataReceived)
 diff --git a/Source/WebCore/platform/image-decoders/haiku/ImageDecoderHaiku.cpp b/Source/WebCore/platform/image-decoders/haiku/ImageDecoderHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..8a01300d39155e62768de06a298a693c0d780341
@@ -36070,6 +36108,30 @@ index 055a809ee5730e1b12c6d48ed697c7335135dfca..0fc5c850285d8e4f73240c0bdbb96bb4
              view().repaintRootContents();
              if (Style::hasEntirelyFixedBackground(oldStyle->backgroundLayers()) != Style::hasEntirelyFixedBackground(newStyle.backgroundLayers()))
                  view().compositor().rootLayerConfigurationChanged();
+diff --git a/Source/WebCore/rendering/RenderBoxModelObject.cpp b/Source/WebCore/rendering/RenderBoxModelObject.cpp
+index 08004fe4449bc61246f1bbde8aeee0e6b630e3c2..2d7dd61784814a608a6a59cb9f2ab81ff8fec982 100644
+--- a/Source/WebCore/rendering/RenderBoxModelObject.cpp
++++ b/Source/WebCore/rendering/RenderBoxModelObject.cpp
+@@ -313,7 +313,18 @@ DecodingMode RenderBoxModelObject::decodingModeForImageDraw(const Image& image,
+     }
+ 
+     // Large image case.
+-    if (!(bitmapImage->isLargeForDecoding() && settings().largeImageAsyncDecodingEnabled()))
++#if PLATFORM(HAIKU)
++    // Any picture bigger than a small icon (32 KB decoded, about 90x90): an
++    // element's first image is then decoded on the decoder's thread rather
++    // than in the paint on the main thread. A news front page decodes dozens
++    // of AVIF and WebP thumbnails (The Guardian: about 100 ms of the main
++    // thread in dav1d while it loads). Pictures an element already shows
++    // are still decoded in place (defaultDecodingMode()), so none flickers.
++    bool decodesAsLarge = bitmapImage->isLargeForDecoding() || bitmapImage->size().area() * sizeof(uint32_t) > 32 * KB;
++#else
++    bool decodesAsLarge = bitmapImage->isLargeForDecoding();
++#endif
++    if (!(decodesAsLarge && settings().largeImageAsyncDecodingEnabled()))
+         return DecodingMode::Synchronous;
+ 
+     // Choose a decodingMode such that the image does not flicker.
 diff --git a/Source/WebCore/rendering/RenderElement.cpp b/Source/WebCore/rendering/RenderElement.cpp
 index b26360017f62da5e5b84a480a480dabf428f16b3..3db0279b08cdef613dcd16b9d1e828bc2067ea00 100644
 --- a/Source/WebCore/rendering/RenderElement.cpp
