@@ -21,21 +21,25 @@ put back old pixels. The X399 now has a hardware cursor (details in
   around whatever kept changing; a navigation could leave most of the
   previous page standing around the new one's video in screenshots. Fixed
   in the engine (same section of hidpi.md).
-- *Reddit with uBlock Origin.* With a copy of the owner's profile a warm
-  load of reddit.com/r/sydney took 6.5-6.9 s against 2.4-2.6 s, and the page
-  drew nothing for 2.7-5.6 s at a time ("Summit page stall: ... no rendering
-  update for 3.4 s"). The main thread is busy then (80% of a 10 s profile):
-  script in microtasks and timers that keeps forcing layout, about half the
-  thread in grid and flex layout. Disabling extensions one at a time: with
-  uBlock Origin off, six loads in a row and no stall; with 1Password off, a
-  stall on the first load; with both off, six loads and no stall. uBlock adds its cosmetic
-  filters in six `tabs.insertCSS()` calls within 0.3 s of the page
-  starting (`SUMMIT_EXTENSION_CSS_TRACE=1`), seconds before the stall, so
-  those are not it; what uBlock does then is not found yet. Each such call
-  does make WebKit rebuild every style resolver of the page, the shadow
-  trees' too (`DocumentScope::didChangeExtensionStyleSheets()`), which a page
-  made of web components pays for many times over; incremental insertion is
-  a candidate if they turn out to matter.
+- *Reddit stops drawing for 3-4 s after it loads.* reddit.com/r/sydney
+  (the version with 27 posts at load, 5 of them ads) draws nothing for 3.4
+  to 5.6 s at a time ("Summit page stall: ... no rendering update for 3.6
+  s"). The page's own components (Lit `firstUpdated`, `measureViewChange`,
+  `insetWidth` in the redditstatic.com chunks) read element geometry about
+  400 times in 10 s from a chain of microtasks that never yields to
+  rendering, each read just after another component changed the page, so
+  each forces a layout: 60 ms at first, growing to 160-360 ms as posts are
+  added (`SUMMIT_PAGE_UPDATE_TRACE=3` logs every forced layout over 5 ms),
+  about 35 in a row. The time is WebKit's flex and grid layout (intrinsic
+  track sizing lays out every grid item again; blocks inside inline content)
+  - engine layout performance, not fixed. An earlier conclusion that uBlock
+  Origin caused it was wrong: runs without uBlock happened to get the page
+  version with 3 posts; with 27 posts it stalls with no extensions at all.
+  uBlock adds its cosmetic filters in six `tabs.insertCSS()` calls within
+  0.3 s (`SUMMIT_EXTENSION_CSS_TRACE=1`); each makes WebKit rebuild every
+  style resolver of the page, shadow trees' too
+  (`DocumentScope::didChangeExtensionStyleSheets()`), a candidate for
+  incremental insertion on pages made of web components.
 - Found on the way: when JavaScriptCore dropped a script from its code cache
   it asked the bytecode cache to write the script's file, and every function
   compiled since was encoded right there (about 70 us each, so seconds for a
