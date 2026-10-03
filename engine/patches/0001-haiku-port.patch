@@ -14996,10 +14996,10 @@ index 0000000000000000000000000000000000000000..df2a7d05bcacb641010b07fe2942ce2d
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..30f88e60d9f7599ec6b65807e589566c70c37a4a
+index 0000000000000000000000000000000000000000..73016e726eb3c4363fa504829965e5024cdf6141
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,1630 @@
+@@ -0,0 +1,1767 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -15044,6 +15044,11 @@ index 0000000000000000000000000000000000000000..30f88e60d9f7599ec6b65807e589566c
 +
 +#include "GraphicsContext.h"
 +#include "NotImplemented.h"
++#include "PlatformMediaResourceLoader.h"
++#include "ResourceError.h"
++#include "ResourceRequest.h"
++#include "ResourceResponse.h"
++#include "SharedBuffer.h"
 +#include "wtf/text/CString.h"
 +#include "wtf/NeverDestroyed.h"
 +
@@ -15174,6 +15179,123 @@ index 0000000000000000000000000000000000000000..30f88e60d9f7599ec6b65807e589566c
 +}
 +#endif
 +
++// blob: and data: URLs name data that only WebCore can read (a blob lives in
++// the network process); Media Kit's own URL reader cannot open them, and the
++// media failed as "not supported". Pages make such media themselves: JW
++// Player plays a tiny clip from a blob: URL to learn whether it may play at
++// all, and on ABC News a player whose test failed took itself away again
++// (issue #21). The whole resource is fetched through the page's media
++// resource loader into a file that the loading thread opens like a download.
++class MediaPrefetchClientHaiku final : public PlatformMediaResourceClient {
++public:
++    static Ref<MediaPrefetchClientHaiku> create(int descriptor, Function<void(bool)>&& completion)
++    {
++        return adoptRef(*new MediaPrefetchClientHaiku(descriptor, WTF::move(completion)));
++    }
++
++    ~MediaPrefetchClientHaiku()
++    {
++        if (m_descriptor >= 0)
++            close(m_descriptor);
++    }
++
++    void responseReceived(PlatformMediaResource&, const ResourceResponse& response, CompletionHandler<void(ShouldContinuePolicyCheck)>&& completionHandler) final
++    {
++        if (response.isInHTTPFamily() && response.httpStatusCode() >= 400)
++            m_failed = true;
++        completionHandler(ShouldContinuePolicyCheck::Yes);
++    }
++
++    void dataReceived(PlatformMediaResource&, const SharedBuffer& buffer) final
++    {
++        if (m_failed || m_descriptor < 0)
++            return;
++        buffer.forEachSegment([&](std::span<const uint8_t> segment) {
++            while (!m_failed && !segment.empty()) {
++                ssize_t written = write(m_descriptor, segment.data(), segment.size());
++                if (written <= 0) {
++                    m_failed = true;
++                    break;
++                }
++                segment = segment.subspan(written);
++            }
++        });
++    }
++
++    void accessControlCheckFailed(PlatformMediaResource&, const ResourceError&) final { finish(false); }
++    void loadFailed(PlatformMediaResource&, const ResourceError&) final { finish(false); }
++    void loadFinished(PlatformMediaResource&, const NetworkLoadMetrics&) final { finish(!m_failed); }
++
++private:
++    MediaPrefetchClientHaiku(int descriptor, Function<void(bool)>&& completion)
++        : m_descriptor(descriptor)
++        , m_completion(WTF::move(completion))
++    {
++    }
++
++    void finish(bool succeeded)
++    {
++        if (m_descriptor >= 0) {
++            if (close(m_descriptor))
++                succeeded = false;
++            m_descriptor = -1;
++        }
++        if (auto completion = std::exchange(m_completion, nullptr))
++            completion(succeeded);
++    }
++
++    int m_descriptor;
++    bool m_failed { false };
++    Function<void(bool)> m_completion;
++};
++
++// Page thread, holding m_mediaLock.
++bool MediaPlayerPrivate::startPrefetchHaiku(const URL& url)
++{
++    char name[] = "/tmp/summit-media-XXXXXX";
++    int descriptor = mkstemp(name);
++    if (descriptor < 0)
++        return false;
++    unsigned generation = ++m_prefetchGeneration;
++    auto client = MediaPrefetchClientHaiku::create(descriptor, [weakThis = WeakPtr { *this }, generation](bool succeeded) {
++        if (weakThis && weakThis->m_prefetchGeneration == generation)
++            weakThis->didFinishPrefetchHaiku(succeeded);
++    });
++    Ref loader = m_player.mediaResourceLoader();
++    m_prefetchResource = loader->requestResource(ResourceRequest { URL { url } }, PlatformMediaResourceLoader::LoadOption::DisallowCaching);
++    if (!m_prefetchResource) {
++        unlink(name);
++        return false;
++    }
++    m_downloadPath = String::fromUTF8(name);
++    m_prefetchResource->setClient(WTF::move(client));
++    if (mediaPlaybackTraceEnabled())
++        std::fprintf(stderr, "Summit media playback: player=%p fetching %s through WebCore\n", this, url.protocol().utf8().legacyCStringPointer());
++    return true;
++}
++
++// Page thread.
++void MediaPlayerPrivate::didFinishPrefetchHaiku(bool succeeded)
++{
++    if (RefPtr resource = std::exchange(m_prefetchResource, nullptr))
++        resource->shutdown();
++    if (mediaPlaybackTraceEnabled())
++        std::fprintf(stderr, "Summit media playback: player=%p fetched=%d\n", this, succeeded);
++    if (!succeeded || m_abort) {
++        if (!m_abort) {
++            m_networkState = MediaPlayer::NetworkState::NetworkError;
++            m_player.networkStateChanged();
++        }
++        return;
++    }
++    m_mediaLock.Lock();
++    m_prefetchedHaiku = true;
++    m_loadingThread = spawn_thread(loadingThread, "media loader", B_NORMAL_PRIORITY, this);
++    if (m_loadingThread >= 0)
++        resume_thread(m_loadingThread);
++    m_mediaLock.Unlock();
++}
++
 +void MediaPlayerPrivate::load(const String& url)
 +{
 +    int traceLifecycle = mediaLifecycleTraceLevel();
@@ -15187,9 +15309,12 @@ index 0000000000000000000000000000000000000000..30f88e60d9f7599ec6b65807e589566c
 +    m_userAgent = m_player.userAgent().utf8().legacyCStringPointer();
 +    m_referrer = m_player.referrer().utf8().legacyCStringPointer();
 +
-+    m_loadingThread = spawn_thread(loadingThread, "media loader", B_NORMAL_PRIORITY, this);
-+    if (m_loadingThread >= 0)
-+        resume_thread(m_loadingThread);
++    URL parsedURL { url };
++    if (!((parsedURL.protocolIsBlob() || parsedURL.protocolIsData()) && startPrefetchHaiku(parsedURL))) {
++        m_loadingThread = spawn_thread(loadingThread, "media loader", B_NORMAL_PRIORITY, this);
++        if (m_loadingThread >= 0)
++            resume_thread(m_loadingThread);
++    }
 +
 +    m_mediaLock.Unlock();
 +
@@ -15214,6 +15339,11 @@ index 0000000000000000000000000000000000000000..30f88e60d9f7599ec6b65807e589566c
 +    bool hadSoundPlayer = false;
 +    m_abort = true;
 +    m_mediaTracksReady = false;
++    // A fetch still under way finishes into nothing.
++    ++m_prefetchGeneration;
++    m_prefetchedHaiku = false;
++    if (RefPtr resource = std::exchange(m_prefetchResource, nullptr))
++        resource->shutdown();
 +#if USE(CURL)
 +    // curl_multi_wakeup() is thread-safe. Serialize the handle lifetime so a
 +    // cancellation cannot race the loader's curl_multi_cleanup().
@@ -16377,6 +16507,13 @@ index 0000000000000000000000000000000000000000..30f88e60d9f7599ec6b65807e589566c
 +#endif
 +    entry_ref ref;
 +    bool hasLocalFile = false;
++    // Fetched by WebCore already (startPrefetchHaiku()).
++    if (m_prefetchedHaiku && !m_downloadPath.isEmpty() && !m_downloadFile) {
++        auto* file = new BFile(m_downloadPath.utf8().legacyCStringPointer(), B_READ_ONLY);
++        m_downloadFile = file;
++        if (file->InitCheck() != B_OK)
++            return;
++    }
 +    if (mediaURL.Protocol() == "file" && (mediaURL.Host().IsEmpty() || mediaURL.Host() == "localhost")) {
 +        BString path = BUrl::UrlDecode(mediaURL.Path());
 +        hasLocalFile = get_ref_for_path(path.String(), &ref) == B_OK;
@@ -16632,10 +16769,10 @@ index 0000000000000000000000000000000000000000..30f88e60d9f7599ec6b65807e589566c
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..2e33cfa9a2a6d785c7bc88dee09e2c62fdf5801a
+index 0000000000000000000000000000000000000000..0afd800b23bedda42322b665a0acde724eb6f9b3
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.h
-@@ -0,0 +1,218 @@
+@@ -0,0 +1,227 @@
 +/*
 + * Copyright (C) 2014 Haiku, Inc.
 + *
@@ -16689,6 +16826,7 @@ index 0000000000000000000000000000000000000000..2e33cfa9a2a6d785c7bc88dee09e2c62
 +class MediaPlayerFactoryHaiku;
 +
 +class SoftwareVideoDecoderHaiku;
++class PlatformMediaResource;
 +
 +class MediaPlayerPrivate
 +    : public MediaPlayerPrivateInterface
@@ -16847,6 +16985,14 @@ index 0000000000000000000000000000000000000000..2e33cfa9a2a6d785c7bc88dee09e2c62
 +        std::string m_referrer;
 +        String m_downloadPath;
 +        String m_secondaryDownloadPath;
++
++        // A blob: or data: URL, fetched whole through WebCore into
++        // m_downloadPath before the loading thread starts (load()).
++        bool startPrefetchHaiku(const URL&);
++        void didFinishPrefetchHaiku(bool succeeded);
++        RefPtr<PlatformMediaResource> m_prefetchResource;
++        unsigned m_prefetchGeneration { 0 };
++        bool m_prefetchedHaiku { false };
 +};
 +
 +
@@ -49766,10 +49912,10 @@ index 0000000000000000000000000000000000000000..d28a6cad6339adf79b155cf974e85bfd
 +
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..29e4343bd44efd49d84aba998c2457e945033ead
+index 0000000000000000000000000000000000000000..ce5487528c16744d92d797880e8f679cec7ac265
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp
-@@ -0,0 +1,895 @@
+@@ -0,0 +1,919 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -50416,35 +50562,38 @@ index 0000000000000000000000000000000000000000..29e4343bd44efd49d84aba998c2457e9
 +    return enabled;
 +}
 +
++// Window thread, from Draw(): app_server ends this update by copying its own
++// copy of the screen over the updated part, page and all, and that copy is
++// older than the screen wherever frames went in directly. The page is
++// presented again in full once app_server has finished (the message is
++// handled after the update ends).
++static void noteDirectExposureHaiku(BWebKitView& view, const std::shared_ptr<WebKit::WebViewStateHaiku>& state)
++{
++    if (state->directExposurePending.exchange(true))
++        return;
++    BLooper* looper = view.Looper();
++    if (!looper || looper->PostMessage(WebKit::viewDirectExposedHaiku, &view) != B_OK)
++        state->directExposurePending = false;
++}
++
 +void BWebKitView::Draw(BRect update)
 +{
 +    UpdateGeometry();
++    bool direct = false;
 +    if (m_state->presentedDirectly.load()) {
-+        std::shared_ptr<WebKit::DirectPresentTargetHaiku> target;
-+        {
-+            std::lock_guard guard(m_state->mutex);
-+            target = m_state->directTarget;
-+        }
-+        if (target && target->enabled()) {
-+            // The GPU puts the page on the screen itself; the bitmap is older.
-+            // app_server asked for this part again, so it may hold something
-+            // else now: have the page presented again. Only what no frame
-+            // covers (a window being enlarged) gets the base colour meanwhile;
-+            // the last frame through app_server says how far frames reach.
-+            if (auto last = m_state->presenter.snapshot()) {
-+                BRegion uncovered(update);
-+                uncovered.Exclude(BRect(0, 0, last->viewSize.width() - 1, last->viewSize.height() - 1));
-+                if (uncovered.CountRects()) {
-+                    PushState();
-+                    SetHighColor(255, 255, 255, 255);
-+                    FillRegion(&uncovered);
-+                    PopState();
-+                }
-+            }
-+            dispatchViewMessageHaiku(m_state, BMessage(WebKit::viewDirectRedisplayHaiku));
-+            return;
-+        }
++        std::lock_guard guard(m_state->mutex);
++        direct = m_state->directTarget && m_state->directTarget->enabled();
 +    }
++    // When the GPU puts the page on the screen itself, the bitmap is older
++    // than the screen. It is drawn all the same: app_server asked for this
++    // part again because its own copy of the screen holds something else
++    // there now (a window that has moved away), and at the end of the update
++    // it copies that copy onto the screen and keeps it for screenshots and
++    // for the next time it redraws. The page then goes into the screen again
++    // in full (noteDirectExposureHaiku()).
++    // A frame that goes into the screen directly while this one is drawn may
++    // land before it, and then this older one covers it.
++    uint32_t directFramesBefore = m_state->directFrames.load();
 +    auto frame = m_state->presenter.snapshot();
 +    if (presentTraceHaiku())
 +        std::fprintf(stderr, "Summit view %p draw [%.0f,%.0f %.0fx%.0f] frame=%llu view=%dx%d hidden=%d\n", this, update.left, update.top,
@@ -50476,8 +50625,14 @@ index 0000000000000000000000000000000000000000..29e4343bd44efd49d84aba998c2457e9
 +        }
 +    }
 +    PopState();
++    if (direct) {
++        noteDirectExposureHaiku(*this, m_state);
++        return;
++    }
 +    bigtime_t drawStart = PresentStageStatsHaiku::enabled() ? system_time() : 0;
 +    Sync();
++    if (m_state->directFrames.load() != directFramesBefore)
++        noteDirectExposureHaiku(*this, m_state);
 +    if (drawStart && frame) {
 +        static PresentStageStatsHaiku draw("draw (app_server)");
 +        BRect drawn = update & destination;
@@ -50612,6 +50767,21 @@ index 0000000000000000000000000000000000000000..29e4343bd44efd49d84aba998c2457e9
 +    case B_CUT: case B_COPY: case B_PASTE: case B_SELECT_ALL: case B_UNDO: case B_REDO:
 +        ExecuteEditCommand(message->what);
 +        return;
++    case WebKit::viewDirectExposedHaiku: {
++        m_state->directExposurePending = false;
++        // app_server handles the end of the update before this.
++        Sync();
++        std::shared_ptr<WebKit::DirectPresentTargetHaiku> target;
++        {
++            std::lock_guard guard(m_state->mutex);
++            target = m_state->directTarget;
++        }
++        if (target && target->enabled()) {
++            target->invalidate();
++            dispatchViewMessageHaiku(m_state, BMessage(WebKit::viewDirectRedisplayHaiku));
++        }
++        return;
++    }
 +    case viewFrameHaiku: {
 +        if (presentTraceHaiku())
 +            std::fprintf(stderr, "Summit view %p frame message damage=%d window=%p hidden=%d\n", this,
@@ -74751,10 +74921,10 @@ index 0000000000000000000000000000000000000000..c9ce1c3634ecf86e8225245d70df7d88
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/DirectPresentTargetHaiku.h b/Source/WebKit/UIProcess/haiku/DirectPresentTargetHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..afb435524fc55067a4ce7c27c4b144ba48867c93
+index 0000000000000000000000000000000000000000..4bacf045a2c597f0e182667aa572dc93db80b21b
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/DirectPresentTargetHaiku.h
-@@ -0,0 +1,139 @@
+@@ -0,0 +1,150 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#pragma once
 +
@@ -74863,6 +75033,17 @@ index 0000000000000000000000000000000000000000..afb435524fc55067a4ce7c27c4b144ba
 +        m_current = target;
 +        m_enabled = target.enabled;
 +        return true;
++    }
++
++    // Any thread. Something other than the page has drawn into its place on
++    // the screen (app_server, from its own copy): the next frame goes there in
++    // full rather than only what changed.
++    void invalidate()
++    {
++        bool locked = acquire_sem_etc(m_state->lock, 1, B_RELATIVE_TIMEOUT, 30000) == B_OK;
++        m_state->generation++;
++        if (locked)
++            release_sem(m_state->lock);
 +    }
 +
 +private:
@@ -79097,10 +79278,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..b061c97a5f706d92f2b4208d4c94c083bfb2a1fb
+index 0000000000000000000000000000000000000000..5c0c6f63447d0cacb701ae704b79875c912a63a8
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,2096 @@
+@@ -0,0 +1,2097 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -80873,6 +81054,7 @@ index 0000000000000000000000000000000000000000..b061c97a5f706d92f2b4208d4c94c083
 +    if (m_presentationCallback)
 +        std::exchange(m_presentationCallback, { })();
 +    m_state->presentedDirectly = true;
++    m_state->directFrames++;
 +    // The view has nothing to draw, but frame counts (Summit's benchmarks)
 +    // still see the frame.
 +    BMessenger view;
@@ -81773,10 +81955,10 @@ index 0000000000000000000000000000000000000000..888251fc63a6b06030f82115037d8ec3
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..7b8ce621fa2ac99e9011236420e25c2cb11ab071
+index 0000000000000000000000000000000000000000..caad3031f5ed3d81b99a0e62cd6408f55ece5ac0
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
-@@ -0,0 +1,164 @@
+@@ -0,0 +1,173 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -81819,6 +82001,10 @@ index 0000000000000000000000000000000000000000..7b8ce621fa2ac99e9011236420e25c2c
 +    // Presenting straight into the screen (DirectPresentHaiku.h): the view
 +    // has a target for its page, or the page needs presenting again in full.
 +    viewDirectTargetHaiku = 'wvdt', viewDirectRedisplayHaiku = 'wvdr',
++    // To the view itself: app_server has copied its own copy of the screen
++    // over part of the page (BWebKitView::Draw); once it is done, present the
++    // page again in full.
++    viewDirectExposedHaiku = 'wvde',
 +    viewPreconnectHaiku = 'wvpc'
 +};
 +
@@ -81865,6 +82051,11 @@ index 0000000000000000000000000000000000000000..7b8ce621fa2ac99e9011236420e25c2c
 +    // The last frame went into the screen directly, so the view's bitmap is
 +    // older than the screen and must not be drawn over it.
 +    std::atomic<bool> presentedDirectly { false };
++    // Frames presented directly so far: a frame app_server draws while one
++    // goes into the screen may land on top of it.
++    std::atomic<uint32_t> directFrames { 0 };
++    // A viewDirectExposedHaiku is on its way to the view.
++    std::atomic<bool> directExposurePending { false };
 +    // This reference is read, assigned and released only on the WebKit main
 +    // thread. Native windows retain the state without touching the client.
 +    RefPtr<WebView> client;
@@ -99351,7 +99542,7 @@ index 0000000000000000000000000000000000000000..abc82f6d26d2b1374740dc304282ae75
 +
 +}
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
-index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac807cc26c6c 100644
+index cf4d54b7869d7a7cded74482922d8fdda53af21d..c730f1b6767d313114497a1deb55e563c947b4ae 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
 @@ -26,6 +26,23 @@
@@ -99427,7 +99618,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
      , m_hardwareAccelerationEnabled(webPage.corePage()->settings().hardwareAccelerationEnabled())
  #endif
      , m_backgroundColor(webPage.backgroundColor())
-@@ -130,11 +166,280 @@ AcceleratedSurface::AcceleratedSurface(WebPage& webPage, Function<void()>&& fram
+@@ -130,11 +166,292 @@ AcceleratedSurface::AcceleratedSurface(WebPage& webPage, Function<void()>&& fram
      , m_isVisible(webPage.activityState().contains(ActivityState::IsVisible))
      , m_useExplicitSync(usesGL() && useExplicitSync())
  #if ENABLE(DAMAGE_TRACKING)
@@ -99443,9 +99634,9 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
      , m_damageTracker(m_swapChain, !usesGL())
  #endif
 +#endif
-+{
-+}
-+
+ {
+ }
+ 
 +#if PLATFORM(HAIKU)
 +// app_server's copy of the screen, mapped once for the life of the process.
 +// Mesa keeps the pages of the mapping it presents into locked for the GPU,
@@ -99479,6 +99670,8 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
 +    mappings->set(source, clone >= 0 ? address : nullptr);
 +    return clone >= 0 ? address : nullptr;
 +}
++
++static bool directPresentTraceHaiku();
 +
 +// Copies composited frames straight into the screen where the UI process
 +// says the page is (DirectPresentHaiku.h), through Summit's private Mesa
@@ -99537,8 +99730,11 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
 +        }
 +
 +        // A changed place is presented in full: the screen holds nothing of
-+        // the page in a part that has just become visible.
-+        bool full = m_state->generation != m_state->presentedGeneration.load();
++        // the page in a part that has just become visible. So is a new
++        // presenter's first frame: the state is the view's, and the process
++        // that presented into it last (before a navigation to another site,
++        // say) showed another page.
++        bool full = !m_presentedAny || m_state->generation != m_state->presentedGeneration.load();
 +        uint32_t visibleCount = std::min(m_state->rectCount, DirectPresentStateHaiku::maximumRects);
 +        m_rects.clear();
 +        for (uint32_t i = 0; i < visibleCount; ++i) {
@@ -99596,6 +99792,13 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
 +        if (std::exchange(m_lastFailure, 0) || !m_presentedAny)
 +            std::fprintf(stderr, "Summit direct present: presenting %dx%d frames into the screen at %d,%d\n",
 +                frameSize.width(), frameSize.height(), m_state->originX, m_state->originY);
++        if (full && directPresentTraceHaiku()) {
++            double pixels = 0;
++            for (auto& rect : m_rects)
++                pixels += double(rect[2] - rect[0] + 1) * (rect[3] - rect[1] + 1);
++            std::fprintf(stderr, "Summit direct present: in full, generation %u, %zu rectangles, %.2f Mpx\n",
++                m_state->generation, m_rects.size(), pixels / 1e6);
++        }
 +        m_presentedAny = true;
 +        m_state->presentedGeneration = m_state->generation;
 +        m_state->presents.fetch_add(1);
@@ -99691,13 +99894,13 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
 +}
 +
 +void AcceleratedSurface::setDirectPresentTarget(int32_t area)
- {
++{
 +    m_directPresenter = area >= 0 ? DirectPresenterHaiku::create(area) : nullptr;
 +    if (directPresentTraceHaiku())
 +        std::fprintf(stderr, "Summit direct present: surface %llu target area %d: %s, wanted %d\n", static_cast<unsigned long long>(surfaceID()),
 +            static_cast<int>(area), m_directPresenter ? "presenter" : "none", m_directPresenter && m_directPresenter->wanted());
- }
- 
++}
++
 +void AcceleratedSurface::redisplayDirect()
 +{
 +    if (m_redisplayHandlerHaiku)
@@ -99708,7 +99911,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
  AcceleratedSurface::~AcceleratedSurface() = default;
  
  WTF_MAKE_TZONE_ALLOCATED_IMPL(AcceleratedSurface::RenderTarget);
-@@ -176,7 +481,7 @@ void AcceleratedSurface::RenderTarget::createSkiaSurfaceForFramebuffer(unsigned
+@@ -176,7 +493,7 @@ void AcceleratedSurface::RenderTarget::createSkiaSurfaceForFramebuffer(unsigned
      m_skiaSurface = SkSurfaces::WrapBackendRenderTarget(display.skiaGrContext(), backendRenderTarget, origin, kRGBA_8888_SkColorType, SkColorSpace::MakeSRGB(), &properties);
  }
  
@@ -99717,7 +99920,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
  WTF_MAKE_TZONE_ALLOCATED_IMPL(AcceleratedSurface::RenderTargetShareableBuffer);
  
  AcceleratedSurface::RenderTargetShareableBuffer::RenderTargetShareableBuffer(AcceleratedSurface& surface, const IntSize& size)
-@@ -218,9 +523,36 @@ void AcceleratedSurface::RenderTargetShareableBuffer::initializeColorBuffer(EGLI
+@@ -218,9 +535,36 @@ void AcceleratedSurface::RenderTargetShareableBuffer::initializeColorBuffer(EGLI
      glBindRenderbuffer(GL_RENDERBUFFER, m_colorBuffer);
      if (image)
          glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER, image);
@@ -99755,7 +99958,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
  
      if (m_surface->useSkia())
          createSkiaSurfaceForFramebuffer(m_fbo);
-@@ -228,6 +560,10 @@ void AcceleratedSurface::RenderTargetShareableBuffer::initializeColorBuffer(EGLI
+@@ -228,6 +572,10 @@ void AcceleratedSurface::RenderTargetShareableBuffer::initializeColorBuffer(EGLI
  
  void AcceleratedSurface::RenderTargetShareableBuffer::sendFrame(Vector<WebCore::IntRect, 1>&& damageRects)
  {
@@ -99766,7 +99969,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
      WebProcess::singleton().parentProcessConnection()->send(Messages::AcceleratedBackingStore::Frame(m_id, WTF::move(damageRects), WTF::move(m_renderingFenceFD)), m_surface->surfaceID());
  }
  
-@@ -418,7 +754,14 @@ std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::RenderTarg
+@@ -418,7 +766,14 @@ std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::RenderTarg
          return nullptr;
      }
  
@@ -99781,7 +99984,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
      if (!bufferHandle) {
          WTFLogAlways("Failed to create handle for shared memory buffer");
          return nullptr;
-@@ -439,13 +782,407 @@ AcceleratedSurface::RenderTargetSHMImage::RenderTargetSHMImage(AcceleratedSurfac
+@@ -439,13 +794,407 @@ AcceleratedSurface::RenderTargetSHMImage::RenderTargetSHMImage(AcceleratedSurfac
      WebProcess::singleton().parentProcessConnection()->send(Messages::AcceleratedBackingStore::DidCreateSHMBuffer(m_id, WTF::move(bitmapHandle)), m_surface->surfaceID());
  }
  
@@ -100189,7 +100392,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
  
          SkImageInfo info = SkImageInfo::Make(m_bitmap->size().width(), m_bitmap->size().height(), SkColorType::kBGRA_8888_SkColorType, SkAlphaType::kPremul_SkAlphaType);
  
-@@ -457,9 +1194,14 @@ void AcceleratedSurface::RenderTargetSHMImage::didRenderFrame()
+@@ -457,9 +1206,14 @@ void AcceleratedSurface::RenderTargetSHMImage::didRenderFrame()
          return;
      }
  
@@ -100204,7 +100407,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
  std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::RenderTargetTexture::create(AcceleratedSurface& surface, const IntSize& size)
  {
      auto texture = BitmapTexture::create(size);
-@@ -515,8 +1257,9 @@ AcceleratedSurface::RenderTargetTexture::RenderTargetTexture(AcceleratedSurface&
+@@ -515,8 +1269,9 @@ AcceleratedSurface::RenderTargetTexture::RenderTargetTexture(AcceleratedSurface&
  }
  
  AcceleratedSurface::RenderTargetTexture::~RenderTargetTexture() = default;
@@ -100215,7 +100418,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
  
  #if USE(WPE_RENDERER)
  std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::RenderTargetWPEBackend::create(AcceleratedSurface& surface, const IntSize& initialSize, UnixFileDescriptor&& hostFD)
-@@ -594,7 +1337,7 @@ void AcceleratedSurface::RenderTargetWPEBackend::didRenderFrame()
+@@ -594,7 +1349,7 @@ void AcceleratedSurface::RenderTargetWPEBackend::didRenderFrame()
  AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
      : m_surface(surface)
  {
@@ -100224,7 +100427,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
      if (!m_surface->hardwareAccelerationEnabled()) {
          m_type = Type::SharedMemory;
          return;
-@@ -632,7 +1375,7 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
+@@ -632,7 +1387,7 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
      case PlatformDisplay::Type::GBM:
  #endif
          break;
@@ -100233,7 +100436,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
  #if USE(WPE_RENDERER)
      case PlatformDisplay::Type::WPE:
          m_type = Type::WPEBackend;
-@@ -646,11 +1389,19 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
+@@ -646,11 +1401,19 @@ AcceleratedSurface::SwapChain::SwapChain(AcceleratedSurface& surface)
      case PlatformDisplay::Type::Default:
          break;
  #endif // PLATFORM(GTK)
@@ -100254,7 +100457,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
  void AcceleratedSurface::SwapChain::setupBufferFormat()
  {
      if (m_type != Type::EGLImage)
-@@ -749,7 +1500,7 @@ bool AcceleratedSurface::SwapChain::resize(const IntSize& size)
+@@ -749,7 +1512,7 @@ bool AcceleratedSurface::SwapChain::resize(const IntSize& size)
  
  bool AcceleratedSurface::SwapChain::handleBufferFormatChangeIfNeeded()
  {
@@ -100263,7 +100466,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
      if (m_type == Type::EGLImage) {
          Locker locker { m_bufferFormatLock };
          if (m_bufferFormatChanged) {
-@@ -765,7 +1516,7 @@ bool AcceleratedSurface::SwapChain::handleBufferFormatChangeIfNeeded()
+@@ -765,7 +1528,7 @@ bool AcceleratedSurface::SwapChain::handleBufferFormatChangeIfNeeded()
  std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::SwapChain::createTarget() const
  {
      switch (m_type) {
@@ -100272,7 +100475,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
  #if USE(GBM) || OS(ANDROID)
      case Type::EGLImage: {
          Locker locker { m_bufferFormatLock };
-@@ -773,7 +1524,11 @@ std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::SwapChain:
+@@ -773,7 +1536,11 @@ std::unique_ptr<AcceleratedSurface::RenderTarget> AcceleratedSurface::SwapChain:
      }
  #endif
      case Type::Texture:
@@ -100284,7 +100487,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
      case Type::SharedMemory:
          return RenderTargetSHMImage::create(m_surface.get(), m_size);
  #endif
-@@ -812,6 +1567,11 @@ AcceleratedSurface::RenderTarget* AcceleratedSurface::SwapChain::nextTarget()
+@@ -812,6 +1579,11 @@ AcceleratedSurface::RenderTarget* AcceleratedSurface::SwapChain::nextTarget()
              if (auto target = createTarget())
                  m_freeTargets.append(WTF::move(target));
          }
@@ -100296,7 +100499,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
  
  #if ENABLE(WPE_PLATFORM)
          if (m_freeTargets.size() != targetsToCreate)
-@@ -841,6 +1601,12 @@ void AcceleratedSurface::SwapChain::releaseTarget(uint64_t targetID, UnixFileDes
+@@ -841,6 +1613,12 @@ void AcceleratedSurface::SwapChain::releaseTarget(uint64_t targetID, UnixFileDes
          m_freeTargets.insert(0, WTF::move(m_lockedTargets[index]));
          m_lockedTargets.removeAt(index);
      }
@@ -100309,7 +100512,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
  }
  
  void AcceleratedSurface::SwapChain::reset()
-@@ -859,6 +1625,11 @@ void AcceleratedSurface::SwapChain::releaseUnusedBuffers()
+@@ -859,6 +1637,11 @@ void AcceleratedSurface::SwapChain::releaseUnusedBuffers()
  #if USE(WPE_RENDERER)
      ASSERT(m_type != Type::WPEBackend);
  #endif
@@ -100321,7 +100524,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
  
  #if ENABLE(WPE_PLATFORM)
      WebProcess::singleton().parentProcessConnection()->send(Messages::AcceleratedBackingStore::DidChangeBufferConfiguration(m_lockedTargets.size()), m_surface->surfaceID());
-@@ -929,7 +1700,7 @@ bool AcceleratedSurface::shouldPaintMirrored() const
+@@ -929,7 +1712,7 @@ bool AcceleratedSurface::shouldPaintMirrored() const
      switch (m_swapChain.type()) {
      case SwapChain::Type::Invalid:
          return false;
@@ -100330,7 +100533,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
      case SwapChain::Type::Texture:
  #if USE(GBM) || OS(ANDROID)
      case SwapChain::Type::EGLImage:
-@@ -960,6 +1731,10 @@ void AcceleratedSurface::preferredBufferFormatsDidChange()
+@@ -960,6 +1743,10 @@ void AcceleratedSurface::preferredBufferFormatsDidChange()
  
  void AcceleratedSurface::visibilityDidChange(bool isVisible)
  {
@@ -100341,7 +100544,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
      if (m_isVisible == isVisible)
          return;
  
-@@ -1000,7 +1775,7 @@ void AcceleratedSurface::backgroundColorDidChange()
+@@ -1000,7 +1787,7 @@ void AcceleratedSurface::backgroundColorDidChange()
      if (isOpaque == wasOpaque)
          return;
  
@@ -100350,7 +100553,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
      m_swapChain.setupBufferFormat();
  #endif
  }
-@@ -1022,7 +1797,7 @@ void AcceleratedSurface::didCreateCompositingRunLoop(RunLoop& runLoop)
+@@ -1022,7 +1809,7 @@ void AcceleratedSurface::didCreateCompositingRunLoop(RunLoop& runLoop)
  #if USE(GLIB_EVENT_LOOP)
      m_releaseUnusedBuffersTimer->setPriority(RunLoopSourcePriority::ReleaseUnusedResourcesTimer);
  #endif
@@ -100359,7 +100562,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
      WebProcess::singleton().parentProcessConnection()->addMessageReceiver(runLoop, *this, Messages::AcceleratedSurface::messageReceiverName(), m_id);
  #endif
  }
-@@ -1030,6 +1805,10 @@ void AcceleratedSurface::didCreateCompositingRunLoop(RunLoop& runLoop)
+@@ -1030,6 +1817,10 @@ void AcceleratedSurface::didCreateCompositingRunLoop(RunLoop& runLoop)
  void AcceleratedSurface::willDestroyCompositingRunLoop()
  {
      m_frameCompleteHandler = nullptr;
@@ -100370,7 +100573,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
  
  #if USE(WPE_RENDERER)
      if (m_swapChain.type() == SwapChain::Type::WPEBackend)
-@@ -1043,7 +1822,7 @@ void AcceleratedSurface::willDestroyCompositingRunLoop()
+@@ -1043,7 +1834,7 @@ void AcceleratedSurface::willDestroyCompositingRunLoop()
              protectedThis->m_releaseUnusedBuffersTimer = nullptr;
          });
      }
@@ -100379,7 +100582,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
      WebProcess::singleton().parentProcessConnection()->removeMessageReceiver(Messages::AcceleratedSurface::messageReceiverName(), m_id);
  #endif
  }
-@@ -1155,18 +1934,84 @@ void AcceleratedSurface::didRenderFrame(TargetContents targetContents)
+@@ -1155,18 +1946,105 @@ void AcceleratedSurface::didRenderFrame(TargetContents targetContents)
      if (!m_target)
          return;
  
@@ -100445,6 +100648,27 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
 +    // No rectangles would read as "the whole frame" anyway; say so outright.
 +    if (damageRects.isEmpty())
 +        damageRects.append(IntRect { { }, m_swapChain.size() });
++    // app_server's own copy of the screen gets only frames that go through
++    // it, and each names only what changed since the frame before it. What
++    // frames presented directly changed in between is drawn there too, or
++    // that copy keeps the old pixels for good, and app_server copies them
++    // back onto the screen whenever it redraws the window (another window
++    // moving off it, a menu closing), as well as into screenshots.
++    if (m_directPresenter) {
++        if (presentedDirectly) {
++            for (auto& rect : damageRects)
++                m_directDamageHaiku.unite(rect);
++        } else if (!m_directDamageHaiku.isEmpty()) {
++            for (auto& rect : damageRects)
++                m_directDamageHaiku.unite(rect);
++            auto rects = m_directDamageHaiku.rects();
++            if (rects.size() > 64)
++                damageRects = { m_directDamageHaiku.bounds() };
++            else
++                damageRects = WTF::move(rects);
++            m_directDamageHaiku = { };
++        }
++    }
 +#endif
  #else
      UNUSED_PARAM(targetContents);
@@ -100464,7 +100688,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
      m_pendingFrameNotifyTargets.insert(0, { m_target, WTF::move(damageRects) });
      m_target = nullptr;
  }
-@@ -1188,13 +2033,17 @@ const std::optional<Damage>& AcceleratedSurface::renderTargetDamage()
+@@ -1188,13 +2066,17 @@ const std::optional<Damage>& AcceleratedSurface::renderTargetDamage()
  }
  #endif
  
@@ -100484,7 +100708,7 @@ index cf4d54b7869d7a7cded74482922d8fdda53af21d..8196608e5486d5fc54885c95ee37ac80
  #endif
  
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.h b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.h
-index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..329d6a930f5c4802e85982c3035e8b9f630f7a7e 100644
+index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..f12da5cab11d35928ad6f5e2fbbd915b6dad48af 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.h
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.h
 @@ -27,10 +27,15 @@
@@ -100688,7 +100912,7 @@ index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..329d6a930f5c4802e85982c3035e8b9f
          mutable Lock m_bufferFormatLock;
          BufferFormat m_bufferFormat WTF_GUARDED_BY_LOCK(m_bufferFormatLock);
          bool m_bufferFormatChanged WTF_GUARDED_BY_LOCK(m_bufferFormatLock) { false };
-@@ -475,10 +531,21 @@ private:
+@@ -475,10 +531,24 @@ private:
  
      const WeakRef<WebPage> m_webPage;
      Function<void()> m_frameCompleteHandler;
@@ -100702,6 +100926,9 @@ index 7d6fcbf6040f5473b20cfd6700bb9f789fc5c5de..329d6a930f5c4802e85982c3035e8b9f
 +    // When the screen first got a frame app_server's copy does not have.
 +    MonotonicTime m_directPagesPendingSinceHaiku;
 +    MonotonicTime m_lastFrameThroughAppServerHaiku;
++    // What frames presented directly have changed since one last went
++    // through app_server, which that one draws there (didRenderFrame()).
++    WebCore::Region m_directDamageHaiku;
 +#endif
      bool m_useSkia { false };
      uint64_t m_id { 0 };
