@@ -23475,7 +23475,7 @@ index 8723b9e2f90788a74d1ddc536a399463921231ec..6433d3ae69bf7a705a5374010c3a182a
  
  } // namespace WebKit
 diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreProxy.cpp b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreProxy.cpp
-index 30f54801b8aa9b9bc83af8a929f8bdc04a2ee4d1..faf55e6b71b6ae882f5f238b26eb7627e1153d01 100644
+index 30f54801b8aa9b9bc83af8a929f8bdc04a2ee4d1..7eda27f16afd9d2318fe788ca5ef71b475cc62d8 100644
 --- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreProxy.cpp
 +++ b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreProxy.cpp
 @@ -33,6 +33,10 @@
@@ -23554,6 +23554,38 @@ index 30f54801b8aa9b9bc83af8a929f8bdc04a2ee4d1..faf55e6b71b6ae882f5f238b26eb7627
          // If the contents width is small, increase tile size vertically.
          if (m_contentsRect.width() < tileSize.width())
              tileSize.setHeight(maxUntiledContentSize);
+@@ -513,6 +550,31 @@ std::pair<IntRect, IntRect> CoordinatedBackingStoreProxy::computeCoverAndKeepRec
+ 
+     adjustForContentsRect(coverRect);
+ 
++#if PLATFORM(HAIKU)
++    // The page's own layer is as wide as the viewport, so the area it may
++    // cover goes into its height: tiles one and a half viewports above and
++    // below what shows. A layer of a part of the page (a picture with a
++    // filter behind it, a post's gallery) got tiles only once it was within
++    // half a viewport, 400 pixels of the page: scrolled at an ordinary speed
++    // it was in view before the page had painted it, and Reddit's pictures
++    // came in as the black boxes they lie on. Such a layer now has tiles as
++    // far out as the page around it. SUMMIT_LAYER_TILE_REACH=<viewports>
++    // sets the distance, 0 the old one.
++    static const float reach = [] {
++        const char* value = getenv("SUMMIT_LAYER_TILE_REACH");
++        return value && *value ? std::max(0.0, std::atof(value)) : 1.5;
++    }();
++    if (reach > 0 && m_coverAreaMultiplier > 1 && !m_visibleRect.isEmpty()
++        && static_cast<int64_t>(m_contentsRect.width()) * m_contentsRect.height() <= 2 * static_cast<int64_t>(m_visibleRect.width()) * m_visibleRect.height()) {
++        IntRect reachRect = m_visibleRect;
++        reachRect.inflateX(m_visibleRect.width() * (m_coverAreaMultiplier - 1) / 2);
++        reachRect.inflateY(m_visibleRect.height() * reach);
++        reachRect.intersect(m_contentsRect);
++        if (!reachRect.isEmpty())
++            coverRect.unite(reachRect);
++    }
++#endif
++
+     // The keep rect is an inflated version of the cover rect, inflated in tile dimensions.
+     keepRect.unite(coverRect);
+     keepRect.inflateX(m_tileSize.width() / 2);
 diff --git a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreTile.cpp b/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreTile.cpp
 index 3f7acfab36c398a8e7af4c55768bdef27cdac477..3c8c8e0bc1dff262f949e978e756fb219ec443b4 100644
 --- a/Source/WebCore/platform/graphics/texmap/coordinated/CoordinatedBackingStoreTile.cpp
@@ -37050,7 +37082,7 @@ index c08712a55b877c6835a885a79e6516ebb0042ba0..60dfb3d390338b7c918abefc2dee683c
  }
  
 diff --git a/Source/WebCore/rendering/RenderBlock.cpp b/Source/WebCore/rendering/RenderBlock.cpp
-index 80e6d70df1e1adbf7b85dade1a317d8678d1fe37..739b2fb895f0727663e50dd01c32957f8c7b91ed 100644
+index 80e6d70df1e1adbf7b85dade1a317d8678d1fe37..98c60bcb3b065569d6978e0f6c0b91cda3b993ee 100644
 --- a/Source/WebCore/rendering/RenderBlock.cpp
 +++ b/Source/WebCore/rendering/RenderBlock.cpp
 @@ -93,6 +93,10 @@
@@ -37064,7 +37096,7 @@ index 80e6d70df1e1adbf7b85dade1a317d8678d1fe37..739b2fb895f0727663e50dd01c32957f
  #include <wtf/SetForScope.h>
  #include <wtf/StackStats.h>
  #include <wtf/TZoneMallocInlines.h>
-@@ -579,9 +583,479 @@ static bool canContainDescendantScrollbarChanges(const RenderBlock& renderBlock,
+@@ -579,9 +583,507 @@ static bool canContainDescendantScrollbarChanges(const RenderBlock& renderBlock,
      return layoutContext.subtreeScrollbarChangesState().has_value() && renderBlock.style().logicalWidth().isFixed();
  }
  
@@ -37073,6 +37105,9 @@ index 80e6d70df1e1adbf7b85dade1a317d8678d1fe37..739b2fb895f0727663e50dd01c32957f
 +// at least that long, report the blocks that were laid out although nothing in
 +// them needed it when the layout began (an ancestor's algorithm asked), or that
 +// were laid out more than once: how many, and the time in the outermost ones.
++extern unsigned summitPercentHeightChainsDirtied;
++extern unsigned summitPercentHeightChainsLeft;
++
 +struct SummitLayoutWhyTrace {
 +    struct Entry {
 +        unsigned layouts { 0 };
@@ -37088,6 +37123,8 @@ index 80e6d70df1e1adbf7b85dade1a317d8678d1fe37..739b2fb895f0727663e50dd01c32957f
 +    unsigned blockLayouts { 0 };
 +    unsigned forcedBlockLayouts { 0 };
 +    unsigned reusedItemLayouts { 0 };
++    unsigned percentChainsDirtiedAtStart { 0 };
++    unsigned percentChainsLeftAtStart { 0 };
 +};
 +
 +static SummitLayoutWhyTrace& summitLayoutWhyTrace()
@@ -37137,6 +37174,8 @@ index 80e6d70df1e1adbf7b85dade1a317d8678d1fe37..739b2fb895f0727663e50dd01c32957f
 +        return false;
 +    trace = { };
 +    trace.active = true;
++    trace.percentChainsDirtiedAtStart = summitPercentHeightChainsDirtied;
++    trace.percentChainsLeftAtStart = summitPercentHeightChainsLeft;
 +    for (const RenderObject* renderer = &root; renderer; renderer = renderer->nextInPreOrder(&root)) {
 +        ++trace.renderers;
 +        if (renderer->needsLayout())
@@ -37151,8 +37190,9 @@ index 80e6d70df1e1adbf7b85dade1a317d8678d1fe37..739b2fb895f0727663e50dd01c32957f
 +    trace.active = false;
 +    if (milliseconds < summitLayoutWhyTraceThreshold())
 +        return;
-+    WTFLogAlways("Summit layout why: %.1f ms root=%s renderers=%u dirty=%u blockLayouts=%u forced=%u reused=%u\n", milliseconds,
-+        summitLayoutWhyDescription(root).utf8().legacyCStringPointer(), trace.renderers, trace.dirtyAtStart.size() + trace.laidOut.size(), trace.blockLayouts, trace.forcedBlockLayouts, trace.reusedItemLayouts);
++    WTFLogAlways("Summit layout why: %.1f ms root=%s renderers=%u dirty=%u blockLayouts=%u forced=%u reused=%u percentChainsMarked=%u percentChainsLeft=%u\n", milliseconds,
++        summitLayoutWhyDescription(root).utf8().legacyCStringPointer(), trace.renderers, trace.dirtyAtStart.size() + trace.laidOut.size(), trace.blockLayouts, trace.forcedBlockLayouts, trace.reusedItemLayouts,
++        summitPercentHeightChainsDirtied - trace.percentChainsDirtiedAtStart, summitPercentHeightChainsLeft - trace.percentChainsLeftAtStart);
 +    Vector<std::pair<String, SummitLayoutWhyTrace::Entry>> entries;
 +    for (auto& entry : trace.forced)
 +        entries.append({ entry.key, entry.value });
@@ -37398,9 +37438,14 @@ index 80e6d70df1e1adbf7b85dade1a317d8678d1fe37..739b2fb895f0727663e50dd01c32957f
 +    item.setChildNeedsLayout(MarkingBehavior::MarkOnlyThis);
 +}
 +
++// In RenderBlockFlow.cpp.
++void summitVerifyPercentHeightChains();
++
++// Called when a layout of the document is finished.
 +void summitForgetItemsMarkedByContainer()
 +{
 +    summitItemsMarkedByContainer().clear();
++    summitVerifyPercentHeightChains();
 +}
 +
 +static SummitItemLayoutInputs summitCurrentItemLayoutInputs(RenderBlock& item)
@@ -37496,6 +37541,21 @@ index 80e6d70df1e1adbf7b85dade1a317d8678d1fe37..739b2fb895f0727663e50dd01c32957f
 +        };
 +        WTFLogAlways("Summit layout item: %p %s %s | last: %s | now: %s\n", &item, summitLayoutWhyDescription(item).utf8().legacyCStringPointer(),
 +            equivalent ? "kept" : "laid out", describe(last.inputs).utf8().legacyCStringPointer(), describe(now).utf8().legacyCStringPointer());
++        if (auto* descendants = item.percentHeightDescendants()) {
++            unsigned listed = 0;
++            for (auto& descendant : *descendants) {
++                auto& height = descendant.style().logicalHeight();
++                auto percent = [](const auto& length) { auto value = length.tryPercentage(); return value ? static_cast<double>(value->value) : -1.0; };
++                WTFLogAlways("Summit layout item:    percent-height descendant %s in %s height=%.1f%% min=%.1f%% max=%.1f%% size=%.2fx%.2f parentIsItem=%d\n",
++                    summitLayoutWhyDescription(descendant).utf8().legacyCStringPointer(),
++                    descendant.parent() ? summitLayoutWhyDescription(*descendant.parent()).utf8().legacyCStringPointer() : "none",
++                    percent(height), percent(descendant.style().logicalMinHeight()), percent(descendant.style().logicalMaxHeight()),
++                    descendant.logicalWidth().toFloat(), descendant.logicalHeight().toFloat(), descendant.parent() == &item);
++                if (++listed == 6)
++                    break;
++            }
++            WTFLogAlways("Summit layout item:    %u percent-height descendants\n", descendants->computeSize());
++        }
 +    }
 +    if (equivalent) {
 +        // The next comparison is with what was asked for now.
@@ -37544,7 +37604,7 @@ index 80e6d70df1e1adbf7b85dade1a317d8678d1fe37..739b2fb895f0727663e50dd01c32957f
  
      auto& layoutContext = this->layoutContext();
  
-@@ -605,6 +1079,19 @@ void RenderBlock::layout()
+@@ -605,6 +1107,19 @@ void RenderBlock::layout()
          clearLayoutOverflow();
  
      invalidateBackgroundObscurationStatus();
@@ -37565,20 +37625,219 @@ index 80e6d70df1e1adbf7b85dade1a317d8678d1fe37..739b2fb895f0727663e50dd01c32957f
  
  RenderBlockRareData* RenderBlock::blockRareData() const
 diff --git a/Source/WebCore/rendering/RenderBlockFlow.cpp b/Source/WebCore/rendering/RenderBlockFlow.cpp
-index ea03bcbb4b167323afa11643cc204dd4c40e5b55..60a10f363d44e68a7a778645c6ed3237179a627e 100644
+index ea03bcbb4b167323afa11643cc204dd4c40e5b55..543decd3b227e8be66f3107a14f9ca79df2e6233 100644
 --- a/Source/WebCore/rendering/RenderBlockFlow.cpp
 +++ b/Source/WebCore/rendering/RenderBlockFlow.cpp
-@@ -83,7 +83,9 @@
+@@ -71,6 +71,7 @@
+ #include "RenderMarquee.h"
+ #include "RenderMultiColumnFlow.h"
+ #include "RenderMultiColumnSet.h"
++#include "RenderReplaced.h"
+ #include "RenderObjectInlines.h"
+ #include "RenderTableCellInlines.h"
+ #include "RenderText.h"
+@@ -83,9 +84,15 @@
  #include "TextBoxTrimmer.h"
  #include "TextUtil.h"
  #include "VisiblePosition.h"
 +#include <cstdlib>
++#include <cstring>
  #include <ranges>
 +#include <wtf/MonotonicTime.h>
++#include <wtf/NeverDestroyed.h>
  #include <wtf/Scope.h>
  #include <wtf/TZoneMallocInlines.h>
++#include <wtf/text/MakeString.h>
++#include <wtf/text/StringBuilder.h>
  #include <wtf/unicode/CharacterNames.h>
-@@ -4295,6 +4297,58 @@ std::pair<float, float> RenderBlockFlow::inlineContentTopAndBottomIncludingInkOv
+ 
+ #if PLATFORM(COCOA)
+@@ -796,8 +803,184 @@ static bool formattingContextRootIntrinsicLogicalWidthsDependOnOwnHeight(const R
+     return false;
+ }
+ 
++#if PLATFORM(HAIKU)
++unsigned summitPercentHeightChainsDirtied;
++unsigned summitPercentHeightChainsLeft;
++
++// A picture with a percentage height is noted with every block above it whose
++// height is automatic or a percentage (RenderReplaced), because the height it
++// resolves against is found by going up through such blocks. Every one of
++// those blocks then marks the whole chain down to the picture for layout each
++// time it is laid out itself, changed or not. A feed of pictures (Reddit's
++// r/pics: 85 of them under main) was laid out in full for each of the five
++// times its grid lays out main in one layout, 35 ms a time, and the page
++// forces forty such layouts in a row.
++//
++// Going up from the picture stops at the first box whose height is settled
++// without looking further: a flex item whose container gave it a height to
++// resolve percentages against, a box with an aspect ratio, a box with a
++// fixed height (RenderBox::availableLogicalHeightUsing(), in that order).
++// What this block's height becomes cannot reach a picture below such a box,
++// so its chain is left alone; the box itself is laid out again by its own
++// container when its height changes, and passes that on. Standards mode
++// only.
++// SUMMIT_PERCENT_HEIGHT_CHAINS=all marks every chain, as before; =verify
++// marks them too and reports, after the layout, each picture whose size came
++// out different although the box that settles it kept its height.
++enum class SummitPercentHeightChains : uint8_t { All, Settled, Verify };
++
++static SummitPercentHeightChains summitPercentHeightChainsMode()
++{
++    static const SummitPercentHeightChains mode = [] {
++        const char* value = getenv("SUMMIT_PERCENT_HEIGHT_CHAINS");
++        if (value && !strcmp(value, "all"))
++            return SummitPercentHeightChains::All;
++        if (value && !strcmp(value, "verify"))
++            return SummitPercentHeightChains::Verify;
++        return SummitPercentHeightChains::Settled;
++    }();
++    return mode;
++}
++
++// The box between the picture and the block that settles the height the
++// picture resolves against, if there is one.
++static RenderBlock* summitBoxSettlingPercentHeight(const RenderBox& descendant, const RenderBlockFlow& block)
++{
++    if (summitPercentHeightChainsMode() == SummitPercentHeightChains::All || !is<RenderReplaced>(descendant) || descendant.isOutOfFlowPositioned())
++        return nullptr;
++    // In quirks mode a percentage height skips every block with an automatic
++    // height on its way up, a box with an aspect ratio among them, and the
++    // marks made for a picture are what gets the boxes in between laid out
++    // again (tools/bench/pages/percent-height-chains.html without its
++    // doctype shows it).
++    if (block.document().inQuirksMode())
++        return nullptr;
++    for (auto* ancestor = descendant.containingBlock(); ancestor && ancestor != &block; ancestor = ancestor->containingBlock()) {
++        if (ancestor->isRenderTableCell() || ancestor->isOutOfFlowPositioned() || ancestor->isRenderFragmentedFlow())
++            return nullptr;
++        if (ancestor->shouldSkipForPercentageResolution())
++            continue;
++        if (ancestor->isHorizontalWritingMode() != descendant.isHorizontalWritingMode())
++            return nullptr;
++        if (ancestor->isFlexItem() && downcast<RenderFlexibleBox>(*ancestor->parent()).usedFlexItemOverridingLogicalHeightForPercentageResolution(*ancestor))
++            return ancestor;
++        if (ancestor->shouldComputeLogicalHeightFromAspectRatio())
++            return ancestor;
++        if (ancestor->style().logicalHeight().isFixed())
++            return ancestor;
++    }
++    return nullptr;
++}
++
++struct SummitPercentHeightChainToVerify {
++    SingleThreadWeakPtr<RenderBox> descendant;
++    SingleThreadWeakPtr<RenderBlock> settledBy;
++    LayoutSize descendantSize;
++    LayoutSize settledBySize;
++    std::optional<LayoutUnit> imposedLogicalHeight;
++};
++
++static Vector<SummitPercentHeightChainToVerify>& summitPercentHeightChainsToVerify()
++{
++    static NeverDestroyed<Vector<SummitPercentHeightChainToVerify>> chains;
++    return chains;
++}
++
++static void summitNotePercentHeightChainToVerify(RenderBox& descendant, RenderBlock& settledBy, const RenderBlockFlow& block)
++{
++    // A chain that something else has marked is laid out for that reason.
++    for (CheckedPtr<RenderElement> renderer = &descendant; renderer && renderer != &block; renderer = renderer->container()) {
++        if (renderer->needsLayout())
++            return;
++    }
++    summitPercentHeightChainsToVerify().append({ descendant, settledBy, LayoutSize { descendant.logicalWidth(), descendant.logicalHeight() }, LayoutSize { settledBy.logicalWidth(), settledBy.logicalHeight() }, settledBy.overridingBorderBoxLogicalHeight() });
++}
++
++// Called when a layout of the document is finished (LocalFrameViewLayoutContext).
++void summitVerifyPercentHeightChains()
++{
++    auto chains = std::exchange(summitPercentHeightChainsToVerify(), { });
++    if (chains.isEmpty())
++        return;
++    unsigned compared = 0;
++    unsigned mismatches = 0;
++    for (auto& chain : chains) {
++        if (!chain.descendant || !chain.settledBy)
++            continue;
++        if (LayoutSize { chain.settledBy->logicalWidth(), chain.settledBy->logicalHeight() } != chain.settledBySize || chain.settledBy->overridingBorderBoxLogicalHeight() != chain.imposedLogicalHeight)
++            continue;
++        ++compared;
++        if (LayoutSize { chain.descendant->logicalWidth(), chain.descendant->logicalHeight() } == chain.descendantSize)
++            continue;
++        if (++mismatches <= 10) {
++            WTFLogAlways("Summit percent height MISMATCH: %s %.2fx%.2f -> %.2fx%.2f under %s %.2fx%.2f\n", static_cast<const RenderObject&>(*chain.descendant).renderName().characters(),
++                chain.descendantSize.width().toFloat(), chain.descendantSize.height().toFloat(), chain.descendant->logicalWidth().toFloat(), chain.descendant->logicalHeight().toFloat(),
++                static_cast<const RenderObject&>(*chain.settledBy).renderName().characters(), chain.settledBySize.width().toFloat(), chain.settledBySize.height().toFloat());
++        }
++    }
++    static unsigned totalCompared;
++    static unsigned totalMismatches;
++    totalCompared += compared;
++    totalMismatches += mismatches;
++    static unsigned reports;
++    if (mismatches || !(++reports % 50))
++        WTFLogAlways("Summit percent height verify: %u chains compared, %u mismatches (in all %u, %u)\n", compared, mismatches, totalCompared, totalMismatches);
++}
++
++static void summitTracePercentHeightChain(const RenderBox& descendant, const RenderBlockFlow& block, bool left)
++{
++    static const bool enabled = [] {
++        const char* value = getenv("SUMMIT_PERCENT_HEIGHT_TRACE");
++        return value && value[0] == '1' && !value[1];
++    }();
++    if (!enabled)
++        return;
++    static unsigned reported;
++    if (reported >= 400)
++        return;
++    ++reported;
++    auto describe = [](const RenderObject& renderer) {
++        StringBuilder builder;
++        builder.append(renderer.renderName());
++        if (RefPtr element = dynamicDowncast<Element>(renderer.node())) {
++            builder.append('<', element->localName());
++            auto& classNames = element->getAttribute(HTMLNames::classAttr);
++            if (!classNames.isEmpty())
++                builder.append('.', StringView(classNames.string()).left(24));
++            builder.append('>');
++        }
++        return builder.toString();
++    };
++    StringBuilder chain;
++    unsigned levels = 0;
++    for (auto* ancestor = descendant.containingBlock(); ancestor && ancestor != &block; ancestor = ancestor->containingBlock()) {
++        if (++levels > 14) {
++            chain.append(" ..."_s);
++            break;
++        }
++        chain.append(" < "_s, describe(*ancestor), ancestor->isFlexItem() ? (ancestor->overridingBorderBoxLogicalHeight() ? " [flex item, height imposed]"_s : " [flex item]"_s) : ""_s,
++            ancestor->isGridItem() ? (ancestor->overridingBorderBoxLogicalHeight() ? " [grid item, height imposed]"_s : " [grid item]"_s) : ""_s,
++            ancestor->style().logicalHeight().isAuto() ? ""_s : (ancestor->style().logicalHeight().isFixed() ? " [fixed height]"_s : " [percent height]"_s));
++    }
++    WTFLogAlways("Summit percent height: %s chain of %s under %s:%s\n", left ? "left" : "marked", describe(descendant).utf8().legacyCStringPointer(),
++        describe(block).utf8().legacyCStringPointer(), chain.toString().utf8().legacyCStringPointer());
++}
++#endif
++
+ void RenderBlockFlow::dirtyForLayoutFromPercentageHeightDescendant(RenderBox& descendant)
+ {
++#if PLATFORM(HAIKU)
++    if (auto* settledBy = summitBoxSettlingPercentHeight(descendant, *this)) {
++        ++summitPercentHeightChainsLeft;
++        summitTracePercentHeightChain(descendant, *this, true);
++        if (summitPercentHeightChainsMode() != SummitPercentHeightChains::Verify)
++            return;
++        summitNotePercentHeightChainToVerify(descendant, *settledBy, *this);
++    } else {
++        ++summitPercentHeightChainsDirtied;
++        summitTracePercentHeightChain(descendant, *this, false);
++    }
++#endif
+     // Let's not dirty the height percentage descendant when it has an absolutely positioned containing block ancestor. We should be able to dirty such boxes through the regular invalidation logic.
+     for (auto* ancestor = descendant.containingBlock(); ancestor && ancestor != this; ancestor = ancestor->containingBlock()) {
+         if (ancestor->isOutOfFlowPositioned())
+@@ -4295,6 +4478,58 @@ std::pair<float, float> RenderBlockFlow::inlineContentTopAndBottomIncludingInkOv
  
  RenderBlockFlow::InlineContentStatus RenderBlockFlow::markInlineContentDirtyForLayout(RelayoutChildren relayoutChildren)
  {
@@ -37637,7 +37896,7 @@ index ea03bcbb4b167323afa11643cc204dd4c40e5b55..60a10f363d44e68a7a778645c6ed3237
      auto contentNeedsNormalChildLayoutOnly = std::optional<bool> { };
      auto hasInFlowBlockLevelElement = false;
      auto hasDirtyInFlowBlockLevelElement = false;
-@@ -4307,7 +4361,78 @@ RenderBlockFlow::InlineContentStatus RenderBlockFlow::markInlineContentDirtyForL
+@@ -4307,7 +4542,78 @@ RenderBlockFlow::InlineContentStatus RenderBlockFlow::markInlineContentDirtyForL
          auto isInFlowBlockLevelElement = box && box->isBlockLevelBox() && box->isInFlow();
          hasInFlowBlockLevelElement |= isInFlowBlockLevelElement;
          hasDirtyInFlowBlockLevelElement |= (isInFlowBlockLevelElement && box->needsLayout());
@@ -37717,7 +37976,7 @@ index ea03bcbb4b167323afa11643cc204dd4c40e5b55..60a10f363d44e68a7a778645c6ed3237
          auto childNeedsIntrinsicWidthComputation = !renderer.isExcludedFromNormalLayout() && relayoutChildren == RelayoutChildren::Yes && box && box->shouldInvalidateContentWidths();
  
          if (childNeedsLayout)
-@@ -4367,6 +4492,10 @@ RenderBlockFlow::InlineContentStatus RenderBlockFlow::markInlineContentDirtyForL
+@@ -4367,6 +4673,10 @@ RenderBlockFlow::InlineContentStatus RenderBlockFlow::markInlineContentDirtyForL
              continue;
          }
      }
