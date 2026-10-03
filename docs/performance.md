@@ -155,6 +155,33 @@ paint, Reddit's largest paint, and The Guardian's largest paint when warm.
 (The Guardian's cold first byte, 107 against 759 ms, is its server's
 per-User-Agent cache, not Summit.)
 
+### Against Firefox at the end of the session
+
+The same run on the last build (`bundle-7dlqk_lh`, with the bytecode
+cache below; 10:00, medians, ms, cold / warm):
+
+| page | browser | first paint | largest paint | DOMContentLoaded |
+| --- | --- | --- | --- | --- |
+| Reddit | Summit | 877 / 982 | 2048 / 1968 | 984 / 1216 |
+| Reddit | Firefox | 832 / 1085 | 1178 / 1538 | 992 / 1464 |
+| The Guardian | Summit | 962 / 639 | 1864 / 1344 | 1136 / 609 |
+| The Guardian | Firefox | 409 / 816 | 645 / 998 | 717 / 1059 |
+| YouTube | Summit | 1242 / 1420 | 2948 / 1420 | 2273 / 1018 |
+| YouTube | Firefox | 952 / 1072 | 2616 / 2794 | 2304 / 2404 |
+| Wikipedia | Summit | 1308 / 1054 | 1396 / 1211 | 1144 / 1171 |
+| Wikipedia | Firefox | 1382 / 1159 | 1649 / 1306 | 1410 / 1164 |
+| BBC News | Summit | 307 / 369 | 1288 / 944 | 702 / 591 |
+| BBC News | Firefox | 295 / 481 | 872 / 838 | 1192 / 846 |
+| GitHub | Summit | 1132 / 1190 | 1132 / 1190 | 1487 / 1496 |
+| GitHub | Firefox | – / 3160 | – / 4312 | 1317 / 3284 |
+
+Warm YouTube loads now finish (DOMContentLoaded, largest paint) in less
+than half Firefox's time. The Guardian's cold row is its server's
+per-User-Agent cache again (first byte 660 ms for Summit, 127 for
+Firefox), and GitHub's edge was slow for Firefox's warm rounds (first
+byte 2.1 s). Still behind: Reddit's largest paint, BBC News's cold one,
+and YouTube's first paint (see the end of the bytecode section).
+
 ### Connections opened before they are needed
 
 Summit never connected ahead of a request. WebKit's preconnects (`<link
