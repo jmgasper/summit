@@ -5120,6 +5120,49 @@ index 508b64bf39d2074357445b343e1056b1c3212411..f22828d4fdd11099e38c6161892e61b7
          InspectorInstrumentation::didHandleEvent(context, event, registeredListener);
  
          if (registeredListener->isPassive())
+diff --git a/Source/WebCore/dom/ExtensionStyleSheets.cpp b/Source/WebCore/dom/ExtensionStyleSheets.cpp
+index a503201bfcf8a65e2591c30245a88c6c5b8d31f3..593f339fa2d8a14b5275a2259b2483a124fc8bba 100644
+--- a/Source/WebCore/dom/ExtensionStyleSheets.cpp
++++ b/Source/WebCore/dom/ExtensionStyleSheets.cpp
+@@ -184,10 +184,38 @@ void ExtensionStyleSheets::updateInjectedStyleSheetCache() const
+     });
+ }
+ 
++#if PLATFORM(HAIKU)
++// In StyleDocumentScope.cpp.
++bool summitAddExtensionStyleSheetIncrementally(Document&, CSSStyleSheet&);
++#endif
++
+ void ExtensionStyleSheets::injectPageSpecificUserStyleSheet(const UserStyleSheet& userStyleSheet)
+ {
++#if PLATFORM(HAIKU)
++    // When the sheets already made from the injected style sheets are all the page's own, the new
++    // one comes after them: it is made alone and added, in place of making every sheet again.
++    bool newSheetComesLast = m_injectedStyleSheetCacheValid
++        && m_injectedUserStyleSheets.size() + m_injectedAuthorStyleSheets.size() == m_pageSpecificStyleSheets.size();
++    m_pageSpecificStyleSheets.append(userStyleSheet);
++    if (!newSheetComesLast && getenv("SUMMIT_EXTENSION_CSS_TRACE")) {
++        WTFLogAlways("Summit extension css: sheet restyles everything: the injected sheets %s (%u user, %u author sheets made, %u for the page)\n",
++            m_injectedStyleSheetCacheValid ? "are not all the page's own" : "were not made yet", static_cast<unsigned>(m_injectedUserStyleSheets.size()),
++            static_cast<unsigned>(m_injectedAuthorStyleSheets.size()), static_cast<unsigned>(m_pageSpecificStyleSheets.size()));
++    }
++    if (newSheetComesLast && userStyleSheet.level() == UserStyleLevel::User) {
++        Ref document = m_document;
++        Ref sheet = createExtensionsStyleSheet(document, userStyleSheet.url(), userStyleSheet.source(), userStyleSheet.level());
++        m_injectedStyleSheetToSource.set(sheet.copyRef(), userStyleSheet.source());
++        m_injectedUserStyleSheets.append(sheet.copyRef());
++        if (!summitAddExtensionStyleSheetIncrementally(document, sheet))
++            document->styleScope().didChangeExtensionStyleSheets();
++        return;
++    }
++    invalidateInjectedStyleSheetCache();
++#else
+     m_pageSpecificStyleSheets.append(userStyleSheet);
+     invalidateInjectedStyleSheetCache();
++#endif
+ }
+ 
+ void ExtensionStyleSheets::removePageSpecificUserStyleSheet(const UserStyleSheet& userStyleSheet)
 diff --git a/Source/WebCore/dom/ScriptedAnimationController.cpp b/Source/WebCore/dom/ScriptedAnimationController.cpp
 index fe92fc6370b31f2f826b8762171186c54700be76..4976d5a2754255636b2c71b899d6482dcacbf8b3 100644
 --- a/Source/WebCore/dom/ScriptedAnimationController.cpp
@@ -5754,10 +5797,45 @@ index 72f4c91235e843ef00441b39e38e9214767be0cf..c7676b712136356679cec6d5b8f98713
              ASSERT(!mayHaveGlyphOverflow);
              return { cachedWidth, { } };
 diff --git a/Source/WebCore/layout/integration/LayoutIntegrationFormattingContextLayout.cpp b/Source/WebCore/layout/integration/LayoutIntegrationFormattingContextLayout.cpp
-index 762711231f70a6f41d0945a45118bfd1535b8d8a..9ac3284587a606b9eb13e3dfe95fa3ebc24bbb2b 100644
+index 762711231f70a6f41d0945a45118bfd1535b8d8a..d0a48ad64e8943531dcad5720e96b370ef47425a 100644
 --- a/Source/WebCore/layout/integration/LayoutIntegrationFormattingContextLayout.cpp
 +++ b/Source/WebCore/layout/integration/LayoutIntegrationFormattingContextLayout.cpp
-@@ -101,7 +101,6 @@ void layoutGridItemWithFormattingContext(const Layout::ElementBox& box, std::opt
+@@ -39,6 +39,13 @@
+ #include "RenderObjectInlines.h"
+ #include "TextBoxTrimmer.h"
+ 
++#if PLATFORM(HAIKU)
++namespace WebCore {
++// Layout reuse for flex and grid items lives in RenderBlock.cpp.
++void summitSetNeedsLayoutByContainer(RenderBox&);
++}
++#endif
++
+ namespace WebCore {
+ namespace LayoutIntegration {
+ 
+@@ -57,12 +64,20 @@ static void layoutRendererWithOverridingBorderBoxSize(RenderBox& renderer, std::
+ {
+     if (overridingBorderBoxLogicalWidth) {
+         renderer.setOverridingBorderBoxLogicalWidth(*overridingBorderBoxLogicalWidth);
++#if PLATFORM(HAIKU)
++        summitSetNeedsLayoutByContainer(renderer);
++#else
+         renderer.setNeedsLayout(MarkingBehavior::MarkOnlyThis);
++#endif
+     }
+ 
+     if (overridingBorderBoxLogicalHeight) {
+         renderer.setOverridingBorderBoxLogicalHeight(*overridingBorderBoxLogicalHeight);
++#if PLATFORM(HAIKU)
++        summitSetNeedsLayoutByContainer(renderer);
++#else
+         renderer.setNeedsLayout(MarkingBehavior::MarkOnlyThis);
++#endif
+     }
+ 
+     renderer.layoutIfNeeded();
+@@ -101,7 +116,6 @@ void layoutGridItemWithFormattingContext(const Layout::ElementBox& box, std::opt
      // against it below rather than against the grid container's content box.
      renderer->setGridAreaContentLogicalWidth(gridAreaInlineSize);
      layoutRendererAndUpdateBoxGeometry(box, renderer.get(), overridingBorderBoxLogicalWidth, overridingBorderBoxLogicalHeight, gridAreaInlineSize, layoutState);
@@ -5766,10 +5844,10 @@ index 762711231f70a6f41d0945a45118bfd1535b8d8a..9ac3284587a606b9eb13e3dfe95fa3eb
  
  static inline void populateRootRendererWithFloatsFromIFC(auto& rootBlockContainer, auto& placedFloats)
 diff --git a/Source/WebCore/layout/integration/LayoutIntegrationUtils.cpp b/Source/WebCore/layout/integration/LayoutIntegrationUtils.cpp
-index b71758ef19608d57fe0e2659ae773119a51e4584..378d2a1ce6ab5e20d03da729d76d322aba482d1b 100644
+index b71758ef19608d57fe0e2659ae773119a51e4584..5fe4c012b282aceeb5f8525418de9a74abf09d44 100644
 --- a/Source/WebCore/layout/integration/LayoutIntegrationUtils.cpp
 +++ b/Source/WebCore/layout/integration/LayoutIntegrationUtils.cpp
-@@ -34,6 +34,11 @@
+@@ -34,6 +34,18 @@
  #include "RenderElementInlines.h"
  #include "RenderObject.h"
  #include "RenderObjectInlines.h"
@@ -5778,10 +5856,17 @@ index b71758ef19608d57fe0e2659ae773119a51e4584..378d2a1ce6ab5e20d03da729d76d322a
 +#include <cstdio>
 +#include <cstdlib>
 +#endif
++
++#if PLATFORM(HAIKU)
++namespace WebCore {
++// Layout reuse for flex and grid items lives in RenderBlock.cpp.
++void summitSetNeedsLayoutByContainer(RenderBox&);
++}
++#endif
  
  namespace WebCore {
  namespace Layout {
-@@ -129,6 +134,19 @@ static LayoutUnit blockSizeForGridItem(const LayoutState& layoutState, const Ele
+@@ -129,6 +141,19 @@ static LayoutUnit blockSizeForGridItem(const LayoutState& layoutState, const Ele
  {
      ASSERT(box.isGridItem());
      CheckedRef renderer = downcast<RenderBox>(*box.rendererForIntegration());
@@ -5801,7 +5886,17 @@ index b71758ef19608d57fe0e2659ae773119a51e4584..378d2a1ce6ab5e20d03da729d76d322a
  
      switch (logicalHeightType) {
      case LayoutIntegration::LogicalHeightType::MinContent:
-@@ -142,7 +160,32 @@ static LayoutUnit blockSizeForGridItem(const LayoutState& layoutState, const Ele
+@@ -136,13 +161,42 @@ static LayoutUnit blockSizeForGridItem(const LayoutState& layoutState, const Ele
+     case LayoutIntegration::LogicalHeightType::MinContentContribution:
+     case LayoutIntegration::LogicalHeightType::MaxContentContribution: {
+         renderer->setGridAreaContentLogicalWidth(inlineAxisConstraint);
++        #if PLATFORM(HAIKU)
++        summitSetNeedsLayoutByContainer(renderer.get());
++#else
+         renderer->setNeedsLayout(MarkingBehavior::MarkOnlyThis);
++#endif
+ 
+         layoutState.layoutWithFormattingContextForBox(box, { }, { });
  
          renderer->clearGridAreaContentSize();
  
@@ -5835,13 +5930,13 @@ index b71758ef19608d57fe0e2659ae773119a51e4584..378d2a1ce6ab5e20d03da729d76d322a
      }
      }
  
-@@ -242,4 +285,3 @@ std::pair<LayoutRect, LayoutRect> IntegrationUtils::toMarginAndBorderBoxVisualRe
+@@ -242,4 +296,3 @@ std::pair<LayoutRect, LayoutRect> IntegrationUtils::toMarginAndBorderBoxVisualRe
  
  }
  }
 -
 diff --git a/Source/WebCore/layout/integration/flex/FlexIntegrationUtils.cpp b/Source/WebCore/layout/integration/flex/FlexIntegrationUtils.cpp
-index 2a01b6c02ef3a712915fccbaa3c521c800235f72..b1f880a774d985688df3295a60871bc1062e3f0a 100644
+index 2a01b6c02ef3a712915fccbaa3c521c800235f72..b17a5d0d1ac72aff192a54667ff100564554185b 100644
 --- a/Source/WebCore/layout/integration/flex/FlexIntegrationUtils.cpp
 +++ b/Source/WebCore/layout/integration/flex/FlexIntegrationUtils.cpp
 @@ -26,6 +26,12 @@
@@ -5857,7 +5952,20 @@ index 2a01b6c02ef3a712915fccbaa3c521c800235f72..b1f880a774d985688df3295a60871bc1
  #include "LocalFrameView.h"
  #include "RenderBlockFlow.h"
  #include "RenderBoxInlines.h"
-@@ -47,6 +53,17 @@ namespace LayoutIntegration {
+@@ -41,12 +47,30 @@
+ #include "StylePrimitiveNumericTypes+Evaluation.h"
+ #include <wtf/TZoneMallocInlines.h>
+ 
++#if PLATFORM(HAIKU)
++namespace WebCore {
++// Layout reuse for flex and grid items lives in RenderBlock.cpp.
++void summitSetChildNeedsLayoutByContainer(RenderBox&);
++}
++#endif
++
+ namespace WebCore {
+ 
+ namespace LayoutIntegration {
  
  WTF_MAKE_TZONE_ALLOCATED_IMPL(FlexItemContentCache);
  
@@ -5875,7 +5983,43 @@ index 2a01b6c02ef3a712915fccbaa3c521c800235f72..b1f880a774d985688df3295a60871bc1
  FlexIntegrationUtils::FlexIntegrationUtils(RenderFlexibleBox& flexBox, FlexLayoutState& flexLayoutState, FlexItemContentCache& flexItemContentCache)
      : m_flexBox(flexBox)
      , m_flexLayoutState(flexLayoutState)
-@@ -515,8 +532,24 @@ std::optional<LayoutUnit> FlexIntegrationUtils::computeMainAxisExtentForFlexItem
+@@ -85,7 +109,11 @@ void FlexIntegrationUtils::layoutFlexItemForStretchedCrossSize(const FlexLayoutI
+         renderer->setOverridingBorderBoxLogicalHeight(crossSize);
+     else
+         renderer->setOverridingBorderBoxLogicalWidth(crossSize);
++#if PLATFORM(HAIKU)
++    summitSetChildNeedsLayoutByContainer(renderer.get());
++#else
+     renderer->setChildNeedsLayout(MarkingBehavior::MarkOnlyThis);
++#endif
+     renderer->layoutIfNeeded();
+ }
+ 
+@@ -144,7 +172,11 @@ void FlexIntegrationUtils::layoutFlexItemWithMainSize(FlexLayoutItem& flexLayout
+     };
+ 
+     if (shouldMarkFlexItemForLayout())
++#if PLATFORM(HAIKU)
++        summitSetChildNeedsLayoutByContainer(flexItem.get());
++#else
+         flexItem->setChildNeedsLayout(MarkingBehavior::MarkOnlyThis);
++#endif
+     else
+         flexItem->markForPaginationRelayoutIfNeeded();
+ 
+@@ -374,7 +406,11 @@ LayoutUnit FlexIntegrationUtils::computeBlockAxisContentSizeForFlexItem(const Fl
+     // where we want percentages to be treated as auto. For flex-basis itself, this is not a problem because
+     // by definition we have an indefinite flex basis here and thus percentages should not resolve.
+     auto percentResolveDisableScope = FlexPercentResolveDisabler { flexBox().view().frameView().layoutContext(), renderer };
++#if PLATFORM(HAIKU)
++    summitSetChildNeedsLayoutByContainer(renderer.get());
++#else
+     renderer->setChildNeedsLayout(MarkingBehavior::MarkOnlyThis);
++#endif
+     renderer->layoutIfNeeded();
+     flexLayoutState().setFlexItemHasCompletedLayout(renderer);
+ 
+@@ -515,8 +551,24 @@ std::optional<LayoutUnit> FlexIntegrationUtils::computeMainAxisExtentForFlexItem
          // (Compare code in RenderBlock::computeIntrinsicLogicalWidthContributions)
          if (flexLayoutItem.style().logicalWidth().isAuto() && !FlexFormattingUtils::flexItemHasAspectRatio(flexItem)) {
              if (size.isMinContent()) {
@@ -6404,7 +6548,7 @@ index 3dbc23ec4a0818ed58ab2e0b2648056ab360a2ff..8254fb1525db8f69c8c4d1191e04b9b9
  
  #if USE(QUICK_LOOK)
 diff --git a/Source/WebCore/page/LocalFrameView.cpp b/Source/WebCore/page/LocalFrameView.cpp
-index 52f8cd72fa2e3073163713fd16fc2f1677b96695..c8925b1b936f96c31c323609ea9f9d46725759b8 100644
+index 52f8cd72fa2e3073163713fd16fc2f1677b96695..bdf399b6ed6db64e982f68083c4951ad88c23edb 100644
 --- a/Source/WebCore/page/LocalFrameView.cpp
 +++ b/Source/WebCore/page/LocalFrameView.cpp
 @@ -4863,10 +4863,30 @@ void LocalFrameView::flushAnyPendingPostLayoutTasks()
@@ -6505,8 +6649,30 @@ index 52f8cd72fa2e3073163713fd16fc2f1677b96695..c8925b1b936f96c31c323609ea9f9d46
  
      protect(m_frame->document())->scheduleDeferredAXObjectCacheUpdate();
  
+@@ -6218,6 +6265,21 @@ void LocalFrameView::checkAndDispatchDidReachVisuallyNonEmptyState()
+         return;
+ 
+     m_contentQualifiesAsVisuallyNonEmpty = true;
++#if PLATFORM(HAIKU)
++    // SUMMIT_FIRST_SHOWN_TRACE=1: when a page had enough to be shown in place of the one before it.
++    static bool traceFirstShown = [] {
++        const char* value = std::getenv("SUMMIT_FIRST_SHOWN_TRACE");
++        return value && value[0] == '1' && !value[1];
++    }();
++    if (traceFirstShown && m_frame->isRootFrame()) {
++        Ref document = *m_frame->document();
++        RefPtr documentLoader = m_frame->loader().documentLoader();
++        auto sinceStart = documentLoader ? MonotonicTime::now() - documentLoader->timing().startTime() : 0_s;
++        WTFLogAlways("Summit first shown: %.0f ms after the navigation began, %u characters, %u pixels, url=%s\n",
++            sinceStart.milliseconds(), m_visuallyNonEmptyCharacterCount, m_visuallyNonEmptyPixelCount,
++            document->url().string().utf8().legacyCStringPointer());
++    }
++#endif
+     if (m_frame->isRootFrame())
+         m_frame->loader().didReachVisuallyNonEmptyState();
+ }
 diff --git a/Source/WebCore/page/LocalFrameViewLayoutContext.cpp b/Source/WebCore/page/LocalFrameViewLayoutContext.cpp
-index 61749fa2eecc674d3bc7d185a5b3944181454f73..1315ffe7394c4af457ee1461aba3d3ad0b852ee9 100644
+index 61749fa2eecc674d3bc7d185a5b3944181454f73..2dd2c366435c97ac9752500ab05dd810ae5c8a88 100644
 --- a/Source/WebCore/page/LocalFrameViewLayoutContext.cpp
 +++ b/Source/WebCore/page/LocalFrameViewLayoutContext.cpp
 @@ -61,9 +61,11 @@
@@ -6521,7 +6687,21 @@ index 61749fa2eecc674d3bc7d185a5b3944181454f73..1315ffe7394c4af457ee1461aba3d3ad
  #include <wtf/text/TextStream.h>
  
  namespace WebCore {
-@@ -173,10 +175,35 @@ void LocalFrameViewLayoutContext::layout(bool canDeferUpdateLayerPositions)
+@@ -167,16 +169,49 @@ UpdateScrollInfoAfterLayoutTransaction& LocalFrameViewLayoutContext::updateScrol
+     return *m_updateScrollInfoAfterLayoutTransaction;
+ }
+ 
++#if PLATFORM(HAIKU)
++// The layout "why" trace lives in RenderBlock.cpp.
++bool summitLayoutWhyTraceBegin(RenderElement&);
++void summitLayoutWhyTraceEnd(RenderElement&, double milliseconds);
++// So is the reuse of flex and grid items' layouts.
++void summitForgetItemsMarkedByContainer();
++#endif
++
+ void LocalFrameViewLayoutContext::layout(bool canDeferUpdateLayerPositions)
+ {
+     LOG_WITH_STREAM(Layout, stream << "LocalFrameView " << &view() << " LocalFrameViewLayoutContext::layout() with size " << view().layoutSize());
  
      Ref protectedView(view());
  
@@ -6558,7 +6738,7 @@ index 61749fa2eecc674d3bc7d185a5b3944181454f73..1315ffe7394c4af457ee1461aba3d3ad
  
      Style::DocumentScope::LayoutDependencyUpdateContext layoutDependencyUpdateContext;
      while (document() && document()->styleScope().invalidateForLayoutDependencies(layoutDependencyUpdateContext)) {
-@@ -186,10 +213,20 @@ void LocalFrameViewLayoutContext::layout(bool canDeferUpdateLayerPositions)
+@@ -186,10 +221,20 @@ void LocalFrameViewLayoutContext::layout(bool canDeferUpdateLayerPositions)
              break;
  
          performLayout(canDeferUpdateLayerPositions);
@@ -6580,7 +6760,7 @@ index 61749fa2eecc674d3bc7d185a5b3944181454f73..1315ffe7394c4af457ee1461aba3d3ad
  }
  
  void LocalFrameViewLayoutContext::interleavedLayout()
-@@ -219,6 +256,27 @@ void LocalFrameViewLayoutContext::performLayout(bool canDeferUpdateLayerPosition
+@@ -219,6 +264,27 @@ void LocalFrameViewLayoutContext::performLayout(bool canDeferUpdateLayerPosition
          return;
      }
  
@@ -6608,7 +6788,7 @@ index 61749fa2eecc674d3bc7d185a5b3944181454f73..1315ffe7394c4af457ee1461aba3d3ad
      LayoutFrameScope layoutFrameScope(*this);
      TraceScope tracingScope(PerformLayoutStart, PerformLayoutEnd);
      ScriptDisallowedScope::InMainThread scriptDisallowedScope;
-@@ -262,6 +320,9 @@ void LocalFrameViewLayoutContext::performLayout(bool canDeferUpdateLayerPosition
+@@ -262,6 +328,9 @@ void LocalFrameViewLayoutContext::performLayout(bool canDeferUpdateLayerPosition
          protect(view())->willDoLayout(layoutRoot);
          m_firstLayout = false;
      }
@@ -6618,7 +6798,26 @@ index 61749fa2eecc674d3bc7d185a5b3944181454f73..1315ffe7394c4af457ee1461aba3d3ad
  
      Vector<FloatQuad> layoutAreas;
      {
-@@ -311,6 +372,9 @@ void LocalFrameViewLayoutContext::performLayout(bool canDeferUpdateLayerPosition
+@@ -272,8 +341,18 @@ void LocalFrameViewLayoutContext::performLayout(bool canDeferUpdateLayerPosition
+         RenderView::RepaintRegionAccumulator repaintRegionAccumulator(renderView());
+ #ifndef NDEBUG
+         RenderTreeNeedsLayoutChecker checker(*renderView());
++#endif
++#if PLATFORM(HAIKU)
++        bool summitLayoutWhyTraceBegan = summitLayoutWhyTraceBegin(*layoutRoot);
++        auto summitLayoutWhyTraceStart = summitLayoutWhyTraceBegan ? MonotonicTime::now() : MonotonicTime { };
+ #endif
+         layoutRoot->layout();
++#if PLATFORM(HAIKU)
++        if (!isLayoutNested())
++            summitForgetItemsMarkedByContainer();
++        if (summitLayoutWhyTraceBegan)
++            summitLayoutWhyTraceEnd(*layoutRoot, (MonotonicTime::now() - summitLayoutWhyTraceStart).milliseconds());
++#endif
+         {
+             CheckedPtr renderView = this->renderView();
+             auto state = renderView ? renderView->textAutosizingState() : RenderView::TextAutosizingState::Normal;
+@@ -311,6 +390,9 @@ void LocalFrameViewLayoutContext::performLayout(bool canDeferUpdateLayerPosition
              showRenderTree(renderView());
  #endif
      }
@@ -6628,7 +6827,7 @@ index 61749fa2eecc674d3bc7d185a5b3944181454f73..1315ffe7394c4af457ee1461aba3d3ad
      {
          SetForScope layoutPhase(m_layoutPhase, LayoutPhase::InViewSizeAdjust);
          ScriptDisallowedScope::InMainThread scriptDisallowedScope;
-@@ -324,16 +388,45 @@ void LocalFrameViewLayoutContext::performLayout(bool canDeferUpdateLayerPosition
+@@ -324,16 +406,45 @@ void LocalFrameViewLayoutContext::performLayout(bool canDeferUpdateLayerPosition
                  return;
          }
      }
@@ -36699,7 +36898,7 @@ index c534f8fe7e32b62d5c1b9584aaaa109e836086ff..bcfba160da5797070c6d5cdee5b0bb4e
  #include <errno.h>
  #include <fcntl.h>
 diff --git a/Source/WebCore/rendering/GridTrackSizingAlgorithm.cpp b/Source/WebCore/rendering/GridTrackSizingAlgorithm.cpp
-index c08712a55b877c6835a885a79e6516ebb0042ba0..5b8653de4a8b8c8669d7017c15b1d49511bc9d88 100644
+index c08712a55b877c6835a885a79e6516ebb0042ba0..60dfb3d390338b7c918abefc2dee683c59276096 100644
 --- a/Source/WebCore/rendering/GridTrackSizingAlgorithm.cpp
 +++ b/Source/WebCore/rendering/GridTrackSizingAlgorithm.cpp
 @@ -40,6 +40,10 @@
@@ -36713,7 +36912,33 @@ index c08712a55b877c6835a885a79e6516ebb0042ba0..5b8653de4a8b8c8669d7017c15b1d495
  #include <ranges>
  #include <wtf/Range.h>
  #include <wtf/StdMap.h>
-@@ -1085,7 +1089,23 @@ LayoutUnit GridTrackSizingAlgorithmStrategy::logicalHeightForGridItem(RenderBox&
+@@ -48,6 +52,13 @@
+ #include <wtf/WeakPtr.h>
+ #include <wtf/text/ParsingUtilities.h>
+ 
++#if PLATFORM(HAIKU)
++namespace WebCore {
++// Layout reuse for flex and grid items lives in RenderBlock.cpp.
++void summitSetNeedsLayoutByContainer(RenderBox&);
++}
++#endif
++
+ namespace WebCore {
+ 
+ class ScopedGridAreaContentLogicalHeight {
+@@ -1075,7 +1086,11 @@ LayoutUnit GridTrackSizingAlgorithmStrategy::logicalHeightForGridItem(RenderBox&
+     };
+     if (hasOverridingContainingBlockContentSizeForGridItem() && shouldClearOverridingContainingBlockContentSizeForGridItem(gridItem, Style::GridTrackSizingDirection::Rows)) {
+         setOverridingContainingBlockContentSizeForGridItem(*renderGrid(), gridItem, gridItemBlockDirection, std::nullopt);
++#if PLATFORM(HAIKU)
++        summitSetNeedsLayoutByContainer(gridItem);
++#else
+         gridItem.setNeedsLayout(MarkingBehavior::MarkOnlyThis);
++#endif
+ 
+         if (renderGrid()->canSetColumnAxisStretchRequirementForItem(gridItem))
+             gridLayoutState.setLayoutRequirementForGridItem(gridItem, ItemLayoutRequirement::NeedsColumnAxisStretchAlignment);
+@@ -1085,7 +1100,23 @@ LayoutUnit GridTrackSizingAlgorithmStrategy::logicalHeightForGridItem(RenderBox&
      if (gridItem.needsLayout())
          gridItem.clearOverridingSize();
  
@@ -36737,6 +36962,569 @@ index c08712a55b877c6835a885a79e6516ebb0042ba0..5b8653de4a8b8c8669d7017c15b1d495
  
      auto gridItemLogicalHeight = gridItem.logicalHeight() + GridLayoutFunctions::marginLogicalSizeForGridItem(*renderGrid(), gridItemBlockDirection, gridItem) + m_algorithm.baselineOffsetForGridItem(gridItem, direction());
      if (intrinsicLogicalHeightsForRowSizingFirstPass && sizingState() == GridTrackSizingAlgorithm::SizingState::RowSizingFirstIteration)
+@@ -1146,7 +1177,11 @@ LayoutUnit GridTrackSizingAlgorithmStrategy::minContentContributionForGridItem(R
+     }
+ 
+     if (updateOverridingContainingBlockContentSizeForGridItem(gridItem, gridItemInlineDirection)) {
++#if PLATFORM(HAIKU)
++        summitSetNeedsLayoutByContainer(gridItem);
++#else
+         gridItem.setNeedsLayout(MarkingBehavior::MarkOnlyThis);
++#endif
+ 
+         if (auto& intrinsicLogicalHeightsForRowSizingFirstPass = renderGrid()->intrinsicLogicalHeightsForRowSizingFirstPass())
+             intrinsicLogicalHeightsForRowSizingFirstPass->invalidateSizeForItem(gridItem);
+@@ -1193,7 +1228,11 @@ LayoutUnit GridTrackSizingAlgorithmStrategy::maxContentContributionForGridItem(R
+     if (updateOverridingContainingBlockContentSizeForGridItem(gridItem, gridItemInlineDirection)) {
+         if (auto& intrinsicLogicalHeightsForRowSizingFirstPass = renderGrid()->intrinsicLogicalHeightsForRowSizingFirstPass())
+             intrinsicLogicalHeightsForRowSizingFirstPass->invalidateSizeForItem(gridItem);
++#if PLATFORM(HAIKU)
++        summitSetNeedsLayoutByContainer(gridItem);
++#else
+         gridItem.setNeedsLayout(MarkingBehavior::MarkOnlyThis);
++#endif
+     }
+     return logicalHeightForGridItem(gridItem, gridLayoutState);
+ }
+@@ -1440,7 +1479,11 @@ private:
+ void IndefiniteSizeStrategy::layoutGridItemForMinSizeComputation(RenderBox& gridItem, bool overrideSizeHasChanged) const
+ {
+     if (overrideSizeHasChanged && direction() != Style::GridTrackSizingDirection::Columns)
++#if PLATFORM(HAIKU)
++        summitSetNeedsLayoutByContainer(gridItem);
++#else
+         gridItem.setNeedsLayout(MarkingBehavior::MarkOnlyThis);
++#endif
+     gridItem.layoutIfNeeded();
+ }
+ 
+@@ -1646,7 +1689,11 @@ void DefiniteSizeStrategy::maximizeTracks(Vector<UniqueRef<GridTrack>>& tracks,
+ void DefiniteSizeStrategy::layoutGridItemForMinSizeComputation(RenderBox& gridItem, bool overrideSizeHasChanged) const
+ {
+     if (overrideSizeHasChanged)
++#if PLATFORM(HAIKU)
++        summitSetNeedsLayoutByContainer(gridItem);
++#else
+         gridItem.setNeedsLayout(MarkingBehavior::MarkOnlyThis);
++#endif
+     gridItem.layoutIfNeeded();
+ }
+ 
+diff --git a/Source/WebCore/rendering/RenderBlock.cpp b/Source/WebCore/rendering/RenderBlock.cpp
+index 80e6d70df1e1adbf7b85dade1a317d8678d1fe37..739b2fb895f0727663e50dd01c32957f8c7b91ed 100644
+--- a/Source/WebCore/rendering/RenderBlock.cpp
++++ b/Source/WebCore/rendering/RenderBlock.cpp
+@@ -93,6 +93,10 @@
+ #include "TransformState.h"
+ #include <wtf/HexNumber.h>
+ #include <wtf/NeverDestroyed.h>
++#include <wtf/HashSet.h>
++#include <wtf/MonotonicTime.h>
++#include <wtf/text/MakeString.h>
++#include <wtf/text/StringBuilder.h>
+ #include <wtf/SetForScope.h>
+ #include <wtf/StackStats.h>
+ #include <wtf/TZoneMallocInlines.h>
+@@ -579,9 +583,479 @@ static bool canContainDescendantScrollbarChanges(const RenderBlock& renderBlock,
+     return layoutContext.subtreeScrollbarChangesState().has_value() && renderBlock.style().logicalWidth().isFixed();
+ }
+ 
++#if PLATFORM(HAIKU)
++// SUMMIT_LAYOUT_WHY_TRACE=<ms>: for each layout of the render tree that takes
++// at least that long, report the blocks that were laid out although nothing in
++// them needed it when the layout began (an ancestor's algorithm asked), or that
++// were laid out more than once: how many, and the time in the outermost ones.
++struct SummitLayoutWhyTrace {
++    struct Entry {
++        unsigned layouts { 0 };
++        unsigned outermost { 0 };
++        double outermostMilliseconds { 0 };
++    };
++    bool active { false };
++    HashSet<const RenderObject*> dirtyAtStart;
++    HashSet<const RenderObject*> laidOut;
++    HashMap<String, Entry> forced;
++    unsigned forcedDepth { 0 };
++    unsigned renderers { 0 };
++    unsigned blockLayouts { 0 };
++    unsigned forcedBlockLayouts { 0 };
++    unsigned reusedItemLayouts { 0 };
++};
++
++static SummitLayoutWhyTrace& summitLayoutWhyTrace()
++{
++    static NeverDestroyed<SummitLayoutWhyTrace> trace;
++    return trace;
++}
++
++static double summitLayoutWhyTraceThreshold()
++{
++    static double threshold = [] {
++        const char* value = std::getenv("SUMMIT_LAYOUT_WHY_TRACE");
++        return value && *value ? std::atof(value) : -1.0;
++    }();
++    return threshold;
++}
++
++static String summitLayoutWhyDescription(const RenderObject& renderer)
++{
++    StringBuilder builder;
++    builder.append(renderer.renderName());
++    if (RefPtr element = dynamicDowncast<Element>(renderer.node())) {
++        builder.append('<', element->localName());
++        auto& classNames = element->getAttribute(HTMLNames::classAttr);
++        if (!classNames.isEmpty())
++            builder.append('.', StringView(classNames.string()).left(28));
++        builder.append('>');
++    }
++    return builder.toString();
++}
++
++// SUMMIT_LAYOUT_WHY_ITEMS=<text>: with the trace on, each layout request for a
++// flex or grid item whose description contains the text is logged with the
++// inputs of its last layout and the present ones.
++static bool summitLayoutWhyTraceFollows(const RenderObject& renderer)
++{
++    static const char* text = std::getenv("SUMMIT_LAYOUT_WHY_ITEMS");
++    return text && *text && summitLayoutWhyDescription(renderer).contains(StringView::fromLatin1(text));
++}
++
++bool summitLayoutWhyTraceBegin(RenderElement& root)
++{
++    if (summitLayoutWhyTraceThreshold() < 0)
++        return false;
++    auto& trace = summitLayoutWhyTrace();
++    if (trace.active)
++        return false;
++    trace = { };
++    trace.active = true;
++    for (const RenderObject* renderer = &root; renderer; renderer = renderer->nextInPreOrder(&root)) {
++        ++trace.renderers;
++        if (renderer->needsLayout())
++            trace.dirtyAtStart.add(renderer);
++    }
++    return true;
++}
++
++void summitLayoutWhyTraceEnd(RenderElement& root, double milliseconds)
++{
++    auto& trace = summitLayoutWhyTrace();
++    trace.active = false;
++    if (milliseconds < summitLayoutWhyTraceThreshold())
++        return;
++    WTFLogAlways("Summit layout why: %.1f ms root=%s renderers=%u dirty=%u blockLayouts=%u forced=%u reused=%u\n", milliseconds,
++        summitLayoutWhyDescription(root).utf8().legacyCStringPointer(), trace.renderers, trace.dirtyAtStart.size() + trace.laidOut.size(), trace.blockLayouts, trace.forcedBlockLayouts, trace.reusedItemLayouts);
++    Vector<std::pair<String, SummitLayoutWhyTrace::Entry>> entries;
++    for (auto& entry : trace.forced)
++        entries.append({ entry.key, entry.value });
++    std::ranges::sort(entries, [](auto& a, auto& b) {
++        return a.second.outermostMilliseconds > b.second.outermostMilliseconds;
++    });
++    unsigned reported = 0;
++    for (auto& entry : entries) {
++        WTFLogAlways("Summit layout why:   %6.1f ms outermost=%u layouts=%u %s\n", entry.second.outermostMilliseconds,
++            entry.second.outermost, entry.second.layouts, entry.first.utf8().legacyCStringPointer());
++        if (++reported == 24)
++            break;
++    }
++}
++
++class SummitLayoutWhyTraceScope {
++public:
++    explicit SummitLayoutWhyTraceScope(const RenderBlock& block, ASCIILiteral reuseRefusal)
++        : m_reuseRefusal(reuseRefusal)
++    {
++        auto& trace = summitLayoutWhyTrace();
++        if (!trace.active)
++            return;
++        ++trace.blockLayouts;
++        // Only the first layout of a block that needed one is expected.
++        bool wasDirty = trace.dirtyAtStart.remove(&block);
++        bool again = !trace.laidOut.add(&block).isNewEntry;
++        if (wasDirty)
++            return;
++        m_block = &block;
++        m_again = again;
++        ++trace.forcedBlockLayouts;
++        m_outermost = !trace.forcedDepth++;
++        if (m_outermost)
++            m_start = MonotonicTime::now();
++    }
++
++    ~SummitLayoutWhyTraceScope()
++    {
++        if (!m_block)
++            return;
++        auto& trace = summitLayoutWhyTrace();
++        if (!trace.active)
++            return;
++        --trace.forcedDepth;
++        auto key = makeString(m_again ? "again "_s : "clean "_s, summitLayoutWhyDescription(*m_block), " in "_s,
++            m_block->parent() ? summitLayoutWhyDescription(*m_block->parent()) : String("none"_s),
++            m_reuseRefusal.isNull() ? ""_s : " kept-not: "_s, m_reuseRefusal.isNull() ? ""_s : m_reuseRefusal);
++        auto& entry = trace.forced.ensure(key, [] { return SummitLayoutWhyTrace::Entry { }; }).iterator->value;
++        ++entry.layouts;
++        if (m_outermost) {
++            ++entry.outermost;
++            entry.outermostMilliseconds += (MonotonicTime::now() - m_start).milliseconds();
++        }
++    }
++
++private:
++    const RenderBlock* m_block { nullptr };
++    ASCIILiteral m_reuseRefusal;
++    MonotonicTime m_start;
++    bool m_again { false };
++    bool m_outermost { false };
++};
++
++// Flex and grid containers lay their items out several times in one layout:
++// to measure them, again with the final size, again to stretch them, and each
++// time they mark the item as needing layout whether or not anything it is
++// laid out from has changed. Nested, the repeats multiply: on Reddit's feed
++// (a grid in a flex box in a grid, posts with galleries in them) one layout
++// with about a hundred changed boxes laid blocks out 10,000 times, a gallery's
++// items 14 times for each layout of the gallery, 3,600 times in all.
++//
++// An item's layout is therefore kept when it is asked for again with nothing
++// changed: the same sizes imposed by the container as in its last layout (or
++// ones that come to the same, see summitItemLayoutInputsAreEquivalent()), the
++// same size left by that layout, and nothing inside the item that needs layout
++// itself. The marks on the item have to be known to come from the container
++// (summitSetNeedsLayoutByContainer(), summitSetChildNeedsLayoutByContainer()).
++// SUMMIT_LAYOUT_REUSE=0 turns this off.
++struct SummitItemLayoutInputs {
++    std::optional<LayoutUnit> overridingBorderBoxLogicalWidth;
++    std::optional<LayoutUnit> overridingBorderBoxLogicalHeight;
++    std::optional<RenderBox::GridAreaSize> gridAreaContentLogicalWidth;
++    std::optional<RenderBox::GridAreaSize> gridAreaContentLogicalHeight;
++    LayoutUnit containingBlockLogicalWidth;
++    LayoutUnit logicalWidth;
++    LayoutUnit logicalHeight;
++    bool percentHeightResolveDisabled { false };
++    bool containerResolvesPercentHeights { false };
++    bool containerPhaseChangesSizing { false };
++    // The flex basis stood in for the item's size (while a flex container computes flex base sizes).
++    bool flexBasisIsImposed { false };
++
++    bool operator==(const SummitItemLayoutInputs&) const = default;
++};
++
++struct SummitItemLayout {
++    SummitItemLayoutInputs inputs;
++    // The size the item took when nothing imposed one, while that is still what it would take.
++    std::optional<LayoutSize> naturalLogicalSize;
++};
++
++// Whether a layout from one set of inputs leaves what a layout from the other
++// would. Besides equal inputs:
++// - Which of its layout phases a flex container is in only decides how
++//   percentage heights in the item resolve, so it does not matter to an item
++//   without any.
++// - Containers measure an item without imposing a size and then impose the
++//   size they measured. For a block (not a flex box or a grid, whose content
++//   is placed by their size) without percentage heights inside, that is the
++//   layout it already has.
++static bool summitItemLayoutInputsAreEquivalent(const RenderBlock& item, const SummitItemLayout& last, const SummitItemLayoutInputs& now)
++{
++    auto& before = last.inputs;
++    if (before == now)
++        return true;
++    if (before.logicalWidth != now.logicalWidth || before.logicalHeight != now.logicalHeight
++        || before.containingBlockLogicalWidth != now.containingBlockLogicalWidth
++        || before.gridAreaContentLogicalWidth != now.gridAreaContentLogicalWidth
++        || before.gridAreaContentLogicalHeight != now.gridAreaContentLogicalHeight
++        || before.containerPhaseChangesSizing != now.containerPhaseChangesSizing
++        || before.flexBasisIsImposed != now.flexBasisIsImposed)
++        return false;
++
++    if (item.hasPercentHeightDescendants() || item.hasRelativeLogicalHeight())
++        return false;
++
++    if (before.overridingBorderBoxLogicalWidth == now.overridingBorderBoxLogicalWidth
++        && before.overridingBorderBoxLogicalHeight == now.overridingBorderBoxLogicalHeight)
++        return true;
++
++    if (!last.naturalLogicalSize || !item.isRenderBlockFlow())
++        return false;
++    auto naturalWidth = last.naturalLogicalSize->width();
++    auto naturalHeight = last.naturalLogicalSize->height();
++    return before.overridingBorderBoxLogicalWidth.value_or(naturalWidth) == now.overridingBorderBoxLogicalWidth.value_or(naturalWidth)
++        && before.overridingBorderBoxLogicalHeight.value_or(naturalHeight) == now.overridingBorderBoxLogicalHeight.value_or(naturalHeight)
++        && now.overridingBorderBoxLogicalWidth.value_or(naturalWidth) == now.logicalWidth
++        && now.overridingBorderBoxLogicalHeight.value_or(naturalHeight) == now.logicalHeight;
++}
++
++static bool summitLayoutReuseEnabled()
++{
++    static bool enabled = [] {
++        const char* value = std::getenv("SUMMIT_LAYOUT_REUSE");
++        return !value || value[0] != '0' || value[1];
++    }();
++    return enabled;
++}
++
++// SUMMIT_LAYOUT_REUSE=verify lays the item out anyway and reports any box in
++// it that the layout moved or resized: the kept layout would have been wrong.
++static bool summitLayoutReuseVerifies()
++{
++    static bool verifies = [] {
++        const char* value = std::getenv("SUMMIT_LAYOUT_REUSE");
++        return value && !strcmp(value, "verify");
++    }();
++    return verifies;
++}
++
++static LayoutRect summitFrameRectInItem(const RenderBlock& item, const RenderBox& box)
++{
++    if (&box == &item)
++        return { 0_lu, 0_lu, box.borderBoxWidth(), box.borderBoxHeight() };
++    return { box.x(), box.y(), box.borderBoxWidth(), box.borderBoxHeight() };
++}
++
++static Vector<LayoutRect> summitFrameRectsInItem(const RenderBlock& item)
++{
++    Vector<LayoutRect> rects;
++    for (const RenderObject* renderer = &item; renderer; renderer = renderer->nextInPreOrder(&item)) {
++        if (auto* box = dynamicDowncast<RenderBox>(*renderer))
++            rects.append(summitFrameRectInItem(item, *box));
++    }
++    return rects;
++}
++
++// How the last item asked about came to keep its layout, for the verification's report.
++static String summitLayoutReuseContext;
++
++static void summitReportLayoutReuseMismatch(const RenderBlock& item, const Vector<LayoutRect>& before)
++{
++    static unsigned verified;
++    static unsigned mismatches;
++    if (!(++verified % 5000))
++        WTFLogAlways("Summit layout reuse: %u kept layouts verified, %u wrong\n", verified, mismatches);
++    size_t index = 0;
++    for (const RenderObject* renderer = &item; renderer; renderer = renderer->nextInPreOrder(&item)) {
++        auto* box = dynamicDowncast<RenderBox>(*renderer);
++        if (!box)
++            continue;
++        auto rect = summitFrameRectInItem(item, *box);
++        if (index >= before.size() || before[index] != rect) {
++            ++mismatches;
++            auto was = index < before.size() ? before[index] : LayoutRect { };
++            WTFLogAlways("Summit layout reuse MISMATCH: item %s in %s (%s; %u boxes): box %u %s was %.2f,%.2f %.2fx%.2f is %.2f,%.2f %.2fx%.2f\n",
++                summitLayoutWhyDescription(item).utf8().legacyCStringPointer(), summitLayoutWhyDescription(*item.parent()).utf8().legacyCStringPointer(),
++                summitLayoutReuseContext.utf8().legacyCStringPointer(), static_cast<unsigned>(before.size()),
++                static_cast<unsigned>(index), summitLayoutWhyDescription(*box).utf8().legacyCStringPointer(),
++                was.x().toFloat(), was.y().toFloat(), was.width().toFloat(), was.height().toFloat(),
++                rect.x().toFloat(), rect.y().toFloat(), rect.width().toFloat(), rect.height().toFloat());
++            return;
++        }
++        ++index;
++    }
++}
++
++static SingleThreadWeakHashMap<RenderBox, SummitItemLayout>& summitItemLayouts()
++{
++    static NeverDestroyed<SingleThreadWeakHashMap<RenderBox, SummitItemLayout>> layouts;
++    return layouts;
++}
++
++static SingleThreadWeakHashSet<RenderBox>& summitItemsMarkedByContainer()
++{
++    static NeverDestroyed<SingleThreadWeakHashSet<RenderBox>> items;
++    return items;
++}
++
++// A container marks an item for layout through these, in place of
++// RenderObject::setNeedsLayout(MarkOnlyThis) and setChildNeedsLayout(MarkOnlyThis).
++// Those marks are also made for changes to the item or inside it (a style
++// change, a percentage height whose base changed), so an item only counts as
++// marked by its container while every mark on it was made here.
++static void summitNoteMarkByContainer(RenderBox& item)
++{
++    if (!summitLayoutReuseEnabled())
++        return;
++    if (!item.needsLayout() || summitItemsMarkedByContainer().contains(item))
++        summitItemsMarkedByContainer().add(item);
++}
++
++void summitSetNeedsLayoutByContainer(RenderBox& item)
++{
++    summitNoteMarkByContainer(item);
++    item.setNeedsLayout(MarkingBehavior::MarkOnlyThis);
++}
++
++void summitSetChildNeedsLayoutByContainer(RenderBox& item)
++{
++    summitNoteMarkByContainer(item);
++    item.setChildNeedsLayout(MarkingBehavior::MarkOnlyThis);
++}
++
++void summitForgetItemsMarkedByContainer()
++{
++    summitItemsMarkedByContainer().clear();
++}
++
++static SummitItemLayoutInputs summitCurrentItemLayoutInputs(RenderBlock& item)
++{
++    SummitItemLayoutInputs inputs;
++    inputs.overridingBorderBoxLogicalWidth = item.overridingBorderBoxLogicalWidth();
++    inputs.overridingBorderBoxLogicalHeight = item.overridingBorderBoxLogicalHeight();
++    inputs.gridAreaContentLogicalWidth = item.gridAreaContentLogicalWidth();
++    inputs.gridAreaContentLogicalHeight = item.gridAreaContentLogicalHeight();
++    inputs.containingBlockLogicalWidth = item.containingBlockLogicalWidthForContent();
++    inputs.logicalWidth = item.logicalWidth();
++    inputs.logicalHeight = item.logicalHeight();
++    inputs.flexBasisIsImposed = item.overridingLogicalWidthForFlexBasisComputation() || item.overridingLogicalHeightForFlexBasisComputation();
++    auto& style = item.style();
++    if (CheckedPtr flexBox = dynamicDowncast<RenderFlexibleBox>(item.parent())) {
++        inputs.percentHeightResolveDisabled = item.view().frameView().layoutContext().isPercentHeightResolveDisabledFor(item);
++        inputs.containerResolvesPercentHeights = flexBox->canUseFlexItemForPercentageResolution(item);
++        // While it computes flex base sizes the container has its items ignore their minimum and maximum sizes.
++        bool hasMinimumOrMaximumSize = !style.logicalMinWidth().isAuto() || !style.logicalMinHeight().isAuto()
++            || !style.logicalMaxWidth().isNone() || !style.logicalMaxHeight().isNone();
++        inputs.containerPhaseChangesSizing = hasMinimumOrMaximumSize && flexBox->isComputingFlexBaseSizes();
++    } else if (CheckedPtr grid = dynamicDowncast<RenderGrid>(item.parent())) {
++        // While it sizes its tracks a grid has its items treat automatic inline margins as zero.
++        bool hasAutomaticInlineMargin = style.marginStart(grid->writingMode()).isAuto() || style.marginEnd(grid->writingMode()).isAuto();
++        inputs.containerPhaseChangesSizing = hasAutomaticInlineMargin && grid->isComputingTrackSizes();
++    }
++    return inputs;
++}
++
++// Why the last item asked about could not keep its layout, for the trace.
++static ASCIILiteral summitLayoutReuseRefusal;
++
++static bool summitItemLayoutIsReusable(RenderBlock& item)
++{
++    auto refuse = [](ASCIILiteral reason) {
++        summitLayoutReuseRefusal = reason;
++        return false;
++    };
++    if (!item.everHadLayout() || item.isOutOfFlowPositioned() || item.document().inQuirksMode())
++        return refuse("first/out-of-flow/quirks"_s);
++    // The block inside a button takes its height from the button without an imposed size.
++    if (item.isAnonymous() || item.parent()->isAnonymous())
++        return refuse("anonymous"_s);
++
++    // What the layout below would redo has to be only what the container asked for.
++    if (!summitItemsMarkedByContainer().remove(item))
++        return refuse("not-container"_s);
++    bool markedByContainer = true;
++    if (item.outOfFlowChildNeedsLayout() || item.needsSimplifiedNormalFlowLayout() || item.needsOutOfFlowMovementLayout()
++        || item.outOfFlowChildNeedsStaticPositionLayout())
++        return refuse("out-of-flow/simplified"_s);
++    for (auto* child = item.firstChild(); child; child = child->nextSibling()) {
++        if (child->needsLayout())
++            return refuse("child"_s);
++    }
++
++    // Sizes that are found outside the item in ways the inputs do not record.
++    if (item.hasRelativeLogicalHeight())
++        return refuse("relative-height"_s);
++    if (item.overridingLogicalWidthForFlexBasisComputation() || item.overridingLogicalHeightForFlexBasisComputation())
++        return refuse("flex-basis"_s);
++    if (auto* grid = dynamicDowncast<RenderGrid>(item); grid && grid->isSubgrid())
++        return refuse("subgrid"_s);
++    auto* layoutState = item.view().frameView().layoutContext().layoutState();
++    if (!layoutState || layoutState->isPaginated() || layoutState->lineClamp() || layoutState->legacyLineClamp())
++        return refuse("paginated/line-clamp"_s);
++    if (item.enclosingFragmentedFlow())
++        return refuse("fragmented"_s);
++
++    auto previous = summitItemLayouts().find(item);
++    if (previous == summitItemLayouts().end())
++        return refuse("no-inputs"_s);
++    auto& last = previous->value;
++    auto now = summitCurrentItemLayoutInputs(item);
++    bool equivalent = summitItemLayoutInputsAreEquivalent(item, last, now);
++    if (equivalent && summitLayoutReuseVerifies()) {
++        auto size = [](std::optional<LayoutUnit> value) { return value ? value->toFloat() : -1.f; };
++        summitLayoutReuseContext = makeString(item.selfNeedsLayout() ? "self "_s : ""_s, item.normalChildNeedsLayout() ? "child "_s : ""_s,
++            markedByContainer ? "marked "_s : ""_s, last.inputs == now ? "same"_s : "equivalent"_s,
++            " override "_s, size(last.inputs.overridingBorderBoxLogicalWidth), 'x', size(last.inputs.overridingBorderBoxLogicalHeight),
++            " -> "_s, size(now.overridingBorderBoxLogicalWidth), 'x', size(now.overridingBorderBoxLogicalHeight),
++            " flags "_s, last.inputs.percentHeightResolveDisabled ? '1' : '0', last.inputs.containerResolvesPercentHeights ? '1' : '0',
++            " -> "_s, now.percentHeightResolveDisabled ? '1' : '0', now.containerResolvesPercentHeights ? '1' : '0');
++    }
++    if (summitLayoutWhyTrace().active && summitLayoutWhyTraceFollows(item)) {
++        auto describe = [](const SummitItemLayoutInputs& inputs) {
++            auto size = [](std::optional<LayoutUnit> value) { return value ? value->toFloat() : -1.f; };
++            auto area = [](std::optional<RenderBox::GridAreaSize> value) { return value ? (*value ? (*value)->toFloat() : -2.f) : -1.f; };
++            return makeString("override="_s, size(inputs.overridingBorderBoxLogicalWidth), 'x', size(inputs.overridingBorderBoxLogicalHeight),
++                " area="_s, area(inputs.gridAreaContentLogicalWidth), 'x', area(inputs.gridAreaContentLogicalHeight),
++                " container="_s, inputs.containingBlockLogicalWidth.toFloat(), " size="_s, inputs.logicalWidth.toFloat(), 'x', inputs.logicalHeight.toFloat(),
++                " flags="_s, inputs.percentHeightResolveDisabled ? '1' : '0', inputs.containerResolvesPercentHeights ? '1' : '0', inputs.containerPhaseChangesSizing ? '1' : '0');
++        };
++        WTFLogAlways("Summit layout item: %p %s %s | last: %s | now: %s\n", &item, summitLayoutWhyDescription(item).utf8().legacyCStringPointer(),
++            equivalent ? "kept" : "laid out", describe(last.inputs).utf8().legacyCStringPointer(), describe(now).utf8().legacyCStringPointer());
++    }
++    if (equivalent) {
++        // The next comparison is with what was asked for now.
++        last.inputs = now;
++        return true;
++    }
++    auto& before = last.inputs;
++    if (before.overridingBorderBoxLogicalHeight != now.overridingBorderBoxLogicalHeight)
++        return refuse("override-height"_s);
++    if (before.overridingBorderBoxLogicalWidth != now.overridingBorderBoxLogicalWidth)
++        return refuse("override-width"_s);
++    if (before.gridAreaContentLogicalWidth != now.gridAreaContentLogicalWidth)
++        return refuse("area-width"_s);
++    if (before.gridAreaContentLogicalHeight != now.gridAreaContentLogicalHeight)
++        return refuse("area-height"_s);
++    if (before.containingBlockLogicalWidth != now.containingBlockLogicalWidth)
++        return refuse("container-width"_s);
++    if (before.logicalWidth != now.logicalWidth)
++        return refuse("width"_s);
++    if (before.logicalHeight != now.logicalHeight)
++        return refuse("height"_s);
++    return refuse("container-phase"_s);
++}
++#endif
++
+ void RenderBlock::layout()
+ {
+     StackStats::LayoutCheckPoint layoutCheckPoint;
++#if PLATFORM(HAIKU)
++    bool summitTracksLayoutInputs = summitLayoutReuseEnabled() && (isFlexItem() || isGridItem());
++    summitLayoutReuseRefusal = { };
++    Vector<LayoutRect> summitFrameRectsToVerify;
++    String summitContextToVerify;
++    if (summitTracksLayoutInputs && summitItemLayoutIsReusable(*this)) {
++        if (summitLayoutWhyTrace().active)
++            ++summitLayoutWhyTrace().reusedItemLayouts;
++        if (!summitLayoutReuseVerifies()) {
++            clearNeedsLayout();
++            return;
++        }
++        summitFrameRectsToVerify = summitFrameRectsInItem(*this);
++        summitContextToVerify = summitLayoutReuseContext;
++    }
++    SummitLayoutWhyTraceScope summitLayoutWhyTraceScope(*this, summitLayoutReuseRefusal);
++#endif
+ 
+     auto& layoutContext = this->layoutContext();
+ 
+@@ -605,6 +1079,19 @@ void RenderBlock::layout()
+         clearLayoutOverflow();
+ 
+     invalidateBackgroundObscurationStatus();
++
++#if PLATFORM(HAIKU)
++    if (!summitFrameRectsToVerify.isEmpty()) {
++        summitLayoutReuseContext = summitContextToVerify;
++        summitReportLayoutReuseMismatch(*this, summitFrameRectsToVerify);
++    }
++    if (summitTracksLayoutInputs) {
++        SummitItemLayout layout { summitCurrentItemLayoutInputs(*this), { } };
++        if (!layout.inputs.overridingBorderBoxLogicalWidth && !layout.inputs.overridingBorderBoxLogicalHeight)
++            layout.naturalLogicalSize = LayoutSize { logicalWidth(), logicalHeight() };
++        summitItemLayouts().set(*this, layout);
++    }
++#endif
+ }
+ 
+ RenderBlockRareData* RenderBlock::blockRareData() const
 diff --git a/Source/WebCore/rendering/RenderBlockFlow.cpp b/Source/WebCore/rendering/RenderBlockFlow.cpp
 index ea03bcbb4b167323afa11643cc204dd4c40e5b55..60a10f363d44e68a7a778645c6ed3237179a627e 100644
 --- a/Source/WebCore/rendering/RenderBlockFlow.cpp
@@ -36902,10 +37690,24 @@ index ea03bcbb4b167323afa11643cc204dd4c40e5b55..60a10f363d44e68a7a778645c6ed3237
  }
  
 diff --git a/Source/WebCore/rendering/RenderBox.cpp b/Source/WebCore/rendering/RenderBox.cpp
-index 055a809ee5730e1b12c6d48ed697c7335135dfca..0fc5c850285d8e4f73240c0bdbb96bb4904659a1 100644
+index 055a809ee5730e1b12c6d48ed697c7335135dfca..27ee890329da22b899a1a1625e99ab5a7ab18cc4 100644
 --- a/Source/WebCore/rendering/RenderBox.cpp
 +++ b/Source/WebCore/rendering/RenderBox.cpp
-@@ -296,6 +296,10 @@ void RenderBox::styleWillChange(Style::Difference diff, const Style::ComputedSty
+@@ -124,6 +124,13 @@
+ #include "TypedElementDescendantIteratorInlines.h"
+ #endif
+ 
++#if PLATFORM(HAIKU)
++namespace WebCore {
++// Layout reuse for flex and grid items lives in RenderBlock.cpp.
++void summitSetNeedsLayoutByContainer(RenderBox&);
++}
++#endif
++
+ namespace WebCore {
+ 
+ WTF_MAKE_TZONE_ALLOCATED_IMPL(RenderBox);
+@@ -296,6 +303,10 @@ void RenderBox::styleWillChange(Style::Difference diff, const Style::ComputedSty
          // The background of the root element or the body element could propagate up to
          // the canvas. Issue full repaint, when our style changes substantially.
          if (diff >= Style::DifferenceResult::Repaint && (isDocumentElementRenderer() || isBody())) {
@@ -36916,6 +37718,18 @@ index 055a809ee5730e1b12c6d48ed697c7335135dfca..0fc5c850285d8e4f73240c0bdbb96bb4
              view().repaintRootContents();
              if (Style::hasEntirelyFixedBackground(oldStyle->backgroundLayers()) != Style::hasEntirelyFixedBackground(newStyle.backgroundLayers()))
                  view().compositor().rootLayerConfigurationChanged();
+@@ -3681,7 +3692,11 @@ LayoutUnit RenderBox::computeIntrinsicLogicalHeight()
+     // height. A descendant that does not resolve against this box's logical height is unaffected and need not lay out again.
+     layoutIfNeeded();
+     auto blockSize = logicalHeight();
++#if PLATFORM(HAIKU)
++    summitSetNeedsLayoutByContainer(*this);
++#else
+     setNeedsLayout(MarkingBehavior::MarkOnlyThis);
++#endif
+     return blockSize;
+ }
+ 
 diff --git a/Source/WebCore/rendering/RenderBoxModelObject.cpp b/Source/WebCore/rendering/RenderBoxModelObject.cpp
 index 08004fe4449bc61246f1bbde8aeee0e6b630e3c2..2d7dd61784814a608a6a59cb9f2ab81ff8fec982 100644
 --- a/Source/WebCore/rendering/RenderBoxModelObject.cpp
@@ -37053,10 +37867,10 @@ index b26360017f62da5e5b84a480a480dabf428f16b3..3db0279b08cdef613dcd16b9d1e828bc
          Style::AnchorPositionEvaluator::captureScrollSnapshots(downcast<RenderBox>(*this));
  }
 diff --git a/Source/WebCore/rendering/RenderGrid.cpp b/Source/WebCore/rendering/RenderGrid.cpp
-index bbc577b4dc47a315d4a9125d061367fdabc0fe8f..3276570b646bc237ae9e53811052111fd31529d4 100644
+index bbc577b4dc47a315d4a9125d061367fdabc0fe8f..11ca3754e739ea2894339fe73536a9e578d2cc99 100644
 --- a/Source/WebCore/rendering/RenderGrid.cpp
 +++ b/Source/WebCore/rendering/RenderGrid.cpp
-@@ -48,6 +48,10 @@
+@@ -48,12 +48,23 @@
  #include "StyleFitTolerance.h"
  #include "StyleGridPositionsResolver.h"
  #include "StylePrimitiveNumericTypes+Evaluation.h"
@@ -37067,7 +37881,44 @@ index bbc577b4dc47a315d4a9125d061367fdabc0fe8f..3276570b646bc237ae9e53811052111f
  #include <ranges>
  #include <wtf/Range.h>
  #include <wtf/Scope.h>
-@@ -1696,7 +1700,22 @@ void RenderGrid::layoutGridItems(RenderGridLayoutState& gridLayoutState, GridLan
+ #include <wtf/SetForScope.h>
+ #include <wtf/TZoneMallocInlines.h>
+ 
++#if PLATFORM(HAIKU)
++namespace WebCore {
++// Layout reuse for flex and grid items lives in RenderBlock.cpp.
++void summitSetNeedsLayoutByContainer(RenderBox&);
++}
++#endif
++
+ namespace WebCore {
+ 
+ WTF_MAKE_TZONE_ALLOCATED_IMPL(RenderGrid);
+@@ -1648,7 +1659,11 @@ void RenderGrid::updateGridAreaLogicalSize(RenderBox& gridItem, std::optional<La
+     bool gridAreaWidthChanged = overrideSizeChanged(gridItem, Style::GridTrackSizingDirection::Columns, width, height);
+     bool gridAreaHeightChanged = overrideSizeChanged(gridItem, Style::GridTrackSizingDirection::Rows, width, height);
+     if (gridAreaWidthChanged || (gridAreaHeightChanged && hasRelativeBlockAxisSize(*this, gridItem)))
++#if PLATFORM(HAIKU)
++        summitSetNeedsLayoutByContainer(gridItem);
++#else
+         gridItem.setNeedsLayout(MarkingBehavior::MarkOnlyThis);
++#endif
+ 
+     gridItem.setGridAreaContentLogicalWidth(width);
+     gridItem.setGridAreaContentLogicalHeight(height);
+@@ -1681,7 +1696,11 @@ void RenderGrid::layoutGridItems(RenderGridLayoutState& gridLayoutState, GridLan
+ 
+         auto* renderGrid = dynamicDowncast<RenderGrid>(gridItem);
+         if (renderGrid && (renderGrid->isSubgridColumns() || renderGrid->isSubgridRows()))
++#if PLATFORM(HAIKU)
++            summitSetNeedsLayoutByContainer(gridItem);
++#else
+             gridItem.setNeedsLayout(MarkingBehavior::MarkOnlyThis);
++#endif
+ 
+         // Setting the definite grid area's sizes. It may imply that the
+         // item must perform a layout if its area differs from the one
+@@ -1696,7 +1715,22 @@ void RenderGrid::layoutGridItems(RenderGridLayoutState& gridLayoutState, GridLan
          applyStretchAlignmentToGridItemIfNeeded(gridItem, gridLayoutState);
          applySubgridStretchAlignmentToGridItemIfNeeded(gridItem);
  
@@ -37090,7 +37941,31 @@ index bbc577b4dc47a315d4a9125d061367fdabc0fe8f..3276570b646bc237ae9e53811052111f
  
          // We need pending layouts to be done in order to compute auto-margins properly.
          GridLayoutFunctions::updateAutoMarginsIfNeeded(gridItem, writingMode());
-@@ -2704,8 +2723,19 @@ void RenderGrid::updateIntrinsicLogicalHeightsForRowSizingFirstPassCacheAvailabi
+@@ -1892,7 +1926,11 @@ void RenderGrid::stretchBlockSizeForGridItem(RenderBox& gridItem, LayoutUnit ali
+     // FIXME: Can avoid laying out here in some cases. See https://webkit.org/b/87905.
+     if (itemNeedsRelayoutForStretchAlignment) {
+         gridItem.setLogicalHeight(0_lu);
++#if PLATFORM(HAIKU)
++        summitSetNeedsLayoutByContainer(gridItem);
++#else
+         gridItem.setNeedsLayout(MarkingBehavior::MarkOnlyThis);
++#endif
+     }
+ }
+ 
+@@ -1902,7 +1940,11 @@ void RenderGrid::stretchInlineSizeForGridItem(RenderBox& gridItem, LayoutUnit al
+     auto desiredLogicalWidth = gridItem.constrainLogicalWidthByMinMax(stretchedLogicalWidth, contentBoxWidth(), *this);
+     gridItem.setOverridingBorderBoxLogicalWidth(desiredLogicalWidth);
+     if (desiredLogicalWidth != gridItem.logicalWidth())
++#if PLATFORM(HAIKU)
++        summitSetNeedsLayoutByContainer(gridItem);
++#else
+         gridItem.setNeedsLayout(MarkingBehavior::MarkOnlyThis);
++#endif
+ }
+ 
+ // FIXME: This logic is shared by RenderFlexibleBox, so it should be moved to RenderBox.
+@@ -2704,8 +2746,19 @@ void RenderGrid::updateIntrinsicLogicalHeightsForRowSizingFirstPassCacheAvailabi
  
      if (canCreateIntrinsicLogicalHeightsCacheForRowSizingFirstPass && m_intrinsicLogicalHeightsForRowSizingFirstPass) {
          for (auto& gridItem : childrenOfType<RenderBox>(*this)) {
@@ -37895,6 +38770,218 @@ index 1faa3e0b201f1a1ee52ea04773e6857d31b24391..4cc5bf3d86dabe4d375970c0f3b30e84
  
      CascadeLayerName m_resolvedCascadeLayerName;
      HashMap<CascadeLayerName, RuleSet::CascadeLayerIdentifier> m_cascadeLayerIdentifierMap;
+diff --git a/Source/WebCore/style/StyleDocumentScope.cpp b/Source/WebCore/style/StyleDocumentScope.cpp
+index 9d7f7eb126d6621398d946c39fbf3703d4d7914e..f4b2982ecc11f0873014bf8cfc9f6cfadc0b0ba5 100644
+--- a/Source/WebCore/style/StyleDocumentScope.cpp
++++ b/Source/WebCore/style/StyleDocumentScope.cpp
+@@ -53,8 +53,16 @@
+ #include "StyleEnvironmentVariables.h"
+ #include "StyleInvalidator.h"
+ #include "StyleResolver.h"
++#include "StyleRule.h"
+ #include "StyleSheetContents.h"
++#include "CSSSerializationContext.h"
++#include "CSSValuePool.h"
++#include "HTMLNames.h"
++#include "StyleExtractor.h"
++#include "StyleExtractorState.h"
++#include "TypedElementDescendantIteratorInlines.h"
+ #include <wtf/SetForScope.h>
++#include <wtf/text/StringBuilder.h>
+ #include <wtf/TZoneMallocInlines.h>
+ 
+ namespace WebCore {
+@@ -228,6 +236,190 @@ void DocumentScope::didChangeStyleSheetEnvironment()
+     scheduleUpdate(UpdateType::ContentsOrInterpretation);
+ }
+ 
++#if PLATFORM(HAIKU)
++} // namespace Style
++
++// A style sheet an extension adds to a page (tabs.insertCSS(); uBlock Origin
++// adds its cosmetic filters this way, four to six times while a page loads)
++// used to throw away every style resolver of the document, those of its
++// shadow trees included, and have the style of every element worked out
++// again: 80 to 100 ms a time on YouTube and Reddit. When the sheet only holds
++// style rules (and keyframes) and comes last among the page's injected sheets, its rules are
++// added to the resolver in place and only the elements its selectors can match
++// are restyled, as for a style sheet the page itself adds.
++// SUMMIT_INCREMENTAL_EXTENSION_CSS=0 goes the old way; =verify then also goes
++// the old way and reports every element whose style came out different.
++// Returns false when the caller has to go the old way.
++static bool summitAddExtensionStyleSheetToResolvers(Document&, CSSStyleSheet&);
++
++static void summitForEachElementWithStyle(Document& document, NOESCAPE const Function<void(Element&, const Style::ComputedStyle&)>& function)
++{
++    auto visit = [&](ContainerNode& root) {
++        for (Ref element : descendantsOfType<Element>(root)) {
++            if (auto* style = element->existingComputedStyle())
++                function(element, *style);
++        }
++    };
++    visit(document);
++    for (auto& shadowRoot : document.inDocumentShadowRoots())
++        visit(const_cast<ShadowRoot&>(shadowRoot));
++}
++
++bool summitAddExtensionStyleSheetIncrementally(Document& document, CSSStyleSheet& sheet)
++{
++    static const char* mode = std::getenv("SUMMIT_INCREMENTAL_EXTENSION_CSS");
++    if (mode && !strcmp(mode, "0"))
++        return false;
++    if (!summitAddExtensionStyleSheetToResolvers(document, sheet))
++        return false;
++    if (!mode || strcmp(mode, "verify"))
++        return true;
++
++    // Styles as wholes compare unequal after everything was resolved again (their fonts refer to
++    // a newer font selector), so the values of the properties that style sheets of extensions set are compared.
++    static constexpr CSSPropertyID properties[] = { CSSPropertyDisplay, CSSPropertyVisibility, CSSPropertyOpacity, CSSPropertyPosition,
++        CSSPropertyFloat, CSSPropertyColor, CSSPropertyBackgroundColor, CSSPropertyWidth, CSSPropertyHeight, CSSPropertyMaxHeight,
++        CSSPropertyOverflowX, CSSPropertyPointerEvents, CSSPropertyFontSize, CSSPropertyZIndex, CSSPropertyTop, CSSPropertyLeft,
++        CSSPropertyMarginTop, CSSPropertyPaddingTop, CSSPropertyBorderTopWidth, CSSPropertyTransform, CSSPropertyFilter };
++    auto valuesOf = [&](Element& element, const Style::ComputedStyle& style) {
++        Style::Extractor extractor(&element);
++        StringBuilder values;
++        for (auto property : properties)
++            values.append(extractor.propertyValueSerializationInStyle(style, property, CSS::defaultSerializationContext(), CSSValuePool::singleton(), nullptr, Style::ExtractorState::PropertyValueType::Computed), ';');
++        return values.toString();
++    };
++
++    Ref protectedDocument = document;
++    document.updateStyleIfNeeded();
++    HashMap<Ref<Element>, String> incrementalStyles;
++    summitForEachElementWithStyle(document, [&](Element& element, const Style::ComputedStyle& style) {
++        incrementalStyles.add(element, valuesOf(element, style));
++    });
++    document.styleScope().didChangeExtensionStyleSheets();
++    document.updateStyleIfNeeded();
++    unsigned elements = 0;
++    unsigned different = 0;
++    summitForEachElementWithStyle(document, [&](Element& element, const Style::ComputedStyle& style) {
++        ++elements;
++        auto incremental = incrementalStyles.find(element);
++        if (incremental == incrementalStyles.end())
++            return;
++        auto values = valuesOf(element, style);
++        if (incremental->value == values)
++            return;
++        if (++different <= 5) {
++            WTFLogAlways("Summit extension css MISMATCH: <%s class=\"%s\"> incremental %s full %s\n", element.localName().string().utf8().legacyCStringPointer(),
++                element.getAttribute(HTMLNames::classAttr).string().left(60).utf8().legacyCStringPointer(),
++                incremental->value.utf8().legacyCStringPointer(), values.utf8().legacyCStringPointer());
++        }
++    });
++    WTFLogAlways("Summit extension css: verified %u elements (%u had style before), %u differ, sheet of %u rules\n", elements, incrementalStyles.size(), different,
++        static_cast<unsigned>(sheet.contents().childRules().size()));
++    return true;
++}
++
++static bool summitAddExtensionStyleSheetToResolvers(Document& document, CSSStyleSheet& sheet)
++{
++    // SUMMIT_EXTENSION_CSS_TRACE=1 (also read by the browser) reports which way each sheet went.
++    static bool trace = [] {
++        const char* value = std::getenv("SUMMIT_EXTENSION_CSS_TRACE");
++        return value && value[0] == '1' && !value[1];
++    }();
++    auto oldWay = [&](ASCIILiteral reason) {
++        if (trace)
++            WTFLogAlways("Summit extension css: sheet of %u rules restyles everything: %s\n", static_cast<unsigned>(sheet.contents().childRules().size()), reason.characters());
++        return false;
++    };
++    if (!sheet.contents().isUserStyleSheet())
++        return oldWay("not a user-level sheet"_s);
++    if (document.inStyleRecalc() || document.inRenderTreeUpdate())
++        return oldWay("styles are being resolved"_s);
++
++    // Font faces, properties, layers and imports are registered with more than the rule set.
++    Ref contents = sheet.contents();
++    if (!contents->importRules().isEmpty() || !contents->layerRulesBeforeImportRules().isEmpty() || !contents->namespaceRules().isEmpty())
++        return oldWay("imports, layers or namespaces"_s);
++    unsigned otherRuleType = 0;
++    Function<bool(const Vector<Ref<StyleRuleBase>>&)> onlyStyleRules = [&](const Vector<Ref<StyleRuleBase>>& rules) {
++        for (auto& rule : rules) {
++            // Keyframes go to the resolver by name as the user rules are built again below. An element
++            // that already named an animation the sheet now defines (not one of the sheet's own
++            // elements, which are restyled) starts it at its next restyle.
++            if (rule->isStyleRule() || rule->type() == StyleRuleType::Keyframes)
++                continue;
++            // Rules inside @media and @supports are added to the rule set as they are at the top level.
++            if (rule->type() == StyleRuleType::Media || rule->type() == StyleRuleType::Supports) {
++                if (onlyStyleRules(downcast<StyleRuleGroup>(rule.get()).childRules()))
++                    continue;
++                return false;
++            }
++            otherRuleType = static_cast<unsigned>(rule->type());
++            return false;
++        }
++        return true;
++    };
++    if (!onlyStyleRules(contents->childRules())) {
++        if (trace)
++            WTFLogAlways("Summit extension css: a rule of type %u\n", otherRuleType);
++        return oldWay("rules other than style rules"_s);
++    }
++
++    auto& documentScope = document.styleScope();
++    // An update that is already due may keep the resolver and would not look at the injected sheets
++    // again: it is done first.
++    documentScope.flushPendingUpdate();
++    if (documentScope.hasPendingUpdate())
++        return oldWay("a style sheet update is pending"_s);
++    RefPtr resolver = documentScope.resolverIfExists();
++    if (!resolver) {
++        // Nothing was built from the injected sheets yet; the resolver will read them all.
++        if (trace)
++            WTFLogAlways("Summit extension css: sheet of %u rules waits for the first resolver\n", static_cast<unsigned>(contents->childRules().size()));
++        return true;
++    }
++
++    auto updateFeatures = [](Style::Resolver& resolver) {
++        // Collects the features of all the resolver's rule sets again, the user rules among them.
++        resolver.appendAuthorStyleSheets({ });
++        resolver.invalidateMatchedDeclarationsCache();
++    };
++    resolver->ruleSets().initializeUserStyle();
++    updateFeatures(*resolver);
++
++    Style::Invalidator invalidator({ contents }, resolver->mediaQueryEvaluator());
++    bool invalidateAll = !document.bodyOrFrameset() || document.hasNodesWithMissingStyle();
++    auto invalidate = [&](Style::Scope& scope) {
++        if (invalidateAll)
++            Style::Invalidator::invalidateAllStyle(scope);
++        else
++            invalidator.invalidateStyle(scope);
++    };
++    invalidate(documentScope);
++
++    // Shadow trees take the document's user rules (ScopeRuleSets::userStyle()); the trees of
++    // built-in controls take none.
++    HashSet<Style::Resolver*> updatedResolvers;
++    unsigned shadowTrees = 0;
++    for (auto& shadowRoot : document.inDocumentShadowRoots()) {
++        if (shadowRoot.mode() == ShadowRootMode::UserAgent)
++            continue;
++        ++shadowTrees;
++        auto& scope = const_cast<ShadowRoot&>(shadowRoot).styleScope();
++        if (RefPtr shadowResolver = scope.resolverIfExists(); shadowResolver && updatedResolvers.add(shadowResolver.get()).isNewEntry)
++            updateFeatures(*shadowResolver);
++        invalidate(scope);
++    }
++    if (trace) {
++        WTFLogAlways("Summit extension css: sheet of %u rules added in place: %s, %u shadow trees with %u resolvers\n", static_cast<unsigned>(contents->childRules().size()),
++            invalidateAll ? "the document is not ready, everything restyled" : invalidator.dirtiesAllStyle() ? "its selectors can match anything, everything restyled" : "matching elements restyled",
++            shadowTrees, updatedResolvers.size());
++    }
++    return true;
++}
++
++namespace Style {
++#endif
++
+ void DocumentScope::didChangeExtensionStyleSheets()
+ {
+     // Extension stylesheets may mutate in the middle of a style update when resource loading triggers
 diff --git a/Source/WebCore/style/StyleResolver.cpp b/Source/WebCore/style/StyleResolver.cpp
 index 0f09e88f82e9b587d8c08d8f5d1d83a5a00cfaf1..09f17413d66c5c621c375c6ce7d790ea1b7b3663 100644
 --- a/Source/WebCore/style/StyleResolver.cpp
@@ -99562,6 +100649,42 @@ index 1ead3222995438e67fc22b7232af895a788d3a28..3bd1fc63a0d02b47a72e9c1a30504e9c
              if (auto* extensionControllerProxy = webPage->webExtensionControllerProxy())
                  parameters.pageHasLoadedWebExtensions = extensionControllerProxy->hasLoadedContexts();
  #endif
+diff --git a/Source/WebKit/WebProcess/UserContent/WebUserContentController.cpp b/Source/WebKit/WebProcess/UserContent/WebUserContentController.cpp
+index 0bee0bf3b5ae9763dfb432633b8be87047ebe269..47185559e3e7abdf60fe7a0f85fc6ac526f4ac4f 100644
+--- a/Source/WebKit/WebProcess/UserContent/WebUserContentController.cpp
++++ b/Source/WebKit/WebProcess/UserContent/WebUserContentController.cpp
+@@ -247,6 +247,9 @@ void WebUserContentController::removeAllUserScripts(const Vector<ContentWorldIde
+ 
+ void WebUserContentController::addUserStyleSheets(Vector<WebUserStyleSheetData>&& userStyleSheets)
+ {
++#if PLATFORM(HAIKU)
++    bool addedSheetForEveryPage = false;
++#endif
+     for (auto& userStyleSheetData : userStyleSheets) {
+         addContentWorldIfNecessary(userStyleSheetData.worldData);
+         RefPtr world = worldMap().get(userStyleSheetData.worldData.identifier);
+@@ -256,9 +259,21 @@ void WebUserContentController::addUserStyleSheets(Vector<WebUserStyleSheetData>&
+         }
+         
+         UserStyleSheet sheet = userStyleSheetFromData(WTF::move(userStyleSheetData.userStyleSheet));
++#if PLATFORM(HAIKU)
++        if (!sheet.pageID())
++            addedSheetForEveryPage = true;
++#endif
+         addUserStyleSheetInternal(*world, userStyleSheetData.identifier, WTF::move(sheet));
+     }
+ 
++#if PLATFORM(HAIKU)
++    // A sheet for one page (an extension's tabs.insertCSS()) was given to that page's documents
++    // above (Page::injectUserStyleSheet()) and is in no other document's injected sheets: making
++    // every document of every page in this process build its injected sheets and resolve all its
++    // styles again was work for nothing, and undid the page's own incremental update.
++    if (!addedSheetForEveryPage)
++        return;
++#endif
+     invalidateInjectedStyleSheetCacheInAllFramesInAllPages();
+ }
+ 
 diff --git a/Source/WebKit/WebProcess/WebAuthentication/WebAuthenticatorCoordinator.cpp b/Source/WebKit/WebProcess/WebAuthentication/WebAuthenticatorCoordinator.cpp
 index 8677b9d9f5c1e61cbe8b0a184b669022d8db3eed..3ef5c5295f89885202331129b3eb86ac1a082dba 100644
 --- a/Source/WebKit/WebProcess/WebAuthentication/WebAuthenticatorCoordinator.cpp

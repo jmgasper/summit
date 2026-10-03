@@ -1,0 +1,106 @@
+<!doctype html>
+<!-- Nested grids and flex boxes changed a little at a time, with a geometry
+     read (a forced layout) after every change: the pattern of Reddit's feed.
+     Run with SUMMIT_LAYOUT_REUSE=verify to have every kept item layout checked
+     against a real one; the page reports the time per forced layout. -->
+<meta charset="utf-8">
+<title>layout reuse</title>
+<style>
+body { margin: 0; font: 14px/1.4 sans-serif; }
+.page { display: grid; grid-template-columns: 220px 1fr; gap: 12px; }
+.side { background: #eef; padding: 8px; }
+.sub { display: flex; gap: 12px; align-items: stretch; }
+.main-container { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; width: 100%; }
+main { min-width: 0; }
+.feed { display: flex; flex-direction: column; gap: 6px; }
+.post { border: 1px solid #ccc; padding: 6px; position: relative; }
+.row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.row > span { display: flex; align-items: center; flex-shrink: 0; }
+.gallery { display: flex; overflow: hidden; }
+.gallery ul { display: grid; grid-auto-flow: column; grid-auto-columns: 100%; list-style: none; margin: 0; padding: 0; width: 100%; position: relative; }
+.gallery li { display: flex; justify-content: center; position: relative; }
+.gallery figure { height: 100%; width: 100%; margin: 0; display: flex; justify-content: center; }
+.gallery figure div { width: 60%; background: #9c9; }
+.tall figure div { min-height: 180px; }
+.short figure div { min-height: 90px; }
+.cols { display: flex; flex-direction: column; height: 160px; }
+.cols > div { flex: 1 1 0; background: #fd9; margin: 2px; min-height: 0; overflow: hidden; }
+.cols > div.big { flex-grow: 3; }
+.pct { display: flex; height: 80px; }
+.pct > div { height: 50%; width: 40px; background: #99f; margin-right: 4px; }
+.pct > div.full { height: 100%; }
+.right { position: sticky; top: 0; background: #fee; padding: 8px; }
+.wide .main-container { grid-template-columns: minmax(0, 1fr) 200px; }
+.start .sub { align-items: flex-start; }
+.grid2 { display: grid; grid-template-columns: repeat(3, 1fr); grid-auto-rows: minmax(40px, auto); gap: 4px; }
+.grid2 > div { background: #ddd; padding: 2px; }
+.grid2 > div.span { grid-column: span 2; }
+.ar { aspect-ratio: 16 / 9; background: #c9c; width: 50%; }
+#out { position: fixed; right: 4px; bottom: 4px; background: #fff; border: 1px solid #000; padding: 4px; z-index: 5; }
+</style>
+<div id="out">running</div>
+<div class="page" id="page">
+  <div class="side">side<br>bar</div>
+  <div class="sub">
+    <div class="main-container">
+      <main><div class="feed" id="feed"></div></main>
+      <div class="right" id="right">right column</div>
+    </div>
+  </div>
+</div>
+<script>
+let seed = 12345;
+function random(n) { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; }
+const words = 'layout reuse flex grid item stretch measure content height width feed post gallery'.split(' ');
+function text(n) { let s = ''; for (let i = 0; i < n; ++i) s += words[random(words.length)] + ' '; return s; }
+function post(i) {
+    const kind = i % 4;
+    let body = '<div class="row"><span><b>' + text(2) + '</b></span><span>' + text(1) + '</span></div><p>' + text(8 + random(30)) + '</p>';
+    if (kind == 0)
+        body += '<div class="gallery ' + (i % 8 ? 'tall' : 'short') + '"><ul>' + '<li><figure><div>' + text(2) + '</div></figure></li>'.repeat(4) + '</ul></div>';
+    else if (kind == 1)
+        body += '<div class="cols"><div>' + text(3) + '</div><div class="big">' + text(20) + '</div><div>' + text(2) + '</div></div>';
+    else if (kind == 2)
+        body += '<div class="pct"><div></div><div class="full"></div><div></div></div><div class="ar"></div>';
+    else
+        body += '<div class="grid2"><div>' + text(4) + '</div><div class="span">' + text(12) + '</div><div>' + text(2) + '</div><div>' + text(9) + '</div></div>';
+    return '<article class="post" id="p' + i + '">' + body + '<div class="row"><span>' + text(1) + '</span><span>' + text(2) + '</span></div></article>';
+}
+const feed = document.getElementById('feed');
+let count = 0;
+function add(n) { let html = ''; for (let i = 0; i < n; ++i) html += post(count++); feed.insertAdjacentHTML('beforeend', html); }
+add(40);
+let sink = 0;
+function read() { const p = document.getElementById('p' + random(count)); sink += p ? p.offsetHeight + p.getBoundingClientRect().top : 0; sink += document.getElementById('right').offsetHeight; }
+const changes = [
+    () => { const p = document.querySelector('#p' + random(count) + ' p'); if (p) p.textContent = text(5 + random(40)); },
+    () => { const s = document.querySelector('#p' + random(count) + ' .row span'); if (s) s.textContent = text(1 + random(3)); },
+    () => { const g = document.querySelector('#p' + random(count) + ' .gallery'); if (g) g.classList.toggle('tall'); },
+    () => { const c = document.querySelector('#p' + random(count) + ' .cols'); if (c) c.style.height = (100 + random(120)) + 'px'; },
+    () => { const c = document.querySelector('#p' + random(count) + ' .pct'); if (c) c.style.height = (40 + random(100)) + 'px'; },
+    () => { const c = document.querySelector('#p' + random(count) + ' .grid2 div'); if (c) c.textContent = text(1 + random(25)); },
+    () => { document.getElementById('right').textContent = text(1 + random(60)); },
+    () => { document.getElementById('page').classList.toggle('wide'); },
+    () => { document.getElementById('page').classList.toggle('start'); },
+    () => { document.getElementById('page').style.width = random(3) ? '' : (700 + random(500)) + 'px'; },
+    () => { add(1); },
+    () => { const p = document.getElementById('p' + random(count)); if (p && count > 20) p.style.display = p.style.display ? '' : 'none'; },
+    () => { const f = document.querySelector('#p' + random(count) + ' figure div'); if (f) f.style.minHeight = (60 + random(200)) + 'px'; },
+];
+const started = performance.now();
+let steps = 0;
+function run() {
+    const until = performance.now() + 30;
+    while (performance.now() < until && steps < 1500) {
+        // Mostly small changes inside one post, as the feed's components make.
+        changes[random(10) < 7 ? random(7) : random(changes.length)]();
+        read();
+        ++steps;
+    }
+    if (steps < 1500) { setTimeout(run, 0); return; }
+    const elapsed = performance.now() - started;
+    document.getElementById('out').textContent = 'done: ' + steps + ' forced layouts, ' + (elapsed / steps).toFixed(2) + ' ms each, ' + count + ' posts, sink ' + Math.round(sink);
+    document.title = 'layout reuse: ' + (elapsed / steps).toFixed(2) + ' ms each, sink ' + Math.round(sink);
+}
+setTimeout(run, 300);
+</script>
