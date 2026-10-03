@@ -1,5 +1,70 @@
 # Summit performance: Speedometer 3.1 baseline, where the time goes, stress test
 
+## 3 October 2026 (afternoon): issues #19, #20 and #21
+
+All three were filed against bundle-7dlqk_lh, the first build that presented
+pages straight into the screen (#16). Installed at the end:
+**bundle-6hq57edu** (Mesa prefix-20261002), and in the Haiku fork an
+app_server and `nvidia_rm.accelerant` with a hardware cursor.
+
+**#19, the pointer over a video.** The pointer was a software cursor drawn
+into the frame buffer, which the direct frames painted over, and moving it
+put back old pixels. The X399 now has a hardware cursor (details in
+[hidpi.md](hidpi.md#the-pointer-and-old-pixels-issues-19-and-20-3-october-2026)).
+
+**#20, pages that did not load fully.** Two causes.
+
+- *Old pixels on the screen.* Whatever app_server redrew in a window (a
+  window moved off it, a menu closing, the screen blanker going away) it
+  copied from its own copy of the screen, which direct frames never wrote,
+  so parts of a page showed another window, black, or an earlier frame,
+  around whatever kept changing; a navigation could leave most of the
+  previous page standing around the new one's video in screenshots. Fixed
+  in the engine (same section of hidpi.md).
+- *Reddit with uBlock Origin.* With a copy of the owner's profile a warm
+  load of reddit.com/r/sydney took 6.5-6.9 s against 2.4-2.6 s, and the page
+  drew nothing for 2.7-5.6 s at a time ("Summit page stall: ... no rendering
+  update for 3.4 s"). The main thread is busy then (80% of a 10 s profile):
+  script in microtasks and timers that keeps forcing layout, about half the
+  thread in grid and flex layout. Disabling extensions one at a time: with
+  uBlock Origin off, six loads in a row and no stall; with 1Password off, a
+  stall on the first load; with both off, six loads and no stall. uBlock adds its cosmetic
+  filters in six `tabs.insertCSS()` calls within 0.3 s of the page
+  starting (`SUMMIT_EXTENSION_CSS_TRACE=1`), seconds before the stall, so
+  those are not it; what uBlock does then is not found yet. Each such call
+  does make WebKit rebuild every style resolver of the page, the shadow
+  trees' too (`DocumentScope::didChangeExtensionStyleSheets()`), which a page
+  made of web components pays for many times over; incremental insertion is
+  a candidate if they turn out to matter.
+- Found on the way: when JavaScriptCore dropped a script from its code cache
+  it asked the bytecode cache to write the script's file, and every function
+  compiled since was encoded right there (about 70 us each, so seconds for a
+  script with thousands). They are now encoded 4 ms at a time like the
+  scheduled write (`CachedScriptSourceProviderHaiku.cpp`). In these runs the
+  biggest such write was 936 functions, 41-65 ms, so this was not the Reddit
+  stall.
+- The "in view but rendering frozen for 10.0 s" reports seen after most
+  navigations to another site were the previous page, frozen in the
+  back/forward cache; they are no longer reported, and the report now names
+  the freeze reasons.
+
+**#21, ABC News video.** The article's video is JW Player 8.38 with plain MP4
+files. JW Player first checks whether it may play with a tiny clip in a
+`blob:` URL, and Summit's media player handed `blob:` and `data:` URLs to
+Media Kit, which cannot read them: `play()` was refused with
+`NotSupportedError`, JW Player reported `autostartNotAllowed`
+(`autoplayDisabled`) and the page took the player away again. Such URLs are
+now fetched whole through WebCore's media resource loader into a file first;
+the check resolves in about 65 ms and the article's video plays (25 frames/s,
+31.6 s clip). `SUMMIT_MEDIA_PLAYBACK_TRACE=1` reports the fetch. JW Player
+also waits until half its player is in view before starting.
+
+How it was measured: tools on the X399 under `/boot/home/summit`
+(`claude-d2-*`): private bundle copies, copies of the owner's profile
+(private, never left the machine), `tools/bench/fbgrab.py` for what is
+really on the screen (a VNC screenshot is app_server's copy) and
+`profile -a -f` with `SUMMIT_DIRECT_PRESENT=0`.
+
 ## 3 October 2026: start-up, process launches and first bytes
 
 In short (details below):

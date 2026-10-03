@@ -197,3 +197,65 @@ there; a window whose daemon has gone has its pages draw through
 app_server from the next frame. No hang followed any of these timeouts;
 the one hang came after a test script killed a browser whose pages were
 still being presented.
+
+## The pointer and old pixels (issues #19 and #20, 3 October 2026)
+
+Two faults of direct present, both about what else draws into the frame
+buffer.
+
+**The pointer (#19).** The X399's accelerant had no cursor hooks (they were
+left out of X547's NVKMS accelerant when it was imported), so app_server drew
+the pointer into the frame buffer itself, blended from its own copy of the
+screen, and put that copy's pixels back wherever the pointer left. Pages
+presented directly painted over the pointer at every frame (over a playing
+video it showed about one frame in four, when a frame went through
+app_server), and moving it put back patches of frames up to a quarter of a
+second old. The fix is in the Haiku fork (`x399-workstation`, local commits
+f3554c61d6 and ee8d8390ca, deployed with a power cycle):
+
+- `nvidia_rm.accelerant` hands out `B_MOVE_CURSOR`, `B_SHOW_CURSOR` and
+  `B_SET_CURSOR_BITMAP`; NVKMS's cursor plane is composited by the display
+  engine and is not in the frame buffer at all. A cursor is never made
+  32 x 32: the display engine reads a cursor's rows packed (128 bytes apart
+  at that size) while `NvKmsBitmap` starts rows every 256 bytes, so small
+  cursors go into 64 x 64.
+- app_server hands the accelerant the cursor at the frame buffer's density
+  (at 200% the cursor as set is half size), with the drag bitmap composed in,
+  after every change of cursor, drag bitmap, mode, layout or scale, and falls
+  back to the software cursor when the accelerant refuses one (a drag bitmap
+  over 256 pixels). `nvcursortest` (fork, `build-cross.sh`) shows a square on
+  the cursor plane from a second NVKMS client.
+
+Check: the frame buffer (`tools/bench/fbgrab.py`) no longer has the pointer
+in it; the VNC server draws its own.
+
+**Old pixels (#20).** app_server's copy of the screen only got the frames
+that went through it four times a second, and each named only what changed
+since the frame before it, so whatever direct frames changed in between
+stayed old there for good. And app_server copies that copy onto the screen
+at the end of every update of the window (`Window::EndUpdate`), whether the
+view drew or not: a window moved off the page, a menu closing or the screen
+blanker going away left another window's pixels, or black, in the page,
+with only what kept changing (a video, typed text) drawn over them, after
+the page had already been presented again in full for the new clipping.
+Screenshots and the VNC server showed the same stale copy. Fixed in the
+engine:
+
+- A frame through app_server draws everything that frames presented
+  directly changed since the previous one (`m_directDamageHaiku`).
+- `BWebKitView::Draw()` draws the last frame through app_server even while
+  pages are presented directly (so app_server's copy has the page where it
+  redraws), and posts itself a message that runs after the update has ended:
+  `Sync()` (app_server has finished its copy by then), then
+  `DirectPresentTargetHaiku::invalidate()` and a redisplay, which presents
+  the page again in full. The same happens when a frame went into the screen
+  while app_server drew an older one.
+- A presenter's first frame is presented in full: after a navigation to
+  another site the new web process found the old one's generation marked as
+  presented.
+- `SUMMIT_DIRECT_PRESENT_TRACE=1` also logs each present in full ("in full,
+  generation 8, 1 rectangles, 2.41 Mpx").
+
+Check: a Developer Tools window moved over a playing video and away again,
+then both the real frame buffer and a VNC screenshot show the whole page;
+before, both kept the Developer Tools window where it had been.
