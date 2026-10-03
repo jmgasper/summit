@@ -1,5 +1,171 @@
 # Summit performance: Speedometer 3.1 baseline, where the time goes, stress test
 
+## 3-4 October 2026 (night): Reddit's layouts, style sheets from extensions
+
+Two items left open by the sessions above: the Reddit freeze after a load
+(issue #20, "engine layout performance, not fixed") and the style work that
+extensions add to every page load. Both are engine changes; the build
+installed with them is **bundle-orh0apka** (Mesa prefix-20261002).
+
+### Reddit: an item's layout is kept when nothing it depends on changed
+
+`SUMMIT_LAYOUT_WHY_TRACE=<ms>` (new) reports, for each layout of the render
+tree that takes at least that long, the blocks that were laid out although
+nothing in them needed it when the layout began, or more than once, by
+element and container. On reddit.com/r/sydney after the next batch of posts
+arrives (26 posts, 9,400 renderers), one forced layout with 126 renderers
+changed laid blocks out **10,737 times**: 170 ms, and the page's components
+force about thirty in a row (4.0-4.7 s in three runs, the "no rendering
+update for 4.5 s").
+
+Flex and grid containers lay their items out several times in one layout (to
+measure them, again with the final size, again to stretch them) and mark the
+item as needing layout each time, whether or not anything changed. Nested,
+the repeats multiply. Reddit's feed is a grid in a flex box in a grid, with
+posts that hold galleries (a flex box in a grid in a flex box); in that one
+layout:
+
+| box | in | layouts |
+| --- | --- | --- |
+| `div.subgrid-container` (flex) | `div.grid-container` (grid) | 3 |
+| `main` | `div.main-container` (grid) | 15 |
+| `faceplate-batch` (the posts) | `shreddit-feed` (flex) | 31 |
+| `div.carousel-container` (flex) | `faceplate-carousel` (flex) | 252 |
+| `li` (a gallery picture) | `ul` (grid) | 3,629 |
+
+The engine now keeps an item's layout when its container asks for it again
+with nothing changed (`RenderBlock::layout()`, Haiku only): the sizes the
+container imposes are those of the item's last layout (overriding width and
+height, grid area, containing block width, and the container's phase where
+the item can tell), the item still has the size that layout left, every mark
+on it was made by the container (the containers mark through
+`summitSetNeedsLayoutByContainer()` / `summitSetChildNeedsLayoutByContainer()`),
+and none of its children needs layout. Two sets of sizes count as the same
+where they must give the same layout: which phase a flex container is in for
+an item without percentage heights inside, and, for a plain block without
+percentage heights inside, "no size imposed" against "the size it took when
+none was imposed" (containers measure first and then impose what they
+measured). Never kept: items with a percentage height of their own,
+anonymous items (the block inside a button takes its height from the button
+without an imposed size), subgrids, anything in quirks mode, paginated or
+under a line clamp. `SUMMIT_LAYOUT_REUSE=0` turns it off.
+
+`SUMMIT_LAYOUT_REUSE=verify` lays the item out anyway and reports every box
+in it that the layout moved or resized. That found three ways the first
+version was wrong before any page showed it (a layout made while the flex
+basis stood in for the item's size; marks on an item's children that did not
+come from the container, as for a percentage height whose base changed; the
+button case above). With those fixed: no box different in 20 sites loaded,
+scrolled and resized (YouTube home, watch and search pages, Reddit, GitHub,
+The Guardian, BBC, Amazon, eBay, Google search, Gmail, Twitch and others;
+12,000 kept layouts checked on YouTube's home page alone), and in
+`tools/bench/pages/layout-reuse.html` (1,500 small changes to nested grids
+and flex boxes, a forced layout after each; its checksum of positions is the
+same with reuse on and off).
+
+The same build with reuse on and off, four alternated runs each
+(`SUMMIT_LAYOUT_WHY_TRACE=3`; "incremental" is a layout of the full feed with
+under 300 renderers changed):
+
+| | reuse on | reuse off |
+| --- | --- | --- |
+| incremental layout, median | 24-45 ms | 66-105 ms |
+| blocks laid out in it, median | 1,476-2,874 | 3,880-6,752 |
+| all layouts in the run | 0.76-1.81 s | 2.14-3.37 s |
+
+On the page state with more galleries (the first runs of the night) a
+forced layout went from 170 ms to 42 ms. None of the later runs with reuse
+on stalled after the load. (A "page stall" reported right at the start of a
+navigation is the wait for the first bytes, not this.) Speedometer 3.1 is
+unchanged (9.52 and 9.25 against 9.45 and 9.19 for the installed build, 3
+iterations, alternated).
+
+What is left in a Reddit layout: `main` is still laid out up to three times
+when a post inside it changed (measured without a height, then with the
+height it measured, and it has percentage heights inside, so the two are
+not the same to the engine), and items with percentage heights (each gallery
+picture's `figure`) are laid out every time. Keeping measurements apart from
+layouts would remove the first.
+
+Tools on the X399 (`/boot/home/summit`): `claude-rd-run.py BUNDLE LABEL
+ROUNDS [K=V]` (r/sydney without extensions, a wheel burst to bring the next
+posts, counts of posts, stalls and layouts), `claude-rd-why.py` (per-layout
+numbers from the trace), `claude-verify.py BUNDLE-DIR LABEL URL...` (verify
+mode over a list of sites). `SUMMIT_LAYOUT_WHY_ITEMS=<text>` logs every
+layout request for items whose description contains the text, with the
+inputs of the last layout and the present ones.
+
+### Style sheets from extensions are added in place
+
+With the owner's extensions (uBlock Origin, 1Password), style resolution in
+the first 12 s of a load took 1,271-1,480 ms on Reddit against 778-825 ms
+without them, and 749-1,139 ms against 342-433 ms on YouTube
+(`SUMMIT_PAGE_UPDATE_TRACE=3`, "Summit style phases"). uBlock adds its
+cosmetic filters with `tabs.insertCSS()` four to seven times while a page
+loads (`SUMMIT_EXTENSION_CSS_TRACE=1`), the last three once the page is
+built, and each of those was followed by a style update of 80-116 ms. Two
+causes:
+
+- A sheet added to a page made the document throw away every style
+  resolver, those of its shadow trees too, and resolve the style of every
+  element again (`DocumentScope::didChangeExtensionStyleSheets()`).
+- After giving the sheet to its page, the web process told every document of
+  every page it holds to build its injected sheets again and resolve all
+  styles again (`WebUserContentController::addUserStyleSheets()`), although
+  a sheet for one page is in no other document's sheets. That also undid
+  any cheaper update of the page itself.
+
+Now a sheet for one page reaches only that page, and when it holds only
+style rules (also inside `@media` and `@supports`) and keyframes and comes
+last among the page's injected sheets, it is added to the existing resolver:
+the user rules are built again from the injected sheets, the resolvers'
+features collected again, and only elements the new sheet's selectors can
+match are restyled, in the document and in each shadow tree, as for a style
+sheet the page itself adds. A sheet whose selectors can match anything (one
+of uBlock's has such a rule) still restyles everything, but no resolver is
+rebuilt (Reddit: 379 shadow trees sharing 67 resolvers). Removing a sheet,
+and sheets with other rules (font faces, layers, imports), go the old way.
+`SUMMIT_INCREMENTAL_EXTENSION_CSS=0` goes the old way always; `=verify` then
+resolves everything the old way as well and reports each element for which
+21 properties (display, visibility, opacity, position, sizes, colours,
+transform, filter and others) came out different. On YouTube, Reddit, The
+Guardian, BBC News and GitHub that reported only a text field's placeholder
+(its width is set by layout) and a spinner in mid-rotation.
+
+Three alternated loads each with the owner's extensions, style resolution in
+the first 12 s:
+
+| | in place | old way |
+| --- | --- | --- |
+| YouTube | 510-524 ms | 671-716 ms |
+| Reddit | 1,501-1,628 ms | 1,194-1,675 ms |
+
+YouTube saves about 170 ms of main thread per load. On Reddit the
+difference is inside the spread of its loads (the page keeps building
+itself for seconds, and the sheet that matters there is the one that can
+match anything). The trace now says which way each sheet went and why.
+
+### Measured and not kept
+
+- **A wide blur made at a reduced size** (scale down by 2-8, blur, scale
+  back up) for the view-transition snapshots that YouTube's watch page paints
+  on the CPU: it looked the same and was slower, 165 ms against 136 ms a
+  frame for six blurred boxes at 200%. Skia's CPU blur already costs about
+  what the scaling does; the cost of those snapshots is the number of pixels
+  times the number of frames, not the blur's radius.
+- **Showing a page once it has drawn a skeleton** (six boxes with a
+  background of their own counting as "visually non-empty"): YouTube's home
+  page today has no such boxes before its first image, which is what shows
+  it; nothing changed and the rule was taken out again.
+  `SUMMIT_FIRST_SHOWN_TRACE=1` (kept) reports when a page had enough to be
+  shown in place of the one before it and what counted.
+
+The X399's boot volume could not take another bundle ("File too large" with
+10 GB free: too fragmented at 95% full). 435 bundles from earlier sessions
+were removed from `/boot/home/summit/build-modern-browser` (about 100 GB);
+the installed one, those the launcher backups name and the last few were
+kept.
+
 ## 3 October 2026 (evening): issue #22, YouTube with uBlock Origin
 
 The owner's report: YouTube's home page loads choppily, scrolls badly, and a
