@@ -51,7 +51,7 @@ COLLECT = ('(() => { const n = performance.getEntriesByType("navigation")[0]; co
            'load: n ? n.loadEventEnd : null, fcp: paint["first-contentful-paint"] ?? null, '
            'phases: n ? {fetch: n.fetchStart, redirectEnd: n.redirectEnd, dns: n.domainLookupStart, dnsEnd: n.domainLookupEnd, '
            'connect: n.connectStart, tls: n.secureConnectionStart, connectEnd: n.connectEnd, request: n.requestStart, '
-           'response: n.responseStart, responseEnd: n.responseEnd} : null, '
+           'response: n.responseStart, responseEnd: n.responseEnd, interactive: n.domInteractive, dclStart: n.domContentLoadedEventStart} : null, '
            'lcp: window.__pageload ? window.__pageload.lcp : null, lcpWhat: window.__pageload ? window.__pageload.lcpWhat : null, '
            'lcpAll: window.__pageload ? window.__pageload.lcpAll : null, '
            'resources: r.length, '
