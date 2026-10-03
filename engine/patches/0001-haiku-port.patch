@@ -71,6 +71,62 @@ index 630f6c989889b00e6c8817a819df1d9eed083d95..90dfd0dbc79faf617f61332f5248966a
          push(@args, qw(-E -P -x c++ -C -ffreestanding));
      }
  }
+diff --git a/Source/JavaScriptCore/interpreter/Interpreter.cpp b/Source/JavaScriptCore/interpreter/Interpreter.cpp
+index f8bf0d531b381426806cdb8a9ef29b975ba79b58..6827e7bb447ce7218c07852cdb88878035dbf52d 100644
+--- a/Source/JavaScriptCore/interpreter/Interpreter.cpp
++++ b/Source/JavaScriptCore/interpreter/Interpreter.cpp
+@@ -574,6 +574,19 @@ void Interpreter::getStackTrace(JSCell* owner, Vector<StackFrame>& results, size
+         return;
+ 
+     size_t skippedFrames = 0;
++#if PLATFORM(HAIKU)
++    // Grown by a quarter at a time, the vector was reallocated six times for
++    // a stack 60 calls deep, each time copying every frame (a Variant): a
++    // third of the cost of a thrown error. Doubling copies twice; a shallow
++    // stack keeps the usual first 16 (more room up front kept more memory
++    // per error alive and brought collections sooner).
++    auto makeRoom = [&] {
++        if (results.size() == results.capacity())
++            results.reserveCapacity(std::max<size_t>(16, results.capacity() * 2));
++    };
++#else
++    auto makeRoom = [] { };
++#endif
+ 
+     auto isImplementationVisibilityPrivate = [&](CodeBlock* codeBlock) {
+         if (auto* executable = codeBlock->ownerExecutable())
+@@ -593,6 +606,7 @@ void Interpreter::getStackTrace(JSCell* owner, Vector<StackFrame>& results, size
+         if (isImplementationVisibilityPrivate(codeBlock))
+             return IterationStatus::Continue;
+ 
++        makeRoom();
+         results.append(StackFrame(vm, owner, codeBlock, bytecodeIndex));
+         return IterationStatus::Continue;
+     };
+@@ -656,6 +670,7 @@ void Interpreter::getStackTrace(JSCell* owner, Vector<StackFrame>& results, size
+                 auto* nativeCallee = visitor->callee().asNativeCallee();
+                 switch (nativeCallee->category()) {
+                 case NativeCallee::Category::Wasm: {
++                    makeRoom();
+                     results.append(StackFrame(visitor->wasmFunctionIndexOrName(), visitor->wasmFunctionIndex()));
+                     break;
+                 }
+@@ -663,10 +678,13 @@ void Interpreter::getStackTrace(JSCell* owner, Vector<StackFrame>& results, size
+                     break;
+                 }
+                 }
+-            } else if (!!visitor->codeBlock() && !visitor->codeBlock()->unlinkedCodeBlock()->isBuiltinFunction())
++            } else if (!!visitor->codeBlock() && !visitor->codeBlock()->unlinkedCodeBlock()->isBuiltinFunction()) {
++                makeRoom();
+                 results.append(StackFrame(vm, owner, visitor->callee().asCell(), visitor->codeBlock(), visitor->bytecodeIndex()));
+-            else
++            } else {
++                makeRoom();
+                 results.append(StackFrame(vm, owner, visitor->callee().asCell()));
++            }
+ 
+             previousEntryFrame = currentEntryFrame;
+             previousEntryFrameStackTraceInsertPos = results.size();
 diff --git a/Source/JavaScriptCore/runtime/ArrayBuffer.cpp b/Source/JavaScriptCore/runtime/ArrayBuffer.cpp
 index 25e14419707ec277496523d826ac82e1b0183333..05c14e3340517b9b990d3e4df5b89a4ec2e72eb7 100644
 --- a/Source/JavaScriptCore/runtime/ArrayBuffer.cpp
@@ -243,6 +299,85 @@ index ad646d690356b4dd663520a5114b9ec374998025..72e69814f7921dd17711b0fdb8a50632
  
      static void* nullBasePointer();
  
+diff --git a/Source/JavaScriptCore/runtime/Exception.cpp b/Source/JavaScriptCore/runtime/Exception.cpp
+index dcb5b60fde3d0c9fa524712c5b6b3e68ccc8064a..260e6c459b7fe0a5ddbf289b27fdf3fc8241b296 100644
+--- a/Source/JavaScriptCore/runtime/Exception.cpp
++++ b/Source/JavaScriptCore/runtime/Exception.cpp
+@@ -26,12 +26,19 @@
+ #include "config.h"
+ #include "Exception.h"
+ 
++#include "ErrorInstance.h"
++
+ #include "Interpreter.h"
+ #include "JSCJSValueInlines.h"
+ #include "JSObjectInlines.h"
+ #include "StructureCreateInlines.h"
+ #include "JSWebAssemblyException.h"
+ #include "WasmTag.h"
++#if PLATFORM(HAIKU)
++#include "JSString.h"
++#include <cstdio>
++#include <cstdlib>
++#endif
+ 
+ namespace JSC {
+ 
+@@ -83,10 +90,53 @@ void Exception::finishCreation(VM& vm, StackCaptureAction action)
+     Base::finishCreation(vm);
+ 
+     Vector<StackFrame> stackTrace;
+-    if (action == StackCaptureAction::CaptureStack)
++    if (action == StackCaptureAction::CaptureStack) {
++#if PLATFORM(HAIKU)
++        // A thrown Error has just walked the stack for its own trace (a
++        // SyntaxError from JSON.parse, `throw new Error`): its frames serve
++        // the exception too, as Chrome reports an uncaught error with the
++        // stack of where it was made. Walking it twice made each throw from
++        // 60 calls deep cost 9 us; pages that throw by the thousand (a
++        // content blocker trying JSON.parse on every response, issue #22)
++        // spent most of a second in it.
++        auto* error = dynamicDowncast<ErrorInstance>(m_value.get());
++        if (auto* errorStack = error ? error->stackTrace() : nullptr; errorStack && !errorStack->isEmpty()) {
++            stackTrace.reserveInitialCapacity(std::min<size_t>(errorStack->size(), Options::exceptionStackTraceLimit()));
++            for (auto& frame : *errorStack) {
++                if (stackTrace.size() >= Options::exceptionStackTraceLimit())
++                    break;
++                stackTrace.append(frame);
++            }
++            vm.writeBarrier(this);
++        } else
++#endif
+         vm.interpreter.getStackTrace(this, stackTrace, 0, Options::exceptionStackTraceLimit());
++    }
+     m_stack = WTF::move(stackTrace);
+     vm.heap.reportExtraMemoryAllocated(this, m_stack.sizeInBytes());
++#if PLATFORM(HAIKU)
++    // SUMMIT_JS_THROW_TRACE=N: every Nth exception thrown in this process,
++    // with its value and where it was thrown (pages that throw thousands).
++    static const unsigned traceEvery = [] {
++        const char* value = getenv("SUMMIT_JS_THROW_TRACE");
++        return value ? static_cast<unsigned>(strtoul(value, nullptr, 10)) : 0u;
++    }();
++    if (traceEvery) [[unlikely]] {
++        static unsigned thrown;
++        if (!(++thrown % traceEvery)) {
++            String name = "value"_s;
++            String value;
++            if (auto* error = dynamicDowncast<ErrorInstance>(m_value.get())) {
++                name = error->sanitizedNameString(error->realm());
++                value = error->sanitizedMessageString(error->realm());
++            } else if (m_value.get().isString())
++                value = asString(m_value.get())->tryGetValue();
++            fprintf(stderr, "Summit throw: %u thrown, %s: %s\n", thrown, name.utf8().legacyCStringPointer(), value.left(120).utf8().legacyCStringPointer());
++            for (size_t i = 0; i < m_stack.size() && i < 24; ++i)
++                fprintf(stderr, "Summit throw:   %s\n", m_stack[i].toString(vm).left(200).utf8().legacyCStringPointer());
++        }
++    }
++#endif
+ }
+ 
+ #if ENABLE(WEBASSEMBLY)
 diff --git a/Source/JavaScriptCore/runtime/JSCBytecodeCacheVersion.cpp b/Source/JavaScriptCore/runtime/JSCBytecodeCacheVersion.cpp
 index 26e825ace464f1e32e50b5c6a0a4d57d573779b9..fa4b4d7426a4fc3121651814b34db1041cc199b0 100644
 --- a/Source/JavaScriptCore/runtime/JSCBytecodeCacheVersion.cpp
@@ -275,6 +410,29 @@ index 2ac8b24f00e624acb564a0e11fd2437b5f02a99c..fd988cc36ef755a0e2d5939eb54141af
  #elif OS(FREEBSD)
  
  #if CPU(X86_64)
+diff --git a/Source/JavaScriptCore/runtime/ProxyObject.cpp b/Source/JavaScriptCore/runtime/ProxyObject.cpp
+index 22302e4f55593a311a60a15f80f7d75ade40db76..6f0938043e9cc7eb5202df3d189d587d935d04bf 100644
+--- a/Source/JavaScriptCore/runtime/ProxyObject.cpp
++++ b/Source/JavaScriptCore/runtime/ProxyObject.cpp
+@@ -618,7 +618,18 @@ JSC_DEFINE_HOST_FUNCTION(performProxyCall, (JSGlobalObject* globalObject, CallFr
+ 
+     JSObject* handler = uncheckedDowncast<JSObject>(handlerValue);
+     CallData callData;
++#if PLATFORM(HAIKU)
++    // The name was made an atom string again on every call: a quarter of a
++    // call through a Proxy, which content blockers put around JSON.parse,
++    // fetch and the like (issue #22). Atoms belong to their thread's table,
++    // so each thread keeps its own (and a reference, so it stays an atom).
++    static thread_local AtomStringImpl* applyAtom;
++    if (!applyAtom) [[unlikely]]
++        applyAtom = makeIdentifier(vm, "apply"_s).releaseImpl().leakRef();
++    JSValue applyMethod = handler->getMethod(globalObject, callData, Identifier::fromString(vm, applyAtom), "'apply' property of a Proxy's handler should be callable"_s);
++#else
+     JSValue applyMethod = handler->getMethod(globalObject, callData, makeIdentifier(vm, "apply"_s), "'apply' property of a Proxy's handler should be callable"_s);
++#endif
+     RETURN_IF_EXCEPTION(scope, encodedJSValue());
+     JSObject* target = proxy->target();
+     if (applyMethod.isUndefined()) {
 diff --git a/Source/JavaScriptCore/wasm/WasmMemory.cpp b/Source/JavaScriptCore/wasm/WasmMemory.cpp
 index 769678502c06430b29cf59cddec450b1ca7f78d4..6233d267ce38a3ba0391a9ddab357e26103cd349 100644
 --- a/Source/JavaScriptCore/wasm/WasmMemory.cpp
@@ -2940,10 +3098,10 @@ index df84a17d3df79ad454e6c7d8131ae0aa5af31256..f4d777f62a4c728ad955d80df67a2ee8
          , m_cachedScript(cachedScript)
 diff --git a/Source/WebCore/bindings/js/CachedScriptSourceProviderHaiku.cpp b/Source/WebCore/bindings/js/CachedScriptSourceProviderHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..b5e75133f2f6fab940170d71c9adb63d7e96aa13
+index 0000000000000000000000000000000000000000..2cbba0878aaad1a4ce5264b3482e4e18f45270e7
 --- /dev/null
 +++ b/Source/WebCore/bindings/js/CachedScriptSourceProviderHaiku.cpp
-@@ -0,0 +1,400 @@
+@@ -0,0 +1,434 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#include "config.h"
 +#include "CachedScriptSourceProvider.h"
@@ -2969,6 +3127,7 @@ index 0000000000000000000000000000000000000000..b5e75133f2f6fab940170d71c9adb63d
 +#include <sys/stat.h>
 +#include <unistd.h>
 +#include <utime.h>
++#include <wtf/Deque.h>
 +#include <wtf/FileHandle.h>
 +#include <wtf/FileSystem.h>
 +#include <wtf/HashSet.h>
@@ -3229,14 +3388,57 @@ index 0000000000000000000000000000000000000000..b5e75133f2f6fab940170d71c9adb63d
 +}
 +
 +// Main thread: providers whose functions are being encoded a few
-+// milliseconds at a time (commitStepHaiku()), and whether one of them is
-+// writing its file now.
++// milliseconds at a time, one after the other.
 +static HashSet<const void*>& committingProvidersHaiku()
 +{
 +    static NeverDestroyed<HashSet<const void*>> providers;
 +    return providers.get();
 +}
-+static bool s_writingBytecodeHaiku { false };
++static Deque<Ref<const CachedScriptSourceProvider>>& commitQueueHaiku()
++{
++    static NeverDestroyed<Deque<Ref<const CachedScriptSourceProvider>>> queue;
++    return queue.get();
++}
++static bool s_commitStepScheduledHaiku { false };
++
++// Encoding is work for when the page has nothing better to do. Run back to
++// back, the 4 ms slices took YouTube's main thread for 580-700 ms of the
++// seconds in which its home page was still filling in (issue #22). The next
++// slice waits at least 12 ms, so encoding takes a quarter of the main thread
++// at most, and twice as long each time a slice ran late (the main thread was
++// busy with the page), up to half a second; on time again, the pause halves.
++static Seconds s_commitPauseHaiku { 12_ms };
++static constexpr Seconds minimumCommitPauseHaiku { 12_ms };
++static constexpr Seconds maximumCommitPauseHaiku { 500_ms };
++
++static void scheduleCommitStepHaiku()
++{
++    if (s_commitStepScheduledHaiku || commitQueueHaiku().isEmpty())
++        return;
++    s_commitStepScheduledHaiku = true;
++    auto due = MonotonicTime::now() + s_commitPauseHaiku;
++    RunLoop::mainSingleton().dispatchAfter(s_commitPauseHaiku, [due] {
++        s_commitStepScheduledHaiku = false;
++        if (MonotonicTime::now() - due > 8_ms)
++            s_commitPauseHaiku = std::min(s_commitPauseHaiku * 2, maximumCommitPauseHaiku);
++        else
++            s_commitPauseHaiku = std::max(s_commitPauseHaiku / 2, minimumCommitPauseHaiku);
++        if (commitQueueHaiku().isEmpty())
++            return;
++        // One slice of encoding; the file is written once all is encoded.
++        Ref provider = commitQueueHaiku().first();
++        provider->commitCachedBytecode();
++        scheduleCommitStepHaiku();
++    });
++}
++
++static void queueCommitHaiku(const CachedScriptSourceProvider& provider)
++{
++    if (!committingProvidersHaiku().add(&provider).isNewEntry)
++        return;
++    commitQueueHaiku().append(provider);
++    scheduleCommitStepHaiku();
++}
 +
 +void CachedScriptSourceProvider::commitCachedBytecode() const
 +{
@@ -3246,14 +3448,12 @@ index 0000000000000000000000000000000000000000..b5e75133f2f6fab940170d71c9adb63d
 +    // since then right there (about 70 us each) held the main thread for 2.7
 +    // to 3.7 s on Reddit, whose scripts compile thousands (issue #20): what
 +    // a few milliseconds do not finish is encoded between other work.
-+    if (!s_writingBytecodeHaiku && !encodePendingFunctionsHaiku(4)) {
-+        if (committingProvidersHaiku().add(this).isNewEntry) {
-+            RunLoop::mainSingleton().dispatch([protectedThis = Ref { *this }] {
-+                protectedThis->commitStepHaiku();
-+            });
-+        }
++    if (!encodePendingFunctionsHaiku(4)) {
++        queueCommitHaiku(*this);
 +        return;
 +    }
++    if (committingProvidersHaiku().remove(this))
++        commitQueueHaiku().removeFirstMatching([this](auto& provider) { return provider.ptr() == this; });
 +    // Once per provider: functions compiled after this are written by the
 +    // next visit, which reads this file.
 +    encodePendingFunctionsHaiku(std::numeric_limits<double>::infinity());
@@ -3321,23 +3521,15 @@ index 0000000000000000000000000000000000000000..b5e75133f2f6fab940170d71c9adb63d
 +        return;
 +    m_bytecodeCommitScheduledHaiku = true;
 +    RunLoop::mainSingleton().dispatchAfter(commitDelayHaiku, [protectedThis = Ref { *this }] {
-+        if (committingProvidersHaiku().add(protectedThis.ptr()).isNewEntry)
-+            protectedThis->commitStepHaiku();
++        queueCommitHaiku(protectedThis.get());
 +    });
 +}
 +
-+// The functions are encoded a few milliseconds at a time between the main
-+// loop's other work, then the file is written.
++// No longer used: the functions are encoded a few milliseconds at a time
++// between the main loop's other work by scheduleCommitStepHaiku(), which
++// calls commitCachedBytecode() for each slice.
 +void CachedScriptSourceProvider::commitStepHaiku() const
 +{
-+    if (!encodePendingFunctionsHaiku(4)) {
-+        RunLoop::mainSingleton().dispatch([protectedThis = Ref { *this }] {
-+            protectedThis->commitStepHaiku();
-+        });
-+        return;
-+    }
-+    committingProvidersHaiku().remove(this);
-+    SetForScope writing(s_writingBytecodeHaiku, true);
 +    commitCachedBytecode();
 +}
 +
@@ -38392,7 +38584,7 @@ index 2afa30a728be0cfee042ff40e4c591c0647c7531..b562096a3ec665a30771357ee0e1dd40
 +#endif
  }
 diff --git a/Source/WebKit/NetworkProcess/NetworkResourceLoader.cpp b/Source/WebKit/NetworkProcess/NetworkResourceLoader.cpp
-index 4bed05b3670522d93770c3331d578642cc934eee..d0d3f9379d33e725c7732cab942f501e0a726c4b 100644
+index 4bed05b3670522d93770c3331d578642cc934eee..660d7a6a0b962cf267da65698ab84353bd8e6a94 100644
 --- a/Source/WebKit/NetworkProcess/NetworkResourceLoader.cpp
 +++ b/Source/WebKit/NetworkProcess/NetworkResourceLoader.cpp
 @@ -110,6 +110,14 @@
@@ -38446,7 +38638,7 @@ index 4bed05b3670522d93770c3331d578642cc934eee..d0d3f9379d33e725c7732cab942f501e
  
          if (!entry) {
              protectedThis->startNetworkLoad(WTF::move(request), FirstLoad::Yes);
-@@ -517,6 +540,147 @@ void NetworkResourceLoader::startNetworkLoad(ResourceRequest&& request, FirstLoa
+@@ -517,6 +540,160 @@ void NetworkResourceLoader::startNetworkLoad(ResourceRequest&& request, FirstLoa
          LOADER_RELEASE_LOG("startNetworkLoad: Going to the network (description=%" PUBLIC_LOG_STRING ")", networkLoad->description().utf8().legacyCStringPointer());
  }
  
@@ -38481,6 +38673,19 @@ index 4bed05b3670522d93770c3331d578642cc934eee..d0d3f9379d33e725c7732cab942f501e
 +    RefPtr connection = protect(connectionToWebProcess().networkProcess())->parentProcessConnection();
 +    if (!connection)
 +        return completionHandler({ });
++    // SUMMIT_WEBREQUEST_TRACE=1: how long each blocking decision took (the
++    // request waits for the UI process and every extension's listeners).
++    static const bool traceDecisions = [] {
++        const char* value = getenv("SUMMIT_WEBREQUEST_TRACE");
++        return value && !strcmp(value, "1");
++    }();
++    if (traceDecisions) {
++        completionHandler = [completionHandler = WTF::move(completionHandler), phase, start = MonotonicTime::now(), url = request.url().string().left(100).isolatedCopy()](WebExtensionWebRequestGateResultHaiku&& result) mutable {
++            fprintf(stderr, "Summit webRequest: [%.3f] phase %u %.1f ms%s %s\n", MonotonicTime::now().secondsSinceEpoch().seconds(), phase,
++                (MonotonicTime::now() - start).milliseconds(), result.cancel ? " cancel" : "", url.utf8().legacyCStringPointer());
++            completionHandler(WTF::move(result));
++        };
++    }
 +    // The UI process always replies, at the latest after its listener timeout;
 +    // a closed connection replies with an empty (fail-open) result.
 +    connection->sendWithAsyncReply(Messages::NetworkProcessProxy::ResourceLoadWebRequestDecisionHaiku(webPageProxyID(), phase, loadInfo, request, httpBody,
@@ -38594,7 +38799,7 @@ index 4bed05b3670522d93770c3331d578642cc934eee..d0d3f9379d33e725c7732cab942f501e
  ResourceLoadInfo NetworkResourceLoader::resourceLoadInfo()
  {
      auto loadedFromCache = [] (const ResourceResponse& response) {
-@@ -1042,7 +1206,7 @@ ResourceRequest NetworkResourceLoader::constructPreconnectRequest(const Resource
+@@ -1042,7 +1219,7 @@ ResourceRequest NetworkResourceLoader::constructPreconnectRequest(const Resource
  
  void NetworkResourceLoader::startPreconnectTask(const URL& baseURL, const LinkHeader& header, const ContentSecurityPolicy& contentSecurityPolicy)
  {
@@ -38603,7 +38808,7 @@ index 4bed05b3670522d93770c3331d578642cc934eee..d0d3f9379d33e725c7732cab942f501e
      if (!parameters().linkPreconnectEarlyHintsEnabled)
          return;
  
-@@ -1081,6 +1245,46 @@ void NetworkResourceLoader::startPreconnectTask(const URL& baseURL, const LinkHe
+@@ -1081,6 +1258,46 @@ void NetworkResourceLoader::startPreconnectTask(const URL& baseURL, const LinkHe
  
  void NetworkResourceLoader::didReceiveResponse(ResourceResponse&& receivedResponse, PrivateRelayed privateRelayed, ResponseCompletionHandler&& completionHandler)
  {
@@ -38650,7 +38855,7 @@ index 4bed05b3670522d93770c3331d578642cc934eee..d0d3f9379d33e725c7732cab942f501e
  #if HAVE(BROKEN_MULTIPART_RESPONSE_FLOW_CONTROL)
      if (m_isProcessingResponse) {
          m_deferredMessages.append(DeferredResponse { WTF::move(receivedResponse), privateRelayed, WTF::move(completionHandler) });
-@@ -1521,6 +1725,32 @@ void NetworkResourceLoader::didReceiveChallenge(const AuthenticationChallenge& c
+@@ -1521,6 +1738,32 @@ void NetworkResourceLoader::didReceiveChallenge(const AuthenticationChallenge& c
          protect(connectionToWebProcess().networkProcess())->parentProcessConnection()->send(Messages::NetworkProcessProxy::ResourceLoadDidReceiveChallenge(webPageProxyID(), resourceLoadInfo(), challenge), 0);
  }
  
@@ -38683,7 +38888,7 @@ index 4bed05b3670522d93770c3331d578642cc934eee..d0d3f9379d33e725c7732cab942f501e
  std::optional<Seconds> NetworkResourceLoader::validateCacheEntryForMaxAgeCapValidation(const ResourceRequest& request, const ResourceRequest& redirectRequest, const ResourceResponse& redirectResponse)
  {
      bool existingCacheEntryMatchesNewResponse = false;
-@@ -1778,6 +2008,15 @@ void NetworkResourceLoader::restartNetworkLoad(WebCore::ResourceRequest&& newReq
+@@ -1778,6 +2021,15 @@ void NetworkResourceLoader::restartNetworkLoad(WebCore::ResourceRequest&& newReq
  
      completionHandler({ });
  
@@ -38699,7 +38904,7 @@ index 4bed05b3670522d93770c3331d578642cc934eee..d0d3f9379d33e725c7732cab942f501e
      if (!newRequest.isEmpty())
          startNetworkLoad(WTF::move(newRequest), FirstLoad::No);
  }
-@@ -1866,6 +2105,18 @@ void NetworkResourceLoader::continueWillSendRequest(ResourceRequest&& newRequest
+@@ -1866,6 +2118,18 @@ void NetworkResourceLoader::continueWillSendRequest(ResourceRequest&& newRequest
          LOG(NetworkCache, "(NetworkProcess) Retrieving cached redirect");
          LOADER_RELEASE_LOG("continueWillSendRequest: m_isWaitingContinueWillSendRequestForCachedRedirect was set");
  
@@ -38718,7 +38923,7 @@ index 4bed05b3670522d93770c3331d578642cc934eee..d0d3f9379d33e725c7732cab942f501e
          if (canUseCachedRedirect(newRequest))
              retrieveCacheEntry(newRequest);
          else
-@@ -1876,6 +2127,27 @@ void NetworkResourceLoader::continueWillSendRequest(ResourceRequest&& newRequest
+@@ -1876,6 +2140,27 @@ void NetworkResourceLoader::continueWillSendRequest(ResourceRequest&& newRequest
      if (m_networkLoad) {
          LOADER_RELEASE_LOG("continueWillSendRequest: Telling NetworkLoad to proceed with the redirect");
  
@@ -97928,10 +98133,10 @@ index 7e5207762fe78057c1b72f80bc18bf9bdd0042e6..66bccd011c8a0fe507b96c85b2322b68
      // Windows
      DispatchWindowsEvent(WebKit::WebExtensionEventListenerType type, std::optional<WebKit::WebExtensionWindowParameters> windowParameters)
 diff --git a/Source/WebKit/WebProcess/Extensions/WebExtensionControllerProxy.cpp b/Source/WebKit/WebProcess/Extensions/WebExtensionControllerProxy.cpp
-index 83216ed3967b6cdc9fa10e8588406734a4be6426..e8ada5331818c89dbd53161124cb56c38cd0f32f 100644
+index 83216ed3967b6cdc9fa10e8588406734a4be6426..c9cc88681b3813584fbc5bbdd6f8a244ce880a18 100644
 --- a/Source/WebKit/WebProcess/Extensions/WebExtensionControllerProxy.cpp
 +++ b/Source/WebKit/WebProcess/Extensions/WebExtensionControllerProxy.cpp
-@@ -28,11 +28,21 @@
+@@ -28,11 +28,27 @@
  
  #if ENABLE(WK_WEB_EXTENSIONS)
  
@@ -97950,10 +98155,16 @@ index 83216ed3967b6cdc9fa10e8588406734a4be6426..e8ada5331818c89dbd53161124cb56c3
  #include "WebProcess.h"
 +#include <JavaScriptCore/APICast.h>
 +#include <WebCore/JSDOMGlobalObject.h>
++#if PLATFORM(HAIKU)
++#include <JavaScriptCore/JSCInlines.h>
++#include <JavaScriptCore/TopExceptionScope.h>
++#include <WebCore/LocalFrame.h>
++#include <WebCore/ScriptController.h>
++#endif
  #include <wtf/HashMap.h>
  #include <wtf/NeverDestroyed.h>
  #include <wtf/TZoneMallocInlines.h>
-@@ -138,12 +148,203 @@ RefPtr<WebExtensionContextProxy> WebExtensionControllerProxy::extensionContext(W
+@@ -138,12 +154,316 @@ RefPtr<WebExtensionContextProxy> WebExtensionControllerProxy::extensionContext(W
  
          auto prefixLength = prefix.length();
          auto uniqueIdentifier = world.name().substring(prefixLength);
@@ -97971,6 +98182,114 @@ index 83216ed3967b6cdc9fa10e8588406734a4be6426..e8ada5331818c89dbd53161124cb56c3
      return extensionContext(frame.url());
  }
  
++#if PLATFORM(HAIKU)
++// Firefox gives content scripts the page's own window as
++// window.wrappedJSObject. uBlock Origin's Firefox build looks there for the
++// sentinel its injected scriptlets set in the page before it records them as
++// injected; without the object the check threw, nothing was recorded, and
++// each later trigger (response headers, navigation committed, the content
++// script starting) injected them again. On YouTube that stacked the same
++// JSON.stringify trap five deep, each layer calling through the others: a
++// SyntaxError thrown and caught 2^5 times per call, 126,000 a second
++// (issue #22). This one reads, writes, tests and deletes the page's global
++// properties with plain values only (strings, numbers, booleans, null,
++// undefined); the page's objects stay in the page's world.
++struct PageWorldBridgeHaiku {
++    WebCore::FrameIdentifier frameID;
++};
++
++static JSValueRef pageWorldBridgeHaiku(JSContextRef context, JSObjectRef function, JSObjectRef, size_t argumentCount, const JSValueRef arguments[], JSValueRef*)
++{
++    auto* globalObject = toJS(context);
++    auto& vm = globalObject->vm();
++    JSC::JSLockHolder lock(vm);
++    auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
++    JSValueRef result = JSValueMakeUndefined(context);
++    auto* bridge = static_cast<PageWorldBridgeHaiku*>(JSObjectGetPrivate(function));
++    RefPtr webFrame = bridge ? WebProcess::singleton().webFrame(bridge->frameID) : nullptr;
++    RefPtr frame = webFrame ? webFrame->coreLocalFrame() : nullptr;
++    auto* pageGlobalObject = frame ? frame->script().globalObject(WebCore::mainThreadNormalWorldSingleton()) : nullptr;
++    if (!pageGlobalObject || argumentCount < 2)
++        return result;
++    JSC::JSValue nameValue = toJS(globalObject, arguments[1]);
++    if (!nameValue.isString())
++        return result;
++    auto name = asString(nameValue)->value(globalObject);
++    if (scope.exception()) [[unlikely]] {
++        scope.clearException();
++        return result;
++    }
++    auto identifier = JSC::Identifier::fromString(vm, name.data);
++    auto isPlain = [](JSC::JSValue value) {
++        return !value.isCell() || value.isString();
++    };
++    JSC::JSValue operation = toJS(globalObject, arguments[0]);
++    switch (operation.isInt32() ? operation.asInt32() : -1) {
++    case 0: {
++        JSC::JSValue value = pageGlobalObject->get(pageGlobalObject, identifier);
++        if (!scope.exception() && isPlain(value))
++            result = toRef(globalObject, value);
++        break;
++    }
++    case 1: {
++        JSC::JSValue value = argumentCount > 2 ? toJS(globalObject, arguments[2]) : JSC::jsUndefined();
++        if (isPlain(value)) {
++            JSC::PutPropertySlot slot(pageGlobalObject);
++            pageGlobalObject->methodTable()->put(pageGlobalObject, pageGlobalObject, identifier, value, slot);
++        }
++        result = JSValueMakeBoolean(context, true);
++        break;
++    }
++    case 2:
++        result = JSValueMakeBoolean(context, pageGlobalObject->hasProperty(pageGlobalObject, identifier));
++        break;
++    case 3: {
++        JSC::DeletePropertySlot slot;
++        pageGlobalObject->methodTable()->deleteProperty(pageGlobalObject, pageGlobalObject, identifier, slot);
++        result = JSValueMakeBoolean(context, true);
++        break;
++    }
++    }
++    scope.clearException();
++    return result;
++}
++
++static void installWrappedJSObjectHaiku(JSContextRef context, JSObjectRef globalObject, WebFrame& frame)
++{
++    static JSClassRef bridgeClass = [] {
++        JSClassDefinition definition = kJSClassDefinitionEmpty;
++        definition.className = "SummitPageWorld";
++        definition.callAsFunction = pageWorldBridgeHaiku;
++        definition.finalize = [](JSObjectRef object) {
++            delete static_cast<PageWorldBridgeHaiku*>(JSObjectGetPrivate(object));
++        };
++        return JSClassCreate(&definition);
++    }();
++    JSRetainPtr name = toJSString("wrappedJSObject"_s);
++    if (!name)
++        return;
++    JSRetainPtr factorySource = toJSString(
++        "(function(bridge) {"
++        "  return new Proxy({}, {"
++        "    get(target, name) { return typeof name === 'string' ? bridge(0, name) : undefined; },"
++        "    set(target, name, value) { if (typeof name === 'string') bridge(1, name, value); return true; },"
++        "    has(target, name) { return typeof name === 'string' && bridge(2, name); },"
++        "    deleteProperty(target, name) { if (typeof name === 'string') bridge(3, name); return true; },"
++        "  });"
++        "})"_s);
++    if (!factorySource)
++        return;
++    JSValueRef factory = JSEvaluateScript(context, factorySource.get(), nullptr, nullptr, 1, nullptr);
++    if (!factory || !JSValueIsObject(context, factory))
++        return;
++    JSValueRef bridge = JSObjectMake(context, bridgeClass, new PageWorldBridgeHaiku { frame.frameID() });
++    JSValueRef proxy = JSObjectCallAsFunction(context, const_cast<JSObjectRef>(factory), nullptr, 1, &bridge, nullptr);
++    if (!proxy)
++        return;
++    JSObjectSetProperty(context, globalObject, name.get(), proxy, kJSPropertyAttributeDontEnum, nullptr);
++}
++#endif
++
 +void WebExtensionControllerProxy::globalObjectIsAvailableForFrame(WebPage& page, WebFrame& frame, DOMWrapperWorld& world)
 +{
 +    RefPtr extension = extensionContext(frame, world);
@@ -98019,6 +98338,11 @@ index 83216ed3967b6cdc9fa10e8588406734a4be6426..e8ada5331818c89dbd53161124cb56c3
 +        // This is a safer cpp false positive (rdar://163760990).
 +        SUPPRESS_UNCOUNTED_ARG JSObjectSetProperty(context, globalObject, chromeString.get(), namespaceObject, kJSPropertyAttributeNone, nullptr);
 +    }
++
++#if PLATFORM(HAIKU)
++    if (contentWorldType == WebExtensionContentWorldType::ContentScript)
++        installWrappedJSObjectHaiku(context, globalObject, frame);
++#endif
 +
 +    if (auto* domGlobalObject = dynamicDowncast<JSDOMGlobalObject>(toJS(context))) {
 +        domGlobalObject->addScriptErrorCallback([extension = Ref { *extension }, contentWorldType](const String& message, const String& sourceURL, unsigned lineNumber, unsigned columnNumber) {

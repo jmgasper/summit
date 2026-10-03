@@ -1106,6 +1106,13 @@ int main()
     // browser), not by its launcher: take the launcher's environment.
     summit::ApplyLaunchEnvironment();
     PrepareResolver();
+    // Pages get 10 frames in error.stack, as in Chrome, not JavaScriptCore's
+    // 100: every error walks the stack that far when it is made. One of
+    // uBlock Origin's YouTube filters traps JSON.stringify and, for a value
+    // that does not serialize, throws and catches a SyntaxError: 1.6 million
+    // in 80 s of YouTube (issue #22). The web processes inherit this; set it
+    // to override.
+    setenv("JSC_defaultErrorStackTraceLimit", "10", 0);
     // The application thread runs WebKit's main loop: every frame, input
     // reply and IPC message of every tab passes through it. Under the load of
     // many tabs it competes with dozens of web processes, so it runs at the

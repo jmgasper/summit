@@ -1,0 +1,41 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>proxy-calls</title>
+<!-- What a function wrapped in a Proxy costs per call, as uBlock Origin's
+     scriptlets wrap JSON.parse, fetch and others on YouTube. The result is
+     in the title: "proxy-calls plain=N proxy=N ..." (nanoseconds per call; json and
+     jsonProxy are milliseconds per 1 MB document; throw* and badParse* are
+     a thrown Error and a failed JSON.parse, with the stack 60 calls deep
+     for the *Deep ones). -->
+<pre id="out"></pre>
+<script>
+function bench(label, f, n) {
+    f(100);
+    const start = performance.now();
+    f(n);
+    return (performance.now() - start) * 1e6 / n;
+}
+function target(a, b) { return a + b; }
+const proxied = new Proxy(target, { apply(t, self, args) { return t.apply(self, args); } });
+const reflected = new Proxy(target, { apply(t, self, args) { return Reflect.apply(t, self, args); } });
+const results = {};
+results.plain = bench('plain', n => { let s = 0; for (let i = 0; i < n; ++i) s += target(i, 1); return s; }, 2e6);
+results.proxy = bench('proxy', n => { let s = 0; for (let i = 0; i < n; ++i) s += proxied(i, 1); return s; }, 2e6);
+results.reflect = bench('reflect', n => { let s = 0; for (let i = 0; i < n; ++i) s += reflected(i, 1); return s; }, 2e6);
+const doc = JSON.stringify({ items: Array.from({ length: 6000 }, (_, i) => ({ id: i, title: 'video ' + i, thumbnails: [{ url: 'https://i.ytimg.com/vi/' + i + '/hq.jpg', width: 480, height: 360 }], runs: [{ text: 'channel ' + (i % 50) }], flags: { live: false, short: i % 7 === 0 } })) });
+const parse = JSON.parse;
+const parseProxy = new Proxy(JSON.parse, { apply(t, self, args) { return Reflect.apply(t, self, args); } });
+results.json = bench('json', n => { for (let i = 0; i < n; ++i) parse(doc); }, 20) / 1e6;
+results.jsonProxy = bench('jsonProxy', n => { for (let i = 0; i < n; ++i) parseProxy(doc); }, 20) / 1e6;
+results.size = doc.length;
+// A failed JSON.parse throws a SyntaxError, which records the stack.
+function deep(depth, f) { return depth ? deep(depth - 1, f) + 0 : f(); }
+const badJSON = 'ytcfg.set({"x": 1});' + 'a'.repeat(200);
+results.throwShallow = bench('throwShallow', n => { for (let i = 0; i < n; ++i) { try { throw new Error('x'); } catch (e) { } } }, 20000);
+results.throwDeep = bench('throwDeep', n => deep(60, () => { for (let i = 0; i < n; ++i) { try { throw new Error('x'); } catch (e) { } } return 0; }), 20000);
+results.badParse = bench('badParse', n => { for (let i = 0; i < n; ++i) { try { JSON.parse(badJSON); } catch (e) { } } }, 20000);
+results.badParseDeep = bench('badParseDeep', n => deep(60, () => { for (let i = 0; i < n; ++i) { try { parseProxy(badJSON); } catch (e) { } } return 0; }), 20000);
+const text = 'proxy-calls ' + Object.entries(results).map(([k, v]) => k + '=' + (Math.round(v * 10) / 10)).join(' ');
+document.getElementById('out').textContent = text;
+document.title = text;
+</script>
