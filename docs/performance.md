@@ -1,5 +1,92 @@
 # Summit performance: Speedometer 3.1 baseline, where the time goes, stress test
 
+## 3 October 2026 (evening): issue #22, YouTube with uBlock Origin
+
+The owner's report: YouTube's home page loads choppily, scrolls badly, and a
+video clicked on it starts after a long pause. Measured on the X399 with
+copies of the owner's profile (uBlock Origin 1.75.0 and 1Password, Firefox
+builds), a fresh browser per run, a scripted click on the first thumbnail.
+
+**Not a Summit regression.** The build of 2 October evening
+(bundle-ywvpzj7_) did no better than the installed one: three alternated
+rounds each, click to first video frame 2.65-3.47 s against 2.35-2.82 s.
+
+**The extensions.** Click to first video frame, by profile:
+
+| extensions | click to first frame |
+| --- | --- |
+| none | 0.66-0.79 s |
+| 1Password only | 1.0-1.8 s |
+| uBlock Origin only | 3.2-10.7 s |
+| both | 2.5-2.8 s |
+
+uBlock's blocking webRequest decisions were not it (1-3 ms each,
+`SUMMIT_WEBREQUEST_TRACE=1`). The page's main thread was: in the 5 s after a
+click, 1.4 s in calls through Proxies, 1.0 s in `JSON.parse`, 0.7 s
+recording stacks for thrown errors. `SUMMIT_JS_THROW_TRACE=N` (every Nth
+exception with its stack) found 1.6 million SyntaxErrors in an 80 s run,
+126,000 a second after the click and 54,000 a second while the video
+played: `JSON.parse(undefined)` inside uBlock's `editObj`.
+
+**Cause.** One of uBlock's YouTube filters,
+`trusted-edit-inbound-object, JSON.stringify, 0, ...`, traps
+`JSON.stringify` and clones each argument with `JSON.parse(JSON.stringify(x))`,
+catching the error when the value does not serialize. That costs one error
+per call, as designed. But uBlock's Firefox build checks that its scriptlets
+ran in the page through `self.wrappedJSObject[sentinel]` before it records
+them as injected (`uBO_scriptletsInjected`), and Summit's content scripts had
+no `wrappedJSObject`. The check threw, nothing was recorded, and each later
+trigger (response headers, navigation committed, the content script
+starting) injected the scriptlets again. Every injection wrapped
+`JSON.stringify` once more, and each layer's "safe" `JSON.stringify` was the
+layer below: 2^N errors per call. That this showed now is likely a filter
+list update, not a browser change.
+
+**Fixes** (commit d633372 and the bundle installed with it):
+
+- Content scripts get a `wrappedJSObject` (WebExtensionControllerProxy):
+  a Proxy whose reads, writes, `in` and `delete` reach the page's global
+  object, with plain values only (strings, numbers, booleans, null,
+  undefined); the page's objects never cross into the extension's world.
+  uBlock now injects once: 35,000 errors in a run instead of 320,000 to
+  1.6 million. (1Password only tests for `cloneInto`, which is still absent.)
+- Errors are cheaper: an exception reuses the frames its Error recorded
+  instead of walking the stack again; the frame vector doubles instead of
+  growing by a quarter (six copies of every frame for a stack 60 deep);
+  Summit gives pages 10 frames in `error.stack`, as Chrome does
+  (`JSC_defaultErrorStackTraceLimit=10`, set in `main()` unless already set).
+  A throw-and-catch loop 60 calls deep: 1.25 million in 12 s before, 6.7
+  million after.
+- A call through a Proxy no longer makes "apply" an atom string each time
+  (a quarter of the call; 259 -> 236 ns, `tools/bench/pages/proxy-calls.html`).
+- The bytecode cache (3 October morning) encoded its functions in 4 ms slices
+  back to back, 570-700 ms of YouTube's main thread while the home page was
+  still filling in. Slices now wait at least 12 ms after each other, twice as
+  long each time one ran late (up to half a second).
+
+With both extensions, three alternated rounds:
+
+| | click to player | click to playback start |
+| --- | --- | --- |
+| installed build (bundle-6hq57edu) | 1.88-2.20 s | 2.77-3.30 s |
+| this build | 1.49-1.59 s | 2.01-2.77 s (2.77: a seek to 75 s first) |
+
+What is left: uBlock's four `JSON.stringify` traps (one per filter) still
+throw once each per call, and its JSON-path filters walk YouTube's request
+objects (as fast as V8 on this machine: 180 us vs 107 us per small object).
+1Password still adds 0.3-1 s to a click. YouTube's watch page also starts a
+view transition, whose snapshots WebKit paints on the CPU at 200% with the
+ambient-mode blur, 0.6-0.8 s of main thread per click
+(`ViewTransition::updatePseudoElementRenderers` snapshots the new state every
+frame when the capture clips its overflow; `ImageBufferSkiaAcceleratedBackend`
+gives GPU buffers to canvases only). Turning view transitions off did not
+bring the first frame sooner (1.39 vs 1.43 s), so it is a smoothness item for
+later, not the start delay.
+
+Issues #23 (Netflix) and #24 (Disney+) need Encrypted Media Extensions with a
+licensed DRM module; Summit has neither, and Widevine's license does not allow
+using it without an agreement with Google. Nothing was built for them.
+
 ## 3 October 2026 (afternoon): issues #19, #20 and #21
 
 All three were filed against bundle-7dlqk_lh, the first build that presented
