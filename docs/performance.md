@@ -1,5 +1,125 @@
 # Summit performance: Speedometer 3.1 baseline, where the time goes, stress test
 
+## 4 October 2026 (morning): pictures that flicker while Reddit is scrolled
+
+Reported on the workstation at 175%: scrolling a page full of pictures
+(Reddit), the pictures disappear and come back. Three causes, all in the
+engine, none of them particular to 175%. The build with the fixes is
+**bundle-r0_tdpf3** (Mesa prefix-20261002).
+
+### Seeing it: frames read from the screen
+
+A screenshot shows app_server's copy of the screen, and a dump of the frame
+buffer takes 4 s. `tools/bench/fbcap` (new) reads a part of the frame buffer
+the card scans out, every eighth pixel of the column of posts in 20 ms, 480
+or 700 times in a row; `frames.py` makes contact sheets of consecutive frames
+and counts the frames with a black box where a picture belongs and the frames
+that are one flat colour. `scroll-capture.sh` loads a page in a private copy
+of the browser, scrolls it steadily down and back up and captures meanwhile.
+(`nvscanout --band` is not a crop of the dump: it paints a test band into the
+screen.)
+
+### 1. A scroll released the layers a rendering update had replaced
+
+With the layer set committed in every composition, as upstream does: a
+picture visible in one frame, a black box in the next three to six, the
+picture again. The compositor takes the page's new set of layers at the
+start of every composition. A composition for a scroll alone runs while the
+rendering update that brought the set still waits for its tiles (the update
+is held back, the scroll is not), took the set, and released the layers the
+page had replaced; their replacements are attached by the update itself
+(children, tiles). Until it came, the frames showed neither: where Reddit
+had made a post's picture layers anew, the post's black background.
+
+The set is now committed with the rendering update it belongs to
+(`CoordinatedSceneState::flushCompositingState`).
+`SUMMIT_COMMIT_LAYERS_WITH_UPDATE=0` is the old way. In 30 s of scrolling
+r/pics the trace had 2 and 3 frames without the pictures' layers before, and
+the captures show the black boxes at those moments; none after.
+
+### 2. Pictures' percentage heights laid the whole feed out again
+
+The larger part of what the eye sees as pictures missing. Scrolled at an
+ordinary speed (2.5 notches a second and more), r/pics had no rendering
+update for 5 to 16 s at a time: after each batch of posts the page forces
+about forty layouts in a row, 130 to 230 ms each. The compositor scrolls on
+into what was never painted; when the page catches up the posts appear with
+black boxes first and the pictures a moment later.
+
+The layout kept on 3 October (an item's layout is kept when its container
+asks again with nothing changed) did not apply: 12,900 block layouts for 550
+changed renderers, 13 kept. A picture with a percentage height is noted with
+*every* block above it whose height is automatic or a percentage
+(`RenderReplaced`, for the height it resolves against is found by going up
+through such blocks), and each of those blocks marks the whole chain down to
+the picture for layout whenever it is laid out itself, changed or not. Under
+`main` there were 85 such pictures; Reddit's grid lays `main` out five times
+in one layout (to measure it, with the measured height, and again for each
+repeat of the boxes above), so the whole feed was laid out five times, 35 ms
+a time.
+
+A chain is now left alone when a box between the block and the picture
+settles the height the picture resolves against
+(`RenderBlockFlow::dirtyForLayoutFromPercentageHeightDescendant`): a flex
+item that its container gave a height for percentages, a box with an aspect
+ratio, a box with a fixed height, the order
+`RenderBox::availableLogicalHeightUsing()` looks in. That box is laid out by
+its own container when its height changes and passes it on. Standards mode
+only: in quirks mode a percentage skips blocks with automatic heights, boxes
+with an aspect ratio among them, and the marks made for the picture are what
+gets the boxes in between laid out (the test page without its doctype gave
+different sizes until the rule was limited).
+
+| r/pics, 120 notches at 60 ms, two runs each | before | after |
+| --- | --- | --- |
+| layout during the scroll | 4.3 s, 5.8 s | 0.3 s, 0.5 s |
+| layouts of 20 ms and more | 37, 41 | 4, 5 |
+| longest time without a rendering update | 4.7 s, 5.1 s | 1.5 s, 1.7 s |
+
+`SUMMIT_PERCENT_HEIGHT_CHAINS=all` marks every chain as before; `=verify`
+marks them too and reports, after each layout, a picture whose size came out
+different although the box that settles it kept its height: none on 25 sites
+(Reddit, Airbnb, YouTube, CNN and Twitch have such chains).
+`SUMMIT_PERCENT_HEIGHT_TRACE=1` lists the chains marked and left;
+the layout why-trace counts them (`percentChainsMarked`, `percentChainsLeft`)
+and, with `SUMMIT_LAYOUT_WHY_ITEMS`, lists an item's pictures.
+`tools/bench/pages/percent-height-chains.html` changes the heights around
+18 such pictures in 26 steps: the same 52 readings with the rule and
+without, in standards mode (711 chains left alone) and in quirks mode.
+
+### 3. A layer of a part of the page had tiles only close to the viewport
+
+The page's own layer is as wide as the viewport, so the area it may cover
+goes into its height: tiles one and a half viewports above and below what
+shows. A layer of a part of the page (Reddit composites each picture, since
+a blurred copy lies behind it) covered half a viewport each way, 400 pixels
+of the page, and was in view before it was painted when the page was a
+little late. Such a layer now reaches as far as the page around it
+(`CoordinatedBackingStoreProxy::computeCoverAndKeepRect`,
+`SUMMIT_LAYER_TILE_REACH=<viewports>`, 0 for the old distance; not under
+memory pressure).
+
+### Result
+
+Frames read from the screen while r/pics is scrolled down for 10 s (150
+notches at 60 ms) and back up, 480 frames each way, two runs:
+
+| | installed (bundle-orh0apka) | bundle-r0_tdpf3 |
+| --- | --- | --- |
+| down: frames with the page not painted | 267, 251 | 22, 47 |
+| down: longest time without a rendering update | 6.6 s, 15.9 s | 1.4 s, 1.6 s |
+| back up: frames with the page not painted | 0, 63 | 16, 25 |
+
+What is left in the new build is the moment the next batch of posts arrives:
+Reddit shows its grey placeholders for about half a second, and the last
+post before them has its black box until its picture has loaded.
+
+Not the cause, though suspected first: tiles whose upload a composition
+leaves for the next (no tile waited in view in 1,600 frames; the compositor
+timing trace now counts them, `waitingInView` and `texturelessInView`, and
+`SUMMIT_TILE_HOLE_TRACE=1` names the layer), and decoded pictures being
+discarded.
+
 ## 3-4 October 2026 (night): Reddit's layouts, style sheets from extensions
 
 Two items left open by the sessions above: the Reddit freeze after a load
