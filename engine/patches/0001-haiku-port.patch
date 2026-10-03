@@ -2406,10 +2406,10 @@ index b29212ad5b98d332ff7c1db7814cb2575988ec5f..b6c50d32873f6c712e3409ca1c5e2ec5
      String m_accessGroup;
  };
 diff --git a/Source/WebCore/PlatformHaiku.cmake b/Source/WebCore/PlatformHaiku.cmake
-index 16a88804a1baa39ccdd9fc2870b6e2524d941298..327f7c3fb4e35acc6ee68d5b7021cdf919e97780 100644
+index 16a88804a1baa39ccdd9fc2870b6e2524d941298..4a7711e50e89077fd2535b02a26834b25eeeaee6 100644
 --- a/Source/WebCore/PlatformHaiku.cmake
 +++ b/Source/WebCore/PlatformHaiku.cmake
-@@ -1,8 +1,91 @@
+@@ -1,52 +1,257 @@
 +include(platform/Haiku.cmake)
  include(platform/ImageDecoders.cmake)
  include(platform/OpenSSL.cmake)
@@ -2502,12 +2502,15 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..327f7c3fb4e35acc6ee68d5b7021cdf9
  )
  
  list(APPEND WebCore_SOURCES
-@@ -11,42 +94,162 @@ list(APPEND WebCore_SOURCES
+   accessibility/playstation/AXObjectCachePlayStation.cpp
+   accessibility/playstation/AccessibilityObjectPlayStation.cpp
  
-   editing/glib/EditorGLib.cpp
+-  editing/glib/EditorGLib.cpp
++  bindings/js/CachedScriptSourceProviderHaiku.cpp
  
 -  page/PointerLockController.cpp
--
++  editing/glib/EditorGLib.cpp
+ 
    page/haiku/DragControllerHaiku.cpp
    page/haiku/EventHandlerHaiku.cpp
  
@@ -2670,7 +2673,7 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..327f7c3fb4e35acc6ee68d5b7021cdf9
    textencoding
    translation
    ${WEBP_LIBRARIES}
-@@ -61,6 +264,205 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
+@@ -61,6 +266,205 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
    ${SQLITE_INCLUDE_DIR}
    ${WEBP_INCLUDE_DIRS}
    ${ZLIB_INCLUDE_DIRS}
@@ -2888,6 +2891,430 @@ index 1b478eff878aef4108b0f4f828eabe3132f24131..697e681b98110eb40583e3af9064481f
  contentextensions/ContentExtensionsBackend.cpp
  contentextensions/DFA.cpp
  contentextensions/DFABytecodeCompiler.cpp
+diff --git a/Source/WebCore/bindings/js/CachedScriptSourceProvider.h b/Source/WebCore/bindings/js/CachedScriptSourceProvider.h
+index df84a17d3df79ad454e6c7d8131ae0aa5af31256..f4d777f62a4c728ad955d80df67a2ee8f9d47fa8 100644
+--- a/Source/WebCore/bindings/js/CachedScriptSourceProvider.h
++++ b/Source/WebCore/bindings/js/CachedScriptSourceProvider.h
+@@ -40,6 +40,9 @@ public:
+ 
+     virtual ~CachedScriptSourceProvider()
+     {
++#if PLATFORM(HAIKU)
++        discardPendingBytecodeHaiku();
++#endif
+         protect(m_cachedScript)->removeClient(*this);
+     }
+ 
+@@ -56,7 +59,32 @@ public:
+         SUPPRESS_UNCOUNTED_ARG return m_cachedScript->codeBlockHashConcurrently(startOffset, endOffset, kind, isModuleType() ? CachedScript::ShouldDecodeAsUTF8Only::Yes : CachedScript::ShouldDecodeAsUTF8Only::No);
+     }
+ 
++#if PLATFORM(HAIKU)
++    // Compiled code kept on disk between visits (CachedScriptSourceProviderHaiku.cpp).
++    RefPtr<JSC::CachedBytecode> cachedBytecode() const final;
++    void cacheBytecode(const JSC::BytecodeCacheGenerator&) const final;
++    void updateCache(const JSC::UnlinkedFunctionExecutable*, const JSC::SourceCode&, JSC::CodeSpecializationKind, const JSC::UnlinkedFunctionCodeBlock*) const final;
++    void commitCachedBytecode() const final;
++#endif
++
+ private:
++#if PLATFORM(HAIKU)
++    struct PendingFunctionsHaiku;
++    String bytecodeCachePathHaiku() const;
++    void scheduleBytecodeCommitHaiku() const;
++    bool encodePendingFunctionsHaiku(double budgetMilliseconds) const;
++    void commitStepHaiku() const;
++    void discardPendingBytecodeHaiku();
++
++    mutable RefPtr<JSC::CachedBytecode> m_cachedBytecodeHaiku;
++    // Functions compiled since, encoded when the file is written.
++    mutable PendingFunctionsHaiku* m_pendingFunctionsHaiku { nullptr };
++    mutable double m_encodeMillisecondsHaiku { 0 };
++    mutable size_t m_cachedBytecodeFileSizeHaiku { 0 };
++    mutable bool m_triedBytecodeLoadHaiku { false };
++    mutable bool m_bytecodeCommitScheduledHaiku { false };
++#endif
++
+     CachedScriptSourceProvider(CachedScript* cachedScript, JSC::SourceProviderSourceType sourceType, Ref<CachedScriptFetcher>&& scriptFetcher)
+         : SourceProvider(JSC::SourceOrigin { cachedScript->response().url(), WTF::move(scriptFetcher) }, String(cachedScript->response().url().string()), cachedScript->response().isRedirected() ? String(cachedScript->url().string()) : String(), cachedScript->requiresPrivacyProtections() ? JSC::SourceTaintedOrigin::KnownTainted : JSC::SourceTaintedOrigin::Untainted, TextPosition(), sourceType)
+         , m_cachedScript(cachedScript)
+diff --git a/Source/WebCore/bindings/js/CachedScriptSourceProviderHaiku.cpp b/Source/WebCore/bindings/js/CachedScriptSourceProviderHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..d288f32e93393aebcdd0bef8f0e810b215a16092
+--- /dev/null
++++ b/Source/WebCore/bindings/js/CachedScriptSourceProviderHaiku.cpp
+@@ -0,0 +1,371 @@
++/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#include "CachedScriptSourceProvider.h"
++
++#if PLATFORM(HAIKU)
++
++#include "CommonVM.h"
++#include <JavaScriptCore/BytecodeCacheError.h>
++#include <JavaScriptCore/CachedBytecode.h>
++#include <JavaScriptCore/CachedTypes.h>
++#include <JavaScriptCore/JSCBytecodeCacheVersion.h>
++#include <JavaScriptCore/StrongInlines.h>
++#include <JavaScriptCore/UnlinkedFunctionCodeBlock.h>
++#include <JavaScriptCore/UnlinkedFunctionExecutable.h>
++#include <limits>
++#include <algorithm>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <ctime>
++#include <dlfcn.h>
++#include <fcntl.h>
++#include <sys/stat.h>
++#include <unistd.h>
++#include <utime.h>
++#include <wtf/FileHandle.h>
++#include <wtf/FileSystem.h>
++#include <wtf/MallocSpan.h>
++#include <wtf/MonotonicTime.h>
++#include <wtf/NeverDestroyed.h>
++#include <wtf/RunLoop.h>
++#include <wtf/StdLibExtras.h>
++#include <wtf/Threading.h>
++#include <wtf/WorkQueue.h>
++#include <wtf/text/MakeString.h>
++
++// A site's scripts are compiled again on every visit: parsed in full once to
++// check them, then each function parsed again and turned into bytecode the
++// first time it runs. YouTube's 2.5 MB of script cost its web process half a
++// second of that on every load. JavaScriptCore can keep that work on disk
++// (CachedBytecode): the program's bytecode when it is compiled, and each
++// function's as it is compiled later, decoded lazily on the next visit. The
++// jsc shell uses it through its own SourceProvider; here the scripts a page
++// loads do the same.
++//
++// The directory comes from the browser (WEBKIT_HAIKU_BYTECODE_CACHE, set for
++// the persistent profile by WebViewContextHaiku); private sessions keep
++// nothing. SUMMIT_BYTECODE_CACHE=0 turns it off and
++// SUMMIT_BYTECODE_CACHE_TRACE=1 reports each load and write.
++
++namespace WebCore {
++
++// Functions compiled since the program was cached or read, kept until the
++// file is written: encoding each one as it is compiled cost YouTube's first
++// load 130-290 ms before DOMContentLoaded.
++struct CachedScriptSourceProvider::PendingFunctionsHaiku {
++    struct Function {
++        JSC::Strong<JSC::UnlinkedFunctionExecutable> executable;
++        JSC::CodeSpecializationKind kind;
++        JSC::Strong<JSC::UnlinkedFunctionCodeBlock> codeBlock;
++    };
++    Vector<Function> functions;
++    size_t next { 0 };
++};
++
++// Small scripts are cheap to compile; a file each would cost more to open.
++static constexpr unsigned minimumSourceLengthHaiku = 20 * 1024;
++// The program and the functions compiled in its first seconds are written
++// once, this long after the script first ran.
++static constexpr Seconds commitDelayHaiku = 5_s;
++static constexpr uint64_t directoryLimitHaiku = 320 * MB;
++static constexpr uint64_t directoryTargetHaiku = 240 * MB;
++
++static bool traceHaiku()
++{
++    static bool trace = [] {
++        const char* value = getenv("SUMMIT_BYTECODE_CACHE_TRACE");
++        return value && *value && strcmp(value, "0");
++    }();
++    return trace;
++}
++
++// Oldest files first, until the directory is under its target; other
++// builds' directories go whole. Once per process, well after it starts.
++static void pruneDirectoriesHaiku(const String& base, const String& current)
++{
++    Thread::create("Bytecode cache pruning"_s, [base = base.isolatedCopy(), current = current.isolatedCopy()] {
++        sleep(30_s);
++        for (auto& name : FileSystem::listDirectory(base)) {
++            auto path = FileSystem::pathByAppendingComponent(base, name);
++            if (path != current && FileSystem::fileType(path) == FileSystem::FileType::Directory)
++                FileSystem::deleteNonEmptyDirectory(path);
++        }
++        struct Entry {
++            CString path;
++            uint64_t size;
++            time_t time;
++        };
++        Vector<Entry> entries;
++        uint64_t total = 0;
++        time_t now = time(nullptr);
++        for (auto& name : FileSystem::listDirectory(current)) {
++            auto path = FileSystem::pathByAppendingComponent(current, name).utf8();
++            struct stat info;
++            if (stat(path.legacyCStringPointer(), &info) || !S_ISREG(info.st_mode))
++                continue;
++            // A write that never finished.
++            if (name.endsWith(".tmp"_s)) {
++                if (now - info.st_mtime > 60)
++                    unlink(path.legacyCStringPointer());
++                continue;
++            }
++            entries.append({ WTF::move(path), static_cast<uint64_t>(info.st_size), info.st_mtime });
++            total += info.st_size;
++        }
++        if (total <= directoryLimitHaiku)
++            return;
++        std::sort(entries.begin(), entries.end(), [](auto& a, auto& b) { return a.time < b.time; });
++        for (auto& entry : entries) {
++            if (total <= directoryTargetHaiku)
++                break;
++            if (!unlink(entry.path.legacyCStringPointer()))
++                total -= entry.size;
++        }
++    }, ThreadType::Unknown, ThreadQOS::Background)->detach();
++}
++
++// Cached bytecode can only be read by the JavaScriptCore that wrote it. Its
++// own check (computeJSCBytecodeCacheVersion()) uses the library's build ID,
++// which these libraries do not have, so the library's size and time name
++// the directory as well.
++static const String& directoryHaiku()
++{
++    static NeverDestroyed<String> directory = [] -> String {
++        const char* base = getenv("WEBKIT_HAIKU_BYTECODE_CACHE");
++        if (!base || *base != '/')
++            return { };
++        if (const char* setting = getenv("SUMMIT_BYTECODE_CACHE"); setting && !strcmp(setting, "0"))
++            return { };
++        Dl_info info { };
++        struct stat library;
++        if (!dladdr(reinterpret_cast<void*>(&JSC::computeJSCBytecodeCacheVersion), &info) || !info.dli_fname || stat(info.dli_fname, &library))
++            return { };
++        uint64_t key = (static_cast<uint64_t>(JSC::computeJSCBytecodeCacheVersion()) << 32)
++            ^ static_cast<uint64_t>(library.st_size) ^ (static_cast<uint64_t>(library.st_mtime) << 24);
++        auto baseDirectory = String::fromUTF8(base);
++        auto directory = FileSystem::pathByAppendingComponent(baseDirectory, makeString(hex(key, 16)));
++        if (!FileSystem::makeAllDirectories(directory))
++            return { };
++        pruneDirectoriesHaiku(baseDirectory, directory);
++        return directory;
++    }();
++    return directory.get();
++}
++
++String CachedScriptSourceProvider::bytecodeCachePathHaiku() const
++{
++    auto& directory = directoryHaiku();
++    if (directory.isNull())
++        return { };
++    // JavaScriptCore encodes programs and modules only.
++    if (sourceType() != JSC::SourceProviderSourceType::Program && sourceType() != JSC::SourceProviderSourceType::Module)
++        return { };
++    if (m_cachedScript->sessionID().isEphemeral())
++        return { };
++    unsigned length = source().length();
++    if (length < minimumSourceLengthHaiku)
++        return { };
++    return FileSystem::pathByAppendingComponent(directory, makeString(hex(hash(), 8), '-', hex(length, 8), isModuleType() ? ".module"_s : ".script"_s));
++}
++
++RefPtr<JSC::CachedBytecode> CachedScriptSourceProvider::cachedBytecode() const
++{
++    if (m_triedBytecodeLoadHaiku)
++        return m_cachedBytecodeHaiku;
++    m_triedBytecodeLoadHaiku = true;
++    auto path = bytecodeCachePathHaiku();
++    if (path.isNull())
++        return nullptr;
++    auto handle = FileSystem::openFile(path, FileSystem::FileOpenMode::Read);
++    if (!handle)
++        return nullptr;
++    auto data = handle.map(FileSystem::MappedFileMode::Private);
++    if (!data || !data->size())
++        return nullptr;
++    m_cachedBytecodeFileSizeHaiku = data->size();
++    m_cachedBytecodeHaiku = JSC::CachedBytecode::create(WTF::move(*data));
++    // Recently used, for pruning.
++    utime(path.utf8().legacyCStringPointer(), nullptr);
++    if (traceHaiku())
++        fprintf(stderr, "bytecode cache: read %zu bytes for %s\n", m_cachedBytecodeFileSizeHaiku, sourceURL().utf8().legacyCStringPointer());
++    scheduleBytecodeCommitHaiku();
++    return m_cachedBytecodeHaiku;
++}
++
++void CachedScriptSourceProvider::cacheBytecode(const JSC::BytecodeCacheGenerator& generator) const
++{
++    // The program was compiled, so whatever was read did not fit (or there
++    // was nothing): the file is written anew.
++    m_triedBytecodeLoadHaiku = true;
++    m_cachedBytecodeHaiku = nullptr;
++    m_cachedBytecodeFileSizeHaiku = 0;
++    if (bytecodeCachePathHaiku().isNull())
++        return;
++    auto start = MonotonicTime::now();
++    auto update = generator();
++    double milliseconds = (MonotonicTime::now() - start).milliseconds();
++    m_encodeMillisecondsHaiku += milliseconds;
++    if (traceHaiku())
++        fprintf(stderr, "bytecode cache: program encoded in %.1f ms for %s\n", milliseconds, sourceURL().utf8().legacyCStringPointer());
++    if (!update)
++        return;
++    m_cachedBytecodeHaiku = JSC::CachedBytecode::create();
++    m_cachedBytecodeHaiku->addGlobalUpdate(*update);
++    scheduleBytecodeCommitHaiku();
++}
++
++void CachedScriptSourceProvider::updateCache(const JSC::UnlinkedFunctionExecutable* executable, const JSC::SourceCode&, JSC::CodeSpecializationKind kind, const JSC::UnlinkedFunctionCodeBlock* codeBlock) const
++{
++    if (!m_cachedBytecodeHaiku)
++        return;
++    if (!m_pendingFunctionsHaiku)
++        m_pendingFunctionsHaiku = new PendingFunctionsHaiku;
++    auto& vm = commonVM();
++    m_pendingFunctionsHaiku->functions.append({ JSC::Strong<JSC::UnlinkedFunctionExecutable>(vm, const_cast<JSC::UnlinkedFunctionExecutable*>(executable)), kind,
++        JSC::Strong<JSC::UnlinkedFunctionCodeBlock>(vm, const_cast<JSC::UnlinkedFunctionCodeBlock*>(codeBlock)) });
++}
++
++// Returns whether every recorded function has been encoded.
++bool CachedScriptSourceProvider::encodePendingFunctionsHaiku(double budgetMilliseconds) const
++{
++    auto* pending = m_pendingFunctionsHaiku;
++    if (!pending || !m_cachedBytecodeHaiku)
++        return true;
++    auto start = MonotonicTime::now();
++    auto& vm = commonVM();
++    while (pending->next < pending->functions.size()) {
++        auto& function = pending->functions[pending->next++];
++        auto* executable = function.executable.get();
++        // Recorded in the order they were compiled, so an enclosing function
++        // is added (and its own functions with it) before those inside it;
++        // addFunctionUpdate() needs the function's place in the file.
++        if (executable && m_cachedBytecodeHaiku->leafExecutables().contains(executable)) {
++            JSC::BytecodeCacheError error;
++            auto update = JSC::encodeFunctionCodeBlock(vm, function.codeBlock.get(), error);
++            if (update && !error.isValid())
++                m_cachedBytecodeHaiku->addFunctionUpdate(executable, function.kind, *update);
++        }
++        function.executable.clear();
++        function.codeBlock.clear();
++        if ((MonotonicTime::now() - start).milliseconds() >= budgetMilliseconds)
++            break;
++    }
++    m_encodeMillisecondsHaiku += (MonotonicTime::now() - start).milliseconds();
++    return pending->next >= pending->functions.size();
++}
++
++void CachedScriptSourceProvider::discardPendingBytecodeHaiku()
++{
++    delete std::exchange(m_pendingFunctionsHaiku, nullptr);
++}
++
++static bool writeAllHaiku(int fd, std::span<const uint8_t> data)
++{
++    while (!data.empty()) {
++        ssize_t written = write(fd, data.data(), data.size());
++        if (written <= 0)
++            return false;
++        data = data.subspan(written);
++    }
++    return true;
++}
++
++// Writes go to a thread of their own: the file is synced before it replaces
++// the old one, since BFS journals only metadata and after a power cut a
++// renamed file could hold stale blocks, which JavaScriptCore would decode.
++static WorkQueue& writerQueueHaiku()
++{
++    static NeverDestroyed<Ref<WorkQueue>> queue = WorkQueue::create("Bytecode cache writer"_s, WorkQueue::QOS::Utility);
++    return queue.get();
++}
++
++void CachedScriptSourceProvider::commitCachedBytecode() const
++{
++    // Once per provider: functions compiled after this are written by the
++    // next visit, which reads this file.
++    encodePendingFunctionsHaiku(std::numeric_limits<double>::infinity());
++    size_t functions = m_pendingFunctionsHaiku ? m_pendingFunctionsHaiku->functions.size() : 0;
++    delete std::exchange(m_pendingFunctionsHaiku, nullptr);
++    RefPtr bytecode = std::exchange(m_cachedBytecodeHaiku, nullptr);
++    if (!bytecode || !bytecode->hasUpdates())
++        return;
++    auto path = bytecodeCachePathHaiku();
++    if (path.isNull())
++        return;
++    auto start = MonotonicTime::now();
++    // Another process may have replaced the file since this one read it.
++    struct stat current;
++    if (m_cachedBytecodeFileSizeHaiku && (stat(path.utf8().legacyCStringPointer(), &current) || static_cast<size_t>(current.st_size) != m_cachedBytecodeFileSizeHaiku))
++        return;
++    // Function updates change the old file's bytes as well as adding to it,
++    // and processes (this one too) may be decoding from the old file as
++    // mapped: the whole new file is put together here and written beside the
++    // old one, then replaces it.
++    size_t size = bytecode->sizeForUpdate();
++    // A visit that compiled little that was not in the file already: not
++    // worth rewriting it (YouTube's is 44 MB, 30 ms to put together).
++    if (m_cachedBytecodeFileSizeHaiku && (size - m_cachedBytecodeFileSizeHaiku) * 20 < m_cachedBytecodeFileSizeHaiku) {
++        if (traceHaiku())
++            fprintf(stderr, "bytecode cache: %zu new bytes not written for %s\n", size - m_cachedBytecodeFileSizeHaiku, sourceURL().utf8().legacyCStringPointer());
++        return;
++    }
++    auto data = MallocSpan<uint8_t>::malloc(size);
++    auto file = data.mutableSpan();
++    memcpySpan(file, bytecode->span());
++    bool fits = true;
++    bytecode->commitUpdates([&](off_t offset, std::span<const uint8_t> update) {
++        if (offset < 0 || static_cast<size_t>(offset) > size || update.size() > size - offset) {
++            fits = false;
++            return;
++        }
++        memcpySpan(file.subspan(offset), update);
++    });
++    if (!fits)
++        return;
++    if (traceHaiku())
++        fprintf(stderr, "bytecode cache: %zu bytes (%zu read, %zu functions, %.1f ms encoding) ready in %.1f ms for %s\n", size, m_cachedBytecodeFileSizeHaiku, functions, m_encodeMillisecondsHaiku, (MonotonicTime::now() - start).milliseconds(), sourceURL().utf8().legacyCStringPointer());
++    writerQueueHaiku().dispatch([path = path.isolatedCopy(), data = WTF::move(data)] {
++        auto start = MonotonicTime::now();
++        auto pathUTF8 = path.utf8();
++        auto temporary = makeString(path, '.', getpid(), ".tmp"_s).utf8();
++        int fd = open(temporary.legacyCStringPointer(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
++        if (fd < 0)
++            return;
++        bool written = writeAllHaiku(fd, data.span()) && !fsync(fd);
++        close(fd);
++        if (!written || rename(temporary.legacyCStringPointer(), pathUTF8.legacyCStringPointer())) {
++            unlink(temporary.legacyCStringPointer());
++            return;
++        }
++        if (traceHaiku())
++            fprintf(stderr, "bytecode cache: wrote %zu bytes in %.1f ms to %s\n", data.span().size(), (MonotonicTime::now() - start).milliseconds(), pathUTF8.legacyCStringPointer());
++    });
++}
++
++void CachedScriptSourceProvider::scheduleBytecodeCommitHaiku() const
++{
++    if (m_bytecodeCommitScheduledHaiku)
++        return;
++    m_bytecodeCommitScheduledHaiku = true;
++    RunLoop::mainSingleton().dispatchAfter(commitDelayHaiku, [protectedThis = Ref { *this }] {
++        protectedThis->commitStepHaiku();
++    });
++}
++
++// The functions are encoded a few milliseconds at a time between the main
++// loop's other work, then the file is written.
++void CachedScriptSourceProvider::commitStepHaiku() const
++{
++    if (!encodePendingFunctionsHaiku(4)) {
++        RunLoop::mainSingleton().dispatch([protectedThis = Ref { *this }] {
++            protectedThis->commitStepHaiku();
++        });
++        return;
++    }
++    commitCachedBytecode();
++}
++
++} // namespace WebCore
++
++#endif // PLATFORM(HAIKU)
 diff --git a/Source/WebCore/contentextensions/ContentExtension.cpp b/Source/WebCore/contentextensions/ContentExtension.cpp
 index af98d12bc8869a1678f940471531333950be1d11..5e0f99c3611d29adf7f698565386d9023b9d70a9 100644
 --- a/Source/WebCore/contentextensions/ContentExtension.cpp
@@ -47795,10 +48222,10 @@ index 0000000000000000000000000000000000000000..574ed16658f0c14b1aa2e63208e990b8
 +#define WEBKIT_ENGINE_VERSION_HAIKU "@WebKit_HAIKU_MAJOR_VERSION@.@WebKit_HAIKU_MINOR_VERSION@.@WebKit_HAIKU_TINY_VERSION@"
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitContext.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitContext.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..d631e44355fd9b50cb16caa4729786a0894d1835
+index 0000000000000000000000000000000000000000..822415cd2b1fe428b3522024d18150379afb9881
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitContext.cpp
-@@ -0,0 +1,687 @@
+@@ -0,0 +1,698 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -47822,7 +48249,10 @@ index 0000000000000000000000000000000000000000..d631e44355fd9b50cb16caa4729786a0
 +#include "WebsiteDataStore.h"
 +#include "WebsiteDataType.h"
 +#include <Application.h>
++#include <cstdlib>
++#include <wtf/FileSystem.h>
 +#include <wtf/RunLoop.h>
++#include <wtf/Threading.h>
 +#include "WebViewContextHaiku.h"
 +#include "SitePermissionsHaiku.h"
 +
@@ -48439,8 +48869,16 @@ index 0000000000000000000000000000000000000000..d631e44355fd9b50cb16caa4729786a0
 +        OptionSet<WebsiteDataType> byOrigin;
 +        if (types & B_WEBKIT_DATA_COOKIES)
 +            whole.add(WebsiteDataType::Cookies);
-+        if (types & B_WEBKIT_DATA_CACHE)
++        if (types & B_WEBKIT_DATA_CACHE) {
 +            whole.add({ WebsiteDataType::DiskCache, WebsiteDataType::MemoryCache });
++            // The scripts' compiled code (CachedScriptSourceProviderHaiku.cpp).
++            const char* bytecode = getenv("WEBKIT_HAIKU_BYTECODE_CACHE");
++            if (context->dataStore().isPersistent() && bytecode && *bytecode == '/') {
++                Thread::create("Bytecode cache removal"_s, [path = String::fromUTF8(bytecode)] {
++                    FileSystem::deleteNonEmptyDirectory(path);
++                })->detach();
++            }
++        }
 +        if (types & B_WEBKIT_DATA_LOCAL_STORAGE)
 +            byOrigin.add({ WebsiteDataType::LocalStorage, WebsiteDataType::SessionStorage });
 +        if (types & B_WEBKIT_DATA_INDEXED_DB)
@@ -80761,10 +81199,10 @@ index 0000000000000000000000000000000000000000..b061c97a5f706d92f2b4208d4c94c083
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..ada056ff41f7f608cd5aa15261bae39abdc3b7f7
+index 0000000000000000000000000000000000000000..15dcdf32d0965969575554f06829dfe3c325e086
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp
-@@ -0,0 +1,303 @@
+@@ -0,0 +1,307 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -80791,6 +81229,7 @@ index 0000000000000000000000000000000000000000..ada056ff41f7f608cd5aa15261bae39a
 +#endif
 +#include "WebProcessPool.h"
 +#include <pal/SessionID.h>
++#include <cstdlib>
 +#include <wtf/FileSystem.h>
 +#include <wtf/NeverDestroyed.h>
 +#include <wtf/RunLoop.h>
@@ -80984,6 +81423,9 @@ index 0000000000000000000000000000000000000000..ada056ff41f7f608cd5aa15261bae39a
 +    // inherit these same profile roots. Curl's cookie path is not initialized
 +    // by the common non-Cocoa implementation, so supply it explicitly.
 +    auto configuration = WebsiteDataStoreConfiguration::createWithBaseDirectories(cache, data);
++    // Compiled scripts kept between visits (CachedScriptSourceProviderHaiku.cpp):
++    // web processes inherit this, the first persistent profile's.
++    setenv("WEBKIT_HAIKU_BYTECODE_CACHE", FileSystem::pathByAppendingComponent(cache, "JavaScript"_s).utf8().legacyCStringPointer(), 0);
 +    configuration->setCookieStorageFile(FileSystem::pathByAppendingComponent(data, "Cookies.db"_s));
 +    configuration->setSearchFieldHistoryDirectory(storageDirectoryPathHaiku(false, data, "SearchFieldHistory"_s, true));
 +    configuration->setEnhancedSecurityDirectory(storageDirectoryPathHaiku(false, data, "EnhancedSecurity"_s, true));

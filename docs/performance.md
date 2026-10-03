@@ -17,6 +17,10 @@ In short (details below):
 - Responsiveness: the profile is saved off the window threads; the
   largest-contentful-paint entry is no longer lost; the first frame after
   a pause goes straight to the screen.
+- Scripts: compiled bytecode kept on disk between visits (JavaScriptCore's
+  `CachedBytecode`, which WebCore never used): YouTube's warm loads reach
+  DOMContentLoaded about 270 ms sooner and their largest paint 360 ms
+  sooner.
 - Benchmarks: run-pageload.py alternates which browser loads first (some
   servers answer the second request from a cache the first one warmed).
 
@@ -334,6 +338,83 @@ click): on The Guardian that frame took 134 ms to composite, 84 of them
 reading it back. Now a frame goes through app_server only once changes
 have waited 250 ms for it; a page that stops changing gets its last frame
 there 300 ms later as before. Screenshots of settled pages are unchanged.
+
+### Compiled scripts kept between visits
+
+On a warm load of YouTube (everything in the cache) Summit reached
+DOMContentLoaded at 1.27-1.35 s and painted first at 1.78-1.80 s, while
+Firefox painted at 1.23 s. The HTML was in by 135 ms; the parser then
+spent a second in YouTube's scripts. A system profile of the web process
+(`profile -a`, warm load) had JavaScriptCore compiling for 720 ms of the
+835 it spent evaluating scripts, 470 of them in the parser: 240 ms
+checking the 10.8 MB main script's syntax, 230 ms parsing functions again
+as each first ran.
+Every visit compiled them from scratch; Firefox and Chrome keep compiled
+code in their caches.
+
+JavaScriptCore can already keep its bytecode on disk (`CachedBytecode`:
+the program's bytecode when it is compiled and each function's as it is
+compiled later, read back lazily), but only through four `SourceProvider`
+hooks that the jsc shell and the JSScript API implement and WebCore does
+not. `CachedScriptSourceProvider` (scripts a page loads, classic and
+module) now implements them on Haiku
+(`CachedScriptSourceProviderHaiku.cpp`):
+
+- Scripts of 20 KB and more, in persistent profiles only, one file each in
+  `<profile>/WebKit/Cache/JavaScript/<build>/`, named by the source's hash
+  and length. JavaScriptCore compares the whole source text before using
+  a file, so a different script with the same name is only a miss.
+- Its own version check uses the library's GNU build ID, which these
+  libraries do not have; the directory is named after libJavaScriptCore's
+  size and time too, and other builds' directories are deleted.
+- Written once per script and process, five seconds after it first ran:
+  the program and every function compiled by then. The next visit reads
+  that file and adds the functions it compiles. A function's entry is
+  patched inside the old file, which other processes (and this one) may be
+  decoding from as mapped, so the new file is put together in memory (44
+  MB for YouTube's main script, 23-30 ms) and a thread of its own writes it
+  beside the old one, syncs it and renames it over it (100-150 ms). BFS
+  journals only metadata: without the sync, a power cut could leave a
+  renamed file holding stale blocks, which JavaScriptCore would decode.
+  A visit that adds less than a twentieth to a file does not rewrite it.
+- Encoding is the cost. The program takes little (6.6 ms for YouTube's
+  main script), but each function compiled from it took 70 µs to encode:
+  402 ms for the 5,869 that YouTube compiles in its first seconds. Done as
+  each was compiled, that put YouTube's first visit 130-290 ms later to
+  DOMContentLoaded. The functions are now only noted as they compile and
+  encoded when the file is written, 4 ms at a time between the main loop's
+  other work.
+- 320 MB at most (oldest files go first, down to 240 MB), checked 30 s
+  after a web process first runs a script. Clearing the cache in
+  Preferences removes it. `SUMMIT_BYTECODE_CACHE=0` turns it off;
+  `SUMMIT_BYTECODE_CACHE_TRACE=1` reports each read and write.
+
+Two alternating pairs of `run-pageload.py --browser summit --rounds 3`
+against `SUMMIT_BYTECODE_CACHE=0` (medians, ms; warm = rounds 2 and 3,
+which read the files the first round wrote):
+
+| YouTube | DOMContentLoaded | largest paint | first paint |
+| --- | --- | --- | --- |
+| warm, cache | 1050, 1118 | 1452, 1638 | 1452, 949 |
+| warm, no cache | 1342, 1326 | 1937, 1875 | 1164, 1875 |
+| cold, cache | 2173, 2119 | 2793, 2795 | 1173, 1136 |
+| cold, no cache | 2169, 2192 | 2826, 2900 | 1192, 1209 |
+
+First paint on warm YouTube loads varies widely either way. The other
+five pages moved within their spread (their scripts are smaller or
+cached in memory by the time they matter). Within one browser
+JavaScriptCore already kept compiled scripts in memory, so the files help
+a site's first visit in each new web process: after a restart, in a new
+tab, after browsing elsewhere.
+
+YouTube's first paint is still later than Firefox's for another reason.
+WebKit keeps the previous page on screen until the new one is "visually
+non-empty" (`LocalFrameView::checkAndDispatchDidReachVisuallyNonEmptyState`:
+200 characters of text, an image or a fixed-size SVG, or parsing done with
+no style sheets or fonts pending; text in a web font that is still loading
+does not count). YouTube's skeleton is grey boxes, so nothing is shown
+until its scripts have rendered text, where Firefox paints the skeleton.
+Safari behaves as Summit does; it was left alone.
 
 ## 1 October 2026: page loads against Firefox (issue #2)
 
