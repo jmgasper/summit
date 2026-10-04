@@ -1,5 +1,5 @@
 // threadstate INTERVAL_MS COUNT TEAM... : every INTERVAL_MS, one line per
-// thread of each team that is not waiting idly: system_time() in seconds,
+// thread of each team that used CPU (the first time: every thread): system_time() in seconds,
 // team, thread name, state, the semaphore it waits on and the CPU time it
 // used since the last sample. Shows what a stalled main thread is doing
 // (busy, or blocked on which lock) where `profile` is not available.
@@ -46,9 +46,9 @@ int main(int argc, char** argv)
 					if (get_sem_info(info.sem, &sem) == B_OK)
 						std::snprintf(semName, sizeof(semName), "%s", sem.name);
 				}
-				// Idle waits are the rule; print a thread when it used CPU
-				// or waits on something other than its message port.
-				bool busy = delta > interval / 10 || info.state == B_THREAD_RUNNING || info.state == B_THREAD_READY;
+				// Idle waits are the rule: after the first sample, print a
+				// thread only when it used a millisecond or more, or runs.
+				bool busy = delta >= 1000 || info.state == B_THREAD_RUNNING || info.state == B_THREAD_READY;
 				if (!busy && sample > 0 && info.thread != team)
 					continue;
 				std::printf("%.3f %d %-28.28s %-4s %-28.28s +%.0f ms\n", now, (int)team, info.name,
