@@ -1069,6 +1069,7 @@ static int RunApplication()
         return 1;
     }
     app.Run();
+    SUMMIT_QUIT_TRACE("application loop ended");
 #if !SUMMIT_MODERN_WEBKIT
     if (app.WebKitInitialized()) BWebPage::ShutdownOnce();
 #endif
@@ -1131,6 +1132,7 @@ int main()
     // window/context cleanup. WebKit worker TLS destructors may still be
     // finishing, so do not race them with libbe's global handler-token table
     // destruction. This matches the Haiku WebKit helper-process exit path.
+    SUMMIT_QUIT_TRACE("application destroyed; exiting");
     std::fflush(nullptr);
     std::_Exit(status);
 #else
