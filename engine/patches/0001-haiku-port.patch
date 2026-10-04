@@ -43723,10 +43723,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..41b76d57876fd7761dbc7fcd1b7a57b0ba6b2090
+index 0000000000000000000000000000000000000000..617c7285b4d4a8751254195731eace30a85b145f
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,439 @@
+@@ -0,0 +1,451 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -44068,6 +44068,18 @@ index 0000000000000000000000000000000000000000..41b76d57876fd7761dbc7fcd1b7a57b0
 +    $<TARGET_LINKER_FILE:WebKit> $<TARGET_LINKER_FILE:JavaScriptCore>)
 +cmake_language(DEFER CALL target_link_options NetworkProcess BEFORE PRIVATE
 +    $<TARGET_LINKER_FILE:WebKit> $<TARGET_LINKER_FILE:JavaScriptCore>)
++
++# libWebKit also binds its own data symbols when it is linked (after the
++# -Bsymbolic-functions of OptionsHaiku.cmake, so this one wins): the 43,000
++# lookups of its own type_info objects, vtables and statics at every load
++# become relative relocations (111k symbol relocations -> 69k), and a bare web
++# process loads in 111 ms instead of 136 on the X399. The binding changes
++# only where an image searched before libWebKit defines the same symbol, and
++# libWebKit comes right after the executable in all three processes; the
++# executables define only Haiku's ABI markers, the WebCore::Headroom
++# constants and some libstdc++ shared_ptr type_info objects, none of which
++# depends on being one object.
++cmake_language(DEFER CALL target_link_options WebKit PRIVATE -Wl,-Bsymbolic)
 +
 +add_custom_target(forwarding-headerHaiku
 +    COMMAND ${PERL_EXECUTABLE} ${WEBKIT_DIR}/Scripts/generate-forwarding-headers.pl ${WEBKIT_DIR} ${DERIVED_SOURCES_WEBKIT_DIR}/include haiku
