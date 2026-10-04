@@ -136,6 +136,11 @@ missing styles").
 - `verify` restyles everything after the targeted invalidation has been
   resolved and compares 21 computed properties of every element: Wikipedia
   (three checks, 7,423-9,728 elements) and GitHub (1,490): no differences.
+  On the X399 also The Guardian, Reddit and YouTube (with uBlock Origin and
+  1Password), BBC News, CNN (35 checks, 72,518 elements), Stack Overflow,
+  Hacker News, Amazon, MDN, The New York Times and GitHub trending: the only
+  differences were the `transform` of spinners and a pulsing icon, animations
+  sampled at two moments.
 
 | Wikipedia on the Pi, per load | style | layout |
 | --- | --- | --- |
