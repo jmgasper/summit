@@ -15,6 +15,7 @@ CXX="${CROSS}g++ --sysroot=$SYSROOT -specs=$SPECS -O2"
 $CXX "$HERE/probes/stime.cpp" -o "$OUT/stime"
 $CXX "$HERE/probes/dltime.cpp" -o "$OUT/dltime"
 $CXX "$HERE/probes/faultbench.cpp" -o "$OUT/faultbench"
+$CXX "$HERE/probes/threadstate.cpp" -o "$OUT/threadstate"
 $CXX -I$GLDEPS/include "$HERE/probes/fctime.cpp" -L$GLDEPS/lib -lfontconfig \
 	-Wl,-rpath-link,$GLDEPS/lib -Wl,-rpath-link,/mnt/HaikuWork/build/summit-arm64/deps/lib -o "$OUT/fctime"
 for p in egltime readback; do
