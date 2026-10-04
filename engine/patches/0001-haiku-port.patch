@@ -4696,7 +4696,7 @@ index 64a53ff58bf7bcd9e56ccc8b74cea8c9c75bf89e..8810339d0e397c61f7f3462d0655fcfc
  #else
          // Check https://webkit.org/b/271957 before allowing file access for your port.
 diff --git a/Source/WebCore/dom/Document.cpp b/Source/WebCore/dom/Document.cpp
-index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..49341ab5570aa84b3c98f1fe2959c13d78a9039f 100644
+index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..46befead7d3d6c7e29bed7746a6e24413408b8e4 100644
 --- a/Source/WebCore/dom/Document.cpp
 +++ b/Source/WebCore/dom/Document.cpp
 @@ -383,6 +383,7 @@
@@ -4707,7 +4707,21 @@ index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..49341ab5570aa84b3c98f1fe2959c13d
  #include <ctime>
  #include <ranges>
  #include <wtf/ASCIICType.h>
-@@ -2811,6 +2812,17 @@ void Document::updateRenderTree(std::unique_ptr<Style::Update> styleUpdate)
+@@ -487,6 +488,13 @@
+ #define DOCUMENT_RELEASE_LOG(channel, fmt, ...) RELEASE_LOG(channel, "%p - [pageID=%" PRIu64 ", frameID=%" PRIu64 ", isMainFrame=%d] Document::" fmt, this, pageID() ? pageID()->toUInt64() : 0, frameID() ? frameID()->toUInt64() : 0, this->isTopDocument(), ##__VA_ARGS__)
+ #define DOCUMENT_RELEASE_LOG_ERROR(channel, fmt, ...) RELEASE_LOG_ERROR(channel, "%p - [pageID=%" PRIu64 ", frameID=%" PRIu64 ", isMainFrame=%d] Document::" fmt, this, pageID() ? pageID()->toUInt64() : 0, frameID() ? frameID()->toUInt64() : 0, this->isTopDocument(), ##__VA_ARGS__)
+ 
++#if PLATFORM(HAIKU)
++namespace WebCore {
++bool summitInvalidateElementsWithMissingStyleHaiku(Document&);
++void summitForgetElementsWithMissingStyleHaiku(Document&);
++}
++#endif
++
+ namespace WebCore {
+ 
+ WTF_MAKE_TZONE_ALLOCATED_IMPL(Document);
+@@ -2811,6 +2819,17 @@ void Document::updateRenderTree(std::unique_ptr<Style::Update> styleUpdate)
  
  void Document::resolveStyle(ResolveStyleType type)
  {
@@ -4725,7 +4739,17 @@ index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..49341ab5570aa84b3c98f1fe2959c13d
      ScriptDisallowedScope::InMainThread scriptDisallowedScope;
  
      ASSERT(!view() || !view()->isPainting());
-@@ -2879,19 +2891,45 @@ void Document::resolveStyle(ResolveStyleType type)
+@@ -2860,6 +2879,9 @@ void Document::resolveStyle(ResolveStyleType type)
+         if (type == ResolveStyleType::Rebuild) {
+             // This may get set again during style resolve.
+             m_hasNodesWithMissingStyle = false;
++#if PLATFORM(HAIKU)
++            summitForgetElementsWithMissingStyleHaiku(*this);
++#endif
+ 
+             auto newStyle = Style::resolveForDocument(*this);
+ 
+@@ -2879,19 +2901,45 @@ void Document::resolveStyle(ResolveStyleType type)
  
          {
              Style::TreeResolver resolver(*this, WTF::move(m_pendingRenderTreeUpdate));
@@ -4771,7 +4795,7 @@ index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..49341ab5570aa84b3c98f1fe2959c13d
              }
  
              m_lastStyleUpdateSizeForTesting = styleUpdate ? styleUpdate->size() : 0;
-@@ -2906,12 +2944,26 @@ void Document::resolveStyle(ResolveStyleType type)
+@@ -2906,12 +2954,26 @@ void Document::resolveStyle(ResolveStyleType type)
                  fontLoader->loadPendingFonts();
  
              if (styleUpdate) {
@@ -4798,7 +4822,7 @@ index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..49341ab5570aa84b3c98f1fe2959c13d
  
          if (m_renderView->needsLayout())
              frameView->layoutContext().scheduleLayout();
-@@ -2938,6 +2990,14 @@ void Document::resolveStyle(ResolveStyleType type)
+@@ -2938,6 +3000,14 @@ void Document::resolveStyle(ResolveStyleType type)
      // Re-evaluate speculation rules after DOM changes that trigger style recalculation.
      // That helps ensure CSS selector matching works correctly.
      considerSpeculationRules();
@@ -4813,7 +4837,19 @@ index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..49341ab5570aa84b3c98f1fe2959c13d
  }
  
  void Document::updateTextRenderer(Text& text, unsigned offsetOfReplacedText, unsigned lengthOfReplacedText)
-@@ -3081,6 +3141,16 @@ static RenderElement* rootForSkippedLayout(RenderElement& rootCandidate)
+@@ -3048,7 +3118,11 @@ bool Document::updateStyleIfNeededIgnoringPendingStylesheets()
+     bool oldIgnore = m_ignorePendingStylesheets;
+     m_ignorePendingStylesheets = true;
+     // FIXME: This should just invalidate elements with missing styles.
++#if PLATFORM(HAIKU)
++    if (m_hasNodesWithMissingStyle && !summitInvalidateElementsWithMissingStyleHaiku(*this))
++#else
+     if (m_hasNodesWithMissingStyle)
++#endif
+         scheduleFullStyleRebuild();
+ 
+     updateRelevancyOfContentVisibilityElements();
+@@ -3081,13 +3155,27 @@ static RenderElement* rootForSkippedLayout(RenderElement& rootCandidate)
  
  auto Document::updateLayout(OptionSet<LayoutOptions> layoutOptions, const Element* context) -> UpdateLayoutResult
  {
@@ -4830,7 +4866,18 @@ index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..49341ab5570aa84b3c98f1fe2959c13d
      bool oldIgnore = m_ignorePendingStylesheets;
  
      if (layoutOptions.contains(LayoutOptions::IgnorePendingStylesheets)) {
-@@ -3118,8 +3188,15 @@ auto Document::updateLayout(OptionSet<LayoutOptions> layoutOptions, const Elemen
+         if (!haveStylesheetsLoaded()) {
+             m_ignorePendingStylesheets = true;
+             // FIXME: This should just invalidate elements with missing styles.
++#if PLATFORM(HAIKU)
++            if (m_hasNodesWithMissingStyle && !summitInvalidateElementsWithMissingStyleHaiku(*this))
++#else
+             if (m_hasNodesWithMissingStyle)
++#endif
+                 scheduleFullStyleRebuild();
+         }
+ 
+@@ -3118,8 +3206,15 @@ auto Document::updateLayout(OptionSet<LayoutOptions> layoutOptions, const Elemen
                  result = UpdateLayoutResult::ChangesDone;
          }
  
@@ -4846,7 +4893,7 @@ index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..49341ab5570aa84b3c98f1fe2959c13d
  
          // LBSE: drain queued transform-attribute updates after style recalc so updateLayerTransform
          // sees post-style geometry and re-enqueues from style callbacks land in this pass.
-@@ -3186,6 +3263,9 @@ auto Document::updateLayout(OptionSet<LayoutOptions> layoutOptions, const Elemen
+@@ -3186,6 +3281,9 @@ auto Document::updateLayout(OptionSet<LayoutOptions> layoutOptions, const Elemen
                  return true;
              };
  
@@ -4856,7 +4903,7 @@ index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..49341ab5570aa84b3c98f1fe2959c13d
              auto didRunLayout = runForcedLayoutOnSkippedContentIfNeeded();
              if (!didRunLayout && layoutContext->needsLayout(layoutOptions)) {
                  layoutContext->layout(layoutOptions.contains(LayoutOptions::CanDeferUpdateLayerPositions));
-@@ -3193,9 +3273,18 @@ auto Document::updateLayout(OptionSet<LayoutOptions> layoutOptions, const Elemen
+@@ -3193,9 +3291,18 @@ auto Document::updateLayout(OptionSet<LayoutOptions> layoutOptions, const Elemen
              }
  
              result = didRunLayout ? UpdateLayoutResult::ChangesDone : result;
@@ -4875,7 +4922,7 @@ index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..49341ab5570aa84b3c98f1fe2959c13d
          }
      }
  
-@@ -3203,6 +3292,14 @@ auto Document::updateLayout(OptionSet<LayoutOptions> layoutOptions, const Elemen
+@@ -3203,6 +3310,14 @@ auto Document::updateLayout(OptionSet<LayoutOptions> layoutOptions, const Elemen
          protect(view())->flushAnyPendingPostLayoutTasks();
  
      m_ignorePendingStylesheets = oldIgnore;
@@ -4890,7 +4937,7 @@ index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..49341ab5570aa84b3c98f1fe2959c13d
      return result;
  }
  
-@@ -3494,6 +3591,9 @@ void Document::createRenderTree()
+@@ -3494,6 +3609,9 @@ void Document::createRenderTree()
  
      renderView->setIsInWindow(true);
  
@@ -4900,7 +4947,7 @@ index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..49341ab5570aa84b3c98f1fe2959c13d
      resolveStyle(ResolveStyleType::Rebuild);
  
  #if PLATFORM(MAC)
-@@ -5999,6 +6099,37 @@ void Document::runScrollSteps()
+@@ -5999,6 +6117,37 @@ void Document::runScrollSteps()
      if (auto page = this->page(); page && page->shouldDeferScrollEvents())
          return;
  
@@ -4938,7 +4985,7 @@ index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..49341ab5570aa84b3c98f1fe2959c13d
      // Service user scroll animations before scroll event dispatch.
      if (RefPtr frameView = view()) {
          MonotonicTime now = MonotonicTime::now();
-@@ -6020,7 +6151,13 @@ void Document::runScrollSteps()
+@@ -6020,7 +6169,13 @@ void Document::runScrollSteps()
          if (scrollAnimationsInProgress)
              protect(page())->scheduleRenderingUpdate({ RenderingUpdateStep::Scroll });
  
@@ -4952,7 +4999,7 @@ index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..49341ab5570aa84b3c98f1fe2959c13d
      }
  
      // FIXME: The order of dispatching is not specified: https://github.com/WICG/visual-viewport/issues/66.
-@@ -6028,6 +6165,15 @@ void Document::runScrollSteps()
+@@ -6028,6 +6183,15 @@ void Document::runScrollSteps()
          LOG_WITH_STREAM(Events, stream << "Document " << this << " sending scroll events to pending scroll event targets");
          auto currentTargets = WTF::move(m_pendingScrollEventTargetList->targets);
          for (auto& [target, type] : currentTargets) {
@@ -4968,7 +5015,7 @@ index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..49341ab5570aa84b3c98f1fe2959c13d
              auto bubbles = target->isDocumentNode() ? Event::CanBubble::Yes : Event::CanBubble::No;
              auto eventName = [&] {
                  switch (type) {
-@@ -6049,13 +6195,31 @@ void Document::runScrollSteps()
+@@ -6049,13 +6213,31 @@ void Document::runScrollSteps()
                  return frameView->scrollableAreaForNode(target.get());
              }();
  
@@ -5000,7 +5047,7 @@ index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..49341ab5570aa84b3c98f1fe2959c13d
          }
      }
      if (m_needsVisualViewportScrollEvent) {
-@@ -6064,6 +6228,17 @@ void Document::runScrollSteps()
+@@ -6064,6 +6246,17 @@ void Document::runScrollSteps()
          if (RefPtr window = this->window())
              window->visualViewport().dispatchEvent(Event::create(eventNames().scrollEvent, Event::CanBubble::No, Event::IsCancelable::No));
      }
@@ -5018,7 +5065,7 @@ index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..49341ab5570aa84b3c98f1fe2959c13d
  }
  
  void Document::flushDeferredScrollEvents()
-@@ -10529,21 +10704,54 @@ void Document::removeIntersectionObserver(IntersectionObserver& observer)
+@@ -10529,21 +10722,54 @@ void Document::removeIntersectionObserver(IntersectionObserver& observer)
  static void updateAndNotifyIntersectionObservers(const Vector<WeakPtr<IntersectionObserver>>& intersectionObservers, const Frame& hostFrame)
  {
      Vector<WeakPtr<IntersectionObserver>> intersectionObserversWithPendingNotifications;
@@ -39320,6 +39367,85 @@ index 9d7f7eb126d6621398d946c39fbf3703d4d7914e..f4b2982ecc11f0873014bf8cfc9f6cfa
  void DocumentScope::didChangeExtensionStyleSheets()
  {
      // Extension stylesheets may mutate in the middle of a style update when resource loading triggers
+diff --git a/Source/WebCore/style/StyleInvalidator.cpp b/Source/WebCore/style/StyleInvalidator.cpp
+index 584490dc2b3ba0ad36e6d22e0a9cba7f94d101d2..2615ce7e3a544114c3b4d616eb03ae14b8b20b9f 100644
+--- a/Source/WebCore/style/StyleInvalidator.cpp
++++ b/Source/WebCore/style/StyleInvalidator.cpp
+@@ -41,12 +41,37 @@
+ #include "StyleScopeRuleSets.h"
+ #include "StyleSheetContents.h"
+ #include "TypedElementDescendantIteratorInlines.h"
++#if PLATFORM(HAIKU)
++#include "CSSKeyframesRule.h"
++#endif
+ #include <ranges>
+ #include <wtf/SetForScope.h>
+ 
+ namespace WebCore {
+ namespace Style {
+ 
++#if PLATFORM(HAIKU)
++// A style sheet added to a page restyled every element unless it held only
++// style rules (and @media). Rules inside @supports now go into the rule set
++// the invalidator matches against, as at the top level (RuleSetBuilder
++// evaluates the condition), and a new @keyframes rule reaches the animations
++// that already name it through Resolver::addKeyframeStyle() ->
++// Document::keyframesRuleDidChange(), so neither needs every element
++// restyled. Wikipedia's ResourceLoader adds such sheets while the page runs:
++// each one restyled the whole article, 300 to 380 ms on a Raspberry Pi 4.
++// SUMMIT_STYLE_SHEET_INVALIDATION=all restyles everything as before; =verify
++// also restyles everything afterwards and reports differences.
++static bool summitTargetsSheetRulesHaiku()
++{
++    static bool targets = [] {
++        const char* value = getenv("SUMMIT_STYLE_SHEET_INVALIDATION");
++        return !value || strcmp(value, "all");
++    }();
++    return targets;
++}
++static bool s_summitOldSheetRulesHaiku;
++#endif
++
+ static bool NODELETE shouldDirtyAllStyle(const Vector<Ref<StyleRuleBase>>& rules)
+ {
+     for (auto& rule : rules) {
+@@ -55,6 +80,17 @@ static bool NODELETE shouldDirtyAllStyle(const Vector<Ref<StyleRuleBase>>& rules
+                 return true;
+             continue;
+         }
++#if PLATFORM(HAIKU)
++        if (summitTargetsSheetRulesHaiku() && !s_summitOldSheetRulesHaiku) {
++            if (auto* styleRuleSupports = dynamicDowncast<StyleRuleSupports>(rule.get())) {
++                if (shouldDirtyAllStyle(styleRuleSupports->childRules()))
++                    return true;
++                continue;
++            }
++            if (is<StyleRuleKeyframes>(rule.get()))
++                continue;
++        }
++#endif
+         if (auto* styleRuleWithNesting = dynamicDowncast<StyleRuleWithNesting>(rule.get())) {
+             if (shouldDirtyAllStyle(styleRuleWithNesting->nestedRules()))
+                 return true;
+@@ -89,6 +125,18 @@ static bool NODELETE shouldDirtyAllStyle(const Vector<Ref<StyleSheetContents>>&
+     return false;
+ }
+ 
++#if PLATFORM(HAIKU)
++// Whether these added sheets are invalidated by what they match only because
++// of the @supports and @keyframes handling above (for =verify).
++bool summitSheetsAvoidFullInvalidationHaiku(const Vector<Ref<StyleSheetContents>>& sheets)
++{
++    if (shouldDirtyAllStyle(sheets))
++        return false;
++    SetForScope oldRules { s_summitOldSheetRulesHaiku, true };
++    return shouldDirtyAllStyle(sheets);
++}
++#endif
++
+ Invalidator::Invalidator(const Vector<Ref<StyleSheetContents>>& sheets, const MQ::MediaQueryEvaluator& mediaQueryEvaluator)
+     : m_ownedRuleSet(RuleSet::create())
+     , m_ruleSets({ { m_ownedRuleSet } })
 diff --git a/Source/WebCore/style/StyleResolver.cpp b/Source/WebCore/style/StyleResolver.cpp
 index 0f09e88f82e9b587d8c08d8f5d1d83a5a00cfaf1..09f17413d66c5c621c375c6ce7d790ea1b7b3663 100644
 --- a/Source/WebCore/style/StyleResolver.cpp
@@ -39350,10 +39476,10 @@ index cb33f6566d5bab2af0b77f56ced2a5c06b56b37e..89863f7a636c35e936ce5682cafbd67f
      ScopeRuleSets& ruleSets() LIFETIME_BOUND { return m_ruleSets; }
      const ScopeRuleSets& ruleSets() const LIFETIME_BOUND { return m_ruleSets; }
 diff --git a/Source/WebCore/style/StyleScope.cpp b/Source/WebCore/style/StyleScope.cpp
-index 5375c6f10320876a1fac9dfd503cb3c8b373879b..755e28ae96448b68c8067ac7a39a47a72bdf8414 100644
+index 5375c6f10320876a1fac9dfd503cb3c8b373879b..9ee376641fb6454c88e10693ef0f7e0574c52ce2 100644
 --- a/Source/WebCore/style/StyleScope.cpp
 +++ b/Source/WebCore/style/StyleScope.cpp
-@@ -69,6 +69,7 @@
+@@ -69,9 +69,20 @@
  #include "UserContentController.h"
  #include "UserContentURLPattern.h"
  #include "UserStyleSheet.h"
@@ -39361,7 +39487,20 @@ index 5375c6f10320876a1fac9dfd503cb3c8b373879b..755e28ae96448b68c8067ac7a39a47a7
  #include <wtf/SetForScope.h>
  #include <wtf/TZoneMallocInlines.h>
  
-@@ -585,6 +586,8 @@ void Scope::updateActiveStyleSheets(UpdateType updateType)
++#if PLATFORM(HAIKU)
++namespace WebCore {
++bool summitInvalidateElementsWithMissingStyleHaiku(Document&);
++void summitVerifyStyleInvalidationHaiku(Document&);
++namespace Style {
++bool summitSheetsAvoidFullInvalidationHaiku(const Vector<Ref<StyleSheetContents>>&);
++}
++}
++#endif
++
+ namespace WebCore {
+ 
+ using namespace HTMLNames;
+@@ -585,6 +596,8 @@ void Scope::updateActiveStyleSheets(UpdateType updateType)
      auto styleSheetChange = StyleSheetChange { ResolverUpdateType::Reconstruct };
      if (updateType == UpdateType::ActiveSet)
          styleSheetChange = analyzeStyleSheetChange(activeCSSStyleSheets);
@@ -39370,9 +39509,17 @@ index 5375c6f10320876a1fac9dfd503cb3c8b373879b..755e28ae96448b68c8067ac7a39a47a7
  
      updateResolver(activeCSSStyleSheets, styleSheetChange.resolverUpdateType);
  
-@@ -613,7 +616,8 @@ void Scope::invalidateStyleAfterStyleSheetChange(const StyleSheetChange& styleSh
+@@ -612,14 +625,30 @@ void Scope::invalidateStyleAfterStyleSheetChange(const StyleSheetChange& styleSh
+ 
      // If we are already parsing the body and so may have significant amount of elements, put some effort into trying to avoid style recalcs.
      bool invalidateAll = !m_document->bodyOrFrameset() || m_document->hasNodesWithMissingStyle();
++#if PLATFORM(HAIKU)
++    // Elements left without style are invalidated alone (StyleTreeResolver.cpp).
++    if (invalidateAll && m_document->bodyOrFrameset()
++        && (styleSheetChange.resolverUpdateType == ResolverUpdateType::Reset || styleSheetChange.resolverUpdateType == ResolverUpdateType::Additive)
++        && summitInvalidateElementsWithMissingStyleHaiku(document()))
++        invalidateAll = false;
++#endif
  
 -    if (styleSheetChange.resolverUpdateType == ResolverUpdateType::Reconstruct || invalidateAll) {
 +    if (styleSheetChange.resolverUpdateType == ResolverUpdateType::Reconstruct
@@ -39380,7 +39527,21 @@ index 5375c6f10320876a1fac9dfd503cb3c8b373879b..755e28ae96448b68c8067ac7a39a47a7
          Invalidator::invalidateAllStyle(*this);
          return;
      }
-@@ -634,6 +638,15 @@ void Scope::updateResolver(std::span<const Ref<CSSStyleSheet>> activeStyleSheets
+ 
+     Invalidator invalidator(styleSheetChange.addedSheets, m_resolver->mediaQueryEvaluator());
+     invalidator.invalidateStyle(*this);
++#if PLATFORM(HAIKU)
++    static bool verify = [] {
++        const char* value = getenv("SUMMIT_STYLE_SHEET_INVALIDATION");
++        return value && !strcmp(value, "verify");
++    }();
++    if (verify && summitSheetsAvoidFullInvalidationHaiku(styleSheetChange.addedSheets))
++        summitVerifyStyleInvalidationHaiku(document());
++#endif
+ }
+ 
+ void Scope::updateResolver(std::span<const Ref<CSSStyleSheet>> activeStyleSheets, ResolverUpdateType updateType)
+@@ -634,6 +663,15 @@ void Scope::updateResolver(std::span<const Ref<CSSStyleSheet>> activeStyleSheets
  
      SetForScope isUpdatingStyleResolver { m_isUpdatingStyleResolver, true };
  
@@ -39396,7 +39557,7 @@ index 5375c6f10320876a1fac9dfd503cb3c8b373879b..755e28ae96448b68c8067ac7a39a47a7
      if (updateType == ResolverUpdateType::Reset) {
          customPropertyRegistry().clearRegisteredFromStylesheets();
          counterStyleRegistry().clearAuthorCounterStyles();
-@@ -749,7 +762,7 @@ void Scope::scheduleUpdate(UpdateType update)
+@@ -749,7 +787,7 @@ void Scope::scheduleUpdate(UpdateType update)
  
  void Scope::didChangeActiveStyleSheetCandidates()
  {
@@ -39405,7 +39566,7 @@ index 5375c6f10320876a1fac9dfd503cb3c8b373879b..755e28ae96448b68c8067ac7a39a47a7
  }
  
  void Scope::didChangeStyleSheetContents()
-@@ -757,6 +770,24 @@ void Scope::didChangeStyleSheetContents()
+@@ -757,6 +795,24 @@ void Scope::didChangeStyleSheetContents()
      scheduleUpdate(UpdateType::ContentsOrInterpretation);
  }
  
@@ -39489,6 +39650,176 @@ index 8c5e827bd714f453f1f0404786f8b5ed848b3f04..7bf9d246f2e968b2715a513c1945c15a
 +    void appendAuthorStyleSheets(std::span<const Ref<CSSStyleSheet>>, MQ::MediaQueryEvaluator*, Style::InspectorCSSOMWrappers&, bool preserveResolverMutatingRules = false);
  
      void resetUserAgentMediaQueryStyle();
+ 
+diff --git a/Source/WebCore/style/StyleTreeResolver.cpp b/Source/WebCore/style/StyleTreeResolver.cpp
+index 0f4a062ea287c67412a3582831a43a9c04774cbf..0c4ece6c0d557fc01ee8e728f1c40d6ba51e0c06 100644
+--- a/Source/WebCore/style/StyleTreeResolver.cpp
++++ b/Source/WebCore/style/StyleTreeResolver.cpp
+@@ -84,8 +84,155 @@
+ #include <wtf/cocoa/RuntimeApplicationChecksCocoa.h>
+ #endif
+ 
++#if PLATFORM(HAIKU)
++#include "CSSSerializationContext.h"
++#include "CSSValuePool.h"
++#include "EventLoop.h"
++#include "HTMLNames.h"
++#include "StyleExtractor.h"
++#include "StyleExtractorState.h"
++#include "TypedElementDescendantIteratorInlines.h"
++#include <wtf/WeakHashMap.h>
++#include <wtf/WeakHashSet.h>
++#include <wtf/text/StringBuilder.h>
++#endif
++
+ namespace WebCore {
+ 
++#if PLATFORM(HAIKU)
++// Elements a style resolution left without style because a style sheet was
++// still loading (Document::hasNodesWithMissingStyle()). Upstream then
++// restyles the whole document at every later style sheet change, and when a
++// script asks for style or layout while a sheet loads ("This should just
++// invalidate elements with missing styles"). Wikipedia's ResourceLoader adds
++// module styles while the page runs: each one restyled the article from
++// scratch, 300 to 400 ms on a Raspberry Pi 4. These elements are remembered
++// instead, and only their subtrees are invalidated besides what the new
++// sheets match, unless more than 4096 were left. A full rebuild forgets them.
++// SUMMIT_MISSING_STYLE_INVALIDATION=all restyles everything as before;
++// =verify also restyles everything afterwards and reports differences.
++struct SummitMissingStyleHaiku {
++    WTF_DEPRECATED_MAKE_STRUCT_FAST_ALLOCATED(SummitMissingStyleHaiku);
++    WeakHashSet<Element, WeakPtrImplWithEventTargetData> elements;
++    unsigned noted { 0 };
++    bool overflow { false };
++};
++
++static WeakHashMap<Document, std::unique_ptr<SummitMissingStyleHaiku>, WeakPtrImplWithEventTargetData>& summitMissingStyleTableHaiku()
++{
++    static NeverDestroyed<WeakHashMap<Document, std::unique_ptr<SummitMissingStyleHaiku>, WeakPtrImplWithEventTargetData>> table;
++    return table;
++}
++
++static const char* summitMissingStyleModeHaiku()
++{
++    static const char* mode = [] {
++        const char* value = getenv("SUMMIT_MISSING_STYLE_INVALIDATION");
++        return value ? value : "";
++    }();
++    return mode;
++}
++
++void summitNoteElementWithMissingStyleHaiku(Document& document, Element& element)
++{
++    auto& entry = summitMissingStyleTableHaiku().ensure(document, [] { return makeUnique<SummitMissingStyleHaiku>(); }).iterator->value;
++    if (entry->overflow)
++        return;
++    if (++entry->noted > 4096) {
++        entry->overflow = true;
++        entry->elements.clear();
++        return;
++    }
++    entry->elements.add(element);
++}
++
++void summitForgetElementsWithMissingStyleHaiku(Document& document)
++{
++    summitMissingStyleTableHaiku().remove(document);
++}
++
++void summitVerifyStyleInvalidationHaiku(Document&);
++
++// False when the caller has to invalidate everything as before.
++bool summitInvalidateElementsWithMissingStyleHaiku(Document& document)
++{
++    if (!strcmp(summitMissingStyleModeHaiku(), "all"))
++        return false;
++    auto& table = summitMissingStyleTableHaiku();
++    auto iterator = table.find(document);
++    if (iterator == table.end())
++        return true;
++    if (iterator->value->overflow)
++        return false;
++    Vector<Ref<Element>> elements;
++    for (auto& element : iterator->value->elements)
++        elements.append(element);
++    iterator->value->elements.clear();
++    iterator->value->noted = 0;
++    for (auto& element : elements) {
++        if (&element->document() == &document && element->isConnected())
++            element->invalidateStyleForSubtree();
++    }
++    if (!strcmp(summitMissingStyleModeHaiku(), "verify"))
++        summitVerifyStyleInvalidationHaiku(document);
++    return true;
++}
++
++// Restyles everything once the targeted invalidation has been resolved, and
++// reports elements whose style came out different.
++void summitVerifyStyleInvalidationHaiku(Document& document)
++{
++    document.eventLoop().queueTask(TaskSource::InternalAsyncTask, [weakDocument = WeakPtr { document }] {
++        RefPtr document = weakDocument.get();
++        if (!document || !document->renderView())
++            return;
++        static constexpr CSSPropertyID properties[] = { CSSPropertyDisplay, CSSPropertyVisibility, CSSPropertyOpacity, CSSPropertyPosition,
++            CSSPropertyFloat, CSSPropertyColor, CSSPropertyBackgroundColor, CSSPropertyWidth, CSSPropertyHeight, CSSPropertyMaxHeight,
++            CSSPropertyOverflowX, CSSPropertyPointerEvents, CSSPropertyFontSize, CSSPropertyZIndex, CSSPropertyTop, CSSPropertyLeft,
++            CSSPropertyMarginTop, CSSPropertyPaddingTop, CSSPropertyBorderTopWidth, CSSPropertyTransform, CSSPropertyFilter };
++        auto valuesOf = [&](Element& element, const Style::ComputedStyle& style) {
++            Style::Extractor extractor(&element);
++            StringBuilder values;
++            for (auto property : properties)
++                values.append(extractor.propertyValueSerializationInStyle(style, property, CSS::defaultSerializationContext(), CSSValuePool::singleton(), nullptr, Style::ExtractorState::PropertyValueType::Computed), ';');
++            return values.toString();
++        };
++        document->updateStyleIfNeeded();
++        HashMap<Ref<Element>, String> targeted;
++        for (Ref element : descendantsOfType<Element>(*document)) {
++            if (auto* style = element->existingComputedStyle())
++                targeted.add(element, valuesOf(element, *style));
++        }
++        document->scheduleFullStyleRebuild();
++        document->updateStyleIfNeeded();
++        unsigned elements = 0;
++        unsigned different = 0;
++        unsigned missing = 0;
++        for (Ref element : descendantsOfType<Element>(*document)) {
++            auto* style = element->existingComputedStyle();
++            if (!style)
++                continue;
++            ++elements;
++            auto found = targeted.find(element);
++            if (found == targeted.end()) {
++                ++missing;
++                continue;
++            }
++            auto values = valuesOf(element, *style);
++            if (found->value == values)
++                continue;
++            if (++different <= 5) {
++                WTFLogAlways("Summit style invalidation MISMATCH: <%s class=\"%s\"> targeted %s full %s\n", element->localName().string().utf8().legacyCStringPointer(),
++                    element->getAttribute(HTMLNames::classAttr).string().left(60).utf8().legacyCStringPointer(),
++                    found->value.utf8().legacyCStringPointer(), values.utf8().legacyCStringPointer());
++            }
++        }
++        WTFLogAlways("Summit style invalidation: verified %u elements, %u differ, %u had no style before the full restyle, url %s\n", elements, different, missing,
++            document->url().string().left(80).utf8().legacyCStringPointer());
++    });
++}
++#endif
++
+ namespace Style {
+ 
+ DEFINE_ALLOCATOR_WITH_HEAP_IDENTIFIER(TreeResolverScope);
+@@ -326,6 +473,9 @@ auto TreeResolver::resolveElement(Element& element, const Style::ComputedStyle*
+ {
+     if (m_didSeePendingStylesheet && !element.renderOrDisplayContentsStyle() && !m_document->isIgnoringPendingStylesheets()) {
+         m_document->setHasNodesWithMissingStyle();
++#if PLATFORM(HAIKU)
++        summitNoteElementWithMissingStyleHaiku(m_document, element);
++#endif
+         return { };
+     }
  
 diff --git a/Source/WebCore/testing/Internals.idl b/Source/WebCore/testing/Internals.idl
 index efb0e18ef3681d9f33b6c784f0fb22f1ff0e80eb..19ec94335716b9ab75d52343c7adcad776ac151b 100644
