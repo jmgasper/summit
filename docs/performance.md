@@ -25,7 +25,8 @@ browser's code with the old build, 8.7 s with the new packages right after
 installing them. A faster SD mode in the OS's driver (high speed or UHS), or
 reading the engine's files in the background after login, would help there.
 
-Speedometer 3.1 on the Pi (three iterations): 1.02 +- 0.21 -> 1.36 +- 0.22.
+Speedometer 3.1 on the Pi (three iterations): 1.02 +- 0.21 -> 1.36 +- 0.22;
+the final packages (1.10.0-7) 1.34 +- 0.32.
 
 ### Libraries: the runtime loader binds everything at load
 
