@@ -330,6 +330,14 @@ is on the screen at the web process's `first frame sent`.
   10 s, then the close is retried.
 - A maximised window scrolls at ~20 fps (read-back), video at ~11 fps
   (software decoding, upload and read-back of each frame).
+- A browser killed while it launches a helper (load_image() takes 0.3-0.6 s
+  on the Pi) leaves that helper behind for good: Haiku starts the new team's
+  main thread suspended until the parent resumes it, and nothing does once
+  the parent is gone. Each holds ~10 MiB (one suspended thread, its libraries
+  loaded). Seen after the smoke test's quit-then-kill; a browser killed at
+  any other moment takes all its helpers with it within 2-10 s
+  (`tools/pi/board/orphan-test.sh`). The browser could kill such suspended
+  helpers of its own executable path, whose parent is gone, when it starts.
 - The Pi's RAM disk (ramfs) hung around 00:25 on 5 October: a network process
   left behind by a force-quit browser and an `rm -rf` in that RAM disk sit
   in kernel waits and ignore `kill -9`; `ls`, `df` and `profile -a` hang with
