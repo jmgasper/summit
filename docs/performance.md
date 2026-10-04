@@ -182,22 +182,24 @@ map image: Bad data").
 
 ### Installed
 
-- Raspberry Pi (5 October, 01:10): `summit_webkit-1.10.0-6` (engine from
-  Summit 3dfbea2: the mimalloc slots and the library order below) with
-  `summit-0.1.0~git20261004-1` (unchanged browser), `pkgman install` of the
-  local file. Staged in `/mnt/HaikuWork/rpi4/packages-arm64` for the next
-  image (1.10.0-5 moved to `packages-arm64-replaced`). Against 1.10.0-5's
-  engine, both copied to the SD card and alternated: first frame with the
-  page 1.73-1.74 s instead of 1.77-1.78 s. (Those are 0.3 s above the
-  evening's numbers in every build since the RAM disk hang below; the time
-  goes between the web process's start and its page, and a restart should
-  bring it back.) Eight launch, quit and force-kill cycles of the installed
-  build left no process behind.
-- X399: `bundle-vg3_w8ii` (Mesa prefix-20261002), same sources. Against the
-  previous `bundle-p82o30tm`, alternating: Speedometer 3.1 11.26, 11.39,
-  11.26, 11.05, 11.38, 10.87 (mean 11.20) against 11.06, 11.12, 11.06, 11.14
-  (11.09); the DOM page 235 ms against 241; a bare web process loads in
-  131-133 ms against 134-137.
+- Raspberry Pi (5 October, 02:20): `summit_webkit-1.10.0-7` (engine from
+  Summit d2f5170: the mimalloc slots, the library order and `-Bsymbolic`
+  below) with `summit-0.1.0~git20261004-1` (unchanged browser), `pkgman
+  install` of the local file. Staged in `/mnt/HaikuWork/rpi4/packages-arm64`
+  for the next image (1.10.0-5 and -6 moved to `packages-arm64-replaced`).
+  Installed, warm: the browser's code at 0.32 s, first frame with the page
+  1.58-1.59 s (1.69 s for 1.10.0-6 in the same state of the Pi; both 0.3 s
+  above what a restarted Pi gives, see the RAM disk hang below); the first
+  launch after installing, from the SD card: 8.1 s to the browser's code.
+  Launch, quit and force-kill cycles of the installed build left nothing
+  behind. 1.10.0-6 (01:10) had the mimalloc slots and library order only.
+- X399: `bundle-3_40rbw1` (Mesa prefix-20261002), same sources: the
+  browser's code at 0.11 s, first frame 0.45-0.48 s. Before it tonight
+  `bundle-vg3_w8ii` (01:35, without `-Bsymbolic`): against the previous
+  `bundle-p82o30tm`, alternating, Speedometer 3.1 11.26, 11.39, 11.26,
+  11.05, 11.38, 10.87 (mean 11.20) against 11.06, 11.12, 11.06, 11.14
+  (11.09); the DOM page 235 ms against 241; a bare web process 131-133 ms
+  against 134-137.
 - Before that, on the evening of 4 October: Pi `summit_webkit-1.10.0-5`
   (Summit 3f427fc), start page warm at 1.39 s; X399 `bundle-p82o30tm`,
   checked against `bundle-r0_tdpf3` (start-up 0.13 s to the browser's code,
@@ -273,8 +275,34 @@ bare web process on the Pi: `find_symbol` 20%, `elf_gnuhash` 13%,
 `match_symbol` 12.5%, relocation 12%, `strcmp` 11%. A per-image cache of
 resolved symbols while an image is relocated (FreeBSD's rtld keeps one)
 would cut the model's work 3.6 times; it belongs to the OS's runtime loader.
-Summit can't avoid these relocations short of building without RTTI or
-linking JavaScriptCore into libWebKit.
+
+### libWebKit binds its own data symbols when it is linked
+
+43,000 of libWebKit's lookups were of its own symbols: the type_info
+objects every vtable points at, vtables and statics reached through the
+GOT. `-Bsymbolic-functions` leaves data symbols to the runtime loader;
+libWebKit is now linked with `-Bsymbolic` (after the other flag, so it
+wins): 111k symbol relocations -> 69k. The binding only changes where an
+image searched before libWebKit defines the same symbol, and libWebKit comes
+right after the executable in the browser and both helper processes; the
+executables define only Haiku's ABI markers, the two `WebCore::Headroom`
+constants (compared by value) and libstdc++'s shared_ptr type_info objects
+(compared by name), and have no copy relocations.
+
+| | before | after |
+| --- | --- | --- |
+| Pi: browser's code runs | 0.38 s | 0.32-0.33 s |
+| Pi: web process libraries | 0.34 s | 0.275 s |
+| Pi: first frame with the page | 1.71 s | 1.58-1.60 s |
+| X399: browser's code runs | 0.131 s | 0.110 s |
+| X399: first frame | 0.515 s | 0.43-0.48 s |
+| X399: bare web process | 136 ms | 111 ms |
+| X399: Speedometer 3.1, five runs | 11.16 | 11.27 |
+
+(Pi: copies on the SD card, alternating, after the RAM disk hang, which adds
+the same 0.3 s to both.) The DOM page, Wikipedia scrolling (53 and 59 fps,
+direct present) and a profile with uBlock Origin and 1Password on YouTube
+and Reddit are unchanged on the X399.
 
 ### Measuring start-up on the X399: copy bundles early
 
