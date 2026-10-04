@@ -368,6 +368,7 @@ public:
                     [](const WindowRecord& window) { return window.privateBrowsing; }))
                 EndPrivateSession();
             if (fQuitting) {
+                SUMMIT_QUIT_TRACE("window closed, %zu left", fWindows.size());
                 // Quitting keeps every window's tabs for the next start.
                 fClosedWhileQuitting.push_back(key);
                 if (fWindows.empty()) PostMessage(B_QUIT_REQUESTED);
@@ -381,6 +382,7 @@ public:
         }
         if (message->what == summit::kWindowCloseCancelled) {
             if (!fQuitting) return;
+            SUMMIT_QUIT_TRACE("a window stayed open; not quitting");
             // A page kept its window open: Summit keeps running, without the
             // windows that already closed.
             fQuitting = false;
@@ -617,6 +619,7 @@ public:
     }
     bool QuitRequested() override
     {
+        SUMMIT_QUIT_TRACE("quit requested (%zu windows%s)", fWindows.size(), fQuitting ? ", already quitting" : "");
         if (!fWindows.empty()) {
             if (fQuitting || fDownloadPromptPending) return false;
             if (!fDownloads.empty() && !fDownloadQuitApproved) {
@@ -676,7 +679,9 @@ public:
                 SetPulseRate(100000);
                 return false;
             }
+            SUMMIT_QUIT_TRACE("releasing the engine");
             fWebKitContext.reset();
+            SUMMIT_QUIT_TRACE("engine released");
             PostMessage(B_QUIT_REQUESTED);
             return false;
         }
@@ -699,6 +704,7 @@ public:
             std::string error;
             if (!fShared->Save(error)) std::fprintf(stderr, "Summit: could not save the profile: %s\n", error.c_str());
         }
+        SUMMIT_QUIT_TRACE("profile saved; the application quits");
         return true;
     }
 #endif

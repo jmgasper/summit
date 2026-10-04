@@ -56,6 +56,18 @@ section of `docs/performance.md`.
    `kill-cycles.sh` launches, quits and force-kills a browser N times and
    reports processes left behind.
 
+8. Quitting: `quit-trace.sh SUMMIT PROFILE URL [WAIT]` loads a page, asks
+   the browser to quit after WAIT seconds and prints how long its team lived
+   on, with the `SUMMIT_QUIT_TRACE=1` lines of the browser and the engine;
+   `quit-strace.sh SUMMIT PROFILE URL WAIT TAG` also records when the web
+   process and the browser went (`logs/quit-strace-TAG.times`), with
+   `THREADS=1` the state and CPU time of each thread every 250 ms
+   (`threadstate`), and without `NO_STRACE=1` an strace of both teams.
+9. Bundles on the SD card: `sd-bundle.sh b-NAME [FILE...]` copies a staged
+   bundle to `/boot/home/summit-ec/sd/b-NAME` (4.5 minutes for all of it;
+   with FILEs, such as `lib/libWebKit.so.1`, only those). Use this for
+   anything that force-kills a browser.
+
 Running a bundle from a RAM disk is for measuring only: twice on 5 October a
 network process left behind by a force-killed browser hung in the kernel
 together with the RAM disk it ran from (`ls`, `df` and `profile -a` on it
@@ -68,6 +80,9 @@ only a restart frees it.
 - `dltime LIB...`: `dlopen()` time, CPU time and page faults per library.
 - `faultbench FILE`: cost of anonymous, file and copy-on-write page faults.
 - `fctime`: fontconfig start with and without its cache.
+- `threadstate MS COUNT TEAM...`: every MS milliseconds, the threads of the
+  teams that ran or wait on something other than their port: state, the
+  semaphore waited on, CPU time since the last sample.
 - `egltime`: EGL display, context, shader compile and first draw.
 - `readback W H`: `glReadPixels` into memory, through a PBO, from a pbuffer,
   and in 64-row bands.

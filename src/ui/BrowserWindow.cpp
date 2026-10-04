@@ -1104,6 +1104,7 @@ void BrowserWindow::CloseTab(int64 id)
 
 void BrowserWindow::StartCloseRequest(Tab& tab)
 {
+    SUMMIT_QUIT_TRACE("asking tab %lld to close", static_cast<long long>(tab.id));
     tab.closeQueued = false;
     tab.closeRequested = true;
     tab.view->RequestClose();
@@ -1179,9 +1180,11 @@ void BrowserWindow::BeginWindowClose()
     if (fCloseCommitPending) { fWindowCloseQueued = true; return; }
     fWindowCloseQueued = false;
     fWindowCloseInvalidated = false;
+    SUMMIT_QUIT_TRACE("window close begins (%zu tabs)", fTabs.size());
     // Approval is provisional until every tab agrees. Keep live documents,
     // undo state and the full saved session intact when any tab chooses Stay.
     SaveSession();
+    SUMMIT_QUIT_TRACE("session saved");
     fWindowCloseFocus = CaptureCloseFocus();
     fClosePromptTab = 0;
     for (const auto& tab : fTabs) {
@@ -1262,6 +1265,7 @@ void BrowserWindow::WebKitCloseCommitted(const BMessage& message)
         || identifier != fCloseCommitIdentifier || message.FindBool("closed", &closed) != B_OK) return;
     fCloseCommitPending = false;
     auto identifiers = std::exchange(fCommitTabs, { });
+    SUMMIT_QUIT_TRACE("close committed: %s", closed ? "closed" : "kept");
     if (fCommitWholeWindow) {
         if (!closed) {
             CancelWindowClose();
@@ -1275,6 +1279,7 @@ void BrowserWindow::WebKitCloseCommitted(const BMessage& message)
         fTabs.clear();
         fSelected = 0;
         --sOpenWindows;
+        SUMMIT_QUIT_TRACE("window's views deleted");
         if (fCloseWindowCommand) RespondToCommand(std::exchange(fCloseWindowCommand, 0), B_OK);
         BMessage ready(kWindowReadyToClose);
         ready.AddMessenger("window", BMessenger(this));
@@ -1331,6 +1336,7 @@ void BrowserWindow::WebKitCloseResult(const BMessage& message)
     if (message.FindMessenger("view", &sender) != B_OK) return;
     auto* tab = FindTab(sender);
     if (!tab) return;
+    SUMMIT_QUIT_TRACE("tab %lld %s", static_cast<long long>(tab->id), message.what == B_WEBKIT_CLOSE_CANCELLED ? "stays" : "may close");
     if (message.what == B_WEBKIT_CLOSE_CANCELLED) {
         if (!tab->closeRequested) return;
         tab->closeRequested = false;
