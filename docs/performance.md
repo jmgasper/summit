@@ -1,5 +1,152 @@
 # Summit performance: Speedometer 3.1 baseline, where the time goes, stress test
 
+## 5 October 2026: quitting with a busy page, helpers left behind, the Pi's video decoder
+
+Three items left open on the Raspberry Pi 4 the night before, checked on the
+X399 for regressions. In short:
+
+| | Before | After |
+|---|---|---|
+| Pi: quit with YouTube loading, until the window is gone | 0.9-18.8 s (14-21 s typical) | 1.2-1.4 s |
+| Pi: a start right after quitting | lost while the old instance exited (nothing opened) | opens (waits for, or is passed on by, the old one) |
+| Helper killed with its browser while starting | suspended for good, ~10 MiB each | removed by the next browser's first launch |
+| Pi: MSE H.264 720p30 | libavcodec, 515-540 of 898 pictures, 1.37-1.47 cores | VideoCore, all pictures, 0.65-0.95 cores |
+| Pi: MSE H.264 1080p30 | libavcodec, 652 of 898, 2.52-2.67 cores | VideoCore, 886-929 shown, 1.33-1.35 cores |
+| Pi: H.264 1080p30 file | libavcodec, 27 fps, 2.9 cores | VideoCore, 25 fps, 2.1 cores |
+| X399: Speedometer 3.1, 3 runs each, alternating | 11.38, 10.64, 11.39 | 11.32, 11.16, 11.45 |
+
+Installed: Pi `summit_webkit` 1.10.0-9 and `summit` 0.1.0~git20261005-1;
+X399 `bundle-r6slr78u` (Mesa prefix-20261002).
+
+### Quitting while a page's main thread is busy
+
+`quit-trace.sh`/`quit-strace.sh` (tools/pi) with `SUMMIT_QUIT_TRACE=1`, which
+now traces every step in the browser and the engine on one clock. Quitting
+asks each tab's page (TryClose: its before-unload handlers) before anything
+closes. The answer comes when the page's main thread gets to it; a YouTube
+page still loading on the Pi runs one script for 4-5 s at a time. The Haiku
+port waited 10 s for it, then pinged the process (3+ s) and, if the process
+answered, cancelled the close; the window stayed up all that time.
+
+Upstream WebKit closes after 50 ms without an answer, Firefox after
+`dom.beforeunload_timeout_ms` (1 s). Summit now gives the page 1 s and then
+closes it; a before-unload prompt the page shows stops the clock, as before
+(`runBeforeUnloadConfirmPanel()`). Pi, quit 7-13 s into YouTube's load,
+alternating: new 1.94, 6.29, 2.08, 1.89 s; installed 2.30, 0.91, 18.80,
+13.66 s. The window goes 1.1-1.4 s after the request.
+
+What is left after the window has gone is the SD card (1.4 MB/s, 25 MHz):
+while the network and web processes write YouTube's HTTP cache and its 44 MB
+bytecode cache, the browser's last profile write waited 4-5 s and its
+team's teardown after `exit()` 12-14 s (`threadstate` shows no thread busy;
+the team can no longer be inspected once it dies). On a quiet card the
+whole quit takes 1.5-2 s.
+
+That tail cost something visible: Summit is single-launch, and a start in
+those seconds was handed to the exiting instance and lost. Now the last
+profile write happens after the application has left the registrar; a start
+that reached the quitting instance is started again once it has gone
+(`started again with N arguments` in the trace); a start that finds an
+instance still writing its profile (a port named `Summit exits <hash of the
+executable>`) waits for it, up to 20 s. `relaunch-test.sh` (tools/pi): a
+start 0.3 s and 2 s after the quit both open their page.
+
+The X399 quits in 0.14-0.77 s with either build.
+
+The first 26 s, 44 s and 66 s quits measured in the morning were the Pi
+running out of memory (below), not the browser.
+
+### Helpers left suspended
+
+A browser killed while `load_image()` loads a helper (0.3-0.6 s on the Pi)
+leaves that team with one suspended thread for good. The engine's process
+launcher now removes, on a thread of its own at its first launch, every team
+running its own WebProcess or NetworkProcess executable (same file) whose
+parent is gone (the kernel team adopts orphans) and whose threads are all
+suspended. Reproduced with `killonspawn` (tools/pi/probes; kills a browser
+the moment it has started a helper): both helpers are left suspended, and
+the next start logs `Summit: removed ... left suspended by a browser that
+died while starting it` for each, on the Pi and on the X399.
+
+### The Raspberry Pi's video decoder
+
+The Pi image has `rpi_mmal` (H.264 on the VideoCore firmware) and `rpi_hevc`
+(the SoC's HEVC block). Neither registers a format with the media kit, on
+purpose (a refusal would leave a stream without a decoder), so Summit could
+not reach them: the media kit picked the ROCK 5's `00_rockchip_mpp`, which
+fails on the Pi, and Summit fell back to libavcodec.
+
+- `AddOnVideoDecoderHaiku` (MediaDecoderSelectionHaiku.cpp) loads `rpi_mmal`
+  by name, as airTime does, for eight-bit 4:2:0 progressive H.264 up to
+  1920x1088 (from the avcC's sequence parameter set), before the media kit's
+  choice, in the MSE player and the file player. Anything it refuses goes
+  on as before; `SUMMIT_HARDWARE_VIDEO=0` turns it off. The engine has no
+  RTTI: the add-on's `MediaPlugin` is turned into its `DecoderPlugin` with
+  the offset-to-top in its vtable, checked against the virtual base offset.
+- The samples the add-on read while it was set up are given again to the
+  next decoder if it refuses the stream.
+- Its pictures are I420. MSE (YouTube) sends them to the compositor as
+  planes: `CoordinatedPlatformLayerBufferPlanesHaiku` uploads them into
+  three single-channel textures (`BitmapTexture::Flags::SingleChannel`, Haiku
+  only) and draws them with TextureMapper's planar YUV shader (BT.709 at 720
+  lines and more, BT.601 below). An image is made on the CPU only when
+  something paints the video itself (`SUMMIT_VIDEO_PLANES=0` does it for
+  every picture). The file player converts on the CPU (NEON); that
+  conversion took 10.2 ms a 1080p picture because GCC 13 sends a
+  `uint8x16x4_t` for `st4` through the stack, and takes 4.3 ms (an 8 MB
+  `memcpy`'s time) with zips and plain stores.
+- While the firmware decodes, the ARM's memory copies run about three times
+  slower (rpi4 `docs/rpi4/MEDIA.md`): the file player, which copies every
+  picture twice more (into its BBitmap, then for the compositor), gains CPU
+  but not pictures; the MSE path, which copies nothing, gains both.
+- The firmware's decoder service can stop answering until the next boot
+  (below). A decoder that failed is closed on a thread of its own; when
+  that takes seconds or a request times out, the add-on is not used again
+  until the system restarts (`/tmp/Summit hardware video failed` names the
+  boot) and videos go to libavcodec.
+- After a flush (a seek) the MSE player's sample source told the decoder the
+  stream had ended; the Pi's decoder then waits for the firmware to confirm
+  that before returning. The source now cancels (`B_CANCELED`) after a flush
+  or when closing and ends the stream only at its end; a flush during set-up
+  no longer drops the next generation's samples. X399, NVDEC, 1080p seek:
+  target reached 0.24 s after the seek (0.28 before).
+
+Measured on the Pi with `tools/pi/pages/mse.html` (a fragmented MP4 through
+MSE, 2 MB appends, title = presented/dropped) and `vplay.html`, served from
+the host, display awake (the scripts now stop the screen blanker: a blanked
+screen stops app_server drawing and makes the compositor look cheap):
+
+| Clip | Decoder | Pictures shown / dropped | Web process |
+|---|---|---|---|
+| MSE 720p30 | VideoCore, planes | 849-915 / 0-49 | 0.65-1.47 cores |
+| | VideoCore, CPU conversion | 593 / 305 | 1.59 |
+| | libavcodec | 423-540 / 358-475 | 1.15-1.47 |
+| MSE 1080p30 | VideoCore, planes | 886-929 / 26-92 | 1.33-1.35 |
+| | libavcodec | 652 / 246 | 2.59-2.67 |
+| File 1080p30 | VideoCore | 25 fps | 2.11-2.14 |
+| | libavcodec | 27 fps | 2.88-2.91 |
+
+YouTube gives the Pi 480p H.264 (854x480): 1.17 cores against 1.71.
+Not done: the file player with planes (it would need its frame hand-off
+reworked); `rpi_hevc` (Summit offers no HEVC through MSE).
+
+### The Pi out of memory, and a kernel panic
+
+The RAM disks that hung on 5 October at 00:25 held 2.3 GB of bundles that
+could not be freed: 1.1 GB free with nothing running, "Summit memory
+pressure: 95%, critical" in every test, stalls of tens of seconds. In that
+state a web process's mimalloc returned memory with `MADV_FREE` at a thread's
+exit and the kernel panicked (`VMAnonymousCache::Commit()` assertion from
+`Discard()`; docs/kunanyios-platform-issues.md). The board was restarted from
+its kernel debugger over the serial console (the NanoKVM's keyboard does not
+reach it) and later once more with `shutdown -r` to clear the firmware's
+decoder service. After a restart: 3.7 GB free.
+
+### Start-up
+
+Installed 1.10.0-9 on the restarted Pi, warm: the browser's code at
+0.30-0.31 s, the first frame with the page 1.20-1.39 s.
+
 ## 4 October 2026 (evening): the Raspberry Pi 4 - start-up, scrolling, page loads
 
 The Pi 4 (4 GB, four Cortex-A72 at 1.5 GHz, air/OS on an SD card, Mesa's
@@ -328,7 +475,7 @@ is on the screen at the web process's `first frame sent`.
 
 - Quitting with YouTube open takes 14-17 s on the Pi (old and new builds):
   the page's busy main thread does not answer TryClose within the port's
-  10 s, then the close is retried.
+  10 s, then the close is retried. (Fixed 5 October, see that section.)
 - A maximised window scrolls at ~20 fps (read-back), video at ~11 fps
   (software decoding, upload and read-back of each frame).
 - A browser killed while it launches a helper (load_image() takes 0.3-0.6 s
@@ -339,6 +486,7 @@ is on the screen at the web process's `first frame sent`.
   any other moment takes all its helpers with it within 2-10 s
   (`tools/pi/board/orphan-test.sh`). The browser could kill such suspended
   helpers of its own executable path, whose parent is gone, when it starts.
+  (Done 5 October.)
 - The Pi's RAM disk (ramfs) hung around 00:25 on 5 October: a network process
   left behind by a force-quit browser and an `rm -rf` in that RAM disk sit
   in kernel waits and ignore `kill -9`; `ls`, `df` and `profile -a` hang with
