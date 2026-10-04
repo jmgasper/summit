@@ -14,9 +14,13 @@ H=${SUMMIT_PI_WORK:-/mnt/HaikuWork/tmp/summit-ec}
 FORK_SCRIPT=/mnt/HaikuWork/rpi4/haiku/tools/airos/build-arm64-app-packages.sh
 [[ $NAME =~ ^b-[A-Za-z0-9_-]+$ ]] || { echo "bad name $NAME"; exit 2; }
 mkdir -p $H
-sed 's|-lscintilla -llexilla -lcurl -lcolumnlistview -o "$BUILDDIR/Summit"|-lscintilla -llexilla -lcurl -lcolumnlistview -Wl,--hash-style=both -o "$BUILDDIR/Summit"|' \
+# Summit's own link: a GNU hash table, and the libraries most symbols are
+# found in right after libWebKit (see the engine's PlatformHaiku.cmake).
+sed -e 's|-lscintilla -llexilla -lcurl -lcolumnlistview -o "$BUILDDIR/Summit"|-lscintilla -llexilla -lcurl -lcolumnlistview -Wl,--hash-style=both -o "$BUILDDIR/Summit"|' \
+	-e 's|		-lWebKit -lbe -lnetwork -lcrypto -lbnetapi|		-lWebKit -lJavaScriptCore -lbe -lstdc++ -lroot -lnetwork -lcrypto -lbnetapi|' \
 	$FORK_SCRIPT > $H/pkg.sh
-grep -q 'hash-style=both -o "$BUILDDIR/Summit"' $H/pkg.sh || { echo "packaging script changed; check the Summit link line"; exit 1; }
+grep -q 'hash-style=both -o "$BUILDDIR/Summit"' $H/pkg.sh && grep -q 'lWebKit -lJavaScriptCore -lbe' $H/pkg.sh \
+	|| { echo "packaging script changed; check the Summit link line"; exit 1; }
 rm -rf $H/pkgs-$NAME && mkdir -p $H/pkgs-$NAME
 SUMMIT_ENGINE=/mnt/HaikuWork/rpi4/summit-gl/WebKitBuild SUMMIT_ENGINE_LOG=/mnt/HaikuWork/rpi4/summit-gl/ninja-ec-$TAG.log \
 SUMMIT_ENGINE_EXTRA_DEPS=${DEPS_PREFIX:-/mnt/HaikuWork/rpi4/summit-gl/deps} TLS_DEPS=${TLS_PREFIX:-/mnt/HaikuWork/build/summit-arm64/deps} \

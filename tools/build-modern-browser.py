@@ -322,7 +322,10 @@ def main():
                 for source, output in zip(sources, objects)]
     if not arguments.compile_only:
         commands.append(['c++', *map(str, objects), '-L' + str(ENGINE / 'lib'),
-                         '-lWebKit', '-lbe', '-lnetwork', '-lcrypto',
+                         # The loader searches the executable's libraries first, in
+                         # this order: the ones most symbols are found in come
+                         # right after libWebKit (see the engine's PlatformHaiku.cmake).
+                         '-lWebKit', '-lJavaScriptCore', '-lbe', '-lstdc++', '-lroot', '-lnetwork', '-lcrypto',
                          *(['-lbnetapi', '-ltranslation', '-ltracker', '-lgame', '-lscintilla', '-llexilla', '-lcurl',
                             # BColumnListView, a static library of the system's.
                             '-lcolumnlistview'] if browser else []),

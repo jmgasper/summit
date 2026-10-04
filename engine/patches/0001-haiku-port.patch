@@ -43735,10 +43735,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..3899aaf905a33adfd645020a450f8fbd76331e94
+index 0000000000000000000000000000000000000000..d89fb690b48115a4bad2bfd5f86c274477c9c633
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,417 @@
+@@ -0,0 +1,428 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -44058,6 +44058,17 @@ index 0000000000000000000000000000000000000000..3899aaf905a33adfd645020a450f8fbd
 +    ${OPENGL_LIBRARIES}
 +    ${SQLITE_LIBRARIES}
 +)
++
++# Haiku's runtime_loader binds every symbol when it loads an image and looks
++# each one up in the images breadth-first, in load order, the executable's
++# own list first. libbe, libstdc++ and libroot (SysV hash tables only) came
++# last and look up most of their own symbols, and nearly every library looks
++# up symbols in libroot or libstdc++: right after libWebKit they are searched
++# first. A model of the lookups halves the work of a web process start
++# (tools/pi/lookup-scenarios.py); none of these libraries defines a symbol
++# another one in the list does, so nothing binds differently.
++list(INSERT WebProcess_LIBRARIES 1 JavaScriptCore be stdc++ root)
++list(INSERT NetworkProcess_LIBRARIES 1 JavaScriptCore be stdc++ root)
 +
 +add_custom_target(forwarding-headerHaiku
 +    COMMAND ${PERL_EXECUTABLE} ${WEBKIT_DIR}/Scripts/generate-forwarding-headers.pl ${WEBKIT_DIR} ${DERIVED_SOURCES_WEBKIT_DIR}/include haiku
