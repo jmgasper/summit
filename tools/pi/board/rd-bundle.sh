@@ -1,8 +1,8 @@
 #!/bin/sh
 # rd-bundle.sh NAME : copies /Documents/SummitPi/NAME into the RAM disk
-# /boot/home/summit-ec/rd (mounted on first use) as a runnable bundle.
+# /boot/home/summit-ec/rd, or $RD (mounted on first use), as a runnable bundle.
 name=$1
-rd=/boot/home/summit-ec/rd
+rd=${RD:-/boot/home/summit-ec/rd}
 mkdir -p $rd
 if ! df $rd 2>/dev/null | grep -q ramfs; then mount -t ramfs $rd || exit 1; fi
 rm -rf $rd/$name

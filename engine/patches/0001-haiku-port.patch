@@ -43723,10 +43723,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..d89fb690b48115a4bad2bfd5f86c274477c9c633
+index 0000000000000000000000000000000000000000..41b76d57876fd7761dbc7fcd1b7a57b0ba6b2090
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,428 @@
+@@ -0,0 +1,439 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -44057,6 +44057,17 @@ index 0000000000000000000000000000000000000000..d89fb690b48115a4bad2bfd5f86c2744
 +# another one in the list does, so nothing binds differently.
 +list(INSERT WebProcess_LIBRARIES 1 JavaScriptCore be stdc++ root)
 +list(INSERT NetworkProcess_LIBRARIES 1 JavaScriptCore be stdc++ root)
++
++# CMake drops the JavaScriptCore above for the one libWebKit brings in, at
++# the end of the line, so it was loaded after a dozen libraries. libWebKit
++# looks up 49,000 symbols in it (the method tables of its JS wrappers), each
++# one through libbe, libstdc++ and libroot's SysV tables first: more than half
++# of a web process's symbol lookup work. Link options come before the objects
++# and libraries, so these two are loaded first.
++cmake_language(DEFER CALL target_link_options WebProcess BEFORE PRIVATE
++    $<TARGET_LINKER_FILE:WebKit> $<TARGET_LINKER_FILE:JavaScriptCore>)
++cmake_language(DEFER CALL target_link_options NetworkProcess BEFORE PRIVATE
++    $<TARGET_LINKER_FILE:WebKit> $<TARGET_LINKER_FILE:JavaScriptCore>)
 +
 +add_custom_target(forwarding-headerHaiku
 +    COMMAND ${PERL_EXECUTABLE} ${WEBKIT_DIR}/Scripts/generate-forwarding-headers.pl ${WEBKIT_DIR} ${DERIVED_SOURCES_WEBKIT_DIR}/include haiku
@@ -122818,6 +122829,117 @@ index 9626340809303ad97ee5f0066aabc70a49108f14..95ba93d756a2139b98581c104fc78dcc
  
  static inline uint64_t pas_atomic_fetch_add_uint64_relaxed(uint64_t* ptr, uint64_t addend)
  {
+diff --git a/Source/bmalloc/mimalloc/mimalloc/include/mimalloc/prim.h b/Source/bmalloc/mimalloc/mimalloc/include/mimalloc/prim.h
+index 75ad758e83d93a07013280ac20632463a5b2ec30..805103060cfc6ac67a843409a6c31010536e7bdd 100644
+--- a/Source/bmalloc/mimalloc/mimalloc/include/mimalloc/prim.h
++++ b/Source/bmalloc/mimalloc/mimalloc/include/mimalloc/prim.h
+@@ -149,6 +149,7 @@ bool _mi_prim_thread_is_in_threadpool(void);
+         || (defined(__BIONIC__)  && (defined(__x86_64__) || defined(__i386__) || (defined(__arm__) && __ARM_ARCH >= 7) || defined(__aarch64__))) \
+         || (defined(__FreeBSD__) && (defined(__x86_64__) || defined(__i386__) || defined(__aarch64__))) \
+         || (defined(__OpenBSD__) && (defined(__x86_64__) || defined(__i386__) || defined(__aarch64__))) \
++        || (defined(__HAIKU__)   && (defined(__x86_64__) || defined(__aarch64__))) \
+       ))
+ 
+ static inline void* mi_prim_tls_slot(size_t slot) mi_attr_noexcept {
+@@ -373,6 +374,11 @@ static inline mi_theap_t* _mi_theap_cached(void);
+ #elif defined(__OpenBSD__) || defined(__ANDROID__)
+   #define MI_TLS_MODEL_DYNAMIC_PTHREADS     1
+   // #define MI_TLS_MODEL_DYNAMIC_PTHREADS_DEFAULT_ENTRY_IS_NULL  1
++#elif defined(__HAIKU__) && (defined(__x86_64__) || defined(__aarch64__))
++  // Haiku: a thread local of a shared library is a call into the runtime
++  // loader (__tls_get_addr) at every access; a slot from tls_allocate() is
++  // a load off the thread pointer.
++  #define MI_TLS_MODEL_DYNAMIC_HAIKU        1
+ #else
+   #define MI_TLS_MODEL_THREAD_LOCAL         1
+ #endif
+@@ -461,6 +467,29 @@ static inline mi_theap_t* _mi_theap_cached(void) {
+   return theap;
+ }
+ 
++#elif MI_TLS_MODEL_DYNAMIC_HAIKU
++// Slots from tls_allocate() (Haiku). They are allocated when the first thread
++// (the main one, from the process constructor) is initialized; until then, or
++// if none was left, the thread locals are used. Slot 0 is the TLS base.
++#define MI_THEAP_INITASNULL  1
++
++extern mi_decl_hidden size_t _mi_theap_default_slot;
++extern mi_decl_hidden size_t _mi_theap_cached_slot;
++extern mi_decl_hidden mi_decl_thread mi_theap_t* __mi_theap_default;
++extern mi_decl_hidden mi_decl_thread mi_theap_t* __mi_theap_cached;
++
++static inline mi_theap_t* _mi_theap_default(void) {
++  const size_t slot = _mi_theap_default_slot;
++  if mi_likely(slot!=0) { return (mi_theap_t*)mi_prim_tls_slot(slot); }
++  return __mi_theap_default;
++}
++
++static inline mi_theap_t* _mi_theap_cached(void) {
++  const size_t slot = _mi_theap_cached_slot;
++  if mi_likely(slot!=0) { return (mi_theap_t*)mi_prim_tls_slot(slot); }
++  return __mi_theap_cached;
++}
++
+ #elif MI_TLS_MODEL_DYNAMIC_PTHREADS
+ // Dynamic pthread slot on less common platforms. This is not too bad. (default on OpenBSD)
+ #define MI_THEAP_INITASNULL  1
+diff --git a/Source/bmalloc/mimalloc/mimalloc/src/init.c b/Source/bmalloc/mimalloc/mimalloc/src/init.c
+index 3161450fdfdcf8229a8d3aa0eb6cd0604c5ac3e1..b1f97596bc3ef001413aa4f489bd3f6954efa46e 100644
+--- a/Source/bmalloc/mimalloc/mimalloc/src/init.c
++++ b/Source/bmalloc/mimalloc/mimalloc/src/init.c
+@@ -755,6 +755,30 @@ static void mi_win_tls_slot_set(size_t slot, size_t extended_slot, void* value)
+   }
+ }
+ 
++#elif MI_TLS_MODEL_DYNAMIC_HAIKU
++
++#include <support/TLS.h>
++
++mi_decl_hidden size_t _mi_theap_default_slot = 0;
++mi_decl_hidden size_t _mi_theap_cached_slot = 0;
++mi_decl_hidden mi_decl_thread mi_theap_t* __mi_theap_default = NULL;
++mi_decl_hidden mi_decl_thread mi_theap_t* __mi_theap_cached = NULL;
++
++static void mi_haiku_tls_slots_init(void) {
++  static mi_atomic_once_t tls_slots_init;
++  if (mi_atomic_once(&tls_slots_init)) {
++    const int32 default_slot = tls_allocate();
++    const int32 cached_slot = tls_allocate();
++    if (default_slot > 0 && cached_slot > 0) {
++      // carry over this thread's values (the slots of every thread start NULL)
++      mi_prim_tls_slot_set((size_t)default_slot, __mi_theap_default);
++      mi_prim_tls_slot_set((size_t)cached_slot, __mi_theap_cached);
++      _mi_theap_cached_slot = (size_t)cached_slot;
++      _mi_theap_default_slot = (size_t)default_slot;
++    }
++  }
++}
++
+ #elif MI_TLS_MODEL_DYNAMIC_PTHREADS
+ 
+ // only for pthreads for now
+@@ -780,6 +804,10 @@ void _mi_theap_cached_set(mi_theap_t* theap) {
+   #elif MI_TLS_MODEL_DYNAMIC_WIN32
+     _mi_win_tls_slots_init();
+     mi_win_tls_slot_set(_mi_theap_cached_slot, _mi_theap_cached_expansion_slot, theap);
++  #elif MI_TLS_MODEL_DYNAMIC_HAIKU
++    mi_haiku_tls_slots_init();
++    __mi_theap_cached = theap;
++    if (_mi_theap_cached_slot!=0) mi_prim_tls_slot_set(_mi_theap_cached_slot, theap);
+   #elif MI_TLS_MODEL_DYNAMIC_PTHREADS
+     _mi_tls_keys_init();
+     if (_mi_theap_cached_key!=0) pthread_setspecific(_mi_theap_cached_key, theap);
+@@ -796,6 +824,10 @@ void _mi_theap_default_set(mi_theap_t* theap)  {
+   #elif MI_TLS_MODEL_DYNAMIC_WIN32
+     _mi_win_tls_slots_init();
+     mi_win_tls_slot_set(_mi_theap_default_slot, _mi_theap_default_expansion_slot, theap);
++  #elif MI_TLS_MODEL_DYNAMIC_HAIKU
++    mi_haiku_tls_slots_init();
++    __mi_theap_default = theap;
++    if (_mi_theap_default_slot!=0) mi_prim_tls_slot_set(_mi_theap_default_slot, theap);
+   #elif MI_TLS_MODEL_DYNAMIC_PTHREADS
+     _mi_tls_keys_init();
+     if (_mi_theap_default_key!=0) pthread_setspecific(_mi_theap_default_key, theap);
 diff --git a/Source/bmalloc/mimalloc/mimalloc/src/prim/unix/prim.c b/Source/bmalloc/mimalloc/mimalloc/src/prim/unix/prim.c
 index ba8dfb1f87d7e2a7b90fe9061793f703c6ccd5b3..163707e713185ebbac1801e7c1e58780d0fee231 100644
 --- a/Source/bmalloc/mimalloc/mimalloc/src/prim/unix/prim.c

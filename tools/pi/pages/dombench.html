@@ -1,0 +1,46 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>running</title>
+<style>body{font:14px sans-serif} .row{display:flex;gap:4px} .cell{padding:2px;border:1px solid #ccc}</style>
+</head><body><div id="out"></div><div id="work"></div>
+<script>
+// Allocation-heavy page work: HTML parsing, DOM building, style + layout,
+// JSON and strings. The title gets the median of 5 rounds, in ms.
+function round() {
+  const work = document.getElementById('work');
+  const t0 = performance.now();
+  let html = '';
+  for (let i = 0; i < 1500; i++)
+    html += '<div class="row"><span class="cell">item ' + i + '</span><span class="cell"><b>bold</b> text ' + (i * 7) + '</span><a href="#' + i + '">link</a></div>';
+  work.innerHTML = html;
+  work.offsetHeight;
+  for (let i = 0; i < 3000; i++) {
+    const d = document.createElement('div');
+    d.className = 'cell';
+    d.setAttribute('data-i', i);
+    d.appendChild(document.createTextNode('node ' + i));
+    work.appendChild(d);
+  }
+  work.offsetHeight;
+  for (const el of work.querySelectorAll('.row'))
+    el.style.color = 'rgb(' + (el.textContent.length % 255) + ',0,0)';
+  work.offsetHeight;
+  const data = [];
+  for (let i = 0; i < 20000; i++) data.push({ id: i, name: 'n' + i, tags: ['a', 'b', String(i)] });
+  const parsed = JSON.parse(JSON.stringify(data));
+  let s = 0;
+  for (const o of parsed) s += o.name.length + o.tags.join(',').length;
+  work.textContent = '';
+  return performance.now() - t0 + (s & 0);
+}
+const times = [];
+let n = 0;
+function next() {
+  times.push(round());
+  if (++n < 6) { setTimeout(next, 50); return; }
+  times.shift();
+  times.sort((a, b) => a - b);
+  document.title = 'dombench ' + times[2].toFixed(1) + ' [' + times.map(t => t.toFixed(0)).join(' ') + ']';
+  document.getElementById('out').textContent = document.title;
+}
+setTimeout(next, 500);
+</script></body></html>
