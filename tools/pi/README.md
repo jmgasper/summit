@@ -48,6 +48,19 @@ section of `docs/performance.md`.
    launch, when Summit's code ran, when the window showed and when the first
    frame with tiles was composited (seconds after exec);
    `milestones.sh LOG` lists the `SUMMIT_STARTUP_TRACE=1` lines.
+   `RD=dir` makes `rd-bundle.sh` (and `ab-bench.sh`) use another RAM disk.
+7. Benchmarks that report through the page title: `ab-bench.sh ROUNDS URL
+   PREFIX OUT A B...` alternates bundles in the RAM disk on a page such as
+   `pages/dombench.html` (allocation-heavy DOM, style, layout and JSON work;
+   the title gets the median of five rounds); `bench-title.sh` runs one.
+   `kill-cycles.sh` launches, quits and force-kills a browser N times and
+   reports processes left behind.
+
+Running a bundle from a RAM disk is for measuring only: twice on 5 October a
+network process left behind by a force-killed browser hung in the kernel
+together with the RAM disk it ran from (`ls`, `df` and `profile -a` on it
+hang too, `kill -9` does nothing). Use a new mount point when it happens;
+only a restart frees it.
 
 ## Probes
 

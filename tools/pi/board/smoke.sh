@@ -11,7 +11,7 @@ for u in https://en.wikipedia.org/wiki/BeOS https://github.com/WebKit/WebKit htt
   echo "$u -> ${t:-?} (web processes: $(ps | grep -c '[W]ebProcess'))"
 done
 $d/summitctl --team $pid quit > /dev/null; sleep 4
-echo "browser left after quit: $(ps | grep -c "[r]d/$(basename $b)/Summit")"
+echo "browser left after quit: $(ps | grep -c "$(basename $b)/[S]ummit")"
 kill -9 $pid 2>/dev/null
 grep -a -i -E "crash|fatal|abort|segment|ASSERT" $d/logs/smoke.log | head -5
 ls -t /boot/home/Desktop 2>/dev/null | head -3

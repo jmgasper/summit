@@ -182,21 +182,29 @@ map image: Bad data").
 
 ### Installed
 
-- Raspberry Pi: `summit_webkit-1.10.0-5` and `summit-0.1.0~git20261004-1`
-  (`pkgman install` of the local files; the packages of 2 October are kept in
-  `~/summit-package-backup-20261004` on the board). Engine from Summit
-  3f427fc; its third-party libraries are the ones rebuilt with GNU hash
-  tables (`/mnt/HaikuWork/build/summit-arm64/deps-gnu/prefix`). The same two
-  packages are in `/mnt/HaikuWork/rpi4/packages-arm64` for the next image
-  (the replaced ones in `packages-arm64-replaced`). Start page, warm: the
-  browser's code at 0.38 s, the frame with the page on the screen at 1.39 s.
-- X399: `bundle-p82o30tm` (Mesa prefix-20261002), same sources. Checked
-  there against the previously installed `bundle-r0_tdpf3`: start-up 0.13 s
-  to the browser's code (0.14), first frame 0.53-0.56 s (0.54-0.59), all 18
-  shader programs still warm in 11.5 ms; Speedometer 3.1 11.17 / 11.11
-  (11.09 / 11.26); Wikipedia scroll bursts 53-59 fps (53-60); direct present
-  still used; style verify modes clean on Wikipedia, GitHub, The Guardian,
-  and with uBlock Origin and 1Password on Reddit and YouTube.
+- Raspberry Pi (5 October, 01:10): `summit_webkit-1.10.0-6` (engine from
+  Summit 3dfbea2: the mimalloc slots and the library order below) with
+  `summit-0.1.0~git20261004-1` (unchanged browser), `pkgman install` of the
+  local file. Staged in `/mnt/HaikuWork/rpi4/packages-arm64` for the next
+  image (1.10.0-5 moved to `packages-arm64-replaced`). Against 1.10.0-5's
+  engine, both copied to the SD card and alternated: first frame with the
+  page 1.73-1.74 s instead of 1.77-1.78 s. (Those are 0.3 s above the
+  evening's numbers in every build since the RAM disk hang below; the time
+  goes between the web process's start and its page, and a restart should
+  bring it back.) Eight launch, quit and force-kill cycles of the installed
+  build left no process behind.
+- X399: `bundle-vg3_w8ii` (Mesa prefix-20261002), same sources. Against the
+  previous `bundle-p82o30tm`, alternating: Speedometer 3.1 11.26, 11.39,
+  11.26, 11.05, 11.38, 10.87 (mean 11.20) against 11.06, 11.12, 11.06, 11.14
+  (11.09); the DOM page 235 ms against 241; a bare web process loads in
+  131-133 ms against 134-137.
+- Before that, on the evening of 4 October: Pi `summit_webkit-1.10.0-5`
+  (Summit 3f427fc), start page warm at 1.39 s; X399 `bundle-p82o30tm`,
+  checked against `bundle-r0_tdpf3` (start-up 0.13 s to the browser's code,
+  first frame 0.53-0.56 s, Speedometer 11.17 / 11.11 against 11.09 / 11.26,
+  Wikipedia scroll bursts 53-59 fps, direct present still used, style verify
+  modes clean on Wikipedia, GitHub, The Guardian, and with uBlock Origin and
+  1Password on Reddit and YouTube).
 
 ### No shader compile inside the first frame with the page
 
@@ -215,6 +223,70 @@ parallel, took 20 s (the card seeks between them), where the loader reads
 only the pages it touches. The SD driver runs the card at 25 MHz default
 speed; a faster mode is the way to a faster cold start.
 
+### Allocations: mimalloc's thread heap through the runtime loader
+
+A profile of a Wikipedia load on the Pi had 1.5% of the web process's main
+thread in `__tls_get_addr`, `get_tls_address` and `TLSBlockTemplates::Get`
+(the runtime loader). On Haiku every access to a thread local of a shared
+library is a call into the runtime loader with generation checks, and
+mimalloc read its default heap from one (`__mi_theap_default`) on every
+allocation. mimalloc on Haiku now keeps the default and the cached heap in
+two slots from `tls_allocate()`, read off the thread pointer (`tpidr_el0`,
+`%fs`), as it does with TlsAlloc slots on Windows; until the slots exist
+(they are allocated by the first thread init, in the process constructor)
+the thread locals are used. Haiku zeroes a new thread's slots except on
+stacks the caller supplies, which nothing in Summit's processes does.
+
+A page of allocation-heavy work (`tools/pi/pages/dombench.html`: HTML
+parsing, DOM building, style and layout, JSON; median of five rounds, three
+launches each, alternating):
+
+| | before | after |
+| --- | --- | --- |
+| Pi | 1597, 1582, 1589 ms | 1531, 1477, 1529 ms |
+| X399 | 241, 245, 240 ms | 236, 233, 235 ms |
+
+### libJavaScriptCore loaded second, at last
+
+The library order above did not take for libJavaScriptCore: CMake dropped
+the copy inserted after libWebKit for the one libWebKit itself brings in, at
+the end of the line, so WebProcess and NetworkProcess loaded it after a
+dozen libraries. libWebKit looks up 49,000 symbols in it (the method tables
+of its 2,200 JS wrapper classes point at `JSC::JSObject` functions), each
+one through the SysV tables of libbe, libstdc++ and libroot first. Both
+executables now get libWebKit and libJavaScriptCore as link options, which
+come before everything else. The lookup model: 914k -> 426k units per
+process. Measured on the Pi, warm, five launches each: a web process has its
+libraries 15-20 ms sooner (0.355 -> 0.34 s after its launch), the first
+frame with the page 10-15 ms sooner. Bare processes on the X399: 2-4 ms
+faster.
+
+### The loader's own work: repeated lookups
+
+What is left of a web process's 0.34 s in the runtime loader is mostly
+lookups repeated for the same symbol: libWebKit has 112,000 symbol
+relocations but only 33,800 distinct symbols, and the runtime loader does
+the whole breadth-first search for each (`vtable for
+__cxxabiv1::__si_class_type_info` 11,980 times, `__cxa_pure_virtual` 4,103
+times, each of 30 `JSC::JSObject` methods about 2,200 times). Profile of a
+bare web process on the Pi: `find_symbol` 20%, `elf_gnuhash` 13%,
+`match_symbol` 12.5%, relocation 12%, `strcmp` 11%. A per-image cache of
+resolved symbols while an image is relocated (FreeBSD's rtld keeps one)
+would cut the model's work 3.6 times; it belongs to the OS's runtime loader.
+Summit can't avoid these relocations short of building without RTTI or
+linking JavaScriptCore into libWebKit.
+
+### Measuring start-up on the X399: copy bundles early
+
+A bundle copied a minute before is slower to start: a fresh copy of the
+installed bundle loaded the web process's libraries in 161-195 ms where the
+copy made two hours earlier took 102-115 ms (same files, alternating
+launches). Freshly written files are slower to map for a while; let a new
+copy sit (or compare two fresh copies) before timing start-up. And a
+Speedometer run there posts its result 25 s after the page loads; the
+240-300 s `x-speedo.sh` keeps the browser open is only a ceiling, so match
+results to runs by the server's request log, not by when a run ended.
+
 ### Open
 
 - Quitting with YouTube open takes 14-17 s on the Pi (old and new builds):
@@ -222,6 +294,12 @@ speed; a faster mode is the way to a faster cold start.
   10 s, then the close is retried.
 - A maximised window scrolls at ~20 fps (read-back), video at ~11 fps
   (software decoding, upload and read-back of each frame).
+- The Pi's RAM disk (ramfs) hung around 00:25 on 5 October: a network process
+  left behind by a force-quit browser and an `rm -rf` in that RAM disk sit
+  in kernel waits and ignore `kill -9`; `ls`, `df` and `profile -a` hang with
+  them (the profiler then holds the next process it attached to). The rest
+  of the system works; a reboot clears it. Benchmarks moved to a second RAM
+  disk (`RD=/boot/home/summit-ec/rd2`).
 
 ### Left for the OS image
 
@@ -231,6 +309,16 @@ speed; a faster mode is the way to a faster cold start.
 - Presentation without the read-back (frames scanned out from GPU memory),
   or cached buffer mappings for reads: 15-29 ms per megapixel now.
 - GNU hash tables for Haiku's own libraries.
+- A cache of resolved symbols in the runtime loader while it relocates an
+  image (above): the largest part of every process start that is left.
+- arm64 string routines: `memcpy` is a C loop of 8-byte words with a byte
+  loop for the tail and `memset` the generic C one (1.9% and 0.5% of the web
+  process's main thread in a page load); the runtime loader's `strcmp` is 11%
+  of loading a web process. Arm's optimized-routines versions would help
+  every program.
+- `__tls_get_addr` goes through the runtime loader on every call; a
+  per-thread cache of the module's block, or TLS descriptors, would make
+  thread locals of shared libraries cheap again.
 
 ## 4 October 2026 (morning): pictures that flicker while Reddit is scrolled
 
