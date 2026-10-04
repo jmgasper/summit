@@ -22622,10 +22622,10 @@ index 4c15dfa81a1f6da9de3fead1584946253080c76c..18e6a7678f451073d729488cb80083d0
      }
      LOG(WebGL, "Got EGLContext");
 diff --git a/Source/WebCore/platform/graphics/texmap/TextureMapper.cpp b/Source/WebCore/platform/graphics/texmap/TextureMapper.cpp
-index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..b3742988119c281ac73ee2f7a446bc7a3a44171d 100644
+index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..8f01693d0db2d374eacc14176ea88f76c71a00ac 100644
 --- a/Source/WebCore/platform/graphics/texmap/TextureMapper.cpp
 +++ b/Source/WebCore/platform/graphics/texmap/TextureMapper.cpp
-@@ -44,6 +44,12 @@
+@@ -44,6 +44,14 @@
  #include <wtf/SetForScope.h>
  #include <wtf/TZoneMallocInlines.h>
  
@@ -22633,22 +22633,29 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..b3742988119c281ac73ee2f7a446bc7a
 +#include <OS.h>
 +#include <cstdio>
 +#include <cstdlib>
++#include <cstring>
++#include <unistd.h>
 +#endif
 +
  #if USE(CAIRO)
  #include "CairoUtilities.h"
  #include "RefPtrCairo.h"
-@@ -75,6 +81,9 @@ public:
+@@ -75,6 +83,14 @@ public:
      bool didModifyStencil { false };
      GLint previousScissorState { 0 };
      GLint previousDepthState { 0 };
 +#if PLATFORM(HAIKU)
 +    bool warmedRoundedSolidColor { false };
++    // warmShaderProgramsHaiku(): the next program of its list, and the time
++    // the programs warmed so far took to compile.
++    unsigned warmedProgramsHaiku { 0 };
++    bigtime_t warmTimeHaiku { 0 };
++    unsigned paintsHaiku { 0 };
 +#endif
      std::array<GLint, 4> viewport { };
      std::array<GLint, 4> previousScissor { };
      double zNear { 0 };
-@@ -174,7 +183,16 @@ Ref<TextureMapperShaderProgram> TextureMapperGLData::getShaderProgram(TextureMap
+@@ -174,7 +190,16 @@ Ref<TextureMapperShaderProgram> TextureMapperGLData::getShaderProgram(TextureMap
  {
      ASSERT(!options.isEmpty());
      auto addResult = m_sharedGLData->m_programs.ensure(options.toRaw(), [options] {
@@ -22666,7 +22673,7 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..b3742988119c281ac73ee2f7a446bc7a
      });
      return *addResult.iterator->value;
  }
-@@ -232,8 +250,54 @@ ClipStack& TextureMapper::clipStack()
+@@ -232,8 +257,87 @@ ClipStack& TextureMapper::clipStack()
      return data().currentSurface ? data().currentSurface->clipStack() : m_clipStack;
  }
  
@@ -22677,15 +22684,24 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..b3742988119c281ac73ee2f7a446bc7a
 +    // that has 16 ms: the first scroll of a page (a scrollbar fades in), the
 +    // first rounded video, the first filter. These are the programs that
 +    // twenty sites had compiled by the end of a scroll, and the filters of
-+    // the same kind they did not use; the compositor thread makes them when
-+    // it is created, while the page is still being fetched. With Mesa's
-+    // shader cache a program costs 0.3 to 3 ms, 8 to 24 the first time this
-+    // machine compiles it.
++    // the same kind they did not use. Each call compiles one program, so a
++    // composition asked for meanwhile waits for one program at most. The
++    // compositor makes the first two, which every first frame draws with,
++    // while the page is still being fetched, and the rest after its first
++    // frame. With
++    // Mesa's shader cache a program costs 0.3 to 3 ms (8 to 24 the first
++    // time the X399 compiles it). Without one, as on the Raspberry Pi 4
++    // (v3d), a program costs 40 to 150 ms and all of them took 2.2 s of a
++    // core while the first page loaded: warming stops once the programs
++    // compiled so far took the budget (SUMMIT_WARM_SHADERS=<ms>, default
++    // 150; "all" has no budget; the first two do not count) and the rest
++    // compile when first drawn with.
 +    using Program = TextureMapperShaderProgram;
++    static constexpr unsigned firstFrameProgramCount = 2;
 +    static const Program::Options programs[] = {
-+        { Program::SolidColor, Program::RoundedRectClip },
 +        { Program::TextureRGB },
 +        { Program::SolidColor },
++        { Program::SolidColor, Program::RoundedRectClip },
 +        { Program::TextureRGB, Program::Opacity },
 +        { Program::TextureRGB, Program::RoundedRectClip },
 +        { Program::TextureRGB, Program::Opacity, Program::RoundedRectClip },
@@ -22702,9 +22718,32 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..b3742988119c281ac73ee2f7a446bc7a
 +        { Program::TextureRGB, Program::InvertFilter },
 +        { Program::AlphaBlur },
 +    };
-+    for (auto& options : programs)
-+        data().getShaderProgram(options);
-+    data().warmedRoundedSolidColor = true;
++    static const bigtime_t budget = [] () -> bigtime_t {
++        const char* value = getenv("SUMMIT_WARM_SHADERS");
++        if (value && !strcmp(value, "all"))
++            return std::numeric_limits<bigtime_t>::max();
++        if (value && *value >= '1' && *value <= '9')
++            return atoll(value) * 1000;
++        return 150000;
++    }();
++    static const bool trace = [] {
++        const char* value = getenv("SUMMIT_COMPOSITOR_TIMING_TRACE");
++        return value && value[0] == '1' && !value[1];
++    }();
++    auto& glData = data();
++    if (glData.warmedProgramsHaiku >= std::size(programs) || glData.warmTimeHaiku >= budget)
++        return;
++    unsigned index = glData.warmedProgramsHaiku++;
++    bigtime_t startedAt = system_time();
++    glData.getShaderProgram(programs[index]);
++    bigtime_t took = system_time() - startedAt;
++    if (index >= firstFrameProgramCount)
++        glData.warmTimeHaiku += took;
++    if (index == firstFrameProgramCount)
++        glData.warmedRoundedSolidColor = true;
++    if (trace)
++        std::fprintf(stderr, "Summit shader warm-up: pid=%d program=%u took=%.1f total=%.1f%s\n", static_cast<int>(getpid()), index,
++            took / 1000.0, glData.warmTimeHaiku / 1000.0, glData.warmTimeHaiku >= budget && index + 1 < std::size(programs) ? " (budget spent)" : "");
 +}
 +#endif
 +
@@ -22713,7 +22752,8 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..b3742988119c281ac73ee2f7a446bc7a
 +#if PLATFORM(HAIKU)
 +    // Reddit can first use this variant after scrolling begins. Compile it on
 +    // the first compositor paint so shader creation does not interrupt a frame.
-+    if (!data().warmedRoundedSolidColor) {
++    // Not in the first frame, which the warm-up follows (it starts with this program).
++    if (!data().warmedRoundedSolidColor && data().paintsHaiku++) {
 +        data().getShaderProgram({ TextureMapperShaderProgram::SolidColor, TextureMapperShaderProgram::RoundedRectClip });
 +        data().warmedRoundedSolidColor = true;
 +    }
@@ -22721,7 +22761,7 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..b3742988119c281ac73ee2f7a446bc7a
      glGetIntegerv(GL_CURRENT_PROGRAM, &data().previousProgram);
      data().previousScissorState = glIsEnabled(GL_SCISSOR_TEST);
      data().previousDepthState = glIsEnabled(GL_DEPTH_TEST);
-@@ -801,6 +865,10 @@ void TextureMapper::drawTexturePackedYUV(GLuint texture, const std::array<GLfloa
+@@ -801,6 +905,10 @@ void TextureMapper::drawTexturePackedYUV(GLuint texture, const std::array<GLfloa
  
  void TextureMapper::drawSolidColor(const FloatRect& rect, const TransformationMatrix& matrix, const Color& color, bool isBlendingAllowed)
  {
@@ -22732,7 +22772,7 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..b3742988119c281ac73ee2f7a446bc7a
      OptionSet<TextureMapperFlags> flags;
      TextureMapperShaderProgram::Options options = TextureMapperShaderProgram::SolidColor;
      if (!matrix.mapQuad(rect).isRectilinear()) {
-@@ -817,6 +885,9 @@ void TextureMapper::drawSolidColor(const FloatRect& rect, const TransformationMa
+@@ -817,6 +925,9 @@ void TextureMapper::drawSolidColor(const FloatRect& rect, const TransformationMa
      }
  
      Ref<TextureMapperShaderProgram> program = data().getShaderProgram(options);
@@ -22742,7 +22782,7 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..b3742988119c281ac73ee2f7a446bc7a
      glUseProgram(program->programID());
  
      if (clipStack().isRoundedRectClipEnabled())
-@@ -828,6 +899,13 @@ void TextureMapper::drawSolidColor(const FloatRect& rect, const TransformationMa
+@@ -828,6 +939,13 @@ void TextureMapper::drawSolidColor(const FloatRect& rect, const TransformationMa
          flags.add(TextureMapperFlags::ShouldBlend);
  
      draw(rect, matrix, program.get(), GL_TRIANGLE_FAN, flags);
@@ -22756,7 +22796,7 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..b3742988119c281ac73ee2f7a446bc7a
  }
  
  void TextureMapper::clearColor(const Color& color)
-@@ -877,8 +955,38 @@ void TextureMapper::drawUnitRect(TextureMapperShaderProgram& program, GLenum dra
+@@ -877,8 +995,38 @@ void TextureMapper::drawUnitRect(TextureMapperShaderProgram& program, GLenum dra
      glBindBuffer(GL_ARRAY_BUFFER, 0);
  }
  
@@ -22795,7 +22835,7 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..b3742988119c281ac73ee2f7a446bc7a
      TransformationMatrix matrix(modelViewMatrix);
      matrix.multiply(TransformationMatrix::rectToRect(FloatRect(0, 0, 1, 1), rect));
  
-@@ -987,6 +1095,10 @@ void TextureMapper::drawTextureCopy(const BitmapTexture& sourceTexture, const Fl
+@@ -987,6 +1135,10 @@ void TextureMapper::drawTextureCopy(const BitmapTexture& sourceTexture, const Fl
  
  void TextureMapper::drawBlurred(const BitmapTexture& sourceTexture, const FloatRect& rect, float radius, Direction direction, bool alphaBlur)
  {
@@ -22806,7 +22846,7 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..b3742988119c281ac73ee2f7a446bc7a
      Ref<TextureMapperShaderProgram> program = data().getShaderProgram({
          alphaBlur ? TextureMapperShaderProgram::AlphaBlur : TextureMapperShaderProgram::BlurFilter,
      });
-@@ -1278,6 +1390,28 @@ RefPtr<BitmapTexture> TextureMapper::applyFilters(RefPtr<BitmapTexture>& sourceT
+@@ -1278,6 +1430,28 @@ RefPtr<BitmapTexture> TextureMapper::applyFilters(RefPtr<BitmapTexture>& sourceT
  
  RefPtr<BitmapTexture> TextureMapper::applyFilter(RefPtr<BitmapTexture>& sourceTexture, const Ref<const FilterOperation>& filter, bool defersLastPass)
  {
@@ -22835,7 +22875,7 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..b3742988119c281ac73ee2f7a446bc7a
      switch (filter->type()) {
      case FilterOperation::Type::Grayscale:
      case FilterOperation::Type::Sepia:
-@@ -1330,6 +1464,10 @@ void TextureMapper::bindDefaultSurface()
+@@ -1330,6 +1504,10 @@ void TextureMapper::bindDefaultSurface()
  
  void TextureMapper::bindSurface(BitmapTexture *surface)
  {
@@ -41070,10 +41110,10 @@ index 0000000000000000000000000000000000000000..4c21c1bdf92f8107cf0f7452833e81b1
 +} // namespace WebKit
 diff --git a/Source/WebKit/NetworkProcess/haiku/NetworkProcessMainHaiku.cpp b/Source/WebKit/NetworkProcess/haiku/NetworkProcessMainHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..965873dd7f2d1df1f63bb5f1725da68ba2498059
+index 0000000000000000000000000000000000000000..3382baa3a9773022fcf15d40877521e0064c80f1
 --- /dev/null
 +++ b/Source/WebKit/NetworkProcess/haiku/NetworkProcessMainHaiku.cpp
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,47 @@
 +/*
 + * Copyright (C) 2019 Haiku, Inc.
 + *
@@ -41104,6 +41144,7 @@ index 0000000000000000000000000000000000000000..965873dd7f2d1df1f63bb5f1725da68b
 +
 +#include "AuxiliaryProcessMain.h"
 +#include "NetworkProcess.h"
++#include "StartupTraceHaiku.h"
 +
 +namespace WebKit {
 +
@@ -41115,6 +41156,7 @@ index 0000000000000000000000000000000000000000..965873dd7f2d1df1f63bb5f1725da68b
 +
 +int NetworkProcessMain(int argc, char** argv)
 +{
++    SUMMIT_STARTUP_TRACE("network process main");
 +    return AuxiliaryProcessMain<NetworkProcess, AuxiliaryProcessMainBase>(argc, argv);
 +}
 +
@@ -48819,6 +48861,69 @@ index 0000000000000000000000000000000000000000..7b3fb7cba806ac1a7415813534d8d12f
 +#endif
 +
 +} // namespace WebKit
+diff --git a/Source/WebKit/Shared/haiku/StartupTraceHaiku.h b/Source/WebKit/Shared/haiku/StartupTraceHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..8379e2fb5142bdfdbdff047d4ad861b8db59f6e7
+--- /dev/null
++++ b/Source/WebKit/Shared/haiku/StartupTraceHaiku.h
+@@ -0,0 +1,57 @@
++/*
++ * Copyright (C) 2026 Summit contributors
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHORS ``AS IS'' AND ANY EXPRESS OR
++ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
++ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
++ * IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
++ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
++ * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
++ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#pragma once
++
++#if PLATFORM(HAIKU)
++
++#include <OS.h>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <unistd.h>
++
++namespace WebKit {
++
++// SUMMIT_STARTUP_TRACE=1 prints one line per start-up milestone of the
++// browser's processes (launch, libraries loaded, EGL, page, compositor,
++// first frame), stamped with system_time() in seconds: the clock Summit's
++// own timing lines use, so one log orders all the processes' lines.
++inline bool startupTraceEnabledHaiku()
++{
++    static const bool enabled = [] {
++        const char* value = std::getenv("SUMMIT_STARTUP_TRACE");
++        return value && !std::strcmp(value, "1");
++    }();
++    return enabled;
++}
++
++} // namespace WebKit
++
++#define SUMMIT_STARTUP_TRACE(format, ...) do { \
++    if (WebKit::startupTraceEnabledHaiku()) \
++        std::fprintf(stderr, "Summit startup %.3f pid=%d " format "\n", system_time() / 1e6, static_cast<int>(getpid()), ##__VA_ARGS__); \
++} while (0)
++
++#endif // PLATFORM(HAIKU)
 diff --git a/Source/WebKit/Shared/haiku/WebCoreArgumentCodersHaiku.cpp b/Source/WebKit/Shared/haiku/WebCoreArgumentCodersHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..92e6a5ad332ada635bf11487a9bf91669fe153dc
@@ -74475,10 +74580,10 @@ index 0000000000000000000000000000000000000000..8a418c283373b3ad30d46aea00e6d191
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/Launcher/haiku/ProcessLauncherHaiku.cpp b/Source/WebKit/UIProcess/Launcher/haiku/ProcessLauncherHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..78d02501f0ef4901e5449d9b52ed749a3e4eabe7
+index 0000000000000000000000000000000000000000..554013e2efdbe58cb206f1a696a203949a454a48
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Launcher/haiku/ProcessLauncherHaiku.cpp
-@@ -0,0 +1,178 @@
+@@ -0,0 +1,184 @@
 +/*
 + *  Copyright (C) 2019 Haiku, Inc.
 + *
@@ -74506,6 +74611,8 @@ index 0000000000000000000000000000000000000000..78d02501f0ef4901e5449d9b52ed749a
 +
 +#include "config.h"
 +#include "ProcessLauncher.h"
++
++#include "StartupTraceHaiku.h"
 +#include "HaikuProcess.h"
 +#include "IPCUtilities.h"
 +#include "ProcessExecutablePath.h"
@@ -74623,9 +74730,13 @@ index 0000000000000000000000000000000000000000..78d02501f0ef4901e5449d9b52ed749a
 +    Thread::create("WebKit process launcher"_s, [protectedThis = Ref { *this }, executable = executable.utf8(), processIdentifier = m_launchOptions.processIdentifier.toUInt64(),
 +        failForTesting = m_launchOptions.shouldMakeProcessLaunchFailForTesting, client = WTF::move(sockets.client), server = WTF::move(sockets.server),
 +        arguments = WTF::move(arguments)] mutable {
++        const char* name = strrchr(executable.legacyCStringPointer(), '/');
++        name = name ? name + 1 : executable.legacyCStringPointer();
++        SUMMIT_STARTUP_TRACE("launching %s", name);
 +        auto result = failForTesting
 +            ? HaikuProcessResult { 0, ENOENT }
 +            : spawnHaikuProcess(executable.legacyCStringPointer(), processIdentifier, client.value(), arguments, childEnvironmentOverrides());
++        SUMMIT_STARTUP_TRACE("%s team %d has loaded its libraries", name, static_cast<int>(result.process));
 +        client = { };
 +        if (result.error) {
 +            RunLoop::mainSingleton().dispatch([protectedThis = WTF::move(protectedThis)] {
@@ -75679,10 +75790,10 @@ index 8ace95c1b44f471e9072adcce4b7875472a98436..177e029c622167f73699813a22b48025
      DidChangeBufferConfiguration(uint32_t bufferCount);
 diff --git a/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.cpp b/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..4c508627281697860841f02637c50dc69d171910
+index 0000000000000000000000000000000000000000..390e5c7d9fbe65abf79d71e2b963dbcaa561b779
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/AcceleratedBackingStore.cpp
-@@ -0,0 +1,289 @@
+@@ -0,0 +1,293 @@
 +/*
 + * Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause
 + */
@@ -75695,6 +75806,7 @@ index 0000000000000000000000000000000000000000..4c508627281697860841f02637c50dc6
 +#include "AcceleratedBackingStoreMessages.h"
 +#include "AcceleratedSurfaceMessages.h"
 +#include "DirectPresentTargetHaiku.h"
++#include "StartupTraceHaiku.h"
 +#include "PageClient.h"
 +#include "WebPageProxy.h"
 +#include "WebProcessProxy.h"
@@ -75880,6 +75992,9 @@ index 0000000000000000000000000000000000000000..4c508627281697860841f02637c50dc6
 +
 +void AcceleratedBackingStore::frame(uint64_t id, Rects&& damage, WTF::UnixFileDescriptor&&)
 +{
++    static bool firstFrameTraced;
++    if (!std::exchange(firstFrameTraced, true))
++        SUMMIT_STARTUP_TRACE("first frame received by the browser");
 +    if (!m_directFrameSeen && m_directTarget && m_directTarget->enabled() && MonotonicTime::now() - m_directTargetSentAt >= 1_s) {
 +        sendDirectTarget();
 +        requestDirectRedisplay();
@@ -80923,10 +81038,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..5c0c6f63447d0cacb701ae704b79875c912a63a8
+index 0000000000000000000000000000000000000000..ea746aaac278adf133a8a5a3b7b30196375c3fc3
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,2097 @@
+@@ -0,0 +1,2101 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -81404,7 +81519,11 @@ index 0000000000000000000000000000000000000000..5c0c6f63447d0cacb701ae704b79875c
 +// and relocating the whole engine before the page can be fetched. WebKit's
 +// automatic prewarming only runs with process swapping on navigation, which
 +// this port does not use, so a spare process is started here once a page has
-+// loaded, ready for the next tab. SUMMIT_PREWARM_PROCESS=0 turns it off.
++// loaded, ready for the next tab. It waits a second: a page goes on painting
++// and running scripts after its load event, and on the Raspberry Pi 4 the
++// spare process (0.6 s of a core to load its libraries, then EGL) started
++// before the first page had its first frame. SUMMIT_PREWARM_PROCESS=0 turns
++// it off.
 +static void prewarmWebProcessHaiku(WebPageProxy& page)
 +{
 +    static const bool enabled = [] {
@@ -81413,7 +81532,7 @@ index 0000000000000000000000000000000000000000..5c0c6f63447d0cacb701ae704b79875c
 +    }();
 +    if (!enabled)
 +        return;
-+    RunLoop::mainSingleton().dispatch([pool = Ref { page.configuration().processPool() }] {
++    RunLoop::mainSingleton().dispatchAfter(1_s, [pool = Ref { page.configuration().processPool() }] {
 +        pool->prewarmProcess();
 +    });
 +}
@@ -103329,10 +103448,21 @@ index 4096303fde47800b8ea64ecef4fe536c97b62d52..2ba8509a68888720ef1a9a0a13ed1493
      bool m_compositionRequired { false };
  #if ENABLE(SCROLLING_THREAD)
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
-index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..82db26049d1d988e41a05b3e43c8ee8476c63c24 100644
+index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..e2456aaba35b6d3f42f998a642097c2e4bef1149 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
-@@ -33,6 +33,8 @@
+@@ -26,6 +26,10 @@
+ #include "config.h"
+ #include "ThreadedCompositor.h"
+ 
++#if PLATFORM(HAIKU)
++#include "StartupTraceHaiku.h"
++#endif
++
+ #if USE(COORDINATED_GRAPHICS)
+ #include "AcceleratedSurface.h"
+ #include "CoordinatedSceneState.h"
+@@ -33,6 +37,8 @@
  #include "RenderProcessInfo.h"
  #include "WebPage.h"
  #include "WebProcess.h"
@@ -103341,7 +103471,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..82db26049d1d988e41a05b3e43c8ee84
  #include <WebCore/CoordinatedPlatformLayer.h>
  #include <WebCore/Damage.h>
  #include <WebCore/FontCache.h>
-@@ -53,6 +55,15 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
+@@ -53,6 +59,15 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
  #include <wtf/TZoneMallocInlines.h>
  #include <wtf/text/StringToIntegerConversion.h>
  
@@ -103357,7 +103487,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..82db26049d1d988e41a05b3e43c8ee84
  #if USE(GLIB_EVENT_LOOP)
  #include <wtf/glib/RunLoopSourcePriority.h>
  #endif
-@@ -68,18 +79,40 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
+@@ -68,18 +83,40 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
  #include <GLES2/gl2.h>
  #endif
  
@@ -103398,7 +103528,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..82db26049d1d988e41a05b3e43c8ee84
      , m_layerTreeHost(&layerTreeHost)
      , m_surface(AcceleratedSurface::create(webPage, [this] { frameComplete(); }, AcceleratedSurface::RenderingPurpose::Composited))
      , m_sceneState(&sceneState)
-@@ -90,6 +123,18 @@ ThreadedCompositor::ThreadedCompositor(WebPage& webPage, LayerTreeHost& layerTre
+@@ -90,6 +127,18 @@ ThreadedCompositor::ThreadedCompositor(WebPage& webPage, LayerTreeHost& layerTre
  {
      ASSERT(RunLoop::isMain());
  
@@ -103417,28 +103547,79 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..82db26049d1d988e41a05b3e43c8ee84
      m_didCompositeRunLoopObserver = makeUnique<RunLoopObserver>(RunLoopObserver::WellKnownOrder::GraphicsCommit, [this] {
          this->didCompositeRunLoopObserverFired();
      });
-@@ -136,6 +181,20 @@ ThreadedCompositor::ThreadedCompositor(WebPage& webPage, LayerTreeHost& layerTre
+@@ -127,6 +176,9 @@ ThreadedCompositor::ThreadedCompositor(WebPage& webPage, LayerTreeHost& layerTre
+         }
+ 
+         glGetIntegerv(GL_MAX_TEXTURE_SIZE, &m_maxTextureSize);
++#if PLATFORM(HAIKU)
++        SUMMIT_STARTUP_TRACE("compositor GL context ready");
++#endif
+ 
+ #if USE(TEXTURE_MAPPER)
+         m_context = WTF::move(context);
+@@ -136,7 +188,61 @@ ThreadedCompositor::ThreadedCompositor(WebPage& webPage, LayerTreeHost& layerTre
          m_threadSafeGrContext = PlatformDisplay::sharedDisplay().skiaGrContext()->threadSafeProxy();
  #endif
      });
 +
 +#if PLATFORM(HAIKU) && USE(TEXTURE_MAPPER)
-+    // SUMMIT_WARM_SHADERS=0 compiles each program when it is first drawn with.
-+    static const bool warmsShaders = [] {
-+        const char* value = getenv("SUMMIT_WARM_SHADERS");
-+        return !value || strcmp(value, "0");
-+    }();
-+    if (warmsShaders) {
++    // The two programs of every first frame, before it is asked for.
++    if (!getenv("SUMMIT_WARM_SHADERS") || strcmp(getenv("SUMMIT_WARM_SHADERS"), "0")) {
 +        m_workQueue->dispatch([this, protectedThis = Ref { *this }] {
-+            if (m_context && m_textureMapper && m_context->makeContextCurrent())
-+                m_textureMapper->warmShaderProgramsHaiku();
++            warmShaderProgramsHaiku(2, false);
 +        });
 +    }
 +#endif
++
++}
++
++#if PLATFORM(HAIKU) && USE(TEXTURE_MAPPER)
++// Shader programs the page is likely to need soon are compiled one per task
++// (TextureMapper::warmShaderProgramsHaiku()): the two every first frame draws
++// with while the page is fetched, the others once a frame has shown the
++// page's tiles, each when no composition is waiting and none was sent for
++// 100 ms, so neither the first frames nor a composition asked for meanwhile
++// wait for them. On the Raspberry Pi 4, without a shader cache, the warm-up
++// of all of them before the first frame put it 2.2 s later, and compiles
++// right after a blank first frame held back the one with the page.
++// SUMMIT_WARM_SHADERS=0 compiles each program when it is first drawn with.
++void ThreadedCompositor::warmShaderProgramsHaiku(unsigned remaining, bool waitsForQuiet)
++{
++    ASSERT(m_workQueue->runLoop().isCurrent());
++    if (!remaining || !m_context || !m_textureMapper)
++        return;
++    if (waitsForQuiet) {
++        static constexpr Seconds quiet = 100_ms;
++        Seconds wait;
++        {
++            Locker locker { m_state.lock };
++            if (m_state.state == State::Invalidated)
++                return;
++            auto sinceFrame = MonotonicTime::now() - m_lastFrameSentHaiku;
++            if (m_state.state != State::Idle || m_state.isRenderTimerActive)
++                wait = quiet;
++            else if (sinceFrame < quiet)
++                wait = quiet - sinceFrame;
++        }
++        if (wait > 0_s) {
++            m_workQueue->dispatchAfter(wait, [this, protectedThis = Ref { *this }, remaining] {
++                warmShaderProgramsHaiku(remaining, true);
++            });
++            return;
++        }
++    }
++    if (!m_context->makeContextCurrent())
++        return;
++    m_textureMapper->warmShaderProgramsHaiku();
++    m_workQueue->dispatch([this, protectedThis = Ref { *this }, remaining, waitsForQuiet] {
++        warmShaderProgramsHaiku(remaining - 1, waitsForQuiet);
++    });
  }
++#endif
  
  ThreadedCompositor::~ThreadedCompositor() = default;
-@@ -216,8 +275,23 @@ void ThreadedCompositor::updateRenderTimer()
+ 
+@@ -216,8 +322,23 @@ void ThreadedCompositor::updateRenderTimer()
      }
  
      if (m_state.isRenderTimerActive) {
@@ -103464,7 +103645,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..82db26049d1d988e41a05b3e43c8ee84
      } else
          m_renderTimer.stop();
  }
-@@ -364,6 +438,10 @@ TargetContents ThreadedCompositor::paintToCurrentGLContext(const TransformationM
+@@ -364,6 +485,10 @@ TargetContents ThreadedCompositor::paintToCurrentGLContext(const TransformationM
  #if USE(TEXTURE_MAPPER)
  void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix, const IntSize& size, const OptionSet<CompositionReason>& reasons)
  {
@@ -103475,7 +103656,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..82db26049d1d988e41a05b3e43c8ee84
      FloatRect clipRect(FloatPoint { }, size);
      TextureMapperLayer& currentRootLayer = m_sceneState->rootLayer().ensureTarget();
      if (currentRootLayer.transform() != matrix)
-@@ -373,6 +451,9 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
+@@ -373,6 +498,9 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
  
      m_textureMapper->beginPainting(m_flipY ? TextureMapper::FlipY::Yes : TextureMapper::FlipY::No);
      m_textureMapper->beginClip(TransformationMatrix(), FloatRoundedRect(clipRect));
@@ -103485,7 +103666,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..82db26049d1d988e41a05b3e43c8ee84
  
  #if ENABLE(DAMAGE_TRACKING)
      std::optional<FloatRoundedRect> rectContainingRegionThatActuallyChanged;
-@@ -383,6 +464,10 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
+@@ -383,6 +511,10 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
          WTFBeginSignpost(this, CollectDamage);
          currentRootLayer.collectDamage(*m_textureMapper, frameDamage);
          WTFEndSignpost(this, CollectDamage);
@@ -103496,7 +103677,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..82db26049d1d988e41a05b3e43c8ee84
  
          recordFrameDamage(WTF::move(frameDamage));
  
-@@ -404,11 +489,20 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
+@@ -404,11 +536,20 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
          m_textureMapper->beginClip(TransformationMatrix(), *rectContainingRegionThatActuallyChanged);
  #endif
  
@@ -103517,7 +103698,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..82db26049d1d988e41a05b3e43c8ee84
  
  #if ENABLE(DAMAGE_TRACKING)
      if (rectContainingRegionThatActuallyChanged)
-@@ -426,6 +520,16 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
+@@ -426,6 +567,16 @@ void ThreadedCompositor::paintToTextureMapper(const TransformationMatrix& matrix
  
      m_textureMapper->endClip();
      m_textureMapper->endPainting();
@@ -103534,7 +103715,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..82db26049d1d988e41a05b3e43c8ee84
  
      if (sceneHasRunningAnimations)
          requestComposition(CompositionReason::Animation);
-@@ -556,6 +660,46 @@ void ThreadedCompositor::renderLayerTree()
+@@ -556,6 +707,46 @@ void ThreadedCompositor::renderLayerTree()
      if (m_suspendedCount > 0)
          return;
  
@@ -103581,7 +103762,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..82db26049d1d988e41a05b3e43c8ee84
      OptionSet<CompositionReason> reasons;
      bool shouldNotifiyDidComposite = false;
      {
-@@ -580,8 +724,18 @@ void ThreadedCompositor::renderLayerTree()
+@@ -580,8 +771,18 @@ void ThreadedCompositor::renderLayerTree()
  
          ASSERT(m_state.state == State::Scheduled);
          m_state.state = State::InProgress;
@@ -103600,7 +103781,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..82db26049d1d988e41a05b3e43c8ee84
  #if USE(TEXTURE_MAPPER)
      if (!m_context || !m_context->makeContextCurrent())
          return;
-@@ -599,23 +753,55 @@ void ThreadedCompositor::renderLayerTree()
+@@ -599,23 +800,61 @@ void ThreadedCompositor::renderLayerTree()
      if (viewportSize.isEmpty())
          return;
  
@@ -103623,6 +103804,12 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..82db26049d1d988e41a05b3e43c8ee84
 +        CoordinatedBackingStoreTile::setCountsUpdatesHaiku(true);
 +        TextureMapper::setCountsDrawsHaiku(true);
 +    }
++#if USE(TEXTURE_MAPPER)
++    // Until the shader warm-up starts, the tile counts say when a frame first
++    // shows the page's tiles.
++    else
++        CoordinatedBackingStoreTile::setCountsUpdatesHaiku(!m_shaderWarmupStartedHaiku);
++#endif
 +    // SUMMIT_TILE_UPLOAD_BUDGET_MS: how long a composition uploads tiles it
 +    // does not show (CoordinatedBackingStore::processPendingUpdates); 0
 +    // uploads every tile in the composition that receives it, as before.
@@ -103656,7 +103843,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..82db26049d1d988e41a05b3e43c8ee84
  
      updateFPSCounter();
  
-@@ -631,8 +817,29 @@ void ThreadedCompositor::renderLayerTree()
+@@ -631,8 +870,49 @@ void ThreadedCompositor::renderLayerTree()
      PlatformDisplay::sharedDisplay().skiaGLContext()->swapBuffers();
  #endif
  
@@ -103668,6 +103855,26 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..82db26049d1d988e41a05b3e43c8ee84
 +    const bigtime_t readAt = traceTiming ? system_time() : 0;
 +#endif
      m_surface->sendFrame();
++#if PLATFORM(HAIKU) && USE(TEXTURE_MAPPER)
++    m_lastFrameSentHaiku = MonotonicTime::now();
++    if (m_renderCountHaiku == 1)
++        SUMMIT_STARTUP_TRACE("first frame sent");
++    if (!m_shaderWarmupStartedHaiku && (tileUpdates.tiles || m_renderCountHaiku >= 30)) {
++        m_shaderWarmupStartedHaiku = true;
++        SUMMIT_STARTUP_TRACE("first frame with tiles sent");
++        static const bool warmsShaders = [] {
++            const char* value = getenv("SUMMIT_WARM_SHADERS");
++            return !value || strcmp(value, "0");
++        }();
++        // 16 programs after the first two; the TextureMapper stops earlier
++        // once its budget is spent.
++        if (warmsShaders) {
++            m_workQueue->dispatch([this, protectedThis = Ref { *this }] {
++                warmShaderProgramsHaiku(16, true);
++            });
++        }
++    }
++#endif
 +#if PLATFORM(HAIKU)
 +    if (traceTiming)
 +        std::fprintf(stderr, "Summit compositor timing: pid=%d at=%lld async=%d update=%d surface=%.1f flush=%.1f paint=%.1f send=%.1f total=%.1f tiles=%u newTextures=%u tileMpx=%.2f paintWait=%.1f texture=%.1f upload=%.1f swap=%.1f read=%.1f ipc=%.1f deferred=%d draws=%u blended=%u intoSurfaces=%u surfaces=%u blurs=%u drawMpx=%.1f blendedMpx=%.1f transparentTiles=%u waitingInView=%u texturelessInView=%u\n",
@@ -103686,7 +103893,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..82db26049d1d988e41a05b3e43c8ee84
  
      RunLoop::mainSingleton().dispatch([this, protectedThis = Ref { *this }] {
          if (m_layerTreeHost)
-@@ -656,6 +863,13 @@ void ThreadedCompositor::requestComposition(CompositionReason reason)
+@@ -656,6 +936,13 @@ void ThreadedCompositor::requestComposition(CompositionReason reason)
  {
      Locker locker { m_state.lock };
      m_state.reasons.add(reason);
@@ -103700,7 +103907,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..82db26049d1d988e41a05b3e43c8ee84
      scheduleUpdateLocked();
  }
  
-@@ -703,6 +917,10 @@ void ThreadedCompositor::scheduleUpdateLocked()
+@@ -703,6 +990,10 @@ void ThreadedCompositor::scheduleUpdateLocked()
  void ThreadedCompositor::frameComplete()
  {
      ASSERT(m_workQueue->runLoop().isCurrent());
@@ -103711,7 +103918,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..82db26049d1d988e41a05b3e43c8ee84
  
      Locker locker { m_state.lock };
      WTFEmitSignpost(this, FrameComplete, "reasons: %s, state: %s, waiting for tiles: %s", reasonsToString(m_state.reasons).ascii().data(), stateToString(m_state.state).characters(), m_state.isWaitingForTiles ? "yes" : "no");
-@@ -726,6 +944,112 @@ void ThreadedCompositor::frameComplete()
+@@ -726,6 +1017,112 @@ void ThreadedCompositor::frameComplete()
      }
  }
  
@@ -103825,7 +104032,7 @@ index f9f6b4fc1110a915f2cade834d49a7695bccfc0c..82db26049d1d988e41a05b3e43c8ee84
  {
      return m_surface ? &m_workQueue->runLoop() : nullptr;
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.h b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.h
-index 6665a0cc3570425e2ad5d26dc6c443e3b8280665..1086829379cb10b74165a90456e7fc40829dd0bf 100644
+index 6665a0cc3570425e2ad5d26dc6c443e3b8280665..7f961ec7358e1b3bd305f1ade96f2b0238f36b13 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.h
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.h
 @@ -97,6 +97,9 @@ public:
@@ -103848,7 +104055,7 @@ index 6665a0cc3570425e2ad5d26dc6c443e3b8280665..1086829379cb10b74165a90456e7fc40
  
      void didCompositeRunLoopObserverFired();
  
-@@ -194,6 +200,21 @@ private:
+@@ -194,6 +200,26 @@ private:
      } m_attributes;
  
      RunLoop::Timer m_renderTimer;
@@ -103866,11 +104073,16 @@ index 6665a0cc3570425e2ad5d26dc6c443e3b8280665..1086829379cb10b74165a90456e7fc40
 +    enum class TestStallHaiku : uint8_t { Timer, Late, Frame };
 +    bool testStallHaiku(TestStallHaiku);
 +    unsigned m_renderCountHaiku { 0 };
++#if USE(TEXTURE_MAPPER)
++    void warmShaderProgramsHaiku(unsigned remaining, bool waitsForQuiet);
++    bool m_shaderWarmupStartedHaiku { false };
++    MonotonicTime m_lastFrameSentHaiku;
++#endif
 +#endif
  #if USE(TEXTURE_MAPPER)
      std::unique_ptr<WebCore::TextureMapper> m_textureMapper;
  #endif
-@@ -234,4 +255,3 @@ private:
+@@ -234,4 +260,3 @@ private:
  } // namespace WebKit
  
  #endif // USE(COORDINATED_GRAPHICS)
@@ -105950,10 +106162,10 @@ index 0000000000000000000000000000000000000000..7459ce25f180160a1c12431c73926a1f
 +
 diff --git a/Source/WebKit/WebProcess/WebPage/haiku/WebPageHaiku.cpp b/Source/WebKit/WebProcess/WebPage/haiku/WebPageHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..ddd457397b3aa6ab142c4d59d33f47cbd372412c
+index 0000000000000000000000000000000000000000..0b0a79dd0813bcfae719f65f648a6f5c0aba68a8
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/WebPage/haiku/WebPageHaiku.cpp
-@@ -0,0 +1,145 @@
+@@ -0,0 +1,147 @@
 +/*
 + * Copyright (C) 2014 Haiku, inc.
 + *
@@ -105982,6 +106194,7 @@ index 0000000000000000000000000000000000000000..ddd457397b3aa6ab142c4d59d33f47cb
 +#include "config.h"
 +#include "WebPage.h"
 +#include "EditingCommandsHaiku.h"
++#include "StartupTraceHaiku.h"
 +
 +#include <WebCore/BackForwardController.h>
 +#include <WebCore/Document.h>
@@ -106007,6 +106220,7 @@ index 0000000000000000000000000000000000000000..ddd457397b3aa6ab142c4d59d33f47cb
 +
 +void WebPage::platformInitialize(WebKit::WebPageCreationParameters const&)
 +{
++    SUMMIT_STARTUP_TRACE("page created");
 +}
 +
 +void WebPage::platformReinitializeAccessibilityToken()
@@ -106173,10 +106387,10 @@ index 0000000000000000000000000000000000000000..6549d7f5c9eac54d993817a051d3965d
 +resource app_flags B_MULTIPLE_LAUNCH | B_BACKGROUND_APP;
 diff --git a/Source/WebKit/WebProcess/haiku/WebProcessHaiku.cpp b/Source/WebKit/WebProcess/haiku/WebProcessHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..4ad5a78c4f85dd502610f204d4b393d89a30dbde
+index 0000000000000000000000000000000000000000..35ccf4d96426f1f299de0d7867c69553201bd4f7
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/haiku/WebProcessHaiku.cpp
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,133 @@
 +/*
 + * Copyright (C) 2014,2019 Haiku, Inc.
 + *
@@ -106210,6 +106424,7 @@ index 0000000000000000000000000000000000000000..4ad5a78c4f85dd502610f204d4b393d8
 +#include <Application.h>
 +#if USE(COORDINATED_GRAPHICS)
 +#include <WebCore/PlatformDisplayHaiku.h>
++#include "StartupTraceHaiku.h"
 +#endif
 +#include <wtf/Assertions.h>
 +
@@ -106241,6 +106456,7 @@ index 0000000000000000000000000000000000000000..4ad5a78c4f85dd502610f204d4b393d8
 +
 +void WebProcess::platformInitializeWebProcess(WebProcessCreationParameters& parameters)
 +{
++    SUMMIT_STARTUP_TRACE("initializing the web process");
 +    applyProcessCreationParameters(WTF::move(parameters.auxiliaryProcessParameters));
 +#if ENABLE(VIDEO)
 +    // The Media Kit's list of file formats, read on a thread of its own
@@ -106261,6 +106477,7 @@ index 0000000000000000000000000000000000000000..4ad5a78c4f85dd502610f204d4b393d8
 +        }
 +        if (display)
 +            WebCore::PlatformDisplay::setSharedDisplay(WTF::move(display));
++        SUMMIT_STARTUP_TRACE("EGL display ready");
 +    }
 +#endif
 +}
@@ -106309,10 +106526,10 @@ index 0000000000000000000000000000000000000000..4ad5a78c4f85dd502610f204d4b393d8
 +} // namespace WebKit
 diff --git a/Source/WebKit/WebProcess/haiku/WebProcessMainHaiku.cpp b/Source/WebKit/WebProcess/haiku/WebProcessMainHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..50d1a5288e2dbc36c745b9640e344180ff7fdea1
+index 0000000000000000000000000000000000000000..4af8492f6014d42d63f77522b745415fdc1e6431
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/haiku/WebProcessMainHaiku.cpp
-@@ -0,0 +1,87 @@
+@@ -0,0 +1,89 @@
 +/*
 + * Copyright 2014,2019 Haiku, Inc.
 + *
@@ -106342,6 +106559,7 @@ index 0000000000000000000000000000000000000000..50d1a5288e2dbc36c745b9640e344180
 +#include "WebProcessMain.h"
 +
 +#include "AuxiliaryProcessMain.h"
++#include "StartupTraceHaiku.h"
 +#include "WebProcess.h"
 +#include <wtf/WTFProcess.h>
 +
@@ -106356,6 +106574,7 @@ index 0000000000000000000000000000000000000000..50d1a5288e2dbc36c745b9640e344180
 +public:
 +    bool platformInitialize() override
 +    {
++        SUMMIT_STARTUP_TRACE("web process main");
 +        // The media loaders of this process fetch with libcurl, whose
 +        // resolver threads call getaddrinfo() several at a time. libnetwork
 +        // parses nsswitch.conf on the first lookup and its scanner calls
