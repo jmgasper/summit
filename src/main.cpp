@@ -22,11 +22,14 @@
 #include <Path.h>
 #include <Roster.h>
 #include <OS.h>
+#include <image.h>
+#include <unistd.h>
 #if !SUMMIT_MODERN_WEBKIT
 #include <WebPage.h>
 #include <WebSettings.h>
 #endif
 #include <filesystem>
+#include <functional>
 #include <algorithm>
 #include <atomic>
 #include <map>
@@ -68,6 +71,13 @@ public:
             return;
         }
 #endif
+        // A start while Summit quits is made again once this instance is
+        // gone (RunApplication): opening it in a closing window would lose it.
+        if (fQuitting) {
+            fRelaunch = true;
+            for (int32 i = 1; i < argc; ++i) fRelaunchArguments.push_back(argv[i]);
+            return;
+        }
         for (int32 i = 1; i < argc; ++i) {
             std::string argument = argv[i];
             if (argument == "--profile" && i + 1 < argc) { fProfile = argv[++i]; continue; }
@@ -77,6 +87,15 @@ public:
     }
     void RefsReceived(BMessage* message) override
     {
+        if (fQuitting) {
+            fRelaunch = true;
+            entry_ref ref;
+            for (int32 i = 0; message->FindRef("refs", i, &ref) == B_OK; ++i) {
+                BPath path(&ref);
+                if (path.InitCheck() == B_OK) fRelaunchArguments.push_back(summit::FileURL(path.Path()));
+            }
+            return;
+        }
         if (!fWindows.empty()) {
             if (FrontNormalWindow().IsValid()) FrontNormalWindow().SendMessage(message);
             else {
@@ -233,6 +252,11 @@ public:
     }
     void MessageReceived(BMessage* message) override
     {
+        // Summit started again without arguments (its icon) while quitting.
+        if (message->what == B_SILENT_RELAUNCH && fQuitting) {
+            fRelaunch = true;
+            return;
+        }
 #if SUMMIT_MODERN_WEBKIT
         if (message->what == B_WEBKIT_EXTENSION_ACTIONS_CHANGED) {
             for (const auto& window : fWindows) window.messenger.SendMessage(message);
@@ -390,6 +414,9 @@ public:
             for (auto key : fClosedWhileQuitting) fShared->RemoveWindowSession(key);
             fClosedWhileQuitting.clear();
             fShared->SaveSoon();
+            // What was started meanwhile opens here after all.
+            fRelaunch = false;
+            for (const auto& argument : std::exchange(fRelaunchArguments, { })) OpenInNormalWindow(argument);
             return;
         }
         if (message->what == summit::kCloseWindowRequest) {
@@ -698,18 +725,22 @@ public:
             PostMessage(B_QUIT_REQUESTED);
             return false;
         }
-        // Windows save their sessions on the profile's thread; what is still
-        // waiting there is written now, before the process exits.
-        if (fShared) {
-            std::string error;
-            if (!fShared->Save(error)) std::fprintf(stderr, "Summit: could not save the profile: %s\n", error.c_str());
-        }
-        SUMMIT_QUIT_TRACE("profile saved; the application quits");
+        // What the profile's thread has still to write is written once the
+        // application has left the registrar (RunApplication), so that a new
+        // start does not wait on a slow disk.
+        SUMMIT_QUIT_TRACE("the application quits");
         return true;
     }
 #endif
     bool WebKitInitialized() const { return fWebKitInitialized; }
     int ExitStatus() const { return fExitStatus; }
+    std::shared_ptr<summit::SharedProfile> Profile() const { return fShared; }
+    // Whether Summit was started again while it quit, and with what.
+    bool TakeRelaunch(std::vector<std::string>& arguments)
+    {
+        arguments = std::exchange(fRelaunchArguments, { });
+        return std::exchange(fRelaunch, false);
+    }
 private:
     struct WindowRecord {
         BMessenger messenger;
@@ -724,6 +755,8 @@ private:
     std::string fStartURL;
     BMessenger fPreferences;
     bool fQuitting = false;
+    bool fRelaunch = false;
+    std::vector<std::string> fRelaunchArguments;
     std::vector<uint64> fClosedWhileQuitting;
     std::map<uint64, BMessenger> fDownloads;
     bool fDownloadQuitApproved = false;
@@ -1057,23 +1090,85 @@ private:
     std::vector<std::string> fURLs;
 };
 
+// The executable this instance runs: Summit is single-launch per executable.
+static std::string ExecutablePath()
+{
+    int32 cookie = 0;
+    image_info image;
+    while (get_next_image_info(B_CURRENT_TEAM, &cookie, &image) == B_OK) {
+        if (image.type == B_APP_IMAGE) return image.name;
+    }
+    return { };
+}
+
+// A quitting instance keeps a port of this name from the moment it leaves the
+// registrar until its profile is written.
+static std::string ExitingPortName()
+{
+    char name[B_OS_NAME_LENGTH];
+    std::snprintf(name, sizeof(name), "Summit exits %016zx", std::hash<std::string>()(ExecutablePath()));
+    return name;
+}
+
+// A start of the same Summit just after it quit would read the profile while
+// that instance still writes it (seconds, on a Raspberry Pi's SD card): wait
+// for it, up to 20 s.
+static void WaitForExitingInstance()
+{
+    const std::string name = ExitingPortName();
+    if (find_port(name.c_str()) < 0) return;
+    const bigtime_t deadline = system_time() + 20000000;
+    while (find_port(name.c_str()) >= 0 && system_time() < deadline) snooze(50000);
+}
+
+static void StartAgain(const std::vector<std::string>& arguments)
+{
+    std::vector<std::string> strings { ExecutablePath() };
+    strings.insert(strings.end(), arguments.begin(), arguments.end());
+    std::vector<const char*> argv;
+    for (const auto& string : strings) argv.push_back(string.c_str());
+    argv.push_back(nullptr);
+    thread_id thread = load_image(static_cast<int32>(strings.size()), argv.data(), const_cast<const char**>(environ));
+    if (thread >= 0) resume_thread(thread);
+    SUMMIT_QUIT_TRACE("started again with %zu arguments: %s", arguments.size(), thread >= 0 ? "yes" : std::strerror(thread));
+}
+
 static int RunApplication()
 {
     umask(0077);
     status_t status = B_NO_INIT;
-    SummitApp app(status);
-    if (status == B_ALREADY_RUNNING)
-        return 0; // The registrar delivered the launch arguments to the existing instance.
-    if (status != B_OK) {
-        std::fprintf(stderr, "Summit: could not initialize the native application: %s\n", std::strerror(status));
-        return 1;
-    }
-    app.Run();
-    SUMMIT_QUIT_TRACE("application loop ended");
+    std::shared_ptr<summit::SharedProfile> profile;
+    std::vector<std::string> relaunchArguments;
+    bool relaunch = false;
+    port_id exiting = -1;
+    int exitStatus = 0;
+    {
+        SummitApp app(status);
+        if (status == B_ALREADY_RUNNING)
+            return 0; // The registrar delivered the launch arguments to the existing instance.
+        if (status != B_OK) {
+            std::fprintf(stderr, "Summit: could not initialize the native application: %s\n", std::strerror(status));
+            return 1;
+        }
+        app.Run();
+        SUMMIT_QUIT_TRACE("application loop ended");
 #if !SUMMIT_MODERN_WEBKIT
-    if (app.WebKitInitialized()) BWebPage::ShutdownOnce();
+        if (app.WebKitInitialized()) BWebPage::ShutdownOnce();
 #endif
-    return app.ExitStatus();
+        exitStatus = app.ExitStatus();
+        profile = app.Profile();
+        relaunch = app.TakeRelaunch(relaunchArguments);
+        if (profile) exiting = create_port(1, ExitingPortName().c_str());
+    }
+    // The application has left the registrar: a new start makes a new
+    // instance, which waits for the port. The profile's last write (the
+    // saver thread's, then its own) happens with the last reference.
+    SUMMIT_QUIT_TRACE("application destroyed");
+    profile = nullptr;
+    SUMMIT_QUIT_TRACE("profile saved");
+    if (exiting >= 0) delete_port(exiting);
+    if (relaunch) StartAgain(relaunchArguments);
+    return exitStatus;
 }
 
 // libnetwork's resolver re-reads nsswitch.conf whenever the path it looks at
@@ -1113,6 +1208,7 @@ int main()
     // browser), not by its launcher: take the launcher's environment.
     summit::ApplyLaunchEnvironment();
     PrepareResolver();
+    WaitForExitingInstance();
     // Pages get 10 frames in error.stack, as in Chrome, not JavaScriptCore's
     // 100: every error walks the stack that far when it is made. One of
     // uBlock Origin's YouTube filters traps JSON.stringify and, for a value
@@ -1132,7 +1228,7 @@ int main()
     // window/context cleanup. WebKit worker TLS destructors may still be
     // finishing, so do not race them with libbe's global handler-token table
     // destruction. This matches the Haiku WebKit helper-process exit path.
-    SUMMIT_QUIT_TRACE("application destroyed; exiting");
+    SUMMIT_QUIT_TRACE("exiting");
     std::fflush(nullptr);
     std::_Exit(status);
 #else
