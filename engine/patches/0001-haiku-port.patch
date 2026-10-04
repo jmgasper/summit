@@ -22718,7 +22718,7 @@ index 4c15dfa81a1f6da9de3fead1584946253080c76c..18e6a7678f451073d729488cb80083d0
      }
      LOG(WebGL, "Got EGLContext");
 diff --git a/Source/WebCore/platform/graphics/texmap/TextureMapper.cpp b/Source/WebCore/platform/graphics/texmap/TextureMapper.cpp
-index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..8f01693d0db2d374eacc14176ea88f76c71a00ac 100644
+index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..e181e0ca88e9cb27d8d9067013392d70294a9efc 100644
 --- a/Source/WebCore/platform/graphics/texmap/TextureMapper.cpp
 +++ b/Source/WebCore/platform/graphics/texmap/TextureMapper.cpp
 @@ -44,6 +44,14 @@
@@ -22736,22 +22736,20 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..8f01693d0db2d374eacc14176ea88f76
  #if USE(CAIRO)
  #include "CairoUtilities.h"
  #include "RefPtrCairo.h"
-@@ -75,6 +83,14 @@ public:
+@@ -75,6 +83,12 @@ public:
      bool didModifyStencil { false };
      GLint previousScissorState { 0 };
      GLint previousDepthState { 0 };
 +#if PLATFORM(HAIKU)
-+    bool warmedRoundedSolidColor { false };
 +    // warmShaderProgramsHaiku(): the next program of its list, and the time
 +    // the programs warmed so far took to compile.
 +    unsigned warmedProgramsHaiku { 0 };
 +    bigtime_t warmTimeHaiku { 0 };
-+    unsigned paintsHaiku { 0 };
 +#endif
      std::array<GLint, 4> viewport { };
      std::array<GLint, 4> previousScissor { };
      double zNear { 0 };
-@@ -174,7 +190,16 @@ Ref<TextureMapperShaderProgram> TextureMapperGLData::getShaderProgram(TextureMap
+@@ -174,7 +188,16 @@ Ref<TextureMapperShaderProgram> TextureMapperGLData::getShaderProgram(TextureMap
  {
      ASSERT(!options.isEmpty());
      auto addResult = m_sharedGLData->m_programs.ensure(options.toRaw(), [options] {
@@ -22769,7 +22767,7 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..8f01693d0db2d374eacc14176ea88f76
      });
      return *addResult.iterator->value;
  }
-@@ -232,8 +257,87 @@ ClipStack& TextureMapper::clipStack()
+@@ -232,6 +255,77 @@ ClipStack& TextureMapper::clipStack()
      return data().currentSurface ? data().currentSurface->clipStack() : m_clipStack;
  }
  
@@ -22780,7 +22778,10 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..8f01693d0db2d374eacc14176ea88f76
 +    // that has 16 ms: the first scroll of a page (a scrollbar fades in), the
 +    // first rounded video, the first filter. These are the programs that
 +    // twenty sites had compiled by the end of a scroll, and the filters of
-+    // the same kind they did not use. Each call compiles one program, so a
++    // the same kind they did not use (the rounded solid colour, which Reddit
++    // can first use after scrolling begins, comes first after the first
++    // frame; compiled inside the first frame with the page, it cost a
++    // Raspberry Pi 4 75 ms). Each call compiles one program, so a
 +    // composition asked for meanwhile waits for one program at most. The
 +    // compositor makes the first two, which every first frame draws with,
 +    // while the page is still being fetched, and the rest after its first
@@ -22835,8 +22836,6 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..8f01693d0db2d374eacc14176ea88f76
 +    bigtime_t took = system_time() - startedAt;
 +    if (index >= firstFrameProgramCount)
 +        glData.warmTimeHaiku += took;
-+    if (index == firstFrameProgramCount)
-+        glData.warmedRoundedSolidColor = true;
 +    if (trace)
 +        std::fprintf(stderr, "Summit shader warm-up: pid=%d program=%u took=%.1f total=%.1f%s\n", static_cast<int>(getpid()), index,
 +            took / 1000.0, glData.warmTimeHaiku / 1000.0, glData.warmTimeHaiku >= budget && index + 1 < std::size(programs) ? " (budget spent)" : "");
@@ -22845,19 +22844,8 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..8f01693d0db2d374eacc14176ea88f76
 +
  void TextureMapper::beginPainting(FlipY flipY, BitmapTexture* surface)
  {
-+#if PLATFORM(HAIKU)
-+    // Reddit can first use this variant after scrolling begins. Compile it on
-+    // the first compositor paint so shader creation does not interrupt a frame.
-+    // Not in the first frame, which the warm-up follows (it starts with this program).
-+    if (!data().warmedRoundedSolidColor && data().paintsHaiku++) {
-+        data().getShaderProgram({ TextureMapperShaderProgram::SolidColor, TextureMapperShaderProgram::RoundedRectClip });
-+        data().warmedRoundedSolidColor = true;
-+    }
-+#endif
      glGetIntegerv(GL_CURRENT_PROGRAM, &data().previousProgram);
-     data().previousScissorState = glIsEnabled(GL_SCISSOR_TEST);
-     data().previousDepthState = glIsEnabled(GL_DEPTH_TEST);
-@@ -801,6 +905,10 @@ void TextureMapper::drawTexturePackedYUV(GLuint texture, const std::array<GLfloa
+@@ -801,6 +895,10 @@ void TextureMapper::drawTexturePackedYUV(GLuint texture, const std::array<GLfloa
  
  void TextureMapper::drawSolidColor(const FloatRect& rect, const TransformationMatrix& matrix, const Color& color, bool isBlendingAllowed)
  {
@@ -22868,7 +22856,7 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..8f01693d0db2d374eacc14176ea88f76
      OptionSet<TextureMapperFlags> flags;
      TextureMapperShaderProgram::Options options = TextureMapperShaderProgram::SolidColor;
      if (!matrix.mapQuad(rect).isRectilinear()) {
-@@ -817,6 +925,9 @@ void TextureMapper::drawSolidColor(const FloatRect& rect, const TransformationMa
+@@ -817,6 +915,9 @@ void TextureMapper::drawSolidColor(const FloatRect& rect, const TransformationMa
      }
  
      Ref<TextureMapperShaderProgram> program = data().getShaderProgram(options);
@@ -22878,7 +22866,7 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..8f01693d0db2d374eacc14176ea88f76
      glUseProgram(program->programID());
  
      if (clipStack().isRoundedRectClipEnabled())
-@@ -828,6 +939,13 @@ void TextureMapper::drawSolidColor(const FloatRect& rect, const TransformationMa
+@@ -828,6 +929,13 @@ void TextureMapper::drawSolidColor(const FloatRect& rect, const TransformationMa
          flags.add(TextureMapperFlags::ShouldBlend);
  
      draw(rect, matrix, program.get(), GL_TRIANGLE_FAN, flags);
@@ -22892,7 +22880,7 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..8f01693d0db2d374eacc14176ea88f76
  }
  
  void TextureMapper::clearColor(const Color& color)
-@@ -877,8 +995,38 @@ void TextureMapper::drawUnitRect(TextureMapperShaderProgram& program, GLenum dra
+@@ -877,8 +985,38 @@ void TextureMapper::drawUnitRect(TextureMapperShaderProgram& program, GLenum dra
      glBindBuffer(GL_ARRAY_BUFFER, 0);
  }
  
@@ -22931,7 +22919,7 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..8f01693d0db2d374eacc14176ea88f76
      TransformationMatrix matrix(modelViewMatrix);
      matrix.multiply(TransformationMatrix::rectToRect(FloatRect(0, 0, 1, 1), rect));
  
-@@ -987,6 +1135,10 @@ void TextureMapper::drawTextureCopy(const BitmapTexture& sourceTexture, const Fl
+@@ -987,6 +1125,10 @@ void TextureMapper::drawTextureCopy(const BitmapTexture& sourceTexture, const Fl
  
  void TextureMapper::drawBlurred(const BitmapTexture& sourceTexture, const FloatRect& rect, float radius, Direction direction, bool alphaBlur)
  {
@@ -22942,7 +22930,7 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..8f01693d0db2d374eacc14176ea88f76
      Ref<TextureMapperShaderProgram> program = data().getShaderProgram({
          alphaBlur ? TextureMapperShaderProgram::AlphaBlur : TextureMapperShaderProgram::BlurFilter,
      });
-@@ -1278,6 +1430,28 @@ RefPtr<BitmapTexture> TextureMapper::applyFilters(RefPtr<BitmapTexture>& sourceT
+@@ -1278,6 +1420,28 @@ RefPtr<BitmapTexture> TextureMapper::applyFilters(RefPtr<BitmapTexture>& sourceT
  
  RefPtr<BitmapTexture> TextureMapper::applyFilter(RefPtr<BitmapTexture>& sourceTexture, const Ref<const FilterOperation>& filter, bool defersLastPass)
  {
@@ -22971,7 +22959,7 @@ index 20ece6ed78d03bfa6b69ee82880f0291d3d888a3..8f01693d0db2d374eacc14176ea88f76
      switch (filter->type()) {
      case FilterOperation::Type::Grayscale:
      case FilterOperation::Type::Sepia:
-@@ -1330,6 +1504,10 @@ void TextureMapper::bindDefaultSurface()
+@@ -1330,6 +1494,10 @@ void TextureMapper::bindDefaultSurface()
  
  void TextureMapper::bindSurface(BitmapTexture *surface)
  {
