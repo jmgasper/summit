@@ -1,5 +1,210 @@
 # Summit performance: Speedometer 3.1 baseline, where the time goes, stress test
 
+## 4 October 2026 (evening): the Raspberry Pi 4 - start-up, scrolling, page loads
+
+The Pi 4 (4 GB, four Cortex-A72 at 1.5 GHz, air/OS on an SD card, Mesa's
+v3d) ran the engine of 2 October, built for it with Skia, GL compositing
+and WebGL (`summit_webkit` 1.10.0-2, `/mnt/HaikuWork/rpi4/summit-gl`). This
+session rebuilt that engine from the current tree, measured where its time
+goes, and fixed what was Summit's. Tools and the loop: `tools/pi/README.md`.
+
+In short, warm launches of a small page, seconds after exec:
+
+| | browser code runs | window | first frame with the page |
+| --- | --- | --- | --- |
+| installed build (2 October) | 1.68 | 1.74 | 5.85 |
+| current engine (link flags of 3 October) | 0.66 | 0.70 | 3.01 |
+| ... shader warm-up after the first frame | 0.66 | 0.70 | 2.0 |
+| ... bundled libraries with GNU hash tables | 0.43 | 0.47 | 1.52 |
+| ... libraries most symbols are found in listed first | 0.39 | 0.43 | 1.46 |
+| installed packages (summit_webkit 1.10.0-3) | 0.38 | 0.43 | 1.37-1.40 |
+
+The first launch after a boot also reads the engine from the SD card
+(25 MHz default speed, about 28 MB/s through packagefs): 11.2 s to the
+browser's code with the old build, 8.7 s with the new packages right after
+installing them. A faster SD mode in the OS's driver (high speed or UHS), or
+reading the engine's files in the background after login, would help there.
+
+Speedometer 3.1 on the Pi (three iterations): 1.02 +- 0.21 -> 1.36 +- 0.22.
+
+### Libraries: the runtime loader binds everything at load
+
+The arm64 engine predated `-Bsymbolic-functions` and `--hash-style=both`
+(3 October). Haiku's `profile -a` works on the Pi: 93% of a bare
+`WebProcess` start (634 ms) was the runtime loader (`find_symbol`,
+`match_symbol`, `strcmp`). (The arm64 kernel books all user time as kernel
+time, so `time` showed it as `sys`; a bash loop shows the same.)
+
+- The current engine's link flags: libWebKit's symbol relocations 356k ->
+  112k, a bare web process 1.48 -> 0.62 s.
+- The 25 third-party libraries bundled with the engine (ICU, OpenSSL,
+  libxml2, curl, FreeType, Fontconfig, HarfBuzz, libepoxy...) were linked
+  with SysV hash tables only, and most lookups pass several of them before
+  reaching their definition (a library looks up even its own symbols). A
+  model of the lookups (`tools/pi/lookup-scenarios.py`) put 869,000 SysV
+  chain walks into one web process start. `tools/pi/build-deps-gnu-hash.sh`
+  rebuilds them from the same patched sources with `--hash-style=both` and
+  `-Bsymbolic-functions` (libepoxy `-Bsymbolic`: its exports are function
+  pointer variables; OpenSSL keeps its own `-Bsymbolic`): a bare web
+  process 0.66 -> 0.42 s, the browser's code runs at 0.43 s instead of
+  0.66, the first frame comes 0.5 s sooner.
+- Left for the OS: Haiku's own libraries (libroot, libbe, libstdc++,
+  libmedia...) are SysV-only too; GNU hash tables there would speed up every
+  program's start, on the X399 as well.
+
+### Shader warm-up before the first frame
+
+The compositor compiled 18 shader programs (the ones twenty sites used by the
+end of a scroll) as soon as it was created. With Mesa's shader cache that is
+a few milliseconds; the Pi's Mesa is built without one
+(`-Dshader-cache=disabled`) and v3d takes 40-150 ms a program: 2.2 s before
+the first frame. Now the two programs every first frame draws with are
+compiled while the page is fetched, the rest after the first frame that
+shows the page's tiles, one per compositor task, only when no composition is
+waiting and none was sent for 100 ms, and only until they have taken 150 ms
+(`SUMMIT_WARM_SHADERS=<ms>|all|0`). The X399, with its cache, still warms
+all of them.
+
+The spare web process for the next tab now starts a second after a page has
+loaded rather than at once.
+
+`SUMMIT_STARTUP_TRACE=1` prints the milestones of all processes on
+`system_time()`; on the Pi, warm: browser code 0.43 s, web and network
+processes launched 0.47, their libraries loaded 0.87, web process main 0.90,
+EGL 1.11, compositor context 1.20, page 1.25, first frame 1.43, first frame
+with the page's tiles 1.69.
+
+### Scrolling: frames held for a screen that was never used
+
+The current engine scrolled Wikipedia on the Pi at 7 frames a second (the
+build of 2 October: 30-35). Frames went out exactly 128 ms apart while the
+compositor sat idle: the browser held each frame's FrameDone until app_server
+had drawn it, which it does only for a window whose page also presents
+straight into the screen (#16). The Pi's libEGL_mesa has no Summit present
+entry points, so the web process reads every frame back, but the browser did
+not know and offered the target again every second. The web process now
+declines the target (a DirectFrame for target 0) and the browser stops
+holding: 24-32 frames a second.
+
+### Read-back on V3D
+
+The GPU's buffers are mapped write-combining (`v3d` driver: uncached for the
+CPU), and Mesa de-tiles every `glReadPixels` on the CPU into a staging buffer
+the size of the read. A whole 1920x1000 frame read at 139 MB/s (55 ms);
+bands of 16-64 rows at 260 MB/s (29 ms), as the staging buffer then stays in
+the A72's L2. Pixel buffer objects are no faster (the copy out of the mapped
+buffer runs at 420 MB/s), nor is a pbuffer, nor any combination of RGBA and
+BGRA. On V3D Summit now reads in 384 KB bands (`SUMMIT_READBACK_BAND_KB`);
+in a scroll the read went from 18.4 to 15.3 ms for 0.6 Mpx.
+
+What is left per frame of a scroll, 0.6 Mpx: read 15 ms, GPU 4, tile
+uploads 4, drawing 1.5. A maximised window (2 Mpx) cannot pass ~20 frames a
+second this way. The fix belongs to the OS: frames the display scans out
+from GPU memory (the HVS), or cached mappings with cache maintenance for
+reads.
+
+### Page loads: style sheets added while a page runs
+
+Seconds until the tab stops loading, three visits each (some of the
+current build's rounds overlapped a profile run):
+
+| | installed | current |
+| --- | --- | --- |
+| Wikipedia article | 10.7, 10.7, 9.6 | 8.5, 9.1, 3.8 |
+| BBC News | 29.7, 22.8, 23.1 | 14.8, 17.2, 5.2 |
+| GitHub WebKit | 2.8, 3.1, 2.8 | 2.2, 1.9, 1.6 |
+
+A Wikipedia article kept the web process's main thread busy for 6.6 s of
+its 8.7 s load: style 27%, layout 21%, JavaScript 10.5% (parsing and
+bytecode; the bytecode cache helps on later visits). With
+`SUMMIT_PAGE_UPDATE_TRACE=3` the article was restyled from scratch three
+more times after its first style pass, 300-400 ms each, each followed by a
+relayout. A temporary trace of style invalidations found why: Wikipedia's
+ResourceLoader adds module styles as the page runs, and WebKit restyles every
+element of a document when an added sheet holds anything but style rules and
+`@media` (here `@supports` and `@keyframes`), and also at every later sheet
+change once a style pass has skipped elements because a sheet was still
+loading (upstream's "FIXME: This should just invalidate elements with
+missing styles").
+
+- Rules inside `@supports` now go into the invalidation rule set as at the
+  top level (RuleSetBuilder evaluates the condition); a new `@keyframes`
+  reaches the animations that name it through `Resolver::addKeyframeStyle()`
+  -> `Document::keyframesRuleDidChange()`. `SUMMIT_STYLE_SHEET_INVALIDATION=all|verify`.
+- Elements left without style are remembered (up to 4096) and only their
+  subtrees are invalidated. `SUMMIT_MISSING_STYLE_INVALIDATION=all|verify`.
+- `verify` restyles everything after the targeted invalidation has been
+  resolved and compares 21 computed properties of every element: Wikipedia
+  (three checks, 7,423-9,728 elements) and GitHub (1,490): no differences.
+
+| Wikipedia on the Pi, per load | style | layout |
+| --- | --- | --- |
+| before (three loads) | 2.14-2.18 s | 1.84-1.85 s |
+| after | 1.07-1.10 s | 1.10-1.11 s |
+
+The time to the load event hardly moves (the extra restyles came around and
+after it); the main thread is free 1.8 s sooner and the page uses that much
+less CPU.
+
+### Video: the decoder the media kit picked failed
+
+`<video>` with H.264 played nothing on the Pi: the image carries the ROCK 5's
+`00_rockchip_mpp` decoder add-on, which sorts first, takes H.264 and fails to
+set up there, and the media kit does not try the next add-on. A track
+without a decoder now goes to libavcodec (`SoftwareVideoDecoderHaiku`, the
+NVDEC fallback), and an MSE decoder that fails is set to libavcodec. A 1080p
+clip plays, in software: about 2.6 cores, and ~11 compositions a second (each
+frame is uploaded into the GPU's tiled memory and read back). The image
+blocks the add-on on the Pi from its next build (rpi4 fda5bdb813); hardware
+decoding (`rpi_mmal`) is not reachable through the public BMediaDecoder API.
+
+### Idle and memory
+
+A loaded Wikipedia page with nothing moving: under 0.5% of a core for all of
+Summit's processes. Allocated memory: browser 45 MiB, network process 40,
+the page's process 199, the spare process 28.
+
+### Library order
+
+Haiku's runtime loader searches images breadth-first in load order, the
+executable's list first. WebProcess, NetworkProcess and Summit now list
+libbe, libstdc++ and libroot (Summit also libJavaScriptCore) right after
+libWebKit (no two of them define a common symbol). The model promised half
+the lookup work; measured, the browser's code runs 30 ms sooner and a web
+process loads 1-2% faster. Reordering `DT_NEEDED` with patchelf afterwards
+does not work: it adds load segments the runtime loader refuses ("Could not
+map image: Bad data").
+
+### Installed
+
+- Raspberry Pi: `summit_webkit-1.10.0-3` and `summit-0.1.0~git20261004-1`
+  (`pkgman install` of the local files; the previous packages are kept in
+  `~/summit-package-backup-20261004` on the board). The engine carries the
+  third-party libraries rebuilt with GNU hash tables.
+- X399: `bundle-z2eiu8dx` (Mesa prefix-20261002), same sources. Checked
+  there against the installed `bundle-r0_tdpf3`: start-up 0.13 s to the
+  browser's code (0.14), first frame 0.53-0.58 s (0.54-0.59), all 18 shader
+  programs still warm in 11.5 ms; Speedometer 3.1 11.17 / 11.11 (11.09 /
+  11.26); Wikipedia scroll bursts 53-59 fps (53-60); direct present still
+  used; style verify mode clean on Wikipedia, GitHub and The Guardian.
+
+### Open
+
+- Quitting with YouTube open takes 14-17 s on the Pi (old and new builds):
+  the page's busy main thread does not answer TryClose within the port's
+  10 s, then the close is retried.
+- A maximised window scrolls at ~20 fps (read-back), video at ~11 fps
+  (software decoding, upload and read-back of each frame).
+
+### Left for the OS image
+
+- Mesa with its shader cache (`-Dshader-cache=enabled`; it also brings
+  program binaries): the two programs of every first frame cost 200 ms per
+  web process, each new program 40-150 ms.
+- Presentation without the read-back (frames scanned out from GPU memory),
+  or cached buffer mappings for reads: 15-29 ms per megapixel now.
+- GNU hash tables for Haiku's own libraries.
+
 ## 4 October 2026 (morning): pictures that flicker while Reddit is scrolled
 
 Reported on the workstation at 175%: scrolling a page full of pictures
