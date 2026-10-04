@@ -315,6 +315,14 @@ Speedometer run there posts its result 25 s after the page loads; the
 240-300 s `x-speedo.sh` keeps the browser open is only a ceiling, so match
 results to runs by the server's request log, not by when a run ended.
 
+### Reading the start-up trace on the X399
+
+`first frame received by the browser` counts the first frame that comes as
+a bitmap (`Frame`). On the X399 the first frame goes straight into the
+screen (`DirectFrame`, `SUMMIT_SWAPCHAIN_TRACE=1` shows `send=2 direct`), at
+0.49 s; the 0.83 s of that trace line is a later read-back frame. The page
+is on the screen at the web process's `first frame sent`.
+
 ### Open
 
 - Quitting with YouTube open takes 14-17 s on the Pi (old and new builds):
