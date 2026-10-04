@@ -11,7 +11,9 @@ for t in $(ps | awk '/screen_blanker/ && !/awk/ {print $(NF-3)}'); do kill $t; d
 env "$@" "$summit" --profile "$p" "$url" > $l/video-$tag.log 2>&1 &
 pid=$!
 sleep $((secs - 10))
-teams="$pid $(ps | awk -v n="$(dirname $summit)/" 'index($0, n) && !index($0, "/Summit") {print $(NF-3)}' | tr '\n' ' ')"
+# The helpers sit beside a bundle's Summit, or in the engine package's folder.
+helpers="$(dirname $summit)/"; [ "$summit" = /boot/system/apps/Summit ] && helpers=/boot/system/lib/summit-webkit/
+teams="$pid $(ps | awk -v n="$helpers" 'index($0, n) && !index($0, "/Summit") {print $(NF-3)}' | tr '\n' ' ')"
 $d/threadstate 10000 2 $teams > $l/video-$tag.threads 2>&1
 t=$($d/summitctl --team $pid state 2>/dev/null | sed -n 's/.*"title":"\([^"]*\)".*/\1/p')
 echo "title: $t"

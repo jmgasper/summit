@@ -15209,10 +15209,10 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..9a84169f86a330032b085c81e0e7aeca624385e7
+index 0000000000000000000000000000000000000000..04f28f20b9c4c4e88f937eec280a6ba58f81fe4a
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.cpp
-@@ -0,0 +1,798 @@
+@@ -0,0 +1,801 @@
 +/*
 + * Copyright (C) 2026 Haiku, Inc. All rights reserved.
 + *
@@ -15782,6 +15782,9 @@ index 0000000000000000000000000000000000000000..9a84169f86a330032b085c81e0e7aeca
 +    if (status == B_OK && (output.type != B_MEDIA_RAW_VIDEO || display.format != colorSpaceI420 || !display.line_width
 +        || !display.line_count || display.bytes_per_row < display.line_width))
 +        status = B_MEDIA_BAD_FORMAT;
++    // The source stopped (a seek): nothing is wrong with the decoder.
++    if (status == B_CANCELED)
++        return nullptr;
 +    if (status != B_OK) {
 +        std::fprintf(stderr, "Summit media: %s did not take the stream (%s)\n", result->m_codecInfo.pretty_name, strerror(status));
 +        if (status == B_TIMED_OUT)
@@ -18227,10 +18230,10 @@ index 0000000000000000000000000000000000000000..9b18ce5f8f93b16b835f8680440fffbc
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..82cfb3e962c9db430c68a66f50723b89867ba031
+index 0000000000000000000000000000000000000000..b5b1638c74cc3e096fd2a983fbaa83e986869405
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
-@@ -0,0 +1,1938 @@
+@@ -0,0 +1,1951 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -18816,8 +18819,15 @@ index 0000000000000000000000000000000000000000..82cfb3e962c9db430c68a66f50723b89
 +                next = taken[replayed++];
 +            else {
 +                while (true) {
-+                    if (m_queue.take(&configuration, generation, next) == HaikuMSESampleQueue::TakeResult::Stop)
-+                        return B_LAST_BUFFER_ERROR;
++                    if (m_queue.take(&configuration, generation, next) == HaikuMSESampleQueue::TakeResult::Stop) {
++                        // After a flush (or when closing) the pictures still in
++                        // the decoder are not wanted: it stops at once. At the
++                        // end of the stream it gives them out first. The
++                        // Raspberry Pi's decoder, told the stream ended, waits
++                        // for the firmware to say so too, which after a flush
++                        // never came: the video stopped for good.
++                        return m_queue.aborted() || m_queue.generation() != generation ? B_CANCELED : B_LAST_BUFFER_ERROR;
++                    }
 +                    // A seek decodes from the keyframe before the target (5 s of
 +                    // pictures on YouTube, 0.75 s of decoding at 60 frames/s);
 +                    // the pictures nothing refers to can be left out.
@@ -18859,6 +18869,8 @@ index 0000000000000000000000000000000000000000..82cfb3e962c9db430c68a66f50723b89
 +        }
 +        if (addOn)
 +            taken.clear();
++        else if (m_queue.aborted() || m_queue.generation() != generation)
++            return true;
 +        keepTaken = false;
 +
 +        HaikuChunkDecoder decoder([&](const void** data, size_t* size, media_header* header) {
@@ -18912,6 +18924,10 @@ index 0000000000000000000000000000000000000000..82cfb3e962c9db430c68a66f50723b89
 +        }
 +        MSE_TRACE("video decoder %s %ux%u status=%ld setup=%.1f ms\n", codecInfo.pretty_name, info.width, info.height,
 +            long(status), (system_time() - setupStarted) / 1000.0);
++        // A flush while the decoder was set up (it reads samples to find the
++        // picture size) is no reason to drop what the next generation queued.
++        if (m_queue.aborted() || m_queue.generation() != generation)
++            return true;
 +        if (status != B_OK || width <= 0 || height <= 0)
 +            return false;
 +

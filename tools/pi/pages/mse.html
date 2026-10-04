@@ -1,7 +1,8 @@
 <!doctype html><html><head><meta charset="utf-8"><title>mse</title></head>
-<!-- mse.html?src=FILE[&codec=avc1.640028]: plays a fragmented MP4 through
+<!-- mse.html?src=FILE[&codec=avc1.640028][&seek=AT,TO]: plays a fragmented MP4 through
      Media Source Extensions (muted) and puts the frames presented and dropped
-     (getVideoPlaybackQuality) and the time into the title each second. -->
+     (getVideoPlaybackQuality) and the time into the title each second;
+     seek=AT,TO seeks to TO seconds when AT seconds have played. -->
 <body style="margin:0;background:#222"><video id="v" autoplay muted width="1280"></video>
 <script>
 const q = new URLSearchParams(location.search);
@@ -30,6 +31,10 @@ source.addEventListener('sourceopen', async () => {
   buffer.addEventListener('updateend', next);
   next();
 });
+if (q.get('seek')) {
+  const [at, to] = q.get('seek').split(',').map(Number);
+  const check = setInterval(() => { if (v.currentTime >= at) { clearInterval(check); v.currentTime = to; } }, 100);
+}
 setInterval(() => {
   const quality = v.getVideoPlaybackQuality();
   document.title = 'presented ' + (quality.totalVideoFrames - quality.droppedVideoFrames) + ' dropped ' + quality.droppedVideoFrames + ' t=' + v.currentTime.toFixed(1);

@@ -233,3 +233,69 @@ stays at its boot clocks were inferred from frame rates. The headers on
 disk have no control that returns clock frequencies, so the clocks
 themselves are unread.
 
+
+## Raspberry Pi 4 (air/OS, hrev60097+621, 5 October 2026)
+
+### A kernel panic in `VMAnonymousCache::Commit()` from `madvise()`
+
+```
+PANIC: ASSERT FAILED (../haiku/src/system/kernel/vm/VMAnonymousCache.cpp:756):
+  size >= (page_count * 4096); cache 0xffff0000d6c4f368
+  VMAnonymousCache::Commit <- VMAnonymousCache::Discard <- _user_memory_advice
+  <- libroot _kern_memory_advice <- libJavaScriptCore (thread exit:
+  __pthread_key_call_destructors) on "JSC Heap Collector Thread"
+CACHE: type RAM, virtual_end 0x4000a000, temporary, 84773 pages,
+  one area "libJavaScriptCore.so.18 mmap ar", 1 GiB
+```
+
+`Discard()` lowers the commitment by the bytes `VMCache::Discard()` reports
+(`Commit(fCommittedSize - discarded)`); here more pages stayed in the cache
+than the lowered commitment covers. It happened with the system nearly out
+of memory (95%: two hung RAM disks held 2.3 GB, below), as a web process's
+mimalloc returned memory with `MADV_FREE` at a thread's exit. Summit uses
+`MADV_FREE` since 27 September (Haiku ignores `MADV_DONTNEED`). Captured from
+the NanoKVM: `.vm/pi-panic-2026-10-05/kdl.jpg`. The board was restarted from
+the kernel debugger over its serial console (`reboot` on the NanoKVM's
+`/dev/ttyS1`); the NanoKVM's keyboard does not reach the kernel debugger.
+
+### The VideoCore decoder needs 3 MB of contiguous memory below 1 GB
+
+`rpi_mmal` receives each picture through a VCHIQ bulk transfer into a bounce
+buffer the driver allocates per service and direction, physically contiguous
+and below 1 GB (`ensure_bulk_buffer()`, `B_CONTIGUOUS`, `high_address = 1 GB`),
+about 3 MB for a 1080p picture. After an hour and a half of use (3.6 GB
+free) it failed: `rpi_mmal: receiving a picture: Out of memory`. The
+firmware's side of that transfer then never completes, the decoder's later
+requests time out (5 s each) and its mmal service answers nothing until the
+next boot. Reserving the bounce buffers when the driver loads (or giving the
+firmware page lists of the caller's buffer) would remove both.
+
+**In Summit**: a decoder that fails is closed on a thread of its own, and when
+closing takes seconds (or a request times out) the add-on is not used again
+until the system restarts (a marker in `/tmp` that names the boot); videos go
+to libavcodec.
+
+### A helper whose parent dies inside `load_image()` stays suspended for good
+
+`load_image()` returns the new team's main thread suspended; the parent
+resumes it. A parent killed while `load_image()` loads the child's libraries
+(0.3-0.6 s on the Pi) leaves a team with one suspended thread that nothing
+will ever resume (~10 MiB each). The kernel could kill a team whose main
+thread was never resumed when its parent dies.
+
+**In Summit**: the first helper launch of a browser removes helpers of its own
+engine whose parent is gone and whose threads are all suspended.
+
+### RAM disks hang after a force-killed program ran from them
+
+A network process force-killed while it ran from a `ramfs` (5 October 00:25)
+stays in a kernel wait with that RAM disk; `ls`, `df`, `rm`, `profile -a`
+then hang on it and its memory (2.3 GB of bundles here) is never freed. Only
+a restart clears it.
+
+### Writes to the SD card hold up other processes for seconds
+
+The card is run at 25 MHz default speed and writes at ~1.4 MB/s. While
+YouTube's first visit writes its HTTP cache and a 44 MB bytecode cache,
+another process's small write (a profile save, a line to a log file on the
+card) waits 4 to 11 s, and a team's teardown after `exit()` 12 to 14 s.
