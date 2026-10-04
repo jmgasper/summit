@@ -8,7 +8,7 @@
 set -euo pipefail
 W=/mnt/HaikuWork/build/summit-arm64
 G=/mnt/HaikuWork/rpi4/summit-gl
-R=${SUMMIT_PI_WORK:-/mnt/HaikuWork/tmp/summit-ec}/deps-gnu
+R=${SUMMIT_GNU_DEPS:-/mnt/HaikuWork/build/summit-arm64/deps-gnu}
 . $W/hosttools/env.sh
 SYSROOT=$W/sysroot
 P=$R/prefix

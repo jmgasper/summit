@@ -177,16 +177,38 @@ map image: Bad data").
 
 ### Installed
 
-- Raspberry Pi: `summit_webkit-1.10.0-3` and `summit-0.1.0~git20261004-1`
-  (`pkgman install` of the local files; the previous packages are kept in
-  `~/summit-package-backup-20261004` on the board). The engine carries the
-  third-party libraries rebuilt with GNU hash tables.
-- X399: `bundle-z2eiu8dx` (Mesa prefix-20261002), same sources. Checked
-  there against the installed `bundle-r0_tdpf3`: start-up 0.13 s to the
-  browser's code (0.14), first frame 0.53-0.58 s (0.54-0.59), all 18 shader
-  programs still warm in 11.5 ms; Speedometer 3.1 11.17 / 11.11 (11.09 /
-  11.26); Wikipedia scroll bursts 53-59 fps (53-60); direct present still
-  used; style verify mode clean on Wikipedia, GitHub and The Guardian.
+- Raspberry Pi: `summit_webkit-1.10.0-5` and `summit-0.1.0~git20261004-1`
+  (`pkgman install` of the local files; the packages of 2 October are kept in
+  `~/summit-package-backup-20261004` on the board). Engine from Summit
+  3f427fc; its third-party libraries are the ones rebuilt with GNU hash
+  tables (`/mnt/HaikuWork/build/summit-arm64/deps-gnu/prefix`). The same two
+  packages are in `/mnt/HaikuWork/rpi4/packages-arm64` for the next image
+  (the replaced ones in `packages-arm64-replaced`). Start page, warm: the
+  browser's code at 0.38 s, the frame with the page on the screen at 1.39 s.
+- X399: `bundle-p82o30tm` (Mesa prefix-20261002), same sources. Checked
+  there against the previously installed `bundle-r0_tdpf3`: start-up 0.13 s
+  to the browser's code (0.14), first frame 0.53-0.56 s (0.54-0.59), all 18
+  shader programs still warm in 11.5 ms; Speedometer 3.1 11.17 / 11.11
+  (11.09 / 11.26); Wikipedia scroll bursts 53-59 fps (53-60); direct present
+  still used; style verify modes clean on Wikipedia, GitHub, The Guardian,
+  and with uBlock Origin and 1Password on Reddit and YouTube.
+
+### No shader compile inside the first frame with the page
+
+The compositor compiled the rounded solid colour program on its second
+paint; with the warm-up now after the first frame with tiles, that paint was
+this frame (start page on the Pi: paint 89 ms, composition 128 ms). The
+warm-up, which starts with that program, compiles it a moment later:
+composition 54 ms.
+
+### A cold start is the SD card's
+
+The first launch after a new package is installed (or after a boot) reads
+the engine from the SD card: 8.5 s to the browser's code. Reading the
+engine's libraries ahead of time does not help: all of them, read cold in
+parallel, took 20 s (the card seeks between them), where the loader reads
+only the pages it touches. The SD driver runs the card at 25 MHz default
+speed; a faster mode is the way to a faster cold start.
 
 ### Open
 

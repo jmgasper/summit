@@ -31,14 +31,19 @@ section of `docs/performance.md`.
    To move the arm64 tree to a new engine patch, use the README of
    `build/summit-arm64` ("Updating to a newer summit commit").
 2. Dependencies with GNU hash tables (once): `tools/pi/build-deps-gnu-hash.sh`
-   (3 minutes; prefix `$SUMMIT_PI_WORK/deps-gnu/prefix`).
-3. Bundle: `DEPS_PREFIX=<prefix> TLS_PREFIX=<prefix> tools/pi/mkbundle.sh TAG b-NAME`
-   packages engine + browser with the fork's packaging script and stages them
-   in `/mnt/Documents/SummitPi/b-NAME`.
-4. Probes and board scripts: `tools/pi/build-probes.sh` (into
+   (3 minutes; prefix `/mnt/HaikuWork/build/summit-arm64/deps-gnu/prefix`).
+3. Bundle: `tools/pi/mkbundle.sh TAG b-NAME` packages engine + browser with
+   the fork's packaging script and stages them in
+   `/mnt/Documents/SummitPi/b-NAME`; `OUT_PACKAGES=dir` keeps the .hpkg
+   files, `SUMMIT_WEBKIT_VERSION=1.10.0-N` sets the engine package's version.
+4. Install on the Pi: copy the .hpkg files there (through /Documents) and
+   `pkgman install -y ./summit_webkit-....hpkg ./summit-....hpkg`; for the
+   next image, put them in `/mnt/HaikuWork/rpi4/packages-arm64` (it replaces
+   the air/OS release's packages of the same name) and move the old ones out.
+5. Probes and board scripts: `tools/pi/build-probes.sh` (into
    `/mnt/Documents/SummitPi/tools`); on the Pi copy them to
    `/boot/home/summit-ec/` and `chmod +x`.
-5. On the Pi: `rd-bundle.sh b-NAME`, then
+6. On the Pi: `rd-bundle.sh b-NAME`, then
    `ab-start.sh $RD/b-NAME/Summit PROFILE TAG ROUNDS URL [K=V...]` prints, per
    launch, when Summit's code ran, when the window showed and when the first
    frame with tiles was composited (seconds after exec);
