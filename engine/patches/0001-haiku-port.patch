@@ -5968,6 +5968,19 @@ index 9417e52ee3925b7b2654b1e9156a99d52a55b6bf..ff861a0b6c68608c27866dac44236f00
  }
  
  } // namespace WebCore
+diff --git a/Source/WebCore/html/HTMLCanvasElement.cpp b/Source/WebCore/html/HTMLCanvasElement.cpp
+index 605a0989c939e34bf52229b5521053999f72f143..59e7e5338a9a29bbc44bc1bcf29f5eb87f6d96ec 100644
+--- a/Source/WebCore/html/HTMLCanvasElement.cpp
++++ b/Source/WebCore/html/HTMLCanvasElement.cpp
+@@ -800,7 +800,7 @@ RefPtr<ImageData> HTMLCanvasElement::getImageData()
+ 
+ RefPtr<VideoFrame> HTMLCanvasElement::toVideoFrame()
+ {
+-#if PLATFORM(COCOA) || USE(GSTREAMER)
++#if PLATFORM(COCOA) || USE(GSTREAMER) || PLATFORM(HAIKU)
+     Ref document = this->document();
+ #if ENABLE(WEBGL)
+     if (RefPtr context = dynamicDowncast<WebGLRenderingContextBase>(m_context.get())) {
 diff --git a/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.cpp b/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.cpp
 index 50c7fe12885a08e9650329a04bc561a391823a1c..a3e11b8dd7fa6d21024bc7f47c0efa89fd6893a9 100644
 --- a/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.cpp
@@ -32860,10 +32873,10 @@ index 351b4f92dee11593273912a45deaee716386d699..209ac28509ff44c81686db96243dfba7
  }
 diff --git a/Source/WebCore/platform/mediarecorder/MediaRecorderPrivateHaiku.cpp b/Source/WebCore/platform/mediarecorder/MediaRecorderPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..12a4732415315983f58eaea5745d3615ede91ff8
+index 0000000000000000000000000000000000000000..33462d50724e254168f063788ec7dea8bb171250
 --- /dev/null
 +++ b/Source/WebCore/platform/mediarecorder/MediaRecorderPrivateHaiku.cpp
-@@ -0,0 +1,637 @@
+@@ -0,0 +1,648 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -32941,9 +32954,9 @@ index 0000000000000000000000000000000000000000..12a4732415315983f58eaea5745d3615
 +
 +class HaikuWebMRecorder final : public ThreadSafeRefCounted<HaikuWebMRecorder, WTF::DestructionThread::Main> {
 +public:
-+    static Ref<HaikuWebMRecorder> create(VideoCodec codec, bool hasAudio, unsigned videoBitRate, unsigned audioBitRate)
++    static Ref<HaikuWebMRecorder> create(VideoCodec codec, bool hasAudio, unsigned videoBitRate, unsigned audioBitRate, double videoFrameRate)
 +    {
-+        return adoptRef(*new HaikuWebMRecorder(codec, hasAudio, videoBitRate, audioBitRate));
++        return adoptRef(*new HaikuWebMRecorder(codec, hasAudio, videoBitRate, audioBitRate, videoFrameRate));
 +    }
 +
 +    ~HaikuWebMRecorder()
@@ -33034,12 +33047,13 @@ index 0000000000000000000000000000000000000000..12a4732415315983f58eaea5745d3615
 +    }
 +
 +private:
-+    HaikuWebMRecorder(VideoCodec codec, bool hasAudio, unsigned videoBitRate, unsigned audioBitRate)
++    HaikuWebMRecorder(VideoCodec codec, bool hasAudio, unsigned videoBitRate, unsigned audioBitRate, double videoFrameRate)
 +        : m_queue(WorkQueue::create("Summit MediaRecorder"_s))
 +        , m_videoCodec(codec)
 +        , m_hasAudio(hasAudio)
 +        , m_videoBitRate(videoBitRate)
 +        , m_audioBitRate(audioBitRate)
++        , m_videoFrameRate(videoFrameRate > 0 && videoFrameRate <= 240 ? videoFrameRate : 30)
 +    {
 +    }
 +
@@ -33068,8 +33082,14 @@ index 0000000000000000000000000000000000000000..12a4732415315983f58eaea5745d3615
 +        m_segment.GetSegmentInfo()->set_muxing_app("Summit");
 +        if (m_videoCodec != VideoCodec::None) {
 +            m_videoTrack = m_segment.AddVideoTrack(m_videoSize.width(), m_videoSize.height(), 0);
-+            if (auto* track = m_segment.GetTrackByNumber(m_videoTrack))
++            if (auto* track = static_cast<mkvmuxer::VideoTrack*>(m_segment.GetTrackByNumber(m_videoTrack))) {
 +                track->set_codec_id(m_videoCodec == VideoCodec::VP9 ? mkvmuxer::Tracks::kVp9CodecId : mkvmuxer::Tracks::kVp8CodecId);
++                // The nominal rate, as Chrome writes it: a live file has no
++                // duration or index to work it out from, and players that
++                // count frames (Haiku's FFmpeg reader) otherwise take the
++                // timestamps' unit, a thousand a second, as the rate.
++                track->set_frame_rate(m_videoFrameRate);
++            }
 +        }
 +        if (m_hasAudio && ensureOpus()) {
 +            m_audioTrack = m_segment.AddAudioTrack(opusRate, opusChannels, 0);
@@ -33333,6 +33353,7 @@ index 0000000000000000000000000000000000000000..12a4732415315983f58eaea5745d3615
 +    const bool m_hasAudio;
 +    const unsigned m_videoBitRate;
 +    const unsigned m_audioBitRate;
++    const double m_videoFrameRate;
 +    std::atomic<unsigned> m_queuedVideoFrames { 0 };
 +
 +    Lock m_timeLock;
@@ -33425,7 +33446,10 @@ index 0000000000000000000000000000000000000000..12a4732415315983f58eaea5745d3615
 +    if (!configuration || (configuration->videoCodec == VideoCodec::None && !configuration->hasAudio))
 +        return nullptr;
 +    auto bitRates = computeBitRates(options, &stream);
-+    auto recorder = HaikuWebMRecorder::create(configuration->videoCodec, configuration->hasAudio, bitRates.video, bitRates.audio);
++    double frameRate = 0;
++    if (RefPtr videoTrack = tracks.videoTrack.get())
++        frameRate = videoTrack->settings().frameRate();
++    auto recorder = HaikuWebMRecorder::create(configuration->videoCodec, configuration->hasAudio, bitRates.video, bitRates.audio, frameRate);
 +    auto result = makeUnique<MediaRecorderPrivateHaiku>(stream, options, WTF::move(recorder));
 +    result->m_mimeType = configuration->mimeType;
 +    return result;
@@ -89336,10 +89360,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..a863161594ce9231bcd061bfc07d3cafda82496e
+index 0000000000000000000000000000000000000000..d5cca0fbd558bbf09de9b906b25f0b69693d18c0
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,2188 @@
+@@ -0,0 +1,2193 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -90713,6 +90737,11 @@ index 0000000000000000000000000000000000000000..a863161594ce9231bcd061bfc07d3caf
 +    configuration->preferences().setScreenCaptureEnabled(true);
 +#if USE(LIBWEBRTC)
 +    configuration->preferences().setPeerConnectionEnabled(true);
++    // Host candidates hidden behind random .local names need an mDNS
++    // responder to answer for them, and Haiku has none: neither this machine
++    // nor the other peer could resolve them. The default route's address is
++    // given instead, as browsers did before mDNS candidates.
++    configuration->preferences().setICECandidateFilteringEnabled(false);
 +#endif
 +#if ENABLE(MEDIA_RECORDER)
 +    configuration->preferences().setMediaRecorderEnabled(true);

@@ -60,7 +60,7 @@ async function videoPlays(video, what) {
             return true;
         await sleep(100);
     }
-    log(`${what}: videoWidth ${video.videoWidth} readyState ${video.readyState} currentTime ${video.currentTime}`);
+    log(`${what}: videoWidth ${video.videoWidth} readyState ${video.readyState} currentTime ${video.currentTime} duration ${video.duration} paused ${video.paused} ended ${video.ended} error ${video.error ? video.error.code : "none"}`);
     return false;
 }
 
@@ -172,8 +172,20 @@ async function run() {
     try {
         const pc1 = new RTCPeerConnection();
         const pc2 = new RTCPeerConnection();
-        pc1.onicecandidate = event => event.candidate && pc2.addIceCandidate(event.candidate);
-        pc2.onicecandidate = event => event.candidate && pc1.addIceCandidate(event.candidate);
+        const candidates = { pc1: 0, pc2: 0 };
+        for (const [name, from, to] of [['pc1', pc1, pc2], ['pc2', pc2, pc1]]) {
+            from.onicecandidate = event => {
+                if (!event.candidate) {
+                    log(`${name}: ${candidates[name]} candidates, gathering done`);
+                    return;
+                }
+                if (!candidates[name]++)
+                    log(`${name} first candidate: ${event.candidate.candidate}`);
+                to.addIceCandidate(event.candidate).catch(e => log(`${name} addIceCandidate: ${e}`));
+            };
+            from.oniceconnectionstatechange = () => log(`${name} ice: ${from.iceConnectionState}`);
+            from.onconnectionstatechange = () => log(`${name} connection: ${from.connectionState}`);
+        }
         const remote = document.getElementById('remote');
         pc2.ontrack = event => { if (!remote.srcObject) remote.srcObject = event.streams[0]; };
         stream.getTracks().forEach(track => pc1.addTrack(track, stream));
