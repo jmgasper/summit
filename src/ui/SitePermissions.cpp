@@ -9,13 +9,15 @@
 #include <Bitmap.h>
 #include <Button.h>
 #include <LayoutBuilder.h>
-#include <RadioButton.h>
+#include <ListView.h>
+#include <ScrollView.h>
 #include <StringView.h>
 #include <Invoker.h>
 #include <MessageRunner.h>
 #include <Notification.h>
 #include <Roster.h>
 #include <Window.h>
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -55,37 +57,44 @@ const char* Question(const std::string& permission)
         : "wants a permission.";
 }
 
-// getDisplayMedia(): which screen to share, asked every time. Answers the
-// service with kPromptAnswered ("which" 2 and "device_id", or "which" 1).
+// getDisplayMedia(): which screen or window to share, asked every time.
+// Answers the service with kPromptAnswered ("which" 2 and "device_id", or
+// "which" 1).
 class ScreenSharePicker final : public BWindow {
 public:
     ScreenSharePicker(const BMessage& request, const std::string& question, BMessenger service)
-        : BWindow(BRect(0, 0, 300, 120), "Share a Screen", B_FLOATING_WINDOW_LOOK, B_FLOATING_APP_WINDOW_FEEL,
-            B_NOT_RESIZABLE | B_NOT_ZOOMABLE | B_AUTO_UPDATE_SIZE_LIMITS | B_CLOSE_ON_ESCAPE)
+        : BWindow(BRect(0, 0, 380, 260), "Share Your Screen", B_FLOATING_WINDOW_LOOK, B_FLOATING_APP_WINDOW_FEEL,
+            B_NOT_ZOOMABLE | B_AUTO_UPDATE_SIZE_LIMITS | B_CLOSE_ON_ESCAPE)
         , fService(service)
         , fPermission(request.GetString("permission", ""))
         , fOrigin(request.GetString("origin", ""))
     {
         auto* text = new BStringView("question", question.c_str());
-        auto* note = new BStringView("note", "The page sees everything on the screen while you share it.");
+        auto* note = new BStringView("note", "The page sees everything in it while you share. A window is "
+            "shared with whatever covers it.");
         BFont small(be_plain_font);
         small.SetSize(small.Size() * 0.9f);
         note->SetFont(&small);
-        auto builder = BLayoutBuilder::Group<>(this, B_VERTICAL, B_USE_DEFAULT_SPACING)
-            .SetInsets(B_USE_WINDOW_INSETS)
-            .Add(text);
+        fList = new BListView("choices", B_SINGLE_SELECTION_LIST);
         const char* id = nullptr;
         const char* label = nullptr;
         for (int32 index = 0; request.FindString("device_id", index, &id) == B_OK; ++index) {
             if (request.FindString("device_label", index, &label) != B_OK) label = id;
-            auto* choice = new BRadioButton(label, label, nullptr);
-            if (!index) choice->SetValue(B_CONTROL_ON);
-            fChoices.emplace_back(choice, id);
-            builder.Add(choice);
+            fList->AddItem(new BStringItem(label));
+            fIds.emplace_back(id);
         }
+        fList->Select(0);
+        fList->SetInvocationMessage(new BMessage(kShare));
+        auto* scroll = new BScrollView("choices-scroll", fList, 0, false, true);
+        const float row = fList->CountItems() ? fList->ItemAt(0)->Height() + 1 : 18;
+        scroll->SetExplicitMinSize(BSize(340, row * std::min<int32>(std::max<int32>(fList->CountItems(), 3), 10) + 4));
         auto* share = new BButton("share", "Share", new BMessage(kShare));
         auto* cancel = new BButton("cancel", "Cancel", new BMessage(B_QUIT_REQUESTED));
-        builder.Add(note)
+        BLayoutBuilder::Group<>(this, B_VERTICAL, B_USE_DEFAULT_SPACING)
+            .SetInsets(B_USE_WINDOW_INSETS)
+            .Add(text)
+            .Add(scroll)
+            .Add(note)
             .AddGroup(B_HORIZONTAL)
                 .AddGlue()
                 .Add(cancel)
@@ -100,12 +109,9 @@ public:
             BWindow::MessageReceived(message);
             return;
         }
-        for (const auto& [choice, id] : fChoices) {
-            if (choice->Value() == B_CONTROL_ON) {
-                Answer(2, id);
-                break;
-            }
-        }
+        const int32 selected = fList->CurrentSelection();
+        if (selected < 0 || selected >= int32(fIds.size())) return;
+        Answer(2, fIds[selected]);
         Quit();
     }
 
@@ -133,7 +139,8 @@ private:
 
     BMessenger fService;
     std::string fPermission, fOrigin;
-    std::vector<std::pair<BRadioButton*, std::string>> fChoices;
+    BListView* fList = nullptr;
+    std::vector<std::string> fIds;
     bool fAnswered = false;
 };
 

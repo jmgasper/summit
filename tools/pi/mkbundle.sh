@@ -9,6 +9,8 @@
 #   build-deps-gnu-hash.sh's prefix (/mnt/HaikuWork/build/summit-arm64/
 #   deps-gnu/prefix), which gives every bundled library a GNU hash table.
 #   OUT_PACKAGES=dir: keep the .hpkg files there too.
+#   ENGINE_ROOT=dir: another engine build (its WebKitBuild and ninja-ec-TAG.log),
+#   such as rpi4/summit-rtc.
 set -euo pipefail
 TAG=$1 NAME=$2
 H=${SUMMIT_PI_WORK:-/mnt/HaikuWork/tmp/summit-ec}
@@ -23,7 +25,8 @@ sed -e 's|-lscintilla -llexilla -lcurl -lcolumnlistview -o "$BUILDDIR/Summit"|-l
 grep -q 'hash-style=both -o "$BUILDDIR/Summit"' $H/pkg.sh && grep -q 'lWebKit -lJavaScriptCore -lbe' $H/pkg.sh \
 	|| { echo "packaging script changed; check the Summit link line"; exit 1; }
 rm -rf $H/pkgs-$NAME && mkdir -p $H/pkgs-$NAME
-SUMMIT_ENGINE=/mnt/HaikuWork/rpi4/summit-gl/WebKitBuild SUMMIT_ENGINE_LOG=/mnt/HaikuWork/rpi4/summit-gl/ninja-ec-$TAG.log \
+ENGINE_ROOT=${ENGINE_ROOT:-/mnt/HaikuWork/rpi4/summit-gl}
+SUMMIT_ENGINE=$ENGINE_ROOT/WebKitBuild SUMMIT_ENGINE_LOG=$ENGINE_ROOT/ninja-ec-$TAG.log \
 SUMMIT_ENGINE_EXTRA_DEPS=${DEPS_PREFIX:-/mnt/HaikuWork/build/summit-arm64/deps-gnu/prefix} TLS_DEPS=${TLS_PREFIX:-/mnt/HaikuWork/build/summit-arm64/deps-gnu/prefix} \
 SUMMIT_WEBKIT_VERSION=${SUMMIT_WEBKIT_VERSION:-1.10.0-3} SUMMIT_REVISION=${SUMMIT_REVISION:-1} \
 APPBUILD=$H/appbuild JOBS=12 bash $H/pkg.sh $H/pkgs-$NAME summit_webkit summit > $H/pkg-$NAME.log 2>&1

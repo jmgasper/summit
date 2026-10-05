@@ -34432,10 +34432,10 @@ index 0000000000000000000000000000000000000000..fe7e73ec15510659da4aed9350553d0b
 +#endif // ENABLE(MEDIA_STREAM) && PLATFORM(HAIKU)
 diff --git a/Source/WebCore/platform/mediastream/haiku/HaikuCaptureSources.cpp b/Source/WebCore/platform/mediastream/haiku/HaikuCaptureSources.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..2e19d6785c4e5f345e103e6c1794ab0882bbede4
+index 0000000000000000000000000000000000000000..3788b05c92dfa91c6cfc15c66691fa7257c03494
 --- /dev/null
 +++ b/Source/WebCore/platform/mediastream/haiku/HaikuCaptureSources.cpp
-@@ -0,0 +1,759 @@
+@@ -0,0 +1,853 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -34465,8 +34465,12 @@ index 0000000000000000000000000000000000000000..2e19d6785c4e5f345e103e6c1794ab08
 +#include "RealtimeMediaSourceCenter.h"
 +#include "VideoFrameHaiku.h"
 +#include <Bitmap.h>
++#include <InterfaceDefs.h>
++#include <Rect.h>
 +#include <cmath>
++#include <cstdlib>
 +#include <interface/Screen.h>
++#include <private/interface/WindowInfo.h>
 +#include <wtf/MainThread.h>
 +#include <wtf/NeverDestroyed.h>
 +#include <wtf/text/MakeString.h>
@@ -34549,6 +34553,30 @@ index 0000000000000000000000000000000000000000..2e19d6785c4e5f345e103e6c1794ab08
 +        if (screen.SetToNext() != B_OK)
 +            break;
 +    }
++
++    // The windows on the current workspace, front to back: those that are
++    // shown, not minimized, of some size, and not the desktop or Deskbar.
++    int32* tokens = nullptr;
++    int32 count = 0;
++    if (BPrivate::get_window_order(current_workspace(), &tokens, &count) != B_OK || !tokens)
++        return;
++    for (int32 index = 0; index < count; ++index) {
++        client_window_info* info = get_window_info(tokens[index]);
++        if (!info)
++            continue;
++        int width = info->window_right - info->window_left + 1;
++        int height = info->window_bottom - info->window_top + 1;
++        String title = String::fromUTF8(info->name);
++        bool shareable = info->show_hide_level <= 0 && !info->is_mini && width >= 64 && height >= 48
++            && !title.isEmpty() && title != "Deskbar"_s && title != "Desktop"_s;
++        if (shareable) {
++            CaptureDevice device(makeString("haiku-window:"_s, info->server_token), CaptureDevice::DeviceType::Window, makeString("Window: "_s, title));
++            device.setEnabled(true);
++            m_devices.append(WTF::move(device));
++        }
++        free(info);
++    }
++    free(tokens);
 +}
 +
 +const Vector<CaptureDevice>& HaikuDisplayCaptureDeviceManager::captureDevices()
@@ -34801,16 +34829,27 @@ index 0000000000000000000000000000000000000000..2e19d6785c4e5f345e103e6c1794ab08
 +CaptureSourceOrError HaikuDisplayCaptureSource::create(const CaptureDevice& device, MediaDeviceHashSalts&& hashSalts, const MediaConstraints* constraints, std::optional<PageIdentifier> pageIdentifier)
 +{
 +    auto id = device.persistentId();
-+    if (!id.startsWith("haiku-screen:"_s))
++    int32_t screenId = B_MAIN_SCREEN_ID.id;
++    int32_t windowToken = -1;
++    IntSize size;
++    if (id.startsWith("haiku-screen:"_s)) {
++        screenId = parseInteger<int32_t>(StringView(id).substring(13)).value_or(B_MAIN_SCREEN_ID.id);
++        BScreen screen(screen_id { screenId });
++        if (!screen.IsValid())
++            return CaptureSourceOrError(CaptureSourceError { "The screen is gone"_s, MediaAccessDenialReason::HardwareError });
++        BRect frame = screen.Frame();
++        size = IntSize(frame.IntegerWidth() + 1, frame.IntegerHeight() + 1);
++    } else if (id.startsWith("haiku-window:"_s)) {
++        windowToken = parseInteger<int32_t>(StringView(id).substring(13)).value_or(-1);
++        client_window_info* info = windowToken >= 0 ? get_window_info(windowToken) : nullptr;
++        if (!info)
++            return CaptureSourceOrError(CaptureSourceError { "The window is gone"_s, MediaAccessDenialReason::HardwareError });
++        size = IntSize(info->window_right - info->window_left + 1, info->window_bottom - info->window_top + 1);
++        free(info);
++    } else
 +        return CaptureSourceOrError(CaptureSourceError { "Unknown screen"_s, MediaAccessDenialReason::PermissionDenied });
-+    int32_t screenId = parseInteger<int32_t>(StringView(id).substring(13)).value_or(B_MAIN_SCREEN_ID.id);
-+    BScreen screen(screen_id { screenId });
-+    if (!screen.IsValid())
-+        return CaptureSourceOrError(CaptureSourceError { "The screen is gone"_s, MediaAccessDenialReason::HardwareError });
-+    BRect frame = screen.Frame();
-+    IntSize size(frame.IntegerWidth() + 1, frame.IntegerHeight() + 1);
 +
-+    auto source = adoptRef(*new HaikuDisplayCaptureSource(device, screenId, size, WTF::move(hashSalts), pageIdentifier));
++    auto source = adoptRef(*new HaikuDisplayCaptureSource(device, screenId, windowToken, size, WTF::move(hashSalts), pageIdentifier));
 +    if (constraints) {
 +        if (auto error = source->applyConstraints(*constraints))
 +            return CaptureSourceOrError(CaptureSourceError { error->invalidConstraint });
@@ -34818,9 +34857,10 @@ index 0000000000000000000000000000000000000000..2e19d6785c4e5f345e103e6c1794ab08
 +    return CaptureSourceOrError(WTF::move(source));
 +}
 +
-+HaikuDisplayCaptureSource::HaikuDisplayCaptureSource(const CaptureDevice& device, int32_t screenId, IntSize size, MediaDeviceHashSalts&& hashSalts, std::optional<PageIdentifier> pageIdentifier)
++HaikuDisplayCaptureSource::HaikuDisplayCaptureSource(const CaptureDevice& device, int32_t screenId, int32_t windowToken, IntSize size, MediaDeviceHashSalts&& hashSalts, std::optional<PageIdentifier> pageIdentifier)
 +    : RealtimeVideoCaptureSource(device, WTF::move(hashSalts), pageIdentifier)
 +    , m_screenId(screenId)
++    , m_windowToken(windowToken)
 +    , m_screenSize(size)
 +{
 +    setIntrinsicSize(size, false);
@@ -34858,7 +34898,7 @@ index 0000000000000000000000000000000000000000..2e19d6785c4e5f345e103e6c1794ab08
 +        RealtimeMediaSourceSettings settings;
 +        settings.setDeviceId(hashedId());
 +        settings.setLabel(name());
-+        settings.setDisplaySurface(DisplaySurfaceType::Monitor);
++        settings.setDisplaySurface(m_windowToken >= 0 ? DisplaySurfaceType::Window : DisplaySurfaceType::Monitor);
 +        settings.setLogicalSurface(false);
 +        RealtimeMediaSourceSupportedConstraints supportedConstraints;
 +        supportedConstraints.setSupportsDeviceId(true);
@@ -34917,6 +34957,28 @@ index 0000000000000000000000000000000000000000..2e19d6785c4e5f345e103e6c1794ab08
 +    }
 +}
 +
++void HaikuDisplayCaptureSource::settingsDidChange(OptionSet<RealtimeMediaSourceSettings::Flag> flags)
++{
++    m_currentSettings = std::nullopt;
++    if (flags.containsAny({ RealtimeMediaSourceSettings::Flag::Width, RealtimeMediaSourceSettings::Flag::Height })) {
++        auto outputSize = size();
++        m_outputWidth = outputSize.width();
++        m_outputHeight = outputSize.height();
++    }
++    if (flags.contains(RealtimeMediaSourceSettings::Flag::FrameRate) && frameRate() > 0)
++        m_captureFrameRate = frameRate();
++}
++
++// The largest size of `size`'s shape that fits `box` (no larger than `size`),
++// even, as encoders want.
++static IntSize fitWithin(IntSize size, IntSize box)
++{
++    if (box.isEmpty() || (size.width() <= box.width() && size.height() <= box.height()))
++        return size;
++    double scale = std::min(double(box.width()) / size.width(), double(box.height()) / size.height());
++    return { std::max(2, int(size.width() * scale) & ~1), std::max(2, int(size.height() * scale) & ~1) };
++}
++
 +void HaikuDisplayCaptureSource::captureLoop()
 +{
 +    BScreen screen(screen_id { m_screenId });
@@ -34926,13 +34988,9 @@ index 0000000000000000000000000000000000000000..2e19d6785c4e5f345e103e6c1794ab08
 +        });
 +        return;
 +    }
-+    BRect frame = screen.Frame();
-+    BBitmap bitmap(frame.OffsetToCopy(0, 0), B_RGB32);
-+    if (bitmap.InitCheck() != B_OK)
-+        return;
-+    int width = frame.IntegerWidth() + 1;
-+    int height = frame.IntegerHeight() + 1;
 +
++    std::unique_ptr<BBitmap> bitmap;
++    IntSize lastSize = m_screenSize;
 +    auto next = MonotonicTime::now();
 +    while (true) {
 +        {
@@ -34949,19 +35007,55 @@ index 0000000000000000000000000000000000000000..2e19d6785c4e5f345e103e6c1794ab08
 +
 +        if (!isProducingData() || muted())
 +            continue;
-+        if (screen.ReadBitmap(&bitmap, true, &frame) != B_OK)
++
++        BRect area = screen.Frame();
++        if (m_windowToken >= 0) {
++            client_window_info* info = get_window_info(m_windowToken);
++            if (!info) {
++                // The window was closed: so is the track.
++                callOnMainThread([protectedThis = Ref { *this }] {
++                    protectedThis->captureFailed();
++                });
++                break;
++            }
++            bool visible = !info->is_mini && info->show_hide_level <= 0 && (info->workspaces & (1u << current_workspace()));
++            area = BRect(info->window_left, info->window_top, info->window_right, info->window_bottom) & screen.Frame();
++            free(info);
++            // Hidden or on another workspace: the last picture stays.
++            if (!visible || !area.IsValid())
++                continue;
++        }
++
++        int width = area.IntegerWidth() + 1;
++        int height = area.IntegerHeight() + 1;
++        if (!bitmap || bitmap->Bounds().IntegerWidth() + 1 != width || bitmap->Bounds().IntegerHeight() + 1 != height) {
++            bitmap = std::make_unique<BBitmap>(BRect(0, 0, width - 1, height - 1), B_RGB32);
++            if (bitmap->InitCheck() != B_OK) {
++                bitmap = nullptr;
++                continue;
++            }
++        }
++        if (screen.ReadBitmap(bitmap.get(), true, &area) != B_OK)
 +            continue;
 +
 +        auto picture = VideoFrameHaiku::create(VideoFrameHaiku::Format::I420, { width, height }, currentMediaTime());
 +        auto& y = picture->plane(0);
 +        auto& u = picture->plane(1);
 +        auto& v = picture->plane(2);
-+        if (libyuv::ARGBToI420(static_cast<const uint8_t*>(bitmap.Bits()), bitmap.BytesPerRow(), y.data, y.stride, u.data, u.stride, v.data, v.stride, width, height))
++        if (libyuv::ARGBToI420(static_cast<const uint8_t*>(bitmap->Bits()), bitmap->BytesPerRow(), y.data, y.stride, u.data, u.stride, v.data, v.stride, width, height))
 +            continue;
 +
++        IntSize captured(width, height);
++        if (captured != lastSize) {
++            lastSize = captured;
++            callOnMainThread([protectedThis = Ref { *this }, captured] {
++                protectedThis->setIntrinsicSize(captured);
++            });
++        }
++
 +        RefPtr<VideoFrameHaiku> output = picture.ptr();
-+        IntSize outputSize(m_outputWidth, m_outputHeight);
-+        if (!outputSize.isEmpty() && outputSize != IntSize(width, height))
++        IntSize outputSize = fitWithin(captured, IntSize(m_outputWidth, m_outputHeight));
++        if (outputSize != captured)
 +            output = picture->resizedTo(outputSize);
 +        if (output)
 +            dispatchVideoFrameToObservers(*output, { });
@@ -35197,10 +35291,10 @@ index 0000000000000000000000000000000000000000..2e19d6785c4e5f345e103e6c1794ab08
 +#endif // ENABLE(MEDIA_STREAM) && PLATFORM(HAIKU)
 diff --git a/Source/WebCore/platform/mediastream/haiku/HaikuCaptureSources.h b/Source/WebCore/platform/mediastream/haiku/HaikuCaptureSources.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..31e317a4538dacfa826b3bc3824da1a9cb52857f
+index 0000000000000000000000000000000000000000..0c89f9bb2bcec1ce8f3796ad0e40a132510afd01
 --- /dev/null
 +++ b/Source/WebCore/platform/mediastream/haiku/HaikuCaptureSources.h
-@@ -0,0 +1,218 @@
+@@ -0,0 +1,226 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -35263,8 +35357,9 @@ index 0000000000000000000000000000000000000000..31e317a4538dacfa826b3bc3824da1a9
 +    bool m_computed { false };
 +};
 +
-+// The screens app_server draws, for getDisplayMedia(): the browser asks which
-+// one the person wants to share, so the list is part of the request.
++// The screens app_server draws and the windows on the current workspace, for
++// getDisplayMedia(): the browser asks which one the person wants to share, so
++// the list is part of the request.
 +class HaikuDisplayCaptureDeviceManager final : public DisplayCaptureManager {
 +public:
 +    static HaikuDisplayCaptureDeviceManager& singleton();
@@ -35316,8 +35411,10 @@ index 0000000000000000000000000000000000000000..31e317a4538dacfa826b3bc3824da1a9
 +    MonotonicTime m_lastPicture;
 +};
 +
-+// A screen, read from app_server (BScreen::ReadBitmap) on a thread of its
-+// own at the frame rate asked for.
++// A screen, or a window's part of it, read from app_server
++// (BScreen::ReadBitmap) on a thread of its own at the frame rate asked for. A
++// window is followed as it moves and resizes; what covers it is captured
++// with it (app_server keeps no picture of a window's hidden parts).
 +class HaikuDisplayCaptureSource final : public RealtimeVideoCaptureSource {
 +public:
 +    static CaptureSourceOrError create(const CaptureDevice&, MediaDeviceHashSalts&&, const MediaConstraints*, std::optional<PageIdentifier>);
@@ -35327,19 +35424,22 @@ index 0000000000000000000000000000000000000000..31e317a4538dacfa826b3bc3824da1a9
 +    const RealtimeMediaSourceSettings& settings() final;
 +
 +private:
-+    HaikuDisplayCaptureSource(const CaptureDevice&, int32_t screenId, IntSize, MediaDeviceHashSalts&&, std::optional<PageIdentifier>);
++    HaikuDisplayCaptureSource(const CaptureDevice&, int32_t screenId, int32_t windowToken, IntSize, MediaDeviceHashSalts&&, std::optional<PageIdentifier>);
 +
 +    bool isCaptureSource() const final { return true; }
-+    CaptureDevice::DeviceType deviceType() const final { return CaptureDevice::DeviceType::Screen; }
++    CaptureDevice::DeviceType deviceType() const final { return m_windowToken >= 0 ? CaptureDevice::DeviceType::Window : CaptureDevice::DeviceType::Screen; }
 +    void startProducingData() final;
 +    void stopProducingData() final;
 +    void generatePresets() final;
 +    bool canResizeVideoFrames() const final { return true; }
 +    void configurationChanged() final;
++    void settingsDidChange(OptionSet<RealtimeMediaSourceSettings::Flag>) final;
 +
 +    void captureLoop();
 +
 +    const int32_t m_screenId;
++    // The window's app_server token, or -1 for the whole screen.
++    const int32_t m_windowToken;
 +    const IntSize m_screenSize;
 +    RefPtr<Thread> m_thread;
 +    Lock m_lock;
@@ -35354,7 +35454,9 @@ index 0000000000000000000000000000000000000000..31e317a4538dacfa826b3bc3824da1a9
 +
 +// A microphone (or a sound card's input), through a consumer node of ours.
 +// Samples go out as interleaved float (HaikuAudioData).
-+class HaikuAudioCaptureSource final : public RealtimeMediaSource, public ThreadSafeRefCountedAndCanMakeThreadSafeWeakPtr<HaikuAudioCaptureSource> {
++// Destroyed on the main run loop: the last reference can be dropped on the
++// capture node's thread, which cannot stop and disconnect its own node.
++class HaikuAudioCaptureSource final : public RealtimeMediaSource, public ThreadSafeRefCountedAndCanMakeThreadSafeWeakPtr<HaikuAudioCaptureSource, WTF::DestructionThread::MainRunLoop> {
 +public:
 +    static CaptureSourceOrError create(const CaptureDevice&, MediaDeviceHashSalts&&, const MediaConstraints*, std::optional<PageIdentifier>);
 +    ~HaikuAudioCaptureSource();
