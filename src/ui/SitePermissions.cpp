@@ -7,6 +7,10 @@
 #include <AppFileInfo.h>
 #include <Application.h>
 #include <Bitmap.h>
+#include <Button.h>
+#include <LayoutBuilder.h>
+#include <RadioButton.h>
+#include <StringView.h>
 #include <Invoker.h>
 #include <MessageRunner.h>
 #include <Notification.h>
@@ -44,7 +48,110 @@ std::string HostOf(const std::string& origin)
 const char* Question(const std::string& permission)
 {
     return permission == "notifications" ? "wants to show you notifications."
-        : permission == "geolocation" ? "wants to know your location." : "wants a permission.";
+        : permission == "geolocation" ? "wants to know your location."
+        : permission == "camera" ? "wants to use your camera."
+        : permission == "microphone" ? "wants to use your microphone."
+        : permission == "camera-microphone" ? "wants to use your camera and microphone."
+        : "wants a permission.";
+}
+
+// getDisplayMedia(): which screen to share, asked every time. Answers the
+// service with kPromptAnswered ("which" 2 and "device_id", or "which" 1).
+class ScreenSharePicker final : public BWindow {
+public:
+    ScreenSharePicker(const BMessage& request, const std::string& question, BMessenger service)
+        : BWindow(BRect(0, 0, 300, 120), "Share a Screen", B_FLOATING_WINDOW_LOOK, B_FLOATING_APP_WINDOW_FEEL,
+            B_NOT_RESIZABLE | B_NOT_ZOOMABLE | B_AUTO_UPDATE_SIZE_LIMITS | B_CLOSE_ON_ESCAPE)
+        , fService(service)
+        , fPermission(request.GetString("permission", ""))
+        , fOrigin(request.GetString("origin", ""))
+    {
+        auto* text = new BStringView("question", question.c_str());
+        auto* note = new BStringView("note", "The page sees everything on the screen while you share it.");
+        BFont small(be_plain_font);
+        small.SetSize(small.Size() * 0.9f);
+        note->SetFont(&small);
+        auto builder = BLayoutBuilder::Group<>(this, B_VERTICAL, B_USE_DEFAULT_SPACING)
+            .SetInsets(B_USE_WINDOW_INSETS)
+            .Add(text);
+        const char* id = nullptr;
+        const char* label = nullptr;
+        for (int32 index = 0; request.FindString("device_id", index, &id) == B_OK; ++index) {
+            if (request.FindString("device_label", index, &label) != B_OK) label = id;
+            auto* choice = new BRadioButton(label, label, nullptr);
+            if (!index) choice->SetValue(B_CONTROL_ON);
+            fChoices.emplace_back(choice, id);
+            builder.Add(choice);
+        }
+        auto* share = new BButton("share", "Share", new BMessage(kShare));
+        auto* cancel = new BButton("cancel", "Cancel", new BMessage(B_QUIT_REQUESTED));
+        builder.Add(note)
+            .AddGroup(B_HORIZONTAL)
+                .AddGlue()
+                .Add(cancel)
+                .Add(share)
+            .End();
+        SetDefaultButton(share);
+    }
+
+    void MessageReceived(BMessage* message) override
+    {
+        if (message->what != kShare) {
+            BWindow::MessageReceived(message);
+            return;
+        }
+        for (const auto& [choice, id] : fChoices) {
+            if (choice->Value() == B_CONTROL_ON) {
+                Answer(2, id);
+                break;
+            }
+        }
+        Quit();
+    }
+
+    bool QuitRequested() override
+    {
+        // Closed or cancelled: not shared.
+        Answer(1, {});
+        return true;
+    }
+
+private:
+    static constexpr uint32 kShare = 'sssh';
+
+    void Answer(int32 which, const std::string& id)
+    {
+        if (fAnswered) return;
+        fAnswered = true;
+        BMessage answer(kPromptAnswered);
+        answer.AddString("permission", fPermission.c_str());
+        answer.AddString("origin", fOrigin.c_str());
+        answer.AddInt32("which", which);
+        answer.AddString("device_id", id.c_str());
+        fService.SendMessage(&answer);
+    }
+
+    BMessenger fService;
+    std::string fPermission, fOrigin;
+    std::vector<std::pair<BRadioButton*, std::string>> fChoices;
+    bool fAnswered = false;
+};
+
+// Centres a window on the asking page's window, near its top.
+void PlaceOverView(BWindow* window, const BMessage& request)
+{
+    BMessenger view;
+    if (request.FindMessenger("view", &view) != B_OK) return;
+    BLooper* looper = nullptr;
+    view.Target(&looper);
+    auto* owner = dynamic_cast<BWindow*>(looper);
+    if (!owner || owner->LockWithTimeout(100000) != B_OK) return;
+    const BRect frame = owner->Frame();
+    owner->Unlock();
+    window->Lock();
+    const BRect size = window->Frame();
+    window->MoveTo(frame.left + (frame.Width() - size.Width()) / 2, frame.top + 90);
+    window->Unlock();
 }
 }
 
@@ -102,6 +209,18 @@ void SitePermissionService::Ask(const BMessage& request)
     auto& waiting = fPrompts[{permission, origin}];
     waiting.push_back(identifier);
     if (waiting.size() > 1) return;
+    if (permission == "screen") {
+        std::string question = HostOf(origin) + " wants to see your screen.";
+        if (request.GetBool("audio", false)) question += " (Its sound is not shared.)";
+        auto* picker = new ScreenSharePicker(request, question, BMessenger(this));
+        picker->Lock();
+        picker->Layout(true);
+        picker->ResizeToPreferred();
+        picker->Unlock();
+        PlaceOverView(picker, request);
+        picker->Show();
+        return;
+    }
     std::string text = HostOf(origin) + " " + Question(permission);
     if (permission == "geolocation")
         text += "\n\nSummit asks BeaconDB (beacondb.net) where you are, from the Wi-Fi networks nearby and your "
@@ -141,12 +260,26 @@ void SitePermissionService::Answered(const BMessage& message)
     if (Tracing())
         std::fprintf(stderr, "Summit permissions: %s %s for %s\n", which == 2 ? "allowed" : which == 0 ? "blocked" : "not now",
             permission.c_str(), origin.c_str());
-    // "Not Now" answers this request only; Block and Allow are remembered.
-    if (which != 1) fSave(permission, origin, allowed);
+    // "Not Now" answers this request only; Block and Allow are remembered,
+    // a camera-and-microphone answer as both. A shared screen is asked for
+    // every time.
+    std::vector<std::string> saved;
+    if (permission == "camera-microphone") saved = {"camera", "microphone"};
+    else if (permission != "screen") saved = {permission};
+    if (which != 1) {
+        for (const auto& name : saved) fSave(name, origin, allowed);
+    }
+    const std::string device = message.GetString("device_id", "");
     if (auto context = fContext.lock()) {
-        if (which != 1 && fPrivate) context->SetSitePermission(permission.c_str(), origin.c_str(), allowed ? 1 : 0);
-        for (const uint64 identifier : identifiers)
-            context->RespondToPermissionRequest(identifier, allowed);
+        if (which != 1 && fPrivate) {
+            for (const auto& name : saved) context->SetSitePermission(name.c_str(), origin.c_str(), allowed ? 1 : 0);
+        }
+        for (const uint64 identifier : identifiers) {
+            if (permission == "screen")
+                context->RespondToMediaPermissionRequest(identifier, allowed && !device.empty(), device.c_str());
+            else
+                context->RespondToPermissionRequest(identifier, allowed);
+        }
     }
 }
 

@@ -101,7 +101,8 @@ private:
     std::shared_ptr<std::atomic<bool>> fCancelled;
     std::unique_ptr<BMessageRunner> fTimer;
 };
-struct TabLabel { int64 id; std::string title; bool loading; const BBitmap* icon = nullptr; };
+// capturing: the page uses the camera, microphone or a screen (a red dot).
+struct TabLabel { int64 id; std::string title; bool loading; const BBitmap* icon = nullptr; bool capturing = false; };
 // Draws a site icon, or a neutral globe when there is none.
 void DrawSiteIcon(BView* view, const BBitmap* icon, BPoint leftTop);
 class TabStrip : public BView {

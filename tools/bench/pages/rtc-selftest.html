@@ -1,0 +1,219 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>rtc selftest: running</title>
+<style>
+body { font: 14px sans-serif; margin: 16px; }
+video, canvas { width: 240px; height: 180px; background: #222; margin: 4px; }
+pre { background: #f4f4f4; padding: 8px; max-height: 50vh; overflow: auto; }
+.pass { color: #070; } .fail { color: #b00; }
+</style>
+</head>
+<body>
+<h3>Summit Peer-to-Peer self test</h3>
+<p>Without a camera: a canvas is the video source and an oscillator the
+audio. <code>?camera=1</code> uses the camera and microphone,
+<code>?screen=1</code> asks to share a screen (both need a click on Allow).
+The title ends as <code>rtc selftest: N/M</code> with the failures listed.</p>
+<div>
+  <canvas id="source" width="320" height="240"></canvas>
+  <video id="local" autoplay muted playsinline></video>
+  <video id="remote" autoplay muted playsinline></video>
+  <video id="recorded" controls playsinline></video>
+</div>
+<pre id="log"></pre>
+<script>
+const params = new URLSearchParams(location.search);
+const results = [];
+const logElement = document.getElementById('log');
+function log(text) { logElement.textContent += text + '\n'; console.log('rtc-selftest: ' + text); }
+function check(name, ok, detail = '') {
+    results.push({ name, ok });
+    log((ok ? 'PASS ' : 'FAIL ') + name + (detail ? ' (' + detail + ')' : ''));
+}
+function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+function withTimeout(promise, ms, what) {
+    return Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(what + ' timed out')), ms))]);
+}
+
+// A moving picture on the canvas, so frames differ.
+const canvas = document.getElementById('source');
+const context2d = canvas.getContext('2d');
+let frame = 0;
+function draw() {
+    frame++;
+    context2d.fillStyle = `hsl(${frame % 360}, 70%, 50%)`;
+    context2d.fillRect(0, 0, 320, 240);
+    context2d.fillStyle = '#fff';
+    context2d.font = '40px sans-serif';
+    context2d.fillText('frame ' + frame, 40, 130);
+    context2d.fillRect((frame * 4) % 320, 200, 30, 30);
+    requestAnimationFrame(draw);
+}
+draw();
+
+async function videoPlays(video, what) {
+    const start = performance.now();
+    while (performance.now() - start < 8000) {
+        if (video.videoWidth > 0 && video.readyState >= 2 && video.currentTime > 0.2)
+            return true;
+        await sleep(100);
+    }
+    log(`${what}: videoWidth ${video.videoWidth} readyState ${video.readyState} currentTime ${video.currentTime}`);
+    return false;
+}
+
+// Pixels of a playing video are not all one colour.
+function videoHasPicture(video) {
+    const probe = document.createElement('canvas');
+    probe.width = 64; probe.height = 48;
+    const c = probe.getContext('2d');
+    c.drawImage(video, 0, 0, 64, 48);
+    const data = c.getImageData(0, 0, 64, 48).data;
+    let min = 255, max = 0;
+    for (let i = 0; i < data.length; i += 4) { min = Math.min(min, data[i + 1]); max = Math.max(max, data[i + 1]); }
+    return max - min > 20;
+}
+
+async function run() {
+    // The html5test.co checks.
+    check('RTCPeerConnection', !!window.RTCPeerConnection);
+    let dataChannelApi = false;
+    try { dataChannelApi = 'createDataChannel' in new RTCPeerConnection(null); } catch (e) { log('new RTCPeerConnection: ' + e); }
+    check('createDataChannel', dataChannelApi);
+    check('getUserMedia', !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia));
+    check('getDisplayMedia', !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia));
+    check('enumerateDevices', !!(navigator.mediaDevices && navigator.mediaDevices.enumerateDevices));
+    check('MediaRecorder', 'MediaRecorder' in window);
+    check('AudioContext', 'AudioContext' in window);
+
+    if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+        try {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            log('devices: ' + devices.map(d => d.kind + (d.label ? ':' + d.label : '')).join(', '));
+        } catch (e) { log('enumerateDevices: ' + e); }
+    }
+
+    // Web Audio: an oscillator into an analyser.
+    let audioContext = null;
+    let audioStream = null;
+    try {
+        audioContext = new AudioContext();
+        await audioContext.resume();
+        const oscillator = audioContext.createOscillator();
+        oscillator.frequency.value = 440;
+        const gain = audioContext.createGain();
+        gain.gain.value = 0.05;
+        const analyser = audioContext.createAnalyser();
+        const destination = audioContext.createMediaStreamDestination();
+        oscillator.connect(gain).connect(analyser);
+        gain.connect(destination);
+        oscillator.start();
+        audioStream = destination.stream;
+        await sleep(500);
+        const bins = new Uint8Array(analyser.frequencyBinCount);
+        analyser.getByteFrequencyData(bins);
+        let peak = 0, peakIndex = 0;
+        bins.forEach((value, index) => { if (value > peak) { peak = value; peakIndex = index; } });
+        const peakHz = peakIndex * audioContext.sampleRate / analyser.fftSize;
+        check('Web Audio analyser sees 440 Hz', peak > 50 && Math.abs(peakHz - 440) < 60, `peak ${peak} at ${peakHz.toFixed(0)} Hz, rate ${audioContext.sampleRate}, state ${audioContext.state}`);
+    } catch (e) { check('Web Audio', false, String(e)); }
+
+    // The stream: a camera or the canvas, with the oscillator's sound.
+    let stream;
+    if (params.get('camera') === '1') {
+        try {
+            stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: true });
+            check('getUserMedia camera + microphone', true, stream.getTracks().map(t => t.kind + ':' + t.label).join(', '));
+        } catch (e) { check('getUserMedia camera + microphone', false, String(e)); }
+    }
+    if (params.get('screen') === '1') {
+        try {
+            const screen = await navigator.mediaDevices.getDisplayMedia({ video: true });
+            const settings = screen.getVideoTracks()[0].getSettings();
+            check('getDisplayMedia', true, `${settings.width}x${settings.height} ${settings.displaySurface}`);
+            if (!stream) stream = screen;
+        } catch (e) { check('getDisplayMedia', false, String(e)); }
+    }
+    if (!stream) {
+        stream = canvas.captureStream(30);
+        if (audioStream) stream.addTrack(audioStream.getAudioTracks()[0]);
+    }
+    const local = document.getElementById('local');
+    local.srcObject = stream;
+    check('local preview plays', await videoPlays(local, 'local'));
+    check('local preview has a picture', videoHasPicture(local));
+
+    // MediaRecorder: two seconds, then played back.
+    if (window.MediaRecorder) {
+        try {
+            const types = ['video/webm', 'video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9', 'audio/webm;codecs=opus', 'video/mp4'];
+            log('isTypeSupported: ' + types.map(t => t + '=' + MediaRecorder.isTypeSupported(t)).join(', '));
+            const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+            const chunks = [];
+            recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
+            const stopped = new Promise(resolve => recorder.onstop = resolve);
+            recorder.start(500);
+            await sleep(2500);
+            recorder.stop();
+            await withTimeout(stopped, 5000, 'recorder stop');
+            const blob = new Blob(chunks, { type: recorder.mimeType });
+            check('MediaRecorder produced data', blob.size > 1000, `${chunks.length} chunks, ${blob.size} bytes, ${recorder.mimeType}`);
+            const recorded = document.getElementById('recorded');
+            recorded.src = URL.createObjectURL(blob);
+            recorded.muted = true;
+            try { await recorded.play(); } catch (e) { log('recorded play: ' + e); }
+            check('recording plays back', await videoPlays(recorded, 'recorded'));
+        } catch (e) { check('MediaRecorder', false, String(e)); }
+    }
+
+    // WebRTC loopback: two peers in this page, video, audio and a data channel.
+    try {
+        const pc1 = new RTCPeerConnection();
+        const pc2 = new RTCPeerConnection();
+        pc1.onicecandidate = event => event.candidate && pc2.addIceCandidate(event.candidate);
+        pc2.onicecandidate = event => event.candidate && pc1.addIceCandidate(event.candidate);
+        const remote = document.getElementById('remote');
+        pc2.ontrack = event => { if (!remote.srcObject) remote.srcObject = event.streams[0]; };
+        stream.getTracks().forEach(track => pc1.addTrack(track, stream));
+        const channel = pc1.createDataChannel('selftest');
+        const echoed = new Promise(resolve => {
+            pc2.ondatachannel = event => {
+                event.channel.onmessage = message => event.channel.send('echo:' + message.data);
+            };
+            channel.onmessage = message => resolve(message.data);
+        });
+        channel.onopen = () => channel.send('hello');
+        const offer = await pc1.createOffer();
+        log('offer codecs: ' + [...new Set((offer.sdp.match(/a=rtpmap:\d+ [^\/]+/g) || []).map(l => l.split(' ')[1]))].join(' '));
+        await pc1.setLocalDescription(offer);
+        await pc2.setRemoteDescription(offer);
+        const answer = await pc2.createAnswer();
+        await pc2.setLocalDescription(answer);
+        await pc1.setRemoteDescription(answer);
+        const message = await withTimeout(echoed, 10000, 'data channel');
+        check('data channel round trip', message === 'echo:hello', message);
+        check('remote video plays', await videoPlays(remote, 'remote'));
+        check('remote video has a picture', videoHasPicture(remote));
+        const stats = await pc2.getStats();
+        stats.forEach(report => {
+            if (report.type === 'inbound-rtp')
+                log(`inbound ${report.kind}: ${report.packetsReceived} packets, ${report.framesDecoded ?? '-'} frames decoded, codec ${report.codecId}`);
+            if (report.type === 'codec')
+                log(`codec ${report.id}: ${report.mimeType}`);
+        });
+        const inboundAudio = [...stats.values()].find(r => r.type === 'inbound-rtp' && r.kind === 'audio');
+        check('remote audio packets', !!inboundAudio && inboundAudio.packetsReceived > 10, inboundAudio ? String(inboundAudio.packetsReceived) : 'none');
+        pc1.close(); pc2.close();
+    } catch (e) { check('WebRTC loopback', false, String(e)); }
+
+    const failed = results.filter(r => !r.ok).map(r => r.name);
+    const passed = results.length - failed.length;
+    document.title = `rtc selftest: ${passed}/${results.length}` + (failed.length ? ' failed: ' + failed.join('; ') : '');
+    log(document.title);
+}
+run().catch(e => { log('error: ' + e); document.title = 'rtc selftest: error ' + e; });
+</script>
+</body>
+</html>

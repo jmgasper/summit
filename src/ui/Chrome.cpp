@@ -540,6 +540,10 @@ void TabStrip::DrawHaiku(BRect update)
             SetHighColor(ui_color(B_CONTROL_HIGHLIGHT_COLOR));
             FillEllipse(icon + BPoint(15, 15), 2.5f, 2.5f);
         }
+        if (fTabs[i].capturing) {
+            SetHighColor(214, 40, 40);
+            FillEllipse(icon + BPoint(15, 1), 3, 3);
+        }
         BString title(fTabs[i].title.empty() ? "New Tab" : fTabs[i].title.c_str());
         const float textLeft = content.left + 22;
         TruncateString(&title, B_TRUNCATE_END, std::max(0.0f, content.right - textLeft));
@@ -596,6 +600,12 @@ void TabStrip::DrawSafari(BRect)
             // A loading page keeps its icon, with a dot on its corner.
             SetHighColor(44, 125, 104);
             FillEllipse(icon + BPoint(15, 15), 2.5f, 2.5f);
+            SetHighColor(selected ? selectedText : otherText);
+        }
+        if (fTabs[i].capturing) {
+            // Camera, microphone or screen in use: a red dot on the other corner.
+            SetHighColor(214, 40, 40);
+            FillEllipse(icon + BPoint(15, 1), 3, 3);
             SetHighColor(selected ? selectedText : otherText);
         }
         DrawString(text, BPoint(rect.left + 31, 22));

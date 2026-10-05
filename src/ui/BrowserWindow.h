@@ -143,6 +143,8 @@ private:
         BrowserWebView* view;
         std::string url, title;
         bool loading = false, back = false, forward = false;
+        // The page captures the camera, microphone or a screen.
+        bool capturingCamera = false, capturingMicrophone = false, capturingScreen = false;
         float progress = 0;
         // For summit:history and summit:bookmarks, the page revision shown.
         uint64 pageRevision = 0;

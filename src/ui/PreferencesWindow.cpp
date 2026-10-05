@@ -249,7 +249,9 @@ void PreferencesWindow::ShowSitePermissions(const std::vector<SiteEntry>& entrie
         const std::string site = entry.origin.rfind("https://", 0) == 0 ? entry.origin.substr(8) : entry.origin;
         row->SetField(new BStringField(site.c_str()), kSiteColumn);
         row->SetField(new BStringField(entry.permission == "notifications" ? "Notifications"
-            : entry.permission == "geolocation" ? "Location" : entry.permission.c_str()), kPermissionColumn);
+            : entry.permission == "geolocation" ? "Location"
+            : entry.permission == "camera" ? "Camera"
+            : entry.permission == "microphone" ? "Microphone" : entry.permission.c_str()), kPermissionColumn);
         row->SetField(new BStringField(entry.allowed ? "Allowed" : "Blocked"), kSettingColumn);
         fSites->AddRow(row);
         if (entry.origin == selectedOrigin && entry.permission == selectedPermission) selected = row;

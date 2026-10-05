@@ -2123,7 +2123,9 @@ void BrowserWindow::WindowActivated(bool active)
 void BrowserWindow::RefreshChrome()
 {
     std::vector<TabLabel> labels;
-    for (const auto& tab : fTabs) labels.push_back({tab.id, tab.title, tab.loading, fFavicons->Icon(tab.url)});
+    for (const auto& tab : fTabs)
+        labels.push_back({tab.id, tab.title, tab.loading, fFavicons->Icon(tab.url),
+            tab.capturingCamera || tab.capturingMicrophone || tab.capturingScreen});
     fTabStrip->SetTabs(std::move(labels), fSelected);
     if (auto* tab = ActiveTab()) {
         fBookmarkButton->SetEnabled(Bookmarkable(tab->url));
@@ -3687,6 +3689,9 @@ void BrowserWindow::WebKitStateChanged(const BMessage& message)
     else if (!tab->loading && wasLoading) tab->loadFinishedAt = system_time();
     message.FindBool("canGoBack", &tab->back);
     message.FindBool("canGoForward", &tab->forward);
+    message.FindBool("capturingCamera", &tab->capturingCamera);
+    message.FindBool("capturingMicrophone", &tab->capturingMicrophone);
+    message.FindBool("capturingScreen", &tab->capturingScreen);
     double progress;
     if (message.FindDouble("progress", &progress) == B_OK && std::isfinite(progress))
         tab->progress = static_cast<float>(std::clamp(progress, 0.0, 1.0));

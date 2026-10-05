@@ -136,7 +136,7 @@ Profile Profile::Load(const std::filesystem::path& path, std::string& error)
 
 const std::vector<std::string>& SitePermissionNames()
 {
-    static const std::vector<std::string> names = {"notifications", "geolocation"};
+    static const std::vector<std::string> names = {"notifications", "geolocation", "camera", "microphone"};
     return names;
 }
 
