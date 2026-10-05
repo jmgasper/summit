@@ -604,7 +604,7 @@ index ae46ee10d0941e1f361244e595a7495c325902dc..6a80abd0ff4bc526910361adcae48402
  #endif
  
 diff --git a/Source/ThirdParty/libwebrtc/CMakeLists.txt b/Source/ThirdParty/libwebrtc/CMakeLists.txt
-index 2b62597d620d61134c68656c224763cf19ae64c9..225437091072bfd1674617e436adfb8140876b00 100644
+index 2b62597d620d61134c68656c224763cf19ae64c9..66cb84bc4239a087683ea3bd9ce3f6514e8a3c6e 100644
 --- a/Source/ThirdParty/libwebrtc/CMakeLists.txt
 +++ b/Source/ThirdParty/libwebrtc/CMakeLists.txt
 @@ -25,7 +25,9 @@ endif ()
@@ -783,6 +783,23 @@ index 2b62597d620d61134c68656c224763cf19ae64c9..225437091072bfd1674617e436adfb81
      add_library(vpx OBJECT ${vpx_SOURCES} ${vpx_ASSEMBLY_SOURCES})
      target_compile_options(vpx PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-mavx2>)
      target_compile_options(vpx PRIVATE $<$<COMPILE_LANGUAGE:C>:-mavx2>)
+@@ -3637,6 +3723,16 @@ elseif (WTF_CPU_ARM64)
+ endif ()
+ 
+ target_include_directories(vpx PRIVATE ${vpx_INCLUDE_DIRECTORIES})
++
++if (HAIKU)
++    # Kept inside the engine: the processes also load the system's libvpx,
++    # libopus and libsrtp users (FFmpeg through the Media Kit), which must not
++    # bind to these copies.
++    set_target_properties(vpx libsrtp PROPERTIES C_VISIBILITY_PRESET hidden CXX_VISIBILITY_PRESET hidden)
++    if (TARGET opus)
++        set_target_properties(opus PROPERTIES C_VISIBILITY_PRESET hidden)
++    endif ()
++endif ()
+ target_compile_options(vpx PRIVATE $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-cast-align> $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-incompatible-pointer-types>)
+ 
+ # libaom static library, mirrors libwebrtc.xcodeproj's libaom target.
 diff --git a/Source/ThirdParty/libwebrtc/Source/third_party/abseil-cpp/absl/base/internal/sysinfo.cc b/Source/ThirdParty/libwebrtc/Source/third_party/abseil-cpp/absl/base/internal/sysinfo.cc
 index b103f49edffb48e89a4104a5e3c6deac15c7d3d6..08b03927aab0c7d1cf0d9bf968ccc0463716d489 100644
 --- a/Source/ThirdParty/libwebrtc/Source/third_party/abseil-cpp/absl/base/internal/sysinfo.cc
@@ -3160,10 +3177,10 @@ index b29212ad5b98d332ff7c1db7814cb2575988ec5f..b6c50d32873f6c712e3409ca1c5e2ec5
      String m_accessGroup;
  };
 diff --git a/Source/WebCore/PlatformHaiku.cmake b/Source/WebCore/PlatformHaiku.cmake
-index 16a88804a1baa39ccdd9fc2870b6e2524d941298..f1930245dcfb19595045b19e8fd9f49145a3f08b 100644
+index 16a88804a1baa39ccdd9fc2870b6e2524d941298..36b467084e2b60b2abc55ae9db0a13d500b5be59 100644
 --- a/Source/WebCore/PlatformHaiku.cmake
 +++ b/Source/WebCore/PlatformHaiku.cmake
-@@ -1,52 +1,326 @@
+@@ -1,52 +1,327 @@
 +include(platform/Haiku.cmake)
  include(platform/ImageDecoders.cmake)
  include(platform/OpenSSL.cmake)
@@ -3436,6 +3453,7 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..f1930245dcfb19595045b19e8fd9f491
 +if (USE_LIBWEBRTC)
 +    list(APPEND WebCore_SOURCES
 +        platform/mediastream/haiku/HaikuVoiceProcessing.cpp
++        platform/mediastream/libwebrtc/haiku/LibWebRTCH264DecoderHaiku.cpp
 +        platform/mediastream/libwebrtc/haiku/LibWebRTCHaiku.cpp
 +    )
 +    if (ENABLE_MEDIA_RECORDER)
@@ -3496,7 +3514,7 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..f1930245dcfb19595045b19e8fd9f491
    textencoding
    translation
    ${WEBP_LIBRARIES}
-@@ -61,6 +335,205 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
+@@ -61,6 +336,205 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
    ${SQLITE_INCLUDE_DIR}
    ${WEBP_INCLUDE_DIRS}
    ${ZLIB_INCLUDE_DIRS}
@@ -35523,10 +35541,10 @@ index 0000000000000000000000000000000000000000..0c89f9bb2bcec1ce8f3796ad0e40a132
 +#endif // ENABLE(MEDIA_STREAM) && PLATFORM(HAIKU)
 diff --git a/Source/WebCore/platform/mediastream/haiku/HaikuVoiceProcessing.cpp b/Source/WebCore/platform/mediastream/haiku/HaikuVoiceProcessing.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..a54004c460eb6540e0fb2013a02056f796194688
+index 0000000000000000000000000000000000000000..a3a56ca8271ef0190ed4728a9d1490b5a192c01d
 --- /dev/null
 +++ b/Source/WebCore/platform/mediastream/haiku/HaikuVoiceProcessing.cpp
-@@ -0,0 +1,148 @@
+@@ -0,0 +1,149 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -35549,6 +35567,7 @@ index 0000000000000000000000000000000000000000..a54004c460eb6540e0fb2013a02056f7
 +
 +#if ENABLE(MEDIA_STREAM) && PLATFORM(HAIKU) && USE(LIBWEBRTC)
 +
++#include "LibWebRTCMacros.h"
 +#include <cstdlib>
 +#include <cstring>
 +#include <wtf/MonotonicTime.h>
@@ -36018,12 +36037,368 @@ index 0000000000000000000000000000000000000000..873c9f72583dcd3f0d9de5d72f91e3c4
 +} // namespace WebCore
 +
 +#endif
+diff --git a/Source/WebCore/platform/mediastream/libwebrtc/haiku/LibWebRTCH264DecoderHaiku.cpp b/Source/WebCore/platform/mediastream/libwebrtc/haiku/LibWebRTCH264DecoderHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..f1180d06509b78fc5b3dade7300fa84af50390b9
+--- /dev/null
++++ b/Source/WebCore/platform/mediastream/libwebrtc/haiku/LibWebRTCH264DecoderHaiku.cpp
+@@ -0,0 +1,309 @@
++/*
++ * Copyright (C) 2026 Summit contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHORS ``AS IS'' AND ANY EXPRESS OR
++ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
++ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
++ */
++
++#include "config.h"
++#include "LibWebRTCH264DecoderHaiku.h"
++
++#if USE(LIBWEBRTC) && PLATFORM(HAIKU)
++
++#include "LibWebRTCMacros.h"
++#include <cerrno>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <dlfcn.h>
++#include <wtf/NumberOfCores.h>
++
++WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
++#include <libyuv.h>
++#include <webrtc/api/video/i420_buffer.h>
++#include <webrtc/api/video/video_frame.h>
++#include <webrtc/api/video_codecs/builtin_video_decoder_factory.h>
++#include <webrtc/api/video_codecs/h264_profile_level_id.h>
++#include <webrtc/api/video_codecs/video_decoder.h>
++#include <webrtc/modules/video_coding/codecs/h264/include/h264.h>
++#include <webrtc/modules/video_coding/include/video_error_codes.h>
++WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_END
++
++// H.264 for WebRTC through the system's FFmpeg (libavcodec, which Haiku's
++// media add-on uses too), loaded when first needed: without it, H.264 is not
++// offered. Only functions are looked up, and only the leading members of
++// AVPacket and AVFrame are used, which have kept their places for many major
++// versions; contexts are configured through AVOptions.
++
++namespace WebCore {
++
++namespace {
++
++struct AVPacketPrefix {
++    void* buf;
++    int64_t pts;
++    int64_t dts;
++    uint8_t* data;
++    int size;
++};
++
++struct AVFramePrefix {
++    uint8_t* data[8];
++    int linesize[8];
++    uint8_t** extendedData;
++    int width;
++    int height;
++    int sampleCount;
++    int format;
++};
++
++// AVPixelFormat values that have not moved since FFmpeg 1.
++constexpr int pixelFormatYUV420P = 0;
++constexpr int pixelFormatYUV422P = 4;
++constexpr int pixelFormatYUV444P = 5;
++constexpr int pixelFormatYUVJ420P = 12;
++constexpr int pixelFormatYUVJ422P = 13;
++constexpr int pixelFormatYUVJ444P = 14;
++
++// AVERROR(EAGAIN): Haiku's errno values are negative already.
++constexpr int averrorEAGAIN = EDOM > 0 ? -EAGAIN : EAGAIN;
++
++struct FFmpeg {
++    void* (*findDecoderByName)(const char*);
++    void* (*allocContext)(const void*);
++    int (*open)(void*, const void*, void**);
++    void (*freeContext)(void**);
++    void* (*allocPacket)();
++    void (*freePacket)(void**);
++    int (*sendPacket)(void*, const void*);
++    int (*receiveFrame)(void*, void*);
++    void* (*allocFrame)();
++    void (*freeFrame)(void**);
++    int (*setOptionInt)(void*, const char*, int64_t, int);
++
++    static const FFmpeg* load()
++    {
++        static const FFmpeg* loaded = [] () -> const FFmpeg* {
++            if (const char* value = getenv("SUMMIT_WEBRTC_H264"); value && !strcmp(value, "0"))
++                return nullptr;
++            void* avcodec = nullptr;
++            for (const char* name : { "libavcodec.so.62", "libavcodec.so.61", "libavcodec.so.60", "libavcodec.so.59", "libavcodec.so.58" }) {
++                if ((avcodec = dlopen(name, RTLD_NOW | RTLD_LOCAL)))
++                    break;
++            }
++            void* avutil = nullptr;
++            for (const char* name : { "libavutil.so.60", "libavutil.so.59", "libavutil.so.58", "libavutil.so.57", "libavutil.so.56" }) {
++                if ((avutil = dlopen(name, RTLD_NOW | RTLD_LOCAL)))
++                    break;
++            }
++            if (!avcodec || !avutil) {
++                fprintf(stderr, "Summit: no libavcodec; WebRTC offers no H.264\n");
++                return nullptr;
++            }
++            auto* ffmpeg = new FFmpeg;
++            bool complete = true;
++            auto find = [&](void* library, const char* name) {
++                void* symbol = dlsym(library, name);
++                complete = complete && symbol;
++                return symbol;
++            };
++            ffmpeg->findDecoderByName = reinterpret_cast<void* (*)(const char*)>(find(avcodec, "avcodec_find_decoder_by_name"));
++            ffmpeg->allocContext = reinterpret_cast<void* (*)(const void*)>(find(avcodec, "avcodec_alloc_context3"));
++            ffmpeg->open = reinterpret_cast<int (*)(void*, const void*, void**)>(find(avcodec, "avcodec_open2"));
++            ffmpeg->freeContext = reinterpret_cast<void (*)(void**)>(find(avcodec, "avcodec_free_context"));
++            ffmpeg->allocPacket = reinterpret_cast<void* (*)()>(find(avcodec, "av_packet_alloc"));
++            ffmpeg->freePacket = reinterpret_cast<void (*)(void**)>(find(avcodec, "av_packet_free"));
++            ffmpeg->sendPacket = reinterpret_cast<int (*)(void*, const void*)>(find(avcodec, "avcodec_send_packet"));
++            ffmpeg->receiveFrame = reinterpret_cast<int (*)(void*, void*)>(find(avcodec, "avcodec_receive_frame"));
++            ffmpeg->allocFrame = reinterpret_cast<void* (*)()>(find(avutil, "av_frame_alloc"));
++            ffmpeg->freeFrame = reinterpret_cast<void (*)(void**)>(find(avutil, "av_frame_free"));
++            ffmpeg->setOptionInt = reinterpret_cast<int (*)(void*, const char*, int64_t, int)>(find(avutil, "av_opt_set_int"));
++            if (!complete || !ffmpeg->findDecoderByName("h264")) {
++                fprintf(stderr, "Summit: libavcodec has no usable H.264 decoder; WebRTC offers no H.264\n");
++                delete ffmpeg;
++                return nullptr;
++            }
++            return ffmpeg;
++        }();
++        return loaded;
++    }
++};
++
++class H264DecoderHaiku final : public webrtc::VideoDecoder {
++public:
++    explicit H264DecoderHaiku(const FFmpeg& ffmpeg)
++        : m_ffmpeg(ffmpeg)
++    {
++    }
++
++    ~H264DecoderHaiku() { Release(); }
++
++    bool Configure(const Settings& settings) final
++    {
++        Release();
++        const void* codec = m_ffmpeg.findDecoderByName("h264");
++        m_context = m_ffmpeg.allocContext(codec);
++        if (!m_context)
++            return false;
++        // Slices in parallel, not frames: frame threads would hold pictures back.
++        int threads = std::clamp(std::min(settings.number_of_cores(), WTF::numberOfProcessorCores()), 1, 4);
++        m_ffmpeg.setOptionInt(m_context, "threads", threads, 0);
++        m_ffmpeg.setOptionInt(m_context, "thread_type", 2 /* FF_THREAD_SLICE */, 0);
++        if (m_ffmpeg.open(m_context, codec, nullptr) < 0) {
++            Release();
++            return false;
++        }
++        m_packet = m_ffmpeg.allocPacket();
++        m_frame = m_ffmpeg.allocFrame();
++        return m_packet && m_frame;
++    }
++
++    int32_t Decode(const webrtc::EncodedImage& image, int64_t) final
++    {
++        if (!m_context || !m_callback)
++            return WEBRTC_VIDEO_CODEC_UNINITIALIZED;
++        if (!image.data() || !image.size())
++            return WEBRTC_VIDEO_CODEC_ERR_PARAMETER;
++
++        auto* packet = static_cast<AVPacketPrefix*>(m_packet);
++        packet->data = const_cast<uint8_t*>(image.data());
++        packet->size = static_cast<int>(image.size());
++        packet->pts = image.RtpTimestamp();
++        int status = m_ffmpeg.sendPacket(m_context, m_packet);
++        packet->data = nullptr;
++        packet->size = 0;
++        if (status < 0 && status != averrorEAGAIN)
++            return WEBRTC_VIDEO_CODEC_ERROR;
++
++        while (m_ffmpeg.receiveFrame(m_context, m_frame) >= 0) {
++            auto* frame = static_cast<AVFramePrefix*>(m_frame);
++            auto buffer = toI420(*frame);
++            if (!buffer)
++                continue;
++            auto output = webrtc::VideoFrame::Builder()
++                .set_video_frame_buffer(buffer)
++                .set_rtp_timestamp(image.RtpTimestamp())
++                .set_color_space(image.ColorSpace())
++                .build();
++            m_callback->Decoded(output, std::nullopt, std::nullopt);
++        }
++        return WEBRTC_VIDEO_CODEC_OK;
++    }
++
++    int32_t RegisterDecodeCompleteCallback(webrtc::DecodedImageCallback* callback) final
++    {
++        m_callback = callback;
++        return WEBRTC_VIDEO_CODEC_OK;
++    }
++
++    int32_t Release() final
++    {
++        if (m_frame)
++            m_ffmpeg.freeFrame(&m_frame);
++        if (m_packet)
++            m_ffmpeg.freePacket(&m_packet);
++        if (m_context)
++            m_ffmpeg.freeContext(&m_context);
++        return WEBRTC_VIDEO_CODEC_OK;
++    }
++
++    DecoderInfo GetDecoderInfo() const final
++    {
++        DecoderInfo info;
++        info.implementation_name = "FFmpeg (Summit)";
++        info.is_hardware_accelerated = false;
++        return info;
++    }
++
++    const char* ImplementationName() const final { return "FFmpeg (Summit)"; }
++
++private:
++    webrtc::scoped_refptr<webrtc::I420Buffer> toI420(const AVFramePrefix& frame)
++    {
++        if (frame.width <= 0 || frame.height <= 0)
++            return nullptr;
++        auto buffer = webrtc::I420Buffer::Create(frame.width, frame.height);
++        int status = -1;
++        switch (frame.format) {
++        case pixelFormatYUV420P:
++        case pixelFormatYUVJ420P:
++            status = libyuv::I420Copy(frame.data[0], frame.linesize[0], frame.data[1], frame.linesize[1], frame.data[2], frame.linesize[2],
++                buffer->MutableDataY(), buffer->StrideY(), buffer->MutableDataU(), buffer->StrideU(), buffer->MutableDataV(), buffer->StrideV(), frame.width, frame.height);
++            break;
++        case pixelFormatYUV422P:
++        case pixelFormatYUVJ422P:
++            status = libyuv::I422ToI420(frame.data[0], frame.linesize[0], frame.data[1], frame.linesize[1], frame.data[2], frame.linesize[2],
++                buffer->MutableDataY(), buffer->StrideY(), buffer->MutableDataU(), buffer->StrideU(), buffer->MutableDataV(), buffer->StrideV(), frame.width, frame.height);
++            break;
++        case pixelFormatYUV444P:
++        case pixelFormatYUVJ444P:
++            status = libyuv::I444ToI420(frame.data[0], frame.linesize[0], frame.data[1], frame.linesize[1], frame.data[2], frame.linesize[2],
++                buffer->MutableDataY(), buffer->StrideY(), buffer->MutableDataU(), buffer->StrideU(), buffer->MutableDataV(), buffer->StrideV(), frame.width, frame.height);
++            break;
++        default:
++            break;
++        }
++        return status ? nullptr : buffer;
++    }
++
++    const FFmpeg& m_ffmpeg;
++    void* m_context { nullptr };
++    void* m_packet { nullptr };
++    void* m_frame { nullptr };
++    webrtc::DecodedImageCallback* m_callback { nullptr };
++};
++
++// libwebrtc's own decoders (VP8, VP9) and H.264 through FFmpeg.
++class VideoDecoderFactoryHaiku final : public webrtc::VideoDecoderFactory {
++public:
++    VideoDecoderFactoryHaiku()
++        : m_builtin(webrtc::CreateBuiltinVideoDecoderFactory())
++    {
++    }
++
++    std::vector<webrtc::SdpVideoFormat> GetSupportedFormats() const final
++    {
++        auto formats = m_builtin->GetSupportedFormats();
++        if (FFmpeg::load()) {
++            for (auto profile : { webrtc::H264Profile::kProfileConstrainedBaseline, webrtc::H264Profile::kProfileBaseline, webrtc::H264Profile::kProfileMain, webrtc::H264Profile::kProfileHigh }) {
++                formats.push_back(webrtc::CreateH264Format(profile, webrtc::H264Level::kLevel5_1, "1"));
++                formats.push_back(webrtc::CreateH264Format(profile, webrtc::H264Level::kLevel5_1, "0"));
++            }
++        }
++        return formats;
++    }
++
++    std::unique_ptr<webrtc::VideoDecoder> Create(const webrtc::Environment& environment, const webrtc::SdpVideoFormat& format) final
++    {
++        if (equalIgnoringASCIICase(StringView::fromLatin1(format.name.c_str()), "H264"_s)) {
++            if (auto* ffmpeg = FFmpeg::load())
++                return std::make_unique<H264DecoderHaiku>(*ffmpeg);
++            return nullptr;
++        }
++        return m_builtin->Create(environment, format);
++    }
++
++private:
++    std::unique_ptr<webrtc::VideoDecoderFactory> m_builtin;
++};
++
++} // namespace
++
++std::unique_ptr<webrtc::VideoDecoderFactory> createVideoDecoderFactoryHaiku()
++{
++    return std::make_unique<VideoDecoderFactoryHaiku>();
++}
++
++} // namespace WebCore
++
++#endif // USE(LIBWEBRTC) && PLATFORM(HAIKU)
+diff --git a/Source/WebCore/platform/mediastream/libwebrtc/haiku/LibWebRTCH264DecoderHaiku.h b/Source/WebCore/platform/mediastream/libwebrtc/haiku/LibWebRTCH264DecoderHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..5ebe657ddbbbe67bdade2e776238ab5344efd904
+--- /dev/null
++++ b/Source/WebCore/platform/mediastream/libwebrtc/haiku/LibWebRTCH264DecoderHaiku.h
+@@ -0,0 +1,35 @@
++/*
++ * Copyright (C) 2026 Summit contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHORS ``AS IS'' AND ANY EXPRESS OR
++ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
++ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
++ */
++
++#pragma once
++
++#if USE(LIBWEBRTC) && PLATFORM(HAIKU)
++
++#include <memory>
++
++namespace webrtc {
++class VideoDecoderFactory;
++}
++
++namespace WebCore {
++
++// libwebrtc's decoders (VP8, VP9) and, when the system has FFmpeg, H.264.
++std::unique_ptr<webrtc::VideoDecoderFactory> createVideoDecoderFactoryHaiku();
++
++} // namespace WebCore
++
++#endif // USE(LIBWEBRTC) && PLATFORM(HAIKU)
 diff --git a/Source/WebCore/platform/mediastream/libwebrtc/haiku/LibWebRTCHaiku.cpp b/Source/WebCore/platform/mediastream/libwebrtc/haiku/LibWebRTCHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..8bf45cea03431c90b4488e9ddd59c305046203f8
+index 0000000000000000000000000000000000000000..5adc1a1546e9f7dbd336218f4159b199c4ad6e2d
 --- /dev/null
 +++ b/Source/WebCore/platform/mediastream/libwebrtc/haiku/LibWebRTCHaiku.cpp
-@@ -0,0 +1,317 @@
+@@ -0,0 +1,318 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -36047,6 +36422,7 @@ index 0000000000000000000000000000000000000000..8bf45cea03431c90b4488e9ddd59c305
 +#if USE(LIBWEBRTC) && PLATFORM(HAIKU)
 +
 +#include "HaikuAudioData.h"
++#include "LibWebRTCH264DecoderHaiku.h"
 +#include "LibWebRTCAudioFormat.h"
 +#include "LibWebRTCVideoFrameUtilities.h"
 +#include <wtf/TZoneMallocInlines.h>
@@ -36146,7 +36522,7 @@ index 0000000000000000000000000000000000000000..8bf45cea03431c90b4488e9ddd59c305
 +
 +std::unique_ptr<webrtc::VideoDecoderFactory> LibWebRTCProviderHaiku::createDecoderFactory()
 +{
-+    return webrtc::CreateBuiltinVideoDecoderFactory();
++    return createVideoDecoderFactoryHaiku();
 +}
 +
 +// Incoming audio: libwebrtc's 16-bit samples as float.

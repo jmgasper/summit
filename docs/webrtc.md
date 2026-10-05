@@ -44,8 +44,18 @@ WebKit's vendored libwebrtc (`Source/ThirdParty/libwebrtc`, built by its
 - `getifaddrs()` comes from libbsd; the library links `bsd` and `network`.
 - The WebM muxer (libwebm's mkvmuxer) is built into it for MediaRecorder.
 
-Video codecs are libwebrtc's own: VP8 and VP9 through libvpx. There is no
-H.264 encoder in the tree (Apple uses VideoToolbox, GTK GStreamer).
+Video codecs are libwebrtc's own, VP8 and VP9 through libvpx, and H.264
+decoding through the system's FFmpeg (`LibWebRTCH264DecoderHaiku.cpp`):
+libavcodec is loaded when first needed (only functions are looked up, and only
+the leading members of AVPacket and AVFrame are used, which have kept their
+places for many major versions); without it, H.264 is not offered.
+`SUMMIT_WEBRTC_H264=0` turns it off. There is no H.264 encoder (Apple uses
+VideoToolbox, GTK GStreamer; Haiku's FFmpeg has neither x264 nor OpenH264),
+so H.264 is received but not sent.
+
+The bundled libvpx, Opus and libsrtp are compiled with hidden visibility: the
+same processes load the system's FFmpeg (through the Media Kit's ffmpeg
+add-on), whose own libvpx and libopus calls must not bind to these copies.
 
 ### Capture (`WebCore/platform/mediastream/haiku`)
 
@@ -146,7 +156,7 @@ devices. The title ends as `rtc selftest: N/M`.
 
 ## Not done yet
 
-- H.264 (encoder and decoder) for WebRTC.
+- An H.264 encoder for WebRTC.
 - Echo cancellation, noise suppression and gain control (libwebrtc's audio
   processing module is in the tree; it needs the played audio as reference).
 - Window capture (only whole screens), system audio.
