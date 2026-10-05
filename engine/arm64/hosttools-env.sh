@@ -1,0 +1,4 @@
+export PATH=/mnt/HaikuWork/build/summit-arm64/hosttools/bin:/mnt/HaikuWork/toolchains/host/usr/bin:/mnt/HaikuWork/build/arm64/cross-tools-arm64/bin:$PATH
+export LD_LIBRARY_PATH=/mnt/HaikuWork/build/summit-arm64/hosttools/root/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+export RUBYLIB=/mnt/HaikuWork/build/summit-arm64/hosttools/root/usr/lib/ruby/3.2.0:/mnt/HaikuWork/build/summit-arm64/hosttools/root/usr/lib/x86_64-linux-gnu/ruby/3.2.0:/mnt/HaikuWork/build/summit-arm64/hosttools/root/usr/lib/ruby/vendor_ruby
+export CPATH=/mnt/HaikuWork/build/summit-arm64/sysroot/boot/system/develop/headers/private/netservices:/mnt/HaikuWork/build/summit-arm64/sysroot/boot/system/develop/headers/private/libroot:/mnt/HaikuWork/build/summit-arm64/sysroot/boot/system/develop/headers/private/shared:/mnt/HaikuWork/build/summit-arm64/sysroot/boot/system/develop/headers/private/system:/mnt/HaikuWork/build/summit-arm64/sysroot/boot/system/develop/headers/private/system/arch

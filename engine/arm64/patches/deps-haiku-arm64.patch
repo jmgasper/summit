@@ -1,0 +1,58 @@
+--- a/openssl-3.3.2/crypto/armcap.c
++++ b/openssl-3.3.2/crypto/armcap.c
+@@ -253,6 +253,10 @@
+ # if !defined(__APPLE__) && !defined(OSSL_IMPLEMENT_GETAUXVAL)
+     struct sigaction ill_oact, ill_act;
+     sigset_t oset;
++#  if defined(__HAIKU__)
++    /* Haiku arm64 reports undefined instructions as SIGBUS, not SIGILL. */
++    struct sigaction bus_oact;
++#  endif
+ # endif
+     static int trigger = 0;
+ 
+@@ -370,6 +374,9 @@
+ 
+     sigprocmask(SIG_SETMASK, &ill_act.sa_mask, &oset);
+     sigaction(SIGILL, &ill_act, &ill_oact);
++#  if defined(__HAIKU__)
++    sigaction(SIGBUS, &ill_act, &bus_oact);
++#  endif
+ 
+     OPENSSL_armcap_P |= arm_probe_for(_armv7_neon_probe, ARMV7_NEON);
+ 
+@@ -403,6 +410,9 @@
+      */
+ 
+     sigaction(SIGILL, &ill_oact, NULL);
++#  if defined(__HAIKU__)
++    sigaction(SIGBUS, &bus_oact, NULL);
++#  endif
+     sigprocmask(SIG_SETMASK, &oset, NULL);
+ 
+ # endif /* __APPLE__, OSSL_IMPLEMENT_GETAUXVAL */
+--- a/openssl-3.3.2/os-dep/haiku.h
++++ b/openssl-3.3.2/os-dep/haiku.h
+@@ -7,5 +7,7 @@
+  * https://www.openssl.org/source/license.html
+  */
+ 
++#ifndef __ASSEMBLER__
+ #include <sys/select.h>
+ #include <sys/time.h>
++#endif
+--- a/curl-8.10.1/lib/cf-socket.c
++++ b/curl-8.10.1/lib/cf-socket.c
+@@ -24,6 +24,12 @@
+ 
+ #include "curl_setup.h"
+ 
++#ifdef __HAIKU__
++/* Haiku accepts SOCK_NONBLOCK in socket() and reports O_NONBLOCK, but the
++   socket still blocks in connect() and recv(); use fcntl() instead. */
++#undef SOCK_NONBLOCK
++#endif
++
+ #ifdef HAVE_NETINET_IN_H
+ #include <netinet/in.h> /* <netinet/tcp.h> may need it */
+ #endif
