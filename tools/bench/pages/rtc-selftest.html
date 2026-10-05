@@ -15,6 +15,9 @@ pre { background: #f4f4f4; padding: 8px; max-height: 50vh; overflow: auto; }
 <p>Without a camera: a canvas is the video source and an oscillator the
 audio. <code>?camera=1</code> uses the camera and microphone,
 <code>?screen=1</code> asks to share a screen (both need a click on Allow).
+Sharing needs a user gesture: click <b>Share screen</b> when the title says
+so, or call <code>rtcShareScreen()</code> from the Developer Tools console
+(its evaluations count as gestures).
 The title ends as <code>rtc selftest: N/M</code> with the failures listed.</p>
 <div>
   <canvas id="source" width="320" height="240"></canvas>
@@ -22,6 +25,7 @@ The title ends as <code>rtc selftest: N/M</code> with the failures listed.</p>
   <video id="remote" autoplay muted playsinline></video>
   <video id="recorded" controls playsinline></video>
 </div>
+<p><button id="share">Share screen</button></p>
 <pre id="log"></pre>
 <script>
 const params = new URLSearchParams(location.search);
@@ -76,6 +80,76 @@ function videoHasPicture(video) {
     return max - min > 20;
 }
 
+// Two peers in this page; with `codec`, the receiver prefers it.
+async function loopback(stream, codec) {
+    const label = codec ? ` (${codec})` : '';
+    try {
+        const pc1 = new RTCPeerConnection();
+        const pc2 = new RTCPeerConnection();
+        const candidates = { pc1: 0, pc2: 0 };
+        for (const [name, from, to] of [['pc1', pc1, pc2], ['pc2', pc2, pc1]]) {
+            from.onicecandidate = event => {
+                if (!event.candidate) {
+                    log(`${name}: ${candidates[name]} candidates, gathering done`);
+                    return;
+                }
+                if (!candidates[name]++)
+                    log(`${name} first candidate: ${event.candidate.candidate}`);
+                to.addIceCandidate(event.candidate).catch(e => log(`${name} addIceCandidate: ${e}`));
+            };
+            from.oniceconnectionstatechange = () => log(`${name} ice: ${from.iceConnectionState}`);
+            from.onconnectionstatechange = () => log(`${name} connection: ${from.connectionState}`);
+        }
+        const remote = document.getElementById('remote');
+        remote.srcObject = null;
+        pc2.ontrack = event => {
+            if (codec && event.track.kind === 'video') {
+                const preferred = RTCRtpReceiver.getCapabilities('video').codecs.filter(c => c.mimeType === codec);
+                event.transceiver.setCodecPreferences(preferred);
+            }
+            if (!remote.srcObject) remote.srcObject = event.streams[0];
+        };
+        stream.getTracks().forEach(track => pc1.addTrack(track, stream));
+        const channel = pc1.createDataChannel('selftest');
+        const echoed = new Promise(resolve => {
+            pc2.ondatachannel = event => {
+                event.channel.onmessage = message => event.channel.send('echo:' + message.data);
+            };
+            channel.onmessage = message => resolve(message.data);
+        });
+        channel.onopen = () => channel.send('hello');
+        const offer = await pc1.createOffer();
+        log('offer codecs: ' + [...new Set((offer.sdp.match(/a=rtpmap:\d+ [^\/]+/g) || []).map(l => l.split(' ')[1]))].join(' '));
+        await pc1.setLocalDescription(offer);
+        await pc2.setRemoteDescription(offer);
+        const answer = await pc2.createAnswer();
+        await pc2.setLocalDescription(answer);
+        await pc1.setRemoteDescription(answer);
+        const message = await withTimeout(echoed, 10000, 'data channel');
+        check('data channel round trip' + label, message === 'echo:hello', message);
+        check('remote video plays' + label, await videoPlays(remote, 'remote'));
+        check('remote video has a picture' + label, videoHasPicture(remote));
+        const stats = await pc2.getStats();
+        const codecs = new Map();
+        stats.forEach(report => {
+            if (report.type === 'codec')
+                codecs.set(report.id, report.mimeType);
+        });
+        stats.forEach(report => {
+            if (report.type === 'inbound-rtp')
+                log(`inbound ${report.kind}: ${report.packetsReceived} packets, ${report.framesDecoded ?? '-'} frames decoded, ${codecs.get(report.codecId) || report.codecId}`);
+        });
+        const inboundAudio = [...stats.values()].find(r => r.type === 'inbound-rtp' && r.kind === 'audio');
+        check('remote audio packets' + label, !!inboundAudio && inboundAudio.packetsReceived > 10, inboundAudio ? String(inboundAudio.packetsReceived) : 'none');
+        if (codec) {
+            const inboundVideo = [...stats.values()].find(r => r.type === 'inbound-rtp' && r.kind === 'video');
+            const used = inboundVideo && codecs.get(inboundVideo.codecId);
+            check('video codec' + label, used === codec && inboundVideo.framesDecoded > 0, `${used}, ${inboundVideo?.framesDecoded} frames decoded`);
+        }
+        pc1.close(); pc2.close();
+    } catch (e) { check('WebRTC loopback' + label, false, String(e)); }
+}
+
 async function run() {
     // The html5test.co checks.
     check('RTCPeerConnection', !!window.RTCPeerConnection);
@@ -125,15 +199,59 @@ async function run() {
     if (params.get('camera') === '1') {
         try {
             stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: true });
+            // &mic=TEXT: then the microphone whose label contains TEXT (the
+            // labels are known once capture is allowed).
+            if (params.get('mic')) {
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                log('microphones: ' + devices.filter(d => d.kind === 'audioinput').map(d => d.label || '(no label)').join(', '));
+                const wanted = devices.find(d => d.kind === 'audioinput' && d.label.includes(params.get('mic')));
+                if (wanted) {
+                    stream.getAudioTracks().forEach(track => { track.stop(); stream.removeTrack(track); });
+                    const microphone = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: wanted.deviceId } } });
+                    stream.addTrack(microphone.getAudioTracks()[0]);
+                }
+            }
             check('getUserMedia camera + microphone', true, stream.getTracks().map(t => t.kind + ':' + t.label).join(', '));
+            // How loud the microphone is (a quiet room is not a failure).
+            if (audioContext && stream.getAudioTracks().length) {
+                const source = audioContext.createMediaStreamSource(stream);
+                const meter = audioContext.createAnalyser();
+                source.connect(meter);
+                const samples = new Float32Array(meter.fftSize);
+                let loudest = 0;
+                for (let i = 0; i < 15; ++i) {
+                    await sleep(100);
+                    meter.getFloatTimeDomainData(samples);
+                    loudest = Math.max(loudest, Math.sqrt(samples.reduce((sum, v) => sum + v * v, 0) / samples.length));
+                }
+                source.disconnect();
+                log(`microphone: loudest ${(20 * Math.log10(loudest || 1e-9)).toFixed(1)} dBFS over 1.5 s, settings ${JSON.stringify(stream.getAudioTracks()[0].getSettings())}`);
+            }
         } catch (e) { check('getUserMedia camera + microphone', false, String(e)); }
     }
     if (params.get('screen') === '1') {
         try {
-            const screen = await navigator.mediaDevices.getDisplayMedia({ video: true });
+            // getDisplayMedia() has to be called in the gesture itself.
+            let displayRequest;
+            const requested = new Promise(resolve => {
+                window.rtcShareScreen = () => {
+                    displayRequest = navigator.mediaDevices.getDisplayMedia({ video: true });
+                    resolve();
+                    return 'requested';
+                };
+            });
+            document.getElementById('share').onclick = () => window.rtcShareScreen();
+            const title = document.title;
+            document.title = 'rtc selftest: waiting for Share screen';
+            await withTimeout(requested, 60000, 'Share screen click');
+            document.title = title;
+            const screen = await displayRequest;
             const settings = screen.getVideoTracks()[0].getSettings();
             check('getDisplayMedia', true, `${settings.width}x${settings.height} ${settings.displaySurface}`);
-            if (!stream) stream = screen;
+            if (!stream) {
+                stream = screen;
+                if (audioStream) stream.addTrack(audioStream.getAudioTracks()[0]);
+            }
         } catch (e) { check('getDisplayMedia', false, String(e)); }
     }
     if (!stream) {
@@ -168,57 +286,14 @@ async function run() {
         } catch (e) { check('MediaRecorder', false, String(e)); }
     }
 
-    // WebRTC loopback: two peers in this page, video, audio and a data channel.
-    try {
-        const pc1 = new RTCPeerConnection();
-        const pc2 = new RTCPeerConnection();
-        const candidates = { pc1: 0, pc2: 0 };
-        for (const [name, from, to] of [['pc1', pc1, pc2], ['pc2', pc2, pc1]]) {
-            from.onicecandidate = event => {
-                if (!event.candidate) {
-                    log(`${name}: ${candidates[name]} candidates, gathering done`);
-                    return;
-                }
-                if (!candidates[name]++)
-                    log(`${name} first candidate: ${event.candidate.candidate}`);
-                to.addIceCandidate(event.candidate).catch(e => log(`${name} addIceCandidate: ${e}`));
-            };
-            from.oniceconnectionstatechange = () => log(`${name} ice: ${from.iceConnectionState}`);
-            from.onconnectionstatechange = () => log(`${name} connection: ${from.connectionState}`);
-        }
-        const remote = document.getElementById('remote');
-        pc2.ontrack = event => { if (!remote.srcObject) remote.srcObject = event.streams[0]; };
-        stream.getTracks().forEach(track => pc1.addTrack(track, stream));
-        const channel = pc1.createDataChannel('selftest');
-        const echoed = new Promise(resolve => {
-            pc2.ondatachannel = event => {
-                event.channel.onmessage = message => event.channel.send('echo:' + message.data);
-            };
-            channel.onmessage = message => resolve(message.data);
-        });
-        channel.onopen = () => channel.send('hello');
-        const offer = await pc1.createOffer();
-        log('offer codecs: ' + [...new Set((offer.sdp.match(/a=rtpmap:\d+ [^\/]+/g) || []).map(l => l.split(' ')[1]))].join(' '));
-        await pc1.setLocalDescription(offer);
-        await pc2.setRemoteDescription(offer);
-        const answer = await pc2.createAnswer();
-        await pc2.setLocalDescription(answer);
-        await pc1.setRemoteDescription(answer);
-        const message = await withTimeout(echoed, 10000, 'data channel');
-        check('data channel round trip', message === 'echo:hello', message);
-        check('remote video plays', await videoPlays(remote, 'remote'));
-        check('remote video has a picture', videoHasPicture(remote));
-        const stats = await pc2.getStats();
-        stats.forEach(report => {
-            if (report.type === 'inbound-rtp')
-                log(`inbound ${report.kind}: ${report.packetsReceived} packets, ${report.framesDecoded ?? '-'} frames decoded, codec ${report.codecId}`);
-            if (report.type === 'codec')
-                log(`codec ${report.id}: ${report.mimeType}`);
-        });
-        const inboundAudio = [...stats.values()].find(r => r.type === 'inbound-rtp' && r.kind === 'audio');
-        check('remote audio packets', !!inboundAudio && inboundAudio.packetsReceived > 10, inboundAudio ? String(inboundAudio.packetsReceived) : 'none');
-        pc1.close(); pc2.close();
-    } catch (e) { check('WebRTC loopback', false, String(e)); }
+    // WebRTC loopback: two peers in this page, video, audio and a data channel;
+    // then again with H.264 preferred, when both directions offer it.
+    await loopback(stream, null);
+    const canSend = (RTCRtpSender.getCapabilities('video')?.codecs || []).some(c => c.mimeType === 'video/H264');
+    const canReceive = (RTCRtpReceiver.getCapabilities('video')?.codecs || []).some(c => c.mimeType === 'video/H264');
+    log(`H.264: send ${canSend}, receive ${canReceive}`);
+    if (canSend && canReceive)
+        await loopback(stream, 'video/H264');
 
     const failed = results.filter(r => !r.ok).map(r => r.name);
     const passed = results.length - failed.length;

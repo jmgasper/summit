@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>rtc call</title>
+<style>
+body { font: 13px sans-serif; margin: 12px; }
+video { width: 320px; height: 240px; background: #222; margin-right: 8px; }
+pre { font: 11px monospace; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<p>A call between two browsers through tools/bench/rtc-signal.py: open
+<code>?role=a</code> on one machine and <code>?role=b</code> on the other
+(same <code>&amp;room=</code>). <code>&amp;camera=1</code> sends the camera
+and microphone, otherwise a canvas and a tone; <code>&amp;codec=H264</code>
+(or VP8, VP9) is preferred for the video this side receives, and
+<code>&amp;sendvideo=0</code> sends none. The title ends
+as <code>rtc call: ...</code> after <code>&amp;seconds=</code> (default 12)
+of call.</p>
+<div>
+  <video id="local" autoplay muted playsinline></video>
+  <video id="remote" autoplay playsinline></video>
+</div>
+<pre id="log"></pre>
+<script>
+const params = new URLSearchParams(location.search);
+const role = params.get('role') === 'b' ? 'b' : 'a';
+const other = role === 'a' ? 'b' : 'a';
+const room = params.get('room') || 'test';
+const seconds = Number(params.get('seconds') || 12);
+const logElement = document.getElementById('log');
+function log(text) { logElement.textContent += text + '\n'; console.log('rtc-call: ' + text); }
+function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+async function send(message) {
+    await fetch(`/signal/${room}/${other}`, { method: 'POST', body: JSON.stringify(message) });
+}
+// The outcome, also for the test driver: GET /signal/ROOM/result-ROLE.
+function finish(text) {
+    document.title = `rtc call: ${role} ${text}`;
+    log(document.title);
+    fetch(`/signal/${room}/result-${role}`, { method: 'POST', body: JSON.stringify(document.title) });
+}
+
+// A canvas with a moving square and a clock, and a tone.
+function syntheticStream() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 640; canvas.height = 360;
+    const context = canvas.getContext('2d');
+    let frame = 0;
+    setInterval(() => {
+        ++frame;
+        context.fillStyle = role === 'a' ? '#2a6' : '#36c';
+        context.fillRect(0, 0, 640, 360);
+        context.fillStyle = '#fff';
+        context.fillRect((frame * 4) % 600, 150, 40, 40);
+        context.font = '28px sans-serif';
+        context.fillText(`${role} ${new Date().toISOString().slice(11, 22)}`, 20, 40);
+    }, 33);
+    const stream = canvas.captureStream(30);
+    try {
+        const audio = new AudioContext();
+        const oscillator = audio.createOscillator();
+        oscillator.frequency.value = role === 'a' ? 440 : 660;
+        const gain = audio.createGain();
+        gain.gain.value = 0.02;
+        const destination = audio.createMediaStreamDestination();
+        oscillator.connect(gain).connect(destination);
+        oscillator.start();
+        stream.addTrack(destination.stream.getAudioTracks()[0]);
+    } catch (e) { log('no tone: ' + e); }
+    return stream;
+}
+
+async function run() {
+    document.title = `rtc call: ${role} starting`;
+    let stream;
+    if (params.get('camera') === '1')
+        stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: true });
+    else
+        stream = syntheticStream();
+    log('sending ' + stream.getTracks().map(t => t.kind + ':' + t.label).join(', '));
+    document.getElementById('local').srcObject = stream;
+
+    const pc = new RTCPeerConnection();
+    let candidates = 0;
+    pc.onicecandidate = event => {
+        if (event.candidate) {
+            if (!candidates++) log('first candidate: ' + event.candidate.candidate);
+            send({ candidate: event.candidate.toJSON() });
+        }
+    };
+    pc.oniceconnectionstatechange = () => log('ice: ' + pc.iceConnectionState);
+    pc.onconnectionstatechange = () => log('connection: ' + pc.connectionState);
+    const remote = document.getElementById('remote');
+    pc.ontrack = event => {
+        if (!remote.srcObject) remote.srcObject = event.streams[0];
+    };
+    // &codec=: the only one this side takes, set before each offer or answer.
+    const preferCodec = () => {
+        const codec = params.get('codec');
+        if (!codec) return;
+        const preferred = RTCRtpReceiver.getCapabilities('video').codecs.filter(c => c.mimeType.toLowerCase() === 'video/' + codec.toLowerCase());
+        if (!preferred.length) {
+            log(`cannot receive ${codec}`);
+            return;
+        }
+        pc.getTransceivers().filter(t => t.receiver.track.kind === 'video').forEach(t => t.setCodecPreferences(preferred));
+    };
+    // &sendvideo=0: this side only receives video (a codec it can decode
+    // but not encode is then negotiable: send-and-receive needs both).
+    stream.getTracks().filter(track => track.kind !== 'video' || params.get('sendvideo') !== '0').forEach(track => pc.addTrack(track, stream));
+
+    let channel;
+    const echoed = new Promise(resolve => {
+        const listen = c => {
+            channel = c;
+            c.onmessage = message => {
+                if (message.data.startsWith('echo:')) resolve(message.data);
+                else c.send('echo:' + message.data);
+            };
+            c.onopen = () => c.send(`hello from ${role}`);
+        };
+        if (role === 'a') listen(pc.createDataChannel('call'));
+        else pc.ondatachannel = event => listen(event.channel);
+    });
+
+    // Each side says hello; a offers when it hears b's (b answers a's hello
+    // with another, in case a came second). Use a new room for each call.
+    await send({ hello: true });
+    let offered = false, greeted = false;
+    // Signaling until connected; then the call runs for `seconds`.
+    let connectedAt = 0;
+    while (!connectedAt || performance.now() - connectedAt < seconds * 1000) {
+        if (!connectedAt && pc.connectionState === 'connected')
+            connectedAt = performance.now();
+        if (pc.connectionState === 'failed')
+            break;
+        if (connectedAt) {
+            await sleep(500);
+            continue;
+        }
+        const response = await fetch(`/signal/${room}/${role}?wait=2`);
+        for (const message of await response.json()) {
+            if (message.hello && role === 'b') {
+                if (!greeted) {
+                    greeted = true;
+                    await send({ hello: true });
+                }
+            } else if (message.hello && role === 'a') {
+                if (offered)
+                    continue;
+                offered = true;
+                preferCodec();
+                const offer = await pc.createOffer();
+                log('offer codecs: ' + [...new Set((offer.sdp.match(/a=rtpmap:\d+ [^\/]+/g) || []).map(l => l.split(' ')[1]))].join(' '));
+                await pc.setLocalDescription(offer);
+                await send({ description: pc.localDescription.toJSON() });
+            } else if (message.description) {
+                await pc.setRemoteDescription(message.description);
+                if (message.description.type === 'offer') {
+                    preferCodec();
+                    const answer = await pc.createAnswer();
+                    const video = answer.sdp.split('m=').find(m => m.startsWith('video')) || '';
+                    log('answer video codecs: ' + (video.match(/a=rtpmap:\d+ [^\r\n]+/g) || []).map(l => l.split(' ')[1]).join(' ')
+                        + ' ' + (video.match(/a=fmtp:\d+ [^\r\n]*profile-level-id=[0-9a-f]+/g) || []).map(l => l.split('profile-level-id=')[1]).join(','));
+                    await pc.setLocalDescription(answer);
+                    await send({ description: pc.localDescription.toJSON() });
+                }
+            } else if (message.candidate) {
+                await pc.addIceCandidate(message.candidate).catch(e => log('addIceCandidate: ' + e));
+            }
+        }
+    }
+
+    const results = [];
+    if (pc.connectionState !== 'connected') {
+        finish(`failed (${pc.connectionState})`);
+        return;
+    }
+    let echo = 'none';
+    try { echo = await Promise.race([echoed, sleep(3000).then(() => 'timeout')]); } catch (e) { echo = String(e); }
+    results.push('data ' + echo);
+    const stats = await pc.getStats();
+    const codecs = new Map();
+    stats.forEach(r => { if (r.type === 'codec') codecs.set(r.id, r.mimeType.split('/')[1]); });
+    stats.forEach(r => {
+        if (r.type === 'inbound-rtp' && r.kind === 'video')
+            results.push(`in video ${codecs.get(r.codecId)} ${r.frameWidth}x${r.frameHeight} ${r.framesDecoded} frames ${Math.round(r.framesPerSecond || 0)}/s`);
+        if (r.type === 'inbound-rtp' && r.kind === 'audio')
+            results.push(`in audio ${codecs.get(r.codecId)} ${r.packetsReceived} packets`);
+        if (r.type === 'outbound-rtp' && r.kind === 'video')
+            results.push(`out video ${codecs.get(r.codecId)} ${r.frameWidth}x${r.frameHeight} ${r.framesEncoded} frames`);
+        if (r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded')
+            results.push(`rtt ${Math.round((r.currentRoundTripTime || 0) * 1000)} ms`);
+    });
+    results.push(`remote element ${remote.videoWidth}x${remote.videoHeight} t=${remote.currentTime.toFixed(1)}`);
+    finish('ok: ' + results.join('; '));
+    if (params.get('hold') !== '1') pc.close();
+}
+run().catch(e => finish('error ' + e));
+</script>
+</body>
+</html>

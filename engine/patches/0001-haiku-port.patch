@@ -5020,10 +5020,10 @@ index b29212ad5b98d332ff7c1db7814cb2575988ec5f..b6c50d32873f6c712e3409ca1c5e2ec5
      String m_accessGroup;
  };
 diff --git a/Source/WebCore/PlatformHaiku.cmake b/Source/WebCore/PlatformHaiku.cmake
-index 16a88804a1baa39ccdd9fc2870b6e2524d941298..36b467084e2b60b2abc55ae9db0a13d500b5be59 100644
+index 16a88804a1baa39ccdd9fc2870b6e2524d941298..cc23330a44284ca1587f9495601c21fb19f60baf 100644
 --- a/Source/WebCore/PlatformHaiku.cmake
 +++ b/Source/WebCore/PlatformHaiku.cmake
-@@ -1,52 +1,327 @@
+@@ -1,52 +1,331 @@
 +include(platform/Haiku.cmake)
  include(platform/ImageDecoders.cmake)
  include(platform/OpenSSL.cmake)
@@ -5288,6 +5288,10 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..36b467084e2b60b2abc55ae9db0a13d5
 +    list(APPEND WebCore_PRIVATE_INCLUDE_DIRECTORIES
 +        "${WEBCORE_DIR}/platform/mediastream/haiku"
 +    )
++    # WebProcess frees the devices in use before it exits.
++    list(APPEND WebCore_PRIVATE_FRAMEWORK_HEADERS
++        platform/mediastream/haiku/HaikuCaptureNode.h
++    )
 +endif ()
 +
 +# WebRTC through libwebrtc (Source/ThirdParty/libwebrtc, built for Haiku by
@@ -5357,7 +5361,7 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..36b467084e2b60b2abc55ae9db0a13d5
    textencoding
    translation
    ${WEBP_LIBRARIES}
-@@ -61,6 +336,205 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
+@@ -61,6 +340,205 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
    ${SQLITE_INCLUDE_DIR}
    ${WEBP_INCLUDE_DIRS}
    ${ZLIB_INCLUDE_DIRS}
@@ -35896,10 +35900,10 @@ index 0000000000000000000000000000000000000000..b59f56027057be21b0b3eeaeb5f9ec3b
 +#endif
 diff --git a/Source/WebCore/platform/mediastream/haiku/HaikuCaptureNode.cpp b/Source/WebCore/platform/mediastream/haiku/HaikuCaptureNode.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..cbd8105a80dc42c4be6839b9f6d3605ca0bebdaf
+index 0000000000000000000000000000000000000000..2a39ceb66ecd63eac3a2926ba161eeb4c8a01d67
 --- /dev/null
 +++ b/Source/WebCore/platform/mediastream/haiku/HaikuCaptureNode.cpp
-@@ -0,0 +1,327 @@
+@@ -0,0 +1,405 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -35926,11 +35930,14 @@ index 0000000000000000000000000000000000000000..cbd8105a80dc42c4be6839b9f6d3605c
 +#include <BufferConsumer.h>
 +#include <MediaEventLooper.h>
 +#include <MediaRoster.h>
++#include <OS.h>
 +#include <TimeSource.h>
 +#include <cstdio>
 +#include <cstdlib>
 +#include <cstring>
 +#include <wtf/HashMap.h>
++#include <wtf/HashSet.h>
++#include <wtf/NeverDestroyed.h>
 +#include <wtf/text/MakeString.h>
 +#include <wtf/text/StringHash.h>
 +
@@ -36124,6 +36131,37 @@ index 0000000000000000000000000000000000000000..cbd8105a80dc42c4be6839b9f6d3605c
 +    return std::nullopt;
 +}
 +
++// Outputs still connected to a consumer whose program has ended (it crashed,
++// or was killed while capturing): the media services do not break those
++// connections, and the device would stay in use until they restart. A port
++// goes with its team, so a destination port that is gone marks one.
++static void reclaimAbandonedOutputs(BMediaRoster& roster, const media_node& producer)
++{
++    media_output outputs[16];
++    int32 count = 0;
++    if (roster.GetConnectedOutputsFor(producer, outputs, std::size(outputs), &count) != B_OK)
++        return;
++    for (int32 index = 0; index < count; ++index) {
++        port_info info;
++        if (get_port_info(outputs[index].destination.port, &info) == B_OK)
++            continue;
++        CAPTURE_TRACE("output \"%s\" of node %d was left connected by a program that ended; disconnecting it\n",
++            outputs[index].name, int(producer.node));
++        // The consumer's node went with it; Disconnect() wants a valid id
++        // only to republish that node's inputs.
++        roster.Disconnect(producer.node, outputs[index].source, producer.node, outputs[index].destination);
++    }
++}
++
++// The connections that are up, for disconnectAllBeforeExit(). Disconnecting
++// happens under the lock, so a connection is never disconnected twice.
++static Lock liveConnectionsLock;
++static HashSet<HaikuCaptureConnection*>& liveConnections() WTF_REQUIRES_LOCK(liveConnectionsLock)
++{
++    static NeverDestroyed<HashSet<HaikuCaptureConnection*>> connections;
++    return connections;
++}
++
 +std::unique_ptr<HaikuCaptureConnection> HaikuCaptureConnection::connect(const media_node& producer, const media_format& requested, BufferHandler&& handler, String& error)
 +{
 +    BMediaRoster* roster = mediaRoster();
@@ -36135,6 +36173,10 @@ index 0000000000000000000000000000000000000000..cbd8105a80dc42c4be6839b9f6d3605c
 +    media_output output;
 +    int32 count = 0;
 +    status_t status = roster->GetFreeOutputsFor(producer, &output, 1, &count, requested.type);
++    if (status == B_OK && count < 1) {
++        reclaimAbandonedOutputs(*roster, producer);
++        status = roster->GetFreeOutputsFor(producer, &output, 1, &count, requested.type);
++    }
 +    if (status != B_OK || count < 1) {
 +        // Cameras serve one consumer at a time.
 +        error = "The device is in use by another program."_s;
@@ -36172,8 +36214,12 @@ index 0000000000000000000000000000000000000000..cbd8105a80dc42c4be6839b9f6d3605c
 +        CAPTURE_TRACE("connect failed: %s\n", strerror(status));
 +        return nullptr;
 +    }
-+    connection->m_connected = true;
 +    connection->m_format = format;
++    {
++        Locker locker { liveConnectionsLock };
++        connection->m_connected = true;
++        liveConnections().add(connection.get());
++    }
 +
 +    // Follow the producer's clock, as its buffers are stamped with it.
 +    BTimeSource* timeSource = roster->MakeTimeSourceFor(producer);
@@ -36200,24 +36246,60 @@ index 0000000000000000000000000000000000000000..cbd8105a80dc42c4be6839b9f6d3605c
 +    return connection;
 +}
 +
++void HaikuCaptureConnection::disconnectLocked()
++{
++    liveConnections().remove(this);
++    BMediaRoster* roster = BMediaRoster::CurrentRoster();
++    if (!roster || !m_connected)
++        return;
++    m_connected = false;
++    // A sound card's node also plays: only a camera is stopped. Without its
++    // consumer a camera stops by itself anyway.
++    if (m_format.type == B_MEDIA_RAW_VIDEO)
++        roster->StopNode(m_producer, 0, true);
++    if (m_consumer)
++        roster->StopNode(m_consumer->Node(), 0, true);
++    roster->Disconnect(m_producer.node, m_output.source, m_consumer->ID(), m_input.destination);
++    CAPTURE_TRACE("%s disconnected\n", m_format.type == B_MEDIA_RAW_VIDEO ? "video" : "audio");
++}
++
++void HaikuCaptureConnection::disconnectAllBeforeExit()
++{
++    {
++        Locker locker { liveConnectionsLock };
++        if (liveConnections().isEmpty())
++            return;
++    }
++    // On a thread of its own: the media services may not answer, and the
++    // process ends anyway.
++    sem_id done = create_sem(0, "Summit capture disconnect");
++    if (done < B_OK)
++        return;
++    thread_id thread = spawn_thread([](void* data) -> status_t {
++        {
++            Locker locker { liveConnectionsLock };
++            for (auto* connection : copyToVector(liveConnections()))
++                connection->disconnectLocked();
++        }
++        release_sem(static_cast<sem_id>(reinterpret_cast<intptr_t>(data)));
++        return B_OK;
++    }, "Summit capture disconnect", B_NORMAL_PRIORITY, reinterpret_cast<void*>(static_cast<intptr_t>(done)));
++    if (thread >= B_OK && resume_thread(thread) == B_OK)
++        acquire_sem_etc(done, 1, B_RELATIVE_TIMEOUT, 500000);
++    delete_sem(done);
++}
++
 +HaikuCaptureConnection::~HaikuCaptureConnection()
 +{
-+    BMediaRoster* roster = BMediaRoster::CurrentRoster();
 +    if (m_consumer)
 +        m_consumer->setHandler(nullptr);
-+    if (roster && m_connected) {
-+        // A sound card's node also plays: only a camera is stopped. Without
-+        // its consumer a camera stops by itself anyway.
-+        if (m_format.type == B_MEDIA_RAW_VIDEO)
-+            roster->StopNode(m_producer, 0, true);
-+        if (m_consumer)
-+            roster->StopNode(m_consumer->Node(), 0, true);
-+        roster->Disconnect(m_producer.node, m_output.source, m_consumer->ID(), m_input.destination);
-+        CAPTURE_TRACE("%s disconnected\n", m_format.type == B_MEDIA_RAW_VIDEO ? "video" : "audio");
++    {
++        Locker locker { liveConnectionsLock };
++        disconnectLocked();
 +    }
 +    // Registered nodes go through the roster, as CodyCam does it.
 +    if (m_consumer) {
-+        if (roster)
++        if (BMediaRoster* roster = BMediaRoster::CurrentRoster())
 +            roster->ReleaseNode(m_consumer->Node());
 +        else
 +            m_consumer->Release();
@@ -36229,10 +36311,10 @@ index 0000000000000000000000000000000000000000..cbd8105a80dc42c4be6839b9f6d3605c
 +#endif // ENABLE(MEDIA_STREAM) && PLATFORM(HAIKU)
 diff --git a/Source/WebCore/platform/mediastream/haiku/HaikuCaptureNode.h b/Source/WebCore/platform/mediastream/haiku/HaikuCaptureNode.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..fe7e73ec15510659da4aed9350553d0b8bec4bb2
+index 0000000000000000000000000000000000000000..45f9b5810dcc89414a8444dfd9a93e62362758aa
 --- /dev/null
 +++ b/Source/WebCore/platform/mediastream/haiku/HaikuCaptureNode.h
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,89 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -36301,8 +36383,15 @@ index 0000000000000000000000000000000000000000..fe7e73ec15510659da4aed9350553d0b
 +
 +    const media_format& format() const { return m_format; }
 +
++    // For a process about to end at once (_exit): disconnects every
++    // connection still up, waiting half a second at most. The media services
++    // do not break a dead program's connections, and a sound card's input
++    // would stay in use for every program until they restart.
++    WEBCORE_EXPORT static void disconnectAllBeforeExit();
++
 +private:
 +    HaikuCaptureConnection() = default;
++    void disconnectLocked();
 +
 +    media_node m_producer;
 +    HaikuCaptureConsumer* m_consumer { nullptr };
@@ -116730,16 +116819,19 @@ index 0000000000000000000000000000000000000000..0b0a79dd0813bcfae719f65f648a6f5c
 +
 +} // namespace WebKit
 diff --git a/Source/WebKit/WebProcess/WebProcess.cpp b/Source/WebKit/WebProcess/WebProcess.cpp
-index 4811f370c5f17ae854978f8df3c0a8bc96e9fa0d..e29a8c0720676903c106d6d545d629a69332dbb4 100644
+index 4811f370c5f17ae854978f8df3c0a8bc96e9fa0d..801f72acbb1a388645f2df70e4ce79b6459ccc41 100644
 --- a/Source/WebKit/WebProcess/WebProcess.cpp
 +++ b/Source/WebKit/WebProcess/WebProcess.cpp
-@@ -290,6 +290,29 @@ static const Seconds nonVisibleProcessEarlyMemoryCleanupDelay { 10_s };
+@@ -290,6 +290,32 @@ static const Seconds nonVisibleProcessEarlyMemoryCleanupDelay { 10_s };
  static const Seconds nonVisibleProcessMemoryCleanupDelay { 120_s };
  #endif
  
 +
 +#if OS(HAIKU)
 +#include <wtf/haiku/ProcessPriorityHaiku.h>
++#if ENABLE(MEDIA_STREAM)
++#include <WebCore/HaikuCaptureNode.h>
++#endif
 +
 +// The process yields the CPUs while the user can neither see nor hear any of
 +// its pages. Extension pages (background, popup) are never shown as tabs but
@@ -116763,7 +116855,19 @@ index 4811f370c5f17ae854978f8df3c0a8bc96e9fa0d..e29a8c0720676903c106d6d545d629a6
  namespace WebKit {
  using namespace WebCore;
  
-@@ -387,7 +410,7 @@ WebProcess::WebProcess()
+@@ -298,6 +324,11 @@ WTF_MAKE_TZONE_ALLOCATED_IMPL(WebProcess);
+ #if !PLATFORM(GTK) && !PLATFORM(WPE)
+ [[noreturn]] static void callExit(IPC::Connection*)
+ {
++#if PLATFORM(HAIKU) && ENABLE(MEDIA_STREAM)
++    // Free the cameras and microphones in use: _exit() leaves them
++    // connected to nodes that no longer exist.
++    HaikuCaptureConnection::disconnectAllBeforeExit();
++#endif
+     terminateProcess(EXIT_SUCCESS);
+ }
+ #endif
+@@ -387,7 +418,7 @@ WebProcess::WebProcess()
      addSupplement<WebMediaKeyStorageManager>();
  #endif
  
@@ -116772,7 +116876,7 @@ index 4811f370c5f17ae854978f8df3c0a8bc96e9fa0d..e29a8c0720676903c106d6d545d629a6
      addSupplementWithoutRefCountedCheck<UserMediaCaptureManager>();
  #endif
  
-@@ -1087,6 +1110,8 @@ void WebProcess::createWebPage(PageIdentifier pageID, WebPageCreationParameters&
+@@ -1087,6 +1118,8 @@ void WebProcess::createWebPage(PageIdentifier pageID, WebPageCreationParameters&
  
  #if OS(LINUX)
          HighPriorityThreads::singleton().setEnabled(hasVisibleWebPage());
@@ -116781,7 +116885,7 @@ index 4811f370c5f17ae854978f8df3c0a8bc96e9fa0d..e29a8c0720676903c106d6d545d629a6
  #endif
      } else
          page->reinitializeWebPage(WTF::move(parameters));
-@@ -1120,6 +1145,8 @@ void WebProcess::removeWebPage(PageIdentifier pageID)
+@@ -1120,6 +1153,8 @@ void WebProcess::removeWebPage(PageIdentifier pageID)
  
  #if OS(LINUX)
      HighPriorityThreads::singleton().setEnabled(hasVisibleWebPage());
@@ -116790,7 +116894,7 @@ index 4811f370c5f17ae854978f8df3c0a8bc96e9fa0d..e29a8c0720676903c106d6d545d629a6
  #endif
  }
  
-@@ -1808,6 +1835,11 @@ void WebProcess::pageActivityStateDidChange(PageIdentifier, OptionSet<WebCore::A
+@@ -1808,6 +1843,11 @@ void WebProcess::pageActivityStateDidChange(PageIdentifier, OptionSet<WebCore::A
          HighPriorityThreads::singleton().setEnabled(hasVisibleWebPage());
  #endif
      }
