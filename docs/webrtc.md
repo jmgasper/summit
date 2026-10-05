@@ -96,15 +96,14 @@ the GLib files, which are portable).
 - Screen (`HaikuDisplayCaptureSource`): `BScreen::ReadBitmap` on a thread of
   its own at the frame rate asked for (15 by default), converted to I420 and
   scaled to the size asked for. Reading the screen holds app_server's drawing
-  lock, and every window waits meanwhile: on the X399 (3840x1080 drawn at
-  twice that) a whole read takes a quarter of a second, because app_server
-  copies the high-resolution buffer and averages it down. So the picture is
-  read in bands of 128 rows, with a pause after each twice as long as the
-  read: no wait is longer than one band (~30 ms there) and the desktop keeps
-  two thirds of app_server's time. The whole X399 desktop is then shared at
-  about 2 pictures a second, a window of 1040x760 at about 8. A faster
-  `ReadBitmap` at scale 2 (no copy, a specialised average) is an OS-side
-  improvement. A blanked screen reads back black.
+  lock, and every window waits meanwhile, so the picture is read in bands of
+  128 rows with a pause after each twice as long as the read: no wait is
+  longer than one band, and the desktop keeps two thirds of app_server's
+  time on any machine. At 200% app_server used to copy the high-resolution
+  buffer and average it pixel by pixel (250 ms for the X399's 3840x1080,
+  about 2 pictures a second shared); since the X399 fork's 348a5d8cc2 it
+  averages straight from the buffer (10 ms), and the whole desktop is shared
+  at the 15 a second asked for. A blanked screen reads back black.
 - Window: the same, cropped to one window's frame, which is followed as the
   window moves (the private `get_window_info`); the stream ends when the
   window closes. Windows are listed as `Window: <title>` after the screens.
