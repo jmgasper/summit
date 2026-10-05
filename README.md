@@ -32,6 +32,19 @@ installs successfully but stops on the missing privacy API; filtering remains un
 
 ![Summit running current WebKit natively in Haiku](docs/screenshots/current-webkit.png)
 
+<!-- airos-ci:latest-builds:start -->
+## Latest builds
+
+Built automatically by air/OS CI from commit `8db493a` on 2026-10-05 ([all files](https://github.com/jmgasper/summit/releases/tag/latest)).
+
+| Architecture | Package |
+|---|---|
+| arm64 | [summit-0.1.0.git20261005.1321-1-arm64.hpkg](https://github.com/jmgasper/summit/releases/download/latest/summit-0.1.0.git20261005.1321-1-arm64.hpkg) |
+| arm64 | [summit_webkit-1.10.1.git20261005.1321-1-arm64.hpkg](https://github.com/jmgasper/summit/releases/download/latest/summit_webkit-1.10.1.git20261005.1321-1-arm64.hpkg) |
+
+Install with `pkgman install <file>`, or copy the file into `/boot/system/packages`. Haiku SDK: x86_64 hrev60206-673-ge070ecba1d, arm64 hrev60206-673-ge070ecba1d.
+<!-- airos-ci:latest-builds:end -->
+
 ## Build and try
 
 The current development bundle is `artifacts/modern-browser/bundle-dxx4tx8e/`
