@@ -36406,10 +36406,10 @@ index 0000000000000000000000000000000000000000..45f9b5810dcc89414a8444dfd9a93e62
 +#endif // ENABLE(MEDIA_STREAM) && PLATFORM(HAIKU)
 diff --git a/Source/WebCore/platform/mediastream/haiku/HaikuCaptureSources.cpp b/Source/WebCore/platform/mediastream/haiku/HaikuCaptureSources.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..3788b05c92dfa91c6cfc15c66691fa7257c03494
+index 0000000000000000000000000000000000000000..7fd4cd5e1a1fafbf794dccebfd1021ef81d8bde3
 --- /dev/null
 +++ b/Source/WebCore/platform/mediastream/haiku/HaikuCaptureSources.cpp
-@@ -0,0 +1,853 @@
+@@ -0,0 +1,892 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -36953,6 +36953,9 @@ index 0000000000000000000000000000000000000000..3788b05c92dfa91c6cfc15c66691fa72
 +    return { std::max(2, int(size.width() * scale) & ~1), std::max(2, int(size.height() * scale) & ~1) };
 +}
 +
++// Rows read at a time (even, see captureLoop()).
++static constexpr int screenBandRows = 128;
++
 +void HaikuDisplayCaptureSource::captureLoop()
 +{
 +    BScreen screen(screen_id { m_screenId });
@@ -36963,7 +36966,8 @@ index 0000000000000000000000000000000000000000..3788b05c92dfa91c6cfc15c66691fa72
 +        return;
 +    }
 +
-+    std::unique_ptr<BBitmap> bitmap;
++    // A whole band and the last one, kept between pictures.
++    std::unique_ptr<BBitmap> bandBitmaps[2];
 +    IntSize lastSize = m_screenSize;
 +    auto next = MonotonicTime::now();
 +    while (true) {
@@ -37002,22 +37006,57 @@ index 0000000000000000000000000000000000000000..3788b05c92dfa91c6cfc15c66691fa72
 +
 +        int width = area.IntegerWidth() + 1;
 +        int height = area.IntegerHeight() + 1;
-+        if (!bitmap || bitmap->Bounds().IntegerWidth() + 1 != width || bitmap->Bounds().IntegerHeight() + 1 != height) {
-+            bitmap = std::make_unique<BBitmap>(BRect(0, 0, width - 1, height - 1), B_RGB32);
-+            if (bitmap->InitCheck() != B_OK) {
-+                bitmap = nullptr;
-+                continue;
-+            }
-+        }
-+        if (screen.ReadBitmap(bitmap.get(), true, &area) != B_OK)
-+            continue;
-+
 +        auto picture = VideoFrameHaiku::create(VideoFrameHaiku::Format::I420, { width, height }, currentMediaTime());
 +        auto& y = picture->plane(0);
 +        auto& u = picture->plane(1);
 +        auto& v = picture->plane(2);
-+        if (libyuv::ARGBToI420(static_cast<const uint8_t*>(bitmap->Bits()), bitmap->BytesPerRow(), y.data, y.stride, u.data, u.stride, v.data, v.stride, width, height))
++
++        // Reading the screen holds app_server's frame buffer, and every
++        // window waits meanwhile: a 3840x1080 desktop drawn at twice that
++        // takes a quarter of a second on the X399, whose frame buffer is in
++        // video memory (uncached reads). So the picture is read in bands,
++        // with a pause after each at least twice as long as the read: the
++        // desktop keeps two thirds of app_server's time whatever the rate
++        // asked for, and no wait is longer than one band.
++        bool complete = true;
++        for (int top = 0; top < height && complete; top += screenBandRows) {
++            int rows = std::min(screenBandRows, height - top);
++            auto& bitmap = bandBitmaps[rows == screenBandRows ? 0 : 1];
++            if (!bitmap || bitmap->Bounds().IntegerWidth() + 1 != width || bitmap->Bounds().IntegerHeight() + 1 != rows) {
++                bitmap = std::make_unique<BBitmap>(BRect(0, 0, width - 1, rows - 1), B_RGB32);
++                if (bitmap->InitCheck() != B_OK) {
++                    bitmap = nullptr;
++                    complete = false;
++                    break;
++                }
++            }
++            BRect band(area.left, area.top + top, area.right, area.top + top + rows - 1);
++            auto readStart = MonotonicTime::now();
++            if (screen.ReadBitmap(bitmap.get(), true, &band) != B_OK) {
++                complete = false;
++                break;
++            }
++            auto readTime = MonotonicTime::now() - readStart;
++            // Rows are even except at the bottom, so the chroma rows line up.
++            if (libyuv::ARGBToI420(static_cast<const uint8_t*>(bitmap->Bits()), bitmap->BytesPerRow(),
++                y.data + top * y.stride, y.stride, u.data + (top / 2) * u.stride, u.stride, v.data + (top / 2) * v.stride, v.stride,
++                width, rows)) {
++                complete = false;
++                break;
++            }
++            Locker locker { m_lock };
++            if (!m_running) {
++                complete = false;
++                break;
++            }
++            m_condition.waitFor(m_lock, std::max(readTime * 2, 1_ms));
++            if (!m_running)
++                complete = false;
++        }
++        if (!complete)
 +            continue;
++        // The next picture is due one frame after this one started, or now.
++        next = std::max(next, MonotonicTime::now());
 +
 +        IntSize captured(width, height);
 +        if (captured != lastSize) {

@@ -83,10 +83,28 @@ the GLib files, which are portable).
   elsewhere fails with "The device is in use by another program."
 - Microphone (`HaikuAudioCaptureSource`): a sound card's input or a USB
   microphone, samples converted to interleaved float. The sound card node is
-  never stopped (it also plays).
+  never stopped (it also plays). The default is the system's (Media
+  preferences); on the X399 that is the motherboard's input, and the C920's
+  microphone is "USB Audio".
+- The media services do not break the connections of a program that ended,
+  and Summit ends its web processes at once (`_exit`, or SIGKILL): a device
+  would stay in use for every program until the services restart. The web
+  process disconnects its devices when its connection to Summit closes
+  (`HaikuCaptureConnection::disconnectAllBeforeExit`, at most half a
+  second), and connecting to an input whose output still points at a port
+  that is gone takes it back.
 - Screen (`HaikuDisplayCaptureSource`): `BScreen::ReadBitmap` on a thread of
   its own at the frame rate asked for (15 by default), converted to I420 and
-  scaled to the size asked for.
+  scaled to the size asked for. Reading the screen holds app_server's drawing
+  lock, and every window waits meanwhile: on the X399 (3840x1080 drawn at
+  twice that) a whole read takes a quarter of a second, because app_server
+  copies the high-resolution buffer and averages it down. So the picture is
+  read in bands of 128 rows, with a pause after each twice as long as the
+  read: no wait is longer than one band (~30 ms there) and the desktop keeps
+  two thirds of app_server's time. The whole X399 desktop is then shared at
+  about 2 pictures a second, a window of 1040x760 at about 8. A faster
+  `ReadBitmap` at scale 2 (no copy, a specialised average) is an OS-side
+  improvement. A blanked screen reads back black.
 - Window: the same, cropped to one window's frame, which is followed as the
   window moves (the private `get_window_info`); the stream ends when the
   window closes. Windows are listed as `Window: <title>` after the screens.
@@ -173,10 +191,30 @@ goes through `SitePermissionsHaiku::requestMedia`:
 `tools/bench/pages/rtc-selftest.html` checks the html5test features, Web Audio
 (an oscillator into an analyser), a canvas stream played locally, recorded
 and played back, and a two-peer loopback with video, audio and a data
-channel. It needs no camera; `?camera=1` and `?screen=1` add the real
-devices. The title ends as `rtc selftest: N/M`.
+channel, again with H.264 when both directions offer it. It needs no camera;
+`?camera=1` (with `&size=1280x720`, `&mic=USB`) and `?screen=1` add the real
+devices. The title ends as `rtc selftest: N/M`. Sharing a screen needs a user
+gesture: the page waits for its Share screen button, or for
+`rtcShareScreen()` evaluated in the Developer Tools console (with
+`SUMMIT_ENABLE_INPUT_SYNTHESIS=1`, `summitctl devtools-do evaluate`).
+`summitctl permission allow|block|notnow [N]` answers the open permission
+prompt (N: the screen or window to share).
+
+Calls between machines: `python3 tools/bench/rtc-signal.py 8765` on any host,
+then `http://HOST:8765/rtc-call.html?role=a&room=R` on one machine and
+`role=b` on the other (`&camera=1`, `&codec=H264`, `&sendvideo=0`); each side
+posts its outcome to the server (`GET /signal/R/result-a`). Results on 5
+October 2026: the X399 (C920) and the Raspberry Pi call each other with VP8
+both ways, or H.264 from the X399's OpenH264 to the Pi's FFmpeg (the Pi
+receiving only: it has no encoder, and a send-and-receive line offers only
+codecs both directions have); Summit calls Chromium (VP8 and VP9).
 
 ## Not done yet
 
 - System audio capture (sharing what the computer plays).
-- WebCodecs.
+- WebCodecs (WebKit's are Cocoa's or GStreamer's; Zoom's web client uses
+  them when present).
+- `devicechange` events: devices are listed when asked, but plugging one in
+  is not announced.
+- Not yet tried against Zoom or Teams themselves (they need meetings to
+  join); Summit presents itself as Safari, which both support.

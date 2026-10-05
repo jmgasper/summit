@@ -139,6 +139,12 @@ async function loopback(stream, codec) {
             if (report.type === 'inbound-rtp')
                 log(`inbound ${report.kind}: ${report.packetsReceived} packets, ${report.framesDecoded ?? '-'} frames decoded, ${codecs.get(report.codecId) || report.codecId}`);
         });
+        (await pc1.getStats()).forEach(report => {
+            if (report.type === 'media-source' && report.kind === 'video')
+                log(`video source: ${report.width}x${report.height}, ${report.frames} frames, ${report.framesPerSecond ?? '-'}/s`);
+            if (report.type === 'outbound-rtp' && report.kind === 'video')
+                log(`outbound video: ${report.frameWidth}x${report.frameHeight}, ${report.framesEncoded} encoded, ${report.framesSent} sent, limited by ${report.qualityLimitationReason}, encoder ${report.encoderImplementation}`);
+        });
         const inboundAudio = [...stats.values()].find(r => r.type === 'inbound-rtp' && r.kind === 'audio');
         check('remote audio packets' + label, !!inboundAudio && inboundAudio.packetsReceived > 10, inboundAudio ? String(inboundAudio.packetsReceived) : 'none');
         if (codec) {
@@ -198,7 +204,11 @@ async function run() {
     let stream;
     if (params.get('camera') === '1') {
         try {
-            stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: true });
+            // &size=WxH: the camera size asked for (640x480 by default).
+            const [width, height] = (params.get('size') || '640x480').split('x').map(Number);
+            stream = await navigator.mediaDevices.getUserMedia({ video: { width, height }, audio: true });
+            const videoSettings = stream.getVideoTracks()[0]?.getSettings() || {};
+            log(`camera: asked ${width}x${height}, got ${videoSettings.width}x${videoSettings.height} at ${videoSettings.frameRate}/s`);
             // &mic=TEXT: then the microphone whose label contains TEXT (the
             // labels are known once capture is allowed).
             if (params.get('mic')) {
@@ -262,6 +272,14 @@ async function run() {
     local.srcObject = stream;
     check('local preview plays', await videoPlays(local, 'local'));
     check('local preview has a picture', videoHasPicture(local));
+    // Pictures the preview shows in three seconds.
+    if (local.requestVideoFrameCallback) {
+        let frames = 0;
+        const count = () => { ++frames; local.requestVideoFrameCallback(count); };
+        local.requestVideoFrameCallback(count);
+        await sleep(3000);
+        log(`local preview: ${(frames / 3).toFixed(1)} pictures a second`);
+    }
 
     // MediaRecorder: two seconds, then played back.
     if (window.MediaRecorder) {
