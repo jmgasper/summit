@@ -45,13 +45,22 @@ WebKit's vendored libwebrtc (`Source/ThirdParty/libwebrtc`, built by its
 - The WebM muxer (libwebm's mkvmuxer) is built into it for MediaRecorder.
 
 Video codecs are libwebrtc's own, VP8 and VP9 through libvpx, and H.264
-decoding through the system's FFmpeg (`LibWebRTCH264DecoderHaiku.cpp`):
-libavcodec is loaded when first needed (only functions are looked up, and only
-the leading members of AVPacket and AVFrame are used, which have kept their
-places for many major versions); without it, H.264 is not offered.
-`SUMMIT_WEBRTC_H264=0` turns it off. There is no H.264 encoder (Apple uses
-VideoToolbox, GTK GStreamer; Haiku's FFmpeg has neither x264 nor OpenH264),
-so H.264 is received but not sent.
+through libraries of the system, loaded when first needed
+(`LibWebRTCH264DecoderHaiku.cpp`):
+
+- Decoding through FFmpeg: only functions are looked up in libavcodec, and
+  only the leading members of AVPacket and AVFrame are used, which have kept
+  their places for many major versions.
+- Encoding through OpenH264 (the `openh264` package, `libopenh264.so.7`):
+  libwebrtc's own encoder for it (`h264_encoder_impl.cc`), built against
+  OpenH264 2.4.1's API headers (in `third_party/openh264`, BSD), with the two
+  functions it calls by name looked up in the library
+  (`h264_encoder_haiku.cc`). Another version of the library is not used: the
+  parameter structures are passed by pointer. Haiku's FFmpeg has no H.264
+  encoder (neither x264 nor OpenH264).
+
+Without the library, H.264 is not offered in that direction (calls fall back
+to VP8 or VP9). `SUMMIT_WEBRTC_H264=0` turns both off.
 
 The bundled libvpx, Opus and libsrtp are compiled with hidden visibility: the
 same processes load the system's FFmpeg (through the Media Kit's ffmpeg
@@ -78,6 +87,13 @@ the GLib files, which are portable).
 - Screen (`HaikuDisplayCaptureSource`): `BScreen::ReadBitmap` on a thread of
   its own at the frame rate asked for (15 by default), converted to I420 and
   scaled to the size asked for.
+- Window: the same, cropped to one window's frame, which is followed as the
+  window moves (the private `get_window_info`); the stream ends when the
+  window closes. Windows are listed as `Window: <title>` after the screens.
+- Echo cancellation, noise suppression and gain control for the microphone
+  (`HaikuVoiceProcessing`): libwebrtc's audio processing module (AEC3),
+  with what the page plays (streams and Web Audio) as the echo reference.
+  `SUMMIT_VOICE_PROCESSING=0` turns it off.
 - `SUMMIT_CAPTURE_TRACE=1` traces device lists and connections.
 
 ### Frames and samples
@@ -106,16 +122,22 @@ and video sources. Outgoing audio goes to libwebrtc as 10 ms chunks of 16-bit
 samples at the capture rate; libwebrtc resamples. Sockets live in the network
 process (`NetworkRTCProvider`, as on GTK).
 
-Host candidates are not hidden behind mDNS names on Haiku: WebKit hides them
-only where the network process can answer for the names (Avahi, Bonjour), and
-Haiku has no mDNS responder. Pages that make peer connections can see the
-machine's local addresses, as in browsers before mDNS candidates.
+Host candidates are not hidden behind mDNS names on Haiku
+(`ICECandidateFilteringEnabled` is off in `UIProcess/haiku/WebView.cpp`, and
+the provider says it has no mDNS): a random `.local` name needs a responder
+on the network to answer for it, and Haiku has none, so neither this machine
+nor the other peer could resolve it and peers on the same network never
+connected. Pages that make peer connections can see the default route's
+address, as in browsers before mDNS candidates.
 
 ### MediaRecorder
 
 `MediaRecorderPrivateHaiku`: WebM with VP8 (default) or VP9 and Opus,
 encoded on a work queue of its own (libvpx, Opus) and muxed as it goes
-(libwebm). Audio is resampled to 48 kHz stereo.
+(libwebm). Audio is resampled to 48 kHz stereo. The video track carries the
+stream's nominal frame rate, as Chrome writes it: a live file has no
+duration or index, and Haiku's FFmpeg reader, which counts frames, otherwise
+takes the timestamps' unit (a thousand a second) as the rate.
 
 ### Web Audio
 
@@ -156,8 +178,5 @@ devices. The title ends as `rtc selftest: N/M`.
 
 ## Not done yet
 
-- An H.264 encoder for WebRTC.
-- Echo cancellation, noise suppression and gain control (libwebrtc's audio
-  processing module is in the tree; it needs the played audio as reference).
-- Window capture (only whole screens), system audio.
+- System audio capture (sharing what the computer plays).
 - WebCodecs.

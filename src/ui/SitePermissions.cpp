@@ -225,6 +225,11 @@ void SitePermissionService::Ask(const BMessage& request)
         picker->ResizeToPreferred();
         picker->Unlock();
         PlaceOverView(picker, request);
+        auto& shown = fPromptWindows[{permission, origin}];
+        shown.window = BMessenger(picker);
+        const char* device = nullptr;
+        for (int32 index = 0; request.FindString("device_id", index, &device) == B_OK; ++index)
+            shown.devices.emplace_back(device);
         picker->Show();
         return;
     }
@@ -252,7 +257,26 @@ void SitePermissionService::Ask(const BMessage& request)
     auto* answer = new BMessage(kPromptAnswered);
     answer->AddString("permission", permission.c_str());
     answer->AddString("origin", origin.c_str());
+    fPromptWindows[{permission, origin}].window = BMessenger(alert);
     alert->Go(new BInvoker(answer, this));
+}
+
+bool SitePermissionService::AnswerOpenPrompt(int32 which, int32 deviceIndex)
+{
+    if (fPrompts.empty()) return false;
+    const auto& [permission, origin] = fPrompts.begin()->first;
+    BMessage answer(kPromptAnswered);
+    answer.AddString("permission", permission.c_str());
+    answer.AddString("origin", origin.c_str());
+    answer.AddInt32("which", which);
+    if (permission == "screen" && which == 2) {
+        const auto shown = fPromptWindows.find(fPrompts.begin()->first);
+        if (shown == fPromptWindows.end() || shown->second.devices.empty()) return false;
+        const auto& devices = shown->second.devices;
+        answer.AddString("device_id", devices[std::clamp<int32>(deviceIndex, 0, int32(devices.size()) - 1)].c_str());
+    }
+    Answered(answer);
+    return true;
 }
 
 void SitePermissionService::Answered(const BMessage& message)
@@ -263,6 +287,12 @@ void SitePermissionService::Answered(const BMessage& message)
     if (found == fPrompts.end()) return;
     const auto identifiers = std::move(found->second);
     fPrompts.erase(found);
+    // Answered from elsewhere (AnswerOpenPrompt) while its window is open;
+    // a window that answered is closing already.
+    if (auto shown = fPromptWindows.find({permission, origin}); shown != fPromptWindows.end()) {
+        shown->second.window.SendMessage(B_QUIT_REQUESTED);
+        fPromptWindows.erase(shown);
+    }
     const bool allowed = which == 2;
     if (Tracing())
         std::fprintf(stderr, "Summit permissions: %s %s for %s\n", which == 2 ? "allowed" : which == 0 ? "blocked" : "not now",

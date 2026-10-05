@@ -508,6 +508,17 @@ public:
             return;
         }
 #if SUMMIT_MODERN_WEBKIT
+        if (message->what == summit::kAnswerPermissionPrompt) {
+            const int32 which = message->GetInt32("which", 1), device = message->GetInt32("device_index", 0);
+            bool answered = false;
+            for (auto* service : { fSitePermissions.get(), fPrivateSitePermissions.get() }) {
+                if (!answered && service) answered = service->AnswerOpenPrompt(which, device);
+            }
+            BMessage reply(B_REPLY);
+            reply.AddBool("answered", answered);
+            message->SendReply(&reply);
+            return;
+        }
         if (message->what == summit::kClearCacheRequest || message->what == summit::kClearSiteDataRequest) {
             // Extensions keep their own storage; only websites' is removed.
             const uint32 types = message->what == summit::kClearCacheRequest ? B_WEBKIT_DATA_CACHE

@@ -74,6 +74,11 @@ constexpr uint32 kCloseFind = 'cfin';
 constexpr uint32 kZoomIn = 'zmin';
 constexpr uint32 kZoomOut = 'zmot';
 constexpr uint32 kZoomReset = 'zres';
+// Answers an open permission prompt as its buttons would (summitctl
+// permission): "which" 0 blocks, 1 is Not Now, 2 allows; for a screen,
+// "device_index" picks the screen or window shared (the first by default).
+// The reply's "answered" says whether a prompt was open.
+constexpr uint32 kAnswerPermissionPrompt = 'apmp';
 constexpr uint32 kSaveSession = 'sess';
 constexpr uint32 kNextTab = 'next';
 constexpr uint32 kPreviousTab = 'prev';

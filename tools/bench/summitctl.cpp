@@ -242,7 +242,7 @@ int main(int argc, char** argv)
         index += 2;
     }
     if (team < 0 || index >= argc) {
-        std::fputs("usage: summitctl --team ID [--timeout-ms N] state|navigate URL|newtab URL|closetab [ID]|selecttab ID|back|forward|reload|scroll N MS DELTA [X Y]|framestats|quit\n", stderr);
+        std::fputs("usage: summitctl --team ID [--timeout-ms N] state|navigate URL|newtab URL|closetab [ID]|selecttab ID|back|forward|reload|scroll N MS DELTA [X Y]|framestats|permission allow|block|notnow [N]|quit\n", stderr);
         return 2;
     }
     const std::string command = argv[index++];
@@ -314,6 +314,19 @@ int main(int argc, char** argv)
         message.AddString("extension_identifier", argument);
         message.AddBool(command == "pin" ? "pinned" : "allowed", on);
         return app.SendMessage(&message, static_cast<BHandler*>(nullptr), timeout) == B_OK ? 0 : 5;
+    }
+    if (command == "permission") {
+        // permission allow|block|notnow [DEVICE_INDEX]: answers the open prompt.
+        const std::string answer = argument ? argument : "";
+        const int32 which = answer == "allow" ? 2 : answer == "block" ? 0 : answer == "notnow" ? 1 : -1;
+        if (which < 0) return 2;
+        BMessage message(summit::kAnswerPermissionPrompt);
+        message.AddInt32("which", which);
+        if (index + 1 < argc) message.AddInt32("device_index", std::atoi(argv[index + 1]));
+        BMessage reply;
+        if (app.SendMessage(&message, &reply, timeout, timeout) != B_OK) return 5;
+        std::printf("{\"answered\":%s}\n", reply.GetBool("answered", false) ? "true" : "false");
+        return reply.GetBool("answered", false) ? 0 : 4;
     }
     if (command == "style") {
         if (!argument) return 2;

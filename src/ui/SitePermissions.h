@@ -30,6 +30,9 @@ public:
     void MessageReceived(BMessage*) override;
     // A click on one of this context's notifications (from ArgvReceived).
     void NotificationClicked(uint64 identifier);
+    // Answers the oldest open prompt as its window would, and closes the
+    // window (kAnswerPermissionPrompt). False when none is open.
+    bool AnswerOpenPrompt(int32 which, int32 deviceIndex);
     bool IsPrivate() const { return fPrivate; }
 
 private:
@@ -46,6 +49,12 @@ private:
     // Open prompts by permission and origin; requests that arrive while one
     // is open wait for its answer.
     std::map<std::pair<std::string, std::string>, std::vector<uint64>> fPrompts;
+    // Their windows, and for a screen the devices it offers.
+    struct PromptWindow {
+        BMessenger window;
+        std::vector<std::string> devices;
+    };
+    std::map<std::pair<std::string, std::string>, PromptWindow> fPromptWindows;
     struct Shown {
         BMessenger view;
     };
