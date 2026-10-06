@@ -31,8 +31,11 @@ entries without runtime results are still open.
   encoding, bitmap transfer, HTML placeholder presentation and main-thread
   WebGL/WebGL2. Worker GL contexts failed because WebWorkerClient returned null.
   The implementation now creates worker contexts with separate ANGLE
-  virtualization groups and no compositor context sharing; runtime verification
-  and concurrent worker/main-thread pixel checks remain pending.
+  virtualization groups and no compositor context sharing. A separate native
+  runtime check reproduced black placeholder pixels with antialiasing disabled:
+  display readback sampled the next drawing texture after the buffer swap.
+  Haiku now reads the retained compositor texture. Native compilation passes;
+  final worker, concurrent-context and placeholder pixel checks remain pending.
 - **#26, image formats:** private, checksum-pinned libjxl 0.12.0, libheif
   1.23.6/libde265 1.1.3 and Debian-patched jxrlib 1.2 now build on the X399.
   `tools/prepare-image-codecs.py` installs them under
@@ -127,7 +130,8 @@ server on the workstation's loopback address:
 
 - `offscreen-canvas.html`: 2D pixels, PNG round trip, ImageBitmap and
   bitmaprenderer, clear/resize, main-thread and worker WebGL/WebGL2 GPU
-  readback, transferred HTML canvas presentation and returned ImageBitmap.
+  readback, simultaneous main/worker contexts, transferred HTML canvas
+  presentation with antialiasing disabled, and returned ImageBitmap.
   Completion sets `window.testDone`, with detailed `window.testResults` and
   a pass count in the title.
 - `image-codecs.html`: independent JPEG XL/HEIC/JPEG XR decode fixtures, pixel
