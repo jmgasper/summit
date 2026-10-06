@@ -190,7 +190,9 @@ def freeze(work, inputs, commands, before, configuration, build, executable_name
         if browser:
             (bundle / 'licenses/Scintilla').mkdir(parents=True)
             shutil.copy2(TEXT_LICENSE, bundle / 'licenses/Scintilla/License.txt')
-            assets.append('licenses/Scintilla/License.txt')
+            (bundle / 'licenses/Haiku').mkdir(parents=True)
+            shutil.copy2(ROOT / 'resources/toolbar/LICENSE-Haiku', bundle / 'licenses/Haiku/Toolbar.txt')
+            assets.extend(['licenses/Scintilla/License.txt', 'licenses/Haiku/Toolbar.txt'])
             (bundle / 'resources').mkdir()
             shutil.copy2(ROOT / 'resources/start.html', bundle / 'resources/start.html')
             assets.append('resources/start.html')

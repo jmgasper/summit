@@ -3,6 +3,9 @@
 #include <Window.h>
 #include <Message.h>
 #include <Bitmap.h>
+#include <Application.h>
+#include <Resources.h>
+#include <IconUtils.h>
 #include <MenuItem.h>
 #include <PopUpMenu.h>
 #include <ControlLook.h>
@@ -97,6 +100,33 @@ static void DrawFlatButton(BView* view, bool pressed, bool focused, const Chrome
     }
 }
 
+// Keep the vector source in the executable. Each button owns the rendered
+// bitmap and BControl supplies matching pressed and disabled variants.
+void ToolButton::UpdateIconBitmap()
+{
+    float scale = 1;
+#if SUMMIT_MODERN_WEBKIT
+    scale = BWebKitDisplayScale();
+#endif
+    const bool compact = fIcon == Icon::Back || fIcon == Icon::Forward
+        || fIcon == Icon::Go || fIcon == Icon::Stop || fIcon == Icon::Home;
+    const int size = std::max(1, int(std::ceil((compact ? 48 : 24) * scale)));
+    if (size == fBitmapSize && fBitmapIcon == fIcon) return;
+    fBitmapSize = size;
+    fBitmapIcon = fIcon;
+    // BResources is shared across window threads.
+    static std::mutex lock;
+    std::lock_guard guard(lock);
+    auto* resources = BApplication::AppResources();
+    size_t bytes = 0;
+    auto* data = resources ? static_cast<const uint8*>(resources->LoadResource('VICN', 201 + int(fIcon), &bytes)) : nullptr;
+    BBitmap bitmap(BRect(0, 0, size - 1, size - 1), B_RGBA32);
+    if (data && bitmap.InitCheck() == B_OK && BIconUtils::GetVectorIcon(data, bytes, &bitmap) == B_OK)
+        BControl::SetIcon(&bitmap, B_TRIM_ICON_BITMAP_KEEP_ASPECT);
+    else
+        BControl::SetIcon(nullptr);
+}
+
 void ToolButton::Draw(BRect update)
 {
     rgb_color ink;
@@ -108,6 +138,21 @@ void ToolButton::Draw(BRect update)
         DrawFlatButton(this, Value(), IsFocus(), colors);
         if (colors.privateBrowsing) ink = IsEnabled() ? colors.text : Mix(colors.text, colors.panel, 0.55f);
         else ink = IsEnabled() ? rgb_color{49, 69, 66, 255} : rgb_color{163, 170, 168, 255};
+    }
+    UpdateIconBitmap();
+    const uint32 which = (Value() ? B_ACTIVE_ICON_BITMAP : B_INACTIVE_ICON_BITMAP)
+        | (IsEnabled() ? 0 : B_DISABLED_ICON_BITMAP);
+    if (const BBitmap* bitmap = IconBitmap(which)) {
+        const float width = bitmap->Bounds().Width() + 1;
+        const float height = bitmap->Bounds().Height() + 1;
+        const float factor = 20.0f / std::max(width, height);
+        const float x = std::floor((Bounds().Width() + 1 - width * factor) / 2) + (Value() ? 1 : 0);
+        const float y = std::floor((Bounds().Height() + 1 - height * factor) / 2) + (Value() ? 1 : 0);
+        SetDrawingMode(B_OP_ALPHA);
+        SetBlendingMode(B_PIXEL_ALPHA, B_ALPHA_OVERLAY);
+        DrawBitmap(bitmap, bitmap->Bounds(), BRect(x, y, x + width * factor - 1, y + height * factor - 1));
+        SetDrawingMode(B_OP_COPY);
+        return;
     }
     SetHighColor(ink);
     SetDrawingMode(B_OP_ALPHA);

@@ -40,6 +40,9 @@ public:
     BSize PreferredSize() override;
     void SetIcon(Icon icon) { if (fIcon != icon) { fIcon = icon; Invalidate(); } }
 private:
+    void UpdateIconBitmap();
+    int fBitmapSize = 0;
+    Icon fBitmapIcon = Icon::More;
     Icon fIcon;
     bool fHover = false;
 };
