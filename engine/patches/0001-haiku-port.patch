@@ -10934,13 +10934,21 @@ index 0000000000000000000000000000000000000000..44faf4f950d8a073a4a58e424bfa7949
 +    platform/graphics/haiku/PathHaiku.h
 +)
 diff --git a/Source/WebCore/platform/ImageDecoders.cmake b/Source/WebCore/platform/ImageDecoders.cmake
-index 6439263a69ce3e3d744c166c8e38b2993bd00944..eca78256ee7b238492da15537b25ef6077686deb 100644
+index 6439263a69ce3e3d744c166c8e38b2993bd00944..241b19d1678889fc9d45e3519eeab98b390faaba 100644
 --- a/Source/WebCore/platform/ImageDecoders.cmake
 +++ b/Source/WebCore/platform/ImageDecoders.cmake
-@@ -40,6 +40,12 @@ list(APPEND WebCore_LIBRARIES
+@@ -40,6 +40,20 @@ list(APPEND WebCore_LIBRARIES
      WebP::demux
  )
  
++if (USE_JPEGXR)
++    list(APPEND WebCore_PRIVATE_INCLUDE_DIRECTORIES
++        "${WEBCORE_DIR}/platform/image-decoders/jpegxr" ${JPEGXR_INCLUDE_DIRS})
++    list(APPEND WebCore_SOURCES platform/image-decoders/jpegxr/JPEGXRCodec.cpp
++        platform/image-decoders/jpegxr/JPEGXRImageDecoder.cpp)
++    list(APPEND WebCore_LIBRARIES ${JPEGXR_LINK_LIBRARIES})
++endif ()
++
 +if (USE_HEIF)
 +    list(APPEND WebCore_PRIVATE_INCLUDE_DIRECTORIES "${WEBCORE_DIR}/platform/image-decoders/heif")
 +    list(APPEND WebCore_SOURCES platform/image-decoders/heif/HEIFImageDecoder.cpp)
@@ -11017,7 +11025,7 @@ index 872b0844d27a320bbd862f8623eaf377a6261afe..22cf57caa74132de43aa6fcf76888625
      WEBCORE_EXPORT String getAssertionTouchIDPromptTitle(const String& bundleName, const String& domain);
      WEBCORE_EXPORT String genericTouchIDPromptTitle();
 diff --git a/Source/WebCore/platform/MIMETypeRegistry.cpp b/Source/WebCore/platform/MIMETypeRegistry.cpp
-index 9b54ff20266447120b80f850ebd0a0f69423bdcb..7ec1c6ff8fbd4c9b5bac1bab6d3422f4923f3d60 100644
+index 9b54ff20266447120b80f850ebd0a0f69423bdcb..06e9190d629e4df7181891f2bde7c2db6d3657b1 100644
 --- a/Source/WebCore/platform/MIMETypeRegistry.cpp
 +++ b/Source/WebCore/platform/MIMETypeRegistry.cpp
 @@ -54,6 +54,15 @@
@@ -11048,7 +11056,18 @@ index 9b54ff20266447120b80f850ebd0a0f69423bdcb..7ec1c6ff8fbd4c9b5bac1bab6d3422f4
      "image/heic"_s,
      "image/heic-sequence"_s,
      "image/heif"_s,
-@@ -418,6 +430,26 @@ String MIMETypeRegistry::mediaMIMETypeForExtension(StringView extension)
+@@ -117,6 +129,10 @@ constexpr SortedArraySet supportedImageMIMETypeSet { WTF::toArray<ComparableCase
+ #if HAVE(JPEGXL) || USE(JPEGXL)
+     "image/jxl"_s,
+ #endif
++#if USE(JPEGXR)
++    "image/jxr"_s,
++    "image/vnd.ms-photo"_s,
++#endif
+ #if PLATFORM(IOS_FAMILY)
+     "image/ms-bmp"_s,
+     "image/pipeg"_s,
+@@ -418,6 +434,26 @@ String MIMETypeRegistry::mediaMIMETypeForExtension(StringView extension)
  
  String MIMETypeRegistry::mimeTypeForPath(StringView path)
  {
@@ -11075,6 +11094,17 @@ index 9b54ff20266447120b80f850ebd0a0f69423bdcb..7ec1c6ff8fbd4c9b5bac1bab6d3422f4
      auto position = path.reverseFind('.');
      if (position != notFound) {
          auto result = mimeTypeForExtension(path.substring(position + 1));
+@@ -492,6 +528,10 @@ std::unique_ptr<MIMETypeRegistryThreadGlobalData> MIMETypeRegistry::createMIMETy
+ #elif USE(CAIRO)
+         "image/png"_s,
+ #elif USE(SKIA)
++#if USE(JPEGXR)
++        "image/vnd.ms-photo"_s,
++        "image/jxr"_s,
++#endif
+         "image/png"_s,
+         "image/jpeg"_s,
+         "image/webp"_s,
 diff --git a/Source/WebCore/platform/OpenSSL.cmake b/Source/WebCore/platform/OpenSSL.cmake
 index d65ff90dc36887139a180ecc8d16be88fde5b1a9..1a4a65584f5f7d6a37d58eece820b6285aa084e8 100644
 --- a/Source/WebCore/platform/OpenSSL.cmake
@@ -28206,6 +28236,51 @@ index df7f059b01553362418e4c3302011d4bf47f6384..ce17aac5a99e987d99d9dfd66d4374c8
  
      auto* grContext = this->grContext();
      if (!grContext)
+diff --git a/Source/WebCore/platform/graphics/skia/ImageUtilitiesSkia.cpp b/Source/WebCore/platform/graphics/skia/ImageUtilitiesSkia.cpp
+index d39fe093c43d4f04d6cc8fe3a59c82bb0e2e43f1..df0bd25776d93618df33523a1d357e8b63454034 100644
+--- a/Source/WebCore/platform/graphics/skia/ImageUtilitiesSkia.cpp
++++ b/Source/WebCore/platform/graphics/skia/ImageUtilitiesSkia.cpp
+@@ -30,9 +30,14 @@
+ #include "GLContext.h"
+ #include "MIMETypeRegistry.h"
+ #include "NativeImage.h"
++#if USE(JPEGXR)
++#include "JPEGXRCodec.h"
++#endif
+ #include "PlatformDisplay.h"
+ 
+ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
++#include <skia/core/SkBitmap.h>
++#include <skia/core/SkColorSpace.h>
+ #include <skia/core/SkData.h>
+ #include <skia/core/SkImage.h>
+ #include <skia/core/SkStream.h>
+@@ -131,6 +136,25 @@ Vector<uint8_t> platformEncodeData(const NativeImage& nativeImage, const String&
+     if (!image)
+         return { };
+ 
++#if USE(JPEGXR)
++    if (equalLettersIgnoringASCIICase(mimeType, "image/vnd.ms-photo"_s) || equalLettersIgnoringASCIICase(mimeType, "image/jxr"_s)) {
++        if (image->width() <= 0 || image->height() <= 0 || image->width() > 16384 || image->height() > 16384
++            || static_cast<uint64_t>(image->width()) * image->height() > 64 * 1024 * 1024)
++            return { };
++        if (image->isTextureBacked() && !PlatformDisplay::sharedDisplay().skiaGLContext()->makeContextCurrent())
++            return { };
++        SkBitmap bitmap;
++        auto info = SkImageInfo::Make(image->width(), image->height(), kRGBA_8888_SkColorType,
++            kUnpremul_SkAlphaType, SkColorSpace::MakeSRGB());
++        if (!bitmap.tryAllocPixels(info) || !image->readPixels(nativeImage.grContext(), info,
++                bitmap.getPixels(), bitmap.rowBytes(), 0, 0))
++            return { };
++        auto encoded = encodeJPEGXR(unsafeMakeSpan(static_cast<const uint8_t*>(bitmap.getPixels()), bitmap.computeByteSize()),
++            image->width(), image->height(), bitmap.rowBytes(), quality);
++        return std::span<const uint8_t>(encoded);
++    }
++#endif
++
+     if (image->isTextureBacked()) {
+         auto data = encodeAcceleratedImage(nativeImage, mimeType, quality);
+         if (!data)
 diff --git a/Source/WebCore/platform/graphics/skia/PlatformDisplaySkia.cpp b/Source/WebCore/platform/graphics/skia/PlatformDisplaySkia.cpp
 index 6b3cac20c6de4a7b817689de34c807020235850e..f5e992b32ba9dc919975dcd08b86e74d672a3477 100644
 --- a/Source/WebCore/platform/graphics/skia/PlatformDisplaySkia.cpp
@@ -34794,23 +34869,31 @@ index 0000000000000000000000000000000000000000..b93cdeb2c5928847691a7781bc6fcd08
 +	</body>
 +</html>
 diff --git a/Source/WebCore/platform/image-decoders/ScalableImageDecoder.cpp b/Source/WebCore/platform/image-decoders/ScalableImageDecoder.cpp
-index 3f46090c1c8905a7ab80a942c252395153170f6a..9c7e123405bb080afb52d96b63fdd7f581501c9f 100644
+index 3f46090c1c8905a7ab80a942c252395153170f6a..24502022d7b8cf3c641f62bb5556f21b3d9d8180 100644
 --- a/Source/WebCore/platform/image-decoders/ScalableImageDecoder.cpp
 +++ b/Source/WebCore/platform/image-decoders/ScalableImageDecoder.cpp
-@@ -35,6 +35,9 @@
+@@ -35,6 +35,12 @@
  #include "PNGImageDecoder.h"
  #include "WEBPImageDecoder.h"
  #endif
++#if USE(JPEGXR)
++#include "JPEGXRImageDecoder.h"
++#endif
 +#if USE(HEIF)
 +#include "HEIFImageDecoder.h"
 +#endif
  #if USE(AVIF)
  #include "AVIFImageDecoder.h"
  #endif
-@@ -161,6 +164,28 @@ RefPtr<ScalableImageDecoder> ScalableImageDecoder::create(FragmentedSharedBuffer
+@@ -161,6 +167,33 @@ RefPtr<ScalableImageDecoder> ScalableImageDecoder::create(FragmentedSharedBuffer
          return WEBPImageDecoder::create(alphaOption, gammaAndColorProfileOption);
  #endif
  
++#if USE(JPEGXR)
++    if (spanHasPrefix(contentsSpan, unsafeMakeSpan("\x49\x49\xbc\x01", 4)))
++        return JPEGXRImageDecoder::create(alphaOption, gammaAndColorProfileOption);
++#endif
++
 +#if USE(HEIF)
 +    // AVIF's existing sniff accepts any ftyp box. Identify HEVC brands first,
 +    // including compatible brands in a generic mif1 container.
@@ -35097,6 +35180,341 @@ index 0000000000000000000000000000000000000000..c70340c58ebc48c1f1a424319de275e9
 +    ScalableImageDecoderFrame* frameBufferAtIndex(size_t) final;
 +private:
 +    HEIFImageDecoder(AlphaOption alpha, GammaAndColorProfileOption color) : ScalableImageDecoder(alpha, color) { }
++    void tryDecodeSize(bool allDataReceived) final { decode(true, allDataReceived); }
++    void decode(bool onlySize, bool allDataReceived);
++};
++}
++#endif
+diff --git a/Source/WebCore/platform/image-decoders/jpegxr/JPEGXRCodec.cpp b/Source/WebCore/platform/image-decoders/jpegxr/JPEGXRCodec.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..cafe20c89ef6b39e706c4ea72a6aeef61c9e53a2
+--- /dev/null
++++ b/Source/WebCore/platform/image-decoders/jpegxr/JPEGXRCodec.cpp
+@@ -0,0 +1,223 @@
++// Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause
++#ifndef SUMMIT_CODEC_STANDALONE
++#include "config.h"
++#endif
++#include "JPEGXRCodec.h"
++#include <algorithm>
++#include <cmath>
++#include <cstring>
++#include <memory>
++#include <new>
++#ifndef __ANSI__
++#define __ANSI__
++#endif
++#ifndef DISABLE_PERF_MEASUREMENT
++#define DISABLE_PERF_MEASUREMENT
++#endif
++#include <JXRGlue.h>
++#undef min
++#undef max
++
++namespace WebCore {
++namespace {
++constexpr size_t maximumBytes = 256 * 1024 * 1024;
++// Validate TIFF-style directory payloads before the reference library can
++// allocate a metadata field from its declared count. Codec extents are checked
++// again once the library has interpreted the directory.
++bool validDirectory(std::span<const uint8_t> bytes)
++{
++    auto u16 = [&](size_t p) -> uint16_t { return bytes[p] | (bytes[p + 1] << 8); };
++    auto u32 = [&](size_t p) -> uint32_t { return u16(p) | (static_cast<uint32_t>(u16(p + 2)) << 16); };
++    const size_t directory = u32(4);
++    if (directory < 8 || directory > bytes.size() - 2) return false;
++    const size_t entries = u16(directory);
++    if (!entries || entries > 4096 || entries * 12 + 6 > bytes.size() - directory) return false;
++    static constexpr unsigned typeSizes[] = {0, 1, 1, 2, 4, 8, 1, 1, 2, 4, 8, 4, 8};
++    for (size_t i = 0; i < entries; ++i) {
++        const size_t entry = directory + 2 + i * 12;
++        const unsigned type = u16(entry + 2);
++        if (!type || type >= std::size(typeSizes)) return false;
++        const uint64_t size = static_cast<uint64_t>(u32(entry + 4)) * typeSizes[type];
++        if (size > 16 * 1024 * 1024) return false;
++        if (size > 4) {
++            const size_t offset = u32(entry + 8);
++            if (offset > bytes.size() || size > bytes.size() - offset) return false;
++        }
++    }
++    return true;
++}
++struct XRStream {
++    WMPStream stream { };
++    std::vector<uint8_t> output;
++    std::span<const uint8_t> input;
++    bool allowPadding = false;
++    size_t position = 0;
++    bool failed = false;
++    static XRStream& self(WMPStream* stream) { return *static_cast<XRStream*>(stream->state.pvObj); }
++    explicit XRStream(std::span<const uint8_t> bytes = {}) : input(bytes)
++    {
++        stream.state.pvObj = this;
++        stream.Close = [](WMPStream** value) -> ERR { *value = nullptr; return WMP_errSuccess; };
++        stream.EOS = [](WMPStream* value) -> Bool { auto& s = self(value); return s.position >= (s.input.empty() ? s.output.size() : s.input.size()); };
++        stream.Read = [](WMPStream* value, void* output, size_t length) -> ERR {
++            auto& s = self(value);
++            const std::span<const uint8_t> bytes = s.input.empty() ? std::span<const uint8_t>(s.output) : s.input;
++            if (s.position > bytes.size() + (s.allowPadding ? 8192 : 0)) { s.failed = true; return WMP_errFileIO; }
++            const size_t available = s.position < bytes.size() ? std::min(length, bytes.size() - s.position) : 0;
++            if (available < length && (!s.allowPadding || length > 8192)) {
++                s.failed = true; return WMP_errFileIO;
++            }
++            if (available) std::memcpy(output, bytes.data() + s.position, available);
++            // The bitstream reader fills fixed-size packets past the last
++            // byte. Container metadata reads remain strict, and declared
++            // image/alpha extents are checked before enabling this padding.
++            if (available < length) std::memset(static_cast<uint8_t*>(output) + available, 0, length - available);
++            s.position += available;
++            return WMP_errSuccess;
++        };
++        stream.Write = [](WMPStream* value, const void* bytes, size_t length) -> ERR {
++            auto& s = self(value);
++            if (!s.input.empty()) { s.failed = true; return WMP_errFileIO; }
++            if (s.position > maximumBytes || length > maximumBytes - s.position) {
++                s.failed = true; return WMP_errBufferOverflow;
++            }
++#if defined(__cpp_exceptions)
++            try {
++#endif
++                if (s.position + length > s.output.size()) s.output.resize(s.position + length);
++#if defined(__cpp_exceptions)
++            } catch (const std::bad_alloc&) { s.failed = true; return WMP_errOutOfMemory; }
++#endif
++            std::memcpy(s.output.data() + s.position, bytes, length);
++            s.position += length;
++            return WMP_errSuccess;
++        };
++        stream.SetPos = [](WMPStream* value, size_t position) -> ERR {
++            auto& s = self(value);
++            const size_t limit = s.input.empty() ? maximumBytes : s.input.size() + (s.allowPadding ? 8192 : 0);
++            if (position > limit) { s.failed = true; return WMP_errBufferOverflow; }
++            s.position = position;
++            return WMP_errSuccess;
++        };
++        stream.GetPos = [](WMPStream* value, size_t* position) -> ERR {
++            *position = self(value).position;
++            return WMP_errSuccess;
++        };
++    }
++};
++struct DecoderDeleter {
++    void operator()(PKImageDecode* decoder) const { decoder->Release(&decoder); }
++};
++struct EncoderDeleter {
++    void operator()(PKImageEncode* encoder) const { encoder->Release(&encoder); }
++};
++}
++std::optional<JPEGXRImage> decodeJPEGXR(std::span<const uint8_t> bytes, bool onlySize)
++{
++    if (bytes.size() < 8 || bytes.size() > maximumBytes || bytes[0] != 'I' || bytes[1] != 'I'
++        || bytes[2] != 0xbc || bytes[3] != 1 || !validDirectory(bytes))
++        return {};
++    XRStream stream(bytes);
++    PKImageDecode* raw = nullptr;
++    if (PKImageDecode_Create_WMP(&raw) != WMP_errSuccess || !raw)
++        return {};
++    std::unique_ptr<PKImageDecode, DecoderDeleter> decoder(raw);
++    if (decoder->Initialize(decoder.get(), &stream.stream) != WMP_errSuccess || stream.failed)
++        return {};
++    auto extentValid = [&](uint32_t offset, uint32_t length) {
++        return length > 0 && static_cast<uint64_t>(offset) + length <= bytes.size();
++    };
++    const auto& extents = decoder->WMP.wmiDEMisc;
++    if (!extentValid(extents.uImageOffset, extents.uImageByteCount)
++        || (extents.uAlphaByteCount && !extentValid(extents.uAlphaOffset, extents.uAlphaByteCount)))
++        return {};
++    int32_t width = 0, height = 0;
++    if (decoder->GetSize(decoder.get(), &width, &height) != WMP_errSuccess || width <= 0 || height <= 0
++        || width > 16384 || height > 16384 || static_cast<uint64_t>(width) * height > maximumBytes / 4)
++        return {};
++    JPEGXRImage result;
++    result.width = width;
++    result.height = height;
++    PKPixelInfo original { };
++    original.pGUIDPixFmt = &decoder->guidPixFormat;
++    if (PixelFormatLookup(&original, LOOKUP_FORWARD) != WMP_errSuccess)
++        return {};
++    result.hasAlpha = original.grBit & PK_pixfmtHasAlpha;
++    if (onlySize)
++        return result;
++    PKPixelInfo format { };
++    format.pGUIDPixFmt = &GUID_PKPixelFormat32bppRGBA;
++    if (PixelFormatLookup(&format, LOOKUP_FORWARD) != WMP_errSuccess)
++        return {};
++    auto& info = decoder->WMP.wmiI;
++    info.cfColorFormat = format.cfColorFormat;
++    info.bdBitDepth = format.bdBitDepth;
++    info.cBitsPerUnit = format.cbitUnit;
++    info.bRGB = TRUE;
++    info.cThumbnailWidth = info.cWidth;
++    info.cThumbnailHeight = info.cHeight;
++    info.cROILeftX = info.cROITopY = 0;
++    info.cROIWidth = info.cWidth;
++    info.cROIHeight = info.cHeight;
++    decoder->WMP.wmiSCP.uAlphaMode = result.hasAlpha ? 2 : 0;
++    decoder->WMP.wmiSCP.sbSubband = SB_ALL;
++    result.pixels.resize(static_cast<size_t>(width) * height * 4);
++    stream.allowPadding = true;
++    PKRect rect {0, 0, width, height};
++    if (decoder->Copy(decoder.get(), &rect, result.pixels.data(), width * 4) != WMP_errSuccess || stream.failed)
++        return {};
++    if (!result.hasAlpha)
++        for (size_t i = 3; i < result.pixels.size(); i += 4) result.pixels[i] = 255;
++    else if (original.grBit & PK_pixfmtPreMul) {
++        for (size_t i = 0; i < result.pixels.size(); i += 4) {
++            const unsigned alpha = result.pixels[i + 3];
++            for (unsigned c = 0; c < 3; ++c)
++                result.pixels[i + c] = alpha ? std::min(255u, (result.pixels[i + c] * 255u + alpha / 2) / alpha) : 0;
++        }
++    }
++    U32 profileSize = 0;
++    if (decoder->GetColorContext(decoder.get(), nullptr, &profileSize) == WMP_errSuccess
++        && profileSize && profileSize <= 4 * 1024 * 1024) {
++        result.colorProfile.resize(profileSize);
++        stream.allowPadding = false;
++        if (decoder->GetColorContext(decoder.get(), result.colorProfile.data(), &profileSize) != WMP_errSuccess || stream.failed)
++            result.colorProfile.clear();
++    }
++    return result;
++}
++std::vector<uint8_t> encodeJPEGXR(std::span<const uint8_t> pixels, unsigned width, unsigned height,
++    unsigned stride, std::optional<double> quality)
++{
++    if (!width || !height || width > 16384 || height > 16384 || static_cast<uint64_t>(width) * height > maximumBytes / 4
++        || stride < static_cast<uint64_t>(width) * 4 || static_cast<uint64_t>(height - 1) * stride + width * 4 > pixels.size())
++        return {};
++    XRStream stream;
++    PKImageEncode* raw = nullptr;
++    if (PKImageEncode_Create_WMP(&raw) != WMP_errSuccess || !raw)
++        return {};
++    raw->pStream = &stream.stream; // Release also closes the stream after failed initialization.
++    std::unique_ptr<PKImageEncode, EncoderDeleter> encoder(raw);
++    CWMIStrCodecParam options { };
++    options.cfColorFormat = YUV_444;
++    options.bdBitDepth = BD_LONG;
++    options.bfBitstreamFormat = FREQUENCY;
++    options.bProgressiveMode = TRUE;
++    options.olOverlap = OL_NONE;
++    options.sbSubband = SB_ALL;
++    options.uAlphaMode = 3; // Interleaved alpha; no temporary file for a second plane.
++    options.uiDefaultQPIndex = 1; // Lossless by default, also for quality == 1.
++    options.uiDefaultQPIndexAlpha = 1;
++    if (quality && std::isfinite(*quality) && *quality >= 0 && *quality < 1) {
++        options.uiDefaultQPIndex = static_cast<U8>(1 + std::lround((1 - *quality) * 70));
++        options.olOverlap = OL_ONE;
++    }
++    if (encoder->Initialize(encoder.get(), &stream.stream, &options, sizeof(options)) != WMP_errSuccess
++        || encoder->SetPixelFormat(encoder.get(), GUID_PKPixelFormat32bppRGBA) != WMP_errSuccess
++        || encoder->SetSize(encoder.get(), width, height) != WMP_errSuccess
++        || encoder->SetResolution(encoder.get(), 96, 96) != WMP_errSuccess
++        || encoder->WritePixels(encoder.get(), height, const_cast<uint8_t*>(pixels.data()), stride) != WMP_errSuccess
++        || encoder->Terminate(encoder.get()) != WMP_errSuccess || stream.failed)
++        return {};
++    return std::move(stream.output);
++}
++}
+diff --git a/Source/WebCore/platform/image-decoders/jpegxr/JPEGXRCodec.h b/Source/WebCore/platform/image-decoders/jpegxr/JPEGXRCodec.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..ff32b4b3cfb84335392b7192fe64ee98d6c0cd63
+--- /dev/null
++++ b/Source/WebCore/platform/image-decoders/jpegxr/JPEGXRCodec.h
+@@ -0,0 +1,18 @@
++// Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause
++#pragma once
++#include <cstdint>
++#include <optional>
++#include <span>
++#include <vector>
++namespace WebCore {
++// Packed, straight-alpha sRGB RGBA. The codec never opens a file or launches
++// a program; bounded memory streams serve both the container and bitstream.
++struct JPEGXRImage {
++    unsigned width = 0, height = 0;
++    bool hasAlpha = false;
++    std::vector<uint8_t> pixels, colorProfile;
++};
++std::optional<JPEGXRImage> decodeJPEGXR(std::span<const uint8_t>, bool onlySize = false);
++std::vector<uint8_t> encodeJPEGXR(std::span<const uint8_t>, unsigned width, unsigned height,
++    unsigned stride, std::optional<double> quality);
++}
+diff --git a/Source/WebCore/platform/image-decoders/jpegxr/JPEGXRImageDecoder.cpp b/Source/WebCore/platform/image-decoders/jpegxr/JPEGXRImageDecoder.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..4ce3da7f551fabc6dedbe16cfa6266c23264cf94
+--- /dev/null
++++ b/Source/WebCore/platform/image-decoders/jpegxr/JPEGXRImageDecoder.cpp
+@@ -0,0 +1,52 @@
++// Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause
++#include "config.h"
++#include "JPEGXRImageDecoder.h"
++#if USE(JPEGXR)
++#include "JPEGXRCodec.h"
++#include "ImageBackingStore.h"
++#if USE(LCMS)
++#include "LCMSUniquePtr.h"
++#endif
++namespace WebCore {
++ScalableImageDecoderFrame* JPEGXRImageDecoder::frameBufferAtIndex(size_t index)
++{
++    assertIsHeld(m_lock);
++    if (index || failed()) return nullptr;
++    if (m_frameBufferCache.isEmpty()) m_frameBufferCache.grow(1);
++    auto& frame = m_frameBufferCache.first();
++    if (!frame.isComplete()) decode(false, isAllDataReceived());
++    return failed() ? nullptr : &frame;
++}
++void JPEGXRImageDecoder::decode(bool onlySize, bool allDataReceived)
++{
++    assertIsHeld(m_lock);
++    if (failed() || !allDataReceived || !m_data) return;
++    auto image = decodeJPEGXR(m_data->span(), onlySize);
++    if (!image) { setFailed(); return; }
++    IntSize decodedSize(image->width, image->height);
++    if (!isSizeAvailable() && !setSize(decodedSize)) return;
++    if (size() != decodedSize) { setFailed(); return; }
++    if (onlySize) return;
++    auto& frame = m_frameBufferCache.first();
++    if (!frame.initialize(size(), m_premultiplyAlpha)) { setFailed(); return; }
++#if USE(LCMS)
++    if (!m_ignoreGammaAndColorProfile && !image->colorProfile.empty()) {
++        LCMSProfilePtr input(cmsOpenProfileFromMem(image->colorProfile.data(), image->colorProfile.size()));
++        LCMSProfilePtr output(cmsCreate_sRGBProfile());
++        if (input && output && cmsGetColorSpace(input.get()) == cmsSigRgbData) {
++            LCMSTransformPtr transform(cmsCreateTransform(input.get(), TYPE_RGBA_8, output.get(), TYPE_RGBA_8,
++                INTENT_PERCEPTUAL, cmsFLAGS_COPY_ALPHA));
++            if (transform) cmsDoTransform(transform.get(), image->pixels.data(), image->pixels.data(), image->width * image->height);
++        }
++    }
++#endif
++    for (unsigned y = 0; y < image->height; ++y)
++        for (unsigned x = 0; x < image->width; ++x) {
++            auto* pixel = image->pixels.data() + (static_cast<size_t>(y) * image->width + x) * 4;
++            frame.backingStore()->setPixel(x, y, pixel[0], pixel[1], pixel[2], pixel[3]);
++        }
++    frame.setHasAlpha(image->hasAlpha);
++    frame.setDecodingStatus(DecodingStatus::Complete);
++}
++}
++#endif
+diff --git a/Source/WebCore/platform/image-decoders/jpegxr/JPEGXRImageDecoder.h b/Source/WebCore/platform/image-decoders/jpegxr/JPEGXRImageDecoder.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..367942fc4fb15d1a124d3d4d39aa2cecfecf49ba
+--- /dev/null
++++ b/Source/WebCore/platform/image-decoders/jpegxr/JPEGXRImageDecoder.h
+@@ -0,0 +1,18 @@
++// Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause
++#pragma once
++#include "ScalableImageDecoder.h"
++#if USE(JPEGXR)
++namespace WebCore {
++class JPEGXRImageDecoder final : public ScalableImageDecoder {
++public:
++    static Ref<ScalableImageDecoder> create(AlphaOption alpha, GammaAndColorProfileOption color)
++    { return adoptRef(*new JPEGXRImageDecoder(alpha, color)); }
++    String filenameExtension() const final { return "jxr"_s; }
++    ScalableImageDecoderFrame* frameBufferAtIndex(size_t) final;
++private:
++    JPEGXRImageDecoder(AlphaOption alpha, GammaAndColorProfileOption color) : ScalableImageDecoder(alpha, color) { }
 +    void tryDecodeSize(bool allDataReceived) final { decode(true, allDataReceived); }
 +    void decode(bool onlySize, bool allDataReceived);
 +};
@@ -133786,10 +134204,10 @@ index 121e64b01bce34e387deacf3bbbca93adf0f59da..7926cd9c3edf141bc52f7db0253c37c0
  endif ()
 diff --git a/Source/cmake/OptionsHaiku.cmake b/Source/cmake/OptionsHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..e9596e33439403ec0de553421ec37c73a501d421
+index 0000000000000000000000000000000000000000..4a1277b6ed83ff89a86bd81eaf62034f5726d13a
 --- /dev/null
 +++ b/Source/cmake/OptionsHaiku.cmake
-@@ -0,0 +1,368 @@
+@@ -0,0 +1,373 @@
 +include(GNUInstallDirs)
 +include(VersioningUtils)
 +
@@ -133853,6 +134271,7 @@ index 0000000000000000000000000000000000000000..e9596e33439403ec0de553421ec37c73
 +
 +WEBKIT_OPTION_BEGIN()
 +WEBKIT_OPTION_DEFINE(USE_HEIF "Enable HEIC still image decoding through libheif" PUBLIC OFF)
++WEBKIT_OPTION_DEFINE(USE_JPEGXR "Enable JPEG XR image coding through jxrlib" PUBLIC OFF)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_ATTACHMENT_ELEMENT PUBLIC OFF)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_DARK_MODE_CSS PUBLIC ON)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_DRAG_SUPPORT PUBLIC ON)
@@ -133964,6 +134383,10 @@ index 0000000000000000000000000000000000000000..e9596e33439403ec0de553421ec37c73
 +    if (NOT JPEGXL_FOUND)
 +        message(FATAL_ERROR "libjxl is required for USE_JPEGXL")
 +    endif ()
++endif ()
++
++if (USE_JPEGXR)
++    pkg_check_modules(JPEGXR REQUIRED libjxr>=1.2)
 +endif ()
 +
 +if (USE_HEIF)

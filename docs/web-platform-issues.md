@@ -30,8 +30,15 @@ entries without runtime results are still open.
   decoder handles dimensions, crops/rotation, alpha and ICC conversion, with
   bounded allocations and decoded-plane checks. It passes native compilation.
   HEIC brand detection precedes the existing broad AVIF container check.
-  JPEG XL enablement/bundling, JPEG XR integration and browser pixel tests are
-  still pending. JPEG XL and HEIC in html5test.co are decoding probes;
+  JPEG XR now has bounded in-memory encode/decode helpers, a ScalableImageDecoder
+  adapter and a Skia canvas export path (including GPU readback). The native
+  standalone suite passes 256 checks covering exact pixels, transparency,
+  dimensions, quality, truncation, directory limits and malformed data. A
+  separately encoded 24-bit RGB fixture also matches every expected pixel.
+  Native engine-object compilation passes for the codec, decoder adapter and
+  Skia export path. Feature enablement/bundling and browser pixel tests are
+  still pending. JPEG XL and
+  HEIC in html5test.co are decoding probes;
   **JPEG XR is a canvas encoding probe** (`toDataURL('image/vnd.ms-photo')`),
   so decoding alone cannot satisfy it.
 - **#28, custom schemes:** registration/unregistration now have secure-context
