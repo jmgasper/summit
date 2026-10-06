@@ -22,11 +22,18 @@ entries without runtime results are still open.
   wrapper now explicitly enables them (and fullscreen) unless the caller
   supplies an override. This migrates retained build directories too. Engine
   compilation and runtime pixel tests are pending.
-- **#26, image formats:** still to implement and verify. The pinned engine has
-  an optional libjxl decoder; the workstation only has libjxl 0.6.1, below the
-  port's required 0.7.0, and no HEIF or JPEG XR library. JPEG XL and HEIC in
-  html5test.co are decoding probes; **JPEG XR is a canvas encoding probe**
-  (`toDataURL('image/vnd.ms-photo')`), so decoding alone cannot satisfy it.
+- **#26, image formats:** private, checksum-pinned libjxl 0.12.0, libheif
+  1.23.6/libde265 1.1.3 and Debian-patched jxrlib 1.2 now build on the X399.
+  `tools/prepare-image-codecs.py` installs them under
+  `/boot/home/summit-deps/image-codecs-20261006` with source/file manifests and
+  license notices. The OS packages are untouched. A new HEIC still-image
+  decoder handles dimensions, crops/rotation, alpha and ICC conversion, with
+  bounded allocations and decoded-plane checks. It passes native compilation.
+  HEIC brand detection precedes the existing broad AVIF container check.
+  JPEG XL enablement/bundling, JPEG XR integration and browser pixel tests are
+  still pending. JPEG XL and HEIC in html5test.co are decoding probes;
+  **JPEG XR is a canvas encoding probe** (`toDataURL('image/vnd.ms-photo')`),
+  so decoding alone cannot satisfy it.
 - **#28, custom schemes:** registration/unregistration now have secure-context
   bindings, scheme and same-origin validation, and a frame-origin-checked IPC
   bridge. A native asynchronous prompt approves website handlers. User-activated

@@ -10933,6 +10933,23 @@ index 0000000000000000000000000000000000000000..44faf4f950d8a073a4a58e424bfa7949
 +    platform/graphics/haiku/ImageBufferHaikuSurfaceBackend.h
 +    platform/graphics/haiku/PathHaiku.h
 +)
+diff --git a/Source/WebCore/platform/ImageDecoders.cmake b/Source/WebCore/platform/ImageDecoders.cmake
+index 6439263a69ce3e3d744c166c8e38b2993bd00944..eca78256ee7b238492da15537b25ef6077686deb 100644
+--- a/Source/WebCore/platform/ImageDecoders.cmake
++++ b/Source/WebCore/platform/ImageDecoders.cmake
+@@ -40,6 +40,12 @@ list(APPEND WebCore_LIBRARIES
+     WebP::demux
+ )
+ 
++if (USE_HEIF)
++    list(APPEND WebCore_PRIVATE_INCLUDE_DIRECTORIES "${WEBCORE_DIR}/platform/image-decoders/heif")
++    list(APPEND WebCore_SOURCES platform/image-decoders/heif/HEIFImageDecoder.cpp)
++    list(APPEND WebCore_LIBRARIES PkgConfig::HEIF)
++endif ()
++
+ if (USE_JPEGXL)
+     list(APPEND WebCore_LIBRARIES JPEGXL::jxl)
+ endif ()
 diff --git a/Source/WebCore/platform/LocalizedStrings.cpp b/Source/WebCore/platform/LocalizedStrings.cpp
 index c4c472fdd2eaf510f2523571b98f76a9c09a38e2..6364458b41e0471a3c3febb0fb8e629ab8486d54 100644
 --- a/Source/WebCore/platform/LocalizedStrings.cpp
@@ -11000,7 +11017,7 @@ index 872b0844d27a320bbd862f8623eaf377a6261afe..22cf57caa74132de43aa6fcf76888625
      WEBCORE_EXPORT String getAssertionTouchIDPromptTitle(const String& bundleName, const String& domain);
      WEBCORE_EXPORT String genericTouchIDPromptTitle();
 diff --git a/Source/WebCore/platform/MIMETypeRegistry.cpp b/Source/WebCore/platform/MIMETypeRegistry.cpp
-index 9b54ff20266447120b80f850ebd0a0f69423bdcb..361b7de4fda4c599ac52d9d4c489c7623d1a7208 100644
+index 9b54ff20266447120b80f850ebd0a0f69423bdcb..7ec1c6ff8fbd4c9b5bac1bab6d3422f4923f3d60 100644
 --- a/Source/WebCore/platform/MIMETypeRegistry.cpp
 +++ b/Source/WebCore/platform/MIMETypeRegistry.cpp
 @@ -54,6 +54,15 @@
@@ -11019,7 +11036,19 @@ index 9b54ff20266447120b80f850ebd0a0f69423bdcb..361b7de4fda4c599ac52d9d4c489c762
  #if HAVE(AVASSETREADER)
  #include "ContentType.h"
  #include "ImageDecoderAVFObjC.h"
-@@ -418,6 +427,26 @@ String MIMETypeRegistry::mediaMIMETypeForExtension(StringView extension)
+@@ -102,7 +111,10 @@ constexpr SortedArraySet supportedImageMIMETypeSet { WTF::toArray<ComparableCase
+     "image/gi_"_s,
+ #endif
+     "image/gif"_s,
+-#if HAVE(HEIC)
++#if USE(HEIF)
++    "image/heic"_s,
++    "image/heif"_s,
++#elif HAVE(HEIC)
+     "image/heic"_s,
+     "image/heic-sequence"_s,
+     "image/heif"_s,
+@@ -418,6 +430,26 @@ String MIMETypeRegistry::mediaMIMETypeForExtension(StringView extension)
  
  String MIMETypeRegistry::mimeTypeForPath(StringView path)
  {
@@ -34764,6 +34793,49 @@ index 0000000000000000000000000000000000000000..b93cdeb2c5928847691a7781bc6fcd08
 +	<body>
 +	</body>
 +</html>
+diff --git a/Source/WebCore/platform/image-decoders/ScalableImageDecoder.cpp b/Source/WebCore/platform/image-decoders/ScalableImageDecoder.cpp
+index 3f46090c1c8905a7ab80a942c252395153170f6a..9c7e123405bb080afb52d96b63fdd7f581501c9f 100644
+--- a/Source/WebCore/platform/image-decoders/ScalableImageDecoder.cpp
++++ b/Source/WebCore/platform/image-decoders/ScalableImageDecoder.cpp
+@@ -35,6 +35,9 @@
+ #include "PNGImageDecoder.h"
+ #include "WEBPImageDecoder.h"
+ #endif
++#if USE(HEIF)
++#include "HEIFImageDecoder.h"
++#endif
+ #if USE(AVIF)
+ #include "AVIFImageDecoder.h"
+ #endif
+@@ -161,6 +164,28 @@ RefPtr<ScalableImageDecoder> ScalableImageDecoder::create(FragmentedSharedBuffer
+         return WEBPImageDecoder::create(alphaOption, gammaAndColorProfileOption);
+ #endif
+ 
++#if USE(HEIF)
++    // AVIF's existing sniff accepts any ftyp box. Identify HEVC brands first,
++    // including compatible brands in a generic mif1 container.
++    if (spanHasPrefix(contentsSpan.subspan(4), "ftyp"_span)) {
++        const uint32_t boxSize = (static_cast<uint32_t>(contents[0]) << 24)
++            | (static_cast<uint32_t>(contents[1]) << 16) | (static_cast<uint32_t>(contents[2]) << 8) | contents[3];
++        if (boxSize >= 16 && boxSize <= 4096 && data.size() >= boxSize) {
++            Vector<uint8_t> brands(boxSize);
++            data.copyTo(brands.mutableSpan());
++            for (size_t offset = 8; offset + 4 <= boxSize; offset += 4) {
++                if (offset == 12) // minor version, not a brand
++                    continue;
++                auto brand = brands.span().subspan(offset, 4);
++                if (spanHasPrefix(brand, "heic"_span) || spanHasPrefix(brand, "heix"_span)
++                    || spanHasPrefix(brand, "hevc"_span) || spanHasPrefix(brand, "hevx"_span))
++                    return HEIFImageDecoder::create(alphaOption, gammaAndColorProfileOption);
++            }
++        } else if (boxSize <= 4096 && data.size() < boxSize)
++            return nullptr; // Wait for the complete brand box before choosing a decoder.
++    }
++#endif
++
+ #if USE(AVIF)
+     if (matchesAVIFSignature(contentsSpan, data))
+         return AVIFImageDecoder::create(alphaOption, gammaAndColorProfileOption);
 diff --git a/Source/WebCore/platform/image-decoders/avif/AVIFImageReader.cpp b/Source/WebCore/platform/image-decoders/avif/AVIFImageReader.cpp
 index 5f12f723d31e283fe9f21679466ae96fb096a072..f40b44e35373ed2b857da6cc56ff45f871b37a28 100644
 --- a/Source/WebCore/platform/image-decoders/avif/AVIFImageReader.cpp
@@ -34867,6 +34939,169 @@ index 0000000000000000000000000000000000000000..8a01300d39155e62768de06a298a693c
 +
 +} // namespace WebCore
 +
+diff --git a/Source/WebCore/platform/image-decoders/heif/HEIFImageDecoder.cpp b/Source/WebCore/platform/image-decoders/heif/HEIFImageDecoder.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..ff37370000fb026776370cdfb5f157988eeb72d2
+--- /dev/null
++++ b/Source/WebCore/platform/image-decoders/heif/HEIFImageDecoder.cpp
+@@ -0,0 +1,129 @@
++// Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause
++#include "config.h"
++#include "HEIFImageDecoder.h"
++#if USE(HEIF)
++#include "ImageBackingStore.h"
++#if USE(LCMS)
++#include "LCMSUniquePtr.h"
++#endif
++#include <libheif/heif.h>
++#include <algorithm>
++#include <wtf/Scope.h>
++
++namespace WebCore {
++ScalableImageDecoderFrame* HEIFImageDecoder::frameBufferAtIndex(size_t index)
++{
++    assertIsHeld(m_lock);
++    if (index || failed())
++        return nullptr;
++    if (m_frameBufferCache.isEmpty())
++        m_frameBufferCache.grow(1);
++    auto& frame = m_frameBufferCache.first();
++    if (!frame.isComplete())
++        decode(false, isAllDataReceived());
++    return failed() ? nullptr : &frame;
++}
++void HEIFImageDecoder::decode(bool onlySize, bool allDataReceived)
++{
++    assertIsHeld(m_lock);
++    // HEIF item extents can point anywhere in the file. Decode only after
++    // the entire resource has arrived, not an arbitrary partial prefix.
++    if (failed() || !allDataReceived || !m_data)
++        return;
++    constexpr uint64_t maximumPixels = 64 * 1024 * 1024;
++    constexpr uint64_t maximumBytes = 256 * 1024 * 1024;
++    if (m_data->size() > maximumBytes) { setFailed(); return; }
++    auto* context = heif_context_alloc();
++    if (!context) { setFailed(); return; }
++    auto freeContext = makeScopeExit([&] { heif_context_free(context); });
++    auto* limits = heif_context_get_security_limits(context);
++    limits->max_image_size_pixels = maximumPixels;
++    limits->max_memory_block_size = maximumBytes;
++    limits->max_total_memory = maximumBytes * 2;
++    limits->max_color_profile_size = 4 * 1024 * 1024;
++    heif_context_set_max_decoding_threads(context, 2);
++    auto data = m_data->span();
++    if (heif_context_read_from_memory_without_copy(context, data.data(), data.size(), nullptr).code != heif_error_Ok) {
++        setFailed(); return;
++    }
++    heif_image_handle* handle = nullptr;
++    if (heif_context_get_primary_image_handle(context, &handle).code != heif_error_Ok || !handle) {
++        setFailed(); return;
++    }
++    auto freeHandle = makeScopeExit([&] { heif_image_handle_release(handle); });
++    const int width = heif_image_handle_get_width(handle), height = heif_image_handle_get_height(handle);
++    if (width <= 0 || height <= 0 || static_cast<uint64_t>(width) * height > maximumPixels) {
++        setFailed(); return;
++    }
++    if (!isSizeAvailable() && !setSize({ width, height }))
++        return;
++    if (size() != IntSize(width, height)) { setFailed(); return; }
++    if (onlySize)
++        return;
++    heif_image* image = nullptr;
++    auto* options = heif_decoding_options_alloc();
++    if (!options) { setFailed(); return; }
++    auto freeOptions = makeScopeExit([&] { heif_decoding_options_free(options); });
++    options->convert_hdr_to_8bit = 1;
++    options->strict_decoding = 1;
++    options->num_codec_threads = 2;
++    const auto error = heif_decode_image(handle, &image, heif_colorspace_RGB, heif_chroma_interleaved_RGBA, options);
++    auto freeImage = makeScopeExit([&] { if (image) heif_image_release(image); });
++    if (error.code != heif_error_Ok || !image) { setFailed(); return; }
++    int stride = 0;
++    const auto* pixels = heif_image_get_plane_readonly(image, heif_channel_interleaved, &stride);
++    // Decoded plane dimensions, not only container metadata, determine which
++    // bytes are addressable (including cropped/tiled or malformed images).
++    if (!pixels || heif_image_get_width(image, heif_channel_interleaved) != width
++        || heif_image_get_height(image, heif_channel_interleaved) != height
++        || stride < static_cast<int64_t>(width) * 4) { setFailed(); return; }
++    auto& frame = m_frameBufferCache.first();
++    if (!frame.initialize(size(), m_premultiplyAlpha)) { setFailed(); return; }
++    const bool premultiplied = heif_image_is_premultiplied_alpha(image);
++    Vector<uint8_t> converted;
++    if (premultiplied)
++        converted.grow(static_cast<size_t>(width) * 4);
++#if USE(LCMS)
++    LCMSTransformPtr transform;
++    const auto profileSize = heif_image_handle_get_raw_color_profile_size(handle);
++    if (!m_ignoreGammaAndColorProfile && profileSize && profileSize <= 4 * 1024 * 1024) {
++        Vector<uint8_t> profile(profileSize);
++        if (heif_image_handle_get_raw_color_profile(handle, profile.mutableSpan().data()).code == heif_error_Ok) {
++            LCMSProfilePtr input(cmsOpenProfileFromMem(profile.span().data(), profile.size()));
++            LCMSProfilePtr output(cmsCreate_sRGBProfile());
++            if (input && output && cmsGetColorSpace(input.get()) == cmsSigRgbData)
++                transform.reset(cmsCreateTransform(input.get(), TYPE_RGBA_8, output.get(), TYPE_RGBA_8,
++                    INTENT_PERCEPTUAL, cmsFLAGS_COPY_ALPHA));
++        }
++        if (transform)
++            converted.grow(static_cast<size_t>(width) * 4);
++    }
++#endif
++    for (int y = 0; y < height; ++y) {
++        const auto* row = pixels + static_cast<size_t>(y) * stride;
++        if (premultiplied) {
++            auto straight = converted.mutableSpan();
++            for (size_t x = 0; x < static_cast<size_t>(width) * 4; x += 4) {
++                const unsigned alpha = row[x + 3];
++                for (unsigned c = 0; c < 3; ++c)
++                    straight[x + c] = alpha ? std::min(255u, (row[x + c] * 255u + alpha / 2) / alpha) : 0;
++                straight[x + 3] = alpha;
++            }
++            row = straight.data();
++        }
++#if USE(LCMS)
++        if (transform) {
++            cmsDoTransform(transform.get(), row, converted.mutableSpan().data(), width);
++            row = converted.span().data();
++        }
++#endif
++        for (int x = 0; x < width; ++x) {
++            const auto* pixel = row + static_cast<size_t>(x) * 4;
++            frame.backingStore()->setPixel(x, y, pixel[0], pixel[1], pixel[2], pixel[3]);
++        }
++    }
++    frame.setHasAlpha(heif_image_handle_has_alpha_channel(handle));
++    frame.setDecodingStatus(DecodingStatus::Complete);
++}
++}
++#endif
+diff --git a/Source/WebCore/platform/image-decoders/heif/HEIFImageDecoder.h b/Source/WebCore/platform/image-decoders/heif/HEIFImageDecoder.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..c70340c58ebc48c1f1a424319de275e955ff9a8f
+--- /dev/null
++++ b/Source/WebCore/platform/image-decoders/heif/HEIFImageDecoder.h
+@@ -0,0 +1,22 @@
++// Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause
++#pragma once
++#include "ScalableImageDecoder.h"
++#if USE(HEIF)
++namespace WebCore {
++// The primary still image, including HEIF crops, rotation and alpha. libheif
++// validates item graphs and decodes HEVC; ImageBackingStore owns final pixels.
++class HEIFImageDecoder final : public ScalableImageDecoder {
++public:
++    static Ref<ScalableImageDecoder> create(AlphaOption alpha, GammaAndColorProfileOption color)
++    {
++        return adoptRef(*new HEIFImageDecoder(alpha, color));
++    }
++    String filenameExtension() const final { return "heic"_s; }
++    ScalableImageDecoderFrame* frameBufferAtIndex(size_t) final;
++private:
++    HEIFImageDecoder(AlphaOption alpha, GammaAndColorProfileOption color) : ScalableImageDecoder(alpha, color) { }
++    void tryDecodeSize(bool allDataReceived) final { decode(true, allDataReceived); }
++    void decode(bool onlySize, bool allDataReceived);
++};
++}
++#endif
 diff --git a/Source/WebCore/platform/mediacapabilities/PlatformMediaEngineConfigurationFactory.cpp b/Source/WebCore/platform/mediacapabilities/PlatformMediaEngineConfigurationFactory.cpp
 index 351b4f92dee11593273912a45deaee716386d699..209ac28509ff44c81686db96243dfba7887bed4d 100644
 --- a/Source/WebCore/platform/mediacapabilities/PlatformMediaEngineConfigurationFactory.cpp
@@ -133551,10 +133786,10 @@ index 121e64b01bce34e387deacf3bbbca93adf0f59da..7926cd9c3edf141bc52f7db0253c37c0
  endif ()
 diff --git a/Source/cmake/OptionsHaiku.cmake b/Source/cmake/OptionsHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..c3dd569030a9f6a16962f000a8de182cab4f9a93
+index 0000000000000000000000000000000000000000..e9596e33439403ec0de553421ec37c73a501d421
 --- /dev/null
 +++ b/Source/cmake/OptionsHaiku.cmake
-@@ -0,0 +1,363 @@
+@@ -0,0 +1,368 @@
 +include(GNUInstallDirs)
 +include(VersioningUtils)
 +
@@ -133617,6 +133852,7 @@ index 0000000000000000000000000000000000000000..c3dd569030a9f6a16962f000a8de182c
 +add_definitions(-DDATA_DIR="${CMAKE_INSTALL_PREFIX}/${DATA_INSTALL_DIR}")
 +
 +WEBKIT_OPTION_BEGIN()
++WEBKIT_OPTION_DEFINE(USE_HEIF "Enable HEIC still image decoding through libheif" PUBLIC OFF)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_ATTACHMENT_ELEMENT PUBLIC OFF)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_DARK_MODE_CSS PUBLIC ON)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_DRAG_SUPPORT PUBLIC ON)
@@ -133728,6 +133964,10 @@ index 0000000000000000000000000000000000000000..c3dd569030a9f6a16962f000a8de182c
 +    if (NOT JPEGXL_FOUND)
 +        message(FATAL_ERROR "libjxl is required for USE_JPEGXL")
 +    endif ()
++endif ()
++
++if (USE_HEIF)
++    pkg_check_modules(HEIF REQUIRED IMPORTED_TARGET libheif>=1.23.6)
 +endif ()
 +
 +if (USE_LCMS)
