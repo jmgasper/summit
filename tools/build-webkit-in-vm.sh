@@ -29,7 +29,7 @@ SUMMIT_ENGINE_CMAKE_EXTRA=${SUMMIT_ENGINE_CMAKE_EXTRA:-}
 # CMake preserves old OFF cache entries even when port defaults change. Migrate
 # existing modern builds too; explicit feature overrides still take precedence.
 if [[ $SUMMIT_ENGINE_MODE != legacy ]]; then
-    for SUMMIT_FEATURE in ENABLE_FULLSCREEN_API ENABLE_OFFSCREEN_CANVAS ENABLE_OFFSCREEN_CANVAS_IN_WORKERS; do
+    for SUMMIT_FEATURE in ENABLE_FULLSCREEN_API ENABLE_OFFSCREEN_CANVAS ENABLE_OFFSCREEN_CANVAS_IN_WORKERS USE_JPEGXL USE_HEIF USE_JPEGXR; do
         if [[ " $SUMMIT_ENGINE_CMAKE_EXTRA " != *" -D$SUMMIT_FEATURE="* ]]; then
             SUMMIT_ENGINE_CMAKE_EXTRA="$SUMMIT_ENGINE_CMAKE_EXTRA -D$SUMMIT_FEATURE=ON"
         fi
@@ -96,6 +96,13 @@ if [[ $SUMMIT_ENGINE_MODE == extensions ]]; then
     tar -cf - tools/prepare-extension-deps.py engine/libzip.lock.json |
         bash "$SUMMIT_REMOTE_SHELL" 'tar -xf - -C /boot/home/summit && python3.10 /boot/home/summit/tools/prepare-extension-deps.py'
 fi
+if [[ $SUMMIT_ENGINE_MODE != legacy ]]; then
+    # The image codecs live in a private prefix with verified source and file
+    # manifests. Dependency work must finish before any engine sources change.
+    bash "$SUMMIT_REMOTE_SHELL" 'mkdir -p /boot/home/summit/tools /boot/home/summit/engine'
+    tar -cf - tools/prepare-image-codecs.py engine/image-codecs.lock.json engine/image-codec-patches |
+        bash "$SUMMIT_REMOTE_SHELL" 'tar -xf - -C /boot/home/summit && python3.10 /boot/home/summit/tools/prepare-image-codecs.py'
+fi
 python3 tools/prepare-webkit.py
 SUMMIT_ENGINE_PATCH_SHA=$(python3 -c 'import json; print(json.load(open("engine/sources.lock.json"))["patch"]["sha256"])')
 if [[ ! $SUMMIT_ENGINE_PATCH_SHA =~ ^[0-9a-f]{64}$ ]]; then
@@ -109,9 +116,9 @@ tar -C .cache/WebKit -czf - --exclude=__pycache__ CMakeLists.txt Configurations 
 # Keep large compiler temporaries on the engine volume, including when the
 # extension source is a symlink to the separate native build disk.
 if [[ $SUMMIT_ENGINE_MODE == extensions ]]; then
-    bash "$SUMMIT_REMOTE_SHELL" 'export PKG_CONFIG_PATH=/boot/home/summit-deps/libzip-1.11.4/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}; cd /boot/home/summit-webkit-extensions && cmake -S . -B WebKitBuild/'"$SUMMIT_ENGINE_BUILD_NAME"' -G Ninja -DPORT=Haiku -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="'"$SUMMIT_ENGINE_CXX_FLAGS"'" -DENABLE_WEBKIT=ON -DENABLE_WEBKIT_LEGACY=OFF -DENABLE_WK_WEB_EXTENSIONS=ON -DENABLE_CONTENT_EXTENSIONS=ON -DENABLE_GPU_PROCESS=OFF -DENABLE_LAYOUT_TESTS=OFF -DICU_ROOT=/boot/home/summit-deps/icu78 -DCMAKE_INSTALL_PREFIX=/boot/home/summit-webkit-extensions-install '"$SUMMIT_ENGINE_CMAKE_EXTRA"' && mkdir -p WebKitBuild/'"$SUMMIT_ENGINE_BUILD_NAME"'/tmp && TMPDIR="$PWD/WebKitBuild/'"$SUMMIT_ENGINE_BUILD_NAME"'/tmp" DISABLE_ASLR=1 ninja -C WebKitBuild/'"$SUMMIT_ENGINE_BUILD_NAME"' -k 0 -j' "$SUMMIT_WEBKIT_JOBS" "$SUMMIT_ENGINE_TARGET"
+    bash "$SUMMIT_REMOTE_SHELL" 'export PKG_CONFIG_PATH=/boot/home/summit-deps/image-codecs-20261006/lib/pkgconfig:/boot/home/summit-deps/libzip-1.11.4/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}; cd /boot/home/summit-webkit-extensions && cmake -S . -B WebKitBuild/'"$SUMMIT_ENGINE_BUILD_NAME"' -G Ninja -DPORT=Haiku -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="'"$SUMMIT_ENGINE_CXX_FLAGS"'" -DENABLE_WEBKIT=ON -DENABLE_WEBKIT_LEGACY=OFF -DENABLE_WK_WEB_EXTENSIONS=ON -DENABLE_CONTENT_EXTENSIONS=ON -DENABLE_GPU_PROCESS=OFF -DENABLE_LAYOUT_TESTS=OFF -DICU_ROOT=/boot/home/summit-deps/icu78 -DCMAKE_INSTALL_PREFIX=/boot/home/summit-webkit-extensions-install '"$SUMMIT_ENGINE_CMAKE_EXTRA"' && mkdir -p WebKitBuild/'"$SUMMIT_ENGINE_BUILD_NAME"'/tmp && TMPDIR="$PWD/WebKitBuild/'"$SUMMIT_ENGINE_BUILD_NAME"'/tmp" DISABLE_ASLR=1 ninja -C WebKitBuild/'"$SUMMIT_ENGINE_BUILD_NAME"' -k 0 -j' "$SUMMIT_WEBKIT_JOBS" "$SUMMIT_ENGINE_TARGET"
 elif [[ $SUMMIT_ENGINE_MODE == modern ]]; then
-    bash "$SUMMIT_REMOTE_SHELL" 'cd /boot/home/summit-webkit && cmake -S . -B WebKitBuild/Modern -G Ninja -DPORT=Haiku -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="'"$SUMMIT_ENGINE_CXX_FLAGS"'" -DENABLE_WEBKIT=ON -DENABLE_WEBKIT_LEGACY=OFF -DENABLE_GPU_PROCESS=OFF -DENABLE_LAYOUT_TESTS=OFF -DICU_ROOT=/boot/home/summit-deps/icu78 -DCMAKE_INSTALL_PREFIX=/boot/home/summit-webkit-modern '"$SUMMIT_ENGINE_CMAKE_EXTRA"' && DISABLE_ASLR=1 ninja -C WebKitBuild/Modern -k 0 -j' "$SUMMIT_WEBKIT_JOBS" "$SUMMIT_ENGINE_TARGET"
+    bash "$SUMMIT_REMOTE_SHELL" 'export PKG_CONFIG_PATH=/boot/home/summit-deps/image-codecs-20261006/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}; cd /boot/home/summit-webkit && cmake -S . -B WebKitBuild/Modern -G Ninja -DPORT=Haiku -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="'"$SUMMIT_ENGINE_CXX_FLAGS"'" -DENABLE_WEBKIT=ON -DENABLE_WEBKIT_LEGACY=OFF -DENABLE_GPU_PROCESS=OFF -DENABLE_LAYOUT_TESTS=OFF -DICU_ROOT=/boot/home/summit-deps/icu78 -DCMAKE_INSTALL_PREFIX=/boot/home/summit-webkit-modern '"$SUMMIT_ENGINE_CMAKE_EXTRA"' && DISABLE_ASLR=1 ninja -C WebKitBuild/Modern -k 0 -j' "$SUMMIT_WEBKIT_JOBS" "$SUMMIT_ENGINE_TARGET"
 else
     bash "$SUMMIT_REMOTE_SHELL" 'cd /boot/home/summit-webkit && cmake -S . -B WebKitBuild/Release -G Ninja -DPORT=Haiku -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="'"$SUMMIT_ENGINE_CXX_FLAGS"'" -DENABLE_WEBKIT=OFF -DENABLE_WEBKIT_LEGACY=ON -DENABLE_LAYOUT_TESTS=OFF -DCMAKE_INSTALL_PREFIX=/boot/home/summit-webkit-install && DISABLE_ASLR=1 ninja -C WebKitBuild/Release -j' "$SUMMIT_WEBKIT_JOBS" "$SUMMIT_ENGINE_TARGET"
 fi

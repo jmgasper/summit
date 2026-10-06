@@ -20,6 +20,7 @@ SOURCE = pathlib.Path('/boot/home/summit-webkit')
 ENGINE = SOURCE / 'WebKitBuild/Modern'
 ICU = pathlib.Path('/boot/home/summit-deps/icu78')
 LIBZIP = pathlib.Path('/boot/home/summit-deps/libzip-1.11.4')
+IMAGE_CODECS = pathlib.Path('/boot/home/summit-deps/image-codecs-20261006')
 # The browser's developer tools show text with the system's Scintilla and
 # Lexilla. They are copied into the bundle, so that it runs where those
 # packages are not installed.
@@ -123,11 +124,24 @@ def engine_inputs(inputs):
             if digest(path) != lock['files'][source]:
                 raise RuntimeError('Private libzip differs from its locked input: ' + relative)
             paths.append(path)
+    if any(cache.get(feature) == 'ON' for feature in ('USE_JPEGXL', 'USE_HEIF', 'USE_JPEGXR')):
+        if inputs['image_codecs']['revision'] != '20261006':
+            raise RuntimeError('Update the private codec prefix for the new locked revision')
+        report_path = IMAGE_CODECS / 'summit-dependency-manifest.json'
+        report = json.loads(report_path.read_text())
+        if report.get('lock_sha256') != digest(ROOT / 'engine/image-codecs.lock.json') or report.get('sources') != inputs['image_codecs']['sources']:
+            raise RuntimeError('Private image codecs do not match their locked sources; prepare them again')
+        paths.append(report_path)
+        for relative, expected_hash in report['files'].items():
+            path = IMAGE_CODECS / relative
+            if not path.is_relative_to(IMAGE_CODECS) or '..' in pathlib.Path(relative).parts or digest(path) != expected_hash:
+                raise RuntimeError('Private codec input differs from its manifest: ' + relative)
+            paths.append(path)
     configuration = dict(expected)
     for key in ('USE_MIMALLOC', 'USE_SYSTEM_MALLOC', 'USE_SKIA',
                 'USE_HAIKU_GL_COMPOSITING', 'ENABLE_ASYNC_SCROLLING', 'CMAKE_CXX_FLAGS',
                 'ENABLE_FULLSCREEN_API', 'ENABLE_OFFSCREEN_CANVAS',
-                'ENABLE_OFFSCREEN_CANVAS_IN_WORKERS', 'ENABLE_WEBGL', 'USE_JPEGXL'):
+                'ENABLE_OFFSCREEN_CANVAS_IN_WORKERS', 'ENABLE_WEBGL', 'USE_JPEGXL', 'USE_HEIF', 'USE_JPEGXR'):
         configuration[key] = cache.get(key)
     return configuration, paths
 
@@ -160,6 +174,12 @@ def freeze(work, inputs, commands, before, configuration, build, executable_name
             raise RuntimeError('The app requires the pinned private ICU 78.3 build')
         if 'libzip' in inputs:
             libraries.append(library('libzip.so', LIBZIP / 'lib'))
+        with_codecs = any(configuration.get(feature) == 'ON' for feature in ('USE_JPEGXL', 'USE_HEIF', 'USE_JPEGXR'))
+        if with_codecs:
+            # Include the private dependency closure (Brotli, HEVC, CMS and
+            # JPEG XR glue), with both link-time aliases and runtime SONAMEs.
+            libraries += [library(path.name, IMAGE_CODECS / 'lib')
+                          for path in sorted((IMAGE_CODECS / 'lib').glob('*.so'))]
         files = {executable_name: work / executable_name, 'WebProcess': ENGINE / 'bin/WebProcess',
                  'NetworkProcess': ENGINE / 'bin/NetworkProcess'}
         files.update({'lib/' + source.name: source for _, _, source in libraries})
@@ -185,7 +205,8 @@ def freeze(work, inputs, commands, before, configuration, build, executable_name
         dependencies = {name: dynamic(bundle / name, 'NEEDED') for name in files}
         for name, needed in dependencies.items():
             for dependency in needed:
-                if dependency.startswith(('libWebKit', 'libJavaScriptCore', 'libicu', 'libzip')) and not (bundle / 'lib' / dependency).is_file():
+                if dependency.startswith(('libWebKit', 'libJavaScriptCore', 'libicu', 'libzip')
+                                         + (('libjxl', 'libheif', 'libde265', 'libjxrglue', 'libjpegxr', 'libbrotli') if with_codecs else ())) and not (bundle / 'lib' / dependency).is_file():
                     raise RuntimeError(f'{name} has an unbundled engine dependency: {dependency}')
         shutil.copy2(ROOT / 'LICENSE-Summit', bundle / 'LICENSE-Summit')
         assets = []
@@ -214,6 +235,17 @@ def freeze(work, inputs, commands, before, configuration, build, executable_name
             if digest(bundle / 'licenses/libzip/zip.h') != before[str(LIBZIP / 'include/zip.h')]:
                 raise RuntimeError('The libzip license header changed during copying')
             assets.append('licenses/libzip/zip.h')
+        if with_codecs:
+            for source in sorted((IMAGE_CODECS / 'share/licenses').rglob('*')):
+                if not source.is_file():
+                    continue
+                relative = 'licenses/image-codecs/' + str(source.relative_to(IMAGE_CODECS / 'share/licenses'))
+                destination = bundle / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, destination)
+                if digest(destination) != before[str(source)]:
+                    raise RuntimeError('A codec license changed while copying: ' + str(source))
+                assets.append(relative)
         launcher = bundle / ('run-browser.sh' if browser else 'run-preview.sh')
         launcher.write_text(
             '#!/bin/sh\nset -eu\n'
@@ -234,7 +266,8 @@ def freeze(work, inputs, commands, before, configuration, build, executable_name
             + ('Scintilla and Lexilla, which the developer tools show text with, are copies of the\n'
                'system\'s libraries; their license is in licenses/Scintilla.\n' if browser else '')
             + ('The extension-enabled engine includes pinned libzip; its license notice is in licenses/libzip/zip.h.\n'
-               if 'libzip' in inputs else '') +
+               if 'libzip' in inputs else '')
+            + ('Private image codec libraries are in lib; notices and licenses are in licenses/image-codecs.\n' if with_codecs else '') +
             'The app source and build inputs are preserved in source.\n')
         shutil.copytree(ROOT, bundle / 'source')
         for name, expected in inputs['sha256'].items():
@@ -337,7 +370,7 @@ def main():
                          # its bloom filter (see the engine's OptionsHaiku.cmake).
                          '-Wl,--hash-style=both',
                          '-Wl,-rpath,' + ':'.join(map(str, [ENGINE / 'lib', ICU / 'lib']
-                             + ([LIBZIP / 'lib'] if 'libzip' in inputs else []))),
+                             + ([LIBZIP / 'lib'] if 'libzip' in inputs else []) + [IMAGE_CODECS / 'lib'])),
                          '-o', str(work / executable_name)])
         if browser:
             commands += [['rc', '-I', str(ROOT / 'resources'),

@@ -36,7 +36,10 @@ entries without runtime results are still open.
   dimensions, quality, truncation, directory limits and malformed data. A
   separately encoded 24-bit RGB fixture also matches every expected pixel.
   Native engine-object compilation passes for the codec, decoder adapter and
-  Skia export path. Feature enablement/bundling and browser pixel tests are
+  Skia export path. The build wrapper enables all three codecs and prepares
+  the locked dependencies; bundle creation verifies their manifest and copies
+  their complete private library closure and licenses. The closure check passes
+  on the X399. The integrated engine build, bundle and browser pixel tests are
   still pending. JPEG XL and
   HEIC in html5test.co are decoding probes;
   **JPEG XR is a canvas encoding probe** (`toDataURL('image/vnd.ms-photo')`),
