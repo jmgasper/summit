@@ -116385,7 +116385,7 @@ index 7f814064bfdf3ffadc7cce58fe6552ab841d2620..c8c18bd669bbafb79276689226b6e6b5
          extensionControllerProxy->globalObjectIsAvailableForFrame(*webPage, m_frame, world);
  #endif
 diff --git a/Source/WebKit/WebProcess/WebCoreSupport/WebWorkerClient.cpp b/Source/WebKit/WebProcess/WebCoreSupport/WebWorkerClient.cpp
-index 993fe9657ae60068cc1ec2edc4b1e7cf75ecc778..942f62501685ca2d5de8adebeeb2956b5ce825fa 100644
+index 993fe9657ae60068cc1ec2edc4b1e7cf75ecc778..bd0970108f4c04c4bab13ee8dbd78461fcaf6183 100644
 --- a/Source/WebKit/WebProcess/WebCoreSupport/WebWorkerClient.cpp
 +++ b/Source/WebKit/WebProcess/WebCoreSupport/WebWorkerClient.cpp
 @@ -37,6 +37,9 @@
@@ -116411,7 +116411,22 @@ index 993fe9657ae60068cc1ec2edc4b1e7cf75ecc778..942f62501685ca2d5de8adebeeb2956b
      ASSERT(isMainRunLoop());
  #if ENABLE(GPU_PROCESS)
      return UniqueRef<GPUProcessWebWorkerClient> { *new GPUProcessWebWorkerClient { dispatcher, page.displayID() } };
-@@ -189,8 +198,14 @@ RefPtr<ImageBuffer> WebWorkerClient::createImageBuffer(const FloatSize& size, Re
+@@ -182,6 +191,14 @@ RefPtr<ImageBuffer> WebWorkerClient::sinkIntoImageBuffer(std::unique_ptr<Seriali
+ RefPtr<ImageBuffer> WebWorkerClient::createImageBuffer(const FloatSize& size, RenderingMode renderingMode, RenderingPurpose purpose, float resolutionScale, const ColorSpace& colorSpace, ImageBufferFormat pixelFormat) const
+ {
+     assertIsCurrent(*dispatcher().get());
++#if PLATFORM(HAIKU)
++    // Worker snapshots are transferred to the main thread. A Skia GPU image
++    // belongs to its creating GrDirectContext and cannot be drawn by another
++    // thread's context. Keep these intermediate image buffers in CPU memory;
++    // the worker's WebGL context still renders through ANGLE on the GPU.
++    if (renderingMode == RenderingMode::Accelerated)
++        return ImageBuffer::create(size, RenderingMode::Unaccelerated, purpose, resolutionScale, colorSpace, pixelFormat);
++#endif
+     return nullptr;
+ }
+ 
+@@ -189,8 +206,14 @@ RefPtr<ImageBuffer> WebWorkerClient::createImageBuffer(const FloatSize& size, Re
  RefPtr<GraphicsContextGL> WebWorkerClient::createGraphicsContextGL(const GraphicsContextGLAttributes& attributes) const
  {
      assertIsCurrent(*dispatcher().get());
