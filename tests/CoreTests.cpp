@@ -250,7 +250,9 @@ int main()
     CHECK(profile.SetSitePermission("notifications", "https://github.com", true));
     CHECK(!profile.SetSitePermission("notifications", "https://github.com", true));
     CHECK(profile.SetSitePermission("geolocation", "https://maps.example:8443", false));
-    CHECK(!profile.SetSitePermission("camera", "https://github.com", true));
+    CHECK(!profile.SetSitePermission("unknown-permission", "https://github.com", true));
+    CHECK(profile.SetSitePermission("camera", "https://github.com", true));
+    CHECK(profile.SetSitePermission("microphone", "https://github.com", false));
     CHECK(!profile.SetSitePermission("notifications", "https://github.com/path", true));
     CHECK(!profile.SetSitePermission("notifications", "javascript:alert(1)", true));
     CHECK(!profile.SetSitePermission("notifications", "https://", true));
@@ -270,9 +272,11 @@ int main()
     CHECK(loaded.history.front().visits == 2 && loaded.history.back().visits == 0);
     CHECK(loaded.bookmarks.size() == 2 && loaded.bookmarks[1].bar && loaded.bookmarks[1].url == "https://bar.example/");
     CHECK(loaded.homeURL == "https://home.example/" && !loaded.showBookmarksBar);
-    CHECK(loaded.sitePermissions.size() == 2 && loaded.sitePermissions["notifications"].size() == 1
+    CHECK(loaded.sitePermissions.size() == 4 && loaded.sitePermissions["notifications"].size() == 1
         && loaded.sitePermissions["notifications"]["https://github.com"]
-        && !loaded.sitePermissions["geolocation"]["https://maps.example:8443"]);
+        && !loaded.sitePermissions["geolocation"]["https://maps.example:8443"]
+        && loaded.sitePermissions.at("camera").at("https://github.com")
+        && !loaded.sitePermissions.at("microphone").at("https://github.com"));
     CHECK(loaded.searchEngine == "bing" && loaded.siteZoom.size() == 2 && loaded.siteZoom["example.com"] == 1.5);
     CHECK(loaded.unpinnedExtensions == std::set<std::string>({"ext-1", "ext-2"}));
     CHECK(loaded.trustedCertificates.size() == 2 && loaded.trustedCertificates[0].subject == "/CN=UniFi"
