@@ -36,6 +36,8 @@ entries without runtime results are still open.
   display readback sampled the next drawing texture after the buffer swap.
   Haiku now reads the retained compositor texture. Native compilation passes;
   final worker, concurrent-context and placeholder pixel checks remain pending.
+  The integrated run also identified the separate AllowWebGLInWorkers runtime
+  preference; Haiku now enables it with OffscreenCanvas.
 - **#26, image formats:** private, checksum-pinned libjxl 0.12.0, libheif
   1.23.6/libde265 1.1.3 and Debian-patched jxrlib 1.2 now build on the X399.
   `tools/prepare-image-codecs.py` installs them under
@@ -53,8 +55,9 @@ entries without runtime results are still open.
   Skia export path. The build wrapper enables all three codecs and prepares
   the locked dependencies; bundle creation verifies their manifest and copies
   their complete private library closure and licenses. The closure check passes
-  on the X399. The integrated engine build, bundle and browser pixel tests are
-  still pending. JPEG XL and
+  on the X399. The integrated browser passes all 20 format checks: independent
+  fixture pixels, transparency, ImageBitmap, and JPEG XR canvas/toBlob/Offscreen
+  encoding. JPEG XL and
   HEIC in html5test.co are decoding probes;
   **JPEG XR is a canvas encoding probe** (`toDataURL('image/vnd.ms-photo')`),
   so decoding alone cannot satisfy it.
@@ -68,9 +71,11 @@ entries without runtime results are still open.
   prompt replies do nothing. Portable validation/encoding/profile tests pass;
   native browser compilation passes. The native chooser recommends a MIME-registered
   test application, BRoster delivers the complete URL as one argument, and the
-  saved choice launches directly on the next request. The registration bindings
-  and complete integrated engine still need runtime checks. These changes are newer
-  than the first engine build and require a subsequent incremental build.
+  saved choice launches directly on the next request. The integrated engine
+  passes all 18 registration validation checks. Website approval and the full
+  escaped-URL round trip pass (19/19); unregister removes the saved handler.
+  Private registration stays off disk, its handler opens correctly, and private
+  unregistration leaves the normal profile untouched.
 - **#29, WebUSB:** a native USB backend now compiles and enumerates the X399's
   seven devices. Its portable policy tests pass, and native guards reject
   protected devices and operations on closed sessions. The WICG device blocklist,
@@ -92,8 +97,10 @@ entries without runtime results are still open.
   broker and page/view/context bridges passes.
   Full integration and browser tests are pending. The current implementation
   restricts access to the top-level origin and does not expose WorkerNavigator.usb.
-  No eligible device is currently attached; actual authorized transfers still
-  need a test device.
+  Runtime testing found a missing USB permissions-policy enum in IPC
+  serialization and DataView constructor identity loss; corrections are in
+  progress. No eligible device is currently attached. The user explicitly
+  deferred physical USB transfer validation to a future goal.
 
 The four portable CTest suites pass. Their profile regression had retained an
 old expectation that camera permissions were unsupported; it now checks

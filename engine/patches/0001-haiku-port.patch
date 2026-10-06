@@ -6420,15 +6420,15 @@ index 0000000000000000000000000000000000000000..b4db61cf810d6dbc81b6286a8759c4a3
 +#include "USBDescriptors.h"
 diff --git a/Source/WebCore/Modules/webusb/USBInTransferResult.idl b/Source/WebCore/Modules/webusb/USBInTransferResult.idl
 new file mode 100644
-index 0000000000000000000000000000000000000000..2c341d7a001eae80b99530833e27c7361954075f
+index 0000000000000000000000000000000000000000..b53b6649014342cba5073cfc308b882f898bcef8
 --- /dev/null
 +++ b/Source/WebCore/Modules/webusb/USBInTransferResult.idl
 @@ -0,0 +1,7 @@
 +/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
 +[Conditional=WEBUSB, Exposed=Window, SecureContext]
 +interface USBInTransferResult {
-+    constructor(USBTransferStatus status, optional DataView? data = null);
-+    readonly attribute DataView? data;
++    [Custom] constructor(USBTransferStatus status, optional DataView? data = null);
++    [CachedAttribute] readonly attribute DataView? data;
 +    readonly attribute USBTransferStatus status;
 +  };
 diff --git a/Source/WebCore/Modules/webusb/USBInterface.h b/Source/WebCore/Modules/webusb/USBInterface.h
@@ -6466,15 +6466,15 @@ index 0000000000000000000000000000000000000000..b4db61cf810d6dbc81b6286a8759c4a3
 +#include "USBDescriptors.h"
 diff --git a/Source/WebCore/Modules/webusb/USBIsochronousInTransferPacket.idl b/Source/WebCore/Modules/webusb/USBIsochronousInTransferPacket.idl
 new file mode 100644
-index 0000000000000000000000000000000000000000..a2bebe5d8cbc7260478956857ff1ca3c6f9c50f3
+index 0000000000000000000000000000000000000000..1b4e2f7c0a30dfc69f9cdee059aa16be19a2e9f9
 --- /dev/null
 +++ b/Source/WebCore/Modules/webusb/USBIsochronousInTransferPacket.idl
 @@ -0,0 +1,7 @@
 +/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
 +[Conditional=WEBUSB, Exposed=Window, SecureContext]
 +interface USBIsochronousInTransferPacket {
-+    constructor(USBTransferStatus status, optional DataView? data = null);
-+    readonly attribute DataView? data;
++    [Custom] constructor(USBTransferStatus status, optional DataView? data = null);
++    [CachedAttribute] readonly attribute DataView? data;
 +    readonly attribute USBTransferStatus status;
 +  };
 diff --git a/Source/WebCore/Modules/webusb/USBIsochronousInTransferResult.h b/Source/WebCore/Modules/webusb/USBIsochronousInTransferResult.h
@@ -6488,15 +6488,15 @@ index 0000000000000000000000000000000000000000..b4db61cf810d6dbc81b6286a8759c4a3
 +#include "USBDescriptors.h"
 diff --git a/Source/WebCore/Modules/webusb/USBIsochronousInTransferResult.idl b/Source/WebCore/Modules/webusb/USBIsochronousInTransferResult.idl
 new file mode 100644
-index 0000000000000000000000000000000000000000..d85f874d3be05a9d42dca29eefcc1b5dec7a18ca
+index 0000000000000000000000000000000000000000..30e6e35122897c938ef9fa2cc599730a7c49ad9f
 --- /dev/null
 +++ b/Source/WebCore/Modules/webusb/USBIsochronousInTransferResult.idl
 @@ -0,0 +1,7 @@
 +/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
 +[Conditional=WEBUSB, Exposed=Window, SecureContext]
 +interface USBIsochronousInTransferResult {
-+    constructor(sequence<USBIsochronousInTransferPacket> packets, optional DataView? data = null);
-+    readonly attribute DataView? data;
++    [Custom] constructor(sequence<USBIsochronousInTransferPacket> packets, optional DataView? data = null);
++    [CachedAttribute] readonly attribute DataView? data;
 +    readonly attribute FrozenArray<USBIsochronousInTransferPacket> packets;
 +  };
 diff --git a/Source/WebCore/Modules/webusb/USBIsochronousOutTransferPacket.h b/Source/WebCore/Modules/webusb/USBIsochronousOutTransferPacket.h
@@ -6600,6 +6600,141 @@ index 0000000000000000000000000000000000000000..babbce29c870224134af259830e7e759
 @@ -0,0 +1,2 @@
 +/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
 +enum USBRequestType { "standard", "class", "vendor" };
+diff --git a/Source/WebCore/Modules/webusb/USBTransferResultCustom.cpp b/Source/WebCore/Modules/webusb/USBTransferResultCustom.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..6f2dbec3532eabe1169a7ce8514e153f4378ec0b
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBTransferResultCustom.cpp
+@@ -0,0 +1,129 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#if ENABLE(WEBUSB)
++#include "JSDOMConstructor.h"
++#include "JSDOMConvertBufferSource.h"
++#include "JSDOMConvertEnumeration.h"
++#include "JSDOMConvertInterface.h"
++#include "JSDOMConvertNullable.h"
++#include "JSDOMConvertOptional.h"
++#include "JSDOMConvertSequences.h"
++#include "JSDOMGlobalObjectInlines.h"
++#include "JSUSBTransferStatus.h"
++#include "JSUSBInTransferResult.h"
++#include "JSUSBIsochronousInTransferPacket.h"
++#include "JSUSBIsochronousInTransferResult.h"
++
++namespace WebCore {
++using namespace JSC;
++
++EncodedJSValue constructJSUSBInTransferResult(JSGlobalObject* lexicalGlobalObject, CallFrame& frame)
++{
++    using JSUSBInTransferResultDOMConstructor = JSDOMConstructor<JSUSBInTransferResult>;
++    auto* callFrame = &frame;
++    auto& vm = lexicalGlobalObject->vm();
++    auto throwScope = DECLARE_THROW_SCOPE(vm);
++    auto* castedThis = uncheckedDowncast<JSUSBInTransferResultDOMConstructor>(callFrame->jsCallee());
++    ASSERT(castedThis);
++    if (callFrame->argumentCount() < 1) [[unlikely]]
++        return throwVMError(lexicalGlobalObject, throwScope, createNotEnoughArgumentsError(lexicalGlobalObject));
++    EnsureStillAliveScope argument0 = callFrame->uncheckedArgument(0);
++    auto statusConversionResult = convert<IDLEnumeration<USBTransferStatus>>(*lexicalGlobalObject, argument0.value(), [](JSC::JSGlobalObject& lexicalGlobalObject, JSC::ThrowScope& scope) { throwArgumentMustBeEnumError(lexicalGlobalObject, scope, 0, "status"_s, "USBInTransferResult"_s, nullptr, expectedEnumerationValues<USBTransferStatus>()); });
++    if (statusConversionResult.hasException(throwScope)) [[unlikely]]
++       return encodedJSValue();
++    EnsureStillAliveScope argument1 = callFrame->argument(1);
++    auto dataConversionResult = convertOptionalWithDefault<IDLNullable<IDLDataView>>(*lexicalGlobalObject, argument1.value(), [&] -> ConversionResult<IDLNullable<IDLDataView>> { return typename Converter<IDLNullable<IDLDataView>>::ReturnType { nullptr }; }, [](JSC::JSGlobalObject& lexicalGlobalObject, JSC::ThrowScope& scope) { throwArgumentTypeError(lexicalGlobalObject, scope, 1, "data"_s, "USBInTransferResult"_s, nullptr, "DataView"_s); });
++    if (dataConversionResult.hasException(throwScope)) [[unlikely]]
++       return encodedJSValue();
++    auto object = USBInTransferResult::create(statusConversionResult.releaseReturnValue(), dataConversionResult.releaseReturnValue());
++    if constexpr (IsExceptionOr<decltype(object)>)
++        RETURN_IF_EXCEPTION(throwScope, { });
++    static_assert(TypeOrExceptionOrUnderlyingType<decltype(object)>::isRef);
++    auto jsValue = toJSNewlyCreated<IDLInterface<USBInTransferResult>>(*lexicalGlobalObject, *castedThis->realm(), throwScope, WTF::move(object));
++    if constexpr (IsExceptionOr<decltype(object)>)
++        RETURN_IF_EXCEPTION(throwScope, { });
++    setSubclassStructureIfNeeded<USBInTransferResult>(lexicalGlobalObject, callFrame, asObject(jsValue));
++    RETURN_IF_EXCEPTION(throwScope, { });
++    // The IDL conversion holds a native view over the same buffer, but wrapping
++    // it again would create a different JavaScript DataView. Retain the supplied
++    // object in the generated, GC-traced attribute cache. Native transfer results
++    // populate this cache lazily on their first data access.
++    auto* wrapper = uncheckedDowncast<JSUSBInTransferResult>(asObject(jsValue));
++    wrapper->m_data.set(vm, wrapper, argument1.value().isUndefined() ? jsNull() : argument1.value());
++    return JSValue::encode(jsValue);
++}
++
++EncodedJSValue constructJSUSBIsochronousInTransferPacket(JSGlobalObject* lexicalGlobalObject, CallFrame& frame)
++{
++    using JSUSBIsochronousInTransferPacketDOMConstructor = JSDOMConstructor<JSUSBIsochronousInTransferPacket>;
++    auto* callFrame = &frame;
++    auto& vm = lexicalGlobalObject->vm();
++    auto throwScope = DECLARE_THROW_SCOPE(vm);
++    auto* castedThis = uncheckedDowncast<JSUSBIsochronousInTransferPacketDOMConstructor>(callFrame->jsCallee());
++    ASSERT(castedThis);
++    if (callFrame->argumentCount() < 1) [[unlikely]]
++        return throwVMError(lexicalGlobalObject, throwScope, createNotEnoughArgumentsError(lexicalGlobalObject));
++    EnsureStillAliveScope argument0 = callFrame->uncheckedArgument(0);
++    auto statusConversionResult = convert<IDLEnumeration<USBTransferStatus>>(*lexicalGlobalObject, argument0.value(), [](JSC::JSGlobalObject& lexicalGlobalObject, JSC::ThrowScope& scope) { throwArgumentMustBeEnumError(lexicalGlobalObject, scope, 0, "status"_s, "USBIsochronousInTransferPacket"_s, nullptr, expectedEnumerationValues<USBTransferStatus>()); });
++    if (statusConversionResult.hasException(throwScope)) [[unlikely]]
++       return encodedJSValue();
++    EnsureStillAliveScope argument1 = callFrame->argument(1);
++    auto dataConversionResult = convertOptionalWithDefault<IDLNullable<IDLDataView>>(*lexicalGlobalObject, argument1.value(), [&] -> ConversionResult<IDLNullable<IDLDataView>> { return typename Converter<IDLNullable<IDLDataView>>::ReturnType { nullptr }; }, [](JSC::JSGlobalObject& lexicalGlobalObject, JSC::ThrowScope& scope) { throwArgumentTypeError(lexicalGlobalObject, scope, 1, "data"_s, "USBIsochronousInTransferPacket"_s, nullptr, "DataView"_s); });
++    if (dataConversionResult.hasException(throwScope)) [[unlikely]]
++       return encodedJSValue();
++    auto object = USBIsochronousInTransferPacket::create(statusConversionResult.releaseReturnValue(), dataConversionResult.releaseReturnValue());
++    if constexpr (IsExceptionOr<decltype(object)>)
++        RETURN_IF_EXCEPTION(throwScope, { });
++    static_assert(TypeOrExceptionOrUnderlyingType<decltype(object)>::isRef);
++    auto jsValue = toJSNewlyCreated<IDLInterface<USBIsochronousInTransferPacket>>(*lexicalGlobalObject, *castedThis->realm(), throwScope, WTF::move(object));
++    if constexpr (IsExceptionOr<decltype(object)>)
++        RETURN_IF_EXCEPTION(throwScope, { });
++    setSubclassStructureIfNeeded<USBIsochronousInTransferPacket>(lexicalGlobalObject, callFrame, asObject(jsValue));
++    RETURN_IF_EXCEPTION(throwScope, { });
++    // The IDL conversion holds a native view over the same buffer, but wrapping
++    // it again would create a different JavaScript DataView. Retain the supplied
++    // object in the generated, GC-traced attribute cache. Native transfer results
++    // populate this cache lazily on their first data access.
++    auto* wrapper = uncheckedDowncast<JSUSBIsochronousInTransferPacket>(asObject(jsValue));
++    wrapper->m_data.set(vm, wrapper, argument1.value().isUndefined() ? jsNull() : argument1.value());
++    return JSValue::encode(jsValue);
++}
++
++EncodedJSValue constructJSUSBIsochronousInTransferResult(JSGlobalObject* lexicalGlobalObject, CallFrame& frame)
++{
++    using JSUSBIsochronousInTransferResultDOMConstructor = JSDOMConstructor<JSUSBIsochronousInTransferResult>;
++    auto* callFrame = &frame;
++    auto& vm = lexicalGlobalObject->vm();
++    auto throwScope = DECLARE_THROW_SCOPE(vm);
++    auto* castedThis = uncheckedDowncast<JSUSBIsochronousInTransferResultDOMConstructor>(callFrame->jsCallee());
++    ASSERT(castedThis);
++    if (callFrame->argumentCount() < 1) [[unlikely]]
++        return throwVMError(lexicalGlobalObject, throwScope, createNotEnoughArgumentsError(lexicalGlobalObject));
++    EnsureStillAliveScope argument0 = callFrame->uncheckedArgument(0);
++    auto packetsConversionResult = convert<IDLSequence<IDLInterface<USBIsochronousInTransferPacket>>>(*lexicalGlobalObject, argument0.value());
++    if (packetsConversionResult.hasException(throwScope)) [[unlikely]]
++       return encodedJSValue();
++    EnsureStillAliveScope argument1 = callFrame->argument(1);
++    auto dataConversionResult = convertOptionalWithDefault<IDLNullable<IDLDataView>>(*lexicalGlobalObject, argument1.value(), [&] -> ConversionResult<IDLNullable<IDLDataView>> { return typename Converter<IDLNullable<IDLDataView>>::ReturnType { nullptr }; }, [](JSC::JSGlobalObject& lexicalGlobalObject, JSC::ThrowScope& scope) { throwArgumentTypeError(lexicalGlobalObject, scope, 1, "data"_s, "USBIsochronousInTransferResult"_s, nullptr, "DataView"_s); });
++    if (dataConversionResult.hasException(throwScope)) [[unlikely]]
++       return encodedJSValue();
++    auto object = USBIsochronousInTransferResult::create(packetsConversionResult.releaseReturnValue(), dataConversionResult.releaseReturnValue());
++    if constexpr (IsExceptionOr<decltype(object)>)
++        RETURN_IF_EXCEPTION(throwScope, { });
++    static_assert(TypeOrExceptionOrUnderlyingType<decltype(object)>::isRef);
++    auto jsValue = toJSNewlyCreated<IDLInterface<USBIsochronousInTransferResult>>(*lexicalGlobalObject, *castedThis->realm(), throwScope, WTF::move(object));
++    if constexpr (IsExceptionOr<decltype(object)>)
++        RETURN_IF_EXCEPTION(throwScope, { });
++    setSubclassStructureIfNeeded<USBIsochronousInTransferResult>(lexicalGlobalObject, callFrame, asObject(jsValue));
++    RETURN_IF_EXCEPTION(throwScope, { });
++    // The IDL conversion holds a native view over the same buffer, but wrapping
++    // it again would create a different JavaScript DataView. Retain the supplied
++    // object in the generated, GC-traced attribute cache. Native transfer results
++    // populate this cache lazily on their first data access.
++    auto* wrapper = uncheckedDowncast<JSUSBIsochronousInTransferResult>(asObject(jsValue));
++    wrapper->m_data.set(vm, wrapper, argument1.value().isUndefined() ? jsNull() : argument1.value());
++    return JSValue::encode(jsValue);
++}
++
++} // namespace WebCore
++#endif
 diff --git a/Source/WebCore/Modules/webusb/USBTransferStatus.h b/Source/WebCore/Modules/webusb/USBTransferStatus.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..61e0a7a955b28e17aa56b65027635fc543037204
@@ -6619,7 +6754,7 @@ index 0000000000000000000000000000000000000000..48e19a5957df4c1ae60378dd9a84cbe4
 +/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
 +enum USBTransferStatus { "ok", "stall", "babble" };
 diff --git a/Source/WebCore/PlatformHaiku.cmake b/Source/WebCore/PlatformHaiku.cmake
-index 16a88804a1baa39ccdd9fc2870b6e2524d941298..2cdcbd541632c5f5958525e1ef51362208f20329 100644
+index 16a88804a1baa39ccdd9fc2870b6e2524d941298..fb0408950fc36fed9b3479a9f5b64761bbaa1351 100644
 --- a/Source/WebCore/PlatformHaiku.cmake
 +++ b/Source/WebCore/PlatformHaiku.cmake
 @@ -1,52 +1,331 @@
@@ -6960,7 +7095,7 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..2cdcbd541632c5f5958525e1ef513622
    textencoding
    translation
    ${WEBP_LIBRARIES}
-@@ -61,6 +340,213 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
+@@ -61,6 +340,214 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
    ${SQLITE_INCLUDE_DIR}
    ${WEBP_INCLUDE_DIRS}
    ${ZLIB_INCLUDE_DIRS}
@@ -7172,6 +7307,7 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..2cdcbd541632c5f5958525e1ef513622
 +        Modules/webusb/USB.cpp
 +        Modules/webusb/USBDevice.cpp
 +        Modules/webusb/USBDescriptors.cpp
++        Modules/webusb/USBTransferResultCustom.cpp
 +    )
 +endif ()
 diff --git a/Source/WebCore/Sources.txt b/Source/WebCore/Sources.txt
@@ -61001,7 +61137,7 @@ index 23ebd4a75995ae9f57a82f860a97794ca3ee454f..dc9c8105e8da7e5bcb761413f637115a
  
  #if HAVE(COOKIE_CHANGE_LISTENER_API)
 diff --git a/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in b/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in
-index 575a1f68f3bd19cbe2259aae39f94dcadb552392..ddfb1b1c75e62a278faa06d1558f30b5b9b4c4fb 100644
+index 575a1f68f3bd19cbe2259aae39f94dcadb552392..439c077d205687dc9fe11b815027db5ec9f70d63 100644
 --- a/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in
 +++ b/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in
 @@ -1689,7 +1689,7 @@ header: <wtf/MachSendRight.h>
@@ -61047,6 +61183,14 @@ index 575a1f68f3bd19cbe2259aae39f94dcadb552392..ddfb1b1c75e62a278faa06d1558f30b5
  
  enum class WebCore::ContentExtensionDefaultEnablement : bool
  using WebCore::ContentExtensionEnablement = std::pair<WebCore::ContentExtensionDefaultEnablement, HashSet<String>>;
+@@ -6814,6 +6823,7 @@ struct WebCore::OwnerPermissionsPolicyData {
+     SyncXHR,
+     Fullscreen,
+     WebShare,
++    USB,
+ #if ENABLE(DEVICE_ORIENTATION)
+     Gyroscope,
+     Accelerometer,
 diff --git a/Source/WebKit/Shared/WebCoreArgumentCodersNetwork.serialization.in b/Source/WebKit/Shared/WebCoreArgumentCodersNetwork.serialization.in
 index 219204814dae3776eaa86c1e91724afc8e57f886..a07920c19c053450070e8ee201e36ed4d97c6a16 100644
 --- a/Source/WebKit/Shared/WebCoreArgumentCodersNetwork.serialization.in
@@ -94206,10 +94350,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..1ac4143e0e03ff4281a8184c6a054761d8c6a673
+index 0000000000000000000000000000000000000000..70a10e320239cd2c13509114f817ddde87d27e7e
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,2354 @@
+@@ -0,0 +1,2357 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -95597,6 +95741,9 @@ index 0000000000000000000000000000000000000000..1ac4143e0e03ff4281a8184c6a054761
 +    if (const char* offscreen = std::getenv("SUMMIT_OFFSCREEN_CANVAS"); !offscreen || std::strcmp(offscreen, "0")) {
 +        configuration->preferences().setOffscreenCanvasEnabled(true);
 +        configuration->preferences().setOffscreenCanvasInWorkersEnabled(true);
++#if ENABLE(WEBGL)
++        configuration->preferences().setAllowWebGLInWorkers(true);
++#endif
 +    }
 +#endif
 +#if ENABLE(WEB_AUTHN)

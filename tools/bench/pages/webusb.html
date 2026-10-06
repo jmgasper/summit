@@ -51,13 +51,19 @@ async function main() {
     const view = new DataView(new Uint8Array([11,22,33]).buffer);
     const input = new USBInTransferResult('ok', view);
     check('input result preserves bytes', input.status === 'ok' && input.data === view && input.data.getUint8(1) === 22);
+    check('input result keeps DataView identity', input.data === input.data);
+    view.setUint8(1, 44);
+    check('input result shares the supplied buffer', input.data.getUint8(1) === 44);
+    class DerivedInput extends USBInTransferResult {}
+    const derived = new DerivedInput('ok', view);
+    check('input result supports subclasses', derived instanceof DerivedInput && derived.data === view);
     check('input result default is null', new USBInTransferResult('stall').data === null);
     const output = new USBOutTransferResult('ok', 3);
     check('output result preserves count', output.status === 'ok' && output.bytesWritten === 3);
     await rejects('invalid transfer status rejected', () => new USBInTransferResult('invalid'), 'TypeError');
     const inPacket = new USBIsochronousInTransferPacket('ok', view);
     const inResult = new USBIsochronousInTransferResult([inPacket], view);
-    check('iso input packet result', inResult.packets[0] === inPacket && inResult.data === view && Object.isFrozen(inResult.packets));
+    check('iso input packet result', inResult.packets[0] === inPacket && inPacket.data === view && inResult.data === view && Object.isFrozen(inResult.packets));
     const outPacket = new USBIsochronousOutTransferPacket('ok', 3);
     const outResult = new USBIsochronousOutTransferResult([outPacket]);
     check('iso output packet result', outResult.packets[0] === outPacket && outResult.packets[0].bytesWritten === 3 && Object.isFrozen(outResult.packets));
