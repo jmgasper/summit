@@ -1,0 +1,117 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>OffscreenCanvas: running</title>
+<style>body{font:16px sans-serif;margin:24px}canvas{border:1px solid #888;width:128px;height:64px;image-rendering:pixelated}pre{white-space:pre-wrap}</style>
+<h1>OffscreenCanvas</h1>
+<p>The transferred canvas below must be green on the left and blue on the right.</p>
+<canvas id="display" width="128" height="64"></canvas><pre id="log"></pre>
+<script>
+const results = [];
+const log = document.querySelector('#log');
+function check(name, ok, detail = '') {
+    results.push({name, ok, detail});
+    log.textContent += `${ok ? 'PASS' : 'FAIL'} ${name} ${detail}\n`;
+}
+function pixel(ctx, x, y, color) {
+    const data = ctx.getImageData(x, y, 1, 1).data;
+    return color.every((c, i) => Math.abs(data[i] - c) <= 1);
+}
+function paint(ctx, width, height) {
+    ctx.fillStyle = '#00ff00'; ctx.fillRect(0, 0, width / 2, height);
+    ctx.fillStyle = '#0000ff'; ctx.fillRect(width / 2, 0, width / 2, height);
+}
+async function main() {
+    check('OffscreenCanvas constructor', typeof OffscreenCanvas === 'function');
+    if (typeof OffscreenCanvas !== 'function') return;
+    const canvas = new OffscreenCanvas(128, 64);
+    const ctx = canvas.getContext('2d');
+    check('2D context', !!ctx);
+    paint(ctx, canvas.width, canvas.height);
+    check('2D pixel readback', pixel(ctx, 10, 10, [0,255,0,255]) && pixel(ctx, 100, 10, [0,0,255,255]));
+    const blob = await canvas.convertToBlob({type:'image/png'});
+    check('PNG encoding', blob.type === 'image/png' && blob.size > 50);
+    const image = await createImageBitmap(blob);
+    const decoded = new OffscreenCanvas(128, 64).getContext('2d');
+    decoded.drawImage(image, 0, 0); image.close();
+    check('PNG pixels survive encoding', pixel(decoded, 10, 10, [0,255,0,255]) && pixel(decoded, 100, 10, [0,0,255,255]));
+    const bitmap = canvas.transferToImageBitmap();
+    const receiver = new OffscreenCanvas(128,64);
+    const bitmapContext = receiver.getContext('bitmaprenderer');
+    check('bitmaprenderer context', !!bitmapContext);
+    bitmapContext.transferFromImageBitmap(bitmap);
+    const restored = new OffscreenCanvas(128,64).getContext('2d');
+    restored.drawImage(receiver,0,0);
+    check('bitmaprenderer transferred pixels', pixel(restored,10,10,[0,255,0,255]));
+    check('transferToImageBitmap clears source', pixel(ctx,10,10,[0,0,0,0]));
+    canvas.width = 32; canvas.height = 16;
+    check('resize and clear', canvas.width === 32 && canvas.height === 16 && pixel(ctx,1,1,[0,0,0,0]));
+    for (const name of ['webgl', 'webgl2']) {
+        const gl = new OffscreenCanvas(16,16).getContext(name);
+        check('main thread ' + name + ' context', !!gl);
+        if (gl) {
+            gl.clearColor(1,0,0,1); gl.clear(gl.COLOR_BUFFER_BIT);
+            const data = new Uint8Array(4);
+            gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,data);
+            check('main thread ' + name + ' GPU pixels', data[0] === 255 && data[1] === 0 && data[2] === 0 && data[3] === 255);
+            gl.getExtension('WEBGL_lose_context')?.loseContext();
+        }
+    }
+    const display = document.querySelector('#display');
+    const transferred = display.transferControlToOffscreen();
+    check('HTML canvas transfers control', transferred instanceof OffscreenCanvas);
+    let rejected = false;
+    try { display.getContext('2d'); } catch(e) { rejected = e.name === 'InvalidStateError'; }
+    check('transferred placeholder rejects getContext', rejected);
+    const source = `
+        ${pixel.toString()}
+        ${paint.toString()}
+        onmessage = async event => {
+            try {
+                const checks = [];
+                const canvas = event.data, ctx = canvas.getContext('2d');
+                paint(ctx,canvas.width,canvas.height);
+                checks.push(['worker 2D pixels',pixel(ctx,10,10,[0,255,0,255]) && pixel(ctx,100,10,[0,0,255,255])]);
+                const encoded = await canvas.convertToBlob({type:'image/png'});
+                checks.push(['worker PNG encoding',encoded.size > 50 && encoded.type === 'image/png']);
+                for (const name of ['webgl','webgl2']) {
+                    const gl = new OffscreenCanvas(16,16).getContext(name);
+                    checks.push(['worker '+name+' context',!!gl]);
+                    if (gl) {
+                        gl.clearColor(1,0,0,1); gl.clear(gl.COLOR_BUFFER_BIT);
+                        const p = new Uint8Array(4); gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,p);
+                        checks.push(['worker '+name+' GPU readback',p[0] === 255 && p[1] === 0 && p[2] === 0 && p[3] === 255]);
+                        gl.getExtension('WEBGL_lose_context')?.loseContext();
+                    }
+                }
+                const independent = new OffscreenCanvas(8,8), independentContext = independent.getContext('2d');
+                independentContext.fillStyle = '#00ff00'; independentContext.fillRect(0,0,8,8);
+                const bitmap = independent.transferToImageBitmap();
+                postMessage({checks,bitmap},[bitmap]);
+            } catch(e) { postMessage({error:String(e.stack || e)}); }
+        }`;
+    const url = URL.createObjectURL(new Blob([source],{type:'text/javascript'}));
+    const worker = new Worker(url);
+    const data = await new Promise((resolve,reject) => {
+        const timeout = setTimeout(() => reject(new Error('worker timed out')),20000);
+        worker.onmessage = e => {clearTimeout(timeout); resolve(e.data)};
+        worker.onerror = e => {clearTimeout(timeout); reject(new Error(e.message))};
+        worker.postMessage(transferred,[transferred]);
+    });
+    if (data.error) throw new Error(data.error);
+    for (const [name,ok] of data.checks) check(name,ok);
+    const returned = new OffscreenCanvas(8,8).getContext('2d');
+    returned.drawImage(data.bitmap,0,0); data.bitmap.close();
+    check('ImageBitmap returned from worker',pixel(returned,1,1,[0,255,0,255]));
+    // Let the worker commit to its HTML placeholder before sampling it.
+    await new Promise(r => setTimeout(r,250));
+    const presentation = document.createElement('canvas'); presentation.width=128; presentation.height=64;
+    const presented = presentation.getContext('2d'); presented.drawImage(display,0,0);
+    check('worker paints HTML placeholder',pixel(presented,10,10,[0,255,0,255]) && pixel(presented,100,10,[0,0,255,255]));
+    worker.terminate(); URL.revokeObjectURL(url);
+}
+main().catch(e => check('unexpected exception',false,String(e.stack || e))).finally(() => {
+    document.title = `OffscreenCanvas: ${results.filter(r => r.ok).length}/${results.length}`;
+    window.testResults = results;
+    window.testDone = true;
+});
+</script>

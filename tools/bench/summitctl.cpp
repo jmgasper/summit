@@ -429,7 +429,7 @@ int main(int argc, char** argv)
         std::printf("{\"team\":%ld,\"now\":%lld,\"replyMicros\":%lld,\"count\":%ld,\"selected\":%lld,\"closing\":%s,"
             "\"scrollActive\":%s,\"scrollRequested\":%ld,\"scrollSent\":%ld,\"scrollStatus\":%ld,\"scrollDurationMicros\":%lld,"
             "\"address\":\"%s\",\"status\":\"%s\",\"backend\":\"%s\",\"webkit\":\"%s\",\"haikuWebkit\":\"%s\","
-            "\"webkitRevision\":\"%s\",\"private\":%s,\"tabs\":[",
+            "\"webkitRevision\":\"%s\",\"private\":%s,\"fullscreen\":%s,\"tabs\":[",
             long(team), static_cast<long long>(state.GetInt64("now", 0)), static_cast<long long>(elapsed), long(count), static_cast<long long>(selected),
             closing ? "true" : "false", scrollActive ? "true" : "false",
             long(state.GetInt32("scroll_requested", 0)), long(state.GetInt32("scroll_sent", 0)),
@@ -437,7 +437,8 @@ int main(int argc, char** argv)
             Escape(String(state, "address")).c_str(), Escape(String(state, "status")).c_str(),
             Escape(String(state, "backend")).c_str(), Escape(String(state, "webkit")).c_str(),
             Escape(String(state, "haiku_webkit")).c_str(), Escape(String(state, "webkit_revision")).c_str(),
-            state.GetBool("private", false) ? "true" : "false");
+            state.GetBool("private", false) ? "true" : "false",
+            state.GetBool("fullscreen", false) ? "true" : "false");
         BMessage tab;
         for (int32 i = 0; state.FindMessage("tab", i, &tab) == B_OK; ++i) {
             int64 id = -1; bool loading = false, loadError = false;

@@ -377,6 +377,18 @@ private:
     void RebuildDynamicMenus();
     void ShowBookmarkMenu();
     void IconLoaded(const BMessage& message);
+#if SUMMIT_MODERN_WEBKIT
+    void FullScreenRequested(const BMessage&);
+    bool SetPageFullScreen(int64 tab, bool enter);
+    void ExitPageFullScreen();
+    int64 fFullScreenTab = 0;
+    BRect fBeforeFullScreen;
+    window_look fBeforeFullScreenLook = B_TITLED_WINDOW_LOOK;
+    uint32 fBeforeFullScreenFlags = 0;
+    std::vector<BView*> fFullScreenHidden;
+    BStringView* fFullScreenNotice = nullptr;
+    std::unique_ptr<BMessageRunner> fFullScreenNoticeTimer;
+#endif
     void SetBookmarksBarVisible(bool visible);
     std::string HomeAddress() const;
     // An extension's chrome_url_overrides.newtab page, else the home page.

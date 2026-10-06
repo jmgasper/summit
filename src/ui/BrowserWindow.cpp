@@ -630,6 +630,16 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
         .Add(fPages, 1)
         .Add(fFindBar).Add(statusLine);
     fLayout = static_cast<BGroupLayout*>(GetLayout());
+#if SUMMIT_MODERN_WEBKIT
+    fFullScreenNotice = new BStringView("fullscreen-notice", "");
+    fFullScreenNotice->SetAlignment(B_ALIGN_CENTER);
+    fFullScreenNotice->SetTruncation(B_TRUNCATE_MIDDLE);
+    fFullScreenNotice->SetExplicitMinSize(BSize(0, B_SIZE_UNSET));
+    fFullScreenNotice->SetViewUIColor(B_PANEL_BACKGROUND_COLOR);
+    fFullScreenNotice->SetHighUIColor(B_PANEL_TEXT_COLOR);
+    fLayout->AddView(fFullScreenNotice);
+    fFullScreenNotice->Hide();
+#endif
     // Glue that only the Safari-like look shows (ApplyInterfaceStyle), to
     // centre the address field.
     auto glue = [] {
@@ -1036,6 +1046,9 @@ void BrowserWindow::ReplaceTabView(const Tab& tab, const std::string& url)
 #endif
 void BrowserWindow::SelectTab(int64 id, bool forClose)
 {
+#if SUMMIT_MODERN_WEBKIT
+    if (fFullScreenTab && fFullScreenTab != id) ExitPageFullScreen();
+#endif
 #if !SUMMIT_MODERN_WEBKIT
     (void)forClose;
 #endif
@@ -1365,6 +1378,7 @@ void BrowserWindow::WebKitCloseResult(const BMessage& message)
 
 void BrowserWindow::FinishCloseTab(int64 id)
 {
+    if (fFullScreenTab == id) ExitPageFullScreen();
 #endif
     for (size_t i = 0; i < fTabs.size(); ++i) {
         if (fTabs[i].id != id) continue;
@@ -1948,6 +1962,13 @@ void BrowserWindow::ActivateExtensionAction(const BMessage& message)
 void BrowserWindow::DispatchMessage(BMessage* message, BHandler* handler)
 {
     summit::StallScope scope("window", message ? message->what : 0);
+#if SUMMIT_MODERN_WEBKIT
+    if (fFullScreenTab && message && message->what == B_KEY_DOWN
+        && message->GetString("bytes", "")[0] == B_ESCAPE) {
+        ExitPageFullScreen();
+        return;
+    }
+#endif
     // SUMMIT_INPUT_LAG_TRACE=1: once a second, how late pointer events reach
     // this window after input_server stamped them, which is the time they
     // spent in input_server and app_server (whose event thread also moves
@@ -2264,6 +2285,9 @@ void BrowserWindow::ShowTabMenu(const BMessage& message)
 
 void BrowserWindow::ApplyInterfaceStyle()
 {
+#if SUMMIT_MODERN_WEBKIT
+    ExitPageFullScreen();
+#endif
     const bool haiku = fInterfaceStyle == "haiku";
     SetInterfaceStyle(haiku);
     // Haiku: tabs on top, as in WebPositive, then a toolbar of real buttons with
@@ -2559,6 +2583,77 @@ void BrowserWindow::IconLoaded(const BMessage& message)
     // Every window redraws; the others read the new icon from disk.
     fShared->IconChanged(page, BMessenger(this));
 }
+#if SUMMIT_MODERN_WEBKIT
+void BrowserWindow::FullScreenRequested(const BMessage& message)
+{
+    BMessenger messenger;
+    if (message.FindMessenger("view", &messenger) != B_OK) return;
+    auto* tab = FindTab(messenger);
+    if (!tab) return;
+    const bool enter = message.GetBool("fullscreen", false);
+    const bool accepted = SetPageFullScreen(tab->id, enter);
+    if (auto request = message.GetUInt64("request", 0))
+        tab->view->CompleteFullScreenRequest(request, accepted);
+}
+
+bool BrowserWindow::SetPageFullScreen(int64 tab, bool enter)
+{
+    if (enter) {
+        if (tab != fSelected || !IsActive() || fClosingWindow) return false;
+        if (fFullScreenTab) return fFullScreenTab == tab;
+        const BRect screen = BScreen(this).Frame();
+        if (!screen.IsValid()) return false;
+        fBeforeFullScreen = Frame();
+        fBeforeFullScreenLook = Look();
+        fBeforeFullScreenFlags = Flags();
+        fFullScreenTab = tab;
+        fSuggestions->Hide();
+        for (int32 i = 0; i < fLayout->CountItems(); ++i) {
+            auto* view = fLayout->ItemAt(i)->View();
+            if (view && view != fPages && view != fFullScreenNotice && !view->IsHidden(view)) {
+                fFullScreenHidden.push_back(view);
+                view->Hide();
+            }
+        }
+        SetLook(B_NO_BORDER_WINDOW_LOOK);
+        SetFlags(Flags() | B_NOT_MOVABLE | B_NOT_RESIZABLE);
+        MoveTo(screen.LeftTop());
+        ResizeTo(screen.Width(), screen.Height());
+        // Show the real URL in native chrome briefly so a page cannot enter
+        // fullscreen without identifying itself and explaining how to leave.
+        auto* active = ActiveTab();
+        std::string notice = (active ? active->url : std::string()) + " — Full screen. Press Esc to exit.";
+        fFullScreenNotice->SetText(notice.c_str());
+        fFullScreenNotice->Show();
+        BMessage hide('fsnh');
+        fFullScreenNoticeTimer = std::make_unique<BMessageRunner>(BMessenger(this), &hide, 3000000, 1);
+        if (active) active->view->MakeFocus();
+    } else if (fFullScreenTab == tab) {
+        fFullScreenTab = 0;
+        fFullScreenNoticeTimer.reset();
+        if (!fFullScreenNotice->IsHidden(fFullScreenNotice)) fFullScreenNotice->Hide();
+        SetFlags(fBeforeFullScreenFlags);
+        SetLook(fBeforeFullScreenLook);
+        for (auto* view : fFullScreenHidden) view->Show();
+        fFullScreenHidden.clear();
+        MoveTo(fBeforeFullScreen.LeftTop());
+        ResizeTo(fBeforeFullScreen.Width(), fBeforeFullScreen.Height());
+    }
+    return true;
+}
+
+void BrowserWindow::ExitPageFullScreen()
+{
+    if (!fFullScreenTab) return;
+    for (auto& tab : fTabs) {
+        if (tab.id != fFullScreenTab) continue;
+        tab.view->ExitFullScreen();
+        SetPageFullScreen(tab.id, false);
+        break;
+    }
+}
+#endif
+
 void BrowserWindow::SaveSession()
 {
 #if SUMMIT_MODERN_WEBKIT
@@ -2571,7 +2666,11 @@ void BrowserWindow::SaveSession()
         session.tabs.push_back({fTabs[i].url, fTabs[i].title});
         if (fTabs[i].id == fSelected) session.selected = i;
     }
+#if SUMMIT_MODERN_WEBKIT
+    const BRect frame = fFullScreenTab ? fBeforeFullScreen : Frame();
+#else
     const BRect frame = Frame();
+#endif
     session.frame[0] = frame.left; session.frame[1] = frame.top;
     session.frame[2] = frame.right; session.frame[3] = frame.bottom;
     fShared->SetWindowSession(fKey, session);
@@ -3033,6 +3132,11 @@ void BrowserWindow::MessageReceived(BMessage* message)
             }
             break;
         }
+        case B_WEBKIT_FULLSCREEN_REQUESTED: FullScreenRequested(*message); break;
+        case 'fsnh':
+            if (fFullScreenTab && !fFullScreenNotice->IsHidden(fFullScreenNotice))
+                fFullScreenNotice->Hide();
+            break;
         case B_WEBKIT_STATE_CHANGED: case B_WEBKIT_PROCESS_EXITED:
             WebKitStateChanged(*message);
             break;
@@ -3179,6 +3283,7 @@ void BrowserWindow::MessageReceived(BMessage* message)
             reply.AddRect("frame", Frame());
 #if SUMMIT_MODERN_WEBKIT
             reply.AddString("backend", "modern");
+            reply.AddBool("fullscreen", fFullScreenTab != 0);
             reply.AddBool("private", fPrivate);
             reply.AddInt32("download_count", fDownloads.size());
             reply.AddUInt64("extension_action_snapshot", fExtensionActionSnapshot);

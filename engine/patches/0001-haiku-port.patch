@@ -61793,10 +61793,10 @@ index 0000000000000000000000000000000000000000..d28a6cad6339adf79b155cf974e85bfd
 +
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..ce5487528c16744d92d797880e8f679cec7ac265
+index 0000000000000000000000000000000000000000..c513815be2c9593bb9bac943763f49bd69d97fc7
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitView.cpp
-@@ -0,0 +1,919 @@
+@@ -0,0 +1,927 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -62255,6 +62255,14 @@ index 0000000000000000000000000000000000000000..ce5487528c16744d92d797880e8f679c
 +void BWebKitView::GoForward() { SendCommand(viewForwardHaiku); }
 +void BWebKitView::Reload() { SendCommand(viewReloadHaiku); }
 +void BWebKitView::Stop() { SendCommand(viewStopHaiku); }
++void BWebKitView::ExitFullScreen() { SendCommand(viewExitFullScreenHaiku); }
++void BWebKitView::CompleteFullScreenRequest(uint64 request, bool accepted)
++{
++    BMessage message(viewFullScreenResultHaiku);
++    message.AddUInt64("request", request);
++    message.AddBool("accepted", accepted);
++    dispatchViewMessageHaiku(m_state, std::move(message));
++}
 +
 +void BWebKitView::RequestClose()
 +{
@@ -62718,10 +62726,10 @@ index 0000000000000000000000000000000000000000..ce5487528c16744d92d797880e8f679c
 +}
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitView.h b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..75ed8b2c5a2548896c44634fdd7eacd9a202403f
+index 0000000000000000000000000000000000000000..38d4fe91c0bb2fde33dfa4080b4220767f6d4ede
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
-@@ -0,0 +1,209 @@
+@@ -0,0 +1,218 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -62752,6 +62760,12 @@ index 0000000000000000000000000000000000000000..75ed8b2c5a2548896c44634fdd7eacd9
 +WK_EXPORT float BWebKitDisplayScale();
 +
 +enum : uint32 {
++    // The page requests a native fullscreen transition. Fields: "view",
++    // "fullscreen" (bool), "request" (uint64). Change the window on its looper,
++    // then call CompleteFullScreenRequest. A zero request only restores the
++    // window (page closed, crashed or a host failed to answer). Unanswered
++    // requests fail after five seconds. Only the active view should be accepted.
++    B_WEBKIT_FULLSCREEN_REQUESTED = 'wful',
 +    B_WEBKIT_STATE_CHANGED = 'wsta',
 +    B_WEBKIT_PROCESS_EXITED = 'wpex',
 +    B_WEBKIT_FIND_RESULT = 'wfin',
@@ -62826,6 +62840,9 @@ index 0000000000000000000000000000000000000000..75ed8b2c5a2548896c44634fdd7eacd9
 +    void GoForward();
 +    void Reload();
 +    void Stop();
++    void CompleteFullScreenRequest(uint64 request, bool accepted);
++    // The host's Escape key or tab switch: ask the DOM fullscreen manager to exit.
++    void ExitFullScreen();
 +    // Asks beforeunload handlers before notifying CLOSE_REQUESTED or
 +    // CLOSE_CANCELLED. Keep the view alive until the resulting notification.
 +    // Repeated requests while waiting for a decision are ignored.
@@ -91381,10 +91398,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..d5cca0fbd558bbf09de9b906b25f0b69693d18c0
+index 0000000000000000000000000000000000000000..cc4df5ba18c9baed6672f3ea7960e1d21d52a786
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,2193 @@
+@@ -0,0 +1,2273 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -92691,6 +92708,9 @@ index 0000000000000000000000000000000000000000..d5cca0fbd558bbf09de9b906b25f0b69
 +    // There is no native way to keep the display awake yet, and a granted request ended the
 +    // page's process (seen on browserbench.org). Pages must see the API as absent.
 +    configuration->preferences().setScreenWakeLockAPIEnabled(false);
++#if ENABLE(FULLSCREEN_API)
++    configuration->preferences().setFullScreenEnabled(true);
++#endif
 +    // Chrome and Firefox ship requestIdleCallback, and sites and extensions built for
 +    // them call it unconditionally. WebKit's implementation is complete but off by default.
 +    // SUMMIT_REQUEST_IDLE_CALLBACK=0 turns it off, to tell its cost apart.
@@ -93004,6 +93024,15 @@ index 0000000000000000000000000000000000000000..d5cca0fbd558bbf09de9b906b25f0b69
 +        notifyState();
 +        break;
 +    }
++#if ENABLE(FULLSCREEN_API)
++    case viewFullScreenResultHaiku:
++        finishFullScreenRequest(message.GetUInt64("request", 0), message.GetBool("accepted", false));
++        break;
++    case viewExitFullScreenHaiku:
++        if (auto* manager = m_page->fullScreenManager())
++            manager->requestExitFullScreen();
++        break;
++#endif
 +    case viewStopHaiku:
 +        stopLoadHaiku(m_state);
 +        m_page->stopLoading();
@@ -93329,6 +93358,9 @@ index 0000000000000000000000000000000000000000..d5cca0fbd558bbf09de9b906b25f0b69
 +
 +void WebView::processDidExit()
 +{
++#if ENABLE(FULLSCREEN_API)
++    closeFullScreenManager();
++#endif
 +    m_state->load.pending = false;
 +    m_state->load.identified = false;
 +    m_state->load.outcome = "process-exited";
@@ -93570,12 +93602,77 @@ index 0000000000000000000000000000000000000000..d5cca0fbd558bbf09de9b906b25f0b69
 +
 +void WebView::processWillSwap()
 +{
++#if ENABLE(FULLSCREEN_API)
++    closeFullScreenManager();
++#endif
 +    // PageClient's default treats a normal navigation swap as a process exit.
 +    // Preserve the in-flight load and tab state while dropping the old
 +    // process's outstanding presentation callback.
 +    if (m_presentationCallback)
 +        std::exchange(m_presentationCallback, { })();
 +}
++
++#if ENABLE(FULLSCREEN_API)
++void WebView::requestFullScreen(bool enter, CompletionHandler<void(bool)>&& completion)
++{
++    if (m_fullScreenCompletion || (enter && (!geometry().visible || !geometry().active)))
++        return completion(false);
++    m_fullScreenRequested = enter;
++    m_fullScreenCompletion = WTF::move(completion);
++    auto request = ++m_fullScreenRequest;
++    BMessage message(B_WEBKIT_FULLSCREEN_REQUESTED);
++    message.AddMessenger("view", nativeView());
++    message.AddBool("fullscreen", enter);
++    message.AddUInt64("request", request);
++    if (m_state->target.SendMessage(&message, static_cast<BHandler*>(nullptr), 0) != B_OK) {
++        finishFullScreenRequest(request, false);
++        return;
++    }
++    RunLoop::mainSingleton().dispatchAfter(5_s, [weakThis = WeakPtr { *this }, request] {
++        if (weakThis)
++            weakThis->finishFullScreenRequest(request, false);
++    });
++}
++
++void WebView::finishFullScreenRequest(uint64_t request, bool accepted)
++{
++    if (request != m_fullScreenRequest || !m_fullScreenCompletion)
++        return;
++    if (accepted)
++        m_fullScreen = m_fullScreenRequested;
++    auto completion = std::exchange(m_fullScreenCompletion, { });
++    if (!accepted)
++        closeFullScreenManager();
++    completion(accepted);
++}
++
++void WebView::enterFullScreen(WebCore::FloatSize, CompletionHandler<void(bool)>&& completion)
++{
++    requestFullScreen(true, WTF::move(completion));
++}
++
++void WebView::exitFullScreen(CompletionHandler<void()>&& completion)
++{
++    requestFullScreen(false, [completion = WTF::move(completion)](bool) mutable { completion(); });
++}
++
++void WebView::closeFullScreenManager()
++{
++    bool restore = m_fullScreen || m_fullScreenCompletion || m_fullScreenRequested;
++    m_fullScreen = false;
++    m_fullScreenRequested = false;
++    ++m_fullScreenRequest;
++    if (restore) {
++        BMessage message(B_WEBKIT_FULLSCREEN_REQUESTED);
++        message.AddMessenger("view", nativeView());
++        message.AddBool("fullscreen", false);
++        message.AddUInt64("request", 0);
++        m_state->target.SendMessage(&message, static_cast<BHandler*>(nullptr), 0);
++    }
++    if (auto completion = std::exchange(m_fullScreenCompletion, { }))
++        completion(false);
++}
++#endif
 +
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp
@@ -93979,10 +94076,10 @@ index 0000000000000000000000000000000000000000..38315cb60560494a2ac07e47637a9935
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewPrivate.h b/Source/WebKit/UIProcess/haiku/WebViewPrivate.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..eef6d4e35ddeba3b33bda06cf4e2f57deea60f4a
+index 0000000000000000000000000000000000000000..8629d18bcec6c7090eb5eed1a966e91ac519125a
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewPrivate.h
-@@ -0,0 +1,173 @@
+@@ -0,0 +1,195 @@
 +/*
 +   Copyright (C) 2014 Haiku, inc.
 +
@@ -94007,6 +94104,7 @@ index 0000000000000000000000000000000000000000..eef6d4e35ddeba3b33bda06cf4e2f57d
 +#include "APIObject.h"
 +#include "DefaultUndoController.h"
 +#include "PageClient.h"
++#include "WebFullScreenManagerProxy.h"
 +#include "WebKitView.h"
 +#include "WebViewStateHaiku.h"
 +#include <wtf/CompletionHandler.h>
@@ -94019,7 +94117,11 @@ index 0000000000000000000000000000000000000000..eef6d4e35ddeba3b33bda06cf4e2f57d
 +class AcceleratedBackingStore;
 +#endif
 +
-+class WebView final : public API::ObjectImpl<API::Object::Type::View>, public PageClient {
++class WebView final : public API::ObjectImpl<API::Object::Type::View>, public PageClient
++#if ENABLE(FULLSCREEN_API)
++    , public WebFullScreenManagerProxyClient
++#endif
++{
 +    WTF_MAKE_TZONE_ALLOCATED(WebView);
 +public:
 +    static Ref<WebView> create(std::shared_ptr<WebViewStateHaiku>);
@@ -94138,6 +94240,23 @@ index 0000000000000000000000000000000000000000..eef6d4e35ddeba3b33bda06cf4e2f57d
 +    void requestDOMPasteAccess(WebCore::DOMPasteAccessCategory, WebCore::DOMPasteRequiresInteraction, WebCore::FrameIdentifier, const WebCore::IntRect&, const String&, CompletionHandler<void(WebCore::DOMPasteAccessResponse)>&&) override;
 +    void processWillSwap() override;
 +
++#if ENABLE(FULLSCREEN_API)
++    WebFullScreenManagerProxyClient& fullScreenManagerProxyClient() override { return m_fullScreenTestClient ? *m_fullScreenTestClient : *this; }
++    void setFullScreenClientForTesting(std::unique_ptr<WebFullScreenManagerProxyClient>&& client) override { m_fullScreenTestClient = WTF::move(client); }
++    void closeFullScreenManager() override;
++    bool isFullScreen() override { return m_fullScreen; }
++    void enterFullScreen(WebCore::FloatSize, CompletionHandler<void(bool)>&&) override;
++    void exitFullScreen(CompletionHandler<void()>&&) override;
++    void beganEnterFullScreen(const WebCore::IntRect&, const WebCore::IntRect&, CompletionHandler<void(bool)>&& completion) override { completion(m_fullScreen); }
++    void beganExitFullScreen(const WebCore::IntRect&, const WebCore::IntRect&, CompletionHandler<void()>&& completion) override { completion(); }
++    void requestFullScreen(bool, CompletionHandler<void(bool)>&&);
++    void finishFullScreenRequest(uint64_t, bool);
++    bool m_fullScreen { false };
++    bool m_fullScreenRequested { false };
++    uint64_t m_fullScreenRequest { 0 };
++    CompletionHandler<void(bool)> m_fullScreenCompletion;
++    std::unique_ptr<WebFullScreenManagerProxyClient> m_fullScreenTestClient;
++#endif
 +    const std::shared_ptr<WebViewStateHaiku> m_state;
 +    RefPtr<WebPageProxy> m_page;
 +    DefaultUndoController m_undoController;
@@ -94158,10 +94277,10 @@ index 0000000000000000000000000000000000000000..eef6d4e35ddeba3b33bda06cf4e2f57d
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..caad3031f5ed3d81b99a0e62cd6408f55ece5ac0
+index 0000000000000000000000000000000000000000..ffbf7d2cb2acad7db7187df7203ee1fc6bf6c709
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
-@@ -0,0 +1,173 @@
+@@ -0,0 +1,174 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -94208,7 +94327,8 @@ index 0000000000000000000000000000000000000000..caad3031f5ed3d81b99a0e62cd6408f5
 +    // over part of the page (BWebKitView::Draw); once it is done, present the
 +    // page again in full.
 +    viewDirectExposedHaiku = 'wvde',
-+    viewPreconnectHaiku = 'wvpc'
++    viewPreconnectHaiku = 'wvpc',
++    viewFullScreenResultHaiku = 'wvfa', viewExitFullScreenHaiku = 'wvfx'
 +};
 +
 +struct WebViewGeometryHaiku {
@@ -133128,7 +133248,7 @@ index 121e64b01bce34e387deacf3bbbca93adf0f59da..7926cd9c3edf141bc52f7db0253c37c0
  endif ()
 diff --git a/Source/cmake/OptionsHaiku.cmake b/Source/cmake/OptionsHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..acd7572fdd5603c1d8a168aa69246813a46b88cf
+index 0000000000000000000000000000000000000000..4fea3e60bc8aae1298dcfa62dfc1c37c3fc94b70
 --- /dev/null
 +++ b/Source/cmake/OptionsHaiku.cmake
 @@ -0,0 +1,362 @@
@@ -133197,7 +133317,7 @@ index 0000000000000000000000000000000000000000..acd7572fdd5603c1d8a168aa69246813
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_DARK_MODE_CSS PUBLIC ON)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_DRAG_SUPPORT PUBLIC ON)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_ENCRYPTED_MEDIA PUBLIC OFF)
-+WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_FULLSCREEN_API PUBLIC OFF)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_FULLSCREEN_API PUBLIC ${ENABLE_WEBKIT})
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_GAMEPAD PUBLIC OFF)
 +# The host finds the position (Summit: Wi-Fi networks and BeaconDB); see
 +# UIProcess/haiku/SitePermissionsHaiku.cpp.

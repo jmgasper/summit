@@ -1,0 +1,48 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Fullscreen: ready</title>
+<style>
+body{font:16px sans-serif;margin:24px}#target{padding:24px;background:#24623d;color:white}
+#target:fullscreen{box-sizing:border-box;width:100%;height:100%;background:#24623d}
+button{font:inherit;padding:12px}pre{white-space:pre-wrap}
+</style>
+<h1>Fullscreen lifecycle</h1>
+<p>Enter and exit, then enter and press Escape. Also check tab switching, navigation, closing the tab,
+and a renderer crash. The normal window frame and controls must return. An iframe without permission must be rejected.</p>
+<div id="target"><button id="enter">Enter fullscreen</button> <button id="exit">Exit fullscreen</button><pre id="log"></pre></div>
+<iframe id="denied" sandbox="allow-scripts" srcdoc="<button onclick='document.body.requestFullscreen().then(()=>parent.postMessage(\"iframe-allowed\",\"*\"),e=>parent.postMessage(\"iframe-denied:\"+e.name,\"*\"))'>Unpermitted iframe fullscreen</button>"></iframe>
+<script>
+const results=[];
+function check(name,ok,detail='') {results.push({name,ok,detail});log.textContent+=`${ok?'PASS':'FAIL'} ${name} ${detail}\n`;}
+const target=document.querySelector('#target'), log=document.querySelector('#log');
+check('fullscreenEnabled',document.fullscreenEnabled===true);
+check('requestFullscreen',typeof target.requestFullscreen==='function');
+check('exitFullscreen',typeof document.exitFullscreen==='function');
+window.enterFullscreen=()=>target.requestFullscreen().then(()=>{
+    check('entry promise resolves with fullscreenElement',document.fullscreenElement===target);
+    document.title='Fullscreen: entered';
+},e=>{check('entry',false,String(e));document.title='Fullscreen: failed'});
+window.exitFullscreen=()=>document.exitFullscreen().then(()=>{
+    check('exit promise resolves without fullscreenElement',document.fullscreenElement===null);
+    document.title='Fullscreen: exited';
+});
+enter.onclick=enterFullscreen;exit.onclick=exitFullscreen;
+document.addEventListener('fullscreenchange',()=>{
+    check(document.fullscreenElement?'enter event':'exit event',true);
+    document.title=document.fullscreenElement?'Fullscreen: entered':'Fullscreen: exited';
+    if (document.fullscreenElement) setTimeout(()=>{
+        const rect=target.getBoundingClientRect();
+        check('fullscreen element fills viewport',Math.abs(rect.width-innerWidth)<=1&&Math.abs(rect.height-innerHeight)<=1,
+            JSON.stringify({width:rect.width,height:rect.height,innerWidth,innerHeight}));
+    },3500);
+});
+window.addEventListener('message',e=>{
+    if(e.source!==denied.contentWindow)return;
+    check('iframe without allowfullscreen rejected',String(e.data).startsWith('iframe-denied:'),e.data);
+});
+// This call has no gesture, and must fail even when fullscreen is enabled.
+if (typeof target.requestFullscreen==='function') target.requestFullscreen().then(
+    ()=>{check('entry without gesture rejected',false);document.exitFullscreen()},
+    ()=>check('entry without gesture rejected',true));
+window.testResults=results;
+</script>
