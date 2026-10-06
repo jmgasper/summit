@@ -95393,6 +95393,793 @@ index 0000000000000000000000000000000000000000..ffbf7d2cb2acad7db7187df7203ee1fc
 +void performExtensionMenuItemHaiku(uint64_t token);
 +
 +} // namespace WebKit
+diff --git a/Source/WebKit/UIProcess/haiku/usb/USBDevicePolicyHaiku.h b/Source/WebKit/UIProcess/haiku/usb/USBDevicePolicyHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..fece383da7906574b8bfdcaf6a877c1f7c2a99ad
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/usb/USBDevicePolicyHaiku.h
+@@ -0,0 +1,176 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++
++#include <algorithm>
++#include <cstdint>
++#include <optional>
++#include <string>
++#include <vector>
++
++namespace WebKit::USBHaiku {
++
++constexpr size_t maximumTransferSize = 16 * 1024 * 1024;
++constexpr size_t maximumIsochronousPackets = 1024;
++
++struct Endpoint {
++    uint8_t number { 0 };
++    bool input { false };
++    uint8_t type { 0 }; // USB bmAttributes: 1 isochronous, 2 bulk, 3 interrupt.
++    uint16_t packetSize { 0 };
++};
++struct Alternate {
++    uint8_t setting { 0 };
++    uint8_t classCode { 0 };
++    uint8_t subclassCode { 0 };
++    uint8_t protocolCode { 0 };
++    std::string name;
++    std::vector<Endpoint> endpoints;
++};
++struct Interface {
++    uint8_t number { 0 };
++    uint8_t alternate { 0 };
++    bool claimed { false };
++    std::vector<Alternate> alternates;
++};
++struct Configuration {
++    uint8_t value { 0 };
++    std::string name;
++    std::vector<Interface> interfaces;
++};
++struct Device {
++    // These two fields never cross the renderer IPC boundary.
++    std::string path;
++    std::string identity;
++    uint16_t usbVersion { 0 };
++    uint16_t vendorId { 0 };
++    uint16_t productId { 0 };
++    uint16_t deviceVersion { 0 };
++    uint8_t classCode { 0 };
++    uint8_t subclassCode { 0 };
++    uint8_t protocolCode { 0 };
++    uint8_t configuration { 0 };
++    std::string manufacturer;
++    std::string product;
++    std::string serial;
++    std::vector<Configuration> configurations;
++};
++struct Filter {
++    std::optional<uint16_t> vendorId;
++    std::optional<uint16_t> productId;
++    std::optional<uint8_t> classCode;
++    std::optional<uint8_t> subclassCode;
++    std::optional<uint8_t> protocolCode;
++    std::optional<std::string> serialNumber;
++};
++
++inline bool validFilter(const Filter& f)
++{
++    return (!f.productId || f.vendorId) && (!f.subclassCode || f.classCode)
++        && (!f.protocolCode || f.subclassCode) && (!f.serialNumber || f.serialNumber->size() <= 1024);
++}
++
++inline bool protectedClass(uint8_t value)
++{
++    // https://wicg.github.io/webusb/#protected-interface-class
++    switch (value) {
++    case 0x01: case 0x03: case 0x08: case 0x09:
++    case 0x0b: case 0x0e: case 0x10: case 0xe0:
++        return true;
++    default:
++        return false;
++    }
++}
++
++inline bool blocklisted(uint16_t vendor, uint16_t product, uint16_t version)
++{
++    (void)version;
++    // WICG/webusb blocklist.txt, retrieved 2026-10-06. Revisit with engine updates.
++    // Entries currently have no version bounds. Keep tokens out of raw USB.
++    constexpr uint32_t devices[] = {
++        0x096e0850, 0x096e0852, 0x096e0853, 0x096e0854, 0x096e0856,
++        0x096e0858, 0x096e085a, 0x096e085b, 0x096e0880, 0x09c30023,
++        0x10500010, 0x10500018, 0x10500030, 0x10500110, 0x10500111,
++        0x10500112, 0x10500113, 0x10500114, 0x10500115, 0x10500116,
++        0x10500120, 0x10500200, 0x10500211, 0x10500401, 0x10500402,
++        0x10500403, 0x10500404, 0x10500405, 0x10500406, 0x10500407,
++        0x10500410, 0x10c48acf, 0x18d15026, 0x1a4400bb, 0x1d5060fc,
++        0x1e0df1ae, 0x1e0df1d0, 0x1ea8f025, 0x20a04287, 0x24dc0101,
++        0x2581f1d0, 0x2abe1002, 0x2ccf0880
++    };
++    return std::binary_search(std::begin(devices), std::end(devices), (uint32_t(vendor) << 16) | product);
++}
++
++inline bool eligible(const Device& d)
++{
++    if (!d.vendorId || !d.productId || d.configurations.empty()
++        || protectedClass(d.classCode) || blocklisted(d.vendorId, d.productId, d.deviceVersion))
++        return false;
++    // Haiku's raw USB driver cannot reserve a single interface against kernel
++    // drivers. Therefore exclude the entire composite device if *any* alternate
++    // has a protected class. Never reconfigure a keyboard or a mounted disk.
++    bool hasInterface = false;
++    for (auto& configuration : d.configurations) {
++        for (auto& interface : configuration.interfaces) {
++            for (auto& alternate : interface.alternates) {
++                hasInterface = true;
++                if (protectedClass(alternate.classCode))
++                    return false;
++            }
++        }
++    }
++    return hasInterface;
++}
++
++inline bool matches(const Device& d, const Filter& f)
++{
++    if (!validFilter(f) || (f.vendorId && *f.vendorId != d.vendorId)
++        || (f.productId && *f.productId != d.productId)
++        || (f.serialNumber && *f.serialNumber != d.serial))
++        return false;
++    if (!f.classCode)
++        return true;
++    auto matchesClass = [&](uint8_t c, uint8_t s, uint8_t p) {
++        return *f.classCode == c && (!f.subclassCode || *f.subclassCode == s)
++            && (!f.protocolCode || *f.protocolCode == p);
++    };
++    if (matchesClass(d.classCode, d.subclassCode, d.protocolCode))
++        return true;
++    for (auto& c : d.configurations) {
++        for (auto& i : c.interfaces) {
++            for (auto& a : i.alternates) {
++                if (matchesClass(a.classCode, a.subclassCode, a.protocolCode))
++                    return true;
++            }
++        }
++    }
++    return false;
++}
++
++inline bool matches(const Device& d, const std::vector<Filter>& include, const std::vector<Filter>& exclude)
++{
++    return eligible(d) && (include.empty() || std::any_of(include.begin(), include.end(), [&](auto& f) { return matches(d, f); }))
++        && std::none_of(exclude.begin(), exclude.end(), [&](auto& f) { return matches(d, f); });
++}
++
++inline bool allowedStandardControl(bool input, uint8_t request)
++{
++    // WebUSB permits only these read-only standard requests. State changes
++    // must go through selectConfiguration/selectAlternateInterface/clearHalt.
++    return input && (request == 0 || request == 6 || request == 8 || request == 10 || request == 12);
++}
++
++inline bool validPacketLengths(const std::vector<uint32_t>& lengths, size_t& total)
++{
++    total = 0;
++    if (lengths.size() > maximumIsochronousPackets)
++        return false;
++    for (auto length : lengths) {
++        // Haiku's usb_iso_packet_descriptor uses a signed 16-bit length.
++        if (length > 32767 || length > maximumTransferSize - total)
++            return false;
++        total += length;
++    }
++    return true;
++}
++
++} // namespace WebKit::USBHaiku
+diff --git a/Source/WebKit/UIProcess/haiku/usb/USBDeviceSessionHaiku.cpp b/Source/WebKit/UIProcess/haiku/usb/USBDeviceSessionHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c48412e0fa048a27c743a2afd405e874cbec01a3
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/usb/USBDeviceSessionHaiku.cpp
+@@ -0,0 +1,524 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#ifndef SUMMIT_USB_STANDALONE
++#include "config.h"
++#endif
++#include "USBDeviceSessionHaiku.h"
++
++#include <USBKit.h>
++#include <algorithm>
++#include <cstring>
++#include <dirent.h>
++#include <fcntl.h>
++#include <sys/ioctl.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++namespace WebKit::USBHaiku {
++namespace {
++
++// The stable prefix of Haiku's usb_raw.h ABI (MIT, Haiku Inc. 2006-2008).
++// Use raw transfer replies because USBKit collapses STALL into B_ERROR.
++constexpr uint32_t getVersion = 0x1000;
++constexpr uint32_t controlTransferCommand = 0x4000;
++constexpr uint32_t interruptTransferCommand = 0x4001;
++constexpr uint32_t bulkTransferCommand = 0x4002;
++constexpr uint32_t isochronousTransferCommand = 0x4003;
++struct RawControl {
++    status_t status;
++    uint8_t requestType;
++    uint8_t request;
++    uint16_t value;
++    uint16_t index;
++    uint16_t length;
++    void* data;
++};
++struct RawTransfer {
++    status_t status;
++    uint32_t interfaceIndex;
++    uint32_t endpointIndex;
++    void* data;
++    size_t length;
++};
++struct RawIsochronous {
++    status_t status;
++    uint32_t interfaceIndex;
++    uint32_t endpointIndex;
++    void* data;
++    size_t length;
++    usb_iso_packet_descriptor* packets;
++    uint32_t packetCount;
++};
++
++Result rawResult(status_t status, size_t transferred, size_t capacity)
++{
++    if (status == 3) {
++        Result r;
++        r.status = Status::Stall;
++        return r;
++    }
++    if (status != 0)
++        return Result::failure(Error::Network);
++    Result r;
++    r.status = transferred > capacity ? Status::Babble : Status::Ok;
++    r.transferred = std::min(transferred, capacity);
++    return r;
++}
++
++bool validPath(const std::string& path)
++{
++    constexpr std::string_view prefix = "/dev/bus/usb/";
++    if (!path.starts_with(prefix) || path.size() > 256)
++        return false;
++    auto rest = std::string_view(path).substr(prefix.size());
++    if (rest.empty() || rest.front() == '/' || rest.back() == '/')
++        return false;
++    for (char c : rest) {
++        if ((c < '0' || c > '9') && c != '/' && c != 'h' && c != 'u' && c != 'b')
++            return false;
++    }
++    return rest.find("//") == std::string_view::npos;
++}
++
++std::string safeString(const char* text)
++{
++    if (!text)
++        return { };
++    return std::string(text, strnlen(text, 1024));
++}
++
++std::optional<uint8_t> activeConfiguration(const BUSBDevice& device)
++{
++    uint8_t value = 0;
++    if (device.ControlTransfer(0x80, 8, 0, 0, 1, &value) != 1)
++        return std::nullopt;
++    return value;
++}
++
++std::optional<Device> describe(BUSBDevice& device, const std::string& path)
++{
++    if (device.InitCheck() != B_OK || device.CountConfigurations() > 32)
++        return std::nullopt;
++    Device d;
++    d.path = path;
++    d.usbVersion = device.USBVersion();
++    d.vendorId = device.VendorID();
++    d.productId = device.ProductID();
++    d.deviceVersion = device.Version();
++    d.classCode = device.Class();
++    d.subclassCode = device.Subclass();
++    d.protocolCode = device.Protocol();
++    size_t descriptorCount = 0;
++    for (uint32_t c = 0; c < device.CountConfigurations(); ++c) {
++        auto* config = device.ConfigurationAt(c);
++        if (!config || config->CountInterfaces() > 128)
++            return std::nullopt;
++        Configuration configuration;
++        configuration.value = config->Descriptor()->configuration_value;
++        for (uint32_t i = 0; i < config->CountInterfaces(); ++i) {
++            auto* iface = config->InterfaceAt(i);
++            if (!iface || iface->CountAlternates() > 128)
++                return std::nullopt;
++            Interface interface;
++            interface.number = iface->Descriptor()->interface_number;
++            interface.alternate = iface->Descriptor()->alternate_setting;
++            for (uint32_t a = 0; a < iface->CountAlternates(); ++a) {
++                auto* alt = iface->AlternateAt(a);
++                if (!alt || alt->CountEndpoints() > 30 || ++descriptorCount > 4096)
++                    return std::nullopt;
++                Alternate alternate;
++                alternate.setting = alt->Descriptor()->alternate_setting;
++                alternate.classCode = alt->Class();
++                alternate.subclassCode = alt->Subclass();
++                alternate.protocolCode = alt->Protocol();
++                // Do not read strings until the complete class tree is known.
++                for (uint32_t e = 0; e < alt->CountEndpoints(); ++e) {
++                    auto* endpoint = alt->EndpointAt(e);
++                    if (!endpoint || ++descriptorCount > 4096)
++                        return std::nullopt;
++                    auto* desc = endpoint->Descriptor();
++                    Endpoint value;
++                    value.number = desc->endpoint_address & 15;
++                    value.input = endpoint->IsInput();
++                    value.type = desc->attributes & 3;
++                    value.packetSize = endpoint->MaxPacketSize() & 0x7ff;
++                    if (value.number && value.type)
++                        alternate.endpoints.push_back(value);
++                }
++                interface.alternates.push_back(std::move(alternate));
++            }
++            configuration.interfaces.push_back(std::move(interface));
++        }
++        d.configurations.push_back(std::move(configuration));
++    }
++    // Protected devices are observable only to the broker's policy test, never
++    // returned to a web origin. Avoid even string/control reads for these.
++    if (!eligible(d))
++        return d;
++    d.manufacturer = safeString(device.ManufacturerString());
++    d.product = safeString(device.ProductString());
++    d.serial = safeString(device.SerialNumberString());
++    for (size_t c = 0; c < d.configurations.size(); ++c) {
++        auto* config = device.ConfigurationAt(c);
++        d.configurations[c].name = safeString(config->ConfigurationString());
++        for (size_t i = 0; i < d.configurations[c].interfaces.size(); ++i) {
++            auto* iface = config->InterfaceAt(i);
++            auto& interface = d.configurations[c].interfaces[i];
++            for (size_t a = 0; a < interface.alternates.size(); ++a)
++                interface.alternates[a].name = safeString(iface->AlternateAt(a)->InterfaceString());
++        }
++    }
++    // Length-delimited serial avoids identity collisions with delimiter bytes.
++    d.identity = std::to_string(d.vendorId) + ":" + std::to_string(d.productId) + ":"
++        + std::to_string(d.deviceVersion) + ":" + std::to_string(d.serial.size()) + ":" + d.serial;
++    if (auto value = activeConfiguration(device))
++        d.configuration = *value;
++    return d;
++}
++
++void enumerate(const std::string& path, unsigned depth, std::vector<Device>& result)
++{
++    if (depth > 8 || result.size() >= 128)
++        return;
++    auto* dir = opendir(path.c_str());
++    if (!dir)
++        return;
++    while (auto* entry = readdir(dir)) {
++        if (entry->d_name[0] == '.')
++            continue;
++        auto child = path + '/' + entry->d_name;
++        if (!validPath(child))
++            continue;
++        struct stat st;
++        if (lstat(child.c_str(), &st) || S_ISLNK(st.st_mode))
++            continue;
++        if (S_ISDIR(st.st_mode))
++            enumerate(child, depth + 1, result);
++        else if (auto device = describeDevice(child))
++            result.push_back(std::move(*device));
++        if (result.size() >= 128)
++            break;
++    }
++    closedir(dir);
++}
++} // namespace
++
++std::optional<Device> describeDevice(const std::string& path)
++{
++    if (!validPath(path))
++        return std::nullopt;
++    BUSBDevice device(path.c_str());
++    return describe(device, path);
++}
++
++std::vector<Device> enumerateDevices()
++{
++    std::vector<Device> result;
++    enumerate("/dev/bus/usb", 0, result);
++    return result;
++}
++
++Session::Session() = default;
++Session::~Session() { close(); }
++
++Result Session::open(const Device& approved)
++{
++    if (opened())
++        return { };
++    if (!eligible(approved) || !validPath(approved.path))
++        return Result::failure(Error::Security);
++    struct stat before;
++    if (lstat(approved.path.c_str(), &before) || S_ISLNK(before.st_mode))
++        return Result::failure(Error::NotFound);
++    auto device = std::make_unique<BUSBDevice>(approved.path.c_str());
++    auto info = describe(*device, approved.path);
++    if (!info)
++        return Result::failure(Error::NotFound);
++    if (!eligible(*info) || info->identity != approved.identity)
++        return Result::failure(Error::Security);
++    int fd = ::open(approved.path.c_str(), O_RDWR | O_CLOEXEC | O_NOFOLLOW);
++    if (fd < 0)
++        return Result::failure(Error::NotFound);
++    struct stat opened;
++    if (fstat(fd, &opened) || opened.st_dev != before.st_dev || opened.st_ino != before.st_ino) {
++        ::close(fd);
++        return Result::failure(Error::NotFound);
++    }
++    status_t version = 0;
++    // v0x15 adds streaming commands, without changing transfer structures.
++    if (ioctl(fd, getVersion, &version, sizeof(version)) || (version != 0x14 && version != 0x15)) {
++        ::close(fd);
++        return Result::failure(Error::NotSupported);
++    }
++    m_rawFD = fd;
++    m_device = std::move(device);
++    m_state = std::move(*info);
++    return { };
++}
++
++void Session::close()
++{
++    if (m_rawFD >= 0)
++        ::close(m_rawFD);
++    m_rawFD = -1;
++    m_claimed.clear();
++    for (auto& c : m_state.configurations) {
++        for (auto& i : c.interfaces)
++            i.claimed = false;
++    }
++    m_device.reset();
++}
++
++const BUSBConfiguration* Session::configuration() const
++{
++    if (!m_device || !m_state.configuration)
++        return nullptr;
++    for (uint32_t i = 0; i < m_device->CountConfigurations(); ++i) {
++        auto* config = m_device->ConfigurationAt(i);
++        if (config && config->Descriptor()->configuration_value == m_state.configuration)
++            return config;
++    }
++    return nullptr;
++}
++
++bool Session::currentConfigurationMatches() const
++{
++    if (!m_device)
++        return false;
++    auto active = activeConfiguration(*m_device);
++    return active && *active == m_state.configuration;
++}
++
++const BUSBInterface* Session::interface(uint8_t number) const
++{
++    auto* config = configuration();
++    if (!config)
++        return nullptr;
++    for (uint32_t i = 0; i < config->CountInterfaces(); ++i) {
++        auto* iface = config->InterfaceAt(i);
++        if (iface && iface->Descriptor()->interface_number == number)
++            return iface;
++    }
++    return nullptr;
++}
++
++const BUSBEndpoint* Session::endpoint(bool input, uint8_t number) const
++{
++    if (!number || number > 15)
++        return nullptr;
++    for (auto n : m_claimed) {
++        auto* iface = interface(n);
++        if (!iface)
++            continue;
++        for (uint32_t i = 0; i < iface->CountEndpoints(); ++i) {
++            auto* endpoint = iface->EndpointAt(i);
++            if (endpoint && (endpoint->Descriptor()->endpoint_address & 15) == number && endpoint->IsInput() == input)
++                return endpoint;
++        }
++    }
++    return nullptr;
++}
++
++void Session::refreshInterfaceState()
++{
++    for (auto& c : m_state.configurations) {
++        for (auto& i : c.interfaces) {
++            i.claimed = c.value == m_state.configuration && m_claimed.contains(i.number);
++            if (c.value == m_state.configuration) {
++                if (auto* iface = interface(i.number))
++                    i.alternate = iface->Descriptor()->alternate_setting;
++            }
++        }
++    }
++}
++
++Result Session::selectConfiguration(uint8_t value)
++{
++    if (!m_device)
++        return Result::failure(Error::InvalidState);
++    for (uint32_t i = 0; i < m_device->CountConfigurations(); ++i) {
++        auto* config = m_device->ConfigurationAt(i);
++        if (!config || config->Descriptor()->configuration_value != value)
++            continue;
++        if (value == m_state.configuration && currentConfigurationMatches())
++            return { };
++        if (!m_claimed.empty())
++            return Result::failure(Error::InvalidState);
++        if (m_device->SetConfiguration(config) != B_OK)
++            return Result::failure(Error::Network);
++        m_state.configuration = value;
++        refreshInterfaceState();
++        return { };
++    }
++    return Result::failure(Error::NotFound);
++}
++
++Result Session::claimInterface(uint8_t number)
++{
++    if (!m_device || !configuration() || !currentConfigurationMatches())
++        return Result::failure(Error::InvalidState);
++    auto* iface = interface(number);
++    if (!iface)
++        return Result::failure(Error::NotFound);
++    for (uint32_t i = 0; i < iface->CountAlternates(); ++i) {
++        auto* alt = iface->AlternateAt(i);
++        if (!alt || protectedClass(alt->Class()))
++            return Result::failure(Error::Security);
++    }
++    m_claimed.insert(number);
++    refreshInterfaceState();
++    return { };
++}
++
++Result Session::releaseInterface(uint8_t number)
++{
++    if (!m_device || !configuration())
++        return Result::failure(Error::InvalidState);
++    if (!interface(number))
++        return Result::failure(Error::NotFound);
++    m_claimed.erase(number);
++    refreshInterfaceState();
++    return { };
++}
++
++Result Session::selectAlternateInterface(uint8_t number, uint8_t setting)
++{
++    if (!m_device || !configuration() || !currentConfigurationMatches() || !m_claimed.contains(number))
++        return Result::failure(Error::InvalidState);
++    auto* iface = interface(number);
++    if (!iface)
++        return Result::failure(Error::NotFound);
++    for (uint32_t i = 0; i < iface->CountAlternates(); ++i) {
++        auto* alt = iface->AlternateAt(i);
++        if (!alt || alt->Descriptor()->alternate_setting != setting)
++            continue;
++        if (protectedClass(alt->Class()))
++            return Result::failure(Error::Security);
++        if (const_cast<BUSBInterface*>(iface)->SetAlternate(i) != B_OK)
++            return Result::failure(Error::Network);
++        refreshInterfaceState();
++        return { };
++    }
++    return Result::failure(Error::NotFound);
++}
++
++Result Session::clearHalt(bool input, uint8_t number)
++{
++    if (!m_device || !configuration() || !currentConfigurationMatches())
++        return Result::failure(Error::InvalidState);
++    auto* ep = endpoint(input, number);
++    if (!ep)
++        return Result::failure(Error::NotFound);
++    if (ep->IsIsochronous())
++        return Result::failure(Error::InvalidAccess);
++    return ep->ClearStall() == B_OK ? Result { } : Result::failure(Error::Network);
++}
++
++Result Session::controlTransfer(bool input, uint8_t type, uint8_t recipient, uint8_t request,
++    uint16_t value, uint16_t index, size_t length, std::span<const uint8_t> output)
++{
++    if (!m_device)
++        return Result::failure(Error::InvalidState);
++    if (type > 2 || recipient > 3 || length > 65535 || (!input && length != output.size()))
++        return Result::failure(Error::Range);
++    if (recipient == 1 || recipient == 2) {
++        if (!configuration() || !currentConfigurationMatches())
++            return Result::failure(Error::InvalidState);
++        if (recipient == 1 && !m_claimed.contains(index & 0xff))
++            return Result::failure(Error::InvalidState);
++        if (recipient == 2 && !endpoint(index & 0x80, index & 0x0f))
++            return Result::failure(Error::NotFound);
++    }
++    if (type == 0 && !allowedStandardControl(input, request))
++        return Result::failure(Error::Security);
++    std::vector<uint8_t> data(std::max<size_t>(length, 1));
++    if (!input)
++        std::copy(output.begin(), output.end(), data.begin());
++    RawControl command { 0, uint8_t((input ? 0x80 : 0) | (type << 5) | recipient), request, value, index, uint16_t(length), data.data() };
++    if (ioctl(m_rawFD, controlTransferCommand, &command, sizeof(command)))
++        return Result::failure(Error::Network);
++    auto result = rawResult(command.status, command.length, length);
++    if (input && result.error == Error::None) {
++        data.resize(result.transferred);
++        result.data = std::move(data);
++    }
++    return result;
++}
++
++Result Session::transfer(bool input, uint8_t number, size_t length, std::span<const uint8_t> output)
++{
++    if (!m_device || !configuration() || !currentConfigurationMatches())
++        return Result::failure(Error::InvalidState);
++    if (length > maximumTransferSize || (!input && length != output.size()))
++        return Result::failure(Error::Range);
++    auto* ep = endpoint(input, number);
++    if (!ep)
++        return Result::failure(Error::NotFound);
++    if (!ep->IsBulk() && !ep->IsInterrupt())
++        return Result::failure(Error::InvalidAccess);
++    std::vector<uint8_t> data(std::max<size_t>(length, 1));
++    if (!input)
++        std::copy(output.begin(), output.end(), data.begin());
++    RawTransfer command { 0, ep->Interface()->Index(), ep->Index(), data.data(), length };
++    if (ioctl(m_rawFD, ep->IsBulk() ? bulkTransferCommand : interruptTransferCommand, &command, sizeof(command)))
++        return Result::failure(Error::Network);
++    auto result = rawResult(command.status, command.length, length);
++    if (input && result.error == Error::None) {
++        data.resize(result.transferred);
++        result.data = std::move(data);
++    }
++    return result;
++}
++
++Result Session::isochronousTransfer(bool input, uint8_t number, const std::vector<uint32_t>& lengths,
++    std::span<const uint8_t> output)
++{
++    if (!m_device || !configuration() || !currentConfigurationMatches())
++        return Result::failure(Error::InvalidState);
++    size_t length = 0;
++    if (!validPacketLengths(lengths, length) || (!input && length != output.size()))
++        return Result::failure(Error::Range);
++    auto* ep = endpoint(input, number);
++    if (!ep)
++        return Result::failure(Error::NotFound);
++    if (!ep->IsIsochronous())
++        return Result::failure(Error::InvalidAccess);
++    if (lengths.empty())
++        return { };
++    std::vector<usb_iso_packet_descriptor> packets(lengths.size());
++    for (size_t i = 0; i < lengths.size(); ++i) {
++        if (lengths[i] > ep->MaxPacketSize())
++            return Result::failure(Error::Range);
++        packets[i].request_length = lengths[i];
++    }
++    std::vector<uint8_t> data(std::max<size_t>(length, 1));
++    if (!input)
++        std::copy(output.begin(), output.end(), data.begin());
++    RawIsochronous command { 0, ep->Interface()->Index(), ep->Index(), data.data(), length, packets.data(), uint32_t(packets.size()) };
++    if (ioctl(m_rawFD, isochronousTransferCommand, &command, sizeof(command)))
++        return Result::failure(Error::Network);
++    auto result = rawResult(command.status, command.length, length);
++    if (result.error != Error::None)
++        return result;
++    for (size_t i = 0; i < packets.size(); ++i) {
++        if (packets[i].actual_length < 0 || uint32_t(packets[i].actual_length) > lengths[i])
++            return Result::failure(Error::Network);
++        result.packets.push_back({ packets[i].status == B_OK ? Status::Ok : Status::Stall, uint32_t(packets[i].actual_length) });
++    }
++    if (input) {
++        // Packet data retains the requested offsets, including short packets.
++        data.resize(length);
++        result.data = std::move(data);
++    }
++    return result;
++}
++
++Result Session::reset()
++{
++    if (!m_device)
++        return Result::failure(Error::InvalidState);
++    // Haiku's raw USB ABI has no port reset operation. Do not pretend that a
++    // SET_CONFIGURATION or a close/open cycle resets the hardware.
++    return Result::failure(Error::NotSupported);
++}
++
++} // namespace WebKit::USBHaiku
+diff --git a/Source/WebKit/UIProcess/haiku/usb/USBDeviceSessionHaiku.h b/Source/WebKit/UIProcess/haiku/usb/USBDeviceSessionHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..e1ec1a344989a02034b5d0aeb282c9a2a2dea468
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/usb/USBDeviceSessionHaiku.h
+@@ -0,0 +1,69 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++
++#include "USBDevicePolicyHaiku.h"
++#include <memory>
++#include <set>
++#include <span>
++
++class BUSBDevice;
++class BUSBConfiguration;
++class BUSBInterface;
++class BUSBEndpoint;
++
++namespace WebKit::USBHaiku {
++
++enum class Error { None, NotFound, Security, InvalidState, Network, NotSupported, Range, InvalidAccess };
++enum class Status { Ok, Stall, Babble };
++struct PacketResult {
++    Status status { Status::Ok };
++    uint32_t transferred { 0 };
++};
++struct Result {
++    Error error { Error::None };
++    Status status { Status::Ok };
++    uint32_t transferred { 0 };
++    std::vector<uint8_t> data;
++    std::vector<PacketResult> packets;
++    static Result failure(Error error) { Result r; r.error = error; return r; }
++};
++
++// Used exclusively on a broker worker thread. Browser-origin grants and
++// opaque capabilities are checked by the broker before it invokes this class.
++// Enumeration only reads descriptors; it never configures or claims a device.
++std::vector<Device> enumerateDevices();
++std::optional<Device> describeDevice(const std::string& path);
++
++class Session final {
++public:
++    Session();
++    ~Session();
++    Result open(const Device& approvedDevice);
++    void close();
++    bool opened() const { return !!m_device; }
++    const Device& state() const { return m_state; }
++    Result selectConfiguration(uint8_t);
++    Result claimInterface(uint8_t);
++    Result releaseInterface(uint8_t);
++    Result selectAlternateInterface(uint8_t, uint8_t);
++    Result clearHalt(bool input, uint8_t endpoint);
++    Result controlTransfer(bool input, uint8_t requestType, uint8_t recipient,
++        uint8_t request, uint16_t value, uint16_t index, size_t length, std::span<const uint8_t> output = { });
++    Result transfer(bool input, uint8_t endpoint, size_t length, std::span<const uint8_t> output = { });
++    Result isochronousTransfer(bool input, uint8_t endpoint, const std::vector<uint32_t>& lengths,
++        std::span<const uint8_t> output = { });
++    Result reset();
++
++private:
++    const BUSBConfiguration* configuration() const;
++    const BUSBInterface* interface(uint8_t number) const;
++    const BUSBEndpoint* endpoint(bool input, uint8_t number) const;
++    void refreshInterfaceState();
++    bool currentConfigurationMatches() const;
++    std::unique_ptr<BUSBDevice> m_device;
++    int m_rawFD { -1 };
++    Device m_state;
++    std::set<uint8_t> m_claimed;
++};
++
++} // namespace WebKit::USBHaiku
 diff --git a/Source/WebKit/WebKit.xcodeproj/project.pbxproj b/Source/WebKit/WebKit.xcodeproj/project.pbxproj
 index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..24635a41f45dd5556d895ff6b5996375d65ae8c5 100644
 --- a/Source/WebKit/WebKit.xcodeproj/project.pbxproj

@@ -55,8 +55,17 @@ entries without runtime results are still open.
   native browser compilation passes. Engine compilation and runtime checks
   are pending. These changes are newer
   than the first engine build and require a subsequent incremental build.
-- **#29, WebUSB:** still to implement native device access and the browser API,
-  with device selection and permission enforcement, then verify a real transfer.
+- **#29, WebUSB:** a native USB backend now compiles and enumerates the X399's
+  seven devices. Its portable policy tests pass, and native guards reject
+  protected devices and operations on closed sessions. The WICG device blocklist,
+  every alternate interface's protected class, filter dependencies, standard
+  control-request allowlist and transfer limits are checked. Because Haiku lacks
+  exclusive kernel interface claims, a composite device containing any protected
+  interface is excluded as a whole. The backend implements configuration,
+  alternates, control, bulk, interrupt and isochronous transfers. Haiku has no raw
+  USB reset command, so reset reports NotSupportedError. The JavaScript bindings,
+  origin-grant broker and chooser are still in progress. No eligible device is
+  currently attached; actual authorized transfers still need a test device.
 
 The four portable CTest suites pass. Their profile regression had retained an
 old expectation that camera permissions were unsupported; it now checks
