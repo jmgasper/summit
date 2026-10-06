@@ -7671,6 +7671,30 @@ index 0000000000000000000000000000000000000000..2cbba0878aaad1a4ce5264b3482e4e18
 +} // namespace WebCore
 +
 +#endif // PLATFORM(HAIKU)
+diff --git a/Source/WebCore/bindings/js/WebCoreBuiltinNames.h b/Source/WebCore/bindings/js/WebCoreBuiltinNames.h
+index 66c6dcd879e16649249c84dc22d28c5d2da8e20c..7e4ab5b086b4109e31ccb1d423be73bc7c64d7eb 100644
+--- a/Source/WebCore/bindings/js/WebCoreBuiltinNames.h
++++ b/Source/WebCore/bindings/js/WebCoreBuiltinNames.h
+@@ -484,6 +484,19 @@ namespace WebCore {
+     macro(TrustedTypePolicyFactory) \
+     macro(TrustedTypePolicyOptions) \
+     macro(URLPattern) \
++    macro(USB) \
++    macro(USBAlternateInterface) \
++    macro(USBConfiguration) \
++    macro(USBConnectionEvent) \
++    macro(USBDevice) \
++    macro(USBEndpoint) \
++    macro(USBInTransferResult) \
++    macro(USBInterface) \
++    macro(USBIsochronousInTransferPacket) \
++    macro(USBIsochronousInTransferResult) \
++    macro(USBIsochronousOutTransferPacket) \
++    macro(USBIsochronousOutTransferResult) \
++    macro(USBOutTransferResult) \
+     macro(UndoItem) \
+     macro(UndoManager) \
+     macro(VideoDecoder) \
 diff --git a/Source/WebCore/contentextensions/ContentExtension.cpp b/Source/WebCore/contentextensions/ContentExtension.cpp
 index af98d12bc8869a1678f940471531333950be1d11..5e0f99c3611d29adf7f698565386d9023b9d70a9 100644
 --- a/Source/WebCore/contentextensions/ContentExtension.cpp
@@ -97509,10 +97533,10 @@ index 0000000000000000000000000000000000000000..fece383da7906574b8bfdcaf6a877c1f
 +} // namespace WebKit::USBHaiku
 diff --git a/Source/WebKit/UIProcess/haiku/usb/USBDeviceSessionHaiku.cpp b/Source/WebKit/UIProcess/haiku/usb/USBDeviceSessionHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..9850cb6e10a53818ee28cbfbcedae060906fee6d
+index 0000000000000000000000000000000000000000..dbf4d3445a5603c591ef49c35454a93f32f3dd97
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/usb/USBDeviceSessionHaiku.cpp
-@@ -0,0 +1,586 @@
+@@ -0,0 +1,596 @@
 +/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#ifndef SUMMIT_USB_STANDALONE
 +#include "config.h"
@@ -97849,10 +97873,12 @@ index 0000000000000000000000000000000000000000..9850cb6e10a53818ee28cbfbcedae060
 +
 +bool Session::currentConfigurationMatches() const
 +{
-+    if (!m_device)
++    if (!m_device || m_rawFD < 0 || m_aborted.load())
 +        return false;
-+    auto active = activeConfiguration(*m_device);
-+    return active && *active == m_state.configuration;
++    uint8_t active = 0;
++    RawControl command { 0, 0x80, 8, 0, 0, 1, &active };
++    return transferIoctl(m_rawFD, controlTransferCommand, &command, sizeof(command), m_aborted) == Error::None
++        && command.status == 0 && command.length == 1 && active == m_state.configuration;
 +}
 +
 +const BUSBInterface* Session::interface(uint8_t number) const
@@ -97993,6 +98019,8 @@ index 0000000000000000000000000000000000000000..9850cb6e10a53818ee28cbfbcedae060
 +Result Session::controlTransfer(bool input, uint8_t type, uint8_t recipient, uint8_t request,
 +    uint16_t value, uint16_t index, size_t length, std::span<const uint8_t> output)
 +{
++    if (m_aborted.load())
++        return Result::failure(Error::Abort);
 +    if (!m_device)
 +        return Result::failure(Error::InvalidState);
 +    if (type > 2 || recipient > 3 || length > 65535 || (!input && length != output.size()))
@@ -98023,6 +98051,8 @@ index 0000000000000000000000000000000000000000..9850cb6e10a53818ee28cbfbcedae060
 +
 +Result Session::transfer(bool input, uint8_t number, size_t length, std::span<const uint8_t> output)
 +{
++    if (m_aborted.load())
++        return Result::failure(Error::Abort);
 +    if (!m_device || !configuration() || !currentConfigurationMatches())
 +        return Result::failure(Error::InvalidState);
 +    if (length > maximumTransferSize || (!input && length != output.size()))
@@ -98049,6 +98079,8 @@ index 0000000000000000000000000000000000000000..9850cb6e10a53818ee28cbfbcedae060
 +Result Session::isochronousTransfer(bool input, uint8_t number, const std::vector<uint32_t>& lengths,
 +    std::span<const uint8_t> output)
 +{
++    if (m_aborted.load())
++        return Result::failure(Error::Abort);
 +    if (!m_device || !configuration() || !currentConfigurationMatches())
 +        return Result::failure(Error::InvalidState);
 +    size_t length = 0;
@@ -98091,6 +98123,8 @@ index 0000000000000000000000000000000000000000..9850cb6e10a53818ee28cbfbcedae060
 +
 +Result Session::reset()
 +{
++    if (m_aborted.load())
++        return Result::failure(Error::Abort);
 +    if (!m_device)
 +        return Result::failure(Error::InvalidState);
 +    // Haiku's raw USB ABI has no port reset operation. Do not pretend that a
@@ -98180,10 +98214,10 @@ index 0000000000000000000000000000000000000000..437da04334f6bfcba7e473b160dea1e7
 +} // namespace WebKit::USBHaiku
 diff --git a/Source/WebKit/UIProcess/haiku/usb/WebUSBBrokerHaiku.cpp b/Source/WebKit/UIProcess/haiku/usb/WebUSBBrokerHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..670a5e379bda13f777913e236fd1c3e787a29456
+index 0000000000000000000000000000000000000000..dfbe819bd91f5a24def28c1e5e534f1936987c96
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/usb/WebUSBBrokerHaiku.cpp
-@@ -0,0 +1,476 @@
+@@ -0,0 +1,486 @@
 +/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#include "config.h"
 +#if ENABLE(WEBUSB)
@@ -98341,6 +98375,16 @@ index 0000000000000000000000000000000000000000..670a5e379bda13f777913e236fd1c3e7
 +    Ref<JSON::Object>&& args, std::function<bool()>&& isCurrent, Completion&& completion)
 +{
 +    bool choosing = args->getString("operation"_s) == "requestDevice"_s;
++    if (!choosing) {
++        bool hasGrant = false;
++        for (auto& grant : m_grants)
++            hasGrant |= grant.value.origin == origin;
++        if (!hasGrant) {
++            // An unapproved origin learns nothing from probing the physical bus.
++            completion("{\"devices\":[]}"_s, { });
++            return;
++        }
++    }
 +    auto include = choosing ? readFilters(args, "filters"_s) : std::optional { std::vector<Filter> { } };
 +    auto exclude = choosing ? readFilters(args, "exclusionFilters"_s) : std::optional { std::vector<Filter> { } };
 +    if (!include || !exclude) {

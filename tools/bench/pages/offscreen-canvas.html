@@ -77,6 +77,24 @@ async function concurrentWebGL() {
 async function main() {
     check('OffscreenCanvas constructor', typeof OffscreenCanvas === 'function');
     if (typeof OffscreenCanvas !== 'function') return;
+    // No main-thread GL context has been created when this worker starts.
+    const firstURL = URL.createObjectURL(new Blob([`onmessage = () => {
+        const gl = new OffscreenCanvas(8,8).getContext('webgl2');
+        if (!gl) {postMessage(false);return;}
+        gl.clearColor(0,1,0,1);gl.clear(gl.COLOR_BUFFER_BIT);
+        const p=new Uint8Array(4);gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,p);
+        postMessage(p[0]===0&&p[1]===255&&p[2]===0&&p[3]===255);
+    }`], {type:'text/javascript'}));
+    const firstWorker = new Worker(firstURL);
+    try {
+        const first = await new Promise((resolve,reject) => {
+            const timer=setTimeout(()=>reject(new Error('first GL worker timeout')),20000);
+            firstWorker.onmessage=e=>{clearTimeout(timer);resolve(e.data)};
+            firstWorker.onerror=e=>{clearTimeout(timer);reject(new Error(e.message))};
+            firstWorker.postMessage(null);
+        });
+        check('worker WebGL works before main-thread GL', first === true);
+    } finally {firstWorker.terminate();URL.revokeObjectURL(firstURL);}
     const canvas = new OffscreenCanvas(128, 64);
     const ctx = canvas.getContext('2d');
     check('2D context', !!ctx);

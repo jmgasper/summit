@@ -8,7 +8,7 @@ entries without runtime results are still open.
   come from Haiku's WebPositive; the other icons are Summit vectors. Native
   browser compilation and `rc` resource compilation pass on the X399, and a
   contact sheet rendered by BIconUtils verifies all normal and disabled icons.
-  Still to verify the complete bundled browser on screen.
+  The complete toolbar also passes visual inspection in the separate test browser.
 - **#25, fullscreen:** implementation in progress. The modern engine's
   WebFullScreenManagerProxy client requests a transition on the browser window's
   looper and waits for acknowledgement before completing the DOM request.
@@ -19,8 +19,10 @@ entries without runtime results are still open.
   The first engine build completed. In a separate test browser, entry promises,
   fullscreenchange, programmatic exit, Escape and normal-frame restoration pass.
   Runtime testing found the notice capped the fullscreen width at 528 pixels;
-  the notice now allows unlimited width. That correction and remaining lifecycle
-  cases are being verified against the frozen first engine.
+  the notice now allows unlimited width. The correction fills the 3840×1080 display. Escape, tab opening/switching,
+  navigation, tab closure and renderer termination restore the original native
+  frame. The sandboxed iframe reports fullscreen disabled. These checks pass
+  against the frozen first engine and the corrected app.
 - **#27, OffscreenCanvas:** the source already defaulted both feature switches
   on, but the X399's SkiaCGMiPGO CMake cache still set both OFF. The modern build
   wrapper now explicitly enables them (and fullscreen) unless the caller
@@ -61,8 +63,10 @@ entries without runtime results are still open.
   shell. Saved choices and registration denials can be cleared in Preferences
   › Link Handlers; private choices stay in memory. Stale or background-tab
   prompt replies do nothing. Portable validation/encoding/profile tests pass;
-  native browser compilation passes. Engine compilation and runtime checks
-  are pending. These changes are newer
+  native browser compilation passes. The native chooser recommends a MIME-registered
+  test application, BRoster delivers the complete URL as one argument, and the
+  saved choice launches directly on the next request. The registration bindings
+  and complete integrated engine still need runtime checks. These changes are newer
   than the first engine build and require a subsequent incremental build.
 - **#29, WebUSB:** a native USB backend now compiles and enumerates the X399's
   seven devices. Its portable policy tests pass, and native guards reject
@@ -77,9 +81,12 @@ entries without runtime results are still open.
   policy checks, bounded transfers and navigation/closure cancellation are now
   implemented. The UI process validates process/frame ownership and committed
   origins independently of the renderer. Private contexts have separate grants;
-  protected composite devices remain excluded. Native transfer calls have a
-  cancellation path and a ten-second deadline. USB binding and IPC generation
-  pass; fresh native compilation of the DOM implementation and broker passes.
+  protected composite devices remain excluded. Native transfer calls and active-configuration checks have a
+  cancellation path and a ten-second deadline. Cancelled leases reject every
+  subsequent operation; the read-only native regression checks this without
+  opening an eligible device. An origin with no grants avoids bus enumeration. USB binding and IPC generation
+  pass; native compilation of all 15 generated binding files, the DOM implementation,
+  broker and page/view/context bridges passes.
   Full integration and browser tests are pending. The current implementation
   restricts access to the top-level origin and does not expose WorkerNavigator.usb.
   No eligible device is currently attached; actual authorized transfers still
@@ -107,7 +114,7 @@ bash tools/build-modern-browser-in-vm.sh --browser --bundle --modern-extensions
 
 The first build's host log is `.vm/issues-engine-build.log`. Subsequent wrappers
 are immutable snapshots, since editing a running shell script can affect its
-remaining commands. The third build is `.vm/issues-engine-build-third.log`.
+remaining commands. The current build is `.vm/issues-engine-build-fourth.log`.
 All binding and IPC generators also run separately as preflight checks; native
 compile probes assert WEBUSB is enabled to avoid false passes from stale PCHs. The installed launcher still points to `bundle-acipjxcr`
 with Mesa `prefix-20261002`; do not replace it until the new bundle is verified.
