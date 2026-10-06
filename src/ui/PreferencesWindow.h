@@ -45,6 +45,10 @@ private:
         bool allowed = false;
     };
     void ShowSitePermissions(const std::vector<SiteEntry>&);
+    void ShowProtocolHandlers(const std::vector<std::pair<std::string, std::string>>&);
+    BColumnListView* fProtocols;
+    BButton* fProtocolRemove;
+    std::vector<std::pair<std::string, std::string>> fProtocolEntries;
     BTabView* fTabs;
     BColumnListView* fSites;
     BButton* fSiteAllow;

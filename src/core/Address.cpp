@@ -1,4 +1,5 @@
 #include "Address.h"
+#include "Protocol.h"
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -94,7 +95,8 @@ Address ResolveAddress(std::string_view input)
     const bool local = host == "localhost" || host.rfind("localhost:", 0) == 0 || (!host.empty() && host.front() == '[');
     // A numeric port after a hostname must not be mistaken for a URI scheme.
     bool port = false;
-    if (colon != std::string::npos && colon < host.size() && colon + 1 < host.size())
+    if (colon != std::string::npos && colon < host.size() && colon + 1 < host.size()
+        && (local || host.substr(0, colon).find('.') != std::string::npos))
         port = std::all_of(host.begin() + colon + 1, host.end(), [](unsigned char c) { return std::isdigit(c); });
     if (colon != std::string::npos && (slash == std::string::npos || colon < slash) && !port && !local) {
         auto scheme = text.substr(0, colon);
@@ -108,6 +110,7 @@ Address ResolveAddress(std::string_view input)
             if (page == "summit:home" || page == "summit:history" || page == "summit:bookmarks") return {page, {}, false};
             return {{}, "There is no Summit page called " + text.substr(colon + 1) + ".", false};
         }
+        if (IsExternalScheme(scheme)) return {scheme + text.substr(colon), {}, false};
         return {{}, "This address type is not supported: " + scheme, false};
     }
     if (text.front() == '/') return {FileURL(text), {}, false};

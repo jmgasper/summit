@@ -1,4 +1,5 @@
 #include "BrowserWindow.h"
+#include "ProtocolHandlers.h"
 #include "ExtensionTiming.h"
 #include "StallTrace.h"
 #include "Chrome.h"
@@ -496,6 +497,14 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
         sWindowList.push_back({BMessenger(this), fKey, "Summit"});
     }
     fShared->AddListener(BMessenger(this));
+    fProtocolHandlers = std::make_unique<ProtocolHandlers>(fShared, fPrivate,
+        [this](int64 id, const std::string& source) {
+            if (IsClosing()) return false;
+            const auto* tab = ActiveTab();
+            return !id ? source.empty() : tab && tab->id == id && tab->url == source;
+        }, [this](const std::string& url) { if (ActiveTab()) Navigate(url); else CreateTab(url); },
+        [this](const std::string& error) { ShowError(error); });
+    AddHandler(fProtocolHandlers.get());
     std::tie(fBookmarksBarVisible, fInterfaceStyle) = fShared->Read([](const Profile& profile) {
         return std::make_pair(profile.showBookmarksBar, profile.interfaceStyle);
     });
@@ -724,6 +733,8 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
 }
 BrowserWindow::~BrowserWindow()
 {
+    RemoveHandler(fProtocolHandlers.get());
+    fProtocolHandlers.reset();
 #if SUMMIT_MODERN_WEBKIT
     BWebKitView::WindowDirectConnected(this, nullptr);
     // Without its daemon thread ~BDirectWindow would wait for ever.
@@ -928,6 +939,16 @@ void BrowserWindow::CreateTab(const std::string& input, bool select, BWebView* a
     const auto address = ResolveAddress(input);
 #endif
     if (!address.error.empty()) { fail(address.error); return; }
+    if (IsExternalScheme(URLScheme(address.url))) {
+#if SUMMIT_MODERN_WEBKIT
+        if (newPage || command) { fail("Open external links from the page or address field."); return; }
+        // Restoring a session must never launch another application.
+        if (fRestoringSession) return;
+#endif
+        auto* tab = ActiveTab();
+        fProtocolHandlers->Open(address.url, tab ? tab->id : 0, tab ? tab->url : "");
+        return;
+    }
 #if SUMMIT_MODERN_WEBKIT
     const bool extensionPage = !newPage && address.url.starts_with("webkit-extension:");
     if (extensionPage && !extensionIdentifier) {
@@ -1421,6 +1442,10 @@ void BrowserWindow::Navigate(const std::string& text)
 {
     auto address = ResolveAddress(text);
     if (!address.error.empty()) { ShowError(address.error); return; }
+    if (IsExternalScheme(URLScheme(address.url))) {
+        if (auto* tab = ActiveTab()) fProtocolHandlers->Open(address.url, tab->id, tab->url);
+        return;
+    }
 #if SUMMIT_MODERN_WEBKIT
     if (!PrepareNavigation()) return;
 #endif
@@ -3130,6 +3155,20 @@ void BrowserWindow::MessageReceived(BMessage* message)
                 if (description && *description) status += ": " + std::string(description);
                 fStatus->SetText(status.c_str());
             }
+            break;
+        }
+        case B_WEBKIT_SCHEME_OPEN_REQUESTED:
+        case B_WEBKIT_SCHEME_REGISTRATION: {
+            BMessenger view;
+            if (message->FindMessenger("view", &view) != B_OK) break;
+            auto* tab = FindTab(view);
+            if (!tab || tab != ActiveTab()) break;
+            const std::string source = message->GetString("source_url", "");
+            if (source != tab->url) break;
+            if (message->what == B_WEBKIT_SCHEME_OPEN_REQUESTED)
+                fProtocolHandlers->Open(message->GetString("url", ""), tab->id, source);
+            else fProtocolHandlers->Register(message->GetString("scheme", ""), message->GetString("url", ""),
+                message->GetBool("remove", false), tab->id, source);
             break;
         }
         case B_WEBKIT_FULLSCREEN_REQUESTED: FullScreenRequested(*message); break;

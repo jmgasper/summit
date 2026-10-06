@@ -4621,7 +4621,7 @@ index fb688cc015cd74b8fa16c7073b3a0c9f61f4aee2..4eee13adc7844b818bb6e27103cc16a1
  
  enum class UTextProviderContext {
 diff --git a/Source/WebCore/CMakeLists.txt b/Source/WebCore/CMakeLists.txt
-index 5f4a893485a9b9e1904cf2d342085ea83c5315c1..c60b8258d19729dd8b5df31bc065dc7dce93af8a 100644
+index 5f4a893485a9b9e1904cf2d342085ea83c5315c1..a1e6bd67069c2ddd495a5f5e6a18b259ffd323e3 100644
 --- a/Source/WebCore/CMakeLists.txt
 +++ b/Source/WebCore/CMakeLists.txt
 @@ -74,6 +74,7 @@ set(WebCore_PRIVATE_INCLUDE_DIRECTORIES
@@ -4709,7 +4709,15 @@ index 5f4a893485a9b9e1904cf2d342085ea83c5315c1..c60b8258d19729dd8b5df31bc065dc7d
  set(WebCore_IDL_INCLUDES
      css
      dom
-@@ -3221,6 +3226,19 @@ list(APPEND WebCore_SOURCES ${WebCore_DERIVED_SOURCES_DIR}/Namespace.cpp)
+@@ -2127,6 +2132,7 @@ set(WebCore_SUPPLEMENTAL_IDL_FILES
+     page/DOMWindow+VisualViewport.idl
+     page/Navigator+LoginStatus.idl
+     page/Navigator+UserActivation.idl
++    page/NavigatorContentUtils.idl
+     page/NavigatorCookies.idl
+     page/NavigatorGlobalPrivacyControl.idl
+     page/NavigatorID.idl
+@@ -3221,6 +3227,19 @@ list(APPEND WebCore_SOURCES ${WebCore_DERIVED_SOURCES_DIR}/Namespace.cpp)
  
  WEBKIT_COMPUTE_SOURCES(WebCore)
  
@@ -4729,6 +4737,14 @@ index 5f4a893485a9b9e1904cf2d342085ea83c5315c1..c60b8258d19729dd8b5df31bc065dc7d
  WEBKIT_DEFINE_SUBTARGET_WITH_PREFIX(WebCore WebCoreJSBindings
      PREFIX WebCoreJSBindingsPrefix.h
      PREFIX_LANGUAGES CXX
+@@ -3251,6 +3270,7 @@ WEBKIT_DEFINE_SUBTARGET_WITH_PREFIX(WebCore WebCoreAVFoundation
+ WEBKIT_ADD_PREFIX_HEADER(WebCore WebCorePrefix.h PREFIX_LANGUAGES CXX OBJCXX)
+ 
+ list(APPEND WebCore_PRIVATE_FRAMEWORK_HEADERS
++    page/ProtocolHandlerUtilities.h
+     ${WebCore_DERIVED_SOURCES_DIR}/DocumentSyncData.serialization.in
+     ${WebCore_DERIVED_SOURCES_DIR}/FrameTreeSyncData.serialization.in
+     ${WebCore_DERIVED_SOURCES_DIR}/InspectorNativeFunctionParameters.json
 diff --git a/Source/WebCore/Headers.cmake b/Source/WebCore/Headers.cmake
 index 341db75e1e661ce171e21d818a544a19c5ecdbbd..9d0bd598ef39373c6843cc2a15e2e448cdfe60c7 100644
 --- a/Source/WebCore/Headers.cmake
@@ -9137,6 +9153,20 @@ index 3dbc23ec4a0818ed58ab2e0b2648056ab360a2ff..8254fb1525db8f69c8c4d1191e04b9b9
      virtual void receivedCancellation(const AuthenticationChallenge&);
  
  #if USE(QUICK_LOOK)
+diff --git a/Source/WebCore/page/ChromeClient.h b/Source/WebCore/page/ChromeClient.h
+index 349b9cb1fe7dc8f666371b92e665e1b3c21c2eaa..f5b74c00dd51526b5cdde51fc2f2fa4e2d0778a5 100644
+--- a/Source/WebCore/page/ChromeClient.h
++++ b/Source/WebCore/page/ChromeClient.h
+@@ -426,6 +426,9 @@ public:
+ 
+     virtual void runOpenPanel(LocalFrame&, FileChooser&) = 0;
+     WEBCORE_EXPORT virtual void transcodeChosenFiles(Vector<String>&& transcodingPaths, String&& destinationUTI, String&& destinationExtension, CompletionHandler<void(Vector<String>&&)>&&);
++#if ENABLE(CUSTOM_PROTOCOL_HANDLERS)
++    virtual void protocolHandlerRequested(LocalFrame&, const String&, const URL&, bool) { }
++#endif
+     virtual void showShareSheet(ShareDataWithParsedURL&&, CompletionHandler<void(bool)>&& callback) { callback(false); }
+     virtual void showContactPicker(ContactsRequestData&&, CompletionHandler<void(std::optional<Vector<ContactInfo>>&&)>&& callback) { callback(std::nullopt); }
+ 
 diff --git a/Source/WebCore/page/LocalFrameView.cpp b/Source/WebCore/page/LocalFrameView.cpp
 index 52f8cd72fa2e3073163713fd16fc2f1677b96695..bdf399b6ed6db64e982f68083c4951ad88c23edb 100644
 --- a/Source/WebCore/page/LocalFrameView.cpp
@@ -9463,6 +9493,119 @@ index 61749fa2eecc674d3bc7d185a5b3944181454f73..2dd2c366435c97ac9752500ab05dd810
  }
  
  void LocalFrameViewLayoutContext::runOrScheduleAsynchronousTasks(bool canDeferUpdateLayerPositions)
+diff --git a/Source/WebCore/page/Navigator.cpp b/Source/WebCore/page/Navigator.cpp
+index 957720da7f04e4635deede785707b6da26b75cd8..a9cd408bf885d27ae790877038745fcae8620a2a 100644
+--- a/Source/WebCore/page/Navigator.cpp
++++ b/Source/WebCore/page/Navigator.cpp
+@@ -25,6 +25,8 @@
+ 
+ #include "BadgeClient.h"
+ #include "Chrome.h"
++#include "ChromeClient.h"
++#include "ProtocolHandlerUtilities.h"
+ #include "CookieJar.h"
+ #include "DOMMimeType.h"
+ #include "DOMMimeTypeArray.h"
+@@ -130,6 +132,52 @@ bool Navigator::onLine() const
+     return platformStrategies()->loaderStrategy()->isOnLine();
+ }
+ 
++#if ENABLE(CUSTOM_PROTOCOL_HANDLERS)
++static ExceptionOr<URL> normalizeProtocolHandler(Document& document, const String& scheme, const String& value)
++{
++    if (!isAllowedProtocolHandlerScheme(scheme))
++        return Exception { ExceptionCode::SecurityError, "This scheme cannot be registered by a website."_s };
++    if (!value.contains("%s"_s))
++        return Exception { ExceptionCode::SyntaxError, "A protocol handler URL must contain %s."_s };
++    auto url = document.encodingParseURL(value);
++    if (!url.isValid())
++        return Exception { ExceptionCode::SyntaxError, "Invalid protocol handler URL."_s };
++    if (!url.protocolIsInHTTPFamily() || !document.securityOrigin().isSameOriginAs(SecurityOrigin::create(url)))
++        return Exception { ExceptionCode::SecurityError, "A protocol handler must be an HTTP(S) URL on this origin."_s };
++    if (!document.isFullyActive())
++        return Exception { ExceptionCode::InvalidStateError, "The registering document is not active."_s };
++    return url;
++}
++
++ExceptionOr<void> Navigator::registerProtocolHandler(const String& scheme, const String& value)
++{
++    RefPtr document = this->document();
++    RefPtr frame = this->frame();
++    if (!document || !frame || !frame->page())
++        return Exception { ExceptionCode::InvalidStateError };
++    auto normalizedScheme = scheme.convertToASCIILowercase();
++    auto result = normalizeProtocolHandler(*document, normalizedScheme, value);
++    if (result.hasException())
++        return result.releaseException();
++    frame->page()->chrome().client().protocolHandlerRequested(*frame, normalizedScheme, result.releaseReturnValue(), false);
++    return { };
++}
++
++ExceptionOr<void> Navigator::unregisterProtocolHandler(const String& scheme, const String& value)
++{
++    RefPtr document = this->document();
++    RefPtr frame = this->frame();
++    if (!document || !frame || !frame->page())
++        return Exception { ExceptionCode::InvalidStateError };
++    auto normalizedScheme = scheme.convertToASCIILowercase();
++    auto result = normalizeProtocolHandler(*document, normalizedScheme, value);
++    if (result.hasException())
++        return result.releaseException();
++    frame->page()->chrome().client().protocolHandlerRequested(*frame, normalizedScheme, result.releaseReturnValue(), true);
++    return { };
++}
++#endif
++
+ static std::optional<URL> shareableURLForShareData(ScriptExecutionContext& context, const ShareData& data)
+ {
+     if (data.url.isNull())
+diff --git a/Source/WebCore/page/Navigator.h b/Source/WebCore/page/Navigator.h
+index c2759da3ca373213f532ff00dcbd3acb5278366b..49457cd224ebfc5b8c9cc8574343c666d27f11da 100644
+--- a/Source/WebCore/page/Navigator.h
++++ b/Source/WebCore/page/Navigator.h
+@@ -19,6 +19,7 @@
+ 
+ #pragma once
+ 
++#include <WebCore/ExceptionOr.h>
+ #include <WebCore/LocalDOMWindowProperty.h>
+ #include <WebCore/NavigatorBase.h>
+ #include <WebCore/ScriptWrappable.h>
+@@ -59,6 +60,10 @@ public:
+     String platform() const final;
+     void userAgentChanged();
+     bool onLine() const final;
++#if ENABLE(CUSTOM_PROTOCOL_HANDLERS)
++    ExceptionOr<void> registerProtocolHandler(const String&, const String&);
++    ExceptionOr<void> unregisterProtocolHandler(const String&, const String&);
++#endif
+     bool canShare(Document&, const ShareData&);
+     void share(Document&, const ShareData&, Ref<DeferredPromise>&&);
+     NavigatorUAData& userAgentData() const;
+diff --git a/Source/WebCore/page/Navigator.idl b/Source/WebCore/page/Navigator.idl
+index 7284c98993dc0ab8f282118aed38bd8b8a159132..13899aefde160d01d2e3c24780b0fb8fa2d55558 100644
+--- a/Source/WebCore/page/Navigator.idl
++++ b/Source/WebCore/page/Navigator.idl
+@@ -35,6 +35,7 @@ Navigator includes NavigatorLocks;
+ Navigator includes NavigatorMaxTouchPoints;
+ Navigator includes NavigatorOnLine;
+ Navigator includes NavigatorCookies;
++Navigator includes NavigatorContentUtils;
+ Navigator includes NavigatorPlugins;
+ Navigator includes NavigatorServiceWorker;
+ Navigator includes NavigatorShare;
+diff --git a/Source/WebCore/page/NavigatorContentUtils.idl b/Source/WebCore/page/NavigatorContentUtils.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..0409f3d1b6b97c10443b41add217e81c53a35813
+--- /dev/null
++++ b/Source/WebCore/page/NavigatorContentUtils.idl
+@@ -0,0 +1,6 @@
++// Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause
++// https://html.spec.whatwg.org/multipage/system-state.html#custom-handlers
++[Conditional=CUSTOM_PROTOCOL_HANDLERS] interface mixin NavigatorContentUtils {
++    [SecureContext, MayThrowException] undefined registerProtocolHandler(DOMString scheme, USVString url);
++    [SecureContext, MayThrowException] undefined unregisterProtocolHandler(DOMString scheme, USVString url);
++};
 diff --git a/Source/WebCore/page/Page.cpp b/Source/WebCore/page/Page.cpp
 index a26485a6771a1d63e0d0f5ff3800f30221a77304..723f476108c2e7516f1e24723248d1c9e122835d 100644
 --- a/Source/WebCore/page/Page.cpp
@@ -9762,6 +9905,37 @@ index a26485a6771a1d63e0d0f5ff3800f30221a77304..723f476108c2e7516f1e24723248d1c9
  void Page::isolatedUpdateRendering()
  {
      LOG(EventLoop, "Page %p isolatedUpdateRendering()", this);
+diff --git a/Source/WebCore/page/ProtocolHandlerUtilities.h b/Source/WebCore/page/ProtocolHandlerUtilities.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..a98fad150b4dabf1b3429d078eef8f6227c918e6
+--- /dev/null
++++ b/Source/WebCore/page/ProtocolHandlerUtilities.h
+@@ -0,0 +1,25 @@
++// Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause
++#pragma once
++#include <wtf/text/WTFString.h>
++#include <wtf/text/ASCIILiteral.h>
++
++namespace WebCore {
++inline bool isAllowedProtocolHandlerScheme(const String& scheme)
++{
++    static constexpr ASCIILiteral allowed[] = { "bitcoin"_s, "ftp"_s, "ftps"_s, "geo"_s,
++        "im"_s, "irc"_s, "ircs"_s, "magnet"_s, "mailto"_s, "matrix"_s, "mms"_s,
++        "news"_s, "nntp"_s, "openpgp4fpr"_s, "sftp"_s, "sip"_s, "sms"_s, "smsto"_s,
++        "ssh"_s, "tel"_s, "urn"_s, "webcal"_s, "wtai"_s, "xmpp"_s };
++    for (auto value : allowed) {
++        if (scheme == value)
++            return true;
++    }
++    if (!scheme.startsWith("web+"_s) || scheme.length() <= 4)
++        return false;
++    for (unsigned i = 4; i < scheme.length(); ++i) {
++        if (scheme[i] < 'a' || scheme[i] > 'z')
++            return false;
++    }
++    return true;
++}
++}
 diff --git a/Source/WebCore/page/RenderingUpdateScheduler.cpp b/Source/WebCore/page/RenderingUpdateScheduler.cpp
 index 06e9a596c37605ce8ce2d70ffbcb23e63de6e4e8..ec33be50927aaec5069d7bf43e90c0e16e3480f1 100644
 --- a/Source/WebCore/page/RenderingUpdateScheduler.cpp
@@ -62726,10 +62900,10 @@ index 0000000000000000000000000000000000000000..c513815be2c9593bb9bac943763f49bd
 +}
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitView.h b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..38d4fe91c0bb2fde33dfa4080b4220767f6d4ede
+index 0000000000000000000000000000000000000000..ba7cf012f3aabe831e3f22a7aa4e0d55d1479168
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
-@@ -0,0 +1,218 @@
+@@ -0,0 +1,224 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -62766,6 +62940,12 @@ index 0000000000000000000000000000000000000000..38d4fe91c0bb2fde33dfa4080b422076
 +    // window (page closed, crashed or a host failed to answer). Unanswered
 +    // requests fail after five seconds. Only the active view should be accepted.
 +    B_WEBKIT_FULLSCREEN_REQUESTED = 'wful',
++    // User-initiated external link: "view", "url", "source_url". The load
++    // was ignored; the browser can offer an approved web or native handler.
++    B_WEBKIT_SCHEME_OPEN_REQUESTED = 'wsch',
++    // registerProtocolHandler / unregisterProtocolHandler: "view", "scheme",
++    // "url" (validated same-origin HTTP(S) template), "source_url", "remove".
++    B_WEBKIT_SCHEME_REGISTRATION = 'wsrg',
 +    B_WEBKIT_STATE_CHANGED = 'wsta',
 +    B_WEBKIT_PROCESS_EXITED = 'wpex',
 +    B_WEBKIT_FIND_RESULT = 'wfin',
@@ -85137,7 +85317,7 @@ index 3e5f83fe2ace16999a0cd12e7a9c561c46463303..3bdd8c37e24cd4f85dc84e4914c6491b
      DeleteWebsiteDataInWebProcessesForOrigin(OptionSet<WebKit::WebsiteDataType> websiteDataTypes, struct WebCore::ClientOrigin origin, PAL::SessionID sessionID, WebKit::WebPageProxyIdentifier webPageProxyID) -> ()
      ReloadExecutionContextsForOrigin(struct WebCore::ClientOrigin origin, PAL::SessionID sessionID, std::optional<WebCore::FrameIdentifier> triggeringFrame) -> ()
 diff --git a/Source/WebKit/UIProcess/PageClient.h b/Source/WebKit/UIProcess/PageClient.h
-index a4299803aa31a4a1705aebf669aba3190bcb878a..d0f3a47edf7d2b080af70b57cf1193adae733387 100644
+index a4299803aa31a4a1705aebf669aba3190bcb878a..6fe81fd58b13e0204621ec5a7064bede210b53cc 100644
 --- a/Source/WebKit/UIProcess/PageClient.h
 +++ b/Source/WebKit/UIProcess/PageClient.h
 @@ -263,6 +263,11 @@ public:
@@ -85152,6 +85332,16 @@ index a4299803aa31a4a1705aebf669aba3190bcb878a..d0f3a47edf7d2b080af70b57cf1193ad
      // Tell the view to scroll to the given position, and whether this was a programmatic scroll.
      virtual void requestScroll(const WebCore::FloatPoint& scrollPosition, const WebCore::IntPoint& scrollOrigin, WebCore::ScrollIsAnimated, WebCore::InterruptScrollAnimation) = 0;
  
+@@ -665,6 +670,9 @@ public:
+     virtual void cancelTextRecognitionForVideoInElementFullscreen() { }
+ #endif
+ 
++#if ENABLE(CUSTOM_PROTOCOL_HANDLERS)
++    virtual void protocolHandlerRequested(const String&, const URL&, bool) { }
++#endif
+     // Auxiliary Client Creation
+ #if ENABLE(FULLSCREEN_API)
+     virtual WebFullScreenManagerProxyClient& fullScreenManagerProxyClient() = 0;
 diff --git a/Source/WebKit/UIProcess/UserMediaPermissionRequestManagerProxy.cpp b/Source/WebKit/UIProcess/UserMediaPermissionRequestManagerProxy.cpp
 index ed75cd4b36d92c580f0ad731f77ff6db6efebcef..2bb2c9b70ef9131558bdfb3b35b891eae1db3b95 100644
 --- a/Source/WebKit/UIProcess/UserMediaPermissionRequestManagerProxy.cpp
@@ -85692,10 +85882,20 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..3dc45f6c38748eccb21fd0a9a185349b
  #endif
  
 diff --git a/Source/WebKit/UIProcess/WebPageProxy.h b/Source/WebKit/UIProcess/WebPageProxy.h
-index 0df86238ffdc53863b10fefb1e88e76900fd5df1..e2b711f8e35b2f20b3781bf01f0e48dd718a0d09 100644
+index 0df86238ffdc53863b10fefb1e88e76900fd5df1..b93b23dc904925defbcfd1e7199db0458b63c5ae 100644
 --- a/Source/WebKit/UIProcess/WebPageProxy.h
 +++ b/Source/WebKit/UIProcess/WebPageProxy.h
-@@ -1932,6 +1932,9 @@ public:
+@@ -1116,6 +1116,9 @@ public:
+     void clearSelection(std::optional<WebCore::FrameIdentifier> = std::nullopt);
+     void restoreSelectionInFocusedEditableElement();
+ 
++#if ENABLE(CUSTOM_PROTOCOL_HANDLERS)
++    void protocolHandlerRequested(IPC::Connection&, WebCore::FrameIdentifier, const String&, const URL&, bool);
++#endif
+     PageClient* NODELETE pageClient() const;
+ 
+     void setViewNeedsDisplay(const WebCore::Region&);
+@@ -1932,6 +1935,9 @@ public:
  #endif
  
      void preferencesDidChange();
@@ -85705,7 +85905,7 @@ index 0df86238ffdc53863b10fefb1e88e76900fd5df1..e2b711f8e35b2f20b3781bf01f0e48dd
  
  #if ENABLE(CONTEXT_MENUS)
      // Called by the WebContextMenuProxy.
-@@ -3870,6 +3873,13 @@ private:
+@@ -3870,6 +3876,13 @@ private:
      Ref<WebProcessProxy> m_legacyMainFrameProcess;
      const Ref<WebPageGroup> m_pageGroup;
      Ref<WebPreferences> m_preferences;
@@ -85719,6 +85919,20 @@ index 0df86238ffdc53863b10fefb1e88e76900fd5df1..e2b711f8e35b2f20b3781bf01f0e48dd
  
      const Ref<WebUserContentControllerProxy> m_userContentController;
  
+diff --git a/Source/WebKit/UIProcess/WebPageProxy.messages.in b/Source/WebKit/UIProcess/WebPageProxy.messages.in
+index 5ae60009a71fe5d15e29892e6d21834bb2b60d86..01f9dd0d7c177315cb0ff10c5e6bb46341c32933 100644
+--- a/Source/WebKit/UIProcess/WebPageProxy.messages.in
++++ b/Source/WebKit/UIProcess/WebPageProxy.messages.in
+@@ -29,6 +29,9 @@ Copyright (C) 2010-2024 Apple Inc. All rights reserved.
+ messages -> WebPageProxy {
+     # UI messages
+     CreateNewPage(struct WebCore::WindowFeatures windowFeatures, struct WebKit::NavigationActionData navigationActionData) -> (std::optional<WebCore::PageIdentifier> newPageID, std::optional<WebKit::WebPageCreationParameters> newPageParameters) Synchronous
++#if ENABLE(CUSTOM_PROTOCOL_HANDLERS)
++    ProtocolHandlerRequested(WebCore::FrameIdentifier frameID, String scheme, URL url, bool remove)
++#endif
+     ShowPage()
+     ClosePage()
+     RunJavaScriptAlert(WebCore::FrameIdentifier frameID, struct WebKit::FrameInfoData frameInfo, String message) -> () Synchronous
 diff --git a/Source/WebKit/UIProcess/WebPageProxyInternals.h b/Source/WebKit/UIProcess/WebPageProxyInternals.h
 index bc3b24188d37a1517e0cbb152e7634211b111243..226044918059bdd29b0892f573e24c7ea2a9aa31 100644
 --- a/Source/WebKit/UIProcess/WebPageProxyInternals.h
@@ -91085,10 +91299,10 @@ index 0000000000000000000000000000000000000000..b12e656b2046acc0f1325d1b28ee8be2
 +#endif
 diff --git a/Source/WebKit/UIProcess/haiku/WebPageProxyHaiku.cpp b/Source/WebKit/UIProcess/haiku/WebPageProxyHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..e7c42ca1941d19f335fa815dda752aae69918ab6
+index 0000000000000000000000000000000000000000..45507ea5c3aef80c91e50d727907dffd99590ddb
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebPageProxyHaiku.cpp
-@@ -0,0 +1,67 @@
+@@ -0,0 +1,91 @@
 +/*
 + * Copyright (C) 2014-2021 Haiku, inc.
 + *
@@ -91117,6 +91331,11 @@ index 0000000000000000000000000000000000000000..e7c42ca1941d19f335fa815dda752aae
 +#include "config.h"
 +#include "WebKitVersion.h"
 +#include "WebPageProxy.h"
++#include "PageClient.h"
++#include "WebFrameProxy.h"
++#include "WebProcessProxy.h"
++#include <WebCore/ProtocolHandlerUtilities.h>
++#include <WebCore/SecurityOrigin.h>
 +
 +#include <WebCore/NotImplemented.h>
 +#include <WebCore/SearchPopupMenu.h>
@@ -91125,6 +91344,25 @@ index 0000000000000000000000000000000000000000..e7c42ca1941d19f335fa815dda752aae
 +#include <sys/utsname.h>
 +
 +namespace WebKit {
++
++#if ENABLE(CUSTOM_PROTOCOL_HANDLERS)
++void WebPageProxy::protocolHandlerRequested(IPC::Connection& connection, WebCore::FrameIdentifier frameID, const String& scheme, const URL& url, bool remove)
++{
++    Ref process = WebProcessProxy::fromConnection(connection);
++    RefPtr frame = WebFrameProxy::webFrame(frameID);
++    if (!frame || frame->page() != this || &frame->process() != process.ptr()
++        || !WebCore::isAllowedProtocolHandlerScheme(scheme) || !url.isValid()
++        || !url.protocolIsInHTTPFamily() || !url.string().contains("%s"_s))
++        return;
++    // Use the committed security origin, including inherited and opaque
++    // sandbox origins, rather than inferring identity from the frame URL.
++    Ref origin = WebCore::SecurityOrigin::create(frame->documentSecurityOriginData());
++    if (!origin->isPotentiallyTrustworthy() || !origin->isSameOriginAs(WebCore::SecurityOrigin::create(url)))
++        return;
++    if (RefPtr client = pageClient())
++        client->protocolHandlerRequested(scheme, url, remove);
++}
++#endif
 +
 +void WebPageProxy::platformInitialize()
 +{
@@ -91398,10 +91636,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..cc4df5ba18c9baed6672f3ea7960e1d21d52a786
+index 0000000000000000000000000000000000000000..4a701489a4b59a4ebc6a3b64d26b4d26d46ac29e
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,2273 @@
+@@ -0,0 +1,2308 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -91945,6 +92183,27 @@ index 0000000000000000000000000000000000000000..cc4df5ba18c9baed6672f3ea7960e1d2
 +
 +    void decidePolicyForNavigationAction(WebPageProxy& page, Ref<API::NavigationAction>&& action, Ref<WebFramePolicyListenerProxy>&& listener) override
 +    {
++        const auto& url = action->request().url();
++        const bool external = url.isValid() && !url.protocolIsInHTTPFamily() && !url.protocolIsFile()
++            && !url.protocolIsAbout() && !url.protocolIsData() && !url.protocolIsBlob()
++            && !url.protocolIsJavaScript() && !url.protocolIs("webkit-extension"_s)
++            && !page.urlSchemeHandlerForScheme(url.protocol());
++        if (external) {
++            // Launch only during a genuine user action. The browser validates
++            // the source tab and keeps a single native prompt outstanding.
++            if (action->isProcessingUserGesture()) {
++                if (auto state = m_state.lock(); state && !state->closed) {
++                    BMessage message(B_WEBKIT_SCHEME_OPEN_REQUESTED);
++                    auto cleanURL = url;
++                    cleanURL.removeCredentials();
++                    message.AddString("url", cleanURL.string().utf8().legacyCStringPointer());
++                    message.AddString("source_url", page.pageLoadState().activeURL().string().utf8().legacyCStringPointer());
++                    sendToHostHaiku(state, message);
++                }
++            }
++            listener->ignore();
++            return;
++        }
 +        if (action->navigationType() == NavigationType::LinkClicked
 +            && (action->mouseButton() == WebMouseEventButton::Middle || action->modifiers().contains(WebEventModifier::ControlKey))) {
 +            // A middle click or Command-click on a link opens it in a new tab
@@ -92873,6 +93132,20 @@ index 0000000000000000000000000000000000000000..cc4df5ba18c9baed6672f3ea7960e1d2
 +    }
 +    view.SendMessage(&message, static_cast<BHandler*>(nullptr), 0);
 +}
++
++#if ENABLE(CUSTOM_PROTOCOL_HANDLERS)
++void WebView::protocolHandlerRequested(const String& scheme, const URL& url, bool remove)
++{
++    if (!m_page || m_state->closed)
++        return;
++    BMessage message(B_WEBKIT_SCHEME_REGISTRATION);
++    message.AddString("scheme", scheme.utf8().legacyCStringPointer());
++    message.AddString("url", url.string().utf8().legacyCStringPointer());
++    message.AddString("source_url", m_page->pageLoadState().activeURL().string().utf8().legacyCStringPointer());
++    message.AddBool("remove", remove);
++    sendToHostHaiku(m_state, message);
++}
++#endif
 +
 +void WebView::notifyState(uint32_t what) const
 +{
@@ -94076,10 +94349,10 @@ index 0000000000000000000000000000000000000000..38315cb60560494a2ac07e47637a9935
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewPrivate.h b/Source/WebKit/UIProcess/haiku/WebViewPrivate.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..8629d18bcec6c7090eb5eed1a966e91ac519125a
+index 0000000000000000000000000000000000000000..f1bf4a28642113f98ffd8e87a04a2f46208ec9a3
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewPrivate.h
-@@ -0,0 +1,195 @@
+@@ -0,0 +1,198 @@
 +/*
 +   Copyright (C) 2014 Haiku, inc.
 +
@@ -94145,6 +94418,9 @@ index 0000000000000000000000000000000000000000..8629d18bcec6c7090eb5eed1a966e91a
 +        std::lock_guard guard(m_state->mutex);
 +        return m_state->view;
 +    }
++#if ENABLE(CUSTOM_PROTOCOL_HANDLERS)
++    void protocolHandlerRequested(const String&, const URL&, bool) override;
++#endif
 +    void notifyState(uint32_t = B_WEBKIT_STATE_CHANGED) const;
 +    // The frame the view shows now (device pixels), or null.
 +    std::shared_ptr<const BitmapPresenterHaiku::Frame> presentedFrameHaiku() const { return m_state->presenter.snapshot(); }
@@ -111718,7 +111994,7 @@ index 8677b9d9f5c1e61cbe8b0a184b669022d8db3eed..3ef5c5295f89885202331129b3eb86ac
  #include "MessageSenderInlines.h"
  #include "WebAuthenticatorCoordinatorProxyMessages.h"
 diff --git a/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.cpp b/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.cpp
-index 335b456329f885a77d3880fc2a98b2b58cb4bee8..99e17141482039aa045c9c879103465df11e0539 100644
+index 335b456329f885a77d3880fc2a98b2b58cb4bee8..3f158978c0edd699aae1322485aae9a72f5df380 100644
 --- a/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.cpp
 +++ b/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.cpp
 @@ -120,6 +120,9 @@
@@ -111740,7 +112016,24 @@ index 335b456329f885a77d3880fc2a98b2b58cb4bee8..99e17141482039aa045c9c879103465d
  #endif
  
      auto sendResult = protect(WebProcess::singleton().parentProcessConnection())->sendSync(Messages::WebPageProxy::GetWindowFrame(), page->identifier());
-@@ -1216,6 +1221,12 @@ RefPtr<GraphicsContextGL> WebChromeClient::createGraphicsContextGL(const Graphic
+@@ -1076,6 +1081,16 @@ void WebChromeClient::transcodeChosenFiles(Vector<String>&& transcodingPaths, St
+     page->sendWithAsyncReply(Messages::WebPageProxy::TranscodeChosenFiles(transcodingPaths, destinationUTI, destinationExtension), WTF::move(completion));
+ }
+     
++#if ENABLE(CUSTOM_PROTOCOL_HANDLERS)
++void WebChromeClient::protocolHandlerRequested(LocalFrame& frame, const String& scheme, const URL& url, bool remove)
++{
++    RefPtr page = m_page.get();
++    RefPtr webFrame = WebFrame::fromCoreFrame(frame);
++    if (page && webFrame)
++        page->send(Messages::WebPageProxy::ProtocolHandlerRequested(webFrame->frameID(), scheme, url, remove));
++}
++#endif
++
+ void WebChromeClient::showShareSheet(ShareDataWithParsedURL&& shareData, CompletionHandler<void(bool)>&& callback)
+ {
+     if (RefPtr page = m_page.get())
+@@ -1216,6 +1231,12 @@ RefPtr<GraphicsContextGL> WebChromeClient::createGraphicsContextGL(const Graphic
      WebProcess::singleton().initializePlatformDisplayIfNeeded();
      WebProcess::singleton().initializeVulkanIfNeeded();
  #endif
@@ -111753,7 +112046,7 @@ index 335b456329f885a77d3880fc2a98b2b58cb4bee8..99e17141482039aa045c9c879103465d
  #if ENABLE(GPU_PROCESS)
      if (WebProcess::singleton().shouldUseRemoteRenderingForWebGL()) {
          RefPtr page = m_page.get();
-@@ -2282,7 +2293,7 @@ void WebChromeClient::setMockWebAuthenticationConfiguration(const MockWebAuthent
+@@ -2282,7 +2303,7 @@ void WebChromeClient::setMockWebAuthenticationConfiguration(const MockWebAuthent
  }
  #endif
  
@@ -111763,10 +112056,20 @@ index 335b456329f885a77d3880fc2a98b2b58cb4bee8..99e17141482039aa045c9c879103465d
  {
      notImplemented();
 diff --git a/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.h b/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.h
-index de1365cbd5a6babca6154348d0ddbbecf5ed5f4d..8cfc876a52a323c1281a625e89fedcccc9af9872 100644
+index de1365cbd5a6babca6154348d0ddbbecf5ed5f4d..7fb3c5269c8a5d211c76ed55ef6cc7353ad12b0b 100644
 --- a/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.h
 +++ b/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.h
-@@ -267,7 +267,7 @@ private:
+@@ -223,6 +223,9 @@ private:
+ 
+     void runOpenPanel(WebCore::LocalFrame&, WebCore::FileChooser&) final;
+     void transcodeChosenFiles(Vector<String>&&, String&& destinationUTI, String&& destinationExtension, CompletionHandler<void(Vector<String>&&)>&&) final;
++#if ENABLE(CUSTOM_PROTOCOL_HANDLERS)
++    void protocolHandlerRequested(WebCore::LocalFrame&, const String&, const URL&, bool) final;
++#endif
+     void showShareSheet(WebCore::ShareDataWithParsedURL&&, WTF::CompletionHandler<void(bool)>&&) final;
+     void showContactPicker(WebCore::ContactsRequestData&&, WTF::CompletionHandler<void(std::optional<Vector<WebCore::ContactInfo>>&&)>&&) final;
+ 
+@@ -267,7 +270,7 @@ private:
      void AXFinishFrameLoad() final { }
  #endif
  
@@ -133248,10 +133551,10 @@ index 121e64b01bce34e387deacf3bbbca93adf0f59da..7926cd9c3edf141bc52f7db0253c37c0
  endif ()
 diff --git a/Source/cmake/OptionsHaiku.cmake b/Source/cmake/OptionsHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..4fea3e60bc8aae1298dcfa62dfc1c37c3fc94b70
+index 0000000000000000000000000000000000000000..c3dd569030a9f6a16962f000a8de182cab4f9a93
 --- /dev/null
 +++ b/Source/cmake/OptionsHaiku.cmake
-@@ -0,0 +1,362 @@
+@@ -0,0 +1,363 @@
 +include(GNUInstallDirs)
 +include(VersioningUtils)
 +
@@ -133276,6 +133579,7 @@ index 0000000000000000000000000000000000000000..4fea3e60bc8aae1298dcfa62dfc1c37c
 +
 +option(ENABLE_WEBKIT_LEGACY "Enable building the Haiku legacy embedding" ON)
 +SET_AND_EXPOSE_TO_BUILD(USE_UNIX_DOMAIN_SOCKETS ${ENABLE_WEBKIT})
++SET_AND_EXPOSE_TO_BUILD(ENABLE_CUSTOM_PROTOCOL_HANDLERS ${ENABLE_WEBKIT})
 +
 +set(USE_ANGLE_EGL OFF)
 +

@@ -41,6 +41,7 @@ class BookmarksBar;
 class AddressSuggestions;
 class FaviconCache;
 class SharedProfile;
+class ProtocolHandlers;
 // How a new window starts.
 struct BrowserWindowOptions {
     // The window's place in the saved session (windows are saved in key order).
@@ -398,6 +399,7 @@ private:
     void ShowError(const std::string& error);
     std::string StoredURL(const BString& url) const;
     std::shared_ptr<SharedProfile> fShared;
+    std::unique_ptr<ProtocolHandlers> fProtocolHandlers;
     uint64 fKey = 0;
     bool fPrivate = false;
     ZoomButton* fZoomButton = nullptr;

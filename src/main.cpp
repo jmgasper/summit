@@ -491,6 +491,14 @@ public:
             return;
         }
 #if SUMMIT_MODERN_WEBKIT
+        if (message->what == summit::kProtocolHandlerRemove) {
+            const std::string scheme = message->GetString("scheme", "");
+            fShared->Change([&](summit::Profile& profile) -> uint32 {
+                return profile.RemoveProtocolHandler(scheme) ? summit::SharedProfile::kSettingsChanged : 0;
+            });
+            SendPreferencesState();
+            return;
+        }
         if (message->what == summit::kSitePermissionChange) {
             // From Preferences › Site Permissions: "state" 1 allows, 0 blocks, -1 forgets.
             const std::string permission = message->GetString("permission", ""), origin = message->GetString("origin", "");
@@ -983,6 +991,16 @@ private:
             state.AddInt32("history_count", static_cast<int32>(profile.history.size()));
             state.AddInt32("trusted_certificates", static_cast<int32>(profile.trustedCertificates.size()));
             AddSitePermissions(state, profile);
+            state.AddBool("has_protocol_handlers", true);
+            for (const auto& [scheme, handler] : profile.protocolHandlers) {
+                state.AddString("protocol_scheme", scheme.c_str());
+                state.AddString("protocol_target", handler.target.c_str());
+            }
+            for (const auto& [scheme, targets] : profile.declinedProtocolHandlers) {
+                if (targets.empty() || profile.protocolHandlers.count(scheme)) continue;
+                state.AddString("protocol_scheme", scheme.c_str());
+                state.AddString("protocol_target", "Website registration declined");
+            }
             return 0;
         });
         fPreferences.SendMessage(&state);

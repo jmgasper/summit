@@ -57,6 +57,8 @@ constexpr uint32 kForgetCertificatesRequest = 'pclt';
 // Preferences › Site Permissions, to the application: "permission", "origin",
 // "state" (1 allow, 0 block, -1 forget).
 constexpr uint32 kSitePermissionChange = 'pspc';
+// Preferences › Link Handlers: forget the choice and denials for this scheme.
+constexpr uint32 kProtocolHandlerRemove = 'pphr';
 // To a browser window: select the tab showing "view" (a BWebKitView messenger)
 // and come to the front (a click on that page's notification).
 constexpr uint32 kShowTabOfView = 'shtv';

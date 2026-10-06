@@ -114,6 +114,26 @@ Profile Profile::Load(const std::filesystem::path& path, std::string& error)
                     if (allowed.is_boolean()) profile.SetSitePermission(permission, origin, allowed.get<bool>());
             }
         }
+        if (auto handlers = j.find("protocolHandlers"); handlers != j.end() && handlers->is_object() && handlers->size() <= 1000) {
+            for (const auto& [scheme, item] : handlers->items()) {
+                if (!item.is_object()) continue;
+                auto kind = item.find("kind"), target = item.find("target"), origin = item.find("origin");
+                if (kind == item.end() || target == item.end() || origin == item.end()
+                    || !kind->is_string() || !target->is_string() || !origin->is_string()) continue;
+                profile.SetProtocolHandler(scheme, {kind->get<std::string>(), target->get<std::string>(), origin->get<std::string>()});
+            }
+        }
+        if (auto denied = j.find("declinedProtocolHandlers"); denied != j.end() && denied->is_object() && denied->size() <= 1000) {
+            for (const auto& [scheme, targets] : denied->items()) {
+                if (!IsWebHandlerScheme(scheme) || !targets.is_array() || targets.size() > 100) continue;
+                for (const auto& target : targets) {
+                    if (!target.is_string()) continue;
+                    const auto url = target.get<std::string>();
+                    if (ValidProtocolHandler(scheme, {"web", url, ProtocolOrigin(url)}))
+                        profile.declinedProtocolHandlers[scheme].insert(url);
+                }
+            }
+        }
         if (auto trusted = j.find("trustedCertificates"); trusted != j.end()) {
             if (!trusted->is_array() || trusted->size() > 1000) throw std::runtime_error("Invalid trusted certificate list");
             for (const auto& item : *trusted) {
@@ -161,6 +181,19 @@ bool Profile::SetSitePermission(const std::string& permission, const std::string
     return true;
 }
 
+bool Profile::SetProtocolHandler(const std::string& scheme, const ProtocolHandler& handler)
+{
+    if (!ValidProtocolHandler(scheme, handler) || (protocolHandlers.find(scheme) == protocolHandlers.end() && protocolHandlers.size() >= 1000)) return false;
+    if (auto found = protocolHandlers.find(scheme); found != protocolHandlers.end() && found->second == handler) return false;
+    protocolHandlers[scheme] = handler;
+    return true;
+}
+bool Profile::RemoveProtocolHandler(const std::string& scheme)
+{
+    const bool removed = protocolHandlers.erase(scheme) != 0;
+    return declinedProtocolHandlers.erase(scheme) != 0 || removed;
+}
+
 bool Profile::TrustCertificate(const TrustedCertificate& certificate)
 {
     auto lower = [](std::string text) {
@@ -192,6 +225,9 @@ bool Profile::Save(const std::filesystem::path& path, std::string& error) const
         for (const auto& certificate : trustedCertificates)
             trusted.push_back({{"host", certificate.host}, {"sha256", certificate.sha256},
                 {"subject", certificate.subject}, {"added", certificate.added}});
+        json handlers = json::object();
+        for (const auto& [scheme, handler] : protocolHandlers)
+            handlers[scheme] = {{"kind", handler.kind}, {"target", handler.target}, {"origin", handler.origin}};
         const WindowSession first = windows.empty() ? WindowSession() : windows.front();
         std::string data = json{{"version", 1}, {"tabs", Encode(first.tabs)}, {"selected", first.selected},
             {"windows", std::move(sessions)},
@@ -199,7 +235,8 @@ bool Profile::Save(const std::filesystem::path& path, std::string& error) const
             {"homeURL", homeURL}, {"showBookmarksBar", showBookmarksBar},
             {"interfaceStyle", interfaceStyle}, {"searchEngine", searchEngine},
             {"siteZoom", siteZoom}, {"unpinnedExtensions", unpinnedExtensions},
-            {"trustedCertificates", trusted}, {"sitePermissions", sitePermissions}}.dump(2);
+            {"trustedCertificates", trusted}, {"sitePermissions", sitePermissions},
+            {"protocolHandlers", handlers}, {"declinedProtocolHandlers", declinedProtocolHandlers}}.dump(2);
         if (data.size() > 16 * 1024 * 1024) throw std::runtime_error("Profile is too large");
         temporary = path.string() + ".XXXXXX";
         fd = mkstemp(temporary.data());

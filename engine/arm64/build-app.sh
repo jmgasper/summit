@@ -21,9 +21,9 @@ cp $WK/UIProcess/API/haiku/WebKitView.h $WK/UIProcess/API/haiku/WebKitContext.h 
 FLAGS=(--sysroot=$SYSROOT -std=c++23 -O2 -Wall -Wextra -Wno-multichar -DBUILDING_HAIKU__=1
        -I$OUT/include -DSUMMIT_MODERN_WEBKIT=1 -I$ROOT/src -I$ROOT/vendor
        -I$H/private/netservices -I$H/private -I$W/deps/include)
-SOURCES=(src/main.cpp src/core/Address.cpp src/core/Profile.cpp src/core/ExtensionCatalog.cpp
+SOURCES=(src/main.cpp src/core/Address.cpp src/core/Protocol.cpp src/core/Profile.cpp src/core/ExtensionCatalog.cpp
          src/core/ExtensionIdentity.cpp src/core/Favicon.cpp src/core/InternalPages.cpp
-         src/ui/FaviconCache.cpp src/ui/PreferencesWindow.cpp src/ui/SharedProfile.cpp
+         src/ui/ProtocolHandlers.cpp src/ui/FaviconCache.cpp src/ui/PreferencesWindow.cpp src/ui/SharedProfile.cpp
          src/ui/BrowserWindow.cpp src/ui/Chrome.cpp src/ui/ExtensionPermissionPrompt.cpp
          src/ui/ExtensionController.cpp src/ui/ExtensionInstaller.cpp src/ui/ExtensionManager.cpp)
 OBJS=()

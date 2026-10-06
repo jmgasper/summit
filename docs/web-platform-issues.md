@@ -27,9 +27,17 @@ entries without runtime results are still open.
   port's required 0.7.0, and no HEIF or JPEG XR library. JPEG XL and HEIC in
   html5test.co are decoding probes; **JPEG XR is a canvas encoding probe**
   (`toDataURL('image/vnd.ms-photo')`), so decoding alone cannot satisfy it.
-- **#28, custom schemes:** still to implement registration plus native app
-  selection, remembered choices and a system handler recommendation. The
-  pinned engine has no modern `navigator.registerProtocolHandler` implementation.
+- **#28, custom schemes:** registration/unregistration now have secure-context
+  bindings, scheme and same-origin validation, and a frame-origin-checked IPC
+  bridge. A native asynchronous prompt approves website handlers. User-activated
+  external links use a remembered app or website, or offer Haiku's MIME-preferred
+  app and an application chooser. Arguments go directly to BRoster, without a
+  shell. Saved choices and registration denials can be cleared in Preferences
+  › Link Handlers; private choices stay in memory. Stale or background-tab
+  prompt replies do nothing. Portable validation/encoding/profile tests pass;
+  native browser compilation passes. Engine compilation and runtime checks
+  are pending. These changes are newer
+  than the first engine build and require a subsequent incremental build.
 - **#29, WebUSB:** still to implement native device access and the browser API,
   with device selection and permission enforcement, then verify a real transfer.
 
@@ -66,6 +74,10 @@ Serve `tools/bench/pages` for the runtime probes:
   readback, transferred HTML canvas presentation and returned ImageBitmap.
   Completion sets `window.testDone`, with detailed `window.testResults` and
   a pass count in the title.
+- `protocol-handlers.html`: API presence, reserved/invalid schemes, malformed
+  templates and cross-origin rejection. Manual registration, round-trip link,
+  unregistration and native app links exercise the chooser. Verify remembering,
+  cancellation, removal in Preferences, private isolation and stale replies.
 - `fullscreen.html`: user activation, promise resolution, fullscreenchange,
   element/viewport dimensions, exitFullscreen, Escape and iframe permission.
   `enterFullscreen()` / `exitFullscreen()` can be evaluated through the native

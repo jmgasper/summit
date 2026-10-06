@@ -1,0 +1,35 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Protocol handler checks</title>
+<style>body{font:18px system-ui;margin:40px;max-width:1000px}button,a{display:inline-block;margin:8px;padding:12px}pre{white-space:pre-wrap}.pass{color:green}.fail{color:#b22}</style>
+<h1>Protocol handlers</h1>
+<p>Serve on localhost or HTTPS. Registration is deliberately manual; allow or decline the native prompt. The tests below never launch another application automatically.</p>
+<button id="register">Register web+summittest</button>
+<button id="unregister">Unregister web+summittest</button>
+<a id="roundtrip" href="web+summittest:hello%20world?title=caf%C3%A9&amp;one=1">Open the registered website</a>
+<a href="mailto:summit-test@example.invalid?subject=Summit%20handler%20test">Choose an app for mailto</a>
+<pre id="results"></pre>
+<script>
+window.testResults=[];window.testDone=false;
+const out=document.querySelector('#results');
+function check(name,pass,detail=''){testResults.push({name,pass:!!pass,detail});const row=document.createElement('div');row.className=pass?'pass':'fail';row.textContent=(pass?'PASS ':'FAIL ')+name+(detail?' — '+detail:'');out.append(row);}
+function throws(name,fn,expected){try{fn();check(name,false,'did not throw')}catch(e){check(name,e.name===expected,e.name)}}
+const template=location.origin+location.pathname+'?handled=%s';
+const incoming=new URL(location).searchParams.get('handled');
+if(incoming!==null)check('registered handler received the complete original URL',incoming==='web+summittest:hello%20world?title=caf%C3%A9&one=1',incoming);
+check('secure context',isSecureContext);
+check('registerProtocolHandler exists',typeof navigator.registerProtocolHandler==='function');
+check('unregisterProtocolHandler exists',typeof navigator.unregisterProtocolHandler==='function');
+if(typeof navigator.registerProtocolHandler==='function'){
+ for(const scheme of ['http','https','file','javascript','data','summit','web+','web+bad1','web+é'])
+  throws('reject reserved/invalid '+scheme,()=>navigator.registerProtocolHandler(scheme,template),'SecurityError');
+ throws('reject missing placeholder',()=>navigator.registerProtocolHandler('web+summittest',location.href),'SyntaxError');
+ throws('reject another origin',()=>navigator.registerProtocolHandler('web+summittest','https://elsewhere.invalid/?url=%s'),'SecurityError');
+ throws('reject non-HTTP target',()=>navigator.registerProtocolHandler('web+summittest','javascript:alert("%s")'),'SecurityError');
+ throws('reject malformed URL',()=>navigator.registerProtocolHandler('web+summittest','https://[invalid]/?url=%s'),'SyntaxError');
+ for(const scheme of ['http','web+'])throws('unregister validates '+scheme,()=>navigator.unregisterProtocolHandler(scheme,template),'SecurityError');
+}
+document.querySelector('#register').onclick=()=>{try{navigator.registerProtocolHandler('WEB+SUMMITTEST',template);check('valid registration returns normally',true,'Confirm in the native prompt, then open the link.')}catch(e){check('valid registration',false,e.name+': '+e.message)}};
+document.querySelector('#unregister').onclick=()=>{try{navigator.unregisterProtocolHandler('web+summittest',template);check('unregister returns normally',true,'Preferences should no longer show this website.')}catch(e){check('unregister',false,e.name)}};
+window.testDone=true;document.title='Protocol handlers: '+testResults.filter(x=>x.pass).length+'/'+testResults.length;
+</script>

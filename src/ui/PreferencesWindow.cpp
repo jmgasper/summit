@@ -28,7 +28,7 @@ constexpr uint32 homeEdited = 'phed', useStartPage = 'phsp', bookmarksBarToggled
     searchChosen = 'psrc', clearHistory = 'pchi', clearHistoryConfirmed = 'pchc', clearCache = 'pcca',
     clearSiteData = 'pcsd', clearSiteDataConfirmed = 'pcsc', cacheMeasured = 'pcms',
     forgetCertificates = 'pfce', forgetCertificatesConfirmed = 'pfcc', siteSelected = 'psse', siteAllow = 'pssa',
-    siteBlock = 'pssb', siteRemove = 'pssr';
+    siteBlock = 'pssb', siteRemove = 'pssr', protocolSelected = 'ppse', protocolRemove = 'pprm';
 enum SiteColumn { kSiteColumn, kPermissionColumn, kSettingColumn };
 
 std::string SizeLabel(uintmax_t bytes)
@@ -190,10 +190,29 @@ PreferencesWindow::PreferencesWindow(BMessenger owner, const PreferencesState& s
             .Add(fSiteRemove)
         .End()
         .Add(locationHint);
+    fProtocols = new BColumnListView("link-handlers", B_NAVIGABLE, B_FANCY_BORDER, true);
+    fProtocols->AddColumn(new BStringColumn("Link scheme", 120, 80, 200, B_TRUNCATE_END), 0);
+    fProtocols->AddColumn(new BStringColumn("Opens with", 350, 100, 800, B_TRUNCATE_MIDDLE), 1);
+    fProtocols->SetSelectionMessage(new BMessage(protocolSelected));
+    fProtocols->SetSelectionMode(B_SINGLE_SELECTION_LIST);
+    fProtocols->SetSortingEnabled(false);
+    fProtocols->SetExplicitMinSize(BSize(470, 170));
+    fProtocolRemove = new BButton("link-handler-remove", "Remove", new BMessage(protocolRemove));
+    ShowProtocolHandlers({});
+    auto* protocols = new BGroupView("Link Handlers", B_VERTICAL, 8);
+    BLayoutBuilder::Group<>(protocols).SetInsets(18)
+        .Add(SectionTitle("link-handlers-title", "Link Handlers"))
+        .Add(new BStringView("link-handlers-intro", "Applications and websites chosen to open links."))
+        .Add(fProtocols)
+        .AddGroup(B_HORIZONTAL, 8)
+            .Add(new BStringView("link-handlers-hint", "Remove a choice to be asked again."))
+            .AddGlue().Add(fProtocolRemove)
+        .End();
     fTabs = new BTabView("preferences-tabs", B_WIDTH_FROM_LABEL);
     fTabs->AddTab(general);
     fTabs->AddTab(data);
     fTabs->AddTab(sites);
+    fTabs->AddTab(protocols);
     fTabs->SetBorder(B_NO_BORDER);
     BLayoutBuilder::Group<>(this, B_VERTICAL, 0)
         .SetInsets(0, B_USE_SMALL_SPACING, 0, 0)
@@ -261,6 +280,26 @@ void PreferencesWindow::ShowSitePermissions(const std::vector<SiteEntry>& entrie
     fSiteAllow->SetEnabled(hasSelection);
     fSiteBlock->SetEnabled(hasSelection);
     fSiteRemove->SetEnabled(hasSelection);
+}
+
+void PreferencesWindow::ShowProtocolHandlers(const std::vector<std::pair<std::string, std::string>>& entries)
+{
+    std::string selection;
+    if (auto* row = fProtocols->CurrentSelection()) {
+        const auto index = fProtocols->IndexOf(row);
+        if (index >= 0 && static_cast<size_t>(index) < fProtocolEntries.size()) selection = fProtocolEntries[index].first;
+    }
+    fProtocols->Clear();
+    fProtocolEntries = entries;
+    std::sort(fProtocolEntries.begin(), fProtocolEntries.end());
+    for (const auto& [scheme, target] : fProtocolEntries) {
+        auto* row = new BRow();
+        row->SetField(new BStringField((scheme + ":").c_str()), 0);
+        row->SetField(new BStringField(target.c_str()), 1);
+        fProtocols->AddRow(row);
+        if (selection == scheme) fProtocols->SetFocusRow(row, true);
+    }
+    fProtocolRemove->SetEnabled(fProtocols->CurrentSelection() != nullptr);
 }
 
 void PreferencesWindow::ShowHistoryCount(size_t count)
@@ -384,6 +423,14 @@ void PreferencesWindow::MessageReceived(BMessage* message)
             fOwner.SendMessage(kPreferencesUseCurrentPage);
             break;
         case kPreferencesState: {
+            if (message->GetBool("has_protocol_handlers", false)) {
+                std::vector<std::pair<std::string, std::string>> entries;
+                const char* scheme = nullptr;
+                const char* target = nullptr;
+                for (int32 i = 0; message->FindString("protocol_scheme", i, &scheme) == B_OK
+                    && message->FindString("protocol_target", i, &target) == B_OK; ++i) entries.emplace_back(scheme, target);
+                ShowProtocolHandlers(entries);
+            }
             // The browser changed a setting (the current page, or View › Bookmarks Bar).
             const char* home = nullptr;
             if (message->FindString("home_url", &home) == B_OK && home && Trim(fHome->Text()) != home) {
@@ -439,6 +486,19 @@ void PreferencesWindow::MessageReceived(BMessage* message)
                 fTabs->Select(2);
             Activate();
             break;
+        case protocolSelected:
+            fProtocolRemove->SetEnabled(fProtocols->CurrentSelection() != nullptr);
+            break;
+        case protocolRemove: {
+            auto* row = fProtocols->CurrentSelection();
+            if (!row) break;
+            const auto index = fProtocols->IndexOf(row);
+            if (index < 0 || static_cast<size_t>(index) >= fProtocolEntries.size()) break;
+            BMessage remove(kProtocolHandlerRemove);
+            remove.AddString("scheme", fProtocolEntries[index].first.c_str());
+            fOwner.SendMessage(&remove);
+            break;
+        }
         case siteSelected: {
             auto* row = fSites->CurrentSelection();
             fSiteAllow->SetEnabled(row != nullptr);

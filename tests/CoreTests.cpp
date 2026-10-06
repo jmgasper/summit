@@ -38,7 +38,10 @@ int main()
     CHECK(ResolveAddress("file:///boot/home/a%20%23.html").url == "file:///boot/home/a%20%23.html");
     CHECK(FileURL("relative.html").empty());
     CHECK(ResolveAddress("kunanyi walking tracks").search);
-    CHECK(ResolveAddress("site:example.com").error.size() > 0);
+    CHECK(ResolveAddress("site:example.com").url == "site:example.com");
+    CHECK(ResolveAddress("tel:12345").url == "tel:12345");
+    CHECK(ResolveAddress("MAILTO:person@example.com").url == "mailto:person@example.com");
+    CHECK(ResolveAddress("web+demo:123").url == "web+demo:123");
     CHECK(ResolveAddress("hello & goodbye").url == "https://duckduckgo.com/?q=hello%20%26%20goodbye");
     CHECK(ResolveAddress("example.com query").search);
     CHECK(!ResolveAddress("javascript:alert(1)").error.empty());
@@ -50,6 +53,38 @@ int main()
     CHECK(ResolveAddress("summit:history").url == "summit:history");
     CHECK(ResolveAddress("Summit:Bookmarks").url == "summit:bookmarks");
     CHECK(!ResolveAddress("summit:nothing").error.empty());
+
+    // External link dispatch: allowed registration schemes, trusted templates,
+    // encoding one complete URL (never shell arguments), and credential removal.
+    CHECK(URLScheme("MAILTO:hello@example.com") == "mailto");
+    CHECK(URLScheme("1mail:bad").empty() && URLScheme("mail to:bad").empty());
+    CHECK(URLScheme("mailto:bad\naddress").empty());
+    CHECK(!IsExternalScheme("javascript") && !IsExternalScheme("https") && !IsExternalScheme("file"));
+    CHECK(IsExternalScheme("haiku-app") && IsWebHandlerScheme("mailto") && IsWebHandlerScheme("web+demo"));
+    CHECK(!IsWebHandlerScheme("https") && !IsWebHandlerScheme("web+") && !IsWebHandlerScheme("web+demo1"));
+    CHECK(ProtocolOrigin("HTTPS://MAIL.Example:443/path?q=%s") == "https://mail.example");
+    CHECK(ProtocolOrigin("http://[::1]:080/path") == "http://[::1]");
+    CHECK(ProtocolOrigin("https://mail.example:8443/path") == "https://mail.example:8443");
+    CHECK(ProtocolOrigin("https://good@evil/path").empty());
+    CHECK(ProtocolOrigin("https://good:99999/path").empty());
+    CHECK(ProtocolOrigin("https://good:abc/path").empty());
+    CHECK(ProtocolOrigin("https://good\\evil/path").empty());
+    const ProtocolHandler mail {"web", "https://mail.example/compose?url=%s&other=%s", "https://mail.example"};
+    CHECK(ValidProtocolHandler("mailto", mail));
+    CHECK(!ValidProtocolHandler("http", mail));
+    CHECK(!ValidProtocolHandler("mailto", {"web", "https://evil.example/?url=%s", mail.origin}));
+    CHECK(!ValidProtocolHandler("mailto", {"web", "javascript:alert('%s')", mail.origin}));
+    CHECK(!ValidProtocolHandler("mailto", {"web", "https://mail.example/", mail.origin}));
+    CHECK(!ValidProtocolHandler("mailto", {"app", "relative", ""}));
+    CHECK(!ValidProtocolHandler("mailto", {"app", "/boot/apps/Mail\n", ""}));
+    CHECK(ProtocolHandlerURL(mail, "mailto:café@example.com?subject=A&B")
+        == "https://mail.example/compose?url=mailto%3Acaf%C3%A9%40example.com%3Fsubject%3DA%26B&other=%s");
+    const ProtocolHandler ftp {"web", "https://files.example/open?url=%s", "https://files.example"};
+    CHECK(ProtocolHandlerURL(ftp, "ftp://user:password@host/file@name")
+        == "https://files.example/open?url=ftp%3A%2F%2Fhost%2Ffile%40name");
+    CHECK(ProtocolHandlerURL(ftp, "ftp://host/file@name")
+        == "https://files.example/open?url=ftp%3A%2F%2Fhost%2Ffile%40name");
+    CHECK(ProtocolHandlerURL(mail, "javascript:alert(1)").empty());
 
     // Search engines.
     CHECK(CurrentSearchEngine().id == std::string("duckduckgo") && SearchEngines().size() == 3);
@@ -259,6 +294,11 @@ int main()
     CHECK(profile.SetSitePermission("notifications", "http://old.example", true));
     CHECK(profile.SetSitePermission("notifications", "http://old.example", std::nullopt));
     CHECK(!profile.SetSitePermission("notifications", "http://old.example", std::nullopt));
+    CHECK(profile.SetProtocolHandler("mailto", mail));
+    CHECK(!profile.SetProtocolHandler("mailto", mail));
+    CHECK(profile.SetProtocolHandler("irc", {"app", "/boot/apps/Vision/Vision", ""}));
+    CHECK(!profile.SetProtocolHandler("https", mail));
+    profile.declinedProtocolHandlers["web+demo"].insert("https://demo.example/?url=%s");
     profile.homeURL = "https://home.example/";
     profile.showBookmarksBar = false;
     CHECK(profile.Save(path, error) && error.empty());
@@ -277,6 +317,10 @@ int main()
         && !loaded.sitePermissions["geolocation"]["https://maps.example:8443"]
         && loaded.sitePermissions.at("camera").at("https://github.com")
         && !loaded.sitePermissions.at("microphone").at("https://github.com"));
+    CHECK(loaded.protocolHandlers == profile.protocolHandlers);
+    CHECK(loaded.declinedProtocolHandlers == profile.declinedProtocolHandlers);
+    CHECK(loaded.RemoveProtocolHandler("mailto") && !loaded.RemoveProtocolHandler("mailto"));
+    CHECK(loaded.RemoveProtocolHandler("web+demo") && loaded.declinedProtocolHandlers.empty());
     CHECK(loaded.searchEngine == "bing" && loaded.siteZoom.size() == 2 && loaded.siteZoom["example.com"] == 1.5);
     CHECK(loaded.unpinnedExtensions == std::set<std::string>({"ext-1", "ext-2"}));
     CHECK(loaded.trustedCertificates.size() == 2 && loaded.trustedCertificates[0].subject == "/CN=UniFi"

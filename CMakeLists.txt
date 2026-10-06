@@ -4,7 +4,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(SUMMIT_MODERN_WEBKIT "Build Summit with the native multiprocess WebKit API" OFF)
 find_package(OpenSSL REQUIRED COMPONENTS Crypto)
-add_library(summit_core src/core/Address.cpp src/core/Profile.cpp src/core/ExtensionCatalog.cpp src/core/ExtensionIdentity.cpp
+add_library(summit_core src/core/Address.cpp src/core/Protocol.cpp src/core/Profile.cpp src/core/ExtensionCatalog.cpp src/core/ExtensionIdentity.cpp
     src/core/Favicon.cpp src/core/InternalPages.cpp src/core/Zoom.cpp src/core/Suggest.cpp src/core/DevTools.cpp src/core/DevToolsFormat.cpp)
 target_link_libraries(summit_core PUBLIC OpenSSL::Crypto)
 target_include_directories(summit_core PUBLIC src vendor)
@@ -37,7 +37,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Haiku")
     find_program(HAIKU_RC rc REQUIRED)
     find_program(HAIKU_XRES xres REQUIRED)
     add_executable(Summit src/main.cpp src/ui/BrowserWindow.cpp src/ui/Chrome.cpp src/ui/ExtensionPermissionPrompt.cpp src/ui/ExtensionController.cpp src/ui/ExtensionInstaller.cpp src/ui/ExtensionManager.cpp
-        src/ui/FaviconCache.cpp src/ui/PreferencesWindow.cpp src/ui/SharedProfile.cpp src/ui/DirectWindowRescue.cpp
+        src/ui/ProtocolHandlers.cpp src/ui/FaviconCache.cpp src/ui/PreferencesWindow.cpp src/ui/SharedProfile.cpp src/ui/DirectWindowRescue.cpp
         src/ui/SourceView.cpp src/ui/DevToolsWindow.cpp src/ui/DevToolsNetwork.cpp src/ui/DevToolsConsole.cpp)
     target_include_directories(Summit PRIVATE ${SUMMIT_WEBKIT_INCLUDE_DIR} /boot/system/develop/headers/private/netservices)
     target_compile_options(Summit PRIVATE -Wno-multichar)

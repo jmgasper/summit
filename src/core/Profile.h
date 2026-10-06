@@ -1,4 +1,5 @@
 #pragma once
+#include "Protocol.h"
 #include <cstdint>
 #include <ctime>
 #include <filesystem>
@@ -63,6 +64,11 @@ struct Profile {
     // ("notifications", "geolocation") -> origin ("https://host[:port]") ->
     // allowed. Sites not listed ask again.
     std::map<std::string, std::map<std::string, bool>> sitePermissions;
+    std::map<std::string, ProtocolHandler> protocolHandlers;
+    // A declined site registration is not prompted again until removed in Preferences.
+    std::map<std::string, std::set<std::string>> declinedProtocolHandlers;
+    bool SetProtocolHandler(const std::string& scheme, const ProtocolHandler&);
+    bool RemoveProtocolHandler(const std::string& scheme);
     static Profile Load(const std::filesystem::path& path, std::string& error);
     bool Save(const std::filesystem::path& path, std::string& error) const;
     // Records a visit to an http(s) page; returns false for other pages.
