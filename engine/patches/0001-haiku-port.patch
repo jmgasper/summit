@@ -4621,7 +4621,7 @@ index fb688cc015cd74b8fa16c7073b3a0c9f61f4aee2..4eee13adc7844b818bb6e27103cc16a1
  
  enum class UTextProviderContext {
 diff --git a/Source/WebCore/CMakeLists.txt b/Source/WebCore/CMakeLists.txt
-index 5f4a893485a9b9e1904cf2d342085ea83c5315c1..a1e6bd67069c2ddd495a5f5e6a18b259ffd323e3 100644
+index 5f4a893485a9b9e1904cf2d342085ea83c5315c1..42a2729498acc39ba5270538f360377733d3bca0 100644
 --- a/Source/WebCore/CMakeLists.txt
 +++ b/Source/WebCore/CMakeLists.txt
 @@ -74,6 +74,7 @@ set(WebCore_PRIVATE_INCLUDE_DIRECTORIES
@@ -4717,7 +4717,42 @@ index 5f4a893485a9b9e1904cf2d342085ea83c5315c1..a1e6bd67069c2ddd495a5f5e6a18b259
      page/NavigatorCookies.idl
      page/NavigatorGlobalPrivacyControl.idl
      page/NavigatorID.idl
-@@ -3221,6 +3227,19 @@ list(APPEND WebCore_SOURCES ${WebCore_DERIVED_SOURCES_DIR}/Namespace.cpp)
+@@ -2192,6 +2198,34 @@ if (USE_APPLE_INTERNAL_SDK)
+     )
+ endif ()
+ 
++if (ENABLE_WEBUSB)
++    list(APPEND WebCore_NON_SVG_IDL_FILES
++        Modules/webusb/USB.idl
++        Modules/webusb/USBAlternateInterface.idl
++        Modules/webusb/USBConfiguration.idl
++        Modules/webusb/USBConnectionEvent.idl
++        Modules/webusb/USBControlTransferParameters.idl
++        Modules/webusb/USBDevice.idl
++        Modules/webusb/USBDeviceFilter.idl
++        Modules/webusb/USBDeviceRequestOptions.idl
++        Modules/webusb/USBDirection.idl
++        Modules/webusb/USBEndpoint.idl
++        Modules/webusb/USBEndpointType.idl
++        Modules/webusb/USBInTransferResult.idl
++        Modules/webusb/USBInterface.idl
++        Modules/webusb/USBIsochronousInTransferPacket.idl
++        Modules/webusb/USBIsochronousInTransferResult.idl
++        Modules/webusb/USBIsochronousOutTransferPacket.idl
++        Modules/webusb/USBIsochronousOutTransferResult.idl
++        Modules/webusb/USBOutTransferResult.idl
++        Modules/webusb/USBRecipient.idl
++        Modules/webusb/USBRequestType.idl
++        Modules/webusb/USBTransferStatus.idl
++    )
++    list(APPEND WebCore_SUPPLEMENTAL_IDL_FILES Modules/webusb/Navigator+USB.idl)
++    list(APPEND WebCore_PRIVATE_INCLUDE_DIRECTORIES "${WEBCORE_DIR}/Modules/webusb")
++endif ()
++
+ set(WebCore_IDL_FILES
+     ${WebCore_NON_SVG_IDL_FILES}
+     ${WebCore_SVG_IDL_FILES}
+@@ -3221,6 +3255,19 @@ list(APPEND WebCore_SOURCES ${WebCore_DERIVED_SOURCES_DIR}/Namespace.cpp)
  
  WEBKIT_COMPUTE_SOURCES(WebCore)
  
@@ -4737,7 +4772,7 @@ index 5f4a893485a9b9e1904cf2d342085ea83c5315c1..a1e6bd67069c2ddd495a5f5e6a18b259
  WEBKIT_DEFINE_SUBTARGET_WITH_PREFIX(WebCore WebCoreJSBindings
      PREFIX WebCoreJSBindingsPrefix.h
      PREFIX_LANGUAGES CXX
-@@ -3251,6 +3270,7 @@ WEBKIT_DEFINE_SUBTARGET_WITH_PREFIX(WebCore WebCoreAVFoundation
+@@ -3251,6 +3298,7 @@ WEBKIT_DEFINE_SUBTARGET_WITH_PREFIX(WebCore WebCoreAVFoundation
  WEBKIT_ADD_PREFIX_HEADER(WebCore WebCorePrefix.h PREFIX_LANGUAGES CXX OBJCXX)
  
  list(APPEND WebCore_PRIVATE_FRAMEWORK_HEADERS
@@ -5035,8 +5070,1554 @@ index b29212ad5b98d332ff7c1db7814cb2575988ec5f..b6c50d32873f6c712e3409ca1c5e2ec5
      RefPtr<ArrayBuffer> m_largeBlob;
      String m_accessGroup;
  };
+diff --git a/Source/WebCore/Modules/webusb/Navigator+USB.idl b/Source/WebCore/Modules/webusb/Navigator+USB.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..5317e62f9b5e744486d130bdcfab2cdbdcde8532
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/Navigator+USB.idl
+@@ -0,0 +1,5 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++[Conditional=WEBUSB]
++partial interface Navigator {
++    [SecureContext, SameObject] readonly attribute USB usb;
++};
+diff --git a/Source/WebCore/Modules/webusb/USB.cpp b/Source/WebCore/Modules/webusb/USB.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..29495fd751c4f5702450f377928a08099d7bce3a
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USB.cpp
+@@ -0,0 +1,260 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#if ENABLE(WEBUSB)
++#include "USB.h"
++#include "Chrome.h"
++#include "ChromeClient.h"
++#include "Document.h"
++#include "EventNames.h"
++#include "EventTargetInlines.h"
++#include "JSDOMConvertInterface.h"
++#include "JSDOMConvertSequences.h"
++#include "JSDOMPromiseDeferred.h"
++#include "JSUSBDevice.h"
++#include "LocalDOMWindow.h"
++#include "LocalFrame.h"
++#include "Page.h"
++#include "PermissionsPolicy.h"
++#include "SecurityOrigin.h"
++#include "USBConnectionEvent.h"
++#include <wtf/TZoneMallocInlines.h>
++
++namespace WebCore {
++WTF_MAKE_TZONE_ALLOCATED_IMPL(USB);
++WTF_MAKE_TZONE_ALLOCATED_IMPL(USBConnectionEvent);
++
++Ref<USB> USB::create(Document& document)
++{
++    auto result = adoptRef(*new USB(document));
++    result->suspendIfNeeded();
++    return result;
++}
++USB::USB(Document& document)
++    : ActiveDOMObject(&document), m_pollTimer(*this, &USB::pollDevices) { }
++USB::~USB() = default;
++Document* USB::document() const { return dynamicDowncast<Document>(scriptExecutionContext()); }
++
++static ExceptionCode errorCode(const String& name)
++{
++    if (name == "SecurityError"_s) return ExceptionCode::SecurityError;
++    if (name == "NotFoundError"_s) return ExceptionCode::NotFoundError;
++    if (name == "NotAllowedError"_s) return ExceptionCode::NotAllowedError;
++    if (name == "InvalidStateError"_s) return ExceptionCode::InvalidStateError;
++    if (name == "NotSupportedError"_s) return ExceptionCode::NotSupportedError;
++    if (name == "InvalidAccessError"_s) return ExceptionCode::InvalidAccessError;
++    if (name == "AbortError"_s) return ExceptionCode::AbortError;
++    if (name == "TypeError"_s) return ExceptionCode::TypeError;
++    if (name == "RangeError"_s) return ExceptionCode::RangeError;
++    return ExceptionCode::NetworkError;
++}
++
++void USB::perform(Document* document, Ref<JSON::Object>&& arguments, Vector<uint8_t>&& bytes, Completion&& completion)
++{
++    if (!document || !document->isFullyActive() || !document->frame() || !document->page()) {
++        completion(Exception { ExceptionCode::InvalidStateError, "The USB document is no longer active"_s }, { });
++        return;
++    }
++    if (!document->isSecureContext() || document->securityOrigin().isOpaque()
++        || !PermissionsPolicy::isFeatureEnabled(PermissionsPolicy::Feature::USB, *document)) {
++        completion(Exception { ExceptionCode::SecurityError, "USB access is not allowed in this document"_s }, { });
++        return;
++    }
++    if (bytes.size() > 16 * 1024 * 1024) {
++        completion(Exception { ExceptionCode::RangeError, "USB transfer exceeds 16 MiB"_s }, { });
++        return;
++    }
++    arguments->setString("document"_s, document->identifier().toString());
++    document->page()->chrome().client().usbRequest(*document->frame(), arguments->toJSONString(), WTF::move(bytes),
++        [document = WeakPtr { *document }, completion = WTF::move(completion)](String&& response, Vector<uint8_t>&& bytes) mutable {
++            if (!document || !document->isFullyActive()) {
++                completion(Exception { ExceptionCode::AbortError, "The USB document was closed"_s }, { });
++                return;
++            }
++            auto value = JSON::Value::parseJSON(response);
++            auto object = value ? value->asObject() : nullptr;
++            if (!object) {
++                completion(Exception { ExceptionCode::NetworkError, "Invalid USB broker response"_s }, { });
++                return;
++            }
++            auto error = object->getString("error"_s);
++            if (!error.isEmpty()) {
++                completion(Exception { errorCode(error), object->getString("message"_s) }, { });
++                return;
++            }
++            completion(object.releaseNonNull(), WTF::move(bytes));
++        });
++}
++
++Ref<USBDevice> USB::device(Ref<JSON::Object>&& data)
++{
++    m_devices.removeIf([&](auto& entry) {
++        if (!entry.value->state().forgotten)
++            return false;
++        m_connected.remove(entry.key);
++        return true;
++    });
++    auto id = data->getString("id"_s);
++    if (!m_stopped && !m_pollTimer.isActive())
++        m_pollTimer.startRepeating(2_s);
++    if (auto it = m_devices.find(id); it != m_devices.end())
++        return it->value.copyRef();
++    auto value = USBDevice::create(*document(), WTF::move(data));
++    m_devices.add(id, value.copyRef());
++    return value;
++}
++
++void USB::getDevices(DOMPromiseDeferred<IDLSequence<IDLInterface<USBDevice>>>&& promise)
++{
++    auto args = JSON::Object::create();
++    args->setString("operation"_s, "getDevices"_s);
++    perform(document(), WTF::move(args), { }, [this, protectedThis = Ref { *this }, promise = WTF::move(promise)](auto&& response, auto&&) mutable {
++        if (response.hasException()) {
++            promise.reject(response.releaseException());
++            return;
++        }
++        auto result = response.releaseReturnValue();
++        Vector<Ref<USBDevice>> devices;
++        if (auto values = result->getArray("devices"_s)) {
++            for (auto& value : *values) {
++                if (auto data = value->asObject()) {
++                    auto item = device(data.releaseNonNull());
++                    m_connected.add(item->identifier());
++                    devices.append(WTF::move(item));
++                }
++            }
++        }
++        promise.resolve(WTF::move(devices));
++    });
++}
++
++static RefPtr<JSON::Array> filtersJSON(const Vector<USBDeviceFilter>& filters)
++{
++    if (filters.size() > 64)
++        return nullptr;
++    auto result = JSON::Array::create();
++    for (auto& filter : filters) {
++        if ((filter.productId && !filter.vendorId) || (filter.subclassCode && !filter.classCode)
++            || (filter.protocolCode && !filter.subclassCode) || filter.serialNumber.length() > 1024)
++            return nullptr;
++        auto value = JSON::Object::create();
++        if (filter.vendorId) value->setInteger("vendorId"_s, *filter.vendorId);
++        if (filter.productId) value->setInteger("productId"_s, *filter.productId);
++        if (filter.classCode) value->setInteger("classCode"_s, *filter.classCode);
++        if (filter.subclassCode) value->setInteger("subclassCode"_s, *filter.subclassCode);
++        if (filter.protocolCode) value->setInteger("protocolCode"_s, *filter.protocolCode);
++        if (!filter.serialNumber.isNull()) value->setString("serialNumber"_s, filter.serialNumber);
++        result->pushObject(WTF::move(value));
++    }
++    return result;
++}
++
++void USB::requestDevice(USBDeviceRequestOptions&& options, DOMPromiseDeferred<IDLInterface<USBDevice>>&& promise)
++{
++    auto filters = filtersJSON(options.filters);
++    auto exclusions = filtersJSON(options.exclusionFilters);
++    if (!filters || !exclusions) {
++        promise.reject(ExceptionCode::TypeError, "Invalid USB device filter"_s);
++        return;
++    }
++    auto* doc = document();
++    if (!doc || !doc->window() || !doc->window()->hasTransientActivation()) {
++        promise.reject(ExceptionCode::SecurityError, "Choosing a USB device requires a user gesture"_s);
++        return;
++    }
++    auto args = JSON::Object::create();
++    args->setString("operation"_s, "requestDevice"_s);
++    args->setArray("filters"_s, filters.releaseNonNull());
++    args->setArray("exclusionFilters"_s, exclusions.releaseNonNull());
++    perform(doc, WTF::move(args), { }, [this, protectedThis = Ref { *this }, promise = WTF::move(promise)](auto&& response, auto&&) mutable {
++        if (response.hasException()) {
++            promise.reject(response.releaseException());
++            return;
++        }
++        auto result = response.releaseReturnValue();
++        auto value = result->getObject("device"_s);
++        if (!value) {
++            promise.reject(ExceptionCode::NotFoundError, "No USB device was selected"_s);
++            return;
++        }
++        auto selected = device(value.releaseNonNull());
++        m_connected.add(selected->identifier());
++        promise.resolve(WTF::move(selected));
++    });
++}
++
++void USB::eventListenersDidChange()
++{
++    bool listening = hasEventListeners(eventNames().connectEvent) || hasEventListeners(eventNames().disconnectEvent);
++    if (listening && !m_stopped && !m_pollTimer.isActive())
++        m_pollTimer.startRepeating(2_s);
++    else if (!listening && m_devices.isEmpty())
++        m_pollTimer.stop();
++}
++bool USB::virtualHasPendingActivity() const
++{
++    if (m_stopped)
++        return false;
++    if (hasEventListeners())
++        return true;
++    return std::ranges::any_of(m_devices.values(), [](auto& device) { return device->opened(); });
++}
++void USB::suspend(ReasonForSuspension) { m_pollTimer.stop(); }
++void USB::resume() { eventListenersDidChange(); }
++void USB::stop()
++{
++    m_stopped = true;
++    m_pollTimer.stop();
++    for (auto& entry : m_devices)
++        entry.value->disconnected();
++    m_connected.clear();
++    // The UI broker independently cancels leases on frame navigation/closure.
++}
++void USB::pollDevices()
++{
++    if (m_polling || m_stopped)
++        return;
++    m_polling = true;
++    auto args = JSON::Object::create();
++    args->setString("operation"_s, "getDevices"_s);
++    perform(document(), WTF::move(args), { }, [this, protectedThis = Ref { *this }](auto&& response, auto&&) mutable {
++        m_polling = false;
++        if (response.hasException() || m_stopped)
++            return;
++        HashSet<String> connected;
++        Vector<Ref<Event>> events;
++        auto result = response.releaseReturnValue();
++        if (auto values = result->getArray("devices"_s)) {
++            for (auto& value : *values) {
++                auto data = value->asObject();
++                if (!data)
++                    continue;
++                auto item = device(data.releaseNonNull());
++                auto id = item->identifier();
++                connected.add(id);
++                if (!m_connected.contains(id)) {
++                    USBConnectionEvent::Init init { { }, item.copyRef() };
++                    events.append(USBConnectionEvent::create(eventNames().connectEvent, WTF::move(init), Event::IsTrusted::Yes));
++                }
++            }
++        }
++        for (auto& id : m_connected) {
++            if (connected.contains(id))
++                continue;
++            if (auto it = m_devices.find(id); it != m_devices.end()) {
++                it->value->disconnected();
++                USBConnectionEvent::Init init { { }, it->value.copyRef() };
++                events.append(USBConnectionEvent::create(eventNames().disconnectEvent, WTF::move(init), Event::IsTrusted::Yes));
++            }
++        }
++        m_connected = WTF::move(connected);
++        // A listener may navigate or stop this object. Finish updating the
++        // device map before invoking page code, and iterate a separate list.
++        for (auto& event : events) {
++            if (m_stopped)
++                break;
++            dispatchEvent(event);
++        }
++    });
++}
++} // namespace WebCore
++#endif
+diff --git a/Source/WebCore/Modules/webusb/USB.h b/Source/WebCore/Modules/webusb/USB.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..e0686525a32746eae64d661a28beea16534f8253
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USB.h
+@@ -0,0 +1,51 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#if ENABLE(WEBUSB)
++#include "ActiveDOMObject.h"
++#include "EventTarget.h"
++#include "EventTargetInterfaces.h"
++#include "IDLTypes.h"
++#include "JSDOMPromiseDeferredForward.h"
++#include "Timer.h"
++#include "USBDevice.h"
++#include "USBDeviceRequestOptions.h"
++#include <wtf/CompletionHandler.h>
++#include <wtf/HashMap.h>
++#include <wtf/text/StringHash.h>
++
++namespace WebCore {
++class USB final : public RefCounted<USB>, public EventTarget, public ActiveDOMObject {
++    WTF_MAKE_TZONE_ALLOCATED(USB);
++public:
++    static Ref<USB> create(Document&);
++    ~USB();
++    void ref() const final { RefCounted::ref(); }
++    void deref() const final { RefCounted::deref(); }
++    USING_CAN_MAKE_WEAKPTR(EventTarget);
++    ScriptExecutionContext* scriptExecutionContext() const final { return ActiveDOMObject::scriptExecutionContext(); }
++    void getDevices(DOMPromiseDeferred<IDLSequence<IDLInterface<USBDevice>>>&&);
++    void requestDevice(USBDeviceRequestOptions&&, DOMPromiseDeferred<IDLInterface<USBDevice>>&&);
++    using Completion = CompletionHandler<void(ExceptionOr<Ref<JSON::Object>>&&, Vector<uint8_t>&&)>;
++    static void perform(Document*, Ref<JSON::Object>&&, Vector<uint8_t>&&, Completion&&);
++private:
++    explicit USB(Document&);
++    EventTargetInterfaceType eventTargetInterface() const final { return EventTargetInterfaceType::USB; }
++    void refEventTarget() final { ref(); }
++    void derefEventTarget() final { deref(); }
++    void stop() final;
++    void suspend(ReasonForSuspension) final;
++    void resume() final;
++    void eventListenersDidChange() final;
++    bool virtualHasPendingActivity() const final;
++    void pollDevices();
++    Ref<USBDevice> device(Ref<JSON::Object>&&);
++    Document* document() const;
++    Timer m_pollTimer;
++    HashMap<String, Ref<USBDevice>> m_devices;
++    HashSet<String> m_connected;
++    bool m_polling { false };
++    bool m_stopped { false };
++};
++} // namespace WebCore
++SPECIALIZE_TYPE_TRAITS_EVENTTARGET(USB)
++#endif
+diff --git a/Source/WebCore/Modules/webusb/USB.idl b/Source/WebCore/Modules/webusb/USB.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..45c1587d0ec42502028331aa3b979d00b389cf35
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USB.idl
+@@ -0,0 +1,8 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++[Conditional=WEBUSB, Exposed=Window, SecureContext, ActiveDOMObject]
++interface USB : EventTarget {
++    attribute EventHandler onconnect;
++    attribute EventHandler ondisconnect;
++    Promise<sequence<USBDevice>> getDevices();
++    Promise<USBDevice> requestDevice(USBDeviceRequestOptions options);
++  };
+diff --git a/Source/WebCore/Modules/webusb/USBAlternateInterface.h b/Source/WebCore/Modules/webusb/USBAlternateInterface.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..b4db61cf810d6dbc81b6286a8759c4a3b62f2f46
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBAlternateInterface.h
+@@ -0,0 +1,3 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#include "USBDescriptors.h"
+diff --git a/Source/WebCore/Modules/webusb/USBAlternateInterface.idl b/Source/WebCore/Modules/webusb/USBAlternateInterface.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..d30a0d32f9e9027dcf61767b4e64bf4f6634e452
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBAlternateInterface.idl
+@@ -0,0 +1,11 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++[Conditional=WEBUSB, Exposed=Window, SecureContext]
++interface USBAlternateInterface {
++    constructor(USBInterface deviceInterface, octet alternateSetting);
++    readonly attribute octet alternateSetting;
++    readonly attribute octet interfaceClass;
++    readonly attribute octet interfaceSubclass;
++    readonly attribute octet interfaceProtocol;
++    readonly attribute DOMString? interfaceName;
++    readonly attribute FrozenArray<USBEndpoint> endpoints;
++  };
+diff --git a/Source/WebCore/Modules/webusb/USBConfiguration.h b/Source/WebCore/Modules/webusb/USBConfiguration.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..b4db61cf810d6dbc81b6286a8759c4a3b62f2f46
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBConfiguration.h
+@@ -0,0 +1,3 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#include "USBDescriptors.h"
+diff --git a/Source/WebCore/Modules/webusb/USBConfiguration.idl b/Source/WebCore/Modules/webusb/USBConfiguration.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..65753851dc43efd09861d7ecce3b241a72553b70
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBConfiguration.idl
+@@ -0,0 +1,8 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++[Conditional=WEBUSB, Exposed=Window, SecureContext]
++interface USBConfiguration {
++    constructor(USBDevice device, octet configurationValue);
++    readonly attribute octet configurationValue;
++    readonly attribute DOMString? configurationName;
++    readonly attribute FrozenArray<USBInterface> interfaces;
++  };
+diff --git a/Source/WebCore/Modules/webusb/USBConnectionEvent.h b/Source/WebCore/Modules/webusb/USBConnectionEvent.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..ffc43a64d47415d8171d6e73ea38bc124b47ce8b
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBConnectionEvent.h
+@@ -0,0 +1,20 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#if ENABLE(WEBUSB)
++#include "Event.h"
++#include "USBDevice.h"
++namespace WebCore {
++class USBConnectionEvent final : public Event {
++    WTF_MAKE_TZONE_ALLOCATED(USBConnectionEvent);
++public:
++    struct Init : EventInit { Ref<USBDevice> device; };
++    static Ref<USBConnectionEvent> create(const AtomString& type, Init&& init, IsTrusted trusted = IsTrusted::No)
++    { return adoptRef(*new USBConnectionEvent(type, WTF::move(init), trusted)); }
++    USBDevice& device() const { return m_device; }
++private:
++    USBConnectionEvent(const AtomString& type, Init&& init, IsTrusted trusted)
++        : Event(EventInterfaceType::USBConnectionEvent, type, WTF::move(init), trusted), m_device(WTF::move(init.device)) { }
++    Ref<USBDevice> m_device;
++};
++}
++#endif
+diff --git a/Source/WebCore/Modules/webusb/USBConnectionEvent.idl b/Source/WebCore/Modules/webusb/USBConnectionEvent.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..e65c820dcfec8030a2cc21a79ef73e144dfdc7bf
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBConnectionEvent.idl
+@@ -0,0 +1,9 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++[Conditional=WEBUSB, Exposed=Window, SecureContext]
++interface USBConnectionEvent : Event {
++  constructor([AtomString] DOMString type, USBConnectionEventInit eventInitDict);
++  [SameObject] readonly attribute USBDevice device;
++};
++dictionary USBConnectionEventInit : EventInit {
++    required USBDevice device;
++};
+diff --git a/Source/WebCore/Modules/webusb/USBControlTransferParameters.h b/Source/WebCore/Modules/webusb/USBControlTransferParameters.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..5012fc032d55a15d47d35b0a7e037685271fc66e
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBControlTransferParameters.h
+@@ -0,0 +1,13 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#include "USBRecipient.h"
++#include "USBRequestType.h"
++namespace WebCore {
++struct USBControlTransferParameters {
++    USBRequestType requestType;
++    USBRecipient recipient;
++    uint8_t request;
++    uint16_t value;
++    uint16_t index;
++};
++}
+diff --git a/Source/WebCore/Modules/webusb/USBControlTransferParameters.idl b/Source/WebCore/Modules/webusb/USBControlTransferParameters.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..5e5419a2447648f1978e866dd5c2c462c9bb71f7
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBControlTransferParameters.idl
+@@ -0,0 +1,8 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++dictionary USBControlTransferParameters {
++    required USBRequestType requestType;
++    required USBRecipient recipient;
++    required octet request;
++    required unsigned short value;
++    required unsigned short index;
++  };
+diff --git a/Source/WebCore/Modules/webusb/USBDescriptors.cpp b/Source/WebCore/Modules/webusb/USBDescriptors.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..296b197cb060682c008a09a6f3008e00878e2951
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBDescriptors.cpp
+@@ -0,0 +1,110 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#if ENABLE(WEBUSB)
++#include "USBDescriptors.h"
++#include "USBDevice.h"
++
++namespace WebCore {
++unsigned usbNumber(const JSON::Object& object, ASCIILiteral key)
++{
++    return std::max(0, object.getInteger(key).value_or(0));
++}
++RefPtr<JSON::Object> usbFind(const JSON::Object& object, ASCIILiteral arrayKey, ASCIILiteral key, unsigned number)
++{
++    auto array = object.getArray(arrayKey);
++    if (!array)
++        return nullptr;
++    for (auto& value : *array) {
++        if (auto child = value->asObject(); child && child->getInteger(key) == number)
++            return child;
++    }
++    return nullptr;
++}
++
++ExceptionOr<Ref<USBConfiguration>> USBConfiguration::create(USBDevice& device, uint8_t number)
++{
++    auto data = usbFind(device.state().data, "configurations"_s, "configurationValue"_s, number);
++    if (!data)
++        return Exception { ExceptionCode::RangeError, "Unknown USB configuration"_s };
++    return create(device.state(), data.releaseNonNull());
++}
++Vector<Ref<USBInterface>> USBConfiguration::interfaces() const
++{
++    Vector<Ref<USBInterface>> result;
++    if (auto values = m_data->getArray("interfaces"_s)) {
++        for (auto& value : *values) {
++            if (auto data = value->asObject())
++                result.append(USBInterface::create(m_state, configurationValue(), data.releaseNonNull()));
++        }
++    }
++    return result;
++}
++ExceptionOr<Ref<USBInterface>> USBInterface::create(USBConfiguration& configuration, uint8_t number)
++{
++    auto data = usbFind(configuration.data(), "interfaces"_s, "interfaceNumber"_s, number);
++    if (!data)
++        return Exception { ExceptionCode::RangeError, "Unknown USB interface"_s };
++    return create(configuration.state(), configuration.configurationValue(), data.releaseNonNull());
++}
++RefPtr<JSON::Object> USBInterface::current() const
++{
++    if (auto configuration = usbFind(m_state->data, "configurations"_s, "configurationValue"_s, m_configuration))
++        return usbFind(*configuration, "interfaces"_s, "interfaceNumber"_s, interfaceNumber());
++    return nullptr;
++}
++bool USBInterface::claimed() const
++{
++    if (!m_state->opened || usbNumber(m_state->data, "configurationValue"_s) != m_configuration)
++        return false;
++    auto value = current();
++    return value && value->getBoolean("claimed"_s).value_or(false);
++}
++Ref<USBAlternateInterface> USBInterface::alternate() const
++{
++    auto value = current();
++    auto number = value ? usbNumber(*value, "alternateSetting"_s) : 0;
++    if (auto data = usbFind(m_data, "alternates"_s, "alternateSetting"_s, number))
++        return USBAlternateInterface::create(data.releaseNonNull());
++    // A malformed descriptor never reaches the broker's eligible-device list;
++    // keep a safe object if a device vanished during a state update.
++    return USBAlternateInterface::create(JSON::Object::create());
++}
++Vector<Ref<USBAlternateInterface>> USBInterface::alternates() const
++{
++    Vector<Ref<USBAlternateInterface>> result;
++    if (auto values = m_data->getArray("alternates"_s)) {
++        for (auto& value : *values) {
++            if (auto data = value->asObject())
++                result.append(USBAlternateInterface::create(data.releaseNonNull()));
++        }
++    }
++    return result;
++}
++ExceptionOr<Ref<USBAlternateInterface>> USBAlternateInterface::create(USBInterface& interface, uint8_t number)
++{
++    auto data = usbFind(interface.data(), "alternates"_s, "alternateSetting"_s, number);
++    if (!data)
++        return Exception { ExceptionCode::RangeError, "Unknown USB alternate setting"_s };
++    return create(data.releaseNonNull());
++}
++Vector<Ref<USBEndpoint>> USBAlternateInterface::endpoints() const
++{
++    Vector<Ref<USBEndpoint>> result;
++    if (auto values = m_data->getArray("endpoints"_s)) {
++        for (auto& value : *values) {
++            if (auto data = value->asObject())
++                result.append(USBEndpoint::create(data.releaseNonNull()));
++        }
++    }
++    return result;
++}
++ExceptionOr<Ref<USBEndpoint>> USBEndpoint::create(USBAlternateInterface& alternate, uint8_t number, USBDirection direction)
++{
++    for (auto& endpoint : alternate.endpoints()) {
++        if (endpoint->endpointNumber() == number && endpoint->direction() == direction)
++            return endpoint.copyRef();
++    }
++    return Exception { ExceptionCode::RangeError, "Unknown USB endpoint"_s };
++}
++} // namespace WebCore
++#endif
+diff --git a/Source/WebCore/Modules/webusb/USBDescriptors.h b/Source/WebCore/Modules/webusb/USBDescriptors.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..64bd3a05a05ccfeb2ebfd2564f0d32152c38bcfe
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBDescriptors.h
+@@ -0,0 +1,184 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#if ENABLE(WEBUSB)
++
++#include "Document.h"
++#include "ExceptionOr.h"
++#include "USBDirection.h"
++#include "USBEndpointType.h"
++#include "USBTransferStatus.h"
++#include <JavaScriptCore/DataView.h>
++#include <wtf/JSONValues.h>
++#include <wtf/RefCounted.h>
++
++namespace WebCore {
++
++class USBDevice;
++class USBConfiguration;
++class USBInterface;
++class USBAlternateInterface;
++class USBEndpoint;
++
++class USBDeviceState final : public RefCounted<USBDeviceState> {
++public:
++    static Ref<USBDeviceState> create(Document& document, Ref<JSON::Object>&& value)
++    { return adoptRef(*new USBDeviceState(document, WTF::move(value))); }
++    Ref<JSON::Object> data;
++    WeakPtr<Document, WeakPtrImplWithEventTargetData> document;
++    bool opened { false };
++    bool busy { false };
++    bool forgotten { false };
++private:
++    USBDeviceState(Document& document, Ref<JSON::Object>&& value)
++        : data(WTF::move(value)), document(document) { }
++};
++
++RefPtr<JSON::Object> usbFind(const JSON::Object&, ASCIILiteral array, ASCIILiteral key, unsigned value);
++unsigned usbNumber(const JSON::Object&, ASCIILiteral key);
++
++class USBConfiguration final : public RefCounted<USBConfiguration> {
++public:
++    static ExceptionOr<Ref<USBConfiguration>> create(USBDevice&, uint8_t);
++    static Ref<USBConfiguration> create(USBDeviceState& state, Ref<JSON::Object>&& value)
++    { return adoptRef(*new USBConfiguration(state, WTF::move(value))); }
++    uint8_t configurationValue() const { return usbNumber(m_data, "configurationValue"_s); }
++    String configurationName() const { return m_data->getString("configurationName"_s); }
++    Vector<Ref<USBInterface>> interfaces() const;
++    USBDeviceState& state() const { return m_state; }
++    JSON::Object& data() const { return m_data; }
++private:
++    USBConfiguration(USBDeviceState& state, Ref<JSON::Object>&& data) : m_state(state), m_data(WTF::move(data)) { }
++    Ref<USBDeviceState> m_state;
++    Ref<JSON::Object> m_data;
++};
++
++class USBInterface final : public RefCounted<USBInterface> {
++public:
++    static ExceptionOr<Ref<USBInterface>> create(USBConfiguration&, uint8_t);
++    static Ref<USBInterface> create(USBDeviceState& state, uint8_t configuration, Ref<JSON::Object>&& value)
++    { return adoptRef(*new USBInterface(state, configuration, WTF::move(value))); }
++    uint8_t interfaceNumber() const { return usbNumber(m_data, "interfaceNumber"_s); }
++    bool claimed() const;
++    Ref<USBAlternateInterface> alternate() const;
++    Vector<Ref<USBAlternateInterface>> alternates() const;
++    USBDeviceState& state() const { return m_state; }
++    uint8_t configurationValue() const { return m_configuration; }
++    JSON::Object& data() const { return m_data; }
++private:
++    USBInterface(USBDeviceState& state, uint8_t configuration, Ref<JSON::Object>&& data)
++        : m_state(state), m_configuration(configuration), m_data(WTF::move(data)) { }
++    RefPtr<JSON::Object> current() const;
++    Ref<USBDeviceState> m_state;
++    uint8_t m_configuration;
++    Ref<JSON::Object> m_data;
++};
++
++class USBAlternateInterface final : public RefCounted<USBAlternateInterface> {
++public:
++    static ExceptionOr<Ref<USBAlternateInterface>> create(USBInterface&, uint8_t);
++    static Ref<USBAlternateInterface> create(Ref<JSON::Object>&& value)
++    { return adoptRef(*new USBAlternateInterface(WTF::move(value))); }
++    uint8_t alternateSetting() const { return usbNumber(m_data, "alternateSetting"_s); }
++    uint8_t interfaceClass() const { return usbNumber(m_data, "interfaceClass"_s); }
++    uint8_t interfaceSubclass() const { return usbNumber(m_data, "interfaceSubclass"_s); }
++    uint8_t interfaceProtocol() const { return usbNumber(m_data, "interfaceProtocol"_s); }
++    String interfaceName() const { return m_data->getString("interfaceName"_s); }
++    Vector<Ref<USBEndpoint>> endpoints() const;
++    JSON::Object& data() const { return m_data; }
++private:
++    explicit USBAlternateInterface(Ref<JSON::Object>&& data) : m_data(WTF::move(data)) { }
++    Ref<JSON::Object> m_data;
++};
++
++class USBEndpoint final : public RefCounted<USBEndpoint> {
++public:
++    static ExceptionOr<Ref<USBEndpoint>> create(USBAlternateInterface&, uint8_t, USBDirection);
++    static Ref<USBEndpoint> create(Ref<JSON::Object>&& value)
++    { return adoptRef(*new USBEndpoint(WTF::move(value))); }
++    uint8_t endpointNumber() const { return usbNumber(m_data, "endpointNumber"_s); }
++    USBDirection direction() const { return m_data->getBoolean("input"_s).value_or(false) ? USBDirection::In : USBDirection::Out; }
++    USBEndpointType type() const
++    {
++        switch (usbNumber(m_data, "type"_s)) {
++        case 1: return USBEndpointType::Isochronous;
++        case 3: return USBEndpointType::Interrupt;
++        default: return USBEndpointType::Bulk;
++        }
++    }
++    uint32_t packetSize() const { return usbNumber(m_data, "packetSize"_s); }
++private:
++    explicit USBEndpoint(Ref<JSON::Object>&& data) : m_data(WTF::move(data)) { }
++    Ref<JSON::Object> m_data;
++};
++
++class USBInTransferResult final : public RefCounted<USBInTransferResult> {
++public:
++    static Ref<USBInTransferResult> create(USBTransferStatus status, RefPtr<JSC::DataView>&& data = nullptr)
++    { return adoptRef(*new USBInTransferResult(status, WTF::move(data))); }
++    USBTransferStatus status() const { return m_status; }
++    JSC::DataView* data() const { return m_data.get(); }
++private:
++    USBInTransferResult(USBTransferStatus status, RefPtr<JSC::DataView>&& data) : m_status(status), m_data(WTF::move(data)) { }
++    USBTransferStatus m_status;
++    RefPtr<JSC::DataView> m_data;
++};
++
++class USBIsochronousInTransferPacket final : public RefCounted<USBIsochronousInTransferPacket> {
++public:
++    static Ref<USBIsochronousInTransferPacket> create(USBTransferStatus status, RefPtr<JSC::DataView>&& data = nullptr)
++    { return adoptRef(*new USBIsochronousInTransferPacket(status, WTF::move(data))); }
++    USBTransferStatus status() const { return m_status; }
++    JSC::DataView* data() const { return m_data.get(); }
++private:
++    USBIsochronousInTransferPacket(USBTransferStatus status, RefPtr<JSC::DataView>&& data) : m_status(status), m_data(WTF::move(data)) { }
++    USBTransferStatus m_status;
++    RefPtr<JSC::DataView> m_data;
++};
++
++class USBOutTransferResult final : public RefCounted<USBOutTransferResult> {
++public:
++    static Ref<USBOutTransferResult> create(USBTransferStatus status, uint32_t bytesWritten = 0)
++    { return adoptRef(*new USBOutTransferResult(status, bytesWritten)); }
++    USBTransferStatus status() const { return m_status; }
++    uint32_t bytesWritten() const { return m_bytesWritten; }
++private:
++    USBOutTransferResult(USBTransferStatus status, uint32_t bytesWritten) : m_status(status), m_bytesWritten(bytesWritten) { }
++    USBTransferStatus m_status;
++    uint32_t m_bytesWritten;
++};
++
++class USBIsochronousOutTransferPacket final : public RefCounted<USBIsochronousOutTransferPacket> {
++public:
++    static Ref<USBIsochronousOutTransferPacket> create(USBTransferStatus status, uint32_t bytesWritten = 0)
++    { return adoptRef(*new USBIsochronousOutTransferPacket(status, bytesWritten)); }
++    USBTransferStatus status() const { return m_status; }
++    uint32_t bytesWritten() const { return m_bytesWritten; }
++private:
++    USBIsochronousOutTransferPacket(USBTransferStatus status, uint32_t bytesWritten) : m_status(status), m_bytesWritten(bytesWritten) { }
++    USBTransferStatus m_status;
++    uint32_t m_bytesWritten;
++};
++
++class USBIsochronousInTransferResult final : public RefCounted<USBIsochronousInTransferResult> {
++public:
++    static Ref<USBIsochronousInTransferResult> create(Vector<Ref<USBIsochronousInTransferPacket>>&& packets, RefPtr<JSC::DataView>&& data = nullptr)
++    { return adoptRef(*new USBIsochronousInTransferResult(WTF::move(packets), WTF::move(data))); }
++    const Vector<Ref<USBIsochronousInTransferPacket>>& packets() const { return m_packets; }
++    JSC::DataView* data() const { return m_data.get(); }
++private:
++    USBIsochronousInTransferResult(Vector<Ref<USBIsochronousInTransferPacket>>&& packets, RefPtr<JSC::DataView>&& data)
++        : m_packets(WTF::move(packets)), m_data(WTF::move(data)) { }
++    Vector<Ref<USBIsochronousInTransferPacket>> m_packets;
++    RefPtr<JSC::DataView> m_data;
++};
++class USBIsochronousOutTransferResult final : public RefCounted<USBIsochronousOutTransferResult> {
++public:
++    static Ref<USBIsochronousOutTransferResult> create(Vector<Ref<USBIsochronousOutTransferPacket>>&& packets)
++    { return adoptRef(*new USBIsochronousOutTransferResult(WTF::move(packets))); }
++    const Vector<Ref<USBIsochronousOutTransferPacket>>& packets() const { return m_packets; }
++private:
++    explicit USBIsochronousOutTransferResult(Vector<Ref<USBIsochronousOutTransferPacket>>&& packets) : m_packets(WTF::move(packets)) { }
++    Vector<Ref<USBIsochronousOutTransferPacket>> m_packets;
++};
++} // namespace WebCore
++#endif
+diff --git a/Source/WebCore/Modules/webusb/USBDevice.cpp b/Source/WebCore/Modules/webusb/USBDevice.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..f025824a0eed9c78087de9124cbae1f7a93486d3
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBDevice.cpp
+@@ -0,0 +1,315 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#if ENABLE(WEBUSB)
++#include "USBDevice.h"
++#include "JSDOMConvertInterface.h"
++#include "JSDOMPromiseDeferred.h"
++#include "JSUSBInTransferResult.h"
++#include "JSUSBOutTransferResult.h"
++#include "JSUSBIsochronousInTransferResult.h"
++#include "JSUSBIsochronousOutTransferResult.h"
++#include "USB.h"
++#include <JavaScriptCore/ArrayBuffer.h>
++
++namespace WebCore {
++static constexpr size_t maximumTransferSize = 16 * 1024 * 1024;
++
++RefPtr<USBConfiguration> USBDevice::configuration() const
++{
++    auto number = usbNumber(m_state->data, "configurationValue"_s);
++    if (!number)
++        return nullptr;
++    auto value = usbFind(m_state->data, "configurations"_s, "configurationValue"_s, number);
++    return value ? USBConfiguration::create(m_state, value.releaseNonNull()).ptr() : nullptr;
++}
++Vector<Ref<USBConfiguration>> USBDevice::configurations() const
++{
++    Vector<Ref<USBConfiguration>> result;
++    if (auto values = m_state->data->getArray("configurations"_s)) {
++        for (auto& value : *values) {
++            if (auto data = value->asObject())
++                result.append(USBConfiguration::create(m_state, data.releaseNonNull()));
++        }
++    }
++    return result;
++}
++void USBDevice::disconnected() { m_state->opened = false; }
++Ref<JSON::Object> USBDevice::arguments(ASCIILiteral operation) const
++{
++    auto result = JSON::Object::create();
++    result->setString("operation"_s, operation);
++    result->setString("id"_s, identifier());
++    return result;
++}
++void USBDevice::changeState(Ref<JSON::Object>&& args, DOMPromiseDeferred<void>&& promise)
++{
++    auto operation = args->getString("operation"_s);
++    bool closing = operation == "close"_s || operation == "forget"_s;
++    if (m_state->busy || (m_transfers && !closing)) {
++        promise.reject(ExceptionCode::InvalidStateError, "A USB operation is still pending"_s);
++        return;
++    }
++    if (!m_state->opened && operation != "open"_s && operation != "forget"_s && operation != "close"_s) {
++        promise.reject(ExceptionCode::InvalidStateError, "The USB device is not open"_s);
++        return;
++    }
++    if ((operation == "open"_s && opened()) || (operation == "close"_s && !opened())) {
++        promise.resolve();
++        return;
++    }
++    m_state->busy = true;
++    USB::perform(m_state->document.get(), WTF::move(args), { },
++        [this, protectedThis = Ref { *this }, operation, promise = WTF::move(promise)](auto&& response, auto&&) mutable {
++            m_state->busy = false;
++            if (response.hasException()) {
++                promise.reject(response.releaseException());
++                return;
++            }
++            auto result = response.releaseReturnValue();
++            if (auto state = result->getObject("device"_s))
++                m_state->data = state.releaseNonNull();
++            if (operation == "open"_s)
++                m_state->opened = true;
++            else if (operation == "close"_s || operation == "forget"_s)
++                m_state->opened = false;
++            if (operation == "forget"_s)
++                m_state->forgotten = true;
++            promise.resolve();
++        });
++}
++void USBDevice::open(DOMPromiseDeferred<void>&& promise) { changeState(arguments("open"_s), WTF::move(promise)); }
++void USBDevice::close(DOMPromiseDeferred<void>&& promise) { changeState(arguments("close"_s), WTF::move(promise)); }
++void USBDevice::forget(DOMPromiseDeferred<void>&& promise) { changeState(arguments("forget"_s), WTF::move(promise)); }
++void USBDevice::reset(DOMPromiseDeferred<void>&& promise) { changeState(arguments("reset"_s), WTF::move(promise)); }
++void USBDevice::selectConfiguration(uint8_t value, DOMPromiseDeferred<void>&& promise)
++{
++    auto args = arguments("selectConfiguration"_s);
++    args->setInteger("value"_s, value);
++    changeState(WTF::move(args), WTF::move(promise));
++}
++void USBDevice::claimInterface(uint8_t number, DOMPromiseDeferred<void>&& promise)
++{
++    auto args = arguments("claimInterface"_s);
++    args->setInteger("interface"_s, number);
++    changeState(WTF::move(args), WTF::move(promise));
++}
++void USBDevice::releaseInterface(uint8_t number, DOMPromiseDeferred<void>&& promise)
++{
++    auto args = arguments("releaseInterface"_s);
++    args->setInteger("interface"_s, number);
++    changeState(WTF::move(args), WTF::move(promise));
++}
++void USBDevice::selectAlternateInterface(uint8_t number, uint8_t alternate, DOMPromiseDeferred<void>&& promise)
++{
++    auto args = arguments("selectAlternateInterface"_s);
++    args->setInteger("interface"_s, number);
++    args->setInteger("alternate"_s, alternate);
++    changeState(WTF::move(args), WTF::move(promise));
++}
++void USBDevice::clearHalt(USBDirection direction, uint8_t endpoint, DOMPromiseDeferred<void>&& promise)
++{
++    auto args = arguments("clearHalt"_s);
++    args->setBoolean("input"_s, direction == USBDirection::In);
++    args->setInteger("endpoint"_s, endpoint);
++    changeState(WTF::move(args), WTF::move(promise));
++}
++
++void USBDevice::transfer(Ref<JSON::Object>&& args, Vector<uint8_t>&& bytes, USB::Completion&& completion)
++{
++    if (!opened() || m_state->busy) {
++        completion(Exception { ExceptionCode::InvalidStateError, "The USB device is not ready"_s }, { });
++        return;
++    }
++    if (m_transfers >= 16) {
++        completion(Exception { ExceptionCode::QuotaExceededError, "Too many pending USB transfers"_s }, { });
++        return;
++    }
++    ++m_transfers;
++    USB::perform(m_state->document.get(), WTF::move(args), WTF::move(bytes),
++        [this, protectedThis = Ref { *this }, completion = WTF::move(completion)](auto&& response, auto&& data) mutable {
++            --m_transfers;
++            completion(WTF::move(response), WTF::move(data));
++        });
++}
++static USBTransferStatus transferStatus(const JSON::Object& object)
++{
++    switch (usbNumber(object, "status"_s)) {
++    case 1: return USBTransferStatus::Stall;
++    case 2: return USBTransferStatus::Babble;
++    default: return USBTransferStatus::Ok;
++    }
++}
++void USBDevice::inputTransfer(Ref<JSON::Object>&& args, InPromise&& promise)
++{
++    auto length = args->getInteger("length"_s);
++    if (!length || *length < 0 || unsigned(*length) > maximumTransferSize) {
++        promise.reject(ExceptionCode::RangeError, "USB transfer exceeds 16 MiB"_s);
++        return;
++    }
++    args->setBoolean("input"_s, true);
++    transfer(WTF::move(args), { }, [promise = WTF::move(promise)](auto&& response, auto&& bytes) mutable {
++        if (response.hasException()) {
++            promise.reject(response.releaseException());
++            return;
++        }
++        auto result = response.releaseReturnValue();
++        auto status = transferStatus(result);
++        RefPtr<JSC::DataView> data;
++        if (status != USBTransferStatus::Stall)
++            data = JSC::DataView::create(JSC::ArrayBuffer::create(bytes.span()));
++        promise.resolve(USBInTransferResult::create(status, WTF::move(data)));
++    });
++}
++void USBDevice::outputTransfer(Ref<JSON::Object>&& args, std::span<const uint8_t> output, OutPromise&& promise)
++{
++    if (output.size() > maximumTransferSize) {
++        promise.reject(ExceptionCode::RangeError, "USB transfer exceeds 16 MiB"_s);
++        return;
++    }
++    args->setBoolean("input"_s, false);
++    args->setInteger("length"_s, output.size());
++    transfer(WTF::move(args), Vector<uint8_t>(output), [promise = WTF::move(promise)](auto&& response, auto&&) mutable {
++        if (response.hasException()) {
++            promise.reject(response.releaseException());
++            return;
++        }
++        auto result = response.releaseReturnValue();
++        promise.resolve(USBOutTransferResult::create(transferStatus(result), usbNumber(result, "transferred"_s)));
++    });
++}
++static void controlArguments(JSON::Object& args, const USBControlTransferParameters& setup)
++{
++    args.setInteger("requestType"_s, static_cast<uint8_t>(setup.requestType));
++    args.setInteger("recipient"_s, static_cast<uint8_t>(setup.recipient));
++    args.setInteger("request"_s, setup.request);
++    args.setInteger("value"_s, setup.value);
++    args.setInteger("index"_s, setup.index);
++}
++void USBDevice::controlTransferIn(USBControlTransferParameters&& setup, uint16_t length, InPromise&& promise)
++{
++    auto args = arguments("controlTransfer"_s);
++    controlArguments(args, setup);
++    args->setInteger("length"_s, length);
++    inputTransfer(WTF::move(args), WTF::move(promise));
++}
++void USBDevice::controlTransferOut(USBControlTransferParameters&& setup, std::optional<BufferSource>&& output, OutPromise&& promise)
++{
++    auto args = arguments("controlTransfer"_s);
++    controlArguments(args, setup);
++    if (output && output->byteLength() > 65535) {
++        promise.reject(ExceptionCode::RangeError, "USB control transfer exceeds 65535 bytes"_s);
++        return;
++    }
++    outputTransfer(WTF::move(args), output ? output->span() : std::span<const uint8_t> { }, WTF::move(promise));
++}
++void USBDevice::transferIn(uint8_t endpoint, uint32_t length, InPromise&& promise)
++{
++    if (length > maximumTransferSize) {
++        promise.reject(ExceptionCode::RangeError, "USB transfer exceeds 16 MiB"_s);
++        return;
++    }
++    auto args = arguments("transfer"_s);
++    args->setInteger("endpoint"_s, endpoint);
++    args->setInteger("length"_s, length);
++    inputTransfer(WTF::move(args), WTF::move(promise));
++}
++void USBDevice::transferOut(uint8_t endpoint, BufferSource&& output, OutPromise&& promise)
++{
++    auto args = arguments("transfer"_s);
++    args->setInteger("endpoint"_s, endpoint);
++    outputTransfer(WTF::move(args), output.span(), WTF::move(promise));
++}
++static std::optional<size_t> packetArguments(JSON::Object& args, const Vector<uint32_t>& lengths)
++{
++    if (lengths.size() > 1024)
++        return std::nullopt;
++    size_t total = 0;
++    auto packets = JSON::Array::create();
++    for (auto length : lengths) {
++        if (length > 32767 || length > maximumTransferSize - total)
++            return std::nullopt;
++        total += length;
++        packets->pushInteger(length);
++    }
++    args.setArray("packetLengths"_s, WTF::move(packets));
++    return total;
++}
++void USBDevice::isochronousTransferIn(uint8_t endpoint, Vector<uint32_t>&& lengths, IsoInPromise&& promise)
++{
++    auto args = arguments("isochronousTransfer"_s);
++    args->setInteger("endpoint"_s, endpoint);
++    args->setBoolean("input"_s, true);
++    if (!packetArguments(args, lengths)) {
++        promise.reject(ExceptionCode::RangeError, "Invalid USB packet lengths"_s);
++        return;
++    }
++    transfer(WTF::move(args), { }, [lengths = WTF::move(lengths), promise = WTF::move(promise)](auto&& response, auto&& bytes) mutable {
++        if (response.hasException()) {
++            promise.reject(response.releaseException());
++            return;
++        }
++        auto result = response.releaseReturnValue();
++        auto values = result->getArray("packets"_s);
++        if (!values || values->length() != lengths.size()) {
++            promise.reject(ExceptionCode::NetworkError);
++            return;
++        }
++        Ref buffer = JSC::ArrayBuffer::create(bytes.span());
++        Vector<Ref<USBIsochronousInTransferPacket>> packets;
++        size_t offset = 0;
++        for (size_t i = 0; i < lengths.size(); ++i) {
++            auto value = values->get(i)->asObject();
++            if (!value || offset > bytes.size() || lengths[i] > bytes.size() - offset) {
++                promise.reject(ExceptionCode::NetworkError);
++                return;
++            }
++            auto actual = usbNumber(*value, "transferred"_s);
++            if (actual > lengths[i]) {
++                promise.reject(ExceptionCode::NetworkError);
++                return;
++            }
++            auto status = transferStatus(*value);
++            RefPtr<JSC::DataView> data;
++            if (status == USBTransferStatus::Ok)
++                data = JSC::DataView::create(buffer.ptr(), offset, actual);
++            packets.append(USBIsochronousInTransferPacket::create(status, WTF::move(data)));
++            offset += lengths[i];
++        }
++        promise.resolve(USBIsochronousInTransferResult::create(WTF::move(packets), JSC::DataView::create(WTF::move(buffer))));
++    });
++}
++void USBDevice::isochronousTransferOut(uint8_t endpoint, BufferSource&& output, Vector<uint32_t>&& lengths, IsoOutPromise&& promise)
++{
++    auto args = arguments("isochronousTransfer"_s);
++    args->setInteger("endpoint"_s, endpoint);
++    args->setBoolean("input"_s, false);
++    auto total = packetArguments(args, lengths);
++    if (!total || *total != output.byteLength()) {
++        promise.reject(ExceptionCode::RangeError, "Packet lengths must equal the USB transfer size"_s);
++        return;
++    }
++    transfer(WTF::move(args), Vector<uint8_t>(output.span()), [count = lengths.size(), promise = WTF::move(promise)](auto&& response, auto&&) mutable {
++        if (response.hasException()) {
++            promise.reject(response.releaseException());
++            return;
++        }
++        auto result = response.releaseReturnValue();
++        auto values = result->getArray("packets"_s);
++        if (!values || values->length() != count) {
++            promise.reject(ExceptionCode::NetworkError);
++            return;
++        }
++        Vector<Ref<USBIsochronousOutTransferPacket>> packets;
++        for (auto& value : *values) {
++            auto object = value->asObject();
++            if (!object) {
++                promise.reject(ExceptionCode::NetworkError);
++                return;
++            }
++            packets.append(USBIsochronousOutTransferPacket::create(transferStatus(*object), usbNumber(*object, "transferred"_s)));
++        }
++        promise.resolve(USBIsochronousOutTransferResult::create(WTF::move(packets)));
++    });
++}
++} // namespace WebCore
++#endif
+diff --git a/Source/WebCore/Modules/webusb/USBDevice.h b/Source/WebCore/Modules/webusb/USBDevice.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..88ff3c58dbb305ba117f354a93757db80d0e7a23
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBDevice.h
+@@ -0,0 +1,69 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#if ENABLE(WEBUSB)
++#include "BufferSource.h"
++#include "IDLTypes.h"
++#include "JSDOMPromiseDeferredForward.h"
++#include "USBControlTransferParameters.h"
++#include "USBDescriptors.h"
++#include <wtf/CompletionHandler.h>
++
++namespace WebCore {
++
++class USBDevice final : public RefCounted<USBDevice> {
++public:
++    static Ref<USBDevice> create(Document& document, Ref<JSON::Object>&& data)
++    { return adoptRef(*new USBDevice(document, WTF::move(data))); }
++    USBDeviceState& state() const { return m_state; }
++    uint8_t usbVersionMajor() const { return usbNumber(m_state->data, "usbVersion"_s) >> 8; }
++    uint8_t usbVersionMinor() const { return (usbNumber(m_state->data, "usbVersion"_s) >> 4) & 15; }
++    uint8_t usbVersionSubminor() const { return usbNumber(m_state->data, "usbVersion"_s) & 15; }
++    uint8_t deviceClass() const { return usbNumber(m_state->data, "deviceClass"_s); }
++    uint8_t deviceSubclass() const { return usbNumber(m_state->data, "deviceSubclass"_s); }
++    uint8_t deviceProtocol() const { return usbNumber(m_state->data, "deviceProtocol"_s); }
++    uint16_t vendorId() const { return usbNumber(m_state->data, "vendorId"_s); }
++    uint16_t productId() const { return usbNumber(m_state->data, "productId"_s); }
++    uint8_t deviceVersionMajor() const { return usbNumber(m_state->data, "deviceVersion"_s) >> 8; }
++    uint8_t deviceVersionMinor() const { return (usbNumber(m_state->data, "deviceVersion"_s) >> 4) & 15; }
++    uint8_t deviceVersionSubminor() const { return usbNumber(m_state->data, "deviceVersion"_s) & 15; }
++    String manufacturerName() const { return m_state->data->getString("manufacturerName"_s); }
++    String productName() const { return m_state->data->getString("productName"_s); }
++    String serialNumber() const { return m_state->data->getString("serialNumber"_s); }
++    RefPtr<USBConfiguration> configuration() const;
++    Vector<Ref<USBConfiguration>> configurations() const;
++    bool opened() const { return m_state->opened; }
++    String identifier() const { return m_state->data->getString("id"_s); }
++    void disconnected();
++
++    void open(DOMPromiseDeferred<void>&&);
++    void close(DOMPromiseDeferred<void>&&);
++    void forget(DOMPromiseDeferred<void>&&);
++    void selectConfiguration(uint8_t, DOMPromiseDeferred<void>&&);
++    void claimInterface(uint8_t, DOMPromiseDeferred<void>&&);
++    void releaseInterface(uint8_t, DOMPromiseDeferred<void>&&);
++    void selectAlternateInterface(uint8_t, uint8_t, DOMPromiseDeferred<void>&&);
++    void clearHalt(USBDirection, uint8_t, DOMPromiseDeferred<void>&&);
++    void reset(DOMPromiseDeferred<void>&&);
++    using InPromise = DOMPromiseDeferred<IDLInterface<USBInTransferResult>>;
++    using OutPromise = DOMPromiseDeferred<IDLInterface<USBOutTransferResult>>;
++    using IsoInPromise = DOMPromiseDeferred<IDLInterface<USBIsochronousInTransferResult>>;
++    using IsoOutPromise = DOMPromiseDeferred<IDLInterface<USBIsochronousOutTransferResult>>;
++    void controlTransferIn(USBControlTransferParameters&&, uint16_t, InPromise&&);
++    void controlTransferOut(USBControlTransferParameters&&, std::optional<BufferSource>&&, OutPromise&&);
++    void transferIn(uint8_t, uint32_t, InPromise&&);
++    void transferOut(uint8_t, BufferSource&&, OutPromise&&);
++    void isochronousTransferIn(uint8_t, Vector<uint32_t>&&, IsoInPromise&&);
++    void isochronousTransferOut(uint8_t, BufferSource&&, Vector<uint32_t>&&, IsoOutPromise&&);
++
++private:
++    USBDevice(Document& document, Ref<JSON::Object>&& data) : m_state(USBDeviceState::create(document, WTF::move(data))) { }
++    Ref<JSON::Object> arguments(ASCIILiteral operation) const;
++    void changeState(Ref<JSON::Object>&&, DOMPromiseDeferred<void>&&);
++    void transfer(Ref<JSON::Object>&&, Vector<uint8_t>&&, CompletionHandler<void(ExceptionOr<Ref<JSON::Object>>&&, Vector<uint8_t>&&)>&&);
++    void inputTransfer(Ref<JSON::Object>&&, InPromise&&);
++    void outputTransfer(Ref<JSON::Object>&&, std::span<const uint8_t>, OutPromise&&);
++    Ref<USBDeviceState> m_state;
++    unsigned m_transfers { 0 };
++};
++} // namespace WebCore
++#endif
+diff --git a/Source/WebCore/Modules/webusb/USBDevice.idl b/Source/WebCore/Modules/webusb/USBDevice.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..c24e92d447ee2b88481be3383fdd9f67681ffe48
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBDevice.idl
+@@ -0,0 +1,36 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++[Conditional=WEBUSB, Exposed=Window, SecureContext]
++interface USBDevice {
++    readonly attribute octet usbVersionMajor;
++    readonly attribute octet usbVersionMinor;
++    readonly attribute octet usbVersionSubminor;
++    readonly attribute octet deviceClass;
++    readonly attribute octet deviceSubclass;
++    readonly attribute octet deviceProtocol;
++    readonly attribute unsigned short vendorId;
++    readonly attribute unsigned short productId;
++    readonly attribute octet deviceVersionMajor;
++    readonly attribute octet deviceVersionMinor;
++    readonly attribute octet deviceVersionSubminor;
++    readonly attribute DOMString? manufacturerName;
++    readonly attribute DOMString? productName;
++    readonly attribute DOMString? serialNumber;
++    readonly attribute USBConfiguration? configuration;
++    readonly attribute FrozenArray<USBConfiguration> configurations;
++    readonly attribute boolean opened;
++    Promise<undefined> open();
++    Promise<undefined> close();
++    Promise<undefined> forget();
++    Promise<undefined> selectConfiguration(octet configurationValue);
++    Promise<undefined> claimInterface(octet interfaceNumber);
++    Promise<undefined> releaseInterface(octet interfaceNumber);
++    Promise<undefined> selectAlternateInterface(octet interfaceNumber, octet alternateSetting);
++    Promise<USBInTransferResult> controlTransferIn(USBControlTransferParameters setup, unsigned short length);
++    Promise<USBOutTransferResult> controlTransferOut(USBControlTransferParameters setup, optional BufferSource data);
++    Promise<undefined> clearHalt(USBDirection direction, octet endpointNumber);
++    Promise<USBInTransferResult> transferIn(octet endpointNumber, unsigned long length);
++    Promise<USBOutTransferResult> transferOut(octet endpointNumber, BufferSource data);
++    Promise<USBIsochronousInTransferResult> isochronousTransferIn(octet endpointNumber, sequence<unsigned long> packetLengths);
++    Promise<USBIsochronousOutTransferResult> isochronousTransferOut(octet endpointNumber, BufferSource data, sequence<unsigned long> packetLengths);
++    Promise<undefined> reset();
++  };
+diff --git a/Source/WebCore/Modules/webusb/USBDeviceFilter.h b/Source/WebCore/Modules/webusb/USBDeviceFilter.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..af82ca0fd7bee60acb35509110c2c3d522ecced4
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBDeviceFilter.h
+@@ -0,0 +1,14 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#include <optional>
++#include <wtf/text/WTFString.h>
++namespace WebCore {
++struct USBDeviceFilter {
++    std::optional<uint16_t> vendorId;
++    std::optional<uint16_t> productId;
++    std::optional<uint8_t> classCode;
++    std::optional<uint8_t> subclassCode;
++    std::optional<uint8_t> protocolCode;
++    String serialNumber;
++};
++}
+diff --git a/Source/WebCore/Modules/webusb/USBDeviceFilter.idl b/Source/WebCore/Modules/webusb/USBDeviceFilter.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..70a50e84db8dd97060a23747a507e0bb90ff881c
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBDeviceFilter.idl
+@@ -0,0 +1,9 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++dictionary USBDeviceFilter {
++    unsigned short vendorId;
++    unsigned short productId;
++    octet classCode;
++    octet subclassCode;
++    octet protocolCode;
++    DOMString serialNumber;
++  };
+diff --git a/Source/WebCore/Modules/webusb/USBDeviceRequestOptions.h b/Source/WebCore/Modules/webusb/USBDeviceRequestOptions.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..04fa13a36aa39d7e8251dbf56643065438f7977a
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBDeviceRequestOptions.h
+@@ -0,0 +1,10 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#include "USBDeviceFilter.h"
++#include <wtf/Vector.h>
++namespace WebCore {
++struct USBDeviceRequestOptions {
++    Vector<USBDeviceFilter> filters;
++    Vector<USBDeviceFilter> exclusionFilters;
++};
++}
+diff --git a/Source/WebCore/Modules/webusb/USBDeviceRequestOptions.idl b/Source/WebCore/Modules/webusb/USBDeviceRequestOptions.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..dc88b608d16d5d06361bb74cfed523c94d6b8843
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBDeviceRequestOptions.idl
+@@ -0,0 +1,5 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++dictionary USBDeviceRequestOptions {
++    required sequence<USBDeviceFilter> filters;
++    sequence<USBDeviceFilter> exclusionFilters = [];
++  };
+diff --git a/Source/WebCore/Modules/webusb/USBDirection.h b/Source/WebCore/Modules/webusb/USBDirection.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..bdd607768b6742b478ff6d0d843f7ade9f8f9e4e
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBDirection.h
+@@ -0,0 +1,4 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#include <cstdint>
++namespace WebCore { enum class USBDirection : uint8_t { In, Out }; }
+diff --git a/Source/WebCore/Modules/webusb/USBDirection.idl b/Source/WebCore/Modules/webusb/USBDirection.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..d5496150687ed0740833064fc79baad9d3229da1
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBDirection.idl
+@@ -0,0 +1,2 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++enum USBDirection { "in", "out" };
+diff --git a/Source/WebCore/Modules/webusb/USBEndpoint.h b/Source/WebCore/Modules/webusb/USBEndpoint.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..b4db61cf810d6dbc81b6286a8759c4a3b62f2f46
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBEndpoint.h
+@@ -0,0 +1,3 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#include "USBDescriptors.h"
+diff --git a/Source/WebCore/Modules/webusb/USBEndpoint.idl b/Source/WebCore/Modules/webusb/USBEndpoint.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..0fb84b4fff2ecde8b2fee9977b953e97271b0f9e
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBEndpoint.idl
+@@ -0,0 +1,9 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++[Conditional=WEBUSB, Exposed=Window, SecureContext]
++interface USBEndpoint {
++    constructor(USBAlternateInterface alternate, octet endpointNumber, USBDirection direction);
++    readonly attribute octet endpointNumber;
++    readonly attribute USBDirection direction;
++    readonly attribute USBEndpointType type;
++    readonly attribute unsigned long packetSize;
++  };
+diff --git a/Source/WebCore/Modules/webusb/USBEndpointType.h b/Source/WebCore/Modules/webusb/USBEndpointType.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..8a2d4859a34375e943f4a9505b55342b407c1726
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBEndpointType.h
+@@ -0,0 +1,4 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#include <cstdint>
++namespace WebCore { enum class USBEndpointType : uint8_t { Bulk, Interrupt, Isochronous }; }
+diff --git a/Source/WebCore/Modules/webusb/USBEndpointType.idl b/Source/WebCore/Modules/webusb/USBEndpointType.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..d23b80cf82da3a92cc6792474957161142e1e013
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBEndpointType.idl
+@@ -0,0 +1,2 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++enum USBEndpointType { "bulk", "interrupt", "isochronous" };
+diff --git a/Source/WebCore/Modules/webusb/USBInTransferResult.h b/Source/WebCore/Modules/webusb/USBInTransferResult.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..b4db61cf810d6dbc81b6286a8759c4a3b62f2f46
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBInTransferResult.h
+@@ -0,0 +1,3 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#include "USBDescriptors.h"
+diff --git a/Source/WebCore/Modules/webusb/USBInTransferResult.idl b/Source/WebCore/Modules/webusb/USBInTransferResult.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..2c341d7a001eae80b99530833e27c7361954075f
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBInTransferResult.idl
+@@ -0,0 +1,7 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++[Conditional=WEBUSB, Exposed=Window, SecureContext]
++interface USBInTransferResult {
++    constructor(USBTransferStatus status, optional DataView? data = null);
++    readonly attribute DataView? data;
++    readonly attribute USBTransferStatus status;
++  };
+diff --git a/Source/WebCore/Modules/webusb/USBInterface.h b/Source/WebCore/Modules/webusb/USBInterface.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..b4db61cf810d6dbc81b6286a8759c4a3b62f2f46
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBInterface.h
+@@ -0,0 +1,3 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#include "USBDescriptors.h"
+diff --git a/Source/WebCore/Modules/webusb/USBInterface.idl b/Source/WebCore/Modules/webusb/USBInterface.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..94e6482b640e8dd6335fc0fbebfd8ce58ab90a49
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBInterface.idl
+@@ -0,0 +1,9 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++[Conditional=WEBUSB, Exposed=Window, SecureContext]
++interface USBInterface {
++    constructor(USBConfiguration configuration, octet interfaceNumber);
++    readonly attribute octet interfaceNumber;
++    readonly attribute USBAlternateInterface alternate;
++    readonly attribute FrozenArray<USBAlternateInterface> alternates;
++    readonly attribute boolean claimed;
++  };
+diff --git a/Source/WebCore/Modules/webusb/USBIsochronousInTransferPacket.h b/Source/WebCore/Modules/webusb/USBIsochronousInTransferPacket.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..b4db61cf810d6dbc81b6286a8759c4a3b62f2f46
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBIsochronousInTransferPacket.h
+@@ -0,0 +1,3 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#include "USBDescriptors.h"
+diff --git a/Source/WebCore/Modules/webusb/USBIsochronousInTransferPacket.idl b/Source/WebCore/Modules/webusb/USBIsochronousInTransferPacket.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..a2bebe5d8cbc7260478956857ff1ca3c6f9c50f3
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBIsochronousInTransferPacket.idl
+@@ -0,0 +1,7 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++[Conditional=WEBUSB, Exposed=Window, SecureContext]
++interface USBIsochronousInTransferPacket {
++    constructor(USBTransferStatus status, optional DataView? data = null);
++    readonly attribute DataView? data;
++    readonly attribute USBTransferStatus status;
++  };
+diff --git a/Source/WebCore/Modules/webusb/USBIsochronousInTransferResult.h b/Source/WebCore/Modules/webusb/USBIsochronousInTransferResult.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..b4db61cf810d6dbc81b6286a8759c4a3b62f2f46
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBIsochronousInTransferResult.h
+@@ -0,0 +1,3 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#include "USBDescriptors.h"
+diff --git a/Source/WebCore/Modules/webusb/USBIsochronousInTransferResult.idl b/Source/WebCore/Modules/webusb/USBIsochronousInTransferResult.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..d85f874d3be05a9d42dca29eefcc1b5dec7a18ca
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBIsochronousInTransferResult.idl
+@@ -0,0 +1,7 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++[Conditional=WEBUSB, Exposed=Window, SecureContext]
++interface USBIsochronousInTransferResult {
++    constructor(sequence<USBIsochronousInTransferPacket> packets, optional DataView? data = null);
++    readonly attribute DataView? data;
++    readonly attribute FrozenArray<USBIsochronousInTransferPacket> packets;
++  };
+diff --git a/Source/WebCore/Modules/webusb/USBIsochronousOutTransferPacket.h b/Source/WebCore/Modules/webusb/USBIsochronousOutTransferPacket.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..b4db61cf810d6dbc81b6286a8759c4a3b62f2f46
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBIsochronousOutTransferPacket.h
+@@ -0,0 +1,3 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#include "USBDescriptors.h"
+diff --git a/Source/WebCore/Modules/webusb/USBIsochronousOutTransferPacket.idl b/Source/WebCore/Modules/webusb/USBIsochronousOutTransferPacket.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..16cd1199100da0d8842a0b838d845f49c1907fd1
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBIsochronousOutTransferPacket.idl
+@@ -0,0 +1,7 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++[Conditional=WEBUSB, Exposed=Window, SecureContext]
++interface USBIsochronousOutTransferPacket {
++    constructor(USBTransferStatus status, optional unsigned long bytesWritten = 0);
++    readonly attribute unsigned long bytesWritten;
++    readonly attribute USBTransferStatus status;
++  };
+diff --git a/Source/WebCore/Modules/webusb/USBIsochronousOutTransferResult.h b/Source/WebCore/Modules/webusb/USBIsochronousOutTransferResult.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..b4db61cf810d6dbc81b6286a8759c4a3b62f2f46
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBIsochronousOutTransferResult.h
+@@ -0,0 +1,3 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#include "USBDescriptors.h"
+diff --git a/Source/WebCore/Modules/webusb/USBIsochronousOutTransferResult.idl b/Source/WebCore/Modules/webusb/USBIsochronousOutTransferResult.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..051f51aac173e5ec64fadb24de50084c31896cfb
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBIsochronousOutTransferResult.idl
+@@ -0,0 +1,6 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++[Conditional=WEBUSB, Exposed=Window, SecureContext]
++interface USBIsochronousOutTransferResult {
++    constructor(sequence<USBIsochronousOutTransferPacket> packets);
++    readonly attribute FrozenArray<USBIsochronousOutTransferPacket> packets;
++  };
+diff --git a/Source/WebCore/Modules/webusb/USBOutTransferResult.h b/Source/WebCore/Modules/webusb/USBOutTransferResult.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..b4db61cf810d6dbc81b6286a8759c4a3b62f2f46
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBOutTransferResult.h
+@@ -0,0 +1,3 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#include "USBDescriptors.h"
+diff --git a/Source/WebCore/Modules/webusb/USBOutTransferResult.idl b/Source/WebCore/Modules/webusb/USBOutTransferResult.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..e21d397072fc5335e69e561bd16890e3d1df1602
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBOutTransferResult.idl
+@@ -0,0 +1,7 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++[Conditional=WEBUSB, Exposed=Window, SecureContext]
++interface USBOutTransferResult {
++    constructor(USBTransferStatus status, optional unsigned long bytesWritten = 0);
++    readonly attribute unsigned long bytesWritten;
++    readonly attribute USBTransferStatus status;
++  };
+diff --git a/Source/WebCore/Modules/webusb/USBRecipient.h b/Source/WebCore/Modules/webusb/USBRecipient.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..01fc468aa0dc25be9ea5fbb8b0602250990b62b6
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBRecipient.h
+@@ -0,0 +1,4 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#include <cstdint>
++namespace WebCore { enum class USBRecipient : uint8_t { Device, Interface, Endpoint, Other }; }
+diff --git a/Source/WebCore/Modules/webusb/USBRecipient.idl b/Source/WebCore/Modules/webusb/USBRecipient.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..500831e1173d088004ca26d99c7492f696007cd1
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBRecipient.idl
+@@ -0,0 +1,2 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++enum USBRecipient { "device", "interface", "endpoint", "other" };
+diff --git a/Source/WebCore/Modules/webusb/USBRequestType.h b/Source/WebCore/Modules/webusb/USBRequestType.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..2a26aa7ba15666b1e34d76c95050944dba56e1f6
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBRequestType.h
+@@ -0,0 +1,4 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#include <cstdint>
++namespace WebCore { enum class USBRequestType : uint8_t { Standard, Class, Vendor }; }
+diff --git a/Source/WebCore/Modules/webusb/USBRequestType.idl b/Source/WebCore/Modules/webusb/USBRequestType.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..babbce29c870224134af259830e7e759f7f4b672
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBRequestType.idl
+@@ -0,0 +1,2 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++enum USBRequestType { "standard", "class", "vendor" };
+diff --git a/Source/WebCore/Modules/webusb/USBTransferStatus.h b/Source/WebCore/Modules/webusb/USBTransferStatus.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..61e0a7a955b28e17aa56b65027635fc543037204
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBTransferStatus.h
+@@ -0,0 +1,4 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#include <cstdint>
++namespace WebCore { enum class USBTransferStatus : uint8_t { Ok, Stall, Babble }; }
+diff --git a/Source/WebCore/Modules/webusb/USBTransferStatus.idl b/Source/WebCore/Modules/webusb/USBTransferStatus.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..48e19a5957df4c1ae60378dd9a84cbe4f437d646
+--- /dev/null
++++ b/Source/WebCore/Modules/webusb/USBTransferStatus.idl
+@@ -0,0 +1,2 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++enum USBTransferStatus { "ok", "stall", "babble" };
 diff --git a/Source/WebCore/PlatformHaiku.cmake b/Source/WebCore/PlatformHaiku.cmake
-index 16a88804a1baa39ccdd9fc2870b6e2524d941298..cc23330a44284ca1587f9495601c21fb19f60baf 100644
+index 16a88804a1baa39ccdd9fc2870b6e2524d941298..2cdcbd541632c5f5958525e1ef51362208f20329 100644
 --- a/Source/WebCore/PlatformHaiku.cmake
 +++ b/Source/WebCore/PlatformHaiku.cmake
 @@ -1,52 +1,331 @@
@@ -5377,7 +6958,7 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..cc23330a44284ca1587f9495601c21fb
    textencoding
    translation
    ${WEBP_LIBRARIES}
-@@ -61,6 +340,205 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
+@@ -61,6 +340,213 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
    ${SQLITE_INCLUDE_DIR}
    ${WEBP_INCLUDE_DIRS}
    ${ZLIB_INCLUDE_DIRS}
@@ -5583,6 +7164,14 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..cc23330a44284ca1587f9495601c21fb
  )
  
  set(CSS_VALUE_PLATFORM_DEFINES "HAVE_OS_DARK_MODE_SUPPORT=1")
++
++if (ENABLE_WEBUSB)
++    list(APPEND WebCore_SOURCES
++        Modules/webusb/USB.cpp
++        Modules/webusb/USBDevice.cpp
++        Modules/webusb/USBDescriptors.cpp
++    )
++endif ()
 diff --git a/Source/WebCore/Sources.txt b/Source/WebCore/Sources.txt
 index 1b478eff878aef4108b0f4f828eabe3132f24131..697e681b98110eb40583e3af9064481fdf8dd784 100644
 --- a/Source/WebCore/Sources.txt
@@ -7666,6 +9255,15 @@ index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..46befead7d3d6c7e29bed7746a6e2441
  }
  
  void Document::updateRemoteIntersectionObservers()
+diff --git a/Source/WebCore/dom/EventInterfaces.in b/Source/WebCore/dom/EventInterfaces.in
+index 677f2e8a4fb88f674f1542b6dbf72e8316739ed4..80b07694b5c973082689a3a997e47d8ab8685630 100644
+--- a/Source/WebCore/dom/EventInterfaces.in
++++ b/Source/WebCore/dom/EventInterfaces.in
+@@ -112,3 +112,4 @@ NotificationEvent conditional=NOTIFICATION_EVENT
+ ContentVisibilityAutoStateChangeEvent
+ GPUUncapturedErrorEvent
+ CanvasPaintEvent
++USBConnectionEvent conditional=WEBUSB
 diff --git a/Source/WebCore/dom/EventTarget.cpp b/Source/WebCore/dom/EventTarget.cpp
 index 508b64bf39d2074357445b343e1056b1c3212411..f22828d4fdd11099e38c6161892e61b740e2b738 100644
 --- a/Source/WebCore/dom/EventTarget.cpp
@@ -7713,6 +9311,15 @@ index 508b64bf39d2074357445b343e1056b1c3212411..f22828d4fdd11099e38c6161892e61b7
          InspectorInstrumentation::didHandleEvent(context, event, registeredListener);
  
          if (registeredListener->isPassive())
+diff --git a/Source/WebCore/dom/EventTargetFactory.in b/Source/WebCore/dom/EventTargetFactory.in
+index 244b96d8f5d0b1c64a63f9d562810e653649698d..4a16711860fb461f56f13e087d3e2f046c003a69 100644
+--- a/Source/WebCore/dom/EventTargetFactory.in
++++ b/Source/WebCore/dom/EventTargetFactory.in
+@@ -87,3 +87,4 @@ WebXRLayer conditional=WEBXR
+ WebXRSession conditional=WEBXR
+ WebXRSpace conditional=WEBXR
+ WebXRSystem conditional=WEBXR
++USB conditional=WEBUSB
 diff --git a/Source/WebCore/dom/ExtensionStyleSheets.cpp b/Source/WebCore/dom/ExtensionStyleSheets.cpp
 index a503201bfcf8a65e2591c30245a88c6c5b8d31f3..593f339fa2d8a14b5275a2259b2483a124fc8bba 100644
 --- a/Source/WebCore/dom/ExtensionStyleSheets.cpp
@@ -7844,6 +9451,55 @@ index 605a0989c939e34bf52229b5521053999f72f143..59e7e5338a9a29bbc44bc1bcf29f5eb8
      Ref document = this->document();
  #if ENABLE(WEBGL)
      if (RefPtr context = dynamicDowncast<WebGLRenderingContextBase>(m_context.get())) {
+diff --git a/Source/WebCore/html/PermissionsPolicy.cpp b/Source/WebCore/html/PermissionsPolicy.cpp
+index 5417f278972081e8bec7ffc8d1050e0e253f0d9c..e92902abc20c4607bc6a669fa22008cabc1eab5b 100644
+--- a/Source/WebCore/html/PermissionsPolicy.cpp
++++ b/Source/WebCore/html/PermissionsPolicy.cpp
+@@ -69,6 +69,8 @@ static ASCIILiteral toFeatureNameForLogging(PermissionsPolicy::Feature feature)
+         return "Fullscreen"_s;
+     case PermissionsPolicy::Feature::WebShare:
+         return "WebShare"_s;
++    case PermissionsPolicy::Feature::USB:
++        return "USB"_s;
+ #if ENABLE(DEVICE_ORIENTATION)
+     case PermissionsPolicy::Feature::Gyroscope:
+         return "Gyroscope"_s;
+@@ -129,10 +131,14 @@ static std::pair<PermissionsPolicy::Feature, StringView> readFeatureIdentifier(S
+ #if ENABLE(WEBXR)
+     constexpr auto xrSpatialTrackingToken { "xr-spatial-tracking"_s };
+ #endif
++    constexpr auto usbToken { "usb"_s };
+     constexpr auto privateTokenToken { "private-token"_s };
+     constexpr auto storageAccessToken { "storage-access"_s };
+ 
+-    if (value.startsWith(cameraToken)) {
++    if (value.startsWith(usbToken)) {
++        feature = PermissionsPolicy::Feature::USB;
++        remainingValue = value.substring(usbToken.length());
++    } else if (value.startsWith(cameraToken)) {
+         feature = PermissionsPolicy::Feature::Camera;
+         remainingValue = value.substring(cameraToken.length());
+     } else if (value.startsWith(microphoneToken)) {
+@@ -222,6 +228,7 @@ static ASCIILiteral defaultAllowlistValue(PermissionsPolicy::Feature feature)
+     case PermissionsPolicy::Feature::ScreenWakeLock:
+     case PermissionsPolicy::Feature::Fullscreen:
+     case PermissionsPolicy::Feature::WebShare:
++    case PermissionsPolicy::Feature::USB:
+ #if ENABLE(DEVICE_ORIENTATION)
+     case PermissionsPolicy::Feature::Gyroscope:
+     case PermissionsPolicy::Feature::Accelerometer:
+diff --git a/Source/WebCore/html/PermissionsPolicy.h b/Source/WebCore/html/PermissionsPolicy.h
+index a8ad291b4884798676be22fdf1fef71072733eb7..d30f78244b735ab90d17125b30461d7982973cab 100644
+--- a/Source/WebCore/html/PermissionsPolicy.h
++++ b/Source/WebCore/html/PermissionsPolicy.h
+@@ -57,6 +57,7 @@ public:
+         SyncXHR,
+         Fullscreen,
+         WebShare,
++        USB,
+ #if ENABLE(DEVICE_ORIENTATION)
+         Gyroscope,
+         Accelerometer,
 diff --git a/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.cpp b/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.cpp
 index 50c7fe12885a08e9650329a04bc561a391823a1c..a3e11b8dd7fa6d21024bc7f47c0efa89fd6893a9 100644
 --- a/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.cpp
@@ -9154,15 +10810,19 @@ index 3dbc23ec4a0818ed58ab2e0b2648056ab360a2ff..8254fb1525db8f69c8c4d1191e04b9b9
  
  #if USE(QUICK_LOOK)
 diff --git a/Source/WebCore/page/ChromeClient.h b/Source/WebCore/page/ChromeClient.h
-index 349b9cb1fe7dc8f666371b92e665e1b3c21c2eaa..f5b74c00dd51526b5cdde51fc2f2fa4e2d0778a5 100644
+index 349b9cb1fe7dc8f666371b92e665e1b3c21c2eaa..d5d8e082f7e90a9ae9e87cc49b77ea942ff9a8be 100644
 --- a/Source/WebCore/page/ChromeClient.h
 +++ b/Source/WebCore/page/ChromeClient.h
-@@ -426,6 +426,9 @@ public:
+@@ -426,6 +426,13 @@ public:
  
      virtual void runOpenPanel(LocalFrame&, FileChooser&) = 0;
      WEBCORE_EXPORT virtual void transcodeChosenFiles(Vector<String>&& transcodingPaths, String&& destinationUTI, String&& destinationExtension, CompletionHandler<void(Vector<String>&&)>&&);
 +#if ENABLE(CUSTOM_PROTOCOL_HANDLERS)
 +    virtual void protocolHandlerRequested(LocalFrame&, const String&, const URL&, bool) { }
++#endif
++#if ENABLE(WEBUSB)
++    virtual void usbRequest(LocalFrame&, const String&, Vector<uint8_t>&&, CompletionHandler<void(String&&, Vector<uint8_t>&&)>&& completion)
++    { completion("{\"error\":\"NotSupportedError\"}"_s, { }); }
 +#endif
      virtual void showShareSheet(ShareDataWithParsedURL&&, CompletionHandler<void(bool)>&& callback) { callback(false); }
      virtual void showContactPicker(ContactsRequestData&&, CompletionHandler<void(std::optional<Vector<ContactInfo>>&&)>&& callback) { callback(std::nullopt); }
@@ -9494,10 +11154,16 @@ index 61749fa2eecc674d3bc7d185a5b3944181454f73..2dd2c366435c97ac9752500ab05dd810
  
  void LocalFrameViewLayoutContext::runOrScheduleAsynchronousTasks(bool canDeferUpdateLayerPositions)
 diff --git a/Source/WebCore/page/Navigator.cpp b/Source/WebCore/page/Navigator.cpp
-index 957720da7f04e4635deede785707b6da26b75cd8..a9cd408bf885d27ae790877038745fcae8620a2a 100644
+index 957720da7f04e4635deede785707b6da26b75cd8..e0c9196be26be79abd2bc381bc2c4a10436c043d 100644
 --- a/Source/WebCore/page/Navigator.cpp
 +++ b/Source/WebCore/page/Navigator.cpp
-@@ -25,6 +25,8 @@
+@@ -22,9 +22,14 @@
+ 
+ #include "config.h"
+ #include "Navigator.h"
++#if ENABLE(WEBUSB)
++#include "USB.h"
++#endif
  
  #include "BadgeClient.h"
  #include "Chrome.h"
@@ -9506,7 +11172,23 @@ index 957720da7f04e4635deede785707b6da26b75cd8..a9cd408bf885d27ae790877038745fca
  #include "CookieJar.h"
  #include "DOMMimeType.h"
  #include "DOMMimeTypeArray.h"
-@@ -130,6 +132,52 @@ bool Navigator::onLine() const
+@@ -65,6 +70,15 @@
+ #include <wtf/WeakPtr.h>
+ 
+ namespace WebCore {
++#if ENABLE(WEBUSB)
++USB& Navigator::usb()
++{
++    if (!m_usb)
++        m_usb = USB::create(*document());
++    return *m_usb;
++}
++#endif
++
+ 
+ WTF_MAKE_TZONE_ALLOCATED_IMPL(Navigator);
+ 
+@@ -130,6 +144,52 @@ bool Navigator::onLine() const
      return platformStrategies()->loaderStrategy()->isOnLine();
  }
  
@@ -9560,7 +11242,7 @@ index 957720da7f04e4635deede785707b6da26b75cd8..a9cd408bf885d27ae790877038745fca
  {
      if (data.url.isNull())
 diff --git a/Source/WebCore/page/Navigator.h b/Source/WebCore/page/Navigator.h
-index c2759da3ca373213f532ff00dcbd3acb5278366b..49457cd224ebfc5b8c9cc8574343c666d27f11da 100644
+index c2759da3ca373213f532ff00dcbd3acb5278366b..6f622851c209b7627e6e353b40e80911144640bc 100644
 --- a/Source/WebCore/page/Navigator.h
 +++ b/Source/WebCore/page/Navigator.h
 @@ -19,6 +19,7 @@
@@ -9571,7 +11253,17 @@ index c2759da3ca373213f532ff00dcbd3acb5278366b..49457cd224ebfc5b8c9cc8574343c666
  #include <WebCore/LocalDOMWindowProperty.h>
  #include <WebCore/NavigatorBase.h>
  #include <WebCore/ScriptWrappable.h>
-@@ -59,6 +60,10 @@ public:
+@@ -36,6 +37,9 @@ class DOMPluginArray;
+ class Page;
+ class ShareDataReader;
+ class NavigatorUAData;
++#if ENABLE(WEBUSB)
++class USB;
++#endif
+ 
+ class Navigator final
+     : public NavigatorBase
+@@ -59,9 +63,16 @@ public:
      String platform() const final;
      void userAgentChanged();
      bool onLine() const final;
@@ -9582,6 +11274,21 @@ index c2759da3ca373213f532ff00dcbd3acb5278366b..49457cd224ebfc5b8c9cc8574343c666
      bool canShare(Document&, const ShareData&);
      void share(Document&, const ShareData&, Ref<DeferredPromise>&&);
      NavigatorUAData& userAgentData() const;
++#if ENABLE(WEBUSB)
++    USB& usb();
++#endif
+     
+ #if ENABLE(NAVIGATOR_STANDALONE)
+     bool NODELETE standalone() const;
+@@ -94,5 +105,8 @@ private:
+     mutable String m_platform;
+     mutable RefPtr<NavigatorUAData> m_navigatorUAData;
+     RefPtr<GPU> m_gpuForWebGPU;
++#if ENABLE(WEBUSB)
++    RefPtr<USB> m_usb;
++#endif
+ };
+ }
 diff --git a/Source/WebCore/page/Navigator.idl b/Source/WebCore/page/Navigator.idl
 index 7284c98993dc0ab8f282118aed38bd8b8a159132..13899aefde160d01d2e3c24780b0fb8fa2d55558 100644
 --- a/Source/WebCore/page/Navigator.idl
@@ -9596,15 +11303,15 @@ index 7284c98993dc0ab8f282118aed38bd8b8a159132..13899aefde160d01d2e3c24780b0fb8f
  Navigator includes NavigatorShare;
 diff --git a/Source/WebCore/page/NavigatorContentUtils.idl b/Source/WebCore/page/NavigatorContentUtils.idl
 new file mode 100644
-index 0000000000000000000000000000000000000000..0409f3d1b6b97c10443b41add217e81c53a35813
+index 0000000000000000000000000000000000000000..029cc6d2189f48e938cedd6235ae43a441637567
 --- /dev/null
 +++ b/Source/WebCore/page/NavigatorContentUtils.idl
 @@ -0,0 +1,6 @@
 +// Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause
 +// https://html.spec.whatwg.org/multipage/system-state.html#custom-handlers
 +[Conditional=CUSTOM_PROTOCOL_HANDLERS] interface mixin NavigatorContentUtils {
-+    [SecureContext, MayThrowException] undefined registerProtocolHandler(DOMString scheme, USVString url);
-+    [SecureContext, MayThrowException] undefined unregisterProtocolHandler(DOMString scheme, USVString url);
++    [SecureContext] undefined registerProtocolHandler(DOMString scheme, USVString url);
++    [SecureContext] undefined unregisterProtocolHandler(DOMString scheme, USVString url);
 +};
 diff --git a/Source/WebCore/page/Page.cpp b/Source/WebCore/page/Page.cpp
 index a26485a6771a1d63e0d0f5ff3800f30221a77304..723f476108c2e7516f1e24723248d1c9e122835d 100644
@@ -13345,7 +15052,7 @@ index b885cbbef48b2d18b96f6157f983bb288f3cf978..1a10ece7769e7c97967cf0c48c161daf
  WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
  #include <skia/core/SkShader.h>
 diff --git a/Source/WebCore/platform/graphics/PlatformDisplay.h b/Source/WebCore/platform/graphics/PlatformDisplay.h
-index 904b4b70582be0758920b2e939a01993d84451f0..7badae148581b0814cf93b74016339f572cf52e8 100644
+index 904b4b70582be0758920b2e939a01993d84451f0..e9a35d324d4912fdcae9bb2b2cb9c61e65b1950d 100644
 --- a/Source/WebCore/platform/graphics/PlatformDisplay.h
 +++ b/Source/WebCore/platform/graphics/PlatformDisplay.h
 @@ -71,6 +71,9 @@ public:
@@ -13358,6 +15065,15 @@ index 904b4b70582be0758920b2e939a01993d84451f0..7badae148581b0814cf93b74016339f5
  #if USE(WPE_RENDERER)
          WPE,
  #endif
+@@ -106,7 +109,7 @@ public:
+ #endif
+ 
+ #if ENABLE(WEBGL)
+-    EGLDisplay angleEGLDisplay() const;
++    WEBCORE_EXPORT EGLDisplay angleEGLDisplay() const;
+     EGLContext angleSharingGLContext();
+ #endif
+ 
 diff --git a/Source/WebCore/platform/graphics/PlatformGraphicsContext.h b/Source/WebCore/platform/graphics/PlatformGraphicsContext.h
 index 9b23f5286f8abb8b1aa42e98f2e934778432bd79..8c9b225ebe3d77ef9575ac138c0c40b137f9b101 100644
 --- a/Source/WebCore/platform/graphics/PlatformGraphicsContext.h
@@ -28410,10 +30126,21 @@ index 30343ff03299542f8673d98b486c7fdd78bddeb9..71a5183d271a91463084b874fab070c9
          if (const char* envString = getenv("WEBKIT_SKIA_CPU_PAINTING_THREADS")) {
              auto newValue = parseInteger<unsigned>(StringView::fromLatin1(envString));
 diff --git a/Source/WebCore/platform/graphics/texmap/GraphicsContextGLTextureMapperANGLE.cpp b/Source/WebCore/platform/graphics/texmap/GraphicsContextGLTextureMapperANGLE.cpp
-index 4c15dfa81a1f6da9de3fead1584946253080c76c..18e6a7678f451073d729488cb80083d049fef466 100644
+index 4c15dfa81a1f6da9de3fead1584946253080c76c..f505c95099bcea8328c35f12c349750f9fb53db5 100644
 --- a/Source/WebCore/platform/graphics/texmap/GraphicsContextGLTextureMapperANGLE.cpp
 +++ b/Source/WebCore/platform/graphics/texmap/GraphicsContextGLTextureMapperANGLE.cpp
-@@ -63,7 +63,7 @@
+@@ -25,6 +25,10 @@
+  */
+ 
+ #include "config.h"
++#if PLATFORM(HAIKU)
++#include <OS.h>
++#include <wtf/MainThread.h>
++#endif
+ #include "GraphicsContextGLTextureMapperANGLE.h"
+ 
+ #if ENABLE(WEBGL) && (USE(GRAPHICS_LAYER_WC) || USE(COORDINATED_GRAPHICS))
+@@ -63,7 +67,7 @@
  #include "GraphicsContextGLTextureMapperGBM.h"
  #endif
  
@@ -28422,7 +30149,7 @@ index 4c15dfa81a1f6da9de3fead1584946253080c76c..18e6a7678f451073d729488cb80083d0
  #include "GLFence.h"
  #endif
  
-@@ -264,6 +264,9 @@ bool GraphicsContextGLTextureMapperANGLE::platformInitializeContext()
+@@ -264,6 +268,9 @@ bool GraphicsContextGLTextureMapperANGLE::platformInitializeContext()
      EGL_ChooseConfig(m_displayObj, configAttributes, &m_configObj, 1, &numberConfigsReturned);
      if (numberConfigsReturned != 1) {
          LOG(WebGL, "EGLConfig Initialization failed.");
@@ -28432,7 +30159,39 @@ index 4c15dfa81a1f6da9de3fead1584946253080c76c..18e6a7678f451073d729488cb80083d0
          return false;
      }
      LOG(WebGL, "Got EGLConfig");
-@@ -324,6 +327,9 @@ bool GraphicsContextGLTextureMapperANGLE::platformInitializeContext()
+@@ -305,9 +312,15 @@ bool GraphicsContextGLTextureMapperANGLE::platformInitializeContext()
+     // WebGL doesn't allow implicit creation of objects on bind.
+     eglContextAttributes.append(EGL_CONTEXT_BIND_GENERATES_RESOURCE_CHROMIUM);
+     eglContextAttributes.append(EGL_FALSE);
+-#if USE(COORDINATED_GRAPHICS)
++#if USE(COORDINATED_GRAPHICS) || PLATFORM(HAIKU)
+     eglContextAttributes.append(EGL_CONTEXT_VIRTUALIZATION_GROUP_ANGLE);
++#if PLATFORM(HAIKU)
++    // A virtualization group uses one native EGL context and must never be
++    // current on two threads. Keep each worker separate from the compositor.
++    eglContextAttributes.append(isMainThread() ? 0 : find_thread(nullptr));
++#else
+     eglContextAttributes.append(0);
++#endif
+ #endif
+ 
+     if (WTF::contains(unsafeSpan(displayExtensions), "EGL_ANGLE_power_preference"_span)) {
+@@ -318,23 +331,42 @@ bool GraphicsContextGLTextureMapperANGLE::platformInitializeContext()
+     }
+     eglContextAttributes.append(EGL_NONE);
+ 
++#if PLATFORM(HAIKU)
++    if (!isMainThread()) {
++        // Worker OffscreenCanvas publishes CPU snapshots/ImageBitmaps. It has
++        // no reason to make the main-thread compositor's sharing context
++        // current here; doing that races the compositor's native context.
++        m_contextObj = EGL_CreateContext(m_displayObj, m_configObj, EGL_NO_CONTEXT, eglContextAttributes.span().data());
++    } else
++#endif
+ #if PLATFORM(WIN)
+     m_contextObj = EGL_CreateContext(m_displayObj, m_configObj, sharedDisplay.angleSharingGLContext(), eglContextAttributes.span().data());
+ #else
++    {
      m_angleSharingContextObj = sharedDisplay.angleSharingGLContext();
      if (m_angleSharingContextObj == EGL_NO_CONTEXT) {
          LOG(WebGL, "ANGLE sharing EGLContext Initialization failed.");
@@ -28442,7 +30201,8 @@ index 4c15dfa81a1f6da9de3fead1584946253080c76c..18e6a7678f451073d729488cb80083d0
          return false;
      }
  
-@@ -331,10 +337,16 @@ bool GraphicsContextGLTextureMapperANGLE::platformInitializeContext()
+     m_contextObj = EGL_CreateContext(m_displayObj, m_configObj, m_angleSharingContextObj, eglContextAttributes.span().data());
++    }
  #endif
      if (m_contextObj == EGL_NO_CONTEXT) {
          LOG(WebGL, "EGLContext Initialization failed.");
@@ -54246,10 +56006,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..0d73b41896b62c7fbd0b5899084deceed0840c70
+index 0000000000000000000000000000000000000000..87ae85e79e1f75b180273dc3ec760da7a90be84c
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,483 @@
+@@ -0,0 +1,492 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -54733,6 +56493,15 @@ index 0000000000000000000000000000000000000000..0d73b41896b62c7fbd0b5899084decee
 +        Shared/Extensions/WebExtensionWebRequestGateResultHaiku.serialization.in
 +    )
 +endif ()
++
++if (ENABLE_WEBUSB)
++    list(APPEND WebKit_SOURCES
++        UIProcess/haiku/usb/USBDeviceSessionHaiku.cpp
++        UIProcess/haiku/usb/WebUSBBrokerHaiku.cpp
++    )
++    list(APPEND WebKit_PRIVATE_INCLUDE_DIRECTORIES "${WEBKIT_DIR}/UIProcess/haiku/usb")
++    list(APPEND WebKit_LIBRARIES device)
++endif ()
 diff --git a/Source/WebKit/Scripts/generate-message-receiver.py b/Source/WebKit/Scripts/generate-message-receiver.py
 index ab343ef829cf78a7a6f9f87a838a07eb198daf67..bedf5c97c3e662ae1314a04f09b850718ebf3864 100644
 --- a/Source/WebKit/Scripts/generate-message-receiver.py
@@ -54880,6 +56649,21 @@ index b1618c8ccb7334b09c689d0f88cbb9e2503e9ba5..20940206be8c608c79e54d8b0f014573
          if condition:
              result.append('#endif\n')
      result.append('    MessageDescription { "<invalid message name>"_s, ReceiverName::Invalid%s, false, ProcessName::Unknown, ProcessName::Unknown }\n' % (", false" * len(attributes_to_generate_validators)))
+diff --git a/Source/WebKit/Scripts/webkit/opaque_ipc_types.tracking.in b/Source/WebKit/Scripts/webkit/opaque_ipc_types.tracking.in
+index e86e69ad43376d74f66123965ba35ae74fc00467..cedebc46b79a7d9b6462e6fd6fe5bd733ff23da5 100644
+--- a/Source/WebKit/Scripts/webkit/opaque_ipc_types.tracking.in
++++ b/Source/WebKit/Scripts/webkit/opaque_ipc_types.tracking.in
+@@ -579,3 +579,10 @@
+ [NeedsReview] MessageParam NetworkTransportSession.ExportKeyingMaterial label std::span<const uint8_t>
+ [NeedsReview] MessageParam NetworkTransportSession.ExportKeyingMaterial context std::span<const uint8_t>
+ [NeedsReview] MessageParamReply NetworkTransportSession.ExportKeyingMaterial keyingMaterial std::optional<Vector<uint8_t>>
++
++# Haiku WebUSB payloads are device-protocol bytes, never parsed as native objects.
++# WebPageProxy::usbRequest bounds the IPC payload and checks the process/frame;
++# WebUSBBrokerHaiku independently checks origin grants, lease, operation, endpoint,
++# protected classes, and all lengths before handing a span to USBHaiku::Session.
++[UnsafeWrapper, Docs='WebUSBBrokerHaiku and USBDeviceSessionHaiku enforce a 16 MiB maximum and device capabilities before native transfer'] MessageParam WebPageProxy.UsbRequest bytes Vector<uint8_t>
++[NotSentFromWebContent] MessageParamReply WebPageProxy.UsbRequest data Vector<uint8_t>
 diff --git a/Source/WebKit/Shared/API/c/WKBase.h b/Source/WebKit/Shared/API/c/WKBase.h
 index f920a7cd3f564700db2a4b293b79c4949a78f84c..4e6df27d9c74bc96bccc623ac1f51b25bc674fc5 100644
 --- a/Source/WebKit/Shared/API/c/WKBase.h
@@ -85979,7 +87763,7 @@ index 3e5f83fe2ace16999a0cd12e7a9c561c46463303..3bdd8c37e24cd4f85dc84e4914c6491b
      DeleteWebsiteDataInWebProcessesForOrigin(OptionSet<WebKit::WebsiteDataType> websiteDataTypes, struct WebCore::ClientOrigin origin, PAL::SessionID sessionID, WebKit::WebPageProxyIdentifier webPageProxyID) -> ()
      ReloadExecutionContextsForOrigin(struct WebCore::ClientOrigin origin, PAL::SessionID sessionID, std::optional<WebCore::FrameIdentifier> triggeringFrame) -> ()
 diff --git a/Source/WebKit/UIProcess/PageClient.h b/Source/WebKit/UIProcess/PageClient.h
-index a4299803aa31a4a1705aebf669aba3190bcb878a..6fe81fd58b13e0204621ec5a7064bede210b53cc 100644
+index a4299803aa31a4a1705aebf669aba3190bcb878a..8afc3875307e7c6fa12e909df258cd660dd11317 100644
 --- a/Source/WebKit/UIProcess/PageClient.h
 +++ b/Source/WebKit/UIProcess/PageClient.h
 @@ -263,6 +263,11 @@ public:
@@ -85994,12 +87778,16 @@ index a4299803aa31a4a1705aebf669aba3190bcb878a..6fe81fd58b13e0204621ec5a7064bede
      // Tell the view to scroll to the given position, and whether this was a programmatic scroll.
      virtual void requestScroll(const WebCore::FloatPoint& scrollPosition, const WebCore::IntPoint& scrollOrigin, WebCore::ScrollIsAnimated, WebCore::InterruptScrollAnimation) = 0;
  
-@@ -665,6 +670,9 @@ public:
+@@ -665,6 +670,13 @@ public:
      virtual void cancelTextRecognitionForVideoInElementFullscreen() { }
  #endif
  
 +#if ENABLE(CUSTOM_PROTOCOL_HANDLERS)
 +    virtual void protocolHandlerRequested(const String&, const URL&, bool) { }
++#endif
++#if ENABLE(WEBUSB)
++    virtual void usbRequest(uint64_t, const String&, const String&, Vector<uint8_t>&&, CompletionHandler<void(String&&, Vector<uint8_t>&&)>&& completion)
++    { completion("{\"error\":\"NotSupportedError\"}"_s, { }); }
 +#endif
      // Auxiliary Client Creation
  #if ENABLE(FULLSCREEN_API)
@@ -86544,20 +88332,23 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..3dc45f6c38748eccb21fd0a9a185349b
  #endif
  
 diff --git a/Source/WebKit/UIProcess/WebPageProxy.h b/Source/WebKit/UIProcess/WebPageProxy.h
-index 0df86238ffdc53863b10fefb1e88e76900fd5df1..b93b23dc904925defbcfd1e7199db0458b63c5ae 100644
+index 0df86238ffdc53863b10fefb1e88e76900fd5df1..76cb61ed3f5eeed293b7201e92f383a526d6bc8d 100644
 --- a/Source/WebKit/UIProcess/WebPageProxy.h
 +++ b/Source/WebKit/UIProcess/WebPageProxy.h
-@@ -1116,6 +1116,9 @@ public:
+@@ -1116,6 +1116,12 @@ public:
      void clearSelection(std::optional<WebCore::FrameIdentifier> = std::nullopt);
      void restoreSelectionInFocusedEditableElement();
  
 +#if ENABLE(CUSTOM_PROTOCOL_HANDLERS)
-+    void protocolHandlerRequested(IPC::Connection&, WebCore::FrameIdentifier, const String&, const URL&, bool);
++    void protocolHandlerRequested(IPC::Connection&, WebCore::FrameIdentifier, const String&, IPC::Untrusted<URL>&&, bool);
++#endif
++#if ENABLE(WEBUSB)
++    void usbRequest(IPC::Connection&, WebCore::FrameIdentifier, const String&, Vector<uint8_t>&&, CompletionHandler<void(String&&, Vector<uint8_t>&&)>&&);
 +#endif
      PageClient* NODELETE pageClient() const;
  
      void setViewNeedsDisplay(const WebCore::Region&);
-@@ -1932,6 +1935,9 @@ public:
+@@ -1932,6 +1938,9 @@ public:
  #endif
  
      void preferencesDidChange();
@@ -86567,7 +88358,7 @@ index 0df86238ffdc53863b10fefb1e88e76900fd5df1..b93b23dc904925defbcfd1e7199db045
  
  #if ENABLE(CONTEXT_MENUS)
      // Called by the WebContextMenuProxy.
-@@ -3870,6 +3876,13 @@ private:
+@@ -3870,6 +3879,13 @@ private:
      Ref<WebProcessProxy> m_legacyMainFrameProcess;
      const Ref<WebPageGroup> m_pageGroup;
      Ref<WebPreferences> m_preferences;
@@ -86582,15 +88373,20 @@ index 0df86238ffdc53863b10fefb1e88e76900fd5df1..b93b23dc904925defbcfd1e7199db045
      const Ref<WebUserContentControllerProxy> m_userContentController;
  
 diff --git a/Source/WebKit/UIProcess/WebPageProxy.messages.in b/Source/WebKit/UIProcess/WebPageProxy.messages.in
-index 5ae60009a71fe5d15e29892e6d21834bb2b60d86..01f9dd0d7c177315cb0ff10c5e6bb46341c32933 100644
+index 5ae60009a71fe5d15e29892e6d21834bb2b60d86..817b58799a8a5adf1cdcccb6ed0f45748bd46576 100644
 --- a/Source/WebKit/UIProcess/WebPageProxy.messages.in
 +++ b/Source/WebKit/UIProcess/WebPageProxy.messages.in
-@@ -29,6 +29,9 @@ Copyright (C) 2010-2024 Apple Inc. All rights reserved.
+@@ -27,8 +27,14 @@ Copyright (C) 2010-2024 Apple Inc. All rights reserved.
+     SharedPreferencesNeedsConnection
+ ]
  messages -> WebPageProxy {
++#if ENABLE(WEBUSB)
++    UsbRequest(WebCore::FrameIdentifier frameID, String arguments, Vector<uint8_t> bytes) -> (String response, Vector<uint8_t> data)
++#endif
      # UI messages
      CreateNewPage(struct WebCore::WindowFeatures windowFeatures, struct WebKit::NavigationActionData navigationActionData) -> (std::optional<WebCore::PageIdentifier> newPageID, std::optional<WebKit::WebPageCreationParameters> newPageParameters) Synchronous
 +#if ENABLE(CUSTOM_PROTOCOL_HANDLERS)
-+    ProtocolHandlerRequested(WebCore::FrameIdentifier frameID, String scheme, URL url, bool remove)
++    ProtocolHandlerRequested(WebCore::FrameIdentifier frameID, String scheme, IPC::Untrusted<URL> url, bool remove)
 +#endif
      ShowPage()
      ClosePage()
@@ -91105,10 +92901,10 @@ index 0000000000000000000000000000000000000000..a1df802a24259059253fe0d7e648aee7
 +};
 diff --git a/Source/WebKit/UIProcess/haiku/SitePermissionsHaiku.cpp b/Source/WebKit/UIProcess/haiku/SitePermissionsHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..dba1b1292804c98e0132ee76b79b43d2dce05d09
+index 0000000000000000000000000000000000000000..b18dba79f01d5e1a1d34ccfbebb08a672c0b55d1
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/SitePermissionsHaiku.cpp
-@@ -0,0 +1,435 @@
+@@ -0,0 +1,462 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -91417,6 +93213,33 @@ index 0000000000000000000000000000000000000000..dba1b1292804c98e0132ee76b79b43d2
 +    }
 +}
 +
++void SitePermissionsHaiku::requestUSB(const String& origin, const BMessenger& view,
++    Vector<std::pair<String, String>>&& devices, MediaCompletion&& completion)
++{
++    ASSERT(RunLoop::isMain());
++    if (m_shutdown || !m_listener.IsValid() || origin.isEmpty() || origin == "null"_s || devices.isEmpty()) {
++        completion(false, { });
++        return;
++    }
++    const uint64_t identifier = ++m_lastRequest;
++    BMessage message(B_WEBKIT_PERMISSION_REQUESTED);
++    message.AddUInt64("identifier", identifier);
++    message.AddString("permission", "usb");
++    message.AddString("origin", origin.utf8().legacyCStringPointer());
++    message.AddBool("private", m_private);
++    if (view.IsValid())
++        message.AddMessenger("view", view);
++    for (auto& [id, label] : devices) {
++        message.AddString("device_id", id.utf8().legacyCStringPointer());
++        message.AddString("device_label", label.utf8().legacyCStringPointer());
++    }
++    m_pending.add(identifier, Pending { Kind::Camera, origin, { }, WTF::move(completion) });
++    if (!post(message)) {
++        if (auto request = m_pending.take(identifier); request.mediaCompletion)
++            request.mediaCompletion(false, { });
++    }
++}
++
 +std::optional<WebCore::PermissionState> SitePermissionsHaiku::query(Kind kind, const String& origin) const
 +{
 +    if (auto saved = decision(kind, origin))
@@ -91546,10 +93369,10 @@ index 0000000000000000000000000000000000000000..dba1b1292804c98e0132ee76b79b43d2
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/SitePermissionsHaiku.h b/Source/WebKit/UIProcess/haiku/SitePermissionsHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..8a091339c45e63a0fdd9a85f948b0cf8be32855b
+index 0000000000000000000000000000000000000000..39a78af01734b06389afe74f6eb857c781a5c8f8
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/SitePermissionsHaiku.h
-@@ -0,0 +1,108 @@
+@@ -0,0 +1,109 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -91613,6 +93436,7 @@ index 0000000000000000000000000000000000000000..8a091339c45e63a0fdd9a85f948b0cf8
 +    };
 +    using MediaCompletion = CompletionHandler<void(bool allowed, const String& deviceId)>;
 +    void requestMedia(const String& origin, const BMessenger& view, MediaRequest&&, MediaCompletion&&);
++    void requestUSB(const String& origin, const BMessenger& view, Vector<std::pair<String, String>>&& devices, MediaCompletion&&);
 +    // navigator.permissions.query(): granted, denied or prompt.
 +    std::optional<WebCore::PermissionState> query(Kind, const String& origin) const;
 +
@@ -91961,10 +93785,10 @@ index 0000000000000000000000000000000000000000..b12e656b2046acc0f1325d1b28ee8be2
 +#endif
 diff --git a/Source/WebKit/UIProcess/haiku/WebPageProxyHaiku.cpp b/Source/WebKit/UIProcess/haiku/WebPageProxyHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..45507ea5c3aef80c91e50d727907dffd99590ddb
+index 0000000000000000000000000000000000000000..e0616e42f8dde64892626fd2acaecf9242b6c713
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebPageProxyHaiku.cpp
-@@ -0,0 +1,91 @@
+@@ -0,0 +1,128 @@
 +/*
 + * Copyright (C) 2014-2021 Haiku, inc.
 + *
@@ -92004,12 +93828,16 @@ index 0000000000000000000000000000000000000000..45507ea5c3aef80c91e50d727907dffd
 +#include <WebCore/UserAgent.h>
 +
 +#include <sys/utsname.h>
++#include <wtf/JSONValues.h>
 +
 +namespace WebKit {
 +
 +#if ENABLE(CUSTOM_PROTOCOL_HANDLERS)
-+void WebPageProxy::protocolHandlerRequested(IPC::Connection& connection, WebCore::FrameIdentifier frameID, const String& scheme, const URL& url, bool remove)
++void WebPageProxy::protocolHandlerRequested(IPC::Connection& connection, WebCore::FrameIdentifier frameID, const String& scheme, IPC::Untrusted<URL>&& untrustedURL, bool remove)
 +{
++    // Validation below binds the template URL to this process-owned frame's
++    // committed origin and permits only trustworthy HTTP(S) handler templates.
++    auto url = WTF::move(untrustedURL).unsafeExtractWithoutValidation(IPC::UnvalidatedReason::ValidatedElsewhere);
 +    Ref process = WebProcessProxy::fromConnection(connection);
 +    RefPtr frame = WebFrameProxy::webFrame(frameID);
 +    if (!frame || frame->page() != this || &frame->process() != process.ptr()
@@ -92023,6 +93851,39 @@ index 0000000000000000000000000000000000000000..45507ea5c3aef80c91e50d727907dffd
 +        return;
 +    if (RefPtr client = pageClient())
 +        client->protocolHandlerRequested(scheme, url, remove);
++}
++#endif
++
++#if ENABLE(WEBUSB)
++void WebPageProxy::usbRequest(IPC::Connection& connection, WebCore::FrameIdentifier frameID, const String& arguments,
++    Vector<uint8_t>&& bytes, CompletionHandler<void(String&&, Vector<uint8_t>&&)>&& completion)
++{
++    Ref process = WebProcessProxy::fromConnection(connection);
++    RefPtr frame = WebFrameProxy::webFrame(frameID);
++    RefPtr topFrame = mainFrame();
++    if (!frame || !topFrame || frame->page() != this || &frame->process() != process.ptr()
++        || arguments.length() > 65536 || bytes.size() > 16 * 1024 * 1024) {
++        completion("{\"error\":\"SecurityError\"}"_s, { });
++        return;
++    }
++    Ref origin = WebCore::SecurityOrigin::create(frame->documentSecurityOriginData());
++    Ref topOrigin = WebCore::SecurityOrigin::create(topFrame->documentSecurityOriginData());
++    // Haiku currently allows top-level and same-origin child documents. Cross-
++    // origin delegation requires a UI-process policy representation first.
++    if (origin->isOpaque() || !origin->isPotentiallyTrustworthy() || !origin->isSameOriginAs(topOrigin)) {
++        completion("{\"error\":\"SecurityError\"}"_s, { });
++        return;
++    }
++    auto value = JSON::Value::parseJSON(arguments);
++    auto object = value ? value->asObject() : nullptr;
++    if (!object || (object->getString("operation"_s) == "requestDevice"_s && !frame->hasTransientActivation())) {
++        completion("{\"error\":\"SecurityError\"}"_s, { });
++        return;
++    }
++    if (RefPtr client = pageClient())
++        client->usbRequest(frameID.toUInt64(), origin->toString(), arguments, WTF::move(bytes), WTF::move(completion));
++    else
++        completion("{\"error\":\"AbortError\"}"_s, { });
 +}
 +#endif
 +
@@ -92298,10 +94159,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..4a701489a4b59a4ebc6a3b64d26b4d26d46ac29e
+index 0000000000000000000000000000000000000000..1ac4143e0e03ff4281a8184c6a054761d8c6a673
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,2308 @@
+@@ -0,0 +1,2354 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -92373,6 +94234,10 @@ index 0000000000000000000000000000000000000000..4a701489a4b59a4ebc6a3b64d26b4d26
 +#include "WebProcessPool.h"
 +#include "WebProcessProxy.h"
 +#include "WebViewContextHaiku.h"
++#if ENABLE(WEBUSB)
++#include "WebUSBBrokerHaiku.h"
++#include <wtf/JSONValues.h>
++#endif
 +#include "SitePermissionsHaiku.h"
 +#include "StartupTraceHaiku.h"
 +#include "APISecurityOrigin.h"
@@ -92975,8 +94840,14 @@ index 0000000000000000000000000000000000000000..4a701489a4b59a4ebc6a3b64d26b4d26
 +            state->load.committed = true;
 +    }
 +
-+    void didCommitLoadForFrame(WebPageProxy&, ResourceRequest&&, FrameInfoData&& frame) override
++    void didCommitLoadForFrame(WebPageProxy& page, ResourceRequest&&, FrameInfoData&& frame) override
 +    {
++#if ENABLE(WEBUSB)
++        if (auto state = m_state.lock(); state && state->context) {
++            ++state->usbGeneration;
++            state->context->usb()->cancelPage(page.identifier().toUInt64());
++        }
++#endif
 +        if (!frame.isMainFrame)
 +            return;
 +        if (auto state = m_state.lock()) {
@@ -93762,6 +95633,11 @@ index 0000000000000000000000000000000000000000..4a701489a4b59a4ebc6a3b64d26b4d26
 +{
 +    ASSERT(RunLoop::isMain());
 +    Ref protectedThis { *this };
++#if ENABLE(WEBUSB)
++    ++m_state->usbGeneration;
++    if (m_page && m_state->context)
++        m_state->context->usb()->cancelPage(m_page->identifier().toUInt64());
++#endif
 +    m_state->contentSizeChanged = nullptr;
 +    m_state->dialogs->cancelAll(true);
 +    BMessage dismissDialogs(javaScriptDialogsCancelHaiku);
@@ -93806,6 +95682,32 @@ index 0000000000000000000000000000000000000000..4a701489a4b59a4ebc6a3b64d26b4d26
 +    message.AddString("source_url", m_page->pageLoadState().activeURL().string().utf8().legacyCStringPointer());
 +    message.AddBool("remove", remove);
 +    sendToHostHaiku(m_state, message);
++}
++#endif
++
++#if ENABLE(WEBUSB)
++void WebView::usbRequest(uint64_t frame, const String& origin, const String& arguments, Vector<uint8_t>&& bytes,
++    CompletionHandler<void(String&&, Vector<uint8_t>&&)>&& completion)
++{
++    if (!m_page || m_state->closed || !m_state->context) {
++        completion("{\"error\":\"AbortError\"}"_s, { });
++        return;
++    }
++    auto parsed = JSON::Value::parseJSON(arguments);
++    auto args = parsed ? parsed->asObject() : nullptr;
++    auto document = args ? args->getString("document"_s) : String { };
++    if (document.isEmpty() || document.length() > 64) {
++        completion("{\"error\":\"TypeError\"}"_s, { });
++        return;
++    }
++    auto page = m_page->identifier().toUInt64();
++    auto generation = m_state->usbGeneration;
++    auto owner = makeString(page, '/', frame, '/', document);
++    m_state->context->usb()->request(page, owner, origin, nativeView(), arguments, WTF::move(bytes),
++        [state = std::weak_ptr { m_state }, generation] {
++            auto current = state.lock();
++            return current && !current->closed && current->usbGeneration == generation;
++        }, WTF::move(completion));
 +}
 +#endif
 +
@@ -94293,6 +96195,11 @@ index 0000000000000000000000000000000000000000..4a701489a4b59a4ebc6a3b64d26b4d26
 +
 +void WebView::processDidExit()
 +{
++#if ENABLE(WEBUSB)
++    ++m_state->usbGeneration;
++    if (m_page && m_state->context)
++        m_state->context->usb()->cancelPage(m_page->identifier().toUInt64());
++#endif
 +#if ENABLE(FULLSCREEN_API)
 +    closeFullScreenManager();
 +#endif
@@ -94612,14 +96519,17 @@ index 0000000000000000000000000000000000000000..4a701489a4b59a4ebc6a3b64d26b4d26
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..15dcdf32d0965969575554f06829dfe3c325e086
+index 0000000000000000000000000000000000000000..a82e1e89c127924e40b9ad00b7832b6d2f4c4015
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp
-@@ -0,0 +1,307 @@
+@@ -0,0 +1,319 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
 +#include "WebViewContextHaiku.h"
++#if ENABLE(WEBUSB)
++#include "WebUSBBrokerHaiku.h"
++#endif
 +#include "BrowserCommandBrokerHaiku.h"
 +#include "BrowserTabRegistryHaiku.h"
 +
@@ -94674,6 +96584,9 @@ index 0000000000000000000000000000000000000000..15dcdf32d0965969575554f06829dfe3
 +    , m_browserTabs(std::make_shared<BrowserTabRegistryHaiku>())
 +#endif
 +    , m_sitePermissions(SitePermissionsHaiku::create(m_processPool.get(), !m_dataStore->isPersistent()))
++#if ENABLE(WEBUSB)
++    , m_usb(WebUSBBrokerHaiku::create(m_sitePermissions))
++#endif
 +{
 +    ASSERT(RunLoop::isMain());
 +    m_processPool->setLegacyDownloadClient(m_downloads->createClient());
@@ -94695,6 +96608,9 @@ index 0000000000000000000000000000000000000000..15dcdf32d0965969575554f06829dfe3
 +    , m_browserTabs(extensionOwner->m_browserTabs)
 +    , m_extensionOwner(WTF::move(extensionOwner))
 +    , m_sitePermissions(SitePermissionsHaiku::create(m_processPool.get(), true))
++#if ENABLE(WEBUSB)
++    , m_usb(WebUSBBrokerHaiku::create(m_sitePermissions))
++#endif
 +{
 +    ASSERT(RunLoop::isMain());
 +    // Downloads of private pages stay out of extensions' downloads API.
@@ -94704,6 +96620,9 @@ index 0000000000000000000000000000000000000000..15dcdf32d0965969575554f06829dfe3
 +WebViewContextHaiku::~WebViewContextHaiku()
 +{
 +    ASSERT(RunLoop::isMain());
++#if ENABLE(WEBUSB)
++    m_usb->shutdown();
++#endif
 +    m_sitePermissions->shutdown();
 +    if (m_extensionOwner) {
 +        // The extensions, their prompts and commands are the owner's.
@@ -94925,10 +96844,10 @@ index 0000000000000000000000000000000000000000..15dcdf32d0965969575554f06829dfe3
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..38315cb60560494a2ac07e47637a99356eb2da61
+index 0000000000000000000000000000000000000000..a228323ecfd67a6e79d7ddc284b9209c88093f88
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h
-@@ -0,0 +1,80 @@
+@@ -0,0 +1,89 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -94953,6 +96872,9 @@ index 0000000000000000000000000000000000000000..38315cb60560494a2ac07e47637a9935
 +class ExtensionPermissionPromptHaiku;
 +class ExtensionPackageRegistryHaiku;
 +class SitePermissionsHaiku;
++#if ENABLE(WEBUSB)
++class WebUSBBrokerHaiku;
++#endif
 +class WebExtensionController;
 +class WebPageProxy;
 +class WebProcessPool;
@@ -94981,6 +96903,9 @@ index 0000000000000000000000000000000000000000..38315cb60560494a2ac07e47637a9935
 +    void download(WebPageProxy&, const WebCore::ResourceRequest&, const BMessenger&);
 +    // Notifications and location: requests, the host's decisions, providers.
 +    const std::shared_ptr<SitePermissionsHaiku>& sitePermissions() const { return m_sitePermissions; }
++#if ENABLE(WEBUSB)
++    const std::shared_ptr<WebUSBBrokerHaiku>& usb() const { return m_usb; }
++#endif
 +    // Server certificates the user trusts for a host although they failed
 +    // verification, by SHA-256 of the DER leaf certificate (lower-case hex).
 +    // Application thread only.
@@ -95006,15 +96931,18 @@ index 0000000000000000000000000000000000000000..38315cb60560494a2ac07e47637a9935
 +    const std::shared_ptr<WebViewContextHaiku> m_extensionOwner;
 +    HashMap<String, HashSet<String>> m_allowedServerCertificates;
 +    const std::shared_ptr<SitePermissionsHaiku> m_sitePermissions;
++#if ENABLE(WEBUSB)
++    const std::shared_ptr<WebUSBBrokerHaiku> m_usb;
++#endif
 +};
 +
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewPrivate.h b/Source/WebKit/UIProcess/haiku/WebViewPrivate.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..f1bf4a28642113f98ffd8e87a04a2f46208ec9a3
+index 0000000000000000000000000000000000000000..5445edc327c34a3d8ae455ca5a4d04e37b32ee9e
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewPrivate.h
-@@ -0,0 +1,198 @@
+@@ -0,0 +1,201 @@
 +/*
 +   Copyright (C) 2014 Haiku, inc.
 +
@@ -95082,6 +97010,9 @@ index 0000000000000000000000000000000000000000..f1bf4a28642113f98ffd8e87a04a2f46
 +    }
 +#if ENABLE(CUSTOM_PROTOCOL_HANDLERS)
 +    void protocolHandlerRequested(const String&, const URL&, bool) override;
++#endif
++#if ENABLE(WEBUSB)
++    void usbRequest(uint64_t, const String&, const String&, Vector<uint8_t>&&, CompletionHandler<void(String&&, Vector<uint8_t>&&)>&&) override;
 +#endif
 +    void notifyState(uint32_t = B_WEBKIT_STATE_CHANGED) const;
 +    // The frame the view shows now (device pixels), or null.
@@ -95215,10 +97146,10 @@ index 0000000000000000000000000000000000000000..f1bf4a28642113f98ffd8e87a04a2f46
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..ffbf7d2cb2acad7db7187df7203ee1fc6bf6c709
+index 0000000000000000000000000000000000000000..c336a7ec445bc211eb4b3abffe700d2f4fb5ac70
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
-@@ -0,0 +1,174 @@
+@@ -0,0 +1,175 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -95367,6 +97298,7 @@ index 0000000000000000000000000000000000000000..ffbf7d2cb2acad7db7187df7203ee1fc
 +    bool closeDecisionInFlight { false };
 +    uint64_t closeRequestGeneration { 0 };
 +    uint64_t navigationGeneration { 0 };
++    uint64_t usbGeneration { 0 };
 +    uint64_t closeNavigationGeneration { 0 };
 +    // The policy callback for a native request is asynchronous. Its matching
 +    // identifier describes the request we already observed, not a new one.
@@ -95577,10 +97509,10 @@ index 0000000000000000000000000000000000000000..fece383da7906574b8bfdcaf6a877c1f
 +} // namespace WebKit::USBHaiku
 diff --git a/Source/WebKit/UIProcess/haiku/usb/USBDeviceSessionHaiku.cpp b/Source/WebKit/UIProcess/haiku/usb/USBDeviceSessionHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..c48412e0fa048a27c743a2afd405e874cbec01a3
+index 0000000000000000000000000000000000000000..9850cb6e10a53818ee28cbfbcedae060906fee6d
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/usb/USBDeviceSessionHaiku.cpp
-@@ -0,0 +1,524 @@
+@@ -0,0 +1,586 @@
 +/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#ifndef SUMMIT_USB_STANDALONE
 +#include "config.h"
@@ -95588,6 +97520,7 @@ index 0000000000000000000000000000000000000000..c48412e0fa048a27c743a2afd405e874
 +#include "USBDeviceSessionHaiku.h"
 +
 +#include <USBKit.h>
++#include <OS.h>
 +#include <algorithm>
 +#include <cstring>
 +#include <dirent.h>
@@ -95631,6 +97564,49 @@ index 0000000000000000000000000000000000000000..c48412e0fa048a27c743a2afd405e874
 +    usb_iso_packet_descriptor* packets;
 +    uint32_t packetCount;
 +};
++
++// Raw USB waits are interruptible by killing their calling thread. Run only
++// the ioctl in that thread: buffers and C++ resources remain owned here. On
++// cancellation the kernel cancels its queued request before unwinding, and we
++// join before releasing buffers. This also bounds a non-responsive transfer.
++Error transferIoctl(int fd, uint32_t operation, void* command, size_t size, const std::atomic<bool>& aborted)
++{
++    if (aborted.load())
++        return Error::Abort;
++    struct Call { int fd; uint32_t operation; void* command; size_t size; } call { fd, operation, command, size };
++    auto thread = spawn_thread([](void* data) -> int32 {
++        auto& call = *static_cast<Call*>(data);
++        return ioctl(call.fd, call.operation, call.command, call.size) ? B_ERROR : B_OK;
++    }, "WebUSB transfer", B_NORMAL_PRIORITY, &call);
++    if (thread < B_OK)
++        return Error::Network;
++    if (resume_thread(thread) != B_OK) {
++        kill_thread(thread);
++        status_t ignored;
++        wait_for_thread(thread, &ignored);
++        return Error::Network;
++    }
++    auto deadline = system_time() + 10000000;
++    for (;;) {
++        status_t result = B_ERROR;
++        auto wait = wait_for_thread_etc(thread, B_RELATIVE_TIMEOUT, 100000, &result);
++        if (wait == B_OK)
++            return aborted.load() ? Error::Abort : result == B_OK ? Error::None : Error::Network;
++        if (wait == B_INTERRUPTED)
++            continue;
++        if (wait != B_TIMED_OUT && wait != B_WOULD_BLOCK) {
++            kill_thread(thread);
++            wait_for_thread(thread, &result);
++            return Error::Network;
++        }
++        bool cancelled = aborted.load();
++        if (cancelled || system_time() >= deadline) {
++            kill_thread(thread);
++            wait_for_thread(thread, &result);
++            return cancelled ? Error::Abort : Error::Network;
++        }
++    }
++}
 +
 +Result rawResult(status_t status, size_t transferred, size_t capacity)
 +{
@@ -95753,6 +97729,12 @@ index 0000000000000000000000000000000000000000..c48412e0fa048a27c743a2afd405e874
 +    // Length-delimited serial avoids identity collisions with delimiter bytes.
 +    d.identity = std::to_string(d.vendorId) + ":" + std::to_string(d.productId) + ":"
 +        + std::to_string(d.deviceVersion) + ":" + std::to_string(d.serial.size()) + ":" + d.serial;
++    struct stat st;
++    if (lstat(path.c_str(), &st))
++        return std::nullopt;
++    // A reattached serial-less device must not inherit a grant from a device
++    // which previously occupied the same USB address.
++    d.identity += ":" + std::to_string(st.st_dev) + ":" + std::to_string(st.st_ino);
 +    if (auto value = activeConfiguration(device))
 +        d.configuration = *value;
 +    return d;
@@ -95805,6 +97787,8 @@ index 0000000000000000000000000000000000000000..c48412e0fa048a27c743a2afd405e874
 +
 +Result Session::open(const Device& approved)
 +{
++    if (m_aborted.load())
++        return Result::failure(Error::Abort);
 +    if (opened())
 +        return { };
 +    if (!eligible(approved) || !validPath(approved.path))
@@ -95916,6 +97900,8 @@ index 0000000000000000000000000000000000000000..c48412e0fa048a27c743a2afd405e874
 +
 +Result Session::selectConfiguration(uint8_t value)
 +{
++    if (m_aborted.load())
++        return Result::failure(Error::Abort);
 +    if (!m_device)
 +        return Result::failure(Error::InvalidState);
 +    for (uint32_t i = 0; i < m_device->CountConfigurations(); ++i) {
@@ -95937,6 +97923,8 @@ index 0000000000000000000000000000000000000000..c48412e0fa048a27c743a2afd405e874
 +
 +Result Session::claimInterface(uint8_t number)
 +{
++    if (m_aborted.load())
++        return Result::failure(Error::Abort);
 +    if (!m_device || !configuration() || !currentConfigurationMatches())
 +        return Result::failure(Error::InvalidState);
 +    auto* iface = interface(number);
@@ -95954,6 +97942,8 @@ index 0000000000000000000000000000000000000000..c48412e0fa048a27c743a2afd405e874
 +
 +Result Session::releaseInterface(uint8_t number)
 +{
++    if (m_aborted.load())
++        return Result::failure(Error::Abort);
 +    if (!m_device || !configuration())
 +        return Result::failure(Error::InvalidState);
 +    if (!interface(number))
@@ -95965,6 +97955,8 @@ index 0000000000000000000000000000000000000000..c48412e0fa048a27c743a2afd405e874
 +
 +Result Session::selectAlternateInterface(uint8_t number, uint8_t setting)
 +{
++    if (m_aborted.load())
++        return Result::failure(Error::Abort);
 +    if (!m_device || !configuration() || !currentConfigurationMatches() || !m_claimed.contains(number))
 +        return Result::failure(Error::InvalidState);
 +    auto* iface = interface(number);
@@ -95986,6 +97978,8 @@ index 0000000000000000000000000000000000000000..c48412e0fa048a27c743a2afd405e874
 +
 +Result Session::clearHalt(bool input, uint8_t number)
 +{
++    if (m_aborted.load())
++        return Result::failure(Error::Abort);
 +    if (!m_device || !configuration() || !currentConfigurationMatches())
 +        return Result::failure(Error::InvalidState);
 +    auto* ep = endpoint(input, number);
@@ -96017,8 +98011,8 @@ index 0000000000000000000000000000000000000000..c48412e0fa048a27c743a2afd405e874
 +    if (!input)
 +        std::copy(output.begin(), output.end(), data.begin());
 +    RawControl command { 0, uint8_t((input ? 0x80 : 0) | (type << 5) | recipient), request, value, index, uint16_t(length), data.data() };
-+    if (ioctl(m_rawFD, controlTransferCommand, &command, sizeof(command)))
-+        return Result::failure(Error::Network);
++    if (auto error = transferIoctl(m_rawFD, controlTransferCommand, &command, sizeof(command), m_aborted); error != Error::None)
++        return Result::failure(error);
 +    auto result = rawResult(command.status, command.length, length);
 +    if (input && result.error == Error::None) {
 +        data.resize(result.transferred);
@@ -96042,8 +98036,8 @@ index 0000000000000000000000000000000000000000..c48412e0fa048a27c743a2afd405e874
 +    if (!input)
 +        std::copy(output.begin(), output.end(), data.begin());
 +    RawTransfer command { 0, ep->Interface()->Index(), ep->Index(), data.data(), length };
-+    if (ioctl(m_rawFD, ep->IsBulk() ? bulkTransferCommand : interruptTransferCommand, &command, sizeof(command)))
-+        return Result::failure(Error::Network);
++    if (auto error = transferIoctl(m_rawFD, ep->IsBulk() ? bulkTransferCommand : interruptTransferCommand, &command, sizeof(command), m_aborted); error != Error::None)
++        return Result::failure(error);
 +    auto result = rawResult(command.status, command.length, length);
 +    if (input && result.error == Error::None) {
 +        data.resize(result.transferred);
@@ -96077,8 +98071,8 @@ index 0000000000000000000000000000000000000000..c48412e0fa048a27c743a2afd405e874
 +    if (!input)
 +        std::copy(output.begin(), output.end(), data.begin());
 +    RawIsochronous command { 0, ep->Interface()->Index(), ep->Index(), data.data(), length, packets.data(), uint32_t(packets.size()) };
-+    if (ioctl(m_rawFD, isochronousTransferCommand, &command, sizeof(command)))
-+        return Result::failure(Error::Network);
++    if (auto error = transferIoctl(m_rawFD, isochronousTransferCommand, &command, sizeof(command), m_aborted); error != Error::None)
++        return Result::failure(error);
 +    auto result = rawResult(command.status, command.length, length);
 +    if (result.error != Error::None)
 +        return result;
@@ -96107,14 +98101,15 @@ index 0000000000000000000000000000000000000000..c48412e0fa048a27c743a2afd405e874
 +} // namespace WebKit::USBHaiku
 diff --git a/Source/WebKit/UIProcess/haiku/usb/USBDeviceSessionHaiku.h b/Source/WebKit/UIProcess/haiku/usb/USBDeviceSessionHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..e1ec1a344989a02034b5d0aeb282c9a2a2dea468
+index 0000000000000000000000000000000000000000..437da04334f6bfcba7e473b160dea1e7f43592ad
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/usb/USBDeviceSessionHaiku.h
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,73 @@
 +/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#pragma once
 +
 +#include "USBDevicePolicyHaiku.h"
++#include <atomic>
 +#include <memory>
 +#include <set>
 +#include <span>
@@ -96126,7 +98121,7 @@ index 0000000000000000000000000000000000000000..e1ec1a344989a02034b5d0aeb282c9a2
 +
 +namespace WebKit::USBHaiku {
 +
-+enum class Error { None, NotFound, Security, InvalidState, Network, NotSupported, Range, InvalidAccess };
++enum class Error { None, NotFound, Security, InvalidState, Network, NotSupported, Range, InvalidAccess, Abort };
 +enum class Status { Ok, Stall, Babble };
 +struct PacketResult {
 +    Status status { Status::Ok };
@@ -96153,6 +98148,8 @@ index 0000000000000000000000000000000000000000..e1ec1a344989a02034b5d0aeb282c9a2
 +    ~Session();
 +    Result open(const Device& approvedDevice);
 +    void close();
++    // Safe from the broker main thread; the transfer worker owns all cleanup.
++    void abort() { m_aborted.store(true); }
 +    bool opened() const { return !!m_device; }
 +    const Device& state() const { return m_state; }
 +    Result selectConfiguration(uint8_t);
@@ -96173,6 +98170,7 @@ index 0000000000000000000000000000000000000000..e1ec1a344989a02034b5d0aeb282c9a2
 +    const BUSBEndpoint* endpoint(bool input, uint8_t number) const;
 +    void refreshInterfaceState();
 +    bool currentConfigurationMatches() const;
++    std::atomic<bool> m_aborted { false };
 +    std::unique_ptr<BUSBDevice> m_device;
 +    int m_rawFD { -1 };
 +    Device m_state;
@@ -96180,6 +98178,544 @@ index 0000000000000000000000000000000000000000..e1ec1a344989a02034b5d0aeb282c9a2
 +};
 +
 +} // namespace WebKit::USBHaiku
+diff --git a/Source/WebKit/UIProcess/haiku/usb/WebUSBBrokerHaiku.cpp b/Source/WebKit/UIProcess/haiku/usb/WebUSBBrokerHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..670a5e379bda13f777913e236fd1c3e787a29456
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/usb/WebUSBBrokerHaiku.cpp
+@@ -0,0 +1,476 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#if ENABLE(WEBUSB)
++#include "WebUSBBrokerHaiku.h"
++#include "SitePermissionsHaiku.h"
++#include <wtf/NeverDestroyed.h>
++#include <wtf/RunLoop.h>
++#include <wtf/UUID.h>
++#include <wtf/text/MakeString.h>
++#include <unordered_map>
++
++namespace WebKit {
++using namespace USBHaiku;
++
++static Ref<WorkQueue> usbQueue()
++{
++    static NeverDestroyed<Ref<WorkQueue>> queue(WorkQueue::create("WebKit.USB"_s, WorkQueue::QOS::Utility));
++    return queue.get().copyRef();
++}
++// Main-thread ownership spans normal and private browsing contexts.
++static auto& openDevices()
++{
++    static NeverDestroyed<std::unordered_map<std::string, std::weak_ptr<Session>>> devices;
++    return devices.get();
++}
++static String usbError(ASCIILiteral name, ASCIILiteral message)
++{
++    auto object = JSON::Object::create();
++    object->setString("error"_s, name);
++    object->setString("message"_s, message);
++    return object->toJSONString();
++}
++static ASCIILiteral errorName(Error error)
++{
++    switch (error) {
++    case Error::None: return ""_s;
++    case Error::NotFound: return "NotFoundError"_s;
++    case Error::Security: return "SecurityError"_s;
++    case Error::InvalidState: return "InvalidStateError"_s;
++    case Error::Network: return "NetworkError"_s;
++    case Error::NotSupported: return "NotSupportedError"_s;
++    case Error::Range: return "RangeError"_s;
++    case Error::InvalidAccess: return "InvalidAccessError"_s;
++    case Error::Abort: return "AbortError"_s;
++    }
++    return "NetworkError"_s;
++}
++static String fromUTF8(const std::string& string) { return String::fromUTF8ReplacingInvalidSequences(std::span(reinterpret_cast<const char8_t*>(string.data()), string.size())); }
++
++static Ref<JSON::Object> deviceJSON(const Device& device, const String& token)
++{
++    auto object = JSON::Object::create();
++    object->setString("id"_s, token);
++    object->setInteger("usbVersion"_s, device.usbVersion);
++    object->setInteger("vendorId"_s, device.vendorId);
++    object->setInteger("productId"_s, device.productId);
++    object->setInteger("deviceVersion"_s, device.deviceVersion);
++    object->setInteger("deviceClass"_s, device.classCode);
++    object->setInteger("deviceSubclass"_s, device.subclassCode);
++    object->setInteger("deviceProtocol"_s, device.protocolCode);
++    object->setInteger("configurationValue"_s, device.configuration);
++    if (!device.manufacturer.empty()) object->setString("manufacturerName"_s, fromUTF8(device.manufacturer));
++    if (!device.product.empty()) object->setString("productName"_s, fromUTF8(device.product));
++    if (!device.serial.empty()) object->setString("serialNumber"_s, fromUTF8(device.serial));
++    auto configurations = JSON::Array::create();
++    for (auto& c : device.configurations) {
++        auto configuration = JSON::Object::create();
++        configuration->setInteger("configurationValue"_s, c.value);
++        if (!c.name.empty()) configuration->setString("configurationName"_s, fromUTF8(c.name));
++        auto interfaces = JSON::Array::create();
++        for (auto& i : c.interfaces) {
++            auto interface = JSON::Object::create();
++            interface->setInteger("interfaceNumber"_s, i.number);
++            interface->setInteger("alternateSetting"_s, i.alternate);
++            interface->setBoolean("claimed"_s, i.claimed);
++            auto alternates = JSON::Array::create();
++            for (auto& a : i.alternates) {
++                auto alternate = JSON::Object::create();
++                alternate->setInteger("alternateSetting"_s, a.setting);
++                alternate->setInteger("interfaceClass"_s, a.classCode);
++                alternate->setInteger("interfaceSubclass"_s, a.subclassCode);
++                alternate->setInteger("interfaceProtocol"_s, a.protocolCode);
++                if (!a.name.empty()) alternate->setString("interfaceName"_s, fromUTF8(a.name));
++                auto endpoints = JSON::Array::create();
++                for (auto& e : a.endpoints) {
++                    auto endpoint = JSON::Object::create();
++                    endpoint->setInteger("endpointNumber"_s, e.number);
++                    endpoint->setBoolean("input"_s, e.input);
++                    endpoint->setInteger("type"_s, e.type);
++                    endpoint->setInteger("packetSize"_s, e.packetSize);
++                    endpoints->pushObject(WTF::move(endpoint));
++                }
++                alternate->setArray("endpoints"_s, WTF::move(endpoints));
++                alternates->pushObject(WTF::move(alternate));
++            }
++            interface->setArray("alternates"_s, WTF::move(alternates));
++            interfaces->pushObject(WTF::move(interface));
++        }
++        configuration->setArray("interfaces"_s, WTF::move(interfaces));
++        configurations->pushObject(WTF::move(configuration));
++    }
++    object->setArray("configurations"_s, WTF::move(configurations));
++    return object;
++}
++
++static std::optional<std::vector<Filter>> readFilters(const JSON::Object& arguments, ASCIILiteral key)
++{
++    auto array = arguments.getArray(key);
++    if (!array || array->length() > 64)
++        return std::nullopt;
++    std::vector<Filter> result;
++    for (auto& value : *array) {
++        auto object = value->asObject();
++        if (!object)
++            return std::nullopt;
++        Filter filter;
++        bool valid = true;
++        auto number = [&](ASCIILiteral key, auto& target, unsigned maximum) {
++            if (!object->getValue(key))
++                return;
++            auto value = object->getInteger(key);
++            if (!value || *value < 0 || unsigned(*value) > maximum)
++                valid = false;
++            else
++                target = *value;
++        };
++        number("vendorId"_s, filter.vendorId, 65535);
++        number("productId"_s, filter.productId, 65535);
++        number("classCode"_s, filter.classCode, 255);
++        number("subclassCode"_s, filter.subclassCode, 255);
++        number("protocolCode"_s, filter.protocolCode, 255);
++        if (auto serial = object->getValue("serialNumber"_s)) {
++            auto string = serial->asString();
++            if (string.isNull() || string.length() > 1024)
++                valid = false;
++            else
++                filter.serialNumber = string.utf8().legacyCStringPointer();
++        }
++        if (!valid || !validFilter(filter))
++            return std::nullopt;
++        result.push_back(std::move(filter));
++    }
++    return result;
++}
++
++std::shared_ptr<WebUSBBrokerHaiku> WebUSBBrokerHaiku::create(std::shared_ptr<SitePermissionsHaiku> permissions)
++{
++    return std::shared_ptr<WebUSBBrokerHaiku>(new WebUSBBrokerHaiku(std::move(permissions)));
++}
++WebUSBBrokerHaiku::WebUSBBrokerHaiku(std::shared_ptr<SitePermissionsHaiku> permissions)
++    : m_permissions(std::move(permissions)), m_queue(usbQueue()) { }
++WebUSBBrokerHaiku::~WebUSBBrokerHaiku() { shutdown(); }
++
++void WebUSBBrokerHaiku::enumerate(uint64_t page, const String& owner, const String& origin, const BMessenger& view,
++    Ref<JSON::Object>&& args, std::function<bool()>&& isCurrent, Completion&& completion)
++{
++    bool choosing = args->getString("operation"_s) == "requestDevice"_s;
++    auto include = choosing ? readFilters(args, "filters"_s) : std::optional { std::vector<Filter> { } };
++    auto exclude = choosing ? readFilters(args, "exclusionFilters"_s) : std::optional { std::vector<Filter> { } };
++    if (!include || !exclude) {
++        completion(usbError("TypeError"_s, "Invalid USB device filter"_s), { });
++        return;
++    }
++    if (m_enumerations >= 4) {
++        completion(usbError("InvalidStateError"_s, "A USB enumeration is already pending"_s), { });
++        return;
++    }
++    ++m_enumerations;
++    m_queue->dispatch([self = shared_from_this(), page, owner = owner.isolatedCopy(), origin = origin.isolatedCopy(), view,
++        choosing, include = std::move(*include), exclude = std::move(*exclude), isCurrent = std::move(isCurrent), completion = WTF::move(completion)]() mutable {
++        auto devices = enumerateDevices();
++        std::erase_if(devices, [&](auto& device) { return !matches(device, include, exclude); });
++        RunLoop::mainSingleton().dispatch([self, page, owner = owner.isolatedCopy(), origin = origin.isolatedCopy(), view, choosing,
++            devices = std::move(devices), isCurrent = std::move(isCurrent), completion = WTF::move(completion)]() mutable {
++            --self->m_enumerations;
++            if (self->m_shutdown || !isCurrent()) {
++                completion(usbError("AbortError"_s, "The USB document was closed"_s), { });
++                return;
++            }
++            if (!choosing) {
++                auto result = JSON::Object::create();
++                auto list = JSON::Array::create();
++                for (auto& grant : self->m_grants) {
++                    if (grant.value.origin != origin)
++                        continue;
++                    auto found = std::find_if(devices.begin(), devices.end(), [&](auto& device) {
++                        return device.path == grant.value.device.path && device.identity == grant.value.device.identity;
++                    });
++                    if (found != devices.end())
++                        list->pushObject(deviceJSON(*found, grant.key));
++                    else
++                        self->closeGrant(grant.value);
++                }
++                result->setArray("devices"_s, WTF::move(list));
++                completion(result->toJSONString(), { });
++                return;
++            }
++            if (devices.empty()) {
++                completion(usbError("NotFoundError"_s, "No eligible USB device matches these filters"_s), { });
++                return;
++            }
++            Vector<std::pair<String, String>> choices;
++            Vector<String> tokens;
++            for (auto& device : devices) {
++                auto token = WTF::UUID::createVersion4().toString();
++                auto label = fromUTF8(device.product.empty() ? "USB device" : device.product);
++                if (!device.manufacturer.empty())
++                    label = makeString(fromUTF8(device.manufacturer), " — "_s, label);
++                // Never let device strings insert new lines in the permission UI.
++                label = makeStringByReplacingAll(makeStringByReplacingAll(label, '\n', ' '), '\r', ' ');
++                choices.append({ token, label });
++                tokens.append(token);
++            }
++            self->m_permissions->requestUSB(origin, view, WTF::move(choices),
++                [self, page, owner, origin, devices = std::move(devices), tokens = WTF::move(tokens),
++                    isCurrent = std::move(isCurrent), completion = WTF::move(completion)](bool allowed, const String& selected) mutable {
++                    if (self->m_shutdown || !isCurrent()) {
++                        completion(usbError("AbortError"_s, "The USB document was closed"_s), { });
++                        return;
++                    }
++                    auto index = tokens.find(selected);
++                    if (!allowed || index == notFound || index >= devices.size()) {
++                        completion(usbError("NotFoundError"_s, "No USB device was selected"_s), { });
++                        return;
++                    }
++                    auto& device = devices[index];
++                    String token;
++                    for (auto& grant : self->m_grants) {
++                        if (grant.value.origin == origin && grant.value.device.path == device.path
++                            && grant.value.device.identity == device.identity) {
++                            token = grant.key;
++                            break;
++                        }
++                    }
++                    if (token.isEmpty()) {
++                        if (self->m_grants.size() >= 256) {
++                            completion(usbError("NotAllowedError"_s, "Too many USB device grants"_s), { });
++                            return;
++                        }
++                        token = WTF::UUID::createVersion4().toString();
++                        self->m_grants.add(token, Grant { origin, device });
++                    }
++                    auto result = JSON::Object::create();
++                    result->setObject("device"_s, deviceJSON(device, token));
++                    completion(result->toJSONString(), { });
++                });
++        });
++    });
++}
++
++// Checked before enqueueing, independently of renderer bindings.
++static bool validOperation(const JSON::Object& args, size_t outputSize)
++{
++    auto op = args.getString("operation"_s);
++    auto number = [&](ASCIILiteral key, unsigned maximum) {
++        auto value = args.getInteger(key);
++        return value && *value >= 0 && unsigned(*value) <= maximum;
++    };
++    if (op == "open"_s || op == "close"_s || op == "forget"_s || op == "reset"_s)
++        return !outputSize;
++    if (op == "selectConfiguration"_s)
++        return !outputSize && number("value"_s, 255);
++    if (op == "claimInterface"_s || op == "releaseInterface"_s)
++        return !outputSize && number("interface"_s, 255);
++    if (op == "selectAlternateInterface"_s)
++        return !outputSize && number("interface"_s, 255) && number("alternate"_s, 255);
++    auto input = args.getBoolean("input"_s);
++    if (!input)
++        return false;
++    if (*input && outputSize)
++        return false;
++    if (op == "clearHalt"_s)
++        return !outputSize && number("endpoint"_s, 15) && args.getInteger("endpoint"_s) != 0;
++    if (op == "controlTransfer"_s) {
++        if (!number("requestType"_s, 2) || !number("recipient"_s, 3) || !number("request"_s, 255)
++            || !number("value"_s, 65535) || !number("index"_s, 65535) || !number("length"_s, 65535))
++            return false;
++        return *input || args.getInteger("length"_s) == outputSize;
++    }
++    if (!number("endpoint"_s, 15) || args.getInteger("endpoint"_s) == 0)
++        return false;
++    if (op == "transfer"_s)
++        return number("length"_s, maximumTransferSize) && (*input || args.getInteger("length"_s) == outputSize);
++    if (op != "isochronousTransfer"_s)
++        return false;
++    auto packets = args.getArray("packetLengths"_s);
++    if (!packets || packets->length() > maximumIsochronousPackets)
++        return false;
++    size_t total = 0;
++    for (auto& packet : *packets) {
++        auto value = packet->asInteger();
++        if (!value || *value < 0 || *value > 32767 || unsigned(*value) > maximumTransferSize - total)
++            return false;
++        total += *value;
++    }
++    return *input || total == outputSize;
++}
++
++static Result operate(Session& session, const Device& approved, const JSON::Object& args, std::span<const uint8_t> bytes)
++{
++    auto op = args.getString("operation"_s);
++    auto n = [&](ASCIILiteral key) { return args.getInteger(key).value_or(0); };
++    bool input = args.getBoolean("input"_s).value_or(false);
++    if (op == "open"_s) return session.open(approved);
++    if (op == "close"_s || op == "forget"_s) { session.close(); return { }; }
++    if (op == "selectConfiguration"_s) return session.selectConfiguration(n("value"_s));
++    if (op == "claimInterface"_s) return session.claimInterface(n("interface"_s));
++    if (op == "releaseInterface"_s) return session.releaseInterface(n("interface"_s));
++    if (op == "selectAlternateInterface"_s) return session.selectAlternateInterface(n("interface"_s), n("alternate"_s));
++    if (op == "clearHalt"_s) return session.clearHalt(input, n("endpoint"_s));
++    if (op == "controlTransfer"_s)
++        return session.controlTransfer(input, n("requestType"_s), n("recipient"_s), n("request"_s), n("value"_s), n("index"_s), n("length"_s), bytes);
++    if (op == "transfer"_s)
++        return session.transfer(input, n("endpoint"_s), n("length"_s), bytes);
++    if (op == "isochronousTransfer"_s) {
++        std::vector<uint32_t> lengths;
++        for (auto& value : *args.getArray("packetLengths"_s))
++            lengths.push_back(*value->asInteger());
++        return session.isochronousTransfer(input, n("endpoint"_s), lengths, bytes);
++    }
++    if (op == "reset"_s) return session.reset();
++    return Result::failure(Error::NotSupported);
++}
++
++void WebUSBBrokerHaiku::request(uint64_t page, const String& owner, const String& origin, const BMessenger& view,
++    const String& arguments, Vector<uint8_t>&& bytes, std::function<bool()>&& isCurrent, Completion&& completion)
++{
++    ASSERT(RunLoop::isMain());
++    if (m_shutdown || !isCurrent()) {
++        completion(usbError("AbortError"_s, "The USB document was closed"_s), { });
++        return;
++    }
++    if (arguments.length() > 65536 || bytes.size() > maximumTransferSize || origin.isEmpty() || origin == "null"_s) {
++        completion(usbError("SecurityError"_s, "Invalid USB request"_s), { });
++        return;
++    }
++    auto parsed = JSON::Value::parseJSON(arguments);
++    auto args = parsed ? parsed->asObject() : nullptr;
++    if (!args) {
++        completion(usbError("TypeError"_s, "Invalid USB request"_s), { });
++        return;
++    }
++    auto op = args->getString("operation"_s);
++    if (op == "getDevices"_s || op == "requestDevice"_s) {
++        if (!bytes.isEmpty()) {
++            completion(usbError("TypeError"_s, "Invalid USB enumeration"_s), { });
++            return;
++        }
++        enumerate(page, owner, origin, view, args.releaseNonNull(), std::move(isCurrent), WTF::move(completion));
++        return;
++    }
++    auto token = args->getString("id"_s);
++    auto found = m_grants.find(token);
++    if (found == m_grants.end() || found->value.origin != origin) {
++        completion(usbError("SecurityError"_s, "This origin has no grant for the USB device"_s), { });
++        return;
++    }
++    if (!validOperation(*args, bytes.size())) {
++        completion(usbError("TypeError"_s, "Invalid USB operation or transfer size"_s), { });
++        return;
++    }
++    auto& grant = found->value;
++    bool closing = op == "close"_s || op == "forget"_s;
++    if (op == "forget"_s && !grant.session) {
++        m_grants.remove(found);
++        completion("{}"_s, { });
++        return;
++    }
++    if (op == "close"_s && !grant.session) {
++        completion("{}"_s, { });
++        return;
++    }
++    if (grant.closing || (grant.pending >= 16 && !closing) || (grant.session && grant.owner != owner)) {
++        completion(usbError("InvalidStateError"_s, "The USB device is already in use"_s), { });
++        return;
++    }
++    if (op == "open"_s && !grant.session) {
++        auto existing = openDevices().find(grant.device.path);
++        if (existing != openDevices().end() && !existing->second.expired()) {
++            completion(usbError("InvalidStateError"_s, "Another page is using this USB device"_s), { });
++            return;
++        }
++        grant.session = std::make_shared<Session>();
++        grant.owner = owner;
++        grant.page = page;
++        openDevices()[grant.device.path] = grant.session;
++    }
++    if (!grant.session) {
++        completion(usbError("InvalidStateError"_s, "The USB device is not open"_s), { });
++        return;
++    }
++    if (closing) {
++        grant.closing = true;
++        grant.session->abort();
++    }
++    ++grant.pending;
++    m_queue->dispatch([self = shared_from_this(), token = token.isolatedCopy(), owner = owner.isolatedCopy(),
++        operation = op.isolatedCopy(), arguments = arguments.isolatedCopy(), approved = grant.device, session = grant.session,
++        bytes = WTF::move(bytes), isCurrent = std::move(isCurrent), completion = WTF::move(completion)]() mutable {
++        auto parsed = JSON::Value::parseJSON(arguments);
++        auto args = parsed->asObject();
++        auto result = operate(*session, approved, *args, bytes.span());
++        auto object = JSON::Object::create();
++        if (result.error != Error::None) {
++            object->setString("error"_s, errorName(result.error));
++            object->setString("message"_s, result.error == Error::NotSupported
++                ? "This USB operation is not supported by Haiku"_s : "The USB operation could not be completed"_s);
++        } else {
++            if (operation == "open"_s || operation == "selectConfiguration"_s || operation == "claimInterface"_s
++                || operation == "releaseInterface"_s || operation == "selectAlternateInterface"_s)
++                object->setObject("device"_s, deviceJSON(session->state(), token));
++            object->setInteger("status"_s, static_cast<unsigned>(result.status));
++            object->setInteger("transferred"_s, result.transferred);
++            auto packets = JSON::Array::create();
++            for (auto& packet : result.packets) {
++                auto value = JSON::Object::create();
++                value->setInteger("status"_s, static_cast<unsigned>(packet.status));
++                value->setInteger("transferred"_s, packet.transferred);
++                packets->pushObject(WTF::move(value));
++            }
++            object->setArray("packets"_s, WTF::move(packets));
++        }
++        RunLoop::mainSingleton().dispatch([self, token = token.isolatedCopy(), owner = owner.isolatedCopy(), session,
++            operation = operation.isolatedCopy(), failed = result.error != Error::None,
++            response = object->toJSONString().isolatedCopy(), bytes = Vector<uint8_t>(std::span<const uint8_t>(result.data)),
++            isCurrent = std::move(isCurrent), completion = WTF::move(completion)]() mutable {
++            auto found = self->m_grants.find(token);
++            if (found != self->m_grants.end() && found->value.session == session) {
++                auto& grant = found->value;
++                --grant.pending;
++                if (operation == "close"_s || operation == "forget"_s || (operation == "open"_s && failed)) {
++                    self->closeGrant(grant);
++                    if (operation == "forget"_s)
++                        self->m_grants.remove(found);
++                }
++            }
++            if (self->m_shutdown || !isCurrent()) {
++                completion(usbError("AbortError"_s, "The USB document was closed"_s), { });
++                return;
++            }
++            completion(WTF::move(response), WTF::move(bytes));
++        });
++    });
++}
++
++void WebUSBBrokerHaiku::closeGrant(Grant& grant)
++{
++    if (auto session = std::exchange(grant.session, nullptr)) {
++        session->abort();
++        m_queue->dispatch([session] { session->close(); });
++    }
++    grant.owner = { };
++    grant.page = 0;
++    grant.pending = 0;
++    grant.closing = false;
++}
++void WebUSBBrokerHaiku::cancelPage(uint64_t page)
++{
++    ASSERT(RunLoop::isMain());
++    for (auto& grant : m_grants) {
++        if (grant.value.page == page)
++            closeGrant(grant.value);
++    }
++}
++void WebUSBBrokerHaiku::shutdown()
++{
++    ASSERT(RunLoop::isMain());
++    if (m_shutdown)
++        return;
++    m_shutdown = true;
++    for (auto& grant : m_grants)
++        closeGrant(grant.value);
++    m_grants.clear();
++}
++} // namespace WebKit
++#endif
+diff --git a/Source/WebKit/UIProcess/haiku/usb/WebUSBBrokerHaiku.h b/Source/WebKit/UIProcess/haiku/usb/WebUSBBrokerHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..9b1755f7d42debc3a50c35cced1ff3b9d9760bec
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/usb/WebUSBBrokerHaiku.h
+@@ -0,0 +1,50 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#if ENABLE(WEBUSB)
++#include "USBDeviceSessionHaiku.h"
++#include <Messenger.h>
++#include <functional>
++#include <memory>
++#include <wtf/CompletionHandler.h>
++#include <wtf/HashMap.h>
++#include <wtf/JSONValues.h>
++#include <wtf/WorkQueue.h>
++#include <wtf/text/StringHash.h>
++
++namespace WebKit {
++class SitePermissionsHaiku;
++
++// The browser process owns all device capabilities. Paths, serial identifiers
++// of unapproved devices and native USB handles never reach the web process.
++// Grants last for this browsing context; private contexts get their own broker.
++class WebUSBBrokerHaiku final : public std::enable_shared_from_this<WebUSBBrokerHaiku> {
++public:
++    using Completion = CompletionHandler<void(String&&, Vector<uint8_t>&&)>;
++    static std::shared_ptr<WebUSBBrokerHaiku> create(std::shared_ptr<SitePermissionsHaiku>);
++    ~WebUSBBrokerHaiku();
++    void request(uint64_t page, const String& owner, const String& origin, const BMessenger&,
++        const String& arguments, Vector<uint8_t>&&, std::function<bool()>&& isCurrent, Completion&&);
++    void cancelPage(uint64_t page);
++    void shutdown();
++private:
++    explicit WebUSBBrokerHaiku(std::shared_ptr<SitePermissionsHaiku>);
++    struct Grant {
++        String origin;
++        USBHaiku::Device device;
++        String owner;
++        uint64_t page { 0 };
++        std::shared_ptr<USBHaiku::Session> session;
++        unsigned pending { 0 };
++        bool closing { false };
++    };
++    void enumerate(uint64_t, const String&, const String&, const BMessenger&, Ref<JSON::Object>&&,
++        std::function<bool()>&&, Completion&&);
++    void closeGrant(Grant&);
++    const std::shared_ptr<SitePermissionsHaiku> m_permissions;
++    const Ref<WorkQueue> m_queue;
++    HashMap<String, Grant> m_grants;
++    bool m_shutdown { false };
++    unsigned m_enumerations { 0 };
++};
++}
++#endif
 diff --git a/Source/WebKit/WebKit.xcodeproj/project.pbxproj b/Source/WebKit/WebKit.xcodeproj/project.pbxproj
 index b7b0ed482995a6b9f45e1676790d5c49504fbaf0..24635a41f45dd5556d895ff6b5996375d65ae8c5 100644
 --- a/Source/WebKit/WebKit.xcodeproj/project.pbxproj
@@ -113443,7 +115979,7 @@ index 8677b9d9f5c1e61cbe8b0a184b669022d8db3eed..3ef5c5295f89885202331129b3eb86ac
  #include "MessageSenderInlines.h"
  #include "WebAuthenticatorCoordinatorProxyMessages.h"
 diff --git a/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.cpp b/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.cpp
-index 335b456329f885a77d3880fc2a98b2b58cb4bee8..3f158978c0edd699aae1322485aae9a72f5df380 100644
+index 335b456329f885a77d3880fc2a98b2b58cb4bee8..98b0338dd908b2b3208d1f3a2c24aec2f3c145f3 100644
 --- a/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.cpp
 +++ b/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.cpp
 @@ -120,6 +120,9 @@
@@ -113465,10 +116001,24 @@ index 335b456329f885a77d3880fc2a98b2b58cb4bee8..3f158978c0edd699aae1322485aae9a7
  #endif
  
      auto sendResult = protect(WebProcess::singleton().parentProcessConnection())->sendSync(Messages::WebPageProxy::GetWindowFrame(), page->identifier());
-@@ -1076,6 +1081,16 @@ void WebChromeClient::transcodeChosenFiles(Vector<String>&& transcodingPaths, St
+@@ -1076,6 +1081,30 @@ void WebChromeClient::transcodeChosenFiles(Vector<String>&& transcodingPaths, St
      page->sendWithAsyncReply(Messages::WebPageProxy::TranscodeChosenFiles(transcodingPaths, destinationUTI, destinationExtension), WTF::move(completion));
  }
      
++#if ENABLE(WEBUSB)
++void WebChromeClient::usbRequest(LocalFrame& frame, const String& arguments, Vector<uint8_t>&& bytes,
++    CompletionHandler<void(String&&, Vector<uint8_t>&&)>&& completion)
++{
++    RefPtr page = m_page.get();
++    auto* webFrame = WebFrame::fromCoreFrame(frame);
++    if (!page || !webFrame) {
++        completion("{\"error\":\"AbortError\"}"_s, { });
++        return;
++    }
++    page->sendWithAsyncReply(Messages::WebPageProxy::UsbRequest(webFrame->frameID(), arguments, bytes), WTF::move(completion));
++}
++#endif
++
 +#if ENABLE(CUSTOM_PROTOCOL_HANDLERS)
 +void WebChromeClient::protocolHandlerRequested(LocalFrame& frame, const String& scheme, const URL& url, bool remove)
 +{
@@ -113482,7 +116032,7 @@ index 335b456329f885a77d3880fc2a98b2b58cb4bee8..3f158978c0edd699aae1322485aae9a7
  void WebChromeClient::showShareSheet(ShareDataWithParsedURL&& shareData, CompletionHandler<void(bool)>&& callback)
  {
      if (RefPtr page = m_page.get())
-@@ -1216,6 +1231,12 @@ RefPtr<GraphicsContextGL> WebChromeClient::createGraphicsContextGL(const Graphic
+@@ -1216,6 +1245,12 @@ RefPtr<GraphicsContextGL> WebChromeClient::createGraphicsContextGL(const Graphic
      WebProcess::singleton().initializePlatformDisplayIfNeeded();
      WebProcess::singleton().initializeVulkanIfNeeded();
  #endif
@@ -113495,7 +116045,7 @@ index 335b456329f885a77d3880fc2a98b2b58cb4bee8..3f158978c0edd699aae1322485aae9a7
  #if ENABLE(GPU_PROCESS)
      if (WebProcess::singleton().shouldUseRemoteRenderingForWebGL()) {
          RefPtr page = m_page.get();
-@@ -2282,7 +2303,7 @@ void WebChromeClient::setMockWebAuthenticationConfiguration(const MockWebAuthent
+@@ -2282,7 +2317,7 @@ void WebChromeClient::setMockWebAuthenticationConfiguration(const MockWebAuthent
  }
  #endif
  
@@ -113505,20 +116055,23 @@ index 335b456329f885a77d3880fc2a98b2b58cb4bee8..3f158978c0edd699aae1322485aae9a7
  {
      notImplemented();
 diff --git a/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.h b/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.h
-index de1365cbd5a6babca6154348d0ddbbecf5ed5f4d..7fb3c5269c8a5d211c76ed55ef6cc7353ad12b0b 100644
+index de1365cbd5a6babca6154348d0ddbbecf5ed5f4d..3a8f7e9cb424a8f81efeda1341abf49b6a378cf1 100644
 --- a/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.h
 +++ b/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.h
-@@ -223,6 +223,9 @@ private:
+@@ -223,6 +223,12 @@ private:
  
      void runOpenPanel(WebCore::LocalFrame&, WebCore::FileChooser&) final;
      void transcodeChosenFiles(Vector<String>&&, String&& destinationUTI, String&& destinationExtension, CompletionHandler<void(Vector<String>&&)>&&) final;
 +#if ENABLE(CUSTOM_PROTOCOL_HANDLERS)
 +    void protocolHandlerRequested(WebCore::LocalFrame&, const String&, const URL&, bool) final;
 +#endif
++#if ENABLE(WEBUSB)
++    void usbRequest(WebCore::LocalFrame&, const String&, Vector<uint8_t>&&, CompletionHandler<void(String&&, Vector<uint8_t>&&)>&&) final;
++#endif
      void showShareSheet(WebCore::ShareDataWithParsedURL&&, WTF::CompletionHandler<void(bool)>&&) final;
      void showContactPicker(WebCore::ContactsRequestData&&, WTF::CompletionHandler<void(std::optional<Vector<WebCore::ContactInfo>>&&)>&&) final;
  
-@@ -267,7 +270,7 @@ private:
+@@ -267,7 +273,7 @@ private:
      void AXFinishFrameLoad() final { }
  #endif
  
@@ -113617,6 +116170,49 @@ index 7f814064bfdf3ffadc7cce58fe6552ab841d2620..c8c18bd669bbafb79276689226b6e6b5
      if (RefPtr extensionControllerProxy = webPage->webExtensionControllerProxy())
          extensionControllerProxy->globalObjectIsAvailableForFrame(*webPage, m_frame, world);
  #endif
+diff --git a/Source/WebKit/WebProcess/WebCoreSupport/WebWorkerClient.cpp b/Source/WebKit/WebProcess/WebCoreSupport/WebWorkerClient.cpp
+index 993fe9657ae60068cc1ec2edc4b1e7cf75ecc778..942f62501685ca2d5de8adebeeb2956b5ce825fa 100644
+--- a/Source/WebKit/WebProcess/WebCoreSupport/WebWorkerClient.cpp
++++ b/Source/WebKit/WebProcess/WebCoreSupport/WebWorkerClient.cpp
+@@ -37,6 +37,9 @@
+ #include "WebProcess.h"
+ #include <WebCore/ImageBuffer.h>
+ #include <WebCore/Page.h>
++#if PLATFORM(HAIKU) && ENABLE(WEBGL)
++#include <WebCore/PlatformDisplay.h>
++#endif
+ #include <wtf/TZoneMallocInlines.h>
+ 
+ #if ENABLE(WEBGL) && ENABLE(GPU_PROCESS)
+@@ -145,6 +148,12 @@ WTF_MAKE_TZONE_ALLOCATED_IMPL(WebWorkerClient);
+ 
+ UniqueRef<WebWorkerClient> WebWorkerClient::create(Page& page, SerialFunctionDispatcher& dispatcher)
+ {
++#if PLATFORM(HAIKU) && ENABLE(WEBGL)
++    // Initialize the shared display on the main thread before publishing it
++    // to workers; their EGL contexts and virtualization groups are separate.
++    if (auto* display = PlatformDisplay::sharedDisplayIfExists())
++        display->angleEGLDisplay();
++#endif
+     ASSERT(isMainRunLoop());
+ #if ENABLE(GPU_PROCESS)
+     return UniqueRef<GPUProcessWebWorkerClient> { *new GPUProcessWebWorkerClient { dispatcher, page.displayID() } };
+@@ -189,8 +198,14 @@ RefPtr<ImageBuffer> WebWorkerClient::createImageBuffer(const FloatSize& size, Re
+ RefPtr<GraphicsContextGL> WebWorkerClient::createGraphicsContextGL(const GraphicsContextGLAttributes& attributes) const
+ {
+     assertIsCurrent(*dispatcher().get());
+-    // ANGLE does not support multithreading, so we cannot create in-process contexts in worker threads.
++#if PLATFORM(HAIKU)
++    if (!PlatformDisplay::sharedDisplayIfExists())
++        return nullptr;
++    return WebCore::createWebProcessGraphicsContextGL(attributes);
++#else
++    // Other ports require their GPU process for worker GL contexts.
+     return nullptr;
++#endif
+ }
+ #endif
+ 
 diff --git a/Source/WebKit/WebProcess/WebCoreSupport/haiku/WebErrorsHaiku.cpp b/Source/WebKit/WebProcess/WebCoreSupport/haiku/WebErrorsHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..06e5d2054d87db887c39f2fea694476392074eb9
@@ -135000,10 +137596,10 @@ index 121e64b01bce34e387deacf3bbbca93adf0f59da..7926cd9c3edf141bc52f7db0253c37c0
  endif ()
 diff --git a/Source/cmake/OptionsHaiku.cmake b/Source/cmake/OptionsHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..4a1277b6ed83ff89a86bd81eaf62034f5726d13a
+index 0000000000000000000000000000000000000000..b49da42ec1792b87a5526fd206e16e895f070cc9
 --- /dev/null
 +++ b/Source/cmake/OptionsHaiku.cmake
-@@ -0,0 +1,373 @@
+@@ -0,0 +1,374 @@
 +include(GNUInstallDirs)
 +include(VersioningUtils)
 +
@@ -135028,7 +137624,6 @@ index 0000000000000000000000000000000000000000..4a1277b6ed83ff89a86bd81eaf62034f
 +
 +option(ENABLE_WEBKIT_LEGACY "Enable building the Haiku legacy embedding" ON)
 +SET_AND_EXPOSE_TO_BUILD(USE_UNIX_DOMAIN_SOCKETS ${ENABLE_WEBKIT})
-+SET_AND_EXPOSE_TO_BUILD(ENABLE_CUSTOM_PROTOCOL_HANDLERS ${ENABLE_WEBKIT})
 +
 +set(USE_ANGLE_EGL OFF)
 +
@@ -135066,6 +137661,8 @@ index 0000000000000000000000000000000000000000..4a1277b6ed83ff89a86bd81eaf62034f
 +add_definitions(-DDATA_DIR="${CMAKE_INSTALL_PREFIX}/${DATA_INSTALL_DIR}")
 +
 +WEBKIT_OPTION_BEGIN()
++WEBKIT_OPTION_DEFINE(ENABLE_CUSTOM_PROTOCOL_HANDLERS "Enable website protocol handler registration" PUBLIC ${ENABLE_WEBKIT})
++WEBKIT_OPTION_DEFINE(ENABLE_WEBUSB "Enable the native Haiku WebUSB broker" PUBLIC ${ENABLE_WEBKIT})
 +WEBKIT_OPTION_DEFINE(USE_HEIF "Enable HEIC still image decoding through libheif" PUBLIC OFF)
 +WEBKIT_OPTION_DEFINE(USE_JPEGXR "Enable JPEG XR image coding through jxrlib" PUBLIC OFF)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_ATTACHMENT_ELEMENT PUBLIC OFF)

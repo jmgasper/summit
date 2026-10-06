@@ -1,0 +1,82 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Image codecs: running</title>
+<style>body{font:16px sans-serif;margin:24px}canvas,img{width:192px;image-rendering:pixelated;border:1px solid #888}pre{white-space:pre-wrap}</style>
+<h1>JPEG XL, HEIC and JPEG XR</h1>
+<p>Each quadrant fixture should show red, green and translucent blue, with a transparent fourth quadrant.</p>
+<div id="images"></div><pre id="log"></pre>
+<script>
+const results = [];
+const log = document.querySelector('#log');
+function check(name, ok, detail = '') {
+    results.push({name,ok,detail}); log.textContent += `${ok ? 'PASS' : 'FAIL'} ${name} ${detail}\n`;
+}
+function load(url) {
+    return new Promise((resolve,reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image); image.onerror = () => reject(new Error('image load failed'));
+        image.src = url;
+    });
+}
+function canvas(width,height) {
+    const c = document.createElement('canvas'); c.width = width; c.height = height; return c;
+}
+function closeTo(data, expected, tolerance = 0) {
+    return expected.every((v,i) => Math.abs(data[i]-v) <= tolerance);
+}
+const fixtures = new URLSearchParams(location.search).get('fixtures') || '../../../tests/fixtures/image-codecs/';
+async function decodeQuadrants(extension, tolerance) {
+    const image = await load(fixtures + 'quadrants-32x16.' + extension);
+    document.querySelector('#images').append(image);
+    check(extension + ' dimensions', image.naturalWidth === 32 && image.naturalHeight === 16);
+    const c = canvas(32,16), ctx = c.getContext('2d'); ctx.drawImage(image,0,0);
+    for (const [x,y,color] of [[4,4,[255,0,0,255]],[20,4,[0,255,0,255]],[4,12,[0,0,255,128]],[20,12,[0,0,0,0]]]) {
+        const p = ctx.getImageData(x,y,1,1).data;
+        check(extension + ` pixel ${x},${y}`, closeTo(p,color,tolerance), Array.from(p).join(','));
+    }
+    const bitmap = await createImageBitmap(image);
+    ctx.clearRect(0,0,32,16); ctx.drawImage(bitmap,0,0); bitmap.close();
+    check(extension + ' ImageBitmap pixels', closeTo(ctx.getImageData(4,4,1,1).data,[255,0,0,255],tolerance));
+}
+async function decodeXR() {
+    const image = await load(fixtures + 'rgb-19x7.jxr');
+    check('independent JPEG XR dimensions', image.naturalWidth === 19 && image.naturalHeight === 7);
+    const ctx = canvas(19,7).getContext('2d'); ctx.drawImage(image,0,0);
+    const p = ctx.getImageData(0,0,19,7).data;
+    let exact = true;
+    for (let y=0;y<7;++y) for (let x=0;x<19;++x) {
+        const i=(y*19+x)*4;
+        exact &&= closeTo(p.subarray(i,i+4),[(x*11)%256,(y*27)%256,(x*y*7)%256,255]);
+    }
+    check('independent JPEG XR exact pixels', exact);
+}
+async function encodeXR() {
+    const c = canvas(32,16), ctx = c.getContext('2d');
+    ctx.fillStyle = '#ff0000'; ctx.fillRect(0,0,16,8);
+    ctx.fillStyle = '#00ff00'; ctx.fillRect(16,0,16,8);
+    ctx.fillStyle = 'rgba(0,0,255,0.5)'; ctx.fillRect(0,8,16,8);
+    const mime = 'image/vnd.ms-photo';
+    const encoded = c.toDataURL(mime,1);
+    check('JPEG XR canvas encoding MIME', encoded.startsWith('data:' + mime + ';base64,'));
+    if (!encoded.startsWith('data:' + mime + ';')) return;
+    const bytes = atob(encoded.split(',')[1]);
+    check('JPEG XR encoded signature', bytes.charCodeAt(0) === 0x49 && bytes.charCodeAt(1) === 0x49 && bytes.charCodeAt(2) === 0xbc);
+    const image = await load(encoded);
+    const decoded = canvas(32,16).getContext('2d'); decoded.drawImage(image,0,0);
+    check('JPEG XR opaque round-trip pixels', closeTo(decoded.getImageData(4,4,1,1).data,[255,0,0,255]) && closeTo(decoded.getImageData(20,4,1,1).data,[0,255,0,255]));
+    check('JPEG XR alpha round-trip pixels', closeTo(decoded.getImageData(4,12,1,1).data,[0,0,255,128],1) && closeTo(decoded.getImageData(20,12,1,1).data,[0,0,0,0]));
+    const blob = await new Promise(resolve => c.toBlob(resolve,mime,1));
+    check('JPEG XR toBlob MIME and size', blob?.type === mime && blob.size > 32);
+    const offscreen = new OffscreenCanvas(32,16); offscreen.getContext('2d').drawImage(c,0,0);
+    const offscreenBlob = await offscreen.convertToBlob({type:mime,quality:1});
+    check('JPEG XR OffscreenCanvas encoding', offscreenBlob.type === mime && offscreenBlob.size > 32);
+}
+(async () => {
+    for (const [name, action] of [['JPEG XL',()=>decodeQuadrants('jxl',1)],['HEIC',()=>decodeQuadrants('heic',3)],['JPEG XR decode',decodeXR],['JPEG XR encode',encodeXR]]) {
+        try { await action(); } catch(e) { check(name, false, String(e.stack || e)); }
+    }
+})().finally(() => {
+    window.testResults = results; window.testDone = true;
+    document.title = `Image codecs: ${results.filter(r=>r.ok).length}/${results.length}`;
+});
+</script>

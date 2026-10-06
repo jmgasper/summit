@@ -1,0 +1,100 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WebUSB: running</title>
+<style>body{font:16px sans-serif;margin:24px;max-width:900px}button{padding:8px}pre{white-space:pre-wrap}</style>
+<h1>WebUSB</h1>
+<p>Automatic checks never open or transfer data to a device. The chooser below
+requires a click and lists only eligible USB devices.</p>
+<button id="choose">Choose a USB device</button>
+<button id="forget" disabled>Forget selected device</button>
+<pre id="log"></pre>
+<script>
+const results = [];
+const log = document.querySelector('#log');
+function check(name, ok, detail = '') {
+    results.push({name, ok, detail});
+    log.textContent += `${ok ? 'PASS' : 'FAIL'} ${name} ${detail}\n`;
+}
+async function rejects(name, action, expected) {
+    try { await action(); check(name, false, 'unexpected success'); }
+    catch(e) { check(name, e.name === expected, e.name); }
+}
+async function main() {
+    check('secure context', isSecureContext);
+    check('navigator.usb exists', !!navigator.usb);
+    if (!navigator.usb) return;
+    check('navigator.usb SameObject', navigator.usb === navigator.usb);
+    check('USB inherits EventTarget', navigator.usb instanceof EventTarget);
+    for (const name of ['USB','USBDevice','USBConfiguration','USBInterface','USBAlternateInterface',
+        'USBEndpoint','USBConnectionEvent','USBInTransferResult','USBOutTransferResult',
+        'USBIsochronousInTransferPacket','USBIsochronousOutTransferPacket',
+        'USBIsochronousInTransferResult','USBIsochronousOutTransferResult'])
+        check(name + ' interface exposed', typeof window[name] === 'function');
+    for (const name of ['open','close','forget','selectConfiguration','claimInterface','releaseInterface',
+        'selectAlternateInterface','controlTransferIn','controlTransferOut','clearHalt','transferIn',
+        'transferOut','isochronousTransferIn','isochronousTransferOut','reset'])
+        check('USBDevice.' + name, typeof USBDevice.prototype[name] === 'function');
+    check('initial event handlers', navigator.usb.onconnect === null && navigator.usb.ondisconnect === null);
+    await rejects('USB is not directly constructible', () => new USB(), 'TypeError');
+    await rejects('USBDevice is not directly constructible', () => new USBDevice(), 'TypeError');
+    await rejects('connection event requires a USBDevice', () => new USBConnectionEvent('connect', {}), 'TypeError');
+    await rejects('requestDevice requires filters', () => navigator.usb.requestDevice({}), 'TypeError');
+    await rejects('product filter requires vendor', () => navigator.usb.requestDevice({filters:[{productId:1}]}), 'TypeError');
+    await rejects('subclass filter requires class', () => navigator.usb.requestDevice({filters:[{subclassCode:1}]}), 'TypeError');
+    await rejects('protocol filter requires subclass', () => navigator.usb.requestDevice({filters:[{classCode:255,protocolCode:1}]}), 'TypeError');
+    await rejects('exclusion filters are validated', () => navigator.usb.requestDevice({filters:[],exclusionFilters:[{productId:1}]}), 'TypeError');
+    await rejects('chooser requires user activation', () => navigator.usb.requestDevice({filters:[]}), 'SecurityError');
+    const devices = await navigator.usb.getDevices();
+    check('getDevices returns only approved device objects', Array.isArray(devices) && devices.every(d => d instanceof USBDevice));
+    // Use a new profile to prove that enumeration does not expose attached devices.
+    check('fresh profile has no device grants', devices.length === 0, String(devices.length));
+    const view = new DataView(new Uint8Array([11,22,33]).buffer);
+    const input = new USBInTransferResult('ok', view);
+    check('input result preserves bytes', input.status === 'ok' && input.data === view && input.data.getUint8(1) === 22);
+    check('input result default is null', new USBInTransferResult('stall').data === null);
+    const output = new USBOutTransferResult('ok', 3);
+    check('output result preserves count', output.status === 'ok' && output.bytesWritten === 3);
+    await rejects('invalid transfer status rejected', () => new USBInTransferResult('invalid'), 'TypeError');
+    const inPacket = new USBIsochronousInTransferPacket('ok', view);
+    const inResult = new USBIsochronousInTransferResult([inPacket], view);
+    check('iso input packet result', inResult.packets[0] === inPacket && inResult.data === view && Object.isFrozen(inResult.packets));
+    const outPacket = new USBIsochronousOutTransferPacket('ok', 3);
+    const outResult = new USBIsochronousOutTransferResult([outPacket]);
+    check('iso output packet result', outResult.packets[0] === outPacket && outResult.packets[0].bytesWritten === 3 && Object.isFrozen(outResult.packets));
+    // A same-origin document whose container policy denies USB must reject access.
+    const frame = document.createElement('iframe');
+    frame.allow = "usb 'none'";
+    const frameResult = new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('policy iframe timeout')), 10000);
+        const listener = e => {
+            if (e.source !== frame.contentWindow || e.data?.usbPolicy === undefined) return;
+            clearTimeout(timer); removeEventListener('message', listener); resolve(e.data.usbPolicy);
+        };
+        addEventListener('message', listener);
+    });
+    frame.srcdoc = '<script>navigator.usb.getDevices().then(()=>parent.postMessage({usbPolicy:"allowed"},"*"),e=>parent.postMessage({usbPolicy:e.name},"*"))<\/script>';
+    document.body.append(frame);
+    check('iframe Permissions Policy enforced', await frameResult === 'SecurityError');
+    frame.remove();
+}
+let selected;
+document.querySelector('#choose').onclick = async () => {
+    try {
+        selected = await navigator.usb.requestDevice({filters:[]});
+        check('device chooser returned a device', selected instanceof USBDevice, `${selected.vendorId.toString(16)}:${selected.productId.toString(16)} ${selected.productName || ''}`);
+        check('selection does not open device', !selected.opened);
+        document.querySelector('#forget').disabled = false;
+    } catch(e) { log.textContent += `Chooser: ${e.name}: ${e.message}\n`; }
+};
+document.querySelector('#forget').onclick = async () => {
+    try {
+        await selected.forget();
+        check('forgotten device removed from grants', !(await navigator.usb.getDevices()).includes(selected));
+        selected = null; document.querySelector('#forget').disabled = true;
+    } catch(e) { log.textContent += `Forget: ${e.name}: ${e.message}\n`; }
+};
+main().catch(e => check('unexpected exception', false, String(e.stack || e))).finally(() => {
+    window.testResults = results; window.testDone = true;
+    document.title = `WebUSB: ${results.filter(r => r.ok).length}/${results.length}`;
+});
+</script>

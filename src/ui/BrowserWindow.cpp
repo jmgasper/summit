@@ -644,6 +644,9 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
     fFullScreenNotice->SetAlignment(B_ALIGN_CENTER);
     fFullScreenNotice->SetTruncation(B_TRUNCATE_MIDDLE);
     fFullScreenNotice->SetExplicitMinSize(BSize(0, B_SIZE_UNSET));
+    // BStringView otherwise caps the layout at its text's preferred width.
+    // Showing the notice must not shrink a fullscreen window to that width.
+    fFullScreenNotice->SetExplicitMaxSize(BSize(B_SIZE_UNLIMITED, B_SIZE_UNSET));
     fFullScreenNotice->SetViewUIColor(B_PANEL_BACKGROUND_COLOR);
     fFullScreenNotice->SetHighUIColor(B_PANEL_TEXT_COLOR);
     fLayout->AddView(fFullScreenNotice);

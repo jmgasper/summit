@@ -20,6 +20,60 @@ function paint(ctx, width, height) {
     ctx.fillStyle = '#00ff00'; ctx.fillRect(0, 0, width / 2, height);
     ctx.fillStyle = '#0000ff'; ctx.fillRect(width / 2, 0, width / 2, height);
 }
+async function concurrentWebGL() {
+    const source = `onmessage = async ({data: channel}) => {
+        try {
+            const canvas = new OffscreenCanvas(16,16), gl = canvas.getContext('webgl2');
+            if (!gl) throw new Error('worker context unavailable');
+            const expected = [0,0,0,255]; expected[channel] = 255;
+            for (let frame = 0; frame < 40; ++frame) {
+                gl.clearColor(expected[0]/255,expected[1]/255,expected[2]/255,1);
+                gl.clear(gl.COLOR_BUFFER_BIT);
+                const pixel = new Uint8Array(4);
+                gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel);
+                if (expected.some((v,i) => v !== pixel[i])) throw new Error('cross-thread pixel corruption at frame ' + frame);
+                await new Promise(resolve => setTimeout(resolve,5));
+            }
+            const bitmap = canvas.transferToImageBitmap();
+            postMessage({bitmap},[bitmap]);
+        } catch(e) { postMessage({error:String(e.stack || e)}); }
+    }`;
+    const url = URL.createObjectURL(new Blob([source], {type:'text/javascript'}));
+    const workers = [new Worker(url), new Worker(url)];
+    try {
+        const jobs = workers.map((worker, channel) => new Promise((resolve,reject) => {
+            const timeout = setTimeout(() => reject(new Error('concurrent worker timed out')),20000);
+            worker.onerror = e => {clearTimeout(timeout); reject(new Error(e.message))};
+            worker.onmessage = ({data}) => {
+                clearTimeout(timeout);
+                if (data.error) reject(new Error(data.error)); else resolve(data.bitmap);
+            };
+            worker.postMessage(channel);
+        }));
+        const mainJob = (async () => {
+            const canvas = new OffscreenCanvas(16,16), gl = canvas.getContext('webgl2');
+            if (!gl) throw new Error('main context unavailable');
+            for (let frame = 0; frame < 40; ++frame) {
+                gl.clearColor(0,0,1,1); gl.clear(gl.COLOR_BUFFER_BIT);
+                const p = new Uint8Array(4); gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,p);
+                if (p[0] !== 0 || p[1] !== 0 || p[2] !== 255 || p[3] !== 255)
+                    throw new Error('main pixel corruption at frame ' + frame);
+                await new Promise(resolve => setTimeout(resolve,5));
+            }
+            gl.getExtension('WEBGL_lose_context')?.loseContext();
+        })();
+        const [red,green] = await Promise.all([...jobs,mainJob]);
+        check('main and two workers render concurrently', true);
+        const context = new OffscreenCanvas(16,16).getContext('2d');
+        context.drawImage(red,0,0); red.close();
+        check('worker WebGL ImageBitmap red pixels', pixel(context,1,1,[255,0,0,255]));
+        context.clearRect(0,0,16,16); context.drawImage(green,0,0); green.close();
+        check('worker WebGL ImageBitmap green pixels', pixel(context,1,1,[0,255,0,255]));
+    } finally {
+        for (const worker of workers) worker.terminate();
+        URL.revokeObjectURL(url);
+    }
+}
 async function main() {
     check('OffscreenCanvas constructor', typeof OffscreenCanvas === 'function');
     if (typeof OffscreenCanvas !== 'function') return;
@@ -108,6 +162,7 @@ async function main() {
     const presented = presentation.getContext('2d'); presented.drawImage(display,0,0);
     check('worker paints HTML placeholder',pixel(presented,10,10,[0,255,0,255]) && pixel(presented,100,10,[0,0,255,255]));
     worker.terminate(); URL.revokeObjectURL(url);
+    await concurrentWebGL();
 }
 main().catch(e => check('unexpected exception',false,String(e.stack || e))).finally(() => {
     document.title = `OffscreenCanvas: ${results.filter(r => r.ok).length}/${results.length}`;

@@ -4,6 +4,7 @@
 // other engineers run their own Summit instances in the same VM, so every
 // command requires the team id (== pid) of the instance the caller launched.
 //
+//   summitctl --team ID activate|escape     activate the browser window, or send Escape
 //   summitctl --team ID state                 one JSON line with window/tab state
 //   summitctl --team ID navigate URL
 //   summitctl --team ID newtab URL
@@ -387,6 +388,21 @@ int main(int argc, char** argv)
         return 5;
     }
     BMessenger window = browsers[windowIndex].first;
+    if (command == "activate") {
+        BMessage request(B_SET_PROPERTY), reply;
+        request.AddSpecifier("Active");
+        request.AddBool("data", true);
+        return browsers[windowIndex].first.SendMessage(&request, &reply, timeout, timeout) == B_OK ? 0 : 4;
+    }
+    if (command == "escape") {
+        BMessage request(B_KEY_DOWN);
+        request.AddString("bytes", "\033");
+        request.AddInt32("raw_char", B_ESCAPE);
+        request.AddInt32("key", 1);
+        request.AddInt32("modifiers", 0);
+        request.AddInt64("when", system_time());
+        return browsers[windowIndex].first.SendMessage(&request) == B_OK ? 0 : 4;
+    }
     if (command == "typeaddress" || command == "keyaddress") {
         // typeaddress TEXT [select]: types into the address field (select: over
         // its text); keyaddress down|up|enter|escape|backspace. Prints the

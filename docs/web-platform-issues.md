@@ -16,12 +16,21 @@ entries without runtime results are still open.
   flags and visible controls; Escape, switching tabs, closing a tab and a
   crashed renderer restore the window. A native notice identifies the URL and
   Escape key for three seconds. Session persistence keeps the normal frame.
-  Native browser compilation passes; engine build and runtime checks pending.
+  The first engine build completed. In a separate test browser, entry promises,
+  fullscreenchange, programmatic exit, Escape and normal-frame restoration pass.
+  Runtime testing found the notice capped the fullscreen width at 528 pixels;
+  the notice now allows unlimited width. That correction and remaining lifecycle
+  cases are being verified against the frozen first engine.
 - **#27, OffscreenCanvas:** the source already defaulted both feature switches
   on, but the X399's SkiaCGMiPGO CMake cache still set both OFF. The modern build
   wrapper now explicitly enables them (and fullscreen) unless the caller
   supplies an override. This migrates retained build directories too. Engine
-  compilation and runtime pixel tests are pending.
+  compilation completed. The first runtime fixture passed 19/21 checks: 2D,
+  encoding, bitmap transfer, HTML placeholder presentation and main-thread
+  WebGL/WebGL2. Worker GL contexts failed because WebWorkerClient returned null.
+  The implementation now creates worker contexts with separate ANGLE
+  virtualization groups and no compositor context sharing; runtime verification
+  and concurrent worker/main-thread pixel checks remain pending.
 - **#26, image formats:** private, checksum-pinned libjxl 0.12.0, libheif
   1.23.6/libde265 1.1.3 and Debian-patched jxrlib 1.2 now build on the X399.
   `tools/prepare-image-codecs.py` installs them under
@@ -63,9 +72,18 @@ entries without runtime results are still open.
   exclusive kernel interface claims, a composite device containing any protected
   interface is excluded as a whole. The backend implements configuration,
   alternates, control, bulk, interrupt and isochronous transfers. Haiku has no raw
-  USB reset command, so reset reports NotSupportedError. The JavaScript bindings,
-  origin-grant broker and chooser are still in progress. No eligible device is
-  currently attached; actual authorized transfers still need a test device.
+  USB reset command, so reset reports NotSupportedError. Secure-context Window
+  bindings, per-origin session grants, the native device chooser, permissions
+  policy checks, bounded transfers and navigation/closure cancellation are now
+  implemented. The UI process validates process/frame ownership and committed
+  origins independently of the renderer. Private contexts have separate grants;
+  protected composite devices remain excluded. Native transfer calls have a
+  cancellation path and a ten-second deadline. USB binding and IPC generation
+  pass; fresh native compilation of the DOM implementation and broker passes.
+  Full integration and browser tests are pending. The current implementation
+  restricts access to the top-level origin and does not expose WorkerNavigator.usb.
+  No eligible device is currently attached; actual authorized transfers still
+  need a test device.
 
 The four portable CTest suites pass. Their profile regression had retained an
 old expectation that camera permissions were unsupported; it now checks
@@ -87,19 +105,30 @@ bash tools/build-webkit-in-vm.sh --modern-extensions all
 bash tools/build-modern-browser-in-vm.sh --browser --bundle --modern-extensions
 ```
 
-The first build's host log is `.vm/issues-engine-build.log`; its wrapper is
-`.vm/issues-build.sh`. The installed launcher still points to `bundle-acipjxcr`
+The first build's host log is `.vm/issues-engine-build.log`. Subsequent wrappers
+are immutable snapshots, since editing a running shell script can affect its
+remaining commands. The third build is `.vm/issues-engine-build-third.log`.
+All binding and IPC generators also run separately as preflight checks; native
+compile probes assert WEBUSB is enabled to avoid false passes from stale PCHs. The installed launcher still points to `bundle-acipjxcr`
 with Mesa `prefix-20261002`; do not replace it until the new bundle is verified.
 The owner's running Summit is team 18408 at this point; run tests from a
 separate bundle executable/profile and target only its returned team ID.
 
-Serve `tools/bench/pages` for the runtime probes:
+Serve the repository root (or mirror the same paths) for the runtime probes in
+`tools/bench/pages`. USB/protocol probes need a trustworthy origin, such as a
+server on the workstation's loopback address:
 
 - `offscreen-canvas.html`: 2D pixels, PNG round trip, ImageBitmap and
   bitmaprenderer, clear/resize, main-thread and worker WebGL/WebGL2 GPU
   readback, transferred HTML canvas presentation and returned ImageBitmap.
   Completion sets `window.testDone`, with detailed `window.testResults` and
   a pass count in the title.
+- `image-codecs.html`: independent JPEG XL/HEIC/JPEG XR decode fixtures, pixel
+  and alpha comparisons, ImageBitmap, JPEG XR MIME/signature and canvas/toBlob/
+  OffscreenCanvas encoding. Binary fixtures live in `tests/fixtures/image-codecs`.
+- `webusb.html`: interface and constructor behavior, filter validation, gesture
+  requirements, fresh-profile grant isolation, result objects and an iframe
+  policy denial. Manual chooser/forget checks perform no device transfers.
 - `protocol-handlers.html`: API presence, reserved/invalid schemes, malformed
   templates and cross-origin rejection. Manual registration, round-trip link,
   unregistration and native app links exercise the chooser. Verify remembering,
