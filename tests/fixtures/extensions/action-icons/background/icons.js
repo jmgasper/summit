@@ -2,7 +2,7 @@
 // before issuing the next click, so coalesced updates cannot hide failures.
 const action = browser.browserAction;
 const NativeImageData = ImageData;
-let firstTab, firstWindow, step = 0, running = false;
+let firstTab, firstWindow, canvasSourceRGBA, step = 0, running = false;
 const image = (rgba = [80, 160, 224, 255], size = 16) => {
     const result = new NativeImageData(size, size);
     for (let i = 0; i < result.data.length; i += 4) result.data.set(rgba, i);
@@ -28,6 +28,9 @@ const embeddedPNG = (rgba = [176, 96, 32, 255]) => {
     canvas.getContext("2d").putImageData(image(rgba, 64), 0, 0);
     return canvas.toDataURL("image/png");
 };
+// A 64px RGBA PNG with exact [80, 160, 224, 128] pixels. Keep this SVG
+// decode fixture independent of canvas serialization and its alpha rounding.
+const alphaPNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAmUlEQVR4nO3QMREAIBDAsJeIJKQgDSnIyECH7L3OOnf/bHSA1gAdoDVAB2gN0AFaA3SA1gAdoDVAB2gN0AFaA3SA1gAdoDVAB2gN0AFaA3SA1gAdoDVAB2gN0AFaA3SA1gAdoDVAB2gN0AFaA3SA1gAdoDVAB2gN0AFaA3SA1gAdoDVAB2gN0AFaA3SA1gAdoDVAB2gN0AHaA2lRAiw3y42jAAAAAElFTkSuQmCC";
 const cases = [
     ["relative path", () => action.setIcon({path: "../icons/red.svg"})],
     ["rooted path", () => action.setIcon({path: "/icons/blue.svg"})],
@@ -47,6 +50,7 @@ const cases = [
         return action.setIcon({path: canvas.toDataURL("image/png")});
     }],
     ["ImageData", () => action.setIcon({imageData: image()})],
+    ["ImageData takes precedence over path", () => action.setIcon({path: "../icons/red.svg", imageData: image()})],
     ["ImageData alpha", () => action.setIcon({imageData: image([80, 160, 224, 128])})],
     ["canvas alpha roundtrip", () => {
         // Exceed WebKit's 60x60 putImageData cache so readback exercises the
@@ -57,9 +61,15 @@ const cases = [
         const clipped = context.getImageData(-1, -1, 66, 66);
         for (const [x, y, expected] of [[0, 0, [0, 0, 0, 0]], [1, 1, [80, 160, 224, 128]], [64, 64, [80, 160, 224, 128]], [65, 65, [0, 0, 0, 0]]]) {
             const pixel = Array.from(clipped.data.slice((y * 66 + x) * 4, (y * 66 + x) * 4 + 4));
-            if (pixel.some((value, index) => value !== expected[index])) throw new Error("canvas clipped roundtrip " + pixel);
+            // Canvas uses premultiplied alpha, so this half-opacity RGB
+            // roundtrip can lose one unit. Keep alpha and outside pixels exact.
+            // https://html.spec.whatwg.org/multipage/canvas.html#pixel-manipulation
+            if (pixel.some((value, index) => Math.abs(value - expected[index]) > (index < 3 && expected[3] === 128 ? 1 : 0)))
+                throw new Error("canvas clipped roundtrip " + pixel);
         }
-        return action.setIcon({imageData: context.getImageData(0, 0, 16, 16)});
+        const pixels = context.getImageData(0, 0, 16, 16);
+        canvasSourceRGBA = Array.from(pixels.data.slice(0, 4));
+        return action.setIcon({imageData: pixels});
     }],
     ["canvas painted alpha", () => {
         const canvas = document.createElement("canvas"); canvas.width = canvas.height = 16;
@@ -67,6 +77,7 @@ const cases = [
         context.fillStyle = "rgba(80,160,224,0.5)"; context.fillRect(0, 0, 16, 16);
         const pixels = context.getImageData(0, 0, 16, 16);
         if ([80, 160, 224, 128].some((value, index) => Math.abs(pixels.data[index] - value) > 1)) throw new Error("canvas painted alpha " + Array.from(pixels.data.slice(0, 4)));
+        canvasSourceRGBA = Array.from(pixels.data.slice(0, 4));
         return action.setIcon({imageData: pixels});
     }],
     ["ImageData size selection", () => action.setIcon({imageData: {32: image([208, 32, 48, 255], 32), 16: image()}})],
@@ -85,7 +96,9 @@ const cases = [
         globalThis.ImageData = function () { throw new Error("shadow constructor"); };
         try { await action.setIcon({imageData: pixels}); } finally { globalThis.ImageData = NativeImageData; }
     }],
-    ["inherited sizes", () => action.setIcon({path: Object.create({16: "../icons/red.svg"})})],
+    // Size maps use own enumerable properties; inherited entries must not
+    // turn prototype helpers into icon sizes (see extension-survey-2026-09-26).
+    ["inherited sizes ignored", () => action.setIcon({path: Object.create({16: "../icons/red.svg"})})],
     ["inherited details", () => action.setIcon(Object.create({path: "../icons/blue.svg", get unknown() { throw new Error("unknown getter"); }}))],
     ["Chrome callback", () => new Promise((resolve, reject) => chrome.browserAction.setIcon({path: "../icons/yellow.svg"}, () => {
         const error = chrome.runtime.lastError;
@@ -121,7 +134,7 @@ const cases = [
     }],
     ["invalid details rejection", async () => {
         for (const details of [null, [], true, 1, "icon.svg", {path: ""}, {path: 4}, {imageData: []},
-            {path: "../icons/red.svg", imageData: image()}, {path: "../icons/red.svg", tabId: null},
+            {path: "../icons/red.svg", tabId: null},
             {path: "../icons/red.svg", tabId: NaN}, {path: "../icons/red.svg", tabId: 9007199254740992}])
             await rejected(details);
     }],
@@ -152,7 +165,7 @@ const cases = [
     ["SVG alpha", () => action.setIcon({path: svg("rgba(80,160,224,0.5)")})],
     ["isolated SVG", () => action.setIcon({path: svg("rgb(144,48,176)", '<script>document.querySelector("rect").setAttribute("fill","black")</script>')})],
     ["SVG embedded PNG", () => action.setIcon({path: svg("rgb(144,48,176)", '<image width="16" height="16" href="' + embeddedPNG() + '"/>')})],
-    ["SVG embedded PNG alpha", () => action.setIcon({path: svg("transparent", '<image width="16" height="16" href="' + embeddedPNG([80, 160, 224, 128]) + '"/>')})],
+    ["SVG embedded PNG alpha", () => action.setIcon({path: svg("transparent", '<image width="16" height="16" href="' + alphaPNG + '"/>')})],
     ["SVG malformed embedded image", () => action.setIcon({path: svg("rgb(144,48,176)", '<image width="16" height="16" href="data:image/png;base64,%%%%"/>')})],
     ["detached ImageData rejection", async () => {
         const pixels = image();
@@ -168,8 +181,9 @@ action.onClicked.addListener(async tab => {
         firstTab ??= tab.id;
         firstWindow ??= tab.windowId;
         const [label, run] = cases[step];
+        canvasSourceRGBA = undefined;
         await run(tab);
-        await action.setTitle({title: "Icon " + (++step) + ": " + label});
+        await action.setTitle({title: "Icon " + (++step) + ": " + label + (canvasSourceRGBA ? " rgba=" + JSON.stringify(canvasSourceRGBA) : "")});
     } catch (error) {
         await action.setTitle({title: "ICON ERROR " + (step + 1) + ": " + String(error)});
     } finally { running = false; }

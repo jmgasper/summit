@@ -44,9 +44,11 @@ static void IconScreenPixels(const BMessenger& window, const char* name, const j
         if (bitmap.InitCheck() != B_OK || screen.ReadBitmap(&bitmap, false, &frame) != B_OK) return false;
         int cx = int(frame.Width()) / 2, cy = int(frame.Height()) / 2;
         auto* pixels = static_cast<const uint8*>(bitmap.Bits());
-        auto* background = pixels + cy * bitmap.BytesPerRow() + 4 * 4;
         const int alpha = color[3].get<int>();
         for (int y = cy - 2; y <= cy + 2; ++y) for (int x = cx - 2; x <= cx + 2; ++x) {
+            // Native buttons have a vertical gradient: sample the background
+            // on the same row as each composited icon pixel.
+            auto* background = pixels + y * bitmap.BytesPerRow() + 4 * 4;
             auto* pixel = pixels + y * bitmap.BytesPerRow() + x * 4;
             for (int channel = 0; channel < 3; ++channel) {
                 const int bgra = 2 - channel;
@@ -113,6 +115,7 @@ int main(int argc, char** argv)
         Require(plan.is_array() && !plan.empty(), "independent native pixel expectations are available");
         int step = 0;
         for (const auto& item : plan) {
+            auto color = item["rgba"];
             const auto operation = item.value("operation", "click");
             if (operation == "click") {
                 Button(window, control);
@@ -120,8 +123,19 @@ int main(int argc, char** argv)
                 Require(Wait([&] {
                     const auto actual = title();
                     if (actual.starts_with("ICON ERROR")) throw std::runtime_error(actual);
-                    return actual == expected;
+                    return item.value("canvasSourceRGBA", false) ? actual.starts_with(expected + " rgba=") : actual == expected;
                 }), expected + " completes through the real extension API");
+                if (item.value("canvasSourceRGBA", false)) {
+                    // Validate canvas rounding independently, then compare the icon
+                    // to the actual ImageData supplied to setIcon. This preserves
+                    // the SDK pixel tolerance without counting canvas loss twice.
+                    auto source = json::parse(title().substr(expected.size() + 6));
+                    Require(source.is_array() && source.size() == 4, "canvas reports its source pixel");
+                    for (int channel = 0; channel < 4; ++channel)
+                        Require(source[channel].is_number_integer() && std::abs(source[channel].get<int>() - color[channel].get<int>()) <= (channel == 3 ? 0 : 1),
+                            "canvas source preserves alpha and bounded RGB precision");
+                    color = std::move(source);
+                }
             } else if (operation == "new-tab") {
                 Send(window, summit::kNewTab, -1, (pages / "second.html").string());
                 Require(Wait([&] { return Count(State(window)) == 2 && Selected(State(window)) != first; }), "second native tab is selected");
@@ -133,7 +147,6 @@ int main(int argc, char** argv)
                 Send(window, summit::kCloseTab, first);
                 Require(Wait([&] { return Count(State(window)) == 1 && Selected(State(window)) == second; }), "original native tab closes");
             } else Require(operation == "initial", "known native icon test operation");
-            const auto& color = item["rgba"];
             BMessage observedIcon;
             const bool pixelsMatch = Wait([&] {
                 observedIcon = ExtensionAction(window, "summit-action-icons");
