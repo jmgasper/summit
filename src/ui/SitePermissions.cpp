@@ -73,7 +73,7 @@ public:
     {
         auto* text = new BStringView("question", question.c_str());
         auto* note = new BStringView("note", (fPermission == "usb" || fPermission == "bluetooth")
-            ? "Allow this site to communicate with this device for this browsing session."
+            ? "Access lasts for this browsing session."
             : "The page sees everything in it while you share. A window is shared with whatever covers it.");
         BFont small(be_plain_font);
         small.SetSize(small.Size() * 0.9f);
@@ -89,7 +89,11 @@ public:
         fList->Select(0);
         fList->SetInvocationMessage(new BMessage(kShare));
         auto* scroll = new BScrollView("choices-scroll", fList, 0, false, true);
-        const float row = fList->CountItems() ? fList->ItemAt(0)->Height() + 1 : 18;
+        // Item heights are not initialized until the list is attached. Use
+        // the UI font here so the picker has room for readable rows at Show().
+        font_height metrics;
+        be_plain_font->GetHeight(&metrics);
+        const float row = metrics.ascent + metrics.descent + metrics.leading + 8;
         scroll->SetExplicitMinSize(BSize(340, row * std::min<int32>(std::max<int32>(fList->CountItems(), 3), 10) + 4));
         auto* share = new BButton("share", (fPermission == "usb" || fPermission == "bluetooth") ? "Connect" : "Share", new BMessage(kShare));
         auto* cancel = new BButton("cancel", "Cancel", new BMessage(B_QUIT_REQUESTED));

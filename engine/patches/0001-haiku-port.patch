@@ -5261,10 +5261,10 @@ index b29212ad5b98d332ff7c1db7814cb2575988ec5f..b6c50d32873f6c712e3409ca1c5e2ec5
  };
 diff --git a/Source/WebCore/Modules/webbluetooth/Bluetooth.cpp b/Source/WebCore/Modules/webbluetooth/Bluetooth.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..93a77c720f7800e61abb5a1fccce571d54122bde
+index 0000000000000000000000000000000000000000..96b7005e75080df1e7dce40d84323754cb48695c
 --- /dev/null
 +++ b/Source/WebCore/Modules/webbluetooth/Bluetooth.cpp
-@@ -0,0 +1,227 @@
+@@ -0,0 +1,228 @@
 +/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#include "config.h"
 +#if ENABLE(WEB_BLUETOOTH)
@@ -5275,6 +5275,7 @@ index 0000000000000000000000000000000000000000..93a77c720f7800e61abb5a1fccce571d
 +#include "ChromeClient.h"
 +#include "ContextDestructionObserverInlines.h"
 +#include "Document.h"
++#include "DocumentPage.h"
 +#include "EventNames.h"
 +#include "EventTargetInlines.h"
 +#include "FrameDestructionObserverInlines.h"
@@ -17367,7 +17368,7 @@ index 0000000000000000000000000000000000000000..9edf8b02ec675520b2d7eee5cb3336ac
 +}
 diff --git a/Source/WebCore/platform/bluetooth/haiku/BluetoothTypesHaiku.cpp b/Source/WebCore/platform/bluetooth/haiku/BluetoothTypesHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..a059ad21afc3cbdeab92bba4c6d3d29842309494
+index 0000000000000000000000000000000000000000..1253a8be40c918acc0079bd164a8eb065eeeb239
 --- /dev/null
 +++ b/Source/WebCore/platform/bluetooth/haiku/BluetoothTypesHaiku.cpp
 @@ -0,0 +1,122 @@
@@ -17417,7 +17418,7 @@ index 0000000000000000000000000000000000000000..a059ad21afc3cbdeab92bba4c6d3d298
 +#include "BluetoothUUIDNamesHaiku.inc"
 +std::optional<UUID> namedUUID(UUIDKind kind, std::string_view name)
 +{
-+    if (auto uuid = UUID::parse(name)) return uuid;
++    if (auto uuid = UUID::parse(name)) return uuid->string() == name ? uuid : std::nullopt;
 +    for (const auto& entry : uuidNames) if (entry.kind == kind && entry.name == name) return UUID::alias(entry.value);
 +    return {};
 +}
@@ -104512,10 +104513,10 @@ index 0000000000000000000000000000000000000000..800bd4bb48b9c51f11d0f1592e227012
 +}
 diff --git a/Source/WebKit/UIProcess/haiku/bluetooth/WebBluetoothBrokerHaiku.cpp b/Source/WebKit/UIProcess/haiku/bluetooth/WebBluetoothBrokerHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..6fd263a7db90b736d9cdfbd6f47458fbf99d3544
+index 0000000000000000000000000000000000000000..be9ae859cadd64115af3577397242ff38f556fc3
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/bluetooth/WebBluetoothBrokerHaiku.cpp
-@@ -0,0 +1,406 @@
+@@ -0,0 +1,410 @@
 +/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#include "config.h"
 +#if ENABLE(WEB_BLUETOOTH)
@@ -104856,7 +104857,11 @@ index 0000000000000000000000000000000000000000..6fd263a7db90b736d9cdfbd6f47458fb
 +        bool close = connection->closing;
 +        if (!close && op == "connect"_s && !connection->gatt) {
 +            auto status = connection->session->connect();
-+            if (status != NativeError::None) { close = true; object->setString("error"_s, status == NativeError::Busy ? "InvalidStateError"_s : "NetworkError"_s); }
++            if (status != NativeError::None) {
++                close = true;
++                object->setString("error"_s, status == NativeError::Busy ? "InvalidStateError"_s : "NetworkError"_s);
++                object->setString("message"_s, status == NativeError::Busy ? "The Bluetooth controller is already in use by another application"_s : "The Bluetooth connection could not be established"_s);
++            }
 +            else {
 +                connection->gatt = std::make_unique<GATTConnection>(connection->session->client(), services);
 +                result = connection->gatt->initialize(); close = !result;

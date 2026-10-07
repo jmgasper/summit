@@ -73,6 +73,7 @@ int main()
     assert(UUID::alias(0x12345678).string()=="12345678-0000-1000-8000-00805f9b34fb");
     auto custom=*UUID::parse("12345678-90ab-cdef-1234-567890abcdef");
     std::vector<uint8_t> wire(custom.bytes.rbegin(),custom.bytes.rend());assert(UUID::fromWire(wire)==custom);
+    assert(!namedUUID(UUIDKind::Service,"0000180F-0000-1000-8000-00805f9b34fb"));
     assert(namedUUID(UUIDKind::Service,"battery_service")==UUID::alias(0x180f));
     assert(namedUUID(UUIDKind::Characteristic,"battery_level")==UUID::alias(0x2a19));
     assert(namedUUID(UUIDKind::Descriptor,"gatt.client_characteristic_configuration")==UUID::alias(0x2902));

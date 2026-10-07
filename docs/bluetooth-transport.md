@@ -91,3 +91,14 @@ negative adapter identifiers, and never opens a hardware link. It retains the
 ordinary chooser, origin checks, IPC, GATT capability checks and ATT parser.
 Normal browser launches have neither test setting. Simulated-device results
 must not be reported as successful physical-device reads.
+
+`tests/NativeBluetoothPickerTests.cpp` exercises the actual Summit permission
+service and native window without opening a hardware device. All 17 checks
+pass on X399: visible device rows, Connect, cancellation by exact request ID,
+duplicate-request isolation, stale-answer rejection, no generic saved decision,
+and close/reopen. Visual inspection caught an initially collapsed list; the
+picker now measures its minimum row height from the UI font before attachment.
+The final screenshot (`.vm/issue31/picker.png`) shows both selectable devices
+and the session-lifetime notice. No new crash reports or debugger events were
+recorded. This native UI check uses an isolated embedding context and does not
+substitute for the still-pending complete browser GATT suite.

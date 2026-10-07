@@ -22,6 +22,8 @@ window.btTest = (() => {
             assert(BluetoothUUID.getDescriptor('gatt.client_characteristic_configuration') === canonical(0x2902), 'descriptor name resolves');
             assert(canonical(0x12345678) === '12345678-0000-1000-8000-00805f9b34fb', '32-bit UUID expands');
             await rejection(()=>BluetoothUUID.getService('battery_level'), 'TypeError', 'UUID names are scoped by kind');
+            await rejection(()=>BluetoothUUID.getService('0000180F-0000-1000-8000-00805f9b34fb'), 'TypeError', 'UUID strings must be canonical lowercase');
+            await rejection(()=>BluetoothUUID.canonicalUUID(-1), 'TypeError', 'canonicalUUID enforces the unsigned range');
             await rejection(()=>BluetoothUUID.getService('not-a-uuid'), 'TypeError', 'invalid UUID rejects');
             const value = {meaning:42}; const event = new ValueEvent('availabilitychanged', {value});
             assert(event.value === value && event.value === event.value && !event.isTrusted, 'ValueEvent retains the JS value identity');
