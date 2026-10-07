@@ -49,6 +49,14 @@ def native(args):
     save()
     temporary = ROOT / 'tmp'; temporary.mkdir(mode=0o700)
     environment = dict(os.environ, TMPDIR=str(temporary), WEBKIT_EXEC_PATH=str(bundle), LIBRARY_PATH=str(bundle / 'lib') + ':/boot/system/lib')
+    if args.library_path_prefix:
+        if not Path(args.library_path_prefix).is_absolute() or not Path(args.library_path_prefix).is_dir():
+            raise RuntimeError('Native library prefix must be an existing absolute directory')
+        environment['LIBRARY_PATH'] = args.library_path_prefix + ':' + environment['LIBRARY_PATH']
+    if args.egl_vendor_json:
+        if not Path(args.egl_vendor_json).is_absolute() or not Path(args.egl_vendor_json).is_file():
+            raise RuntimeError('EGL vendor manifest must be an existing absolute file')
+        environment['__EGL_VENDOR_LIBRARY_FILENAMES'] = args.egl_vendor_json
     for key in ('LD_PRELOAD', 'LD_PRELOAD_ADDONS', 'DISABLE_ASLR', 'SUMMIT_TRACE_EXTENSION_CONSOLE'): environment.pop(key, None)
     if args.trace_console: environment['SUMMIT_TRACE_EXTENSION_CONSOLE'] = '1'
     source = bundle / 'source'; executable = ROOT / 'ModernUBlockTests'
@@ -223,6 +231,10 @@ def host(args):
     remote('tar -xzf - -C ' + shlex.quote(stage), input=stream.getvalue(), check=True)
     print(json.dumps({'stage': stage, 'output': str(output)}), flush=True)
     command = ['python3.10', stage + '/tools/' + SCRIPT, '--native', '--bundle', args.bundle]
+    if args.library_path_prefix:
+        command += ['--library-path-prefix', args.library_path_prefix]
+    if args.egl_vendor_json:
+        command += ['--egl-vendor-json', args.egl_vendor_json]
     if args.watch: command.append('--watch')
     if args.compile_only: command.append('--compile-only')
     if args.trace_console: command.append('--trace-console')
@@ -252,6 +264,8 @@ def host(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--bundle', required=True)
+    parser.add_argument('--library-path-prefix', help='Native private graphics-library directory, ahead of bundled/system libraries')
+    parser.add_argument('--egl-vendor-json', help='Native EGL vendor manifest for the private graphics driver')
     parser.add_argument('--compile-only', action='store_true')
     parser.add_argument('--trace-console', action='store_true', help='Enable extension console diagnostics; does not establish a clean runtime pass')
     parser.add_argument('--watch', action='store_true')
