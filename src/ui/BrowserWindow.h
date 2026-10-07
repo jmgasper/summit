@@ -428,6 +428,9 @@ private:
     BMenuItem* fBookmarksBarItem;
     BMenuItem* fRemoveBookmarkItem;
     ToolButton* fBookmarkButton;
+#if SUMMIT_MODERN_WEBKIT
+    BButton* fStoreInstallButton = nullptr;
+#endif
     std::unique_ptr<FaviconCache> fFavicons;
     // Bumped whenever history, bookmarks or icons change, so open built-in
     // pages can be brought up to date when they are shown again.

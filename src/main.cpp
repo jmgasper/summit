@@ -267,13 +267,27 @@ public:
             return;
         }
         if (message->what == summit::kShowExtensions) {
-            if (fWindows.empty() || !fExtensions || !fInstaller) return;
-            if (!fExtensionWindow.IsValid()) {
-                auto* manager = new summit::ExtensionManager(BMessenger(this), fExtensionWindows);
-                fExtensionWindow = BMessenger(manager);
-                manager->Show();
-            } else fExtensionWindow.SendMessage(summit::kShowExtensions);
-            RefreshExtensions();
+            ShowExtensions();
+            return;
+        }
+        if (message->what == summit::kBrowseExtensionStore || message->what == summit::kExtensionStoreInstall) {
+            BMessenger sender;
+            if (fQuitting || fWindows.empty() || !fInstaller || !fExtensions
+                || message->FindMessenger("window", &sender) != B_OK) return;
+            const bool fromManager = sender == fExtensionWindow;
+            const bool fromBrowser = std::any_of(fWindows.begin(), fWindows.end(), [&](const auto& window) {
+                return window.messenger == sender;
+            });
+            if (!fromManager && !fromBrowser) return;
+            const std::string url = message->GetString("url", "");
+            if (message->what == summit::kBrowseExtensionStore) {
+                if (url == summit::kChromeExtensionStore || url == summit::kFirefoxExtensionStore) OpenInNormalWindow(url);
+                return;
+            }
+            ShowExtensions();
+            if (fExtensions->IsReady() && !fInstaller->IsBusy()) fInstaller->ImportStoreURL(url);
+            else (new BAlert("Extensions", "Please finish the current extension operation before starting another installation.",
+                "OK"))->Go(nullptr);
             return;
         }
         if (message->what == summit::kExtensionSetPinned) {
@@ -1044,6 +1058,16 @@ private:
             if (auto* window = OpenWindow(options)) target = BMessenger(window);
         }
         if (!target.IsValid() || target.SendMessage(message) != B_OK) fail("The browser window is not available.");
+    }
+    void ShowExtensions()
+    {
+        if (fWindows.empty() || !fExtensions || !fInstaller || fQuitting) return;
+        if (!fExtensionWindow.IsValid()) {
+            auto* manager = new summit::ExtensionManager(BMessenger(this), fExtensionWindows);
+            fExtensionWindow = BMessenger(manager);
+            manager->Show();
+        } else fExtensionWindow.SendMessage(summit::kShowExtensions);
+        RefreshExtensions();
     }
     void RefreshExtensions()
     {

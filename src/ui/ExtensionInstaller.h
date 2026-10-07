@@ -1,6 +1,7 @@
 #pragma once
 #if SUMMIT_MODERN_WEBKIT
 #include "core/ExtensionCatalog.h"
+#include "core/ExtensionStore.h"
 #include <Handler.h>
 #include <Message.h>
 #include <functional>
@@ -20,6 +21,7 @@ public:
     ~ExtensionInstaller() override;
     void Start();
     bool Import(const std::filesystem::path&);
+    bool ImportStoreURL(const std::string&);
     void Approve(uint64 generation, bool allowFiles, bool allowPrivate);
     void Cancel(uint64 generation);
     void Shutdown();
@@ -31,6 +33,7 @@ public:
 private:
     struct ImportWork;
     struct Draft;
+    bool BeginImport(const std::filesystem::path&, std::optional<ExtensionStoreItem> = {});
     void Poll();
     void Changed();
     void Finish(std::string);
@@ -38,6 +41,7 @@ private:
     void RetainUnsavedRuntime(std::string);
     std::shared_ptr<BWebKitContext> fContext;
     ExtensionCatalog fCatalog;
+    std::filesystem::path fDownloadRoot;
     Loaded fLoaded;
     std::function<void()> fChanged;
     std::shared_ptr<ImportWork> fWork;

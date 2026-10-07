@@ -1,6 +1,7 @@
 #include "ExtensionInstaller.h"
 #if SUMMIT_MODERN_WEBKIT
 #include "core/ExtensionIdentity.h"
+#include "ExtensionStoreDownload.h"
 #include <WebKit/WebKitContext.h>
 #include <MessageRunner.h>
 #include <nlohmann/json.hpp>
@@ -59,18 +60,18 @@ std::string ExtensionDisplayText(std::string text)
 struct ExtensionInstaller::ImportWork {
     std::atomic<bool> finished { false }, cancelled { false };
     std::unique_ptr<StagedExtensionPackage> package;
-    std::string error;
+    std::string error, expectedIdentity, storeName;
 };
 struct ExtensionInstaller::Draft {
     std::unique_ptr<StagedExtensionPackage> package;
     InstalledExtension entry;
-    std::string token, body, baseURL, newTabURL, rollbackError;
+    std::string token, body, baseURL, newTabURL, rollbackError, expectedIdentity, storeName;
     std::vector<std::string> permissions, origins;
     bool ready = false, loaded = false;
 };
 ExtensionInstaller::ExtensionInstaller(std::shared_ptr<BWebKitContext> context, std::filesystem::path root,
     Loaded loaded, std::function<void()> changed)
-    : BHandler("Summit extension installer"), fContext(std::move(context)), fCatalog(std::move(root))
+    : BHandler("Summit extension installer"), fContext(std::move(context)), fCatalog(root), fDownloadRoot(root / "downloads")
     , fLoaded(std::move(loaded)), fChanged(std::move(changed)) { }
 ExtensionInstaller::~ExtensionInstaller()
 {
@@ -99,14 +100,32 @@ BMessage ExtensionInstaller::Snapshot() const
 }
 bool ExtensionInstaller::Import(const std::filesystem::path& source)
 {
+    return BeginImport(source);
+}
+bool ExtensionInstaller::ImportStoreURL(const std::string& url)
+{
+    if (fStopping || IsBusy()) return false;
+    auto item = ParseExtensionStoreURL(url);
+    if (!item) {
+        Finish("Enter an extension's detail-page link from the Chrome Web Store or Firefox Add-ons.");
+        return false;
+    }
+    return BeginImport({}, std::move(item));
+}
+bool ExtensionInstaller::BeginImport(const std::filesystem::path& source, std::optional<ExtensionStoreItem> store)
+{
     if (fStopping || IsBusy() || !fTimer || fTimer->InitCheck() != B_OK) return false;
     ++fGeneration;
     fCancelled = false;
-    fStatus = "Reading extension package…";
+    fStatus = store ? "Downloading extension from the store…" : "Reading extension package…";
     fWork = std::make_shared<ImportWork>();
     try {
-        fThread = std::thread([work = fWork, catalog = fCatalog, source, target = BMessenger(this)] {
-            work->package = catalog.Stage(source, work->error);
+        fThread = std::thread([work = fWork, catalog = fCatalog, source, store, downloadRoot = fDownloadRoot, target = BMessenger(this)] {
+            if (store) {
+                work->storeName = store->store == ExtensionStoreItem::Store::Chrome ? "Chrome Web Store" : "Firefox Add-ons";
+                work->package = DownloadStoreExtension(*store, downloadRoot, catalog, work->cancelled,
+                    work->expectedIdentity, work->error);
+            } else work->package = catalog.Stage(source, work->error);
             if (work->cancelled.load()) work->package.reset();
             work->finished.store(true, std::memory_order_release);
             BMessage ready(pollImport);
@@ -129,6 +148,8 @@ void ExtensionInstaller::Poll()
         if (!work->package) { Finish(work->error); return; }
         fDraft = std::make_unique<Draft>();
         fDraft->package = std::move(work->package);
+        fDraft->expectedIdentity = std::move(work->expectedIdentity);
+        fDraft->storeName = std::move(work->storeName);
         fStatus = "Checking extension requirements…";
         fPending = B_WEBKIT_EXTENSION_PACKAGE_PREPARED;
         auto status = fContext->PrepareExtension(fDraft->package->Path().c_str(), BMessenger(this), ++fRequest);
@@ -257,6 +278,10 @@ void ExtensionInstaller::MessageReceived(BMessage* message)
         auto manifest = nlohmann::json::parse(manifestText);
         const auto verifiedCRXIdentity = field(*message, "verified_crx_id");
         draft.entry.identifier = ExtensionIdentity(manifest, draft.entry.identifier, verifiedCRXIdentity);
+        if (!draft.expectedIdentity.empty() && draft.entry.identifier != draft.expectedIdentity)
+            throw std::runtime_error("The downloaded extension's identity does not match the selected store item.");
+        if (draft.storeName == "Chrome Web Store" && verifiedCRXIdentity.empty())
+            throw std::runtime_error("The Chrome Web Store package does not have a valid CRX3 signature.");
         std::vector<InstalledExtension> entries;
         std::string error;
         if (!fCatalog.Load(entries, error)) throw std::runtime_error(error);
@@ -282,6 +307,7 @@ void ExtensionInstaller::MessageReceived(BMessage* message)
         requested.insert(draft.permissions.begin(), draft.permissions.end());
         requested.insert(draft.origins.begin(), draft.origins.end());
         draft.body = ExtensionDisplayText(draft.entry.name) + "\nVersion " + ExtensionDisplayText(draft.entry.version);
+        if (!draft.storeName.empty()) draft.body += "\nDownloaded from " + draft.storeName + " over HTTPS.";
         draft.body += verifiedCRXIdentity.empty()
             ? "\n\nThis package has not been signature-verified. Install only packages you trust."
             : "\n\nPackage signature verified. Chrome Web Store provenance has not been verified.";

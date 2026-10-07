@@ -606,6 +606,8 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
     fBookmarkButton = new ToolButton("bookmark", "Bookmark this page", Icon::Bookmark, kBookmarkButton);
 #if SUMMIT_MODERN_WEBKIT
     fExtensionActions = new BGroupView("extension-actions", B_HORIZONTAL, 2);
+    fStoreInstallButton = new BButton("install-store-extension", "Install extension…", new BMessage(kExtensionStoreInstall));
+    fStoreInstallButton->SetToolTip("Download this store extension and review its requested access in Summit.");
 #endif
     fTabStrip = new TabStrip();
     fProgress = new ProgressLine();
@@ -668,11 +670,13 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
         .Add(fBookmarkButton)
         .Add(downloadsButton)
 #if SUMMIT_MODERN_WEBKIT
+        .Add(fStoreInstallButton)
         .Add(fExtensionActions)
 #endif
         ;
 #if SUMMIT_MODERN_WEBKIT
     fExtensionActions->Hide();
+    fStoreInstallButton->Hide();
 #endif
     fZoomButton->Hide();
     if (fPrivate) {
@@ -2171,6 +2175,12 @@ void BrowserWindow::WindowActivated(bool active)
 
 void BrowserWindow::RefreshChrome()
 {
+#if SUMMIT_MODERN_WEBKIT
+    const auto* active = ActiveTab();
+    const bool storePage = fExtensionsEnabled && active && ParseExtensionStoreURL(active->url).has_value();
+    if (storePage && fStoreInstallButton->IsHidden(fStoreInstallButton)) fStoreInstallButton->Show();
+    else if (!storePage && !fStoreInstallButton->IsHidden(fStoreInstallButton)) fStoreInstallButton->Hide();
+#endif
     std::vector<TabLabel> labels;
     for (const auto& tab : fTabs)
         labels.push_back({tab.id, tab.title, tab.loading, fFavicons->Icon(tab.url),
@@ -2934,6 +2944,16 @@ void BrowserWindow::MessageReceived(BMessage* message)
         case kShowBookmarks: ShowInternalPage(kBookmarksPage); break;
         case kShowHistory: ShowInternalPage(kHistoryPage); break;
         case kShowExtensions: be_app->PostMessage(kShowExtensions); break;
+#if SUMMIT_MODERN_WEBKIT
+        case kExtensionStoreInstall: {
+            if (!fExtensionsEnabled || !tab || !ParseExtensionStoreURL(tab->url)) break;
+            BMessage request(kExtensionStoreInstall);
+            request.AddMessenger("window", BMessenger(this));
+            request.AddString("url", tab->url.c_str());
+            be_app->PostMessage(&request);
+            break;
+        }
+#endif
         case kOpenBookmark: {
             const char* url = nullptr;
             if (message->FindString("url", &url) != B_OK || !url) break;

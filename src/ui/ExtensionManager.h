@@ -13,6 +13,7 @@ class BGroupView;
 class BListView;
 class BStringView;
 class BTextView;
+class BTextControl;
 namespace summit {
 class ExtensionManager final : public BWindow {
 public:
@@ -32,6 +33,8 @@ private:
     BTextView* fDetails;
     BStringView* fStatus;
     BButton *fAdd, *fToggle, *fRemove, *fInstall, *fCancel;
+    BButton* fStoreInstall;
+    BTextControl* fStoreURL;
     BCheckBox* fFiles;
     // Of the selected extension: its toolbar button, and private windows.
     BCheckBox* fPinned;

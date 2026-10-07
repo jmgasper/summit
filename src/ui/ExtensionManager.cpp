@@ -13,6 +13,7 @@
 #include <ScrollView.h>
 #include <StringView.h>
 #include <TextView.h>
+#include <TextControl.h>
 
 namespace summit {
 namespace {
@@ -48,6 +49,14 @@ ExtensionManager::ExtensionManager(BMessenger owner, std::shared_ptr<std::atomic
     auto* title = new BStringView("extensions-title", "Extensions");
     title->SetFont(be_bold_font);
     fAdd = new BButton("extension-add", "Add extension…", new BMessage(choosePackage));
+    auto storeButton = [](const char* label, const char* url) {
+        auto* message = new BMessage(kBrowseExtensionStore);
+        message->AddString("url", url);
+        return new BButton(label, label, message);
+    };
+    fStoreURL = new BTextControl("extension-store-url", "Store link:", "", new BMessage(kExtensionStoreInstall));
+    fStoreURL->SetToolTip("Paste an extension's detail-page link from either store.");
+    fStoreInstall = new BButton("extension-store-install", "Review extension…", new BMessage(kExtensionStoreInstall));
     fList = new BListView("extension-list");
     fList->SetSelectionMessage(new BMessage(selectEntry));
     auto* list = new BScrollView("extension-list-scroll", fList, 0, false, true);
@@ -85,6 +94,10 @@ ExtensionManager::ExtensionManager(BMessenger owner, std::shared_ptr<std::atomic
     BLayoutBuilder::Group<>(this, B_VERTICAL, 12)
         .SetInsets(16)
         .AddGroup(B_HORIZONTAL).Add(title).AddGlue().Add(fAdd).End()
+        .AddGroup(B_HORIZONTAL, 8)
+            .Add(storeButton("Chrome Web Store", kChromeExtensionStore))
+            .Add(storeButton("Firefox Add-ons", kFirefoxExtensionStore)).AddGlue().End()
+        .AddGroup(B_HORIZONTAL, 8).Add(fStoreURL).Add(fStoreInstall).End()
         .AddGroup(B_HORIZONTAL, 16)
             .Add(list)
             .AddGroup(B_VERTICAL, 8)
@@ -149,6 +162,8 @@ void ExtensionManager::Render()
 {
     auto* item = dynamic_cast<Item*>(fList->ItemAt(fList->CurrentSelection()));
     fAdd->SetEnabled(fReady && !fBusy);
+    fStoreURL->SetEnabled(fReady && !fBusy);
+    fStoreInstall->SetEnabled(fReady && !fBusy);
     fToggle->SetEnabled(fReady && !fBusy && item && item->installed);
     fRemove->SetEnabled(fReady && !fBusy && item);
     fToggle->SetLabel(item && (item->loaded || item->enabled) ? "Disable" : "Enable");
@@ -188,6 +203,15 @@ void ExtensionManager::MessageReceived(BMessage* message)
     if (message->what == kShowExtensions) { Activate(); return; }
     if (message->what == kCloseExtensionManager) { Quit(); return; }
     if (message->what == selectEntry) { Render(); return; }
+    if (message->what == kBrowseExtensionStore) { BMessage request(*message); Send(request); return; }
+    if (message->what == kExtensionStoreInstall) {
+        if (fReady && !fBusy) {
+            BMessage request(kExtensionStoreInstall);
+            request.AddString("url", fStoreURL->Text());
+            Send(request);
+        }
+        return;
+    }
     if (message->what == choosePackage) {
         if (!fReady || fBusy) return;
         if (!fPanel) {

@@ -4,7 +4,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(SUMMIT_MODERN_WEBKIT "Build Summit with the native multiprocess WebKit API" OFF)
 find_package(OpenSSL REQUIRED COMPONENTS Crypto)
-add_library(summit_core src/core/Address.cpp src/core/Protocol.cpp src/core/Profile.cpp src/core/ExtensionCatalog.cpp src/core/ExtensionIdentity.cpp
+add_library(summit_core src/core/Address.cpp src/core/Protocol.cpp src/core/Profile.cpp src/core/ExtensionCatalog.cpp src/core/ExtensionIdentity.cpp src/core/ExtensionStore.cpp
     src/core/Favicon.cpp src/core/InternalPages.cpp src/core/Zoom.cpp src/core/Suggest.cpp src/core/DevTools.cpp src/core/DevToolsFormat.cpp)
 target_link_libraries(summit_core PUBLIC OpenSSL::Crypto)
 target_include_directories(summit_core PUBLIC src vendor)
@@ -22,6 +22,9 @@ add_test(NAME summit_extension_catalog COMMAND summit_extension_catalog_tests)
 add_executable(summit_extension_identity_tests tests/ExtensionIdentityTests.cpp)
 target_link_libraries(summit_extension_identity_tests PRIVATE summit_core)
 add_test(NAME summit_extension_identity COMMAND summit_extension_identity_tests ${CMAKE_SOURCE_DIR}/tests/fixtures/extensions/chrome-key/public-key.txt)
+add_executable(summit_extension_store_tests tests/ExtensionStoreTests.cpp)
+target_link_libraries(summit_extension_store_tests PRIVATE summit_core)
+add_test(NAME summit_extension_store COMMAND summit_extension_store_tests)
 if(CMAKE_SYSTEM_NAME STREQUAL "Haiku")
     if(SUMMIT_MODERN_WEBKIT)
         find_path(WEBKIT_MODERN_INCLUDE_DIR WebKit/WebKitView.h PATH_SUFFIXES webkit REQUIRED)
@@ -37,6 +40,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Haiku")
     find_program(HAIKU_RC rc REQUIRED)
     find_program(HAIKU_XRES xres REQUIRED)
     add_executable(Summit src/main.cpp src/ui/BrowserWindow.cpp src/ui/Chrome.cpp src/ui/ExtensionPermissionPrompt.cpp src/ui/ExtensionController.cpp src/ui/ExtensionInstaller.cpp src/ui/ExtensionManager.cpp
+        src/ui/ExtensionStoreDownload.cpp
         src/ui/ProtocolHandlers.cpp src/ui/FaviconCache.cpp src/ui/PreferencesWindow.cpp src/ui/SharedProfile.cpp src/ui/DirectWindowRescue.cpp
         src/ui/SourceView.cpp src/ui/DevToolsWindow.cpp src/ui/DevToolsNetwork.cpp src/ui/DevToolsConsole.cpp)
     target_include_directories(Summit PRIVATE ${SUMMIT_WEBKIT_INCLUDE_DIR} /boot/system/develop/headers/private/netservices)
@@ -53,9 +57,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Haiku")
         target_include_directories(Summit PRIVATE ${SCINTILLA_INCLUDE_DIR} ${LEXILLA_INCLUDE_DIR} /boot/system/develop/headers/private)
         target_link_libraries(Summit PRIVATE ${SCINTILLA_LIBRARY} ${LEXILLA_LIBRARY} columnlistview)
     endif()
-    target_link_libraries(Summit PRIVATE summit_core ${SUMMIT_WEBKIT_LIBRARY} be game network bnetapi translation tracker)
+    target_link_libraries(Summit PRIVATE summit_core ${SUMMIT_WEBKIT_LIBRARY} be game network bnetapi translation tracker curl)
     set_property(TARGET Summit APPEND PROPERTY LINK_DEPENDS ${CMAKE_SOURCE_DIR}/resources/Summit.rdef)
     set_property(TARGET Summit APPEND PROPERTY LINK_DEPENDS ${CMAKE_SOURCE_DIR}/resources/Summit.hvif)
+    file(GLOB SUMMIT_TOOLBAR_RESOURCES CONFIGURE_DEPENDS resources/toolbar/*.hvif resources/toolbar/*.png)
+    set_property(TARGET Summit APPEND PROPERTY LINK_DEPENDS ${SUMMIT_TOOLBAR_RESOURCES})
     add_custom_command(TARGET Summit POST_BUILD
         COMMAND ${HAIKU_RC} -I ${CMAKE_SOURCE_DIR}/resources -o $<TARGET_FILE_DIR:Summit>/Summit.rsrc ${CMAKE_SOURCE_DIR}/resources/Summit.rdef
         COMMAND ${HAIKU_XRES} -o $<TARGET_FILE:Summit> $<TARGET_FILE_DIR:Summit>/Summit.rsrc
