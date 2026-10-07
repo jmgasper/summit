@@ -11,7 +11,7 @@ class BBitmap;
 class BMessageRunner;
 
 namespace summit {
-enum class Icon { Back, Forward, Reload, Stop, Plus, Bookmark, BookmarkFilled, Downloads, Home, More, Go, Lock, LockWarning };
+enum class Icon { Back, Forward, Reload, Stop, Plus, Bookmark, BookmarkFilled, Downloads, Home, More, Go, Lock, LockWarning, Reader, ReaderActive };
 // The look of the browser's own controls, for every window: true draws them
 // like other Haiku applications (BControlLook buttons and tabs), false keeps
 // the flat, Safari-like look.

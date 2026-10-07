@@ -196,6 +196,13 @@ void ToolButton::Draw(BRect update)
         StrokeLine(c + BPoint(x1, y1), c + BPoint(x2, y2));
     };
     switch (fIcon) {
+        case Icon::Reader: case Icon::ReaderActive:
+            if (fIcon == Icon::ReaderActive) SetHighColor(rgb_color { 44, 125, 104, 255 });
+            line(-8, -7, -8, 6); line(8, -7, 8, 6); line(0, -5, 0, 8);
+            line(-8, -7, -3, -7); line(-3, -7, 0, -5); line(0, -5, 3, -7); line(3, -7, 8, -7);
+            line(-8, 6, -3, 6); line(-3, 6, 0, 8); line(0, 8, 3, 6); line(3, 6, 8, 6);
+            line(-6, -2, -2, -2); line(2, -2, 6, -2); line(-6, 1, -2, 1); line(2, 1, 6, 1);
+            break;
         case Icon::More:
             for (float x : {-6.0f, 0.0f, 6.0f}) FillEllipse(c + BPoint(x, 0), 1.3f, 1.3f);
             break;

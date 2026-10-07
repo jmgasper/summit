@@ -45,7 +45,10 @@
 #if SUMMIT_MODERN_WEBKIT
 #include "ExtensionInstaller.h"
 #include "CertificateInfoWindow.h"
+#include "ReaderMode.h"
 #include <WebKit/WebKitInfo.h>
+#include <WebKit/WebKitEmbedding.h>
+#include <nlohmann/json.hpp>
 #else
 #include <WebDownload.h>
 #include <WebKitInfo.h>
@@ -329,9 +332,51 @@ public:
         fFilter = new AddressEnterFilter(*this);
         TextView()->AddFilter(fFilter);
         SetModificationMessage(new BMessage(kAddressModified));
+#if SUMMIT_MODERN_WEBKIT
+        fReader = new ToolButton("reader", "Enter Reader mode", Icon::Reader, kToggleReader);
+        AddChild(fReader);
+        fReader->Hide();
+#endif
     }
 
     void SetKeyHandler(std::function<bool(char)> handler) { fFilter->fKeyHandler = std::move(handler); }
+
+#if SUMMIT_MODERN_WEBKIT
+    void SetReader(bool visible, bool active, bool enabled)
+    {
+        fReader->SetIcon(active ? Icon::ReaderActive : Icon::Reader);
+        fReader->SetToolTip(active ? "Exit Reader mode" : "Enter Reader mode");
+        fReader->SetEnabled(enabled);
+        if (visible == !fReader->IsHidden(fReader)) return;
+        if (visible) fReader->Show(); else fReader->Hide();
+        InvalidateLayout();
+        Layout(true);
+        Invalidate();
+    }
+    void Draw(BRect update) override
+    {
+        if (!fReader || fReader->IsHidden(fReader)) { BTextControl::Draw(update); return; }
+        // BTextControl normally outlines only its text view. Keep the outline
+        // around both the shortened text view and the trailing reader button.
+        BRect frame = fFullTextFrame.InsetByCopy(-2, -2);
+        uint32 flags = IsEnabled() ? 0 : BControlLook::B_DISABLED;
+        if (TextView()->IsFocus() && Window()->IsActive()) flags |= BControlLook::B_FOCUSED;
+        SetHighColor(TextView()->ViewColor());
+        FillRect(frame.InsetByCopy(2, 2));
+        be_control_look->DrawTextControlBorder(this, frame, update, ViewColor(), flags);
+    }
+    void DoLayout() override
+    {
+        BTextControl::DoLayout();
+        fFullTextFrame = TextView()->Frame();
+        if (!fReader || fReader->IsHidden(fReader)) return;
+        constexpr float width = 28;
+        TextView()->ResizeTo(std::max(1.0f, fFullTextFrame.Width() - width - 4), fFullTextFrame.Height());
+        TextView()->SetTextRect(TextView()->Bounds());
+        fReader->MoveTo(fFullTextFrame.right - width, fFullTextFrame.top);
+        fReader->ResizeTo(width, fFullTextFrame.Height());
+    }
+#endif
 
     status_t Invoke(BMessage* message = nullptr) override
     {
@@ -343,6 +388,10 @@ public:
 
 private:
     AddressEnterFilter* fFilter;
+#if SUMMIT_MODERN_WEBKIT
+    ToolButton* fReader = nullptr;
+    BRect fFullTextFrame;
+#endif
 };
 
 // A click anywhere in the window may take the focus from the address field,
@@ -907,6 +956,10 @@ std::string BrowserWindow::StoredURL(const BString& url) const
     // Haiku's URL notification can use file:/path before WebKit commits
     // the canonical file:///path form. Both refer to our built-in pages.
     const std::string value = url.String();
+#if SUMMIT_MODERN_WEBKIT
+    for (const auto& tab : fTabs)
+        if (auto found = tab.readerOriginals.find(value); found != tab.readerOriginals.end()) return found->second;
+#endif
     auto matches = [&](const std::string& file) {
         return value == file || (file.rfind("file:///", 0) == 0 && value == "file:" + file.substr(7));
     };
@@ -1020,6 +1073,7 @@ void BrowserWindow::CreateTab(const std::string& input, bool select, BWebView* a
         : address.url == kBookmarksPage ? "Bookmarks" : "Loading…";
     created.pageRevision = fPagesRevision;
     created.messenger = BMessenger(webView);
+    webView->SetURLSchemeHandler("summit-reader", BMessenger(this));
     // As in other browsers, a restored session's tabs wait to be selected
     // before they load: a window of fifteen tabs would otherwise start fifteen
     // page loads and web processes at once, with only one of them on screen.
@@ -1112,6 +1166,7 @@ void BrowserWindow::SelectTab(int64 id, bool forClose)
             fTabs[i].view->LoadURL(std::exchange(fTabs[i].deferredURL, {}).c_str());
         if (!forClose && !fRestoringSession && fTabs[i].certificate && !fTabs[i].certificate->asked)
             AskAboutCertificate(fTabs[i]);
+        ProbeReader(fTabs[i]);
 #endif
         fTabs[i].view->MakeFocus();
         fAddress->SetText(DisplayURL(fTabs[i].url).c_str());
@@ -2185,6 +2240,9 @@ void BrowserWindow::RefreshChrome()
 {
 #if SUMMIT_MODERN_WEBKIT
     const auto* active = ActiveTab();
+    static_cast<AddressControl*>(fAddress)->SetReader(active && !active->processExited
+        && active->loadError.empty() && (active->readerActive || active->readerAvailable),
+        active && active->readerActive, active && !active->loading && !active->readerExtracting && !active->processExited);
     const bool storePage = fExtensionsEnabled && active && ParseExtensionStoreURL(active->url).has_value();
     if (storePage && fStoreInstallButton->IsHidden(fStoreInstallButton)) fStoreInstallButton->Show();
     else if (!storePage && !fStoreInstallButton->IsHidden(fStoreInstallButton)) fStoreInstallButton->Hide();
@@ -2971,6 +3029,10 @@ void BrowserWindow::MessageReceived(BMessage* message)
         case kShowExtensions: be_app->PostMessage(kShowExtensions); break;
 #if SUMMIT_MODERN_WEBKIT
         case kShowCertificate: ShowCertificate(); break;
+        case kToggleReader: ToggleReader(); break;
+        case B_WEBKIT_JAVASCRIPT_RESULT: ReaderResult(*message); break;
+        case B_WEBKIT_URL_SCHEME_REQUEST: ReaderResource(*message); break;
+        case B_WEBKIT_URL_SCHEME_REQUEST_STOPPED: break;
         case kExtensionStoreInstall: {
             if (!fExtensionsEnabled || !tab || !ParseExtensionStoreURL(tab->url)) break;
             BMessage request(kExtensionStoreInstall);
@@ -3408,6 +3470,9 @@ void BrowserWindow::MessageReceived(BMessage* message)
                 item.AddInt32("loadErrorCode", page.loadErrorCode);
                 item.AddBool("loadErrorProvisional", page.loadErrorProvisional);
                 item.AddUInt64("loadGeneration", page.loadGeneration);
+                item.AddBool("readerAvailable", page.readerAvailable);
+                item.AddBool("readerActive", page.readerActive);
+                item.AddBool("readerBusy", page.readerExtracting);
                 item.AddString("loadOutcome", page.loadOutcome.c_str());
                 item.AddUInt64("loadSuccessSequence", page.loadSuccessSequence);
                 item.AddInt64("loadStartedAt", page.loadStartedAt);
@@ -3808,6 +3873,11 @@ void BrowserWindow::WebKitStateChanged(const BMessage& message)
     // Older generations may still carry ordinary progress/close state, but
     // cannot restore a previous navigation's load error.
     if (message.FindUInt64("loadGeneration", &generation) == B_OK && generation >= tab->loadGeneration) {
+        if (generation != tab->loadGeneration) {
+            tab->readerRequest = 0;
+            tab->readerExtracting = false;
+            tab->readerAvailable = false;
+        }
         tab->loadGeneration = generation;
         tab->connectionCertificate.MakeEmpty();
         message.FindMessage("connectionCertificate", &tab->connectionCertificate);
@@ -3866,6 +3936,7 @@ void BrowserWindow::WebKitStateChanged(const BMessage& message)
         }
     }
     if (message.FindString("url", &value) == B_OK && value && *value) {
+        tab->readerActive = !tab->readerURL.empty() && tab->readerURL == value;
         tab->url = StoredURL(value);
         ApplySiteZoom(*tab);
     }
@@ -3910,7 +3981,7 @@ void BrowserWindow::WebKitStateChanged(const BMessage& message)
             const auto stored = StoredURL(successURL);
             const PageRecord visit { stored, successTitle };
             // Private windows leave no history.
-            if (!fPrivate) {
+            if (!fPrivate && tab->readerURL != successURL) {
                 fShared->Change([&](Profile& profile) -> uint32 {
                     return profile.Visit(visit) ? SharedProfile::kHistoryChanged : 0;
                 }, BMessenger(this), false);
@@ -3919,7 +3990,7 @@ void BrowserWindow::WebKitStateChanged(const BMessage& message)
         }
     }
     const char* successfulURL = nullptr;
-    if (!fPrivate && tab->loadOutcome == "succeeded"
+    if (!fPrivate && !tab->readerActive && tab->loadOutcome == "succeeded"
         && message.FindString("loadSuccessURL", &successfulURL) == B_OK && successfulURL
         && StoredURL(successfulURL) == tab->url) {
         const std::string url = tab->url, title = tab->title;
@@ -3934,12 +4005,120 @@ void BrowserWindow::WebKitStateChanged(const BMessage& message)
         if (!fAddress->TextView()->IsFocus()) fAddress->SetText(DisplayURL(tab->url).c_str());
         ShowTabStatus(*tab);
         if (tab->certificate && !tab->certificate->asked) AskAboutCertificate(*tab);
+        ProbeReader(*tab);
     }
     // Back or Forward to a built-in page shows the copy from when it was
     // written (or the page cache's); bring it up to date once it has loaded.
     // Only then: any other state change may be the start of a navigation away.
     if (internalPageLoaded && !tab->loading) RefreshInternalPage(*tab);
     RefreshChrome();
+}
+
+void BrowserWindow::ProbeReader(Tab& tab)
+{
+    if (fClosingWindow || tab.closeQueued || tab.closeRequested || tab.closeApproved
+        || tab.loading || tab.processExited || !tab.loadError.empty() || tab.readerActive
+        || tab.loadOutcome != "succeeded" || !tab.loadGeneration
+        || tab.readerProbedGeneration == tab.loadGeneration
+        || !(tab.url.starts_with("https://") || tab.url.starts_with("http://"))) return;
+    tab.readerProbedGeneration = tab.loadGeneration;
+    const auto& source = ReaderProbeScript();
+    if (source.empty()) return;
+    tab.readerRequest = ++fReaderRequest;
+    tab.readerGeneration = tab.loadGeneration;
+    tab.readerRequestURL = tab.url;
+    tab.readerExtracting = false;
+    tab.view->EvaluateJavaScriptIsolated(source.c_str(), BMessenger(this), tab.readerRequest, tab.readerGeneration);
+}
+
+void BrowserWindow::ToggleReader()
+{
+    auto* tab = ActiveTab();
+    if (!tab || tab->loading || tab->processExited || tab->readerExtracting) return;
+    if (tab->readerActive) {
+        Navigate(tab->readerSource);
+        return;
+    }
+    if (!tab->readerAvailable || !PrepareNavigation()) return;
+    const auto& source = ReaderExtractScript();
+    if (source.empty()) { fStatus->SetText("Reader mode resources are unavailable."); return; }
+    tab->readerRequest = ++fReaderRequest;
+    tab->readerGeneration = tab->loadGeneration;
+    tab->readerRequestURL = tab->url;
+    tab->readerExtracting = true;
+    tab->view->EvaluateJavaScriptIsolated(source.c_str(), BMessenger(this), tab->readerRequest, tab->readerGeneration);
+    fStatus->SetText("Preparing Reader mode…");
+    RefreshChrome();
+}
+
+void BrowserWindow::ReaderResult(const BMessage& message)
+{
+    BMessenger view;
+    if (message.FindMessenger("view", &view) != B_OK) return;
+    auto* tab = FindTab(view);
+    if (!tab || !tab->readerRequest || tab->readerRequest != message.GetUInt64("identifier", 0)) return;
+    const bool extracting = std::exchange(tab->readerExtracting, false);
+    tab->readerRequest = 0;
+    if (fClosingWindow || tab->closeQueued || tab->closeRequested || tab->closeApproved
+        || tab->loading || tab->processExited || tab->readerGeneration != tab->loadGeneration
+        || tab->readerGeneration != message.GetUInt64("generation", 0) || tab->readerRequestURL != tab->url) {
+        RefreshChrome();
+        return;
+    }
+    const std::string value = message.GetString("result", "");
+    if (!extracting) {
+        tab->readerAvailable = !message.HasString("error") && value == "true";
+        RefreshChrome();
+        return;
+    }
+    auto unavailable = [&] {
+        tab->readerAvailable = false;
+        if (tab->id == fSelected) fStatus->SetText("Reader mode could not find an article on this page.");
+        RefreshChrome();
+    };
+    if (message.HasString("error") || value.empty() || value.size() > 4000000) { unavailable(); return; }
+    const auto article = nlohmann::json::parse(value, nullptr, false);
+    if (!article.is_object() || !article.contains("url") || !article["url"].is_string()
+        || article["url"].get<std::string>() != tab->url || !article.contains("html") || !article["html"].is_string()) {
+        unavailable(); return;
+    }
+    auto html = article["html"].get<std::string>();
+    auto url = tab->readerSource == tab->url ? tab->readerURL : NewReaderURL();
+    if (html.empty() || html.size() > 3500000 || url.empty()) { unavailable(); return; }
+    // Keep one article per tab, in memory. Stale requests cannot retrieve a
+    // previous tab's article, and private browsing creates no reader files.
+    tab->readerSource = tab->url;
+    tab->readerURL = std::move(url);
+    tab->readerOriginals[tab->readerURL] = tab->readerSource;
+    tab->readerHTML = std::move(html);
+    tab->view->LoadURL(tab->readerURL.c_str());
+}
+
+void BrowserWindow::ReaderResource(const BMessage& message)
+{
+    const auto identifier = message.GetUInt64("identifier", 0);
+    BMessenger view;
+    auto* tab = message.FindMessenger("view", &view) == B_OK ? FindTab(view) : nullptr;
+    const char* url = message.GetString("url", "");
+    if (!tab || !message.GetBool("main_frame", false) || std::strcmp(message.GetString("method", ""), "GET")) {
+        BWebKitView::FailURLSchemeRequest(identifier, "This Reader article is no longer available.");
+        return;
+    }
+    if (tab->readerHTML.empty() || tab->readerURL != url) {
+        if (auto found = tab->readerOriginals.find(url); found != tab->readerOriginals.end())
+            tab->view->LoadURL(found->second.c_str());
+        BWebKitView::FailURLSchemeRequest(identifier, "Opening the original article.");
+        return;
+    }
+    BMessage headers;
+    for (auto [name, value] : { std::pair { "Cache-Control", "no-store" },
+            { "Content-Security-Policy", "default-src 'none'; img-src https: http:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" },
+            { "Referrer-Policy", "no-referrer" }, { "X-Content-Type-Options", "nosniff" } }) {
+        headers.AddString("name", name);
+        headers.AddString("value", value);
+    }
+    BWebKitView::RespondToURLSchemeRequest(identifier, 200, "text/html; charset=utf-8", &headers,
+        tab->readerHTML.data(), tab->readerHTML.size());
 }
 
 void BrowserWindow::ShowCertificate()

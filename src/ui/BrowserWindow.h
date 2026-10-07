@@ -181,6 +181,12 @@ private:
         };
         std::optional<CertificateProblem> certificate { };
         BMessage connectionCertificate;
+        bool readerAvailable = false, readerActive = false, readerExtracting = false;
+        uint64 readerProbedGeneration = 0, readerRequest = 0, readerGeneration = 0;
+        std::string readerRequestURL, readerSource, readerURL, readerHTML;
+        // Older in-memory previews reopen their original web page when the
+        // tab's single cached article has been replaced.
+        std::map<std::string, std::string> readerOriginals;
 #endif
     };
 #if SUMMIT_MODERN_WEBKIT
@@ -191,6 +197,11 @@ private:
     void AskAboutCertificate(Tab&);
     void CertificateDecision(const BMessage&);
     void ShowCertificate();
+    void ProbeReader(Tab&);
+    void ToggleReader();
+    void ReaderResult(const BMessage&);
+    void ReaderResource(const BMessage&);
+    uint64 fReaderRequest = 0;
     void WebKitFindResult(const BMessage& message);
     void WebKitCloseResult(const BMessage& message);
     void WebKitClosePrompt(const BMessage& message);

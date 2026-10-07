@@ -65670,10 +65670,10 @@ index 0000000000000000000000000000000000000000..c513815be2c9593bb9bac943763f49bd
 +}
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitView.h b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..8966f9528acc7a38ed7be98bcebaa4ff32acc89d
+index 0000000000000000000000000000000000000000..7128bfb8c27cab859a77fab8923f9131705b0629
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
-@@ -0,0 +1,228 @@
+@@ -0,0 +1,233 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -65833,6 +65833,11 @@ index 0000000000000000000000000000000000000000..8966f9528acc7a38ed7be98bcebaa4ff
 +    // reply. As an async function, source is a function body whose returned
 +    // promise is awaited.
 +    void EvaluateJavaScript(const char* source, BMessenger reply, uint64 identifier, bool asAsyncFunction = false);
++    // Browser-owned document inspection, in a fresh isolated world. Does not
++    // grant or consume user activation. Fails if expectedGeneration is stale;
++    // replies also include "generation". Website globals/prototype overrides
++    // are not visible. Source is a synchronous script returning a value.
++    void EvaluateJavaScriptIsolated(const char* source, BMessenger reply, uint64 identifier, uint64 expectedGeneration);
 +    // An empty string restores the engine's own user agent.
 +    void SetCustomUserAgent(const char*);
 +    // The view's pages load URLs of scheme through target, once per scheme and
@@ -65904,10 +65909,10 @@ index 0000000000000000000000000000000000000000..8966f9528acc7a38ed7be98bcebaa4ff
 +};
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitViewEmbedding.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitViewEmbedding.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..50cdaccd1d2552bae6f4d5555599b34e95e1a0ab
+index 0000000000000000000000000000000000000000..d8412baf03f170dad5c68c7ef43bef8821a16cea
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitViewEmbedding.cpp
-@@ -0,0 +1,704 @@
+@@ -0,0 +1,746 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +// BWebKitView's embedding interfaces (WebKitEmbedding.h): user scripts,
@@ -66363,6 +66368,48 @@ index 0000000000000000000000000000000000000000..50cdaccd1d2552bae6f4d5555599b34e
 +            }
 +            reply.SendMessage(&message, static_cast<BHandler*>(nullptr), 0);
 +        });
++    });
++}
++
++void BWebKitView::EvaluateJavaScriptIsolated(const char* source, BMessenger reply, uint64 identifier, uint64 expectedGeneration)
++{
++    if (m_status != B_OK) {
++        BMessage message(B_WEBKIT_JAVASCRIPT_RESULT);
++        message.AddUInt64("identifier", identifier);
++        message.AddString("error", "The view has no page");
++        reply.SendMessage(&message, static_cast<BHandler*>(nullptr), 0);
++        return;
++    }
++    RunLoop::mainSingleton().dispatch([state = m_state, source = copyTextHaiku(source), reply, identifier, expectedGeneration] {
++        BMessage message(B_WEBKIT_JAVASCRIPT_RESULT);
++        message.AddMessenger("view", viewOfStateHaiku(state));
++        message.AddUInt64("identifier", identifier);
++        message.AddUInt64("generation", expectedGeneration);
++        auto* page = pageHaiku(state);
++        if (!page || state->load.generation != expectedGeneration || state->load.pending) {
++            message.AddString("error", "The document changed");
++            reply.SendMessage(&message, static_cast<BHandler*>(nullptr), 0);
++            return;
++        }
++        auto string = IPC::TransferString::create(stringHaiku(source));
++        if (!string) {
++            message.AddString("error", "Out of memory");
++            reply.SendMessage(&message, static_cast<BHandler*>(nullptr), 0);
++            return;
++        }
++        auto world = API::ContentWorld::createNamelessWorld({ ContentWorldOption::DisableLegacyBuiltinOverrides });
++        WebKit::RunJavaScriptParameters parameters { WTF::move(*string), JSC::SourceTaintedOrigin::Untainted, URL { },
++            RunAsAsyncFunction::No, std::nullopt, ForceUserGesture::No, RemoveTransientActivation::No };
++        page->runJavaScriptInFrameInScriptWorld(WTF::move(parameters), std::nullopt, world, true,
++            [state, world, message = WTF::move(message), reply, expectedGeneration](auto&& result) mutable {
++                if (state->closed || state->load.generation != expectedGeneration || state->load.pending)
++                    message.AddString("error", "The document changed");
++                else if (result)
++                    addScriptValueHaiku(message, WTF::move(*result), "result", "result_type");
++                else
++                    message.AddString("error", "Could not inspect this document");
++                reply.SendMessage(&message, static_cast<BHandler*>(nullptr), 0);
++            });
 +    });
 +}
 +
