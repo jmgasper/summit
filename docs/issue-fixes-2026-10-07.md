@@ -3,7 +3,8 @@
 ## Follow-up issues #43–#49
 
 Seven additional issues appeared after the original deployment. #43 and #44
-are verified in `bundle-a7988kyv`; #45–#49 and the requested six-hour
+are verified in `bundle-a7988kyv`; #49 is verified in `bundle-a3u9gkoe`.
+#45–#48 and the requested six-hour
 performance session remain to be completed. The desktop launcher still selects
 the original deployment until the next installation.
 
@@ -19,9 +20,23 @@ the original deployment until the next installation.
   Certificate checks (72) and reader checks (79) pass on X399, and the native
   screenshot confirms the lock's placement. Tests quit their own browser
   instances without leaving helpers or new crash reports.
+- **#49:** Native pages enable `rel=prefetch` by default, with
+  `SUMMIT_PREFETCH=0` and extension privacy overrides honored. Link completion
+  delivers load/error events, HTTP error responses complete the fetch, and
+  the temporary cross-origin cache respects `Cache-Control: no-store`.
+  All 96 native checks in `tools/bench/test-prefetch.py` pass: actual requests,
+  same/cross-origin cache reuse, no-store reloads, dynamic href, CSP, transport
+  and HTTP failures, default credentials, disabling and process cleanup.
+  The extension privacy regression passes five HTTPS rounds and all twelve
+  API commands, with no new crash reports or leftover helpers. Its test
+  accepts both null (WebKit) and undefined (Chromium) for an absent lastError.
+  Engine patch SHA-256:
+  `11d81674a41dbd78749a5e36a6a5d2f804e75a3b85538bdcffd217432d37b614`.
 
 Evidence: `.vm/issues43-49/{certificates,reader}.json`,
-`fullscreen-checks.json`, `fullscreen.log` and `.vm/issue41-viewer.png`.
+`fullscreen-checks.json`, `fullscreen.log`,
+`prefetch-final-credentials/results.json`, `privacy-results.json` and
+`.vm/issue41-viewer.png`.
 
 ## Original issues #31–#42
 

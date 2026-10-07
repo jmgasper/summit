@@ -46,7 +46,9 @@ try {
                     });
                     await pause();
                     reply.callbacks = callbacks;
-                    reply.lastErrorCleared = chrome.runtime.lastError === undefined;
+                    // WebKit's `any` binding maps an absent native JSValue to
+                    // null; Chromium uses undefined. Both mean no lastError.
+                    reply.lastErrorCleared = chrome.runtime.lastError == null;
                     if (callbacks !== 1 || !reply.lastErrorCleared)
                         throw new Error('Callback count or runtime.lastError lifetime is invalid');
                     if (callbackError) throw new Error(callbackError);

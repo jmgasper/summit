@@ -11222,6 +11222,28 @@ index 9ca0df74c9d224f9cde8226eda2e99798d08dd72..513838e5185fd7a4f44913114cb28d8d
      Ref document = this->document();
  #if ENABLE(WEBGL)
      if (RefPtr context = dynamicDowncast<WebGLRenderingContextBase>(m_context.get())) {
+diff --git a/Source/WebCore/html/HTMLLinkElement.cpp b/Source/WebCore/html/HTMLLinkElement.cpp
+index aeb17770f3e1e6fca6f5efc89419a0895221014b..dbb756d88aeab3b8845f4c58ecdc7e446e65e720 100644
+--- a/Source/WebCore/html/HTMLLinkElement.cpp
++++ b/Source/WebCore/html/HTMLLinkElement.cpp
+@@ -671,13 +671,17 @@ bool HTMLLinkElement::mediaAttributeMatches() const
+ void HTMLLinkElement::linkLoaded()
+ {
+     m_loadedResource = true;
++#if !PLATFORM(HAIKU)
+     if (!m_relAttribute.isLinkPrefetch || m_allowPrefetchLoadAndErrorForTesting)
++#endif
+         linkLoadEventSenderSingleton().dispatchEventSoon(*this, eventNames().loadEvent);
+ }
+ 
+ void HTMLLinkElement::linkLoadingErrored()
+ {
++#if !PLATFORM(HAIKU)
+     if (!m_relAttribute.isLinkPrefetch || m_allowPrefetchLoadAndErrorForTesting)
++#endif
+         linkLoadEventSenderSingleton().dispatchEventSoon(*this, eventNames().errorEvent);
+ }
+ 
 diff --git a/Source/WebCore/html/HTMLMediaElement.cpp b/Source/WebCore/html/HTMLMediaElement.cpp
 index 81443b80c390626d0f6b2521a34c815f323f7445..fa1fa73cf709fe6dc417fe63c5c7659526a38025 100644
 --- a/Source/WebCore/html/HTMLMediaElement.cpp
@@ -12829,7 +12851,7 @@ index f3b3bec602b4042b1062e51ae41f638fa912107f..94021e6ade6d8c6a84ce6c763a73531e
      Ref protectedElement = element();
      Ref document = protectedElement->document();
 diff --git a/Source/WebCore/loader/LinkLoader.cpp b/Source/WebCore/loader/LinkLoader.cpp
-index f55175ed13b2e6a618d50857d2c4c5d144af6c1f..37fec93ccd1cb2b9e73753071580192383e7c088 100644
+index f55175ed13b2e6a618d50857d2c4c5d144af6c1f..699936e2924ef36b5308e228fc3fb9e264ff034f 100644
 --- a/Source/WebCore/loader/LinkLoader.cpp
 +++ b/Source/WebCore/loader/LinkLoader.cpp
 @@ -465,10 +465,11 @@ RefPtr<LinkPreloadResourceClient> LinkLoader::preloadIfNeeded(const LinkLoadPara
@@ -12846,6 +12868,20 @@ index f55175ed13b2e6a618d50857d2c4c5d144af6c1f..37fec93ccd1cb2b9e737530715801923
      std::optional<ResourceLoadPriority> priority;
      CachedResource::Type type = CachedResource::Type::LinkPrefetch;
  
+@@ -490,8 +491,12 @@ void LinkLoader::prefetchIfNeeded(const LinkLoadParameters& params, Document& do
+     options.nonce = params.nonce;
+     if (auto result = protect(document.cachedResourceLoader())->requestLinkResource(type, CachedResourceRequest(ResourceRequest { document.encodingParseURL(params.href.string()) }, options, priority)))
+         m_cachedLinkResource = WTF::move(result.value());
+-    else
++    else {
+         m_cachedLinkResource = nullptr;
++#if PLATFORM(HAIKU)
++        triggerError();
++#endif
++    }
+     if (RefPtr cachedLinkResource = m_cachedLinkResource)
+         cachedLinkResource->addClient(*this);
+ }
 diff --git a/Source/WebCore/loader/PingLoader.cpp b/Source/WebCore/loader/PingLoader.cpp
 index e69e189f9699bf73efc5201d4f225fb3a73311e0..741032d3cafd533e8f6f4fd795db74bbf9dff5ab 100644
 --- a/Source/WebCore/loader/PingLoader.cpp
@@ -13003,6 +13039,32 @@ index 3dbc23ec4a0818ed58ab2e0b2648056ab360a2ff..43bca3f24c6e34564fc700b21a38745d
  
      ResourceRequest m_request;
      ResourceRequest m_originalRequest; // Before redirects.
+diff --git a/Source/WebCore/loader/SubresourceLoader.cpp b/Source/WebCore/loader/SubresourceLoader.cpp
+index 93a69eb328e3aff594509a95e65d350644013cbc..fa8b6eefc90787dbfabb67b53f702fef1fad28f4 100644
+--- a/Source/WebCore/loader/SubresourceLoader.cpp
++++ b/Source/WebCore/loader/SubresourceLoader.cpp
+@@ -583,7 +583,7 @@ void SubresourceLoader::didReceiveBuffer(const FragmentedSharedBuffer& buffer, l
+     RefPtr resource = m_resource;
+     ASSERT(resource);
+ 
+-    if (resource->response().httpStatusCode() >= httpStatus400BadRequest && !resource->shouldIgnoreHTTPStatusCodeErrors())
++    if (responseHasHTTPStatusCodeError())
+         return;
+     ASSERT(!resource->resourceToRevalidate());
+     ASSERT(!resource->errorOccurred());
+@@ -605,6 +605,12 @@ void SubresourceLoader::didReceiveBuffer(const FragmentedSharedBuffer& buffer, l
+ bool SubresourceLoader::responseHasHTTPStatusCodeError() const
+ {
+     RefPtr resource = m_resource;
++#if PLATFORM(HAIKU)
++    // Prefetch reports network failures, not HTTP error statuses. A fetched
++    // 404 response is still a completed fetch and fires the link's load event.
++    if (resource->type() == CachedResource::Type::LinkPrefetch)
++        return false;
++#endif
+     if (resource->response().httpStatusCode() < httpStatus400BadRequest || resource->shouldIgnoreHTTPStatusCodeErrors())
+         return false;
+     return true;
 diff --git a/Source/WebCore/loader/haiku/PDFJSResourcesHaiku.h b/Source/WebCore/loader/haiku/PDFJSResourcesHaiku.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..447fb46775db9899147977d777de40f9e4827cf4
@@ -58418,7 +58480,7 @@ index 5a8bebfa4fb03b8ed66afe52ec6ea95d97a987ac..7595c5866ece87286d0992e64c684ede
 +#endif
  }
 diff --git a/Source/WebKit/NetworkProcess/NetworkResourceLoader.cpp b/Source/WebKit/NetworkProcess/NetworkResourceLoader.cpp
-index 0ecf172b29e1ba69a2573c3de5351f86e5a4ef0e..1634f6c5322984ff960dd0f778579598d619fa51 100644
+index 0ecf172b29e1ba69a2573c3de5351f86e5a4ef0e..12341ff7480d381c8eb430e1df7c2de05c911d2a 100644
 --- a/Source/WebKit/NetworkProcess/NetworkResourceLoader.cpp
 +++ b/Source/WebKit/NetworkProcess/NetworkResourceLoader.cpp
 @@ -115,6 +115,14 @@
@@ -58785,6 +58847,19 @@ index 0ecf172b29e1ba69a2573c3de5351f86e5a4ef0e..1634f6c5322984ff960dd0f778579598
          if (shouldSendResourceLoadMessages() && !newRequest.isNull())
              protect(connectionToWebProcess().networkProcess())->parentProcessConnection()->send(Messages::NetworkProcessProxy::ResourceLoadDidPerformHTTPRedirection(webPageProxyID(), resourceLoadInfo(), m_redirectResponse, newRequest), 0);
  
+@@ -2344,6 +2629,12 @@ void NetworkResourceLoader::tryStoreAsCacheEntry()
+     }
+ 
+     if (isCrossOriginPrefetch()) {
++#if PLATFORM(HAIKU)
++        // The transient prefetch cache must honor no-store just as the normal
++        // HTTP cache does; it otherwise retains the body for a later navigation.
++        if (m_response.cacheControlContainsNoStore())
++            return;
++#endif
+         if (CheckedPtr session = protect(connectionToWebProcess().networkProcess())->networkSession(sessionID())) {
+             LOADER_RELEASE_LOG("tryStoreAsCacheEntry: Storing entry in prefetch cache");
+             session->prefetchCache().store(m_networkLoad->currentRequest().url(), WTF::move(m_response), m_privateRelayed, m_bufferedDataForCache.takeBuffer());
 diff --git a/Source/WebKit/NetworkProcess/NetworkResourceLoader.h b/Source/WebKit/NetworkProcess/NetworkResourceLoader.h
 index 867bf9c5ec02bd497e31cbd97fc869fcd5933434..239ed3af2cc6aa5014808c166247a4d4fbc71d52 100644
 --- a/Source/WebKit/NetworkProcess/NetworkResourceLoader.h
@@ -100934,10 +101009,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..ae2ef9978c7ea5c30f3ad8bbc322134dacf5117e
+index 0000000000000000000000000000000000000000..f30f510fbe89f2e9d104fe2cccfe30835a979101
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,2458 @@
+@@ -0,0 +1,2463 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -102314,6 +102389,11 @@ index 0000000000000000000000000000000000000000..ae2ef9978c7ea5c30f3ad8bbc322134d
 +    const bool preconnectEnabled = !preconnect || std::strcmp(preconnect, "0");
 +    configuration->preferences().setLinkPreconnect(preconnectEnabled);
 +    configuration->preferences().setLinkPreconnectEarlyHintsEnabled(preconnectEnabled);
++    // LinkLoader and the network cache already implement rel=prefetch. Enable
++    // it for native pages as well; extension privacy.network overrides still
++    // take precedence through WebPageProxy's per-page preferences store.
++    const char* prefetch = std::getenv("SUMMIT_PREFETCH");
++    configuration->preferences().setLinkPrefetchEnabled(!prefetch || std::strcmp(prefetch, "0"));
 +    // navigator.storage (estimate, persist), on by default for GTK and WPE;
 +    // web apps and extensions (OneTab) call it unguarded.
 +    configuration->preferences().setStorageAPIEnabled(true);
