@@ -21,6 +21,7 @@ ENGINE = SOURCE / 'WebKitBuild/Modern'
 ICU = pathlib.Path('/boot/home/summit-deps/icu78')
 LIBZIP = pathlib.Path('/boot/home/summit-deps/libzip-1.11.4')
 IMAGE_CODECS = pathlib.Path('/boot/home/summit-deps/image-codecs-20261006')
+FFMPEG_HEADERS = pathlib.Path('/boot/home/summit-deps/ffmpeg-6.1.2-headers')
 # The browser's developer tools show text with the system's Scintilla and
 # Lexilla. They are copied into the bundle, so that it runs where those
 # packages are not installed.
@@ -137,10 +138,21 @@ def engine_inputs(inputs):
             if not path.is_relative_to(IMAGE_CODECS) or '..' in pathlib.Path(relative).parts or digest(path) != expected_hash:
                 raise RuntimeError('Private codec input differs from its manifest: ' + relative)
             paths.append(path)
+    if cache.get('ENABLE_MEDIA_SOURCE') == 'ON' and 'ffmpeg_headers' in inputs:
+        report_path = FFMPEG_HEADERS / 'summit-dependency-manifest.json'
+        report = json.loads(report_path.read_text())
+        if inputs['ffmpeg_headers']['version'] != '6.1.2' or report.get('lock_sha256') != digest(ROOT / 'engine/ffmpeg-headers.lock.json'):
+            raise RuntimeError('Public FFmpeg headers differ from the locked dependency')
+        paths.append(report_path)
+        for relative, expected_hash in report['files'].items():
+            path = FFMPEG_HEADERS / relative
+            if not path.is_relative_to(FFMPEG_HEADERS) or '..' in pathlib.Path(relative).parts or digest(path) != expected_hash:
+                raise RuntimeError('Public FFmpeg header differs from its manifest: ' + relative)
+            paths.append(path)
     configuration = dict(expected)
     for key in ('USE_MIMALLOC', 'USE_SYSTEM_MALLOC', 'USE_SKIA',
                 'USE_HAIKU_GL_COMPOSITING', 'ENABLE_ASYNC_SCROLLING', 'CMAKE_CXX_FLAGS',
-                'ENABLE_FULLSCREEN_API', 'ENABLE_OFFSCREEN_CANVAS',
+                'ENABLE_MEDIA_SOURCE', 'ENABLE_FULLSCREEN_API', 'ENABLE_OFFSCREEN_CANVAS',
                 'ENABLE_OFFSCREEN_CANVAS_IN_WORKERS', 'ENABLE_WEBGL', 'USE_JPEGXL', 'USE_HEIF', 'USE_JPEGXR'):
         configuration[key] = cache.get(key)
     return configuration, paths
@@ -239,6 +251,17 @@ def freeze(work, inputs, commands, before, configuration, build, executable_name
             if digest(bundle / 'licenses/libzip/zip.h') != before[str(LIBZIP / 'include/zip.h')]:
                 raise RuntimeError('The libzip license header changed during copying')
             assets.append('licenses/libzip/zip.h')
+        if 'ffmpeg_headers' in inputs and configuration.get('ENABLE_MEDIA_SOURCE') == 'ON':
+            for source in sorted((FFMPEG_HEADERS / 'share/licenses').rglob('*')):
+                if not source.is_file():
+                    continue
+                relative = 'licenses/' + str(source.relative_to(FFMPEG_HEADERS / 'share/licenses'))
+                destination = bundle / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, destination)
+                if digest(destination) != before[str(source)]:
+                    raise RuntimeError('The FFmpeg header license changed during copying')
+                assets.append(relative)
         if with_codecs:
             for source in sorted((IMAGE_CODECS / 'share/licenses').rglob('*')):
                 if not source.is_file():

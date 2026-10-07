@@ -8334,10 +8334,10 @@ index 0000000000000000000000000000000000000000..48e19a5957df4c1ae60378dd9a84cbe4
 +/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
 +enum USBTransferStatus { "ok", "stall", "babble" };
 diff --git a/Source/WebCore/PlatformHaiku.cmake b/Source/WebCore/PlatformHaiku.cmake
-index 16a88804a1baa39ccdd9fc2870b6e2524d941298..8b5ae364f08cbaf95c11e563439e34b9697c4951 100644
+index 16a88804a1baa39ccdd9fc2870b6e2524d941298..796466d49a0dcd8736bc096023f465221fef1a06 100644
 --- a/Source/WebCore/PlatformHaiku.cmake
 +++ b/Source/WebCore/PlatformHaiku.cmake
-@@ -1,52 +1,354 @@
+@@ -1,52 +1,365 @@
 +include(platform/Haiku.cmake)
  include(platform/ImageDecoders.cmake)
  include(platform/OpenSSL.cmake)
@@ -8629,6 +8629,17 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..8b5ae364f08cbaf95c11e563439e34b9
 +    )
 +endif ()
 +
++# TS demuxing uses version-checked public FFmpeg APIs at runtime. Keep the
++# dependency's headers local to this source, without rebuilding every PCH user.
++if (ENABLE_MEDIA_SOURCE)
++    find_path(HaikuFFmpeg_INCLUDE_DIR libavformat/avformat.h
++        HINTS /boot/home/summit-deps/ffmpeg-6.1.2-headers/include REQUIRED)
++    list(APPEND WebCore_SOURCES platform/graphics/haiku/MPEGTSParserHaiku.cpp)
++    set_source_files_properties(platform/graphics/haiku/MPEGTSParserHaiku.cpp PROPERTIES
++        INCLUDE_DIRECTORIES "${HaikuFFmpeg_INCLUDE_DIR}"
++        SKIP_PRECOMPILE_HEADERS ON)
++endif ()
++
 +# WebRTC through libwebrtc (Source/ThirdParty/libwebrtc, built for Haiku by
 +# its CMakeLists.txt), with libyuv for picture conversions, and libvpx, Opus
 +# and libwebm from the same tree for MediaRecorder.
@@ -8698,7 +8709,7 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..8b5ae364f08cbaf95c11e563439e34b9
    textencoding
    translation
    ${WEBP_LIBRARIES}
-@@ -61,6 +363,236 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
+@@ -61,6 +374,236 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
    ${SQLITE_INCLUDE_DIR}
    ${WEBP_INCLUDE_DIRS}
    ${ZLIB_INCLUDE_DIRS}
@@ -27044,6 +27055,904 @@ index 0000000000000000000000000000000000000000..25b7a88fac963dbb273a0059ee216443
 +};
 +
 +} // namespace SummitMPEGAudio
+diff --git a/Source/WebCore/platform/graphics/haiku/MPEGTSParserHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MPEGTSParserHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..6fb52a9bf3c3186814fe664893f99342c8fca48a
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/haiku/MPEGTSParserHaiku.cpp
+@@ -0,0 +1,839 @@
++/*
++ * Copyright (C) 2026 Summit contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHORS ``AS IS'' AND ANY EXPRESS OR
++ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
++ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
++ * IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DAMAGES ARISING FROM USE.
++ */
++
++#if __has_include("config.h")
++#include "config.h"
++#endif
++#include "MPEGTSParserHaiku.h"
++
++extern "C" {
++#include <libavformat/avformat.h>
++#include <libavcodec/avcodec.h>
++#include <libavutil/mem.h>
++}
++#include <algorithm>
++#include <condition_variable>
++#include <cstring>
++#include <dlfcn.h>
++#include <limits>
++#include <map>
++#include <mutex>
++#include <thread>
++#include <variant>
++
++namespace SummitMPEGTS {
++namespace {
++
++// These are installed public headers, never private copies of FFmpeg structs.
++// Loading only their exact ABI versions avoids interpreting a newer layout.
++static_assert(LIBAVFORMAT_VERSION_MAJOR == 60 && LIBAVCODEC_VERSION_MAJOR == 60 && LIBAVUTIL_VERSION_MAJOR == 58);
++#define FORMAT_FUNCTIONS(F) F(avformat_version) F(avformat_alloc_context) F(avio_alloc_context) F(avformat_open_input) F(av_find_input_format) F(avformat_find_stream_info) F(av_read_frame) F(avformat_close_input) F(avio_context_free)
++#define CODEC_FUNCTIONS(F) F(avcodec_version) F(av_packet_alloc) F(av_packet_free) F(av_packet_unref) F(av_get_audio_frame_duration2)
++#define UTIL_FUNCTIONS(F) F(avutil_version) F(av_malloc) F(av_free) F(av_dict_set) F(av_dict_free)
++struct API {
++#define DECLARE(name) decltype(&::name) name { nullptr };
++    FORMAT_FUNCTIONS(DECLARE)
++    CODEC_FUNCTIONS(DECLARE)
++    UTIL_FUNCTIONS(DECLARE)
++#undef DECLARE
++    bool ready { false };
++    API()
++    {
++        auto* format = dlopen("libavformat.so.60", RTLD_NOW | RTLD_LOCAL);
++        auto* codec = dlopen("libavcodec.so.60", RTLD_NOW | RTLD_LOCAL);
++        auto* util = dlopen("libavutil.so.58", RTLD_NOW | RTLD_LOCAL);
++        if (!format || !codec || !util)
++            return;
++#define LOAD_FORMAT(name) name = reinterpret_cast<decltype(name)>(dlsym(format, #name)); if (!name) return;
++#define LOAD_CODEC(name) name = reinterpret_cast<decltype(name)>(dlsym(codec, #name)); if (!name) return;
++#define LOAD_UTIL(name) name = reinterpret_cast<decltype(name)>(dlsym(util, #name)); if (!name) return;
++        FORMAT_FUNCTIONS(LOAD_FORMAT)
++        CODEC_FUNCTIONS(LOAD_CODEC)
++        UTIL_FUNCTIONS(LOAD_UTIL)
++#undef LOAD_FORMAT
++#undef LOAD_CODEC
++#undef LOAD_UTIL
++        ready = (avformat_version() >> 16) == 60 && (avcodec_version() >> 16) == 60 && (avutil_version() >> 16) == 58;
++    }
++};
++#undef FORMAT_FUNCTIONS
++#undef CODEC_FUNCTIONS
++#undef UTIL_FUNCTIONS
++API& api()
++{
++    static API instance;
++    return instance;
++}
++
++constexpr size_t maxPacketBytes = 16 * 1024 * 1024;
++constexpr size_t maxOutputBytes = 32 * 1024 * 1024;
++constexpr uint32_t audioRates[] = { 96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350 };
++
++std::optional<int64_t> rescale(int64_t value, AVRational source, uint32_t destination)
++{
++    if (value == AV_NOPTS_VALUE || source.num <= 0 || source.den <= 0 || !destination)
++        return std::nullopt;
++    __int128 numerator = static_cast<__int128>(value) * source.num * destination;
++    numerator += numerator >= 0 ? source.den / 2 : -source.den / 2;
++    __int128 result = numerator / source.den;
++    if (result <= INT64_MIN || result >= INT64_MAX)
++        return std::nullopt;
++    return static_cast<int64_t>(result);
++}
++
++// Annex B to length-prefixed access units. Keeping avcC and this sample layout
++// lets the existing Media Kit NVDEC/Raspberry Pi H.264 paths take TS streams.
++std::vector<std::vector<uint8_t>> nalUnits(const uint8_t* bytes, size_t size)
++{
++    std::vector<std::vector<uint8_t>> units;
++    auto startCode = [&](size_t position) -> size_t {
++        if (position + 3 <= size && !bytes[position] && !bytes[position + 1]) {
++            if (bytes[position + 2] == 1)
++                return 3;
++            if (position + 4 <= size && !bytes[position + 2] && bytes[position + 3] == 1)
++                return 4;
++        }
++        return 0;
++    };
++    size_t position = 0;
++    while (position < size && !startCode(position)) {
++        if (bytes[position++])
++            return { };
++    }
++    while (position < size) {
++        size_t begin = position + startCode(position);
++        position = begin;
++        while (position < size && !startCode(position))
++            ++position;
++        size_t end = position;
++        while (end > begin && !bytes[end - 1])
++            --end;
++        if (end == begin || units.size() >= 4096)
++            return { };
++        units.emplace_back(bytes + begin, bytes + end);
++    }
++    return units;
++}
++
++bool makeAVCConfiguration(const uint8_t* bytes, size_t size, std::vector<uint8_t>& output)
++{
++    auto units = nalUnits(bytes, size);
++    std::vector<std::vector<uint8_t>> sps, pps;
++    for (auto& unit : units) {
++        if (unit.size() > 65535)
++            return false;
++        if ((unit[0] & 31) == 7)
++            sps.push_back(std::move(unit));
++        else if ((unit[0] & 31) == 8)
++            pps.push_back(std::move(unit));
++    }
++    if (sps.empty() || pps.empty() || sps.size() > 31 || pps.size() > 255 || sps.front().size() < 4)
++        return false;
++    output = { 1, sps[0][1], sps[0][2], sps[0][3], 0xff, static_cast<uint8_t>(0xe0 | sps.size()) };
++    auto append = [&](auto& list) {
++        for (auto& unit : list) {
++            output.push_back(unit.size() >> 8);
++            output.push_back(unit.size() & 255);
++            output.insert(output.end(), unit.begin(), unit.end());
++        }
++    };
++    append(sps);
++    output.push_back(pps.size());
++    append(pps);
++    return true;
++}
++
++bool lengthPrefixAVC(std::vector<uint8_t>& bytes)
++{
++    auto units = nalUnits(bytes.data(), bytes.size());
++    if (units.empty())
++        return false;
++    std::vector<uint8_t> result;
++    result.reserve(bytes.size() + units.size());
++    for (auto& unit : units) {
++        uint32_t size = unit.size();
++        result.insert(result.end(), { static_cast<uint8_t>(size >> 24), static_cast<uint8_t>(size >> 16), static_cast<uint8_t>(size >> 8), static_cast<uint8_t>(size) });
++        result.insert(result.end(), unit.begin(), unit.end());
++    }
++    bytes = std::move(result);
++    return true;
++}
++
++// Validate transport structure before handing it to a demuxer that deliberately
++// tolerates broadcast damage. MSE requires append errors for damaged transport
++// packets, multiple programs, incomplete PES/PSI, missing PTS and missing PCR.
++class TransportValidator {
++public:
++    bool append(const uint8_t* bytes, size_t size, std::vector<uint8_t>& output)
++    {
++        if (m_failed || (size && !bytes))
++            return false;
++        while (size) {
++            size_t amount = std::min(size, m_packet.size() - m_packetSize);
++            std::memcpy(m_packet.data() + m_packetSize, bytes, amount);
++            m_packetSize += amount;
++            bytes += amount;
++            size -= amount;
++            if (m_packetSize == m_packet.size()) {
++                m_packetSize = 0;
++                m_duplicate = false;
++                if (!packet()) {
++                    m_failed = true;
++                    return false;
++                }
++                if (!m_duplicate)
++                    output.insert(output.end(), m_packet.begin(), m_packet.end());
++            }
++        }
++        return true;
++    }
++
++    bool finish()
++    {
++        if (m_failed || m_packetSize || !m_havePAT || !m_havePMT)
++            return false;
++        for (auto& [pid, state] : m_pids) {
++            if (!state.section.empty() || (state.pesStarted && (!state.headerComplete
++                || (state.pesLength && state.pesBytes != state.pesLength))))
++                return false;
++        }
++        return true;
++    }
++
++private:
++    struct PIDState {
++        bool counterKnown { false };
++        uint8_t counter { 0 };
++        std::array<uint8_t, 188> previous { };
++        std::vector<uint8_t> section;
++        size_t sectionLength { 0 };
++        std::array<uint8_t, 264> pesHeader { };
++        size_t headerBytes { 0 };
++        size_t headerLength { 0 };
++        size_t pesBytes { 0 };
++        size_t pesLength { 0 };
++        bool pesStarted { false };
++        bool headerComplete { false };
++    };
++
++    static uint32_t crc(const std::vector<uint8_t>& bytes)
++    {
++        uint32_t value = 0xffffffff;
++        for (auto byte : bytes) {
++            value ^= uint32_t(byte) << 24;
++            for (unsigned bit = 0; bit < 8; ++bit)
++                value = value & 0x80000000 ? value << 1 ^ 0x04c11db7 : value << 1;
++        }
++        return value;
++    }
++
++    bool section(uint16_t pid, const std::vector<uint8_t>& bytes)
++    {
++        if (bytes.size() < 12 || !(bytes[1] & 0x80) || (bytes[1] & 0x40) || crc(bytes))
++            return false;
++        if (!(bytes[5] & 1))
++            return true; // A future table is not the active initialization.
++        if (bytes[6] || bytes[7])
++            return false;
++        size_t end = bytes.size() - 4;
++        if (!pid) {
++            if (bytes[0] || (end - 8) % 4)
++                return false;
++            unsigned programs = 0;
++            uint16_t program = 0, pmt = 0;
++            for (size_t position = 8; position < end; position += 4) {
++                uint16_t number = uint16_t(bytes[position]) << 8 | bytes[position + 1];
++                if (!number)
++                    continue; // Network information table.
++                if (++programs > 1)
++                    return false;
++                program = number;
++                pmt = uint16_t(bytes[position + 2] & 31) << 8 | bytes[position + 3];
++            }
++            if (programs != 1 || pmt < 16 || pmt == 8191)
++                return false;
++            // Repeated identical PSI is common (including at every frame).
++            if (m_havePAT && (program != m_program || pmt != m_pmtPID))
++                return false; // Requires a new parser initialization.
++            m_program = program;
++            m_pmtPID = pmt;
++            m_havePAT = true;
++            return true;
++        }
++        if (!m_havePAT || pid != m_pmtPID || bytes[0] != 2 || end < 12
++            || (uint16_t(bytes[3]) << 8 | bytes[4]) != m_program)
++            return false;
++        uint16_t pcr = uint16_t(bytes[8] & 31) << 8 | bytes[9];
++        size_t position = 12 + (size_t(bytes[10] & 15) << 8 | bytes[11]);
++        if (position > end)
++            return false;
++        std::map<uint16_t, uint8_t> streams;
++        while (position < end) {
++            if (end - position < 5 || streams.size() >= 32)
++                return false;
++            uint8_t type = bytes[position];
++            uint16_t id = uint16_t(bytes[position + 1] & 31) << 8 | bytes[position + 2];
++            size_t descriptors = size_t(bytes[position + 3] & 15) << 8 | bytes[position + 4];
++            if (id < 16 || id == 8191 || id == m_pmtPID || descriptors > end - position - 5 || !streams.emplace(id, type).second)
++                return false;
++            position += 5 + descriptors;
++        }
++        if (streams.empty() || pcr == 8191)
++            return false;
++        if (m_havePMT && (pcr != m_pcrPID || streams != m_streams))
++            return false; // A changed track topology requires a new init.
++        m_streams = std::move(streams);
++        m_pcrPID = pcr;
++        m_havePMT = true;
++        return true;
++    }
++
++    bool psi(uint16_t pid, PIDState& state, const uint8_t* bytes, size_t size, bool start)
++    {
++        if (start) {
++            if (!size || bytes[0] > size - 1)
++                return false;
++            size_t pointer = *bytes++;
++            --size;
++            if (!state.section.empty()) {
++                if (!psi(pid, state, bytes, pointer, false) || !state.section.empty())
++                    return false;
++            }
++            bytes += pointer;
++            size -= pointer;
++        } else if (state.section.empty())
++            return true;
++        while (size) {
++            if (state.section.empty() && *bytes == 0xff)
++                return std::all_of(bytes, bytes + size, [](auto value) { return value == 0xff; });
++            state.section.push_back(*bytes++);
++            --size;
++            if (state.section.size() == 3) {
++                state.sectionLength = 3 + (size_t(state.section[1] & 15) << 8 | state.section[2]);
++                if (state.sectionLength < 12 || state.sectionLength > 1024)
++                    return false;
++            }
++            if (state.sectionLength && state.section.size() == state.sectionLength) {
++                if (!section(pid, state.section))
++                    return false;
++                state.section.clear();
++                state.sectionLength = 0;
++            }
++        }
++        return true;
++    }
++
++    bool pes(PIDState& state, const uint8_t* bytes, size_t size, bool start)
++    {
++        if (start) {
++            if (state.pesStarted && (!state.headerComplete || (state.pesLength && state.pesBytes != state.pesLength)))
++                return false;
++            if (!m_havePCR)
++                return false;
++            state.pesStarted = true;
++            state.headerComplete = false;
++            state.headerBytes = state.headerLength = state.pesBytes = state.pesLength = 0;
++        }
++        if (!state.pesStarted)
++            return false;
++        if (size > maxPacketBytes - state.pesBytes)
++            return false;
++        state.pesBytes += size;
++        for (size_t position = 0; !state.headerComplete && position < size; ++position) {
++            if (state.headerBytes == state.pesHeader.size())
++                return false;
++            state.pesHeader[state.headerBytes++] = bytes[position];
++            auto* header = state.pesHeader.data();
++            if (state.headerBytes == 9) {
++                if (header[0] || header[1] || header[2] != 1 || (header[6] & 0xc0) != 0x80
++                    || (header[7] & 0xc0) < 0x80 || header[8] < ((header[7] & 0xc0) == 0xc0 ? 10 : 5))
++                    return false;
++                size_t length = size_t(header[4]) << 8 | header[5];
++                state.pesLength = length ? length + 6 : 0;
++                state.headerLength = 9 + header[8];
++                if (state.pesLength && state.headerLength > state.pesLength)
++                    return false;
++            }
++            if (state.headerLength && state.headerBytes == state.headerLength) {
++                unsigned prefix = header[7] >> 6;
++                if ((header[9] >> 4) != prefix || !(header[9] & 1) || !(header[11] & 1) || !(header[13] & 1))
++                    return false;
++                if (prefix == 3 && ((header[14] >> 4) != 1 || !(header[14] & 1) || !(header[16] & 1) || !(header[18] & 1)))
++                    return false;
++                state.headerComplete = true;
++            }
++        }
++        return !state.pesLength || state.pesBytes <= state.pesLength;
++    }
++
++    bool packet()
++    {
++        auto* bytes = m_packet.data();
++        if (bytes[0] != 0x47 || (bytes[1] & 0x80) || (bytes[3] & 0xc0))
++            return false;
++        uint16_t pid = uint16_t(bytes[1] & 31) << 8 | bytes[2];
++        unsigned control = bytes[3] >> 4 & 3;
++        if (!control)
++            return false;
++        size_t offset = 4;
++        bool discontinuity = false, pcr = false;
++        if (control & 2) {
++            size_t length = bytes[offset++];
++            if (length > 188 - offset || (control == 2 && length != 183))
++                return false;
++            if (length) {
++                discontinuity = bytes[offset] & 0x80;
++                pcr = bytes[offset] & 0x10;
++                if (pcr && length < 7)
++                    return false;
++            }
++            offset += length;
++        }
++        bool isPSI = !pid || (m_havePAT && pid == m_pmtPID);
++        bool isMedia = m_havePMT && m_streams.contains(pid);
++        if (!isPSI && !isMedia && (!m_havePMT || pid != m_pcrPID))
++            return true;
++        auto& state = m_pids[pid];
++        if (discontinuity) {
++            state.counterKnown = false;
++            if (pid == m_pcrPID)
++                m_havePCR = false;
++        }
++        if (pcr && m_havePMT && pid == m_pcrPID)
++            m_havePCR = true;
++        if (!(control & 1))
++            return true;
++        if (offset == 188)
++            return false;
++        uint8_t counter = bytes[3] & 15;
++        if (state.counterKnown) {
++            if (counter == state.counter && state.previous == m_packet) {
++                m_duplicate = true;
++                return true;
++            }
++            if (counter != ((state.counter + 1) & 15))
++                return false;
++        }
++        state.counterKnown = true;
++        state.counter = counter;
++        state.previous = m_packet;
++        bool start = bytes[1] & 0x40;
++        if (isPSI)
++            return psi(pid, state, bytes + offset, 188 - offset, start);
++        if (isMedia) {
++            auto type = m_streams[pid];
++            // Sections such as SCTE-35 are SI rather than PES media data.
++            if (type == 0x05 || type == 0x0b || type == 0x0d || type == 0x86)
++                return true;
++            return pes(state, bytes + offset, 188 - offset, start);
++        }
++        return true;
++    }
++
++    std::array<uint8_t, 188> m_packet { };
++    size_t m_packetSize { 0 };
++    bool m_failed { false };
++    bool m_duplicate { false };
++    bool m_havePAT { false };
++    bool m_havePMT { false };
++    bool m_havePCR { false };
++    uint16_t m_program { 0 };
++    uint16_t m_pmtPID { 0 };
++    uint16_t m_pcrPID { 0 };
++    std::map<uint16_t, uint8_t> m_streams;
++    std::map<uint16_t, PIDState> m_pids;
++};
++
++} // namespace
++
++struct Parser::Impl {
++    explicit Impl(Parser& parser) : owner(parser), worker([this] { run(); }) { }
++    ~Impl()
++    {
++        {
++            std::lock_guard guard(lock);
++            cancelled = true;
++            ready.notify_all();
++        }
++        worker.join();
++    }
++
++    using Event = std::variant<SummitMP4::InitSegment, SummitMP4::Sample>;
++    struct Track {
++        SummitMP4::TrackInfo info;
++        AVRational timeBase { 0, 1 };
++        uint32_t defaultDuration { 0 };
++        std::optional<int64_t> nextAudioTime;
++    };
++
++    Parser& owner;
++    TransportValidator transport;
++    std::mutex lock;
++    std::condition_variable ready;
++    const uint8_t* input { nullptr }; // Borrowed only while append waits below.
++    size_t inputSize { 0 };
++    bool idle { false };
++    bool eof { false };
++    bool flushed { false };
++    bool cancelled { false };
++    bool done { false };
++    bool failed { false };
++    std::vector<Event> events;
++    size_t outputBytes { 0 };
++    std::map<int, Track> tracks;
++    std::optional<int64_t> decodeReference90k;
++    std::thread worker; // Starts after every field used by the worker.
++
++    static int read(void* context, uint8_t* target, int capacity)
++    {
++        auto& self = *static_cast<Impl*>(context);
++        std::unique_lock guard(self.lock);
++        while (!self.inputSize && !self.eof && !self.cancelled) {
++            self.idle = true;
++            self.ready.notify_all();
++            self.ready.wait(guard);
++        }
++        self.idle = false;
++        if (self.cancelled)
++            return AVERROR_EXIT;
++        if (!self.inputSize)
++            return AVERROR_EOF;
++        size_t amount = std::min<size_t>(capacity, self.inputSize);
++        std::memcpy(target, self.input, amount);
++        self.input += amount;
++        self.inputSize -= amount;
++        return amount;
++    }
++
++    bool deliver()
++    {
++        // The producer only calls this while the worker is idle/flushed/done.
++        auto pending = std::move(events);
++        events.clear();
++        outputBytes = 0;
++        for (auto& event : pending) {
++            if (auto* init = std::get_if<SummitMP4::InitSegment>(&event)) {
++                if (owner.onInitSegment)
++                    owner.onInitSegment(std::move(*init));
++            } else if (owner.onSample)
++                owner.onSample(std::move(std::get<SummitMP4::Sample>(event)));
++        }
++        return !failed;
++    }
++
++    bool append(const uint8_t* bytes, size_t size)
++    {
++        if (size && !bytes)
++            return false;
++        std::unique_lock guard(lock);
++        if (done || failed)
++            return false;
++        while (size) {
++            size_t amount = std::min<size_t>(size, 65536);
++            std::vector<uint8_t> validated;
++            if (!transport.append(bytes, amount, validated))
++                return false;
++            bytes += amount;
++            size -= amount;
++            if (validated.empty())
++                continue;
++            // An ended MediaSource may reopen and append more bytes.
++            eof = false;
++            flushed = false;
++            idle = false;
++            input = validated.data();
++            inputSize = validated.size();
++            ready.notify_all();
++            ready.wait(guard, [&] { return idle || done; });
++            if (!deliver())
++                return false;
++        }
++        return true;
++    }
++
++    bool finish()
++    {
++        if (!transport.finish())
++            return false;
++        std::unique_lock guard(lock);
++        if (done || failed)
++            return false;
++        eof = true;
++        ready.notify_all();
++        ready.wait(guard, [&] { return flushed || done; });
++        return deliver();
++    }
++
++    bool initialize(AVFormatContext& context)
++    {
++        if (!context.nb_streams || context.nb_streams > 32)
++            return false;
++        SummitMP4::InitSegment init;
++        for (unsigned index = 0; index < context.nb_streams; ++index) {
++            auto& stream = *context.streams[index];
++            auto& codec = *stream.codecpar;
++            Track track;
++            auto& info = track.info;
++            info.id = stream.id;
++            track.timeBase = stream.time_base;
++            if (codec.codec_type != AVMEDIA_TYPE_AUDIO && codec.codec_type != AVMEDIA_TYPE_VIDEO)
++                continue;
++            if (codec.extradata_size < 0 || codec.extradata_size > 1024 * 1024)
++                return false;
++            if (codec.extradata_size)
++                info.codecConfig.assign(codec.extradata, codec.extradata + codec.extradata_size);
++            if (codec.codec_type == AVMEDIA_TYPE_VIDEO) {
++                info.kind = SummitMP4::TrackInfo::Kind::Video;
++                info.timescale = 90000;
++                if (codec.width <= 0 || codec.height <= 0 || codec.width > 16384 || codec.height > 16384)
++                    return false;
++                info.width = codec.width;
++                info.height = codec.height;
++                if (codec.codec_id == AV_CODEC_ID_H264) {
++                    info.codec = "avc1";
++                    if (!makeAVCConfiguration(codec.extradata, codec.extradata_size, info.codecConfig))
++                        return false;
++                } else if (codec.codec_id == AV_CODEC_ID_HEVC)
++                    info.codec = "hvc1";
++                else
++                    return false;
++                auto rate = stream.avg_frame_rate.num ? stream.avg_frame_rate : stream.r_frame_rate;
++                auto duration = rescale(1, { rate.den, rate.num }, 90000);
++                track.defaultDuration = duration && *duration > 0 && *duration < UINT32_MAX ? *duration : 3000;
++            } else {
++                info.kind = SummitMP4::TrackInfo::Kind::Audio;
++                if (codec.sample_rate < 7350 || codec.sample_rate > 192000 || codec.ch_layout.nb_channels < 1 || codec.ch_layout.nb_channels > 8)
++                    return false;
++                info.sampleRate = info.timescale = codec.sample_rate;
++                info.channels = codec.ch_layout.nb_channels;
++                info.packetTimedAudio = true;
++                info.seekPreRoll = codec.codec_id == AV_CODEC_ID_MP3 ? 500000000 : 80000000;
++                switch (codec.codec_id) {
++                case AV_CODEC_ID_AAC: {
++                    info.codec = "mp4a";
++                    info.objectTypeIndication = 0x40;
++                    auto* found = std::find(std::begin(audioRates), std::end(audioRates), info.sampleRate);
++                    if (found == std::end(audioRates) || info.channels == 7)
++                        return false;
++                    unsigned rateIndex = found - std::begin(audioRates);
++                    unsigned channels = info.channels == 8 ? 7 : info.channels;
++                    info.codecConfig = { static_cast<uint8_t>(2 << 3 | rateIndex >> 1), static_cast<uint8_t>((rateIndex & 1) << 7 | channels << 3) };
++                    break;
++                }
++                case AV_CODEC_ID_MP1: info.codec = "mp1"; break;
++                case AV_CODEC_ID_MP2: info.codec = "mp2"; break;
++                case AV_CODEC_ID_MP3: info.codec = "mp3"; break;
++                case AV_CODEC_ID_AC3: info.codec = "ac-3"; break;
++                case AV_CODEC_ID_EAC3: info.codec = "ec-3"; break;
++                default: return false;
++                }
++            }
++            init.tracks.push_back(info);
++            tracks.emplace(index, std::move(track));
++        }
++        if (init.tracks.empty())
++            return false;
++        events.emplace_back(std::move(init));
++        return true;
++    }
++
++    bool sample(AVFormatContext& context, AVPacket& packet)
++    {
++        auto found = tracks.find(packet.stream_index);
++        if (found == tracks.end())
++            return true;
++        if (packet.size <= 0 || static_cast<size_t>(packet.size) > maxPacketBytes || (packet.flags & AV_PKT_FLAG_CORRUPT))
++            return false;
++        auto& track = found->second;
++        auto& info = track.info;
++        SummitMP4::Sample sample;
++        sample.trackID = info.id;
++        sample.isSync = packet.flags & AV_PKT_FLAG_KEY;
++        // PTS/DTS are 33-bit clocks. Choose the representation nearest the
++        // most recent decode time across tracks; audio and B-frame read-ahead
++        // can straddle the rollover without shifting one track by 26 hours.
++        constexpr int64_t period = int64_t(1) << 33;
++        auto unwrap = [&](int64_t value, int64_t reference) -> std::optional<int64_t> {
++            int64_t delta = (value & (period - 1)) - (reference & (period - 1));
++            if (delta > period / 2)
++                delta -= period;
++            else if (delta < -period / 2)
++                delta += period;
++            __int128 result = static_cast<__int128>(reference) + delta;
++            if (result <= INT64_MIN || result >= INT64_MAX)
++                return std::nullopt;
++            return static_cast<int64_t>(result);
++        };
++        auto pts90k = rescale(packet.pts, track.timeBase, 90000);
++        auto dts90k = rescale(packet.dts, track.timeBase, 90000);
++        if (dts90k || pts90k) {
++            int64_t rawDecode = dts90k ? *dts90k : *pts90k;
++            auto decode = unwrap(rawDecode, decodeReference90k.value_or(rawDecode & (period - 1)));
++            if (!decode)
++                return false;
++            if (dts90k)
++                dts90k = decode;
++            if (pts90k)
++                pts90k = unwrap(*pts90k, *decode);
++            decodeReference90k = decodeReference90k ? std::max(*decodeReference90k, *decode) : *decode;
++        }
++        auto pts = pts90k ? rescale(*pts90k, { 1, 90000 }, info.timescale) : std::nullopt;
++        auto dts = dts90k ? rescale(*dts90k, { 1, 90000 }, info.timescale) : std::nullopt;
++        auto duration = rescale(packet.duration, track.timeBase, info.timescale);
++        sample.data.assign(packet.data, packet.data + packet.size);
++        if (info.kind == SummitMP4::TrackInfo::Kind::Audio) {
++            int frames = api().av_get_audio_frame_duration2(context.streams[packet.stream_index]->codecpar, packet.size);
++            if (info.codec == "mp4a") {
++                const auto* bytes = packet.data;
++                if (packet.size < 7 || bytes[0] != 0xff || (bytes[1] & 0xf6) != 0xf0 || (bytes[2] >> 6) != 1)
++                    return false;
++                unsigned index = bytes[2] >> 2 & 15;
++                unsigned channels = (bytes[2] & 1) << 2 | bytes[3] >> 6;
++                unsigned length = (bytes[3] & 3) << 11 | bytes[4] << 3 | bytes[5] >> 5;
++                if (index >= std::size(audioRates) || audioRates[index] != info.sampleRate
++                    || (channels == 7 ? 8 : channels) != info.channels || length != static_cast<unsigned>(packet.size))
++                    return false;
++                frames = 1024 * ((bytes[6] & 3) + 1);
++            } else if (info.codec == "ec-3") {
++                // E-AC-3 has 1, 2, 3 or 6 blocks; the generic public duration
++                // helper returns zero before codec analysis fills frame_size.
++                const auto* bytes = packet.data;
++                if (packet.size < 7 || bytes[0] != 0x0b || bytes[1] != 0x77 || (bytes[2] >> 6) == 3
++                    || (bytes[5] >> 3) < 11 || (bytes[5] >> 3) > 16)
++                    return false;
++                unsigned size = (((unsigned(bytes[2]) & 7) << 8 | bytes[3]) + 1) * 2;
++                unsigned rateCode = bytes[4] >> 6;
++                unsigned blockCode = bytes[4] >> 4 & 3;
++                static constexpr unsigned rates[] = { 48000, 44100, 32000 };
++                static constexpr unsigned blocks[] = { 1, 2, 3, 6 };
++                if (size > static_cast<unsigned>(packet.size) || size < 7 || (rateCode == 3 && blockCode == 3))
++                    return false;
++                unsigned rate = rateCode == 3 ? rates[blockCode] / 2 : rates[rateCode];
++                if (rate != info.sampleRate)
++                    return false;
++                frames = 256 * (rateCode == 3 ? 6 : blocks[blockCode]);
++            }
++            if (frames <= 0)
++                return false;
++            // The first analyzed packets can lack duration and PTS. A PES's
++            // first timestamp anchors the exact sample clock for its frames.
++            if (track.nextAudioTime && (packet.pos < 0 || !pts || (static_cast<__int128>(*pts) - *track.nextAudioTime >= -2 && static_cast<__int128>(*pts) - *track.nextAudioTime <= 2)))
++                pts = track.nextAudioTime;
++            if (!pts || *pts > INT64_MAX - frames)
++                return false;
++            sample.presentationTime = sample.decodeTime = *pts;
++            sample.duration = frames;
++            track.nextAudioTime = *pts + frames;
++            sample.isSync = true;
++        } else {
++            if (!pts || !dts)
++                return false;
++            sample.presentationTime = *pts;
++            sample.decodeTime = *dts;
++            sample.duration = duration && *duration > 0 && *duration < UINT32_MAX ? *duration : track.defaultDuration;
++            if (info.codec == "avc1" && !lengthPrefixAVC(sample.data))
++                return false;
++        }
++        if (events.size() >= 65536 || sample.data.size() > maxOutputBytes - outputBytes)
++            return false;
++        outputBytes += sample.data.size();
++        events.emplace_back(std::move(sample));
++        return true;
++    }
++
++    void run()
++    {
++        auto& api = SummitMPEGTS::api();
++        AVFormatContext* context = nullptr;
++        AVIOContext* io = nullptr;
++        AVPacket* packet = nullptr;
++        bool ok = api.ready;
++        if (ok) {
++            context = api.avformat_alloc_context();
++            auto* buffer = static_cast<uint8_t*>(api.av_malloc(4096));
++            if (buffer)
++                io = api.avio_alloc_context(buffer, 4096, 0, this, read, nullptr, nullptr);
++            if (!io)
++                api.av_free(buffer);
++            ok = context && io;
++        }
++        if (ok) {
++            context->pb = io;
++            context->flags |= AVFMT_FLAG_CUSTOM_IO;
++            context->probesize = 256 * 1024;
++            context->max_analyze_duration = 500000;
++            context->fps_probe_size = 0;
++            context->max_probe_packets = 128;
++            context->max_index_size = 65536;
++            context->max_streams = 32;
++            context->correct_ts_overflow = 0;
++            AVDictionary* options = nullptr;
++            api.av_dict_set(&options, "scan_all_pmts", "1", 0);
++            ok = api.avformat_open_input(&context, nullptr, api.av_find_input_format("mpegts"), &options) >= 0;
++            api.av_dict_free(&options);
++        }
++        if (ok)
++            ok = api.avformat_find_stream_info(context, nullptr) >= 0 && initialize(*context);
++        if (ok) {
++            packet = api.av_packet_alloc();
++            ok = packet;
++        }
++        while (ok) {
++            int status = api.av_read_frame(context, packet);
++            if (status >= 0) {
++                ok = sample(*context, *packet);
++                api.av_packet_unref(packet);
++                continue;
++            }
++            std::unique_lock guard(lock);
++            if (cancelled)
++                break;
++            if (status != AVERROR_EOF || !eof) {
++                ok = false;
++                break;
++            }
++            flushed = true;
++            ready.notify_all();
++            ready.wait(guard, [&] { return !eof || cancelled; });
++            if (cancelled)
++                break;
++            io->eof_reached = 0;
++            io->error = 0;
++        }
++        if (packet)
++            api.av_packet_free(&packet);
++        if (context)
++            api.avformat_close_input(&context);
++        if (io) {
++            api.av_free(io->buffer);
++            api.avio_context_free(&io);
++        }
++        std::lock_guard guard(lock);
++        failed = !ok;
++        done = true;
++        ready.notify_all();
++    }
++};
++
++Parser::Parser() : m_impl(std::make_unique<Impl>(*this)) { }
++Parser::~Parser() = default;
++bool Parser::available() { return api().ready; }
++bool Parser::append(const uint8_t* bytes, size_t size) { return m_impl->append(bytes, size); }
++bool Parser::finish() { return m_impl->finish(); }
++
++} // namespace SummitMPEGTS
+diff --git a/Source/WebCore/platform/graphics/haiku/MPEGTSParserHaiku.h b/Source/WebCore/platform/graphics/haiku/MPEGTSParserHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..d1d95938f12b4b0b3044b1ebaee2cb383a2eeaa0
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/haiku/MPEGTSParserHaiku.h
+@@ -0,0 +1,47 @@
++/*
++ * Copyright (C) 2026 Summit contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHORS ``AS IS'' AND ANY EXPRESS OR
++ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
++ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
++ * IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DAMAGES ARISING FROM USE.
++ */
++
++#pragma once
++
++#include "FragmentedMP4ParserHaiku.h"
++#include <memory>
++
++namespace SummitMPEGTS {
++
++// Incremental MPEG-TS demuxing through the installed FFmpeg public API. Only
++// this parser's worker enters FFmpeg; callbacks run synchronously on append's
++// caller. The worker waits for input instead of treating an append boundary
++// as end-of-stream, which would truncate a PES packet or an access unit.
++class Parser {
++public:
++    Parser();
++    ~Parser();
++    Parser(const Parser&) = delete;
++    Parser& operator=(const Parser&) = delete;
++    static bool available();
++    std::function<void(SummitMP4::InitSegment&&)> onInitSegment;
++    std::function<void(SummitMP4::Sample&&)> onSample;
++    bool append(const uint8_t*, size_t);
++    bool finish();
++
++private:
++    struct Impl;
++    std::unique_ptr<Impl> m_impl;
++};
++
++} // namespace SummitMPEGTS
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..04f28f20b9c4c4e88f937eec280a6ba58f81fe4a

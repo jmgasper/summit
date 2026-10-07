@@ -3,6 +3,9 @@
 #include "WebMParserHaiku.h"
 #include "MPEGAudioParserHaiku.h"
 #include "VideoPresentationTimelineHaiku.h"
+#if SUMMIT_TEST_MPEGTS
+#include "MPEGTSParserHaiku.h"
+#endif
 #include "nlohmann/json.hpp"
 #include <Application.h>
 #include <MediaDecoder.h>
@@ -47,7 +50,7 @@ public:
 
 static json decode(const SummitMP4::TrackInfo& info, const std::vector<SummitMP4::Sample>& samples, bool clearPreSkip)
 {
-    const std::map<std::string, uint32> codecs { { "hvc1", 173 }, { "hev1", 173 }, { "ac-3", 86019 }, { "ec-3", 86056 }, { "vp08", 139 }, { "vp09", 167 }, { "av01", 226 }, { "vorb", 86021 }, { "Opus", 86076 }, { "mp4a", 86018 }, { "mp1", 86058 }, { "mp2", 86016 }, { "mp3", 86017 } };
+    const std::map<std::string, uint32> codecs { { "avc1", 27 }, { "hvc1", 173 }, { "hev1", 173 }, { "ac-3", 86019 }, { "ec-3", 86056 }, { "vp08", 139 }, { "vp09", 167 }, { "av01", 226 }, { "vorb", 86021 }, { "Opus", 86076 }, { "mp4a", 86018 }, { "mp1", 86058 }, { "mp2", 86016 }, { "mp3", 86017 } };
     auto found = codecs.find(info.codec);
     if (found == codecs.end())
         return { { "error", "unsupported codec" } };
@@ -202,6 +205,12 @@ int main(int argc, char** argv)
             return !bytes.empty() && parser.append(bytes.data(), bytes.size());
         };
         bool parsed;
+#if SUMMIT_TEST_MPEGTS
+        if (std::string(argv[index]).ends_with(".ts")) {
+            SummitMPEGTS::Parser parser;
+            parsed = parse(parser) && parser.finish();
+        } else
+#endif
         if (std::string(argv[index]).ends_with(".webm")) {
             SummitWebM::Parser parser;
             parsed = parse(parser);

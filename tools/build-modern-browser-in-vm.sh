@@ -77,7 +77,8 @@ headers = {
 files = {'tests/ModernBrowser.cpp': 'tests/ModernBrowser.cpp',
          'tools/build-modern-browser.py': 'tools/build-modern-browser.py',
          'LICENSE-Summit': 'LICENSE',
-         'engine/image-codecs.lock.json': 'engine/image-codecs.lock.json'}
+         'engine/image-codecs.lock.json': 'engine/image-codecs.lock.json',
+         'engine/ffmpeg-headers.lock.json': 'engine/ffmpeg-headers.lock.json'}
 if target == 'browser':
     for directory in ['src', 'vendor', 'resources']:
         for source in sorted((root / directory).rglob('*')):
@@ -96,6 +97,7 @@ inputs = {
     'engine': lock,
     'icu': json.loads((root / 'engine/icu.lock.json').read_text()),
     'image_codecs': json.loads((root / 'engine/image-codecs.lock.json').read_text()),
+    'ffmpeg_headers': json.loads((root / 'engine/ffmpeg-headers.lock.json').read_text()),
     'engine_variant': sys.argv[3],
     'engine_build_name': os.environ.get('SUMMIT_ENGINE_BUILD_NAME', 'Modern'),
     'public_headers': headers,

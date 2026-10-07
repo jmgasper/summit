@@ -22,7 +22,11 @@ int main(int argc, char** argv)
         Require(std::filesystem::canonical(executable.Path()) == std::filesystem::canonical(argv[2]),
             "Streaming test owns the browser executable");
         owned = true;
-        auto browser = Window(app, 0);
+        BMessenger browser;
+        Require(Wait([&] {
+            browser = Window(app, 0);
+            return browser.IsValid() && Count(State(browser)) > 0;
+        }), "Streaming browser window and initial tab are ready");
         auto title = [&] {
             auto state = State(browser);
             BMessage tab;

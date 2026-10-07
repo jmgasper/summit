@@ -30,9 +30,10 @@ def main():
         if manifest.exists():
             fixtures += [directory / item['file'] for item in json.loads(manifest.read_text())['fixtures']]
         else:
-            fixtures += sorted(directory.glob('*.webm')) + sorted(directory.glob('*.mp4'))
+            fixtures += sorted(directory.glob('*.webm')) + sorted(directory.glob('*.mp4')) + sorted(directory.glob('*.ts'))
     if not fixtures:
         raise SystemExit('No media fixtures found')
+    needs_ts = any(path.suffix == '.ts' for path in fixtures)
     remote = guest.GUEST_ROOT + '/streaming-codecs-' + str(time.time_ns())
     port = args.engine / 'Source/WebCore/platform/graphics/haiku'
     third_party = args.engine / 'Source/ThirdParty/libwebrtc/Source/third_party'
@@ -43,6 +44,11 @@ def main():
         for name in ('WebMParserHaiku', 'MPEGAudioParserHaiku', 'FragmentedMP4ParserHaiku'):
             for extension in ('cpp', 'h'):
                 tar.add(port / (name + '.' + extension), arcname=name + '.' + extension)
+        if needs_ts:
+            for extension in ('h', 'cpp'):
+                tar.add(port / ('MPEGTSParserHaiku.' + extension), arcname='MPEGTSParserHaiku.' + extension)
+            for path in ('tools/prepare-ffmpeg-headers.py', 'engine/ffmpeg-headers.lock.json'):
+                tar.add(guest.ROOT / path, arcname=path)
         tar.add(port / 'CencCryptoHaiku.h', arcname='CencCryptoHaiku.h')
         tar.add(port / 'VideoPresentationTimelineHaiku.h', arcname='VideoPresentationTimelineHaiku.h')
         tar.add(third_party / 'libwebm/webm_parser', arcname='webm')
@@ -50,6 +56,8 @@ def main():
         for index, fixture in enumerate(fixtures):
             tar.add(fixture, arcname='media/' + str(index) + '-' + fixture.name)
     guest.ssh('mkdir -p ' + shlex.quote(remote) + ' && tar -xf - -C ' + shlex.quote(remote), input_bytes=archive.getvalue())
+    if needs_ts:
+        guest.ssh('python3.10 ' + shlex.quote(remote + '/tools/prepare-ffmpeg-headers.py'), timeout=600)
     compile_script = '''import glob,subprocess,sys
 remote=sys.argv[1]
 sources=[p for p in sorted(glob.glob(remote+'/webm/src/*.cc')) if not p.endswith('_test.cc')]
@@ -57,11 +65,13 @@ command=['g++','-std=c++23','-O1','-DWEBRTC_WEBKIT_BUILD=1','-Wno-multichar',
  '-I'+remote,'-I'+remote+'/webm','-I'+remote+'/webm/include','-I'+remote+'/opus',
  remote+'/probe.cpp',remote+'/WebMParserHaiku.cpp',remote+'/MPEGAudioParserHaiku.cpp',
  remote+'/FragmentedMP4ParserHaiku.cpp',*sources,'-Wl,-l:libopus.so.0','-lbe','-lmedia','-o',remote+'/probe']
+if len(sys.argv)>2 and sys.argv[2]=='ts':
+ command[1:1]=['-DSUMMIT_TEST_MPEGTS=1','-I/boot/home/summit-deps/ffmpeg-6.1.2-headers/include',remote+'/MPEGTSParserHaiku.cpp']
 with open(remote+'/compile.log','wb') as log:
  result=subprocess.run(command,stdout=log,stderr=subprocess.STDOUT)
 sys.exit(result.returncode)
 '''
-    compilation = guest.ssh('python3.10 - ' + shlex.quote(remote), input_bytes=compile_script.encode(), timeout=600, check=False)
+    compilation = guest.ssh('python3.10 - ' + shlex.quote(remote) + (' ts' if needs_ts else ''), input_bytes=compile_script.encode(), timeout=600, check=False)
     guest.fetch_file(remote + '/compile.log', args.output / 'compile.log')
     if compilation.returncode:
         raise guest.GuestError('codec probe compilation failed; see compile.log')

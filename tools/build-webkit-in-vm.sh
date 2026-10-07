@@ -102,6 +102,8 @@ if [[ $SUMMIT_ENGINE_MODE != legacy ]]; then
     bash "$SUMMIT_REMOTE_SHELL" 'mkdir -p /boot/home/summit/tools /boot/home/summit/engine'
     tar -cf - tools/prepare-image-codecs.py engine/image-codecs.lock.json engine/image-codec-patches |
         bash "$SUMMIT_REMOTE_SHELL" 'tar -xf - -C /boot/home/summit && python3.10 /boot/home/summit/tools/prepare-image-codecs.py'
+    tar -cf - tools/prepare-ffmpeg-headers.py engine/ffmpeg-headers.lock.json |
+        bash "$SUMMIT_REMOTE_SHELL" 'tar -xf - -C /boot/home/summit && python3.10 /boot/home/summit/tools/prepare-ffmpeg-headers.py'
 fi
 python3 tools/prepare-webkit.py
 SUMMIT_ENGINE_PATCH_SHA=$(python3 -c 'import json; print(json.load(open("engine/sources.lock.json"))["patch"]["sha256"])')

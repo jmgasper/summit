@@ -33,7 +33,11 @@ output before replacing the native sound player.
 
 Raw MPEG audio handles incremental headers and frames, free-format MPEG frame
 sizing, ID3v1/v2 and ICY header metadata. Parser storage is bounded. MPEG-TS is
-still in progress and is not advertised as supported.
+still in progress and is not advertised as supported. Its parser foundation
+passes 10 fixtures (988 packets) at nine append sizes, 16 structural cases and
+128 mutations under ASan/UBSan. The native X399 probe passes 17 decode checks,
+including NVDEC H.264 and the 33-bit clock rollover. Parser reset, discontinuity
+and browser end-of-stream integration remain to be completed.
 
 ## Verification
 
@@ -66,3 +70,19 @@ own driver and launch an isolated browser profile through `tools/ws.sh`.
 Local evidence is retained in `.vm/issues43-49/` under
 `webm-parser-integrated`, `mpeg-audio-parser`, `streaming-codecs-timing-x399`
 and `streaming-browser-timing-x399`.
+
+The TS foundation uses pinned FFmpeg 6.1.2 public headers and checks the
+installed `libavformat.so.60`, `libavcodec.so.60` and `libavutil.so.58` ABI
+versions before use. `tools/prepare-ffmpeg-headers.py` installs only headers in
+a private prefix; it does not replace OS libraries. To reproduce its portable
+checks, prepare the headers with an absolute `--prefix`, then run
+`tools/bench/test-mpegts-parser.py --headers PREFIX --output .vm/mpegts-parser`.
+Pass `.vm/mpegts-parser` to the native codec probe's `--fixtures` argument.
+Foundation evidence is in `.vm/issues43-49/{mpegts-parser,mpegts-codecs-rollover}/`.
+
+The TS foundation also compiles in the native WebKit build. Bundle
+`bundle-zxsy87w0` verifies the pinned dependency manifest, header license
+notices and a real-browser streaming smoke test. Its engine patch is
+`181476f3ab7c1781507942516a5686171831141dd02ae3b73723ffe6c9273865`.
+This bundle still advertises the established formats above; TS itself is
+not yet exposed through MediaSource.
