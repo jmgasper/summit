@@ -8,6 +8,26 @@ are verified in `bundle-a7988kyv`; #49 is verified in `bundle-a3u9gkoe`.
 #47–#48 and the requested six-hour performance session remain to be completed. The desktop launcher still selects
 the original deployment until the next installation.
 
+Work in progress for **#47**: the portable incremental WebM parser now handles
+VP8, VP9, AV1, Opus and Vorbis and emits the existing MSE track/sample model.
+It uses the bundled libwebm parser, bounds frame/header/cluster storage,
+preserves committed track configuration across aborted replacement headers,
+handles Xiph/fixed/EBML lacing, and carries decoded-audio end padding.
+Eight FFmpeg-generated fixtures (618 packets) match packet bytes, timestamps,
+durations and keyframe flags at nine append sizes, including one-byte appends.
+ASan/UBSan also pass 22 structural/abort/error cases and 128 deterministic
+mutations. `tools/bench/test-webm-parser.py` reproduces these checks.
+
+The native `ModernStreamingCodecTests.cpp` probe decodes every video packet
+to a changing RGB frame and every audio track to finite, non-silent PCM on
+X399, without crashes or leftover helpers. It confirms that Opus pre-skip
+must be handled explicitly when mapping decoded PCM back to MSE timestamps:
+Media Kit removes those frames without advancing the initial output timestamp.
+These parser/decoder foundations do **not yet enable WebM MSE capability
+reporting**. SourceBuffer integration, playback/seek checks and additional
+streaming containers remain in progress. Evidence is in
+`.vm/issues43-49/webm-parser/` and `.vm/issues43-49/webm-native/`.
+
 - **#43:** Fullscreen uses air/OS's `get_display_frame(Frame(), true, ...)`,
   the same display-selection policy as native window maximization. On older
   Haiku versions without that symbol it falls back to `BScreen::Frame()`.
