@@ -18,14 +18,14 @@ build table below.
 <!-- airos-ci:latest-builds:start -->
 ## Latest builds
 
-Built automatically by air/OS CI from commit `cbd21dd` on 2026-10-07 ([all files](https://github.com/jmgasper/summit/releases/tag/latest)).
+Built automatically by air/OS CI from commit `e97da96` on 2026-10-07 ([all files](https://github.com/jmgasper/summit/releases/tag/latest)).
 
 | Architecture | Package |
 |---|---|
-| arm64 | [summit-0.1.0.git20261007.2039-1-arm64.hpkg](https://github.com/jmgasper/summit/releases/download/latest/summit-0.1.0.git20261007.2039-1-arm64.hpkg) |
-| arm64 | [summit_webkit-1.10.1.git20261007.2039-1-arm64.hpkg](https://github.com/jmgasper/summit/releases/download/latest/summit_webkit-1.10.1.git20261007.2039-1-arm64.hpkg) |
-| x86_64 | [summit-0.1.0.git20261007.2039-1-x86_64.hpkg](https://github.com/jmgasper/summit/releases/download/latest/summit-0.1.0.git20261007.2039-1-x86_64.hpkg) |
-| x86_64 | [summit_webkit-1.10.1.git20261007.2039-1-x86_64.hpkg](https://github.com/jmgasper/summit/releases/download/latest/summit_webkit-1.10.1.git20261007.2039-1-x86_64.hpkg) |
+| arm64 | [summit-0.1.0.git20261007.2231-1-arm64.hpkg](https://github.com/jmgasper/summit/releases/download/latest/summit-0.1.0.git20261007.2231-1-arm64.hpkg) |
+| arm64 | [summit_webkit-1.10.1.git20261007.2231-1-arm64.hpkg](https://github.com/jmgasper/summit/releases/download/latest/summit_webkit-1.10.1.git20261007.2231-1-arm64.hpkg) |
+| x86_64 | [summit-0.1.0.git20261007.2231-1-x86_64.hpkg](https://github.com/jmgasper/summit/releases/download/latest/summit-0.1.0.git20261007.2231-1-x86_64.hpkg) |
+| x86_64 | [summit_webkit-1.10.1.git20261007.2231-1-x86_64.hpkg](https://github.com/jmgasper/summit/releases/download/latest/summit_webkit-1.10.1.git20261007.2231-1-x86_64.hpkg) |
 
 Install with `pkgman install <file>`, or copy the file into `/boot/system/packages`. Haiku SDK: x86_64 hrev60206-735-ge1fddb8f6c, arm64 hrev60206-735-ge1fddb8f6c.
 <!-- airos-ci:latest-builds:end -->
