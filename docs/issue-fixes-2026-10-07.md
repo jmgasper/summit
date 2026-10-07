@@ -14,7 +14,7 @@ verified installation on X399. The final installation is still pending.
 | #35 Color input | Implemented with BColorControl, Done/Cancel, script updates and datalist swatches. 65 native checks pass, including DOM events and navigation/tab/quit cleanup; [details](native-form-pickers.md). |
 | #34 Reader mode | Implemented: address-field button, isolated Readability extraction, DOMPurify/CSP, in-memory article view, original-URL history and private browsing. 79 native checks pass; [details](reader-mode.md). |
 | #33 DASH | Implemented direct H.264/AAC DASH with adaptive quality, byte ranges, seeking and live refresh. 82 native checks and portable ASan/UBSan tests pass; [scope and evidence](dash-playback.md). |
-| #32 EME | Pending: Encrypted Media Extensions. |
+| #32 EME | Implemented temporary Clear Key CENC for H.264/AAC MSE and direct DASH, secure-context and permissions-policy checks, key lifecycle and media-origin protections. 207 native checks and portable ASan/UBSan tests pass; [scope and evidence](encrypted-media.md). |
 | #31 Web Bluetooth | Pending: use air/OS Bluetooth facilities. X399 source has `headers/private/bluetooth/LEAttributeClient.h` and associated LE transport support. |
 
 The existing installed launcher still selects `bundle-1gm22c31` with Mesa

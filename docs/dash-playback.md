@@ -22,13 +22,17 @@ queues, and fetches the segment containing the target. Seek completion waits
 for a decoded video frame. Live streams expose a finite seekable window.
 
 `SegmentBase`, WebM representations, and periods that change their audio/video
-track sets are outside this implementation. Encrypted representations are
-rejected by the direct DASH path until decryption support is connected.
+track sets are outside this implementation. CENC-encrypted H.264/AAC
+representations can use temporary Clear Key sessions through
+[Encrypted Media Extensions](encrypted-media.md); other encryption schemes
+and commercial DRM systems are not supported.
 
 ## Network and parsing boundaries
 
 Requests retain the media element's cookies, TLS decisions, CORS mode, and
-content security policy. Redirects and resolved MPD URLs must use HTTP or HTTPS
+content security policy. Every response contributes to media-origin checks,
+so cross-origin segments without CORS permission taint canvas even when the
+manifest itself is same-origin. Redirects and resolved MPD URLs must use HTTP or HTTPS
 without embedded credentials. Byte-range responses must have status 206 and
 the exact requested `Content-Range` and body length. Requests have a 30-second
 timeout; the manifest is limited to 4 MiB and each fetched segment to 64 MiB.

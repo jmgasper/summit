@@ -1,0 +1,224 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Summit EME fixture ready</title>
+<style>
+body { font: 16px sans-serif; margin: 24px; background: #f5f7fb; color: #17243a }
+video { display: block; width: 640px; height: 360px; background: #000 }
+button { margin: 12px 0; padding: 12px }
+pre { font-size: 12px; white-space: pre-wrap; max-width: 950px }
+</style>
+<h1>Summit encrypted media playback</h1>
+<p>Clear Key · CENC AES-128 CTR · encrypted H.264 video and AAC audio</p>
+<video id="video" controls playsinline></video>
+<button id="play">Play with audio</button>
+<pre id="status"></pre>
+<script>
+const video = document.getElementById('video');
+const encode = value => new TextEncoder().encode(JSON.stringify(value));
+const fromHex = value => Uint8Array.from(value.match(/../g), byte => parseInt(byte, 16));
+const base64 = value => btoa(String.fromCharCode(...value)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const ids = ['00112233445566778899aabbccddeeff', 'ffeeddccbbaa99887766554433221100'].map(x => base64(fromHex(x)));
+const values = ['000102030405060708090a0b0c0d0e0f', '0f0e0d0c0b0a09080706050403020100'].map(x => base64(fromHex(x)));
+const configuration = () => ({initDataTypes: ['cenc','keyids'], distinctiveIdentifier: 'not-allowed', persistentState: 'not-allowed', sessionTypes: ['temporary'],
+    videoCapabilities: [{contentType: 'video/mp4; codecs="avc1.64001e"', encryptionScheme: 'cenc'}],
+    audioCapabilities: [{contentType: 'audio/mp4; codecs="mp4a.40.2"', encryptionScheme: 'cenc'}]});
+let keys = null, sessions = [], requests = [], events = [], errors = [], pending = [], seen = new Set(), operation = null, appended = false, policy = '';
+for (const name of ['loadedmetadata','loadeddata','playing','waiting','waitingforkey','seeking','seeked','ended','error','pause'])
+    video.addEventListener(name, () => events.push({name, time: video.currentTime}));
+function license(kids, wrong = false) {
+    return encode({keys: kids.map(kid => ({kty:'oct', kid, k: wrong ? base64(new Uint8Array(16)) : values[ids.indexOf(kid)]})), type:'temporary'});
+}
+function sessionFor(initDataType, data, automatic) {
+    const session = keys.createSession(); sessions.push(session);
+    const message = new Promise((resolve, reject) => {
+        session.addEventListener('message', async event => {
+            try {
+                const request = JSON.parse(new TextDecoder().decode(event.message));
+                requests.push({request, messageType: event.messageType, sessionId: session.sessionId});
+                if (automatic) await session.update(license(request.kids));
+                else pending.push({session, request});
+                resolve(request);
+            } catch (error) { errors.push(String(error)); reject(error); }
+        }, {once: true});
+    });
+    return session.generateRequest(initDataType, data).then(() => message);
+}
+video.addEventListener('encrypted', event => {
+    events.push({name:'encrypted', type:event.initDataType, size:event.initData?.byteLength || 0});
+    if (!event.initData) return;
+    const token = base64(new Uint8Array(event.initData));
+    if (seen.has(token)) return;
+    seen.add(token);
+    if (keys) sessionFor(event.initDataType, event.initData, policy === 'automatic').catch(error => errors.push(String(error)));
+});
+async function reset() {
+    video.pause(); video.removeAttribute('src'); video.load();
+    video.removeAttribute('crossorigin');
+    if (video.mediaKeys) await video.setMediaKeys(null);
+    await Promise.all(sessions.map(session => session.close()));
+    keys = null; sessions = []; requests = []; events = []; errors = []; pending = []; seen.clear(); appended = false;
+}
+async function loadMSE(clear = false) {
+    const media = new MediaSource(); const url = URL.createObjectURL(media); video.src = url;
+    await new Promise((resolve, reject) => {
+        media.addEventListener('sourceopen', async () => {
+            URL.revokeObjectURL(url);
+            try {
+                await Promise.all([['video','avc1.64001e'],['audio','mp4a.40.2']].map(async ([track, codec]) => {
+                    const source = media.addSourceBuffer(`${track}/mp4; codecs="${codec}"`);
+                    const prefix = (clear ? 'clear-' : '') + track;
+                    for (const file of [`${prefix}-init.mp4`, ...Array.from({length:9}, (_,i) => `${prefix}-${i+1}.m4s`)]) {
+                        const data = await fetch('/' + file).then(response => { if (!response.ok) throw Error(file); return response.arrayBuffer(); });
+                        await new Promise((resolve, reject) => {
+                            source.addEventListener('updateend', resolve, {once:true});
+                            source.addEventListener('error', () => reject(Error('SourceBuffer error')), {once:true});
+                            source.appendBuffer(data);
+                        });
+                    }
+                }));
+                media.endOfStream(); appended = true; resolve(true);
+            } catch (error) { errors.push(String(error)); reject(error); }
+        }, {once:true});
+    });
+}
+window.emeTest = {
+    configuration, ids,
+    run(method, ...args) { operation = null; Promise.resolve().then(() => this[method](...args)).then(value => operation = {ok:true,value}, error => operation = {ok:false,error:String(error)}); return true; },
+    operation() { return operation; },
+    async securityProbe() {
+        const result = {secure:isSecureContext, api:typeof navigator.requestMediaKeySystemAccess,
+            mediaKeys:typeof video.setMediaKeys, constructor:typeof MediaKeys, allowed:false, error:null};
+        if (result.api === 'function') {
+            try { await navigator.requestMediaKeySystemAccess('org.w3.clearkey',[configuration()]); result.allowed=true; }
+            catch (error) { result.error=error.name; }
+        }
+        return result;
+    },
+    async probeFrame(cross=false, allow=null, responsePolicy='', sandbox=false) {
+        const frame=document.createElement('iframe'), token=String(Math.random());
+        const url=new URL(location.href);url.search='';url.searchParams.set('probe',token);
+        if(cross)url.hostname='localhost';
+        if(responsePolicy)url.searchParams.set('policy',responsePolicy);
+        frame.src=url;frame.hidden=true;
+        if(allow!==null)frame.setAttribute('allow',allow);
+        if(sandbox)frame.setAttribute('sandbox','allow-scripts');
+        return new Promise((resolve,reject)=>{
+            const timeout=setTimeout(()=>{cleanup();reject(Error('security frame timed out'))},15000);
+            function cleanup(){clearTimeout(timeout);window.removeEventListener('message',receive);frame.remove()}
+            function receive(event){if(event.source!==frame.contentWindow || event.data?.probe!==token)return;
+                const result=event.data.result;cleanup();resolve(result)}
+            window.addEventListener('message',receive);document.body.append(frame);
+        });
+    },
+    async securityChecks() {
+        const results=[];
+        for(const [label,args,allowed] of [
+            ['same-origin iframe inherits EME',[],true],
+            ['iframe allow none denies EME',[false,"encrypted-media 'none'"],false],
+            ['cross-origin iframe needs delegation',[true],false],
+            ['cross-origin iframe with delegation',[true,'encrypted-media'],true],
+            ['opaque sandbox needs explicit permission',[false,null,'',true],false],
+            ['opaque sandbox with explicit permission',[false,'encrypted-media *','',true],true],
+            ['response header denies EME',[false,null,'deny'],false],
+            ['response header self permits EME',[false,null,'self'],true],
+            ['response header cannot override parent',[true,null,'all'],false],
+            ['response URL with a path does not grant an origin',[false,null,'path'],false],
+            ['response origin excludes this document',[false,null,'other'],false]]) {
+            const detail=await this.probeFrame(...args);
+            results.push({label,pass:detail.allowed===allowed && (allowed || detail.error==='SecurityError' || detail.api==='undefined'),detail});
+        }
+        return results;
+    },
+    async capabilities() {
+        const results = [];
+        async function expect(label, system, config, supported) {
+            let actual = false, detail = null;
+            try { const access = await navigator.requestMediaKeySystemAccess(system, [config]); actual = true; detail = access.getConfiguration(); }
+            catch (error) { detail = error.name; }
+            results.push({label, pass:actual === supported, detail});
+        }
+        await expect('temporary Clear Key H.264/AAC CENC', 'org.w3.clearkey', configuration(), true);
+        for (const system of ['com.widevine.alpha','com.apple.fps','ORG.W3.CLEARKEY','invalid.system'])
+            await expect('reject '+system, system, configuration(), false);
+        for (const [label, mutate] of [
+            ['persistent license', c => {c.sessionTypes=['persistent-license'];c.persistentState='required'}],
+            ['distinctive identifier', c => c.distinctiveIdentifier='required'],
+            ['hardware robustness', c => {c.audioCapabilities=[];c.videoCapabilities[0].robustness='HW_SECURE_ALL'}],
+            ['CBCS', c => {c.audioCapabilities=[];c.videoCapabilities[0].encryptionScheme='cbcs'}],
+            ['WebM encrypted container', c => {c.audioCapabilities=[];c.videoCapabilities[0].contentType='video/webm; codecs="vp9"'}],
+            ['unsupported VP9 codec', c => {c.audioCapabilities=[];c.videoCapabilities[0].contentType='video/mp4; codecs="vp09.00.10.08"'}],
+            ['WebM initialization data', c => c.initDataTypes=['webm']]]) {
+            const config=configuration(); mutate(config); await expect('reject '+label,'org.w3.clearkey',config,false);
+        }
+        return results;
+    },
+    async sessionChecks() {
+        await reset(); const access = await navigator.requestMediaKeySystemAccess('org.w3.clearkey',[configuration()]);
+        keys = await access.createMediaKeys(); const results = [];
+        const check = (label, pass) => results.push({label,pass});
+        check('certificate is unsupported', await keys.setServerCertificate(new Uint8Array([1,2,3])) === false);
+        let rejected = false; try { keys.createSession('persistent-license'); } catch { rejected = true; }
+        check('persistent session creation rejects', rejected);
+        const request = await sessionFor('keyids', encode({kids:ids}), false);
+        check('license request has requested key IDs and temporary type', request.type === 'temporary' && request.kids.join() === ids.join());
+        const session = sessions[0];
+        for (const [label, data] of [['invalid JSON',new TextEncoder().encode('{')],['invalid key size', encode({keys:[{kty:'oct',kid:ids[0],k:'AA'}]})],['wrong license type',encode({keys:[{kty:'oct',kid:ids[0],k:values[0]}],type:'persistent-license'})]]) {
+            let rejected = false; try { await session.update(data); } catch { rejected = true; }
+            check('reject '+label, rejected);
+        }
+        await session.update(license(ids));
+        check('both keys become usable', session.keyStatuses.size === 2 && [...session.keyStatuses.values()].every(value => value === 'usable'));
+        check('temporary license does not expire', Number.isNaN(session.expiration));
+        let releaseMessages=0;session.addEventListener('message',event=>{if(event.messageType==='license-release')releaseMessages++});
+        await session.remove();
+        check('temporary removal releases keys without a persistent-license message', [...session.keyStatuses.values()].every(value=>value==='released') && releaseMessages===0);
+        await session.update(license(ids));
+        check('a removed temporary license can receive new usable keys', session.keyStatuses.size===2 && [...session.keyStatuses.values()].every(value=>value==='usable'));
+        await session.close(); await session.closed;
+        check('closed session clears key statuses', session.keyStatuses.size === 0);
+        let updateClosed = false; try { await session.update(license(ids)); } catch { updateClosed = true; }
+        check('closed session rejects updates', updateClosed);
+        for (const [label, data] of [['truncated PSSH',new Uint8Array([0,0,0,8,112,115,115,104])], ['wrong PSSH type',new Uint8Array(52)]]) {
+            const trial = keys.createSession(); let rejected=false;
+            try { await trial.generateRequest('cenc',data); } catch { rejected=true; }
+            check('reject '+label,rejected); await trial.close().catch(()=>{});
+        }
+        // More than 255 IDs catches truncation of the 32-bit Common PSSH count.
+        const count=260, pssh=new Uint8Array(36+16*count), view=new DataView(pssh.buffer);
+        view.setUint32(0,pssh.length);pssh.set([112,115,115,104,1,0,0,0],4);
+        pssh.set(fromHex('1077efecc0b24d02ace33c1e52e2fb4b'),12);view.setUint32(28,count);
+        for(let i=0;i<count;i++)view.setUint32(32+i*16+12,i+1);
+        const many=await sessionFor('cenc',pssh,false);
+        check('Common PSSH preserves a full 32-bit key count',many.type==='temporary' && many.kids.length===count);
+        await sessions.at(-1).close();
+        return results;
+    },
+    async prepare(mode='mse', requestedPolicy='automatic', resource='', cors=false) {
+        await reset(); policy=requestedPolicy; video.muted=true;
+        if (cors) video.crossOrigin='anonymous';
+        if (mode !== 'clear' && mode !== 'dash-clear') {
+            const access=await navigator.requestMediaKeySystemAccess('org.w3.clearkey',[configuration()]);
+            keys=await access.createMediaKeys();
+            if (policy !== 'late') await video.setMediaKeys(keys);
+        }
+        if (mode === 'dash' || mode === 'dash-clear') { video.src=resource || '/manifest.mpd'; video.load(); return true; }
+        return loadMSE(mode === 'clear');
+    },
+    async release() { const waiting=pending.splice(0); for (const {session,request} of waiting) await session.update(license(request.kids)); return waiting.length; },
+    async duplicateSession() { await sessionFor('keyids',encode({kids:ids}),true); return true; },
+    async closeFirst() { await sessions[0].close(); return true; },
+    async closeSessions() { await Promise.all(sessions.map(session=>session.close())); return true; },
+    async reopen() { await sessionFor('keyids',encode({kids:ids}),true); return true; },
+    async attach() { await video.setMediaKeys(keys); return true; },
+    async detach() { await video.setMediaKeys(null); return true; },
+    async play() { await video.play(); return true; },
+    async clear() { await reset(); return true; },
+    async wrongKeys() { await reset();const access=await navigator.requestMediaKeySystemAccess('org.w3.clearkey',[configuration()]);keys=await access.createMediaKeys();await video.setMediaKeys(keys);policy='hold';await sessionFor('keyids',encode({kids:ids}),false);await sessions[0].update(license(ids,true));return loadMSE(); },
+    state() { return {secure:isSecureContext,time:video.currentTime,duration:String(video.duration),ready:video.readyState,width:video.videoWidth,height:video.videoHeight,paused:video.paused,ended:video.ended,seeking:video.seeking,quality:video.getVideoPlaybackQuality().totalVideoFrames,error:video.error&&{code:video.error.code,message:video.error.message},attached:!!video.mediaKeys,appended,events,requests,errors,sessions:sessions.map(session=>({id:session.sessionId,statuses:[...session.keyStatuses.values()]}))}; },
+    pixels() { const canvas=document.createElement('canvas');canvas.width=64;canvas.height=36;const context=canvas.getContext('2d');context.drawImage(video,0,0,64,36);const data=context.getImageData(0,0,64,36).data;let colored=0;for(let i=0;i<data.length;i+=4)if(Math.max(data[i],data[i+1],data[i+2])-Math.min(data[i],data[i+1],data[i+2])>50)colored++;return colored; }
+};
+document.getElementById('play').onclick=()=>{video.muted=false;video.play().catch(error=>errors.push(String(error)))};
+const probe=new URL(location.href).searchParams.get('probe');
+if(probe)emeTest.securityProbe().then(result=>parent.postMessage({probe,result},'*'));
+setInterval(()=>document.getElementById('status').textContent=JSON.stringify(emeTest.state(),null,2),500);
+</script>

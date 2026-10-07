@@ -4809,6 +4809,90 @@ index 341db75e1e661ce171e21d818a544a19c5ecdbbd..9d0bd598ef39373c6843cc2a15e2e448
      platform/mock/DeviceOrientationClientMock.h
      platform/mock/MediaPlaybackTargetMock.h
      platform/mock/MediaPlaybackTargetPickerMock.h
+diff --git a/Source/WebCore/Modules/encryptedmedia/MediaKeySession.idl b/Source/WebCore/Modules/encryptedmedia/MediaKeySession.idl
+index a26f2a8fe8a7781cdc6aad37578e9a945e5a7ee7..e43f924b77a6f28c70280cf3ffb9679958f2019c 100644
+--- a/Source/WebCore/Modules/encryptedmedia/MediaKeySession.idl
++++ b/Source/WebCore/Modules/encryptedmedia/MediaKeySession.idl
+@@ -32,6 +32,7 @@
+     EnabledBySetting=EncryptedMediaAPIEnabled,
+     ExportToWrappedFunction,
+     DisabledByQuirk=hasBrokenEncryptedMediaAPISupport,
++    SecureContext,
+     Exposed=Window
+ ] interface MediaKeySession : EventTarget {
+     readonly attribute DOMString sessionId;
+diff --git a/Source/WebCore/Modules/encryptedmedia/MediaKeyStatusMap.idl b/Source/WebCore/Modules/encryptedmedia/MediaKeyStatusMap.idl
+index b0d388116b31e0aea55bf16118b806cf608d5417..a7b2b8c9b63bb58f0136b71009ea263675f84305 100644
+--- a/Source/WebCore/Modules/encryptedmedia/MediaKeyStatusMap.idl
++++ b/Source/WebCore/Modules/encryptedmedia/MediaKeyStatusMap.idl
+@@ -40,6 +40,7 @@ enum MediaKeyStatus {
+     Conditional=ENCRYPTED_MEDIA,
+     EnabledBySetting=EncryptedMediaAPIEnabled,
+     DisabledByQuirk=hasBrokenEncryptedMediaAPISupport,
++    SecureContext,
+     Exposed=Window
+ ] interface MediaKeyStatusMap {
+     iterable<BufferSource, MediaKeyStatus>;
+diff --git a/Source/WebCore/Modules/encryptedmedia/MediaKeySystemAccess.idl b/Source/WebCore/Modules/encryptedmedia/MediaKeySystemAccess.idl
+index 01a4c36aae72c4365c3ff62d332f5b0caf385c02..882549d6d5329852125a67b764b12d9d3857f425 100644
+--- a/Source/WebCore/Modules/encryptedmedia/MediaKeySystemAccess.idl
++++ b/Source/WebCore/Modules/encryptedmedia/MediaKeySystemAccess.idl
+@@ -31,6 +31,7 @@
+     Conditional=ENCRYPTED_MEDIA,
+     EnabledBySetting=EncryptedMediaAPIEnabled,
+     DisabledByQuirk=hasBrokenEncryptedMediaAPISupport,
++    SecureContext,
+     Exposed=Window
+ ] interface MediaKeySystemAccess {
+     readonly attribute DOMString keySystem;
+diff --git a/Source/WebCore/Modules/encryptedmedia/MediaKeys.idl b/Source/WebCore/Modules/encryptedmedia/MediaKeys.idl
+index 98de4f25aa8755d6c036ad77baad8326e4fc7e75..f63593b6dd6ea178258dc5d084cc5bdfac8ed325 100644
+--- a/Source/WebCore/Modules/encryptedmedia/MediaKeys.idl
++++ b/Source/WebCore/Modules/encryptedmedia/MediaKeys.idl
+@@ -31,6 +31,7 @@
+     EnabledBySetting=EncryptedMediaAPIEnabled,
+     ExportToWrappedFunction,
+     DisabledByQuirk=hasBrokenEncryptedMediaAPISupport,
++    SecureContext,
+     Exposed=Window
+ ] interface MediaKeys {
+     [CallWith=CurrentDocument] MediaKeySession createSession(optional MediaKeySessionType sessionType = "temporary");
+diff --git a/Source/WebCore/Modules/encryptedmedia/Navigator+EME.idl b/Source/WebCore/Modules/encryptedmedia/Navigator+EME.idl
+index bcb2ee1921f255cdc614c51c0c6170bb91c3202b..e030832797c63b9da4d2084e6ee5f48ff88b5fa5 100644
+--- a/Source/WebCore/Modules/encryptedmedia/Navigator+EME.idl
++++ b/Source/WebCore/Modules/encryptedmedia/Navigator+EME.idl
+@@ -33,5 +33,5 @@
+     DisabledByQuirk=hasBrokenEncryptedMediaAPISupport,
+     ImplementedBy=NavigatorEME
+ ] partial interface Navigator {
+-    [CallWith=CurrentDocument] Promise<MediaKeySystemAccess> requestMediaKeySystemAccess(DOMString keySystem, sequence<MediaKeySystemConfiguration> supportedConfiguration);
++    [SecureContext, CallWith=CurrentDocument] Promise<MediaKeySystemAccess> requestMediaKeySystemAccess(DOMString keySystem, sequence<MediaKeySystemConfiguration> supportedConfiguration);
+ };
+diff --git a/Source/WebCore/Modules/encryptedmedia/NavigatorEME.cpp b/Source/WebCore/Modules/encryptedmedia/NavigatorEME.cpp
+index c424513ac3cc46ddae67093a2dbec79247eca790..05bb32fe096a2f2c37b8921107d8cb6b217d2aa5 100644
+--- a/Source/WebCore/Modules/encryptedmedia/NavigatorEME.cpp
++++ b/Source/WebCore/Modules/encryptedmedia/NavigatorEME.cpp
+@@ -39,6 +39,7 @@
+ #include "JSMediaKeySystemAccess.h"
+ #include "Logging.h"
+ #include "MediaKeySystemRequest.h"
++#include "PermissionsPolicy.h"
+ #include <JavaScriptCore/HeapCellInlines.h>
+ #include <wtf/text/StringBuilder.h>
+ 
+@@ -97,6 +98,12 @@ void NavigatorEME::requestMediaKeySystemAccess(Navigator& navigator, Document& d
+         return;
+     }
+ 
++    if (!document.isSecureContext()
++        || !PermissionsPolicy::isFeatureEnabled(PermissionsPolicy::Feature::EncryptedMedia, document)) {
++        promise->reject(Exception { ExceptionCode::SecurityError, "Encrypted media is not allowed in this document."_s });
++        return;
++    }
++
+     auto request = MediaKeySystemRequest::create(document, keySystem, WTF::move(promise));
+     request->setAllowCallback([keySystem, supportedConfigurations = WTF::move(supportedConfigurations), weakDocument = WeakPtr { document }, logger = WTF::move(logger), identifier = WTF::move(identifier)](String&& mediaKeysHashSalt, RefPtr<DeferredPromise>&& promise) mutable {
+         RefPtr document = weakDocument.get();
 diff --git a/Source/WebCore/Modules/identity/CredentialRequestCoordinator.cpp b/Source/WebCore/Modules/identity/CredentialRequestCoordinator.cpp
 index 2cfba92b71804f74b83bc3f44b56a3600b7adfd6..cd068dcdb035adee28647318bf137c1b2e23e029 100644
 --- a/Source/WebCore/Modules/identity/CredentialRequestCoordinator.cpp
@@ -6838,10 +6922,10 @@ index 0000000000000000000000000000000000000000..48e19a5957df4c1ae60378dd9a84cbe4
 +/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
 +enum USBTransferStatus { "ok", "stall", "babble" };
 diff --git a/Source/WebCore/PlatformHaiku.cmake b/Source/WebCore/PlatformHaiku.cmake
-index 16a88804a1baa39ccdd9fc2870b6e2524d941298..b87f008782ece24f62f6f20cce5dcf5723cd1f50 100644
+index 16a88804a1baa39ccdd9fc2870b6e2524d941298..38bc1806391b3aed5c3ce78851d2eede03726f6b 100644
 --- a/Source/WebCore/PlatformHaiku.cmake
 +++ b/Source/WebCore/PlatformHaiku.cmake
-@@ -1,52 +1,349 @@
+@@ -1,52 +1,351 @@
 +include(platform/Haiku.cmake)
  include(platform/ImageDecoders.cmake)
  include(platform/OpenSSL.cmake)
@@ -7008,6 +7092,8 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..b87f008782ece24f62f6f20cce5dcf57
 +  platform/graphics/haiku/DashPlaybackHaiku.cpp
 +  platform/graphics/haiku/DashResourceLoaderHaiku.cpp
 +  platform/graphics/haiku/FragmentedMP4ParserHaiku.cpp
++  platform/graphics/haiku/CDMProxyHaiku.cpp
++  platform/graphics/haiku/CencCryptoHaiku.cpp
 +  platform/graphics/haiku/MediaDecoderSelectionHaiku.cpp
 +  platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 +  platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
@@ -7197,7 +7283,7 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..b87f008782ece24f62f6f20cce5dcf57
    textencoding
    translation
    ${WEBP_LIBRARIES}
-@@ -61,6 +358,222 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
+@@ -61,6 +360,222 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
    ${SQLITE_INCLUDE_DIR}
    ${WEBP_INCLUDE_DIRS}
    ${ZLIB_INCLUDE_DIRS}
@@ -9723,6 +9809,53 @@ index 605a0989c939e34bf52229b5521053999f72f143..59e7e5338a9a29bbc44bc1bcf29f5eb8
      Ref document = this->document();
  #if ENABLE(WEBGL)
      if (RefPtr context = dynamicDowncast<WebGLRenderingContextBase>(m_context.get())) {
+diff --git a/Source/WebCore/html/HTMLMediaElement.cpp b/Source/WebCore/html/HTMLMediaElement.cpp
+index 07ff5468e78d1f361dfccba1e5ef726885ade033..484a4d250b2a933bb1c0bc63301585f8aac4a75d 100644
+--- a/Source/WebCore/html/HTMLMediaElement.cpp
++++ b/Source/WebCore/html/HTMLMediaElement.cpp
+@@ -3693,7 +3693,15 @@ void HTMLMediaElement::mediaPlayerInitializationDataEncountered(const String& in
+     // 4. If the media data is CORS-same-origin and not mixed content, run the following steps:
+     //   4.1. Let initDataType be the string representing the Initialization Data Type of the Initialization Data.
+     //   4.2. Let initData be the Initialization Data.
+-    // FIXME: ^
++#if PLATFORM(HAIKU)
++    String exposedInitDataType = initDataType;
++    if (!document().isSecureContext() || taintsOrigin(document().securityOrigin())) {
++        exposedInitDataType = emptyString();
++        initData = nullptr;
++    }
++#else
++    auto& exposedInitDataType = initDataType;
++#endif
+ 
+     // 5. Queue a task to create an event named encrypted that does not bubble and is not cancellable using the
+     //    MediaEncryptedEvent interface with its type attribute set to encrypted and its isTrusted attribute
+@@ -3703,7 +3711,7 @@ void HTMLMediaElement::mediaPlayerInitializationDataEncountered(const String& in
+     //      initData = initData
+     auto initializer = MediaEncryptedEvent::Init {
+         { false, false, false },
+-        initDataType,
++        exposedInitDataType,
+         WTF::move(initData)
+     };
+     scheduleEvent(MediaEncryptedEvent::create(eventNames().encryptedEvent, WTF::move(initializer), Event::IsTrusted::Yes));
+diff --git a/Source/WebCore/html/HTMLMediaElement.idl b/Source/WebCore/html/HTMLMediaElement.idl
+index 35fefdacfa8e5ce92579c4ab5f46241c7afe3236..14de6e363fc52d5c8e84f5ebd1492eece8ad26b7 100644
+--- a/Source/WebCore/html/HTMLMediaElement.idl
++++ b/Source/WebCore/html/HTMLMediaElement.idl
+@@ -112,10 +112,10 @@ typedef (
+ 
+     // https://w3c.github.io/encrypted-media/#webidl-1869224078
+     // FIXME: Move these to their own IDL file HTMLMediaElement+EncryptedMedia.idl.
+-    [Conditional=ENCRYPTED_MEDIA, EnabledBySetting=EncryptedMediaAPIEnabled, DisabledByQuirk=hasBrokenEncryptedMediaAPISupport] readonly attribute MediaKeys? mediaKeys;
++    [SecureContext, Conditional=ENCRYPTED_MEDIA, EnabledBySetting=EncryptedMediaAPIEnabled, DisabledByQuirk=hasBrokenEncryptedMediaAPISupport] readonly attribute MediaKeys? mediaKeys;
+     [Conditional=ENCRYPTED_MEDIA, EnabledBySetting=EncryptedMediaAPIEnabled, DisabledByQuirk=hasBrokenEncryptedMediaAPISupport] attribute EventHandler onencrypted;
+     [Conditional=ENCRYPTED_MEDIA, EnabledBySetting=EncryptedMediaAPIEnabled, DisabledByQuirk=hasBrokenEncryptedMediaAPISupport] attribute EventHandler onwaitingforkey;
+-    [Conditional=ENCRYPTED_MEDIA, EnabledBySetting=EncryptedMediaAPIEnabled, DisabledByQuirk=hasBrokenEncryptedMediaAPISupport] Promise<undefined> setMediaKeys(MediaKeys? mediaKeys);
++    [SecureContext, Conditional=ENCRYPTED_MEDIA, EnabledBySetting=EncryptedMediaAPIEnabled, DisabledByQuirk=hasBrokenEncryptedMediaAPISupport] Promise<undefined> setMediaKeys(MediaKeys? mediaKeys);
+ 
+     // tracks
+     TextTrack addTextTrack([AtomString] DOMString kind, optional [AtomString] DOMString label = "", optional [AtomString] DOMString language = "");
 diff --git a/Source/WebCore/html/MonthInputType.cpp b/Source/WebCore/html/MonthInputType.cpp
 index d28d814bfb7fc086d84ecb726bbd3c89f1ae2663..1f3f0978fcc27c7e424fccd89d64dd9c500ee39a 100644
 --- a/Source/WebCore/html/MonthInputType.cpp
@@ -9874,54 +10007,191 @@ index f401335d473e926808c3dceca100b849f96e238e..32abb05690691199198fbc56973391c7
  
      m_injectedStyleAndScript = true;
 diff --git a/Source/WebCore/html/PermissionsPolicy.cpp b/Source/WebCore/html/PermissionsPolicy.cpp
-index 5417f278972081e8bec7ffc8d1050e0e253f0d9c..e92902abc20c4607bc6a669fa22008cabc1eab5b 100644
+index 5417f278972081e8bec7ffc8d1050e0e253f0d9c..7b9c945945690ca50fd2351501c5ac37d7cda848 100644
 --- a/Source/WebCore/html/PermissionsPolicy.cpp
 +++ b/Source/WebCore/html/PermissionsPolicy.cpp
-@@ -69,6 +69,8 @@ static ASCIILiteral toFeatureNameForLogging(PermissionsPolicy::Feature feature)
+@@ -28,12 +28,14 @@
+ 
+ #include "Allowlist.h"
+ #include "Document.h"
++#include "DocumentLoader.h"
+ #include "ElementInlines.h"
+ #include "HTMLIFrameElement.h"
+ #include "HTMLNames.h"
+ #include "LocalDOMWindow.h"
+ #include "OwnerPermissionsPolicyData.h"
+ #include "Quirks.h"
++#include "RFC8941.h"
+ #include "SecurityOrigin.h"
+ #include <wtf/TZoneMalloc.h>
+ #include <wtf/text/MakeString.h>
+@@ -69,6 +71,10 @@ static ASCIILiteral toFeatureNameForLogging(PermissionsPolicy::Feature feature)
          return "Fullscreen"_s;
      case PermissionsPolicy::Feature::WebShare:
          return "WebShare"_s;
 +    case PermissionsPolicy::Feature::USB:
 +        return "USB"_s;
++    case PermissionsPolicy::Feature::EncryptedMedia:
++        return "EncryptedMedia"_s;
  #if ENABLE(DEVICE_ORIENTATION)
      case PermissionsPolicy::Feature::Gyroscope:
          return "Gyroscope"_s;
-@@ -129,10 +131,14 @@ static std::pair<PermissionsPolicy::Feature, StringView> readFeatureIdentifier(S
+@@ -129,10 +135,19 @@ static std::pair<PermissionsPolicy::Feature, StringView> readFeatureIdentifier(S
  #if ENABLE(WEBXR)
      constexpr auto xrSpatialTrackingToken { "xr-spatial-tracking"_s };
  #endif
 +    constexpr auto usbToken { "usb"_s };
++    constexpr auto encryptedMediaToken { "encrypted-media"_s };
      constexpr auto privateTokenToken { "private-token"_s };
      constexpr auto storageAccessToken { "storage-access"_s };
  
 -    if (value.startsWith(cameraToken)) {
-+    if (value.startsWith(usbToken)) {
++    if (value == encryptedMediaToken || (value.startsWith(encryptedMediaToken)
++        && isASCIIWhitespace(value[encryptedMediaToken.length()]))) {
++        feature = PermissionsPolicy::Feature::EncryptedMedia;
++        remainingValue = value.substring(encryptedMediaToken.length());
++    } else if (value.startsWith(usbToken)) {
 +        feature = PermissionsPolicy::Feature::USB;
 +        remainingValue = value.substring(usbToken.length());
 +    } else if (value.startsWith(cameraToken)) {
          feature = PermissionsPolicy::Feature::Camera;
          remainingValue = value.substring(cameraToken.length());
      } else if (value.startsWith(microphoneToken)) {
-@@ -222,6 +228,7 @@ static ASCIILiteral defaultAllowlistValue(PermissionsPolicy::Feature feature)
+@@ -222,6 +237,8 @@ static ASCIILiteral defaultAllowlistValue(PermissionsPolicy::Feature feature)
      case PermissionsPolicy::Feature::ScreenWakeLock:
      case PermissionsPolicy::Feature::Fullscreen:
      case PermissionsPolicy::Feature::WebShare:
 +    case PermissionsPolicy::Feature::USB:
++    case PermissionsPolicy::Feature::EncryptedMedia:
  #if ENABLE(DEVICE_ORIENTATION)
      case PermissionsPolicy::Feature::Gyroscope:
      case PermissionsPolicy::Feature::Accelerometer:
+@@ -268,6 +285,9 @@ static bool checkPermissionsPolicy(const PermissionsPolicy& permissionsPolicy, P
+     if (!permissionsPolicy.inheritedPolicyValueForFeature(feature))
+         return false;
+ 
++    if (auto iterator = permissionsPolicy.declaredPolicy().find(feature); iterator != permissionsPolicy.declaredPolicy().end())
++        return iterator->value.matches(origin);
++
+     return isFeatureAllowedByDefaultAllowlist(feature, origin, documentOrigin);
+ }
+ 
+@@ -380,10 +400,13 @@ PermissionsPolicy::PolicyDirective PermissionsPolicy::processPermissionsPolicyAt
+ }
+ 
+ // https://w3c.github.io/webappsec-permissions-policy/#algo-get-feature-value-for-origin
+-static bool NODELETE featureValueForOrigin(PermissionsPolicy::Feature feature, const PermissionsPolicy& documentPermissionsPolicy, const SecurityOriginData&)
++static bool NODELETE featureValueForOrigin(PermissionsPolicy::Feature feature, const PermissionsPolicy& documentPermissionsPolicy, const SecurityOriginData& origin)
+ {
+-    // Declared policy is not implemented yet, so origin is unused.
+-    return documentPermissionsPolicy.inheritedPolicyValueForFeature(feature);
++    if (!documentPermissionsPolicy.inheritedPolicyValueForFeature(feature))
++        return false;
++    if (auto iterator = documentPermissionsPolicy.declaredPolicy().find(feature); iterator != documentPermissionsPolicy.declaredPolicy().end())
++        return iterator->value.matches(origin);
++    return true;
+ }
+ 
+ // https://w3c.github.io/webappsec-permissions-policy/#algo-define-inherited-policy-in-container
+@@ -414,8 +437,57 @@ bool PermissionsPolicy::inheritedPolicyValueForFeature(Feature feature) const
+     return m_inheritedPolicy.contains(feature);
+ }
+ 
++// Parse the response directive for EME using the existing structured-fields parser.
++// Other features retain their existing policy behavior. Origin lists use the same
++// exact-origin matching as iframe allowlists; unsupported expressions grant nothing.
++static PermissionsPolicy::PolicyDirective declaredEncryptedMediaPolicy(const Document& document)
++{
++    PermissionsPolicy::PolicyDirective result;
++    RefPtr loader = document.loader();
++    if (!loader)
++        return result;
++    auto dictionary = RFC8941::parseDictionaryStructuredFieldValue(loader->response().httpHeaderField("Permissions-Policy"_s));
++    if (!dictionary)
++        return result;
++    auto iterator = dictionary->find("encrypted-media"_s);
++    if (iterator == dictionary->end())
++        return result;
++    auto& value = iterator->value.first;
++    HashSet<SecurityOriginData> origins;
++    bool allOrigins = false;
++    auto append = [&](const RFC8941::BareItem& item) {
++        if (auto* token = std::get_if<RFC8941::Token>(&item)) {
++            if (token->string() == "*"_s)
++                allOrigins = true;
++            else if (token->string() == "self"_s)
++                origins.add(document.securityOrigin().data());
++        } else if (auto* string = std::get_if<String>(&item)) {
++            URL url { *string };
++            auto authority = string->find("://"_s);
++            if (url.isValid() && authority != notFound && string->find('/', authority + 3) == notFound
++                && !string->contains('*') && !string->contains('?') && !string->contains('#') && !string->contains('@')) {
++                auto origin = SecurityOrigin::create(url);
++                if (!origin->isOpaque())
++                    origins.add(origin->data());
++            }
++        }
++    };
++    if (auto* innerList = std::get_if<RFC8941::InnerList>(&value)) {
++        for (auto& item : *innerList)
++            append(item.first);
++    } else {
++        auto& item = std::get<RFC8941::BareItem>(value);
++        if (std::holds_alternative<RFC8941::Token>(item))
++            append(item);
++    }
++    result.add(PermissionsPolicy::Feature::EncryptedMedia,
++        allOrigins ? Allowlist { Allowlist::AllowAllOrigins { } } : Allowlist { WTF::move(origins) });
++    return result;
++}
++
+ // https://w3c.github.io/webappsec-permissions-policy/#algo-create-for-navigable
+ PermissionsPolicy::PermissionsPolicy(const Document& document)
++    : m_declaredPolicy(declaredEncryptedMediaPolicy(document))
+ {
+     auto ownerPermissionsPolicy = document.ownerPermissionsPolicy();
+     forEachFeature([&](auto feature) {
 diff --git a/Source/WebCore/html/PermissionsPolicy.h b/Source/WebCore/html/PermissionsPolicy.h
-index a8ad291b4884798676be22fdf1fef71072733eb7..d30f78244b735ab90d17125b30461d7982973cab 100644
+index a8ad291b4884798676be22fdf1fef71072733eb7..f93c7a121bbf0c76d62be58f1d267e2319d1f947 100644
 --- a/Source/WebCore/html/PermissionsPolicy.h
 +++ b/Source/WebCore/html/PermissionsPolicy.h
-@@ -57,6 +57,7 @@ public:
+@@ -57,6 +57,8 @@ public:
          SyncXHR,
          Fullscreen,
          WebShare,
 +        USB,
++        EncryptedMedia,
  #if ENABLE(DEVICE_ORIENTATION)
          Gyroscope,
          Accelerometer,
+@@ -79,20 +81,23 @@ public:
+ 
+     // InheritedPolicy contains enabled features.
+     using InheritedPolicy = HashSet<Feature, IntHash<Feature>, WTF::StrongEnumHashTraits<Feature>>;
+-    PermissionsPolicy(const InheritedPolicy& inheritedPolicy)
++    // https://w3c.github.io/webappsec-permissions-policy/#policy-directives
++    using PolicyDirective = HashMap<Feature, Allowlist, IntHash<Feature>, WTF::StrongEnumHashTraits<Feature>>;
++    PermissionsPolicy(const InheritedPolicy& inheritedPolicy, const PolicyDirective& declaredPolicy)
+         : m_inheritedPolicy(inheritedPolicy)
++        , m_declaredPolicy(declaredPolicy)
+     {
+     }
+-    InheritedPolicy inheritedPolicy() const { return m_inheritedPolicy; }
++    const InheritedPolicy& inheritedPolicy() const LIFETIME_BOUND { return m_inheritedPolicy; }
++    const PolicyDirective& declaredPolicy() const LIFETIME_BOUND { return m_declaredPolicy; }
+ 
+-    // https://w3c.github.io/webappsec-permissions-policy/#policy-directives
+-    using PolicyDirective = HashMap<Feature, Allowlist, IntHash<Feature>, WTF::StrongEnumHashTraits<Feature>>;
+     static PolicyDirective processPermissionsPolicyAttribute(const HTMLIFrameElement&);
+ 
+ private:
+     bool computeInheritedPolicyValueInContainer(Feature, const std::optional<OwnerPermissionsPolicyData>&, const SecurityOriginData&) const;
+ 
+     InheritedPolicy m_inheritedPolicy;
++    PolicyDirective m_declaredPolicy;
+ };
+ 
+ } // namespace WebCore
 diff --git a/Source/WebCore/html/TimeInputType.cpp b/Source/WebCore/html/TimeInputType.cpp
 index f9843211a87cf9776d26b42eda3b30946a456d53..cf6dec5558b2495d41e05d51d7de60714fb734ca 100644
 --- a/Source/WebCore/html/TimeInputType.cpp
@@ -14805,6 +15075,430 @@ index 0000000000000000000000000000000000000000..cdab62bfd95bf644f740fce9f74b4813
 +SPECIALIZE_TYPE_TRAITS_END()
 +
 +#endif // PLATFORM(HAIKU)
+diff --git a/Source/WebCore/platform/encryptedmedia/CDMFactory.cpp b/Source/WebCore/platform/encryptedmedia/CDMFactory.cpp
+index 7123e4b97b38686bec463b9562d9b80b28236a5f..ff98ce0f13c1d3b1191f03a981fb97f6a7f7ea65 100644
+--- a/Source/WebCore/platform/encryptedmedia/CDMFactory.cpp
++++ b/Source/WebCore/platform/encryptedmedia/CDMFactory.cpp
+@@ -31,6 +31,9 @@
+ #if ENABLE(ENCRYPTED_MEDIA)
+ 
+ #include "MediaStrategy.h"
++#if OS(HAIKU)
++#include "CDMClearKey.h"
++#endif
+ #include "PlatformStrategies.h"
+ #include <mutex>
+ #include <wtf/NeverDestroyed.h>
+@@ -62,8 +65,13 @@ void CDMFactory::unregisterFactory(CDMFactory& factory)
+ }
+ 
+ #if !USE(GSTREAMER) && !USE(AVFOUNDATION)
+-void CDMFactory::platformRegisterFactories(Vector<WeakRef<CDMFactory>>&)
++void CDMFactory::platformRegisterFactories(Vector<WeakRef<CDMFactory>>& factories)
+ {
++#if OS(HAIKU)
++    factories.append(CDMFactoryClearKey::singleton());
++#else
++    UNUSED_PARAM(factories);
++#endif
+ }
+ #endif
+ 
+diff --git a/Source/WebCore/platform/encryptedmedia/CDMProxy.cpp b/Source/WebCore/platform/encryptedmedia/CDMProxy.cpp
+index a49b1c51257430b36b0cb5d858587a5e1a8684d9..e30b9f3553ca61e31bade823a1201cbc46aac9a4 100644
+--- a/Source/WebCore/platform/encryptedmedia/CDMProxy.cpp
++++ b/Source/WebCore/platform/encryptedmedia/CDMProxy.cpp
+@@ -80,7 +80,7 @@ RefPtr<CDMProxy> CDMProxyFactory::createCDMProxyForKeySystem(const String& keySy
+     return cdmProxy;
+ }
+ 
+-#if !USE(GSTREAMER)
++#if !USE(GSTREAMER) && !OS(HAIKU)
+ Vector<CDMProxyFactory*> CDMProxyFactory::platformRegisterFactories()
+ {
+     Vector<CDMProxyFactory*> factories;
+@@ -175,6 +175,15 @@ void CDMProxy::setInstance(CDMInstanceProxy* instance)
+     m_instance = instance;
+ }
+ 
++std::optional<KeyHandleValueVariant> CDMProxy::keyValueIfAvailable(const KeyIDType& keyID) const
++{
++    Locker locker { m_keysLock };
++    RefPtr handle = m_keyStore.keyHandle(keyID);
++    if (!handle || !handle->isStatusCurrentlyValid())
++        return std::nullopt;
++    return handle->value();
++}
++
+ RefPtr<KeyHandle> CDMProxy::keyHandle(const KeyIDType& keyID) const
+ {
+     Locker locker { m_keysLock };
+diff --git a/Source/WebCore/platform/encryptedmedia/CDMProxy.h b/Source/WebCore/platform/encryptedmedia/CDMProxy.h
+index fb0467960468871ca8b4039572d2e8ff89f00bb3..91ec00cc8451bc66d0ffc746d2704d04d750ec3f 100644
+--- a/Source/WebCore/platform/encryptedmedia/CDMProxy.h
++++ b/Source/WebCore/platform/encryptedmedia/CDMProxy.h
+@@ -253,6 +253,9 @@ public:
+     void abortWaitingForKey() const;
+ 
+ protected:
++    // Copy under the key-store lock: session updates and closure may run
++    // concurrently with a native decoder. Never expose mutable key handles.
++    std::optional<KeyHandleValueVariant> keyValueIfAvailable(const KeyIDType&) const;
+     RefPtr<KeyHandle> keyHandle(const KeyIDType&) const;
+     bool isKeyAvailable(const KeyIDType&) const;
+     bool isKeyAvailableUnlocked(const KeyIDType&) const WTF_REQUIRES_LOCK(m_keysLock);
+diff --git a/Source/WebCore/platform/encryptedmedia/clearkey/CDMClearKey.cpp b/Source/WebCore/platform/encryptedmedia/clearkey/CDMClearKey.cpp
+index 45b86514bb305b44dc4db3d219c6e7961867b2a9..ce709ed223755ac41adc49f3f7e86b05771c2c24 100644
+--- a/Source/WebCore/platform/encryptedmedia/clearkey/CDMClearKey.cpp
++++ b/Source/WebCore/platform/encryptedmedia/clearkey/CDMClearKey.cpp
+@@ -35,6 +35,9 @@
+ 
+ #include "CDMKeySystemConfiguration.h"
+ #include "CDMRestrictions.h"
++#if OS(HAIKU)
++#include "ContentType.h"
++#endif
+ #include "CDMSessionType.h"
+ #include "CDMUtilities.h"
+ #include "InitDataRegistry.h"
+@@ -59,6 +62,11 @@ WTF_MAKE_TZONE_ALLOCATED_IMPL(CDMInstanceClearKey);
+ 
+ static std::optional<Vector<Ref<KeyHandle>>> parseLicenseFormat(const JSON::Object& root)
+ {
++#if OS(HAIKU)
++    auto type = root.find("type"_s);
++    if (type != root.end() && type->value->asString() != "temporary"_s)
++        return std::nullopt;
++#endif
+     // If the 'keys' key is present in the root object, parse the JSON further
+     // according to the specified 'license' format.
+     auto it = root.find("keys"_s);
+@@ -78,7 +86,7 @@ static std::optional<Vector<Ref<KeyHandle>>> parseLicenseFormat(const JSON::Obje
+                 return false;
+ 
+             auto keyType = keyObject->getString("kty"_s);
+-            if (!keyType || !equalLettersIgnoringASCIICase(keyType, "oct"_s))
++            if (keyType != "oct"_s)
+                 return false;
+ 
+             auto keyID = keyObject->getString("kid"_s);
+@@ -96,6 +104,10 @@ static std::optional<Vector<Ref<KeyHandle>>> parseLicenseFormat(const JSON::Obje
+             auto keyHandleValueData = base64URLDecode(keyValue);
+             if (!keyHandleValueData)
+                 return false;
++#if OS(HAIKU)
++            if (keyIDData->isEmpty() || keyIDData->size() > 512 || keyHandleValueData->size() != 16 || decodedKeys.size() >= 512)
++                return false;
++#endif
+ 
+             decodedKeys.append(KeyHandle::create(CDMInstanceSession::KeyStatus::Usable, WTF::move(*keyIDData), WTF::move(*keyHandleValueData)));
+             return true;
+@@ -142,59 +154,48 @@ static bool parseLicenseReleaseAcknowledgementFormat(const JSON::Object& root)
+ // This function extracts the KeyIds count and the location of the first KeyId in initData buffer.
+ static std::pair<unsigned, unsigned> extractKeyidsLocationFromCencInitData(const SharedBuffer& initData)
+ {
+-    std::pair<unsigned, unsigned> keyIdsMap(0, 0);
+-
+-    // Check the initData size.
+-    if (initData.isEmpty() || initData.size() > std::numeric_limits<unsigned>::max())
+-        return keyIdsMap;
+-
+     auto data = initData.span();
+-    unsigned initDataSize = data.size();
+-    unsigned index = 0;
+-    unsigned psshSize = 0;
+-
+-    // Search in the concatenated or the simple InitData, the ClearKey PSSH.
+-    bool foundPssh = false;
+-    while (true) {
+-
+-        // Check the overflow InitData.
+-        if (index + 12 + ClearKey::cencSystemId.size() >= initDataSize)
+-            return keyIdsMap;
+-
+-        psshSize = data[index + 2] * 256 + data[index + 3];
+-
+-        // Check the pssh size
+-        if (!psshSize)
+-            return keyIdsMap;
+-
+-        // 12 = BMFF box header + Full box header.
+-        if (spanHasPrefix(data.subspan(index + 12), std::span { ClearKey::cencSystemId })) {
+-            foundPssh = true;
+-            break;
++    if (data.size() > 1024 * 1024)
++        return { 0, 0 };
++    auto read32 = [&](size_t at) -> uint32_t {
++        return uint32_t(data[at]) << 24 | uint32_t(data[at + 1]) << 16 | uint32_t(data[at + 2]) << 8 | data[at + 3];
++    };
++    size_t at = 0;
++    std::pair<unsigned, unsigned> result { 0, 0 };
++    while (at < data.size()) {
++        if (data.size() - at < 8 || read32(at + 4) != 0x70737368)
++            return { 0, 0 };
++        uint64_t size = read32(at);
++        size_t header = 8;
++        if (size == 1) {
++            if (data.size() - at < 16) return { 0, 0 };
++            size = uint64_t(read32(at + 8)) << 32 | read32(at + 12);
++            header = 16;
++        } else if (!size)
++            size = data.size() - at;
++        if (size < header + 24 || size > data.size() - at)
++            return { 0, 0 };
++        size_t boxEnd = at + size;
++        size_t payload = at + header;
++        unsigned version = data[payload];
++        if (version > 1 || (read32(payload) & 0xffffff)) return { 0, 0 };
++        bool common = spanHasPrefix(data.subspan(payload + 4), std::span { ClearKey::cencSystemId });
++        size_t cursor = payload + 20;
++        unsigned count = 0;
++        size_t firstKey = 0;
++        if (version == 1) {
++            count = read32(cursor);
++            cursor += 4;
++            if (count > (boxEnd - cursor) / ClearKey::KeyIDSizeInBytes) return { 0, 0 };
++            firstKey = cursor;
++            cursor += size_t(count) * ClearKey::KeyIDSizeInBytes;
+         }
+-        index += psshSize;
++        if (boxEnd - cursor < 4 || read32(cursor) != boxEnd - cursor - 4) return { 0, 0 };
++        if (!result.first && common && version == 1 && count && count <= 512)
++            result = { count, unsigned(firstKey) };
++        at = boxEnd;
+     }
+-
+-    // Check if the InitData contains the ClearKey PSSH.
+-    if (!foundPssh)
+-        return keyIdsMap;
+-
+-    index += (12 + ClearKey::cencSystemId.size()); // 12 (BMFF box header + Full box header) + SystemID size.
+-
+-    // Check the overflow.
+-    if (index + 3 >= initDataSize)
+-        return keyIdsMap;
+-
+-    keyIdsMap.first = data[index + 3]; // Read the KeyIdsCount.
+-    index += 4; // KeyIdsCount size.
+-
+-    // Check the overflow.
+-    if ((index + (keyIdsMap.first * ClearKey::KeyIDSizeInBytes)) >= initDataSize)
+-        return keyIdsMap;
+-
+-    keyIdsMap.second = index; // The location of the first KeyId in initData.
+-
+-    return keyIdsMap;
++    return result;
+ }
+ 
+ // This function checks if the initData sharedBuffer is a valid CENC initData.
+@@ -273,7 +274,7 @@ std::unique_ptr<CDMPrivate> CDMFactoryClearKey::createCDM(const String& keySyste
+ bool CDMFactoryClearKey::supportsKeySystem(const String& keySystem)
+ {
+     // `org.w3.clearkey` is the only supported key system.
+-    return equalLettersIgnoringASCIICase(keySystem, "org.w3.clearkey"_s);
++    return keySystem == "org.w3.clearkey"_s;
+ }
+ 
+ CDMPrivateClearKey::CDMPrivateClearKey() = default;
+@@ -284,7 +285,9 @@ Vector<String> CDMPrivateClearKey::supportedInitDataTypes() const
+     return {
+         InitDataRegistry::keyidsName(),
+         InitDataRegistry::cencName(),
++#if !OS(HAIKU)
+         InitDataRegistry::webmName(),
++#endif
+     };
+ }
+ 
+@@ -295,6 +298,24 @@ static bool NODELETE containsPersistentLicenseType(const Vector<CDMSessionType>&
+ 
+ bool CDMPrivateClearKey::supportsConfiguration(const CDMKeySystemConfiguration& configuration) const
+ {
++#if OS(HAIKU)
++    if (configuration.persistentState == CDMRequirement::Required || containsPersistentLicenseType(configuration.sessionTypes))
++        return false;
++    auto supported = [](const CDMMediaCapability& capability) {
++        if (capability.encryptionScheme && *capability.encryptionScheme != CDMEncryptionScheme::cenc)
++            return false;
++        ContentType type { capability.contentType };
++        if (type.containerType() != "video/mp4"_s && type.containerType() != "audio/mp4"_s)
++            return false;
++        for (const auto& codec : type.codecs()) {
++            if (!codec.startsWith("avc1."_s) && !codec.startsWith("avc3."_s) && codec != "mp4a.40.2"_s)
++                return false;
++        }
++        return capability.robustness.isEmpty();
++    };
++    if (!std::ranges::all_of(configuration.audioCapabilities, supported) || !std::ranges::all_of(configuration.videoCapabilities, supported))
++        return false;
++#endif
+     // Reject any configuration that marks distinctive identifier as required.
+     if (configuration.distinctiveIdentifier == CDMRequirement::Required)
+         return false;
+@@ -309,6 +330,10 @@ bool CDMPrivateClearKey::supportsConfiguration(const CDMKeySystemConfiguration&
+ 
+ bool CDMPrivateClearKey::supportsConfigurationWithRestrictions(const CDMKeySystemConfiguration& configuration, const CDMRestrictions& restrictions) const
+ {
++#if OS(HAIKU)
++    if (!supportsConfiguration(configuration))
++        return false;
++#endif
+     // Reject any configuration that marks distincitive identifier as required, or that marks
+     // distinctive identifier as optional even when restrictions mark it as denied.
+     if ((configuration.distinctiveIdentifier == CDMRequirement::Optional && restrictions.distinctiveIdentifierDenied)
+@@ -330,6 +355,10 @@ bool CDMPrivateClearKey::supportsConfigurationWithRestrictions(const CDMKeySyste
+ 
+ bool CDMPrivateClearKey::supportsSessionTypeWithConfiguration(const CDMSessionType& sessionType, const CDMKeySystemConfiguration& configuration) const
+ {
++#if OS(HAIKU)
++    if (sessionType != CDMSessionType::Temporary)
++        return false;
++#endif
+     // Only support the 'temporary' and 'persistent-license' session types.
+     if (sessionType != CDMSessionType::Temporary && sessionType != CDMSessionType::PersistentLicense)
+         return false;
+@@ -344,6 +373,10 @@ Vector<String> CDMPrivateClearKey::supportedRobustnesses() const
+ 
+ CDMRequirement CDMPrivateClearKey::distinctiveIdentifiersRequirement(const CDMKeySystemConfiguration&, const CDMRestrictions& restrictions) const
+ {
++#if OS(HAIKU)
++    UNUSED_PARAM(restrictions);
++    return CDMRequirement::NotAllowed;
++#endif
+     // Distinctive identifier is not allowed if it's been denied, otherwise it's optional.
+     if (restrictions.distinctiveIdentifierDenied)
+         return CDMRequirement::NotAllowed;
+@@ -352,6 +385,10 @@ CDMRequirement CDMPrivateClearKey::distinctiveIdentifiersRequirement(const CDMKe
+ 
+ CDMRequirement CDMPrivateClearKey::persistentStateRequirement(const CDMKeySystemConfiguration&, const CDMRestrictions& restrictions) const
+ {
++#if OS(HAIKU)
++    UNUSED_PARAM(restrictions);
++    return CDMRequirement::NotAllowed;
++#endif
+     // Persistent state is not allowed if it's been denied, otherwise it's optional.
+     if (restrictions.persistentStateDenied)
+         return CDMRequirement::NotAllowed;
+@@ -396,8 +433,10 @@ bool CDMPrivateClearKey::supportsInitData(const String& initDataType, const Shar
+         return true;
+ 
+     // Validate the initData buffer as WebM initData.
++#if !OS(HAIKU)
+     if (equalLettersIgnoringASCIICase(initDataType, "webm"_s) && !initData.isEmpty())
+         return true;
++#endif
+ 
+     return false;
+ }
+@@ -405,7 +444,7 @@ bool CDMPrivateClearKey::supportsInitData(const String& initDataType, const Shar
+ RefPtr<SharedBuffer> CDMPrivateClearKey::sanitizeResponse(const SharedBuffer& response) const
+ {
+     // Validate the response buffer as an JSON object.
+-    if (!CDMUtilities::parseJSONObject(response))
++    if (response.size() > 1024 * 1024 || !CDMUtilities::parseJSONObject(response))
+         return nullptr;
+ 
+     return response.makeContiguous();
+@@ -450,6 +489,13 @@ RefPtr<CDMInstanceSession> CDMInstanceClearKey::createSession()
+     return adoptRef(new CDMInstanceSessionClearKey(*this));
+ }
+ 
++CDMInstanceSessionClearKey::~CDMInstanceSessionClearKey()
++{
++#if OS(HAIKU)
++    if (RefPtr parent = parentInstance()) parent->unrefAllKeysFrom(m_keyStore);
++#endif
++}
++
+ void CDMInstanceSessionClearKey::requestLicense(LicenseType, KeyGroupingStrategy, const String& initDataType, Ref<SharedBuffer>&& initData, LicenseCallback&& callback)
+ {
+     if (RefPtr parentInstance = this->parentInstance())
+@@ -463,6 +509,21 @@ void CDMInstanceSessionClearKey::requestLicense(LicenseType, KeyGroupingStrategy
+     if (equalLettersIgnoringASCIICase(initDataType, "webm"_s))
+         initData = extractKeyIdFromWebMInitData(initData.get());
+ 
++#if OS(HAIKU)
++    // Always construct the license request ourselves, including its required
++    // session type, instead of echoing arbitrary fields in keyids input.
++    auto request = CDMUtilities::parseJSONObject(initData.get());
++    auto kids = request ? request->getArray("kids"_s) : nullptr;
++    if (!kids || !kids->length() || kids->length() > 512) {
++        callback(SharedBuffer::create(), emptyString(), false, Failed);
++        return;
++    }
++    auto message = JSON::Object::create();
++    message->setArray("kids"_s, kids.releaseNonNull());
++    message->setString("type"_s, "temporary"_s);
++    initData = SharedBuffer::create(message->toJSONString().utf8().span());
++#endif
++
+     callOnMainThread(
+         [sessionID = m_sessionID, callback = WTF::move(callback), initData = WTF::move(initData)]() mutable {
+             callback(WTF::move(initData), sessionID, false, Succeeded);
+@@ -520,7 +581,11 @@ void CDMInstanceSessionClearKey::updateLicense(const String& sessionId, LicenseT
+         return;
+     }
+ 
+-    if (parseLicenseReleaseAcknowledgementFormat(*root)) {
++    if (
++#if OS(HAIKU)
++        false &&
++#endif
++        parseLicenseReleaseAcknowledgementFormat(*root)) {
+         LOG_WITH_STREAM(EME, stream << "EME - ClearKey - session "_s << sessionId << " release acknowledged, clearing all known keys"_s);
+         parentInstance->unrefAllKeysFrom(m_keyStore);
+         m_keyStore.clear();
+@@ -546,6 +611,10 @@ void CDMInstanceSessionClearKey::loadSession(LicenseType, const String& sessionI
+ 
+ void CDMInstanceSessionClearKey::closeSession(const String&, CloseSessionCallback&& callback)
+ {
++#if OS(HAIKU)
++    if (RefPtr parent = parentInstance()) parent->unrefAllKeysFrom(m_keyStore);
++    m_keyStore.clear();
++#endif
+     callOnMainThread(
+         [weakThis = WeakPtr { *this }, callback = WTF::move(callback)] () mutable {
+             if (!weakThis)
+@@ -557,6 +626,16 @@ void CDMInstanceSessionClearKey::closeSession(const String&, CloseSessionCallbac
+ 
+ void CDMInstanceSessionClearKey::removeSessionData(const String& sessionId, LicenseType, RemoveSessionDataCallback&& callback)
+ {
++#if OS(HAIKU)
++    ASSERT_UNUSED(sessionId, sessionId == m_sessionID);
++    auto statuses = m_keyStore.allKeysAs(CDMInstanceSession::KeyStatus::Released);
++    if (RefPtr parent = parentInstance()) parent->unrefAllKeysFrom(m_keyStore);
++    m_keyStore.clear();
++    callOnMainThread([callback = WTF::move(callback), statuses = WTF::move(statuses)]() mutable {
++        callback(WTF::move(statuses), nullptr, SuccessValue::Succeeded);
++    });
++    return;
++#endif
+     ASSERT_UNUSED(sessionId, sessionId == m_sessionID);
+ 
+     auto dispatchCallback =
+@@ -592,6 +671,9 @@ void CDMInstanceSessionClearKey::removeSessionData(const String& sessionId, Lice
+         message = SharedBuffer::create(messageString.utf8().span());
+     }
+ 
++#if OS(HAIKU)
++    if (RefPtr parent = parentInstance()) parent->unrefAllKeysFrom(m_keyStore);
++#endif
+     m_keyStore.clear();
+     dispatchCallback(WTF::move(keyStatusVector), Ref<SharedBuffer>(*message), SuccessValue::Succeeded);
+ }
+diff --git a/Source/WebCore/platform/encryptedmedia/clearkey/CDMClearKey.h b/Source/WebCore/platform/encryptedmedia/clearkey/CDMClearKey.h
+index aacc92d2633ea786c620125aa9cb8203f85e7e06..02363d59ed1c6a78d8d7120ec8bb67f1959c6ec9 100644
+--- a/Source/WebCore/platform/encryptedmedia/clearkey/CDMClearKey.h
++++ b/Source/WebCore/platform/encryptedmedia/clearkey/CDMClearKey.h
+@@ -121,6 +121,7 @@ class CDMInstanceSessionClearKey final : public CDMInstanceSessionProxy {
+ public:
+     CDMInstanceSessionClearKey(CDMInstanceClearKey& parent)
+         : CDMInstanceSessionProxy(parent) { }
++    ~CDMInstanceSessionClearKey() final;
+     void requestLicense(LicenseType, KeyGroupingStrategy, const String& initDataType, Ref<SharedBuffer>&& initData, LicenseCallback&&) final;
+     void updateLicense(const String&, LicenseType, Ref<SharedBuffer>&&, LicenseUpdateCallback&&) final;
+     void loadSession(LicenseType, const String&, const String&, LoadSessionCallback&&) final;
 diff --git a/Source/WebCore/platform/graphics/AsyncImageDecoder.cpp b/Source/WebCore/platform/graphics/AsyncImageDecoder.cpp
 index 3b7a53f05cae5d35892390e4907d74a8f4b4112c..e1f7f04d7e6e0b26ae59e2fae76423dcc3345bcd 100644
 --- a/Source/WebCore/platform/graphics/AsyncImageDecoder.cpp
@@ -16537,6 +17231,154 @@ index 0000000000000000000000000000000000000000..5eed0d0d901da46122b19f33ddb1a880
 +}
 +
 +}
+diff --git a/Source/WebCore/platform/graphics/haiku/CDMProxyHaiku.cpp b/Source/WebCore/platform/graphics/haiku/CDMProxyHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..7b50818d55964ce2ba9927c4192d1537008ce72b
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/haiku/CDMProxyHaiku.cpp
+@@ -0,0 +1,28 @@
++// Copyright (C) 2026 Summit contributors. BSD-2-Clause.
++#include "config.h"
++#include "CDMProxyHaiku.h"
++#if ENABLE(ENCRYPTED_MEDIA)
++#include <wtf/NeverDestroyed.h>
++#include <algorithm>
++namespace WebCore {
++std::optional<std::array<uint8_t, 16>> CDMProxyHaiku::key(const std::array<uint8_t, 16>& id) const
++{
++    auto value = keyValueIfAvailable(Vector<uint8_t> { std::span { id } });
++    if (!value) return std::nullopt;
++    const auto* bytes = std::get_if<Vector<uint8_t>>(&*value);
++    if (!bytes || bytes->size() != 16) return std::nullopt;
++    std::array<uint8_t, 16> result;
++    std::copy(bytes->begin(), bytes->end(), result.begin());
++    return result;
++}
++class CDMProxyFactoryHaiku final : public CDMProxyFactory {
++    RefPtr<CDMProxy> createCDMProxy(const String&) final { return CDMProxyHaiku::create(); }
++    bool supportsKeySystem(const String& name) final { return name == "org.w3.clearkey"_s; }
++};
++Vector<CDMProxyFactory*> CDMProxyFactory::platformRegisterFactories()
++{
++    static NeverDestroyed<CDMProxyFactoryHaiku> factory;
++    return { &factory.get() };
++}
++} // namespace WebCore
++#endif
+diff --git a/Source/WebCore/platform/graphics/haiku/CDMProxyHaiku.h b/Source/WebCore/platform/graphics/haiku/CDMProxyHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..50579e1abd3cb1b6229256105cdbf51b3b3fcf7e
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/haiku/CDMProxyHaiku.h
+@@ -0,0 +1,14 @@
++// Copyright (C) 2026 Summit contributors. BSD-2-Clause.
++#pragma once
++#if ENABLE(ENCRYPTED_MEDIA)
++#include "CDMProxy.h"
++#include <array>
++
++namespace WebCore {
++class CDMProxyHaiku final : public CDMProxy {
++public:
++    static Ref<CDMProxyHaiku> create() { return adoptRef(*new CDMProxyHaiku); }
++    std::optional<std::array<uint8_t, 16>> key(const std::array<uint8_t, 16>&) const;
++};
++} // namespace WebCore
++#endif
+diff --git a/Source/WebCore/platform/graphics/haiku/CencCryptoHaiku.cpp b/Source/WebCore/platform/graphics/haiku/CencCryptoHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..02d3134aae723398272d2ae66de2cef304318dbd
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/haiku/CencCryptoHaiku.cpp
+@@ -0,0 +1,44 @@
++// Copyright (C) 2026 Summit contributors. BSD-2-Clause.
++#if __has_include("config.h")
++#include "config.h"
++#endif
++#include "CencCryptoHaiku.h"
++#include <openssl/evp.h>
++#include <algorithm>
++#include <climits>
++#include <memory>
++
++namespace SummitMP4 {
++
++bool decryptCenc(std::span<const uint8_t> input, const CencSample& sample,
++    const std::array<uint8_t, 16>& key, std::vector<uint8_t>& output)
++{
++    if (!validCencSample(sample, input.size())) return false;
++    std::array<uint8_t, 16> counter { };
++    std::copy(sample.iv.begin(), sample.iv.end(), counter.begin());
++    std::unique_ptr<EVP_CIPHER_CTX, decltype(&EVP_CIPHER_CTX_free)> context(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_free);
++    if (!context || EVP_DecryptInit_ex(context.get(), EVP_aes_128_ctr(), nullptr, key.data(), counter.data()) != 1)
++        return false;
++    std::vector<uint8_t> result(input.begin(), input.end());
++    auto decrypt = [&](size_t at, size_t count) {
++        if (!count) return true;
++        int written = 0;
++        return count <= INT_MAX && EVP_DecryptUpdate(context.get(), result.data() + at, &written, input.data() + at, int(count)) == 1 && written == int(count);
++    };
++    if (sample.subsamples.empty()) {
++        if (!decrypt(0, input.size())) return false;
++    } else {
++        size_t at = 0;
++        for (const auto& entry : sample.subsamples) {
++            at += entry.clearBytes;
++            if (!decrypt(at, entry.encryptedBytes)) return false;
++            at += entry.encryptedBytes;
++        }
++    }
++    std::array<uint8_t, 16> finalBytes { };
++    int written = 0;
++    if (EVP_DecryptFinal_ex(context.get(), finalBytes.data(), &written) != 1 || written) return false;
++    output = std::move(result);
++    return true;
++}
++} // namespace SummitMP4
+diff --git a/Source/WebCore/platform/graphics/haiku/CencCryptoHaiku.h b/Source/WebCore/platform/graphics/haiku/CencCryptoHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..d77546c5a2050ae628523b3befeb7c7ebd2897bc
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/haiku/CencCryptoHaiku.h
+@@ -0,0 +1,38 @@
++// Copyright (C) 2026 Summit contributors. BSD-2-Clause.
++#pragma once
++#include <array>
++#include <cstddef>
++#include <cstdint>
++#include <span>
++#include <vector>
++
++namespace SummitMP4 {
++struct CencSubsample {
++    uint32_t clearBytes { 0 };
++    uint32_t encryptedBytes { 0 };
++};
++struct CencSample {
++    std::array<uint8_t, 16> keyID { };
++    std::vector<uint8_t> iv;
++    std::vector<CencSubsample> subsamples;
++};
++// AES-128 CTR. Clear bytes do not consume the keystream. Failure leaves output
++// unchanged, and never exposes a partially decrypted sample to a decoder.
++bool decryptCenc(std::span<const uint8_t> input, const CencSample&,
++    const std::array<uint8_t, 16>& key, std::vector<uint8_t>& output);
++inline bool validCencSample(const CencSample& sample, size_t size)
++{
++    if ((sample.iv.size() != 8 && sample.iv.size() != 16) || size > 64 * 1024 * 1024 || sample.subsamples.size() > 65535)
++        return false;
++    if (sample.subsamples.empty()) return true;
++    size_t remaining = size;
++    for (const auto& entry : sample.subsamples) {
++        if (entry.clearBytes > remaining) return false;
++        remaining -= entry.clearBytes;
++        if (entry.encryptedBytes > remaining) return false;
++        remaining -= entry.encryptedBytes;
++    }
++    return !remaining;
++}
++
++} // namespace SummitMP4
 diff --git a/Source/WebCore/platform/graphics/haiku/ColorHaiku.cpp b/Source/WebCore/platform/graphics/haiku/ColorHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..dabe5bce595adb306ad549ae5fa0e4d1df647e97
@@ -17292,10 +18134,10 @@ index 0000000000000000000000000000000000000000..be2deb2ec5913bb4b52f78693c0853f6
 +}
 diff --git a/Source/WebCore/platform/graphics/haiku/DashPlaybackHaiku.cpp b/Source/WebCore/platform/graphics/haiku/DashPlaybackHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..76e006da1b37f59a7cc19c633eb1fdc7d7958652
+index 0000000000000000000000000000000000000000..3b488cc1aa98eddeee00e0e2824045b33a6ccb0e
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/DashPlaybackHaiku.cpp
-@@ -0,0 +1,259 @@
+@@ -0,0 +1,264 @@
 +/* Copyright (C) 2026 air/OS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#include "DashPlaybackHaiku.h"
 +#include <algorithm>
@@ -17307,7 +18149,12 @@ index 0000000000000000000000000000000000000000..76e006da1b37f59a7cc19c633eb1fdc7
 +{
 +    for (unsigned index = 0; index < m_tracks.size(); ++index) {
 +        auto& track = m_tracks[index];
++        track.parser.onProtectionSystemHeaders = [this](std::vector<uint8_t>&& headers) {
++            if (m_hooks.protectionSystemHeaders) m_hooks.protectionSystemHeaders(std::move(headers));
++        };
 +        track.parser.onInitSegment = [this, index](SummitMP4::InitSegment&& initialization) {
++            if (m_hooks.protectionSystemHeaders && !initialization.protectionSystemHeaders.empty())
++                m_hooks.protectionSystemHeaders(std::move(initialization.protectionSystemHeaders));
 +            auto& track = m_tracks[index];
 +            auto kind = index ? SummitMP4::TrackInfo::Kind::Audio : SummitMP4::TrackInfo::Kind::Video;
 +            track.configuration.reset();
@@ -17557,10 +18404,10 @@ index 0000000000000000000000000000000000000000..76e006da1b37f59a7cc19c633eb1fdc7
 +}
 diff --git a/Source/WebCore/platform/graphics/haiku/DashPlaybackHaiku.h b/Source/WebCore/platform/graphics/haiku/DashPlaybackHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..6deb84e1c754189987ff5cb94815f43e08680c53
+index 0000000000000000000000000000000000000000..8bb3904715f57aafec27fd7d4fa3c441788957d7
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/DashPlaybackHaiku.h
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,80 @@
 +/* Copyright (C) 2026 air/OS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#pragma once
 +#include "DashManifestHaiku.h"
@@ -17587,6 +18434,7 @@ index 0000000000000000000000000000000000000000..6deb84e1c754189987ff5cb94815f43e
 +        std::function<void(double)> reset;
 +        std::function<void()> changed;
 +        std::function<void(const std::string&, bool)> error;
++        std::function<void(std::vector<uint8_t>&&)> protectionSystemHeaders { };
 +    };
 +    explicit Player(Hooks);
 +    ~Player();
@@ -17642,10 +18490,10 @@ index 0000000000000000000000000000000000000000..6deb84e1c754189987ff5cb94815f43e
 +}
 diff --git a/Source/WebCore/platform/graphics/haiku/DashResourceLoaderHaiku.cpp b/Source/WebCore/platform/graphics/haiku/DashResourceLoaderHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..8a6eed59f7f2a01dad5ae5623180046de4599443
+index 0000000000000000000000000000000000000000..f3c9c4e415df627894aa9d7af36e44f5e8cb7e1f
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/DashResourceLoaderHaiku.cpp
-@@ -0,0 +1,126 @@
+@@ -0,0 +1,154 @@
 +/* Copyright (C) 2026 air/OS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#include "config.h"
 +#if ENABLE(MEDIA_SOURCE)
@@ -17653,6 +18501,8 @@ index 0000000000000000000000000000000000000000..8a6eed59f7f2a01dad5ae5623180046d
 +#include "ParsedContentRange.h"
 +#include "ResourceRequest.h"
 +#include "ResourceResponse.h"
++#include "SecurityOrigin.h"
++#include "OriginAccessPatterns.h"
 +#include <limits>
 +#include <wtf/MonotonicTime.h>
 +#include <wtf/RunLoop.h>
@@ -17667,9 +18517,10 @@ index 0000000000000000000000000000000000000000..8a6eed59f7f2a01dad5ae5623180046d
 +class DashResourceClientHaiku final : public PlatformMediaResourceClient {
 +public:
 +    using Completion = Function<void(bool, std::vector<uint8_t>&&, std::string&&, double)>;
-+    static Ref<DashResourceClientHaiku> create(std::optional<SummitDASH::ByteRange> range, size_t limit, Completion&& completion)
-+    { return adoptRef(*new DashResourceClientHaiku(range, limit, WTF::move(completion))); }
-+    void responseReceived(PlatformMediaResource&, const ResourceResponse& response, CompletionHandler<void(ShouldContinuePolicyCheck)>&& completion) final
++    using SecurityResponse = Function<void(const URL&, bool, bool)>;
++    static Ref<DashResourceClientHaiku> create(std::optional<SummitDASH::ByteRange> range, size_t limit, SecurityResponse&& securityResponse, Completion&& completion)
++    { return adoptRef(*new DashResourceClientHaiku(range, limit, WTF::move(securityResponse), WTF::move(completion))); }
++    void responseReceived(PlatformMediaResource& resource, const ResourceResponse& response, CompletionHandler<void(ShouldContinuePolicyCheck)>&& completion) final
 +    {
 +        bool valid = dashNetworkURL(response.url()) && response.httpStatusCode() == (m_range ? 206 : 200);
 +        if (m_range) {
@@ -17681,6 +18532,7 @@ index 0000000000000000000000000000000000000000..8a6eed59f7f2a01dad5ae5623180046d
 +        valid &= length <= 0 || uint64_t(length) <= m_limit;
 +        if (m_range && length >= 0) valid &= uint64_t(length) == m_range->last - m_range->first + 1;
 +        if (valid) {
++            m_securityResponse(response.url(), resource.didPassAccessControlCheck(), response.tainting() == ResourceResponse::Tainting::Opaque);
 +            m_receivedResponse = true;
 +            auto url = response.url().string().utf8();
 +            m_finalURL.assign(url.legacyCStringPointer(), url.length());
@@ -17706,8 +18558,8 @@ index 0000000000000000000000000000000000000000..8a6eed59f7f2a01dad5ae5623180046d
 +    void loadFinished(PlatformMediaResource&, const NetworkLoadMetrics&) final
 +    { finish(m_receivedResponse && (!m_range || m_data.size() == m_range->last - m_range->first + 1)); }
 +private:
-+    DashResourceClientHaiku(std::optional<SummitDASH::ByteRange> range, size_t limit, Completion&& completion)
-+        : m_range(range), m_limit(limit), m_completion(WTF::move(completion)), m_started(MonotonicTime::now()) { }
++    DashResourceClientHaiku(std::optional<SummitDASH::ByteRange> range, size_t limit, SecurityResponse&& securityResponse, Completion&& completion)
++        : m_range(range), m_limit(limit), m_securityResponse(WTF::move(securityResponse)), m_completion(WTF::move(completion)), m_started(MonotonicTime::now()) { }
 +    void finish(bool success)
 +    {
 +        if (auto completion = std::exchange(m_completion, nullptr)) {
@@ -17719,6 +18571,7 @@ index 0000000000000000000000000000000000000000..8a6eed59f7f2a01dad5ae5623180046d
 +    }
 +    std::optional<SummitDASH::ByteRange> m_range;
 +    size_t m_limit;
++    SecurityResponse m_securityResponse;
 +    Completion m_completion;
 +    MonotonicTime m_started;
 +    std::vector<uint8_t> m_data;
@@ -17750,9 +18603,32 @@ index 0000000000000000000000000000000000000000..8a6eed59f7f2a01dad5ae5623180046d
 +        });
 +        return;
 +    }
-+    resource->setClient(DashResourceClientHaiku::create(input.range, limit, [weakThis = WeakPtr { *this }, identifier](bool success, auto&& data, auto&& url, double elapsed) {
++    resource->setClient(DashResourceClientHaiku::create(input.range, limit,
++        [weakThis = WeakPtr { *this }](const URL& url, bool passedCORS, bool opaque) {
++            if (RefPtr loader = weakThis.get()) {
++                auto origin = SecurityOrigin::create(url);
++                if (!passedCORS && !loader->m_nonCORSOrigins.contains(origin->data())) {
++                    if (loader->m_nonCORSOrigins.size() < 64)
++                        loader->m_nonCORSOrigins.add(origin->data());
++                    else
++                        loader->m_hasOpaqueResponse = true;
++                }
++                loader->m_hasOpaqueResponse |= opaque;
++                loader->m_hasInsecureResource |= !origin->isPotentiallyTrustworthy();
++            }
++        }, [weakThis = WeakPtr { *this }, identifier](bool success, auto&& data, auto&& url, double elapsed) {
 +        if (RefPtr protectedThis = weakThis.get()) protectedThis->completed(identifier, success, WTF::move(data), WTF::move(url), elapsed);
 +    }));
++}
++bool DashResourceLoaderHaiku::isCrossOrigin(const SecurityOrigin& origin) const
++{
++    if (m_hasOpaqueResponse)
++        return true;
++    for (auto& resourceOrigin : m_nonCORSOrigins) {
++        if (!origin.canRequest(URL { resourceOrigin.toString() }, OriginAccessPatternsForWebProcess::singleton()))
++            return true;
++    }
++    return false;
 +}
 +void DashResourceLoaderHaiku::completed(uint64_t identifier, bool success, std::vector<uint8_t>&& data, std::string&& url, double elapsed)
 +{
@@ -17774,20 +18650,23 @@ index 0000000000000000000000000000000000000000..8a6eed59f7f2a01dad5ae5623180046d
 +#endif // ENABLE(MEDIA_SOURCE)
 diff --git a/Source/WebCore/platform/graphics/haiku/DashResourceLoaderHaiku.h b/Source/WebCore/platform/graphics/haiku/DashResourceLoaderHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..5e59afb81c379a6602b173ee74cdb26ba32f37ac
+index 0000000000000000000000000000000000000000..e298c0cca4ac2e447d8be1c6077b5459eec89f37
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/DashResourceLoaderHaiku.h
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,37 @@
 +/* Copyright (C) 2026 air/OS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#pragma once
 +#include "DashManifestHaiku.h"
 +#include "PlatformMediaResourceLoader.h"
++#include "SecurityOriginData.h"
 +#include <wtf/Function.h>
 +#include <wtf/HashMap.h>
++#include <wtf/HashSet.h>
 +#include <wtf/RefCounted.h>
 +#include <wtf/WeakPtr.h>
 +
 +namespace WebCore {
++class SecurityOrigin;
 +// Uses the media element's loader, retaining WebCore's redirect, credential,
 +// CSP and CORS rules. Each result is delivered asynchronously on the main loop.
 +class DashResourceLoaderHaiku final : public RefCounted<DashResourceLoaderHaiku>, public CanMakeWeakPtr<DashResourceLoaderHaiku> {
@@ -17799,12 +18678,17 @@ index 0000000000000000000000000000000000000000..5e59afb81c379a6602b173ee74cdb26b
 +    void request(uint64_t, const SummitDASH::Resource&, size_t limit);
 +    void cancel(uint64_t);
 +    void cancelAll();
++    bool isCrossOrigin(const SecurityOrigin&) const;
++    bool hasInsecureResource() const { return m_hasInsecureResource; }
 +private:
 +    DashResourceLoaderHaiku(Ref<PlatformMediaResourceLoader>&&, Completion&&);
 +    void completed(uint64_t, bool, std::vector<uint8_t>&&, std::string&&, double);
 +    Ref<PlatformMediaResourceLoader> m_loader;
 +    Completion m_completion;
 +    HashMap<uint64_t, RefPtr<PlatformMediaResource>> m_resources;
++    HashSet<SecurityOriginData> m_nonCORSOrigins;
++    bool m_hasOpaqueResponse { false };
++    bool m_hasInsecureResource { false };
 +};
 +}
 diff --git a/Source/WebCore/platform/graphics/haiku/FloatPointHaiku.cpp b/Source/WebCore/platform/graphics/haiku/FloatPointHaiku.cpp
@@ -18813,10 +19697,10 @@ index 0000000000000000000000000000000000000000..e3c0c9db245a921b99b0c02608610cec
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/haiku/FragmentedMP4ParserHaiku.cpp b/Source/WebCore/platform/graphics/haiku/FragmentedMP4ParserHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..d0fe57efc3350d38ff187c8ff812897bc0f58e99
+index 0000000000000000000000000000000000000000..8853a91a09c15356864a31b1c167895a9bb29eb6
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/FragmentedMP4ParserHaiku.cpp
-@@ -0,0 +1,543 @@
+@@ -0,0 +1,745 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -18873,6 +19757,41 @@ index 0000000000000000000000000000000000000000..d0fe57efc3350d38ff187c8ff812897b
 +        if (!visit(type, data + at + header, size_t(boxSize - header)))
 +            return false;
 +        at += size_t(boxSize);
++    }
++    return at == size;
++}
++
++bool appendPSSH(const uint8_t* payload, size_t size, std::vector<uint8_t>& result)
++{
++    if (size < 24 || size > 1024 * 1024 - 8 || result.size() > 1024 * 1024 - size - 8 || payload[0] > 1 || (be32(payload) & 0xffffff)) return false;
++    size_t at = 20;
++    if (payload[0] == 1) {
++        auto count = be32(payload + at);
++        at += 4;
++        if (count > (size - at) / 16) return false;
++        at += size_t(count) * 16;
++    }
++    if (size - at < 4 || be32(payload + at) != size - at - 4) return false;
++    uint32_t boxSize = uint32_t(size + 8);
++    for (int shift = 24; shift >= 0; shift -= 8) result.push_back(uint8_t(boxSize >> shift));
++    result.insert(result.end(), { 'p', 's', 's', 'h' });
++    result.insert(result.end(), payload, payload + size);
++    return true;
++}
++
++bool readCencAuxiliary(const uint8_t* data, size_t size, uint8_t ivSize, bool subsamples, CencSample& encryption, size_t& consumed)
++{
++    if ((ivSize != 8 && ivSize != 16) || size < ivSize) return false;
++    encryption.iv.assign(data, data + ivSize);
++    consumed = ivSize;
++    if (!subsamples) return true;
++    if (size - consumed < 2) return false;
++    uint16_t count = be16(data + consumed);
++    consumed += 2;
++    if (count > (size - consumed) / 6) return false;
++    for (unsigned i = 0; i < count; ++i) {
++        encryption.subsamples.push_back({ be16(data + consumed), be32(data + consumed + 2) });
++        consumed += 6;
 +    }
 +    return true;
 +}
@@ -18943,10 +19862,19 @@ index 0000000000000000000000000000000000000000..d0fe57efc3350d38ff187c8ff812897b
 +{
 +    if (m_failed)
 +        return false;
++    if (!size) return true;
++    if (!data) { m_failed = true; return false; }
++    constexpr size_t maximumBuffer = 128 * 1024 * 1024;
++    if (size > maximumBuffer - m_buffer.size()) {
++        m_failed = true;
++        m_buffer.clear();
++        m_pendingRuns.clear();
++        return false;
++    }
 +    m_buffer.insert(m_buffer.end(), data, data + size);
 +
-+    size_t at = 0;
-+    uint64_t keepFrom = m_bufferOffset;
++    size_t at = m_parseOffset;
++    uint64_t keepFrom = m_pendingMoofOffset != UINT64_MAX ? m_pendingMoofOffset : m_bufferOffset;
 +    while (at + 8 <= m_buffer.size()) {
 +        uint64_t boxSize = be32(m_buffer.data() + at);
 +        char type[4];
@@ -18958,7 +19886,7 @@ index 0000000000000000000000000000000000000000..d0fe57efc3350d38ff187c8ff812897b
 +            boxSize = be64(m_buffer.data() + at + 8);
 +            header = 16;
 +        }
-+        if (boxSize < header) {
++        if (boxSize < header || boxSize > maximumBuffer) {
 +            m_failed = true;
 +            break;
 +        }
@@ -18987,6 +19915,7 @@ index 0000000000000000000000000000000000000000..d0fe57efc3350d38ff187c8ff812897b
 +        m_buffer.erase(m_buffer.begin(), m_buffer.begin() + discard);
 +        m_bufferOffset += discard;
 +    }
++    m_parseOffset = at - discard;
 +    return true;
 +}
 +
@@ -18994,6 +19923,7 @@ index 0000000000000000000000000000000000000000..d0fe57efc3350d38ff187c8ff812897b
 +{
 +    m_buffer.clear();
 +    m_bufferOffset = 0;
++    m_parseOffset = 0;
 +    m_failed = false;
 +    m_pendingRuns.clear();
 +    m_pendingMoofOffset = UINT64_MAX;
@@ -19043,6 +19973,8 @@ index 0000000000000000000000000000000000000000..d0fe57efc3350d38ff187c8ff812897b
 +    std::map<uint32_t, TrackInfo> defaults;
 +    uint64_t fragmentDuration = 0;
 +    bool ok = forEachBox(data, size, [&](const char* type, const uint8_t* payload, size_t length) {
++        if (isType(type, "pssh"))
++            return appendPSSH(payload, length, init.protectionSystemHeaders);
 +        if (isType(type, "mvhd")) {
 +            if (length < 4)
 +                return false;
@@ -19107,6 +20039,7 @@ index 0000000000000000000000000000000000000000..d0fe57efc3350d38ff187c8ff812897b
 +{
 +    return forEachBox(data, size, [&](const char* type, const uint8_t* payload, size_t length) {
 +        if (isType(type, "tkhd")) {
++            if (!length || payload[0] > 1) return false;
 +            size_t idOffset = payload[0] == 1 ? 20 : 12;
 +            if (length < idOffset + 4)
 +                return false;
@@ -19117,6 +20050,7 @@ index 0000000000000000000000000000000000000000..d0fe57efc3350d38ff187c8ff812897b
 +            return true;
 +        return forEachBox(payload, length, [&](const char* mediaType, const uint8_t* media, size_t mediaLength) {
 +            if (isType(mediaType, "mdhd")) {
++                if (!mediaLength || media[0] > 1) return false;
 +                size_t scaleOffset = media[0] == 1 ? 20 : 12;
 +                if (mediaLength < scaleOffset + 4)
 +                    return false;
@@ -19148,7 +20082,7 @@ index 0000000000000000000000000000000000000000..d0fe57efc3350d38ff187c8ff812897b
 +bool Parser::parseSampleDescription(const uint8_t* data, size_t size, TrackInfo& info)
 +{
 +    // Full box header, entry count, then the first sample entry.
-+    if (size < 16)
++    if (size < 16 || be32(data + 4) != 1)
 +        return false;
 +    const uint8_t* entry = data + 8;
 +    size_t entrySize = be32(entry);
@@ -19158,12 +20092,21 @@ index 0000000000000000000000000000000000000000..d0fe57efc3350d38ff187c8ff812897b
 +    const uint8_t* payload = entry + 8;
 +    size_t length = entrySize - 8;
 +
++    bool protectedEntry = info.codec == "encv" || info.codec == "enca";
++    if (protectedEntry && (info.kind == TrackInfo::Kind::Video ? info.codec != "encv" : info.codec != "enca")) return false;
++    bool haveProtection = false;
++    bool valid = true;
 +    if (info.kind == TrackInfo::Kind::Video) {
 +        if (length < 78)
-+            return true;
++            return false;
 +        info.width = be16(payload + 24);
 +        info.height = be16(payload + 26);
-+        return forEachBox(payload + 78, length - 78, [&](const char* type, const uint8_t* child, size_t childLength) {
++        valid = forEachBox(payload + 78, length - 78, [&](const char* type, const uint8_t* child, size_t childLength) {
++            if (isType(type, "sinf")) {
++                if (haveProtection || !protectedEntry) return false;
++                haveProtection = true;
++                return parseProtection(child, childLength, info);
++            }
 +            if (isType(type, "avcC") || isType(type, "hvcC") || isType(type, "vpcC") || isType(type, "av1C"))
 +                info.codecConfig.assign(child, child + childLength);
 +            return true;
@@ -19171,14 +20114,19 @@ index 0000000000000000000000000000000000000000..d0fe57efc3350d38ff187c8ff812897b
 +    }
 +    if (info.kind == TrackInfo::Kind::Audio) {
 +        if (length < 28)
-+            return true;
++            return false;
 +        uint16_t version = be16(payload + 8);
 +        info.channels = be16(payload + 16);
 +        info.sampleRate = be32(payload + 24) >> 16;
 +        size_t childrenAt = 28 + (version == 1 ? 16 : version == 2 ? 36 : 0);
 +        if (childrenAt > length)
-+            return true;
-+        return forEachBox(payload + childrenAt, length - childrenAt, [&](const char* type, const uint8_t* child, size_t childLength) {
++            return false;
++        valid = forEachBox(payload + childrenAt, length - childrenAt, [&](const char* type, const uint8_t* child, size_t childLength) {
++            if (isType(type, "sinf")) {
++                if (haveProtection || !protectedEntry) return false;
++                haveProtection = true;
++                return parseProtection(child, childLength, info);
++            }
 +            if (isType(type, "esds"))
 +                parseElementaryStreamDescriptor(child, childLength, info);
 +            else if (isType(type, "dOps"))
@@ -19186,7 +20134,37 @@ index 0000000000000000000000000000000000000000..d0fe57efc3350d38ff187c8ff812897b
 +            return true;
 +        });
 +    }
-+    return true;
++    return valid && protectedEntry == haveProtection;
++}
++
++bool Parser::parseProtection(const uint8_t* data, size_t size, TrackInfo& info)
++{
++    bool haveFormat = false, haveScheme = false, haveTenc = false;
++    bool valid = forEachBox(data, size, [&](const char* type, const uint8_t* child, size_t length) {
++        if (isType(type, "frma")) {
++            if (haveFormat || length != 4) return false;
++            haveFormat = true;
++            info.codec.assign(reinterpret_cast<const char*>(child), 4);
++            return info.kind == TrackInfo::Kind::Video ? info.codec == "avc1" || info.codec == "avc3" : info.codec == "mp4a";
++        }
++        if (isType(type, "schm")) {
++            if (haveScheme || length < 12 || be32(child) || std::memcmp(child + 4, "cenc", 4) || be32(child + 8) != 0x10000) return false;
++            haveScheme = true;
++        }
++        if (isType(type, "schi")) {
++            return forEachBox(child, length, [&](const char* type, const uint8_t* tenc, size_t length) {
++                if (!isType(type, "tenc")) return true;
++                if (haveTenc || length != 24 || tenc[0] > 1 || (be32(tenc) & 0xffffff) || tenc[4] || tenc[5] || tenc[6] != 1 || (tenc[7] != 8 && tenc[7] != 16)) return false;
++                haveTenc = true;
++                info.encrypted = true;
++                info.defaultIVSize = tenc[7];
++                std::copy(tenc + 8, tenc + 24, info.defaultKeyID.begin());
++                return true;
++            });
++        }
++        return true;
++    });
++    return valid && haveFormat && haveScheme && haveTenc;
 +}
 +
 +bool Parser::parseMovieFragment(const uint8_t* data, size_t size, uint64_t moofOffset)
@@ -19194,6 +20172,11 @@ index 0000000000000000000000000000000000000000..d0fe57efc3350d38ff187c8ff812897b
 +    return forEachBox(data, size, [&](const char* type, const uint8_t* payload, size_t length) {
 +        if (isType(type, "traf"))
 +            return parseTrackFragment(payload, length, moofOffset);
++        if (isType(type, "pssh")) {
++            std::vector<uint8_t> headers;
++            if (!appendPSSH(payload, length, headers)) return false;
++            if (onProtectionSystemHeaders) onProtectionSystemHeaders(std::move(headers));
++        }
 +        return true;
 +    });
 +}
@@ -19210,10 +20193,12 @@ index 0000000000000000000000000000000000000000..d0fe57efc3350d38ff187c8ff812897b
 +    bool firstRun = true;
 +    uint64_t decodeTime = 0;
 +    size_t firstRunIndex = m_pendingRuns.size();
++    size_t totalSamples = 0;
++    for (const auto& run : m_pendingRuns) totalSamples += run.entries.size();
 +
 +    bool ok = forEachBox(data, size, [&](const char* type, const uint8_t* payload, size_t length) {
 +        if (isType(type, "tfhd")) {
-+            if (length < 8)
++            if (length < 8 || payload[0])
 +                return false;
 +            uint32_t flags = be32(payload) & 0xffffff;
 +            trackID = be32(payload + 4);
@@ -19231,8 +20216,10 @@ index 0000000000000000000000000000000000000000..d0fe57efc3350d38ff187c8ff812897b
 +                base = be64(payload + at);
 +                at += 8;
 +            }
-+            if (flags & 0x2)
++            if (flags & 0x2) {
++                if (!need(4) || be32(payload + at) != 1) return false;
 +                at += 4;
++            }
 +            if (flags & 0x8) {
 +                if (!need(4))
 +                    return false;
@@ -19251,15 +20238,15 @@ index 0000000000000000000000000000000000000000..d0fe57efc3350d38ff187c8ff812897b
 +                defaultFlags = be32(payload + at);
 +                at += 4;
 +            }
++            if (at != length) return false;
 +            haveDefaults = true;
 +            return true;
 +        }
 +        if (!info)
 +            return true;
 +        if (isType(type, "tfdt")) {
-+            if (length < 8)
-+                return false;
-+            baseDecodeTime = payload[0] == 1 && length >= 12 ? be64(payload + 4) : be32(payload + 4);
++            if (length < 8 || payload[0] > 1 || length != (payload[0] ? 12u : 8u)) return false;
++            baseDecodeTime = payload[0] ? be64(payload + 4) : be32(payload + 4);
 +            return true;
 +        }
 +        if (!isType(type, "trun"))
@@ -19268,14 +20255,19 @@ index 0000000000000000000000000000000000000000..d0fe57efc3350d38ff187c8ff812897b
 +            return false;
 +
 +        uint8_t version = payload[0];
++        if (version > 1) return false;
 +        uint32_t flags = be32(payload) & 0xffffff;
 +        uint32_t count = be32(payload + 4);
++        if (count > 200000 - totalSamples) return false;
++        totalSamples += count;
 +        size_t at = 8;
 +        uint64_t dataOffset = firstRun ? base : nextDataOffset;
 +        if (flags & 0x1) {
 +            if (at + 4 > length)
 +                return false;
-+            dataOffset = base + int64_t(int32_t(be32(payload + at)));
++            int64_t offset = int32_t(be32(payload + at));
++            if ((offset < 0 && uint64_t(-offset) > base) || (offset >= 0 && uint64_t(offset) > UINT64_MAX - base)) return false;
++            dataOffset = offset < 0 ? base - uint64_t(-offset) : base + uint64_t(offset);
 +            at += 4;
 +        }
 +        std::optional<uint32_t> firstSampleFlags;
@@ -19317,6 +20309,7 @@ index 0000000000000000000000000000000000000000..d0fe57efc3350d38ff187c8ff812897b
 +                entry.compositionOffset = version ? int64_t(int32_t(value)) : int64_t(value);
 +                at += 4;
 +            }
++            if (entry.size > 64 * 1024 * 1024 || entry.size > UINT64_MAX - dataOffset) return false;
 +            entry.offset = dataOffset;
 +            dataOffset += entry.size;
 +            entry.isSync = info->kind == TrackInfo::Kind::Audio || !((sampleFlags >> 16) & 1);
@@ -19324,11 +20317,91 @@ index 0000000000000000000000000000000000000000..d0fe57efc3350d38ff187c8ff812897b
 +        }
 +        nextDataOffset = dataOffset;
 +        firstRun = false;
-+        for (auto& entry : run.entries)
++        for (auto& entry : run.entries) {
++            if (decodeTime > INT64_MAX || entry.duration > uint64_t(INT64_MAX) - decodeTime) return false;
 +            decodeTime += entry.duration;
++        }
 +        m_pendingRuns.push_back(std::move(run));
 +        return true;
 +    });
++    if (ok && info) {
++        const uint8_t* senc = nullptr;
++        size_t sencSize = 0;
++        std::vector<uint8_t> auxiliarySizes;
++        std::optional<uint64_t> auxiliaryOffset;
++        bool haveSizes = false;
++        ok = forEachBox(data, size, [&](const char* type, const uint8_t* payload, size_t length) {
++            if ((isType(type, "sgpd") || isType(type, "sbgp")) && length >= 8 && !std::memcmp(payload + 4, "seig", 4))
++                return false; // Per-sample key overrides are not implemented.
++            if (isType(type, "senc")) {
++                if (senc || length < 8 || payload[0] || (be32(payload) & ~2u)) return false;
++                senc = payload;
++                sencSize = length;
++            } else if (isType(type, "saiz")) {
++                if (haveSizes || length < 9 || payload[0] || (be32(payload) & ~1u)) return false;
++                haveSizes = true;
++                size_t at = 4;
++                if (be32(payload) & 1) {
++                    if (length < 17 || std::memcmp(payload + at, "cenc", 4) || be32(payload + at + 4)) return false;
++                    at += 8;
++                }
++                uint8_t defaultSize = payload[at++];
++                uint32_t count = be32(payload + at);
++                at += 4;
++                if (count > 200000) return false;
++                if ((!defaultSize && length - at != count) || (defaultSize && length != at)) return false;
++                auxiliarySizes.resize(count, defaultSize);
++                if (!defaultSize) std::copy(payload + at, payload + length, auxiliarySizes.begin());
++            } else if (isType(type, "saio")) {
++                if (auxiliaryOffset || length < 12 || payload[0] > 1 || (be32(payload) & 0xfffffe)) return false;
++                size_t at = 4;
++                if (be32(payload) & 1) {
++                    if (length < 20 || std::memcmp(payload + at, "cenc", 4) || be32(payload + at + 4)) return false;
++                    at += 8;
++                }
++                if (be32(payload + at) != 1 || length != at + (payload[0] ? 12u : 8u)) return false;
++                at += 4;
++                uint64_t offset = payload[0] ? be64(payload + at) : be32(payload + at);
++                if (offset > UINT64_MAX - base) return false;
++                auxiliaryOffset = base + offset;
++            }
++            return true;
++        });
++        if (ok && info->encrypted) {
++            size_t count = 0;
++            for (size_t i = firstRunIndex; i < m_pendingRuns.size(); ++i) count += m_pendingRuns[i].entries.size();
++            ok = count <= 200000 && (!senc || be32(senc + 4) == count)
++                && (haveSizes == bool(auxiliaryOffset)) && (!haveSizes || auxiliarySizes.size() == count)
++                && (senc || haveSizes);
++            size_t at = 8, index = 0;
++            uint64_t aux = auxiliaryOffset.value_or(0);
++            for (size_t i = firstRunIndex; ok && i < m_pendingRuns.size(); ++i) {
++                for (auto& entry : m_pendingRuns[i].entries) {
++                    entry.encryption.emplace();
++                    entry.encryption->keyID = info->defaultKeyID;
++                    if (senc) {
++                        size_t consumed = 0;
++                        if (at > sencSize || !readCencAuxiliary(senc + at, sencSize - at, info->defaultIVSize, be32(senc) & 2, *entry.encryption, consumed)
++                            || !validCencSample(*entry.encryption, entry.size)) { ok = false; break; }
++                        uint64_t absolute = m_bufferOffset + size_t(senc + at - m_buffer.data());
++                        if (haveSizes && (auxiliarySizes[index] != consumed || aux != absolute)) { ok = false; break; }
++                        at += consumed;
++                    } else {
++                        if (auxiliarySizes[index] < info->defaultIVSize) { ok = false; break; }
++                        entry.auxiliaryOffset = aux;
++                        entry.auxiliarySize = auxiliarySizes[index];
++                    }
++                    if (haveSizes) {
++                        if (auxiliarySizes[index] > UINT64_MAX - aux) { ok = false; break; }
++                        aux += auxiliarySizes[index];
++                    }
++                    ++index;
++                }
++            }
++            if (senc && at != sencSize) ok = false;
++        } else if (ok && (senc || haveSizes || auxiliaryOffset))
++            ok = false; // Never treat signaled encrypted samples as clear.
++    }
 +    if (!ok)
 +        m_pendingRuns.resize(firstRunIndex);
 +    return ok;
@@ -19340,17 +20413,30 @@ index 0000000000000000000000000000000000000000..d0fe57efc3350d38ff187c8ff812897b
 +    for (auto& run : m_pendingRuns) {
 +        int64_t decodeTime = int64_t(run.baseDecodeTime);
 +        for (auto& entry : run.entries) {
-+            if (entry.offset < m_bufferOffset || entry.offset + entry.size > bufferEnd
-+                || entry.offset < mdatOffset || entry.offset + entry.size > mdatEnd)
++            if (entry.offset < m_bufferOffset || entry.offset > bufferEnd || entry.size > bufferEnd - entry.offset
++                || entry.offset < mdatOffset || entry.offset > mdatEnd || entry.size > mdatEnd - entry.offset)
 +                return false;
++            if (entry.auxiliarySize) {
++                uint64_t aux = entry.auxiliaryOffset;
++                if (!entry.encryption || aux < m_bufferOffset || aux > bufferEnd || entry.auxiliarySize > bufferEnd - aux)
++                    return false;
++                size_t consumed = 0;
++                auto* info = track(run.trackID);
++                if (!info || !readCencAuxiliary(m_buffer.data() + (aux - m_bufferOffset), entry.auxiliarySize, info->defaultIVSize,
++                        entry.auxiliarySize > info->defaultIVSize, *entry.encryption, consumed)
++                    || consumed != entry.auxiliarySize || !validCencSample(*entry.encryption, entry.size))
++                    return false;
++            }
 +            Sample sample;
 +            sample.trackID = run.trackID;
 +            sample.decodeTime = decodeTime;
++            if (entry.compositionOffset > 0 && decodeTime > INT64_MAX - entry.compositionOffset) return false;
 +            sample.presentationTime = decodeTime + entry.compositionOffset;
 +            sample.duration = entry.duration;
 +            sample.isSync = entry.isSync;
 +            const uint8_t* bytes = m_buffer.data() + (entry.offset - m_bufferOffset);
 +            sample.data.assign(bytes, bytes + entry.size);
++            sample.encryption = entry.encryption;
 +            decodeTime += entry.duration;
 +            if (onSample)
 +                onSample(std::move(sample));
@@ -19362,10 +20448,10 @@ index 0000000000000000000000000000000000000000..d0fe57efc3350d38ff187c8ff812897b
 +} // namespace SummitMP4
 diff --git a/Source/WebCore/platform/graphics/haiku/FragmentedMP4ParserHaiku.h b/Source/WebCore/platform/graphics/haiku/FragmentedMP4ParserHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..5441e818ece09a1f37fbd1dbc2038449a028847b
+index 0000000000000000000000000000000000000000..3a563fe86f523b9884814e0fe5596448ebab1a15
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/FragmentedMP4ParserHaiku.h
-@@ -0,0 +1,120 @@
+@@ -0,0 +1,134 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -19391,6 +20477,8 @@ index 0000000000000000000000000000000000000000..5441e818ece09a1f37fbd1dbc2038449
 +// arrive in pieces of any size. It deliberately depends only on the standard
 +// library so it can be tested away from Haiku.
 +
++#include "CencCryptoHaiku.h"
++#include <optional>
 +#include <cstddef>
 +#include <cstdint>
 +#include <functional>
@@ -19415,6 +20503,10 @@ index 0000000000000000000000000000000000000000..5441e818ece09a1f37fbd1dbc2038449
 +    std::vector<uint8_t> codecConfig;
 +    uint8_t objectTypeIndication { 0 };
 +
++    bool encrypted { false };
++    uint8_t defaultIVSize { 0 };
++    std::array<uint8_t, 16> defaultKeyID { };
++
 +    // Defaults from the movie extends box (trex).
 +    uint32_t defaultSampleDuration { 0 };
 +    uint32_t defaultSampleSize { 0 };
@@ -19426,6 +20518,7 @@ index 0000000000000000000000000000000000000000..5441e818ece09a1f37fbd1dbc2038449
 +    // In movieTimescale; zero when unknown (typical for live or MSE streams).
 +    uint64_t duration { 0 };
 +    std::vector<TrackInfo> tracks;
++    std::vector<uint8_t> protectionSystemHeaders;
 +};
 +
 +struct Sample {
@@ -19436,12 +20529,14 @@ index 0000000000000000000000000000000000000000..5441e818ece09a1f37fbd1dbc2038449
 +    uint32_t duration { 0 };
 +    bool isSync { false };
 +    std::vector<uint8_t> data;
++    std::optional<CencSample> encryption;
 +};
 +
 +class Parser {
 +public:
 +    std::function<void(InitSegment&&)> onInitSegment;
 +    std::function<void(Sample&&)> onSample;
++    std::function<void(std::vector<uint8_t>&&)> onProtectionSystemHeaders;
 +
 +    // Returns false once the stream cannot be parsed; the parser then drops
 +    // everything it holds until reset().
@@ -19461,6 +20556,9 @@ index 0000000000000000000000000000000000000000..5441e818ece09a1f37fbd1dbc2038449
 +            uint32_t duration { 0 };
 +            int64_t compositionOffset { 0 };
 +            bool isSync { false };
++            std::optional<CencSample> encryption;
++            uint64_t auxiliaryOffset { 0 };
++            uint8_t auxiliarySize { 0 };
 +        };
 +        std::vector<Entry> entries;
 +    };
@@ -19469,6 +20567,7 @@ index 0000000000000000000000000000000000000000..5441e818ece09a1f37fbd1dbc2038449
 +    bool parseMovie(const uint8_t*, size_t);
 +    bool parseTrack(const uint8_t*, size_t, TrackInfo&);
 +    bool parseSampleDescription(const uint8_t*, size_t, TrackInfo&);
++    bool parseProtection(const uint8_t*, size_t, TrackInfo&);
 +    bool parseMovieFragment(const uint8_t*, size_t, uint64_t moofOffset);
 +    bool parseTrackFragment(const uint8_t*, size_t, uint64_t moofOffset);
 +    bool emitSamples(uint64_t mdatOffset, uint64_t mdatEnd);
@@ -19477,6 +20576,7 @@ index 0000000000000000000000000000000000000000..5441e818ece09a1f37fbd1dbc2038449
 +    std::vector<uint8_t> m_buffer;
 +    // Stream offset of m_buffer[0].
 +    uint64_t m_bufferOffset { 0 };
++    size_t m_parseOffset { 0 };
 +    bool m_failed { false };
 +    InitSegment m_init;
 +    bool m_haveInit { false };
@@ -24902,10 +26002,10 @@ index 0000000000000000000000000000000000000000..df43f4fc21c17d2cfb904c9eaefa28b1
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..c47e96d3b7f01fe77a9ffdfd90048cf0aab4c81e
+index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49832b15c5
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
-@@ -0,0 +1,2120 @@
+@@ -0,0 +1,2302 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -24933,6 +26033,12 @@ index 0000000000000000000000000000000000000000..c47e96d3b7f01fe77a9ffdfd90048cf0
 +#include "AudioTrackPrivate.h"
 +#include "ColorSpace.h"
 +#include "ContentType.h"
++#if ENABLE(ENCRYPTED_MEDIA)
++#include "CDMClearKey.h"
++#include "CDMProxyHaiku.h"
++#include <openssl/crypto.h>
++#include <JavaScriptCore/ArrayBuffer.h>
++#endif
 +#include "GraphicsContext.h"
 +#include "Logging.h"
 +#include "MediaDescription.h"
@@ -25230,14 +26336,56 @@ index 0000000000000000000000000000000000000000..c47e96d3b7f01fe77a9ffdfd90048cf0
 +
 +} // namespace
 +
++#if ENABLE(ENCRYPTED_MEDIA)
++// One media element's CDM. Decoder threads only receive a copied, currently
++// usable key; they cannot retain a session's mutable key-store entries.
++class HaikuCencDecryptionContext final : public ThreadSafeRefCounted<HaikuCencDecryptionContext> {
++public:
++    static Ref<HaikuCencDecryptionContext> create() { return adoptRef(*new HaikuCencDecryptionContext); }
++    void setProxy(RefPtr<CDMProxyHaiku>&& proxy)
++    {
++        Locker locker { m_lock };
++        m_proxy = WTF::move(proxy);
++    }
++    std::optional<std::array<uint8_t, 16>> key(const std::array<uint8_t, 16>& id) const
++    {
++        Locker locker { m_lock };
++        return m_proxy ? m_proxy->key(id) : std::nullopt;
++    }
++private:
++    mutable Lock m_lock;
++    RefPtr<CDMProxyHaiku> m_proxy WTF_GUARDED_BY_LOCK(m_lock);
++};
++#endif
++
 +// #pragma mark - Sample queue shared by both renderers
 +
 +class HaikuMSESampleQueue {
 +public:
-+    HaikuMSESampleQueue(size_t capacity)
++    HaikuMSESampleQueue(size_t capacity, MediaPlayerPrivateHaikuMSE& player)
 +        : m_capacity(capacity)
++#if ENABLE(ENCRYPTED_MEDIA)
++        , m_decryptionContext(player.decryptionContext())
++        , m_keyStateChanged([weakPlayer = WeakPtr { player }] {
++            callOnMainThread([weakPlayer] {
++                if (RefPtr player = weakPlayer.get()) player->encryptionStateChanged();
++            });
++        })
++#endif
 +    {
++#if !ENABLE(ENCRYPTED_MEDIA)
++        UNUSED_PARAM(player);
++#endif
 +    }
++
++#if ENABLE(ENCRYPTED_MEDIA)
++    bool waitingForKey() const { return m_waitingForKey; }
++    bool decryptionFailed() const { return m_decryptionFailed; }
++    void setWaitingForKey(bool waiting)
++    {
++        if (m_waitingForKey.exchange(waiting) != waiting) m_keyStateChanged();
++    }
++#endif
 +
 +    void enqueue(Ref<MediaSampleHaiku>&& sample)
 +    {
@@ -25266,6 +26414,10 @@ index 0000000000000000000000000000000000000000..c47e96d3b7f01fe77a9ffdfd90048cf0
 +    {
 +        Locker locker { m_lock };
 +        m_samples.clear();
++#if ENABLE(ENCRYPTED_MEDIA)
++        setWaitingForKey(false);
++        m_decryptionFailed = false;
++#endif
 +        m_endOfStream = false;
 +        ++m_generation;
 +        m_condition.notifyAll();
@@ -25283,6 +26435,9 @@ index 0000000000000000000000000000000000000000..c47e96d3b7f01fe77a9ffdfd90048cf0
 +    {
 +        Locker locker { m_lock };
 +        m_aborted = true;
++#if ENABLE(ENCRYPTED_MEDIA)
++        setWaitingForKey(false);
++#endif
 +        m_condition.notifyAll();
 +    }
 +
@@ -25309,10 +26464,35 @@ index 0000000000000000000000000000000000000000..c47e96d3b7f01fe77a9ffdfd90048cf0
 +    {
 +        ThreadSafeWeakPtr<SourceBufferPrivateHaiku> notify;
 +        TrackID notifyTrackID = 0;
++#if ENABLE(ENCRYPTED_MEDIA)
++        std::optional<std::array<uint8_t, 16>> key;
++#endif
 +        {
 +            Locker locker { m_lock };
-+            while (!m_aborted && m_generation == generation && m_samples.isEmpty() && !m_endOfStream)
-+                m_condition.wait(m_lock);
++            while (!m_aborted && m_generation == generation) {
++                if (m_samples.isEmpty()) {
++                    if (m_endOfStream) break;
++                    m_condition.wait(m_lock);
++                    continue;
++                }
++                if (&m_samples.first()->configuration() != configuration) break;
++                if (!m_samples.first()->encryption()) break;
++#if ENABLE(ENCRYPTED_MEDIA)
++                key = m_decryptionContext->key(m_samples.first()->encryption()->keyID);
++                if (key) break;
++                setWaitingForKey(true);
++                // Timed condition waits keep key delivery independent of the
++                // decoder, while flush/abort always wake immediately. Samples
++                // remain encrypted in the bounded queue until a key arrives.
++                m_condition.waitFor(m_lock, 50_ms);
++#else
++                m_samples.clear();
++                break;
++#endif
++            }
++#if ENABLE(ENCRYPTED_MEDIA)
++            setWaitingForKey(false);
++#endif
 +            if (m_aborted || m_generation != generation || m_samples.isEmpty())
 +                return TakeResult::Stop;
 +            if (&m_samples.first()->configuration() != configuration)
@@ -25326,6 +26506,20 @@ index 0000000000000000000000000000000000000000..c47e96d3b7f01fe77a9ffdfd90048cf0
 +        }
 +        if (RefPtr buffer = notify.get())
 +            buffer->rendererReadyForMoreSamples(notifyTrackID);
++#if ENABLE(ENCRYPTED_MEDIA)
++        if (sample->encryption()) {
++            std::vector<uint8_t> clear;
++            bool decrypted = key && SummitMP4::decryptCenc(std::span { sample->bytes(), sample->size() }, *sample->encryption(), *key, clear);
++            if (key) OPENSSL_cleanse(key->data(), key->size());
++            if (!decrypted) {
++                m_decryptionFailed = true;
++                m_keyStateChanged();
++                return TakeResult::Stop;
++            }
++            sample = sample->withClearBytes(WTF::move(clear));
++        }
++#endif
++        if (m_aborted || m_generation != generation) return TakeResult::Stop;
 +        return TakeResult::Sample;
 +    }
 +
@@ -25353,6 +26547,12 @@ index 0000000000000000000000000000000000000000..c47e96d3b7f01fe77a9ffdfd90048cf0
 +
 +private:
 +    const size_t m_capacity;
++#if ENABLE(ENCRYPTED_MEDIA)
++    Ref<HaikuCencDecryptionContext> m_decryptionContext;
++    Function<void()> m_keyStateChanged;
++    std::atomic<bool> m_waitingForKey { false };
++    std::atomic<bool> m_decryptionFailed { false };
++#endif
 +    Lock m_lock;
 +    Condition m_condition;
 +    Deque<Ref<MediaSampleHaiku>> m_samples WTF_GUARDED_BY_LOCK(m_lock);
@@ -25373,7 +26573,7 @@ index 0000000000000000000000000000000000000000..c47e96d3b7f01fe77a9ffdfd90048cf0
 +    HaikuMSEVideoRenderer(MediaPlayerPrivateHaikuMSE& player, const HaikuMSEClock& clock)
 +        : m_weakPlayer(player)
 +        , m_clock(clock)
-+        , m_queue(90)
++        , m_queue(90, player)
 +    {
 +        m_thread = Thread::create("Summit MSE video"_s, [this] { run(); }, ThreadType::Graphics, Thread::QOS::UserInteractive);
 +    }
@@ -25392,6 +26592,10 @@ index 0000000000000000000000000000000000000000..c47e96d3b7f01fe77a9ffdfd90048cf0
 +        m_queue.enqueue(WTF::move(sample));
 +    }
 +    bool isReadyForMore() { return m_queue.isReadyForMore(); }
++#if ENABLE(ENCRYPTED_MEDIA)
++    bool waitingForKey() const { return m_queue.waitingForKey(); }
++    bool decryptionFailed() const { return m_queue.decryptionFailed(); }
++#endif
 +    void requestReadyNotification(ThreadSafeWeakPtr<SourceBufferPrivateHaiku>&& buffer, TrackID trackID) { m_queue.requestReadyNotification(WTF::move(buffer), trackID); }
 +    void setEndOfStream() { m_queue.setEndOfStream(); }
 +    void flush()
@@ -25832,7 +27036,7 @@ index 0000000000000000000000000000000000000000..c47e96d3b7f01fe77a9ffdfd90048cf0
 +    HaikuMSEAudioRenderer(MediaPlayerPrivateHaikuMSE& player, const HaikuMSEClock& clock)
 +        : m_weakPlayer(player)
 +        , m_clock(clock)
-+        , m_queue(120)
++        , m_queue(120, player)
 +    {
 +        m_thread = Thread::create("Summit MSE audio decoder"_s, [this] { run(); }, ThreadType::Audio, Thread::QOS::UserInteractive);
 +    }
@@ -25851,6 +27055,10 @@ index 0000000000000000000000000000000000000000..c47e96d3b7f01fe77a9ffdfd90048cf0
 +
 +    void enqueue(Ref<MediaSampleHaiku>&& sample) { m_queue.enqueue(WTF::move(sample)); }
 +    bool isReadyForMore() { return m_queue.isReadyForMore(); }
++#if ENABLE(ENCRYPTED_MEDIA)
++    bool waitingForKey() const { return m_queue.waitingForKey(); }
++    bool decryptionFailed() const { return m_queue.decryptionFailed(); }
++#endif
 +    void requestReadyNotification(ThreadSafeWeakPtr<SourceBufferPrivateHaiku>&& buffer, TrackID trackID) { m_queue.requestReadyNotification(WTF::move(buffer), trackID); }
 +    void setEndOfStream() { m_queue.setEndOfStream(); }
 +    void flush()
@@ -26197,7 +27405,11 @@ index 0000000000000000000000000000000000000000..c47e96d3b7f01fe77a9ffdfd90048cf0
 +// #pragma mark - Player
 +
 +MediaPlayerPrivateHaikuMSE::MediaPlayerPrivateHaikuMSE(MediaPlayer& player)
-+    : m_player(player)
++    :
++#if ENABLE(ENCRYPTED_MEDIA)
++    m_decryptionContext(HaikuCencDecryptionContext::create()),
++#endif
++    m_player(player)
 +    , m_playbackTimer(RunLoop::mainSingleton(), "MediaPlayerPrivateHaikuMSE::PlaybackTimer"_s, this, &MediaPlayerPrivateHaikuMSE::playbackTimerFired)
 +{
 +}
@@ -26220,6 +27432,59 @@ index 0000000000000000000000000000000000000000..c47e96d3b7f01fe77a9ffdfd90048cf0
 +const Logger& MediaPlayerPrivateHaikuMSE::mediaPlayerLogger()
 +{
 +    return m_player.get()->mediaPlayerLogger();
++}
++#endif
++
++std::optional<bool> MediaPlayerPrivateHaikuMSE::isCrossOrigin(const SecurityOrigin& origin) const
++{
++    if (m_dashLoader)
++        return m_dashLoader->isCrossOrigin(origin);
++    return std::nullopt;
++}
++
++#if ENABLE(ENCRYPTED_MEDIA)
++void MediaPlayerPrivateHaikuMSE::cdmInstanceAttached(CDMInstance& instance)
++{
++    if (instance.implementationType() != CDMInstance::ImplementationType::ClearKey) return;
++    m_cdmInstance = &instance;
++    auto& clearKey = downcast<CDMInstanceClearKey>(instance);
++    m_decryptionContext->setProxy(static_cast<CDMProxyHaiku*>(clearKey.proxy().get()));
++}
++
++void MediaPlayerPrivateHaikuMSE::cdmInstanceDetached(CDMInstance& instance)
++{
++    if (m_cdmInstance.get() != &instance) return;
++    m_decryptionContext->setProxy(nullptr);
++    m_cdmInstance = nullptr;
++}
++
++void MediaPlayerPrivateHaikuMSE::attemptToDecryptWithInstance(CDMInstance& instance)
++{
++    if (m_cdmInstance.get() == &instance) cdmInstanceAttached(instance);
++}
++
++void MediaPlayerPrivateHaikuMSE::initializationDataEncountered(std::vector<uint8_t>&& headers)
++{
++    if (headers.empty()) return;
++    if (RefPtr player = m_player.get()) {
++        if (m_dashLoader && m_dashLoader->hasInsecureResource())
++            player->initializationDataEncountered(emptyString(), nullptr);
++        else
++            player->initializationDataEncountered("cenc"_s, ArrayBuffer::create(std::span { headers }));
++    }
++}
++
++void MediaPlayerPrivateHaikuMSE::encryptionStateChanged()
++{
++    bool waiting = (m_videoRenderer && m_videoRenderer->waitingForKey()) || (m_audioRenderer && m_audioRenderer->waitingForKey());
++    if (std::exchange(m_waitingForKey, waiting) != waiting) {
++        if (RefPtr player = m_player.get()) player->waitingForKeyChanged();
++    }
++    if ((m_videoRenderer && m_videoRenderer->decryptionFailed()) || (m_audioRenderer && m_audioRenderer->decryptionFailed())) {
++        m_clock.stop();
++        setNetworkState(MediaPlayer::NetworkState::DecodeError);
++    }
++    updatePlaybackState();
 +}
 +#endif
 +
@@ -26266,12 +27531,18 @@ index 0000000000000000000000000000000000000000..c47e96d3b7f01fe77a9ffdfd90048cf0
 +    hooks.request = [this](uint64_t id, const auto& resource, size_t limit) { m_dashLoader->request(id, resource, limit); };
 +    hooks.cancel = [this](uint64_t id) { if (m_dashLoader) m_dashLoader->cancel(id); };
 +    hooks.supports = [](const SummitDASH::Representation& representation) {
-+        if (representation.encrypted || representation.mimeType.empty()) return false;
++        if (representation.mimeType.empty()) return false;
++#if !ENABLE(ENCRYPTED_MEDIA)
++        if (representation.encrypted) return false;
++#endif
 +        auto type = representation.mimeType + "; codecs=\"" + representation.codecs + "\"";
 +        MediaEngineSupportParameters parameters { .platformType = PlatformMediaDecodingType::MediaSource,
 +            .type = ContentType { String::fromUTF8(type.c_str()) } };
 +        return supportsType(parameters) != MediaPlayer::SupportsType::IsNotSupported;
 +    };
++#if ENABLE(ENCRYPTED_MEDIA)
++    hooks.protectionSystemHeaders = [this](std::vector<uint8_t>&& headers) { initializationDataEncountered(WTF::move(headers)); };
++#endif
 +    hooks.canEnqueue = [this](unsigned track) { return track ? audioRenderer().isReadyForMore() : videoRenderer().isReadyForMore(); };
 +    hooks.enqueue = [this](unsigned track, const auto& configuration, auto&& sample, double offset) {
 +        enqueueDashSample(track, configuration, WTF::move(sample), offset);
@@ -26319,7 +27590,7 @@ index 0000000000000000000000000000000000000000..c47e96d3b7f01fe77a9ffdfd90048cf0
 +    auto duration = MediaTime(sample.duration, info.timescale);
 +    auto flags = sample.isSync ? MediaSample::IsSync : MediaSample::None;
 +    if (!track && (presentation + duration).toDouble() <= m_dashDecodeTarget) flags = static_cast<MediaSample::SampleFlags>(flags | MediaSample::IsNonDisplaying);
-+    auto nativeSample = MediaSampleHaiku::create(HaikuSampleData::create(WTF::move(sample.data)), Ref { *configuration },
++    auto nativeSample = MediaSampleHaiku::create(HaikuSampleData::create(WTF::move(sample.data), WTF::move(sample.encryption)), Ref { *configuration },
 +        sample.trackID, presentation, decode, duration, flags);
 +    if (track) audioRenderer().enqueue(WTF::move(nativeSample));
 +    else videoRenderer().enqueue(WTF::move(nativeSample));
@@ -26593,6 +27864,9 @@ index 0000000000000000000000000000000000000000..c47e96d3b7f01fe77a9ffdfd90048cf0
 +{
 +    RefPtr mediaSource = m_mediaSourcePrivate;
 +    bool run = !m_paused && !m_pendingSeek && (m_dash ? !m_dash->isStopped() && m_dash->hasMetadata() : bool(mediaSource));
++#if ENABLE(ENCRYPTED_MEDIA)
++    run = run && !m_waitingForKey && m_networkState != MediaPlayer::NetworkState::DecodeError;
++#endif
 +    bool reachedEnd = false;
 +    if (run) {
 +        auto now = currentTime();
@@ -26813,6 +28087,11 @@ index 0000000000000000000000000000000000000000..c47e96d3b7f01fe77a9ffdfd90048cf0
 +{
 +    m_parser.onInitSegment = [this](SummitMP4::InitSegment&& segment) { didParseInitializationSegment(WTF::move(segment)); };
 +    m_parser.onSample = [this](SummitMP4::Sample&& sample) { didParseSample(WTF::move(sample)); };
++#if ENABLE(ENCRYPTED_MEDIA)
++    m_parser.onProtectionSystemHeaders = [this](std::vector<uint8_t>&& headers) {
++        if (RefPtr player = this->player()) player->initializationDataEncountered(WTF::move(headers));
++    };
++#endif
 +}
 +
 +SourceBufferPrivateHaiku::~SourceBufferPrivateHaiku() = default;
@@ -26886,6 +28165,9 @@ index 0000000000000000000000000000000000000000..c47e96d3b7f01fe77a9ffdfd90048cf0
 +        }
 +    }
 +    SourceBufferPrivate::didReceiveInitializationSegment(WTF::move(segment));
++#if ENABLE(ENCRYPTED_MEDIA)
++    if (RefPtr player = this->player()) player->initializationDataEncountered(WTF::move(init.protectionSystemHeaders));
++#endif
 +}
 +
 +void SourceBufferPrivateHaiku::didParseSample(SummitMP4::Sample&& sample)
@@ -26895,7 +28177,7 @@ index 0000000000000000000000000000000000000000..c47e96d3b7f01fe77a9ffdfd90048cf0
 +        return;
 +    uint32_t timescale = configuration->info.timescale;
 +    auto flags = sample.isSync ? MediaSample::IsSync : MediaSample::None;
-+    SourceBufferPrivate::didReceiveSample(MediaSampleHaiku::create(HaikuSampleData::create(WTF::move(sample.data)), configuration.releaseNonNull(),
++    SourceBufferPrivate::didReceiveSample(MediaSampleHaiku::create(HaikuSampleData::create(WTF::move(sample.data), WTF::move(sample.encryption)), configuration.releaseNonNull(),
 +        sample.trackID, MediaTime(sample.presentationTime, timescale), MediaTime(sample.decodeTime, timescale),
 +        MediaTime(sample.duration, timescale), flags));
 +}
@@ -27028,10 +28310,10 @@ index 0000000000000000000000000000000000000000..c47e96d3b7f01fe77a9ffdfd90048cf0
 +#endif // ENABLE(MEDIA_SOURCE)
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.h b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..4d24c5fbb427b70d8a9d6939fca0c697629ef1db
+index 0000000000000000000000000000000000000000..66ffa91f609f6cd8aef64d1696aae184761b9e36
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.h
-@@ -0,0 +1,337 @@
+@@ -0,0 +1,361 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -27089,6 +28371,7 @@ index 0000000000000000000000000000000000000000..4d24c5fbb427b70d8a9d6939fca0c697
 +class MediaSourcePrivateHaiku;
 +class HaikuMSEVideoRenderer;
 +class HaikuMSEAudioRenderer;
++class HaikuCencDecryptionContext;
 +
 +// The codec and container details of one track, shared by every sample that
 +// came after its initialization segment. A new initialization segment makes a
@@ -27107,12 +28390,15 @@ index 0000000000000000000000000000000000000000..4d24c5fbb427b70d8a9d6939fca0c697
 +
 +class HaikuSampleData final : public ThreadSafeRefCounted<HaikuSampleData> {
 +public:
-+    static Ref<HaikuSampleData> create(std::vector<uint8_t>&& bytes) { return adoptRef(*new HaikuSampleData(WTF::move(bytes))); }
++    static Ref<HaikuSampleData> create(std::vector<uint8_t>&& bytes, std::optional<SummitMP4::CencSample>&& encryption = std::nullopt)
++    { return adoptRef(*new HaikuSampleData(WTF::move(bytes), WTF::move(encryption))); }
 +    const std::vector<uint8_t> bytes;
++    const std::optional<SummitMP4::CencSample> encryption;
 +
 +private:
-+    explicit HaikuSampleData(std::vector<uint8_t>&& bytes)
++    explicit HaikuSampleData(std::vector<uint8_t>&& bytes, std::optional<SummitMP4::CencSample>&& encryption)
 +        : bytes(WTF::move(bytes))
++        , encryption(WTF::move(encryption))
 +    {
 +    }
 +};
@@ -27142,6 +28428,11 @@ index 0000000000000000000000000000000000000000..4d24c5fbb427b70d8a9d6939fca0c697
 +    const uint8_t* bytes() const { return m_data->bytes.data(); }
 +    size_t size() const { return m_data->bytes.size(); }
 +    const HaikuTrackConfiguration& configuration() const { return m_configuration.get(); }
++    const std::optional<SummitMP4::CencSample>& encryption() const { return m_data->encryption; }
++    Ref<MediaSampleHaiku> withClearBytes(std::vector<uint8_t>&& bytes) const
++    {
++        return create(HaikuSampleData::create(WTF::move(bytes)), m_configuration.copyRef(), m_trackID, m_presentationTime, m_decodeTime, m_duration, m_flags);
++    }
 +
 +private:
 +    MediaSampleHaiku(Ref<HaikuSampleData>&&, Ref<HaikuTrackConfiguration>&&, TrackID, const MediaTime&, const MediaTime&, const MediaTime&, SampleFlags);
@@ -27199,6 +28490,11 @@ index 0000000000000000000000000000000000000000..4d24c5fbb427b70d8a9d6939fca0c697
 +
 +    // Called on the main thread by the renderers.
 +    void videoFrameAvailable();
++#if ENABLE(ENCRYPTED_MEDIA)
++    HaikuCencDecryptionContext& decryptionContext() const { return m_decryptionContext.get(); }
++    void encryptionStateChanged();
++    void initializationDataEncountered(std::vector<uint8_t>&&);
++#endif
 +
 +#if !RELEASE_LOG_DISABLED
 +    uint64_t mediaPlayerLogIdentifier();
@@ -27206,6 +28502,15 @@ index 0000000000000000000000000000000000000000..4d24c5fbb427b70d8a9d6939fca0c697
 +#endif
 +
 +private:
++#if ENABLE(ENCRYPTED_MEDIA)
++    void cdmInstanceAttached(CDMInstance&) final;
++    void cdmInstanceDetached(CDMInstance&) final;
++    void attemptToDecryptWithInstance(CDMInstance&) final;
++    bool waitingForKey() const final { return m_waitingForKey; }
++    Ref<HaikuCencDecryptionContext> m_decryptionContext;
++    RefPtr<CDMInstance> m_cdmInstance;
++    bool m_waitingForKey { false };
++#endif
 +    void load(const String&) final;
 +    void load(const URL&, const LoadOptions&, MediaSourcePrivateClient&) final;
 +#if ENABLE(MEDIA_STREAM)
@@ -27217,6 +28522,7 @@ index 0000000000000000000000000000000000000000..4d24c5fbb427b70d8a9d6939fca0c697
 +    bool paused() const final { return m_paused; }
 +    FloatSize naturalSize() const final;
 +    bool hasVideo() const final;
++    std::optional<bool> isCrossOrigin(const SecurityOrigin&) const final;
 +    bool hasAudio() const final;
 +    void setPageIsVisible(bool) final { }
 +    Ref<MediaTimePromise> seekToTarget(const SeekTarget&) final;
@@ -62672,7 +63978,7 @@ index 23ebd4a75995ae9f57a82f860a97794ca3ee454f..dc9c8105e8da7e5bcb761413f637115a
  
  #if HAVE(COOKIE_CHANGE_LISTENER_API)
 diff --git a/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in b/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in
-index 575a1f68f3bd19cbe2259aae39f94dcadb552392..439c077d205687dc9fe11b815027db5ec9f70d63 100644
+index 575a1f68f3bd19cbe2259aae39f94dcadb552392..45d1cb9260913efbfac5191bd1f5825660d006f3 100644
 --- a/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in
 +++ b/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in
 @@ -1689,7 +1689,7 @@ header: <wtf/MachSendRight.h>
@@ -62718,14 +64024,25 @@ index 575a1f68f3bd19cbe2259aae39f94dcadb552392..439c077d205687dc9fe11b815027db5e
  
  enum class WebCore::ContentExtensionDefaultEnablement : bool
  using WebCore::ContentExtensionEnablement = std::pair<WebCore::ContentExtensionDefaultEnablement, HashSet<String>>;
-@@ -6814,6 +6823,7 @@ struct WebCore::OwnerPermissionsPolicyData {
+@@ -6814,6 +6823,8 @@ struct WebCore::OwnerPermissionsPolicyData {
      SyncXHR,
      Fullscreen,
      WebShare,
 +    USB,
++    EncryptedMedia,
  #if ENABLE(DEVICE_ORIENTATION)
      Gyroscope,
      Accelerometer,
+@@ -6833,7 +6844,9 @@ struct WebCore::OwnerPermissionsPolicyData {
+ 
+ class WebCore::PermissionsPolicy {
+     WebCore::PermissionsPolicy::InheritedPolicy inheritedPolicy()
++    WebCore::PermissionsPolicy::PolicyDirective declaredPolicy()
+ };
++using WebCore::PermissionsPolicy::PolicyDirective = HashMap<WebCore::PermissionsPolicy::Feature, WebCore::Allowlist, IntHash<WebCore::PermissionsPolicy::Feature>, WTF::StrongEnumHashTraits<WebCore::PermissionsPolicy::Feature>>;
+ using WebCore::PermissionsPolicy::InheritedPolicy = HashSet<WebCore::PermissionsPolicy::Feature, IntHash<WebCore::PermissionsPolicy::Feature>, WTF::StrongEnumHashTraits<WebCore::PermissionsPolicy::Feature>>;
+ using WebCore::OwnerPermissionsPolicyData::PolicyDirective = HashMap<WebCore::PermissionsPolicy::Feature, WebCore::Allowlist, IntHash<WebCore::PermissionsPolicy::Feature>, WTF::StrongEnumHashTraits<WebCore::PermissionsPolicy::Feature>>;
+ 
 diff --git a/Source/WebKit/Shared/WebCoreArgumentCodersNetwork.serialization.in b/Source/WebKit/Shared/WebCoreArgumentCodersNetwork.serialization.in
 index 219204814dae3776eaa86c1e91724afc8e57f886..a07920c19c053450070e8ee201e36ed4d97c6a16 100644
 --- a/Source/WebKit/Shared/WebCoreArgumentCodersNetwork.serialization.in
@@ -140161,7 +141478,7 @@ index 121e64b01bce34e387deacf3bbbca93adf0f59da..7926cd9c3edf141bc52f7db0253c37c0
  endif ()
 diff --git a/Source/cmake/OptionsHaiku.cmake b/Source/cmake/OptionsHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..1c5612d4d2e74f02bbffca7042d4db3c2302729a
+index 0000000000000000000000000000000000000000..509ac9e85014d9b4dc2ca3dd017ef42c90cd319b
 --- /dev/null
 +++ b/Source/cmake/OptionsHaiku.cmake
 @@ -0,0 +1,375 @@
@@ -140233,7 +141550,7 @@ index 0000000000000000000000000000000000000000..1c5612d4d2e74f02bbffca7042d4db3c
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_ATTACHMENT_ELEMENT PUBLIC OFF)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_DARK_MODE_CSS PUBLIC ON)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_DRAG_SUPPORT PUBLIC ON)
-+WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_ENCRYPTED_MEDIA PUBLIC OFF)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_ENCRYPTED_MEDIA PUBLIC ON)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_FULLSCREEN_API PUBLIC ${ENABLE_WEBKIT})
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_GAMEPAD PUBLIC OFF)
 +# The host finds the position (Summit: Wi-Fi networks and BeaconDB); see
