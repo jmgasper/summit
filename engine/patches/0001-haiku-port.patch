@@ -6384,10 +6384,10 @@ index 0000000000000000000000000000000000000000..4ad7cfd18cd52db090ad68d3961b2d26
 +};
 diff --git a/Source/WebCore/Modules/webbluetooth/BluetoothUUID.cpp b/Source/WebCore/Modules/webbluetooth/BluetoothUUID.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..ff16753df51a1265ac5c2beec27d9f6246704893
+index 0000000000000000000000000000000000000000..5e91fa44c835dbac2d3de86dc6b866601c2d4bf3
 --- /dev/null
 +++ b/Source/WebCore/Modules/webbluetooth/BluetoothUUID.cpp
-@@ -0,0 +1,16 @@
+@@ -0,0 +1,17 @@
 +/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#include "config.h"
 +#if ENABLE(WEB_BLUETOOTH)
@@ -6399,7 +6399,8 @@ index 0000000000000000000000000000000000000000..ff16753df51a1265ac5c2beec27d9f62
 +{
 +    if (auto* alias = std::get_if<uint32_t>(&value)) return canonicalUUID(*alias);
 +    auto& name = std::get<String>(value);
-+    if (auto uuid = BluetoothHaiku::namedUUID(kind, name.utf8().legacyCStringPointer())) return String::fromLatin1(uuid->string());
++    auto bytes = name.utf8();
++    if (auto uuid = BluetoothHaiku::namedUUID(kind, std::string_view { bytes.legacyCStringPointer(), bytes.length() })) return String::fromLatin1(uuid->string());
 +    return Exception { ExceptionCode::TypeError, "Invalid Bluetooth UUID or assigned name"_s };
 +}
 +}
@@ -62442,10 +62443,10 @@ index b1618c8ccb7334b09c689d0f88cbb9e2503e9ba5..20940206be8c608c79e54d8b0f014573
              result.append('#endif\n')
      result.append('    MessageDescription { "<invalid message name>"_s, ReceiverName::Invalid%s, false, ProcessName::Unknown, ProcessName::Unknown }\n' % (", false" * len(attributes_to_generate_validators)))
 diff --git a/Source/WebKit/Scripts/webkit/opaque_ipc_types.tracking.in b/Source/WebKit/Scripts/webkit/opaque_ipc_types.tracking.in
-index e86e69ad43376d74f66123965ba35ae74fc00467..cedebc46b79a7d9b6462e6fd6fe5bd733ff23da5 100644
+index e86e69ad43376d74f66123965ba35ae74fc00467..b7fa56ad9bcb70a0093a27abdc577807176e3869 100644
 --- a/Source/WebKit/Scripts/webkit/opaque_ipc_types.tracking.in
 +++ b/Source/WebKit/Scripts/webkit/opaque_ipc_types.tracking.in
-@@ -579,3 +579,10 @@
+@@ -579,3 +579,17 @@
  [NeedsReview] MessageParam NetworkTransportSession.ExportKeyingMaterial label std::span<const uint8_t>
  [NeedsReview] MessageParam NetworkTransportSession.ExportKeyingMaterial context std::span<const uint8_t>
  [NeedsReview] MessageParamReply NetworkTransportSession.ExportKeyingMaterial keyingMaterial std::optional<Vector<uint8_t>>
@@ -62456,6 +62457,13 @@ index e86e69ad43376d74f66123965ba35ae74fc00467..cedebc46b79a7d9b6462e6fd6fe5bd73
 +# protected classes, and all lengths before handing a span to USBHaiku::Session.
 +[UnsafeWrapper, Docs='WebUSBBrokerHaiku and USBDeviceSessionHaiku enforce a 16 MiB maximum and device capabilities before native transfer'] MessageParam WebPageProxy.UsbRequest bytes Vector<uint8_t>
 +[NotSentFromWebContent] MessageParamReply WebPageProxy.UsbRequest data Vector<uint8_t>
++
++# Haiku Web Bluetooth payloads are ATT attribute values, not native objects.
++# WebPageProxy::bluetoothRequest validates the process/frame and payload size;
++# WebBluetoothBrokerHaiku and GATTClient validate origin grants, connection
++# generations, discovered handles, blocklists, and lengths before native I/O.
++[UnsafeWrapper, Docs='WebBluetoothBrokerHaiku and BluetoothGATTHaiku enforce a 512-byte maximum and granted GATT capabilities before native transfer'] MessageParam WebPageProxy.BluetoothRequest bytes Vector<uint8_t>
++[NotSentFromWebContent] MessageParamReply WebPageProxy.BluetoothRequest data Vector<uint8_t>
 diff --git a/Source/WebKit/Shared/API/c/WKBase.h b/Source/WebKit/Shared/API/c/WKBase.h
 index f920a7cd3f564700db2a4b293b79c4949a78f84c..4e6df27d9c74bc96bccc623ac1f51b25bc674fc5 100644
 --- a/Source/WebKit/Shared/API/c/WKBase.h
@@ -104513,10 +104521,10 @@ index 0000000000000000000000000000000000000000..800bd4bb48b9c51f11d0f1592e227012
 +}
 diff --git a/Source/WebKit/UIProcess/haiku/bluetooth/WebBluetoothBrokerHaiku.cpp b/Source/WebKit/UIProcess/haiku/bluetooth/WebBluetoothBrokerHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..be9ae859cadd64115af3577397242ff38f556fc3
+index 0000000000000000000000000000000000000000..ea11df4332ef7a5d29f3eec0e6b3dd30cc3ffb9e
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/bluetooth/WebBluetoothBrokerHaiku.cpp
-@@ -0,0 +1,410 @@
+@@ -0,0 +1,413 @@
 +/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#include "config.h"
 +#if ENABLE(WEB_BLUETOOTH)
@@ -104533,6 +104541,8 @@ index 0000000000000000000000000000000000000000..be9ae859cadd64115af3577397242ff3
 +using namespace BluetoothHaiku;
 +using BluetoothUUID = WebCore::BluetoothHaiku::UUID;
 +static String fromUTF8(const std::string& string) { return String::fromUTF8ReplacingInvalidSequences(std::span(reinterpret_cast<const char8_t*>(string.data()), string.size())); }
++static std::string toUTF8(const String& string)
++{ auto bytes = string.utf8(); return { bytes.legacyCStringPointer(), bytes.length() }; }
 +static String error(ASCIILiteral name, ASCIILiteral message)
 +{
 +    auto object = JSON::Object::create();
@@ -104549,7 +104559,7 @@ index 0000000000000000000000000000000000000000..be9ae859cadd64115af3577397242ff3
 +static std::optional<BluetoothUUID> uuidValue(const JSON::Value& value)
 +{
 +    auto string = value.asString();
-+    return string.isNull() ? std::nullopt : BluetoothUUID::parse(string.utf8().legacyCStringPointer());
++    return string.isNull() ? std::nullopt : BluetoothUUID::parse(toUTF8(string));
 +}
 +static std::optional<std::set<BluetoothUUID>> servicesArray(const JSON::Array& array)
 +{
@@ -104588,11 +104598,11 @@ index 0000000000000000000000000000000000000000..be9ae859cadd64115af3577397242ff3
 +        Filter filter;
 +        if (auto name = object->getValue("name"_s)) {
 +            auto string = name->asString(); if (string.isNull()) return std::nullopt;
-+            filter.name = string.utf8().legacyCStringPointer();
++            filter.name = toUTF8(string);
 +        }
 +        if (auto name = object->getValue("namePrefix"_s)) {
 +            auto string = name->asString(); if (string.isNull()) return std::nullopt;
-+            filter.namePrefix = string.utf8().legacyCStringPointer();
++            filter.namePrefix = toUTF8(string);
 +        }
 +        if (auto value = object->getValue("services"_s)) {
 +            auto array = value->asArray();
@@ -104696,6 +104706,7 @@ index 0000000000000000000000000000000000000000..be9ae859cadd64115af3577397242ff3
 +                auto token = WTF::UUID::createVersion4().toString();
 +                auto label = fromUTF8(device.advertisement.name.empty() ? "Unnamed Bluetooth device" : device.advertisement.name);
 +                label = makeStringByReplacingAll(makeStringByReplacingAll(label, '\n', ' '), '\r', ' ');
++                label = makeStringByReplacingAll(label, '\0', ' ');
 +                choices.append({ token, label }); tokens.append(token);
 +            }
 +            self->m_permissions->requestBluetooth(origin, view, WTF::move(choices),

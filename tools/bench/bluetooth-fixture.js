@@ -24,6 +24,7 @@ window.btTest = (() => {
             await rejection(()=>BluetoothUUID.getService('battery_level'), 'TypeError', 'UUID names are scoped by kind');
             await rejection(()=>BluetoothUUID.getService('0000180F-0000-1000-8000-00805f9b34fb'), 'TypeError', 'UUID strings must be canonical lowercase');
             await rejection(()=>BluetoothUUID.canonicalUUID(-1), 'TypeError', 'canonicalUUID enforces the unsigned range');
+            await rejection(()=>BluetoothUUID.getService('battery_service\0suffix'), 'TypeError', 'UUID names cannot hide a suffix after NUL');
             await rejection(()=>BluetoothUUID.getService('not-a-uuid'), 'TypeError', 'invalid UUID rejects');
             const value = {meaning:42}; const event = new ValueEvent('availabilitychanged', {value});
             assert(event.value === value && event.value === event.value && !event.isTrusted, 'ValueEvent retains the JS value identity');
@@ -46,11 +47,17 @@ window.btTest = (() => {
                 {filters:[{name:'x'}],exclusionFilters:[]}
             ]) await rejection(()=>navigator.bluetooth.requestDevice(options),'TypeError','invalid filter rejects');
             await rejection(()=>navigator.bluetooth.requestDevice({filters:[{services:['human_interface_device']}]}),'SecurityError','HID filter is blocked');
+            await rejection(()=>navigator.bluetooth.requestDevice({filters:[{name:'Summit Test Peripheral\0suffix'}]}),'NotFoundError','name filters retain all bytes after NUL');
             return results;
         },
         async request(options) {
             device = await navigator.bluetooth.requestDevice(options);
-            return {id:device.id, name:device.name, connected:device.gatt.connected};
+            let battery=null;
+            if (new URL(location.href).searchParams.has('browser')) {
+                const server=await device.gatt.connect();
+                battery=(await (await (await server.getPrimaryService('battery_service')).getCharacteristic('battery_level')).readValue()).getUint8(0);
+            }
+            return {id:device.id, name:device.name, connected:device.gatt.connected, battery};
         },
         async grantChecks() {
             results = [];
@@ -141,8 +148,10 @@ window.btTest = (() => {
             frame.src=url; document.body.append(frame); try{return await result;}finally{frame.remove();}
         }
     };
-    const run=(method,...args)=>{operation=null;Promise.resolve().then(()=>methods[method](...args)).then(value=>{operation={ok:true,value};resultsElement.textContent=JSON.stringify(operation,null,2);},e=>{operation={ok:false,error:e.name,message:e.message,results};resultsElement.textContent=JSON.stringify(operation,null,2);});return true;};
+    const run=(method,...args)=>{operation=null;Promise.resolve().then(()=>methods[method](...args)).then(value=>{operation={ok:true,value};resultsElement.textContent=JSON.stringify(operation,null,2);report();},e=>{operation={ok:false,error:e.name,message:e.message,results};resultsElement.textContent=JSON.stringify(operation,null,2);report();});return true;};
     const resultsElement=document.getElementById('results');
+    const report=()=>{if(!new URL(location.href).searchParams.has('browser'))return;const r=document.getElementById('request').getBoundingClientRect();document.title='BLUETOOTH '+JSON.stringify({ready:true,button:[r.x+r.width/2,r.y+r.height/2],operation});};
+    requestAnimationFrame(report);
     document.getElementById('request').onclick=()=>run(window.nextMethod||'request', window.nextOptions || {filters:[{name:'Summit Test Peripheral'}],optionalServices:['battery_service','device_information','human_interface_device']});
     if(new URL(location.href).searchParams.has('probe')) methods.probe().then(value=>parent.postMessage(value,'*'));
     return {run,operation:()=>operation};

@@ -3,7 +3,8 @@
 Issue #31 is in progress. The engine patch now connects `navigator.bluetooth`,
 GATT objects, origin-scoped grants, the native chooser, and the air/OS transport.
 The new C++ classes and generated JavaScript bindings pass native syntax checks.
-The full engine build and browser integration suite are still pending.
+WebCore, including the new bindings, compiles in the full native build. The
+WebKit build and browser integration suite are still pending.
 
 The engine patch contains portable Bluetooth UUID/advertisement parsing,
 an ATT client, and a GATT capability boundary in
@@ -102,3 +103,11 @@ The final screenshot (`.vm/issue31/picker.png`) shows both selectable devices
 and the session-lifetime notice. No new crash reports or debugger events were
 recorded. This native UI check uses an isolated embedding context and does not
 substitute for the still-pending complete browser GATT suite.
+
+`tests/ModernBrowserBluetoothTests.cpp` adds coverage through the complete
+Summit app: a page click opens the native picker, Cancel rejects the JavaScript
+request, Connect allows a simulated battery read, and navigation/quit dismiss
+pending selection. Both browser harnesses compile on X399; runtime results
+still depend on the completed engine build. The fixture also checks that UUID
+names and device filters retain embedded NUL bytes rather than silently matching
+a truncated value.

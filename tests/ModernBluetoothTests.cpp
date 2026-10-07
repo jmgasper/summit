@@ -22,14 +22,15 @@ public:
             m_window->Show(); SetPulseRate(100000);
             m_worker = std::thread([this] {
                 try { RunTests(); }
-                catch (const std::exception& error) { std::fprintf(stderr, "Bluetooth_FAILURE %s\n", error.what()); m_failed = true; }
+                catch (const std::exception& error) { std::fprintf(stderr, "BLUETOOTH_FAILURE %s\n", error.what()); m_failed = true; }
                 m_done = true;
             });
-        } catch (const std::exception& error) { std::fprintf(stderr, "Bluetooth_FAILURE %s\n", error.what()); m_failed = true; m_done = true; SetPulseRate(100000); }
+        } catch (const std::exception& error) { std::fprintf(stderr, "BLUETOOTH_FAILURE %s\n", error.what()); m_failed = true; m_done = true; SetPulseRate(100000); }
     }
     void MessageReceived(BMessage* message) override
     {
         if (message->what == B_WEBKIT_PERMISSION_REQUESTED) {
+            if (!m_context) return;
             auto identifier=message->GetUInt64("identifier",0); m_lastRequest=identifier; ++m_requests;
             if (m_holdPrompt) return;
             const char* wanted=m_selectBusy ? "Summit Test Busy Peripheral" : "Summit Test Peripheral";
@@ -54,9 +55,9 @@ public:
             m_context.reset();
         }
         if (!HasHelpers(m_bundle) && !BWebKitHasPendingNativeUI()) {
-            std::printf("Bluetooth_RESULT %s checks=%u\n", m_failed ? "FAIL" : "PASS", checks);
+            std::printf("BLUETOOTH_RESULT %s checks=%u\n", m_failed ? "FAIL" : "PASS", checks);
             m_finished = true; PostMessage(B_QUIT_REQUESTED);
-        } else if (system_time() - m_closing > 30000000) { std::fputs("Bluetooth_FAILURE helper teardown deadline\n", stderr); _Exit(1); }
+        } else if (system_time() - m_closing > 30000000) { std::fputs("BLUETOOTH_FAILURE helper teardown deadline\n", stderr); _Exit(1); }
     }
     bool QuitRequested() override { return m_finished; }
 private:
@@ -74,7 +75,7 @@ private:
     void WaitScript(Inspector& inspector, const std::string& expression, const char* description, bigtime_t duration = 45000000)
     {
         try { Wait([&] { return inspector.Evaluate(expression) == true; }, description, duration); }
-        catch (...) { std::fprintf(stderr, "Bluetooth_STATE %s\n", inspector.Evaluate("btTest.operation()").dump().c_str()); throw; }
+        catch (...) { std::fprintf(stderr, "BLUETOOTH_STATE %s\n", inspector.Evaluate("btTest.operation()").dump().c_str()); throw; }
     }
     JSON Operation(Inspector& inspector, const std::string& method, const JSON& arguments = JSON::array())
     {
@@ -83,7 +84,7 @@ private:
         Require(inspector.Evaluate("btTest.run(" + JSON(method).dump() + parameters + ")") == true, "start asynchronous Bluetooth operation");
         WaitScript(inspector, "btTest.operation()!==null", "Bluetooth operation settles", 90000000);
         auto result = inspector.Evaluate("btTest.operation()");
-        if (!result.value("ok", false)) std::fprintf(stderr, "Bluetooth_OPERATION %s\n", result.dump().c_str());
+        if (!result.value("ok", false)) std::fprintf(stderr, "BLUETOOTH_OPERATION %s\n", result.dump().c_str());
         Require(result.value("ok", false), method.c_str());
         return result["value"];
     }
@@ -91,20 +92,20 @@ private:
     {
         Require(results.is_array() && !results.empty(), "Bluetooth JavaScript checks return results");
         for (const auto& result : results) {
-            if (!result.value("pass", false)) std::fprintf(stderr, "Bluetooth_CHECK %s\n", result.dump().c_str());
+            if (!result.value("pass", false)) std::fprintf(stderr, "BLUETOOTH_CHECK %s\n", result.dump().c_str());
             Require(result.value("pass", false), result["label"].get<std::string>().c_str());
         }
     }
     void Click(Inspector& inspector, const char* id)
     {
-        auto point = inspector.Evaluate("(()=>{const r=document.getElbtntById(" + JSON(id).dump() + ").getBoundingClientRect();return [r.x+r.width/2,r.y+r.height/2]})()");
-        Require(point.is_array(), "locate the native audio playback control");
+        auto point = inspector.Evaluate("(()=>{const r=document.getElementById(" + JSON(id).dump() + ").getBoundingClientRect();return [r.x+r.width/2,r.y+r.height/2]})()");
+        Require(point.is_array(), "locate the Bluetooth request control");
         BPoint where(point[0].get<float>(), point[1].get<float>()); BMessenger view(m_view);
         for (uint32 what : {B_MOUSE_DOWN, B_MOUSE_UP}) {
             BMessage message(what); message.AddPoint("where", where); message.AddPoint("be:view_where", where);
             message.AddInt32("buttons", what == B_MOUSE_DOWN ? B_PRIMARY_MOUSE_BUTTON : 0);
             message.AddInt32("clicks", 1); message.AddInt32("modifiers", 0); message.AddInt64("when", system_time());
-            Require(view.SendMessage(&message) == B_OK, "send native Bluetooth play pointer event");
+            Require(view.SendMessage(&message) == B_OK, "send native Bluetooth request pointer event");
         }
     }
     void RunTests()
