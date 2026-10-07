@@ -90,6 +90,7 @@ constexpr uint32 kShowDownloads = 'down';
 constexpr uint32 kDownloadSave = 'dsav';
 constexpr uint32 kDownloadQuitReply = 'dqre';
 constexpr uint32 kShowExtensions = 'exts';
+constexpr uint32 kShowCertificate = 'cert';
 constexpr uint32 kInspectExtension = 'exin';
 constexpr uint32 kExtensionSelected = 'exsl';
 constexpr uint32 kExtensionStoreInstall = 'exsi';

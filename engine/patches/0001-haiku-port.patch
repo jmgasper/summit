@@ -46072,10 +46072,35 @@ index 0a21c097975d267a561b77b3f750872b987bd98f..aefac57fa5ef7dbe444cebb76dca6708
  void DNSResolveQueueCurl::resolve(const String& /* hostname */, uint64_t /* identifier */, DNSCompletionHandler&& /* completionHandler */)
  {
 diff --git a/Source/WebCore/platform/network/curl/OpenSSLHelper.cpp b/Source/WebCore/platform/network/curl/OpenSSLHelper.cpp
-index 4cfe46eed7ca84223c22c0d5f467692fad5c7d09..3f61e5290e0411d4c8806233db3ff58c8b32cd99 100644
+index 4cfe46eed7ca84223c22c0d5f467692fad5c7d09..f42a21b34de0cf59318bf1c27897cf4c7b403a0d 100644
 --- a/Source/WebCore/platform/network/curl/OpenSSLHelper.cpp
 +++ b/Source/WebCore/platform/network/curl/OpenSSLHelper.cpp
-@@ -184,19 +184,20 @@ WebCore::CertificateInfo::CertificateChain createCertificateChain(X509_STORE_CTX
+@@ -171,9 +171,21 @@ std::unique_ptr<WebCore::CertificateInfo> createCertificateInfo(std::optional<lo
+     if (!verifyResult || !ssl)
+         return nullptr;
+ 
+-    auto certChain = SSL_get_peer_cert_chain(ssl);
+-
+-    return makeUnique<WebCore::CertificateInfo>(*verifyResult, pemDataFromCtx(StackOfX509(certChain)));
++    auto certificateChain = pemDataFromCtx(StackOfX509(SSL_get_peer_cert_chain(ssl)));
++#if PLATFORM(HAIKU)
++    // Resumed TLS sessions can omit the chain, but OpenSSL retains the peer
++    // certificate in the session. Preserve that actual certificate for the
++    // committed page's security details instead of losing the lock on reload.
++    if (certificateChain.isEmpty()) {
++        std::unique_ptr<X509, deleter<X509>> peer { SSL_get1_peer_certificate(ssl) };
++        if (peer) {
++            BIO bio(peer.get());
++            if (auto certificate = bio.getDataAsVector())
++                certificateChain.append(WTF::move(*certificate));
++        }
++    }
++#endif
++    return makeUnique<WebCore::CertificateInfo>(*verifyResult, WTF::move(certificateChain));
+ }
+ 
+ WebCore::CertificateInfo::CertificateChain createCertificateChain(X509_STORE_CTX* ctx)
+@@ -184,19 +196,20 @@ WebCore::CertificateInfo::CertificateChain createCertificateChain(X509_STORE_CTX
      return pemDataFromCtx(StackOfX509(ctx));
  }
  
@@ -46100,7 +46125,7 @@ index 4cfe46eed7ca84223c22c0d5f467692fad5c7d09..3f61e5290e0411d4c8806233db3ff58c
  
  static String getSubjectEntry(const X509* x509, int nid)
  {
-@@ -216,7 +217,7 @@ static String getSubjectEntry(const X509* x509, int nid)
+@@ -216,7 +229,7 @@ static String getSubjectEntry(const X509* x509, int nid)
      if (!entryData)
          return String();
  
@@ -46109,7 +46134,7 @@ index 4cfe46eed7ca84223c22c0d5f467692fad5c7d09..3f61e5290e0411d4c8806233db3ff58c
  }
  
  static String getCommonName(const X509* x509)
-@@ -306,7 +307,7 @@ static void getSubjectAltName(const X509* x509, Vector<String>& dnsNames, Vector
+@@ -306,7 +319,7 @@ static void getSubjectAltName(const X509* x509, Vector<String>& dnsNames, Vector
              continue;
  
          if (value->type == GEN_DNS) {
@@ -65537,10 +65562,10 @@ index 0000000000000000000000000000000000000000..c513815be2c9593bb9bac943763f49bd
 +}
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitView.h b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..ba7cf012f3aabe831e3f22a7aa4e0d55d1479168
+index 0000000000000000000000000000000000000000..8966f9528acc7a38ed7be98bcebaa4ff32acc89d
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitView.h
-@@ -0,0 +1,224 @@
+@@ -0,0 +1,228 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -65583,6 +65608,10 @@ index 0000000000000000000000000000000000000000..ba7cf012f3aabe831e3f22a7aa4e0d55
 +    // registerProtocolHandler / unregisterProtocolHandler: "view", "scheme",
 +    // "url" (validated same-origin HTTP(S) template), "source_url", "remove".
 +    B_WEBKIT_SCHEME_REGISTRATION = 'wsrg',
++    // State snapshots may include connectionCertificate (BMessage) for the
++    // committed HTTPS main resource: url, host, subject, issuer, names and
++    // sha256 (strings), validFrom/validUntil (epoch seconds, doubles), verified,
++    // exception and mixedContent (bools), and problem (string).
 +    B_WEBKIT_STATE_CHANGED = 'wsta',
 +    B_WEBKIT_PROCESS_EXITED = 'wpex',
 +    B_WEBKIT_FIND_RESULT = 'wfin',
@@ -94350,10 +94379,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..70a10e320239cd2c13509114f817ddde87d27e7e
+index 0000000000000000000000000000000000000000..a100ea8256383c4a7ef7db49e09dc60060921dce
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,2357 @@
+@@ -0,0 +1,2380 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -95917,6 +95946,29 @@ index 0000000000000000000000000000000000000000..70a10e320239cd2c13509114f817ddde
 +    message.AddDouble("progress", state.estimatedProgress());
 +    message.AddBool("canGoBack", state.canGoBack());
 +    message.AddBool("canGoForward", state.canGoForward());
++    // Describe the certificate from the committed main resource, never a
++    // separate probe of the address. In particular a provisional navigation
++    // must not display the previous document's certificate beside its URL.
++    if (!state.isProvisional() && state.url().protocolIs("https"_s)) {
++        if (auto certificate = describeCertificateHaiku(state.url().host().toString(), state.certificateInfo())) {
++            BMessage details;
++            details.AddString("url", state.url().string().utf8().legacyCStringPointer());
++            details.AddString("host", certificate->host.utf8().legacyCStringPointer());
++            details.AddString("subject", certificate->subject.utf8().legacyCStringPointer());
++            details.AddString("issuer", certificate->issuer.utf8().legacyCStringPointer());
++            details.AddString("names", certificate->names.utf8().legacyCStringPointer());
++            details.AddString("sha256", certificate->sha256.utf8().legacyCStringPointer());
++            details.AddDouble("validFrom", certificate->validFrom);
++            details.AddDouble("validUntil", certificate->validUntil);
++            const bool exception = m_state->context && m_state->context->allowsServerCertificate(certificate->host, certificate->sha256);
++            const bool verified = !exception && !state.certificateInfo().verificationError();
++            details.AddBool("verified", verified);
++            details.AddBool("exception", exception);
++            details.AddBool("mixedContent", !state.hasOnlySecureContent());
++            details.AddString("problem", verified ? "" : certificate->problem.utf8().legacyCStringPointer());
++            message.AddMessage("connectionCertificate", &details);
++        }
++    }
 +    message.AddDouble("pageZoom", m_page->pageZoomFactor());
 +    message.AddDouble("textZoom", m_page->textZoomFactor());
 +    message.AddBool("closeApprovalInvalidated", m_state->closeApprovalInvalidated);

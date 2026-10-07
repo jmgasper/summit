@@ -7,7 +7,7 @@ verified installation on X399. The final installation is still pending.
 | --- | --- |
 | #39 New icons | Supplied toolbar SVGs render at three densities; the app uses the updated mountain-and-flag HVIF. Native bundle `bundle-uofxmys5` builds. Screenshot `.vm/issue39-native.png` verifies the toolbar in the preceding icon bundle. Commit `a2a9512` is pushed. |
 | #40 Extension stores | Implemented and verified against both live stores; [workflow and native evidence](extension-stores.md). |
-| #41 Certificate information | Pending. Existing engine `WebView.cpp` already describes rejected certificates. `PageLoadState::certificateInfo()` retains the committed main resource certificate; publish it with its URL, verification and mixed-content status, then expose the supplied lock icon and native details UI. |
+| #41 Certificate information | Implemented: supplied lock icon and native details from the committed connection. Verified/public and exception states, tab/navigation cleanup, and resumed TLS peer certificate retention pass 72 native checks; [details](certificate-warnings.md). |
 | #38 PDF viewing | Pending: browser preview and optional download. |
 | #37 README | Pending until the features and icon work finish; replace old KunanyiOS branding with air/OS, audit current capabilities, retain the CI latest-release download section. |
 | #36 Date/time input types | Pending for date, month, week, time and datetime-local, using BCalendar where appropriate. Legacy chooser implementations exist but the modern multiprocess path needs native proxies. |

@@ -54,8 +54,49 @@ port answered none of them, so every such load failed.
   The engine does not store them; Summit gives its saved ones to each context
   it creates.
 
-## Not done
+## Viewing a loaded page's certificate
 
-- There is no certificate viewer beyond the warning's summary.
+For [issue #41](https://github.com/jmgasper/summit/issues/41), a lock beside the
+address opens **Connection security** after an HTTPS page finishes loading.
+The selectable native view includes the page URL, subject, issuer, alternative
+names, validity dates in UTC, and SHA-256 fingerprint. It uses the certificate
+from the committed main-resource connection, without making a second request.
+
+A verified connection uses the supplied lock artwork. An accepted certificate
+exception or mixed content adds an amber warning badge; the viewer explains
+the warning and never describes a saved exception as verified. Navigating,
+switching tabs, changing connection security, or closing the browser dismisses
+the viewer. HTTP pages, failed loads and pages still loading have no lock.
+
+`B_WEBKIT_STATE_CHANGED` carries a `connectionCertificate` message for the
+committed HTTPS page. Summit binds it to the URL and load generation, preventing
+certificate details from a previous navigation appearing beside a new address.
+
+The curl backend also retains the peer's leaf certificate when a TLS session
+resumes without a chain. [OpenSSL documents this distinction](https://docs.openssl.org/3.5/man3/SSL_get_peer_cert_chain/).
+The native regression covers a verified public site, explicit exception
+consent, exact certificate fingerprint, HTTP navigation, tab switches, a
+HTTPS-to-HTTP redirect, and loading the exception again through a resumed
+session. `tools/bench/certificate-fixture.py --host HOST_IP --directory TEMP_DIR`
+provides the HTTP/TLS URLs and fingerprint. Compile
+`tests/ModernCertificateInfoTests.cpp` on Haiku with `-std=c++23 -Isrc -Ivendor -lbe`
+and run it against an owned browser launched at `https://example.com/`:
+
+```sh
+test-certificates TEAM EXECUTABLE HTTPS_BASE HTTP_BASE SHA256 SCREENSHOT_PPM
+```
+
+Use a disposable profile. The test approves its temporary fixture certificate
+and quits that browser after exercising the real native controls.
+
+X399 validation on 7 October 2026: bundle `bundle-ef1a8im3`, engine patch
+`702bb3849f1c36de00ce783c4f1a81563f550a10ad61a59a9dfbc5111c9be8ad`,
+72/72 checks pass. Owned team 53859 and its helpers exited cleanly with no new
+crash reports or debugger events. The native viewer screenshot was inspected;
+all five portable CTest suites pass. Local evidence is
+`.vm/issue41-native-results.json` and `.vm/issue41-viewer.png`.
+
+## Remaining work
+
 - HTTP authentication (basic/digest) challenges still get the engine's
   default handling, which does not ask for a password.

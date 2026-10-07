@@ -44,6 +44,7 @@
 #include <WindowScreen.h>
 #if SUMMIT_MODERN_WEBKIT
 #include "ExtensionInstaller.h"
+#include "CertificateInfoWindow.h"
 #include <WebKit/WebKitInfo.h>
 #else
 #include <WebDownload.h>
@@ -608,6 +609,7 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
     fExtensionActions = new BGroupView("extension-actions", B_HORIZONTAL, 2);
     fStoreInstallButton = new BButton("install-store-extension", "Install extension…", new BMessage(kExtensionStoreInstall));
     fStoreInstallButton->SetToolTip("Download this store extension and review its requested access in Summit.");
+    fCertificateButton = new ToolButton("connection-certificate", "View connection certificate", Icon::Lock, kShowCertificate);
 #endif
     fTabStrip = new TabStrip();
     fProgress = new ProgressLine();
@@ -666,7 +668,11 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
     BLayoutBuilder::Group<>(fToolbar)
         .SetInsets(8, 7, 8, 7)
         .Add(fBack).Add(fForward).Add(homeButton)
-        .Add(glue()).Add(fAddress, 3).Add(fZoomButton).Add(fGo).Add(fReload).Add(glue())
+        .Add(glue())
+#if SUMMIT_MODERN_WEBKIT
+        .Add(fCertificateButton)
+#endif
+        .Add(fAddress, 3).Add(fZoomButton).Add(fGo).Add(fReload).Add(glue())
         .Add(fBookmarkButton)
         .Add(downloadsButton)
 #if SUMMIT_MODERN_WEBKIT
@@ -677,6 +683,7 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
 #if SUMMIT_MODERN_WEBKIT
     fExtensionActions->Hide();
     fStoreInstallButton->Hide();
+    fCertificateButton->Hide();
 #endif
     fZoomButton->Hide();
     if (fPrivate) {
@@ -758,6 +765,7 @@ BrowserWindow::~BrowserWindow()
     }
 #if SUMMIT_MODERN_WEBKIT
     if (fExtensionMenuCancelled) *fExtensionMenuCancelled = true;
+    if (fCertificateWindow.IsValid()) fCertificateWindow.SendMessage(B_QUIT_REQUESTED);
     fWebKitContext->SetBrowserWindowTabs(BMessenger(this), { }, nullptr, false);
     SaveSession();
     fSaveTimer.reset();
@@ -2180,6 +2188,23 @@ void BrowserWindow::RefreshChrome()
     const bool storePage = fExtensionsEnabled && active && ParseExtensionStoreURL(active->url).has_value();
     if (storePage && fStoreInstallButton->IsHidden(fStoreInstallButton)) fStoreInstallButton->Show();
     else if (!storePage && !fStoreInstallButton->IsHidden(fStoreInstallButton)) fStoreInstallButton->Hide();
+    const bool hasCertificate = active && !active->loading && !active->processExited && active->loadError.empty()
+        && active->url == active->connectionCertificate.GetString("url", "")
+        && active->connectionCertificate.HasString("sha256");
+    if (hasCertificate) {
+        const bool verified = active->connectionCertificate.GetBool("verified", false)
+            && !active->connectionCertificate.GetBool("mixedContent", false);
+        fCertificateButton->SetIcon(verified ? Icon::Lock : Icon::LockWarning);
+        fCertificateButton->SetToolTip(verified ? "Encrypted connection — view certificate" : "Connection warning — view certificate");
+        if (fCertificateButton->IsHidden(fCertificateButton)) fCertificateButton->Show();
+    } else if (!fCertificateButton->IsHidden(fCertificateButton)) fCertificateButton->Hide();
+    if (fCertificateWindow.IsValid() && (!hasCertificate || fCertificateTab != active->id
+        || fCertificateGeneration != active->loadGeneration
+        || fCertificateVerified != active->connectionCertificate.GetBool("verified", false)
+        || fCertificateMixedContent != active->connectionCertificate.GetBool("mixedContent", false))) {
+        fCertificateWindow.SendMessage(B_QUIT_REQUESTED);
+        fCertificateWindow = {};
+    }
 #endif
     std::vector<TabLabel> labels;
     for (const auto& tab : fTabs)
@@ -2945,6 +2970,7 @@ void BrowserWindow::MessageReceived(BMessage* message)
         case kShowHistory: ShowInternalPage(kHistoryPage); break;
         case kShowExtensions: be_app->PostMessage(kShowExtensions); break;
 #if SUMMIT_MODERN_WEBKIT
+        case kShowCertificate: ShowCertificate(); break;
         case kExtensionStoreInstall: {
             if (!fExtensionsEnabled || !tab || !ParseExtensionStoreURL(tab->url)) break;
             BMessage request(kExtensionStoreInstall);
@@ -3783,6 +3809,8 @@ void BrowserWindow::WebKitStateChanged(const BMessage& message)
     // cannot restore a previous navigation's load error.
     if (message.FindUInt64("loadGeneration", &generation) == B_OK && generation >= tab->loadGeneration) {
         tab->loadGeneration = generation;
+        tab->connectionCertificate.MakeEmpty();
+        message.FindMessage("connectionCertificate", &tab->connectionCertificate);
         if (message.FindString("loadOutcome", &value) == B_OK && value) tab->loadOutcome = value;
         bool failed = false;
         if (message.FindBool("loadError", &failed) == B_OK) {
@@ -3912,6 +3940,20 @@ void BrowserWindow::WebKitStateChanged(const BMessage& message)
     // Only then: any other state change may be the start of a navigation away.
     if (internalPageLoaded && !tab->loading) RefreshInternalPage(*tab);
     RefreshChrome();
+}
+
+void BrowserWindow::ShowCertificate()
+{
+    auto* tab = ActiveTab();
+    if (!tab || fCertificateButton->IsHidden(fCertificateButton)) return;
+    if (fCertificateWindow.IsValid()) { fCertificateWindow.SendMessage(kShowCertificate); return; }
+    auto* window = new CertificateInfoWindow(tab->connectionCertificate, Frame());
+    fCertificateWindow = BMessenger(window);
+    fCertificateTab = tab->id;
+    fCertificateGeneration = tab->loadGeneration;
+    fCertificateVerified = tab->connectionCertificate.GetBool("verified", false);
+    fCertificateMixedContent = tab->connectionCertificate.GetBool("mixedContent", false);
+    window->Show();
 }
 
 void BrowserWindow::AskAboutCertificate(Tab& tab)

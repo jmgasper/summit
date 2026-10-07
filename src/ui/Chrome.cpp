@@ -174,6 +174,16 @@ void ToolButton::Draw(BRect update)
             StrokeLine(badge + BPoint(-0.5f, 1.5f), badge + BPoint(2, -1.5f));
             SetPenSize(1);
         }
+        if (fIcon == Icon::LockWarning) {
+            const BPoint badge(Bounds().right - 6, Bounds().bottom - 6);
+            SetHighColor(244, 182, 46, 255);
+            FillEllipse(badge, 4.5f, 4.5f);
+            SetHighColor(45, 35, 15, 255);
+            SetPenSize(1.5f);
+            StrokeLine(badge + BPoint(0, -2.5f), badge + BPoint(0, 0.5f));
+            StrokeLine(badge + BPoint(0, 2.5f), badge + BPoint(0, 2.5f));
+            SetPenSize(1);
+        }
         SetDrawingMode(B_OP_COPY);
         return;
     }
@@ -218,6 +228,9 @@ void ToolButton::Draw(BRect update)
         case Icon::Home:
             line(-8, 1, 0, -7); line(0, -7, 8, 1);
             line(-5, -1, -5, 7); line(-5, 7, 5, 7); line(5, 7, 5, -1); break;
+        case Icon::Lock: case Icon::LockWarning:
+            StrokeArc(BRect(c.x - 4, c.y - 8, c.x + 4, c.y), 0, 180);
+            StrokeRoundRect(BRect(c.x - 6, c.y - 1, c.x + 6, c.y + 8), 2, 2); break;
     }
     SetPenSize(1);
     SetDrawingMode(B_OP_COPY);

@@ -353,7 +353,7 @@ def main():
                    'src/core/DevTools.cpp', 'src/core/DevToolsFormat.cpp', 'src/ui/SourceView.cpp',
                    'src/ui/DevToolsWindow.cpp', 'src/ui/DevToolsNetwork.cpp', 'src/ui/DevToolsConsole.cpp', 'src/ui/DevToolsStorage.cpp', 'src/ui/FaviconCache.cpp', 'src/ui/PreferencesWindow.cpp', 'src/ui/DefaultBrowser.cpp', 'src/ui/SharedProfile.cpp', 'src/ui/DirectWindowRescue.cpp',
                    'src/ui/BrowserWindow.cpp', 'src/ui/ProtocolHandlers.cpp', 'src/ui/AddressSuggestions.cpp', 'src/ui/SitePermissions.cpp', 'src/ui/Location.cpp', 'src/ui/Chrome.cpp', 'src/ui/ExtensionPermissionPrompt.cpp',
-                   'src/ui/ExtensionController.cpp', 'src/ui/ExtensionInstaller.cpp', 'src/ui/ExtensionManager.cpp', 'src/ui/ExtensionStoreDownload.cpp']
+                   'src/ui/ExtensionController.cpp', 'src/ui/ExtensionInstaller.cpp', 'src/ui/ExtensionManager.cpp', 'src/ui/ExtensionStoreDownload.cpp', 'src/ui/CertificateInfoWindow.cpp']
     objects = [work / pathlib.Path(source).with_suffix('.o') for source in sources]
     commands = [flags + ['-c', str(ROOT / source), '-o', str(output)]
                 for source, output in zip(sources, objects)]

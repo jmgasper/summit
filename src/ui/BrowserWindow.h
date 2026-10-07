@@ -180,6 +180,7 @@ private:
             bool asked = false;
         };
         std::optional<CertificateProblem> certificate { };
+        BMessage connectionCertificate;
 #endif
     };
 #if SUMMIT_MODERN_WEBKIT
@@ -189,6 +190,7 @@ private:
     // Asks whether to continue to a site whose certificate is not trusted.
     void AskAboutCertificate(Tab&);
     void CertificateDecision(const BMessage&);
+    void ShowCertificate();
     void WebKitFindResult(const BMessage& message);
     void WebKitCloseResult(const BMessage& message);
     void WebKitClosePrompt(const BMessage& message);
@@ -430,6 +432,12 @@ private:
     ToolButton* fBookmarkButton;
 #if SUMMIT_MODERN_WEBKIT
     BButton* fStoreInstallButton = nullptr;
+    ToolButton* fCertificateButton = nullptr;
+    BMessenger fCertificateWindow;
+    int64 fCertificateTab = 0;
+    uint64 fCertificateGeneration = 0;
+    bool fCertificateVerified = false;
+    bool fCertificateMixedContent = false;
 #endif
     std::unique_ptr<FaviconCache> fFavicons;
     // Bumped whenever history, bookmarks or icons change, so open built-in
