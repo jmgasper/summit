@@ -1,8 +1,9 @@
-# Bluetooth transport work
+# Web Bluetooth implementation and verification
 
-Issue #31 is in progress. These transport components do not yet expose
-`navigator.bluetooth`; the WebIDL, browser broker, chooser, and browser-level
-verification remain to be connected.
+Issue #31 is in progress. The engine patch now connects `navigator.bluetooth`,
+GATT objects, origin-scoped grants, the native chooser, and the air/OS transport.
+The new C++ classes and generated JavaScript bindings pass native syntax checks.
+The full engine build and browser integration suite are still pending.
 
 The engine patch contains portable Bluetooth UUID/advertisement parsing,
 an ATT client, and a GATT capability boundary in
@@ -47,10 +48,46 @@ for these scripted protocol checks.
 `tests/NativeBluetoothTests.cpp` builds with the native session, ATT and UUID
 sources plus `-lbe -lnetwork`. The X399 run found the adapter, cancelled an
 active scan, and completed a fresh scan. It saw 18 advertisers in that run.
-The selected ProtoArc EM11 NL was not advertising under its supplied name;
-physical connection and characteristic reads remain unverified.
+The selected ProtoArc EM11 NL is the workstation's active Bluetooth mouse.
+At the user's request it remains connected to its mouse driver. The dedicated
+`NativeBluetoothBusyTests.cpp --test-busy-input` check received `Busy` from the
+native transport and verified that the input driver's connected status and
+last-change timestamp stayed unchanged. It reads only the public live-status
+archive, never stored bond keys. Successful physical GATT connection and
+characteristic reads remain unverified.
 
 The native test accepts an exact device name. It scans without connecting by
 default. An additional `--connect` argument enables a connection to that
 matching device and reads available battery/model/manufacturer values. It
 does not read HID reports, standardized serial numbers, or unrelated devices.
+
+## Browser boundary and test tools
+
+The Window API includes availability, device selection, session grants,
+connect/disconnect/forget, service and included-service discovery,
+characteristic/descriptor reads and writes, and notification events. HTTPS
+or trusted localhost, a nonopaque origin, and the Bluetooth permissions policy
+are required. Device selection additionally requires user activation and a
+native permission response. The broker independently validates filters, grants,
+connection generations, handles, transfer sizes, and document lifetime.
+Navigating or closing a view, removing a frame, or exiting its renderer cancels
+pending selection and closes owned links. Cancellation identifies the exact
+native prompt so a late response cannot answer its replacement.
+
+Current scope is the top-level origin and same-origin children permitted by
+policy. Cross-origin delegation, persistent grants, Web Bluetooth scanning /
+advertisement observation APIs, and new pairing are not implemented. The
+native stack offers one LE link per controller; another client's link remains
+owned by that client. GATT services requiring a newly authenticated pairing
+are not usable through this backend.
+
+`tools/bench/bluetooth-fixture.py` serves the browser fixture on port 8775.
+`tests/ModernBluetoothTests.cpp` runs it through native WebKit and Inspector,
+with real pointer activation and the embedding permission messages. The
+integration fixture uses an explicitly simulated ATT peripheral when both
+`SUMMIT_BLUETOOTH_TEST_BACKEND=1` and `SUMMIT_ENABLE_INPUT_SYNTHESIS=1` are set
+in the host process. This mode replaces native scan results, uses reserved
+negative adapter identifiers, and never opens a hardware link. It retains the
+ordinary chooser, origin checks, IPC, GATT capability checks and ATT parser.
+Normal browser launches have neither test setting. Simulated-device results
+must not be reported as successful physical-device reads.

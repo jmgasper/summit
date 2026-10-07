@@ -38,6 +38,7 @@ public:
 private:
     void Ask(const BMessage&);
     void Answered(const BMessage&);
+    void Cancelled(const BMessage&);
     void ShowNotification(const BMessage&);
     void StartLocation(bool highAccuracy);
     void StopLocation();

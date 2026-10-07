@@ -4621,7 +4621,7 @@ index fb688cc015cd74b8fa16c7073b3a0c9f61f4aee2..4eee13adc7844b818bb6e27103cc16a1
  
  enum class UTextProviderContext {
 diff --git a/Source/WebCore/CMakeLists.txt b/Source/WebCore/CMakeLists.txt
-index 5f4a893485a9b9e1904cf2d342085ea83c5315c1..42a2729498acc39ba5270538f360377733d3bca0 100644
+index 5f4a893485a9b9e1904cf2d342085ea83c5315c1..532d2ecb8c914d265d946f3d3e1d8b1c06b12ef3 100644
 --- a/Source/WebCore/CMakeLists.txt
 +++ b/Source/WebCore/CMakeLists.txt
 @@ -74,6 +74,7 @@ set(WebCore_PRIVATE_INCLUDE_DIRECTORIES
@@ -4717,7 +4717,7 @@ index 5f4a893485a9b9e1904cf2d342085ea83c5315c1..42a2729498acc39ba5270538f3603777
      page/NavigatorCookies.idl
      page/NavigatorGlobalPrivacyControl.idl
      page/NavigatorID.idl
-@@ -2192,6 +2198,34 @@ if (USE_APPLE_INTERNAL_SDK)
+@@ -2192,6 +2198,55 @@ if (USE_APPLE_INTERNAL_SDK)
      )
  endif ()
  
@@ -4749,10 +4749,31 @@ index 5f4a893485a9b9e1904cf2d342085ea83c5315c1..42a2729498acc39ba5270538f3603777
 +    list(APPEND WebCore_PRIVATE_INCLUDE_DIRECTORIES "${WEBCORE_DIR}/Modules/webusb")
 +endif ()
 +
++if (ENABLE_WEB_BLUETOOTH)
++    list(APPEND WebCore_NON_SVG_IDL_FILES
++        Modules/webbluetooth/Bluetooth.idl
++        Modules/webbluetooth/BluetoothCharacteristicProperties.idl
++        Modules/webbluetooth/BluetoothDataFilterInit.idl
++        Modules/webbluetooth/BluetoothDevice.idl
++        Modules/webbluetooth/BluetoothLEScanFilterInit.idl
++        Modules/webbluetooth/BluetoothManufacturerDataFilterInit.idl
++        Modules/webbluetooth/BluetoothRemoteGATTCharacteristic.idl
++        Modules/webbluetooth/BluetoothRemoteGATTDescriptor.idl
++        Modules/webbluetooth/BluetoothRemoteGATTServer.idl
++        Modules/webbluetooth/BluetoothRemoteGATTService.idl
++        Modules/webbluetooth/BluetoothServiceDataFilterInit.idl
++        Modules/webbluetooth/BluetoothUUID.idl
++        Modules/webbluetooth/RequestDeviceOptions.idl
++        Modules/webbluetooth/ValueEvent.idl
++    )
++    list(APPEND WebCore_SUPPLEMENTAL_IDL_FILES Modules/webbluetooth/Navigator+Bluetooth.idl)
++    list(APPEND WebCore_PRIVATE_INCLUDE_DIRECTORIES "${WEBCORE_DIR}/Modules/webbluetooth" "${WEBCORE_DIR}/platform/bluetooth/haiku")
++endif ()
++
  set(WebCore_IDL_FILES
      ${WebCore_NON_SVG_IDL_FILES}
      ${WebCore_SVG_IDL_FILES}
-@@ -3221,6 +3255,19 @@ list(APPEND WebCore_SOURCES ${WebCore_DERIVED_SOURCES_DIR}/Namespace.cpp)
+@@ -3221,6 +3276,19 @@ list(APPEND WebCore_SOURCES ${WebCore_DERIVED_SOURCES_DIR}/Namespace.cpp)
  
  WEBKIT_COMPUTE_SOURCES(WebCore)
  
@@ -4772,7 +4793,7 @@ index 5f4a893485a9b9e1904cf2d342085ea83c5315c1..42a2729498acc39ba5270538f3603777
  WEBKIT_DEFINE_SUBTARGET_WITH_PREFIX(WebCore WebCoreJSBindings
      PREFIX WebCoreJSBindingsPrefix.h
      PREFIX_LANGUAGES CXX
-@@ -3251,6 +3298,7 @@ WEBKIT_DEFINE_SUBTARGET_WITH_PREFIX(WebCore WebCoreAVFoundation
+@@ -3251,6 +3319,7 @@ WEBKIT_DEFINE_SUBTARGET_WITH_PREFIX(WebCore WebCoreAVFoundation
  WEBKIT_ADD_PREFIX_HEADER(WebCore WebCorePrefix.h PREFIX_LANGUAGES CXX OBJCXX)
  
  list(APPEND WebCore_PRIVATE_FRAMEWORK_HEADERS
@@ -5238,6 +5259,1324 @@ index b29212ad5b98d332ff7c1db7814cb2575988ec5f..b6c50d32873f6c712e3409ca1c5e2ec5
      RefPtr<ArrayBuffer> m_largeBlob;
      String m_accessGroup;
  };
+diff --git a/Source/WebCore/Modules/webbluetooth/Bluetooth.cpp b/Source/WebCore/Modules/webbluetooth/Bluetooth.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..93a77c720f7800e61abb5a1fccce571d54122bde
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/Bluetooth.cpp
+@@ -0,0 +1,227 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#if ENABLE(WEB_BLUETOOTH)
++#include "Bluetooth.h"
++#include "BluetoothDevice.h"
++#include "BluetoothUUID.h"
++#include "Chrome.h"
++#include "ChromeClient.h"
++#include "ContextDestructionObserverInlines.h"
++#include "Document.h"
++#include "EventNames.h"
++#include "EventTargetInlines.h"
++#include "FrameDestructionObserverInlines.h"
++#include "JSDOMConvertInterface.h"
++#include "JSDOMConvertBoolean.h"
++#include "JSDOMConvertSequences.h"
++#include "JSDOMPromiseDeferred.h"
++#include "JSBluetoothDevice.h"
++#include "LocalDOMWindow.h"
++#include "LocalFrame.h"
++#include "Page.h"
++#include "PermissionsPolicy.h"
++#include "SecurityOrigin.h"
++#include "ValueEvent.h"
++#include <wtf/TZoneMallocInlines.h>
++namespace WebCore {
++WTF_MAKE_TZONE_ALLOCATED_IMPL(Bluetooth);
++Ref<Bluetooth> Bluetooth::create(Document& document)
++{
++    auto result = adoptRef(*new Bluetooth(document)); result->suspendIfNeeded(); return result;
++}
++Bluetooth::Bluetooth(Document& document) : ActiveDOMObject(&document), m_timer(*this, &Bluetooth::pollAvailability) { }
++Bluetooth::~Bluetooth() = default;
++Document* Bluetooth::document() const { return dynamicDowncast<Document>(scriptExecutionContext()); }
++static ExceptionCode errorCode(const String& name)
++{
++    if (name == "SecurityError"_s) return ExceptionCode::SecurityError;
++    if (name == "NotFoundError"_s) return ExceptionCode::NotFoundError;
++    if (name == "NotAllowedError"_s) return ExceptionCode::NotAllowedError;
++    if (name == "InvalidStateError"_s) return ExceptionCode::InvalidStateError;
++    if (name == "NotSupportedError"_s) return ExceptionCode::NotSupportedError;
++    if (name == "InvalidModificationError"_s) return ExceptionCode::InvalidModificationError;
++    if (name == "AbortError"_s) return ExceptionCode::AbortError;
++    if (name == "TypeError"_s) return ExceptionCode::TypeError;
++    return ExceptionCode::NetworkError;
++}
++void Bluetooth::perform(Document* document, Ref<JSON::Object>&& arguments, Vector<uint8_t>&& bytes, Completion&& completion)
++{
++    if (!document || !document->isFullyActive() || !document->frame() || !document->page()) {
++        completion(Exception { ExceptionCode::InvalidStateError, "The Bluetooth document is no longer active"_s }, { }, std::nullopt); return;
++    }
++    if (!document->isSecureContext() || document->securityOrigin().isOpaque()
++        || !PermissionsPolicy::isFeatureEnabled(PermissionsPolicy::Feature::Bluetooth, *document)) {
++        completion(Exception { ExceptionCode::SecurityError, "Bluetooth access is not allowed in this document"_s }, { }, std::nullopt); return;
++    }
++    if (bytes.size() > 512) { completion(Exception { ExceptionCode::InvalidModificationError, "Bluetooth attributes are limited to 512 bytes"_s }, { }, std::nullopt); return; }
++    arguments->setString("document"_s, document->identifier().toString());
++    auto json = arguments->toJSONString();
++    if (json.length() > 65536) { completion(Exception { ExceptionCode::TypeError, "Bluetooth request is too large"_s }, { }, std::nullopt); return; }
++    document->page()->chrome().client().bluetoothRequest(*document->frame(), json, WTF::move(bytes),
++        [document = WeakPtr { *document }, completion = WTF::move(completion)](String&& response, Vector<uint8_t>&& bytes) mutable {
++            if (!document || !document->isFullyActive()) { completion(Exception { ExceptionCode::AbortError, "The Bluetooth document was closed"_s }, { }, std::nullopt); return; }
++            auto value = JSON::Value::parseJSON(response); auto object = value ? value->asObject() : nullptr;
++            if (!object) { completion(Exception { ExceptionCode::NetworkError, "Invalid Bluetooth broker response"_s }, { }, std::nullopt); return; }
++            auto connected = object->getBoolean("connected"_s);
++            auto error = object->getString("error"_s);
++            if (!error.isEmpty()) { completion(Exception { errorCode(error), object->getString("message"_s) }, { }, connected); return; }
++            completion(object.releaseNonNull(), WTF::move(bytes), connected);
++        });
++}
++Ref<BluetoothDevice> Bluetooth::device(Ref<JSON::Object>&& data)
++{
++    m_devices.removeIf([](auto& entry) { return entry.value->forgotten(); });
++    auto id = data->getString("id"_s);
++    if (auto it = m_devices.find(id); it != m_devices.end()) return it->value.copyRef();
++    auto device = BluetoothDevice::create(*document(), *this, WTF::move(data));
++    m_devices.add(id, device.copyRef()); return device;
++}
++void Bluetooth::getAvailability(DOMPromiseDeferred<IDLBoolean>&& promise)
++{
++    auto* doc = document();
++    if (!doc || !PermissionsPolicy::isFeatureEnabled(PermissionsPolicy::Feature::Bluetooth, *doc, PermissionsPolicy::ShouldReportViolation::No)) { promise.resolve(false); return; }
++    auto args = JSON::Object::create(); args->setString("operation"_s, "getAvailability"_s);
++    perform(doc, WTF::move(args), { }, [this, protectedThis = Ref { *this }, promise = WTF::move(promise)](auto&& result, auto&&, auto) mutable {
++        if (result.hasException()) { auto error = result.releaseException(); if (error.code() == ExceptionCode::SecurityError) promise.resolve(false); else promise.reject(WTF::move(error)); return; }
++        bool available = result.releaseReturnValue()->getBoolean("available"_s).value_or(false);
++        m_available = available; promise.resolve(available);
++    });
++}
++void Bluetooth::getDevices(DOMPromiseDeferred<IDLSequence<IDLInterface<BluetoothDevice>>>&& promise)
++{
++    auto args = JSON::Object::create(); args->setString("operation"_s, "getDevices"_s);
++    perform(document(), WTF::move(args), { }, [this, protectedThis = Ref { *this }, promise = WTF::move(promise)](auto&& result, auto&&, auto) mutable {
++        if (result.hasException()) { promise.reject(result.releaseException()); return; }
++        Vector<Ref<BluetoothDevice>> devices;
++        if (auto array = result.releaseReturnValue()->getArray("devices"_s))
++            for (auto& value : *array) if (auto object = value->asObject()) devices.append(device(object.releaseNonNull()));
++        promise.resolve(WTF::move(devices));
++    });
++}
++
++static ExceptionOr<Ref<JSON::Array>> uuidArray(const Vector<BluetoothUUIDValue>& values, bool optional = false)
++{
++    if (values.size() > 128) return Exception { ExceptionCode::TypeError, "Too many Bluetooth services"_s };
++    auto result = JSON::Array::create();
++    for (auto& value : values) {
++        auto resolved = BluetoothUUID::resolve(BluetoothHaiku::UUIDKind::Service, value);
++        if (resolved.hasException()) return resolved.releaseException();
++        auto uuid = resolved.releaseReturnValue();
++        if (BluetoothHaiku::blocked(*BluetoothHaiku::UUID::parse(uuid.utf8().legacyCStringPointer()))) {
++            if (optional) continue;
++            return Exception { ExceptionCode::SecurityError, "This Bluetooth service is blocked"_s };
++        }
++        result->pushString(uuid);
++    }
++    return result;
++}
++static bool dataFilter(JSON::Object& object, const BluetoothDataFilterInit& data)
++{
++    if ((data.mask && (!data.dataPrefix || data.mask->byteLength() != data.dataPrefix->byteLength()))
++        || (data.dataPrefix && data.dataPrefix->byteLength() > 512)) return false;
++    for (auto entry : { std::pair { "dataPrefix"_s, &data.dataPrefix }, std::pair { "mask"_s, &data.mask } }) {
++        if (!*entry.second) continue;
++        auto array = JSON::Array::create(); for (auto byte : (*entry.second)->span()) array->pushInteger(byte);
++        object.setArray(entry.first, WTF::move(array));
++    }
++    return true;
++}
++static ExceptionOr<Ref<JSON::Array>> filtersJSON(const Vector<BluetoothLEScanFilterInit>& filters)
++{
++    if (filters.isEmpty() || filters.size() > 64) return Exception { ExceptionCode::TypeError, "Bluetooth filters must be a nonempty list"_s };
++    auto result = JSON::Array::create();
++    for (auto& filter : filters) {
++        auto object = JSON::Object::create();
++        if (!filter.services && filter.name.isNull() && filter.namePrefix.isNull() && !filter.manufacturerData && !filter.serviceData)
++            return Exception { ExceptionCode::TypeError, "A Bluetooth filter must constrain a device"_s };
++        if (filter.services) {
++            if (filter.services->isEmpty()) return Exception { ExceptionCode::TypeError, "A services filter must be nonempty"_s };
++            auto array = uuidArray(*filter.services); if (array.hasException()) return array.releaseException();
++            object->setArray("services"_s, array.releaseReturnValue());
++        }
++        if ((!filter.name.isNull() && filter.name.utf8().length() > 248) || (!filter.namePrefix.isNull() && (filter.namePrefix.isEmpty() || filter.namePrefix.utf8().length() > 248)))
++            return Exception { ExceptionCode::TypeError, "Invalid Bluetooth name filter"_s };
++        if (!filter.name.isNull()) object->setString("name"_s, filter.name);
++        if (!filter.namePrefix.isNull()) object->setString("namePrefix"_s, filter.namePrefix);
++        if (filter.manufacturerData) {
++            if (filter.manufacturerData->isEmpty() || filter.manufacturerData->size() > 64) return Exception { ExceptionCode::TypeError, "Invalid manufacturer-data filter"_s };
++            auto array = JSON::Array::create(); HashSet<uint32_t> companies;
++            for (auto& data : *filter.manufacturerData) {
++                if (!companies.add(uint32_t(data.companyIdentifier) + 1).isNewEntry) return Exception { ExceptionCode::TypeError, "Duplicate manufacturer-data filter"_s };
++                auto item = JSON::Object::create(); item->setInteger("companyIdentifier"_s, data.companyIdentifier);
++                if (!dataFilter(item, data)) return Exception { ExceptionCode::TypeError, "Invalid Bluetooth data prefix or mask"_s };
++                array->pushObject(WTF::move(item));
++            }
++            object->setArray("manufacturerData"_s, WTF::move(array));
++        }
++        if (filter.serviceData) {
++            if (filter.serviceData->isEmpty() || filter.serviceData->size() > 64) return Exception { ExceptionCode::TypeError, "Invalid service-data filter"_s };
++            auto array = JSON::Array::create(); HashSet<String> services;
++            for (auto& data : *filter.serviceData) {
++                auto resolved = BluetoothUUID::resolve(BluetoothHaiku::UUIDKind::Service, data.service);
++                if (resolved.hasException()) return resolved.releaseException();
++                auto uuid = resolved.releaseReturnValue();
++                if (BluetoothHaiku::blocked(*BluetoothHaiku::UUID::parse(uuid.utf8().legacyCStringPointer()))) return Exception { ExceptionCode::SecurityError, "This Bluetooth service is blocked"_s };
++                if (!services.add(uuid).isNewEntry) return Exception { ExceptionCode::TypeError, "Duplicate service-data filter"_s };
++                auto item = JSON::Object::create(); item->setString("service"_s, uuid);
++                if (!dataFilter(item, data)) return Exception { ExceptionCode::TypeError, "Invalid Bluetooth data prefix or mask"_s };
++                array->pushObject(WTF::move(item));
++            }
++            object->setArray("serviceData"_s, WTF::move(array));
++        }
++        result->pushObject(WTF::move(object));
++    }
++    return result;
++}
++void Bluetooth::requestDevice(RequestDeviceOptions&& options, DOMPromiseDeferred<IDLInterface<BluetoothDevice>>&& promise)
++{
++    if (options.acceptAllDevices == options.filters.has_value()) { promise.reject(ExceptionCode::TypeError, "Use filters or acceptAllDevices to choose Bluetooth devices"_s); return; }
++    if (options.acceptAllDevices && options.exclusionFilters) { promise.reject(ExceptionCode::TypeError, "Exclusion filters require inclusion filters"_s); return; }
++    auto* doc = document();
++    if (!doc || !doc->window() || !doc->window()->hasTransientActivation()) { promise.reject(ExceptionCode::SecurityError, "Choosing a Bluetooth device requires a user gesture"_s); return; }
++    auto args = JSON::Object::create(); args->setString("operation"_s, "requestDevice"_s); args->setBoolean("acceptAllDevices"_s, options.acceptAllDevices);
++    for (auto entry : { std::pair { "filters"_s, &options.filters }, std::pair { "exclusionFilters"_s, &options.exclusionFilters } }) {
++        if (!*entry.second) continue;
++        auto filters = filtersJSON(**entry.second);
++        if (filters.hasException()) { promise.reject(filters.releaseException()); return; }
++        args->setArray(entry.first, filters.releaseReturnValue());
++    }
++    auto services = uuidArray(options.optionalServices, true);
++    if (services.hasException()) { promise.reject(services.releaseException()); return; }
++    args->setArray("optionalServices"_s, services.releaseReturnValue());
++    perform(doc, WTF::move(args), { }, [this, protectedThis = Ref { *this }, promise = WTF::move(promise)](auto&& result, auto&&, auto) mutable {
++        if (result.hasException()) { promise.reject(result.releaseException()); return; }
++        auto data = result.releaseReturnValue()->getObject("device"_s);
++        if (!data) { promise.reject(ExceptionCode::NotFoundError, "No Bluetooth device was selected"_s); return; }
++        promise.resolve(device(data.releaseNonNull()));
++    });
++}
++void Bluetooth::eventListenersDidChange()
++{
++    if (!m_stopped && hasEventListeners(eventNames().availabilitychangedEvent)) { if (!m_timer.isActive()) m_timer.startRepeating(2_s); }
++    else m_timer.stop();
++}
++void Bluetooth::pollAvailability()
++{
++    if (m_stopped || m_polling) return;
++    m_polling = true;
++    auto args = JSON::Object::create(); args->setString("operation"_s, "getAvailability"_s);
++    perform(document(), WTF::move(args), { }, [this, protectedThis = Ref { *this }](auto&& result, auto&&, auto) {
++        m_polling = false;
++        if (m_stopped) return;
++        bool available = !result.hasException() && result.releaseReturnValue()->getBoolean("available"_s).value_or(false);
++        auto previous = m_available; m_available = available;
++        if (previous && *previous != available) dispatchEvent(ValueEvent::createAvailability(available));
++    });
++}
++bool Bluetooth::virtualHasPendingActivity() const { return !m_stopped && hasEventListeners(); }
++void Bluetooth::suspend(ReasonForSuspension) { m_timer.stop(); }
++void Bluetooth::resume() { eventListenersDidChange(); }
++void Bluetooth::stop()
++{
++    m_stopped = true; m_timer.stop();
++    for (auto& entry : m_devices) entry.value->disconnected(false);
++    m_devices.clear();
++}
++}
++#endif
+diff --git a/Source/WebCore/Modules/webbluetooth/Bluetooth.h b/Source/WebCore/Modules/webbluetooth/Bluetooth.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..30e37fcd4f62c1fee5cac92c9966fe67496d6197
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/Bluetooth.h
+@@ -0,0 +1,54 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#if ENABLE(WEB_BLUETOOTH)
++#include "ActiveDOMObject.h"
++#include "EventTarget.h"
++#include "EventTargetInterfaces.h"
++#include "ExceptionOr.h"
++#include "IDLTypes.h"
++#include "JSDOMPromiseDeferredForward.h"
++#include "RequestDeviceOptions.h"
++#include "Timer.h"
++#include <wtf/CompletionHandler.h>
++#include <wtf/HashMap.h>
++#include <wtf/JSONValues.h>
++#include <wtf/text/StringHash.h>
++namespace WebCore {
++class BluetoothDevice;
++class Document;
++class Bluetooth final : public RefCounted<Bluetooth>, public EventTarget, public ActiveDOMObject {
++    WTF_MAKE_TZONE_ALLOCATED(Bluetooth);
++public:
++    static Ref<Bluetooth> create(Document&);
++    ~Bluetooth();
++    void ref() const final { RefCounted::ref(); }
++    void deref() const final { RefCounted::deref(); }
++    USING_CAN_MAKE_WEAKPTR(EventTarget);
++    ScriptExecutionContext* scriptExecutionContext() const final { return ActiveDOMObject::scriptExecutionContext(); }
++    void getAvailability(DOMPromiseDeferred<IDLBoolean>&&);
++    void getDevices(DOMPromiseDeferred<IDLSequence<IDLInterface<BluetoothDevice>>>&&);
++    void requestDevice(RequestDeviceOptions&&, DOMPromiseDeferred<IDLInterface<BluetoothDevice>>&&);
++    BluetoothDevice* referringDevice() const { return nullptr; }
++    using Completion = CompletionHandler<void(ExceptionOr<Ref<JSON::Object>>&&, Vector<uint8_t>&&, std::optional<bool> connected)>;
++    static void perform(Document*, Ref<JSON::Object>&&, Vector<uint8_t>&&, Completion&&);
++private:
++    explicit Bluetooth(Document&);
++    EventTargetInterfaceType eventTargetInterface() const final { return EventTargetInterfaceType::Bluetooth; }
++    void refEventTarget() final { ref(); }
++    void derefEventTarget() final { deref(); }
++    void stop() final;
++    void suspend(ReasonForSuspension) final;
++    void resume() final;
++    void eventListenersDidChange() final;
++    bool virtualHasPendingActivity() const final;
++    void pollAvailability();
++    Ref<BluetoothDevice> device(Ref<JSON::Object>&&);
++    Document* document() const;
++    Timer m_timer;
++    HashMap<String, Ref<BluetoothDevice>> m_devices;
++    std::optional<bool> m_available;
++    bool m_polling { false }, m_stopped { false };
++};
++}
++SPECIALIZE_TYPE_TRAITS_EVENTTARGET(Bluetooth)
++#endif
+diff --git a/Source/WebCore/Modules/webbluetooth/Bluetooth.idl b/Source/WebCore/Modules/webbluetooth/Bluetooth.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..c2025e38f90e83426e2d1d3eec4759a0e7e841bd
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/Bluetooth.idl
+@@ -0,0 +1,11 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++[Conditional=WEB_BLUETOOTH, Exposed=Window, SecureContext, ActiveDOMObject]
++interface Bluetooth : EventTarget {
++    Promise<boolean> getAvailability();
++    attribute EventHandler onavailabilitychanged;
++    attribute EventHandler ongattserverdisconnected;
++    attribute EventHandler oncharacteristicvaluechanged;
++    [SameObject] readonly attribute BluetoothDevice? referringDevice;
++    Promise<sequence<BluetoothDevice>> getDevices();
++    Promise<BluetoothDevice> requestDevice(optional RequestDeviceOptions options = {});
++};
+diff --git a/Source/WebCore/Modules/webbluetooth/BluetoothCharacteristicProperties.h b/Source/WebCore/Modules/webbluetooth/BluetoothCharacteristicProperties.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..4130b35c1ecff8dde4678f082132a684cc4247f3
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/BluetoothCharacteristicProperties.h
+@@ -0,0 +1,2 @@
++#pragma once
++#include "BluetoothGATTObjects.h"
+diff --git a/Source/WebCore/Modules/webbluetooth/BluetoothCharacteristicProperties.idl b/Source/WebCore/Modules/webbluetooth/BluetoothCharacteristicProperties.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..b171b4018f1127558a1d013d920d052f00b26922
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/BluetoothCharacteristicProperties.idl
+@@ -0,0 +1,13 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++[Conditional=WEB_BLUETOOTH, Exposed=Window, SecureContext]
++interface BluetoothCharacteristicProperties {
++    readonly attribute boolean broadcast;
++    readonly attribute boolean read;
++    readonly attribute boolean writeWithoutResponse;
++    readonly attribute boolean write;
++    readonly attribute boolean notify;
++    readonly attribute boolean indicate;
++    readonly attribute boolean authenticatedSignedWrites;
++    readonly attribute boolean reliableWrite;
++    readonly attribute boolean writableAuxiliaries;
++};
+diff --git a/Source/WebCore/Modules/webbluetooth/BluetoothDataFilterInit.h b/Source/WebCore/Modules/webbluetooth/BluetoothDataFilterInit.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..46f5069b00ef07085a82afcaa661e5a4b100f5dd
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/BluetoothDataFilterInit.h
+@@ -0,0 +1,2 @@
++#pragma once
++#include "RequestDeviceOptions.h"
+diff --git a/Source/WebCore/Modules/webbluetooth/BluetoothDataFilterInit.idl b/Source/WebCore/Modules/webbluetooth/BluetoothDataFilterInit.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..43cd9b632c707093072857bae227c055959861f2
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/BluetoothDataFilterInit.idl
+@@ -0,0 +1,5 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++dictionary BluetoothDataFilterInit {
++    BufferSource dataPrefix;
++    BufferSource mask;
++};
+diff --git a/Source/WebCore/Modules/webbluetooth/BluetoothDevice.cpp b/Source/WebCore/Modules/webbluetooth/BluetoothDevice.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..bd4b6fd2d217a7be1feb7e46d5108d90547e6fca
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/BluetoothDevice.cpp
+@@ -0,0 +1,143 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#if ENABLE(WEB_BLUETOOTH)
++#include "BluetoothDevice.h"
++#include "BluetoothGATTObjects.h"
++#include "ContextDestructionObserverInlines.h"
++#include "Document.h"
++#include "EventDispatcher.h"
++#include "Event.h"
++#include "EventNames.h"
++#include "EventTargetInlines.h"
++#include "JSDOMConvertInterface.h"
++#include "JSDOMPromiseDeferred.h"
++#include "JSBluetoothRemoteGATTServer.h"
++#include <wtf/TZoneMallocInlines.h>
++namespace WebCore {
++WTF_MAKE_TZONE_ALLOCATED_IMPL(BluetoothDevice);
++Ref<BluetoothDevice> BluetoothDevice::create(Document& document, Bluetooth& bluetooth, Ref<JSON::Object>&& data)
++{
++    auto result = adoptRef(*new BluetoothDevice(document, bluetooth, WTF::move(data))); result->suspendIfNeeded(); return result;
++}
++BluetoothDevice::BluetoothDevice(Document& document, Bluetooth& bluetooth, Ref<JSON::Object>&& data)
++    : ActiveDOMObject(&document), m_id(data->getString("id"_s)), m_name(data->getString("name"_s)), m_bluetooth(bluetooth), m_timer(*this, &BluetoothDevice::poll) { }
++BluetoothDevice::~BluetoothDevice() = default;
++Document* BluetoothDevice::document() const { return dynamicDowncast<Document>(scriptExecutionContext()); }
++Ref<BluetoothRemoteGATTServer> BluetoothDevice::gatt()
++{
++    if (m_gatt) return Ref { *m_gatt };
++    auto server = BluetoothRemoteGATTServer::create(*this); m_gatt = server; return server;
++}
++Ref<JSON::Object> BluetoothDevice::arguments(ASCIILiteral operation) const
++{
++    auto args = JSON::Object::create(); args->setString("operation"_s, operation); args->setString("id"_s, m_id); args->setString("generation"_s, m_generation); return args;
++}
++void BluetoothDevice::connect(DOMPromiseDeferred<IDLInterface<BluetoothRemoteGATTServer>>&& promise)
++{
++    if (m_forgotten || m_stopped) { promise.reject(ExceptionCode::SecurityError, "This Bluetooth device is no longer permitted"_s); return; }
++    if (m_connected) { promise.resolve(gatt()); return; }
++    if (m_connecting) { promise.reject(ExceptionCode::InvalidStateError, "A Bluetooth connection is already pending"_s); return; }
++    m_connecting = true; auto attempt = ++m_connectAttempt;
++    Bluetooth::perform(document(), arguments("connect"_s), { }, [this, protectedThis = Ref { *this }, attempt, promise = WTF::move(promise)](auto&& result, auto&&, auto connected) mutable {
++        if (attempt != m_connectAttempt || m_stopped || m_forgotten) { promise.reject(ExceptionCode::AbortError, "The Bluetooth connection was cancelled"_s); return; }
++        m_connecting = false;
++        if (result.hasException()) { promise.reject(result.releaseException()); return; }
++        auto object = result.releaseReturnValue();
++        m_generation = object->getString("generation"_s);
++        if (!connected.value_or(false) || m_generation.isEmpty()) { promise.reject(ExceptionCode::NetworkError, "The Bluetooth server did not connect"_s); return; }
++        m_connected = true;
++        m_timer.startRepeating(100_ms);
++        promise.resolve(gatt());
++    });
++}
++void BluetoothDevice::disconnect()
++{
++    if (!m_connected && !m_connecting) return;
++    auto args = arguments("disconnect"_s);
++    Bluetooth::perform(document(), WTF::move(args), { }, [](auto&&, auto&&, auto) { });
++    disconnected();
++}
++void BluetoothDevice::disconnected(bool dispatch)
++{
++    bool wasConnected = m_connected;
++    ++m_connectAttempt; m_connected = false; m_connecting = false; m_generation = { }; m_timer.stop();
++    for (auto& entry : m_characteristics) if (entry.value) entry.value->disconnected();
++    m_characteristics.clear(); m_services.clear();
++    if (wasConnected && dispatch && !m_stopped) dispatchEvent(Event::create(eventNames().gattserverdisconnectedEvent, Event::CanBubble::Yes, Event::IsCancelable::No));
++}
++void BluetoothDevice::forget(DOMPromiseDeferred<void>&& promise)
++{
++    if (m_forgotten) { promise.resolve(); return; }
++    Bluetooth::perform(document(), arguments("forget"_s), { }, [this, protectedThis = Ref { *this }, promise = WTF::move(promise)](auto&& result, auto&&, auto) mutable {
++        if (result.hasException()) { promise.reject(result.releaseException()); return; }
++        m_forgotten = true; disconnected(); promise.resolve();
++    });
++}
++void BluetoothDevice::perform(const String& generation, Ref<JSON::Object>&& args, Vector<uint8_t>&& bytes, Bluetooth::Completion&& completion)
++{
++    if (!m_connected || m_stopped) { completion(Exception { ExceptionCode::NetworkError, "The Bluetooth server is disconnected"_s }, { }, false); return; }
++    if (generation.isEmpty() || generation != m_generation) { completion(Exception { ExceptionCode::InvalidStateError, "This GATT object belongs to a previous connection"_s }, { }, true); return; }
++    args->setString("generation"_s, generation);
++    Bluetooth::perform(document(), WTF::move(args), WTF::move(bytes),
++        [this, protectedThis = Ref { *this }, generation, completion = WTF::move(completion)](auto&& result, auto&& bytes, auto connected) mutable {
++            if (!m_connected || generation != m_generation) { completion(Exception { ExceptionCode::NetworkError, "The Bluetooth connection ended before the operation completed"_s }, { }, false); return; }
++            if (connected && !*connected) disconnected();
++            if (!result.hasException()) {
++                auto object = result.releaseReturnValue();
++                // Keep result storage independent: an event handler may navigate,
++                // disconnect or start another request while notifications bubble.
++                deliverNotifications(object);
++                if (!m_connected || generation != m_generation) { completion(Exception { ExceptionCode::NetworkError, "The Bluetooth connection ended"_s }, { }, false); return; }
++                completion(WTF::move(object), WTF::move(bytes), connected);
++            } else completion(result.releaseException(), WTF::move(bytes), connected);
++        });
++}
++Ref<BluetoothRemoteGATTService> BluetoothDevice::service(Ref<JSON::Object>&& data)
++{
++    unsigned handle = data->getInteger("handle"_s).value_or(0);
++    if (auto item = m_services.find(handle); item != m_services.end() && item->value) return Ref { *item->value };
++    auto value = BluetoothRemoteGATTService::create(*this, WTF::move(data)); m_services.set(handle, value); return value;
++}
++Ref<BluetoothRemoteGATTCharacteristic> BluetoothDevice::characteristic(BluetoothRemoteGATTService& service, Ref<JSON::Object>&& data)
++{
++    unsigned handle = data->getInteger("handle"_s).value_or(0);
++    if (auto item = m_characteristics.find(handle); item != m_characteristics.end() && item->value) return Ref { *item->value };
++    auto value = BluetoothRemoteGATTCharacteristic::create(service, WTF::move(data)); m_characteristics.set(handle, value); return value;
++}
++void BluetoothDevice::deliverNotifications(const JSON::Object& object)
++{
++    auto array = object.getArray("notifications"_s);
++    if (!array) return;
++    for (auto& value : *array) {
++        if (!m_connected || m_stopped) break;
++        auto notification = value->asObject(); if (!notification) continue;
++        unsigned handle = notification->getInteger("handle"_s).value_or(0);
++        auto found = m_characteristics.find(handle); if (found == m_characteristics.end() || !found->value) continue;
++        Ref characteristic = *found->value;
++        auto data = notification->getArray("value"_s); if (!data || data->length() > 512) continue;
++        Vector<uint8_t> bytes; for (auto& byte : *data) bytes.append(byte->asInteger().value_or(0));
++        characteristic->notification(WTF::move(bytes));
++    }
++}
++void BluetoothDevice::poll()
++{
++    if (m_polling || !m_connected || m_stopped) return;
++    m_polling = true;
++    auto generation = m_generation;
++    perform(generation, arguments("poll"_s), { }, [this, protectedThis = Ref { *this }, generation](auto&& result, auto&&, auto) {
++        m_polling = false;
++        if (result.hasException() && generation == m_generation) disconnected();
++    });
++}
++void BluetoothDevice::dispatchEvent(Event& event)
++{
++    Ref protectedThis { *this }; RefPtr parent = m_bluetooth.get();
++    if (parent) EventDispatcher::dispatchEvent(std::initializer_list<EventTarget*> { this, parent.get() }, event);
++    else EventTarget::dispatchEvent(event);
++}
++void BluetoothDevice::stop() { m_stopped = true; disconnected(false); }
++void BluetoothDevice::suspend(ReasonForSuspension) { disconnect(); }
++void BluetoothDevice::resume() { }
++bool BluetoothDevice::virtualHasPendingActivity() const { return !m_stopped && (m_connected || m_connecting); }
++}
++#endif
+diff --git a/Source/WebCore/Modules/webbluetooth/BluetoothDevice.h b/Source/WebCore/Modules/webbluetooth/BluetoothDevice.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..db0811db2d8b943999537ac113a28d166dbe6785
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/BluetoothDevice.h
+@@ -0,0 +1,58 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#if ENABLE(WEB_BLUETOOTH)
++#include "Bluetooth.h"
++#include <wtf/WeakPtr.h>
++namespace WebCore {
++class BluetoothRemoteGATTServer;
++class BluetoothRemoteGATTService;
++class BluetoothRemoteGATTCharacteristic;
++class BluetoothDevice final : public RefCounted<BluetoothDevice>, public EventTarget, public ActiveDOMObject {
++    WTF_MAKE_TZONE_ALLOCATED(BluetoothDevice);
++public:
++    static Ref<BluetoothDevice> create(Document&, Bluetooth&, Ref<JSON::Object>&&);
++    ~BluetoothDevice();
++    void ref() const final { RefCounted::ref(); }
++    void deref() const final { RefCounted::deref(); }
++    USING_CAN_MAKE_WEAKPTR(EventTarget);
++    ScriptExecutionContext* scriptExecutionContext() const final { return ActiveDOMObject::scriptExecutionContext(); }
++    String id() const { return m_id; }
++    String name() const { return m_name; }
++    Ref<BluetoothRemoteGATTServer> gatt();
++    void forget(DOMPromiseDeferred<void>&&);
++    bool forgotten() const { return m_forgotten; }
++    bool connected() const { return m_connected; }
++    String generation() const { return m_generation; }
++    Document* document() const;
++    Bluetooth* bluetooth() const { return m_bluetooth.get(); }
++    void connect(DOMPromiseDeferred<IDLInterface<BluetoothRemoteGATTServer>>&&);
++    void disconnect();
++    void disconnected(bool dispatch = true);
++    Ref<JSON::Object> arguments(ASCIILiteral) const;
++    void perform(const String& generation, Ref<JSON::Object>&&, Vector<uint8_t>&&, Bluetooth::Completion&&);
++    Ref<BluetoothRemoteGATTService> service(Ref<JSON::Object>&&);
++    Ref<BluetoothRemoteGATTCharacteristic> characteristic(BluetoothRemoteGATTService&, Ref<JSON::Object>&&);
++    void dispatchEvent(Event&) final;
++private:
++    BluetoothDevice(Document&, Bluetooth&, Ref<JSON::Object>&&);
++    EventTargetInterfaceType eventTargetInterface() const final { return EventTargetInterfaceType::BluetoothDevice; }
++    void refEventTarget() final { ref(); }
++    void derefEventTarget() final { deref(); }
++    void stop() final;
++    void suspend(ReasonForSuspension) final;
++    void resume() final;
++    bool virtualHasPendingActivity() const final;
++    void poll();
++    void deliverNotifications(const JSON::Object&);
++    String m_id, m_name, m_generation;
++    WeakPtr<Bluetooth, WeakPtrImplWithEventTargetData> m_bluetooth;
++    WeakPtr<BluetoothRemoteGATTServer> m_gatt;
++    HashMap<unsigned, WeakPtr<BluetoothRemoteGATTService, WeakPtrImplWithEventTargetData>> m_services;
++    HashMap<unsigned, WeakPtr<BluetoothRemoteGATTCharacteristic, WeakPtrImplWithEventTargetData>> m_characteristics;
++    Timer m_timer;
++    uint64_t m_connectAttempt { 0 };
++    bool m_connected { false }, m_connecting { false }, m_forgotten { false }, m_stopped { false }, m_polling { false };
++};
++}
++SPECIALIZE_TYPE_TRAITS_EVENTTARGET(BluetoothDevice)
++#endif
+diff --git a/Source/WebCore/Modules/webbluetooth/BluetoothDevice.idl b/Source/WebCore/Modules/webbluetooth/BluetoothDevice.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..165124f370ef11b1f87de5cc2a913a76e8a6ef0c
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/BluetoothDevice.idl
+@@ -0,0 +1,10 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++[Conditional=WEB_BLUETOOTH, Exposed=Window, SecureContext, ActiveDOMObject]
++interface BluetoothDevice : EventTarget {
++    readonly attribute DOMString id;
++    readonly attribute DOMString? name;
++    [SameObject] readonly attribute BluetoothRemoteGATTServer? gatt;
++    attribute EventHandler ongattserverdisconnected;
++    attribute EventHandler oncharacteristicvaluechanged;
++    Promise<undefined> forget();
++};
+diff --git a/Source/WebCore/Modules/webbluetooth/BluetoothGATTObjects.cpp b/Source/WebCore/Modules/webbluetooth/BluetoothGATTObjects.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..fb9961976559acd5f6f06e66e5f957945d40f429
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/BluetoothGATTObjects.cpp
+@@ -0,0 +1,222 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#if ENABLE(WEB_BLUETOOTH)
++#include "BluetoothGATTObjects.h"
++#include "ContextDestructionObserverInlines.h"
++#include "Document.h"
++#include "EventDispatcher.h"
++#include "Event.h"
++#include "EventNames.h"
++#include "EventTargetInlines.h"
++#include "JSDOMConvertBufferSource.h"
++#include "JSDOMConvertInterface.h"
++#include "JSDOMConvertNullable.h"
++#include "JSDOMConvertSequences.h"
++#include "JSDOMGlobalObjectInlines.h"
++#include "JSDOMPromiseDeferred.h"
++#include "JSBluetoothRemoteGATTServer.h"
++#include "JSBluetoothRemoteGATTService.h"
++#include "JSBluetoothRemoteGATTCharacteristic.h"
++#include "JSBluetoothRemoteGATTDescriptor.h"
++#include "JSValueInWrappedObjectInlines.h"
++#include "ScriptWrappableInlines.h"
++#include <JavaScriptCore/JSCInlines.h>
++#include <wtf/TZoneMallocInlines.h>
++namespace WebCore {
++WTF_MAKE_TZONE_ALLOCATED_IMPL(BluetoothRemoteGATTService);
++WTF_MAKE_TZONE_ALLOCATED_IMPL(BluetoothRemoteGATTDescriptor);
++WTF_MAKE_TZONE_ALLOCATED_IMPL(BluetoothRemoteGATTCharacteristic);
++
++template<typename T, bool single, typename Factory, typename Promise>
++static void discover(BluetoothDevice& device, const String& generation, Ref<JSON::Object>&& args,
++    std::optional<BluetoothUUIDValue>&& query, BluetoothHaiku::UUIDKind kind, Factory&& factory, Promise&& promise)
++{
++    if (query) {
++        auto resolved = BluetoothUUID::resolve(kind, *query);
++        if (resolved.hasException()) { promise.reject(resolved.releaseException()); return; }
++        args->setString("uuid"_s, resolved.releaseReturnValue());
++    }
++    device.perform(generation, WTF::move(args), { }, [factory = std::forward<Factory>(factory), promise = WTF::move(promise)](auto&& result, auto&&, auto) mutable {
++        if (result.hasException()) { promise.reject(result.releaseException()); return; }
++        Vector<Ref<T>> items;
++        if (auto values = result.releaseReturnValue()->getArray("items"_s)) {
++            for (auto& value : *values) if (auto object = value->asObject()) items.append(factory(object.releaseNonNull()));
++        }
++        if constexpr (single) {
++            if (items.isEmpty()) promise.reject(ExceptionCode::NotFoundError, "The requested GATT attribute was not found"_s);
++            else promise.resolve(items[0].copyRef());
++        } else promise.resolve(WTF::move(items));
++    });
++}
++void BluetoothRemoteGATTServer::connect(DOMPromiseDeferred<IDLInterface<BluetoothRemoteGATTServer>>&& promise) { m_device->connect(WTF::move(promise)); }
++void BluetoothRemoteGATTServer::getPrimaryService(BluetoothUUIDValue&& query, DOMPromiseDeferred<IDLInterface<BluetoothRemoteGATTService>>&& promise)
++{
++    discover<BluetoothRemoteGATTService, true>(m_device, m_device->generation(), m_device->arguments("services"_s), WTF::move(query), BluetoothHaiku::UUIDKind::Service,
++        [device = m_device.copyRef()](auto&& data) { return device->service(WTF::move(data)); }, WTF::move(promise));
++}
++void BluetoothRemoteGATTServer::getPrimaryServices(std::optional<BluetoothUUIDValue>&& query, DOMPromiseDeferred<IDLSequence<IDLInterface<BluetoothRemoteGATTService>>>&& promise)
++{
++    discover<BluetoothRemoteGATTService, false>(m_device, m_device->generation(), m_device->arguments("services"_s), WTF::move(query), BluetoothHaiku::UUIDKind::Service,
++        [device = m_device.copyRef()](auto&& data) { return device->service(WTF::move(data)); }, WTF::move(promise));
++}
++BluetoothRemoteGATTService::BluetoothRemoteGATTService(BluetoothDevice& device, Ref<JSON::Object>&& data)
++    : m_device(device), m_uuid(data->getString("uuid"_s)), m_generation(device.generation()), m_handle(data->getInteger("handle"_s).value_or(0)), m_primary(data->getBoolean("primary"_s).value_or(true)) { }
++void BluetoothRemoteGATTService::getCharacteristic(BluetoothUUIDValue&& query, DOMPromiseDeferred<IDLInterface<BluetoothRemoteGATTCharacteristic>>&& promise)
++{
++    auto args = m_device->arguments("characteristics"_s); args->setInteger("handle"_s, m_handle);
++    discover<BluetoothRemoteGATTCharacteristic, true>(m_device, m_generation, WTF::move(args), WTF::move(query), BluetoothHaiku::UUIDKind::Characteristic,
++        [self = Ref { *this }](auto&& data) { return self->device().characteristic(self, WTF::move(data)); }, WTF::move(promise));
++}
++void BluetoothRemoteGATTService::getCharacteristics(std::optional<BluetoothUUIDValue>&& query, DOMPromiseDeferred<IDLSequence<IDLInterface<BluetoothRemoteGATTCharacteristic>>>&& promise)
++{
++    auto args = m_device->arguments("characteristics"_s); args->setInteger("handle"_s, m_handle);
++    discover<BluetoothRemoteGATTCharacteristic, false>(m_device, m_generation, WTF::move(args), WTF::move(query), BluetoothHaiku::UUIDKind::Characteristic,
++        [self = Ref { *this }](auto&& data) { return self->device().characteristic(self, WTF::move(data)); }, WTF::move(promise));
++}
++void BluetoothRemoteGATTService::getIncludedService(BluetoothUUIDValue&& query, DOMPromiseDeferred<IDLInterface<BluetoothRemoteGATTService>>&& promise)
++{
++    auto args = m_device->arguments("includedServices"_s); args->setInteger("handle"_s, m_handle);
++    discover<BluetoothRemoteGATTService, true>(m_device, m_generation, WTF::move(args), WTF::move(query), BluetoothHaiku::UUIDKind::Service,
++        [device = m_device.copyRef()](auto&& data) { return device->service(WTF::move(data)); }, WTF::move(promise));
++}
++void BluetoothRemoteGATTService::getIncludedServices(std::optional<BluetoothUUIDValue>&& query, DOMPromiseDeferred<IDLSequence<IDLInterface<BluetoothRemoteGATTService>>>&& promise)
++{
++    auto args = m_device->arguments("includedServices"_s); args->setInteger("handle"_s, m_handle);
++    discover<BluetoothRemoteGATTService, false>(m_device, m_generation, WTF::move(args), WTF::move(query), BluetoothHaiku::UUIDKind::Service,
++        [device = m_device.copyRef()](auto&& data) { return device->service(WTF::move(data)); }, WTF::move(promise));
++}
++void BluetoothRemoteGATTService::dispatchEvent(Event& event)
++{
++    Ref protectedThis { *this }; RefPtr bluetooth = m_device->bluetooth();
++    if (bluetooth) EventDispatcher::dispatchEvent(std::initializer_list<EventTarget*> { this, m_device.ptr(), bluetooth.get() }, event);
++    else EventDispatcher::dispatchEvent(std::initializer_list<EventTarget*> { this, m_device.ptr() }, event);
++}
++
++Ref<BluetoothRemoteGATTCharacteristic> BluetoothRemoteGATTCharacteristic::create(BluetoothRemoteGATTService& service, Ref<JSON::Object>&& data)
++{
++    auto result = adoptRef(*new BluetoothRemoteGATTCharacteristic(service, WTF::move(data))); result->suspendIfNeeded(); return result;
++}
++BluetoothRemoteGATTCharacteristic::BluetoothRemoteGATTCharacteristic(BluetoothRemoteGATTService& service, Ref<JSON::Object>&& data)
++    : ActiveDOMObject(service.scriptExecutionContext()), m_service(service)
++    , m_properties(BluetoothCharacteristicProperties::create(data->getInteger("properties"_s).value_or(0), data->getInteger("extendedProperties"_s).value_or(0)))
++    , m_uuid(data->getString("uuid"_s)), m_handle(data->getInteger("handle"_s).value_or(0)) { }
++BluetoothRemoteGATTCharacteristic::~BluetoothRemoteGATTCharacteristic() = default;
++Ref<JSON::Object> BluetoothRemoteGATTCharacteristic::arguments(ASCIILiteral operation) const
++{
++    auto args = m_service->device().arguments(operation); args->setInteger("handle"_s, m_handle); args->setBoolean("descriptor"_s, false); return args;
++}
++void BluetoothRemoteGATTCharacteristic::getDescriptor(BluetoothUUIDValue&& query, DOMPromiseDeferred<IDLInterface<BluetoothRemoteGATTDescriptor>>&& promise)
++{
++    discover<BluetoothRemoteGATTDescriptor, true>(m_service->device(), m_service->generation(), arguments("descriptors"_s), WTF::move(query), BluetoothHaiku::UUIDKind::Descriptor,
++        [self = Ref { *this }](auto&& data) {
++            unsigned handle = data->getInteger("handle"_s).value_or(0);
++            if (auto it = self->m_descriptors.find(handle); it != self->m_descriptors.end() && it->value) return Ref { *it->value };
++            auto descriptor = BluetoothRemoteGATTDescriptor::create(self, WTF::move(data)); self->m_descriptors.set(handle, descriptor); return descriptor;
++        }, WTF::move(promise));
++}
++void BluetoothRemoteGATTCharacteristic::getDescriptors(std::optional<BluetoothUUIDValue>&& query, DOMPromiseDeferred<IDLSequence<IDLInterface<BluetoothRemoteGATTDescriptor>>>&& promise)
++{
++    discover<BluetoothRemoteGATTDescriptor, false>(m_service->device(), m_service->generation(), arguments("descriptors"_s), WTF::move(query), BluetoothHaiku::UUIDKind::Descriptor,
++        [self = Ref { *this }](auto&& data) {
++            unsigned handle = data->getInteger("handle"_s).value_or(0);
++            if (auto it = self->m_descriptors.find(handle); it != self->m_descriptors.end() && it->value) return Ref { *it->value };
++            auto descriptor = BluetoothRemoteGATTDescriptor::create(self, WTF::move(data)); self->m_descriptors.set(handle, descriptor); return descriptor;
++        }, WTF::move(promise));
++}
++
++template<typename Wrapper> static JSC::JSValue cachedDataView(JSC::JSGlobalObject& global, const Wrapper& wrapper)
++{
++    auto scope = DECLARE_THROW_SCOPE(global.vm());
++    return cachedPropertyValue(scope, global, wrapper, wrapper.wrapped().cachedValue(), [&](JSC::ThrowScope&) {
++        return toJS<IDLNullable<IDLDataView>>(global, *wrapper.realm(), wrapper.wrapped().value());
++    });
++}
++JSC::JSValue JSBluetoothRemoteGATTCharacteristic::value(JSC::JSGlobalObject& global) const { return cachedDataView(global, *this); }
++JSC::JSValue JSBluetoothRemoteGATTDescriptor::value(JSC::JSGlobalObject& global) const { return cachedDataView(global, *this); }
++template<typename Visitor> void JSBluetoothRemoteGATTCharacteristic::visitAdditionalChildrenInGCThread(Visitor& visitor) { wrapped().cachedValue().visitInGCThread(visitor); }
++template<typename Visitor> void JSBluetoothRemoteGATTDescriptor::visitAdditionalChildrenInGCThread(Visitor& visitor) { wrapped().cachedValue().visitInGCThread(visitor); }
++DEFINE_VISIT_ADDITIONAL_CHILDREN_IN_GC_THREAD(JSBluetoothRemoteGATTCharacteristic);
++DEFINE_VISIT_ADDITIONAL_CHILDREN_IN_GC_THREAD(JSBluetoothRemoteGATTDescriptor);
++template<typename T, typename Wrapper> static void resolveValue(T& object, Ref<DeferredPromise>&& promise)
++{
++    promise->resolveWithCallback([&](JSDOMGlobalObject& global) {
++        auto value = toJS<IDLInterface<T>>(global, global, object);
++        auto* wrapper = dynamicDowncast<Wrapper>(value);
++        return wrapper ? cachedDataView(global, *wrapper) : JSC::jsNull();
++    });
++}
++void BluetoothRemoteGATTCharacteristic::setValue(Vector<uint8_t>&& bytes)
++{ m_value = JSC::DataView::create(JSC::ArrayBuffer::create(bytes.span())); m_cachedValue.clear(); }
++void BluetoothRemoteGATTCharacteristic::readValue(Ref<DeferredPromise>&& promise)
++{
++    m_service->device().perform(m_service->generation(), arguments("read"_s), { }, [self = Ref { *this }, promise = WTF::move(promise)](auto&& result, auto&& bytes, auto) mutable {
++        if (result.hasException()) { promise->reject(result.releaseException()); return; }
++        self->setValue(WTF::move(bytes));
++        // Resolve with the same cached DataView exposed by .value, including
++        // when a listener reads that property during the value-change event.
++        resolveValue<BluetoothRemoteGATTCharacteristic, JSBluetoothRemoteGATTCharacteristic>(self, WTF::move(promise));
++        self->dispatchEvent(Event::create(eventNames().characteristicvaluechangedEvent, Event::CanBubble::Yes, Event::IsCancelable::No));
++    });
++}
++void BluetoothRemoteGATTCharacteristic::write(BufferSource&& value, bool response, DOMPromiseDeferred<void>&& promise)
++{
++    if (value.byteLength() > 512) { promise.reject(ExceptionCode::InvalidModificationError, "Bluetooth attributes are limited to 512 bytes"_s); return; }
++    auto args = arguments("write"_s); args->setBoolean("response"_s, response);
++    m_service->device().perform(m_service->generation(), WTF::move(args), Vector<uint8_t>(value.span()), [self = Ref { *this }, value = Vector<uint8_t>(value.span()), promise = WTF::move(promise)](auto&& result, auto&&, auto) mutable {
++        if (result.hasException()) { promise.reject(result.releaseException()); return; }
++        self->setValue(WTF::move(value)); promise.resolve();
++    });
++}
++void BluetoothRemoteGATTCharacteristic::writeValue(BufferSource&& value, DOMPromiseDeferred<void>&& promise) { write(WTF::move(value), m_properties->write(), WTF::move(promise)); }
++void BluetoothRemoteGATTCharacteristic::writeValueWithResponse(BufferSource&& value, DOMPromiseDeferred<void>&& promise) { write(WTF::move(value), true, WTF::move(promise)); }
++void BluetoothRemoteGATTCharacteristic::writeValueWithoutResponse(BufferSource&& value, DOMPromiseDeferred<void>&& promise) { write(WTF::move(value), false, WTF::move(promise)); }
++void BluetoothRemoteGATTCharacteristic::setNotifications(bool enabled, DOMPromiseDeferred<IDLInterface<BluetoothRemoteGATTCharacteristic>>&& promise)
++{
++    auto args = arguments("notifications"_s); args->setBoolean("enable"_s, enabled);
++    m_service->device().perform(m_service->generation(), WTF::move(args), { }, [self = Ref { *this }, enabled, promise = WTF::move(promise)](auto&& result, auto&&, auto) mutable {
++        if (result.hasException()) { promise.reject(result.releaseException()); return; }
++        self->m_notifying = enabled; promise.resolve(self.copyRef());
++    });
++}
++void BluetoothRemoteGATTCharacteristic::startNotifications(DOMPromiseDeferred<IDLInterface<BluetoothRemoteGATTCharacteristic>>&& promise) { setNotifications(true, WTF::move(promise)); }
++void BluetoothRemoteGATTCharacteristic::stopNotifications(DOMPromiseDeferred<IDLInterface<BluetoothRemoteGATTCharacteristic>>&& promise) { setNotifications(false, WTF::move(promise)); }
++void BluetoothRemoteGATTCharacteristic::notification(Vector<uint8_t>&& bytes)
++{
++    if (!m_notifying || !m_service->device().connected()) return;
++    setValue(WTF::move(bytes)); dispatchEvent(Event::create(eventNames().characteristicvaluechangedEvent, Event::CanBubble::Yes, Event::IsCancelable::No));
++}
++void BluetoothRemoteGATTCharacteristic::dispatchEvent(Event& event)
++{
++    Ref protectedThis { *this }; RefPtr bluetooth = m_service->device().bluetooth();
++    if (bluetooth) EventDispatcher::dispatchEvent(std::initializer_list<EventTarget*> { this, m_service.ptr(), &m_service->device(), bluetooth.get() }, event);
++    else EventDispatcher::dispatchEvent(std::initializer_list<EventTarget*> { this, m_service.ptr(), &m_service->device() }, event);
++}
++
++BluetoothRemoteGATTDescriptor::BluetoothRemoteGATTDescriptor(BluetoothRemoteGATTCharacteristic& characteristic, Ref<JSON::Object>&& data)
++    : m_characteristic(characteristic), m_uuid(data->getString("uuid"_s)), m_handle(data->getInteger("handle"_s).value_or(0)) { }
++Ref<JSON::Object> BluetoothRemoteGATTDescriptor::arguments(ASCIILiteral operation) const
++{
++    auto args = m_characteristic->service().device().arguments(operation); args->setInteger("handle"_s, m_handle); args->setBoolean("descriptor"_s, true); return args;
++}
++void BluetoothRemoteGATTDescriptor::setValue(Vector<uint8_t>&& bytes)
++{ m_value = JSC::DataView::create(JSC::ArrayBuffer::create(bytes.span())); m_cachedValue.clear(); }
++void BluetoothRemoteGATTDescriptor::readValue(Ref<DeferredPromise>&& promise)
++{
++    auto& service = m_characteristic->service();
++    service.device().perform(service.generation(), arguments("read"_s), { }, [self = Ref { *this }, promise = WTF::move(promise)](auto&& result, auto&& bytes, auto) mutable {
++        if (result.hasException()) { promise->reject(result.releaseException()); return; }
++        self->setValue(WTF::move(bytes));
++        resolveValue<BluetoothRemoteGATTDescriptor, JSBluetoothRemoteGATTDescriptor>(self, WTF::move(promise));
++    });
++}
++void BluetoothRemoteGATTDescriptor::writeValue(BufferSource&& value, DOMPromiseDeferred<void>&& promise)
++{
++    if (value.byteLength() > 512) { promise.reject(ExceptionCode::InvalidModificationError, "Bluetooth attributes are limited to 512 bytes"_s); return; }
++    auto& service = m_characteristic->service(); auto args = arguments("write"_s); args->setBoolean("response"_s, true);
++    service.device().perform(service.generation(), WTF::move(args), Vector<uint8_t>(value.span()), [self = Ref { *this }, value = Vector<uint8_t>(value.span()), promise = WTF::move(promise)](auto&& result, auto&&, auto) mutable {
++        if (result.hasException()) { promise.reject(result.releaseException()); return; }
++        self->setValue(WTF::move(value)); promise.resolve();
++    });
++}
++}
++#endif
+diff --git a/Source/WebCore/Modules/webbluetooth/BluetoothGATTObjects.h b/Source/WebCore/Modules/webbluetooth/BluetoothGATTObjects.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..c4e52140c7a6575438dac77e7b8424ec08be3ae0
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/BluetoothGATTObjects.h
+@@ -0,0 +1,141 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#if ENABLE(WEB_BLUETOOTH)
++#include "BluetoothDevice.h"
++#include "BluetoothUUID.h"
++#include "BufferSource.h"
++#include "JSValueInWrappedObject.h"
++#include <JavaScriptCore/DataView.h>
++namespace WebCore {
++class BluetoothRemoteGATTDescriptor;
++class BluetoothRemoteGATTServer final : public RefCounted<BluetoothRemoteGATTServer>, public CanMakeWeakPtr<BluetoothRemoteGATTServer> {
++public:
++    static Ref<BluetoothRemoteGATTServer> create(BluetoothDevice& device) { return adoptRef(*new BluetoothRemoteGATTServer(device)); }
++    BluetoothDevice& device() const { return m_device; }
++    bool connected() const { return m_device->connected(); }
++    void connect(DOMPromiseDeferred<IDLInterface<BluetoothRemoteGATTServer>>&&);
++    void disconnect() { m_device->disconnect(); }
++    void getPrimaryService(BluetoothUUIDValue&&, DOMPromiseDeferred<IDLInterface<BluetoothRemoteGATTService>>&&);
++    void getPrimaryServices(std::optional<BluetoothUUIDValue>&&, DOMPromiseDeferred<IDLSequence<IDLInterface<BluetoothRemoteGATTService>>>&&);
++private:
++    explicit BluetoothRemoteGATTServer(BluetoothDevice& device) : m_device(device) { }
++    Ref<BluetoothDevice> m_device;
++};
++class BluetoothRemoteGATTService final : public RefCounted<BluetoothRemoteGATTService>, public EventTarget {
++    WTF_MAKE_TZONE_ALLOCATED(BluetoothRemoteGATTService);
++public:
++    static Ref<BluetoothRemoteGATTService> create(BluetoothDevice& device, Ref<JSON::Object>&& data)
++    { return adoptRef(*new BluetoothRemoteGATTService(device, WTF::move(data))); }
++    void ref() const { RefCounted::ref(); }
++    void deref() const { RefCounted::deref(); }
++    USING_CAN_MAKE_WEAKPTR(EventTarget);
++    ScriptExecutionContext* scriptExecutionContext() const final { return m_device->scriptExecutionContext(); }
++    BluetoothDevice& device() const { return m_device; }
++    String uuid() const { return m_uuid; }
++    bool isPrimary() const { return m_primary; }
++    unsigned handle() const { return m_handle; }
++    String generation() const { return m_generation; }
++    void getCharacteristic(BluetoothUUIDValue&&, DOMPromiseDeferred<IDLInterface<BluetoothRemoteGATTCharacteristic>>&&);
++    void getCharacteristics(std::optional<BluetoothUUIDValue>&&, DOMPromiseDeferred<IDLSequence<IDLInterface<BluetoothRemoteGATTCharacteristic>>>&&);
++    void getIncludedService(BluetoothUUIDValue&&, DOMPromiseDeferred<IDLInterface<BluetoothRemoteGATTService>>&&);
++    void getIncludedServices(std::optional<BluetoothUUIDValue>&&, DOMPromiseDeferred<IDLSequence<IDLInterface<BluetoothRemoteGATTService>>>&&);
++    void dispatchEvent(Event&) final;
++private:
++    BluetoothRemoteGATTService(BluetoothDevice&, Ref<JSON::Object>&&);
++    EventTargetInterfaceType eventTargetInterface() const final { return EventTargetInterfaceType::BluetoothRemoteGATTService; }
++    void refEventTarget() final { ref(); }
++    void derefEventTarget() final { deref(); }
++    Ref<BluetoothDevice> m_device;
++    String m_uuid, m_generation;
++    unsigned m_handle;
++    bool m_primary;
++};
++class BluetoothCharacteristicProperties final : public RefCounted<BluetoothCharacteristicProperties> {
++public:
++    static Ref<BluetoothCharacteristicProperties> create(uint8_t bits, uint16_t extended)
++    { return adoptRef(*new BluetoothCharacteristicProperties(bits, extended)); }
++    bool broadcast() const { return m_bits & 1; }
++    bool read() const { return m_bits & 2; }
++    bool writeWithoutResponse() const { return m_bits & 4; }
++    bool write() const { return m_bits & 8; }
++    bool notify() const { return m_bits & 16; }
++    bool indicate() const { return m_bits & 32; }
++    bool authenticatedSignedWrites() const { return m_bits & 64; }
++    bool reliableWrite() const { return m_extended & 1; }
++    bool writableAuxiliaries() const { return m_extended & 2; }
++private:
++    BluetoothCharacteristicProperties(uint8_t bits, uint16_t extended) : m_bits(bits), m_extended(extended) { }
++    uint8_t m_bits;
++    uint16_t m_extended;
++};
++class BluetoothRemoteGATTCharacteristic final : public RefCounted<BluetoothRemoteGATTCharacteristic>, public EventTarget, public ActiveDOMObject {
++    WTF_MAKE_TZONE_ALLOCATED(BluetoothRemoteGATTCharacteristic);
++public:
++    static Ref<BluetoothRemoteGATTCharacteristic> create(BluetoothRemoteGATTService&, Ref<JSON::Object>&&);
++    ~BluetoothRemoteGATTCharacteristic();
++    void ref() const final { RefCounted::ref(); }
++    void deref() const final { RefCounted::deref(); }
++    USING_CAN_MAKE_WEAKPTR(EventTarget);
++    ScriptExecutionContext* scriptExecutionContext() const final { return ActiveDOMObject::scriptExecutionContext(); }
++    BluetoothRemoteGATTService& service() const { return m_service; }
++    String uuid() const { return m_uuid; }
++    unsigned handle() const { return m_handle; }
++    BluetoothCharacteristicProperties& properties() const { return m_properties; }
++    JSC::DataView* value() const { return m_value.get(); }
++    JSValueInWrappedObject& cachedValue() { return m_cachedValue; }
++    void getDescriptor(BluetoothUUIDValue&&, DOMPromiseDeferred<IDLInterface<BluetoothRemoteGATTDescriptor>>&&);
++    void getDescriptors(std::optional<BluetoothUUIDValue>&&, DOMPromiseDeferred<IDLSequence<IDLInterface<BluetoothRemoteGATTDescriptor>>>&&);
++    void readValue(Ref<DeferredPromise>&&);
++    void writeValue(BufferSource&&, DOMPromiseDeferred<void>&&);
++    void writeValueWithResponse(BufferSource&&, DOMPromiseDeferred<void>&&);
++    void writeValueWithoutResponse(BufferSource&&, DOMPromiseDeferred<void>&&);
++    void startNotifications(DOMPromiseDeferred<IDLInterface<BluetoothRemoteGATTCharacteristic>>&&);
++    void stopNotifications(DOMPromiseDeferred<IDLInterface<BluetoothRemoteGATTCharacteristic>>&&);
++    void notification(Vector<uint8_t>&&);
++    void disconnected() { m_notifying = false; }
++    void dispatchEvent(Event&) final;
++private:
++    BluetoothRemoteGATTCharacteristic(BluetoothRemoteGATTService&, Ref<JSON::Object>&&);
++    EventTargetInterfaceType eventTargetInterface() const final { return EventTargetInterfaceType::BluetoothRemoteGATTCharacteristic; }
++    void refEventTarget() final { ref(); }
++    void derefEventTarget() final { deref(); }
++    void stop() final { m_notifying = false; }
++    bool virtualHasPendingActivity() const final { return m_notifying && m_service->device().connected(); }
++    void write(BufferSource&&, bool response, DOMPromiseDeferred<void>&&);
++    void setNotifications(bool, DOMPromiseDeferred<IDLInterface<BluetoothRemoteGATTCharacteristic>>&&);
++    Ref<JSON::Object> arguments(ASCIILiteral) const;
++    void setValue(Vector<uint8_t>&&);
++    Ref<BluetoothRemoteGATTService> m_service;
++    Ref<BluetoothCharacteristicProperties> m_properties;
++    String m_uuid;
++    unsigned m_handle;
++    RefPtr<JSC::DataView> m_value;
++    JSValueInWrappedObject m_cachedValue;
++    HashMap<unsigned, WeakPtr<BluetoothRemoteGATTDescriptor>> m_descriptors;
++    bool m_notifying { false };
++};
++class BluetoothRemoteGATTDescriptor final : public RefCounted<BluetoothRemoteGATTDescriptor>, public CanMakeWeakPtr<BluetoothRemoteGATTDescriptor>, public ScriptWrappable {
++    WTF_MAKE_TZONE_ALLOCATED(BluetoothRemoteGATTDescriptor);
++public:
++    static Ref<BluetoothRemoteGATTDescriptor> create(BluetoothRemoteGATTCharacteristic& characteristic, Ref<JSON::Object>&& data)
++    { return adoptRef(*new BluetoothRemoteGATTDescriptor(characteristic, WTF::move(data))); }
++    BluetoothRemoteGATTCharacteristic& characteristic() const { return m_characteristic; }
++    String uuid() const { return m_uuid; }
++    JSC::DataView* value() const { return m_value.get(); }
++    JSValueInWrappedObject& cachedValue() { return m_cachedValue; }
++    void readValue(Ref<DeferredPromise>&&);
++    void writeValue(BufferSource&&, DOMPromiseDeferred<void>&&);
++private:
++    void setValue(Vector<uint8_t>&&);
++    BluetoothRemoteGATTDescriptor(BluetoothRemoteGATTCharacteristic&, Ref<JSON::Object>&&);
++    Ref<JSON::Object> arguments(ASCIILiteral) const;
++    Ref<BluetoothRemoteGATTCharacteristic> m_characteristic;
++    String m_uuid;
++    unsigned m_handle;
++    RefPtr<JSC::DataView> m_value;
++    JSValueInWrappedObject m_cachedValue;
++};
++}
++SPECIALIZE_TYPE_TRAITS_EVENTTARGET(BluetoothRemoteGATTService)
++SPECIALIZE_TYPE_TRAITS_EVENTTARGET(BluetoothRemoteGATTCharacteristic)
++#endif
+diff --git a/Source/WebCore/Modules/webbluetooth/BluetoothLEScanFilterInit.h b/Source/WebCore/Modules/webbluetooth/BluetoothLEScanFilterInit.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..46f5069b00ef07085a82afcaa661e5a4b100f5dd
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/BluetoothLEScanFilterInit.h
+@@ -0,0 +1,2 @@
++#pragma once
++#include "RequestDeviceOptions.h"
+diff --git a/Source/WebCore/Modules/webbluetooth/BluetoothLEScanFilterInit.idl b/Source/WebCore/Modules/webbluetooth/BluetoothLEScanFilterInit.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..5801137da156611d99d028b44c773c748a5fd756
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/BluetoothLEScanFilterInit.idl
+@@ -0,0 +1,8 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++dictionary BluetoothLEScanFilterInit {
++    sequence<(DOMString or unsigned long)> services;
++    DOMString name;
++    DOMString namePrefix;
++    sequence<BluetoothManufacturerDataFilterInit> manufacturerData;
++    sequence<BluetoothServiceDataFilterInit> serviceData;
++};
+diff --git a/Source/WebCore/Modules/webbluetooth/BluetoothManufacturerDataFilterInit.h b/Source/WebCore/Modules/webbluetooth/BluetoothManufacturerDataFilterInit.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..46f5069b00ef07085a82afcaa661e5a4b100f5dd
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/BluetoothManufacturerDataFilterInit.h
+@@ -0,0 +1,2 @@
++#pragma once
++#include "RequestDeviceOptions.h"
+diff --git a/Source/WebCore/Modules/webbluetooth/BluetoothManufacturerDataFilterInit.idl b/Source/WebCore/Modules/webbluetooth/BluetoothManufacturerDataFilterInit.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..8d013be4e46a1b24355f01d8d27e2560604c0057
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/BluetoothManufacturerDataFilterInit.idl
+@@ -0,0 +1,4 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++dictionary BluetoothManufacturerDataFilterInit : BluetoothDataFilterInit {
++    required unsigned short companyIdentifier;
++};
+diff --git a/Source/WebCore/Modules/webbluetooth/BluetoothRemoteGATTCharacteristic.h b/Source/WebCore/Modules/webbluetooth/BluetoothRemoteGATTCharacteristic.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..4130b35c1ecff8dde4678f082132a684cc4247f3
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/BluetoothRemoteGATTCharacteristic.h
+@@ -0,0 +1,2 @@
++#pragma once
++#include "BluetoothGATTObjects.h"
+diff --git a/Source/WebCore/Modules/webbluetooth/BluetoothRemoteGATTCharacteristic.idl b/Source/WebCore/Modules/webbluetooth/BluetoothRemoteGATTCharacteristic.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..20028c629738f6980daeb67a9712f7ed92f056d7
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/BluetoothRemoteGATTCharacteristic.idl
+@@ -0,0 +1,17 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++[Conditional=WEB_BLUETOOTH, Exposed=Window, SecureContext, JSCustomMarkFunction, ActiveDOMObject]
++interface BluetoothRemoteGATTCharacteristic : EventTarget {
++    [SameObject] readonly attribute BluetoothRemoteGATTService service;
++    readonly attribute DOMString uuid;
++    [SameObject] readonly attribute BluetoothCharacteristicProperties properties;
++    [CustomGetter] readonly attribute DataView? value;
++    attribute EventHandler oncharacteristicvaluechanged;
++    Promise<BluetoothRemoteGATTDescriptor> getDescriptor((DOMString or unsigned long) descriptor);
++    Promise<sequence<BluetoothRemoteGATTDescriptor>> getDescriptors(optional (DOMString or unsigned long) descriptor);
++    Promise<DataView> readValue();
++    Promise<undefined> writeValue(BufferSource value);
++    Promise<undefined> writeValueWithResponse(BufferSource value);
++    Promise<undefined> writeValueWithoutResponse(BufferSource value);
++    Promise<BluetoothRemoteGATTCharacteristic> startNotifications();
++    Promise<BluetoothRemoteGATTCharacteristic> stopNotifications();
++};
+diff --git a/Source/WebCore/Modules/webbluetooth/BluetoothRemoteGATTDescriptor.h b/Source/WebCore/Modules/webbluetooth/BluetoothRemoteGATTDescriptor.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..4130b35c1ecff8dde4678f082132a684cc4247f3
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/BluetoothRemoteGATTDescriptor.h
+@@ -0,0 +1,2 @@
++#pragma once
++#include "BluetoothGATTObjects.h"
+diff --git a/Source/WebCore/Modules/webbluetooth/BluetoothRemoteGATTDescriptor.idl b/Source/WebCore/Modules/webbluetooth/BluetoothRemoteGATTDescriptor.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..03d7f07e493ca491f5926b2108ebe5e67b511ca0
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/BluetoothRemoteGATTDescriptor.idl
+@@ -0,0 +1,9 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++[Conditional=WEB_BLUETOOTH, Exposed=Window, SecureContext, JSCustomMarkFunction]
++interface BluetoothRemoteGATTDescriptor {
++    [SameObject] readonly attribute BluetoothRemoteGATTCharacteristic characteristic;
++    readonly attribute DOMString uuid;
++    [CustomGetter] readonly attribute DataView? value;
++    Promise<DataView> readValue();
++    Promise<undefined> writeValue(BufferSource value);
++};
+diff --git a/Source/WebCore/Modules/webbluetooth/BluetoothRemoteGATTServer.h b/Source/WebCore/Modules/webbluetooth/BluetoothRemoteGATTServer.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..4130b35c1ecff8dde4678f082132a684cc4247f3
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/BluetoothRemoteGATTServer.h
+@@ -0,0 +1,2 @@
++#pragma once
++#include "BluetoothGATTObjects.h"
+diff --git a/Source/WebCore/Modules/webbluetooth/BluetoothRemoteGATTServer.idl b/Source/WebCore/Modules/webbluetooth/BluetoothRemoteGATTServer.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..083e00e57d273f828d8097b433b08390b663ed22
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/BluetoothRemoteGATTServer.idl
+@@ -0,0 +1,10 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++[Conditional=WEB_BLUETOOTH, Exposed=Window, SecureContext]
++interface BluetoothRemoteGATTServer {
++    [SameObject] readonly attribute BluetoothDevice device;
++    readonly attribute boolean connected;
++    Promise<BluetoothRemoteGATTServer> connect();
++    undefined disconnect();
++    Promise<BluetoothRemoteGATTService> getPrimaryService((DOMString or unsigned long) service);
++    Promise<sequence<BluetoothRemoteGATTService>> getPrimaryServices(optional (DOMString or unsigned long) service);
++};
+diff --git a/Source/WebCore/Modules/webbluetooth/BluetoothRemoteGATTService.h b/Source/WebCore/Modules/webbluetooth/BluetoothRemoteGATTService.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..4130b35c1ecff8dde4678f082132a684cc4247f3
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/BluetoothRemoteGATTService.h
+@@ -0,0 +1,2 @@
++#pragma once
++#include "BluetoothGATTObjects.h"
+diff --git a/Source/WebCore/Modules/webbluetooth/BluetoothRemoteGATTService.idl b/Source/WebCore/Modules/webbluetooth/BluetoothRemoteGATTService.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..8b25faa10b34091abeedc23232a9b941bf823450
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/BluetoothRemoteGATTService.idl
+@@ -0,0 +1,12 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++[Conditional=WEB_BLUETOOTH, Exposed=Window, SecureContext]
++interface BluetoothRemoteGATTService : EventTarget {
++    [SameObject] readonly attribute BluetoothDevice device;
++    readonly attribute DOMString uuid;
++    readonly attribute boolean isPrimary;
++    attribute EventHandler oncharacteristicvaluechanged;
++    Promise<BluetoothRemoteGATTCharacteristic> getCharacteristic((DOMString or unsigned long) characteristic);
++    Promise<sequence<BluetoothRemoteGATTCharacteristic>> getCharacteristics(optional (DOMString or unsigned long) characteristic);
++    Promise<BluetoothRemoteGATTService> getIncludedService((DOMString or unsigned long) service);
++    Promise<sequence<BluetoothRemoteGATTService>> getIncludedServices(optional (DOMString or unsigned long) service);
++};
+diff --git a/Source/WebCore/Modules/webbluetooth/BluetoothServiceDataFilterInit.h b/Source/WebCore/Modules/webbluetooth/BluetoothServiceDataFilterInit.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..46f5069b00ef07085a82afcaa661e5a4b100f5dd
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/BluetoothServiceDataFilterInit.h
+@@ -0,0 +1,2 @@
++#pragma once
++#include "RequestDeviceOptions.h"
+diff --git a/Source/WebCore/Modules/webbluetooth/BluetoothServiceDataFilterInit.idl b/Source/WebCore/Modules/webbluetooth/BluetoothServiceDataFilterInit.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..4ad7cfd18cd52db090ad68d3961b2d2606552709
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/BluetoothServiceDataFilterInit.idl
+@@ -0,0 +1,4 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++dictionary BluetoothServiceDataFilterInit : BluetoothDataFilterInit {
++    required (DOMString or unsigned long) service;
++};
+diff --git a/Source/WebCore/Modules/webbluetooth/BluetoothUUID.cpp b/Source/WebCore/Modules/webbluetooth/BluetoothUUID.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..ff16753df51a1265ac5c2beec27d9f6246704893
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/BluetoothUUID.cpp
+@@ -0,0 +1,16 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#if ENABLE(WEB_BLUETOOTH)
++#include "BluetoothUUID.h"
++namespace WebCore {
++String BluetoothUUID::canonicalUUID(uint32_t value)
++{ return String::fromLatin1(BluetoothHaiku::UUID::alias(value).string()); }
++ExceptionOr<String> BluetoothUUID::resolve(BluetoothHaiku::UUIDKind kind, const BluetoothUUIDValue& value)
++{
++    if (auto* alias = std::get_if<uint32_t>(&value)) return canonicalUUID(*alias);
++    auto& name = std::get<String>(value);
++    if (auto uuid = BluetoothHaiku::namedUUID(kind, name.utf8().legacyCStringPointer())) return String::fromLatin1(uuid->string());
++    return Exception { ExceptionCode::TypeError, "Invalid Bluetooth UUID or assigned name"_s };
++}
++}
++#endif
+diff --git a/Source/WebCore/Modules/webbluetooth/BluetoothUUID.h b/Source/WebCore/Modules/webbluetooth/BluetoothUUID.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..65196b470fa161da20c22515a5bd6e4b6612e7c9
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/BluetoothUUID.h
+@@ -0,0 +1,18 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#if ENABLE(WEB_BLUETOOTH)
++#include "BluetoothTypesHaiku.h"
++#include "ExceptionOr.h"
++#include "RequestDeviceOptions.h"
++#include <wtf/RefCounted.h>
++namespace WebCore {
++class BluetoothUUID final : public RefCounted<BluetoothUUID> {
++public:
++    static ExceptionOr<String> getService(BluetoothUUIDValue&& value) { return resolve(BluetoothHaiku::UUIDKind::Service, value); }
++    static ExceptionOr<String> getCharacteristic(BluetoothUUIDValue&& value) { return resolve(BluetoothHaiku::UUIDKind::Characteristic, value); }
++    static ExceptionOr<String> getDescriptor(BluetoothUUIDValue&& value) { return resolve(BluetoothHaiku::UUIDKind::Descriptor, value); }
++    static String canonicalUUID(uint32_t);
++    static ExceptionOr<String> resolve(BluetoothHaiku::UUIDKind, const BluetoothUUIDValue&);
++};
++}
++#endif
+diff --git a/Source/WebCore/Modules/webbluetooth/BluetoothUUID.idl b/Source/WebCore/Modules/webbluetooth/BluetoothUUID.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..4c08a1563de82819d270741abc3bb7f3e3d43b67
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/BluetoothUUID.idl
+@@ -0,0 +1,8 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++[Conditional=WEB_BLUETOOTH, Exposed=Window]
++interface BluetoothUUID {
++    [RaisesException] static DOMString getService((DOMString or unsigned long) name);
++    [RaisesException] static DOMString getCharacteristic((DOMString or unsigned long) name);
++    [RaisesException] static DOMString getDescriptor((DOMString or unsigned long) name);
++    static DOMString canonicalUUID([EnforceRange] unsigned long alias);
++};
+diff --git a/Source/WebCore/Modules/webbluetooth/Navigator+Bluetooth.idl b/Source/WebCore/Modules/webbluetooth/Navigator+Bluetooth.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..67f3798d65d2703b22fda36245d4825a800ea4c4
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/Navigator+Bluetooth.idl
+@@ -0,0 +1,4 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++[Conditional=WEB_BLUETOOTH] partial interface Navigator {
++    [SecureContext, SameObject] readonly attribute Bluetooth bluetooth;
++};
+diff --git a/Source/WebCore/Modules/webbluetooth/RequestDeviceOptions.h b/Source/WebCore/Modules/webbluetooth/RequestDeviceOptions.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..e22c69547b0a29c8c099fe89e6f88bd90acaa293
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/RequestDeviceOptions.h
+@@ -0,0 +1,24 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#include "BufferSource.h"
++#include <wtf/Vector.h>
++#include <wtf/Variant.h>
++#include <wtf/text/WTFString.h>
++namespace WebCore {
++using BluetoothUUIDValue = Variant<String, uint32_t>;
++struct BluetoothDataFilterInit { std::optional<BufferSource> dataPrefix, mask; };
++struct BluetoothManufacturerDataFilterInit : BluetoothDataFilterInit { uint16_t companyIdentifier; };
++struct BluetoothServiceDataFilterInit : BluetoothDataFilterInit { BluetoothUUIDValue service; };
++struct BluetoothLEScanFilterInit {
++    std::optional<Vector<BluetoothUUIDValue>> services;
++    String name, namePrefix;
++    std::optional<Vector<BluetoothManufacturerDataFilterInit>> manufacturerData;
++    std::optional<Vector<BluetoothServiceDataFilterInit>> serviceData;
++};
++struct RequestDeviceOptions {
++    std::optional<Vector<BluetoothLEScanFilterInit>> filters, exclusionFilters;
++    Vector<BluetoothUUIDValue> optionalServices;
++    Vector<uint16_t> optionalManufacturerData;
++    bool acceptAllDevices { false };
++};
++}
+diff --git a/Source/WebCore/Modules/webbluetooth/RequestDeviceOptions.idl b/Source/WebCore/Modules/webbluetooth/RequestDeviceOptions.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..2119bbcf17ed7d15ecd78504ed556815a31e12d2
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/RequestDeviceOptions.idl
+@@ -0,0 +1,8 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++dictionary RequestDeviceOptions {
++    sequence<BluetoothLEScanFilterInit> filters;
++    sequence<BluetoothLEScanFilterInit> exclusionFilters;
++    sequence<(DOMString or unsigned long)> optionalServices = [];
++    sequence<unsigned short> optionalManufacturerData = [];
++    boolean acceptAllDevices = false;
++};
+diff --git a/Source/WebCore/Modules/webbluetooth/ValueEvent.cpp b/Source/WebCore/Modules/webbluetooth/ValueEvent.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..4845e3b1a31b5ca555c9e5bd97db8f5d733ed976
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/ValueEvent.cpp
+@@ -0,0 +1,32 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#if ENABLE(WEB_BLUETOOTH)
++#include "ValueEvent.h"
++#include "EventNames.h"
++#include "JSValueEvent.h"
++#include "JSValueInWrappedObjectInlines.h"
++#include <JavaScriptCore/JSCInlines.h>
++#include <wtf/TZoneMallocInlines.h>
++namespace WebCore {
++WTF_MAKE_TZONE_ALLOCATED_IMPL(ValueEvent);
++ValueEvent::ValueEvent(JSC::JSGlobalObject& global, const AtomString& type, Init&& init, IsTrusted trusted)
++    : Event(EventInterfaceType::ValueEvent, type, WTF::move(init), trusted), m_value(global, init.value) { }
++ValueEvent::ValueEvent(bool value)
++    : Event(EventInterfaceType::ValueEvent, eventNames().availabilitychangedEvent, CanBubble::No, IsCancelable::No, IsComposed::No), m_nativeValue(value) { }
++Ref<ValueEvent> ValueEvent::create(JSC::JSGlobalObject& global, const AtomString& type, Init&& init, IsTrusted trusted)
++{ return adoptRef(*new ValueEvent(global, type, WTF::move(init), trusted)); }
++Ref<ValueEvent> ValueEvent::createAvailability(bool value) { return adoptRef(*new ValueEvent(value)); }
++JSC::JSValue JSValueEvent::value(JSC::JSGlobalObject& global) const
++{
++    if (auto value = wrapped().nativeValue()) return JSC::jsBoolean(*value);
++    auto scope = DECLARE_THROW_SCOPE(global.vm());
++    return cachedPropertyValue(scope, global, *this, wrapped().cachedValue(), [this](JSC::ThrowScope&) { return wrapped().value().getValue(JSC::jsNull()); });
++}
++template<typename Visitor> void JSValueEvent::visitAdditionalChildrenInGCThread(Visitor& visitor)
++{
++    wrapped().value().visitInGCThread(visitor);
++    wrapped().cachedValue().visitInGCThread(visitor);
++}
++DEFINE_VISIT_ADDITIONAL_CHILDREN_IN_GC_THREAD(JSValueEvent);
++}
++#endif
+diff --git a/Source/WebCore/Modules/webbluetooth/ValueEvent.h b/Source/WebCore/Modules/webbluetooth/ValueEvent.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..3aad87601d7f7649e7bde4c41bb36b4a373d9c3e
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/ValueEvent.h
+@@ -0,0 +1,23 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#if ENABLE(WEB_BLUETOOTH)
++#include "Event.h"
++#include "JSValueInWrappedObject.h"
++namespace WebCore {
++class ValueEvent final : public Event {
++    WTF_MAKE_TZONE_ALLOCATED(ValueEvent);
++public:
++    struct Init : EventInit { JSC::JSValue value; };
++    static Ref<ValueEvent> create(JSC::JSGlobalObject&, const AtomString&, Init&&, IsTrusted = IsTrusted::No);
++    static Ref<ValueEvent> createAvailability(bool);
++    const JSValueInWrappedObject& value() const { return m_value; }
++    JSValueInWrappedObject& cachedValue() { return m_cachedValue; }
++    std::optional<bool> nativeValue() const { return m_nativeValue; }
++private:
++    ValueEvent(JSC::JSGlobalObject&, const AtomString&, Init&&, IsTrusted);
++    explicit ValueEvent(bool);
++    JSValueInWrappedObject m_value, m_cachedValue;
++    std::optional<bool> m_nativeValue;
++};
++}
++#endif
+diff --git a/Source/WebCore/Modules/webbluetooth/ValueEvent.idl b/Source/WebCore/Modules/webbluetooth/ValueEvent.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..aeebe3c9455a656d658d90ae8ce86efc9238ecb8
+--- /dev/null
++++ b/Source/WebCore/Modules/webbluetooth/ValueEvent.idl
+@@ -0,0 +1,9 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++[Conditional=WEB_BLUETOOTH, Exposed=Window, SecureContext, JSCustomMarkFunction]
++interface ValueEvent : Event {
++    [CallWith=CurrentGlobalObject] constructor([AtomString] DOMString type, optional ValueEventInit initDict = {});
++    [CustomGetter] readonly attribute any value;
++};
++dictionary ValueEventInit : EventInit {
++    any value = null;
++};
 diff --git a/Source/WebCore/Modules/webusb/Navigator+USB.idl b/Source/WebCore/Modules/webusb/Navigator+USB.idl
 new file mode 100644
 index 0000000000000000000000000000000000000000..5317e62f9b5e744486d130bdcfab2cdbdcde8532
@@ -6922,7 +8261,7 @@ index 0000000000000000000000000000000000000000..48e19a5957df4c1ae60378dd9a84cbe4
 +/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
 +enum USBTransferStatus { "ok", "stall", "babble" };
 diff --git a/Source/WebCore/PlatformHaiku.cmake b/Source/WebCore/PlatformHaiku.cmake
-index 16a88804a1baa39ccdd9fc2870b6e2524d941298..38bc1806391b3aed5c3ce78851d2eede03726f6b 100644
+index 16a88804a1baa39ccdd9fc2870b6e2524d941298..727b6fe41c4a5fc27c2615a4d11583fe1c12bff2 100644
 --- a/Source/WebCore/PlatformHaiku.cmake
 +++ b/Source/WebCore/PlatformHaiku.cmake
 @@ -1,52 +1,351 @@
@@ -7283,7 +8622,7 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..38bc1806391b3aed5c3ce78851d2eede
    textencoding
    translation
    ${WEBP_LIBRARIES}
-@@ -61,6 +360,222 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
+@@ -61,6 +360,235 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
    ${SQLITE_INCLUDE_DIR}
    ${WEBP_INCLUDE_DIRS}
    ${ZLIB_INCLUDE_DIRS}
@@ -7506,6 +8845,19 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..38bc1806391b3aed5c3ce78851d2eede
 +    COMPILE_OPTIONS "-fexceptions"
 +    SKIP_PRECOMPILE_HEADERS ON
 +)
++
++if (ENABLE_WEB_BLUETOOTH)
++    list(APPEND WebCore_SOURCES
++        Modules/webbluetooth/Bluetooth.cpp
++        Modules/webbluetooth/BluetoothDevice.cpp
++        Modules/webbluetooth/BluetoothGATTObjects.cpp
++        Modules/webbluetooth/BluetoothUUID.cpp
++        Modules/webbluetooth/ValueEvent.cpp
++        platform/bluetooth/haiku/BluetoothTypesHaiku.cpp
++        platform/bluetooth/haiku/BluetoothATTClientHaiku.cpp
++        platform/bluetooth/haiku/BluetoothGATTHaiku.cpp
++    )
++endif ()
 diff --git a/Source/WebCore/Sources.txt b/Source/WebCore/Sources.txt
 index 1b478eff878aef4108b0f4f828eabe3132f24131..697e681b98110eb40583e3af9064481fdf8dd784 100644
 --- a/Source/WebCore/Sources.txt
@@ -8006,10 +9358,10 @@ index 0000000000000000000000000000000000000000..2cbba0878aaad1a4ce5264b3482e4e18
 +
 +#endif // PLATFORM(HAIKU)
 diff --git a/Source/WebCore/bindings/js/WebCoreBuiltinNames.h b/Source/WebCore/bindings/js/WebCoreBuiltinNames.h
-index 66c6dcd879e16649249c84dc22d28c5d2da8e20c..7e4ab5b086b4109e31ccb1d423be73bc7c64d7eb 100644
+index 66c6dcd879e16649249c84dc22d28c5d2da8e20c..938048ec313ffa6e6c6ac60253832b8c948493eb 100644
 --- a/Source/WebCore/bindings/js/WebCoreBuiltinNames.h
 +++ b/Source/WebCore/bindings/js/WebCoreBuiltinNames.h
-@@ -484,6 +484,19 @@ namespace WebCore {
+@@ -484,6 +484,28 @@ namespace WebCore {
      macro(TrustedTypePolicyFactory) \
      macro(TrustedTypePolicyOptions) \
      macro(URLPattern) \
@@ -8017,6 +9369,15 @@ index 66c6dcd879e16649249c84dc22d28c5d2da8e20c..7e4ab5b086b4109e31ccb1d423be73bc
 +    macro(USBAlternateInterface) \
 +    macro(USBConfiguration) \
 +    macro(USBConnectionEvent) \
++    macro(Bluetooth) \
++    macro(BluetoothDevice) \
++    macro(BluetoothRemoteGATTServer) \
++    macro(BluetoothRemoteGATTService) \
++    macro(BluetoothRemoteGATTCharacteristic) \
++    macro(BluetoothRemoteGATTDescriptor) \
++    macro(BluetoothCharacteristicProperties) \
++    macro(BluetoothUUID) \
++    macro(ValueEvent) \
 +    macro(USBDevice) \
 +    macro(USBEndpoint) \
 +    macro(USBInTransferResult) \
@@ -9614,14 +10975,30 @@ index e1afd2578e1f0f508e560875eb5fa6fdfc9d05d3..46befead7d3d6c7e29bed7746a6e2441
  
  void Document::updateRemoteIntersectionObservers()
 diff --git a/Source/WebCore/dom/EventInterfaces.in b/Source/WebCore/dom/EventInterfaces.in
-index 677f2e8a4fb88f674f1542b6dbf72e8316739ed4..80b07694b5c973082689a3a997e47d8ab8685630 100644
+index 677f2e8a4fb88f674f1542b6dbf72e8316739ed4..fe405439137ef39125f38983c52c7ad762a55b66 100644
 --- a/Source/WebCore/dom/EventInterfaces.in
 +++ b/Source/WebCore/dom/EventInterfaces.in
-@@ -112,3 +112,4 @@ NotificationEvent conditional=NOTIFICATION_EVENT
+@@ -112,3 +112,6 @@ NotificationEvent conditional=NOTIFICATION_EVENT
  ContentVisibilityAutoStateChangeEvent
  GPUUncapturedErrorEvent
  CanvasPaintEvent
 +USBConnectionEvent conditional=WEBUSB
++
++ValueEvent conditional=WEB_BLUETOOTH
+diff --git a/Source/WebCore/dom/EventNames.json b/Source/WebCore/dom/EventNames.json
+index eef6f0d2ce84ef42acbe4bdd0bf0639c5147e6f9..8013628318d5e6ed306efdf7a699fd5215f15e51 100644
+--- a/Source/WebCore/dom/EventNames.json
++++ b/Source/WebCore/dom/EventNames.json
+@@ -323,6 +323,9 @@
+     "webkitmouseforcewillbegin": { },
+     "webkitneedkey": { },
+     "webkitnetworkinfochange": { },
++    "availabilitychanged": { },
++    "gattserverdisconnected": { },
++    "characteristicvaluechanged": { },
+     "webkitplaybacktargetavailabilitychanged": { },
+     "webkitpresentationmodechanged": { },
+     "webkitprojectionchanged": { },
 diff --git a/Source/WebCore/dom/EventTarget.cpp b/Source/WebCore/dom/EventTarget.cpp
 index 508b64bf39d2074357445b343e1056b1c3212411..f22828d4fdd11099e38c6161892e61b740e2b738 100644
 --- a/Source/WebCore/dom/EventTarget.cpp
@@ -9670,14 +11047,19 @@ index 508b64bf39d2074357445b343e1056b1c3212411..f22828d4fdd11099e38c6161892e61b7
  
          if (registeredListener->isPassive())
 diff --git a/Source/WebCore/dom/EventTargetFactory.in b/Source/WebCore/dom/EventTargetFactory.in
-index 244b96d8f5d0b1c64a63f9d562810e653649698d..4a16711860fb461f56f13e087d3e2f046c003a69 100644
+index 244b96d8f5d0b1c64a63f9d562810e653649698d..747f3f53e8fe58c7b3d9826c72a061caf6a66253 100644
 --- a/Source/WebCore/dom/EventTargetFactory.in
 +++ b/Source/WebCore/dom/EventTargetFactory.in
-@@ -87,3 +87,4 @@ WebXRLayer conditional=WEBXR
+@@ -87,3 +87,9 @@ WebXRLayer conditional=WEBXR
  WebXRSession conditional=WEBXR
  WebXRSpace conditional=WEBXR
  WebXRSystem conditional=WEBXR
 +USB conditional=WEBUSB
++
++Bluetooth conditional=WEB_BLUETOOTH
++BluetoothDevice conditional=WEB_BLUETOOTH
++BluetoothRemoteGATTService conditional=WEB_BLUETOOTH
++BluetoothRemoteGATTCharacteristic conditional=WEB_BLUETOOTH
 diff --git a/Source/WebCore/dom/ExtensionStyleSheets.cpp b/Source/WebCore/dom/ExtensionStyleSheets.cpp
 index a503201bfcf8a65e2591c30245a88c6c5b8d31f3..593f339fa2d8a14b5275a2259b2483a124fc8bba 100644
 --- a/Source/WebCore/dom/ExtensionStyleSheets.cpp
@@ -10007,7 +11389,7 @@ index f401335d473e926808c3dceca100b849f96e238e..32abb05690691199198fbc56973391c7
  
      m_injectedStyleAndScript = true;
 diff --git a/Source/WebCore/html/PermissionsPolicy.cpp b/Source/WebCore/html/PermissionsPolicy.cpp
-index 5417f278972081e8bec7ffc8d1050e0e253f0d9c..7b9c945945690ca50fd2351501c5ac37d7cda848 100644
+index 5417f278972081e8bec7ffc8d1050e0e253f0d9c..15c3a12d8c7e99eaf8ed8583c5ef4194480dc1a2 100644
 --- a/Source/WebCore/html/PermissionsPolicy.cpp
 +++ b/Source/WebCore/html/PermissionsPolicy.cpp
 @@ -28,12 +28,14 @@
@@ -10025,7 +11407,7 @@ index 5417f278972081e8bec7ffc8d1050e0e253f0d9c..7b9c945945690ca50fd2351501c5ac37
  #include "SecurityOrigin.h"
  #include <wtf/TZoneMalloc.h>
  #include <wtf/text/MakeString.h>
-@@ -69,6 +71,10 @@ static ASCIILiteral toFeatureNameForLogging(PermissionsPolicy::Feature feature)
+@@ -69,6 +71,12 @@ static ASCIILiteral toFeatureNameForLogging(PermissionsPolicy::Feature feature)
          return "Fullscreen"_s;
      case PermissionsPolicy::Feature::WebShare:
          return "WebShare"_s;
@@ -10033,14 +11415,17 @@ index 5417f278972081e8bec7ffc8d1050e0e253f0d9c..7b9c945945690ca50fd2351501c5ac37
 +        return "USB"_s;
 +    case PermissionsPolicy::Feature::EncryptedMedia:
 +        return "EncryptedMedia"_s;
++    case PermissionsPolicy::Feature::Bluetooth:
++        return "Bluetooth"_s;
  #if ENABLE(DEVICE_ORIENTATION)
      case PermissionsPolicy::Feature::Gyroscope:
          return "Gyroscope"_s;
-@@ -129,10 +135,19 @@ static std::pair<PermissionsPolicy::Feature, StringView> readFeatureIdentifier(S
+@@ -129,10 +137,24 @@ static std::pair<PermissionsPolicy::Feature, StringView> readFeatureIdentifier(S
  #if ENABLE(WEBXR)
      constexpr auto xrSpatialTrackingToken { "xr-spatial-tracking"_s };
  #endif
 +    constexpr auto usbToken { "usb"_s };
++    constexpr auto bluetoothToken { "bluetooth"_s };
 +    constexpr auto encryptedMediaToken { "encrypted-media"_s };
      constexpr auto privateTokenToken { "private-token"_s };
      constexpr auto storageAccessToken { "storage-access"_s };
@@ -10050,6 +11435,10 @@ index 5417f278972081e8bec7ffc8d1050e0e253f0d9c..7b9c945945690ca50fd2351501c5ac37
 +        && isASCIIWhitespace(value[encryptedMediaToken.length()]))) {
 +        feature = PermissionsPolicy::Feature::EncryptedMedia;
 +        remainingValue = value.substring(encryptedMediaToken.length());
++    } else if (value == bluetoothToken || (value.startsWith(bluetoothToken)
++        && isASCIIWhitespace(value[bluetoothToken.length()]))) {
++        feature = PermissionsPolicy::Feature::Bluetooth;
++        remainingValue = value.substring(bluetoothToken.length());
 +    } else if (value.startsWith(usbToken)) {
 +        feature = PermissionsPolicy::Feature::USB;
 +        remainingValue = value.substring(usbToken.length());
@@ -10057,16 +11446,17 @@ index 5417f278972081e8bec7ffc8d1050e0e253f0d9c..7b9c945945690ca50fd2351501c5ac37
          feature = PermissionsPolicy::Feature::Camera;
          remainingValue = value.substring(cameraToken.length());
      } else if (value.startsWith(microphoneToken)) {
-@@ -222,6 +237,8 @@ static ASCIILiteral defaultAllowlistValue(PermissionsPolicy::Feature feature)
+@@ -222,6 +244,9 @@ static ASCIILiteral defaultAllowlistValue(PermissionsPolicy::Feature feature)
      case PermissionsPolicy::Feature::ScreenWakeLock:
      case PermissionsPolicy::Feature::Fullscreen:
      case PermissionsPolicy::Feature::WebShare:
 +    case PermissionsPolicy::Feature::USB:
 +    case PermissionsPolicy::Feature::EncryptedMedia:
++    case PermissionsPolicy::Feature::Bluetooth:
  #if ENABLE(DEVICE_ORIENTATION)
      case PermissionsPolicy::Feature::Gyroscope:
      case PermissionsPolicy::Feature::Accelerometer:
-@@ -268,6 +285,9 @@ static bool checkPermissionsPolicy(const PermissionsPolicy& permissionsPolicy, P
+@@ -268,6 +293,9 @@ static bool checkPermissionsPolicy(const PermissionsPolicy& permissionsPolicy, P
      if (!permissionsPolicy.inheritedPolicyValueForFeature(feature))
          return false;
  
@@ -10076,7 +11466,7 @@ index 5417f278972081e8bec7ffc8d1050e0e253f0d9c..7b9c945945690ca50fd2351501c5ac37
      return isFeatureAllowedByDefaultAllowlist(feature, origin, documentOrigin);
  }
  
-@@ -380,10 +400,13 @@ PermissionsPolicy::PolicyDirective PermissionsPolicy::processPermissionsPolicyAt
+@@ -380,10 +408,13 @@ PermissionsPolicy::PolicyDirective PermissionsPolicy::processPermissionsPolicyAt
  }
  
  // https://w3c.github.io/webappsec-permissions-policy/#algo-get-feature-value-for-origin
@@ -10093,14 +11483,14 @@ index 5417f278972081e8bec7ffc8d1050e0e253f0d9c..7b9c945945690ca50fd2351501c5ac37
  }
  
  // https://w3c.github.io/webappsec-permissions-policy/#algo-define-inherited-policy-in-container
-@@ -414,8 +437,57 @@ bool PermissionsPolicy::inheritedPolicyValueForFeature(Feature feature) const
+@@ -414,8 +445,59 @@ bool PermissionsPolicy::inheritedPolicyValueForFeature(Feature feature) const
      return m_inheritedPolicy.contains(feature);
  }
  
-+// Parse the response directive for EME using the existing structured-fields parser.
++// Parse EME and Bluetooth directives using the existing structured-fields parser.
 +// Other features retain their existing policy behavior. Origin lists use the same
 +// exact-origin matching as iframe allowlists; unsupported expressions grant nothing.
-+static PermissionsPolicy::PolicyDirective declaredEncryptedMediaPolicy(const Document& document)
++static PermissionsPolicy::PolicyDirective declaredDeviceAndMediaPolicy(const Document& document)
 +{
 +    PermissionsPolicy::PolicyDirective result;
 +    RefPtr loader = document.loader();
@@ -10109,62 +11499,65 @@ index 5417f278972081e8bec7ffc8d1050e0e253f0d9c..7b9c945945690ca50fd2351501c5ac37
 +    auto dictionary = RFC8941::parseDictionaryStructuredFieldValue(loader->response().httpHeaderField("Permissions-Policy"_s));
 +    if (!dictionary)
 +        return result;
-+    auto iterator = dictionary->find("encrypted-media"_s);
-+    if (iterator == dictionary->end())
-+        return result;
-+    auto& value = iterator->value.first;
-+    HashSet<SecurityOriginData> origins;
-+    bool allOrigins = false;
-+    auto append = [&](const RFC8941::BareItem& item) {
-+        if (auto* token = std::get_if<RFC8941::Token>(&item)) {
-+            if (token->string() == "*"_s)
-+                allOrigins = true;
-+            else if (token->string() == "self"_s)
-+                origins.add(document.securityOrigin().data());
-+        } else if (auto* string = std::get_if<String>(&item)) {
-+            URL url { *string };
-+            auto authority = string->find("://"_s);
-+            if (url.isValid() && authority != notFound && string->find('/', authority + 3) == notFound
-+                && !string->contains('*') && !string->contains('?') && !string->contains('#') && !string->contains('@')) {
-+                auto origin = SecurityOrigin::create(url);
-+                if (!origin->isOpaque())
-+                    origins.add(origin->data());
++    for (auto entry : { std::pair { "encrypted-media"_s, PermissionsPolicy::Feature::EncryptedMedia }, std::pair { "bluetooth"_s, PermissionsPolicy::Feature::Bluetooth } }) {
++        auto iterator = dictionary->find(entry.first);
++        if (iterator == dictionary->end())
++            continue;
++        auto& value = iterator->value.first;
++        HashSet<SecurityOriginData> origins;
++        bool allOrigins = false;
++        auto append = [&](const RFC8941::BareItem& item) {
++            if (auto* token = std::get_if<RFC8941::Token>(&item)) {
++                if (token->string() == "*"_s)
++                    allOrigins = true;
++                else if (token->string() == "self"_s)
++                    origins.add(document.securityOrigin().data());
++            } else if (auto* string = std::get_if<String>(&item)) {
++                URL url { *string };
++                auto authority = string->find("://"_s);
++                if (url.isValid() && authority != notFound && string->find('/', authority + 3) == notFound
++                    && !string->contains('*') && !string->contains('?') && !string->contains('#') && !string->contains('@')) {
++                    auto origin = SecurityOrigin::create(url);
++                    if (!origin->isOpaque())
++                        origins.add(origin->data());
++                }
 +            }
++        };
++        if (auto* innerList = std::get_if<RFC8941::InnerList>(&value)) {
++            for (auto& item : *innerList)
++                append(item.first);
++        } else {
++            auto& item = std::get<RFC8941::BareItem>(value);
++            if (std::holds_alternative<RFC8941::Token>(item))
++                append(item);
 +        }
-+    };
-+    if (auto* innerList = std::get_if<RFC8941::InnerList>(&value)) {
-+        for (auto& item : *innerList)
-+            append(item.first);
-+    } else {
-+        auto& item = std::get<RFC8941::BareItem>(value);
-+        if (std::holds_alternative<RFC8941::Token>(item))
-+            append(item);
++        result.add(entry.second,
++            allOrigins ? Allowlist { Allowlist::AllowAllOrigins { } } : Allowlist { WTF::move(origins) });
 +    }
-+    result.add(PermissionsPolicy::Feature::EncryptedMedia,
-+        allOrigins ? Allowlist { Allowlist::AllowAllOrigins { } } : Allowlist { WTF::move(origins) });
 +    return result;
 +}
 +
  // https://w3c.github.io/webappsec-permissions-policy/#algo-create-for-navigable
  PermissionsPolicy::PermissionsPolicy(const Document& document)
-+    : m_declaredPolicy(declaredEncryptedMediaPolicy(document))
++    : m_declaredPolicy(declaredDeviceAndMediaPolicy(document))
  {
      auto ownerPermissionsPolicy = document.ownerPermissionsPolicy();
      forEachFeature([&](auto feature) {
 diff --git a/Source/WebCore/html/PermissionsPolicy.h b/Source/WebCore/html/PermissionsPolicy.h
-index a8ad291b4884798676be22fdf1fef71072733eb7..f93c7a121bbf0c76d62be58f1d267e2319d1f947 100644
+index a8ad291b4884798676be22fdf1fef71072733eb7..0192a108d78ff8503a25cbf6cf4927f91a69dfa0 100644
 --- a/Source/WebCore/html/PermissionsPolicy.h
 +++ b/Source/WebCore/html/PermissionsPolicy.h
-@@ -57,6 +57,8 @@ public:
+@@ -57,6 +57,9 @@ public:
          SyncXHR,
          Fullscreen,
          WebShare,
 +        USB,
 +        EncryptedMedia,
++        Bluetooth,
  #if ENABLE(DEVICE_ORIENTATION)
          Gyroscope,
          Accelerometer,
-@@ -79,20 +81,23 @@ public:
+@@ -79,20 +82,23 @@ public:
  
      // InheritedPolicy contains enabled features.
      using InheritedPolicy = HashSet<Feature, IntHash<Feature>, WTF::StrongEnumHashTraits<Feature>>;
@@ -11672,10 +13065,10 @@ index 0000000000000000000000000000000000000000..d0291650380038f8c810316011430ff9
 +}
 +#endif
 diff --git a/Source/WebCore/page/ChromeClient.h b/Source/WebCore/page/ChromeClient.h
-index 349b9cb1fe7dc8f666371b92e665e1b3c21c2eaa..d5d8e082f7e90a9ae9e87cc49b77ea942ff9a8be 100644
+index 349b9cb1fe7dc8f666371b92e665e1b3c21c2eaa..11c5ddeae96712c4674a77787cb8a653ef9d7f8e 100644
 --- a/Source/WebCore/page/ChromeClient.h
 +++ b/Source/WebCore/page/ChromeClient.h
-@@ -426,6 +426,13 @@ public:
+@@ -426,6 +426,17 @@ public:
  
      virtual void runOpenPanel(LocalFrame&, FileChooser&) = 0;
      WEBCORE_EXPORT virtual void transcodeChosenFiles(Vector<String>&& transcodingPaths, String&& destinationUTI, String&& destinationExtension, CompletionHandler<void(Vector<String>&&)>&&);
@@ -11684,6 +13077,10 @@ index 349b9cb1fe7dc8f666371b92e665e1b3c21c2eaa..d5d8e082f7e90a9ae9e87cc49b77ea94
 +#endif
 +#if ENABLE(WEBUSB)
 +    virtual void usbRequest(LocalFrame&, const String&, Vector<uint8_t>&&, CompletionHandler<void(String&&, Vector<uint8_t>&&)>&& completion)
++    { completion("{\"error\":\"NotSupportedError\"}"_s, { }); }
++#endif
++#if ENABLE(WEB_BLUETOOTH)
++    virtual void bluetoothRequest(LocalFrame&, const String&, Vector<uint8_t>&&, CompletionHandler<void(String&&, Vector<uint8_t>&&)>&& completion)
 +    { completion("{\"error\":\"NotSupportedError\"}"_s, { }); }
 +#endif
      virtual void showShareSheet(ShareDataWithParsedURL&&, CompletionHandler<void(bool)>&& callback) { callback(false); }
@@ -12016,15 +13413,18 @@ index 61749fa2eecc674d3bc7d185a5b3944181454f73..2dd2c366435c97ac9752500ab05dd810
  
  void LocalFrameViewLayoutContext::runOrScheduleAsynchronousTasks(bool canDeferUpdateLayerPositions)
 diff --git a/Source/WebCore/page/Navigator.cpp b/Source/WebCore/page/Navigator.cpp
-index 957720da7f04e4635deede785707b6da26b75cd8..e0c9196be26be79abd2bc381bc2c4a10436c043d 100644
+index 957720da7f04e4635deede785707b6da26b75cd8..cf2e30185e067a4e13e62674de8333b99e903b23 100644
 --- a/Source/WebCore/page/Navigator.cpp
 +++ b/Source/WebCore/page/Navigator.cpp
-@@ -22,9 +22,14 @@
+@@ -22,9 +22,17 @@
  
  #include "config.h"
  #include "Navigator.h"
 +#if ENABLE(WEBUSB)
 +#include "USB.h"
++#endif
++#if ENABLE(WEB_BLUETOOTH)
++#include "Bluetooth.h"
 +#endif
  
  #include "BadgeClient.h"
@@ -12034,7 +13434,7 @@ index 957720da7f04e4635deede785707b6da26b75cd8..e0c9196be26be79abd2bc381bc2c4a10
  #include "CookieJar.h"
  #include "DOMMimeType.h"
  #include "DOMMimeTypeArray.h"
-@@ -65,6 +70,15 @@
+@@ -65,6 +73,23 @@
  #include <wtf/WeakPtr.h>
  
  namespace WebCore {
@@ -12046,11 +13446,19 @@ index 957720da7f04e4635deede785707b6da26b75cd8..e0c9196be26be79abd2bc381bc2c4a10
 +    return *m_usb;
 +}
 +#endif
++#if ENABLE(WEB_BLUETOOTH)
++Bluetooth& Navigator::bluetooth()
++{
++    if (!m_bluetooth)
++        m_bluetooth = Bluetooth::create(*document());
++    return *m_bluetooth;
++}
++#endif
 +
  
  WTF_MAKE_TZONE_ALLOCATED_IMPL(Navigator);
  
-@@ -130,6 +144,52 @@ bool Navigator::onLine() const
+@@ -130,6 +155,52 @@ bool Navigator::onLine() const
      return platformStrategies()->loaderStrategy()->isOnLine();
  }
  
@@ -12104,7 +13512,7 @@ index 957720da7f04e4635deede785707b6da26b75cd8..e0c9196be26be79abd2bc381bc2c4a10
  {
      if (data.url.isNull())
 diff --git a/Source/WebCore/page/Navigator.h b/Source/WebCore/page/Navigator.h
-index c2759da3ca373213f532ff00dcbd3acb5278366b..6f622851c209b7627e6e353b40e80911144640bc 100644
+index c2759da3ca373213f532ff00dcbd3acb5278366b..df60d7f87a9b7e713ffb393f67bee15a87d2deb9 100644
 --- a/Source/WebCore/page/Navigator.h
 +++ b/Source/WebCore/page/Navigator.h
 @@ -19,6 +19,7 @@
@@ -12115,17 +13523,20 @@ index c2759da3ca373213f532ff00dcbd3acb5278366b..6f622851c209b7627e6e353b40e80911
  #include <WebCore/LocalDOMWindowProperty.h>
  #include <WebCore/NavigatorBase.h>
  #include <WebCore/ScriptWrappable.h>
-@@ -36,6 +37,9 @@ class DOMPluginArray;
+@@ -36,6 +37,12 @@ class DOMPluginArray;
  class Page;
  class ShareDataReader;
  class NavigatorUAData;
 +#if ENABLE(WEBUSB)
 +class USB;
 +#endif
++#if ENABLE(WEB_BLUETOOTH)
++class Bluetooth;
++#endif
  
  class Navigator final
      : public NavigatorBase
-@@ -59,9 +63,16 @@ public:
+@@ -59,9 +66,19 @@ public:
      String platform() const final;
      void userAgentChanged();
      bool onLine() const final;
@@ -12139,15 +13550,21 @@ index c2759da3ca373213f532ff00dcbd3acb5278366b..6f622851c209b7627e6e353b40e80911
 +#if ENABLE(WEBUSB)
 +    USB& usb();
 +#endif
++#if ENABLE(WEB_BLUETOOTH)
++    Bluetooth& bluetooth();
++#endif
      
  #if ENABLE(NAVIGATOR_STANDALONE)
      bool NODELETE standalone() const;
-@@ -94,5 +105,8 @@ private:
+@@ -94,5 +111,11 @@ private:
      mutable String m_platform;
      mutable RefPtr<NavigatorUAData> m_navigatorUAData;
      RefPtr<GPU> m_gpuForWebGPU;
 +#if ENABLE(WEBUSB)
 +    RefPtr<USB> m_usb;
++#endif
++#if ENABLE(WEB_BLUETOOTH)
++    RefPtr<Bluetooth> m_bluetooth;
 +#endif
  };
  }
@@ -15346,10 +16763,10 @@ index 0000000000000000000000000000000000000000..f900e9fc3465729567cb107a6a3eb566
 +}
 diff --git a/Source/WebCore/platform/bluetooth/haiku/BluetoothGATTHaiku.cpp b/Source/WebCore/platform/bluetooth/haiku/BluetoothGATTHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..a270889700b9c48753dd7700937c3862858fdcb2
+index 0000000000000000000000000000000000000000..6bb0cdf5fe51e03874dd53eed65d8778dbacb870
 --- /dev/null
 +++ b/Source/WebCore/platform/bluetooth/haiku/BluetoothGATTHaiku.cpp
-@@ -0,0 +1,219 @@
+@@ -0,0 +1,220 @@
 +/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#include "BluetoothGATTHaiku.h"
 +#include <algorithm>
@@ -15379,7 +16796,8 @@ index 0000000000000000000000000000000000000000..a270889700b9c48753dd7700937c3862
 +    invalidate();
 +    std::vector<Service> primary, secondary;
 +    if (auto result = checked(m_client.services(primary)); !result) return result;
-+    if (auto result = checked(m_client.services(secondary, false)); !result) return result;
++    auto secondaryResult = m_client.services(secondary, false);
++    if (!secondaryResult && !(secondaryResult.error == ATTError::Remote && secondaryResult.remoteError == 0x10)) return checked(secondaryResult);
 +    m_catalog = std::move(primary);
 +    m_catalog.insert(m_catalog.end(), secondary.begin(), secondary.end());
 +    std::sort(m_catalog.begin(), m_catalog.end(), [](auto& a, auto& b) { return a.start < b.start; });
@@ -15830,6 +17248,123 @@ index 0000000000000000000000000000000000000000..8f71f43fee3f78649d238238cbde51e6
 +   See the License for the specific language governing permissions and
 +   limitations under the License.
 +
+diff --git a/Source/WebCore/platform/bluetooth/haiku/BluetoothTestTransportHaiku.h b/Source/WebCore/platform/bluetooth/haiku/BluetoothTestTransportHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..9edf8b02ec675520b2d7eee5cb3336ac3d1b22d6
+--- /dev/null
++++ b/Source/WebCore/platform/bluetooth/haiku/BluetoothTestTransportHaiku.h
+@@ -0,0 +1,111 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#include "BluetoothATTClientHaiku.h"
++#include <algorithm>
++#include <map>
++namespace WebCore::BluetoothHaiku {
++// Deterministic ATT peer for native end-to-end tests. Selected only by the
++// host's explicit test environment, never by a document or a physical address.
++class TestTransport final : public ATTTransport {
++public:
++    TestTransport()
++        : m_attributes {
++            { 1, { 0x2800, { 0x0f, 0x18 } } },
++            { 2, { 0x2803, { 0x1e, 3, 0, 0x19, 0x2a } } },
++            { 3, { 0x2a19, { 88 } } },
++            { 4, { 0x2902, { 0, 0 } } },
++            { 5, { 0x2901, { 'B', 'a', 't', 't', 'e', 'r', 'y' } } },
++            { 6, { 0x2803, { 2, 7, 0, 0x25, 0x2a } } },
++            { 7, { 0x2a25, { 'p', 'r', 'i', 'v', 'a', 't', 'e' } } },
++            { 8, { 0x2802, { 11, 0, 20, 0, 0x0a, 0x18 } } },
++            { 11, { 0x2800, { 0x0a, 0x18 } } },
++            { 12, { 0x2803, { 2, 13, 0, 0x29, 0x2a } } },
++            { 13, { 0x2a29, { 'S', 'u', 'm', 'm', 'i', 't' } } },
++            { 21, { 0x2800, { 0x12, 0x18 } } },
++            { 31, { 0x2800, { 1, 0x18 } } },
++            { 32, { 0x2803, { 0x20, 33, 0, 5, 0x2a } } },
++            { 33, { 0x2a05, { 1, 0, 0xff, 0xff } } },
++            { 34, { 0x2902, { 0, 0 } } }
++        } { }
++    ATTResult send(std::span<const uint8_t> packet) final
++    {
++        if (packet.empty() || packet.size() > 23) return { ATTError::Protocol };
++        auto word = [&](size_t i) -> uint16_t { return i + 1 < packet.size() ? uint16_t(packet[i]) | uint16_t(packet[i + 1]) << 8 : 0; };
++        auto handle = word(1);
++        auto error = [&](uint8_t value) { m_replies.push_back({ 1, packet[0], uint8_t(handle), uint8_t(handle >> 8), value }); };
++        auto appendWord = [](auto& bytes, uint16_t value) { bytes.push_back(uint8_t(value)); bytes.push_back(uint8_t(value >> 8)); };
++        auto attribute = m_attributes.find(handle);
++        switch (packet[0]) {
++        case 0x10: case 0x08: case 0x04: {
++            if (packet.size() != (packet[0] == 0x04 ? 5u : 7u)) return { ATTError::Protocol };
++            uint16_t end = word(3), type = word(5);
++            if (packet[0] == 0x10 && type != 0x2800) { error(0x10); break; }
++            std::vector<uint8_t> reply { uint8_t(packet[0] + 1), uint8_t(packet[0] == 0x04 ? 1 : 0) };
++            size_t itemSize = 0;
++            for (auto it = m_attributes.lower_bound(handle); it != m_attributes.end() && it->first <= end; ++it) {
++                if (packet[0] != 0x04 && it->second.type != type) continue;
++                std::vector<uint8_t> item; appendWord(item, it->first);
++                if (packet[0] == 0x04) appendWord(item, it->second.type);
++                else {
++                    if (packet[0] == 0x10) appendWord(item, it->first == 1 ? 10 : it->first == 11 ? 20 : it->first == 21 ? 30 : 40);
++                    item.insert(item.end(), it->second.value.begin(), it->second.value.end());
++                }
++                if (reply.size() + item.size() > 23 || (itemSize && itemSize != item.size())) break;
++                itemSize = item.size(); reply.insert(reply.end(), item.begin(), item.end());
++            }
++            if (reply.size() == 2) error(0x0a);
++            else { if (packet[0] != 0x04) reply[1] = uint8_t(itemSize); m_replies.push_back(std::move(reply)); }
++            break;
++        }
++        case 0x0a: case 0x0c: {
++            if (attribute == m_attributes.end()) { error(1); break; }
++            auto& value = attribute->second.value; size_t offset = packet[0] == 0x0c ? word(3) : 0;
++            if (offset > value.size()) { error(7); break; }
++            std::vector<uint8_t> reply { uint8_t(packet[0] + 1) };
++            reply.insert(reply.end(), value.begin() + offset, value.begin() + std::min(offset + 22, value.size()));
++            m_replies.push_back(std::move(reply)); break;
++        }
++        case 0x12: case 0x52:
++            if (attribute == m_attributes.end()) { if (packet[0] == 0x12) error(1); break; }
++            attribute->second.value.assign(packet.begin() + 3, packet.end());
++            if (packet[0] == 0x12) m_replies.push_back({ 0x13 });
++            changed(handle); break;
++        case 0x16: {
++            if (attribute == m_attributes.end()) { error(1); break; }
++            if ((m_preparedHandle && m_preparedHandle != handle) || word(3) != m_prepared.size()) { error(7); break; }
++            m_preparedHandle = handle; m_prepared.insert(m_prepared.end(), packet.begin() + 5, packet.end());
++            std::vector<uint8_t> echo(packet.begin(), packet.end()); echo[0] = 0x17; m_replies.push_back(std::move(echo)); break;
++        }
++        case 0x18:
++            m_replies.push_back({ 0x19 });
++            if (packet.size() == 2 && packet[1] && m_preparedHandle) { m_attributes[m_preparedHandle].value = m_prepared; changed(m_preparedHandle); }
++            m_preparedHandle = 0; m_prepared.clear(); break;
++        case 0x1e: break;
++        default: error(6); break;
++        }
++        return { };
++    }
++    ATTResult receive(std::vector<uint8_t>& packet, unsigned) final
++    {
++        if (m_replies.empty()) return { ATTError::Timeout };
++        packet = std::move(m_replies.front()); m_replies.pop_front(); return { };
++    }
++private:
++    void changed(uint16_t handle)
++    {
++        auto& value = m_attributes[3].value;
++        if (handle == 3 && value == std::vector<uint8_t> { 254 } && m_attributes[34].value == std::vector<uint8_t> { 2, 0 })
++            m_replies.push_back({ 0x1d, 33, 0, 1, 0, 0xff, 0xff });
++        else if ((handle == 3 || handle == 4) && m_attributes[4].value == std::vector<uint8_t> { 1, 0 }) {
++            std::vector<uint8_t> notification { 0x1b, 3, 0 };
++            notification.insert(notification.end(), value.begin(), value.begin() + std::min<size_t>(20, value.size()));
++            m_replies.push_back(std::move(notification));
++        }
++    }
++    struct Attribute { uint16_t type; std::vector<uint8_t> value; };
++    std::map<uint16_t, Attribute> m_attributes;
++    std::deque<std::vector<uint8_t>> m_replies;
++    uint16_t m_preparedHandle { 0 };
++    std::vector<uint8_t> m_prepared;
++};
++}
 diff --git a/Source/WebCore/platform/bluetooth/haiku/BluetoothTypesHaiku.cpp b/Source/WebCore/platform/bluetooth/haiku/BluetoothTypesHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..a059ad21afc3cbdeab92bba4c6d3d29842309494
@@ -60250,10 +61785,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..fedde0f3608ad208d96b5807c2f5418804291668
+index 0000000000000000000000000000000000000000..b08a0657a5efd326e95a79745dbcf46fc41a7f12
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,494 @@
+@@ -0,0 +1,504 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -60747,6 +62282,16 @@ index 0000000000000000000000000000000000000000..fedde0f3608ad208d96b5807c2f54188
 +    )
 +    list(APPEND WebKit_PRIVATE_INCLUDE_DIRECTORIES "${WEBKIT_DIR}/UIProcess/haiku/usb")
 +    list(APPEND WebKit_LIBRARIES device)
++endif ()
++
++if (ENABLE_WEB_BLUETOOTH)
++    list(APPEND WebKit_SOURCES
++        UIProcess/haiku/bluetooth/BluetoothSessionHaiku.cpp
++        UIProcess/haiku/bluetooth/WebBluetoothBrokerHaiku.cpp
++    )
++    list(APPEND WebKit_PRIVATE_INCLUDE_DIRECTORIES "${WEBKIT_DIR}/UIProcess/haiku/bluetooth" "${WEBCORE_DIR}/platform/bluetooth/haiku")
++    # Native kit headers are isolated from WebKit's precompiled header.
++    set_source_files_properties(UIProcess/haiku/bluetooth/BluetoothSessionHaiku.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 +endif ()
 diff --git a/Source/WebKit/Scripts/generate-message-receiver.py b/Source/WebKit/Scripts/generate-message-receiver.py
 index ab343ef829cf78a7a6f9f87a838a07eb198daf67..bedf5c97c3e662ae1314a04f09b850718ebf3864 100644
@@ -65200,7 +66745,7 @@ index 23ebd4a75995ae9f57a82f860a97794ca3ee454f..dc9c8105e8da7e5bcb761413f637115a
  
  #if HAVE(COOKIE_CHANGE_LISTENER_API)
 diff --git a/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in b/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in
-index 575a1f68f3bd19cbe2259aae39f94dcadb552392..45d1cb9260913efbfac5191bd1f5825660d006f3 100644
+index 575a1f68f3bd19cbe2259aae39f94dcadb552392..e8beecaba0ba32f993b2480fea2edd7c47904303 100644
 --- a/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in
 +++ b/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in
 @@ -1689,7 +1689,7 @@ header: <wtf/MachSendRight.h>
@@ -65246,16 +66791,17 @@ index 575a1f68f3bd19cbe2259aae39f94dcadb552392..45d1cb9260913efbfac5191bd1f58256
  
  enum class WebCore::ContentExtensionDefaultEnablement : bool
  using WebCore::ContentExtensionEnablement = std::pair<WebCore::ContentExtensionDefaultEnablement, HashSet<String>>;
-@@ -6814,6 +6823,8 @@ struct WebCore::OwnerPermissionsPolicyData {
+@@ -6814,6 +6823,9 @@ struct WebCore::OwnerPermissionsPolicyData {
      SyncXHR,
      Fullscreen,
      WebShare,
 +    USB,
 +    EncryptedMedia,
++    Bluetooth,
  #if ENABLE(DEVICE_ORIENTATION)
      Gyroscope,
      Accelerometer,
-@@ -6833,7 +6844,9 @@ struct WebCore::OwnerPermissionsPolicyData {
+@@ -6833,7 +6845,9 @@ struct WebCore::OwnerPermissionsPolicyData {
  
  class WebCore::PermissionsPolicy {
      WebCore::PermissionsPolicy::InheritedPolicy inheritedPolicy()
@@ -67828,10 +69374,10 @@ index 0000000000000000000000000000000000000000..ee93998d5279578e79487073ec1b9f03
 +}
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitContext.h b/Source/WebKit/UIProcess/API/haiku/WebKitContext.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..ae266f65bd838fd69336325756e28c6884387671
+index 0000000000000000000000000000000000000000..5691b130cd6f3f0cf5e28bf15063d2e03f88edec
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitContext.h
-@@ -0,0 +1,349 @@
+@@ -0,0 +1,354 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -67929,7 +69475,7 @@ index 0000000000000000000000000000000000000000..ae266f65bd838fd69336325756e28c68
 +// depend on the answer. All go to the listener set with SetPermissionListener.
 +//   PERMISSION_REQUESTED  identifier (uint64), permission ("notifications",
 +//                  "geolocation", "camera", "microphone", "camera-microphone"
-+//                  or "screen"), origin ("scheme://host[:port]"), private
++//                  "screen", "usb", or "bluetooth"), origin ("scheme://host[:port]"), private
 +//                  (bool), view (the asking BWebKitView) when known. Answer
 +//                  once with RespondToPermissionRequest; origins with a saved
 +//                  decision (SetSitePermission) are answered without asking.
@@ -67939,6 +69485,10 @@ index 0000000000000000000000000000000000000000..ae266f65bd838fd69336325756e28c68
 +//                  "device_label" strings, the screens that may be shared, and
 +//                  "audio" (bool, the page also asked for the sound); answer it
 +//                  with RespondToMediaPermissionRequest and the chosen id.
++//                  "usb" and "bluetooth" also carry device_id/device_label
++//                  choices; their grants last only for this browsing context.
++//   PERMISSION_CANCELLED identifier (uint64): close this request's prompt;
++//                  its document was closed. Ignore any later answer.
 +//   NOTIFICATION_SHOW  identifier (uint64), title, body, tag, icon_url, lang,
 +//                  origin strings, rtl and silent bools, view when its page is
 +//                  known. Show it (BNotification); report a click with
@@ -67952,6 +69502,7 @@ index 0000000000000000000000000000000000000000..ae266f65bd838fd69336325756e28c68
 +//   GEOLOCATION_STOP   no page is watching any more.
 +enum : uint32 {
 +    B_WEBKIT_PERMISSION_REQUESTED = 'wprq',
++    B_WEBKIT_PERMISSION_CANCELLED = 'wpcn',
 +    B_WEBKIT_NOTIFICATION_SHOW = 'wnsh',
 +    B_WEBKIT_NOTIFICATION_CLOSE = 'wncl',
 +    B_WEBKIT_GEOLOCATION_START = 'wgst',
@@ -92079,7 +93630,7 @@ index 3e5f83fe2ace16999a0cd12e7a9c561c46463303..3bdd8c37e24cd4f85dc84e4914c6491b
      DeleteWebsiteDataInWebProcessesForOrigin(OptionSet<WebKit::WebsiteDataType> websiteDataTypes, struct WebCore::ClientOrigin origin, PAL::SessionID sessionID, WebKit::WebPageProxyIdentifier webPageProxyID) -> ()
      ReloadExecutionContextsForOrigin(struct WebCore::ClientOrigin origin, PAL::SessionID sessionID, std::optional<WebCore::FrameIdentifier> triggeringFrame) -> ()
 diff --git a/Source/WebKit/UIProcess/PageClient.h b/Source/WebKit/UIProcess/PageClient.h
-index a4299803aa31a4a1705aebf669aba3190bcb878a..8afc3875307e7c6fa12e909df258cd660dd11317 100644
+index a4299803aa31a4a1705aebf669aba3190bcb878a..94063f25953bbaa6d4e7b130c47bd511bc605647 100644
 --- a/Source/WebKit/UIProcess/PageClient.h
 +++ b/Source/WebKit/UIProcess/PageClient.h
 @@ -263,6 +263,11 @@ public:
@@ -92094,7 +93645,7 @@ index a4299803aa31a4a1705aebf669aba3190bcb878a..8afc3875307e7c6fa12e909df258cd66
      // Tell the view to scroll to the given position, and whether this was a programmatic scroll.
      virtual void requestScroll(const WebCore::FloatPoint& scrollPosition, const WebCore::IntPoint& scrollOrigin, WebCore::ScrollIsAnimated, WebCore::InterruptScrollAnimation) = 0;
  
-@@ -665,6 +670,13 @@ public:
+@@ -665,6 +670,18 @@ public:
      virtual void cancelTextRecognitionForVideoInElementFullscreen() { }
  #endif
  
@@ -92103,6 +93654,11 @@ index a4299803aa31a4a1705aebf669aba3190bcb878a..8afc3875307e7c6fa12e909df258cd66
 +#endif
 +#if ENABLE(WEBUSB)
 +    virtual void usbRequest(uint64_t, const String&, const String&, Vector<uint8_t>&&, CompletionHandler<void(String&&, Vector<uint8_t>&&)>&& completion)
++    { completion("{\"error\":\"NotSupportedError\"}"_s, { }); }
++#endif
++#if ENABLE(WEB_BLUETOOTH)
++    virtual void bluetoothFrameDisconnected() { }
++    virtual void bluetoothRequest(uint64_t, const String&, const String&, Vector<uint8_t>&&, CompletionHandler<void(String&&, Vector<uint8_t>&&)>&& completion)
 +    { completion("{\"error\":\"NotSupportedError\"}"_s, { }); }
 +#endif
      // Auxiliary Client Creation
@@ -92277,6 +93833,33 @@ index 0000000000000000000000000000000000000000..75b860c792f1ea4ae0756a0eb424fec3
 +} // namespace WebKit
 +
 +#endif // ENABLE(WEB_AUTHN) && PLATFORM(HAIKU)
+diff --git a/Source/WebKit/UIProcess/WebFrameProxy.cpp b/Source/WebKit/UIProcess/WebFrameProxy.cpp
+index 06aa75be27c78db6b3c662188627a800488f4140..a8b9da50179068537e5c9883027b5d2b7e638cef 100644
+--- a/Source/WebKit/UIProcess/WebFrameProxy.cpp
++++ b/Source/WebKit/UIProcess/WebFrameProxy.cpp
+@@ -55,6 +55,9 @@
+ #include "WebPageInspectorController.h"
+ #include "WebPageMessages.h"
+ #include "WebPageProxy.h"
++#if ENABLE(WEB_BLUETOOTH)
++#include "PageClient.h"
++#endif
+ #include "WebPageProxyMessages.h"
+ #include "WebPasteboardProxy.h"
+ #include "WebProcessMessages.h"
+@@ -592,6 +595,12 @@ void WebFrameProxy::collapseSelection()
+ 
+ void WebFrameProxy::disconnect()
+ {
++#if ENABLE(WEB_BLUETOOTH)
++    if (RefPtr page = m_page.get()) {
++        if (auto* client = page->pageClient())
++            client->bluetoothFrameDisconnected();
++    }
++#endif
+     if (RefPtr parentFrame = m_parentFrame.get()) {
+ #if ENABLE(WEBDRIVER_BIDI)
+         if (RefPtr page = m_page.get()) {
 diff --git a/Source/WebKit/UIProcess/WebPageProxy.cpp b/Source/WebKit/UIProcess/WebPageProxy.cpp
 index dcb789361fd321de76e3f647c18328ad2f4af9fc..3dc45f6c38748eccb21fd0a9a185349b8f01696d 100644
 --- a/Source/WebKit/UIProcess/WebPageProxy.cpp
@@ -92648,10 +94231,10 @@ index dcb789361fd321de76e3f647c18328ad2f4af9fc..3dc45f6c38748eccb21fd0a9a185349b
  #endif
  
 diff --git a/Source/WebKit/UIProcess/WebPageProxy.h b/Source/WebKit/UIProcess/WebPageProxy.h
-index 0df86238ffdc53863b10fefb1e88e76900fd5df1..76cb61ed3f5eeed293b7201e92f383a526d6bc8d 100644
+index 0df86238ffdc53863b10fefb1e88e76900fd5df1..7b33c15c443132dad1cfcaddf8b992168f43ff0d 100644
 --- a/Source/WebKit/UIProcess/WebPageProxy.h
 +++ b/Source/WebKit/UIProcess/WebPageProxy.h
-@@ -1116,6 +1116,12 @@ public:
+@@ -1116,6 +1116,15 @@ public:
      void clearSelection(std::optional<WebCore::FrameIdentifier> = std::nullopt);
      void restoreSelectionInFocusedEditableElement();
  
@@ -92661,10 +94244,13 @@ index 0df86238ffdc53863b10fefb1e88e76900fd5df1..76cb61ed3f5eeed293b7201e92f383a5
 +#if ENABLE(WEBUSB)
 +    void usbRequest(IPC::Connection&, WebCore::FrameIdentifier, const String&, Vector<uint8_t>&&, CompletionHandler<void(String&&, Vector<uint8_t>&&)>&&);
 +#endif
++#if ENABLE(WEB_BLUETOOTH)
++    void bluetoothRequest(IPC::Connection&, WebCore::FrameIdentifier, const String&, Vector<uint8_t>&&, CompletionHandler<void(String&&, Vector<uint8_t>&&)>&&);
++#endif
      PageClient* NODELETE pageClient() const;
  
      void setViewNeedsDisplay(const WebCore::Region&);
-@@ -1932,6 +1938,9 @@ public:
+@@ -1932,6 +1941,9 @@ public:
  #endif
  
      void preferencesDidChange();
@@ -92674,7 +94260,7 @@ index 0df86238ffdc53863b10fefb1e88e76900fd5df1..76cb61ed3f5eeed293b7201e92f383a5
  
  #if ENABLE(CONTEXT_MENUS)
      // Called by the WebContextMenuProxy.
-@@ -3870,6 +3879,13 @@ private:
+@@ -3870,6 +3882,13 @@ private:
      Ref<WebProcessProxy> m_legacyMainFrameProcess;
      const Ref<WebPageGroup> m_pageGroup;
      Ref<WebPreferences> m_preferences;
@@ -92689,15 +94275,18 @@ index 0df86238ffdc53863b10fefb1e88e76900fd5df1..76cb61ed3f5eeed293b7201e92f383a5
      const Ref<WebUserContentControllerProxy> m_userContentController;
  
 diff --git a/Source/WebKit/UIProcess/WebPageProxy.messages.in b/Source/WebKit/UIProcess/WebPageProxy.messages.in
-index 5ae60009a71fe5d15e29892e6d21834bb2b60d86..817b58799a8a5adf1cdcccb6ed0f45748bd46576 100644
+index 5ae60009a71fe5d15e29892e6d21834bb2b60d86..721e003fcd3244834a6649458d0db0d8f163c795 100644
 --- a/Source/WebKit/UIProcess/WebPageProxy.messages.in
 +++ b/Source/WebKit/UIProcess/WebPageProxy.messages.in
-@@ -27,8 +27,14 @@ Copyright (C) 2010-2024 Apple Inc. All rights reserved.
+@@ -27,8 +27,17 @@ Copyright (C) 2010-2024 Apple Inc. All rights reserved.
      SharedPreferencesNeedsConnection
  ]
  messages -> WebPageProxy {
 +#if ENABLE(WEBUSB)
 +    UsbRequest(WebCore::FrameIdentifier frameID, String arguments, Vector<uint8_t> bytes) -> (String response, Vector<uint8_t> data)
++#endif
++#if ENABLE(WEB_BLUETOOTH)
++    BluetoothRequest(WebCore::FrameIdentifier frameID, String arguments, Vector<uint8_t> bytes) -> (String response, Vector<uint8_t> data)
 +#endif
      # UI messages
      CreateNewPage(struct WebCore::WindowFeatures windowFeatures, struct WebKit::NavigationActionData navigationActionData) -> (std::optional<WebCore::PageIdentifier> newPageID, std::optional<WebKit::WebPageCreationParameters> newPageParameters) Synchronous
@@ -97650,10 +99239,10 @@ index 0000000000000000000000000000000000000000..a1df802a24259059253fe0d7e648aee7
 +};
 diff --git a/Source/WebKit/UIProcess/haiku/SitePermissionsHaiku.cpp b/Source/WebKit/UIProcess/haiku/SitePermissionsHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..b18dba79f01d5e1a1d34ccfbebb08a672c0b55d1
+index 0000000000000000000000000000000000000000..a37bf6a11f987b147dea21e383060f6fafb8d902
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/SitePermissionsHaiku.cpp
-@@ -0,0 +1,462 @@
+@@ -0,0 +1,510 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -97774,6 +99363,8 @@ index 0000000000000000000000000000000000000000..b18dba79f01d5e1a1d34ccfbebb08a67
 +void SitePermissionsHaiku::shutdown()
 +{
 +    ASSERT(RunLoop::isMain());
++    while (!m_bluetoothViews.isEmpty())
++        cancelBluetoothRequests(m_bluetoothViews.begin()->value);
 +    m_shutdown = true;
 +    m_listener = BMessenger();
 +    auto pending = std::exchange(m_pending, { });
@@ -97821,6 +99412,7 @@ index 0000000000000000000000000000000000000000..b18dba79f01d5e1a1d34ccfbebb08a67
 +    ASSERT(RunLoop::isMain());
 +    m_listener = listener;
 +    if (!listener.IsValid()) {
++        m_bluetoothViews.clear();
 +        auto pending = std::exchange(m_pending, { });
 +        for (auto& request : pending.values()) {
 +            if (request.completion)
@@ -97910,6 +99502,7 @@ index 0000000000000000000000000000000000000000..b18dba79f01d5e1a1d34ccfbebb08a67
 +void SitePermissionsHaiku::respond(uint64_t identifier, bool allowed, const String& deviceId)
 +{
 +    ASSERT(RunLoop::isMain());
++    m_bluetoothViews.remove(identifier);
 +    auto request = m_pending.take(identifier);
 +    if (request.completion)
 +        request.completion(allowed);
@@ -97984,6 +99577,50 @@ index 0000000000000000000000000000000000000000..b18dba79f01d5e1a1d34ccfbebb08a67
 +    }
 +    m_pending.add(identifier, Pending { Kind::Camera, origin, { }, WTF::move(completion) });
 +    if (!post(message)) {
++        if (auto request = m_pending.take(identifier); request.mediaCompletion)
++            request.mediaCompletion(false, { });
++    }
++}
++
++void SitePermissionsHaiku::requestBluetooth(const String& origin, const BMessenger& view,
++    Vector<std::pair<String, String>>&& devices, MediaCompletion&& completion)
++{
++    ASSERT(RunLoop::isMain());
++    if (m_shutdown || !m_listener.IsValid() || origin.isEmpty() || origin == "null"_s || devices.isEmpty()) {
++        completion(false, { });
++        return;
++    }
++    const uint64_t identifier = ++m_lastRequest;
++    BMessage message(B_WEBKIT_PERMISSION_REQUESTED);
++    message.AddUInt64("identifier", identifier);
++    message.AddString("permission", "bluetooth");
++    message.AddString("origin", origin.utf8().legacyCStringPointer());
++    message.AddBool("private", m_private);
++    if (view.IsValid())
++        message.AddMessenger("view", view);
++    for (auto& [id, label] : devices) {
++        message.AddString("device_id", id.utf8().legacyCStringPointer());
++        message.AddString("device_label", label.utf8().legacyCStringPointer());
++    }
++    m_pending.add(identifier, Pending { Kind::Camera, origin, { }, WTF::move(completion) });
++    m_bluetoothViews.add(identifier, view);
++    if (!post(message)) {
++        m_bluetoothViews.remove(identifier);
++        if (auto request = m_pending.take(identifier); request.mediaCompletion)
++            request.mediaCompletion(false, { });
++    }
++}
++
++void SitePermissionsHaiku::cancelBluetoothRequests(const BMessenger& view)
++{
++    ASSERT(RunLoop::isMain());
++    Vector<uint64_t> identifiers;
++    for (auto& entry : m_bluetoothViews) if (entry.value == view) identifiers.append(entry.key);
++    for (auto identifier : identifiers) {
++        m_bluetoothViews.remove(identifier);
++        BMessage message(B_WEBKIT_PERMISSION_CANCELLED);
++        message.AddUInt64("identifier", identifier);
++        post(message);
 +        if (auto request = m_pending.take(identifier); request.mediaCompletion)
 +            request.mediaCompletion(false, { });
 +    }
@@ -98118,10 +99755,10 @@ index 0000000000000000000000000000000000000000..b18dba79f01d5e1a1d34ccfbebb08a67
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/SitePermissionsHaiku.h b/Source/WebKit/UIProcess/haiku/SitePermissionsHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..39a78af01734b06389afe74f6eb857c781a5c8f8
+index 0000000000000000000000000000000000000000..726ae50d03c2b79e267235162e2c4f68b283f9c2
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/SitePermissionsHaiku.h
-@@ -0,0 +1,109 @@
+@@ -0,0 +1,112 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -98186,6 +99823,8 @@ index 0000000000000000000000000000000000000000..39a78af01734b06389afe74f6eb857c7
 +    using MediaCompletion = CompletionHandler<void(bool allowed, const String& deviceId)>;
 +    void requestMedia(const String& origin, const BMessenger& view, MediaRequest&&, MediaCompletion&&);
 +    void requestUSB(const String& origin, const BMessenger& view, Vector<std::pair<String, String>>&& devices, MediaCompletion&&);
++    void requestBluetooth(const String& origin, const BMessenger& view, Vector<std::pair<String, String>>&& devices, MediaCompletion&&);
++    void cancelBluetoothRequests(const BMessenger& view);
 +    // navigator.permissions.query(): granted, denied or prompt.
 +    std::optional<WebCore::PermissionState> query(Kind, const String& origin) const;
 +
@@ -98222,6 +99861,7 @@ index 0000000000000000000000000000000000000000..39a78af01734b06389afe74f6eb857c7
 +        MediaCompletion mediaCompletion;
 +    };
 +    HashMap<uint64_t, Pending> m_pending;
++    HashMap<uint64_t, BMessenger> m_bluetoothViews;
 +    uint64_t m_lastRequest { 0 };
 +    // Shown notifications by the identifier given to the host.
 +    HashMap<uint64_t, WebNotificationIdentifier> m_notifications;
@@ -98802,10 +100442,10 @@ index 0000000000000000000000000000000000000000..b12e656b2046acc0f1325d1b28ee8be2
 +#endif
 diff --git a/Source/WebKit/UIProcess/haiku/WebPageProxyHaiku.cpp b/Source/WebKit/UIProcess/haiku/WebPageProxyHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..e0616e42f8dde64892626fd2acaecf9242b6c713
+index 0000000000000000000000000000000000000000..79f33c7d74ab003802aedcfbf583f11a931f3dbf
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebPageProxyHaiku.cpp
-@@ -0,0 +1,128 @@
+@@ -0,0 +1,160 @@
 +/*
 + * Copyright (C) 2014-2021 Haiku, inc.
 + *
@@ -98899,6 +100539,38 @@ index 0000000000000000000000000000000000000000..e0616e42f8dde64892626fd2acaecf92
 +    }
 +    if (RefPtr client = pageClient())
 +        client->usbRequest(frameID.toUInt64(), origin->toString(), arguments, WTF::move(bytes), WTF::move(completion));
++    else
++        completion("{\"error\":\"AbortError\"}"_s, { });
++}
++#endif
++#if ENABLE(WEB_BLUETOOTH)
++void WebPageProxy::bluetoothRequest(IPC::Connection& connection, WebCore::FrameIdentifier frameID, const String& arguments,
++    Vector<uint8_t>&& bytes, CompletionHandler<void(String&&, Vector<uint8_t>&&)>&& completion)
++{
++    Ref process = WebProcessProxy::fromConnection(connection);
++    RefPtr frame = WebFrameProxy::webFrame(frameID);
++    RefPtr topFrame = mainFrame();
++    if (!frame || !topFrame || frame->page() != this || &frame->process() != process.ptr()
++        || arguments.length() > 65536 || bytes.size() > 512) {
++        completion("{\"error\":\"SecurityError\"}"_s, { });
++        return;
++    }
++    Ref origin = WebCore::SecurityOrigin::create(frame->documentSecurityOriginData());
++    Ref topOrigin = WebCore::SecurityOrigin::create(topFrame->documentSecurityOriginData());
++    // Haiku currently allows top-level and same-origin child documents. Cross-
++    // origin delegation requires a UI-process policy representation first.
++    if (origin->isOpaque() || !origin->isPotentiallyTrustworthy() || !origin->isSameOriginAs(topOrigin)) {
++        completion("{\"error\":\"SecurityError\"}"_s, { });
++        return;
++    }
++    auto value = JSON::Value::parseJSON(arguments);
++    auto object = value ? value->asObject() : nullptr;
++    if (!object || (object->getString("operation"_s) == "requestDevice"_s && !frame->hasTransientActivation())) {
++        completion("{\"error\":\"SecurityError\"}"_s, { });
++        return;
++    }
++    if (RefPtr client = pageClient())
++        client->bluetoothRequest(frameID.toUInt64(), origin->toString(), arguments, WTF::move(bytes), WTF::move(completion));
 +    else
 +        completion("{\"error\":\"AbortError\"}"_s, { });
 +}
@@ -99176,10 +100848,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..4883efdc3a639b12c85d13f1ee42e06e4d8259c4
+index 0000000000000000000000000000000000000000..13402929cfc93dabfa04ddb29874589c125bc03c
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,2405 @@
+@@ -0,0 +1,2457 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -99255,6 +100927,10 @@ index 0000000000000000000000000000000000000000..4883efdc3a639b12c85d13f1ee42e06e
 +#include "WebViewContextHaiku.h"
 +#if ENABLE(WEBUSB)
 +#include "WebUSBBrokerHaiku.h"
++#include <wtf/JSONValues.h>
++#endif
++#if ENABLE(WEB_BLUETOOTH)
++#include "WebBluetoothBrokerHaiku.h"
 +#include <wtf/JSONValues.h>
 +#endif
 +#include "SitePermissionsHaiku.h"
@@ -99865,6 +101541,12 @@ index 0000000000000000000000000000000000000000..4883efdc3a639b12c85d13f1ee42e06e
 +        if (auto state = m_state.lock(); state && state->context) {
 +            ++state->usbGeneration;
 +            state->context->usb()->cancelPage(page.identifier().toUInt64());
++        }
++#endif
++#if ENABLE(WEB_BLUETOOTH)
++        if (auto state = m_state.lock(); state && state->context) {
++            ++state->bluetoothGeneration;
++            state->context->bluetooth()->cancelPage(page.identifier().toUInt64());
 +        }
 +#endif
 +        if (!frame.isMainFrame)
@@ -100670,6 +102352,11 @@ index 0000000000000000000000000000000000000000..4883efdc3a639b12c85d13f1ee42e06e
 +    if (m_page && m_state->context)
 +        m_state->context->usb()->cancelPage(m_page->identifier().toUInt64());
 +#endif
++#if ENABLE(WEB_BLUETOOTH)
++    ++m_state->bluetoothGeneration;
++    if (m_page && m_state->context)
++        m_state->context->bluetooth()->cancelPage(m_page->identifier().toUInt64());
++#endif
 +    m_state->contentSizeChanged = nullptr;
 +    m_state->dialogs->cancelAll(true);
 +    BMessage dismissDialogs(javaScriptDialogsCancelHaiku);
@@ -100739,6 +102426,38 @@ index 0000000000000000000000000000000000000000..4883efdc3a639b12c85d13f1ee42e06e
 +        [state = std::weak_ptr { m_state }, generation] {
 +            auto current = state.lock();
 +            return current && !current->closed && current->usbGeneration == generation;
++        }, WTF::move(completion));
++}
++#endif
++#if ENABLE(WEB_BLUETOOTH)
++void WebView::bluetoothFrameDisconnected()
++{
++    ++m_state->bluetoothGeneration;
++    if (m_page && m_state->context)
++        m_state->context->bluetooth()->cancelPage(m_page->identifier().toUInt64());
++}
++
++void WebView::bluetoothRequest(uint64_t frame, const String& origin, const String& arguments, Vector<uint8_t>&& bytes,
++    CompletionHandler<void(String&&, Vector<uint8_t>&&)>&& completion)
++{
++    if (!m_page || m_state->closed || !m_state->context) {
++        completion("{\"error\":\"AbortError\"}"_s, { });
++        return;
++    }
++    auto parsed = JSON::Value::parseJSON(arguments);
++    auto args = parsed ? parsed->asObject() : nullptr;
++    auto document = args ? args->getString("document"_s) : String { };
++    if (document.isEmpty() || document.length() > 64) {
++        completion("{\"error\":\"TypeError\"}"_s, { });
++        return;
++    }
++    auto page = m_page->identifier().toUInt64();
++    auto generation = m_state->bluetoothGeneration;
++    auto owner = makeString(page, '/', frame, '/', document);
++    m_state->context->bluetooth()->request(page, owner, origin, nativeView(), arguments, WTF::move(bytes),
++        [state = std::weak_ptr { m_state }, generation] {
++            auto current = state.lock();
++            return current && !current->closed && current->bluetoothGeneration == generation;
 +        }, WTF::move(completion));
 +}
 +#endif
@@ -101260,6 +102979,11 @@ index 0000000000000000000000000000000000000000..4883efdc3a639b12c85d13f1ee42e06e
 +    if (m_page && m_state->context)
 +        m_state->context->usb()->cancelPage(m_page->identifier().toUInt64());
 +#endif
++#if ENABLE(WEB_BLUETOOTH)
++    ++m_state->bluetoothGeneration;
++    if (m_page && m_state->context)
++        m_state->context->bluetooth()->cancelPage(m_page->identifier().toUInt64());
++#endif
 +#if ENABLE(FULLSCREEN_API)
 +    closeFullScreenManager();
 +#endif
@@ -101587,16 +103311,19 @@ index 0000000000000000000000000000000000000000..4883efdc3a639b12c85d13f1ee42e06e
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..a82e1e89c127924e40b9ad00b7832b6d2f4c4015
+index 0000000000000000000000000000000000000000..cec18405a06158fc6b2d1f68e7e90d61c28c8d01
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.cpp
-@@ -0,0 +1,319 @@
+@@ -0,0 +1,331 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
 +#include "WebViewContextHaiku.h"
 +#if ENABLE(WEBUSB)
 +#include "WebUSBBrokerHaiku.h"
++#endif
++#if ENABLE(WEB_BLUETOOTH)
++#include "WebBluetoothBrokerHaiku.h"
 +#endif
 +#include "BrowserCommandBrokerHaiku.h"
 +#include "BrowserTabRegistryHaiku.h"
@@ -101655,6 +103382,9 @@ index 0000000000000000000000000000000000000000..a82e1e89c127924e40b9ad00b7832b6d
 +#if ENABLE(WEBUSB)
 +    , m_usb(WebUSBBrokerHaiku::create(m_sitePermissions))
 +#endif
++#if ENABLE(WEB_BLUETOOTH)
++    , m_bluetooth(WebBluetoothBrokerHaiku::create(m_sitePermissions))
++#endif
 +{
 +    ASSERT(RunLoop::isMain());
 +    m_processPool->setLegacyDownloadClient(m_downloads->createClient());
@@ -101679,6 +103409,9 @@ index 0000000000000000000000000000000000000000..a82e1e89c127924e40b9ad00b7832b6d
 +#if ENABLE(WEBUSB)
 +    , m_usb(WebUSBBrokerHaiku::create(m_sitePermissions))
 +#endif
++#if ENABLE(WEB_BLUETOOTH)
++    , m_bluetooth(WebBluetoothBrokerHaiku::create(m_sitePermissions))
++#endif
 +{
 +    ASSERT(RunLoop::isMain());
 +    // Downloads of private pages stay out of extensions' downloads API.
@@ -101690,6 +103423,9 @@ index 0000000000000000000000000000000000000000..a82e1e89c127924e40b9ad00b7832b6d
 +    ASSERT(RunLoop::isMain());
 +#if ENABLE(WEBUSB)
 +    m_usb->shutdown();
++#endif
++#if ENABLE(WEB_BLUETOOTH)
++    m_bluetooth->shutdown();
 +#endif
 +    m_sitePermissions->shutdown();
 +    if (m_extensionOwner) {
@@ -101912,10 +103648,10 @@ index 0000000000000000000000000000000000000000..a82e1e89c127924e40b9ad00b7832b6d
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..a228323ecfd67a6e79d7ddc284b9209c88093f88
+index 0000000000000000000000000000000000000000..72b20b3d5a964a65bbe8fb34aad9c94a3cb2cfc7
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewContextHaiku.h
-@@ -0,0 +1,89 @@
+@@ -0,0 +1,98 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -101942,6 +103678,9 @@ index 0000000000000000000000000000000000000000..a228323ecfd67a6e79d7ddc284b9209c
 +class SitePermissionsHaiku;
 +#if ENABLE(WEBUSB)
 +class WebUSBBrokerHaiku;
++#endif
++#if ENABLE(WEB_BLUETOOTH)
++class WebBluetoothBrokerHaiku;
 +#endif
 +class WebExtensionController;
 +class WebPageProxy;
@@ -101974,6 +103713,9 @@ index 0000000000000000000000000000000000000000..a228323ecfd67a6e79d7ddc284b9209c
 +#if ENABLE(WEBUSB)
 +    const std::shared_ptr<WebUSBBrokerHaiku>& usb() const { return m_usb; }
 +#endif
++#if ENABLE(WEB_BLUETOOTH)
++    const std::shared_ptr<WebBluetoothBrokerHaiku>& bluetooth() const { return m_bluetooth; }
++#endif
 +    // Server certificates the user trusts for a host although they failed
 +    // verification, by SHA-256 of the DER leaf certificate (lower-case hex).
 +    // Application thread only.
@@ -102002,15 +103744,18 @@ index 0000000000000000000000000000000000000000..a228323ecfd67a6e79d7ddc284b9209c
 +#if ENABLE(WEBUSB)
 +    const std::shared_ptr<WebUSBBrokerHaiku> m_usb;
 +#endif
++#if ENABLE(WEB_BLUETOOTH)
++    const std::shared_ptr<WebBluetoothBrokerHaiku> m_bluetooth;
++#endif
 +};
 +
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewPrivate.h b/Source/WebKit/UIProcess/haiku/WebViewPrivate.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..0ea90370cc27d5f8cb908ac24ed9383c525ffb08
+index 0000000000000000000000000000000000000000..d5f9d941b5119ca190cf4dbb0fe376708b46d741
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewPrivate.h
-@@ -0,0 +1,202 @@
+@@ -0,0 +1,206 @@
 +/*
 +   Copyright (C) 2014 Haiku, inc.
 +
@@ -102081,6 +103826,10 @@ index 0000000000000000000000000000000000000000..0ea90370cc27d5f8cb908ac24ed9383c
 +#endif
 +#if ENABLE(WEBUSB)
 +    void usbRequest(uint64_t, const String&, const String&, Vector<uint8_t>&&, CompletionHandler<void(String&&, Vector<uint8_t>&&)>&&) override;
++#endif
++#if ENABLE(WEB_BLUETOOTH)
++    void bluetoothFrameDisconnected() override;
++    void bluetoothRequest(uint64_t, const String&, const String&, Vector<uint8_t>&&, CompletionHandler<void(String&&, Vector<uint8_t>&&)>&&) override;
 +#endif
 +    void notifyState(uint32_t = B_WEBKIT_STATE_CHANGED) const;
 +    // The frame the view shows now (device pixels), or null.
@@ -102215,10 +103964,10 @@ index 0000000000000000000000000000000000000000..0ea90370cc27d5f8cb908ac24ed9383c
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..c336a7ec445bc211eb4b3abffe700d2f4fb5ac70
+index 0000000000000000000000000000000000000000..bca84c38c4baa97b3e3b0a32616bbeda33a18336
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
-@@ -0,0 +1,175 @@
+@@ -0,0 +1,176 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -102368,6 +104117,7 @@ index 0000000000000000000000000000000000000000..c336a7ec445bc211eb4b3abffe700d2f
 +    uint64_t closeRequestGeneration { 0 };
 +    uint64_t navigationGeneration { 0 };
 +    uint64_t usbGeneration { 0 };
++    uint64_t bluetoothGeneration { 0 };
 +    uint64_t closeNavigationGeneration { 0 };
 +    // The policy callback for a native request is asynchronous. Its matching
 +    // identifier describes the request we already observed, not a new one.
@@ -102396,12 +104146,14 @@ index 0000000000000000000000000000000000000000..c336a7ec445bc211eb4b3abffe700d2f
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/bluetooth/BluetoothSessionHaiku.cpp b/Source/WebKit/UIProcess/haiku/bluetooth/BluetoothSessionHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..074ae790c8b5aef8a4d50c38f0ca8b938375ff7a
+index 0000000000000000000000000000000000000000..925ef4b1a0712fc5103ddf9aa4d3f9a0b683e7cc
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/bluetooth/BluetoothSessionHaiku.cpp
-@@ -0,0 +1,283 @@
+@@ -0,0 +1,310 @@
 +/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#include "BluetoothSessionHaiku.h"
++#include "BluetoothTestTransportHaiku.h"
++#include <cstdlib>
 +#include <Looper.h>
 +#include <Message.h>
 +#include <Messenger.h>
@@ -102418,6 +104170,12 @@ index 0000000000000000000000000000000000000000..074ae790c8b5aef8a4d50c38f0ca8b93
 +
 +namespace WebKit::BluetoothHaiku {
 +namespace {
++bool testing()
++{
++    const char* backend = std::getenv("SUMMIT_BLUETOOTH_TEST_BACKEND");
++    const char* input = std::getenv("SUMMIT_ENABLE_INPUT_SYNTHESIS");
++    return backend && !std::strcmp(backend, "1") && input && !std::strcmp(input, "1");
++}
 +// air/OS bluetooth_server's listener-scoped LE protocol. No force operations.
 +constexpr const char* serverSignature = "application/x-vnd.Haiku-bluetooth_server";
 +constexpr uint32_t code(const char* s) { return uint32_t(s[0]) << 24 | uint32_t(s[1]) << 16 | uint32_t(s[2]) << 8 | uint32_t(s[3]); }
@@ -102523,6 +104281,7 @@ index 0000000000000000000000000000000000000000..074ae790c8b5aef8a4d50c38f0ca8b93
 +
 +bool available()
 +{
++    if (testing()) return true;
 +    BMessage message(countAdapters), reply;
 +    return request(message, reply) == B_OK && reply.GetInt32("count", 0) > 0;
 +}
@@ -102531,6 +104290,16 @@ index 0000000000000000000000000000000000000000..074ae790c8b5aef8a4d50c38f0ca8b93
 +{
 +    result.clear();
 +    if (cancelled) return NativeError::Aborted;
++    if (testing()) {
++        for (int index = 0; index < 2; ++index) {
++            Device device; device.adapter = -31 - index; device.address[0] = uint8_t(index + 1); device.addressType = 1;
++            device.advertisement.connectable = true;
++            device.advertisement.name = index ? "Summit Test Busy Peripheral" : "Summit Test Peripheral";
++            device.advertisement.services.insert(UUID::alias(0x180f));
++            result.push_back(std::move(device));
++        }
++        return NativeError::None;
++    }
 +    ScopedListener listener;
 +    if (!listener.messenger.IsValid()) return NativeError::Unavailable;
 +    std::vector<int32_t> scanning;
@@ -102569,7 +104338,11 @@ index 0000000000000000000000000000000000000000..074ae790c8b5aef8a4d50c38f0ca8b93
 +NativeError Session::connect()
 +{
 +    if (m_aborted) return NativeError::Aborted;
-+    if (m_state) return NativeError::Busy;
++    if (m_state || m_testTransport) return NativeError::Busy;
++    if (testing() && (m_device.adapter == -31 || m_device.adapter == -32)) {
++        if (m_device.adapter == -32) return NativeError::Busy;
++        m_testTransport = std::make_unique<TestTransport>(); m_connected = true; return NativeError::None;
++    }
 +    m_state = std::make_unique<State>();
 +    if (!m_state->listener.messenger.IsValid()) { disconnect(); return NativeError::Unavailable; }
 +    BMessage message(linkConnect), reply;
@@ -102624,6 +104397,7 @@ index 0000000000000000000000000000000000000000..074ae790c8b5aef8a4d50c38f0ca8b93
 +void Session::disconnect()
 +{
 +    m_connected = false;
++    m_testTransport.reset();
 +    if (m_socket >= 0) { close(m_socket); m_socket = -1; }
 +    if (!m_state) return;
 +    if (m_state->attempted) {
@@ -102647,6 +104421,7 @@ index 0000000000000000000000000000000000000000..074ae790c8b5aef8a4d50c38f0ca8b93
 +{
 +    if (bytes.empty() || bytes.size() > 23) return { ATTError::InvalidLength };
 +    if (m_aborted) return { ATTError::Aborted };
++    if (m_testTransport) return m_testTransport->send(bytes);
 +    if (!m_connected || m_socket < 0 || m_state->listener.notices->link != linkConnected) { m_connected = false; return { ATTError::Disconnected }; }
 +    auto deadline = system_time() + 5000000;
 +    while (!m_aborted && system_time() < deadline) {
@@ -102661,6 +104436,8 @@ index 0000000000000000000000000000000000000000..074ae790c8b5aef8a4d50c38f0ca8b93
 +ATTResult Session::receive(std::vector<uint8_t>& bytes, unsigned milliseconds)
 +{
 +    bytes.clear();
++    if (m_aborted) return { ATTError::Aborted };
++    if (m_testTransport) return m_testTransport->receive(bytes, milliseconds);
 +    auto deadline = system_time() + bigtime_t(milliseconds) * 1000;
 +    do {
 +        if (m_aborted) return { ATTError::Aborted };
@@ -102685,10 +104462,10 @@ index 0000000000000000000000000000000000000000..074ae790c8b5aef8a4d50c38f0ca8b93
 +}
 diff --git a/Source/WebKit/UIProcess/haiku/bluetooth/BluetoothSessionHaiku.h b/Source/WebKit/UIProcess/haiku/bluetooth/BluetoothSessionHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..bc3f84cabc0d23566936d24ee8bbdea40a546dd6
+index 0000000000000000000000000000000000000000..800bd4bb48b9c51f11d0f1592e22701203ea2170
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/bluetooth/BluetoothSessionHaiku.h
-@@ -0,0 +1,43 @@
+@@ -0,0 +1,44 @@
 +/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#pragma once
 +#include "BluetoothATTClientHaiku.h"
@@ -102730,8 +104507,476 @@ index 0000000000000000000000000000000000000000..bc3f84cabc0d23566936d24ee8bbdea4
 +    std::atomic<bool> m_connected { false };
 +    int m_socket { -1 };
 +    ATTClient m_client;
++    std::unique_ptr<ATTTransport> m_testTransport;
 +};
 +}
+diff --git a/Source/WebKit/UIProcess/haiku/bluetooth/WebBluetoothBrokerHaiku.cpp b/Source/WebKit/UIProcess/haiku/bluetooth/WebBluetoothBrokerHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..6fd263a7db90b736d9cdfbd6f47458fbf99d3544
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/bluetooth/WebBluetoothBrokerHaiku.cpp
+@@ -0,0 +1,406 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#if ENABLE(WEB_BLUETOOTH)
++#include "WebBluetoothBrokerHaiku.h"
++#include "BluetoothGATTHaiku.h"
++#include "SitePermissionsHaiku.h"
++#include <wtf/NeverDestroyed.h>
++#include <wtf/RunLoop.h>
++#include <wtf/UUID.h>
++#include <wtf/text/MakeString.h>
++#include <unordered_map>
++
++namespace WebKit {
++using namespace BluetoothHaiku;
++using BluetoothUUID = WebCore::BluetoothHaiku::UUID;
++static String fromUTF8(const std::string& string) { return String::fromUTF8ReplacingInvalidSequences(std::span(reinterpret_cast<const char8_t*>(string.data()), string.size())); }
++static String error(ASCIILiteral name, ASCIILiteral message)
++{
++    auto object = JSON::Object::create();
++    object->setString("error"_s, name); object->setString("message"_s, message);
++    return object->toJSONString();
++}
++static Ref<JSON::Object> deviceJSON(const Device& device, const String& id)
++{
++    auto object = JSON::Object::create();
++    object->setString("id"_s, id);
++    if (!device.advertisement.name.empty()) object->setString("name"_s, fromUTF8(device.advertisement.name));
++    return object;
++}
++static std::optional<BluetoothUUID> uuidValue(const JSON::Value& value)
++{
++    auto string = value.asString();
++    return string.isNull() ? std::nullopt : BluetoothUUID::parse(string.utf8().legacyCStringPointer());
++}
++static std::optional<std::set<BluetoothUUID>> servicesArray(const JSON::Array& array)
++{
++    if (array.length() > 128) return std::nullopt;
++    std::set<BluetoothUUID> result;
++    for (auto& value : array) {
++        auto uuid = uuidValue(value.get());
++        if (!uuid || blocked(*uuid)) return std::nullopt;
++        result.insert(*uuid);
++    }
++    return result;
++}
++static bool bytesArray(const JSON::Object& object, ASCIILiteral key, std::vector<uint8_t>& output)
++{
++    auto value = object.getValue(key);
++    if (!value) return true;
++    auto array = value->asArray();
++    if (!array || array->length() > 512) return false;
++    for (auto& entry : *array) {
++        auto byte = entry->asInteger();
++        if (!byte || *byte < 0 || *byte > 255) return false;
++        output.push_back(*byte);
++    }
++    return true;
++}
++static std::optional<std::vector<Filter>> filters(const JSON::Object& args, ASCIILiteral key)
++{
++    auto value = args.getValue(key);
++    if (!value) return std::vector<Filter> { };
++    auto array = value->asArray();
++    if (!array || array->length() > 64 || !array->length()) return std::nullopt;
++    std::vector<Filter> output;
++    for (auto& entry : *array) {
++        auto object = entry->asObject();
++        if (!object) return std::nullopt;
++        Filter filter;
++        if (auto name = object->getValue("name"_s)) {
++            auto string = name->asString(); if (string.isNull()) return std::nullopt;
++            filter.name = string.utf8().legacyCStringPointer();
++        }
++        if (auto name = object->getValue("namePrefix"_s)) {
++            auto string = name->asString(); if (string.isNull()) return std::nullopt;
++            filter.namePrefix = string.utf8().legacyCStringPointer();
++        }
++        if (auto value = object->getValue("services"_s)) {
++            auto array = value->asArray();
++            auto services = array ? servicesArray(*array) : std::nullopt;
++            if (!services || services->empty()) return std::nullopt;
++            filter.services.assign(services->begin(), services->end());
++        }
++        for (bool manufacturer : { true, false }) {
++            auto data = object->getValue(manufacturer ? "manufacturerData"_s : "serviceData"_s);
++            if (!data) continue;
++            auto array = data->asArray();
++            if (!array || !array->length() || array->length() > 64) return std::nullopt;
++            for (auto& entry : *array) {
++                auto object = entry->asObject();
++                DataFilter dataFilter;
++                if (!object || !bytesArray(*object, "dataPrefix"_s, dataFilter.prefix) || !bytesArray(*object, "mask"_s, dataFilter.mask)
++                    || !dataFilter.valid() || (object->getValue("mask"_s) && dataFilter.mask.size() != dataFilter.prefix.size())) return std::nullopt;
++                if (manufacturer) {
++                    auto company = object->getInteger("companyIdentifier"_s);
++                    if (!company || *company < 0 || *company > 65535 || filter.manufacturerData.contains(*company)) return std::nullopt;
++                    filter.manufacturerData.emplace(*company, std::move(dataFilter));
++                } else {
++                    auto service = object->getValue("service"_s);
++                    auto uuid = service ? uuidValue(*service) : std::nullopt;
++                    if (!uuid || blocked(*uuid) || filter.serviceData.contains(*uuid)) return std::nullopt;
++                    filter.serviceData.emplace(*uuid, std::move(dataFilter));
++                }
++            }
++        }
++        if (!filter.valid()) return std::nullopt;
++        output.push_back(std::move(filter));
++    }
++    return output;
++}
++
++struct WebBluetoothBrokerHaiku::Connection {
++    explicit Connection(const Device& device)
++        : queue(WorkQueue::create("WebKit.Bluetooth.GATT"_s, WorkQueue::QOS::Utility)), session(std::make_shared<Session>(device)), generation(WTF::UUID::createVersion4().toString()) { }
++    Ref<WorkQueue> queue;
++    std::shared_ptr<Session> session;
++    std::unique_ptr<GATTConnection> gatt; // Worker queue only.
++    String generation; // Main thread only; isolated copy crosses queues.
++    std::atomic<bool> closing { false };
++};
++static Ref<WorkQueue> scanQueue()
++{
++    static NeverDestroyed<Ref<WorkQueue>> queue(WorkQueue::create("WebKit.Bluetooth.Scan"_s, WorkQueue::QOS::Utility));
++    return queue.get().copyRef();
++}
++static auto& openPeers()
++{
++    // Main thread, across normal/private contexts. The OS also checks ownership.
++    static NeverDestroyed<std::unordered_map<std::string, std::weak_ptr<Session>>> peers;
++    return peers.get();
++}
++static std::string peerKey(const Device& device)
++{
++    std::string key(reinterpret_cast<const char*>(device.address.data()), device.address.size());
++    key += char(device.addressType);
++    return key;
++}
++std::shared_ptr<WebBluetoothBrokerHaiku> WebBluetoothBrokerHaiku::create(std::shared_ptr<SitePermissionsHaiku> permissions)
++{ return std::shared_ptr<WebBluetoothBrokerHaiku>(new WebBluetoothBrokerHaiku(std::move(permissions))); }
++WebBluetoothBrokerHaiku::WebBluetoothBrokerHaiku(std::shared_ptr<SitePermissionsHaiku> permissions)
++    : m_permissions(std::move(permissions)), m_scanQueue(scanQueue()) { }
++WebBluetoothBrokerHaiku::~WebBluetoothBrokerHaiku() { shutdown(); }
++
++void WebBluetoothBrokerHaiku::choose(uint64_t page, const String& owner, const String& origin, const BMessenger& view,
++    Ref<JSON::Object>&& args, std::function<bool()>&& isCurrent, Completion&& completion)
++{
++    auto include = filters(args.get(), "filters"_s), exclude = filters(args.get(), "exclusionFilters"_s);
++    auto optional = args->getArray("optionalServices"_s);
++    auto services = optional ? servicesArray(*optional) : std::optional { std::set<BluetoothUUID> { } };
++    bool all = args->getBoolean("acceptAllDevices"_s).value_or(false);
++    if (!include || !exclude || !services || (all == !!args->getValue("filters"_s))
++        || (all && args->getValue("exclusionFilters"_s))
++        || (args->getValue("optionalServices"_s) && !optional)) {
++        completion(error("TypeError"_s, "Invalid Bluetooth device filters"_s), { }); return;
++    }
++    for (auto& filter : *include) services->insert(filter.services.begin(), filter.services.end());
++    if (m_scans.size() >= 4) { completion(error("InvalidStateError"_s, "A Bluetooth chooser is already pending"_s), { }); return; }
++    auto identifier = ++m_nextScan;
++    auto cancelled = std::make_shared<std::atomic<bool>>(false);
++    m_scans.add(identifier, Scan { page, cancelled, view });
++    m_scanQueue->dispatch([self = shared_from_this(), page, identifier, cancelled, owner = owner.isolatedCopy(), origin = origin.isolatedCopy(), view,
++        include = std::move(*include), exclude = std::move(*exclude), services = std::move(*services), isCurrent = std::move(isCurrent), completion = WTF::move(completion)]() mutable {
++        std::vector<Device> devices;
++        auto result = scan(devices, *cancelled);
++        std::erase_if(devices, [&](auto& device) { return !matches(device.advertisement, include, exclude); });
++        RunLoop::mainSingleton().dispatch([self, page, identifier, cancelled, result, owner = owner.isolatedCopy(), origin = origin.isolatedCopy(), view,
++            devices = std::move(devices), services = std::move(services), isCurrent = std::move(isCurrent), completion = WTF::move(completion)]() mutable {
++            if (self->m_shutdown || *cancelled || !isCurrent()) {
++                self->m_scans.remove(identifier); completion(error("AbortError"_s, "The Bluetooth document was closed"_s), { }); return;
++            }
++            if (result != NativeError::None || devices.empty()) {
++                self->m_scans.remove(identifier); completion(error("NotFoundError"_s, "No matching Bluetooth device is advertising"_s), { }); return;
++            }
++            Vector<std::pair<String, String>> choices;
++            Vector<String> tokens;
++            for (auto& device : devices) {
++                auto token = WTF::UUID::createVersion4().toString();
++                auto label = fromUTF8(device.advertisement.name.empty() ? "Unnamed Bluetooth device" : device.advertisement.name);
++                label = makeStringByReplacingAll(makeStringByReplacingAll(label, '\n', ' '), '\r', ' ');
++                choices.append({ token, label }); tokens.append(token);
++            }
++            self->m_permissions->requestBluetooth(origin, view, WTF::move(choices),
++                [self, identifier, cancelled, devices = std::move(devices), tokens = WTF::move(tokens), services = std::move(services), origin,
++                    isCurrent = std::move(isCurrent), completion = WTF::move(completion)](bool allowed, const String& selected) mutable {
++                    self->m_scans.remove(identifier);
++                    if (self->m_shutdown || *cancelled || !isCurrent()) { completion(error("AbortError"_s, "The Bluetooth document was closed"_s), { }); return; }
++                    auto index = tokens.find(selected);
++                    if (!allowed || index == notFound || index >= devices.size()) { completion(error("NotFoundError"_s, "No Bluetooth device was selected"_s), { }); return; }
++                    auto& device = devices[index];
++                    String token;
++                    for (auto& entry : self->m_grants) if (entry.value->origin == origin && entry.value->device.samePeer(device)) {
++                        token = entry.key;
++                        entry.value->services.insert(services.begin(), services.end());
++                        entry.value->device = device;
++                        break;
++                    }
++                    if (token.isEmpty()) {
++                        if (self->m_grants.size() >= 256) { completion(error("NotAllowedError"_s, "Too many Bluetooth device grants"_s), { }); return; }
++                        token = WTF::UUID::createVersion4().toString();
++                        self->m_grants.add(token, std::make_unique<Grant>(Grant { origin, device, std::move(services), { }, 0, nullptr, 0 }));
++                    }
++                    auto object = JSON::Object::create(); object->setObject("device"_s, deviceJSON(device, token));
++                    completion(object->toJSONString(), { });
++                });
++        });
++    });
++}
++
++static bool validOperation(const JSON::Object& args, size_t bytes)
++{
++    auto op = args.getString("operation"_s);
++    if (op == "connect"_s || op == "disconnect"_s || op == "forget"_s || op == "poll"_s) return !bytes;
++    if (auto uuid = args.getValue("uuid"_s); uuid && !uuidValue(*uuid)) return false;
++    if (op == "services"_s) return !bytes;
++    auto handle = args.getInteger("handle"_s);
++    if (!handle || *handle < 1 || *handle > 65535) return false;
++    if (op == "includedServices"_s || op == "characteristics"_s || op == "descriptors"_s) return !bytes;
++    if (op == "notifications"_s) return !bytes && args.getBoolean("enable"_s).has_value();
++    if (!args.getBoolean("descriptor"_s)) return false;
++    if (op == "read"_s) return !bytes;
++    return op == "write"_s && bytes <= 512 && args.getBoolean("response"_s).has_value();
++}
++static void appendNotifications(JSON::Object& object, const std::vector<Notification>& notifications)
++{
++    auto array = JSON::Array::create();
++    for (auto& notification : notifications) {
++        auto item = JSON::Object::create(); item->setInteger("handle"_s, notification.handle);
++        auto bytes = JSON::Array::create(); for (auto byte : notification.value) bytes->pushInteger(byte);
++        item->setArray("value"_s, WTF::move(bytes)); array->pushObject(WTF::move(item));
++    }
++    object.setArray("notifications"_s, WTF::move(array));
++}
++static GATTResult operate(GATTConnection& gatt, const JSON::Object& args, std::span<const uint8_t> bytes, JSON::Object& object, std::vector<uint8_t>& output)
++{
++    auto op = args.getString("operation"_s);
++    uint16_t handle = args.getInteger("handle"_s).value_or(0);
++    auto value = args.getValue("uuid"_s); auto query = value ? uuidValue(*value) : std::nullopt;
++    auto array = JSON::Array::create();
++    GATTResult result;
++    if (op == "services"_s || op == "includedServices"_s) {
++        std::vector<Service> services;
++        result = op == "services"_s ? gatt.services(query, services) : gatt.includedServices(handle, query, services);
++        for (auto& service : services) {
++            auto item = JSON::Object::create(); item->setInteger("handle"_s, service.start);
++            item->setString("uuid"_s, fromUTF8(service.uuid.string())); item->setBoolean("primary"_s, service.primary); array->pushObject(WTF::move(item));
++        }
++    } else if (op == "characteristics"_s) {
++        std::vector<GATTCharacteristic> characteristics; result = gatt.characteristics(handle, query, characteristics);
++        for (auto& characteristic : characteristics) {
++            auto item = JSON::Object::create(); item->setInteger("handle"_s, characteristic.attribute.value);
++            item->setString("uuid"_s, fromUTF8(characteristic.attribute.uuid.string())); item->setInteger("properties"_s, characteristic.attribute.properties);
++            item->setInteger("extendedProperties"_s, characteristic.extendedProperties); array->pushObject(WTF::move(item));
++        }
++    } else if (op == "descriptors"_s) {
++        std::vector<GATTDescriptor> descriptors; result = gatt.descriptors(handle, query, descriptors);
++        for (auto& descriptor : descriptors) {
++            auto item = JSON::Object::create(); item->setInteger("handle"_s, descriptor.attribute.handle);
++            item->setString("uuid"_s, fromUTF8(descriptor.attribute.uuid.string())); array->pushObject(WTF::move(item));
++        }
++    } else if (op == "read"_s) result = gatt.read(handle, args.getBoolean("descriptor"_s).value_or(false), output);
++    else if (op == "write"_s) result = gatt.write(handle, args.getBoolean("descriptor"_s).value_or(false), bytes, args.getBoolean("response"_s).value_or(true));
++    else if (op == "notifications"_s) result = gatt.notifications(handle, args.getBoolean("enable"_s).value_or(false));
++    object.setArray("items"_s, WTF::move(array));
++    return result;
++}
++static ASCIILiteral gattErrorName(const GATTResult& result)
++{
++    switch (result.error) {
++    case GATTError::Security: return "SecurityError"_s;
++    case GATTError::NotFound: return "NotFoundError"_s;
++    case GATTError::InvalidState: return "InvalidStateError"_s;
++    case GATTError::NotSupported: return "NotSupportedError"_s;
++    case GATTError::ATT:
++        if (result.att.error == ATTError::InvalidLength) return "InvalidModificationError"_s;
++        if (result.att.error == ATTError::Remote && (result.att.remoteError == 5 || result.att.remoteError == 8 || result.att.remoteError == 15)) return "NotAllowedError"_s;
++        return "NetworkError"_s;
++    case GATTError::None: return ""_s;
++    }
++    return "NetworkError"_s;
++}
++
++void WebBluetoothBrokerHaiku::request(uint64_t page, const String& owner, const String& origin, const BMessenger& view,
++    const String& arguments, Vector<uint8_t>&& bytes, std::function<bool()>&& isCurrent, Completion&& completion)
++{
++    ASSERT(RunLoop::isMain());
++    if (m_shutdown || !isCurrent()) { completion(error("AbortError"_s, "The Bluetooth document was closed"_s), { }); return; }
++    if (arguments.length() > 65536 || bytes.size() > 512 || origin.isEmpty() || origin == "null"_s) { completion(error("SecurityError"_s, "Invalid Bluetooth request"_s), { }); return; }
++    auto parsed = JSON::Value::parseJSON(arguments); auto args = parsed ? parsed->asObject() : nullptr;
++    if (!args) { completion(error("TypeError"_s, "Invalid Bluetooth request"_s), { }); return; }
++    auto op = args->getString("operation"_s);
++    if (op == "getAvailability"_s && bytes.isEmpty()) {
++        if (m_pendingAvailability >= 16) { completion(error("InvalidStateError"_s, "Too many Bluetooth availability requests"_s), { }); return; }
++        ++m_pendingAvailability;
++        m_scanQueue->dispatch([self = shared_from_this(), isCurrent = std::move(isCurrent), completion = WTF::move(completion)]() mutable {
++            bool present = available();
++            RunLoop::mainSingleton().dispatch([self, present, isCurrent = std::move(isCurrent), completion = WTF::move(completion)]() mutable {
++                --self->m_pendingAvailability;
++                if (self->m_shutdown || !isCurrent()) { completion(error("AbortError"_s, "The Bluetooth document was closed"_s), { }); return; }
++                completion(present ? "{\"available\":true}"_s : "{\"available\":false}"_s, { });
++            });
++        });
++        return;
++    }
++    if (op == "requestDevice"_s && bytes.isEmpty()) { choose(page, owner, origin, view, args.releaseNonNull(), std::move(isCurrent), WTF::move(completion)); return; }
++    if (op == "getDevices"_s && bytes.isEmpty()) {
++        auto object = JSON::Object::create(); auto devices = JSON::Array::create();
++        for (auto& grant : m_grants) if (grant.value->origin == origin) devices->pushObject(deviceJSON(grant.value->device, grant.key));
++        object->setArray("devices"_s, WTF::move(devices)); completion(object->toJSONString(), { }); return;
++    }
++    auto token = args->getString("id"_s); auto found = m_grants.find(token);
++    if (found == m_grants.end() || found->value->origin != origin) { completion(error("SecurityError"_s, "This origin has no grant for the Bluetooth device"_s), { }); return; }
++    if (!validOperation(*args, bytes.size())) { completion(error("TypeError"_s, "Invalid Bluetooth operation"_s), { }); return; }
++    auto& grant = *found->value;
++    if (op == "forget"_s) { closeGrant(grant); m_grants.remove(found); completion("{}"_s, { }); return; }
++    if (op == "disconnect"_s) {
++        if (grant.connection && grant.owner == owner && (args->getString("generation"_s).isEmpty() || args->getString("generation"_s) == grant.connection->generation)) closeGrant(grant);
++        completion("{}"_s, { }); return;
++    }
++    if (grant.pending >= 8 || (grant.connection && (grant.owner != owner || grant.connection->closing))) {
++        completion(error("InvalidStateError"_s, "The Bluetooth connection is busy"_s), { }); return;
++    }
++    bool connecting = op == "connect"_s;
++    if (connecting && !grant.connection) {
++        auto key = peerKey(grant.device); auto existing = openPeers().find(key);
++        if (existing != openPeers().end() && !existing->second.expired()) { completion(error("InvalidStateError"_s, "Another page is using this Bluetooth device"_s), { }); return; }
++        grant.connection = std::make_shared<Connection>(grant.device); grant.owner = owner; grant.page = page;
++        openPeers()[key] = grant.connection->session;
++    }
++    if (!grant.connection || (!connecting && args->getString("generation"_s) != grant.connection->generation)) {
++        completion(op == "poll"_s ? "{\"connected\":false}"_s : error("NetworkError"_s, "The Bluetooth server is disconnected"_s), { }); return;
++    }
++    auto connection = grant.connection;
++    ++grant.pending;
++    connection->queue->dispatch([self = shared_from_this(), connection, token = token.isolatedCopy(), generation = connection->generation.isolatedCopy(),
++        arguments = arguments.isolatedCopy(), services = grant.services, bytes = WTF::move(bytes), isCurrent = std::move(isCurrent), completion = WTF::move(completion)]() mutable {
++        auto parsed = JSON::Value::parseJSON(arguments); auto args = parsed->asObject(); auto op = args->getString("operation"_s);
++        auto object = JSON::Object::create(); std::vector<uint8_t> output; GATTResult result;
++        bool close = connection->closing;
++        if (!close && op == "connect"_s && !connection->gatt) {
++            auto status = connection->session->connect();
++            if (status != NativeError::None) { close = true; object->setString("error"_s, status == NativeError::Busy ? "InvalidStateError"_s : "NetworkError"_s); }
++            else {
++                connection->gatt = std::make_unique<GATTConnection>(connection->session->client(), services);
++                result = connection->gatt->initialize(); close = !result;
++            }
++        }
++        if (!close && connection->gatt) {
++            connection->gatt->addGrants(services);
++            std::vector<Notification> notifications;
++            result = connection->gatt->poll(notifications);
++            appendNotifications(object, notifications);
++            if (!result || !connection->session->connected()) close = true;
++            else if (op != "connect"_s && op != "poll"_s) result = operate(*connection->gatt, *args, bytes.span(), object, output);
++        }
++        if (!result) {
++            object->setString("error"_s, gattErrorName(result));
++            object->setString("message"_s, result.error == GATTError::Security ? "The requested GATT attribute is not permitted"_s : "The Bluetooth operation could not be completed"_s);
++            close |= result.error == GATTError::InvalidState || (result.error == GATTError::ATT && result.att.error != ATTError::Remote && result.att.error != ATTError::InvalidLength);
++        }
++        if (close) {
++            connection->closing = true; connection->gatt.reset(); connection->session->disconnect();
++            if (op != "poll"_s && !object->getValue("error"_s)) object->setString("error"_s, "NetworkError"_s);
++        }
++        object->setBoolean("connected"_s, !close);
++        object->setString("generation"_s, generation);
++        RunLoop::mainSingleton().dispatch([self, connection, token = token.isolatedCopy(), close, response = object->toJSONString().isolatedCopy(),
++            bytes = Vector<uint8_t>(std::span<const uint8_t>(output)), isCurrent = std::move(isCurrent), completion = WTF::move(completion)]() mutable {
++            auto found = self->m_grants.find(token);
++            if (found != self->m_grants.end() && found->value->connection == connection) {
++                --found->value->pending;
++                if (close) self->closeGrant(*found->value);
++            }
++            if (self->m_shutdown || !isCurrent()) { completion(error("AbortError"_s, "The Bluetooth document was closed"_s), { }); return; }
++            completion(WTF::move(response), WTF::move(bytes));
++        });
++    });
++}
++void WebBluetoothBrokerHaiku::closeGrant(Grant& grant)
++{
++    if (auto connection = std::exchange(grant.connection, nullptr)) {
++        connection->closing = true; connection->session->abort();
++        connection->queue->dispatch([connection] { connection->gatt.reset(); connection->session->disconnect(); });
++    }
++    grant.owner = { }; grant.page = 0; grant.pending = 0;
++}
++void WebBluetoothBrokerHaiku::cancelPage(uint64_t page)
++{
++    ASSERT(RunLoop::isMain());
++    Vector<BMessenger> views;
++    for (auto& scan : m_scans) if (scan.value.page == page) { *scan.value.cancelled = true; views.append(scan.value.view); }
++    for (auto& view : views) m_permissions->cancelBluetoothRequests(view);
++    for (auto& grant : m_grants) if (grant.value->page == page) closeGrant(*grant.value);
++}
++void WebBluetoothBrokerHaiku::shutdown()
++{
++    ASSERT(RunLoop::isMain());
++    if (m_shutdown) return;
++    m_shutdown = true;
++    Vector<BMessenger> views;
++    for (auto& scan : m_scans) { *scan.value.cancelled = true; views.append(scan.value.view); }
++    for (auto& view : views) m_permissions->cancelBluetoothRequests(view);
++    for (auto& grant : m_grants) closeGrant(*grant.value);
++    m_grants.clear();
++}
++}
++#endif
+diff --git a/Source/WebKit/UIProcess/haiku/bluetooth/WebBluetoothBrokerHaiku.h b/Source/WebKit/UIProcess/haiku/bluetooth/WebBluetoothBrokerHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..e29f83d0a7d6a1f92d912485554915150820882a
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/bluetooth/WebBluetoothBrokerHaiku.h
+@@ -0,0 +1,49 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#if ENABLE(WEB_BLUETOOTH)
++#include "BluetoothSessionHaiku.h"
++#include <Messenger.h>
++#include <functional>
++#include <wtf/CompletionHandler.h>
++#include <wtf/HashMap.h>
++#include <wtf/JSONValues.h>
++#include <wtf/WorkQueue.h>
++#include <wtf/text/StringHash.h>
++
++namespace WebKit {
++class SitePermissionsHaiku;
++class WebBluetoothBrokerHaiku final : public std::enable_shared_from_this<WebBluetoothBrokerHaiku> {
++public:
++    using Completion = CompletionHandler<void(String&&, Vector<uint8_t>&&)>;
++    static std::shared_ptr<WebBluetoothBrokerHaiku> create(std::shared_ptr<SitePermissionsHaiku>);
++    ~WebBluetoothBrokerHaiku();
++    void request(uint64_t page, const String& owner, const String& origin, const BMessenger&,
++        const String& arguments, Vector<uint8_t>&&, std::function<bool()>&& isCurrent, Completion&&);
++    void cancelPage(uint64_t);
++    void shutdown();
++private:
++    explicit WebBluetoothBrokerHaiku(std::shared_ptr<SitePermissionsHaiku>);
++    struct Connection;
++    struct Grant {
++        String origin;
++        BluetoothHaiku::Device device;
++        std::set<WebCore::BluetoothHaiku::UUID> services;
++        String owner;
++        uint64_t page { 0 };
++        std::shared_ptr<Connection> connection;
++        unsigned pending { 0 };
++    };
++    struct Scan { uint64_t page; std::shared_ptr<std::atomic<bool>> cancelled; BMessenger view; };
++    void choose(uint64_t, const String&, const String&, const BMessenger&, Ref<JSON::Object>&&,
++        std::function<bool()>&&, Completion&&);
++    void closeGrant(Grant&);
++    const std::shared_ptr<SitePermissionsHaiku> m_permissions;
++    const Ref<WorkQueue> m_scanQueue;
++    HashMap<String, std::unique_ptr<Grant>> m_grants;
++    HashMap<uint64_t, Scan> m_scans;
++    uint64_t m_nextScan { 0 };
++    unsigned m_pendingAvailability { 0 };
++    bool m_shutdown { false };
++};
++}
++#endif
 diff --git a/Source/WebKit/UIProcess/haiku/usb/USBDevicePolicyHaiku.h b/Source/WebKit/UIProcess/haiku/usb/USBDevicePolicyHaiku.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..fece383da7906574b8bfdcaf6a877c1f7c2a99ad
@@ -121406,7 +123651,7 @@ index 8677b9d9f5c1e61cbe8b0a184b669022d8db3eed..3ef5c5295f89885202331129b3eb86ac
  #include "MessageSenderInlines.h"
  #include "WebAuthenticatorCoordinatorProxyMessages.h"
 diff --git a/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.cpp b/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.cpp
-index 335b456329f885a77d3880fc2a98b2b58cb4bee8..98b0338dd908b2b3208d1f3a2c24aec2f3c145f3 100644
+index 335b456329f885a77d3880fc2a98b2b58cb4bee8..2c58ecfae17f7abdfb2c73052b0a748458c56d5b 100644
 --- a/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.cpp
 +++ b/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.cpp
 @@ -120,6 +120,9 @@
@@ -121428,7 +123673,7 @@ index 335b456329f885a77d3880fc2a98b2b58cb4bee8..98b0338dd908b2b3208d1f3a2c24aec2
  #endif
  
      auto sendResult = protect(WebProcess::singleton().parentProcessConnection())->sendSync(Messages::WebPageProxy::GetWindowFrame(), page->identifier());
-@@ -1076,6 +1081,30 @@ void WebChromeClient::transcodeChosenFiles(Vector<String>&& transcodingPaths, St
+@@ -1076,6 +1081,43 @@ void WebChromeClient::transcodeChosenFiles(Vector<String>&& transcodingPaths, St
      page->sendWithAsyncReply(Messages::WebPageProxy::TranscodeChosenFiles(transcodingPaths, destinationUTI, destinationExtension), WTF::move(completion));
  }
      
@@ -121445,6 +123690,19 @@ index 335b456329f885a77d3880fc2a98b2b58cb4bee8..98b0338dd908b2b3208d1f3a2c24aec2
 +    page->sendWithAsyncReply(Messages::WebPageProxy::UsbRequest(webFrame->frameID(), arguments, bytes), WTF::move(completion));
 +}
 +#endif
++#if ENABLE(WEB_BLUETOOTH)
++void WebChromeClient::bluetoothRequest(LocalFrame& frame, const String& arguments, Vector<uint8_t>&& bytes,
++    CompletionHandler<void(String&&, Vector<uint8_t>&&)>&& completion)
++{
++    RefPtr page = m_page.get();
++    auto* webFrame = WebFrame::fromCoreFrame(frame);
++    if (!page || !webFrame) {
++        completion("{\"error\":\"AbortError\"}"_s, { });
++        return;
++    }
++    page->sendWithAsyncReply(Messages::WebPageProxy::BluetoothRequest(webFrame->frameID(), arguments, bytes), WTF::move(completion));
++}
++#endif
 +
 +#if ENABLE(CUSTOM_PROTOCOL_HANDLERS)
 +void WebChromeClient::protocolHandlerRequested(LocalFrame& frame, const String& scheme, const URL& url, bool remove)
@@ -121459,7 +123717,7 @@ index 335b456329f885a77d3880fc2a98b2b58cb4bee8..98b0338dd908b2b3208d1f3a2c24aec2
  void WebChromeClient::showShareSheet(ShareDataWithParsedURL&& shareData, CompletionHandler<void(bool)>&& callback)
  {
      if (RefPtr page = m_page.get())
-@@ -1216,6 +1245,12 @@ RefPtr<GraphicsContextGL> WebChromeClient::createGraphicsContextGL(const Graphic
+@@ -1216,6 +1258,12 @@ RefPtr<GraphicsContextGL> WebChromeClient::createGraphicsContextGL(const Graphic
      WebProcess::singleton().initializePlatformDisplayIfNeeded();
      WebProcess::singleton().initializeVulkanIfNeeded();
  #endif
@@ -121472,7 +123730,7 @@ index 335b456329f885a77d3880fc2a98b2b58cb4bee8..98b0338dd908b2b3208d1f3a2c24aec2
  #if ENABLE(GPU_PROCESS)
      if (WebProcess::singleton().shouldUseRemoteRenderingForWebGL()) {
          RefPtr page = m_page.get();
-@@ -2282,7 +2317,7 @@ void WebChromeClient::setMockWebAuthenticationConfiguration(const MockWebAuthent
+@@ -2282,7 +2330,7 @@ void WebChromeClient::setMockWebAuthenticationConfiguration(const MockWebAuthent
  }
  #endif
  
@@ -121482,10 +123740,10 @@ index 335b456329f885a77d3880fc2a98b2b58cb4bee8..98b0338dd908b2b3208d1f3a2c24aec2
  {
      notImplemented();
 diff --git a/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.h b/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.h
-index de1365cbd5a6babca6154348d0ddbbecf5ed5f4d..3a8f7e9cb424a8f81efeda1341abf49b6a378cf1 100644
+index de1365cbd5a6babca6154348d0ddbbecf5ed5f4d..2b9dfdea598ce6d0b2a2ecefab7fe408bef4172d 100644
 --- a/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.h
 +++ b/Source/WebKit/WebProcess/WebCoreSupport/WebChromeClient.h
-@@ -223,6 +223,12 @@ private:
+@@ -223,6 +223,15 @@ private:
  
      void runOpenPanel(WebCore::LocalFrame&, WebCore::FileChooser&) final;
      void transcodeChosenFiles(Vector<String>&&, String&& destinationUTI, String&& destinationExtension, CompletionHandler<void(Vector<String>&&)>&&) final;
@@ -121495,10 +123753,13 @@ index de1365cbd5a6babca6154348d0ddbbecf5ed5f4d..3a8f7e9cb424a8f81efeda1341abf49b
 +#if ENABLE(WEBUSB)
 +    void usbRequest(WebCore::LocalFrame&, const String&, Vector<uint8_t>&&, CompletionHandler<void(String&&, Vector<uint8_t>&&)>&&) final;
 +#endif
++#if ENABLE(WEB_BLUETOOTH)
++    void bluetoothRequest(WebCore::LocalFrame&, const String&, Vector<uint8_t>&&, CompletionHandler<void(String&&, Vector<uint8_t>&&)>&&) final;
++#endif
      void showShareSheet(WebCore::ShareDataWithParsedURL&&, WTF::CompletionHandler<void(bool)>&&) final;
      void showContactPicker(WebCore::ContactsRequestData&&, WTF::CompletionHandler<void(std::optional<Vector<WebCore::ContactInfo>>&&)>&&) final;
  
-@@ -267,7 +273,7 @@ private:
+@@ -267,7 +276,7 @@ private:
      void AXFinishFrameLoad() final { }
  #endif
  
@@ -143038,10 +145299,10 @@ index 121e64b01bce34e387deacf3bbbca93adf0f59da..7926cd9c3edf141bc52f7db0253c37c0
  endif ()
 diff --git a/Source/cmake/OptionsHaiku.cmake b/Source/cmake/OptionsHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..509ac9e85014d9b4dc2ca3dd017ef42c90cd319b
+index 0000000000000000000000000000000000000000..2cef70764c90c6bfea1645cf3307fc8eb80419d4
 --- /dev/null
 +++ b/Source/cmake/OptionsHaiku.cmake
-@@ -0,0 +1,375 @@
+@@ -0,0 +1,376 @@
 +include(GNUInstallDirs)
 +include(VersioningUtils)
 +
@@ -143105,6 +145366,7 @@ index 0000000000000000000000000000000000000000..509ac9e85014d9b4dc2ca3dd017ef42c
 +WEBKIT_OPTION_BEGIN()
 +WEBKIT_OPTION_DEFINE(ENABLE_CUSTOM_PROTOCOL_HANDLERS "Enable website protocol handler registration" PUBLIC ${ENABLE_WEBKIT})
 +WEBKIT_OPTION_DEFINE(ENABLE_WEBUSB "Enable the native Haiku WebUSB broker" PUBLIC ${ENABLE_WEBKIT})
++WEBKIT_OPTION_DEFINE(ENABLE_WEB_BLUETOOTH "Enable the native air/OS Web Bluetooth broker" PUBLIC ${ENABLE_WEBKIT})
 +WEBKIT_OPTION_DEFINE(USE_HEIF "Enable HEIC still image decoding through libheif" PUBLIC OFF)
 +WEBKIT_OPTION_DEFINE(USE_JPEGXR "Enable JPEG XR image coding through jxrlib" PUBLIC OFF)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_ATTACHMENT_ELEMENT PUBLIC OFF)

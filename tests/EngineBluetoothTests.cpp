@@ -1,5 +1,6 @@
 #include "BluetoothATTClientHaiku.h"
 #include "BluetoothGATTHaiku.h"
+#include "BluetoothTestTransportHaiku.h"
 #include <cassert>
 #include <algorithm>
 #include <iostream>
@@ -151,6 +152,20 @@ int main()
     GATTConnection privateGatt(privateClient,{UUID::alias(0x180f)});assert(privateGatt.initialize());
     assert(privateGatt.services({},allowedServices));assert(privateGatt.characteristics(1,{},allowedChars)&&allowedChars.size()==1);
     packets=privatePeer.sent.size();assert(privateGatt.read(3,false,read).error==GATTError::Security);assert(privatePeer.sent.size()==packets);
+    TestTransport testPeer; ATTClient testClient(testPeer); GATTConnection testGatt(testClient,{UUID::alias(0x180f),UUID::alias(0x180a)});
+    assert(testGatt.initialize());
+    assert(testGatt.services({},allowedServices)&&allowedServices.size()==2);
+    assert(testGatt.characteristics(1,{},allowedChars)&&allowedChars.size()==1);
+    assert(testGatt.read(3,false,read)&&read==std::vector<uint8_t>{88});
+    assert(testGatt.descriptors(3,{},allowedDescriptors)&&allowedDescriptors.size()==2);
+    assert(testGatt.write(5,true,std::vector<uint8_t>{'O','K'},true));
+    assert(testGatt.read(5,true,read)&&read==std::vector<uint8_t>({'O','K'}));
+    std::vector<uint8_t> longValue(512,77);
+    assert(testGatt.write(3,false,longValue,true)&&testGatt.read(3,false,read)&&read==longValue);
+    assert(testGatt.includedServices(1,{},allowedServices)&&allowedServices.size()==1&&allowedServices[0].start==11);
+    assert(testGatt.notifications(3,true));assert(testGatt.poll(notifications)&&notifications.size()==1);
+    assert(testGatt.write(3,false,std::vector<uint8_t>{254},true));
+    assert(testGatt.poll(notifications).error==GATTError::InvalidState);
     std::mt19937 random(0x626c65);
     for(unsigned i=0;i<5000;i++) {
         std::vector<uint8_t> fuzz(random()%64);for(auto& byte:fuzz)byte=random();Advertisement advertisement;advertisement.append(fuzz);

@@ -63,14 +63,16 @@ const char* Question(const std::string& permission)
 class DevicePermissionPicker final : public BWindow {
 public:
     DevicePermissionPicker(const BMessage& request, const std::string& question, BMessenger service)
-        : BWindow(BRect(0, 0, 380, 260), std::strcmp(request.GetString("permission", ""), "usb") == 0 ? "Connect USB Device" : "Share Your Screen", B_FLOATING_WINDOW_LOOK, B_FLOATING_APP_WINDOW_FEEL,
+        : BWindow(BRect(0, 0, 380, 260), std::strcmp(request.GetString("permission", ""), "bluetooth") == 0 ? "Connect Bluetooth Device"
+            : std::strcmp(request.GetString("permission", ""), "usb") == 0 ? "Connect USB Device" : "Share Your Screen", B_FLOATING_WINDOW_LOOK, B_FLOATING_APP_WINDOW_FEEL,
             B_NOT_ZOOMABLE | B_AUTO_UPDATE_SIZE_LIMITS | B_CLOSE_ON_ESCAPE)
         , fService(service)
         , fPermission(request.GetString("permission", ""))
         , fOrigin(request.GetString("origin", ""))
+        , fIdentifier(request.GetUInt64("identifier", 0))
     {
         auto* text = new BStringView("question", question.c_str());
-        auto* note = new BStringView("note", fPermission == "usb"
+        auto* note = new BStringView("note", (fPermission == "usb" || fPermission == "bluetooth")
             ? "Allow this site to communicate with this device for this browsing session."
             : "The page sees everything in it while you share. A window is shared with whatever covers it.");
         BFont small(be_plain_font);
@@ -89,7 +91,7 @@ public:
         auto* scroll = new BScrollView("choices-scroll", fList, 0, false, true);
         const float row = fList->CountItems() ? fList->ItemAt(0)->Height() + 1 : 18;
         scroll->SetExplicitMinSize(BSize(340, row * std::min<int32>(std::max<int32>(fList->CountItems(), 3), 10) + 4));
-        auto* share = new BButton("share", fPermission == "usb" ? "Connect" : "Share", new BMessage(kShare));
+        auto* share = new BButton("share", (fPermission == "usb" || fPermission == "bluetooth") ? "Connect" : "Share", new BMessage(kShare));
         auto* cancel = new BButton("cancel", "Cancel", new BMessage(B_QUIT_REQUESTED));
         BLayoutBuilder::Group<>(this, B_VERTICAL, B_USE_DEFAULT_SPACING)
             .SetInsets(B_USE_WINDOW_INSETS)
@@ -133,6 +135,7 @@ private:
         BMessage answer(kPromptAnswered);
         answer.AddString("permission", fPermission.c_str());
         answer.AddString("origin", fOrigin.c_str());
+        answer.AddUInt64("identifier", fIdentifier);
         answer.AddInt32("which", which);
         answer.AddString("device_id", id.c_str());
         fService.SendMessage(&answer);
@@ -140,6 +143,7 @@ private:
 
     BMessenger fService;
     std::string fPermission, fOrigin;
+    uint64 fIdentifier;
     BListView* fList = nullptr;
     std::vector<std::string> fIds;
     bool fAnswered = false;
@@ -179,6 +183,7 @@ void SitePermissionService::MessageReceived(BMessage* message)
 {
     switch (message->what) {
     case B_WEBKIT_PERMISSION_REQUESTED: Ask(*message); break;
+    case B_WEBKIT_PERMISSION_CANCELLED: Cancelled(*message); break;
     case kPromptAnswered: Answered(*message); break;
     case B_WEBKIT_NOTIFICATION_SHOW: ShowNotification(*message); break;
     case B_WEBKIT_NOTIFICATION_CLOSE:
@@ -214,18 +219,18 @@ void SitePermissionService::Ask(const BMessage& request)
     if (Tracing())
         std::fprintf(stderr, "Summit permissions: %s asks for %s (request %llu)\n", origin.c_str(), permission.c_str(),
             static_cast<unsigned long long>(identifier));
-    // USB requests may contain different filter/device sets. Never merge their
+    // Device requests may contain different filter/device sets. Never merge their
     // answers into an existing prompt for the same origin.
-    if (permission == "usb" && fPrompts.count({permission, origin})) {
+    if ((permission == "usb" || permission == "bluetooth") && fPrompts.count({permission, origin})) {
         context->RespondToMediaPermissionRequest(identifier, false, "");
         return;
     }
     auto& waiting = fPrompts[{permission, origin}];
     waiting.push_back(identifier);
     if (waiting.size() > 1) return;
-    if (permission == "screen" || permission == "usb") {
-        std::string question = HostOf(origin) + (permission == "usb"
-            ? " wants to connect to a USB device." : " wants to see your screen.");
+    if (permission == "screen" || permission == "usb" || permission == "bluetooth") {
+        std::string question = HostOf(origin) + (permission == "bluetooth" ? " wants to connect to a Bluetooth device."
+            : permission == "usb" ? " wants to connect to a USB device." : " wants to see your screen.");
         if (request.GetBool("audio", false)) question += " (Its sound is not shared.)";
         auto* picker = new DevicePermissionPicker(request, question, BMessenger(this));
         picker->Lock();
@@ -265,6 +270,7 @@ void SitePermissionService::Ask(const BMessage& request)
     auto* answer = new BMessage(kPromptAnswered);
     answer->AddString("permission", permission.c_str());
     answer->AddString("origin", origin.c_str());
+    answer->AddUInt64("identifier", identifier);
     fPromptWindows[{permission, origin}].window = BMessenger(alert);
     alert->Go(new BInvoker(answer, this));
 }
@@ -276,8 +282,9 @@ bool SitePermissionService::AnswerOpenPrompt(int32 which, int32 deviceIndex)
     BMessage answer(kPromptAnswered);
     answer.AddString("permission", permission.c_str());
     answer.AddString("origin", origin.c_str());
+    answer.AddUInt64("identifier", fPrompts.begin()->second.front());
     answer.AddInt32("which", which);
-    if ((permission == "screen" || permission == "usb") && which == 2) {
+    if ((permission == "screen" || permission == "usb" || permission == "bluetooth") && which == 2) {
         const auto shown = fPromptWindows.find(fPrompts.begin()->first);
         if (shown == fPromptWindows.end() || shown->second.devices.empty()) return false;
         const auto& devices = shown->second.devices;
@@ -293,6 +300,8 @@ void SitePermissionService::Answered(const BMessage& message)
     const int32 which = message.GetInt32("which", 1);
     auto found = fPrompts.find({permission, origin});
     if (found == fPrompts.end()) return;
+    const uint64 identifier = message.GetUInt64("identifier", 0);
+    if (std::find(found->second.begin(), found->second.end(), identifier) == found->second.end()) return;
     const auto identifiers = std::move(found->second);
     fPrompts.erase(found);
     // Answered from elsewhere (AnswerOpenPrompt) while its window is open;
@@ -310,7 +319,7 @@ void SitePermissionService::Answered(const BMessage& message)
     // every time.
     std::vector<std::string> saved;
     if (permission == "camera-microphone") saved = {"camera", "microphone"};
-    else if (permission != "screen" && permission != "usb") saved = {permission};
+    else if (permission != "screen" && permission != "usb" && permission != "bluetooth") saved = {permission};
     if (which != 1) {
         for (const auto& name : saved) fSave(name, origin, allowed);
     }
@@ -320,11 +329,29 @@ void SitePermissionService::Answered(const BMessage& message)
             for (const auto& name : saved) context->SetSitePermission(name.c_str(), origin.c_str(), allowed ? 1 : 0);
         }
         for (const uint64 identifier : identifiers) {
-            if (permission == "screen" || permission == "usb")
+            if (permission == "screen" || permission == "usb" || permission == "bluetooth")
                 context->RespondToMediaPermissionRequest(identifier, allowed && !device.empty(), device.c_str());
             else
                 context->RespondToPermissionRequest(identifier, allowed);
         }
+    }
+}
+
+void SitePermissionService::Cancelled(const BMessage& message)
+{
+    const uint64 identifier = message.GetUInt64("identifier", 0);
+    for (auto found = fPrompts.begin(); found != fPrompts.end(); ++found) {
+        auto& identifiers = found->second;
+        auto request = std::find(identifiers.begin(), identifiers.end(), identifier);
+        if (request == identifiers.end()) continue;
+        identifiers.erase(request);
+        if (!identifiers.empty()) return;
+        if (auto shown = fPromptWindows.find(found->first); shown != fPromptWindows.end()) {
+            shown->second.window.SendMessage(B_QUIT_REQUESTED);
+            fPromptWindows.erase(shown);
+        }
+        fPrompts.erase(found);
+        return;
     }
 }
 
