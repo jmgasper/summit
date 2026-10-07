@@ -2,22 +2,23 @@
 #define SUMMIT_EXTENSION_OVERFLOW_HELPERS_ONLY
 #include "ModernExtensionOverflowTests.cpp"
 
-static bool IconMatches(const BMessage& action, const json& color)
+static bool IconMatches(const BMessage& action, const json& color, int dimension = 16)
 {
     const void* data = nullptr;
     ssize_t size = 0;
     if (!action.GetUInt64("load_identifier", 0) || !action.GetUInt64("page_identifier", 0)
-        || action.FindData("icon_bgra", B_RAW_TYPE, &data, &size) != B_OK || size != 1024) return false;
+        || action.FindData(dimension == 32 ? "icon_bgra_32" : "icon_bgra", B_RAW_TYPE, &data, &size) != B_OK
+        || size != dimension * dimension * 4) return false;
     const auto* pixels = static_cast<const uint8*>(data);
-    for (int y = 4; y < 12; ++y) for (int x = 4; x < 12; ++x) {
-        const auto* pixel = pixels + (y * 16 + x) * 4;
+    for (int y = dimension / 4; y < dimension * 3 / 4; ++y) for (int x = dimension / 4; x < dimension * 3 / 4; ++x) {
+        const auto* pixel = pixels + (y * dimension + x) * 4;
         for (int channel = 0; channel < 4; ++channel)
             if (std::abs(int(pixel[channel == 3 ? 3 : 2 - channel]) - color[channel].get<int>()) > 2) return false;
     }
     return true;
 }
 
-static void IconScreenPixels(const BMessenger& window, const char* name, const json& color)
+static void IconScreenPixels(const BMessenger& window, const char* name, const json& color, const std::filesystem::path& diagnosticPath)
 {
     auto target = View(window, name);
     BRect windowFrame, frame;
@@ -39,7 +40,7 @@ static void IconScreenPixels(const BMessenger& window, const char* name, const j
     Require(find(window, windowFrame.LeftTop(), 0) && frame.Width() >= 24 && frame.Height() >= 24 && screen.Frame().Contains(frame),
         "dynamic icon capture is inside the actual native control");
     BBitmap bitmap(BRect(0, 0, frame.Width(), frame.Height()), B_RGBA32);
-    Require(Wait([&] {
+    const bool matches = Wait([&] {
         if (bitmap.InitCheck() != B_OK || screen.ReadBitmap(&bitmap, false, &frame) != B_OK) return false;
         int cx = int(frame.Width()) / 2, cy = int(frame.Height()) / 2;
         auto* pixels = static_cast<const uint8*>(bitmap.Bits());
@@ -54,14 +55,32 @@ static void IconScreenPixels(const BMessenger& window, const char* name, const j
             }
         }
         return true;
-    }), "actual desktop pixels render the dynamic icon with its alpha");
+    });
+    if (!matches && bitmap.InitCheck() == B_OK) {
+        const int width = bitmap.Bounds().IntegerWidth() + 1;
+        const int height = bitmap.Bounds().IntegerHeight() + 1;
+        const auto* pixels = static_cast<const uint8*>(bitmap.Bits());
+        const auto* center = pixels + (height / 2) * bitmap.BytesPerRow() + (width / 2) * 4;
+        std::printf("ICON_SCREEN_MISMATCH frame=[%g,%g,%g,%g] expected=%s center_rgba=[%u,%u,%u,%u]\n",
+            frame.left, frame.top, frame.right, frame.bottom, color.dump().c_str(), center[2], center[1], center[0], center[3]);
+        std::ofstream capture(diagnosticPath, std::ios::binary);
+        capture << "P6\n" << width << ' ' << height << "\n255\n";
+        for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) {
+            const auto* pixel = pixels + y * bitmap.BytesPerRow() + x * 4;
+            const char rgb[] = { static_cast<char>(pixel[2]), static_cast<char>(pixel[1]), static_cast<char>(pixel[0]) };
+            capture.write(rgb, sizeof(rgb));
+        }
+    }
+    Require(matches, "actual desktop pixels render the dynamic icon with its alpha");
 }
 
 int main(int argc, char** argv)
 {
     if (argc == 3 && std::string(argv[1]) == "--check-executable-unused") return SummitCloseHarnessEntry(argc, argv);
-    if (argc != 5 && argc != 6) return 2;
-    const bool watch = argc == 6 && std::string(argv[5]) == "watch";
+    if (argc < 6 || argc > 7) return 2;
+    const bool highDensity = std::string(argv[5]) == "2";
+    if (!highDensity && std::string(argv[5]) != "1") return 2;
+    const bool watch = argc == 7 && std::string(argv[6]) == "watch";
     status_t status;
     BApplication test("application/x-vnd.Kunanyi-Summit-icon-tests", &status);
     if (status != B_OK) return 1;
@@ -129,7 +148,10 @@ int main(int argc, char** argv)
                 }
             }
             Require(pixelsMatch, item["label"].get<std::string>() + " has the expected decoded SDK pixels");
-            IconScreenPixels(window, control, color);
+            const auto& largeColor = item.contains("rgba32") ? item["rgba32"] : color;
+            Require(Wait([&] { return IconMatches(ExtensionAction(window, "summit-action-icons"), largeColor, 32); }),
+                item["label"].get<std::string>() + " has the expected 32px SDK pixels");
+            IconScreenPixels(window, control, highDensity ? largeColor : color, std::filesystem::path(argv[3]).parent_path() / "icon-screen-failure.ppm");
             if (watch) snooze(400000);
         }
         Send(app, B_QUIT_REQUESTED);

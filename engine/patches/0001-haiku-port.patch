@@ -63649,10 +63649,10 @@ index c6ffb3e89eeaffe26af5d76690da641e7b65c4c0..c71dbdcfb65137fa950b35451b2415e1
          return nullString();
      case WebExtensionEventListenerType::ActionOnClicked:
 diff --git a/Source/WebKit/Shared/Extensions/WebExtensionEventListenerType.serialization.in b/Source/WebKit/Shared/Extensions/WebExtensionEventListenerType.serialization.in
-index 66271809620c823d465be4cee34c1806ab422cbe..bb97e6002e6738b3a56e9edd7800f04f66891ddf 100644
+index 66271809620c823d465be4cee34c1806ab422cbe..e9d89039281cc773b82b234c08613a17bd758e89 100644
 --- a/Source/WebKit/Shared/Extensions/WebExtensionEventListenerType.serialization.in
 +++ b/Source/WebKit/Shared/Extensions/WebExtensionEventListenerType.serialization.in
-@@ -90,6 +90,24 @@ enum class WebKit::WebExtensionEventListenerType : uint8_t {
+@@ -90,6 +90,23 @@ enum class WebKit::WebExtensionEventListenerType : uint8_t {
      WindowsOnCreated,
      WindowsOnFocusChanged,
      WindowsOnRemoved,
@@ -63663,7 +63663,6 @@ index 66271809620c823d465be4cee34c1806ab422cbe..bb97e6002e6738b3a56e9edd7800f04f
 +    ManagementOnEnabled,
 +    ManagementOnInstalled,
 +    ManagementOnUninstalled,
-+    NotificationsOnClosed,
 +    NotificationsOnShown,
 +    RuntimeOnSuspend,
 +    RuntimeOnSuspendCanceled,
@@ -89917,10 +89916,10 @@ index 0000000000000000000000000000000000000000..87388e7f5f83641e04309ca134336097
 +#endif
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..34621804a95de1bdd602b056ce94878e4a352598
+index 0000000000000000000000000000000000000000..883a55377c8fdf1677038614e9626406350909cb
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionHaiku.cpp
-@@ -0,0 +1,329 @@
+@@ -0,0 +1,339 @@
 +/*
 + * Copyright (C) 2026 KunanyiOS contributors.
 + *
@@ -90215,12 +90214,22 @@ index 0000000000000000000000000000000000000000..34621804a95de1bdd602b056ce94878e
 +        RefPtr document = page ? page->localTopDocument() : nullptr;
 +        if (!document || !document->wellFormed() || !document->hasSVGRootNode())
 +            return fail();
-+        auto rasterSize = sizeForResizing.isZero() ? svg->resolvedIntrinsicSize() : sizeForResizing;
++        auto intrinsicSize = svg->resolvedIntrinsicSize();
++        if (!validIconSize(intrinsicSize))
++            return fail();
++        auto rasterSize = sizeForResizing.isZero() ? intrinsicSize : sizeForResizing;
 +        rasterSize.scale(scale);
 +        if (!validIconSize(rasterSize))
 +            return fail();
 +        // SVGImage uses an isolated image document with scripting disabled.
-+        nativeImage = svg->nativeImage(rasterSize);
++        // Lay out absolute SVG dimensions at their intrinsic size, then scale
++        // the full image into the requested bitmap. Enlarging only its viewport
++        // leaves a 16px SVG in one corner of the 32px toolbar representation.
++        RefPtr imageBuffer = WebCore::ImageBuffer::create(rasterSize, WebCore::RenderingMode::Unaccelerated, WebCore::RenderingPurpose::DOM, 1, WebCore::ColorSpace::SRGB(), WebCore::PixelFormat::BGRA8);
++        if (!imageBuffer)
++            return fail();
++        imageBuffer->context().drawImage(svg, WebCore::ConcreteObjectSize::fixed(intrinsicSize), WebCore::FloatRect({ }, rasterSize));
++        nativeImage = WebCore::ImageBuffer::sinkIntoNativeImage(WTF::move(imageBuffer));
 +    } else {
 +        Ref bitmap = WebCore::BitmapImage::create();
 +        if (bitmap->setData(WTF::move(encodedData), true) < WebCore::EncodedDataStatus::SizeAvailable || !validIconSize(bitmap->size()))
@@ -90237,7 +90246,7 @@ index 0000000000000000000000000000000000000000..34621804a95de1bdd602b056ce94878e
 +            RefPtr imageBuffer = WebCore::ImageBuffer::create(rasterSize, WebCore::RenderingMode::Unaccelerated, WebCore::RenderingPurpose::DOM, 1, WebCore::ColorSpace::SRGB(), WebCore::PixelFormat::BGRA8);
 +            if (!imageBuffer)
 +                return fail();
-+            imageBuffer->context().drawImage(bitmap, WebCore::ConcreteObjectSize::fixed(rasterSize), WebCore::FloatRect({ }, rasterSize));
++            imageBuffer->context().drawBitmapImage(bitmap, WebCore::FloatRect({ }, rasterSize));
 +            nativeImage = WebCore::ImageBuffer::sinkIntoNativeImage(WTF::move(imageBuffer));
 +        }
 +    }

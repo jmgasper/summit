@@ -37,7 +37,7 @@ def native(args):
                str(ROOT / 'tests/ModernExtensionIconTests.cpp'), '-lbe', '-o', str(executable)]
     compiled = subprocess.run(command, capture_output=True, text=True)
     report = {'scope': 'actual native installation and toolbar clicks, dynamic path/ImageData icons, callbacks/errors, size selection, resets, inheritance, navigation and closed-tab rejection, SDK pixels and desktop alpha compositing',
-              'bundle': str(bundle), 'inputs': inputs, 'compile_command': command, 'compile_exit': compiled.returncode,
+              'bundle': str(bundle), 'device_scale_factor': args.device_scale_factor, 'inputs': inputs, 'compile_command': command, 'compile_exit': compiled.returncode,
               'compile_output': compiled.stdout + compiled.stderr, 'passed': False}
     def save():
         (ROOT / 'result.json').write_text(json.dumps(report, indent=2) + '\n')
@@ -51,6 +51,15 @@ def native(args):
     profile = ROOT / 'profile'
     profile.mkdir(mode=0o700)
     environment = dict(os.environ, WEBKIT_EXEC_PATH=str(bundle), LIBRARY_PATH=str(bundle / 'lib') + ':/boot/system/lib')
+    environment['SUMMIT_DEVICE_SCALE_FACTOR'] = str(args.device_scale_factor)
+    if args.library_path_prefix:
+        if not Path(args.library_path_prefix).is_absolute() or not Path(args.library_path_prefix).is_dir():
+            raise RuntimeError('Native library prefix must be an existing absolute directory')
+        environment['LIBRARY_PATH'] = args.library_path_prefix + ':' + environment['LIBRARY_PATH']
+    if args.egl_vendor_json:
+        if not Path(args.egl_vendor_json).is_absolute() or not Path(args.egl_vendor_json).is_file():
+            raise RuntimeError('EGL vendor manifest must be an existing absolute file')
+        environment['__EGL_VENDOR_LIBRARY_FILENAMES'] = args.egl_vendor_json
     for key in ('LD_PRELOAD', 'LD_PRELOAD_ADDONS', 'DISABLE_ASLR'):
         environment.pop(key, None)
     def members(group):
@@ -75,7 +84,7 @@ def native(args):
             report['pid'] = report['process_group'] = process.pid
             save()
             try:
-                command = [str(executable), str(process.pid), str(bundle / 'Summit'), str(ROOT / 'package'), str(ROOT / 'package/expected.json')]
+                command = [str(executable), str(process.pid), str(bundle / 'Summit'), str(ROOT / 'package'), str(ROOT / 'package/expected.json'), str(args.device_scale_factor)]
                 if args.watch:
                     command.append('watch')
                 report['harness_command'] = command
@@ -119,8 +128,11 @@ def native(args):
 
 
 def host(args):
+    remote_shell = os.environ.get('SUMMIT_REMOTE_SHELL', 'tools/haiku.sh')
+    if remote_shell not in ('tools/haiku.sh', 'tools/ws.sh'):
+        raise RuntimeError('SUMMIT_REMOTE_SHELL must be tools/haiku.sh or tools/ws.sh')
     def remote(command, **kwargs):
-        return subprocess.run(['bash', str(ROOT / 'tools/haiku.sh'), command], **kwargs)
+        return subprocess.run(['bash', str(ROOT / remote_shell), command], **kwargs)
     names = ('tests/ModernExtensionIconTests.cpp', 'tests/ModernExtensionOverflowTests.cpp',
              'tests/ModernExtensionManagerTests.cpp', 'tests/ModernCloseTests.cpp',
              'tools/test-modern-extension-icons.py', 'tools/test-modern-close-native.py', 'tools/native_crash_log.py', 'tools/vm.py')
@@ -153,16 +165,26 @@ def host(args):
     remote('tar -xzf - -C ' + shlex.quote(stage), input=archive.getvalue(), check=True)
     print(json.dumps({'stage': stage, 'output': str(output)}), flush=True)
     command = ['python3.10', stage + '/tools/test-modern-extension-icons.py', '--native', '--bundle', args.bundle]
+    command += ['--device-scale-factor', str(args.device_scale_factor)]
+    if args.library_path_prefix:
+        command += ['--library-path-prefix', args.library_path_prefix]
+    if args.egl_vendor_json:
+        command += ['--egl-vendor-json', args.egl_vendor_json]
     if args.watch:
         command.append('--watch')
-    # These assertions read desktop pixels, so wake the VM's screen first.
-    subprocess.run(['python3', str(ROOT / 'tools/vm.py'), 'key', 'shift'], check=True)
+    # These assertions read desktop pixels, so wake the selected host first.
+    if remote_shell == 'tools/ws.sh':
+        subprocess.run(['python3', '-c',
+            'import sys; sys.path.insert(0, "tools/bench"); import guest; guest.wake_display()'],
+            cwd=ROOT, env=dict(os.environ, SUMMIT_BENCH_HOST='workstation'), check=True)
+    else:
+        subprocess.run(['python3', str(ROOT / 'tools/vm.py'), 'key', 'shift'], check=True)
     with (output / 'native.log').open('w') as log:
         result = remote(shlex.join(command), stdout=log, stderr=subprocess.STDOUT)
     print((output / 'native.log').read_text(), end='', flush=True)
     data = remote('cat ' + shlex.quote(stage + '/result.json'), capture_output=True, text=True, check=True)
     report = {'native': json.loads(data.stdout), 'sources_unchanged': all(digest(ROOT / name) == expected for name, expected in original.items()),
-              'source_sha256': original}
+              'source_sha256': original, 'remote_shell': remote_shell}
     report['passed'] = result.returncode == 0 and report['native']['passed'] and report['sources_unchanged']
     (output / 'result.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps({'passed': report['passed'], 'result': str(output / 'result.json')}), flush=True)
@@ -173,6 +195,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--bundle', required=True)
     parser.add_argument('--watch', action='store_true', help='Keep each verified image visible briefly in VNC')
+    parser.add_argument('--device-scale-factor', type=int, choices=(1, 2), default=1, help='Render scale for the isolated browser (both SDK icon sizes are always checked)')
+    parser.add_argument('--library-path-prefix', help='Native private graphics-library directory, ahead of bundled/system libraries')
+    parser.add_argument('--egl-vendor-json', help='Native EGL vendor manifest for the private graphics driver')
     parser.add_argument('--native', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
     raise SystemExit(native(args) if args.native else host(args))
