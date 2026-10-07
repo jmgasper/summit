@@ -56214,10 +56214,10 @@ index 0000000000000000000000000000000000000000..abdba4dff009ff314eecd9f825a128aa
 +} // namespace WebKit
 diff --git a/Source/WebKit/PlatformHaiku.cmake b/Source/WebKit/PlatformHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..87ae85e79e1f75b180273dc3ec760da7a90be84c
+index 0000000000000000000000000000000000000000..8206f6692f2f7292a48bdadef1702375417cfc21
 --- /dev/null
 +++ b/Source/WebKit/PlatformHaiku.cmake
-@@ -0,0 +1,492 @@
+@@ -0,0 +1,493 @@
 +include(Headers.cmake)
 +include(Platform/Curl.cmake)
 +
@@ -56345,6 +56345,7 @@ index 0000000000000000000000000000000000000000..87ae85e79e1f75b180273dc3ec760da7
 +    UIProcess/haiku/MemoryPressureMonitorHaiku.cpp
 +    UIProcess/haiku/TextCheckerHaiku.cpp
 +    UIProcess/haiku/WebPageProxyHaiku.cpp
++    UIProcess/haiku/WebColorPickerHaiku.cpp
 +    UIProcess/haiku/WebPopupMenuProxyHaiku.cpp
 +    UIProcess/haiku/WebProcessPoolHaiku.cpp
 +    UIProcess/haiku/WebView.cpp
@@ -92346,6 +92347,150 @@ index 0000000000000000000000000000000000000000..e74064b7ebc8e652df29d285e62b91ef
 +} // namespace WebKit
 +
 +#endif // OS(HAIKU)
+diff --git a/Source/WebKit/UIProcess/haiku/NativeColorPickerHaiku.h b/Source/WebKit/UIProcess/haiku/NativeColorPickerHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..e9cb002658620cb1ebd184697a6b449987c1dac4
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/NativeColorPickerHaiku.h
+@@ -0,0 +1,138 @@
++/* Copyright (C) 2026 air/OS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++
++#include <Button.h>
++#include <ColorControl.h>
++#include <GroupView.h>
++#include <LayoutBuilder.h>
++#include <Message.h>
++#include <Messenger.h>
++#include <Screen.h>
++#include <View.h>
++#include <Window.h>
++#include <algorithm>
++#include <atomic>
++#include <functional>
++#include <memory>
++#include <optional>
++#include <utility>
++#include <vector>
++
++namespace WebKit {
++
++// The window looper owns only native data. Its completion queues work for the
++// WebKit loop; cancel never waits for the window or dereferences a raw view.
++class NativeColorPickerHaiku final {
++    enum : uint32 { changed = 'cpch', accept = 'cpok', update = 'cpup', swatch = 'cpsw' };
++    struct Control {
++        explicit Control(std::function<void(std::optional<rgb_color>)>&& callback)
++            : complete(std::move(callback)) { }
++        const std::function<void(std::optional<rgb_color>)> complete;
++        std::atomic<bool> cancelled { false };
++    };
++    class Swatch final : public BButton {
++    public:
++        Swatch(rgb_color color, BMessage* message)
++            : BButton("color-swatch", "", message), m_color(color)
++        {
++            SetExplicitSize(BSize(24, 24));
++        }
++        void Draw(BRect) override
++        {
++            auto bounds = Bounds();
++            SetHighColor(ui_color(B_PANEL_TEXT_COLOR)); StrokeRect(bounds);
++            bounds.InsetBy(2, 2);
++            SetHighColor(m_color); FillRect(bounds);
++        }
++        void setColor(rgb_color color) { m_color = color; Invalidate(); }
++    private:
++        rgb_color m_color;
++    };
++    class Window final : public BWindow {
++    public:
++        Window(std::shared_ptr<Control> control, rgb_color initial, const std::vector<rgb_color>& suggestions, BRect anchor)
++            : BWindow(BRect(0, 0, 360, 260), "Choose color — Summit", B_TITLED_WINDOW,
++                B_ASYNCHRONOUS_CONTROLS | B_AUTO_UPDATE_SIZE_LIMITS | B_NOT_RESIZABLE | B_NOT_ZOOMABLE | B_CLOSE_ON_ESCAPE)
++            , m_control(std::move(control))
++        {
++            m_picker = new BColorControl(B_ORIGIN, B_CELLS_32x8, 8, "color-picker", new BMessage(changed));
++            m_picker->SetValue(initial);
++            m_preview = new Swatch(initial, nullptr);
++            m_preview->SetEnabled(false);
++            auto* done = new BButton("color-done", "Done", new BMessage(accept));
++            auto* cancel = new BButton("color-cancel", "Cancel", new BMessage(B_QUIT_REQUESTED));
++            auto layout = BLayoutBuilder::Group<>(this, B_VERTICAL, 12).SetInsets(12);
++            layout.Add(m_picker);
++            if (!suggestions.empty()) {
++                auto* colors = new BGroupView("suggested-colors", B_HORIZONTAL, 4);
++                for (auto color : suggestions) {
++                    auto* message = new BMessage(swatch);
++                    message->AddData("color", B_RGB_COLOR_TYPE, &color, sizeof(color));
++                    colors->AddChild(new Swatch(color, message));
++                }
++                layout.Add(colors);
++            }
++            layout.AddGroup(B_HORIZONTAL, 8).Add(m_preview).AddGlue().Add(cancel).Add(done).End();
++            SetDefaultButton(done);
++            Layout(true);
++            auto screen = BScreen().Frame();
++            MoveTo(std::clamp(anchor.left, screen.left, std::max(screen.left, screen.right - Bounds().Width())),
++                std::clamp(anchor.bottom + 8, screen.top + 24, std::max(screen.top + 24, screen.bottom - Bounds().Height())));
++        }
++        bool QuitRequested() override { finish(std::nullopt); return true; }
++        void MessageReceived(BMessage* message) override
++        {
++            if (message->what == accept) {
++                finish(m_picker->ValueAsColor());
++                PostMessage(B_QUIT_REQUESTED);
++                return;
++            }
++            if (message->what == update || message->what == swatch) {
++                const rgb_color* color = nullptr;
++                ssize_t size = 0;
++                if (message->FindData("color", B_RGB_COLOR_TYPE, reinterpret_cast<const void**>(&color), &size) == B_OK && size == sizeof(rgb_color))
++                    m_picker->SetValue(*color);
++                m_preview->setColor(m_picker->ValueAsColor());
++                return;
++            }
++            if (message->what == changed) { m_preview->setColor(m_picker->ValueAsColor()); return; }
++            BWindow::MessageReceived(message);
++        }
++    private:
++        void finish(std::optional<rgb_color> color)
++        {
++            if (std::exchange(m_finished, true) || m_control->cancelled) return;
++            m_control->complete(color);
++        }
++        const std::shared_ptr<Control> m_control;
++        BColorControl* m_picker { nullptr };
++        Swatch* m_preview { nullptr };
++        bool m_finished { false };
++    };
++public:
++    NativeColorPickerHaiku(rgb_color initial, const std::vector<rgb_color>& suggestions, BRect anchor,
++        std::function<void(std::optional<rgb_color>)>&& completion)
++        : m_control(std::make_shared<Control>(std::move(completion)))
++    {
++        auto* window = new Window(m_control, initial, suggestions, anchor);
++        m_window = BMessenger(window);
++        window->Show();
++    }
++    ~NativeColorPickerHaiku() { cancel(); }
++    void cancel()
++    {
++        m_control->cancelled = true;
++        BMessage message(B_QUIT_REQUESTED);
++        m_window.SendMessage(&message, static_cast<BHandler*>(nullptr), 0);
++    }
++    void setColor(rgb_color color)
++    {
++        BMessage message(update);
++        message.AddData("color", B_RGB_COLOR_TYPE, &color, sizeof(color));
++        m_window.SendMessage(&message, static_cast<BHandler*>(nullptr), 0);
++    }
++private:
++    const std::shared_ptr<Control> m_control;
++    BMessenger m_window;
++};
++} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/NativeExtensionPopupHaiku.h b/Source/WebKit/UIProcess/haiku/NativeExtensionPopupHaiku.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..9fa4b7ac5416aa7f51b2aa0b770fde7890a4afe0
@@ -93758,6 +93903,138 @@ index 0000000000000000000000000000000000000000..82037ad3e803b1f34c0c83a5b0b81646
 +#endif
 +
 +} // namespace WebKit
+diff --git a/Source/WebKit/UIProcess/haiku/WebColorPickerHaiku.cpp b/Source/WebKit/UIProcess/haiku/WebColorPickerHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..7f0f82faf4ddc6bba0c5392912b862afbf66217f
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/WebColorPickerHaiku.cpp
+@@ -0,0 +1,89 @@
++/* Copyright (C) 2026 air/OS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#include "WebColorPickerHaiku.h"
++
++#include "NativeColorPickerHaiku.h"
++#include "WebPageProxy.h"
++#include "WebViewStateHaiku.h"
++#include <WebCore/Color.h>
++#include <WebCore/IntRect.h>
++#include <cmath>
++#include <wtf/Function.h>
++#include <wtf/RunLoop.h>
++
++namespace WebKit {
++struct WebColorPickerHaiku::CompletionState {
++    // Only read, invoked or cleared on the WebKit main thread.
++    Function<void(std::optional<rgb_color>)> callback;
++};
++Ref<WebColorPickerHaiku> WebColorPickerHaiku::create(WebPageProxy& page, std::shared_ptr<WebViewStateHaiku> state,
++    Vector<WebCore::Color>&& suggestions, std::optional<WebCore::FrameIdentifier> frame)
++{
++    return adoptRef(*new WebColorPickerHaiku(page, std::move(state), WTF::move(suggestions), frame));
++}
++WebColorPickerHaiku::WebColorPickerHaiku(WebPageProxy& page, std::shared_ptr<WebViewStateHaiku> state,
++    Vector<WebCore::Color>&& suggestions, std::optional<WebCore::FrameIdentifier> frame)
++    : WebColorPicker(&page.colorPickerClient(), frame), m_state(std::move(state)), m_suggestions(WTF::move(suggestions)) { }
++WebColorPickerHaiku::~WebColorPickerHaiku() { invalidate(); }
++void WebColorPickerHaiku::invalidate()
++{
++    ASSERT(RunLoop::isMain());
++    if (m_completion) m_completion->callback = nullptr;
++    m_completion = nullptr;
++    m_native = nullptr;
++}
++void WebColorPickerHaiku::endPicker()
++{
++    Ref protectedThis { *this };
++    invalidate();
++    WebColorPicker::endPicker();
++}
++void WebColorPickerHaiku::setSelectedColor(const WebCore::Color& color)
++{
++    ASSERT(RunLoop::isMain());
++    if (m_native) m_native->setColor(color);
++}
++void WebColorPickerHaiku::showColorPicker(const WebCore::Color& color, const WebCore::IntRect& rect)
++{
++    ASSERT(RunLoop::isMain());
++    invalidate();
++    auto state = m_state.lock();
++    if (!client() || !state || state->closed) { endPicker(); return; }
++    WebViewGeometryHaiku geometry;
++    { std::lock_guard lock(state->mutex); geometry = state->geometry; }
++    if (!geometry.attached || !geometry.visible) { endPicker(); return; }
++    // elementRect is in root-view coordinates, already accounting for zoom.
++    BRect anchor(geometry.screenOrigin.x() + rect.x(), geometry.screenOrigin.y() + rect.y(),
++        geometry.screenOrigin.x() + static_cast<double>(rect.maxX()), geometry.screenOrigin.y() + static_cast<double>(rect.maxY()));
++    if (!anchor.IsValid() || !std::isfinite(anchor.left) || !std::isfinite(anchor.top)
++        || !std::isfinite(anchor.right) || !std::isfinite(anchor.bottom)) { endPicker(); return; }
++    std::vector<rgb_color> suggestions;
++    // Keep author-provided suggestions within one reasonable native row.
++    for (auto& suggestion : m_suggestions) {
++        if (suggestions.size() == 10) break;
++        suggestions.push_back(suggestion);
++    }
++    m_completion = std::make_shared<CompletionState>();
++    m_completion->callback = [this](std::optional<rgb_color> selected) { complete(selected); };
++    m_native = std::make_unique<NativeColorPickerHaiku>(color, suggestions, anchor,
++        [completion = m_completion](std::optional<rgb_color> selected) {
++            RunLoop::mainSingleton().dispatch([completion, selected] {
++                if (auto callback = std::exchange(completion->callback, nullptr)) callback(selected);
++            });
++        });
++}
++void WebColorPickerHaiku::complete(std::optional<rgb_color> selected)
++{
++    ASSERT(RunLoop::isMain());
++    Ref protectedThis { *this };
++    auto state = m_state.lock();
++    if (selected && state && !state->closed) {
++        bool visible;
++        { std::lock_guard lock(state->mutex); visible = state->geometry.visible; }
++        if (visible) {
++            if (CheckedPtr client = this->client()) client->didChooseColor(WebCore::Color(*selected));
++        }
++    }
++    endPicker();
++}
++}
+diff --git a/Source/WebKit/UIProcess/haiku/WebColorPickerHaiku.h b/Source/WebKit/UIProcess/haiku/WebColorPickerHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..60291d60bcbc7a44b006a88500f1c374ef9f083a
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/WebColorPickerHaiku.h
+@@ -0,0 +1,31 @@
++/* Copyright (C) 2026 air/OS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#include "WebColorPicker.h"
++#include <InterfaceDefs.h>
++#include <WebCore/Color.h>
++#include <memory>
++#include <optional>
++#include <wtf/Vector.h>
++
++struct rgb_color;
++namespace WebKit {
++class NativeColorPickerHaiku;
++struct WebViewStateHaiku;
++class WebColorPickerHaiku final : public WebColorPicker {
++public:
++    static Ref<WebColorPickerHaiku> create(WebPageProxy&, std::shared_ptr<WebViewStateHaiku>, Vector<WebCore::Color>&&, std::optional<WebCore::FrameIdentifier>);
++    ~WebColorPickerHaiku() override;
++    void endPicker() override;
++    void setSelectedColor(const WebCore::Color&) override;
++    void showColorPicker(const WebCore::Color&, const WebCore::IntRect&) override;
++private:
++    WebColorPickerHaiku(WebPageProxy&, std::shared_ptr<WebViewStateHaiku>, Vector<WebCore::Color>&&, std::optional<WebCore::FrameIdentifier>);
++    void complete(std::optional<rgb_color>);
++    void invalidate();
++    struct CompletionState;
++    const std::weak_ptr<WebViewStateHaiku> m_state;
++    Vector<WebCore::Color> m_suggestions;
++    std::shared_ptr<CompletionState> m_completion;
++    std::unique_ptr<NativeColorPickerHaiku> m_native;
++};
++}
 diff --git a/Source/WebKit/UIProcess/haiku/WebExtensionTimingHaiku.h b/Source/WebKit/UIProcess/haiku/WebExtensionTimingHaiku.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..9ee7bbd2503a50b1c2115e1cc826e86fb7b4386b
@@ -94379,10 +94656,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..a100ea8256383c4a7ef7db49e09dc60060921dce
+index 0000000000000000000000000000000000000000..a8cc54e5313a71d0ebbd131344cd0c1c4907809b
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,2380 @@
+@@ -0,0 +1,2388 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -94442,6 +94719,7 @@ index 0000000000000000000000000000000000000000..a100ea8256383c4a7ef7db49e09dc600
 +#include "WKAPICast.h"
 +#include "WKPage.h"
 +#include "WebColorPicker.h"
++#include "WebColorPickerHaiku.h"
 +#include "WebContextMenuProxy.h"
 +#include "WebDataListSuggestionsDropdown.h"
 +#include "WebDateTimePicker.h"
@@ -95753,6 +96031,8 @@ index 0000000000000000000000000000000000000000..a100ea8256383c4a7ef7db49e09dc600
 +    // DataTransfer.items, on by default for the other ports: editors (GitHub's
 +    // among them) take pasted and dropped images from it.
 +    configuration->preferences().setDataTransferItemsEnabled(true);
++    configuration->preferences().setInputTypeColorEnabled(true);
++    configuration->preferences().setDataListElementEnabled(true);
 +    // Background tabs: slow their timers down (more the longer they stay
 +    // hidden) and pause their CSS animations, as Safari does; GTK enables the
 +    // same. Hidden tabs ran every 10 ms timer at full rate, which with dozens
@@ -96315,6 +96595,8 @@ index 0000000000000000000000000000000000000000..a100ea8256383c4a7ef7db49e09dc600
 +        ActivityState::IsVisible, ActivityState::IsInWindow });
 +    if (!current.visible && m_presentationCallback)
 +        std::exchange(m_presentationCallback, { })();
++    if (!current.visible)
++        m_page->endColorPicker();
 +}
 +
 +void WebView::setViewNeedsDisplay(const Region&)
@@ -96513,7 +96795,10 @@ index 0000000000000000000000000000000000000000..a100ea8256383c4a7ef7db49e09dc600
 +IntRect WebView::rootViewToScreen(const IntRect& rect) { auto result = rect; result.move(toIntSize(geometry().screenOrigin)); return result; }
 +
 +RefPtr<WebPopupMenuProxy> WebView::createPopupMenuProxy(WebPageProxy& page) { return WebPopupMenuProxyHaiku::create(m_state, page.popupMenuClient()); }
-+RefPtr<WebColorPicker> WebView::createColorPicker(WebPageProxy&, const Color&, const IntRect&, ColorControlSupportsAlpha, Vector<Color>&&, std::optional<FrameIdentifier>) { return nullptr; }
++RefPtr<WebColorPicker> WebView::createColorPicker(WebPageProxy& page, const Color&, const IntRect&, ColorControlSupportsAlpha, Vector<Color>&& suggestions, std::optional<FrameIdentifier> frame)
++{
++    return WebColorPickerHaiku::create(page, m_state, WTF::move(suggestions), frame);
++}
 +RefPtr<WebDataListSuggestionsDropdown> WebView::createDataListSuggestionsDropdown(WebPageProxy&) { return nullptr; }
 +RefPtr<WebDateTimePicker> WebView::createDateTimePicker(WebPageProxy&) { return nullptr; }
 +

@@ -11,7 +11,7 @@ verified installation on X399. The final installation is still pending.
 | #38 PDF viewing | Pending: browser preview and optional download. |
 | #37 README | Pending until the features and icon work finish; replace old KunanyiOS branding with air/OS, audit current capabilities, retain the CI latest-release download section. |
 | #36 Date/time input types | Pending for date, month, week, time and datetime-local, using BCalendar where appropriate. Legacy chooser implementations exist but the modern multiprocess path needs native proxies. |
-| #35 Color input | Pending: modern engine chooser using BColorControl. Legacy chooser code exists. |
+| #35 Color input | Implemented with BColorControl, Done/Cancel, script updates and datalist swatches. 65 native checks pass, including DOM events and navigation/tab/quit cleanup; [details](native-form-pickers.md). |
 | #34 Reader mode | Pending: reader button within the address bar after page load, readable article view and restore. |
 | #33 DASH | Pending: adaptive MPEG-DASH playback. Audit existing MSE support and html5test detection before implementation. |
 | #32 EME | Pending: Encrypted Media Extensions. |
