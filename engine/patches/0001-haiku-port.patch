@@ -27300,10 +27300,10 @@ index 0000000000000000000000000000000000000000..7e71065daef6e0b78a8016de5043cee9
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..f1ff9391e645b2fcd5e09bf301d0247f52b21422
+index 0000000000000000000000000000000000000000..293426f5133bb645346df8584f4d8aa26b77154d
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,1784 @@
+@@ -0,0 +1,1814 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -27743,6 +27743,17 @@ index 0000000000000000000000000000000000000000..f1ff9391e645b2fcd5e09bf301d0247f
 +    // TODO should we seek the tracks to 0? reset m_currentTime? other things?
 +}
 +
++static bigtime_t audioTrackTime(BMediaTrack& track, const media_raw_audio_format& format)
++{
++    // Some Media Kit FFmpeg decoders return packet timestamps in their stream
++    // time base, not microseconds: AAC in MP4 appears too slow, and ADTS AAC
++    // leaps past its duration. CurrentFrame counts decoded PCM samples and is
++    // repositioned by SeekToTime, so it works for both containers.
++    if (format.frame_rate > 0 && std::isfinite(format.frame_rate))
++        return static_cast<bigtime_t>(track.CurrentFrame() * 1000000.0 / format.frame_rate);
++    return track.CurrentTime();
++}
++
 +void MediaPlayerPrivate::playCallback(void* cookie, void* buffer,
 +    size_t /*size*/, const media_raw_audio_format& /*format*/)
 +{
@@ -27752,11 +27763,9 @@ index 0000000000000000000000000000000000000000..f1ff9391e645b2fcd5e09bf301d0247f
 +        return;
 +
 +    if (player->m_audioTrack && !player->m_audioAtEnd) {
-+        // BMediaTrack::CurrentTime() counts decoded audio rather than the time
-+        // heard by the output device. It advances far too slowly on some MP4s;
-+        // the video thread supplies the presentation clock when there is video.
++        // The video thread supplies the presentation clock when there is video.
 +        if (!player->m_hasVideo)
-+            player->m_currentTime = player->m_audioTrack->CurrentTime() / 1000000.f;
++            player->m_currentTime = audioTrackTime(*player->m_audioTrack, player->m_audioFormat) / 1000000.f;
 +
 +        int64 size64;
 +        if (player->m_audioTrack->ReadFrames(buffer, &size64) != B_OK)
@@ -28225,7 +28234,7 @@ index 0000000000000000000000000000000000000000..f1ff9391e645b2fcd5e09bf301d0247f
 +        // A muted or paused clip does not advance its audio track. Match the
 +        // video's clock when sound is enabled later in the playback.
 +        if (m_mediaLock.Lock()) {
-+            bigtime_t audioTime = m_audioTrack->CurrentTime();
++            bigtime_t audioTime = audioTrackTime(*m_audioTrack, m_audioFormat);
 +            bigtime_t playbackTime = (bigtime_t)(m_currentTime.load() * 1000000);
 +            if (std::abs(audioTime - playbackTime) > 100000)
 +                m_audioTrack->SeekToTime(&playbackTime);
@@ -28894,7 +28903,7 @@ index 0000000000000000000000000000000000000000..f1ff9391e645b2fcd5e09bf301d0247f
 +            if (encodedFormat.type == B_MEDIA_ENCODED_VIDEO) {
 +                format.type = B_MEDIA_RAW_VIDEO;
 +                format.u.raw_video.display.format = B_RGB32;
-+            } else if (encodedFormat.type == B_MEDIA_ENCODED_AUDIO)
++            } else if (encodedFormat.type == B_MEDIA_ENCODED_AUDIO || encodedFormat.type == B_MEDIA_RAW_AUDIO)
 +                format.type = B_MEDIA_RAW_AUDIO;
 +            else {
 +                mediaFile->ReleaseTrack(track);
@@ -29033,8 +29042,19 @@ index 0000000000000000000000000000000000000000..f1ff9391e645b2fcd5e09bf301d0247f
 +        media_file_format mfi;
 +
 +        // Add the types the Haiku Media Kit add-ons advertise support for
-+        while (get_next_file_format(&cookie, &mfi) == B_OK)
++        while (get_next_file_format(&cookie, &mfi) == B_OK) {
 +            cache.get().add(String::fromUTF8(mfi.mime_type));
++            // Media Kit advertises the ADTS AAC reader as audio/mp4. Web
++            // content uses audio/aac for ADTS and the m4a aliases for MP4.
++            if (!std::strcmp(mfi.short_name, "aac")) {
++                cache.get().add("audio/aac"_s);
++                cache.get().add("audio/x-aac"_s);
++            }
++        }
++        if (cache.get().contains("audio/mp4"_s)) {
++            cache.get().add("audio/m4a"_s);
++            cache.get().add("audio/x-m4a"_s);
++        }
 +
 +        // The finite byte-range HLS path is handled before Media Kit sees the
 +        // completed MP4 files, so its playlist MIME types are not advertised by
@@ -29071,6 +29091,16 @@ index 0000000000000000000000000000000000000000..f1ff9391e645b2fcd5e09bf301d0247f
 +    if (equalLettersIgnoringASCIICase(containerType, "application/vnd.apple.mpegurl"_s)
 +        || equalLettersIgnoringASCIICase(containerType, "application/x-mpegurl"_s))
 +        return MediaPlayer::SupportsType::MayBeSupported;
++
++    if (containerType == "audio/aac"_s || containerType == "audio/x-aac"_s
++        || containerType == "audio/m4a"_s || containerType == "audio/x-m4a"_s) {
++        // These aliases expose AAC-LC, including MPEG-2 AAC-LC (0x67).
++        // Do not promise arbitrary codecs just because the container exists.
++        for (auto& codec : parameters.type.codecs()) {
++            if (codec != "mp4a.40.2"_s && codec != "mp4a.67"_s)
++                return MediaPlayer::SupportsType::IsNotSupported;
++        }
++    }
 +
 +    // spec says we should not return "probably" if the codecs string is empty
 +    if (mimeTypeCache().contains(containerType)) {

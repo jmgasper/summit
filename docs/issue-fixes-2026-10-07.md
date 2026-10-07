@@ -4,7 +4,7 @@
 
 Seven additional issues appeared after the original deployment. #43 and #44
 are verified in `bundle-a7988kyv`; #49 is verified in `bundle-a3u9gkoe`.
-#45–#48 and the requested six-hour
+#45 is verified in `bundle-3ulccsni`; #46–#48 and the requested six-hour
 performance session remain to be completed. The desktop launcher still selects
 the original deployment until the next installation.
 
@@ -20,6 +20,20 @@ the original deployment until the next installation.
   Certificate checks (72) and reader checks (79) pass on X399, and the native
   screenshot confirms the lock's placement. Tests quit their own browser
   instances without leaving helpers or new crash reports.
+- **#45:** Added Media Kit-backed `audio/aac`, `audio/x-aac`, `audio/m4a`
+  and `audio/x-m4a` types for AAC-LC and MPEG-2 AAC-LC (`mp4a.67`). Native
+  decoding already existed, but MIME aliases and audio-only timing were
+  broken. FFmpeg's stream timestamps made half a second of decoded MP4 AAC
+  appear as 0.04 seconds and ADTS AAC as 13.9 seconds. The player now uses
+  decoded PCM frame counts for its audio clock and resume synchronization.
+  It also accepts raw PCM tracks, which the track selector previously dropped.
+  Nine AAC source/container combinations plus MP3, Vorbis and WAV pass all
+  252 DOM checks on X399: actual source selection, smooth timing, audio enabled,
+  pause, seek, ended events and unsupported-codec rejection. The native
+  driver exits normally with no helpers or new crashes. The fixtures disable
+  MPEG-4 PNS when generating MPEG-2-compatible LC samples.
+  Engine patch SHA-256:
+  `31be58cf6bae4fb0c138df8a772a4bc80c9a98ee3ee5f96594f6b0af43c08fff`.
 - **#49:** Native pages enable `rel=prefetch` by default, with
   `SUMMIT_PREFETCH=0` and extension privacy overrides honored. Link completion
   delivers load/error events, HTTP error responses complete the fetch, and
@@ -36,7 +50,11 @@ the original deployment until the next installation.
 Evidence: `.vm/issues43-49/{certificates,reader}.json`,
 `fullscreen-checks.json`, `fullscreen.log`,
 `prefetch-final-credentials/results.json`, `privacy-results.json` and
-`.vm/issue41-viewer.png`.
+`.vm/issue41-viewer.png`. Audio evidence is in `aac-results.json`,
+`aac-native.log`, `aac-browser.log`, `aac-media/result-*.json` and
+`aac-clock.log`. Reproduce with `tools/bench/aac-fixture.py` and the native
+`tests/ModernAACTests.cpp` driver, passing an owned browser team, its exact
+executable path and the fixture's base URL.
 
 ## Original issues #31–#42
 
