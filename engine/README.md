@@ -2,10 +2,12 @@
 
 The engine target is upstream WebKit `main`, pinned on October 7, 2026:
 `fb054d09146b113aeeabee5f67f4c8b6d9379809` (upstream timestamp
-2026-10-07 06:34:32 UTC). Native compilation and regression verification of
-this update are in progress; [the October work record](../docs/issue-fixes-2026-10-07.md)
-tracks its status. Verification results below describe the preceding September
-13 engine unless a newer revision is explicitly identified.
+2026-10-07 06:34:32 UTC). The modern Haiku port compiles and links on X399.
+Native feature, JavaScriptCore, layout, graphics and extension regressions are
+recorded in [the October work record](../docs/issue-fixes-2026-10-07.md), together
+with the installed bundle. Historical verification results below describe the
+preceding September 13 engine unless a newer revision is explicitly identified;
+the full Test262 run has not been repeated for the October pin.
 
 The platform changes originate in Haiku's actively maintained Codeberg port:
 `295ca3199ad0f8563ce664fb15597bc3a2b2e3fe` (August 30, 2026).

@@ -1,7 +1,8 @@
 # October 7 issue work
 
-The requested scope is every open issue in `jmgasper/summit`, followed by a
-verified installation on X399. The final installation is still pending.
+The requested scope was every open issue in `jmgasper/summit` (#31–#42),
+followed by a verified installation on X399. Implementation and verification
+are complete. X399's desktop launcher now selects `bundle-4bl4v7jv`.
 
 | Issue | Current evidence / remaining work |
 | --- | --- |
@@ -16,11 +17,13 @@ verified installation on X399. The final installation is still pending.
 | #33 DASH | Implemented direct H.264/AAC DASH with adaptive quality, byte ranges, seeking and live refresh. 82 native checks and portable ASan/UBSan tests pass; [scope and evidence](dash-playback.md). |
 | #32 EME | Implemented temporary Clear Key CENC for H.264/AAC MSE and direct DASH, secure-context and permissions-policy checks, key lifecycle and media-origin protections. 207 native checks and portable ASan/UBSan tests pass; [scope and evidence](encrypted-media.md). |
 | #31 Web Bluetooth | Implemented: 213 browser API checks, 34 full-app picker/GATT checks and 17 isolated native picker checks pass. Portable ATT/GATT, native scans and the physical busy-device test pass. Clear Key (207) and DASH (82) regressions pass on the same bundle. The user requested that the ProtoArc mouse remain connected; successful physical GATT reads are deferred. [Scope and evidence](bluetooth-transport.md). |
-| #42 Latest WebKit | Source pin updated to the October 7 upstream revision `fb054d09146b113aeeabee5f67f4c8b6d9379809`. The port has been rebased, including moved graphics/grid code and extension API changes. Native compilation and regression verification are in progress; this revision is not yet installed. |
+| #42 Latest WebKit | Rebased, compiled, tested and installed the October 7 upstream revision `fb054d09146b113aeeabee5f67f4c8b6d9379809` (06:34:32 UTC). Native graphics/grid integration and extension API adaptations are verified below. |
 
-The existing installed launcher still selects `bundle-1gm22c31` with Mesa
-`prefix-20261002`. Test builds use separate profiles and process groups.
-Do not replace the final deployment requirement with the test bundle.
+The installed bundle uses Mesa `prefix-20261002`; its engine patch SHA-256 is
+`abba809b9d133d115b0287bcaaab7ca49f00795ec3c6fa618f78fa26e833e494`.
+It contains application source from `5b344c3`; subsequent changes update tests
+and documentation only. The previous desktop launcher is backed up under
+`/boot/home/summit/launcher-backups`, and previous bundles remain available.
 
 Native browser build: `SUMMIT_REMOTE_SHELL=tools/ws.sh SUMMIT_REMOTE_TAG=ws
 SUMMIT_ENGINE_BUILD_NAME=SkiaCGMiPGO bash tools/build-modern-browser-in-vm.sh
@@ -28,10 +31,58 @@ SUMMIT_ENGINE_BUILD_NAME=SkiaCGMiPGO bash tools/build-modern-browser-in-vm.sh
 `.vm/issue42/build.sh`; inspect live processes before starting another
 engine build, and preserve those PGO/Skia settings for incremental work.
 
-The October 7 engine has compiled and linked JavaScriptCore, WebCore, Skia
-and libwebrtc. WebKit integration is still being compiled. Native adaptations
+The October 7 engine has compiled and linked JavaScriptCore, WebCore, WebKit,
+Skia, libwebrtc and the browser helper processes. Native adaptations
 cover typed strings, image sizes, cancellable timers, frame registry lookup,
 picker callbacks and extension event/string ownership changes. Four inherited
 PGO data files reproducibly crashed GCC; the same objects compiled successfully
 with those files saved aside and all source/flags unchanged. The original files
-remain backed up. Runtime verification of the new engine is still pending.
+remain backed up.
+
+## October engine verification
+
+| Area | Result |
+| --- | --- |
+| Bluetooth | 213 API and 34 full-browser checks pass on the final bundle using the explicit simulated ATT backend. The earlier physical ProtoArc busy-device check passes with its input link preserved. Successful physical GATT reads remain deferred at the user's request. |
+| Media | Clear Key 207 and DASH 82 checks pass on the final bundle. |
+| Native features | Reader 79, color picker 65, date/time pickers 171, PDF API 86, full-browser PDF 32 and TLS/certificate details 72 checks pass on the final bundle. |
+| Extension scripting | 585 checks pass on the final bundle, including frame targeting, navigation identity, serialization and teardown. |
+| Extension icons | 51 cases and 57 observations pass at both 1× and 2× display density, 538 native checks per run. Both SDK image sizes and actual desktop pixels are checked. |
+| Published extensions | uBlock Origin passes 90 installation plus 7 restart checks; Dark Reader passes 79 checks, including actual page colors and enable/disable behavior. Both use the final bundle. |
+| JavaScriptCore | 31 JIT/interpreter/WebAssembly smoke checks pass against the updated native engine. The historical full Test262 corpus has not been rerun for this pin. |
+| Listener persistence | 46 checks pass with declarative request rules disabled and enabled, 92 total. |
+| Platform pages | OffscreenCanvas 28, image codecs 20, WebUSB 54 and protocol handlers 18 checks pass on the updated engine. |
+| Layout and graphics | All 11 grid geometry values and initial/final/all 20 reflow samples match the preceding engine. WebGL 1/2 render the expected pixels with no GL errors; the animated scene renders successfully. Timing runs overlapped compilation, so they are not clean performance comparisons. |
+
+The platform/layout runs used `bundle-hm0nz25k`, before the final isolated
+extension ImageData encoding fix. The final bundle repeats the feature and
+extension checks above; its normal installed launcher additionally passes all
+48 OffscreenCanvas/image-codec checks. Test processes exit cleanly without new
+crash reports or leftover helpers.
+
+Icon verification found and fixed intrinsic SVG scaling, full-source bitmap
+resizing, and avoidable precision loss when encoding straight-alpha ImageData.
+The test fixture now measures spec-permitted canvas rounding separately from
+icon decoding, samples each row of the native button's gradient for alpha
+compositing, and uses a PNG with known source pixels for embedded-image tests.
+SDK and desktop pixel tolerances were retained. Stale expectations were aligned
+with the September extension compatibility fixes: size dictionaries use own
+properties, and ImageData takes precedence when both icon sources are supplied.
+
+## Installed launcher verification
+
+Installation used `SUMMIT_MESA_PREFIX=prefix-20261002 bash
+tools/install-on-workstation.sh bundle-4bl4v7jv`. The actual
+`/boot/home/Desktop/Summit-current.sh` was launched with an isolated profile and
+the normal environment, without simulated Bluetooth or input-synthesis flags.
+The installed link, application/helper executable paths, and loaded WebKit and
+JavaScriptCore library paths all select the final bundle. The image-codec page
+was visually inspected after painting. The owned browser group quit normally;
+Clipper, AirTop, Bluetooth preferences and the mouse connection were preserved.
+
+Local evidence is retained in `.vm/issue42/`: `native-regressions.json`,
+`extension-tail.json`, `jsc-results.json`, `listener-results.json`,
+`platform-hm0-results.json`, `graphics-hm0-results.json`, `install.log`,
+`installed-results.json` and `installed.png`. The final PDF browser result is
+`.vm/issue38-browser-results.json`; icon and script-injection reports are in
+the corresponding `.vm/modern-extension-*` directories.
