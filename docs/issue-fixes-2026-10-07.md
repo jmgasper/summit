@@ -8,25 +8,31 @@ are verified in `bundle-a7988kyv`; #49 is verified in `bundle-a3u9gkoe`.
 #47–#48 and the requested six-hour performance session remain to be completed. The desktop launcher still selects
 the original deployment until the next installation.
 
-Work in progress for **#47**: the portable incremental WebM parser now handles
-VP8, VP9, AV1, Opus and Vorbis and emits the existing MSE track/sample model.
-It uses the bundled libwebm parser, bounds frame/header/cluster storage,
-preserves committed track configuration across aborted replacement headers,
-handles Xiph/fixed/EBML lacing, and carries decoded-audio end padding.
-Eight FFmpeg-generated fixtures (618 packets) match packet bytes, timestamps,
-durations and keyframe flags at nine append sizes, including one-byte appends.
-ASan/UBSan also pass 22 structural/abort/error cases and 128 deterministic
-mutations. `tools/bench/test-webm-parser.py` reproduces these checks.
+Work in progress for **#47**: WebM MSE now plays VP8, VP9 and AV1 with
+Opus or Vorbis. Raw ADTS AAC-LC and MPEG Layer I/II/III streams use generated
+sequence timestamps. Fragmented MP4 also accepts HEVC, VP9, AV1, AC-3 and
+E-AC-3. Hardware H.264 selection remains in place; the newly tested codecs
+use Media Kit's installed software decoders on X399.
 
-The native `ModernStreamingCodecTests.cpp` probe decodes every video packet
-to a changing RGB frame and every audio track to finite, non-silent PCM on
-X399, without crashes or leftover helpers. It confirms that Opus pre-skip
-must be handled explicitly when mapping decoded PCM back to MSE timestamps:
-Media Kit removes those frames without advancing the initial output timestamp.
-These parser/decoder foundations do **not yet enable WebM MSE capability
-reporting**. SourceBuffer integration, playback/seek checks and additional
-streaming containers remain in progress. Evidence is in
-`.vm/issues43-49/webm-parser/` and `.vm/issues43-49/webm-native/`.
+The native browser passes all 31 streaming scenarios, including pause/seek,
+abort, changeType, timestamp offsets, append windows, six-channel Opus,
+2.5/5/120 ms Opus packets, actual output-format changes, end events and an
+open stream stalled at its declared duration. Audio seeks are checked against
+the first queued PCM timestamp; Opus trims leave exactly 192,000 frames in
+the four-second fixtures. AV1 and reordered HEVC now use the input frame
+presentation timeline because their native decoders return missing or incorrect
+timestamps. The native probe passes 43 decode checks across 29 files.
+
+Portable ASan/UBSan checks cover 12 WebM fixtures at nine append sizes,
+26 structural cases and 128 mutations; raw MPEG audio adds 12 fixtures,
+14 structural cases and 128 mutations. Browser and native tests exit without
+new crashes or leftover helpers. The verified bundle is `bundle-e821ncjv`,
+engine patch `f9e39981f6ad6ff511cab0639fa0a9231d719cb4412be95b1fddfb2cabfd13c0`.
+AAC (252 DOM checks), Clear Key (207) and DASH (82) regressions pass on this
+bundle. MPEG-TS integration remains in progress, so #47 remains open. Reproduction
+commands and format limits are in [streaming media](streaming-media.md).
+Evidence: `.vm/issues43-49/{webm-parser-integrated,mpeg-audio-parser,
+streaming-codecs-timing-x399,streaming-browser-timing-x399}/`.
 
 - **#43:** Fullscreen uses air/OS's `get_display_frame(Frame(), true, ...)`,
   the same display-selection policy as native window maximization. On older

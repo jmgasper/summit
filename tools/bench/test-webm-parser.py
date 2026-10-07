@@ -50,6 +50,14 @@ def fixtures(output):
         run(['ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i',
              'sine=frequency=911:sample_rate=48000', '-t', '0.75', '-ac', '2',
              '-c:a', encoder, '-b:a', '96k', str(output / (audio + '.webm'))])
+    for duration in ('2.5', '5', '120'):
+        run(['ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i',
+             'sine=frequency=911:sample_rate=48000', '-t', '0.75', '-ac', '2',
+             '-c:a', 'libopus', '-frame_duration', duration, '-b:a', '96k',
+             str(output / ('opus-' + duration + 'ms.webm'))])
+    tones = '|'.join(f'0.1*sin(2*PI*{frequency}*t)' for frequency in (211, 401, 601, 71, 1009, 1511))
+    run(['ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i', f'aevalsrc={tones}:s=48000:c=5.1',
+         '-t', '0.75', '-c:a', 'libopus', '-mapping_family', '1', '-b:a', '768k', str(output / 'opus-surround.webm')])
 
 
 def probe(executable, path, chunk, reset=None):
@@ -156,6 +164,15 @@ def structural_checks(executable, output):
                     + integer(0x9b, 20) + element(0x75a2, (3125000).to_bytes(4, 'big', signed=True)))
     parsed = check('discard-padding', init + cluster(group))
     assert parsed['samples'][0]['trimEnd'] == 150
+    for name, padding in [('start', -25000000), ('end', 25000000)]:
+        group = element(0xa0, element(0xa1, b'\x81\0\0\x04\x02' + packet * 3)
+                        + element(0x75a2, padding.to_bytes(4, 'big', signed=True)))
+        parsed = check('laced-discard-' + name, init + cluster(group))
+        assert [p['trimStart'] for p in parsed['samples']] == ([960, 552, 0] if name == 'start' else [312, 0, 0])
+        assert [p['trimEnd'] for p in parsed['samples']] == ([0, 0, 0] if name == 'start' else [0, 240, 960])
+    group = element(0xa0, element(0xa1, b'\x81\0\0\x04\x02' + packet * 3)
+                    + element(0x75a2, (-59000000).to_bytes(4, 'big', signed=True)))
+    check('discard-overlaps-preskip', init + cluster(group), False)
     parsed = check('unknown-clusters', init + cluster(simple(), unknown=True) + cluster(simple(), 20, True))
     assert len(parsed['samples']) == 2
     parsed = check('new-init', init + cluster(simple()) + init + cluster(simple(), 1000))
@@ -177,6 +194,7 @@ def structural_checks(executable, output):
     check('cluster-before-init', header + segment + info + cluster(simple()), False)
     check('missing-timecode', init + element(0x1f43b675, simple()), False)
     check('unknown-track', init + cluster(simple(track_id=2)), False)
+    check('overflow-track', init + cluster(simple(track_id=(1 << 32) + 1)), False)
     check('bad-opus-frame', init + cluster(simple(b'\xff')), False)
     check('bad-lace', init + cluster(simple(b'\x02' + packet * 3 + b'\0', 0x84)), False)
     check('timestamp-overflow', init + cluster(simple(), (1 << 64) - 1), False)

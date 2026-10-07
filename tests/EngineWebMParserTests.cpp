@@ -1,5 +1,9 @@
 // Portable packet-level probe for the Haiku MSE WebM parser.
+#if defined(SUMMIT_TEST_MPEG_AUDIO)
+#include "MPEGAudioParserHaiku.h"
+#else
 #include "WebMParserHaiku.h"
+#endif
 #include "nlohmann/json.hpp"
 #include <openssl/sha.h>
 #include <fstream>
@@ -32,7 +36,12 @@ int main(int argc, char** argv)
         return 2;
     std::vector<uint8_t> bytes(std::istreambuf_iterator<char>(input), { });
     json result { { "init", json::array() }, { "samples", json::array() } };
+#if defined(SUMMIT_TEST_MPEG_AUDIO)
+    SummitMPEGAudio::Parser parser(std::string(argv[1]).ends_with(".aac")
+        ? SummitMPEGAudio::Parser::Format::ADTS : SummitMPEGAudio::Parser::Format::MPEG);
+#else
     SummitWebM::Parser parser;
+#endif
     parser.onInitSegment = [&](SummitMP4::InitSegment&& init) {
         json tracks = json::array();
         for (auto& track : init.tracks)
@@ -66,7 +75,9 @@ int main(int argc, char** argv)
             resetOffset = SIZE_MAX;
         }
     }
+#if !defined(SUMMIT_TEST_MPEG_AUDIO)
     parser.flushPendingSamples();
+#endif
     result["ok"] = passed;
     std::cout << result.dump() << '\n';
     return passed ? 0 : 1;

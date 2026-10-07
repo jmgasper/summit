@@ -44,7 +44,7 @@ document.getElementById('play').onclick=async()=>{try{
  for(const mime of ['audio/aac','audio/x-aac','audio/m4a','audio/x-m4a']){
   assert(audio.canPlayType(mime)!=='','advertise '+mime);
   assert(audio.canPlayType(mime+'; codecs="not-a-codec"')==='','reject unknown codec in '+mime);
-  assert(!MediaSource.isTypeSupported(mime),'file alias does not overclaim MSE '+mime);
+  assert(MediaSource.isTypeSupported(mime)===(mime==='audio/aac'),'canonical ADTS MSE type, file aliases remain separate '+mime);
  }
  const source=document.createElement('source');source.src='/media/'+file+'?type='+encodeURIComponent(type);source.type=type;
  audio.replaceChildren(source);audio.load();await audio.play();const playStarted=performance.now();

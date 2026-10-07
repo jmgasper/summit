@@ -5052,6 +5052,20 @@ index 485cce61c45d47b611240834f3275ecee733b8f9..223d00b6294ca261a48cd91b1a0fc19f
  #else
      std::unique_ptr<MediaRecorderPrivate> result;
  #endif
+diff --git a/Source/WebCore/Modules/mediasource/MediaSource.cpp b/Source/WebCore/Modules/mediasource/MediaSource.cpp
+index c65a2b2b0fdf2f9919320a50699c5cced9d2ef41..fea8c660d57e4b2075d78022489cfba20bd01b3e 100644
+--- a/Source/WebCore/Modules/mediasource/MediaSource.cpp
++++ b/Source/WebCore/Modules/mediasource/MediaSource.cpp
+@@ -417,7 +417,8 @@ ExceptionOr<void> MediaSource::clearLiveSeekableRange()
+ 
+ bool MediaSource::contentTypeShouldGenerateTimestamps(const ContentType& contentType)
+ {
+-    return contentType.containerType() == "audio/aac"_s || contentType.containerType() == "audio/mpeg"_s;
++    auto container = contentType.containerType().convertToASCIILowercase();
++    return container == "audio/aac"_s || container == "audio/mpeg"_s;
+ }
+ 
+ void MediaSource::monitorSourceBuffers()
 diff --git a/Source/WebCore/Modules/pdfjs-extras/haiku/configuration.js b/Source/WebCore/Modules/pdfjs-extras/haiku/configuration.js
 new file mode 100644
 index 0000000000000000000000000000000000000000..883aa898608405f49a1ef2f74bf09e759a00c024
@@ -8320,10 +8334,10 @@ index 0000000000000000000000000000000000000000..48e19a5957df4c1ae60378dd9a84cbe4
 +/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
 +enum USBTransferStatus { "ok", "stall", "babble" };
 diff --git a/Source/WebCore/PlatformHaiku.cmake b/Source/WebCore/PlatformHaiku.cmake
-index 16a88804a1baa39ccdd9fc2870b6e2524d941298..a20e7223c778114489063fe38f09a0a17e5f8858 100644
+index 16a88804a1baa39ccdd9fc2870b6e2524d941298..8b5ae364f08cbaf95c11e563439e34b9697c4951 100644
 --- a/Source/WebCore/PlatformHaiku.cmake
 +++ b/Source/WebCore/PlatformHaiku.cmake
-@@ -1,52 +1,353 @@
+@@ -1,52 +1,354 @@
 +include(platform/Haiku.cmake)
  include(platform/ImageDecoders.cmake)
  include(platform/OpenSSL.cmake)
@@ -8490,6 +8504,7 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..a20e7223c778114489063fe38f09a0a1
 +  platform/graphics/haiku/DashPlaybackHaiku.cpp
 +  platform/graphics/haiku/DashResourceLoaderHaiku.cpp
 +  platform/graphics/haiku/FragmentedMP4ParserHaiku.cpp
++  platform/graphics/haiku/MPEGAudioParserHaiku.cpp
 +  platform/graphics/haiku/CDMProxyHaiku.cpp
 +  platform/graphics/haiku/CencCryptoHaiku.cpp
 +  platform/graphics/haiku/MediaDecoderSelectionHaiku.cpp
@@ -8683,7 +8698,7 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..a20e7223c778114489063fe38f09a0a1
    textencoding
    translation
    ${WEBP_LIBRARIES}
-@@ -61,6 +362,236 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
+@@ -61,6 +363,236 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
    ${SQLITE_INCLUDE_DIR}
    ${WEBP_INCLUDE_DIRS}
    ${ZLIB_INCLUDE_DIRS}
@@ -11345,7 +11360,7 @@ index aeb17770f3e1e6fca6f5efc89419a0895221014b..dbb756d88aeab3b8845f4c58ecdc7e44
  }
  
 diff --git a/Source/WebCore/html/HTMLMediaElement.cpp b/Source/WebCore/html/HTMLMediaElement.cpp
-index 81443b80c390626d0f6b2521a34c815f323f7445..fa1fa73cf709fe6dc417fe63c5c7659526a38025 100644
+index 81443b80c390626d0f6b2521a34c815f323f7445..7292bcfd28dff94326c62547c2a193b49ffbedb3 100644
 --- a/Source/WebCore/html/HTMLMediaElement.cpp
 +++ b/Source/WebCore/html/HTMLMediaElement.cpp
 @@ -3697,7 +3697,15 @@ void HTMLMediaElement::mediaPlayerInitializationDataEncountered(const String& in
@@ -11374,6 +11389,25 @@ index 81443b80c390626d0f6b2521a34c815f323f7445..fa1fa73cf709fe6dc417fe63c5c76595
          WTF::move(initData)
      };
      scheduleEvent(MediaEncryptedEvent::create(eventNames().encryptedEvent, WTF::move(initializer), Event::IsTrusted::Yes));
+@@ -6801,8 +6809,17 @@ bool HTMLMediaElement::endedPlayback() const
+     // of playback is forwards, Either the media element does not have a loop attribute specified,
+     // or the media element has a current media controller.
+     MediaTime now = currentMediaTime();
+-    if (requestedPlaybackRate() > 0)
++    if (requestedPlaybackRate() > 0) {
++#if ENABLE(MEDIA_SOURCE)
++        // A finite duration can be known while more segments are still
++        // expected. Match handlePlaybackPositionChanged(): reaching that
++        // position ends playback only after endOfStream(), otherwise it is
++        // a stall and a later append must be able to resume playback.
++        if (RefPtr mediaSource = m_mediaSource; mediaSource && !mediaSource->isEnded())
++            return false;
++#endif
+         return dur > MediaTime::zeroTime() && now >= dur && (!loop() || m_mediaController);
++    }
+ 
+     // or the current playback position is the earliest possible position and the direction
+     // of playback is backwards
 diff --git a/Source/WebCore/html/HTMLMediaElement.idl b/Source/WebCore/html/HTMLMediaElement.idl
 index 35fefdacfa8e5ce92579c4ab5f46241c7afe3236..14de6e363fc52d5c8e84f5ebd1492eece8ad26b7 100644
 --- a/Source/WebCore/html/HTMLMediaElement.idl
@@ -19848,6 +19882,79 @@ index 27a5bf72f7a1ca7da49246059e584c2d868e1e6c..47d3a5f8796e8803c81100692924c62b
  
      // Take ownership of the memory for process memory accounting purposes.
      WEBCORE_EXPORT void takeOwnershipOfMemory(MemoryLedger) const;
+diff --git a/Source/WebCore/platform/graphics/SourceBufferPrivate.cpp b/Source/WebCore/platform/graphics/SourceBufferPrivate.cpp
+index b2ea7229043986cf9da17357fd66577b7851455a..020ad69ff2c1a50c0bb02009b9bbf3e5c688f242 100644
+--- a/Source/WebCore/platform/graphics/SourceBufferPrivate.cpp
++++ b/Source/WebCore/platform/graphics/SourceBufferPrivate.cpp
+@@ -488,7 +488,7 @@ void SourceBufferPrivate::reenqueueMediaForTime(TrackBuffer& trackBuffer, TrackI
+     bool isEnded = false;
+     if (RefPtr mediaSource = m_mediaSource.get())
+         isEnded = mediaSource->isEnded();
+-    if (trackBuffer.reenqueueMediaForTime(time, isEnded))
++    if (trackBuffer.reenqueueMediaForTime(time, isEnded, decoderPrerollForTrackID(trackID)))
+         provideMediaData(trackBuffer, trackID);
+ }
+ 
+diff --git a/Source/WebCore/platform/graphics/SourceBufferPrivate.h b/Source/WebCore/platform/graphics/SourceBufferPrivate.h
+index 03bddbbc92693773abe22029f44b6bf0e48d29f2..05770ac5574e1953d8dc8dec9f4da0bfd15ec0a1 100644
+--- a/Source/WebCore/platform/graphics/SourceBufferPrivate.h
++++ b/Source/WebCore/platform/graphics/SourceBufferPrivate.h
+@@ -197,6 +197,7 @@ protected:
+     virtual Ref<MediaPromise> appendInternal(Ref<SharedBuffer>&&) = 0;
+     virtual void resetParserStateInternal() = 0;
+     virtual void flush(TrackID) { }
++    virtual MediaTime decoderPrerollForTrackID(TrackID) const { return MediaTime::zeroTime(); }
+     virtual void enqueueSample(Ref<MediaSample>&&, TrackID) { }
+     virtual void allSamplesInTrackEnqueued(TrackID) { }
+     virtual bool isReadyForMoreSamples(TrackID) { return false; }
+diff --git a/Source/WebCore/platform/graphics/TrackBuffer.cpp b/Source/WebCore/platform/graphics/TrackBuffer.cpp
+index 73b72ffb1c653b14b552d294ee350d072ba6ef68..c6590f5167325490c4c835f39cef291c60adc5d9 100644
+--- a/Source/WebCore/platform/graphics/TrackBuffer.cpp
++++ b/Source/WebCore/platform/graphics/TrackBuffer.cpp
+@@ -267,7 +267,7 @@ void TrackBuffer::updateMinimumUpcomingPresentationTime()
+         m_minimumEnqueuedPresentationTime = MediaTime::invalidTime();
+ }
+ 
+-bool TrackBuffer::reenqueueMediaForTime(const MediaTime& time, bool isEnded)
++bool TrackBuffer::reenqueueMediaForTime(const MediaTime& time, bool isEnded, const MediaTime& decoderPreroll)
+ {
+     clearDecodeQueue();
+     m_lastEnqueueDecodeEnd = time;
+@@ -306,7 +306,20 @@ bool TrackBuffer::reenqueueMediaForTime(const MediaTime& time, bool isEnded)
+     ASSERT(currentSampleDTSIterator != m_samples.decodeOrder().end());
+ 
+     auto reverseCurrentSampleIter = --DecodeOrderSampleMap::reverse_iterator(currentSampleDTSIterator);
+-    auto reverseLastSyncSampleIter = m_samples.decodeOrder().findSyncSamplePriorToDecodeIterator(reverseCurrentSampleIter);
++    auto reverseDecodeStartIter = reverseCurrentSampleIter;
++    // Independently framed audio may still require prior decoded samples to
++    // warm up the codec (Opus SeekPreRoll, Vorbis overlap). Decode those as
++    // non-displaying samples without moving the requested seek time.
++    if (decoderPreroll > MediaTime::zeroTime()) {
++        auto prerollStart = sample->presentationTime() - decoderPreroll;
++        while (Ref { reverseDecodeStartIter->second }->presentationTime() > prerollStart) {
++            auto earlier = std::next(reverseDecodeStartIter);
++            if (earlier == m_samples.decodeOrder().rend())
++                break;
++            reverseDecodeStartIter = earlier;
++        }
++    }
++    auto reverseLastSyncSampleIter = m_samples.decodeOrder().findSyncSamplePriorToDecodeIterator(reverseDecodeStartIter);
+     if (reverseLastSyncSampleIter == m_samples.decodeOrder().rend())
+         return false;
+ 
+diff --git a/Source/WebCore/platform/graphics/TrackBuffer.h b/Source/WebCore/platform/graphics/TrackBuffer.h
+index f136ce76f7b7e4f840e58d213e05d7b5f44cf5fd..1b337115b6b6e868c639770bf11f524468bb7b69 100644
+--- a/Source/WebCore/platform/graphics/TrackBuffer.h
++++ b/Source/WebCore/platform/graphics/TrackBuffer.h
+@@ -67,7 +67,7 @@ public:
+     // SampleMap and m_decodeQueue, and adjusts m_buffered to match.
+     void adjustSampleStartTime(MediaSample& original, const MediaTime& offset);
+ 
+-    bool reenqueueMediaForTime(const MediaTime&, bool isEnded = false);
++    bool reenqueueMediaForTime(const MediaTime&, bool isEnded = false, const MediaTime& decoderPreroll = MediaTime::zeroTime());
+     MediaTime findSeekTimeForTargetTime(const MediaTime& targetTime, const MediaTime& negativeThreshold, const MediaTime& positiveThreshold);
+     int64_t removeCodedFrames(const MediaTime& start, const MediaTime& end, const MediaTime& currentTime);
+     PlatformTimeRanges removeSamples(const DecodeOrderSampleMap::MapType&, ASCIILiteral);
 diff --git a/Source/WebCore/platform/graphics/angle/PlatformDisplayANGLE.cpp b/Source/WebCore/platform/graphics/angle/PlatformDisplayANGLE.cpp
 index 100e61c99fcc079ca9b363aab12482437ef928c7..b4cffb99d5cf579d95cc54bbc2c6a17c2d3152ec 100644
 --- a/Source/WebCore/platform/graphics/angle/PlatformDisplayANGLE.cpp
@@ -24077,10 +24184,10 @@ index 0000000000000000000000000000000000000000..8853a91a09c15356864a31b1c167895a
 +} // namespace SummitMP4
 diff --git a/Source/WebCore/platform/graphics/haiku/FragmentedMP4ParserHaiku.h b/Source/WebCore/platform/graphics/haiku/FragmentedMP4ParserHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..79fcbe19847bd9ab015d50da7d19302904c6de1d
+index 0000000000000000000000000000000000000000..701534576fbed4765b47d2c05a12d7477de604cf
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/FragmentedMP4ParserHaiku.h
-@@ -0,0 +1,137 @@
+@@ -0,0 +1,140 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -24128,6 +24235,9 @@ index 0000000000000000000000000000000000000000..79fcbe19847bd9ab015d50da7d193029
 +    uint32_t height { 0 };
 +    uint32_t channels { 0 };
 +    uint32_t sampleRate { 0 };
++    // Decoder warm-up before a seek target, in nanoseconds (WebM audio).
++    uint64_t seekPreRoll { 0 };
++    bool packetTimedAudio { false };
 +    // avcC payload for H.264, AudioSpecificConfig for AAC, dOps for Opus.
 +    std::vector<uint8_t> codecConfig;
 +    uint8_t objectTypeIndication { 0 };
@@ -26607,6 +26717,333 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 +} // namespace WebCore
 +
+diff --git a/Source/WebCore/platform/graphics/haiku/MPEGAudioParserHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MPEGAudioParserHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..449afa8a125b9d6499e81c0ddae0873fc8f4e31e
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/haiku/MPEGAudioParserHaiku.cpp
+@@ -0,0 +1,260 @@
++/*
++ * Copyright (C) 2026 Summit contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHORS ``AS IS'' AND ANY EXPRESS OR
++ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
++ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
++ * IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DAMAGES ARISING FROM USE.
++ */
++
++#ifdef HAVE_CONFIG_H
++#include "config.h"
++#endif
++#include "MPEGAudioParserHaiku.h"
++
++#include <algorithm>
++#include <cstring>
++
++namespace SummitMPEGAudio {
++namespace {
++constexpr size_t maximumBufferedBytes = 64 * 1024;
++constexpr size_t maximumFreeFrameBytes = 16 * 1024;
++
++uint32_t headerAt(const uint8_t* data)
++{
++    return uint32_t(data[0]) << 24 | uint32_t(data[1]) << 16 | uint32_t(data[2]) << 8 | data[3];
++}
++
++bool validMPEGHeader(uint32_t header)
++{
++    return (header & 0xffe00000) == 0xffe00000 && ((header >> 19) & 3) != 1
++        && ((header >> 17) & 3) && ((header >> 12) & 15) != 15 && ((header >> 10) & 3) != 3;
++}
++
++bool sameFreeFormat(uint32_t a, uint32_t b)
++{
++    return validMPEGHeader(b) && !((b >> 12) & 15) && !((a ^ b) & 0xfffe0c00);
++}
++}
++
++bool Parser::append(const uint8_t* bytes, size_t size)
++{
++    if (m_failed || (!bytes && size))
++        return false;
++    do {
++        if (m_offset) {
++            m_buffer.erase(m_buffer.begin(), m_buffer.begin() + m_offset);
++            m_offset = 0;
++        }
++        size_t count = std::min(size, maximumBufferedBytes - m_buffer.size());
++        if (count) {
++            m_buffer.insert(m_buffer.end(), bytes, bytes + count);
++            bytes += count;
++            size -= count;
++        }
++        Result result;
++        do {
++            result = parseOne();
++        } while (result == Result::Complete);
++        if (result == Result::Error || (m_buffer.size() == maximumBufferedBytes && !m_offset)) {
++            m_failed = true;
++            m_buffer.clear();
++            m_offset = 0;
++            return false;
++        }
++    } while (size);
++    return true;
++}
++
++void Parser::reset()
++{
++    m_buffer.clear();
++    m_offset = 0;
++    m_skipBytes = 0;
++    m_failed = false;
++    m_nextTimestamp = 0;
++    m_freeFormatFrameSize = 0;
++    // Keep the committed initialization, as SourceBuffer.abort() requires.
++}
++
++Parser::Result Parser::parseOne()
++{
++    size_t available = m_buffer.size() - m_offset;
++    if (m_skipBytes) {
++        size_t count = std::min<uint64_t>(m_skipBytes, available);
++        m_skipBytes -= count;
++        m_offset += count;
++        return count ? Result::Complete : Result::NeedMore;
++    }
++    if (available < 4)
++        return Result::NeedMore;
++    const auto* data = m_buffer.data() + m_offset;
++    if (!std::memcmp(data, "ID3", 3)) {
++        if (available < 10)
++            return Result::NeedMore;
++        if (data[3] < 2 || data[3] > 4 || data[4] == 255 || ((data[6] | data[7] | data[8] | data[9]) & 0x80))
++            return Result::Error;
++        m_skipBytes = (uint32_t(data[6]) << 21) | (uint32_t(data[7]) << 14) | (uint32_t(data[8]) << 7) | data[9];
++        if (data[3] == 4 && (data[5] & 0x10))
++            m_skipBytes += 10; // ID3v2.4 footer is outside the declared body.
++        m_offset += 10;
++        return Result::Complete;
++    }
++    if (!std::memcmp(data, "TAG", 3)) {
++        m_skipBytes = 128;
++        return Result::Complete;
++    }
++    if (!std::memcmp(data, "ICY ", 4)) {
++        static constexpr uint8_t end[] { '\r', '\n', '\r', '\n' };
++        auto* found = std::search(data + 4, data + available, std::begin(end), std::end(end));
++        if (found == data + available)
++            return Result::NeedMore;
++        m_offset += found - data + sizeof(end);
++        return Result::Complete;
++    }
++    SummitMP4::TrackInfo info;
++    info.id = 1;
++    info.kind = SummitMP4::TrackInfo::Kind::Audio;
++    info.packetTimedAudio = true;
++    info.seekPreRoll = 80000000;
++    size_t frameSize = 0;
++    uint32_t duration = 0;
++    auto result = m_format == Format::ADTS ? parseADTS(info, frameSize, duration) : parseMPEG(info, frameSize, duration);
++    if (result != Result::Complete)
++        return result;
++    if (available < frameSize)
++        return Result::NeedMore;
++    __int128 timestamp = m_haveInit && info.timescale != m_track.timescale
++        ? __int128(m_nextTimestamp) * info.timescale / m_track.timescale : m_nextTimestamp;
++    if (timestamp > INT64_MAX - duration)
++        return Result::Error;
++    m_nextTimestamp = static_cast<int64_t>(timestamp);
++    emit(std::move(info), frameSize, duration);
++    m_offset += frameSize;
++    return Result::Complete;
++}
++
++Parser::Result Parser::parseADTS(SummitMP4::TrackInfo& info, size_t& frameSize, uint32_t& duration)
++{
++    size_t available = m_buffer.size() - m_offset;
++    const auto* data = m_buffer.data() + m_offset;
++    if (available < 7)
++        return Result::NeedMore;
++    if (data[0] != 255 || (data[1] & 0xf6) != 0xf0)
++        return Result::Error;
++    static constexpr uint32_t rates[] { 96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350 };
++    unsigned profile = (data[2] >> 6) + 1;
++    unsigned frequencyIndex = (data[2] >> 2) & 15;
++    unsigned channelConfig = ((data[2] & 1) << 2) | (data[3] >> 6);
++    // Channel configuration zero needs a Program Config Element in the AAC
++    // payload; do not guess its layout. Reserved/SSR profiles aren't claimed.
++    if (profile != 2 || frequencyIndex >= std::size(rates) || !channelConfig)
++        return Result::Error;
++    frameSize = ((data[3] & 3) << 11) | (data[4] << 3) | (data[5] >> 5);
++    size_t headerSize = data[1] & 1 ? 7 : 9;
++    if (frameSize <= headerSize)
++        return Result::Error;
++    duration = 1024 * ((data[6] & 3) + 1);
++    info.codec = "mp4a";
++    info.objectTypeIndication = data[1] & 8 ? 0x67 : 0x40;
++    info.sampleRate = info.timescale = rates[frequencyIndex];
++    info.channels = channelConfig == 7 ? 8 : channelConfig;
++    info.codecConfig = { uint8_t((profile << 3) | (frequencyIndex >> 1)), uint8_t((frequencyIndex << 7) | (channelConfig << 3)) };
++    return Result::Complete;
++}
++
++Parser::Result Parser::parseMPEG(SummitMP4::TrackInfo& info, size_t& frameSize, uint32_t& duration)
++{
++    const auto* data = m_buffer.data() + m_offset;
++    size_t available = m_buffer.size() - m_offset;
++    uint32_t header = headerAt(data);
++    if (!validMPEGHeader(header))
++        return Result::Error;
++    unsigned version = (header >> 19) & 3;
++    unsigned layer = 4 - ((header >> 17) & 3);
++    unsigned bitrateIndex = (header >> 12) & 15;
++    unsigned padding = (header >> 9) & 1;
++    static constexpr uint32_t baseRates[] { 44100, 48000, 32000 };
++    uint32_t rate = baseRates[(header >> 10) & 3] >> (version == 3 ? 0 : version == 2 ? 1 : 2);
++    static constexpr unsigned mpeg1Rates[3][15] {
++        { 0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448 },
++        { 0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384 },
++        { 0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320 }
++    };
++    static constexpr unsigned lowRateLayer1[] { 0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256 };
++    static constexpr unsigned lowRateLayer23[] { 0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160 };
++    unsigned bitrate = version == 3 ? mpeg1Rates[layer - 1][bitrateIndex] : layer == 1 ? lowRateLayer1[bitrateIndex] : lowRateLayer23[bitrateIndex];
++    size_t paddingBytes = layer == 1 ? padding * 4 : padding;
++    if (bitrate) {
++        if (layer == 1)
++            frameSize = (12 * bitrate * 1000 / rate) * 4 + paddingBytes;
++        else
++            frameSize = (layer == 3 && version != 3 ? 72 : 144) * bitrate * 1000 / rate + paddingBytes;
++        m_freeFormatFrameSize = 0;
++    } else {
++        if (!sameFreeFormat(m_freeFormatHeader, header))
++            m_freeFormatFrameSize = 0;
++        if (!m_freeFormatFrameSize) {
++            // Infer a free-format frame's size only after three matching
++            // headers, so a sync-like payload sequence cannot split a frame.
++            for (size_t offset = 4; offset + 4 <= available && offset <= maximumFreeFrameBytes; ++offset) {
++                uint32_t next = headerAt(data + offset);
++                if (!sameFreeFormat(header, next) || offset <= paddingBytes)
++                    continue;
++                size_t nextPadding = ((next >> 9) & 1) * (layer == 1 ? 4 : 1);
++                size_t third = offset * 2 - paddingBytes + nextPadding;
++                if (third + 4 > available)
++                    return Result::NeedMore;
++                if (!sameFreeFormat(header, headerAt(data + third)))
++                    continue;
++                m_freeFormatFrameSize = offset - paddingBytes;
++                m_freeFormatHeader = header;
++                break;
++            }
++            if (!m_freeFormatFrameSize)
++                return available >= maximumFreeFrameBytes * 2 + 4 ? Result::Error : Result::NeedMore;
++        }
++        frameSize = m_freeFormatFrameSize + paddingBytes;
++    }
++    if (frameSize < 4 || frameSize > maximumFreeFrameBytes)
++        return Result::Error;
++    duration = layer == 1 ? 384 : layer == 3 && version != 3 ? 576 : 1152;
++    info.codec = layer == 1 ? "mp1" : layer == 2 ? "mp2" : "mp3";
++    info.sampleRate = info.timescale = rate;
++    info.channels = ((header >> 6) & 3) == 3 ? 1 : 2;
++    return Result::Complete;
++}
++
++void Parser::emit(SummitMP4::TrackInfo&& info, size_t frameSize, uint32_t duration)
++{
++    if (!m_haveInit || info.codec != m_track.codec || info.sampleRate != m_track.sampleRate
++        || info.channels != m_track.channels || info.codecConfig != m_track.codecConfig || info.objectTypeIndication != m_track.objectTypeIndication) {
++        m_track = std::move(info);
++        m_haveInit = true;
++        SummitMP4::InitSegment init;
++        init.movieTimescale = m_track.timescale;
++        init.tracks.push_back(m_track);
++        if (onInitSegment)
++            onInitSegment(std::move(init));
++    }
++    SummitMP4::Sample sample;
++    sample.trackID = 1;
++    sample.isSync = true;
++    sample.decodeTime = sample.presentationTime = m_nextTimestamp;
++    sample.duration = duration;
++    sample.data.assign(m_buffer.begin() + m_offset, m_buffer.begin() + m_offset + frameSize);
++    m_nextTimestamp += duration;
++    if (onSample)
++        onSample(std::move(sample));
++}
++
++} // namespace SummitMPEGAudio
+diff --git a/Source/WebCore/platform/graphics/haiku/MPEGAudioParserHaiku.h b/Source/WebCore/platform/graphics/haiku/MPEGAudioParserHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..25b7a88fac963dbb273a0059ee2164433085cdf8
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/haiku/MPEGAudioParserHaiku.h
+@@ -0,0 +1,55 @@
++/*
++ * Copyright (C) 2026 Summit contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHORS ``AS IS'' AND ANY EXPRESS OR
++ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
++ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
++ * IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DAMAGES ARISING FROM USE.
++ */
++
++#pragma once
++
++#include "FragmentedMP4ParserHaiku.h"
++
++namespace SummitMPEGAudio {
++
++// MSE's audio/aac (ADTS) and audio/mpeg (Layer I/II/III) byte streams.
++// Metadata is skipped incrementally; frame bytes and header state are bounded.
++class Parser {
++public:
++    enum class Format { ADTS, MPEG };
++    explicit Parser(Format format) : m_format(format) { }
++    std::function<void(SummitMP4::InitSegment&&)> onInitSegment;
++    std::function<void(SummitMP4::Sample&&)> onSample;
++    bool append(const uint8_t*, size_t);
++    void reset();
++
++private:
++    enum class Result { Complete, NeedMore, Error };
++    Result parseOne();
++    Result parseADTS(SummitMP4::TrackInfo&, size_t& frameSize, uint32_t& duration);
++    Result parseMPEG(SummitMP4::TrackInfo&, size_t& frameSize, uint32_t& duration);
++    void emit(SummitMP4::TrackInfo&&, size_t frameSize, uint32_t duration);
++
++    const Format m_format;
++    std::vector<uint8_t> m_buffer;
++    size_t m_offset { 0 };
++    uint64_t m_skipBytes { 0 };
++    bool m_failed { false };
++    bool m_haveInit { false };
++    SummitMP4::TrackInfo m_track;
++    int64_t m_nextTimestamp { 0 };
++    uint32_t m_freeFormatHeader { 0 };
++    size_t m_freeFormatFrameSize { 0 }; // Excludes padding.
++};
++
++} // namespace SummitMPEGAudio
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.cpp
 new file mode 100644
 index 0000000000000000000000000000000000000000..04f28f20b9c4c4e88f937eec280a6ba58f81fe4a
@@ -29664,10 +30101,10 @@ index 0000000000000000000000000000000000000000..df43f4fc21c17d2cfb904c9eaefa28b1
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49832b15c5
+index 0000000000000000000000000000000000000000..cf6dfbf1b26c6dae7d098c351ec7a2b45ca632aa
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
-@@ -0,0 +1,2302 @@
+@@ -0,0 +1,2663 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -29693,6 +30130,8 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +#if ENABLE(MEDIA_SOURCE)
 +
 +#include "AudioTrackPrivate.h"
++#include "AV1Utilities.h"
++#include "VP9Utilities.h"
 +#include "ColorSpace.h"
 +#include "ContentType.h"
 +#if ENABLE(ENCRYPTED_MEDIA)
@@ -29702,6 +30141,7 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +#include <JavaScriptCore/ArrayBuffer.h>
 +#endif
 +#include "GraphicsContext.h"
++#include "HEVCUtilities.h"
 +#include "Logging.h"
 +#include "MediaDescription.h"
 +#include "MediaSourcePrivateClient.h"
@@ -29709,6 +30149,7 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +#include "PlatformTimeRanges.h"
 +#include "SharedBuffer.h"
 +#include "VideoTrackPrivate.h"
++#include "VideoPresentationTimelineHaiku.h"
 +#include <span>
 +#include <wtf/Condition.h>
 +#include <wtf/MainThread.h>
@@ -29750,7 +30191,18 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +// streams (B_MISC_FORMAT_FAMILY, file format 'ffmp'). The NVDEC add-on
 +// registers itself for H.264 under the same description.
 +static constexpr uint32 ffmpegCodecH264 = 27;
++static constexpr uint32 ffmpegCodecHEVC = 173;
 +static constexpr uint32 ffmpegCodecAAC = 86018;
++static constexpr uint32 ffmpegCodecAC3 = 86019;
++static constexpr uint32 ffmpegCodecEAC3 = 86056;
++static constexpr uint32 ffmpegCodecMP1 = 86058;
++static constexpr uint32 ffmpegCodecMP2 = 86016;
++static constexpr uint32 ffmpegCodecMP3 = 86017;
++static constexpr uint32 ffmpegCodecVP8 = 139;
++static constexpr uint32 ffmpegCodecVP9 = 167;
++static constexpr uint32 ffmpegCodecAV1 = 226;
++static constexpr uint32 ffmpegCodecVorbis = 86021;
++static constexpr uint32 ffmpegCodecOpus = 86076;
 +
 +static bool mseTraceEnabled()
 +{
@@ -29782,7 +30234,7 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +// #pragma mark - Samples
 +
 +MediaSampleHaiku::MediaSampleHaiku(Ref<HaikuSampleData>&& data, Ref<HaikuTrackConfiguration>&& configuration, TrackID trackID,
-+    const MediaTime& presentationTime, const MediaTime& decodeTime, const MediaTime& duration, SampleFlags flags)
++    const MediaTime& presentationTime, const MediaTime& decodeTime, const MediaTime& duration, SampleFlags flags, const MediaTime& trimStart, const MediaTime& trimEnd)
 +    : m_data(WTF::move(data))
 +    , m_configuration(WTF::move(configuration))
 +    , m_trackID(trackID)
@@ -29790,6 +30242,8 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +    , m_decodeTime(decodeTime)
 +    , m_duration(duration)
 +    , m_flags(flags)
++    , m_trimStart(trimStart)
++    , m_trimEnd(trimEnd)
 +{
 +}
 +
@@ -29814,14 +30268,34 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +Ref<MediaSample> MediaSampleHaiku::createNonDisplayingCopy() const
 +{
 +    return create(m_data.copyRef(), m_configuration.copyRef(), m_trackID, m_presentationTime, m_decodeTime, m_duration,
-+        SampleFlags(m_flags | IsNonDisplaying));
++        SampleFlags(m_flags | IsNonDisplaying), m_trimStart, m_trimEnd);
 +}
 +
 +Ref<MediaSample> MediaSampleHaiku::createCopyWithAdjustedStartTime(const MediaTime& offset) const
 +{
 +    MediaTime clamped = std::max(MediaTime::zeroTime(), std::min(offset, m_duration));
 +    return create(m_data.copyRef(), m_configuration.copyRef(), m_trackID, m_presentationTime + clamped, m_decodeTime + clamped,
-+        m_duration - clamped, m_flags);
++        m_duration - clamped, m_flags, m_trimStart + clamped, m_trimEnd);
++}
++
++bool MediaSampleHaiku::isDivisable() const
++{
++    return m_configuration->info.packetTimedAudio;
++}
++
++std::pair<RefPtr<MediaSample>, RefPtr<MediaSample>> MediaSampleHaiku::divide(const MediaTime& time, UseEndTime)
++{
++    if (time <= m_presentationTime)
++        return { nullptr, this };
++    if (time >= m_presentationTime + m_duration)
++        return { this, nullptr };
++    auto offset = time - m_presentationTime;
++    return {
++        create(m_data.copyRef(), m_configuration.copyRef(), m_trackID, m_presentationTime, m_decodeTime, offset,
++            m_flags, m_trimStart, m_trimEnd + m_duration - offset),
++        create(m_data.copyRef(), m_configuration.copyRef(), m_trackID, time, m_decodeTime + offset, m_duration - offset,
++            m_flags, m_trimStart + offset, m_trimEnd)
++    };
 +}
 +
 +// #pragma mark - Clock
@@ -29949,7 +30423,7 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +{
 +    return a.kind == b.kind && a.codec == b.codec && a.timescale == b.timescale && a.width == b.width && a.height == b.height
 +        && a.channels == b.channels && a.sampleRate == b.sampleRate && a.codecConfig == b.codecConfig
-+        && a.objectTypeIndication == b.objectTypeIndication;
++        && a.objectTypeIndication == b.objectTypeIndication && a.seekPreRoll == b.seekPreRoll && a.packetTimedAudio == b.packetTimedAudio;
 +}
 +
 +bool isH264(const std::string& codec) { return codec == "avc1" || codec == "avc3"; }
@@ -30320,8 +30794,15 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +                m_decodedBeforeTarget = 0;
 +                m_skippedBeforeTarget = 0;
 +            }
-+            if (!decodeWith(*configuration, generation))
++            if (!decodeWith(*configuration, generation)) {
 +                m_queue.dropSamplesFor(configuration.get());
++                if (!m_queue.aborted() && m_queue.generation() == generation) {
++                    callOnMainThread([weakPlayer = m_weakPlayer] {
++                        if (RefPtr player = weakPlayer.get())
++                            player->decodingFailed();
++                    });
++                }
++            }
 +        }
 +    }
 +
@@ -30330,12 +30811,15 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +    bool decodeWith(const HaikuTrackConfiguration& configuration, unsigned generation)
 +    {
 +        auto& info = configuration.info;
-+        if (!isH264(info.codec) || !info.width || !info.height) {
++        uint32 codec = isH264(info.codec) ? ffmpegCodecH264 : info.codec == "vp08" ? ffmpegCodecVP8
++            : info.codec == "vp09" ? ffmpegCodecVP9 : info.codec == "av01" ? ffmpegCodecAV1
++            : info.codec == "hvc1" || info.codec == "hev1" ? ffmpegCodecHEVC : 0;
++        if (!codec || !info.width || !info.height) {
 +            MSE_TRACE("video codec %s %ux%u is not supported\n", info.codec.c_str(), info.width, info.height);
 +            return false;
 +        }
 +        media_format format;
-+        if (!makeEncodedFormat(ffmpegCodecH264, true, format))
++        if (!makeEncodedFormat(codec, true, format))
 +            return false;
 +        format.u.encoded_video.output.display.line_width = info.width;
 +        format.u.encoded_video.output.display.line_count = info.height;
@@ -30344,7 +30828,7 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +        format.u.encoded_video.output.pixel_height_aspect = 1;
 +
 +        // The avcC record's byte 4 gives the NAL length field's size.
-+        const unsigned nalLengthSize = info.codecConfig.size() > 4 ? (info.codecConfig[4] & 3) + 1 : 0;
++        const unsigned nalLengthSize = isH264(info.codec) && info.codecConfig.size() > 4 ? (info.codecConfig[4] & 3) + 1 : 0;
 +        const std::span<const uint8_t> codecConfig { info.codecConfig.data(), info.codecConfig.size() };
 +        RefPtr<MediaSampleHaiku> current;
 +        // The samples a decoder took while it was set up, given again to the
@@ -30352,6 +30836,9 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +        Vector<RefPtr<MediaSampleHaiku>> taken;
 +        size_t replayed = 0;
 +        bool keepTaken = true;
++        const bool useInputTimeline = codec == ffmpegCodecAV1 || codec == ffmpegCodecHEVC;
++        VideoPresentationTimelineHaiku inputTimeline;
++        bool invalidTimeline = false;
 +        auto nextChunk = [&](const void** data, size_t* size, media_header* header) -> status_t {
 +            RefPtr<MediaSampleHaiku> next;
 +            if (replayed < taken.size())
@@ -30381,13 +30868,21 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +                    m_nonDisplaying.append(toMicroseconds(next->presentationTime()));
 +                    ++m_decodedBeforeTarget;
 +                }
-+                if (keepTaken)
++                if (keepTaken) {
++                    if (taken.size() >= 256)
++                        return B_MEDIA_BAD_FORMAT;
 +                    taken.append(next);
++                    replayed = taken.size();
++                }
 +            }
 +            current = WTF::move(next);
 +            std::memset(header, 0, sizeof(*header));
 +            header->type = B_MEDIA_ENCODED_VIDEO;
 +            header->start_time = toMicroseconds(current->presentationTime());
++            if (useInputTimeline && !inputTimeline.append(header->start_time)) {
++                invalidTimeline = true;
++                return B_MEDIA_BAD_FORMAT;
++            }
 +            header->size_used = current->size();
 +            if (current->isSync())
 +                header->u.encoded_video.field_flags = B_MEDIA_KEY_FRAME;
@@ -30399,18 +30894,15 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +
 +        // The Raspberry Pi's own decoder first; see MediaDecoderSelectionHaiku.h.
 +        std::unique_ptr<AddOnVideoDecoderHaiku> addOn;
-+        if (AddOnVideoDecoderHaiku::canDecode(format, codecConfig)) {
++        if (isH264(info.codec) && AddOnVideoDecoderHaiku::canDecode(format, codecConfig)) {
 +            addOn = AddOnVideoDecoderHaiku::create(format, codecConfig, [&](const void** data, size_t* size, media_header* header) {
 +                return nextChunk(data, size, header);
 +            });
 +            if (!addOn)
 +                replayed = 0;
 +        }
-+        if (addOn)
-+            taken.clear();
-+        else if (m_queue.aborted() || m_queue.generation() != generation)
++        if (!addOn && (m_queue.aborted() || m_queue.generation() != generation))
 +            return true;
-+        keepTaken = false;
 +
 +        HaikuChunkDecoder decoder([&](const void** data, size_t* size, media_header* header) {
 +            return nextChunk(data, size, header);
@@ -30431,6 +30923,9 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +            if (status != B_OK) {
 +                // The add-on the media kit chose failed (the Raspberry Pi 4's image
 +                // has the ROCK 5's Rockchip decoder first); see MediaDecoderSelectionHaiku.h.
++                replayed = 0;
++                inputTimeline.clear();
++                invalidTimeline = false;
 +                status = setSoftwareDecoderHaiku(decoder, format, info.codecConfig.data(), info.codecConfig.size());
 +                std::fprintf(stderr, "Summit media: no decoder add-on took MSE video at first; libavcodec status %ld\n", long(status));
 +            }
@@ -30438,7 +30933,8 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +                // NVDEC runs out of pictures on 16 reference frames; see MediaDecoderSelectionHaiku.h.
 +                media_codec_info chosen = { };
 +                decoder.GetDecoderInfo(&chosen);
-+                if (hardwareDecoderCannotDecodeHaiku(chosen, codecConfig)) {
++                if (isH264(info.codec) && hardwareDecoderCannotDecodeHaiku(chosen, codecConfig)) {
++                    replayed = 0;
 +                    status = setSoftwareDecoderHaiku(decoder, format, info.codecConfig.data(), info.codecConfig.size());
 +                    std::fprintf(stderr, "Summit media: MSE H.264 with %u reference frames goes to libavcodec instead of %s (status %ld)\n",
 +                        h264MaxReferenceFrames(codecConfig).value_or(0), chosen.pretty_name, long(status));
@@ -30461,6 +30957,10 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +            if (!rowBytes)
 +                rowBytes = size_t(width) * 4;
 +        }
++        keepTaken = false;
++        // Unread setup samples must survive a fallback until it consumes them.
++        if (replayed == taken.size())
++            taken.clear();
 +        MSE_TRACE("video decoder %s %ux%u status=%ld setup=%.1f ms\n", codecInfo.pretty_name, info.width, info.height,
 +            long(status), (system_time() - setupStarted) / 1000.0);
 +        // A flush while the decoder was set up (it reads samples to find the
@@ -30508,17 +31008,27 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +            status = addOn ? addOn->decode(target, rowBytes, &frames, &header, &decodeInfo)
 +                : decoder.Decode(target, &frames, &header, &decodeInfo);
 +            if (status != B_OK)
-+                break;
++                return !invalidTimeline;
 +            if (m_queue.generation() != generation)
 +                break;
-+            int64_t pts = header.start_time;
++            if (!frames)
++                continue;
++            if (frames != 1)
++                return false;
++            std::optional<int64_t> presentationTime = useInputTimeline ? inputTimeline.take() : std::optional<int64_t>(header.start_time);
++            if (!presentationTime || *presentationTime == INT64_MIN || *presentationTime == INT64_MAX)
++                return false;
++            int64_t pts = *presentationTime;
++            if (mseTraceEnabled() && useInputTimeline)
++                MSE_TRACE("video output codec=%s generation=%u pts=%lld native=%lld\n", info.codec.c_str(), generation,
++                    static_cast<long long>(pts), static_cast<long long>(header.start_time));
 +            if (takeNonDisplaying(pts))
 +                continue;
 +            if (!waitUntilDue(pts, generation))
 +                break;
 +            if (!m_presentedSinceFlush && (m_decodedBeforeTarget || m_skippedBeforeTarget))
 +                MSE_TRACE("seek target reached: %u pictures decoded before it, %u left out\n", m_decodedBeforeTarget, m_skippedBeforeTarget);
-+            int64_t lateness = m_clock.isRunning() ? m_clock.now() - pts : 0;
++            __int128 lateness = m_clock.isRunning() ? static_cast<__int128>(m_clock.now()) - pts : 0;
 +            if (m_presentedSinceFlush && lateness > 80000) {
 +                ++m_droppedFrames;
 +                continue;
@@ -30561,10 +31071,10 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +                m_queue.waitFor(10_ms, generation);
 +                continue;
 +            }
-+            int64_t wait = pts - m_clock.now();
++            __int128 wait = static_cast<__int128>(pts) - m_clock.now();
 +            if (wait <= 3000)
 +                return true;
-+            m_queue.waitFor(Seconds::fromMicroseconds(std::min<int64_t>(wait - 2000, 20000)), generation);
++            m_queue.waitFor(Seconds::fromMicroseconds(static_cast<int64_t>(std::min<__int128>(wait - 2000, 20000))), generation);
 +        }
 +        return false;
 +    }
@@ -30729,6 +31239,7 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +        Locker locker { m_pcmLock };
 +        m_pcm.clear();
 +        m_pcmFrames = 0;
++        m_lastPCMEnd = m_clock.now();
 +        m_pcmCondition.notifyAll();
 +    }
 +
@@ -30792,6 +31303,16 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +        }
 +    }
 +
++    void outputFormatChanged()
++    {
++        if (m_formatChanged.exchange(false))
++            releaseOutput();
++        updateOutput();
++        Locker locker { m_pcmLock };
++        m_outputFormatReady = true;
++        m_pcmCondition.notifyAll();
++    }
++
 +private:
 +    struct PCMBlock {
 +        int64_t pts { 0 };
@@ -30816,43 +31337,106 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +            RefPtr configuration = m_queue.waitForSample(generation);
 +            if (!configuration)
 +                return;
-+            if (!decodeWith(*configuration, generation))
++            if (!decodeWith(*configuration, generation)) {
 +                m_queue.dropSamplesFor(configuration.get());
++                if (!m_queue.aborted() && m_queue.generation() == generation) {
++                    callOnMainThread([weakPlayer = m_weakPlayer] {
++                        if (RefPtr player = weakPlayer.get())
++                            player->decodingFailed();
++                    });
++                }
++            }
 +        }
 +    }
 +
 +    bool decodeWith(const HaikuTrackConfiguration& configuration, unsigned generation)
 +    {
 +        auto& info = configuration.info;
-+        if (!isAAC(info) || !info.sampleRate || !info.channels) {
++        uint32 codec = isAAC(info) ? ffmpegCodecAAC : info.codec == "Opus" ? ffmpegCodecOpus
++            : info.codec == "vorb" ? ffmpegCodecVorbis : info.codec == "mp1" ? ffmpegCodecMP1
++            : info.codec == "mp2" ? ffmpegCodecMP2 : info.codec == "mp3" ? ffmpegCodecMP3
++            : info.codec == "ac-3" ? ffmpegCodecAC3 : info.codec == "ec-3" ? ffmpegCodecEAC3 : 0;
++        bool packetTimedAudio = info.packetTimedAudio;
++        if (!codec || !info.sampleRate || !info.channels) {
 +            MSE_TRACE("audio codec %s (0x%x) is not supported\n", info.codec.c_str(), info.objectTypeIndication);
 +            return false;
 +        }
 +        media_format format;
-+        if (!makeEncodedFormat(ffmpegCodecAAC, false, format))
++        if (!makeEncodedFormat(codec, false, format))
 +            return false;
 +        format.u.encoded_audio.output.frame_rate = info.sampleRate;
 +        format.u.encoded_audio.output.channel_count = info.channels;
 +        format.u.encoded_audio.output.byte_order = B_MEDIA_HOST_ENDIAN;
-+        format.u.encoded_audio.frame_size = 1024;
++        format.u.encoded_audio.frame_size = isAAC(info) ? 1024 : 0;
 +
++        // Media Kit's FFmpeg decoder consumes Opus pre-skip without moving
++        // the first output timestamp. Decode the entire packet and apply the
++        // parser/append-window trims ourselves on the exact PCM timeline.
++        auto codecConfig = info.codecConfig;
++        if (info.codec == "Opus") {
++            if (codecConfig.size() < 19 || std::memcmp(codecConfig.data(), "OpusHead", 8))
++                return false;
++            codecConfig[10] = codecConfig[11] = 0;
++        }
++        struct PacketTiming {
++            MediaTime presentationTime;
++            MediaTime duration;
++            MediaTime trimStart;
++            MediaTime trimEnd;
++            bool nonDisplaying;
++            uint64_t consumedFrames { 0 };
++        };
++        Deque<PacketTiming> packetTimings;
++        bool firstPacket = true;
 +        RefPtr<MediaSampleHaiku> current;
++        size_t prerollIndex = 0;
++        bool deliveredCurrent = true;
++        MediaTime prerollRemaining = MediaTime::zeroTime();
 +        HaikuChunkDecoder decoder([&](const void** data, size_t* size, media_header* header) -> status_t {
-+            RefPtr<MediaSampleHaiku> next;
-+            if (m_queue.take(&configuration, generation, next) == HaikuMSESampleQueue::TakeResult::Stop)
-+                return B_LAST_BUFFER_ERROR;
-+            current = WTF::move(next);
++            if (deliveredCurrent) {
++                RefPtr<MediaSampleHaiku> next;
++                if (m_queue.take(&configuration, generation, next) == HaikuMSESampleQueue::TakeResult::Stop)
++                    return B_LAST_BUFFER_ERROR;
++                current = WTF::move(next);
++                deliveredCurrent = false;
++                prerollIndex = 0;
++                prerollRemaining = MediaTime::zeroTime();
++                for (auto& packet : current->preroll())
++                    prerollRemaining += MediaTime(packet.duration, info.timescale);
++            }
++            PacketTiming timing { current->codedPresentationTime(), current->codedDuration(), current->trimStart(), current->trimEnd(), current->isNonDisplaying() };
++            if (prerollIndex < current->preroll().size()) {
++                auto& packet = current->preroll()[prerollIndex++];
++                timing.presentationTime -= prerollRemaining;
++                timing.duration = MediaTime(packet.duration, info.timescale);
++                timing.trimStart = timing.trimEnd = MediaTime::zeroTime();
++                timing.nonDisplaying = true;
++                prerollRemaining -= timing.duration;
++                *data = packet.data.data();
++                *size = packet.data.size();
++            } else {
++                deliveredCurrent = true;
++                *data = current->bytes();
++                *size = current->size();
++            }
++            // Vorbis' first packet primes the overlapping transform and
++            // produces no PCM. Its nominal container duration must not be
++            // assigned to the first decoded block from the following packet.
++            if (packetTimedAudio && !(firstPacket && info.codec == "vorb")) {
++                if (packetTimings.size() >= 512)
++                    return B_MEDIA_BAD_FORMAT;
++                packetTimings.append(timing);
++            }
++            firstPacket = false;
 +            std::memset(header, 0, sizeof(*header));
 +            header->type = B_MEDIA_ENCODED_AUDIO;
-+            header->start_time = toMicroseconds(current->presentationTime());
-+            header->size_used = current->size();
-+            *data = current->bytes();
-+            *size = current->size();
++            header->start_time = toMicroseconds(packetTimedAudio ? timing.presentationTime : current->presentationTime());
++            header->size_used = *size;
 +            return B_OK;
 +        });
-+        status_t status = decoder.SetTo(&format, info.codecConfig.data(), info.codecConfig.size());
++        status_t status = decoder.SetTo(&format, codecConfig.data(), codecConfig.size());
 +        if (status != B_OK)
-+            status = setSoftwareDecoderHaiku(decoder, format, info.codecConfig.data(), info.codecConfig.size());
++            status = setSoftwareDecoderHaiku(decoder, format, codecConfig.data(), codecConfig.size());
 +        media_format output;
 +        output.type = B_MEDIA_RAW_AUDIO;
 +        output.u.raw_audio = media_raw_audio_format::wildcard;
@@ -30871,37 +31455,49 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +            Locker locker { m_pcmLock };
 +            bool changed = m_formatKnown && (m_format.frame_rate != output.u.raw_audio.frame_rate
 +                || m_format.channel_count != output.u.raw_audio.channel_count || m_format.format != output.u.raw_audio.format);
++            // Existing PCM still belongs to the old SoundPlayer format. Let
++            // it drain before changing channels, sample width, or sample rate.
++            while (changed && (!m_pcm.isEmpty() || m_clock.now() < m_lastPCMEnd) && !m_queue.aborted() && m_queue.generation() == generation)
++                m_pcmCondition.waitFor(m_pcmLock, 20_ms);
++            if (m_queue.aborted() || m_queue.generation() != generation)
++                return true;
 +            m_format = output.u.raw_audio;
 +            m_frameSize = frameSize;
 +            if (changed)
 +                m_formatChanged = true;
 +        }
 +        if (!m_formatKnown.exchange(true) || m_formatChanged) {
-+            // The player owns this renderer, so it is alive while the player is.
-+            callOnMainThread([weakPlayer = m_weakPlayer, this] {
-+                if (!weakPlayer.get())
-+                    return;
-+                if (m_formatChanged.exchange(false))
-+                    releaseOutput();
-+                updateOutput();
++            {
++                Locker locker { m_pcmLock };
++                m_outputFormatReady = false;
++            }
++            // Reloading can replace the renderer while this task is queued.
++            // The player checks ownership before dereferencing the pointer.
++            callOnMainThread([weakPlayer = m_weakPlayer, renderer = this] {
++                if (RefPtr player = weakPlayer.get())
++                    player->audioOutputFormatChanged(renderer);
 +            });
++            Locker locker { m_pcmLock };
++            while (!m_outputFormatReady && !m_queue.aborted() && m_queue.generation() == generation)
++                m_pcmCondition.waitFor(m_pcmLock, 20_ms);
++            if (m_queue.aborted() || m_queue.generation() != generation)
++                return true;
 +        }
 +
-+        while (!m_queue.aborted() && m_queue.generation() == generation) {
-+            PCMBlock block;
-+            block.bytes.grow(output.u.raw_audio.buffer_size);
-+            media_header header;
-+            std::memset(&header, 0, sizeof(header));
-+            int64 frames = 0;
-+            status = decoder.Decode(block.bytes.mutableSpan().data(), &frames, &header, nullptr);
-+            if (status != B_OK || frames <= 0)
-+                break;
-+            block.bytes.shrink(std::min<size_t>(block.bytes.size(), size_t(frames) * frameSize));
-+            block.pts = header.start_time;
++        uint64_t decodedPCMFrames = 0;
++        uint64_t queuedPCMFrames = 0;
++        bool loggedFirstPCM = false;
++        auto enqueuePCM = [&](PCMBlock&& block) {
 +            Locker locker { m_pcmLock };
 +            if (m_queue.generation() != generation)
-+                break;
-+            m_pcmFrames += frames;
++                return;
++            if (!loggedFirstPCM) {
++                MSE_TRACE("audio first PCM codec=%s generation=%u pts=%.6f frames=%zu\n", info.codec.c_str(), generation, block.pts / 1000000.0, block.bytes.size() / frameSize);
++                loggedFirstPCM = true;
++            }
++            queuedPCMFrames += block.bytes.size() / frameSize;
++            m_lastPCMEnd = blockEnd(block);
++            m_pcmFrames += block.bytes.size() / frameSize;
 +            m_pcm.append(WTF::move(block));
 +            // Hold about half a second; drop what the clock has already passed.
 +            while (!m_queue.aborted() && m_queue.generation() == generation && m_pcmFrames > m_format.frame_rate / 2) {
@@ -30912,8 +31508,61 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +                }
 +                m_pcmCondition.waitFor(m_pcmLock, 20_ms);
 +            }
++        };
++        auto pcmFramesFor = [&](const MediaTime& duration) -> uint64_t {
++            return std::max<int64_t>(0, std::llround(duration.toDouble() * output.u.raw_audio.frame_rate));
++        };
++        while (!m_queue.aborted() && m_queue.generation() == generation) {
++            PCMBlock block;
++            block.bytes.grow(output.u.raw_audio.buffer_size);
++            media_header header;
++            std::memset(&header, 0, sizeof(header));
++            int64 frames = 0;
++            status = decoder.Decode(block.bytes.mutableSpan().data(), &frames, &header, nullptr);
++            if (status != B_OK || frames <= 0)
++                break;
++            block.bytes.shrink(std::min<size_t>(block.bytes.size(), size_t(frames) * frameSize));
++            decodedPCMFrames += block.bytes.size() / frameSize;
++            if (!packetTimedAudio) {
++                block.pts = header.start_time;
++                enqueuePCM(WTF::move(block));
++                continue;
++            }
++            // A Media Kit output buffer may span several encoded packets.
++            // Split on packet boundaries before applying presentation trims,
++            // so timestamp gaps and discarded tails don't shift later audio.
++            size_t offsetFrames = 0;
++            size_t decodedFrames = block.bytes.size() / frameSize;
++            while (offsetFrames < decodedFrames) {
++                if (packetTimings.isEmpty()) {
++                    MSE_TRACE("audio output exceeded its coded packet timeline\n");
++                    return false;
++                }
++                auto& timing = packetTimings.first();
++                uint64_t codedFrames = pcmFramesFor(timing.duration);
++                uint64_t begin = std::min(codedFrames, pcmFramesFor(timing.trimStart));
++                uint64_t end = codedFrames - std::min(codedFrames - begin, pcmFramesFor(timing.trimEnd));
++                size_t amount = std::min<uint64_t>(decodedFrames - offsetFrames, codedFrames - timing.consumedFrames);
++                uint64_t visibleBegin = std::max(begin, timing.consumedFrames);
++                uint64_t visibleEnd = std::min(end, timing.consumedFrames + amount);
++                if (!timing.nonDisplaying && visibleEnd > visibleBegin) {
++                    PCMBlock visible;
++                    visible.pts = toMicroseconds(timing.presentationTime)
++                        + std::llround(visibleBegin * 1000000.0 / output.u.raw_audio.frame_rate);
++                    size_t byteOffset = (offsetFrames + visibleBegin - timing.consumedFrames) * frameSize;
++                    visible.bytes.append(block.bytes.span().subspan(byteOffset, (visibleEnd - visibleBegin) * frameSize));
++                    enqueuePCM(WTF::move(visible));
++                }
++                timing.consumedFrames += amount;
++                offsetFrames += amount;
++                if (timing.consumedFrames == codedFrames)
++                    packetTimings.removeFirst();
++            }
 +        }
-+        return true;
++        MSE_TRACE("audio finished codec=%s generation=%u decoded=%llu queued=%llu status=%ld\n", info.codec.c_str(), generation,
++            static_cast<unsigned long long>(decodedPCMFrames), static_cast<unsigned long long>(queuedPCMFrames), long(status));
++        return status == B_OK || status == B_LAST_BUFFER_ERROR || status == B_CANCELED
++            || m_queue.aborted() || m_queue.generation() != generation;
 +    }
 +
 +    int64_t blockEnd(const PCMBlock& block) const WTF_REQUIRES_LOCK(m_pcmLock)
@@ -30981,6 +31630,8 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +    Lock m_pcmLock;
 +    Condition m_pcmCondition;
 +    Deque<PCMBlock> m_pcm WTF_GUARDED_BY_LOCK(m_pcmLock);
++    bool m_outputFormatReady WTF_GUARDED_BY_LOCK(m_pcmLock) { true };
++    int64_t m_lastPCMEnd WTF_GUARDED_BY_LOCK(m_pcmLock) { 0 };
 +    int64_t m_pcmFrames WTF_GUARDED_BY_LOCK(m_pcmLock) { 0 };
 +    media_raw_audio_format m_format WTF_GUARDED_BY_LOCK(m_pcmLock) { };
 +    size_t m_frameSize { 0 };
@@ -31013,7 +31664,11 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +
 +static const HashSet<String>& mseTypes()
 +{
-+    static NeverDestroyed types = HashSet<String> { "video/mp4"_s, "audio/mp4"_s };
++    static NeverDestroyed types = HashSet<String> { "video/mp4"_s, "audio/mp4"_s, "audio/aac"_s, "audio/mpeg"_s
++#if USE(LIBWEBRTC)
++        , "video/webm"_s, "audio/webm"_s
++#endif
++    };
 +    return types;
 +}
 +
@@ -31038,6 +31693,23 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +    return codec == "mp4a.40.2"_s || codec == "mp4a.40.5"_s || codec == "mp4a.40.29"_s || codec == "mp4a.40"_s || codec == "mp4a.67"_s;
 +}
 +
++static bool isSupportedMP4Codec(StringView codec, bool audioOnly)
++{
++    if (isSupportedCodec(codec, audioOnly) || codec == "ac-3"_s || codec == "ec-3"_s)
++        return true;
++    if (audioOnly)
++        return false;
++    if (codec.startsWith("vp09"_s)) {
++        if (auto vp = parseVPCodecParameters(codec))
++            return vp->profile < 2 ? vp->bitDepth == 8 : vp->bitDepth > 8;
++    }
++    if (auto av1 = parseAV1CodecParameters(codec))
++        return validateAV1ConfigurationRecord(*av1);
++    if (auto hevc = parseHEVCCodecParameters(codec))
++        return !hevc->generalProfileSpace && hevc->generalProfileIDC >= 1 && hevc->generalProfileIDC <= 3;
++    return false;
++}
++
 +MediaPlayer::SupportsType MediaPlayerPrivateHaikuMSE::supportsType(const MediaEngineSupportParameters& parameters)
 +{
 +    auto container = parameters.type.containerType().convertToASCIILowercase();
@@ -31054,11 +31726,33 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +    if (!mseTypes().contains(container))
 +        return MediaPlayer::SupportsType::IsNotSupported;
 +    auto codecs = parameters.type.codecs();
++    // These byte-stream registrations identify the codec in their MIME
++    // type and explicitly prohibit a codecs parameter.
++    if (container == "audio/aac"_s || container == "audio/mpeg"_s)
++        return parameters.type.parameter(ContentType::codecsParameter()).isNull() ? MediaPlayer::SupportsType::IsSupported : MediaPlayer::SupportsType::IsNotSupported;
 +    if (codecs.isEmpty())
 +        return MediaPlayer::SupportsType::MayBeSupported;
-+    bool audioOnly = container == "audio/mp4"_s;
++    bool audioOnly = container.startsWith("audio/"_s);
++#if USE(LIBWEBRTC)
++    if (container == "video/webm"_s || container == "audio/webm"_s) {
++        for (auto& codec : codecs) {
++            bool audio = codec == "opus"_s || (codec == "vorbis"_s && SummitWebM::Parser::supportsVorbis());
++            bool video = false;
++            if (!audioOnly) {
++                if (auto vp = parseVPCodecParameters(codec)) {
++                    bool vp8 = vp->codecName == "vp8"_s || vp->codecName == "vp08"_s;
++                    video = vp8 ? vp->bitDepth == 8 : (vp->profile < 2 ? vp->bitDepth == 8 : vp->bitDepth > 8);
++                } else if (auto av1 = parseAV1CodecParameters(codec))
++                    video = validateAV1ConfigurationRecord(*av1);
++            }
++            if (!audio && !video)
++                return MediaPlayer::SupportsType::IsNotSupported;
++        }
++        return MediaPlayer::SupportsType::IsSupported;
++    }
++#endif
 +    for (auto& codec : codecs) {
-+        if (!isSupportedCodec(codec, audioOnly))
++        if (!isSupportedMP4Codec(codec, audioOnly))
 +            return MediaPlayer::SupportsType::IsNotSupported;
 +    }
 +    return MediaPlayer::SupportsType::IsSupported;
@@ -31467,6 +32161,7 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +void MediaPlayerPrivateHaikuMSE::mediaSourceHasRetrievedAllData()
 +{
 +    setNetworkState(MediaPlayer::NetworkState::Loaded);
++    updatePlaybackState();
 +}
 +
 +const PlatformTimeRanges& MediaPlayerPrivateHaikuMSE::buffered() const
@@ -31526,16 +32221,23 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +{
 +    RefPtr mediaSource = m_mediaSourcePrivate;
 +    bool run = !m_paused && !m_pendingSeek && (m_dash ? !m_dash->isStopped() && m_dash->hasMetadata() : bool(mediaSource));
++    run = run && m_networkState != MediaPlayer::NetworkState::DecodeError;
 +#if ENABLE(ENCRYPTED_MEDIA)
-+    run = run && !m_waitingForKey && m_networkState != MediaPlayer::NetworkState::DecodeError;
++    run = run && !m_waitingForKey;
 +#endif
-+    bool reachedEnd = false;
++    auto now = currentTime();
++    auto mediaDuration = duration();
++    bool atDurationEnd = !m_pendingSeek && mediaDuration.isValid() && !mediaDuration.isIndefinite()
++        && !mediaDuration.isPositiveInfinite() && now >= mediaDuration;
++    // HTML can notice endedPlayback() and pause the engine before its next
++    // timer tick. The final position notification is still required to fire
++    // the DOM ended event. An open MSE at its buffered edge is only stalled.
++    bool reachedEnd = atDurationEnd && (m_dash ? m_dash->hasEnded() : mediaSource && mediaSource->isEnded());
++    bool announceEnd = reachedEnd && !m_reachedEnd;
++    m_reachedEnd = reachedEnd;
 +    if (run) {
-+        auto now = currentTime();
-+        auto duration = this->duration();
-+        if (duration.isValid() && !duration.isIndefinite() && !duration.isPositiveInfinite() && now >= duration) {
++        if (atDurationEnd) {
 +            run = false;
-+            reachedEnd = true;
 +        } else if (m_clock.isRunning())
 +            run = m_dash ? m_dash->hasCurrentData() && m_dash->bufferedEnd() > now.toDouble() : mediaSource->hasFutureTime(now, MediaTime::zeroTime());
 +        else {
@@ -31563,18 +32265,18 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +        MSE_TRACE("clock %s at %.3f%s\n", run ? "started" : "stopped", currentTime().toDouble(), stalled ? (reachedEnd ? " (end)" : " (stalled)") : "");
 +        if (stalled != m_stalled) {
 +            m_stalled = stalled;
-+            if (RefPtr player = m_player.get())
-+                player->timeChanged();
++            if (!announceEnd) {
++                if (RefPtr player = m_player.get())
++                    player->timeChanged();
++            }
 +        }
 +    }
 +    if (m_audioRenderer)
 +        m_audioRenderer->setPlaying(run);
-+    if (reachedEnd && !m_reachedEnd) {
-+        m_reachedEnd = true;
++    if (announceEnd) {
 +        if (RefPtr player = m_player.get())
 +            player->timeChanged();
-+    } else if (!reachedEnd)
-+        m_reachedEnd = false;
++    }
 +
 +    bool needsTimer = m_dash ? !m_dash->isStopped() : !m_paused;
 +    if (needsTimer && !m_playbackTimer.isActive()) m_playbackTimer.startRepeating(50_ms);
@@ -31596,6 +32298,18 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +    }
 +    if (m_audioRenderer)
 +        m_audioRenderer->updateOutput();
++}
++
++void MediaPlayerPrivateHaikuMSE::audioOutputFormatChanged(HaikuMSEAudioRenderer* renderer)
++{
++    if (m_audioRenderer.get() == renderer)
++        renderer->outputFormatChanged();
++}
++
++void MediaPlayerPrivateHaikuMSE::decodingFailed()
++{
++    setNetworkState(MediaPlayer::NetworkState::DecodeError);
++    updatePlaybackState();
 +}
 +
 +void MediaPlayerPrivateHaikuMSE::videoFrameAvailable()
@@ -31711,7 +32425,7 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +    MSE_TRACE("addSourceBuffer %s\n", reinterpret_cast<const char*>(contentType.raw().utf8().data()));
 +    {
 +        Locker locker { m_lock };
-+        m_sourceBuffers.append(SourceBufferPrivateHaiku::create(*this));
++        m_sourceBuffers.append(SourceBufferPrivateHaiku::create(*this, contentType));
 +        outPrivate = m_sourceBuffers.last();
 +    }
 +    outPrivate->setMediaSourceDuration(duration());
@@ -31735,24 +32449,45 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +
 +// #pragma mark - SourceBufferPrivateHaiku
 +
-+Ref<SourceBufferPrivateHaiku> SourceBufferPrivateHaiku::create(MediaSourcePrivateHaiku& parent)
++Ref<SourceBufferPrivateHaiku> SourceBufferPrivateHaiku::create(MediaSourcePrivateHaiku& parent, const ContentType& type)
 +{
-+    return adoptRef(*new SourceBufferPrivateHaiku(parent));
++    return adoptRef(*new SourceBufferPrivateHaiku(parent, type));
 +}
 +
-+SourceBufferPrivateHaiku::SourceBufferPrivateHaiku(MediaSourcePrivateHaiku& parent)
++SourceBufferPrivateHaiku::SourceBufferPrivateHaiku(MediaSourcePrivateHaiku& parent, const ContentType& type)
 +    : SourceBufferPrivate(parent)
 +#if !RELEASE_LOG_DISABLED
 +    , m_logger(parent.haikuPlayer()->mediaPlayerLogger())
 +    , m_logIdentifier(parent.haikuPlayer()->mediaPlayerLogIdentifier())
 +#endif
 +{
++    configureParser(type);
 +    m_parser.onInitSegment = [this](SummitMP4::InitSegment&& segment) { didParseInitializationSegment(WTF::move(segment)); };
 +    m_parser.onSample = [this](SummitMP4::Sample&& sample) { didParseSample(WTF::move(sample)); };
 +#if ENABLE(ENCRYPTED_MEDIA)
 +    m_parser.onProtectionSystemHeaders = [this](std::vector<uint8_t>&& headers) {
 +        if (RefPtr player = this->player()) player->initializationDataEncountered(WTF::move(headers));
 +    };
++#endif
++}
++
++void SourceBufferPrivateHaiku::configureParser(const ContentType& type)
++{
++    auto container = type.containerType().convertToASCIILowercase();
++    if (container == "audio/aac"_s || container == "audio/mpeg"_s) {
++        m_mpegAudioParser = std::make_unique<SummitMPEGAudio::Parser>(container == "audio/aac"_s
++            ? SummitMPEGAudio::Parser::Format::ADTS : SummitMPEGAudio::Parser::Format::MPEG);
++        m_mpegAudioParser->onInitSegment = [this](SummitMP4::InitSegment&& segment) { didParseInitializationSegment(WTF::move(segment)); };
++        m_mpegAudioParser->onSample = [this](SummitMP4::Sample&& sample) { didParseSample(WTF::move(sample)); };
++    } else
++        m_mpegAudioParser = nullptr;
++#if USE(LIBWEBRTC)
++    if (container == "video/webm"_s || container == "audio/webm"_s) {
++        m_webmParser = std::make_unique<SummitWebM::Parser>();
++        m_webmParser->onInitSegment = [this](SummitMP4::InitSegment&& segment) { didParseInitializationSegment(WTF::move(segment)); };
++        m_webmParser->onSample = [this](SummitMP4::Sample&& sample) { didParseSample(WTF::move(sample)); };
++    } else
++        m_webmParser = nullptr;
 +#endif
 +}
 +
@@ -31775,10 +32510,22 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +{
 +    bool ok = !m_parseFailed;
 +    data->forEachSegment([&](std::span<const uint8_t> segment) {
-+        if (ok)
-+            ok = m_parser.append(segment.data(), segment.size());
++        if (ok) {
++            if (m_mpegAudioParser)
++                ok = m_mpegAudioParser->append(segment.data(), segment.size());
++#if USE(LIBWEBRTC)
++            else if (m_webmParser)
++                ok = m_webmParser->append(segment.data(), segment.size());
++#endif
++            else
++                ok = m_parser.append(segment.data(), segment.size());
++        }
 +    });
-+    if (!ok) {
++#if USE(LIBWEBRTC)
++    if (ok && m_webmParser)
++        m_webmParser->flushPendingSamples();
++#endif
++    if (!ok || m_parseFailed) {
 +        MSE_TRACE("append of %zu bytes could not be parsed\n", data->size());
 +        m_parseFailed = true;
 +        return MediaPromise::createAndReject(PlatformMediaError::ParsingError);
@@ -31788,7 +32535,18 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +
 +void SourceBufferPrivateHaiku::resetParserStateInternal()
 +{
++    m_audioPreroll.clear();
 +    m_parser.reset();
++    if (m_pendingType)
++        configureParser(*std::exchange(m_pendingType, std::nullopt));
++    else {
++        if (m_mpegAudioParser)
++            m_mpegAudioParser->reset();
++#if USE(LIBWEBRTC)
++        if (m_webmParser)
++            m_webmParser->reset();
++#endif
++    }
 +    m_parseFailed = false;
 +}
 +
@@ -31798,11 +32556,15 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +        .platformType = PlatformMediaDecodingType::MediaSource,
 +        .type = contentType
 +    };
-+    return MediaPlayerPrivateHaikuMSE::supportsType(parameters) != MediaPlayer::SupportsType::IsNotSupported;
++    if (MediaPlayerPrivateHaikuMSE::supportsType(parameters) == MediaPlayer::SupportsType::IsNotSupported)
++        return false;
++    m_pendingType = contentType.isolatedCopy();
++    return true;
 +}
 +
 +void SourceBufferPrivateHaiku::didParseInitializationSegment(SummitMP4::InitSegment&& init)
 +{
++    m_audioPreroll.clear();
 +    InitializationSegment segment;
 +    segment.duration = init.duration && init.movieTimescale ? MediaTime(int64_t(init.duration), init.movieTimescale) : MediaTime::invalidTime();
 +    auto previous = std::exchange(m_configurations, { });
@@ -31834,14 +32596,44 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +
 +void SourceBufferPrivateHaiku::didParseSample(SummitMP4::Sample&& sample)
 +{
++    if (m_parseFailed)
++        return;
 +    RefPtr configuration = m_configurations.get(sample.trackID);
 +    if (!configuration)
 +        return;
 +    uint32_t timescale = configuration->info.timescale;
++    // A short Opus packet can be entirely covered by pre-skip. MSE drops
++    // zero-duration or negative-time samples, but the codec still needs them
++    // to initialize its state. Keep a bounded prefix with the next audible
++    // sample, so seeking and sample removal retain that dependency as well.
++    auto pending = m_audioPreroll.find(sample.trackID);
++    if (pending != m_audioPreroll.end() && !pending->value.samples.empty()) {
++        auto& previous = pending->value.samples.back();
++        if (__int128(previous.presentationTime) + previous.duration != sample.presentationTime) {
++            m_audioPreroll.remove(pending);
++            pending = m_audioPreroll.end();
++        }
++    }
++    if (configuration->info.packetTimedAudio && sample.duration && uint64_t(sample.trimStart) + sample.trimEnd == sample.duration) {
++        auto& prefix = m_audioPreroll.ensure(sample.trackID, [] { return PendingAudioPreroll { }; }).iterator->value;
++        if (prefix.samples.size() >= 1024 || sample.data.size() > 1024 * 1024 - prefix.bytes) {
++            m_parseFailed = true;
++            return;
++        }
++        prefix.bytes += sample.data.size();
++        prefix.samples.push_back(WTF::move(sample));
++        return;
++    }
++    std::vector<SummitMP4::Sample> preroll;
++    if (pending != m_audioPreroll.end()) {
++        preroll = WTF::move(pending->value.samples);
++        m_audioPreroll.remove(pending);
++    }
 +    auto flags = sample.isSync ? MediaSample::IsSync : MediaSample::None;
-+    SourceBufferPrivate::didReceiveSample(MediaSampleHaiku::create(HaikuSampleData::create(WTF::move(sample.data), WTF::move(sample.encryption)), configuration.releaseNonNull(),
-+        sample.trackID, MediaTime(sample.presentationTime, timescale), MediaTime(sample.decodeTime, timescale),
-+        MediaTime(sample.duration, timescale), flags));
++    SourceBufferPrivate::didReceiveSample(MediaSampleHaiku::create(HaikuSampleData::create(WTF::move(sample.data), WTF::move(sample.encryption), WTF::move(preroll)), configuration.releaseNonNull(),
++        sample.trackID, MediaTime(sample.presentationTime + sample.trimStart, timescale), MediaTime(sample.decodeTime + sample.trimStart, timescale),
++        MediaTime(sample.duration - sample.trimStart - sample.trimEnd, timescale), flags,
++        MediaTime(sample.trimStart, timescale), MediaTime(sample.trimEnd, timescale)));
 +}
 +
 +SourceBufferPrivateHaiku::Renderer SourceBufferPrivateHaiku::rendererForTrack(TrackID trackID) const
@@ -31868,6 +32660,12 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +    case Renderer::None:
 +        break;
 +    }
++}
++
++MediaTime SourceBufferPrivateHaiku::decoderPrerollForTrackID(TrackID trackID) const
++{
++    RefPtr configuration = m_configurations.get(trackID);
++    return configuration ? MediaTime(configuration->info.seekPreRoll, 1000000000) : MediaTime::zeroTime();
 +}
 +
 +void SourceBufferPrivateHaiku::enqueueSample(Ref<MediaSample>&& sample, TrackID trackID)
@@ -31972,10 +32770,10 @@ index 0000000000000000000000000000000000000000..b7bd35103fa19697b40f1a69ce428a49
 +#endif // ENABLE(MEDIA_SOURCE)
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.h b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..66ffa91f609f6cd8aef64d1696aae184761b9e36
+index 0000000000000000000000000000000000000000..f59fcf004e7768d8a3bc04ed0de1858e9a81d7b1
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.h
-@@ -0,0 +1,361 @@
+@@ -0,0 +1,400 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -32006,14 +32804,19 @@ index 0000000000000000000000000000000000000000..66ffa91f609f6cd8aef64d1696aae184
 +// and presented against the player's clock; audio is decoded on its own thread
 +// and played by a BSoundPlayer that follows the same clock.
 +
++#include "ContentType.h"
 +#include "DashPlaybackHaiku.h"
 +#include "DashResourceLoaderHaiku.h"
 +#include "FragmentedMP4ParserHaiku.h"
++#include "MPEGAudioParserHaiku.h"
 +#include "PlatformTimeRanges.h"
 +#include "MediaPlayerPrivate.h"
 +#include "MediaSample.h"
 +#include "MediaSourcePrivate.h"
 +#include "SourceBufferPrivate.h"
++#if USE(LIBWEBRTC)
++#include "WebMParserHaiku.h"
++#endif
 +#include <atomic>
 +#include <memory>
 +#include <wtf/Deque.h>
@@ -32052,15 +32855,25 @@ index 0000000000000000000000000000000000000000..66ffa91f609f6cd8aef64d1696aae184
 +
 +class HaikuSampleData final : public ThreadSafeRefCounted<HaikuSampleData> {
 +public:
-+    static Ref<HaikuSampleData> create(std::vector<uint8_t>&& bytes, std::optional<SummitMP4::CencSample>&& encryption = std::nullopt)
-+    { return adoptRef(*new HaikuSampleData(WTF::move(bytes), WTF::move(encryption))); }
++    static Ref<HaikuSampleData> create(std::vector<uint8_t>&& bytes, std::optional<SummitMP4::CencSample>&& encryption = std::nullopt,
++        std::vector<SummitMP4::Sample>&& preroll = { })
++    { return adoptRef(*new HaikuSampleData(WTF::move(bytes), WTF::move(encryption), WTF::move(preroll))); }
 +    const std::vector<uint8_t> bytes;
 +    const std::optional<SummitMP4::CencSample> encryption;
++    const std::vector<SummitMP4::Sample> preroll;
++    size_t sizeInBytes() const
++    {
++        size_t size = bytes.size();
++        for (auto& packet : preroll)
++            size += sizeof(packet) + packet.data.size();
++        return size;
++    }
 +
 +private:
-+    explicit HaikuSampleData(std::vector<uint8_t>&& bytes, std::optional<SummitMP4::CencSample>&& encryption)
++    explicit HaikuSampleData(std::vector<uint8_t>&& bytes, std::optional<SummitMP4::CencSample>&& encryption, std::vector<SummitMP4::Sample>&& preroll)
 +        : bytes(WTF::move(bytes))
 +        , encryption(WTF::move(encryption))
++        , preroll(WTF::move(preroll))
 +    {
 +    }
 +};
@@ -32068,36 +32881,44 @@ index 0000000000000000000000000000000000000000..66ffa91f609f6cd8aef64d1696aae184
 +class MediaSampleHaiku final : public MediaSample {
 +public:
 +    static Ref<MediaSampleHaiku> create(Ref<HaikuSampleData>&& data, Ref<HaikuTrackConfiguration>&& configuration, TrackID trackID,
-+        const MediaTime& presentationTime, const MediaTime& decodeTime, const MediaTime& duration, SampleFlags flags)
++        const MediaTime& presentationTime, const MediaTime& decodeTime, const MediaTime& duration, SampleFlags flags,
++        const MediaTime& trimStart = MediaTime::zeroTime(), const MediaTime& trimEnd = MediaTime::zeroTime())
 +    {
-+        return adoptRef(*new MediaSampleHaiku(WTF::move(data), WTF::move(configuration), trackID, presentationTime, decodeTime, duration, flags));
++        return adoptRef(*new MediaSampleHaiku(WTF::move(data), WTF::move(configuration), trackID, presentationTime, decodeTime, duration, flags, trimStart, trimEnd));
 +    }
 +
 +    MediaTime presentationTime() const final { return m_presentationTime; }
 +    MediaTime decodeTime() const final { return m_decodeTime; }
 +    MediaTime duration() const final { return m_duration; }
 +    TrackID trackID() const final { return m_trackID; }
-+    size_t sizeInBytes() const final { return m_data->bytes.size() + sizeof(*this); }
++    size_t sizeInBytes() const final { return m_data->sizeInBytes() + sizeof(*this); }
 +    FloatSize presentationSize() const final;
 +    void offsetTimestampsBy(const MediaTime&) final;
 +    void setTimestamps(const MediaTime&, const MediaTime&) final;
 +    Ref<MediaSample> createNonDisplayingCopy() const final;
 +    Ref<MediaSample> createCopyWithAdjustedStartTime(const MediaTime&) const final;
++    bool isDivisable() const final;
++    std::pair<RefPtr<MediaSample>, RefPtr<MediaSample>> divide(const MediaTime&, UseEndTime = UseEndTime::DoNotUse) final;
 +    SampleFlags flags() const final { return m_flags; }
 +    PlatformSample platformSample() const final { return PlatformSample { static_cast<const MockSampleBox*>(nullptr) }; }
 +    Type type() const final { return Type::None; }
 +
 +    const uint8_t* bytes() const { return m_data->bytes.data(); }
 +    size_t size() const { return m_data->bytes.size(); }
++    const std::vector<SummitMP4::Sample>& preroll() const { return m_data->preroll; }
 +    const HaikuTrackConfiguration& configuration() const { return m_configuration.get(); }
++    const MediaTime& trimStart() const { return m_trimStart; }
++    const MediaTime& trimEnd() const { return m_trimEnd; }
++    MediaTime codedPresentationTime() const { return m_presentationTime - m_trimStart; }
++    MediaTime codedDuration() const { return m_duration + m_trimStart + m_trimEnd; }
 +    const std::optional<SummitMP4::CencSample>& encryption() const { return m_data->encryption; }
 +    Ref<MediaSampleHaiku> withClearBytes(std::vector<uint8_t>&& bytes) const
 +    {
-+        return create(HaikuSampleData::create(WTF::move(bytes)), m_configuration.copyRef(), m_trackID, m_presentationTime, m_decodeTime, m_duration, m_flags);
++        return create(HaikuSampleData::create(WTF::move(bytes)), m_configuration.copyRef(), m_trackID, m_presentationTime, m_decodeTime, m_duration, m_flags, m_trimStart, m_trimEnd);
 +    }
 +
 +private:
-+    MediaSampleHaiku(Ref<HaikuSampleData>&&, Ref<HaikuTrackConfiguration>&&, TrackID, const MediaTime&, const MediaTime&, const MediaTime&, SampleFlags);
++    MediaSampleHaiku(Ref<HaikuSampleData>&&, Ref<HaikuTrackConfiguration>&&, TrackID, const MediaTime&, const MediaTime&, const MediaTime&, SampleFlags, const MediaTime&, const MediaTime&);
 +
 +    const Ref<HaikuSampleData> m_data;
 +    const Ref<HaikuTrackConfiguration> m_configuration;
@@ -32106,6 +32927,8 @@ index 0000000000000000000000000000000000000000..66ffa91f609f6cd8aef64d1696aae184
 +    MediaTime m_decodeTime;
 +    MediaTime m_duration;
 +    SampleFlags m_flags;
++    MediaTime m_trimStart;
++    MediaTime m_trimEnd;
 +};
 +
 +// Media time that advances with the system clock while playback is running.
@@ -32152,6 +32975,8 @@ index 0000000000000000000000000000000000000000..66ffa91f609f6cd8aef64d1696aae184
 +
 +    // Called on the main thread by the renderers.
 +    void videoFrameAvailable();
++    void decodingFailed();
++    void audioOutputFormatChanged(HaikuMSEAudioRenderer*);
 +#if ENABLE(ENCRYPTED_MEDIA)
 +    HaikuCencDecryptionContext& decryptionContext() const { return m_decryptionContext.get(); }
 +    void encryptionStateChanged();
@@ -32278,7 +33103,7 @@ index 0000000000000000000000000000000000000000..66ffa91f609f6cd8aef64d1696aae184
 +
 +class SourceBufferPrivateHaiku final : public SourceBufferPrivate {
 +public:
-+    static Ref<SourceBufferPrivateHaiku> create(MediaSourcePrivateHaiku&);
++    static Ref<SourceBufferPrivateHaiku> create(MediaSourcePrivateHaiku&, const ContentType&);
 +    virtual ~SourceBufferPrivateHaiku();
 +
 +    constexpr MediaPlatformType platformType() const final { return MediaPlatformType::Haiku; }
@@ -32287,12 +33112,14 @@ index 0000000000000000000000000000000000000000..66ffa91f609f6cd8aef64d1696aae184
 +    void rendererReadyForMoreSamples(TrackID);
 +
 +private:
-+    explicit SourceBufferPrivateHaiku(MediaSourcePrivateHaiku&);
++    SourceBufferPrivateHaiku(MediaSourcePrivateHaiku&, const ContentType&);
++    void configureParser(const ContentType&);
 +
 +    Ref<MediaPromise> appendInternal(Ref<SharedBuffer>&&) final;
 +    void resetParserStateInternal() final;
 +    bool canSwitchToType(const ContentType&) final;
 +    void flush(TrackID) final;
++    MediaTime decoderPrerollForTrackID(TrackID) const final;
 +    void enqueueSample(Ref<MediaSample>&&, TrackID) final;
 +    void allSamplesInTrackEnqueued(TrackID) final;
 +    bool isReadyForMoreSamples(TrackID) final;
@@ -32318,9 +33145,19 @@ index 0000000000000000000000000000000000000000..66ffa91f609f6cd8aef64d1696aae184
 +#endif
 +
 +    SummitMP4::Parser m_parser;
++    std::unique_ptr<SummitMPEGAudio::Parser> m_mpegAudioParser;
++    std::optional<ContentType> m_pendingType;
++#if USE(LIBWEBRTC)
++    std::unique_ptr<SummitWebM::Parser> m_webmParser;
++#endif
 +    bool m_parseFailed { false };
 +    // Parser track number -> configuration from the latest init segment.
 +    HashMap<uint64_t, Ref<HaikuTrackConfiguration>> m_configurations;
++    struct PendingAudioPreroll {
++        std::vector<SummitMP4::Sample> samples;
++        size_t bytes { 0 };
++    };
++    HashMap<uint64_t, PendingAudioPreroll> m_audioPreroll;
 +    // First track of each kind in this buffer; only those are played.
 +    std::optional<TrackID> m_videoTrackID;
 +    std::optional<TrackID> m_audioTrackID;
@@ -36054,12 +36891,76 @@ index 0000000000000000000000000000000000000000..41999de77e252470c0a8f56b0eda479b
 +SPECIALIZE_TYPE_TRAITS_END()
 +
 +#endif // ENABLE(VIDEO) && PLATFORM(HAIKU)
+diff --git a/Source/WebCore/platform/graphics/haiku/VideoPresentationTimelineHaiku.h b/Source/WebCore/platform/graphics/haiku/VideoPresentationTimelineHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..40d4d11d5bbed58fb996c46e75654959b18e4994
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/haiku/VideoPresentationTimelineHaiku.h
+@@ -0,0 +1,58 @@
++/*
++ * Copyright (C) 2026 Summit contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHORS ``AS IS'' AND ANY EXPRESS OR
++ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
++ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
++ */
++
++#pragma once
++
++#include <algorithm>
++#include <cstdint>
++#include <limits>
++#include <optional>
++#include <vector>
++
++namespace WebCore {
++
++// Media Kit's dav1d decoder loses the timestamp and its HEVC decoder returns
++// the most recently read packet's timestamp, before frame reordering. Both
++// deliver pictures in presentation order. Retain the container's timestamps
++// for the access units still inside the decoder, including seek preroll.
++class VideoPresentationTimelineHaiku {
++public:
++    bool append(int64_t timestamp)
++    {
++        if (m_timestamps.size() >= 256 || timestamp == std::numeric_limits<int64_t>::min()
++            || timestamp == std::numeric_limits<int64_t>::max())
++            return false;
++        m_timestamps.insert(std::upper_bound(m_timestamps.begin(), m_timestamps.end(), timestamp), timestamp);
++        return true;
++    }
++
++    std::optional<int64_t> take()
++    {
++        if (m_timestamps.empty())
++            return std::nullopt;
++        int64_t timestamp = m_timestamps.front();
++        m_timestamps.erase(m_timestamps.begin());
++        return timestamp;
++    }
++
++    void clear() { m_timestamps.clear(); }
++
++private:
++    std::vector<int64_t> m_timestamps;
++};
++
++} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/haiku/WebMParserHaiku.cpp b/Source/WebCore/platform/graphics/haiku/WebMParserHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..daa0698b338c4c000195ed244886d26bf2cbba2a
+index 0000000000000000000000000000000000000000..cdb8c7f7c24639c71c111af7969f91ebfd8932cb
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/WebMParserHaiku.cpp
-@@ -0,0 +1,578 @@
+@@ -0,0 +1,616 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -36235,6 +37136,8 @@ index 0000000000000000000000000000000000000000..daa0698b338c4c000195ed244886d26b
 +        for (auto& [id, track] : m_tracks) {
 +            track.pending.reset();
 +            track.lastEnd.reset();
++            track.sawPacket = false;
++            track.preSkipRemaining = 0;
 +            if (track.vorbis)
 +                VorbisAPI::singleton().reset(track.vorbis.get());
 +        }
@@ -36246,6 +37149,8 @@ index 0000000000000000000000000000000000000000..daa0698b338c4c000195ed244886d26b
 +        uint64_t codecDelay { 0 };
 +        uint32_t defaultDuration { 0 };
 +        uint32_t lastDuration { 0 };
++        uint32_t preSkipRemaining { 0 };
++        bool sawPacket { false };
 +        std::optional<int64_t> lastEnd;
 +        std::optional<SummitMP4::Sample> pending;
 +        std::unique_ptr<AVVorbisParseContext, VorbisDeleter> vorbis;
@@ -36360,6 +37265,7 @@ index 0000000000000000000000000000000000000000..daa0698b338c4c000195ed244886d26b
 +                info.codecConfig.clear();
 +        } else if (entry.track_type.value() == webm::TrackType::kAudio) {
 +            info.kind = SummitMP4::TrackInfo::Kind::Audio;
++            info.packetTimedAudio = true;
 +            const auto& audio = entry.audio.value();
 +            auto rate = audio.sampling_frequency.value();
 +            if (!std::isfinite(rate) || rate < 8000 || rate > 192000 || std::floor(rate) != rate
@@ -36367,6 +37273,9 @@ index 0000000000000000000000000000000000000000..daa0698b338c4c000195ed244886d26b
 +                return invalid;
 +            info.channels = audio.channels.value();
 +            info.sampleRate = info.timescale = rate;
++            if (entry.seek_pre_roll.value() > nanosecondsPerSecond * 60)
++                return invalid;
++            info.seekPreRoll = std::max<uint64_t>(80000000, entry.seek_pre_roll.value());
 +            const auto& config = info.codecConfig;
 +            if (codec == "A_OPUS") {
 +                if (config.size() < 19 || std::memcmp(config.data(), "OpusHead", 8) || config[8] > 15 || config[9] != info.channels)
@@ -36462,7 +37371,7 @@ index 0000000000000000000000000000000000000000..daa0698b338c4c000195ed244886d26b
 +    Status beginBlock(const webm::Block& block, webm::Action* action)
 +    {
 +        *action = webm::Action::kRead;
-+        if (!m_haveCluster || m_blockActive || !m_tracks.count(block.track_number) || block.num_frames < 1 || block.num_frames > 256)
++        if (!m_haveCluster || m_blockActive || block.track_number > UINT32_MAX || !m_tracks.count(block.track_number) || block.num_frames < 1 || block.num_frames > 256)
 +            return invalid;
 +        m_block = block;
 +        m_blockActive = true;
@@ -36538,25 +37447,52 @@ index 0000000000000000000000000000000000000000..daa0698b338c4c000195ed244886d26b
 +        if (!timestamp || !explicitDuration || *explicitDuration > UINT32_MAX || !discard || *discard < -int64_t(UINT32_MAX) || *discard > UINT32_MAX)
 +            return invalid;
 +        bool audio = info.kind == SummitMP4::TrackInfo::Kind::Audio;
++        if (!track.sawPacket && info.codec == "Opus") {
++            // OpusHead pre-skip applies at the encoded stream's beginning.
++            // Seeking straight to a later Cluster must not consume it again.
++            if ((__int128(m_clusterTime) + m_block.timecode) * m_timecodeScale == 0)
++                track.preSkipRemaining = uint32_t(info.codecConfig[10]) | uint32_t(info.codecConfig[11]) << 8;
++        }
++        track.sawPacket = true;
 +        // WebM timestamps are often quantized to 1 ms. Continue the precise
 +        // audio sample clock across rounding-sized gaps/overlaps, while
 +        // retaining actual discontinuities and out-of-order appends.
 +        if (audio && track.lastEnd && (*timestamp >= *track.lastEnd ? __int128(*timestamp) - *track.lastEnd : __int128(*track.lastEnd) - *timestamp) <= (__int128(m_timecodeScale) * info.timescale / nanosecondsPerSecond + 1))
 +            timestamp = track.lastEnd;
-+        for (size_t index = 0; index < m_frames.size(); ++index) {
-+            auto& bytes = m_frames[index];
++        std::vector<uint32_t> durations;
++        durations.reserve(m_frames.size());
++        uint64_t remainingDuration = 0;
++        for (auto& bytes : m_frames) {
 +            int64_t duration = *explicitDuration ? *explicitDuration / m_frames.size() : track.defaultDuration;
 +            if (info.codec == "Opus") {
 +                unsigned char toc;
 +                const unsigned char* frames[48];
 +                opus_int16 sizes[48];
 +                int payload;
-+                if (opus_packet_parse(bytes.data(), bytes.size(), &toc, frames, sizes, &payload) < 0)
++                // The public packet parser accepts a single Opus stream.
++                // Surround packets concatenate self-delimited streams and
++                // can exceed that API's 1275-byte per-frame limit. Their
++                // first TOC still gives the duration; the decoder validates
++                // each stream's payload and channel mapping.
++                if (!info.codecConfig[18] && opus_packet_parse(bytes.data(), bytes.size(), &toc, frames, sizes, &payload) < 0)
 +                    return invalid;
 +                duration = opus_packet_get_nb_samples(bytes.data(), bytes.size(), 48000);
 +            } else if (track.vorbis)
 +                duration = VorbisAPI::singleton().frame(track.vorbis.get(), bytes.data(), bytes.size());
-+            if (duration < 0 || duration > UINT32_MAX || *timestamp > INT64_MAX - duration)
++            if (duration < 0 || duration > UINT32_MAX)
++                return invalid;
++            durations.push_back(duration);
++            remainingDuration += duration;
++        }
++        uint64_t discardStart = audio && *discard < 0 ? -*discard : 0;
++        uint64_t discardEnd = audio && *discard > 0 ? *discard : 0;
++        if (discardStart + discardEnd + std::min<uint64_t>(track.preSkipRemaining, remainingDuration) > remainingDuration)
++            return invalid;
++        for (size_t index = 0; index < m_frames.size(); ++index) {
++            auto& bytes = m_frames[index];
++            uint32_t duration = durations[index];
++            remainingDuration -= duration;
++            if (*timestamp > INT64_MAX - duration)
 +                return invalid;
 +            if (track.pending) {
 +                auto difference = __int128(*timestamp) - track.pending->presentationTime;
@@ -36572,10 +37508,13 @@ index 0000000000000000000000000000000000000000..daa0698b338c4c000195ed244886d26b
 +            sample.data = std::move(bytes);
 +            // Keep coded duration and presentation timestamps intact. The
 +            // audio renderer consumes these trims after decoding the packet.
-+            if (audio && *discard < 0 && !index)
-+                sample.trimStart = -*discard;
-+            if (audio && *discard > 0 && index + 1 == m_frames.size())
-+                sample.trimEnd = *discard;
++            sample.trimStart = std::min(track.preSkipRemaining, sample.duration);
++            track.preSkipRemaining -= sample.trimStart;
++            uint32_t start = std::min<uint64_t>(discardStart, duration - sample.trimStart);
++            sample.trimStart += start;
++            discardStart -= start;
++            if (discardEnd > remainingDuration)
++                sample.trimEnd = std::min<uint64_t>(duration, discardEnd - remainingDuration);
 +            if (uint64_t(sample.trimStart) + sample.trimEnd > sample.duration)
 +                return invalid;
 +            if (!audio && !duration) {

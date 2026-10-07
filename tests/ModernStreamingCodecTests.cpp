@@ -1,6 +1,8 @@
-// Decode the WebM parser's packets through native Media Kit, independently
+// Decode the streaming parsers' packets through native Media Kit, independently
 // of HTML's playback clock. Used alongside the in-browser MSE tests.
 #include "WebMParserHaiku.h"
+#include "MPEGAudioParserHaiku.h"
+#include "VideoPresentationTimelineHaiku.h"
 #include "nlohmann/json.hpp"
 #include <Application.h>
 #include <MediaDecoder.h>
@@ -22,6 +24,8 @@ public:
     const SummitMP4::TrackInfo& info;
     const std::vector<SummitMP4::Sample>& samples;
     size_t position { 0 };
+    WebCore::VideoPresentationTimelineHaiku timeline;
+    bool mapsTimestamps() const { return info.codec == "av01" || info.codec == "hvc1" || info.codec == "hev1"; }
     status_t GetNextChunk(const void** data, size_t* size, media_header* header) override
     {
         if (position == samples.size())
@@ -30,6 +34,8 @@ public:
         *header = { };
         header->type = info.kind == SummitMP4::TrackInfo::Kind::Video ? B_MEDIA_ENCODED_VIDEO : B_MEDIA_ENCODED_AUDIO;
         header->start_time = sample.presentationTime * 1000000 / info.timescale;
+        if (mapsTimestamps() && !timeline.append(header->start_time))
+            return B_MEDIA_BAD_FORMAT;
         header->size_used = sample.data.size();
         if (sample.isSync && info.kind == SummitMP4::TrackInfo::Kind::Video)
             header->u.encoded_video.field_flags = B_MEDIA_KEY_FRAME;
@@ -41,7 +47,7 @@ public:
 
 static json decode(const SummitMP4::TrackInfo& info, const std::vector<SummitMP4::Sample>& samples, bool clearPreSkip)
 {
-    const std::map<std::string, uint32> codecs { { "vp08", 139 }, { "vp09", 167 }, { "av01", 226 }, { "vorb", 86021 }, { "Opus", 86076 } };
+    const std::map<std::string, uint32> codecs { { "hvc1", 173 }, { "hev1", 173 }, { "ac-3", 86019 }, { "ec-3", 86056 }, { "vp08", 139 }, { "vp09", 167 }, { "av01", 226 }, { "vorb", 86021 }, { "Opus", 86076 }, { "mp4a", 86018 }, { "mp1", 86058 }, { "mp2", 86016 }, { "mp3", 86017 } };
     auto found = codecs.find(info.codec);
     if (found == codecs.end())
         return { { "error", "unsupported codec" } };
@@ -117,6 +123,13 @@ static json decode(const SummitMP4::TrackInfo& info, const std::vector<SummitMP4
     uint64_t previousHash = 0;
     double peak = 0;
     json timestamps = json::array();
+    std::vector<int64_t> presentationTimes;
+    std::vector<int64_t> expectedPresentationTimes;
+    if (video) {
+        for (auto& sample : samples)
+            expectedPresentationTimes.push_back(sample.presentationTime * 1000000 / info.timescale);
+        std::sort(expectedPresentationTimes.begin(), expectedPresentationTimes.end());
+    }
     for (unsigned count = 0; count < 10000; ++count) {
         media_header header { };
         int64 amount = 0;
@@ -128,6 +141,10 @@ static json decode(const SummitMP4::TrackInfo& info, const std::vector<SummitMP4
         frames += amount;
         timestamps.push_back({ header.start_time, amount });
         if (video) {
+            auto pts = decoder.mapsTimestamps() ? decoder.timeline.take() : std::optional<int64_t>(header.start_time);
+            if (!pts || amount != 1)
+                return { { "error", "missing presentation timestamp" } };
+            presentationTimes.push_back(*pts);
             uint64_t hash = 14695981039346656037ULL;
             for (auto byte : buffer)
                 hash = (hash ^ byte) * 1099511628211ULL;
@@ -141,14 +158,32 @@ static json decode(const SummitMP4::TrackInfo& info, const std::vector<SummitMP4
                     return { { "error", "nonfinite PCM" } };
                 peak = std::max(peak, std::abs(double(pcm[i])));
             }
-        }
+        } else if (output.u.raw_audio.format == media_raw_audio_format::B_AUDIO_SHORT) {
+            auto* pcm = reinterpret_cast<const int16_t*>(buffer.data());
+            for (size_t i = 0; i < size_t(amount) * output.u.raw_audio.channel_count; ++i)
+                peak = std::max(peak, std::abs(double(pcm[i])) / 32768.0);
+        } else
+            return { { "error", "unmeasured PCM format" }, { "format", output.u.raw_audio.format } };
     }
     result["endStatus"] = status;
     result["frames"] = frames;
     result["changedFrames"] = changed;
     result["peak"] = peak;
     result["timestamps"] = timestamps;
-    result["ok"] = video ? frames == samples.size() && changed > 1 : frames > 0 && peak > 0.01;
+    if (video) {
+        result["presentationTimes"] = presentationTimes;
+        result["presentationOrderCorrect"] = presentationTimes == expectedPresentationTimes;
+    }
+    uint64_t expectedFrames = 0;
+    for (auto& sample : samples)
+        expectedFrames += sample.duration;
+    if (info.codec == "vorb" && !samples.empty())
+        expectedFrames -= samples.front().duration;
+    if (info.codec == "Opus" && !clearPreSkip)
+        expectedFrames -= uint32_t(info.codecConfig[10]) | uint32_t(info.codecConfig[11]) << 8;
+    result["expectedFrames"] = expectedFrames;
+    result["ok"] = video ? frames == samples.size() && changed > 1 && presentationTimes == expectedPresentationTimes
+        : frames == expectedFrames && (peak > 0.01 || info.codec == "mp1");
     return result;
 }
 
@@ -159,17 +194,30 @@ int main(int argc, char** argv)
     for (int index = 1; index < argc; ++index) {
         std::ifstream input(argv[index], std::ios::binary);
         std::vector<uint8_t> bytes(std::istreambuf_iterator<char>(input), { });
-        SummitWebM::Parser parser;
         std::vector<SummitMP4::TrackInfo> tracks;
         std::map<uint32_t, std::vector<SummitMP4::Sample>> packets;
-        parser.onInitSegment = [&](SummitMP4::InitSegment&& init) { tracks = std::move(init.tracks); };
-        parser.onSample = [&](SummitMP4::Sample&& sample) { packets[sample.trackID].push_back(std::move(sample)); };
-        if (bytes.empty() || !parser.append(bytes.data(), bytes.size())) {
+        auto parse = [&](auto& parser) {
+            parser.onInitSegment = [&](SummitMP4::InitSegment&& init) { tracks = std::move(init.tracks); };
+            parser.onSample = [&](SummitMP4::Sample&& sample) { packets[sample.trackID].push_back(std::move(sample)); };
+            return !bytes.empty() && parser.append(bytes.data(), bytes.size());
+        };
+        bool parsed;
+        if (std::string(argv[index]).ends_with(".webm")) {
+            SummitWebM::Parser parser;
+            parsed = parse(parser);
+            parser.flushPendingSamples();
+        } else if (std::string(argv[index]).ends_with(".mp4")) {
+            SummitMP4::Parser parser;
+            parsed = parse(parser);
+        } else {
+            SummitMPEGAudio::Parser parser(std::string(argv[index]).ends_with(".aac") ? SummitMPEGAudio::Parser::Format::ADTS : SummitMPEGAudio::Parser::Format::MPEG);
+            parsed = parse(parser);
+        }
+        if (!parsed) {
             std::cout << json({ { "file", argv[index] }, { "parseError", true } }) << '\n';
             passed = false;
             continue;
         }
-        parser.flushPendingSamples();
         for (auto& track : tracks) {
             auto result = decode(track, packets[track.id], false);
             result["file"] = argv[index];

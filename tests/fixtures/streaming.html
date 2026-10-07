@@ -1,0 +1,83 @@
+<!doctype html><meta charset="utf-8"><title>Streaming starting</title>
+<style>body{font:16px sans-serif}button{position:absolute;left:20px;top:20px;width:220px;height:50px}video{display:block;margin-top:90px;width:320px;height:180px;background:#222}</style>
+<button id="play">Play streaming test</button><video id="media" controls></video><pre id="status"></pre>
+<script>
+const index=Number(new URLSearchParams(location.search).get('case'));
+const media=document.getElementById('media'), checks=[], events=[], hashes=new Set();
+let test, mse, buffer, timer, objectURL;
+const state=()=>({index,test,time:media.currentTime,duration:media.duration,ready:media.readyState,
+  error:media.error&&{code:media.error.code,message:media.error.message},checks,events,frames:hashes.size,
+  buffered:buffer?Array.from({length:buffer.buffered.length},(_,i)=>[buffer.buffered.start(i),buffer.buffered.end(i)]):[]});
+const assert=(value,label)=>{checks.push({label,passed:!!value});if(!value)throw Error(label)};
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const wait=async(predicate,label)=>{const end=performance.now()+20000;while(!predicate()){
+ if(media.error)throw Error(JSON.stringify(state().error));if(performance.now()>end)throw Error(label);await sleep(25)}};
+const event=(target,name)=>new Promise((resolve,reject)=>{
+ const timeout=setTimeout(()=>{cleanup();reject(Error('timeout '+name))},20000);
+ const done=()=>{cleanup();resolve()};const failed=()=>{cleanup();reject(Error('failed '+name))};
+ const cleanup=()=>{clearTimeout(timeout);target.removeEventListener(name,done);target.removeEventListener('error',failed)};
+ target.addEventListener(name,done,{once:true});target.addEventListener('error',failed,{once:true});
+});
+const append=async bytes=>{const done=event(buffer,'updateend');buffer.appendBuffer(bytes);await done};
+const report=async(prefix)=>{clearInterval(timer);const result=state();document.getElementById('status').textContent=JSON.stringify(result,null,2);
+ await fetch('/result/'+index,{method:'POST',body:JSON.stringify(result)});document.title=prefix+' '+index;
+ media.pause();media.removeAttribute('src');media.load();if(objectURL)URL.revokeObjectURL(objectURL)};
+for(const name of ['loadedmetadata','loadeddata','playing','pause','seeking','seeked','ended','error'])
+ media.addEventListener(name,()=>events.push({name,time:media.currentTime,at:performance.now()}));
+const canvas=document.createElement('canvas');canvas.width=32;canvas.height=18;const context=canvas.getContext('2d');
+function sampleFrame(){if(media.readyState<2||!media.videoWidth)return;context.drawImage(media,0,0,32,18);
+ const bytes=context.getImageData(0,0,32,18).data;let hash=2166136261;
+ for(let i=0;i<bytes.length;i++)hash=Math.imul(hash^bytes[i],16777619);hashes.add(hash)}
+document.getElementById('play').onclick=async()=>{document.getElementById('play').disabled=true;try{
+ const cases=await(await fetch('/cases.json')).json();test=cases[index];
+ assert(MediaSource.isTypeSupported(test.type),'advertise tested stream');
+ for(const type of ['video/webm; codecs="bogus"','audio/webm; codecs="vp9"','video/webm; codecs="avc1.42E01E"',
+  'audio/webm; codecs="mp4a.40.2"','video/mp4; codecs="vorbis"',
+  'video/webm; codecs="vp09.garbage"','video/webm; codecs="vp09.00.10.12"','video/webm; codecs="av01.garbage"',
+  'audio/aac; codecs="mp4a.40.2"','audio/mpeg; codecs="mp3"','audio/aac; codecs=""'])assert(!MediaSource.isTypeSupported(type),'reject '+type);
+ mse=new MediaSource();objectURL=URL.createObjectURL(mse);const opened=event(mse,'sourceopen');media.src=objectURL;await opened;
+ buffer=mse.addSourceBuffer(test.changeType?'video/mp4; codecs="avc1.42E01E,mp4a.40.2"':test.type);
+ if(test.changeType){buffer.changeType(test.type);assert(buffer.mode===(test.raw?'sequence':'segments'),'changeType selects the correct timestamp mode')}
+ assert(buffer.mode===(test.raw?'sequence':'segments'),'container selects timestamp mode');
+ if(test.offset)buffer.timestampOffset=test.offset;
+ if(test.window){buffer.appendWindowStart=test.window[0];buffer.appendWindowEnd=test.window[1]}
+ const bytes=new Uint8Array(await(await fetch('/media/'+test.file)).arrayBuffer());
+ let start=0;
+ if(test.abort){await append(bytes.slice(0,test.initLength+8));buffer.abort();start=test.initLength;
+  assert(!buffer.updating,'abort clears updating')}
+ const chunks=[1,2,3,5,7,31,188,1024,65536];let step=0;
+ while(start<bytes.length){const amount=chunks[Math.min(step++,chunks.length-1)];await append(bytes.slice(start,start+amount));start+=amount}
+ if(test.after){buffer.changeType(test.after.type);assert(buffer.mode==='sequence','actual codec change selects sequence mode');
+  await append(new Uint8Array(await(await fetch('/media/'+test.after.file)).arrayBuffer()))}
+ assert(buffer.buffered.length===1,'one contiguous buffered range');
+ const offset=test.offset||test.window?.[0]||test.start||0, expectedEnd=test.expectedEnd||test.window?.[1]||(offset+4);
+ assert(Math.abs(buffer.buffered.start(0)-offset)<.02,'buffer starts at expected timestamp');
+ assert(Math.abs(buffer.buffered.end(0)-expectedEnd)<.1,'complete buffered duration');
+ if(test.deferEnd)mse.duration=buffer.buffered.end(0);else mse.endOfStream();
+ await wait(()=>media.readyState>=1,'metadata loaded');
+ assert(Math.abs(media.duration-expectedEnd)<.1,'finite MSE duration');
+ if(offset){media.currentTime=offset;await wait(()=>!media.seeking,'initial offset seek')}
+ timer=setInterval(sampleFrame,40);
+ await media.play();const playStarted=performance.now();
+ await wait(()=>media.currentTime>offset+.6,'clock advances');
+ assert(!media.ended&&media.currentTime<offset+1.4,'smooth playback clock');
+ assert(performance.now()-playStarted>150&&performance.now()-playStarted<2500,'clock tracks elapsed playback');
+ if(test.video){assert(media.videoWidth===160&&media.videoHeight===90,'decoded video dimensions');assert(hashes.size>=3,'multiple decoded canvas frames')}
+ assert(!media.muted&&media.volume===1,'audio output enabled');
+ if(test.after)await wait(()=>media.currentTime>4.5,'play through audio format change');
+ if(test.fullPlayback)await wait(()=>media.ended,'complete initial audio decode');
+ if(test.deferEnd){await wait(()=>media.currentTime>=buffer.buffered.end(0)-.005,'reach open stream edge');await sleep(300);
+  assert(mse.readyState==='open'&&!media.ended&&!events.some(e=>e.name==='ended'),'open stream stalls without ending');
+  mse.endOfStream();await wait(()=>events.some(e=>e.name==='ended'),'late endOfStream delivers ended')}
+ media.pause();const before=media.currentTime;await sleep(250);assert(Math.abs(media.currentTime-before)<.08,'pause holds clock');
+ const seekTarget=test.seek??(offset+2);media.currentTime=seekTarget;await wait(()=>!media.seeking,'seek completes');assert(Math.abs(media.currentTime-seekTarget)<.15,'seek reaches target');
+ const priorFrames=hashes.size, priorEnded=events.filter(e=>e.name==='ended').length;
+ await media.play();await wait(()=>media.ended,'stream reaches end');
+ await wait(()=>events.filter(e=>e.name==='ended').length>priorEnded,'ended event delivered');
+ if(test.video)assert(hashes.size>priorFrames+2,'decoded frames continue after seek');
+ assert(media.currentTime>=expectedEnd-.1,'stream plays to end');
+ assert(events.some(e=>e.name==='seeked')&&events.some(e=>e.name==='ended'),'seeked and ended events');
+ await report('Streaming_PASS');
+}catch(error){checks.push({label:String(error),passed:false});await report('Streaming_FAIL')}};
+document.title='Streaming ready '+index;
+</script>

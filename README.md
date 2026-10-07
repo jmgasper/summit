@@ -63,7 +63,7 @@ for tested versions and limitations.
 | Rendering | Modern WebKit HTML/CSS/JavaScript, [WebGL](docs/webgl.md), and accelerated compositing when a suitable EGL/GLES driver is available; software rendering otherwise. |
 | Canvas | Main-thread and worker OffscreenCanvas with 2D, WebGL/WebGL2, and ImageBitmap transfer. |
 | Images | Standard web formats plus JPEG XL and HEIC decoding, and JPEG XR decoding/encoding. |
-| Media | HTML audio/video, MediaSource, and direct [MPEG-DASH](docs/dash-playback.md) for H.264/AAC, with seeking, adaptive quality, and live-manifest refresh. |
+| Media | HTML audio/video and [MediaSource streaming](docs/streaming-media.md) for MP4, WebM, ADTS AAC and MPEG audio. Direct [MPEG-DASH](docs/dash-playback.md) supports H.264/AAC, seeking, adaptive quality and live refresh. |
 | Encrypted media | [Clear Key EME](docs/encrypted-media.md) with temporary CENC sessions for H.264/AAC through MediaSource or DASH. Widevine, PlayReady, FairPlay, and persistent licenses are unsupported. |
 | Devices | [WebUSB](docs/web-platform-issues.md) and [Web Bluetooth](docs/bluetooth-transport.md), with native selection, origin-scoped grants, protected-device checks, and cancellation on page closure. |
 | Integration | Native fullscreen, approved external-app and website protocol handlers, and Web Authentication. |
