@@ -255,8 +255,11 @@ def native(args):
 
 
 def host(args):
+    remote_shell = os.environ.get('SUMMIT_REMOTE_SHELL', 'tools/haiku.sh')
+    if remote_shell not in ('tools/haiku.sh', 'tools/ws.sh'):
+        raise RuntimeError('SUMMIT_REMOTE_SHELL must be tools/haiku.sh or tools/ws.sh')
     def remote(command, **kwargs):
-        return subprocess.run(['bash', str(ROOT / 'tools/haiku.sh'), command], **kwargs)
+        return subprocess.run(['bash', str(ROOT / remote_shell), command], **kwargs)
     names = ('tests/ModernDarkReaderTests.cpp', 'tests/ModernExtensionOverflowTests.cpp',
              'tests/ModernExtensionManagerTests.cpp', 'tests/ModernCloseTests.cpp',
              'tools/' + SCRIPT, 'tools/test-modern-close-native.py', 'tools/native_crash_log.py', 'tools/vm.py')
@@ -299,13 +302,20 @@ def host(args):
     if args.compile_only:
         command.append('--compile-only')
     else:
-        subprocess.run(['python3', str(ROOT / 'tools/vm.py'), 'key', 'shift'], check=True)
+        if remote_shell == 'tools/ws.sh':
+            # Wake the same workstation that owns the isolated test browser.
+            subprocess.run(['python3', '-c',
+                'import sys; sys.path.insert(0, "tools/bench"); import guest; guest.wake_display()'],
+                cwd=ROOT, env=dict(os.environ, SUMMIT_BENCH_HOST='workstation'), check=True)
+        else:
+            subprocess.run(['python3', str(ROOT / 'tools/vm.py'), 'key', 'shift'], check=True)
     with (output / 'native.log').open('w') as log:
         result = remote(shlex.join(command), stdout=log, stderr=subprocess.STDOUT)
     print((output / 'native.log').read_text(), end='', flush=True)
     data = remote('cat ' + shlex.quote(stage + '/result.json'), capture_output=True, text=True, check=True)
     report = {'native': json.loads(data.stdout), 'sources_unchanged': all(digest(ROOT / name) == expected for name, expected in original.items()),
               'source_sha256': original}
+    report['remote_shell'] = remote_shell
     report['passed'] = result.returncode == 0 and report['native']['passed'] and report['sources_unchanged']
     for name, expected in report['native'].get('screenshots', {}).items():
         if Path(name).name != name or not name.endswith('.ppm'):

@@ -52,6 +52,8 @@ def main():
                                '--bind', guest.SERVER_BIND, '--out-dir', str(directory)],
                               stdout=(directory / 'server.log').open('w'), stderr=subprocess.STDOUT)
     time.sleep(1)
+    if server.poll() is not None:
+        raise RuntimeError(f"Fixture server exited before browser launch; see {directory / 'server.log'}")
     guest.wake_display()
     team = group = None
     outcome = 'timeout'

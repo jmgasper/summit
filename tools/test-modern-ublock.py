@@ -127,7 +127,7 @@ def native(args):
         return values
     def run(mode):
         row = {'mode': mode, 'forced_cleanup': False}; report['runs'].append(row)
-        with Path('/SummitExtensions/summit/live-progress.log').open('a') as log: log.write('[Summit uBlock tests] Starting ' + mode + '\n')
+        with (ROOT.parent / 'live-progress.log').open('a') as log: log.write('[Summit uBlock tests] Starting ' + mode + '\n')
         command = [str(bundle / 'Summit'), '--profile', str(profile), target + ('/setup' if mode == 'install' else '/boot')]
         row['command'] = command
         with (ROOT / (mode + '-browser.log')).open('w') as log:
@@ -155,7 +155,7 @@ def native(args):
         row['browser_output'] = (ROOT / (mode + '-browser.log')).read_text(errors='replace')
         row['passed'] = row.get('harness_exit') == 0 and row['browser_exit'] == 0 and row['group_drained'] and not row['forced_cleanup'] and 'UBLOCK_RESULT PASS mode=' + mode in row['output']
         save(); print(json.dumps({'mode': mode, 'passed': row['passed'], 'error': row.get('error')}), flush=True)
-        with Path('/SummitExtensions/summit/live-progress.log').open('a') as log: log.write('[Summit uBlock tests] ' + mode + (' PASS' if row['passed'] else ' FAIL') + '\n')
+        with (ROOT.parent / 'live-progress.log').open('a') as log: log.write('[Summit uBlock tests] ' + mode + (' PASS' if row['passed'] else ' FAIL') + '\n')
         if not row['passed']: raise RuntimeError(mode + ' failed')
     monitor = NativeCrashLog()
     try:
@@ -186,7 +186,10 @@ def native(args):
 
 
 def host(args):
-    def remote(command, **kwargs): return subprocess.run(['bash', str(ROOT / 'tools/haiku.sh'), command], **kwargs)
+    remote_shell = os.environ.get('SUMMIT_REMOTE_SHELL', 'tools/haiku.sh')
+    if remote_shell not in ('tools/haiku.sh', 'tools/ws.sh'):
+        raise RuntimeError('SUMMIT_REMOTE_SHELL must be tools/haiku.sh or tools/ws.sh')
+    def remote(command, **kwargs): return subprocess.run(['bash', str(ROOT / remote_shell), command], **kwargs)
     names = ('tests/ModernUBlockTests.cpp', 'tests/ModernExtensionManagerTests.cpp', 'tests/ModernCloseTests.cpp',
              'tools/' + SCRIPT, 'tools/test-modern-close-native.py', 'tools/native_crash_log.py')
     files = {}; original = {}
@@ -212,8 +215,9 @@ def host(args):
     with tarfile.open(fileobj=stream, mode='w:gz') as tar:
         for name, data in files.items():
             item = tarfile.TarInfo(name); item.size = len(data); item.mode = 0o600; tar.addfile(item, io.BytesIO(data))
-    stage = remote('mktemp -d /SummitExtensions/summit/extension-ublock-browser.XXXXXXXX', capture_output=True, text=True, check=True).stdout.strip()
-    if not stage.startswith('/SummitExtensions/summit/extension-ublock-browser.') or not stage.rsplit('.', 1)[-1].isalnum(): raise RuntimeError('Invalid native stage')
+    stage_prefix = ('/boot/home/summit' if remote_shell == 'tools/ws.sh' else '/SummitExtensions/summit') + '/extension-ublock-browser.'
+    stage = remote('mktemp -d ' + stage_prefix + 'XXXXXXXX', capture_output=True, text=True, check=True).stdout.strip()
+    if not stage.startswith(stage_prefix) or not stage.rsplit('.', 1)[-1].isalnum(): raise RuntimeError('Invalid native stage')
     output = ROOT / '.vm' / ('modern-ublock-' + secrets.token_hex(12)); output.mkdir()
     (output / 'stage.json').write_text(json.dumps({'stage': stage, 'sources': original}, indent=2) + '\n')
     remote('tar -xzf - -C ' + shlex.quote(stage), input=stream.getvalue(), check=True)
@@ -222,10 +226,18 @@ def host(args):
     if args.watch: command.append('--watch')
     if args.compile_only: command.append('--compile-only')
     if args.trace_console: command.append('--trace-console')
-    if not args.compile_only: subprocess.run(['python3', str(ROOT / 'tools/vm.py'), 'key', 'shift'], check=True)
+    if not args.compile_only:
+        if remote_shell == 'tools/ws.sh':
+            # Wake the same workstation that owns the isolated test browser.
+            subprocess.run(['python3', '-c',
+                'import sys; sys.path.insert(0, "tools/bench"); import guest; guest.wake_display()'],
+                cwd=ROOT, env=dict(os.environ, SUMMIT_BENCH_HOST='workstation'), check=True)
+        else:
+            subprocess.run(['python3', str(ROOT / 'tools/vm.py'), 'key', 'shift'], check=True)
     with (output / 'native.log').open('w') as log: result = remote(shlex.join(command), stdout=log, stderr=subprocess.STDOUT)
     fetched = remote('cat ' + shlex.quote(stage + '/result.json'), capture_output=True, text=True, check=True)
     report = {'native': json.loads(fetched.stdout), 'source_sha256': original, 'sources_unchanged': all(digest(Path(name)) == value for name, value in original.items())}
+    report['remote_shell'] = remote_shell
     report['passed'] = result.returncode == 0 and report['native']['passed'] and report['sources_unchanged']
     for name, value in report['native'].get('screenshots', {}).items():
         if Path(name).name != name or not name.endswith('.ppm'): raise RuntimeError('Invalid screenshot path')
