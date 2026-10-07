@@ -13,7 +13,7 @@ verified installation on X399. The final installation is still pending.
 | #36 Date/time input types | Implemented for all five types with BCalendar and canonical editable values. 171 native checks pass, including leap dates, ISO weeks, range/step constraints, events and cleanup; [details](native-form-pickers.md). |
 | #35 Color input | Implemented with BColorControl, Done/Cancel, script updates and datalist swatches. 65 native checks pass, including DOM events and navigation/tab/quit cleanup; [details](native-form-pickers.md). |
 | #34 Reader mode | Implemented: address-field button, isolated Readability extraction, DOMPurify/CSP, in-memory article view, original-URL history and private browsing. 79 native checks pass; [details](reader-mode.md). |
-| #33 DASH | Pending: adaptive MPEG-DASH playback. Audit existing MSE support and html5test detection before implementation. |
+| #33 DASH | Implemented direct H.264/AAC DASH with adaptive quality, byte ranges, seeking and live refresh. 82 native checks and portable ASan/UBSan tests pass; [scope and evidence](dash-playback.md). |
 | #32 EME | Pending: Encrypted Media Extensions. |
 | #31 Web Bluetooth | Pending: use air/OS Bluetooth facilities. X399 source has `headers/private/bluetooth/LEAttributeClient.h` and associated LE transport support. |
 

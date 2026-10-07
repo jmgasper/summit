@@ -158,6 +158,7 @@ private:
 };
 }
 
+#ifndef SUMMIT_PDF_HELPERS_ONLY
 class PDFTests final : public BApplication {
 public:
     PDFTests(char** argv, status_t& status)
@@ -372,3 +373,5 @@ int main(int argc, char** argv)
     status_t status; PDFTests app(argv, status); if (status != B_OK) return 1;
     app.Run(); return app.Result();
 }
+
+#endif // SUMMIT_PDF_HELPERS_ONLY
