@@ -4891,6 +4891,90 @@ index 485cce61c45d47b611240834f3275ecee733b8f9..223d00b6294ca261a48cd91b1a0fc19f
  #else
      std::unique_ptr<MediaRecorderPrivate> result;
  #endif
+diff --git a/Source/WebCore/Modules/pdfjs-extras/haiku/configuration.js b/Source/WebCore/Modules/pdfjs-extras/haiku/configuration.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..883aa898608405f49a1ef2f74bf09e759a00c024
+--- /dev/null
++++ b/Source/WebCore/Modules/pdfjs-extras/haiku/configuration.js
+@@ -0,0 +1,20 @@
++/* Copyright (C) 2026 air/OS contributors. SPDX-License-Identifier: BSD-2-Clause */
++// Installed in the viewer's head, before viewer.mjs starts the application.
++document.addEventListener('webviewerloaded', () => {
++    PDFViewerApplicationOptions.setAll({
++        disablePreferences: true,
++        disableHistory: true,
++        defaultUrl: '',
++        enableScripting: false,
++        annotationEditorMode: -1,
++        annotationMode: 1,
++        enableAltTextModelDownload: false,
++        enableGuessAltText: false,
++        enableSignatureEditor: false,
++        enableSplitMerge: false,
++        supportsIntegratedFind: false,
++        supportsPrinting: false,
++        externalLinkTarget: 4,
++        sidebarViewOnLoad: 0
++    });
++}, { once: true });
+diff --git a/Source/WebCore/Modules/pdfjs-extras/haiku/content-script.js b/Source/WebCore/Modules/pdfjs-extras/haiku/content-script.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..1fcf3df99e86cc0b3741c0417dda4e49746c17d7
+--- /dev/null
++++ b/Source/WebCore/Modules/pdfjs-extras/haiku/content-script.js
+@@ -0,0 +1,31 @@
++/* Copyright (C) 2026 air/OS contributors. SPDX-License-Identifier: BSD-2-Clause */
++// PDFJSDocument posts its already-authorized response bytes to this frame.
++// No second fetch, no cross-origin proxy and no PDF-provided JavaScript.
++window.addEventListener('message', event => {
++    if (event.source !== window || !event.data || event.data.message !== 'open-pdf'
++        || !(event.data.data instanceof ArrayBuffer)) return;
++    const {data, sourceURL, filename} = event.data;
++    PDFViewerApplication.initializedPromise.then(async () => {
++        const showError = message => {
++            let notice = document.getElementById('summit-pdf-error');
++            if (!notice) {
++                notice = document.createElement('section');
++                notice.id = 'summit-pdf-error';
++                notice.setAttribute('role', 'alert');
++                document.getElementById('viewerContainer').append(notice);
++            }
++            notice.textContent = message || 'This PDF could not be opened.';
++        };
++        PDFViewerApplication.eventBus.on('documenterror', event => showError(event.message));
++        PDFViewerApplication.setTitleUsingUrl(sourceURL || 'document.pdf');
++        PDFViewerApplication.eventBus.on('pagesinit', () => {
++            PDFViewerApplication.pdfViewer.currentScaleValue = 'page-width';
++        });
++        try {
++            await PDFViewerApplication.open({data, docBaseUrl: sourceURL, filename: filename || 'document.pdf', isEvalSupported: false});
++        } catch {
++            if (!document.getElementById('summit-pdf-error'))
++                showError('This PDF could not be opened.');
++        }
++    });
++});
+diff --git a/Source/WebCore/Modules/pdfjs-extras/haiku/style.css b/Source/WebCore/Modules/pdfjs-extras/haiku/style.css
+new file mode 100644
+index 0000000000000000000000000000000000000000..fc11d58359011913363661487800c8881b5abb1d
+--- /dev/null
++++ b/Source/WebCore/Modules/pdfjs-extras/haiku/style.css
+@@ -0,0 +1,15 @@
++/* Copyright (C) 2026 air/OS contributors. SPDX-License-Identifier: BSD-2-Clause */
++/* Viewing, navigation, zoom, search and saving; editing is disabled in code. */
++#openFile, #secondaryOpenFile, #printButton, #secondaryPrint,
++#editorModeButtons, #editorModeSeparator, #editorUndoBar { display: none !important; }
++#summit-pdf-error {
++    box-sizing: border-box;
++    width: min(36rem, calc(100% - 3rem));
++    margin: 3rem auto;
++    padding: 1.5rem;
++    border: 1px solid #b9b9b9;
++    border-radius: 6px;
++    color: #242424;
++    background: #fff;
++    font: 16px/1.5 system-ui, sans-serif;
++}
 diff --git a/Source/WebCore/Modules/webaudio/MediaStreamAudioSource.cpp b/Source/WebCore/Modules/webaudio/MediaStreamAudioSource.cpp
 index 75c1c3a44c13404d144e2e1ef184529b2ed77939..f6c8ec9615c4545e846af0da40318ea94dbef5ef 100644
 --- a/Source/WebCore/Modules/webaudio/MediaStreamAudioSource.cpp
@@ -6754,15 +6838,30 @@ index 0000000000000000000000000000000000000000..48e19a5957df4c1ae60378dd9a84cbe4
 +/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
 +enum USBTransferStatus { "ok", "stall", "babble" };
 diff --git a/Source/WebCore/PlatformHaiku.cmake b/Source/WebCore/PlatformHaiku.cmake
-index 16a88804a1baa39ccdd9fc2870b6e2524d941298..029bd5a6f1e10b84116c823327dfb3d9a5366237 100644
+index 16a88804a1baa39ccdd9fc2870b6e2524d941298..ffbbf7dbbae0d9f8f064149aaa26c0f00a19c81d 100644
 --- a/Source/WebCore/PlatformHaiku.cmake
 +++ b/Source/WebCore/PlatformHaiku.cmake
-@@ -1,52 +1,331 @@
+@@ -1,52 +1,346 @@
 +include(platform/Haiku.cmake)
  include(platform/ImageDecoders.cmake)
  include(platform/OpenSSL.cmake)
  
 -list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
++if (ENABLE_PDFJS)
++    include(${THIRDPARTY_DIR}/pdfjs/PdfJSFiles.cmake)
++    set(HaikuPDFJSExtras ${WEBCORE_DIR}/Modules/pdfjs-extras/haiku)
++    set(HaikuPDFJSResources ${WebCore_DERIVED_SOURCES_DIR}/PDFJSResourcesHaiku.cpp)
++    add_custom_command(OUTPUT ${HaikuPDFJSResources}
++        COMMAND ${PYTHON_EXECUTABLE} ${TOOLS_DIR}/Scripts/generate-pdfjs-haiku-resources.py
++            --pdfjs ${THIRDPARTY_DIR}/pdfjs --extras ${HaikuPDFJSExtras} --output ${HaikuPDFJSResources}
++        DEPENDS ${TOOLS_DIR}/Scripts/generate-pdfjs-haiku-resources.py ${PdfJSFiles}
++            ${THIRDPARTY_DIR}/pdfjs/PdfJSFiles.cmake
++            ${HaikuPDFJSExtras}/configuration.js ${HaikuPDFJSExtras}/content-script.js ${HaikuPDFJSExtras}/style.css
++        VERBATIM)
++    list(APPEND WebCore_SOURCES loader/haiku/ResourceLoaderHaiku.cpp ${HaikuPDFJSResources})
++    list(APPEND WebCore_PRIVATE_INCLUDE_DIRECTORIES ${WEBCORE_DIR}/loader/haiku)
++endif ()
++
 +find_package(SQLite3 REQUIRED)
 +if (NOT TARGET SQLite3::SQLite3) # CMake < 4.3
 +    add_library(SQLite3::SQLite3 ALIAS SQLite::SQLite3)
@@ -7095,7 +7194,7 @@ index 16a88804a1baa39ccdd9fc2870b6e2524d941298..029bd5a6f1e10b84116c823327dfb3d9
    textencoding
    translation
    ${WEBP_LIBRARIES}
-@@ -61,6 +340,215 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
+@@ -61,6 +355,215 @@ list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
    ${SQLITE_INCLUDE_DIR}
    ${WEBP_INCLUDE_DIRS}
    ${ZLIB_INCLUDE_DIRS}
@@ -9649,6 +9748,121 @@ index d9eeaba6fb3ea26aa4364647e6be838d737f0064..bfbf4641e6873f156615dc62388d385c
  
      bool isValidFormat(OptionSet<DateTimeFormatValidationResults>) const final;
      String formatDateTimeFieldsState(const DateTimeFieldsState&) const final;
+diff --git a/Source/WebCore/html/PDFJSDocument.cpp b/Source/WebCore/html/PDFJSDocument.cpp
+index f401335d473e926808c3dceca100b849f96e238e..32abb05690691199198fbc56973391c7619a6f14 100644
+--- a/Source/WebCore/html/PDFJSDocument.cpp
++++ b/Source/WebCore/html/PDFJSDocument.cpp
+@@ -51,6 +51,9 @@
+ #include <JavaScriptCore/JSGlobalObjectInlines.h>
+ #include <JavaScriptCore/JSString.h>
+ #include <JavaScriptCore/ObjectConstructor.h>
++#if PLATFORM(HAIKU)
++#include <pal/text/TextEncoding.h>
++#endif
+ #include <wtf/TZoneMallocInlines.h>
+ 
+ namespace WebCore {
+@@ -148,6 +151,18 @@ Ref<DocumentParser> PDFJSDocument::createParser()
+     return PDFJSDocumentParser::create(*this);
+ }
+ 
++#if PLATFORM(HAIKU)
++static String pdfFilenameHaiku(PDFJSDocument& document)
++{
++    String filename;
++    if (auto* documentLoader = document.loader())
++        filename = documentLoader->response().suggestedFilename();
++    if (filename.isEmpty() && (document.url().protocolIsInHTTPFamily() || document.url().protocolIsFile()))
++        filename = PAL::decodeURLEscapeSequences(document.url().lastPathComponent());
++    return filename.isEmpty() ? "document.pdf"_s : filename;
++}
++#endif
++
+ void PDFJSDocument::createDocumentStructure()
+ {
+     // Description of parameters:
+@@ -158,6 +173,12 @@ void PDFJSDocument::createDocumentStructure()
+ 
+     frame()->injectUserScripts(UserScriptInjectionTime::DocumentStart);
+ 
++#if PLATFORM(HAIKU)
++    // Document::setTitle requires a connected HTML root and head.
++    rootElement->appendChild(HTMLHeadElement::create(*this));
++    setTitle(pdfFilenameHaiku(*this));
++#endif
++
+     Ref body = HTMLBodyElement::create(*this);
+     body->setAttribute(styleAttr, "margin: 0px;height: 100vh;"_s);
+     rootElement->appendChild(body);
+@@ -180,6 +201,11 @@ void PDFJSDocument::updateDuringParsing()
+ 
+ void PDFJSDocument::finishedParsing()
+ {
++#if PLATFORM(HAIKU)
++    // Empty PDFs still need a viewer and a useful invalid-document error.
++    if (!m_iframe)
++        createDocumentStructure();
++#endif
+     ASSERT(m_iframe);
+     m_isFinishedParsing = true;
+     if (m_isContentScriptLoaded)
+@@ -194,6 +220,10 @@ void PDFJSDocument::postMessageToIframe(const String& name, JSC::JSObject* data)
+ 
+     JSC::JSObject* message = JSC::constructEmptyObject(globalObject);
+     message->putDirect(vm, vm.propertyNames->message, JSC::jsNontrivialString(vm, name));
++#if PLATFORM(HAIKU)
++    message->putDirect(vm, JSC::Identifier::fromString(vm, "sourceURL"_s), JSC::jsNontrivialString(vm, url().string()));
++    message->putDirect(vm, JSC::Identifier::fromString(vm, "filename"_s), JSC::jsNontrivialString(vm, pdfFilenameHaiku(*this)));
++#endif
+     if (data)
+         message->putDirect(vm, JSC::Identifier::fromString(vm, "data"_s), data);
+ 
+@@ -215,6 +245,16 @@ void PDFJSDocument::sendPDFArrayBuffer()
+ {
+     auto* documentLoader = loader();
+     ASSERT(documentLoader);
++#if PLATFORM(HAIKU)
++    auto bytes = documentLoader->mainResourceData();
++    auto arrayBuffer = bytes ? bytes->tryCreateArrayBuffer() : JSC::ArrayBuffer::tryCreate(0, 1);
++    if (arrayBuffer) {
++        auto& vm = globalObject()->vm();
++        JSC::JSLockHolder lock(vm);
++        auto* dataObject = JSC::JSArrayBuffer::create(vm, globalObject()->arrayBufferStructure(arrayBuffer->sharingMode()), WTF::move(arrayBuffer));
++        postMessageToIframe("open-pdf"_s, dataObject);
++    }
++#else
+     if (auto mainResourceData = documentLoader->mainResourceData()) {
+         if (auto arrayBuffer = mainResourceData->tryCreateArrayBuffer()) {
+             auto& vm = globalObject()->vm();
+@@ -223,6 +263,7 @@ void PDFJSDocument::sendPDFArrayBuffer()
+             postMessageToIframe("open-pdf"_s, dataObject);
+         }
+     }
++#endif
+ }
+ 
+ void PDFJSDocument::finishLoadingPDF()
+@@ -250,6 +291,8 @@ void PDFJSDocument::injectStyleAndContentScript()
+     link->setAttribute(hrefAttr, "webkit-pdfjs-viewer://pdfjs/extras/cocoa/style.css"_s);
+ #elif PLATFORM(GTK) || PLATFORM(WPE)
+     link->setAttribute(hrefAttr, "webkit-pdfjs-viewer://pdfjs/extras/adwaita/style.css"_s);
++#elif PLATFORM(HAIKU)
++    link->setAttribute(hrefAttr, "webkit-pdfjs-viewer://pdfjs/extras/haiku/style.css"_s);
+ #endif
+     contentDocument->head()->appendChild(link);
+ 
+@@ -257,7 +300,11 @@ void PDFJSDocument::injectStyleAndContentScript()
+     m_script = HTMLScriptElement::create(scriptTag, *contentDocument, false);
+     ASSERT(m_listener);
+     m_script->addEventListener(eventNames().loadEvent, *m_listener);
++#if PLATFORM(HAIKU)
++    m_script->setAttribute(srcAttr, "webkit-pdfjs-viewer://pdfjs/extras/haiku/content-script.js"_s);
++#else
+     m_script->setAttribute(srcAttr, "webkit-pdfjs-viewer://pdfjs/extras/content-script.js"_s);
++#endif
+     contentDocument->body()->appendChild(*m_script);
+ 
+     m_injectedStyleAndScript = true;
 diff --git a/Source/WebCore/html/PermissionsPolicy.cpp b/Source/WebCore/html/PermissionsPolicy.cpp
 index 5417f278972081e8bec7ffc8d1050e0e253f0d9c..e92902abc20c4607bc6a669fa22008cabc1eab5b 100644
 --- a/Source/WebCore/html/PermissionsPolicy.cpp
@@ -11038,10 +11252,24 @@ index 7b3ac0dd15fe4419421236f158fd9640526174e6..e10c172c710d2838e5037777df644d06
      void didReceiveResponse(ResourceLoader&, ResourceLoaderIdentifier, const ResourceResponse&);
      void didReceiveData(ResourceLoader&, ResourceLoaderIdentifier, const SharedBuffer&, int encodedDataLength);
 diff --git a/Source/WebCore/loader/ResourceLoader.cpp b/Source/WebCore/loader/ResourceLoader.cpp
-index b3dd27ce657c17c506e93694ba1a74706edcd2ed..a37040b3ad549ac51f4a8bc27f8606961d2d0e65 100644
+index b3dd27ce657c17c506e93694ba1a74706edcd2ed..73f355c755cc74099e52ac46daac4f2088f41e78 100644
 --- a/Source/WebCore/loader/ResourceLoader.cpp
 +++ b/Source/WebCore/loader/ResourceLoader.cpp
-@@ -914,7 +914,18 @@ bool ResourceLoader::canAuthenticateAgainstProtectionSpace(const ProtectionSpace
+@@ -259,6 +259,13 @@ void ResourceLoader::start()
+         return;
+     }
+ 
++#if PLATFORM(HAIKU) && ENABLE(PDFJS)
++    if (m_request.url().protocolIs("webkit-pdfjs-viewer"_s)) {
++        loadPDFJSResourceHaiku();
++        return;
++    }
++#endif
++
+ #if USE(SOUP)
+     if (m_request.url().protocolIs("resource"_s) || isPDFJSResourceLoad()) {
+         loadGResource();
+@@ -914,7 +921,18 @@ bool ResourceLoader::canAuthenticateAgainstProtectionSpace(const ProtectionSpace
  }
  
  #endif
@@ -11062,7 +11290,7 @@ index b3dd27ce657c17c506e93694ba1a74706edcd2ed..a37040b3ad549ac51f4a8bc27f860696
  
  RetainPtr<CFDictionaryRef> ResourceLoader::connectionProperties(ResourceHandle*)
 diff --git a/Source/WebCore/loader/ResourceLoader.h b/Source/WebCore/loader/ResourceLoader.h
-index 3dbc23ec4a0818ed58ab2e0b2648056ab360a2ff..8254fb1525db8f69c8c4d1191e04b9b9a72146e4 100644
+index 3dbc23ec4a0818ed58ab2e0b2648056ab360a2ff..43bca3f24c6e34564fc700b21a38745d70f8f40a 100644
 --- a/Source/WebCore/loader/ResourceLoader.h
 +++ b/Source/WebCore/loader/ResourceLoader.h
 @@ -129,6 +129,11 @@ public:
@@ -11077,6 +11305,92 @@ index 3dbc23ec4a0818ed58ab2e0b2648056ab360a2ff..8254fb1525db8f69c8c4d1191e04b9b9
      virtual void receivedCancellation(const AuthenticationChallenge&);
  
  #if USE(QUICK_LOOK)
+@@ -235,6 +240,9 @@ private:
+ #if USE(SOUP)
+     void loadGResource();
+ #endif
++#if PLATFORM(HAIKU) && ENABLE(PDFJS)
++    void loadPDFJSResourceHaiku();
++#endif
+ 
+     ResourceRequest m_request;
+     ResourceRequest m_originalRequest; // Before redirects.
+diff --git a/Source/WebCore/loader/haiku/PDFJSResourcesHaiku.h b/Source/WebCore/loader/haiku/PDFJSResourcesHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..447fb46775db9899147977d777de40f9e4827cf4
+--- /dev/null
++++ b/Source/WebCore/loader/haiku/PDFJSResourcesHaiku.h
+@@ -0,0 +1,17 @@
++/* Copyright (C) 2026 air/OS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#include <cstddef>
++#include <string_view>
++
++namespace WebCore {
++// Generated from WebKit's pinned PDF.js distribution; never from a URL path
++// on the filesystem. Each member is compressed independently with zlib.
++struct PDFJSResourceHaiku {
++    std::string_view path;
++    const char* mimeType;
++    const unsigned char* bytes;
++    size_t compressedSize;
++    size_t size;
++};
++const PDFJSResourceHaiku* findPDFJSResourceHaiku(std::string_view);
++}
+diff --git a/Source/WebCore/loader/haiku/ResourceLoaderHaiku.cpp b/Source/WebCore/loader/haiku/ResourceLoaderHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..d0291650380038f8c810316011430ff9b450f0bc
+--- /dev/null
++++ b/Source/WebCore/loader/haiku/ResourceLoaderHaiku.cpp
+@@ -0,0 +1,47 @@
++/* Copyright (C) 2026 air/OS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "config.h"
++#include "ResourceLoader.h"
++
++#if ENABLE(PDFJS)
++#include "PDFJSResourcesHaiku.h"
++#include "ResourceError.h"
++#include "SharedBuffer.h"
++#include <wtf/RunLoop.h>
++#include <wtf/text/CString.h>
++#include <zlib.h>
++
++namespace WebCore {
++void ResourceLoader::loadPDFJSResourceHaiku()
++{
++    // Delivery is deferred until WebLoaderStrategy has registered the load.
++    RunLoop::mainSingleton().dispatch([loader = Ref { *this }] {
++        if (loader->reachedTerminalState() || loader->wasCancelled()) return;
++        auto url = loader->request().url();
++        auto path = url.path().toString().utf8();
++        const PDFJSResourceHaiku* resource = nullptr;
++        if (loader->isPDFJSResourceLoad() && url.host() == "pdfjs"_s && !url.port()
++            && loader->request().httpMethod() == "GET"_s && path.length() < 512)
++            resource = findPDFJSResourceHaiku({ path.legacyCStringPointer(), path.length() });
++        if (!resource) {
++            loader->didFail(ResourceError("PDFJS"_s, 1, url, "The PDF viewer resource is unavailable"_s));
++            return;
++        }
++        Vector<uint8_t> data(resource->size);
++        uLongf size = data.size();
++        if (uncompress(data.mutableSpan().data(), &size, resource->bytes, resource->compressedSize) != Z_OK
++            || size != resource->size) {
++            loader->didFail(ResourceError("PDFJS"_s, 2, url, "Could not decode a PDF viewer resource"_s));
++            return;
++        }
++        auto mimeType = String::fromLatin1(resource->mimeType);
++        ResourceResponse response(URL { url }, String { mimeType }, static_cast<long long>(data.size()), "UTF-8"_s);
++        response.setHTTPStatusCode(200);
++        response.setHTTPStatusText("OK"_s);
++        response.setHTTPHeaderField(HTTPHeaderName::ContentType, mimeType);
++        response.setHTTPHeaderField(HTTPHeaderName::CacheControl, "no-store"_s);
++        response.setSource(ResourceResponse::Source::Network);
++        loader->deliverResponseAndData(WTF::move(response), SharedBuffer::create(WTF::move(data)));
++    });
++}
++}
++#endif
 diff --git a/Source/WebCore/page/ChromeClient.h b/Source/WebCore/page/ChromeClient.h
 index 349b9cb1fe7dc8f666371b92e665e1b3c21c2eaa..d5d8e082f7e90a9ae9e87cc49b77ea942ff9a8be 100644
 --- a/Source/WebCore/page/ChromeClient.h
@@ -95235,10 +95549,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..4412918c9cccf71d16bf961755e1d3ea66b16c14
+index 0000000000000000000000000000000000000000..4883efdc3a639b12c85d13f1ee42e06e4d8259c4
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,2402 @@
+@@ -0,0 +1,2405 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -96612,6 +96926,9 @@ index 0000000000000000000000000000000000000000..4412918c9cccf71d16bf961755e1d3ea
 +    // among them) take pasted and dropped images from it.
 +    configuration->preferences().setDataTransferItemsEnabled(true);
 +    configuration->preferences().setInputTypeColorEnabled(true);
++#if ENABLE(PDFJS)
++    configuration->preferences().setPDFJSViewerEnabled(true);
++#endif
 +    configuration->preferences().setDataListElementEnabled(true);
 +    configuration->preferences().setInputTypeDateEnabled(true);
 +    configuration->preferences().setInputTypeMonthEnabled(true);
@@ -138756,10 +139073,10 @@ index 121e64b01bce34e387deacf3bbbca93adf0f59da..7926cd9c3edf141bc52f7db0253c37c0
  endif ()
 diff --git a/Source/cmake/OptionsHaiku.cmake b/Source/cmake/OptionsHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..b49da42ec1792b87a5526fd206e16e895f070cc9
+index 0000000000000000000000000000000000000000..1c5612d4d2e74f02bbffca7042d4db3c2302729a
 --- /dev/null
 +++ b/Source/cmake/OptionsHaiku.cmake
-@@ -0,0 +1,374 @@
+@@ -0,0 +1,375 @@
 +include(GNUInstallDirs)
 +include(VersioningUtils)
 +
@@ -138836,6 +139153,7 @@ index 0000000000000000000000000000000000000000..b49da42ec1792b87a5526fd206e16e89
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_GEOLOCATION PUBLIC ON)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_MEDIA_CAPTURE PUBLIC ON)
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_MEDIA_SOURCE PUBLIC ON)
++WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_PDFJS PUBLIC ON)
 +# Camera, microphone and screen capture through the Media Kit and app_server
 +# (platform/mediastream/haiku), WebRTC through libwebrtc as on GTK and WPE
 +# (USE_LIBWEBRTC below), MediaRecorder writing WebM (VP8/VP9 and Opus).
@@ -147054,6 +147372,64 @@ index 4b7c7544bfcb699ad223b17f7df8e0546c7a1b46..32ca135ecb2bfe8202da5e164c8ef80b
 +}
 +
  exit exitStatus($result);
+diff --git a/Tools/Scripts/generate-pdfjs-haiku-resources.py b/Tools/Scripts/generate-pdfjs-haiku-resources.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..d20ca9f34e49e90c63fd4e5cbab489916844c631
+--- /dev/null
++++ b/Tools/Scripts/generate-pdfjs-haiku-resources.py
+@@ -0,0 +1,52 @@
++#!/usr/bin/env python3
++"""Embed the pinned PDF.js resources for the native Haiku resource loader."""
++import argparse
++import json
++import pathlib
++import re
++import zlib
++
++parser = argparse.ArgumentParser()
++parser.add_argument('--pdfjs', type=pathlib.Path, required=True)
++parser.add_argument('--extras', type=pathlib.Path, required=True)
++parser.add_argument('--output', type=pathlib.Path, required=True)
++args = parser.parse_args()
++
++manifest = (args.pdfjs / 'PdfJSFiles.cmake').read_text()
++paths = re.findall(r'\$\{THIRDPARTY_DIR\}/pdfjs/([^\s)]+)', manifest)
++if not paths or len(paths) != len(set(paths)):
++    raise SystemExit('Invalid PDF.js resource manifest')
++resources = {f'/{path}': (args.pdfjs / path).read_bytes() for path in paths}
++for name in ['configuration.js', 'content-script.js', 'style.css']:
++    resources['/extras/haiku/' + name] = (args.extras / name).read_bytes()
++# Install settings before the viewer module initializes. This customization
++# stays outside the vendored upstream distribution and is checked at build time.
++viewer = resources['/web/viewer.html'].decode()
++if viewer.count('<head>') != 1:
++    raise SystemExit('PDF.js viewer head changed')
++resources['/web/viewer.html'] = viewer.replace('<head>',
++    '<head>\n<script src="../extras/haiku/configuration.js"></script>', 1).encode()
++mime = {'.mjs': 'text/javascript', '.js': 'text/javascript', '.css': 'text/css',
++        '.html': 'text/html', '.json': 'application/json', '.svg': 'image/svg+xml',
++        '.png': 'image/png', '.gif': 'image/gif', '.ttf': 'font/ttf', '.pfb': 'application/x-font-type1',
++        '.ftl': 'text/plain', '.wasm': 'application/wasm'}
++lines = ['// Generated; do not edit.', '#include "config.h"', '#include "PDFJSResourcesHaiku.h"',
++         '#include <algorithm>', '#include <iterator>', 'namespace WebCore {', 'namespace {']
++entries = []
++for index, (path, data) in enumerate(sorted(resources.items())):
++    if not data or len(data) > 16000000:
++        raise SystemExit('Unexpected PDF.js resource size: ' + path)
++    packed = zlib.compress(data, 9)
++    lines.append(f'static const unsigned char resource{index}[] = {{')
++    for start in range(0, len(packed), 24):
++        lines.append(','.join(str(byte) for byte in packed[start:start + 24]) + ',')
++    lines.append('};')
++    media_type = mime.get(pathlib.Path(path).suffix, 'application/octet-stream')
++    entries.append(f'{{ {json.dumps(path)}, {json.dumps(media_type)}, resource{index}, sizeof(resource{index}), {len(data)} }},')
++lines += ['static const PDFJSResourceHaiku resources[] = {', *entries, '};', '}',
++          'const PDFJSResourceHaiku* findPDFJSResourceHaiku(std::string_view path) {',
++          '    auto* item = std::lower_bound(std::begin(resources), std::end(resources), path,',
++          '        [](const auto& resource, auto name) { return resource.path < name; });',
++          '    return item != std::end(resources) && item->path == path ? item : nullptr;', '}', '}']
++args.output.parent.mkdir(parents=True, exist_ok=True)
++args.output.write_text('\n'.join(lines) + '\n')
 diff --git a/Tools/Scripts/webkitdirs.pm b/Tools/Scripts/webkitdirs.pm
 index 010341afed77e463c8a59f6b499417d5162cb9a1..b9f0dd70d85ef87d6b2698bf733c1bf17f901b09 100755
 --- a/Tools/Scripts/webkitdirs.pm

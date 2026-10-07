@@ -8,7 +8,7 @@ verified installation on X399. The final installation is still pending.
 | #39 New icons | Supplied toolbar SVGs render at three densities; the app uses the updated mountain-and-flag HVIF. Native bundle `bundle-uofxmys5` builds. Screenshot `.vm/issue39-native.png` verifies the toolbar in the preceding icon bundle. Commit `a2a9512` is pushed. |
 | #40 Extension stores | Implemented and verified against both live stores; [workflow and native evidence](extension-stores.md). |
 | #41 Certificate information | Implemented: supplied lock icon and native details from the committed connection. Verified/public and exception states, tab/navigation cleanup, and resumed TLS peer certificate retention pass 72 native checks; [details](certificate-warnings.md). |
-| #38 PDF viewing | Pending: browser preview and optional download. |
+| #38 PDF viewing | Implemented with bundled PDF.js, original-response downloads, navigation/search/zoom, passwords, and error handling. 118 native checks pass; [details](pdf-viewer.md). |
 | #37 README | Pending until the features and icon work finish; replace old KunanyiOS branding with air/OS, audit current capabilities, retain the CI latest-release download section. |
 | #36 Date/time input types | Implemented for all five types with BCalendar and canonical editable values. 171 native checks pass, including leap dates, ISO weeks, range/step constraints, events and cleanup; [details](native-form-pickers.md). |
 | #35 Color input | Implemented with BColorControl, Done/Cancel, script updates and datalist swatches. 65 native checks pass, including DOM events and navigation/tab/quit cleanup; [details](native-form-pickers.md). |
