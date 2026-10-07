@@ -2710,6 +2710,18 @@ index 0000000000000000000000000000000000000000..75f686ce911bb0eb180927b26550a431
 +}  // namespace webrtc
 +
 +#endif  // MODULES_VIDEO_CODING_CODECS_H264_H264_ENCODER_HAIKU_H_
+diff --git a/Source/ThirdParty/libwebrtc/Source/webrtc/modules/video_coding/codecs/h264/h264_encoder_impl.h b/Source/ThirdParty/libwebrtc/Source/webrtc/modules/video_coding/codecs/h264/h264_encoder_impl.h
+index ab589ac0b5739d415f8f377110ecedfe3dcfb394..524fcf6a5e98656c5823721548f6cb198578d054 100644
+--- a/Source/ThirdParty/libwebrtc/Source/webrtc/modules/video_coding/codecs/h264/h264_encoder_impl.h
++++ b/Source/ThirdParty/libwebrtc/Source/webrtc/modules/video_coding/codecs/h264/h264_encoder_impl.h
+@@ -39,7 +39,6 @@
+ #include "modules/video_coding/codecs/h264/include/h264_globals.h"
+ #include "modules/video_coding/svc/scalable_video_controller.h"
+ #include "modules/video_coding/utility/frame_sampler.h"
+-#include "rtc_base/experiments/psnr_experiment.h"
+ 
+ #ifdef WEBRTC_WEBKIT_BUILD
+ #if defined(WEBKIT_LIBWEBRTC_OPENH264_ENCODER) && WEBKIT_LIBWEBRTC_OPENH264_ENCODER
 diff --git a/Source/ThirdParty/libwebrtc/Source/webrtc/rtc_base/cpu_info.cc b/Source/ThirdParty/libwebrtc/Source/webrtc/rtc_base/cpu_info.cc
 index fa17252c7f15385798c8977757b2f669f232eb79..0d598f8ed19c60f48afdb8c505c963d8937d797c 100644
 --- a/Source/ThirdParty/libwebrtc/Source/webrtc/rtc_base/cpu_info.cc
@@ -8922,7 +8934,7 @@ index 6b884b257953dc67da8f86ca346e3b761200754c..f2f875e633370bc3adb81e3e1b51468a
          , m_cachedScript(cachedScript)
 diff --git a/Source/WebCore/bindings/js/CachedScriptSourceProviderHaiku.cpp b/Source/WebCore/bindings/js/CachedScriptSourceProviderHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..2cbba0878aaad1a4ce5264b3482e4e18f45270e7
+index 0000000000000000000000000000000000000000..2c20205753574d55df3541bf009349686ca16c4f
 --- /dev/null
 +++ b/Source/WebCore/bindings/js/CachedScriptSourceProviderHaiku.cpp
 @@ -0,0 +1,434 @@
@@ -9023,7 +9035,7 @@ index 0000000000000000000000000000000000000000..2cbba0878aaad1a4ce5264b3482e4e18
 +                FileSystem::deleteNonEmptyDirectory(path);
 +        }
 +        struct Entry {
-+            CString path;
++            UTF8CString path;
 +            uint64_t size;
 +            time_t time;
 +        };
@@ -11830,7 +11842,7 @@ index 1e32526022d7299e8ba3b5f4f82c59d5244267af..42eba71cd13dd736fde5b3ca949bddba
  }
  
 diff --git a/Source/WebCore/layout/formattingContexts/grid/GridItemSizingFunctions.cpp b/Source/WebCore/layout/formattingContexts/grid/GridItemSizingFunctions.cpp
-index 805a551a0f61b491f162dfee4d04f478990d3dc1..6ab07f539270370a7a601ed36a7c5ba38a8ca2c9 100644
+index 805a551a0f61b491f162dfee4d04f478990d3dc1..112ded99af37004c2c9159da6235de0d8fc29ccf 100644
 --- a/Source/WebCore/layout/formattingContexts/grid/GridItemSizingFunctions.cpp
 +++ b/Source/WebCore/layout/formattingContexts/grid/GridItemSizingFunctions.cpp
 @@ -32,6 +32,8 @@
@@ -11853,7 +11865,7 @@ index 805a551a0f61b491f162dfee4d04f478990d3dc1..6ab07f539270370a7a601ed36a7c5ba3
 +    // a new cache, and a changed column size has a different constraint.
 +    struct CachedContribution {
 +        LayoutUnit inlineAxisConstraint;
-+        MarginBoxSize value;
++        MarginBoxSize value { MarginBoxSize::zeroSized() };
 +    };
 +    auto contributions = std::make_shared<HashMap<const PlacedGridItem*, CachedContribution>>();
 +    auto blockContribution = [&formattingContext, contributions](const PlacedGridItem& gridItem, LayoutUnit inlineAxisConstraint) {
@@ -15199,7 +15211,7 @@ index 7b737a373363845d9a421303fa2dfc45334ebe06..227aa2786b0a15464e60c06a670f70f1
      enum class IsTouch : bool { No, Yes };
  
 diff --git a/Source/WebCore/platform/RunLoopObserver.cpp b/Source/WebCore/platform/RunLoopObserver.cpp
-index 7896afc9dadf5595dc274c19b102d9957c69f4f3..c1d885b0a82a6289a9d1444cf15be4b21d99b2f7 100644
+index 7896afc9dadf5595dc274c19b102d9957c69f4f3..e5573f5ab8efeb4cdcdfe950fb85967ca014f5c5 100644
 --- a/Source/WebCore/platform/RunLoopObserver.cpp
 +++ b/Source/WebCore/platform/RunLoopObserver.cpp
 @@ -49,7 +49,91 @@ void RunLoopObserver::runLoopObserverFired()
@@ -15255,7 +15267,7 @@ index 7896afc9dadf5595dc274c19b102d9957c69f4f3..c1d885b0a82a6289a9d1444cf15be4b2
 +
 +    // Arming the timer takes the target loop's own lock, and the callback takes
 +    // this one while holding it, so this lock is never held across either call.
-+    RefPtr<RunLoop::DispatchTimer> timer = target->dispatchAfter(0_s, [this] {
++    RefPtr<RunLoop::DispatchTimer> timer = target->scheduleTimer(0_s, [this] {
 +        {
 +            Locker locker { m_timerLock };
 +            if (!m_isScheduled)
@@ -19594,7 +19606,7 @@ index 160ba4f2623722caaf670da2b6eb3f4b1d3f2f5f..ffff803f61bbdb6af0dbc8fd6e0b5c44
      keepRect.unite(coverRect);
      keepRect.inflateX(m_tileSize.width() / 2);
 diff --git a/Source/WebCore/platform/graphics/coordinated/CoordinatedPlatformLayer.cpp b/Source/WebCore/platform/graphics/coordinated/CoordinatedPlatformLayer.cpp
-index 63ec41fac1fe1f6d4b7606555093bc4bed44d365..dd1e7a01f028d39b53770d3f743b5edd794e9658 100644
+index 63ec41fac1fe1f6d4b7606555093bc4bed44d365..4153d1204664a89ec985a059cad37555683a0ecf 100644
 --- a/Source/WebCore/platform/graphics/coordinated/CoordinatedPlatformLayer.cpp
 +++ b/Source/WebCore/platform/graphics/coordinated/CoordinatedPlatformLayer.cpp
 @@ -910,6 +910,22 @@ void CoordinatedPlatformLayer::updateBackingStore()
@@ -19611,7 +19623,7 @@ index 63ec41fac1fe1f6d4b7606555093bc4bed44d365..dd1e7a01f028d39b53770d3f743b5edd
 +        IntRect dirty;
 +        for (auto& rect : m_dirtyRegion)
 +            dirty.unite(rect);
-+        auto name = m_owner ? m_owner->name().utf8() : CString();
++        auto name = m_owner ? m_owner->name().utf8() : UTF8CString();
 +        fprintf(stderr, "Summit tile update: layer=%p \"%s\" size=%.0fx%.0f scale=%.2f dirty=%zu rects, bounds %d,%d %dx%d tilesUpdate=%d pendingCreation=%d opaque=%d\n",
 +            static_cast<void*>(this), name.data() ? reinterpret_cast<const char*>(name.data()) : "", size.width(), size.height(), contentsScale, m_dirtyRegion.size(),
 +            dirty.x(), dirty.y(), dirty.width(), dirty.height(), m_needsTilesUpdate, m_pendingTilesCreation, contentsOpaque);
@@ -22585,7 +22597,7 @@ index 0000000000000000000000000000000000000000..6092748df3c81f058cb54f781cc338c0
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/haiku/FontPlatformDataHaiku.cpp b/Source/WebCore/platform/graphics/haiku/FontPlatformDataHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..e3c0c9db245a921b99b0c02608610cec6ac396d2
+index 0000000000000000000000000000000000000000..f06b970433de5061ee8b0d0aad1cefc02ea1e47a
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/FontPlatformDataHaiku.cpp
 @@ -0,0 +1,341 @@
@@ -22635,9 +22647,9 @@ index 0000000000000000000000000000000000000000..e3c0c9db245a921b99b0c02608610cec
 +void
 +FontPlatformData::findMatchingFontFamily(const AtomString& familyName, font_family& fontFamily)
 +{
-+    CString familyNameUTF8 = familyName.string().utf8();
-+    if (BFont().SetFamilyAndStyle(familyNameUTF8.data(), 0) == B_OK)
-+        strlcpy(fontFamily, familyNameUTF8.data(), B_FONT_FAMILY_LENGTH);
++    UTF8CString familyNameUTF8 = familyName.string().utf8();
++    if (BFont().SetFamilyAndStyle(familyNameUTF8.legacyCStringPointer(), 0) == B_OK)
++        strlcpy(fontFamily, familyNameUTF8.legacyCStringPointer(), B_FONT_FAMILY_LENGTH);
 +    else {
 +        // If no font family is found for the given name, we use a generic font.
 +
@@ -31912,7 +31924,7 @@ index 0000000000000000000000000000000000000000..66ffa91f609f6cd8aef64d1696aae184
 +#endif // ENABLE(MEDIA_SOURCE)
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateMediaStreamHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateMediaStreamHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..e10bff75c9fddffec331428eda2377fa8cbfde37
+index 0000000000000000000000000000000000000000..e5b238af128e01081280c450d3319007ad093d44
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateMediaStreamHaiku.cpp
 @@ -0,0 +1,509 @@
@@ -32402,7 +32414,7 @@ index 0000000000000000000000000000000000000000..e10bff75c9fddffec331428eda2377fa
 +    auto frame = currentFrame();
 +    if (!frame)
 +        return;
-+    context.drawVideoFrame(*frame, rect, ImageOrientation::Orientation::None, false);
++    context.drawVideoFrame(*frame, rect, ShouldDiscardAlpha::No, { ImageOrientation::Orientation::None });
 +}
 +
 +RefPtr<VideoFrame> MediaPlayerPrivateMediaStreamHaiku::videoFrameForCurrentTime()
@@ -37954,7 +37966,7 @@ index 0000000000000000000000000000000000000000..06ce18441ca1537e8c251a343de6b3f0
 +
 diff --git a/Source/WebCore/platform/haiku/FileSystemHaiku.cpp b/Source/WebCore/platform/haiku/FileSystemHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..1c12bb2ccb66dfedfcf90743c5cc0d5d8831fac3
+index 0000000000000000000000000000000000000000..45be31e933f00d0787462151b7b82b2d3b677ffb
 --- /dev/null
 +++ b/Source/WebCore/platform/haiku/FileSystemHaiku.cpp
 @@ -0,0 +1,64 @@
@@ -38000,7 +38012,7 @@ index 0000000000000000000000000000000000000000..1c12bb2ccb66dfedfcf90743c5cc0d5d
 +
 +namespace FileSystem {
 +
-+CString fileSystemRepresentation(const String& path)
++UTF8CString fileSystemRepresentation(const String& path)
 +{
 +    return path.utf8();
 +}
@@ -38841,10 +38853,10 @@ index 0000000000000000000000000000000000000000..32ba8e2f08efde1fa6ffccd7f3b73935
 +
 diff --git a/Source/WebCore/platform/haiku/PasteboardHaiku.cpp b/Source/WebCore/platform/haiku/PasteboardHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..5bbb1237794cefb5519db06eee7c9556496a7a81
+index 0000000000000000000000000000000000000000..272c840064e1290abc654367c841e5e9d70b81e2
 --- /dev/null
 +++ b/Source/WebCore/platform/haiku/PasteboardHaiku.cpp
-@@ -0,0 +1,628 @@
+@@ -0,0 +1,629 @@
 +/*
 + * Copyright (C) 2006 Zack Rusin <zack@kde.org>
 + * Copyright (C) 2007 Ryan Leavengood <leavengood@gmail.com>
@@ -38881,6 +38893,7 @@ index 0000000000000000000000000000000000000000..5bbb1237794cefb5519db06eee7c9556
 +#include "DocumentFragment.h"
 +#include "DragData.h"
 +#include "Image.h"
++#include "ConcreteObjectSize.h"
 +#include "ImageUtilities.h"
 +#include "NativeImage.h"
 +#include "SharedBuffer.h"
@@ -39058,11 +39071,11 @@ index 0000000000000000000000000000000000000000..5bbb1237794cefb5519db06eee7c9556
 +        BMessage* bdata = be_clipboard->Data();
 +
 +        if (bdata) {
-+            CString typeUTF8 = type.utf8();
-+            bdata->RemoveName(typeUTF8.data());
++            UTF8CString typeUTF8 = type.utf8();
++            bdata->RemoveName(typeUTF8.legacyCStringPointer());
 +
-+            CString dataUTF8 = data.utf8();
-+            if (bdata->AddData(typeUTF8.data(), B_MIME_TYPE,
++            UTF8CString dataUTF8 = data.utf8();
++            if (bdata->AddData(typeUTF8.legacyCStringPointer(), B_MIME_TYPE,
 +                    dataUTF8.data(), dataUTF8.length()) == B_OK)
 +                result = true;
 +        }
@@ -39127,7 +39140,7 @@ index 0000000000000000000000000000000000000000..5bbb1237794cefb5519db06eee7c9556
 +{
 +    if (m_forDragAndDrop || !pasteboardImage.image)
 +        return;
-+    RefPtr nativeImage = pasteboardImage.image->nativeImage();
++    RefPtr nativeImage = pasteboardImage.image->nativeImage(ConcreteObjectSize::fixed(pasteboardImage.image->size()));
 +    if (!nativeImage)
 +        return;
 +    auto png = encodeData(*nativeImage, "image/png"_s);
@@ -39149,7 +39162,7 @@ index 0000000000000000000000000000000000000000..5bbb1237794cefb5519db06eee7c9556
 +            data->AddMessage("image/bitmap", &archive);
 +    }
 +    if (!pasteboardImage.url.url.isEmpty()) {
-+        CString url = pasteboardImage.url.url.string().utf8();
++        UTF8CString url = pasteboardImage.url.url.string().utf8();
 +        data->AddData("text/uri-list", B_MIME_TYPE, url.data(), url.length());
 +    }
 +    be_clipboard->Commit();
@@ -44683,7 +44696,7 @@ index 0000000000000000000000000000000000000000..45f9b5810dcc89414a8444dfd9a93e62
 +#endif // ENABLE(MEDIA_STREAM) && PLATFORM(HAIKU)
 diff --git a/Source/WebCore/platform/mediastream/haiku/HaikuCaptureSources.cpp b/Source/WebCore/platform/mediastream/haiku/HaikuCaptureSources.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..7fd4cd5e1a1fafbf794dccebfd1021ef81d8bde3
+index 0000000000000000000000000000000000000000..461574c91a2050788d9897217e2f7200a5f4cceb
 --- /dev/null
 +++ b/Source/WebCore/platform/mediastream/haiku/HaikuCaptureSources.cpp
 @@ -0,0 +1,892 @@
@@ -44999,7 +45012,7 @@ index 0000000000000000000000000000000000000000..7fd4cd5e1a1fafbf794dccebfd1021ef
 +            protectedThis->pictureReceived(data, bytes, format);
 +    }, error);
 +    if (!m_connection) {
-+        fprintf(stderr, "Summit: camera \"%s\": %s\n", name().utf8().data(), error.utf8().data());
++        fprintf(stderr, "Summit: camera \"%s\": %s\n", name().utf8().legacyCStringPointer(), error.utf8().legacyCStringPointer());
 +        captureFailed();
 +        return;
 +    }
@@ -45452,7 +45465,7 @@ index 0000000000000000000000000000000000000000..7fd4cd5e1a1fafbf794dccebfd1021ef
 +            protectedThis->samplesReceived(data, bytes, format);
 +    }, error);
 +    if (!m_connection) {
-+        fprintf(stderr, "Summit: microphone \"%s\": %s\n", name().utf8().data(), error.utf8().data());
++        fprintf(stderr, "Summit: microphone \"%s\": %s\n", name().utf8().legacyCStringPointer(), error.utf8().legacyCStringPointer());
 +        captureFailed();
 +        return;
 +    }
@@ -48466,7 +48479,7 @@ index 7d0ffb01d0cfc846045fea9ad8a4b2e7a7d63e8c..6635b56b82d892e8c385a661b7158bd3
  }
 diff --git a/Source/WebCore/platform/network/curl/CurlCacheEntry.cpp b/Source/WebCore/platform/network/curl/CurlCacheEntry.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..4181a09648810af79ad0153ab8a5124a7d43e278
+index 0000000000000000000000000000000000000000..e9ee3cad1b3ffa4681e32715b2a9f0451026a4a2
 --- /dev/null
 +++ b/Source/WebCore/platform/network/curl/CurlCacheEntry.cpp
 @@ -0,0 +1,333 @@
@@ -48582,7 +48595,7 @@ index 0000000000000000000000000000000000000000..4181a09648810af79ad0153ab8a5124a
 +
 +    auto buffer = FileSystem::readEntireFile(m_contentFilename);
 +    if (!buffer) {
-+        LOG(Network, "Cache Error: Could not open %s to read cached content\n", m_contentFilename.latin1().data());
++        LOG(Network, "Cache Error: Could not open %s to read cached content\n", m_contentFilename.latin1().legacyCStringPointer());
 +        return false;
 +    }
 +
@@ -48596,7 +48609,7 @@ index 0000000000000000000000000000000000000000..4181a09648810af79ad0153ab8a5124a
 +{
 +    FileSystem::FileHandle headerFile = FileSystem::openFile(m_headerFilename, FileSystem::FileOpenMode::Truncate);
 +    if (!headerFile) {
-+        LOG(Network, "Cache Error: Could not open %s for write\n", m_headerFilename.latin1().data());
++        LOG(Network, "Cache Error: Could not open %s for write\n", m_headerFilename.latin1().legacyCStringPointer());
 +        return false;
 +    }
 +
@@ -48617,7 +48630,7 @@ index 0000000000000000000000000000000000000000..4181a09648810af79ad0153ab8a5124a
 +{
 +    auto buffer = FileSystem::readEntireFile(m_headerFilename);
 +    if (!buffer) {
-+        LOG(Network, "Cache Error: Could not open %s to read cached headers\n", m_headerFilename.latin1().data());
++        LOG(Network, "Cache Error: Could not open %s to read cached headers\n", m_headerFilename.latin1().legacyCStringPointer());
 +        return false;
 +    }
 +
@@ -48674,7 +48687,7 @@ index 0000000000000000000000000000000000000000..4181a09648810af79ad0153ab8a5124a
 +    setIsLoading(false);
 +}
 +
-+void CurlCacheEntry::generateBaseFilename(const CString& url)
++void CurlCacheEntry::generateBaseFilename(const Latin1CString& url)
 +{
 +    SHA1 sha1;
 +    sha1.addBytes(url.span());
@@ -48694,7 +48707,7 @@ index 0000000000000000000000000000000000000000..4181a09648810af79ad0153ab8a5124a
 +    closeContentFile();
 +    FileSystem::deleteFile(m_headerFilename);
 +    FileSystem::deleteFile(m_contentFilename);
-+    LOG(Network, "Cache: invalidated %s\n", m_basename.latin1().data());
++    LOG(Network, "Cache: invalidated %s\n", m_basename.latin1().legacyCStringPointer());
 +}
 +
 +bool CurlCacheEntry::parseResponseHeaders(const ResourceResponse& response)
@@ -48760,12 +48773,12 @@ index 0000000000000000000000000000000000000000..4181a09648810af79ad0153ab8a5124a
 +    if (!m_entrySize) {
 +        auto headerFileSize = FileSystem::fileSize(m_headerFilename);
 +        if (!headerFileSize) {
-+            LOG(Network, "Cache Error: Could not get file size of %s\n", m_headerFilename.latin1().data());
++            LOG(Network, "Cache Error: Could not get file size of %s\n", m_headerFilename.latin1().legacyCStringPointer());
 +            return m_entrySize;
 +        }
 +        auto contentFileSize = FileSystem::fileSize(m_contentFilename);
 +        if (!contentFileSize) {
-+            LOG(Network, "Cache Error: Could not get file size of %s\n", m_contentFilename.latin1().data());
++            LOG(Network, "Cache Error: Could not get file size of %s\n", m_contentFilename.latin1().legacyCStringPointer());
 +            return m_entrySize;
 +        }
 +
@@ -48786,7 +48799,7 @@ index 0000000000000000000000000000000000000000..4181a09648810af79ad0153ab8a5124a
 +    if (m_contentFile)
 +        return true;
 +
-+    LOG(Network, "Cache Error: Could not open %s for write\n", m_contentFilename.latin1().data());
++    LOG(Network, "Cache Error: Could not open %s for write\n", m_contentFilename.latin1().legacyCStringPointer());
 +    return false;
 +}
 +
@@ -48805,7 +48818,7 @@ index 0000000000000000000000000000000000000000..4181a09648810af79ad0153ab8a5124a
 +#endif
 diff --git a/Source/WebCore/platform/network/curl/CurlCacheEntry.h b/Source/WebCore/platform/network/curl/CurlCacheEntry.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..b117ac3a1b6d6435f7676a8dd2103e4067607f2f
+index 0000000000000000000000000000000000000000..cd099b26569a1e77411614f933e312b8959527e2
 --- /dev/null
 +++ b/Source/WebCore/platform/network/curl/CurlCacheEntry.h
 @@ -0,0 +1,99 @@
@@ -48900,7 +48913,7 @@ index 0000000000000000000000000000000000000000..b117ac3a1b6d6435f7676a8dd2103e40
 +
 +    ResourceHandle* m_job;
 +
-+    void generateBaseFilename(const CString& url);
++    void generateBaseFilename(const Latin1CString& url);
 +    bool loadResponseHeaders();
 +
 +    bool openContentFile();
@@ -48910,7 +48923,7 @@ index 0000000000000000000000000000000000000000..b117ac3a1b6d6435f7676a8dd2103e40
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/network/curl/CurlCacheManager.cpp b/Source/WebCore/platform/network/curl/CurlCacheManager.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..80e6bef2cb0b2848a163a18c29a07fec5cbe8b1f
+index 0000000000000000000000000000000000000000..b76d7b8eeb88feb6bee77b36a05e217ca2e9f7c6
 --- /dev/null
 +++ b/Source/WebCore/platform/network/curl/CurlCacheManager.cpp
 @@ -0,0 +1,338 @@
@@ -49020,7 +49033,7 @@ index 0000000000000000000000000000000000000000..80e6bef2cb0b2848a163a18c29a07fec
 +    String indexFilePath = FileSystem::pathByAppendingComponent(m_cacheDir, "index.dat"_s);
 +    auto buffer = FileSystem::readEntireFile(indexFilePath);
 +    if (!buffer) {
-+        LOG(Network, "Cache Error: Could not read %s\n", indexFilePath.latin1().data());
++        LOG(Network, "Cache Error: Could not read %s\n", indexFilePath.latin1().legacyCStringPointer());
 +        return;
 +    }
 +
@@ -49059,14 +49072,14 @@ index 0000000000000000000000000000000000000000..80e6bef2cb0b2848a163a18c29a07fec
 +    FileSystem::deleteFile(indexFilePath);
 +    FileSystem::FileHandle indexFile = FileSystem::openFile(indexFilePath, FileSystem::FileOpenMode::Truncate);
 +    if (!indexFile) {
-+        LOG(Network, "Cache Error: Could not open %s for write\n", indexFilePath.latin1().data());
++        LOG(Network, "Cache Error: Could not open %s for write\n", indexFilePath.latin1().legacyCStringPointer());
 +        return;
 +    }
 +
 +    auto it = m_LRUEntryList.begin();
 +    const auto& end = m_LRUEntryList.end();
 +    while (it != end) {
-+        const CString& urlLatin1 = it->latin1();
++        const Latin1CString& urlLatin1 = it->latin1();
 +        indexFile.write(std::span<const unsigned char>((unsigned char*)urlLatin1.data(), urlLatin1.length()));
 +        indexFile.write(std::span<const unsigned char>((unsigned char*)"\n", 1));
 +        ++it;
@@ -49739,7 +49752,7 @@ index 0000000000000000000000000000000000000000..da71c185bfa5f93bf68ba7a513f48393
 +
 +#endif
 diff --git a/Source/WebCore/platform/network/curl/CurlRequest.cpp b/Source/WebCore/platform/network/curl/CurlRequest.cpp
-index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..0e868fa146addf3eb4c0960d7ca11c0299ed553a 100644
+index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..30ccdd0813f2d4d29cef8126776ae82ff957c316 100644
 --- a/Source/WebCore/platform/network/curl/CurlRequest.cpp
 +++ b/Source/WebCore/platform/network/curl/CurlRequest.cpp
 @@ -36,19 +36,377 @@
@@ -49782,7 +49795,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..0e868fa146addf3eb4c0960d7ca11c02
 +    return from && to ? (to - from).milliseconds() : -1;
 +}
 +
-+static CString netTraceURLHaiku(const URL& url)
++static UTF8CString netTraceURLHaiku(const URL& url)
 +{
 +    auto string = url.string();
 +    return (string.length() > 160 ? string.left(160) : string).utf8();
@@ -50156,7 +50169,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..0e868fa146addf3eb4c0960d7ca11c02
 +#if PLATFORM(HAIKU)
 +    if (netTraceHaiku()) {
 +        m_netTraceQueuedAtHaiku = MonotonicTime::now();
-+        fprintf(stderr, "Summit net: start id=%p %s %s\n", this, m_request.httpMethod().utf8().data(), netTraceURLHaiku(m_request.url()).data());
++        fprintf(stderr, "Summit net: start id=%p %s %s\n", this, m_request.httpMethod().utf8().legacyCStringPointer(), netTraceURLHaiku(m_request.url()).legacyCStringPointer());
 +    }
 +#endif
  
@@ -50171,7 +50184,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..0e868fa146addf3eb4c0960d7ca11c02
      }
 +#if PLATFORM(HAIKU)
 +    if (netTraceHaiku() && m_netTraceQueuedAtHaiku)
-+        fprintf(stderr, "Summit net: cancel id=%p after=%.0f %s\n", this, netTraceMsHaiku(m_netTraceQueuedAtHaiku, MonotonicTime::now()), netTraceURLHaiku(m_request.url()).data());
++        fprintf(stderr, "Summit net: cancel id=%p after=%.0f %s\n", this, netTraceMsHaiku(m_netTraceQueuedAtHaiku, MonotonicTime::now()), netTraceURLHaiku(m_request.url()).legacyCStringPointer());
 +#endif
  
      auto& scheduler = CurlContext::singleton().scheduler();
@@ -50355,7 +50368,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..0e868fa146addf3eb4c0960d7ca11c02
 +    if (m_contentDecoderHaiku) {
 +        if (!m_contentDecoderHaiku->decode(receivedData, decoded)) {
 +            if (netTraceHaiku())
-+                fprintf(stderr, "Summit net: content decoding failed id=%p %s\n", this, netTraceURLHaiku(m_request.url()).data());
++                fprintf(stderr, "Summit net: content decoding failed id=%p %s\n", this, netTraceURLHaiku(m_request.url()).legacyCStringPointer());
 +            return CURL_WRITEFUNC_ERROR;
 +        }
 +        receivedData = decoded.span();
@@ -50392,7 +50405,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..0e868fa146addf3eb4c0960d7ca11c02
 +                this, netTraceMsHaiku(m_netTraceQueuedAtHaiku, m_performStartTime),
 +                netTraceMsHaiku(metrics.domainLookupStart, metrics.domainLookupEnd), netTraceMsHaiku(metrics.connectStart, metrics.connectEnd),
 +                netTraceMsHaiku(metrics.secureConnectionStart, metrics.connectEnd), netTraceMsHaiku(m_netTraceQueuedAtHaiku, MonotonicTime::now()),
-+                m_preconnectedMultiplexedHaiku ? "h2" : "http/1.1 (closed)", netTraceURLHaiku(m_request.url()).data());
++                m_preconnectedMultiplexedHaiku ? "h2" : "http/1.1 (closed)", netTraceURLHaiku(m_request.url()).legacyCStringPointer());
 +        }
 +        finalizeTransfer();
 +        callClient([networkLoadMetrics = WTF::move(metrics)](CurlRequest& request, CurlRequestClient& client) mutable {
@@ -50421,8 +50434,8 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..0e868fa146addf3eb4c0960d7ca11c02
 +                this, m_response.statusCode, netTraceMsHaiku(m_netTraceQueuedAtHaiku, m_performStartTime),
 +                netTraceMsHaiku(metrics.domainLookupStart, metrics.domainLookupEnd), netTraceMsHaiku(metrics.connectStart, metrics.connectEnd),
 +                netTraceMsHaiku(metrics.secureConnectionStart, metrics.connectEnd), netTraceMsHaiku(metrics.requestStart, metrics.responseStart),
-+                netTraceMsHaiku(m_netTraceQueuedAtHaiku, now), m_totalReceivedSize, metrics.protocol.utf8().data(),
-+                netTraceURLHaiku(m_request.url()).data());
++                netTraceMsHaiku(m_netTraceQueuedAtHaiku, now), m_totalReceivedSize, metrics.protocol.utf8().legacyCStringPointer(),
++                netTraceURLHaiku(m_request.url()).legacyCStringPointer());
 +        }
 +#endif
  
@@ -50435,7 +50448,7 @@ index 92ba6b6e9eef3ac9232fa1049e30ced84a241c23..0e868fa146addf3eb4c0960d7ca11c02
 +#if PLATFORM(HAIKU)
 +        if (netTraceHaiku() && m_netTraceQueuedAtHaiku)
 +            fprintf(stderr, "Summit net: fail id=%p result=%d (%s) total=%.0f %s\n", this, static_cast<int>(result), curl_easy_strerror(result),
-+                netTraceMsHaiku(m_netTraceQueuedAtHaiku, MonotonicTime::now()), netTraceURLHaiku(m_request.url()).data());
++                netTraceMsHaiku(m_netTraceQueuedAtHaiku, MonotonicTime::now()), netTraceURLHaiku(m_request.url()).legacyCStringPointer());
 +#endif
  
          CertificateInfo certificateInfo;
@@ -51643,7 +51656,7 @@ index 4cfe46eed7ca84223c22c0d5f467692fad5c7d09..f42a21b34de0cf59318bf1c27897cf4c
          } else if (value->type == GEN_IPADD) {
 diff --git a/Source/WebCore/platform/network/curl/ResourceHandleCurl.cpp b/Source/WebCore/platform/network/curl/ResourceHandleCurl.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..74bc458868ddc63ed1bb24573f201ddd84a712c9
+index 0000000000000000000000000000000000000000..ea6ccd3b7184c5fad315f84f4e9bd42862d9bf44
 --- /dev/null
 +++ b/Source/WebCore/platform/network/curl/ResourceHandleCurl.cpp
 @@ -0,0 +1,590 @@
@@ -51828,7 +51841,7 @@ index 0000000000000000000000000000000000000000..74bc458868ddc63ed1bb24573f201ddd
 +    if (FileSystem::fileExists(certificate))
 +        CurlContext::singleton().sslHandle().setClientCertificateInfo(host, certificate, key);
 +    else
-+        LOG(Network, "Invalid client certificate file: %s!\n", certificate.latin1().data());
++        LOG(Network, "Invalid client certificate file: %s!\n", certificate.latin1().legacyCStringPointer());
 +}
 +
 +#endif
@@ -56147,7 +56160,7 @@ index 71b979677ed9ea5b375f374fdb66f824f3074ba6..d696dbfdb06e0b1191a73a834a269c88
  
      // Choose a decodingMode such that the image does not flicker.
 diff --git a/Source/WebCore/rendering/RenderElement.cpp b/Source/WebCore/rendering/RenderElement.cpp
-index c30408dbc98900cac30cc19b6a52ac5e1b698120..80a23e7f32b50fc1ce92e9623c0adb7b29e41488 100644
+index c30408dbc98900cac30cc19b6a52ac5e1b698120..b6ab9a44ecaee119ef604d07fbcc9aef94cc54ed 100644
 --- a/Source/WebCore/rendering/RenderElement.cpp
 +++ b/Source/WebCore/rendering/RenderElement.cpp
 @@ -43,6 +43,9 @@
@@ -56227,8 +56240,8 @@ index c30408dbc98900cac30cc19b6a52ac5e1b698120..80a23e7f32b50fc1ce92e9623c0adb7b
 +        if (larger.width().toFloat() * larger.height().toFloat() >= 1e6f) {
 +            auto name = renderName();
 +            auto element = this->element();
-+            auto described = element ? makeString(element->tagName(), " id='"_s, element->getIdAttribute(), "' class='"_s, element->getAttribute(HTMLNames::classAttr), '\'').utf8() : CString();
-+            fprintf(stderr, "Summit full repaint: %s %s %.0fx%.0f -> %.0fx%.0f because %s\n", name.characters(), described.data() ? reinterpret_cast<const char*>(described.data()) : "",
++            auto described = element ? makeString(element->tagName(), " id='"_s, element->getIdAttribute(), "' class='"_s, element->getAttribute(HTMLNames::classAttr), '\'').utf8() : UTF8CString();
++            fprintf(stderr, "Summit full repaint: %s %s %.0fx%.0f -> %.0fx%.0f because %s\n", name.characters(), described.legacyCStringPointer() ? described.legacyCStringPointer() : "",
 +                oldClippedOverflowRect.width().toFloat(), oldClippedOverflowRect.height().toFloat(), newClippedOverflowRect.width().toFloat(), newClippedOverflowRect.height().toFloat(), fullRepaintReason);
 +        }
 +    }
@@ -56488,7 +56501,7 @@ index 4bf8021fddeb356aa2f416e2b5c07aae6136387b..b7eb58b149a8884fcee4d96a61a8dff6
      if (renderer.hasAppleVisualEffect())
          return true;
 diff --git a/Source/WebCore/rendering/RenderObject.cpp b/Source/WebCore/rendering/RenderObject.cpp
-index 5a90dd68672464ece91671bee69e2598510a2ebb..519a48af5ab05c4d3d855fa19dd03b9dfb7728af 100644
+index 5a90dd68672464ece91671bee69e2598510a2ebb..fce4daff95c2608a1efd285024a8408462104ffb 100644
 --- a/Source/WebCore/rendering/RenderObject.cpp
 +++ b/Source/WebCore/rendering/RenderObject.cpp
 @@ -34,6 +34,7 @@
@@ -56538,12 +56551,12 @@ index 5a90dd68672464ece91671bee69e2598510a2ebb..519a48af5ab05c4d3d855fa19dd03b9d
 +        if (traceInvalidations) {
 +            auto* sourceNode = node();
 +            auto* sourceElement = dynamicDowncast<Element>(sourceNode);
-+            auto nodeName = sourceNode ? sourceNode->nodeName().utf8() : CString { };
-+            auto id = sourceElement ? sourceElement->getAttribute(HTMLNames::idAttr).string().utf8() : CString { };
-+            auto classes = sourceElement ? sourceElement->getAttribute(HTMLNames::classAttr).string().utf8() : CString { };
++            auto nodeName = sourceNode ? sourceNode->nodeName().utf8() : UTF8CString { };
++            auto id = sourceElement ? sourceElement->getAttribute(HTMLNames::idAttr).string().utf8() : UTF8CString { };
++            auto classes = sourceElement ? sourceElement->getAttribute(HTMLNames::classAttr).string().utf8() : UTF8CString { };
 +            auto documentURL = document().url().string().utf8();
 +            WTFLogAlways("Summit layout invalidation: renderer=%p document=%p type=%s node=%s id=%s class=%s url=%s\n",
-+                this, &document(), renderName().characters(), nodeName.data(), id.data(), classes.data(), reinterpret_cast<const char*>(documentURL.data()));
++                this, &document(), renderName().characters(), nodeName.legacyCStringPointer(), id.legacyCStringPointer(), classes.legacyCStringPointer(), reinterpret_cast<const char*>(documentURL.data()));
 +            if (sourceNode && is<HTMLHtmlElement>(*sourceNode)) {
 +                auto stack = Inspector::createScriptCallStack(JSExecState::currentState(), 8);
 +                if (auto* frame = stack->firstNonNativeCallFrame()) {
@@ -72689,7 +72702,7 @@ index 0000000000000000000000000000000000000000..cedd3c87bd75e9bd0863dee455691389
 +#endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/UIProcess/Extensions/API/WebExtensionContextAPIPort.cpp b/Source/WebKit/UIProcess/Extensions/API/WebExtensionContextAPIPort.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..2a83f11ee4c1044a15ec0a8c8c9edc0fd14a9c30
+index 0000000000000000000000000000000000000000..30ff0323e3adc237d6eb939e9571aecec71f63ab
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/API/WebExtensionContextAPIPort.cpp
 @@ -0,0 +1,312 @@
@@ -72744,7 +72757,7 @@ index 0000000000000000000000000000000000000000..2a83f11ee4c1044a15ec0a8c8c9edc0f
 +
 +    if (!isPortConnected(sourceContentWorldType, targetContentWorldType, channelIdentifier)) {
 +        // The port might not be open on the other end yet. Queue the message until it does open.
-+        RELEASE_LOG_DEBUG(Extensions, "Enqueued message for port channel %{public}llu in %" PUBLIC_LOG_STRING " world", channelIdentifier.toUInt64(), toDebugString(targetContentWorldType).utf8().data());
++        RELEASE_LOG_DEBUG(Extensions, "Enqueued message for port channel %{public}llu in %" PUBLIC_LOG_STRING " world", channelIdentifier.toUInt64(), toDebugString(targetContentWorldType).utf8().legacyCStringPointer());
 +
 +        auto& messages = m_portQueuedMessages.ensure({ targetContentWorldType, channelIdentifier }, [] {
 +            return Vector<PortQueuedMessage> { };
@@ -72792,7 +72805,7 @@ index 0000000000000000000000000000000000000000..2a83f11ee4c1044a15ec0a8c8c9edc0f
 +void WebExtensionContext::addPorts(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier channelIdentifier, HashCountedSet<WebPageProxyIdentifier>&& addedPortCounts)
 +{
 +    for (auto& entry : addedPortCounts) {
-+        RELEASE_LOG_DEBUG(Extensions, "Added %{public}u port(s) for channel %{public}llu in %" PUBLIC_LOG_STRING " world for page %{public}llu", entry.value, channelIdentifier.toUInt64(), toDebugString(sourceContentWorldType).utf8().data(), entry.key.toUInt64());
++        RELEASE_LOG_DEBUG(Extensions, "Added %{public}u port(s) for channel %{public}llu in %" PUBLIC_LOG_STRING " world for page %{public}llu", entry.value, channelIdentifier.toUInt64(), toDebugString(sourceContentWorldType).utf8().legacyCStringPointer(), entry.key.toUInt64());
 +
 +        if (isBackgroundPage(entry.key))
 +            m_lastBackgroundPortActivityTime = MonotonicTime::now();
@@ -72805,7 +72818,7 @@ index 0000000000000000000000000000000000000000..2a83f11ee4c1044a15ec0a8c8c9edc0f
 +
 +void WebExtensionContext::removePort(WebExtensionContentWorldType sourceContentWorldType, WebExtensionContentWorldType targetContentWorldType, WebExtensionPortChannelIdentifier channelIdentifier, WebPageProxyIdentifier webPageProxyIdentifier)
 +{
-+    RELEASE_LOG_DEBUG(Extensions, "Removed 1 port for channel %{public}llu in %" PUBLIC_LOG_STRING " world for page %{public}llu", channelIdentifier.toUInt64(), toDebugString(sourceContentWorldType).utf8().data(), webPageProxyIdentifier.toUInt64());
++    RELEASE_LOG_DEBUG(Extensions, "Removed 1 port for channel %{public}llu in %" PUBLIC_LOG_STRING " world for page %{public}llu", channelIdentifier.toUInt64(), toDebugString(sourceContentWorldType).utf8().legacyCStringPointer(), webPageProxyIdentifier.toUInt64());
 +
 +    if (m_ports.remove({ sourceContentWorldType, channelIdentifier }))
 +        clearQueuedPortMessages(targetContentWorldType, channelIdentifier);
@@ -72818,7 +72831,7 @@ index 0000000000000000000000000000000000000000..2a83f11ee4c1044a15ec0a8c8c9edc0f
 +    constexpr auto contentWorldType = WebExtensionContentWorldType::Native;
 +    auto channelIdentifier = nativePort.channelIdentifier();
 +
-+    RELEASE_LOG_DEBUG(Extensions, "Added 1 port for channel %{public}llu in %" PUBLIC_LOG_STRING " world", channelIdentifier.toUInt64(), toDebugString(contentWorldType).utf8().data());
++    RELEASE_LOG_DEBUG(Extensions, "Added 1 port for channel %{public}llu in %" PUBLIC_LOG_STRING " world", channelIdentifier.toUInt64(), toDebugString(contentWorldType).utf8().legacyCStringPointer());
 +
 +    if (!isLoaded() || nativePort.extensionContext() != this || nativePort.isDisconnected())
 +        return false;
@@ -72837,7 +72850,7 @@ index 0000000000000000000000000000000000000000..2a83f11ee4c1044a15ec0a8c8c9edc0f
 +    if (currentPort.get() != &nativePort)
 +        return;
 +
-+    RELEASE_LOG_DEBUG(Extensions, "Removed 1 port for channel %{public}llu in %" PUBLIC_LOG_STRING " world", channelIdentifier.toUInt64(), toDebugString(contentWorldType).utf8().data());
++    RELEASE_LOG_DEBUG(Extensions, "Removed 1 port for channel %{public}llu in %" PUBLIC_LOG_STRING " world", channelIdentifier.toUInt64(), toDebugString(contentWorldType).utf8().legacyCStringPointer());
 +
 +    clearQueuedPortMessages(WebExtensionContentWorldType::Main, channelIdentifier);
 +    clearQueuedPortMessages(WebExtensionContentWorldType::Native, channelIdentifier);
@@ -72865,7 +72878,7 @@ index 0000000000000000000000000000000000000000..2a83f11ee4c1044a15ec0a8c8c9edc0f
 +{
 +    const auto sourceWorldCount = openPortCount(sourceContentWorldType, channelIdentifier);
 +
-+    RELEASE_LOG_DEBUG(Extensions, "Port channel %{public}llu has %{public}u port(s) open in %" PUBLIC_LOG_STRING " world", channelIdentifier.toUInt64(), sourceWorldCount, toDebugString(sourceContentWorldType).utf8().data());
++    RELEASE_LOG_DEBUG(Extensions, "Port channel %{public}llu has %{public}u port(s) open in %" PUBLIC_LOG_STRING " world", channelIdentifier.toUInt64(), sourceWorldCount, toDebugString(sourceContentWorldType).utf8().legacyCStringPointer());
 +
 +    // When the worlds are the same, it is connected if there are 2 ports remaining.
 +    if (isEqual(sourceContentWorldType, targetContentWorldType))
@@ -72873,7 +72886,7 @@ index 0000000000000000000000000000000000000000..2a83f11ee4c1044a15ec0a8c8c9edc0f
 +
 +    const auto targetWorldCount = openPortCount(targetContentWorldType, channelIdentifier);
 +
-+    RELEASE_LOG_DEBUG(Extensions, "Port channel %{public}llu has %{public}u port(s) open in %" PUBLIC_LOG_STRING " world", channelIdentifier.toUInt64(), targetWorldCount, toDebugString(targetContentWorldType).utf8().data());
++    RELEASE_LOG_DEBUG(Extensions, "Port channel %{public}llu has %{public}u port(s) open in %" PUBLIC_LOG_STRING " world", channelIdentifier.toUInt64(), targetWorldCount, toDebugString(targetContentWorldType).utf8().legacyCStringPointer());
 +
 +    // When the worlds are different, it is connected if there is 1 port in each world remaining.
 +    return sourceWorldCount && targetWorldCount;
@@ -72900,7 +72913,7 @@ index 0000000000000000000000000000000000000000..2a83f11ee4c1044a15ec0a8c8c9edc0f
 +    if (messages.isEmpty())
 +        return;
 +
-+    RELEASE_LOG_DEBUG(Extensions, "Sending %{public}zu queued message(s) to port channel %{public}llu in %" PUBLIC_LOG_STRING " world", messages.size(), channelIdentifier.toUInt64(), toDebugString(targetContentWorldType).utf8().data());
++    RELEASE_LOG_DEBUG(Extensions, "Sending %{public}zu queued message(s) to port channel %{public}llu in %" PUBLIC_LOG_STRING " world", messages.size(), channelIdentifier.toUInt64(), toDebugString(targetContentWorldType).utf8().legacyCStringPointer());
 +
 +    for (auto& entry : messages)
 +        firePortMessageEventsIfNeeded(targetContentWorldType, entry.sendingPageProxyIdentifier, channelIdentifier, entry.messageJSON, entry.userGesture);
@@ -72909,7 +72922,7 @@ index 0000000000000000000000000000000000000000..2a83f11ee4c1044a15ec0a8c8c9edc0f
 +void WebExtensionContext::clearQueuedPortMessages(WebExtensionContentWorldType contentWorldType, WebExtensionPortChannelIdentifier channelIdentifier)
 +{
 +    if (m_portQueuedMessages.remove({ contentWorldType, channelIdentifier }))
-+        RELEASE_LOG_DEBUG(Extensions, "Cleared queued message(s) for port channel %{public}llu in %" PUBLIC_LOG_STRING " world", channelIdentifier.toUInt64(), toDebugString(contentWorldType).utf8().data());
++        RELEASE_LOG_DEBUG(Extensions, "Cleared queued message(s) for port channel %{public}llu in %" PUBLIC_LOG_STRING " world", channelIdentifier.toUInt64(), toDebugString(contentWorldType).utf8().legacyCStringPointer());
 +
 +#if ENABLE(INSPECTOR_EXTENSIONS)
 +    // Inspector content world is a special alias of Main. Include it when Main is requested (and vice versa).
@@ -72926,7 +72939,7 @@ index 0000000000000000000000000000000000000000..2a83f11ee4c1044a15ec0a8c8c9edc0f
 +    if (isPortConnected(sourceContentWorldType, targetContentWorldType, channelIdentifier))
 +        return;
 +
-+    RELEASE_LOG_DEBUG(Extensions, "Sending disconnect event for port channel %{public}llu in %" PUBLIC_LOG_STRING " world", channelIdentifier.toUInt64(), toDebugString(targetContentWorldType).utf8().data());
++    RELEASE_LOG_DEBUG(Extensions, "Sending disconnect event for port channel %{public}llu in %" PUBLIC_LOG_STRING " world", channelIdentifier.toUInt64(), toDebugString(targetContentWorldType).utf8().legacyCStringPointer());
 +
 +    if (targetContentWorldType == WebExtensionContentWorldType::Native) {
 +        if (RefPtr nativePort = m_nativePortMap.get(channelIdentifier))
@@ -88059,7 +88072,7 @@ index 0000000000000000000000000000000000000000..25600e412c2690295ad0faf8ac058b38
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionControllerWebRequestBlockingHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionControllerWebRequestBlockingHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..eed04a3b1934ecfc85a58e70e840105ba0e9a4bc
+index 0000000000000000000000000000000000000000..454bbb96a06e13427065cdb9ae59a8fcb9989622
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionControllerWebRequestBlockingHaiku.cpp
 @@ -0,0 +1,340 @@
@@ -88165,7 +88178,7 @@ index 0000000000000000000000000000000000000000..eed04a3b1934ecfc85a58e70e840105b
 +            // Invalid replies are ignored, as in Chrome: they never mutate the load.
 +            auto decision = parseWebExtensionWebRequestDecisionHaiku(json);
 +            if (!decision) {
-+                RELEASE_LOG_ERROR(Extensions, "Ignoring invalid blocking webRequest reply: %" PUBLIC_LOG_STRING, decision.error().utf8().data());
++                RELEASE_LOG_ERROR(Extensions, "Ignoring invalid blocking webRequest reply: %" PUBLIC_LOG_STRING, decision.error().utf8().legacyCStringPointer());
 +                continue;
 +            }
 +            if (!decision->cancel && !decision->redirectURL && !decision->requestHeaders && !decision->responseHeaders && !decision->authCredentials)
@@ -88220,7 +88233,7 @@ index 0000000000000000000000000000000000000000..eed04a3b1934ecfc85a58e70e840105b
 +
 +        auto merged = mergeWebExtensionWebRequestRepliesHaiku(static_cast<WebExtensionWebRequestPhaseHaiku>(m_phase), m_url, m_originalHeaders, { }, m_replies);
 +        if (!merged) {
-+            RELEASE_LOG_ERROR(Extensions, "Blocking webRequest replies could not be merged, continuing unmodified: %" PUBLIC_LOG_STRING, merged.error().utf8().data());
++            RELEASE_LOG_ERROR(Extensions, "Blocking webRequest replies could not be merged, continuing unmodified: %" PUBLIC_LOG_STRING, merged.error().utf8().legacyCStringPointer());
 +            return result;
 +        }
 +
@@ -113483,7 +113496,7 @@ index f1aac0a9950d66f358906d67eba1ba3c996d83d9..9733c5b8f18d8e867515592c3afec1d4
      bool validatePermissionsDetails(HashSet<String>& permissions, HashSet<String>& origins, HashSet<Ref<WebExtensionMatchPattern>>& matchPatterns, NSString *callingAPIName, NSString **outExceptionString);
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIPort.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIPort.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..b6227b9a50ea74f5653e1aa3ba39c9cf1f09ce93
+index 0000000000000000000000000000000000000000..a909a7338e1edbf1199c72ffe4dbcea492d120b1
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIPort.cpp
 @@ -0,0 +1,274 @@
@@ -113564,7 +113577,7 @@ index 0000000000000000000000000000000000000000..b6227b9a50ea74f5653e1aa3ba39c9cf
 +
 +    addResult.iterator->value.add(*this);
 +
-+    RELEASE_LOG_DEBUG(Extensions, "Added port for channel %{public}llu in %" PUBLIC_LOG_STRING " world", channelIdentifier().toUInt64(), toDebugString(contentWorldType()).utf8().data());
++    RELEASE_LOG_DEBUG(Extensions, "Added port for channel %{public}llu in %" PUBLIC_LOG_STRING " world", channelIdentifier().toUInt64(), toDebugString(contentWorldType()).utf8().legacyCStringPointer());
 +}
 +
 +void WebExtensionAPIPort::remove()
@@ -113632,7 +113645,7 @@ index 0000000000000000000000000000000000000000..b6227b9a50ea74f5653e1aa3ba39c9cf
 +    if (isQuarantined())
 +        return;
 +
-+    RELEASE_LOG_DEBUG(Extensions, "Sent port message for channel %{public}llu from %" PUBLIC_LOG_STRING " world", channelIdentifier().toUInt64(), toDebugString(contentWorldType()).utf8().data());
++    RELEASE_LOG_DEBUG(Extensions, "Sent port message for channel %{public}llu from %" PUBLIC_LOG_STRING " world", channelIdentifier().toUInt64(), toDebugString(contentWorldType()).utf8().legacyCStringPointer());
 +
 +    bool userGesture = WebCore::UserGestureIndicator::processingUserGesture();
 +    WebProcess::singleton().send(Messages::WebExtensionContext::PortPostMessage(contentWorldType(), targetContentWorldType(), owningPageProxyIdentifier(), channelIdentifier(), message, userGesture), extensionContext().identifier());
@@ -113650,7 +113663,7 @@ index 0000000000000000000000000000000000000000..b6227b9a50ea74f5653e1aa3ba39c9cf
 +    if (isDisconnected() || isQuarantined() || !m_onMessage || m_onMessage->listeners().isEmpty())
 +        return;
 +
-+    RELEASE_LOG_DEBUG(Extensions, "Fired port message event for channel %{public}llu in %" PUBLIC_LOG_STRING " world", channelIdentifier().toUInt64(), toDebugString(contentWorldType()).utf8().data());
++    RELEASE_LOG_DEBUG(Extensions, "Fired port message event for channel %{public}llu in %" PUBLIC_LOG_STRING " world", channelIdentifier().toUInt64(), toDebugString(contentWorldType()).utf8().legacyCStringPointer());
 +
 +    // Copy the listeners since call() can trigger a mutation of the listeners.
 +    auto listenersCopy = m_onMessage->listeners();
@@ -113679,7 +113692,7 @@ index 0000000000000000000000000000000000000000..b6227b9a50ea74f5653e1aa3ba39c9cf
 +
 +    Ref protectedThis { *this };
 +
-+    RELEASE_LOG_DEBUG(Extensions, "Port channel %{public}llu disconnected in %" PUBLIC_LOG_STRING " world", m_channelIdentifier ? m_channelIdentifier->toUInt64() : 0, toDebugString(contentWorldType()).utf8().data());
++    RELEASE_LOG_DEBUG(Extensions, "Port channel %{public}llu disconnected in %" PUBLIC_LOG_STRING " world", m_channelIdentifier ? m_channelIdentifier->toUInt64() : 0, toDebugString(contentWorldType()).utf8().legacyCStringPointer());
 +
 +    m_errorMessage = errorMessage;
 +    m_disconnected = true;
@@ -113692,7 +113705,7 @@ index 0000000000000000000000000000000000000000..b6227b9a50ea74f5653e1aa3ba39c9cf
 +    if (!m_onDisconnect || m_onDisconnect->listeners().isEmpty())
 +        return;
 +
-+    RELEASE_LOG_DEBUG(Extensions, "Fired port disconnect event for channel %{public}llu in %" PUBLIC_LOG_STRING " world", m_channelIdentifier ? m_channelIdentifier->toUInt64() : 0, toDebugString(contentWorldType()).utf8().data());
++    RELEASE_LOG_DEBUG(Extensions, "Fired port disconnect event for channel %{public}llu in %" PUBLIC_LOG_STRING " world", m_channelIdentifier ? m_channelIdentifier->toUInt64() : 0, toDebugString(contentWorldType()).utf8().legacyCStringPointer());
 +
 +    // Copy the listeners since call() can trigger a mutation of the listeners.
 +    auto listenersCopy = m_onDisconnect->listeners();
@@ -125911,7 +125924,7 @@ index f7a92c96dec16106113dc0ee005ebd40f36a7ffb..0c69ec684f8b5d9c492fc67fda9863b4
  };
  
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
-index 3d6d03115b4e8f2c5868af50c90f83cccc25bcf7..a2296cbc390f9fe485719c4606d1e98a79962a89 100644
+index 3d6d03115b4e8f2c5868af50c90f83cccc25bcf7..b9f0c54c5eb433e43f7007a237d31a964f4e8f46 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
 @@ -28,6 +28,7 @@
@@ -126055,7 +126068,7 @@ index 3d6d03115b4e8f2c5868af50c90f83cccc25bcf7..a2296cbc390f9fe485719c4606d1e98a
 +        if (blocked >= (m_isSuspended ? 2_s : 10_s) && !std::exchange(m_reportedLivenessStallHaiku, true)) {
 +            std::fprintf(stderr, "Summit page stall: pid=%d in view but rendering %s for %.1f s (freeze reasons %#x); WebCore scheduler: %s\n",
 +                static_cast<int>(getpid()), m_isSuspended ? "suspended" : "frozen", blocked.seconds(), freezeReasons.toRaw(),
-+                describeRenderingUpdateSchedulerHaiku(*corePage).utf8().data());
++                describeRenderingUpdateSchedulerHaiku(*corePage).utf8().legacyCStringPointer());
 +        }
 +        return;
 +    }
@@ -126070,7 +126083,7 @@ index 3d6d03115b4e8f2c5868af50c90f83cccc25bcf7..a2296cbc390f9fe485719c4606d1e98a
 +        return;
 +    if (!std::exchange(m_reportedLivenessStallHaiku, true)) {
 +        std::fprintf(stderr, "Summit page stall: pid=%d no rendering update for %.1f s; WebCore scheduler: %s; drawing asked for %s; update observer %s; waiting for the compositor %s\n",
-+            static_cast<int>(getpid()), sinceUpdate.seconds(), describeRenderingUpdateSchedulerHaiku(*corePage).utf8().data(),
++            static_cast<int>(getpid()), sinceUpdate.seconds(), describeRenderingUpdateSchedulerHaiku(*corePage).utf8().legacyCStringPointer(),
 +            requested ? "since the last update" : "not since the last update", observerScheduled ? "pending" : "not pending",
 +            m_isWaitingForRenderer ? "yes" : "no");
 +    }
@@ -126277,7 +126290,7 @@ index 57163f65873e5a481e5ef5a4ec3beec4b40b7cea..61b49ac7c362b416cdec1d10c44304d2
      bool m_compositionRequired { false };
  #if ENABLE(SCROLLING_THREAD)
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
-index c238029ad9c99c5028ea7e456520af85d1d85532..ae8fbd016830d26b22ea8bc4dbba0c85c8588140 100644
+index c238029ad9c99c5028ea7e456520af85d1d85532..7acf378411328d3555960b70652361e6c238059a 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp
 @@ -26,6 +26,10 @@
@@ -126799,7 +126812,7 @@ index c238029ad9c99c5028ea7e456520af85d1d85532..ae8fbd016830d26b22ea8bc4dbba0c85
 +                m_state.isRenderTimerActive ? "active" : "inactive", m_suspendedCount.load(),
 +                m_state.isWaitingForTiles, m_sceneState->pendingTiles(), m_isWaitingForRenderTarget,
 +                !!m_state.didCompositeRenderingUpdateFunction, inProgress ? (now - m_inProgressSinceHaiku).seconds() : 0.0,
-+                describeTimerHaiku(m_renderTimer).utf8().data());
++                describeTimerHaiku(m_renderTimer).utf8().legacyCStringPointer());
 +            // An update the page asked for that nothing scheduled.
 +            if (m_state.state == State::Idle && m_state.didCompositeRenderingUpdateFunction) {
 +                m_state.reasons.add(CompositionReason::RenderingUpdate);
@@ -128408,7 +128421,7 @@ index 0000000000000000000000000000000000000000..3fbdb891367700b88586c40ced6315b4
 +} // namespace WebKit
 diff --git a/Source/WebKit/WebProcess/WebPage/haiku/LayerTreeHostHaiku.cpp b/Source/WebKit/WebProcess/WebPage/haiku/LayerTreeHostHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..d8b2eb8692cb43e338c7e42d13cf3bcda9b75c31
+index 0000000000000000000000000000000000000000..a8c2c564757c95bf45dd4d2a6b84c3e487ddabea
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/WebPage/haiku/LayerTreeHostHaiku.cpp
 @@ -0,0 +1,434 @@
@@ -128583,7 +128596,7 @@ index 0000000000000000000000000000000000000000..d8b2eb8692cb43e338c7e42d13cf3bcd
 +        rejection = "the framebuffer readback self-test failed";
 +
 +    if (rejection) {
-+        WTFLogAlways("Summit GL compositing: %s [%s, %s]; rendering in software.", rejection, renderer.utf8().data(), version.utf8().data());
++        WTFLogAlways("Summit GL compositing: %s [%s, %s]; rendering in software.", rejection, renderer.utf8().legacyCStringPointer(), version.utf8().legacyCStringPointer());
 +        context = nullptr; // Before the display that owns it.
 +        return Availability::Unavailable;
 +    }
@@ -128591,7 +128604,7 @@ index 0000000000000000000000000000000000000000..d8b2eb8692cb43e338c7e42d13cf3bcd
 +    // Only GL_RGBA/GL_UNSIGNED_BYTE readback is guaranteed by OpenGL ES 2.
 +    s_supportsBGRAReadback = GLContext::isExtensionSupported(reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS)), "GL_EXT_read_format_bgra");
 +
-+    WTFLogAlways("Summit GL compositing: enabled%s [%s, %s, %s readback].", forced ? " (forced)" : "", renderer.utf8().data(), version.utf8().data(), s_supportsBGRAReadback ? "BGRA" : "RGBA+swap");
++    WTFLogAlways("Summit GL compositing: enabled%s [%s, %s, %s readback].", forced ? " (forced)" : "", renderer.utf8().legacyCStringPointer(), version.utf8().legacyCStringPointer(), s_supportsBGRAReadback ? "BGRA" : "RGBA+swap");
 +
 +    // Installing the display keeps PlatformDisplay::sharedDisplay(), which
 +    // asserts when there is none, safe for BitmapTexturePool.
@@ -147322,7 +147335,7 @@ index 0000000000000000000000000000000000000000..f38a4334e37d17dbef8f0d7e9ccbacff
 +}
 diff --git a/Tools/DumpRenderTree/haiku/DumpRenderTree.cpp b/Tools/DumpRenderTree/haiku/DumpRenderTree.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..c876b09a5388e5d922d4db890178abd4815beb98
+index 0000000000000000000000000000000000000000..9d1ed45e561d8b8cfc7f032123b2deb14c383fb6
 --- /dev/null
 +++ b/Tools/DumpRenderTree/haiku/DumpRenderTree.cpp
 @@ -0,0 +1,813 @@
@@ -147569,11 +147582,11 @@ index 0000000000000000000000000000000000000000..c876b09a5388e5d922d4db890178abd4
 +{
 +    if (!testURL.startsWith(ASCIILiteral::fromLiteralUnsafe("http://"))
 +        && !testURL.startsWith(ASCIILiteral::fromLiteralUnsafe("https://"))) {
-+        char* cFilePath = realpath(testURL.utf8().data(), NULL);
++        char* cFilePath = realpath(testURL.utf8().legacyCStringPointer(), NULL);
 +        const String filePath = String::fromUTF8(cFilePath);
 +        free(cFilePath);
 +
-+        if (BFile(filePath.utf8().data(), B_READ_ONLY).IsFile())
++        if (BFile(filePath.utf8().legacyCStringPointer(), B_READ_ONLY).IsFile())
 +            return makeString("file://"_s, filePath);
 +    }
 +
@@ -147588,8 +147601,8 @@ index 0000000000000000000000000000000000000000..c876b09a5388e5d922d4db890178abd4
 +static void createTestRunner(const String& testURL, const String& expectedPixelHash)
 +{
 +    gTestRunner =
-+        TestRunner::create(std::string(testURL.utf8().data()),
-+                                     std::string(expectedPixelHash.utf8().data()));
++        TestRunner::create(std::string(testURL.utf8().legacyCStringPointer()),
++                                     std::string(expectedPixelHash.utf8().legacyCStringPointer()));
 +
 +    topLoadingFrame = 0;
 +    done = false;
@@ -147933,7 +147946,7 @@ index 0000000000000000000000000000000000000000..c876b09a5388e5d922d4db890178abd4
 +        if (!done) {
 +            gTestRunner->dumpResourceLoadCallbacks();
 +#if 0
-+            CString responseDescription(descriptionSuitableForTestResult(response));
++            UTF8CString responseDescription(descriptionSuitableForTestResult(response));
 +            printf("%s - didReceiveResponse %s\n",
 +                m_dumpAssignedUrls.contains(response->identifier) ? m_dumpAssignedUrls.get(response->identifier).data() : "<unknown>",
 +                responseDescription.data());
@@ -147956,7 +147969,7 @@ index 0000000000000000000000000000000000000000..c876b09a5388e5d922d4db890178abd4
 +        if (!done && gTestRunner->dumpFrameLoadCallbacks()) {
 +            const String frameName(DumpRenderTreeClient::suitableDRTFrameName(
 +                frame));
-+            printf("%s - didReceiveTitle: %s\n", frameName.utf8().data(),
++            printf("%s - didReceiveTitle: %s\n", frameName.utf8().legacyCStringPointer(),
 +                title.String());
 +        }
 +
@@ -147982,7 +147995,7 @@ index 0000000000000000000000000000000000000000..c876b09a5388e5d922d4db890178abd4
 +        message->FindPointer("frame", (void**)&frame);
 +        if (!done && gTestRunner->dumpFrameLoadCallbacks()) {
 +            const String frameName(DumpRenderTreeClient::suitableDRTFrameName(frame));
-+            printf("%s - didFinishLoadForFrame\n", frameName.utf8().data());
++            printf("%s - didFinishLoadForFrame\n", frameName.utf8().legacyCStringPointer());
 +        }
 +
 +        if (frame == topLoadingFrame)
@@ -147999,11 +148012,11 @@ index 0000000000000000000000000000000000000000..c876b09a5388e5d922d4db890178abd4
 +        const String frameName(DumpRenderTreeClient::suitableDRTFrameName(frame));
 +
 +        if (!done && gTestRunner->dumpFrameLoadCallbacks())
-+            printf("%s - didFinishDocumentLoadForFrame\n", frameName.utf8().data());
++            printf("%s - didFinishDocumentLoadForFrame\n", frameName.utf8().legacyCStringPointer());
 +        else if (!done) {
 +            const unsigned pendingFrameUnloadEvents = DumpRenderTreeClient::pendingUnloadEventCount(frame);
 +            if (pendingFrameUnloadEvents)
-+                printf("%s - has %u onunload handler(s)\n", frameName.utf8().data(), pendingFrameUnloadEvents);
++                printf("%s - has %u onunload handler(s)\n", frameName.utf8().legacyCStringPointer(), pendingFrameUnloadEvents);
 +        }
 +
 +        break;
@@ -148193,7 +148206,7 @@ index 0000000000000000000000000000000000000000..6550f05bd066cc89a7581a92ad399667
 +#endif // DumpRenderTreeHaiku_h
 diff --git a/Tools/DumpRenderTree/haiku/EditingCallbacks.cpp b/Tools/DumpRenderTree/haiku/EditingCallbacks.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..ac6742a3bbc0ca3ad7ceac6356c0d632456f07c6
+index 0000000000000000000000000000000000000000..2cda7cd2c71d7874d895b804a7ecc805c2e974b7
 --- /dev/null
 +++ b/Tools/DumpRenderTree/haiku/EditingCallbacks.cpp
 @@ -0,0 +1,266 @@
@@ -148250,7 +148263,7 @@ index 0000000000000000000000000000000000000000..ac6742a3bbc0ca3ad7ceac6356c0d632
 +{
 +    ASSERT(node);
 +
-+    std::string result(node->nodeName().utf8().data());
++    std::string result(node->nodeName().utf8().legacyCStringPointer());
 +
 +    WebCore::ContainerNode* parent = node->parentNode();
 +    if (parent) {
@@ -148352,7 +148365,7 @@ index 0000000000000000000000000000000000000000..ac6742a3bbc0ca3ad7ceac6356c0d632
 +{
 +    if (!done && gTestRunner->dumpEditingCallbacks()) {
 +        printf("EDITING DELEGATE: shouldApplyStyle:%s toElementsInDOMRange:%s\n",
-+                style->asText(WebCore::CSS::defaultSerializationContext()).utf8().data(), dumpRange(range).String());
++                style->asText(WebCore::CSS::defaultSerializationContext()).utf8().legacyCStringPointer(), dumpRange(range).String());
 +    }
 +}
 +
@@ -149487,7 +149500,7 @@ index 0000000000000000000000000000000000000000..80535a54f63743c01944fff25d0c31ef
 +#endif // PixelDumpSupportHaiku_h
 diff --git a/Tools/DumpRenderTree/haiku/TestRunnerHaiku.cpp b/Tools/DumpRenderTree/haiku/TestRunnerHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..505a5cd505432297de3e743de5a6103e63b22d94
+index 0000000000000000000000000000000000000000..e13596dba265d073bb5e719118e0058e45a98700
 --- /dev/null
 +++ b/Tools/DumpRenderTree/haiku/TestRunnerHaiku.cpp
 @@ -0,0 +1,630 @@
@@ -149649,7 +149662,7 @@ index 0000000000000000000000000000000000000000..505a5cd505432297de3e743de5a6103e
 +    size_t indexOfSeparatorAfterRoot = indexOfRootStart + requestedRoot.length();
 +    String fullPathToUrl = makeString("file://"_s, resourceRoot, requestedUrl.substring(indexOfSeparatorAfterRoot));
 +
-+    return JSStringCreateWithUTF8CString(fullPathToUrl.utf8().data());
++    return JSStringCreateWithUTF8CString(fullPathToUrl.utf8().legacyCStringPointer());
 +}
 +
 +void TestRunner::queueLoad(JSStringRef url, JSStringRef target)
@@ -149710,7 +149723,7 @@ index 0000000000000000000000000000000000000000..505a5cd505432297de3e743de5a6103e
 +    notImplemented();
 +}
 +
-+static CString gUserStyleSheet;
++static UTF8CString gUserStyleSheet;
 +static bool gUserStyleSheetEnabled = true;
 +
 +void TestRunner::setUserStyleSheetEnabled(bool flag)
@@ -149896,7 +149909,7 @@ index 0000000000000000000000000000000000000000..505a5cd505432297de3e743de5a6103e
 +
 +static inline int toInt(JSStringRef value)
 +{
-+    return atoi(value->string().utf8().data());
++    return atoi(value->string().utf8().legacyCStringPointer());
 +}
 +
 +void TestRunner::overridePreference(JSStringRef key, JSStringRef value)
@@ -149936,7 +149949,7 @@ index 0000000000000000000000000000000000000000..505a5cd505432297de3e743de5a6103e
 +    else if (equals(key, "WebKitWebGLEnabled"))
 +        notImplemented();
 +    else
-+        fprintf(stderr, "TestRunner::overridePreference tried to override unknown preference '%s'.\n", key->string().utf8().data());
++        fprintf(stderr, "TestRunner::overridePreference tried to override unknown preference '%s'.\n", key->string().utf8().legacyCStringPointer());
 +}
 +
 +void TestRunner::addUserScript(JSStringRef source, bool runAtStart, bool allFrames)
@@ -154453,7 +154466,7 @@ index 0000000000000000000000000000000000000000..1198320955e2587ba2342923425c7f21
 +} // namespace WTR
 diff --git a/Tools/WebKitTestRunner/InjectedBundle/haiku/TestRunnerHaiku.cpp b/Tools/WebKitTestRunner/InjectedBundle/haiku/TestRunnerHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..a1540da404f48a4b1beb6f9e611c52aee2af6bcd
+index 0000000000000000000000000000000000000000..dacccb2b3bbab23222c2f04f7e19bfc6fd7a1908
 --- /dev/null
 +++ b/Tools/WebKitTestRunner/InjectedBundle/haiku/TestRunnerHaiku.cpp
 @@ -0,0 +1,88 @@
@@ -154531,7 +154544,7 @@ index 0000000000000000000000000000000000000000..a1540da404f48a4b1beb6f9e611c52ae
 +    size_t indexOfSeparatorAfterRoot = indexOfRootStart + requestedRoot.length();
 +    String fullPathToUrl = "file://" + resourceRoot + requestedUrl.substring(indexOfSeparatorAfterRoot);
 +
-+    return JSStringCreateWithUTF8CString(fullPathToUrl.utf8().data());
++    return JSStringCreateWithUTF8CString(fullPathToUrl.utf8().legacyCStringPointer());
 +}
 +
 +JSRetainPtr<JSStringRef> TestRunner::inspectorTestStubURL()
@@ -154541,7 +154554,7 @@ index 0000000000000000000000000000000000000000..a1540da404f48a4b1beb6f9e611c52ae
 +    builder.append(WebCore::inspectorResourcePath());
 +    builder.appendLiteral("/TestStub.html");
 +
-+    return JSStringCreateWithUTF8CString(builder.toString().utf8().data());
++    return JSStringCreateWithUTF8CString(builder.toString().utf8().legacyCStringPointer());
 +}
 +
 +}
