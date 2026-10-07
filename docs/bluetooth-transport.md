@@ -1,11 +1,12 @@
 # Web Bluetooth implementation and verification
 
-Issue #31 is in progress. The engine patch now connects `navigator.bluetooth`,
+Issue #31 is implemented. The engine patch connects `navigator.bluetooth`,
 GATT objects, origin-scoped grants, the native chooser, and the air/OS transport.
 The complete native engine and Summit app build successfully. The full-app
-picker/GATT suite passes 34 checks. The broader browser API suite is still in
-progress; it exposed an immediate-reconnect race now fixed in the broker and
-awaiting a rerun.
+picker/GATT suite passes 34 checks and the broader browser API suite passes 213
+on X399 with `bundle-icx644ud` (engine patch `090d328b517f`). Successful physical
+GATT reads remain deferred at the user's request; the active mouse's busy-link
+test passes without disturbing its connection.
 
 The engine patch contains portable Bluetooth UUID/advertisement parsing,
 an ATT client, and a GATT capability boundary in
@@ -102,22 +103,29 @@ and close/reopen. Visual inspection caught an initially collapsed list; the
 picker now measures its minimum row height from the UI font before attachment.
 The final screenshot (`.vm/issue31/picker.png`) shows both selectable devices
 and the session-lifetime notice. No new crash reports or debugger events were
-recorded. This native UI check uses an isolated embedding context and does not
-substitute for the still-pending complete browser GATT suite.
+recorded. This native UI check uses an isolated embedding context; the complete
+browser suites below separately validate JavaScript, IPC and simulated GATT.
 
 `tests/ModernBrowserBluetoothTests.cpp` adds coverage through the complete
 Summit app: a page click opens the native picker, Cancel rejects the JavaScript
 request, Connect allows a simulated battery read, and navigation/quit dismiss
-pending selection. All 34 checks pass on X399 with `bundle-9wi5o0ag`; no new
+pending selection. All 34 checks pass on X399 with `bundle-icx644ud`; no new
 crash reports, debugger events, or surviving owned processes were recorded.
 The fixture also checks that UUID
 names and device filters retain embedded NUL bytes rather than silently matching
 a truncated value.
 
-The API run passes exposure, filtering, grants, frame policy, GATT discovery,
-512-byte reads/writes, descriptors and notifications, but initially failed when
-reconnecting immediately after disconnect. The old native session was still
-closing and appeared to own the peer. The broker now reserves the peer for the
-replacement connection and reuses its serial work queue, so cleanup runs before
-the replacement opens a link. Active connections still reject competing pages.
-This change requires the complete API rerun before issue #31 can be closed.
+The 213-check API run passes exposure, filtering, grants, frame/response policy,
+GATT discovery, 512-byte reads/writes, descriptors, notifications, immediate
+reconnect, stale-handle rejection, Service Changed invalidation, simulated busy
+handling, forget, origin isolation, HTTP denial and pending-chooser teardown.
+Reconnect reserves the peer for the replacement connection and reuses its serial
+work queue, so cleanup runs before the replacement opens a link. Active
+connections still reject competing pages. No new crash reports, debugger events
+or surviving owned helpers were recorded. The rendered fixture was inspected.
+
+The same bundle also passes the Clear Key EME suite (207 checks) and DASH suite
+(82 checks), with rendered video inspected and clean process teardown. Local
+evidence is in `.vm/issue31/browser-reconnect.log`, `app-reconnect.log`,
+`eme-regression.log`, and `dash-regression.log`; the result JSON files include
+process ownership and crash-watch records.
