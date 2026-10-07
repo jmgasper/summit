@@ -2,9 +2,10 @@
 
 Issue #31 is in progress. The engine patch now connects `navigator.bluetooth`,
 GATT objects, origin-scoped grants, the native chooser, and the air/OS transport.
-The new C++ classes and generated JavaScript bindings pass native syntax checks.
-WebCore, including the new bindings, compiles in the full native build. The
-WebKit build and browser integration suite are still pending.
+The complete native engine and Summit app build successfully. The full-app
+picker/GATT suite passes 34 checks. The broader browser API suite is still in
+progress; it exposed an immediate-reconnect race now fixed in the broker and
+awaiting a rerun.
 
 The engine patch contains portable Bluetooth UUID/advertisement parsing,
 an ATT client, and a GATT capability boundary in
@@ -107,7 +108,16 @@ substitute for the still-pending complete browser GATT suite.
 `tests/ModernBrowserBluetoothTests.cpp` adds coverage through the complete
 Summit app: a page click opens the native picker, Cancel rejects the JavaScript
 request, Connect allows a simulated battery read, and navigation/quit dismiss
-pending selection. Both browser harnesses compile on X399; runtime results
-still depend on the completed engine build. The fixture also checks that UUID
+pending selection. All 34 checks pass on X399 with `bundle-9wi5o0ag`; no new
+crash reports, debugger events, or surviving owned processes were recorded.
+The fixture also checks that UUID
 names and device filters retain embedded NUL bytes rather than silently matching
 a truncated value.
+
+The API run passes exposure, filtering, grants, frame policy, GATT discovery,
+512-byte reads/writes, descriptors and notifications, but initially failed when
+reconnecting immediately after disconnect. The old native session was still
+closing and appeared to own the peer. The broker now reserves the peer for the
+replacement connection and reuses its serial work queue, so cleanup runs before
+the replacement opens a link. Active connections still reject competing pages.
+This change requires the complete API rerun before issue #31 can be closed.

@@ -140,12 +140,30 @@ window.btTest = (() => {
         async busy() { results=[]; await rejection(()=>device.gatt.connect(),'InvalidStateError','busy device rejects without taking the link'); assert(!device.gatt.connected,'busy server remains disconnected'); return results; },
         async forget() { const previous=device; await previous.forget(); await previous.forget(); const devices=await navigator.bluetooth.getDevices(); return {count:devices.length, connected:previous.gatt.connected}; },
         async devices() { return (await navigator.bluetooth.getDevices()).map(d=>({id:d.id,name:d.name})); },
-        async probe() { let devices=null, error=null; try { devices=(await navigator.bluetooth.getDevices()).length; } catch(e) { error=e.name; } return {secure:isSecureContext, api:typeof navigator.bluetooth, available:navigator.bluetooth?await navigator.bluetooth.getAvailability():null, devices,error}; },
+        async probe() {
+            window.btProbe={stage:'devices'};
+            let devices=null, error=null;
+            try { devices=(await navigator.bluetooth.getDevices()).length; } catch(e) { error=e.name; }
+            window.btProbe={stage:'availability',devices,error};
+            const available=navigator.bluetooth?await navigator.bluetooth.getAvailability():null;
+            window.btProbe={stage:'done',secure:isSecureContext,api:typeof navigator.bluetooth,available,devices,error};
+            return window.btProbe;
+        },
         async frame(cross, allow) {
             const frame=document.createElement('iframe'); if(allow!==null) frame.allow=allow;
             const url=new URL(location.href); if(cross) url.hostname=location.hostname==='localhost'?'127.0.0.1':'localhost'; url.search='?probe=1';
-            const result=new Promise((resolve,reject)=>{ const timeout=setTimeout(()=>reject(Error('frame timeout')),5000); const listener=e=>{if(e.source!==frame.contentWindow)return;clearTimeout(timeout);removeEventListener('message',listener);resolve(e.data);};addEventListener('message',listener); });
-            frame.src=url; document.body.append(frame); try{return await result;}finally{frame.remove();}
+            let timeout,listener; const received=[];
+            const result=new Promise((resolve,reject)=>{
+                timeout=setTimeout(()=>{
+                    let detail='cross-origin';
+                    try { detail=JSON.stringify({ready:frame.contentDocument?.readyState,probe:frame.contentWindow.btProbe,fixture:typeof frame.contentWindow.btTest,received}); } catch {}
+                    reject(Error('frame timeout: '+detail));
+                },5000);
+                listener=e=>{received.push({origin:e.origin,matching:e.source===frame.contentWindow,nullSource:e.source===null,data:e.data});if(e.source===frame.contentWindow)resolve(e.data);};
+                addEventListener('message',listener);
+            });
+            frame.src=url; document.body.append(frame);
+            try{return await result;}finally{clearTimeout(timeout);removeEventListener('message',listener);frame.remove();}
         }
     };
     const run=(method,...args)=>{operation=null;Promise.resolve().then(()=>methods[method](...args)).then(value=>{operation={ok:true,value};resultsElement.textContent=JSON.stringify(operation,null,2);report();},e=>{operation={ok:false,error:e.name,message:e.message,results};resultsElement.textContent=JSON.stringify(operation,null,2);report();});return true;};
@@ -153,6 +171,6 @@ window.btTest = (() => {
     const report=()=>{if(!new URL(location.href).searchParams.has('browser'))return;const r=document.getElementById('request').getBoundingClientRect();document.title='BLUETOOTH '+JSON.stringify({ready:true,button:[r.x+r.width/2,r.y+r.height/2],operation});};
     requestAnimationFrame(report);
     document.getElementById('request').onclick=()=>run(window.nextMethod||'request', window.nextOptions || {filters:[{name:'Summit Test Peripheral'}],optionalServices:['battery_service','device_information','human_interface_device']});
-    if(new URL(location.href).searchParams.has('probe')) methods.probe().then(value=>parent.postMessage(value,'*'));
+    if(new URL(location.href).searchParams.has('probe')) methods.probe().then(value=>{parent.postMessage(value,'*');window.btProbe.posted=true;}).catch(e=>{window.btProbe.postError=e.name+': '+e.message;});
     return {run,operation:()=>operation};
 })();

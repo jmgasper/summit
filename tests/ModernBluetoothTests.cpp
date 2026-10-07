@@ -118,7 +118,8 @@ private:
         inspector.Evaluate("window.nextMethod='validation';true"); Click(inspector, "request");
         WaitScript(inspector, "btTest.operation()!==null", "gesture filter checks settle");
         auto validation = inspector.Evaluate("btTest.operation()");
-        Require(validation.value("ok", false), validation.dump().c_str()); CheckResults(validation["value"]);
+        if (!validation.value("ok", false)) std::fprintf(stderr, "BLUETOOTH_VALIDATION %s\n", validation.dump().c_str());
+        Require(validation.value("ok", false), "gesture filter validation"); CheckResults(validation["value"]);
         inspector.Evaluate("window.nextMethod='request';true");
         auto choose = [&] {
             inspector.Evaluate("btTest.run('devices');true");

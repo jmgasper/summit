@@ -104521,10 +104521,10 @@ index 0000000000000000000000000000000000000000..800bd4bb48b9c51f11d0f1592e227012
 +}
 diff --git a/Source/WebKit/UIProcess/haiku/bluetooth/WebBluetoothBrokerHaiku.cpp b/Source/WebKit/UIProcess/haiku/bluetooth/WebBluetoothBrokerHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..ea11df4332ef7a5d29f3eec0e6b3dd30cc3ffb9e
+index 0000000000000000000000000000000000000000..d0118f3dc9c3098a48c51385d621e962d6e6a179
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/bluetooth/WebBluetoothBrokerHaiku.cpp
-@@ -0,0 +1,413 @@
+@@ -0,0 +1,418 @@
 +/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#include "config.h"
 +#if ENABLE(WEB_BLUETOOTH)
@@ -104639,8 +104639,15 @@ index 0000000000000000000000000000000000000000..ea11df4332ef7a5d29f3eec0e6b3dd30
 +}
 +
 +struct WebBluetoothBrokerHaiku::Connection {
-+    explicit Connection(const Device& device)
-+        : queue(WorkQueue::create("WebKit.Bluetooth.GATT"_s, WorkQueue::QOS::Utility)), session(std::make_shared<Session>(device)), generation(WTF::UUID::createVersion4().toString()) { }
++    Connection(const Device& device, Ref<WorkQueue>&& serialQueue)
++        : queue(WTF::move(serialQueue)), session(std::make_shared<Session>(device)), generation(WTF::UUID::createVersion4().toString()) { }
++    static auto& peers()
++    {
++        // Main thread, across normal/private contexts. A closing connection
++        // retains its queue so a replacement waits for native link cleanup.
++        static NeverDestroyed<std::unordered_map<std::string, std::weak_ptr<Connection>>> peers;
++        return peers.get();
++    }
 +    Ref<WorkQueue> queue;
 +    std::shared_ptr<Session> session;
 +    std::unique_ptr<GATTConnection> gatt; // Worker queue only.
@@ -104651,12 +104658,6 @@ index 0000000000000000000000000000000000000000..ea11df4332ef7a5d29f3eec0e6b3dd30
 +{
 +    static NeverDestroyed<Ref<WorkQueue>> queue(WorkQueue::create("WebKit.Bluetooth.Scan"_s, WorkQueue::QOS::Utility));
 +    return queue.get().copyRef();
-+}
-+static auto& openPeers()
-+{
-+    // Main thread, across normal/private contexts. The OS also checks ownership.
-+    static NeverDestroyed<std::unordered_map<std::string, std::weak_ptr<Session>>> peers;
-+    return peers.get();
 +}
 +static std::string peerKey(const Device& device)
 +{
@@ -104851,10 +104852,14 @@ index 0000000000000000000000000000000000000000..ea11df4332ef7a5d29f3eec0e6b3dd30
 +    }
 +    bool connecting = op == "connect"_s;
 +    if (connecting && !grant.connection) {
-+        auto key = peerKey(grant.device); auto existing = openPeers().find(key);
-+        if (existing != openPeers().end() && !existing->second.expired()) { completion(error("InvalidStateError"_s, "Another page is using this Bluetooth device"_s), { }); return; }
-+        grant.connection = std::make_shared<Connection>(grant.device); grant.owner = owner; grant.page = page;
-+        openPeers()[key] = grant.connection->session;
++        auto& peers = Connection::peers();
++        std::erase_if(peers, [](auto& entry) { return entry.second.expired(); });
++        auto key = peerKey(grant.device); auto existing = peers.find(key);
++        auto previous = existing == peers.end() ? nullptr : existing->second.lock();
++        if (previous && !previous->closing) { completion(error("InvalidStateError"_s, "Another page is using this Bluetooth device"_s), { }); return; }
++        auto queue = previous ? previous->queue.copyRef() : WorkQueue::create("WebKit.Bluetooth.GATT"_s, WorkQueue::QOS::Utility);
++        grant.connection = std::make_shared<Connection>(grant.device, WTF::move(queue)); grant.owner = owner; grant.page = page;
++        peers[key] = grant.connection;
 +    }
 +    if (!grant.connection || (!connecting && args->getString("generation"_s) != grant.connection->generation)) {
 +        completion(op == "poll"_s ? "{\"connected\":false}"_s : error("NetworkError"_s, "The Bluetooth server is disconnected"_s), { }); return;
