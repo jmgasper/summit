@@ -35,14 +35,14 @@ installs successfully but stops on the missing privacy API; filtering remains un
 <!-- airos-ci:latest-builds:start -->
 ## Latest builds
 
-Built automatically by air/OS CI from commit `962bc34` on 2026-10-07 ([all files](https://github.com/jmgasper/summit/releases/tag/latest)).
+Built automatically by air/OS CI from commit `87fd81e` on 2026-10-07 ([all files](https://github.com/jmgasper/summit/releases/tag/latest)).
 
 | Architecture | Package |
 |---|---|
-| arm64 | [summit-0.1.0.git20261007.0126-1-arm64.hpkg](https://github.com/jmgasper/summit/releases/download/latest/summit-0.1.0.git20261007.0126-1-arm64.hpkg) |
-| arm64 | [summit_webkit-1.10.1.git20261007.0126-1-arm64.hpkg](https://github.com/jmgasper/summit/releases/download/latest/summit_webkit-1.10.1.git20261007.0126-1-arm64.hpkg) |
-| x86_64 | [summit-0.1.0.git20261007.0126-1-x86_64.hpkg](https://github.com/jmgasper/summit/releases/download/latest/summit-0.1.0.git20261007.0126-1-x86_64.hpkg) |
-| x86_64 | [summit_webkit-1.10.1.git20261007.0126-1-x86_64.hpkg](https://github.com/jmgasper/summit/releases/download/latest/summit_webkit-1.10.1.git20261007.0126-1-x86_64.hpkg) |
+| arm64 | [summit-0.1.0.git20261007.0142-1-arm64.hpkg](https://github.com/jmgasper/summit/releases/download/latest/summit-0.1.0.git20261007.0142-1-arm64.hpkg) |
+| arm64 | [summit_webkit-1.10.1.git20261007.0142-1-arm64.hpkg](https://github.com/jmgasper/summit/releases/download/latest/summit_webkit-1.10.1.git20261007.0142-1-arm64.hpkg) |
+| x86_64 | [summit-0.1.0.git20261007.0142-1-x86_64.hpkg](https://github.com/jmgasper/summit/releases/download/latest/summit-0.1.0.git20261007.0142-1-x86_64.hpkg) |
+| x86_64 | [summit_webkit-1.10.1.git20261007.0142-1-x86_64.hpkg](https://github.com/jmgasper/summit/releases/download/latest/summit_webkit-1.10.1.git20261007.0142-1-x86_64.hpkg) |
 
 Install with `pkgman install <file>`, or copy the file into `/boot/system/packages`. Haiku SDK: x86_64 hrev60206-730-gb6854ab9f8, arm64 hrev60206-730-gb6854ab9f8.
 <!-- airos-ci:latest-builds:end -->
