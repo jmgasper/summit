@@ -110114,10 +110114,10 @@ index 77c4db0966a28ff00141af56b68d0fd16a6a826b..4d8372f4f47e8b05e804aa2bb49fbcf9
      if (m_listeners.isEmpty())
 diff --git a/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIAction.cpp b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIAction.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..dc6b66a9111083e77e28b03cef513c58539ac1c9
+index 0000000000000000000000000000000000000000..0c7a1f82dee8593a192c335e0bdeb5c3ea3bb029
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/Extensions/API/WebExtensionAPIAction.cpp
-@@ -0,0 +1,490 @@
+@@ -0,0 +1,498 @@
 +/*
 + * Copyright (C) 2023 Apple Inc. All rights reserved.
 + *
@@ -110169,6 +110169,7 @@ index 0000000000000000000000000000000000000000..dc6b66a9111083e77e28b03cef513c58
 +#include <WebCore/ImageUtilities.h>
 +#include <WebCore/JSImageData.h>
 +#include <WebCore/LocalFrameInlines.h>
++#include <WebCore/NativeImage.h>
 +#include <WebCore/UserGestureIndicator.h>
 +namespace WebKit {
 +void WebExtensionAPIAction::openPopup(WebPageProxyIdentifier page, RefPtr<JSON::Value> options, Ref<WebExtensionCallbackHandler>&& callback, String& exception)
@@ -110249,12 +110250,19 @@ index 0000000000000000000000000000000000000000..dc6b66a9111083e77e28b03cef513c58
 +        || image.data().length() != uint64_t(image.width()) * image.height() * 4)
 +        return std::unexpected("ImageData is detached, invalid or too large"_s);
 +    Ref pixels = image.byteArrayPixelBuffer();
++#if USE(SKIA)
++    // Encode straight ImageData pixels directly. Painting into an 8-bit
++    // premultiplied surface first loses colour precision before PNG encoding,
++    // and subsequent icon decoding/resizing compounds that loss.
++    auto encoded = WebCore::encodeDataURL(WebCore::NativeImage::create(WTF::move(pixels)), "image/png"_s);
++#else
 +    RefPtr buffer = WebCore::ImageBuffer::create(image.size(), WebCore::RenderingMode::Unaccelerated,
 +        WebCore::RenderingPurpose::Unspecified, 1, WebCore::ColorSpace::SRGB(), WebCore::PixelFormat::BGRA8);
 +    if (!buffer)
 +        return std::unexpected("the icon image buffer could not be created"_s);
 +    buffer->putPixelBuffer(pixels.get(), WebCore::IntRect { { }, image.size() });
 +    auto encoded = WebCore::encodeDataURL(WTF::move(buffer), "image/png"_s);
++#endif
 +    if (!encoded.startsWith("data:image/png;base64,"_s) || encoded.length() > maximumWebExtensionActionIconJSONLength)
 +        return std::unexpected("the icon ImageData could not be encoded"_s);
 +    return encoded;
