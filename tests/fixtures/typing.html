@@ -1,0 +1,65 @@
+<!doctype html><meta charset="utf-8"><title>Typing ready</title>
+<style>
+body { margin: 20px; font: 16px sans-serif; }
+textarea, [contenteditable] { display: block; box-sizing: border-box; width: 900px; height: 500px;
+  padding: 8px; border: 1px solid #777; font: 16px/24px monospace; overflow: auto; white-space: pre-wrap; }
+</style>
+<textarea id="field" spellcheck="false" autofocus></textarea>
+<script>
+'use strict';
+let field=document.getElementById('field'), keys=[], inputs=0, pastes=0, edits=[], before=0;
+const value=()=>field.tagName==='TEXTAREA'?field.value:field.textContent;
+const p95=a=>a.length?a.slice().sort((a,b)=>a-b)[Math.floor(a.length*.95)]:null;
+function listen() {
+  field.addEventListener('beforeinput',()=>before=performance.now());
+  field.addEventListener('paste',()=>pastes++);
+  field.addEventListener('input',()=>{inputs++;edits.push(performance.now()-before)});
+  field.addEventListener('keydown',e=>{
+    const sample={delay:performance.now()-e.timeStamp,frame:null};keys.push(sample);
+    requestAnimationFrame(()=>sample.frame=performance.now()-e.timeStamp);
+  });
+}
+function selection() {
+  if(field.tagName==='TEXTAREA')return [field.selectionStart,field.selectionEnd];
+  const s=getSelection();if(!s.rangeCount)return [-1,-1];
+  const r=s.getRangeAt(0), before=document.createRange();before.selectNodeContents(field);
+  before.setEnd(r.startContainer,r.startOffset);const start=before.toString().length;
+  before.setEnd(r.endContainer,r.endOffset);return [start,before.toString().length];
+}
+function select(start,end=start) {
+  field.focus();
+  if(field.tagName==='TEXTAREA')field.setSelectionRange(start,end);
+  else {
+    const walker=document.createTreeWalker(field,NodeFilter.SHOW_TEXT),range=document.createRange();
+    let node,at=0,foundStart=false,foundEnd=false;
+    while(node=walker.nextNode()) {
+      const next=at+node.length;
+      if(!foundStart&&start<=next){range.setStart(node,start-at);foundStart=true}
+      if(end<=next){range.setEnd(node,end-at);foundEnd=true;break}at=next;
+    }
+    if(!foundStart||!foundEnd)throw Error('selection outside fixture text');
+    getSelection().removeAllRanges();getSelection().addRange(range);
+  }
+  return selection();
+}
+window.typingTest={
+  value,selection,select,
+  prepare(kind,text,wrap=true){
+    const old=field;field=document.createElement(kind==='textarea'?'textarea':'div');field.id='field';
+    field.spellcheck=false;if(kind!=='textarea')field.contentEditable='true';
+    field.style.whiteSpace=wrap?'pre-wrap':'pre';
+    if(kind==='textarea'){field.value=text;field.wrap=wrap?'soft':'off'}else field.textContent=text;
+    old.replaceWith(field);keys=[];inputs=0;pastes=0;edits=[];listen();select(text.length);return true;
+  },
+  reset(){keys=[];inputs=0;pastes=0;edits=[];return true},
+  resize(width){field.style.width=width+'px';return field.getBoundingClientRect().width},
+  stats(start=0){const samples=keys.slice(start);return {
+    visible:document.visibilityState,focus:document.hasFocus(),keys:samples.length,inputs,pastes,
+    length:value().length,selection:selection(),edit95:p95(edits.slice(start+pastes)),
+    delay95:p95(samples.map(k=>k.delay)),delayMax:samples.length?Math.max(...samples.map(k=>k.delay)):null,
+    frames:samples.filter(k=>k.frame!==null).length,
+    frame95:p95(samples.filter(k=>k.frame!==null).map(k=>k.frame)),scrollTop:field.scrollTop,
+    scrollHeight:field.scrollHeight,clientHeight:field.clientHeight}}
+};
+listen();
+</script>

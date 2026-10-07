@@ -11134,6 +11134,55 @@ index a503201bfcf8a65e2591c30245a88c6c5b8d31f3..593f339fa2d8a14b5275a2259b2483a1
  }
  
  void ExtensionStyleSheets::removePageSpecificUserStyleSheet(const UserStyleSheet& userStyleSheet)
+diff --git a/Source/WebCore/dom/Position.cpp b/Source/WebCore/dom/Position.cpp
+index 105e7fcdcc8733c8dd1e662460015680f469a3a4..8fe399844836fefc38c61faa98bf397e65dd46d1 100644
+--- a/Source/WebCore/dom/Position.cpp
++++ b/Source/WebCore/dom/Position.cpp
+@@ -758,7 +758,8 @@ Position Position::upstream(EditingBoundaryCrossingRule rule) const
+ 
+         // return current position if it is in rendered text
+         if (CheckedPtr textRenderer = dynamicDowncast<RenderText>(*renderer)) {
+-            auto [firstTextBox, orderCache] = InlineIterator::firstTextBoxInLogicalOrderFor(*textRenderer);
++            auto textOffset = convertNodeOffsetToOffsetInTextFragment(*textRenderer, currentPosition.offsetInLeafNode());
++            auto [firstTextBox, orderCache] = InlineIterator::firstTextBoxInLogicalOrderFor(*textRenderer, textOffset);
+             if (!firstTextBox)
+                 continue;
+ 
+@@ -771,7 +772,6 @@ Position Position::upstream(EditingBoundaryCrossingRule rule) const
+                 return makeDeprecatedLegacyPosition(currentNode.ptr(), caretMaxOffset(currentNode));
+             }
+ 
+-            auto textOffset = convertNodeOffsetToOffsetInTextFragment(*textRenderer, currentPosition.offsetInLeafNode());
+             for (auto box = firstTextBox; box;) {
+                 if (textOffset > box->start() && textOffset <= box->end())
+                     return currentPosition;
+@@ -871,7 +871,8 @@ Position Position::downstream(EditingBoundaryCrossingRule rule) const
+ 
+         // return current position if it is in rendered text
+         if (CheckedPtr textRenderer = dynamicDowncast<RenderText>(*renderer)) {
+-            auto [firstTextBox, orderCache] = InlineIterator::firstTextBoxInLogicalOrderFor(*textRenderer);
++            auto textOffset = convertNodeOffsetToOffsetInTextFragment(*textRenderer, currentPosition.offsetInLeafNode());
++            auto [firstTextBox, orderCache] = InlineIterator::firstTextBoxInLogicalOrderFor(*textRenderer, textOffset);
+             if (!firstTextBox)
+                 continue;
+ 
+@@ -880,7 +881,6 @@ Position Position::downstream(EditingBoundaryCrossingRule rule) const
+                 return makeContainerOffsetPosition(currentNode.ptr(), textRenderer->caretMinOffset());
+             }
+ 
+-            auto textOffset = convertNodeOffsetToOffsetInTextFragment(*textRenderer, currentPosition.offsetInLeafNode());
+             for (auto box = firstTextBox; box;) {
+                 if (!box->length() && textOffset == box->start())
+                     return currentPosition;
+@@ -1288,7 +1288,7 @@ InlineBoxAndOffset Position::inlineBoxAndOffset(Affinity affinity, TextDirection
+         if (!caretOffset)
+             box = InlineIterator::boxFor(*lineBreakRenderer);
+     } else if (CheckedPtr textRenderer = dynamicDowncast<RenderText>(*renderer)) {
+-        auto textBox = InlineIterator::lineLeftmostTextBoxFor(*textRenderer);
++        auto textBox = InlineIterator::textBoxForTextOffset(*textRenderer, caretOffset);
+         InlineIterator::TextBoxIterator candidate;
+ 
+         for (; textBox; ++textBox) {
 diff --git a/Source/WebCore/dom/ScriptedAnimationController.cpp b/Source/WebCore/dom/ScriptedAnimationController.cpp
 index fe92fc6370b31f2f826b8762171186c54700be76..4976d5a2754255636b2c71b899d6482dcacbf8b3 100644
 --- a/Source/WebCore/dom/ScriptedAnimationController.cpp
@@ -11188,6 +11237,28 @@ index 7f18cb986d1972948b04893b511de16598d7f103..68525703b1263997f5100c89a1c31dd9
  } elsif ($Config::Config{"osname"} eq "darwin" && $ENV{SDKROOT}) {
      chomp($ccLocation = `xcrun -find cc -sdk '$ENV{SDKROOT}'`);
  } else {
+diff --git a/Source/WebCore/editing/Editor.cpp b/Source/WebCore/editing/Editor.cpp
+index ded8fbcc946056d316ba617ebdb86aa26f9c25a5..4ad67d599532797d5683fb66d6ab4890ea83d270 100644
+--- a/Source/WebCore/editing/Editor.cpp
++++ b/Source/WebCore/editing/Editor.cpp
+@@ -1460,10 +1460,13 @@ bool Editor::insertTextWithoutSendingTextEvent(const String& text, bool selectIn
+     if (!shouldInsertText(text, selection.toNormalizedRange(), EditorInsertAction::Typed))
+         return true;
+ 
+-    // FIXME: Should pass false to updateMarkersForWordsAffectedByEditing() to not remove markers if
+-    // a leading or trailing no-break space is being inserted. See <https://webkit.org/b/212098>.
+-    bool isStartOfNewWord = deprecatedIsSpaceOrNewline(selection.visibleStart().characterBefore());
+-    updateMarkersForWordsAffectedByEditing(deprecatedIsSpaceOrNewline(text[0]) || isStartOfNewWord);
++    if (CheckedPtr markers = document().markersIfExists(); markers && markers->hasMarkers()) {
++        // FIXME: Should pass false to updateMarkersForWordsAffectedByEditing() to not remove markers if
++        // a leading or trailing no-break space is being inserted. See <https://webkit.org/b/212098>.
++        // Resolving the preceding visible character is unnecessary without markers.
++        bool atWordBoundary = deprecatedIsSpaceOrNewline(text[0]) || deprecatedIsSpaceOrNewline(selection.visibleStart().characterBefore());
++        updateMarkersForWordsAffectedByEditing(atWordBoundary);
++    }
+ 
+     bool shouldConsiderApplyingAutocorrection = false;
+     if (text == " "_s || text == "\t"_s)
 diff --git a/Source/WebCore/editing/glib/EditorGLib.cpp b/Source/WebCore/editing/glib/EditorGLib.cpp
 index fdc5b8fc0424fc394e954fa583f40e825727dc47..ee9ab0719ef8e6050eeaf97b29649a4d059f773f 100644
 --- a/Source/WebCore/editing/glib/EditorGLib.cpp
@@ -12694,6 +12765,189 @@ index dbef53afb1bbcba1cc90e15bdd10a928129930bb..214e13da536477f3e067034cd3596140
  }
  
  std::pair<LayoutUnit, LayoutUnit> GridLayout::computeIntrinsicWidths()
+diff --git a/Source/WebCore/layout/integration/inline/InlineIteratorLogicalOrderTraversal.cpp b/Source/WebCore/layout/integration/inline/InlineIteratorLogicalOrderTraversal.cpp
+index 40c6ea9ab189a2a84c3897fccd9319b069778857..37839771abf400aa8dc106125694c155871133bb 100644
+--- a/Source/WebCore/layout/integration/inline/InlineIteratorLogicalOrderTraversal.cpp
++++ b/Source/WebCore/layout/integration/inline/InlineIteratorLogicalOrderTraversal.cpp
+@@ -69,12 +69,12 @@ static void updateTextLogicalOrderCacheIfNeeded(const TextBoxIterator& textBox,
+     }
+ }
+ 
+-std::pair<TextBoxIterator, TextLogicalOrderCache> firstTextBoxInLogicalOrderFor(const RenderText& text)
++std::pair<TextBoxIterator, TextLogicalOrderCache> firstTextBoxInLogicalOrderFor(const RenderText& text, unsigned startOffset)
+ {
+     if (auto cache = makeTextLogicalOrderCacheIfNeeded(text))
+         return { cache->boxes.first(), WTF::move(cache) };
+ 
+-    return { lineLeftmostTextBoxFor(text), nullptr };
++    return { textBoxForTextOffset(text, startOffset), nullptr };
+ }
+ 
+ TextBoxIterator nextTextBoxInLogicalOrder(const TextBoxIterator& textBox, TextLogicalOrderCache& cache)
+diff --git a/Source/WebCore/layout/integration/inline/InlineIteratorLogicalOrderTraversal.h b/Source/WebCore/layout/integration/inline/InlineIteratorLogicalOrderTraversal.h
+index ecd5c856f55d6d0c27132a35c7979b4b76ebc2f8..ad9a4d8abb4daa6d8a37e77b4b1f43b47d32931a 100644
+--- a/Source/WebCore/layout/integration/inline/InlineIteratorLogicalOrderTraversal.h
++++ b/Source/WebCore/layout/integration/inline/InlineIteratorLogicalOrderTraversal.h
+@@ -40,7 +40,7 @@ struct TextLogicalOrderCacheData {
+ };
+ using TextLogicalOrderCache = std::unique_ptr<TextLogicalOrderCacheData>;
+ 
+-std::pair<TextBoxIterator, TextLogicalOrderCache> firstTextBoxInLogicalOrderFor(const RenderText&);
++std::pair<TextBoxIterator, TextLogicalOrderCache> firstTextBoxInLogicalOrderFor(const RenderText&, unsigned startOffset = 0);
+ TextBoxIterator nextTextBoxInLogicalOrder(const TextBoxIterator&, TextLogicalOrderCache&);
+ 
+ struct LineLogicalOrderCacheData {
+diff --git a/Source/WebCore/layout/integration/inline/InlineIteratorTextBox.cpp b/Source/WebCore/layout/integration/inline/InlineIteratorTextBox.cpp
+index f505f69bc6f9619c716f00bc51600cd1454bf051..b60dcf5163c88325457f78e6cd398615b1c06bc5 100644
+--- a/Source/WebCore/layout/integration/inline/InlineIteratorTextBox.cpp
++++ b/Source/WebCore/layout/integration/inline/InlineIteratorTextBox.cpp
+@@ -80,6 +80,15 @@ TextBoxIterator lineLeftmostTextBoxFor(const RenderText& text)
+     return { BoxLegacyPath { nullptr } };
+ }
+ 
++TextBoxIterator textBoxForTextOffset(const RenderText& text, unsigned offset)
++{
++    if (offset && !text.needsVisualReordering()) {
++        if (CheckedPtr lineLayout = LayoutIntegration::LineLayout::containing(text))
++            return lineLayout->textBoxForTextOffset(text, offset);
++    }
++    return lineLeftmostTextBoxFor(text);
++}
++
+ TextBoxIterator textBoxFor(const LegacyInlineTextBox* legacyInlineTextBox)
+ {
+     return { BoxLegacyPath { legacyInlineTextBox } };
+diff --git a/Source/WebCore/layout/integration/inline/InlineIteratorTextBox.h b/Source/WebCore/layout/integration/inline/InlineIteratorTextBox.h
+index 1b639b12b2ac06ba58b654537b87218b6bd939df..c97470fb7fd51ed8b97e5f87e1ef10c4147c891b 100644
+--- a/Source/WebCore/layout/integration/inline/InlineIteratorTextBox.h
++++ b/Source/WebCore/layout/integration/inline/InlineIteratorTextBox.h
+@@ -82,6 +82,7 @@ private:
+ };
+ 
+ TextBoxIterator lineLeftmostTextBoxFor(const RenderText&);
++TextBoxIterator textBoxForTextOffset(const RenderText&, unsigned);
+ TextBoxIterator textBoxFor(const LegacyInlineTextBox*);
+ TextBoxIterator textBoxFor(const LayoutIntegration::InlineContent&, const InlineDisplay::Box&);
+ TextBoxIterator textBoxFor(const LayoutIntegration::InlineContent&, size_t boxIndex);
+diff --git a/Source/WebCore/layout/integration/inline/LayoutIntegrationInlineContent.cpp b/Source/WebCore/layout/integration/inline/LayoutIntegrationInlineContent.cpp
+index 10b5c30b7b5f15ac8ac3353293faddd3b0e5f636..f9aca2da1cf394414587542fe41521655ca6660c 100644
+--- a/Source/WebCore/layout/integration/inline/LayoutIntegrationInlineContent.cpp
++++ b/Source/WebCore/layout/integration/inline/LayoutIntegrationInlineContent.cpp
+@@ -154,6 +154,51 @@ std::optional<size_t> InlineContent::firstBoxIndexForLayoutBox(const Layout::Box
+     return it->value;
+ }
+ 
++std::optional<size_t> InlineContent::textBoxIndexForOffset(const Layout::Box& layoutBox, unsigned offset) const
++{
++    auto first = firstBoxIndexForLayoutBox(layoutBox);
++    if (!first || !offset)
++        return first;
++
++    auto& boxes = m_displayContent.boxes;
++    constexpr size_t indexStride = 64;
++    if (boxes.size() < 2 * indexStride || boxes[*first].isLastForLayoutBox()
++        || offset <= boxes[*first].text().end())
++        return first;
++
++    // This index is only used for text whose visual and logical orders agree.
++    // Keep one entry per 64 boxes, and share the layout cache's invalidation
++    // lifetime. Long text fields otherwise scan all preceding lines many times
++    // for every key press, even when layout itself is incremental.
++    if (!m_textOffsetIndexCache)
++        m_textOffsetIndexCache = makeUnique<TextOffsetIndexCache>();
++    auto& indexes = m_textOffsetIndexCache->ensure(layoutBox, [&] {
++        Vector<size_t> indexes;
++        size_t count = 0;
++        for (size_t i = *first; i < boxes.size(); ++i) {
++            auto& box = boxes[i];
++            if (&box.layoutBox() != &layoutBox)
++                continue;
++            ASSERT(box.isTextOrSoftLineBreak());
++            if (!(count++ % indexStride))
++                indexes.append(i);
++            if (box.isLastForLayoutBox())
++                break;
++        }
++        indexes.shrinkToFit();
++        return indexes;
++    }).iterator->value;
++
++    // Include the preceding box and its end+1 boundary for upstream positions,
++    // wrapped lines, collapsed whitespace, and affinity at a line break.
++    auto candidate = std::lower_bound(indexes.begin(), indexes.end(), offset - 1, [&](size_t index, unsigned value) {
++        return boxes[index].text().end() < value;
++    });
++    if (candidate != indexes.begin())
++        --candidate;
++    return *candidate;
++}
++
+ // Returns a block level box if the line is for block-in-inline.
+ const InlineDisplay::Box* InlineContent::blockLevelBoxForLine(const InlineDisplay::Line& line) const
+ {
+@@ -208,6 +253,7 @@ const Vector<SVGTextFragment>& InlineContent::svgTextFragments(size_t index) con
+ void InlineContent::releaseCaches()
+ {
+     m_firstBoxIndexCache = { };
++    m_textOffsetIndexCache = { };
+     m_inlineBoxIndexCache = { };
+ }
+ 
+diff --git a/Source/WebCore/layout/integration/inline/LayoutIntegrationInlineContent.h b/Source/WebCore/layout/integration/inline/LayoutIntegrationInlineContent.h
+index 0b7338e394848cc687708b0d7d6f5dc85c752b66..b21e40283e45e742d088043ce605a1cfe5ed56a2 100644
+--- a/Source/WebCore/layout/integration/inline/LayoutIntegrationInlineContent.h
++++ b/Source/WebCore/layout/integration/inline/LayoutIntegrationInlineContent.h
+@@ -91,6 +91,9 @@ public:
+     const InlineDisplay::Box* firstBoxForLayoutBox(const Layout::Box&) const LIFETIME_BOUND;
+     std::optional<size_t> firstBoxIndexForLayoutBox(const Layout::Box&) const;
+ 
++    // Starts before the requested offset; callers still apply their own caret boundary rules.
++    std::optional<size_t> textBoxIndexForOffset(const Layout::Box&, unsigned) const;
++
+     // Returns a block level box if the line is for block-in-inline.
+     const InlineDisplay::Box* NODELETE blockLevelBoxForLine(const InlineDisplay::Line&) const LIFETIME_BOUND;
+     bool NODELETE isInlineBoxWrapperForBlockLevelBox(const InlineDisplay::Box&) const;
+@@ -133,6 +136,8 @@ private:
+ 
+     using InlineBoxIndexCache = HashMap<CheckedRef<const Layout::Box>, Vector<size_t>>;
+     mutable std::unique_ptr<InlineBoxIndexCache> m_inlineBoxIndexCache;
++    using TextOffsetIndexCache = HashMap<CheckedRef<const Layout::Box>, Vector<size_t>>;
++    mutable std::unique_ptr<TextOffsetIndexCache> m_textOffsetIndexCache;
+     FloatRect m_scrollableOverflow;
+     FloatRect m_inkOverflow;
+     float m_clearGapBeforeFirstLine { 0 };
+diff --git a/Source/WebCore/layout/integration/inline/LayoutIntegrationLineLayout.cpp b/Source/WebCore/layout/integration/inline/LayoutIntegrationLineLayout.cpp
+index ae08c6ef9e76573796692ef641a3104b1158d717..455d2915d40d5118512c6ad314f3d2d794e1b7a8 100644
+--- a/Source/WebCore/layout/integration/inline/LayoutIntegrationLineLayout.cpp
++++ b/Source/WebCore/layout/integration/inline/LayoutIntegrationLineLayout.cpp
+@@ -1252,6 +1252,15 @@ InlineIterator::TextBoxIterator LineLayout::textBoxesFor(const RenderText& rende
+     return InlineIterator::textBoxFor(*m_inlineContent, *firstIndex);
+ }
+ 
++InlineIterator::TextBoxIterator LineLayout::textBoxForTextOffset(const RenderText& renderText, unsigned offset) const
++{
++    if (!m_inlineContent)
++        return { };
++    ASSERT(!renderText.needsVisualReordering());
++    auto index = m_inlineContent->textBoxIndexForOffset(*renderText.layoutBox(), offset);
++    return index ? InlineIterator::textBoxFor(*m_inlineContent, *index) : InlineIterator::TextBoxIterator { };
++}
++
+ InlineIterator::LeafBoxIterator LineLayout::boxFor(const RenderElement& renderElement) const
+ {
+     if (!m_inlineContent)
+diff --git a/Source/WebCore/layout/integration/inline/LayoutIntegrationLineLayout.h b/Source/WebCore/layout/integration/inline/LayoutIntegrationLineLayout.h
+index fea0118c87bc57a6e5b0ebdf231c9e86a90e449b..3ed1d644e0c79c9b5694a50e26b73dec1edfa929 100644
+--- a/Source/WebCore/layout/integration/inline/LayoutIntegrationLineLayout.h
++++ b/Source/WebCore/layout/integration/inline/LayoutIntegrationLineLayout.h
+@@ -129,6 +129,7 @@ public:
+     LayoutRect enclosingBorderBoxRectFor(const RenderBoxModelObject&) const;
+ 
+     InlineIterator::TextBoxIterator textBoxesFor(const RenderText&) const;
++    InlineIterator::TextBoxIterator textBoxForTextOffset(const RenderText&, unsigned) const;
+     InlineIterator::LeafBoxIterator boxFor(const RenderElement&) const;
+     InlineIterator::InlineBoxIterator firstInlineBoxFor(const RenderBoxModelObject&) const;
+     InlineIterator::InlineBoxIterator firstRootInlineBox() const;
 diff --git a/Source/WebCore/loader/CookieJar.cpp b/Source/WebCore/loader/CookieJar.cpp
 index 7a100df953c393486f1ca28b3da8507ab505cf08..5ed82dff72b910fa49f63baadf18d590d3295f42 100644
 --- a/Source/WebCore/loader/CookieJar.cpp
@@ -18377,6 +18631,25 @@ index ce4c06a790160ac521e85613f5ff360c17f45e60..0ccb530b83d1fd46af4baea456c1eea8
 +#endif
  
  typedef const struct __CTRun * CTRunRef;
+ 
+diff --git a/Source/WebCore/platform/graphics/DisplayRefreshMonitorManager.cpp b/Source/WebCore/platform/graphics/DisplayRefreshMonitorManager.cpp
+index 5a74726408d9d80269a4a833a708f79a71ab088f..cf7b839bbeff3d4d709d34119828a5d1cc3241a6 100644
+--- a/Source/WebCore/platform/graphics/DisplayRefreshMonitorManager.cpp
++++ b/Source/WebCore/platform/graphics/DisplayRefreshMonitorManager.cpp
+@@ -80,8 +80,13 @@ bool DisplayRefreshMonitorManager::scheduleAnimation(DisplayRefreshMonitorClient
+ {
+     if (RefPtr monitor = monitorForClient(client)) {
+         client.setIsScheduled(true);
+-        return monitor->requestRefreshCallback();
++        if (monitor->requestRefreshCallback())
++            return true;
+     }
++    // A failed monitor (including EmptyClients' monitor during paste) leaves
++    // the caller to use its fallback timer. It must not remain marked as
++    // scheduled after that timer fires, or every later update is suppressed.
++    client.setIsScheduled(false);
+     return false;
+ }
  
 diff --git a/Source/WebCore/platform/graphics/DoublePoint.cpp b/Source/WebCore/platform/graphics/DoublePoint.cpp
 index 713bbc38cc4b1c52c3352273f05cecec28cd0b5f..79729cca97331d565766912d48bf8b4f3b7c2ebe 100644
@@ -56688,6 +56961,19 @@ index 5a90dd68672464ece91671bee69e2598510a2ebb..fce4daff95c2608a1efd285024a84084
  
      if (layoutRoot && layoutRoot->isRooted())
          protect(layoutRoot->view().frameView().layoutContext())->scheduleSubtreeLayout(*layoutRoot);
+diff --git a/Source/WebCore/rendering/RenderText.cpp b/Source/WebCore/rendering/RenderText.cpp
+index a52a008e494939c3874a83a8ae10bfc16a5b7025..53c7f1a89a1a416c12c91ddd5ac5c43b83149fc7 100644
+--- a/Source/WebCore/rendering/RenderText.cpp
++++ b/Source/WebCore/rendering/RenderText.cpp
+@@ -2148,7 +2148,7 @@ unsigned RenderText::countRenderedCharacterOffsetsUntil(unsigned offset) const
+ enum class OffsetType { Character, Caret };
+ static bool containsOffset(const RenderText& text, unsigned offset, OffsetType type)
+ {
+-    for (auto [box, orderCache] = InlineIterator::firstTextBoxInLogicalOrderFor(text); box; box = InlineIterator::nextTextBoxInLogicalOrder(box, orderCache)) {
++    for (auto [box, orderCache] = InlineIterator::firstTextBoxInLogicalOrderFor(text, offset); box; box = InlineIterator::nextTextBoxInLogicalOrder(box, orderCache)) {
+         auto start = box->start();
+         if (offset < start)
+             return false;
 diff --git a/Source/WebCore/rendering/RenderView.cpp b/Source/WebCore/rendering/RenderView.cpp
 index 2b5c9f572f37b8ab7c61f5524e4a49d4a57976e4..402dd047e253d82dd66b0159c02c1ada96eb38a8 100644
 --- a/Source/WebCore/rendering/RenderView.cpp

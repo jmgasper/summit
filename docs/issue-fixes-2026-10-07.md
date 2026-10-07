@@ -4,8 +4,8 @@
 
 Seven additional issues appeared after the original deployment. #43 and #44
 are verified in `bundle-a7988kyv`; #49 is verified in `bundle-a3u9gkoe`.
-#45 is verified in `bundle-3ulccsni`; #46–#48 and the requested six-hour
-performance session remain to be completed. The desktop launcher still selects
+#45 is verified in `bundle-3ulccsni`; #46 is verified in `bundle-zf9_3v7d`.
+#47–#48 and the requested six-hour performance session remain to be completed. The desktop launcher still selects
 the original deployment until the next installation.
 
 - **#43:** Fullscreen uses air/OS's `get_display_frame(Frame(), true, ...)`,
@@ -34,6 +34,26 @@ the original deployment until the next installation.
   MPEG-4 PNS when generating MPEG-2-compatible LC samples.
   Engine patch SHA-256:
   `31be58cf6bae4fb0c138df8a772a4bc80c9a98ee3ee5f96594f6b0af43c08fff`.
+- **#46:** Fixed two independent post-paste delays. Parsing pasted content can
+  create an `EmptyDisplayRefreshMonitor`; its rejected callback request left
+  the live page marked as scheduled even after its fallback timer fired.
+  Later frames then waited for the two-second liveness watchdog. Failed
+  requests now clear that flag. Caret lookup also repeatedly scanned all
+  preceding line boxes in large fields. A sparse index owned and invalidated
+  by the layout cache now starts those searches near the requested offset;
+  visually reordered text keeps the existing traversal. Marker-free edits
+  skip the unnecessary preceding-character lookup.
+  All 1,253 native checks pass for actual clipboard paste, two typing phases
+  at 30 ms per key, caret scrolling, exact text/selection, reflow, Unicode,
+  bidirectional text and contenteditable fields. The full Summit window also
+  passes all six paste/typing phases. At 1 MB, final steady-state p95 key/frame
+  delays are 1/17 ms in Summit (3/20 ms in the isolated view), versus roughly
+  5–6 seconds of sustained input backlog before the fix. The initial 1 MB
+  paste still costs about 350 ms; 1 KB and 100 KB fields have 1–2 ms p95 key
+  delay. Every key reaches a frame, both processes exit cleanly, and final
+  runs have no new crashes or remaining helpers. All five host suites pass.
+  Engine patch SHA-256:
+  `86392baaf25d333f7a9d5aa4d6262da5e62aa72d82ef9cf9159698798c8634c4`.
 - **#49:** Native pages enable `rel=prefetch` by default, with
   `SUMMIT_PREFETCH=0` and extension privacy overrides honored. Link completion
   delivers load/error events, HTTP error responses complete the fetch, and
@@ -54,7 +74,13 @@ Evidence: `.vm/issues43-49/{certificates,reader}.json`,
 `aac-native.log`, `aac-browser.log`, `aac-media/result-*.json` and
 `aac-clock.log`. Reproduce with `tools/bench/aac-fixture.py` and the native
 `tests/ModernAACTests.cpp` driver, passing an owned browser team, its exact
-executable path and the fixture's base URL.
+executable path and the fixture's base URL. Typing evidence is in
+`typing-final/{result.json,native.log}`, `typing-browser-final.json`,
+`typing-browser-final-native.log`, `typing-refresh-before-fix.log` and
+`host-tests.log`. Reproduce the isolated typing checks with
+`SUMMIT_BENCH_HOST=workstation python3 tools/bench/test-typing.py --bundle BUNDLE`.
+The typing fixtures reproduce the native paste failure locally; they do not
+submit content to GitHub or automate the user's signed-in session.
 
 ## Original issues #31–#42
 
