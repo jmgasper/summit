@@ -18,16 +18,16 @@ build table below.
 <!-- airos-ci:latest-builds:start -->
 ## Latest builds
 
-Built automatically by air/OS CI from commit `247c55f` on 2026-10-07 ([all files](https://github.com/jmgasper/summit/releases/tag/latest)).
+Built automatically by air/OS CI from commit `81c7bbb` on 2026-10-07 ([all files](https://github.com/jmgasper/summit/releases/tag/latest)).
 
 | Architecture | Package |
 |---|---|
-| arm64 | [summit-0.1.0.git20261007.0535-1-arm64.hpkg](https://github.com/jmgasper/summit/releases/download/untagged-93baa730cde655aec38f/summit-0.1.0.git20261007.0535-1-arm64.hpkg) |
-| arm64 | [summit_webkit-1.10.1.git20261007.0535-1-arm64.hpkg](https://github.com/jmgasper/summit/releases/download/untagged-93baa730cde655aec38f/summit_webkit-1.10.1.git20261007.0535-1-arm64.hpkg) |
-| x86_64 | [summit-0.1.0.git20261007.0535-1-x86_64.hpkg](https://github.com/jmgasper/summit/releases/download/untagged-93baa730cde655aec38f/summit-0.1.0.git20261007.0535-1-x86_64.hpkg) |
-| x86_64 | [summit_webkit-1.10.1.git20261007.0535-1-x86_64.hpkg](https://github.com/jmgasper/summit/releases/download/untagged-93baa730cde655aec38f/summit_webkit-1.10.1.git20261007.0535-1-x86_64.hpkg) |
+| arm64 | [summit-0.1.0.git20261007.1018-1-arm64.hpkg](https://github.com/jmgasper/summit/releases/download/latest/summit-0.1.0.git20261007.1018-1-arm64.hpkg) |
+| arm64 | [summit_webkit-1.10.1.git20261007.1018-1-arm64.hpkg](https://github.com/jmgasper/summit/releases/download/latest/summit_webkit-1.10.1.git20261007.1018-1-arm64.hpkg) |
+| x86_64 | [summit-0.1.0.git20261007.1018-1-x86_64.hpkg](https://github.com/jmgasper/summit/releases/download/latest/summit-0.1.0.git20261007.1018-1-x86_64.hpkg) |
+| x86_64 | [summit_webkit-1.10.1.git20261007.1018-1-x86_64.hpkg](https://github.com/jmgasper/summit/releases/download/latest/summit_webkit-1.10.1.git20261007.1018-1-x86_64.hpkg) |
 
-Install with `pkgman install <file>`, or copy the file into `/boot/system/packages`. Haiku SDK: x86_64 hrev60206-731-gc2e8b8ece8, arm64 hrev60206-731-gc2e8b8ece8.
+Install with `pkgman install <file>`, or copy the file into `/boot/system/packages`. Haiku SDK: x86_64 hrev60206-733-g6ea9a7d410, arm64 hrev60206-733-g6ea9a7d410.
 <!-- airos-ci:latest-builds:end -->
 
 ## Browser features
