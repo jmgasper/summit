@@ -16,7 +16,7 @@ verified installation on X399. The final installation is still pending.
 | #33 DASH | Implemented direct H.264/AAC DASH with adaptive quality, byte ranges, seeking and live refresh. 82 native checks and portable ASan/UBSan tests pass; [scope and evidence](dash-playback.md). |
 | #32 EME | Implemented temporary Clear Key CENC for H.264/AAC MSE and direct DASH, secure-context and permissions-policy checks, key lifecycle and media-origin protections. 207 native checks and portable ASan/UBSan tests pass; [scope and evidence](encrypted-media.md). |
 | #31 Web Bluetooth | Implemented: 213 browser API checks, 34 full-app picker/GATT checks and 17 isolated native picker checks pass. Portable ATT/GATT, native scans and the physical busy-device test pass. Clear Key (207) and DASH (82) regressions pass on the same bundle. The user requested that the ProtoArc mouse remain connected; successful physical GATT reads are deferred. [Scope and evidence](bluetooth-transport.md). |
-| #42 Latest WebKit | Added during this task. Preparing the October 7 upstream revision `fb054d09146b113aeeabee5f67f4c8b6d9379809` in an isolated checkout. Source conflict resolution, a native build and regression verification are required before changing the engine pin or installing. |
+| #42 Latest WebKit | Source pin updated to the October 7 upstream revision `fb054d09146b113aeeabee5f67f4c8b6d9379809`. The port has been rebased, including moved graphics/grid code and extension API changes. Native compilation and regression verification are in progress; this revision is not yet installed. |
 
 The existing installed launcher still selects `bundle-1gm22c31` with Mesa
 `prefix-20261002`. Test builds use separate profiles and process groups.
@@ -25,5 +25,5 @@ Do not replace the final deployment requirement with the test bundle.
 Native browser build: `SUMMIT_REMOTE_SHELL=tools/ws.sh SUMMIT_REMOTE_TAG=ws
 SUMMIT_ENGINE_BUILD_NAME=SkiaCGMiPGO bash tools/build-modern-browser-in-vm.sh
 --browser --bundle --modern-extensions`. Engine build flags are recorded in
-`.vm/issues-build-ninth.sh`; inspect live processes before starting another
+`.vm/issue42/build.sh`; inspect live processes before starting another
 engine build, and preserve those PGO/Skia settings for incremental work.

@@ -1,8 +1,11 @@
 # Current upstream WebKit port
 
-The engine target is upstream WebKit `main`, pinned on September 13, 2026:
-`00991b6cdc59937da6076c69a22ae6a9460a4445` (upstream timestamp
-2026-09-12 23:12:08 -0700).
+The engine target is upstream WebKit `main`, pinned on October 7, 2026:
+`fb054d09146b113aeeabee5f67f4c8b6d9379809` (upstream timestamp
+2026-10-07 06:34:32 UTC). Native compilation and regression verification of
+this update are in progress; [the October work record](../docs/issue-fixes-2026-10-07.md)
+tracks its status. Verification results below describe the preceding September
+13 engine unless a newer revision is explicitly identified.
 
 The platform changes originate in Haiku's actively maintained Codeberg port:
 `295ca3199ad0f8563ce664fb15597bc3a2b2e3fe` (August 30, 2026).
