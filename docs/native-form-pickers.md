@@ -36,3 +36,37 @@ X399 validation on 7 October 2026: bundle `bundle-9e85uc_r`, engine patch
 there were no new crash reports or debugger events. The native screenshot
 was inspected. Local evidence: `.vm/issue35-native-results.json` and
 `.vm/issue35-picker.png`.
+
+## Date and time inputs
+
+Issue [#36](https://github.com/jmgasper/summit/issues/36) adds native choosers for
+`date`, `month`, `week`, `time` and `datetime-local`. Calendar-based types use
+`BCalendarView`, with month navigation and an editable canonical value. Time
+values support seconds and milliseconds. The picker offers Done, Cancel and
+Clear; page scripts receive the regular input/change events.
+
+Values use WebCore's `DateComponents` parser and decimal `StepRange`
+calculations. Invalid dates, values outside min/max, and step mismatches leave
+Done disabled with an explanation. Time ranges that cross midnight are
+handled. Local date/time values keep their wall-clock components without a
+timezone conversion. Clearing a required field is allowed, with the HTML
+form's existing required validation still applying.
+
+Haiku's `BDate` changes calendars in October 1582. The native calendar displays
+an equivalent Gregorian 400-year cycle while preserving the actual year in
+the field and heading. This keeps HTML's proleptic Gregorian dates valid,
+including 1582-10-10, and preserves leap days and ISO week boundaries.
+
+`tests/ModernDateTimeInputTests.cpp` drives
+`tools/bench/pages/date-time-input.html` through actual native controls:
+
+```sh
+test-date TEAM EXECUTABLE FIXTURE_URL SCREENSHOT_PPM
+```
+
+X399 validation on 7 October 2026: bundle `bundle-epgep6a_`, engine patch
+`ca9be7a1f731d9f1b2430a6ac36ed2eaa27d8ee4f597ef39f916a2428816a9ed`,
+171/171 native checks pass. Owned team 56409 and its helpers exited normally;
+there were no new crash reports or debugger events. The calendar screenshot
+was inspected. Local evidence: `.vm/issue36-native-results.json` and
+`.vm/issue36-calendar.png`.
