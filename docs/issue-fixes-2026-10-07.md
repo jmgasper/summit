@@ -27,3 +27,11 @@ SUMMIT_ENGINE_BUILD_NAME=SkiaCGMiPGO bash tools/build-modern-browser-in-vm.sh
 --browser --bundle --modern-extensions`. Engine build flags are recorded in
 `.vm/issue42/build.sh`; inspect live processes before starting another
 engine build, and preserve those PGO/Skia settings for incremental work.
+
+The October 7 engine has compiled and linked JavaScriptCore, WebCore, Skia
+and libwebrtc. WebKit integration is still being compiled. Native adaptations
+cover typed strings, image sizes, cancellable timers, frame registry lookup,
+picker callbacks and extension event/string ownership changes. Four inherited
+PGO data files reproducibly crashed GCC; the same objects compiled successfully
+with those files saved aside and all source/flags unchanged. The original files
+remain backed up. Runtime verification of the new engine is still pending.

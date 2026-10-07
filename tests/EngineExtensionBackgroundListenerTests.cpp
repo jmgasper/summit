@@ -18,7 +18,7 @@ static void check(bool condition, const char* message)
     }
 }
 
-static Ref<JSON::Object> stateWith(const String& entries, const String& version = "4"_s)
+static Ref<JSON::Object> stateWith(const String& entries, const String& version = makeString(currentBackgroundContentListenerStateVersionHaiku))
 {
     auto text = makeString("{\"BackgroundContentEventListenersVersion\":"_s, version,
         ",\"BackgroundContentEventListeners\":"_s, entries, '}');
@@ -63,7 +63,7 @@ int main()
     check(restored && restored->count(Event::TabsOnUpdated) == 7 && restored->count(Event::RuntimeOnMessage) == 2
         && restored->count(Event::RuntimeOnConnect) == 5, "independent reordered input resolves event names correctly");
 
-    for (auto version : { "3"_s, "5"_s, "4.5"_s, "\"4\""_s, "true"_s, "null"_s })
+    for (auto version : { "3"_s, "5"_s, "6"_s, "4.5"_s, "\"7\""_s, "true"_s, "null"_s })
         check(!readBackgroundListenersHaiku(stateWith("{}"_s, version)), "invalid or stale version requires discovery");
     for (auto entries : { "[]"_s, "null"_s, "42"_s, "\"text\""_s,
             "{\"Unknown\":1}"_s, "{\"NewUnknownEvent\":1}"_s, "{\"onMessage\":1}"_s,
@@ -80,6 +80,12 @@ int main()
         check(!readBackgroundListenersHaiku(independent), "nonfinite counts require discovery");
     }
 
+    listeners.clear();
+    listeners.add(Event::NotificationsOnClosed, 2);
+    saveBackgroundListenersHaiku(state, listeners);
+    restored = readBackgroundListenersHaiku(state);
+    check(restored && restored->count(Event::NotificationsOnClosed) == 2,
+        "notification close listeners survive the upstream enum consolidation");
     listeners.clear();
     listeners.add(Event::RuntimeOnMessage, std::numeric_limits<unsigned>::max());
     saveBackgroundListenersHaiku(state, listeners);

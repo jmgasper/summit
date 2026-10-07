@@ -192,6 +192,14 @@ def native(args):
     report.update(control_url=control_url, target_url=target_url, runtime_package_sha256=package_inputs)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     environment = dict(os.environ, WEBKIT_EXEC_PATH=str(bundle), LIBRARY_PATH=str(bundle / 'lib') + ':/boot/system/lib')
+    if args.library_path_prefix:
+        if not Path(args.library_path_prefix).is_absolute() or not Path(args.library_path_prefix).is_dir():
+            raise RuntimeError('Native library prefix must be an existing absolute directory')
+        environment['LIBRARY_PATH'] = args.library_path_prefix + ':' + environment['LIBRARY_PATH']
+    if args.egl_vendor_json:
+        if not Path(args.egl_vendor_json).is_absolute() or not Path(args.egl_vendor_json).is_file():
+            raise RuntimeError('EGL vendor manifest must be an existing absolute file')
+        environment['__EGL_VENDOR_LIBRARY_FILENAMES'] = args.egl_vendor_json
     for key in ('LD_PRELOAD', 'LD_PRELOAD_ADDONS', 'DISABLE_ASLR', 'SUMMIT_TRACE_EXTENSION_CONSOLE'):
         environment.pop(key, None)
     def members(group):
@@ -284,8 +292,11 @@ def native(args):
 
 
 def host(args):
+    remote_shell = os.environ.get('SUMMIT_REMOTE_SHELL', 'tools/haiku.sh')
+    if remote_shell not in ('tools/haiku.sh', 'tools/ws.sh'):
+        raise RuntimeError('SUMMIT_REMOTE_SHELL must be tools/haiku.sh or tools/ws.sh')
     def remote(command, **kwargs):
-        return subprocess.run(['bash', str(ROOT / 'tools/haiku.sh'), command], **kwargs)
+        return subprocess.run(['bash', str(ROOT / remote_shell), command], **kwargs)
     names = ('tests/ModernExtensionTabScriptTests.cpp', 'tests/ModernExtensionOverflowTests.cpp',
              'tests/ModernExtensionManagerTests.cpp', 'tests/ModernCloseTests.cpp',
              'tools/' + SCRIPT, 'tools/test-modern-close-native.py', 'tools/native_crash_log.py', 'tools/vm.py')
@@ -305,8 +316,9 @@ def host(args):
         for name, data in files.items():
             item = tarfile.TarInfo(name); item.size = len(data); item.mode = 0o600
             stream.addfile(item, io.BytesIO(data))
-    stage = remote('mktemp -d /SummitExtensions/summit/extension-tab-script-browser.XXXXXXXX', capture_output=True, text=True, check=True).stdout.strip()
-    if not stage.startswith('/SummitExtensions/summit/extension-tab-script-browser.') or not stage.rsplit('.', 1)[-1].isalnum():
+    stage_prefix = ('/boot/home/summit' if remote_shell == 'tools/ws.sh' else '/SummitExtensions/summit') + '/extension-tab-script-browser.'
+    stage = remote('mktemp -d ' + stage_prefix + 'XXXXXXXX', capture_output=True, text=True, check=True).stdout.strip()
+    if not stage.startswith(stage_prefix) or not stage.rsplit('.', 1)[-1].isalnum():
         raise RuntimeError('Invalid native stage')
     output = ROOT / '.vm' / ('modern-extension-tab-script-' + secrets.token_hex(12))
     output.mkdir()
@@ -314,8 +326,16 @@ def host(args):
     remote('tar -xzf - -C ' + shlex.quote(stage), input=archive.getvalue(), check=True)
     print(json.dumps({'stage': stage, 'output': str(output)}), flush=True)
     command = ['python3.10', stage + '/tools/' + SCRIPT, '--native', '--bundle', args.bundle]
+    if args.library_path_prefix:
+        command += ['--library-path-prefix', args.library_path_prefix]
+    if args.egl_vendor_json:
+        command += ['--egl-vendor-json', args.egl_vendor_json]
     if args.compile_only:
         command.append('--compile-only')
+    elif remote_shell == 'tools/ws.sh':
+        subprocess.run(['python3', '-c',
+            'import sys; sys.path.insert(0, "tools/bench"); import guest; guest.wake_display()'],
+            cwd=ROOT, env=dict(os.environ, SUMMIT_BENCH_HOST='workstation'), check=True)
     else:
         subprocess.run(['python3', str(ROOT / 'tools/vm.py'), 'key', 'shift'], check=True)
     with (output / 'native.log').open('w') as log:
@@ -323,7 +343,7 @@ def host(args):
     print((output / 'native.log').read_text(), end='', flush=True)
     data = remote('cat ' + shlex.quote(stage + '/result.json'), capture_output=True, text=True, check=True)
     report = {'native': json.loads(data.stdout), 'sources_unchanged': all(digest(ROOT / name) == expected for name, expected in original.items()),
-              'source_sha256': original}
+              'source_sha256': original, 'remote_shell': remote_shell}
     report['passed'] = result.returncode == 0 and report['native']['passed'] and report['sources_unchanged']
     (output / 'result.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps({'passed': report['passed'], 'result': str(output / 'result.json')}), flush=True)
@@ -334,6 +354,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--bundle', required=True)
     parser.add_argument('--compile-only', action='store_true')
+    parser.add_argument('--library-path-prefix', help='Native private graphics-library directory, ahead of bundled/system libraries')
+    parser.add_argument('--egl-vendor-json', help='Native EGL vendor manifest for the private graphics driver')
     parser.add_argument('--native', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
     raise SystemExit(native(args) if args.native else host(args))

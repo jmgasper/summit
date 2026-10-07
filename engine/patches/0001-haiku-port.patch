@@ -63584,10 +63584,10 @@ index 0000000000000000000000000000000000000000..786389356ffcf87d818bc62c570e3623
 +
 +#endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/Shared/Extensions/WebExtensionEventListenerType.h b/Source/WebKit/Shared/Extensions/WebExtensionEventListenerType.h
-index c6ffb3e89eeaffe26af5d76690da641e7b65c4c0..f71d78222cc66a7aa48b2a676456fb151ca770ba 100644
+index c6ffb3e89eeaffe26af5d76690da641e7b65c4c0..c71dbdcfb65137fa950b35451b2415e1466a0b2f 100644
 --- a/Source/WebKit/Shared/Extensions/WebExtensionEventListenerType.h
 +++ b/Source/WebKit/Shared/Extensions/WebExtensionEventListenerType.h
-@@ -99,11 +99,63 @@ enum class WebExtensionEventListenerType : uint8_t {
+@@ -99,11 +99,60 @@ enum class WebExtensionEventListenerType : uint8_t {
      WindowsOnCreated,
      WindowsOnFocusChanged,
      WindowsOnRemoved,
@@ -63598,7 +63598,6 @@ index c6ffb3e89eeaffe26af5d76690da641e7b65c4c0..f71d78222cc66a7aa48b2a676456fb15
 +    ManagementOnEnabled,
 +    ManagementOnInstalled,
 +    ManagementOnUninstalled,
-+    NotificationsOnClosed,
 +    NotificationsOnShown,
 +    RuntimeOnSuspend,
 +    RuntimeOnSuspendCanceled,
@@ -63627,8 +63626,6 @@ index c6ffb3e89eeaffe26af5d76690da641e7b65c4c0..f71d78222cc66a7aa48b2a676456fb15
 +        return "onInstalled"_s;
 +    case WebExtensionEventListenerType::ManagementOnUninstalled:
 +        return "onUninstalled"_s;
-+    case WebExtensionEventListenerType::NotificationsOnClosed:
-+        return "onClosed"_s;
 +    case WebExtensionEventListenerType::NotificationsOnShown:
 +        return "onShown"_s;
 +    case WebExtensionEventListenerType::RuntimeOnSuspend:
@@ -65654,10 +65651,10 @@ index 0000000000000000000000000000000000000000..14bb1096faa8574d452de76f0cf1728a
 +#endif
 diff --git a/Source/WebKit/Shared/Extensions/WebExtensionTabScriptTarget.cpp b/Source/WebKit/Shared/Extensions/WebExtensionTabScriptTarget.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..2f3b20cdea960d434acee60ef756db24ed72caae
+index 0000000000000000000000000000000000000000..62d83620125018bc4d5bb28177d68c7d1c647549
 --- /dev/null
 +++ b/Source/WebKit/Shared/Extensions/WebExtensionTabScriptTarget.cpp
-@@ -0,0 +1,116 @@
+@@ -0,0 +1,113 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#include "config.h"
 +#include "WebExtensionTabScriptTarget.h"
@@ -65667,12 +65664,13 @@ index 0000000000000000000000000000000000000000..2f3b20cdea960d434acee60ef756db24
 +
 +namespace WebKit {
 +
-+static bool validFrame(const FrameInfoData& frame, WebPageProxyIdentifier pageIdentifier, const FrameInfoData* parent)
++static bool validFrame(const FrameInfoData& frame, WebPageProxyIdentifier pageIdentifier)
 +{
++    // Parent relationships are carried by the tree itself. The UI process
++    // validates that tree against its registry before capture; the web process
++    // rebuilds it from live frames before refreshing each document identity.
 +    return frame.webPageProxyID && *frame.webPageProxyID == pageIdentifier
-+        && frame.documentID && *frame.documentID
-+        && frame.isMainFrame == !parent
-+        && (parent ? frame.parentFrameID && *frame.parentFrameID == parent->frameID : !frame.parentFrameID);
++        && frame.documentID && *frame.documentID;
 +}
 +
 +std::expected<Vector<WebExtensionTabScriptTarget>, String> captureWebExtensionTabScriptTargets(const FrameTreeNodeData& root, WebPageProxyIdentifier pageIdentifier, const WebExtensionTabScriptParameters& parameters)
@@ -65696,18 +65694,16 @@ index 0000000000000000000000000000000000000000..2f3b20cdea960d434acee60ef756db24
 +            matches = info.documentID && info.documentID->object() == *parameters.documentIdentifier;
 +        else if (!parameters.allFrames) {
 +            auto identifier = parameters.frameIdentifier.value_or(WebExtensionFrameConstants::MainFrameIdentifier);
-+            matches = isMainFrame(identifier) ? info.isMainFrame : !info.isMainFrame && info.frameID.toUInt64() == identifier.toUInt64();
++            matches = isMainFrame(identifier) ? current.node == &root : current.node != &root && info.frameID.toUInt64() == identifier.toUInt64();
 +        }
 +
 +        current.ancestors.append(&info);
 +        if (matches) {
 +            WebExtensionTabScriptTarget target { pageIdentifier, { } };
-+            const FrameInfoData* parent = nullptr;
 +            for (const auto* frame : current.ancestors) {
-+                if (!validFrame(*frame, pageIdentifier, parent))
++                if (!validFrame(*frame, pageIdentifier))
 +                    return makeUnexpected("the target document is unavailable"_s);
 +                target.documents.append({ frame->frameID, *frame->documentID, frame->request.url() });
-+                parent = frame;
 +            }
 +            targets.append(WTF::move(target));
 +        }
@@ -65746,16 +65742,14 @@ index 0000000000000000000000000000000000000000..2f3b20cdea960d434acee60ef756db24
 +
 +    WebExtensionTabScriptTarget refreshed { target.pageIdentifier, { } };
 +    const FrameTreeNodeData* node = &root;
-+    const FrameInfoData* parent = nullptr;
 +    for (size_t i = 0; i < target.documents.size(); ++i) {
 +        const auto& expected = target.documents[i];
-+        if (!node || !validFrame(node->info, target.pageIdentifier, parent)
++        if (!node || !validFrame(node->info, target.pageIdentifier)
 +            || node->info.frameID != expected.frameIdentifier
 +            || *node->info.documentID != expected.documentIdentifier)
 +            return makeUnexpected("the target document changed before script execution"_s);
 +
 +        refreshed.documents.append({ node->info.frameID, *node->info.documentID, node->info.request.url() });
-+        parent = &node->info;
 +        if (i + 1 < target.documents.size()) {
 +            const auto nextFrameIdentifier = target.documents[i + 1].frameIdentifier;
 +            const FrameTreeNodeData* next = nullptr;
@@ -65776,10 +65770,10 @@ index 0000000000000000000000000000000000000000..2f3b20cdea960d434acee60ef756db24
 +#endif
 diff --git a/Source/WebKit/Shared/Extensions/WebExtensionTabScriptTarget.h b/Source/WebKit/Shared/Extensions/WebExtensionTabScriptTarget.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..10edfa7e5a993c496f926a3f21c009fda2def52f
+index 0000000000000000000000000000000000000000..1a678d53bd0b2966036e4995ba4197aa800fbf38
 --- /dev/null
 +++ b/Source/WebKit/Shared/Extensions/WebExtensionTabScriptTarget.h
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,45 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#pragma once
 +
@@ -65809,7 +65803,8 @@ index 0000000000000000000000000000000000000000..10edfa7e5a993c496f926a3f21c009fd
 +    Vector<WebExtensionTabScriptDocument> documents;
 +};
 +
-+// Capture before requesting permission. The returned order always starts with
++// The caller validates the root and parent relationships against its frame
++// registry before requesting permission. The returned order always starts with
 +// the main frame when it is selected. No extension permissions are granted here.
 +std::expected<Vector<WebExtensionTabScriptTarget>, String> captureWebExtensionTabScriptTargets(const FrameTreeNodeData&, WebPageProxyIdentifier, const WebExtensionTabScriptParameters&);
 +
@@ -71401,16 +71396,17 @@ index 0000000000000000000000000000000000000000..7128bfb8c27cab859a77fab8923f9131
 +};
 diff --git a/Source/WebKit/UIProcess/API/haiku/WebKitViewEmbedding.cpp b/Source/WebKit/UIProcess/API/haiku/WebKitViewEmbedding.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..d8412baf03f170dad5c68c7ef43bef8821a16cea
+index 0000000000000000000000000000000000000000..5dd3bf6c6cbc0146d090b04e2aa4defdaa8d0f9c
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/API/haiku/WebKitViewEmbedding.cpp
-@@ -0,0 +1,746 @@
+@@ -0,0 +1,747 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +// BWebKitView's embedding interfaces (WebKitEmbedding.h): user scripts,
 +// script messages with replies, script evaluation and URL scheme handlers.
 +
 +#include "config.h"
++#include "FrameInfoHaiku.h"
 +#include "WebKitView.h"
 +
 +#include "APIArray.h"
@@ -71592,7 +71588,7 @@ index 0000000000000000000000000000000000000000..d8412baf03f170dad5c68c7ef43bef88
 +        addStringHaiku(message, "name", m_name);
 +        addScriptValueHaiku(message, WTF::move(body), "body", "body_type");
 +        message.AddUInt64("reply_token", token);
-+        message.AddBool("main_frame", frame.isMainFrame);
++        message.AddBool("main_frame", isMainFrameHaiku(frame, &page));
 +        addStringHaiku(message, "frame_url", frame.request.url().string());
 +        addStringHaiku(message, "origin", frame.securityOrigin.isOpaque() ? "null"_s : frame.securityOrigin.toString());
 +        pendingScriptRepliesHaiku().add(token, WTF::move(completion));
@@ -79012,12 +79008,13 @@ index b9eb05c62a8aade37bb75b1a196fd114b3bfebd7..1759a9c1a598de8bd22c7d09ec631189
  #endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/ExtensionActionPopupHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/ExtensionActionPopupHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..bb15477c4926a4f4d21958bbc823cdd48762945b
+index 0000000000000000000000000000000000000000..e766986b94c99d2792ad9ce57d789ace4a1d2fa0
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/ExtensionActionPopupHaiku.cpp
-@@ -0,0 +1,542 @@
+@@ -0,0 +1,543 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#include "config.h"
++#include "FrameInfoHaiku.h"
 +#include "ExtensionActionPopupHaiku.h"
 +#include <cstdio>
 +#include <cstdlib>
@@ -79083,14 +79080,14 @@ index 0000000000000000000000000000000000000000..bb15477c4926a4f4d21958bbc823cdd4
 +    }
 +    void didFailProvisionalNavigationWithError(WebPageProxy& page, FrameInfoData&& frame, API::Navigation*, const URL&, const WebCore::ResourceError&, API::Object*) final
 +    {
-+        if (frame.isMainFrame) {
++        if (isMainFrameHaiku(frame, &page)) {
 +            if (RefPtr popup = popupForPage(page))
 +                popup->fail("The extension popup document could not be loaded."_s);
 +        }
 +    }
 +    void didFailNavigationWithError(WebPageProxy& page, const FrameInfoData& frame, API::Navigation*, const URL&, const WebCore::ResourceError&, API::Object*) final
 +    {
-+        if (frame.isMainFrame) {
++        if (isMainFrameHaiku(frame, &page)) {
 +            if (RefPtr popup = popupForPage(page))
 +                popup->fail("The extension popup navigation failed."_s);
 +        }
@@ -80634,7 +80631,7 @@ index 0000000000000000000000000000000000000000..1abaf938599f4601a4f1a53999fffe84
 +#endif // PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionBackgroundListenersHaiku.h b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionBackgroundListenersHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..cfe3cc9acc01c8fe5a57caf84975cab393e17642
+index 0000000000000000000000000000000000000000..2f71885a2c8f6e4819dd9431a5848905267b3947
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionBackgroundListenersHaiku.h
 @@ -0,0 +1,106 @@
@@ -80677,8 +80674,8 @@ index 0000000000000000000000000000000000000000..cfe3cc9acc01c8fe5a57caf84975cab3
 +
 +inline constexpr auto backgroundContentEventListenersKeyHaiku = "BackgroundContentEventListeners"_s;
 +inline constexpr auto backgroundContentEventListenersVersionKeyHaiku = "BackgroundContentEventListenersVersion"_s;
-+// Native privacy and downloads.onErased add events only on Haiku; older backgrounds must register them on their next load.
-+inline constexpr unsigned currentBackgroundContentListenerStateVersionHaiku = 6;
++// Refresh listeners after integrating the upstream notification events.
++inline constexpr unsigned currentBackgroundContentListenerStateVersionHaiku = 7;
 +
 +using BackgroundListenerCountsHaiku = HashCountedSet<WebExtensionEventListenerType>;
 +
@@ -81727,7 +81724,7 @@ index 0000000000000000000000000000000000000000..730115dae41130579faaec07972c4c97
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPIDownloadsHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPIDownloadsHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..6d2778beec5bb5938b0e7b5e1f408fb2ec9d54f1
+index 0000000000000000000000000000000000000000..df5f15285326a8eb497c5b7717e53659c931e46e
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPIDownloadsHaiku.cpp
 @@ -0,0 +1,316 @@
@@ -81917,7 +81914,7 @@ index 0000000000000000000000000000000000000000..6d2778beec5bb5938b0e7b5e1f408fb2
 +            fail("body"_s, "it must be a string and requires the POST method"_s);
 +            return;
 +        }
-+        request.setHTTPBody(WebCore::FormData::create(body.utf8()));
++        request.setHTTPBody(WebCore::FormData::create(body.utf8().span()));
 +    }
 +
 +    // Start the transfer as the calling extension page. That page owns the
@@ -83200,10 +83197,10 @@ index 0000000000000000000000000000000000000000..87f9f3f91adb4d6506770a637f90eca0
 +#endif
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPIScriptingHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPIScriptingHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..1a8d72da0ff6d297326e483193c6f994de5bb93d
+index 0000000000000000000000000000000000000000..1dd20c49553438da863b8e4ec85e589a3a7598da
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPIScriptingHaiku.cpp
-@@ -0,0 +1,722 @@
+@@ -0,0 +1,723 @@
 +/*
 + * Copyright (C) 2023-2024 Apple Inc. All rights reserved.
 + *
@@ -83232,6 +83229,7 @@ index 0000000000000000000000000000000000000000..1a8d72da0ff6d297326e483193c6f994
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
++#include "FrameInfoHaiku.h"
 +#include "WebExtensionContext.h"
 +
 +#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
@@ -83592,7 +83590,7 @@ index 0000000000000000000000000000000000000000..1a8d72da0ff6d297326e483193c6f994
 +    auto runAt = injectImmediately ? WebExtensionTabScriptRunAt::DocumentStart : WebExtensionTabScriptRunAt::DocumentIdle;
 +
 +    page->getAllFrames([this, protectedThis = Ref { *this }, tab, page, world, mainWorld, parameters, sources = WTF::move(*sources), runAt, userGesture, stillCurrent, completion = WTF::move(completion)](std::optional<FrameTreeNodeData>&& frames) mutable {
-+        if (!frames || !stillCurrent()) {
++        if (!frames || !stillCurrent() || !frameTreeMatchesPageHaiku(*frames, *page)) {
 +            completion(toWebExtensionError(apiName, nullString(), "the target document is unavailable"_s));
 +            return;
 +        }
@@ -84479,12 +84477,13 @@ index 0000000000000000000000000000000000000000..7075a9e51371a32250e2ff4e80d29137
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPITabScriptHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPITabScriptHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..17efa98590eecc8feb56779e9ff0f9c92c5e011d
+index 0000000000000000000000000000000000000000..df528e83c3b65c609416b3b57eb367b1bfa8e502
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextAPITabScriptHaiku.cpp
-@@ -0,0 +1,135 @@
+@@ -0,0 +1,136 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#include "config.h"
++#include "FrameInfoHaiku.h"
 +#include "WebExtensionContext.h"
 +#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 +#include "APIContentWorld.h"
@@ -84543,7 +84542,7 @@ index 0000000000000000000000000000000000000000..17efa98590eecc8feb56779e9ff0f9c9
 +            && tab->isOpen() && tab->extensionHasAccess() && tab->nativePage() == page;
 +    };
 +    page->getAllFrames([this, protectedThis = Ref { *this }, tab, page, world, parameters, source, sourceURL, userGesture, stillCurrent, completion = WTF::move(completion)](std::optional<FrameTreeNodeData>&& frames) mutable {
-+        if (!frames || !stillCurrent()) {
++        if (!frames || !stillCurrent() || !frameTreeMatchesPageHaiku(*frames, *page)) {
 +            completion(toWebExtensionError("tabs.executeScript()"_s, nullString(), "the target document is unavailable"_s));
 +            return;
 +        }
@@ -85209,7 +85208,7 @@ index 0000000000000000000000000000000000000000..cdba2fb439048f5b8dda6962e4b1c916
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextBackgroundHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextBackgroundHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..fec6124e532d5bdcb0d992a01d76905eb67831c7
+index 0000000000000000000000000000000000000000..99532b95636c27ebefb3884399e8eaff0582623e
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextBackgroundHaiku.cpp
 @@ -0,0 +1,460 @@
@@ -85325,7 +85324,7 @@ index 0000000000000000000000000000000000000000..fec6124e532d5bdcb0d992a01d76905e
 +    WeakPtr<WebExtensionContext> m_context;
 +};
 +
-+void WebExtensionContext::enumerateExtensionPages(NOESCAPE Function<void(WebPageProxy&, bool&)>&& action)
++void WebExtensionContext::enumerateExtensionPages(NOESCAPE const Function<void(WebPageProxy&, bool&)>& action)
 +{
 +    RefPtr controller = extensionController();
 +    if (!controller)
@@ -87379,13 +87378,14 @@ index 0000000000000000000000000000000000000000..f0d39259efea20c5b48abdb23588ef7c
 +#endif // ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextWebNavigationHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextWebNavigationHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..14a233b25aa096a498b05c278b6884164e331304
+index 0000000000000000000000000000000000000000..9790c035f324c9a74dde9d0a19ea539775dd983f
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionContextWebNavigationHaiku.cpp
-@@ -0,0 +1,113 @@
+@@ -0,0 +1,114 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
++#include "FrameInfoHaiku.h"
 +#include "WebExtensionContext.h"
 +
 +#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
@@ -87411,7 +87411,7 @@ index 0000000000000000000000000000000000000000..14a233b25aa096a498b05c278b688416
 +    while (!pending.isEmpty()) {
 +        auto frame = pending.takeLast();
 +        auto& info = frame.node->info;
-+        auto identifier = toWebExtensionFrameIdentifier(info);
++        auto identifier = frame.node == &root ? WebExtensionFrameConstants::MainFrameIdentifier : toWebExtensionFrameIdentifier(std::optional { info.frameID });
 +        if (!target || identifier == *target) {
 +            auto& url = info.request.url();
 +            WebExtensionFrameParameters parameters {
@@ -87452,7 +87452,7 @@ index 0000000000000000000000000000000000000000..14a233b25aa096a498b05c278b688416
 +            completionHandler(toWebExtensionError("webNavigation.getFrame()"_s, nullString(), "tab not found"_s));
 +            return;
 +        }
-+        if (!tree || !tree->info.isMainFrame) {
++        if (!tree || !frameTreeMatchesPageHaiku(*tree, page.get())) {
 +            completionHandler(toWebExtensionError("webNavigation.getFrame()"_s, nullString(), "main frame not found"_s));
 +            return;
 +        }
@@ -87485,7 +87485,7 @@ index 0000000000000000000000000000000000000000..14a233b25aa096a498b05c278b688416
 +            completionHandler(toWebExtensionError("webNavigation.getAllFrames()"_s, nullString(), "tab not found"_s));
 +            return;
 +        }
-+        if (!tree || !tree->info.isMainFrame) {
++        if (!tree || !frameTreeMatchesPageHaiku(*tree, page.get())) {
 +            completionHandler(toWebExtensionError("webNavigation.getAllFrames()"_s, nullString(), "main frame not found"_s));
 +            return;
 +        }
@@ -89917,10 +89917,10 @@ index 0000000000000000000000000000000000000000..87388e7f5f83641e04309ca134336097
 +#endif
 diff --git a/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionHaiku.cpp b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..25cc2b175dc0d9894a67dc1634d557a83794068b
+index 0000000000000000000000000000000000000000..34621804a95de1bdd602b056ce94878e4a352598
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/Extensions/haiku/WebExtensionHaiku.cpp
-@@ -0,0 +1,328 @@
+@@ -0,0 +1,329 @@
 +/*
 + * Copyright (C) 2026 KunanyiOS contributors.
 + *
@@ -89946,6 +89946,7 @@ index 0000000000000000000000000000000000000000..25cc2b175dc0d9894a67dc1634d557a8
 + */
 +
 +#include "config.h"
++#include <WebCore/ConcreteObjectSize.h>
 +#include "WebExtension.h"
 +
 +#if ENABLE(WK_WEB_EXTENSIONS) && PLATFORM(HAIKU)
@@ -90225,7 +90226,7 @@ index 0000000000000000000000000000000000000000..25cc2b175dc0d9894a67dc1634d557a8
 +        if (bitmap->setData(WTF::move(encodedData), true) < WebCore::EncodedDataStatus::SizeAvailable || !validIconSize(bitmap->size()))
 +            return fail();
 +        if (sizeForResizing.isZero())
-+            nativeImage = static_cast<WebCore::Image&>(bitmap.get()).currentPreTransformedNativeImage(WebCore::ImageOrientation::Orientation::FromImage);
++            nativeImage = static_cast<WebCore::Image&>(bitmap.get()).currentPreTransformedNativeImage(WebCore::ConcreteObjectSize::fixed(bitmap->size()), WebCore::ImageOrientation::Orientation::FromImage);
 +        else {
 +            auto originalSize = bitmap->size();
 +            auto ratio = std::min(sizeForResizing.width() / originalSize.width(), sizeForResizing.height() / originalSize.height()) * scale;
@@ -90236,7 +90237,7 @@ index 0000000000000000000000000000000000000000..25cc2b175dc0d9894a67dc1634d557a8
 +            RefPtr imageBuffer = WebCore::ImageBuffer::create(rasterSize, WebCore::RenderingMode::Unaccelerated, WebCore::RenderingPurpose::DOM, 1, WebCore::ColorSpace::SRGB(), WebCore::PixelFormat::BGRA8);
 +            if (!imageBuffer)
 +                return fail();
-+            imageBuffer->context().drawImage(bitmap, WebCore::FloatRect({ }, rasterSize));
++            imageBuffer->context().drawImage(bitmap, WebCore::ConcreteObjectSize::fixed(rasterSize), WebCore::FloatRect({ }, rasterSize));
 +            nativeImage = WebCore::ImageBuffer::sinkIntoNativeImage(WTF::move(imageBuffer));
 +        }
 +    }
@@ -97580,6 +97581,51 @@ index 0000000000000000000000000000000000000000..59c492253640a0611a637d38d7ae2001
 +};
 +
 +} // namespace WebKit
+diff --git a/Source/WebKit/UIProcess/haiku/FrameInfoHaiku.h b/Source/WebKit/UIProcess/haiku/FrameInfoHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..1ba712e5edf664b57e3a086d452b59c5c5710113
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/FrameInfoHaiku.h
+@@ -0,0 +1,39 @@
++/* Copyright (C) 2026 air/OS contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++
++#include "FrameTreeNodeData.h"
++#include "WebFrameProxy.h"
++#include "WebPageProxy.h"
++
++namespace WebKit {
++
++inline bool isMainFrameHaiku(const FrameInfoData& info, const WebPageProxy* page)
++{
++    RefPtr frame = WebFrameProxy::webFrame(info.frameID);
++    return page && frame && frame->page() == page && frame->isMainFrame();
++}
++
++// FrameInfoData no longer carries parent or main-frame flags. Validate the
++// returned tree against the UI process's frame registry before authorizing
++// extension script targets or reporting their parent relationships.
++inline bool frameTreeMatchesPageHaiku(const FrameTreeNodeData& root, const WebPageProxy& page)
++{
++    struct PendingFrame {
++        const FrameTreeNodeData* node;
++        WebFrameProxy* parent;
++    };
++    Vector<PendingFrame> pending { { &root, nullptr } };
++    while (!pending.isEmpty()) {
++        auto current = pending.takeLast();
++        const auto& info = current.node->info;
++        RefPtr frame = WebFrameProxy::webFrame(info.frameID);
++        if (!frame || frame->page() != &page || !info.webPageProxyID || *info.webPageProxyID != page.identifier()
++            || frame->isMainFrame() != !current.parent || frame->parentFrame() != current.parent)
++            return false;
++        for (const auto& child : current.node->children)
++            pending.append({ &child, frame.get() });
++    }
++    return true;
++}
++
++} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/JavaScriptDialogHaiku.h b/Source/WebKit/UIProcess/haiku/JavaScriptDialogHaiku.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..15401027888088266cf858cb7282d33ea2607e04
@@ -100091,7 +100137,7 @@ index 0000000000000000000000000000000000000000..60291d60bcbc7a44b006a88500f1c374
 +}
 diff --git a/Source/WebKit/UIProcess/haiku/WebDateTimePickerHaiku.cpp b/Source/WebKit/UIProcess/haiku/WebDateTimePickerHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..2afbe1c6c5b2cb255539b764f7ff384726cad2dc
+index 0000000000000000000000000000000000000000..28aa449338ea36dcf54c2b96097c6a01a549a7c5
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebDateTimePickerHaiku.cpp
 @@ -0,0 +1,98 @@
@@ -100159,7 +100205,7 @@ index 0000000000000000000000000000000000000000..2afbe1c6c5b2cb255539b764f7ff3847
 +        if (model.suggestions.size() == 20) break;
 +        if (suggestion.length() <= 64) model.suggestions.push_back(copy(suggestion));
 +    }
-+    const auto& rect = params.anchorRectInRootView;
++    const auto& rect = params.anchorRectInMainFrameView;
 +    BRect anchor(geometry.screenOrigin.x() + rect.x(), geometry.screenOrigin.y() + rect.y(),
 +        geometry.screenOrigin.x() + static_cast<double>(rect.maxX()), geometry.screenOrigin.y() + static_cast<double>(rect.maxY()));
 +    if (!anchor.IsValid() || !std::isfinite(anchor.left) || !std::isfinite(anchor.top)
@@ -100878,10 +100924,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..13402929cfc93dabfa04ddb29874589c125bc03c
+index 0000000000000000000000000000000000000000..ae2ef9978c7ea5c30f3ad8bbc322134dacf5117e
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,2457 @@
+@@ -0,0 +1,2458 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -100908,6 +100954,7 @@ index 0000000000000000000000000000000000000000..13402929cfc93dabfa04ddb29874589c
 + */
 +
 +#include "config.h"
++#include "FrameInfoHaiku.h"
 +#include "WebViewPrivate.h"
 +
 +#include "APIData.h"
@@ -101579,7 +101626,7 @@ index 0000000000000000000000000000000000000000..13402929cfc93dabfa04ddb29874589c
 +            state->context->bluetooth()->cancelPage(page.identifier().toUInt64());
 +        }
 +#endif
-+        if (!frame.isMainFrame)
++        if (!isMainFrameHaiku(frame, &page))
 +            return;
 +        if (auto state = m_state.lock()) {
 +            state->documentIdentifier = frame.documentID ? std::optional { *frame.documentID } : std::nullopt;
@@ -101589,10 +101636,10 @@ index 0000000000000000000000000000000000000000..13402929cfc93dabfa04ddb29874589c
 +        }
 +    }
 +
-+    void didFailProvisionalNavigationWithError(WebPageProxy&, FrameInfoData&& frame,
++    void didFailProvisionalNavigationWithError(WebPageProxy& page, FrameInfoData&& frame,
 +        API::Navigation* navigation, const URL& requestURL, const ResourceError& error, API::Object*) override
 +    {
-+        if (auto state = m_state.lock(); state && frame.isMainFrame && matchesLoadHaiku(*state, navigation))
++        if (auto state = m_state.lock(); state && isMainFrameHaiku(frame, &page) && matchesLoadHaiku(*state, navigation))
 +            failLoadHaiku(state, requestURL, error, true);
 +        // An uncommitted failure without a Navigation ID has no document
 +        // identity. Do not attribute it to a newer same-URL request.
@@ -101601,7 +101648,7 @@ index 0000000000000000000000000000000000000000..13402929cfc93dabfa04ddb29874589c
 +    void didFailNavigationWithError(WebPageProxy& page, const FrameInfoData& frame,
 +        API::Navigation* navigation, const URL& requestURL, const ResourceError& error, API::Object*) override
 +    {
-+        if (auto state = m_state.lock(); state && frame.isMainFrame
++        if (auto state = m_state.lock(); state && isMainFrameHaiku(frame, &page)
 +            && (matchesLoadHaiku(*state, navigation) || (!navigation && matchesUnidentifiedDocument(*state, page, frame))))
 +            failLoadHaiku(state, requestURL, error, false);
 +    }
@@ -101656,7 +101703,7 @@ index 0000000000000000000000000000000000000000..13402929cfc93dabfa04ddb29874589c
 +        WebPageProxy& page, const FrameInfoData& frame)
 +    {
 +        return !state.closed && state.load.pending && !state.load.identified && state.load.committed
-+            && frame.isMainFrame && frame.documentID && state.documentIdentifier
++            && isMainFrameHaiku(frame, &page) && frame.documentID && state.documentIdentifier
 +            && *frame.documentID == *state.documentIdentifier
 +            && !page.pageLoadState().pendingAPIRequest().navigationID
 +            && page.pageLoadState().provisionalURL().isEmpty();
@@ -103081,7 +103128,7 @@ index 0000000000000000000000000000000000000000..13402929cfc93dabfa04ddb29874589c
 +IntRect WebView::rootViewToScreen(const IntRect& rect) { auto result = rect; result.move(toIntSize(geometry().screenOrigin)); return result; }
 +
 +RefPtr<WebPopupMenuProxy> WebView::createPopupMenuProxy(WebPageProxy& page) { return WebPopupMenuProxyHaiku::create(m_state, page.popupMenuClient()); }
-+RefPtr<WebColorPicker> WebView::createColorPicker(WebPageProxy& page, const Color&, const IntRect&, ColorControlSupportsAlpha, Vector<Color>&& suggestions, std::optional<FrameIdentifier> frame)
++RefPtr<WebColorPicker> WebView::createColorPicker(WebPageProxy& page, const Color&, ColorControlSupportsAlpha, Vector<Color>&& suggestions, std::optional<FrameIdentifier> frame)
 +{
 +    return WebColorPickerHaiku::create(page, m_state, WTF::move(suggestions), frame);
 +}
@@ -103153,12 +103200,12 @@ index 0000000000000000000000000000000000000000..13402929cfc93dabfa04ddb29874589c
 +            || !(context->hasPermission(WebExtensionPermission::menus()) || context->hasPermission(WebExtensionPermission::contextMenus())))
 +            continue;
 +        WebExtensionMenuItemContextParameters parameters;
-+        parameters.frameIdentifier = toWebExtensionFrameIdentifier(frame);
++        parameters.frameIdentifier = isMainFrameHaiku(frame, &page) ? WebExtensionFrameConstants::MainFrameIdentifier : toWebExtensionFrameIdentifier(std::optional { frame.frameID });
 +        parameters.frameURL = frame.request.url();
 +        RefPtr tab = context->getTab(page.identifier());
 +        if (tab)
 +            parameters.tabIdentifier = tab->identifier();
-+        if (!context->hasPermission(frame.request.url(), tab.get()) && (!tab || !frame.isMainFrame || !context->hasPermission(WebExtensionPermission::activeTab())))
++        if (!context->hasPermission(frame.request.url(), tab.get()) && (!tab || !isMainFrameHaiku(frame, &page) || !context->hasPermission(WebExtensionPermission::activeTab())))
 +            continue;
 +        if (hitTest) {
 +            if (!hitTest->absoluteImageURL.isEmpty()) {
@@ -103186,7 +103233,7 @@ index 0000000000000000000000000000000000000000..13402929cfc93dabfa04ddb29874589c
 +            }
 +        }
 +        if (parameters.types.isEmpty())
-+            parameters.types.add(frame.isMainFrame ? WebExtensionMenuItemContextType::Page : WebExtensionMenuItemContextType::Frame);
++            parameters.types.add(isMainFrameHaiku(frame, &page) ? WebExtensionMenuItemContextType::Page : WebExtensionMenuItemContextType::Frame);
 +        BMessage extension;
 +        addExtensionMenuItemsHaiku(extension, context, context->mainMenuItems(), parameters);
 +        if (extension.HasMessage("item")) {
@@ -103227,7 +103274,7 @@ index 0000000000000000000000000000000000000000..13402929cfc93dabfa04ddb29874589c
 +            message.AddPoint("where", BPoint(location.x(), location.y()));
 +            addTextHaiku(message, "selected_text", m_context.selectedText());
 +            addTextHaiku(message, "frame_url", m_frameInfo.request.url().string());
-+            message.AddBool("main_frame", m_frameInfo.isMainFrame);
++            message.AddBool("main_frame", isMainFrameHaiku(m_frameInfo, page()));
 +            if (const auto& hit = m_context.webHitTestResultData()) {
 +                addTextHaiku(message, "link_url", hit->absoluteLinkURL);
 +                addTextHaiku(message, "link_label", hit->linkLabel);
@@ -103247,7 +103294,7 @@ index 0000000000000000000000000000000000000000..13402929cfc93dabfa04ddb29874589c
 +            sendToHostHaiku(state, message);
 +        }
 +        if (RefPtr page = this->page())
-+            page->didDismissContextMenu();
++            page->didDismissContextMenu(m_frameInfo);
 +    }
 +
 +    const std::weak_ptr<WebViewStateHaiku> m_state;
@@ -103782,7 +103829,7 @@ index 0000000000000000000000000000000000000000..72b20b3d5a964a65bbe8fb34aad9c94a
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewPrivate.h b/Source/WebKit/UIProcess/haiku/WebViewPrivate.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..d5f9d941b5119ca190cf4dbb0fe376708b46d741
+index 0000000000000000000000000000000000000000..de3766585496e053be2426a4e3f11eb3f5c217b0
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewPrivate.h
 @@ -0,0 +1,206 @@
@@ -103914,7 +103961,7 @@ index 0000000000000000000000000000000000000000..d5f9d941b5119ca190cf4dbb0fe37670
 +#if ENABLE(CONTEXT_MENUS)
 +    Ref<WebContextMenuProxy> createContextMenuProxy(WebPageProxy&, FrameInfoData&&, ContextMenuContextData&&, const UserData&) override;
 +#endif
-+    RefPtr<WebColorPicker> createColorPicker(WebPageProxy&, const WebCore::Color&, const WebCore::IntRect&, ColorControlSupportsAlpha, Vector<WebCore::Color>&&, std::optional<WebCore::FrameIdentifier>) override;
++    RefPtr<WebColorPicker> createColorPicker(WebPageProxy&, const WebCore::Color&, ColorControlSupportsAlpha, Vector<WebCore::Color>&&, std::optional<WebCore::FrameIdentifier>) override;
 +    RefPtr<WebDataListSuggestionsDropdown> createDataListSuggestionsDropdown(WebPageProxy&) override;
 +    RefPtr<WebDateTimePicker> createDateTimePicker(WebPageProxy&) override;
 +#if USE(COORDINATED_GRAPHICS)
@@ -120251,7 +120298,7 @@ index 0000000000000000000000000000000000000000..80deac4079e45cdcbc0249ee23e1bddd
 +}
 +#endif
 diff --git a/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionWrapper.cpp b/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionWrapper.cpp
-index e0051aaf0bbe2ae2d4fcc14f4f90797040d6033b..c47d391012af2496c13dfcfeb5eb023bf87915da 100644
+index e0051aaf0bbe2ae2d4fcc14f4f90797040d6033b..3b0191f700dab9256977021fc38ab9848b20665f 100644
 --- a/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionWrapper.cpp
 +++ b/Source/WebKit/WebProcess/Extensions/Bindings/JSWebExtensionWrapper.cpp
 @@ -43,6 +43,8 @@
@@ -120288,6 +120335,42 @@ index e0051aaf0bbe2ae2d4fcc14f4f90797040d6033b..c47d391012af2496c13dfcfeb5eb023b
  }
  
  JSValueRef toWindowObject(JSContextRef context, WebFrame& frame)
+@@ -262,7 +257,7 @@ JSValueRef toJSValueRef(JSContextRef context, const String& string, NullOrEmptyS
+         [[fallthrough]];
+ 
+     case NullOrEmptyString::NullStringAsEmptyString:
+-        if (RefPtr stringRef = toJSString(string))
++        if (auto stringRef = toJSString(string))
+             return JSValueMakeString(context, stringRef.get());
+ 
+         return JSValueMakeNull(context);
+@@ -294,7 +289,7 @@ JSValueRef deserializeJSONString(JSContextRef context, const String& jsonString)
+     if (jsonString.isEmpty())
+         return JSValueMakeNull(context);
+ 
+-    if (RefPtr string = toJSString(jsonString)) {
++    if (auto string = toJSString(jsonString)) {
+         if (JSValueRef value = JSValueMakeFromJSONString(context, string.get()))
+             return value;
+     }
+@@ -346,7 +341,7 @@ static JSValueRef fromJSONObject(JSContextRef context, const JSON::Object& objec
+ 
+     for (auto& key : object.keys()) {
+         if (auto value = object.getValue(key)) {
+-            RefPtr jsKey = toJSString(key);
++            auto jsKey = toJSString(key);
+             JSObjectSetProperty(context, result, jsKey.get(), fromJSON(context, value), 0, nullptr);
+         }
+     }
+@@ -423,7 +418,7 @@ JSValueRef fromObject(JSContextRef context, HashMap<String, Protected<JSValueRef
+     auto result = JSObjectMake(context, nullptr, nullptr);
+ 
+     for (auto& key : object.keys()) {
+-        RefPtr jsKey = toJSString(key);
++        auto jsKey = toJSString(key);
+         JSObjectSetProperty(context, result, jsKey.get(), object.get(key).get(), 0, nullptr);
+     }
+ 
 @@ -545,6 +540,54 @@ String toJSONString(JSContextRef context, JSValueRef value)
      return serializeJSObject(context, value, nullptr);
  }
@@ -120343,6 +120426,37 @@ index e0051aaf0bbe2ae2d4fcc14f4f90797040d6033b..c47d391012af2496c13dfcfeb5eb023b
  bool isFunction(JSContextRef context, JSValueRef value)
  {
      if (!context || !value || !JSValueIsObject(context, value))
+@@ -563,9 +606,9 @@ bool isDictionary(JSContextRef context, JSValueRef value)
+     if (isThenable(context, value))
+         return false;
+ 
+-    RefPtr protoString = toJSString("__proto__"_s);
+-    RefPtr objectString = toJSString("Object"_s);
+-    RefPtr prototypeString = toJSString("prototype"_s);
++    auto protoString = toJSString("__proto__"_s);
++    auto objectString = toJSString("Object"_s);
++    auto prototypeString = toJSString("prototype"_s);
+ 
+     JSObjectRef thisObject = JSValueToObject(context, value, nullptr);
+     JSObjectRef globalObject = JSContextGetGlobalObject(context);
+@@ -582,7 +625,7 @@ bool isRegularExpression(JSContextRef context, JSValueRef value)
+     if (!context || !JSValueIsObject(context, value))
+         return false;
+ 
+-    RefPtr regexpString = toJSString("RegExp"_s);
++    auto regexpString = toJSString("RegExp"_s);
+     JSObjectRef globalObject = JSContextGetGlobalObject(context);
+     JSObjectRef regexpValue = JSValueToObject(context, JSObjectGetProperty(context, globalObject, regexpString.get(), nullptr), nullptr);
+ 
+@@ -594,7 +637,7 @@ bool isThenable(JSContextRef context, JSValueRef value)
+     if (!context || !JSValueIsObject(context, value))
+         return false;
+ 
+-    RefPtr thenableString = toJSString("then"_s);
++    auto thenableString = toJSString("then"_s);
+     JSObjectRef valueObject = JSValueToObject(context, value, nullptr);
+     JSValueRef thenableObject = JSObjectGetProperty(context, valueObject, thenableString.get(), nullptr);
+ 
 @@ -649,6 +692,21 @@ static RefPtr<JSON::Value> toJSONArray(JSContextRef context, JSValueRef value)
      return result;
  }
@@ -123042,10 +123156,10 @@ index 0000000000000000000000000000000000000000..ef414274ea6c550c9f912275911eb033
 +#endif // ENABLE(WK_WEB_EXTENSIONS)
 diff --git a/Source/WebKit/WebProcess/Extensions/WebExtensionTabScriptExecution.cpp b/Source/WebKit/WebProcess/Extensions/WebExtensionTabScriptExecution.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..1f9f3cb9d26d04bbefd4de6bcc4d6d53db0316af
+index 0000000000000000000000000000000000000000..82f5d981b2f9e3657454ee1f636e1ad688472855
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/Extensions/WebExtensionTabScriptExecution.cpp
-@@ -0,0 +1,258 @@
+@@ -0,0 +1,261 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +#include "config.h"
 +#include "WebExtensionTabScriptExecution.h"
@@ -123151,7 +123265,10 @@ index 0000000000000000000000000000000000000000..1f9f3cb9d26d04bbefd4de6bcc4d6d53
 +            || controller->extensionContext(extension->uniqueIdentifier()) != extension
 +            || extension->contentScriptWorldIdentifier() != m_worldIdentifier)
 +            return makeUnexpected("the extension was unloaded or its content world changed"_s);
-+        return refreshWebExtensionTabScriptTarget(m_target, page->mainWebFrame().frameTreeData());
++        auto tree = page->mainWebFrame().frameTreeData();
++        if (!tree)
++            return makeUnexpected("the target document is unavailable"_s);
++        return refreshWebExtensionTabScriptTarget(m_target, *tree);
 +    }
 +
 +    RefPtr<WebFrame> currentFrame() const
