@@ -2,9 +2,9 @@
 """Generate resources/Summit.hvif, the Haiku vector icon for the app.
 
 The artwork is a vector tracing of docs/summit-icon.png, a snow-capped peak with
-a summit flag in front of a globe.  Geometry below stays in the coordinate space
-of that drawing and is mapped into Haiku's 64x64 icon grid by `P()`, so the
-tracing remains readable next to the original image.
+a summit flag.  Geometry below stays in the pixel coordinates of that drawing
+and is mapped into Haiku's 64x64 icon grid by `P()`, so the tracing remains
+readable next to the original image.
 
 Run `python3 tools/make-summit-icon.py` after editing; the result is checked in
 and `resources/Summit.rdef` imports it as the BEOS:ICON resource.
@@ -175,16 +175,16 @@ class Icon:
 
 # ------------------------------------------------------------ source geometry
 
-# The tracing below uses pixel coordinates of the source drawing, whose opaque
-# artwork spans x 269..1074 and y 169..923.  SCALE/ORIGIN centre that box in the
-# 64x64 icon grid with a small margin.
-SCALE = 0.072
-ORIGIN_X, ORIGIN_Y = 3.0, 4.8
+# The tracing below uses pixel coordinates of the 1254x1254 source drawing,
+# whose artwork spans x 185..1014 and y 120..1116 including its black outline.
+# SCALE/ORIGIN centre that box in the 64x64 icon grid with a small margin.
+SCALE = 0.059
+ORIGIN_X, ORIGIN_Y = 7.55, 2.6
 
 
 def P(x, y):
-    return (round(ORIGIN_X + (x - 269) * SCALE, 3),
-            round(ORIGIN_Y + (y - 169) * SCALE, 3))
+    return (round(ORIGIN_X + (x - 185) * SCALE, 3),
+            round(ORIGIN_Y + (y - 120) * SCALE, 3))
 
 
 def poly(points):
@@ -205,28 +205,37 @@ def ellipse(cx, cy, rx, ry):
     ]
 
 
-def parallel(x0, x1, y, sag, thickness):
-    """A latitude line: two shallow arcs between the same end points."""
-    span = x1 - x0
-    top = 4.0 * (sag - thickness / 2.0) / 3.0
-    bottom = 4.0 * (sag + thickness / 2.0) / 3.0
-    return [
-        P(x0, y) + P(x0 + span / 3.0, y + bottom) + P(x0 + span / 3.0, y + top),
-        P(x1, y) + P(x0 + 2 * span / 3.0, y + top) + P(x0 + 2 * span / 3.0, y + bottom),
-    ]
+def offset(points, distance, limit=None):
+    """The polygon grown by `distance` (shrunk when negative), corners mitred.
 
-
-def meridian(cx, cy, radius, bulge, thickness):
-    """A longitude line: two half ellipses from pole to pole."""
-    outer = bulge + math.copysign(thickness / 2.0, bulge)
-    inner = bulge - math.copysign(thickness / 2.0, bulge)
-    ky = radius * KAPPA
-    return [
-        P(cx, cy - radius) + P(cx + inner * KAPPA, cy - radius) + P(cx + outer * KAPPA, cy - radius),
-        P(cx + outer, cy) + P(cx + outer, cy - ky) + P(cx + outer, cy + ky),
-        P(cx, cy + radius) + P(cx + outer * KAPPA, cy + radius) + P(cx + inner * KAPPA, cy + radius),
-        P(cx + inner, cy) + P(cx + inner, cy + ky) + P(cx + inner, cy - ky),
-    ]
+    A mitre longer than `limit` times the distance is clipped square, the way
+    AGG clips stroke joins, so the flag's sharp tip does not grow a spike.
+    """
+    edges = list(zip(points, points[1:] + points[:1]))
+    area = sum(x0 * y1 - x1 * y0 for (x0, y0), (x1, y1) in edges)
+    sign = 1.0 if area > 0 else -1.0
+    lines = []
+    for (x0, y0), (x1, y1) in edges:
+        length = math.hypot(x1 - x0, y1 - y0)
+        nx, ny = sign * (y1 - y0) / length, -sign * (x1 - x0) / length
+        lines.append(((x0 + nx * distance, y0 + ny * distance), (x1 - x0, y1 - y0)))
+    result = []
+    for corner, (p, d), (q, e) in zip(points, lines[-1:] + lines[:-1], lines):
+        cross = d[0] * e[1] - d[1] * e[0]
+        s = ((q[0] - p[0]) * e[1] - (q[1] - p[1]) * e[0]) / cross
+        mx, my = p[0] + s * d[0], p[1] + s * d[1]
+        reach = math.hypot(mx - corner[0], my - corner[1])
+        convex = cross * area > 0
+        if limit is None or convex != (distance > 0) or reach <= limit * abs(distance):
+            result.append((mx, my))
+            continue
+        bx, by = (mx - corner[0]) / reach, (my - corner[1]) / reach
+        cut = limit * abs(distance)
+        for start, direction in ((p, d), (q, e)):
+            t = (cut - ((start[0] - corner[0]) * bx + (start[1] - corner[1]) * by)) / \
+                (direction[0] * bx + direction[1] * by)
+            result.append((start[0] + t * direction[0], start[1] + t * direction[1]))
+    return result
 
 
 def linear_transform(x0, y0, x1, y1):
@@ -242,120 +251,206 @@ def linear_transform(x0, y0, x1, y1):
     return (dx, dy, -dy, dx, (ax + bx) / 2.0, (ay + by) / 2.0)
 
 
-GLOBE_CX, GLOBE_CY, GLOBE_R = 825.0, 569.0, 238.0
+def ramp(start, end, first=0, last=255, steps=4):
+    """Gradient stops for a straight blend from `start` to `end`.
 
-MOUNTAIN_OUTLINE = [
-    (617, 296), (762, 520), (806, 550), (935, 802), (700, 930),
-    (269, 796), (333, 700), (397, 640), (477, 490),
-]
+    Haiku eases between neighbouring stops (INTERPOLATION_SMOOTH, which HVIF
+    cannot switch off), so long blends get intermediate stops to stay linear.
+    """
+    stops = []
+    for i in range(steps + 1):
+        t = i / float(steps)
+        stops.append((int(round(first + (last - first) * t)),
+                      tuple(int(round(a + (b - a) * t)) for a, b in zip(start, end))))
+    return stops
 
-MOUNTAIN_BODY = [
-    (617, 312), (751, 520), (795, 550), (921, 798), (698, 913),
-    (288, 789), (345, 702), (408, 642), (488, 492),
-]
 
-SNOW = [
-    (596, 336), (554, 400), (488, 492), (440, 583), (547, 508), (577, 580),
-    (586, 605), (615, 574), (651, 620), (663, 638), (669, 604), (665, 580),
-    (648, 500), (626, 400),
-]
+def radial_transform(cx, cy, rx, ry, angle):
+    """Maps a circular gradient (radius 64) onto an ellipse in source pixels."""
+    ox, oy = P(cx, cy)
+    sx, sy = rx * SCALE / 64.0, ry * SCALE / 64.0
+    c, s = math.cos(angle), math.sin(angle)
+    return (c * sx, s * sx, -s * sy, c * sy, ox, oy)
 
-NEAR_RIDGE = [
-    (547, 508), (577, 580), (586, 605), (615, 574), (651, 620), (663, 638),
-    (685, 665), (696, 710), (711, 770), (725, 830), (739, 890), (742, 898),
-    (698, 913), (288, 789), (345, 702), (408, 642), (440, 583),
-]
 
-NEAR_RIDGE_LIT = [
-    (547, 508), (513, 560), (481, 605), (436, 665), (372, 725), (309, 785),
-    (297, 791), (288, 789), (345, 702), (408, 642), (441, 583),
-]
+# Width of the black outlines, drawn as filled rings around the centre lines
+# below so the width can be given in source pixels (HVIF strokes come in whole
+# icon units).  The drawing's own outlines are about 10.5 px, but Haiku blends
+# edges in linear light, which leaves a line that thin pale and broken at icon
+# sizes; 16 px reads the way the drawing does.
+OUTLINE = 16
 
-FRONT_EDGE = [
-    (663, 638), (685, 665), (692, 700), (704, 745), (716, 790), (728, 840),
-    (742, 896), (698, 913), (688, 875), (668, 785), (656, 740), (646, 700),
-    (638, 668),
-]
+# Mountain outline, centre of the stroke, from the summit (hidden behind the
+# pole) down the left side.  Every corner is a point of MOUNTAIN.
+APEX, SHOULDER_L1, SHOULDER_L2 = (652, 322.5), (464, 568.5), (431.5, 585)
+KNEE_L1, KNEE_L2, CORNER_L = (314, 800), (257, 846), (190.5, 952)
+CORNER_B, CORNER_R = (732, 1110), (1009, 958.5)
+SHOULDER_R2, SHOULDER_R1 = (863, 636.5), (796, 597)
+MOUNTAIN = [APEX, SHOULDER_L1, SHOULDER_L2, KNEE_L1, KNEE_L2, CORNER_L,
+            CORNER_B, CORNER_R, SHOULDER_R2, SHOULDER_R1]
 
-FAR_RIDGE_SHADE = [
-    (702, 522), (734, 545), (777, 575), (818, 605), (840, 635), (854, 662),
-    (877, 700), (900, 745), (924, 800), (745, 894), (739, 890), (685, 665),
-]
+# Where the snow ends: the left peak, the notch, the front ridge's peak, the
+# tip of the snow tongue between the two right-hand faces, and the far face's
+# peak.  The rest lie on the outline.
+PEAK_L, NOTCH, PEAK_FRONT = (546.5, 602.5), (587, 718.5), (639.5, 676)
+TONGUE, PEAK_FAR = (730.5, 773), (740.5, 604)
+SNOW_L, FAR_R = (360, 716), (902, 723)
+SHADE_TOP, SHADE_TOP_R = (650, 409), (682.5, 380)
 
-FLAG_OUTLINE = [(603, 176), (802, 243), (603, 316)]
-FLAG_BODY = [(617, 199), (773, 243), (617, 293)]
+# Lower edges of the sunlit left face and of its bright rim, and the feet of
+# the ridges that divide the shaded faces.
+LIT_KNEE, LIT_FOOT = (373, 831), (217, 960)
+RIM = [(329.5, 815.5), (267.5, 862), (212, 958.5)]
+RIDGE_FOOT, DARK_FOOT, DIAGONAL_FOOT = (746.5, 1102), (826.5, 1058.5), (962, 984)
 
-POLE_OUTLINE = [
-    P(592, 350), P(592, 193) + P(592, 193) + P(592, 193 - 21 * KAPPA),
-    P(613, 172) + P(613 - 21 * KAPPA, 172) + P(613 + 21 * KAPPA, 172),
-    P(634, 193) + P(634, 193 - 21 * KAPPA) + P(634, 193),
-    P(634, 350),
-]
+SNOW = [APEX, SHOULDER_L1, SHOULDER_L2, SNOW_L, PEAK_L, NOTCH, PEAK_FRONT,
+        TONGUE, SHADE_TOP, SHADE_TOP_R]
+NEAR_FACE = [SNOW_L, PEAK_L, NOTCH, PEAK_FRONT, RIDGE_FOOT, CORNER_B,
+             CORNER_L, KNEE_L2, KNEE_L1]
+LIT_FACE = [SNOW_L, PEAK_L, LIT_KNEE, LIT_FOOT, CORNER_L, KNEE_L2, KNEE_L1]
+LIT_RIM = [KNEE_L1] + RIM + [CORNER_L, KNEE_L2]
+FRONT_FACE = [PEAK_FRONT, TONGUE, DARK_FOOT, RIDGE_FOOT]
+FAR_FACE = [PEAK_FAR, FAR_R, CORNER_R, DIAGONAL_FOOT, TONGUE]
+DARK_FACE = [TONGUE, DIAGONAL_FOOT, DARK_FOOT]
+
+# Flag, centre of the stroke; its hoist is hidden under the pole's outline.
+# The bright band along its top edge and the dark underside along its bottom
+# edge both run out at the tip.
+FLAG_TOP, FLAG_TIP, FLAG_BOTTOM = (667, 157), (916, 242), (667, 332)
+FLAG = [FLAG_TOP, FLAG_TIP, FLAG_BOTTOM]
+FLAG_FACE = [(667, 181), (864, 246), (667, 313)]
+FLAG_BAND = [FLAG_TOP, FLAG_TIP, (864, 246), (667, 181)]
+
+# Pole: a gold cylinder sunk into the snow, its top an ellipse.
+POLE_LEFT, POLE_RIGHT = 620.6, 668
+POLE_CAP_X, POLE_CAP_Y, POLE_CAP_RX, POLE_CAP_RY = 644.3, 144, 23.7, 14.5
+POLE_FOOT_L, POLE_FOOT, POLE_FOOT_R = (620.6, 374.5), (647.5, 399.5), (668, 381)
 POLE_BODY = [
-    P(602, 345), P(602, 203) + P(602, 203) + P(602, 203 - 11 * KAPPA),
-    P(613, 192) + P(613 - 11 * KAPPA, 192) + P(613 + 11 * KAPPA, 192),
-    P(624, 203) + P(624, 203 - 11 * KAPPA) + P(624, 203),
-    P(624, 345),
+    P(*POLE_FOOT_L),
+    P(POLE_LEFT, POLE_CAP_Y) + P(POLE_LEFT, POLE_CAP_Y) +
+    P(POLE_LEFT, POLE_CAP_Y - POLE_CAP_RY * KAPPA),
+    P(POLE_CAP_X, POLE_CAP_Y - POLE_CAP_RY) +
+    P(POLE_CAP_X - POLE_CAP_RX * KAPPA, POLE_CAP_Y - POLE_CAP_RY) +
+    P(POLE_CAP_X + POLE_CAP_RX * KAPPA, POLE_CAP_Y - POLE_CAP_RY),
+    P(POLE_RIGHT, POLE_CAP_Y) + P(POLE_RIGHT, POLE_CAP_Y - POLE_CAP_RY * KAPPA) +
+    P(POLE_RIGHT, POLE_CAP_Y),
+    P(*POLE_FOOT_R),
+    P(*POLE_FOOT),
 ]
+
+
+def pole_outline(width):
+    """The pole widened by `width` with a round top, down to the mountain's
+    outline; its bottom edge runs through the pole's feet, under the pole."""
+    radius = (POLE_RIGHT - POLE_LEFT) / 2.0 + width
+    top = POLE_CAP_Y - POLE_CAP_RY - width
+    left, right = POLE_CAP_X - radius, POLE_CAP_X + radius
+    k = radius * KAPPA
+    # Where the mountain's slopes, centre of the stroke, pass the outline.
+    left_slope = (SHOULDER_L1[1] - APEX[1]) / (APEX[0] - SHOULDER_L1[0])
+    right_slope = (SHOULDER_R1[1] - APEX[1]) / (SHOULDER_R1[0] - APEX[0])
+    left_foot = left, APEX[1] + (APEX[0] - left) * left_slope
+    right_foot = right, APEX[1] + (right - APEX[0]) * right_slope
+    return [
+        P(*left_foot),
+        P(left, top + radius) + P(left, top + radius) + P(left, top + radius - k),
+        P(POLE_CAP_X, top) + P(POLE_CAP_X - k, top) + P(POLE_CAP_X + k, top),
+        P(right, top + radius) + P(right, top + radius - k) + P(right, top + radius),
+        P(*right_foot),
+        P(*POLE_FOOT_R),
+        P(*POLE_FOOT_L),
+    ]
+
+
+# The soft shadow cast to the lower right is an elliptical gradient behind the
+# mountain, fitted to the drawing's shadow: solid out to SHADOW_SOLID of the
+# radius, then fading away.
+SHADOW_X, SHADOW_Y, SHADOW_RX, SHADOW_RY = 634, 939, 426, 199
+SHADOW_ANGLE, SHADOW_SOLID = 0.127, 0.594
+
+
+def rotated_box(cx, cy, rx, ry, angle):
+    """The rectangle around an ellipse, which the shadow's gradient fills."""
+    c, s = math.cos(angle), math.sin(angle)
+    return [(cx + c * u * rx - s * v * ry, cy + s * u * rx + c * v * ry)
+            for u, v in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+
 
 BLACK = (0, 0, 0)
+
+
+def ring(icon, style, points, width):
+    """A band `width` wide centred on the polygon: outer edge and reversed inner edge."""
+    outer = offset(points, width / 2.0, limit=2.0)
+    inner = offset(points, -width / 2.0)
+    icon.shape(style, [icon.path(Path(poly(outer))),
+                       icon.path(Path(poly(inner[::-1])))])
 
 
 def build():
     icon = Icon()
 
     ink = icon.style(Solid(*BLACK))
-    globe_fill = icon.style(Gradient(GRADIENT_LINEAR, [
-        (0, (185, 228, 253)), (38, (142, 210, 252)), (77, (95, 175, 248)),
-        (115, (29, 111, 204)), (153, (12, 92, 186)), (191, (3, 71, 158)),
-        (255, (0, 44, 108))],
-        linear_transform(657, 401, 993, 737)))
-    graticule = icon.style(Solid(255, 255, 255, 110))
-    snow = icon.style(Solid(253, 252, 246))
-    shade = icon.style(Solid(200, 212, 235))
-    rock = icon.style(Gradient(GRADIENT_LINEAR, [
-        (0, (123, 161, 187)), (60, (124, 163, 189)), (121, (117, 157, 185)),
-        (181, (106, 147, 177)), (235, (91, 137, 169)), (255, (84, 129, 162))],
-        linear_transform(540, 520, 600, 900)))
-    rock_lit = icon.style(Solid(166, 191, 206))
-    rock_edge = icon.style(Solid(48, 87, 110))
-    rock_dark = icon.style(Gradient(GRADIENT_LINEAR, [
-        (0, (29, 63, 84)), (120, (31, 66, 88)), (200, (38, 72, 94)),
-        (255, (41, 76, 99))],
-        linear_transform(700, 760, 890, 760)))
+    shadow = icon.style(Gradient(GRADIENT_CIRCULAR, [(0, BLACK + (106,))] +
+        ramp(BLACK + (106,), BLACK + (0,), first=int(SHADOW_SOLID * 255)),
+        radial_transform(SHADOW_X, SHADOW_Y, SHADOW_RX, SHADOW_RY, SHADOW_ANGLE)))
+    shade = icon.style(Gradient(GRADIENT_LINEAR,
+        ramp((186, 199, 224), (217, 232, 250)),
+        linear_transform(692, 571, 833, 537)))
+    snow = icon.style(Gradient(GRADIENT_LINEAR,
+        ramp((232, 237, 245), (255, 254, 244)),
+        linear_transform(686, 710, 521, 482)))
+    rock = icon.style(Gradient(GRADIENT_LINEAR,
+        ramp((57, 113, 157), (123, 167, 198)),
+        linear_transform(661, 1086, 425, 747)))
+    rock_lit = icon.style(Solid(155, 193, 215))
+    rock_rim = icon.style(Solid(178, 213, 233))
+    rock_front = icon.style(Solid(44, 81, 112))
+    rock_far = icon.style(Gradient(GRADIENT_LINEAR,
+        ramp((37, 70, 99), (54, 94, 128)),
+        linear_transform(774, 823, 924, 770)))
+    rock_dark = icon.style(Solid(30, 60, 88))
+    flag_underside = icon.style(Solid(150, 95, 4))
     flag = icon.style(Gradient(GRADIENT_LINEAR, [
-        (0, (253, 208, 66)), (60, (249, 181, 26)), (180, (242, 170, 14)),
-        (255, (228, 155, 8))],
-        linear_transform(690, 200, 690, 292)))
+        (0, (253, 208, 52)), (128, (243, 178, 14)), (255, (222, 152, 8))],
+        linear_transform(690, 220, 860, 262)))
+    flag_band = icon.style(Gradient(GRADIENT_LINEAR,
+        ramp((255, 246, 190), (250, 210, 60)),
+        linear_transform(680, 180, 880, 240)))
     pole = icon.style(Gradient(GRADIENT_LINEAR, [
-        (0, (252, 192, 48)), (120, (244, 172, 20)), (150, (158, 92, 1)),
-        (255, (143, 83, 0))],
-        linear_transform(602, 250, 624, 250)))
+        (0, (232, 165, 12)), (61, (253, 228, 76)), (104, (250, 198, 42)),
+        (137, (232, 170, 20)), (140, (131, 78, 3)), (232, (133, 82, 3)),
+        (255, (90, 52, 2))],
+        linear_transform(620.6, 250, 668, 250)))
+    pole_cap = icon.style(Gradient(GRADIENT_LINEAR, [
+        (0, (243, 215, 120)), (60, (253, 252, 225)), (104, (253, 243, 164)),
+        (137, (253, 211, 82)), (169, (239, 177, 41)), (201, (202, 138, 18)),
+        (255, (160, 100, 3))],
+        linear_transform(620.6, 144, 668, 144)))
 
-    # Globe, behind the mountain.
-    icon.draw(ink, ellipse(GLOBE_CX, GLOBE_CY, GLOBE_R + 11, GLOBE_R + 11))
-    icon.draw(globe_fill, ellipse(GLOBE_CX, GLOBE_CY, GLOBE_R, GLOBE_R))
-    for offset in (-137.0, 1.0, 131.0):
-        half = math.sqrt(GLOBE_R ** 2 - offset ** 2)
-        icon.draw(graticule, parallel(GLOBE_CX - half, GLOBE_CX + half,
-                                      GLOBE_CY + offset, 24.0, 12.0))
-    for bulge in (-62.0, 62.0, 168.0):
-        icon.draw(graticule, meridian(GLOBE_CX, GLOBE_CY, GLOBE_R, bulge, 12.0))
+    icon.draw(shadow, poly(rotated_box(SHADOW_X, SHADOW_Y, SHADOW_RX, SHADOW_RY,
+                                       SHADOW_ANGLE)))
 
-    # Mountain: outline, then the faces painted inside it.
-    icon.draw(ink, poly(MOUNTAIN_OUTLINE))
-    icon.draw(shade, poly(MOUNTAIN_BODY))
+    # Mountain: the faces, painted over the shaded snow, then the outline.
+    icon.draw(shade, poly(MOUNTAIN))
     icon.draw(snow, poly(SNOW))
-    icon.draw(rock, poly(NEAR_RIDGE))
-    icon.draw(rock_lit, poly(NEAR_RIDGE_LIT))
-    icon.draw(rock_edge, poly(FRONT_EDGE))
-    icon.draw(rock_dark, poly(FAR_RIDGE_SHADE))
+    icon.draw(rock, poly(NEAR_FACE))
+    icon.draw(rock_lit, poly(LIT_FACE))
+    icon.draw(rock_rim, poly(LIT_RIM))
+    icon.draw(rock_front, poly(FRONT_FACE))
+    icon.draw(rock_far, poly(FAR_FACE))
+    icon.draw(rock_dark, poly(DARK_FACE))
+    ring(icon, ink, MOUNTAIN, OUTLINE)
 
-    # Summit flag; the pole is drawn over the flag's hoist edge.
-    icon.draw(ink, poly(FLAG_OUTLINE))
-    icon.draw(flag, poly(FLAG_BODY))
-    icon.draw(ink, POLE_OUTLINE)
+    # Summit flag between the pole's outline and the pole itself, which covers
+    # the summit and the flag's hoist.
+    icon.draw(ink, pole_outline(OUTLINE))
+    icon.draw(flag_underside, poly(FLAG))
+    icon.draw(flag, poly(FLAG_FACE))
+    icon.draw(flag_band, poly(FLAG_BAND))
+    ring(icon, ink, FLAG, OUTLINE)
     icon.draw(pole, POLE_BODY)
+    icon.draw(pole_cap, ellipse(POLE_CAP_X, POLE_CAP_Y, POLE_CAP_RX, POLE_CAP_RY))
 
     return icon.to_bytes()
 

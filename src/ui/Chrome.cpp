@@ -6,6 +6,8 @@
 #include <Application.h>
 #include <Resources.h>
 #include <IconUtils.h>
+#include <DataIO.h>
+#include <TranslationUtils.h>
 #include <MenuItem.h>
 #include <PopUpMenu.h>
 #include <ControlLook.h>
@@ -100,8 +102,9 @@ static void DrawFlatButton(BView* view, bool pressed, bool focused, const Chrome
     }
 }
 
-// Keep the vector source in the executable. Each button owns the rendered
-// bitmap and BControl supplies matching pressed and disabled variants.
+// BControl supplies matching pressed and disabled variants. The supplied SVG
+// artwork is rendered at three densities at build preparation time; controls
+// without new artwork continue to use their native vector resources.
 void ToolButton::UpdateIconBitmap()
 {
     float scale = 1;
@@ -119,6 +122,15 @@ void ToolButton::UpdateIconBitmap()
     std::lock_guard guard(lock);
     auto* resources = BApplication::AppResources();
     size_t bytes = 0;
+    const int density = scale > 2 ? 2 : scale > 1 ? 1 : 0;
+    if (auto* png = resources ? resources->LoadResource('PNG ', 301 + int(fIcon) + density * 100, &bytes) : nullptr) {
+        BMemoryIO stream(png, bytes);
+        std::unique_ptr<BBitmap> bitmap(BTranslationUtils::GetBitmap(&stream));
+        if (bitmap && bitmap->InitCheck() == B_OK) {
+            BControl::SetIcon(bitmap.get(), B_TRIM_ICON_BITMAP_KEEP_ASPECT);
+            return;
+        }
+    }
     auto* data = resources ? static_cast<const uint8*>(resources->LoadResource('VICN', 201 + int(fIcon), &bytes)) : nullptr;
     BBitmap bitmap(BRect(0, 0, size - 1, size - 1), B_RGBA32);
     if (data && bitmap.InitCheck() == B_OK && BIconUtils::GetVectorIcon(data, bytes, &bitmap) == B_OK)
@@ -150,7 +162,18 @@ void ToolButton::Draw(BRect update)
         const float y = std::floor((Bounds().Height() + 1 - height * factor) / 2) + (Value() ? 1 : 0);
         SetDrawingMode(B_OP_ALPHA);
         SetBlendingMode(B_PIXEL_ALPHA, B_ALPHA_OVERLAY);
-        DrawBitmap(bitmap, bitmap->Bounds(), BRect(x, y, x + width * factor - 1, y + height * factor - 1));
+        DrawBitmap(bitmap, bitmap->Bounds(), BRect(x, y, x + width * factor - 1, y + height * factor - 1), B_FILTER_BITMAP_BILINEAR);
+        if (fIcon == Icon::BookmarkFilled && IsEnabled()) {
+            // Keep the saved-page state visible with the supplied bookmark art.
+            const BPoint badge(Bounds().right - 6, Bounds().bottom - 6);
+            SetHighColor(35, 125, 77, 255);
+            FillEllipse(badge, 4, 4);
+            SetHighColor(255, 255, 255, 255);
+            SetPenSize(1.2f);
+            StrokeLine(badge + BPoint(-2, 0), badge + BPoint(-0.5f, 1.5f));
+            StrokeLine(badge + BPoint(-0.5f, 1.5f), badge + BPoint(2, -1.5f));
+            SetPenSize(1);
+        }
         SetDrawingMode(B_OP_COPY);
         return;
     }
