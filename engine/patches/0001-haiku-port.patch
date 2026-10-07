@@ -15075,6 +15075,1228 @@ index 0000000000000000000000000000000000000000..cdab62bfd95bf644f740fce9f74b4813
 +SPECIALIZE_TYPE_TRAITS_END()
 +
 +#endif // PLATFORM(HAIKU)
+diff --git a/Source/WebCore/platform/bluetooth/haiku/BluetoothATTClientHaiku.cpp b/Source/WebCore/platform/bluetooth/haiku/BluetoothATTClientHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..62efe2bc95db02703e878b09c8d94a35c6f7d5cc
+--- /dev/null
++++ b/Source/WebCore/platform/bluetooth/haiku/BluetoothATTClientHaiku.cpp
+@@ -0,0 +1,214 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "BluetoothATTClientHaiku.h"
++#include <algorithm>
++
++namespace WebCore::BluetoothHaiku {
++static uint16_t read16(std::span<const uint8_t> data, size_t at = 0) { return data[at] | uint16_t(data[at + 1]) << 8; }
++static void append16(std::vector<uint8_t>& data, uint16_t value) { data.push_back(value); data.push_back(value >> 8); }
++static std::vector<uint8_t> rangeRequest(uint8_t opcode, uint16_t start, uint16_t end, uint16_t type)
++{ std::vector<uint8_t> request { opcode }; append16(request, start); append16(request, end); append16(request, type); return request; }
++static ATTResult badPacket() { return { ATTError::Protocol }; }
++
++ATTResult ATTClient::unsolicited(std::span<const uint8_t> packet, bool& handled)
++{
++    handled = true;
++    if (packet.empty() || packet.size() > 23) return badPacket();
++    if (packet[0] == 0x1b || packet[0] == 0x1d) {
++        if (packet.size() < 3 || !read16(packet, 1)) return badPacket();
++        if (packet[0] == 0x1d && !m_transport.confirmsIndications()) {
++            const std::array<uint8_t, 1> confirmation { 0x1e };
++            if (auto result = m_transport.send(confirmation); !result) return result;
++        }
++        if (m_notifications.size() >= 256) m_notifications.pop_front();
++        m_notifications.push_back({ read16(packet, 1), {packet.begin() + 3, packet.end()} });
++        return {};
++    }
++    if (packet[0] == 0x02) {
++        if (packet.size() != 3 || read16(packet, 1) < 23) return badPacket();
++        const std::array<uint8_t, 3> response { 0x03, 23, 0 };
++        return m_transport.send(response);
++    }
++    handled = false;
++    return {};
++}
++ATTResult ATTClient::exchange(std::span<const uint8_t> request, uint8_t responseOpcode, std::vector<uint8_t>& response)
++{
++    if (request.empty() || request.size() > 23) return { ATTError::InvalidLength };
++    if (auto result = m_transport.send(request); !result) return result;
++    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
++    while (std::chrono::steady_clock::now() < deadline) {
++        unsigned remaining = std::max<int64_t>(1, std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count());
++        if (auto result = m_transport.receive(response, remaining); !result) return result;
++        bool handled = false;
++        if (auto result = unsolicited(response, handled); !result) return result;
++        if (handled) continue;
++        if (response[0] == 0x01) {
++            if (response.size() != 5 || response[1] != request[0] || !response[4]) return badPacket();
++            return { ATTError::Remote, response[4] };
++        }
++        if (response[0] != responseOpcode) return badPacket();
++        return {};
++    }
++    return { ATTError::Timeout };
++}
++ATTResult ATTClient::services(std::vector<Service>& output, bool primary)
++{
++    std::vector<Service> found;
++    uint32_t start = 1;
++    while (start <= 65535) {
++        auto request = rangeRequest(0x10, start, 0xffff, primary ? 0x2800 : 0x2801);
++        std::vector<uint8_t> response;
++        auto result = exchange(request, 0x11, response);
++        if (result.error == ATTError::Remote && result.remoteError == 0x0a) break;
++        if (!result) return result;
++        if (response.size() < 2 || (response[1] != 6 && response[1] != 20) || response.size() <= 2 || (response.size() - 2) % response[1]) return badPacket();
++        size_t width = response[1];
++        for (size_t at = 2; at < response.size(); at += width) {
++            auto entry = std::span { response }.subspan(at, width);
++            Service service { read16(entry), read16(entry, 2), *UUID::fromWire(entry.subspan(4)), primary };
++            if (service.start < start || service.end < service.start || found.size() >= 256) return badPacket();
++            found.push_back(service); start = uint32_t(service.end) + 1;
++        }
++    }
++    output = std::move(found); return {};
++}
++ATTResult ATTClient::includedServices(const Service& parent, std::vector<Service>& output)
++{
++    if (!parent.start || parent.end < parent.start) return badPacket();
++    std::vector<Service> found;
++    uint32_t start = parent.start;
++    while (start <= parent.end) {
++        auto request = rangeRequest(0x08, start, parent.end, 0x2802);
++        std::vector<uint8_t> response;
++        auto result = exchange(request, 0x09, response);
++        if (result.error == ATTError::Remote && result.remoteError == 0x0a) break;
++        if (!result) return result;
++        if (response.size() < 2 || (response[1] != 6 && response[1] != 8) || response.size() <= 2 || (response.size() - 2) % response[1]) return badPacket();
++        size_t width = response[1];
++        // A 128-bit included service omits its UUID from this declaration;
++        // read the referenced service attribute to obtain it.
++        for (size_t at = 2; at < response.size(); at += width) {
++            auto entry = std::span { response }.subspan(at, width);
++            uint16_t declaration = read16(entry);
++            Service service { read16(entry, 2), read16(entry, 4), {}, false };
++            if (declaration < start || declaration > parent.end || !service.start || service.end < service.start || found.size() >= 256) return badPacket();
++            if (width == 8) service.uuid = *UUID::fromWire(entry.subspan(6));
++            else {
++                std::vector<uint8_t> value;
++                if (auto readResult = read(service.start, value); !readResult) return readResult;
++                auto uuid = UUID::fromWire(value);
++                if (!uuid || value.size() != 16) return badPacket();
++                service.uuid = *uuid;
++            }
++            found.push_back(service); start = uint32_t(declaration) + 1;
++        }
++    }
++    output = std::move(found); return {};
++}
++ATTResult ATTClient::characteristics(const Service& service, std::vector<Characteristic>& output)
++{
++    if (!service.start || service.end < service.start) return badPacket();
++    std::vector<Characteristic> found;
++    uint32_t start = service.start;
++    while (start <= service.end) {
++        auto request = rangeRequest(0x08, start, service.end, 0x2803);
++        std::vector<uint8_t> response;
++        auto result = exchange(request, 0x09, response);
++        if (result.error == ATTError::Remote && result.remoteError == 0x0a) break;
++        if (!result) return result;
++        if (response.size() < 2 || (response[1] != 7 && response[1] != 21) || response.size() <= 2 || (response.size() - 2) % response[1]) return badPacket();
++        size_t width = response[1];
++        for (size_t at = 2; at < response.size(); at += width) {
++            auto entry = std::span { response }.subspan(at, width);
++            Characteristic characteristic { read16(entry), read16(entry, 3), service.end, entry[2], *UUID::fromWire(entry.subspan(5)) };
++            if (characteristic.declaration < start || characteristic.value <= characteristic.declaration || characteristic.value > service.end || found.size() >= 1024) return badPacket();
++            if (!found.empty()) found.back().end = characteristic.declaration - 1;
++            found.push_back(characteristic); start = uint32_t(characteristic.value) + 1;
++        }
++    }
++    output = std::move(found); return {};
++}
++ATTResult ATTClient::descriptors(const Characteristic& characteristic, std::vector<Descriptor>& output)
++{
++    if (!characteristic.value || characteristic.end < characteristic.value) return badPacket();
++    std::vector<Descriptor> found;
++    uint32_t start = uint32_t(characteristic.value) + 1;
++    while (start <= characteristic.end) {
++        auto request = rangeRequest(0x04, start, characteristic.end, 0); request.resize(5);
++        std::vector<uint8_t> response;
++        auto result = exchange(request, 0x05, response);
++        if (result.error == ATTError::Remote && result.remoteError == 0x0a) break;
++        if (!result) return result;
++        if (response.size() < 2 || (response[1] != 1 && response[1] != 2)) return badPacket();
++        size_t width = response[1] == 1 ? 4 : 18;
++        if (response.size() <= 2 || (response.size() - 2) % width) return badPacket();
++        for (size_t at = 2; at < response.size(); at += width) {
++            auto entry = std::span { response }.subspan(at, width);
++            Descriptor descriptor { read16(entry), *UUID::fromWire(entry.subspan(2)) };
++            if (descriptor.handle < start || descriptor.handle > characteristic.end || found.size() >= 256) return badPacket();
++            found.push_back(descriptor); start = uint32_t(descriptor.handle) + 1;
++        }
++    }
++    output = std::move(found); return {};
++}
++ATTResult ATTClient::read(uint16_t handle, std::vector<uint8_t>& output)
++{
++    if (!handle) return badPacket();
++    std::vector<uint8_t> value;
++    for (;;) {
++        std::vector<uint8_t> request { uint8_t(value.empty() ? 0x0a : 0x0c) };
++        append16(request, handle); if (!value.empty()) append16(request, value.size());
++        std::vector<uint8_t> response;
++        auto result = exchange(request, value.empty() ? 0x0b : 0x0d, response);
++        if (!value.empty() && result.error == ATTError::Remote && (result.remoteError == 0x07 || result.remoteError == 0x0b)) break;
++        if (!result) return result;
++        if (response.size() - 1 > 512 - value.size()) return { ATTError::InvalidLength };
++        value.insert(value.end(), response.begin() + 1, response.end());
++        if (response.size() < 23) break;
++    }
++    output = std::move(value); return {};
++}
++ATTResult ATTClient::write(uint16_t handle, std::span<const uint8_t> value, bool response)
++{
++    if (!handle) return badPacket();
++    if (value.size() > 512 || (!response && value.size() > 20)) return { ATTError::InvalidLength };
++    if (value.size() <= 20) {
++        std::vector<uint8_t> request { uint8_t(response ? 0x12 : 0x52) }; append16(request, handle);
++        request.insert(request.end(), value.begin(), value.end());
++        if (!response) return m_transport.send(request);
++        std::vector<uint8_t> reply; auto result = exchange(request, 0x13, reply);
++        return result && reply.size() != 1 ? badPacket() : result;
++    }
++    auto execute = [&](bool commit) {
++        std::array<uint8_t, 2> request { 0x18, uint8_t(commit) };
++        std::vector<uint8_t> reply; auto result = exchange(request, 0x19, reply);
++        return result && reply.size() != 1 ? badPacket() : result;
++    };
++    for (size_t offset = 0; offset < value.size();) {
++        size_t length = std::min<size_t>(18, value.size() - offset);
++        std::vector<uint8_t> request { 0x16 }; append16(request, handle); append16(request, offset);
++        request.insert(request.end(), value.begin() + offset, value.begin() + offset + length);
++        std::vector<uint8_t> reply; auto result = exchange(request, 0x17, reply);
++        if (!result || reply.size() != request.size() || !std::equal(reply.begin() + 1, reply.end(), request.begin() + 1)) {
++            execute(false);
++            return result ? badPacket() : result;
++        }
++        offset += length;
++    }
++    return execute(true);
++}
++ATTResult ATTClient::pollNotifications(std::vector<Notification>& output)
++{
++    // Bound each poll, even if the peripheral floods the link continuously.
++    for (unsigned i = 0; i < 256; ++i) {
++        std::vector<uint8_t> packet; auto result = m_transport.receive(packet, 0);
++        if (result.error == ATTError::Timeout) break;
++        if (!result) return result;
++        bool handled = false; result = unsolicited(packet, handled);
++        if (!result) return result;
++        if (!handled) return badPacket();
++    }
++    output.assign(std::make_move_iterator(m_notifications.begin()), std::make_move_iterator(m_notifications.end()));
++    m_notifications.clear(); return {};
++}
++}
+diff --git a/Source/WebCore/platform/bluetooth/haiku/BluetoothATTClientHaiku.h b/Source/WebCore/platform/bluetooth/haiku/BluetoothATTClientHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..f900e9fc3465729567cb107a6a3eb566c0130343
+--- /dev/null
++++ b/Source/WebCore/platform/bluetooth/haiku/BluetoothATTClientHaiku.h
+@@ -0,0 +1,43 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#include "BluetoothTypesHaiku.h"
++#include <chrono>
++#include <deque>
++
++namespace WebCore::BluetoothHaiku {
++enum class ATTError { None, Timeout, Disconnected, Protocol, Remote, InvalidLength, Aborted };
++struct ATTResult {
++    ATTError error { ATTError::None };
++    uint8_t remoteError { 0 };
++    explicit operator bool() const { return error == ATTError::None; }
++};
++struct Notification { uint16_t handle; std::vector<uint8_t> value; };
++class ATTTransport {
++public:
++    virtual ~ATTTransport() = default;
++    virtual ATTResult send(std::span<const uint8_t>) = 0;
++    virtual ATTResult receive(std::vector<uint8_t>&, unsigned timeoutMilliseconds) = 0;
++    // air/OS confirms indications in the kernel, including when no user-space
++    // receiver exists. Other transports must let this client confirm them.
++    virtual bool confirmsIndications() const { return false; }
++};
++// One ATT transaction at a time, run on the owning connection's worker queue.
++// Matches the native stack's default 23-byte MTU; long values use Read Blob
++// and Prepare/Execute Write, with a 512-byte attribute limit.
++class ATTClient {
++public:
++    explicit ATTClient(ATTTransport& transport) : m_transport(transport) { }
++    ATTResult services(std::vector<Service>&, bool primary = true);
++    ATTResult includedServices(const Service&, std::vector<Service>&);
++    ATTResult characteristics(const Service&, std::vector<Characteristic>&);
++    ATTResult descriptors(const Characteristic&, std::vector<Descriptor>&);
++    ATTResult read(uint16_t handle, std::vector<uint8_t>&);
++    ATTResult write(uint16_t handle, std::span<const uint8_t>, bool response = true);
++    ATTResult pollNotifications(std::vector<Notification>&);
++private:
++    ATTResult exchange(std::span<const uint8_t>, uint8_t responseOpcode, std::vector<uint8_t>&);
++    ATTResult unsolicited(std::span<const uint8_t>, bool& handled);
++    ATTTransport& m_transport;
++    std::deque<Notification> m_notifications;
++};
++}
+diff --git a/Source/WebCore/platform/bluetooth/haiku/BluetoothGATTHaiku.cpp b/Source/WebCore/platform/bluetooth/haiku/BluetoothGATTHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..a270889700b9c48753dd7700937c3862858fdcb2
+--- /dev/null
++++ b/Source/WebCore/platform/bluetooth/haiku/BluetoothGATTHaiku.cpp
+@@ -0,0 +1,219 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "BluetoothGATTHaiku.h"
++#include <algorithm>
++
++namespace WebCore::BluetoothHaiku {
++GATTResult GATTConnection::checked(ATTResult result)
++{
++    if (result) return { };
++    // A timeout/protocol error may leave a delayed response on the ATT channel.
++    // Invalidate all capabilities; the broker must close the native connection.
++    if (result.error != ATTError::Remote && result.error != ATTError::InvalidLength) invalidate();
++    return { GATTError::ATT, result };
++}
++void GATTConnection::invalidate()
++{
++    m_valid = false;
++    m_catalog.clear(); m_services.clear(); m_characteristics.clear(); m_descriptors.clear();
++    m_discoveredCharacteristics.clear(); m_discoveredDescriptors.clear(); m_subscribed.clear();
++    m_serviceChanged = 0;
++}
++void GATTConnection::addGrants(const std::set<UUID>& grants)
++{
++    for (auto& uuid : grants) if (!blocked(uuid)) m_grants.insert(uuid);
++}
++GATTResult GATTConnection::initialize()
++{
++    invalidate();
++    std::vector<Service> primary, secondary;
++    if (auto result = checked(m_client.services(primary)); !result) return result;
++    if (auto result = checked(m_client.services(secondary, false)); !result) return result;
++    m_catalog = std::move(primary);
++    m_catalog.insert(m_catalog.end(), secondary.begin(), secondary.end());
++    std::sort(m_catalog.begin(), m_catalog.end(), [](auto& a, auto& b) { return a.start < b.start; });
++    for (size_t i = 1; i < m_catalog.size(); ++i)
++        if (m_catalog[i].start <= m_catalog[i - 1].end) return checked({ ATTError::Protocol });
++    // Subscribe internally to Service Changed, when supported. A changed
++    // database invalidates all cached handles, including queued web operations.
++    // The broker disconnects rather than reusing an old handle for new data.
++    for (auto& service : m_catalog) {
++        if (service.uuid != UUID::alias(0x1801)) continue;
++        std::vector<Characteristic> characteristics;
++        auto status = m_client.characteristics(service, characteristics);
++        if (!status) {
++            if (status.error == ATTError::Remote) continue;
++            return checked(status);
++        }
++        for (auto& characteristic : characteristics) {
++            if (characteristic.uuid != UUID::alias(0x2a05) || !(characteristic.properties & 0x20)) continue;
++            std::vector<Descriptor> descriptors;
++            status = m_client.descriptors(characteristic, descriptors);
++            if (!status) {
++                if (status.error == ATTError::Remote) continue;
++                return checked(status);
++            }
++            auto cccd = std::find_if(descriptors.begin(), descriptors.end(), [](auto& descriptor) { return descriptor.uuid == UUID::alias(0x2902); });
++            if (cccd == descriptors.end()) continue;
++            const std::array<uint8_t, 2> indicate { 2, 0 };
++            status = m_client.write(cccd->handle, indicate);
++            if (status) m_serviceChanged = characteristic.value;
++            else if (status.error != ATTError::Remote) return checked(status);
++        }
++    }
++    m_valid = true;
++    return { };
++}
++GATTResult GATTConnection::checkServiceQuery(const std::optional<UUID>& query) const
++{
++    if (!m_valid) return { GATTError::InvalidState, { } };
++    if (query && !allowed(*query)) return { GATTError::Security, { } };
++    return { };
++}
++GATTResult GATTConnection::services(std::optional<UUID> query, std::vector<Service>& output)
++{
++    output.clear();
++    if (auto result = checkServiceQuery(query); !result) return result;
++    for (auto& service : m_catalog) {
++        if (service.primary && allowed(service.uuid) && (!query || service.uuid == *query)) {
++            m_services[service.start] = service;
++            output.push_back(service);
++        }
++    }
++    return { };
++}
++GATTResult GATTConnection::includedServices(uint16_t parent, std::optional<UUID> query, std::vector<Service>& output)
++{
++    output.clear();
++    if (auto result = checkServiceQuery(query); !result) return result;
++    auto service = m_services.find(parent);
++    if (service == m_services.end()) return { GATTError::Security, { } };
++    std::vector<Service> found;
++    if (auto result = checked(m_client.includedServices(service->second, found)); !result) return result;
++    for (auto& included : found) {
++        auto catalog = std::find_if(m_catalog.begin(), m_catalog.end(), [&](auto& known) { return known.start == included.start && known.end == included.end && known.uuid == included.uuid; });
++        if (catalog == m_catalog.end()) return checked({ ATTError::Protocol });
++        if (allowed(catalog->uuid) && (!query || catalog->uuid == *query)) {
++            m_services[catalog->start] = *catalog;
++            output.push_back(*catalog);
++        }
++    }
++    return { };
++}
++GATTResult GATTConnection::characteristics(uint16_t parent, std::optional<UUID> query, std::vector<GATTCharacteristic>& output)
++{
++    output.clear();
++    if (!m_valid) return { GATTError::InvalidState, { } };
++    if (query && blocked(*query)) return { GATTError::Security, { } };
++    auto service = m_services.find(parent);
++    if (service == m_services.end()) return { GATTError::Security, { } };
++    if (!m_discoveredCharacteristics.contains(parent)) {
++        std::vector<Characteristic> found;
++        if (auto result = checked(m_client.characteristics(service->second, found)); !result) return result;
++        if (m_characteristics.size() + found.size() > 4096) return checked({ ATTError::Protocol });
++        for (auto& characteristic : found) {
++            if (blocked(characteristic.uuid)) continue;
++            m_characteristics[characteristic.value] = { characteristic, parent, 0 };
++        }
++        m_discoveredCharacteristics.insert(parent);
++        // Extended properties live in a descriptor rather than the declaration.
++        for (auto& characteristic : found) {
++            if (blocked(characteristic.uuid) || !(characteristic.properties & 0x80)) continue;
++            if (auto result = rememberDescriptors(characteristic.value); !result) return result;
++            for (auto& [handle, descriptor] : m_descriptors) {
++                if (descriptor.characteristic != characteristic.value || descriptor.attribute.uuid != UUID::alias(0x2900)) continue;
++                std::vector<uint8_t> value;
++                if (auto result = checked(m_client.read(handle, value)); !result) return result;
++                if (value.size() != 2) return checked({ ATTError::Protocol });
++                m_characteristics[characteristic.value].extendedProperties = value[0] | uint16_t(value[1]) << 8;
++            }
++        }
++    }
++    for (auto& [_, characteristic] : m_characteristics)
++        if (characteristic.service == parent && (!query || characteristic.attribute.uuid == *query)) output.push_back(characteristic);
++    return { };
++}
++GATTResult GATTConnection::rememberDescriptors(uint16_t parent)
++{
++    auto characteristic = m_characteristics.find(parent);
++    if (characteristic == m_characteristics.end()) return { GATTError::Security, { } };
++    if (m_discoveredDescriptors.contains(parent)) return { };
++    std::vector<Descriptor> found;
++    if (auto result = checked(m_client.descriptors(characteristic->second.attribute, found)); !result) return result;
++    if (m_descriptors.size() + found.size() > 4096) return checked({ ATTError::Protocol });
++    for (auto& descriptor : found) if (!blocked(descriptor.uuid)) m_descriptors[descriptor.handle] = { descriptor, parent };
++    m_discoveredDescriptors.insert(parent);
++    return { };
++}
++GATTResult GATTConnection::descriptors(uint16_t parent, std::optional<UUID> query, std::vector<GATTDescriptor>& output)
++{
++    output.clear();
++    if (!m_valid) return { GATTError::InvalidState, { } };
++    if (query && blocked(*query)) return { GATTError::Security, { } };
++    if (auto result = rememberDescriptors(parent); !result) return result;
++    for (auto& [_, descriptor] : m_descriptors)
++        if (descriptor.characteristic == parent && (!query || descriptor.attribute.uuid == *query)) output.push_back(descriptor);
++    return { };
++}
++GATTResult GATTConnection::read(uint16_t handle, bool descriptor, std::vector<uint8_t>& output)
++{
++    output.clear();
++    if (!m_valid) return { GATTError::InvalidState, { } };
++    if (descriptor) {
++        auto item = m_descriptors.find(handle);
++        if (item == m_descriptors.end() || blocked(item->second.attribute.uuid, Access::Read)) return { GATTError::Security, { } };
++    } else {
++        auto item = m_characteristics.find(handle);
++        if (item == m_characteristics.end() || blocked(item->second.attribute.uuid, Access::Read)) return { GATTError::Security, { } };
++        if (!(item->second.attribute.properties & 2)) return { GATTError::NotSupported, { } };
++    }
++    return checked(m_client.read(handle, output));
++}
++GATTResult GATTConnection::write(uint16_t handle, bool descriptor, std::span<const uint8_t> value, bool response)
++{
++    if (!m_valid) return { GATTError::InvalidState, { } };
++    if (descriptor) {
++        auto item = m_descriptors.find(handle);
++        if (item == m_descriptors.end() || blocked(item->second.attribute.uuid, Access::Write)) return { GATTError::Security, { } };
++        if (!response) return { GATTError::NotSupported, { } };
++    } else {
++        auto item = m_characteristics.find(handle);
++        if (item == m_characteristics.end() || blocked(item->second.attribute.uuid, Access::Write)) return { GATTError::Security, { } };
++        if (!(item->second.attribute.properties & (response ? 8 : 4))) return { GATTError::NotSupported, { } };
++    }
++    return checked(m_client.write(handle, value, response));
++}
++GATTResult GATTConnection::notifications(uint16_t handle, bool enable)
++{
++    if (!m_valid) return { GATTError::InvalidState, { } };
++    auto item = m_characteristics.find(handle);
++    if (item == m_characteristics.end() || blocked(item->second.attribute.uuid, Access::Read)) return { GATTError::Security, { } };
++    if (handle == m_serviceChanged) return { GATTError::NotSupported, { } };
++    auto properties = item->second.attribute.properties;
++    if (!(properties & 0x30)) return { GATTError::NotSupported, { } };
++    if (m_subscribed.contains(handle) == enable) return { };
++    if (auto result = rememberDescriptors(handle); !result) return result;
++    auto cccd = std::find_if(m_descriptors.begin(), m_descriptors.end(), [&](auto& entry) { return entry.second.characteristic == handle && entry.second.attribute.uuid == UUID::alias(0x2902); });
++    if (cccd == m_descriptors.end()) return { GATTError::NotSupported, { } };
++    const std::array<uint8_t, 2> value { uint8_t(enable ? (properties & 0x10 ? 1 : 2) : 0), 0 };
++    if (auto result = checked(m_client.write(cccd->first, value)); !result) return result;
++    if (enable) m_subscribed.insert(handle);
++    else m_subscribed.erase(handle);
++    return { };
++}
++GATTResult GATTConnection::poll(std::vector<Notification>& output)
++{
++    output.clear();
++    if (!m_valid) return { GATTError::InvalidState, { } };
++    std::vector<Notification> found;
++    if (auto result = checked(m_client.pollNotifications(found)); !result) return result;
++    for (auto& notification : found) {
++        if (notification.handle == m_serviceChanged) {
++            invalidate();
++            output.clear();
++            return { GATTError::InvalidState, { } };
++        }
++        if (m_subscribed.contains(notification.handle)) output.push_back(std::move(notification));
++    }
++    return { };
++}
++}
+diff --git a/Source/WebCore/platform/bluetooth/haiku/BluetoothGATTHaiku.h b/Source/WebCore/platform/bluetooth/haiku/BluetoothGATTHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..e6a859137fd50649d794d42518d8433fba5254e3
+--- /dev/null
++++ b/Source/WebCore/platform/bluetooth/haiku/BluetoothGATTHaiku.h
+@@ -0,0 +1,47 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#include "BluetoothATTClientHaiku.h"
++
++namespace WebCore::BluetoothHaiku {
++enum class GATTError { None, Security, NotFound, InvalidState, NotSupported, ATT };
++struct GATTResult {
++    GATTError error { GATTError::None };
++    ATTResult att;
++    explicit operator bool() const { return error == GATTError::None; }
++};
++struct GATTCharacteristic { Characteristic attribute; uint16_t service; uint16_t extendedProperties { 0 }; };
++struct GATTDescriptor { Descriptor attribute; uint16_t characteristic; };
++
++// Browser-process capability boundary, also usable with a scripted ATT peer.
++// Untrusted requests never supply native ranges or UUIDs for raw operations:
++// handles must have been discovered beneath a granted, exported service.
++class GATTConnection {
++public:
++    GATTConnection(ATTClient& client, std::set<UUID> grants) : m_client(client), m_grants(std::move(grants)) { }
++    GATTResult initialize();
++    GATTResult services(std::optional<UUID>, std::vector<Service>&);
++    GATTResult includedServices(uint16_t service, std::optional<UUID>, std::vector<Service>&);
++    GATTResult characteristics(uint16_t service, std::optional<UUID>, std::vector<GATTCharacteristic>&);
++    GATTResult descriptors(uint16_t characteristic, std::optional<UUID>, std::vector<GATTDescriptor>&);
++    GATTResult read(uint16_t handle, bool descriptor, std::vector<uint8_t>&);
++    GATTResult write(uint16_t handle, bool descriptor, std::span<const uint8_t>, bool response);
++    GATTResult notifications(uint16_t characteristic, bool enable);
++    GATTResult poll(std::vector<Notification>&);
++    void invalidate();
++    void addGrants(const std::set<UUID>&);
++private:
++    GATTResult checkServiceQuery(const std::optional<UUID>&) const;
++    GATTResult rememberDescriptors(uint16_t characteristic);
++    GATTResult checked(ATTResult);
++    bool allowed(const UUID& uuid) const { return m_grants.contains(uuid) && !blocked(uuid); }
++    ATTClient& m_client;
++    std::set<UUID> m_grants;
++    std::vector<Service> m_catalog;
++    std::map<uint16_t, Service> m_services;
++    std::map<uint16_t, GATTCharacteristic> m_characteristics;
++    std::map<uint16_t, GATTDescriptor> m_descriptors;
++    std::set<uint16_t> m_discoveredCharacteristics, m_discoveredDescriptors, m_subscribed;
++    uint16_t m_serviceChanged { 0 };
++    bool m_valid { false };
++};
++}
+diff --git a/Source/WebCore/platform/bluetooth/haiku/BluetoothRegistries-LICENSE.txt b/Source/WebCore/platform/bluetooth/haiku/BluetoothRegistries-LICENSE.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..8f71f43fee3f78649d238238cbde51e6d7055c82
+--- /dev/null
++++ b/Source/WebCore/platform/bluetooth/haiku/BluetoothRegistries-LICENSE.txt
+@@ -0,0 +1,202 @@
++                                 Apache License
++                           Version 2.0, January 2004
++                        http://www.apache.org/licenses/
++
++   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
++
++   1. Definitions.
++
++      "License" shall mean the terms and conditions for use, reproduction,
++      and distribution as defined by Sections 1 through 9 of this document.
++
++      "Licensor" shall mean the copyright owner or entity authorized by
++      the copyright owner that is granting the License.
++
++      "Legal Entity" shall mean the union of the acting entity and all
++      other entities that control, are controlled by, or are under common
++      control with that entity. For the purposes of this definition,
++      "control" means (i) the power, direct or indirect, to cause the
++      direction or management of such entity, whether by contract or
++      otherwise, or (ii) ownership of fifty percent (50%) or more of the
++      outstanding shares, or (iii) beneficial ownership of such entity.
++
++      "You" (or "Your") shall mean an individual or Legal Entity
++      exercising permissions granted by this License.
++
++      "Source" form shall mean the preferred form for making modifications,
++      including but not limited to software source code, documentation
++      source, and configuration files.
++
++      "Object" form shall mean any form resulting from mechanical
++      transformation or translation of a Source form, including but
++      not limited to compiled object code, generated documentation,
++      and conversions to other media types.
++
++      "Work" shall mean the work of authorship, whether in Source or
++      Object form, made available under the License, as indicated by a
++      copyright notice that is included in or attached to the work
++      (an example is provided in the Appendix below).
++
++      "Derivative Works" shall mean any work, whether in Source or Object
++      form, that is based on (or derived from) the Work and for which the
++      editorial revisions, annotations, elaborations, or other modifications
++      represent, as a whole, an original work of authorship. For the purposes
++      of this License, Derivative Works shall not include works that remain
++      separable from, or merely link (or bind by name) to the interfaces of,
++      the Work and Derivative Works thereof.
++
++      "Contribution" shall mean any work of authorship, including
++      the original version of the Work and any modifications or additions
++      to that Work or Derivative Works thereof, that is intentionally
++      submitted to Licensor for inclusion in the Work by the copyright owner
++      or by an individual or Legal Entity authorized to submit on behalf of
++      the copyright owner. For the purposes of this definition, "submitted"
++      means any form of electronic, verbal, or written communication sent
++      to the Licensor or its representatives, including but not limited to
++      communication on electronic mailing lists, source code control systems,
++      and issue tracking systems that are managed by, or on behalf of, the
++      Licensor for the purpose of discussing and improving the Work, but
++      excluding communication that is conspicuously marked or otherwise
++      designated in writing by the copyright owner as "Not a Contribution."
++
++      "Contributor" shall mean Licensor and any individual or Legal Entity
++      on behalf of whom a Contribution has been received by Licensor and
++      subsequently incorporated within the Work.
++
++   2. Grant of Copyright License. Subject to the terms and conditions of
++      this License, each Contributor hereby grants to You a perpetual,
++      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
++      copyright license to reproduce, prepare Derivative Works of,
++      publicly display, publicly perform, sublicense, and distribute the
++      Work and such Derivative Works in Source or Object form.
++
++   3. Grant of Patent License. Subject to the terms and conditions of
++      this License, each Contributor hereby grants to You a perpetual,
++      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
++      (except as stated in this section) patent license to make, have made,
++      use, offer to sell, sell, import, and otherwise transfer the Work,
++      where such license applies only to those patent claims licensable
++      by such Contributor that are necessarily infringed by their
++      Contribution(s) alone or by combination of their Contribution(s)
++      with the Work to which such Contribution(s) was submitted. If You
++      institute patent litigation against any entity (including a
++      cross-claim or counterclaim in a lawsuit) alleging that the Work
++      or a Contribution incorporated within the Work constitutes direct
++      or contributory patent infringement, then any patent licenses
++      granted to You under this License for that Work shall terminate
++      as of the date such litigation is filed.
++
++   4. Redistribution. You may reproduce and distribute copies of the
++      Work or Derivative Works thereof in any medium, with or without
++      modifications, and in Source or Object form, provided that You
++      meet the following conditions:
++
++      (a) You must give any other recipients of the Work or
++          Derivative Works a copy of this License; and
++
++      (b) You must cause any modified files to carry prominent notices
++          stating that You changed the files; and
++
++      (c) You must retain, in the Source form of any Derivative Works
++          that You distribute, all copyright, patent, trademark, and
++          attribution notices from the Source form of the Work,
++          excluding those notices that do not pertain to any part of
++          the Derivative Works; and
++
++      (d) If the Work includes a "NOTICE" text file as part of its
++          distribution, then any Derivative Works that You distribute must
++          include a readable copy of the attribution notices contained
++          within such NOTICE file, excluding those notices that do not
++          pertain to any part of the Derivative Works, in at least one
++          of the following places: within a NOTICE text file distributed
++          as part of the Derivative Works; within the Source form or
++          documentation, if provided along with the Derivative Works; or,
++          within a display generated by the Derivative Works, if and
++          wherever such third-party notices normally appear. The contents
++          of the NOTICE file are for informational purposes only and
++          do not modify the License. You may add Your own attribution
++          notices within Derivative Works that You distribute, alongside
++          or as an addendum to the NOTICE text from the Work, provided
++          that such additional attribution notices cannot be construed
++          as modifying the License.
++
++      You may add Your own copyright statement to Your modifications and
++      may provide additional or different license terms and conditions
++      for use, reproduction, or distribution of Your modifications, or
++      for any such Derivative Works as a whole, provided Your use,
++      reproduction, and distribution of the Work otherwise complies with
++      the conditions stated in this License.
++
++   5. Submission of Contributions. Unless You explicitly state otherwise,
++      any Contribution intentionally submitted for inclusion in the Work
++      by You to the Licensor shall be under the terms and conditions of
++      this License, without any additional terms or conditions.
++      Notwithstanding the above, nothing herein shall supersede or modify
++      the terms of any separate license agreement you may have executed
++      with Licensor regarding such Contributions.
++
++   6. Trademarks. This License does not grant permission to use the trade
++      names, trademarks, service marks, or product names of the Licensor,
++      except as required for reasonable and customary use in describing the
++      origin of the Work and reproducing the content of the NOTICE file.
++
++   7. Disclaimer of Warranty. Unless required by applicable law or
++      agreed to in writing, Licensor provides the Work (and each
++      Contributor provides its Contributions) on an "AS IS" BASIS,
++      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
++      implied, including, without limitation, any warranties or conditions
++      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
++      PARTICULAR PURPOSE. You are solely responsible for determining the
++      appropriateness of using or redistributing the Work and assume any
++      risks associated with Your exercise of permissions under this License.
++
++   8. Limitation of Liability. In no event and under no legal theory,
++      whether in tort (including negligence), contract, or otherwise,
++      unless required by applicable law (such as deliberate and grossly
++      negligent acts) or agreed to in writing, shall any Contributor be
++      liable to You for damages, including any direct, indirect, special,
++      incidental, or consequential damages of any character arising as a
++      result of this License or out of the use or inability to use the
++      Work (including but not limited to damages for loss of goodwill,
++      work stoppage, computer failure or malfunction, or any and all
++      other commercial damages or losses), even if such Contributor
++      has been advised of the possibility of such damages.
++
++   9. Accepting Warranty or Additional Liability. While redistributing
++      the Work or Derivative Works thereof, You may choose to offer,
++      and charge a fee for, acceptance of support, warranty, indemnity,
++      or other liability obligations and/or rights consistent with this
++      License. However, in accepting such obligations, You may act only
++      on Your own behalf and on Your sole responsibility, not on behalf
++      of any other Contributor, and only if You agree to indemnify,
++      defend, and hold each Contributor harmless for any liability
++      incurred by, or claims asserted against, such Contributor by reason
++      of your accepting any such warranty or additional liability.
++
++   END OF TERMS AND CONDITIONS
++
++   APPENDIX: How to apply the Apache License to your work.
++
++      To apply the Apache License to your work, attach the following
++      boilerplate notice, with the fields enclosed by brackets "{}"
++      replaced with your own identifying information. (Don't include
++      the brackets!)  The text should be enclosed in the appropriate
++      comment syntax for the file format. We also recommend that a
++      file or class name and description of purpose be included on the
++      same "printed page" as the copyright notice for easier
++      identification within third-party archives.
++
++   Copyright {yyyy} {name of copyright owner}
++
++   Licensed under the Apache License, Version 2.0 (the "License");
++   you may not use this file except in compliance with the License.
++   You may obtain a copy of the License at
++
++       http://www.apache.org/licenses/LICENSE-2.0
++
++   Unless required by applicable law or agreed to in writing, software
++   distributed under the License is distributed on an "AS IS" BASIS,
++   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++   See the License for the specific language governing permissions and
++   limitations under the License.
++
+diff --git a/Source/WebCore/platform/bluetooth/haiku/BluetoothTypesHaiku.cpp b/Source/WebCore/platform/bluetooth/haiku/BluetoothTypesHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..a059ad21afc3cbdeab92bba4c6d3d29842309494
+--- /dev/null
++++ b/Source/WebCore/platform/bluetooth/haiku/BluetoothTypesHaiku.cpp
+@@ -0,0 +1,122 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "BluetoothTypesHaiku.h"
++#include <algorithm>
++#include <cstdio>
++
++namespace WebCore::BluetoothHaiku {
++UUID UUID::alias(uint32_t value)
++{
++    UUID result { { uint8_t(value >> 24), uint8_t(value >> 16), uint8_t(value >> 8), uint8_t(value), 0, 0, 0x10, 0, 0x80, 0, 0, 0x80, 0x5f, 0x9b, 0x34, 0xfb } };
++    return result;
++}
++std::optional<UUID> UUID::parse(std::string_view text)
++{
++    if (text.size() != 36) return {};
++    UUID result;
++    auto digit = [](char c) -> int { if (c >= '0' && c <= '9') return c - '0'; if (c >= 'a' && c <= 'f') return c - 'a' + 10; if (c >= 'A' && c <= 'F') return c - 'A' + 10; return -1; };
++    size_t index = 0;
++    for (size_t i = 0; i < text.size();) {
++        if (i == 8 || i == 13 || i == 18 || i == 23) { if (text[i++] != '-') return {}; continue; }
++        int high = digit(text[i++]), low = digit(text[i++]);
++        if (high < 0 || low < 0) return {};
++        result.bytes[index++] = (high << 4) | low;
++    }
++    return result;
++}
++std::optional<UUID> UUID::fromWire(std::span<const uint8_t> bytes)
++{
++    if (bytes.size() == 2) return alias(bytes[0] | uint32_t(bytes[1]) << 8);
++    if (bytes.size() == 4) return alias(bytes[0] | uint32_t(bytes[1]) << 8 | uint32_t(bytes[2]) << 16 | uint32_t(bytes[3]) << 24);
++    if (bytes.size() != 16) return {};
++    UUID result; std::reverse_copy(bytes.begin(), bytes.end(), result.bytes.begin()); return result;
++}
++std::string UUID::string() const
++{
++    static constexpr char digits[] = "0123456789abcdef";
++    std::string result; result.reserve(36);
++    for (size_t i = 0; i < bytes.size(); ++i) {
++        if (i == 4 || i == 6 || i == 8 || i == 10) result += '-';
++        result += digits[bytes[i] >> 4]; result += digits[bytes[i] & 15];
++    }
++    return result;
++}
++
++#include "BluetoothUUIDNamesHaiku.inc"
++std::optional<UUID> namedUUID(UUIDKind kind, std::string_view name)
++{
++    if (auto uuid = UUID::parse(name)) return uuid;
++    for (const auto& entry : uuidNames) if (entry.kind == kind && entry.name == name) return UUID::alias(entry.value);
++    return {};
++}
++bool blocked(const UUID& uuid, Access access)
++{
++    for (auto value : {0x1812, 0xfffd, 0xfff9, 0xfde2, 0x2a03, 0x2a25}) if (uuid == UUID::alias(value)) return true;
++    for (auto text : {"00001530-1212-efde-1523-785feabcd123", "f000ffc0-0451-4000-b000-000000000000", "00060000-0000-1000-8000-00805f9b34fb"}) if (uuid == *UUID::parse(text)) return true;
++    return access == Access::Write && (uuid == UUID::alias(0x2a02) || uuid == UUID::alias(0x2902) || uuid == UUID::alias(0x2903));
++}
++bool Advertisement::append(std::span<const uint8_t> bytes)
++{
++    if (bytes.size() > 1650) return false;
++    // Commit only complete packets; a malformed length cannot preserve partial
++    // filter fields that were not present in a valid advertisement.
++    Advertisement updated = *this;
++    while (!bytes.empty()) {
++        size_t length = bytes.front(); bytes = bytes.subspan(1);
++        if (!length) break;
++        if (length > bytes.size()) return false;
++        uint8_t type = bytes.front(); auto data = bytes.subspan(1, length - 1); bytes = bytes.subspan(length);
++        if ((type == 8 || type == 9) && !data.empty() && (type == 9 || !updated.completeName)) {
++            updated.name.assign(reinterpret_cast<const char*>(data.data()), data.size()); updated.completeName = type == 9;
++        } else if (type >= 2 && type <= 7) {
++            size_t width = type <= 3 ? 2 : type <= 5 ? 4 : 16;
++            if (data.size() % width) return false;
++            while (!data.empty()) { updated.services.insert(*UUID::fromWire(data.first(width))); data = data.subspan(width); }
++        } else if (type == 0xff && data.size() >= 2) {
++            uint16_t company = data[0] | uint16_t(data[1]) << 8;
++            // Web Bluetooth registry: iBeacon proximity data is excluded.
++            if (company != 0x004c || data.size() < 3 || data[2] != 0x02)
++                updated.manufacturerData[company] = { data.begin() + 2, data.end() };
++            else
++                updated.manufacturerData.erase(company);
++        } else if (type == 0x16 || type == 0x20 || type == 0x21) {
++            size_t width = type == 0x16 ? 2 : type == 0x20 ? 4 : 16;
++            if (data.size() < width) return false;
++            auto uuid = *UUID::fromWire(data.first(width));
++            if (!blocked(uuid)) updated.serviceData[uuid] = { data.begin() + width, data.end() };
++        }
++        if (updated.services.size() > 128 || updated.manufacturerData.size() > 64 || updated.serviceData.size() > 128) return false;
++    }
++    *this = std::move(updated); return true;
++}
++bool DataFilter::valid() const { return prefix.size() <= 512 && (mask.empty() || mask.size() == prefix.size()); }
++bool DataFilter::matches(std::span<const uint8_t> value) const
++{
++    if (!valid() || value.size() < prefix.size()) return false;
++    for (size_t i = 0; i < prefix.size(); ++i) { uint8_t bitMask = mask.empty() ? 0xff : mask[i]; if ((value[i] & bitMask) != (prefix[i] & bitMask)) return false; }
++    return true;
++}
++bool Filter::valid() const
++{
++    if (!name && !namePrefix && services.empty() && manufacturerData.empty() && serviceData.empty()) return false;
++    if ((name && name->size() > 248) || (namePrefix && (namePrefix->empty() || namePrefix->size() > 248)) || services.size() > 128 || manufacturerData.size() > 64 || serviceData.size() > 128) return false;
++    for (auto& service : services) if (blocked(service)) return false;
++    for (auto& [_, filter] : manufacturerData) if (!filter.valid()) return false;
++    for (auto& [uuid, filter] : serviceData) if (blocked(uuid) || !filter.valid()) return false;
++    return true;
++}
++bool Filter::matches(const Advertisement& advertisement) const
++{
++    if (!valid()) return false;
++    if (name && *name != advertisement.name) return false;
++    if (namePrefix && !advertisement.name.starts_with(*namePrefix)) return false;
++    for (auto& uuid : services) if (!advertisement.services.contains(uuid)) return false;
++    for (auto& [company, filter] : manufacturerData) { auto item = advertisement.manufacturerData.find(company); if (item == advertisement.manufacturerData.end() || !filter.matches(item->second)) return false; }
++    for (auto& [uuid, filter] : serviceData) { auto item = advertisement.serviceData.find(uuid); if (item == advertisement.serviceData.end() || !filter.matches(item->second)) return false; }
++    return true;
++}
++bool matches(const Advertisement& advertisement, const std::vector<Filter>& include, const std::vector<Filter>& exclude)
++{
++    return advertisement.connectable && (include.empty() || std::ranges::any_of(include, [&](auto& filter) { return filter.matches(advertisement); }))
++        && !std::ranges::any_of(exclude, [&](auto& filter) { return filter.matches(advertisement); });
++}
++}
+diff --git a/Source/WebCore/platform/bluetooth/haiku/BluetoothTypesHaiku.h b/Source/WebCore/platform/bluetooth/haiku/BluetoothTypesHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..e9c6b5d44b02b3b362253f6885aa459d3296b0bf
+--- /dev/null
++++ b/Source/WebCore/platform/bluetooth/haiku/BluetoothTypesHaiku.h
+@@ -0,0 +1,53 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#include <array>
++#include <cstdint>
++#include <map>
++#include <optional>
++#include <set>
++#include <span>
++#include <string>
++#include <string_view>
++#include <vector>
++
++namespace WebCore::BluetoothHaiku {
++struct UUID {
++    std::array<uint8_t, 16> bytes {};
++    auto operator<=>(const UUID&) const = default;
++    static UUID alias(uint32_t);
++    static std::optional<UUID> parse(std::string_view);
++    static std::optional<UUID> fromWire(std::span<const uint8_t>);
++    std::string string() const;
++};
++enum class UUIDKind { Service, Characteristic, Descriptor };
++std::optional<UUID> namedUUID(UUIDKind, std::string_view);
++enum class Access { Discover, Read, Write };
++bool blocked(const UUID&, Access = Access::Discover);
++struct Advertisement {
++    std::string name;
++    bool completeName { false };
++    bool connectable { false };
++    int8_t rssi { -127 };
++    std::set<UUID> services;
++    std::map<uint16_t, std::vector<uint8_t>> manufacturerData;
++    std::map<UUID, std::vector<uint8_t>> serviceData;
++    bool append(std::span<const uint8_t>);
++};
++struct DataFilter {
++    std::vector<uint8_t> prefix, mask;
++    bool valid() const;
++    bool matches(std::span<const uint8_t>) const;
++};
++struct Filter {
++    std::optional<std::string> name, namePrefix;
++    std::vector<UUID> services;
++    std::map<uint16_t, DataFilter> manufacturerData;
++    std::map<UUID, DataFilter> serviceData;
++    bool valid() const;
++    bool matches(const Advertisement&) const;
++};
++bool matches(const Advertisement&, const std::vector<Filter>&, const std::vector<Filter>&);
++struct Service { uint16_t start {0}, end {0}; UUID uuid; bool primary {true}; };
++struct Characteristic { uint16_t declaration {0}, value {0}, end {0}; uint8_t properties {0}; UUID uuid; };
++struct Descriptor { uint16_t handle {0}; UUID uuid; };
++}
+diff --git a/Source/WebCore/platform/bluetooth/haiku/BluetoothUUIDNamesHaiku.inc b/Source/WebCore/platform/bluetooth/haiku/BluetoothUUIDNamesHaiku.inc
+new file mode 100644
+index 0000000000000000000000000000000000000000..bab2d54ce17d1d146ab76d9d02583ce286da7952
+--- /dev/null
++++ b/Source/WebCore/platform/bluetooth/haiku/BluetoothUUIDNamesHaiku.inc
+@@ -0,0 +1,274 @@
++// Alias data: WebBluetoothCG/registries (Apache-2.0), fetched 2026-10-07.
++// https://github.com/WebBluetoothCG/registries/tree/228b62c31c177c9b770b79896aec9ef660f62216
++// See BluetoothRegistries-LICENSE.txt.
++struct UUIDName { UUIDKind kind; std::string_view name; uint32_t value; };
++static constexpr UUIDName uuidNames[] = {
++    {UUIDKind::Service, "generic_access", 0x00001800},
++    {UUIDKind::Service, "generic_attribute", 0x00001801},
++    {UUIDKind::Service, "immediate_alert", 0x00001802},
++    {UUIDKind::Service, "link_loss", 0x00001803},
++    {UUIDKind::Service, "tx_power", 0x00001804},
++    {UUIDKind::Service, "current_time", 0x00001805},
++    {UUIDKind::Service, "reference_time_update", 0x00001806},
++    {UUIDKind::Service, "next_dst_change", 0x00001807},
++    {UUIDKind::Service, "glucose", 0x00001808},
++    {UUIDKind::Service, "health_thermometer", 0x00001809},
++    {UUIDKind::Service, "device_information", 0x0000180A},
++    {UUIDKind::Service, "heart_rate", 0x0000180D},
++    {UUIDKind::Service, "phone_alert_status", 0x0000180E},
++    {UUIDKind::Service, "battery_service", 0x0000180F},
++    {UUIDKind::Service, "blood_pressure", 0x00001810},
++    {UUIDKind::Service, "alert_notification", 0x00001811},
++    {UUIDKind::Service, "human_interface_device", 0x00001812},
++    {UUIDKind::Service, "scan_parameters", 0x00001813},
++    {UUIDKind::Service, "running_speed_and_cadence", 0x00001814},
++    {UUIDKind::Service, "automation_io", 0x00001815},
++    {UUIDKind::Service, "cycling_speed_and_cadence", 0x00001816},
++    {UUIDKind::Service, "cycling_power", 0x00001818},
++    {UUIDKind::Service, "location_and_navigation", 0x00001819},
++    {UUIDKind::Service, "environmental_sensing", 0x0000181A},
++    {UUIDKind::Service, "body_composition", 0x0000181B},
++    {UUIDKind::Service, "user_data", 0x0000181C},
++    {UUIDKind::Service, "weight_scale", 0x0000181D},
++    {UUIDKind::Service, "bond_management", 0x0000181E},
++    {UUIDKind::Service, "continuous_glucose_monitoring", 0x0000181F},
++    {UUIDKind::Service, "internet_protocol_support", 0x00001820},
++    {UUIDKind::Service, "indoor_positioning", 0x00001821},
++    {UUIDKind::Service, "pulse_oximeter", 0x00001822},
++    {UUIDKind::Service, "http_proxy", 0x00001823},
++    {UUIDKind::Service, "transport_discovery", 0x00001824},
++    {UUIDKind::Service, "object_transfer", 0x00001825},
++    {UUIDKind::Service, "fitness_machine", 0x00001826},
++    {UUIDKind::Service, "mesh_provisioning", 0x00001827},
++    {UUIDKind::Service, "mesh_proxy", 0x00001828},
++    {UUIDKind::Service, "reconnection_configuration", 0x00001829},
++    {UUIDKind::Characteristic, "gap.device_name", 0x00002A00},
++    {UUIDKind::Characteristic, "gap.appearance", 0x00002A01},
++    {UUIDKind::Characteristic, "gap.peripheral_privacy_flag", 0x00002A02},
++    {UUIDKind::Characteristic, "gap.reconnection_address", 0x00002A03},
++    {UUIDKind::Characteristic, "gap.peripheral_preferred_connection_parameters", 0x00002A04},
++    {UUIDKind::Characteristic, "gatt.service_changed", 0x00002A05},
++    {UUIDKind::Characteristic, "alert_level", 0x00002A06},
++    {UUIDKind::Characteristic, "tx_power_level", 0x00002A07},
++    {UUIDKind::Characteristic, "date_time", 0x00002A08},
++    {UUIDKind::Characteristic, "day_of_week", 0x00002A09},
++    {UUIDKind::Characteristic, "day_date_time", 0x00002A0A},
++    {UUIDKind::Characteristic, "exact_time_100", 0x00002A0B},
++    {UUIDKind::Characteristic, "exact_time_256", 0x00002A0C},
++    {UUIDKind::Characteristic, "dst_offset", 0x00002A0D},
++    {UUIDKind::Characteristic, "time_zone", 0x00002A0E},
++    {UUIDKind::Characteristic, "local_time_information", 0x00002A0F},
++    {UUIDKind::Characteristic, "secondary_time_zone", 0x00002A10},
++    {UUIDKind::Characteristic, "time_with_dst", 0x00002A11},
++    {UUIDKind::Characteristic, "time_accuracy", 0x00002A12},
++    {UUIDKind::Characteristic, "time_source", 0x00002A13},
++    {UUIDKind::Characteristic, "reference_time_information", 0x00002A14},
++    {UUIDKind::Characteristic, "time_broadcast", 0x00002A15},
++    {UUIDKind::Characteristic, "time_update_control_point", 0x00002A16},
++    {UUIDKind::Characteristic, "time_update_state", 0x00002A17},
++    {UUIDKind::Characteristic, "glucose_measurement", 0x00002A18},
++    {UUIDKind::Characteristic, "battery_level", 0x00002A19},
++    {UUIDKind::Characteristic, "battery_power_state", 0x00002A1A},
++    {UUIDKind::Characteristic, "battery_level_state", 0x00002A1B},
++    {UUIDKind::Characteristic, "temperature_measurement", 0x00002A1C},
++    {UUIDKind::Characteristic, "temperature_type", 0x00002A1D},
++    {UUIDKind::Characteristic, "intermediate_temperature", 0x00002A1E},
++    {UUIDKind::Characteristic, "temperature_celsius", 0x00002A1F},
++    {UUIDKind::Characteristic, "temperature_fahrenheit", 0x00002A20},
++    {UUIDKind::Characteristic, "measurement_interval", 0x00002A21},
++    {UUIDKind::Characteristic, "boot_keyboard_input_report", 0x00002A22},
++    {UUIDKind::Characteristic, "system_id", 0x00002A23},
++    {UUIDKind::Characteristic, "model_number_string", 0x00002A24},
++    {UUIDKind::Characteristic, "serial_number_string", 0x00002A25},
++    {UUIDKind::Characteristic, "firmware_revision_string", 0x00002A26},
++    {UUIDKind::Characteristic, "hardware_revision_string", 0x00002A27},
++    {UUIDKind::Characteristic, "software_revision_string", 0x00002A28},
++    {UUIDKind::Characteristic, "manufacturer_name_string", 0x00002A29},
++    {UUIDKind::Characteristic, "ieee_11073-20601_regulatory_certification_data_list", 0x00002A2A},
++    {UUIDKind::Characteristic, "current_time", 0x00002A2B},
++    {UUIDKind::Characteristic, "magnetic_declination", 0x00002A2C},
++    {UUIDKind::Characteristic, "position_2d", 0x00002A2F},
++    {UUIDKind::Characteristic, "position_3d", 0x00002A30},
++    {UUIDKind::Characteristic, "scan_refresh", 0x00002A31},
++    {UUIDKind::Characteristic, "boot_keyboard_output_report", 0x00002A32},
++    {UUIDKind::Characteristic, "boot_mouse_input_report", 0x00002A33},
++    {UUIDKind::Characteristic, "glucose_measurement_context", 0x00002A34},
++    {UUIDKind::Characteristic, "blood_pressure_measurement", 0x00002A35},
++    {UUIDKind::Characteristic, "intermediate_cuff_pressure", 0x00002A36},
++    {UUIDKind::Characteristic, "heart_rate_measurement", 0x00002A37},
++    {UUIDKind::Characteristic, "body_sensor_location", 0x00002A38},
++    {UUIDKind::Characteristic, "heart_rate_control_point", 0x00002A39},
++    {UUIDKind::Characteristic, "removable", 0x00002A3A},
++    {UUIDKind::Characteristic, "service_required", 0x00002A3B},
++    {UUIDKind::Characteristic, "scientific_temperature_celsius", 0x00002A3C},
++    {UUIDKind::Characteristic, "string", 0x00002A3D},
++    {UUIDKind::Characteristic, "network_availability", 0x00002A3E},
++    {UUIDKind::Characteristic, "alert_status", 0x00002A3F},
++    {UUIDKind::Characteristic, "ringer_control_point", 0x00002A40},
++    {UUIDKind::Characteristic, "ringer_setting", 0x00002A41},
++    {UUIDKind::Characteristic, "alert_category_id_bit_mask", 0x00002A42},
++    {UUIDKind::Characteristic, "alert_category_id", 0x00002A43},
++    {UUIDKind::Characteristic, "alert_notification_control_point", 0x00002A44},
++    {UUIDKind::Characteristic, "unread_alert_status", 0x00002A45},
++    {UUIDKind::Characteristic, "new_alert", 0x00002A46},
++    {UUIDKind::Characteristic, "supported_new_alert_category", 0x00002A47},
++    {UUIDKind::Characteristic, "supported_unread_alert_category", 0x00002A48},
++    {UUIDKind::Characteristic, "blood_pressure_feature", 0x00002A49},
++    {UUIDKind::Characteristic, "hid_information", 0x00002A4A},
++    {UUIDKind::Characteristic, "report_map", 0x00002A4B},
++    {UUIDKind::Characteristic, "hid_control_point", 0x00002A4C},
++    {UUIDKind::Characteristic, "report", 0x00002A4D},
++    {UUIDKind::Characteristic, "protocol_mode", 0x00002A4E},
++    {UUIDKind::Characteristic, "scan_interval_window", 0x00002A4F},
++    {UUIDKind::Characteristic, "pnp_id", 0x00002A50},
++    {UUIDKind::Characteristic, "glucose_feature", 0x00002A51},
++    {UUIDKind::Characteristic, "record_access_control_point", 0x00002A52},
++    {UUIDKind::Characteristic, "rsc_measurement", 0x00002A53},
++    {UUIDKind::Characteristic, "rsc_feature", 0x00002A54},
++    {UUIDKind::Characteristic, "sc_control_point", 0x00002A55},
++    {UUIDKind::Characteristic, "digital", 0x00002A56},
++    {UUIDKind::Characteristic, "digital_output", 0x00002A57},
++    {UUIDKind::Characteristic, "analog", 0x00002A58},
++    {UUIDKind::Characteristic, "analog_output", 0x00002A59},
++    {UUIDKind::Characteristic, "aggregate", 0x00002A5A},
++    {UUIDKind::Characteristic, "csc_measurement", 0x00002A5B},
++    {UUIDKind::Characteristic, "csc_feature", 0x00002A5C},
++    {UUIDKind::Characteristic, "sensor_location", 0x00002A5D},
++    {UUIDKind::Characteristic, "plx_spot_check_measurement", 0x00002A5E},
++    {UUIDKind::Characteristic, "plx_continuous_measurement", 0x00002A5F},
++    {UUIDKind::Characteristic, "plx_features", 0x00002A60},
++    {UUIDKind::Characteristic, "pulse_oximetry_control_point", 0x00002A62},
++    {UUIDKind::Characteristic, "cycling_power_measurement", 0x00002A63},
++    {UUIDKind::Characteristic, "cycling_power_vector", 0x00002A64},
++    {UUIDKind::Characteristic, "cycling_power_feature", 0x00002A65},
++    {UUIDKind::Characteristic, "cycling_power_control_point", 0x00002A66},
++    {UUIDKind::Characteristic, "location_and_speed", 0x00002A67},
++    {UUIDKind::Characteristic, "navigation", 0x00002A68},
++    {UUIDKind::Characteristic, "position_quality", 0x00002A69},
++    {UUIDKind::Characteristic, "ln_feature", 0x00002A6A},
++    {UUIDKind::Characteristic, "ln_control_point", 0x00002A6B},
++    {UUIDKind::Characteristic, "elevation", 0x00002A6C},
++    {UUIDKind::Characteristic, "pressure", 0x00002A6D},
++    {UUIDKind::Characteristic, "temperature", 0x00002A6E},
++    {UUIDKind::Characteristic, "humidity", 0x00002A6F},
++    {UUIDKind::Characteristic, "true_wind_speed", 0x00002A70},
++    {UUIDKind::Characteristic, "true_wind_direction", 0x00002A71},
++    {UUIDKind::Characteristic, "apparent_wind_speed", 0x00002A72},
++    {UUIDKind::Characteristic, "apparent_wind_direction", 0x00002A73},
++    {UUIDKind::Characteristic, "gust_factor", 0x00002A74},
++    {UUIDKind::Characteristic, "pollen_concentration", 0x00002A75},
++    {UUIDKind::Characteristic, "uv_index", 0x00002A76},
++    {UUIDKind::Characteristic, "irradiance", 0x00002A77},
++    {UUIDKind::Characteristic, "rainfall", 0x00002A78},
++    {UUIDKind::Characteristic, "wind_chill", 0x00002A79},
++    {UUIDKind::Characteristic, "heat_index", 0x00002A7A},
++    {UUIDKind::Characteristic, "dew_point", 0x00002A7B},
++    {UUIDKind::Characteristic, "descriptor_value_changed", 0x00002A7D},
++    {UUIDKind::Characteristic, "aerobic_heart_rate_lower_limit", 0x00002A7E},
++    {UUIDKind::Characteristic, "aerobic_threshold", 0x00002A7F},
++    {UUIDKind::Characteristic, "age", 0x00002A80},
++    {UUIDKind::Characteristic, "anaerobic_heart_rate_lower_limit", 0x00002A81},
++    {UUIDKind::Characteristic, "anaerobic_heart_rate_upper_limit", 0x00002A82},
++    {UUIDKind::Characteristic, "anaerobic_threshold", 0x00002A83},
++    {UUIDKind::Characteristic, "aerobic_heart_rate_upper_limit", 0x00002A84},
++    {UUIDKind::Characteristic, "date_of_birth", 0x00002A85},
++    {UUIDKind::Characteristic, "date_of_threshold_assessment", 0x00002A86},
++    {UUIDKind::Characteristic, "email_address", 0x00002A87},
++    {UUIDKind::Characteristic, "fat_burn_heart_rate_lower_limit", 0x00002A88},
++    {UUIDKind::Characteristic, "fat_burn_heart_rate_upper_limit", 0x00002A89},
++    {UUIDKind::Characteristic, "first_name", 0x00002A8A},
++    {UUIDKind::Characteristic, "five_zone_heart_rate_limits", 0x00002A8B},
++    {UUIDKind::Characteristic, "gender", 0x00002A8C},
++    {UUIDKind::Characteristic, "heart_rate_max", 0x00002A8D},
++    {UUIDKind::Characteristic, "height", 0x00002A8E},
++    {UUIDKind::Characteristic, "hip_circumference", 0x00002A8F},
++    {UUIDKind::Characteristic, "last_name", 0x00002A90},
++    {UUIDKind::Characteristic, "maximum_recommended_heart_rate", 0x00002A91},
++    {UUIDKind::Characteristic, "resting_heart_rate", 0x00002A92},
++    {UUIDKind::Characteristic, "sport_type_for_aerobic_and_anaerobic_thresholds", 0x00002A93},
++    {UUIDKind::Characteristic, "three_zone_heart_rate_limits", 0x00002A94},
++    {UUIDKind::Characteristic, "two_zone_heart_rate_limit", 0x00002A95},
++    {UUIDKind::Characteristic, "vo2_max", 0x00002A96},
++    {UUIDKind::Characteristic, "waist_circumference", 0x00002A97},
++    {UUIDKind::Characteristic, "weight", 0x00002A98},
++    {UUIDKind::Characteristic, "database_change_increment", 0x00002A99},
++    {UUIDKind::Characteristic, "user_index", 0x00002A9A},
++    {UUIDKind::Characteristic, "body_composition_feature", 0x00002A9B},
++    {UUIDKind::Characteristic, "body_composition_measurement", 0x00002A9C},
++    {UUIDKind::Characteristic, "weight_measurement", 0x00002A9D},
++    {UUIDKind::Characteristic, "weight_scale_feature", 0x00002A9E},
++    {UUIDKind::Characteristic, "user_control_point", 0x00002A9F},
++    {UUIDKind::Characteristic, "magnetic_flux_density_2D", 0x00002AA0},
++    {UUIDKind::Characteristic, "magnetic_flux_density_3D", 0x00002AA1},
++    {UUIDKind::Characteristic, "language", 0x00002AA2},
++    {UUIDKind::Characteristic, "barometric_pressure_trend", 0x00002AA3},
++    {UUIDKind::Characteristic, "bond_management_control_point", 0x00002AA4},
++    {UUIDKind::Characteristic, "bond_management_feature", 0x00002AA5},
++    {UUIDKind::Characteristic, "gap.central_address_resolution_support", 0x00002AA6},
++    {UUIDKind::Characteristic, "cgm_measurement", 0x00002AA7},
++    {UUIDKind::Characteristic, "cgm_feature", 0x00002AA8},
++    {UUIDKind::Characteristic, "cgm_status", 0x00002AA9},
++    {UUIDKind::Characteristic, "cgm_session_start_time", 0x00002AAA},
++    {UUIDKind::Characteristic, "cgm_session_run_time", 0x00002AAB},
++    {UUIDKind::Characteristic, "cgm_specific_ops_control_point", 0x00002AAC},
++    {UUIDKind::Characteristic, "indoor_positioning_configuration", 0x00002AAD},
++    {UUIDKind::Characteristic, "latitude", 0x00002AAE},
++    {UUIDKind::Characteristic, "longitude", 0x00002AAF},
++    {UUIDKind::Characteristic, "local_north_coordinate", 0x00002AB0},
++    {UUIDKind::Characteristic, "local_east_coordinate.xml", 0x00002AB1},
++    {UUIDKind::Characteristic, "floor_number", 0x00002AB2},
++    {UUIDKind::Characteristic, "altitude", 0x00002AB3},
++    {UUIDKind::Characteristic, "uncertainty", 0x00002AB4},
++    {UUIDKind::Characteristic, "location_name", 0x00002AB5},
++    {UUIDKind::Characteristic, "uri", 0x00002AB6},
++    {UUIDKind::Characteristic, "http_headers", 0x00002AB7},
++    {UUIDKind::Characteristic, "http_status_code", 0x00002AB8},
++    {UUIDKind::Characteristic, "http_entity_body", 0x00002AB9},
++    {UUIDKind::Characteristic, "http_control_point", 0x00002ABA},
++    {UUIDKind::Characteristic, "https_security", 0x00002ABB},
++    {UUIDKind::Characteristic, "tds_control_point", 0x00002ABC},
++    {UUIDKind::Characteristic, "ots_feature", 0x00002ABD},
++    {UUIDKind::Characteristic, "object_name", 0x00002ABE},
++    {UUIDKind::Characteristic, "object_type", 0x00002ABF},
++    {UUIDKind::Characteristic, "object_size", 0x00002AC0},
++    {UUIDKind::Characteristic, "object_first_created", 0x00002AC1},
++    {UUIDKind::Characteristic, "object_last_modified", 0x00002AC2},
++    {UUIDKind::Characteristic, "object_id", 0x00002AC3},
++    {UUIDKind::Characteristic, "object_properties", 0x00002AC4},
++    {UUIDKind::Characteristic, "object_action_control_point", 0x00002AC5},
++    {UUIDKind::Characteristic, "object_list_control_point", 0x00002AC6},
++    {UUIDKind::Characteristic, "object_list_filter", 0x00002AC7},
++    {UUIDKind::Characteristic, "object_changed", 0x00002AC8},
++    {UUIDKind::Characteristic, "resolvable_private_address_only", 0x00002AC9},
++    {UUIDKind::Characteristic, "fitness_machine_feature", 0x00002ACC},
++    {UUIDKind::Characteristic, "treadmill_data", 0x00002ACD},
++    {UUIDKind::Characteristic, "cross_trainer_data", 0x00002ACE},
++    {UUIDKind::Characteristic, "step_climber_data", 0x00002ACF},
++    {UUIDKind::Characteristic, "stair_climber_data", 0x00002AD0},
++    {UUIDKind::Characteristic, "rower_data", 0x00002AD1},
++    {UUIDKind::Characteristic, "indoor_bike_data", 0x00002AD2},
++    {UUIDKind::Characteristic, "training_status", 0x00002AD3},
++    {UUIDKind::Characteristic, "supported_speed_range", 0x00002AD4},
++    {UUIDKind::Characteristic, "supported_inclination_range", 0x00002AD5},
++    {UUIDKind::Characteristic, "supported_resistance_level_range", 0x00002AD6},
++    {UUIDKind::Characteristic, "supported_heart_rate_range", 0x00002AD7},
++    {UUIDKind::Characteristic, "supported_power_range", 0x00002AD8},
++    {UUIDKind::Characteristic, "fitness_machine_control_point", 0x00002AD9},
++    {UUIDKind::Characteristic, "fitness_machine_status", 0x00002ADA},
++    {UUIDKind::Characteristic, "date_utc", 0x00002AED},
++    {UUIDKind::Descriptor, "gatt.characteristic_extended_properties", 0x00002900},
++    {UUIDKind::Descriptor, "gatt.characteristic_user_description", 0x00002901},
++    {UUIDKind::Descriptor, "gatt.client_characteristic_configuration", 0x00002902},
++    {UUIDKind::Descriptor, "gatt.server_characteristic_configuration", 0x00002903},
++    {UUIDKind::Descriptor, "gatt.characteristic_presentation_format", 0x00002904},
++    {UUIDKind::Descriptor, "gatt.characteristic_aggregate_format", 0x00002905},
++    {UUIDKind::Descriptor, "valid_range", 0x00002906},
++    {UUIDKind::Descriptor, "external_report_reference", 0x00002907},
++    {UUIDKind::Descriptor, "report_reference", 0x00002908},
++    {UUIDKind::Descriptor, "number_of_digitals", 0x00002909},
++    {UUIDKind::Descriptor, "value_trigger_setting", 0x0000290A},
++    {UUIDKind::Descriptor, "es_configuration", 0x0000290B},
++    {UUIDKind::Descriptor, "es_measurement", 0x0000290C},
++    {UUIDKind::Descriptor, "es_trigger_setting", 0x0000290D},
++    {UUIDKind::Descriptor, "time_trigger_setting", 0x0000290E},
++};
 diff --git a/Source/WebCore/platform/encryptedmedia/CDMFactory.cpp b/Source/WebCore/platform/encryptedmedia/CDMFactory.cpp
 index 7123e4b97b38686bec463b9562d9b80b28236a5f..ff98ce0f13c1d3b1191f03a981fb97f6a7f7ea65 100644
 --- a/Source/WebCore/platform/encryptedmedia/CDMFactory.cpp
@@ -101172,6 +102394,344 @@ index 0000000000000000000000000000000000000000..c336a7ec445bc211eb4b3abffe700d2f
 +void performExtensionMenuItemHaiku(uint64_t token);
 +
 +} // namespace WebKit
+diff --git a/Source/WebKit/UIProcess/haiku/bluetooth/BluetoothSessionHaiku.cpp b/Source/WebKit/UIProcess/haiku/bluetooth/BluetoothSessionHaiku.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..074ae790c8b5aef8a4d50c38f0ca8b938375ff7a
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/bluetooth/BluetoothSessionHaiku.cpp
+@@ -0,0 +1,283 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#include "BluetoothSessionHaiku.h"
++#include <Looper.h>
++#include <Message.h>
++#include <Messenger.h>
++#include <OS.h>
++#include <bluetooth/L2CAP/btL2CAP.h>
++#include <algorithm>
++#include <cerrno>
++#include <cstring>
++#include <fcntl.h>
++#include <mutex>
++#include <poll.h>
++#include <sys/socket.h>
++#include <unistd.h>
++
++namespace WebKit::BluetoothHaiku {
++namespace {
++// air/OS bluetooth_server's listener-scoped LE protocol. No force operations.
++constexpr const char* serverSignature = "application/x-vnd.Haiku-bluetooth_server";
++constexpr uint32_t code(const char* s) { return uint32_t(s[0]) << 24 | uint32_t(s[1]) << 16 | uint32_t(s[2]) << 8 | uint32_t(s[3]); }
++constexpr uint32_t countAdapters = code("btCd"), acquireAdapter = code("btAd");
++constexpr uint32_t scanStart = code("leSS"), scanStop = code("leST"), advertisement = code("leAD");
++constexpr uint32_t linkConnect = code("leCN"), linkCancel = code("leCC"), linkDisconnect = code("leDC");
++constexpr uint32_t linkConnected = code("leCD"), linkFailed = code("leCF"), linkDisconnected = code("leDD");
++constexpr bigtime_t messageTimeout = 1000000;
++
++status_t request(BMessage& message, BMessage& reply)
++{
++    BMessenger server(serverSignature);
++    if (!server.IsValid()) return B_NO_INIT;
++    auto status = server.SendMessage(&message, &reply, messageTimeout, messageTimeout);
++    return status == B_OK ? reply.GetInt32("status", B_ERROR) : status;
++}
++status_t scopedRequest(uint32_t what, int32_t adapter, const BMessenger& listener)
++{
++    BMessage message(what), reply;
++    message.AddInt32("hci_id", adapter);
++    message.AddMessenger("listener", listener);
++    return request(message, reply);
++}
++std::vector<int32_t> adapters()
++{
++    BMessage count(countAdapters), reply;
++    if (request(count, reply) != B_OK) return { };
++    int32_t total = std::clamp(reply.GetInt32("count", 0), 0, 16);
++    std::vector<int32_t> result;
++    for (int32_t i = 0; i < total; ++i) {
++        BMessage acquire(acquireAdapter), response;
++        if (request(acquire, response) != B_OK) continue;
++        int32_t id = response.GetInt32("hci_id", -1);
++        if (id >= 0 && std::find(result.begin(), result.end(), id) == result.end()) result.push_back(id);
++    }
++    return result;
++}
++struct Notices {
++    std::mutex mutex;
++    std::vector<Device> devices;
++    std::atomic<uint32_t> link { 0 };
++};
++class Listener final : public BLooper {
++public:
++    explicit Listener(std::shared_ptr<Notices> notices) : BLooper("Summit Bluetooth"), m_notices(std::move(notices)) { }
++    void MessageReceived(BMessage* message) override
++    {
++        switch (message->what) {
++        case linkConnected: case linkFailed: case linkDisconnected:
++            m_notices->link = message->what;
++            return;
++        case advertisement: {
++            const void* address = nullptr;
++            const void* data = nullptr;
++            ssize_t addressSize = 0, dataSize = 0;
++            uint8_t type = 0, event = 0;
++            int8_t rssi = -127;
++            int32_t adapter = -1;
++            if (message->FindData("address", B_RAW_TYPE, &address, &addressSize) != B_OK || addressSize != 6
++                || message->FindData("data", B_RAW_TYPE, &data, &dataSize) != B_OK || dataSize < 0 || dataSize > 1650
++                || message->FindUInt8("address_type", &type) != B_OK || type > 1
++                || message->FindInt32("hci_id", &adapter) != B_OK || adapter < 0) return;
++            message->FindUInt8("event_type", &event);
++            message->FindInt8("rssi", &rssi);
++            Device incoming;
++            std::memcpy(incoming.address.data(), address, 6);
++            incoming.addressType = type;
++            incoming.adapter = adapter;
++            std::lock_guard lock(m_notices->mutex);
++            auto it = std::find_if(m_notices->devices.begin(), m_notices->devices.end(), [&](auto& device) {
++                return device.samePeer(incoming) && device.adapter == adapter;
++            });
++            if (it == m_notices->devices.end()) {
++                if (m_notices->devices.size() >= 256) return;
++                m_notices->devices.push_back(incoming);
++                it = m_notices->devices.end() - 1;
++            }
++            it->advertisement.rssi = rssi;
++            it->advertisement.connectable |= event == 0 || event == 1;
++            it->advertisement.append({ static_cast<const uint8_t*>(data), size_t(dataSize) });
++            return;
++        }
++        default: BLooper::MessageReceived(message);
++        }
++    }
++private:
++    std::shared_ptr<Notices> m_notices;
++};
++class ScopedListener {
++public:
++    ScopedListener() : notices(std::make_shared<Notices>()), m_listener(new Listener(notices))
++    {
++        if (m_listener->Run() < 0) { delete m_listener; m_listener = nullptr; }
++        else messenger = BMessenger(m_listener);
++    }
++    ~ScopedListener() { if (m_listener && m_listener->Lock()) m_listener->Quit(); }
++    std::shared_ptr<Notices> notices;
++    BMessenger messenger;
++private:
++    Listener* m_listener;
++};
++}
++
++bool available()
++{
++    BMessage message(countAdapters), reply;
++    return request(message, reply) == B_OK && reply.GetInt32("count", 0) > 0;
++}
++
++NativeError scan(std::vector<Device>& result, const std::atomic<bool>& cancelled, unsigned milliseconds)
++{
++    result.clear();
++    if (cancelled) return NativeError::Aborted;
++    ScopedListener listener;
++    if (!listener.messenger.IsValid()) return NativeError::Unavailable;
++    std::vector<int32_t> scanning;
++    for (auto adapter : adapters()) {
++        if (cancelled) break;
++        // Keep every attempted adapter, including a timed-out acknowledgement:
++        // the server may have registered this listener before its reply expired.
++        scanning.push_back(adapter);
++        scopedRequest(scanStart, adapter, listener.messenger);
++    }
++    auto deadline = system_time() + bigtime_t(std::min(milliseconds, 15000u)) * 1000;
++    while (!scanning.empty() && !cancelled && system_time() < deadline) snooze(50000);
++    for (auto adapter : scanning) scopedRequest(scanStop, adapter, listener.messenger);
++    if (cancelled) return NativeError::Aborted;
++    if (scanning.empty()) return NativeError::Unavailable;
++    {
++        std::lock_guard lock(listener.notices->mutex);
++        result = std::move(listener.notices->devices);
++    }
++    std::stable_sort(result.begin(), result.end(), [](auto& a, auto& b) { return a.advertisement.rssi > b.advertisement.rssi; });
++    // A peer seen by several adapters needs just one chooser entry.
++    for (size_t i = 0; i < result.size(); ++i) {
++        auto first = result.begin() + i + 1;
++        result.erase(std::remove_if(first, result.end(), [&](auto& device) { return device.samePeer(result[i]); }), result.end());
++    }
++    return NativeError::None;
++}
++
++struct Session::State { ScopedListener listener; bool attempted { false }; };
++Session::Session(Device device) : m_device(std::move(device)), m_client(*this) { }
++Session::~Session() { disconnect(); }
++bool Session::connected() const
++{
++    return m_connected && !m_aborted;
++}
++NativeError Session::connect()
++{
++    if (m_aborted) return NativeError::Aborted;
++    if (m_state) return NativeError::Busy;
++    m_state = std::make_unique<State>();
++    if (!m_state->listener.messenger.IsValid()) { disconnect(); return NativeError::Unavailable; }
++    BMessage message(linkConnect), reply;
++    message.AddInt32("hci_id", m_device.adapter);
++    message.AddMessenger("listener", m_state->listener.messenger);
++    message.AddData("address", B_RAW_TYPE, m_device.address.data(), 6);
++    message.AddUInt8("address_type", m_device.addressType);
++    m_state->attempted = true;
++    auto status = request(message, reply);
++    if (status != B_OK) {
++        int32_t refusal = B_OK;
++        if (reply.FindInt32("status", &refusal) == B_OK && refusal != B_OK) m_state->attempted = false;
++        disconnect();
++        return status == B_BUSY ? NativeError::Busy : NativeError::Network;
++    }
++    auto deadline = system_time() + 20000000;
++    while (!m_aborted && !m_state->listener.notices->link && system_time() < deadline) snooze(50000);
++    if (m_aborted || m_state->listener.notices->link != linkConnected) {
++        auto error = m_aborted ? NativeError::Aborted : (!m_state->listener.notices->link ? NativeError::Timeout : NativeError::Network);
++        disconnect();
++        return error;
++    }
++    m_socket = socket(AF_BLUETOOTH, SOCK_SEQPACKET, BLUETOOTH_PROTO_L2CAP);
++    if (m_socket < 0 || fcntl(m_socket, F_SETFL, O_NONBLOCK) < 0) { disconnect(); return NativeError::Network; }
++    sockaddr_l2cap peer { };
++    peer.l2cap_len = sizeof(peer);
++    peer.l2cap_family = AF_BLUETOOTH;
++    peer.l2cap_psm = B_L2CAP_LE_ATT_CID;
++    std::memcpy(peer.l2cap_bdaddr.b, m_device.address.data(), 6);
++    if (::connect(m_socket, reinterpret_cast<const sockaddr*>(&peer), sizeof(peer)) < 0) {
++        if (errno != EINPROGRESS && errno != EWOULDBLOCK) { disconnect(); return NativeError::Network; }
++        deadline = system_time() + 5000000;
++        bool ready = false;
++        while (!m_aborted && system_time() < deadline) {
++            pollfd descriptor { m_socket, POLLOUT, 0 };
++            int polled = poll(&descriptor, 1, 100);
++            if (polled < 0 && errno == EINTR) continue;
++            if (polled < 0) break;
++            if (polled > 0) {
++                int error = 0;
++                socklen_t size = sizeof(error);
++                ready = getsockopt(m_socket, SOL_SOCKET, SO_ERROR, &error, &size) == 0 && !error && !(descriptor.revents & (POLLERR | POLLHUP | POLLNVAL));
++                break;
++            }
++        }
++        if (!ready) { disconnect(); return m_aborted ? NativeError::Aborted : NativeError::Network; }
++    }
++    m_connected = true;
++    return NativeError::None;
++}
++
++void Session::disconnect()
++{
++    m_connected = false;
++    if (m_socket >= 0) { close(m_socket); m_socket = -1; }
++    if (!m_state) return;
++    if (m_state->attempted) {
++        auto& listener = m_state->listener;
++        scopedRequest(linkCancel, m_device.adapter, listener.messenger);
++        scopedRequest(linkDisconnect, m_device.adapter, listener.messenger);
++        // A cancellation may race with connection completion. Retain ownership
++        // until the terminal notice, and disconnect a just-completed own link.
++        auto deadline = system_time() + 1500000;
++        while (system_time() < deadline) {
++            auto state = listener.notices->link.load();
++            if (state == linkFailed || state == linkDisconnected) break;
++            if (state == linkConnected) scopedRequest(linkDisconnect, m_device.adapter, listener.messenger);
++            snooze(50000);
++        }
++    }
++    m_state.reset();
++}
++
++ATTResult Session::send(std::span<const uint8_t> bytes)
++{
++    if (bytes.empty() || bytes.size() > 23) return { ATTError::InvalidLength };
++    if (m_aborted) return { ATTError::Aborted };
++    if (!m_connected || m_socket < 0 || m_state->listener.notices->link != linkConnected) { m_connected = false; return { ATTError::Disconnected }; }
++    auto deadline = system_time() + 5000000;
++    while (!m_aborted && system_time() < deadline) {
++        auto length = ::send(m_socket, bytes.data(), bytes.size(), 0);
++        if (length == ssize_t(bytes.size())) return { };
++        if (length >= 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) { m_connected = false; return { ATTError::Disconnected }; }
++        pollfd descriptor { m_socket, POLLOUT, 0 };
++        poll(&descriptor, 1, 100);
++    }
++    return { m_aborted ? ATTError::Aborted : ATTError::Timeout };
++}
++ATTResult Session::receive(std::vector<uint8_t>& bytes, unsigned milliseconds)
++{
++    bytes.clear();
++    auto deadline = system_time() + bigtime_t(milliseconds) * 1000;
++    do {
++        if (m_aborted) return { ATTError::Aborted };
++        if (!m_connected || m_socket < 0 || m_state->listener.notices->link != linkConnected) { m_connected = false; return { ATTError::Disconnected }; }
++        pollfd descriptor { m_socket, POLLIN, 0 };
++        auto remaining = std::max<bigtime_t>(0, (deadline - system_time() + 999) / 1000);
++        int polled = poll(&descriptor, 1, int(std::min<bigtime_t>(remaining, 100)));
++        if (polled < 0 && errno == EINTR) continue;
++        if (polled < 0 || (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL))) { m_connected = false; return { ATTError::Disconnected }; }
++        if (polled > 0) {
++            uint8_t packet[24];
++            auto length = recv(m_socket, packet, sizeof(packet), 0);
++            if (length < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
++            if (length <= 0) { m_connected = false; return { ATTError::Disconnected }; }
++            if (length > 23) return { ATTError::Protocol };
++            bytes.assign(packet, packet + length);
++            return { };
++        }
++    } while (system_time() < deadline);
++    return { ATTError::Timeout };
++}
++}
+diff --git a/Source/WebKit/UIProcess/haiku/bluetooth/BluetoothSessionHaiku.h b/Source/WebKit/UIProcess/haiku/bluetooth/BluetoothSessionHaiku.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..bc3f84cabc0d23566936d24ee8bbdea40a546dd6
+--- /dev/null
++++ b/Source/WebKit/UIProcess/haiku/bluetooth/BluetoothSessionHaiku.h
+@@ -0,0 +1,43 @@
++/* Copyright (C) 2026 Summit contributors. SPDX-License-Identifier: BSD-2-Clause */
++#pragma once
++#include "BluetoothATTClientHaiku.h"
++#include <atomic>
++#include <memory>
++
++namespace WebKit::BluetoothHaiku {
++using namespace WebCore::BluetoothHaiku;
++struct Device {
++    std::array<uint8_t, 6> address {};
++    uint8_t addressType { 0 };
++    int32_t adapter { -1 };
++    Advertisement advertisement;
++    bool samePeer(const Device& other) const { return address == other.address && addressType == other.addressType; }
++};
++enum class NativeError { None, Unavailable, Busy, Aborted, Timeout, Network };
++bool available();
++NativeError scan(std::vector<Device>&, const std::atomic<bool>& cancelled, unsigned milliseconds = 8000);
++
++// All methods except abort()/connected() run on one connection's worker queue.
++// The server owns the LE link; this client can cancel only its own listener.
++class Session final : public ATTTransport {
++public:
++    explicit Session(Device);
++    ~Session() override;
++    NativeError connect();
++    void disconnect();
++    void abort() { m_aborted = true; }
++    bool connected() const;
++    ATTResult send(std::span<const uint8_t>) override;
++    ATTResult receive(std::vector<uint8_t>&, unsigned timeoutMilliseconds) override;
++    bool confirmsIndications() const override { return true; }
++    ATTClient& client() { return m_client; }
++private:
++    struct State;
++    Device m_device;
++    std::unique_ptr<State> m_state;
++    std::atomic<bool> m_aborted { false };
++    std::atomic<bool> m_connected { false };
++    int m_socket { -1 };
++    ATTClient m_client;
++};
++}
 diff --git a/Source/WebKit/UIProcess/haiku/usb/USBDevicePolicyHaiku.h b/Source/WebKit/UIProcess/haiku/usb/USBDevicePolicyHaiku.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..fece383da7906574b8bfdcaf6a877c1f7c2a99ad
