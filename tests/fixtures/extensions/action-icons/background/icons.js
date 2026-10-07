@@ -35,6 +35,17 @@ const cases = [
     ["size selection", () => action.setIcon({path: {32: "../icons/red.svg", 16: "../icons/blue.svg"}})],
     ["larger representation", () => action.setIcon({path: {32: "../icons/yellow.svg"}})],
     ["SVG data URL", () => action.setIcon({path: svg("rgb(144,48,176)")})],
+    ["PNG downscaling", () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = canvas.height = 64;
+        const pixels = image([24, 96, 208, 255], 64);
+        for (let y = 8; y < 56; ++y) for (let x = 8; x < 56; ++x)
+            pixels.data.set([176, 96, 32, 255], (y * 64 + x) * 4);
+        canvas.getContext("2d").putImageData(pixels, 0, 0);
+        // Both resized centers must be brown. Cropping a 16px source rectangle
+        // instead of scaling the full 64px image exposes its blue border.
+        return action.setIcon({path: canvas.toDataURL("image/png")});
+    }],
     ["ImageData", () => action.setIcon({imageData: image()})],
     ["ImageData alpha", () => action.setIcon({imageData: image([80, 160, 224, 128])})],
     ["canvas alpha roundtrip", () => {
