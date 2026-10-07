@@ -70,6 +70,14 @@
 #include <mutex>
 #include <utility>
 
+#if SUMMIT_MODERN_WEBKIT
+// air/OS extends the native zoom policy to individual displays. Keep the
+// whole-screen fallback for Haiku versions that do not export this API.
+namespace BPrivate {
+status_t get_display_frame(BRect, bool forZoom, BRect&) __attribute__((weak));
+}
+#endif
+
 namespace summit {
 #if SUMMIT_MODERN_WEBKIT
 // The engine sends one 'wvfr' message when a coordinated frame reaches its
@@ -333,6 +341,9 @@ public:
         TextView()->AddFilter(fFilter);
         SetModificationMessage(new BMessage(kAddressModified));
 #if SUMMIT_MODERN_WEBKIT
+        fCertificate = new ToolButton("connection-certificate", "View connection certificate", Icon::Lock, kShowCertificate);
+        AddChild(fCertificate);
+        fCertificate->Hide();
         fReader = new ToolButton("reader", "Enter Reader mode", Icon::Reader, kToggleReader);
         AddChild(fReader);
         fReader->Hide();
@@ -342,22 +353,33 @@ public:
     void SetKeyHandler(std::function<bool(char)> handler) { fFilter->fKeyHandler = std::move(handler); }
 
 #if SUMMIT_MODERN_WEBKIT
+    ToolButton* CertificateButton() const { return fCertificate; }
+    void SetCertificate(bool visible, bool verified)
+    {
+        fCertificate->SetIcon(verified ? Icon::Lock : Icon::LockWarning);
+        fCertificate->SetToolTip(verified ? "Encrypted connection — view certificate" : "Connection warning — view certificate");
+        SetButtonVisible(fCertificate, visible);
+    }
     void SetReader(bool visible, bool active, bool enabled)
     {
         fReader->SetIcon(active ? Icon::ReaderActive : Icon::Reader);
         fReader->SetToolTip(active ? "Exit Reader mode" : "Enter Reader mode");
         fReader->SetEnabled(enabled);
-        if (visible == !fReader->IsHidden(fReader)) return;
-        if (visible) fReader->Show(); else fReader->Hide();
+        SetButtonVisible(fReader, visible);
+    }
+    void SetButtonVisible(ToolButton* button, bool visible)
+    {
+        if (visible == !button->IsHidden(button)) return;
+        if (visible) button->Show(); else button->Hide();
         InvalidateLayout();
         Layout(true);
         Invalidate();
     }
     void Draw(BRect update) override
     {
-        if (!fReader || fReader->IsHidden(fReader)) { BTextControl::Draw(update); return; }
+        if (!HasButton(fCertificate) && !HasButton(fReader)) { BTextControl::Draw(update); return; }
         // BTextControl normally outlines only its text view. Keep the outline
-        // around both the shortened text view and the trailing reader button.
+        // around the text view and both embedded buttons.
         BRect frame = fFullTextFrame.InsetByCopy(-2, -2);
         uint32 flags = IsEnabled() ? 0 : BControlLook::B_DISABLED;
         if (TextView()->IsFocus() && Window()->IsActive()) flags |= BControlLook::B_FOCUSED;
@@ -369,12 +391,21 @@ public:
     {
         BTextControl::DoLayout();
         fFullTextFrame = TextView()->Frame();
-        if (!fReader || fReader->IsHidden(fReader)) return;
         constexpr float width = 28;
-        TextView()->ResizeTo(std::max(1.0f, fFullTextFrame.Width() - width - 4), fFullTextFrame.Height());
+        BRect text = fFullTextFrame;
+        if (HasButton(fCertificate)) {
+            fCertificate->MoveTo(fFullTextFrame.LeftTop());
+            fCertificate->ResizeTo(width, fFullTextFrame.Height());
+            text.left += width + 4;
+        }
+        if (HasButton(fReader)) {
+            fReader->MoveTo(fFullTextFrame.right - width, fFullTextFrame.top);
+            fReader->ResizeTo(width, fFullTextFrame.Height());
+            text.right -= width + 4;
+        }
+        TextView()->MoveTo(text.LeftTop());
+        TextView()->ResizeTo(std::max(1.0f, text.Width()), text.Height());
         TextView()->SetTextRect(TextView()->Bounds());
-        fReader->MoveTo(fFullTextFrame.right - width, fFullTextFrame.top);
-        fReader->ResizeTo(width, fFullTextFrame.Height());
     }
 #endif
 
@@ -389,6 +420,8 @@ public:
 private:
     AddressEnterFilter* fFilter;
 #if SUMMIT_MODERN_WEBKIT
+    static bool HasButton(ToolButton* button) { return button && !button->IsHidden(button); }
+    ToolButton* fCertificate = nullptr;
     ToolButton* fReader = nullptr;
     BRect fFullTextFrame;
 #endif
@@ -658,7 +691,7 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
     fExtensionActions = new BGroupView("extension-actions", B_HORIZONTAL, 2);
     fStoreInstallButton = new BButton("install-store-extension", "Install extension…", new BMessage(kExtensionStoreInstall));
     fStoreInstallButton->SetToolTip("Download this store extension and review its requested access in Summit.");
-    fCertificateButton = new ToolButton("connection-certificate", "View connection certificate", Icon::Lock, kShowCertificate);
+    fCertificateButton = static_cast<AddressControl*>(fAddress)->CertificateButton();
 #endif
     fTabStrip = new TabStrip();
     fProgress = new ProgressLine();
@@ -718,9 +751,6 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
         .SetInsets(8, 7, 8, 7)
         .Add(fBack).Add(fForward).Add(homeButton)
         .Add(glue())
-#if SUMMIT_MODERN_WEBKIT
-        .Add(fCertificateButton)
-#endif
         .Add(fAddress, 3).Add(fZoomButton).Add(fGo).Add(fReload).Add(glue())
         .Add(fBookmarkButton)
         .Add(downloadsButton)
@@ -732,7 +762,6 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
 #if SUMMIT_MODERN_WEBKIT
     fExtensionActions->Hide();
     fStoreInstallButton->Hide();
-    fCertificateButton->Hide();
 #endif
     fZoomButton->Hide();
     if (fPrivate) {
@@ -2249,13 +2278,9 @@ void BrowserWindow::RefreshChrome()
     const bool hasCertificate = active && !active->loading && !active->processExited && active->loadError.empty()
         && active->url == active->connectionCertificate.GetString("url", "")
         && active->connectionCertificate.HasString("sha256");
-    if (hasCertificate) {
-        const bool verified = active->connectionCertificate.GetBool("verified", false)
-            && !active->connectionCertificate.GetBool("mixedContent", false);
-        fCertificateButton->SetIcon(verified ? Icon::Lock : Icon::LockWarning);
-        fCertificateButton->SetToolTip(verified ? "Encrypted connection — view certificate" : "Connection warning — view certificate");
-        if (fCertificateButton->IsHidden(fCertificateButton)) fCertificateButton->Show();
-    } else if (!fCertificateButton->IsHidden(fCertificateButton)) fCertificateButton->Hide();
+    static_cast<AddressControl*>(fAddress)->SetCertificate(hasCertificate, hasCertificate
+        && active->connectionCertificate.GetBool("verified", false)
+        && !active->connectionCertificate.GetBool("mixedContent", false));
     if (fCertificateWindow.IsValid() && (!hasCertificate || fCertificateTab != active->id
         || fCertificateGeneration != active->loadGeneration
         || fCertificateVerified != active->connectionCertificate.GetBool("verified", false)
@@ -2722,7 +2747,10 @@ bool BrowserWindow::SetPageFullScreen(int64 tab, bool enter)
     if (enter) {
         if (tab != fSelected || !IsActive() || fClosingWindow) return false;
         if (fFullScreenTab) return fFullScreenTab == tab;
-        const BRect screen = BScreen(this).Frame();
+        BRect screen;
+        if (!BPrivate::get_display_frame
+            || BPrivate::get_display_frame(Frame(), true, screen) != B_OK)
+            screen = BScreen(this).Frame();
         if (!screen.IsValid()) return false;
         fBeforeFullScreen = Frame();
         fBeforeFullScreenLook = Look();

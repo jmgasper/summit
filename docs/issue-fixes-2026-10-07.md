@@ -1,5 +1,30 @@
 # October 7 issue work
 
+## Follow-up issues #43–#49
+
+Seven additional issues appeared after the original deployment. #43 and #44
+are verified in `bundle-a7988kyv`; #45–#49 and the requested six-hour
+performance session remain to be completed. The desktop launcher still selects
+the original deployment until the next installation.
+
+- **#43:** Fullscreen uses air/OS's `get_display_frame(Frame(), true, ...)`,
+  the same display-selection policy as native window maximization. On older
+  Haiku versions without that symbol it falls back to `BScreen::Frame()`.
+  On X399's two displays, all 49 native checks pass: fullscreen on each display
+  with the setting enabled, the combined desktop with it disabled, and exact
+  frame/DOM restoration on Escape. The original enabled setting was restored.
+- **#44:** The certificate button is now a child of the address control, on
+  the left inside its border. Address text reserves space for the lock and
+  the reader button independently, including when either disappears.
+  Certificate checks (72) and reader checks (79) pass on X399, and the native
+  screenshot confirms the lock's placement. Tests quit their own browser
+  instances without leaving helpers or new crash reports.
+
+Evidence: `.vm/issues43-49/{certificates,reader}.json`,
+`fullscreen-checks.json`, `fullscreen.log` and `.vm/issue41-viewer.png`.
+
+## Original issues #31–#42
+
 The requested scope was every open issue in `jmgasper/summit` (#31–#42),
 followed by a verified installation on X399. Implementation and verification
 are complete. X399's desktop launcher now selects `bundle-4bl4v7jv`.
