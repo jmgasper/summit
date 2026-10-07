@@ -1,36 +1,19 @@
 # Summit
 
-<img src="docs/summit-icon.png" alt="Summit icon" width="128">
+<img src="docs/summit-icon.png" alt="Summit mountain and flag icon" width="128">
 
-A native browser for KunanyiOS and Haiku, with a Safari-inspired layout.
+Summit is a native WebKit browser for **air/OS and Haiku**, with native controls,
+a compact toolbar, and a multiprocess engine.
 
-**Development preview — the complete browser is still under construction.**
-The native app builds and runs in Haiku R1/beta6 x86_64. It has real WebKit
-pages, tabs, back/forward navigation, address/search input, page find,
-bookmarks, history, downloads and saved sessions, plus
-[private windows, per-site zoom, a choice of search engine and clearing of
-history, cache and site data](docs/browser-privacy.md), and
-[developer tools](docs/developer-tools.md) that show a page's network
-requests and its console, [WebGL](docs/webgl.md) on the GPU, and a
-[warning for sites whose certificate cannot be verified](docs/certificate-warnings.md)
-(a router's self-signed one) that lets you continue and remembers the choice. The WebKit snapshot pinned on
-September 13 builds and runs in Summit. The modern extension-enabled browser
-now restores approved installed extensions, permissions and storage across
-process restarts. Its native SDK runs extension background pages and dedicated
-extension views. Its [native extension manager](docs/modern-extension-manager.md)
-reviews and installs [signed CRX3](docs/extension-crx.md), ZIP/XPI packages or
-folders, and enables, disables and
-removes installations. Its [native toolbar actions](docs/modern-extension-actions.md)
-display live extension state, including [badge colors](docs/webextensions-native-badge-colors.md),
-and open real extension HTML popups. [Native script injection](docs/webextensions-tab-script.md)
-now runs in existing tabs; published Dark Reader themes an already-open page
-without reloading and passes real popup On/Off tests. Broad Safari,
-Chrome and Firefox extension compatibility
-remains unfinished; see [startup evidence](docs/modern-extension-startup.md).
-The [published uBlock runtime baseline](docs/webextensions-published-ublock.md)
-installs successfully but stops on the missing privacy API; filtering remains unverified.
+**Development preview.** Summit is used and tested on air/OS; web-platform and
+extension compatibility are still evolving. Feature notes below describe the
+current source. Download packages identify the commit they were built from.
 
-![Summit running current WebKit natively in Haiku](docs/screenshots/current-webkit.png)
+[Download the latest release](https://github.com/jmgasper/summit/releases/tag/latest)
+— choose the Summit and Summit WebKit packages for your architecture from the
+build table below.
+
+![Summit running WebKit natively](docs/screenshots/current-webkit.png)
 
 <!-- airos-ci:latest-builds:start -->
 ## Latest builds
@@ -47,36 +30,72 @@ Built automatically by air/OS CI from commit `247c55f` on 2026-10-07 ([all files
 Install with `pkgman install <file>`, or copy the file into `/boot/system/packages`. Haiku SDK: x86_64 hrev60206-731-gc2e8b8ece8, arm64 hrev60206-731-gc2e8b8ece8.
 <!-- airos-ci:latest-builds:end -->
 
-## Build and try
+## Browser features
 
-The current development bundle is `artifacts/modern-browser/bundle-dxx4tx8e/`
-(September 20): GL compositing where a hardware EGL/GLES driver is available
-(software painting otherwise), WebKit's mimalloc, and Speedometer 3.1 at 3.67
-on browserbench.org in the QEMU VM. Unmodified published uBlock Origin
-(filtering, popup, restart: 97 checks) and Dark Reader (79 checks) pass their
-native suites; 1Password signs in, fills its inline icon on login forms and
-offers passkeys through [Web Authentication](docs/webauthn-passkeys.md).
-Extension packages are staged beside the profile, so a small or full system
-temporary volume no longer leaves a window without its extensions. See [status](docs/STATUS.md), [performance](docs/performance.md),
-[GPU validation](docs/gpu-validation.md) and [1Password](docs/webextensions-1password.md).
-Copy the whole directory to Haiku R1/beta6 x86_64 and run `./run-browser.sh`.
+- Tabs, saved sessions, back/forward history, bookmarks, downloads, page find,
+  configurable search, and per-site zoom.
+- [Private windows and browsing-data controls](docs/browser-privacy.md),
+  [certificate warnings and connection details](docs/certificate-warnings.md),
+  and native website permission prompts.
+- [Reader mode](docs/reader-mode.md) for articles, with a book button in the
+  address field, sanitized content, and the original page's URL retained in history.
+- A bundled [PDF viewer](docs/pdf-viewer.md) with navigation, search, zoom,
+  password entry, and downloads of the original document.
+- Native [color, date, month, week, time, and local date/time pickers](docs/native-form-pickers.md).
+- [Developer tools](docs/developer-tools.md) for page inspection, JavaScript
+  console output, and network requests.
+- [Extension installation from Chrome Web Store and Firefox Add-ons](docs/extension-stores.md),
+  native permission review, toolbar actions and popups, and restoration of
+  approved extensions across restarts. Local CRX3, ZIP/XPI, and folder packages
+  are also supported.
 
-The previous extension-enabled development bundle is
-`artifacts/modern-browser/bundle-d0h_6xzg/`. It includes private helpers and
-libraries, frozen application inputs, the matching patched WebKit source
-archive, and copy provenance. It includes [verified CRX3 import](docs/extension-crx.md),
-[Chrome manifest-key identity](docs/extension-identity.md)
-and [native extension toolbar actions, popups and keyboard overflow](docs/modern-extension-actions.md),
-plus [CSS/RGBA badge colors](docs/webextensions-native-badge-colors.md) and
-[script injection into existing tabs](docs/webextensions-tab-script.md).
-Its [installer and lifecycle verification](docs/modern-extension-manager.md)
-does not establish compatibility with arbitrary extensions.
+Published uBlock Origin and Dark Reader have passed native runtime suites;
+1Password has verified sign-in, inline filling, and
+[Web Authentication/passkey integration](docs/webauthn-passkeys.md). This is
+not a promise that every Chrome, Firefox, or Safari extension works. See the
+[verification record](docs/STATUS.md) and [1Password notes](docs/webextensions-1password.md)
+for tested versions and limitations.
 
-The current-engine development bundle is `artifacts/current-browser/`. Copy that
-whole directory to Haiku R1/beta6 x86_64 and run its `Summit` executable. Its
-private WebKit libraries, source archive and build manifest accompany the app.
+## Web features
 
-For fast UI development using Haiku's installed WebKit SDK:
+| Area | Current implementation |
+| --- | --- |
+| Rendering | Modern WebKit HTML/CSS/JavaScript, [WebGL](docs/webgl.md), and accelerated compositing when a suitable EGL/GLES driver is available; software rendering otherwise. |
+| Canvas | Main-thread and worker OffscreenCanvas with 2D, WebGL/WebGL2, and ImageBitmap transfer. |
+| Images | Standard web formats plus JPEG XL and HEIC decoding, and JPEG XR decoding/encoding. |
+| Media | HTML audio/video, MediaSource, and direct [MPEG-DASH](docs/dash-playback.md) for H.264/AAC, with seeking, adaptive quality, and live-manifest refresh. |
+| Encrypted media | [Clear Key EME](docs/encrypted-media.md) with temporary CENC sessions for H.264/AAC through MediaSource or DASH. Widevine, PlayReady, FairPlay, and persistent licenses are unsupported. |
+| Devices | [WebUSB](docs/web-platform-issues.md) and [Web Bluetooth](docs/bluetooth-transport.md), with native selection, origin-scoped grants, protected-device checks, and cancellation on page closure. |
+| Integration | Native fullscreen, approved external-app and website protocol handlers, and Web Authentication. |
+
+[Web-platform notes](docs/web-platform-issues.md) document the supported subsets.
+Device access requires a secure context and user approval. WebUSB physical
+transfers and successful physical Bluetooth GATT reads still need dedicated
+device validation; the Bluetooth busy-controller check passed while preserving
+X399's active mouse link. Bluetooth currently supports the top-level origin and
+same-origin children, session-only grants, and the air/OS stack's existing LE
+connection facilities. New pairing and advertisement observation APIs are not
+implemented.
+
+## Build and run
+
+Use matching application and engine packages from the release table. Native
+engine builds need the air/OS/Haiku toolchain and private dependencies described
+in the [engine notes](engine/README.md).
+
+The full multiprocess, extension-enabled development build is:
+
+```sh
+bash tools/build-webkit-in-vm.sh --modern-extensions all
+bash tools/build-modern-browser-in-vm.sh --browser --bundle --modern-extensions
+```
+
+The scripts record the resulting bundle path. Copy the entire bundle and run
+its `run-browser.sh`; it carries the matching engine, process helpers, private
+libraries, source archive, and build manifest. See
+[bundle instructions](docs/modern-bundle-copy.md) and the [native test VM](docs/VM.md).
+
+For UI development against an installed Haiku WebKit SDK:
 
 ```sh
 pkgman install gcc make haikuwebkit_devel
@@ -85,34 +104,10 @@ make check
 ./build-haiku/Summit
 ```
 
-The application icon is a Haiku vector icon, `resources/Summit.hvif`. It is
-traced from `docs/summit-icon.png` by `tools/make-summit-icon.py`; run that
-script to regenerate the icon after editing the tracing, and `rc` imports the
-result into the `BEOS:ICON` resource.
+That SDK may expose fewer features than Summit's patched engine.
 
-The app uses native Interface Kit controls. Haiku's default Command modifier
-is **Alt**: Alt+L focuses the address field; Alt+T creates a tab; Alt+W closes
-it; Alt+Shift+T reopens the last closed tab; Alt+D bookmarks the page; Alt+F
-finds text; Alt+R reloads. Ctrl+Tab cycles tabs. The search provider is currently
-DuckDuckGo. Explicit `http://`, `https://` and `file://` addresses are supported.
-
-Profiles live in `~/config/settings/Summit/`. `--profile /path` selects a separate
-directory for browser state. Cookies use a SQLite file in that directory.
-Complete separation of all engine storage requires further verification.
-Downloads are saved in `~/Downloads/`; the toolbar button opens that folder.
-
-The earlier system-engine preview package is
-`artifacts/summit-0.1.0~dev1-1-x86_64.hpkg` when built:
-
-```sh
-pkgman install ./artifacts/summit-0.1.0~dev1-1-x86_64.hpkg
-/boot/system/apps/Summit
-```
-
-## Development
-
-The portable tests run on Linux as well as Haiku. They require OpenSSL's
-development headers and crypto library for Chrome manifest-key identities:
+Portable tests also run on Linux. Install a C++ compiler, CMake, and OpenSSL
+development headers/libraries, then run:
 
 ```sh
 cmake -S . -B build-host -DCMAKE_BUILD_TYPE=Debug
@@ -120,48 +115,26 @@ cmake --build build-host -j6
 ctest --test-dir build-host --output-on-failure
 ```
 
-The independent [QEMU environment](docs/VM.md) supplies the native SDK and
-renderer. `bash tools/build-in-vm.sh` builds there and copies the executable
-to `artifacts/`. For live browser verification, start
-`python3 tools/serve-fixtures.py` on the host, launch Summit in the VM, then run
-`make browser-smoke` inside `/boot/home/summit` in the guest.
+## Using Summit
 
-`bash tools/build-current-browser-in-vm.sh` builds the pinned engine, compiles
-Summit against it, and creates a bundle with private libraries. The bundle's
-library paths were verified against the native loader. It includes the patched
-WebKit source used for the build. `bash tools/copy-current-browser-bundle.sh`
-can repeat the host copy without rebuilding when the engine inputs still match.
+Haiku's default Command modifier is **Alt**: Alt+L focuses the address field,
+Alt+T opens a tab, Alt+W closes it, Alt+Shift+T reopens the last closed tab,
+Alt+D bookmarks the page, Alt+F finds text, and Alt+R reloads. Ctrl+Tab cycles
+tabs. Choose the search provider in Preferences.
 
-The experimental multiprocess backend uses a separate engine build and profile:
+Profiles live in `~/config/settings/Summit/`; `--profile /path` selects a
+separate profile. Downloads default to `~/Downloads/`.
+[Privacy notes](docs/browser-privacy.md) describe storage and private windows.
 
-```sh
-bash tools/build-webkit-in-vm.sh --modern-extensions all
-bash tools/build-modern-browser-in-vm.sh --browser --bundle --modern-extensions
-```
+The application icon is the native vector resource `resources/Summit.hvif`.
+Editable toolbar artwork, generated image sizes, and regeneration commands
+are documented in [resources/artwork](resources/artwork/README.md).
 
-The second command records the frozen native bundle path, including its
-`run-browser.sh` launcher and private engine processes. The complete modern
-engine, process helpers and browser now link and run natively. The preview
-passes its live HTTP/DOM/storage fixture and native pixel check. The full browser
-passes 143 close-workflow checks, and the modern API passes all 12 context
-storage stages. All 33 navigation checks and 30 repeated history cycles pass.
-Native helper-launch and looper-lock fixes now pass the concurrent launch stress
-regression. The NetworkProcess exit fix passes five consecutive profile
-teardown/reopen runs with native debugger-event monitoring. Broader browsing
-and extension integration remain unfinished. Modern downloads now pass real
-HTTP, HTML-link and native quit-dialog tests; see [download behavior and limits](docs/modern-downloads.md).
-Navigation errors, unchanged-address retry and successful-only history pass
-90 native assertions; see [navigation behavior](docs/modern-navigation-errors.md).
-The verified development bundle is
-in `artifacts/modern-browser/bundle-d0h_6xzg`;
-[copy and rebuild instructions](docs/modern-bundle-copy.md) accompany it. [The verification record](docs/STATUS.md)
-records the exact bundles and remaining limitations.
-
-See [the current verification record](docs/STATUS.md), the complete
-[requirements and remaining work](docs/REQUIREMENTS.md), and the
-[engine source and porting notes](engine/README.md). Passing the preview's
-tests does not establish full web-platform or extension compatibility.
+See [current verification](docs/STATUS.md),
+[the October issue work](docs/issue-fixes-2026-10-07.md),
+[requirements and remaining work](docs/REQUIREMENTS.md), and
+[performance measurements](docs/performance.md) for implementation evidence.
 
 Summit's application code is MIT-licensed. WebKit and the Haiku port retain
-their upstream per-file licenses; engine source changes are in `engine/patches`.
-The JSON dependency is unmodified nlohmann/json 3.12.0 under MIT.
+their upstream per-file licenses; engine changes are in `engine/patches`.
+Bundled dependencies retain their own licenses and notices.
