@@ -311,6 +311,22 @@ renderer exits in every tab, and returns failure for recorded findings or an
 unmet action target. The earlier crash run correctly failed. Evidence:
 `.vm/bench/stress-20261008-164722-opt1008-stress-actions-smoke/`.
 
+The smaller GC allowance also passed the twelve-tab local test after loader
+repair: all 783 checks, 2009 MiB hidden and 281 MiB after closing to blank,
+normal quit and no helpers or crash events. This is comparable to the earlier
+default local measurements and does not support enabling the setting.
+Evidence: `.vm/bench/tab-memory-20261008-164856-opt1008-cap4-controlled-tabs/`.
+
+A separate disposable QEMU overlay ran a bounded condition-variable/signal
+diagnostic with eight waiters. Each case ran for ten seconds; the sender
+slept 10 ms between signal operations and waits for acknowledgements had a
+two-second timeout. Plain waits completed 37,952 wakeups, the no-op handler
+case sent 990 signals, and nested suspend/resume completed 970 handshakes.
+All exited normally and the VM shut down normally. This did not reproduce
+the earlier native invalid-opcode crash and does not establish its cause.
+No signal diagnostic was repeated on X399. Evidence:
+`.vm/optimization-2026-10-08/cond-signal-vm-bounded.{cpp,log}`.
+
 ## 5 October 2026: quitting with a busy page, helpers left behind, the Pi's video decoder
 
 Three items left open on the Raspberry Pi 4 the night before, checked on the
