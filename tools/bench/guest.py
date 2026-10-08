@@ -259,24 +259,26 @@ def alive(team):
 def terminate(binary, team, grace=20, group=None):
     """Ask only our own instance to quit; escalate to signals for that process group only."""
     report = {'team': team, 'method': None}
-    if not alive(team):
-        report['method'] = 'already-exited'
-        return report
     group = [pid for pid, image in members(binary, group or team) if role(image) != 'profile']
-    ctl(binary, team, 'quit')
-    deadline = time.time() + grace
-    while time.time() < deadline:
-        if not alive(team):
-            report['method'] = 'quit-request'
-            break
-        time.sleep(1)
+    if alive(team):
+        ctl(binary, team, 'quit')
+        deadline = time.time() + grace
+        while time.time() < deadline:
+            if not alive(team):
+                report['method'] = 'quit-request'
+                break
+            time.sleep(1)
+        else:
+            ssh(f'kill {int(team)}', check=False)
+            time.sleep(5)
+            report['method'] = 'SIGTERM'
+            if alive(team):
+                ssh(f'kill -9 {int(team)}', check=False)
+                report['method'] = 'SIGKILL'
     else:
-        ssh(f'kill {int(team)}', check=False)
-        time.sleep(5)
-        report['method'] = 'SIGTERM'
-        if alive(team):
-            ssh(f'kill -9 {int(team)}', check=False)
-            report['method'] = 'SIGKILL'
+        # A crashed/exited UI can leave helpers in its original process group.
+        # They still belong to this run and need the same bounded cleanup.
+        report['method'] = 'already-exited'
     # Helpers exit on their own once the UI process has gone; a profile-training
     # build writes its counters first, which takes a while
     # (SUMMIT_BENCH_LEFTOVER_GRACE=60 during training).

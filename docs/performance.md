@@ -139,6 +139,16 @@ hit-region metadata and remains a comparison in each run. Evidence:
 baseline cited above. Engine patch:
 `b178f34dcbc14aa0cf15e144e5ef4607a77b6ae90c4df3ffd078300721cdb9e2`.
 
+The stress harness now uses workstation fixture addresses/binding, accepts
+the same explicit browser environment as other benchmarks, and cleans up its
+owned browser on harness failure. A two-minute local smoke run completed
+55 navigation/tab/history actions with no findings, crashes, debugger events
+or leftover helpers. Separately, an owned orphan-process test verified that
+`guest.terminate()` removes helpers even when their UI parent has already
+exited, while preserving an unrelated guard process and the user's original
+browser. Evidence: `.vm/bench/stress-20261008-143841-opt1008-stress-smoke/`
+and `.vm/optimization-2026-10-08/orphan-cleanup.json`.
+
 ## 5 October 2026: quitting with a busy page, helpers left behind, the Pi's video decoder
 
 Three items left open on the Raspberry Pi 4 the night before, checked on the

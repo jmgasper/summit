@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tab/navigation stress test for Summit in the Haiku test VM.
+"""Tab/navigation stress test for Summit in Haiku (VM or workstation).
 
 Drives one Summit instance (its own fresh profile, addressed by team id only)
 through a seeded random sequence of: open tab, navigate, select tab, close tab,
@@ -71,7 +71,7 @@ class Stress:
         self.started = time.time()
         self.findings = []
         self.consecutive_hangs = 0
-        local = [f'http://10.0.2.2:{args.port}{path}' for path in LOCAL_PAGES]
+        local = [f'http://{guest.HOST_ADDRESS}:{args.port}{path}' for path in LOCAL_PAGES]
         self.urls = local if args.local_only else REAL_SITES + local
         if args.urls:
             self.urls = [line.strip() for line in pathlib.Path(args.urls).read_text().splitlines()
@@ -174,12 +174,16 @@ class Stress:
         guest_dir = f'{guest.GUEST_ROOT}/runs/{self.directory.name}'
         self.watch = guest.CrashWatch()
         guest.wake_display()
-        start_url = f'http://10.0.2.2:{args.port}/about.html'
-        self.group = guest.launch(args.bundle, f'{guest_dir}/profile', start_url, f'{guest_dir}/browser.log')
+        start_url = f'http://{guest.HOST_ADDRESS}:{args.port}/about.html'
+        env = dict(item.split('=', 1) for item in args.env)
+        self.group = guest.launch(args.bundle, f'{guest_dir}/profile', start_url, f'{guest_dir}/browser.log', env)
         self.team = guest.find_browser(self.ctl, self.group)
+        (self.directory / 'active.json').write_text(json.dumps({'team': self.team, 'group': self.group,
+                                                              'remote': guest_dir, 'env': env}, indent=2))
         log(f'launched Summit team {self.team}')
         guest.ctl(self.ctl, self.team, 'frame', *args.window.split(','))
         time.sleep(8)
+        self.started = time.time()
         baseline = self.sample('start-idle')
         outcome = 'completed'
         counts = {}
@@ -249,6 +253,8 @@ class Stress:
         if crash['syslogEvents'] or crash['newReports'] or outcome != 'completed':
             (self.directory / 'syslog-tail.txt').write_text(self.watch.syslog_tail(300))
         summary['shutdown'] = guest.terminate(self.ctl, self.team, group=self.group)
+        summary['leftovers'] = guest.members(self.ctl, self.group)
+        summary['crash'] = self.watch.poll()
         guest.fetch_file(f'{guest_dir}/browser.log', self.directory / 'browser.log', tail_bytes=8 * 1024 * 1024)
         guest.ssh(f'rm -rf {guest_dir}/profile', check=False, timeout=600)
         summary['findings'] = self.findings
@@ -304,6 +310,7 @@ def main():
     parser.add_argument('--window', default='4,1,1270,797')
     parser.add_argument('--wait-gui', type=float, default=0, metavar='MINUTES')
     parser.add_argument('--label', default='')
+    parser.add_argument('--env', action='append', default=[], metavar='NAME=VALUE')
     args = parser.parse_args()
 
     def interrupted(signum, frame):
@@ -314,16 +321,31 @@ def main():
     directory = guest.ROOT / '.vm/bench' / run_id
     directory.mkdir(parents=True)
     server = subprocess.Popen([sys.executable, str(guest.BENCH / 'serve-speedometer.py'), '--port', str(args.port),
-                               '--out-dir', str(directory)], stdout=(directory / 'server.log').open('w'),
+                               '--bind', guest.SERVER_BIND, '--out-dir', str(directory)], stdout=(directory / 'server.log').open('w'),
                               stderr=subprocess.STDOUT)
-    time.sleep(1)
-    stress = Stress(args, directory)
-    load_before = guest.load_report(stress.ctl, (), 3000)
+    stress = None
     try:
+        time.sleep(1)
+        if server.poll() is not None:
+            raise RuntimeError(f'Fixture server exited before browser launch; see {directory / "server.log"}')
+        stress = Stress(args, directory)
+        load_before = guest.load_report(stress.ctl, (), 3000)
         summary = stress.run()
     finally:
-        server.terminate()
-    summary.update(id=run_id, bundle=args.bundle, seed=args.seed, duration=args.duration, urls=stress.urls,
+        try:
+            # Unexpected harness/SSH failures must not leave the owned browser running.
+            if stress is not None:
+                if stress.group is not None and (guest.alive(stress.team or stress.group)
+                                                or guest.members(stress.ctl, stress.group)):
+                    cleanup = guest.terminate(stress.ctl, stress.team or stress.group, group=stress.group)
+                    (directory / 'emergency-cleanup.json').write_text(json.dumps(cleanup, indent=2))
+                stress.actions.close()
+                stress.samples.close()
+        finally:
+            server.terminate()
+            server.wait(timeout=10)
+    summary.update(id=run_id, bundle=args.bundle, machine=guest.HOST, env=args.env,
+                   seed=args.seed, duration=args.duration, urls=stress.urls,
                    loadBefore=load_before, loadAfter=guest.load_report(stress.ctl, (), 3000),
                    memoryTrend=memory_trend(directory))
     text = (directory / 'browser.log').read_text(errors='replace') if (directory / 'browser.log').exists() else ''
@@ -342,7 +364,8 @@ def main():
     for finding in summary['findings'][:20]:
         print('  -', json.dumps(finding)[:240])
     print(f'artifacts  : {directory}')
-    return 0 if summary['outcome'] == 'completed' and not summary['crash']['newReports'] else 1
+    return 0 if (summary['outcome'] == 'completed' and not summary['crash']['newReports']
+                 and not summary['crash']['syslogEvents'] and not summary['leftovers']) else 1
 
 
 if __name__ == '__main__':
