@@ -2,6 +2,7 @@
 """Generate WebM streaming media and serve actual MSE playback checks."""
 import argparse
 import http.server
+import importlib.util
 import json
 import pathlib
 import subprocess
@@ -83,8 +84,60 @@ def generate(directory):
                         str(directory / filename)], check=True)
         cases.append({'file': filename, 'type': f'audio/mp4; codecs="{codec}"', 'video': False, 'mp4': True})
     cases.append({**cases[14], 'deferEnd': True})
+    # Share transport generators with the independent packet-level checks.
+    spec = importlib.util.spec_from_file_location('mpegts_fixtures', ROOT / 'tools/bench/test-mpegts-parser.py')
+    transport = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(transport)
+    ts_cases = []
+    for path in transport.generate(directory, duration=4):
+        reference_path = directory / 'h264-aac.ts' if path.stem == 'rollover' else path
+        reference = json.loads(subprocess.check_output(['ffprobe', '-v', 'error', '-show_streams', '-show_packets', '-of', 'json', str(reference_path)]))
+        codec_names = {'h264': 'avc1.64000b', 'hevc': 'hvc1.1.6.L30.B0', 'aac': 'mp4a.40.2',
+                       'mp3': 'mp4a.6b', 'mp2': 'mp4a.69', 'ac3': 'ac-3', 'eac3': 'ec-3'}
+        codecs = ','.join(codec_names[stream['codec_name']] for stream in reference['streams'])
+        first = max(min(float(packet['pts_time']) for packet in reference['packets'] if packet['stream_index'] == stream['index'])
+                    for stream in reference['streams'])
+        end = max(float(packet['pts_time']) + float(packet['duration_time']) for packet in reference['packets'])
+        shift = transport.ROLLOVER_SHIFT / 90000 if path.stem == 'rollover' else 0
+        ts_cases.append({'file': path.name, 'type': f'video/mp2t; codecs="{codecs}"', 'ts': True,
+                         'video': any(stream['codec_type'] == 'video' for stream in reference['streams']),
+                         'timestampOffset': -(first + shift), 'start': 0, 'expectedEnd': end - first})
+    cases += ts_cases
+    cases += [{**ts_cases[0], 'changeType': True}, {**ts_cases[0], 'deferEnd': True}]
+    (directory / 'abort-reuse.ts').write_bytes(transport.without_initialization((directory / ts_cases[0]['file']).read_bytes()))
+    cases.append({**ts_cases[0], 'file': 'abort-reuse.ts', 'abortReuse': ts_cases[0]['file']})
+    (directory / 'truncated.ts').write_bytes((directory / ts_cases[0]['file']).read_bytes()[:-1])
+    cases.append({**ts_cases[0], 'file': 'truncated.ts', 'errorOnEnd': True})
+    cases += [{**ts_cases[0], 'reopenOnEnd': True}, {**ts_cases[0], 'detachOnEnd': True},
+              {**ts_cases[0], 'removeOnEnd': True}]
+    source = (directory / ts_cases[0]['file']).read_bytes()
+    prefix = transport.discontinuity_prefix(source)
+    reference = json.loads(subprocess.check_output(['ffprobe', '-v', 'error', '-show_packets', '-of', 'json', str(directory / ts_cases[0]['file'])]))
+    first = min(float(packet['pts_time']) for packet in reference['packets'])
+    end = max(float(packet['pts_time']) + float(packet['duration_time']) for packet in reference['packets'])
+    for shift in (-300000, 450000):
+        filename = f'discontinuity-{shift}.ts'
+        (directory / filename).write_bytes(source + prefix + transport.shift_transport(source, shift))
+        cases.append({**ts_cases[0], 'file': filename, 'expectedEnd': ts_cases[0]['expectedEnd'] + end - first,
+                      'seek': 6, 'playThrough': 4.5})
+    (directory / 'timestamp-reset.ts').write_bytes(prefix + source)
+    cases.append({**ts_cases[-1], 'timestampReset': {'file': 'timestamp-reset.ts',
+                  'firstEnd': ts_cases[0]['expectedEnd'], 'offset': ts_cases[0]['expectedEnd'] + ts_cases[0]['timestampOffset']},
+                  'expectedEnd': ts_cases[0]['expectedEnd'] * 2, 'seek': 6})
+    for codec, encoder, mime, expected in [('aac', 'aac', 'audio/aac', 4.224),
+                                            ('mp3', 'libmp3lame', 'audio/mpeg', 4.176)]:
+        filename = 'raw-8000.' + codec
+        command = ['ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i',
+                   'sine=frequency=701:sample_rate=8000', '-t', '4', '-c:a', encoder, '-b:a', '16k', '-ac', '2']
+        if codec == 'mp3':
+            command += ['-write_xing', '0']
+        subprocess.run(command + [str(directory / filename)], check=True)
+        cases.append({'file': filename, 'type': mime, 'video': False, 'raw': True, 'expectedEnd': expected})
+    cases += [{**ts_cases[0], 'reopenSettings': setting} for setting in ('offset', 'window', 'mode')]
     for case in cases:
-        if case.get('mp4'):
+        if case.get('ts'):
+            case['initLength'] = 0
+        elif case.get('mp4'):
             case['initLength'] = (directory / case['file']).read_bytes().index(b'moof') - 4
             reference = json.loads(subprocess.check_output(['ffprobe', '-v', 'error', '-show_packets', '-of', 'json', str(directory / case['file'])]))
             case['start'] = min(float(packet['pts_time']) for packet in reference['packets'])
@@ -113,7 +166,8 @@ def serve(directory, cases, host, port):
                 data, mime = (ROOT / 'tests/fixtures/streaming.html').read_bytes(), 'text/html; charset=utf-8'
             elif url.path == '/cases.json':
                 data, mime = json.dumps(cases).encode(), 'application/json'
-            elif url.path.startswith('/media/') and url.path[7:] in {case['file'] for case in cases}:
+            elif url.path.startswith('/media/') and url.path[7:] in ({case['file'] for case in cases}
+                    | {case['timestampReset']['file'] for case in cases if case.get('timestampReset')}):
                 data, mime = (directory / url.path[7:]).read_bytes(), 'video/webm'
             else:
                 self.send_error(404); return

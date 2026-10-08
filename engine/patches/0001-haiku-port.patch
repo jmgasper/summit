@@ -5053,7 +5053,7 @@ index 485cce61c45d47b611240834f3275ecee733b8f9..223d00b6294ca261a48cd91b1a0fc19f
      std::unique_ptr<MediaRecorderPrivate> result;
  #endif
 diff --git a/Source/WebCore/Modules/mediasource/MediaSource.cpp b/Source/WebCore/Modules/mediasource/MediaSource.cpp
-index c65a2b2b0fdf2f9919320a50699c5cced9d2ef41..fea8c660d57e4b2075d78022489cfba20bd01b3e 100644
+index c65a2b2b0fdf2f9919320a50699c5cced9d2ef41..e294e0571d4c73587b43e150a7349b42bf115212 100644
 --- a/Source/WebCore/Modules/mediasource/MediaSource.cpp
 +++ b/Source/WebCore/Modules/mediasource/MediaSource.cpp
 @@ -417,7 +417,8 @@ ExceptionOr<void> MediaSource::clearLiveSeekableRange()
@@ -5066,6 +5066,245 @@ index c65a2b2b0fdf2f9919320a50699c5cced9d2ef41..fea8c660d57e4b2075d78022489cfba2
  }
  
  void MediaSource::monitorSourceBuffers()
+@@ -578,6 +579,10 @@ void MediaSource::setReadyState(ReadyState state)
+     if (oldState == state)
+         return;
+ 
++    if (state != ReadyState::Ended) {
++        ++m_endOfStreamGeneration;
++        m_finalizingParsers = false;
++    }
+     if (RefPtr msp = m_private)
+         msp->setReadyState(state);
+ 
+@@ -617,15 +622,57 @@ void MediaSource::streamEndedWithError(std::optional<EndOfStreamError> error)
+     if (isClosed())
+         return;
+ 
+-    Ref msp = *m_private;
+-
+-    // 2.4.7 https://dvcs.w3.org/hg/html-media/raw-file/tip/media-source/media-source.html#end-of-stream-algorithm
+-
+-    // 1. Change the readyState attribute value to "ended".
+-    // 2. Queue a task to fire a simple event named sourceended at the MediaSource.
++    // Containers with an undelimited final access unit need explicit EOF.
++    // readyState changes immediately, while playback remains open until their
++    // final samples, buffered ranges and duration have reached the main thread.
++    bool needsFlush = !error && std::ranges::any_of(m_sourceBuffers.get(), [](auto& buffer) { return buffer->requiresParserFlush(); });
++    if (needsFlush) {
++        uint64_t generation = ++m_endOfStreamGeneration;
++        m_finalizingParsers = true;
++        setReadyState(ReadyState::Ended);
++        // Preserve the synchronous duration change for already buffered
++        // frames. Finalization can extend it when delayed frames arrive.
++        MediaTime bufferedEnd;
++        for (Ref buffer : m_sourceBuffers.get()) {
++            if (auto span = buffer->bufferedInternal().span(); !span.empty())
++                bufferedEnd = std::max(bufferedEnd, span.back().end);
++        }
++        setDurationInternal(bufferedEnd);
++        Vector<Ref<MediaPromise>> promises;
++        for (Ref buffer : m_sourceBuffers.get()) {
++            if (buffer->requiresParserFlush())
++                promises.append(buffer->finishParsing());
++        }
++        MediaPromise::all(promises)->whenSettled(RunLoop::mainSingleton(), [client = m_client.copyRef(), generation](auto&& result) mutable {
++            client->ensureWeakOnDispatcher([generation, succeeded = !!result](MediaSource& source) {
++                if (source.m_endOfStreamGeneration != generation || !source.isEnded())
++                    return;
++                source.m_finalizingParsers = false;
++                for (Ref buffer : source.m_sourceBuffers.get())
++                    buffer->setMediaSourceEnded(true);
++                std::optional<EndOfStreamError> error;
++                if (!succeeded)
++                    error = EndOfStreamError::Decode;
++                source.completeEndOfStream(error);
++            });
++        });
++        return;
++    }
++    if (m_finalizingParsers) {
++        ++m_endOfStreamGeneration;
++        m_finalizingParsers = false;
++        for (Ref buffer : m_sourceBuffers.get())
++            buffer->setMediaSourceEnded(true);
++    }
+     setReadyState(ReadyState::Ended);
++    completeEndOfStream(error);
++}
+ 
+-    // 3.
++void MediaSource::completeEndOfStream(std::optional<EndOfStreamError> error)
++{
++    Ref msp = *m_private;
++
++    // 3. Complete the end-of-stream algorithm after any container finalization.
+     if (!error) {
+         // ↳ If error is not set, is null, or is an empty string
+         // 1. Run the duration change algorithm with new duration set to the highest end time reported by
+@@ -784,6 +831,13 @@ ExceptionOr<void> MediaSource::removeSourceBuffer(SourceBuffer& buffer)
+     // 12. Destroy all resources for sourceBuffer.
+     buffer.removedFromMediaSource();
+ 
++    if (m_finalizingParsers) {
++        // A removed buffer cannot make the remaining resource fail to end.
++        // Its old completion is ignored and remaining operations stay ordered.
++        ++m_endOfStreamGeneration;
++        m_finalizingParsers = false;
++        streamEndedWithError(std::nullopt);
++    }
+     return { };
+ }
+ 
+@@ -1040,6 +1094,11 @@ bool MediaSource::isEnded() const
+     return readyState() == ReadyState::Ended;
+ }
+ 
++bool MediaSource::isPlaybackEnded() const
++{
++    return isEnded() && m_private && m_private->isEnded();
++}
++
+ void MediaSource::elementIsShuttingDown()
+ {
+     ALWAYS_LOG(LOGIDENTIFIER);
+@@ -1216,8 +1275,10 @@ void MediaSource::onReadyStateChange(ReadyState oldState, ReadyState newState)
+         // We need to force the recalculation of the buffered range as its value depends
+         // on the readyState.
+         // https://w3c.github.io/media-source/#htmlmediaelement-extensions-buffered
+-        for (auto& sourceBuffer : m_sourceBuffers.get())
+-            sourceBuffer->setMediaSourceEnded(true);
++        if (!m_finalizingParsers) {
++            for (auto& sourceBuffer : m_sourceBuffers.get())
++                sourceBuffer->setMediaSourceEnded(true);
++        }
+     }
+     if (newState == ReadyState::Ended || (newState == ReadyState::Open && oldState == ReadyState::Ended))
+         updateBufferedIfNeeded(true /* force */);
+diff --git a/Source/WebCore/Modules/mediasource/MediaSource.h b/Source/WebCore/Modules/mediasource/MediaSource.h
+index c304a94c689ea509e75e7f518957cc755c15d2e8..622bd4d796e594931918b93d1e6019643e5e4a26 100644
+--- a/Source/WebCore/Modules/mediasource/MediaSource.h
++++ b/Source/WebCore/Modules/mediasource/MediaSource.h
+@@ -99,6 +99,7 @@ public:
+     virtual void monitorSourceBuffers();
+     bool isClosed() const;
+     bool isEnded() const;
++    bool isPlaybackEnded() const;
+     void sourceBufferDidChangeActiveState(SourceBuffer&, bool);
+     MediaTime duration() const;
+     PlatformTimeRanges buffered() const;
+@@ -212,6 +213,7 @@ private:
+     RegistrableType registrableType() const final { return RegistrableType::MediaSource; }
+ 
+     void setReadyState(ReadyState);
++    void completeEndOfStream(std::optional<EndOfStreamError>);
+     void onReadyStateChange(ReadyState oldState, ReadyState newState);
+ 
+     Vector<PlatformTimeRanges> activeRanges() const;
+@@ -227,6 +229,8 @@ private:
+     const Ref<SourceBufferList> m_activeSourceBuffers;
+     bool m_openDeferred { false };
+     bool m_sourceopenPending { false };
++    bool m_finalizingParsers { false };
++    uint64_t m_endOfStreamGeneration { 0 };
+     bool m_isAttached { false };
+     std::optional<ReadyState> m_readyStateBeforeDetached;
+ #if ENABLE(MEDIA_SOURCE_IN_WORKERS)
+diff --git a/Source/WebCore/Modules/mediasource/MediaSourceInterfaceMainThread.cpp b/Source/WebCore/Modules/mediasource/MediaSourceInterfaceMainThread.cpp
+index e150790eb0b5dcc69b0691717cbc5abb2c94d8c5..2cab9af12a566cc09926f03e17c7d940318211c7 100644
+--- a/Source/WebCore/Modules/mediasource/MediaSourceInterfaceMainThread.cpp
++++ b/Source/WebCore/Modules/mediasource/MediaSourceInterfaceMainThread.cpp
+@@ -60,6 +60,11 @@ bool MediaSourceInterfaceMainThread::isEnded() const
+     return m_mediaSource->isEnded();
+ }
+ 
++bool MediaSourceInterfaceMainThread::isPlaybackEnded() const
++{
++    return m_mediaSource->isPlaybackEnded();
++}
++
+ MediaTime MediaSourceInterfaceMainThread::duration() const
+ {
+     return m_mediaSource->duration();
+diff --git a/Source/WebCore/Modules/mediasource/MediaSourceInterfaceMainThread.h b/Source/WebCore/Modules/mediasource/MediaSourceInterfaceMainThread.h
+index bf6bedff5ab787f8069be73b2f2c7860d59d12bf..0bcf36d14652cbcf876a2aa1f9183e30cb8552a0 100644
+--- a/Source/WebCore/Modules/mediasource/MediaSourceInterfaceMainThread.h
++++ b/Source/WebCore/Modules/mediasource/MediaSourceInterfaceMainThread.h
+@@ -42,6 +42,7 @@ private:
+     void monitorSourceBuffers() final;
+     bool isClosed() const final;
+     bool isEnded() const final;
++    bool isPlaybackEnded() const final;
+     MediaTime duration() const final;
+     PlatformTimeRanges buffered() const final;
+     PlatformTimeRanges seekable() const final;
+diff --git a/Source/WebCore/Modules/mediasource/MediaSourceInterfaceProxy.h b/Source/WebCore/Modules/mediasource/MediaSourceInterfaceProxy.h
+index 6a36da0b0430c3eaaaaecdf0515d9cb0438699b4..0446f5a1b2011d1821cedc2482f57614b691919c 100644
+--- a/Source/WebCore/Modules/mediasource/MediaSourceInterfaceProxy.h
++++ b/Source/WebCore/Modules/mediasource/MediaSourceInterfaceProxy.h
+@@ -49,6 +49,7 @@ public:
+     virtual void monitorSourceBuffers() = 0;
+     virtual bool isClosed() const = 0;
+     virtual bool isEnded() const = 0;
++    virtual bool isPlaybackEnded() const = 0;
+     virtual MediaTime duration() const = 0;
+     virtual PlatformTimeRanges buffered() const = 0;
+     virtual PlatformTimeRanges seekable() const = 0;
+diff --git a/Source/WebCore/Modules/mediasource/MediaSourceInterfaceWorker.cpp b/Source/WebCore/Modules/mediasource/MediaSourceInterfaceWorker.cpp
+index a051ef832cf521baade2362930f7b4e1c56fc951..a4504346f6da0a14b1599a8fefac590a544974fa 100644
+--- a/Source/WebCore/Modules/mediasource/MediaSourceInterfaceWorker.cpp
++++ b/Source/WebCore/Modules/mediasource/MediaSourceInterfaceWorker.cpp
+@@ -71,6 +71,13 @@ bool MediaSourceInterfaceWorker::isEnded() const
+     return true;
+ }
+ 
++bool MediaSourceInterfaceWorker::isPlaybackEnded() const
++{
++    if (RefPtr source = m_handle->mediaSourcePrivate())
++        return source->readyState() == MediaSource::ReadyState::Ended && source->isEnded();
++    return true;
++}
++
+ MediaTime MediaSourceInterfaceWorker::duration() const
+ {
+     if (RefPtr mediaSourcePrivate = m_handle->mediaSourcePrivate(); mediaSourcePrivate && !isClosed())
+diff --git a/Source/WebCore/Modules/mediasource/MediaSourceInterfaceWorker.h b/Source/WebCore/Modules/mediasource/MediaSourceInterfaceWorker.h
+index a7058f656af87c688565203edffe4f490fc3da9f..4c7804319bd656df4f2cdfe5682147d48ce5cb62 100644
+--- a/Source/WebCore/Modules/mediasource/MediaSourceInterfaceWorker.h
++++ b/Source/WebCore/Modules/mediasource/MediaSourceInterfaceWorker.h
+@@ -42,6 +42,7 @@ private:
+     void monitorSourceBuffers() final;
+     bool isClosed() const final;
+     bool isEnded() const final;
++    bool isPlaybackEnded() const final;
+     MediaTime duration() const final;
+     PlatformTimeRanges buffered() const final;
+     PlatformTimeRanges seekable() const final;
+diff --git a/Source/WebCore/Modules/mediasource/SourceBuffer.cpp b/Source/WebCore/Modules/mediasource/SourceBuffer.cpp
+index 3482c162d4a46442368f89b8767ae7e070139e32..88713f7c8d17ab1720e3c367cc62bd47fb230bac 100644
+--- a/Source/WebCore/Modules/mediasource/SourceBuffer.cpp
++++ b/Source/WebCore/Modules/mediasource/SourceBuffer.cpp
+@@ -252,6 +252,7 @@ ExceptionOr<void> SourceBuffer::setTimestampOffset(double offset)
+ 
+     // 7. Update the attribute to the new value.
+     m_private->setTimestampOffset(newTimestampOffset);
++    m_private->resetParserTimestampOffset();
+ 
+     m_private->resetTimestampOffsetInTrackBuffers();
+ 
+diff --git a/Source/WebCore/Modules/mediasource/SourceBuffer.h b/Source/WebCore/Modules/mediasource/SourceBuffer.h
+index 9b642c760a0aa1ea0e1888f00e0ce52196c0f822..7eea57492e165a4549ee95d954b9dc4dd98b93b8 100644
+--- a/Source/WebCore/Modules/mediasource/SourceBuffer.h
++++ b/Source/WebCore/Modules/mediasource/SourceBuffer.h
+@@ -132,6 +132,8 @@ public:
+     size_t NODELETE memoryCost() const;
+ 
+     void setMediaSourceEnded(bool isEnded);
++    bool requiresParserFlush() const { return m_private->requiresParserFlush(); }
++    Ref<MediaPromise> finishParsing() { return m_private->finishParsing(); }
+     bool receivedFirstInitializationSegment() const { return m_receivedFirstInitializationSegment; }
+ 
+ #if !RELEASE_LOG_DISABLED
 diff --git a/Source/WebCore/Modules/pdfjs-extras/haiku/configuration.js b/Source/WebCore/Modules/pdfjs-extras/haiku/configuration.js
 new file mode 100644
 index 0000000000000000000000000000000000000000..883aa898608405f49a1ef2f74bf09e759a00c024
@@ -11371,7 +11610,7 @@ index aeb17770f3e1e6fca6f5efc89419a0895221014b..dbb756d88aeab3b8845f4c58ecdc7e44
  }
  
 diff --git a/Source/WebCore/html/HTMLMediaElement.cpp b/Source/WebCore/html/HTMLMediaElement.cpp
-index 81443b80c390626d0f6b2521a34c815f323f7445..7292bcfd28dff94326c62547c2a193b49ffbedb3 100644
+index 81443b80c390626d0f6b2521a34c815f323f7445..e2452d5d12d09244697d84bdea82c7851d63ee32 100644
 --- a/Source/WebCore/html/HTMLMediaElement.cpp
 +++ b/Source/WebCore/html/HTMLMediaElement.cpp
 @@ -3697,7 +3697,15 @@ void HTMLMediaElement::mediaPlayerInitializationDataEncountered(const String& in
@@ -11400,6 +11639,15 @@ index 81443b80c390626d0f6b2521a34c815f323f7445..7292bcfd28dff94326c62547c2a193b4
          WTF::move(initData)
      };
      scheduleEvent(MediaEncryptedEvent::create(eventNames().encryptedEvent, WTF::move(initializer), Event::IsTrusted::Yes));
+@@ -6305,7 +6313,7 @@ void HTMLMediaElement::handlePlaybackPositionChanged()
+     bool canReachEnd = true;
+ #if ENABLE(MEDIA_SOURCE)
+     if (m_mediaSource)
+-        canReachEnd = protect(m_mediaSource)->isEnded();
++        canReachEnd = protect(m_mediaSource)->isPlaybackEnded();
+ #endif
+ 
+     // When the current playback position reaches the end of the media resource then the user agent must follow these steps:
 @@ -6801,8 +6809,17 @@ bool HTMLMediaElement::endedPlayback() const
      // of playback is forwards, Either the media element does not have a loop attribute specified,
      // or the media element has a current media controller.
@@ -11411,7 +11659,7 @@ index 81443b80c390626d0f6b2521a34c815f323f7445..7292bcfd28dff94326c62547c2a193b4
 +        // expected. Match handlePlaybackPositionChanged(): reaching that
 +        // position ends playback only after endOfStream(), otherwise it is
 +        // a stall and a later append must be able to resume playback.
-+        if (RefPtr mediaSource = m_mediaSource; mediaSource && !mediaSource->isEnded())
++        if (RefPtr mediaSource = m_mediaSource; mediaSource && !mediaSource->isPlaybackEnded())
 +            return false;
 +#endif
          return dur > MediaTime::zeroTime() && now >= dur && (!loop() || m_mediaController);
@@ -19894,10 +20142,79 @@ index 27a5bf72f7a1ca7da49246059e584c2d868e1e6c..47d3a5f8796e8803c81100692924c62b
      // Take ownership of the memory for process memory accounting purposes.
      WEBCORE_EXPORT void takeOwnershipOfMemory(MemoryLedger) const;
 diff --git a/Source/WebCore/platform/graphics/SourceBufferPrivate.cpp b/Source/WebCore/platform/graphics/SourceBufferPrivate.cpp
-index b2ea7229043986cf9da17357fd66577b7851455a..020ad69ff2c1a50c0bb02009b9bbf3e5c688f242 100644
+index b2ea7229043986cf9da17357fd66577b7851455a..e5a150c3f991b4710bf55fd27e154e655e0cc488 100644
 --- a/Source/WebCore/platform/graphics/SourceBufferPrivate.cpp
 +++ b/Source/WebCore/platform/graphics/SourceBufferPrivate.cpp
-@@ -488,7 +488,7 @@ void SourceBufferPrivate::reenqueueMediaForTime(TrackBuffer& trackBuffer, TrackI
+@@ -108,7 +108,7 @@ MediaTime SourceBufferPrivate::mediaSourceDuration() const
+ 
+ void SourceBufferPrivate::setMode(SourceBufferAppendMode mode)
+ {
+-    ensureWeakOnDispatcher([mode](auto& buffer) {
++    enqueueSettingsChange([mode](auto& buffer) {
+         assertIsCurrent(buffer.m_dispatcher.get());
+         buffer.m_appendMode = mode;
+     });
+@@ -116,18 +116,36 @@ void SourceBufferPrivate::setMode(SourceBufferAppendMode mode)
+ 
+ void SourceBufferPrivate::resetTimestampOffsetInTrackBuffers()
+ {
+-    // Can be called on SourceBuffer's thread.
+-    ensureWeakOnDispatcher([](auto& buffer) {
+-        buffer.iterateTrackBuffers([&](auto& trackBuffer) {
+-            trackBuffer.resetTimestampOffset();
+-        });
++    // The DOM and parser may share the main thread. Being on the dispatcher
++    // does not mean pending finalization has completed: always order a script
++    // offset change after that operation, including its final video samples.
++    enqueueSettingsChange([](auto& buffer) {
++        buffer.iterateTrackBuffers([](auto& trackBuffer) { trackBuffer.resetTimestampOffset(); });
++    });
++}
++
++void SourceBufferPrivate::enqueueSettingsChange(Function<void(SourceBufferPrivate&)>&& change)
++{
++    // Settings changed after endOfStream must follow its asynchronous parser
++    // finalization, just as settings changed after an ordinary append do.
++    m_currentSourceBufferOperation = protect(m_currentSourceBufferOperation)->whenSettled(m_dispatcher, [weakThis = ThreadSafeWeakPtr { *this }, change = WTF::move(change)](auto result) mutable {
++        RefPtr buffer = weakThis.get();
++        if (!buffer)
++            return OperationPromise::createAndReject(PlatformMediaError::BufferRemoved);
++        change(*buffer);
++        return OperationPromise::createAndSettle(WTF::move(result));
+     });
+ }
+ 
++void SourceBufferPrivate::resetParserTimestampOffset()
++{
++    enqueueSettingsChange([](auto& buffer) { buffer.resetParserTimestampOffsetInternal(); });
++}
++
+ void SourceBufferPrivate::startChangingType()
+ {
+     // Can be called on SourceBuffer's thread.
+-    ensureWeakOnDispatcher([](auto& buffer) {
++    enqueueSettingsChange([](auto& buffer) {
+         assertIsCurrent(buffer.m_dispatcher.get());
+         buffer.m_pendingInitializationSegmentForChangeType = true;
+     });
+@@ -138,6 +156,16 @@ void SourceBufferPrivate::setTimestampOffset(const MediaTime& timestampOffset)
+     // Called from the SourceBuffer's dispatcher
+     Locker locker { m_lock };
+     m_timestampOffset = timestampOffset;
++    ++m_timestampOffsetVersion;
++}
++
++void SourceBufferPrivate::setTimestampOffsetForCodedFrame(const MediaTime& offset)
++{
++    m_appendSettings.timestampOffset = offset;
++    Locker locker { m_lock };
++    // A later script assignment is immediately observable and takes priority.
++    if (m_timestampOffsetVersion == m_appendSettings.timestampOffsetVersion)
++        m_timestampOffset = offset;
+ }
+ 
+ MediaTime SourceBufferPrivate::timestampOffset() const
+@@ -488,7 +516,7 @@ void SourceBufferPrivate::reenqueueMediaForTime(TrackBuffer& trackBuffer, TrackI
      bool isEnded = false;
      if (RefPtr mediaSource = m_mediaSource.get())
          isEnded = mediaSource->isEnded();
@@ -19906,18 +20223,184 @@ index b2ea7229043986cf9da17357fd66577b7851455a..020ad69ff2c1a50c0bb02009b9bbf3e5
          provideMediaData(trackBuffer, trackID);
  }
  
+@@ -875,7 +903,7 @@ void SourceBufferPrivate::setGroupStartTimestamp(const MediaTime& mediaTime)
+ {
+     // Called on SourceBuffer's thread.
+     ASSERT(isOnCreationThread());
+-    ensureWeakOnDispatcher([mediaTime](auto& buffer) {
++    enqueueSettingsChange([mediaTime](auto& buffer) {
+         assertIsCurrent(buffer.m_dispatcher.get());
+         buffer.m_groupStartTimestamp = mediaTime;
+     });
+@@ -885,7 +913,7 @@ void SourceBufferPrivate::setGroupStartTimestampToEndTimestamp()
+ {
+     // Called on SourceBuffer's thread.
+     ASSERT(isOnCreationThread());
+-    ensureWeakOnDispatcher([](auto& buffer) {
++    enqueueSettingsChange([](auto& buffer) {
+         assertIsCurrent(buffer.m_dispatcher.get());
+         buffer.m_groupStartTimestamp = buffer.m_groupEndTimestamp;
+     });
+@@ -895,7 +923,7 @@ void SourceBufferPrivate::setShouldGenerateTimestamps(bool flag)
+ {
+     // Called on SourceBuffer's thread.
+     ASSERT(isOnCreationThread());
+-    ensureWeakOnDispatcher([flag](auto& buffer) {
++    enqueueSettingsChange([flag](auto& buffer) {
+         assertIsCurrent(buffer.m_dispatcher.get());
+         buffer.m_shouldGenerateTimestamps = flag;
+     });
+@@ -1009,7 +1037,22 @@ void SourceBufferPrivate::didReceiveSample(Ref<MediaSample>&& sample)
+ 
+ Ref<MediaPromise> SourceBufferPrivate::append(Ref<SharedBuffer>&& buffer)
+ {
+-    m_currentSourceBufferOperation = protect(m_currentSourceBufferOperation)->whenSettled(m_dispatcher, [weakThis = ThreadSafeWeakPtr { *this }, buffer = WTF::move(buffer), abortCount = m_abortCount.load()](auto result) mutable {
++    return appendOrFinish(WTF::move(buffer));
++}
++
++Ref<MediaPromise> SourceBufferPrivate::finishParsing()
++{
++    return appendOrFinish(nullptr);
++}
++
++Ref<MediaPromise> SourceBufferPrivate::appendOrFinish(RefPtr<SharedBuffer>&& buffer)
++{
++    AppendSettings settings;
++    {
++        Locker locker { m_lock };
++        settings = { m_timestampOffset, m_timestampOffsetVersion, { m_appendWindowStart, m_appendWindowEnd } };
++    }
++    m_currentSourceBufferOperation = protect(m_currentSourceBufferOperation)->whenSettled(m_dispatcher, [weakThis = ThreadSafeWeakPtr { *this }, buffer = WTF::move(buffer), settings, abortCount = m_abortCount.load()](auto result) mutable {
+         RefPtr protectedThis = weakThis.get();
+         if (!protectedThis || !result)
+             return MediaPromise::createAndReject(!result ? result.error() : PlatformMediaError::BufferRemoved);
+@@ -1018,14 +1061,26 @@ Ref<MediaPromise> SourceBufferPrivate::append(Ref<SharedBuffer>&& buffer)
+         // We have fully completed the previous append operation, we can start a new promise chain.
+         protectedThis->m_currentAppendProcessing = MediaPromise::createAndResolve();
+ 
+-        if (buffer->isEmpty())
++        if (abortCount != protectedThis->m_abortCount)
+             return MediaPromise::createAndResolve();
+ 
+-        if (abortCount != protectedThis->m_abortCount)
++        {
++            Locker locker { protectedThis->m_lock };
++            protectedThis->m_appendSettings = settings;
++            // A preceding queued finalization may have generated timestamps.
++            if (settings.timestampOffsetVersion == protectedThis->m_timestampOffsetVersion)
++                protectedThis->m_appendSettings.timestampOffset = protectedThis->m_timestampOffset;
++        }
++
++        // Explicit EOF must use the same pending-sample, buffered-range and
++        // duration processing as an append before renderers receive EOS.
++        if (!buffer)
++            return protectedThis->finishParsingInternal();
++        if (buffer->isEmpty())
+             return MediaPromise::createAndResolve();
+ 
+         // Before the promise returned by appendInternal is resolved, the various callbacks would have been called and populating m_currentAppendProcessing.
+-        return protectedThis->appendInternal(WTF::move(buffer));
++        return protectedThis->appendInternal(buffer.releaseNonNull());
+     })->whenSettled(m_dispatcher, [weakThis = ThreadSafeWeakPtr { *this }](auto result) mutable -> Ref<OperationPromise> {
+         RefPtr protectedThis = weakThis.get();
+         if (!protectedThis)
+@@ -1255,7 +1310,7 @@ bool SourceBufferPrivate::processMediaSample(SourceBufferPrivateClient& client,
+         // 1.3 If mode equals "sequence" and group start timestamp is set, then run the following steps:
+         if (m_appendMode == SourceBufferAppendMode::Sequence && m_groupStartTimestamp.isValid()) {
+             // 1.3.1 Set timestampOffset equal to group start timestamp - presentation timestamp.
+-            setTimestampOffset(m_groupStartTimestamp - presentationTimestamp);
++            setTimestampOffsetForCodedFrame(m_groupStartTimestamp - presentationTimestamp);
+ 
+             iterateTrackBuffers([&](auto& trackBuffer) {
+                 trackBuffer.resetTimestampOffset();
+@@ -1288,7 +1343,7 @@ bool SourceBufferPrivate::processMediaSample(SourceBufferPrivateClient& client,
+         MediaTime microsecond(1, 1000000);
+ 
+         // 1.4 If timestampOffset is not 0, then run the following steps:
+-        if (auto timestampOffset = this->timestampOffset()) {
++        if (auto timestampOffset = m_appendSettings.timestampOffset) {
+             if (!trackBuffer.roundedTimestampOffset().isValid())
+                 trackBuffer.setRoundedTimestampOffset(timestampOffset);
+             if (presentationTimestamp.isValid() && presentationTimestamp.timeScale() != trackBuffer.lastFrameTimescale()) {
+@@ -1351,7 +1406,7 @@ bool SourceBufferPrivate::processMediaSample(SourceBufferPrivateClient& client,
+         // 1.9 If frame end timestamp is greater than appendWindowEnd, then set the need random access
+         // point flag to true, drop the coded frame, and jump to the top of the loop to start processing
+         // the next coded frame.
+-        auto [appendWindowStart, appendWindowEnd] = appendWindow();
++        auto [appendWindowStart, appendWindowEnd] = m_appendSettings.window;
+         if (presentationTimestamp.isInvalid() || presentationTimestamp < appendWindowStart || frameEndTimestamp > appendWindowEnd) {
+             // 1.8 Note.
+             // Some implementations MAY choose to collect some of these coded frames with presentation
+@@ -1671,8 +1726,10 @@ bool SourceBufferPrivate::processMediaSample(SourceBufferPrivateClient& client,
+ 
+         // 1.21 If generate timestamps flag equals true, then set timestampOffset equal to frame end timestamp.
+         if (m_shouldGenerateTimestamps) {
+-            setTimestampOffset(frameEndTimestamp);
+-            resetTimestampOffsetInTrackBuffers();
++            setTimestampOffsetForCodedFrame(frameEndTimestamp);
++            // Generated timestamps change inside this operation, before the
++            // next coded frame, rather than after the operation completes.
++            iterateTrackBuffers([](auto& trackBuffer) { trackBuffer.resetTimestampOffset(); });
+         }
+         break;
+     } while (true);
 diff --git a/Source/WebCore/platform/graphics/SourceBufferPrivate.h b/Source/WebCore/platform/graphics/SourceBufferPrivate.h
-index 03bddbbc92693773abe22029f44b6bf0e48d29f2..05770ac5574e1953d8dc8dec9f4da0bfd15ec0a1 100644
+index 03bddbbc92693773abe22029f44b6bf0e48d29f2..f9243a80dc5c0d4388ca83378e3d527147371068 100644
 --- a/Source/WebCore/platform/graphics/SourceBufferPrivate.h
 +++ b/Source/WebCore/platform/graphics/SourceBufferPrivate.h
-@@ -197,6 +197,7 @@ protected:
+@@ -89,6 +89,8 @@ public:
+     void setActive(bool);
+ 
+     Ref<MediaPromise> append(Ref<SharedBuffer>&&);
++    virtual bool requiresParserFlush() const { return false; }
++    Ref<MediaPromise> finishParsing();
+ 
+     void abort();
+     // Overrides must call the base class.
+@@ -113,6 +115,7 @@ public:
+     WEBCORE_EXPORT virtual size_t platformEvictionThreshold() const;
+     WEBCORE_EXPORT uint64_t contentSize() const;
+     void resetTimestampOffsetInTrackBuffers();
++    void resetParserTimestampOffset();
+     virtual void startChangingType();
+     void setTimestampOffset(const MediaTime&);
+     WEBCORE_EXPORT MediaTime timestampOffset() const;
+@@ -195,8 +198,11 @@ protected:
+     WEBCORE_EXPORT void didReceiveSample(Ref<MediaSample>&&);
+ 
      virtual Ref<MediaPromise> appendInternal(Ref<SharedBuffer>&&) = 0;
++    virtual Ref<MediaPromise> finishParsingInternal() { return MediaPromise::createAndResolve(); }
      virtual void resetParserStateInternal() = 0;
++    virtual void resetParserTimestampOffsetInternal() { }
      virtual void flush(TrackID) { }
 +    virtual MediaTime decoderPrerollForTrackID(TrackID) const { return MediaTime::zeroTime(); }
      virtual void enqueueSample(Ref<MediaSample>&&, TrackID) { }
      virtual void allSamplesInTrackEnqueued(TrackID) { }
      virtual bool isReadyForMoreSamples(TrackID) { return false; }
+@@ -232,6 +238,7 @@ protected:
+ 
+     mutable Lock m_lock;
+     MediaTime m_timestampOffset WTF_GUARDED_BY_LOCK(m_lock);
++    uint64_t m_timestampOffsetVersion WTF_GUARDED_BY_LOCK(m_lock) { 0 };
+     std::atomic<size_t> m_maximumBufferSize { 0 };
+ 
+ #if ASSERT_ENABLED
+@@ -239,6 +246,15 @@ protected:
+ #endif
+ 
+ private:
++    struct AppendSettings {
++        MediaTime timestampOffset;
++        uint64_t timestampOffsetVersion { 0 };
++        std::pair<MediaTime, MediaTime> window;
++    };
++    AppendSettings m_appendSettings;
++    void enqueueSettingsChange(Function<void(SourceBufferPrivate&)>&&);
++    void setTimestampOffsetForCodedFrame(const MediaTime&);
++    Ref<MediaPromise> appendOrFinish(RefPtr<SharedBuffer>&&);
+     MediaTime minimumBufferedTime() const;
+     MediaTime maximumBufferedTime() const;
+     Ref<MediaPromise> updateBuffered();
 diff --git a/Source/WebCore/platform/graphics/TrackBuffer.cpp b/Source/WebCore/platform/graphics/TrackBuffer.cpp
 index 73b72ffb1c653b14b552d294ee350d072ba6ef68..c6590f5167325490c4c835f39cef291c60adc5d9 100644
 --- a/Source/WebCore/platform/graphics/TrackBuffer.cpp
@@ -26730,10 +27213,10 @@ index 0000000000000000000000000000000000000000..1cd8c62d710e7a636c975765ee5c10cd
 +
 diff --git a/Source/WebCore/platform/graphics/haiku/MPEGAudioParserHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MPEGAudioParserHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..449afa8a125b9d6499e81c0ddae0873fc8f4e31e
+index 0000000000000000000000000000000000000000..407ece4cdc00babacc358e314fd5d4ae417f51db
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MPEGAudioParserHaiku.cpp
-@@ -0,0 +1,260 @@
+@@ -0,0 +1,261 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -26861,12 +27344,13 @@ index 0000000000000000000000000000000000000000..449afa8a125b9d6499e81c0ddae0873f
 +    info.id = 1;
 +    info.kind = SummitMP4::TrackInfo::Kind::Audio;
 +    info.packetTimedAudio = true;
-+    info.seekPreRoll = 80000000;
 +    size_t frameSize = 0;
 +    uint32_t duration = 0;
 +    auto result = m_format == Format::ADTS ? parseADTS(info, frameSize, duration) : parseMPEG(info, frameSize, duration);
 +    if (result != Result::Complete)
 +        return result;
++    // Low-rate Layer III frames can depend on several earlier bit reservoirs.
++    info.seekPreRoll = info.codec == "mp3" ? 500000000 : 80000000;
 +    if (available < frameSize)
 +        return Result::NeedMore;
 +    __int128 timestamp = m_haveInit && info.timescale != m_track.timescale
@@ -27057,10 +27541,10 @@ index 0000000000000000000000000000000000000000..25b7a88fac963dbb273a0059ee216443
 +} // namespace SummitMPEGAudio
 diff --git a/Source/WebCore/platform/graphics/haiku/MPEGTSParserHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MPEGTSParserHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..6fb52a9bf3c3186814fe664893f99342c8fca48a
+index 0000000000000000000000000000000000000000..6e501a2fe1cea41f053ab8d37de684f186bc5238
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MPEGTSParserHaiku.cpp
-@@ -0,0 +1,839 @@
+@@ -0,0 +1,1121 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -27096,6 +27580,7 @@ index 0000000000000000000000000000000000000000..6fb52a9bf3c3186814fe664893f99342
 +#include <limits>
 +#include <map>
 +#include <mutex>
++#include <set>
 +#include <thread>
 +#include <variant>
 +
@@ -27242,7 +27727,7 @@ index 0000000000000000000000000000000000000000..6fb52a9bf3c3186814fe664893f99342
 +// packets, multiple programs, incomplete PES/PSI, missing PTS and missing PCR.
 +class TransportValidator {
 +public:
-+    bool append(const uint8_t* bytes, size_t size, std::vector<uint8_t>& output)
++    bool append(const uint8_t* bytes, size_t size, std::vector<uint8_t>& output, std::vector<size_t>& boundaries)
 +    {
 +        if (m_failed || (size && !bytes))
 +            return false;
@@ -27254,13 +27739,16 @@ index 0000000000000000000000000000000000000000..6fb52a9bf3c3186814fe664893f99342
 +            size -= amount;
 +            if (m_packetSize == m_packet.size()) {
 +                m_packetSize = 0;
-+                m_duplicate = false;
++                m_duplicate = m_discontinuity = false;
 +                if (!packet()) {
 +                    m_failed = true;
 +                    return false;
 +                }
-+                if (!m_duplicate)
++                if (!m_duplicate) {
++                    if (m_discontinuity)
++                        boundaries.push_back(output.size());
 +                    output.insert(output.end(), m_packet.begin(), m_packet.end());
++                }
 +            }
 +        }
 +        return true;
@@ -27276,6 +27764,40 @@ index 0000000000000000000000000000000000000000..6fb52a9bf3c3186814fe664893f99342
 +                return false;
 +        }
 +        return true;
++    }
++
++    void reset()
++    {
++        m_packetSize = 0;
++        m_failed = m_duplicate = m_havePCR = false;
++        m_pids.clear();
++    }
++
++    std::vector<uint8_t> initializationBytes() const
++    {
++        std::vector<uint8_t> result;
++        auto append = [&](uint16_t pid, const std::vector<uint8_t>& section) {
++            size_t position = 0;
++            uint8_t counter = 0;
++            while (position < section.size()) {
++                std::array<uint8_t, 188> packet;
++                packet.fill(0xff);
++                packet[0] = 0x47;
++                packet[1] = static_cast<uint8_t>(pid >> 8) | (!position ? 0x40 : 0);
++                packet[2] = static_cast<uint8_t>(pid);
++                packet[3] = 0x10 | (counter++ & 15);
++                size_t offset = 4;
++                if (!position)
++                    packet[offset++] = 0; // PSI pointer field.
++                size_t amount = std::min(section.size() - position, packet.size() - offset);
++                std::copy_n(section.data() + position, amount, packet.data() + offset);
++                position += amount;
++                result.insert(result.end(), packet.begin(), packet.end());
++            }
++        };
++        append(0, m_committedPAT);
++        append(m_pmtPID, m_committedPMT);
++        return result;
 +    }
 +
 +private:
@@ -27336,6 +27858,7 @@ index 0000000000000000000000000000000000000000..6fb52a9bf3c3186814fe664893f99342
 +            m_program = program;
 +            m_pmtPID = pmt;
 +            m_havePAT = true;
++            m_committedPAT = bytes;
 +            return true;
 +        }
 +        if (!m_havePAT || pid != m_pmtPID || bytes[0] != 2 || end < 12
@@ -27363,6 +27886,7 @@ index 0000000000000000000000000000000000000000..6fb52a9bf3c3186814fe664893f99342
 +        m_streams = std::move(streams);
 +        m_pcrPID = pcr;
 +        m_havePMT = true;
++        m_committedPMT = bytes;
 +        return true;
 +    }
 +
@@ -27460,10 +27984,34 @@ index 0000000000000000000000000000000000000000..6fb52a9bf3c3186814fe664893f99342
 +            if (length > 188 - offset || (control == 2 && length != 183))
 +                return false;
 +            if (length) {
-+                discontinuity = bytes[offset] & 0x80;
-+                pcr = bytes[offset] & 0x10;
-+                if (pcr && length < 7)
++                unsigned flags = bytes[offset];
++                discontinuity = flags & 0x80;
++                pcr = flags & 0x10;
++                size_t position = offset + 1, end = offset + length;
++                auto clock = [&] {
++                    if (end - position < 6 || (bytes[position + 4] & 0x7e) != 0x7e
++                        || ((unsigned(bytes[position + 4] & 1) << 8) | bytes[position + 5]) >= 300)
++                        return false;
++                    position += 6;
++                    return true;
++                };
++                if ((pcr && !clock()) || ((flags & 8) && !clock()))
 +                    return false;
++                if (flags & 4) {
++                    if (position == end)
++                        return false;
++                    ++position;
++                }
++                for (unsigned flag : { 2u, 1u }) {
++                    if (!(flags & flag))
++                        continue;
++                    if (position == end)
++                        return false;
++                    size_t size = bytes[position++];
++                    if (size > end - position)
++                        return false;
++                    position += size;
++                }
 +            }
 +            offset += length;
 +        }
@@ -27472,6 +28020,17 @@ index 0000000000000000000000000000000000000000..6fb52a9bf3c3186814fe664893f99342
 +        if (!isPSI && !isMedia && (!m_havePMT || pid != m_pcrPID))
 +            return true;
 +        auto& state = m_pids[pid];
++        if ((control & 1) && state.counterKnown && (bytes[3] & 15) == state.counter && state.previous == m_packet) {
++            m_duplicate = true;
++            return true;
++        }
++        if (discontinuity && pid == m_pcrPID && m_havePCR) {
++            // Finish the old access units before FFmpeg sees a new clock epoch.
++            // A discontinuity cannot hide an incomplete declared PES/section.
++            if (!finish())
++                return false;
++            m_discontinuity = true;
++        }
 +        if (discontinuity) {
 +            state.counterKnown = false;
 +            if (pid == m_pcrPID)
@@ -27512,6 +28071,7 @@ index 0000000000000000000000000000000000000000..6fb52a9bf3c3186814fe664893f99342
 +    size_t m_packetSize { 0 };
 +    bool m_failed { false };
 +    bool m_duplicate { false };
++    bool m_discontinuity { false };
 +    bool m_havePAT { false };
 +    bool m_havePMT { false };
 +    bool m_havePCR { false };
@@ -27520,12 +28080,13 @@ index 0000000000000000000000000000000000000000..6fb52a9bf3c3186814fe664893f99342
 +    uint16_t m_pcrPID { 0 };
 +    std::map<uint16_t, uint8_t> m_streams;
 +    std::map<uint16_t, PIDState> m_pids;
++    std::vector<uint8_t> m_committedPAT;
++    std::vector<uint8_t> m_committedPMT;
 +};
 +
 +} // namespace
 +
 +struct Parser::Impl {
-+    explicit Impl(Parser& parser) : owner(parser), worker([this] { run(); }) { }
 +    ~Impl()
 +    {
 +        {
@@ -27544,8 +28105,35 @@ index 0000000000000000000000000000000000000000..6fb52a9bf3c3186814fe664893f99342
 +        std::optional<int64_t> nextAudioTime;
 +    };
 +
++    struct RestoreState {
++        TransportValidator transport;
++        std::map<int, Track> tracks;
++    };
++
++    explicit Impl(Parser& parser, std::optional<RestoreState> restored = std::nullopt)
++        : owner(parser)
++        , transport(restored ? std::move(restored->transport) : TransportValidator())
++        , initialization(transport.initializationBytes())
++        , restoredTracks(restored ? std::move(restored->tracks) : std::map<int, Track>())
++        , worker([this] { run(); })
++    {
++    }
++
++    std::optional<RestoreState> restoreState()
++    {
++        std::lock_guard guard(lock);
++        if (tracks.empty())
++            return std::nullopt;
++        RestoreState state { transport, tracks };
++        state.transport.reset();
++        return state;
++    }
++
 +    Parser& owner;
 +    TransportValidator transport;
++    std::vector<uint8_t> initialization;
++    size_t initializationOffset { 0 };
++    std::map<int, Track> restoredTracks;
 +    std::mutex lock;
 +    std::condition_variable ready;
 +    const uint8_t* input { nullptr }; // Borrowed only while append waits below.
@@ -27560,12 +28148,24 @@ index 0000000000000000000000000000000000000000..6fb52a9bf3c3186814fe664893f99342
 +    size_t outputBytes { 0 };
 +    std::map<int, Track> tracks;
 +    std::optional<int64_t> decodeReference90k;
++    int64_t timestampOffset90k { 0 };
++    std::optional<int64_t> maximumEnd90k;
++    std::optional<int64_t> discontinuityTarget90k;
++    std::vector<SummitMP4::Sample> discontinuitySamples;
++    std::set<uint32_t> discontinuityTracks;
++    size_t discontinuityBytes { 0 };
 +    std::thread worker; // Starts after every field used by the worker.
 +
 +    static int read(void* context, uint8_t* target, int capacity)
 +    {
 +        auto& self = *static_cast<Impl*>(context);
 +        std::unique_lock guard(self.lock);
++        if (self.initializationOffset < self.initialization.size()) {
++            size_t amount = std::min<size_t>(capacity, self.initialization.size() - self.initializationOffset);
++            std::memcpy(target, self.initialization.data() + self.initializationOffset, amount);
++            self.initializationOffset += amount;
++            return amount;
++        }
 +        while (!self.inputSize && !self.eof && !self.cancelled) {
 +            self.idle = true;
 +            self.ready.notify_all();
@@ -27609,22 +28209,34 @@ index 0000000000000000000000000000000000000000..6fb52a9bf3c3186814fe664893f99342
 +        while (size) {
 +            size_t amount = std::min<size_t>(size, 65536);
 +            std::vector<uint8_t> validated;
-+            if (!transport.append(bytes, amount, validated))
++            std::vector<size_t> boundaries;
++            if (!transport.append(bytes, amount, validated, boundaries))
 +                return false;
 +            bytes += amount;
 +            size -= amount;
-+            if (validated.empty())
-+                continue;
-+            // An ended MediaSource may reopen and append more bytes.
-+            eof = false;
-+            flushed = false;
-+            idle = false;
-+            input = validated.data();
-+            inputSize = validated.size();
-+            ready.notify_all();
-+            ready.wait(guard, [&] { return idle || done; });
-+            if (!deliver())
-+                return false;
++            size_t position = 0;
++            boundaries.push_back(validated.size());
++            for (size_t boundary : boundaries) {
++                if (boundary > position) {
++                    // An ended MediaSource may reopen and append more bytes.
++                    eof = flushed = idle = false;
++                    input = validated.data() + position;
++                    inputSize = boundary - position;
++                    ready.notify_all();
++                    ready.wait(guard, [&] { return idle || done; });
++                    if (!deliver())
++                        return false;
++                }
++                if (boundary < validated.size()) {
++                    if (!flushWorker(guard))
++                        return false;
++                    discontinuityTarget90k = maximumEnd90k;
++                    decodeReference90k.reset();
++                    for (auto& [index, track] : tracks)
++                        track.nextAudioTime.reset();
++                }
++                position = boundary;
++            }
 +        }
 +        return true;
 +    }
@@ -27636,9 +28248,35 @@ index 0000000000000000000000000000000000000000..6fb52a9bf3c3186814fe664893f99342
 +        std::unique_lock guard(lock);
 +        if (done || failed)
 +            return false;
++        return flushWorker(guard);
++    }
++
++    bool flushWorker(std::unique_lock<std::mutex>& guard)
++    {
 +        eof = true;
 +        ready.notify_all();
 +        ready.wait(guard, [&] { return flushed || done; });
++        return deliver();
++    }
++
++    bool resetTimestampOffset()
++    {
++        std::lock_guard guard(lock);
++        // Called between appends, with the demuxer waiting for input.
++        decodeReference90k.reset();
++        timestampOffset90k = 0;
++        maximumEnd90k.reset();
++        discontinuityTarget90k.reset();
++        for (auto& sample : discontinuitySamples) {
++            auto track = std::find_if(tracks.begin(), tracks.end(), [&](auto& entry) { return entry.second.info.id == sample.trackID; });
++            if (track == tracks.end() || !emitSample(std::move(sample), track->second.info.timescale))
++                return false;
++        }
++        discontinuitySamples.clear();
++        discontinuityTracks.clear();
++        discontinuityBytes = 0;
++        for (auto& [index, track] : tracks)
++            track.nextAudioTime.reset();
 +        return deliver();
 +    }
 +
@@ -27812,10 +28450,127 @@ index 0000000000000000000000000000000000000000..6fb52a9bf3c3186814fe664893f99342
 +            if (info.codec == "avc1" && !lengthPrefixAVC(sample.data))
 +                return false;
 +        }
++        if (discontinuityTarget90k) {
++            if (discontinuitySamples.size() >= 65536 || sample.data.size() > maxOutputBytes - discontinuityBytes)
++                return false;
++            discontinuityBytes += sample.data.size();
++            discontinuityTracks.insert(sample.trackID);
++            discontinuitySamples.push_back(std::move(sample));
++            return discontinuityTracks.size() != tracks.size() || finishDiscontinuity();
++        }
++        return emitSample(std::move(sample), info.timescale);
++    }
++
++    bool emitSample(SummitMP4::Sample&& sample, uint32_t timescale)
++    {
++        auto offset = rescale(timestampOffset90k, { 1, 90000 }, timescale);
++        if (!offset)
++            return false;
++        auto adjust = [&](int64_t& value) {
++            __int128 result = static_cast<__int128>(value) + *offset;
++            if (result <= INT64_MIN || result >= INT64_MAX)
++                return false;
++            value = static_cast<int64_t>(result);
++            return true;
++        };
++        if (!adjust(sample.presentationTime) || !adjust(sample.decodeTime)
++            || sample.presentationTime > INT64_MAX - sample.duration)
++            return false;
++        auto end = rescale(sample.presentationTime + sample.duration, { 1, static_cast<int>(timescale) }, 90000);
++        if (!end)
++            return false;
++        maximumEnd90k = maximumEnd90k ? std::max(*maximumEnd90k, *end) : *end;
 +        if (events.size() >= 65536 || sample.data.size() > maxOutputBytes - outputBytes)
 +            return false;
 +        outputBytes += sample.data.size();
 +        events.emplace_back(std::move(sample));
++        return true;
++    }
++
++    bool finishDiscontinuity()
++    {
++        if (!discontinuityTarget90k || discontinuitySamples.empty())
++            return true;
++        auto scale = [&](uint32_t id) {
++            auto found = std::find_if(tracks.begin(), tracks.end(), [&](auto& entry) { return entry.second.info.id == id; });
++            return found == tracks.end() ? 0 : found->second.info.timescale;
++        };
++        int64_t first = INT64_MAX;
++        for (auto& sample : discontinuitySamples) {
++            auto time = rescale(sample.presentationTime, { 1, static_cast<int>(scale(sample.trackID)) }, 90000);
++            if (!time)
++                return false;
++            first = std::min(first, *time);
++        }
++        __int128 offset = static_cast<__int128>(*discontinuityTarget90k) - first;
++        if (offset <= INT64_MIN || offset >= INT64_MAX)
++            return false;
++        timestampOffset90k = static_cast<int64_t>(offset);
++        discontinuityTarget90k.reset();
++        for (auto& sample : discontinuitySamples) {
++            uint32_t timescale = scale(sample.trackID);
++            if (!emitSample(std::move(sample), timescale))
++                return false;
++        }
++        discontinuitySamples.clear();
++        discontinuityTracks.clear();
++        discontinuityBytes = 0;
++        return true;
++    }
++
++    bool restoreConfigurations(AVFormatContext& context)
++    {
++        for (unsigned index = 0; index < context.nb_streams; ++index) {
++            auto& stream = *context.streams[index];
++            auto& codec = *stream.codecpar;
++            auto found = std::find_if(restoredTracks.begin(), restoredTracks.end(), [&](auto& item) {
++                return item.second.info.id == static_cast<uint32_t>(stream.id);
++            });
++            if (found == restoredTracks.end())
++                continue;
++            auto& info = found->second.info;
++            if (info.kind != SummitMP4::TrackInfo::Kind::Video)
++                continue; // ADTS/MPEG/AC-3 carry their format in each frame.
++            std::vector<uint8_t> extra;
++            if (info.codec == "avc1" && codec.codec_id == AV_CODEC_ID_H264) {
++                auto& config = info.codecConfig;
++                if (config.size() < 7 || config[0] != 1)
++                    return false;
++                size_t position = 6;
++                auto appendNALs = [&](unsigned count) {
++                    while (count--) {
++                        if (config.size() - position < 2)
++                            return false;
++                        size_t size = size_t(config[position]) << 8 | config[position + 1];
++                        position += 2;
++                        if (!size || size > config.size() - position)
++                            return false;
++                        extra.insert(extra.end(), { 0, 0, 0, 1 });
++                        extra.insert(extra.end(), config.begin() + position, config.begin() + position + size);
++                        position += size;
++                    }
++                    return true;
++                };
++                if (!appendNALs(config[5] & 31) || position >= config.size())
++                    return false;
++                unsigned pps = config[position++];
++                if (!appendNALs(pps))
++                    return false;
++            } else if (info.codec == "hvc1" && codec.codec_id == AV_CODEC_ID_HEVC)
++                extra = info.codecConfig;
++            else
++                continue;
++            auto* bytes = static_cast<uint8_t*>(api().av_malloc(extra.size() + AV_INPUT_BUFFER_PADDING_SIZE));
++            if (!bytes)
++                return false;
++            std::memcpy(bytes, extra.data(), extra.size());
++            std::memset(bytes + extra.size(), 0, AV_INPUT_BUFFER_PADDING_SIZE);
++            api().av_free(codec.extradata);
++            codec.extradata = bytes;
++            codec.extradata_size = extra.size();
++            codec.width = info.width;
++            codec.height = info.height;
++        }
 +        return true;
 +    }
 +
@@ -27851,7 +28606,7 @@ index 0000000000000000000000000000000000000000..6fb52a9bf3c3186814fe664893f99342
 +            api.av_dict_free(&options);
 +        }
 +        if (ok)
-+            ok = api.avformat_find_stream_info(context, nullptr) >= 0 && initialize(*context);
++            ok = restoreConfigurations(*context) && api.avformat_find_stream_info(context, nullptr) >= 0 && initialize(*context);
 +        if (ok) {
 +            packet = api.av_packet_alloc();
 +            ok = packet;
@@ -27867,6 +28622,10 @@ index 0000000000000000000000000000000000000000..6fb52a9bf3c3186814fe664893f99342
 +            if (cancelled)
 +                break;
 +            if (status != AVERROR_EOF || !eof) {
++                ok = false;
++                break;
++            }
++            if (!finishDiscontinuity()) {
 +                ok = false;
 +                break;
 +            }
@@ -27898,14 +28657,21 @@ index 0000000000000000000000000000000000000000..6fb52a9bf3c3186814fe664893f99342
 +bool Parser::available() { return api().ready; }
 +bool Parser::append(const uint8_t* bytes, size_t size) { return m_impl->append(bytes, size); }
 +bool Parser::finish() { return m_impl->finish(); }
++bool Parser::resetTimestampOffset() { return m_impl->resetTimestampOffset(); }
++void Parser::reset()
++{
++    auto restored = m_impl->restoreState();
++    m_impl.reset(); // Cancels blocked reads and joins before replacing state.
++    m_impl = std::make_unique<Impl>(*this, std::move(restored));
++}
 +
 +} // namespace SummitMPEGTS
 diff --git a/Source/WebCore/platform/graphics/haiku/MPEGTSParserHaiku.h b/Source/WebCore/platform/graphics/haiku/MPEGTSParserHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..d1d95938f12b4b0b3044b1ebaee2cb383a2eeaa0
+index 0000000000000000000000000000000000000000..21962ea9d0bd80ba9c260e9ef9ecac36ecab14ef
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MPEGTSParserHaiku.h
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,49 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -27946,6 +28712,8 @@ index 0000000000000000000000000000000000000000..d1d95938f12b4b0b3044b1ebaee2cb38
 +    std::function<void(SummitMP4::Sample&&)> onSample;
 +    bool append(const uint8_t*, size_t);
 +    bool finish();
++    void reset();
++    bool resetTimestampOffset();
 +
 +private:
 +    struct Impl;
@@ -31010,10 +31778,10 @@ index 0000000000000000000000000000000000000000..df43f4fc21c17d2cfb904c9eaefa28b1
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..cf6dfbf1b26c6dae7d098c351ec7a2b45ca632aa
+index 0000000000000000000000000000000000000000..2517294f40cad9d49265b0e7cda89d17c19448de
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
-@@ -0,0 +1,2663 @@
+@@ -0,0 +1,2715 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -31066,6 +31834,7 @@ index 0000000000000000000000000000000000000000..cf6dfbf1b26c6dae7d098c351ec7a2b4
 +#include <wtf/Threading.h>
 +#include <wtf/WallTime.h>
 +#include <wtf/text/StringView.h>
++#include <wtf/text/MakeString.h>
 +
 +#if USE(COORDINATED_GRAPHICS) && USE(TEXTURE_MAPPER) && USE(SKIA)
 +#include "CoordinatedPlatformLayerBufferNativeImage.h"
@@ -32573,11 +33342,16 @@ index 0000000000000000000000000000000000000000..cf6dfbf1b26c6dae7d098c351ec7a2b4
 +
 +static const HashSet<String>& mseTypes()
 +{
-+    static NeverDestroyed types = HashSet<String> { "video/mp4"_s, "audio/mp4"_s, "audio/aac"_s, "audio/mpeg"_s
++    static NeverDestroyed types = [] {
++        HashSet<String> result { "video/mp4"_s, "audio/mp4"_s, "audio/aac"_s, "audio/mpeg"_s
 +#if USE(LIBWEBRTC)
-+        , "video/webm"_s, "audio/webm"_s
++            , "video/webm"_s, "audio/webm"_s
 +#endif
-+    };
++        };
++        if (SummitMPEGTS::Parser::available())
++            result.add("video/mp2t"_s);
++        return result;
++    }();
 +    return types;
 +}
 +
@@ -32642,6 +33416,22 @@ index 0000000000000000000000000000000000000000..cf6dfbf1b26c6dae7d098c351ec7a2b4
 +    if (codecs.isEmpty())
 +        return MediaPlayer::SupportsType::MayBeSupported;
 +    bool audioOnly = container.startsWith("audio/"_s);
++    if (container == "video/mp2t"_s) {
++        for (auto& codec : codecs) {
++            bool supported = codec == "mp4a.40.2"_s || codec == "mp4a.67"_s
++                || equalLettersIgnoringASCIICase(codec, "mp4a.69"_s) || equalLettersIgnoringASCIICase(codec, "mp4a.6b"_s)
++                || codec == "mp3"_s || codec == "ac-3"_s || codec == "ec-3"_s;
++            if (codec.length() == 11 && (codec.startsWith("avc1."_s) || codec.startsWith("avc3."_s))) {
++                auto avcString = makeString("avc1."_s, codec.substring(5));
++                if (auto avc = parseAVCCodecParameters(avcString))
++                    supported = avc->profileIDC == 66 || avc->profileIDC == 77 || avc->profileIDC == 88 || avc->profileIDC == 100;
++            } else if (auto hevc = parseHEVCCodecParameters(codec))
++                supported = !hevc->generalProfileSpace && hevc->generalProfileIDC >= 1 && hevc->generalProfileIDC <= 3;
++            if (!supported)
++                return MediaPlayer::SupportsType::IsNotSupported;
++        }
++        return MediaPlayer::SupportsType::IsSupported;
++    }
 +#if USE(LIBWEBRTC)
 +    if (container == "video/webm"_s || container == "audio/webm"_s) {
 +        for (auto& codec : codecs) {
@@ -33383,6 +34173,13 @@ index 0000000000000000000000000000000000000000..cf6dfbf1b26c6dae7d098c351ec7a2b4
 +void SourceBufferPrivateHaiku::configureParser(const ContentType& type)
 +{
 +    auto container = type.containerType().convertToASCIILowercase();
++    m_parserNeedsEndFlush = false;
++    if (container == "video/mp2t"_s) {
++        m_mpegTSParser = std::make_unique<SummitMPEGTS::Parser>();
++        m_mpegTSParser->onInitSegment = [this](SummitMP4::InitSegment&& segment) { didParseInitializationSegment(WTF::move(segment)); };
++        m_mpegTSParser->onSample = [this](SummitMP4::Sample&& sample) { didParseSample(WTF::move(sample)); };
++    } else
++        m_mpegTSParser = nullptr;
 +    if (container == "audio/aac"_s || container == "audio/mpeg"_s) {
 +        m_mpegAudioParser = std::make_unique<SummitMPEGAudio::Parser>(container == "audio/aac"_s
 +            ? SummitMPEGAudio::Parser::Format::ADTS : SummitMPEGAudio::Parser::Format::MPEG);
@@ -33420,7 +34217,10 @@ index 0000000000000000000000000000000000000000..cf6dfbf1b26c6dae7d098c351ec7a2b4
 +    bool ok = !m_parseFailed;
 +    data->forEachSegment([&](std::span<const uint8_t> segment) {
 +        if (ok) {
-+            if (m_mpegAudioParser)
++            if (m_mpegTSParser) {
++                m_parserNeedsEndFlush = true;
++                ok = m_mpegTSParser->append(segment.data(), segment.size());
++            } else if (m_mpegAudioParser)
 +                ok = m_mpegAudioParser->append(segment.data(), segment.size());
 +#if USE(LIBWEBRTC)
 +            else if (m_webmParser)
@@ -33442,13 +34242,33 @@ index 0000000000000000000000000000000000000000..cf6dfbf1b26c6dae7d098c351ec7a2b4
 +    return MediaPromise::createAndResolve();
 +}
 +
++Ref<MediaPromise> SourceBufferPrivateHaiku::finishParsingInternal()
++{
++    if (m_parseFailed || (m_mpegTSParser && !m_mpegTSParser->finish()) || m_parseFailed) {
++        m_parseFailed = true;
++        return MediaPromise::createAndReject(PlatformMediaError::ParsingError);
++    }
++    // Keep the barrier until reset/changeType. A synchronous reopen can race
++    // this parse completion while its samples are still crossing dispatchers.
++    return MediaPromise::createAndResolve();
++}
++
++void SourceBufferPrivateHaiku::resetParserTimestampOffsetInternal()
++{
++    if (m_mpegTSParser && !m_mpegTSParser->resetTimestampOffset())
++        m_parseFailed = true;
++}
++
 +void SourceBufferPrivateHaiku::resetParserStateInternal()
 +{
++    m_parserNeedsEndFlush = false;
 +    m_audioPreroll.clear();
 +    m_parser.reset();
 +    if (m_pendingType)
 +        configureParser(*std::exchange(m_pendingType, std::nullopt));
 +    else {
++        if (m_mpegTSParser)
++            m_mpegTSParser->reset();
 +        if (m_mpegAudioParser)
 +            m_mpegAudioParser->reset();
 +#if USE(LIBWEBRTC)
@@ -33679,10 +34499,10 @@ index 0000000000000000000000000000000000000000..cf6dfbf1b26c6dae7d098c351ec7a2b4
 +#endif // ENABLE(MEDIA_SOURCE)
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.h b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..f59fcf004e7768d8a3bc04ed0de1858e9a81d7b1
+index 0000000000000000000000000000000000000000..76d9b945107a58d043c1c86478f31e52f444eaab
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.h
-@@ -0,0 +1,400 @@
+@@ -0,0 +1,406 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -33718,6 +34538,7 @@ index 0000000000000000000000000000000000000000..f59fcf004e7768d8a3bc04ed0de1858e
 +#include "DashResourceLoaderHaiku.h"
 +#include "FragmentedMP4ParserHaiku.h"
 +#include "MPEGAudioParserHaiku.h"
++#include "MPEGTSParserHaiku.h"
 +#include "PlatformTimeRanges.h"
 +#include "MediaPlayerPrivate.h"
 +#include "MediaSample.h"
@@ -34019,13 +34840,16 @@ index 0000000000000000000000000000000000000000..f59fcf004e7768d8a3bc04ed0de1858e
 +
 +    // Called by a renderer, on any thread, when it can take samples again.
 +    void rendererReadyForMoreSamples(TrackID);
++    bool requiresParserFlush() const final { return m_parserNeedsEndFlush; }
 +
 +private:
 +    SourceBufferPrivateHaiku(MediaSourcePrivateHaiku&, const ContentType&);
 +    void configureParser(const ContentType&);
 +
 +    Ref<MediaPromise> appendInternal(Ref<SharedBuffer>&&) final;
++    Ref<MediaPromise> finishParsingInternal() final;
 +    void resetParserStateInternal() final;
++    void resetParserTimestampOffsetInternal() final;
 +    bool canSwitchToType(const ContentType&) final;
 +    void flush(TrackID) final;
 +    MediaTime decoderPrerollForTrackID(TrackID) const final;
@@ -34055,6 +34879,8 @@ index 0000000000000000000000000000000000000000..f59fcf004e7768d8a3bc04ed0de1858e
 +
 +    SummitMP4::Parser m_parser;
 +    std::unique_ptr<SummitMPEGAudio::Parser> m_mpegAudioParser;
++    std::unique_ptr<SummitMPEGTS::Parser> m_mpegTSParser;
++    std::atomic<bool> m_parserNeedsEndFlush { false };
 +    std::optional<ContentType> m_pendingType;
 +#if USE(LIBWEBRTC)
 +    std::unique_ptr<SummitWebM::Parser> m_webmParser;

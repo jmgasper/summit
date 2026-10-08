@@ -10,7 +10,7 @@ using nlohmann::json;
 
 int main(int argc, char** argv)
 {
-    if (argc < 3 || argc > 4)
+    if (argc < 3 || argc > 5)
         return 2;
     std::ifstream input(argv[1], std::ios::binary);
     std::vector<uint8_t> bytes(std::istreambuf_iterator<char>(input), { });
@@ -34,13 +34,37 @@ int main(int argc, char** argv)
             { "dts", sample.decodeTime }, { "duration", sample.duration }, { "sync", sample.isSync },
             { "size", sample.data.size() }, { "hash", hash } });
     };
-    bool ok = true;
-    for (unsigned pass = 0; pass < (argc > 3 ? 2 : 1) && ok; ++pass) {
-        for (size_t position = 0; position < bytes.size() && ok; position += chunk)
-            ok = parser.append(bytes.data() + position, std::min(chunk, bytes.size() - position));
-        if (ok)
-            ok = parser.finish();
+    auto append = [&](const std::vector<uint8_t>& inputBytes) {
+        for (size_t position = 0; position < inputBytes.size(); position += chunk) {
+            if (!parser.append(inputBytes.data() + position, std::min(chunk, inputBytes.size() - position)))
+                return false;
+        }
+        return true;
+    };
+    bool ok = append(bytes);
+    if (ok && argc >= 4) {
+        // Abort with a partial transport packet and a video access unit still
+        // inside FFmpeg. The following media contains no initialization PSI.
+        bool offsetOnly = argc == 5 && std::string(argv[4]) == "--timestamp-offset";
+        if (offsetOnly)
+            ok = parser.finish() && parser.resetTimestampOffset();
+        else if (argc == 5) {
+            std::ifstream malformed(argv[4], std::ios::binary);
+            std::vector<uint8_t> rejected(std::istreambuf_iterator<char>(malformed), { });
+            ok = !rejected.empty() && !append(rejected);
+        } else
+            ok = parser.append(bytes.data(), std::min<size_t>(37, bytes.size()));
+        if (!offsetOnly)
+            parser.reset();
+        if (!offsetOnly)
+            tracks.clear();
+        samples.clear();
+        std::ifstream replacement(argv[3], std::ios::binary);
+        bytes = std::vector<uint8_t>(std::istreambuf_iterator<char>(replacement), { });
+        ok = ok && !bytes.empty() && append(bytes);
     }
+    if (ok)
+        ok = parser.finish();
     std::cout << json({ { "available", parser.available() }, { "ok", ok }, { "tracks", tracks }, { "samples", samples } }) << '\n';
     return ok ? 0 : 1;
 }

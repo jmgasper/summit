@@ -5,9 +5,10 @@
 const index=Number(new URLSearchParams(location.search).get('case'));
 const media=document.getElementById('media'), checks=[], events=[], hashes=new Set();
 let test, mse, buffer, timer, objectURL;
+const buffered=()=>{try{return buffer?Array.from({length:buffer.buffered.length},(_,i)=>[buffer.buffered.start(i),buffer.buffered.end(i)]):[]}catch{return[]}};
 const state=()=>({index,test,time:media.currentTime,duration:media.duration,ready:media.readyState,
   error:media.error&&{code:media.error.code,message:media.error.message},checks,events,frames:hashes.size,
-  buffered:buffer?Array.from({length:buffer.buffered.length},(_,i)=>[buffer.buffered.start(i),buffer.buffered.end(i)]):[]});
+  buffered:buffered()});
 const assert=(value,label)=>{checks.push({label,passed:!!value});if(!value)throw Error(label)};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const wait=async(predicate,label)=>{const end=performance.now()+20000;while(!predicate()){
@@ -34,28 +35,53 @@ document.getElementById('play').onclick=async()=>{document.getElementById('play'
  for(const type of ['video/webm; codecs="bogus"','audio/webm; codecs="vp9"','video/webm; codecs="avc1.42E01E"',
   'audio/webm; codecs="mp4a.40.2"','video/mp4; codecs="vorbis"',
   'video/webm; codecs="vp09.garbage"','video/webm; codecs="vp09.00.10.12"','video/webm; codecs="av01.garbage"',
-  'audio/aac; codecs="mp4a.40.2"','audio/mpeg; codecs="mp3"','audio/aac; codecs=""'])assert(!MediaSource.isTypeSupported(type),'reject '+type);
+  'audio/aac; codecs="mp4a.40.2"','audio/mpeg; codecs="mp3"','audio/aac; codecs=""',
+  'video/mp2t; codecs="vp9"','video/mp2t; codecs="opus"','video/mp2t; codecs="avc1.garbage"'])assert(!MediaSource.isTypeSupported(type),'reject '+type);
  mse=new MediaSource();objectURL=URL.createObjectURL(mse);const opened=event(mse,'sourceopen');media.src=objectURL;await opened;
  buffer=mse.addSourceBuffer(test.changeType?'video/mp4; codecs="avc1.42E01E,mp4a.40.2"':test.type);
  if(test.changeType){buffer.changeType(test.type);assert(buffer.mode===(test.raw?'sequence':'segments'),'changeType selects the correct timestamp mode')}
  assert(buffer.mode===(test.raw?'sequence':'segments'),'container selects timestamp mode');
  if(test.offset)buffer.timestampOffset=test.offset;
+ if(test.timestampOffset!==undefined)buffer.timestampOffset=test.timestampOffset;
  if(test.window){buffer.appendWindowStart=test.window[0];buffer.appendWindowEnd=test.window[1]}
  const bytes=new Uint8Array(await(await fetch('/media/'+test.file)).arrayBuffer());
  let start=0;
+ if(test.abortReuse){await append(new Uint8Array(await(await fetch('/media/'+test.abortReuse)).arrayBuffer()));
+  await append(bytes.slice(0,37));buffer.abort();assert(!buffer.updating,'abort clears partial transport packet')}
  if(test.abort){await append(bytes.slice(0,test.initLength+8));buffer.abort();start=test.initLength;
   assert(!buffer.updating,'abort clears updating')}
  const chunks=[1,2,3,5,7,31,188,1024,65536];let step=0;
  while(start<bytes.length){const amount=chunks[Math.min(step++,chunks.length-1)];await append(bytes.slice(start,start+amount));start+=amount}
+ if(test.errorOnEnd){mse.endOfStream();assert(mse.readyState==='ended','endOfStream changes readyState synchronously');
+  await wait(()=>!!media.error,'truncated transport reports error');assert(media.error.code===3,'truncated transport is a decode error');
+  await report('Streaming_PASS');return}
+ if(test.detachOnEnd||test.removeOnEnd){mse.endOfStream();
+  if(test.detachOnEnd){media.removeAttribute('src');media.load();await wait(()=>mse.readyState==='closed','detach closes media source')}
+  else{mse.removeSourceBuffer(buffer);assert(mse.sourceBuffers.length===0,'remove buffer during finalization')}
+  buffer=null;await sleep(300);assert(!media.error,'cancelled finalization has no stale decode error');await report('Streaming_PASS');return}
+ if(test.timestampReset){mse.endOfStream();await wait(()=>Number.isFinite(media.duration)&&Math.abs(media.duration-test.timestampReset.firstEnd)<.05,'first clock epoch finalized');
+  buffer.timestampOffset=test.timestampReset.offset;assert(mse.readyState==='open','timestampOffset reopens source');
+  await append(new Uint8Array(await(await fetch('/media/'+test.timestampReset.file)).arrayBuffer()))}
  if(test.after){buffer.changeType(test.after.type);assert(buffer.mode==='sequence','actual codec change selects sequence mode');
   await append(new Uint8Array(await(await fetch('/media/'+test.after.file)).arrayBuffer()))}
- assert(buffer.buffered.length===1,'one contiguous buffered range');
+ assert(buffer.buffered.length>0,'stream has buffered data');
  const offset=test.offset||test.window?.[0]||test.start||0, expectedEnd=test.expectedEnd||test.window?.[1]||(offset+4);
  assert(Math.abs(buffer.buffered.start(0)-offset)<.02,'buffer starts at expected timestamp');
- assert(Math.abs(buffer.buffered.end(0)-expectedEnd)<.1,'complete buffered duration');
- if(test.deferEnd)mse.duration=buffer.buffered.end(0);else mse.endOfStream();
+ assert(Math.abs(buffer.buffered.end(buffer.buffered.length-1)-expectedEnd)<(test.ts ? .5 : .1),'buffered duration before finalization');
+ if(test.deferEnd)mse.duration=buffer.buffered.end(buffer.buffered.length-1);else{
+  mse.endOfStream();assert(Number.isFinite(mse.duration),'endOfStream updates duration synchronously')}
+ if(test.reopenOnEnd||test.reopenSettings){buffer.timestampOffset=test.reopenSettings==='offset'?100:buffer.timestampOffset;
+  if(test.reopenSettings==='window')buffer.appendWindowEnd=1;
+  if(test.reopenSettings==='mode')buffer.mode='sequence';
+  assert(mse.readyState==='open','timestampOffset reopens during finalization');
+  mse.endOfStream();assert(mse.readyState==='ended','reopened source finalizes again')}
  await wait(()=>media.readyState>=1,'metadata loaded');
- assert(Math.abs(media.duration-expectedEnd)<.1,'finite MSE duration');
+ if(!test.deferEnd)await wait(()=>Number.isFinite(media.duration)&&Math.abs(media.duration-expectedEnd)<(test.ts ? .005 : .1)&&buffer.buffered.length===1,'finalized MSE duration');
+ assert(Math.abs(media.duration-(test.deferEnd?buffer.buffered.end(buffer.buffered.length-1):expectedEnd))<.1,'finite MSE duration');
+ if(!test.deferEnd)assert(buffer.buffered.length===1,'finalization fills the contiguous buffered range');
+ if(test.reopenSettings==='offset')assert(buffer.timestampOffset===100,'script offset is preserved while older frames finish');
+ if(test.reopenSettings==='window')assert(buffer.appendWindowEnd===1,'new window applies to later appends');
+ if(test.reopenSettings==='mode')assert(buffer.mode==='sequence','new mode applies to later appends');
  if(offset){media.currentTime=offset;await wait(()=>!media.seeking,'initial offset seek')}
  timer=setInterval(sampleFrame,40);
  await media.play();const playStarted=performance.now();
@@ -65,16 +91,18 @@ document.getElementById('play').onclick=async()=>{document.getElementById('play'
  if(test.video){assert(media.videoWidth===160&&media.videoHeight===90,'decoded video dimensions');assert(hashes.size>=3,'multiple decoded canvas frames')}
  assert(!media.muted&&media.volume===1,'audio output enabled');
  if(test.after)await wait(()=>media.currentTime>4.5,'play through audio format change');
+ if(test.playThrough)await wait(()=>media.currentTime>test.playThrough,'play through transport discontinuity');
  if(test.fullPlayback)await wait(()=>media.ended,'complete initial audio decode');
  if(test.deferEnd){await wait(()=>media.currentTime>=buffer.buffered.end(0)-.005,'reach open stream edge');await sleep(300);
   assert(mse.readyState==='open'&&!media.ended&&!events.some(e=>e.name==='ended'),'open stream stalls without ending');
   mse.endOfStream();await wait(()=>events.some(e=>e.name==='ended'),'late endOfStream delivers ended')}
  media.pause();const before=media.currentTime;await sleep(250);assert(Math.abs(media.currentTime-before)<.08,'pause holds clock');
  const seekTarget=test.seek??(offset+2);media.currentTime=seekTarget;await wait(()=>!media.seeking,'seek completes');assert(Math.abs(media.currentTime-seekTarget)<.15,'seek reaches target');
- const priorFrames=hashes.size, priorEnded=events.filter(e=>e.name==='ended').length;
+ // Repeated transport segments may contain the same pictures as before the seek.
+ hashes.clear();const priorEnded=events.filter(e=>e.name==='ended').length;
  await media.play();await wait(()=>media.ended,'stream reaches end');
  await wait(()=>events.filter(e=>e.name==='ended').length>priorEnded,'ended event delivered');
- if(test.video)assert(hashes.size>priorFrames+2,'decoded frames continue after seek');
+ if(test.video)assert(hashes.size>=3,'decoded frames continue after seek');
  assert(media.currentTime>=expectedEnd-.1,'stream plays to end');
  assert(events.some(e=>e.name==='seeked')&&events.some(e=>e.name==='ended'),'seeked and ended events');
  await report('Streaming_PASS');

@@ -111,6 +111,8 @@ print(p.pid)
             result['videoTimingChecks'] = []
             for index, segment in zip(range(args.first_case, end_case), loads):
                 case = cases[index]
+                if case.get('errorOnEnd') or case.get('detachOnEnd') or case.get('removeOnEnd'):
+                    continue
                 if case['video'] and any(codec in case['type'] for codec in ('av01', 'hvc1', 'hev1')):
                     generations = {}
                     for generation, pts in re.findall(r'video output codec=\S+ generation=(\d+) pts=(-?\d+)', segment):

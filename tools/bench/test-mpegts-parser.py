@@ -69,7 +69,17 @@ def shift_transport(data, shift):
     return bytes(data)
 
 
-def generate(directory):
+def discontinuity_prefix(source):
+    # Adaptation-only indicators reset each PID's continuity without changing
+    # its media data. PCR's indicator separates the two timestamp epochs.
+    pids = sorted({(source[i + 1] & 31) << 8 | source[i + 2] for i in range(0, len(source), 188)})
+    result = bytearray()
+    for pid in pids:
+        result += bytes([0x47, pid >> 8, pid & 255, 0x20, 183, 0x80]) + bytes([0xff]) * 182
+    return bytes(result)
+
+
+def generate(directory, duration=2):
     fixtures = []
     choices = [('h264-aac', 'libx264', 'aac', 48000), ('hevc-aac', 'libx265', 'aac', 48000),
                ('h264-mp3', 'libx264', 'libmp3lame', 44100), ('h264-mp2', 'libx264', 'mp2', 48000),
@@ -81,7 +91,7 @@ def generate(directory):
         command = ['ffmpeg', '-v', 'error', '-y']
         if video:
             command += ['-f', 'lavfi', '-i', 'testsrc2=size=160x90:rate=20']
-        command += ['-f', 'lavfi', '-i', f'sine=frequency=701:sample_rate={rate}', '-t', '2',
+        command += ['-f', 'lavfi', '-i', f'sine=frequency=701:sample_rate={rate}', '-t', str(duration),
                     '-c:a', audio, '-b:a', '32k' if rate == 8000 else '96k', '-ac', '2']
         if video:
             command += ['-c:v', video, '-threads', '2', '-g', '10', '-bf', '2', '-b:v', '160k']
@@ -94,6 +104,44 @@ def generate(directory):
     rollover.write_bytes(shift_transport((directory / 'h264-aac.ts').read_bytes(), ROLLOVER_SHIFT))
     fixtures.append(rollover)
     return fixtures
+
+
+def without_initialization(source):
+    packets = [bytearray(source[offset:offset + 188]) for offset in range(0, len(source), 188)]
+    def pid(packet):
+        return (packet[1] & 31) << 8 | packet[2]
+    def payload(packet):
+        return 5 + packet[4] if packet[3] & 0x20 else 4
+    pat = next(packet for packet in packets if pid(packet) == 0)
+    start = payload(pat) + 1 + pat[payload(pat)]
+    pmt_pid = (pat[start + 10] & 31) << 8 | pat[start + 11]
+    reset_packets = [packet for packet in packets if pid(packet) not in (0, pmt_pid)]
+    spans, elementary = [], bytearray()
+    def replace_parameter_sets():
+        if not elementary:
+            return
+        start = 9 + elementary[8]
+        codes = list(re.finditer(b'\x00\x00\x00?\x01', elementary[start:]))
+        for index, code in enumerate(codes):
+            begin = start + code.end()
+            end = start + codes[index + 1].start() if index + 1 < len(codes) else len(elementary)
+            if begin < end and elementary[begin] & 31 in (7, 8):
+                elementary[begin:end] = b'\x0c' + b'\xff' * (end - begin - 2) + b'\x80'
+        offset = 0
+        for packet_index, packet_offset, length in spans:
+            reset_packets[packet_index][packet_offset:packet_offset + length] = elementary[offset:offset + length]
+            offset += length
+    for index, packet in enumerate(reset_packets):
+        if pid(packet) != 256 or not packet[3] & 0x10:
+            continue
+        offset = payload(packet)
+        if packet[1] & 0x40:
+            replace_parameter_sets()
+            spans, elementary = [], bytearray()
+        spans.append((index, offset, 188 - offset))
+        elementary.extend(packet[offset:])
+    replace_parameter_sets()
+    return b''.join(reset_packets)
 
 
 def structural(executable, directory, env):
@@ -119,6 +167,9 @@ def structural(executable, directory, env):
         'scrambled': change(media, 3, packets[media][3] | 0x80),
         'reserved-adaptation': change(media, 3, packets[media][3] & 0xcf),
         'oversized-adaptation': change(media, 4, 184),
+        'bad-pcr-reserved': change(media, 10, packets[media][10] & 0xfd),
+        'truncated-opcr': change(media, 5, packets[media][5] | 8),
+        'truncated-private-data': change(media, 5, packets[media][5] | 2),
         'bad-pat-crc': change(pat, pat_start + 3, packets[pat][pat_start + 3] ^ 1),
         'no-pat': b''.join(packet for packet in packets if pid(packet) != 0),
         'no-pmt': b''.join(packet for packet in packets if pid(packet) != pmt_pid),
@@ -162,6 +213,62 @@ def structural(executable, directory, env):
     original = json.loads(subprocess.check_output([str(executable), str(directory / 'h264-aac.ts'), '188'], env=env))
     repeated = json.loads(subprocess.check_output([str(executable), str(duplicate), '188'], env=env))
     assert original == repeated, 'Duplicate TS packets must not duplicate decoded samples'
+    # Preserve committed program/codec metadata across abort. Remove every
+    # PAT/PMT and replace in-band SPS/PPS with same-size filler NALs so a reset
+    # cannot recover by accidentally finding another full initialization.
+    reset_file = directory / 'reset-no-init.ts'
+    reset_file.write_bytes(without_initialization(source))
+    for chunk in (1, 188, 65536):
+        completed = run([executable, directory / 'h264-aac.ts', chunk, reset_file], env=env,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+        reset_result = json.loads(completed.stdout)
+        assert reset_result['ok'] and len(reset_result['samples']) == len(original['samples']), ('abort preserved samples', chunk)
+        assert reset_result['tracks'] == original['tracks'], ('abort preserved configuration', chunk)
+        for before, after in zip(original['samples'], reset_result['samples']):
+            for key in ('id', 'pts', 'dts', 'duration', 'sync'):
+                assert before[key] == after[key], ('abort timeline', chunk, key, before, after)
+    for initial, bad_init in [('rollover.ts', None), ('h264-aac.ts', 'invalid-multiple-programs.ts')]:
+        command = [executable, directory / initial, 188, reset_file]
+        if bad_init:
+            command.append(directory / bad_init)
+        completed = run(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+        reset_result = json.loads(completed.stdout)
+        assert reset_result['ok'] and reset_result['tracks'] == original['tracks']
+        assert len(reset_result['samples']) == len(original['samples'])
+        for before, after in zip(original['samples'], reset_result['samples']):
+            for key in ('id', 'pts', 'dts', 'duration', 'sync'):
+                assert before[key] == after[key], ('reset after rollover or rejected init', initial, key)
+    print('PASS abort preserves configuration and resets rollover/rejected-init state', flush=True)
+    prefix = discontinuity_prefix(source)
+    reset_epoch = directory / 'reset-epoch.ts'
+    reset_epoch.write_bytes(prefix + source)
+    scales = {track['id']: track['scale'] for track in original['tracks']}
+    first_time = min(sample['pts'] / scales[sample['id']] for sample in original['samples'])
+    end_time = max((sample['pts'] + sample['duration']) / scales[sample['id']] for sample in original['samples'])
+    for shift in (-300000, 450000):
+        discontinuous = directory / f'discontinuity-{shift}.ts'
+        discontinuous.write_bytes(source + prefix + shift_transport(source, shift))
+        for chunk in (1, 188, 65536):
+            completed = run([executable, discontinuous, chunk], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+            joined = json.loads(completed.stdout)
+            assert joined['ok'] and joined['tracks'] == original['tracks']
+            count = len(original['samples'])
+            assert len(joined['samples']) == count * 2, ('discontinuity packet count', shift, chunk)
+            assert joined['samples'][:count] == original['samples']
+            for before, after in zip(original['samples'], joined['samples'][count:]):
+                for key in ('id', 'duration', 'sync', 'size', 'hash'):
+                    assert before[key] == after[key], ('discontinuity preserves packet', shift, key)
+                for key in ('pts', 'dts'):
+                    expected = before[key] + round((end_time - first_time) * scales[before['id']])
+                    assert abs(after[key] - expected) <= 1, ('discontinuity timeline', shift, chunk, key, before, after, expected)
+    for initial in ('rollover.ts', 'discontinuity--300000.ts'):
+        completed = run([executable, directory / initial, 188, reset_epoch, '--timestamp-offset'], env=env,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+        reset_result = json.loads(completed.stdout)
+        assert reset_result == original, ('timestampOffset resets internal epoch', initial)
+    print('PASS discontinuities join the timeline and timestampOffset resets internal clocks', flush=True)
+
+
     import random
     randomizer = random.Random(47)
     mutation = directory / 'mutation.ts'
@@ -173,8 +280,8 @@ def structural(executable, directory, env):
         result = subprocess.run([str(executable), str(mutation), '65536'], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
         assert result.returncode in (0, 1), (index, result.returncode, result.stderr[-1000:])
         assert b'Sanitizer' not in result.stderr and b'runtime error:' not in result.stderr, (index, result.stderr)
-    print('PASS', len(invalid) + 1, 'structural cases and 128 mutations', flush=True)
-    return len(invalid) + 1
+    print('PASS', len(invalid) + 8, 'structural cases and 128 mutations', flush=True)
+    return len(invalid) + 8
 
 
 def main():
