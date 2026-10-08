@@ -15,12 +15,25 @@ Example:
 import argparse
 import json
 import pathlib
+import re
 import signal
 import time
 
 from PIL import Image
 
 import guest
+
+
+def scroll_positions(log):
+    values = [tuple(map(float, match)) for match in re.findall(
+        rb'Summit wheel position: y=(-?[\d.]+) max=(-?[\d.]+)', log)]
+    if not values:
+        return {'available': False, 'moved': False}
+    positions = [value[0] for value in values]
+    return {'available': True, 'events': len(values), 'firstY': positions[0], 'lastY': positions[-1],
+            'minY': min(positions), 'maxY': max(positions),
+            'maximumScrollY': max(value[1] for value in values),
+            'moved': max(positions) - min(positions) > 1}
 
 
 def frame_summary(snapshot):
@@ -61,6 +74,10 @@ def main():
     parser.add_argument('--cycles', type=int, default=2, help='down/up pairs')
     parser.add_argument('--tail', type=float, default=0.25, help='seconds to include smooth-scroll animation tail')
     parser.add_argument('--after-settle', type=float, default=3, help='seconds to wait before a second final capture')
+    parser.add_argument('--capture-bursts', action='store_true',
+                        help='capture after each measured burst, outside its timing interval')
+    parser.add_argument('--require-movement', action='store_true',
+                        help='fail unless root scroll positions change during every burst')
     parser.add_argument('--window', default='0,0,1279,1017')
     parser.add_argument('--scroll-at', metavar='X,Y', help='wheel point in page-view coordinates; default is center')
     parser.add_argument('--env', action='append', default=[], metavar='NAME=VALUE')
@@ -85,11 +102,13 @@ def main():
     environment = dict(item.split('=', 1) for item in args.env)
     # Match the installed desktop launcher for smooth wheel scrolling.
     environment.setdefault('SUMMIT_SCROLL_REFRESH_TIMER', '16')
-    environment.update(SUMMIT_UI_FRAME_STATS='1', SUMMIT_ENABLE_INPUT_SYNTHESIS='1')
+    environment.update(SUMMIT_UI_FRAME_STATS='1', SUMMIT_ENABLE_INPUT_SYNTHESIS='1',
+                       SUMMIT_SCROLL_POSITION_TRACE='1')
     run = {
         'id': run_id, 'machine': guest.HOST, 'url': args.url, 'bundle': args.bundle,
         'notches': args.notches, 'intervalMs': args.interval_ms, 'delta': args.delta,
         'cycles': args.cycles, 'scrollAt': scroll_at or None,
+        'requireMovement': args.require_movement, 'captureBursts': args.capture_bursts,
         'extraEnv': environment, 'bursts': [], 'outcome': 'not-started',
     }
 
@@ -118,6 +137,7 @@ def main():
         if code:
             raise RuntimeError(err or out)
         time.sleep(args.settle)
+        guest.ctl(ctl, team, 'escape')
         run['stateBefore'] = guest.state(ctl, team)
         capture_visible(directory / 'before.png')
         time.sleep(1)
@@ -172,19 +192,28 @@ def main():
                       'animationTail': frame_summary(tail_snapshot),
                       'activeFrameSnapshot': active_snapshot,
                       'animationTailFrameSnapshot': tail_snapshot,
+                      'scrollPosition': scroll_positions(burst_log),
                       'logBytes': len(burst_log)}
             if active_snapshot is not polled_snapshot:
                 record['pollAfterCompletionFrameSnapshot'] = polled_snapshot
             run['bursts'].append(record)
             save()
             print(json.dumps(record), flush=True)
+            if args.capture_bursts:
+                capture_visible(directory / f'burst-{index + 1}.png')
+                # Screen capture can stall drawing. Keep its work out of the
+                # next burst's trace and let the periodic frame counter flush.
+                time.sleep(1.1)
+                guest.fetch_file(remote_log, directory / 'browser.log')
+                log_offset = (directory / 'browser.log').stat().st_size
 
         run['stateAfter'] = guest.state(ctl, team)
         capture_visible(directory / 'after.png')
         time.sleep(args.after_settle)
         if args.after_settle:
             capture_visible(directory / 'settled.png')
-        run['outcome'] = 'completed'
+        run['scrollMovementObserved'] = all(burst['scrollPosition']['moved'] for burst in run['bursts'])
+        run['outcome'] = 'completed' if not args.require_movement or run['scrollMovementObserved'] else 'no-scroll-movement'
     except KeyboardInterrupt:
         run['outcome'] = 'interrupted'
     except Exception as error:
@@ -196,7 +225,8 @@ def main():
             run['termination'] = guest.terminate(ctl, team, group=group)
         save()
         print(f'Artifacts: {directory}', flush=True)
+    return 0 if run['outcome'] == 'completed' else 1
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

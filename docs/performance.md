@@ -65,6 +65,28 @@ resolve the intermittent system audio stall reported in the earlier session.
 The normal installed launcher still points to the baseline while subsequent
 performance work continues with isolated bundles.
 
+Native wheel checks now verify root scroll positions and optionally capture
+each burst after its timing interval. An initial real-site sweep included a
+consent overlay, an empty GitHub issues page and YouTube's empty home page;
+those results do not establish scrolling performance. With loaded, scrollable
+pages, four 60-notch bursts at 25 ms intervals give these ranges on X399:
+
+| Page | Native view FPS | Worst interframe gap across bursts |
+| --- | ---: | ---: |
+| Wikipedia, Haiku article | 58.21–59.55 | 35.3 ms |
+| Reddit, popular feed | 57.35–58.44 | 45.1 ms |
+| GitHub, WebKit repository | 58.98–60.03 | 25.5 ms |
+| YouTube, watch page | 55.61–58.30 | 43.0 ms |
+
+Every burst moved the root scroll position; intermediate screenshots confirm
+changed content. Native frame counts can include video or other animation,
+and are not physical display-refresh measurements. All four runs quit cleanly
+without crash events or leftover helpers. Evidence:
+`.vm/performance-12h-20261008/real-wheel-verified.json`.
+The negative control on `about:blank` correctly reports `no-scroll-movement`
+and exits with status 1 after normal teardown:
+`.vm/bench/scroll-cycles-20261008-211823-perf12h-wheel-negative/`.
+
 ## 8 October 2026: six-hour optimization session
 
 The retained build is **`bundle-tmeeg8cb`**, installed on X399. Deferred canvas
