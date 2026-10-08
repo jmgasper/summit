@@ -188,6 +188,42 @@ before each run. Evidence:
 `.vm/optimization-2026-10-08/gc-churn-matrix-a.json` and
 `.vm/bench/probe-20261008-145131-summit-opt1008-gc-smoke/`.
 
+Allocation-policy results (all 38,320 checks pass in every run, uncontended,
+with normal quit and no helper/crash/debugger events):
+
+| Policy | Work ms | Retained-idle MiB | Released-idle MiB | Work frame p99 ms |
+| --- | ---: | ---: | ---: | ---: |
+| Default, first / repeat | 12266 / 12388 | 1154 / 1199 | 1142 / 1185 | 31 / 32 |
+| Default, four GC markers | 11927 | 1155 | 1138 | 30 |
+| Default, two GC markers | 12011 | 1259 | 1245 | 33 |
+| Normal heap policy | 12880 | 696 | 639 | 29 |
+| Normal policy, four markers | 11786 | 740 | 726 | 22 |
+| Normal policy, two markers | 11960 | 768 | 732 | 22 |
+
+On this 64 GiB host, `JSC_aggressiveHeapThresholdInMB=131072` selects the
+normal policy. It changes both proportional heap growth and the aggressive
+policy's allocation allowance used to avoid frequent collections. Setting
+only `JSC_heapGrowthMaxIncrease=1` retained about 1141 MiB; reducing
+`JSC_maxEdenSizeForRateLimitingMultiplier` to 4 or 0 retained about 975 or
+1073 MiB. Neither isolated setting matched the normal-policy combinations.
+Frame intervals are not direct GC-pause measurements. Evidence:
+`.vm/optimization-2026-10-08/gc-churn-matrix-{a,b}.json`.
+
+Full-browser validation rejected the normal-policy combinations as defaults:
+
+| Heap policy / markers | Two 15-iteration Speedometer scores | Mean versus default |
+| --- | --- | ---: |
+| Default / 8 | 10.895, 10.784 | — |
+| Normal / 8 | 10.165, 10.175 | −6.2% |
+| Normal / 4 | 10.486, 10.511 | −3.1% |
+| Normal / 2 | 10.574, 10.517 | −2.7% |
+
+All eight runs were clean and uncontended. The allocation diagnostic's
+throughput result did not predict the broader browser workload; the memory
+savings are a tradeoff, not a free improvement. The installed settings remain
+unchanged. Evidence:
+`.vm/optimization-2026-10-08/speedometer-heap-matrix.json`.
+
 ## 5 October 2026: quitting with a busy page, helpers left behind, the Pi's video decoder
 
 Three items left open on the Raspberry Pi 4 the night before, checked on the
