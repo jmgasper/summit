@@ -127,6 +127,8 @@ def main():
         environment.pop(name, None)
     environment['WEBKIT_EXEC_PATH'] = str(bundle)
     environment['LIBRARY_PATH'] = str(bundle / 'lib') + ':/boot/system/lib'
+    if prefix := environment.pop('SUMMIT_LIBRARY_PATH_PREFIX', ''):
+        environment['LIBRARY_PATH'] = prefix + ':' + environment['LIBRARY_PATH']
     browser_command = [str(bundle / 'Summit'), '--profile', str(profile)]
     report['browser_command'] = browser_command
     report['profile'] = str(profile)
