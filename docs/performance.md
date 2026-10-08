@@ -163,6 +163,37 @@ duration differences make it a separate case from the fresh 12-second encode.
 Fixture hashes and metadata are in
 `.vm/performance-12h-20261008/media-fixtures.json`.
 
+The current ARM64 JavaScriptCore also passes **39 upstream stress cases** on
+the physical Pi: 13 selected tests under default, interpreter-only and eager
+JIT modes, with each test's required options preserved. These cover atomic
+operations, BigInt, ARM64 condition chains, overflow recovery, OSR materialization,
+regular-expression bounds and GC. The run has no crash events and the device
+health check passes. This selected set is not the complete upstream suite.
+Evidence: `.vm/performance-12h-20261008/pi-jsc-stress-results.json`.
+
+The full isolated ARM64 engine and CMake browser now link. The build exposed
+an extension-disabled configuration error: package snapshot code referenced
+archive helpers that are compiled only with WebExtensions enabled. Its source
+and header now use the same feature gate. The browser's CMake target also
+omitted five existing UI sources; it now matches the native build script's
+source list. All five host CTest suites pass after the changes. The old ARM64
+SDK lacks the current Bluetooth ATT constant, so this isolated build supplies
+its unchanged native value (`0x0004`) only to `BluetoothSessionHaiku.cpp`.
+No shared SDK or installed OS files were changed. Runtime validation of the
+private browser bundle is pending.
+
+A three-round X399 page-load comparison collected Wikipedia, GitHub, BBC and
+Reddit timings for Summit and Firefox. It is diagnostic, not a matched speed
+claim: Summit uses the display's DPR 2 while Firefox reports DPR 1, viewport
+heights differ, and donation banners/feed content vary. Separate DOM and
+screenshot checks confirm loaded visible images in both browsers. The audit
+also caught one Summit WebProcess startup crash inside Haiku's library loader
+while loading Mesa, concurrent with media-type preparation and an IPC thread's
+first TLS allocation. Its cause remains under investigation; these page-load
+runs are not a clean stability pass. Evidence:
+`.vm/bench/pageload-20261008-215158/`,
+`.vm/performance-12h-20261008/{content-verify2,content-verify3,pageload-monitor.json,crashes}/`.
+
 ## 8 October 2026: six-hour optimization session
 
 The retained build is **`bundle-tmeeg8cb`**, installed on X399. Deferred canvas
