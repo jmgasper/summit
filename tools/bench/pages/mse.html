@@ -22,6 +22,9 @@ Query parameters:
                   script-heavy page does, to see whether video keeps moving
   width=<pixels>  displayed video width (default 640); aspect ratio follows source
   expectedFrames=<count>  require this exact total frame count at normal end
+  pauseAt=<seconds>  pause once playback reaches this time, then resume
+  pauseMs=<ms>    pause duration (default 1500, plus 250 ms settling)
+  pausedSeek=<seconds>  optionally seek while paused before checking stability
 -->
 <style>
 body { font: 16px monospace; margin: 12px; }
@@ -40,6 +43,9 @@ const seekTo = params.has('seek') ? Number(params.get('seek')) : null;
 const videoFile = params.get('video') || 'video-frag.mp4';
 const audioFile = params.get('audio') || 'audio-frag.mp4';
 const expectedFrames = params.has('expectedFrames') ? Number(params.get('expectedFrames')) : null;
+const pauseAt = params.has('pauseAt') ? Number(params.get('pauseAt')) : null;
+const pauseMs = Number(params.get('pauseMs') || 1500);
+const pausedSeek = params.has('pausedSeek') ? Number(params.get('pausedSeek')) : null;
 const video = document.getElementById('video');
 const displayWidth = Number(params.get('width') || 640);
 if (Number.isFinite(displayWidth) && displayWidth > 0) {
@@ -70,6 +76,63 @@ const types = ['video/mp4; codecs="avc1.640028"', 'video/mp4; codecs="avc1.4d401
 log('isTypeSupported ' + types.map(t => t.replace(/ codecs=/, '') + '=' + (window.MediaSource ? MediaSource.isTypeSupported(t) : 'noMSE')).join(' '));
 
 let seeked = false;
+let pauseStarted = false;
+let pauseCheck = null;
+async function checkPause() {
+    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const canvas = document.createElement('canvas');
+    canvas.width = 128;
+    canvas.height = 72;
+    const context = canvas.getContext('2d', {willReadFrequently: true});
+    let seekFrameWaitMs = null;
+    function sample() {
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+        return {
+            time: video.currentTime,
+            frames: video.getVideoPlaybackQuality().totalVideoFrames,
+            pixels,
+            hasPicture: pixels.some((value, index) => index % 4 !== 3 && value !== pixels[index % 4]),
+        };
+    }
+    try {
+        video.pause();
+        if (pausedSeek !== null) {
+            const previousFrames = video.getVideoPlaybackQuality().totalVideoFrames;
+            const seekStarted = performance.now();
+            await new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => reject(new Error('paused seek timeout')), 5000);
+                video.addEventListener('seeked', () => { clearTimeout(timeout); resolve(); }, {once: true});
+                video.currentTime = pausedSeek;
+            });
+            // The Haiku backend can resolve its seek when samples are queued,
+            // before the decoder supplies the target picture. Measure that
+            // arrival separately before testing whether a paused picture moves.
+            while (video.getVideoPlaybackQuality().totalVideoFrames <= previousFrames) {
+                if (performance.now() - seekStarted > 5000)
+                    throw new Error('paused seek picture timeout');
+                await sleep(25);
+            }
+            seekFrameWaitMs = performance.now() - seekStarted;
+        }
+        await sleep(250);
+        const before = sample();
+        await sleep(pauseMs);
+        const after = sample();
+        const samePixels = before.pixels.every((value, index) => value === after.pixels[index]);
+        pauseCheck = {beforeTime: before.time, afterTime: after.time,
+            beforeFrames: before.frames, afterFrames: after.frames, samePixels,
+            hasPicture: before.hasPicture && after.hasPicture, target: pausedSeek, seekFrameWaitMs,
+            passed: video.paused && !video.seeking && Math.abs(after.time - before.time) < .05
+                && (pausedSeek === null || Math.abs(after.time - pausedSeek) < .05)
+                && before.frames === after.frames && samePixels && before.hasPicture && after.hasPicture};
+        log('pauseCheck ' + JSON.stringify(pauseCheck));
+        await video.play();
+    } catch (error) {
+        pauseCheck = {passed: false, error: String(error)};
+        await report('pause-error');
+    }
+}
 function update() {
     const q = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null;
     const status = `MSE t=${video.currentTime.toFixed(2)} rs=${video.readyState} buf=${ranges(video.buffered)} q=${q ? q.totalVideoFrames + '/' + q.droppedVideoFrames : '-'} ev=${events.filter(e => e !== 'isTypeSupported').join('>')}`;
@@ -78,6 +141,10 @@ function update() {
     if (seekTo !== null && !seeked && video.currentTime > 3) {
         seeked = true;
         video.currentTime = seekTo;
+    }
+    if (pauseAt !== null && !pauseStarted && video.currentTime >= pauseAt) {
+        pauseStarted = true;
+        checkPause();
     }
 }
 setInterval(update, 250);
@@ -102,6 +169,11 @@ async function report(why) {
         result.expectedFrames = expectedFrames;
         result.passed = Number.isSafeInteger(expectedFrames) && expectedFrames > 0
             && why === 'ended' && !result.error && result.frames === expectedFrames;
+    }
+    if (pauseAt !== null) {
+        result.pauseCheck = pauseCheck;
+        result.passed = result.passed !== false && why === 'ended' && !result.error
+            && !!pauseCheck && pauseCheck.passed;
     }
     try {
         await fetch('/__bench/probe', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(result)});
