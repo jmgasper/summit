@@ -383,6 +383,16 @@ matched the original screenshot exactly. It quit normally without helpers
 or crash events. Evidence:
 `.vm/optimization-2026-10-08/opt1008-gpu-buffer-graphics/`.
 
+The real-site pair likewise did not justify the GPU-buffer policy: hidden
+resident-area totals were **6359 MiB** disabled and **6830 MiB** enabled.
+Remote content varies, so this pair does not establish a causal memory
+regression, but it supplies no evidence of the intended saving. The experiment
+was removed, including its context callback and framebuffer refactor; the
+engine patch returned exactly to `b178f34d…`, retaining the measured canvas
+clip optimization and the idle texture-pool improvement. No GC allowance,
+heap-growth, allocator-purge or hidden-buffer policy change is being shipped.
+Evidence: `.vm/optimization-2026-10-08/gpu-buffers/real-results.json`.
+
 ## 5 October 2026: quitting with a busy page, helpers left behind, the Pi's video decoder
 
 Three items left open on the Raspberry Pi 4 the night before, checked on the
