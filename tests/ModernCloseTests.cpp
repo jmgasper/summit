@@ -242,8 +242,22 @@ static void CheckDraft(const BMessenger& window, const BMessenger& address, int6
 }
 static void Session(const std::filesystem::path& profile, const std::vector<std::string>& urls, size_t selected)
 {
-    std::ifstream stream(profile / "profile.json");
-    const json data = json::parse(stream, nullptr, false);
+    // SharedProfile batches saves on a worker for 250 ms. The native close
+    // reply settles the UI transaction before that write necessarily finishes.
+    json data;
+    Require(Wait([&] {
+        std::ifstream stream(profile / "profile.json");
+        data = json::parse(stream, nullptr, false);
+        if (!data.is_object() || !data.contains("tabs") || !data["tabs"].is_array()
+            || data["tabs"].size() != urls.size() || !data.contains("selected")
+            || data["selected"] != selected)
+            return false;
+        for (size_t i = 0; i < urls.size(); ++i)
+            if (!data["tabs"][i].is_object() || !data["tabs"][i].contains("url")
+                || data["tabs"][i]["url"] != urls[i])
+                return false;
+        return true;
+    }, 5000000), "cancelled session reaches the saved profile within five seconds");
     Require(data.is_object() && data.contains("tabs") && data["tabs"].size() == urls.size(),
         "saved session retains every original tab after cancellation");
     Require(data.contains("selected") && data["selected"] == selected,
