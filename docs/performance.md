@@ -264,6 +264,18 @@ variable and sustained-browser checks are in progress; no fix is claimed.
 Evidence: `.vm/optimization-2026-10-08/opt1008-default-b-real/run.json` and
 `WebProcess-346376-debug-08-10-2026-04-57-23.report` in the same session directory.
 
+The separate native condition-variable probe completed **3,602,343 wakeups**
+in 60 seconds without signals or crash events. Its next mode repeatedly sent
+`SIGUSR1` to eight waiting threads; during that mode X399 stopped answering
+SSH and ping. The owned test was team 352204. An attempt to kill that team
+could not connect. NanoKVM remained reachable and reported power on and HDMI
+enabled, but supplied no video. No restart was performed; owner approval was
+requested because open applications were being preserved. This probe does
+not establish the cause of the earlier WebProcess exception, and the signal
+flood must not be repeated. Native long-run verification and final optimized
+installation are pending recovery. Evidence:
+`.vm/optimization-2026-10-08/{cond-signal.log,cond-signal-results.json,native-stall-status.json}`.
+
 ## 5 October 2026: quitting with a busy page, helpers left behind, the Pi's video decoder
 
 Three items left open on the Raspberry Pi 4 the night before, checked on the
