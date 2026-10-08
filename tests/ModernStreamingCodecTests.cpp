@@ -17,6 +17,7 @@
 #include <iostream>
 #include <iterator>
 #include <map>
+#include <set>
 
 using nlohmann::json;
 
@@ -28,7 +29,11 @@ public:
     const std::vector<SummitMP4::Sample>& samples;
     size_t position { 0 };
     WebCore::VideoPresentationTimelineHaiku timeline;
-    bool mapsTimestamps() const { return info.codec == "av01" || info.codec == "hvc1" || info.codec == "hev1"; }
+    bool mapsTimestamps() const
+    {
+        return info.codec == "av01" || info.codec == "hvc1" || info.codec == "hev1"
+            || info.codec == "avc1" || info.codec == "avc3";
+    }
     status_t GetNextChunk(const void** data, size_t* size, media_header* header) override
     {
         if (position == samples.size())
@@ -48,7 +53,7 @@ public:
     }
 };
 
-static json decode(const SummitMP4::TrackInfo& info, const std::vector<SummitMP4::Sample>& samples, bool clearPreSkip)
+static json decode(const SummitMP4::TrackInfo& info, const std::vector<SummitMP4::Sample>& samples, bool clearPreSkip, bool softwareH264)
 {
     const std::map<std::string, uint32> codecs { { "avc1", 27 }, { "hvc1", 173 }, { "hev1", 173 }, { "ac-3", 86019 }, { "ec-3", 86056 }, { "vp08", 139 }, { "vp09", 167 }, { "av01", 226 }, { "vorb", 86021 }, { "Opus", 86076 }, { "mp4a", 86018 }, { "mp1", 86058 }, { "mp2", 86016 }, { "mp3", 86017 } };
     auto found = codecs.find(info.codec);
@@ -83,13 +88,38 @@ static json decode(const SummitMP4::TrackInfo& info, const std::vector<SummitMP4
     if (clearPreSkip && info.codec == "Opus" && config.size() >= 19)
         config[10] = config[11] = 0;
     Decoder decoder(info, samples);
-    status = decoder.SetTo(&input, config.data(), config.size());
+    if (softwareH264 && (info.codec == "avc1" || info.codec == "avc3")) {
+        // As in setSoftwareDecoderHaiku(), select the libavcodec add-on by
+        // its encoder ID. A newer NVDEC is intentionally exempt from the
+        // browser's legacy reference-count fallback, so test it explicitly.
+        int32 cookie = 0;
+        media_codec_info candidate;
+        std::set<int32> tried;
+        status = B_ENTRY_NOT_FOUND;
+        while (get_next_encoder(&cookie, &candidate) == B_OK) {
+            if (!tried.insert(candidate.id).second)
+                continue;
+            decoder.position = 0;
+            decoder.timeline.clear();
+            media_format candidateInput = input;
+            media_codec_info chosen { };
+            if (decoder.SetTo(&candidate) == B_OK
+                && decoder.SetInputFormat(&candidateInput, config.data(), config.size()) == B_OK
+                && decoder.GetDecoderInfo(&chosen) == B_OK
+                && std::strncmp(chosen.short_name, "nvdec", 5)) {
+                status = B_OK;
+                break;
+            }
+        }
+    } else
+        status = decoder.SetTo(&input, config.data(), config.size());
     json result { { "codec", info.codec }, { "inputPackets", samples.size() }, { "setupStatus", status } };
     if (status != B_OK)
         return result;
     media_codec_info chosen { };
     decoder.GetDecoderInfo(&chosen);
     result["decoder"] = chosen.pretty_name;
+    result["decoderShortName"] = chosen.short_name;
     media_format output { };
     size_t bytesPerFrame;
     size_t capacity;
@@ -194,7 +224,12 @@ int main(int argc, char** argv)
 {
     BApplication application("application/x-vnd.Summit-streaming-codec-tests");
     bool passed = true;
+    bool softwareH264 = std::any_of(argv + 1, argv + argc, [](const char* arg) {
+        return !std::strcmp(arg, "--software-h264");
+    });
     for (int index = 1; index < argc; ++index) {
+        if (!std::strcmp(argv[index], "--software-h264"))
+            continue;
         std::ifstream input(argv[index], std::ios::binary);
         std::vector<uint8_t> bytes(std::istreambuf_iterator<char>(input), { });
         std::vector<SummitMP4::TrackInfo> tracks;
@@ -228,12 +263,12 @@ int main(int argc, char** argv)
             continue;
         }
         for (auto& track : tracks) {
-            auto result = decode(track, packets[track.id], false);
+            auto result = decode(track, packets[track.id], false, softwareH264);
             result["file"] = argv[index];
             passed &= result.value("ok", false);
             std::cout << result << '\n' << std::flush;
             if (track.codec == "Opus") {
-                result = decode(track, packets[track.id], true);
+                result = decode(track, packets[track.id], true, softwareH264);
                 result["file"] = argv[index];
                 result["clearedPreSkip"] = true;
                 passed &= result.value("ok", false);

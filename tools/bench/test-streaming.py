@@ -122,7 +122,7 @@ print(p.pid)
                 case = cases[index]
                 if case.get('errorOnEnd') or case.get('detachOnEnd') or case.get('removeOnEnd'):
                     continue
-                if case['video'] and any(codec in case['type'] for codec in ('av01', 'hvc1', 'hev1')):
+                if case['video'] and any(codec in case['type'] for codec in ('av01', 'hvc1', 'hev1', 'avc1', 'avc3')):
                     generations = {}
                     for generation, pts in re.findall(r'video output codec=\S+ generation=(\d+) pts=(-?\d+)', segment):
                         generations.setdefault(generation, []).append(int(pts))

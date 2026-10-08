@@ -22,6 +22,7 @@ def main():
     parser.add_argument('--fixtures', type=pathlib.Path, nargs='+', required=True)
     parser.add_argument('--engine', type=pathlib.Path, default=guest.ROOT / '.cache/WebKit')
     parser.add_argument('--output', type=pathlib.Path, default=guest.ROOT / '.vm/streaming-codecs')
+    parser.add_argument('--software-h264', action='store_true', help='Select a non-NVDEC H.264 decoder explicitly')
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     fixtures = []
@@ -79,13 +80,14 @@ sys.exit(result.returncode)
     watch = guest.CrashWatch()
     launch = '''import glob,subprocess,sys
 remote=sys.argv[1]
-process=subprocess.Popen([remote+'/probe']+sorted(glob.glob(remote+'/media/*')),stdin=subprocess.DEVNULL,
+options=['--software-h264'] if len(sys.argv)>2 else []
+process=subprocess.Popen([remote+'/probe']+options+sorted(glob.glob(remote+'/media/*')),stdin=subprocess.DEVNULL,
  stdout=open(remote+'/native.log','wb'),stderr=subprocess.STDOUT,start_new_session=True)
 print(process.pid)
 '''
-    launched = guest.ssh('python3.10 - ' + shlex.quote(remote), input_bytes=launch.encode())
+    launched = guest.ssh('python3.10 - ' + shlex.quote(remote) + (' software-h264' if args.software_h264 else ''), input_bytes=launch.encode())
     team = int(launched.stdout.strip().splitlines()[-1])
-    result = {'team': team, 'remote': remote, 'fixtures': [str(path) for path in fixtures]}
+    result = {'team': team, 'remote': remote, 'fixtures': [str(path) for path in fixtures], 'softwareH264': args.software_h264}
     (args.output / 'active.json').write_text(json.dumps(result, indent=2) + '\n')
     try:
         deadline = time.monotonic() + 300
@@ -113,6 +115,10 @@ print(process.pid)
     result['passed'] = ('StreamingCodec_RESULT PASS' in log and all(item.get('ok') for item in decodes)
                         and bool(decodes) and not result.get('timedOut') and not result['members']
                         and not result['crashes']['newReports'])
+    if args.software_h264:
+        h264 = [item for item in decodes if item.get('codec') in ('avc1', 'avc3')]
+        result['passed'] = result['passed'] and bool(h264) and all(
+            item.get('decoderShortName') and not item['decoderShortName'].startswith('nvdec') for item in h264)
     (args.output / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
     print('Native streaming codecs:', 'PASS' if result['passed'] else 'FAIL', len(fixtures), 'files,', len(decodes), 'decode passes')
     return 0 if result['passed'] else 1

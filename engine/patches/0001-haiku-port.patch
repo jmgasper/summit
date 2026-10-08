@@ -32540,10 +32540,10 @@ index 0000000000000000000000000000000000000000..df43f4fc21c17d2cfb904c9eaefa28b1
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..2517294f40cad9d49265b0e7cda89d17c19448de
+index 0000000000000000000000000000000000000000..ecc987459ee819efd6d2f97cd857090b3ef31d0c
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
-@@ -0,0 +1,2715 @@
+@@ -0,0 +1,2727 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -33276,7 +33276,7 @@ index 0000000000000000000000000000000000000000..2517294f40cad9d49265b0e7cda89d17
 +        Vector<RefPtr<MediaSampleHaiku>> taken;
 +        size_t replayed = 0;
 +        bool keepTaken = true;
-+        const bool useInputTimeline = codec == ffmpegCodecAV1 || codec == ffmpegCodecHEVC;
++        bool useInputTimeline = codec == ffmpegCodecAV1 || codec == ffmpegCodecHEVC;
 +        VideoPresentationTimelineHaiku inputTimeline;
 +        bool invalidTimeline = false;
 +        auto nextChunk = [&](const void** data, size_t* size, media_header* header) -> status_t {
@@ -33344,6 +33344,12 @@ index 0000000000000000000000000000000000000000..2517294f40cad9d49265b0e7cda89d17
 +        if (!addOn && (m_queue.aborted() || m_queue.generation() != generation))
 +            return true;
 +
++        // Media Kit's H.264 software decoder also reports the most recently
++        // read packet timestamp, including invalid timestamps when draining.
++        // Its output pictures are ordered; retain the input presentation times.
++        if (!addOn && codec == ffmpegCodecH264)
++            useInputTimeline = true;
++
 +        HaikuChunkDecoder decoder([&](const void** data, size_t* size, media_header* header) {
 +            return nextChunk(data, size, header);
 +        });
@@ -33375,6 +33381,8 @@ index 0000000000000000000000000000000000000000..2517294f40cad9d49265b0e7cda89d17
 +                decoder.GetDecoderInfo(&chosen);
 +                if (isH264(info.codec) && hardwareDecoderCannotDecodeHaiku(chosen, codecConfig)) {
 +                    replayed = 0;
++                    inputTimeline.clear();
++                    invalidTimeline = false;
 +                    status = setSoftwareDecoderHaiku(decoder, format, info.codecConfig.data(), info.codecConfig.size());
 +                    std::fprintf(stderr, "Summit media: MSE H.264 with %u reference frames goes to libavcodec instead of %s (status %ld)\n",
 +                        h264MaxReferenceFrames(codecConfig).value_or(0), chosen.pretty_name, long(status));
@@ -33447,8 +33455,10 @@ index 0000000000000000000000000000000000000000..2517294f40cad9d49265b0e7cda89d17
 +#endif
 +            status = addOn ? addOn->decode(target, rowBytes, &frames, &header, &decodeInfo)
 +                : decoder.Decode(target, &frames, &header, &decodeInfo);
-+            if (status != B_OK)
++            if (status != B_OK) {
++                MSE_TRACE("video decoder stopped status=%ld frames=%lld generation=%u invalidTimeline=%d\n", long(status), static_cast<long long>(frames), generation, invalidTimeline);
 +                return !invalidTimeline;
++            }
 +            if (m_queue.generation() != generation)
 +                break;
 +            if (!frames)
@@ -33459,7 +33469,7 @@ index 0000000000000000000000000000000000000000..2517294f40cad9d49265b0e7cda89d17
 +            if (!presentationTime || *presentationTime == INT64_MIN || *presentationTime == INT64_MAX)
 +                return false;
 +            int64_t pts = *presentationTime;
-+            if (mseTraceEnabled() && useInputTimeline)
++            if (mseTraceEnabled())
 +                MSE_TRACE("video output codec=%s generation=%u pts=%lld native=%lld\n", info.codec.c_str(), generation,
 +                    static_cast<long long>(pts), static_cast<long long>(header.start_time));
 +            if (takeNonDisplaying(pts))
@@ -33507,13 +33517,15 @@ index 0000000000000000000000000000000000000000..2517294f40cad9d49265b0e7cda89d17
 +            // show it at once, even while paused.
 +            if (!m_presentedSinceFlush)
 +                return true;
++            // End-of-stream can stop the clock while the decoder drains its
++            // last pictures. Frames already due must still be presented.
++            __int128 wait = static_cast<__int128>(pts) - m_clock.now();
++            if (wait <= 3000)
++                return true;
 +            if (!m_clock.isRunning()) {
 +                m_queue.waitFor(10_ms, generation);
 +                continue;
 +            }
-+            __int128 wait = static_cast<__int128>(pts) - m_clock.now();
-+            if (wait <= 3000)
-+                return true;
 +            m_queue.waitFor(Seconds::fromMicroseconds(static_cast<int64_t>(std::min<__int128>(wait - 2000, 20000))), generation);
 +        }
 +        return false;
@@ -39390,10 +39402,10 @@ index 0000000000000000000000000000000000000000..41999de77e252470c0a8f56b0eda479b
 +#endif // ENABLE(VIDEO) && PLATFORM(HAIKU)
 diff --git a/Source/WebCore/platform/graphics/haiku/VideoPresentationTimelineHaiku.h b/Source/WebCore/platform/graphics/haiku/VideoPresentationTimelineHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..40d4d11d5bbed58fb996c46e75654959b18e4994
+index 0000000000000000000000000000000000000000..1d1a9c43b347b1b5f55dcd956c6b6974157fc9b7
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/VideoPresentationTimelineHaiku.h
-@@ -0,0 +1,58 @@
+@@ -0,0 +1,59 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -39422,8 +39434,9 @@ index 0000000000000000000000000000000000000000..40d4d11d5bbed58fb996c46e75654959
 +namespace WebCore {
 +
 +// Media Kit's dav1d decoder loses the timestamp and its HEVC decoder returns
-+// the most recently read packet's timestamp, before frame reordering. Both
-+// deliver pictures in presentation order. Retain the container's timestamps
++// the most recently read packet's timestamp, before frame reordering. Its
++// H.264 software decoder does the same, with invalid timestamps on drain.
++// These decoders deliver pictures in presentation order. Retain the container's timestamps
 +// for the access units still inside the decoder, including seek preroll.
 +class VideoPresentationTimelineHaiku {
 +public:
