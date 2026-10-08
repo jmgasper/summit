@@ -22,6 +22,17 @@ $CXX -I$GLDEPS/include "$HERE/probes/fctime.cpp" -L$GLDEPS/lib -lfontconfig \
 for p in egltime readback; do
 	$CXX -I$MESA/mesa-25.3.6/include "$HERE/probes/$p.cpp" -L$SYSROOT/boot/system/lib -L$MESA/stage -lEGL -lGLESv2 -o "$OUT/$p"
 done
+# Compile the exact policy under test, not a second implementation of it.
+python3 - "$ROOT/.cache/WebKit" "$OUT/readback-policy.inc" <<'PY'
+import pathlib, sys
+source = pathlib.Path(sys.argv[1]) / 'Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp'
+text = source.read_text()
+start = text.index('static int readbackBandRowsHaiku(')
+end = text.index('\n// The driver copies', start)
+pathlib.Path(sys.argv[2]).write_text(text[start:end])
+PY
+$CXX -std=c++17 -I"$OUT" -I$MESA/mesa-25.3.6/include "$HERE/probes/readback-policy.cpp" \
+	-L$SYSROOT/boot/system/lib -L$MESA/stage -lEGL -lGLESv2 -o "$OUT/readback-policy"
 $CXX -std=c++17 -I"$ROOT/src" "$ROOT/tools/bench/summitctl.cpp" -lbe -o "$OUT/summitctl"
 cp "$HERE"/board/*.sh "$OUT"/
 rm -f "$SPECS"

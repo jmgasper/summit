@@ -54,7 +54,7 @@ Evidence: `.vm/performance-12h-20261008/readback-validation.json`.
 The 384 KiB run exercises the banding strategy used by V3D on the Pi but is
 still an X399 test. A read-only check also confirms that the actual Pi is
 reachable at its current DHCP address, running arm64 hrev60206+750. No new
-code has been installed on it yet.
+browser or engine has been installed on it yet.
 
 The candidate then passed all **56 native streaming cases**, **50 PCM seek
 checks**, **five video-timing checks** and exact Opus trimming, with normal
@@ -86,6 +86,39 @@ without crash events or leftover helpers. Evidence:
 The negative control on `about:blank` correctly reports `no-scroll-movement`
 and exits with status 1 after normal teardown:
 `.vm/bench/scroll-cycles-20261008-211823-perf12h-wheel-negative/`.
+
+The physical Pi's installed engine uses upstream `00991b6c`, an older revision
+than X399. Its 400-card probe at 1661×798, DPR 1 measures **37.60 fps** over
+600 scroll frames, with 35 ms p99, normal teardown and no crashes. Readback
+costs roughly 19 ms of a 26 ms frame. This is a separate device baseline;
+its resolution, software and CPU differ from the X399 measurements.
+
+The image's newer Mesa supports GPU-assisted readback, but the installed
+Summit still selects the earlier CPU-oriented 384 KiB bands. Alternating
+explicit 384 KiB and whole-rectangle runs gives **36.81–37.13 fps** versus
+**47.56–48.14 fps**, respectively. Whole reads therefore improve this fixture
+by about 29%; 128 KiB bands are slower at 34.89 fps. A 1 MiB-band run suffered
+a collection timeout after the browser quit; recovery found its completed
+36.55 fps result, no leftover processes and no crash. It remains separately
+marked as a collection failure. Evidence:
+`.vm/performance-12h-20261008/pi-band-sweep.json` and its per-run artifacts.
+
+The main engine now consumes Mesa's optional `haiku_mesa_readback_band_bytes`
+hint, already present in the separate arm64 checkout. Explicit overrides
+retain priority; an absent or negative hint retains the old renderer-specific
+fallback. The extracted production helper chooses whole reads on the actual
+Pi, 59-row bands with GPU readback disabled, and respects both explicit
+overrides. All four native EGL cases verify **21,207,648 pixels each** with
+no mismatch. The reusable probe is `tools/pi/probes/readback-policy.cpp`;
+evidence: `.vm/performance-12h-20261008/pi-readback-policy-results.json`.
+The X399 candidate, `bundle-no8kj8a0`, passes separated-damage screenshots
+with shared and direct presentation. Its 900-frame scroll repeat measures
+59.65 fps, 19 ms p99 and 20 ms maximum, with no interval over 33 ms. These
+checks quit normally without crashes or leftover helpers. Evidence:
+`.vm/performance-12h-20261008/readback-hint-validation.json`.
+An isolated build of the current engine for arm64 remains in progress;
+the whole-read speedup above was measured using the installed Pi engine's
+explicit override, not that unfinished browser build.
 
 ## 8 October 2026: six-hour optimization session
 

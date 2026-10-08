@@ -86,6 +86,14 @@ only a restart frees it.
 - `egltime`: EGL display, context, shader compile and first draw.
 - `readback W H`: `glReadPixels` into memory, through a PBO, from a pbuffer,
   and in 64-row bands.
+- `readback-policy EXPECTED_ROWS`: compiles the exact readback policy from
+  `.cache/WebKit`, checks its choice in a live EGL context, and verifies every
+  pixel of sixteen changing 1661×798 frames. On Mesa with GPU readback enabled,
+  expect `0` (whole rectangles); with `V3D_HAIKU_GPU_READBACK=0`, expect `59`
+  (the legacy 384 KiB bands). Explicit `SUMMIT_READBACK_BAND_KB=384` must also
+  give `59`, and `SUMMIT_READBACK_BAND_KB=0` must give `0` even with the driver
+  optimization disabled. Use a fresh process for each case: the production
+  policy caches its selection.
 - `lookup-scope.py EXE DIRS...` (host): which images every symbol lookup of
   the runtime loader walks through; `lookup-scenarios.py` models GNU hash
   tables and `-Bsymbolic-functions` for the bundled libraries.
