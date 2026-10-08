@@ -149,6 +149,20 @@ exited, while preserving an unrelated guard process and the user's original
 browser. Evidence: `.vm/bench/stress-20261008-143841-opt1008-stress-smoke/`
 and `.vm/optimization-2026-10-08/orphan-cleanup.json`.
 
+The deferred-clipping bundle also passes all 120 platform-page checks,
+unchanged grid/reflow geometry, WebGL 1/2 pixels and animation, canvas paths
+and damage, and the H.264/HEVC transport-stream playback/seek checks. Evidence:
+`.vm/optimization-2026-10-08/deferred-regressions/summary.json`.
+
+Two alternating full Speedometer pairs, now using 15 iterations per fresh
+profile, scored **10.811, 10.911** for the candidate and **10.870, 10.813**
+for the original installed bundle. Their means differ by only 0.18%; this
+does not establish an overall browser-speed change. All four runs were
+uncontended, completed without benchmark events, and quit normally with no
+helpers or new crash/debugger events. The harness now checks teardown before
+declaring success, including helpers whose parent exited during launch.
+Evidence: `.vm/optimization-2026-10-08/speedometer-regression-matrix.json`.
+
 ## 5 October 2026: quitting with a busy page, helpers left behind, the Pi's video decoder
 
 Three items left open on the Raspberry Pi 4 the night before, checked on the

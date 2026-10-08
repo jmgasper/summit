@@ -373,6 +373,7 @@ def main():
             run['processesAtEnd'] = guest.members(ctl, group)
             if not args.keep_open:
                 run['shutdown'] = guest.terminate(ctl, team, group=group)
+                run['leftovers'] = guest.members(ctl, group)
             try:
                 guest.fetch_file(f'{guest_dir}/browser.log', directory / 'browser.log', tail_bytes=4 * 1024 * 1024)
             except Exception as error:
@@ -384,6 +385,16 @@ def main():
                     run['events'].append({'profileFetchError': str(error)})
             if not args.keep_open:
                 guest.ssh(f'rm -rf {guest_dir}/profile', check=False, timeout=300)
+        elif group is not None:
+            run['shutdown'] = guest.terminate(ctl, group, group=group)
+            run['leftovers'] = guest.members(ctl, group)
+        run['crash'] = watch.poll()
+        for name in run['crash']['newReports']:
+            if not (directory / name).exists():
+                watch.fetch_report(name, directory / name)
+        if run['crash']['newReports'] or run['crash']['syslogEvents'] or run.get('leftovers'):
+            run['outcome'] = 'teardown-failed' if run['outcome'] == 'completed' else run['outcome']
+            (directory / 'syslog-tail.txt').write_text(watch.syslog_tail(200))
         if server:
             server.terminate()
         after = guest.load_report(ctl, (), 5000)
