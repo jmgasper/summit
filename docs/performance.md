@@ -2,10 +2,22 @@
 
 ## 8 October 2026: six-hour optimization session
 
+The retained build is **`bundle-tmeeg8cb`**, installed on X399. Deferred canvas
+hit-region clipping reduced runtime for the six measured HTML canvas clipping
+workloads by **22–54%**. Paired Speedometer runs were essentially unchanged (+0.18%).
+The texture pool also avoids entering GL twice a second when no idle texture
+can be reclaimed. Memory-policy experiments did not establish a useful saving,
+so GC, allocator and hidden-buffer settings retain their original defaults.
+A separately reproduced Haiku loader TLS bug was fixed and deployed through
+a removable package; the earlier condition-variable exception remains
+unexplained. Extended media verification also reproduced an intermittent Haiku
+HD Audio service stall, detailed below. Measurements, rejected trials and
+verification follow.
+
 All issue fixes were installed and verified on X399 before this session began.
 The session started at **02:14:10 UTC** (13:14 Hobart). Excluding 1,275 seconds
-of workstation outage and user-requested pause, the six-hour minimum ends at
-**08:35:25 UTC** (19:35 Hobart).
+of workstation outage and user-requested pause, the six-hour minimum was reached
+at **08:35:25 UTC** (19:35 Hobart). Final media validation finished at **08:39 UTC**.
 Earlier issue implementation, builds and verification do not count toward it.
 The baseline is `bundle-ralgs2gr`, engine patch
 `303c94b24cd5f1cf92493e00a6c30f0985a7e52d3630c24b14f538719850605f`,
@@ -395,7 +407,9 @@ Evidence: `.vm/optimization-2026-10-08/gpu-buffers/real-results.json`.
 
 The retained engine was rebuilt and installed as **`bundle-tmeeg8cb`** from
 source **`b4006ff`**, with patch `b178f34d…`. JavaScriptCore remains byte-identical
-to the initial baseline (`348d27b1…`). The normal desktop launcher passed all
+to the initial baseline (`348d27b1…`), and rebuilt WebKit exactly matches the
+validated retained candidate (`8cea0f61…`), confirming the experimental code
+was fully removed. The normal desktop launcher passed all
 48 OffscreenCanvas/image-codec checks, loaded its executable, helpers and
 engine libraries from the new bundle, and quit without helpers or crash
 events. Its screenshot was inspected. The first installed check had a fixture
@@ -407,6 +421,81 @@ The reusable `tools/bench/run-presentation-buffer-lifetime.py` also passed all
 68 checks on the installed retained engine, including exact restored pixels,
 background updates and resize, with normal quit and no helpers or crash events.
 Evidence: `.vm/bench/presentation-lifetime-20261008-182633-opt1008-final-retained/`.
+
+The installed retained bundle completed a second **1,200-action** stress run
+with the same seed, local fixtures and six-tab limit as the earlier control:
+324 new tabs, 319 closes, 232 navigations, 136 selections, 126 history actions
+and 63 reloads over **2,570.8 seconds**. There were no findings, crash reports,
+syslog debugger events or leftover helpers, and the browser quit normally.
+After settling, resident-area totals were **59.7 MiB** for Summit, **34.8 MiB**
+for the network process and **245.5 MiB** across two renderers. The earlier
+retained-engine run settled at 59.7 / 38.6 / 241.8 MiB. These totals support
+stable teardown in this workload, not a demonstrated memory saving or proof
+that no leak is possible. The 648 native loads had a **118.5 ms median** and
+**389.2 ms p95**; variation against the earlier run is not treated as a speed
+change because both use identical WebKit and JavaScriptCore binaries.
+Evidence: `.vm/bench/stress-20261008-182757-opt1008-stress1200-final-retained/`.
+
+The first final streaming run encountered a system audio failure starting at
+case 49: six of 56 cases failed clock checks, and the browser recorded 36
+audio-output connection errors. No browser crash or helper leak occurred.
+After Summit exited, an independent silent `BSoundPlayer` also blocked while
+starting; Haiku's HD Audio message port had all 64 queue slots occupied.
+This establishes that the failure persisted outside Summit, but does not
+identify its cause. The existing September 25 audio-service incident below
+is relevant history, not proof that these incidents have the same cause.
+
+With no browser or media player running, the public media shutdown API returned
+success and the services automatically relaunched. The immediate launch call
+returned `B_ALREADY_RUNNING`; an immediate sound check preceded audio-node
+readiness. A fresh check after initialization passed with **100 silent audio
+callbacks** and an empty HD Audio message queue. No workstation reboot was
+performed. The failed run and each recovery step remain in
+`.vm/optimization-2026-10-08/final-retained/validation-retry/streaming/` and
+`.vm/optimization-2026-10-08/media-recovery/`.
+The streaming harness now keeps the display awake and rejects audio-output
+errors and crash-related syslog events as well as crash reports.
+
+The first post-recovery repeat had no audio-output errors, crashes or helpers
+left behind. Cases 1–55 passed; case 0 exposed a fixture timing race. Cold
+audio setup took **711 ms**, so the playback clock had reached its check point
+before the first 40 ms canvas-sampler callback ran. The existing clock and
+dimension checks passed, but there were no sampled frames yet. The fixture
+now waits at most **one additional second** for three distinct decoded frames;
+its playback-clock limits remain unchanged. That failed repeat is preserved in
+`.vm/optimization-2026-10-08/final-retained/streaming-after-media-recovery/`.
+
+The next run passed its first 17 cases, then the HD Audio service stalled
+again. It was cancelled, and its browser quit normally with no helpers or
+crash events. Read-only thread/semaphore queries showed **HD Audio control**
+waiting for the **multi_audio audio output** thread to exit; that worker was
+waiting on the driver's **hda_buffer_sem**. The checked-out Haiku source has
+an unbounded `wait_for_thread()` in `MultiAudioNode::_StopOutputThread()` and
+an interruptible, unbounded buffer wait in the HDA driver. These observations
+locate the blocked threads; they do not establish why buffer interrupts ceased.
+No audio driver change was made. A service restart is a recovery measure,
+not a fix for the recurrence. Evidence:
+`.vm/optimization-2026-10-08/media-recovery/thread-state-stalled.log` and
+`.vm/optimization-2026-10-08/final-retained/streaming-final/`.
+
+After the second audio recovery, four cases passed with no audio errors, but
+the native driver then failed its focus check. It requested activation only
+once while the display-wake helper could still be stopping the screen blanker.
+The driver now retries activation of its owned window within the existing
+20-second wait. This failed attempt also quit without helpers or crash events;
+its evidence is in
+`.vm/optimization-2026-10-08/final-retained/streaming-fresh-services/`.
+
+The final complete run passed **all 56 cases and 1,692 DOM checks**, plus
+**50 PCM seek checks, five video-timing checks and exact Opus trimming**.
+It quit normally with no audio-output errors, crash reports, crash-related
+syslog events or leftover helpers. The final source changes after the installed
+`b4006ff` build affect test harnesses and documentation only. This successful
+run verifies the installed browser against functioning media services; it
+does **not** resolve the recurring system audio stall described above.
+Evidence: `.vm/optimization-2026-10-08/final-retained/streaming-focus-retry/`;
+cross-check of installation, graphics, stress, media and patch identity:
+`.vm/optimization-2026-10-08/final-audit.json`.
 
 ## 5 October 2026: quitting with a busy page, helpers left behind, the Pi's video decoder
 

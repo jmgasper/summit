@@ -25,6 +25,14 @@ teardown. The graphics restoration regression passed another 68 checks.
 Evidence: `.vm/optimization-2026-10-08/final-installed-1791444384/` and
 `.vm/bench/presentation-lifetime-20261008-182633-opt1008-final-retained/`.
 
+The performance session met its six-hour minimum at 08:35:25 UTC, excluding
+the outage/pause. Final verification also passed 1,200 stress actions and the
+56-case streaming suite (1,692 DOM, 50 PCM seek and five video-timing checks),
+with no crashes or helpers left behind. Repeated media testing exposed a
+recurring Haiku HD Audio service stall; recovery and its unresolved status are
+documented in the performance notes. The final media pass used restored
+services and does not establish that the platform stall is fixed.
+
 **#47 is complete:** MediaSource accepts MP4, WebM, raw ADTS AAC, MPEG audio
 and MPEG-TS with the codec matrix in [streaming media](streaming-media.md).
 Transport validation, clock rollover and discontinuity handling preserve
