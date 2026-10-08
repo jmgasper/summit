@@ -2,12 +2,18 @@
 
 ## 8 October 2026: twelve-hour performance and hardening session
 
-This new session began at **09:35:55 UTC**, after the separate six-hour pass
-below. Its baseline is installed `bundle-tmeeg8cb`, patch `b178f34d…`, with
-Mesa `prefix-20261002`. Session evidence is under
-`.vm/performance-12h-20261008/`. Rendering, wheel scrolling, video responsiveness
-and suitability for lower-powered devices remain in scope; this session is
-still in progress.
+This session ran from **09:35:55 to 21:36 UTC**, after the separate six-hour
+pass below. Its baseline is installed `bundle-tmeeg8cb`, patch `b178f34d…`,
+with Mesa `prefix-20261002`. Evidence is under
+`.vm/performance-12h-20261008/`.
+
+The measured Pi default-scroll fixture improves from **39.16 to 50.785 fps**
+(29.7%); X399 scrolling remains near 60 fps, and neither platform's short
+Speedometer comparison establishes a gain. The committed fixes repair missing
+readback pixels, video timestamps and final-frame draining, ARM64 build
+compatibility, and a separately reproduced Haiku loader startup race. The final
+1,528-action stress run and native media, graphics and UI checks pass. Scope,
+failed diagnostic attempts and measurement limits are recorded below.
 
 The initial 400-card scroll probe ran 900 frames at **59.59 fps**, with an
 18 ms p99 and 22 ms maximum interval, in a 1661 × 798 viewport at DPR 2.
@@ -52,9 +58,9 @@ without changing readback thresholds or adding framebuffer allocations.
 Evidence: `.vm/performance-12h-20261008/readback-validation.json`.
 
 The 384 KiB run exercises the banding strategy used by V3D on the Pi but is
-still an X399 test. A read-only check also confirms that the actual Pi is
-reachable at its current DHCP address, running arm64 hrev60206+750. No new
-browser or engine has been installed on it yet.
+still an X399 test. A read-only check also confirmed that the actual Pi was
+reachable at its current DHCP address, running arm64 hrev60206+750. Subsequent
+private-bundle validation on that device is recorded below.
 
 The candidate then passed all **56 native streaming cases**, **50 PCM seek
 checks**, **five video-timing checks** and exact Opus trimming, with normal
@@ -116,9 +122,9 @@ with shared and direct presentation. Its 900-frame scroll repeat measures
 59.65 fps, 19 ms p99 and 20 ms maximum, with no interval over 33 ms. These
 checks quit normally without crashes or leftover helpers. Evidence:
 `.vm/performance-12h-20261008/readback-hint-validation.json`.
-An isolated build of the current engine for arm64 remains in progress;
-the whole-read speedup above was measured using the installed Pi engine's
-explicit override, not that unfinished browser build.
+The whole-read speedup above was measured using the installed Pi engine's
+explicit override. Results from the subsequently completed ARM64 build are
+recorded below.
 
 The current upstream engine needed three arm64 adaptations that previously
 lived only in the separate cross-build checkout: Haiku signal-context register
@@ -131,7 +137,7 @@ JavaScript and, in both JIT runs, WebAssembly. This is a port smoke check,
 not JSC conformance or testing on heterogeneous ARM cores. Evidence:
 `.vm/performance-12h-20261008/pi-current-jsc-results.json`.
 
-The full arm64 browser build remains isolated from the existing cross-build
+The full arm64 browser build is isolated from the existing cross-build
 checkout and its uncommitted changes. Its first attempt exceeded the build
 scope's memory limit; it resumed incrementally with six compiler jobs.
 
@@ -150,7 +156,7 @@ The newer decoder code already prevents replaying samples during initial
 decoder setup. The current X399 engine reports exactly 360 frames and zero
 drops on the 720p control. These are decoder counters, not proof that every
 frame reached the physical display. Native Pi validation of the newer browser
-is still pending.
+and further decoder fixes are recorded below.
 
 `mse.html` now records display dimensions, supports an explicit display width,
 and optionally checks a caller-supplied expected frame count at normal end.
@@ -179,8 +185,8 @@ omitted five existing UI sources; it now matches the native build script's
 source list. All five host CTest suites pass after the changes. The old ARM64
 SDK lacks the current Bluetooth ATT constant, so this isolated build supplies
 its unchanged native value (`0x0004`) only to `BluetoothSessionHaiku.cpp`.
-No shared SDK or installed OS files were changed. Runtime validation of the
-private browser bundle is pending.
+No shared SDK or installed OS files were changed by this build. Runtime
+validation of the private browser bundle is recorded below.
 
 A three-round X399 page-load comparison collected Wikipedia, GitHub, BBC and
 Reddit timings for Summit and Firefox. It is diagnostic, not a matched speed
@@ -189,10 +195,191 @@ heights differ, and donation banners/feed content vary. Separate DOM and
 screenshot checks confirm loaded visible images in both browsers. The audit
 also caught one Summit WebProcess startup crash inside Haiku's library loader
 while loading Mesa, concurrent with media-type preparation and an IPC thread's
-first TLS allocation. Its cause remains under investigation; these page-load
-runs are not a clean stability pass. Evidence:
+first TLS allocation. The subsequent loader investigation is recorded below;
+these page-load runs are not a clean stability pass. Evidence:
 `.vm/bench/pageload-20261008-215158/`,
 `.vm/performance-12h-20261008/{content-verify2,content-verify3,pageload-monitor.json,crashes}/`.
+
+The current ARM64 engine and application now run from private Pi bundles;
+the installed Summit application is unchanged. This build has WebExtensions
+disabled, so it does not establish feature parity with the extension-enabled
+X399 build. All five native ARM64 application suites pass **610 checks**.
+The first upload attempt stopped on a connection timeout after three suites;
+the two remaining suites passed on a verified retry. Evidence:
+`.vm/performance-12h-20261008/pi-arm64-core-tests.json`.
+
+The new Pi browser removed the installed engine's duplicated video frames,
+but exposed two additional end-of-stream faults. MMAL's last two pictures
+arrived after the playback clock stopped, leaving their presentation wait
+blocked even though they were already due. Media Kit's H.264 fallback returned
+the last input packet's timestamp, including invalid values during draining.
+The candidate allows already-due pictures through a stopped clock and reuses
+the existing input presentation-time queue for H.264 through Media Kit.
+
+Private `pi-bundle-timeline`, engine patch `013447c0…`, passes the following
+on the physical Pi. Both traced 720p paths produce **360 distinct, sorted
+presentation timestamps**, from 66,666 through 12,033,333 microseconds.
+
+| Playback case | Hardware total / dropped | Software total / dropped |
+| --- | ---: | ---: |
+| 720p, video only | 360 / 0 | 360 / 0 |
+| 1080p, video only | 360 / 0 | 360 / 1 |
+| 720p, 100 ms page-thread work each second | 360 / 0 | 360 / 0 |
+| 720p, AAC audio | 360 / 0 | 360 / 0 |
+| 720p, seek to 8 seconds after 3 seconds | 211 / 0 | 215 / 0 |
+
+All runs end without decode errors, quit normally, leave no helpers, and pass
+the device health check. Seek counts differ because the seek is triggered by
+a periodic page callback; they are not full-clip frame-count comparisons.
+Audio runs are muted and establish decoder/clock behavior, not audible output.
+Counters do not establish physical display delivery. Evidence:
+`.vm/performance-12h-20261008/{pi-timeline-validation.json,pi-timeline-pts.json}`.
+The same patch is now frozen in X399 `bundle-hbgpfqma`. Its full native
+streaming regression passes **56 cases**, **21 video-timestamp checks**,
+**50 PCM seek checks** and exact Opus trimming. The additional H.264 timing
+checks cover rollover, discontinuities, abort/reuse and stream reopening.
+All **68 graphics lifetime checks** and both shared/direct separated-damage
+screenshot checks also pass. Each run quits normally without crash events or
+remaining helpers; streaming reports no audio-output errors. Separately, the
+native codec driver passes 54 decode runs across 30 valid fixtures; malformed
+inputs are covered by their expected-error cases in the browser suite.
+Evidence: `.vm/performance-12h-20261008/{streaming-media-timeline,codecs-media-timeline-valid}/`
+and `x399-media-qualification.json` in the same directory.
+
+X399 NVDEC version 2 also completes the 720p and 1080p 360-frame probes with
+zero drops, plus stable pause/resume and paused-seek pictures. Its name
+deliberately bypasses the old NVDEC reference-limit override, so attempted
+software-override browser runs are annotated as additional hardware coverage.
+The native codec driver now has an explicit `--software-h264` option; it
+passes the same 30 files / 54 decode checks, with all nine H.264 cases selecting
+Media Kit's `h264` software decoder and preserving exact presentation order.
+This verifies native software decoding, while the Pi checks above also cover
+software playback through the browser's clock. Evidence:
+`.vm/performance-12h-20261008/{x399-playback-validation.json,codecs-forced-software/result.json}`.
+
+The final X399 ABBA comparison uses fresh profiles, 1661×798 at DPR 2 and no
+detected contention. Three-iteration Speedometer scores are **10.360 / 10.136**
+for baseline and **10.510 / 10.314** for current; their wide confidence
+intervals overlap. The 900-frame scrolling runs are **59.61 / 59.61 fps** and
+**59.64 / 59.65 fps**, respectively, with no interval over 33 ms and at most
+23 ms in any run. Neither establishes an X399 speed gain. All runs quit
+normally without crash events or leftover helpers. The final bundle also
+passes the **145-check native close suite**. Evidence:
+`.vm/performance-12h-20261008/x399-matched-performance.json` and
+`.vm/modern-close-889f3ab7df05ea57c29a1466/`.
+
+The final **44.9-minute stress run** completes **1,528 actions** with seed
+100809 and up to eight tabs: 400 opens, 395 closes, 348 navigations, 148 tab
+selections, 155 history operations and 82 reloads. It reports no command/load
+failures, timeouts, unexpected renderer exits, crash reports or debugger
+events. Returning to the starting page and settling for 30 seconds leaves
+473.0 MiB of aggregate resident areas, versus 300.4 MiB at cold start. These
+totals include shared mappings; this result does not establish memory
+neutrality. Normal browser quit leaves no helper processes. Evidence:
+`.vm/bench/stress-20261009-074822-perf12h-final-long/`.
+
+The tested Summit bundles remain private: the X399 desktop launcher still
+selects baseline `bundle-tmeeg8cb`, and the installed Pi application is
+unchanged. The final X399 candidate is `bundle-hbgpfqma`; the Pi media candidate
+is `pi-bundle-timeline` and has WebExtensions disabled. The separately tested
+X399 loader package 1.1 remains active. The final environment audit confirms
+no remaining candidate processes and that the restored test VM is off.
+Evidence: `.vm/performance-12h-20261008/final-environment-audit.json`.
+
+The reusable MSE fixture now also checks pause/resume and seeking while paused.
+On both Pi decoder paths, a normal pause holds the clock, frame count and
+sampled pixels fixed, then resumes through all 360 frames. A paused seek to
+eight seconds produces its new picture after 447–464 ms and then holds a
+nonblank picture exactly until resume. The seek promise currently resolves
+when samples are queued, before this picture arrives; the fixture records
+arrival separately. Its first 250 ms snapshot therefore caught the single
+target-picture update and failed, rather than establishing unwanted playback
+while paused. This existing seek-notification behavior remains unchanged.
+Evidence: `.vm/performance-12h-20261008/pi-probe-20261009-070009-pause-seek-picture-hardware/`
+and `pi-probe-20261009-070338-pause-seek-picture-software/` in the same directory.
+
+A matched Pi Speedometer ABBA comparison, three iterations per fresh profile,
+scores **1.617 and 1.676** for installed Summit and **1.661 and 1.729** for the
+private current build. Both use whole reads, 1661×798 at DPR 1, the same OS
+boot and the same driver/library versions. The wide confidence intervals
+overlap; this is a successful responsiveness regression check, not evidence
+of a significant speed improvement. The shared Pi performance controller
+updated OS components during this session, so earlier measurements are kept
+separate. These runs use its accepted bitmap-pool app_server `59055941…`;
+the roster path and unchanged boot time were verified after the four runs.
+The harness now captures the actual app_server path before future tests.
+Evidence: `.vm/performance-12h-20261008/pi-speedometer-comparison.json`.
+
+A separate default-settings ABBA scroll comparison completes 900 frames per
+run: installed **39.52 / 38.80 fps**, current **50.71 / 50.86 fps**. The means
+are 39.16 and 50.785 fps, a **29.7%** improvement in this fixture. All four
+runs share the 19:23:15 UTC boot, app_server `59055941…`, and identical
+library/driver hashes. That boot was the other controller's kernel trial;
+its packaged version still reported hrev750, so this comparison is kept
+separate from earlier measurements. On the earlier original-kernel boot,
+forcing whole reads in installed Summit gives 52.16 / 52.06 fps, matching
+current Summit's default 52.09 / 52.10 fps. These controls attribute the gain
+to the readback policy. Evidence:
+`.vm/performance-12h-20261008/pi-scroll-default-comparison.json` and
+`pi-matched-scroll-results.json` in the same directory.
+
+Pi native-wheel checks confirm loaded content and actual root movement on
+Wikipedia and GitHub. Four 60-notch bursts at 25 ms intervals range from
+36.46–39.27 fps on Wikipedia and 38.76–41.93 fps on GitHub with the current
+engine; installed Summit ranges from 25.23–37.91 and 39.91–44.65 fps.
+These real-page checks do not show a consistent gain across sites. Screenshots
+were taken after timing. One initial Wikipedia run failed collection on a
+connection timeout and is excluded; its complete repeat passes. Evidence:
+`.vm/performance-12h-20261008/pi-probe-20261009-061743-wheel-wiki-current-repeat/`
+and the adjacent `061304`, `061503` and `061539` wheel runs.
+
+Native close/cancel/navigation tests pass **145 checks** twice on the Pi and
+once on X399. The driver now waits for the existing 250 ms batched session
+save; its first Pi failure read the profile too early, while the final saved
+session was correct. The X399 runner now honors the same optional graphics
+library prefix as the benchmark launcher; its initial omitted-prefix run
+failed EGL startup and is excluded. Successful runs quit without crash events
+or remaining helpers. Evidence:
+`.vm/performance-12h-20261008/pi-close-20261009-{063010,063412}/` and
+`.vm/modern-close-1976c25e0b76494aa99cdf86/`.
+
+Eight mixed Pi tabs preserve their DOM/canvas state and restore **1,325,478
+pixels per tab exactly**, with no differing pixels. Captures wait six seconds
+for scrollbar fading to finish; the earlier comparison caught 140–920
+changing scrollbar pixels rather than lost page content. Aggregate resident
+areas fall from 760.2 MiB with the tabs loaded to 738.7 MiB after hiding and
+172.6 MiB after closing them. These totals include shared mappings and are
+not unique process memory. The system-used reading falls from 1351.4 to
+616.5 MiB after closing; one blank tab remains. Final quit leaves no helpers
+and device health passes. This run used a later OS boot and is a lifetime
+correctness check, not a comparison with the older platform. Evidence:
+`.vm/performance-12h-20261008/pi-probe-20261009-064007-lifetime-current-eight-settled/`.
+
+The loader crash investigation found an unsynchronized TLS-template vector:
+loading another library could reallocate it while a new thread copied a TLS
+template. A focused native test retained all libraries until its workers
+finished, yet observed two initialization mismatches after 26 passing rounds.
+The separate experimental Haiku fork now locks template accesses through the
+copy and atomically reads the global generation. Established thread-local
+blocks retain their lock-free access path; the new lock is reset after fork.
+
+The loader candidate passes 57,600 TLS checks before and after a QEMU reboot,
+all 22 standard loader tests, the 2,000-check generation test, and C++ TLS
+construction/destruction. Its unattended rollback was tested from the prior
+fix to the candidate and back, then to the VM's original loader. An initial
+upgrade attempt encountered a package-manager confirmation dialog; the tested
+procedure removes each version and verifies activation before installing the
+next. X399 now uses removable package
+`summit_runtime_loader_tls_fix-1.1-1-x86_64.hpkg`, loader SHA-256
+`c9c57eae848f9b860ffffdd0b600631da181825c87a24d5fc8b40a6eaffd9d4c`.
+All 57,600 native TLS checks and the other loader regressions pass; the guard
+verified installation. X399 was not rebooted. All **100 subsequent browser
+startup/local-page/normal-quit cycles** pass without crash events or leftover
+helpers. These correctness checks ran during the engine rebuild and do not
+establish startup performance. Evidence:
+`.vm/performance-12h-20261008/tls-concurrency/`.
+The test VM's original loader was restored and verified before orderly
+shutdown, returning that VM to its original off state.
 
 ## 8 October 2026: six-hour optimization session
 
