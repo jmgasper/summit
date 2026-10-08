@@ -29,6 +29,8 @@ def main():
     parser.add_argument('--window', default='4,1,1283,997')
     parser.add_argument('--env', action='append', default=[], metavar='NAME=VALUE')
     parser.add_argument('--label', default='')
+    parser.add_argument('--capture-switches', action='store_true',
+                        help='capture each tab before hiding and after restoration for pixel comparison')
     args = parser.parse_args()
     if args.tabs < 1 or args.samples < 1 or args.settle < 0 or args.close_settle < 0:
         parser.error('tabs and samples must be positive; settle times must be nonnegative')
@@ -139,6 +141,9 @@ def main():
             url = f'http://{guest.HOST_ADDRESS}:{args.port}/tab?id={index}&kind={kinds[index % len(kinds)]}'
             command('navigate' if index == 0 else 'newtab', url)
             wait_event(index)
+            if args.capture_switches:
+                time.sleep(0.1)
+                guest.screenshot(output / f'initial-tab-{index}.png')
         snapshot('loaded')
         time.sleep(args.settle)
         snapshot('hidden-settled')
@@ -160,6 +165,9 @@ def main():
             shown = next(t for t in current['tabs'] if t['id'] == tab['id'])
             switches.append({'id': index, 'checked': checked, 'shownAt': shown.get('shownAt'),
                              'firstFrameAfterShow': shown.get('firstFrameAfterShow')})
+            if args.capture_switches:
+                time.sleep(0.1)
+                guest.screenshot(output / f'restored-tab-{index}.png')
         report['switches'] = switches
         guest.screenshot(output / 'after-switching.png')
         snapshot('after-switching')

@@ -65586,10 +65586,10 @@ index 0000000000000000000000000000000000000000..e6506c4d667ca790af6832a314af9b12
 +} // namespace WebKit
 diff --git a/Source/WebKit/Platform/haiku/BitmapPresenterHaiku.h b/Source/WebKit/Platform/haiku/BitmapPresenterHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..eba572444054ecdcb02e9f0bf4366a2f5373f319
+index 0000000000000000000000000000000000000000..868ab5efaf71cf5e02011f60a71cfd2d09dddf7f
 --- /dev/null
 +++ b/Source/WebKit/Platform/haiku/BitmapPresenterHaiku.h
-@@ -0,0 +1,188 @@
+@@ -0,0 +1,201 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -65650,6 +65650,17 @@ index 0000000000000000000000000000000000000000..eba572444054ecdcb02e9f0bf4366a2f
 +                return nullptr;
 +        }
 +        return { image.release(), Recycler { weak_from_this() } };
++    }
++
++    void releaseUnusedBuffers()
++    {
++        std::vector<std::unique_ptr<BBitmap>> idle;
++        {
++            std::lock_guard guard(m_mutex);
++            idle.swap(m_idle);
++        }
++        // Destruction may talk to app_server. Do it outside the pool lock;
++        // frames retained by a view are not in this list.
 +    }
 +
 +private:
@@ -65758,6 +65769,8 @@ index 0000000000000000000000000000000000000000..eba572444054ecdcb02e9f0bf4366a2f
 +        std::lock_guard guard(m_mutex);
 +        return m_frame;
 +    }
++
++    void releaseUnusedBuffers() { m_pool->releaseUnusedBuffers(); }
 +
 +    void close()
 +    {
@@ -105353,10 +105366,10 @@ index 0000000000000000000000000000000000000000..c9a119d02f85b7c5ad8fe9153bfc9604
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebView.cpp b/Source/WebKit/UIProcess/haiku/WebView.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..f30f510fbe89f2e9d104fe2cccfe30835a979101
+index 0000000000000000000000000000000000000000..85a4b616efba130a882eb6f5aabe605d6f051227
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebView.cpp
-@@ -0,0 +1,2463 @@
+@@ -0,0 +1,2485 @@
 +/*
 + * Copyright (C) 2013 Intel Corporation. All rights reserved.
 + *
@@ -107344,6 +107357,28 @@ index 0000000000000000000000000000000000000000..f30f510fbe89f2e9d104fe2cccfe3083
 +    if (!m_page)
 +        return;
 +    auto current = geometry();
++    auto bufferGeneration = ++m_state->hiddenFrameBufferGeneration;
++    static const bool releaseBuffers = [] {
++        const char* value = std::getenv("SUMMIT_RELEASE_HIDDEN_FRAME_BUFFERS");
++        return value && !std::strcmp(value, "1");
++    }();
++    if (!current.visible && releaseBuffers) {
++        RunLoop::mainSingleton().dispatchAfter(30_s, [weakState = std::weak_ptr { m_state }, bufferGeneration] {
++            auto state = weakState.lock();
++            if (!state || state->closed || state->hiddenFrameBufferGeneration != bufferGeneration)
++                return;
++            {
++                std::lock_guard guard(state->mutex);
++                if (state->geometry.visible)
++                    return;
++            }
++            // Preserve the frame currently shown by the native view while
++            // dropping only spare bitmaps from earlier presentations.
++            state->presenter.releaseUnusedBuffers();
++            if (std::getenv("SUMMIT_HIDDEN_FRAME_BUFFERS_TRACE"))
++                std::fprintf(stderr, "Summit hidden frame buffers: released idle UI bitmaps\n");
++        });
++    }
 +    m_page->legacyMainFrameProcess().send(Messages::WebPage::SetWindowFrameHaiku(FloatRect(current.windowFrame)), m_page->webPageIDInMainFrameProcess());
 +    // The screen's density changes when monitors are rearranged or rescaled.
 +    if (current.scale > 0)
@@ -108475,10 +108510,10 @@ index 0000000000000000000000000000000000000000..de3766585496e053be2426a4e3f11eb3
 +} // namespace WebKit
 diff --git a/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..bca84c38c4baa97b3e3b0a32616bbeda33a18336
+index 0000000000000000000000000000000000000000..edf3ebf5dfe311240ce28854d3a41e2ff3742c8c
 --- /dev/null
 +++ b/Source/WebKit/UIProcess/haiku/WebViewStateHaiku.h
-@@ -0,0 +1,176 @@
+@@ -0,0 +1,178 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -108551,6 +108586,8 @@ index 0000000000000000000000000000000000000000..bca84c38c4baa97b3e3b0a32616bbeda
 +    BMessenger view;
 +    const BMessenger target;
 +    BitmapPresenterHaiku presenter;
++    // Main-thread generation cancels delayed hidden-view buffer cleanup.
++    uint64_t hiddenFrameBufferGeneration { 0 };
 +    std::atomic<bool> closed { false };
 +    // A file drag from another application is over the view (window thread).
 +    bool dragActive { false };
@@ -132188,10 +132225,10 @@ index 483df2ae00809b454f95152d8d8bb462a150fe22..0963a1cfe169cb5cdd2d8c5783b81b19
      RequestAcceptsFirstMouse(std::optional<WebCore::FrameIdentifier> frameID, int eventNumber, Ref<WebKit::WebMouseEvent> event) AllowedWhenWaitingForSyncReplyDuringUnboundedIPC
 diff --git a/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.cpp b/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..05b715645c6ba783cf32a1945ac7d05e2224b777
+index 0000000000000000000000000000000000000000..a69d199f8806124cea3eb9af3c60b107393298f0
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.cpp
-@@ -0,0 +1,665 @@
+@@ -0,0 +1,704 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#include "config.h"
@@ -132253,6 +132290,7 @@ index 0000000000000000000000000000000000000000..05b715645c6ba783cf32a1945ac7d05e
 +DrawingAreaHaiku::DrawingAreaHaiku(WebPage& page, const WebPageCreationParameters& parameters)
 +    : DrawingArea(parameters.drawingAreaIdentifier, page)
 +    , m_displayTimer(RunLoop::mainSingleton(), "DrawingAreaHaiku::Display"_s, this, &DrawingAreaHaiku::display)
++    , m_hiddenFrameBufferTimer(RunLoop::mainSingleton(), "DrawingAreaHaiku::HiddenFrameBuffers"_s, this, &DrawingAreaHaiku::releaseHiddenFrameBuffers)
 +    , m_isVisible(parameters.activityState.contains(ActivityState::IsVisible))
 +{
 +    if (const char* value = getenv("SUMMIT_FRAME_STATS")) {
@@ -132273,6 +132311,7 @@ index 0000000000000000000000000000000000000000..05b715645c6ba783cf32a1945ac7d05e
 +DrawingAreaHaiku::~DrawingAreaHaiku()
 +{
 +    m_displayTimer.stop();
++    m_hiddenFrameBufferTimer.stop();
 +    completeRepaintCallbacks();
 +}
 +
@@ -132457,12 +132496,49 @@ index 0000000000000000000000000000000000000000..05b715645c6ba783cf32a1945ac7d05e
 +
 +void DrawingAreaHaiku::activityStateDidChange(OptionSet<ActivityState>, ActivityStateChangeID, CompletionHandler<void()>&& completionHandler)
 +{
++    bool wasVisible = m_isVisible;
 +    m_isVisible = m_webPage->corePage()->isVisible();
-+    if (m_isVisible)
++    if (m_isVisible) {
++        m_hiddenFrameBufferTimer.stop();
 +        scheduleFrame();
-+    else
++    } else {
 +        m_displayTimer.stop();
++        // Keep the last presented bitmap in the UI process for immediate tab
++        // switching. These renderer-owned presentation buffers are rebuilt
++        // from the unchanged page/layer/canvas state when the page returns.
++        static const bool releaseBuffers = [] {
++            const char* value = getenv("SUMMIT_RELEASE_HIDDEN_FRAME_BUFFERS");
++            return value && !strcmp(value, "1");
++        }();
++        if (wasVisible && releaseBuffers)
++            m_hiddenFrameBufferTimer.startOneShot(30_s);
++    }
 +    completionHandler();
++}
++
++void DrawingAreaHaiku::releaseHiddenFrameBuffers()
++{
++    if (m_isVisible)
++        return;
++    // A forced repaint can run while hidden. Wait for its acknowledgement
++    // and do not release the bitmap or context from a nested display call.
++    if (m_pendingFrame || m_isDisplaying || !m_repaintCallbacks.isEmpty()) {
++        m_hiddenFrameBufferTimer.startOneShot(1_s);
++        return;
++    }
++    size_t bitmapBytes = m_frameBitmap ? m_frameBitmap->mutableSpan().size() : 0;
++    m_frameContext = nullptr;
++    m_frameBitmap = nullptr;
++    m_needsFullRepaint = true;
++    m_dirtyRegion = { };
++    m_scrollRect = { };
++    m_scrollOffset = { };
++#if USE(TEXTURE_MAPPER)
++    if (m_layerTreeHost)
++        m_layerTreeHost->releasePresentationBuffers();
++#endif
++    if (getenv("SUMMIT_HIDDEN_FRAME_BUFFERS_TRACE"))
++        fprintf(stderr, "Summit hidden frame buffers: released bitmap=%zu bytes\n", bitmapBytes);
 +}
 +
 +#if USE(TEXTURE_MAPPER)
@@ -132859,10 +132935,10 @@ index 0000000000000000000000000000000000000000..05b715645c6ba783cf32a1945ac7d05e
 +} // namespace WebKit
 diff --git a/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.h b/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..3fbdb891367700b88586c40ced6315b49818da85
+index 0000000000000000000000000000000000000000..dd106618c024ca1bdfbc3f4148ce5703485d5244
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/WebPage/haiku/DrawingAreaHaiku.h
-@@ -0,0 +1,143 @@
+@@ -0,0 +1,145 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -132933,11 +133009,13 @@ index 0000000000000000000000000000000000000000..3fbdb891367700b88586c40ced6315b4
 +    bool copyScrolledPixels(WebCore::ShareableBitmap&, float scale, const WebCore::IntRect&, const WebCore::IntSize&);
 +    WebCore::GraphicsContext* frameContext(WebCore::ShareableBitmap&, float scale);
 +    void completeRepaintCallbacks();
++    void releaseHiddenFrameBuffers();
 +
 +#if USE(TEXTURE_MAPPER)
 +    std::unique_ptr<LayerTreeHostHaiku> m_layerTreeHost;
 +#endif
 +    RunLoop::Timer m_displayTimer;
++    RunLoop::Timer m_hiddenFrameBufferTimer;
 +    Vector<CompletionHandler<void()>> m_repaintCallbacks;
 +    uint64_t m_geometryIdentifier { 0 };
 +    uint64_t m_frameIdentifier { 0 };
@@ -133008,10 +133086,10 @@ index 0000000000000000000000000000000000000000..3fbdb891367700b88586c40ced6315b4
 +} // namespace WebKit
 diff --git a/Source/WebKit/WebProcess/WebPage/haiku/LayerTreeHostHaiku.cpp b/Source/WebKit/WebProcess/WebPage/haiku/LayerTreeHostHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..a8c2c564757c95bf45dd4d2a6b84c3e487ddabea
+index 0000000000000000000000000000000000000000..a0e3c5a4c18c92b2cd5eb732ed5710efcf43b650
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/WebPage/haiku/LayerTreeHostHaiku.cpp
-@@ -0,0 +1,434 @@
+@@ -0,0 +1,449 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +// The layer bookkeeping follows LayerTreeHostTextureMapper.cpp and the
@@ -133330,6 +133408,21 @@ index 0000000000000000000000000000000000000000..a8c2c564757c95bf45dd4d2a6b84c3e4
 +    m_rootLayer->setTransform(transform);
 +}
 +
++void LayerTreeHostHaiku::releasePresentationBuffers()
++{
++    ASSERT(isMainThread());
++    if (m_surface) {
++        auto& context = processContext();
++        if (context && context->makeContextCurrent()) {
++            // endPainting() restores the GL binding but retains a reference
++            // to the last surface in the mapper until another surface binds.
++            m_textureMapper->bindSurface(nullptr);
++            m_surface = nullptr;
++        }
++    }
++    m_readbackBuffer.clear();
++}
++
 +bool LayerTreeHostHaiku::renderFrame(ShareableBitmap& bitmap)
 +{
 +    ASSERT(isMainThread());
@@ -133448,10 +133541,10 @@ index 0000000000000000000000000000000000000000..a8c2c564757c95bf45dd4d2a6b84c3e4
 +#endif // USE(TEXTURE_MAPPER)
 diff --git a/Source/WebKit/WebProcess/WebPage/haiku/LayerTreeHostHaiku.h b/Source/WebKit/WebProcess/WebPage/haiku/LayerTreeHostHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..0a859b269a8f116614dff645d60315b965079c50
+index 0000000000000000000000000000000000000000..486baecc575600751447b3e99b789851456b20a9
 --- /dev/null
 +++ b/Source/WebKit/WebProcess/WebPage/haiku/LayerTreeHostHaiku.h
-@@ -0,0 +1,96 @@
+@@ -0,0 +1,99 @@
 +/* Copyright (C) 2026 KunanyiOS contributors. SPDX-License-Identifier: BSD-2-Clause */
 +
 +#pragma once
@@ -133519,6 +133612,9 @@ index 0000000000000000000000000000000000000000..0a859b269a8f116614dff645d60315b9
 +    // Returns false when GL failed. The bitmap contents are then undefined and
 +    // the caller must paint it in software and stop using this host.
 +    bool renderFrame(WebCore::ShareableBitmap&);
++
++    // The next frame reconstructs these outputs from retained layer content.
++    void releasePresentationBuffers();
 +
 +    // Valid after renderFrame(): another frame is needed to advance animations.
 +    bool hasRunningAnimations() const { return m_hasRunningAnimations; }
