@@ -1,0 +1,44 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Separated compositor damage</title>
+<style>
+html, body { margin: 0; overflow: hidden; background: #18202c; }
+.patch { position: absolute; will-change: transform; background: rgb(220, 40, 50); }
+#wide { left: 0; top: 10vh; width: 43vw; height: 6vh; }
+#left { left: 0; top: 65vh; width: 3vw; height: 30vh; }
+#right { right: 0; top: 65vh; width: 3vw; height: 30vh; }
+</style>
+<div id="wide" class="patch"></div>
+<div id="left" class="patch"></div>
+<div id="right" class="patch"></div>
+<script>
+// A wide update must not cause either remote narrow update to be dropped.
+// Run with SUMMIT_DIRECT_PRESENT=0 to exercise shared-bitmap readback.
+// The page reports geometry and intended colors; the runner must check screen
+// pixels separately, since DOM style and canvas reads cannot detect lost damage.
+(async () => {
+    const patches = [...document.querySelectorAll('.patch')];
+    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+    await sleep(2000);
+    for (let i = 0; i < 20; ++i) {
+        // A unique color each time prevents a stale double-buffered image
+        // from accidentally matching a two-color animation's final frame.
+        const color = i === 19 ? 'rgb(30, 210, 90)' : `rgb(${40 + 7 * i}, ${50 + 5 * i}, ${60 + 3 * i})`;
+        for (const patch of patches)
+            patch.style.backgroundColor = color;
+        await sleep(150);
+    }
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const result = {
+        viewport: { width: innerWidth, height: innerHeight }, devicePixelRatio,
+        patches: patches.map(p => ({ id: p.id, color: getComputedStyle(p).backgroundColor,
+            rect: p.getBoundingClientRect().toJSON() })),
+        expectedRGB: [30, 210, 90],
+        requiresScreenPixelValidation: true
+    };
+    await fetch('/__bench/probe', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(result) });
+})().catch(error => {
+    fetch('/__bench/probe', { method: 'POST', body: JSON.stringify({ passed: false, error: String(error) }) });
+});
+</script>

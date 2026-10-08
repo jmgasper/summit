@@ -1,5 +1,70 @@
 # Summit performance: Speedometer 3.1 baseline, where the time goes, stress test
 
+## 8 October 2026: twelve-hour performance and hardening session
+
+This new session began at **09:35:55 UTC**, after the separate six-hour pass
+below. Its baseline is installed `bundle-tmeeg8cb`, patch `b178f34d…`, with
+Mesa `prefix-20261002`. Session evidence is under
+`.vm/performance-12h-20261008/`. Rendering, wheel scrolling, video responsiveness
+and suitability for lower-powered devices remain in scope; this session is
+still in progress.
+
+The initial 400-card scroll probe ran 900 frames at **59.59 fps**, with an
+18 ms p99 and 22 ms maximum interval, in a 1661 × 798 viewport at DPR 2.
+It was uncontended and quit normally without leftover helpers or crash events.
+This measures script-driven scroll callbacks, not native wheel presentation.
+Evidence: `.vm/bench/probe-20261008-203810-summit-perf12h-scroll-baseline/`.
+All five host CTest suites and ten Python unit tests also passed.
+
+The first renderer defect is in partial-frame readback. When a wide damaged
+rectangle becomes a full-width read band, the helper also appends uncovered
+narrow rectangles to its output. It subsequently treats those narrow rectangles
+as full-width bands: another rectangle at the same vertical position can be
+discarded despite lying on the opposite side of the frame. The fix limits that
+vertical-only coverage decision to actual full-width bands.
+
+`tools/test-engine-readback-rects.py` compiles the two production geometry
+helpers verbatim with native WebCore rectangle types and a frozen engine.
+The original fails the specific separated-rectangle case and 13,093 checks
+overall; the candidate passes all **996,205** coverage, bounds and read-count
+checks across 12,000 seeded cases. This is geometry verification, not a GPU test.
+Evidence: `.vm/readback-rects-20261008-{204223-before,204328-after}/`.
+
+The browser reproduction changes three composited rectangles through unique
+colors, ending in green. With shared-bitmap presentation, the original leaves
+the right rectangle red while the other two turn green. The reusable
+`tools/bench/run-readback-damage.py` checks actual screenshot pixels, since
+correct DOM styles cannot establish that a frame reached the screen.
+Baseline evidence:
+`.vm/bench/probe-20261008-204702-summit-perf12h-damage-baseline/`.
+An earlier two-color fixture masked the defect because stale swap-chain buffers
+could already contain the final color; that fixture was corrected.
+
+Candidate **`bundle-ktyzor6m`**, patch `af560d77…`, passes the screenshot test
+with ordinary shared-bitmap reads, 384 KiB banded reads, and direct presentation.
+All three quit normally without leftover helpers or crash events. Its retained
+graphics regression also passes all **68 checks**, including WebGL 1/2 state,
+canvas clipping, updates while hidden, resizing and exact restored pixels.
+The repeated 900-frame scroll probe measures **59.63 fps**, 19 ms p99 and a
+20 ms maximum, uncontended and clean; this is consistent with the baseline,
+not an established speed improvement. This change repairs omitted pixels
+without changing readback thresholds or adding framebuffer allocations.
+Evidence: `.vm/performance-12h-20261008/readback-validation.json`.
+
+The 384 KiB run exercises the banding strategy used by V3D on the Pi but is
+still an X399 test. A read-only check also confirms that the actual Pi is
+reachable at its current DHCP address, running arm64 hrev60206+750. No new
+code has been installed on it yet.
+
+The candidate then passed all **56 native streaming cases**, **50 PCM seek
+checks**, **five video-timing checks** and exact Opus trimming, with normal
+browser quit, no audio-output errors, no crash/debugger events and no leftover
+helpers. Evidence: `.vm/performance-12h-20261008/streaming-readback/`.
+This validates the candidate with the current media services; it does not
+resolve the intermittent system audio stall reported in the earlier session.
+The normal installed launcher still points to the baseline while subsequent
+performance work continues with isolated bundles.
+
 ## 8 October 2026: six-hour optimization session
 
 The retained build is **`bundle-tmeeg8cb`**, installed on X399. Deferred canvas
