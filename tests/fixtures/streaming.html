@@ -59,7 +59,8 @@ document.getElementById('play').onclick=async()=>{document.getElementById('play'
   if(test.detachOnEnd){media.removeAttribute('src');media.load();await wait(()=>mse.readyState==='closed','detach closes media source')}
   else{mse.removeSourceBuffer(buffer);assert(mse.sourceBuffers.length===0,'remove buffer during finalization')}
   buffer=null;await sleep(300);assert(!media.error,'cancelled finalization has no stale decode error');await report('Streaming_PASS');return}
- if(test.timestampReset){mse.endOfStream();await wait(()=>Number.isFinite(media.duration)&&Math.abs(media.duration-test.timestampReset.firstEnd)<.05,'first clock epoch finalized');
+ // Reopen while the first epoch's final video samples may still be queued.
+ if(test.timestampReset){mse.endOfStream();await wait(()=>Number.isFinite(media.duration)&&Math.abs(media.duration-test.timestampReset.firstEnd)<.05,'first clock epoch exposes finite duration');
   buffer.timestampOffset=test.timestampReset.offset;assert(mse.readyState==='open','timestampOffset reopens source');
   await append(new Uint8Array(await(await fetch('/media/'+test.timestampReset.file)).arrayBuffer()))}
  if(test.after){buffer.changeType(test.after.type);assert(buffer.mode==='sequence','actual codec change selects sequence mode');

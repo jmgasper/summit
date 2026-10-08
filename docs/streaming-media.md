@@ -52,57 +52,56 @@ retains NVDEC H.264 selection, verified on X399.
 
 ## Verification
 
-The previous integration bundle is `bundle-e821ncjv`, using engine patch SHA-256
-`f9e39981f6ad6ff511cab0639fa0a9231d719cb4412be95b1fddfb2cabfd13c0`.
-The tests cover 31 real-browser scenarios plus exact PCM seek/trim and video
-presentation-order checks. The native codec probe passes 43 decode checks on
-29 files. AAC (252 DOM checks), Clear Key (207 checks), DASH (82 checks)
-and all five host suites pass on the integration. Owned test processes exit normally with
-no new crash reports or remaining helpers.
+The final streaming integration is `bundle-9_wz1wsy`, using engine patch SHA-256
+`fdb082ac31077936391914e40fa2ad688d20fc49c2182c4345c6ceee8c852f32`.
+All 56 browser scenarios pass (1,692 DOM checks), with 50 exact PCM seek checks,
+five video presentation-order checks and exact Opus pre-skip/discard counts.
+The suite covers pause/resume, append windows, format changes, abort/reuse,
+clock rollover, both discontinuity directions, truncated transport, late EOF,
+and detach/remove/reopen or settings changes during finalization. In particular,
+a timestamp change cannot reuse the old clock offset for queued video frames.
+
+AAC (252 DOM checks), Clear Key (207 checks), DASH (82 checks) and all five host
+suites pass. The owned browser groups exit normally without new crash reports,
+syslog crash events or remaining helpers. The user's existing browser stays open.
+
+Portable TS checks pass 10 fixtures (988 packets) at nine append sizes,
+26 structural cases and 128 mutations under ASan/UBSan. The native TS probe
+passes 21 decode checks across 12 files, including both discontinuities and
+NVDEC H.264. Earlier WebM/raw-audio/MP4 integration checks pass 43 native decode
+checks across 29 files. WebM parser checks cover 12 fixtures, 26 structural
+cases and 128 mutations; raw MPEG audio covers 12 fixtures, 14 structural
+cases and 128 mutations.
 
 ```sh
 python3 tools/bench/test-webm-parser.py --output .vm/webm-parser
 python3 tools/bench/test-mpeg-audio-parser.py --output .vm/mpeg-audio-parser
+python3 tools/prepare-ffmpeg-headers.py --prefix /absolute/private/ffmpeg-headers
+python3 tools/bench/test-mpegts-parser.py \
+  --headers /absolute/private/ffmpeg-headers --output .vm/mpegts-parser
 SUMMIT_BENCH_HOST=workstation SUMMIT_WS_MULTIPLEX=0 \
   python3 tools/bench/test-streaming-codecs.py \
-  --fixtures .vm/webm-parser .vm/mpeg-audio-parser \
+  --fixtures .vm/webm-parser .vm/mpeg-audio-parser .vm/mpegts-parser \
   --output .vm/streaming-codecs
 SUMMIT_BENCH_HOST=workstation SUMMIT_WS_MULTIPLEX=0 \
   python3 tools/bench/test-streaming.py --bundle /absolute/frozen/bundle \
   --output .vm/streaming-browser
 ```
 
-`test-streaming.py` generates its own WebM, raw-audio, fragmented-MP4 and TS media.
-Add its `media` directory to the codec probe’s `--fixtures` arguments to include
-those WebM and MP4 files in the native checks. Its browser-only malformed TS
-fixtures must be excluded from native decoding; use the TS parser's
-`result.json` manifest for the valid transport fixtures. Parser tests require FFmpeg,
-a C++ compiler, and sanitizer support on the host. Native tests compile their
-own driver and launch an isolated browser profile through `tools/ws.sh`.
+`test-streaming.py` generates its own WebM, raw-audio, fragmented-MP4 and TS
+media. Its malformed TS fixtures are browser error tests; exclude them from
+native decoding. The TS parser's `result.json` manifest selects valid transport
+fixtures for the codec probe. Parser tests require FFmpeg, a C++ compiler and
+sanitizer support on the host. Native tests compile their own driver and launch
+an isolated browser profile through `tools/ws.sh`.
+
+TS uses pinned FFmpeg 6.1.2 public headers and checks the installed
+`libavformat.so.60`, `libavcodec.so.60` and `libavutil.so.58` ABI versions before
+use. The header preparation script installs only headers in a private prefix;
+it does not replace OS libraries.
 
 Local evidence is retained in `.vm/issues43-49/` under
-`webm-parser-integrated`, `mpeg-audio-parser`, `streaming-codecs-timing-x399`
-and `streaming-browser-timing-x399`.
-
-The TS foundation uses pinned FFmpeg 6.1.2 public headers and checks the
-installed `libavformat.so.60`, `libavcodec.so.60` and `libavutil.so.58` ABI
-versions before use. `tools/prepare-ffmpeg-headers.py` installs only headers in
-a private prefix; it does not replace OS libraries. To reproduce its portable
-checks, prepare the headers with an absolute `--prefix`, then run
-`tools/bench/test-mpegts-parser.py --headers PREFIX --output .vm/mpegts-parser`.
-Pass `.vm/mpegts-parser` to the native codec probe's `--fixtures` argument.
-Foundation evidence is in `.vm/issues43-49/{mpegts-parser,mpegts-codecs-rollover}/`.
-
-The initial TS foundation also compiled in the native WebKit build. Bundle
-`bundle-zxsy87w0` verifies the pinned dependency manifest, header license
-notices and a real-browser streaming smoke test. Its engine patch is
-`181476f3ab7c1781507942516a5686171831141dd02ae3b73723ffe6c9273865`.
-That historical foundation bundle did not expose TS through MediaSource.
-
-Current TS portable checks pass 10 fixtures (988 packets) at nine append
-sizes, 26 structural cases, and 128 mutations under ASan/UBSan. They also
-compare two discontinuity directions with an independent timeline and check
-abort and timestamp-offset reset after rollover. The X399 native probe passes
-21 decode checks across 12 files, including both discontinuities and NVDEC
-H.264. Evidence: `.vm/issues43-49/{mpegts-parser-complete,ts-native-complete}/`.
-The final browser integration verification is in progress.
+`streaming-verified-x399`, `ts-regressions`, `mpegts-parser-complete`,
+`ts-native-complete`, `webm-parser-integrated`, `mpeg-audio-preroll` and
+`streaming-codecs-timing-x399`. The earlier broad native-codec integration
+used `bundle-e821ncjv`; the current browser suite repeats its playback cases.

@@ -5,34 +5,28 @@
 Seven additional issues appeared after the original deployment. #43 and #44
 are verified in `bundle-a7988kyv`; #49 is verified in `bundle-a3u9gkoe`.
 #45 is verified in `bundle-3ulccsni`; #46 is verified in `bundle-zf9_3v7d`.
-#47–#48 and the requested six-hour performance session remain to be completed. The desktop launcher still selects
+#48 and the requested six-hour performance session remain to be completed. The desktop launcher still selects
 the original deployment until the next installation.
 
-Work in progress for **#47**: WebM MSE now plays VP8, VP9 and AV1 with
-Opus or Vorbis. Raw ADTS AAC-LC and MPEG Layer I/II/III streams use generated
-sequence timestamps. Fragmented MP4 also accepts HEVC, VP9, AV1, AC-3 and
-E-AC-3. Hardware H.264 selection remains in place; the newly tested codecs
-use Media Kit's installed software decoders on X399.
+**#47 is complete:** MediaSource accepts MP4, WebM, raw ADTS AAC, MPEG audio
+and MPEG-TS with the codec matrix in [streaming media](streaming-media.md).
+Transport validation, clock rollover and discontinuity handling preserve
+existing NVDEC H.264 selection. Final parser samples drain before playback
+ends, and settings changed during finalization apply to the following operation.
 
-The native browser passes all 31 streaming scenarios, including pause/seek,
-abort, changeType, timestamp offsets, append windows, six-channel Opus,
-2.5/5/120 ms Opus packets, actual output-format changes, end events and an
-open stream stalled at its declared duration. Audio seeks are checked against
-the first queued PCM timestamp; Opus trims leave exactly 192,000 frames in
-the four-second fixtures. AV1 and reordered HEVC now use the input frame
-presentation timeline because their native decoders return missing or incorrect
-timestamps. The native probe passes 43 decode checks across 29 files.
+The verified bundle is `bundle-9_wz1wsy`, engine patch
+`fdb082ac31077936391914e40fa2ad688d20fc49c2182c4345c6ceee8c852f32`.
+All 56 streaming scenarios pass (1,692 DOM checks), with 50 PCM seek checks,
+five video-timing checks and exact Opus trimming. AAC (252 DOM checks),
+Clear Key (207) and DASH (82) regressions pass on the same bundle. All five
+host suites pass. Tests leave no new crash reports or helper processes.
 
-Portable ASan/UBSan checks cover 12 WebM fixtures at nine append sizes,
-26 structural cases and 128 mutations; raw MPEG audio adds 12 fixtures,
-14 structural cases and 128 mutations. Browser and native tests exit without
-new crashes or leftover helpers. The verified bundle is `bundle-e821ncjv`,
-engine patch `f9e39981f6ad6ff511cab0639fa0a9231d719cb4412be95b1fddfb2cabfd13c0`.
-AAC (252 DOM checks), Clear Key (207) and DASH (82) regressions pass on this
-bundle. MPEG-TS integration remains in progress, so #47 remains open. Reproduction
-commands and format limits are in [streaming media](streaming-media.md).
-Evidence: `.vm/issues43-49/{webm-parser-integrated,mpeg-audio-parser,
-streaming-codecs-timing-x399,streaming-browser-timing-x399}/`.
+Portable TS checks cover 10 fixtures, 988 packets at nine append sizes,
+26 structural cases and 128 sanitizer mutations. The native TS probe passes
+21 checks across 12 files. Earlier broad codec checks pass 43 checks across
+29 WebM/raw-audio/MP4 files; the final browser suite repeats their playback
+cases. Evidence: `.vm/issues43-49/{streaming-verified-x399,ts-regressions,
+mpegts-parser-complete,ts-native-complete,streaming-codecs-timing-x399}/`.
 
 - **#43:** Fullscreen uses air/OS's `get_display_frame(Frame(), true, ...)`,
   the same display-selection policy as native window maximization. On older
