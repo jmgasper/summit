@@ -25,6 +25,12 @@ An explicit `Path2D` can be supplied with `path`, with `fillRule` set to
 an empty area or missing identifier/control throws `NotSupportedError`.
 Invalid replacements leave the previous region intact.
 
+Drawing applies clipping immediately. Hit-region bookkeeping keeps shared
+snapshots of each clip's path, transform and fill rule, and computes their
+intersection when a region needs it. Saved states share those snapshots;
+later path mutations do not change them. A chain is flattened at 16 entries
+to bound retained geometry and recursive work.
+
 IDs are case sensitive. Reusing an ID or control replaces its previous region.
 New regions take ownership of overlapping areas, so removing one does not
 restore the region previously underneath it. `clearRect()` subtracts its
@@ -56,6 +62,14 @@ The same bundle passes the platform pages (120 checks), grid/reflow geometry,
 WebGL pixels and animation, and canvas path/damage pixel regressions.
 Evidence is retained in `.vm/issues43-49/{hit-regions-x399-final,
 hit-region-lifetime-x399,hit-region-regressions}/`.
+
+The October 8 deferred-clipping build, `bundle-om1ysaa5`, also passes the
+expanded **66 native clicks / 681 checks** and all 20 lifetime checks. Added
+cases cover clipping-time transforms, later Path2D mutation, a 40-clip chain
+with a saved ancestor, even-odd holes, empty clips, reset and transformed
+clipped clearing. The original installed engine passes the same expanded
+fixture. Evidence is in `.vm/optimization-2026-10-08/{hit-regions-deferred,
+hit-region-lifetime-deferred,hit-regions-expanded-baseline}/`.
 
 The interaction fixture checks the public API with native mouse-down, mouse-up and click
 events, including overlap, curves, clipping, transforms, scrolling, reset,

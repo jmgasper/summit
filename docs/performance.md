@@ -54,7 +54,7 @@ noncritical caches and unused allocator/Skia resources, preserving live state
 and back/forward entries. Visible, audible, capturing and extension pages are
 excluded. `SUMMIT_HIDDEN_MEMORY_TRIM=1` enables this; `=2` adds a full JavaScript
 garbage collection without explicitly deleting compiled code. The default is
-**off**, pending useful gains on representative pages. Trace timings are
+**off** in that trial bundle, pending useful gains on representative pages. Trace timings are
 available with `SUMMIT_HIDDEN_MEMORY_TRACE=1`.
 
 On the twelve local mixed pages, modes 1 and 2 passed all 783 checks each and
@@ -63,6 +63,14 @@ quit without helpers or crash/debugger events. Their hidden memory totals were
 took at most 1.129 ms, mode 2 at most 6.612 ms. These small memory differences
 do not establish a practical improvement. Evidence:
 `.vm/optimization-2026-10-08/hidden-memory-trials.json`.
+
+The real-site follow-up also found no gain: after visiting every tab and
+settling, mode 0 used **6089 MiB**, versus **6101 MiB** for mode 2. Both
+returned to about **618 MiB** after closing back to blank and quit normally
+without leftover helpers or crash/debugger events. The opt-in cleanup code
+was therefore removed from the next source revision; it is not a production
+memory policy. The idle texture-pool fix remains. Evidence:
+`.vm/optimization-2026-10-08/real-tabs-trials.json`.
 
 Separately, setting `MIMALLOC_PURGE_DELAY=0` on the original baseline reduced
 the local hidden-tab total from 1996 to 1893 MiB, with all 783 checks passing.
@@ -94,6 +102,42 @@ accounting for the translation. Its validation failed and it is excluded.
 probe, and records teardown, helper and crash evidence. These timings motivate
 an investigation of eager hit-region clip bookkeeping; they do not by
 themselves attribute every HTML/Offscreen difference to that bookkeeping.
+
+Before changing the clip representation, the native hit-region regression
+fixture was extended to cover late Path2D mutation, clipping-time transforms,
+40 nested clips with a saved ancestor, even-odd holes, empty chains, pending
+clip reset and transformed clipped clearing. The installed baseline passed
+**66 native clicks and 681 checks**, with clean teardown and no new
+crash/debugger events:
+`.vm/optimization-2026-10-08/hit-regions-expanded-baseline/`.
+
+Deferred clip snapshots in `bundle-om1ysaa5` avoid those intersections until
+a hit region is added or cleared. They retain clipping-time paths, transforms
+and fill rules, share snapshots across saved states, and flatten chains at
+16 entries. Drawing still applies its clip immediately. The new engine passes
+the expanded 66-click / 681-check fixture and all 20 lifetime/recording checks,
+with no helpers or crash/debugger events left behind.
+
+Two candidate runs, with an original-bundle repeat between them, measured:
+
+| Clip | Original HTML ms | Deferred HTML ms |
+| --- | ---: | ---: |
+| Rectangle | 26, 26 | 19, 19 |
+| Rectangle, then translated nested rectangle | 41, 41 | 26, 27 |
+| Rounded rectangle | 261, 260 | 146, 147 |
+| Rounded rectangle, then nested rectangle | 558, 555 | 256, 258 |
+| Twenty-point polygon | 756, 750 | 582, 562 |
+| Polygon, then nested rectangle | 1423, 1399 | 1038, 994 |
+
+These are medians of five rounds of 10,000 operations, with the same fixture,
+window, environment and isolated profiles. Every pixel check passed; all runs
+were uncontended and quit normally without helpers or new crash/debugger
+events. The reduction is about **22–54% for these clipping workloads**; it is
+not a claim about whole-browser speed. OffscreenCanvas does not maintain this
+hit-region metadata and remains a comparison in each run. Evidence:
+`.vm/optimization-2026-10-08/deferred-validation.json`, plus the original
+baseline cited above. Engine patch:
+`b178f34dcbc14aa0cf15e144e5ef4607a77b6ae90c4df3ffd078300721cdb9e2`.
 
 ## 5 October 2026: quitting with a busy page, helpers left behind, the Pi's video decoder
 

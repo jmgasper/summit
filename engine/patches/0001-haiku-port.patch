@@ -12531,7 +12531,7 @@ index 42d20ed46b377304c49a3981cfc65ab40fcb8a5e..6737763acbc004d3f0edf74b750a97c8
      // Non-standard legacy aliases (CanvasFillStrokeStyles).
      undefined setStrokeColor(DOMString color, optional unrestricted float alpha);
 diff --git a/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.cpp b/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.cpp
-index eaad38378a1ab2fdeb798d2a7d86325254400472..571512d8ad315d54d7b239e9420cafa31ad87401 100644
+index eaad38378a1ab2fdeb798d2a7d86325254400472..a2f0b209d64aace65b474f1aa5bc8e199bad601b 100644
 --- a/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.cpp
 +++ b/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.cpp
 @@ -32,6 +32,10 @@
@@ -12555,28 +12555,27 @@ index eaad38378a1ab2fdeb798d2a7d86325254400472..571512d8ad315d54d7b239e9420cafa3
      m_path.clear();
      m_bufferNativeImage = nullptr;
      m_cachedContents.emplace<CachedContentsTransparent>();
-@@ -1284,9 +1291,37 @@ void CanvasRenderingContext2DBase::clipInternal(const Path& path, CanvasFillRule
+@@ -1284,9 +1291,78 @@ void CanvasRenderingContext2DBase::clipInternal(const Path& path, CanvasFillRule
          return;
  
      realizeSaves();
 +#if ENABLE(CANVAS_HIT_REGIONS)
 +    if (is2d())
-+        modifiableState().hitRegionClip = clippedHitRegionPath(path, windingRule).value_or(Path { });
++        modifiableState().hitRegionClip = CanvasHitRegionClip::create(path, state().transform, windingRule, state().hitRegionClip.copyRef(), canvasBase().size());
 +#endif
      c->clipPath(path, toWindRule(windingRule));
  }
  
 +#if ENABLE(CANVAS_HIT_REGIONS)
-+std::optional<Path> CanvasRenderingContext2DBase::clippedHitRegionPath(const Path& source, CanvasFillRule rule) const
++WTF_MAKE_TZONE_ALLOCATED_IMPL(CanvasHitRegionClip);
++
++static std::optional<Path> intersectHitRegionPath(const Path& source, const AffineTransform& transform, CanvasFillRule rule, const Path* clippingPath, const IntSize& size)
 +{
-+    if (!hasInvertibleTransform())
-+        return std::nullopt;
 +    Path mapped = source;
-+    mapped.transform(state().transform);
++    mapped.transform(transform);
 +    SkPath filled = *mapped.platformPath();
 +    filled.setFillType(rule == CanvasFillRule::Evenodd ? SkPathFillType::kEvenOdd : SkPathFillType::kWinding);
-+    auto size = canvasBase().size();
-+    SkPath clip = state().hitRegionClip ? *state().hitRegionClip->platformPath() : SkPath::Rect(SkRect::MakeWH(size.width(), size.height()));
++    SkPath clip = clippingPath ? *clippingPath->platformPath() : SkPath::Rect(SkRect::MakeWH(size.width(), size.height()));
 +    SkRect first, second;
 +    if (filled.isRect(&first) && clip.isRect(&second)) {
 +        if (!first.intersect(second))
@@ -12588,12 +12587,54 @@ index eaad38378a1ab2fdeb798d2a7d86325254400472..571512d8ad315d54d7b239e9420cafa3
 +        return std::nullopt;
 +    return Path { PathSkia::create(WTF::move(*result)) };
 +}
++
++Ref<CanvasHitRegionClip> CanvasHitRegionClip::create(const Path& path, const AffineTransform& transform, CanvasFillRule rule, RefPtr<CanvasHitRegionClip>&& previous, const IntSize& size)
++{
++    return adoptRef(*new CanvasHitRegionClip(path, transform, rule, WTF::move(previous), size));
++}
++
++CanvasHitRegionClip::CanvasHitRegionClip(const Path& path, const AffineTransform& transform, CanvasFillRule rule, RefPtr<CanvasHitRegionClip>&& previous, const IntSize& size)
++    : m_path(path)
++    , m_transform(transform)
++    , m_previous(WTF::move(previous))
++    , m_rule(rule)
++{
++    // Bound both retained geometry and recursive resolution for code that
++    // keeps clipping without save/restore or ever using a hit region.
++    static constexpr unsigned maximumDeferredClips = 16;
++    if (m_previous) {
++        if (m_previous->m_depth >= maximumDeferredClips)
++            m_previous->resolvedPath(size);
++        m_depth = m_previous->m_depth + 1;
++    }
++}
++
++const Path& CanvasHitRegionClip::resolvedPath(const IntSize& size)
++{
++    if (!m_resolved) {
++        const Path* previousPath = m_previous ? &m_previous->resolvedPath(size) : nullptr;
++        m_path = intersectHitRegionPath(m_path, m_transform, m_rule, previousPath, size).value_or(Path { });
++        m_previous = nullptr;
++        m_depth = 1;
++        m_resolved = true;
++    }
++    return m_path;
++}
++
++std::optional<Path> CanvasRenderingContext2DBase::clippedHitRegionPath(const Path& source, CanvasFillRule rule) const
++{
++    if (!hasInvertibleTransform())
++        return std::nullopt;
++    auto size = canvasBase().size();
++    const Path* clip = state().hitRegionClip ? &state().hitRegionClip->resolvedPath(size) : nullptr;
++    return intersectHitRegionPath(source, state().transform, rule, clip, size);
++}
 +#endif
 +
  void CanvasRenderingContext2DBase::beginCompositeLayer()
  {
  #if !USE(CAIRO)
-@@ -1396,6 +1431,14 @@ void CanvasRenderingContext2DBase::clearRect(double x, double y, double width, d
+@@ -1396,6 +1472,14 @@ void CanvasRenderingContext2DBase::clearRect(double x, double y, double width, d
          }
          context->setCompositeOperation(CompositeOperator::SourceOver);
      }
@@ -12608,7 +12649,7 @@ index eaad38378a1ab2fdeb798d2a7d86325254400472..571512d8ad315d54d7b239e9420cafa3
      context->clearRect(rect);
      if (saved)
          context->restore();
-@@ -2638,10 +2681,30 @@ void CanvasRenderingContext2DBase::willUpdateContents(std::optional<FloatRect> r
+@@ -2638,10 +2722,30 @@ void CanvasRenderingContext2DBase::willUpdateContents(std::optional<FloatRect> r
          if (context->shouldAntialias())
              dirtyRect.inflate(1);
  #if USE(COORDINATED_GRAPHICS)
@@ -12641,20 +12682,56 @@ index eaad38378a1ab2fdeb798d2a7d86325254400472..571512d8ad315d54d7b239e9420cafa3
          m_dirtyRect.unite(dirtyRect);
  #endif
 diff --git a/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.h b/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.h
-index 2607faee32402d89b9d9ec461b55d70ad2291ce1..1ca49c8e5e25df9d5e6b5a23cb41d42af1c8ed78 100644
+index 2607faee32402d89b9d9ec461b55d70ad2291ce1..b62e3ea0437528d549401e706acf31abf96f81b1 100644
 --- a/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.h
 +++ b/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.h
-@@ -296,6 +296,9 @@ public:
+@@ -54,6 +54,7 @@
+ #include "StyleFilter.h"
+ #include "Timer.h"
+ #include "TypedArrayPixelBuffer.h"
++#include <wtf/RefCounted.h>
+ #include <wtf/Vector.h>
+ #include <wtf/text/WTFString.h>
+ 
+@@ -79,6 +80,27 @@ class WebCodecsVideoFrame;
+ struct DOMMatrix2DInit;
+ struct GlyphOverflow;
+ 
++#if ENABLE(CANVAS_HIT_REGIONS)
++// The drawing context applies clips immediately. Hit regions only need their
++// intersection when a region is added or cleared, so share deferred snapshots
++// across saved states instead of running path operations on every clip().
++class CanvasHitRegionClip final : public RefCounted<CanvasHitRegionClip> {
++    WTF_MAKE_TZONE_ALLOCATED(CanvasHitRegionClip);
++public:
++    static Ref<CanvasHitRegionClip> create(const Path&, const AffineTransform&, CanvasFillRule, RefPtr<CanvasHitRegionClip>&&, const IntSize&);
++    const Path& resolvedPath(const IntSize&);
++
++private:
++    CanvasHitRegionClip(const Path&, const AffineTransform&, CanvasFillRule, RefPtr<CanvasHitRegionClip>&&, const IntSize&);
++    Path m_path;
++    AffineTransform m_transform;
++    RefPtr<CanvasHitRegionClip> m_previous;
++    CanvasFillRule m_rule;
++    unsigned m_depth { 1 };
++    bool m_resolved { false };
++};
++#endif
++
+ class CanvasRenderingContext2DBase : public CanvasRenderingContext, public CanvasPath {
+     WTF_MAKE_TZONE_ALLOCATED(CanvasRenderingContext2DBase);
+     friend class CanvasFilterContextSwitcher;
+@@ -296,6 +318,9 @@ public:
          Color shadowColor;
          double globalAlpha;
          AffineTransform transform;
 +#if ENABLE(CANVAS_HIT_REGIONS)
-+        std::optional<Path> hitRegionClip;
++        RefPtr<CanvasHitRegionClip> hitRegionClip;
 +#endif
          std::optional<AffineTransform> transformInverse;
          Vector<double> lineDash;
          double lineDashOffset;
-@@ -339,6 +342,12 @@ protected:
+@@ -339,6 +364,12 @@ protected:
      static constexpr auto DefaultFontFamily = "sans-serif"_s;
  
      const State& state() const LIFETIME_BOUND { return m_stateStack.last(); }
@@ -133689,19 +133766,16 @@ index 0000000000000000000000000000000000000000..0b0a79dd0813bcfae719f65f648a6f5c
 +
 +} // namespace WebKit
 diff --git a/Source/WebKit/WebProcess/WebProcess.cpp b/Source/WebKit/WebProcess/WebProcess.cpp
-index 413f8bc09ce0a2d3591b203f12addc32584b9f6e..703a7b65262ae96b308a7ed74951fd4c4b255907 100644
+index 413f8bc09ce0a2d3591b203f12addc32584b9f6e..b758e368b04ac0358ac2f5db6e57a6b6f8ebec57 100644
 --- a/Source/WebKit/WebProcess/WebProcess.cpp
 +++ b/Source/WebKit/WebProcess/WebProcess.cpp
-@@ -300,6 +300,49 @@ static const Seconds nonVisibleProcessEarlyMemoryCleanupDelay { 10_s };
+@@ -300,6 +300,32 @@ static const Seconds nonVisibleProcessEarlyMemoryCleanupDelay { 10_s };
  static const Seconds nonVisibleProcessMemoryCleanupDelay { 120_s };
  #endif
  
 +
 +#if OS(HAIKU)
 +#include <wtf/haiku/ProcessPriorityHaiku.h>
-+#include <cstdio>
-+#include <cstdlib>
-+#include <unistd.h>
 +#if ENABLE(MEDIA_STREAM)
 +#include <WebCore/HaikuCaptureNode.h>
 +#endif
@@ -133711,38 +133785,24 @@ index 413f8bc09ce0a2d3591b203f12addc32584b9f6e..703a7b65262ae96b308a7ed74951fd4c
 +// answer content scripts and toolbar popups, so a process hosting one stays
 +// at normal priority; so does a hidden page playing audio or capturing media,
 +// and a process without pages yet.
-+template<typename PageMap> static bool processShouldBeBackgroundedHaiku(const PageMap& pages)
-+{
-+    if (pages.isEmpty())
-+        return false;
-+    for (auto& page : pages.values()) {
-+        if (page->isVisible() || page->activityState().containsAny({ WebCore::ActivityState::IsAudible, WebCore::ActivityState::IsCapturingMedia })
-+            || page->mainWebFrame().url().protocolIs("webkit-extension"_s))
-+            return false;
-+    }
-+    return true;
-+}
-+
 +template<typename PageMap> static void updateProcessPriorityHaiku(const PageMap& pages)
 +{
-+    setProcessBackgroundedHaiku(processShouldBeBackgroundedHaiku(pages));
-+}
-+
-+static unsigned hiddenMemoryCleanupModeHaiku()
-+{
-+    // Opt-in while the background cleanup policy is measured on real pages.
-+    static unsigned mode = [] {
-+        const char* value = std::getenv("SUMMIT_HIDDEN_MEMORY_TRIM");
-+        return value && value[0] == '2' ? 2u : value && value[0] == '1' ? 1u : 0u;
-+    }();
-+    return mode;
++    bool background = !pages.isEmpty();
++    for (auto& page : pages.values()) {
++        if (page->isVisible() || page->activityState().containsAny({ WebCore::ActivityState::IsAudible, WebCore::ActivityState::IsCapturingMedia })
++            || page->mainWebFrame().url().protocolIs("webkit-extension"_s)) {
++            background = false;
++            break;
++        }
++    }
++    setProcessBackgroundedHaiku(background);
 +}
 +#endif
 +
  namespace WebKit {
  using namespace WebCore;
  
-@@ -308,6 +351,11 @@ WTF_MAKE_TZONE_ALLOCATED_IMPL(WebProcess);
+@@ -308,6 +334,11 @@ WTF_MAKE_TZONE_ALLOCATED_IMPL(WebProcess);
  #if !PLATFORM(GTK) && !PLATFORM(WPE)
  [[noreturn]] static void callExit(IPC::Connection*)
  {
@@ -133754,17 +133814,7 @@ index 413f8bc09ce0a2d3591b203f12addc32584b9f6e..703a7b65262ae96b308a7ed74951fd4c
      terminateProcess(EXIT_SUCCESS);
  }
  #endif
-@@ -377,6 +425,9 @@ WebProcess::WebProcess()
-         if (RefPtr protectedThis = weakThis; protectedThis && state == PAL::HysteresisState::Stopped)
-             protectedThis->m_dnsPrefetchedHosts.clear();
-     })
-+#if OS(HAIKU)
-+    , m_hiddenMemoryCleanupTimerHaiku(*this, &WebProcess::hiddenMemoryCleanupTimerFiredHaiku)
-+#endif
- #if ENABLE(NON_VISIBLE_WEBPROCESS_MEMORY_CLEANUP_TIMER)
-     , m_nonVisibleProcessMemoryCleanupTimer(*this, &WebProcess::nonVisibleProcessMemoryCleanupTimerFired)
- #endif
-@@ -397,7 +448,7 @@ WebProcess::WebProcess()
+@@ -397,7 +428,7 @@ WebProcess::WebProcess()
      addSupplement<WebMediaKeyStorageManager>();
  #endif
  
@@ -133773,105 +133823,36 @@ index 413f8bc09ce0a2d3591b203f12addc32584b9f6e..703a7b65262ae96b308a7ed74951fd4c
      addSupplementWithoutRefCountedCheck<UserMediaCaptureManager>();
  #endif
  
-@@ -1112,6 +1163,9 @@ void WebProcess::createWebPage(PageIdentifier pageID, WebPageCreationParameters&
+@@ -1112,6 +1143,8 @@ void WebProcess::createWebPage(PageIdentifier pageID, WebPageCreationParameters&
  
  #if OS(LINUX)
          HighPriorityThreads::singleton().setEnabled(hasVisibleWebPage());
 +#elif OS(HAIKU)
 +        updateProcessPriorityHaiku(m_pageMap);
-+        updateHiddenMemoryCleanupHaiku();
  #endif
      } else
          page->reinitializeWebPage(WTF::move(parameters));
-@@ -1145,6 +1199,9 @@ void WebProcess::removeWebPage(PageIdentifier pageID)
+@@ -1145,6 +1178,8 @@ void WebProcess::removeWebPage(PageIdentifier pageID)
  
  #if OS(LINUX)
      HighPriorityThreads::singleton().setEnabled(hasVisibleWebPage());
 +#elif OS(HAIKU)
 +    updateProcessPriorityHaiku(m_pageMap);
-+    updateHiddenMemoryCleanupHaiku();
  #endif
  }
  
-@@ -1861,8 +1918,51 @@ void WebProcess::pageActivityStateDidChange(PageIdentifier, OptionSet<WebCore::A
+@@ -1861,6 +1896,11 @@ void WebProcess::pageActivityStateDidChange(PageIdentifier, OptionSet<WebCore::A
          HighPriorityThreads::singleton().setEnabled(hasVisibleWebPage());
  #endif
      }
 +#if OS(HAIKU)
 +    // A hidden tab that starts playing sound gets its priority back too.
-+    if (changed.containsAny({ WebCore::ActivityState::IsVisible, WebCore::ActivityState::IsAudible, WebCore::ActivityState::IsCapturingMedia })) {
++    if (changed.containsAny({ WebCore::ActivityState::IsVisible, WebCore::ActivityState::IsAudible, WebCore::ActivityState::IsCapturingMedia }))
 +        updateProcessPriorityHaiku(m_pageMap);
-+        updateHiddenMemoryCleanupHaiku();
-+    }
 +#endif
-+}
-+
-+#if OS(HAIKU)
-+void WebProcess::updateHiddenMemoryCleanupHaiku()
-+{
-+    // Hidden BCardLayout views remain attached to their window, so the
-+    // pageWillLeaveWindow cleanup timer does not cover tab switches on Haiku.
-+    // Give quick switches time to reuse caches, and leave audible, capturing
-+    // and extension pages alone.
-+    if (!hiddenMemoryCleanupModeHaiku() || !processShouldBeBackgroundedHaiku(m_pageMap)) {
-+        m_hiddenMemoryCleanupTimerHaiku.stop();
-+        return;
-+    }
-+    if (!m_hiddenMemoryCleanupTimerHaiku.isActive())
-+        m_hiddenMemoryCleanupTimerHaiku.startOneShot(30_s);
  }
  
-+void WebProcess::hiddenMemoryCleanupTimerFiredHaiku()
-+{
-+    if (!processShouldBeBackgroundedHaiku(m_pageMap))
-+        return;
-+
-+    auto started = MonotonicTime::now();
-+    // Keep compiled JavaScript, live page state and back/forward entries.
-+    // Mode 2 also measures collecting unreachable JavaScript without the
-+    // deleteAllCode operation in the critical-memory-pressure path.
-+    if (hiddenMemoryCleanupModeHaiku() == 2)
-+        GarbageCollectionController::singleton().garbageCollectNow();
-+    WebCore::releaseMemory(Critical::No, Synchronous::Yes, MaintainBackForwardCache::Yes, MaintainMemoryCache::No);
-+    for (auto& page : m_pageMap.values())
-+        page->releaseMemory(Critical::No);
-+
-+    if (std::getenv("SUMMIT_HIDDEN_MEMORY_TRACE"))
-+        std::fprintf(stderr, "Summit hidden memory: pid=%d mode=%u pages=%zu milliseconds=%.3f\n",
-+            getpid(), hiddenMemoryCleanupModeHaiku(), m_pageMap.size(), (MonotonicTime::now() - started).milliseconds());
-+}
-+#endif
-+
  void WebProcess::releaseMemory(CompletionHandler<void()>&& completionHandler)
- {
-     WEBPROCESS_RELEASE_LOG(ProcessSuspension, "releaseMemory: BEGIN");
-diff --git a/Source/WebKit/WebProcess/WebProcess.h b/Source/WebKit/WebProcess/WebProcess.h
-index 1a1242f934313fdc172143d30b558f2594a13e03..46dca6cee5a08fbc560dda90862fd5b74a575d4a 100644
---- a/Source/WebKit/WebProcess/WebProcess.h
-+++ b/Source/WebKit/WebProcess/WebProcess.h
-@@ -355,6 +355,11 @@ public:
- 
-     void nonVisibleProcessEarlyMemoryCleanupTimerFired();
- 
-+#if OS(HAIKU)
-+    void updateHiddenMemoryCleanupHaiku();
-+    void hiddenMemoryCleanupTimerFiredHaiku();
-+#endif
-+
- #if ENABLE(NON_VISIBLE_WEBPROCESS_MEMORY_CLEANUP_TIMER)
-     void nonVisibleProcessMemoryCleanupTimerFired();
- #endif
-@@ -891,6 +896,10 @@ private:
-     HashSet<WebCore::PageIdentifier> m_pagesInWindows;
-     std::optional<WebCore::DeferrableOneShotTimer> m_nonVisibleProcessEarlyMemoryCleanupTimer;
- 
-+#if OS(HAIKU)
-+    WebCore::Timer m_hiddenMemoryCleanupTimerHaiku;
-+#endif
-+
- #if ENABLE(NON_VISIBLE_WEBPROCESS_MEMORY_CLEANUP_TIMER)
-     WebCore::Timer m_nonVisibleProcessMemoryCleanupTimer;
- #endif
 diff --git a/Source/WebKit/WebProcess/glib/UserMediaCaptureManager.cpp b/Source/WebKit/WebProcess/glib/UserMediaCaptureManager.cpp
 index 93230db6ad621ab9defdcd95e31b66ff1e3a9771..9eb847537007b0654b0f36968aae4d4ccb6f6e57 100644
 --- a/Source/WebKit/WebProcess/glib/UserMediaCaptureManager.cpp

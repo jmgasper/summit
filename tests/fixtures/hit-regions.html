@@ -65,6 +65,21 @@ const report=async passed=>{const result={passed,checks,clicks};document.getElem
  throws(()=>context.addHitRegion({id:'invalid-rule',path:circle,fillRule:'bad'}),'TypeError','fill rule is validated');
  context.clearHitRegions();context.save();context.beginPath();context.rect(20,20,60,100);context.clip();rect('clipped',0,0,200,160);context.restore();
  await click(40,40,'clipped','clip retained in hit path');await click(100,40,null,'clip excludes outside pixels');rect('restored',140,20);await click(160,40,'restored','restore restores clip');
+ // Clips must remain snapshots even when their hit-region geometry is resolved later.
+ context.clearHitRegions();const lateClip=new Path2D();lateClip.rect(20,20,80,80);context.save();context.translate(60,0);context.clip(lateClip);context.resetTransform();lateClip.rect(0,0,400,240);rect('late-clip',0,0,400,240);context.restore();
+ await click(100,40,'late-clip','late clip keeps transform at clip time');await click(40,40,null,'late clip ignores later transform');await click(230,40,null,'late clip snapshots mutated Path2D');
+ context.clearHitRegions();context.save();
+ for(let i=0;i<40;i++){const chain=new Path2D();chain.rect(20+i,20,180-2*i,140);context.clip(chain);if(i===7)context.save()}
+ rect('deep-clip',0,0,400,240);await click(100,40,'deep-clip','long clip chain retains intersection');await click(40,40,null,'long clip chain excludes earlier extent');
+ context.restore();rect('saved-clip',0,0,400,240);await click(40,40,'saved-clip','saved clip survives descendant chain compaction');await click(22,40,null,'saved clip retains its own extent');context.restore();
+ context.clearHitRegions();context.save();context.clip(donut,'evenodd');context.save();context.beginPath();context.rect(0,0,400,240);context.clip();rect('evenodd-clip',0,0,400,240);context.restore();context.restore();
+ await click(35,35,'evenodd-clip','deferred evenodd clip keeps exterior');await click(80,80,null,'deferred evenodd clip keeps hole');
+ context.clearHitRegions();context.save();context.beginPath();context.clip();
+ for(let i=0;i<20;i++){context.beginPath();context.rect(0,0,400,240);context.clip()}
+ throws(()=>rect('empty-clip',0,0,400,240),'NotSupportedError','empty clip survives long chain');context.restore();
+ context.beginPath();context.rect(20,20,20,20);context.clip();context.reset();rect('reset-pending',140,20);await click(160,40,'reset-pending','reset discards unresolved clip');
+ context.clearHitRegions();rect('clear-deferred',20,20,180,140);context.save();context.clip(circle);context.translate(50,0);const clearClip=new Path2D();clearClip.rect(0,0,100,200);context.clip(clearClip);context.resetTransform();context.clearRect(0,0,400,240);context.restore();
+ await click(100,100,null,'clearRect resolves deferred transformed intersection');await click(40,40,'clear-deferred','deferred clear preserves outside pixels');
  context.clearHitRegions();rect('clear',20,20,160,120);context.clearRect(60,40,60,60);await click(80,60,null,'clearRect subtracts covered pixels');await click(40,40,'clear','clearRect preserves other pixels');
  context.save();context.beginPath();context.rect(20,20,20,100);context.clip();context.clearRect(0,0,400,240);context.restore();await click(30,40,null,'clearRect respects clip');await click(150,40,'clear','clipped clear preserves other pixels');
  context.clearHitRegions();rect('negative',20,20,160,120);context.clearRect(100,100,-60,-60);await click(60,60,null,'negative clear dimensions');await click(150,40,'negative','negative clear keeps remainder');
