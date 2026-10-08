@@ -111,7 +111,8 @@ print(p.pid)
         result['clicks'] = len(dom.get('clicks', []))
         result['passed'] = (bool(dom.get('passed')) and all(check['passed'] for check in dom.get('checks', []))
                             and 'HitRegion_RESULT PASS' in log and not result.get('members')
-                            and not result.get('timedOut') and not result['crashes']['newReports'])
+                            and not result.get('timedOut') and not result['crashes']['newReports']
+                            and not result['crashes']['syslogEvents'])
         (args.output / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
     print(json.dumps(result, indent=2))
     return 0 if result['passed'] else 1

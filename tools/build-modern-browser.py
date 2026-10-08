@@ -152,7 +152,7 @@ def engine_inputs(inputs):
     configuration = dict(expected)
     for key in ('USE_MIMALLOC', 'USE_SYSTEM_MALLOC', 'USE_SKIA',
                 'USE_HAIKU_GL_COMPOSITING', 'ENABLE_ASYNC_SCROLLING', 'CMAKE_CXX_FLAGS',
-                'ENABLE_MEDIA_SOURCE', 'ENABLE_FULLSCREEN_API', 'ENABLE_OFFSCREEN_CANVAS',
+                'ENABLE_MEDIA_SOURCE', 'ENABLE_FULLSCREEN_API', 'ENABLE_CANVAS_HIT_REGIONS', 'ENABLE_OFFSCREEN_CANVAS',
                 'ENABLE_OFFSCREEN_CANVAS_IN_WORKERS', 'ENABLE_WEBGL', 'USE_JPEGXL', 'USE_HEIF', 'USE_JPEGXR'):
         configuration[key] = cache.get(key)
     return configuration, paths

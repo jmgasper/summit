@@ -4677,7 +4677,7 @@ index fb688cc015cd74b8fa16c7073b3a0c9f61f4aee2..4eee13adc7844b818bb6e27103cc16a1
  
  enum class UTextProviderContext {
 diff --git a/Source/WebCore/CMakeLists.txt b/Source/WebCore/CMakeLists.txt
-index 68eeee74effd53dd2134f8dd2f34a03e78c0eb46..e145034226ea5ab6b346a04a4c127656715bb0ae 100644
+index 68eeee74effd53dd2134f8dd2f34a03e78c0eb46..a1143f47f4645a691d075d1cf6acced6ee9cdc6c 100644
 --- a/Source/WebCore/CMakeLists.txt
 +++ b/Source/WebCore/CMakeLists.txt
 @@ -75,6 +75,7 @@ set(WebCore_PRIVATE_INCLUDE_DIRECTORIES
@@ -4765,7 +4765,15 @@ index 68eeee74effd53dd2134f8dd2f34a03e78c0eb46..e145034226ea5ab6b346a04a4c127656
  set(WebCore_IDL_INCLUDES
      css
      dom
-@@ -2141,6 +2146,7 @@ set(WebCore_SUPPLEMENTAL_IDL_FILES
+@@ -2112,6 +2117,7 @@ set(WebCore_SUPPLEMENTAL_IDL_FILES
+ 
+     html/canvas/CanvasCompositing.idl
+     html/canvas/CanvasDrawElementImage.idl
++    html/canvas/CanvasHitRegionOptions.idl
+     html/canvas/CanvasDrawElementImageOptions.idl
+     html/canvas/CanvasDrawImage.idl
+     html/canvas/CanvasDrawPath.idl
+@@ -2141,6 +2147,7 @@ set(WebCore_SUPPLEMENTAL_IDL_FILES
      page/DOMWindow+VisualViewport.idl
      page/Navigator+LoginStatus.idl
      page/Navigator+UserActivation.idl
@@ -4773,7 +4781,7 @@ index 68eeee74effd53dd2134f8dd2f34a03e78c0eb46..e145034226ea5ab6b346a04a4c127656
      page/NavigatorCookies.idl
      page/NavigatorGlobalPrivacyControl.idl
      page/NavigatorID.idl
-@@ -2206,6 +2212,55 @@ if (USE_APPLE_INTERNAL_SDK)
+@@ -2206,6 +2213,55 @@ if (USE_APPLE_INTERNAL_SDK)
      )
  endif ()
  
@@ -4829,7 +4837,7 @@ index 68eeee74effd53dd2134f8dd2f34a03e78c0eb46..e145034226ea5ab6b346a04a4c127656
  set(WebCore_IDL_FILES
      ${WebCore_NON_SVG_IDL_FILES}
      ${WebCore_SVG_IDL_FILES}
-@@ -3269,6 +3324,19 @@ list(APPEND WebCore_SOURCES ${WebCore_DERIVED_SOURCES_DIR}/Namespace.cpp)
+@@ -3269,6 +3325,19 @@ list(APPEND WebCore_SOURCES ${WebCore_DERIVED_SOURCES_DIR}/Namespace.cpp)
  
  WEBKIT_COMPUTE_SOURCES(WebCore)
  
@@ -4849,7 +4857,7 @@ index 68eeee74effd53dd2134f8dd2f34a03e78c0eb46..e145034226ea5ab6b346a04a4c127656
  WEBKIT_DEFINE_SUBTARGET_WITH_PREFIX(WebCore WebCoreJSBindings
      PREFIX WebCoreJSBindingsPrefix.h
      PREFIX_LANGUAGES CXX
-@@ -3299,6 +3367,7 @@ WEBKIT_DEFINE_SUBTARGET_WITH_PREFIX(WebCore WebCoreAVFoundation
+@@ -3299,6 +3368,7 @@ WEBKIT_DEFINE_SUBTARGET_WITH_PREFIX(WebCore WebCoreAVFoundation
  WEBKIT_ADD_PREFIX_HEADER(WebCore WebCorePrefix.h PREFIX_LANGUAGES CXX OBJCXX)
  
  list(APPEND WebCore_PRIVATE_FRAMEWORK_HEADERS
@@ -11299,6 +11307,33 @@ index 79f2bcbc106c7c43e8a971816c183dcc00610b83..4f53a516b136f9aaaa75bfda4b8b79c5
  }
  
  void Document::updateRemoteIntersectionObservers()
+diff --git a/Source/WebCore/dom/EventDispatcher.cpp b/Source/WebCore/dom/EventDispatcher.cpp
+index 366a96640f8fa0e9532ff00855ed36ec0b5eeb2b..f3e096bf2779a964470a1a0aae5700036680201f 100644
+--- a/Source/WebCore/dom/EventDispatcher.cpp
++++ b/Source/WebCore/dom/EventDispatcher.cpp
+@@ -35,6 +35,9 @@
+ #include "FrameDestructionObserverInlines.h"
+ #include "FrameLoader.h"
+ #include "HTMLInputElement.h"
++#if ENABLE(CANVAS_HIT_REGIONS)
++#include "HTMLCanvasElement.h"
++#endif
+ #include "InputEvent.h"
+ #include "KeyboardEvent.h"
+ #include "LocalFrame.h"
+@@ -193,6 +196,12 @@ void EventDispatcher::dispatchEvent(Node& node, Event& event)
+     Ref document = node.document();
+     RefPtr protectedView { document->view() };
+ 
++#if ENABLE(CANVAS_HIT_REGIONS)
++    if (auto* mouse = dynamicDowncast<MouseEvent>(event); mouse && mouse->isTrusted() && !mouse->isSimulated()) {
++        if (auto* canvas = dynamicDowncast<HTMLCanvasElement>(node))
++            mouse->setRegion(canvas->hitRegionAtAbsolutePoint(FloatPoint(mouse->absoluteLocation())));
++    }
++#endif
+     auto typeInfo = eventNames().typeInfoForEvent(event.type());
+     auto listenerCounts = eventListenerCounts(document, event);
+ 
 diff --git a/Source/WebCore/dom/EventInterfaces.in b/Source/WebCore/dom/EventInterfaces.in
 index 677f2e8a4fb88f674f1542b6dbf72e8316739ed4..fe405439137ef39125f38983c52c7ad762a55b66 100644
 --- a/Source/WebCore/dom/EventInterfaces.in
@@ -11428,6 +11463,91 @@ index a503201bfcf8a65e2591c30245a88c6c5b8d31f3..593f339fa2d8a14b5275a2259b2483a1
  }
  
  void ExtensionStyleSheets::removePageSpecificUserStyleSheet(const UserStyleSheet& userStyleSheet)
+diff --git a/Source/WebCore/dom/MouseEvent.cpp b/Source/WebCore/dom/MouseEvent.cpp
+index 440e031d6cc0261d2821f47e0c75305ba858d21c..fafd8f32ed50c540d82310c767f13902f35e0f6b 100644
+--- a/Source/WebCore/dom/MouseEvent.cpp
++++ b/Source/WebCore/dom/MouseEvent.cpp
+@@ -321,6 +321,9 @@ MouseEvent::MouseEvent(
+     , m_buttons(initializer.buttons)
+     , m_buttonDown(initializer.button != std::to_underlying(MouseButton::None))
+     , m_relatedTarget(initializer.relatedTarget)
++#if ENABLE(CANVAS_HIT_REGIONS)
++    , m_region(initializer.region)
++#endif
+ {
+     initCoordinates({ initializer.clientX, initializer.clientY });
+ }
+diff --git a/Source/WebCore/dom/MouseEvent.h b/Source/WebCore/dom/MouseEvent.h
+index 57ed58ea282bf389d919eebe11d6fbcdca3d0ea3..7e3f8018af67fe986dc19dbfe5b47014c7f18923 100644
+--- a/Source/WebCore/dom/MouseEvent.h
++++ b/Source/WebCore/dom/MouseEvent.h
+@@ -141,6 +141,10 @@ public:
+ 
+     const std::optional<MouseEventInputSource>& inputSource() const LIFETIME_BOUND { return m_inputSource; }
+ 
++#if ENABLE(CANVAS_HIT_REGIONS)
++    const String& region() const { return m_region; }
++    void setRegion(String&& region) { m_region = WTF::move(region); }
++#endif
+     MouseButton button() const;
+     int16_t buttonAsShort() const { return m_button; }
+     unsigned short buttons() const { return m_buttons; }
+@@ -226,6 +230,9 @@ private:
+     SyntheticClickType m_syntheticClickType { SyntheticClickType::NoTap };
+     bool m_buttonDown { false };
+     RefPtr<EventTarget> m_relatedTarget;
++#if ENABLE(CANVAS_HIT_REGIONS)
++    String m_region;
++#endif
+     double m_force { 0 };
+     Vector<Ref<MouseEvent>> m_coalescedEvents;
+     Vector<Ref<MouseEvent>> m_predictedEvents;
+diff --git a/Source/WebCore/dom/MouseEvent.idl b/Source/WebCore/dom/MouseEvent.idl
+index b5eee711d88f7d13c02fba2e0c7889a5b30c0806..1cd111c2602f69756e84ff3f8b7ddbeceed2803f 100644
+--- a/Source/WebCore/dom/MouseEvent.idl
++++ b/Source/WebCore/dom/MouseEvent.idl
+@@ -37,6 +37,7 @@
+     [ImplementedAs=buttonAsShort] readonly attribute short button;
+     readonly attribute unsigned short buttons;
+     readonly attribute EventTarget? relatedTarget;
++    [Conditional=CANVAS_HIT_REGIONS] readonly attribute DOMString? region;
+ 
+     boolean getModifierState(DOMString keyArg);
+ 
+diff --git a/Source/WebCore/dom/MouseEventInit.h b/Source/WebCore/dom/MouseEventInit.h
+index eb498a2f795950ffaf1a16f67864401ef81c27c8..eed8f77b20242d153418d4ab9ecd1bb711baba60 100644
+--- a/Source/WebCore/dom/MouseEventInit.h
++++ b/Source/WebCore/dom/MouseEventInit.h
+@@ -27,6 +27,7 @@
+ 
+ #include <WebCore/EventModifierInit.h>
+ #include <WebCore/EventTargetInlines.h>
++#include <wtf/text/WTFString.h>
+ 
+ namespace WebCore {
+ 
+@@ -38,6 +39,9 @@ struct MouseEventInit : EventModifierInit {
+     int16_t button { 0 };
+     unsigned short buttons { 0 };
+     RefPtr<EventTarget> relatedTarget;
++#if ENABLE(CANVAS_HIT_REGIONS)
++    String region;
++#endif
+     double movementX { 0 };
+     double movementY { 0 };
+ };
+diff --git a/Source/WebCore/dom/MouseEventInit.idl b/Source/WebCore/dom/MouseEventInit.idl
+index 2d5334014685d35d974eed8d6ec9be5c0865344b..5d344747f435031557ca31614aaebe4a9bb7a4ff 100644
+--- a/Source/WebCore/dom/MouseEventInit.idl
++++ b/Source/WebCore/dom/MouseEventInit.idl
+@@ -33,6 +33,7 @@ dictionary MouseEventInit : EventModifierInit {
+     short button = 0;
+     unsigned short buttons = 0;
+     EventTarget? relatedTarget = null;
++    [Conditional=CANVAS_HIT_REGIONS] DOMString? region = null;
+ 
+     // FIXME: non-standard.
+     double movementX = 0;
 diff --git a/Source/WebCore/dom/Position.cpp b/Source/WebCore/dom/Position.cpp
 index 105e7fcdcc8733c8dd1e662460015680f469a3a4..8fe399844836fefc38c61faa98bf397e65dd46d1 100644
 --- a/Source/WebCore/dom/Position.cpp
@@ -11575,10 +11695,33 @@ index fdc5b8fc0424fc394e954fa583f40e825727dc47..ee9ab0719ef8e6050eeaf97b29649a4d
  
  } // namespace WebCore
 diff --git a/Source/WebCore/html/HTMLCanvasElement.cpp b/Source/WebCore/html/HTMLCanvasElement.cpp
-index 9ca0df74c9d224f9cde8226eda2e99798d08dd72..513838e5185fd7a4f44913114cb28d8da6df3175 100644
+index 9ca0df74c9d224f9cde8226eda2e99798d08dd72..31e0ca8c242fb7d8d7fd589c4749505b3275fa48 100644
 --- a/Source/WebCore/html/HTMLCanvasElement.cpp
 +++ b/Source/WebCore/html/HTMLCanvasElement.cpp
-@@ -843,7 +843,7 @@ RefPtr<ImageData> HTMLCanvasElement::getImageData()
+@@ -460,6 +460,22 @@ CanvasRenderingContext2D* HTMLCanvasElement::createContext2d(const String& type,
+     return downcast<CanvasRenderingContext2D>(m_context.get());
+ }
+ 
++#if ENABLE(CANVAS_HIT_REGIONS)
++String HTMLCanvasElement::hitRegionAtAbsolutePoint(const FloatPoint& point) const
++{
++    RefPtr context = dynamicDowncast<CanvasRenderingContext2D>(m_context.get());
++    CheckedPtr renderer = dynamicDowncast<RenderHTMLCanvas>(this->renderer());
++    if (!context || !context->hasHitRegions() || !renderer || !width() || !height())
++        return { };
++    auto local = renderer->absoluteToLocal(point, MapCoordinatesMode::UseTransforms);
++    FloatRect content { renderer->replacedContentRect() };
++    if (content.isEmpty() || !content.contains(local))
++        return { };
++    return context->hitRegionAtPoint({ (local.x() - content.x()) * width() / content.width(),
++        (local.y() - content.y()) * height() / content.height() });
++}
++#endif
++
+ CanvasRenderingContext2D* HTMLCanvasElement::getContext2d(const String& type, CanvasRenderingContext2DSettings&& settings)
+ {
+     ASSERT_UNUSED(HTMLCanvasElement::is2dType(type), type);
+@@ -843,7 +859,7 @@ RefPtr<ImageData> HTMLCanvasElement::getImageData()
  
  RefPtr<VideoFrame> HTMLCanvasElement::toVideoFrame()
  {
@@ -11587,6 +11730,20 @@ index 9ca0df74c9d224f9cde8226eda2e99798d08dd72..513838e5185fd7a4f44913114cb28d8d
      Ref document = this->document();
  #if ENABLE(WEBGL)
      if (RefPtr context = dynamicDowncast<WebGLRenderingContextBase>(m_context.get())) {
+diff --git a/Source/WebCore/html/HTMLCanvasElement.h b/Source/WebCore/html/HTMLCanvasElement.h
+index 85f4d52b6239e35d852f9654435554690ad0bf7d..10459daeaf57fdf98329b5f23304eb22dfba5e39 100644
+--- a/Source/WebCore/html/HTMLCanvasElement.h
++++ b/Source/WebCore/html/HTMLCanvasElement.h
+@@ -94,6 +94,9 @@ public:
+     ExceptionOr<Ref<DOMMatrix>> getElementTransform(const Element&);
+ 
+     CanvasRenderingContext* renderingContext() const final { return m_context.get(); }
++#if ENABLE(CANVAS_HIT_REGIONS)
++    String hitRegionAtAbsolutePoint(const FloatPoint&) const;
++#endif
+     ExceptionOr<std::optional<RenderingContext>> getContext(JSC::JSGlobalObject&, const String& contextId, FixedVector<JSC::Strong<JSC::Unknown>>&& arguments);
+ 
+     RefPtr<CanvasRenderingContext> getContext(const String&);
 diff --git a/Source/WebCore/html/HTMLLinkElement.cpp b/Source/WebCore/html/HTMLLinkElement.cpp
 index aeb17770f3e1e6fca6f5efc89419a0895221014b..dbb756d88aeab3b8845f4c58ecdc7e446e65e720 100644
 --- a/Source/WebCore/html/HTMLLinkElement.cpp
@@ -12104,11 +12261,338 @@ index 31c0a9e4c020a2f52d648fda2b765b3c29e49659..c7f4e5805cb369e5cb3f11b0f7dbf87a
  
      bool isValidFormat(OptionSet<DateTimeFormatValidationResults>) const final;
      String formatDateTimeFieldsState(const DateTimeFieldsState&) const final;
+diff --git a/Source/WebCore/html/canvas/CanvasHitRegionOptions.h b/Source/WebCore/html/canvas/CanvasHitRegionOptions.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..7d1cfe5fb32afe7f7913302b01dff4a1689e34c0
+--- /dev/null
++++ b/Source/WebCore/html/canvas/CanvasHitRegionOptions.h
+@@ -0,0 +1,35 @@
++/*
++ * Copyright (C) 2026 Summit contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHORS ``AS IS'' AND ANY EXPRESS OR
++ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
++ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
++ * IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DAMAGES ARISING FROM USE.
++ */
++
++#pragma once
++
++#include "CanvasFillRule.h"
++#include "Element.h"
++#include "Path2D.h"
++#include <wtf/text/WTFString.h>
++
++namespace WebCore {
++
++struct CanvasHitRegionOptions {
++    String id;
++    RefPtr<Element> control;
++    RefPtr<Path2D> path;
++    CanvasFillRule fillRule { CanvasFillRule::Nonzero };
++};
++
++} // namespace WebCore
+diff --git a/Source/WebCore/html/canvas/CanvasHitRegionOptions.idl b/Source/WebCore/html/canvas/CanvasHitRegionOptions.idl
+new file mode 100644
+index 0000000000000000000000000000000000000000..a58d126041309ec9ef4d8cceefad44824d6b6bb4
+--- /dev/null
++++ b/Source/WebCore/html/canvas/CanvasHitRegionOptions.idl
+@@ -0,0 +1,24 @@
++/*
++ * Copyright (C) 2026 Summit contributors.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHORS ``AS IS'' AND ANY EXPRESS OR
++ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
++ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
++ * IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DAMAGES ARISING FROM USE.
++ */
++
++[Conditional=CANVAS_HIT_REGIONS] dictionary CanvasHitRegionOptions {
++    DOMString id = "";
++    Element? control = null;
++    Path2D? path = null;
++    CanvasFillRule fillRule = "nonzero";
++};
+diff --git a/Source/WebCore/html/canvas/CanvasRenderingContext2D.cpp b/Source/WebCore/html/canvas/CanvasRenderingContext2D.cpp
+index 3c471f4eff31e109372e568f02d0a371522cc6fe..392856e432187a6e6262c868684ee130a1bfbb60 100644
+--- a/Source/WebCore/html/canvas/CanvasRenderingContext2D.cpp
++++ b/Source/WebCore/html/canvas/CanvasRenderingContext2D.cpp
+@@ -32,6 +32,11 @@
+ 
+ #include "config.h"
+ #include "CanvasRenderingContext2D.h"
++#if ENABLE(CANVAS_HIT_REGIONS)
++#include "CanvasHitRegionOptions.h"
++#include "PathSkia.h"
++#include <skia/pathops/SkPathOps.h>
++#endif
+ 
+ #include "AXObjectCache.h"
+ #include "CSSFilterRenderer.h"
+@@ -154,6 +159,100 @@ IntOutsets CanvasRenderingContext2D::calculateFilterOutsets(const FloatRect& bou
+     return CSSFilterRenderer::calculateOutsets(*renderer, state().filter, bounds);
+ }
+ 
++#if ENABLE(CANVAS_HIT_REGIONS)
++ExceptionOr<void> CanvasRenderingContext2D::addHitRegion(const CanvasHitRegionOptions& options)
++{
++    if (options.id.isEmpty() && !options.control)
++        return Exception { ExceptionCode::NotSupportedError };
++    auto path = clippedHitRegionPath(options.path ? options.path->path() : m_path, options.fillRule);
++    if (!path || path->isEmpty() || path->boundingRect().isEmpty())
++        return Exception { ExceptionCode::NotSupportedError };
++    // Validate first, so a failed replacement leaves the previous region intact.
++    m_hitRegions.removeAllMatching([&](auto& region) {
++        bool matches = (!options.id.isEmpty() && region.id == options.id) || (options.control && region.control.get() == options.control.get());
++        if (matches)
++            updateHitRegionControlBounds(region, true);
++        return matches;
++    });
++    didClearHitRegionPixels(*path);
++    m_hitRegions.append({ options.id, options.control, WTF::move(*path) });
++    updateHitRegionControlBounds(m_hitRegions.last());
++    return { };
++}
++
++void CanvasRenderingContext2D::removeHitRegion(const String& id)
++{
++    if (id.isEmpty())
++        return;
++    m_hitRegions.removeAllMatching([&](auto& region) {
++        if (region.id != id)
++            return false;
++        updateHitRegionControlBounds(region, true);
++        return true;
++    });
++}
++
++void CanvasRenderingContext2D::clearHitRegions()
++{
++    for (auto& region : m_hitRegions)
++        updateHitRegionControlBounds(region, true);
++    m_hitRegions.clear();
++}
++
++void CanvasRenderingContext2D::didClearHitRegionPixels(const Path& cleared)
++{
++    if (cleared.isEmpty())
++        return;
++    auto bounds = cleared.fastBoundingRect();
++    m_hitRegions.removeAllMatching([&](auto& region) {
++        if (!region.path.fastBoundingRect().intersects(bounds))
++            return false;
++        auto remainder = Op(*region.path.platformPath(), *cleared.platformPath(), kDifference_SkPathOp);
++        // A pathological path-operation failure must never leave false hits.
++        region.path = remainder ? Path { PathSkia::create(WTF::move(*remainder)) } : Path { };
++        bool removed = region.path.isEmpty() || region.path.boundingRect().isEmpty();
++        updateHitRegionControlBounds(region, removed);
++        return removed;
++    });
++}
++
++String CanvasRenderingContext2D::hitRegionAtPoint(const FloatPoint& point) const
++{
++    if (!std::isfinite(point.x()) || !std::isfinite(point.y()))
++        return { };
++    // Skia includes path boundaries, so coincident edges belong to the newest
++    // region even after its area has been subtracted from older regions.
++    for (size_t index = m_hitRegions.size(); index; --index) {
++        auto& region = m_hitRegions[index - 1];
++        // PathOps retains the resulting winding rule on its native path.
++        if (region.path.platformPath()->contains(point.x(), point.y()))
++            return region.id.isEmpty() ? String { } : region.id;
++    }
++    return { };
++}
++
++void CanvasRenderingContext2D::updateHitRegionControlBounds(const HitRegion& region, bool removed)
++{
++    Ref canvas = this->canvas();
++    RefPtr control = region.control.get();
++    if (!control || !control->isDescendantOf(canvas.get()))
++        return;
++    CheckedPtr cache = canvas->document().existingAXObjectCache();
++    CheckedPtr renderer = dynamicDowncast<RenderReplaced>(canvas->renderer());
++    if (!cache || !renderer || !canvas->width() || !canvas->height())
++        return;
++    FloatRect bounds;
++    if (!removed) {
++        auto pixels = region.path.boundingRect();
++        FloatRect content { renderer->replacedContentRect() };
++        bounds = { content.x() + pixels.x() * content.width() / canvas->width(),
++            content.y() + pixels.y() * content.height() / canvas->height(),
++            pixels.width() * content.width() / canvas->width(), pixels.height() * content.height() / canvas->height() };
++    }
++    cache->deferCanvasFocusPathBoundsUpdate(*control, canvas.get(), bounds);
++}
++#endif
++
+ void CanvasRenderingContext2D::drawFocusIfNeeded(Element& element)
+ {
+     drawFocusIfNeededInternal(m_path, element);
+diff --git a/Source/WebCore/html/canvas/CanvasRenderingContext2D.h b/Source/WebCore/html/canvas/CanvasRenderingContext2D.h
+index d0582c92021378066cd898548464ff6bcf7b9057..1eec1491514db8039ff5a6e0d4bf32e1aa19722d 100644
+--- a/Source/WebCore/html/canvas/CanvasRenderingContext2D.h
++++ b/Source/WebCore/html/canvas/CanvasRenderingContext2D.h
+@@ -28,10 +28,12 @@
+ #include "CanvasRenderingContext2DBase.h"
+ #include "HTMLCanvasElement.h"
+ #include <memory>
++#include <wtf/WeakPtr.h>
+ 
+ namespace WebCore {
+ 
+ class TextMetrics;
++struct CanvasHitRegionOptions;
+ 
+ class CanvasRenderingContext2D final : public CanvasRenderingContext2DBase {
+     WTF_MAKE_TZONE_ALLOCATED(CanvasRenderingContext2D);
+@@ -42,6 +44,13 @@ public:
+ 
+     HTMLCanvasElement& canvas() const { return downcast<HTMLCanvasElement>(canvasBase()); }
+ 
++#if ENABLE(CANVAS_HIT_REGIONS)
++    ExceptionOr<void> addHitRegion(const CanvasHitRegionOptions&);
++    void removeHitRegion(const String&);
++    void clearHitRegions();
++    String hitRegionAtPoint(const FloatPoint&) const;
++    bool hasHitRegions() const final { return !m_hitRegions.isEmpty(); }
++#endif
+     void drawFocusIfNeeded(Element&);
+     void drawFocusIfNeeded(Path2D&, Element&);
+ 
+@@ -62,6 +71,19 @@ private:
+     RefPtr<Filter> createFilter(const FloatRect& bounds) const override;
+     IntOutsets calculateFilterOutsets(const FloatRect& bounds) const override;
+ 
++#if ENABLE(CANVAS_HIT_REGIONS)
++    struct HitRegion {
++        String id;
++        // A control may be the canvas itself or one of its ancestors.
++        // Do not let interaction metadata keep its owning DOM subtree alive.
++        WeakPtr<Element, WeakPtrImplWithEventTargetData> control;
++        Path path;
++    };
++    Vector<HitRegion> m_hitRegions;
++    void didResetHitRegions() final { clearHitRegions(); }
++    void didClearHitRegionPixels(const Path&) final;
++    void updateHitRegionControlBounds(const HitRegion&, bool removed = false);
++#endif
+     void setFontWithoutUpdatingStyle(const String&);
+ 
+     void drawTextInternal(const String& text, double x, double y, bool fill, std::optional<double> maxWidth = std::nullopt);
+diff --git a/Source/WebCore/html/canvas/CanvasRenderingContext2D.idl b/Source/WebCore/html/canvas/CanvasRenderingContext2D.idl
+index 42d20ed46b377304c49a3981cfc65ab40fcb8a5e..6737763acbc004d3f0edf74b750a97c815a895c6 100644
+--- a/Source/WebCore/html/canvas/CanvasRenderingContext2D.idl
++++ b/Source/WebCore/html/canvas/CanvasRenderingContext2D.idl
+@@ -42,6 +42,9 @@ enum RenderingMode {
+     readonly attribute HTMLCanvasElement canvas;
+ 
+     CanvasRenderingContext2DSettings getContextAttributes();
++    [Conditional=CANVAS_HIT_REGIONS, RaisesException] undefined addHitRegion(optional CanvasHitRegionOptions options = {});
++    [Conditional=CANVAS_HIT_REGIONS] undefined removeHitRegion(DOMString id);
++    [Conditional=CANVAS_HIT_REGIONS] undefined clearHitRegions();
+ 
+     // Non-standard legacy aliases (CanvasFillStrokeStyles).
+     undefined setStrokeColor(DOMString color, optional unrestricted float alpha);
 diff --git a/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.cpp b/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.cpp
-index eaad38378a1ab2fdeb798d2a7d86325254400472..99dbe64d8d6e09f2e3cffcffa6625e9dd027940e 100644
+index eaad38378a1ab2fdeb798d2a7d86325254400472..571512d8ad315d54d7b239e9420cafa31ad87401 100644
 --- a/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.cpp
 +++ b/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.cpp
-@@ -2638,10 +2638,30 @@ void CanvasRenderingContext2DBase::willUpdateContents(std::optional<FloatRect> r
+@@ -32,6 +32,10 @@
+ 
+ #include "config.h"
+ #include "CanvasRenderingContext2DBase.h"
++#if ENABLE(CANVAS_HIT_REGIONS)
++#include "PathSkia.h"
++#include <skia/pathops/SkPathOps.h>
++#endif
+ 
+ #include "ApplyImageDevicePixelRatio.h"
+ #include "BitmapImage.h"
+@@ -355,6 +359,9 @@ void CanvasRenderingContext2DBase::didUpdateCanvasSizeProperties(bool sizeChange
+     for (size_t i = 0; i < restoreCount; ++i)
+         restore();
+     m_stateStack.first() = State();
++#if ENABLE(CANVAS_HIT_REGIONS)
++    didResetHitRegions();
++#endif
+     m_path.clear();
+     m_bufferNativeImage = nullptr;
+     m_cachedContents.emplace<CachedContentsTransparent>();
+@@ -1284,9 +1291,37 @@ void CanvasRenderingContext2DBase::clipInternal(const Path& path, CanvasFillRule
+         return;
+ 
+     realizeSaves();
++#if ENABLE(CANVAS_HIT_REGIONS)
++    if (is2d())
++        modifiableState().hitRegionClip = clippedHitRegionPath(path, windingRule).value_or(Path { });
++#endif
+     c->clipPath(path, toWindRule(windingRule));
+ }
+ 
++#if ENABLE(CANVAS_HIT_REGIONS)
++std::optional<Path> CanvasRenderingContext2DBase::clippedHitRegionPath(const Path& source, CanvasFillRule rule) const
++{
++    if (!hasInvertibleTransform())
++        return std::nullopt;
++    Path mapped = source;
++    mapped.transform(state().transform);
++    SkPath filled = *mapped.platformPath();
++    filled.setFillType(rule == CanvasFillRule::Evenodd ? SkPathFillType::kEvenOdd : SkPathFillType::kWinding);
++    auto size = canvasBase().size();
++    SkPath clip = state().hitRegionClip ? *state().hitRegionClip->platformPath() : SkPath::Rect(SkRect::MakeWH(size.width(), size.height()));
++    SkRect first, second;
++    if (filled.isRect(&first) && clip.isRect(&second)) {
++        if (!first.intersect(second))
++            return Path { };
++        return Path { PathSkia::create(SkPath::Rect(first)) };
++    }
++    auto result = Op(filled, clip, kIntersect_SkPathOp);
++    if (!result)
++        return std::nullopt;
++    return Path { PathSkia::create(WTF::move(*result)) };
++}
++#endif
++
+ void CanvasRenderingContext2DBase::beginCompositeLayer()
+ {
+ #if !USE(CAIRO)
+@@ -1396,6 +1431,14 @@ void CanvasRenderingContext2DBase::clearRect(double x, double y, double width, d
+         }
+         context->setCompositeOperation(CompositeOperator::SourceOver);
+     }
++#if ENABLE(CANVAS_HIT_REGIONS)
++    if (is2d() && hasHitRegions()) {
++        Path cleared;
++        cleared.addRect(rect);
++        if (auto pixels = clippedHitRegionPath(cleared))
++            didClearHitRegionPixels(*pixels);
++    }
++#endif
+     context->clearRect(rect);
+     if (saved)
+         context->restore();
+@@ -2638,10 +2681,30 @@ void CanvasRenderingContext2DBase::willUpdateContents(std::optional<FloatRect> r
          if (context->shouldAntialias())
              dirtyRect.inflate(1);
  #if USE(COORDINATED_GRAPHICS)
@@ -12140,6 +12624,74 @@ index eaad38378a1ab2fdeb798d2a7d86325254400472..99dbe64d8d6e09f2e3cffcffa6625e9d
  #else
          m_dirtyRect.unite(dirtyRect);
  #endif
+diff --git a/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.h b/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.h
+index 2607faee32402d89b9d9ec461b55d70ad2291ce1..1ca49c8e5e25df9d5e6b5a23cb41d42af1c8ed78 100644
+--- a/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.h
++++ b/Source/WebCore/html/canvas/CanvasRenderingContext2DBase.h
+@@ -296,6 +296,9 @@ public:
+         Color shadowColor;
+         double globalAlpha;
+         AffineTransform transform;
++#if ENABLE(CANVAS_HIT_REGIONS)
++        std::optional<Path> hitRegionClip;
++#endif
+         std::optional<AffineTransform> transformInverse;
+         Vector<double> lineDash;
+         double lineDashOffset;
+@@ -339,6 +342,12 @@ protected:
+     static constexpr auto DefaultFontFamily = "sans-serif"_s;
+ 
+     const State& state() const LIFETIME_BOUND { return m_stateStack.last(); }
++#if ENABLE(CANVAS_HIT_REGIONS)
++    std::optional<Path> clippedHitRegionPath(const Path&, CanvasFillRule = CanvasFillRule::Nonzero) const;
++    virtual bool hasHitRegions() const { return false; }
++    virtual void didResetHitRegions() { }
++    virtual void didClearHitRegionPixels(const Path&) { }
++#endif
+     void realizeSaves();
+     State& modifiableState() LIFETIME_BOUND { ASSERT(!m_unrealizedSaveCount || m_stateStack.size() >= MaxSaveCount); return m_stateStack.last(); }
+ 
+diff --git a/Source/WebCore/inspector/InspectorCanvasArguments.h b/Source/WebCore/inspector/InspectorCanvasArguments.h
+index 18de0e6c6de219c62c0f67c86a43931084a0a9bc..94889a2d4b3dd7f7a1798745cddfb32a864d423a 100644
+--- a/Source/WebCore/inspector/InspectorCanvasArguments.h
++++ b/Source/WebCore/inspector/InspectorCanvasArguments.h
+@@ -118,6 +118,19 @@ template<typename IDLType> struct InspectorCanvasArgumentProcessor {
+     }
+ };
+ 
++#if ENABLE(CANVAS_HIT_REGIONS)
++struct CanvasHitRegionOptions;
++
++template<> struct InspectorCanvasArgumentProcessor<IDLDictionary<CanvasHitRegionOptions>> {
++    std::optional<InspectorCanvasProcessedArgument> operator()(InspectorCanvas&, const CanvasHitRegionOptions&)
++    {
++        // Hit regions do not draw pixels and may refer to DOM controls or paths
++        // that cannot be reconstructed from a canvas recording's JSON arguments.
++        return std::nullopt;
++    }
++};
++#endif
++
+ // MARK: - Adaptors
+ 
+ template<typename IDLType> struct InspectorCanvasArgumentProcessor<IDLNullable<IDLInterface<IDLType>>> {
+diff --git a/Source/WebCore/inspector/InspectorCanvasCallTracer.cpp b/Source/WebCore/inspector/InspectorCanvasCallTracer.cpp
+index 630b8da74fe0d770a34b573e653a7ca05b1a117e..86acd08e780d52d13ee4bcf10c144203e1e56196 100644
+--- a/Source/WebCore/inspector/InspectorCanvasCallTracer.cpp
++++ b/Source/WebCore/inspector/InspectorCanvasCallTracer.cpp
+@@ -80,6 +80,12 @@ RefPtr<InspectorCanvas> InspectorCanvasCallTracer::enabledInspectorCanvas(GPUDev
+ 
+ void InspectorCanvasCallTracer::recordAction(CanvasRenderingContext& canvasRenderingContext, String&& name, InspectorCanvasProcessedArguments&& arguments)
+ {
++#if ENABLE(CANVAS_HIT_REGIONS)
++    // Recordings replay drawing commands, not canvas interaction metadata.
++    // In particular, their JSON cannot restore a hit region's DOM control.
++    if (name == "addHitRegion"_s || name == "removeHitRegion"_s || name == "clearHitRegions"_s)
++        return;
++#endif
+     if (CheckedPtr canvasAgent = enabledCanvasAgent(canvasRenderingContext))
+         canvasAgent->recordAction(canvasRenderingContext, WTF::move(name), WTF::move(arguments));
+ }
 diff --git a/Source/WebCore/layout/formattingContexts/grid/GridFormattingContext.cpp b/Source/WebCore/layout/formattingContexts/grid/GridFormattingContext.cpp
 index 1e32526022d7299e8ba3b5f4f82c59d5244267af..42eba71cd13dd736fde5b3ca949bddba0595983b 100644
 --- a/Source/WebCore/layout/formattingContexts/grid/GridFormattingContext.cpp
@@ -149360,10 +149912,10 @@ index 359c3765d3a41ba1c6cfdb6b44fa292cc7811a0d..18a4d1524bbb7a68b2bec420d013fd89
  endif ()
 diff --git a/Source/cmake/OptionsHaiku.cmake b/Source/cmake/OptionsHaiku.cmake
 new file mode 100644
-index 0000000000000000000000000000000000000000..ec319297cb9de2f6dc5d6dec58c346ad1f4d7957
+index 0000000000000000000000000000000000000000..7d8c6ec2e0f597b2b591a7025002d0cb5c5e2009
 --- /dev/null
 +++ b/Source/cmake/OptionsHaiku.cmake
-@@ -0,0 +1,376 @@
+@@ -0,0 +1,379 @@
 +include(GNUInstallDirs)
 +include(VersioningUtils)
 +
@@ -149425,6 +149977,7 @@ index 0000000000000000000000000000000000000000..ec319297cb9de2f6dc5d6dec58c346ad
 +add_definitions(-DDATA_DIR="${CMAKE_INSTALL_PREFIX}/${DATA_INSTALL_DIR}")
 +
 +WEBKIT_OPTION_BEGIN()
++WEBKIT_OPTION_DEFINE(ENABLE_CANVAS_HIT_REGIONS "Enable canvas 2D hit regions" PUBLIC ON)
 +WEBKIT_OPTION_DEFINE(ENABLE_CUSTOM_PROTOCOL_HANDLERS "Enable website protocol handler registration" PUBLIC ${ENABLE_WEBKIT})
 +WEBKIT_OPTION_DEFINE(ENABLE_WEBUSB "Enable the native Haiku WebUSB broker" PUBLIC ${ENABLE_WEBKIT})
 +WEBKIT_OPTION_DEFINE(ENABLE_WEB_BLUETOOTH "Enable the native air/OS Web Bluetooth broker" PUBLIC ${ENABLE_WEBKIT})
@@ -149506,6 +150059,8 @@ index 0000000000000000000000000000000000000000..ec319297cb9de2f6dc5d6dec58c346ad
 +# TODO have a ENABLE_DEVELOPER_MODE option like the GTK build
 +WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_LAYOUT_TESTS PRIVATE ON)
 +
++# Canvas hit regions use exact Skia path intersection/subtraction.
++WEBKIT_OPTION_DEPEND(ENABLE_CANVAS_HIT_REGIONS USE_SKIA)
 +WEBKIT_OPTION_END()
 +
 +# Skia needs HarfBuzz for shaping; the ICU component provides the Unicode

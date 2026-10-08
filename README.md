@@ -61,7 +61,7 @@ for tested versions and limitations.
 | Area | Current implementation |
 | --- | --- |
 | Rendering | Modern WebKit HTML/CSS/JavaScript, [WebGL](docs/webgl.md), and accelerated compositing when a suitable EGL/GLES driver is available; software rendering otherwise. |
-| Canvas | Main-thread and worker OffscreenCanvas with 2D, WebGL/WebGL2, and ImageBitmap transfer. |
+| Canvas | [2D hit regions](docs/canvas-hit-regions.md), plus main-thread and worker OffscreenCanvas with 2D, WebGL/WebGL2, and ImageBitmap transfer. |
 | Images | Standard web formats plus JPEG XL and HEIC decoding, and JPEG XR decoding/encoding. |
 | Media | HTML audio/video and [MediaSource streaming](docs/streaming-media.md) for MP4, WebM, ADTS AAC, MPEG audio and MPEG-TS. Direct [MPEG-DASH](docs/dash-playback.md) supports H.264/AAC, seeking, adaptive quality and live refresh. |
 | Encrypted media | [Clear Key EME](docs/encrypted-media.md) with temporary CENC sessions for H.264/AAC through MediaSource or DASH. Widevine, PlayReady, FairPlay, and persistent licenses are unsupported. |
