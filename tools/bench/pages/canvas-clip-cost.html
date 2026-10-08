@@ -1,0 +1,62 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Canvas clipping diagnostic</title>
+<pre id="out">Running</pre>
+<script>
+(async () => {
+  const query = new URLSearchParams(location.search);
+  const iterations = Number(query.get('iterations') || 10000);
+  const rounds = Number(query.get('rounds') || 5);
+  const html = document.createElement('canvas');
+  html.width = 256; html.height = 128;
+  const offscreen = new OffscreenCanvas(256, 128);
+  const contexts = [html, offscreen].map(canvas => canvas.getContext('2d', { willReadFrequently: true }));
+  const paths = {};
+  paths.rectangle = new Path2D(); paths.rectangle.rect(8, 8, 220, 100);
+  paths.rounded = new Path2D(); paths.rounded.roundRect(8, 8, 220, 100, 12);
+  paths.polygon = new Path2D();
+  for (let i = 0; i < 20; ++i) {
+    const angle = i * Math.PI / 10, radius = i % 2 ? 38 : 54;
+    const x = 128 + Math.cos(angle) * radius, y = 64 + Math.sin(angle) * radius;
+    if (!i) paths.polygon.moveTo(x, y); else paths.polygon.lineTo(x, y);
+  }
+  paths.polygon.closePath();
+  function run(context, path, count, nested) {
+    context.clearRect(0, 0, 256, 128);
+    context.fillStyle = '#2367a1';
+    const start = performance.now();
+    for (let i = 0; i < count; ++i) {
+      context.save();
+      context.clip(path);
+      if (nested) { context.translate(1, 1); context.clip(paths.rectangle); }
+      // A single covered pixel exercises clipping without timing a large fill.
+      context.fillRect(nested ? 127 : 128, nested ? 63 : 64, 1, 1);
+      context.restore();
+    }
+    const elapsed = performance.now() - start;
+    return { elapsed, pixel: [...context.getImageData(128, 64, 1, 1).data] };
+  }
+  const results = [];
+  for (const [name, path] of Object.entries(paths)) {
+    for (const nested of [false, true]) {
+      const values = [[], []];
+      for (const context of contexts) run(context, path, 100, nested);
+      for (let round = 0; round < rounds; ++round) {
+        // Alternate order so warming or drift does not always favour one API.
+        for (const index of round % 2 ? [1, 0] : [0, 1]) {
+          await new Promise(resolve => setTimeout(resolve, 20));
+          values[index].push(run(contexts[index], path, iterations, nested));
+        }
+      }
+      results.push({ name, nested, html: values[0], offscreen: values[1] });
+      document.querySelector('#out').textContent = JSON.stringify(results, null, 2);
+    }
+  }
+  const passed = results.every(result => [...result.html, ...result.offscreen].every(sample =>
+    sample.pixel.join() === '35,103,161,255'));
+  const result = { iterations, rounds, results, passed, viewport: [innerWidth, innerHeight], dpr: devicePixelRatio };
+  document.title = `Canvas clipping: ${passed ? 'PASS' : 'FAIL'}`;
+  document.querySelector('#out').textContent = JSON.stringify(result, null, 2);
+  await fetch('/__bench/probe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(result) });
+})().catch(error => { document.title = 'FAIL:' + error.message; document.querySelector('#out').textContent = error.stack; });
+</script>

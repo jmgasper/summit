@@ -71,6 +71,30 @@ above). It remains an experiment rather than a default change. Evidence:
 `.vm/bench/tab-memory-20261008-133341-opt1008-purge0-mixed/` and
 `.vm/bench/speedometer-20261008-133651-opt1008-purge0-a/`.
 
+`canvas-clip-cost.html` compares HTML and Offscreen 2D canvases with
+`willReadFrequently: true`, alternating their order for five rounds of 10,000
+save/clip/single-pixel-fill/restore operations. Median milliseconds on the
+original installed engine:
+
+| Clip | HTML canvas | OffscreenCanvas |
+| --- | ---: | ---: |
+| Rectangle | 26 | 14 |
+| Rectangle, then translated nested rectangle | 41 | 17 |
+| Rounded rectangle | 261 | 135 |
+| Rounded rectangle, then nested rectangle | 558 | 236 |
+| Twenty-point polygon | 756 | 561 |
+| Polygon, then nested rectangle | 1423 | 989 |
+
+All resulting pixels passed in the corrected fixture, the run was uncontended
+and the browser quit without helpers or crash/debugger events. Evidence:
+`.vm/bench/probe-20261008-140039-summit-opt1008-clip-baseline-b/`.
+The first attempt had a fixture error: its nested case read a pixel before
+accounting for the translation. Its validation failed and it is excluded.
+`run-probe.py` now reports an explicit `passed: false` payload as a failed
+probe, and records teardown, helper and crash evidence. These timings motivate
+an investigation of eager hit-region clip bookkeeping; they do not by
+themselves attribute every HTML/Offscreen difference to that bookkeeping.
+
 ## 5 October 2026: quitting with a busy page, helpers left behind, the Pi's video decoder
 
 Three items left open on the Raspberry Pi 4 the night before, checked on the

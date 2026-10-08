@@ -48,6 +48,7 @@ def main():
     if args.browser == 'summit':
         guest.wait_for_free_gui(ctl, args.bundle)
     before = guest.load_report(ctl, (), 3000)
+    watch = guest.CrashWatch()
     server = subprocess.Popen([sys.executable, str(guest.BENCH / 'serve-speedometer.py'), '--port', str(args.port),
                                '--bind', guest.SERVER_BIND, '--out-dir', str(directory)],
                               stdout=(directory / 'server.log').open('w'), stderr=subprocess.STDOUT)
@@ -56,6 +57,8 @@ def main():
         raise RuntimeError(f"Fixture server exited before browser launch; see {directory / 'server.log'}")
     guest.wake_display()
     team = group = None
+    shutdown = None
+    leftovers = []
     outcome = 'timeout'
     url = f'http://{guest.HOST_ADDRESS}:{args.port}/__bench/pages/{args.page}'
     try:
@@ -91,7 +94,11 @@ def main():
         guest.screenshot(directory / 'final.png')
     finally:
         if team is not None:
-            guest.terminate(ctl, team, group=group)
+            shutdown = guest.terminate(ctl, team, group=group)
+            leftovers = guest.members(ctl, group)
+        elif group is not None:
+            shutdown = guest.terminate(ctl, group, group=group)
+            leftovers = guest.members(ctl, group)
         if args.browser == 'firefox':
             guest.ssh(r'ps | /bin/grep "[F]irefox" | awk "{print \$(NF-3)}" | xargs -r kill -9 2>/dev/null; true', check=False)
         guest.fetch_file(f'{guest_dir}/browser.log', directory / 'browser.log', tail_bytes=1024 * 1024)
@@ -99,16 +106,22 @@ def main():
             guest.fetch_file(f'{guest_dir}/profile.txt', directory / 'profile.txt')
         guest.ssh(f'rm -rf {guest_dir}/profile', check=False, timeout=300)
         server.terminate()
+        server.wait(timeout=10)
+    crashes = watch.poll()
     after = guest.load_report(ctl, (), 3000)
     report = {'id': run_id, 'outcome': outcome, 'browser': args.browser, 'page': args.page,
               'machine': guest.HOST, 'bundle': args.bundle, 'env': args.env,
               'haikuProfile': args.haiku_profile,
+              'shutdown': shutdown, 'leftovers': leftovers, 'crashes': crashes,
               'load': {'before': before, 'after': after}, 'contended': before['contended'] or after['contended']}
     if outcome == 'completed':
         report['probe'] = json.loads((directory / 'probe.json').read_text())['payload']
+        if report['probe'].get('passed') is False:
+            report['outcome'] = 'probe-failed'
     (directory / 'run.json').write_text(json.dumps(report, indent=1))
     print(json.dumps(report, indent=1))
-    return 0 if outcome == 'completed' else 1
+    return 0 if (report['outcome'] == 'completed' and not leftovers
+                 and not crashes['newReports'] and not crashes['syslogEvents']) else 1
 
 
 if __name__ == '__main__':
