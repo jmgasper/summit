@@ -244,6 +244,26 @@ so it proceeds to real-tab and longer workload validation with eight markers.
 No installed setting has changed yet. Evidence:
 `.vm/optimization-2026-10-08/speedometer-cap-matrix.json`.
 
+The twelve-site trials did **not** reproduce a general memory reduction:
+valid default runs settled at **6061 and 6031 MiB** after visiting all tabs;
+multiplier 4 settled at **6022 and 6129 MiB**. All four valid runs closed back
+to blank, quit normally and left no helpers or crash/debugger events. The
+allocation-heavy diagnostic remains the only demonstrated memory saving.
+Evidence: `.vm/optimization-2026-10-08/real-cap-trials.json` and
+`.vm/optimization-2026-10-08/opt1008-default-crash-repeat-a/run.json`.
+
+One additional default-control run failed: GitHub's WebProcess exited during
+tab switching, with an invalid-opcode exception in `pthread_cond_wait` on a
+collector helper thread. Its lower memory total is excluded. The report's
+instruction pointer falls inside the call instruction immediately before the
+normal return address; this observation does not establish the cause.
+The installed baseline and candidate JavaScriptCore libraries have the same
+SHA-256, `348d27b11dfe0c55d4267f174193d3ec1d3005bfb9d024aa6a856069ca02ecaa`.
+The immediate full-workload repeat above passed. Further native condition
+variable and sustained-browser checks are in progress; no fix is claimed.
+Evidence: `.vm/optimization-2026-10-08/opt1008-default-b-real/run.json` and
+`WebProcess-346376-debug-08-10-2026-04-57-23.report` in the same session directory.
+
 ## 5 October 2026: quitting with a busy page, helpers left behind, the Pi's video decoder
 
 Three items left open on the Raspberry Pi 4 the night before, checked on the
