@@ -5,17 +5,25 @@
 Seven additional issues appeared after the original deployment. #43 and #44
 are verified in `bundle-a7988kyv`; #49 is verified in `bundle-a3u9gkoe`.
 #45 is verified in `bundle-3ulccsni`; #46 is verified in `bundle-zf9_3v7d`.
-#48 is verified in `bundle-ralgs2gr`, which is now installed as the combined
-deployment. All issues are closed. The normal desktop launcher passes all
-48 OffscreenCanvas/image-codec checks, loads its application, helpers, WebKit
-and JavaScriptCore from that bundle, and quits without crashes or helpers left
-behind. Its screenshot was inspected. The existing user browser and other apps
-remain open. Installation evidence is in `.vm/issues43-49/{install.log,
+#48 is verified in `bundle-ralgs2gr`, which was installed as the combined
+issue-fix deployment. All issues are closed. The normal desktop launcher passed
+all 48 OffscreenCanvas/image-codec checks, loaded its application, helpers,
+WebKit and JavaScriptCore from that bundle, and quit without crashes or helpers
+left behind. Its screenshot was inspected. The user's browser and other apps
+were preserved during that installation. Evidence is in `.vm/issues43-49/{install.log,
 installed-results.json,installed.png}`.
 
 The requested six-hour performance session started afterward, at 02:14:10 UTC
-on October 8 (13:14 Hobart), with a deadline of 08:14:10 UTC (19:14 Hobart).
+on October 8 (13:14 Hobart). Excluding 1,275 seconds of workstation outage and
+user-requested pause moved its minimum finish to 08:35:25 UTC (19:35 Hobart).
 Its measurements and changes are recorded in [performance notes](performance.md).
+
+The retained optimizations are now installed in `bundle-tmeeg8cb`, built from
+`b4006ff` with engine patch `b178f34d…`. The normal desktop launcher again passed
+all 48 checks, with the expected application/helper/library paths and clean
+teardown. The graphics restoration regression passed another 68 checks.
+Evidence: `.vm/optimization-2026-10-08/final-installed-1791444384/` and
+`.vm/bench/presentation-lifetime-20261008-182633-opt1008-final-retained/`.
 
 **#47 is complete:** MediaSource accepts MP4, WebM, raw ADTS AAC, MPEG audio
 and MPEG-TS with the codec matrix in [streaming media](streaming-media.md).

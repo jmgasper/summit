@@ -393,6 +393,21 @@ clip optimization and the idle texture-pool improvement. No GC allowance,
 heap-growth, allocator-purge or hidden-buffer policy change is being shipped.
 Evidence: `.vm/optimization-2026-10-08/gpu-buffers/real-results.json`.
 
+The retained engine was rebuilt and installed as **`bundle-tmeeg8cb`** from
+source **`b4006ff`**, with patch `b178f34d…`. JavaScriptCore remains byte-identical
+to the initial baseline (`348d27b1…`). The normal desktop launcher passed all
+48 OffscreenCanvas/image-codec checks, loaded its executable, helpers and
+engine libraries from the new bundle, and quit without helpers or crash
+events. Its screenshot was inspected. The first installed check had a fixture
+server error (missing image-file routes); its failed evidence is preserved.
+After fixing the server mapping, a fresh run passed:
+`.vm/optimization-2026-10-08/final-installed-1791444384/`.
+
+The reusable `tools/bench/run-presentation-buffer-lifetime.py` also passed all
+68 checks on the installed retained engine, including exact restored pixels,
+background updates and resize, with normal quit and no helpers or crash events.
+Evidence: `.vm/bench/presentation-lifetime-20261008-182633-opt1008-final-retained/`.
+
 ## 5 October 2026: quitting with a busy page, helpers left behind, the Pi's video decoder
 
 Three items left open on the Raspberry Pi 4 the night before, checked on the
