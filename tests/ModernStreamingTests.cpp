@@ -41,7 +41,18 @@ int main(int argc, char** argv)
             auto url = std::string(argv[3]) + "/test.html?case=" + std::to_string(i);
             Send(browser, summit::kNavigate, -1, url);
             Require(Wait([&] { return title() == "Streaming ready " + std::to_string(i); }), "Streaming fixture ready");
-            FocusWindow(browser);
+            // The hardware runner wakes the display asynchronously. Activation
+            // requested while the screen blanker owns focus can be ignored, so
+            // retry activation while waiting for this owned window to be active.
+            Require(Wait([&] {
+                if (Property(browser, "Active").GetBool("result", false))
+                    return true;
+                BMessage activate(B_SET_PROPERTY);
+                activate.AddSpecifier("Active");
+                activate.AddBool("data", true);
+                return Query(browser, activate).GetInt32("error", B_ERROR) == B_OK
+                    && Property(browser, "Active").GetBool("result", false);
+            }), "browser owns native input focus");
             Click(Page(browser, Selected(State(browser))), BPoint(80, 40));
             Require(Wait([&] { return title().starts_with("Streaming_PASS ") || title().starts_with("Streaming_FAIL "); }, 60000000),
                 "Streaming playback test finishes");

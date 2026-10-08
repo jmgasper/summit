@@ -11,7 +11,7 @@ const state=()=>({index,test,time:media.currentTime,duration:media.duration,read
   buffered:buffered()});
 const assert=(value,label)=>{checks.push({label,passed:!!value});if(!value)throw Error(label)};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-const wait=async(predicate,label)=>{const end=performance.now()+20000;while(!predicate()){
+const wait=async(predicate,label,timeout=20000)=>{const end=performance.now()+timeout;while(!predicate()){
  if(media.error)throw Error(JSON.stringify(state().error));if(performance.now()>end)throw Error(label);await sleep(25)}};
 const event=(target,name)=>new Promise((resolve,reject)=>{
  const timeout=setTimeout(()=>{cleanup();reject(Error('timeout '+name))},20000);
@@ -89,7 +89,11 @@ document.getElementById('play').onclick=async()=>{document.getElementById('play'
  await wait(()=>media.currentTime>offset+.6,'clock advances');
  assert(!media.ended&&media.currentTime<offset+1.4,'smooth playback clock');
  assert(performance.now()-playStarted>150&&performance.now()-playStarted<2500,'clock tracks elapsed playback');
- if(test.video){assert(media.videoWidth===160&&media.videoHeight===90,'decoded video dimensions');assert(hashes.size>=3,'multiple decoded canvas frames')}
+ if(test.video){assert(media.videoWidth===160&&media.videoHeight===90,'decoded video dimensions');
+  // Cold audio setup can delay the first sampler callback beyond the clock check.
+  // Require three distinct decoded frames within a separate, bounded interval.
+  await wait(()=>hashes.size>=3,'multiple decoded canvas frames',1000);
+  assert(hashes.size>=3,'multiple decoded canvas frames')}
  assert(!media.muted&&media.volume===1,'audio output enabled');
  if(test.after)await wait(()=>media.currentTime>4.5,'play through audio format change');
  if(test.playThrough)await wait(()=>media.currentTime>test.playThrough,'play through transport discontinuity');

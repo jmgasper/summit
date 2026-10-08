@@ -67,6 +67,7 @@ def main():
                     raise guest.GuestError('fixture server did not become ready')
                 time.sleep(.25)
         end_case = min(len(cases), args.first_case + args.limit) if args.limit else len(cases)
+        guest.wake_display()
         team = guest.launch(bundle, remote + '/profile', 'about:blank', remote + '/browser.log',
                             {'SUMMIT_ENABLE_INPUT_SYNTHESIS': '1', 'SUMMIT_MSE_TRACE': '1',
                              'SUMMIT_LIBRARY_PATH_PREFIX': '/boot/home/summit-mesa/prefix-20261002/lib',
@@ -84,7 +85,11 @@ print(p.pid)
         result['driver'] = driver
         (args.output / 'active.json').write_text(json.dumps(result, indent=2))
         deadline = time.monotonic() + 600
+        next_display_wake = time.monotonic() + 10
         while guest.alive(driver) and time.monotonic() < deadline:
+            if time.monotonic() >= next_display_wake:
+                guest.wake_display()
+                next_display_wake = time.monotonic() + 10
             time.sleep(1)
         if guest.alive(driver):
             result['timedOut'] = True
@@ -102,10 +107,14 @@ print(p.pid)
         server.wait(timeout=10)
         result['crashes'] = watch.poll()
         log = (args.output / 'native.log').read_text() if (args.output / 'native.log').exists() else ''
+        browser_log = (args.output / 'browser.log').read_text() if (args.output / 'browser.log').exists() else ''
+        result['audioOutputErrors'] = [line for line in browser_log.splitlines()
+                                       if 'audio output failed:' in line]
         result['passed'] = ('Streaming_RESULT PASS' in log and not result.get('members')
-                            and not result.get('timedOut') and not result['crashes']['newReports'])
+                            and not result.get('timedOut') and not result['crashes']['newReports']
+                            and not result['crashes']['syslogEvents']
+                            and not result['audioOutputErrors'])
         if result['passed']:
-            browser_log = (args.output / 'browser.log').read_text()
             loads = re.split(r'load player=0x[0-9a-f]+', browser_log)[1:]
             result['audioSeekChecks'] = []
             result['videoTimingChecks'] = []
@@ -134,7 +143,6 @@ print(p.pid)
                                                   'passed': actual is not None and abs(actual - target) < tolerance})
             result['passed'] = len(loads) == end_case - args.first_case and all(item['passed'] for item in result['audioSeekChecks'] + result['videoTimingChecks'])
         if result['passed'] and args.first_case <= 21 and end_case >= 24:
-            browser_log = (args.output / 'browser.log').read_text()
             completed = {(int(decoded), int(queued)) for decoded, queued in re.findall(
                 r'audio finished codec=Opus generation=\d+ decoded=(\d+) queued=(\d+)', browser_log)}
             # Four seconds of exact PCM, after the different packet sizes'
