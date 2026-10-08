@@ -5,9 +5,17 @@
 Seven additional issues appeared after the original deployment. #43 and #44
 are verified in `bundle-a7988kyv`; #49 is verified in `bundle-a3u9gkoe`.
 #45 is verified in `bundle-3ulccsni`; #46 is verified in `bundle-zf9_3v7d`.
-#48 is verified in `bundle-ralgs2gr`. Installation of the combined bundle and
-the requested six-hour performance session remain to be completed. The desktop
-launcher still selects the original deployment until the next installation.
+#48 is verified in `bundle-ralgs2gr`, which is now installed as the combined
+deployment. All issues are closed. The normal desktop launcher passes all
+48 OffscreenCanvas/image-codec checks, loads its application, helpers, WebKit
+and JavaScriptCore from that bundle, and quits without crashes or helpers left
+behind. Its screenshot was inspected. The existing user browser and other apps
+remain open. Installation evidence is in `.vm/issues43-49/{install.log,
+installed-results.json,installed.png}`.
+
+The requested six-hour performance session started afterward, at 02:14:10 UTC
+on October 8 (13:14 Hobart), with a deadline of 08:14:10 UTC (19:14 Hobart).
+Its measurements and changes are recorded in [performance notes](performance.md).
 
 **#47 is complete:** MediaSource accepts MP4, WebM, raw ADTS AAC, MPEG audio
 and MPEG-TS with the codec matrix in [streaming media](streaming-media.md).

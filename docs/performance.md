@@ -1,5 +1,21 @@
 # Summit performance: Speedometer 3.1 baseline, where the time goes, stress test
 
+## 8 October 2026: six-hour optimization session
+
+All issue fixes were installed and verified on X399 before this session began.
+The session runs from **02:14:10 to 08:14:10 UTC** (13:14 to 19:14 Hobart).
+Earlier issue implementation, builds and verification do not count toward it.
+The baseline is `bundle-ralgs2gr`, engine patch
+`303c94b24cd5f1cf92493e00a6c30f0985a7e52d3630c24b14f538719850605f`,
+with Mesa `prefix-20261002` and the October 7 WebKit pin. The normal installed
+launcher and its loaded engine/helper paths were verified.
+
+Measurements use owned browser groups and isolated profiles while preserving
+the user's original browser and other applications. CPU contention, actual
+viewport dimensions, memory usage, teardown and crash evidence accompany the
+runs. The session record is `.vm/optimization-2026-10-08/session.json`.
+Baseline measurements are in progress; no optimization gains are claimed yet.
+
 ## 5 October 2026: quitting with a busy page, helpers left behind, the Pi's video decoder
 
 Three items left open on the Raspberry Pi 4 the night before, checked on the
