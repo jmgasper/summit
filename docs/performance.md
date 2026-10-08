@@ -366,6 +366,23 @@ invalidates their damage history to require a complete repaint. Live page,
 canvas and layer resources remain. The experiment is initially off;
 `SUMMIT_RELEASE_HIDDEN_GPU_BUFFERS=1` enables it.
 
+In `bundle-vctsados`, the coordinated trial actually released the GPU
+attachments for all eleven hidden tabs. Both controls and the enabled run
+passed **783 checks** each and quit normally without helpers or crash events.
+All **36** initial/restored content screenshot pairs matched exactly.
+Hidden resident-area totals were **2001 and 1993 MiB** in the controls versus
+**2016 MiB** enabled; switching medians were **11.4 / 9.6 ms** versus
+**10.5 ms**. These results do not demonstrate a resident-memory reduction.
+Evidence: `.vm/optimization-2026-10-08/gpu-buffers/local-results*.json`.
+
+The dedicated graphics-lifetime fixture passed **68 checks** with the trial
+enabled. Both WebGL versions retained their buffers, scissor state and pixels;
+the 2D canvas retained its clipping state and pixels. Updates made while hidden
+survived another restoration and window resize. The unchanged restoration
+matched the original screenshot exactly. It quit normally without helpers
+or crash events. Evidence:
+`.vm/optimization-2026-10-08/opt1008-gpu-buffer-graphics/`.
+
 ## 5 October 2026: quitting with a busy page, helpers left behind, the Pi's video decoder
 
 Three items left open on the Raspberry Pi 4 the night before, checked on the
