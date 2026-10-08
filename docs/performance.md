@@ -135,6 +135,34 @@ The full arm64 browser build remains isolated from the existing cross-build
 checkout and its uncommitted changes. Its first attempt exceeded the build
 scope's memory limit; it resumed incrementally with six compiler jobs.
 
+The installed Pi engine scores **1.593** on a three-iteration Speedometer 3.1
+diagnostic with whole reads forced (individual scores 1.440, 1.653, 1.686).
+This short run has wide variation and is only a baseline for the forthcoming
+current-engine comparison. Its original harness marked a network helper
+present immediately after browser exit; a subsequent audit found it gone.
+The harness now observes up to five seconds of asynchronous helper teardown.
+Evidence: `.vm/performance-12h-20261008/pi-probe-20261008-213334-installed-speedometer-whole/`.
+
+Media checks also expose the age of the installed Pi engine. A 360-frame
+720p H.264 fixture finishes but reports 370–376 total frames; a freshly encoded
+360-frame 1080p clip reports 392 total frames, including 42 dropped frames.
+The newer decoder code already prevents replaying samples during initial
+decoder setup. The current X399 engine reports exactly 360 frames and zero
+drops on the 720p control. These are decoder counters, not proof that every
+frame reached the physical display. Native Pi validation of the newer browser
+is still pending.
+
+`mse.html` now records display dimensions, supports an explicit display width,
+and optionally checks a caller-supplied expected frame count at normal end.
+`expectedFrames=360` passes on X399 and rejects the installed Pi engine's
+370-frame run. Evidence:
+`.vm/bench/probe-20261008-214734-summit-perf12h-mse-expected-current/` and
+`.vm/performance-12h-20261008/pi-probe-20261008-214811-installed-mse-expected/`.
+An earlier remuxed 1080p input also stalled near its end; its edit-list and
+duration differences make it a separate case from the fresh 12-second encode.
+Fixture hashes and metadata are in
+`.vm/performance-12h-20261008/media-fixtures.json`.
+
 ## 8 October 2026: six-hour optimization session
 
 The retained build is **`bundle-tmeeg8cb`**, installed on X399. Deferred canvas
