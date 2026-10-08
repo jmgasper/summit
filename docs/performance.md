@@ -327,6 +327,25 @@ the earlier native invalid-opcode crash and does not establish its cause.
 No signal diagnostic was repeated on X399. Evidence:
 `.vm/optimization-2026-10-08/cond-signal-vm-bounded.{cpp,log}`.
 
+After the loader repair, the default candidate completed a matched
+**1,200-action** local stress run in **2,552 seconds**: 324 new tabs,
+319 closes, 232 navigations, 136 selections, 126 history actions and
+63 reloads. All actions completed without stalled loads, renderer exits,
+crash/debugger findings or leftover helpers; the browser quit normally.
+The 648 native load samples had a **112 ms median** and **376 ms p95**.
+After closing the workload and settling, resident-area totals were
+60 MiB for the browser, 39 MiB for networking and 242 MiB for renderers.
+This is a stability measurement, not a claim of zero memory growth.
+Evidence: `.vm/bench/stress-20261008-165154-opt1008-stress1200-default/`.
+
+The next trial, committed as `ab0fc08`, reclaims presentation buffers after
+30 seconds hidden. It retains the UI's current immutable frame, DOM/JS state,
+canvas pixels and layer tiles, while dropping spare UI bitmaps, the renderer
+bitmap/context and the compositor's full-frame output texture. Reactivation
+forces a complete repaint. Pending presentations and forced repaint callbacks
+delay reclamation. `SUMMIT_RELEASE_HIDDEN_FRAME_BUFFERS=1` opts in; it remains
+off by default while memory, restored pixels and switching costs are measured.
+
 ## 5 October 2026: quitting with a busy page, helpers left behind, the Pi's video decoder
 
 Three items left open on the Raspberry Pi 4 the night before, checked on the
