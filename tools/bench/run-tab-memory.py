@@ -82,6 +82,17 @@ def main():
               'arguments': vars(args), 'phases': {}, 'startedAt': time.time()}
     group = team = None
 
+    def pause(seconds):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            guest.wake_display()
+            time.sleep(min(10, max(0, deadline - time.monotonic())))
+
+    def capture(name):
+        guest.wake_display()
+        time.sleep(0.1)
+        guest.screenshot(output / name)
+
     def save():
         with event_lock:
             report['events'] = list(events)
@@ -108,6 +119,7 @@ def main():
         raise TimeoutError(f'No fixture event for tab {index}, visible={visible}')
 
     def snapshot(label):
+        guest.wake_display()
         members = dict(guest.members(ctl, group))
         samples = [guest.sample(ctl, members, 1000) for _ in range(args.samples)]
         (output / (label + '-samples.json')).write_text(json.dumps(samples, indent=2) + '\n')
@@ -142,10 +154,9 @@ def main():
             command('navigate' if index == 0 else 'newtab', url)
             wait_event(index)
             if args.capture_switches:
-                time.sleep(0.1)
-                guest.screenshot(output / f'initial-tab-{index}.png')
+                capture(f'initial-tab-{index}.png')
         snapshot('loaded')
-        time.sleep(args.settle)
+        pause(args.settle)
         snapshot('hidden-settled')
         state = guest.state(ctl, team)
         if len(state.get('tabs', [])) != args.tabs:
@@ -166,16 +177,15 @@ def main():
             switches.append({'id': index, 'checked': checked, 'shownAt': shown.get('shownAt'),
                              'firstFrameAfterShow': shown.get('firstFrameAfterShow')})
             if args.capture_switches:
-                time.sleep(0.1)
-                guest.screenshot(output / f'restored-tab-{index}.png')
+                capture(f'restored-tab-{index}.png')
         report['switches'] = switches
-        guest.screenshot(output / 'after-switching.png')
+        capture('after-switching.png')
         snapshot('after-switching')
         for tab in tabs[:-1]:
             command('closetab', str(tab['id']))
         command('navigate', 'about:blank')
         snapshot('closed-immediate')
-        time.sleep(args.close_settle)
+        pause(args.close_settle)
         snapshot('closed-settled')
         report['finalState'] = guest.state(ctl, team)
         report['outcome'] = 'completed'

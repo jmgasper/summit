@@ -1,0 +1,84 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Presentation buffer lifetime</title>
+<style>
+body { margin: 24px; background: #edf1f5; color: #173952; font: 18px sans-serif; }
+canvas { width: 256px; height: 256px; margin-right: 20px; border: 2px solid #173952; }
+#layer { width: 820px; height: 140px; background: #2367a1; color: white; padding: 20px;
+  transform: translateZ(0); box-sizing: border-box; }
+</style>
+<h1>Presentation buffers: retained graphics state</h1>
+<p>Two WebGL contexts, a clipped 2D canvas and a composited layer.</p>
+<canvas id="one" width="256" height="256"></canvas>
+<canvas id="two" width="256" height="256"></canvas>
+<canvas id="flat" width="256" height="256"></canvas>
+<div id="layer">The page and canvas state survive hidden presentation-buffer reclamation.</div>
+<script>
+'use strict';
+const state = { marker: {}, shown: 0, hidden: 0, mutated: false };
+window.retainedState = state;
+const marker = state.marker, contexts = [];
+const failures = [];
+function check(value, message) { if (!value) failures.push(message); }
+for (const [id, kind] of [['one', 'webgl'], ['two', 'webgl2']]) {
+    const gl = document.getElementById(id).getContext(kind, { preserveDrawingBuffer: true, antialias: false });
+    check(!!gl, kind + ' context');
+    if (!gl) continue;
+    gl.clearColor(0, 0, 1, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.enable(gl.SCISSOR_TEST);
+    gl.scissor(32, 32, 128, 128);
+    gl.clearColor(1, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    const buffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([1, 2, 3, 4]), gl.STATIC_DRAW);
+    contexts.push({ gl, buffer, kind });
+}
+const context = document.getElementById('flat').getContext('2d');
+context.fillStyle = '#0000ff'; context.fillRect(0, 0, 256, 256);
+context.save(); context.beginPath(); context.rect(32, 32, 128, 128); context.clip();
+context.fillStyle = '#ff0000'; context.fillRect(0, 0, 256, 256);
+const paint = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+async function report(phase) {
+    if (!document.hidden) await paint();
+    check(window.retainedState === state && state.marker === marker, 'JS identity');
+    const expected = state.mutated ? '0,255,0,255' : '255,0,0,255';
+    for (const { gl, buffer, kind } of contexts) {
+        check(!gl.isContextLost(), kind + ' context loss');
+        check(gl.isBuffer(buffer) && gl.getParameter(gl.ARRAY_BUFFER_BINDING) === buffer, kind + ' retained buffer');
+        check(gl.isEnabled(gl.SCISSOR_TEST), kind + ' retained scissor');
+        check([...gl.getParameter(gl.SCISSOR_BOX)].join() === '32,32,128,128', kind + ' scissor box');
+        const pixel = new Uint8Array(4);
+        gl.readPixels(64, 64, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+        check([...pixel].join() === expected, kind + ' retained inner pixel');
+        gl.readPixels(220, 220, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+        check([...pixel].join() === '0,0,255,255', kind + ' retained outer pixel');
+        check(gl.getError() === gl.NO_ERROR, kind + ' error');
+    }
+    check([...context.getImageData(64, 64, 1, 1).data].join() === expected, '2D retained inner pixel');
+    check([...context.getImageData(220, 220, 1, 1).data].join() === '0,0,255,255', '2D retained outer pixel');
+    const payload = { phase, passed: !failures.length, failures, hidden: document.hidden,
+        shows: state.shown, hides: state.hidden, mutated: state.mutated, contexts: contexts.length,
+        width: innerWidth, height: innerHeight, checks: 17 };
+    document.title = 'Presentation lifetime: ' + (payload.passed ? 'PASS' : 'FAIL');
+    await fetch('/event', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+}
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+        ++state.hidden;
+        if (state.hidden === 2) setTimeout(async () => {
+            // Runs after the 30-second presentation-buffer reclamation timer.
+            for (const { gl } of contexts) { gl.clearColor(0, 1, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT); }
+            context.fillStyle = '#00ff00'; context.fillRect(0, 0, 256, 256);
+            document.getElementById('layer').style.background = '#18733b';
+            state.mutated = true;
+            await report('hidden-mutation');
+        }, 35000);
+    } else {
+        ++state.shown;
+        report('restored');
+    }
+});
+report('initial');
+</script>

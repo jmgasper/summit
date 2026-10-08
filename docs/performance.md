@@ -346,6 +346,26 @@ forces a complete repaint. Pending presentations and forced repaint callbacks
 delay reclamation. `SUMMIT_RELEASE_HIDDEN_FRAME_BUFFERS=1` opts in; it remains
 off by default while memory, restored pixels and switching costs are measured.
 
+That first presentation-buffer trial was rejected. Its renderer changes
+targeted `DrawingAreaHaiku`, but the installed `SkiaCGMiPGO` configuration
+uses coordinated graphics and `AcceleratedSurface`; only the UI-side cleanup
+ran. Hidden resident-area totals were 2014/2013 MiB for the controls and
+2009 MiB with the trial, without a useful reduction. All three runs passed
+783 page checks and quit cleanly. The controls' 24 restored screenshots
+matched exactly; the enabled run's restoration screenshots were entirely
+black because the desktop screen saver activated, so they provide no visual
+validation. The harness now wakes the display through settling and captures.
+The ineffective engine changes have been removed from the next candidate.
+Evidence: `.vm/optimization-2026-10-08/presentation-buffers/`.
+
+The replacement experiment targets the active TextureMapper compositor.
+Its existing hidden-buffer cleanup keeps the last shared bitmap for the UI,
+but the trial also releases that target's GPU color/depth attachments after
+outstanding presentations finish. It recreates them on the next render and
+invalidates their damage history to require a complete repaint. Live page,
+canvas and layer resources remain. The experiment is initially off;
+`SUMMIT_RELEASE_HIDDEN_GPU_BUFFERS=1` enables it.
+
 ## 5 October 2026: quitting with a busy page, helpers left behind, the Pi's video decoder
 
 Three items left open on the Raspberry Pi 4 the night before, checked on the
