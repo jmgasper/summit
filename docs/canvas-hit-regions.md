@@ -48,6 +48,15 @@ and replay cannot reconstruct their DOM controls.
 
 ## Native verification
 
+X399's `bundle-ralgs2gr` passes all 54 native click sequences (560 DOM checks)
+and all 20 lifetime/recording checks. The runs leave no helper processes,
+new crash reports or crash-related syslog events. The engine patch is
+`303c94b24cd5f1cf92493e00a6c30f0985a7e52d3630c24b14f538719850605f`.
+The same bundle passes the platform pages (120 checks), grid/reflow geometry,
+WebGL pixels and animation, and canvas path/damage pixel regressions.
+Evidence is retained in `.vm/issues43-49/{hit-regions-x399-final,
+hit-region-lifetime-x399,hit-region-regressions}/`.
+
 The interaction fixture checks the public API with native mouse-down, mouse-up and click
 events, including overlap, curves, clipping, transforms, scrolling, reset,
 replacement and synthetic-event behavior. It uses an isolated profile and

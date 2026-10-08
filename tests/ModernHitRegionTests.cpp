@@ -34,11 +34,22 @@ int main(int argc, char** argv)
             return String(tab, "title");
         };
         Send(browser, summit::kNavigate, -1, argv[3]);
-        Require(Wait([&] { return title().starts_with("HitRegion_"); }), "Hit-region fixture ready");
+        auto readyTitle = [](const std::string& value) {
+            return value.starts_with("HitRegion_READY ") || value.starts_with("HitRegion_PASS ") || value.starts_with("HitRegion_FAIL ");
+        };
+        std::string current;
+        Require(Wait([&] { current = title(); return readyTitle(current); }), "Hit-region fixture ready");
+        BMessenger page;
+        Require(Wait([&] {
+            auto selected = Selected(State(browser));
+            if (selected < 0) return false;
+            page = Page(browser, selected);
+            return page.IsValid();
+        }), "native canvas page messenger is ready");
         FocusWindow(browser);
         unsigned steps = 0;
         for (;;) {
-            auto current = title();
+            std::printf("HitRegion_STEP %s\n", current.c_str()); std::fflush(stdout);
             if (current.starts_with("HitRegion_PASS") || current.starts_with("HitRegion_FAIL"))
                 break;
             int sequence, x, y;
@@ -46,11 +57,18 @@ int main(int argc, char** argv)
                 "fixture requests a native click");
             Require(sequence == static_cast<int>(++steps) && steps <= 150 && x >= 0 && y >= 0 && x < 2000 && y < 1000,
                 "native click request is bounded and ordered");
-            Click(Page(browser, Selected(State(browser))), BPoint(x, y));
-            Require(Wait([&] { return title() != current; }, 20000000), "native hit-region event delivered");
+            Click(page, BPoint(x, y));
+            Require(Wait([&] {
+                auto updated = title();
+                // A native state query can time out while the window paints.
+                // An empty response is not the fixture's next instruction.
+                if (!readyTitle(updated) || updated == current) return false;
+                current = std::move(updated);
+                return true;
+            }, 20000000), "native hit-region event delivered");
         }
-        bool passed = title().starts_with("HitRegion_PASS");
-        std::printf("HitRegion_CASE %s; %u native clicks\n", title().c_str(), steps);
+        bool passed = current.starts_with("HitRegion_PASS");
+        std::printf("HitRegion_CASE %s; %u native clicks\n", current.c_str(), steps);
         Send(app, B_QUIT_REQUESTED);
         Require(Wait([&] { team_info info; return get_team_info(team, &info) != B_OK; }), "Hit-region browser quits normally");
         std::puts(passed ? "HitRegion_RESULT PASS" : "HitRegion_RESULT FAIL");

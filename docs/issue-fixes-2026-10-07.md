@@ -5,8 +5,9 @@
 Seven additional issues appeared after the original deployment. #43 and #44
 are verified in `bundle-a7988kyv`; #49 is verified in `bundle-a3u9gkoe`.
 #45 is verified in `bundle-3ulccsni`; #46 is verified in `bundle-zf9_3v7d`.
-#48 and the requested six-hour performance session remain to be completed. The desktop launcher still selects
-the original deployment until the next installation.
+#48 is verified in `bundle-ralgs2gr`. Installation of the combined bundle and
+the requested six-hour performance session remain to be completed. The desktop
+launcher still selects the original deployment until the next installation.
 
 **#47 is complete:** MediaSource accepts MP4, WebM, raw ADTS AAC, MPEG audio
 and MPEG-TS with the codec matrix in [streaming media](streaming-media.md).
@@ -74,6 +75,15 @@ mpegts-parser-complete,ts-native-complete,streaming-codecs-timing-x399}/`.
   runs have no new crashes or remaining helpers. All five host suites pass.
   Engine patch SHA-256:
   `86392baaf25d333f7a9d5aa4d6262da5e62aa72d82ef9cf9159698798c8634c4`.
+- **#48:** Implemented canvas hit regions with path snapshots, transforms,
+  clipping, overlap/replacement, partial clearing and native `MouseEvent.region`.
+  All 54 native click sequences pass 560 DOM checks. Twenty inspector checks
+  confirm destruction of 40 canvases with self, ancestor, descendant and mutual
+  control references, valid drawing recordings and normal teardown. Control
+  references are weak to avoid retaining the canvas's DOM subtree.
+  Platform pages pass all 120 checks; grid/reflow geometry, WebGL pixels and
+  animation, and canvas path/damage pixels also pass. Tests leave no helpers,
+  new crashes or crash-related syslog events. [Details and reproduction](canvas-hit-regions.md).
 - **#49:** Native pages enable `rel=prefetch` by default, with
   `SUMMIT_PREFETCH=0` and extension privacy overrides honored. Link completion
   delivers load/error events, HTTP error responses complete the fetch, and
@@ -106,7 +116,7 @@ submit content to GitHub or automate the user's signed-in session.
 
 The requested scope was every open issue in `jmgasper/summit` (#31–#42),
 followed by a verified installation on X399. Implementation and verification
-are complete. X399's desktop launcher now selects `bundle-4bl4v7jv`.
+are complete. That deployment selected `bundle-4bl4v7jv`.
 
 | Issue | Current evidence / remaining work |
 | --- | --- |
