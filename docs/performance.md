@@ -41,6 +41,36 @@ harness also records system used memory, CPU samples and each process's
 crash/debugger events. Local fixtures provide repeatability; real-site loads
 also reflect changing remote content and network conditions.
 
+The first experiments use separate `bundle-vhe8tqtg`, patch
+`6439bb9995f1d7e1a1d5b9db48215bdc425024849671cd6e08e96dc3af8b52a6`.
+Its texture pool checks for releasable entries before making a GL context
+current; idle live tiles no longer enter the driver on every 500 ms cleanup
+tick. Timers still run so a texture released by another thread is reclaimed.
+
+An opt-in hidden-page cleanup experiment follows actual visibility, since
+Haiku's hidden card views remain attached to their window and do not trigger
+WebKit's existing `pageWillLeaveWindow` cleanup. After 30 seconds it clears
+noncritical caches and unused allocator/Skia resources, preserving live state
+and back/forward entries. Visible, audible, capturing and extension pages are
+excluded. `SUMMIT_HIDDEN_MEMORY_TRIM=1` enables this; `=2` adds a full JavaScript
+garbage collection without explicitly deleting compiled code. The default is
+**off**, pending useful gains on representative pages. Trace timings are
+available with `SUMMIT_HIDDEN_MEMORY_TRACE=1`.
+
+On the twelve local mixed pages, modes 1 and 2 passed all 783 checks each and
+quit without helpers or crash/debugger events. Their hidden memory totals were
+2049 and 2010 MiB; the disabled control measured 2037 MiB. Mode 1 callbacks
+took at most 1.129 ms, mode 2 at most 6.612 ms. These small memory differences
+do not establish a practical improvement. Evidence:
+`.vm/optimization-2026-10-08/hidden-memory-trials.json`.
+
+Separately, setting `MIMALLOC_PURGE_DELAY=0` on the original baseline reduced
+the local hidden-tab total from 1996 to 1893 MiB, with all 783 checks passing.
+Its first uncontended Speedometer run scored 10.470 (versus 10.771–10.882
+above). It remains an experiment rather than a default change. Evidence:
+`.vm/bench/tab-memory-20261008-133341-opt1008-purge0-mixed/` and
+`.vm/bench/speedometer-20261008-133651-opt1008-purge0-a/`.
+
 ## 5 October 2026: quitting with a busy page, helpers left behind, the Pi's video decoder
 
 Three items left open on the Raspberry Pi 4 the night before, checked on the

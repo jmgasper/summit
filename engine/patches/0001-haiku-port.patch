@@ -21685,7 +21685,7 @@ index 25a33139079a55094a25c97216a9575a59224292..f218183a01f2781651d7af7ad93e6ccf
  
      static Ref<BitmapTexture> create(const IntSize& size, OptionSet<Flags> flags = { })
 diff --git a/Source/WebCore/platform/graphics/egl/BitmapTexturePool.cpp b/Source/WebCore/platform/graphics/egl/BitmapTexturePool.cpp
-index 36206e6f966e88e056cf20705257fddb8b14d601..71878d8773c760f12e1311865e48400ed020aad5 100644
+index 36206e6f966e88e056cf20705257fddb8b14d601..9c6a1f0f635ecf3299f546d2f3078e20abbfe44f 100644
 --- a/Source/WebCore/platform/graphics/egl/BitmapTexturePool.cpp
 +++ b/Source/WebCore/platform/graphics/egl/BitmapTexturePool.cpp
 @@ -80,6 +80,9 @@ Ref<BitmapTexture> BitmapTexturePool::acquireTexture(const IntSize& size, Option
@@ -21736,7 +21736,38 @@ index 36206e6f966e88e056cf20705257fddb8b14d601..71878d8773c760f12e1311865e48400e
  
      auto hasTextures = [this] -> bool {
          assertIsHeld(m_lock);
-@@ -194,7 +217,7 @@ void BitmapTexturePool::enterLimitExceededModeIfNeeded()
+@@ -139,12 +162,28 @@ void BitmapTexturePool::releaseUnusedTexturesTimerFired()
+     if (!hasTextures())
+         return;
+ 
++    MonotonicTime minUsedTime = MonotonicTime::now() - m_releaseUnusedSecondsTolerance;
++#if PLATFORM(HAIKU)
++    // Most idle pages keep all of their tile textures alive. Do not make a GL
++    // context current twice a second when there is nothing we can release.
++    bool hasReleasableTextures = std::any_of(m_textures.begin(), m_textures.end(), [&](const Entry& entry) {
++        return entry.canBeReleased(minUsedTime);
++    });
++#if USE(GBM)
++    hasReleasableTextures |= std::any_of(m_imageTextures.begin(), m_imageTextures.end(), [](const Ref<BitmapTexture>& texture) {
++        return texture->refCount() == 1;
++    });
++#endif
++    if (!hasReleasableTextures) {
++        scheduleReleaseUnusedTextures();
++        return;
++    }
++#endif
++
+     auto releaseTexturesIfNeeded = [&] {
+         assertIsHeld(m_lock);
+         if (!m_textures.isEmpty()) {
+             // Delete entries, which have been unused in releaseUnusedSecondsTolerance.
+-            MonotonicTime minUsedTime = MonotonicTime::now() - m_releaseUnusedSecondsTolerance;
+-
+             auto matchCount = m_textures.removeAllMatching([this, &minUsedTime](const Entry& entry) {
+                 assertIsHeld(m_lock);
+                 if (entry.canBeReleased(minUsedTime)) {
+@@ -194,7 +233,7 @@ void BitmapTexturePool::enterLimitExceededModeIfNeeded()
          m_onLimitExceededMode = true;
          m_releaseUnusedSecondsTolerance = s_releaseUnusedSecondsToleranceOnLimitExceeded;
          m_releaseUnusedTexturesTimerInterval = s_releaseUnusedTexturesTimerIntervalOnLimitExceeded;
@@ -133658,16 +133689,19 @@ index 0000000000000000000000000000000000000000..0b0a79dd0813bcfae719f65f648a6f5c
 +
 +} // namespace WebKit
 diff --git a/Source/WebKit/WebProcess/WebProcess.cpp b/Source/WebKit/WebProcess/WebProcess.cpp
-index 413f8bc09ce0a2d3591b203f12addc32584b9f6e..b758e368b04ac0358ac2f5db6e57a6b6f8ebec57 100644
+index 413f8bc09ce0a2d3591b203f12addc32584b9f6e..703a7b65262ae96b308a7ed74951fd4c4b255907 100644
 --- a/Source/WebKit/WebProcess/WebProcess.cpp
 +++ b/Source/WebKit/WebProcess/WebProcess.cpp
-@@ -300,6 +300,32 @@ static const Seconds nonVisibleProcessEarlyMemoryCleanupDelay { 10_s };
+@@ -300,6 +300,49 @@ static const Seconds nonVisibleProcessEarlyMemoryCleanupDelay { 10_s };
  static const Seconds nonVisibleProcessMemoryCleanupDelay { 120_s };
  #endif
  
 +
 +#if OS(HAIKU)
 +#include <wtf/haiku/ProcessPriorityHaiku.h>
++#include <cstdio>
++#include <cstdlib>
++#include <unistd.h>
 +#if ENABLE(MEDIA_STREAM)
 +#include <WebCore/HaikuCaptureNode.h>
 +#endif
@@ -133677,24 +133711,38 @@ index 413f8bc09ce0a2d3591b203f12addc32584b9f6e..b758e368b04ac0358ac2f5db6e57a6b6
 +// answer content scripts and toolbar popups, so a process hosting one stays
 +// at normal priority; so does a hidden page playing audio or capturing media,
 +// and a process without pages yet.
-+template<typename PageMap> static void updateProcessPriorityHaiku(const PageMap& pages)
++template<typename PageMap> static bool processShouldBeBackgroundedHaiku(const PageMap& pages)
 +{
-+    bool background = !pages.isEmpty();
++    if (pages.isEmpty())
++        return false;
 +    for (auto& page : pages.values()) {
 +        if (page->isVisible() || page->activityState().containsAny({ WebCore::ActivityState::IsAudible, WebCore::ActivityState::IsCapturingMedia })
-+            || page->mainWebFrame().url().protocolIs("webkit-extension"_s)) {
-+            background = false;
-+            break;
-+        }
++            || page->mainWebFrame().url().protocolIs("webkit-extension"_s))
++            return false;
 +    }
-+    setProcessBackgroundedHaiku(background);
++    return true;
++}
++
++template<typename PageMap> static void updateProcessPriorityHaiku(const PageMap& pages)
++{
++    setProcessBackgroundedHaiku(processShouldBeBackgroundedHaiku(pages));
++}
++
++static unsigned hiddenMemoryCleanupModeHaiku()
++{
++    // Opt-in while the background cleanup policy is measured on real pages.
++    static unsigned mode = [] {
++        const char* value = std::getenv("SUMMIT_HIDDEN_MEMORY_TRIM");
++        return value && value[0] == '2' ? 2u : value && value[0] == '1' ? 1u : 0u;
++    }();
++    return mode;
 +}
 +#endif
 +
  namespace WebKit {
  using namespace WebCore;
  
-@@ -308,6 +334,11 @@ WTF_MAKE_TZONE_ALLOCATED_IMPL(WebProcess);
+@@ -308,6 +351,11 @@ WTF_MAKE_TZONE_ALLOCATED_IMPL(WebProcess);
  #if !PLATFORM(GTK) && !PLATFORM(WPE)
  [[noreturn]] static void callExit(IPC::Connection*)
  {
@@ -133706,7 +133754,17 @@ index 413f8bc09ce0a2d3591b203f12addc32584b9f6e..b758e368b04ac0358ac2f5db6e57a6b6
      terminateProcess(EXIT_SUCCESS);
  }
  #endif
-@@ -397,7 +428,7 @@ WebProcess::WebProcess()
+@@ -377,6 +425,9 @@ WebProcess::WebProcess()
+         if (RefPtr protectedThis = weakThis; protectedThis && state == PAL::HysteresisState::Stopped)
+             protectedThis->m_dnsPrefetchedHosts.clear();
+     })
++#if OS(HAIKU)
++    , m_hiddenMemoryCleanupTimerHaiku(*this, &WebProcess::hiddenMemoryCleanupTimerFiredHaiku)
++#endif
+ #if ENABLE(NON_VISIBLE_WEBPROCESS_MEMORY_CLEANUP_TIMER)
+     , m_nonVisibleProcessMemoryCleanupTimer(*this, &WebProcess::nonVisibleProcessMemoryCleanupTimerFired)
+ #endif
+@@ -397,7 +448,7 @@ WebProcess::WebProcess()
      addSupplement<WebMediaKeyStorageManager>();
  #endif
  
@@ -133715,36 +133773,105 @@ index 413f8bc09ce0a2d3591b203f12addc32584b9f6e..b758e368b04ac0358ac2f5db6e57a6b6
      addSupplementWithoutRefCountedCheck<UserMediaCaptureManager>();
  #endif
  
-@@ -1112,6 +1143,8 @@ void WebProcess::createWebPage(PageIdentifier pageID, WebPageCreationParameters&
+@@ -1112,6 +1163,9 @@ void WebProcess::createWebPage(PageIdentifier pageID, WebPageCreationParameters&
  
  #if OS(LINUX)
          HighPriorityThreads::singleton().setEnabled(hasVisibleWebPage());
 +#elif OS(HAIKU)
 +        updateProcessPriorityHaiku(m_pageMap);
++        updateHiddenMemoryCleanupHaiku();
  #endif
      } else
          page->reinitializeWebPage(WTF::move(parameters));
-@@ -1145,6 +1178,8 @@ void WebProcess::removeWebPage(PageIdentifier pageID)
+@@ -1145,6 +1199,9 @@ void WebProcess::removeWebPage(PageIdentifier pageID)
  
  #if OS(LINUX)
      HighPriorityThreads::singleton().setEnabled(hasVisibleWebPage());
 +#elif OS(HAIKU)
 +    updateProcessPriorityHaiku(m_pageMap);
++    updateHiddenMemoryCleanupHaiku();
  #endif
  }
  
-@@ -1861,6 +1896,11 @@ void WebProcess::pageActivityStateDidChange(PageIdentifier, OptionSet<WebCore::A
+@@ -1861,8 +1918,51 @@ void WebProcess::pageActivityStateDidChange(PageIdentifier, OptionSet<WebCore::A
          HighPriorityThreads::singleton().setEnabled(hasVisibleWebPage());
  #endif
      }
 +#if OS(HAIKU)
 +    // A hidden tab that starts playing sound gets its priority back too.
-+    if (changed.containsAny({ WebCore::ActivityState::IsVisible, WebCore::ActivityState::IsAudible, WebCore::ActivityState::IsCapturingMedia }))
++    if (changed.containsAny({ WebCore::ActivityState::IsVisible, WebCore::ActivityState::IsAudible, WebCore::ActivityState::IsCapturingMedia })) {
 +        updateProcessPriorityHaiku(m_pageMap);
++        updateHiddenMemoryCleanupHaiku();
++    }
 +#endif
++}
++
++#if OS(HAIKU)
++void WebProcess::updateHiddenMemoryCleanupHaiku()
++{
++    // Hidden BCardLayout views remain attached to their window, so the
++    // pageWillLeaveWindow cleanup timer does not cover tab switches on Haiku.
++    // Give quick switches time to reuse caches, and leave audible, capturing
++    // and extension pages alone.
++    if (!hiddenMemoryCleanupModeHaiku() || !processShouldBeBackgroundedHaiku(m_pageMap)) {
++        m_hiddenMemoryCleanupTimerHaiku.stop();
++        return;
++    }
++    if (!m_hiddenMemoryCleanupTimerHaiku.isActive())
++        m_hiddenMemoryCleanupTimerHaiku.startOneShot(30_s);
  }
  
++void WebProcess::hiddenMemoryCleanupTimerFiredHaiku()
++{
++    if (!processShouldBeBackgroundedHaiku(m_pageMap))
++        return;
++
++    auto started = MonotonicTime::now();
++    // Keep compiled JavaScript, live page state and back/forward entries.
++    // Mode 2 also measures collecting unreachable JavaScript without the
++    // deleteAllCode operation in the critical-memory-pressure path.
++    if (hiddenMemoryCleanupModeHaiku() == 2)
++        GarbageCollectionController::singleton().garbageCollectNow();
++    WebCore::releaseMemory(Critical::No, Synchronous::Yes, MaintainBackForwardCache::Yes, MaintainMemoryCache::No);
++    for (auto& page : m_pageMap.values())
++        page->releaseMemory(Critical::No);
++
++    if (std::getenv("SUMMIT_HIDDEN_MEMORY_TRACE"))
++        std::fprintf(stderr, "Summit hidden memory: pid=%d mode=%u pages=%zu milliseconds=%.3f\n",
++            getpid(), hiddenMemoryCleanupModeHaiku(), m_pageMap.size(), (MonotonicTime::now() - started).milliseconds());
++}
++#endif
++
  void WebProcess::releaseMemory(CompletionHandler<void()>&& completionHandler)
+ {
+     WEBPROCESS_RELEASE_LOG(ProcessSuspension, "releaseMemory: BEGIN");
+diff --git a/Source/WebKit/WebProcess/WebProcess.h b/Source/WebKit/WebProcess/WebProcess.h
+index 1a1242f934313fdc172143d30b558f2594a13e03..46dca6cee5a08fbc560dda90862fd5b74a575d4a 100644
+--- a/Source/WebKit/WebProcess/WebProcess.h
++++ b/Source/WebKit/WebProcess/WebProcess.h
+@@ -355,6 +355,11 @@ public:
+ 
+     void nonVisibleProcessEarlyMemoryCleanupTimerFired();
+ 
++#if OS(HAIKU)
++    void updateHiddenMemoryCleanupHaiku();
++    void hiddenMemoryCleanupTimerFiredHaiku();
++#endif
++
+ #if ENABLE(NON_VISIBLE_WEBPROCESS_MEMORY_CLEANUP_TIMER)
+     void nonVisibleProcessMemoryCleanupTimerFired();
+ #endif
+@@ -891,6 +896,10 @@ private:
+     HashSet<WebCore::PageIdentifier> m_pagesInWindows;
+     std::optional<WebCore::DeferrableOneShotTimer> m_nonVisibleProcessEarlyMemoryCleanupTimer;
+ 
++#if OS(HAIKU)
++    WebCore::Timer m_hiddenMemoryCleanupTimerHaiku;
++#endif
++
+ #if ENABLE(NON_VISIBLE_WEBPROCESS_MEMORY_CLEANUP_TIMER)
+     WebCore::Timer m_nonVisibleProcessMemoryCleanupTimer;
+ #endif
 diff --git a/Source/WebKit/WebProcess/glib/UserMediaCaptureManager.cpp b/Source/WebKit/WebProcess/glib/UserMediaCaptureManager.cpp
 index 93230db6ad621ab9defdcd95e31b66ff1e3a9771..9eb847537007b0654b0f36968aae4d4ccb6f6e57 100644
 --- a/Source/WebKit/WebProcess/glib/UserMediaCaptureManager.cpp
