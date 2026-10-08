@@ -224,6 +224,26 @@ savings are a tradeoff, not a free improvement. The installed settings remain
 unchanged. Evidence:
 `.vm/optimization-2026-10-08/speedometer-heap-matrix.json`.
 
+Smaller changes to the aggressive policy's allocation allowance avoided that
+Speedometer cost in two alternating runs each:
+
+| Rate-limiting multiplier / GC markers | Scores | Mean |
+| --- | --- | ---: |
+| Default 8 / 8 | 10.778, 10.935 | 10.8566 |
+| 4 / 8 | 10.900, 10.785 | 10.8425 |
+| 4 / 4 | 10.857, 10.918 | 10.8877 |
+| 6 / 8 | 10.905, 10.905 | 10.9046 |
+
+All eight runs were clean and uncontended, with no option-parsing warnings.
+These small differences do not establish a speed improvement or regression.
+The multiplier limits extra allocation permitted to delay frequent GC; it
+does not cap live heap size. With the usual 32 MiB large-heap minimum on this
+host, multiplier 4 lowers that allowance from 256 MiB to 128 MiB. Its allocation
+diagnostic retained-idle total was 975 MiB versus 1154–1199 MiB for default,
+so it proceeds to real-tab and longer workload validation with eight markers.
+No installed setting has changed yet. Evidence:
+`.vm/optimization-2026-10-08/speedometer-cap-matrix.json`.
+
 ## 5 October 2026: quitting with a busy page, helpers left behind, the Pi's video decoder
 
 Three items left open on the Raspberry Pi 4 the night before, checked on the
