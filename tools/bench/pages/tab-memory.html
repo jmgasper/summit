@@ -1,0 +1,72 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Tab memory fixture</title>
+<style>
+  body { margin: 0; background: #edf1f5; color: #172b43; font: 16px sans-serif; }
+  header { background: #173952; color: white; padding: 22px; }
+  main { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; padding: 20px; }
+  article { background: white; padding: 18px; border-radius: 8px; box-shadow: 0 2px 8px #17395225; }
+  h2 { font-size: 20px; } canvas, img { width: 100%; height: 160px; object-fit: cover; }
+  .layer { will-change: transform; transform: translateZ(0); }
+</style>
+<header><h1>Tab memory fixture</h1><p id="status"></p></header>
+<main></main>
+<script>
+(async () => {
+  const query = new URLSearchParams(location.search);
+  const id = Number(query.get('id') || 0), kind = query.get('kind') || 'dom';
+  const main = document.querySelector('main');
+  const canvases = [], checks = [];
+  let visibleCount = 0, ready = false;
+  const state = { id, kind, marker: `preserved-${id}-${kind}` };
+  window.fixtureState = state;
+  document.querySelector('#status').textContent = `Tab ${id}: ${kind}`;
+  if (kind !== 'blank') {
+    const count = kind === 'dom' ? 400 : 32;
+    for (let i = 0; i < count; ++i) {
+      const card = document.createElement('article');
+      if (kind === 'layers') card.className = 'layer';
+      const title = document.createElement('h2');
+      title.textContent = `Record ${i + 1}`;
+      const text = document.createElement('p');
+      text.textContent = 'A fixed local document for repeatable tab lifetime measurements. ' +
+        'Content, graphics and JavaScript state must survive hiding and showing this page.';
+      card.append(title, text);
+      if (kind === 'canvas' || kind === 'layers') {
+        const canvas = document.createElement('canvas');
+        canvas.width = 640; canvas.height = 360;
+        const context = canvas.getContext('2d');
+        context.fillStyle = '#2367a1';
+        context.fillRect(0, 0, 640, 360);
+        context.fillStyle = '#e9b544';
+        context.fillRect(80, 80, 160, 160);
+        context.fillStyle = '#ffffff';
+        context.font = '28px sans-serif';
+        context.fillText(`Tab ${id}, canvas ${i}`, 20, 330);
+        canvases.push(canvas);
+        card.append(canvas);
+      }
+      main.append(card);
+    }
+  }
+  const paint = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  async function report(event) {
+    if (!ready) return;
+    if (!document.hidden) { ++visibleCount; await paint(); }
+    checks.length = 0;
+    checks.push(window.fixtureState === state && state.marker === `preserved-${id}-${kind}`);
+    for (const canvas of canvases) {
+      const pixel = canvas.getContext('2d').getImageData(100, 100, 1, 1).data;
+      checks.push(pixel[0] === 233 && pixel[1] === 181 && pixel[2] === 68 && pixel[3] === 255);
+    }
+    const payload = { id, kind, event, visible: !document.hidden, visibleCount,
+      passed: checks.every(Boolean), checks: checks.length, cards: main.children.length,
+      width: innerWidth, height: innerHeight, dpr: devicePixelRatio };
+    document.title = `READY:${id}:${kind}:${payload.passed ? 'PASS' : 'FAIL'}`;
+    await fetch('/event', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+  }
+  document.addEventListener('visibilitychange', () => report('visibility'));
+  ready = true;
+  await report('ready');
+})().catch(error => { document.title = 'FAIL:' + error.message; });
+</script>

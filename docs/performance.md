@@ -14,7 +14,32 @@ Measurements use owned browser groups and isolated profiles while preserving
 the user's original browser and other applications. CPU contention, actual
 viewport dimensions, memory usage, teardown and crash evidence accompany the
 runs. The session record is `.vm/optimization-2026-10-08/session.json`.
-Baseline measurements are in progress; no optimization gains are claimed yet.
+Initial baseline (no optimization gains claimed yet):
+
+- Three uncontended ten-iteration Speedometer 3.1 runs scored **10.882,
+  10.787 and 10.771**. Each used a 1280 × 854 viewport at DPR 2, with a fresh
+  profile. The first iteration was slower than the following nine in each run.
+  Evidence: `.vm/bench/speedometer-20261008-{131644-opt1008-baseline-a2,131924-opt1008-baseline-b,132050-opt1008-baseline-c}/`.
+- Twelve real sites, at the larger 1920-wide window used by `run-multitab.py`,
+  used **4093 MiB** after loading and idling, then **6142 MiB** after visiting
+  every tab and letting hidden-tab buffers settle. Median first frame after
+  switching was **25.8 ms**, maximum **133.7 ms**. Closing eleven tabs and
+  navigating the remaining tab to blank settled at **598 MiB** after 45 seconds.
+  Evidence: `.vm/optimization-2026-10-08/real-tabs-baseline/` and
+  `.vm/bench/multitab-20261008-132621-opt1008-baseline-real/`.
+- The new local `tools/bench/run-tab-memory.py` separates blank, DOM, canvas
+  and composited-layer pages. Twelve mixed tabs settled at **1996 MiB**;
+  the initial blank browser used **234 MiB**, and closing back to blank settled
+  at **282 MiB**. All **783** page-state and canvas-pixel checks passed, including
+  reactivation of every tab. The screenshot was inspected. Evidence:
+  `.vm/bench/tab-memory-20261008-133025-opt1008-baseline-mixed/`.
+
+Memory figures above sum resident process areas and can count shared mappings
+more than once; they are not proportional-set-size measurements. The local
+harness also records system used memory, CPU samples and each process's
+`listarea` output. Both tab runs quit normally with no leftover helpers or new
+crash/debugger events. Local fixtures provide repeatability; real-site loads
+also reflect changing remote content and network conditions.
 
 ## 5 October 2026: quitting with a busy page, helpers left behind, the Pi's video decoder
 
