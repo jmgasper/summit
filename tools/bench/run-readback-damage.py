@@ -15,13 +15,12 @@ from PIL import Image, ImageChops
 import guest
 
 
-def validate_pixels(directory, probe):
+def validate_pixels(directory, probe, frame=(4, 1, 1917, 1077)):
     image = Image.open(directory / 'final.png').convert('RGB')
     # The native screenshot is in logical pixels even on the DPR=2 desktop.
     # Find the fixture's background within our requested window, so chrome's
     # height need not be guessed. Each patch has ample interior for sampling.
-    frame = (4, 1, 1917, 1077)
-    if image.width < frame[2] or image.height < 1055:
+    if image.width < frame[2] or image.height < frame[3]:
         raise ValueError(f'Screenshot is too small: {image.size}')
     crop = image.crop(frame)
     background = Image.new('RGB', crop.size, (24, 32, 44))
