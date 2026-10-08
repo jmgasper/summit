@@ -163,6 +163,31 @@ helpers or new crash/debugger events. The harness now checks teardown before
 declaring success, including helpers whose parent exited during launch.
 Evidence: `.vm/optimization-2026-10-08/speedometer-regression-matrix.json`.
 
+Collector-thread experiments on that same bundle used two alternating
+15-iteration runs per setting. The default eight markers scored **10.846,
+10.941**; four scored **10.844, 11.031**; two scored **11.071, 10.895**.
+All were uncontended and clean. Mean differences of +0.4% and +0.8% do not
+establish a reliable improvement, so no collector default has changed.
+Evidence: `.vm/optimization-2026-10-08/speedometer-gc-matrix.json`.
+
+`gc-churn.html` provides a separate allocation diagnostic: 1,200 batches of
+24,000 records with strings, typed-array payloads and shared references,
+keeping only the latest eight batches. It checks retained data throughout,
+records batch time and frame intervals, waits 20 seconds with the working
+set retained, then releases it and waits another 20 seconds. It never forces
+collection. The default and four-marker runs each pass all **38,320** checks;
+the small native smoke case passes 688 checks.
+
+`run-probe.py --sample-interval 2` records owned-process memory, threads and
+CPU alongside contention. `guest.load_report()` now preserves this memory
+data from its existing native sample, also making it available to Speedometer.
+Resident area sums can double-count shared mappings; sampled maxima are
+observed peaks, not exact high-water marks. Page phase timestamps use the
+guest clock, so the experiment runner measures its offset from the host clock
+before each run. Evidence:
+`.vm/optimization-2026-10-08/gc-churn-matrix-a.json` and
+`.vm/bench/probe-20261008-145131-summit-opt1008-gc-smoke/`.
+
 ## 5 October 2026: quitting with a busy page, helpers left behind, the Pi's video decoder
 
 Three items left open on the Raspberry Pi 4 the night before, checked on the

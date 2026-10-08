@@ -1,0 +1,101 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Allocation and retained-state diagnostic</title>
+<style>
+body { font: 16px/1.5 sans-serif; margin: 24px; }
+#bar { height: 12px; width: 0; background: #2367a1; }
+pre { white-space: pre-wrap; }
+</style>
+<h1>Allocation and retained-state diagnostic</h1>
+<p>Allocates short-lived records while retaining and checking a small working set.</p>
+<div id="bar"></div><pre id="out">Starting</pre>
+<script>
+(async () => {
+    const query = new URLSearchParams(location.search);
+    const batches = Number(query.get('batches') || 1200);
+    const batchSize = Number(query.get('batchSize') || 24000);
+    const retainedBatches = 8;
+    const settleMs = Number(query.get('settleMs') || 20000);
+    if (!Number.isInteger(batches) || batches < 8 || batches > 10000
+        || !Number.isInteger(batchSize) || batchSize < 32 || batchSize > 100000
+        || !Number.isFinite(settleMs) || settleMs < 0 || settleMs > 120000)
+        throw new Error('Invalid diagnostic parameters');
+    const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const startedAt = Date.now(), start = performance.now();
+    const elapsed = () => performance.now() - start;
+    const phases = [], batchTimes = [], frameGaps = [];
+    let running = true, lastFrame = null, checks = 0, failedChecks = 0;
+    let retained = new Array(retainedBatches);
+    function frame(now) {
+        if (lastFrame !== null) frameGaps.push(now - lastFrame);
+        lastFrame = now;
+        if (running) requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+    function validate() {
+        for (const bucket of retained) {
+            if (!bucket) continue;
+            for (const index of [0, 1, 17, bucket.items.length - 1]) {
+                const item = bucket.items[index], id = bucket.batch * batchSize + index;
+                ++checks;
+                if (item.id !== id || item.label !== 'record-' + id + '-' + (id * 7)
+                    || item.payload[0] !== id || item.payload[7] !== id + 7
+                    || item.link !== bucket.anchor)
+                    ++failedChecks;
+            }
+        }
+    }
+    const checkpoint = name => phases.push({ name, elapsedMs: elapsed(), at: Date.now() });
+    checkpoint('initial');
+    await pause(3000);
+    const workStart = performance.now();
+    const workFrameStart = frameGaps.length;
+    for (let batch = 0; batch < batches; ++batch) {
+        const before = performance.now();
+        const anchor = { batch }, items = new Array(batchSize);
+        for (let i = 0; i < batchSize; ++i) {
+            const id = batch * batchSize + i, payload = new Float64Array(8);
+            for (let j = 0; j < payload.length; ++j) payload[j] = id + j;
+            items[i] = { id, label: 'record-' + id + '-' + (id * 7), payload, link: anchor };
+        }
+        retained[batch % retainedBatches] = { batch, anchor, items };
+        validate();
+        batchTimes.push(performance.now() - before);
+        if (!(batch % 24)) {
+            document.querySelector('#bar').style.width = (100 * (batch + 1) / batches) + '%';
+            document.querySelector('#out').textContent = `${batch + 1}/${batches} batches; ${checks} state checks`;
+        }
+        if (!(batch % 120)) checkpoint('batch-' + batch);
+        await pause(0);
+    }
+    const workMs = performance.now() - workStart;
+    const workFrameEnd = frameGaps.length;
+    checkpoint('retained-idle');
+    await pause(settleMs);
+    validate();
+    checkpoint('release');
+    retained = null;
+    // This diagnostic never requests collection. Observe the engine's policy.
+    await pause(settleMs);
+    checkpoint('released-idle');
+    running = false;
+    function stats(values) {
+        const sorted = [...values].sort((a, b) => a - b);
+        const at = fraction => sorted[Math.min(sorted.length - 1, Math.floor(fraction * sorted.length))];
+        return { count: sorted.length, min: sorted[0], median: at(.5), p95: at(.95), p99: at(.99), max: sorted[sorted.length - 1] };
+    }
+    const result = { passed: !failedChecks, checks, failedChecks, batches, batchSize, retainedBatches,
+        records: batches * batchSize, workMs, recordsPerSecond: batches * batchSize * 1000 / workMs,
+        batchTimes: stats(batchTimes), workFrameGaps: stats(frameGaps.slice(workFrameStart, workFrameEnd)),
+        frameGaps: stats(frameGaps), startedAt, phases,
+        elapsedMs: elapsed(), viewport: [innerWidth, innerHeight], dpr: devicePixelRatio };
+    document.title = `Allocation diagnostic: ${result.passed ? 'PASS' : 'FAIL'}`;
+    document.querySelector('#out').textContent = JSON.stringify(result, null, 2);
+    await fetch('/__bench/probe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(result) });
+})().catch(async error => {
+    document.title = 'Allocation diagnostic: FAIL';
+    document.querySelector('#out').textContent = error.stack;
+    await fetch('/__bench/probe', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ passed: false, error: String(error), stack: error.stack }) });
+});
+</script>

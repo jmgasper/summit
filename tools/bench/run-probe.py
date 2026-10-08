@@ -34,9 +34,15 @@ def main():
     parser.add_argument('--haiku-profile', action='store_true',
                         help='run Summit under the Haiku sampling profiler and save profile.txt')
     parser.add_argument('--label', default='')
+    parser.add_argument('--sample-interval', type=float, default=0, metavar='SECONDS',
+                        help='sample owned memory and CPU during the probe (0 disables)')
     args = parser.parse_args()
     if args.haiku_profile and guest.HOST == 'workstation':
         parser.error('--haiku-profile is disabled on the workstation because Haiku profile shutdown can hang the machine')
+    if args.sample_interval < 0 or 0 < args.sample_interval < 1:
+        parser.error('--sample-interval must be 0 or at least 1 second')
+    if args.sample_interval and args.browser != 'summit':
+        parser.error('--sample-interval requires an owned Summit process group')
 
     run_id = (time.strftime('probe-%Y%m%d-%H%M%S') + f'-{args.browser}'
               + (f'-{args.label}' if args.label else ''))
@@ -60,6 +66,7 @@ def main():
     shutdown = None
     leftovers = []
     outcome = 'timeout'
+    samples = []
     url = f'http://{guest.HOST_ADDRESS}:{args.port}/__bench/pages/{args.page}'
     try:
         if args.browser == 'firefox':
@@ -76,14 +83,20 @@ def main():
             time.sleep(3)
             guest.ctl(ctl, team, 'navigate', url)
         deadline = time.time() + args.timeout
-        ticks = 0
+        next_sample = time.monotonic() + args.sample_interval
+        next_wake = time.monotonic() + 30
         while time.time() < deadline:
-            time.sleep(5)
+            time.sleep(min(5, args.sample_interval) if args.sample_interval else 5)
             # The blanker comes back on every idle period, and a blanked screen
             # stops app_server drawing, which is what the page is measuring.
-            ticks += 1
-            if not ticks % 6:
+            if time.monotonic() >= next_wake:
                 guest.wake_display()
+                next_wake = time.monotonic() + 30
+            if args.sample_interval and time.monotonic() >= next_sample:
+                members = guest.members(ctl, group)
+                samples.append(guest.load_report(ctl, [pid for pid, _ in members], 1000))
+                (directory / 'samples.json').write_text(json.dumps(samples, indent=1))
+                next_sample = time.monotonic() + args.sample_interval
             if (directory / 'probe.json').exists():
                 outcome = 'completed'
                 break
@@ -112,8 +125,10 @@ def main():
     report = {'id': run_id, 'outcome': outcome, 'browser': args.browser, 'page': args.page,
               'machine': guest.HOST, 'bundle': args.bundle, 'env': args.env,
               'haikuProfile': args.haiku_profile,
+              'sampleInterval': args.sample_interval,
               'shutdown': shutdown, 'leftovers': leftovers, 'crashes': crashes,
-              'load': {'before': before, 'after': after}, 'contended': before['contended'] or after['contended']}
+              'load': {'before': before, 'during': samples, 'after': after},
+              'contended': before['contended'] or after['contended'] or any(s['contended'] for s in samples)}
     if outcome == 'completed':
         report['probe'] = json.loads((directory / 'probe.json').read_text())['payload']
         if report['probe'].get('passed') is False:

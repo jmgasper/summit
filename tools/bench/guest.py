@@ -123,13 +123,19 @@ def load_report(binary, own_teams=(), interval_ms=2000):
     compilers = [t for t in others if COMPILER_PATTERN.search(t.get('image') or t['args'])
                  or '/develop/tools/' in t['args'] or '/lib/gcc/' in t['args']]
     foreign_cores = sum(t['cores'] for t in others)
-    own_cores = sum(t['cores'] for t in data['teams'] if t['team'] in own)
+    owned = [t for t in data['teams'] if t['team'] in own]
+    own_cores = sum(t['cores'] for t in owned)
     # Teams that start and exit inside the sampling interval (a ninja build spawning short
     # compiles) never appear in both snapshots; they are only visible as unexplained busy time.
     unexplained = max(0.0, data['busyCores'] - own_cores - foreign_cores - sum(t['cores'] for t in servers))
     return {
         'at': data['at'], 'cpuCount': data['cpuCount'], 'busyCores': data['busyCores'],
         'foreignCores': round(foreign_cores, 3), 'ownCores': round(own_cores, 3),
+        # Area totals can count shared mappings more than once; these are not PSS.
+        'ownResidentAreaBytes': sum(t.get('ramBytes', 0) for t in owned),
+        'ownProcesses': [{'team': t['team'], 'role': role(t.get('image') or t['args']),
+                          'ramBytes': t.get('ramBytes', 0), 'virtualBytes': t.get('virtualBytes', 0),
+                          'threads': t['threads'], 'areas': t['areas']} for t in owned],
         'serverCores': round(sum(t['cores'] for t in servers), 3),
         'unexplainedBusyCores': round(unexplained, 3),
         'compilerTeams': len(compilers), 'compilerCores': round(sum(t['cores'] for t in compilers), 3),
