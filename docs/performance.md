@@ -120,6 +120,21 @@ An isolated build of the current engine for arm64 remains in progress;
 the whole-read speedup above was measured using the installed Pi engine's
 explicit override, not that unfinished browser build.
 
+The current upstream engine needed three arm64 adaptations that previously
+lived only in the separate cross-build checkout: Haiku signal-context register
+access, ELF GOT references in the ARM64 interpreter, and instruction-cache
+maintenance through `clear_caches`. Those changes are now in the main port
+patch. The newly built JavaScriptCore runs on the actual Pi and passes all
+16 smoke checks with its default JIT settings, 15 with JIT disabled, and 16
+with eager synchronous optimization. These include ICU, async functions, hot
+JavaScript and, in both JIT runs, WebAssembly. This is a port smoke check,
+not JSC conformance or testing on heterogeneous ARM cores. Evidence:
+`.vm/performance-12h-20261008/pi-current-jsc-results.json`.
+
+The full arm64 browser build remains isolated from the existing cross-build
+checkout and its uncommitted changes. Its first attempt exceeded the build
+scope's memory limit; it resumed incrementally with six compiler jobs.
+
 ## 8 October 2026: six-hour optimization session
 
 The retained build is **`bundle-tmeeg8cb`**, installed on X399. Deferred canvas

@@ -31,6 +31,32 @@ index 0000000000000000000000000000000000000000..6d3d18801675659f02d850e3f437c384
 +list(APPEND JavaScriptCore_LIBRARIES
 +	bsd network
 +)
+diff --git a/Source/JavaScriptCore/assembler/ARM64Assembler.h b/Source/JavaScriptCore/assembler/ARM64Assembler.h
+index 0fc3038d8aad73bd021fabef77a46da9e102f5f5..e4be61da48bfa7f2757022f826efc8342e31139b 100644
+--- a/Source/JavaScriptCore/assembler/ARM64Assembler.h
++++ b/Source/JavaScriptCore/assembler/ARM64Assembler.h
+@@ -44,6 +44,10 @@
+ #include <zircon/syscalls.h>
+ #endif
+ 
++#if OS(HAIKU)
++#include <image.h>
++#endif
++
+ #define CHECK_DATASIZE_OF(datasize) static_assert(datasize == 32 || datasize == 64)
+ #define CHECK_DATASIZE_OF_SIMD(datasize) static_assert(datasize == 32 || datasize == 64 || datasize == 128)
+ #define CHECK_DATASIZE_OF_FP(datasize) static_assert(datasize == 16 || datasize == 32 || datasize == 64)
+@@ -4063,6 +4067,10 @@ public:
+         linuxPageFlush(current, end);
+ #elif OS(WINDOWS)
+         FlushInstructionCache(GetCurrentProcess(), code, size);
++#elif OS(HAIKU)
++        // The kernel cleans the data cache and invalidates every instruction
++        // cache alias; the RK3588's Cortex-A55 cores have VIPT I-caches.
++        clear_caches(code, size, B_FLUSH_DCACHE | B_INVALIDATE_ICACHE);
+ #else
+ #error "The cacheFlush support is missing on this platform."
+ #endif
 diff --git a/Source/JavaScriptCore/bytecode/Repatch.cpp b/Source/JavaScriptCore/bytecode/Repatch.cpp
 index 23f8850157acb464dde1c495bdc734d970f24667..8fb41a97bd38263f491f8de10670534bdbb13355 100644
 --- a/Source/JavaScriptCore/bytecode/Repatch.cpp
@@ -127,6 +153,19 @@ index 0c61f573f90d0021fa23f0c092ac2e67deb960da..e732cadbfc392cdcda6fbd4c98b3e2d6
  
              previousEntryFrame = currentEntryFrame;
              previousEntryFrameStackTraceInsertPos = results.size();
+diff --git a/Source/JavaScriptCore/offlineasm/arm64.rb b/Source/JavaScriptCore/offlineasm/arm64.rb
+index 53334dff39c8aead44bedf21d3fdf35c57e81986..59d05fffafbfd279d6d03086331df450f4585c22 100644
+--- a/Source/JavaScriptCore/offlineasm/arm64.rb
++++ b/Source/JavaScriptCore/offlineasm/arm64.rb
+@@ -1531,7 +1531,7 @@ class Instruction
+             $asm.putStr("#endif")
+ 
+             # On Linux, use ELF GOT relocation specifiers.
+-            $asm.putStr("#elif OS(LINUX)")
++            $asm.putStr("#elif OS(LINUX) || OS(HAIKU)")
+ 
+             $asm.puts "adrp #{operands[1].arm64Operand(:quad)}, :got:#{operands[0].asmLabel}"
+             $asm.putStr("#if CPU(ADDRESS32)")
 diff --git a/Source/JavaScriptCore/runtime/ArrayBuffer.cpp b/Source/JavaScriptCore/runtime/ArrayBuffer.cpp
 index b10d8936e22a53c8c7532fe45d35fad7634e3a72..09fb8af76efee893577e502beac93b9c9eb0ef6d 100644
 --- a/Source/JavaScriptCore/runtime/ArrayBuffer.cpp
@@ -392,10 +431,46 @@ index 26e825ace464f1e32e50b5c6a0a4d57d573779b9..fa4b4d7426a4fc3121651814b34db104
              Dl_info info { };
              if (!dladdr(jsFunctionAddr, &info))
 diff --git a/Source/JavaScriptCore/runtime/MachineContext.h b/Source/JavaScriptCore/runtime/MachineContext.h
-index 2ac8b24f00e624acb564a0e11fd2437b5f02a99c..fd988cc36ef755a0e2d5939eb54141af883bb4a7 100644
+index 2ac8b24f00e624acb564a0e11fd2437b5f02a99c..94578295634cfe05af20ee169477506c530a3c81 100644
 --- a/Source/JavaScriptCore/runtime/MachineContext.h
 +++ b/Source/JavaScriptCore/runtime/MachineContext.h
-@@ -677,6 +677,14 @@ inline void* wasmInstancePointer(const mcontext_t& machineContext)
+@@ -152,6 +152,8 @@ static inline void*& stackPointerImpl(mcontext_t& machineContext)
+ #elif OS(HAIKU)
+ #if CPU(X86_64)
+     return reinterpret_cast<void*&>(machineContext.rsp);
++#elif CPU(ARM64)
++    return reinterpret_cast<void*&>(machineContext.sp);
+ #else
+ #error Unknown Architecture
+ #endif
+@@ -281,6 +283,8 @@ static inline void*& framePointerImpl(mcontext_t& machineContext)
+ #elif OS(HAIKU)
+ #if CPU(X86_64)
+     return reinterpret_cast<void*&>(machineContext.rbp);
++#elif CPU(ARM64)
++    return reinterpret_cast<void*&>(machineContext.x[29]);
+ #else
+ #error Unknown Architecture
+ #endif
+@@ -441,6 +445,8 @@ static inline void*& instructionPointerImpl(mcontext_t& machineContext)
+ #elif OS(HAIKU)
+ #if CPU(X86_64)
+     return reinterpret_cast<void*&>((uintptr_t&) machineContext.rip);
++#elif CPU(ARM64)
++    return reinterpret_cast<void*&>((uintptr_t&) machineContext.elr);
+ #else
+ #error Unknown Architecture
+ #endif
+@@ -617,6 +623,8 @@ inline void*& argumentPointer<1>(mcontext_t& machineContext)
+ #elif OS(HAIKU)
+ #if CPU(X86_64)
+     return reinterpret_cast<void*&>((uintptr_t&) machineContext.rsi);
++#elif CPU(ARM64)
++    return reinterpret_cast<void*&>((uintptr_t&) machineContext.x[1]);
+ #else
+ #error Unknown Architecture
+ #endif
+@@ -677,6 +685,16 @@ inline void* wasmInstancePointer(const mcontext_t& machineContext)
  {
  #if OS(DARWIN)
      return wasmInstancePointer(machineContext->__ss);
@@ -404,12 +479,23 @@ index 2ac8b24f00e624acb564a0e11fd2437b5f02a99c..fd988cc36ef755a0e2d5939eb54141af
 +#error Unsupported Architecture
 +#elif CPU(X86_64)
 +    return reinterpret_cast<void*&>((uintptr_t&) machineContext.rbx);
++#elif CPU(ARM64)
++    return reinterpret_cast<void*&>((uintptr_t&) machineContext.x[19]);
 +#else
 +#error Unknown Architecture
 +#endif
  #elif OS(FREEBSD)
  
  #if CPU(X86_64)
+@@ -794,6 +812,8 @@ inline void*& llintInstructionPointer(mcontext_t& machineContext)
+ #elif OS(HAIKU)
+ #if CPU(X86_64)
+     return reinterpret_cast<void*&>((uintptr_t&) machineContext.r8);
++#elif CPU(ARM64)
++    return reinterpret_cast<void*&>((uintptr_t&) machineContext.x[4]);
+ #else
+ #error Unknown Architecture
+ #endif
 diff --git a/Source/JavaScriptCore/runtime/ProxyObject.cpp b/Source/JavaScriptCore/runtime/ProxyObject.cpp
 index 22302e4f55593a311a60a15f80f7d75ade40db76..6f0938043e9cc7eb5202df3d189d587d935d04bf 100644
 --- a/Source/JavaScriptCore/runtime/ProxyObject.cpp
