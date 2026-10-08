@@ -15,6 +15,11 @@ final.png,*.report}.
 
   python3 tools/bench/stress-browser.py --duration 600
   python3 tools/bench/stress-browser.py --duration 3600 --max-tabs 6 --seed 7 --local-only
+  python3 tools/bench/stress-browser.py --actions 1200 --duration 7200 --seed 71 --local-only
+
+Fixed action counts permit matching seeded workloads even when run times differ.
+Reaching the duration limit before that count, renderer exits and other findings
+make the run fail. Native load timings exclude no-op back/forward commands.
 """
 import argparse
 import json
@@ -70,6 +75,7 @@ class Stress:
         self.team = self.group = None
         self.started = time.time()
         self.findings = []
+        self.exited_tabs = set()
         self.consecutive_hangs = 0
         local = [f'http://{guest.HOST_ADDRESS}:{args.port}{path}' for path in LOCAL_PAGES]
         self.urls = local if args.local_only else REAL_SITES + local
@@ -90,6 +96,10 @@ class Stress:
         current = guest.state(self.ctl, self.team, timeout_ms=self.args.hang_timeout * 1000)
         if current.get('ok'):
             self.consecutive_hangs = 0
+            for tab in current.get('tabs', []):
+                if tab.get('loadOutcome') == 'process-exited' and tab['id'] not in self.exited_tabs:
+                    self.exited_tabs.add(tab['id'])
+                    self.finding('tab-process-exited', tab=tab['id'], url=tab.get('url'))
             return current
         if current.get('exit') == 3:
             raise BrowserGone('Summit team no longer exists')
@@ -156,6 +166,7 @@ class Stress:
         record['sendExit'] = code
         if code:
             record['sendError'] = err.strip()
+            self.finding('action-failed', action=action, exit=code, error=err.strip())
         after, seconds, timed_out = self.wait_loaded()
         record['seconds'] = round(seconds, 1)
         record['loadTimedOut'] = timed_out
@@ -163,7 +174,13 @@ class Stress:
             selected = next((t for t in after['tabs'] if t['id'] == after['selected']), {})
             record.update(tabsAfter=len(after['tabs']), title=selected.get('title', '')[:80],
                           finalUrl=selected.get('url', '')[:160], loadError=selected.get('loadErrorText') or None,
-                          replyMicros=after.get('replyMicros'))
+                          loadOutcome=selected.get('loadOutcome'), replyMicros=after.get('replyMicros'))
+            previous = next((t for t in tabs if t['id'] == current['selected']), {})
+            started, finished = selected.get('loadStartedAt') or 0, selected.get('loadFinishedAt') or 0
+            if (action in ('navigate', 'newtab', 'history', 'reload') and started
+                    and finished >= started
+                    and (action == 'newtab' or started != previous.get('loadStartedAt'))):
+                record['nativeLoadMs'] = round((finished - started) / 1000, 3)
         self.actions.write(json.dumps(record) + '\n')
         return record
 
@@ -187,14 +204,17 @@ class Stress:
         baseline = self.sample('start-idle')
         outcome = 'completed'
         counts = {}
+        action_count = 0
         last_sample = last_watch = time.time()
         try:
-            while time.time() - self.started < args.duration:
+            while (time.time() - self.started < args.duration
+                   and (args.actions is None or action_count < args.actions)):
                 current = self.state()
                 if not current:
                     time.sleep(3)
                     continue
                 record = self.act(current)
+                action_count += 1
                 counts[record['action']] = counts.get(record['action'], 0) + 1
                 if record.get('loadTimedOut'):
                     counts['loadTimeouts'] = counts.get('loadTimeouts', 0) + 1
@@ -231,7 +251,10 @@ class Stress:
         except KeyboardInterrupt:
             outcome = 'interrupted'
 
-        summary = {'outcome': outcome, 'counts': counts, 'baseline': baseline}
+        if outcome == 'completed' and args.actions is not None and action_count < args.actions:
+            outcome = 'duration-limit'
+        summary = {'outcome': outcome, 'counts': counts, 'actionCount': action_count,
+                   'targetActions': args.actions, 'actionSeconds': self.elapsed(), 'baseline': baseline}
         try:
             if outcome == 'completed':
                 # Settle: one blank-ish tab, then compare resident memory with the start.
@@ -298,6 +321,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--bundle', default=guest.DEFAULT_BUNDLE)
     parser.add_argument('--duration', type=int, default=600, help='seconds of actions (default 600)')
+    parser.add_argument('--actions', type=int,
+                        help='stop after this many seeded actions; duration remains the time limit')
     parser.add_argument('--max-tabs', type=int, default=4)
     parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--nav-timeout', type=int, default=45, help='seconds to wait for a load to finish')
@@ -312,6 +337,8 @@ def main():
     parser.add_argument('--label', default='')
     parser.add_argument('--env', action='append', default=[], metavar='NAME=VALUE')
     args = parser.parse_args()
+    if args.actions is not None and args.actions < 1:
+        parser.error('--actions must be positive')
 
     def interrupted(signum, frame):
         raise KeyboardInterrupt
@@ -353,8 +380,8 @@ def main():
     (directory / 'run.json').write_text(json.dumps(summary, indent=1))
 
     print()
-    print(f"stress run : {run_id}   outcome: {summary['outcome']}   duration {args.duration}s seed {args.seed}")
-    print(f"actions    : {summary['counts']}")
+    print(f"stress run : {run_id}   outcome: {summary['outcome']}   action phase {summary['actionSeconds']}s seed {args.seed}")
+    print(f"actions    : {summary['actionCount']}   {summary['counts']}")
     print(f"{'process':16} {'first MiB':>10} {'last MiB':>10} {'max MiB':>10} {'MiB/min':>9} {'threads first/last/max':>24} {'max procs':>10}")
     for role, t in summary['memoryTrend'].items():
         print(f"{role:16} {t['firstMiB']:10.1f} {t['lastMiB']:10.1f} {t['maxMiB']:10.1f} {t['slopeMiBPerMinute']:9.2f} "
@@ -365,7 +392,8 @@ def main():
         print('  -', json.dumps(finding)[:240])
     print(f'artifacts  : {directory}')
     return 0 if (summary['outcome'] == 'completed' and not summary['crash']['newReports']
-                 and not summary['crash']['syslogEvents'] and not summary['leftovers']) else 1
+                 and not summary['crash']['syslogEvents'] and not summary['leftovers']
+                 and not summary['findings']) else 1
 
 
 if __name__ == '__main__':

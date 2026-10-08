@@ -3,7 +3,9 @@
 ## 8 October 2026: six-hour optimization session
 
 All issue fixes were installed and verified on X399 before this session began.
-The session runs from **02:14:10 to 08:14:10 UTC** (13:14 to 19:14 Hobart).
+The session started at **02:14:10 UTC** (13:14 Hobart). Excluding 1,275 seconds
+of workstation outage and user-requested pause, the six-hour minimum ends at
+**08:35:25 UTC** (19:35 Hobart).
 Earlier issue implementation, builds and verification do not count toward it.
 The baseline is `bundle-ralgs2gr`, engine patch
 `303c94b24cd5f1cf92493e00a6c30f0985a7e52d3630c24b14f538719850605f`,
@@ -275,6 +277,39 @@ not establish the cause of the earlier WebProcess exception, and the signal
 flood must not be repeated. Native long-run verification and final optimized
 installation are pending recovery. Evidence:
 `.vm/optimization-2026-10-08/{cond-signal.log,cond-signal-results.json,native-stall-status.json}`.
+
+After the owner rebooted the workstation, it was reachable and idle again at
+05:27:40 UTC. The excluded outage/pause shifts the session's minimum finish
+to 08:35:25 UTC. The earlier unthrottled signal probe will not be repeated.
+
+A new 25-action browser smoke exposed a separate Mesa startup crash: a once
+trampoline called a null callback stored in dynamic thread-local storage.
+A two-library native reproducer showed that Haiku's loader discarded a new
+thread's first TLS write after another TLS image had unloaded. Its new vector
+started at generation zero, so the second access invalidated the newly
+created block. Initializing the vector at the current generation fixes that
+reset. The platform fix and regression fixture are committed in the
+[Haiku fork](https://github.com/jmgasper/haiku/commit/d9e624084c).
+
+The local loader build passed. An isolated QEMU overlay failed before the
+change, passed all 2,000 TLS checks after it, failed again after rollback,
+and passed after reinstall and normal VM reboot. The existing 22 loader
+checks and the C++ TLS lifetime fixture also passed. Native X399 failed
+1,224 of 2,000 checks before the fix and passed all 2,000 afterward. Only the
+loader was installed, through a removable package, without rebooting X399.
+The planned automatic rollback guard failed to start because of a script
+quoting error; activation was verified directly and package removal had
+already been tested in QEMU. This does not establish the cause of the earlier
+condition-variable invalid-opcode crash. Evidence:
+`.vm/optimization-2026-10-08/tls-generation/`.
+
+The repeated browser smoke completed all 25 seeded actions in 53.4 seconds,
+with normal quit, no remaining helpers and no crash/debugger findings. Its
+14 native load samples had a 169 ms median. `stress-browser.py --actions`
+now supports matched action counts, records native navigation timing, detects
+renderer exits in every tab, and returns failure for recorded findings or an
+unmet action target. The earlier crash run correctly failed. Evidence:
+`.vm/bench/stress-20261008-164722-opt1008-stress-actions-smoke/`.
 
 ## 5 October 2026: quitting with a busy page, helpers left behind, the Pi's video decoder
 
