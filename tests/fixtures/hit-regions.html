@@ -1,0 +1,86 @@
+<!doctype html><meta charset="utf-8"><title>HitRegion starting</title>
+<style>body{margin:0;font:14px sans-serif}canvas{position:absolute;left:80px;top:100px;width:400px;height:240px;background:#eee;transform-origin:0 0}pre{position:absolute;top:550px}</style>
+<canvas id="canvas" width="400" height="240"><button id="control">Accessible control</button><button id="second">Other control</button></canvas><pre id="status"></pre>
+<script>
+'use strict';
+const canvas=document.getElementById('canvas'),control=document.getElementById('control'),second=document.getElementById('second');
+const context=canvas.getContext('2d'),checks=[],clicks=[];
+let serial=0,point=(x,y)=>[80+x,100+y];
+const assert=(value,label)=>{checks.push({passed:!!value,label});if(!value)throw Error(label)};
+const throws=(operation,name,label)=>{let caught;try{operation()}catch(error){caught=error}assert(caught?.name===name,label)};
+const rect=(id,x=20,y=20,w=80,h=60,control=null)=>{context.beginPath();context.rect(x,y,w,h);context.addHitRegion({id,control})};
+const click=(x,y,expected,label)=>new Promise((resolve,reject)=>{
+ const captured=[],where=point(x,y),sequence=++serial;
+ const cleanup=()=>{clearTimeout(timer);for(const type of ['mousedown','mouseup','click'])canvas.removeEventListener(type,onEvent)};
+ const onEvent=event=>{try{
+  captured.push(event);assert(event.isTrusted,label+' '+event.type+' is native');
+  assert(event.target===canvas,label+' '+event.type+' targets canvas');
+  assert(event.region===expected,label+' '+event.type+' region '+String(event.region));
+  if(event.type==='click'){cleanup();clicks.push({label,x,y,expected,events:captured.map(e=>({type:e.type,region:e.region}))});resolve(captured)}
+ }catch(error){cleanup();reject(error)}};
+ for(const type of ['mousedown','mouseup','click'])canvas.addEventListener(type,onEvent);
+ const timer=setTimeout(()=>{cleanup();reject(Error('No native click for '+label))},15000);
+ document.title='HitRegion_READY '+sequence+' '+where.map(Math.round).join(' ');
+});
+const report=async passed=>{const result={passed,checks,clicks};document.getElementById('status').textContent=JSON.stringify(result,null,2);
+ try{await fetch('/result',{method:'POST',body:JSON.stringify(result)})}finally{document.title='HitRegion_'+(passed?'PASS':'FAIL')+' '+checks.length}};
+(async()=>{try{
+ for(const name of ['addHitRegion','removeHitRegion','clearHitRegions'])assert(typeof context[name]==='function',name+' exists');
+ assert(new MouseEvent('click').region===null,'default MouseEvent region is null');
+ const readonly=new MouseEvent('click');throws(()=>readonly.region='changed','TypeError','region is read-only');
+ assert(new PointerEvent('pointerdown',{region:'pointer'}).region==='pointer','PointerEvent inherits supplied region');
+ assert(new MouseEvent('click',{region:null}).region===null,'nullable synthetic region');
+ assert(new MouseEvent('click',{region:123}).region==='123','synthetic region converts DOMString');
+ const synthetic=new MouseEvent('click',{region:'synthetic'});canvas.dispatchEvent(synthetic);
+ assert(synthetic.region==='synthetic','synthetic dispatch preserves supplied region');
+ throws(()=>context.addHitRegion(),'NotSupportedError','empty default region rejected');
+ context.rect(20,20,80,60);throws(()=>context.addHitRegion({}),'NotSupportedError','region requires id or control');
+ throws(()=>context.addHitRegion({id:'typed',control:123}),'TypeError','control requires Element');
+ context.beginPath();throws(()=>context.addHitRegion({id:'empty'}),'NotSupportedError','empty path rejected');
+ context.rect(450,300,20,20);throws(()=>context.addHitRegion({id:'outside'}),'NotSupportedError','outside bitmap has no hit pixels');
+ rect('Case');const retained=await click(40,40,'Case','basic region');await click(150,40,null,'outside region');
+ context.removeHitRegion('case');await click(40,40,'Case','ids are case sensitive');
+ context.removeHitRegion('Case');assert(retained.every(e=>e.region==='Case'),'event region is an immutable snapshot');await click(40,40,null,'removed region');
+ rect('move');rect('move',140,20);await click(40,40,null,'duplicate id removes old geometry');await click(160,40,'move','duplicate id uses new geometry');
+ context.beginPath();throws(()=>context.addHitRegion({id:'move'}),'NotSupportedError','invalid replacement fails atomically');await click(160,40,'move','failed replacement keeps original');
+ context.clearHitRegions();rect('under',20,20,160,80);rect('over',60,20,80,80);
+ await click(80,40,'over','latest overlapping region');await click(60,40,'over','new region owns shared boundary');context.removeHitRegion('over');await click(80,40,null,'removal cannot uncover older region');await click(40,40,'under','uncovered original portion survives');
+ context.clearHitRegions();rect('controlled',20,20,80,60,control);rect('moved-control',140,20,80,60,control);
+ await click(40,40,null,'duplicate control removes original');await click(160,40,'moved-control','control region keeps canvas target');
+ control.remove();await click(160,40,'moved-control','detached control does not remove id');canvas.append(control);
+ context.clearHitRegions();rect('under-control',20,20,160,80);rect('',20,20,80,60,control);context.removeHitRegion('');await click(40,40,null,'control-only region owns pixels without an id');await click(160,40,'under-control','control-only region preserves uncovered area');
+ context.clearHitRegions();context.save();context.translate(60,0);context.beginPath();context.rect(20,20,80,60);context.translate(60,0);context.addHitRegion({id:'transformed'});context.restore();
+ await click(90,40,'transformed','default path keeps construction transform');await click(170,40,null,'later transform does not move existing path');
+ context.clearHitRegions();const path=new Path2D();path.rect(20,20,80,60);context.save();context.translate(100,0);context.addHitRegion({id:'path2d',path});context.restore();path.rect(250,20,50,50);
+ await click(140,40,'path2d','Path2D uses current transform');await click(40,40,null,'Path2D is transformed');await click(360,40,null,'Path2D is snapshotted');
+ context.clearHitRegions();const donut=new Path2D();donut.rect(20,20,160,120);donut.rect(60,50,80,60);context.addHitRegion({id:'donut',path:donut,fillRule:'evenodd'});
+ await click(40,40,'donut','evenodd outer pixels');await click(80,70,null,'evenodd hole');
+ context.clearHitRegions();const circle=new Path2D();circle.arc(100,100,60,0,2*Math.PI);context.addHitRegion({id:'circle',path:circle});
+ await click(100,100,'circle','curved path interior');await click(45,45,null,'curved bounding box is not the hit area');
+ context.clearRect(90,40,20,120);await click(100,100,null,'clear subtracts from a curved path');await click(60,100,'circle','curved remainder remains interactive');
+ context.clearHitRegions();context.save();context.beginPath();context.arc(100,100,60,0,2*Math.PI);context.clip();rect('round-clip',0,0,200,200);context.restore();
+ await click(100,100,'round-clip','curved clipping path');await click(45,45,null,'curved clipping excludes corners');
+ context.beginPath();context.moveTo(20,20);context.lineTo(100,100);throws(()=>context.addHitRegion({id:'line'}),'NotSupportedError','zero-area diagonal is not a region');
+ context.save();context.scale(0,1);throws(()=>context.addHitRegion({id:'singular',path:circle}),'NotSupportedError','singular transform has no pixels');context.restore();
+ throws(()=>context.addHitRegion({id:'invalid-rule',path:circle,fillRule:'bad'}),'TypeError','fill rule is validated');
+ context.clearHitRegions();context.save();context.beginPath();context.rect(20,20,60,100);context.clip();rect('clipped',0,0,200,160);context.restore();
+ await click(40,40,'clipped','clip retained in hit path');await click(100,40,null,'clip excludes outside pixels');rect('restored',140,20);await click(160,40,'restored','restore restores clip');
+ context.clearHitRegions();rect('clear',20,20,160,120);context.clearRect(60,40,60,60);await click(80,60,null,'clearRect subtracts covered pixels');await click(40,40,'clear','clearRect preserves other pixels');
+ context.save();context.beginPath();context.rect(20,20,20,100);context.clip();context.clearRect(0,0,400,240);context.restore();await click(30,40,null,'clearRect respects clip');await click(150,40,'clear','clipped clear preserves other pixels');
+ context.clearHitRegions();rect('negative',20,20,160,120);context.clearRect(100,100,-60,-60);await click(60,60,null,'negative clear dimensions');await click(150,40,'negative','negative clear keeps remainder');
+ context.clearHitRegions();rect('clear-transform',20,20,160,120);context.save();context.translate(100,0);context.clearRect(0,20,60,80);context.restore();await click(120,40,null,'transformed clear');await click(40,40,'clear-transform','transform does not overclear');
+ context.clearHitRegions();rect('draw');context.fillRect(0,0,400,240);await click(40,40,'draw','ordinary painting preserves regions');context.clearHitRegions();await click(40,40,null,'clearHitRegions clears all');
+ rect('reset');context.reset();await click(40,40,null,'context reset clears regions');rect('resize');canvas.width=canvas.width;await click(40,40,null,'same-width assignment clears regions');
+ rect('scaled');canvas.style.width='200px';canvas.style.height='120px';point=(x,y)=>[80+x/2,100+y/2];await click(40,40,'scaled','CSS scale maps to backing bitmap');await click(160,40,null,'CSS scale preserves geometry');
+ canvas.style.border='10px solid black';canvas.style.padding='15px';point=(x,y)=>[105+x/2,125+y/2];await click(40,40,'scaled','border and padding mapping');
+ point=()=>[95,115];await click(0,0,null,'padding has no bitmap pixel');
+ canvas.style.border='0';canvas.style.padding='0';canvas.style.width='400px';canvas.style.height='240px';canvas.style.transform='matrix(0,1,-1,0,300,0)';point=(x,y)=>[380-y,100+x];await click(40,40,'scaled','CSS rotation maps to bitmap');await click(160,40,null,'rotated outside region');
+ canvas.style.transform='none';canvas.style.width='200px';canvas.style.height='200px';canvas.style.objectFit='contain';point=(x,y)=>[80+x/2,140+y/2];await click(40,40,'scaled','object-fit content rectangle');point=()=>[100,110];await click(0,0,null,'object-fit letterbox has no region');
+ canvas.style.width='400px';canvas.style.height='240px';canvas.style.objectFit='fill';point=(x,y)=>[80+x,100+y];
+ context.clearHitRegions();rect('retained');for(let i=0;i<300;i++)rect('temporary',250,180,20,20);context.removeHitRegion('temporary');await click(40,40,'retained','replacing regions preserves unrelated geometry');
+ document.body.style.height='2000px';canvas.style.top='600px';window.scrollTo(0,500);await new Promise(requestAnimationFrame);
+ assert(window.scrollY===500,'scroll fixture reaches document offset');await click(40,40,'retained','scrolled document maps page coordinates');
+ window.scrollTo(0,0);canvas.style.top='100px';
+ await report(true);
+}catch(error){checks.push({passed:false,label:String(error)});await report(false)}})();
+</script>
