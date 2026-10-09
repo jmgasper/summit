@@ -1,5 +1,30 @@
 # Summit performance: Speedometer 3.1 baseline, where the time goes, stress test
 
+## 9 October 2026: latest ARM64 build installed on the Pi
+
+At the owner's request, the tested performance candidate from Summit
+`918dcbd` was installed as `summit-0.1.0~git20261009.0135-1` and
+`summit_webkit-1.10.1~git20261009.0135-1`. It uses WebKit `fb054d09146b`
+with Haiku patch `013447c0317e`. WebExtensions and AVIF remain disabled.
+The engine's cached runtime revision string still reports `00991b6c`;
+the package provenance and binary hashes identify the actual source/build.
+
+The packages preserve the native-tested binaries, with library paths adjusted
+for the installed layout and application resources retained. Both extracted
+packages were verified before upload; all **36 installed ELF hashes** match
+the package manifest. `pkgman` upgraded only Summit and its engine. Copies
+of the previous packages are retained in
+`/boot/home/summit-deploy-20261009/rollback/`.
+
+Launching `/boot/system/apps/Summit` with a fresh test profile and no special
+environment passes the 300-frame scroll fixture at **50.27 fps**, and the
+720p MSE fixture presents **360 frames with zero drops**. Both runs quit
+normally, leave no helper processes and pass all **18 health checks**.
+Evidence: `.vm/performance-12h-20261008/deploy-pi-20261009/`,
+`pi-probe-20261009-123648-installed-default-scroll/` and
+`pi-probe-20261009-123720-installed-default-video/` under the same session
+directory. The normal Deskbar entry resolves to the installed application.
+
 ## 8 October 2026: twelve-hour performance and hardening session
 
 This session ran from **09:35:55 to 21:36 UTC**, after the separate six-hour
