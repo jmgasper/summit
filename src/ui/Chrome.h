@@ -33,6 +33,7 @@ ChromeColors ChromeColorsFor(bool privateBrowsing);
 class ToolButton : public BButton {
 public:
     ToolButton(const char* name, const char* tooltip, Icon icon, uint32 message);
+    ~ToolButton() override;
     void Draw(BRect update) override;
     void MouseMoved(BPoint where, uint32 transit, const BMessage* drag) override;
     BSize MinSize() override;
@@ -40,7 +41,9 @@ public:
     BSize PreferredSize() override;
     void SetIcon(Icon icon) { if (fIcon != icon) { fIcon = icon; Invalidate(); } }
 private:
-    void UpdateIconBitmap();
+    void UpdateIconBitmap(rgb_color ink);
+    std::unique_ptr<BBitmap> fBitmap;
+    rgb_color fBitmapInk { 0, 0, 0, 0 };
     int fBitmapSize = 0;
     Icon fBitmapIcon = Icon::More;
     Icon fIcon;

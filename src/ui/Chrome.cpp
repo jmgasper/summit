@@ -6,8 +6,6 @@
 #include <Application.h>
 #include <Resources.h>
 #include <IconUtils.h>
-#include <DataIO.h>
-#include <TranslationUtils.h>
 #include <MenuItem.h>
 #include <PopUpMenu.h>
 #include <ControlLook.h>
@@ -96,47 +94,47 @@ static void DrawFlatButton(BView* view, bool pressed, bool focused, const Chrome
     view->SetHighColor(colors.panel);
     view->FillRect(view->Bounds());
     if (pressed || focused) {
-        view->SetHighColor(colors.privateBrowsing ? Mix(colors.panel, colors.control, pressed ? 1.0f : 0.6f)
-            : pressed ? rgb_color{212, 225, 222, 255} : rgb_color{225, 232, 230, 255});
+        view->SetHighColor(Mix(colors.panel, colors.text, pressed ? 0.16f : 0.09f));
         view->FillRoundRect(view->Bounds().InsetByCopy(2, 2), 5, 5);
     }
 }
 
-// BControl supplies matching pressed and disabled variants. The supplied SVG
-// artwork is rendered at three densities at build preparation time; controls
-// without new artwork continue to use their native vector resources.
-void ToolButton::UpdateIconBitmap()
+// Font Awesome silhouettes are native vectors, rasterized at the display's
+// density and tinted with the control's current theme/state color. Keep their
+// 20-point canvas: trimming would enlarge narrow glyphs and erase optical sizing.
+ToolButton::~ToolButton() = default;
+void ToolButton::UpdateIconBitmap(rgb_color ink)
 {
     float scale = 1;
 #if SUMMIT_MODERN_WEBKIT
     scale = BWebKitDisplayScale();
 #endif
-    const bool compact = fIcon == Icon::Back || fIcon == Icon::Forward
-        || fIcon == Icon::Go || fIcon == Icon::Stop || fIcon == Icon::Home;
-    const int size = std::max(1, int(std::ceil((compact ? 48 : 24) * scale)));
-    if (size == fBitmapSize && fBitmapIcon == fIcon) return;
+    const int size = std::max(1, int(std::ceil(20 * scale)));
+    if (size == fBitmapSize && fBitmapIcon == fIcon && fBitmapInk == ink) return;
     fBitmapSize = size;
     fBitmapIcon = fIcon;
+    fBitmapInk = ink;
+    fBitmap.reset();
     // BResources is shared across window threads.
     static std::mutex lock;
     std::lock_guard guard(lock);
     auto* resources = BApplication::AppResources();
     size_t bytes = 0;
-    const int density = scale > 2 ? 2 : scale > 1 ? 1 : 0;
-    if (auto* png = resources ? resources->LoadResource('PNG ', 301 + int(fIcon) + density * 100, &bytes) : nullptr) {
-        BMemoryIO stream(png, bytes);
-        std::unique_ptr<BBitmap> bitmap(BTranslationUtils::GetBitmap(&stream));
-        if (bitmap && bitmap->InitCheck() == B_OK) {
-            BControl::SetIcon(bitmap.get(), B_TRIM_ICON_BITMAP_KEEP_ASPECT);
-            return;
+    auto* data = resources ? static_cast<const uint8*>(resources->LoadResource('VICN', 201 + int(fIcon), &bytes)) : nullptr;
+    auto bitmap = std::make_unique<BBitmap>(BRect(0, 0, size - 1, size - 1), B_RGBA32);
+    if (!data || bitmap->InitCheck() != B_OK || BIconUtils::GetVectorIcon(data, bytes, bitmap.get()) != B_OK)
+        return;
+    // B_RGBA32 stores BGRA on Haiku's supported little-endian architectures.
+    // Preserve vector antialiasing in the alpha channel; RGB is straight alpha.
+    for (int y = 0; y < size; ++y) {
+        auto* pixel = static_cast<uint8*>(bitmap->Bits()) + y * bitmap->BytesPerRow();
+        for (int x = 0; x < size; ++x, pixel += 4) {
+            pixel[0] = ink.blue;
+            pixel[1] = ink.green;
+            pixel[2] = ink.red;
         }
     }
-    auto* data = resources ? static_cast<const uint8*>(resources->LoadResource('VICN', 201 + int(fIcon), &bytes)) : nullptr;
-    BBitmap bitmap(BRect(0, 0, size - 1, size - 1), B_RGBA32);
-    if (data && bitmap.InitCheck() == B_OK && BIconUtils::GetVectorIcon(data, bytes, &bitmap) == B_OK)
-        BControl::SetIcon(&bitmap, B_TRIM_ICON_BITMAP_KEEP_ASPECT);
-    else
-        BControl::SetIcon(nullptr);
+    fBitmap = std::move(bitmap);
 }
 
 void ToolButton::Draw(BRect update)
@@ -147,43 +145,24 @@ void ToolButton::Draw(BRect update)
         DrawHaikuButton(this, update, fHover);
         ink = IsEnabled() ? colors.controlText : Mix(colors.controlText, colors.control, 0.6f);
     } else {
-        DrawFlatButton(this, Value(), IsFocus(), colors);
-        if (colors.privateBrowsing) ink = IsEnabled() ? colors.text : Mix(colors.text, colors.panel, 0.55f);
-        else ink = IsEnabled() ? rgb_color{49, 69, 66, 255} : rgb_color{163, 170, 168, 255};
+        DrawFlatButton(this, Value(), IsFocus() || (fHover && IsEnabled()), colors);
+        ink = IsEnabled() ? colors.text : Mix(colors.text, colors.panel, 0.55f);
     }
-    UpdateIconBitmap();
-    const uint32 which = (Value() ? B_ACTIVE_ICON_BITMAP : B_INACTIVE_ICON_BITMAP)
-        | (IsEnabled() ? 0 : B_DISABLED_ICON_BITMAP);
-    if (const BBitmap* bitmap = IconBitmap(which)) {
-        const float width = bitmap->Bounds().Width() + 1;
-        const float height = bitmap->Bounds().Height() + 1;
-        const float factor = 20.0f / std::max(width, height);
-        const float x = std::floor((Bounds().Width() + 1 - width * factor) / 2) + (Value() ? 1 : 0);
-        const float y = std::floor((Bounds().Height() + 1 - height * factor) / 2) + (Value() ? 1 : 0);
+    if (IsEnabled()) {
+        const auto background = HaikuInterfaceStyle() ? colors.control : colors.panel;
+        const bool dark = int(background.red) + background.green + background.blue < 384;
+        if (fIcon == Icon::BookmarkFilled || fIcon == Icon::LockWarning)
+            ink = dark ? rgb_color{255, 208, 112, 255} : rgb_color{151, 96, 0, 255};
+        else if (fIcon == Icon::ReaderActive)
+            ink = dark ? rgb_color{131, 222, 191, 255} : rgb_color{30, 111, 85, 255};
+    }
+    UpdateIconBitmap(ink);
+    if (fBitmap) {
+        const float x = std::floor((Bounds().Width() + 1 - 20) / 2) + (Value() ? 1 : 0);
+        const float y = std::floor((Bounds().Height() + 1 - 20) / 2) + (Value() ? 1 : 0);
         SetDrawingMode(B_OP_ALPHA);
         SetBlendingMode(B_PIXEL_ALPHA, B_ALPHA_OVERLAY);
-        DrawBitmap(bitmap, bitmap->Bounds(), BRect(x, y, x + width * factor - 1, y + height * factor - 1), B_FILTER_BITMAP_BILINEAR);
-        if (fIcon == Icon::BookmarkFilled && IsEnabled()) {
-            // Keep the saved-page state visible with the supplied bookmark art.
-            const BPoint badge(Bounds().right - 6, Bounds().bottom - 6);
-            SetHighColor(35, 125, 77, 255);
-            FillEllipse(badge, 4, 4);
-            SetHighColor(255, 255, 255, 255);
-            SetPenSize(1.2f);
-            StrokeLine(badge + BPoint(-2, 0), badge + BPoint(-0.5f, 1.5f));
-            StrokeLine(badge + BPoint(-0.5f, 1.5f), badge + BPoint(2, -1.5f));
-            SetPenSize(1);
-        }
-        if (fIcon == Icon::LockWarning) {
-            const BPoint badge(Bounds().right - 6, Bounds().bottom - 6);
-            SetHighColor(244, 182, 46, 255);
-            FillEllipse(badge, 4.5f, 4.5f);
-            SetHighColor(45, 35, 15, 255);
-            SetPenSize(1.5f);
-            StrokeLine(badge + BPoint(0, -2.5f), badge + BPoint(0, 0.5f));
-            StrokeLine(badge + BPoint(0, 2.5f), badge + BPoint(0, 2.5f));
-            SetPenSize(1);
-        }
+        DrawBitmap(fBitmap.get(), fBitmap->Bounds(), BRect(x, y, x + 19, y + 19), B_FILTER_BITMAP_BILINEAR);
         SetDrawingMode(B_OP_COPY);
         return;
     }

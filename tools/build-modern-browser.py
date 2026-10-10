@@ -225,9 +225,10 @@ def freeze(work, inputs, commands, before, configuration, build, executable_name
         if browser:
             (bundle / 'licenses/Scintilla').mkdir(parents=True)
             shutil.copy2(TEXT_LICENSE, bundle / 'licenses/Scintilla/License.txt')
-            (bundle / 'licenses/Haiku').mkdir(parents=True)
-            shutil.copy2(ROOT / 'resources/toolbar/LICENSE-Haiku', bundle / 'licenses/Haiku/Toolbar.txt')
-            assets.extend(['licenses/Scintilla/License.txt', 'licenses/Haiku/Toolbar.txt'])
+            (bundle / 'licenses/FontAwesome').mkdir(parents=True)
+            shutil.copy2(ROOT / 'resources/artwork/fontawesome/LICENSE.txt', bundle / 'licenses/FontAwesome/LICENSE.txt')
+            shutil.copy2(ROOT / 'resources/artwork/fontawesome/README.md', bundle / 'licenses/FontAwesome/README.md')
+            assets.extend(['licenses/Scintilla/License.txt', 'licenses/FontAwesome/LICENSE.txt', 'licenses/FontAwesome/README.md'])
             (bundle / 'licenses/Reader').mkdir(parents=True)
             for name in ['LICENSE-Readability', 'NOTICE-Readability', 'LICENSE-DOMPurify', 'sources.json']:
                 shutil.copy2(ROOT / 'resources/reader' / name, bundle / 'licenses/Reader' / name)

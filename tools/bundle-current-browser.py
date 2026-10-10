@@ -77,6 +77,9 @@ def main():
                 destination = bundle / 'licenses/WebKit' / license_file.relative_to(source_root)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(license_file, destination)
+        (bundle / 'licenses/FontAwesome').mkdir(parents=True)
+        for name in ('LICENSE.txt', 'README.md'):
+            shutil.copy2(ROOT / 'resources/artwork/fontawesome' / name, bundle / 'licenses/FontAwesome' / name)
         (bundle / 'licenses/nlohmann').mkdir(parents=True)
         shutil.copy2(ROOT / 'vendor/nlohmann/LICENSE.MIT', bundle / 'licenses/nlohmann/LICENSE.MIT')
         originals = {'Summit': digest(executable)}

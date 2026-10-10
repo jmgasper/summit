@@ -1,65 +1,92 @@
 #!/usr/bin/env python3
-"""Regenerate Summit's toolbar HVIFs; the four Haiku originals are kept as-is."""
-import importlib.util
-import math
-from pathlib import Path
+"""Generate themeable native toolbar vectors from pinned Font Awesome SVGs.
 
-root = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location('hvif', root / 'tools/make-summit-icon.py')
+Requires fonttools (only on the artwork-authoring host). No font or SVG
+translator is needed by Summit. Geometry fits a 20-point canvas, including
+optical padding; Chrome.cpp must preserve that canvas when drawing.
+"""
+import importlib.util
+from pathlib import Path
+import xml.etree.ElementTree as ET
+
+from fontTools.pens.basePen import BasePen
+from fontTools.pens.boundsPen import BoundsPen
+from fontTools.pens.transformPen import TransformPen
+from fontTools.svgLib.path import parse_path
+
+ROOT = Path(__file__).resolve().parents[1]
+spec = importlib.util.spec_from_file_location('hvif', ROOT / 'tools/make-summit-icon.py')
 hvif = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(hvif)
 
+# Name, Font Awesome source, longest visible dimension in logical pixels.
+# Paired states share geometry and sizing; a filled star denotes a saved page.
+ICONS = (
+    ('back', 'solid-arrow-left', 16),
+    ('forward', 'solid-arrow-right', 16),
+    ('reload', 'solid-arrow-rotate-right', 16),
+    ('stop', 'solid-xmark', 13),
+    ('plus', 'solid-plus', 14),
+    ('bookmark', 'regular-star', 18),
+    ('bookmark-filled', 'solid-star', 18),
+    ('downloads', 'solid-download', 16),
+    ('home', 'solid-house', 17),
+    ('more', 'solid-ellipsis', 14),
+    ('go', 'solid-arrow-right', 16),
+    ('lock', 'solid-lock', 14),
+    ('lock-warning', 'solid-triangle-exclamation', 16),
+    ('reader', 'solid-book-open', 17),
+    ('reader-active', 'solid-book-open', 17),
+)
 
-def icon():
-    value = hvif.Icon()
-    ink = value.style(hvif.Solid(42, 65, 68))
-    # The same light-to-dark green used by Haiku's navigation arrows.
-    green = value.style(hvif.Gradient(0, [(0, (155, 239, 146)), (255, (15, 151, 57))],
-                                    (0, .38, -.38, 0, 32, 32)))
-    gold = value.style(hvif.Gradient(0, [(0, (255, 240, 143)), (255, (232, 159, 13))],
-                                   (0, .38, -.38, 0, 32, 32)))
-    return value, ink, green, gold
+
+class VectorPen(BasePen):
+    """Preserve cubic contours and counters in one HVIF path-source shape."""
+    def __init__(self):
+        super().__init__(None)
+        self.paths = []
+
+    def _moveTo(self, point):
+        self.points = [list(point) * 3]
+
+    def _lineTo(self, point):
+        self.points.append(list(point) * 3)
+
+    def _curveToOne(self, first, second, end):
+        self.points[-1][4:6] = first
+        self.points.append([*end, *second, *end])
+
+    def _closePath(self):
+        if self.points[-1][:2] == self.points[0][:2] and len(self.points) > 1:
+            self.points[0][2:4] = self.points.pop()[2:4]
+        self.paths.append(hvif.Path(self.points))
+
+    def _endPath(self):
+        raise ValueError('Toolbar silhouettes must be closed')
 
 
-def save(name, value):
-    (root / 'resources/toolbar' / (name + '.hvif')).write_bytes(value.to_bytes())
+def main():
+    for name, source, extent in ICONS:
+        svg = ET.parse(ROOT / 'resources/artwork/fontawesome' / f'{source}.svg')
+        paths = [p.attrib['d'] for p in svg.iter('{http://www.w3.org/2000/svg}path')]
+        bounds = BoundsPen(None)
+        for path in paths:
+            parse_path(path, bounds)
+        left, top, right, bottom = bounds.bounds
+        scale = extent / max(right - left, bottom - top) * 64 / 20
+        transform = (scale, 0, 0, scale,
+                     32 - (left + right) * scale / 2,
+                     32 - (top + bottom) * scale / 2)
+        pen = VectorPen()
+        for path in paths:
+            parse_path(path, TransformPen(pen, transform))
+        icon = hvif.Icon()
+        ink = icon.style(hvif.Solid(0, 0, 0))
+        icon.shape(ink, [icon.path(p) for p in pen.paths])
+        output = ROOT / 'resources/toolbar' / f'{name}.hvif'
+        output.write_bytes(icon.to_bytes())
+        print(f'{output.relative_to(ROOT)}: {output.stat().st_size} bytes')
 
 
-def star(radius, inner):
-    return [(32 + (radius if i % 2 == 0 else inner) * math.cos(-math.pi / 2 + i * math.pi / 5),
-             33 + (radius if i % 2 == 0 else inner) * math.sin(-math.pi / 2 + i * math.pi / 5)) for i in range(10)]
-
-
-for name, filled in [('bookmark', False), ('bookmark-filled', True)]:
-    value, ink, green, gold = icon()
-    value.draw(ink, star(28, 13))
-    face = gold if filled else value.style(hvif.Solid(245, 245, 229))
-    value.draw(face, star(23, 10.5))
-    save(name, value)
-
-value, ink, green, gold = icon()
-value.draw(ink, [(25, 7), (39, 7), (39, 25), (57, 25), (57, 39), (39, 39), (39, 57), (25, 57), (25, 39), (7, 39), (7, 25), (25, 25)])
-value.draw(green, [(28, 10), (36, 10), (36, 28), (54, 28), (54, 36), (36, 36), (36, 54), (28, 54), (28, 36), (10, 36), (10, 28), (28, 28)])
-save('plus', value)
-
-value, ink, green, gold = icon()
-value.draw(ink, [(25, 6), (39, 6), (39, 29), (51, 29), (32, 48), (13, 29), (25, 29)])
-value.draw(green, [(28, 9), (36, 9), (36, 32), (44, 32), (32, 44), (20, 32), (28, 32)])
-value.draw(ink, [(7, 43), (13, 43), (13, 53), (51, 53), (51, 43), (57, 43), (57, 59), (7, 59)])
-save('downloads', value)
-
-# Clockwise circular arrow, filled polygons rather than font glyphs.
-value, ink, green, gold = icon()
-def arc(radius, start, end):
-    return [(32 + radius * math.cos(math.radians(a)), 32 + radius * math.sin(math.radians(a)))
-            for a in range(start, end + (1 if end > start else -1), 5 if end > start else -5)]
-value.draw(ink, arc(25, -50, 230) + arc(13, 230, -50))
-value.draw(green, arc(22, -50, 225) + arc(16, 225, -50))
-value.draw(ink, [(42, 9), (58, 7), (55, 30), (35, 16)])
-value.draw(green, [(45, 12), (54, 11), (52, 24), (41, 16)])
-save('reload', value)
-
-value, ink, green, gold = icon()
-for cx in (12, 32, 52):
-    value.draw(ink, [(cx + 5 * math.cos(a * math.pi / 8), 32 + 5 * math.sin(a * math.pi / 8)) for a in range(16)])
-save('more', value)
+if __name__ == '__main__':
+    main()
