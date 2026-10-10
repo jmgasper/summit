@@ -23,6 +23,7 @@ Query parameters:
                   script-heavy page does, to see whether video keeps moving
   width=<pixels>  displayed video width (default 640); aspect ratio follows source
   expectedFrames=<count>  require this exact total frame count at normal end
+  maxDropped=<count>  require at most this many dropped frames (e.g. 0)
   timeoutMs=<ms>  report timeout after this interval (default 25000)
   pauseAt=<seconds>  pause once playback reaches this time, then resume
   pauseMs=<ms>    pause duration (default 1500, plus 250 ms settling)
@@ -48,6 +49,7 @@ const seekTo = params.has('seek') ? Number(params.get('seek')) : null;
 const videoFile = params.get('video') || 'video-frag.mp4';
 const audioFile = params.get('audio') || 'audio-frag.mp4';
 const expectedFrames = params.has('expectedFrames') ? Number(params.get('expectedFrames')) : null;
+const maxDropped = params.has('maxDropped') ? Number(params.get('maxDropped')) : null;
 const pauseAt = params.has('pauseAt') ? Number(params.get('pauseAt')) : null;
 const pauseMs = Number(params.get('pauseMs') || 1500);
 const pausedSeek = params.has('pausedSeek') ? Number(params.get('pausedSeek')) : null;
@@ -187,6 +189,11 @@ async function report(why) {
         result.expectedFrames = expectedFrames;
         result.passed = Number.isSafeInteger(expectedFrames) && expectedFrames > 0
             && why === 'ended' && !result.error && result.frames === expectedFrames;
+    }
+    if (maxDropped !== null) {
+        result.maxDropped = maxDropped;
+        result.passed = result.passed && Number.isSafeInteger(maxDropped) && maxDropped >= 0
+            && Number.isSafeInteger(result.dropped) && result.dropped <= maxDropped;
     }
     if (pauseAt !== null) {
         result.pauseCheck = pauseCheck;
