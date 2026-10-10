@@ -66,7 +66,24 @@ int main(int argc, char** argv)
     require(display.format == B_RGB32 && display.line_width && display.line_count
         && display.bytes_per_row >= display.line_width * 4, "RGB output geometry");
     size_t bytes = size_t(display.bytes_per_row) * display.line_count;
-    std::vector<unsigned char> guarded(bytes + 128, 0xa5);
+    const bool expectFormatFailure = !std::strcmp(argv[3], "format-error");
+    // Keep a generous canary beyond the advertised extent, so the historical
+    // write-after-format-rejection regression cannot corrupt the test's heap.
+    std::vector<unsigned char> guarded(bytes + 65536 + 64, 0xa5);
+    if (expectFormatFailure) {
+        for (unsigned attempt = 0; attempt < 3; ++attempt) {
+            int64 count = 123;
+            media_header header { };
+            status_t status = decoder->readFrame(guarded.data() + 64, &count, &header);
+            require(std::all_of(guarded.begin(), guarded.end(), [](auto c) { return c == 0xa5; }), "format rejection never writes output");
+            require(status == B_MEDIA_BAD_FORMAT && !count, "format error remains latched on repeated reads");
+        }
+        decoder = nullptr;
+        file.ReleaseTrack(track);
+        snooze(250000);
+        std::puts("PASS: incompatible replacement format is sticky and never writes the caller's buffer");
+        return 0;
+    }
     FILE* capture = std::fopen(argv[4], "wb");
     require(capture, "open RGB capture");
     media_codec_info codec { };
@@ -79,7 +96,7 @@ int main(int argc, char** argv)
         media_header header { };
         status_t status = decoder->readFrame(guarded.data() + 64, &count, &header);
         require(std::all_of(guarded.begin(), guarded.begin() + 64, [](auto c) { return c == 0xa5; })
-            && std::all_of(guarded.end() - 64, guarded.end(), [](auto c) { return c == 0xa5; }), "output bounds");
+            && std::all_of(guarded.begin() + 64 + bytes, guarded.end(), [](auto c) { return c == 0xa5; }), "output bounds");
         if (status == B_LAST_BUFFER_ERROR)
             break;
         if (status != B_OK)

@@ -29485,10 +29485,10 @@ index 0000000000000000000000000000000000000000..21962ea9d0bd80ba9c260e9ef9ecac36
 +} // namespace SummitMPEGTS
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.cpp
 new file mode 100644
-index 0000000000..623ed7df6e
+index 0000000000..262557c3d0
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.cpp
-@@ -0,0 +1,888 @@
+@@ -0,0 +1,935 @@
 +/*
 + * Copyright (C) 2026 Haiku, Inc. All rights reserved.
 + *
@@ -30164,7 +30164,14 @@ index 0000000000..623ed7df6e
 +
 +status_t AddOnVideoDecoderHaiku::seekedTo(int64 frame, bigtime_t time)
 +{
-+    return m_decoder ? m_decoder->SeekedTo(frame, time) : B_NO_INIT;
++    if (!m_decoder)
++        return B_NO_INIT;
++    status_t status = m_decoder->SeekedTo(frame, time);
++    if (status == B_TIMED_OUT)
++        markAddOnBroken(s_namedAddOns[m_backend], "the hardware video decoder did not answer during seek");
++    if (status != B_OK)
++        closeFailedDecoder(s_namedAddOns[m_backend], std::exchange(m_decoder, nullptr));
++    return status;
 +}
 +
 +std::unique_ptr<SubstituteVideoDecoderHaiku> SubstituteVideoDecoderHaiku::createIfNeeded(BMediaTrack& track, const media_format& decodedFormat)
@@ -30288,6 +30295,26 @@ index 0000000000..623ed7df6e
 +    return status;
 +}
 +
++status_t SubstituteVideoDecoderHaiku::setUpMatchingOutput()
++{
++    const media_format previous = m_decodedFormat;
++    status_t status = setUp(previous);
++    const auto& oldDisplay = previous.u.raw_video.display;
++    const auto& newDisplay = m_decodedFormat.u.raw_video.display;
++    // The caller owns a bitmap allocated for the original format. Preserve
++    // that contract even after failure, and latch rejection before Decode
++    // can write into it on this or any subsequent read.
++    if (status == B_OK && (m_decodedFormat.type != B_MEDIA_RAW_VIDEO
++        || newDisplay.format != oldDisplay.format || newDisplay.line_width != oldDisplay.line_width
++        || newDisplay.line_count != oldDisplay.line_count || newDisplay.bytes_per_row != oldDisplay.bytes_per_row
++        || newDisplay.pixel_offset != oldDisplay.pixel_offset || newDisplay.line_offset != oldDisplay.line_offset
++        || m_decodedFormat.u.raw_video.orientation != previous.u.raw_video.orientation))
++        status = B_MEDIA_BAD_FORMAT;
++    m_decodedFormat = previous;
++    m_decodeStatus = status;
++    return status;
++}
++
 +status_t SubstituteVideoDecoderHaiku::GetNextChunk(const void** chunk, size_t* size, media_header* header)
 +{
 +    char* buffer = nullptr;
@@ -30302,62 +30329,82 @@ index 0000000000..623ed7df6e
 +
 +status_t SubstituteVideoDecoderHaiku::readFrame(void* buffer, int64* count, media_header* header)
 +{
++    *count = 0;
++    if (m_decodeStatus != B_OK)
++        return m_decodeStatus;
 +    media_header ignored { };
 +    media_decode_info info { };
-+    *count = 0;
-+    status_t status = m_addOn
-+        ? m_addOn->decode(buffer, m_decodedFormat.u.raw_video.display.bytes_per_row, count, header ? header : &ignored, &info)
-+        : Decode(buffer, count, header ? header : &ignored, &info);
-+    if (m_addOn && status != B_OK && status != B_LAST_BUFFER_ERROR && status != B_CANCELED && status != B_INTERRUPTED) {
-+        std::fprintf(stderr, "Summit media: %s failed (%s); resuming this track in software\n", m_addOn->codecInfo().pretty_name, strerror(status));
-+        m_addOn = nullptr;
-+        // The extractor has read ahead of the last picture returned. Seek to
-+        // the keyframe preceding the next output frame, then discard only
-+        // the pictures the caller has already seen.
-+        int64 resumeFrame = m_firstFrame + m_framesDecoded;
-+        int64 keyFrame = resumeFrame;
-+        status = m_track.SeekToFrame(&keyFrame, B_MEDIA_SEEK_CLOSEST_BACKWARD);
-+        if (status != B_OK || keyFrame < 0 || keyFrame > resumeFrame)
-+            return status == B_OK ? B_MEDIA_BAD_FORMAT : status;
-+        media_format previous = m_decodedFormat;
-+        status = setUp(previous);
-+        const auto& oldDisplay = previous.u.raw_video.display;
-+        const auto& newDisplay = m_decodedFormat.u.raw_video.display;
-+        // The caller's bitmap was allocated for the original format. Never
-+        // let a replacement decoder write a different geometry into it.
-+        if (status != B_OK || newDisplay.format != oldDisplay.format || newDisplay.line_width != oldDisplay.line_width
-+            || newDisplay.line_count != oldDisplay.line_count || newDisplay.bytes_per_row != oldDisplay.bytes_per_row)
-+            return status == B_OK ? B_MEDIA_BAD_FORMAT : status;
-+        m_firstFrame = keyFrame;
-+        m_framesDecoded = 0;
-+        do {
++    for (;;) {
++        status_t status = m_addOn
++            ? m_addOn->decode(buffer, m_decodedFormat.u.raw_video.display.bytes_per_row, count, header ? header : &ignored, &info)
++            : Decode(buffer, count, header ? header : &ignored, &info);
++        if (m_addOn && status != B_OK && status != B_LAST_BUFFER_ERROR && status != B_CANCELED && status != B_INTERRUPTED) {
++            std::fprintf(stderr, "Summit media: %s failed (%s); resuming this track in software\n", m_addOn->codecInfo().pretty_name, strerror(status));
++            m_addOn = nullptr;
++            // The extractor has read ahead. Rebuild software references from
++            // the keyframe preceding the next output frame.
++            int64 resumeFrame = m_firstFrame + m_framesDecoded;
++            int64 keyFrame = resumeFrame;
++            status = m_track.SeekToFrame(&keyFrame, B_MEDIA_SEEK_CLOSEST_BACKWARD);
 +            *count = 0;
-+            status = Decode(buffer, count, header ? header : &ignored, &info);
-+            if (status != B_OK)
-+                return status;
-+            if (*count != 1)
-+                return B_MEDIA_BAD_FORMAT;
-+            ++m_framesDecoded;
-+        } while (m_firstFrame + m_framesDecoded <= resumeFrame);
-+        return B_OK;
++            if (status != B_OK || keyFrame < 0 || keyFrame > resumeFrame) {
++                m_decodeStatus = status == B_OK ? B_MEDIA_BAD_FORMAT : status;
++                return m_decodeStatus;
++            }
++            if (setUpMatchingOutput() != B_OK)
++                return m_decodeStatus;
++            m_firstFrame = keyFrame;
++            m_framesDecoded = 0;
++            // Persist preroll across an interrupted read. Returning an old
++            // picture on the retry would duplicate output after fallback.
++            m_framesToDiscard = resumeFrame - keyFrame;
++            continue;
++        }
++        if (status != B_OK) {
++            *count = 0;
++            if (status == B_LAST_BUFFER_ERROR && m_framesToDiscard)
++                status = B_MEDIA_BAD_FORMAT;
++            if (status != B_LAST_BUFFER_ERROR && status != B_CANCELED && status != B_INTERRUPTED)
++                m_decodeStatus = status;
++            return status;
++        }
++        if (*count < 0 || *count > 1) {
++            *count = 0;
++            m_decodeStatus = B_MEDIA_BAD_FORMAT;
++            return m_decodeStatus;
++        }
++        if (!*count)
++            return B_OK;
++        ++m_framesDecoded;
++        if (!m_framesToDiscard)
++            return B_OK;
++        --m_framesToDiscard;
++        *count = 0;
 +    }
-+    if (status == B_OK)
-+        m_framesDecoded += std::max<int64>(*count, 0);
-+    return status;
 +}
 +
 +status_t SubstituteVideoDecoderHaiku::seekToTime(bigtime_t* time)
 +{
 +    status_t status = m_track.SeekToTime(time);
-+    if (status != B_OK)
++    if (status != B_OK) {
++        m_decodeStatus = status;
 +        return status;
++    }
 +    m_firstFrame = m_track.CurrentFrame();
 +    m_framesDecoded = 0;
-+    // Nothing from before the seek may come out of the decoder: the add-on
-+    // forgets what it has, libavcodec's is made anew.
-+    if (m_addOn)
-+        return m_addOn->seekedTo(m_firstFrame, *time);
-+    return setUp(m_decodedFormat);
++    m_framesToDiscard = 0;
++    // Nothing from before the seek may come out of either decoder. A failed
++    // hardware reset must not leave playback tied to that failed decoder.
++    if (m_addOn) {
++        status = m_addOn->seekedTo(m_firstFrame, *time);
++        if (status == B_OK) {
++            m_decodeStatus = B_OK;
++            return B_OK;
++        }
++        std::fprintf(stderr, "Summit media: %s seek reset failed (%s); resuming in software\n", m_addOn->codecInfo().pretty_name, strerror(status));
++        m_addOn = nullptr;
++    }
++    return setUpMatchingOutput();
 +}
 +
 +bigtime_t SubstituteVideoDecoderHaiku::currentTime() const
@@ -30379,10 +30426,10 @@ index 0000000000..623ed7df6e
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.h b/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.h
 new file mode 100644
-index 0000000000..65e0dd571e
+index 0000000000..c3be67cb83
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.h
-@@ -0,0 +1,189 @@
+@@ -0,0 +1,192 @@
 +/*
 + * Copyright (C) 2026 Haiku, Inc. All rights reserved.
 + *
@@ -30560,6 +30607,7 @@ index 0000000000..65e0dd571e
 +    SubstituteVideoDecoderHaiku(BMediaTrack&, const media_format& encodedFormat);
 +    bool setUpAddOn(const media_format& requested);
 +    status_t setUp(const media_format& requested);
++    status_t setUpMatchingOutput();
 +    status_t GetNextChunk(const void** chunk, size_t* size, media_header*) final;
 +
 +    BMediaTrack& m_track;
@@ -30569,6 +30617,8 @@ index 0000000000..65e0dd571e
 +    double m_frameRate { 0 };
 +    int64 m_firstFrame { 0 };
 +    int64 m_framesDecoded { 0 };
++    int64 m_framesToDiscard { 0 };
++    status_t m_decodeStatus { B_OK };
 +};
 +
 +} // namespace WebCore

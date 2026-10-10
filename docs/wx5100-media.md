@@ -92,3 +92,26 @@ The correction and an early cancellation check for cached MSE replay are
 pending the next native incremental build; the native results above describe
 commit `fc9cd5a`. `mse.html` now accepts `timeoutMs` for sustained playback and
 long-GOP recovery checks.
+
+Additional native fault tests reproduced two file-recovery failures: a failed
+hardware seek reset stopped playback, and a decoder format rejected on one
+read could still write into the caller's undersized buffer on the next read.
+The corrected module switches to software after reset failure and latches
+incompatible output geometry before any subsequent decode. It preserves the
+bitmap's original format and retains fallback preroll across interrupted reads.
+
+The reset-failure test seeks to the 2.5 s keyframe and returns all 84 remaining
+software pictures, exactly matching FFmpeg RGB. The format test advertises a
+smaller hardware output, fails before hardware writes, then checks three reads:
+all reject the larger software output without changing any byte of the guarded
+buffer. Both tests fail against the prior module and pass after the correction.
+The normal 144-picture hardware run and all four mid-stream failure runs also
+pass again, with the same complete RGB comparisons. Logs are
+`summit-seek-format-{before,after}.log`, `summit-failed-seek-rgb.log`,
+`summit-track-{faults,hardware}-v2.log` and `summit-recovery-v2-rgb.log`.
+
+The fault proxy's additional test controls are `SUMMIT_TEST_AMDUVD_FAIL_SEEK`
+and `SUMMIT_TEST_AMDUVD_BAD_WIDTH` (the latter only takes effect with
+`SUMMIT_TEST_AMDUVD_FAIL_AFTER=0`). The track test's expected decoder value
+`format-error` checks repeated rejection without output writes. The proxy is
+restored to the real add-on and its hash verified after each test group.

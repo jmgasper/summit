@@ -36,10 +36,22 @@ public:
         return fDecoder->Setup(input, data, size);
     }
     status_t NegotiateOutputFormat(media_format* format) override {
-        return fDecoder->NegotiateOutputFormat(format);
+        status_t status = fDecoder->NegotiateOutputFormat(format);
+        // Only used with FAIL_AFTER=0: the real decoder must never write
+        // into this deliberately undersized output configuration.
+        if (status == B_OK && getenv("SUMMIT_TEST_AMDUVD_BAD_WIDTH") && fFailAfter == 0) {
+            format->u.raw_video.display.line_width -= 16;
+            format->u.raw_video.display.bytes_per_row -= 64;
+            fprintf(stderr, "Summit TEST ONLY: injected undersized output geometry\n");
+        }
+        return status;
     }
     status_t SeekedTo(int64 frame, bigtime_t time) override {
         fFrames = 0;
+        if (getenv("SUMMIT_TEST_AMDUVD_FAIL_SEEK")) {
+            fprintf(stderr, "Summit TEST ONLY: injected hardware seek reset failure\n");
+            return B_ERROR;
+        }
         return fDecoder->SeekedTo(frame, time);
     }
     status_t Decode(void* buffer, int64* count, media_header* header, media_decode_info* info) override {
