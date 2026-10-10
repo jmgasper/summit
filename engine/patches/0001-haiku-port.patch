@@ -29485,10 +29485,10 @@ index 0000000000000000000000000000000000000000..21962ea9d0bd80ba9c260e9ef9ecac36
 +} // namespace SummitMPEGTS
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.cpp
 new file mode 100644
-index 0000000000..69bf031f0f
+index 0000000000..09acb09993
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.cpp
-@@ -0,0 +1,945 @@
+@@ -0,0 +1,959 @@
 +/*
 + * Copyright (C) 2026 Haiku, Inc. All rights reserved.
 + *
@@ -29699,6 +29699,7 @@ index 0000000000..69bf031f0f
 +// The ffmpeg add-on's codec numbers (AV_CODEC_ID_*), which name the formats
 +// of the media kit's 'ffmp' family.
 +constexpr uint32 ffmpegCodecH264 = 27;
++constexpr uint32 ffmpegCodecHEVC = 173;
 +
 +// A decoder add-on loaded by name, and what it is known to decode.
 +struct NamedDecoderAddOn {
@@ -29708,6 +29709,7 @@ index 0000000000..69bf031f0f
 +    unsigned maxHeight;
 +    unsigned maxArea;
 +    bool nativeRGB;
++    unsigned decoderIndex;
 +    BPrivate::media::DecoderPlugin* plugin { nullptr };
 +    std::atomic<bool> broken { false };
 +    std::atomic<unsigned> closing { 0 };
@@ -29719,9 +29721,10 @@ index 0000000000..69bf031f0f
 +    // amduvd validates the complete SPS/PPS and the device before accepting
 +    // the stream. RGB conversion there honours per-picture VUI range/matrix.
 +#if CPU(X86_64)
-+    { "amduvd", ffmpegCodecH264, 4096, 4096, 4096 * 4096, true },
++    { "amduvd", ffmpegCodecH264, 4096, 4096, 4096 * 4096, true, 0 },
++    { "amduvd", ffmpegCodecHEVC, 4096, 4096, 4096 * 4096, true, 1 },
 +#endif
-+    { "rpi_mmal", ffmpegCodecH264, 1920, 1920, 1920 * 1088, false },
++    { "rpi_mmal", ffmpegCodecH264, 1920, 1920, 1920 * 1088, false, 0 },
 +};
 +
 +// What dynamic_cast<void*> does, which the engine (built without RTTI) cannot:
@@ -29877,7 +29880,7 @@ index 0000000000..69bf031f0f
 +}
 +
 +// The add-on for this stream, if one is installed and the stream is of the
-+// kind it decodes (eight-bit 4:2:0 progressive H.264 within its size).
++// kind it decodes (progressive 4:2:0 H.264 or HEVC within its size).
 +NamedDecoderAddOn* namedAddOnForStream(const media_format& encoded, std::span<const uint8_t> codecConfig)
 +{
 +    if (encoded.type != B_MEDIA_ENCODED_VIDEO)
@@ -29896,6 +29899,17 @@ index 0000000000..69bf031f0f
 +        auto info = h264SequenceInfo(codecConfig);
 +        if (!info || info->chromaFormat != 1 || info->bitDepthLuma != 8 || info->bitDepthChroma != 8 || !info->frameMbsOnly
 +            || (info->profile != 66 && info->profile != 77 && info->profile != 100) || info->maxReferenceFrames > 16)
++            return nullptr;
++    } else if (*codec == ffmpegCodecHEVC) {
++        // hvcC describes Main/Main 10, 4:2:0 and matching 8/10-bit planes.
++        // The addon still validates all SPS/PPS syntax and device limits.
++        if (codecConfig.size() < 23 || codecConfig[0] != 1 || (codecConfig[1] >> 6)
++            || (codecConfig[16] & 3) != 1 || (codecConfig[17] & 7) != (codecConfig[18] & 7))
++            return nullptr;
++        unsigned profile = codecConfig[1] & 31;
++        unsigned depthMinus8 = codecConfig[17] & 7;
++        if ((profile != 1 && profile != 2) || (depthMinus8 != 0 && depthMinus8 != 2)
++            || (profile == 1 && depthMinus8))
 +            return nullptr;
 +    }
 +    return addOn;
@@ -30058,7 +30072,7 @@ index 0000000000..69bf031f0f
 +    auto* addOn = namedAddOnForStream(encoded, codecConfig);
 +    if (!addOn)
 +        return nullptr;
-+    auto* decoder = addOn->plugin->NewDecoder(0);
++    auto* decoder = addOn->plugin->NewDecoder(addOn->decoderIndex);
 +    if (!decoder)
 +        return nullptr;
 +    std::unique_ptr<AddOnVideoDecoderHaiku> result(new AddOnVideoDecoderHaiku(decoder, WTF::move(source)));
@@ -30436,10 +30450,10 @@ index 0000000000..69bf031f0f
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.h b/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.h
 new file mode 100644
-index 0000000000..e69b3f19ef
+index 0000000000..646d534a60
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.h
-@@ -0,0 +1,193 @@
+@@ -0,0 +1,194 @@
 +/*
 + * Copyright (C) 2026 Haiku, Inc. All rights reserved.
 + *
@@ -30500,7 +30514,8 @@ index 0000000000..e69b3f19ef
 +// and anything it refuses goes to the media kit's choice or libavcodec. Its
 +// pictures come as I420 and are converted to B_RGB32 here. The X399's AMD
 +// amduvd add-on follows the same explicit selection policy and supplies RGB
-+// with the stream's own color range/matrix. Failures are isolated per backend.
++// with the stream's own color range/matrix: decoder 0 for H.264, decoder 1
++// for HEVC Main/Main 10. Failures are isolated per backend.
 +
 +namespace WebCore {
 +
@@ -30539,7 +30554,7 @@ index 0000000000..e69b3f19ef
 +    using ChunkSource = Function<status_t(const void**, size_t*, media_header*)>;
 +
 +    // Whether an installed add-on is known to decode this encoded format
-+    // (with its avcC as `codecConfig`), before anything is read.
++    // (with its avcC/hvcC as `codecConfig`), before anything is read.
 +    static bool canDecode(const media_format& encoded, std::span<const uint8_t> codecConfig);
 +    // Null unless such an add-on accepts the configuration. Some add-ons
 +    // read chunks from `source` while negotiating the output format.

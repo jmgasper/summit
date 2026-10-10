@@ -278,3 +278,20 @@ addon is restored after each fault injection. Runs:
 `probe-20261011-034756-summit-wx5100-readahead-fault0-seek`,
 `probe-20261011-034824-summit-wx5100-readahead-cache512`, and
 `probe-20261011-034905-summit-wx5100-readahead-pause`.
+
+HEVC selection now names decoder index 1 of `amduvd`; H.264 remains index 0.
+The hvcC prefilter admits Main/Main 10, 4:2:0 and matching 8/10-bit planes,
+with complete SPS/PPS/device validation still performed by the addon. An
+older addon without index 1, unsupported configuration or missing device
+keeps the existing software fallback. The native prerequisite is Haiku
+`a5278702e5`, driver `8fc0041e...`, which corrects P010 firmware pitch units.
+The combined addon `818ef96c...` has passed 648 captured Media Kit pictures
+across formats, seeks and recovery, plus a 540-picture Main-10 POC-wrap test;
+HEVC browser playback is awaiting its new bundle.
+
+The MSE fixture accepts `videoCodec` so HEVC fragments are declared with their
+actual codec string. The RGB reference checker now reads native ten-bit YUV
+and applies ten-bit code ranges without reducing precision; it passes all
+48 captured Main-10 RGB pictures within one channel value and repeats the
+existing eight-bit paused-frame check. Reference decoding trims to a requested
+frame interval, avoiding a whole HD clip allocation for one paused capture.
