@@ -39,6 +39,9 @@ The focused native results are:
 - All hardware RGB pixels match independently decoded YUV and floating-point
   color conversion within one channel value of fixed-point rounding. Every
   software suffix matches FFmpeg RGB output exactly, including frame order.
+- High 10 returns all 50 pictures in software; disabling hardware returns all
+  144 pictures in software. A 2.75 s seek reaches the 2.5 s keyframe and returns
+  all 84 remaining hardware pictures, with complete RGB/order comparison.
 - Four additional 24-frame clips declare BT.601/BT.709 and limited/full range.
   All 96 pictures pass the same complete RGB comparison with maximum error one.
 
