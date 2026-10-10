@@ -134306,15 +134306,16 @@ index 0000000000000000000000000000000000000000..0b0a79dd0813bcfae719f65f648a6f5c
 +
 +} // namespace WebKit
 diff --git a/Source/WebKit/WebProcess/WebProcess.cpp b/Source/WebKit/WebProcess/WebProcess.cpp
-index 413f8bc09ce0a2d3591b203f12addc32584b9f6e..b758e368b04ac0358ac2f5db6e57a6b6f8ebec57 100644
+index 413f8bc09ce0a2d3591b203f12addc32584b9f6e..1fae341b33a38658f87e0b121cde3a26df57a678 100644
 --- a/Source/WebKit/WebProcess/WebProcess.cpp
 +++ b/Source/WebKit/WebProcess/WebProcess.cpp
-@@ -300,6 +300,32 @@ static const Seconds nonVisibleProcessEarlyMemoryCleanupDelay { 10_s };
+@@ -300,6 +300,36 @@ static const Seconds nonVisibleProcessEarlyMemoryCleanupDelay { 10_s };
  static const Seconds nonVisibleProcessMemoryCleanupDelay { 120_s };
  #endif
  
 +
 +#if OS(HAIKU)
++#include <WebCore/ContentSecurityPolicy.h>
 +#include <wtf/haiku/ProcessPriorityHaiku.h>
 +#if ENABLE(MEDIA_STREAM)
 +#include <WebCore/HaikuCaptureNode.h>
@@ -134324,12 +134325,15 @@ index 413f8bc09ce0a2d3591b203f12addc32584b9f6e..b758e368b04ac0358ac2f5db6e57a6b6
 +// its pages. Extension pages (background, popup) are never shown as tabs but
 +// answer content scripts and toolbar popups, so a process hosting one stays
 +// at normal priority; so does a hidden page playing audio or capturing media,
-+// and a process without pages yet.
++// and a process without pages yet. Check the extension configuration as well
++// as the URL: background startup and service-worker hosts can still be at
++// about:blank while compiling scripts or deriving the unlocked vault's keys.
 +template<typename PageMap> static void updateProcessPriorityHaiku(const PageMap& pages)
 +{
 +    bool background = !pages.isEmpty();
 +    for (auto& page : pages.values()) {
 +        if (page->isVisible() || page->activityState().containsAny({ WebCore::ActivityState::IsAudible, WebCore::ActivityState::IsCapturingMedia })
++            || (page->corePage() && page->corePage()->contentSecurityPolicyModeForExtension() != WebCore::ContentSecurityPolicyModeForExtension::None)
 +            || page->mainWebFrame().url().protocolIs("webkit-extension"_s)) {
 +            background = false;
 +            break;
@@ -134342,7 +134346,7 @@ index 413f8bc09ce0a2d3591b203f12addc32584b9f6e..b758e368b04ac0358ac2f5db6e57a6b6
  namespace WebKit {
  using namespace WebCore;
  
-@@ -308,6 +334,11 @@ WTF_MAKE_TZONE_ALLOCATED_IMPL(WebProcess);
+@@ -308,6 +338,11 @@ WTF_MAKE_TZONE_ALLOCATED_IMPL(WebProcess);
  #if !PLATFORM(GTK) && !PLATFORM(WPE)
  [[noreturn]] static void callExit(IPC::Connection*)
  {
@@ -134354,7 +134358,7 @@ index 413f8bc09ce0a2d3591b203f12addc32584b9f6e..b758e368b04ac0358ac2f5db6e57a6b6
      terminateProcess(EXIT_SUCCESS);
  }
  #endif
-@@ -397,7 +428,7 @@ WebProcess::WebProcess()
+@@ -397,7 +432,7 @@ WebProcess::WebProcess()
      addSupplement<WebMediaKeyStorageManager>();
  #endif
  
@@ -134363,7 +134367,7 @@ index 413f8bc09ce0a2d3591b203f12addc32584b9f6e..b758e368b04ac0358ac2f5db6e57a6b6
      addSupplementWithoutRefCountedCheck<UserMediaCaptureManager>();
  #endif
  
-@@ -1112,6 +1143,8 @@ void WebProcess::createWebPage(PageIdentifier pageID, WebPageCreationParameters&
+@@ -1112,6 +1147,8 @@ void WebProcess::createWebPage(PageIdentifier pageID, WebPageCreationParameters&
  
  #if OS(LINUX)
          HighPriorityThreads::singleton().setEnabled(hasVisibleWebPage());
@@ -134372,7 +134376,7 @@ index 413f8bc09ce0a2d3591b203f12addc32584b9f6e..b758e368b04ac0358ac2f5db6e57a6b6
  #endif
      } else
          page->reinitializeWebPage(WTF::move(parameters));
-@@ -1145,6 +1178,8 @@ void WebProcess::removeWebPage(PageIdentifier pageID)
+@@ -1145,6 +1182,8 @@ void WebProcess::removeWebPage(PageIdentifier pageID)
  
  #if OS(LINUX)
      HighPriorityThreads::singleton().setEnabled(hasVisibleWebPage());
@@ -134381,7 +134385,7 @@ index 413f8bc09ce0a2d3591b203f12addc32584b9f6e..b758e368b04ac0358ac2f5db6e57a6b6
  #endif
  }
  
-@@ -1861,6 +1896,11 @@ void WebProcess::pageActivityStateDidChange(PageIdentifier, OptionSet<WebCore::A
+@@ -1861,6 +1900,11 @@ void WebProcess::pageActivityStateDidChange(PageIdentifier, OptionSet<WebCore::A
          HighPriorityThreads::singleton().setEnabled(hasVisibleWebPage());
  #endif
      }

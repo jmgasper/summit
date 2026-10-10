@@ -18,6 +18,7 @@
 #include "WebsiteDataStore.h"
 #include "WebsiteDataRecord.h"
 #include <WebCore/ResourceRequest.h>
+#include <WebCore/ContentSecurityPolicy.h>
 #include <Application.h>
 #include <OS.h>
 #include <image.h>
@@ -63,6 +64,12 @@ try {
             assert(browser.runtime.id === 'summit-runtime-fixture', 'runtime identity');
             assert(chrome.runtime.getManifest().name === 'Summit runtime fixture', 'Chrome namespace manifest');
             assert(browser.runtime.getURL('background.html') === location.href, 'extension resource URL');
+            const started = performance.now();
+            for (let i = 0; i < 20; ++i) await new Promise(resolve => setTimeout(resolve, 5));
+            assert(performance.now() - started < 2000, 'hidden extension timers are not clamped to background-tab intervals');
+            const key = await crypto.subtle.importKey('raw', new Uint8Array([1, 2, 3]), 'PBKDF2', false, ['deriveBits']);
+            assert((await crypto.subtle.deriveBits({name: 'PBKDF2', salt: new Uint8Array(16), iterations: 10000, hash: 'SHA-256'}, key, 256)).byteLength === 32,
+                'hidden extension completes asynchronous key derivation');
             const previous = (await browser.storage.local.get('run')).run;
             assert(input.round === 1 ? previous === undefined : previous.round === 1 && previous.nonce === input.nonce,
                 'storage survives context destruction and reopening');
@@ -142,7 +149,10 @@ public:
         SetPulseRate(100000);
         std::string startup = std::getenv("SUMMIT_EXTENSION_STARTUP") ?: "cold";
         printf("STARTUP_MODE %s\n", startup.c_str());
-        if (startup == "page")
+        if (std::getenv("SUMMIT_EXTENSION_SCHEDULING")) {
+            m_priorityProbe = 1;
+            startControl();
+        } else if (startup == "page")
             startControl();
         else if (startup == "deferred")
             RunLoop::mainSingleton().dispatch([this] { startRound(); });
@@ -192,7 +202,23 @@ public:
                 fflush(stdout);
                 m_lastPhase = phase;
             }
-            if (page->pageLoadState().title() == makeString("SUMMIT CONTROL PASS "_s, m_nonce)) {
+            bool ready = m_priorityProbe == 2
+                ? page->hasRunningProcess() && !page->pageLoadState().isLoading() && page->pageLoadState().activeURL() == URL { "about:blank"_s }
+                : page->pageLoadState().title() == makeString("SUMMIT CONTROL PASS "_s, m_nonce);
+            if (ready) {
+                if (m_priorityProbe) {
+                    thread_info info;
+                    bool found = get_thread_info(page->legacyMainFrameProcess().processID(), &info) == B_OK;
+                    printf("SCHEDULING_PROBE stage=%u priority=%ld\n", m_priorityProbe, found ? long(info.priority) : -1L);
+                    check(found && (m_priorityProbe == 1 ? info.priority == B_LOW_PRIORITY : info.priority > B_LOW_PRIORITY),
+                        m_priorityProbe == 1 ? "ordinary hidden page yields CPU" : "extension about:blank host retains normal CPU priority before URL commit");
+                    closeControl();
+                    if (m_priorityProbe++ == 1)
+                        RunLoop::mainSingleton().dispatch([this] { startControl(); });
+                    else
+                        RunLoop::mainSingleton().dispatch([this] { startRound(); });
+                    return;
+                }
                 check(true, "ordinary offscreen page executes JavaScript in the Extensions-enabled engine");
                 closeControl();
                 RunLoop::mainSingleton().dispatch([this] { startRound(); });
@@ -233,6 +259,9 @@ public:
             }
             if (title == makeString("SUMMIT EXTENSION PASS "_s, m_round, ' ', m_nonce)) {
                 check(true, "background DOM confirms completed extension API operations");
+                thread_info info;
+                check(get_thread_info(page->legacyMainFrameProcess().processID(), &info) == B_OK && info.priority > B_LOW_PRIORITY,
+                    "loaded extension background process retains normal CPU priority");
                 auto active = children();
                 check(!active.web.empty() && !active.network.empty(), "extension uses actual WebProcess and NetworkProcess children");
                 page = nullptr;
@@ -265,9 +294,13 @@ private:
         configuration->preferences().setAcceleratedCompositingEnabled(false);
         configuration->preferences().setForceCompositingMode(false);
         configuration->preferences().setThreadedScrollingEnabled(false);
+        if (m_priorityProbe == 2)
+            configuration->setContentSecurityPolicyModeForExtension(WebCore::ContentSecurityPolicyModeForExtension::ManifestV2);
         m_controlView = WebView::createForExtensionBackground(WTF::move(configuration));
         m_deadline = system_time() + 30000000;
         URL url { makeString("data:text/html,<script>document.title='SUMMIT CONTROL PASS "_s, m_nonce, "'</script>"_s) };
+        if (m_priorityProbe == 2)
+            url = URL { "about:blank"_s };
         m_controlView->page()->loadRequest(WebCore::ResourceRequest { WTF::move(url) });
     }
 
@@ -353,6 +386,7 @@ private:
     String m_lastTitle;
     String m_lastPhase;
     unsigned m_round { 0 };
+    unsigned m_priorityProbe { 0 };
     bigtime_t m_deadline { 0 };
     bool m_closing { false };
     bool m_waitingForNetwork { false };

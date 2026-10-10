@@ -151,3 +151,24 @@ support, or at a different profile, produces the same impression.
 - `downloads` is absent (exporting files such as the Emergency Kit).
 - `storage.managed` is absent (unused by the Firefox build).
 - No desktop-app integration, biometrics or SSH agent: those need a native host.
+
+## CPU scheduling (9 October 2026)
+
+Extension-owned pages retain normal Haiku thread priorities from creation,
+using their extension configuration before the first `webkit-extension:` URL
+commits. This covers the initial `about:blank` background host and service
+worker host. Ordinary hidden tabs still use `B_LOW_PRIORITY`; loaded extension
+background pages already kept normal priority and disabled hidden-page DOM
+timer throttling.
+
+`EngineExtensionRuntimeTests.cpp`, with `SUMMIT_EXTENSION_SCHEDULING=1`,
+compares a hidden ordinary page with an extension-configured `about:blank`
+host, then checks actual extension background timers, asynchronous PBKDF2,
+message/storage operations, priority after loading and context reload. This
+checks scheduling, not the latency of unlocking a particular 1Password vault.
+
+The old bundle measured priority 5 for both preflight pages and failed the
+extension startup check. `bundle-b46l7ic6` measures priority 5 for the ordinary
+hidden page and 15 for the extension host; all 18 native checks pass, including
+two background load/storage rounds. Both runs cleanly release their helpers.
+Evidence: `.vm/fixes-2026-10-09/priority-{baseline,final}.log`.
