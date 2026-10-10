@@ -167,8 +167,8 @@ The saved PNG fails comparison with frame 66 and matches frame 65 within one
 RGB value. The substitute decoder's current time denotes the returned
 picture's end, so seek completion now requires that end to be strictly past
 the target. This retains the native track's start-timestamp comparison.
-The correction is awaiting the private incremental build and repeated pixel
-check. Before-fix evidence: `probe-20261011-025950-summit-wx5100-file-paused-seek`,
+The corrected hardware and software paths both pass the repeated pixel
+check below. Before-fix evidence: `probe-20261011-025950-summit-wx5100-file-paused-seek`,
 `summit-browser-file-paused-pixels-before.log` and
 `summit-browser-file-paused-confirm65.log`.
 
@@ -199,6 +199,52 @@ addon had requested no packets, so the empty replay cache incorrectly caused
 a fatal media error. Recovery now starts software directly from the untouched
 queue in that case; after any consumed input/output it still requires a saved
 keyframe. Before-fix evidence is
-`probe-20261011-030919-summit-wx5100-mse-fault0-seek`. The correction awaits
-build and native regression. Each injected-failure run restored the real
-addon and verified its original SHA-256 before ending.
+`probe-20261011-030919-summit-wx5100-mse-fault0-seek`. Final bundle
+`bundle-uza681dk` (commit `8b5369e`, patch `d386c022...`) passes the repeated
+startup/seek failure case and captures source frame 64 exactly in software,
+then ends normally (`probe-20261011-031916-summit-wx5100-mse-fault0-seek-after`).
+Each injected-failure run restored the real addon and verified its original
+SHA-256 before ending.
+
+The software file seek also passes at exactly 2.75 seconds (source frame 66,
+exact RGB). Hardware at 2.74 seconds correctly shows frame 65 within one RGB
+value. File failure after 47 hardware pictures recovers to software and ends
+with one preroll plus 143 playback pictures. An injected failed startup seek
+reset also recovers; the later paused seek still shows frame 66 exactly.
+This reset injection occurs at startup, not after playback has begun. Evidence:
+`probe-20261011-031211-summit-wx5100-file-paused-sw-after`,
+`probe-20261011-031536-summit-wx5100-file-fault47`,
+`probe-20261011-031605-summit-wx5100-file-seek-reset-fallback`, and
+`probe-20261011-031632-summit-wx5100-file-seek-between-frames`.
+
+The 540-picture long-GOP MSE test reaches the bounded recovery cache limit,
+replays 513 samples in software and emits all source timestamps exactly once.
+It drops two late pictures while a build is active, so establishes recovery
+correctness rather than uncontended performance
+(`probe-20261011-031114-summit-wx5100-mse-cache512`).
+
+Full HD exposed scalar RGB conversion as a throughput limit: native decoding
+of 900 pictures takes 33.866 seconds and browser playback drops frames.
+Haiku commit `fb4755dc24`, addon SHA `818ef96c...`, adds exact SSE4.1 RGB
+conversion, reducing direct decode to 27.568 seconds. Native 144-picture
+small and 24-picture HD captures match independent references within one RGB
+value. With this candidate the browser plays all 900 1080p30 pictures and
+unmuted AAC with zero drops and exact source timestamps
+(`probe-20261011-033006-summit-wx5100-hd900-audio-simd`).
+
+The three-minute test with the same candidate reaches normal end and decodes
+all 5,400 source timestamps, but drops 72 pictures during presentation
+(`probe-20261011-033151-summit-wx5100-hd5400-audio-simd`). There is no foreign
+load, media error, new crash or GPU fault. Trace timing shows short decode
+bursts exceeding one frame interval. The video loop currently waits for each
+picture's presentation before decoding its successor, leaving no accumulated
+margin despite average decode capacity above 30 fps. Production addon
+`3f28945c...` was restored and verified after both candidate test groups.
+
+The next engine candidate decouples decoding and presentation with a separate
+presentation thread and a queue bounded to six pictures and 64 MiB (an
+otherwise empty queue can accept one larger picture). Flush clears queued
+pictures, wakes blocked producers, and serializes generation changes against
+publication so an old picture cannot satisfy a new seek's preroll. The
+existing clock and 80 ms late-frame policy are unchanged. Native playback,
+paused seek, fallback and shutdown regressions are pending.

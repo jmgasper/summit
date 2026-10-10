@@ -32709,10 +32709,10 @@ index 0000000000000000000000000000000000000000..df43f4fc21c17d2cfb904c9eaefa28b1
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
 new file mode 100644
-index 0000000000..289964752f
+index 0000000000..432d5b956e
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
-@@ -0,0 +1,2830 @@
+@@ -0,0 +1,2931 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -33320,14 +33320,21 @@ index 0000000000..289964752f
 +        , m_clock(clock)
 +        , m_queue(90, player)
 +    {
++        m_presentationThread = Thread::create("Summit MSE present"_s, [this] { presentFrames(); }, ThreadType::Graphics, Thread::QOS::UserInteractive);
 +        m_thread = Thread::create("Summit MSE video"_s, [this] { run(); }, ThreadType::Graphics, Thread::QOS::UserInteractive);
 +    }
 +
 +    ~HaikuMSEVideoRenderer()
 +    {
 +        m_queue.abort();
++        {
++            Locker locker { m_outputLock };
++            m_outputCondition.notifyAll();
++        }
 +        if (m_thread)
 +            m_thread->waitForCompletion();
++        if (m_presentationThread)
++            m_presentationThread->waitForCompletion();
 +    }
 +
 +    void enqueue(Ref<MediaSampleHaiku>&& sample)
@@ -33345,9 +33352,15 @@ index 0000000000..289964752f
 +    void setEndOfStream() { m_queue.setEndOfStream(); }
 +    void flush()
 +    {
++        // Serialize generation changes with publication, so an old picture
++        // cannot satisfy preroll or replace the paused seek target afterward.
++        Locker locker { m_outputLock };
 +        m_hasFrameSinceFlush = false;
 +        m_enqueuedSinceFlush = false;
 +        m_queue.flush();
++        m_outputFrames.clear();
++        m_outputBytes = 0;
++        m_outputCondition.notifyAll();
 +        MSE_TRACE("video flush generation=%u\n", m_queue.generation());
 +    }
 +    // The picture at the current position is on screen, so the clock can run.
@@ -33398,7 +33411,7 @@ index 0000000000..289964752f
 +                return;
 +            if (generation != m_lastGeneration) {
 +                m_lastGeneration = generation;
-+                m_presentedSinceFlush = false;
++                m_queuedSinceFlush = false;
 +                m_nonDisplaying.clear();
 +                m_decodedBeforeTarget = 0;
 +                m_skippedBeforeTarget = 0;
@@ -33746,29 +33759,111 @@ index 0000000000..289964752f
 +                    static_cast<long long>(pts), static_cast<long long>(header.start_time));
 +            if (takeNonDisplaying(pts))
 +                continue;
-+            if (!waitUntilDue(pts, generation))
-+                break;
-+            if (!m_presentedSinceFlush && (m_decodedBeforeTarget || m_skippedBeforeTarget))
++            if (!m_queuedSinceFlush && (m_decodedBeforeTarget || m_skippedBeforeTarget))
 +                MSE_TRACE("seek target reached: %u pictures decoded before it, %u left out\n", m_decodedBeforeTarget, m_skippedBeforeTarget);
-+            __int128 lateness = m_clock.isRunning() ? static_cast<__int128>(m_clock.now()) - pts : 0;
++            DecodedFrame frame;
++            frame.pts = pts;
++            frame.generation = generation;
++            frame.size = IntSize(width, height);
++#if USE(SKIA)
++            frame.pixels = WTF::move(pixels);
++            frame.rowBytes = rowBytes;
++#endif
++#if defined(HAIKU_MSE_COMPOSITED_VIDEO)
++            if (planes)
++                frame.planesLayout = addOn->layout();
++#endif
++            if (!enqueueFrame(WTF::move(frame)))
++                break;
++            m_queuedSinceFlush = true;
++        }
++        return true;
++    }
++
++    struct DecodedFrame {
++        int64_t pts { 0 };
++        unsigned generation { 0 };
++        IntSize size;
++#if USE(SKIA)
++        sk_sp<SkData> pixels;
++        size_t rowBytes { 0 };
++#endif
++#if defined(HAIKU_MSE_COMPOSITED_VIDEO)
++        std::optional<AddOnVideoDecoderHaiku::I420Layout> planesLayout;
++#endif
++        size_t byteSize() const
++        {
++#if USE(SKIA)
++            return pixels->size();
++#else
++            return 0;
++#endif
++        }
++    };
++
++    bool enqueueFrame(DecodedFrame&& frame)
++    {
++        // Let decoding absorb short expensive pictures while presentation
++        // follows the clock independently. Bound both count and memory; one
++        // frame larger than the byte budget may enter an otherwise empty queue.
++        constexpr size_t maxFrames = 6;
++        constexpr size_t maxBytes = 64 * 1024 * 1024;
++        Locker locker { m_outputLock };
++        while (!m_queue.aborted() && m_queue.generation() == frame.generation) {
++            if (m_outputFrames.isEmpty() || (m_outputFrames.size() < maxFrames
++                && frame.byteSize() <= maxBytes && m_outputBytes <= maxBytes - frame.byteSize())) {
++                m_outputBytes += frame.byteSize();
++                m_outputFrames.append(WTF::move(frame));
++                m_outputCondition.notifyAll();
++                return true;
++            }
++            m_outputCondition.wait(m_outputLock);
++        }
++        return false;
++    }
++
++    void presentFrames()
++    {
++        unsigned presentationGeneration = UINT_MAX;
++        while (!m_queue.aborted()) {
++            DecodedFrame frame;
++            {
++                Locker locker { m_outputLock };
++                while (!m_queue.aborted() && m_outputFrames.isEmpty())
++                    m_outputCondition.wait(m_outputLock);
++                if (m_queue.aborted())
++                    return;
++                frame = m_outputFrames.takeFirst();
++                m_outputBytes -= frame.byteSize();
++                m_outputCondition.notifyAll();
++            }
++            if (presentationGeneration != frame.generation) {
++                presentationGeneration = frame.generation;
++                m_presentedSinceFlush = false;
++            }
++            if (!waitUntilDue(frame.pts, frame.generation))
++                continue;
++            Locker locker { m_outputLock };
++            if (m_queue.aborted() || m_queue.generation() != frame.generation)
++                continue;
++            __int128 lateness = m_clock.isRunning() ? static_cast<__int128>(m_clock.now()) - frame.pts : 0;
 +            if (m_presentedSinceFlush && lateness > 80000) {
 +                ++m_droppedFrames;
 +                continue;
 +            }
 +#if defined(HAIKU_MSE_COMPOSITED_VIDEO)
-+            if (planes) {
-+                presentPlanes(WTF::move(pixels), addOn->layout());
++            if (frame.planesLayout) {
++                presentPlanes(WTF::move(frame.pixels), *frame.planesLayout);
 +                continue;
 +            }
 +#endif
 +#if USE(SKIA)
-+            auto imageInfo = SkImageInfo::Make(width, height, kBGRA_8888_SkColorType, kOpaque_SkAlphaType, SkColorSpace::MakeSRGB());
-+            present(SkImages::RasterFromData(imageInfo, WTF::move(pixels), rowBytes), IntSize(width, height));
++            auto imageInfo = SkImageInfo::Make(frame.size.width(), frame.size.height(), kBGRA_8888_SkColorType, kOpaque_SkAlphaType, SkColorSpace::MakeSRGB());
++            present(SkImages::RasterFromData(imageInfo, WTF::move(frame.pixels), frame.rowBytes), frame.size);
 +#else
-+            present(IntSize(width, height));
++            present(frame.size);
 +#endif
 +        }
-+        return true;
 +    }
 +
 +    bool takeNonDisplaying(int64_t pts)
@@ -33893,8 +33988,14 @@ index 0000000000..289964752f
 +    const HaikuMSEClock& m_clock;
 +    HaikuMSESampleQueue m_queue;
 +    RefPtr<Thread> m_thread;
++    RefPtr<Thread> m_presentationThread;
++    Lock m_outputLock;
++    Condition m_outputCondition;
++    Deque<DecodedFrame> m_outputFrames WTF_GUARDED_BY_LOCK(m_outputLock);
++    size_t m_outputBytes WTF_GUARDED_BY_LOCK(m_outputLock) { 0 };
 +    unsigned m_lastGeneration { UINT_MAX };
-+    bool m_presentedSinceFlush { false };
++    bool m_queuedSinceFlush { false }; // Decoder thread only.
++    bool m_presentedSinceFlush { false }; // Presentation thread only.
 +    Vector<int64_t> m_nonDisplaying;
 +    unsigned m_decodedBeforeTarget { 0 };
 +    unsigned m_skippedBeforeTarget { 0 };
