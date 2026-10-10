@@ -421,7 +421,6 @@ private:
     std::string fInterfaceStyle;
     BGroupLayout* fLayout = nullptr;
     BGroupView* fToolbar = nullptr;
-    ToolButton* fGo = nullptr;
     BStatusBar* fStatusProgress = nullptr;
     // Set when the window starts closing; its open pop-up menus then close.
     std::shared_ptr<std::atomic<bool>> fMenusCancelled = std::make_shared<std::atomic<bool>>(false);

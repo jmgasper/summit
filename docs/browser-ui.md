@@ -41,6 +41,28 @@ opened, reloaded, selected after something changed, or returned to with Back
 or Forward. It does not reload itself while you are looking at it (that would
 lose the scroll position and search text); Reload brings it up to date.
 
+## Toolbar icons
+
+The toolbar uses Font Awesome silhouettes converted to native Haiku vectors
+(9 October 2026). All controls share a padded 20-point canvas, with individual
+optical sizing. The vectors render at the actual display density and use the
+current theme's text color, including private windows and disabled controls.
+A filled gold star identifies a bookmarked page, an amber triangle identifies
+a certificate warning, and Reader mode turns green when active. Native and
+flat button appearances both retain pressed and hover feedback.
+
+![Font Awesome toolbar in the native Haiku appearance](screenshots/toolbar-icons.png)
+
+Sources, attribution and regeneration instructions are in
+[artwork/README.md](../resources/artwork/README.md). No icon font is required.
+
+As of 9 October 2026, both interface styles omit the Go button. Enter in the
+address field still navigates. Downloads opens the folder without an error
+dialog when Tracker reports `B_ALREADY_RUNNING`: that status means the existing
+Tracker received the folder reference. Native checks in `bundle-b46l7ic6`
+verified Enter navigation, the absent Go button and three repeated Downloads
+clicks in each style (34 checks total).
+
 ## Address field type-ahead
 
 Added 2 October 2026 for [issue #8](https://github.com/jmgasper/summit/issues/8),
@@ -130,8 +152,13 @@ refresh that cancelled a click on a History entry.
 
 ## Installed
 
-The workstation desktop launcher `/boot/home/Desktop/Summit-current.sh` points
-to `bundle-14gx1mrh` (the `SkiaCGMiPGO` engine rebuilt with the icon client, so
-performance matches `bundle-av2hgf30`). The previous launcher is
-`Summit-current.pre-browser-ui-20260926.sh`. Instances already running from
-other bundles keep the old interface until they are restarted.
+On 9 October 2026, the X399 desktop launcher
+`/boot/home/Desktop/Summit-current.sh` and `/boot/home/summit/Summit-installed`
+were updated to `bundle-b46l7ic6`, with the `SkiaCGMiPGO` engine and existing
+private Mesa prefix `prefix-20261002`. Summit was restarted with its normal
+profile; loaded engine libraries and helper executables were verified against
+the new bundle. Installation evidence is in
+`.vm/fixes-2026-10-09/install.log`. The five host test suites also pass.
+
+The original 26 September browser UI rollout used `bundle-14gx1mrh`, with
+`Summit-current.pre-browser-ui-20260926.sh` as its launcher backup.

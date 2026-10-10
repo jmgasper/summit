@@ -679,7 +679,6 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
     fBack = new ToolButton("back", "Back", Icon::Back, kBack);
     fForward = new ToolButton("forward", "Forward", Icon::Forward, kForward);
     fReload = new ToolButton("reload", "Reload / stop", Icon::Reload, kReload);
-    fGo = new ToolButton("go", "Go to this address", Icon::Go, kNavigate);
     fAddress = new AddressControl;
     fAddress->SetExplicitMinSize(BSize(240, 30));
     static_cast<AddressControl*>(fAddress)->SetKeyHandler([this](char key) { return AddressKey(key); });
@@ -751,7 +750,7 @@ BrowserWindow::BrowserWindow(std::shared_ptr<SharedProfile> profile, std::string
         .SetInsets(8, 7, 8, 7)
         .Add(fBack).Add(fForward).Add(homeButton)
         .Add(glue())
-        .Add(fAddress, 3).Add(fZoomButton).Add(fGo).Add(fReload).Add(glue())
+        .Add(fAddress, 3).Add(fZoomButton).Add(fReload).Add(glue())
         .Add(fBookmarkButton)
         .Add(downloadsButton)
 #if SUMMIT_MODERN_WEBKIT
@@ -2447,7 +2446,7 @@ void BrowserWindow::ApplyInterfaceStyle()
         if (visible && view->IsHidden(view)) view->Show();
         else if (!visible && !view->IsHidden(view)) view->Hide();
     };
-    // Order: Back, Forward, Reload (Haiku), Home, glue, Address, Go, Reload (Safari), glue, …
+    // Order: Back, Forward, Reload (Haiku), Home, glue, Address, Reload (Safari), glue, …
     BView* reload = fReload;
     reload->RemoveSelf();
     toolbar->AddView(haiku ? 2 : 5, reload);
@@ -2455,7 +2454,6 @@ void BrowserWindow::ApplyInterfaceStyle()
         auto* view = toolbar->ItemAt(i)->View();
         if (view && !std::strcmp(view->Name(), "toolbar-glue")) show(view, !haiku);
     }
-    show(fGo, haiku);
     fAddress->SetExplicitMaxSize(BSize(haiku ? B_SIZE_UNLIMITED : 660, B_SIZE_UNSET));
     fAddress->TextView()->SetAlignment(haiku ? B_ALIGN_LEFT : B_ALIGN_CENTER);
     toolbar->SetInsets(haiku ? 5 : 8, haiku ? 4 : 7, haiku ? 5 : 8, haiku ? 4 : 7);
@@ -3217,7 +3215,9 @@ void BrowserWindow::MessageReceived(BMessage* message)
             entry_ref ref;
             status_t status = get_ref_for_path(path.Path(), &ref);
             if (status == B_OK) status = be_roster->Launch(&ref);
-            if (status != B_OK) ShowError("Could not open Downloads: " + std::string(std::strerror(status)));
+            // Tracker receives the folder reference even when it is already running.
+            if (status != B_OK && status != B_ALREADY_RUNNING)
+                ShowError("Could not open Downloads: " + std::string(std::strerror(status)));
             break;
         }
 #if !SUMMIT_MODERN_WEBKIT
