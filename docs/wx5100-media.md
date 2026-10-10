@@ -26,9 +26,10 @@ separate from decoder failure.
 Focused tests compiled the actual amended `MediaDecoderSelectionHaiku.cpp` and
 linked to the idle reference engine's WTF/Media Kit dependencies on X399. These
 are decoder tests, not yet full-browser qualification. Both amended decoder
-translation units pass native syntax checks. A complete private engine build is
-in progress under `/boot/home/wx5100/summit-webkit/WebKitBuild/WX5100`; MSE browser
-playback and runtime recovery still require verification with that engine.
+translation units pass native syntax checks. The complete private engine build and final incremental update now pass under
+`/boot/home/wx5100/summit-webkit/WebKitBuild/WX5100`, with port patch SHA-256
+`1a2476f9afeeaf0a50e335c52bb8f5af0070a3f65a6a24079e9ab7e344c1ac0e`.
+The resulting private browser bundle is `bundle-6mitguy5`.
 
 The focused native results are:
 
@@ -88,9 +89,9 @@ The host SPS selection-parser regression builds the actual parser with ASan
 and UBSan (`sps-parser-test.py --output DIRECTORY`). It reproduces an overflow
 from an out-of-range signed scaling delta, then verifies rejection before
 addition, both legal boundary values and 25,000 malformed configurations.
-The correction and an early cancellation check for cached MSE replay are
-pending the next native incremental build; the native results above describe
-commit `fc9cd5a`. `mse.html` now accepts `timeoutMs` for sustained playback and
+The correction and early cancellation check for cached MSE replay are included
+in the completed private engine build; the earlier focused results above
+describe commit `fc9cd5a`. `mse.html` now accepts `timeoutMs` for sustained playback and
 long-GOP recovery checks.
 
 Additional native fault tests reproduced two file-recovery failures: a failed
@@ -133,3 +134,40 @@ pause controls and includes a full-resolution PNG in the JSON result.
 `verify-rgb.py --start-frame N --frame-count 1` checks the corresponding
 decoded BGRA capture against that exact source picture without searching for
 a matching frame.
+
+The full browser's first MSE H.264 run completes all 144 pictures with zero
+drops and no media errors. The trace names the AMD UVD decoder and contains
+144 ordered output timestamps; the page reaches normal end, the browser quits
+cleanly and the crash monitor reports no new crashes or syslog events. Evidence:
+`probe-20261011-025740-summit-wx5100-mse144-llvmpipe` in this checkout's
+`.vm/bench/`, and `summit-browser-mse144-llvmpipe.log` in X399 evidence.
+
+Page rendering for these media tests uses a separate software Mesa prefix at
+`/boot/home/wx5100/summit-mesa/prefix`: llvmpipe (LLVM 20.1.8), Mesa 25.3.6.
+The original installed Mesa contains only Zink and cannot initialize EGL with
+the old NVIDIA card removed. The private stack passes independent surfaceless,
+pbuffer and threaded GLES pixel checks with zero mismatches. Its build log is
+`summit-software-mesa-build.log`. This is CPU page compositing with hardware
+video decoding; it does not establish AMD GPU rendering.
+
+File playback also selects AMD UVD and reaches normal end with one startup
+preroll picture plus 143 playback pictures, no media error and clean shutdown
+(`probe-20261011-025822-summit-wx5100-file144`). File playback does not currently
+implement the browser's playback-quality frame counters.
+
+The MSE paused seek to 2.75 seconds holds an unchanged picture for 1.5 seconds
+and resumes to normal end. Its full-size PNG matches source frame 64 within
+one RGB value; the first MSE timestamp is 0.083333 seconds. Evidence:
+`probe-20261011-025903-summit-wx5100-mse-paused-seek` and
+`summit-browser-mse-paused-pixels.log`.
+
+The analogous file test reproduced a seek-boundary error: at 2.75 seconds,
+frame 65 was shown instead of frame 66 (file timestamps start at zero).
+The saved PNG fails comparison with frame 66 and matches frame 65 within one
+RGB value. The substitute decoder's current time denotes the returned
+picture's end, so seek completion now requires that end to be strictly past
+the target. This retains the native track's start-timestamp comparison.
+The correction is awaiting the private incremental build and repeated pixel
+check. Before-fix evidence: `probe-20261011-025950-summit-wx5100-file-paused-seek`,
+`summit-browser-file-paused-pixels-before.log` and
+`summit-browser-file-paused-confirm65.log`.

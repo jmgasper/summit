@@ -29485,10 +29485,10 @@ index 0000000000000000000000000000000000000000..21962ea9d0bd80ba9c260e9ef9ecac36
 +} // namespace SummitMPEGTS
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.cpp
 new file mode 100644
-index 0000000000..262557c3d0
+index 0000000000..69bf031f0f
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.cpp
-@@ -0,0 +1,935 @@
+@@ -0,0 +1,945 @@
 +/*
 + * Copyright (C) 2026 Haiku, Inc. All rights reserved.
 + *
@@ -30414,6 +30414,16 @@ index 0000000000..262557c3d0
 +    return static_cast<bigtime_t>((m_firstFrame + m_framesDecoded) * 1000000.0 / m_frameRate);
 +}
 +
++bool SubstituteVideoDecoderHaiku::seekTargetReached(bigtime_t target) const
++{
++    if (!m_framesDecoded)
++        return false;
++    // The frame counter names the end of the picture just returned. At an
++    // exact boundary the target belongs to the next picture, so equality
++    // still needs one more decode. Native track timestamps name its start.
++    return m_frameRate > 0 ? currentTime() > target : currentTime() >= target;
++}
++
 +void SubstituteVideoDecoderHaiku::codecInfo(media_codec_info* info)
 +{
 +    if (m_addOn) {
@@ -30426,10 +30436,10 @@ index 0000000000..262557c3d0
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.h b/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.h
 new file mode 100644
-index 0000000000..c3be67cb83
+index 0000000000..e69b3f19ef
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.h
-@@ -0,0 +1,192 @@
+@@ -0,0 +1,193 @@
 +/*
 + * Copyright (C) 2026 Haiku, Inc. All rights reserved.
 + *
@@ -30601,6 +30611,7 @@ index 0000000000..c3be67cb83
 +    status_t readFrame(void* buffer, int64* count, media_header*);
 +    status_t seekToTime(bigtime_t*);
 +    bigtime_t currentTime() const;
++    bool seekTargetReached(bigtime_t) const;
 +    void codecInfo(media_codec_info*);
 +
 +private:
@@ -30624,10 +30635,10 @@ index 0000000000..c3be67cb83
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..293426f5133bb645346df8584f4d8aa26b77154d
+index 0000000000..80b766f428
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,1814 @@
+@@ -0,0 +1,1817 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -31255,7 +31266,10 @@ index 0000000000000000000000000000000000000000..293426f5133bb645346df8584f4d8aa2
 +            status_t status = readVideoFrame(player->m_frameBuffer->Bits(), &count, nullptr);
 +            if (status == B_OK)
 +                ++player->m_prerollFrames;
-+            if (status != B_OK || decodedVideoTime() >= prerollTarget || player->m_prerollFrames >= 300) {
++            bool targetReached = player->m_substituteVideo
++                ? player->m_substituteVideo->seekTargetReached(prerollTarget)
++                : decodedVideoTime() >= prerollTarget;
++            if (status != B_OK || targetReached || player->m_prerollFrames >= 300) {
 +                unsigned generation = player->m_seekGeneration;
 +                if (tracePlayback)
 +                    std::fprintf(stderr, "Summit media seek: player=%p requested=%.3f keyframe=%.3f decoded=%u position=%.3f\n",
