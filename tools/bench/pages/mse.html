@@ -13,6 +13,7 @@ Once playback ends or fails (or after 25 s) the result is also posted to
 /__bench/probe, so tools/bench/run-probe.py --page mse.html completes.
 
 Query parameters:
+  mode=file      use ordinary video.src playback with the same checks
   chunk=<bytes>   append size (default 262144)
   seek=<seconds>  seek there once playback passes 3 s
   muted=1         start muted (autoplay without a gesture)
@@ -40,6 +41,8 @@ video { width: 640px; height: 360px; background: #000; display: block; }
 <div id="log"></div>
 <script>
 const params = new URLSearchParams(location.search);
+const fileMode = params.get('mode') === 'file';
+const playbackMode = fileMode ? 'FILE' : 'MSE';
 const chunk = Number(params.get('chunk') || 262144);
 const seekTo = params.has('seek') ? Number(params.get('seek')) : null;
 const videoFile = params.get('video') || 'video-frag.mp4';
@@ -146,7 +149,7 @@ async function checkPause() {
 }
 function update() {
     const q = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null;
-    const status = `MSE t=${video.currentTime.toFixed(2)} rs=${video.readyState} buf=${ranges(video.buffered)} q=${q ? q.totalVideoFrames + '/' + q.droppedVideoFrames : '-'} ev=${events.filter(e => e !== 'isTypeSupported').join('>')}`;
+    const status = `${playbackMode} t=${video.currentTime.toFixed(2)} rs=${video.readyState} buf=${ranges(video.buffered)} q=${q ? q.totalVideoFrames + '/' + q.droppedVideoFrames : '-'} ev=${events.filter(e => e !== 'isTypeSupported').join('>')}`;
     document.title = status.slice(0, 200);
     document.getElementById('status').textContent = status;
     if (seekTo !== null && !seeked && video.currentTime > 3) {
@@ -168,7 +171,7 @@ async function report(why) {
     update();
     const q = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null;
     const result = {
-        src: 'mse:' + videoFile, why, status: document.title, events: timeline,
+        src: playbackMode.toLowerCase() + ':' + videoFile, why, status: document.title, events: timeline,
         time: video.currentTime, duration: video.duration, readyState: video.readyState,
         buffered: ranges(video.buffered), frames: q && q.totalVideoFrames, dropped: q && q.droppedVideoFrames,
         width: video.videoWidth, height: video.videoHeight,
@@ -215,7 +218,10 @@ async function feed(buffer, url) {
     log('appended ' + url + ' ' + data.length);
 }
 
-if (!window.MediaSource)
+if (fileMode) {
+    video.src = 'mse-media/' + videoFile;
+    video.play().then(() => log('playPromise resolved')).catch(error => log('playPromise ' + error.name));
+} else if (!window.MediaSource)
     log('error no MediaSource');
 else {
     const source = new MediaSource();
