@@ -118,19 +118,52 @@ def main():
         def do_GET(self):
             request = urlsplit(self.path)
             name = request.path.lstrip('/')
+            if name == 'embedded':
+                query = parse_qs(request.query)
+                blocked = query.get('policy') == ['block']
+                body = b'''<!doctype html><title>Embedded PDF fixture</title>
+<style>html,body{margin:0;height:100%}object,embed,iframe{width:100%;height:100%;border:0}</style>
+<script src="embedded.js" defer></script><body>'''
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html')
+                # Blob policy containers inherit HTTP CSP headers. In particular,
+                # frame-ancestors on webmail must not block its own PDF attachment.
+                sources = "'none'" if blocked else "'self' blob:"
+                self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+                    + "frame-src " + sources + "; object-src " + sources + "; frame-ancestors 'none'")
+                self.end_headers(); self.wfile.write(body); return
+            if name == 'embedded.js':
+                body = b'''window.fixtureViolations=[];window.fixtureLoaded=false;
+document.addEventListener('securitypolicyviolation',e=>fixtureViolations.push(e.effectiveDirective));
+(async()=>{const q=new URLSearchParams(location.search),tag=q.get('tag')||'object';
+const e=document.createElement(['object','embed','iframe'].includes(tag)?tag:'object');e.id='pdf';
+e.onload=()=>{window.fixtureLoaded=true};
+let url;
+if(q.get('source')==='http-blocked')url='ancestor-blocked.pdf';
+else if(q.get('source')==='html-blob')url=URL.createObjectURL(new Blob([
+'<!doctype html><p id="local-blob">Local blob</p><script>window.forbiddenInlineScript=true</scr'+'ipt>'
+],{type:'text/html'}));
+else {const r=await fetch('fixture.pdf');url=URL.createObjectURL(await r.blob())}
+e.type=q.get('source')==='html-blob'?'text/html':'application/pdf';
+e[e.tagName==='OBJECT'?'data':'src']=url;document.body.append(e);window.fixtureReady=true;
+})().catch(e=>window.fixtureError=String(e));'''
+                self.send_response(200); self.send_header('Content-Type', 'text/javascript')
+                self.end_headers(); self.wfile.write(body); return
             if name == 'start':
                 body = b'<!doctype html><title>PDF session ready</title><a href="private.pdf">Private PDF</a>'
                 self.send_response(200); self.send_header('Set-Cookie', 'summit-pdf-session=1; HttpOnly; SameSite=Strict; Path=/')
                 self.send_header('Content-Type', 'text/html'); self.end_headers(); self.wfile.write(body); return
             if name == 'private.pdf' and 'summit-pdf-session=1' not in self.headers.get('Cookie', ''):
                 self.send_error(403); return
-            filename = 'fixture.pdf' if name in ('attachment.pdf', 'private.pdf') else name
+            filename = 'fixture.pdf' if name in ('attachment.pdf', 'private.pdf', 'ancestor-blocked.pdf') else name
             if filename not in record:
                 self.send_error(404); return
             body = (args.directory / filename).read_bytes()
             self.send_response(200); self.send_header('Content-Type', 'application/pdf')
             self.send_header('Content-Length', str(len(body)))
             self.send_header('Cache-Control', 'no-store')
+            if name == 'ancestor-blocked.pdf':
+                self.send_header('Content-Security-Policy', "frame-ancestors 'none'")
             run = parse_qs(request.query).get('run', [''])[0]
             download_name = 'summit-pdf-' + run + '.pdf' if re.fullmatch(r'[a-zA-Z0-9-]{1,64}', run) else 'summit-fixture.pdf'
             self.send_header('Content-Disposition', ('attachment' if name == 'attachment.pdf' else 'inline') + '; filename="' + download_name + '"')

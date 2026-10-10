@@ -350,6 +350,27 @@ private:
         Navigate(m_base + "/attachment.pdf"); VerifyDownload(previous);
         Navigate("file://" + m_golden); Ready(inspector, "file://" + m_golden);
         Require(inspector.Evaluate("document.title") == "fixture.pdf", "local PDF title falls back to its filename");
+        for (const char* tag : {"object", "embed", "iframe"}) {
+            const auto embedded = m_base + "/embedded?tag=" + tag;
+            Navigate(embedded); context = Ready(inspector, embedded);
+            Require(inspector.Evaluate("PDFViewerApplicationOptions.get('enableScripting')===false", context) == true,
+                "blob PDF under inherited frame-ancestors renders with PDF scripting disabled");
+        }
+        Navigate(m_base + "/embedded?source=http-blocked&tag=iframe");
+        Wait([&] { return inspector.Evaluate("window.fixtureLoaded===true") == true; },
+            "HTTP PDF with frame-ancestors completes its blocked frame load");
+        Require(!inspector.Viewer(), "HTTP frame-ancestors restriction still blocks PDF embedding");
+        for (const char* tag : {"object", "iframe"}) {
+            Navigate(m_base + "/embedded?policy=block&tag=" + tag);
+            Wait([&] { return inspector.Evaluate("window.fixtureViolations?.length>0") == true; },
+                "embedding page still enforces object-src and frame-src for blob PDFs");
+            Require(!inspector.Viewer(), "disallowed blob PDF does not create a viewer");
+        }
+        Navigate(m_base + "/embedded?source=html-blob&tag=iframe");
+        Wait([&] { return inspector.Evaluate("!!document.querySelector('#pdf')?.contentDocument?.getElementById('local-blob')") == true; },
+            "local HTML blob is not blocked by inherited frame-ancestors");
+        Require(inspector.Evaluate("document.querySelector('#pdf').contentWindow.forbiddenInlineScript!==true") == true,
+            "local HTML blob retains its inherited script-src restriction");
         Navigate("about:blank");
         Wait([&] { return inspector.Evaluate("location.href") == "about:blank"; }, "leave the PDF before checking resource isolation");
         inspector.Evaluate("(()=>{const frame=document.createElement('iframe');frame.src='webkit-pdfjs-viewer://pdfjs/web/viewer.html';document.body.append(frame);return true})()");

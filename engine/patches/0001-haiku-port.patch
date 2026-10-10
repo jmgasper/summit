@@ -15429,6 +15429,32 @@ index 27245cb297f582e0b872150b321a234fb12014ae..56be1e3d0151bc67dc6aa7a76d5c2bea
  };
  
  } // namespace WebCore
+diff --git a/Source/WebCore/page/csp/ContentSecurityPolicy.cpp b/Source/WebCore/page/csp/ContentSecurityPolicy.cpp
+index a149c021fab264535bc4ca151ef4f8017943cb6a..3da3772771f5d62951c1362b22048099d5e1e623 100644
+--- a/Source/WebCore/page/csp/ContentSecurityPolicy.cpp
++++ b/Source/WebCore/page/csp/ContentSecurityPolicy.cpp
+@@ -583,6 +583,11 @@ bool ContentSecurityPolicy::allowFrameAncestors(const LocalFrame& frame, const U
+ {
+     if (m_policies.isEmpty() || overrideContentSecurityPolicy)
+         return true;
++    // CSP's frame-ancestors navigation response check allows local URLs.
++    // A blob inherits its creator's policy container, not a new embedding
++    // restriction on itself (for example a PDF attachment in webmail).
++    if (url.protocolIsBlob() || url.protocolIsData() || url.protocolIsAbout())
++        return true;
+     if (&frame == &frame.tree().top())
+         return true;
+     String sourceURL;
+@@ -610,6 +615,9 @@ bool ContentSecurityPolicy::allowFrameAncestors(const Vector<Ref<SecurityOrigin>
+ {
+     if (m_policies.isEmpty() || overrideContentSecurityPolicy)
+         return true;
++    // Keep the network-process check consistent with the frame-local check.
++    if (url.protocolIsBlob() || url.protocolIsData() || url.protocolIsAbout())
++        return true;
+     bool isTopLevelFrame = ancestorOrigins.isEmpty();
+     if (isTopLevelFrame)
+         return true;
 diff --git a/Source/WebCore/page/haiku/EventHandlerHaiku.cpp b/Source/WebCore/page/haiku/EventHandlerHaiku.cpp
 index 89f2b38d398b9fb7d5319d06bf0b918cfc569e1b..fbd1eea56e97654861c4b24b25c0da6e9f750604 100644
 --- a/Source/WebCore/page/haiku/EventHandlerHaiku.cpp

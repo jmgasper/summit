@@ -1,6 +1,7 @@
 # PDF viewing
 
-Summit displays inline `application/pdf` responses in the current tab using
+Summit displays inline `application/pdf` responses in tabs and embedded
+`object`, `embed`, and `iframe` elements using
 WebKit's bundled PDF.js viewer. The toolbar provides page navigation, zoom,
 search, outlines, and downloading the original PDF. Password-protected PDFs
 prompt for their password. Damaged or empty files display an error in the viewer.
@@ -78,3 +79,33 @@ The standalone harness attaches its Inspector after the initial navigation
 finishes, matching the browser's Developer Tools lifecycle. PDF.js remembers
 the page for a previously viewed document; repeated fixture visits explicitly
 select page one before checking its pixels and text.
+
+## Webmail blob attachments (9 October 2026)
+
+Blob attachments inherit their creator's CSP policy container. The CSP
+`frame-ancestors` navigation check must allow local URLs (`blob:`, `data:`,
+and `about:`), as specified in [CSP's navigation response check](https://w3c.github.io/webappsec-csp/#frame-ancestors-navigation-response).
+Applying a webmail page's `frame-ancestors` header to its own PDF blob instead
+produced an empty, sandboxed error document. Both WebCore and network-process
+ancestor checks now apply the local-URL exception. Other inherited policies
+remain active, including script restrictions; HTTP responses still enforce
+`frame-ancestors`, and the embedding page still enforces `object-src` and
+`frame-src`.
+
+The PDF fixture now serves a webmail-style HTTP CSP with `frame-ancestors
+'none'`. The native suite exercises blob PDFs in all three embedding elements,
+blocked HTTP PDFs, explicitly blocked blob embeds, and inherited HTML blob
+script restrictions. The private customer PDF used for workstation verification
+is not included in the repository.
+
+Verified in `bundle-b46l7ic6`: 107 native PDF checks pass, including the new
+webmail cases and existing rendering, navigation, search, zoom, encryption,
+byte-exact saving and resource isolation checks. The previous installed build
+fails at the first inherited-CSP blob attachment. Evidence is in
+`.vm/fixes-2026-10-09/pdf-{baseline,final}-tests.log`.
+
+The 32 full-browser PDF checks also pass in this bundle. After installation
+and restart through the normal desktop launcher, the customer's original
+attachment renders directly in Proton Mail; both pages were visually checked
+through VNC. The signed-in email session was restored. Screenshots and private
+fixture files remain under the ignored `.vm/fixes-2026-10-09/` directory.
