@@ -29485,10 +29485,10 @@ index 0000000000000000000000000000000000000000..21962ea9d0bd80ba9c260e9ef9ecac36
 +} // namespace SummitMPEGTS
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..04f28f20b9c4c4e88f937eec280a6ba58f81fe4a
+index 0000000000..ee99b0e38c
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.cpp
-@@ -0,0 +1,801 @@
+@@ -0,0 +1,881 @@
 +/*
 + * Copyright (C) 2026 Haiku, Inc. All rights reserved.
 + *
@@ -29530,6 +29530,7 @@ index 0000000000000000000000000000000000000000..04f28f20b9c4c4e88f937eec280a6ba5
 +#include <mutex>
 +#include <private/media/DecoderPlugin.h>
 +#include <set>
++#include <string>
 +#include <sys/stat.h>
 +#include <vector>
 +#include <wtf/Threading.h>
@@ -29699,13 +29700,21 @@ index 0000000000000000000000000000000000000000..04f28f20b9c4c4e88f937eec280a6ba5
 +    unsigned maxWidth;
 +    unsigned maxHeight;
 +    unsigned maxArea;
-+    BPrivate::media::DecoderPlugin* plugin;
++    bool nativeRGB;
++    BPrivate::media::DecoderPlugin* plugin { nullptr };
++    std::atomic<bool> broken { false };
++    std::atomic<unsigned> closing { 0 };
 +};
 +
 +// rpi_mmal of air/OS: the VideoCore firmware's decoder of the Raspberry Pi,
 +// eight-bit 4:2:0 progressive H.264 up to 1920x1088 (either way round).
 +NamedDecoderAddOn s_namedAddOns[] = {
-+    { "rpi_mmal", ffmpegCodecH264, 1920, 1920, 1920 * 1088, nullptr },
++    // amduvd validates the complete SPS/PPS and the device before accepting
++    // the stream. RGB conversion there honours per-picture VUI range/matrix.
++#if CPU(X86_64)
++    { "amduvd", ffmpegCodecH264, 4096, 4096, 4096 * 4096, true },
++#endif
++    { "rpi_mmal", ffmpegCodecH264, 1920, 1920, 1920 * 1088, false },
 +};
 +
 +// What dynamic_cast<void*> does, which the engine (built without RTTI) cannot:
@@ -29732,40 +29741,39 @@ index 0000000000000000000000000000000000000000..04f28f20b9c4c4e88f937eec280a6ba5
 +// 5 s. Once a decoder timed out, or took that long to close, the add-on is
 +// not used again until the system restarts: in this process at once, in the
 +// others through a marker that names this boot.
-+std::atomic<bool> s_addOnBroken { false };
-+// Failed decoders still closing: until they have, whether the firmware still
-+// answers is not known, and none is set up meanwhile.
-+std::atomic<unsigned> s_failedDecodersClosing { 0 };
-+constexpr const char* addOnBrokenMarker = "/tmp/Summit hardware video failed";
++std::string brokenMarker(const NamedDecoderAddOn& addOn)
++{
++    return std::string("/tmp/Summit hardware video failed ") + addOn.leafName;
++}
 +
 +long long bootTimeSeconds()
 +{
 +    return static_cast<long long>(real_time_clock()) - system_time() / 1000000;
 +}
 +
-+bool addOnMarkedBroken()
++bool addOnMarkedBroken(NamedDecoderAddOn& addOn)
 +{
-+    if (s_addOnBroken || s_failedDecodersClosing)
++    if (addOn.broken || addOn.closing)
 +        return true;
-+    FILE* marker = std::fopen(addOnBrokenMarker, "r");
++    FILE* marker = std::fopen(brokenMarker(addOn).c_str(), "r");
 +    if (!marker)
 +        return false;
 +    long long boot = 0;
 +    bool thisBoot = std::fscanf(marker, "%lld", &boot) == 1 && std::llabs(boot - bootTimeSeconds()) <= 5;
 +    std::fclose(marker);
 +    if (thisBoot) {
-+        s_addOnBroken = true;
-+        std::fprintf(stderr, "Summit media: the hardware video decoder failed earlier; libavcodec decodes until the system restarts\n");
++        addOn.broken = true;
++        std::fprintf(stderr, "Summit media: %s failed earlier; this backend is disabled until the system restarts\n", addOn.leafName);
 +    }
 +    return thisBoot;
 +}
 +
-+void markAddOnBroken(const char* reason)
++void markAddOnBroken(NamedDecoderAddOn& addOn, const char* reason)
 +{
-+    if (s_addOnBroken.exchange(true))
++    if (addOn.broken.exchange(true))
 +        return;
-+    std::fprintf(stderr, "Summit media: %s; the hardware video decoder is not used again until the system restarts\n", reason);
-+    if (FILE* marker = std::fopen(addOnBrokenMarker, "w")) {
++    std::fprintf(stderr, "Summit media: %s: %s; this backend is disabled until the system restarts\n", addOn.leafName, reason);
++    if (FILE* marker = std::fopen(brokenMarker(addOn).c_str(), "w")) {
 +        std::fprintf(marker, "%lld\n", bootTimeSeconds());
 +        std::fclose(marker);
 +    }
@@ -29782,18 +29790,18 @@ index 0000000000000000000000000000000000000000..04f28f20b9c4c4e88f937eec280a6ba5
 +
 +// Closes a decoder that failed on a thread of its own: closing waits for the
 +// firmware, which may not answer.
-+void closeFailedDecoder(std::unique_ptr<BPrivate::media::Decoder>&& decoder)
++void closeFailedDecoder(NamedDecoderAddOn& addOn, std::unique_ptr<BPrivate::media::Decoder>&& decoder)
 +{
 +    if (!decoder)
 +        return;
 +    decoder->SetChunkProvider(new NoChunks);
-+    ++s_failedDecodersClosing;
-+    Thread::create("Summit decoder close"_s, [decoder = WTF::move(decoder)]() mutable {
++    ++addOn.closing;
++    Thread::create("Summit decoder close"_s, [&addOn, decoder = WTF::move(decoder)]() mutable {
 +        bigtime_t started = system_time();
 +        decoder = nullptr;
 +        if (system_time() - started > 4000000)
-+            markAddOnBroken("the hardware video decoder took seconds to close");
-+        --s_failedDecodersClosing;
++            markAddOnBroken(addOn, "the hardware video decoder took seconds to close");
++        --addOn.closing;
 +    })->detach();
 +}
 +
@@ -29832,9 +29840,12 @@ index 0000000000000000000000000000000000000000..04f28f20b9c4c4e88f937eec280a6ba5
 +                    unload_add_on(image);
 +                    continue;
 +                }
-+                addOn.plugin = decoderPluginOf(instantiate());
++                auto* plugin = instantiate();
++                addOn.plugin = decoderPluginOf(plugin);
 +                if (!addOn.plugin) {
 +                    std::fprintf(stderr, "Summit media: %s is not a decoder add-on\n", path.Path());
++                    delete plugin;
++                    unload_add_on(image);
 +                    break;
 +                }
 +            }
@@ -29842,7 +29853,7 @@ index 0000000000000000000000000000000000000000..04f28f20b9c4c4e88f937eec280a6ba5
 +        free(paths);
 +    });
 +    for (auto& addOn : s_namedAddOns) {
-+        if (addOn.plugin && addOn.codec == codec)
++        if (addOn.plugin && addOn.codec == codec && !addOnMarkedBroken(addOn))
 +            return &addOn;
 +    }
 +    return nullptr;
@@ -29868,7 +29879,7 @@ index 0000000000000000000000000000000000000000..04f28f20b9c4c4e88f937eec280a6ba5
 +    if (!codec)
 +        return nullptr;
 +    auto* addOn = namedAddOnFor(*codec);
-+    if (!addOn || addOnMarkedBroken())
++    if (!addOn)
 +        return nullptr;
 +    const auto& display = encoded.u.encoded_video.output.display;
 +    if (!display.line_width || !display.line_count || display.line_width > addOn->maxWidth
@@ -29876,7 +29887,8 @@ index 0000000000000000000000000000000000000000..04f28f20b9c4c4e88f937eec280a6ba5
 +        return nullptr;
 +    if (*codec == ffmpegCodecH264) {
 +        auto info = h264SequenceInfo(codecConfig);
-+        if (!info || info->chromaFormat != 1 || info->bitDepthLuma != 8 || info->bitDepthChroma != 8 || !info->frameMbsOnly)
++        if (!info || info->chromaFormat != 1 || info->bitDepthLuma != 8 || info->bitDepthChroma != 8 || !info->frameMbsOnly
++            || (info->profile != 66 && info->profile != 77 && info->profile != 100) || info->maxReferenceFrames > 16)
 +            return nullptr;
 +    }
 +    return addOn;
@@ -30046,17 +30058,21 @@ index 0000000000000000000000000000000000000000..04f28f20b9c4c4e88f937eec280a6ba5
 +    decoder->GetCodecInfo(&result->m_codecInfo);
 +    media_format input = encoded;
 +    status_t status = decoder->Setup(&input, codecConfig.data(), codecConfig.size());
-+    media_format output;
++    media_format output { };
++    const auto colorSpace = addOn->nativeRGB ? B_RGB32 : colorSpaceI420;
 +    if (status == B_OK) {
 +        output.type = B_MEDIA_RAW_VIDEO;
 +        output.u.raw_video = media_raw_video_format::wildcard;
-+        output.u.raw_video.display.format = colorSpaceI420;
++        output.u.raw_video.display.format = colorSpace;
 +        // Decodes the first picture: it tells how large they are.
 +        status = decoder->NegotiateOutputFormat(&output);
 +    }
 +    const auto& display = output.u.raw_video.display;
-+    if (status == B_OK && (output.type != B_MEDIA_RAW_VIDEO || display.format != colorSpaceI420 || !display.line_width
-+        || !display.line_count || display.bytes_per_row < display.line_width))
++    if (status == B_OK && (output.type != B_MEDIA_RAW_VIDEO || display.format != colorSpace || !display.line_width
++        || !display.line_count || display.line_width > addOn->maxWidth || display.line_count > addOn->maxHeight
++        || uint64_t(display.line_width) * display.line_count > addOn->maxArea
++        || display.bytes_per_row < display.line_width * (addOn->nativeRGB ? 4u : 1u)
++        || display.bytes_per_row > addOn->maxWidth * 4u || (!addOn->nativeRGB && (display.bytes_per_row & 1))))
 +        status = B_MEDIA_BAD_FORMAT;
 +    // The source stopped (a seek): nothing is wrong with the decoder.
 +    if (status == B_CANCELED)
@@ -30064,14 +30080,16 @@ index 0000000000000000000000000000000000000000..04f28f20b9c4c4e88f937eec280a6ba5
 +    if (status != B_OK) {
 +        std::fprintf(stderr, "Summit media: %s did not take the stream (%s)\n", result->m_codecInfo.pretty_name, strerror(status));
 +        if (status == B_TIMED_OUT)
-+            markAddOnBroken("the hardware video decoder did not answer");
-+        closeFailedDecoder(std::exchange(result->m_decoder, nullptr));
++            markAddOnBroken(*addOn, "the hardware video decoder did not answer");
++        closeFailedDecoder(*addOn, std::exchange(result->m_decoder, nullptr));
 +        return nullptr;
 +    }
++    result->m_backend = addOn - s_namedAddOns;
++    result->m_nativeRGB = addOn->nativeRGB;
 +    result->m_width = display.line_width;
 +    result->m_height = display.line_count;
 +    result->m_planesRowBytes = display.bytes_per_row;
-+    result->m_planes.grow(result->layout().chromaOffset(3));
++    result->m_planes.grow(result->m_nativeRGB ? size_t(display.bytes_per_row) * display.line_count : result->layout().chromaOffset(3));
 +    return result;
 +}
 +
@@ -30086,19 +30104,42 @@ index 0000000000000000000000000000000000000000..04f28f20b9c4c4e88f937eec280a6ba5
 +
 +status_t AddOnVideoDecoderHaiku::decodePlanes(void* planes, int64* count, media_header* header, media_decode_info* info)
 +{
-+    return m_decoder->Decode(planes, count, header, info);
++    if (m_nativeRGB)
++        return B_NOT_SUPPORTED;
++    return decodeNative(planes, count, header, info);
++}
++
++status_t AddOnVideoDecoderHaiku::decodeNative(void* buffer, int64* count, media_header* header, media_decode_info* info)
++{
++    if (!m_decoder)
++        return B_NO_INIT;
++    *count = 0;
++    status_t status = m_decoder->Decode(buffer, count, header, info);
++    if (status == B_TIMED_OUT)
++        markAddOnBroken(s_namedAddOns[m_backend], "the hardware video decoder did not answer");
++    if (status != B_OK && status != B_LAST_BUFFER_ERROR && status != B_CANCELED && status != B_INTERRUPTED)
++        closeFailedDecoder(s_namedAddOns[m_backend], std::exchange(m_decoder, nullptr));
++    return status;
 +}
 +
 +status_t AddOnVideoDecoderHaiku::decode(void* bgra, size_t rowBytes, int64* count, media_header* header, media_decode_info* info)
 +{
-+    status_t status = decodePlanes(m_planes.mutableSpan().data(), count, header, info);
-+    if (status != B_OK)
++    if (rowBytes < size_t(m_width) * 4)
++        return B_BAD_VALUE;
++    status_t status = decodeNative(m_planes.mutableSpan().data(), count, header, info);
++    if (status != B_OK || !*count)
 +        return status;
++    if (*count != 1)
++        return B_MEDIA_BAD_FORMAT;
 +    // A picture the caller will not show (it is seeking) is not converted;
 +    // the add-on has not filled the planes for it either.
 +    if (info && info->time_to_decode < 0 && header->start_time < -info->time_to_decode)
 +        return B_OK;
-+    convertToBGRA(m_planes.span().data(), layout(), static_cast<uint8_t*>(bgra), rowBytes);
++    if (m_nativeRGB) {
++        for (unsigned y = 0; y < m_height; ++y)
++            std::memcpy(static_cast<uint8_t*>(bgra) + y * rowBytes, m_planes.span().data() + y * m_planesRowBytes, size_t(m_width) * 4);
++    } else
++        convertToBGRA(m_planes.span().data(), layout(), static_cast<uint8_t*>(bgra), rowBytes);
 +    return B_OK;
 +}
 +
@@ -30116,7 +30157,7 @@ index 0000000000000000000000000000000000000000..04f28f20b9c4c4e88f937eec280a6ba5
 +
 +status_t AddOnVideoDecoderHaiku::seekedTo(int64 frame, bigtime_t time)
 +{
-+    return m_decoder->SeekedTo(frame, time);
++    return m_decoder ? m_decoder->SeekedTo(frame, time) : B_NO_INIT;
 +}
 +
 +std::unique_ptr<SubstituteVideoDecoderHaiku> SubstituteVideoDecoderHaiku::createIfNeeded(BMediaTrack& track, const media_format& decodedFormat)
@@ -30148,6 +30189,9 @@ index 0000000000000000000000000000000000000000..04f28f20b9c4c4e88f937eec280a6ba5
 +        track.SeekToTime(&start);
 +        return nullptr;
 +    }
++    start = 0;
++    if (track.SeekToTime(&start) != B_OK)
++        return nullptr;
 +    if (decoder->setUp(decodedFormat) != B_OK) {
 +        std::fprintf(stderr, "Summit media: %s cannot decode this H.264 stream and no other decoder took it\n", native.pretty_name);
 +        return nullptr;
@@ -30243,19 +30287,55 @@ index 0000000000000000000000000000000000000000..04f28f20b9c4c4e88f937eec280a6ba5
 +    int32 length = 0;
 +    status_t status = m_track.ReadChunk(&buffer, &length, header);
 +    *chunk = buffer;
++    if (status == B_OK && (length < 0 || (!buffer && length)))
++        status = B_BAD_DATA;
 +    *size = status == B_OK ? static_cast<size_t>(length) : 0;
 +    return status;
 +}
 +
 +status_t SubstituteVideoDecoderHaiku::readFrame(void* buffer, int64* count, media_header* header)
 +{
-+    media_header ignored;
-+    media_decode_info info;
++    media_header ignored { };
++    media_decode_info info { };
++    *count = 0;
 +    status_t status = m_addOn
 +        ? m_addOn->decode(buffer, m_decodedFormat.u.raw_video.display.bytes_per_row, count, header ? header : &ignored, &info)
 +        : Decode(buffer, count, header ? header : &ignored, &info);
++    if (m_addOn && status != B_OK && status != B_LAST_BUFFER_ERROR && status != B_CANCELED && status != B_INTERRUPTED) {
++        std::fprintf(stderr, "Summit media: %s failed (%s); resuming this track in software\n", m_addOn->codecInfo().pretty_name, strerror(status));
++        m_addOn = nullptr;
++        // The extractor has read ahead of the last picture returned. Seek to
++        // the keyframe preceding the next output frame, then discard only
++        // the pictures the caller has already seen.
++        int64 resumeFrame = m_firstFrame + m_framesDecoded;
++        int64 keyFrame = resumeFrame;
++        status = m_track.SeekToFrame(&keyFrame, B_MEDIA_SEEK_CLOSEST_BACKWARD);
++        if (status != B_OK || keyFrame < 0 || keyFrame > resumeFrame)
++            return status == B_OK ? B_MEDIA_BAD_FORMAT : status;
++        media_format previous = m_decodedFormat;
++        status = setUp(previous);
++        const auto& oldDisplay = previous.u.raw_video.display;
++        const auto& newDisplay = m_decodedFormat.u.raw_video.display;
++        // The caller's bitmap was allocated for the original format. Never
++        // let a replacement decoder write a different geometry into it.
++        if (status != B_OK || newDisplay.format != oldDisplay.format || newDisplay.line_width != oldDisplay.line_width
++            || newDisplay.line_count != oldDisplay.line_count || newDisplay.bytes_per_row != oldDisplay.bytes_per_row)
++            return status == B_OK ? B_MEDIA_BAD_FORMAT : status;
++        m_firstFrame = keyFrame;
++        m_framesDecoded = 0;
++        do {
++            *count = 0;
++            status = Decode(buffer, count, header ? header : &ignored, &info);
++            if (status != B_OK)
++                return status;
++            if (*count != 1)
++                return B_MEDIA_BAD_FORMAT;
++            ++m_framesDecoded;
++        } while (m_firstFrame + m_framesDecoded <= resumeFrame);
++        return B_OK;
++    }
 +    if (status == B_OK)
-+        m_framesDecoded += std::max<int64>(*count, 1);
++        m_framesDecoded += std::max<int64>(*count, 0);
 +    return status;
 +}
 +
@@ -30292,10 +30372,10 @@ index 0000000000000000000000000000000000000000..04f28f20b9c4c4e88f937eec280a6ba5
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.h b/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..7e71065daef6e0b78a8016de5043cee95b040c76
+index 0000000000..e0fdcb7f88
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.h
-@@ -0,0 +1,183 @@
+@@ -0,0 +1,189 @@
 +/*
 + * Copyright (C) 2026 Haiku, Inc. All rights reserved.
 + *
@@ -30354,7 +30434,9 @@ index 0000000000000000000000000000000000000000..7e71065daef6e0b78a8016de5043cee9
 +// stream it refused would then have no other decoder. It is loaded by name,
 +// as the image's player airTime does, for the streams it is known to decode,
 +// and anything it refuses goes to the media kit's choice or libavcodec. Its
-+// pictures come as I420 and are converted to B_RGB32 here.
++// pictures come as I420 and are converted to B_RGB32 here. The X399's AMD
++// amduvd add-on follows the same explicit selection policy and supplies RGB
++// with the stream's own color range/matrix. Failures are isolated per backend.
 +
 +namespace WebCore {
 +
@@ -30385,7 +30467,7 @@ index 0000000000000000000000000000000000000000..7e71065daef6e0b78a8016de5043cee9
 +status_t setSoftwareDecoderHaiku(BMediaDecoder&, const media_format&, const void* info, size_t infoSize, media_codec_info* chosen = nullptr);
 +
 +// A video decoder add-on the media kit does not offer, loaded by name (the
-+// Raspberry Pi's rpi_mmal), with its pictures converted to B_RGB32.
++// Raspberry Pi's rpi_mmal, or AMD's amduvd), producing B_RGB32.
 +// SUMMIT_HARDWARE_VIDEO=0 never uses one.
 +class AddOnVideoDecoderHaiku {
 +    WTF_MAKE_NONCOPYABLE(AddOnVideoDecoderHaiku);
@@ -30409,6 +30491,7 @@ index 0000000000000000000000000000000000000000..7e71065daef6e0b78a8016de5043cee9
 +    // The next picture as it comes, I420 (see I420Layout) in `planes`,
 +    // which holds planesSize() bytes.
 +    status_t decodePlanes(void* planes, int64* count, media_header*, media_decode_info* = nullptr);
++    bool hasPlanes() const { return !m_nativeRGB; }
 +    size_t planesSize() const { return m_planes.size(); }
 +    // The geometry of what decodePlanes() writes.
 +    struct I420Layout {
@@ -30427,9 +30510,12 @@ index 0000000000000000000000000000000000000000..7e71065daef6e0b78a8016de5043cee9
 +    status_t seekedTo(int64 frame, bigtime_t);
 +
 +private:
++    status_t decodeNative(void*, int64*, media_header*, media_decode_info*);
 +    class Forwarder;
 +    AddOnVideoDecoderHaiku(BPrivate::media::Decoder*, ChunkSource&&);
 +
++    size_t m_backend { 0 };
++    bool m_nativeRGB { false };
 +    // The source outlives the decoder, which may read from it until it is gone.
 +    ChunkSource m_source;
 +    std::unique_ptr<BPrivate::media::Decoder> m_decoder;
@@ -30441,12 +30527,12 @@ index 0000000000000000000000000000000000000000..7e71065daef6e0b78a8016de5043cee9
 +};
 +
 +// A BMediaTrack's pictures decoded by another decoder than the track's own:
-+// the Raspberry Pi's add-on, or libavcodec. Its encoded chunks are read raw.
++// a named hardware add-on, or libavcodec. Its encoded chunks are read raw.
 +// The frame counter gives the time, as libavcodec's frame times are in the
 +// stream's time base on Haiku.
 +class SubstituteVideoDecoderHaiku final : public BMediaDecoder {
 +public:
-+    // Null unless the Raspberry Pi's add-on decodes the track, or the track's
++    // Null unless a named hardware add-on decodes the track, or the track's
 +    // own decoder cannot (see above).
 +    static std::unique_ptr<SubstituteVideoDecoderHaiku> createIfNeeded(BMediaTrack&, const media_format& decodedFormat);
 +    // For a track the media kit gave no decoder at all: its chosen add-on
@@ -32540,10 +32626,10 @@ index 0000000000000000000000000000000000000000..df43f4fc21c17d2cfb904c9eaefa28b1
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..ecc987459ee819efd6d2f97cd857090b3ef31d0c
+index 0000000000..42939edbb6
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
-@@ -0,0 +1,2727 @@
+@@ -0,0 +1,2818 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -33276,6 +33362,15 @@ index 0000000000000000000000000000000000000000..ecc987459ee819efd6d2f97cd857090b
 +        Vector<RefPtr<MediaSampleHaiku>> taken;
 +        size_t replayed = 0;
 +        bool keepTaken = true;
++        // Retain compressed samples from a keyframe until every older output
++        // has been consumed. Reordering can leave old pictures pending after
++        // the decoder has read the next keyframe, so retain both GOPs then.
++        Vector<RefPtr<MediaSampleHaiku>> recoverySamples;
++        size_t recoveryBytes = 0;
++        bool keepRecovery = isH264(info.codec) && AddOnVideoDecoderHaiku::canDecode(format, codecConfig);
++        bool recoveryLimitReached = false;
++        std::optional<int64_t> lastHardwareOutput;
++        bool replayingHardwareOutput = false;
 +        bool useInputTimeline = codec == ffmpegCodecAV1 || codec == ffmpegCodecHEVC;
 +        VideoPresentationTimelineHaiku inputTimeline;
 +        bool invalidTimeline = false;
@@ -33308,6 +33403,14 @@ index 0000000000000000000000000000000000000000..ecc987459ee819efd6d2f97cd857090b
 +                    m_nonDisplaying.append(toMicroseconds(next->presentationTime()));
 +                    ++m_decodedBeforeTarget;
 +                }
++                if (keepRecovery) {
++                    recoverySamples.append(next);
++                    recoveryBytes += next->size();
++                    // Switch now, while every consumed packet is still
++                    // available. At most one extra demuxed packet is held.
++                    if (recoverySamples.size() > 512 || recoveryBytes > 64 * 1024 * 1024)
++                        recoveryLimitReached = true;
++                }
 +                if (keepTaken) {
 +                    if (taken.size() >= 256)
 +                        return B_MEDIA_BAD_FORMAT;
@@ -33316,6 +33419,8 @@ index 0000000000000000000000000000000000000000..ecc987459ee819efd6d2f97cd857090b
 +                }
 +            }
 +            current = WTF::move(next);
++            if (keepRecovery && recoveryLimitReached)
++                return B_BUFFER_OVERFLOW;
 +            std::memset(header, 0, sizeof(*header));
 +            header->type = B_MEDIA_ENCODED_VIDEO;
 +            header->start_time = toMicroseconds(current->presentationTime());
@@ -33332,14 +33437,19 @@ index 0000000000000000000000000000000000000000..ecc987459ee819efd6d2f97cd857090b
 +        };
 +        bigtime_t setupStarted = system_time();
 +
-+        // The Raspberry Pi's own decoder first; see MediaDecoderSelectionHaiku.h.
++        // Explicitly selected AMD or Raspberry Pi decoder first.
 +        std::unique_ptr<AddOnVideoDecoderHaiku> addOn;
 +        if (isH264(info.codec) && AddOnVideoDecoderHaiku::canDecode(format, codecConfig)) {
 +            addOn = AddOnVideoDecoderHaiku::create(format, codecConfig, [&](const void** data, size_t* size, media_header* header) {
 +                return nextChunk(data, size, header);
 +            });
-+            if (!addOn)
++            if (!addOn) {
++                keepRecovery = false;
++                recoveryLimitReached = false;
++                if (!recoverySamples.isEmpty())
++                    taken = WTF::move(recoverySamples);
 +                replayed = 0;
++            }
 +        }
 +        if (!addOn && (m_queue.aborted() || m_queue.generation() != generation))
 +            return true;
@@ -33406,6 +33516,10 @@ index 0000000000000000000000000000000000000000..ecc987459ee819efd6d2f97cd857090b
 +                rowBytes = size_t(width) * 4;
 +        }
 +        keepTaken = false;
++        if (!addOn) {
++            keepRecovery = false;
++            recoverySamples.clear();
++        }
 +        // Unread setup samples must survive a fallback until it consumes them.
 +        if (replayed == taken.size())
 +            taken.clear();
@@ -33426,7 +33540,7 @@ index 0000000000000000000000000000000000000000..ecc987459ee819efd6d2f97cd857090b
 +            const char* value = std::getenv("SUMMIT_VIDEO_PLANES");
 +            return !value || std::strcmp(value, "0");
 +        }();
-+        const bool planes = addOn && sendPlanes;
++        bool planes = addOn && addOn->hasPlanes() && sendPlanes;
 +#endif
 +        while (!m_queue.aborted() && m_queue.generation() == generation) {
 +#if defined(HAIKU_MSE_COMPOSITED_VIDEO)
@@ -33441,7 +33555,7 @@ index 0000000000000000000000000000000000000000..ecc987459ee819efd6d2f97cd857090b
 +#endif
 +            media_header header;
 +            std::memset(&header, 0, sizeof(header));
-+            media_decode_info decodeInfo;
++            media_decode_info decodeInfo { };
 +            // Pictures before a seek target are decoded only to reach it.
 +            // The NVDEC add-on skips their pixel conversion when told the
 +            // first time it will be asked to show.
@@ -33457,7 +33571,47 @@ index 0000000000000000000000000000000000000000..ecc987459ee819efd6d2f97cd857090b
 +                : decoder.Decode(target, &frames, &header, &decodeInfo);
 +            if (status != B_OK) {
 +                MSE_TRACE("video decoder stopped status=%ld frames=%lld generation=%u invalidTimeline=%d\n", long(status), static_cast<long long>(frames), generation, invalidTimeline);
-+                return !invalidTimeline;
++                if (m_queue.aborted() || m_queue.generation() != generation || status == B_CANCELED)
++                    return true;
++                if (status == B_INTERRUPTED)
++                    continue;
++                if (status == B_LAST_BUFFER_ERROR)
++                    return !invalidTimeline;
++                if (!addOn || invalidTimeline || recoverySamples.isEmpty() || !recoverySamples[0]->isSync())
++                    return false;
++                std::fprintf(stderr, "Summit media: %s failed (%s); replaying %zu MSE samples in software\n",
++                    codecInfo.pretty_name, strerror(status), recoverySamples.size());
++                addOn = nullptr;
++                keepRecovery = false;
++                recoveryLimitReached = false;
++                taken = WTF::move(recoverySamples);
++                replayed = 0;
++                useInputTimeline = true;
++                replayingHardwareOutput = true;
++                inputTimeline.clear();
++                status = setSoftwareDecoderHaiku(decoder, format, info.codecConfig.data(), info.codecConfig.size(), &codecInfo);
++                media_format output { };
++                output.type = B_MEDIA_RAW_VIDEO;
++                output.u.raw_video = media_raw_video_format::wildcard;
++                output.u.raw_video.display.format = B_RGB32;
++                output.u.raw_video.display.line_width = info.width;
++                output.u.raw_video.display.line_count = info.height;
++                if (status == B_OK)
++                    status = decoder.SetOutputFormat(&output);
++                if (m_queue.aborted() || m_queue.generation() != generation)
++                    return true;
++                const auto& display = output.u.raw_video.display;
++                if (status != B_OK || output.type != B_MEDIA_RAW_VIDEO || display.format != B_RGB32
++                    || !display.line_width || !display.line_count || display.line_width > 4096 || display.line_count > 4096
++                    || display.bytes_per_row < display.line_width * 4 || display.bytes_per_row > 4096 * 4)
++                    return false;
++                width = display.line_width;
++                height = display.line_count;
++                rowBytes = display.bytes_per_row;
++#if defined(HAIKU_MSE_COMPOSITED_VIDEO)
++                planes = false;
++#endif
++                continue;
 +            }
 +            if (m_queue.generation() != generation)
 +                break;
@@ -33469,6 +33623,29 @@ index 0000000000000000000000000000000000000000..ecc987459ee819efd6d2f97cd857090b
 +            if (!presentationTime || *presentationTime == INT64_MIN || *presentationTime == INT64_MAX)
 +                return false;
 +            int64_t pts = *presentationTime;
++            // Replayed pictures rebuild software references, but must not be
++            // presented or counted a second time (including late/preroll ones).
++            if (replayingHardwareOutput && lastHardwareOutput && pts <= *lastHardwareOutput)
++                continue;
++            if (addOn) {
++                lastHardwareOutput = pts;
++                size_t discard = 0;
++                int64_t greatestEarlierPTS = INT64_MIN;
++                for (size_t i = 0; i < recoverySamples.size(); ++i) {
++                    int64_t samplePTS = toMicroseconds(recoverySamples[i]->presentationTime());
++                    if (i && recoverySamples[i]->isSync() && samplePTS <= pts && greatestEarlierPTS <= pts)
++                        discard = i;
++                    greatestEarlierPTS = std::max(greatestEarlierPTS, samplePTS);
++                }
++                for (size_t i = 0; i < discard; ++i)
++                    recoveryBytes -= recoverySamples[i]->size();
++                if (discard)
++                    recoverySamples.removeAt(0, discard);
++            }
++            if (replayed == taken.size()) {
++                taken.clear();
++                replayed = 0;
++            }
 +            if (mseTraceEnabled())
 +                MSE_TRACE("video output codec=%s generation=%u pts=%lld native=%lld\n", info.codec.c_str(), generation,
 +                    static_cast<long long>(pts), static_cast<long long>(header.start_time));
