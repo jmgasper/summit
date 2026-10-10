@@ -181,3 +181,24 @@ counters and preserves start-timestamp semantics otherwise. Evidence:
 `summit-browser-file-paused-sw-pixels-before.log` and
 `summit-browser-file-paused-sw-confirm65.log`. The independent pixel test ran
 while browser packaging was active; no performance result is claimed for it.
+
+The updated hardware file seek now captures frame 66 at 2.75 seconds with
+maximum RGB error one, holds it unchanged and resumes to normal end
+(`probe-20261011-030640-summit-wx5100-file-paused-seek-after`,
+`summit-browser-file-paused-pixels-after.log`).
+
+Full-browser High 10 fallback returns all 50 pictures in software. An injected
+MSE hardware failure after picture 47 returns all 144 pictures with no drops;
+every output timestamp matches the source in order, without gaps or repeats.
+Both runs had concurrent build activity, so these establish correctness, not
+uncontended throughput. Runs: `probe-20261011-030742-summit-wx5100-high10-software`
+and `probe-20261011-030839-summit-wx5100-mse-fault47`.
+
+Failure on the first Decode call exposed a different MSE recovery gap: the
+addon had requested no packets, so the empty replay cache incorrectly caused
+a fatal media error. Recovery now starts software directly from the untouched
+queue in that case; after any consumed input/output it still requires a saved
+keyframe. Before-fix evidence is
+`probe-20261011-030919-summit-wx5100-mse-fault0-seek`. The correction awaits
+build and native regression. Each injected-failure run restored the real
+addon and verified its original SHA-256 before ending.

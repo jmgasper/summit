@@ -32709,10 +32709,10 @@ index 0000000000000000000000000000000000000000..df43f4fc21c17d2cfb904c9eaefa28b1
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
 new file mode 100644
-index 0000000000..ca774a2553
+index 0000000000..289964752f
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
-@@ -0,0 +1,2821 @@
+@@ -0,0 +1,2830 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -33663,7 +33663,16 @@ index 0000000000..ca774a2553
 +                    continue;
 +                if (status == B_LAST_BUFFER_ERROR)
 +                    return !invalidTimeline;
-+                if (!addOn || invalidTimeline || recoverySamples.isEmpty() || !recoverySamples[0]->isSync())
++                if (!addOn || invalidTimeline)
++                    return false;
++                // A decoder can fail before asking for its first packet.
++                // Then the queue is untouched and software can start there;
++                // there is no keyframe to replay yet. Once input or output
++                // has been consumed, recovery still requires a saved GOP.
++                if (recoverySamples.isEmpty()) {
++                    if (current || lastHardwareOutput)
++                        return false;
++                } else if (!recoverySamples[0]->isSync())
 +                    return false;
 +                std::fprintf(stderr, "Summit media: %s failed (%s); replaying %zu MSE samples in software\n",
 +                    codecInfo.pretty_name, strerror(status), recoverySamples.size());
