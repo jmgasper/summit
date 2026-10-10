@@ -29485,10 +29485,10 @@ index 0000000000000000000000000000000000000000..21962ea9d0bd80ba9c260e9ef9ecac36
 +} // namespace SummitMPEGTS
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..09acb099932d29905899d66cf57e09cbadff5009
+index 0000000000000000000000000000000000000000..9a570950b996e984a540ea33a9340014a85c09c1
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.cpp
-@@ -0,0 +1,959 @@
+@@ -0,0 +1,964 @@
 +/*
 + * Copyright (C) 2026 Haiku, Inc. All rights reserved.
 + *
@@ -30147,7 +30147,10 @@ index 0000000000000000000000000000000000000000..09acb099932d29905899d66cf57e09cb
 +{
 +    if (rowBytes < size_t(m_width) * 4)
 +        return B_BAD_VALUE;
-+    status_t status = decodeNative(m_planes.mutableSpan().data(), count, header, info);
++    // RGB addons already produce the caller's exact row layout. Decode into
++    // its owned frame instead of copying an additional full HD RGB image.
++    const bool directRGB = m_nativeRGB && rowBytes == m_planesRowBytes;
++    status_t status = decodeNative(directRGB ? bgra : m_planes.mutableSpan().data(), count, header, info);
 +    if (status != B_OK || !*count)
 +        return status;
 +    if (*count != 1)
@@ -30155,6 +30158,8 @@ index 0000000000000000000000000000000000000000..09acb099932d29905899d66cf57e09cb
 +    // A picture the caller will not show (it is seeking) is not converted;
 +    // the add-on has not filled the planes for it either.
 +    if (info && info->time_to_decode < 0 && header->start_time < -info->time_to_decode)
++        return B_OK;
++    if (directRGB)
 +        return B_OK;
 +    if (m_nativeRGB) {
 +        for (unsigned y = 0; y < m_height; ++y)

@@ -304,3 +304,18 @@ for every video codec and retains recovery packets for an accepted HEVC
 backend too. Named decoders supply their own ordered picture timestamps;
 input timestamp reconstruction starts only for software, including fallback
 and replay. Native hardware qualification follows the rebuilt bundle.
+
+The corrected MSE bundle is `tqyty51m`, from `6e3222c` (patch
+`eac7ab9e...`). Both HEVC profiles return 48/0 frames in hardware, and
+Main-10 paused seeking produces exact source picture 16 within one RGB value.
+HD900 remains rejected: scalar addon `818ef96c...` counts 704 pictures with
+688 drops; SIMD addon `e14a90ba...` improves throughput but still counts 876
+with 810 drops. These runs are uncontended and have no crash or GPU fault.
+Native P010-to-RGB conversion improves from 10.120 to 1.684 ms per HD frame
+with identical checksums and full-precision pixel qualification, but this
+alone is insufficient for the complete playback path.
+
+The next engine change lets an RGB addon write directly into the caller's
+owned buffer when both row strides match. Other layouts retain the existing
+copy path. Decoder status, one-picture validation and seek-skip semantics
+remain in place. Native playback/recovery qualification follows its build.
