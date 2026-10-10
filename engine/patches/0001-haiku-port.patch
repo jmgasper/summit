@@ -29485,7 +29485,7 @@ index 0000000000000000000000000000000000000000..21962ea9d0bd80ba9c260e9ef9ecac36
 +} // namespace SummitMPEGTS
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.cpp
 new file mode 100644
-index 0000000000..09acb09993
+index 0000000000000000000000000000000000000000..09acb099932d29905899d66cf57e09cbadff5009
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.cpp
 @@ -0,0 +1,959 @@
@@ -30450,7 +30450,7 @@ index 0000000000..09acb09993
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.h b/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.h
 new file mode 100644
-index 0000000000..646d534a60
+index 0000000000000000000000000000000000000000..646d534a60dc17f44e8ce243f79dd25ff436e6d1
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaDecoderSelectionHaiku.h
 @@ -0,0 +1,194 @@
@@ -30650,7 +30650,7 @@ index 0000000000..646d534a60
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000..c0f4367e91
+index 0000000000000000000000000000000000000000..c0f4367e91f828d4b45746eb48d559d2f6bff79e
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 @@ -0,0 +1,1829 @@
@@ -32724,10 +32724,10 @@ index 0000000000000000000000000000000000000000..df43f4fc21c17d2cfb904c9eaefa28b1
 +#endif
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
 new file mode 100644
-index 0000000000..432d5b956e
+index 0000000000000000000000000000000000000000..62f9c4539cfb52140bcf92826b8de1724ad15608
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaikuMSE.cpp
-@@ -0,0 +1,2931 @@
+@@ -0,0 +1,2935 @@
 +/*
 + * Copyright (C) 2026 Summit contributors.
 + *
@@ -33478,11 +33478,14 @@ index 0000000000..432d5b956e
 +        // the decoder has read the next keyframe, so retain both GOPs then.
 +        Vector<RefPtr<MediaSampleHaiku>> recoverySamples;
 +        size_t recoveryBytes = 0;
-+        bool keepRecovery = isH264(info.codec) && AddOnVideoDecoderHaiku::canDecode(format, codecConfig);
++        const bool tryAddOn = AddOnVideoDecoderHaiku::canDecode(format, codecConfig);
++        bool keepRecovery = tryAddOn;
 +        bool recoveryLimitReached = false;
 +        std::optional<int64_t> lastHardwareOutput;
 +        bool replayingHardwareOutput = false;
-+        bool useInputTimeline = codec == ffmpegCodecAV1 || codec == ffmpegCodecHEVC;
++        // Named hardware decoders return the timestamp of the actual picture.
++        // Software timestamp recovery starts below, after addon negotiation.
++        bool useInputTimeline = false;
 +        VideoPresentationTimelineHaiku inputTimeline;
 +        bool invalidTimeline = false;
 +        auto nextChunk = [&](const void** data, size_t* size, media_header* header) -> status_t {
@@ -33553,7 +33556,7 @@ index 0000000000..432d5b956e
 +
 +        // Explicitly selected AMD or Raspberry Pi decoder first.
 +        std::unique_ptr<AddOnVideoDecoderHaiku> addOn;
-+        if (isH264(info.codec) && AddOnVideoDecoderHaiku::canDecode(format, codecConfig)) {
++        if (tryAddOn) {
 +            addOn = AddOnVideoDecoderHaiku::create(format, codecConfig, [&](const void** data, size_t* size, media_header* header) {
 +                return nextChunk(data, size, header);
 +            });
@@ -33568,10 +33571,11 @@ index 0000000000..432d5b956e
 +        if (!addOn && (m_queue.aborted() || m_queue.generation() != generation))
 +            return true;
 +
-+        // Media Kit's H.264 software decoder also reports the most recently
-+        // read packet timestamp, including invalid timestamps when draining.
-+        // Its output pictures are ordered; retain the input presentation times.
-+        if (!addOn && codec == ffmpegCodecH264)
++        // Media Kit's H.264, HEVC and AV1 software decoders report packet
++        // timestamps, including invalid timestamps when draining. Their
++        // output pictures are ordered; retain input presentation times from
++        // the start of software input, including any replayed setup samples.
++        if (!addOn && (codec == ffmpegCodecH264 || codec == ffmpegCodecHEVC || codec == ffmpegCodecAV1))
 +            useInputTimeline = true;
 +
 +        HaikuChunkDecoder decoder([&](const void** data, size_t* size, media_header* header) {

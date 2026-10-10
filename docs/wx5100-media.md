@@ -295,3 +295,12 @@ and applies ten-bit code ranges without reducing precision; it passes all
 48 captured Main-10 RGB pictures within one channel value and repeats the
 existing eight-bit paused-frame check. Reference decoding trims to a requested
 frame interval, avoiding a whole HD clip allocation for one paused capture.
+
+The first HEVC browser bundle (`cj29xks1`, `efaa9b9`) exposed a second,
+H.264-only gate in MSE. Both short profiles and the 900-picture HD/AAC clip
+completed without drops, but the trace identifies libavcodec: those runs
+are software evidence only. MSE now asks the backend capability predicate
+for every video codec and retains recovery packets for an accepted HEVC
+backend too. Named decoders supply their own ordered picture timestamps;
+input timestamp reconstruction starts only for software, including fallback
+and replay. Native hardware qualification follows the rebuilt bundle.
