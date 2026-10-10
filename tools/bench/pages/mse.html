@@ -114,7 +114,10 @@ async function checkPause() {
             // The Haiku backend can resolve its seek when samples are queued,
             // before the decoder supplies the target picture. Measure that
             // arrival separately before testing whether a paused picture moves.
-            while (video.getVideoPlaybackQuality().totalVideoFrames <= previousFrames) {
+            // File playback resolves seeked after decoding and submitting its
+            // target picture. It currently supplies no playback-quality frame
+            // counters, so only MSE needs this additional arrival check.
+            while (!fileMode && video.getVideoPlaybackQuality().totalVideoFrames <= previousFrames) {
                 if (performance.now() - seekStarted > 5000)
                     throw new Error('paused seek picture timeout');
                 await sleep(25);
@@ -178,6 +181,7 @@ async function report(why) {
         displayed: {width: video.clientWidth, height: video.clientHeight},
         viewport: {width: innerWidth, height: innerHeight, devicePixelRatio},
         error: video.error && {code: video.error.code, message: video.error.message},
+        passed: why === 'ended' && !video.error,
     };
     if (expectedFrames !== null) {
         result.expectedFrames = expectedFrames;
