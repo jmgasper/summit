@@ -340,3 +340,23 @@ Runs: `probe-20261011-044050` through `044405`. Evidence:
 `summit-hevc-direct-qualification.log`, `summit-direct-timestamps.log`,
 `summit-hevc-direct-{paused,file-paused,file-hd-paused}-pixels.log`, and
 `summit-hevc-file-hd-qualification.log` in the X399 evidence directory.
+
+The three-minute Main-10/AAC run now passes with the same bundle and addon:
+all 5,400 MSE pictures, zero drops, exact source timestamps in order and normal
+end. It is uncontended with no crash, GPU fault or leftover process. Run
+`probe-20261011-044448-summit-wx5100-hevc-direct-main10-hd5400-audio`;
+`summit-hevc-direct-hd5400-timestamps.log`.
+
+HEVC recovery is now qualified too. Failure after 19 output pictures replays
+nine MSE samples and returns all 48 source timestamps once, with zero drops.
+Failure on the first decode at startup and after seek recovers in software;
+the paused 0.75 s picture is source frame 16 with exact software RGB. File
+failure after 19 hardware pictures resumes in software, and its paused image
+at 1.173352 s is source frame 28, also exact. Both pauses preserve pixels/time
+before normal completion. The original addon without index 1 uses software
+from selection and returns all 48 source timestamps with zero drops. All four
+runs are uncontended, cleanly drained and free of crashes/GPU faults. File
+quality counters remain unimplemented. Runs `044819`, `044842`, `044904` and
+`044926`; evidence `summit-hevc-{fault19,fault0-seek,file-fault19,old-addon}.log`
+and the two paused capture comparisons. Production addon `3f28945c...` was
+restored and verified after every test. Composition remains CPU Mesa.
