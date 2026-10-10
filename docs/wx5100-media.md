@@ -319,3 +319,24 @@ The next engine change lets an RGB addon write directly into the caller's
 owned buffer when both row strides match. Other layouts retain the existing
 copy path. Decoder status, one-picture validation and seek-skip semantics
 remain in place. Native playback/recovery qualification follows its build.
+
+The direct RGB build is now qualified for the short application checks:
+Summit `9649ad5`, patch `296f1b03...`, bundle `00kke_5j`, driver `8fc0041e...`
+and addon `84351b42...`. MSE Main48, Main10-48, Main10 HD900/AAC and H.264-144
+all complete with exact source timestamps and zero dropped frames. Every run
+is uncontended, quits cleanly and records no crash or GPU fault. Native
+interleaved tests also verify buffer reuse preserves all captured pixels.
+
+Paused MSE Main10 seeking to 0.75 s matches source picture 16; the file path
+matches picture 18 at the same time. A 1080p Main10/AAC file seek to 13.3 s
+matches all RGB pixels of source picture 399 within one channel value,
+using the independent full-precision ten-bit reference. Each picture and
+clock stay stable during the pause and playback resumes to normal end.
+File playback's browser quality counters are unimplemented (zero), so its
+qualification uses decoder traces and captured pixels, without inferring a
+drop count from those counters. Three-minute and injected-failure runs remain
+pending. Browser composition still uses the private CPU Mesa stack.
+Runs: `probe-20261011-044050` through `044405`. Evidence:
+`summit-hevc-direct-qualification.log`, `summit-direct-timestamps.log`,
+`summit-hevc-direct-{paused,file-paused,file-hd-paused}-pixels.log`, and
+`summit-hevc-file-hd-qualification.log` in the X399 evidence directory.
