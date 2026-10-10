@@ -115,3 +115,21 @@ and `SUMMIT_TEST_AMDUVD_BAD_WIDTH` (the latter only takes effect with
 `SUMMIT_TEST_AMDUVD_FAIL_AFTER=0`). The track test's expected decoder value
 `format-error` checks repeated rejection without output writes. The proxy is
 restored to the real add-on and its hash verified after each test group.
+
+Two additional native file fixtures pass using the current selection module
+(`c96cb9c`). A 36-picture stream changes coded height 240 → 256 → 240 at IDRs,
+with cropping preserving visible 320×240 throughout. A twelve-picture
+Baseline stream uses POC type 2 and MMCO 5 on each of its eleven P pictures.
+Both finish entirely on `amduvd h264`, preserve frame counts and timestamp
+order, and match independently decoded RGB within one channel value.
+The latter fixture also passes a direct native NV12 comparison with zero
+differences; the cropped-height fixture passes 204 Media Kit output pictures
+in NV12, I420 and packed YUV with exact pixels and timestamps. These fixtures
+and comparisons live under `format-transition/` and `mmco5-fixture/` in the
+WX5100 evidence directory. They do not yet qualify the full browser/MSE path.
+
+For browser pixel checks, `mse.html` accepts `capturePausedFrame=1` with its
+pause controls and includes a full-resolution PNG in the JSON result.
+`verify-rgb.py --start-frame N --frame-count 1` checks the corresponding
+decoded BGRA capture against that exact source picture without searching for
+a matching frame.
