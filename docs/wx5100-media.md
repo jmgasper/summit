@@ -171,3 +171,13 @@ The correction is awaiting the private incremental build and repeated pixel
 check. Before-fix evidence: `probe-20261011-025950-summit-wx5100-file-paused-seek`,
 `summit-browser-file-paused-pixels-before.log` and
 `summit-browser-file-paused-confirm65.log`.
+
+With hardware disabled, the file seek has the same pre-fix boundary error:
+its PNG matches frame 65 exactly and fails frame 66. The software timestamp
+workaround also supplies a frame-end counter. It now reports that distinction
+to the seek loop, which applies the strict boundary comparison only to such
+counters and preserves start-timestamp semantics otherwise. Evidence:
+`probe-20261011-030538-summit-wx5100-file-paused-sw-before`,
+`summit-browser-file-paused-sw-pixels-before.log` and
+`summit-browser-file-paused-sw-confirm65.log`. The independent pixel test ran
+while browser packaging was active; no performance result is claimed for it.

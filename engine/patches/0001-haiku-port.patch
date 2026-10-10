@@ -30635,10 +30635,10 @@ index 0000000000..e69b3f19ef
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
 new file mode 100644
-index 0000000000..80b766f428
+index 0000000000..c0f4367e91
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/haiku/MediaPlayerPrivateHaiku.cpp
-@@ -0,0 +1,1817 @@
+@@ -0,0 +1,1829 @@
 +/*
 + * Copyright (C) 2014-2016 Haiku, Inc.
 + *
@@ -31189,8 +31189,10 @@ index 0000000000..80b766f428
 +// decoder that skips frames it does not deliver (NVDEC on the X399 delivers
 +// about a quarter of them, with real times), and there the counter would
 +// end a 10 s clip after 2.5 s.
-+static bigtime_t videoTrackTime(BMediaTrack& track)
++static bigtime_t videoTrackTime(BMediaTrack& track, bool* positionIsFrameEnd = nullptr)
 +{
++    if (positionIsFrameEnd)
++        *positionIsFrameEnd = false;
 +    bigtime_t reported = track.CurrentTime();
 +    media_format format;
 +    if (track.EncodedFormat(&format) != B_OK)
@@ -31200,7 +31202,10 @@ index 0000000000..80b766f428
 +        return reported;
 +    auto counted = static_cast<bigtime_t>(track.CurrentFrame() * 1000000.0 / rate);
 +    auto tolerance = std::max(static_cast<bigtime_t>(2000000.0 / rate), counted / 10);
-+    return reported + tolerance < counted ? counted : reported;
++    bool useCounter = reported + tolerance < counted;
++    if (positionIsFrameEnd)
++        *positionIsFrameEnd = useCounter;
++    return useCounter ? counted : reported;
 +}
 +
 +status_t MediaPlayerPrivate::videoThread(void* cookie)
@@ -31266,9 +31271,16 @@ index 0000000000..80b766f428
 +            status_t status = readVideoFrame(player->m_frameBuffer->Bits(), &count, nullptr);
 +            if (status == B_OK)
 +                ++player->m_prerollFrames;
-+            bool targetReached = player->m_substituteVideo
-+                ? player->m_substituteVideo->seekTargetReached(prerollTarget)
-+                : decodedVideoTime() >= prerollTarget;
++            bool targetReached;
++            if (player->m_substituteVideo)
++                targetReached = player->m_substituteVideo->seekTargetReached(prerollTarget);
++            else {
++                bool positionIsFrameEnd;
++                bigtime_t position = videoTrackTime(*player->m_videoTrack, &positionIsFrameEnd);
++                // The software timestamp workaround also uses a frame-end
++                // counter. A genuine native timestamp still names its start.
++                targetReached = positionIsFrameEnd ? position > prerollTarget : position >= prerollTarget;
++            }
 +            if (status != B_OK || targetReached || player->m_prerollFrames >= 300) {
 +                unsigned generation = player->m_seekGeneration;
 +                if (tracePlayback)
