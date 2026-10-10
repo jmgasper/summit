@@ -246,5 +246,35 @@ presentation thread and a queue bounded to six pictures and 64 MiB (an
 otherwise empty queue can accept one larger picture). Flush clears queued
 pictures, wakes blocked producers, and serializes generation changes against
 publication so an old picture cannot satisfy a new seek's preroll. The
-existing clock and 80 ms late-frame policy are unchanged. Native playback,
-paused seek, fallback and shutdown regressions are pending.
+existing clock and 80 ms late-frame policy are unchanged.
+
+This engine (`3c739a4`, patch `b782abfd...`, `bundle-x50jiwz8`) passes the same
+three-minute HD/AAC test with all **5,400 frames and zero drops**, all source
+PTS in order, normal end and clean shutdown. All 17 load samples are
+uncontended; mean owned CPU load is 0.746 cores. AAC queues 8,650,752 PCM
+frames at 48 kHz stereo. The 116.3 ms reported output latency is not a
+physical A/V measurement. No new crash, GPU fault or leftover process is
+recorded. The saved screenshot shows the movie and `q=5400/0`.
+
+Paused seeking still holds the correct source frame 64 at 2.75 seconds
+(maximum RGB error one), then resumes without drops. High 10 software
+fallback returns all 50 pictures with zero drops. Runs:
+`probe-20261011-034254-summit-wx5100-readahead-paused-seek`,
+`probe-20261011-034320-summit-wx5100-readahead-hd5400-audio`, and
+`probe-20261011-034657-summit-wx5100-readahead-high10`.
+The test group restores and verifies production addon `3f28945c...`.
+
+The page's optional `maxDropped=0` makes zero drops an explicit pass
+condition, independently of `expectedFrames` (whose total includes drops).
+The queued renderer also passes four uncontended regressions with zero drops:
+hardware failure after picture 47 (all 144 source timestamps, 13 compressed
+samples replayed), first-call failure both at startup and after paused seek
+(frame 64 exact software RGB), bounded-cache fallback (513 samples replayed,
+all 540 output timestamps in order), and pause/resume without seeking (144
+frames, time/pixels/counter unchanged during the pause). Every run ends
+normally, drains its processes and records no crash or GPU fault. The real
+addon is restored after each fault injection. Runs:
+`probe-20261011-034728-summit-wx5100-readahead-fault47`,
+`probe-20261011-034756-summit-wx5100-readahead-fault0-seek`,
+`probe-20261011-034824-summit-wx5100-readahead-cache512`, and
+`probe-20261011-034905-summit-wx5100-readahead-pause`.
