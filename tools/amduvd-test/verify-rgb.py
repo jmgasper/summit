@@ -16,7 +16,11 @@ parser.add_argument('source', type=Path)
 parser.add_argument('capture', type=Path)
 parser.add_argument('--fallback-after', type=int)
 parser.add_argument('--start-frame', type=int, default=0)
+parser.add_argument('--frame-count', type=int,
+    help='compare this many source pictures, for a captured paused browser frame')
 args = parser.parse_args()
+assert args.start_frame >= 0
+assert args.frame_count is None or args.frame_count > 0
 stream = json.loads(subprocess.check_output(['ffprobe', '-v', 'error', '-select_streams', 'v:0',
     '-show_streams', '-of', 'json', str(args.source)]))['streams'][0]
 w, h = stream['width'], stream['height']
@@ -26,6 +30,8 @@ yuv = subprocess.check_output(['ffmpeg', '-v', 'error', '-i', str(args.source), 
     '-pix_fmt', stream['pix_fmt'], '-fps_mode', 'passthrough', '-f', 'rawvideo', '-'])
 area = w * h
 frames = np.frombuffer(yuv, np.uint8).reshape(-1, area * 3 // 2)[args.start_frame:]
+if args.frame_count is not None:
+    frames = frames[:args.frame_count]
 actual = np.fromfile(args.capture, np.uint8).reshape(-1, h, w, 4)
 assert len(actual) == len(frames), (len(actual), len(frames))
 assert np.all(actual[..., 3] == 255), 'opaque alpha'
@@ -51,6 +57,8 @@ if split < len(frames):
     software = subprocess.check_output(['ffmpeg', '-v', 'error', '-i', str(args.source), '-an',
         '-vf', 'scale=flags=fast_bilinear', '-pix_fmt', 'bgra', '-fps_mode', 'passthrough', '-f', 'rawvideo', '-'])
     software = np.frombuffer(software, np.uint8).reshape(-1, h, w, 4)[args.start_frame:]
+    if args.frame_count is not None:
+        software = software[:args.frame_count]
     delta = np.abs(actual[split:, ..., :3].astype(np.int16) - software[split:, ..., :3].astype(np.int16))
     assert delta.max(initial=0) <= 3, ('software pixel/order mismatch', int(delta.max()), np.unravel_index(delta.argmax(), delta.shape))
     print(f'Software: {len(frames) - split} frames, max channel error={delta.max(initial=0)}')

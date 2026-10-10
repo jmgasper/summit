@@ -26,6 +26,7 @@ Query parameters:
   pauseAt=<seconds>  pause once playback reaches this time, then resume
   pauseMs=<ms>    pause duration (default 1500, plus 250 ms settling)
   pausedSeek=<seconds>  optionally seek while paused before checking stability
+  capturePausedFrame=1  include the paused picture as a full-size PNG in the result
 -->
 <style>
 body { font: 16px monospace; margin: 12px; }
@@ -79,6 +80,7 @@ log('isTypeSupported ' + types.map(t => t.replace(/ codecs=/, '') + '=' + (windo
 let seeked = false;
 let pauseStarted = false;
 let pauseCheck = null;
+let pausedFrame = null;
 async function checkPause() {
     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
     const canvas = document.createElement('canvas');
@@ -121,6 +123,14 @@ async function checkPause() {
         await sleep(pauseMs);
         const after = sample();
         const samePixels = before.pixels.every((value, index) => value === after.pixels[index]);
+        if (params.get('capturePausedFrame') === '1') {
+            const picture = document.createElement('canvas');
+            picture.width = video.videoWidth;
+            picture.height = video.videoHeight;
+            picture.getContext('2d').drawImage(video, 0, 0);
+            pausedFrame = {time: video.currentTime, width: picture.width, height: picture.height,
+                png: picture.toDataURL('image/png')};
+        }
         pauseCheck = {beforeTime: before.time, afterTime: after.time,
             beforeFrames: before.frames, afterFrames: after.frames, samePixels,
             hasPicture: before.hasPicture && after.hasPicture, target: pausedSeek, seekFrameWaitMs,
@@ -173,6 +183,8 @@ async function report(why) {
     }
     if (pauseAt !== null) {
         result.pauseCheck = pauseCheck;
+        if (pausedFrame)
+            result.pausedFrame = pausedFrame;
         result.passed = result.passed !== false && why === 'ended' && !result.error
             && !!pauseCheck && pauseCheck.passed;
     }
