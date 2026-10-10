@@ -83,3 +83,12 @@ suffix, and `--start-frame N` checks a capture beginning at a seek keyframe.
 `SUMMIT_TEST_AMDUVD_FAIL_AFTER`. It must never ship or remain in a Media Kit
 add-on directory. The lab run held its workstation lock, saved the real add-on,
 used a restoration trap and checked the restored hash before proceeding.
+
+The host SPS selection-parser regression builds the actual parser with ASan
+and UBSan (`sps-parser-test.py --output DIRECTORY`). It reproduces an overflow
+from an out-of-range signed scaling delta, then verifies rejection before
+addition, both legal boundary values and 25,000 malformed configurations.
+The correction and an early cancellation check for cached MSE replay are
+pending the next native incremental build; the native results above describe
+commit `fc9cd5a`. `mse.html` now accepts `timeoutMs` for sustained playback and
+long-GOP recovery checks.
